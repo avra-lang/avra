@@ -59,6 +59,10 @@ invariant it holds — no narration, no self-justification, no history.
   structured fix where expressible, and a golden rendering test.
 - Map iteration order never reaches output — iterate an ordered
   source.
+- A feature is a directory: `mod.av` is the declarative manifest
+  (component + tables), and implementation fns live in sibling files
+  by concern — `builders.av` for parse lowering; `check.av`,
+  `resolve.av`, … as passes arrive.
 
 ## Vendored code — do not imitate
 
@@ -81,7 +85,9 @@ against these before writing; probe in scratch when unsure.
   arms, list elements, if-branches — fixed upstream), but a call whose
   N-evidence rides inside a struct argument still needs explicit `<N>`,
   as does any generic call made from inside a generic fn's body.
-- Table literals need a declared row type (`let x: List<Row> = table`).
+- Table literals need a declared row type (`let x: List<Row> = table`)
+  — field position and component config pairs do not thread it
+  (F1042); the typed let is required.
 - `it` fails to infer in complex filter/map bodies — use an annotated
   closure param.
 - Present-bind (`let x ->`) in expression-position match loses its

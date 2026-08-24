@@ -1,0 +1,88 @@
+// The first real statement, end to end: spine + let + expressions
+// composed by rule merging, `let x = 1 + y` into the arena, spans
+// engine-attributed, and a broken statement costing one diagnostic
+// while its neighbors parse.
+use @std.avrac.core.{NodeStore, new_node_store, Expr, Stmt, StmtId, BinOp, Span}
+use @std.avrac.grammar.{Captured, run_grammar, lex_source, parse_grammar}
+use @std.avrac.features.{
+    LangNode, LanguageFeature, compose_text, dispatch, list_at, stmt_id_at,
+}
+use @std.avrac.features.stmt_spine.{stmt_spine}
+use @std.avrac.features.let_stmt.{let_stmt}
+use @std.avrac.features.expr_spine.{expr_spine}
+
+type ParsedProg = { store: NodeStore, stmts: List<StmtId>, diagnostics: int }
+
+fn parse_prog(source: string) -> ParsedProg {
+    let feats = [stmt_spine(), let_stmt(), expr_spine()]
+    let gp = parse_grammar(compose_text(feats).text)
+    if gp.grammar == null {
+        return ParsedProg { store: new_node_store(), stmts: [], diagnostics: gp.diagnostics.length }
+    }
+    let store = new_node_store()
+    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> dispatch(feats, store, name, args, span)
+    let o = run_grammar<LangNode>(gp.grammar!.merged(), lex_source(source).tokens, build)
+    mut stmts: List<StmtId> = []
+    if o.result != null {
+        let items = list_at([o.result!], 0)
+        for j in 0..items.length {
+            let sid: StmtId? = stmt_id_at(items, j)
+            if sid != null { stmts.push(sid!) }
+        }
+    }
+    ParsedProg { store: store, stmts: stmts, diagnostics: o.diagnostics.length }
+}
+
+spec "features/let_stmt" {
+    given "let x = 1 + y" {
+        then "one Let lands in the arena with the expression tree under it" {
+            let p = parse_prog("let x = 1 + y")
+            let shape_ok = p.diagnostics == 0 && p.stmts.length == 1
+            let tree_ok = if shape_ok {
+                match p.store.stmt(p.stmts[0]) {
+                    .Let(name, value) -> name == "x" && match p.store.expr(value) {
+                        .Binary(op, l, r) -> op == BinOp.Add &&
+                            p.store.expr(l) is .IntLit && p.store.expr(r) is .Ident,
+                        .IntLit(_) -> false, .Ident(_) -> false, .Error -> false,
+                    },
+                    .ExprStmt(_) -> false, .Error -> false,
+                }
+            } else { false }
+            shape_ok && tree_ok
+        }
+        then "the statement's span covers the whole line, engine-attributed" {
+            let p = parse_prog("let x = 1 + y")
+            let s = p.store.stmt_span(p.stmts[0])
+            s?.lo == 0 && s?.hi == 13
+        }
+    }
+    given "several statements" {
+        then "lets accumulate in source order" {
+            let p = parse_prog("let a = 1\nlet b = 2")
+            let names_ok = if p.stmts.length == 2 {
+                let a_ok = match p.store.stmt(p.stmts[0]) {
+                    .Let(name, _) -> name == "a",
+                    .ExprStmt(_) -> false, .Error -> false,
+                }
+                let b_ok = match p.store.stmt(p.stmts[1]) {
+                    .Let(name, _) -> name == "b",
+                    .ExprStmt(_) -> false, .Error -> false,
+                }
+                a_ok && b_ok
+            } else { false }
+            p.diagnostics == 0 && names_ok
+        }
+    }
+    given "a broken statement between good ones" {
+        then "one diagnostic, and the neighbors still parse" {
+            let p = parse_prog("let a = 1\nlet = 3\nlet y = 2")
+            let survivors_ok = if p.stmts.length == 2 {
+                match p.store.stmt(p.stmts[1]) {
+                    .Let(name, _) -> name == "y",
+                    .ExprStmt(_) -> false, .Error -> false,
+                }
+            } else { false }
+            p.diagnostics == 1 && survivors_ok
+        }
+    }
+}
