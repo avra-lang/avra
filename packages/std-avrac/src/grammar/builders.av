@@ -1,0 +1,395 @@
+//! Builders for the grammar DSL: executor captures -> Grammar values.
+//! `grammar_build` is the dispatch `run_grammar` calls; each builder
+//! unwraps its typed captures and constructs one node.
+//!
+//! `build_seq` resolves surface conveniences into structural truth:
+//! each trailing `@expect(tok, msg)` attaches to the first unclaimed
+//! item matching `tok` (a missing target is a parse-time error), and
+//! `@recover` lands on the branch. The token named in the text never
+//! reaches the value model.
+
+use core.{code_at, is_upper_name_cont}
+
+/// What grammar-DSL builders construct — one variant per node kind.
+export enum GrammarNode {
+    NGrammar(g: Grammar)
+    NRule(r: Rule)
+    NAlt(a: Alt)
+    NSeq(s: Seq)
+    NItem(m: Item)
+    NPrim(p: Prim)
+    NBuild(b: Build)
+    NAnnot(an: PendingAnnot)
+}
+
+/// A parsed-but-unattached annotation. Exists only between a branch's
+/// parse and build_seq's attachment resolution.
+export enum PendingAnnot {
+    AExpect(tok: string, message: string)
+    ARecover(sync_to: string)
+}
+
+/// All-caps-and-underscores: the convention marking a lexer terminal
+/// (`NUMBER`) apart from a rule reference (`expression`).
+fn is_terminal_name(s: string) -> bool {
+    if s.length == 0 { return false }
+    if code_at(s, 0) == 95 { return false }
+    mut i = 0
+    while i < s.length {
+        if !is_upper_name_cont(code_at(s, i)) { return false }
+        i = i + 1
+    }
+    true
+}
+
+fn ok(g: GrammarNode) -> Result<Captured<GrammarNode>, string> {
+    Result.Ok(Captured.Node(g))
+}
+
+/// A present extraction, or "expected <what>". The one place unwrap
+/// errors are worded.
+fn want<T>(x: T?, what: string) -> Result<T, string> {
+    let out: Result<T, string> = if x == null { Result.Err("expected ${what}") } else { Result.Ok(x!) }
+    out
+}
+
+// ── Per-kind extractors: a capture's payload, or null. ──
+
+fn tok_of(v: Captured<GrammarNode>) -> Token? {
+    match v {
+        .Terminal(t) -> t,
+        .Node(_) -> null,
+        .Many(_) -> null,
+        .Absent -> null,
+    }
+}
+
+fn alt_of(v: Captured<GrammarNode>) -> Alt? {
+    match v {
+        .Node(g) -> match g {
+            .NAlt(a) -> a,
+            .NGrammar(_) -> null,
+            .NRule(_) -> null,
+            .NSeq(_) -> null,
+            .NItem(_) -> null,
+            .NPrim(_) -> null,
+            .NBuild(_) -> null,
+            .NAnnot(_) -> null,
+        },
+        .Terminal(_) -> null,
+        .Many(_) -> null,
+        .Absent -> null,
+    }
+}
+
+fn prim_of(v: Captured<GrammarNode>) -> Prim? {
+    match v {
+        .Node(g) -> match g {
+            .NPrim(p) -> p,
+            .NGrammar(_) -> null,
+            .NRule(_) -> null,
+            .NAlt(_) -> null,
+            .NSeq(_) -> null,
+            .NItem(_) -> null,
+            .NBuild(_) -> null,
+            .NAnnot(_) -> null,
+        },
+        .Terminal(_) -> null,
+        .Many(_) -> null,
+        .Absent -> null,
+    }
+}
+
+fn item_of(v: Captured<GrammarNode>) -> Item? {
+    match v {
+        .Node(g) -> match g {
+            .NItem(m) -> m,
+            .NGrammar(_) -> null,
+            .NRule(_) -> null,
+            .NAlt(_) -> null,
+            .NSeq(_) -> null,
+            .NPrim(_) -> null,
+            .NBuild(_) -> null,
+            .NAnnot(_) -> null,
+        },
+        .Terminal(_) -> null,
+        .Many(_) -> null,
+        .Absent -> null,
+    }
+}
+
+fn seq_of(v: Captured<GrammarNode>) -> Seq? {
+    match v {
+        .Node(g) -> match g {
+            .NSeq(sq) -> sq,
+            .NGrammar(_) -> null,
+            .NRule(_) -> null,
+            .NAlt(_) -> null,
+            .NItem(_) -> null,
+            .NPrim(_) -> null,
+            .NBuild(_) -> null,
+            .NAnnot(_) -> null,
+        },
+        .Terminal(_) -> null,
+        .Many(_) -> null,
+        .Absent -> null,
+    }
+}
+
+fn rule_of(v: Captured<GrammarNode>) -> Rule? {
+    match v {
+        .Node(g) -> match g {
+            .NRule(r) -> r,
+            .NGrammar(_) -> null,
+            .NAlt(_) -> null,
+            .NSeq(_) -> null,
+            .NItem(_) -> null,
+            .NPrim(_) -> null,
+            .NBuild(_) -> null,
+            .NAnnot(_) -> null,
+        },
+        .Terminal(_) -> null,
+        .Many(_) -> null,
+        .Absent -> null,
+    }
+}
+
+fn build_of(v: Captured<GrammarNode>) -> Build? {
+    match v {
+        .Node(g) -> match g {
+            .NBuild(b) -> b,
+            .NGrammar(_) -> null,
+            .NRule(_) -> null,
+            .NAlt(_) -> null,
+            .NSeq(_) -> null,
+            .NItem(_) -> null,
+            .NPrim(_) -> null,
+            .NAnnot(_) -> null,
+        },
+        .Terminal(_) -> null,
+        .Many(_) -> null,
+        .Absent -> null,
+    }
+}
+
+fn annot_of(v: Captured<GrammarNode>) -> PendingAnnot? {
+    match v {
+        .Node(g) -> match g {
+            .NAnnot(an) -> an,
+            .NGrammar(_) -> null,
+            .NRule(_) -> null,
+            .NAlt(_) -> null,
+            .NSeq(_) -> null,
+            .NItem(_) -> null,
+            .NPrim(_) -> null,
+            .NBuild(_) -> null,
+        },
+        .Terminal(_) -> null,
+        .Many(_) -> null,
+        .Absent -> null,
+    }
+}
+
+/// List delivery for a repeated capture. A label repeated across a
+/// scalar position and a repetition (`x ("," x)*`) can bind a scalar
+/// when the repetition loops zero times — delivery normalizes it.
+fn as_list(v: Captured<GrammarNode>) -> Result<List<Captured<GrammarNode>>, string> {
+    let items: List<Captured<GrammarNode>> = match v {
+        .Many(xs) -> xs,
+        .Absent -> [],
+        .Terminal(t) -> [Captured.Terminal(t)],
+        .Node(g) -> [Captured.Node(g)],
+    }
+    Result.Ok(items)
+}
+
+fn as_seqs(v: Captured<GrammarNode>) -> Result<List<Seq>, string> {
+    mut out: List<Seq> = []
+    for x in as_list(v)? { out.push(want(seq_of(x), "a branch")?) }
+    Result.Ok(out)
+}
+
+fn as_items(v: Captured<GrammarNode>) -> Result<List<Item>, string> {
+    mut out: List<Item> = []
+    for x in as_list(v)? { out.push(want(item_of(x), "an item")?) }
+    Result.Ok(out)
+}
+
+fn as_rules(v: Captured<GrammarNode>) -> Result<List<Rule>, string> {
+    mut out: List<Rule> = []
+    for x in as_list(v)? { out.push(want(rule_of(x), "a rule")?) }
+    Result.Ok(out)
+}
+
+fn as_annots(v: Captured<GrammarNode>) -> Result<List<PendingAnnot>, string> {
+    mut out: List<PendingAnnot> = []
+    for x in as_list(v)? { out.push(want(annot_of(x), "an annotation")?) }
+    Result.Ok(out)
+}
+
+/// The builder-call argument names from a repeated NAME capture.
+fn call_args(v: Captured<GrammarNode>) -> Result<List<string>, string> {
+    mut out: List<string> = []
+    for x in as_list(v)? {
+        let t = want(tok_of(x), "an argument name")?
+        out.push(t.text)
+    }
+    Result.Ok(out)
+}
+
+/// True when this atom is what an `@expect` token names.
+fn prim_matches(p: Prim, token: string) -> bool {
+    match p {
+        .Lit(text) -> text == token,
+        .Named(term) -> term == token,
+        .Ref(_) -> false,
+        .Group(_) -> false,
+    }
+}
+
+/// Attach each @expect to the first unclaimed matching item; land
+/// @recover on the branch. The resolution step of the surface -> value
+/// collapse.
+fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> {
+    mut out = [m for m in items]
+    mut rec: Recover? = null
+    for an in annots {
+        match an {
+            .AExpect(token, message) -> {
+                mut idx = -1
+                for (i, m) in out.enumerate() {
+                    if idx < 0 && m.expect == null && prim_matches(m.prim, token) { idx = i }
+                }
+                if idx < 0 { return Result.Err("@expect names `${token}` but the branch has no matching item") }
+                mut next: List<Item> = []
+                for (i, m) in out.enumerate() {
+                    if i == idx {
+                        next.push(m with { expect: Expect { message: message } })
+                    } else {
+                        next.push(m)
+                    }
+                }
+                out = next
+            }
+            .ARecover(sync_to) -> {
+                if rec != null { return Result.Err("duplicate @recover on one branch") }
+                rec = Recover { sync_to: sync_to }
+            }
+        }
+    }
+    Result.Ok(Seq { items: out, build: null, recover: rec })
+}
+
+/// The parsed grammar inside a run outcome, when one was built.
+/// Consumers use this instead of unwrapping GrammarNode themselves.
+export fn grammar_result(o: RunOutcome<GrammarNode>) -> Grammar? {
+    let res: Captured<GrammarNode>? = o.result
+    if res == null { return null }
+    match res! {
+        .Node(g) -> match g {
+            .NGrammar(gr) -> gr,
+            .NRule(_) -> null,
+            .NAlt(_) -> null,
+            .NSeq(_) -> null,
+            .NItem(_) -> null,
+            .NPrim(_) -> null,
+            .NBuild(_) -> null,
+            .NAnnot(_) -> null,
+        },
+        .Terminal(_) -> null,
+        .Many(_) -> null,
+        .Absent -> null,
+    }
+}
+
+/// The builder dispatch for the grammar DSL itself.
+export fn grammar_build(name: string, args: List<Captured<GrammarNode>>) -> Result<Captured<GrammarNode>, string> {
+    match name {
+        "build_grammar" -> {
+            let rules = as_rules(args[0])?
+            if rules.length == 0 { return Result.Err("a grammar needs at least one rule") }
+            ok(GrammarNode.NGrammar(Grammar { name: "", start: rules[0].name, rules: rules }))
+        }
+        "build_rule" -> {
+            let rule_name = want(tok_of(args[0]), "a rule name")?
+            let body = want(alt_of(args[1]), "an alternation")?
+            ok(GrammarNode.NRule(Rule { name: rule_name.text, body: body }))
+        }
+        "build_alt" -> {
+            let branches = as_seqs(args[0])?
+            ok(GrammarNode.NAlt(Alt { branches: branches }))
+        }
+        "build_seq" -> {
+            let items = as_items(args[0])?
+            let annots = as_annots(args[2])?
+            let sq = attach(items, annots)?
+            match args[1] {
+                .Absent -> ok(GrammarNode.NSeq(sq)),
+                .Node(_) -> {
+                    let b = want(build_of(args[1]), "a build directive")?
+                    ok(GrammarNode.NSeq(sq with { build: b }))
+                }
+                .Terminal(_) -> Result.Err("expected a build directive"),
+                .Many(_) -> Result.Err("expected a build directive"),
+            }
+        }
+        "build_labeled" -> {
+            let inner = want(item_of(args[1]), "an item")?
+            match args[0] {
+                .Absent -> ok(GrammarNode.NItem(inner)),
+                .Terminal(t) -> ok(GrammarNode.NItem(inner with { label: t.text })),
+                .Node(_) -> Result.Err("expected a label"),
+                .Many(_) -> Result.Err("expected a label"),
+            }
+        }
+        "build_postfix" -> {
+            let inner = want(prim_of(args[0]), "an atom")?
+            let rep = match args[1] {
+                .Absent -> Rep.One,
+                .Terminal(t) -> when {
+                    t.text == "*" -> Rep.Star
+                    t.text == "+" -> Rep.Plus
+                    _ -> Rep.Opt
+                },
+                .Node(_) -> Rep.One,
+                .Many(_) -> Rep.One,
+            }
+            ok(GrammarNode.NItem(item(inner) with { rep: rep }))
+        }
+        "build_prim_name" -> {
+            let t = want(tok_of(args[0]), "a name")?
+            if is_terminal_name(t.text) { ok(GrammarNode.NPrim(named(t.text))) }
+            else { ok(GrammarNode.NPrim(rule_ref(t.text))) }
+        }
+        "build_lit" -> {
+            let t = want(tok_of(args[0]), "a quoted terminal")?
+            ok(GrammarNode.NPrim(lit(t.text)))
+        }
+        "build_group" -> {
+            let inner = want(alt_of(args[0]), "an alternation")?
+            ok(GrammarNode.NPrim(Prim.Group(inner)))
+        }
+        "build_build" -> {
+            let t = want(tok_of(args[0]), "a builder name")?
+            match args[1] {
+                .Absent -> ok(GrammarNode.NBuild(Build.Var(t.text))),
+                .Terminal(_) -> {
+                    let arg_names = call_args(args[2])?
+                    ok(GrammarNode.NBuild(Build.Call(t.text, arg_names)))
+                }
+                .Node(_) -> Result.Err("expected `(`"),
+                .Many(_) -> Result.Err("expected `(`"),
+            }
+        }
+        "build_expect" -> {
+            let token = want(tok_of(args[0]), "the expected token")?
+            let msg = want(tok_of(args[1]), "the message")?
+            ok(GrammarNode.NAnnot(PendingAnnot.AExpect(token.text, msg.text)))
+        }
+        "build_recover" -> {
+            let target = want(tok_of(args[0]), "the sync target")?
+            ok(GrammarNode.NAnnot(PendingAnnot.ARecover(target.text)))
+        }
+        _ -> Result.Err("unknown builder `${name}`")
+    }
+}

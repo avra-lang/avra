@@ -3,43 +3,43 @@
 //! run a grammar with defects, so every check here is a guarantee the
 //! matcher can lean on.
 
-/// One coherence defect, attributed to the rule that carries it.
-export type GrammarDefect = { rule: string, message: string }
+use core.{contains_str, concat}
 
-/// The TokKind a terminal name denotes, or null for an unknown name.
-export fn term_kind(term: string) -> TokKind? {
+/// A source-anchorless coherence diagnostic attributed to a rule.
+fn defect(rule_name: string, message: string) -> Diagnostic {
+    Diagnostic { message: message, span: null, expected: [], in_rule: rule_name }
+}
+
+/// The TokenKind a terminal name denotes, or null for an unknown name.
+export fn term_kind(term: string) -> TokenKind? {
     match term {
-        "NAME" -> TokKind.Name,
-        "STRING" -> TokKind.Str,
-        "BREAK" -> TokKind.Break,
-        "EOF" -> TokKind.Eof,
+        "NAME" -> TokenKind.Name,
+        "STRING" -> TokenKind.Str,
+        "BREAK" -> TokenKind.Break,
+        "EOF" -> TokenKind.Eof,
         _ -> null,
     }
 }
 
-fn has(xs: List<string>, x: string) -> bool {
-    for v in xs { if v == x { return true } }
-    false
-}
-
-/// A branch's capture labels, including those inside nested groups —
-/// capture accumulation makes them all visible to the build.
-export fn seq_labels(s: Seq) -> List<string> {
-    mut out: List<string> = []
-    for member in s.items {
-        if member.label != null { out.push(member.label!) }
-        for l in prim_labels(member.prim) { out.push(l) }
+impl Seq {
+    /// This branch's capture labels, including those inside nested
+    /// groups — capture accumulation makes them all visible to the
+    /// build.
+    fn labels(self) -> List<string> {
+        mut out: List<string> = []
+        for member in self.items {
+            if member.label != null { out.push(member.label!) }
+            for l in prim_labels(member.prim) { out.push(l) }
+        }
+        out
     }
-    out
 }
 
 fn prim_labels(p: Prim) -> List<string> {
     match p {
         .Group(inner) -> {
             mut out: List<string> = []
-            for s in inner.branches {
-                for l in seq_labels(s) { out.push(l) }
-            }
+            for s in inner.branches { out = concat(out, s.labels()) }
             out
         }
         .Ref(_) -> [],
@@ -48,14 +48,14 @@ fn prim_labels(p: Prim) -> List<string> {
     }
 }
 
-fn prim_defects(rule_name: string, p: Prim, names: List<string>, labeled: bool) -> List<GrammarDefect> {
+fn prim_defects(rule_name: string, p: Prim, names: List<string>, labeled: bool) -> List<Diagnostic> {
     match p {
         .Ref(target) ->
-            if has(names, target) { [] }
-            else { [GrammarDefect { rule: rule_name, message: "references undefined rule `${target}`" }] },
+            if contains_str(names, target) { [] }
+            else { [defect(rule_name, "references undefined rule `${target}`")] },
         .Named(term) ->
             if term_kind(term) != null { [] }
-            else { [GrammarDefect { rule: rule_name, message: "unknown terminal `${term}`" }] },
+            else { [defect(rule_name, "unknown terminal `${term}`")] },
         .Lit(_) -> [],
         // A labeled group is consumed for its value; an unlabeled one
         // is structural (its value is Absent, its captures escape).
@@ -63,25 +63,25 @@ fn prim_defects(rule_name: string, p: Prim, names: List<string>, labeled: bool) 
     }
 }
 
-fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<GrammarDefect> {
-    mut out: List<GrammarDefect> = []
-    let labels = seq_labels(s)
+fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<Diagnostic> {
+    mut out: List<Diagnostic> = []
+    let labels = s.labels()
     match s.build {
         null -> {
             if value_needed && s.items.length != 1 {
-                out.push(GrammarDefect { rule: rule_name, message: "a branch without a build must have exactly one item to pass through" })
+                out.push(defect(rule_name, "a branch without a build must have exactly one item to pass through"))
             }
         }
         let b -> match b {
             .Var(name) -> {
-                if !has(labels, name) {
-                    out.push(GrammarDefect { rule: rule_name, message: "build returns uncaptured label `${name}`" })
+                if !contains_str(labels, name) {
+                    out.push(defect(rule_name, "build returns uncaptured label `${name}`"))
                 }
             }
             .Call(_, args) -> {
                 for a in args {
-                    if !has(labels, a) {
-                        out.push(GrammarDefect { rule: rule_name, message: "build argument `${a}` is not captured in its branch" })
+                    if !contains_str(labels, a) {
+                        out.push(defect(rule_name, "build argument `${a}` is not captured in its branch"))
                     }
                 }
             }
@@ -90,13 +90,13 @@ fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<GrammarD
     out
 }
 
-fn alt_defects(rule_name: string, a: Alt, names: List<string>, value_needed: bool) -> List<GrammarDefect> {
-    mut out: List<GrammarDefect> = []
+fn alt_defects(rule_name: string, a: Alt, names: List<string>, value_needed: bool) -> List<Diagnostic> {
+    mut out: List<Diagnostic> = []
     for s in a.branches {
         for member in s.items {
-            for d in prim_defects(rule_name, member.prim, names, member.label != null) { out.push(d) }
+            out = concat(out, prim_defects(rule_name, member.prim, names, member.label != null))
         }
-        for d in build_defects(rule_name, s, value_needed) { out.push(d) }
+        out = concat(out, build_defects(rule_name, s, value_needed))
     }
     out
 }
@@ -104,15 +104,13 @@ fn alt_defects(rule_name: string, a: Alt, names: List<string>, value_needed: boo
 impl Grammar {
     /// Every defect in this grammar; empty means the matcher's
     /// assumptions all hold.
-    fn defects(self) -> List<GrammarDefect> {
+    fn defects(self) -> List<Diagnostic> {
         let names = self.rules.map(it.name)
-        mut out: List<GrammarDefect> = []
-        if !has(names, self.start) {
-            out.push(GrammarDefect { rule: self.start, message: "start rule is not defined" })
+        mut out: List<Diagnostic> = []
+        if !contains_str(names, self.start) {
+            out.push(defect(self.start, "start rule is not defined"))
         }
-        for r in self.rules {
-            for d in alt_defects(r.name, r.body, names, true) { out.push(d) }
-        }
+        for r in self.rules { out = concat(out, alt_defects(r.name, r.body, names, true)) }
         out
     }
 }

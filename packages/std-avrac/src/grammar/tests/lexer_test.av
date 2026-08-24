@@ -1,36 +1,36 @@
 use @std.avrac.core.{Span}
-use @std.avrac.grammar.{lex_grammar, Tok, TokKind, LexResult}
+use @std.avrac.grammar.{lex_grammar, Token, TokenKind, LexResult}
 
 /// One line-structure fixture: a source and its Break count.
 type BreakCase = { src: string, breaks: int }
 
-fn kinds_of(r: LexResult) -> List<TokKind> {
-    [t.kind for t in r.toks]
+fn kinds_of(r: LexResult) -> List<TokenKind> {
+    [t.kind for t in r.tokens]
 }
 
 fn count_breaks(r: LexResult) -> int {
-    [t for t in r.toks if t.kind == TokKind.Break].length
+    [t for t in r.tokens if t.kind == TokenKind.Break].length
 }
 
 fn op_texts(r: LexResult) -> List<string> {
-    [t.text for t in r.toks if t.kind == TokKind.Op]
+    [t.text for t in r.tokens if t.kind == TokenKind.Op]
 }
 
 spec "grammar/lexer" {
     given "a one-line rule" {
         then "kinds, texts, and spans are exact" {
             let r = lex_grammar("term = NUMBER")
-            let t0 = r.toks[0]
-            let t2 = r.toks[2]
-            r.toks.length == 5 &&
-                t0.kind == TokKind.Name && t0.text == "term" && t0.span.lo == 0 && t0.span.hi == 4 &&
-                r.toks[1].text == "=" &&
+            let t0 = r.tokens[0]
+            let t2 = r.tokens[2]
+            r.tokens.length == 5 &&
+                t0.kind == TokenKind.Name && t0.text == "term" && t0.span.lo == 0 && t0.span.hi == 4 &&
+                r.tokens[1].text == "=" &&
                 t2.text == "NUMBER" && t2.span.lo == 7 && t2.span.hi == 13 &&
-                r.toks[3].kind == TokKind.Break && r.toks[4].kind == TokKind.Eof
+                r.tokens[3].kind == TokenKind.Break && r.tokens[4].kind == TokenKind.Eof
         }
         then "a final Break is guaranteed without a trailing newline" {
             let r = lex_grammar("a = b")
-            r.toks[r.toks.length - 2].kind == TokKind.Break
+            r.tokens[r.tokens.length - 2].kind == TokenKind.Break
         }
     }
     given "operators" {
@@ -41,7 +41,7 @@ spec "grammar/lexer" {
         }
         then "a bare - is an error and lexing continues" {
             let r = lex_grammar("x = -")
-            r.errors.length == 1 && r.toks[r.toks.length - 1].kind == TokKind.Eof
+            r.errors.length == 1 && r.tokens[r.tokens.length - 1].kind == TokenKind.Eof
         }
         then "@expect lexes as one token" {
             let r = lex_grammar("x = y @expect(\")\", \"msg\")")
@@ -52,16 +52,16 @@ spec "grammar/lexer" {
     given "strings" {
         then "text is unquoted" {
             let r = lex_grammar("x = \"+\"")
-            let s = r.toks[2]
-            s.kind == TokKind.Str && s.text == "+" && s.span.lo == 4 && s.span.hi == 7
+            let s = r.tokens[2]
+            s.kind == TokenKind.Str && s.text == "+" && s.span.lo == 4 && s.span.hi == 7
         }
         then "escaped quote and backslash unescape" {
             let r = lex_grammar("x = \"\\\"\" y = \"\\\\\"")
-            r.toks[2].text == "\"" && r.toks[5].text == "\\"
+            r.tokens[2].text == "\"" && r.tokens[5].text == "\\"
         }
         then "an unterminated string reports and lexing continues" {
             let r = lex_grammar("a = \"oops\nb = c")
-            let names = [t.text for t in r.toks if t.kind == TokKind.Name]
+            let names = [t.text for t in r.tokens if t.kind == TokenKind.Name]
             r.errors.length == 1 && names.length == 3 && names[1] == "b"
         }
     }
@@ -79,7 +79,7 @@ spec "grammar/lexer" {
         }
         then "a leading newline is not a Break" {
             let r = lex_grammar("\na = b")
-            r.toks[0].kind == TokKind.Name
+            r.tokens[0].kind == TokenKind.Name
         }
     }
 }

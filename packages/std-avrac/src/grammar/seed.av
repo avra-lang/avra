@@ -79,10 +79,13 @@ export fn grammar_of_grammars() -> Grammar {
                 Build.Call("build_alt", ["branches"]),
             )]),
 
-            // seq = labeled+ ( "->" build )? annot*
+            // seq = labeled+ annot* ( "->" build )? annot*
+            // Annotations are legal before and after the build; the
+            // repeated label accumulates both in source order.
             rule("seq", [seq_to(
                 [
                     cap("items", rule_ref("labeled")) with { rep: Rep.Plus },
+                    cap("annots", rule_ref("annot")) with { rep: Rep.Star },
                     item(group([seq([item(lit("->")), cap("build", rule_ref("build"))])]))
                         with { rep: Rep.Opt },
                     cap("annots", rule_ref("annot")) with { rep: Rep.Star },
@@ -128,11 +131,13 @@ export fn grammar_of_grammars() -> Grammar {
             ]),
 
             // build = NAME ( "(" ( NAME ("," NAME)* )? ")" )?
+            // `lp` captures the open paren: absent means `-> e` (a
+            // capture reference), present means a builder call.
             rule("build", [seq_to(
                 [
                     cap("name", named("NAME")),
                     item(group([seq([
-                        item(lit("(")),
+                        cap("lp", lit("(")),
                         item(group([seq([
                             cap("args", named("NAME")),
                             item(group([seq([item(lit(",")), cap("args", named("NAME"))])]))
@@ -141,7 +146,7 @@ export fn grammar_of_grammars() -> Grammar {
                         item(lit(")")) with { expect: Expect { message: "expected ')' to close the argument list" } },
                     ])])) with { rep: Rep.Opt },
                 ],
-                Build.Call("build_build", ["name", "args"]),
+                Build.Call("build_build", ["name", "lp", "args"]),
             )]),
 
             // annot = "@expect" "(" STRING "," STRING ")"
@@ -150,11 +155,11 @@ export fn grammar_of_grammars() -> Grammar {
                 seq_to(
                     [
                         item(lit("@expect")), item(lit("(")),
-                        cap("tok", named("STRING")), item(lit(",")),
+                        cap("token", named("STRING")), item(lit(",")),
                         cap("msg", named("STRING")),
                         item(lit(")")) with { expect: Expect { message: "expected ')' to close @expect" } },
                     ],
-                    Build.Call("build_expect", ["tok", "msg"]),
+                    Build.Call("build_expect", ["token", "msg"]),
                 ),
                 seq_to(
                     [

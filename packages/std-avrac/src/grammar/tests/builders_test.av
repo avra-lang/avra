@@ -1,0 +1,118 @@
+// The DSL round-trip in miniature: real grammar text, lexed and run
+// through the seed with the real builders, asserted as Grammar values.
+use @std.avrac.grammar.{
+    Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect, Recover,
+    grammar_of_grammars, lex_grammar,
+    Captured, RunOutcome, run_grammar, GrammarNode, grammar_build, grammar_result,
+}
+
+fn parse(src: string) -> RunOutcome<GrammarNode> {
+    run_grammar<GrammarNode>(grammar_of_grammars(), lex_grammar(src).tokens, grammar_build)
+}
+
+/// The parsed Grammar, or a loud filler grammar when the parse failed
+/// (assertions against it fail without crashing on out-of-range).
+fn parsed(src: string) -> Grammar {
+    let filler = Item { label: null, prim: Prim.Named("PARSE_FAILED"), rep: Rep.One, expect: null }
+    let branch = Seq { items: [filler, filler, filler], build: null, recover: null }
+    let fallback = Grammar { name: "failed", start: "failed", rules: [
+        Rule { name: "failed", body: Alt { branches: [branch, branch] } },
+        Rule { name: "failed2", body: Alt { branches: [branch] } },
+    ] }
+    grammar_result(parse(src)) ?? fallback
+}
+
+fn first_branch(g: Grammar, rule_idx: int) -> Seq {
+    g.rules[rule_idx].body.branches[0]
+}
+
+spec "grammar/builders" {
+    given "rule and reference construction" {
+        then "a lowercase name is a rule reference, uppercase a terminal" {
+            let g = parsed("a = b NAME")
+            let b = first_branch(g, 0)
+            let p0 = b.items[0].prim
+            let p1 = b.items[1].prim
+            let is_ref = match p0 { .Ref(r) -> r == "b", .Lit(_) -> false, .Named(_) -> false, .Group(_) -> false }
+            let is_named = match p1 { .Named(t) -> t == "NAME", .Lit(_) -> false, .Ref(_) -> false, .Group(_) -> false }
+            is_ref && is_named
+        }
+        then "the first rule is the start" {
+            let g = parsed("first = NAME\nsecond = STRING")
+            g.start == "first" && g.rules.length == 2
+        }
+        then "a quoted terminal is a Lit" {
+            let g = parsed("a = \"defer\" NAME")
+            let p = first_branch(g, 0).items[0].prim
+            match p { .Lit(t) -> t == "defer", .Ref(_) -> false, .Named(_) -> false, .Group(_) -> false }
+        }
+    }
+    given "captures, repetition, groups, alternation" {
+        then "a label and a star land on the item" {
+            let g = parsed("a = xs:NAME*")
+            let m = first_branch(g, 0).items[0]
+            m.label == "xs" && m.rep == Rep.Star
+        }
+        then "plus and opt map to their reps" {
+            let g = parsed("a = x:NAME+ y:STRING?")
+            let b = first_branch(g, 0)
+            b.items[0].rep == Rep.Plus && b.items[1].rep == Rep.Opt
+        }
+        then "a group nests an alternation" {
+            let g = parsed("a = ( NAME | STRING )")
+            let p = first_branch(g, 0).items[0].prim
+            match p {
+                .Group(inner) -> inner.branches.length == 2,
+                .Ref(_) -> false, .Lit(_) -> false, .Named(_) -> false,
+            }
+        }
+        then "top-level branches split on |" {
+            let g = parsed("a = NAME | STRING")
+            g.rules[0].body.branches.length == 2
+        }
+    }
+    given "build directives" {
+        then "-> e is a Var" {
+            let g = parsed("a = e:NAME -> e")
+            let b = first_branch(g, 0).build!
+            match b { .Var(n) -> n == "e", .Call(_, _) -> false }
+        }
+        then "-> f(x, y) is a Call with its args" {
+            let g = parsed("a = x:NAME y:STRING -> f(x, y)")
+            let b = first_branch(g, 0).build!
+            match b {
+                .Call(n, args) -> n == "f" && args.length == 2 && args[1] == "y",
+                .Var(_) -> false,
+            }
+        }
+        then "-> f() is a zero-arg Call, not a Var" {
+            let g = parsed("a = NAME -> f()")
+            let b = first_branch(g, 0).build!
+            match b { .Call(n, args) -> n == "f" && args.length == 0, .Var(_) -> false }
+        }
+        then "no arrow means pass-through" {
+            parsed("a = NAME").rules[0].body.branches[0].build == null
+        }
+    }
+    given "annotation resolution" {
+        then "@expect attaches to the item it names" {
+            let g = parsed("a = \"(\" e:a \")\" @expect(\")\", \"close it\") -> e")
+            let b = first_branch(g, 0)
+            b.items[2].expect?.message == "close it" && b.items[0].expect == null
+        }
+        then "@recover lands on the branch" {
+            let g = parsed("a = x:NAME -> f(x) @recover(sync_to: \"BREAK\")")
+            first_branch(g, 0).recover?.sync_to == "BREAK"
+        }
+        then "@expect naming a missing token is a parse-time error" {
+            let o = parse("a = \"(\" e:a \")\" @expect(\"]\", \"nope\") -> e")
+            o.result == null && o.diagnostics.length >= 1
+        }
+    }
+    given "the whole notation at once" {
+        then "the grammar-of-grammars' own shapes parse" {
+            let g = parsed("expr = l:term ( op:\"+\" r:term )* -> fold(l, op, r)\nterm = NUMBER | \"(\" e:expr \")\" -> e")
+            g.rules.length == 2 && g.rules[1].body.branches.length == 2
+        }
+    }
+}

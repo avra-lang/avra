@@ -13,10 +13,6 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
 - [ ] **[Med]** `packages/std-avrac/src/features/spec_test/{runner,reporter}.av`
       — vendored verbatim from the bootstrap tree; `bs2 test` loads
       them from this exact path. Replace with our own test harness.
-- [ ] **[Med]** `grammar/executor.av` carries explicit `<N>` type
-      arguments and typed-constructor ceremony because bs2 infers
-      generics only from direct call arguments. Prune when the
-      self-hosted checker infers better.
 - [ ] **[Low]** `packages/std-cli/src/cli.av` — empty stub; bs2 detects
       a project root by probing for exactly this file.
 - [ ] **[Low]** `src/` layer inside packages — bs2 resolves package
@@ -25,9 +21,27 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       (Makefile) — bs2 links against them but never builds them.
 - [ ] **[Low]** bs2 invoked by absolute path only (Makefile) — it
       re-invokes itself via argv[0] from other working directories.
+- [ ] **[Med]** bs2 `make build-quick` freshness detection silently
+      skips rebuilds after some source edits — five consecutive
+      "successful" builds shipped a stale binary during the mono fix.
+      Use `make build` for anything that matters until fixed.
 - [ ] **[Low]** Toolchain droppings (`*.avra-sha256`, `*.av.ll`,
       `packages/*/build/`) — bs2 writes byproducts next to sources;
       `make clean` sweeps them.
+
+## bs2 defects fixed upstream (2 files in this repo keep the workarounds until pruned)
+
+- [x] Monomorphizer manufactured erased `Enum<Unknown>` instantiations
+      whose payload/eq/release paths hard-ICE'd (F9999, no context).
+      Fixed in the bootstrap tree: erased enum/struct specializations
+      now carry `@mono_erased`; synthesized `__eq_*` compares erased
+      slots as the wide scalar; expected types thread through match
+      arms, list elements, and if-branches in both mono passes; the
+      layout ICE now reports its full context stack, the offending
+      type, and the statement cursor.
+- [ ] **[Med]** `grammar/executor.av` still carries explicit `<N>` and
+      pinned-constructor ceremony written against the old inference.
+      Some of it may now be prunable — verify before pruning.
 
 ## bs2 defects worked around in our code
 

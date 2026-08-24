@@ -66,21 +66,27 @@ against these before writing; probe in scratch when unsure.
 - `ref` and `none` are reserved words.
 - No `mut` parameters — in-place-mutating helpers are inexpressible.
 - Generics infer ONLY from direct call arguments: not sibling fields,
-  not return types, not across match arms. Pin with typed constructor
-  fns (`absent_val<N>()`) or explicit `f<N>(...)`.
+  not return types. Pin with typed constructor fns
+  (`captured_absent<N>()`) or explicit `f<N>(...)`. Constructions under
+  a typed let now infer (mono threads expected types through match
+  arms, list elements, if-branches — fixed upstream), but a call whose
+  N-evidence rides inside a struct argument still needs explicit `<N>`,
+  as does any generic call made from inside a generic fn's body.
 - Table literals need a declared row type (`let x: List<Row> = table`).
 - `it` fails to infer in complex filter/map bodies — use an annotated
   closure param.
-- Present-bind (`let x ->`) in expression-position match can lose its
-  binding at codegen — restructure to `if k == null { } else { k! }`.
+- Present-bind (`let x ->`) in expression-position match loses its
+  binding at codegen inside mono-SPECIALIZED bodies (fine in plain
+  fns) — restructure to `if k == null { } else { k! }`.
 - Matching `null`/`let x ->` directly on a nullable fn call's result
   can mistype — bind to an annotated `let v: T? =` first.
 - Or-patterns (`.A | .B ->`) do not parse, despite being documented.
 - Struct destructuring in `let` (`let Sp { lo, hi } = s`) does not parse.
-- A struct literal directly inside a comprehension does not parse —
-  wrap the construction in a fn and comprehend over the call.
-- Comprehensions iterate lists only, not ranges.
+- Comprehensions iterate lists only, not ranges (struct literals inside
+  them are fine).
 - Method calls on a `const` string fail at codegen.
+- Rebuild bs2 with `make build`, never `build-quick` — its freshness
+  check can silently skip rebuilds and leave a stale binary.
 - Maps reject `m["k"]` indexing — use `.get(key)`, which returns `T?`.
 - `@comptime` folds only scalar int/bool bodies; struct/list-heavy code
   fails to fold. (Compile-time seed validation waits on our own

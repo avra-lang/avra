@@ -11,42 +11,36 @@
 //! Lexing is error-tolerant: a bad character or unterminated string is
 //! recorded and lexing continues, so one pass reports everything.
 use core.{Span}
+use core.{code_at, is_space, is_name_start, is_name_cont}
 
 /// What a token is; Lit-vs-kind matching keys off this.
-export enum TokKind { Name, Str, Op, Break, Eof }
+export enum TokenKind { Name, Str, Op, Break, Eof }
 
 /// One DSL token. For Str, `text` is the unquoted, unescaped contents;
 /// the span covers the quotes.
-export type Tok = { kind: TokKind, text: string, span: Span }
+export type Token = { kind: TokenKind, text: string, span: Span }
 
 /// One recorded problem; lexing continued past it.
+impl Token {
+    /// True when a grammar Lit matches this token: text equality, and
+    /// never against quoted input — a Str's text is data, not syntax.
+    fn lit_matches(self, text: string) -> bool {
+        self.kind != TokenKind.Str && self.kind != TokenKind.Eof && self.text == text
+    }
+}
+
 export type LexError = { message: string, span: Span }
 
 /// Every token and every problem from one pass.
-export type LexResult = { toks: List<Tok>, errors: List<LexError> }
+export type LexResult = { tokens: List<Token>, errors: List<LexError> }
 
 /// Codepoint at byte `i`.
-fn code_at(s: string, i: int) -> int { s.substring(i, i + 1).char_code() }
-
-/// Space, tab, or carriage return — never newline (that is layout).
-fn is_space(c: int) -> bool { c == 32 || c == 9 || c == 13 }
-
-/// A letter or `_`.
-fn is_name_start(c: int) -> bool {
-    (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
-}
-
-/// A letter, digit, or `_`.
-fn is_name_cont(c: int) -> bool {
-    is_name_start(c) || (c >= 48 && c <= 57)
-}
-
 /// Membership in the single-char operator set.
 fn is_single_op(ch: string) -> bool { "=|()*+?:,".index_of(ch) >= 0 }
 
 /// A token spanning `[lo, hi)`.
-fn tok(kind: TokKind, text: string, lo: int, hi: int) -> Tok {
-    Tok { kind: kind, text: text, span: Span { lo: lo, hi: hi } }
+fn token(kind: TokenKind, text: string, lo: int, hi: int) -> Token {
+    Token { kind: kind, text: text, span: Span { lo: lo, hi: hi } }
 }
 
 /// First index at or after `from` where `pred` stops holding.
@@ -58,17 +52,17 @@ fn scan_while(src: string, from: int, pred: fn(int) -> bool) -> int {
 
 /// One scanner step: at most one token, at most one error, always
 /// progress.
-type Step = { tok: Tok?, err: LexError?, next: int }
+type ScanStep = { token: Token?, err: LexError?, next: int }
 
 /// A step that produced a token.
-fn emit(t: Tok, next: int) -> Step { Step { tok: t, err: null, next: next } }
+fn emit(t: Token, next: int) -> ScanStep { ScanStep { token: t, err: null, next: next } }
 
 /// A step that produced nothing (whitespace).
-fn skip(next: int) -> Step { Step { tok: null, err: null, next: next } }
+fn skip(next: int) -> ScanStep { ScanStep { token: null, err: null, next: next } }
 
 /// A step that produced only an error.
-fn fail(message: string, lo: int, hi: int) -> Step {
-    Step { tok: null, err: LexError { message: message, span: Span { lo: lo, hi: hi } }, next: hi }
+fn fail(message: string, lo: int, hi: int) -> ScanStep {
+    ScanStep { token: null, err: LexError { message: message, span: Span { lo: lo, hi: hi } }, next: hi }
 }
 
 /// The two escapes; anything else after `\` stays raw.
@@ -82,7 +76,7 @@ fn unescape(e: int) -> string? {
 
 /// A quoted string from `i`: emits the Str token even when
 /// unterminated, so the parse can keep going.
-fn scan_string(src: string, i: int) -> Step {
+fn scan_string(src: string, i: int) -> ScanStep {
     let n = src.length
     mut j = i + 1
     mut text = ""
@@ -104,23 +98,23 @@ fn scan_string(src: string, i: int) -> Step {
         text = text + src.substring(j, j + 1)
         j = j + 1
     }
-    let t = tok(TokKind.Str, text, i, j)
+    let t = token(TokenKind.Str, text, i, j)
     if closed { return emit(t, j) }
-    Step { tok: t, err: LexError { message: "unterminated string", span: Span { lo: i, hi: j } }, next: j }
+    ScanStep { token: t, err: LexError { message: "unterminated string", span: Span { lo: i, hi: j } }, next: j }
 }
 
 /// One token (or skip, or error) starting at `i`.
-fn scan_step(src: string, i: int) -> Step {
+fn scan_step(src: string, i: int) -> ScanStep {
     let n = src.length
     let c = code_at(src, i)
     when {
         // Newline: raw Break, resolved to layout after the scan.
-        c == 10 -> emit(tok(TokKind.Break, "", i, i + 1), i + 1)
+        c == 10 -> emit(token(TokenKind.Break, "", i, i + 1), i + 1)
         is_space(c) -> skip(i + 1)
         // Name: idents and named terminals alike.
         is_name_start(c) -> {
             let j = scan_while(src, i + 1, is_name_cont)
-            emit(tok(TokKind.Name, src.substring(i, j), i, j), j)
+            emit(token(TokenKind.Name, src.substring(i, j), i, j), j)
         }
         // String: unquote and unescape.
         c == 34 -> scan_string(src, i)
@@ -128,36 +122,36 @@ fn scan_step(src: string, i: int) -> Step {
         c == 64 -> {
             let j = scan_while(src, i + 1, is_name_cont)
             if j == i + 1 { fail("expected a name after `@`", i, i + 1) }
-            else { emit(tok(TokKind.Op, src.substring(i, j), i, j), j) }
+            else { emit(token(TokenKind.Op, src.substring(i, j), i, j), j) }
         }
         // `->` before any single-char op.
         c == 45 && i + 1 < n && code_at(src, i + 1) == 62 ->
-            emit(tok(TokKind.Op, "->", i, i + 2), i + 2)
+            emit(token(TokenKind.Op, "->", i, i + 2), i + 2)
         is_single_op(src.substring(i, i + 1)) ->
-            emit(tok(TokKind.Op, src.substring(i, i + 1), i, i + 1), i + 1)
+            emit(token(TokenKind.Op, src.substring(i, i + 1), i, i + 1), i + 1)
         _ -> fail("unexpected character", i, i + 1)
     }
 }
 
 /// True where a rule may end: before `NAME =`, or at end of input.
-fn boundary_at(toks: List<Tok>, j: int) -> bool {
+fn boundary_at(tokens: List<Token>, j: int) -> bool {
     when {
-        j >= toks.length -> true
-        toks[j].kind != TokKind.Name -> false
-        j + 1 >= toks.length -> false
-        _ -> toks[j + 1].kind == TokKind.Op && toks[j + 1].text == "="
+        j >= tokens.length -> true
+        tokens[j].kind != TokenKind.Name -> false
+        j + 1 >= tokens.length -> false
+        _ -> tokens[j + 1].kind == TokenKind.Op && tokens[j + 1].text == "="
     }
 }
 
 /// Keep a newline only at a rule boundary; collapse runs; drop leading.
-fn resolve_breaks(raw: List<Tok>) -> List<Tok> {
-    mut out: List<Tok> = []
+fn resolve_breaks(raw: List<Token>) -> List<Token> {
+    mut out: List<Token> = []
     mut i = 0
     while i < raw.length {
         let t = raw[i]
-        if t.kind == TokKind.Break {
+        if t.kind == TokenKind.Break {
             mut j = i + 1
-            while j < raw.length && raw[j].kind == TokKind.Break { j = j + 1 }
+            while j < raw.length && raw[j].kind == TokenKind.Break { j = j + 1 }
             if boundary_at(raw, j) && out.length > 0 { out.push(t) }
             i = j
         } else {
@@ -168,23 +162,23 @@ fn resolve_breaks(raw: List<Tok>) -> List<Tok> {
     out
 }
 
-/// The whole input, one Step at a time; then layout, final Break,
+/// The whole input, one ScanStep at a time; then layout, final Break,
 /// and Eof.
 export fn lex_grammar(src: string) -> LexResult {
-    mut raw: List<Tok> = []
+    mut raw: List<Token> = []
     mut errors: List<LexError> = []
     mut i = 0
     while i < src.length {
         let s = scan_step(src, i)
-        if s.tok != null { raw.push(s.tok!) }
+        if s.token != null { raw.push(s.token!) }
         if s.err != null { errors.push(s.err!) }
         i = s.next
     }
-    mut toks = resolve_breaks(raw)
+    mut tokens = resolve_breaks(raw)
     // Every rule ends in a Break, even without a trailing newline.
-    if toks.length > 0 && toks[toks.length - 1].kind != TokKind.Break {
-        toks.push(tok(TokKind.Break, "", src.length, src.length))
+    if tokens.length > 0 && tokens[tokens.length - 1].kind != TokenKind.Break {
+        tokens.push(token(TokenKind.Break, "", src.length, src.length))
     }
-    toks.push(tok(TokKind.Eof, "", src.length, src.length))
-    LexResult { toks: toks, errors: errors }
+    tokens.push(token(TokenKind.Eof, "", src.length, src.length))
+    LexResult { tokens: tokens, errors: errors }
 }

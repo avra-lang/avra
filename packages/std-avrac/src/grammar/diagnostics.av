@@ -1,0 +1,35 @@
+//! The grammar module's one diagnostic currency, and the vocabulary
+//! that renders expectations into prose. Structured first (P11):
+//! `span` is null for defects with no source anchor.
+use core.{Span}
+use core.{contains_str}
+
+/// One structured diagnostic: what went wrong, where, what would have
+/// been accepted, and inside which rule.
+export type Diagnostic = { message: string, span: Span?, expected: List<string>, in_rule: string }
+
+/// Deduplicating union of two expected sets.
+export fn union_expected(a: List<string>, b: List<string>) -> List<string> {
+    mut out = [x for x in a]
+    for x in b { if !contains_str(out, x) { out.push(x) } }
+    out
+}
+
+/// How a prim reads in an "expected ..." message.
+export fn describe_prim(p: Prim) -> string {
+    match p {
+        .Lit(text) -> "`${text}`",
+        .Named(term) -> term,
+        .Ref(target) -> "a ${target}",
+        .Group(_) -> "one of the group",
+    }
+}
+
+/// "A", "A or B", "A, B or C".
+export fn join_expected(xs: List<string>) -> string {
+    if xs.length == 0 { return "input" }
+    if xs.length == 1 { return xs[0] }
+    mut out = xs[0]
+    for i in 1..xs.length - 1 { out = "${out}, ${xs[i]}" }
+    "${out} or ${xs[xs.length - 1]}"
+}

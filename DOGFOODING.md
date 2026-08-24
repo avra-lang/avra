@@ -10,7 +10,7 @@ Any if/return ladder over conditions is a `when` expression:
 
 ```avra
 when {
-    c == 10 -> emit(tok(TokKind.Break, "", i, i + 1), i + 1)
+    c == 10 -> emit(token(TokenKind.Break, "", i, i + 1), i + 1)
     is_space(c) -> skip(i + 1)
     is_name_start(c) -> { ... }
     _ -> fail("unexpected character", i, i + 1)
@@ -21,9 +21,11 @@ when {
 
 ```avra
 fn op_texts(r: LexResult) -> List<string> {
-    [t.text for t in r.toks if t.kind == TokKind.Op]
+    [t.text for t in r.tokens if t.kind == TokenKind.Op]
 }
 ```
+
+Lists only — comprehensions cannot iterate ranges.
 
 ## `it` projection for simple lambdas
 
@@ -52,16 +54,25 @@ Row type annotation is required. Use for pure data cases; keep named
 
 ```avra
 cap("rules", rule_ref("rule")) with { rep: Rep.Plus }   // rare modifiers
-r with { far: far }                                     // struct update
+r with { farthest: merged }                             // struct update
 ```
 
 ## Methods via `impl` (cross-file works)
 
 ```avra
 impl Grammar {
-    fn defects(self) -> List<GrammarDefect> { ... }
+    fn defects(self) -> List<Diagnostic> { ... }
 }
 // callers: g.defects()
+```
+
+A method is also the place a CONTRACT gets its name:
+
+```avra
+impl Token {
+    /// Text equality, never against quoted input — data, not syntax.
+    fn lit_matches(self, text: string) -> bool { ... }
+}
 ```
 
 ## Nullability instead of sentinels
@@ -74,15 +85,71 @@ null/`let x ->` match arms.
 text = text + (unescape(e) ?? src.substring(j, j + 2))
 ```
 
-## Pinned-type constructors (bs2 generics workaround)
+## Extractor + `want` for typed unwrapping
 
-bs2 infers generics only from call arguments. Give every generic
-construction a tiny fn whose signature pins the parameter:
+Per-kind extractors return `T?`; one `want` owns the Result plumbing
+and the error vocabulary. `?` chains the rest:
 
 ```avra
-fn absent_val<N>() -> Val<N> { Val.Absent }
-fn st_at<N>(cursor: int, binds: List<Bind<N>>) -> St<N> { ... }
-// call sites: ok_res<N>(st_at<N>(c, binds), absent_val<N>(), ...)
+fn want<T>(x: T?, what: string) -> Result<T, string> {
+    let out: Result<T, string> = if x == null { Result.Err("expected ${what}") } else { Result.Ok(x!) }
+    out
+}
+// let body = want(alt_of(args[1]), "an alternation")?
+```
+
+A `T?` argument is direct evidence, so `want` needs no explicit `<T>`.
+
+## `?` propagation on Result
+
+```avra
+fn call_args(v: Captured<GrammarNode>) -> Result<List<string>, string> {
+    mut out: List<string> = []
+    for x in as_list(v)? {
+        let t = want(tok_of(x), "an argument name")?
+        out.push(t.text)
+    }
+    Result.Ok(out)
+}
+```
+
+## Generics: what infers, what needs pins
+
+Proven capabilities:
+
+- Generic enums with payload fields (`Captured<N>`), generic structs
+  with fn-typed fields (`MatchContext<N>.build`), and generic fns
+  taking fn-typed params all work — including TWO instantiations of
+  the same fn in one compile unit.
+- A bare `T`/`T?` argument is direct evidence — `want(x: T?, what)`
+  never needs `<T>` at call sites.
+- Constructions infer under a typed `let` and in a fn's TAIL position
+  (expected types thread through match arms, if-branches, and list
+  elements). Early `return`s do NOT get this — keep the typed let there.
+
+Pin explicitly (`f<N>(...)`) when:
+
+- the only N-evidence rides inside a struct argument
+  (`match_rule<N>(cx, ...)` — `cx: MatchContext<N>` is not enough), or
+- the call happens inside another generic fn's body, even at a
+  concrete type (`concat<Diagnostic>(diagnostics, r.diagnostics)`).
+
+Never nest a generic type inside an explicit type argument —
+`concat<Captured<N>>(...)` does not take (write the loop instead).
+
+```avra
+fn captured_absent<N>() -> Captured<N> { Captured.Absent }
+```
+
+## Generic engine, concrete client
+
+A generic engine takes ONE node type; a client with many node kinds
+supplies a wrapper enum and unwraps behind its own accessors:
+
+```avra
+export enum GrammarNode { NGrammar(g: Grammar), NRule(r: Rule), ... }
+run_grammar<GrammarNode>(g, tokens, grammar_build)
+// consumers never match GrammarNode — they call grammar_result(o)
 ```
 
 ## First-class functions
@@ -123,6 +190,32 @@ mut xs = [x for x in items]
 xs.push(v)
 ```
 
+## `is` for single-variant questions
+
+```avra
+tail.prim is .Group && tail.rep == Rep.Star
+```
+
+A full match earns its place only when payloads are extracted.
+
+## `enumerate` for indexed walks
+
+```avra
+for (i, m) in out.enumerate() {
+    if i == idx { next.push(m with { expect: ... }) } else { next.push(m) }
+}
+```
+
+## `concat` / `joined` from core/lists
+
+```avra
+diagnostics = concat<Diagnostic>(diagnostics, r.diagnostics)
+"[${joined([render(x) for x in items], " ")}]"
+```
+
+Pin `concat<T>` inside generic fn bodies — mono needs the explicit
+type there even when T is concrete.
+
 ## Match guards
 
 ```avra
@@ -133,19 +226,8 @@ match self {
 }
 ```
 
-## `?` propagation on Result
-
-```avra
-fn quarter(n: int) -> Result<int, string> {
-    let h = half(n)?
-    half(h)
-}
-```
-
 ## Proven but awaiting their first honest use
 
 - **Traits** (`trait Show` + `impl Show for T`) — first customer is
-  Diag rendering in parse_grammar.
+  Diagnostic rendering in parse_grammar.
 - **Pipe `|>`** — first real pipeline, not two-arg call rewrites.
-- **`?` propagation** — first customer is the builder chain in
-  grammar/builders.av.
