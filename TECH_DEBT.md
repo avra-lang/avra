@@ -38,6 +38,12 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       accessors, and `Result<LangNode, string>` spelling all
       disappear from feature code.
 
+- [ ] **[Low]** Feature instantiation is the keyword-prefixed
+      `component LanguageFeature f { ... }` — bs2's component registry
+      does not span sibling module files, so the bare
+      `LanguageFeature f { ... }` form cannot resolve cross-file.
+      Drops to the bare form when our compiler owns component
+      registration.
 - [ ] **[Med]** The LANGUAGE shares the grammar-DSL lexer's scanner
       (`lex_source` owns only the line policy): the token shapes and
       operator set happen to cover the milestone subset. A real

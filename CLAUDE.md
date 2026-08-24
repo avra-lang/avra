@@ -113,10 +113,14 @@ against these before writing; probe in scratch when unsure.
 - A struct literal directly in a call's argument list fails to parse —
   bind it to a `let` first.
 - Components work: `component Name { config { field: T = default } }`;
-  instantiate with `component Name inst { key = expr }` — pairs
-  NEWLINE-separated, keyword prefix required cross-file. Instantiation
-  is a STATEMENT binding `inst`; in expression position it compiles to
-  a SILENT NULL. Bind, then return the name.
+  instantiate with `component Name inst { key = expr }` — bs2's
+  "keyword-prefixed instantiation", an instance NOT a definition.
+  The bare form (`Name inst {}`) needs the definition registered in
+  the SAME parse, which never holds across sibling module files
+  (probed: parse order does not save it) — so the keyword prefix is
+  rent, not choice. Pairs NEWLINE-separated. Instantiation is a
+  STATEMENT binding `inst`; in expression position it compiles to a
+  SILENT NULL. Bind, then return the name.
 - Fn-typed arguments carry no `T`-evidence (F1002), and an explicit
   `<T>` pin over one corrupts scalar payloads through mono — never
   thread fn args through generics.

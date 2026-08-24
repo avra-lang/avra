@@ -1,0 +1,67 @@
+// Expression statements, and the merge ORDER doing its job: let_stmt's
+// keyword anchor wins before the expression branch sees the line.
+use @std.avrac.core.{NodeStore, new_node_store, Expr, Stmt, StmtId, Span}
+use @std.avrac.grammar.{Captured, run_grammar, lex_source, parse_grammar}
+use @std.avrac.features.{
+    LangNode, LanguageFeature, compose_text, dispatch, list_at, stmt_id_at,
+}
+use @std.avrac.features.stmt_spine.{stmt_spine}
+use @std.avrac.features.let_stmt.{let_stmt}
+use @std.avrac.features.expr_stmt.{expr_stmt}
+use @std.avrac.features.expr_spine.{expr_spine}
+
+type ParsedProg = { store: NodeStore, stmts: List<StmtId>, diagnostics: int }
+
+fn parse_prog(source: string) -> ParsedProg {
+    let feats = [stmt_spine(), let_stmt(), expr_stmt(), expr_spine()]
+    let gp = parse_grammar(compose_text(feats).text)
+    if gp.grammar == null {
+        return ParsedProg { store: new_node_store(), stmts: [], diagnostics: gp.diagnostics.length }
+    }
+    let store = new_node_store()
+    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> dispatch(feats, store, name, args, span)
+    let o = run_grammar<LangNode>(gp.grammar!.merged(), lex_source(source).tokens, build)
+    mut stmts: List<StmtId> = []
+    if o.result != null {
+        let items = list_at([o.result!], 0)
+        for j in 0..items.length {
+            let sid: StmtId? = stmt_id_at(items, j)
+            if sid != null { stmts.push(sid!) }
+        }
+    }
+    ParsedProg { store: store, stmts: stmts, diagnostics: o.diagnostics.length }
+}
+
+fn is_expr_stmt(p: ParsedProg, i: int) -> bool {
+    match p.store.stmt(p.stmts[i]) {
+        .ExprStmt(_) -> true,
+        .Let(_, _) -> false, .Error -> false,
+    }
+}
+
+fn is_let(p: ParsedProg, i: int) -> bool {
+    match p.store.stmt(p.stmts[i]) {
+        .Let(_, _) -> true,
+        .ExprStmt(_) -> false, .Error -> false,
+    }
+}
+
+spec "features/expr_stmt" {
+    given "expressions and lets interleaved" {
+        then "each line lands as its own statement kind" {
+            let p = parse_prog("1 + 2\nlet x = 3\nx")
+            p.diagnostics == 0 && p.stmts.length == 3 &&
+                is_expr_stmt(p, 0) && is_let(p, 1) && is_expr_stmt(p, 2)
+        }
+        then "the let keyword wins over the expression branch" {
+            let p = parse_prog("let x = 1")
+            p.diagnostics == 0 && p.stmts.length == 1 && is_let(p, 0)
+        }
+    }
+    given "a broken expression line" {
+        then "one diagnostic; the next statement survives" {
+            let p = parse_prog("1 +\nlet y = 2")
+            p.diagnostics == 1 && p.stmts.length == 1 && is_let(p, 0)
+        }
+    }
+}
