@@ -16,7 +16,7 @@ real scale; the design sources of truth live in
       `let_stmt` (recovery), `expr_stmt`
 - [x] `language/` driver seam: `assemble` + `parse_program`; recovery
       holes are explicit `Stmt.Error` nodes
-- [ ] Harness retirement: feature tests parse through the driver;
+- [x] Harness retirement: feature tests parse through the driver;
       private test plumbing deleted
 
 ## Milestone 2 — a world-class error, end to end

@@ -1,41 +1,24 @@
-// The first feature, end to end: its grammar text through
-// parse_grammar, real source through the executor, builders
-// allocating into the arena — asserting structure, spans (cover in
-// anger), and the fingerprint invariant across differently-formatted
-// sources.
-use @std.avrac.core.{NodeStore, new_node_store, Expr, BinOp, ExprId, Span}
-use @std.avrac.grammar.{Captured, run_grammar, lex_source, parse_grammar, RunOutcome}
-use @std.avrac.features.{
-    LangNode, LanguageFeature, compose_text, dispatch, expr_id_at,
-}
-use @std.avrac.features.expr_spine.{expr_spine}
-
-/// A test harness feature: wraps the spine in a BREAK-consuming start
-/// rule via a pass-through build, so plain expressions parse whole.
-/// Registers no builders — `-> e` is a Var, not a call.
-fn harness() -> LanguageFeature {
-    component LanguageFeature h {
-        name = "harness"
-        gram = "prog = e:expression BREAK -> e"
-    }
-    h
-}
+// The expression spine through the driver: real source through the
+// composed language, builders allocating into the arena — asserting
+// structure, spans (cover in anger), and the fingerprint invariant
+// across differently-formatted sources.
+use @std.avrac.core.{NodeStore, Expr, BinOp, ExprId}
+use @std.avrac.language.{parse_source}
 
 type Parsed = { store: NodeStore, root: ExprId?, diagnostics: int }
 
+/// One expression line, parsed as a program; the root is its value.
 fn parse_expr(source: string) -> Parsed {
-    let feats = [harness(), expr_spine()]
-    let composed = compose_text(feats)
-    let gp = parse_grammar(composed.text)
-    if gp.grammar == null {
-        return Parsed { store: new_node_store(), root: null, diagnostics: gp.diagnostics.length }
-    }
-    let store = new_node_store()
-    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> dispatch(feats, store, name, args, span)
-    let o = run_grammar<LangNode>(gp.grammar!, lex_source(source).tokens, build)
+    let p = parse_source(source)
     mut root: ExprId? = null
-    if o.result != null { root = expr_id_at([o.result!], 0) }
-    Parsed { store: store, root: root, diagnostics: o.diagnostics.length }
+    if p.stmts.length > 0 {
+        let r: ExprId? = match p.store.stmt(p.stmts[0]) {
+            .ExprStmt(v) -> v,
+            .Let(_, _) -> null, .Error -> null,
+        }
+        root = r
+    }
+    Parsed { store: p.store, root: root, diagnostics: p.diagnostics.length }
 }
 
 spec "features/expr_spine" {
