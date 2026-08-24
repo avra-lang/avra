@@ -1,0 +1,168 @@
+//! The grammar-of-grammars: the DSL's own grammar, written once as
+//! data. `parse_grammar` is the executor running this seed — no
+//! hand-written parser for the DSL exists anywhere.
+//!
+//! The construction vocabulary below (`rule`, `seq`, `seq_to`, `item`,
+//! `cap`, `rule_ref`, `lit`, `named`, `group`) is how a grammar is written
+//! as data; rare modifiers ride `with` (`... with { rep: Rep.Star }`).
+//!
+//! This grammar relies on one executor contract: an optional or
+//! repeated group that fails midway rolls back cleanly (`labeled`'s
+//! leading `(NAME ":")?` needs it).
+
+/// An unlabeled item matched exactly once.
+export fn item(p: Prim) -> Item {
+    Item { label: null, prim: p, rep: Rep.One, expect: null }
+}
+
+/// A captured item matched exactly once.
+export fn cap(label: string, p: Prim) -> Item {
+    Item { label: label, prim: p, rep: Rep.One, expect: null }
+}
+
+/// A pass-through branch.
+export fn seq(items: List<Item>) -> Seq {
+    Seq { items: items, build: null, recover: null }
+}
+
+/// A branch with a build directive.
+export fn seq_to(items: List<Item>, b: Build) -> Seq {
+    Seq { items: items, build: b, recover: null }
+}
+
+/// A rule from its branches.
+export fn rule(name: string, branches: List<Seq>) -> Rule {
+    Rule { name: name, body: Alt { branches: branches } }
+}
+
+/// A rule reference atom.
+export fn rule_ref(rule_name: string) -> Prim { Prim.Ref(rule_name) }
+
+/// An exact-text atom.
+export fn lit(text: string) -> Prim { Prim.Lit(text) }
+
+/// A token-class atom.
+export fn named(term: string) -> Prim { Prim.Named(term) }
+
+/// A grouped alternation atom.
+export fn group(branches: List<Seq>) -> Prim { Prim.Group(Alt { branches: branches }) }
+
+/// The DSL's grammar. Rule names mirror the notation's own vocabulary;
+/// builder names resolve in the executor's registry.
+export fn grammar_of_grammars() -> Grammar {
+    Grammar {
+        name: "grammar_dsl",
+        start: "grammar",
+        rules: [
+            // grammar = rule+
+            rule("grammar", [seq_to(
+                [cap("rules", rule_ref("rule")) with { rep: Rep.Plus }],
+                Build.Call("build_grammar", ["rules"]),
+            )]),
+
+            // rule = NAME "=" alt
+            rule("rule", [seq_to(
+                [cap("name", named("NAME")), item(lit("=")), cap("body", rule_ref("alt"))],
+                Build.Call("build_rule", ["name", "body"]),
+            )]),
+
+            // alt = seq ( "|" seq )*
+            rule("alt", [seq_to(
+                [
+                    cap("branches", rule_ref("seq")),
+                    item(group([seq([item(lit("|")), cap("branches", rule_ref("seq"))])]))
+                        with { rep: Rep.Star },
+                ],
+                Build.Call("build_alt", ["branches"]),
+            )]),
+
+            // seq = labeled+ ( "->" build )? annot*
+            rule("seq", [seq_to(
+                [
+                    cap("items", rule_ref("labeled")) with { rep: Rep.Plus },
+                    item(group([seq([item(lit("->")), cap("build", rule_ref("build"))])]))
+                        with { rep: Rep.Opt },
+                    cap("annots", rule_ref("annot")) with { rep: Rep.Star },
+                ],
+                Build.Call("build_seq", ["items", "build", "annots"]),
+            )]),
+
+            // labeled = ( NAME ":" )? postfix
+            rule("labeled", [seq_to(
+                [
+                    item(group([seq([cap("label", named("NAME")), item(lit(":"))])]))
+                        with { rep: Rep.Opt },
+                    cap("inner", rule_ref("postfix")),
+                ],
+                Build.Call("build_labeled", ["label", "inner"]),
+            )]),
+
+            // postfix = primary ( "*" | "+" | "?" )?
+            rule("postfix", [seq_to(
+                [
+                    cap("inner", rule_ref("primary")),
+                    cap("rep", group([
+                        seq([item(lit("*"))]),
+                        seq([item(lit("+"))]),
+                        seq([item(lit("?"))]),
+                    ])) with { rep: Rep.Opt },
+                ],
+                Build.Call("build_postfix", ["inner", "rep"]),
+            )]),
+
+            // primary = NAME | STRING | "(" alt ")"
+            rule("primary", [
+                seq_to([cap("name", named("NAME"))], Build.Call("build_prim_name", ["name"])),
+                seq_to([cap("text", named("STRING"))], Build.Call("build_lit", ["text"])),
+                seq_to(
+                    [
+                        item(lit("(")),
+                        cap("inner", rule_ref("alt")),
+                        item(lit(")")) with { expect: Expect { message: "expected ')' to close the group" } },
+                    ],
+                    Build.Call("build_group", ["inner"]),
+                ),
+            ]),
+
+            // build = NAME ( "(" ( NAME ("," NAME)* )? ")" )?
+            rule("build", [seq_to(
+                [
+                    cap("name", named("NAME")),
+                    item(group([seq([
+                        item(lit("(")),
+                        item(group([seq([
+                            cap("args", named("NAME")),
+                            item(group([seq([item(lit(",")), cap("args", named("NAME"))])]))
+                                with { rep: Rep.Star },
+                        ])])) with { rep: Rep.Opt },
+                        item(lit(")")) with { expect: Expect { message: "expected ')' to close the argument list" } },
+                    ])])) with { rep: Rep.Opt },
+                ],
+                Build.Call("build_build", ["name", "args"]),
+            )]),
+
+            // annot = "@expect" "(" STRING "," STRING ")"
+            //       | "@recover" "(" "sync_to" ":" STRING ")"
+            rule("annot", [
+                seq_to(
+                    [
+                        item(lit("@expect")), item(lit("(")),
+                        cap("tok", named("STRING")), item(lit(",")),
+                        cap("msg", named("STRING")),
+                        item(lit(")")) with { expect: Expect { message: "expected ')' to close @expect" } },
+                    ],
+                    Build.Call("build_expect", ["tok", "msg"]),
+                ),
+                seq_to(
+                    [
+                        item(lit("@recover")), item(lit("(")),
+                        item(lit("sync_to")), item(lit(":")),
+                        cap("target", named("STRING")),
+                        item(lit(")")) with { expect: Expect { message: "expected ')' to close @recover" } },
+                    ],
+                    Build.Call("build_recover", ["target"]),
+                ),
+            ]),
+        ],
+    }
+}
