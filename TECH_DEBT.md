@@ -38,11 +38,11 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       accessors, and `Result<LangNode, string>` spelling all
       disappear from feature code.
 
-- [ ] **[Med]** The LANGUAGE is lexed by the grammar-DSL lexer
-      (`lex_grammar` on source text): its token shapes and operator
-      set happen to cover the milestone subset. A real language lexer
-      — feature-extensible, string/comment/number shapes of its own —
-      replaces this rent.
+- [ ] **[Med]** The LANGUAGE shares the grammar-DSL lexer's scanner
+      (`lex_source` owns only the line policy): the token shapes and
+      operator set happen to cover the milestone subset. A real
+      language lexer — feature-extensible, string/comment/number
+      shapes of its own — replaces this rent.
 
 ## bs2 defects fixed upstream (2 files in this repo keep the workarounds until pruned)
 

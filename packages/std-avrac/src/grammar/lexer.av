@@ -150,8 +150,9 @@ fn scan_step(src: string, i: int) -> ScanStep {
     }
 }
 
-/// True where a rule may end: before `NAME =`, or at end of input.
-fn boundary_at(tokens: List<Token>, j: int) -> bool {
+/// True where a grammar rule may end: before `NAME =`, or at end of
+/// input.
+fn rule_boundary(tokens: List<Token>, j: int) -> bool {
     when {
         j >= tokens.length -> true
         tokens[j].kind != TokenKind.Name -> false
@@ -160,8 +161,14 @@ fn boundary_at(tokens: List<Token>, j: int) -> bool {
     }
 }
 
-/// Keep a newline only at a rule boundary; collapse runs; drop leading.
-fn resolve_breaks(raw: List<Token>) -> List<Token> {
+/// In language source every line break separates.
+fn line_boundary(tokens: List<Token>, j: int) -> bool {
+    true
+}
+
+/// Collapse each Break run to one, kept only where `boundary` allows;
+/// leading breaks always drop.
+fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> List<Token> {
     mut out: List<Token> = []
     mut i = 0
     while i < raw.length {
@@ -169,7 +176,7 @@ fn resolve_breaks(raw: List<Token>) -> List<Token> {
         if t.kind == TokenKind.Break {
             mut j = i + 1
             while j < raw.length && raw[j].kind == TokenKind.Break { j = j + 1 }
-            if boundary_at(raw, j) && out.length > 0 { out.push(t) }
+            if boundary(raw, j) && out.length > 0 { out.push(t) }
             i = j
         } else {
             out.push(t)
@@ -179,9 +186,9 @@ fn resolve_breaks(raw: List<Token>) -> List<Token> {
     out
 }
 
-/// The whole input, one ScanStep at a time; then layout, final Break,
-/// and Eof.
-export fn lex_grammar(src: string) -> LexResult {
+/// The whole input, one ScanStep at a time; then the line policy, a
+/// final Break, and Eof.
+fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool) -> LexResult {
     mut raw: List<Token> = []
     mut errors: List<LexError> = []
     mut i = 0
@@ -191,11 +198,22 @@ export fn lex_grammar(src: string) -> LexResult {
         if s.err != null { errors.push(s.err!) }
         i = s.next
     }
-    mut tokens = resolve_breaks(raw)
-    // Every rule ends in a Break, even without a trailing newline.
+    mut tokens = collapse_breaks(raw, boundary)
+    // Every rule or statement ends in a Break, even without a trailing
+    // newline.
     if tokens.length > 0 && tokens[tokens.length - 1].kind != TokenKind.Break {
         tokens.push(token(TokenKind.Break, "", src.length, src.length))
     }
     tokens.push(token(TokenKind.Eof, "", src.length, src.length))
     LexResult { tokens: tokens, errors: errors }
+}
+
+/// Grammar-DSL text: a line break survives only at a rule boundary.
+export fn lex_grammar(src: string) -> LexResult {
+    lex_with(src, rule_boundary)
+}
+
+/// Language source: a line break survives between any two statements.
+export fn lex_source(src: string) -> LexResult {
+    lex_with(src, line_boundary)
 }

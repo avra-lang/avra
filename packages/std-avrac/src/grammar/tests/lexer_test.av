@@ -1,5 +1,5 @@
 use @std.avrac.core.{Span}
-use @std.avrac.grammar.{lex_grammar, Token, TokenKind, LexResult}
+use @std.avrac.grammar.{lex_grammar, lex_source, Token, TokenKind, LexResult}
 
 /// One line-structure fixture: a source and its Break count.
 type BreakCase = { src: string, breaks: int }
@@ -97,6 +97,22 @@ spec "grammar/lexer" {
         then "a leading newline is not a Break" {
             let r = lex_grammar("\na = b")
             r.tokens[0].kind == TokenKind.Name
+        }
+    }
+    given "language source line structure" {
+        then "every line break separates; runs collapse; leading drops" {
+            let cases: List<BreakCase> = table {
+                src               | breaks
+                "a\nb"            | 2
+                "a\n\n\nb"        | 2
+                "\na"             | 1
+                ""                | 0
+            }
+            cases.filter((c: BreakCase) -> count_breaks(lex_source(c.src)) != c.breaks).length == 0
+        }
+        then "the last statement ends in a Break without a trailing newline" {
+            let r = lex_source("a")
+            r.tokens[1].kind == TokenKind.Break && r.tokens[2].kind == TokenKind.Eof
         }
     }
 }
