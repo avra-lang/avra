@@ -1,0 +1,90 @@
+use @std.avrac.core.{Span}
+use @std.avrac.grammar.{lex_grammar, Tok, TokKind, LexResult}
+
+fn kinds_of(r: LexResult) -> List<TokKind> {
+    mut out: List<TokKind> = []
+    for t in r.toks { out.push(t.kind) }
+    out
+}
+
+fn count_breaks(r: LexResult) -> int {
+    mut n = 0
+    for t in r.toks { if t.kind == TokKind.Break { n = n + 1 } }
+    n
+}
+
+fn op_texts(r: LexResult) -> List<string> {
+    mut out: List<string> = []
+    for t in r.toks { if t.kind == TokKind.Op { out.push(t.text) } }
+    out
+}
+
+spec "grammar/lexer" {
+    given "a one-line rule" {
+        then "kinds, texts, and spans are exact" {
+            let r = lex_grammar("term = NUMBER")
+            let t0 = r.toks[0]
+            let t2 = r.toks[2]
+            r.toks.length == 5 &&
+                t0.kind == TokKind.Name && t0.text == "term" && t0.span.lo == 0 && t0.span.hi == 4 &&
+                r.toks[1].text == "=" &&
+                t2.text == "NUMBER" && t2.span.lo == 7 && t2.span.hi == 13 &&
+                r.toks[3].kind == TokKind.Break && r.toks[4].kind == TokKind.Eof
+        }
+        then "a final Break is guaranteed without a trailing newline" {
+            let r = lex_grammar("a = b")
+            r.toks[r.toks.length - 2].kind == TokKind.Break
+        }
+    }
+    given "operators" {
+        then "-> munches maximally" {
+            let r = lex_grammar("x = a -> f")
+            let ops = op_texts(r)
+            ops.length == 2 && ops[1] == "->"
+        }
+        then "a bare - is an error and lexing continues" {
+            let r = lex_grammar("x = -")
+            r.errors.length == 1 && r.toks[r.toks.length - 1].kind == TokKind.Eof
+        }
+        then "@expect lexes as one token" {
+            let r = lex_grammar("x = y @expect(\")\", \"msg\")")
+            let ops = op_texts(r)
+            ops[1] == "@expect"
+        }
+    }
+    given "strings" {
+        then "text is unquoted" {
+            let r = lex_grammar("x = \"+\"")
+            let s = r.toks[2]
+            s.kind == TokKind.Str && s.text == "+" && s.span.lo == 4 && s.span.hi == 7
+        }
+        then "escaped quote and backslash unescape" {
+            let r = lex_grammar("x = \"\\\"\" y = \"\\\\\"")
+            r.toks[2].text == "\"" && r.toks[5].text == "\\"
+        }
+        then "an unterminated string reports and lexing continues" {
+            let r = lex_grammar("a = \"oops\nb = c")
+            mut names: List<string> = []
+            for t in r.toks { if t.kind == TokKind.Name { names.push(t.text) } }
+            r.errors.length == 1 && names.length == 3 && names[1] == "b"
+        }
+    }
+    given "line structure" {
+        then "a continuation line does not break the rule" {
+            let r = lex_grammar("a = b\n   | c\nd = e")
+            count_breaks(r) == 2
+        }
+        then "blank lines collapse to one Break" {
+            let r = lex_grammar("a = b\n\n\nc = d")
+            count_breaks(r) == 2
+        }
+        then "a leading newline is not a Break" {
+            let r = lex_grammar("\na = b")
+            r.toks[0].kind == TokKind.Name
+        }
+        then "a NAME continuation without = stays in the rule" {
+            let r = lex_grammar("a = b\n    c\nd = e")
+            count_breaks(r) == 2
+        }
+    }
+}

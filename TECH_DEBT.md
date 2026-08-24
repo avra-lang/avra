@@ -18,3 +18,7 @@ self-hosts the capability, or bs2 stops requiring it.
       itself via argv[0] from other working directories.
 - [ ] Toolchain droppings (`*.avra-sha256`, `*.av.ll`, `packages/*/build/`)
       — bs2 writes byproducts next to sources; `make clean` sweeps them.
+- [ ] bs2 does not enforce module import closures — a missing `use`
+      still compiles because a package's modules merge into one bundle.
+      Every import is kept truthful by hand until our own resolver
+      enforces closures.
