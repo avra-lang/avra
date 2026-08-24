@@ -95,6 +95,17 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       (forge-lang PR #1371, with a regression test); the pinned-helper
       workaround in `features/mod.av` dispatch is removed. Requires a
       bs2 built from that fix.
+- [ ] **[Med]** bs2's prebuild-failure reporter runs
+      `tail -n 8 $(grep -l ... | head -1)`; with no matching log the
+      substitution is empty and `tail` reads STDIN — an interactive
+      `bs2 test` hangs forever waiting on the keyboard. Workaround:
+      `< /dev/null`. One-line upstream fix (guard the empty match).
+- [ ] **[Med]** The @std prebuild fast-path and `bs2 run` typecheck
+      WITHOUT the table row-type threading that `bs2 test`'s
+      whole-program mode has — the library fails F1042 there, so every
+      test shard runs DEGRADED (~6000MB whole-program inlining instead
+      of ~1800MB metadata shards) and `bs2 run` cannot compile the
+      tree. An upstream fix also speeds the suite roughly 3x.
 - [ ] **[Med]** Trait DEFAULT method bodies typecheck but ICE at
       codegen ("undefined method") — nothing materializes the default
       for an implementor. Shaped like a template-instantiation fix at

@@ -1,0 +1,40 @@
+//! One source file, indexed for rendering: spans stay byte offsets
+//! everywhere; line and column exist only in a rendering's output.
+use core.{code_at}
+
+export type SourceFile = { text: string, line_starts: List<int> }
+
+/// 1-based line and column.
+export type LineCol = { line: int, col: int }
+
+export fn new_source_file(text: string) -> SourceFile {
+    mut starts: List<int> = [0]
+    mut i = 0
+    while i < text.length {
+        if code_at(text, i) == 10 { starts.push(i + 1) }
+        i = i + 1
+    }
+    SourceFile { text: text, line_starts: starts }
+}
+
+impl SourceFile {
+    /// The line and column at a byte offset.
+    fn linecol(self, offset: int) -> LineCol {
+        mut line = 0
+        for (i, start) in self.line_starts.enumerate() {
+            if start <= offset { line = i }
+        }
+        LineCol { line: line + 1, col: offset - self.line_starts[line] + 1 }
+    }
+
+    /// The text of a 1-based line, without its newline.
+    fn line_text(self, line: int) -> string {
+        let lo = self.line_starts[line - 1]
+        let hi = if line < self.line_starts.length {
+            self.line_starts[line] - 1
+        } else {
+            self.text.length
+        }
+        self.text.substring(lo, hi)
+    }
+}

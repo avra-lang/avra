@@ -26,7 +26,7 @@ real scale; the design sources of truth live in
 - [x] Diagnostics currency: Diag over the base, kind as identity,
       F-codes as the registry's projection, the kind|id|summary table
       registered per feature and duplicate-gated at assembly
-- [ ] Rendering: per-file line index (byte spans -> line/col only at
+- [x] Rendering: per-file line index (byte spans -> line/col only at
       render), the miette-shaped renderer, golden rendering tests
 - [ ] Driver projection: engine diagnostics -> Diag, with the
       unregistered-kind validation net

@@ -1,0 +1,66 @@
+// Golden renderings: the human text is a contract. Every code's
+// shape is asserted EXACTLY — a drifted gutter or caret fails here.
+use @std.errors.{Loc}
+use @std.avrac.diagnostics.{
+    Diag, Mark, error_at, builtin_codes, render,
+    SourceFile, new_source_file,
+}
+
+fn two_lines() -> SourceFile {
+    new_source_file("let a = 1\nlet = 3")
+}
+
+spec "diagnostics/render" {
+    given "the source index" {
+        then "offsets resolve to 1-based line and column" {
+            let s = two_lines()
+            let first = s.linecol(0)
+            let eq = s.linecol(14)
+            first.line == 1 && first.col == 1 && eq.line == 2 && eq.col == 5
+        }
+        then "line text arrives without its newline" {
+            let s = two_lines()
+            s.line_text(1) == "let a = 1" && s.line_text(2) == "let = 3"
+        }
+    }
+    given "a located diagnostic" {
+        then "the rendering is exact — header, window, pointer, help" {
+            let at = Loc { file: "app.av", lo: 14, hi: 15 }
+            let m: Mark? = Mark { loc: at, label: "expected NAME" }
+            let d = error_at("parse.expected", at, "expected NAME while parsing `stmt`")
+                with { primary: m, help: "a `let` names its value" }
+            let expected = """error[F0100]: expected NAME while parsing `stmt`
+  ╭─[app.av:2:5]
+2 │ let = 3
+  ·     ┬
+  ·     ╰── expected NAME
+──╯
+help: a `let` names its value"""
+            render(d, builtin_codes(), two_lines()) == expected
+        }
+        then "an unlabeled mark points bare" {
+            let at = Loc { file: null, lo: 0, hi: 3 }
+            let d = error_at("parse.expected", at, "m")
+            let expected = """error[F0100]: m
+  ╭─[<source>:1:1]
+1 │ let a = 1
+  · ┬
+  · ╰──
+──╯"""
+            render(d, builtin_codes(), two_lines()) == expected
+        }
+    }
+    given "an anchorless diagnostic" {
+        then "no window renders, help still lands" {
+            let d = error_at("language.defect", null, "rule `s` is declared more than once")
+                with { help: "merge same-name rules first" }
+            let expected = """error[F0900]: rule `s` is declared more than once
+help: merge same-name rules first"""
+            render(d, builtin_codes(), two_lines()) == expected
+        }
+        then "an unregistered kind renders as itself" {
+            let d = error_at("ghost.kind", null, "m")
+            render(d, builtin_codes(), two_lines()) == "error[ghost.kind]: m"
+        }
+    }
+}

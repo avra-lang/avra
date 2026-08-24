@@ -309,7 +309,9 @@ instantiation works cross-file (the bare form does not).
 
 ## Triple-quoted strings for embedded text
 
-Grammar fragments, docs, fixtures — never `\n`-joined literals:
+Grammar fragments, docs, fixtures, and GOLDEN test expectations —
+an exact multi-line rendering compares against one `"""` block —
+never `\n`-joined literals:
 
 ```avra
 gram: """

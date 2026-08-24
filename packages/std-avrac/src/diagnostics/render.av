@@ -1,0 +1,60 @@
+//! A Diag rendered for the terminal. The structured value is the
+//! substrate; this prose is one projection of it (P11).
+//!
+//!   error[F0100]: expected NAME while parsing `stmt`
+//!     ╭─[app.av:2:5]
+//!   2 │ let = 3
+//!     ·     ┬
+//!     ·     ╰── expected NAME
+//!   ──╯
+//!   help: a `let` names its value
+use core.{joined}
+
+fn severity_word(s: Severity) -> string {
+    match s {
+        .Error -> "error",
+        .Warning -> "warning",
+    }
+}
+
+fn repeated(s: string, n: int) -> string {
+    mut out = ""
+    mut i = 0
+    while i < n {
+        out = "${out}${s}"
+        i = i + 1
+    }
+    out
+}
+
+/// The source window for one mark: location header, the line, and the
+/// pointer carrying the mark's label when it has one.
+fn window(m: Mark, src: SourceFile) -> string {
+    let at = src.linecol(m.loc.lo)
+    let file = m.loc.file ?? "<source>"
+    let num = "${at.line}"
+    let gutter = repeated(" ", num.length)
+    let indent = repeated(" ", at.col - 1)
+    let label = match m.label {
+        null -> "",
+        let l -> " ${l}",
+    }
+    joined([
+        "${gutter} ╭─[${file}:${at.line}:${at.col}]",
+        "${num} │ ${src.line_text(at.line)}",
+        "${gutter} ·${indent} ┬",
+        "${gutter} ·${indent} ╰──${label}",
+        "${repeated("─", num.length + 1)}╯",
+    ], "\n")
+}
+
+/// The whole diagnostic as terminal text. The F-code is the
+/// registry's projection of the kind; an unregistered kind renders
+/// as itself.
+export fn render(d: Diag, codes: List<DiagCode>, src: SourceFile) -> string {
+    let code = code_for(codes, d.kind) ?? d.kind
+    mut parts = ["${severity_word(d.severity)}[${code}]: ${d.message}"]
+    if d.primary != null { parts.push(window(d.primary!, src)) }
+    if d.help != null { parts.push("help: ${d.help!}") }
+    joined(parts, "\n")
+}
