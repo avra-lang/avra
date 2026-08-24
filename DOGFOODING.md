@@ -75,6 +75,18 @@ impl Token {
 }
 ```
 
+`impl` works on enums too — derived properties live with the type:
+
+```avra
+impl Rep {
+    fn suffix(self) -> string { match self { .One -> "", .Star -> "*", ... } }
+}
+impl Prim {
+    fn token_name(self) -> string? { ... }
+    fn answers_to(self, token: string) -> bool { ... }  // null-guarded ==
+}
+```
+
 ## Nullability instead of sentinels
 
 Absence is `T?`, never `-1` or `""`: `label: string?`, `build: Build?`

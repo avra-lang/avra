@@ -1,0 +1,52 @@
+// parse_grammar end to end, crowned by the self-hosting fixed point:
+// the DSL's own grammar, written in the DSL, parses to exactly the
+// data seed. If the notation and the seed ever drift, this goes red.
+use @std.avrac.grammar.{
+    Grammar, parse_grammar, GrammarParse, render_grammar, grammar_of_grammars,
+}
+
+/// The grammar-of-grammars, in its own notation.
+fn dsl_text() -> string {
+    """
+grammar = rules:rule+ -> build_grammar(rules)
+rule = name:NAME "=" body:alt BREAK -> build_rule(name, body)
+alt = branches:seq ( "|" branches:seq )* -> build_alt(branches)
+seq = items:labeled+ annots:annot* ( "->" build:build )? annots:annot* -> build_seq(items, build, annots)
+labeled = ( label:NAME ":" )? inner:postfix -> build_labeled(label, inner)
+postfix = inner:primary rep:( "*" | "+" | "?" )? -> build_postfix(inner, rep)
+primary = name:NAME -> build_prim_name(name)
+        | text:STRING -> build_lit(text)
+        | "(" inner:alt ")" @expect(")", "expected ')' to close the group") -> build_group(inner)
+build = name:NAME ( lp:"(" ( args:NAME ( "," args:NAME )* )? ")" @expect(")", "expected ')' to close the argument list") )? -> build_build(name, lp, args)
+annot = "@expect" "(" token:STRING "," msg:STRING ")" @expect(")", "expected ')' to close @expect") -> build_expect(token, msg)
+      | "@recover" "(" "sync_to" ":" target:STRING ")" @expect(")", "expected ')' to close @recover") -> build_recover(target)
+"""
+}
+
+spec "grammar/parse" {
+    given "the self-hosting fixed point" {
+        then "the DSL's own grammar parses to the data seed" {
+            let p = parse_grammar(dsl_text())
+            p.diagnostics.length == 0 && p.grammar != null &&
+                render_grammar(p.grammar!) == render_grammar(grammar_of_grammars())
+        }
+    }
+    given "parse_grammar's outcome contract" {
+        then "the grammar's name is its start rule" {
+            let p = parse_grammar("expr = NAME")
+            p.grammar?.name == "expr"
+        }
+        then "lexer errors surface in the diagnostics" {
+            let p = parse_grammar("a = !")
+            p.diagnostics.length >= 1
+        }
+        then "the built grammar's own defects surface at parse time" {
+            let p = parse_grammar("a = ghost")
+            p.grammar != null && p.diagnostics.length == 1
+        }
+        then "unparseable text yields no grammar but keeps its diagnostics" {
+            let p = parse_grammar("= = =")
+            p.grammar == null && p.diagnostics.length >= 1
+        }
+    }
+}

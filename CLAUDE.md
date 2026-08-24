@@ -87,6 +87,8 @@ against these before writing; probe in scratch when unsure.
 - Method calls on a `const` string fail at codegen.
 - Rebuild bs2 with `make build`, never `build-quick` — its freshness
   check can silently skip rebuilds and leave a stale binary.
+- `==` between a nullable string and a string SEGFAULTS when null —
+  check `!= null` and unwrap before comparing.
 - Maps reject `m["k"]` indexing — use `.get(key)`, which returns `T?`.
 - `@comptime` folds only scalar int/bool bodies; struct/list-heavy code
   fails to fold. (Compile-time seed validation waits on our own

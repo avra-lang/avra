@@ -237,16 +237,6 @@ fn call_args(v: Captured<GrammarNode>) -> Result<List<string>, string> {
     Result.Ok(out)
 }
 
-/// True when this atom is what an `@expect` token names.
-fn prim_matches(p: Prim, token: string) -> bool {
-    match p {
-        .Lit(text) -> text == token,
-        .Named(term) -> term == token,
-        .Ref(_) -> false,
-        .Group(_) -> false,
-    }
-}
-
 /// Attach each @expect to the first unclaimed matching item; land
 /// @recover on the branch. The resolution step of the surface -> value
 /// collapse.
@@ -258,7 +248,7 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
             .AExpect(token, message) -> {
                 mut idx = -1
                 for (i, m) in out.enumerate() {
-                    if idx < 0 && m.expect == null && prim_matches(m.prim, token) { idx = i }
+                    if idx < 0 && m.expect == null && m.prim.answers_to(token) { idx = i }
                 }
                 if idx < 0 { return Result.Err("@expect names `${token}` but the branch has no matching item") }
                 mut next: List<Item> = []
