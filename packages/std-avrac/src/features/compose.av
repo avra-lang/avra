@@ -1,0 +1,51 @@
+//! Assembly: features compose into one grammar text, and the engine's
+//! build calls dispatch back through the features' builder tables.
+use core.{NodeStore, Span}
+use grammar.{Captured}
+
+/// One feature's slice of the composed grammar text — diagnostics map
+/// back to the feature that owns their span.
+export type FragmentRange = { feature: string, lo: int, hi: int }
+
+export type ComposedText = { text: string, ranges: List<FragmentRange> }
+
+/// Every fragment, in feature order — the first feature's first rule
+/// is the language's start rule.
+export fn compose_text(features: List<LanguageFeature>) -> ComposedText {
+    mut text = ""
+    mut ranges: List<FragmentRange> = []
+    for f in features {
+        let lo = text.length
+        text = "${text}${f.gram}\n"
+        ranges.push(FragmentRange { feature: f.name, lo: lo, hi: text.length })
+    }
+    ComposedText { text: text, ranges: ranges }
+}
+
+impl ComposedText {
+    /// The feature owning a byte offset, when one does.
+    fn feature_at(self, offset: int) -> string? {
+        for r in self.ranges {
+            if offset >= r.lo && offset < r.hi { return r.feature }
+        }
+        null
+    }
+}
+
+/// The engine-facing dispatch: the first feature registering `name`
+/// builds, through a Builder holding this call's world.
+export fn dispatch(features: List<LanguageFeature>, store: NodeStore, name: string, args: List<Captured<LangNode>>, span: Span?) -> Result<Captured<LangNode>, string> {
+    for f in features {
+        for row in f.builders {
+            if row.name == name {
+                let b = Builder { store: store, args: args, span: span }
+                let out: Result<Captured<LangNode>, string> = match row.build(b) {
+                    .Ok(n) -> Result.Ok(Captured.Node(n)),
+                    .Err(m) -> Result.Err(m),
+                }
+                return out
+            }
+        }
+    }
+    Result.Err("no feature owns builder `${name}`")
+}

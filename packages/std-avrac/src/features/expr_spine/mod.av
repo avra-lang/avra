@@ -1,0 +1,64 @@
+//! The expression spine: the precedence ladder every expression
+//! feature hangs from. Left association comes from folding the
+//! repeated tail, exactly as the grammar reads.
+use core.{Expr, BinOp, want}
+use features.{LangNode, LanguageFeature, BuilderRow, Builder}
+
+export fn expr_spine() -> LanguageFeature {
+    let rows: List<BuilderRow> = table {
+        name          | build
+        "int_lit"     | build_int_lit
+        "ident"       | build_ident
+        "fold_binary" | build_fold_binary
+    }
+    component LanguageFeature spine {
+        name = "expr_spine"
+        docs = "Expressions: integer literals, identifiers, and left-associative `+`/`-`."
+        gram = """
+expression = additive
+additive = l:primary ( op:( "+" | "-" ) r:primary )* -> fold_binary(l, op, r)
+primary = v:NUMBER -> int_lit(v) | n:NAME -> ident(n)
+"""
+        builders = rows
+    }
+    spine
+}
+
+fn build_int_lit(b: Builder) -> Result<LangNode, string> {
+    let t = b.token(0)?
+    b.make_expr(Expr.IntLit(t.int_value()))
+}
+
+fn build_ident(b: Builder) -> Result<LangNode, string> {
+    let t = b.token(0)?
+    b.make_expr(Expr.Ident(t.text))
+}
+
+/// `l (op r)*` folds left: each pair wraps the accumulator, so
+/// `1 + 2 - x` is `(1 + 2) - x`.
+fn build_fold_binary(b: Builder) -> Result<LangNode, string> {
+    mut acc = b.expr(0)?
+    let ops = b.tokens(1)?
+    let rights = b.exprs(2)?
+    for (i, t) in ops.enumerate() {
+        let op = want(binop_of(t.text), "`+` or `-`")?
+        acc = b.store.alloc_expr(Expr.Binary(op, acc, rights[i]), b.cover(acc, rights[i]))
+    }
+    b.wrap_expr(acc)
+}
+
+type OpRow = { text: string, op: BinOp }
+
+/// The operators this feature folds, as data — new rows are the whole
+/// cost of a new operator.
+fn binop_of(text: string) -> BinOp? {
+    let ops: List<OpRow> = table {
+        text | op
+        "+"  | BinOp.Add
+        "-"  | BinOp.Sub
+    }
+    for r in ops {
+        if r.text == text { return r.op }
+    }
+    null
+}

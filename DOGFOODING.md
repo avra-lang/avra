@@ -47,8 +47,23 @@ let cases: List<BreakCase> = table {
 }
 ```
 
-Row type annotation is required. Use for pure data cases; keep named
-`then` blocks where per-case failure names matter.
+Row type annotation is required (a typed `let` — field position is
+not enough). Use for pure data cases; keep named `then` blocks where
+per-case failure names matter. Cells hold fn VALUES and enum values
+too — a registry or an operator set is literally a table:
+
+```avra
+let rows: List<BuilderRow> = table {
+    name          | build
+    "int_lit"     | build_int_lit
+    "fold_binary" | build_fold_binary
+}
+let ops: List<OpRow> = table {
+    text | op
+    "+"  | BinOp.Add
+    "-"  | BinOp.Sub
+}
+```
 
 ## `with` for modified copies
 
@@ -149,10 +164,29 @@ Pin explicitly (`f<N>(...)`) when:
 
 Never nest a generic type inside an explicit type argument —
 `concat<Captured<N>>(...)` does not take (write the loop instead).
+Fn-typed arguments carry no T-evidence, and pinning `<T>` over one
+corrupts scalar payloads through mono — never thread fn args through
+generics.
 
 ```avra
 fn captured_absent<N>() -> Captured<N> { Captured.Absent }
 ```
+
+## Vocabulary over ceremony
+
+When every author would write the same wrap/unwrap stack, name it once
+and the stack disappears from every call site. Bundle a call's world
+into a context struct and the vocabulary becomes methods on it:
+
+```avra
+fn build_int_lit(b: Builder) -> Result<LangNode, string> {
+    let t = b.token(0)?                    // not want(token_at(args, 0), "...")?
+    b.make_expr(Expr.IntLit(t.int_value()))  // not Ok(Node(NExpr(alloc(..., span))))
+}
+```
+
+The context carries what the engine knows (`b.span`, the store) so
+authors never thread it; raw fields stay public as the escape hatch.
 
 ## Generic engine, concrete client
 
@@ -244,6 +278,51 @@ diagnostics = concat<Diagnostic>(diagnostics, r.diagnostics)
 
 Pin `concat<T>` inside generic fn bodies — mono needs the explicit
 type there even when T is concrete.
+
+## Components for self-describing bundles
+
+A named bundle with defaulted fields is a `component` (the spec's
+feature shape): only the fields that matter get spelled. Instantiation
+is a STATEMENT binding the instance name — bind, then return it.
+
+```avra
+export component LanguageFeature {
+    config {
+        name: string,
+        docs: string = "",
+        gram: string = "",
+        builders: List<BuilderRow> = [],
+    }
+}
+
+fn harness() -> LanguageFeature {
+    component LanguageFeature h {
+        name = "harness"
+        gram = "prog = e:expression BREAK -> e"
+    }
+    h
+}
+```
+
+Config pairs are newline-separated; the `component`-prefixed
+instantiation works cross-file (the bare form does not).
+
+## Triple-quoted strings for embedded text
+
+Grammar fragments, docs, fixtures — never `\n`-joined literals:
+
+```avra
+gram: """
+expression = additive
+primary = v:NUMBER -> int_lit(v) | n:NAME -> ident(n)
+""",
+```
+
+## Typed ids are single-field structs
+
+`type ExprId = { index: int }`, never an int newtype — newtype scalars
+corrupt through generic/mono flows (subset note). Struct ids ride
+every boundary safely and stay nominally distinct.
 
 ## Match guards
 

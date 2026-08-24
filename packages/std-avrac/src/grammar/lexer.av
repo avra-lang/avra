@@ -20,23 +20,35 @@ export enum TokenKind { Name, Num, Str, Op, Break, Eof }
 /// the span covers the quotes.
 export type Token = { kind: TokenKind, text: string, span: Span }
 
-/// One recorded problem; lexing continued past it.
 impl Token {
     /// True when a grammar Lit matches this token: text equality, and
     /// never against quoted input — a Str's text is data, not syntax.
     fn lit_matches(self, text: string) -> bool {
         self.kind != TokenKind.Str && self.kind != TokenKind.Eof && self.text == text
     }
+
+    /// The integer a Num token's digits denote.
+    fn int_value(self) -> int {
+        mut v = 0
+        mut i = 0
+        while i < self.text.length {
+            v = v * 10 + (code_at(self.text, i) - 48)
+            i = i + 1
+        }
+        v
+    }
 }
 
+/// One recorded problem; lexing continued past it.
 export type LexError = { message: string, span: Span }
 
 /// Every token and every problem from one pass.
 export type LexResult = { tokens: List<Token>, errors: List<LexError> }
 
 /// Codepoint at byte `i`.
-/// Membership in the single-char operator set.
-fn is_single_op(ch: string) -> bool { "=|()*+?:,".index_of(ch) >= 0 }
+/// Membership in the single-char operator set; `-` reaches here
+/// only after the `->` munch has failed.
+fn is_single_op(ch: string) -> bool { "=|()*+?:,-".index_of(ch) >= 0 }
 
 /// A token spanning `[lo, hi)`.
 fn token(kind: TokenKind, text: string, lo: int, hi: int) -> Token {

@@ -8,7 +8,7 @@
 //! `@recover` lands on the branch. The token named in the text never
 //! reaches the value model.
 
-use core.{code_at, is_upper_name_cont}
+use core.{code_at, is_upper_name_cont, want, Span}
 
 /// What grammar-DSL builders construct — one variant per node kind.
 export enum GrammarNode {
@@ -44,13 +44,6 @@ fn is_terminal_name(s: string) -> bool {
 
 fn ok(g: GrammarNode) -> Result<Captured<GrammarNode>, string> {
     Result.Ok(Captured.Node(g))
-}
-
-/// A present extraction, or "expected <what>". The one place unwrap
-/// errors are worded.
-fn want<T>(x: T?, what: string) -> Result<T, string> {
-    let out: Result<T, string> = if x == null { Result.Err("expected ${what}") } else { Result.Ok(x!) }
-    out
 }
 
 // ── Per-kind extractors: a capture's payload, or null. ──
@@ -292,8 +285,9 @@ export fn grammar_result(o: RunOutcome<GrammarNode>) -> Grammar? {
     }
 }
 
-/// The builder dispatch for the grammar DSL itself.
-export fn grammar_build(name: string, args: List<Captured<GrammarNode>>) -> Result<Captured<GrammarNode>, string> {
+/// The builder dispatch for the grammar DSL itself. Grammar values
+/// carry no spans, so the branch span goes unused here.
+export fn grammar_build(name: string, args: List<Captured<GrammarNode>>, span: Span?) -> Result<Captured<GrammarNode>, string> {
     match name {
         "build_grammar" -> {
             let rules = as_rules(args[0])?

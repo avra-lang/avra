@@ -17,7 +17,7 @@
 //! rolling back a speculative attempt is keeping the old one.
 //! Diagnostics are structured (span, expected set, rule); prose
 //! rendering is a projection.
-use core.{concat}
+use core.{concat, Span}
 
 /// What a builder receives and returns. The engine never looks inside
 /// `Node` — `N` belongs to whoever supplies the builders.
@@ -58,7 +58,7 @@ type MatchResult<N> = { status: MatchStatus, state: MatchState<N>, value: Captur
 
 /// Everything a match needs to see. `rules` indexes the grammar's
 /// rules by name, built once per run.
-type MatchContext<N> = { g: Grammar, tokens: List<Token>, rules: Map<string, Rule>, build: fn(string, List<Captured<N>>) -> Result<Captured<N>, string> }
+type MatchContext<N> = { g: Grammar, tokens: List<Token>, rules: Map<string, Rule>, build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string> }
 
 /// Captured.Absent with its type parameter pinned.
 fn captured_absent<N>() -> Captured<N> { Captured.Absent }
@@ -258,24 +258,31 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq, entry_state: Mat
             }
         }
     }
-    // Build phase.
+    // Build phase. The branch's consumed range is the builder's span.
+    let branch = consumed_span(cx.tokens, entry_state.cursor, state.cursor)
     let built: Result<Captured<N>, string> = match s.build {
         null -> built_ok<N>(vals[0]),
         let b -> match b {
             .Var(name) -> built_ok<N>(binding_for<N>(state.bindings, name) ?? captured_absent<N>()),
             .Call(name, args) -> {
                 let argv: List<Captured<N>> = [binding_for<N>(state.bindings, a) ?? captured_absent<N>() for a in args]
-                cx.build(name, argv)
+                cx.build(name, argv, branch)
             }
         }
     }
     match built {
         .Ok(v) -> matched<N>(state, v, diagnostics, farthest),
         .Err(m) -> {
-            diagnostics.push(Diagnostic { message: "builder failed: ${m}", span: cx.tokens[state.cursor].span, expected: [], in_rule: rule_name })
+            diagnostics.push(Diagnostic { message: "builder failed: ${m}", span: branch ?? cx.tokens[state.cursor].span, expected: [], in_rule: rule_name })
             fatal_defect<N>(state, diagnostics, farthest)
         }
     }
+}
+
+/// The source range tokens `[from, until)` cover; null when empty.
+fn consumed_span(tokens: List<Token>, from: int, until: int) -> Span? {
+    if until <= from { return null }
+    tokens[from].span.cover(tokens[until - 1].span)
 }
 
 /// A successful build result, with both Result parameters pinned.
@@ -403,7 +410,7 @@ fn overall_failure<N>(cx: MatchContext<N>, r: MatchResult<N>) -> Diagnostic {
 /// Run `g` over `tokens`. A defective grammar refuses to run; a failed
 /// parse still reports every diagnostic gathered; a partial result
 /// (error holes inside) is a result.
-export fn run_grammar<N>(g: Grammar, tokens: List<Token>, build: fn(string, List<Captured<N>>) -> Result<Captured<N>, string>) -> RunOutcome<N> {
+export fn run_grammar<N>(g: Grammar, tokens: List<Token>, build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>) -> RunOutcome<N> {
     let defects = g.defects()
     if defects.length > 0 {
         let refused: RunOutcome<N> = RunOutcome { result: null, diagnostics: defects }

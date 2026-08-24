@@ -8,11 +8,12 @@
 //! allocation goes through the one `alloc_*` seam per arena, so
 //! interning can arrive without call-site churn.
 
-/// Typed index into the expression arena.
-export type ExprId = int
+/// Typed index into the expression arena. A single-field struct, not
+/// an int newtype — see the subset note on newtypes in generic flows.
+export type ExprId = { index: int }
 
 /// Typed index into the statement arena.
-export type StmtId = int
+export type StmtId = { index: int }
 
 export enum BinOp { Add, Sub }
 
@@ -52,22 +53,30 @@ impl NodeStore {
     fn alloc_expr(self, e: Expr, span: Span?) -> ExprId {
         mut fingerprints = self.expr_fingerprints
         fingerprints.push(self.fingerprint_expr(e))
-        ExprId(self.exprs.add(e, span))
+        ExprId { index: self.exprs.add(e, span) }
     }
 
     /// The one statement-allocation seam.
     fn alloc_stmt(self, s: Stmt, span: Span?) -> StmtId {
         mut fingerprints = self.stmt_fingerprints
         fingerprints.push(self.fingerprint_stmt(s))
-        StmtId(self.stmts.add(s, span))
+        StmtId { index: self.stmts.add(s, span) }
     }
 
-    fn expr(self, id: ExprId) -> Expr { self.exprs.node_at(id.raw()) }
-    fn stmt(self, id: StmtId) -> Stmt { self.stmts.node_at(id.raw()) }
-    fn expr_span(self, id: ExprId) -> Span? { self.exprs.span_at(id.raw()) }
-    fn stmt_span(self, id: StmtId) -> Span? { self.stmts.span_at(id.raw()) }
-    fn expr_fingerprint(self, id: ExprId) -> int { self.expr_fingerprints[id.raw()] }
-    fn stmt_fingerprint(self, id: StmtId) -> int { self.stmt_fingerprints[id.raw()] }
+    fn expr(self, id: ExprId) -> Expr { self.exprs.node_at(id.index) }
+    fn stmt(self, id: StmtId) -> Stmt { self.stmts.node_at(id.index) }
+    fn expr_span(self, id: ExprId) -> Span? { self.exprs.span_at(id.index) }
+    fn stmt_span(self, id: StmtId) -> Span? { self.stmts.span_at(id.index) }
+    fn expr_fingerprint(self, id: ExprId) -> int { self.expr_fingerprints[id.index] }
+    fn stmt_fingerprint(self, id: StmtId) -> int { self.stmt_fingerprints[id.index] }
+
+    /// The span containing both expressions, when both are known.
+    fn cover(self, a: ExprId, b: ExprId) -> Span? {
+        let sa = self.expr_span(a)
+        let sb = self.expr_span(b)
+        if sa == null || sb == null { return null }
+        sa!.cover(sb!)
+    }
 
     /// Content identity: variant + payloads + child fingerprints.
     /// Spans never participate.

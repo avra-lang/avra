@@ -1,0 +1,134 @@
+//! The builder-authoring surface: one `Builder` carries a build call's
+//! world, and its methods are the whole vocabulary a feature needs.
+use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, want}
+use grammar.{Captured, Token}
+
+/// One build call's world: the store, the captured arguments in
+/// grammar order, and the engine-attributed span of the branch that
+/// matched. Builders read arguments and make nodes through this.
+export type Builder = { store: NodeStore, args: List<Captured<LangNode>>, span: Span? }
+
+impl Builder {
+    /// The token argument at `i`.
+    fn token(self, i: int) -> Result<Token, string> {
+        want(token_at(self.args, i), "a token argument")
+    }
+
+    /// The expression argument at `i`.
+    fn expr(self, i: int) -> Result<ExprId, string> {
+        want(expr_id_at(self.args, i), "an expression argument")
+    }
+
+    /// The statement argument at `i`.
+    fn stmt(self, i: int) -> Result<StmtId, string> {
+        want(stmt_id_at(self.args, i), "a statement argument")
+    }
+
+    /// The repeated capture at `i`, as plain tokens.
+    fn tokens(self, i: int) -> Result<List<Token>, string> {
+        let items = list_at(self.args, i)
+        mut out: List<Token> = []
+        for j in 0..items.length {
+            out.push(want(token_at(items, j), "a token in a repeated capture")?)
+        }
+        Result.Ok(out)
+    }
+
+    /// The repeated capture at `i`, as expression ids.
+    fn exprs(self, i: int) -> Result<List<ExprId>, string> {
+        let items = list_at(self.args, i)
+        mut out: List<ExprId> = []
+        for j in 0..items.length {
+            out.push(want(expr_id_at(items, j), "an expression in a repeated capture")?)
+        }
+        Result.Ok(out)
+    }
+
+    /// The repeated capture at `i`, as statement ids.
+    fn stmts(self, i: int) -> Result<List<StmtId>, string> {
+        let items = list_at(self.args, i)
+        mut out: List<StmtId> = []
+        for j in 0..items.length {
+            out.push(want(stmt_id_at(items, j), "a statement in a repeated capture")?)
+        }
+        Result.Ok(out)
+    }
+
+    /// A new expression node, spanning the matched branch.
+    fn make_expr(self, e: Expr) -> Result<LangNode, string> {
+        Result.Ok(LangNode.NExpr(self.store.alloc_expr(e, self.span)))
+    }
+
+    /// A new statement node, spanning the matched branch.
+    fn make_stmt(self, s: Stmt) -> Result<LangNode, string> {
+        Result.Ok(LangNode.NStmt(self.store.alloc_stmt(s, self.span)))
+    }
+
+    /// An already-allocated expression as this build's result.
+    fn wrap_expr(self, id: ExprId) -> Result<LangNode, string> {
+        Result.Ok(LangNode.NExpr(id))
+    }
+
+    /// An already-allocated statement as this build's result.
+    fn wrap_stmt(self, id: StmtId) -> Result<LangNode, string> {
+        Result.Ok(LangNode.NStmt(id))
+    }
+
+    /// The span containing both expressions, when both are known.
+    fn cover(self, a: ExprId, b: ExprId) -> Span? {
+        self.store.cover(a, b)
+    }
+}
+
+// ── Capture extractors behind the methods. All take the argument LIST
+// plus an index: a Captured<LangNode> passed by itself as a fn
+// argument misreads in the callee (see the subset note), while
+// list-carried values stay intact. ──
+
+/// The expression id at `args[i]`, when that capture is one.
+export fn expr_id_at(args: List<Captured<LangNode>>, i: int) -> ExprId? {
+    match args[i] {
+        .Node(n) -> match n {
+            .NExpr(id) -> id,
+            .NStmt(_) -> null,
+        },
+        .Terminal(_) -> null,
+        .Many(_) -> null,
+        .Absent -> null,
+    }
+}
+
+/// The statement id at `args[i]`, when that capture is one.
+export fn stmt_id_at(args: List<Captured<LangNode>>, i: int) -> StmtId? {
+    match args[i] {
+        .Node(n) -> match n {
+            .NStmt(id) -> id,
+            .NExpr(_) -> null,
+        },
+        .Terminal(_) -> null,
+        .Many(_) -> null,
+        .Absent -> null,
+    }
+}
+
+/// The token at `args[i]`, when that capture is one.
+export fn token_at(args: List<Captured<LangNode>>, i: int) -> Token? {
+    match args[i] {
+        .Terminal(t) -> t,
+        .Node(_) -> null,
+        .Many(_) -> null,
+        .Absent -> null,
+    }
+}
+
+/// List delivery for the repeated capture at `args[i]` (scalar and
+/// absent normalize).
+export fn list_at(args: List<Captured<LangNode>>, i: int) -> List<Captured<LangNode>> {
+    let items: List<Captured<LangNode>> = match args[i] {
+        .Many(xs) -> xs,
+        .Absent -> [],
+        .Terminal(t) -> [Captured.Terminal(t)],
+        .Node(n) -> [Captured.Node(n)],
+    }
+    items
+}

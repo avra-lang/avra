@@ -1,0 +1,106 @@
+//! Builder coherence: the composed grammar and the feature tables
+//! must agree before any source parses.
+use core.{concat, joined}
+use grammar.{Grammar, Alt, Prim, Build, Diagnostic, defect}
+
+/// Every disagreement between a composed grammar's build calls and the
+/// features' builder tables.
+export fn builder_defects(features: List<LanguageFeature>, g: Grammar) -> List<Diagnostic> {
+    concat(
+        concat(duplicate_defects(features), unregistered_defects(features, g)),
+        dead_defects(features, referenced_names(g)),
+    )
+}
+
+/// The feature whose registration of `name` wins — dispatch's search
+/// order, by construction.
+fn registrar_of(features: List<LanguageFeature>, name: string) -> string? {
+    for f in features {
+        for row in f.builders {
+            if row.name == name { return f.name }
+        }
+    }
+    null
+}
+
+/// Every build-call name any rule references.
+fn referenced_names(g: Grammar) -> Map<string, bool> {
+    mut out: Map<string, bool> = {}
+    for r in g.rules {
+        for name in call_names_in_alt(r.body) { out.set(name, true) }
+    }
+    out
+}
+
+/// A name registered by two features names the prior owner.
+fn duplicate_defects(features: List<LanguageFeature>) -> List<Diagnostic> {
+    mut seen: Map<string, string> = {}
+    mut out: List<Diagnostic> = []
+    for f in features {
+        for row in f.builders {
+            let prior: string? = seen.get(row.name)
+            if prior == null {
+                seen.set(row.name, f.name)
+            } else {
+                out.push(defect(f.name, "builder `${row.name}` is already registered by `${prior!}`"))
+            }
+        }
+    }
+    out
+}
+
+/// A build call no feature answers names the rule and the search.
+fn unregistered_defects(features: List<LanguageFeature>, g: Grammar) -> List<Diagnostic> {
+    let feature_names = features.map(it.name)
+    mut out: List<Diagnostic> = []
+    for r in g.rules {
+        for name in call_names_in_alt(r.body) {
+            if registrar_of(features, name) == null {
+                out.push(defect(r.name, "no feature registers builder `${name}` (searched ${joined(feature_names, ", ")})"))
+            }
+        }
+    }
+    out
+}
+
+/// A builder no grammar rule ever calls is dead.
+fn dead_defects(features: List<LanguageFeature>, referenced: Map<string, bool>) -> List<Diagnostic> {
+    mut out: List<Diagnostic> = []
+    for f in features {
+        for row in f.builders {
+            if referenced.get(row.name) == null {
+                out.push(defect(f.name, "builder `${row.name}` is never called by any grammar rule"))
+            }
+        }
+    }
+    out
+}
+
+/// Build-call names referenced anywhere in a branch tree, groups
+/// included.
+fn call_names_in_alt(a: Alt) -> List<string> {
+    mut out: List<string> = []
+    for s in a.branches {
+        let called: string? = match s.build {
+            null -> null,
+            let b -> match b {
+                .Var(_) -> null,
+                .Call(name, _) -> name,
+            }
+        }
+        if called != null { out.push(called!) }
+        for member in s.items {
+            out = concat(out, call_names_in_prim(member.prim))
+        }
+    }
+    out
+}
+
+fn call_names_in_prim(p: Prim) -> List<string> {
+    match p {
+        .Group(inner) -> call_names_in_alt(inner),
+        .Ref(_) -> [],
+        .Lit(_) -> [],
+        .Named(_) -> [],
+    }
+}

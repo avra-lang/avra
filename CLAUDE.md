@@ -63,7 +63,7 @@ Discovered gaps between the spec and the bootstrap compiler. Verify
 against these before writing; probe in scratch when unsure.
 
 - Function types are spelled `fn(int) -> bool`, not `(int) -> bool`.
-- `ref` and `none` are reserved words.
+- `ref`, `none`, and `shape` are reserved words.
 - No `mut` parameters — in-place-mutating helpers are inexpressible.
 - Generics infer ONLY from direct call arguments: not sibling fields,
   not return types. Pin with typed constructor fns
@@ -87,9 +87,27 @@ against these before writing; probe in scratch when unsure.
 - Method calls on a `const` string fail at codegen.
 - Rebuild bs2 with `make build`, never `build-quick` — its freshness
   check can silently skip rebuilds and leave a stale binary.
+- Int-backed newtypes corrupt through generic/mono flows: a fn
+  returning `Newtype?` comes back null once instances crossed mono'd
+  code. Use single-field STRUCTS for typed ids (`{ index: int }`).
+- `bs2 run` can serve stale library builds silently — trust `make
+  test`, which rebuilds, over ad-hoc `bs2 run` debugging.
 - `==` between a nullable string and a string SEGFAULTS when null —
   check `!= null` and unwrap before comparing.
 - Maps reject `m["k"]` indexing — use `.get(key)`, which returns `T?`.
+- A struct literal directly in a call's argument list fails to parse —
+  bind it to a `let` first.
+- Components work: `component Name { config { field: T = default } }`;
+  instantiate with `component Name inst { key = expr }` — pairs
+  NEWLINE-separated, keyword prefix required cross-file. Instantiation
+  is a STATEMENT binding `inst`; in expression position it compiles to
+  a SILENT NULL. Bind, then return the name.
+- Fn-typed arguments carry no `T`-evidence (F1002), and an explicit
+  `<T>` pin over one corrupts scalar payloads through mono — never
+  thread fn args through generics.
+- Statement-position match arms with `{}` bodies parse as empty MAP
+  literals and the arms then type-clash — restructure to a
+  value-producing match under a typed let, plus an `if`.
 - `@comptime` folds only scalar int/bool bodies; struct/list-heavy code
   fails to fold. (Compile-time seed validation waits on our own
   compiler.)
