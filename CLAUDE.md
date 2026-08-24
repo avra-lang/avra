@@ -1,5 +1,28 @@
 # Avra — clean-room compiler
 
+## AVRA PRINCIPLES
+
+The spec's Part 0 frames every decision (full text: spec, Part 0).
+Above all: **P6, paradox collapse** — binary choices are usually false
+dichotomies; find the design where both sides win. When a trade-off
+feels forced, the model is wrong, not the requirements.
+
+- P1  LLM-first: correct on first generation is the success metric
+- P2  substrate for autonomous services
+- P3  gloriously declarative, zero ceremony
+- P4  Rust-level performance or better
+- P5  full-stack vertical integration
+- P6  paradox collapse
+- P7  visible magic — always inspectable
+- P8  escape hatches everywhere
+- P9  boundaries are contracts
+- P10 the compiler holds semantic knowledge no other tool has
+- P11 machine-readability is the substrate, human-readability the projection
+- P12 one source of truth, many projections
+- P13 collapse dev/ops/infra
+- P14 no runtime, no framework, no container
+- P17 composability over featurefulness
+
 Clean restart of the Avra compiler, built slowly, one reviewed file at a
 time. Front end first: an extensible grammar assembled from
 LanguageFeature components, producing an AST for later passes.

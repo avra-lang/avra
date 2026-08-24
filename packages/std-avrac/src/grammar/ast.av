@@ -1,0 +1,78 @@
+//! Grammar values: the tree a `grammar { }` block becomes, and the one
+//! input the grammar engine runs.
+//!
+//! A Grammar is rules; a rule is alternatives; an alternative is a
+//! sequence; a sequence is items; an item is an atom with modifiers.
+//! Build, Expect, and Recover annotate what to construct, what to say
+//! when a token is missing, and where to resume after failure.
+//!
+//! The worked shape, for the rules
+//!
+//!     expression = l:term ( op:("+" | "-") r:term )*  -> fold_binary(l, op, r)
+//!     term       = NUMBER
+//!                | "(" e:expression ")" @expect(")", "expected ')'") -> e
+//!
+//! `term` is a Rule whose body is an Alt of two Seq branches: the first
+//! holds one Item (the Named atom NUMBER); the second holds three
+//! (Lit "(", the captured Ref `e:expression`, Lit ")"), with the Expect
+//! stored on the ")" item and Var("e") as the build.
+//!
+//! Authored text and stored value differ on purpose: surface
+//! conveniences (first rule is the start, a trailing @expect names its
+//! token) are resolved at parse time into explicit fields (`start`,
+//! `Item.expect`), so consumers read structure, never conventions.
+
+/// A named bag of rules and which one parsing begins at. `start` always
+/// names a rule in `rules`.
+export type Grammar = { name: string, start: string, rules: List<Rule> }
+
+/// One `name = body` line: a name and its right-hand side.
+export type Rule = { name: string, body: Alt }
+
+/// Alternatives separated by `|`, tried top to bottom; first match
+/// wins. A rule body is always an Alt, even with one branch.
+export type Alt = { branches: List<Seq> }
+
+/// One branch of an Alt: items that must appear in order, plus the
+/// branch's build directive and recovery policy. No build means
+/// pass-through of the single sub-result.
+export type Seq = { items: List<Item>, build: Build?, recover: Recover? }
+
+/// One thing in a sequence: an atom wearing up to three modifiers — an
+/// optional capture label, a repetition, and an optional missing-token
+/// message. No label means uncaptured.
+export type Item = { label: string?, prim: Prim, rep: Rep, expect: Expect? }
+
+/// How many times an Item may appear: exactly once, `*` zero or more,
+/// `+` one or more, `?` optional.
+export enum Rep { One, Star, Plus, Opt }
+
+/// What an Item actually is.
+export enum Prim {
+    /// Another rule's name — recurse into it.
+    Ref(rule: string)
+    /// Exact source text that must appear (`"+"`, `"defer"`).
+    Lit(text: string)
+    /// A token class from the lexer (`NUMBER`, `STRING`, `IDENT`) —
+    /// any token of that kind, not specific text.
+    Named(term: string)
+    /// Parentheses in the grammar: a nested Alt as one atom.
+    Group(inner: Alt)
+}
+
+/// The `->` at the end of a branch: what to construct once it matched.
+/// Call invokes a builder with the named captures; Var returns one
+/// capture.
+export enum Build {
+    Var(name: string)
+    Call(name: string, args: List<string>)
+}
+
+/// The error message a specific token owes when it is missing. Written
+/// `@expect(tok, msg)` trailing the branch; stored on the Item it
+/// names, so the token needs no field here.
+export type Expect = { message: string }
+
+/// A branch's failure policy: skip ahead to `sync_to` and continue, so
+/// one parse reports every error, not just the first.
+export type Recover = { sync_to: string }
