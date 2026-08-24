@@ -50,6 +50,15 @@ invariant it holds — no narration, no self-justification, no history.
 - Node facts (spans included) live in side tables keyed by typed ids,
   never on nodes.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
+- Passes are pure queries: explicit inputs, value + diagnostics
+  returned together. A pass OWNS its fact tables — NodeStore is
+  parse-owned and never accretes pass facts.
+- Queries own granularity and caching; features own the per-variant
+  logic a query's body dispatches to.
+- Every diagnostic carries a registered stable code, help or a
+  structured fix where expressible, and a golden rendering test.
+- Map iteration order never reaches output — iterate an ordered
+  source.
 
 ## Vendored code — do not imitate
 

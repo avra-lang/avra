@@ -106,6 +106,16 @@ impl Grammar {
         if !contains_str(names, self.start) {
             out.push(defect(self.start, "start rule is not defined"))
         }
+        // The executor indexes rules by name; a duplicate would silently
+        // shadow. Same-name rules must merge before a grammar runs.
+        mut seen: List<string> = []
+        for r in self.rules {
+            if contains_str(seen, r.name) {
+                out.push(defect(r.name, "declared more than once — merge same-name rules first"))
+            } else {
+                seen.push(r.name)
+            }
+        }
         for r in self.rules { out = concat(out, alt_defects(r.name, r.body, names, true)) }
         out
     }
