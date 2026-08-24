@@ -1,0 +1,45 @@
+//! @std.errors — the base error model every Avra error shares.
+//! Compiler diagnostics and user error types alike join through the
+//! same trait. Kinds are hierarchical stable identifiers
+//! ("io.not_found", "parse.expected") — dotted namespaces, matched by
+//! prefix, never by class hierarchies.
+
+/// A position in some source: an optional file identity and a byte
+/// range. The exchange form — compact in-store spans project into
+/// this at boundaries; line/col exists only in renderings.
+export type Loc = { file: string?, lo: int, hi: int }
+
+/// One step of context an error gathered on its way out — a trace
+/// frame, a `context` note, a labeled source position.
+export type Frame = { label: string, loc: Loc? }
+
+/// How sure a suggestion is. Only High is ever applied without a
+/// human; trust dies faster from one wrong autofix than any bug.
+export enum Confidence { High, Medium, Low }
+
+/// One text replacement.
+export type Edit = { loc: Loc, replacement: string }
+
+/// A structured remedy: what to do, how sure, and the edits that
+/// do it.
+export type Suggestion = {
+    confidence: Confidence,
+    description: string,
+    edits: List<Edit>,
+}
+
+/// A described error: its stable hierarchical kind and its human
+/// message, together — one row per variant at the definition site.
+export type ErrorInfo = { kind: string, message: string }
+
+/// One description row.
+export fn info(kind: string, message: string) -> ErrorInfo {
+    ErrorInfo { kind: kind, message: message }
+}
+
+/// What every Avra error IS: a value that describes itself. Kind and
+/// message ride the description; frames, causes, and suggestions are
+/// data its carrier ships alongside.
+export trait Error {
+    fn describe(self) -> ErrorInfo
+}

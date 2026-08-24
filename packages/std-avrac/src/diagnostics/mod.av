@@ -1,0 +1,58 @@
+//! The compiler's diagnostic: an @std.errors Error carrying source
+//! marks, a severity, and remedies. Structured first (P11); rendering
+//! is a projection. A diagnostic names its KIND; the F-code is the
+//! registry's projection of that kind (codes.av).
+use @std.errors.{Loc, Confidence, Edit, Suggestion, Error, ErrorInfo, info}
+
+export enum Severity { Error, Warning }
+
+/// A located annotation: where, and what to say there.
+export type Mark = { loc: Loc, label: string? }
+
+/// One diagnostic. `primary` is null for problems with no source
+/// anchor; `secondary` marks carry the supporting positions.
+export type Diag = {
+    kind: string,
+    severity: Severity,
+    primary: Mark?,
+    secondary: List<Mark>,
+    message: string,
+    help: string?,
+    suggestions: List<Suggestion>,
+}
+
+impl Error for Diag {
+    fn describe(self) -> ErrorInfo {
+        info(self.kind, self.message)
+    }
+}
+
+/// One registry row: a kind, its stable F-code, and its one-line
+/// meaning for `avra explain`.
+export type DiagCode = { kind: string, id: string, summary: string }
+
+/// The registry's F-code for a kind, when the kind is registered.
+export fn code_for(codes: List<DiagCode>, kind: string) -> string? {
+    for c in codes {
+        if c.kind == kind { return c.id }
+    }
+    null
+}
+
+/// An error at a source position; the common construction. Extend
+/// with `with { help: ..., suggestions: ... }`.
+export fn error_at(kind: string, loc: Loc?, message: string) -> Diag {
+    let primary: Mark? = match loc {
+        null -> null,
+        let l -> Mark { loc: l, label: null },
+    }
+    Diag {
+        kind: kind,
+        severity: Severity.Error,
+        primary: primary,
+        secondary: [],
+        message: message,
+        help: null,
+        suggestions: [],
+    }
+}

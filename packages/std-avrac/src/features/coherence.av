@@ -1,7 +1,8 @@
-//! Builder coherence: the composed grammar and the feature tables
-//! must agree before any source parses.
-use core.{concat, joined}
+//! Coherence: the composed grammar, the feature tables, and the code
+//! registry must agree before any source parses.
+use core.{concat, joined, contains_str}
 use grammar.{Grammar, Alt, Prim, Build, Diagnostic, defect}
+use diagnostics.{DiagCode}
 
 /// Every disagreement between a composed grammar's build calls and the
 /// features' builder tables.
@@ -103,4 +104,21 @@ fn call_names_in_prim(p: Prim) -> List<string> {
         .Lit(_) -> [],
         .Named(_) -> [],
     }
+}
+
+/// A kind or F-code registered twice is an assembly defect.
+export fn code_defects(codes: List<DiagCode>) -> List<Diagnostic> {
+    mut seen: List<string> = []
+    mut out: List<Diagnostic> = []
+    for c in codes {
+        if contains_str(seen, c.kind) {
+            out.push(defect(c.kind, "diagnostic kind is registered more than once"))
+        }
+        if contains_str(seen, c.id) {
+            out.push(defect(c.id, "diagnostic code is registered more than once"))
+        }
+        seen.push(c.kind)
+        seen.push(c.id)
+    }
+    out
 }

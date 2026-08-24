@@ -55,8 +55,9 @@ invariant it holds — no narration, no self-justification, no history.
   parse-owned and never accretes pass facts.
 - Queries own granularity and caching; features own the per-variant
   logic a query's body dispatches to.
-- Every diagnostic carries a registered stable code, help or a
-  structured fix where expressible, and a golden rendering test.
+- Every diagnostic names a registered kind (its F-code is the
+  registry's projection), carries help or a structured fix where
+  expressible, and has a golden rendering test.
 - Map iteration order never reaches output — iterate an ordered
   source.
 - A feature is a directory: `mod.av` is the declarative manifest
@@ -130,6 +131,10 @@ against these before writing; probe in scratch when unsure.
 - `@comptime` folds only scalar int/bool bodies; struct/list-heavy code
   fails to fold. (Compile-time seed validation waits on our own
   compiler.)
+- Trait DEFAULT method bodies typecheck but ICE at codegen
+  ("undefined method") — traits carry mandatory methods only.
+- Module-level `let` values work within their file but do NOT resolve
+  through imports — constants cross modules only as fns.
 - Working and dogfooded: traits + `impl Trait for`, subjectless `when`
   (with `_` arm), list comprehensions `[x for x in xs if p]`, pipe
   `|>`, typed table literals, `with` on generics, cross-file `impl`.

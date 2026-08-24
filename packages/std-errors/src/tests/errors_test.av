@@ -1,0 +1,46 @@
+// The base contract: an error type joins with ONE match — a row per
+// variant pairing kind and message — and kinds namespace by prefix.
+use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion, Error, ErrorInfo, info}
+
+enum ConfigError {
+    Missing(path: string)
+    Bad(line: int)
+}
+
+impl Error for ConfigError {
+    fn describe(self) -> ErrorInfo {
+        match self {
+            .Missing(path) -> info("config.missing", "no config at ${path}"),
+            .Bad(line) -> info("config.bad", "config line ${line} is not usable"),
+        }
+    }
+}
+
+spec "std.errors" {
+    given "an error type joined through the trait" {
+        then "one match describes every variant" {
+            let e = ConfigError.Missing("/etc/app")
+            let d = e.describe()
+            d.kind == "config.missing" && d.message == "no config at /etc/app"
+        }
+        then "kinds namespace hierarchically by prefix" {
+            ConfigError.Bad(3).describe().kind.starts_with("config.")
+        }
+    }
+    given "the remedy shapes" {
+        then "a suggestion carries graded confidence and edits" {
+            let at = Loc { file: "app.av", lo: 4, hi: 9 }
+            let s = Suggestion {
+                confidence: Confidence.High,
+                description: "use `get_user`",
+                edits: [Edit { loc: at, replacement: "get_user" }],
+            }
+            s.confidence == Confidence.High && s.edits.length == 1 &&
+                s.edits[0].loc.lo == 4
+        }
+        then "a frame is a labeled, optionally-located step" {
+            let f = Frame { label: "while reading config", loc: null }
+            f.label.length > 0 && f.loc == null
+        }
+    }
+}

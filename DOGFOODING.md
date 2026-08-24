@@ -334,8 +334,24 @@ match self {
 }
 ```
 
+## Traits for contracts
+
+A trait names a contract; types join by `impl Trait for` — across
+package boundaries too. Keep mandatory methods to the one thing every
+implementor must say (bs2 cannot materialize default bodies):
+
+```avra
+// @std.errors
+export trait Error {
+    fn describe(self) -> ErrorInfo
+}
+
+// any package
+impl Error for Diag {
+    fn describe(self) -> ErrorInfo { info(self.kind, self.message) }
+}
+```
+
 ## Proven but awaiting their first honest use
 
-- **Traits** (`trait Show` + `impl Show for T`) — first customer is
-  Diagnostic rendering in parse_grammar.
 - **Pipe `|>`** — first real pipeline, not two-arg call rewrites.

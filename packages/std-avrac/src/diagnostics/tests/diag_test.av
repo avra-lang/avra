@@ -1,0 +1,45 @@
+// A diagnostic IS an error: it answers through the @std.errors trait,
+// its kind namespaces by prefix, and the F-code is the registry's
+// projection of the kind.
+use @std.errors.{Loc, Error}
+use @std.avrac.core.{contains_str}
+use @std.avrac.diagnostics.{Diag, DiagCode, Severity, error_at, builtin_codes, code_for}
+
+spec "diagnostics" {
+    given "the code registry" {
+        then "kinds and ids are stable, unique, and summarized" {
+            mut kinds: List<string> = []
+            mut ids: List<string> = []
+            mut ok = builtin_codes().length == 5
+            for c in builtin_codes() {
+                if contains_str(kinds, c.kind) { ok = false }
+                if contains_str(ids, c.id) { ok = false }
+                kinds.push(c.kind)
+                ids.push(c.id)
+                if c.summary.length == 0 { ok = false }
+            }
+            ok && code_for(builtin_codes(), "parse.expected") == "F0100" &&
+                code_for(builtin_codes(), "no.such.kind") == null
+        }
+    }
+    given "a diagnostic" {
+        then "it answers through the Error trait" {
+            let at = Loc { file: "app.av", lo: 4, hi: 5 }
+            let d = error_at("parse.expected", at, "expected NAME")
+            let described = d.describe()
+            described.kind == "parse.expected" && described.message == "expected NAME" &&
+                d.describe().kind.starts_with("parse.")
+        }
+        then "error_at fills the quiet fields" {
+            let at = Loc { file: null, lo: 4, hi: 5 }
+            let d = error_at("parse.expected", at, "expected NAME")
+            d.severity == Severity.Error && d.help == null &&
+                d.suggestions.length == 0 && d.secondary.length == 0 &&
+                d.primary != null && d.primary!.loc.lo == 4 && d.primary!.label == null
+        }
+        then "an anchorless diagnostic carries no primary mark" {
+            let d = error_at("language.defect", null, "rule `x` is declared twice") with { help: "merge same-name rules" }
+            d.primary == null && d.help != null
+        }
+    }
+}

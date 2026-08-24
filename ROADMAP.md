@@ -21,10 +21,15 @@ real scale; the design sources of truth live in
 
 ## Milestone 2 — a world-class error, end to end
 
-- [ ] Diagnostics substrate: the epic §10.F schema (code, severity,
-      primary/secondary spans, message, help, fixes), a codes
-      registry as data, per-file line index (byte spans -> line/col
-      only at render), one renderer, golden rendering tests
+- [x] @std.errors — the base error model (describe-only trait, Loc,
+      Frame, graded Suggestion); compiler diagnostics implement it
+- [x] Diagnostics currency: Diag over the base, kind as identity,
+      F-codes as the registry's projection, the kind|id|summary table
+      registered per feature and duplicate-gated at assembly
+- [ ] Rendering: per-file line index (byte spans -> line/col only at
+      render), the miette-shaped renderer, golden rendering tests
+- [ ] Driver projection: engine diagnostics -> Diag, with the
+      unregistered-kind validation net
 - [ ] `avra check` CLI over the driver
 - [ ] Resolve pass — the first pure query: definition-site symbols,
       facts in a pass-owned side table, unresolved names with
@@ -46,6 +51,11 @@ real scale; the design sources of truth live in
 
 - Typed builders: `-> int_lit(v)` binds a typed fn; tables and
   positional accessors die (TECH_DEBT)
+- `@derive(Error)`: the enum declaration becomes the error table —
+  kinds from names, messages from doc-comment templates, generating
+  exactly `describe()`
+- Trait default method bodies (bs2 ICEs today): `kind()`/`message()`
+  return as defaults over `describe()`
 - `grammar { }` blocks replace raw-string grams
 - Bare component instantiation (registry spans files)
 - Query engine (L6 red-green memoization) wraps the pure passes

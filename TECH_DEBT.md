@@ -95,6 +95,14 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       (forge-lang PR #1371, with a regression test); the pinned-helper
       workaround in `features/mod.av` dispatch is removed. Requires a
       bs2 built from that fix.
+- [ ] **[Med]** Trait DEFAULT method bodies typecheck but ICE at
+      codegen ("undefined method") — nothing materializes the default
+      for an implementor. Shaped like a template-instantiation fix at
+      the impl seam; unlocks the spec's `kind()`/`message()` trait
+      surface.
+- [ ] **[Low]** Module-level `let` values do not resolve through
+      imports — constants cross modules only as fns (kills direct
+      value export for registries).
 - [ ] **[Low]** `@comptime` folds only scalar int/bool bodies, so the
       seed grammar cannot be validated at compile time yet. When the
       clean compiler's comptime matures, `grammar_of_grammars().defects()`

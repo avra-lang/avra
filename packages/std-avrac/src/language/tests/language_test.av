@@ -2,12 +2,36 @@
 // parse through one fn, recovery holes are VISIBLE Stmt.Error nodes,
 // and lex errors ride the same diagnostics list.
 use @std.avrac.language.{assemble, language_features, parse_source, parse_program}
+use @std.avrac.diagnostics.{DiagCode}
+use @std.avrac.features.{LanguageFeature}
+
+/// A feature whose registered code collides with a built-in kind.
+fn clashing() -> LanguageFeature {
+    let rows: List<DiagCode> = table {
+        kind        | id      | summary
+        "lex.error" | "F9998" | "collides with the builtin kind"
+    }
+    component LanguageFeature f {
+        name = "clash"
+        gram = "clash_rule = NAME"
+        diags = rows
+    }
+    f
+}
 
 spec "language" {
     given "the canonical language" {
-        then "it assembles with no defects" {
+        then "it assembles with no defects and the builtin registry" {
             let lang = assemble(language_features())
-            lang.grammar != null && lang.diagnostics.length == 0
+            lang.grammar != null && lang.diagnostics.length == 0 &&
+                lang.codes.length == 5
+        }
+        then "a feature registering a taken kind refuses assembly" {
+            mut feats = [f for f in language_features()]
+            feats.push(clashing())
+            let lang = assemble(feats)
+            lang.grammar == null && lang.diagnostics.length == 1 &&
+                lang.diagnostics[0].in_rule == "lex.error"
         }
     }
     given "a well-formed program" {

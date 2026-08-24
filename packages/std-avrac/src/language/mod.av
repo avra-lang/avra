@@ -8,8 +8,9 @@ use grammar.{
 }
 use features.{
     LangNode, LanguageFeature, compose_text, dispatch, builder_defects,
-    list_at, stmt_id_at,
+    code_defects, list_at, stmt_id_at,
 }
+use diagnostics.{DiagCode, builtin_codes}
 use features.stmt_spine.{stmt_spine}
 use features.let_stmt.{let_stmt}
 use features.expr_stmt.{expr_stmt}
@@ -26,6 +27,7 @@ export fn language_features() -> List<LanguageFeature> {
 export type Language = {
     features: List<LanguageFeature>,
     grammar: Grammar?,
+    codes: List<DiagCode>,
     diagnostics: List<Diagnostic>,
 }
 
@@ -33,14 +35,23 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     let gp = parse_grammar(compose_text(features).text)
     if gp.grammar == null { return unassembled(features, gp.diagnostics) }
     let g = gp.grammar!.merged()
-    let defects = concat(g.defects(), builder_defects(features, g))
+    let codes = code_registry(features)
+    let defects = concat(concat(g.defects(), builder_defects(features, g)), code_defects(codes))
     if defects.length > 0 { return unassembled(features, defects) }
-    Language { features: features, grammar: g, diagnostics: [] }
+    Language { features: features, grammar: g, codes: codes, diagnostics: [] }
 }
 
 /// Assembly refused: the defects are the language's diagnostics.
 fn unassembled(features: List<LanguageFeature>, diagnostics: List<Diagnostic>) -> Language {
-    Language { features: features, grammar: null, diagnostics: diagnostics }
+    Language { features: features, grammar: null, codes: [], diagnostics: diagnostics }
+}
+
+/// Built-in codes plus every feature's registered codes, in feature
+/// order — the registry `avra explain` walks.
+fn code_registry(features: List<LanguageFeature>) -> List<DiagCode> {
+    mut out = builtin_codes()
+    for f in features { out = concat(out, f.diags) }
+    out
 }
 
 /// One parsed source: the tree (holes included), and every diagnostic
