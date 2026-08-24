@@ -130,9 +130,10 @@ fn call_args(v: Captured<GrammarNode>) -> Result<List<string>, string> {
 Proven capabilities:
 
 - Generic enums with payload fields (`Captured<N>`), generic structs
-  with fn-typed fields (`MatchContext<N>.build`), and generic fns
-  taking fn-typed params all work — including TWO instantiations of
-  the same fn in one compile unit.
+  with fn-typed fields (`MatchContext<N>.build`), generic fns taking
+  fn-typed params, and generic impls (`impl Arena<N>` — methods
+  specialize per instantiation) all work — including TWO
+  instantiations of the same fn in one compile unit.
 - A bare `T`/`T?` argument is direct evidence — `want(x: T?, what)`
   never needs `<T>` at call sites.
 - Constructions infer under a typed `let` and in a fn's TAIL position
@@ -192,6 +193,22 @@ for r in g.rules { rules.set(r.name, r) }
 ```avra
 for i in 1..xs.length - 1 { out = "${out}, ${xs[i]}" }
 ```
+
+## Rebind-alias for shared mutation
+
+Params and captured structs are immutable, but rebinding a ptr-backed
+list to a `mut` local aliases the same storage — the arena idiom:
+
+```avra
+fn alloc_expr(self, e: Expr, span: Span?) -> ExprId {
+    mut nodes = self.exprs
+    nodes.push(e)
+    ExprId(nodes.length - 1)
+}
+```
+
+(Do NOT capture a `mut` struct in a closure — bs2 emits invalid IR;
+capture the `let` struct and go through a fn like this instead.)
 
 ## Comprehension as list copy
 

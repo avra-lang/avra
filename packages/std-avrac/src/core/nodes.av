@@ -1,0 +1,117 @@
+//! The language AST substrate: nodes in append-only arenas, addressed
+//! by typed ids. Children are ids, never boxed nodes. Every per-node
+//! fact — span, content fingerprint, later types — lives in a side
+//! table keyed by the id, so a node's identity is the hash of its
+//! structure alone: reformatting never changes a fingerprint.
+//!
+//! Ids are opaque: compared or looked up, never inspected. All
+//! allocation goes through the one `alloc_*` seam per arena, so
+//! interning can arrive without call-site churn.
+
+/// Typed index into the expression arena.
+export type ExprId = int
+
+/// Typed index into the statement arena.
+export type StmtId = int
+
+export enum BinOp { Add, Sub }
+
+export enum Expr {
+    IntLit(value: int)
+    Ident(name: string)
+    Binary(op: BinOp, left: ExprId, right: ExprId)
+    /// A parse failure's placeholder — the tree survives bad input.
+    Error
+}
+
+export enum Stmt {
+    Let(name: string, value: ExprId)
+    /// An expression at statement position.
+    ExprStmt(value: ExprId)
+    Error
+}
+
+/// The language AST's arenas plus their fingerprint side tables. A
+/// synthesized node's span is null.
+export type NodeStore = {
+    exprs: Arena<Expr>,
+    expr_fingerprints: List<int>,
+    stmts: Arena<Stmt>,
+    stmt_fingerprints: List<int>,
+}
+
+export fn new_node_store() -> NodeStore {
+    NodeStore {
+        exprs: new_arena<Expr>(), expr_fingerprints: [],
+        stmts: new_arena<Stmt>(), stmt_fingerprints: [],
+    }
+}
+
+impl NodeStore {
+    /// The one expression-allocation seam.
+    fn alloc_expr(self, e: Expr, span: Span?) -> ExprId {
+        mut fingerprints = self.expr_fingerprints
+        fingerprints.push(self.fingerprint_expr(e))
+        ExprId(self.exprs.add(e, span))
+    }
+
+    /// The one statement-allocation seam.
+    fn alloc_stmt(self, s: Stmt, span: Span?) -> StmtId {
+        mut fingerprints = self.stmt_fingerprints
+        fingerprints.push(self.fingerprint_stmt(s))
+        StmtId(self.stmts.add(s, span))
+    }
+
+    fn expr(self, id: ExprId) -> Expr { self.exprs.node_at(id.raw()) }
+    fn stmt(self, id: StmtId) -> Stmt { self.stmts.node_at(id.raw()) }
+    fn expr_span(self, id: ExprId) -> Span? { self.exprs.span_at(id.raw()) }
+    fn stmt_span(self, id: StmtId) -> Span? { self.stmts.span_at(id.raw()) }
+    fn expr_fingerprint(self, id: ExprId) -> int { self.expr_fingerprints[id.raw()] }
+    fn stmt_fingerprint(self, id: StmtId) -> int { self.stmt_fingerprints[id.raw()] }
+
+    /// Content identity: variant + payloads + child fingerprints.
+    /// Spans never participate.
+    fn fingerprint_expr(self, e: Expr) -> int {
+        match e {
+            .IntLit(value) -> fp_mix(1, value),
+            .Ident(name) -> fp_mix(2, fp_str(name)),
+            .Binary(op, left, right) ->
+                fp_mix(fp_mix(fp_mix(3, fp_binop(op)), self.expr_fingerprint(left)), self.expr_fingerprint(right)),
+            .Error -> 4,
+        }
+    }
+
+    fn fingerprint_stmt(self, s: Stmt) -> int {
+        match s {
+            .Let(name, value) -> fp_mix(fp_mix(5, fp_str(name)), self.expr_fingerprint(value)),
+            .ExprStmt(value) -> fp_mix(6, self.expr_fingerprint(value)),
+            .Error -> 7,
+        }
+    }
+}
+
+fn fp_binop(op: BinOp) -> int {
+    match op {
+        .Add -> 1,
+        .Sub -> 2,
+    }
+}
+
+/// In-process rolling hash; both operands normalized under a prime so
+/// mixing never overflows, negative payloads included. The crypto
+/// tier arrives with the on-disk cache.
+fn fp_mix(h: int, v: int) -> int {
+    mut nv = v % 1000000007
+    if nv < 0 { nv = nv + 1000000007 }
+    (h * 131 + nv + 7) % 1000000007
+}
+
+fn fp_str(s: string) -> int {
+    mut h = 0
+    mut i = 0
+    while i < s.length {
+        h = fp_mix(h, code_at(s, i))
+        i = i + 1
+    }
+    fp_mix(h, s.length)
+}

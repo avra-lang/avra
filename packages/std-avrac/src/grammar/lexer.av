@@ -1,5 +1,5 @@
-//! DSL text -> tokens, for `parse_grammar`. Five kinds: Name, Str, Op
-//! (single chars, `->`, and `@`-words), Break, Eof.
+//! DSL text -> tokens, for `parse_grammar`. Six kinds: Name, Num,
+//! Str, Op (single chars, `->`, and `@`-words), Break, Eof.
 //!
 //! The notation is line-structured: one rule per line. The lexer owns
 //! that layout — a newline becomes a Break token only where a rule can
@@ -11,10 +11,10 @@
 //! Lexing is error-tolerant: a bad character or unterminated string is
 //! recorded and lexing continues, so one pass reports everything.
 use core.{Span}
-use core.{code_at, is_space, is_name_start, is_name_cont}
+use core.{code_at, is_space, is_name_start, is_name_cont, is_digit}
 
 /// What a token is; Lit-vs-kind matching keys off this.
-export enum TokenKind { Name, Str, Op, Break, Eof }
+export enum TokenKind { Name, Num, Str, Op, Break, Eof }
 
 /// One DSL token. For Str, `text` is the unquoted, unescaped contents;
 /// the span covers the quotes.
@@ -115,6 +115,11 @@ fn scan_step(src: string, i: int) -> ScanStep {
         is_name_start(c) -> {
             let j = scan_while(src, i + 1, is_name_cont)
             emit(token(TokenKind.Name, src.substring(i, j), i, j), j)
+        }
+        // Number: a digit run; adjacent letters lex as their own Name.
+        is_digit(c) -> {
+            let j = scan_while(src, i + 1, is_digit)
+            emit(token(TokenKind.Num, src.substring(i, j), i, j), j)
         }
         // String: unquote and unescape.
         c == 34 -> scan_string(src, i)
