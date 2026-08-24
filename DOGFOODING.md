@@ -40,25 +40,25 @@ Complex bodies fail `it` inference — use an annotated param:
 
 ```avra
 type BreakCase = { src: string, breaks: int }
-let cases: List<BreakCase> = table {
+let cases = table<BreakCase> {
     src                    | breaks
     "a = b\n   | c\nd = e" | 2
     "\na = b"              | 1
 }
 ```
 
-Row type annotation is required (a typed `let` — field position is
-not enough). Use for pure data cases; keep named `then` blocks where
-per-case failure names matter. Cells hold fn VALUES and enum values
-too — a registry or an operator set is literally a table:
+The row type rides the literal (`table<Row>`) — the one form every
+compile mode accepts. Use for pure data cases; keep named `then`
+blocks where per-case failure names matter. Cells hold fn VALUES and
+enum values too — a registry or an operator set is literally a table:
 
 ```avra
-let rows: List<BuilderRow> = table {
+let rows = table<BuilderRow> {
     name          | build
     "int_lit"     | build_int_lit
     "fold_binary" | build_fold_binary
 }
-let ops: List<OpRow> = table {
+let ops = table<OpRow> {
     text | op
     "+"  | BinOp.Add
     "-"  | BinOp.Sub

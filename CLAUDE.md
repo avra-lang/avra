@@ -86,9 +86,9 @@ against these before writing; probe in scratch when unsure.
   arms, list elements, if-branches — fixed upstream), but a call whose
   N-evidence rides inside a struct argument still needs explicit `<N>`,
   as does any generic call made from inside a generic fn's body.
-- Table literals need a declared row type (`let x: List<Row> = table`)
-  — field position and component config pairs do not thread it
-  (F1042); the typed let is required.
+- Table literals carry their row type explicitly: `table<Row> { ... }`
+  — the only form ALL compile modes accept (lib-mode never threads a
+  typed let's row type, F1042).
 - `it` fails to infer in complex filter/map bodies — use an annotated
   closure param.
 - Present-bind (`let x ->`) in expression-position match loses its
@@ -121,7 +121,9 @@ against these before writing; probe in scratch when unsure.
   (probed: parse order does not save it) — so the keyword prefix is
   rent, not choice. Pairs NEWLINE-separated. Instantiation is a
   STATEMENT binding `inst`; in expression position it compiles to a
-  SILENT NULL. Bind, then return the name.
+  SILENT NULL. Bind, then return the name. Instantiation in
+  metadata-compiled TEST files fails resolve entirely — tests build
+  feature values through an in-package factory plus `with`.
 - Fn-typed arguments carry no `T`-evidence (F1002), and an explicit
   `<T>` pin over one corrupts scalar payloads through mono — never
   thread fn args through generics.

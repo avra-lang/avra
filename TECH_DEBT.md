@@ -44,6 +44,12 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       `LanguageFeature f { ... }` form cannot resolve cross-file.
       Drops to the bare form when our compiler owns component
       registration.
+- [ ] **[Low]** Component instantiation cannot resolve AT ALL in
+      metadata-compiled consumers (test files under the fast-path) —
+      the in-package `feature()` factory bridges, and its body IS the
+      instantiation, so the component stays the one construction
+      path. Fixtures instantiate directly again when the registry
+      crosses metadata or the clean compiler owns components.
 - [ ] **[Med]** The LANGUAGE shares the grammar-DSL lexer's scanner
       (`lex_source` owns only the line policy): the token shapes and
       operator set happen to cover the milestone subset. A real
@@ -95,17 +101,15 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       (forge-lang PR #1371, with a regression test); the pinned-helper
       workaround in `features/mod.av` dispatch is removed. Requires a
       bs2 built from that fix.
-- [ ] **[Med]** bs2's prebuild-failure reporter runs
-      `tail -n 8 $(grep -l ... | head -1)`; with no matching log the
-      substitution is empty and `tail` reads STDIN — an interactive
-      `bs2 test` hangs forever waiting on the keyboard. Workaround:
-      `< /dev/null`. One-line upstream fix (guard the empty match).
-- [ ] **[Med]** The @std prebuild fast-path and `bs2 run` typecheck
-      WITHOUT the table row-type threading that `bs2 test`'s
-      whole-program mode has — the library fails F1042 there, so every
-      test shard runs DEGRADED (~6000MB whole-program inlining instead
-      of ~1800MB metadata shards) and `bs2 run` cannot compile the
-      tree. An upstream fix also speeds the suite roughly 3x.
+- [x] bs2's prebuild-failure reporter ran a bare `tail $(...)` that
+      read STDIN when nothing matched — every interactive `bs2 test`
+      hung on the keyboard. Fixed upstream (forge-lang PR #1372); the
+      local bs2 build carries it.
+- [ ] **[Low]** Lib-mode (prebuild fast-path, `bs2 run`) does not
+      thread a typed let's row type into a table literal — the
+      explicit `table<Row> { ... }` form carries it in every mode and
+      is the house style. The threading gap remains an upstream
+      inconsistency worth closing.
 - [ ] **[Med]** Trait DEFAULT method bodies typecheck but ICE at
       codegen ("undefined method") — nothing materializes the default
       for an implementor. Shaped like a template-instantiation fix at
