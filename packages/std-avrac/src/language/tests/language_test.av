@@ -1,0 +1,44 @@
+// The driver seam: the canonical language assembles clean, programs
+// parse through one fn, recovery holes are VISIBLE Stmt.Error nodes,
+// and lex errors ride the same diagnostics list.
+use @std.avrac.language.{assemble, language_features, parse_source, parse_program}
+
+spec "language" {
+    given "the canonical language" {
+        then "it assembles with no defects" {
+            let lang = assemble(language_features())
+            lang.grammar != null && lang.diagnostics.length == 0
+        }
+    }
+    given "a well-formed program" {
+        then "lets and expression statements land in order" {
+            let p = parse_source("let x = 1 + y\nx")
+            let let_ok = match p.store.stmt(p.stmts[0]) {
+                .Let(name, _) -> name == "x",
+                .ExprStmt(_) -> false, .Error -> false,
+            }
+            p.diagnostics.length == 0 && p.stmts.length == 2 && let_ok &&
+                p.store.stmt(p.stmts[1]) is .ExprStmt
+        }
+    }
+    given "a broken statement between good ones" {
+        then "the hole is an explicit Error node, the neighbors are whole" {
+            let p = parse_source("let a = 1\nlet = 3\nlet y = 2")
+            let hole_ok = p.stmts.length == 3 && p.store.stmt(p.stmts[1]) is .Error
+            let tail_ok = if p.stmts.length == 3 {
+                match p.store.stmt(p.stmts[2]) {
+                    .Let(name, _) -> name == "y",
+                    .ExprStmt(_) -> false, .Error -> false,
+                }
+            } else { false }
+            p.diagnostics.length == 1 && hole_ok && tail_ok
+        }
+    }
+    given "a lex error" {
+        then "it joins the diagnostics and parsing continues" {
+            let p = parse_source("let a = 1\n$\nlet b = 2")
+            let lets = [s for s in p.stmts if p.store.stmt(s) is .Let]
+            p.diagnostics.length >= 1 && lets.length == 2
+        }
+    }
+}

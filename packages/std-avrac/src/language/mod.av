@@ -1,0 +1,91 @@
+//! The language driver: features -> one assembled grammar -> parsed
+//! programs. The single seam every consumer parses through — tests
+//! and `avra check` alike.
+use core.{NodeStore, new_node_store, Stmt, StmtId, Span, concat}
+use grammar.{
+    Captured, Diagnostic, Grammar, RunOutcome, parse_grammar, run_grammar,
+    lex_source, lex_diagnostic,
+}
+use features.{
+    LangNode, LanguageFeature, compose_text, dispatch, builder_defects,
+    list_at, stmt_id_at,
+}
+use features.stmt_spine.{stmt_spine}
+use features.let_stmt.{let_stmt}
+use features.expr_stmt.{expr_stmt}
+use features.expr_spine.{expr_spine}
+
+/// The Avra language: its features, in the order that defines it.
+export fn language_features() -> List<LanguageFeature> {
+    [stmt_spine(), let_stmt(), expr_stmt(), expr_spine()]
+}
+
+/// A feature set assembled once: composed, parsed, merged, and gated
+/// on grammar + builder coherence. `grammar` is null when assembly
+/// found defects — they are the diagnostics.
+export type Language = {
+    features: List<LanguageFeature>,
+    grammar: Grammar?,
+    diagnostics: List<Diagnostic>,
+}
+
+export fn assemble(features: List<LanguageFeature>) -> Language {
+    let gp = parse_grammar(compose_text(features).text)
+    if gp.grammar == null { return unassembled(features, gp.diagnostics) }
+    let g = gp.grammar!.merged()
+    let defects = concat(g.defects(), builder_defects(features, g))
+    if defects.length > 0 { return unassembled(features, defects) }
+    Language { features: features, grammar: g, diagnostics: [] }
+}
+
+/// Assembly refused: the defects are the language's diagnostics.
+fn unassembled(features: List<LanguageFeature>, diagnostics: List<Diagnostic>) -> Language {
+    Language { features: features, grammar: null, diagnostics: diagnostics }
+}
+
+/// One parsed source: the tree (holes included), and every diagnostic
+/// from lexing and parsing, in source order.
+export type ParsedProgram = {
+    store: NodeStore,
+    stmts: List<StmtId>,
+    diagnostics: List<Diagnostic>,
+}
+
+export fn parse_program(lang: Language, source: string) -> ParsedProgram {
+    match lang.grammar {
+        null -> ParsedProgram { store: new_node_store(), stmts: [], diagnostics: lang.diagnostics },
+        let g -> {
+            let lexed = lex_source(source)
+            let store = new_node_store()
+            let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> dispatch(lang.features, store, name, args, span)
+            let o = run_grammar<LangNode>(g, lexed.tokens, build)
+            ParsedProgram {
+                store: store,
+                stmts: program_stmts(store, o),
+                diagnostics: concat([lex_diagnostic(e) for e in lexed.errors], o.diagnostics),
+            }
+        }
+    }
+}
+
+/// The canonical language over one source.
+export fn parse_source(source: string) -> ParsedProgram {
+    parse_program(assemble(language_features()), source)
+}
+
+/// The program's statements in order. A recovery hole becomes an
+/// explicit Stmt.Error node — the tree survives bad input visibly.
+fn program_stmts(store: NodeStore, o: RunOutcome<LangNode>) -> List<StmtId> {
+    mut out: List<StmtId> = []
+    if o.result == null { return out }
+    let items = list_at([o.result!], 0)
+    for j in 0..items.length {
+        let sid: StmtId? = stmt_id_at(items, j)
+        if sid == null {
+            out.push(store.alloc_stmt(Stmt.Error, null))
+        } else {
+            out.push(sid!)
+        }
+    }
+    out
+}
