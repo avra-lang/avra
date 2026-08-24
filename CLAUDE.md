@@ -56,3 +56,35 @@ invariant it holds — no narration, no self-justification, no history.
 `packages/std-avrac/src/features/spec_test/` and `packages/std-cli/`
 exist only because the bs2 toolchain requires them. They are NOT
 reference code for anything — see spec_test's VENDORED.md.
+
+## bs2 subset notes
+
+Discovered gaps between the spec and the bootstrap compiler. Verify
+against these before writing; probe in scratch when unsure.
+
+- Function types are spelled `fn(int) -> bool`, not `(int) -> bool`.
+- `ref` and `none` are reserved words.
+- No `mut` parameters — in-place-mutating helpers are inexpressible.
+- Generics infer ONLY from direct call arguments: not sibling fields,
+  not return types, not across match arms. Pin with typed constructor
+  fns (`absent_val<N>()`) or explicit `f<N>(...)`.
+- Table literals need a declared row type (`let x: List<Row> = table`).
+- `it` fails to infer in complex filter/map bodies — use an annotated
+  closure param.
+- Present-bind (`let x ->`) in expression-position match can lose its
+  binding at codegen — restructure to `if k == null { } else { k! }`.
+- Matching `null`/`let x ->` directly on a nullable fn call's result
+  can mistype — bind to an annotated `let v: T? =` first.
+- Or-patterns (`.A | .B ->`) do not parse, despite being documented.
+- Struct destructuring in `let` (`let Sp { lo, hi } = s`) does not parse.
+- A struct literal directly inside a comprehension does not parse —
+  wrap the construction in a fn and comprehend over the call.
+- Comprehensions iterate lists only, not ranges.
+- Method calls on a `const` string fail at codegen.
+- Maps reject `m["k"]` indexing — use `.get(key)`, which returns `T?`.
+- `@comptime` folds only scalar int/bool bodies; struct/list-heavy code
+  fails to fold. (Compile-time seed validation waits on our own
+  compiler.)
+- Working and dogfooded: traits + `impl Trait for`, subjectless `when`
+  (with `_` arm), list comprehensions `[x for x in xs if p]`, pipe
+  `|>`, typed table literals, `with` on generics, cross-file `impl`.

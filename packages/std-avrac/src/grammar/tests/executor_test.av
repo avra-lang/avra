@@ -1,0 +1,175 @@
+// The engine's contracts, each proven on a toy grammar over the DSL
+// lexer's own token shapes. Builders render to S-expressions so every
+// outcome asserts as a plain string.
+use @std.avrac.grammar.{
+    Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect, Recover,
+    rule, seq, seq_to, item, cap, rule_ref, lit, named,
+    lex_grammar, Val, Diag, RunOutcome, run_grammar,
+}
+
+fn render(v: Val<string>) -> string {
+    match v {
+        .Tok(t) -> t.text,
+        .Node(n) -> n,
+        .Many(items) -> {
+            mut out = "["
+            mut first = true
+            for x in items {
+                if !first { out = "${out} " }
+                out = "${out}${render(x)}"
+                first = false
+            }
+            "${out}]"
+        }
+        .Absent -> "_",
+    }
+}
+
+fn sx_build(name: string, args: List<Val<string>>) -> Result<Val<string>, string> {
+    if name == "boom" { return Result.Err("boom") }
+    mut out = "(${name}"
+    for a in args { out = "${out} ${render(a)}" }
+    Result.Ok(Val.Node("${out})"))
+}
+
+fn run_sx(g: Grammar, src: string) -> RunOutcome<string> {
+    run_grammar<string>(g, lex_grammar(src).toks, sx_build)
+}
+
+fn result_str(o: RunOutcome<string>) -> string {
+    match o.result {
+        null -> "<none>",
+        let v -> render(v),
+    }
+}
+
+fn g1(rules: List<Rule>) -> Grammar {
+    Grammar { name: "t", start: rules[0].name, rules: rules }
+}
+
+spec "grammar/executor" {
+    given "sequencing, captures, and repetition" {
+        then "a starred capture accumulates into the build" {
+            let g = g1([rule("list", [seq_to(
+                [item(lit("(")), cap("xs", named("NAME")) with { rep: Rep.Star }, item(lit(")")), item(named("BREAK"))],
+                Build.Call("mk", ["xs"]),
+            )])])
+            let o = run_sx(g, "( a b c )")
+            result_str(o) == "(mk [a b c])" && o.diags.length == 0
+        }
+        then "the same label in and out of a repeated group accumulates in order" {
+            let g = g1([rule("l", [seq_to(
+                [
+                    cap("x", named("NAME")),
+                    item(Prim.Group(Alt { branches: [seq([item(lit(",")), cap("x", named("NAME"))])] }))
+                        with { rep: Rep.Star },
+                    item(named("BREAK")),
+                ],
+                Build.Call("mk", ["x"]),
+            )])])
+            result_str(run_sx(g, "a , b , c")) == "(mk [a b c])"
+        }
+        then "the same label on separate non-repeating items is last-wins" {
+            let g = g1([rule("d", [seq_to(
+                [cap("a", named("NAME")), cap("a", named("STRING")), item(named("BREAK"))],
+                Build.Call("mk", ["a"]),
+            )])])
+            result_str(run_sx(g, "x \"y\"")) == "(mk y)"
+        }
+        then "an untaken optional delivers Absent to the build" {
+            let g = g1([rule("p", [seq_to(
+                [
+                    item(Prim.Group(Alt { branches: [seq([cap("l", named("NAME")), item(lit(":"))])] }))
+                        with { rep: Rep.Opt },
+                    cap("v", named("NAME")), item(named("BREAK")),
+                ],
+                Build.Call("mk", ["l", "v"]),
+            )])])
+            result_str(run_sx(g, "x")) == "(mk _ x)" && result_str(run_sx(g, "k : v")) == "(mk k v)"
+        }
+        then "plus requires at least one" {
+            let g = g1([rule("pl", [seq_to(
+                [cap("xs", named("NAME")) with { rep: Rep.Plus }, item(named("BREAK"))],
+                Build.Call("mk", ["xs"]),
+            )])])
+            let o = run_sx(g, ",")
+            o.result == null && o.diags.length == 1
+        }
+    }
+    given "alternation" {
+        then "branches try in order and the first match wins" {
+            let g = g1([rule("x", [
+                seq_to([cap("a", named("NAME")), item(named("BREAK"))], Build.Call("as_name", ["a"])),
+                seq_to([cap("s", named("STRING")), item(named("BREAK"))], Build.Call("as_str", ["s"])),
+            ])])
+            result_str(run_sx(g, "\"hi\"")) == "(as_str hi)"
+        }
+        then "an anchored branch commits: siblings are not tried" {
+            let g = g1([rule("c", [
+                seq_to([item(lit("(")), cap("a", named("NAME")), item(lit(")")), item(named("BREAK"))], Build.Call("mk", ["a"])),
+                seq_to([item(lit("(")), cap("s", named("STRING")), item(lit(")")), item(named("BREAK"))], Build.Call("mk2", ["s"])),
+            ])])
+            let o = run_sx(g, "( \"s\" )")
+            o.result == null && o.diags.length == 1
+        }
+        then "quoted input is data: a Str token never matches a Lit" {
+            let g = g1([rule("ls", [seq_to([item(lit("(")), item(named("BREAK"))], Build.Call("mk", []))])])
+            run_sx(g, "\"(\"").result == null
+        }
+    }
+    given "world-class failure reporting" {
+        then "an uncommitted failure lists every expectation at the farthest point" {
+            let g = g1([rule("u", [
+                seq_to([item(lit("x")), item(named("BREAK"))], Build.Call("m1", [])),
+                seq_to([cap("s", named("STRING")), item(named("BREAK"))], Build.Call("m2", ["s"])),
+                seq_to([item(lit("(")), cap("v", named("NAME")), item(lit(")")), item(named("BREAK"))], Build.Call("m3", ["v"])),
+            ])])
+            let o = run_sx(g, "y")
+            let d = o.diags[0]
+            d.expected.length == 3 && d.in_rule == "u" &&
+                d.message == "expected `x`, STRING or `(` while parsing `u`"
+        }
+        then "an authored Expect reports its message and the parse continues" {
+            let g = g1([rule("q", [seq_to(
+                [
+                    item(lit("(")), cap("v", named("NAME")),
+                    item(lit(")")) with { expect: Expect { message: "expected ')' to close the group" } },
+                    item(named("BREAK")),
+                ],
+                Build.Call("mk", ["v"]),
+            )])])
+            let o = run_sx(g, "( a")
+            result_str(o) == "(mk a)" && o.diags.length == 1 &&
+                o.diags[0].message == "expected ')' to close the group"
+        }
+        then "recover syncs and the rest of the input still parses" {
+            let stmt = rule("stmt", [seq_to(
+                [cap("n", named("NAME")), item(lit("=")), cap("v", named("NAME")), item(named("BREAK"))],
+                Build.Call("st", ["n", "v"]),
+            ) with { recover: Recover { sync_to: "BREAK" } }])
+            let prog = rule("prog", [seq_to(
+                [cap("xs", rule_ref("stmt")) with { rep: Rep.Star }, item(named("EOF"))],
+                Build.Call("prog", ["xs"]),
+            )])
+            let g = Grammar { name: "t", start: "prog", rules: [prog, stmt] }
+            let o = run_sx(g, "a = b\nc = = d\ne = f")
+            result_str(o) == "(prog [(st a b) _ (st e f)])" && o.diags.length == 1 &&
+                o.diags[0].message == "expected NAME while parsing `stmt`"
+        }
+        then "trailing input reports but keeps the partial result" {
+            let g = g1([rule("t1", [seq_to([cap("v", named("NAME")), item(named("BREAK"))], Build.Call("mk", ["v"]))])])
+            let o = run_sx(g, "a\nb = c")
+            result_str(o) == "(mk a)" && o.diags.length == 1
+        }
+        then "a builder error is a committed diagnostic" {
+            let g = g1([rule("e", [seq_to([cap("v", named("NAME")), item(named("BREAK"))], Build.Call("boom", ["v"]))])])
+            let o = run_sx(g, "a")
+            o.result == null && o.diags[0].message == "builder failed: boom"
+        }
+        then "a defective grammar refuses to run" {
+            let g = g1([rule("bad", [seq([item(rule_ref("ghost"))])])])
+            let o = run_sx(g, "a")
+            o.result == null && o.diags.length == 1
+        }
+    }
+}

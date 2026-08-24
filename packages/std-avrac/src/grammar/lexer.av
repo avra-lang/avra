@@ -113,37 +113,40 @@ fn scan_string(src: string, i: int) -> Step {
 fn scan_step(src: string, i: int) -> Step {
     let n = src.length
     let c = code_at(src, i)
-    // Newline: raw Break, resolved to layout after the scan.
-    if c == 10 { return emit(tok(TokKind.Break, "", i, i + 1), i + 1) }
-    if is_space(c) { return skip(i + 1) }
-    // Name: idents and named terminals alike.
-    if is_name_start(c) {
-        let j = scan_while(src, i + 1, is_name_cont)
-        return emit(tok(TokKind.Name, src.substring(i, j), i, j), j)
+    when {
+        // Newline: raw Break, resolved to layout after the scan.
+        c == 10 -> emit(tok(TokKind.Break, "", i, i + 1), i + 1)
+        is_space(c) -> skip(i + 1)
+        // Name: idents and named terminals alike.
+        is_name_start(c) -> {
+            let j = scan_while(src, i + 1, is_name_cont)
+            emit(tok(TokKind.Name, src.substring(i, j), i, j), j)
+        }
+        // String: unquote and unescape.
+        c == 34 -> scan_string(src, i)
+        // `@`-word: one Op token (`@expect`, `@recover`).
+        c == 64 -> {
+            let j = scan_while(src, i + 1, is_name_cont)
+            if j == i + 1 { fail("expected a name after `@`", i, i + 1) }
+            else { emit(tok(TokKind.Op, src.substring(i, j), i, j), j) }
+        }
+        // `->` before any single-char op.
+        c == 45 && i + 1 < n && code_at(src, i + 1) == 62 ->
+            emit(tok(TokKind.Op, "->", i, i + 2), i + 2)
+        is_single_op(src.substring(i, i + 1)) ->
+            emit(tok(TokKind.Op, src.substring(i, i + 1), i, i + 1), i + 1)
+        _ -> fail("unexpected character", i, i + 1)
     }
-    // String: unquote and unescape.
-    if c == 34 { return scan_string(src, i) }
-    // `@`-word: one Op token (`@expect`, `@recover`).
-    if c == 64 {
-        let j = scan_while(src, i + 1, is_name_cont)
-        if j == i + 1 { return fail("expected a name after `@`", i, i + 1) }
-        return emit(tok(TokKind.Op, src.substring(i, j), i, j), j)
-    }
-    // `->` before any single-char op.
-    if c == 45 && i + 1 < n && code_at(src, i + 1) == 62 {
-        return emit(tok(TokKind.Op, "->", i, i + 2), i + 2)
-    }
-    let ch = src.substring(i, i + 1)
-    if is_single_op(ch) { return emit(tok(TokKind.Op, ch, i, i + 1), i + 1) }
-    fail("unexpected character", i, i + 1)
 }
 
 /// True where a rule may end: before `NAME =`, or at end of input.
 fn boundary_at(toks: List<Tok>, j: int) -> bool {
-    if j >= toks.length { return true }
-    if toks[j].kind != TokKind.Name { return false }
-    if j + 1 >= toks.length { return false }
-    toks[j + 1].kind == TokKind.Op && toks[j + 1].text == "="
+    when {
+        j >= toks.length -> true
+        toks[j].kind != TokKind.Name -> false
+        j + 1 >= toks.length -> false
+        _ -> toks[j + 1].kind == TokKind.Op && toks[j + 1].text == "="
+    }
 }
 
 /// Keep a newline only at a rule boundary; collapse runs; drop leading.

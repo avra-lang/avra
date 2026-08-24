@@ -1,0 +1,118 @@
+//! Grammar coherence: defects a grammar can carry that would otherwise
+//! surface later as confusing parse failures. The executor refuses to
+//! run a grammar with defects, so every check here is a guarantee the
+//! matcher can lean on.
+
+/// One coherence defect, attributed to the rule that carries it.
+export type GrammarDefect = { rule: string, message: string }
+
+/// The TokKind a terminal name denotes, or null for an unknown name.
+export fn term_kind(term: string) -> TokKind? {
+    match term {
+        "NAME" -> TokKind.Name,
+        "STRING" -> TokKind.Str,
+        "BREAK" -> TokKind.Break,
+        "EOF" -> TokKind.Eof,
+        _ -> null,
+    }
+}
+
+fn has(xs: List<string>, x: string) -> bool {
+    for v in xs { if v == x { return true } }
+    false
+}
+
+/// A branch's capture labels, including those inside nested groups —
+/// capture accumulation makes them all visible to the build.
+export fn seq_labels(s: Seq) -> List<string> {
+    mut out: List<string> = []
+    for member in s.items {
+        if member.label != null { out.push(member.label!) }
+        for l in prim_labels(member.prim) { out.push(l) }
+    }
+    out
+}
+
+fn prim_labels(p: Prim) -> List<string> {
+    match p {
+        .Group(inner) -> {
+            mut out: List<string> = []
+            for s in inner.branches {
+                for l in seq_labels(s) { out.push(l) }
+            }
+            out
+        }
+        .Ref(_) -> [],
+        .Lit(_) -> [],
+        .Named(_) -> [],
+    }
+}
+
+fn prim_defects(rule_name: string, p: Prim, names: List<string>, labeled: bool) -> List<GrammarDefect> {
+    match p {
+        .Ref(target) ->
+            if has(names, target) { [] }
+            else { [GrammarDefect { rule: rule_name, message: "references undefined rule `${target}`" }] },
+        .Named(term) ->
+            if term_kind(term) != null { [] }
+            else { [GrammarDefect { rule: rule_name, message: "unknown terminal `${term}`" }] },
+        .Lit(_) -> [],
+        // A labeled group is consumed for its value; an unlabeled one
+        // is structural (its value is Absent, its captures escape).
+        .Group(inner) -> alt_defects(rule_name, inner, names, labeled),
+    }
+}
+
+fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<GrammarDefect> {
+    mut out: List<GrammarDefect> = []
+    let labels = seq_labels(s)
+    match s.build {
+        null -> {
+            if value_needed && s.items.length != 1 {
+                out.push(GrammarDefect { rule: rule_name, message: "a branch without a build must have exactly one item to pass through" })
+            }
+        }
+        let b -> match b {
+            .Var(name) -> {
+                if !has(labels, name) {
+                    out.push(GrammarDefect { rule: rule_name, message: "build returns uncaptured label `${name}`" })
+                }
+            }
+            .Call(_, args) -> {
+                for a in args {
+                    if !has(labels, a) {
+                        out.push(GrammarDefect { rule: rule_name, message: "build argument `${a}` is not captured in its branch" })
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn alt_defects(rule_name: string, a: Alt, names: List<string>, value_needed: bool) -> List<GrammarDefect> {
+    mut out: List<GrammarDefect> = []
+    for s in a.branches {
+        for member in s.items {
+            for d in prim_defects(rule_name, member.prim, names, member.label != null) { out.push(d) }
+        }
+        for d in build_defects(rule_name, s, value_needed) { out.push(d) }
+    }
+    out
+}
+
+impl Grammar {
+    /// Every defect in this grammar; empty means the matcher's
+    /// assumptions all hold.
+    fn defects(self) -> List<GrammarDefect> {
+        let names = self.rules.map(it.name)
+        mut out: List<GrammarDefect> = []
+        if !has(names, self.start) {
+            out.push(GrammarDefect { rule: self.start, message: "start rule is not defined" })
+        }
+        for r in self.rules {
+            for d in alt_defects(r.name, r.body, names, true) { out.push(d) }
+        }
+        out
+    }
+}

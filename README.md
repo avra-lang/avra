@@ -41,3 +41,5 @@ root detection. Build byproducts (`*.avra-sha256`, `*.av.ll`, `build/`)
 are never committed.
 
 Known toolchain rent is tracked in TECH_DEBT.md.
+
+Dogfooding patterns for this tree: DOGFOODING.md.

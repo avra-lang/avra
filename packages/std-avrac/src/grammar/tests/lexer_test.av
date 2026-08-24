@@ -1,22 +1,19 @@
 use @std.avrac.core.{Span}
 use @std.avrac.grammar.{lex_grammar, Tok, TokKind, LexResult}
 
+/// One line-structure fixture: a source and its Break count.
+type BreakCase = { src: string, breaks: int }
+
 fn kinds_of(r: LexResult) -> List<TokKind> {
-    mut out: List<TokKind> = []
-    for t in r.toks { out.push(t.kind) }
-    out
+    [t.kind for t in r.toks]
 }
 
 fn count_breaks(r: LexResult) -> int {
-    mut n = 0
-    for t in r.toks { if t.kind == TokKind.Break { n = n + 1 } }
-    n
+    [t for t in r.toks if t.kind == TokKind.Break].length
 }
 
 fn op_texts(r: LexResult) -> List<string> {
-    mut out: List<string> = []
-    for t in r.toks { if t.kind == TokKind.Op { out.push(t.text) } }
-    out
+    [t.text for t in r.toks if t.kind == TokKind.Op]
 }
 
 spec "grammar/lexer" {
@@ -64,27 +61,25 @@ spec "grammar/lexer" {
         }
         then "an unterminated string reports and lexing continues" {
             let r = lex_grammar("a = \"oops\nb = c")
-            mut names: List<string> = []
-            for t in r.toks { if t.kind == TokKind.Name { names.push(t.text) } }
+            let names = [t.text for t in r.toks if t.kind == TokKind.Name]
             r.errors.length == 1 && names.length == 3 && names[1] == "b"
         }
     }
     given "line structure" {
-        then "a continuation line does not break the rule" {
-            let r = lex_grammar("a = b\n   | c\nd = e")
-            count_breaks(r) == 2
-        }
-        then "blank lines collapse to one Break" {
-            let r = lex_grammar("a = b\n\n\nc = d")
-            count_breaks(r) == 2
+        then "a Break appears exactly at rule boundaries" {
+            let cases: List<BreakCase> = table {
+                src                       | breaks
+                "a = b\n   | c\nd = e"    | 2
+                "a = b\n\n\nc = d"        | 2
+                "\na = b"                 | 1
+                "a = b\n    c\nd = e"     | 2
+                "a = b -> f\nc = d"       | 2
+            }
+            cases.filter((c: BreakCase) -> count_breaks(lex_grammar(c.src)) != c.breaks).length == 0
         }
         then "a leading newline is not a Break" {
             let r = lex_grammar("\na = b")
             r.toks[0].kind == TokKind.Name
-        }
-        then "a NAME continuation without = stays in the rule" {
-            let r = lex_grammar("a = b\n    c\nd = e")
-            count_breaks(r) == 2
         }
     }
 }

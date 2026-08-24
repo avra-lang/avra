@@ -1,103 +1,53 @@
-// Coherence of the grammar-of-grammars: references resolve, build args
-// are captured, the start rule exists. A defect here would otherwise
-// surface much later as a confusing executor failure.
-use @std.avrac.grammar.{Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, grammar_of_grammars}
-
-fn refs_of_prim(p: Prim) -> List<string> {
-    match p {
-        .Ref(rule) -> [rule],
-        .Lit(_) -> [],
-        .Named(_) -> [],
-        .Group(inner) -> refs_of_alt(inner),
-    }
-}
-
-fn refs_of_alt(a: Alt) -> List<string> {
-    mut out: List<string> = []
-    for s in a.branches {
-        for member in s.items {
-            for r in refs_of_prim(member.prim) { out.push(r) }
-        }
-    }
-    out
-}
-
-fn group_labels(p: Prim) -> List<string> {
-    match p {
-        .Group(inner) -> {
-            mut out: List<string> = []
-            for s in inner.branches {
-                for l in labels_of_seq(s) { out.push(l) }
-            }
-            out
-        }
-        .Ref(_) -> [],
-        .Lit(_) -> [],
-        .Named(_) -> [],
-    }
-}
-
-/// A branch's capture labels, including those inside nested groups —
-/// repeated-capture accumulation makes them all visible to the build.
-fn labels_of_seq(s: Seq) -> List<string> {
-    mut out: List<string> = []
-    for member in s.items {
-        if member.label != null { out.push(member.label!) }
-        for l in group_labels(member.prim) { out.push(l) }
-    }
-    out
-}
-
-fn has(xs: List<string>, x: string) -> bool {
-    for v in xs { if v == x { return true } }
-    false
-}
-
-fn defined_rules(g: Grammar) -> List<string> {
-    mut out: List<string> = []
-    for r in g.rules { out.push(r.name) }
-    out
+// The grammar-of-grammars must be defect-free, and validate_grammar
+// must actually catch each defect class.
+use @std.avrac.grammar.{
+    Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build,
+    grammar_of_grammars,
+    rule, seq, seq_to, item, cap, rule_ref, lit, named,
 }
 
 spec "grammar/seed" {
     given "the grammar-of-grammars" {
-        then "the start rule is defined" {
-            let g = grammar_of_grammars()
-            has(defined_rules(g), g.start)
+        then "the start rule is grammar" {
+            grammar_of_grammars().start == "grammar"
         }
         then "all nine notation rules are present" {
             grammar_of_grammars().rules.length == 9
         }
-        then "every rule reference resolves to a defined rule" {
-            let g = grammar_of_grammars()
-            let names = defined_rules(g)
-            mut ok = true
-            for r in g.rules {
-                for target in refs_of_alt(r.body) {
-                    if !has(names, target) { ok = false }
-                }
-            }
-            ok
+        then "it has zero coherence defects" {
+            grammar_of_grammars().defects().length == 0
         }
-        then "every build argument is captured in its own branch" {
-            let g = grammar_of_grammars()
-            mut ok = true
-            for r in g.rules {
-                for branch in r.body.branches {
-                    match branch.build {
-                        null -> {}
-                        let b -> match b {
-                            .Var(name) -> { if !has(labels_of_seq(branch), name) { ok = false } }
-                            .Call(_, args) -> {
-                                for a in args {
-                                    if !has(labels_of_seq(branch), a) { ok = false }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            ok
+    }
+    given "deliberately broken grammars" {
+        then "a dangling rule reference is a defect" {
+            let g = Grammar { name: "t", start: "a", rules: [
+                rule("a", [seq([item(rule_ref("ghost"))])]),
+            ] }
+            g.defects().length == 1
+        }
+        then "an unknown terminal is a defect" {
+            let g = Grammar { name: "t", start: "a", rules: [
+                rule("a", [seq([item(named("NUMBER"))])]),
+            ] }
+            g.defects().length == 1
+        }
+        then "a multi-item branch without a build is a defect" {
+            let g = Grammar { name: "t", start: "a", rules: [
+                rule("a", [seq([item(lit("x")), item(lit("y"))])]),
+            ] }
+            g.defects().length == 1
+        }
+        then "an uncaptured build argument is a defect" {
+            let g = Grammar { name: "t", start: "a", rules: [
+                rule("a", [seq_to([cap("x", named("NAME"))], Build.Call("mk", ["x", "ghost"]))]),
+            ] }
+            g.defects().length == 1
+        }
+        then "an undefined start rule is a defect" {
+            let g = Grammar { name: "t", start: "missing", rules: [
+                rule("a", [seq([item(named("NAME"))])]),
+            ] }
+            g.defects().length == 1
         }
     }
 }

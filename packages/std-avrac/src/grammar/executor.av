@@ -1,0 +1,449 @@
+//! The grammar engine: runs a Grammar over tokens, producing built
+//! values and structured diagnostics.
+//!
+//! Alternation is speculative only until a branch matches its first
+//! token — then the branch is COMMITTED: sibling branches are never
+//! tried, and failures inside it are real errors, reported where they
+//! happen (authored `Expect` messages first, panic-mode `Recover` sync
+//! second, propagation last). Branches of one rule must therefore not
+//! share a first token. Options and repetitions are SPECULATION
+//! BOUNDARIES: a committed failure inside one means not-taken or
+//! loop-end, surviving only as farthest-failure information.
+//! The engine tracks the farthest cursor any attempt reached and every
+//! terminal that would have matched there, so a failed parse reports
+//! "expected A, B or C while parsing `rule`".
+//!
+//! State threads functionally: a match returns its new state, so
+//! rolling back a speculative attempt is keeping the old one.
+//! Diagnostics are structured (span, expected set, rule); prose
+//! rendering is a projection.
+use core.{Span}
+
+/// What a builder receives and returns. The engine never looks inside
+/// `Node` — `N` belongs to whoever supplies the builders.
+export enum Val<N> {
+    /// A matched terminal.
+    Tok(t: Tok)
+    /// Whatever a builder constructed.
+    Node(n: N)
+    /// Accumulated repetition captures, in source order.
+    Many(items: List<Val<N>>)
+    /// An optional capture not taken, or a recovered error hole.
+    Absent
+}
+
+/// One structured parse diagnostic. `span` is null for defects that
+/// have no source anchor (grammar built from data).
+export type Diag = { message: string, span: Span?, expected: List<string>, in_rule: string }
+
+/// The parse outcome: a result when anything was built (partial trees
+/// included), plus every diagnostic from the run.
+export type RunOutcome<N> = { result: Val<N>?, diags: List<Diag> }
+
+/// One capture binding in a branch's scope.
+type Bind<N> = { label: string, val: Val<N> }
+
+/// Cursor plus capture scope; passed and returned, never mutated.
+type St<N> = { cursor: int, binds: List<Bind<N>> }
+
+/// The farthest point speculation reached: what would have matched
+/// there, inside which rule.
+type Far = { cursor: int, expected: List<string>, in_rule: string }
+
+/// One match attempt's outcome. On failure, `committed` says whether
+/// the failure is final (a committed branch broke) or speculative.
+type MRes<N> = { ok: bool, committed: bool, st: St<N>, val: Val<N>, diags: List<Diag>, far: Far? }
+
+/// Everything a match needs to see. `rules` indexes the grammar's
+/// rules by name, built once per run.
+type Ctx<N> = { g: Grammar, toks: List<Tok>, rules: Map<string, Rule>, build: fn(string, List<Val<N>>) -> Result<Val<N>, string> }
+
+/// Val.Absent with its type parameter pinned.
+fn absent_val<N>() -> Val<N> { Val.Absent }
+
+/// Val.Tok with its type parameter pinned.
+fn tok_val<N>(t: Tok) -> Val<N> { Val.Tok(t) }
+
+/// Val.Many with its type parameter pinned.
+fn many_val<N>(items: List<Val<N>>) -> Val<N> { Val.Many(items) }
+
+/// A state at `cursor` with `binds` in scope.
+fn st_at<N>(cursor: int, binds: List<Bind<N>>) -> St<N> {
+    St { cursor: cursor, binds: binds }
+}
+
+fn ok_res<N>(st: St<N>, v: Val<N>, diags: List<Diag>, far: Far?) -> MRes<N> {
+    let out: MRes<N> = MRes { ok: true, committed: true, st: st, val: v, diags: diags, far: far }
+    out
+}
+
+fn fail_res<N>(st: St<N>, committed: bool, diags: List<Diag>, far: Far?) -> MRes<N> {
+    let out: MRes<N> = MRes { ok: false, committed: committed, st: st, val: absent_val<N>(), diags: diags, far: far }
+    out
+}
+
+/// Deduplicating union of two expected sets.
+fn union_desc(a: List<string>, b: List<string>) -> List<string> {
+    mut out = [x for x in a]
+    for x in b { if !desc_has(out, x) { out.push(x) } }
+    out
+}
+
+fn desc_has(xs: List<string>, x: string) -> bool {
+    for v in xs { if v == x { return true } }
+    false
+}
+
+/// The deeper of two farthest points; a tie unions the expected sets.
+fn far_merge(a: Far?, b: Far?) -> Far? {
+    match a {
+        null -> b,
+        let fa -> match b {
+            null -> a,
+            let fb -> when {
+                fa.cursor > fb.cursor -> a
+                fb.cursor > fa.cursor -> b
+                _ -> Far { cursor: fa.cursor, expected: union_desc(fa.expected, fb.expected), in_rule: fa.in_rule }
+            },
+        },
+    }
+}
+
+/// How a prim reads in an "expected ..." message.
+fn prim_desc(p: Prim) -> string {
+    match p {
+        .Lit(text) -> "`${text}`",
+        .Named(term) -> term,
+        .Ref(target) -> "a ${target}",
+        .Group(_) -> "one of the group",
+    }
+}
+
+/// "A", "A or B", "A, B or C".
+fn join_desc(xs: List<string>) -> string {
+    if xs.length == 0 { return "input" }
+    if xs.length == 1 { return xs[0] }
+    mut out = xs[0]
+    for i in 1..xs.length - 1 { out = "${out}, ${xs[i]}" }
+    "${out} or ${xs[xs.length - 1]}"
+}
+
+/// Append with copy, so a rolled-back attempt cannot have mutated a
+/// list an earlier snapshot still references.
+fn accumulate<N>(prev: Val<N>, v: Val<N>) -> Val<N> {
+    match prev {
+        .Many(items) -> {
+            mut xs = [x for x in items]
+            xs.push(v)
+            Val.Many(xs)
+        }
+        .Tok(t) -> {
+            let first: Val<N> = Val.Tok(t)
+            Val.Many([first, v])
+        }
+        .Node(n) -> {
+            let first: Val<N> = Val.Node(n)
+            Val.Many([first, v])
+        }
+        .Absent -> Val.Many([v]),
+    }
+}
+
+/// A new scope with `label` bound: accumulating inside repetitions,
+/// last-wins otherwise.
+fn bind<N>(binds: List<Bind<N>>, label: string, v: Val<N>, acc: bool) -> List<Bind<N>> {
+    mut out: List<Bind<N>> = []
+    mut found = false
+    for b in binds {
+        if b.label == label {
+            found = true
+            let nv = if acc { accumulate<N>(b.val, v) } else { v }
+            let nb: Bind<N> = Bind { label: label, val: nv }
+            out.push(nb)
+        } else {
+            out.push(b)
+        }
+    }
+    if !found {
+        let nb: Bind<N> = Bind { label: label, val: v }
+        out.push(nb)
+    }
+    out
+}
+
+fn lookup<N>(binds: List<Bind<N>>, label: string) -> Val<N>? {
+    for b in binds { if b.label == label { return b.val } }
+    null
+}
+
+/// Skip to just past the sync target: an uppercase known terminal
+/// syncs by kind, anything else by text. Stops at Eof.
+fn sync_cursor<N>(cx: Ctx<N>, target: string, from: int) -> int {
+    let k = term_kind(target)
+    mut i = from
+    while cx.toks[i].kind != TokKind.Eof {
+        let t = cx.toks[i]
+        mut hit = false
+        if k == null {
+            hit = t.kind != TokKind.Str && t.text == target
+        } else {
+            hit = t.kind == k!
+        }
+        if hit { return i + 1 }
+        i = i + 1
+    }
+    i
+}
+
+fn match_rule<N>(cx: Ctx<N>, name: string, cursor: int) -> MRes<N> {
+    let st0: St<N> = st_at<N>(cursor, [])
+    let found: Rule? = cx.rules.get(name)
+    match found {
+        null -> fail_res<N>(st0, true,
+            [Diag { message: "undefined rule `${name}`", span: null, expected: [], in_rule: name }], null),
+        let rl -> match_alt<N>(cx, name, rl.body, st0, false),
+    }
+}
+
+/// Branches tried top to bottom; the first success or committed
+/// failure wins. A wholly-uncommitted failure carries the merged
+/// farthest point of every branch.
+fn match_alt<N>(cx: Ctx<N>, rule_name: string, a: Alt, st: St<N>, acc: bool) -> MRes<N> {
+    mut far: Far? = null
+    for br in a.branches {
+        let r = match_seq<N>(cx, rule_name, br, st, acc)
+        far = far_merge(far, r.far)
+        if r.ok || r.committed { return r with { far: far } }
+    }
+    fail_res<N>(st, false, [], far)
+}
+
+/// The diagnostic for a failure inside a committed branch, preferring
+/// the failed sub-match's own farthest point.
+fn committed_diag<N>(cx: Ctx<N>, rule_name: string, member: Item, r: MRes<N>, st: St<N>) -> Diag {
+    match r.far {
+        null -> Diag {
+            message: "expected ${prim_desc(member.prim)} while parsing `${rule_name}`",
+            span: cx.toks[st.cursor].span, expected: [prim_desc(member.prim)], in_rule: rule_name,
+        },
+        let f -> Diag {
+            message: "expected ${join_desc(f.expected)} while parsing `${f.in_rule}`",
+            span: cx.toks[f.cursor].span, expected: f.expected, in_rule: f.in_rule,
+        },
+    }
+}
+
+fn match_seq<N>(cx: Ctx<N>, rule_name: string, s: Seq, st0: St<N>, acc: bool) -> MRes<N> {
+    mut st = st0
+    mut vals: List<Val<N>> = []
+    mut diags: List<Diag> = []
+    mut far: Far? = null
+    mut anchored = false
+    for member in s.items {
+        let r = match_item<N>(cx, rule_name, member, st, acc)
+        far = far_merge(far, r.far)
+        if r.ok {
+            for d in r.diags { diags.push(d) }
+            if r.st.cursor > st.cursor { anchored = true }
+            st = r.st
+            vals.push(r.val)
+            continue
+        }
+        if r.committed {
+            for d in r.diags { diags.push(d) }
+            return fail_res<N>(st, true, diags, far)
+        }
+        if !anchored { return fail_res<N>(st0, false, diags, far) }
+        // Committed territory: this failure is real.
+        if member.expect != null {
+            diags.push(Diag {
+                message: member.expect!.message,
+                span: cx.toks[st.cursor].span,
+                expected: [prim_desc(member.prim)], in_rule: rule_name,
+            })
+            if member.label != null {
+                st = st_at<N>(st.cursor, bind<N>(st.binds, member.label!, absent_val<N>(), acc))
+            }
+            vals.push(absent_val<N>())
+            continue
+        }
+        diags.push(committed_diag<N>(cx, rule_name, member, r, st))
+        match s.recover {
+            null -> { return fail_res<N>(st, true, diags, far) }
+            let rec -> {
+                let c = sync_cursor<N>(cx, rec.sync_to, st.cursor)
+                return ok_res<N>(st_at<N>(c, st.binds), absent_val<N>(), diags, far)
+            }
+        }
+    }
+    // Build phase.
+    let built: Result<Val<N>, string> = match s.build {
+        null -> built_ok<N>(vals[0]),
+        let b -> match b {
+            .Var(name) -> built_ok<N>(lookup<N>(st.binds, name) ?? absent_val<N>()),
+            .Call(name, args) -> {
+                mut argv: List<Val<N>> = []
+                for a in args { argv.push(lookup<N>(st.binds, a) ?? absent_val<N>()) }
+                cx.build(name, argv)
+            }
+        }
+    }
+    match built {
+        .Ok(v) -> ok_res<N>(st, v, diags, far),
+        .Err(m) -> {
+            diags.push(Diag { message: "builder failed: ${m}", span: cx.toks[st.cursor].span, expected: [], in_rule: rule_name })
+            fail_res<N>(st, true, diags, far)
+        }
+    }
+}
+
+/// A successful build result, with both Result parameters pinned.
+fn built_ok<N>(v: Val<N>) -> Result<Val<N>, string> {
+    Result.Ok(v)
+}
+
+/// The result of one prim match with this item's label bound.
+fn bound<N>(member: Item, r: MRes<N>, acc: bool) -> MRes<N> {
+    match member.label {
+        null -> r,
+        let l -> r with { st: st_at<N>(r.st.cursor, bind<N>(r.st.binds, l, r.val, acc)) },
+    }
+}
+
+fn match_item<N>(cx: Ctx<N>, rule_name: string, member: Item, st: St<N>, acc: bool) -> MRes<N> {
+    match member.rep {
+        .One -> {
+            let r = match_prim<N>(cx, rule_name, member, st, acc)
+            if !r.ok { return r }
+            bound<N>(member, r, acc)
+        }
+        .Opt -> {
+            // An option is a speculation boundary: even a committed
+            // sub-failure means not-taken, surviving only in `far`.
+            let r = match_prim<N>(cx, rule_name, member, st, acc)
+            if r.ok { return bound<N>(member, r, acc) }
+            ok_res<N>(st, absent_val<N>(), [], r.far)
+        }
+        .Star -> rep_loop<N>(cx, rule_name, member, st, 0),
+        .Plus -> rep_loop<N>(cx, rule_name, member, st, 1),
+    }
+}
+
+/// Greedy repetition: iterations are speculative (an uncommitted
+/// iteration failure ends the loop cleanly), committed failures
+/// propagate, and every iteration must consume input.
+fn rep_loop<N>(cx: Ctx<N>, rule_name: string, member: Item, st0: St<N>, min: int) -> MRes<N> {
+    mut st = st0
+    mut collected: List<Val<N>> = []
+    mut diags: List<Diag> = []
+    mut far: Far? = null
+    mut count = 0
+    mut going = true
+    while going {
+        let r = match_prim<N>(cx, rule_name, member, st, true)
+        far = far_merge(far, r.far)
+        // A repetition is a speculation boundary: a failed iteration
+        // (committed included) ends the loop; its story lives in `far`.
+        if !r.ok {
+            going = false
+            continue
+        }
+        if r.st.cursor == st.cursor {
+            diags.push(Diag { message: "repetition matched without consuming input; stopped", span: null, expected: [], in_rule: rule_name })
+            going = false
+            continue
+        }
+        for d in r.diags { diags.push(d) }
+        collected.push(r.val)
+        mut nb = r.st.binds
+        if member.label != null { nb = bind<N>(nb, member.label!, r.val, true) }
+        st = st_at<N>(r.st.cursor, nb)
+        count = count + 1
+    }
+    if count < min { return fail_res<N>(st0, false, diags, far) }
+    ok_res<N>(st, many_val<N>(collected), diags, far)
+}
+
+fn match_prim<N>(cx: Ctx<N>, rule_name: string, member: Item, st: St<N>, acc: bool) -> MRes<N> {
+    match member.prim {
+        .Lit(text) -> {
+            let t = cx.toks[st.cursor]
+            // Quoted input text is data, never syntax.
+            if t.kind != TokKind.Str && t.kind != TokKind.Eof && t.text == text {
+                ok_res<N>(st_at<N>(st.cursor + 1, st.binds), tok_val<N>(t), [], null)
+            } else {
+                fail_res<N>(st, false, [], Far { cursor: st.cursor, expected: ["`${text}`"], in_rule: rule_name })
+            }
+        }
+        .Named(term) -> {
+            let t = cx.toks[st.cursor]
+            let k = term_kind(term)
+            if k != null && t.kind == k! {
+                // Eof is a position, not a token: match without consuming.
+                let step = if t.kind == TokKind.Eof { 0 } else { 1 }
+                ok_res<N>(st_at<N>(st.cursor + step, st.binds), tok_val<N>(t), [], null)
+            } else {
+                fail_res<N>(st, false, [], Far { cursor: st.cursor, expected: [term], in_rule: rule_name })
+            }
+        }
+        .Ref(target) -> {
+            let r = match_rule<N>(cx, target, st.cursor)
+            if r.ok {
+                ok_res<N>(st_at<N>(r.st.cursor, st.binds), r.val, r.diags, r.far)
+            } else {
+                let out: MRes<N> = MRes { ok: false, committed: r.committed, st: st, val: absent_val<N>(), diags: r.diags, far: r.far }
+                out
+            }
+        }
+        .Group(inner) -> {
+            // Captures inside a group escape to the branch's scope; the
+            // group's own value exists only when the item is labeled.
+            let r = match_alt<N>(cx, rule_name, inner, st, acc)
+            if !r.ok { return r }
+            let v = if member.label != null { r.val } else { absent_val<N>() }
+            r with { ok: true, val: v }
+        }
+    }
+}
+
+/// The final diagnostic when the whole parse failed silently — the
+/// farthest point speculation reached, or a generic failure.
+fn final_diag<N>(cx: Ctx<N>, r: MRes<N>) -> Diag {
+    match r.far {
+        null -> Diag { message: "cannot parse `${cx.g.start}`", span: cx.toks[0].span, expected: [], in_rule: cx.g.start },
+        let f -> Diag {
+            message: "expected ${join_desc(f.expected)} while parsing `${f.in_rule}`",
+            span: cx.toks[f.cursor].span, expected: f.expected, in_rule: f.in_rule,
+        },
+    }
+}
+
+/// Run `g` over `toks`. A defective grammar refuses to run; a failed
+/// parse still reports every diagnostic gathered; a partial result
+/// (error holes inside) is a result.
+export fn run_grammar<N>(g: Grammar, toks: List<Tok>, build: fn(string, List<Val<N>>) -> Result<Val<N>, string>) -> RunOutcome<N> {
+    let defects = g.defects()
+    if defects.length > 0 {
+        mut diags: List<Diag> = []
+        for d in defects {
+            diags.push(Diag { message: "grammar defect in `${d.rule}`: ${d.message}", span: null, expected: [], in_rule: d.rule })
+        }
+        let refused: RunOutcome<N> = RunOutcome { result: null, diags: diags }
+        return refused
+    }
+    mut rules: Map<string, Rule> = {}
+    for r in g.rules { rules.set(r.name, r) }
+    let cx: Ctx<N> = Ctx { g: g, toks: toks, rules: rules, build: build }
+    let r = match_rule<N>(cx, g.start, 0)
+    mut diags = [d for d in r.diags]
+    if !r.ok {
+        if diags.length == 0 { diags.push(final_diag<N>(cx, r)) }
+        let failed: RunOutcome<N> = RunOutcome { result: null, diags: diags }
+        return failed
+    }
+    if cx.toks[r.st.cursor].kind != TokKind.Eof {
+        diags.push(Diag { message: "unexpected input after `${g.start}`", span: cx.toks[r.st.cursor].span, expected: [], in_rule: g.start })
+    }
+    let out: RunOutcome<N> = RunOutcome { result: r.val, diags: diags }
+    out
+}
