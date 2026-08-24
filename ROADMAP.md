@@ -28,7 +28,7 @@ real scale; the design sources of truth live in
       registered per feature and duplicate-gated at assembly
 - [x] Rendering: per-file line index (byte spans -> line/col only at
       render), the miette-shaped renderer, golden rendering tests
-- [ ] Driver projection: engine diagnostics -> Diag, with the
+- [x] Driver projection: engine diagnostics -> Diag, with the
       unregistered-kind validation net
 - [ ] `avra check` CLI over the driver
 - [ ] Resolve pass — the first pure query: definition-site symbols,

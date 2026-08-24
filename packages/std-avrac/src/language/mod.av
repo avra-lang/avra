@@ -1,7 +1,7 @@
 //! The language driver: features -> one assembled grammar -> parsed
 //! programs. The single seam every consumer parses through — tests
 //! and `avra check` alike.
-use core.{NodeStore, new_node_store, Stmt, StmtId, Span, concat}
+use core.{NodeStore, new_node_store, Stmt, StmtId, Span, concat, joined}
 use grammar.{
     Captured, Diagnostic, Grammar, RunOutcome, parse_grammar, run_grammar,
     lex_source, lex_diagnostic,
@@ -10,7 +10,7 @@ use features.{
     LangNode, LanguageFeature, compose_text, dispatch, builder_defects,
     code_defects, list_at, stmt_id_at,
 }
-use diagnostics.{DiagCode, builtin_codes}
+use diagnostics.{Diag, DiagCode, SourceFile, new_source_file, render}
 use features.stmt_spine.{stmt_spine}
 use features.let_stmt.{let_stmt}
 use features.expr_stmt.{expr_stmt}
@@ -28,7 +28,7 @@ export type Language = {
     features: List<LanguageFeature>,
     grammar: Grammar?,
     codes: List<DiagCode>,
-    diagnostics: List<Diagnostic>,
+    diagnostics: List<Diag>,
 }
 
 export fn assemble(features: List<LanguageFeature>) -> Language {
@@ -41,9 +41,10 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     Language { features: features, grammar: g, codes: codes, diagnostics: [] }
 }
 
-/// Assembly refused: the defects are the language's diagnostics.
-fn unassembled(features: List<LanguageFeature>, diagnostics: List<Diagnostic>) -> Language {
-    Language { features: features, grammar: null, codes: [], diagnostics: diagnostics }
+/// Assembly refused: the defects, projected, are the language's
+/// diagnostics.
+fn unassembled(features: List<LanguageFeature>, defects: List<Diagnostic>) -> Language {
+    Language { features: features, grammar: null, codes: [], diagnostics: as_defects(defects) }
 }
 
 /// Built-in codes plus every feature's registered codes, in feature
@@ -59,10 +60,10 @@ fn code_registry(features: List<LanguageFeature>) -> List<DiagCode> {
 export type ParsedProgram = {
     store: NodeStore,
     stmts: List<StmtId>,
-    diagnostics: List<Diagnostic>,
+    diagnostics: List<Diag>,
 }
 
-export fn parse_program(lang: Language, source: string) -> ParsedProgram {
+export fn parse_program(lang: Language, file: string?, source: string) -> ParsedProgram {
     match lang.grammar {
         null -> ParsedProgram { store: new_node_store(), stmts: [], diagnostics: lang.diagnostics },
         let g -> {
@@ -70,10 +71,11 @@ export fn parse_program(lang: Language, source: string) -> ParsedProgram {
             let store = new_node_store()
             let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> dispatch(lang.features, store, name, args, span)
             let o = run_grammar<LangNode>(g, lexed.tokens, build)
+            let engine = concat([lex_diagnostic(e) for e in lexed.errors], o.diagnostics)
             ParsedProgram {
                 store: store,
                 stmts: program_stmts(store, o),
-                diagnostics: concat([lex_diagnostic(e) for e in lexed.errors], o.diagnostics),
+                diagnostics: project_all(engine, file, lang.codes),
             }
         }
     }
@@ -81,7 +83,21 @@ export fn parse_program(lang: Language, source: string) -> ParsedProgram {
 
 /// The canonical language over one source.
 export fn parse_source(source: string) -> ParsedProgram {
-    parse_program(assemble(language_features()), source)
+    parse_program(assemble(language_features()), null, source)
+}
+
+impl Language {
+    /// One diagnostic as terminal text.
+    fn render(self, d: Diag, src: SourceFile) -> string {
+        render(d, self.codes, src)
+    }
+
+    /// Everything wrong with one source, rendered; "" means clean.
+    fn check(self, file: string?, source: string) -> string {
+        let p = parse_program(self, file, source)
+        let src = new_source_file(source)
+        joined([self.render(d, src) for d in p.diagnostics], "\n\n")
+    }
 }
 
 /// The program's statements in order. A recovery hole becomes an

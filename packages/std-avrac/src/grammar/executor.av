@@ -179,7 +179,7 @@ fn match_rule<N>(cx: MatchContext<N>, name: string, cursor: int) -> MatchResult<
     let found: Rule? = cx.rules.get(name)
     match found {
         null -> broke<N>(entry_state,
-            [Diagnostic { message: "undefined rule `${name}`", span: null, expected: [], in_rule: name }], null),
+            [Diagnostic { cause: Cause.Defect, message: "undefined rule `${name}`", span: null, expected: [], in_rule: name }], null),
         let rl -> match_alt<N>(cx, name, rl.body, entry_state, false),
     }
 }
@@ -202,6 +202,7 @@ fn match_alt<N>(cx: MatchContext<N>, rule_name: string, a: Alt, state: MatchStat
 /// "expected A, B or C while parsing `rule`" from a farthest point.
 fn farthest_diagnostic<N>(cx: MatchContext<N>, f: FarthestFailure) -> Diagnostic {
     Diagnostic {
+        cause: Cause.Expected,
         message: "expected ${join_expected(f.expected)} while parsing `${f.in_rule}`",
         span: cx.tokens[f.cursor].span, expected: f.expected, in_rule: f.in_rule,
     }
@@ -239,6 +240,7 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq, entry_state: Mat
         // Committed territory: this failure is real.
         if member.expect != null {
             diagnostics.push(Diagnostic {
+                cause: Cause.Expected,
                 message: member.expect!.message,
                 span: cx.tokens[state.cursor].span,
                 expected: [describe_prim(member.prim)], in_rule: rule_name,
@@ -273,7 +275,7 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq, entry_state: Mat
     match built {
         .Ok(v) -> matched<N>(state, v, diagnostics, farthest),
         .Err(m) -> {
-            diagnostics.push(Diagnostic { message: "builder failed: ${m}", span: branch ?? cx.tokens[state.cursor].span, expected: [], in_rule: rule_name })
+            diagnostics.push(Diagnostic { cause: Cause.Builder, message: "builder failed: ${m}", span: branch ?? cx.tokens[state.cursor].span, expected: [], in_rule: rule_name })
             fatal_defect<N>(state, diagnostics, farthest)
         }
     }
@@ -342,7 +344,7 @@ fn match_repetition<N>(cx: MatchContext<N>, rule_name: string, member: Item, ent
             continue
         }
         if r.state.cursor == state.cursor {
-            diagnostics.push(Diagnostic { message: "repetition matched without consuming input; stopped", span: null, expected: [], in_rule: rule_name })
+            diagnostics.push(Diagnostic { cause: Cause.Defect, message: "repetition matched without consuming input; stopped", span: null, expected: [], in_rule: rule_name })
             going = false
             continue
         }
@@ -402,7 +404,7 @@ fn match_prim<N>(cx: MatchContext<N>, rule_name: string, member: Item, state: Ma
 /// farthest point speculation reached, or a generic failure.
 fn overall_failure<N>(cx: MatchContext<N>, r: MatchResult<N>) -> Diagnostic {
     match r.farthest {
-        null -> Diagnostic { message: "cannot parse `${cx.g.start}`", span: cx.tokens[0].span, expected: [], in_rule: cx.g.start },
+        null -> Diagnostic { cause: Cause.Expected, message: "cannot parse `${cx.g.start}`", span: cx.tokens[0].span, expected: [], in_rule: cx.g.start },
         let f -> farthest_diagnostic<N>(cx, f),
     }
 }
@@ -427,7 +429,7 @@ export fn run_grammar<N>(g: Grammar, tokens: List<Token>, build: fn(string, List
         return failed
     }
     if cx.tokens[r.state.cursor].kind != TokenKind.Eof {
-        diagnostics.push(Diagnostic { message: "unexpected input after `${g.start}`", span: cx.tokens[r.state.cursor].span, expected: [], in_rule: g.start })
+        diagnostics.push(Diagnostic { cause: Cause.Trailing, message: "unexpected input after `${g.start}`", span: cx.tokens[r.state.cursor].span, expected: [], in_rule: g.start })
     }
     RunOutcome { result: r.value, diagnostics: diagnostics }
 }

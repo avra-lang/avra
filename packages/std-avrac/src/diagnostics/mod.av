@@ -2,20 +2,17 @@
 //! marks, a severity, and remedies. Structured first (P11); rendering
 //! is a projection. A diagnostic names its KIND; the F-code is the
 //! registry's projection of that kind (codes.av).
-use @std.errors.{Loc, Confidence, Edit, Suggestion, Error, ErrorInfo, info}
+use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion, Error, ErrorInfo, info}
 
 export enum Severity { Error, Warning }
 
-/// A located annotation: where, and what to say there.
-export type Mark = { loc: Loc, label: string? }
-
 /// One diagnostic. `primary` is null for problems with no source
-/// anchor; `secondary` marks carry the supporting positions.
+/// anchor; `secondary` frames carry the supporting positions.
 export type Diag = {
     kind: string,
     severity: Severity,
-    primary: Mark?,
-    secondary: List<Mark>,
+    primary: Frame?,
+    secondary: List<Frame>,
     message: string,
     help: string?,
     suggestions: List<Suggestion>,
@@ -42,9 +39,9 @@ export fn code_for(codes: List<DiagCode>, kind: string) -> string? {
 /// An error at a source position; the common construction. Extend
 /// with `with { help: ..., suggestions: ... }`.
 export fn error_at(kind: string, loc: Loc?, message: string) -> Diag {
-    let primary: Mark? = match loc {
+    let primary: Frame? = match loc {
         null -> null,
-        let l -> Mark { loc: l, label: null },
+        let l -> Frame { label: null, loc: l },
     }
     Diag {
         kind: kind,

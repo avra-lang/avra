@@ -24,14 +24,27 @@ spec "language" {
         then "it assembles with no defects and the builtin registry" {
             let lang = assemble(language_features())
             lang.grammar != null && lang.diagnostics.length == 0 &&
-                lang.codes.length == 5
+                lang.codes.length == 5 && lang.codes[1].kind == "parse.expected" &&
+                lang.codes[1].id == "F0100"
         }
         then "a feature registering a taken kind refuses assembly" {
             mut feats = [f for f in language_features()]
             feats.push(clashing())
             let lang = assemble(feats)
             lang.grammar == null && lang.diagnostics.length == 1 &&
-                lang.diagnostics[0].in_rule == "lex.error"
+                lang.diagnostics[0].kind == "language.defect" &&
+                lang.diagnostics[0].message == "`lex.error`: diagnostic kind is registered more than once"
+        }
+        then "a real parse error checks end to end" {
+            let lang = assemble(language_features())
+            let expected = """error[F0100]: expected NAME while parsing `stmt`
+  ╭─[app.av:2:5]
+2 │ let = 3
+  ·     ┬
+  ·     ╰──
+──╯"""
+            lang.check("app.av", "let a = 1\nlet = 3") == expected &&
+                lang.check(null, "let a = 1") == ""
         }
     }
     given "a well-formed program" {

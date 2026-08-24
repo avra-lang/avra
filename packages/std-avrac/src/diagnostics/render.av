@@ -9,6 +9,7 @@
 //!   ──╯
 //!   help: a `let` names its value
 use core.{joined}
+use @std.errors.{Loc}
 
 fn severity_word(s: Severity) -> string {
     match s {
@@ -27,15 +28,15 @@ fn repeated(s: string, n: int) -> string {
     out
 }
 
-/// The source window for one mark: location header, the line, and the
-/// pointer carrying the mark's label when it has one.
-fn window(m: Mark, src: SourceFile) -> string {
-    let at = src.linecol(m.loc.lo)
-    let file = m.loc.file ?? "<source>"
+/// The source window for one located frame: location header, the
+/// line, and the pointer carrying the frame's label when it has one.
+fn window(at_loc: Loc, frame_label: string?, src: SourceFile) -> string {
+    let at = src.linecol(at_loc.lo)
+    let file = at_loc.file ?? "<source>"
     let num = "${at.line}"
     let gutter = repeated(" ", num.length)
     let indent = repeated(" ", at.col - 1)
-    let label = match m.label {
+    let label = match frame_label {
         null -> "",
         let l -> " ${l}",
     }
@@ -54,7 +55,9 @@ fn window(m: Mark, src: SourceFile) -> string {
 export fn render(d: Diag, codes: List<DiagCode>, src: SourceFile) -> string {
     let code = code_for(codes, d.kind) ?? d.kind
     mut parts = ["${severity_word(d.severity)}[${code}]: ${d.message}"]
-    if d.primary != null { parts.push(window(d.primary!, src)) }
+    if d.primary != null && d.primary!.loc != null {
+        parts.push(window(d.primary!.loc!, d.primary!.label, src))
+    }
     if d.help != null { parts.push("help: ${d.help!}") }
     joined(parts, "\n")
 }

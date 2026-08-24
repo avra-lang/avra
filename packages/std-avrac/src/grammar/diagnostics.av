@@ -4,13 +4,17 @@
 use core.{Span}
 use core.{contains_str}
 
-/// One structured diagnostic: what went wrong, where, what would have
-/// been accepted, and inside which rule.
-export type Diagnostic = { message: string, span: Span?, expected: List<string>, in_rule: string }
+/// Why a diagnostic exists — the structured discriminator consumers
+/// dispatch on; prose never carries it alone.
+export enum Cause { Expected, Trailing, Builder, Defect, Lex }
+
+/// One structured diagnostic: why, what went wrong, where, what would
+/// have been accepted, and inside which rule.
+export type Diagnostic = { cause: Cause, message: string, span: Span?, expected: List<string>, in_rule: string }
 
 /// A source-anchorless coherence diagnostic, attributed by name.
 export fn defect(in_rule: string, message: string) -> Diagnostic {
-    Diagnostic { message: message, span: null, expected: [], in_rule: in_rule }
+    Diagnostic { cause: Cause.Defect, message: message, span: null, expected: [], in_rule: in_rule }
 }
 
 /// Deduplicating union of two expected sets.
@@ -41,5 +45,5 @@ export fn join_expected(xs: List<string>) -> string {
 
 /// A lexer error as a diagnostic — lexing happens in no rule.
 export fn lex_diagnostic(e: LexError) -> Diagnostic {
-    Diagnostic { message: e.message, span: e.span, expected: [], in_rule: "(lexing)" }
+    Diagnostic { cause: Cause.Lex, message: e.message, span: e.span, expected: [], in_rule: "(lexing)" }
 }
