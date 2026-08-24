@@ -1,0 +1,245 @@
+// WHY: in-process parallel test runner. Executes the test
+// bundle's @deferred_init units (one unit = one test file's
+// __init_<mod>) across worker threads, with per-unit output
+// grouping and crash isolation.
+//
+// Inlined into every test bundle at assembly time, exactly like
+// reporter.av — and, like reporter.av, also swept into the
+// std-avrac package compile, so it is fully self-contained: every
+// extern it uses is declared here. The assembled bundle ends up
+// with duplicate decls for a few names (reporter declares
+// avra_uptime_ms / avra_process_env_get too); declarations converge
+// on one LLVM symbol per name because avra_llvm_add_function is
+// get-or-create on exact type.
+//
+// Architecture (channels + spawn + select, spec Axis 18 dogfooded
+// in the compiler's own test runner):
+//   - work channel (bounded to the unit count) pre-loaded with every
+//     unit index, then closed — workers drain to null and exit. The
+//     close-then-drain protocol is exactly what the typed channel
+//     surface's `recv() -> T?` was designed around.
+//   - `jobs` worker threads: pull an index, push a thread-local
+//     output sink, run the unit under the crash guard, pop the sink,
+//     send UnitDone{idx, out} on the results channel.
+//   - the collector (main thread) selects over {started, results,
+//     ticker}: results print that unit's buffered output atomically
+//     (live progress, file-grouped); the ticker drives a stall
+//     detector that NAMES the in-flight units when nothing completes
+//     inside the window — a hung test stops being a silent hang.
+//
+// Crash isolation layers: per-spec guards (hkms.3) nest inside the
+// per-unit guard installed here, so a crash in top-level test code
+// kills only its unit; the guard returns a result either way, so the
+// collector's accounting never wedges on a crashed unit.
+
+extern fn avra_sink_push()
+extern fn avra_sink_pop() -> string
+extern fn avra_cpu_count() -> int
+extern fn avra_parse_int(s: string) -> int
+extern fn avra_sleep_ms(ms: int)
+extern fn avra_stdout_write(s: string)
+extern fn avra_thread_join(handle: int)
+extern fn avra_uptime_ms() -> int
+extern fn avra_process_env_get(name: string) -> string
+extern fn avra_test_run_spec_guarded(name: string, file: string, ln: int, body: fn() -> int) -> int
+
+/// One deferred test unit: a test file's __init_<mod> plus its
+/// display name for output grouping and stall reporting.
+export type TestUnit = { name: string, run: fn() -> int }
+
+/// Completion record a worker sends per finished unit.
+type UnitDone = { idx: int, out: string }
+
+/// Default milliseconds without a single unit completion before the
+/// stall detector names the in-flight units. Generous: fixture-
+/// compiling units legitimately take tens of seconds on a cold
+/// cache. AVRA_TEST_STALL_MS overrides — primarily so the detector
+/// itself is testable without a minute-long fixture.
+const STALL_AFTER_MS_DEFAULT: int = 60000
+
+fn stall_after_ms() -> int {
+    env_int_or("AVRA_TEST_STALL_MS", STALL_AFTER_MS_DEFAULT)
+}
+
+/// Positive-int env override: the value when set and > 0, else the
+/// fallback. Both runner knobs (jobs, stall window) read this shape.
+fn env_int_or(name: string, fallback: int) -> int {
+    let env = avra_process_env_get(name)
+    if env != "" {
+        let n = avra_parse_int(env)
+        if n > 0 { return n }
+    }
+    fallback
+}
+
+/// Worker count: AVRA_TEST_JOBS env wins (1 = sequential — the
+/// debugging / exact-coverage opt-out), else the machine's cores.
+fn test_jobs() -> int {
+    let cores = avra_cpu_count()
+    env_int_or("AVRA_TEST_JOBS", if cores > 0 { cores } else { 4 })
+}
+
+/// Entry point called by the synthesized test main.
+export fn run_test_suite(units: List<TestUnit>) {
+    if units.length == 0 { return }
+    let jobs = test_jobs()
+    // The ACHIEVED in-shard width, stated once per multi-unit shard.
+    //
+    // Until this line existed the width was unobservable from a run's output,
+    // and that gap has a cost: uzs9.2 (the f1005 interleaving flake) was hit
+    // twice at `AVRA_TEST_JOBS=2`, the pin moved 2->1 nine days later inside an
+    // unrelated PR, and `jobs <= 1` takes the sequential path below — no
+    // threads, so the class cannot fire. Every green CI run since has been
+    // green on that class BY CONSTRUCTION, which reads exactly like evidence
+    // the class is dead and is none.
+    //
+    // Reported so a run can be asked what it actually exercised rather than
+    // what it was assumed to. A detector that cannot show its own width is the
+    // same guard-that-cannot-fail shape it exists to catch.
+    //
+    // Single-unit runs stay silent: they have no interleaving to describe, and
+    // every compile-and-run fixture is one unit — so fixture output is
+    // untouched.
+    // min(jobs, units.length), NOT jobs: `run_units_parallel` spawns `jobs`
+    // workers but loads only `units.length` work items, so a 2-unit shard can
+    // never have more than 2 running at once however many threads exist. The
+    // ACHIEVED width is the smaller. Reporting `jobs` would let a detector bank
+    // a width the shard never reached — the same guard-that-cannot-fail shape
+    // this line exists to prevent (CodeRabbit on #1206).
+    if units.length > 1 {
+        let workers = if jobs <= 1 {
+            1
+        } else if jobs < units.length {
+            jobs
+        } else {
+            units.length
+        }
+        eprintln("[units] ${string(units.length)} unit(s) across ${string(workers)} worker(s)")
+    }
+    if jobs <= 1 || units.length == 1 {
+        run_units_sequential(units)
+        return
+    }
+    run_units_parallel(units, jobs)
+}
+
+/// jobs=1 path: same per-unit guard + output grouping, no threads.
+fn run_units_sequential(units: List<TestUnit>) {
+    for u in units {
+        avra_stdout_write(run_one_unit(u))
+    }
+}
+
+/// Guard + buffer one unit on the current thread. The sink scopes
+/// every println the unit makes (including nested spec captures —
+/// frames stack) so the collector can print units atomically.
+fn run_one_unit(u: TestUnit) -> string {
+    avra_sink_push()
+    let _ = avra_test_run_spec_guarded(u.name, u.name, 0, u.run)
+    avra_sink_pop()
+}
+
+fn run_units_parallel(units: List<TestUnit>, jobs: int) {
+    let work = channel<int>(units.length)
+    let started = channel<int>()
+    let results = channel<UnitDone>()
+    for i in 0..units.length {
+        work.send(i)
+    }
+    work.close()
+
+    for _ in 0..jobs {
+        let _worker = spawn {
+            while true {
+                let next = work.recv()
+                if next == null { break }
+                let idx = next!
+                started.send(idx)
+                results.send(UnitDone { idx: idx, out: run_one_unit(units[idx]) })
+            }
+            0
+        }
+    }
+
+    collect_results(units, started, results)
+    // No manual joins: every spawn in this fn registered with the
+    // scope's task group (structured concurrency, spec Axis 18.7),
+    // which awaits all workers at fn exit. Workers exit after the
+    // closed work channel drains to null.
+}
+
+/// Fan in exactly units.length completions. The ticker fiber feeds
+/// the select so a wedged unit surfaces by name instead of as a
+/// silent hang. Shutdown protocol: the collector sends on `stop`
+/// when the tally completes; the ticker polls it with try_recv and
+/// exits, so the enclosing scope's task-group await (structured
+/// concurrency joins EVERY spawn at fn exit — an infinite ticker
+/// would deadlock the join) completes promptly.
+///
+/// The ticker sleeps in 50ms slices, checking `stop` each slice and
+/// ticking once per 2s worth of slices. A single 2s sleep would put
+/// a 2-SECOND FLOOR on every multi-unit run: the suite finishes in
+/// microseconds, then the task-group join waits out the remainder
+/// of the ticker's nap (measured: 46ms sequential vs 2.0s parallel
+/// before slicing). The tick channel is unbounded so the ticker
+/// never blocks on a busy collector.
+fn collect_results(units: List<TestUnit>, started: Channel<int>, results: Channel<UnitDone>) {
+    let tick = channel<int>()
+    let stop = channel<int>(1)
+    // Tick cadence: half the stall window, capped at 2s — a short
+    // (test-injected) window must still receive ticks, and a long
+    // one shouldn't wake the collector more than every 2s.
+    let cadence_ms = if stall_after_ms() / 2 < 2000 { stall_after_ms() / 2 } else { 2000 }
+    let slices_per_tick = if cadence_ms / 50 > 0 { cadence_ms / 50 } else { 1 }
+    let _ticker = spawn {
+        mut running = true
+        mut slices = 0
+        while running {
+            avra_sleep_ms(50)
+            if stop.try_recv() != null {
+                running = false
+            } else {
+                slices = slices + 1
+                if slices >= slices_per_tick {
+                    slices = 0
+                    tick.send(1)
+                }
+            }
+        }
+        0
+    }
+    mut in_flight: List<bool> = []
+    for _ in 0..units.length { in_flight.push(false) }
+
+    mut done = 0
+    mut last_progress = avra_uptime_ms()
+    mut stall_reported = false
+    let stall_ms = stall_after_ms()
+    while done < units.length {
+        select {
+            s <- started -> { in_flight.set(s, true) }
+            r <- results -> {
+                in_flight.set(r.idx, false)
+                avra_stdout_write(r.out)
+                done = done + 1
+                last_progress = avra_uptime_ms()
+                stall_reported = false
+            }
+            t <- tick -> {
+                if avra_uptime_ms() - last_progress > stall_ms && !stall_reported {
+                    eprintln(render_stall(units, in_flight, stall_ms))
+                    stall_reported = true
+                }
+            }
+        }
+    }
+    stop.send(1)
+}
+
+fn render_stall(units: List<TestUnit>, in_flight: List<bool>, stall_ms: int) -> string {
+    mut names: List<string> = []
+    for (i, u) in units.enumerate() {
+        if in_flight[i] { names.push(u.name) }
+    }
+    "[test-runner] no unit completed in ${string(stall_ms)}ms — still running: ${names.join(", ")}"
+}

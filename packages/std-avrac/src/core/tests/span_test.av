@@ -1,0 +1,43 @@
+use @std.avrac.core.{Span}
+
+spec "core/span" {
+    given "two child spans in either order" {
+        then "cover(a, b) spans both" {
+            let a = Span { lo: 4, hi: 9 }
+            let b = Span { lo: 12, hi: 20 }
+            let c = a.cover(b)
+            c.lo == 4 && c.hi == 20
+        }
+        then "cover(b, a) is identical" {
+            let a = Span { lo: 4, hi: 9 }
+            let b = Span { lo: 12, hi: 20 }
+            let c = b.cover(a)
+            c.lo == 4 && c.hi == 20
+        }
+        then "overlapping children cover exactly" {
+            let a = Span { lo: 0, hi: 10 }
+            let b = Span { lo: 5, hi: 8 }
+            let c = a.cover(b)
+            c.lo == 0 && c.hi == 10
+        }
+    }
+    given "a zero-width span" {
+        then "it is empty with length 0" {
+            let eof = Span { lo: 42, hi: 42 }
+            eof.is_empty() && eof.len() == 0
+        }
+        then "covering it from a real span keeps the position" {
+            let real = Span { lo: 10, hi: 20 }
+            let mark = Span { lo: 42, hi: 42 }
+            let c = real.cover(mark)
+            c.lo == 10 && c.hi == 42
+        }
+    }
+    given "source text" {
+        then "text slices the half-open range" {
+            let src = "let x = 1"
+            let name = Span { lo: 4, hi: 5 }
+            name.text(src) == "x" && name.len() == 1
+        }
+    }
+}
