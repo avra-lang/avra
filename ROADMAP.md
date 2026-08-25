@@ -36,9 +36,16 @@ real scale; the design sources of truth live in
       facts in a pass-owned dense table (O(1) by ExprId), sequential
       visibility with shadowing, use-before-def as its own kind,
       graded nearest-candidate suggestions
-- [ ] Type pass: opaque `TypeId` + interning registry
-      (content-addressing drops in later), the totality invariant —
-      `Unknown` never reaches a consumer
+- [x] Type pass: opaque `TypeId` + interning registry
+      (content-addressing drops in later behind `intern`), the
+      totality invariant structural — a dense `List<TypeId>`, no
+      option and no Unknown; Error is interned, absorbing, and never
+      cascades a second diagnostic
+- [x] The consumer seam: one self-sufficient `Analysis` per source
+      (every pass's facts + codes + ONE diagnostics list, answering
+      `report`/`clean`/`type_name`/`target` itself), the standard
+      pass signature `pass(p, ...upstream Facts) -> Facts`,
+      `SourceFile` as THE input value, `avra()` as the language
 - [x] GATE: `avra check` on `let x = 1 + y` prints a beautiful
       resolve error — golden-tested character-exact
 
@@ -52,6 +59,28 @@ real scale; the design sources of truth live in
       rules together (the component model working as designed)
 - [ ] Back-end decision round: eval vs LLVM emission (its own design
       conversation, spec on the table)
+
+## Multi-file design (recorded, not scheduled)
+
+The single-file shapes ARE the multi-file design in miniature —
+additions get siblings, nothing changes shape:
+
+- A Workspace holds many per-file Analyses; `analyze` stays the
+  per-file pipeline, a workspace pass orders files and feeds import
+  facts in through the SAME standard signature.
+- Node ids stay store-local. Cross-file references ride SymbolId —
+  content-hash of (qualified path + kind), per the epic §15.5 —
+  store-independent and stable across processes.
+- Each Analysis grows an Exports fact: the module's PUBLIC surface as
+  name -> (symbol, signature fingerprint). Importers read surfaces,
+  never neighbor trees — private edits cannot invalidate importers.
+- Content-addressed TypeIds (§15.3) make per-file registries agree by
+  construction: same shape, same hash, everywhere — cross-file type
+  identity needs no coordination step.
+- The L6 query engine lands at the workspace seam: per-file Analyses
+  memoized by content fingerprint (nodes already fingerprint); an
+  edit re-runs importers only when the export surface's fingerprint
+  moved.
 
 ## Self-host endgames (recorded, not scheduled)
 

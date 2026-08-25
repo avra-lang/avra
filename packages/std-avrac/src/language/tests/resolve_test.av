@@ -3,13 +3,14 @@
 // kind, code, window, pointer, and a graded suggestion.
 use @std.avrac.language.{assemble, language_features, parse_source, resolve, target_of}
 use @std.errors.{Confidence}
+use @std.avrac.diagnostics.{new_source_file}
 use @std.avrac.core.{ExprId}
 
 spec "language/resolve" {
     given "resolution facts" {
         then "a use resolves to its definition site" {
             let p = parse_source("let x = 1\nx")
-            let r = resolve(p.store, p.stmts, null)
+            let r = resolve(p)
             let use_expr = match p.store.stmt(p.stmts[1]) {
                 .ExprStmt(v) -> v,
                 .Let(_, value) -> value, .Error -> value_missing(),
@@ -20,7 +21,7 @@ spec "language/resolve" {
         }
         then "a later let shadows an earlier one" {
             let p = parse_source("let x = 1\nlet x = 2\nx")
-            let r = resolve(p.store, p.stmts, null)
+            let r = resolve(p)
             let use_expr = match p.store.stmt(p.stmts[2]) {
                 .ExprStmt(v) -> v,
                 .Let(_, value) -> value, .Error -> value_missing(),
@@ -31,14 +32,14 @@ spec "language/resolve" {
     given "unresolved names" {
         then "a use before its definition names the remedy" {
             let p = parse_source("x\nlet x = 1")
-            let r = resolve(p.store, p.stmts, null)
+            let r = resolve(p)
             r.diagnostics.length == 1 &&
                 r.diagnostics[0].kind == "resolve.use_before_def" &&
                 r.diagnostics[0].help != null
         }
         then "a typo one edit away suggests with High confidence" {
             let p = parse_source("let value = 1 + valu")
-            let r = resolve(p.store, p.stmts, null)
+            let r = resolve(p)
             r.diagnostics.length == 1 &&
                 r.diagnostics[0].kind == "resolve.unresolved" &&
                 r.diagnostics[0].suggestions.length == 1 &&
@@ -48,9 +49,9 @@ spec "language/resolve" {
         }
         then "two edits away is Medium; far away is silent" {
             let near = parse_source("let value = 1\nvlaue")
-            let rn = resolve(near.store, near.stmts, null)
+            let rn = resolve(near)
             let far = parse_source("let alpha = 1\nzz")
-            let rf = resolve(far.store, far.stmts, null)
+            let rf = resolve(far)
             rn.diagnostics[0].suggestions[0].confidence == Confidence.Medium &&
                 rf.diagnostics[0].suggestions.is_empty() && rf.diagnostics[0].help == null
         }
@@ -70,7 +71,7 @@ spec "language/resolve" {
   · ╰── defined here
 ──╯
 help: move the definition above this use"""
-            lang.check("app.av", "x\nlet x = 1") == expected
+            lang.check(new_source_file("app.av", "x\nlet x = 1")) == expected
         }
     }
     given "the milestone gate" {
@@ -83,7 +84,7 @@ help: move the definition above this use"""
   ·             ╰── not defined anywhere in this program
 ──╯
 help: did you mean `x`?"""
-            lang.check("app.av", "let x = 1 + y") == expected
+            lang.check(new_source_file("app.av", "let x = 1 + y")) == expected
         }
     }
 }

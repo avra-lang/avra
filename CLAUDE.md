@@ -42,6 +42,16 @@ points in time. Comments are evergreen: always relevant, or absent.
 Keep them very terse, in plain language. State what a thing is or the
 invariant it holds — no narration, no self-justification, no history.
 
+## Style
+
+- Inline single-use values. A `let` earns its place only when the
+  name carries meaning the expression lacks, the value is read more
+  than once, or the subset REQUIRES a pin (early-return generic
+  constructions, sibling-field-only N-evidence, struct literals in
+  argument lists). Empty literals (`[]`, `{}`) infer inline in
+  constructor fields — never bind them to a throwaway name. When a
+  pin seems needed, probe before assuming.
+
 ## Rules
 
 - `core/` is infrastructure only. Features never import features.
@@ -59,9 +69,14 @@ invariant it holds — no narration, no self-justification, no history.
 - Node facts (spans included) live in side tables keyed by typed ids,
   never on nodes.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
-- Passes are pure queries: explicit inputs, value + diagnostics
-  returned together. A pass OWNS its fact tables — NodeStore is
-  parse-owned and never accretes pass facts.
+- Passes are pure queries with ONE standard signature:
+  `pass(p: ParsedProgram, ...upstream Facts) -> Facts` — the program
+  first, prior passes' facts next, its own Facts (which OWN its
+  diagnostics) out. A pass OWNS its fact tables — NodeStore is
+  parse-owned and never accretes pass facts. `analyze` is the only
+  place pass order exists; consumers hold ONE Analysis. A source is
+  ONE value (`SourceFile`: name + text + line index) — never a loose
+  (file, text) pair.
 - Queries own granularity and caching; features own the per-variant
   logic a query's body dispatches to.
 - Every diagnostic names a registered kind (its F-code is the
@@ -86,7 +101,11 @@ Discovered gaps between the spec and the bootstrap compiler. Verify
 against these before writing; probe in scratch when unsure.
 
 - Function types are spelled `fn(int) -> bool`, not `(int) -> bool`.
-- `ref`, `none`, and `shape` are reserved words.
+- `ref`, `none`, `shape`, and `table` are reserved words — including
+  as variable and method names.
+- `contains`/`index_of` compare non-string elements by IDENTITY —
+  enum/struct values in lists need a semantic `==` scan (enumerate +
+  compare); only string elements get value equality.
 - No `mut` parameters — in-place-mutating helpers are inexpressible.
 - Generics infer ONLY from direct call arguments: not sibling fields,
   not return types. Pin with typed constructor fns

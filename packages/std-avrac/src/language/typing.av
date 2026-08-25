@@ -1,0 +1,143 @@
+//! The type pass — the second pure query. Facts land in a Typing the
+//! pass owns: a DENSE, TOTAL table — every expression has a TypeId,
+//! never an option and never an Unknown. A parse hole or unresolved
+//! name types as the interned Error type, and Error is ABSORBING:
+//! the causing pass already spoke, so no diagnostic cascades from it.
+use core.{NodeStore, Expr, Stmt, StmtId, ExprId}
+use diagnostics.{Diag}
+
+/// Opaque handle into the registry: compared and looked up, never
+/// inspected. Text exists only in the registry's printing projection.
+export type TypeId = { index: int }
+
+/// A type's shape. Interned once; identity is the id.
+export enum Type { Int, Error }
+
+/// The interner: shapes in, ids out — assigned once, compared as
+/// ints forever. The index map is keyed by each shape's CANONICAL
+/// form — deterministic structural content, children by interned id —
+/// which is exactly what content-addressing later hashes: the key
+/// derivation swaps, the map and its callers do not.
+export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId> }
+
+export fn new_type_registry() -> TypeRegistry {
+    TypeRegistry { shapes: [], ids: {} }
+}
+
+impl TypeRegistry {
+    /// A shape's canonical key: variant ordinal, then child ids as
+    /// payload shapes arrive. Structural — never the printed name.
+    fn canon(self, t: Type) -> string {
+        match t {
+            .Int -> "0",
+            .Error -> "1",
+        }
+    }
+
+    /// The id for a shape, minted on first sight — one map probe.
+    fn intern(self, t: Type) -> TypeId {
+        let key = self.canon(t)
+        let hit: TypeId? = self.ids.get(key)
+        if hit != null { return hit! }
+        mut shapes = self.shapes
+        shapes.push(t)
+        let id = TypeId { index: shapes.length - 1 }
+        mut ids = self.ids
+        ids.set(key, id)
+        id
+    }
+
+    fn shape_of(self, id: TypeId) -> Type { self.shapes[id.index] }
+
+    /// The printing projection — the ONLY place a type becomes text.
+    fn name_of(self, id: TypeId) -> string {
+        match self.shape_of(id) {
+            .Int -> "int",
+            .Error -> "<error>",
+        }
+    }
+}
+
+/// The pass's facts: the registry and a dense table indexed by
+/// ExprId — total, O(1) reads for every later pass.
+export type Typing = {
+    types: TypeRegistry,
+    of_expr: List<TypeId>,
+    diagnostics: List<Diag>,
+}
+
+/// The type of a typed expression.
+export fn type_of(t: Typing, e: ExprId) -> TypeId {
+    t.of_expr[e.index]
+}
+
+type Typer = {
+    store: NodeStore,
+    resolution: Resolution,
+    types: TypeRegistry,
+    of_expr: List<TypeId>,
+    diagnostics: List<Diag>,
+}
+
+export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
+    mut registry = new_type_registry()
+    // The table is born total: every slot pre-typed as the hole.
+    let hole = registry.intern(Type.Error)
+    mut facts: List<TypeId> = []
+    mut i = 0
+    while i < p.store.exprs.count() {
+        facts.push(hole)
+        i = i + 1
+    }
+    let t = Typer {
+        store: p.store, resolution: r, types: registry,
+        of_expr: facts, diagnostics: [],
+    }
+    for s in p.stmts {
+        let value: ExprId? = match p.store.stmt(s) {
+            .Let(_, v) -> v,
+            .ExprStmt(v) -> v,
+            .Error -> null,
+        }
+        if value != null { t.type_expr(value!) }
+    }
+    Typing { types: t.types, of_expr: t.of_expr, diagnostics: t.diagnostics }
+}
+
+impl Typer {
+    fn type_expr(self, e: ExprId) -> TypeId {
+        let ty = match self.store.expr(e) {
+            .IntLit(_) -> self.types.intern(Type.Int),
+            .Ident(_) -> self.ident_type(e),
+            .Binary(_, l, right) -> self.binary_type(l, right),
+            .Error -> self.types.intern(Type.Error),
+        }
+        mut facts = self.of_expr
+        facts.set(e.index, ty)
+        ty
+    }
+
+    /// An ident's type is its definition's value type. No target
+    /// means resolve already spoke — Error, silently.
+    fn ident_type(self, e: ExprId) -> TypeId {
+        let target: StmtId? = target_of(self.resolution, e)
+        match target {
+            null -> self.types.intern(Type.Error),
+            let s -> match self.store.stmt(s) {
+                .Let(_, v) -> self.of_expr[v.index],
+                _ -> self.types.intern(Type.Error),
+            },
+        }
+    }
+
+    /// Both operands int -> int. An Error operand ABSORBS: the cause
+    /// was diagnosed where it happened, so nothing cascades here.
+    fn binary_type(self, l: ExprId, r: ExprId) -> TypeId {
+        let lt = self.type_expr(l)
+        let rt = self.type_expr(r)
+        if self.types.shape_of(lt) is .Int && self.types.shape_of(rt) is .Int {
+            return lt
+        }
+        self.types.intern(Type.Error)
+    }
+}

@@ -30,28 +30,27 @@ type Resolver = {
     diagnostics: List<Diag>,
 }
 
-export fn resolve(store: NodeStore, stmts: List<StmtId>, file: string?) -> Resolution {
+export fn resolve(p: ParsedProgram) -> Resolution {
     mut empty_targets: List<StmtId?> = []
     mut i = 0
-    while i < store.exprs.count() {
+    while i < p.store.exprs.count() {
         empty_targets.push(null)
         i = i + 1
     }
-    let nobody: Map<string, StmtId> = {}
-    let defs = defs_of(store, stmts)
+    let defs = defs_of(p.store, p.stmts)
     let r = Resolver {
-        store: store, file: file, all_defs: defs,
+        store: p.store, file: p.source.file, all_defs: defs,
         def_names: [d.name for d in defs],
-        visible: nobody, targets: empty_targets, diagnostics: [],
+        visible: {}, targets: empty_targets, diagnostics: [],
     }
-    for s in stmts {
-        let value: ExprId? = match store.stmt(s) {
+    for s in p.stmts {
+        let value: ExprId? = match p.store.stmt(s) {
             .Let(_, v) -> v,
             .ExprStmt(v) -> v,
             .Error -> null,
         }
         if value != null { r.resolve_expr(value!) }
-        let binds: string? = match store.stmt(s) {
+        let binds: string? = match p.store.stmt(s) {
             .Let(name, _) -> name,
             _ -> null,
         }

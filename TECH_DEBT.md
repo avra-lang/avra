@@ -73,6 +73,16 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
 - [ ] **[Low]** No `find_index(pred)` list method upstream — the
       runtime scan exists (`avra_array_find_idx`); an emitter arm
       would collapse first-match-index scans (builders.av `attach`).
+- [ ] **[Low]** The intern path materializes a string key per probe
+      (bs2 `Map` is string-keyed; FNV walks bytes). The endgame is
+      the epic §15.2 in-process tier: fp_mix over the int tuple
+      (variant ordinal + child ids) into an int-keyed table, verify
+      on collision — zero allocation. Trigger: the first composite
+      shape (when `canon` starts concatenating). Route: a ~40-line
+      core IntMap (open addressing over parallel `List<int>`s) or an
+      int-keyed bs2 map; either swaps into `intern`'s body with zero
+      caller churn. Note the hot path already never interns —
+      singleton ids are threaded through the Typer.
 - [ ] **[Low]** String scanning builds text by per-char concat
       (O(len^2) per string token) — a core string-builder arrives
       with real source files.

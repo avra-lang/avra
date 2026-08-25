@@ -50,19 +50,21 @@ fn code_registry(features: List<LanguageFeature>) -> List<DiagCode> {
     out
 }
 
-/// One parsed source: the tree (holes included), and every diagnostic
-/// from lexing and parsing, in source order.
+/// One parsed source: the tree (holes included), the SourceFile it
+/// came from, and every diagnostic from lexing and parsing, in
+/// source order. THE value every later pass takes first.
 export type ParsedProgram = {
     store: NodeStore,
     stmts: List<StmtId>,
+    source: SourceFile,
     diagnostics: List<Diag>,
 }
 
-export fn parse_program(lang: Language, file: string?, source: string) -> ParsedProgram {
+export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
     match lang.grammar {
-        null -> ParsedProgram { store: new_node_store(), stmts: [], diagnostics: lang.diagnostics },
+        null -> ParsedProgram { store: new_node_store(), stmts: [], source: src, diagnostics: lang.diagnostics },
         let g -> {
-            let lexed = lex_source(source)
+            let lexed = lex_source(src.text)
             let store = new_node_store()
             let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> dispatch(lang.features, store, name, args, span)
             let o = run_grammar<LangNode>(g, lexed.tokens, build)
@@ -70,26 +72,75 @@ export fn parse_program(lang: Language, file: string?, source: string) -> Parsed
             ParsedProgram {
                 store: store,
                 stmts: program_stmts(store, o),
-                diagnostics: project_all(engine, file, lang.codes),
+                source: src,
+                diagnostics: project_all(engine, src.file, lang.codes),
             }
         }
     }
 }
 
 
+/// One source, fully analyzed: the tree, every pass's facts, every
+/// diagnostic in pipeline order, and the code registry to render
+/// them — the ONE self-sufficient artifact consumers hold. Passes
+/// stay pure queries with ONE standard shape —
+/// `pass(p, ...upstream facts) -> Facts` — and `analyze` is the
+/// only place that knows their order.
+export type Analysis = {
+    store: NodeStore,
+    stmts: List<StmtId>,
+    source: SourceFile,
+    resolution: Resolution,
+    typing: Typing,
+    codes: List<DiagCode>,
+    diagnostics: List<Diag>,
+}
+
+impl Analysis {
+    /// Nothing is wrong.
+    fn clean(self) -> bool { self.diagnostics.is_empty() }
+
+    /// Every diagnostic rendered for the terminal; "" means clean.
+    fn report(self) -> string {
+        joined([render(d, self.codes, self.source) for d in self.diagnostics], "\n\n")
+    }
+
+    fn expr(self, e: ExprId) -> Expr { self.store.expr(e) }
+    fn stmt(self, s: StmtId) -> Stmt { self.store.stmt(s) }
+
+    /// The definition an expression names, when it does.
+    fn target(self, e: ExprId) -> StmtId? { target_of(self.resolution, e) }
+
+    /// An expression's type — total: every expression has one.
+    fn type_at(self, e: ExprId) -> TypeId { type_of(self.typing, e) }
+
+    /// An expression's type as text (the printing projection).
+    fn type_name(self, e: ExprId) -> string {
+        self.typing.types.name_of(self.type_at(e))
+    }
+}
+
 impl Language {
+    /// The whole pipeline: a source in, its Analysis out.
+    fn analyze(self, src: SourceFile) -> Analysis {
+        let p = parse_program(self, src)
+        let r = resolve(p)
+        let t = type_check(p, r)
+        Analysis {
+            store: p.store, stmts: p.stmts, source: p.source,
+            resolution: r, typing: t, codes: self.codes,
+            diagnostics: concat(concat(p.diagnostics, r.diagnostics), t.diagnostics),
+        }
+    }
+
     /// One diagnostic as terminal text.
     fn render(self, d: Diag, src: SourceFile) -> string {
         render(d, self.codes, src)
     }
 
-    /// Everything wrong with one source — parse then resolve —
-    /// rendered; "" means clean.
-    fn check(self, file: string?, source: string) -> string {
-        let p = parse_program(self, file, source)
-        let r = resolve(p.store, p.stmts, file)
-        let src = new_source_file(source)
-        joined([self.render(d, src) for d in concat(p.diagnostics, r.diagnostics)], "\n\n")
+    /// Everything wrong with one source, rendered; "" means clean.
+    fn check(self, src: SourceFile) -> string {
+        self.analyze(src).report()
     }
 }
 
@@ -115,7 +166,17 @@ export fn language_features() -> List<LanguageFeature> {
     [stmt_spine(), let_stmt(), expr_stmt(), expr_spine()]
 }
 
-/// The canonical language over one source.
-export fn parse_source(source: string) -> ParsedProgram {
-    parse_program(assemble(language_features()), null, source)
+/// THE language, assembled — one word to hold Avra.
+export fn avra() -> Language {
+    assemble(language_features())
+}
+
+/// The canonical language over one nameless source.
+export fn parse_source(text: string) -> ParsedProgram {
+    parse_program(avra(), new_source_file(null, text))
+}
+
+/// The canonical language's whole pipeline over one nameless source.
+export fn analyze_source(text: string) -> Analysis {
+    avra().analyze(new_source_file(null, text))
 }
