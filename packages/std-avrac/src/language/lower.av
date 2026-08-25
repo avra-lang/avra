@@ -34,15 +34,6 @@ export fn lower(a: Analysis) -> Lowered {
         slots: filled<Reg?>(a.store.stmts.count(), null),
         failures: [],
     }
-    let cx = LowerCx {
-        store: a.store,
-        result: (e: ExprId) -> lo.mint(e),
-        reg_of: (e: ExprId) -> lo.regs[e.index]!,
-        def_reg: (e: ExprId) -> lo.def_reg(e),
-        shape_at: (e: ExprId) -> a.typing.types.shape_of(a.type_at(e)),
-        emit: (i: Ins) -> lo.give(i),
-        fail: (msg: string) -> lo.record(msg),
-    }
     lo.give(Ins.ScopeEnter(Level.Application))
     mut last: Reg? = null
     for s in a.stmts {
@@ -50,10 +41,9 @@ export fn lower(a: Analysis) -> Lowered {
         if value == null {
             lo.record("defect: a hole survived a clean analysis")
         } else {
-            for x in post_order(a.store, value!) { lower_node(lo, cx, x) }
-            let r: Reg? = lo.regs[value!.index]
+            let r = lower_subtree(lo, value!)
             mut written = lo.slots
-            written.set(s.index, r!)
+            written.set(s.index, r)
             last = r
         }
     }
@@ -69,10 +59,25 @@ export fn lower(a: Analysis) -> Lowered {
     }
 }
 
-/// One node's register: the owner lowers, the table records.
-fn lower_node(lo: Lower, cx: LowerCx, e: ExprId) {
+/// One subtree's register, lowered at first request and memoized.
+/// The recursion IS the walk: an impl asking for a child's register
+/// lands back here — so a region's branches lower INSIDE it.
+fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
+    let seen: Reg? = lo.regs[e.index]
+    if seen != null { return seen! }
+    let cx = LowerCx {
+        store: lo.a.store,
+        result: (k: ExprId) -> lo.mint(k),
+        reg_of: (k: ExprId) -> lower_subtree(lo, k),
+        def_reg: (k: ExprId) -> lo.def_reg(k),
+        shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.a.type_at(k)),
+        emit: (i: Ins) -> lo.give(i),
+        fail: (msg: string) -> lo.record(msg),
+    }
+    let r = semantics_of(lo.a.store.expr(e)).lower(cx, e)
     mut rs = lo.regs
-    rs.set(e.index, semantics_of(lo.a.store.expr(e)).lower(cx, e))
+    rs.set(e.index, r)
+    r
 }
 
 impl Lower {

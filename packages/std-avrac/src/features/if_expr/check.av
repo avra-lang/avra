@@ -1,0 +1,32 @@
+//! The typing rule: the condition is a `bool`; the branches must
+//! agree, and their shared type is the expression's. An Error
+//! anywhere ABSORBS — its cause was already diagnosed.
+use core.{Expr, ExprId, Type, TypeId}
+use features.{TypeCx}
+use diagnostics.{error_at, pointed}
+
+fn if_type(cx: TypeCx, e: ExprId) -> TypeId {
+    match cx.store.expr(e) {
+        .If(c, t, f) -> {
+            let cs = cx.shape_at(c)
+            if !(cs is .Bool) && !(cs is .Error) {
+                cx.emit(pointed(
+                    error_at("type.mismatch", cx.loc_of(c), "an `if` condition is a `bool`, found `${cx.name_at(c)}`"),
+                    "this decides the branch"))
+            }
+            branch_type(cx, t, f)
+        }
+        _ -> cx.intern(Type.Error),
+    }
+}
+
+fn branch_type(cx: TypeCx, t: ExprId, f: ExprId) -> TypeId {
+    let ts = cx.shape_at(t)
+    let fs = cx.shape_at(f)
+    if ts is .Error || fs is .Error { return cx.intern(Type.Error) }
+    if ts == fs { return cx.type_at(t) }
+    cx.emit(pointed(
+        error_at("type.mismatch", cx.loc_of(f), "an `if`'s branches disagree: `${cx.name_at(t)}` vs `${cx.name_at(f)}`"),
+        "this is a `${cx.name_at(f)}`"))
+    cx.intern(Type.Error)
+}

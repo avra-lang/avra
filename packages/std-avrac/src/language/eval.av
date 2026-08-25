@@ -26,22 +26,13 @@ fn run_analysis(a: Analysis) -> Result<ExprId, string> {
         values: filled<ExprId?>(a.store.exprs.count(), null),
         failures: [],
     }
-    let cx = EvalCx {
-        store: a.store,
-        value_at: (e: ExprId) -> ev.values[e.index]!,
-        def_value: (e: ExprId) -> ev.def_value(e),
-        alloc: (node: Expr) -> a.store.alloc_expr(node, null),
-        fail: (msg: string) -> ev.record(msg),
-    }
     mut last: ExprId? = null
     for s in a.stmts {
         let value: ExprId? = stmt_value(a.store, s)
         if value == null { return Result.Err("defect: a hole survived a clean analysis") }
-        let order = post_order(a.store, value!)
-        for x in order { eval_node(ev, cx, x) }
-        let v: ExprId? = ev.values[value!.index]
+        let v = eval_subtree(ev, value!)
         mut written = ev.slots
-        written.set(s.index, v!)
+        written.set(s.index, v)
         last = v
     }
     if !ev.failures.is_empty() { return Result.Err(ev.failures[0]) }
@@ -51,10 +42,23 @@ fn run_analysis(a: Analysis) -> Result<ExprId, string> {
     }
 }
 
-/// One node's value: the owner reduces, the table records.
-fn eval_node(ev: Evaluator, cx: EvalCx, e: ExprId) {
+/// One subtree's value, computed at first request and memoized. The
+/// recursion IS the walk: an impl asking for a child's value lands
+/// back here — so only the branches an impl asks for ever run.
+fn eval_subtree(ev: Evaluator, e: ExprId) -> ExprId {
+    let seen: ExprId? = ev.values[e.index]
+    if seen != null { return seen! }
+    let cx = EvalCx {
+        store: ev.a.store,
+        value_at: (k: ExprId) -> eval_subtree(ev, k),
+        def_value: (k: ExprId) -> ev.def_value(k),
+        alloc: (node: Expr) -> ev.a.store.alloc_expr(node, null),
+        fail: (msg: string) -> ev.record(msg),
+    }
+    let v = semantics_of(ev.a.store.expr(e)).eval(cx, e)
     mut vals = ev.values
-    vals.set(e.index, semantics_of(ev.a.store.expr(e)).eval(cx, e))
+    vals.set(e.index, v)
+    v
 }
 
 impl Evaluator {

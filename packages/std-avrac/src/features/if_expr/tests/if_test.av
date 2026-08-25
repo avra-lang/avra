@@ -1,0 +1,89 @@
+// Branches choose, vertically: the keyword anchor parses ahead of
+// NAME, both branches type and must agree, one branch's value wins,
+// and the IR carries the region as brackets with branch-scoped
+// releases.
+use @std.avrac.language.{analyze_source, avra, lower, memory, render_ir, Lowered}
+use @std.avrac.diagnostics.{new_source_file}
+
+/// A program's printed value, or "<refused>".
+fn shown(source: string) -> string {
+    analyze_source(source).ran() ?? "<refused>"
+}
+
+fn ir_of(source: string) -> Lowered {
+    memory(lower(analyze_source(source)))
+}
+
+spec "features/if_expr" {
+    given "the expression" {
+        then "the taken branch is the value, in either direction" {
+            shown("if true { 1 } else { 2 }") == "1" &&
+                shown("if false { 1 } else { 2 }") == "2" &&
+                shown("let x = 3\nif x < 4 { \"lo\" } else { \"hi\" }") == "lo"
+        }
+        then "an if nests as a branch of another if" {
+            shown("if false { 0 } else { if true { 4 } else { 5 } }") == "4"
+        }
+        then "an if rides in a let and in arithmetic" {
+            shown("let bonus = if 2 < 1 { 10 } else { 20 }\nbonus + 1") == "21"
+        }
+    }
+    given "wrong shapes" {
+        then "a non-bool condition points at itself" {
+            let lang = avra()
+            let expected = """error[F2000]: an `if` condition is a `bool`, found `int`
+  ╭─[app.av:1:4]
+1 │ if 1 { 2 } else { 3 }
+  ·    ┬
+  ·    ╰── this decides the branch
+──╯"""
+            lang.check(new_source_file("app.av", "if 1 { 2 } else { 3 }")) == expected
+        }
+        then "disagreeing branches name both types" {
+            let a = analyze_source("if true { 1 } else { \"x\" }")
+            a.diagnostics.length == 1 &&
+                a.report().contains("an `if`'s branches disagree: `int` vs `string`")
+        }
+        then "a keyword refuses as a binding name" {
+            let a = analyze_source("let if = 1")
+            a.diagnostics.length == 1 && a.report().contains("`if` is a keyword")
+        }
+    }
+    given "the region in the IR, as `avra ir` prints it" {
+        then "branch temporaries release inside their own brackets" {
+            let expected = """scope application {
+  r0 = bool true
+  if r0 {
+    r1 = str "x"
+    r2 = str "y"
+    r3 = call avra_streq(r1, r2)
+    release r2
+    release r1
+    yield r3
+  } else {
+    r4 = bool false
+    yield r4
+  } -> r5
+  print r5
+}
+ret 0"""
+            render_ir(ir_of("if true { \"x\" == \"y\" } else { false }")) == expected
+        }
+        then "a yielded string escapes its branch; the merge releases once, at the outer exit" {
+            let expected = """scope application {
+  r0 = bool true
+  if r0 {
+    r1 = str "a"
+    yield r1
+  } else {
+    r2 = str "b"
+    yield r2
+  } -> r3
+  print r3
+  release r3
+}
+ret 0"""
+            render_ir(ir_of("if true { \"a\" } else { \"b\" }")) == expected
+        }
+    }
+}

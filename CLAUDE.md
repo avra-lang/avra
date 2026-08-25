@@ -108,6 +108,11 @@ spec.
   expressible, and has a golden rendering test.
 - Map iteration order never reaches output — iterate an ordered
   source.
+- The IR is CLOSED vocabulary: features lower into it, never grow
+  it. A new Ins variant is a core event — a new control shape, value
+  category, or memory boundary. Value-producing runtime needs ride
+  `CallRt`; the backend and memory pass are functions of the IR,
+  dispatching on shapes, never on features.
 - A feature is a directory: `mod.av` is the declarative manifest
   (component + tables), `builders.av` holds parse lowering,
   `semantics.av` holds its NodeSemantics impl (dispatch one-liners),
@@ -129,7 +134,8 @@ against these before writing; probe in scratch when unsure.
 
 - Function types are spelled `fn(int) -> bool`, not `(int) -> bool`.
 - `ref`, `none`, `shape`, and `table` are reserved words — including
-  as variable and method names.
+  as variable and method names; `then` refuses as a struct/enum
+  field name.
 - `contains`/`index_of` compare non-string elements by IDENTITY —
   enum/struct values in lists need a semantic `==` scan (enumerate +
   compare); only string elements get value equality. `==` between two
@@ -163,7 +169,9 @@ against these before writing; probe in scratch when unsure.
 - Struct destructuring in `let` (`let Sp { lo, hi } = s`) does not parse.
 - Comprehensions iterate lists only, not ranges (struct literals inside
   them are fine), and cannot destructure — `[.. for (i, m) in
-  xs.enumerate()]` fails to parse; use a loop.
+  xs.enumerate()]` fails to parse; use a loop. The `if` FILTER takes
+  a simple predicate only — `||` or `!` inside it fails to parse
+  ("expected `]` after list"); use a loop there too.
 - In a value match producing a list, put a populated arm FIRST — a
   leading `[] `arm pins `List<>` and the sibling arms then clash.
 - Method calls on a `const` string fail at codegen.
@@ -172,8 +180,12 @@ against these before writing; probe in scratch when unsure.
 - Int-backed newtypes corrupt through generic/mono flows: a fn
   returning `Newtype?` comes back null once instances crossed mono'd
   code. Use single-field STRUCTS for typed ids (`{ index: int }`).
-- `bs2 run` can serve stale library builds silently — trust `make
-  test`, which rebuilds, over ad-hoc `bs2 run` debugging.
+- `bs2 run` can serve stale library builds silently — the
+  `.avra-sha256` sidecars are its freshness truth, and they go stale
+  against edited sources. `make test` is immune (metadata mode);
+  `bs2 run` of the CLI is not. When lib-mode behavior lags an edit,
+  `make clean` (which deletes the sidecars), never ad-hoc cache
+  hunting.
 - `==` between a nullable string and a string is safe (null compares
   false) — for a VARIABLE operand only: a call result compared
   directly (`f() == s`) misses the null guard and SIGSEGVs (#1376).
@@ -206,6 +218,10 @@ against these before writing; probe in scratch when unsure.
   ("undefined method") — traits carry mandatory methods only.
 - Module-level `let` values work within their file but do NOT resolve
   through imports — constants cross modules only as fns.
+- Fns share ONE namespace per module across sibling files: a private
+  fn in one file shadows a same-name import for the WHOLE module
+  (arity clashes, F1001, at unrelated call sites). Check for the
+  name before writing a helper.
 - `dyn` boxing happens ONLY under a typed let. A config-list
   assignment does not box, and a match ARM tail boxes with the WRONG
   vtable (silent mis-dispatch!) — box every impl under

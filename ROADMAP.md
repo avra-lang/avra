@@ -195,6 +195,75 @@ commitments (Axis 9) and the compiler-architecture decisions
   stays as the P7 projection, and a build-speed benchmark lands
   with the switch.
 
+## Milestone 6 — `if`, the structured-IR proof
+
+The riskiest recorded decision — control flow as STRUCTURE, never a
+flat CFG — proven on the smallest construct that forces it, before
+functions multiply the surface. Spec syntax, expression position:
+`if cond { a } else { b }`.
+
+- The IR stays ONE flat list; control flow arrives as Wasm-shaped
+  BRACKETS, exactly the shape ScopeEnter/ScopeExit already chose:
+  `IfStart(cond)` … `Else(gives)` … `IfEnd(dst, gives)`. Each
+  branch names the register it yields; no labels, no jumps, regions
+  reconstructible by matching brackets.
+- Lowering and eval walks become ON-DEMAND: `reg_of`/`value_at`
+  compute a child at first request (memoized), so `if` lowers its
+  branches INSIDE its brackets and eval runs only the taken branch.
+  The contract's names and signatures do not change — laziness is
+  the driver's upgrade. Typing and resolve keep the full post-order:
+  BOTH branches must check. Invariant made law: a node's result
+  register mints AFTER its children's — `binary_reg` reordered.
+- Each branch is a SCOPE to the memory pass, at its enclosing
+  level: branch-bound managed values release at branch exit —
+  except the yielded register, which escapes to the phi and is
+  owned (as `dst`) by the enclosing scope. One allocation, one
+  release, on whichever path ran: memory-as-strategy in anger.
+- Backend: blocks and phi at emission only, the mechanics
+  `bool_word` already proved; `get_insert_block` (already in the
+  wrapper) tracks branch-end blocks for nested ifs.
+- Typing: the condition must be `bool`; the branches must agree —
+  both wordings under `type.mismatch`, golden-tested.
+- Keywords join reserved words in resolve: `let`, `if`, `else`,
+  `true`, `false` refuse as binding names (today `let true = 1`
+  parses and shadows — the gap closes with the feature).
+- Gate: `make test` green plus `native == eval` over branching
+  corpus programs, strings-bound-in-branches included.
+
+LANDED: 196/196 green; `native == eval` across all six corpus
+programs, nested ifs and branch-bound strings included. The
+on-demand walk landed without touching any feature impl but the
+mint-order reorder in `binary_reg`; the memory pass's branch scopes
+release temporaries inside their brackets and the yield escapes to
+the merge, released once at the outer exit.
+
+Then M7 — functions: the locked ABI (callee-cleans, Call/Ret
+carrying levels) and statement semantics joining NodeSemantics.
+
+## The IR doctrine (agreed 2026-08-25)
+
+The backend and memory pass never grow with features — they are
+functions of the IR, and the IR is CLOSED vocabulary. What keeps it
+closed:
+
+- Features lower into existing instructions. A new Ins variant is a
+  CORE event — a new control shape (`if`'s brackets), a new value
+  category, a new memory boundary — reviewed like a spec change,
+  never a feature convenience.
+- Value-producing runtime needs ride `CallRt(dst, callee, args)`:
+  one instruction, one backend arm, callees declared once in
+  declare_runtime. String equality was the proof — its bespoke
+  instruction died the day the pattern generalized.
+- Memory inspects neither features nor callees: managedness is the
+  destination's type SHAPE, strategy is the scope's LEVEL.
+- Print stays keyed by shape — a set that grows with TYPES (a core
+  event by definition), never with features.
+
+M7's Call/Ret are the doctrine's next test: user-level calls carry
+the ABI — levels, callee-cleans — and a call is a control shape,
+so they are core. The day a feature wants its own instruction, the
+answer is CallRt or a design conversation, in that order.
+
 ## The speed doctrine (builds, caches, tests)
 
 Sources: Zig's incremental-compilation internals (mlugg, 2026-07),
@@ -226,6 +295,17 @@ milestone answers to:
   channels — spec Axis 18) for per-file and per-unit parallelism
   the day those land; threads/processes are language features first
   and compiler infrastructure second.
+- SOURCES ARE INPUTS, NEVER OUTPUTS. All cache state lives in ONE
+  root (project-local `.avra-cache/` or a global user cache dir),
+  content-addressed; fast-path validators (mtime+size envelopes)
+  live INSIDE the cache keyed by the source's absolute path, never
+  beside the source. This is how Go (one content-addressed
+  `$GOCACHE`), Cargo (everything under `target/`), and Zig
+  (`.zig-cache/` + global) all do it; Python's `__pycache__` is the
+  cautionary tale and bs2's `.avra-sha256` sidecars are its local
+  rerun — an artifact we tolerate from the bootstrap and NEVER
+  reproduce. One `avra clean` deletes the root; nothing else to
+  hunt.
 - ONE scheduler owns the machine: build work and test work share a
   bounded worker pool (workers = cores, memory-watermarked); an
   artifact two tests need builds ONCE — tests demand it as a query
@@ -313,7 +393,13 @@ into features (or spec commitments) when their milestone comes.
   xs.enumerate()]` — wanted by attach, first_defects, joined.
 - Any expression as a comprehension ELEMENT, generic bodies
   included — if-else elements die there today (F1000); wanted by
-  bind_label.
+  bind_label. Same for the FILTER: `||`/`!` in a comprehension `if`
+  refuse to parse; wanted by the memory pass's releases.
+- Derived structural identity: `fingerprint_expr` is mechanical —
+  tag + payloads + child fingerprints per variant. One source of
+  truth, many projections (P12) says the compiler should DERIVE
+  content hashes from type structure; wanted by every new Expr
+  variant's hand-written fp arm.
 - `it` inside `is`-expressions: `ins.filter(it is .Release)` —
   wanted by every IR test; an explicit lambda today.
 - Or-patterns that BIND when the payloads agree in type:

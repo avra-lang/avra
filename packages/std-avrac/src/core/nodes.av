@@ -23,6 +23,7 @@ export enum Expr {
     BoolLit(value: bool)
     Ident(name: string)
     Binary(op: BinOp, left: ExprId, right: ExprId)
+    If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
 }
@@ -91,25 +92,28 @@ impl NodeStore {
         sa!.cover(sb!)
     }
 
-    /// Content identity: variant + payloads + child fingerprints.
-    /// Spans never participate.
+    /// Content identity: a stable variant tag folded with payloads
+    /// and child fingerprints, in order. Spans never participate.
+    /// Tags are never reused; the next free tag is 11.
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
-            .IntLit(value) -> fp_mix(1, value),
-            .Ident(name) -> fp_mix(2, fp_str(name)),
+            .IntLit(value) -> fp(1, [value]),
+            .Ident(name) -> fp(2, [fp_str(name)]),
             .Binary(op, left, right) ->
-                fp_mix(fp_mix(fp_mix(3, fp_binop(op)), self.expr_fingerprint(left)), self.expr_fingerprint(right)),
-            .Error -> 4,
-            .StrLit(value) -> fp_mix(8, fp_str(value)),
-            .BoolLit(value) -> fp_mix(9, if value { 1 } else { 0 }),
+                fp(3, [fp_binop(op), self.expr_fingerprint(left), self.expr_fingerprint(right)]),
+            .Error -> fp(4, []),
+            .StrLit(value) -> fp(8, [fp_str(value)]),
+            .BoolLit(value) -> fp(9, [if value { 1 } else { 0 }]),
+            .If(cond, on_true, on_false) ->
+                fp(10, [self.expr_fingerprint(cond), self.expr_fingerprint(on_true), self.expr_fingerprint(on_false)]),
         }
     }
 
     fn fingerprint_stmt(self, s: Stmt) -> int {
         match s {
-            .Let(name, value) -> fp_mix(fp_mix(5, fp_str(name)), self.expr_fingerprint(value)),
-            .ExprStmt(value) -> fp_mix(6, self.expr_fingerprint(value)),
-            .Error -> 7,
+            .Let(name, value) -> fp(5, [fp_str(name), self.expr_fingerprint(value)]),
+            .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
+            .Error -> fp(7, []),
         }
     }
 }
@@ -121,6 +125,13 @@ fn fp_binop(op: BinOp) -> int {
         .Eq -> 3,
         .Lt -> 4,
     }
+}
+
+/// A variant tag folded with its parts, in order.
+fn fp(tag: int, parts: List<int>) -> int {
+    mut h = tag
+    for p in parts { h = fp_mix(h, p) }
+    h
 }
 
 /// In-process rolling hash; both operands normalized under a prime so

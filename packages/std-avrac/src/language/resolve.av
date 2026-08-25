@@ -30,6 +30,11 @@ fn reserved() -> List<string> {
      "channel", "select"]
 }
 
+/// Today's grammar anchors: already keywords, never names.
+fn keywords() -> List<string> {
+    ["let", "if", "else", "true", "false"]
+}
+
 type Def = { name: string, stmt: StmtId }
 
 type Resolver = {
@@ -60,10 +65,12 @@ export fn resolve(p: ParsedProgram) -> Resolution {
         }
         let binds: string? = let_name(p.store, s)
         if binds != null {
-            if reserved().contains(binds!) {
-                r.refuse_reserved(binds!, loc_at(p.source.file, p.store.stmt_span(s)))
-            } else {
-                r.bind(binds!, s)
+            when {
+                keywords().contains(binds!) ->
+                    r.refuse_keyword(binds!, loc_at(p.source.file, p.store.stmt_span(s)))
+                reserved().contains(binds!) ->
+                    r.refuse_reserved(binds!, loc_at(p.source.file, p.store.stmt_span(s)))
+                _ -> r.bind(binds!, s)
             }
         }
     }
@@ -109,6 +116,11 @@ impl Resolver {
     fn refuse_reserved(self, name: string, at: Loc?) {
         self.speak(pointed(error_at("resolve.reserved", at, "`${name}` is reserved for a future Avra feature"), "cannot be a name")
             with { help: "pick another name — `${name}` becomes a keyword" })
+    }
+
+    fn refuse_keyword(self, name: string, at: Loc?) {
+        self.speak(pointed(error_at("resolve.reserved", at, "`${name}` is a keyword"), "cannot be a name")
+            with { help: "pick another name" })
     }
 
     fn speak(self, d: Diag) {

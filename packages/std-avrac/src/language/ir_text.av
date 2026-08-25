@@ -1,0 +1,80 @@
+//! The human projection of Lowered IR (P7): brackets as braces, one
+//! instruction per line, registers by mint order. What `avra ir`
+//! prints and the golden tests pin.
+use core.{Ins, Reg, Level, BinOp, joined}
+
+export fn render_ir(l: Lowered) -> string {
+    mut lines: List<string> = []
+    mut depth = 0
+    for i in l.ins {
+        match i {
+            .ScopeEnter(level) -> {
+                lines.push(line(depth, "scope ${level_word(level)} {"))
+                depth = depth + 1
+            }
+            .ScopeExit -> {
+                depth = depth - 1
+                lines.push(line(depth, "}"))
+            }
+            .IfStart(c) -> {
+                lines.push(line(depth, "if r${c.index} {"))
+                depth = depth + 1
+            }
+            .Else(gives) -> {
+                lines.push(line(depth, "yield r${gives.index}"))
+                depth = depth - 1
+                lines.push(line(depth, "} else {"))
+                depth = depth + 1
+            }
+            .IfEnd(dst, gives) -> {
+                lines.push(line(depth, "yield r${gives.index}"))
+                depth = depth - 1
+                lines.push(line(depth, "} -> r${dst.index}"))
+            }
+            .ConstInt(d, v) -> lines.push(line(depth, "r${d.index} = int ${v}")),
+            .ConstStr(d, s) -> lines.push(line(depth, "r${d.index} = str \"${s}\"")),
+            .ConstBool(d, v) -> {
+                let word = if v { "true" } else { "false" }
+                lines.push(line(depth, "r${d.index} = bool ${word}"))
+            }
+            .Bin(d, op, a, b) -> lines.push(line(depth, "r${d.index} = r${a.index} ${op_sym(op)} r${b.index}")),
+            .CallRt(d, callee, args) -> lines.push(line(depth, "r${d.index} = call ${callee}(${reg_list(args)})")),
+            .Release(r) -> lines.push(line(depth, "release r${r.index}")),
+            .Print(src) -> lines.push(line(depth, "print r${src.index}")),
+            .Ret(code) -> lines.push(line(depth, "ret ${code}")),
+        }
+    }
+    joined(lines, "\n")
+}
+
+fn line(depth: int, text: string) -> string {
+    mut s = ""
+    mut k = 0
+    while k < depth {
+        s = "${s}  "
+        k = k + 1
+    }
+    "${s}${text}"
+}
+
+fn level_word(level: Level) -> string {
+    match level {
+        .Application -> "application",
+        .Systems -> "systems",
+        .Bare -> "bare",
+        .Hardware -> "hardware",
+    }
+}
+
+fn op_sym(op: BinOp) -> string {
+    match op {
+        .Add -> "+",
+        .Sub -> "-",
+        .Eq -> "==",
+        .Lt -> "<",
+    }
+}
+
+fn reg_list(args: List<Reg>) -> string {
+    joined(["r${a.index}" for a in args], ", ")
+}

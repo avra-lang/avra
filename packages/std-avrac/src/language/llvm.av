@@ -35,30 +35,28 @@ extern fn avra_llvm_add_incoming(phi: ptr, value: ptr, block: ptr)
 extern fn avra_llvm_build_ret(b: ptr, val: ptr) -> ptr
 extern fn avra_llvm_value_array_new(count: int) -> ptr
 extern fn avra_llvm_value_array_set(arr: ptr, idx: int, val: ptr)
+extern fn avra_llvm_get_insert_block(b: ptr) -> ptr
 extern fn avra_llvm_get_named_function(m: ptr, name: string) -> ptr
 extern fn avra_llvm_fn_type_of(fn_val: ptr) -> ptr
 extern fn avra_llvm_verify_function(fn_val: ptr) -> int
 extern fn avra_llvm_print_module_to_file(m: ptr, path: string) -> int
 extern fn avra_llvm_verify_module_print(m: ptr) -> int
 
-/// One emission's world: the LLVM handles and the growing register
-/// value table (dense by Reg — registers mint in instruction order).
+/// One emission's world: the LLVM handles, the growing register
+/// value table (dense by Reg — registers mint in instruction order),
+/// and the open if-regions, innermost last.
 type Emit = {
     lc: ptr,
     m: ptr,
     b: ptr,
     main_fn: ptr,
     vals: List<ptr>,
+    frames: List<IfFrame>,
 }
 
-/// icmp predicates: eq, slt.
-fn pred_of(op: BinOp) -> int {
-    match op {
-        .Eq -> 32,
-        .Lt -> 40,
-        .Add or .Sub -> 0,
-    }
-}
+/// One open region: where `else` and the merge build, and where the
+/// then-branch ended with what it yields — sealed when Else fires.
+type IfFrame = { else_bb: ptr, merge_bb: ptr, then_end: ptr, then_gives: Reg }
 
 /// Write the program as verified `.ll` text; null means written, a
 /// string is the failure.
@@ -73,6 +71,7 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
         b: avra_llvm_create_builder(lc),
         main_fn: avra_llvm_add_function(m, "main", main_ty),
         vals: [],
+        frames: [],
     }
     declare_runtime(em)
     avra_llvm_position_at_end(em.b, avra_llvm_append_basic_block(lc, em.main_fn, "entry"))
@@ -125,10 +124,13 @@ fn emit_ins(em: Emit, l: Lowered, i: Ins) {
         .ConstBool(_, v) -> define(em, avra_llvm_const_int(avra_llvm_int1_type(em.lc), if v { 1 } else { 0 }, 0)),
         .ConstStr(_, s) -> define(em, avra_llvm_build_global_string_ptr(em.b, s, ".str")),
         .Bin(_, op, a, x) -> define(em, bin_value(em, op, em.vals[a.index], em.vals[x.index])),
-        .StrEq(_, a, x) -> define(em, str_eq_value(em, em.vals[a.index], em.vals[x.index])),
+        .CallRt(dst, callee, args) -> define(em, call_rt_value(em, l, dst, callee, args)),
         .Release(r) -> released(em, r),
         .Print(src) -> printed_value(em, l, src),
         .Ret(code) -> ret_code(em, code),
+        .IfStart(c) -> if_start(em, c),
+        .Else(gives) -> else_branch(em, gives),
+        .IfEnd(dst, gives) -> if_end(em, l, dst, gives),
         .ScopeEnter(_) or .ScopeExit -> nothing(),
     }
 }
@@ -139,18 +141,25 @@ fn define(em: Emit, v: ptr) {
     vs.push(v)
 }
 
+/// icmp predicates by number: 32 eq, 40 slt.
 fn bin_value(em: Emit, op: BinOp, a: ptr, b: ptr) -> ptr {
     match op {
         .Add -> avra_llvm_build_add(em.b, a, b, "add"),
         .Sub -> avra_llvm_build_sub(em.b, a, b, "sub"),
-        .Eq or .Lt -> avra_llvm_build_icmp(em.b, pred_of(op), a, b, "cmp"),
+        .Eq -> avra_llvm_build_icmp(em.b, 32, a, b, "cmp"),
+        .Lt -> avra_llvm_build_icmp(em.b, 40, a, b, "cmp"),
     }
 }
 
-/// Runtime value equality, narrowed to i1.
-fn str_eq_value(em: Emit, a: ptr, b: ptr) -> ptr {
-    let raw = call(em, "avra_streq", [a, b])
-    avra_llvm_build_icmp(em.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(em.lc), 0, 0), "streq")
+/// A runtime call, generic over every callee declare_runtime names.
+/// The runtime speaks i64 for truth; a bool-shaped register narrows
+/// to i1.
+fn call_rt_value(em: Emit, l: Lowered, dst: Reg, callee: string, args: List<Reg>) -> ptr {
+    let raw = call(em, callee, [em.vals[a.index] for a in args])
+    if l.types.shape_of(l.reg_types[dst.index]) is .Bool {
+        return avra_llvm_build_icmp(em.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(em.lc), 0, 0), "b")
+    }
+    raw
 }
 
 fn released(em: Emit, r: Reg) {
@@ -202,4 +211,50 @@ fn bool_word(em: Emit, v: ptr) -> ptr {
 
 fn ret_code(em: Emit, code: int) {
     let _ = avra_llvm_build_ret(em.b, avra_llvm_const_int(avra_llvm_int32_type(em.lc), code, 0))
+}
+
+/// Open the region: branch on the condition, build into `then`. The
+/// frame's then-fields are placeholders until Else seals them.
+fn if_start(em: Emit, c: Reg) {
+    let then_bb = avra_llvm_append_basic_block(em.lc, em.main_fn, "then")
+    let else_bb = avra_llvm_append_basic_block(em.lc, em.main_fn, "else")
+    let merge_bb = avra_llvm_append_basic_block(em.lc, em.main_fn, "endif")
+    let _ = avra_llvm_build_cond_br(em.b, em.vals[c.index], then_bb, else_bb)
+    avra_llvm_position_at_end(em.b, then_bb)
+    mut fs = em.frames
+    fs.push(IfFrame { else_bb: else_bb, merge_bb: merge_bb, then_end: then_bb, then_gives: Reg { index: 0 } })
+}
+
+/// Seal `then` — where it ended, what it yields — and build into
+/// `else`. Nested regions moved the insert block; ask, never assume.
+fn else_branch(em: Emit, gives: Reg) {
+    mut fs = em.frames
+    let f = fs.pop()
+    let sealed = f with { then_end: avra_llvm_get_insert_block(em.b), then_gives: gives }
+    let _ = avra_llvm_build_br(em.b, f.merge_bb)
+    avra_llvm_position_at_end(em.b, f.else_bb)
+    fs.push(sealed)
+}
+
+/// Seal `else` and merge: the phi over both yields is the if's
+/// register.
+fn if_end(em: Emit, l: Lowered, dst: Reg, gives: Reg) {
+    mut fs = em.frames
+    let f = fs.pop()
+    let else_end = avra_llvm_get_insert_block(em.b)
+    let _ = avra_llvm_build_br(em.b, f.merge_bb)
+    avra_llvm_position_at_end(em.b, f.merge_bb)
+    let phi = avra_llvm_build_phi(em.b, reg_type(em, l, dst), "ifval")
+    avra_llvm_add_incoming(phi, em.vals[f.then_gives.index], f.then_end)
+    avra_llvm_add_incoming(phi, em.vals[gives.index], else_end)
+    define(em, phi)
+}
+
+/// A register's LLVM type, by its shape.
+fn reg_type(em: Emit, l: Lowered, r: Reg) -> ptr {
+    match l.types.shape_of(l.reg_types[r.index]) {
+        .Int or .Error -> avra_llvm_int64_type(em.lc),
+        .Bool -> avra_llvm_int1_type(em.lc),
+        .Str -> avra_llvm_pointer_type(em.lc),
+    }
 }

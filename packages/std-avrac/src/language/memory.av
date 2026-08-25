@@ -20,17 +20,32 @@ export fn memory(l: Lowered) -> Lowered {
             }
             .ScopeExit -> {
                 let scope = open_scopes.pop()
-                for r in releases_for(scope) { out.push(Ins.Release(r)) }
+                for r in releases_for(scope, null) { out.push(Ins.Release(r)) }
+                out.push(i)
+            }
+            // A branch is a scope at its enclosing level. Its yield
+            // escapes to the merge: the branch never releases it —
+            // the enclosing scope owns `dst`, the merge of both.
+            .IfStart(_) -> {
+                open_scopes.push(Scope { level: enclosing_level(open_scopes), managed: [] })
+                out.push(i)
+            }
+            .Else(gives) -> {
+                let scope = open_scopes.pop()
+                for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
+                open_scopes.push(Scope { level: enclosing_level(open_scopes), managed: [] })
+                out.push(i)
+            }
+            .IfEnd(_, gives) -> {
+                let scope = open_scopes.pop()
+                for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
+                manage(l, open_scopes, i)
                 out.push(i)
             }
             .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-            .Bin(_, _, _, _) or .StrEq(_, _, _) or .Release(_) or
+            .Bin(_, _, _, _) or .CallRt(_, _, _) or .Release(_) or
             .Print(_) or .Ret(_) -> {
-                let dst: Reg? = managed_dst(l, i)
-                if dst != null && !open_scopes.is_empty() {
-                    mut top = open_scopes[open_scopes.length - 1].managed
-                    top.push(dst!)
-                }
+                manage(l, open_scopes, i)
                 out.push(i)
             }
         }
@@ -38,11 +53,37 @@ export fn memory(l: Lowered) -> Lowered {
     l with { ins: out }
 }
 
-/// The strategy: what a scope owes at its exit.
-fn releases_for(scope: Scope) -> List<Reg> {
+/// The level a new scope inherits — its innermost open enclosure.
+fn enclosing_level(open_scopes: List<Scope>) -> Level {
+    if open_scopes.is_empty() { return Level.Application }
+    open_scopes[open_scopes.length - 1].level
+}
+
+/// The strategy: what a scope owes at its exit. `kept` is a value
+/// that escapes the scope and is owned elsewhere.
+fn releases_for(scope: Scope, kept: Reg?) -> List<Reg> {
     match scope.level {
-        .Application -> reversed(scope.managed),
+        .Application -> kept_out(reversed(scope.managed), kept),
         .Systems or .Bare or .Hardware -> [],
+    }
+}
+
+/// All but the escaping register.
+fn kept_out(rs: List<Reg>, kept: Reg?) -> List<Reg> {
+    mut out: List<Reg> = []
+    for r in rs {
+        if kept == null || r.index != kept!.index { out.push(r) }
+    }
+    out
+}
+
+/// When `i` defines a managed value, the innermost open scope takes
+/// ownership of its destination.
+fn manage(l: Lowered, open_scopes: List<Scope>, i: Ins) {
+    let dst: Reg? = managed_dst(l, i)
+    if dst != null && !open_scopes.is_empty() {
+        mut top = open_scopes[open_scopes.length - 1].managed
+        top.push(dst!)
     }
 }
 
@@ -51,6 +92,8 @@ fn releases_for(scope: Scope) -> List<Reg> {
 fn managed_dst(l: Lowered, i: Ins) -> Reg? {
     let dst: Reg? = match i {
         .ConstStr(d, _) -> d,
+        .CallRt(d, _, _) -> d,
+        .IfEnd(d, _) -> d,
         _ -> null,
     }
     match dst {
