@@ -8,7 +8,12 @@ BS2       := $(abspath $(BOOTSTRAP))/build/bs2
 
 RUNTIME_OBJS := build/runtime.o build/llvm_wrapper.o
 
-.PHONY: test clean
+.PHONY: test clean fresh
+
+# bs2's lib-mode freshness truth is the .avra-sha256 sidecars; they
+# go stale against edits. Every bs2-run target clears them first.
+fresh:
+	@find packages -name "*.avra-sha256" -delete
 
 test: $(RUNTIME_OBJS)
 	$(BS2) test
@@ -23,21 +28,24 @@ clean:
 	find packages -name "*.av.ll" -delete
 	rm -rf packages/*/build
 
-check: $(RUNTIME_OBJS)
+check: fresh $(RUNTIME_OBJS)
 	@$(BS2) run packages/cli/src/main.av -- check $(FILE)
 
-run: $(RUNTIME_OBJS)
+run: fresh $(RUNTIME_OBJS)
 	@$(BS2) run packages/cli/src/main.av -- run $(FILE)
 
-emit: $(RUNTIME_OBJS)
+ir: fresh $(RUNTIME_OBJS)
+	@$(BS2) run packages/cli/src/main.av -- ir $(FILE)
+
+emit: fresh $(RUNTIME_OBJS)
 	@$(BS2) run packages/cli/src/main.av -- emit $(FILE)
 
-build-native: $(RUNTIME_OBJS)
+build-native: fresh $(RUNTIME_OBJS)
 	@$(BS2) run packages/cli/src/main.av -- build $(FILE)
 
 # The differential gate: the compiled binary must say exactly what
 # the evaluator says.
-native-check: $(RUNTIME_OBJS)
+native-check: fresh $(RUNTIME_OBJS)
 	@$(BS2) run packages/cli/src/main.av -- run $(FILE) > /tmp/avra-eval.out
 	@$(BS2) run packages/cli/src/main.av -- build $(FILE) > /tmp/avra-bin.path
 	@$$(cat /tmp/avra-bin.path) > /tmp/avra-native.out

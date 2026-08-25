@@ -2,7 +2,7 @@
 //! a Runnable (behaviour); the App parses argv and dispatches.
 //! Exit 0 clean, 1 diagnostics, 2 usage or missing file.
 use @std.cli.{App, Subcommand, CommandSpec, CliResult, Runnable, ArgDef, result_get_arg}
-use @std.avrac.language.{avra, emit_ll}
+use @std.avrac.language.{avra, emit_ll, render_ir}
 use @std.avrac.diagnostics.{new_source_file, SourceFile}
 
 extern fn avra_selfhost_read_file(path: string) -> string
@@ -52,6 +52,38 @@ impl Runnable for RunCmd {
                 1
             }
         }
+    }
+}
+
+type IrCmd = { }
+
+impl Runnable for IrCmd {
+    fn run(self, args: CliResult) -> int {
+        let src: SourceFile? = source_arg(args)
+        if src == null { return 2 }
+        let a = avra().analyze(src!)
+        if !a.clean() {
+            println(a.report())
+            return 1
+        }
+        println(render_ir(a.lowered()))
+        0
+    }
+}
+
+type ExplainCmd = { }
+
+impl Runnable for ExplainCmd {
+    fn run(self, args: CliResult) -> int {
+        let q = result_get_arg(args, "code")
+        for c in avra().codes {
+            if c.id == q || c.kind == q {
+                println("${c.id} ${c.kind} — ${c.summary}")
+                return 0
+            }
+        }
+        eprintln("avra: nothing registered under `${q}`")
+        1
     }
 }
 
@@ -121,7 +153,19 @@ fn binary_name(ll_path: string) -> string {
     if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
 }
 
-/// Every avra subcommand takes exactly one source-file argument.
+/// The one subcommand that takes a code, not a file.
+fn explain_command() -> CommandSpec {
+    CommandSpec {
+        name: "explain",
+        description: "What a diagnostic code means",
+        hidden: false,
+        flags: [],
+        args: [ArgDef { name: "code", description: "an F-code or a kind", required: true, variadic: false }],
+        options: [],
+    }
+}
+
+/// Every other avra subcommand takes exactly one source-file argument.
 fn file_command(name: string, description: string) -> CommandSpec {
     CommandSpec {
         name: name,
@@ -135,6 +179,8 @@ fn file_command(name: string, description: string) -> CommandSpec {
 
 fn main() {
     let check_body: CheckCmd = CheckCmd { }
+    let ir_body: IrCmd = IrCmd { }
+    let explain_body: ExplainCmd = ExplainCmd { }
     let run_body: RunCmd = RunCmd { }
     let emit_body: EmitCmd = EmitCmd { }
     let build_body: BuildCmd = BuildCmd { }
@@ -146,6 +192,9 @@ fn main() {
             meta: file_command("check", "Report everything wrong with a source file"),
             body: check_body,
         }, Subcommand {
+            meta: file_command("ir", "Print a program's IR, regions as brackets"),
+            body: ir_body,
+        }, Subcommand {
             meta: file_command("emit", "Print a program's verified LLVM module"),
             body: emit_body,
         }, Subcommand {
@@ -154,6 +203,9 @@ fn main() {
         }, Subcommand {
             meta: file_command("run", "Run a program and print its value"),
             body: run_body,
+        }, Subcommand {
+            meta: explain_command(),
+            body: explain_body,
         }],
     }
     avra_process_exit(app.run())
