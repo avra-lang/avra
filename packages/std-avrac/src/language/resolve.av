@@ -21,6 +21,15 @@ export fn target_of(r: Resolution, e: ExprId) -> StmtId? {
     r.targets[e.index]
 }
 
+/// Words the spec reserves for future levels, memory, and
+/// concurrency: refusing them as names today means they become
+/// keywords tomorrow without breaking any program.
+fn reserved() -> List<string> {
+    ["systems", "bare", "hardware", "owned", "borrow", "move",
+     "level", "unsafe", "extern", "async", "spawn", "await",
+     "channel", "select"]
+}
+
 type Def = { name: string, stmt: StmtId }
 
 type Resolver = {
@@ -46,20 +55,19 @@ export fn resolve(p: ParsedProgram) -> Resolution {
     }
     for s in p.stmts {
         let value: ExprId? = stmt_value(p.store, s)
-        if value != null { resolve_visit(r, cx, value!) }
+        if value != null {
+            for e in post_order(p.store, value!) { semantics_of(p.store.expr(e)).resolve(cx, e) }
+        }
         let binds: string? = let_name(p.store, s)
-        if binds != null { r.bind(binds!, s) }
+        if binds != null {
+            if reserved().contains(binds!) {
+                r.refuse_reserved(binds!, loc_at(p.source.file, p.store.stmt_span(s)))
+            } else {
+                r.bind(binds!, s)
+            }
+        }
     }
     Resolution { targets: r.targets, diagnostics: r.diagnostics }
-}
-
-/// Post-order walk: children through the owner's `kids`, then the
-/// owner speaks for the node.
-fn resolve_visit(r: Resolver, cx: ResolveCx, e: ExprId) {
-    let node = r.p.store.expr(e)
-    let sem = semantics_of(node)
-    for k in sem.kids(node) { resolve_visit(r, cx, k) }
-    sem.resolve(cx, e)
 }
 
 /// Every definition in the program, in order.
@@ -74,6 +82,10 @@ fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
 
 impl Resolver {
     fn resolve_name(self, e: ExprId, name: string) {
+        if reserved().contains(name) {
+            self.refuse_reserved(name, self.loc_of(e))
+            return
+        }
         let found: StmtId? = self.visible.get(name)
         if found != null {
             mut ts = self.targets
@@ -92,6 +104,11 @@ impl Resolver {
         self.speak(self.suggested(
             pointed(error_at("resolve.unresolved", at, "`${name}` is not defined"), "not defined anywhere in this program"),
             e, name))
+    }
+
+    fn refuse_reserved(self, name: string, at: Loc?) {
+        self.speak(pointed(error_at("resolve.reserved", at, "`${name}` is reserved for a future Avra feature"), "cannot be a name")
+            with { help: "pick another name — `${name}` becomes a keyword" })
     }
 
     fn speak(self, d: Diag) {

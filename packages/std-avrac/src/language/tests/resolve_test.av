@@ -1,20 +1,16 @@
 // The first pass: uses resolve to definition sites, shadowing takes
 // the latest, and an unresolved name earns the milestone error —
 // kind, code, window, pointer, and a graded suggestion.
-use @std.avrac.language.{avra, parse_source, resolve, target_of}
+use @std.avrac.language.{avra, parse_source, resolve, target_of, stmt_value}
 use @std.errors.{Confidence}
 use @std.avrac.diagnostics.{new_source_file}
-use @std.avrac.core.{ExprId}
 
 spec "language/resolve" {
     given "resolution facts" {
         then "a use resolves to its definition site" {
             let p = parse_source("let x = 1\nx")
             let r = resolve(p)
-            let use_expr = match p.store.stmt(p.stmts[1]) {
-                .ExprStmt(v) -> v,
-                .Let(_, value) -> value, .Error -> value_missing(),
-            }
+            let use_expr = stmt_value(p.store, p.stmts[1])!
             r.diagnostics.is_empty() &&
                 target_of(r, use_expr) != null &&
                 target_of(r, use_expr)!.index == p.stmts[0].index
@@ -22,11 +18,7 @@ spec "language/resolve" {
         then "a later let shadows an earlier one" {
             let p = parse_source("let x = 1\nlet x = 2\nx")
             let r = resolve(p)
-            let use_expr = match p.store.stmt(p.stmts[2]) {
-                .ExprStmt(v) -> v,
-                .Let(_, value) -> value, .Error -> value_missing(),
-            }
-            target_of(r, use_expr)!.index == p.stmts[1].index
+            target_of(r, stmt_value(p.store, p.stmts[2])!)!.index == p.stmts[1].index
         }
     }
     given "unresolved names" {
@@ -54,6 +46,27 @@ spec "language/resolve" {
             let rf = resolve(far)
             rn.diagnostics[0].suggestions[0].confidence == Confidence.Medium &&
                 rf.diagnostics[0].suggestions.is_empty() && rf.diagnostics[0].help == null
+        }
+    }
+    given "reserved words" {
+        then "binding one is refused as reserved" {
+            let r = resolve(parse_source("let systems = 1"))
+            r.diagnostics.length == 1 && r.diagnostics[0].kind == "resolve.reserved"
+        }
+        then "using one is reserved, never a typo hunt" {
+            let r = resolve(parse_source("spawn"))
+            r.diagnostics.length == 1 && r.diagnostics[0].kind == "resolve.reserved"
+        }
+        then "the rendering names the future keyword" {
+            let lang = avra()
+            let expected = """error[F3002]: `bare` is reserved for a future Avra feature
+  ╭─[app.av:1:1]
+1 │ let bare = 1
+  · ┬
+  · ╰── cannot be a name
+──╯
+help: pick another name — `bare` becomes a keyword"""
+            lang.check(new_source_file("app.av", "let bare = 1")) == expected
         }
     }
     given "use before definition, rendered" {
@@ -87,9 +100,4 @@ help: did you mean `x`?"""
             lang.check(new_source_file("app.av", "let x = 1 + y")) == expected
         }
     }
-}
-
-/// Unreachable arm filler: a poisoned id no test asserts against.
-fn value_missing() -> ExprId {
-    ExprId { index: 0 - 1 }
 }
