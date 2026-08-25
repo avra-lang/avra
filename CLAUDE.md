@@ -105,7 +105,8 @@ against these before writing; probe in scratch when unsure.
   as variable and method names.
 - `contains`/`index_of` compare non-string elements by IDENTITY —
   enum/struct values in lists need a semantic `==` scan (enumerate +
-  compare); only string elements get value equality.
+  compare); only string elements get value equality. `==` between two
+  LISTS is not value equality either — assert length + per-element.
 - No `mut` parameters — in-place-mutating helpers are inexpressible.
 - Generics infer ONLY from direct call arguments: not sibling fields,
   not return types. Pin with typed constructor fns

@@ -1,0 +1,137 @@
+//! Finds DEAD BRANCHES in a grammar before anything parses with it.
+//!
+//! The parser picks between a rule's branches by the next token
+//! only: the first branch that can start with it wins, the rest are
+//! never tried. So a branch is dead when an earlier branch can start
+//! with the same token — and nothing chose that, it fell out of
+//! merge order. This file computes which tokens each branch can
+//! start with, and refuses the grammar when:
+//!   - two branches of a rule can start with the same token,
+//!   - a branch can match nothing and is not last (it always wins),
+//!   - a keyword like `"let"` sits AFTER a NAME branch — NAME also
+//!     matches the word `let`, so the keyword never fires. The other
+//!     order (keyword first) is how keywords work, and passes,
+//!   - a rule starts with itself — the parser would recurse forever.
+//!
+//! Rules only: this guards what feature merging builds. Alternatives
+//! inside one branch's groups are written by one author in one place.
+use core.{code_at, is_name_start, is_digit}
+
+/// What a branch can begin with, and whether it can begin with
+/// nothing at all.
+type FirstSet = { lits: List<string>, terms: List<string>, nullable: bool }
+
+type FirstCx = { g: Grammar, visiting: List<string>, defects: List<Diagnostic> }
+
+impl FirstCx {
+    fn rule_first(self, name: string) -> FirstSet {
+        if self.visiting.contains(name) {
+            mut ds = self.defects
+            ds.push(defect(name, "rule is left-recursive — no first token can ever commit"))
+            return FirstSet { lits: [], terms: [], nullable: false }
+        }
+        // An undefined ref is validate's defect, not a first set.
+        let body: Alt? = self.g.rules.find(it.name == name)?.body
+        match body {
+            null -> FirstSet { lits: [], terms: [], nullable: false },
+            let a -> {
+                mut v = self.visiting
+                v.push(name)
+                let f = self.alt_first(a)
+                let _ = v.pop()
+                f
+            }
+        }
+    }
+
+    fn alt_first(self, a: Alt) -> FirstSet {
+        mut out = FirstSet { lits: [], terms: [], nullable: false }
+        for s in a.branches { out = first_union(out, self.seq_first(s)) }
+        out
+    }
+
+    /// Walk items left to right: a skippable item's tokens join the
+    /// set and the walk continues; the first required item ends it.
+    /// All items skippable means the branch can match nothing.
+    fn seq_first(self, s: Seq) -> FirstSet {
+        mut out = FirstSet { lits: [], terms: [], nullable: false }
+        for m in s.items {
+            let f = self.prim_first(m.prim)
+            out = FirstSet {
+                lits: union_expected(out.lits, f.lits),
+                terms: union_expected(out.terms, f.terms),
+                nullable: false,
+            }
+            let skippable = m.rep == Rep.Opt || m.rep == Rep.Star || f.nullable
+            if !skippable { return out }
+        }
+        out with { nullable: true }
+    }
+
+    fn prim_first(self, p: Prim) -> FirstSet {
+        match p {
+            .Lit(text) -> FirstSet { lits: [text], terms: [], nullable: false },
+            .Named(term) -> FirstSet { lits: [], terms: [term], nullable: false },
+            .Ref(target) -> self.rule_first(target),
+            .Group(inner) -> self.alt_first(inner),
+        }
+    }
+}
+
+fn first_union(a: FirstSet, b: FirstSet) -> FirstSet {
+    FirstSet {
+        lits: union_expected(a.lits, b.lits),
+        terms: union_expected(a.terms, b.terms),
+        nullable: a.nullable || b.nullable,
+    }
+}
+
+/// The token class that would also match this literal's text:
+/// `"let"` is also a NAME, `"42"` is also a NUMBER.
+fn subsuming_term(text: string) -> string? {
+    if text.length == 0 { return null }
+    let c = code_at(text, 0)
+    if is_name_start(c) { return "NAME" }
+    if is_digit(c) { return "NUMBER" }
+    null
+}
+
+/// Every dead branch in the grammar, each defect saying why.
+export fn first_defects(g: Grammar) -> List<Diagnostic> {
+    let cx = FirstCx { g: g, visiting: [], defects: [] }
+    for r in g.rules {
+        mut firsts: List<FirstSet> = []
+        for s in r.body.branches { firsts.push(cx.seq_first(s)) }
+        for (i, fi) in firsts.enumerate() {
+            if fi.nullable && i < firsts.length - 1 {
+                mut ds = cx.defects
+                ds.push(defect(r.name, "branch ${i + 1} can match empty input — every later branch is unreachable"))
+            }
+            for (j, fj) in firsts.enumerate() {
+                if j > i { overlap_defects(cx, r.name, i, fi, j, fj) }
+            }
+        }
+    }
+    cx.defects
+}
+
+/// An earlier branch's start tokens against a later branch's: any
+/// shared token — or a general token before a keyword it also
+/// matches — makes the later branch dead.
+fn overlap_defects(cx: FirstCx, rule_name: string, i: int, fi: FirstSet, j: int, fj: FirstSet) {
+    mut ds = cx.defects
+    for l in fj.lits {
+        if fi.lits.contains(l) {
+            ds.push(defect(rule_name, "branches ${i + 1} and ${j + 1} both begin with `${l}` — branch ${j + 1} is unreachable"))
+        }
+        let sub: string? = subsuming_term(l)
+        if sub != null && fi.terms.contains(sub!) {
+            ds.push(defect(rule_name, "branch ${j + 1}'s `${l}` is shadowed by branch ${i + 1}'s ${sub!} — anchor the literal branch first"))
+        }
+    }
+    for t in fj.terms {
+        if fi.terms.contains(t) {
+            ds.push(defect(rule_name, "branches ${i + 1} and ${j + 1} both begin with ${t} — branch ${j + 1} is unreachable"))
+        }
+    }
+}
