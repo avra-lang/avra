@@ -1,6 +1,6 @@
 //! Coherence: the composed grammar, the feature tables, and the code
 //! registry must agree before any source parses.
-use core.{concat, joined, contains_str}
+use core.{concat, joined}
 use grammar.{Grammar, Alt, Prim, Build, Diagnostic, defect}
 use diagnostics.{DiagCode}
 
@@ -17,9 +17,7 @@ export fn builder_defects(features: List<LanguageFeature>, g: Grammar) -> List<D
 /// order, by construction.
 fn registrar_of(features: List<LanguageFeature>, name: string) -> string? {
     for f in features {
-        for row in f.builders {
-            if row.name == name { return f.name }
-        }
+        if f.builders.any(it.name == name) { return f.name }
     }
     null
 }
@@ -52,14 +50,12 @@ fn duplicate_defects(features: List<LanguageFeature>) -> List<Diagnostic> {
 
 /// A build call no feature answers names the rule and the search.
 fn unregistered_defects(features: List<LanguageFeature>, g: Grammar) -> List<Diagnostic> {
-    let feature_names = features.map(it.name)
+    let searched = joined(features.map(it.name), ", ")
     mut out: List<Diagnostic> = []
     for r in g.rules {
-        for name in call_names_in_alt(r.body) {
-            if registrar_of(features, name) == null {
-                out.push(defect(r.name, "no feature registers builder `${name}` (searched ${joined(feature_names, ", ")})"))
-            }
-        }
+        let missing = [defect(r.name, "no feature registers builder `${name}` (searched ${searched})")
+            for name in call_names_in_alt(r.body) if registrar_of(features, name) == null]
+        out = concat(out, missing)
     }
     out
 }
@@ -68,11 +64,9 @@ fn unregistered_defects(features: List<LanguageFeature>, g: Grammar) -> List<Dia
 fn dead_defects(features: List<LanguageFeature>, referenced: Map<string, bool>) -> List<Diagnostic> {
     mut out: List<Diagnostic> = []
     for f in features {
-        for row in f.builders {
-            if referenced.get(row.name) == null {
-                out.push(defect(f.name, "builder `${row.name}` is never called by any grammar rule"))
-            }
-        }
+        let dead = [defect(f.name, "builder `${row.name}` is never called by any grammar rule")
+            for row in f.builders if referenced.get(row.name) == null]
+        out = concat(out, dead)
     }
     out
 }
@@ -100,9 +94,7 @@ fn call_names_in_alt(a: Alt) -> List<string> {
 fn call_names_in_prim(p: Prim) -> List<string> {
     match p {
         .Group(inner) -> call_names_in_alt(inner),
-        .Ref(_) -> [],
-        .Lit(_) -> [],
-        .Named(_) -> [],
+        .Ref(_) or .Lit(_) or .Named(_) -> [],
     }
 }
 
@@ -111,10 +103,10 @@ export fn code_defects(codes: List<DiagCode>) -> List<Diagnostic> {
     mut seen: List<string> = []
     mut out: List<Diagnostic> = []
     for c in codes {
-        if contains_str(seen, c.kind) {
+        if seen.contains(c.kind) {
             out.push(defect(c.kind, "diagnostic kind is registered more than once"))
         }
-        if contains_str(seen, c.id) {
+        if seen.contains(c.id) {
             out.push(defect(c.id, "diagnostic code is registered more than once"))
         }
         seen.push(c.kind)

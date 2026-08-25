@@ -7,6 +7,12 @@ use @std.avrac.diagnostics.{code_for}
 use @std.avrac.diagnostics.{DiagCode}
 use @std.avrac.features.{LanguageFeature, feature}
 
+/// True when a cause's projected kind is in the built-in registry.
+fn cause_registered(c: Cause) -> bool {
+    let d = Diagnostic { cause: c, message: "m", span: null, expected: [], in_rule: "r" }
+    code_for(builtin_codes(), project(d, null).kind) != null
+}
+
 /// A feature whose registered code collides with a built-in kind.
 fn clashing() -> LanguageFeature {
     let rows = table<DiagCode> {
@@ -20,9 +26,9 @@ spec "language" {
     given "the canonical language" {
         then "it assembles with no defects and the builtin registry" {
             let lang = assemble(language_features())
-            lang.grammar != null && lang.diagnostics.length == 0 &&
-                lang.codes.length == 5 && lang.codes[1].kind == "parse.expected" &&
-                lang.codes[1].id == "F0100"
+            lang.grammar != null && lang.diagnostics.is_empty() &&
+                lang.codes.length == 7 && lang.codes[1].kind == "parse.expected" &&
+                lang.codes[1].id == "F0100" && lang.codes[5].id == "F3000"
         }
         then "a feature registering a taken kind refuses assembly" {
             mut feats = [f for f in language_features()]
@@ -47,12 +53,7 @@ spec "language" {
     given "the code table" {
         then "every engine cause projects to a registered kind" {
             let causes = [Cause.Lex, Cause.Expected, Cause.Trailing, Cause.Builder, Cause.Defect]
-            mut ok = true
-            for c in causes {
-                let d = Diagnostic { cause: c, message: "m", span: null, expected: [], in_rule: "r" }
-                if code_for(builtin_codes(), project(d, null).kind) == null { ok = false }
-            }
-            ok
+            causes.all(cause_registered(it))
         }
     }
     given "a well-formed program" {
@@ -60,9 +61,9 @@ spec "language" {
             let p = parse_source("let x = 1 + y\nx")
             let let_ok = match p.store.stmt(p.stmts[0]) {
                 .Let(name, _) -> name == "x",
-                .ExprStmt(_) -> false, .Error -> false,
+                .ExprStmt(_) or .Error -> false,
             }
-            p.diagnostics.length == 0 && p.stmts.length == 2 && let_ok &&
+            p.diagnostics.is_empty() && p.stmts.length == 2 && let_ok &&
                 p.store.stmt(p.stmts[1]) is .ExprStmt
         }
     }
@@ -73,7 +74,7 @@ spec "language" {
             let tail_ok = if p.stmts.length == 3 {
                 match p.store.stmt(p.stmts[2]) {
                     .Let(name, _) -> name == "y",
-                    .ExprStmt(_) -> false, .Error -> false,
+                    .ExprStmt(_) or .Error -> false,
                 }
             } else { false }
             p.diagnostics.length == 1 && hole_ok && tail_ok

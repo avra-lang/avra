@@ -46,140 +46,99 @@ fn ok(g: GrammarNode) -> Result<Captured<GrammarNode>, string> {
     Result.Ok(Captured.Node(g))
 }
 
-// ── Per-kind extractors: a capture's payload, or null. ──
+// ── Per-kind extractors: a capture's payload, or null. The Captured
+// unwrap lives in `node_of` ONCE; each extractor asks only its own
+// variant question. ──
 
 fn tok_of(v: Captured<GrammarNode>) -> Token? {
     match v {
         .Terminal(t) -> t,
-        .Node(_) -> null,
-        .Many(_) -> null,
-        .Absent -> null,
+        _ -> null,
+    }
+}
+
+/// The built node inside a capture, when it is one.
+fn node_of(v: Captured<GrammarNode>) -> GrammarNode? {
+    match v {
+        .Node(g) -> g,
+        _ -> null,
     }
 }
 
 fn alt_of(v: Captured<GrammarNode>) -> Alt? {
-    match v {
-        .Node(g) -> match g {
+    let g: GrammarNode? = node_of(v)
+    match g {
+        null -> null,
+        let n -> match n {
             .NAlt(a) -> a,
-            .NGrammar(_) -> null,
-            .NRule(_) -> null,
-            .NSeq(_) -> null,
-            .NItem(_) -> null,
-            .NPrim(_) -> null,
-            .NBuild(_) -> null,
-            .NAnnot(_) -> null,
+            _ -> null,
         },
-        .Terminal(_) -> null,
-        .Many(_) -> null,
-        .Absent -> null,
     }
 }
 
 fn prim_of(v: Captured<GrammarNode>) -> Prim? {
-    match v {
-        .Node(g) -> match g {
+    let g: GrammarNode? = node_of(v)
+    match g {
+        null -> null,
+        let n -> match n {
             .NPrim(p) -> p,
-            .NGrammar(_) -> null,
-            .NRule(_) -> null,
-            .NAlt(_) -> null,
-            .NSeq(_) -> null,
-            .NItem(_) -> null,
-            .NBuild(_) -> null,
-            .NAnnot(_) -> null,
+            _ -> null,
         },
-        .Terminal(_) -> null,
-        .Many(_) -> null,
-        .Absent -> null,
     }
 }
 
 fn item_of(v: Captured<GrammarNode>) -> Item? {
-    match v {
-        .Node(g) -> match g {
+    let g: GrammarNode? = node_of(v)
+    match g {
+        null -> null,
+        let n -> match n {
             .NItem(m) -> m,
-            .NGrammar(_) -> null,
-            .NRule(_) -> null,
-            .NAlt(_) -> null,
-            .NSeq(_) -> null,
-            .NPrim(_) -> null,
-            .NBuild(_) -> null,
-            .NAnnot(_) -> null,
+            _ -> null,
         },
-        .Terminal(_) -> null,
-        .Many(_) -> null,
-        .Absent -> null,
     }
 }
 
 fn seq_of(v: Captured<GrammarNode>) -> Seq? {
-    match v {
-        .Node(g) -> match g {
+    let g: GrammarNode? = node_of(v)
+    match g {
+        null -> null,
+        let n -> match n {
             .NSeq(sq) -> sq,
-            .NGrammar(_) -> null,
-            .NRule(_) -> null,
-            .NAlt(_) -> null,
-            .NItem(_) -> null,
-            .NPrim(_) -> null,
-            .NBuild(_) -> null,
-            .NAnnot(_) -> null,
+            _ -> null,
         },
-        .Terminal(_) -> null,
-        .Many(_) -> null,
-        .Absent -> null,
     }
 }
 
 fn rule_of(v: Captured<GrammarNode>) -> Rule? {
-    match v {
-        .Node(g) -> match g {
+    let g: GrammarNode? = node_of(v)
+    match g {
+        null -> null,
+        let n -> match n {
             .NRule(r) -> r,
-            .NGrammar(_) -> null,
-            .NAlt(_) -> null,
-            .NSeq(_) -> null,
-            .NItem(_) -> null,
-            .NPrim(_) -> null,
-            .NBuild(_) -> null,
-            .NAnnot(_) -> null,
+            _ -> null,
         },
-        .Terminal(_) -> null,
-        .Many(_) -> null,
-        .Absent -> null,
     }
 }
 
 fn build_of(v: Captured<GrammarNode>) -> Build? {
-    match v {
-        .Node(g) -> match g {
+    let g: GrammarNode? = node_of(v)
+    match g {
+        null -> null,
+        let n -> match n {
             .NBuild(b) -> b,
-            .NGrammar(_) -> null,
-            .NRule(_) -> null,
-            .NAlt(_) -> null,
-            .NSeq(_) -> null,
-            .NItem(_) -> null,
-            .NPrim(_) -> null,
-            .NAnnot(_) -> null,
+            _ -> null,
         },
-        .Terminal(_) -> null,
-        .Many(_) -> null,
-        .Absent -> null,
     }
 }
 
 fn annot_of(v: Captured<GrammarNode>) -> PendingAnnot? {
-    match v {
-        .Node(g) -> match g {
+    let g: GrammarNode? = node_of(v)
+    match g {
+        null -> null,
+        let n -> match n {
             .NAnnot(an) -> an,
-            .NGrammar(_) -> null,
-            .NRule(_) -> null,
-            .NAlt(_) -> null,
-            .NSeq(_) -> null,
-            .NItem(_) -> null,
-            .NPrim(_) -> null,
-            .NBuild(_) -> null,
+            _ -> null,
         },
-        .Terminal(_) -> null,
-        .Many(_) -> null,
-        .Absent -> null,
     }
 }
 
@@ -268,20 +227,13 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
 export fn grammar_result(o: RunOutcome<GrammarNode>) -> Grammar? {
     let res: Captured<GrammarNode>? = o.result
     if res == null { return null }
-    match res! {
-        .Node(g) -> match g {
+    let g: GrammarNode? = node_of(res!)
+    match g {
+        null -> null,
+        let n -> match n {
             .NGrammar(gr) -> gr,
-            .NRule(_) -> null,
-            .NAlt(_) -> null,
-            .NSeq(_) -> null,
-            .NItem(_) -> null,
-            .NPrim(_) -> null,
-            .NBuild(_) -> null,
-            .NAnnot(_) -> null,
+            _ -> null,
         },
-        .Terminal(_) -> null,
-        .Many(_) -> null,
-        .Absent -> null,
     }
 }
 
@@ -291,7 +243,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>, span: S
     match name {
         "build_grammar" -> {
             let rules = as_rules(args[0])?
-            if rules.length == 0 { return Result.Err("a grammar needs at least one rule") }
+            if rules.is_empty() { return Result.Err("a grammar needs at least one rule") }
             ok(GrammarNode.NGrammar(Grammar { name: "", start: rules[0].name, rules: rules }))
         }
         "build_rule" -> {
@@ -313,8 +265,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>, span: S
                     let b = want(build_of(args[1]), "a build directive")?
                     ok(GrammarNode.NSeq(sq with { build: b }))
                 }
-                .Terminal(_) -> Result.Err("expected a build directive"),
-                .Many(_) -> Result.Err("expected a build directive"),
+                _ -> Result.Err("expected a build directive"),
             }
         }
         "build_labeled" -> {
@@ -322,8 +273,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>, span: S
             match args[0] {
                 .Absent -> ok(GrammarNode.NItem(inner)),
                 .Terminal(t) -> ok(GrammarNode.NItem(inner with { label: t.text })),
-                .Node(_) -> Result.Err("expected a label"),
-                .Many(_) -> Result.Err("expected a label"),
+                _ -> Result.Err("expected a label"),
             }
         }
         "build_postfix" -> {
@@ -335,8 +285,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>, span: S
                     t.text == "+" -> Rep.Plus
                     _ -> Rep.Opt
                 },
-                .Node(_) -> Rep.One,
-                .Many(_) -> Rep.One,
+                _ -> Rep.One,
             }
             ok(GrammarNode.NItem(item(inner) with { rep: rep }))
         }
@@ -361,8 +310,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>, span: S
                     let arg_names = call_args(args[2])?
                     ok(GrammarNode.NBuild(Build.Call(t.text, arg_names)))
                 }
-                .Node(_) -> Result.Err("expected `(`"),
-                .Many(_) -> Result.Err("expected `(`"),
+                _ -> Result.Err("expected `(`"),
             }
         }
         "build_expect" -> {

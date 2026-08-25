@@ -2,16 +2,18 @@
 //! marks, a severity, and remedies. Structured first (P11); rendering
 //! is a projection. A diagnostic names its KIND; the F-code is the
 //! registry's projection of that kind (codes.av).
+use core.{Span}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion, Error, ErrorInfo, info}
 
 export enum Severity { Error, Warning }
 
-/// One diagnostic. `primary` is null for problems with no source
-/// anchor; `secondary` frames carry the supporting positions.
+/// One diagnostic. The primary frame is always present — absence
+/// lives in ONE place: a problem with no source anchor carries a
+/// loc-less frame. `secondary` frames hold the supporting positions.
 export type Diag = {
     kind: string,
     severity: Severity,
-    primary: Frame?,
+    primary: Frame,
     secondary: List<Frame>,
     message: string,
     help: string?,
@@ -30,23 +32,25 @@ export type DiagCode = { kind: string, id: string, summary: string }
 
 /// The registry's F-code for a kind, when the kind is registered.
 export fn code_for(codes: List<DiagCode>, kind: string) -> string? {
-    for c in codes {
-        if c.kind == kind { return c.id }
+    codes.find(it.kind == kind)?.id
+}
+
+/// A span as a boundary location; absence passes through, so every
+/// caller with a `Span?` in hand maps it in place.
+export fn loc_at(file: string?, s: Span?) -> Loc? {
+    match s {
+        let sp -> Loc { file: file, lo: sp.lo, hi: sp.hi },
+        null -> null,
     }
-    null
 }
 
 /// An error at a source position; the common construction. Extend
 /// with `with { help: ..., suggestions: ... }`.
 export fn error_at(kind: string, loc: Loc?, message: string) -> Diag {
-    let primary: Frame? = match loc {
-        null -> null,
-        let l -> Frame { label: null, loc: l },
-    }
     Diag {
         kind: kind,
         severity: Severity.Error,
-        primary: primary,
+        primary: Frame { label: null, loc: loc },
         secondary: [],
         message: message,
         help: null,

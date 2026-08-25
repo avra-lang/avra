@@ -3,7 +3,7 @@
 //! run a grammar with defects, so every check here is a guarantee the
 //! matcher can lean on.
 
-use core.{contains_str, concat}
+use core.{concat}
 
 /// The TokenKind a terminal name denotes, or null for an unknown name.
 export fn term_kind(term: string) -> TokenKind? {
@@ -38,16 +38,14 @@ fn prim_labels(p: Prim) -> List<string> {
             for s in inner.branches { out = concat(out, s.labels()) }
             out
         }
-        .Ref(_) -> [],
-        .Lit(_) -> [],
-        .Named(_) -> [],
+        .Ref(_) or .Lit(_) or .Named(_) -> [],
     }
 }
 
 fn prim_defects(rule_name: string, p: Prim, names: List<string>, labeled: bool) -> List<Diagnostic> {
     match p {
         .Ref(target) ->
-            if contains_str(names, target) { [] }
+            if names.contains(target) { [] }
             else { [defect(rule_name, "references undefined rule `${target}`")] },
         .Named(term) ->
             if term_kind(term) != null { [] }
@@ -70,13 +68,13 @@ fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<Diagnost
         }
         let b -> match b {
             .Var(name) -> {
-                if !contains_str(labels, name) {
+                if !labels.contains(name) {
                     out.push(defect(rule_name, "build returns uncaptured label `${name}`"))
                 }
             }
             .Call(_, args) -> {
                 for a in args {
-                    if !contains_str(labels, a) {
+                    if !labels.contains(a) {
                         out.push(defect(rule_name, "build argument `${a}` is not captured in its branch"))
                     }
                 }
@@ -103,14 +101,14 @@ impl Grammar {
     fn defects(self) -> List<Diagnostic> {
         let names = self.rules.map(it.name)
         mut out: List<Diagnostic> = []
-        if !contains_str(names, self.start) {
+        if !names.contains(self.start) {
             out.push(defect(self.start, "start rule is not defined"))
         }
         // The executor indexes rules by name; a duplicate would silently
         // shadow. Same-name rules must merge before a grammar runs.
         mut seen: List<string> = []
         for r in self.rules {
-            if contains_str(seen, r.name) {
+            if seen.contains(r.name) {
                 out.push(defect(r.name, "declared more than once — merge same-name rules first"))
             } else {
                 seen.push(r.name)

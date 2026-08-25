@@ -8,7 +8,7 @@
 //!     ·     ╰── expected NAME
 //!   ──╯
 //!   help: a `let` names its value
-use core.{joined}
+use core.{joined, concat}
 use @std.errors.{Loc}
 
 fn severity_word(s: Severity) -> string {
@@ -55,9 +55,10 @@ fn window(at_loc: Loc, frame_label: string?, src: SourceFile) -> string {
 export fn render(d: Diag, codes: List<DiagCode>, src: SourceFile) -> string {
     let code = code_for(codes, d.kind) ?? d.kind
     mut parts = ["${severity_word(d.severity)}[${code}]: ${d.message}"]
-    if d.primary != null && d.primary!.loc != null {
-        parts.push(window(d.primary!.loc!, d.primary!.label, src))
+    if d.primary.loc != null {
+        parts.push(window(d.primary.loc!, d.primary.label, src))
     }
+    parts = concat(parts, [window(f.loc!, f.label, src) for f in d.secondary if f.loc != null])
     if d.help != null { parts.push("help: ${d.help!}") }
     joined(parts, "\n")
 }

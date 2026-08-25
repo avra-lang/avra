@@ -50,7 +50,12 @@ invariant it holds — no narration, no self-justification, no history.
   driver and the ONE definition of Avra (feature order is branch
   order is the language).
 - No string tags or string-matching to detect behavior.
-- No `_ ->` catch-alls over our own enums.
+- No `_ ->` catch-alls in DISPATCH matches over our own enums —
+  wherever arms decide different behavior, a new variant must break
+  the site at compile time (`or`-runs keep that affordable). A
+  PROJECTION — one variant's payload, every other arm the same
+  absence or rejection — uses `_ ->`: its contract already pins the
+  answer for variants that do not exist yet.
 - Node facts (spans included) live in side tables keyed by typed ids,
   never on nodes.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
@@ -93,17 +98,25 @@ against these before writing; probe in scratch when unsure.
 - Table literals carry their row type explicitly: `table<Row> { ... }`
   — the only form ALL compile modes accept (lib-mode never threads a
   typed let's row type, F1042).
-- `it` fails to infer in complex filter/map bodies — use an annotated
-  closure param.
+- `it` binds at the nearest enclosing METHOD call and survives call
+  wrappers and bare-argument use (`cases.all(count(it.src) == it.n)`,
+  `ns.any(is_even(it))`); a nested method call in the body starts its
+  own `it` scope. A top-level plain call never binds `it` (pipe RHS
+  excepted: `x |> f(it + 1)` hands `f` a closure).
 - Present-bind (`let x ->`) in expression-position match loses its
   binding at codegen inside mono-SPECIALIZED bodies (fine in plain
   fns) — restructure to `if k == null { } else { k! }`.
 - Matching `null`/`let x ->` directly on a nullable fn call's result
   can mistype — bind to an annotated `let v: T? =` first.
-- Or-patterns (`.A | .B ->`) do not parse, despite being documented.
+- Or-patterns spell `or`, never `|`: `.A(_) or .B or .C(_) -> x` works
+  (payload wildcards and unit variants alike); `.A | .B ->` does not
+  parse. Bindings cannot ride an `or` arm — wildcards only.
 - Struct destructuring in `let` (`let Sp { lo, hi } = s`) does not parse.
 - Comprehensions iterate lists only, not ranges (struct literals inside
-  them are fine).
+  them are fine), and cannot destructure — `[.. for (i, m) in
+  xs.enumerate()]` fails to parse; use a loop.
+- In a value match producing a list, put a populated arm FIRST — a
+  leading `[] `arm pins `List<>` and the sibling arms then clash.
 - Method calls on a `const` string fail at codegen.
 - Rebuild bs2 with `make build`, never `build-quick` — its freshness
   check can silently skip rebuilds and leave a stale binary.
@@ -115,6 +128,7 @@ against these before writing; probe in scratch when unsure.
 - `==` between a nullable string and a string SEGFAULTS when null —
   check `!= null` and unwrap before comparing.
 - Maps reject `m["k"]` indexing — use `.get(key)`, which returns `T?`.
+- `xs[i] = v` is an invalid assignment target; `xs.set(i, v)` works.
 - A struct literal directly in a call's argument list fails to parse —
   bind it to a `let` first.
 - Components work: `component Name { config { field: T = default } }`;
@@ -143,4 +157,7 @@ against these before writing; probe in scratch when unsure.
   through imports — constants cross modules only as fns.
 - Working and dogfooded: traits + `impl Trait for`, subjectless `when`
   (with `_` arm), list comprehensions `[x for x in xs if p]`, pipe
-  `|>`, typed table literals, `with` on generics, cross-file `impl`.
+  `|>`, typed table literals, `with` on generics, cross-file `impl`,
+  the native list scans (`find`/`any`/`all`/`first`/`last`/`is_empty`,
+  in `<N>`-generic bodies too), and `?.` field projection with `??`
+  (fields only — mapping a present value through a fn stays a match).

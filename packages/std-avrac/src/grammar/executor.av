@@ -114,14 +114,8 @@ fn accumulate<N>(prev: Captured<N>, v: Captured<N>) -> Captured<N> {
             xs.push(v)
             Captured.Many(xs)
         }
-        .Terminal(t) -> {
-            let first: Captured<N> = Captured.Terminal(t)
-            Captured.Many([first, v])
-        }
-        .Node(n) -> {
-            let first: Captured<N> = Captured.Node(n)
-            Captured.Many([first, v])
-        }
+        .Terminal(t) -> Captured.Many([Captured.Terminal(t), v]),
+        .Node(n) -> Captured.Many([Captured.Node(n), v]),
         .Absent -> Captured.Many([v]),
     }
 }
@@ -129,11 +123,16 @@ fn accumulate<N>(prev: Captured<N>, v: Captured<N>) -> Captured<N> {
 /// A new scope with `label` with_label: accumulating inside repetitions,
 /// last-wins otherwise.
 fn bind_label<N>(bindings: List<Binding<N>>, label: string, v: Captured<N>, acc: bool) -> List<Binding<N>> {
+    if !bindings.any(it.label == label) {
+        mut out = [b for b in bindings]
+        let first = if acc { captured_many<N>([v]) } else { v }
+        let nb: Binding<N> = Binding { label: label, value: first }
+        out.push(nb)
+        return out
+    }
     mut out: List<Binding<N>> = []
-    mut found = false
     for b in bindings {
         if b.label == label {
-            found = true
             let nv = if acc { accumulate<N>(b.value, v) } else { v }
             let nb: Binding<N> = Binding { label: label, value: nv }
             out.push(nb)
@@ -141,18 +140,11 @@ fn bind_label<N>(bindings: List<Binding<N>>, label: string, v: Captured<N>, acc:
             out.push(b)
         }
     }
-    if !found {
-        mut first = v
-        if acc { first = captured_many<N>([v]) }
-        let nb: Binding<N> = Binding { label: label, value: first }
-        out.push(nb)
-    }
     out
 }
 
 fn binding_for<N>(bindings: List<Binding<N>>, label: string) -> Captured<N>? {
-    for b in bindings { if b.label == label { return b.value } }
-    null
+    bindings.find(it.label == label)?.value
 }
 
 /// Skip to just past the sync target: an uppercase known terminal
@@ -162,12 +154,7 @@ fn sync_past<N>(cx: MatchContext<N>, target: string, from: int) -> int {
     mut i = from
     while cx.tokens[i].kind != TokenKind.Eof {
         let t = cx.tokens[i]
-        mut hit = false
-        if k == null {
-            hit = t.lit_matches(target)
-        } else {
-            hit = t.kind == k!
-        }
+        let hit: bool = if k == null { t.lit_matches(target) } else { t.kind == k! }
         if hit { return i + 1 }
         i = i + 1
     }
@@ -263,9 +250,9 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq, entry_state: Mat
     // Build phase. The branch's consumed range is the builder's span.
     let branch = consumed_span(cx.tokens, entry_state.cursor, state.cursor)
     let built: Result<Captured<N>, string> = match s.build {
-        null -> built_ok<N>(vals[0]),
+        null -> Result.Ok(vals[0]),
         let b -> match b {
-            .Var(name) -> built_ok<N>(binding_for<N>(state.bindings, name) ?? captured_absent<N>()),
+            .Var(name) -> Result.Ok(binding_for<N>(state.bindings, name) ?? captured_absent<N>()),
             .Call(name, args) -> {
                 let argv: List<Captured<N>> = [binding_for<N>(state.bindings, a) ?? captured_absent<N>() for a in args]
                 cx.build(name, argv, branch)
@@ -285,11 +272,6 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq, entry_state: Mat
 fn consumed_span(tokens: List<Token>, from: int, until: int) -> Span? {
     if until <= from { return null }
     tokens[from].span.cover(tokens[until - 1].span)
-}
-
-/// A successful build result, with both Result parameters pinned.
-fn built_ok<N>(v: Captured<N>) -> Result<Captured<N>, string> {
-    Result.Ok(v)
 }
 
 /// The result of one prim match with this item's label with_label.
@@ -414,7 +396,7 @@ fn overall_failure<N>(cx: MatchContext<N>, r: MatchResult<N>) -> Diagnostic {
 /// (error holes inside) is a result.
 export fn run_grammar<N>(g: Grammar, tokens: List<Token>, build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>) -> RunOutcome<N> {
     let defects = g.defects()
-    if defects.length > 0 {
+    if !defects.is_empty() {
         let refused: RunOutcome<N> = RunOutcome { result: null, diagnostics: defects }
         return refused
     }
@@ -424,7 +406,7 @@ export fn run_grammar<N>(g: Grammar, tokens: List<Token>, build: fn(string, List
     let r = match_rule<N>(cx, g.start, 0)
     mut diagnostics = [d for d in r.diagnostics]
     if r.status != MatchStatus.Hit {
-        if diagnostics.length == 0 { diagnostics.push(overall_failure<N>(cx, r)) }
+        if diagnostics.is_empty() { diagnostics.push(overall_failure<N>(cx, r)) }
         let failed: RunOutcome<N> = RunOutcome { result: null, diagnostics: diagnostics }
         return failed
     }

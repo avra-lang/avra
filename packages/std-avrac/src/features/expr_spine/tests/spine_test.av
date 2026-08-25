@@ -2,7 +2,7 @@
 // composed language, builders allocating into the arena — asserting
 // structure, spans (cover in anger), and the fingerprint invariant
 // across differently-formatted sources.
-use @std.avrac.core.{NodeStore, Expr, BinOp, ExprId}
+use @std.avrac.core.{NodeStore, Expr, BinOp, ExprId, StmtId}
 use @std.avrac.language.{parse_source}
 
 type Parsed = { store: NodeStore, root: ExprId?, diagnostics: int }
@@ -10,13 +10,13 @@ type Parsed = { store: NodeStore, root: ExprId?, diagnostics: int }
 /// One expression line, parsed as a program; the root is its value.
 fn parse_expr(source: string) -> Parsed {
     let p = parse_source(source)
-    mut root: ExprId? = null
-    if p.stmts.length > 0 {
-        let r: ExprId? = match p.store.stmt(p.stmts[0]) {
+    let head: StmtId? = p.stmts.first()
+    let root: ExprId? = match head {
+        null -> null,
+        let s -> match p.store.stmt(s) {
             .ExprStmt(v) -> v,
-            .Let(_, _) -> null, .Error -> null,
-        }
-        root = r
+            .Let(_, _) or .Error -> null,
+        },
     }
     Parsed { store: p.store, root: root, diagnostics: p.diagnostics.length }
 }
@@ -30,11 +30,11 @@ spec "features/expr_spine" {
                     let inner = match p.store.expr(left) {
                         .Binary(iop, il, ir) -> iop == BinOp.Add &&
                             p.store.expr(il) is .IntLit && p.store.expr(ir) is .IntLit,
-                        .IntLit(_) -> false, .Ident(_) -> false, .Error -> false,
+                        .IntLit(_) or .Ident(_) or .Error -> false,
                     }
                     op == BinOp.Sub && inner && p.store.expr(right) is .Ident
                 }
-                .IntLit(_) -> false, .Ident(_) -> false, .Error -> false,
+                .IntLit(_) or .Ident(_) or .Error -> false,
             }
             p.diagnostics == 0 && p.store.exprs.count() == 5 && tree_ok
         }
@@ -50,7 +50,7 @@ spec "features/expr_spine" {
                     let s = p.store.expr_span(left)
                     s?.lo == 0 && s?.hi == 2
                 }
-                .IntLit(_) -> false, .Ident(_) -> false, .Error -> false,
+                .IntLit(_) or .Ident(_) or .Error -> false,
             }
         }
         then "literal payloads parse as integers" {
@@ -58,9 +58,9 @@ spec "features/expr_spine" {
             match p.store.expr(p.root!) {
                 .Binary(_, left, _) -> match p.store.expr(left) {
                     .IntLit(v) -> v == 40,
-                    .Ident(_) -> false, .Binary(_, _, _) -> false, .Error -> false,
+                    .Ident(_) or .Binary(_, _, _) or .Error -> false,
                 },
-                .IntLit(_) -> false, .Ident(_) -> false, .Error -> false,
+                .IntLit(_) or .Ident(_) or .Error -> false,
             }
         }
     }

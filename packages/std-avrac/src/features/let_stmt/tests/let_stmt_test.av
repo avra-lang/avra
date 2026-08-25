@@ -17,15 +17,15 @@ spec "features/let_stmt" {
     given "let x = 1 + y" {
         then "one Let lands in the arena with the expression tree under it" {
             let p = parse_prog("let x = 1 + y")
-            let shape_ok = p.diagnostics.length == 0 && p.stmts.length == 1
+            let shape_ok = p.diagnostics.is_empty() && p.stmts.length == 1
             let tree_ok = if shape_ok {
                 match p.store.stmt(p.stmts[0]) {
                     .Let(name, value) -> name == "x" && match p.store.expr(value) {
                         .Binary(op, l, r) -> op == BinOp.Add &&
                             p.store.expr(l) is .IntLit && p.store.expr(r) is .Ident,
-                        .IntLit(_) -> false, .Ident(_) -> false, .Error -> false,
+                        .IntLit(_) or .Ident(_) or .Error -> false,
                     },
-                    .ExprStmt(_) -> false, .Error -> false,
+                    .ExprStmt(_) or .Error -> false,
                 }
             } else { false }
             shape_ok && tree_ok
@@ -42,15 +42,15 @@ spec "features/let_stmt" {
             let names_ok = if p.stmts.length == 2 {
                 let a_ok = match p.store.stmt(p.stmts[0]) {
                     .Let(name, _) -> name == "a",
-                    .ExprStmt(_) -> false, .Error -> false,
+                    .ExprStmt(_) or .Error -> false,
                 }
                 let b_ok = match p.store.stmt(p.stmts[1]) {
                     .Let(name, _) -> name == "b",
-                    .ExprStmt(_) -> false, .Error -> false,
+                    .ExprStmt(_) or .Error -> false,
                 }
                 a_ok && b_ok
             } else { false }
-            p.diagnostics.length == 0 && names_ok
+            p.diagnostics.is_empty() && names_ok
         }
     }
     given "a broken statement between good ones" {
@@ -60,7 +60,7 @@ spec "features/let_stmt" {
             let tail_ok = if p.stmts.length == 3 {
                 match p.store.stmt(p.stmts[2]) {
                     .Let(name, _) -> name == "y",
-                    .ExprStmt(_) -> false, .Error -> false,
+                    .ExprStmt(_) or .Error -> false,
                 }
             } else { false }
             p.diagnostics.length == 1 && hole_ok && tail_ok

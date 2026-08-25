@@ -61,6 +61,25 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       language lexer — feature-extensible, string/comment/number
       shapes of its own — replaces this rent.
 
+- [ ] **[Med]** The engine accumulates repetition captures by
+      copy-per-append — parsing an N-statement program is O(N^2).
+      Fix shape: `Many` becomes a prefix-snapshot ({shared list,
+      count}); push in place at the tip, copy only after a real
+      rollback. Touches the Captured currency — its own slice.
+- [x] **[Med]** Native list methods `find`/`any`/`all`/`first`/
+      `last`/`is_empty` typecheck but ICE at codegen — implemented
+      upstream (runtime loops + optional-building emitters;
+      `contains` now types as bool) and adopted tree-wide.
+- [ ] **[Low]** No `find_index(pred)` list method upstream — the
+      runtime scan exists (`avra_array_find_idx`); an emitter arm
+      would collapse first-match-index scans (builders.av `attach`).
+- [ ] **[Low]** String scanning builds text by per-char concat
+      (O(len^2) per string token) — a core string-builder arrives
+      with real source files.
+- [ ] **[Low]** A recovery hole (`Stmt.Error`) is not linked to the
+      diagnostic that produced it — a sparse side table (hole ->
+      diagnostic) makes the partial-tree story real for tooling.
+
 ## bs2 defects fixed upstream (2 files in this repo keep the workarounds until pruned)
 
 - [x] Monomorphizer manufactured erased `Enum<Unknown>` instantiations
@@ -102,14 +121,12 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
 - [x] In a non-generic fn, a match arm wrapping a payload into a
       nested generic instantiation ICE'd at layout (F9999): mono never
       threaded ctor args' declared field types, and tail-position
-      match statements dropped the fn's return type. Fixed upstream
-      (forge-lang PR #1371, with a regression test); the pinned-helper
-      workaround in `features/mod.av` dispatch is removed. Requires a
-      bs2 built from that fix.
+      match statements dropped the fn's return type. Fixed and MERGED
+      upstream (forge-lang PR #1371, with a regression test).
 - [x] bs2's prebuild-failure reporter ran a bare `tail $(...)` that
       read STDIN when nothing matched — every interactive `bs2 test`
-      hung on the keyboard. Fixed upstream (forge-lang PR #1372); the
-      local bs2 build carries it.
+      hung on the keyboard. Fixed and MERGED upstream (forge-lang
+      PR #1372).
 - [ ] **[Low]** Lib-mode (prebuild fast-path, `bs2 run`) does not
       thread a typed let's row type into a table literal — the
       explicit `table<Row> { ... }` form carries it in every mode and

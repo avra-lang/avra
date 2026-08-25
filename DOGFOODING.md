@@ -27,14 +27,43 @@ fn op_texts(r: LexResult) -> List<string> {
 
 Lists only — comprehensions cannot iterate ranges.
 
-## `it` projection for simple lambdas
+## The native list vocabulary
+
+`push`, `length`, indexing, `set(i, v)`, `get`, `pop`, `insert`,
+`slice`, `join`, `map`, `filter`, `reduce`, `foreach`, `enumerate`,
+`zip`, `sort`, `reverse`, `contains(v)` (-> bool), `index_of(v)`,
+`find(pred)` (-> `T?`), `any(pred)`, `all(pred)`, `first()`/`last()`
+(-> `T?`), `is_empty()` — all native, and native closures are
+mono-safe (unlike fn args through OUR generics). They work in
+`<N>`-generic bodies too (`bindings.find(it.label == label)`).
+
+A scan is never a loop:
+
+```avra
+codes.find(it.kind == kind)?.id                        // first match, projected
+engine_codes().find(it.cause == c)?.kind ?? "language.defect"
+f.builders.any(it.name == name)
+cases.all(count_breaks(lex_grammar(it.src)) == it.breaks)
+if !defects.is_empty() { return unassembled(features, defects) }
+let tail: Token? = tokens.last()
+```
+
+A loop earns its keep only for: `?` propagation in the body, folds
+with ordering semantics (`closest`'s tie-break), index arithmetic,
+and stateful transforms.
+
+## `it` projection for lambdas
 
 ```avra
 let names = self.rules.map(it.name)
+self.ranges.find(offset >= it.lo && offset < it.hi)?.feature
+cases.all(count_breaks(lex_grammar(it.src)) == it.breaks)
+causes.all(cause_registered(it))
 ```
 
-Complex bodies fail `it` inference — use an annotated param:
-`cases.filter((c: BreakCase) -> count_breaks(lex_grammar(c.src)) != c.breaks)`.
+`it` binds at the nearest enclosing METHOD call — call wrappers and
+bare-argument use inside the body are fine. A nested method call in
+the body starts its own `it` scope (innermost method wins).
 
 ## Typed table literals for fixture data
 
@@ -71,6 +100,14 @@ let ops = table<OpRow> {
 cap("rules", rule_ref("rule")) with { rep: Rep.Plus }   // rare modifiers
 r with { farthest: merged }                             // struct update
 feature("clash", "clash_rule = NAME") with { diags: rows }  // extend a factory value
+```
+
+`with` chains, takes several fields at once, and applies to any
+expression — a whole mut-reassignment ladder is one push:
+
+```avra
+ds.push(pointed(error_at(kind, at, msg), "used here")
+    with { secondary: defined, help: "move the definition above this use" })
 ```
 
 ## Methods via `impl` (cross-file works)
@@ -113,6 +150,20 @@ null/`let x ->` match arms.
 text = text + (unescape(e) ?? src.substring(j, j + 2))
 ```
 
+`?.` projects a field out of an optional; with `??` it collapses the
+whole "if null, default, else unwrap and read" ladder — including
+directly on a nullable call's result:
+
+```avra
+fn later_def(self, name: string) -> StmtId? {
+    self.all_defs.find(it.name == name)?.stmt
+}
+engine_codes().find(it.cause == c)?.kind ?? "language.defect"
+```
+
+`?.` reaches FIELDS only; mapping a present value through a fn or
+constructor is still a null/`let x ->` match.
+
 ## Extractor + `want` for typed unwrapping
 
 Per-kind extractors return `T?`; one `want` owns the Result plumbing
@@ -154,7 +205,12 @@ Proven capabilities:
   never needs `<T>` at call sites.
 - Constructions infer under a typed `let` and in a fn's TAIL position
   (expected types thread through match arms, if-branches, and list
-  elements). Early `return`s do NOT get this — keep the typed let there.
+  elements) — `Captured.Many([Captured.Terminal(t), v])` needs no
+  pinned intermediate, and a generic ctor works as a match-arm tail.
+  Early `return`s do NOT get this — keep the typed let there. Neither
+  does a construction whose only N-evidence is SIBLING fields
+  (`MatchResult { status: r.status, state: state, ... }` — F1002):
+  that one keeps its typed-let pin.
 
 Pin explicitly (`f<N>(...)`) when:
 
@@ -210,7 +266,7 @@ fn scan_while(src: string, from: int, pred: fn(int) -> bool) -> int
 ## Operator/escape sets as data
 
 ```avra
-fn is_single_op(ch: string) -> bool { "=|()*+?:,".index_of(ch) >= 0 }
+fn is_single_op(ch: string) -> bool { "=|()*+?:,-".contains(ch) }
 ```
 
 ## Map as a built-once index
@@ -261,6 +317,77 @@ tail.prim is .Group && tail.rep == Rep.Star
 ```
 
 A full match earns its place only when payloads are extracted.
+
+## `or` arms for shared bodies
+
+Same-body arms are ONE arm — the interesting variant stands alone and
+the rest read as a set. Wildcards only; a binding cannot ride an `or`:
+
+```avra
+match p {
+    .Group(inner) -> call_names_in_alt(inner),
+    .Ref(_) or .Lit(_) or .Named(_) -> [],
+}
+```
+
+## `_` by match species: projection vs dispatch
+
+A PROJECTION asks one variant for its payload; every other arm is the
+same absence or rejection. A new variant can never change the right
+answer — the fn's contract pins it — so `_` is correct and
+enumeration is churn:
+
+```avra
+fn node_of(v: Captured<GrammarNode>) -> GrammarNode? {
+    match v {
+        .Node(g) -> g,
+        _ -> null,
+    }
+}
+```
+
+A DISPATCH decides behavior per variant — a walker's recursion, a
+renderer's shapes, a checker's rules. There a new variant needs a
+human decision, so `_` is banned (CLAUDE.md) and the site must break
+at compile time; `or`-runs keep the enumeration one line:
+
+```avra
+match self.store.expr(e) {
+    .Ident(name) -> self.resolve_name(e, name),
+    .Binary(_, l, right) -> { ... recurse ... }
+    .IntLit(_) or .Error -> self.nothing(),   // a new Expr must land HERE, visibly
+}
+```
+
+Open domains (strings, codepoints, `when` chains) always take `_` —
+there is nothing to enumerate.
+
+## Absence flows through, never re-matched
+
+A mapping fn takes the OPTIONAL and passes absence through, so every
+caller with a `T?` in hand maps in place instead of re-matching
+(`loc_at(file, span?) -> Loc?`). Where a present value becomes 0-or-1
+things, `some_list` turns the optional into a comprehension source:
+
+```avra
+let edits = [Edit { loc: l, replacement: n.name } for l in some_list(at)]
+```
+
+Both idioms end the `null -> []` / `null -> null` arms `??` cannot
+reach (it defaults — yields the LEFT side when present — it does not
+map).
+
+And before reaching for either: check whether the optional should
+exist at all. TWO levels of absence (`primary: Frame?` wrapping
+`Frame.loc: Loc?`) forced a mapping match at every construction and
+read; collapsing to ONE level (the frame is always present, only its
+loc is optional — P6) deleted the matches everywhere at once:
+
+```avra
+primary: Frame { label: null, loc: loc }          // error_at: no match
+d with { primary: d.primary with { label: label } }  // pointed: no match
+if d.primary.loc != null { ... }                  // render: one check
+```
 
 ## `enumerate` for indexed walks
 

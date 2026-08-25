@@ -25,10 +25,7 @@ export fn compose_text(features: List<LanguageFeature>) -> ComposedText {
 impl ComposedText {
     /// The feature owning a byte offset, when one does.
     fn feature_at(self, offset: int) -> string? {
-        for r in self.ranges {
-            if offset >= r.lo && offset < r.hi { return r.feature }
-        }
-        null
+        self.ranges.find(offset >= it.lo && offset < it.hi)?.feature
     }
 }
 
@@ -36,15 +33,14 @@ impl ComposedText {
 /// builds, through a Builder holding this call's world.
 export fn dispatch(features: List<LanguageFeature>, store: NodeStore, name: string, args: List<Captured<LangNode>>, span: Span?) -> Result<Captured<LangNode>, string> {
     for f in features {
-        for row in f.builders {
-            if row.name == name {
-                let b = Builder { store: store, args: args, span: span }
-                let out: Result<Captured<LangNode>, string> = match row.build(b) {
-                    .Ok(n) -> Result.Ok(Captured.Node(n)),
-                    .Err(m) -> Result.Err(m),
-                }
-                return out
+        let hit: BuilderRow? = f.builders.find(it.name == name)
+        if hit != null {
+            let b = Builder { store: store, args: args, span: span }
+            let out: Result<Captured<LangNode>, string> = match hit!.build(b) {
+                .Ok(n) -> Result.Ok(Captured.Node(n)),
+                .Err(m) -> Result.Err(m),
             }
+            return out
         }
     }
     Result.Err("no feature owns builder `${name}`")

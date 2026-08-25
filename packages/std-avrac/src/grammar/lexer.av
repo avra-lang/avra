@@ -48,7 +48,7 @@ export type LexResult = { tokens: List<Token>, errors: List<LexError> }
 /// Codepoint at byte `i`.
 /// Membership in the single-char operator set; `-` reaches here
 /// only after the `->` munch has failed.
-fn is_single_op(ch: string) -> bool { "=|()*+?:,-".index_of(ch) >= 0 }
+fn is_single_op(ch: string) -> bool { "=|()*+?:,-".contains(ch) }
 
 /// A token spanning `[lo, hi)`.
 fn token(kind: TokenKind, text: string, lo: int, hi: int) -> Token {
@@ -176,7 +176,7 @@ fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> 
         if t.kind == TokenKind.Break {
             mut j = i + 1
             while j < raw.length && raw[j].kind == TokenKind.Break { j = j + 1 }
-            if boundary(raw, j) && out.length > 0 { out.push(t) }
+            if boundary(raw, j) && !out.is_empty() { out.push(t) }
             i = j
         } else {
             out.push(t)
@@ -201,7 +201,8 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool) -> LexResult {
     mut tokens = collapse_breaks(raw, boundary)
     // Every rule or statement ends in a Break, even without a trailing
     // newline.
-    if tokens.length > 0 && tokens[tokens.length - 1].kind != TokenKind.Break {
+    let tail: Token? = tokens.last()
+    if tail != null && tail!.kind != TokenKind.Break {
         tokens.push(token(TokenKind.Break, "", src.length, src.length))
     }
     tokens.push(token(TokenKind.Eof, "", src.length, src.length))

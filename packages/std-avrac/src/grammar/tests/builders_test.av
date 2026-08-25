@@ -33,8 +33,8 @@ spec "grammar/builders" {
             let b = first_branch(g, 0)
             let p0 = b.items[0].prim
             let p1 = b.items[1].prim
-            let is_ref = match p0 { .Ref(r) -> r == "b", .Lit(_) -> false, .Named(_) -> false, .Group(_) -> false }
-            let is_named = match p1 { .Named(t) -> t == "NAME", .Lit(_) -> false, .Ref(_) -> false, .Group(_) -> false }
+            let is_ref = match p0 { .Ref(r) -> r == "b", .Lit(_) or .Named(_) or .Group(_) -> false }
+            let is_named = match p1 { .Named(t) -> t == "NAME", .Lit(_) or .Ref(_) or .Group(_) -> false }
             is_ref && is_named
         }
         then "the first rule is the start" {
@@ -44,7 +44,7 @@ spec "grammar/builders" {
         then "a quoted terminal is a Lit" {
             let g = parsed("a = \"defer\" NAME")
             let p = first_branch(g, 0).items[0].prim
-            match p { .Lit(t) -> t == "defer", .Ref(_) -> false, .Named(_) -> false, .Group(_) -> false }
+            match p { .Lit(t) -> t == "defer", .Ref(_) or .Named(_) or .Group(_) -> false }
         }
     }
     given "captures, repetition, groups, alternation" {
@@ -63,7 +63,7 @@ spec "grammar/builders" {
             let p = first_branch(g, 0).items[0].prim
             match p {
                 .Group(inner) -> inner.branches.length == 2,
-                .Ref(_) -> false, .Lit(_) -> false, .Named(_) -> false,
+                .Ref(_) or .Lit(_) or .Named(_) -> false,
             }
         }
         then "top-level branches split on |" {
@@ -88,7 +88,7 @@ spec "grammar/builders" {
         then "-> f() is a zero-arg Call, not a Var" {
             let g = parsed("a = NAME -> f()")
             let b = first_branch(g, 0).build!
-            match b { .Call(n, args) -> n == "f" && args.length == 0, .Var(_) -> false }
+            match b { .Call(n, args) -> n == "f" && args.is_empty(), .Var(_) -> false }
         }
         then "no arrow means pass-through" {
             parsed("a = NAME").rules[0].body.branches[0].build == null
