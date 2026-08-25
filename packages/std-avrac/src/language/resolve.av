@@ -1,0 +1,152 @@
+//! Name resolution — the first pass. A pure query over a parsed
+//! program: facts land in a Resolution the pass owns, never on the
+//! store. A symbol's identity is its definition site; visibility is
+//! sequential, and a later `let` shadows an earlier one.
+use core.{NodeStore, Expr, Stmt, StmtId, ExprId, Span, closest, Closest, some_list}
+use diagnostics.{Diag, error_at, loc_at}
+use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
+
+/// The pass's facts: a dense table indexed by ExprId — O(1) reads
+/// for every later pass.
+export type Resolution = {
+    targets: List<StmtId?>,
+    diagnostics: List<Diag>,
+}
+
+/// The definition a resolved expression names, when it does.
+export fn target_of(r: Resolution, e: ExprId) -> StmtId? {
+    r.targets[e.index]
+}
+
+type Def = { name: string, stmt: StmtId }
+
+type Resolver = {
+    store: NodeStore,
+    file: string?,
+    all_defs: List<Def>,
+    def_names: List<string>,
+    visible: Map<string, StmtId>,
+    targets: List<StmtId?>,
+    diagnostics: List<Diag>,
+}
+
+export fn resolve(store: NodeStore, stmts: List<StmtId>, file: string?) -> Resolution {
+    mut empty_targets: List<StmtId?> = []
+    mut i = 0
+    while i < store.exprs.count() {
+        empty_targets.push(null)
+        i = i + 1
+    }
+    let nobody: Map<string, StmtId> = {}
+    let defs = defs_of(store, stmts)
+    let r = Resolver {
+        store: store, file: file, all_defs: defs,
+        def_names: [d.name for d in defs],
+        visible: nobody, targets: empty_targets, diagnostics: [],
+    }
+    for s in stmts {
+        let value: ExprId? = match store.stmt(s) {
+            .Let(_, v) -> v,
+            .ExprStmt(v) -> v,
+            .Error -> null,
+        }
+        if value != null { r.resolve_expr(value!) }
+        let binds: string? = match store.stmt(s) {
+            .Let(name, _) -> name,
+            _ -> null,
+        }
+        if binds != null { r.bind(binds!, s) }
+    }
+    Resolution { targets: r.targets, diagnostics: r.diagnostics }
+}
+
+/// Every definition in the program, in order.
+fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
+    mut out: List<Def> = []
+    for s in stmts {
+        let d: Def? = match store.stmt(s) {
+            .Let(name, _) -> Def { name: name, stmt: s },
+            _ -> null,
+        }
+        if d != null { out.push(d!) }
+    }
+    out
+}
+
+impl Resolver {
+    fn resolve_expr(self, e: ExprId) {
+        match self.store.expr(e) {
+            .Ident(name) -> self.resolve_name(e, name),
+            .Binary(_, l, right) -> {
+                self.resolve_expr(l)
+                self.resolve_expr(right)
+            }
+            .IntLit(_) or .Error -> self.nothing(),
+        }
+    }
+
+    fn resolve_name(self, e: ExprId, name: string) {
+        let found: StmtId? = self.visible.get(name)
+        if found != null {
+            mut ts = self.targets
+            ts.set(e.index, found!)
+            return
+        }
+        let at = self.loc_of(e)
+        mut ds = self.diagnostics
+        let later: StmtId? = self.later_def(name)
+        if later != null {
+            // A loc-less frame renders no window — absence stays quiet.
+            let defined = [Frame { label: "defined here", loc: loc_at(self.file, self.store.stmt_span(later!)) }]
+            ds.push(pointed(error_at("resolve.use_before_def", at, "`${name}` is used before its definition"), "used here")
+                with { secondary: defined, help: "move the definition above this use" })
+            return
+        }
+        ds.push(self.suggested(
+            pointed(error_at("resolve.unresolved", at, "`${name}` is not defined"), "not defined anywhere in this program"),
+            e, name))
+    }
+
+    /// The first definition of `name` anywhere in the program.
+    fn later_def(self, name: string) -> StmtId? {
+        self.all_defs.find(it.name == name)?.stmt
+    }
+
+    /// Latest binding wins — Map.set IS shadowing.
+    fn bind(self, name: string, s: StmtId) {
+        mut v = self.visible
+        v.set(name, s)
+    }
+
+    fn loc_of(self, e: ExprId) -> Loc? {
+        loc_at(self.file, self.store.expr_span(e))
+    }
+
+    /// A "did you mean" from every definition in the program — later
+    /// and shadowed names are honest candidates for a typo.
+    fn suggested(self, d: Diag, e: ExprId, name: string) -> Diag {
+        let near: Closest? = closest(name, self.def_names)
+        match near {
+            null -> d,
+            let n -> {
+                let at: Loc? = self.loc_of(e)
+                let edits = [Edit { loc: l, replacement: n.name } for l in some_list(at)]
+                let s = Suggestion {
+                    confidence: if n.distance == 1 { Confidence.High } else { Confidence.Medium },
+                    description: "replace `${name}` with `${n.name}`",
+                    edits: edits,
+                }
+                d with { help: "did you mean `${n.name}`?", suggestions: [s] }
+            }
+        }
+    }
+
+    fn nothing(self) {
+        let _ = 0
+    }
+}
+
+/// The diagnostic's primary frame, labeled.
+fn pointed(d: Diag, label: string) -> Diag {
+    d with { primary: d.primary with { label: label } }
+}

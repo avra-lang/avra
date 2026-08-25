@@ -3,8 +3,9 @@
 //! engine stays kind-free — and every projected kind is checked
 //! against the assembled registry. Passes never pass through this
 //! table: they emit Diag directly with their own registered kinds.
+use core.{concat}
 use grammar.{Diagnostic, Cause}
-use diagnostics.{Diag, DiagCode, error_at, code_for}
+use diagnostics.{Diag, DiagCode, error_at, code_for, loc_at}
 use @std.errors.{Loc}
 
 /// One engine cause's projection row.
@@ -22,28 +23,31 @@ fn engine_codes() -> List<EngineCode> {
     rows
 }
 
-/// The engine rows as registry entries, for assembly and `avra explain`.
+/// Codes the driver's passes emit.
+fn pass_codes() -> List<DiagCode> {
+    let rows = table<DiagCode> {
+        kind                     | id      | summary
+        "resolve.unresolved"     | "F3000" | "a name is not defined"
+        "resolve.use_before_def" | "F3001" | "a name is used before its definition"
+    }
+    rows
+}
+
+/// Engine and pass rows as one registry, for assembly and `avra explain`.
 export fn builtin_codes() -> List<DiagCode> {
-    [DiagCode { kind: r.kind, id: r.id, summary: r.summary } for r in engine_codes()]
+    concat([DiagCode { kind: r.kind, id: r.id, summary: r.summary } for r in engine_codes()], pass_codes())
 }
 
 /// The dotted kind an engine cause projects to.
 fn kind_for(c: Cause) -> string {
-    for r in engine_codes() {
-        if r.cause == c { return r.kind }
-    }
-    "language.defect"
+    engine_codes().find(it.cause == c)?.kind ?? "language.defect"
 }
 
 /// One engine diagnostic in language currency. A defect names its
 /// subject up front; parse messages already carry their rule.
 export fn project(d: Diagnostic, file: string?) -> Diag {
-    let at: Loc? = match d.span {
-        null -> null,
-        let s -> Loc { file: file, lo: s.lo, hi: s.hi },
-    }
     let message = if d.cause is .Defect { "`${d.in_rule}`: ${d.message}" } else { d.message }
-    error_at(kind_for(d.cause), at, message)
+    error_at(kind_for(d.cause), loc_at(file, d.span), message)
 }
 
 /// Every engine diagnostic projected, then the net: a kind the

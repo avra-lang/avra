@@ -32,17 +32,22 @@ real scale; the design sources of truth live in
       unregistered-kind validation net
 - [x] `avra check` CLI over the driver (`make check FILE=...`; a
       compiled standalone binary is later polish)
-- [ ] Resolve pass — the first pure query: definition-site symbols,
-      facts in a pass-owned side table, unresolved names with
-      nearest-candidate fixes
+- [x] Resolve pass — the first pure query: definition-site symbols,
+      facts in a pass-owned dense table (O(1) by ExprId), sequential
+      visibility with shadowing, use-before-def as its own kind,
+      graded nearest-candidate suggestions
 - [ ] Type pass: opaque `TypeId` + interning registry
       (content-addressing drops in later), the totality invariant —
       `Unknown` never reaches a consumer
-- [ ] GATE: `avra check` on `let x = 1 + y` prints a beautiful
-      resolve error
+- [x] GATE: `avra check` on `let x = 1 + y` prints a beautiful
+      resolve error — golden-tested character-exact
 
 ## Milestone 3 — widen, vertically complete
 
+- [ ] GATE before widening: the FIRST/FIRST coherence check — merged
+      branches of one rule must not share a first token; feature
+      order decides overlaps DELIBERATELY, never silently
+- [ ] Comments in language source (the first human-facing lexer need)
 - [ ] Each new language feature lands with grammar + builders + check
       rules together (the component model working as designed)
 - [ ] Back-end decision round: eval vs LLVM emission (its own design

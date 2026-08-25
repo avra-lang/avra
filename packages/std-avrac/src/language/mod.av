@@ -32,7 +32,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     let g = gp.grammar!.merged()
     let codes = code_registry(features)
     let defects = concat(concat(g.defects(), builder_defects(features, g)), code_defects(codes))
-    if defects.length > 0 { return unassembled(features, defects) }
+    if !defects.is_empty() { return unassembled(features, defects) }
     Language { features: features, grammar: g, codes: codes, diagnostics: [] }
 }
 
@@ -83,11 +83,13 @@ impl Language {
         render(d, self.codes, src)
     }
 
-    /// Everything wrong with one source, rendered; "" means clean.
+    /// Everything wrong with one source — parse then resolve —
+    /// rendered; "" means clean.
     fn check(self, file: string?, source: string) -> string {
         let p = parse_program(self, file, source)
+        let r = resolve(p.store, p.stmts, file)
         let src = new_source_file(source)
-        joined([self.render(d, src) for d in p.diagnostics], "\n\n")
+        joined([self.render(d, src) for d in concat(p.diagnostics, r.diagnostics)], "\n\n")
     }
 }
 

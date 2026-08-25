@@ -1,0 +1,94 @@
+// The first pass: uses resolve to definition sites, shadowing takes
+// the latest, and an unresolved name earns the milestone error —
+// kind, code, window, pointer, and a graded suggestion.
+use @std.avrac.language.{assemble, language_features, parse_source, resolve, target_of}
+use @std.errors.{Confidence}
+use @std.avrac.core.{ExprId}
+
+spec "language/resolve" {
+    given "resolution facts" {
+        then "a use resolves to its definition site" {
+            let p = parse_source("let x = 1\nx")
+            let r = resolve(p.store, p.stmts, null)
+            let use_expr = match p.store.stmt(p.stmts[1]) {
+                .ExprStmt(v) -> v,
+                .Let(_, value) -> value, .Error -> value_missing(),
+            }
+            r.diagnostics.is_empty() &&
+                target_of(r, use_expr) != null &&
+                target_of(r, use_expr)!.index == p.stmts[0].index
+        }
+        then "a later let shadows an earlier one" {
+            let p = parse_source("let x = 1\nlet x = 2\nx")
+            let r = resolve(p.store, p.stmts, null)
+            let use_expr = match p.store.stmt(p.stmts[2]) {
+                .ExprStmt(v) -> v,
+                .Let(_, value) -> value, .Error -> value_missing(),
+            }
+            target_of(r, use_expr)!.index == p.stmts[1].index
+        }
+    }
+    given "unresolved names" {
+        then "a use before its definition names the remedy" {
+            let p = parse_source("x\nlet x = 1")
+            let r = resolve(p.store, p.stmts, null)
+            r.diagnostics.length == 1 &&
+                r.diagnostics[0].kind == "resolve.use_before_def" &&
+                r.diagnostics[0].help != null
+        }
+        then "a typo one edit away suggests with High confidence" {
+            let p = parse_source("let value = 1 + valu")
+            let r = resolve(p.store, p.stmts, null)
+            r.diagnostics.length == 1 &&
+                r.diagnostics[0].kind == "resolve.unresolved" &&
+                r.diagnostics[0].suggestions.length == 1 &&
+                r.diagnostics[0].suggestions[0].confidence == Confidence.High &&
+                r.diagnostics[0].suggestions[0].edits.length == 1 &&
+                r.diagnostics[0].suggestions[0].edits[0].replacement == "value"
+        }
+        then "two edits away is Medium; far away is silent" {
+            let near = parse_source("let value = 1\nvlaue")
+            let rn = resolve(near.store, near.stmts, null)
+            let far = parse_source("let alpha = 1\nzz")
+            let rf = resolve(far.store, far.stmts, null)
+            rn.diagnostics[0].suggestions[0].confidence == Confidence.Medium &&
+                rf.diagnostics[0].suggestions.is_empty() && rf.diagnostics[0].help == null
+        }
+    }
+    given "use before definition, rendered" {
+        then "both places show: the use and the definition" {
+            let lang = assemble(language_features())
+            let expected = """error[F3001]: `x` is used before its definition
+  ╭─[app.av:1:1]
+1 │ x
+  · ┬
+  · ╰── used here
+──╯
+  ╭─[app.av:2:1]
+2 │ let x = 1
+  · ┬
+  · ╰── defined here
+──╯
+help: move the definition above this use"""
+            lang.check("app.av", "x\nlet x = 1") == expected
+        }
+    }
+    given "the milestone gate" {
+        then "avra check renders the world-class error" {
+            let lang = assemble(language_features())
+            let expected = """error[F3000]: `y` is not defined
+  ╭─[app.av:1:13]
+1 │ let x = 1 + y
+  ·             ┬
+  ·             ╰── not defined anywhere in this program
+──╯
+help: did you mean `x`?"""
+            lang.check("app.av", "let x = 1 + y") == expected
+        }
+    }
+}
+
+/// Unreachable arm filler: a poisoned id no test asserts against.
+fn value_missing() -> ExprId {
+    ExprId { index: 0 - 1 }
+}
