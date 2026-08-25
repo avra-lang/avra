@@ -115,6 +115,13 @@ fn scan_string(src: string, i: int) -> ScanStep {
     ScanStep { token: t, err: LexError { message: "unterminated string", span: Span { lo: i, hi: j } }, next: j }
 }
 
+/// First index at or after `from` that is a newline (or the end).
+fn line_end(src: string, from: int) -> int {
+    mut j = from
+    while j < src.length && code_at(src, j) != 10 { j = j + 1 }
+    j
+}
+
 /// One token (or skip, or error) starting at `i`.
 fn scan_step(src: string, i: int) -> ScanStep {
     let n = src.length
@@ -123,6 +130,9 @@ fn scan_step(src: string, i: int) -> ScanStep {
         // Newline: raw Break, resolved to layout after the scan.
         c == 10 -> emit(token(TokenKind.Break, "", i, i + 1), i + 1)
         is_space(c) -> skip(i + 1)
+        // `//` comment: whitespace to end of line — the newline
+        // itself still arrives as layout.
+        c == 47 && i + 1 < n && code_at(src, i + 1) == 47 -> skip(line_end(src, i))
         // Name: idents and named terminals alike.
         is_name_start(c) -> {
             let j = scan_while(src, i + 1, is_name_cont)

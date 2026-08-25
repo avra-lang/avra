@@ -51,14 +51,39 @@ real scale; the design sources of truth live in
 
 ## Milestone 3 — widen, vertically complete
 
-- [ ] GATE before widening: the FIRST/FIRST coherence check — merged
-      branches of one rule must not share a first token; feature
-      order decides overlaps DELIBERATELY, never silently
-- [ ] Comments in language source (the first human-facing lexer need)
+- [x] GATE before widening: the FIRST/FIRST coherence check — shared
+      first tokens, buried keywords (general terminal before the
+      literal it subsumes), empty-matching non-last branches, and
+      left recursion all refuse at assembly; the keyword ANCHOR
+      (literal first) is the one sanctioned overlap
+- [x] Comments: `//` to end of line is whitespace in BOTH lexers
+      (one shared scanner, no mode); a comment-only line is a blank
+      line; doc comments are a later, node-attached feature
 - [ ] Each new language feature lands with grammar + builders + check
       rules together (the component model working as designed)
 - [ ] Back-end decision round: eval vs LLVM emission (its own design
       conversation, spec on the table)
+
+## Engine sufficiency (recorded, not scheduled)
+
+The engine as it stands parses everything Avra currently is and
+everything on this roadmap's near horizon — no engine work is owed.
+bs2's parser runs the same core discipline (FIRST-set dispatch,
+commit on the first token, no default backtracking); its extra
+annotation vocabulary maps ITS language's hard corners, and becomes
+relevant here only if the spec adopts a construct that demands one:
+
+- `@peek(pred)` — only if a construct needs lookahead past one token
+  (optional chains, trailing commas, `if let`).
+- `@try` — only for a genuinely ambiguous multi-token prefix
+  (turbofish `f<T>(x)` vs `a < b`).
+- `^` same-line gate — only for layout-sensitive suffixes.
+- `@when(pred)` — only for parse-state-dependent branches.
+- Mode flags — only for context windows like the pipe's `it` sugar.
+
+`@cut` never applies — anchor-commit is an automatic cut. Nothing
+architectural blocks any of these; none is planned until a spec'd
+feature asks.
 
 ## Multi-file design (recorded, not scheduled)
 
