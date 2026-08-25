@@ -1,8 +1,7 @@
 //! The one artifact consumers hold: every pass's facts, every
 //! diagnostic, and every question — analyze, report, run — as
 //! methods. `analyze` is the only place pass order exists.
-use core.{NodeStore, Expr, Stmt, StmtId, ExprId, TypeId, concat, joined}
-use features.{LanguageFeature}
+use core.{NodeStore, Expr, Stmt, StmtId, ExprId, TypeId, flatten, joined}
 use diagnostics.{Diag, DiagCode, SourceFile, new_source_file, render}
 
 /// One source, fully analyzed: the tree, every pass's facts, every
@@ -15,7 +14,6 @@ export type Analysis = {
     store: NodeStore,
     stmts: List<StmtId>,
     source: SourceFile,
-    features: List<LanguageFeature>,
     resolution: Resolution,
     typing: Typing,
     codes: List<DiagCode>,
@@ -55,6 +53,14 @@ impl Analysis {
     fn printed(self, v: ExprId) -> string {
         print_value(self, v)
     }
+
+    /// The program's printed value, or null when it refused to run.
+    fn ran(self) -> string? {
+        match self.run() {
+            .Ok(v) -> self.printed(v),
+            .Err(_) -> null,
+        }
+    }
 }
 
 impl Language {
@@ -65,8 +71,8 @@ impl Language {
         let t = type_check(p, r)
         Analysis {
             store: p.store, stmts: p.stmts, source: p.source,
-            features: p.features, resolution: r, typing: t, codes: self.codes,
-            diagnostics: concat(concat(p.diagnostics, r.diagnostics), t.diagnostics),
+            resolution: r, typing: t, codes: self.codes,
+            diagnostics: flatten([p.diagnostics, r.diagnostics, t.diagnostics]),
         }
     }
 
@@ -74,9 +80,4 @@ impl Language {
     fn check(self, src: SourceFile) -> string {
         self.analyze(src).report()
     }
-}
-
-/// The canonical language's whole pipeline over one nameless source.
-export fn analyze_source(text: string) -> Analysis {
-    avra().analyze(new_source_file(null, text))
 }

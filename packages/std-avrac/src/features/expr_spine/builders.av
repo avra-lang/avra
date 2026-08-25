@@ -1,6 +1,7 @@
 //! Parse-time lowering: captures -> expression nodes.
 use core.{Expr, BinOp, want}
-use features.{LangNode, Builder}
+use features.{LangNode, Builder, token_at}
+use grammar.{Token}
 
 fn build_int_lit(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
@@ -25,6 +26,20 @@ fn build_fold_binary(b: Builder) -> Result<LangNode, string> {
     b.wrap_expr(acc)
 }
 
+/// `l (op r)?` — at most one comparison, never a chain.
+fn build_fold_cmp(b: Builder) -> Result<LangNode, string> {
+    let l = b.expr(0)?
+    let op_tok: Token? = token_at(b.args, 1)
+    match op_tok {
+        null -> b.wrap_expr(l),
+        let t -> {
+            let r = b.expr(2)?
+            let op = want(binop_of(t.text), "a comparison operator")?
+            b.make_expr(Expr.Binary(op, l, r))
+        }
+    }
+}
+
 type OpRow = { text: string, op: BinOp }
 
 /// The operators this feature folds, as data — new rows are the whole
@@ -34,6 +49,8 @@ fn binop_of(text: string) -> BinOp? {
         text | op
         "+"  | BinOp.Add
         "-"  | BinOp.Sub
+        "==" | BinOp.Eq
+        "<"  | BinOp.Lt
     }
     ops.find(it.text == text)?.op
 }

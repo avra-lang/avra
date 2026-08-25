@@ -57,15 +57,9 @@ fn run_analysis(a: Analysis) -> Result<ExprId, string> {
 /// Post-order: children become values first, then the owner reduces.
 fn eval_visit(ev: Evaluator, cx: EvalCx, e: ExprId) {
     let node = ev.a.store.expr(e)
-    let sems = semantics_of(ev.a.features, node)
-    if sems.is_empty() {
-        ev.record(no_semantics(node).message)
-        mut vals = ev.values
-        vals.set(e.index, e)
-        return
-    }
-    for k in sems[0].kids(node) { eval_visit(ev, cx, k) }
-    let v = sems[0].eval(cx, e)
+    let sem = semantics_of(node)
+    for k in sem.kids(node) { eval_visit(ev, cx, k) }
+    let v = sem.eval(cx, e)
     mut vals = ev.values
     vals.set(e.index, v)
 }
@@ -89,8 +83,5 @@ impl Evaluator {
 
 /// A value node as `avra run` prints it — the owner's projection.
 fn print_value(a: Analysis, v: ExprId) -> string {
-    let node = a.store.expr(v)
-    let sems = semantics_of(a.features, node)
-    if sems.is_empty() { return "<unprintable>" }
-    sems[0].printed(a.store, v) ?? "<unprintable>"
+    semantics_of(a.store.expr(v)).printed(a.store, v) ?? "<unprintable>"
 }

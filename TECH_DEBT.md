@@ -73,6 +73,11 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
 - [ ] **[Low]** No `find_index(pred)` list method upstream — the
       runtime scan exists (`avra_array_find_idx`); an emitter arm
       would collapse first-match-index scans (builders.av `attach`).
+- [ ] **[Low]** `semantics_of` boxes three dyn markers per node
+      visit — allocation on every pass's hot path. Fix shape: a
+      Semantics bundle built once per pass run (or per process once
+      module-level values exist), the map selecting among held
+      values. Trigger: profiling, or the first big source file.
 - [ ] **[Low]** The intern path materializes a string key per probe
       (bs2 `Map` is string-keyed; FNV walks bytes). The endgame is
       the epic §15.2 in-process tier: fp_mix over the int tuple
@@ -100,9 +105,10 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       arms, list elements, and if-branches in both mono passes; the
       layout ICE now reports its full context stack, the offending
       type, and the statement cursor.
-- [ ] **[Med]** `grammar/executor.av` still carries explicit `<N>` and
-      pinned-constructor ceremony written against the old inference.
-      Some of it may now be prunable — verify before pruning.
+- [x] **[Med]** `grammar/executor.av`'s pinned-constructor ceremony —
+      VERIFIED still required: bare `Captured.Absent` as an argument
+      to a generic helper raises F1002 (arg-position ctors of a
+      GENERIC enum carry no N-evidence). The pins stay.
 
 ## bs2 defects worked around in our code
 
@@ -117,8 +123,19 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       corrupt across fn boundaries after monomorphization (nullable
       returns come back null). Sidestepped with struct ids; the mono
       repr bug deserves an upstream fix.
-- [ ] **[Low]** Or-patterns (`.A | .B ->`) do not parse despite being
-      documented — arms are written out separately.
+- [x] **[Low]** Or-patterns: the spelling is `or`, not `|` —
+      `.A(_) or .B ->` works and is adopted tree-wide.
+- [ ] **[High]** A `dyn`-returning match boxes every arm with the
+      FIRST arm's vtable — compiles clean, dispatches wrong,
+      silently (forge-lang#1375). Worked around everywhere by boxing
+      each impl under a typed let and selecting among the lets.
+- [x] **[Med]** A `dyn` receiver whose trait kind degraded across the
+      metadata boundary died "undefined method" — fixed upstream
+      (registry recovery at the method fallback, PR #1374).
+- [ ] **[Low]** Trait methods cannot return generic enums
+      (`Result<...>`) through `dyn` — mono never instantiates
+      trait-meta returns. Designed around: capability fns report,
+      values return plain.
 - [ ] **[Med]** Component instantiation in expression position (fn
       tail, let init) compiles and yields a silent null instead of the
       instance — statement-bind + name return is the working form.

@@ -1,10 +1,7 @@
-//! What this feature's nodes DO at each pass: literals are values,
-//! idents read their definition, binaries reduce over int children —
-//! and the mismatch diagnostic lives here, with the operator it
-//! belongs to.
-use core.{Expr, ExprId, BinOp, Type, TypeId, NodeStore}
+//! The spine's NodeSemantics: dispatch only. Typing rules live in
+//! check.av, evaluation rules in eval.av.
+use core.{Expr, ExprId, TypeId, NodeStore}
 use features.{NodeSemantics, ResolveCx, TypeCx, EvalCx, nothing}
-use diagnostics.{error_at, pointed}
 
 export type SpineSemantics = { }
 
@@ -24,21 +21,11 @@ impl NodeSemantics for SpineSemantics {
     }
 
     fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
-        match cx.store.expr(e) {
-            .IntLit(_) -> cx.intern(Type.Int),
-            .Ident(_) -> cx.target_type(e),
-            .Binary(op, l, r) -> binary_type(cx, op, l, r),
-            _ -> cx.intern(Type.Error),
-        }
+        spine_type(cx, e)
     }
 
     fn eval(self, cx: EvalCx, e: ExprId) -> ExprId {
-        match cx.store.expr(e) {
-            .IntLit(_) -> e,
-            .Ident(_) -> ident_value(cx, e),
-            .Binary(op, l, r) -> arith(cx, op, l, r),
-            _ -> failed(cx, e, "defect: a hole survived a clean analysis"),
-        }
+        spine_eval(cx, e)
     }
 
     fn printed(self, store: NodeStore, e: ExprId) -> string? {
@@ -46,79 +33,5 @@ impl NodeSemantics for SpineSemantics {
             .IntLit(v) -> "${v}",
             _ -> null,
         }
-    }
-
-}
-
-/// Both operands int -> int. An Error operand ABSORBS — its cause
-/// was diagnosed where it happened; a PRESENT wrong type is this
-/// feature's own news, reported per offending operand.
-fn binary_type(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
-    if cx.shape_at(l) is .Int && cx.shape_at(r) is .Int {
-        return cx.type_at(l)
-    }
-    mismatch(cx, op, l)
-    mismatch(cx, op, r)
-    cx.intern(Type.Error)
-}
-
-fn mismatch(cx: TypeCx, op: BinOp, e: ExprId) {
-    let sh = cx.shape_at(e)
-    if sh is .Int || sh is .Error { return }
-    let found = found_name(sh)
-    let at = cx.loc_of(e)
-    cx.emit(pointed(
-        error_at("type.mismatch", at, "`${op_text(op)}` needs `int` operands, found `${found}`"),
-        "this is a `${found}`"))
-}
-
-/// The wording's name for a shape — mirrors the registry projection
-/// without needing it.
-fn found_name(t: Type) -> string {
-    match t {
-        .Int -> "int",
-        .Str -> "string",
-        .Error -> "<error>",
-    }
-}
-
-fn op_text(op: BinOp) -> string {
-    match op {
-        .Add -> "+",
-        .Sub -> "-",
-    }
-}
-
-/// Record the defect and stand on the node itself — the driver
-/// refuses the whole run afterward.
-fn failed(cx: EvalCx, e: ExprId, msg: string) -> ExprId {
-    cx.fail(msg)
-    e
-}
-
-fn ident_value(cx: EvalCx, e: ExprId) -> ExprId {
-    let v: ExprId? = cx.def_value(e)
-    v ?? failed(cx, e, "defect: an unresolved name survived a clean analysis")
-}
-
-fn arith(cx: EvalCx, op: BinOp, l: ExprId, r: ExprId) -> ExprId {
-    let lv: int? = int_of(cx, cx.value_at(l))
-    let rv: int? = int_of(cx, cx.value_at(r))
-    if lv == null || rv == null {
-        return failed(cx, l, "defect: a non-int value reached arithmetic in a clean program")
-    }
-    let a = lv!
-    let b = rv!
-    let out = match op {
-        .Add -> a + b,
-        .Sub -> a - b,
-    }
-    cx.alloc(Expr.IntLit(out))
-}
-
-fn int_of(cx: EvalCx, v: ExprId) -> int? {
-    match cx.store.expr(v) {
-        .IntLit(i) -> i,
-        _ -> null,
     }
 }

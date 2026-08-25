@@ -44,6 +44,7 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         shape_at: (e: ExprId) -> t.types.shape_of(t.of_expr[e.index]),
         intern: (sh: Type) -> t.types.intern(sh),
         target_type: (e: ExprId) -> t.target_type(e),
+        name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
         loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
         emit: (d: Diag) -> t.speak(d),
     }
@@ -57,13 +58,9 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
 /// Post-order: children typed first, so the owner combines reads.
 fn type_visit(t: Typer, cx: TypeCx, e: ExprId) {
     let node = t.p.store.expr(e)
-    let sems = semantics_of(t.p.features, node)
-    if sems.is_empty() {
-        t.speak(no_semantics(node))
-        return
-    }
-    for k in sems[0].kids(node) { type_visit(t, cx, k) }
-    let ty = sems[0].type_of(cx, e)
+    let sem = semantics_of(node)
+    for k in sem.kids(node) { type_visit(t, cx, k) }
+    let ty = sem.type_of(cx, e)
     mut facts = t.of_expr
     facts.set(e.index, ty)
 }
@@ -73,12 +70,13 @@ impl Typer {
     /// means resolve already spoke — Error, silently.
     fn target_type(self, e: ExprId) -> TypeId {
         let target: StmtId? = target_of(self.resolution, e)
-        match target {
+        let v: ExprId? = match target {
+            let s -> stmt_value(self.p.store, s),
+            null -> null,
+        }
+        match v {
+            let ve -> self.of_expr[ve.index],
             null -> self.types.intern(Type.Error),
-            let s -> match self.p.store.stmt(s) {
-                .Let(_, v) -> self.of_expr[v.index],
-                _ -> self.types.intern(Type.Error),
-            },
         }
     }
 

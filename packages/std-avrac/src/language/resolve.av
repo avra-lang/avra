@@ -47,10 +47,7 @@ export fn resolve(p: ParsedProgram) -> Resolution {
     for s in p.stmts {
         let value: ExprId? = stmt_value(p.store, s)
         if value != null { resolve_visit(r, cx, value!) }
-        let binds: string? = match p.store.stmt(s) {
-            .Let(name, _) -> name,
-            _ -> null,
-        }
+        let binds: string? = let_name(p.store, s)
         if binds != null { r.bind(binds!, s) }
     }
     Resolution { targets: r.targets, diagnostics: r.diagnostics }
@@ -60,24 +57,17 @@ export fn resolve(p: ParsedProgram) -> Resolution {
 /// owner speaks for the node.
 fn resolve_visit(r: Resolver, cx: ResolveCx, e: ExprId) {
     let node = r.p.store.expr(e)
-    let sems = semantics_of(r.p.features, node)
-    if sems.is_empty() {
-        r.speak(no_semantics(node))
-        return
-    }
-    for k in sems[0].kids(node) { resolve_visit(r, cx, k) }
-    sems[0].resolve(cx, e)
+    let sem = semantics_of(node)
+    for k in sem.kids(node) { resolve_visit(r, cx, k) }
+    sem.resolve(cx, e)
 }
 
 /// Every definition in the program, in order.
 fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
     mut out: List<Def> = []
     for s in stmts {
-        let d: Def? = match store.stmt(s) {
-            .Let(name, _) -> Def { name: name, stmt: s },
-            _ -> null,
-        }
-        if d != null { out.push(d!) }
+        let name: string? = let_name(store, s)
+        if name != null { out.push(Def { name: name!, stmt: s }) }
     }
     out
 }

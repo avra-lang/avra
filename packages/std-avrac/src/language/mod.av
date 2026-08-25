@@ -1,16 +1,16 @@
 //! The language driver: features -> one assembled grammar -> parsed
 //! programs. The single seam every consumer parses through — tests
 //! and `avra check` alike. The code table lives in codes.av.
-use core.{concat}
+use core.{concat, flatten}
 use grammar.{Diagnostic, Grammar, parse_grammar}
 use features.{
     LanguageFeature, compose_text, builder_defects, code_defects,
-    semantics_defects,
 }
 use diagnostics.{Diag, DiagCode}
 use features.stmt_spine.{stmt_spine}
 use features.let_stmt.{let_stmt}
 use features.expr_stmt.{expr_stmt}
+use features.bool_lit.{bool_lit}
 use features.expr_spine.{expr_spine}
 use features.str_lit.{str_lit}
 
@@ -29,7 +29,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     if gp.grammar == null { return unassembled(features, gp.diagnostics) }
     let g = gp.grammar!.merged()
     let codes = code_registry(features)
-    let defects = concat(concat(concat(g.defects(), builder_defects(features, g)), code_defects(codes)), semantics_defects(features))
+    let defects = flatten([g.defects(), builder_defects(features, g), code_defects(codes)])
     if !defects.is_empty() { return unassembled(features, defects) }
     Language { features: features, grammar: g, codes: codes, diagnostics: [] }
 }
@@ -51,7 +51,7 @@ fn code_registry(features: List<LanguageFeature>) -> List<DiagCode> {
 /// The Avra language: its features, in the order that defines it —
 /// feature order is branch order is the language.
 export fn language_features() -> List<LanguageFeature> {
-    [stmt_spine(), let_stmt(), expr_stmt(), expr_spine(), str_lit()]
+    [stmt_spine(), let_stmt(), expr_stmt(), bool_lit(), expr_spine(), str_lit()]
 }
 
 /// THE language, assembled — one word to hold Avra.
@@ -59,3 +59,12 @@ export fn avra() -> Language {
     assemble(language_features())
 }
 
+/// The canonical language over one nameless source.
+export fn parse_source(text: string) -> ParsedProgram {
+    parse_program(avra(), new_source_file(null, text))
+}
+
+/// The canonical language's whole pipeline over one nameless source.
+export fn analyze_source(text: string) -> Analysis {
+    avra().analyze(new_source_file(null, text))
+}

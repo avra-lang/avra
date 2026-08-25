@@ -1,0 +1,47 @@
+// Booleans and comparisons, vertically: keyword anchors merge ahead
+// of NAME under the gate, comparisons answer bool, `==` demands
+// matching operands, and programs compute truth end to end.
+use @std.avrac.language.{analyze_source, avra}
+use @std.avrac.diagnostics.{new_source_file}
+
+/// A program's printed value, or "<refused>".
+fn shown(source: string) -> string {
+    analyze_source(source).ran() ?? "<refused>"
+}
+
+spec "features/bool_lit" {
+    given "the literals" {
+        then "they parse ahead of NAME, type as bool, and run" {
+            let a = analyze_source("let t = true\nt")
+            a.clean() && shown("let t = true\nt") == "true" && shown("false") == "false"
+        }
+    }
+    given "comparisons" {
+        then "`<` answers bool over ints" {
+            shown("1 < 2") == "true" && shown("2 < 1") == "false" &&
+                shown("let x = 1 + 1\nx < 3") == "true"
+        }
+        then "`==` compares ints, strings, and bools by value" {
+            shown("1 == 1") == "true" && shown("1 == 2") == "false" &&
+                shown("\"a\" == \"a\"") == "true" && shown("\"a\" == \"b\"") == "false" &&
+                shown("1 < 2 == true") == "<refused>"
+        }
+    }
+    given "wrong operands" {
+        then "`<` points at the non-int" {
+            let lang = avra()
+            let expected = """error[F2000]: `<` needs `int` operands, found `bool`
+  ╭─[app.av:1:1]
+1 │ true < 1
+  · ┬
+  · ╰── this is a `bool`
+──╯"""
+            lang.check(new_source_file("app.av", "true < 1")) == expected
+        }
+        then "`==` names both sides" {
+            let a = analyze_source("1 == \"a\"")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`==` compares matching types, found `int` and `string`")
+        }
+    }
+}

@@ -402,10 +402,11 @@ for (i, m) in out.enumerate() {
 }
 ```
 
-## `concat` / `joined` / `filled` / `some_list` from core/lists
+## `concat` / `flatten` / `joined` / `filled` / `some_list` from core/lists
 
 ```avra
 diagnostics = concat<Diagnostic>(diagnostics, r.diagnostics)
+diagnostics: flatten([p.diagnostics, r.diagnostics, t.diagnostics])  // N lists, in order
 "[${joined([render(x) for x in items], " ")}]"
 targets: filled<StmtId?>(p.store.exprs.count(), null)   // dense-table prefill
 ```
@@ -460,6 +461,9 @@ primary = v:NUMBER -> int_lit(v) | n:NAME -> ident(n)
 """
 ```
 
+In gram text, a zero-capture build is `-> f()` — bare `-> f` is a
+CAPTURE reference and defects at assembly ("uncaptured label").
+
 ## Typed ids are single-field structs
 
 `type ExprId = { index: int }`, never an int newtype — newtype scalars
@@ -498,13 +502,13 @@ Heterogeneous behaviour pairs data with `dyn Trait` — the CLI's
 `Subcommand { meta: CommandSpec, body: dyn Runnable }` dispatches
 each command through the one-method trait. `NodeSemantics` scales the
 same shape to a MULTI-method contract: a feature's whole per-pass
-behavior as one impl, carried as `dyn` in its manifest (box with a
-typed let first — config lists do not auto-box), dispatched by the
-passes through the owner map. The impl is the completeness gate: a
-missing pass method fails to compile. A method that deliberately
-does no work calls `nothing()` — the decision is written, never
-implied. One limit: no generic-enum returns through `dyn` — report
-through a capability fn instead.
+behavior as one impl, and `semantics_of` — the ONE exhaustive map —
+returns it directly (typed-let boxed; no strings, no lookup, no miss
+possible). The impl is the completeness gate: a missing pass method
+fails to compile. A method that deliberately does no work calls
+`nothing()` — the decision is written, never implied. One limit: no
+generic-enum returns through `dyn` — report through a capability fn
+instead.
 
 ## The three seams of a pass
 

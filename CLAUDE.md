@@ -85,12 +85,12 @@ invariant it holds — no narration, no self-justification, no history.
 - Map iteration order never reaches output — iterate an ordered
   source.
 - A feature is a directory: `mod.av` is the declarative manifest
-  (component + tables + its `dyn NodeSemantics`), `builders.av` holds
-  parse lowering, and `semantics.av` holds the NodeSemantics impl —
-  kids, resolve, type_of, eval, printed. Passes NEVER match feature
-  nodes: they look up the owner (`owner_of`, THE one exhaustive map)
-  and dispatch through the trait; the impl forces every pass method
-  at compile time.
+  (component + tables), `builders.av` holds parse lowering,
+  `semantics.av` holds its NodeSemantics impl (dispatch one-liners),
+  and rule bodies live by concern — `check.av` for typing, `eval.av`
+  for evaluation. Passes NEVER match feature nodes: `semantics_of`
+  (THE one exhaustive map, no strings) returns the node's semantics
+  directly; the trait impl forces every pass method at compile time.
 
 ## Vendored code — do not imitate
 
@@ -178,9 +178,10 @@ against these before writing; probe in scratch when unsure.
   ("undefined method") — traits carry mandatory methods only.
 - Module-level `let` values work within their file but do NOT resolve
   through imports — constants cross modules only as fns.
-- `dyn` values in COMPONENT CONFIG lists do not auto-box — the config
-  assignment threads no expected type. Box explicitly first:
-  `let sem: dyn NodeSemantics = SpineSemantics { }` then `hooks = [sem]`.
+- `dyn` boxing happens ONLY under a typed let. A config-list
+  assignment does not box, and a match ARM tail boxes with the WRONG
+  vtable (silent mis-dispatch!) — box every impl under
+  `let x: dyn T = Impl { }` first, then select among the lets.
 - A trait method must not return a GENERIC enum (`Result<...>`)
   through `dyn` dispatch — mono never instantiates trait-meta return
   types ("unknown enum `Result`"). Return the value and record errors

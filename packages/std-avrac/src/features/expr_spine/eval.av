@@ -1,0 +1,61 @@
+//! Evaluation rules: literals stand, idents read their definition's
+//! slot, arithmetic and comparison reduce over value nodes. Defects
+//! are impossible past the refusal gate and recorded, never guessed.
+use core.{Expr, ExprId, BinOp}
+use features.{EvalCx}
+
+fn spine_eval(cx: EvalCx, e: ExprId) -> ExprId {
+    match cx.store.expr(e) {
+        .IntLit(_) -> e,
+        .Ident(_) -> ident_value(cx, e),
+        .Binary(op, l, r) -> match op {
+            .Add or .Sub or .Lt -> arith(cx, op, l, r),
+            .Eq -> equal_values(cx, l, r),
+        },
+        _ -> failed(cx, e, "defect: a hole survived a clean analysis"),
+    }
+}
+
+/// Record the defect and stand on the node itself — the driver
+/// refuses the whole run afterward.
+fn failed(cx: EvalCx, e: ExprId, msg: string) -> ExprId {
+    cx.fail(msg)
+    e
+}
+
+fn ident_value(cx: EvalCx, e: ExprId) -> ExprId {
+    let v: ExprId? = cx.def_value(e)
+    v ?? failed(cx, e, "defect: an unresolved name survived a clean analysis")
+}
+
+fn arith(cx: EvalCx, op: BinOp, l: ExprId, r: ExprId) -> ExprId {
+    let lv: int? = int_of(cx, cx.value_at(l))
+    let rv: int? = int_of(cx, cx.value_at(r))
+    if lv == null || rv == null {
+        return failed(cx, l, "defect: a non-int value reached arithmetic in a clean program")
+    }
+    let a = lv!
+    let b = rv!
+    match op {
+        .Add -> cx.alloc(Expr.IntLit(a + b)),
+        .Sub -> cx.alloc(Expr.IntLit(a - b)),
+        .Lt -> cx.alloc(Expr.BoolLit(a < b)),
+        .Eq -> cx.alloc(Expr.BoolLit(a == b)),
+    }
+}
+
+/// `==` over value NODES — core owns literal payload equality.
+fn equal_values(cx: EvalCx, l: ExprId, r: ExprId) -> ExprId {
+    let eq: bool? = cx.store.literal_eq(cx.value_at(l), cx.value_at(r))
+    match eq {
+        let v -> cx.alloc(Expr.BoolLit(v)),
+        null -> failed(cx, l, "defect: incomparable values reached `==` in a clean program"),
+    }
+}
+
+fn int_of(cx: EvalCx, v: ExprId) -> int? {
+    match cx.store.expr(v) {
+        .IntLit(i) -> i,
+        _ -> null,
+    }
+}

@@ -48,7 +48,7 @@ export type LexResult = { tokens: List<Token>, errors: List<LexError> }
 /// Codepoint at byte `i`.
 /// Membership in the single-char operator set; `-` reaches here
 /// only after the `->` munch has failed.
-fn is_single_op(ch: string) -> bool { "=|()*+?:,-".contains(ch) }
+fn is_single_op(ch: string) -> bool { "=|()*+?:,-<".contains(ch) }
 
 /// A token spanning `[lo, hi)`.
 fn token(kind: TokenKind, text: string, lo: int, hi: int) -> Token {
@@ -151,9 +151,11 @@ fn scan_step(src: string, i: int) -> ScanStep {
             if j == i + 1 { fail("expected a name after `@`", i, i + 1) }
             else { emit(token(TokenKind.Op, src.substring(i, j), i, j), j) }
         }
-        // `->` before any single-char op.
+        // Two-char ops munch before their single-char prefixes.
         c == 45 && i + 1 < n && code_at(src, i + 1) == 62 ->
             emit(token(TokenKind.Op, "->", i, i + 2), i + 2)
+        c == 61 && i + 1 < n && code_at(src, i + 1) == 61 ->
+            emit(token(TokenKind.Op, "==", i, i + 2), i + 2)
         is_single_op(src.substring(i, i + 1)) ->
             emit(token(TokenKind.Op, src.substring(i, i + 1), i, i + 1), i + 1)
         _ -> fail("unexpected character", i, i + 1)

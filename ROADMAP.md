@@ -66,6 +66,16 @@ real scale; the design sources of truth live in
       Every next feature follows this shape: grammar + builders +
       check rules together
 
+## Milestone 3.5 — programs compute truth
+
+- [x] Booleans + comparisons, vertically: `bool_lit` keyword-anchors
+      `true`/`false` ahead of NAME (the gate's sanctioned shape);
+      the comparison stratum lives in the spine (`==`/`<`, one
+      comparison, never a chain); `==` demands MATCHING operands and
+      says both sides; `<` answers bool over ints; eval compares
+      value nodes by payload. Lexer grows `==` (munched before `=`)
+      and `<`.
+
 ## Milestone 4 — the tracer runs
 
 Eval-vs-LLVM is a false dichotomy (P6): the spec requires a
@@ -85,13 +95,14 @@ throwaway.
 ## Milestone 4.5 — features own their semantics
 
 - [x] `NodeSemantics` — one trait per the whole vertical (kids,
-      resolve, type_of, eval, printed), implemented per feature in
-      `semantics.av`, carried as `dyn` in the manifest. Passes are
-      DRIVERS: they own state, order, and refusal, look up the node's
-      owner (`owner_of` — the ONE exhaustive map, the compile-time
-      anchor), and dispatch. A new node costs: the feature dir, the
-      list line, the enum variant, a fingerprint arm, one `owner_of`
-      arm — and the trait impl forces every pass at compile time.
+      resolve, type_of, eval, printed), implemented per feature
+      (semantics.av dispatches; check.av/eval.av hold the rules).
+      Passes are DRIVERS: they own state, order, and refusal;
+      `semantics_of` — the ONE exhaustive map, the compile-time
+      anchor — returns a node's semantics directly, no strings, no
+      lookup. A new node costs: the feature dir, the list line, the
+      enum variant, a fingerprint arm, one map arm — and the trait
+      impl forces every pass at compile time.
 - [x] Upstream findings while landing it: dyn trait-kind loss across
       the metadata boundary (FIXED in bs2 — registry recovery at the
       method fallback); config lists do not auto-box dyn (typed-let
