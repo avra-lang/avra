@@ -362,6 +362,11 @@ match self.store.expr(e) {
 Open domains (strings, codepoints, `when` chains) always take `_` —
 there is nothing to enumerate.
 
+Test assertions are projections-of-truth: "is this a Let named x,
+else false" ends in `_ -> false`, so tests never break when the node
+model grows. Only the PASSES' dispatch matches enumerate — those are
+the sites a new variant must visibly break.
+
 ## Absence flows through, never re-matched
 
 A mapping fn takes the OPTIONAL and passes absence through, so every

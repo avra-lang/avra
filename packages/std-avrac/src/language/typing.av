@@ -3,15 +3,15 @@
 //! never an option and never an Unknown. A parse hole or unresolved
 //! name types as the interned Error type, and Error is ABSORBING:
 //! the causing pass already spoke, so no diagnostic cascades from it.
-use core.{NodeStore, Expr, Stmt, StmtId, ExprId}
-use diagnostics.{Diag}
+use core.{NodeStore, Expr, Stmt, StmtId, ExprId, BinOp}
+use diagnostics.{Diag, error_at, loc_at, pointed}
 
 /// Opaque handle into the registry: compared and looked up, never
 /// inspected. Text exists only in the registry's printing projection.
 export type TypeId = { index: int }
 
 /// A type's shape. Interned once; identity is the id.
-export enum Type { Int, Error }
+export enum Type { Int, Str, Error }
 
 /// The interner: shapes in, ids out — assigned once, compared as
 /// ints forever. The index map is keyed by each shape's CANONICAL
@@ -31,6 +31,7 @@ impl TypeRegistry {
         match t {
             .Int -> "0",
             .Error -> "1",
+            .Str -> "2",
         }
     }
 
@@ -53,6 +54,7 @@ impl TypeRegistry {
     fn name_of(self, id: TypeId) -> string {
         match self.shape_of(id) {
             .Int -> "int",
+            .Str -> "string",
             .Error -> "<error>",
         }
     }
@@ -73,6 +75,7 @@ export fn type_of(t: Typing, e: ExprId) -> TypeId {
 
 type Typer = {
     store: NodeStore,
+    file: string?,
     resolution: Resolution,
     types: TypeRegistry,
     of_expr: List<TypeId>,
@@ -90,7 +93,7 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         i = i + 1
     }
     let t = Typer {
-        store: p.store, resolution: r, types: registry,
+        store: p.store, file: p.source.file, resolution: r, types: registry,
         of_expr: facts, diagnostics: [],
     }
     for s in p.stmts {
@@ -108,8 +111,9 @@ impl Typer {
     fn type_expr(self, e: ExprId) -> TypeId {
         let ty = match self.store.expr(e) {
             .IntLit(_) -> self.types.intern(Type.Int),
+            .StrLit(_) -> self.types.intern(Type.Str),
             .Ident(_) -> self.ident_type(e),
-            .Binary(_, l, right) -> self.binary_type(l, right),
+            .Binary(op, l, right) -> self.binary_type(op, l, right),
             .Error -> self.types.intern(Type.Error),
         }
         mut facts = self.of_expr
@@ -130,14 +134,35 @@ impl Typer {
         }
     }
 
-    /// Both operands int -> int. An Error operand ABSORBS: the cause
-    /// was diagnosed where it happened, so nothing cascades here.
-    fn binary_type(self, l: ExprId, r: ExprId) -> TypeId {
+    /// Both operands int -> int. An Error operand ABSORBS — its cause
+    /// was diagnosed where it happened; a PRESENT wrong type is this
+    /// pass's own news, reported per offending operand.
+    fn binary_type(self, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
         let lt = self.type_expr(l)
         let rt = self.type_expr(r)
         if self.types.shape_of(lt) is .Int && self.types.shape_of(rt) is .Int {
             return lt
         }
+        self.mismatch(op, l, lt)
+        self.mismatch(op, r, rt)
         self.types.intern(Type.Error)
+    }
+
+    fn mismatch(self, op: BinOp, e: ExprId, ty: TypeId) {
+        let sh = self.types.shape_of(ty)
+        if sh is .Int || sh is .Error { return }
+        let found = self.types.name_of(ty)
+        let at = loc_at(self.file, self.store.expr_span(e))
+        mut ds = self.diagnostics
+        ds.push(pointed(
+            error_at("type.mismatch", at, "`${op_text(op)}` needs `int` operands, found `${found}`"),
+            "this is a `${found}`"))
+    }
+}
+
+fn op_text(op: BinOp) -> string {
+    match op {
+        .Add -> "+",
+        .Sub -> "-",
     }
 }

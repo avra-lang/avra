@@ -2,6 +2,7 @@
 //! feature hangs from. Left association comes from folding the
 //! repeated tail, exactly as the grammar reads.
 use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
 
 export fn expr_spine() -> LanguageFeature {
     let rows = table<BuilderRow> {
@@ -9,6 +10,10 @@ export fn expr_spine() -> LanguageFeature {
         "int_lit"     | build_int_lit
         "ident"       | build_ident
         "fold_binary" | build_fold_binary
+    }
+    let codes = table<DiagCode> {
+        kind            | id      | summary
+        "type.mismatch" | "F2000" | "an operand has the wrong type"
     }
     component LanguageFeature spine {
         name = "expr_spine"
@@ -19,6 +24,7 @@ additive = l:primary ( op:( "+" | "-" ) r:primary )* -> fold_binary(l, op, r)
 primary = v:NUMBER -> int_lit(v) | n:NAME -> ident(n)
 """
         builders = rows
+        diags = codes
     }
     spine
 }

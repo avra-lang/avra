@@ -145,8 +145,8 @@ against these before writing; probe in scratch when unsure.
   code. Use single-field STRUCTS for typed ids (`{ index: int }`).
 - `bs2 run` can serve stale library builds silently — trust `make
   test`, which rebuilds, over ad-hoc `bs2 run` debugging.
-- `==` between a nullable string and a string SEGFAULTS when null —
-  check `!= null` and unwrap before comparing.
+- `==` between a nullable string and a string is safe (null compares
+  false).
 - Maps reject `m["k"]` indexing — use `.get(key)`, which returns `T?`.
 - `xs[i] = v` is an invalid assignment target; `xs.set(i, v)` works.
 - A struct literal directly in a call's argument list fails to parse —

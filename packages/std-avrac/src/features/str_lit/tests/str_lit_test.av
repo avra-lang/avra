@@ -1,0 +1,46 @@
+// The first widening, vertically complete: the branch merges into
+// `primary` under the dead-branch gate, strings type as string, and
+// mixing them into arithmetic renders the first type.mismatch.
+use @std.avrac.core.{ExprId, Stmt}
+use @std.avrac.language.{analyze_source, avra, Analysis}
+use @std.avrac.diagnostics.{new_source_file}
+
+/// Statement `i`'s value expression; a hole reads slot 0 (total table).
+fn value_of(a: Analysis, i: int) -> ExprId {
+    match a.stmt(a.stmts[i]) {
+        .Let(_, v) -> v,
+        .ExprStmt(v) -> v,
+        _ -> ExprId { index: 0 },
+    }
+}
+
+spec "features/str_lit" {
+    given "a string in a program" {
+        then "it parses, types as string, and nothing is wrong" {
+            let a = analyze_source("let s = \"hi\"\ns")
+            a.clean() && a.type_name(value_of(a, 0)) == "string" &&
+                a.type_name(value_of(a, 1)) == "string"
+        }
+    }
+    given "a string fed to arithmetic" {
+        then "the mismatch names the operator, the type, and the place" {
+            let lang = avra()
+            let expected = """error[F2000]: `+` needs `int` operands, found `string`
+  ╭─[app.av:1:13]
+1 │ let x = 1 + "a"
+  ·             ┬
+  ·             ╰── this is a `string`
+──╯"""
+            lang.check(new_source_file("app.av", "let x = 1 + \"a\"")) == expected
+        }
+        then "each wrong operand reports once; Error never echoes" {
+            let both = analyze_source("let x = \"a\" - \"b\"")
+            let broken = analyze_source("let x = 1 + y + \"a\"")
+            both.diagnostics.length == 2 && broken.diagnostics.length == 2
+        }
+        then "a mismatch types as Error and absorbs downstream" {
+            let a = analyze_source("let x = 1 + \"a\"\nlet y = x - 1")
+            a.diagnostics.length == 1 && a.type_name(value_of(a, 1)) == "<error>"
+        }
+    }
+}

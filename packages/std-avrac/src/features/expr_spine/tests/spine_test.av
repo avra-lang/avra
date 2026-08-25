@@ -12,11 +12,11 @@ fn parse_expr(source: string) -> Parsed {
     let p = parse_source(source)
     let head: StmtId? = p.stmts.first()
     let root: ExprId? = match head {
-        null -> null,
         let s -> match p.store.stmt(s) {
             .ExprStmt(v) -> v,
-            .Let(_, _) or .Error -> null,
+            _ -> null,
         },
+        null -> null,
     }
     Parsed { store: p.store, root: root, diagnostics: p.diagnostics.length }
 }
@@ -30,11 +30,11 @@ spec "features/expr_spine" {
                     let inner = match p.store.expr(left) {
                         .Binary(iop, il, ir) -> iop == BinOp.Add &&
                             p.store.expr(il) is .IntLit && p.store.expr(ir) is .IntLit,
-                        .IntLit(_) or .Ident(_) or .Error -> false,
+                        _ -> false,
                     }
                     op == BinOp.Sub && inner && p.store.expr(right) is .Ident
                 }
-                .IntLit(_) or .Ident(_) or .Error -> false,
+                _ -> false,
             }
             p.diagnostics == 0 && p.store.exprs.count() == 5 && tree_ok
         }
@@ -50,7 +50,7 @@ spec "features/expr_spine" {
                     let s = p.store.expr_span(left)
                     s?.lo == 0 && s?.hi == 2
                 }
-                .IntLit(_) or .Ident(_) or .Error -> false,
+                _ -> false,
             }
         }
         then "literal payloads parse as integers" {
@@ -58,9 +58,9 @@ spec "features/expr_spine" {
             match p.store.expr(p.root!) {
                 .Binary(_, left, _) -> match p.store.expr(left) {
                     .IntLit(v) -> v == 40,
-                    .Ident(_) or .Binary(_, _, _) or .Error -> false,
+                    _ -> false,
                 },
-                .IntLit(_) or .Ident(_) or .Error -> false,
+                _ -> false,
             }
         }
     }

@@ -27,8 +27,9 @@ spec "language" {
         then "it assembles with no defects and the builtin registry" {
             let lang = assemble(language_features())
             lang.grammar != null && lang.diagnostics.is_empty() &&
-                lang.codes.length == 7 && lang.codes[1].kind == "parse.expected" &&
-                lang.codes[1].id == "F0100" && lang.codes[5].id == "F3000"
+                code_for(lang.codes, "parse.expected") == "F0100" &&
+                code_for(lang.codes, "resolve.unresolved") == "F3000" &&
+                code_for(lang.codes, "type.mismatch") == "F2000"
         }
         then "a feature registering a taken kind refuses assembly" {
             mut feats = [f for f in language_features()]
@@ -65,10 +66,7 @@ spec "language" {
     given "a well-formed program" {
         then "lets and expression statements land in order" {
             let p = parse_source("let x = 1 + y\nx")
-            let let_ok = match p.store.stmt(p.stmts[0]) {
-                .Let(name, _) -> name == "x",
-                .ExprStmt(_) or .Error -> false,
-            }
+            let let_ok = match p.store.stmt(p.stmts[0]) { .Let(name, _) -> name == "x", _ -> false }
             p.diagnostics.is_empty() && p.stmts.length == 2 && let_ok &&
                 p.store.stmt(p.stmts[1]) is .ExprStmt
         }
@@ -77,12 +75,7 @@ spec "language" {
         then "the hole is an explicit Error node, the neighbors are whole" {
             let p = parse_source("let a = 1\nlet = 3\nlet y = 2")
             let hole_ok = p.stmts.length == 3 && p.store.stmt(p.stmts[1]) is .Error
-            let tail_ok = if p.stmts.length == 3 {
-                match p.store.stmt(p.stmts[2]) {
-                    .Let(name, _) -> name == "y",
-                    .ExprStmt(_) or .Error -> false,
-                }
-            } else { false }
+            let tail_ok = match p.store.stmt(p.stmts[2]) { .Let(name, _) -> name == "y", _ -> false }
             p.diagnostics.length == 1 && hole_ok && tail_ok
         }
     }

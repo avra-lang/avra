@@ -59,10 +59,31 @@ real scale; the design sources of truth live in
 - [x] Comments: `//` to end of line is whitespace in BOTH lexers
       (one shared scanner, no mode); a comment-only line is a blank
       line; doc comments are a later, node-attached feature
-- [ ] Each new language feature lands with grammar + builders + check
-      rules together (the component model working as designed)
-- [ ] Back-end decision round: eval vs LLVM emission (its own design
-      conversation, spec on the table)
+- [x] The widening doctrine, proven: string literals landed as one
+      feature directory whose `primary` branch MERGES under the
+      dead-branch gate, with the second type and typing's first real
+      diagnostic (`type.mismatch` F2000, operand-pointing golden).
+      Every next feature follows this shape: grammar + builders +
+      check rules together
+
+## Milestone 4 — the tracer runs
+
+Eval-vs-LLVM is a false dichotomy (P6): the spec requires a
+compile-time evaluator anyway (`@comptime`, seed validation), so the
+evaluator IS the tracer back end — a permanent organ, never
+throwaway.
+
+- [ ] The evaluator: a pure walk of the TYPED AST (totality means no
+      dynamic checks), values as one small enum
+- [ ] `avra run FILE` — analyze, refuse on diagnostics, evaluate,
+      print the program's value
+- [ ] GATE: a real program runs end to end through the real CLI
+
+## Milestone 5 — native emission (recorded, not scheduled)
+
+- LLVM emission as its own design round, spec on the table; the
+  evaluator is its semantic oracle (differential testing, bs2's own
+  diff-test discipline)
 
 ## Engine sufficiency (recorded, not scheduled)
 
