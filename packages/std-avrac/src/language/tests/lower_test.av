@@ -1,0 +1,44 @@
+// The IR half of compilation: lowering is pure and SSA (an ident IS
+// its definition's register), scopes are structure, and the memory
+// pass releases a scope's managed values at its exit — Application
+// strategy, reverse binding order.
+use @std.avrac.core.{Ins}
+use @std.avrac.language.{analyze_source, lower, memory, Lowered}
+
+fn ir_of(source: string) -> Lowered {
+    memory(lower(analyze_source(source)))
+}
+
+fn count_releases(l: Lowered) -> int {
+    l.ins.filter((i: Ins) -> i is .Release).length
+}
+
+spec "language/lower" {
+    given "arithmetic" {
+        then "one scope, constants, one Bin, a print, exit 0" {
+            let l = ir_of("1 + 2")
+            l.diagnostics.is_empty() &&
+                l.ins[0] is .ScopeEnter && l.ins.last()! is .Ret &&
+                l.ins.filter((i: Ins) -> i is .Bin).length == 1 &&
+                l.ins.filter((i: Ins) -> i is .ConstInt).length == 2 &&
+                l.ins.filter((i: Ins) -> i is .Print).length == 1
+        }
+        then "an ident adds NO instruction — SSA by construction" {
+            let direct = ir_of("1 + 2")
+            let named = ir_of("let x = 1 + 2\nx")
+            named.ins.length == direct.ins.length
+        }
+    }
+    given "strings under the Application strategy" {
+        then "each managed binding releases once, at scope exit" {
+            let l = ir_of("let a = \"x\"\nlet b = \"y\"\nb")
+            count_releases(l) == 2
+        }
+        then "scalars never release" {
+            count_releases(ir_of("let n = 1 + 2\nn < 4")) == 0
+        }
+        then "string == lowers through the runtime" {
+            ir_of("\"a\" == \"b\"").ins.filter((i: Ins) -> i is .StrEq).length == 1
+        }
+    }
+}

@@ -1,7 +1,7 @@
 //! One parsed program: the tree, its source, and the owner map —
 //! which feature speaks for which node. Parsing and the statement
 //! spine live here; analysis stacks on top in analysis.av.
-use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, concat}
+use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, concat, flatten}
 use grammar.{Captured, RunOutcome, run_grammar, lex_source, lex_diagnostic}
 use features.{LangNode, LanguageFeature, NodeSemantics, dispatch, list_at, stmt_id_at}
 use features.expr_spine.{SpineSemantics}
@@ -32,6 +32,14 @@ export fn semantics_of(e: Expr) -> dyn NodeSemantics {
         .StrLit(_) -> strs,
         .BoolLit(_) -> bools,
     }
+}
+
+/// Every node at and under `root`, children before owners — THE
+/// order every pass visits: facts a node reads exist before it
+/// speaks.
+export fn post_order(store: NodeStore, root: ExprId) -> List<ExprId> {
+    let node = store.expr(root)
+    concat(flatten([post_order(store, k) for k in semantics_of(node).kids(node)]), [root])
 }
 
 /// A statement's bound name, when it binds one.
@@ -70,7 +78,6 @@ export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
         }
     }
 }
-
 
 /// The program's statements in order. A recovery hole becomes an
 /// explicit Stmt.Error node — the tree survives bad input visibly.

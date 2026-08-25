@@ -50,19 +50,17 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
     }
     for s in p.stmts {
         let value: ExprId? = stmt_value(p.store, s)
-        if value != null { type_visit(t, cx, value!) }
+        if value != null {
+            for e in post_order(p.store, value!) { type_node(t, cx, e) }
+        }
     }
     Typing { types: t.types, of_expr: t.of_expr, diagnostics: t.diagnostics }
 }
 
-/// Post-order: children typed first, so the owner combines reads.
-fn type_visit(t: Typer, cx: TypeCx, e: ExprId) {
-    let node = t.p.store.expr(e)
-    let sem = semantics_of(node)
-    for k in sem.kids(node) { type_visit(t, cx, k) }
-    let ty = sem.type_of(cx, e)
+/// One node's fact: the owner speaks, the table records.
+fn type_node(t: Typer, cx: TypeCx, e: ExprId) {
     mut facts = t.of_expr
-    facts.set(e.index, ty)
+    facts.set(e.index, semantics_of(t.p.store.expr(e)).type_of(cx, e))
 }
 
 impl Typer {
@@ -84,5 +82,4 @@ impl Typer {
         mut ds = self.diagnostics
         ds.push(d)
     }
-
 }

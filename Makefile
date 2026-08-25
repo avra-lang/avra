@@ -28,3 +28,17 @@ check: $(RUNTIME_OBJS)
 
 run: $(RUNTIME_OBJS)
 	@$(BS2) run packages/cli/src/main.av -- run $(FILE)
+
+emit: $(RUNTIME_OBJS)
+	@$(BS2) run packages/cli/src/main.av -- emit $(FILE)
+
+build-native: $(RUNTIME_OBJS)
+	@$(BS2) run packages/cli/src/main.av -- build $(FILE)
+
+# The differential gate: the compiled binary must say exactly what
+# the evaluator says.
+native-check: $(RUNTIME_OBJS)
+	@$(BS2) run packages/cli/src/main.av -- run $(FILE) > /tmp/avra-eval.out
+	@$(BS2) run packages/cli/src/main.av -- build $(FILE) > /tmp/avra-bin.path
+	@$$(cat /tmp/avra-bin.path) > /tmp/avra-native.out
+	@diff /tmp/avra-eval.out /tmp/avra-native.out && echo "native == eval"

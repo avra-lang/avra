@@ -36,16 +36,13 @@ fn run_analysis(a: Analysis) -> Result<ExprId, string> {
     mut last: ExprId? = null
     for s in a.stmts {
         let value: ExprId? = stmt_value(a.store, s)
-        match value {
-            null -> { return Result.Err("defect: a hole survived a clean analysis") }
-            let e -> {
-                eval_visit(ev, cx, e)
-                let v: ExprId? = ev.values[e.index]
-                mut written = ev.slots
-                written.set(s.index, v!)
-                last = v
-            }
-        }
+        if value == null { return Result.Err("defect: a hole survived a clean analysis") }
+        let order = post_order(a.store, value!)
+        for x in order { eval_node(ev, cx, x) }
+        let v: ExprId? = ev.values[value!.index]
+        mut written = ev.slots
+        written.set(s.index, v!)
+        last = v
     }
     if !ev.failures.is_empty() { return Result.Err(ev.failures[0]) }
     match last {
@@ -54,14 +51,10 @@ fn run_analysis(a: Analysis) -> Result<ExprId, string> {
     }
 }
 
-/// Post-order: children become values first, then the owner reduces.
-fn eval_visit(ev: Evaluator, cx: EvalCx, e: ExprId) {
-    let node = ev.a.store.expr(e)
-    let sem = semantics_of(node)
-    for k in sem.kids(node) { eval_visit(ev, cx, k) }
-    let v = sem.eval(cx, e)
+/// One node's value: the owner reduces, the table records.
+fn eval_node(ev: Evaluator, cx: EvalCx, e: ExprId) {
     mut vals = ev.values
-    vals.set(e.index, v)
+    vals.set(e.index, semantics_of(ev.a.store.expr(e)).eval(cx, e))
 }
 
 impl Evaluator {

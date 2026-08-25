@@ -1,0 +1,31 @@
+//! The lowering IR: what a program DOES, flat and typed. Virtual
+//! registers, one instruction list, and SCOPES as real structure —
+//! memory strategy is decided per scope by its LEVEL (the scoped
+//! abstraction levels design), so lowering never writes a memory op;
+//! the memory pass inserts them at the boundaries recorded here.
+//! The language binds every name once, so a definition's register IS
+//! its value everywhere it is read — the IR is born SSA.
+
+/// A virtual register. Minted in instruction order: the Nth
+/// value-producing instruction defines register N.
+export type Reg = { index: int }
+
+/// A scope's abstraction level — which memory strategy owns it.
+export enum Level { Application, Systems, Bare, Hardware }
+
+export enum Ins {
+    ConstInt(dst: Reg, v: int)
+    ConstStr(dst: Reg, s: string)
+    ConstBool(dst: Reg, v: bool)
+    /// Add/Sub over ints; Lt/Eq comparisons — operands same-typed.
+    Bin(dst: Reg, op: BinOp, a: Reg, b: Reg)
+    /// String equality by VALUE — the runtime compares.
+    StrEq(dst: Reg, a: Reg, b: Reg)
+    ScopeEnter(level: Level)
+    ScopeExit
+    /// Inserted by the memory pass, never by lowering.
+    Release(r: Reg)
+    /// The program's value, shown. How is decided by the reg's type.
+    Print(src: Reg)
+    Ret(code: int)
+}

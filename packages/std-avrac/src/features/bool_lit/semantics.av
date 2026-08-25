@@ -1,7 +1,7 @@
 //! A boolean literal IS its value: no children, no names, types as
 //! bool, evaluates to itself, prints its keyword.
-use core.{Expr, ExprId, Type, TypeId, NodeStore}
-use features.{NodeSemantics, ResolveCx, TypeCx, EvalCx, nothing}
+use core.{Expr, ExprId, Type, TypeId, NodeStore, Reg, Ins}
+use features.{NodeSemantics, ResolveCx, TypeCx, EvalCx, LowerCx, nothing}
 
 export type BoolSemantics = { }
 
@@ -20,6 +20,16 @@ impl NodeSemantics for BoolSemantics {
 
     fn eval(self, cx: EvalCx, e: ExprId) -> ExprId {
         e
+    }
+
+    fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
+        let dst = cx.result(e)
+        let v: bool? = match cx.store.expr(e) {
+            .BoolLit(b) -> b,
+            _ -> null,
+        }
+        cx.emit(Ins.ConstBool(dst, v ?? false))
+        dst
     }
 
     fn printed(self, store: NodeStore, e: ExprId) -> string? {

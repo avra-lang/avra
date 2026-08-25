@@ -1,0 +1,205 @@
+//! The LLVM projection of Lowered IR. The module is built through
+//! the LLVM C API (the same wrapper every binary here already
+//! links), verified function-by-function, and written as `.ll` text
+//! for clang. Programs link Avra's runtime library for printing,
+//! string equality, and reference counting — nothing else.
+use core.{Ins, Reg, BinOp}
+use features.{nothing}
+
+extern fn avra_llvm_context_create() -> ptr
+extern fn avra_llvm_context_dispose(ctx: ptr)
+extern fn avra_llvm_module_create(name: string, ctx: ptr) -> ptr
+extern fn avra_llvm_create_builder(ctx: ptr) -> ptr
+extern fn avra_llvm_dispose_builder(b: ptr)
+extern fn avra_llvm_int1_type(ctx: ptr) -> ptr
+extern fn avra_llvm_int32_type(ctx: ptr) -> ptr
+extern fn avra_llvm_int64_type(ctx: ptr) -> ptr
+extern fn avra_llvm_pointer_type(ctx: ptr) -> ptr
+extern fn avra_llvm_function_type(ret: ptr, params: ptr, count: int, is_var: int) -> ptr
+extern fn avra_llvm_type_array_new(count: int) -> ptr
+extern fn avra_llvm_type_array_set(arr: ptr, idx: int, ty: ptr)
+extern fn avra_llvm_type_array_free(arr: ptr)
+extern fn avra_llvm_add_function(m: ptr, name: string, fn_type: ptr) -> ptr
+extern fn avra_llvm_append_basic_block(ctx: ptr, fn_val: ptr, name: string) -> ptr
+extern fn avra_llvm_position_at_end(b: ptr, bb: ptr)
+extern fn avra_llvm_const_int(ty: ptr, value: int, sign_extend: int) -> ptr
+extern fn avra_llvm_build_add(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr
+extern fn avra_llvm_build_sub(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr
+extern fn avra_llvm_build_icmp(b: ptr, pred: int, lhs: ptr, rhs: ptr, name: string) -> ptr
+extern fn avra_llvm_build_global_string_ptr(b: ptr, s: string, name: string) -> ptr
+extern fn avra_llvm_build_call(b: ptr, fn_type: ptr, fn_val: ptr, args: ptr, count: int, name: string) -> ptr
+extern fn avra_llvm_build_cond_br(b: ptr, cond: ptr, then_bb: ptr, else_bb: ptr) -> ptr
+extern fn avra_llvm_build_br(b: ptr, bb: ptr) -> ptr
+extern fn avra_llvm_build_phi(b: ptr, ty: ptr, name: string) -> ptr
+extern fn avra_llvm_add_incoming(phi: ptr, value: ptr, block: ptr)
+extern fn avra_llvm_build_ret(b: ptr, val: ptr) -> ptr
+extern fn avra_llvm_value_array_new(count: int) -> ptr
+extern fn avra_llvm_value_array_set(arr: ptr, idx: int, val: ptr)
+extern fn avra_llvm_get_named_function(m: ptr, name: string) -> ptr
+extern fn avra_llvm_fn_type_of(fn_val: ptr) -> ptr
+extern fn avra_llvm_verify_function(fn_val: ptr) -> int
+extern fn avra_llvm_print_module_to_file(m: ptr, path: string) -> int
+extern fn avra_llvm_verify_module_print(m: ptr) -> int
+
+/// One emission's world: the LLVM handles and the growing register
+/// value table (dense by Reg — registers mint in instruction order).
+type Emit = {
+    lc: ptr,
+    m: ptr,
+    b: ptr,
+    main_fn: ptr,
+    vals: List<ptr>,
+}
+
+/// icmp predicates: eq, slt.
+fn pred_of(op: BinOp) -> int {
+    match op {
+        .Eq -> 32,
+        .Lt -> 40,
+        .Add or .Sub -> 0,
+    }
+}
+
+/// Write the program as verified `.ll` text; null means written, a
+/// string is the failure.
+export fn emit_ll(l: Lowered, path: string) -> string? {
+    let lc = avra_llvm_context_create()
+    let m = avra_llvm_module_create("avra", lc)
+    let no_params = avra_llvm_type_array_new(0)
+    let main_ty = avra_llvm_function_type(avra_llvm_int32_type(lc), no_params, 0, 0)
+    avra_llvm_type_array_free(no_params)
+    let em = Emit {
+        lc: lc, m: m,
+        b: avra_llvm_create_builder(lc),
+        main_fn: avra_llvm_add_function(m, "main", main_ty),
+        vals: [],
+    }
+    declare_runtime(em)
+    avra_llvm_position_at_end(em.b, avra_llvm_append_basic_block(lc, em.main_fn, "entry"))
+    for i in l.ins { emit_ins(em, l, i) }
+    if avra_llvm_verify_function(em.main_fn) != 0 {
+        // The verifier's own report goes to stderr; the module still
+        // writes so the wreck is inspectable.
+        let _ = avra_llvm_verify_module_print(em.m)
+        let _ = avra_llvm_print_module_to_file(em.m, path)
+        return "internal compiler error: LLVM verification failed for main (module at ${path})"
+    }
+    if avra_llvm_print_module_to_file(em.m, path) != 0 {
+        return "cannot write `${path}`"
+    }
+    avra_llvm_dispose_builder(em.b)
+    avra_llvm_context_dispose(lc)
+    null
+}
+
+/// The runtime surface a compiled program uses.
+fn declare_runtime(em: Emit) {
+    let pt = avra_llvm_pointer_type(em.lc)
+    let i64t = avra_llvm_int64_type(em.lc)
+    declare(em, "avra_puts", i64t, [pt], false)
+    declare(em, "avra_streq", i64t, [pt, pt], false)
+    declare(em, "avra_rc_alloc", pt, [i64t], false)
+    declare(em, "avra_rc_release", i64t, [pt], false)
+    declare(em, "snprintf", avra_llvm_int32_type(em.lc), [pt, i64t, pt], true)
+}
+
+fn declare(em: Emit, name: string, ret: ptr, params: List<ptr>, variadic: bool) {
+    let arr = avra_llvm_type_array_new(params.length)
+    for (i, p) in params.enumerate() { avra_llvm_type_array_set(arr, i, p) }
+    let vararg = if variadic { 1 } else { 0 }
+    avra_llvm_add_function(em.m, name, avra_llvm_function_type(ret, arr, params.length, vararg))
+    avra_llvm_type_array_free(arr)
+}
+
+/// Call a declared fn by name with already-built values.
+fn call(em: Emit, name: string, args: List<ptr>) -> ptr {
+    let f = avra_llvm_get_named_function(em.m, name)
+    let arr = avra_llvm_value_array_new(args.length)
+    for (i, a) in args.enumerate() { avra_llvm_value_array_set(arr, i, a) }
+    avra_llvm_build_call(em.b, avra_llvm_fn_type_of(f), f, arr, args.length, "")
+}
+
+fn emit_ins(em: Emit, l: Lowered, i: Ins) {
+    match i {
+        .ConstInt(_, v) -> define(em, avra_llvm_const_int(avra_llvm_int64_type(em.lc), v, 1)),
+        .ConstBool(_, v) -> define(em, avra_llvm_const_int(avra_llvm_int1_type(em.lc), if v { 1 } else { 0 }, 0)),
+        .ConstStr(_, s) -> define(em, avra_llvm_build_global_string_ptr(em.b, s, ".str")),
+        .Bin(_, op, a, x) -> define(em, bin_value(em, op, em.vals[a.index], em.vals[x.index])),
+        .StrEq(_, a, x) -> define(em, str_eq_value(em, em.vals[a.index], em.vals[x.index])),
+        .Release(r) -> released(em, r),
+        .Print(src) -> printed_value(em, l, src),
+        .Ret(code) -> ret_code(em, code),
+        .ScopeEnter(_) or .ScopeExit -> nothing(),
+    }
+}
+
+/// The next register's value — registers mint in instruction order.
+fn define(em: Emit, v: ptr) {
+    mut vs = em.vals
+    vs.push(v)
+}
+
+fn bin_value(em: Emit, op: BinOp, a: ptr, b: ptr) -> ptr {
+    match op {
+        .Add -> avra_llvm_build_add(em.b, a, b, "add"),
+        .Sub -> avra_llvm_build_sub(em.b, a, b, "sub"),
+        .Eq or .Lt -> avra_llvm_build_icmp(em.b, pred_of(op), a, b, "cmp"),
+    }
+}
+
+/// Runtime value equality, narrowed to i1.
+fn str_eq_value(em: Emit, a: ptr, b: ptr) -> ptr {
+    let raw = call(em, "avra_streq", [a, b])
+    avra_llvm_build_icmp(em.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(em.lc), 0, 0), "streq")
+}
+
+fn released(em: Emit, r: Reg) {
+    let _ = call(em, "avra_rc_release", [em.vals[r.index]])
+}
+
+/// Print by the register's type: strings as-is, ints as digits,
+/// bools as their keywords.
+fn printed_value(em: Emit, l: Lowered, src: Reg) {
+    let v = em.vals[src.index]
+    match l.types.shape_of(l.reg_types[src.index]) {
+        .Str -> puts(em, v),
+        .Int -> puts(em, int_text(em, v)),
+        .Bool -> puts(em, bool_word(em, v)),
+        .Error -> nothing(),
+    }
+}
+
+fn puts(em: Emit, text: ptr) {
+    let _ = call(em, "avra_puts", [text])
+}
+
+/// An int's digits: snprintf into a runtime scratch buffer.
+fn int_text(em: Emit, v: ptr) -> ptr {
+    let i64t = avra_llvm_int64_type(em.lc)
+    let buf = call(em, "avra_rc_alloc", [avra_llvm_const_int(i64t, 32, 0)])
+    let _ = call(em, "snprintf", [buf, avra_llvm_const_int(i64t, 32, 0), avra_llvm_build_global_string_ptr(em.b, "%lld", ".fmt"), v])
+    buf
+}
+
+/// A bool's keyword: a two-way branch merging into one phi word.
+fn bool_word(em: Emit, v: ptr) -> ptr {
+    let then_bb = avra_llvm_append_basic_block(em.lc, em.main_fn, "btrue")
+    let else_bb = avra_llvm_append_basic_block(em.lc, em.main_fn, "bfalse")
+    let merge_bb = avra_llvm_append_basic_block(em.lc, em.main_fn, "bdone")
+    let _ = avra_llvm_build_cond_br(em.b, v, then_bb, else_bb)
+    avra_llvm_position_at_end(em.b, then_bb)
+    let t = avra_llvm_build_global_string_ptr(em.b, "true", ".true")
+    let _ = avra_llvm_build_br(em.b, merge_bb)
+    avra_llvm_position_at_end(em.b, else_bb)
+    let f = avra_llvm_build_global_string_ptr(em.b, "false", ".false")
+    let _ = avra_llvm_build_br(em.b, merge_bb)
+    avra_llvm_position_at_end(em.b, merge_bb)
+    let word = avra_llvm_build_phi(em.b, avra_llvm_pointer_type(em.lc), "word")
+    avra_llvm_add_incoming(word, t, then_bb)
+    avra_llvm_add_incoming(word, f, else_bb)
+    word
+}
+
+fn ret_code(em: Emit, code: int) {
+    let _ = avra_llvm_build_ret(em.b, avra_llvm_const_int(avra_llvm_int32_type(em.lc), code, 0))
+}

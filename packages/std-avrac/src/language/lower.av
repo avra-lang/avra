@@ -1,0 +1,104 @@
+//! Lowers a program to IR. The driver owns refusal, statement order,
+//! registers, and the scope structure; HOW a node lowers lives in
+//! its owning feature's NodeSemantics. Lowering emits PURE
+//! semantics — the memory pass owns every Release. A definition's
+//! register is its slot: idents cost nothing, exactly as in eval.
+use core.{StmtId, ExprId, TypeId, Reg, Ins, Level, TypeRegistry, filled}
+use diagnostics.{Diag, error_at}
+use features.{LowerCx, nothing}
+
+/// The lowering facts: instructions in order, each register's type
+/// (dense by Reg), and the registry that names those types.
+export type Lowered = {
+    ins: List<Ins>,
+    reg_types: List<TypeId>,
+    types: TypeRegistry,
+    diagnostics: List<Diag>,
+}
+
+type Lower = {
+    a: Analysis,
+    ins: List<Ins>,
+    reg_types: List<TypeId>,
+    regs: List<Reg?>,
+    slots: List<Reg?>,
+    failures: List<string>,
+}
+
+/// The whole program as IR: one Application scope, the last
+/// statement's register printed, exit 0.
+export fn lower(a: Analysis) -> Lowered {
+    let lo = Lower {
+        a: a, ins: [], reg_types: [],
+        regs: filled<Reg?>(a.store.exprs.count(), null),
+        slots: filled<Reg?>(a.store.stmts.count(), null),
+        failures: [],
+    }
+    let cx = LowerCx {
+        store: a.store,
+        result: (e: ExprId) -> lo.mint(e),
+        reg_of: (e: ExprId) -> lo.regs[e.index]!,
+        def_reg: (e: ExprId) -> lo.def_reg(e),
+        shape_at: (e: ExprId) -> a.typing.types.shape_of(a.type_at(e)),
+        emit: (i: Ins) -> lo.give(i),
+        fail: (msg: string) -> lo.record(msg),
+    }
+    lo.give(Ins.ScopeEnter(Level.Application))
+    mut last: Reg? = null
+    for s in a.stmts {
+        let value: ExprId? = stmt_value(a.store, s)
+        if value == null {
+            lo.record("defect: a hole survived a clean analysis")
+        } else {
+            for x in post_order(a.store, value!) { lower_node(lo, cx, x) }
+            let r: Reg? = lo.regs[value!.index]
+            mut written = lo.slots
+            written.set(s.index, r!)
+            last = r
+        }
+    }
+    match last {
+        let r -> lo.give(Ins.Print(r)),
+        null -> nothing(),
+    }
+    lo.give(Ins.ScopeExit)
+    lo.give(Ins.Ret(0))
+    Lowered {
+        ins: lo.ins, reg_types: lo.reg_types, types: a.typing.types,
+        diagnostics: [error_at("language.defect", null, m) for m in lo.failures],
+    }
+}
+
+/// One node's register: the owner lowers, the table records.
+fn lower_node(lo: Lower, cx: LowerCx, e: ExprId) {
+    mut rs = lo.regs
+    rs.set(e.index, semantics_of(lo.a.store.expr(e)).lower(cx, e))
+}
+
+impl Lower {
+    /// The fresh register for a node, typed by the type pass.
+    fn mint(self, e: ExprId) -> Reg {
+        mut tys = self.reg_types
+        tys.push(self.a.type_at(e))
+        Reg { index: tys.length - 1 }
+    }
+
+    fn give(self, i: Ins) {
+        mut ins = self.ins
+        ins.push(i)
+    }
+
+    /// An ident's register is its definition's slot.
+    fn def_reg(self, e: ExprId) -> Reg? {
+        let target: StmtId? = self.a.target(e)
+        match target {
+            let s -> self.slots[s.index],
+            null -> null,
+        }
+    }
+
+    fn record(self, msg: string) {
+        mut fs = self.failures
+        fs.push(msg)
+    }
+}

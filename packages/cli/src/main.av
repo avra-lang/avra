@@ -2,12 +2,13 @@
 //! a Runnable (behaviour); the App parses argv and dispatches.
 //! Exit 0 clean, 1 diagnostics, 2 usage or missing file.
 use @std.cli.{App, Subcommand, CommandSpec, CliResult, Runnable, ArgDef, result_get_arg}
-use @std.avrac.language.{avra}
+use @std.avrac.language.{avra, emit_ll}
 use @std.avrac.diagnostics.{new_source_file, SourceFile}
 
 extern fn avra_selfhost_read_file(path: string) -> string
 extern fn avra_selfhost_file_exists(path: string) -> int
 extern fn avra_process_exit(code: int)
+extern fn avra_shell_exec_status(cmd: string) -> int
 
 /// The argued file as a SourceFile, or null when it does not exist.
 fn source_arg(args: CliResult) -> SourceFile? {
@@ -54,34 +55,108 @@ impl Runnable for RunCmd {
     }
 }
 
+type EmitCmd = { }
+
+impl Runnable for EmitCmd {
+    fn run(self, args: CliResult) -> int {
+        let src: SourceFile? = source_arg(args)
+        if src == null { return 2 }
+        match lowered_or_report(src!) {
+            .Ok(path) -> {
+                println(avra_selfhost_read_file(path))
+                0
+            }
+            .Err(report) -> {
+                println(report)
+                1
+            }
+        }
+    }
+}
+
+type BuildCmd = { }
+
+impl Runnable for BuildCmd {
+    fn run(self, args: CliResult) -> int {
+        let src: SourceFile? = source_arg(args)
+        if src == null { return 2 }
+        match lowered_or_report(src!) {
+            .Ok(path) -> link(path),
+            .Err(report) -> {
+                println(report)
+                1
+            }
+        }
+    }
+}
+
+/// Analyze, refuse with the report, or write the verified `.ll`
+/// beside the source and answer its path.
+fn lowered_or_report(src: SourceFile) -> Result<string, string> {
+    let a = avra().analyze(src)
+    if !a.clean() { return Result.Err(a.report()) }
+    if a.stmts.is_empty() { return Result.Err("the program is empty") }
+    let path = "${src.file ?? "out"}.ll"
+    let failure: string? = emit_ll(a.lowered(), path)
+    match failure {
+        let msg -> Result.Err(msg),
+        null -> Result.Ok(path),
+    }
+}
+
+/// clang links the `.ll` with Avra's runtime into a native binary.
+fn link(ll_path: string) -> int {
+    let out = binary_name(ll_path)
+    if avra_shell_exec_status("clang -w -O1 ${ll_path} build/runtime.o -o ${out}") != 0 {
+        eprintln("avra: clang failed linking ${ll_path}")
+        return 1
+    }
+    println(out)
+    0
+}
+
+/// `x.av.ll` builds `x`.
+fn binary_name(ll_path: string) -> string {
+    let base = if ll_path.ends_with(".ll") { ll_path.substring(0, ll_path.length - 3) } else { ll_path }
+    if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
+}
+
+/// Every avra subcommand takes exactly one source-file argument.
+fn file_command(name: string, description: string) -> CommandSpec {
+    CommandSpec {
+        name: name,
+        description: description,
+        hidden: false,
+        flags: [],
+        args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
+        options: [],
+    }
+}
+
 fn main() {
     let check_body: CheckCmd = CheckCmd { }
     let run_body: RunCmd = RunCmd { }
+    let emit_body: EmitCmd = EmitCmd { }
+    let build_body: BuildCmd = BuildCmd { }
     let app = App {
         name: "avra",
         description: "The Avra compiler",
         version: "0.0.1",
         commands: [Subcommand {
-            meta: CommandSpec {
-                name: "check",
-                description: "Report everything wrong with a source file",
-                hidden: false,
-                flags: [],
-                args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
-                options: [],
-            },
+            meta: file_command("check", "Report everything wrong with a source file"),
             body: check_body,
         }, Subcommand {
-            meta: CommandSpec {
-                name: "run",
-                description: "Run a program and print its value",
-                hidden: false,
-                flags: [],
-                args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
-                options: [],
-            },
+            meta: file_command("emit", "Print a program's verified LLVM module"),
+            body: emit_body,
+        }, Subcommand {
+            meta: file_command("build", "Compile a program to a native binary"),
+            body: build_body,
+        }, Subcommand {
+            meta: file_command("run", "Run a program and print its value"),
             body: run_body,
         }],
     }
     avra_process_exit(app.run())
 }
+
+

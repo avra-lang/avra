@@ -46,9 +46,8 @@ fn ok(g: GrammarNode) -> Result<Captured<GrammarNode>, string> {
     Result.Ok(Captured.Node(g))
 }
 
-// ── Per-kind extractors: a capture's payload, or null. The Captured
-// unwrap lives in `node_of` ONCE; each extractor asks only its own
-// variant question. ──
+// ── Per-kind extractors: one nested pattern each — the payload when
+// the capture is that node, null otherwise. ──
 
 fn tok_of(v: Captured<GrammarNode>) -> Token? {
     match v {
@@ -57,88 +56,52 @@ fn tok_of(v: Captured<GrammarNode>) -> Token? {
     }
 }
 
-/// The built node inside a capture, when it is one.
-fn node_of(v: Captured<GrammarNode>) -> GrammarNode? {
+fn alt_of(v: Captured<GrammarNode>) -> Alt? {
     match v {
-        .Node(g) -> g,
+        .Node(.NAlt(a)) -> a,
         _ -> null,
     }
 }
 
-fn alt_of(v: Captured<GrammarNode>) -> Alt? {
-    let g: GrammarNode? = node_of(v)
-    match g {
-        null -> null,
-        let n -> match n {
-            .NAlt(a) -> a,
-            _ -> null,
-        },
-    }
-}
-
 fn prim_of(v: Captured<GrammarNode>) -> Prim? {
-    let g: GrammarNode? = node_of(v)
-    match g {
-        null -> null,
-        let n -> match n {
-            .NPrim(p) -> p,
-            _ -> null,
-        },
+    match v {
+        .Node(.NPrim(p)) -> p,
+        _ -> null,
     }
 }
 
 fn item_of(v: Captured<GrammarNode>) -> Item? {
-    let g: GrammarNode? = node_of(v)
-    match g {
-        null -> null,
-        let n -> match n {
-            .NItem(m) -> m,
-            _ -> null,
-        },
+    match v {
+        .Node(.NItem(m)) -> m,
+        _ -> null,
     }
 }
 
 fn seq_of(v: Captured<GrammarNode>) -> Seq? {
-    let g: GrammarNode? = node_of(v)
-    match g {
-        null -> null,
-        let n -> match n {
-            .NSeq(sq) -> sq,
-            _ -> null,
-        },
+    match v {
+        .Node(.NSeq(sq)) -> sq,
+        _ -> null,
     }
 }
 
 fn rule_of(v: Captured<GrammarNode>) -> Rule? {
-    let g: GrammarNode? = node_of(v)
-    match g {
-        null -> null,
-        let n -> match n {
-            .NRule(r) -> r,
-            _ -> null,
-        },
+    match v {
+        .Node(.NRule(r)) -> r,
+        _ -> null,
     }
 }
 
 fn build_of(v: Captured<GrammarNode>) -> Build? {
-    let g: GrammarNode? = node_of(v)
-    match g {
-        null -> null,
-        let n -> match n {
-            .NBuild(b) -> b,
-            _ -> null,
-        },
+    match v {
+        .Node(.NBuild(b)) -> b,
+        _ -> null,
     }
 }
 
 fn annot_of(v: Captured<GrammarNode>) -> PendingAnnot? {
-    let g: GrammarNode? = node_of(v)
-    match g {
-        null -> null,
-        let n -> match n {
-            .NAnnot(an) -> an,
-            _ -> null,
-        },
+    match v {
+        .Node(.NAnnot(an)) -> an,
+        _ -> null,
     }
 }
 
@@ -226,12 +189,10 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
 /// Consumers use this instead of unwrapping GrammarNode themselves.
 export fn grammar_result(o: RunOutcome<GrammarNode>) -> Grammar? {
     let res: Captured<GrammarNode>? = o.result
-    if res == null { return null }
-    let g: GrammarNode? = node_of(res!)
-    match g {
+    match res {
         null -> null,
-        let n -> match n {
-            .NGrammar(gr) -> gr,
+        let r -> match r {
+            .Node(.NGrammar(gr)) -> gr,
             _ -> null,
         },
     }

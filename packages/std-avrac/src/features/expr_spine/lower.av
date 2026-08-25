@@ -1,0 +1,43 @@
+//! Lowering rules: literals become constants, an ident IS its
+//! definition's register (the language is SSA by construction), and
+//! binaries become one instruction — string `==` routes to the
+//! runtime's value comparison.
+use core.{Expr, ExprId, BinOp, Reg, Ins}
+use features.{LowerCx}
+
+fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
+    match cx.store.expr(e) {
+        .IntLit(v) -> {
+            let dst = cx.result(e)
+            cx.emit(Ins.ConstInt(dst, v))
+            dst
+        }
+        .Ident(_) -> ident_reg(cx, e),
+        .Binary(op, l, r) -> binary_reg(cx, e, op, l, r),
+        _ -> lower_failed(cx, e, "defect: a hole survived a clean analysis"),
+    }
+}
+
+fn ident_reg(cx: LowerCx, e: ExprId) -> Reg {
+    let def: Reg? = cx.def_reg(e)
+    def ?? lower_failed(cx, e, "defect: an unresolved name survived a clean analysis")
+}
+
+fn binary_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
+    let dst = cx.result(e)
+    let a = cx.reg_of(l)
+    let b = cx.reg_of(r)
+    if op == BinOp.Eq && cx.shape_at(l) is .Str {
+        cx.emit(Ins.StrEq(dst, a, b))
+    } else {
+        cx.emit(Ins.Bin(dst, op, a, b))
+    }
+    dst
+}
+
+/// Record the defect and stand on a fresh register — the driver
+/// refuses the whole build afterward.
+fn lower_failed(cx: LowerCx, e: ExprId, msg: string) -> Reg {
+    cx.fail(msg)
+    cx.result(e)
+}

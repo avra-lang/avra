@@ -120,25 +120,19 @@ fn accumulate<N>(prev: Captured<N>, v: Captured<N>) -> Captured<N> {
     }
 }
 
-/// A new scope with `label` with_label: accumulating inside repetitions,
+/// A new scope with `label` bound: accumulating inside repetitions,
 /// last-wins otherwise.
 fn bind_label<N>(bindings: List<Binding<N>>, label: string, v: Captured<N>, acc: bool) -> List<Binding<N>> {
     if !bindings.any(it.label == label) {
         mut out = [b for b in bindings]
-        let first = if acc { captured_many<N>([v]) } else { v }
-        let nb: Binding<N> = Binding { label: label, value: first }
-        out.push(nb)
+        let bound: Binding<N> = Binding { label: label, value: if acc { captured_many<N>([v]) } else { v } }
+        out.push(bound)
         return out
     }
     mut out: List<Binding<N>> = []
     for b in bindings {
-        if b.label == label {
-            let nv = if acc { accumulate<N>(b.value, v) } else { v }
-            let nb: Binding<N> = Binding { label: label, value: nv }
-            out.push(nb)
-        } else {
-            out.push(b)
-        }
+        let nb: Binding<N> = if b.label == label { b with { value: if acc { accumulate<N>(b.value, v) } else { v } } } else { b }
+        out.push(nb)
     }
     out
 }
@@ -184,8 +178,6 @@ fn match_alt<N>(cx: MatchContext<N>, rule_name: string, a: Alt, state: MatchStat
     missed<N>(state, [], farthest)
 }
 
-/// The diagnostic for a failure inside a committed branch, preferring
-/// the failed sub-match's own farthest point.
 /// "expected A, B or C while parsing `rule`" from a farthest point.
 fn farthest_diagnostic<N>(cx: MatchContext<N>, f: FarthestFailure) -> Diagnostic {
     Diagnostic {
@@ -195,6 +187,8 @@ fn farthest_diagnostic<N>(cx: MatchContext<N>, f: FarthestFailure) -> Diagnostic
     }
 }
 
+/// The diagnostic for a failure inside a committed branch, preferring
+/// the failed sub-match's own farthest point.
 fn committed_failure<N>(cx: MatchContext<N>, rule_name: string, member: Item, r: MatchResult<N>, state: MatchState<N>) -> Diagnostic {
     match r.farthest {
         null -> farthest_diagnostic<N>(cx, FarthestFailure { cursor: state.cursor, expected: [describe_prim(member.prim)], in_rule: rule_name }),
@@ -249,7 +243,19 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq, entry_state: Mat
     }
     // Build phase. The branch's consumed range is the builder's span.
     let branch = consumed_span(cx.tokens, entry_state.cursor, state.cursor)
-    let built: Result<Captured<N>, string> = match s.build {
+    match built<N>(cx, s, state, vals, branch) {
+        .Ok(v) -> matched<N>(state, v, diagnostics, farthest),
+        .Err(m) -> {
+            diagnostics.push(Diagnostic { cause: Cause.Builder, message: "builder failed: ${m}", span: branch ?? cx.tokens[state.cursor].span, expected: [], in_rule: rule_name })
+            fatal_defect<N>(state, diagnostics, farthest)
+        }
+    }
+}
+
+/// The branch's value: its sole capture, a named binding, or the
+/// builder called over its named captures.
+fn built<N>(cx: MatchContext<N>, s: Seq, state: MatchState<N>, vals: List<Captured<N>>, branch: Span?) -> Result<Captured<N>, string> {
+    match s.build {
         null -> Result.Ok(vals[0]),
         let b -> match b {
             .Var(name) -> Result.Ok(binding_for<N>(state.bindings, name) ?? captured_absent<N>()),
@@ -257,13 +263,6 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq, entry_state: Mat
                 let argv: List<Captured<N>> = [binding_for<N>(state.bindings, a) ?? captured_absent<N>() for a in args]
                 cx.build(name, argv, branch)
             }
-        }
-    }
-    match built {
-        .Ok(v) -> matched<N>(state, v, diagnostics, farthest),
-        .Err(m) -> {
-            diagnostics.push(Diagnostic { cause: Cause.Builder, message: "builder failed: ${m}", span: branch ?? cx.tokens[state.cursor].span, expected: [], in_rule: rule_name })
-            fatal_defect<N>(state, diagnostics, farthest)
         }
     }
 }
@@ -274,7 +273,7 @@ fn consumed_span(tokens: List<Token>, from: int, until: int) -> Span? {
     tokens[from].span.cover(tokens[until - 1].span)
 }
 
-/// The result of one prim match with this item's label with_label.
+/// The result with this item's label bound, when it carries one.
 fn with_label<N>(member: Item, r: MatchResult<N>, acc: bool) -> MatchResult<N> {
     match member.label {
         null -> r,

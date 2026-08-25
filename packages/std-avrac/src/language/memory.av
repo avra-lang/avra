@@ -1,0 +1,71 @@
+//! The memory pass: strategy per scope, decided by its LEVEL.
+//! Lowering emitted pure semantics; this pass inserts the memory
+//! instructions each scope's strategy demands at its exit. Today
+//! every scope is Application — reference counting, releases in
+//! reverse binding order. Systems ownership lands here later as a
+//! strategy, touching neither lowering nor the backend.
+use core.{Ins, Reg, Level}
+
+/// Managed registers bound in one open scope, its level remembered.
+type Scope = { level: Level, managed: List<Reg> }
+
+export fn memory(l: Lowered) -> Lowered {
+    mut out: List<Ins> = []
+    mut open_scopes: List<Scope> = []
+    for i in l.ins {
+        match i {
+            .ScopeEnter(level) -> {
+                open_scopes.push(Scope { level: level, managed: [] })
+                out.push(i)
+            }
+            .ScopeExit -> {
+                let scope = open_scopes.pop()
+                for r in releases_for(scope) { out.push(Ins.Release(r)) }
+                out.push(i)
+            }
+            .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+            .Bin(_, _, _, _) or .StrEq(_, _, _) or .Release(_) or
+            .Print(_) or .Ret(_) -> {
+                let dst: Reg? = managed_dst(l, i)
+                if dst != null && !open_scopes.is_empty() {
+                    mut top = open_scopes[open_scopes.length - 1].managed
+                    top.push(dst!)
+                }
+                out.push(i)
+            }
+        }
+    }
+    l with { ins: out }
+}
+
+/// The strategy: what a scope owes at its exit.
+fn releases_for(scope: Scope) -> List<Reg> {
+    match scope.level {
+        .Application -> reversed(scope.managed),
+        .Systems or .Bare or .Hardware -> [],
+    }
+}
+
+/// A defining instruction's destination when the value is MANAGED
+/// (heap-shaped); null for scalars and non-defining instructions.
+fn managed_dst(l: Lowered, i: Ins) -> Reg? {
+    let dst: Reg? = match i {
+        .ConstStr(d, _) -> d,
+        _ -> null,
+    }
+    match dst {
+        let d -> if l.types.shape_of(l.reg_types[d.index]) is .Str { d } else { null },
+        null -> null,
+    }
+}
+
+/// Last bound, first released.
+fn reversed(xs: List<Reg>) -> List<Reg> {
+    mut out: List<Reg> = []
+    mut i = xs.length - 1
+    while i >= 0 {
+        out.push(xs[i])
+        i = i - 1
+    }
+    out
+}
