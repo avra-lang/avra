@@ -1,16 +1,13 @@
 //! The language driver: features -> one assembled grammar -> parsed
 //! programs. The single seam every consumer parses through — tests
 //! and `avra check` alike. The code table lives in codes.av.
-use core.{NodeStore, new_node_store, Stmt, StmtId, Span, concat, joined}
-use grammar.{
-    Captured, Diagnostic, Grammar, RunOutcome, parse_grammar, run_grammar,
-    lex_source, lex_diagnostic,
-}
+use core.{concat}
+use grammar.{Diagnostic, Grammar, parse_grammar}
 use features.{
-    LangNode, LanguageFeature, compose_text, dispatch, builder_defects,
-    code_defects, list_at, stmt_id_at,
+    LanguageFeature, compose_text, builder_defects, code_defects,
+    semantics_defects,
 }
-use diagnostics.{Diag, DiagCode, SourceFile, new_source_file, render}
+use diagnostics.{Diag, DiagCode}
 use features.stmt_spine.{stmt_spine}
 use features.let_stmt.{let_stmt}
 use features.expr_stmt.{expr_stmt}
@@ -32,7 +29,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     if gp.grammar == null { return unassembled(features, gp.diagnostics) }
     let g = gp.grammar!.merged()
     let codes = code_registry(features)
-    let defects = concat(concat(g.defects(), builder_defects(features, g)), code_defects(codes))
+    let defects = concat(concat(concat(g.defects(), builder_defects(features, g)), code_defects(codes)), semantics_defects(features))
     if !defects.is_empty() { return unassembled(features, defects) }
     Language { features: features, grammar: g, codes: codes, diagnostics: [] }
 }
@@ -51,116 +48,6 @@ fn code_registry(features: List<LanguageFeature>) -> List<DiagCode> {
     out
 }
 
-/// One parsed source: the tree (holes included), the SourceFile it
-/// came from, and every diagnostic from lexing and parsing, in
-/// source order. THE value every later pass takes first.
-export type ParsedProgram = {
-    store: NodeStore,
-    stmts: List<StmtId>,
-    source: SourceFile,
-    diagnostics: List<Diag>,
-}
-
-export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
-    match lang.grammar {
-        null -> ParsedProgram { store: new_node_store(), stmts: [], source: src, diagnostics: lang.diagnostics },
-        let g -> {
-            let lexed = lex_source(src.text)
-            let store = new_node_store()
-            let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> dispatch(lang.features, store, name, args, span)
-            let o = run_grammar<LangNode>(g, lexed.tokens, build)
-            let engine = concat([lex_diagnostic(e) for e in lexed.errors], o.diagnostics)
-            ParsedProgram {
-                store: store,
-                stmts: program_stmts(store, o),
-                source: src,
-                diagnostics: project_all(engine, src.file, lang.codes),
-            }
-        }
-    }
-}
-
-
-/// One source, fully analyzed: the tree, every pass's facts, every
-/// diagnostic in pipeline order, and the code registry to render
-/// them — the ONE self-sufficient artifact consumers hold. Passes
-/// stay pure queries with ONE standard shape —
-/// `pass(p, ...upstream facts) -> Facts` — and `analyze` is the
-/// only place that knows their order.
-export type Analysis = {
-    store: NodeStore,
-    stmts: List<StmtId>,
-    source: SourceFile,
-    resolution: Resolution,
-    typing: Typing,
-    codes: List<DiagCode>,
-    diagnostics: List<Diag>,
-}
-
-impl Analysis {
-    /// Nothing is wrong.
-    fn clean(self) -> bool { self.diagnostics.is_empty() }
-
-    /// Every diagnostic rendered for the terminal; "" means clean.
-    fn report(self) -> string {
-        joined([render(d, self.codes, self.source) for d in self.diagnostics], "\n\n")
-    }
-
-    fn expr(self, e: ExprId) -> Expr { self.store.expr(e) }
-    fn stmt(self, s: StmtId) -> Stmt { self.store.stmt(s) }
-
-    /// The definition an expression names, when it does.
-    fn target(self, e: ExprId) -> StmtId? { target_of(self.resolution, e) }
-
-    /// An expression's type — total: every expression has one.
-    fn type_at(self, e: ExprId) -> TypeId { type_of(self.typing, e) }
-
-    /// An expression's type as text (the printing projection).
-    fn type_name(self, e: ExprId) -> string {
-        self.typing.types.name_of(self.type_at(e))
-    }
-}
-
-impl Language {
-    /// The whole pipeline: a source in, its Analysis out.
-    fn analyze(self, src: SourceFile) -> Analysis {
-        let p = parse_program(self, src)
-        let r = resolve(p)
-        let t = type_check(p, r)
-        Analysis {
-            store: p.store, stmts: p.stmts, source: p.source,
-            resolution: r, typing: t, codes: self.codes,
-            diagnostics: concat(concat(p.diagnostics, r.diagnostics), t.diagnostics),
-        }
-    }
-
-    /// One diagnostic as terminal text.
-    fn render(self, d: Diag, src: SourceFile) -> string {
-        render(d, self.codes, src)
-    }
-
-    /// Everything wrong with one source, rendered; "" means clean.
-    fn check(self, src: SourceFile) -> string {
-        self.analyze(src).report()
-    }
-}
-
-/// The program's statements in order. A recovery hole becomes an
-/// explicit Stmt.Error node — the tree survives bad input visibly.
-fn program_stmts(store: NodeStore, o: RunOutcome<LangNode>) -> List<StmtId> {
-    mut out: List<StmtId> = []
-    if o.result == null { return out }
-    let items = list_at([o.result!], 0)
-    for j in 0..items.length {
-        let sid: StmtId? = stmt_id_at(items, j)
-        if sid == null {
-            out.push(store.alloc_stmt(Stmt.Error, null))
-        } else {
-            out.push(sid!)
-        }
-    }
-    out
-}
 /// The Avra language: its features, in the order that defines it —
 /// feature order is branch order is the language.
 export fn language_features() -> List<LanguageFeature> {
@@ -172,12 +59,3 @@ export fn avra() -> Language {
     assemble(language_features())
 }
 
-/// The canonical language over one nameless source.
-export fn parse_source(text: string) -> ParsedProgram {
-    parse_program(avra(), new_source_file(null, text))
-}
-
-/// The canonical language's whole pipeline over one nameless source.
-export fn analyze_source(text: string) -> Analysis {
-    avra().analyze(new_source_file(null, text))
-}

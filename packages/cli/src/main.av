@@ -3,22 +3,29 @@
 //! Exit 0 clean, 1 diagnostics, 2 usage or missing file.
 use @std.cli.{App, Subcommand, CommandSpec, CliResult, Runnable, ArgDef, result_get_arg}
 use @std.avrac.language.{avra}
-use @std.avrac.diagnostics.{new_source_file}
+use @std.avrac.diagnostics.{new_source_file, SourceFile}
 
 extern fn avra_selfhost_read_file(path: string) -> string
 extern fn avra_selfhost_file_exists(path: string) -> int
 extern fn avra_process_exit(code: int)
 
+/// The argued file as a SourceFile, or null when it does not exist.
+fn source_arg(args: CliResult) -> SourceFile? {
+    let path = result_get_arg(args, "file")
+    if avra_selfhost_file_exists(path) == 0 {
+        eprintln("avra: no such file: ${path}")
+        return null
+    }
+    new_source_file(path, avra_selfhost_read_file(path))
+}
+
 type CheckCmd = { }
 
 impl Runnable for CheckCmd {
     fn run(self, args: CliResult) -> int {
-        let path = result_get_arg(args, "file")
-        if avra_selfhost_file_exists(path) == 0 {
-            eprintln("avra: no such file: ${path}")
-            return 2
-        }
-        let out = avra().check(new_source_file(path, avra_selfhost_read_file(path)))
+        let src: SourceFile? = source_arg(args)
+        if src == null { return 2 }
+        let out = avra().check(src!)
         if out != "" {
             println(out)
             return 1
@@ -27,8 +34,29 @@ impl Runnable for CheckCmd {
     }
 }
 
+type RunCmd = { }
+
+impl Runnable for RunCmd {
+    fn run(self, args: CliResult) -> int {
+        let src: SourceFile? = source_arg(args)
+        if src == null { return 2 }
+        let a = avra().analyze(src!)
+        match a.run() {
+            .Ok(v) -> {
+                println(a.printed(v))
+                0
+            }
+            .Err(report) -> {
+                println(report)
+                1
+            }
+        }
+    }
+}
+
 fn main() {
-    let body: CheckCmd = CheckCmd { }
+    let check_body: CheckCmd = CheckCmd { }
+    let run_body: RunCmd = RunCmd { }
     let app = App {
         name: "avra",
         description: "The Avra compiler",
@@ -42,9 +70,18 @@ fn main() {
                 args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
                 options: [],
             },
-            body: body,
+            body: check_body,
+        }, Subcommand {
+            meta: CommandSpec {
+                name: "run",
+                description: "Run a program and print its value",
+                hidden: false,
+                flags: [],
+                args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
+                options: [],
+            },
+            body: run_body,
         }],
     }
     avra_process_exit(app.run())
 }
-

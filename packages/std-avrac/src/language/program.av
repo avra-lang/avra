@@ -1,0 +1,97 @@
+//! One parsed program: the tree, its source, and the owner map —
+//! which feature speaks for which node. Parsing and the statement
+//! spine live here; analysis stacks on top in analysis.av.
+use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, concat}
+use grammar.{Captured, RunOutcome, run_grammar, lex_source, lex_diagnostic}
+use features.{LangNode, LanguageFeature, NodeSemantics, dispatch, list_at, stmt_id_at}
+use diagnostics.{Diag, SourceFile, new_source_file, error_at}
+
+/// One parsed source: the tree (holes included), the SourceFile it
+/// came from, and every diagnostic from lexing and parsing, in
+/// source order. THE value every later pass takes first.
+export type ParsedProgram = {
+    store: NodeStore,
+    stmts: List<StmtId>,
+    source: SourceFile,
+    features: List<LanguageFeature>,
+    diagnostics: List<Diag>,
+}
+
+/// The feature owning each expression node — THE exhaustive map. A
+/// new variant breaks HERE at compile time; the owner's
+/// NodeSemantics impl then owes every pass, enforced by the trait.
+export fn owner_of(e: Expr) -> string {
+    match e {
+        .IntLit(_) or .Ident(_) or .Binary(_, _, _) or .Error -> "expr_spine",
+        .StrLit(_) -> "str_lit",
+    }
+}
+
+/// A statement's value expression — the stmt-spine dispatch every
+/// pass walks. A new statement kind must decide here, once.
+export fn stmt_value(store: NodeStore, s: StmtId) -> ExprId? {
+    match store.stmt(s) {
+        .Let(_, v) -> v,
+        .ExprStmt(v) -> v,
+        .Error -> null,
+    }
+}
+
+/// The defect for an owner that registers no semantics — one wording
+/// for every pass.
+export fn no_semantics(node: Expr) -> Diag {
+    error_at("language.defect", null, "`${owner_of(node)}`: feature registers no node semantics")
+}
+
+/// A node's semantics through its owner; empty means the owner
+/// registers none — the caller's defect to report.
+export fn semantics_of(features: List<LanguageFeature>, e: Expr) -> List<dyn NodeSemantics> {
+    let hit: LanguageFeature? = features.find(it.name == owner_of(e))
+    match hit {
+        let f -> f.hooks,
+        null -> [],
+    }
+}
+
+export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
+    match lang.grammar {
+        null -> ParsedProgram { store: new_node_store(), stmts: [], source: src, features: lang.features, diagnostics: lang.diagnostics },
+        let g -> {
+            let lexed = lex_source(src.text)
+            let store = new_node_store()
+            let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> dispatch(lang.features, store, name, args, span)
+            let o = run_grammar<LangNode>(g, lexed.tokens, build)
+            let engine = concat([lex_diagnostic(e) for e in lexed.errors], o.diagnostics)
+            ParsedProgram {
+                store: store,
+                stmts: program_stmts(store, o),
+                source: src,
+                features: lang.features,
+                diagnostics: project_all(engine, src.file, lang.codes),
+            }
+        }
+    }
+}
+
+
+/// The program's statements in order. A recovery hole becomes an
+/// explicit Stmt.Error node — the tree survives bad input visibly.
+fn program_stmts(store: NodeStore, o: RunOutcome<LangNode>) -> List<StmtId> {
+    mut out: List<StmtId> = []
+    if o.result == null { return out }
+    let items = list_at([o.result!], 0)
+    for j in 0..items.length {
+        let sid: StmtId? = stmt_id_at(items, j)
+        if sid == null {
+            out.push(store.alloc_stmt(Stmt.Error, null))
+        } else {
+            out.push(sid!)
+        }
+    }
+    out
+}
+/// The canonical language over one nameless source.
+export fn parse_source(text: string) -> ParsedProgram {
+    parse_program(avra(), new_source_file(null, text))
+}
+

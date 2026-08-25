@@ -1,0 +1,55 @@
+//! What a feature's nodes DO at each pass — a named contract the
+//! passes dispatch through. They look up a node's OWNER and call
+//! these; they never match feature nodes themselves. Every method is
+//! mandatory: a feature that does nothing at a pass says so in its
+//! impl, visibly. Each context is data plus capability fns the
+//! driver wires in, so pass state and pass logic stay with the pass.
+use core.{NodeStore, Expr, ExprId, Type, TypeId}
+use diagnostics.{Diag}
+use @std.errors.{Loc}
+
+/// Resolve capabilities: a hook reports a name use; the driver owns
+/// scopes, suggestions, and diagnostics.
+export type ResolveCx = {
+    store: NodeStore,
+    use_name: fn(ExprId, string),
+}
+
+/// Typing capabilities: read children's computed types (post-order —
+/// they exist), intern shapes, read an ident's definition type, and
+/// speak. The impl OWNS its diagnostics wording.
+export type TypeCx = {
+    store: NodeStore,
+    type_at: fn(ExprId) -> TypeId,
+    shape_at: fn(ExprId) -> Type,
+    intern: fn(Type) -> TypeId,
+    target_type: fn(ExprId) -> TypeId,
+    loc_of: fn(ExprId) -> Loc?,
+    emit: fn(Diag),
+}
+
+/// Eval capabilities: a VALUE IS A LITERAL NODE. Children are already
+/// values (post-order); an ident reads its definition's slot; new
+/// values allocate as synthesized literals.
+export type EvalCx = {
+    store: NodeStore,
+    value_at: fn(ExprId) -> ExprId,
+    def_value: fn(ExprId) -> ExprId?,
+    alloc: fn(Expr) -> ExprId,
+    fail: fn(string),
+}
+
+/// The per-pass behavior of one feature's expression nodes.
+export trait NodeSemantics {
+    fn kids(self, e: Expr) -> List<ExprId>
+    fn resolve(self, cx: ResolveCx, e: ExprId)
+    fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId
+    fn eval(self, cx: EvalCx, e: ExprId) -> ExprId
+    fn printed(self, store: NodeStore, e: ExprId) -> string?
+}
+
+/// The written-out nothing — a pass method that deliberately does no
+/// work says so by calling this.
+export fn nothing() {
+    let _ = 0
+}

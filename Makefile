@@ -25,3 +25,6 @@ clean:
 
 check: $(RUNTIME_OBJS)
 	@$(BS2) run packages/cli/src/main.av -- check $(FILE)
+
+run: $(RUNTIME_OBJS)
+	@$(BS2) run packages/cli/src/main.av -- run $(FILE)

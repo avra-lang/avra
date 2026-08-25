@@ -1,0 +1,82 @@
+//! The one artifact consumers hold: every pass's facts, every
+//! diagnostic, and every question — analyze, report, run — as
+//! methods. `analyze` is the only place pass order exists.
+use core.{NodeStore, Expr, Stmt, StmtId, ExprId, TypeId, concat, joined}
+use features.{LanguageFeature}
+use diagnostics.{Diag, DiagCode, SourceFile, new_source_file, render}
+
+/// One source, fully analyzed: the tree, every pass's facts, every
+/// diagnostic in pipeline order, and the code registry to render
+/// them — the ONE self-sufficient artifact consumers hold. Passes
+/// stay pure queries with ONE standard shape —
+/// `pass(p, ...upstream facts) -> Facts` — and `analyze` is the
+/// only place that knows their order.
+export type Analysis = {
+    store: NodeStore,
+    stmts: List<StmtId>,
+    source: SourceFile,
+    features: List<LanguageFeature>,
+    resolution: Resolution,
+    typing: Typing,
+    codes: List<DiagCode>,
+    diagnostics: List<Diag>,
+}
+
+impl Analysis {
+    /// Nothing is wrong.
+    fn clean(self) -> bool { self.diagnostics.is_empty() }
+
+    /// Every diagnostic rendered for the terminal; "" means clean.
+    fn report(self) -> string {
+        joined([render(d, self.codes, self.source) for d in self.diagnostics], "\n\n")
+    }
+
+    fn expr(self, e: ExprId) -> Expr { self.store.expr(e) }
+    fn stmt(self, s: StmtId) -> Stmt { self.store.stmt(s) }
+
+    /// The definition an expression names, when it does.
+    fn target(self, e: ExprId) -> StmtId? { target_of(self.resolution, e) }
+
+    /// An expression's type — total: every expression has one.
+    fn type_at(self, e: ExprId) -> TypeId { type_of(self.typing, e) }
+
+    /// An expression's type as text (the printing projection).
+    fn type_name(self, e: ExprId) -> string {
+        self.typing.types.name_of(self.type_at(e))
+    }
+
+    /// The program's value node, or the report that made it
+    /// unrunnable.
+    fn run(self) -> Result<ExprId, string> {
+        run_analysis(self)
+    }
+
+    /// A value node as `avra run` prints it — the owner's projection.
+    fn printed(self, v: ExprId) -> string {
+        print_value(self, v)
+    }
+}
+
+impl Language {
+    /// The whole pipeline: a source in, its Analysis out.
+    fn analyze(self, src: SourceFile) -> Analysis {
+        let p = parse_program(self, src)
+        let r = resolve(p)
+        let t = type_check(p, r)
+        Analysis {
+            store: p.store, stmts: p.stmts, source: p.source,
+            features: p.features, resolution: r, typing: t, codes: self.codes,
+            diagnostics: concat(concat(p.diagnostics, r.diagnostics), t.diagnostics),
+        }
+    }
+
+    /// Everything wrong with one source, rendered; "" means clean.
+    fn check(self, src: SourceFile) -> string {
+        self.analyze(src).report()
+    }
+}
+
+/// The canonical language's whole pipeline over one nameless source.
+export fn analyze_source(text: string) -> Analysis {
+    avra().analyze(new_source_file(null, text))
+}

@@ -85,9 +85,12 @@ invariant it holds — no narration, no self-justification, no history.
 - Map iteration order never reaches output — iterate an ordered
   source.
 - A feature is a directory: `mod.av` is the declarative manifest
-  (component + tables), and implementation fns live in sibling files
-  by concern — `builders.av` for parse lowering; `check.av`,
-  `resolve.av`, … as passes arrive.
+  (component + tables + its `dyn NodeSemantics`), `builders.av` holds
+  parse lowering, and `semantics.av` holds the NodeSemantics impl —
+  kids, resolve, type_of, eval, printed. Passes NEVER match feature
+  nodes: they look up the owner (`owner_of`, THE one exhaustive map)
+  and dispatch through the trait; the impl forces every pass method
+  at compile time.
 
 ## Vendored code — do not imitate
 
@@ -175,6 +178,15 @@ against these before writing; probe in scratch when unsure.
   ("undefined method") — traits carry mandatory methods only.
 - Module-level `let` values work within their file but do NOT resolve
   through imports — constants cross modules only as fns.
+- `dyn` values in COMPONENT CONFIG lists do not auto-box — the config
+  assignment threads no expected type. Box explicitly first:
+  `let sem: dyn NodeSemantics = SpineSemantics { }` then `hooks = [sem]`.
+- A trait method must not return a GENERIC enum (`Result<...>`)
+  through `dyn` dispatch — mono never instantiates trait-meta return
+  types ("unknown enum `Result`"). Return the value and record errors
+  through a capability fn on the context instead.
+- An `impl Trait for X` block holds ONLY the trait's methods — extra
+  methods live in a separate `impl X` block or free fns.
 - Working and dogfooded: traits + `impl Trait for`, subjectless `when`
   (with `_` arm), list comprehensions `[x for x in xs if p]`, pipe
   `|>`, typed table literals, `with` on generics, cross-file `impl`,

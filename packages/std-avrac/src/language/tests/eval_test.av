@@ -1,0 +1,49 @@
+// The tracer runs: clean programs evaluate to their last statement's
+// value, names read their definition's slot, and anything diagnosed
+// REFUSES to run — the report is the refusal.
+use @std.avrac.language.{analyze_source}
+
+/// A program's printed value, or "<refused>" when it will not run.
+fn shown(source: string) -> string {
+    let a = analyze_source(source)
+    match a.run() {
+        .Ok(v) -> a.printed(v),
+        .Err(_) -> "<refused>",
+    }
+}
+
+spec "language/eval" {
+    given "arithmetic" {
+        then "the program's value is its last statement's" {
+            shown("1 + 2") == "3" && shown("let x = 1 + 2\nx - 4") == "-1"
+        }
+        then "names read their definitions, shadowing included" {
+            shown("let a = 2\nlet b = a + 3\nb - a") == "3" &&
+                shown("let x = 1\nlet x = x + 1\nx") == "2"
+        }
+    }
+    given "strings" {
+        then "a string program prints its text" {
+            shown("let s = \"hello\"\ns") == "hello"
+        }
+    }
+    given "a program that does not analyze clean" {
+        then "it refuses to run and the refusal IS the report" {
+            match analyze_source("let x = 1 + y").run() {
+                .Err(report) -> report.contains("F3000") && report.contains("did you mean"),
+                .Ok(_) -> false,
+            }
+        }
+        then "a type mismatch refuses the same way" {
+            shown("let x = 1 + \"a\"\nx") == "<refused>"
+        }
+    }
+    given "an empty program" {
+        then "there is nothing to run, said plainly" {
+            match analyze_source("").run() {
+                .Err(m) -> m == "the program is empty",
+                .Ok(_) -> false,
+            }
+        }
+    }
+}

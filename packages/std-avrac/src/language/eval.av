@@ -1,0 +1,96 @@
+//! Runs a program. The driver owns refusal, statement order, and the
+//! slots; HOW a node evaluates lives in its owning feature's
+//! NodeSemantics. A VALUE IS A LITERAL NODE — `1 + 2` reduces to a
+//! synthesized `IntLit(3)` — so a feature's literal is its value
+//! representation, and this same reduction is tomorrow's `@comptime`
+//! fold. A program with any diagnostic refuses to run: past that
+//! gate there are no dynamic checks. Names cost nothing at runtime —
+//! an ident reads its definition's slot through the resolve target.
+use core.{Expr, Stmt, StmtId, ExprId, filled}
+use features.{EvalCx}
+
+type Evaluator = {
+    a: Analysis,
+    slots: List<ExprId?>,
+    values: List<ExprId?>,
+    failures: List<string>,
+}
+
+/// The program's value node, or the report that made it unrunnable.
+fn run_analysis(a: Analysis) -> Result<ExprId, string> {
+    if !a.clean() { return Result.Err(a.report()) }
+    // Both tables dense by id — reads are one index, never a scan.
+    let ev = Evaluator {
+        a: a,
+        slots: filled<ExprId?>(a.store.stmts.count(), null),
+        values: filled<ExprId?>(a.store.exprs.count(), null),
+        failures: [],
+    }
+    let cx = EvalCx {
+        store: a.store,
+        value_at: (e: ExprId) -> ev.values[e.index]!,
+        def_value: (e: ExprId) -> ev.def_value(e),
+        alloc: (node: Expr) -> a.store.alloc_expr(node, null),
+        fail: (msg: string) -> ev.record(msg),
+    }
+    mut last: ExprId? = null
+    for s in a.stmts {
+        let value: ExprId? = stmt_value(a.store, s)
+        match value {
+            null -> { return Result.Err("defect: a hole survived a clean analysis") }
+            let e -> {
+                eval_visit(ev, cx, e)
+                let v: ExprId? = ev.values[e.index]
+                mut written = ev.slots
+                written.set(s.index, v!)
+                last = v
+            }
+        }
+    }
+    if !ev.failures.is_empty() { return Result.Err(ev.failures[0]) }
+    match last {
+        let v -> Result.Ok(v),
+        null -> Result.Err("the program is empty"),
+    }
+}
+
+/// Post-order: children become values first, then the owner reduces.
+fn eval_visit(ev: Evaluator, cx: EvalCx, e: ExprId) {
+    let node = ev.a.store.expr(e)
+    let sems = semantics_of(ev.a.features, node)
+    if sems.is_empty() {
+        ev.record(no_semantics(node).message)
+        mut vals = ev.values
+        vals.set(e.index, e)
+        return
+    }
+    for k in sems[0].kids(node) { eval_visit(ev, cx, k) }
+    let v = sems[0].eval(cx, e)
+    mut vals = ev.values
+    vals.set(e.index, v)
+}
+
+impl Evaluator {
+    fn record(self, msg: string) {
+        mut fs = self.failures
+        fs.push(msg)
+    }
+
+    /// An ident's value is its definition's slot — resolution
+    /// already paid for the lookup.
+    fn def_value(self, e: ExprId) -> ExprId? {
+        let target: StmtId? = self.a.target(e)
+        match target {
+            let s -> self.slots[s.index],
+            null -> null,
+        }
+    }
+}
+
+/// A value node as `avra run` prints it — the owner's projection.
+fn print_value(a: Analysis, v: ExprId) -> string {
+    let node = a.store.expr(v)
+    let sems = semantics_of(a.features, node)
+    if sems.is_empty() { return "<unprintable>" }
+    sems[0].printed(a.store, v) ?? "<unprintable>"
+}

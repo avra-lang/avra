@@ -1,0 +1,58 @@
+//! The type currency: opaque ids, interned shapes, one registry.
+//! Core because every layer above speaks it — features implement
+//! typing hooks against these, the driver owns the pass.
+
+/// Opaque handle into the registry: compared and looked up, never
+/// inspected. Text exists only in the registry's printing projection.
+export type TypeId = { index: int }
+
+/// A type's shape. Interned once; identity is the id.
+export enum Type { Int, Str, Error }
+
+/// The interner: shapes in, ids out — assigned once, compared as
+/// ints forever. The index map is keyed by each shape's CANONICAL
+/// form — deterministic structural content, children by interned id —
+/// which is exactly what content-addressing later hashes: the key
+/// derivation swaps, the map and its callers do not.
+export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId> }
+
+export fn new_type_registry() -> TypeRegistry {
+    TypeRegistry { shapes: [], ids: {} }
+}
+
+impl TypeRegistry {
+    /// A shape's canonical key: variant ordinal, then child ids as
+    /// payload shapes arrive. Structural — never the printed name.
+    fn canon(self, t: Type) -> string {
+        match t {
+            .Int -> "0",
+            .Error -> "1",
+            .Str -> "2",
+        }
+    }
+
+    /// The id for a shape, minted on first sight — one map probe.
+    fn intern(self, t: Type) -> TypeId {
+        let key = self.canon(t)
+        let hit: TypeId? = self.ids.get(key)
+        if hit != null { return hit! }
+        mut shapes = self.shapes
+        shapes.push(t)
+        let id = TypeId { index: shapes.length - 1 }
+        mut ids = self.ids
+        ids.set(key, id)
+        id
+    }
+
+    fn shape_of(self, id: TypeId) -> Type { self.shapes[id.index] }
+
+    /// The printing projection — the ONLY place a type becomes text.
+    fn name_of(self, id: TypeId) -> string {
+        match self.shape_of(id) {
+            .Int -> "int",
+            .Str -> "string",
+            .Error -> "<error>",
+        }
+    }
+}
+

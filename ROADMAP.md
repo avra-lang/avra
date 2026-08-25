@@ -73,11 +73,41 @@ compile-time evaluator anyway (`@comptime`, seed validation), so the
 evaluator IS the tracer back end — a permanent organ, never
 throwaway.
 
-- [ ] The evaluator: a pure walk of the TYPED AST (totality means no
-      dynamic checks), values as one small enum
-- [ ] `avra run FILE` — analyze, refuse on diagnostics, evaluate,
-      print the program's value
-- [ ] GATE: a real program runs end to end through the real CLI
+- [x] The evaluator: a pure walk of the TYPED AST — no dynamic
+      checks past the refusal gate; idents read their definition's
+      SLOT (dense by StmtId — resolution is the runtime environment)
+- [x] `avra run FILE` — analyze, refuse with the report on any
+      diagnostic, evaluate, print the last statement's value
+- [x] GATE: `make run` executes a real program (comments, lets,
+      shadowing, arithmetic) and prints its value; a broken program
+      refuses with the full rendered report
+
+## Milestone 4.5 — features own their semantics
+
+- [x] `NodeSemantics` — one trait per the whole vertical (kids,
+      resolve, type_of, eval, printed), implemented per feature in
+      `semantics.av`, carried as `dyn` in the manifest. Passes are
+      DRIVERS: they own state, order, and refusal, look up the node's
+      owner (`owner_of` — the ONE exhaustive map, the compile-time
+      anchor), and dispatch. A new node costs: the feature dir, the
+      list line, the enum variant, a fingerprint arm, one `owner_of`
+      arm — and the trait impl forces every pass at compile time.
+- [x] Upstream findings while landing it: dyn trait-kind loss across
+      the metadata boundary (FIXED in bs2 — registry recovery at the
+      method fallback); config lists do not auto-box dyn (typed-let
+      boxing, noted); no generic-enum returns through dyn vtables
+      (capability-fn design instead, noted)
+
+## Recorded triggers (standardize WHEN, not before)
+
+- Statement semantics join NodeSemantics when the FIRST new statement
+  feature lands (`fn` declarations) — today the stmt spine is three
+  stable kinds dispatched once, in `stmt_value`.
+- The three pass visitors extract into one generic walker when a
+  FOURTH pass proves the shape.
+- Passes become a uniform trait only when the L6 query engine is the
+  consumer that memoizes them — typed signatures are the data-flow
+  contract until then.
 
 ## Milestone 5 — native emission (recorded, not scheduled)
 

@@ -1,64 +1,13 @@
-//! The type pass — the second pure query. Facts land in a Typing the
-//! pass owns: a DENSE, TOTAL table — every expression has a TypeId,
-//! never an option and never an Unknown. A parse hole or unresolved
-//! name types as the interned Error type, and Error is ABSORBING:
-//! the causing pass already spoke, so no diagnostic cascades from it.
-use core.{NodeStore, Expr, Stmt, StmtId, ExprId, BinOp}
-use diagnostics.{Diag, error_at, loc_at, pointed}
-
-/// Opaque handle into the registry: compared and looked up, never
-/// inspected. Text exists only in the registry's printing projection.
-export type TypeId = { index: int }
-
-/// A type's shape. Interned once; identity is the id.
-export enum Type { Int, Str, Error }
-
-/// The interner: shapes in, ids out — assigned once, compared as
-/// ints forever. The index map is keyed by each shape's CANONICAL
-/// form — deterministic structural content, children by interned id —
-/// which is exactly what content-addressing later hashes: the key
-/// derivation swaps, the map and its callers do not.
-export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId> }
-
-export fn new_type_registry() -> TypeRegistry {
-    TypeRegistry { shapes: [], ids: {} }
-}
-
-impl TypeRegistry {
-    /// A shape's canonical key: variant ordinal, then child ids as
-    /// payload shapes arrive. Structural — never the printed name.
-    fn canon(self, t: Type) -> string {
-        match t {
-            .Int -> "0",
-            .Error -> "1",
-            .Str -> "2",
-        }
-    }
-
-    /// The id for a shape, minted on first sight — one map probe.
-    fn intern(self, t: Type) -> TypeId {
-        let key = self.canon(t)
-        let hit: TypeId? = self.ids.get(key)
-        if hit != null { return hit! }
-        mut shapes = self.shapes
-        shapes.push(t)
-        let id = TypeId { index: shapes.length - 1 }
-        mut ids = self.ids
-        ids.set(key, id)
-        id
-    }
-
-    fn shape_of(self, id: TypeId) -> Type { self.shapes[id.index] }
-
-    /// The printing projection — the ONLY place a type becomes text.
-    fn name_of(self, id: TypeId) -> string {
-        match self.shape_of(id) {
-            .Int -> "int",
-            .Str -> "string",
-            .Error -> "<error>",
-        }
-    }
-}
+//! The type pass — the second pure query. The driver owns the
+//! registry, the dense table, and the walk; what a NODE's type IS
+//! lives in its owning feature's NodeSemantics. Facts stay TOTAL:
+//! every expression has a TypeId, never an option and never an
+//! Unknown — a hole or unresolved name types as the interned Error,
+//! which ABSORBS: the causing pass already spoke, so no diagnostic
+//! cascades from it.
+use core.{Expr, Stmt, StmtId, ExprId, TypeId, Type, TypeRegistry, new_type_registry, filled}
+use diagnostics.{Diag, loc_at}
+use features.{TypeCx}
 
 /// The pass's facts: the registry and a dense table indexed by
 /// ExprId — total, O(1) reads for every later pass.
@@ -74,8 +23,7 @@ export fn type_of(t: Typing, e: ExprId) -> TypeId {
 }
 
 type Typer = {
-    store: NodeStore,
-    file: string?,
+    p: ParsedProgram,
     resolution: Resolution,
     types: TypeRegistry,
     of_expr: List<TypeId>,
@@ -86,83 +34,57 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
     mut registry = new_type_registry()
     // The table is born total: every slot pre-typed as the hole.
     let hole = registry.intern(Type.Error)
-    mut facts: List<TypeId> = []
-    mut i = 0
-    while i < p.store.exprs.count() {
-        facts.push(hole)
-        i = i + 1
-    }
     let t = Typer {
-        store: p.store, file: p.source.file, resolution: r, types: registry,
-        of_expr: facts, diagnostics: [],
+        p: p, resolution: r, types: registry,
+        of_expr: filled(p.store.exprs.count(), hole), diagnostics: [],
+    }
+    let cx = TypeCx {
+        store: p.store,
+        type_at: (e: ExprId) -> t.of_expr[e.index],
+        shape_at: (e: ExprId) -> t.types.shape_of(t.of_expr[e.index]),
+        intern: (sh: Type) -> t.types.intern(sh),
+        target_type: (e: ExprId) -> t.target_type(e),
+        loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
+        emit: (d: Diag) -> t.speak(d),
     }
     for s in p.stmts {
-        let value: ExprId? = match p.store.stmt(s) {
-            .Let(_, v) -> v,
-            .ExprStmt(v) -> v,
-            .Error -> null,
-        }
-        if value != null { t.type_expr(value!) }
+        let value: ExprId? = stmt_value(p.store, s)
+        if value != null { type_visit(t, cx, value!) }
     }
     Typing { types: t.types, of_expr: t.of_expr, diagnostics: t.diagnostics }
 }
 
-impl Typer {
-    fn type_expr(self, e: ExprId) -> TypeId {
-        let ty = match self.store.expr(e) {
-            .IntLit(_) -> self.types.intern(Type.Int),
-            .StrLit(_) -> self.types.intern(Type.Str),
-            .Ident(_) -> self.ident_type(e),
-            .Binary(op, l, right) -> self.binary_type(op, l, right),
-            .Error -> self.types.intern(Type.Error),
-        }
-        mut facts = self.of_expr
-        facts.set(e.index, ty)
-        ty
+/// Post-order: children typed first, so the owner combines reads.
+fn type_visit(t: Typer, cx: TypeCx, e: ExprId) {
+    let node = t.p.store.expr(e)
+    let sems = semantics_of(t.p.features, node)
+    if sems.is_empty() {
+        t.speak(no_semantics(node))
+        return
     }
+    for k in sems[0].kids(node) { type_visit(t, cx, k) }
+    let ty = sems[0].type_of(cx, e)
+    mut facts = t.of_expr
+    facts.set(e.index, ty)
+}
 
+impl Typer {
     /// An ident's type is its definition's value type. No target
     /// means resolve already spoke — Error, silently.
-    fn ident_type(self, e: ExprId) -> TypeId {
+    fn target_type(self, e: ExprId) -> TypeId {
         let target: StmtId? = target_of(self.resolution, e)
         match target {
             null -> self.types.intern(Type.Error),
-            let s -> match self.store.stmt(s) {
+            let s -> match self.p.store.stmt(s) {
                 .Let(_, v) -> self.of_expr[v.index],
                 _ -> self.types.intern(Type.Error),
             },
         }
     }
 
-    /// Both operands int -> int. An Error operand ABSORBS — its cause
-    /// was diagnosed where it happened; a PRESENT wrong type is this
-    /// pass's own news, reported per offending operand.
-    fn binary_type(self, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
-        let lt = self.type_expr(l)
-        let rt = self.type_expr(r)
-        if self.types.shape_of(lt) is .Int && self.types.shape_of(rt) is .Int {
-            return lt
-        }
-        self.mismatch(op, l, lt)
-        self.mismatch(op, r, rt)
-        self.types.intern(Type.Error)
-    }
-
-    fn mismatch(self, op: BinOp, e: ExprId, ty: TypeId) {
-        let sh = self.types.shape_of(ty)
-        if sh is .Int || sh is .Error { return }
-        let found = self.types.name_of(ty)
-        let at = loc_at(self.file, self.store.expr_span(e))
+    fn speak(self, d: Diag) {
         mut ds = self.diagnostics
-        ds.push(pointed(
-            error_at("type.mismatch", at, "`${op_text(op)}` needs `int` operands, found `${found}`"),
-            "this is a `${found}`"))
+        ds.push(d)
     }
-}
 
-fn op_text(op: BinOp) -> string {
-    match op {
-        .Add -> "+",
-        .Sub -> "-",
-    }
 }

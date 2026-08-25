@@ -1,9 +1,12 @@
-//! Name resolution — the first pass. A pure query over a parsed
-//! program: facts land in a Resolution the pass owns, never on the
-//! store. A symbol's identity is its definition site; visibility is
+//! Name resolution — the first pure query. The driver owns scopes,
+//! statement order, and every diagnostic; what a NODE means for
+//! names lives in its owning feature's NodeSemantics, reached
+//! through the owner map. Facts land in a Resolution the pass owns.
+//! A symbol's identity is its definition site; visibility is
 //! sequential, and a later `let` shadows an earlier one.
-use core.{NodeStore, Expr, Stmt, StmtId, ExprId, Span, closest, Closest, some_list}
+use core.{Expr, Stmt, StmtId, ExprId, Span, closest, Closest, some_list, filled}
 use diagnostics.{Diag, error_at, loc_at, pointed}
+use features.{ResolveCx}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
 /// The pass's facts: a dense table indexed by ExprId — O(1) reads
@@ -21,8 +24,7 @@ export fn target_of(r: Resolution, e: ExprId) -> StmtId? {
 type Def = { name: string, stmt: StmtId }
 
 type Resolver = {
-    store: NodeStore,
-    file: string?,
+    p: ParsedProgram,
     all_defs: List<Def>,
     def_names: List<string>,
     visible: Map<string, StmtId>,
@@ -31,25 +33,20 @@ type Resolver = {
 }
 
 export fn resolve(p: ParsedProgram) -> Resolution {
-    mut empty_targets: List<StmtId?> = []
-    mut i = 0
-    while i < p.store.exprs.count() {
-        empty_targets.push(null)
-        i = i + 1
-    }
     let defs = defs_of(p.store, p.stmts)
     let r = Resolver {
-        store: p.store, file: p.source.file, all_defs: defs,
+        p: p, all_defs: defs,
         def_names: [d.name for d in defs],
-        visible: {}, targets: empty_targets, diagnostics: [],
+        visible: {}, targets: filled<StmtId?>(p.store.exprs.count(), null),
+        diagnostics: [],
+    }
+    let cx = ResolveCx {
+        store: p.store,
+        use_name: (e: ExprId, name: string) -> r.resolve_name(e, name),
     }
     for s in p.stmts {
-        let value: ExprId? = match p.store.stmt(s) {
-            .Let(_, v) -> v,
-            .ExprStmt(v) -> v,
-            .Error -> null,
-        }
-        if value != null { r.resolve_expr(value!) }
+        let value: ExprId? = stmt_value(p.store, s)
+        if value != null { resolve_visit(r, cx, value!) }
         let binds: string? = match p.store.stmt(s) {
             .Let(name, _) -> name,
             _ -> null,
@@ -57,6 +54,19 @@ export fn resolve(p: ParsedProgram) -> Resolution {
         if binds != null { r.bind(binds!, s) }
     }
     Resolution { targets: r.targets, diagnostics: r.diagnostics }
+}
+
+/// Post-order walk: children through the owner's `kids`, then the
+/// owner speaks for the node.
+fn resolve_visit(r: Resolver, cx: ResolveCx, e: ExprId) {
+    let node = r.p.store.expr(e)
+    let sems = semantics_of(r.p.features, node)
+    if sems.is_empty() {
+        r.speak(no_semantics(node))
+        return
+    }
+    for k in sems[0].kids(node) { resolve_visit(r, cx, k) }
+    sems[0].resolve(cx, e)
 }
 
 /// Every definition in the program, in order.
@@ -73,17 +83,6 @@ fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
 }
 
 impl Resolver {
-    fn resolve_expr(self, e: ExprId) {
-        match self.store.expr(e) {
-            .Ident(name) -> self.resolve_name(e, name),
-            .Binary(_, l, right) -> {
-                self.resolve_expr(l)
-                self.resolve_expr(right)
-            }
-            .IntLit(_) or .StrLit(_) or .Error -> self.nothing(),
-        }
-    }
-
     fn resolve_name(self, e: ExprId, name: string) {
         let found: StmtId? = self.visible.get(name)
         if found != null {
@@ -92,18 +91,22 @@ impl Resolver {
             return
         }
         let at = self.loc_of(e)
-        mut ds = self.diagnostics
         let later: StmtId? = self.later_def(name)
         if later != null {
             // A loc-less frame renders no window — absence stays quiet.
-            let defined = [Frame { label: "defined here", loc: loc_at(self.file, self.store.stmt_span(later!)) }]
-            ds.push(pointed(error_at("resolve.use_before_def", at, "`${name}` is used before its definition"), "used here")
+            let defined = [Frame { label: "defined here", loc: loc_at(self.p.source.file, self.p.store.stmt_span(later!)) }]
+            self.speak(pointed(error_at("resolve.use_before_def", at, "`${name}` is used before its definition"), "used here")
                 with { secondary: defined, help: "move the definition above this use" })
             return
         }
-        ds.push(self.suggested(
+        self.speak(self.suggested(
             pointed(error_at("resolve.unresolved", at, "`${name}` is not defined"), "not defined anywhere in this program"),
             e, name))
+    }
+
+    fn speak(self, d: Diag) {
+        mut ds = self.diagnostics
+        ds.push(d)
     }
 
     /// The first definition of `name` anywhere in the program.
@@ -118,7 +121,7 @@ impl Resolver {
     }
 
     fn loc_of(self, e: ExprId) -> Loc? {
-        loc_at(self.file, self.store.expr_span(e))
+        loc_at(self.p.source.file, self.p.store.expr_span(e))
     }
 
     /// A "did you mean" from every definition in the program — later
@@ -138,9 +141,5 @@ impl Resolver {
                 d with { help: "did you mean `${n.name}`?", suggestions: [s] }
             }
         }
-    }
-
-    fn nothing(self) {
-        let _ = 0
     }
 }

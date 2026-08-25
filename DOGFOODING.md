@@ -402,11 +402,12 @@ for (i, m) in out.enumerate() {
 }
 ```
 
-## `concat` / `joined` from core/lists
+## `concat` / `joined` / `filled` / `some_list` from core/lists
 
 ```avra
 diagnostics = concat<Diagnostic>(diagnostics, r.diagnostics)
 "[${joined([render(x) for x in items], " ")}]"
+targets: filled<StmtId?>(p.store.exprs.count(), null)   // dense-table prefill
 ```
 
 Pin `concat<T>` inside generic fn bodies — mono needs the explicit
@@ -495,7 +496,67 @@ impl Error for Diag {
 
 Heterogeneous behaviour pairs data with `dyn Trait` — the CLI's
 `Subcommand { meta: CommandSpec, body: dyn Runnable }` dispatches
-each command through the one-method trait.
+each command through the one-method trait. `NodeSemantics` scales the
+same shape to a MULTI-method contract: a feature's whole per-pass
+behavior as one impl, carried as `dyn` in its manifest (box with a
+typed let first — config lists do not auto-box), dispatched by the
+passes through the owner map. The impl is the completeness gate: a
+missing pass method fails to compile. A method that deliberately
+does no work calls `nothing()` — the decision is written, never
+implied. One limit: no generic-enum returns through `dyn` — report
+through a capability fn instead.
+
+## The three seams of a pass
+
+Every pass is standard at exactly two seams, and hand-shaped between:
+
+1. DRIVER: `pass(p: ParsedProgram, ...upstream Facts) -> Facts` —
+   facts own their diagnostics; `analyze` is the only place order
+   exists.
+2. FEATURE: one `NodeSemantics` method per pass, `(self, cx, e)`.
+3. Between them, the driver's own walk stays plain code — three
+   similar 8-line visitors beat one generic walker until a fourth
+   pass proves the shape.
+
+A pass's STATE is `{ p: ParsedProgram, ...upstream Facts, ...own
+tables }` — the program held as ONE immutable field, never exploded
+into copied store/features/file fields. That is the "one big
+context", done right: read-context is one shared value; write-state
+stays owned per pass, because shared mutable context is the
+god-object that makes pass order implicit and memoization
+impossible. And passes are NOT a trait: their typed signatures ARE
+the data-flow contract (`type_check(p, r)` cannot run without
+resolution, provably); a `trait Pass` erases that and has no
+consumer until the query engine memoizes passes uniformly — that is
+its trigger, not before.
+
+## Capability contexts: data + driver-wired fns
+
+A context struct crosses layers DOWNWARD carrying fn fields the
+driver wires at construction — features call capabilities without
+importing the pass, and pass state stays with the pass. The engine's
+`MatchContext.build` and every pass Cx are the same pattern:
+
+```avra
+let cx = TypeCx {
+    store: p.store,
+    type_at: (e: ExprId) -> t.of_expr[e.index],
+    intern: (sh: Type) -> t.types.intern(sh),
+    emit: (d: Diag) -> t.speak(d),
+    ...
+}
+```
+
+Closures capture the LET-bound state struct (never a `mut` local) and
+mutate through it — the rebind-alias idiom underneath.
+
+## Values are literal nodes
+
+Evaluation reduces an expression to a LITERAL in the tree —
+`1 + 2` becomes a synthesized `IntLit(3)` (null span). No parallel
+Value enum exists to grow per type (P6): a feature's literal IS its
+value representation, printing is the owner's projection, and the
+same reduction is `@comptime` folding when it arrives.
 
 ## Proven but awaiting their first honest use
 
