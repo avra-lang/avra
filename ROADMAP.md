@@ -114,8 +114,10 @@ throwaway.
 - Statement semantics join NodeSemantics when the FIRST new statement
   feature lands (`fn` declarations) — today the stmt spine is three
   stable kinds dispatched once, in `stmt_value`.
-- The three pass visitors extract into one generic walker when a
-  FOURTH pass proves the shape.
+- [x] LANDED — the fourth pass (lower) proved the shape: `post_order`
+  is THE walk (children before owners), every pass driver iterates
+  it, and the per-pass recursions are gone. Per-node visitors are
+  FREE FNS by doctrine (#1377).
 - Passes become a uniform trait only when the L6 query engine is the
   consumer that memoizes them — typed signatures are the data-flow
   contract until then.
@@ -126,30 +128,129 @@ The goal is REPLACING bs2, so the backend is built for the scoped
 abstraction levels (docs/idea_scoped_abstraction_levels.md), not just
 the tracer:
 
-- [ ] `core/ir.av` — flat typed register IR with SCOPES as
+- [x] `core/ir.av` — flat typed register IR with SCOPES as
       first-class structure (`ScopeEnter(level)`/`ScopeExit`,
       bindings per scope); every level of the abstraction-levels doc
       is an enum value from day one, today always Application. The
       language is already SSA (single-bind lets): a definition's reg
       IS its slot through resolution.
-- [ ] Lowering — pass four, standard shape; NodeSemantics grows
+- [x] Lowering — pass four, standard shape; NodeSemantics grows
       `lower` (compile-enforced per feature). Lowering emits PURE
       semantics: no memory ops, ever.
-- [ ] Memory — pass five: strategy dispatched PER SCOPE by level.
+- [x] Memory — pass five: strategy dispatched PER SCOPE by level.
       Application = RC (bs2 parity: releases at scope exit, correct
       even on statics — the runtime no-ops non-RC pointers); Systems
       ownership drops in later as a strategy, touching neither
       lowering nor the backend.
-- [ ] Backend — LLVM C API through the ALREADY-LINKED
+- [x] Backend — LLVM C API through the ALREADY-LINKED
       `llvm_wrapper.o` externs (verifier in the loop per function,
       per the epic's ORC/comptime future); programs link `runtime.c`
       — Avra's runtime library, rewritten in Avra-at-bare at the
       self-host endgame. `avra emit` prints the module (P7,
       LLVMPrintModule — a projection, never the compile path);
       `avra build` produces the object and clang-links.
-- [ ] GATE: `avra build` output byte-identical to `avra run` across
-      the corpus — the evaluator is the oracle (diff-test
-      discipline).
+- [x] GATE: `make native-check` — the compiled binary's output is
+      byte-identical to the evaluator's across the corpus
+      (arithmetic, strings, comparisons, runtime string equality).
+
+## Milestone 5.5 — the vision audit (2026-08-25)
+
+The current tree audited against the spec's ten v1.0 architectural
+commitments (Axis 9) and the compiler-architecture decisions
+(Axis 26). Verdict: aligned. What the audit closed or decided:
+
+- [x] Reserved words (commitment #10): `systems` `bare` `hardware`
+      `owned` `borrow` `move` `level` `unsafe` `extern` `async`
+      `spawn` `await` `channel` `select` refuse as names —
+      `resolve.reserved` F3002, golden-tested. Near-term keywords
+      (`fn`, `if`, `match`, ...) become anchored literals when their
+      features land; this list is the far-future set the spec locks.
+- DECIDED — control flow lands as STRUCTURED IR (nested regions),
+  never a flat CFG: the memory pass's model is "what does this
+  SCOPE owe at exit," so scope structure stays visible from
+  lowering through memory; blocks and phis exist only at LLVM
+  emission. If the memory pass ever re-derives scopes, the fork was
+  taken wrong.
+- DECIDED — calls carry their contract from day one (commitments
+  #6+#7): when `fn` lands, the app-level ABI is CALLEE-CLEANS (the
+  callee owns its arguments; their release is the callee's scope
+  exit — passing a value whose last use is the call costs zero RC
+  traffic), and every Call/Ret carries (caller level, callee level)
+  even while both are always Application. Systems-level boundary
+  machinery — borrow injected inward, refcount-init outward —
+  attaches to instructions that already exist. Callee-cleans is the
+  SAME convention as a Rust/systems-level move (ownership rides in
+  with the argument; the callee's scope exit cleans) — ONE ABI at
+  every level, only the cleanup op differs by strategy; and it is
+  the Perceus shape: last-use arguments transfer with ZERO RC
+  traffic, and refcount-1 knowledge enables in-place reuse.
+- TRIGGER — the first composite type: the memory pass stops
+  shape-matching managed values (`managed_dst`) and consumes
+  per-type generated TRAVERSALS (commitment #1: which fields need
+  retain/release, invariant across strategies); layouts stay
+  strategy-independent with RC headers EXTERNAL to the object
+  (commitments #2-#3).
+- DEBT — backend: in-process object emission through the wrapper
+  (TargetMachine) replaces `.ll` text + clang's re-parse; `emit_ll`
+  stays as the P7 projection, and a build-speed benchmark lands
+  with the switch.
+
+## The speed doctrine (builds, caches, tests)
+
+Sources: Zig's incremental-compilation internals (mlugg, 2026-07),
+the L6 query-engine and codegen-cache designs. The laws every
+milestone answers to:
+
+- The per-file front end (lex → parse → lower) stays a PURE
+  FUNCTION of file content: embarrassingly parallel, cached per
+  file by content hash. Facts stay FLAT ARRAYS keyed by typed ids —
+  writing a cache is a copy, never a serialization step.
+- Incrementality is per DECLARATION, not per file: analysis units
+  depend on other units and on source-REGION hashes; an edit
+  re-analyzes only its hash's dependents (red-green). INTERFACE
+  fingerprints stop propagation — a body edit never re-checks
+  callers.
+- Codegen needs no cache: its granularity (per fn) IS the
+  incremental granularity — only re-analyzed fns re-lower.
+- Per-update work is proportional to the CHANGE, never the program
+  — no O(program) flush steps (Zig's resolveReferencesInner
+  lesson).
+- Tests run IN-PROCESS: the linked wrapper's `avra_llvm_jit_run`
+  executes a module with no linker, no file, no shell-out; the
+  evaluator covers pure code cheaper still. `avra test` is ONE
+  process — analyze once, share every cache, JIT what must run
+  natively. Shelling out to a child binary is a test-runner defect,
+  not a technique (bs2's runner is the counterexample; it dies at
+  self-host).
+- The compiler dogfoods the language's own concurrency (spawn,
+  channels — spec Axis 18) for per-file and per-unit parallelism
+  the day those land; threads/processes are language features first
+  and compiler infrastructure second.
+- ONE scheduler owns the machine: build work and test work share a
+  bounded worker pool (workers = cores, memory-watermarked); an
+  artifact two tests need builds ONCE — tests demand it as a query
+  and suspend, and the content-addressed cache is the coordination
+  point. Never a process per test and pray.
+- Tests choose their execution tier by EFFECT: pure bodies run
+  IN-PROCESS (evaluator or JIT, parallel on the pool — the compiler
+  verifies purity, so they cannot contaminate each other);
+  effectful tests get a pooled child process with a fresh temp-dir
+  sandbox — isolation by process boundary, and a crash is a
+  FAILURE REPORT, never a lost run. Until the effect system lands,
+  the harness kind picks the tier.
+- Test results are cache entries too: a test is a query keyed by
+  (body hash, consumed-artifact hashes) — an untouched test replays
+  its PASS instantly; an edit re-runs only the tests whose
+  fingerprints moved.
+- Sharing between tests is IMMUTABLE: only content-addressed
+  artifacts, never mutable state — that is what makes the
+  parallelism safe. Remote caches/executors drop in behind the same
+  keys later; keys stay content-addressed so that door stays open.
+- ENDGAME (recorded, not scheduled): a compiler-integrated
+  INCREMENTAL LINKER — machine code patched in place into a mapped
+  output file (Zig's MappedFile shape), rebuilds in tens of
+  milliseconds. Until then: in-process object emission + the system
+  linker.
 
 ## Engine sufficiency (recorded, not scheduled)
 
@@ -193,6 +294,39 @@ additions get siblings, nothing changes shape:
   memoized by content fingerprint (nodes already fingerprint); an
   edit re-runs importers only when the export surface's fingerprint
   moved.
+
+## Sugar backlog — dogfooding asks
+
+The compiler is Avra's first real program, and writing it is design
+evidence: whenever its own code WANTS a construct the language
+lacks, the ask lands here with the wanting site. Entries graduate
+into features (or spec commitments) when their milestone comes.
+
+- Match THROUGH the nullable: variant arms plus a `null` arm on
+  `T?` (`match o.result { .Node(.NGrammar(g)) -> g, null -> ... }`)
+  — wanted by every unwrap-then-match two-step (grammar_result, the
+  pass drivers); the subset refuses (F9001).
+- `?.` through calls, not just fields — `answers_to` wanted
+  `token_name()` projected straight into a compare; today a bound
+  let (and the direct compare is #1376).
+- Comprehension destructuring: `[fix(i, m) for (i, m) in
+  xs.enumerate()]` — wanted by attach, first_defects, joined.
+- Any expression as a comprehension ELEMENT, generic bodies
+  included — if-else elements die there today (F1000); wanted by
+  bind_label.
+- `it` inside `is`-expressions: `ins.filter(it is .Release)` —
+  wanted by every IR test; an explicit lambda today.
+- Or-patterns that BIND when the payloads agree in type:
+  `.Lit(text) or .Named(text) -> text` — wanted by token_name.
+- In-place mutation through self: `self.diagnostics.push(d)` — the
+  `mut alias` two-step in every speak/give/record is ceremony the
+  mutability rules (Axis 11) should erase.
+- Structural `==` for lists (and `contains` by value for all
+  elements) — every list assertion in the suite hand-rolls it.
+- `??` guaranteed LAZY on the right — program_stmts wanted
+  `sid ?? store.alloc_stmt(...)` and could not trust eagerness.
+- Struct literals inline in argument lists — the pin rent paid
+  across the tree is the evidence.
 
 ## Self-host endgames (recorded, not scheduled)
 

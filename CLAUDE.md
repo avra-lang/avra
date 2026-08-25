@@ -51,6 +51,30 @@ invariant it holds — no narration, no self-justification, no history.
   argument lists). Empty literals (`[]`, `{}`) infer inline in
   constructor fields — never bind them to a throwaway name. When a
   pin seems needed, probe before assuming.
+- A state struct's impl is its VOCABULARY: the small verbs that
+  read or write its tables (`speak`, `bind`, `mint`, `give`) live
+  as methods, so drivers read as prose. EXCEPTION (generic — any
+  struct, any loop): a method call on a closure-captured local in a
+  loop that also early-returns ICEs (#1377); there, use a free fn
+  taking the state first (`eval_node(ev, cx, e)`). The pass
+  visitors keep that shape uniformly.
+- A long fn splits at its PHASE boundaries into named helpers, each
+  with a one-line contract (`match_seq` matches, `built` builds;
+  `printed_value` dispatches, `bool_word` branches). If a fn needs
+  a paragraph comment mid-body, that paragraph is a helper's name.
+- A projection is ONE match: nested patterns
+  (`.Node(.NAlt(a)) -> a, _ -> null`), never an unwrap ladder.
+- The third copy of a shape names the concept: shared walks and
+  registries get ONE definition (`post_order`, `file_command`) and
+  the copies die. Two copies may wait; three never do.
+
+## Dogfooding is design
+
+The compiler is Avra's first user. When its code WANTS a construct
+the language lacks — a sugar, a projection, a rule — add the ask to
+the ROADMAP's sugar backlog, naming the wanting site, as part of the
+change that hit it. Request your own features: the backlog feeds the
+spec.
 
 ## Rules
 
@@ -125,7 +149,9 @@ against these before writing; probe in scratch when unsure.
   wrappers and bare-argument use (`cases.all(count(it.src) == it.n)`,
   `ns.any(is_even(it))`); a nested method call in the body starts its
   own `it` scope. A top-level plain call never binds `it` (pipe RHS
-  excepted: `x |> f(it + 1)` hands `f` a closure).
+  excepted: `x |> f(it + 1)` hands `f` a closure). The pronoun
+  detector misses `is`-expressions — `xs.filter(it is .A)` fails to
+  bind; use an explicit param there.
 - Present-bind (`let x ->`) in expression-position match loses its
   binding at codegen inside mono-SPECIALIZED bodies (fine in plain
   fns) — restructure to `if k == null { } else { k! }`.
@@ -149,7 +175,9 @@ against these before writing; probe in scratch when unsure.
 - `bs2 run` can serve stale library builds silently — trust `make
   test`, which rebuilds, over ad-hoc `bs2 run` debugging.
 - `==` between a nullable string and a string is safe (null compares
-  false).
+  false) — for a VARIABLE operand only: a call result compared
+  directly (`f() == s`) misses the null guard and SIGSEGVs (#1376).
+  Bind to a `let tn: string? =` first.
 - Maps reject `m["k"]` indexing — use `.get(key)`, which returns `T?`.
 - `xs[i] = v` is an invalid assignment target; `xs.set(i, v)` works.
 - A struct literal directly in a call's argument list fails to parse —
@@ -192,5 +220,16 @@ against these before writing; probe in scratch when unsure.
   (with `_` arm), list comprehensions `[x for x in xs if p]`, pipe
   `|>`, typed table literals, `with` on generics, cross-file `impl`,
   the native list scans (`find`/`any`/`all`/`first`/`last`/`is_empty`,
-  in `<N>`-generic bodies too), and `?.` field projection with `??`
-  (fields only — mapping a present value through a fn stays a match).
+  in `<N>`-generic bodies too), `?.` field projection with `??`
+  (fields only — mapping a present value through a fn stays a match),
+  NESTED match patterns (`.Node(.NExpr(id)) -> id` — generic-payload
+  enums included), and if-else as a comprehension ELEMENT — in plain
+  fns only: inside a generic body it types as `List<void>` (F1000);
+  loop there instead.
+- A match on a NULLABLE enum takes only `null` and `let x ->` arms —
+  variant arms on `T?` refuse as non-exhaustive (F9001); unwrap
+  first, then match variants.
+- A METHOD call on a closure-captured local inside a loop that also
+  contains an early `return` ICEs at codegen ("Referring to an
+  instruction in another function", #1377) — any struct, any loop.
+  Use a free fn taking the struct first.
