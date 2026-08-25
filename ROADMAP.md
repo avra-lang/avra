@@ -120,11 +120,36 @@ throwaway.
   consumer that memoizes them — typed signatures are the data-flow
   contract until then.
 
-## Milestone 5 — native emission (recorded, not scheduled)
+## Milestone 5 — Avra compiles (the design, agreed)
 
-- LLVM emission as its own design round, spec on the table; the
-  evaluator is its semantic oracle (differential testing, bs2's own
-  diff-test discipline)
+The goal is REPLACING bs2, so the backend is built for the scoped
+abstraction levels (docs/idea_scoped_abstraction_levels.md), not just
+the tracer:
+
+- [ ] `core/ir.av` — flat typed register IR with SCOPES as
+      first-class structure (`ScopeEnter(level)`/`ScopeExit`,
+      bindings per scope); every level of the abstraction-levels doc
+      is an enum value from day one, today always Application. The
+      language is already SSA (single-bind lets): a definition's reg
+      IS its slot through resolution.
+- [ ] Lowering — pass four, standard shape; NodeSemantics grows
+      `lower` (compile-enforced per feature). Lowering emits PURE
+      semantics: no memory ops, ever.
+- [ ] Memory — pass five: strategy dispatched PER SCOPE by level.
+      Application = RC (bs2 parity: releases at scope exit, correct
+      even on statics — the runtime no-ops non-RC pointers); Systems
+      ownership drops in later as a strategy, touching neither
+      lowering nor the backend.
+- [ ] Backend — LLVM C API through the ALREADY-LINKED
+      `llvm_wrapper.o` externs (verifier in the loop per function,
+      per the epic's ORC/comptime future); programs link `runtime.c`
+      — Avra's runtime library, rewritten in Avra-at-bare at the
+      self-host endgame. `avra emit` prints the module (P7,
+      LLVMPrintModule — a projection, never the compile path);
+      `avra build` produces the object and clang-links.
+- [ ] GATE: `avra build` output byte-identical to `avra run` across
+      the corpus — the evaluator is the oracle (diff-test
+      discipline).
 
 ## Engine sufficiency (recorded, not scheduled)
 
