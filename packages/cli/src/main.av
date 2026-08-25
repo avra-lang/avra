@@ -1,0 +1,48 @@
+//! The avra command. Each subcommand pairs a CommandSpec (data) with
+//! a Runnable (behaviour); the App parses argv and dispatches.
+//! Exit 0 clean, 1 diagnostics, 2 usage or missing file.
+use @std.cli.{App, Subcommand, CommandSpec, CliResult, Runnable, ArgDef, result_get_arg}
+use @std.avrac.language.{assemble, language_features}
+
+extern fn avra_selfhost_read_file(path: string) -> string
+extern fn avra_selfhost_file_exists(path: string) -> int
+extern fn avra_process_exit(code: int)
+
+type CheckCmd = { }
+
+impl Runnable for CheckCmd {
+    fn run(self, args: CliResult) -> int {
+        let path = result_get_arg(args, "file")
+        if avra_selfhost_file_exists(path) == 0 {
+            eprintln("avra: no such file: ${path}")
+            return 2
+        }
+        let out = assemble(language_features()).check(path, avra_selfhost_read_file(path))
+        if out != "" {
+            println(out)
+            return 1
+        }
+        0
+    }
+}
+
+fn main() {
+    let body: CheckCmd = CheckCmd { }
+    let app = App {
+        name: "avra",
+        description: "The Avra compiler",
+        version: "0.0.1",
+        commands: [Subcommand {
+            meta: CommandSpec {
+                name: "check",
+                description: "Report everything wrong with a source file",
+                hidden: false,
+                flags: [],
+                args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
+                options: [],
+            },
+            body: body,
+        }],
+    }
+    avra_process_exit(app.run())
+}

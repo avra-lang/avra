@@ -1,6 +1,6 @@
 //! The language driver: features -> one assembled grammar -> parsed
 //! programs. The single seam every consumer parses through — tests
-//! and `avra check` alike.
+//! and `avra check` alike. The code table lives in codes.av.
 use core.{NodeStore, new_node_store, Stmt, StmtId, Span, concat, joined}
 use grammar.{
     Captured, Diagnostic, Grammar, RunOutcome, parse_grammar, run_grammar,
@@ -15,11 +15,6 @@ use features.stmt_spine.{stmt_spine}
 use features.let_stmt.{let_stmt}
 use features.expr_stmt.{expr_stmt}
 use features.expr_spine.{expr_spine}
-
-/// The Avra language: its features, in the order that defines it.
-export fn language_features() -> List<LanguageFeature> {
-    [stmt_spine(), let_stmt(), expr_stmt(), expr_spine()]
-}
 
 /// A feature set assembled once: composed, parsed, merged, and gated
 /// on grammar + builder coherence. `grammar` is null when assembly
@@ -81,10 +76,6 @@ export fn parse_program(lang: Language, file: string?, source: string) -> Parsed
     }
 }
 
-/// The canonical language over one source.
-export fn parse_source(source: string) -> ParsedProgram {
-    parse_program(assemble(language_features()), null, source)
-}
 
 impl Language {
     /// One diagnostic as terminal text.
@@ -115,4 +106,14 @@ fn program_stmts(store: NodeStore, o: RunOutcome<LangNode>) -> List<StmtId> {
         }
     }
     out
+}
+/// The Avra language: its features, in the order that defines it —
+/// feature order is branch order is the language.
+export fn language_features() -> List<LanguageFeature> {
+    [stmt_spine(), let_stmt(), expr_stmt(), expr_spine()]
+}
+
+/// The canonical language over one source.
+export fn parse_source(source: string) -> ParsedProgram {
+    parse_program(assemble(language_features()), null, source)
 }

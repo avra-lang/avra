@@ -22,3 +22,6 @@ clean:
 	find packages -name "*.avra-sha256" -delete
 	find packages -name "*.av.ll" -delete
 	rm -rf packages/*/build
+
+check: $(RUNTIME_OBJS)
+	@$(BS2) run packages/cli/src/main.av -- check $(FILE)

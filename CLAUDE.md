@@ -45,6 +45,10 @@ invariant it holds — no narration, no self-justification, no history.
 ## Rules
 
 - `core/` is infrastructure only. Features never import features.
+- Layering is one-way: core -> grammar -> features -> language.
+  `grammar/` is the language-agnostic engine; `language/` is the
+  driver and the ONE definition of Avra (feature order is branch
+  order is the language).
 - No string tags or string-matching to detect behavior.
 - No `_ ->` catch-alls over our own enums.
 - Node facts (spans included) live in side tables keyed by typed ids,

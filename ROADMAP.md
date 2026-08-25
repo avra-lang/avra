@@ -30,7 +30,8 @@ real scale; the design sources of truth live in
       render), the miette-shaped renderer, golden rendering tests
 - [x] Driver projection: engine diagnostics -> Diag, with the
       unregistered-kind validation net
-- [ ] `avra check` CLI over the driver
+- [x] `avra check` CLI over the driver (`make check FILE=...`; a
+      compiled standalone binary is later polish)
 - [ ] Resolve pass — the first pure query: definition-site symbols,
       facts in a pass-owned side table, unresolved names with
       nearest-candidate fixes

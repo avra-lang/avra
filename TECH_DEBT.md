@@ -13,8 +13,13 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
 - [ ] **[Med]** `packages/std-avrac/src/features/spec_test/{runner,reporter}.av`
       — vendored verbatim from the bootstrap tree; `bs2 test` loads
       them from this exact path. Replace with our own test harness.
-- [ ] **[Low]** `packages/std-cli/src/cli.av` — empty stub; bs2 detects
-      a project root by probing for exactly this file.
+- [ ] **[Low]** `packages/std-cli/src/cli.av` is a file SYMLINK into
+      the bootstrap tree: bs2 resolves imports only from the local
+      packages/ scan (manifest path-deps feed the prebuild, not
+      resolution), its root sentinel is exactly this path, and
+      linking the whole package would drag forge's transitive deps.
+      One file-link satisfies everything without a vendored copy;
+      dies when our compiler owns resolution.
 - [ ] **[Low]** `src/` layer inside packages — bs2 resolves package
       entries only at `packages/<scope>-<name>/src/<name>.av`.
 - [ ] **[Low]** `build/runtime.o` + `build/llvm_wrapper.o` copies

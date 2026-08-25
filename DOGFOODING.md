@@ -70,6 +70,7 @@ let ops = table<OpRow> {
 ```avra
 cap("rules", rule_ref("rule")) with { rep: Rep.Plus }   // rare modifiers
 r with { farthest: merged }                             // struct update
+feature("clash", "clash_rule = NAME") with { diags: rows }  // extend a factory value
 ```
 
 ## Methods via `impl` (cross-file works)
@@ -237,7 +238,7 @@ list to a `mut` local aliases the same storage — the arena idiom:
 fn alloc_expr(self, e: Expr, span: Span?) -> ExprId {
     mut nodes = self.exprs
     nodes.push(e)
-    ExprId(nodes.length - 1)
+    ExprId { index: nodes.length - 1 }
 }
 ```
 
@@ -295,17 +296,23 @@ export component LanguageFeature {
     }
 }
 
-fn harness() -> LanguageFeature {
-    component LanguageFeature h {
-        name = "harness"
-        gram = "prog = e:expression BREAK -> e"
+fn let_stmt() -> LanguageFeature {
+    component LanguageFeature f {
+        name = "let_stmt"
+        docs = "`let <name> = <expression>`, ended by the line."
+        gram = """
+stmt = "let" n:NAME "=" v:expression BREAK -> let_stmt(n, v) @recover(sync_to: "BREAK")
+"""
+        builders = rows
     }
-    h
+    f
 }
 ```
 
 Config pairs are newline-separated; the `component`-prefixed
-instantiation works cross-file (the bare form does not).
+instantiation works cross-file (the bare form does not). A consumer
+that cannot instantiate (metadata-compiled tests) goes through an
+in-package factory and extends the value with `with`.
 
 ## Triple-quoted strings for embedded text
 
@@ -314,10 +321,10 @@ an exact multi-line rendering compares against one `"""` block —
 never `\n`-joined literals:
 
 ```avra
-gram: """
+gram = """
 expression = additive
 primary = v:NUMBER -> int_lit(v) | n:NAME -> ident(n)
-""",
+"""
 ```
 
 ## Typed ids are single-field structs
@@ -353,6 +360,10 @@ impl Error for Diag {
     fn describe(self) -> ErrorInfo { info(self.kind, self.message) }
 }
 ```
+
+Heterogeneous behaviour pairs data with `dyn Trait` — the CLI's
+`Subcommand { meta: CommandSpec, body: dyn Runnable }` dispatches
+each command through the one-method trait.
 
 ## Proven but awaiting their first honest use
 
