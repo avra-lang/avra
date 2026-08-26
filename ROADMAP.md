@@ -13,7 +13,7 @@
   ever rising.
 
   The ladder (~15 rungs; five are heavyweights, marked ▲):
-    1.  `when` — the ledger trial, multi-way on existing regions
+    1.  [x] `when` — the ledger trial, multi-way on existing regions
     2.  blocks — statement scopes, multi-line bodies, `return`
     3.  mutation & loops — `mut`, assignment, `while`/`for`, ranges
     4.  operators complete — `&& || !`, `!= > >= <=`, `* / %`
