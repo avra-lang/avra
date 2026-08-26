@@ -6,9 +6,9 @@
 //! (params mint first), so names cost nothing, exactly as in eval.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{Stmt, StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled}
 use diagnostics.{Diag, error_at}
-use features.{LowerCx, FnSig, nothing}
+use features.{LowerCx, StmtLowerCx, FnSig}
 
 /// One lowered body: instructions in order and each register's type
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
@@ -56,13 +56,11 @@ export fn lower(a: Analysis) -> Lowered {
     mut fns: List<Body> = []
     mut failures: List<string> = []
     for s in a.stmts {
-        match a.store.stmt(s) {
-            .FnDecl(fname, _, _, body) -> {
-                let lf = lower_fn(a, s, fname, body)
-                fns.push(lf.body)
-                for m in lf.failures { failures.push(m) }
-            }
-            .Let(_, _) or .ExprStmt(_) or .Error -> nothing(),
+        let parts: FnParts? = a.store.fn_parts(s)
+        if parts != null {
+            let lf = lower_fn(a, s, parts!.name, parts!.body)
+            fns.push(lf.body)
+            for m in lf.failures { failures.push(m) }
         }
     }
     let lm = lower_main(a)
@@ -97,23 +95,7 @@ fn lower_fn(a: Analysis, s: StmtId, fname: string, root: ExprId) -> LoweredBody 
 fn lower_main(a: Analysis) -> LoweredBody {
     let lo = new_lower(a)
     lo.give(Ins.ScopeEnter(Level.Application))
-    mut last: Reg? = null
-    for s in a.stmts {
-        match a.store.stmt(s) {
-            .FnDecl(_, _, _, _) -> nothing(),
-            .Let(_, _) or .ExprStmt(_) or .Error -> {
-                let value: ExprId? = a.store.stmt_value(s)
-                if value == null {
-                    lo.record("defect: a hole survived a clean analysis")
-                } else {
-                    let r = lower_subtree(lo, value!)
-                    mut written = lo.slots
-                    written.set(s.index, r)
-                    last = r
-                }
-            }
-        }
-    }
+    let last: Reg? = lower_stmts(lo, a.stmts)
     if last != null { lo.give(Ins.Print(last!)) }
     lo.give(Ins.ScopeExit(null))
     lo.give(Ins.Ret(0))
@@ -148,25 +130,32 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
     r
 }
 
+/// Statements in order, each through its own StmtSemantics — the
+/// ONE statement loop, top level and blocks alike. The driver owns
+/// slots and the running last register.
+fn lower_stmts(lo: Lower, stmts: List<StmtId>) -> Reg? {
+    let cx = StmtLowerCx {
+        store: lo.a.store,
+        lower: (v: ExprId) -> lower_subtree(lo, v),
+        fail: (msg: string) -> lo.record(msg),
+    }
+    mut last: Reg? = null
+    for s in stmts {
+        let r: Reg? = stmt_semantics_of(lo.a.store.stmt(s)).lower_stmt(cx, s)
+        if r != null {
+            mut written = lo.slots
+            written.set(s.index, r!)
+            last = r
+        }
+    }
+    last
+}
+
 /// A block is a scope: statements lower in order into it, and the
 /// value register escapes as the scope's yield.
 fn block_reg(lo: Lower, stmts: List<StmtId>, value: ExprId) -> Reg {
     lo.give(Ins.ScopeEnter(Level.Application))
-    for s in stmts {
-        match lo.a.store.stmt(s) {
-            .FnDecl(_, _, _, _) -> lo.record("defect: a nested fn survived a clean analysis"),
-            .Let(_, _) or .ExprStmt(_) or .Error -> {
-                let v: ExprId? = lo.a.store.stmt_value(s)
-                if v == null {
-                    lo.record("defect: a hole survived a clean analysis")
-                } else {
-                    let r = lower_subtree(lo, v!)
-                    mut written = lo.slots
-                    written.set(s.index, r)
-                }
-            }
-        }
-    }
+    let _ = lower_stmts(lo, stmts)
     let r = lower_subtree(lo, value)
     lo.give(Ins.ScopeExit(r))
     r

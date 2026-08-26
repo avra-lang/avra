@@ -1,0 +1,36 @@
+//! The fn declaration's StmtSemantics: at top level the body walks
+//! under its OWN params; inside a block it refuses. Its runtime
+//! value is nothing — the body runs at call time, and lowering
+//! collects declarations on its own axis.
+use core.{StmtId, ExprId, Reg}
+use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtEvalCx, StmtLowerCx, nothing}
+
+export type FnStmtSemantics = { }
+
+impl StmtSemantics for FnStmtSemantics {
+    fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
+        if cx.in_block {
+            cx.refuse_nested_fn(s)
+            return
+        }
+        match cx.store.stmt(s) {
+            .FnDecl(_, fparams, _, body) -> {
+                cx.check_params(fparams, s)
+                cx.walk_under(fparams, body)
+            }
+            _ -> nothing(),
+        }
+    }
+
+    fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
+        cx.check_fn(s)
+    }
+
+    fn eval_stmt(self, cx: StmtEvalCx, s: StmtId) -> ExprId? {
+        null
+    }
+
+    fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
+        null
+    }
+}

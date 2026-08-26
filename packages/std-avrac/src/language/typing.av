@@ -6,9 +6,9 @@
 //! interned Error, which ABSORBS: the causing pass already spoke,
 //! so no diagnostic cascades from it. Signatures come first, from
 //! the annotations alone, so a call may name a fn declared later.
-use core.{Expr, Stmt, StmtId, ExprId, TypeId, Type, Param, TypeRegistry, new_type_registry, filled}
+use core.{StmtId, ExprId, TypeId, Type, Param, TypeRegistry, new_type_registry, filled}
 use diagnostics.{Diag, loc_at, error_at, pointed}
-use features.{TypeCx, FnSig, nothing}
+use features.{TypeCx, StmtTypeCx, FnSig}
 
 /// The pass's facts: the registry, a dense expression table, and a
 /// dense signature table indexed by StmtId — total, O(1) reads for
@@ -45,16 +45,19 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         diagnostics: [],
     }
     t.declare_sigs()
-    for s in p.stmts {
-        match p.store.stmt(s) {
-            .FnDecl(fname, _, fret, body) -> t.check_fn(s, fname, fret, body),
-            .Let(_, _) or .ExprStmt(_) or .Error -> {
-                let value: ExprId? = p.store.stmt_value(s)
-                if value != null { type_walk(t, [], value!) }
-            }
-        }
-    }
+    type_stmts(t, [], p.stmts)
     Typing { types: t.types, of_expr: t.of_expr, sigs: t.sigs, diagnostics: t.diagnostics }
+}
+
+/// Statements in order, each through its own StmtSemantics — the
+/// ONE statement loop, top level and blocks alike.
+fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
+    let cx = StmtTypeCx {
+        store: t.p.store,
+        walk: (v: ExprId) -> type_walk(t, param_types, v),
+        check_fn: (s: StmtId) -> t.check_fn(s),
+    }
+    for s in stmts { stmt_semantics_of(t.p.store.stmt(s)).type_stmt(cx, s) }
 }
 
 /// One subtree's types, under the given param types.
@@ -76,13 +79,9 @@ fn type_walk(t: Typer, param_types: List<TypeId>, root: ExprId) {
 }
 
 /// A block's statements type in order, then its value — which IS
-/// the block's type. Typing has no per-kind statement behavior:
-/// stmt_value is the whole dispatch.
+/// the block's type.
 fn block_type(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>, value: ExprId) -> TypeId {
-    for s in stmts {
-        let v: ExprId? = t.p.store.stmt_value(s)
-        if v != null { type_walk(t, param_types, v!) }
-    }
+    type_stmts(t, param_types, stmts)
     type_walk(t, param_types, value)
     t.of_expr[value.index]
 }
@@ -106,10 +105,8 @@ impl Typer {
     /// body walks, so calls resolve signatures program-wide.
     fn declare_sigs(self) {
         for s in self.p.stmts {
-            match self.p.store.stmt(s) {
-                .FnDecl(_, fparams, fret, _) -> self.declare_sig(s, fparams, fret),
-                .Let(_, _) or .ExprStmt(_) or .Error -> nothing(),
-            }
+            let parts: FnParts? = self.p.store.fn_parts(s)
+            if parts != null { self.declare_sig(s, parts!.params, parts!.ret) }
         }
     }
 
@@ -134,7 +131,10 @@ impl Typer {
 
     /// A fn body types under its params and must answer its
     /// declared return.
-    fn check_fn(self, s: StmtId, fname: string, fret: string, body: ExprId) {
+    fn check_fn(self, s: StmtId) {
+        let parts: FnParts? = self.p.store.fn_parts(s)
+        if parts == null { return }
+        let body = parts!.body
         let sig: FnSig? = self.sigs[s.index]
         let ptypes: List<TypeId> = sig?.params ?? []
         type_walk(self, ptypes, body)
@@ -143,7 +143,7 @@ impl Typer {
         let absorb = self.types.shape_of(got) is .Error || self.types.shape_of(want) is .Error
         if !absorb && got.index != want.index {
             self.speak(pointed(
-                error_at("type.mismatch", loc_at(self.p.source.file, self.p.store.expr_span(body)), "the body answers `${self.types.name_of(got)}` but `${fname}` declares `${fret}`"),
+                error_at("type.mismatch", loc_at(self.p.source.file, self.p.store.expr_span(body)), "the body answers `${self.types.name_of(got)}` but `${parts!.name}` declares `${parts!.ret}`"),
                 "this is a `${self.types.name_of(got)}`"))
         }
     }

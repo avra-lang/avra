@@ -69,10 +69,21 @@ if m.label == null { repped } else { "${m.label!}:${repped}" }
 ```
 
 And reach for the store's PROJECTION before writing an inline
-match: `stmt_value`, `fn_body`, `fn_name`, `truth_of` exist so no
-caller re-derives them. The proof case: a match enumerating
-statement kinds whose arms cannot differ is pure ceremony —
-`stmt_value` plus `if null` is the whole truth.
+match: `stmt_value`, `fn_parts`, and the value protocol trio exist so no caller
+re-derives them. The proof case: a match enumerating statement
+kinds whose arms cannot differ is pure ceremony — `stmt_value`
+plus `if null` is the whole truth.
+
+Projections come ONE PER VARIANT, never one per field: four
+sibling `fn_name`/`fn_params`/`fn_ret`/`fn_body` projections were
+the same match four times — `fn_parts` returns the parts struct
+once and callers pick fields:
+
+```avra
+let name: string? = store.fn_parts(s)?.name
+let parts: FnParts? = store.fn_parts(s)
+if parts != null { declare_sig(s, parts!.params, parts!.ret) }
+```
 
 ## `it` projection for lambdas
 
@@ -542,7 +553,10 @@ Every pass is standard at exactly two seams, and hand-shaped between:
 1. DRIVER: `pass(p: ParsedProgram, ...upstream Facts) -> Facts` —
    facts own their diagnostics; `analyze` is the only place order
    exists.
-2. FEATURE: one `NodeSemantics` method per pass, `(self, cx, e)`.
+2. FEATURE: one `NodeSemantics` method per pass, `(self, cx, e)` —
+   and `StmtSemantics` is its statement twin: one impl per
+   statement kind, one `<pass>_stmts` loop per driver serving top
+   level and blocks alike.
 3. Between them, the driver's own walk stays plain code — three
    similar 8-line visitors beat one generic walker until a fourth
    pass proves the shape.

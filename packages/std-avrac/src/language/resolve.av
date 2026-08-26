@@ -6,9 +6,9 @@
 //! pass: `let` visibility is sequential and a later `let` shadows an
 //! earlier one; `fn` names are program-wide, so recursion and mutual
 //! recursion are free. Inside a body, params bind innermost.
-use core.{Expr, Stmt, StmtId, ExprId, Span, Param, closest, Closest, some_list, filled}
+use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled}
 use diagnostics.{Diag, error_at, loc_at, pointed}
-use features.{ResolveCx, nothing}
+use features.{ResolveCx, StmtResolveCx, nothing}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
 /// The pass's facts: dense tables indexed by ExprId — O(1) reads
@@ -71,41 +71,32 @@ export fn resolve(p: ParsedProgram) -> Resolution {
         diagnostics: [],
     }
     r.declare_fns()
-    for s in p.stmts {
-        match p.store.stmt(s) {
-            .FnDecl(_, fparams, _, body) -> {
-                r.check_params(fparams, s)
-                let names = [pp.name for pp in fparams]
-                resolve_walk(r, names, body)
-            }
-            .Let(_, _) or .ExprStmt(_) or .Error -> {
-                let value: ExprId? = p.store.stmt_value(s)
-                if value != null { resolve_walk(r, [], value!) }
-                r.bind_checked(s)
-            }
-        }
-    }
+    resolve_stmts(r, [], false, p.stmts)
     Resolution { targets: r.targets, params: r.params, diagnostics: r.diagnostics }
 }
 
-/// A block's statements in order under a fresh overlay scope: binds
-/// are visible onward and restored at exit; fn declarations refuse.
+/// Statements in order, each through its own StmtSemantics — the
+/// ONE statement loop, top level and blocks alike.
+fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: List<StmtId>) {
+    let cx = StmtResolveCx {
+        store: r.p.store,
+        in_block: in_block,
+        walk: (v: ExprId) -> resolve_walk(r, param_names, v),
+        walk_under: (ps: List<Param>, body: ExprId) -> resolve_walk(r, [pp.name for pp in ps], body),
+        bind_checked: (s: StmtId) -> r.bind_checked(s),
+        check_params: (ps: List<Param>, s: StmtId) -> r.check_params(ps, s),
+        refuse_nested_fn: (s: StmtId) -> r.refuse_nested(s),
+    }
+    for s in stmts { stmt_semantics_of(r.p.store.stmt(s)).resolve_stmt(cx, s) }
+}
+
+/// A block's statements under a fresh overlay scope: binds are
+/// visible onward and restored at exit.
 fn block_scope(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId) {
     mut ov = r.overlays
     let fresh: Map<string, StmtId> = {}
     ov.push(fresh)
-    for s in stmts {
-        match r.p.store.stmt(s) {
-            .FnDecl(_, _, _, _) ->
-                r.speak(pointed(error_at("resolve.nested_fn", loc_at(r.p.source.file, r.p.store.stmt_span(s)), "fn declarations live at the top level"), "declared inside a block")
-                    with { help: "move the fn out of the block" }),
-            .Let(_, _) or .ExprStmt(_) or .Error -> {
-                let v: ExprId? = r.p.store.stmt_value(s)
-                if v != null { resolve_walk(r, param_names, v!) }
-                r.bind_checked(s)
-            }
-        }
-    }
+    resolve_stmts(r, param_names, true, stmts)
     resolve_walk(r, param_names, value)
     let _ = ov.pop()
 }
@@ -156,7 +147,7 @@ impl Resolver {
     /// — a call may name a fn declared later.
     fn declare_fns(self) {
         for s in self.p.stmts {
-            let name: string? = self.p.store.fn_name(s)
+            let name: string? = self.p.store.fn_parts(s)?.name
             if name != null { self.declare_fn(name!, s) }
         }
     }
@@ -240,6 +231,11 @@ impl Resolver {
         self.speak(self.suggested(
             pointed(error_at("resolve.unresolved", self.loc_of(e), "no `fn ${name}` is defined"), "called here"),
             e, name, self.fn_names))
+    }
+
+    fn refuse_nested(self, s: StmtId) {
+        self.speak(pointed(error_at("resolve.nested_fn", loc_at(self.p.source.file, self.p.store.stmt_span(s)), "fn declarations live at the top level"), "declared inside a block")
+            with { help: "move the fn out of the block" })
     }
 
     fn refuse_reserved(self, name: string, at: Loc?) {

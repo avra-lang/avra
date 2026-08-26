@@ -114,9 +114,13 @@ spec.
   repeated slot, anchor-first — never a tail after the star. The
   builder then owns the law the grammar cannot state (exactly one,
   last).
-- A feature never matches ANOTHER feature's variants: cross-feature
-  value reads go through core's value protocol (`truth_of`), which
-  grows with value categories — a core event — never per feature.
+- A feature never matches ANOTHER feature's variants — nor
+  re-extracts its OWN literal's payload inline: all literal reads
+  go through core's value protocol (`truth_of`, `int_of`,
+  `text_of`), one projection per value category. The protocol grows
+  with value categories — a core event — never per feature. (N
+  variants need N projections — payload types differ, and a unified
+  return would be the parallel Value enum the doctrine refuses.)
 - The IR is CLOSED vocabulary: features lower into it, never grow
   it. A new Ins variant is a core event — a new control shape, value
   category, or memory boundary. Value-producing runtime needs ride
@@ -129,6 +133,9 @@ spec.
   for evaluation. Passes NEVER match feature nodes: `semantics_of`
   (THE one exhaustive map, no strings) returns the node's semantics
   directly; the trait impl forces every pass method at compile time.
+  A feature owning a STATEMENT kind also impls `StmtSemantics`
+  (`stmt.av` or `semantics.av`) and joins `stmt_semantics_of` — the
+  drivers' one statement loop reaches it there.
   Start a feature with `avra new feature <name>`; prove it with a
   corpus pair (`corpus/<name>.av` + `.expected`). `make gate` is
   the bar.

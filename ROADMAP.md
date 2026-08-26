@@ -21,6 +21,8 @@
     5.  lists — the first aggregate; iteration; the method core
     6.  strings complete — `${}` interpolation, the method core
     7.  structs — declarations, literals, `with`, impl methods
+        (and the spec's `shape`/width subtyping belongs to this
+        rung — the cx family in contract.av is already waiting)
     8.  ▲ enums & match — payloads, patterns, exhaustiveness
     9.  nullability — `T?`, `null` arms, `! ?? ?.`
     10. Result & `?` — propagation as the error spine
@@ -446,12 +448,17 @@ ignoring them — designed in at M1 — is exactly what keeps that
 staging clean.
 
 Recorded triggers:
-- Statement semantics: the trigger has FIRED — not by the fourth
-  kind but by the second CONTEXT. Blocks doubled statement dispatch
-  (top-level + block, times four drivers: eight walk loops, and
-  typing's block copy was already carrying a dead match). The
-  statements contract lands as the OPENING act of rung 3, before
-  assignment adds a fourth kind on top of the doubled contexts.
+- Statement semantics: FIRED and DONE (rung 3's opening act).
+  StmtSemantics is the stmt-spine's twin of NodeSemantics: four
+  feature-owned impls (let, expr, fn — which refuses in blocks
+  through its own resolve_stmt — and the hole), four capability
+  contexts, one stmt_semantics_of map that breaks loudly on a
+  fifth kind. The eight driver walk loops collapsed to four
+  one-line prose loops (resolve_stmts, type_stmts, eval_stmts,
+  lower_stmts), each serving top level and blocks alike. Landed
+  behavior-preserving: zero golden changes. The next statement
+  kind (assignment) costs its impl plus the map line — the same
+  steady-state shape expressions already enjoy.
 
 The falsifiable claim, TRIED (M8, `when`): the doctrine's core held
 perfectly — zero new instructions, zero edits to drivers, memory,
@@ -632,7 +639,9 @@ into features (or spec commitments) when their milestone comes.
   tag + payloads + child fingerprints per variant. One source of
   truth, many projections (P12) says the compiler should DERIVE
   content hashes from type structure; wanted by every new Expr
-  variant's hand-written fp arm.
+  variant's hand-written fp arm. Same story for per-variant payload
+  accessors (`truth_of`/`int_of`/`text_of`, the `_of` extractor
+  sets): mechanical, derivable, erased by `@derive` at self-host.
 - `it` inside `is`-expressions: `ins.filter(it is .Release)` —
   wanted by every IR test; an explicit lambda today.
 - Or-patterns that BIND when the payloads agree in type:
@@ -646,6 +655,15 @@ into features (or spec commitments) when their milestone comes.
   `sid ?? store.alloc_stmt(...)` and could not trust eagerness.
 - Struct literals inline in argument lists — the pin rent paid
   across the tree is the evidence.
+- SHAPES, evidenced (not a new ask — the spec's type/shape axis
+  already holds the design): the pass capability contexts (four
+  expr Cx, four stmt Cx) share a prefix — store plus one walk fn —
+  and differ per pass. Width subtyping collapses this the
+  structural way: each capability declares the MINIMAL shape it
+  needs and every nominal cx satisfies it by its fields; shape
+  algebra names the family. `shape` is reserved in bs2 for exactly
+  this. contract.av is the wanting site, and this evidence bumps
+  shapes' priority when rung 7 (structs) lands.
 
 ## Self-host endgames (recorded, not scheduled)
 

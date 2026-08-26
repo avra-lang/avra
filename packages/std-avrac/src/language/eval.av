@@ -8,8 +8,8 @@
 //! at runtime — an ident reads its definition's slot through the
 //! resolve target, a param reads its frame slot by index, and a
 //! call is a fresh frame over the target's body.
-use core.{Expr, Stmt, StmtId, ExprId, filled}
-use features.{EvalCx, nothing}
+use core.{Expr, StmtId, ExprId, filled}
+use features.{EvalCx, StmtEvalCx}
 
 type Evaluator = {
     a: Analysis,
@@ -25,26 +25,31 @@ fn run_analysis(a: Analysis) -> Result<ExprId, string> {
         slots: filled<ExprId?>(a.store.stmts.count(), null),
         failures: [],
     }
-    mut last: ExprId? = null
-    for s in a.stmts {
-        match a.store.stmt(s) {
-            .FnDecl(_, _, _, _) -> nothing(),
-            .Let(_, _) or .ExprStmt(_) or .Error -> {
-                let value: ExprId? = a.store.stmt_value(s)
-                if value == null {
-                    ev.record("defect: a hole survived a clean analysis")
-                } else {
-                    let v = eval_subtree(ev, [], value!)
-                    mut written = ev.slots
-                    written.set(s.index, v)
-                    last = v
-                }
-            }
-        }
-    }
+    let last: ExprId? = eval_stmts(ev, [], a.stmts)
     if !ev.failures.is_empty() { return Result.Err(ev.failures[0]) }
     if last == null { return Result.Err("the program is empty") }
     Result.Ok(last!)
+}
+
+/// Statements in order, each through its own StmtSemantics — the
+/// ONE statement loop, top level and blocks alike. The driver owns
+/// slots and the running last value.
+fn eval_stmts(ev: Evaluator, frame: List<ExprId>, stmts: List<StmtId>) -> ExprId? {
+    let cx = StmtEvalCx {
+        store: ev.a.store,
+        eval: (v: ExprId) -> eval_subtree(ev, frame, v),
+        fail: (msg: string) -> ev.record(msg),
+    }
+    mut last: ExprId? = null
+    for s in stmts {
+        let v: ExprId? = stmt_semantics_of(ev.a.store.stmt(s)).eval_stmt(cx, s)
+        if v != null {
+            mut written = ev.slots
+            written.set(s.index, v!)
+            last = v
+        }
+    }
+    last
 }
 
 /// One subtree's value under one frame. The recursion IS the walk:
@@ -67,21 +72,7 @@ fn eval_subtree(ev: Evaluator, frame: List<ExprId>, e: ExprId) -> ExprId {
 /// A block's statements execute in order under the CURRENT frame,
 /// slots landing as at top level; the value is the block's answer.
 fn exec_block(ev: Evaluator, frame: List<ExprId>, stmts: List<StmtId>, value: ExprId) -> ExprId {
-    for s in stmts {
-        match ev.a.store.stmt(s) {
-            .FnDecl(_, _, _, _) -> ev.record("defect: a nested fn survived a clean analysis"),
-            .Let(_, _) or .ExprStmt(_) or .Error -> {
-                let v: ExprId? = ev.a.store.stmt_value(s)
-                if v == null {
-                    ev.record("defect: a hole survived a clean analysis")
-                } else {
-                    let val = eval_subtree(ev, frame, v!)
-                    mut written = ev.slots
-                    written.set(s.index, val)
-                }
-            }
-        }
-    }
+    let _ = eval_stmts(ev, frame, stmts)
     eval_subtree(ev, frame, value)
 }
 
@@ -99,7 +90,7 @@ fn def_value_of(ev: Evaluator, frame: List<ExprId>, e: ExprId) -> ExprId? {
 /// values.
 fn invoke_fn(ev: Evaluator, call_e: ExprId, args: List<ExprId>) -> ExprId {
     let target: StmtId? = ev.a.target(call_e)
-    let body: ExprId? = if target == null { null } else { ev.a.store.fn_body(target!) }
+    let body: ExprId? = if target == null { null } else { ev.a.store.fn_parts(target!)?.body }
     if body == null {
         ev.record("defect: a call without a fn target survived a clean analysis")
         return call_e

@@ -1,6 +1,6 @@
 //! A string literal IS its value: no children, no names, types as
 //! string, evaluates to itself, prints its text.
-use core.{Expr, ExprId, Type, TypeId, NodeStore, Reg, Ins}
+use core.{Expr, ExprId, Type, TypeId, NodeStore, Reg, Ins, text_of}
 use features.{NodeSemantics, ResolveCx, TypeCx, EvalCx, nothing}
 
 export type StrSemantics = { }
@@ -24,18 +24,11 @@ impl NodeSemantics for StrSemantics {
 
     fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
         let dst = cx.result(e)
-        let text: string? = match cx.store.expr(e) {
-            .StrLit(s) -> s,
-            _ -> null,
-        }
-        cx.emit(Ins.ConstStr(dst, text ?? ""))
+        cx.emit(Ins.ConstStr(dst, text_of(cx.store.expr(e)) ?? ""))
         dst
     }
 
     fn printed(self, store: NodeStore, e: ExprId) -> string? {
-        match store.expr(e) {
-            .StrLit(s) -> s,
-            _ -> null,
-        }
+        text_of(store.expr(e))
     }
 }
