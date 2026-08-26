@@ -43,10 +43,8 @@ fn run_analysis(a: Analysis) -> Result<ExprId, string> {
         }
     }
     if !ev.failures.is_empty() { return Result.Err(ev.failures[0]) }
-    match last {
-        let v -> Result.Ok(v),
-        null -> Result.Err("the program is empty"),
-    }
+    if last == null { return Result.Err("the program is empty") }
+    Result.Ok(last!)
 }
 
 /// One subtree's value under one frame. The recursion IS the walk:
@@ -60,9 +58,31 @@ fn eval_subtree(ev: Evaluator, frame: List<ExprId>, e: ExprId) -> ExprId {
         def_value: (k: ExprId) -> def_value_of(ev, frame, k),
         alloc: (node: Expr) -> ev.a.store.alloc_expr(node, null),
         invoke: (call_e: ExprId, args: List<ExprId>) -> invoke_fn(ev, call_e, args),
+        run_block: (stmts: List<StmtId>, value: ExprId) -> exec_block(ev, frame, stmts, value),
         fail: (msg: string) -> ev.record(msg),
     }
     semantics_of(ev.a.store.expr(e)).eval(cx, e)
+}
+
+/// A block's statements execute in order under the CURRENT frame,
+/// slots landing as at top level; the value is the block's answer.
+fn exec_block(ev: Evaluator, frame: List<ExprId>, stmts: List<StmtId>, value: ExprId) -> ExprId {
+    for s in stmts {
+        match ev.a.store.stmt(s) {
+            .FnDecl(_, _, _, _) -> ev.record("defect: a nested fn survived a clean analysis"),
+            .Let(_, _) or .ExprStmt(_) or .Error -> {
+                let v: ExprId? = ev.a.store.stmt_value(s)
+                if v == null {
+                    ev.record("defect: a hole survived a clean analysis")
+                } else {
+                    let val = eval_subtree(ev, frame, v!)
+                    mut written = ev.slots
+                    written.set(s.index, val)
+                }
+            }
+        }
+    }
+    eval_subtree(ev, frame, value)
 }
 
 /// An ident's value: its param's frame slot, or its definition's
@@ -71,30 +91,20 @@ fn def_value_of(ev: Evaluator, frame: List<ExprId>, e: ExprId) -> ExprId? {
     let pi: int? = ev.a.param_at(e)
     if pi != null { return frame[pi!] }
     let target: StmtId? = ev.a.target(e)
-    match target {
-        let s -> ev.slots[s.index],
-        null -> null,
-    }
+    if target == null { return null }
+    ev.slots[target!.index]
 }
 
 /// A call: the target's body under a fresh frame of the argument
 /// values.
 fn invoke_fn(ev: Evaluator, call_e: ExprId, args: List<ExprId>) -> ExprId {
     let target: StmtId? = ev.a.target(call_e)
-    let body: ExprId? = match target {
-        let s -> match ev.a.store.stmt(s) {
-            .FnDecl(_, _, _, b) -> b,
-            .Let(_, _) or .ExprStmt(_) or .Error -> null,
-        },
-        null -> null,
+    let body: ExprId? = if target == null { null } else { ev.a.store.fn_body(target!) }
+    if body == null {
+        ev.record("defect: a call without a fn target survived a clean analysis")
+        return call_e
     }
-    match body {
-        let b -> eval_subtree(ev, args, b),
-        null -> {
-            ev.record("defect: a call without a fn target survived a clean analysis")
-            call_e
-        }
-    }
+    eval_subtree(ev, args, body!)
 }
 
 impl Evaluator {

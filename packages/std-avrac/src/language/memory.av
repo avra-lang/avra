@@ -16,9 +16,9 @@ type Scope = { level: Level, managed: List<Reg> }
 export fn memory(l: Lowered) -> Lowered {
     mut fns: List<Body> = []
     for b in l.fns {
-        fns.push(b with { ins: memory_ins(l.types, b.reg_types, b.ins, managed_params(l.types, b), b.gives) })
+        fns.push(b with { ins: memory_ins(l.types, b.reg_types, b.ins, managed_params(l.types, b)) })
     }
-    let entry = l.entry with { ins: memory_ins(l.types, l.entry.reg_types, l.entry.ins, [], null) }
+    let entry = l.entry with { ins: memory_ins(l.types, l.entry.reg_types, l.entry.ins, []) }
     l with { fns: fns, entry: entry }
 }
 
@@ -33,8 +33,8 @@ fn managed_params(types: TypeRegistry, b: Body) -> List<Reg> {
 }
 
 /// One body's memory instructions. `seed` joins the outermost scope
-/// at its open; `kept` escapes the outermost scope at its close.
-fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed: List<Reg>, kept: Reg?) -> List<Ins> {
+/// at its open; every scope's exit names what escapes it.
+fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed: List<Reg>) -> List<Ins> {
     mut out: List<Ins> = []
     mut open_scopes: List<Scope> = []
     for i in ins {
@@ -47,10 +47,18 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 }
                 out.push(i)
             }
-            .ScopeExit -> {
+            // A scope YIELDS like a branch: released never here,
+            // adopted by the enclosing scope (ownership moves out
+            // one level; at the outermost it escapes to the caller).
+            .ScopeExit(gives) -> {
                 let scope = open_scopes.pop()
-                let escaping: Reg? = if open_scopes.is_empty() { kept } else { null }
-                for r in releases_for(scope, escaping) { out.push(Ins.Release(r)) }
+                for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
+                if gives != null && !open_scopes.is_empty() {
+                    if types.shape_of(reg_types[gives!.index]) is .Str {
+                        mut top = open_scopes[open_scopes.length - 1].managed
+                        top.push(gives!)
+                    }
+                }
                 out.push(i)
             }
             // A branch is a scope at its enclosing level. Its yield
@@ -130,10 +138,8 @@ fn manage(types: TypeRegistry, reg_types: List<TypeId>, open_scopes: List<Scope>
 /// (heap-shaped); null for scalars and non-defining instructions.
 fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
     let dst: Reg? = dst_of(i)
-    match dst {
-        let d -> if types.shape_of(reg_types[d.index]) is .Str { d } else { null },
-        null -> null,
-    }
+    if dst == null { return null }
+    if types.shape_of(reg_types[dst!.index]) is .Str { dst } else { null }
 }
 
 /// Last bound, first released.

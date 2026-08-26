@@ -96,16 +96,14 @@ fn fatal_defect<N>(state: MatchState<N>, diagnostics: List<Diagnostic>, farthest
 
 /// The deeper of two farthest points; a tie unions the expected sets.
 fn far_merge(a: FarthestFailure?, b: FarthestFailure?) -> FarthestFailure? {
-    match a {
-        null -> b,
-        let fa -> match b {
-            null -> a,
-            let fb -> when {
-                fa.cursor > fb.cursor -> a
-                fb.cursor > fa.cursor -> b
-                _ -> FarthestFailure { cursor: fa.cursor, expected: union_expected(fa.expected, fb.expected), in_rule: fa.in_rule }
-            },
-        },
+    if a == null { return b }
+    if b == null { return a }
+    let fa = a!
+    let fb = b!
+    when {
+        fa.cursor > fb.cursor -> a
+        fb.cursor > fa.cursor -> b
+        _ -> FarthestFailure { cursor: fa.cursor, expected: union_expected(fa.expected, fb.expected), in_rule: fa.in_rule }
     }
 }
 
@@ -162,11 +160,11 @@ fn sync_past<N>(cx: MatchContext<N>, target: string, from: int) -> int {
 fn match_rule<N>(cx: MatchContext<N>, name: string, cursor: int) -> MatchResult<N> {
     let entry_state: MatchState<N> = state_at<N>(cursor, [])
     let found: Rule? = cx.rules.get(name)
-    match found {
-        null -> broke<N>(entry_state,
-            [Diagnostic { cause: Cause.Defect, message: "undefined rule `${name}`", span: null, expected: [], in_rule: name }], null),
-        let rl -> match_alt<N>(cx, name, rl.body, entry_state, false),
+    if found == null {
+        return broke<N>(entry_state,
+            [Diagnostic { cause: Cause.Defect, message: "undefined rule `${name}`", span: null, expected: [], in_rule: name }], null)
     }
+    match_alt<N>(cx, name, found!.body, entry_state, false)
 }
 
 /// Branches tried top to bottom; the first success wins. A committed
@@ -175,10 +173,11 @@ fn match_rule<N>(cx: MatchContext<N>, name: string, cursor: int) -> MatchResult<
 /// carries the merged farthest point of every branch.
 fn match_alt<N>(cx: MatchContext<N>, rule_name: string, a: Alt, state: MatchState<N>, acc: bool) -> MatchResult<N> {
     mut farthest: FarthestFailure? = null
-    // A nullable generic local corrupts through mono (subset note);
-    // the flag carries the presence instead.
+    // GENERIC locals cannot carry loop state through mono (subset
+    // note) — a Broke's state and value are never consumed, so the
+    // fallback survives as its non-generic pieces alone.
     mut have_fallback = false
-    mut fallback: MatchResult<N> = missed<N>(state, [], null)
+    mut fb_diags: List<Diagnostic> = []
     for br in a.branches {
         let r = match_seq<N>(cx, rule_name, br, state, acc)
         farthest = far_merge(farthest, r.farthest)
@@ -186,12 +185,12 @@ fn match_alt<N>(cx: MatchContext<N>, rule_name: string, a: Alt, state: MatchStat
             return r with { farthest: farthest }
         }
         if r.status == MatchStatus.Broke && !have_fallback {
-            fallback = r
+            fb_diags = r.diagnostics
             have_fallback = true
         }
     }
     if !have_fallback { return missed<N>(state, [], farthest) }
-    fallback with { farthest: farthest }
+    broke<N>(state, fb_diags, farthest)
 }
 
 /// "expected A, B or C while parsing `rule`" from a farthest point.
@@ -206,10 +205,8 @@ fn farthest_diagnostic<N>(cx: MatchContext<N>, f: FarthestFailure) -> Diagnostic
 /// The diagnostic for a failure inside a committed branch, preferring
 /// the failed sub-match's own farthest point.
 fn committed_failure<N>(cx: MatchContext<N>, rule_name: string, member: Item, r: MatchResult<N>, state: MatchState<N>) -> Diagnostic {
-    match r.farthest {
-        null -> farthest_diagnostic<N>(cx, FarthestFailure { cursor: state.cursor, expected: [describe_prim(member.prim)], in_rule: rule_name }),
-        let f -> farthest_diagnostic<N>(cx, f),
-    }
+    let f = r.farthest ?? FarthestFailure { cursor: state.cursor, expected: [describe_prim(member.prim)], in_rule: rule_name }
+    farthest_diagnostic<N>(cx, f)
 }
 
 fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq, entry_state: MatchState<N>, acc: bool) -> MatchResult<N> {
@@ -249,13 +246,9 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq, entry_state: Mat
             continue
         }
         diagnostics.push(committed_failure<N>(cx, rule_name, member, r, state))
-        match s.recover {
-            null -> { return broke<N>(state, diagnostics, farthest) }
-            let rec -> {
-                let c = sync_past<N>(cx, rec.sync_to, state.cursor)
-                return matched<N>(state_at<N>(c, state.bindings), captured_absent<N>(), diagnostics, farthest)
-            }
-        }
+        if s.recover == null { return broke<N>(state, diagnostics, farthest) }
+        let c = sync_past<N>(cx, s.recover!.sync_to, state.cursor)
+        return matched<N>(state_at<N>(c, state.bindings), captured_absent<N>(), diagnostics, farthest)
     }
     // Build phase. The branch's consumed range is the builder's span.
     let branch = consumed_span(cx.tokens, entry_state.cursor, state.cursor)
@@ -271,14 +264,12 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq, entry_state: Mat
 /// The branch's value: its sole capture, a named binding, or the
 /// builder called over its named captures.
 fn built<N>(cx: MatchContext<N>, s: Seq, state: MatchState<N>, vals: List<Captured<N>>, branch: Span?) -> Result<Captured<N>, string> {
-    match s.build {
-        null -> Result.Ok(vals[0]),
-        let b -> match b {
-            .Var(name) -> Result.Ok(binding_for<N>(state.bindings, name) ?? captured_absent<N>()),
-            .Call(name, args) -> {
-                let argv: List<Captured<N>> = [binding_for<N>(state.bindings, a) ?? captured_absent<N>() for a in args]
-                cx.build(name, argv, branch)
-            }
+    if s.build == null { return Result.Ok(vals[0]) }
+    match s.build! {
+        .Var(name) -> Result.Ok(binding_for<N>(state.bindings, name) ?? captured_absent<N>()),
+        .Call(name, args) -> {
+            let argv: List<Captured<N>> = [binding_for<N>(state.bindings, a) ?? captured_absent<N>() for a in args]
+            cx.build(name, argv, branch)
         }
     }
 }
@@ -291,10 +282,8 @@ fn consumed_span(tokens: List<Token>, from: int, until: int) -> Span? {
 
 /// The result with this item's label bound, when it carries one.
 fn with_label<N>(member: Item, r: MatchResult<N>, acc: bool) -> MatchResult<N> {
-    match member.label {
-        null -> r,
-        let l -> r with { state: state_at<N>(r.state.cursor, bind_label<N>(r.state.bindings, l, r.value, acc)) },
-    }
+    if member.label == null { return r }
+    r with { state: state_at<N>(r.state.cursor, bind_label<N>(r.state.bindings, member.label!, r.value, acc)) }
 }
 
 fn match_item<N>(cx: MatchContext<N>, rule_name: string, member: Item, state: MatchState<N>, acc: bool) -> MatchResult<N> {
@@ -400,10 +389,8 @@ fn match_prim<N>(cx: MatchContext<N>, rule_name: string, member: Item, state: Ma
 /// The final diagnostic when the whole parse failed silently — the
 /// farthest point speculation reached, or a generic failure.
 fn overall_failure<N>(cx: MatchContext<N>, r: MatchResult<N>) -> Diagnostic {
-    match r.farthest {
-        null -> Diagnostic { cause: Cause.Expected, message: "cannot parse `${cx.g.start}`", span: cx.tokens[0].span, expected: [], in_rule: cx.g.start },
-        let f -> farthest_diagnostic<N>(cx, f),
-    }
+    if r.farthest != null { return farthest_diagnostic<N>(cx, r.farthest!) }
+    Diagnostic { cause: Cause.Expected, message: "cannot parse `${cx.g.start}`", span: cx.tokens[0].span, expected: [], in_rule: cx.g.start }
 }
 
 /// Run `g` over `tokens`. A defective grammar refuses to run; a failed

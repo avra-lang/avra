@@ -52,6 +52,7 @@ type Resolver = {
     all_defs: List<Def>,
     def_names: List<string>,
     visible: Map<string, StmtId>,
+    overlays: List<Map<string, StmtId>>,
     fn_defs: Map<string, StmtId>,
     fn_names: List<string>,
     targets: List<StmtId?>,
@@ -64,7 +65,7 @@ export fn resolve(p: ParsedProgram) -> Resolution {
     let r = Resolver {
         p: p, all_defs: defs,
         def_names: [d.name for d in defs],
-        visible: {}, fn_defs: {}, fn_names: [],
+        visible: {}, overlays: [], fn_defs: {}, fn_names: [],
         targets: filled<StmtId?>(p.store.exprs.count(), null),
         params: filled<int?>(p.store.exprs.count(), null),
         diagnostics: [],
@@ -80,20 +81,44 @@ export fn resolve(p: ParsedProgram) -> Resolution {
             .Let(_, _) or .ExprStmt(_) or .Error -> {
                 let value: ExprId? = p.store.stmt_value(s)
                 if value != null { resolve_walk(r, [], value!) }
-                let binds: string? = p.store.let_name(s)
-                if binds != null {
-                    when {
-                        keywords().contains(binds!) ->
-                            r.refuse_keyword(binds!, loc_at(p.source.file, p.store.stmt_span(s)))
-                        reserved().contains(binds!) ->
-                            r.refuse_reserved(binds!, loc_at(p.source.file, p.store.stmt_span(s)))
-                        _ -> r.bind(binds!, s)
-                    }
-                }
+                r.bind_checked(s)
             }
         }
     }
     Resolution { targets: r.targets, params: r.params, diagnostics: r.diagnostics }
+}
+
+/// A block's statements in order under a fresh overlay scope: binds
+/// are visible onward and restored at exit; fn declarations refuse.
+fn block_scope(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId) {
+    mut ov = r.overlays
+    let fresh: Map<string, StmtId> = {}
+    ov.push(fresh)
+    for s in stmts {
+        match r.p.store.stmt(s) {
+            .FnDecl(_, _, _, _) ->
+                r.speak(pointed(error_at("resolve.nested_fn", loc_at(r.p.source.file, r.p.store.stmt_span(s)), "fn declarations live at the top level"), "declared inside a block")
+                    with { help: "move the fn out of the block" }),
+            .Let(_, _) or .ExprStmt(_) or .Error -> {
+                let v: ExprId? = r.p.store.stmt_value(s)
+                if v != null { resolve_walk(r, param_names, v!) }
+                r.bind_checked(s)
+            }
+        }
+    }
+    resolve_walk(r, param_names, value)
+    let _ = ov.pop()
+}
+
+/// The innermost overlay holding `name`, or null.
+fn overlay_hit(overlays: List<Map<string, StmtId>>, name: string) -> StmtId? {
+    mut k = overlays.length - 1
+    mut found: StmtId? = null
+    while k >= 0 {
+        if found == null { found = overlays[k].get(name) }
+        k = k - 1
+    }
+    found
 }
 
 /// One subtree's resolution, under the given param names.
@@ -102,6 +127,7 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
         store: r.p.store,
         use_name: (e: ExprId, name: string) -> r.resolve_name(e, name, param_names),
         use_call: (e: ExprId, name: string) -> r.resolve_call(e, name),
+        block_scope: (stmts: List<StmtId>, value: ExprId) -> block_scope(r, param_names, stmts, value),
     }
     for e in r.p.store.post_order(root) { semantics_of(r.p.store.expr(e)).resolve(cx, e) }
 }
@@ -130,10 +156,8 @@ impl Resolver {
     /// — a call may name a fn declared later.
     fn declare_fns(self) {
         for s in self.p.stmts {
-            match self.p.store.stmt(s) {
-                .FnDecl(name, _, _, _) -> self.declare_fn(name, s),
-                .Let(_, _) or .ExprStmt(_) or .Error -> nothing(),
-            }
+            let name: string? = self.p.store.fn_name(s)
+            if name != null { self.declare_fn(name!, s) }
         }
     }
 
@@ -177,6 +201,12 @@ impl Resolver {
         if idx != null {
             mut ps = self.params
             ps.set(e.index, idx!)
+            return
+        }
+        let inner: StmtId? = overlay_hit(self.overlays, name)
+        if inner != null {
+            mut ts = self.targets
+            ts.set(e.index, inner!)
             return
         }
         let found: StmtId? = self.visible.get(name)
@@ -232,10 +262,30 @@ impl Resolver {
         self.all_defs.find(it.name == name)?.stmt
     }
 
-    /// Latest binding wins — Map.set IS shadowing.
+    /// A statement's binding, keyword- and reserved-checked — the
+    /// one law for top level and blocks alike.
+    fn bind_checked(self, s: StmtId) {
+        let binds: string? = self.p.store.let_name(s)
+        if binds == null { return }
+        when {
+            keywords().contains(binds!) ->
+                self.refuse_keyword(binds!, loc_at(self.p.source.file, self.p.store.stmt_span(s)))
+            reserved().contains(binds!) ->
+                self.refuse_reserved(binds!, loc_at(self.p.source.file, self.p.store.stmt_span(s)))
+            _ -> self.bind(binds!, s)
+        }
+    }
+
+    /// Latest binding wins — Map.set IS shadowing. Inside a block,
+    /// the binding lives in the innermost overlay and dies with it.
     fn bind(self, name: string, s: StmtId) {
-        mut v = self.visible
-        v.set(name, s)
+        if self.overlays.is_empty() {
+            mut v = self.visible
+            v.set(name, s)
+        } else {
+            mut top = self.overlays[self.overlays.length - 1]
+            top.set(name, s)
+        }
     }
 
     fn loc_of(self, e: ExprId) -> Loc? {
@@ -246,18 +296,15 @@ impl Resolver {
     /// shadowed names are honest candidates for a typo.
     fn suggested(self, d: Diag, e: ExprId, name: string, candidates: List<string>) -> Diag {
         let near: Closest? = closest(name, candidates)
-        match near {
-            null -> d,
-            let n -> {
-                let at: Loc? = self.loc_of(e)
-                let edits = [Edit { loc: l, replacement: n.name } for l in some_list(at)]
-                let s = Suggestion {
-                    confidence: if n.distance == 1 { Confidence.High } else { Confidence.Medium },
-                    description: "replace `${name}` with `${n.name}`",
-                    edits: edits,
-                }
-                d with { help: "did you mean `${n.name}`?", suggestions: [s] }
-            }
+        if near == null { return d }
+        let n = near!
+        let at: Loc? = self.loc_of(e)
+        let edits = [Edit { loc: l, replacement: n.name } for l in some_list(at)]
+        let s = Suggestion {
+            confidence: if n.distance == 1 { Confidence.High } else { Confidence.Medium },
+            description: "replace `${name}` with `${n.name}`",
+            edits: edits,
         }
+        d with { help: "did you mean `${n.name}`?", suggestions: [s] }
     }
 }

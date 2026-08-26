@@ -66,12 +66,25 @@ fn type_walk(t: Typer, param_types: List<TypeId>, root: ExprId) {
         intern: (sh: Type) -> t.types.intern(sh),
         target_type: (e: ExprId) -> t.target_type(e, param_types),
         sig_of: (e: ExprId) -> t.sig_at(e),
+        block_type: (stmts: List<StmtId>, value: ExprId) -> block_type(t, param_types, stmts, value),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
         type_name: (ty: TypeId) -> t.types.name_of(ty),
         loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
         emit: (d: Diag) -> t.speak(d),
     }
     for e in t.p.store.post_order(root) { type_node(t, cx, e) }
+}
+
+/// A block's statements type in order, then its value — which IS
+/// the block's type. Typing has no per-kind statement behavior:
+/// stmt_value is the whole dispatch.
+fn block_type(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>, value: ExprId) -> TypeId {
+    for s in stmts {
+        let v: ExprId? = t.p.store.stmt_value(s)
+        if v != null { type_walk(t, param_types, v!) }
+    }
+    type_walk(t, param_types, value)
+    t.of_expr[value.index]
 }
 
 /// One node's fact: the owner speaks, the table records.
@@ -111,25 +124,21 @@ impl Typer {
     /// An annotation's TypeId; an unknown name speaks and absorbs.
     fn annotated(self, s: StmtId, name: string) -> TypeId {
         let sh: Type? = shape_named(name)
-        match sh {
-            let shp -> self.types.intern(shp),
-            null -> {
-                self.speak(pointed(
-                    error_at("type.unknown", loc_at(self.p.source.file, self.p.store.stmt_span(s)), "`${name}` names no type"),
-                    "in this signature")
-                    with { help: "the types today are `int`, `string`, and `bool`" })
-                self.types.intern(Type.Error)
-            }
-        }
+        if sh != null { return self.types.intern(sh!) }
+        self.speak(pointed(
+            error_at("type.unknown", loc_at(self.p.source.file, self.p.store.stmt_span(s)), "`${name}` names no type"),
+            "in this signature")
+            with { help: "the types today are `int`, `string`, and `bool`" })
+        self.types.intern(Type.Error)
     }
 
     /// A fn body types under its params and must answer its
     /// declared return.
     fn check_fn(self, s: StmtId, fname: string, fret: string, body: ExprId) {
         let sig: FnSig? = self.sigs[s.index]
-        let ptypes: List<TypeId> = match sig { let sg -> sg.params, null -> [] }
+        let ptypes: List<TypeId> = sig?.params ?? []
         type_walk(self, ptypes, body)
-        let want: TypeId = match sig { let sg -> sg.ret, null -> self.types.intern(Type.Error) }
+        let want: TypeId = sig?.ret ?? self.types.intern(Type.Error)
         let got = self.of_expr[body.index]
         let absorb = self.types.shape_of(got) is .Error || self.types.shape_of(want) is .Error
         if !absorb && got.index != want.index {
@@ -145,23 +154,16 @@ impl Typer {
         let pi: int? = param_of(self.resolution, e)
         if pi != null { return param_types[pi!] }
         let target: StmtId? = target_of(self.resolution, e)
-        let v: ExprId? = match target {
-            let s -> self.p.store.stmt_value(s),
-            null -> null,
-        }
-        match v {
-            let ve -> self.of_expr[ve.index],
-            null -> self.types.intern(Type.Error),
-        }
+        let v: ExprId? = if target == null { null } else { self.p.store.stmt_value(target!) }
+        if v == null { return self.types.intern(Type.Error) }
+        self.of_expr[v!.index]
     }
 
     /// A call's target signature, when resolve found one.
     fn sig_at(self, e: ExprId) -> FnSig? {
         let target: StmtId? = target_of(self.resolution, e)
-        match target {
-            let s -> self.sigs[s.index],
-            null -> null,
-        }
+        if target == null { return null }
+        self.sigs[target!.index]
     }
 
     fn speak(self, d: Diag) {

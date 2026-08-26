@@ -1,0 +1,28 @@
+//! `{ statements… value }` — a scope as an expression, defined ONCE
+//! and borrowed by every construct with braces. The inline form
+//! passes through: a one-expression block costs no node, so every
+//! one-line fn and if keeps its exact tree. The multi-line form
+//! arrives by deferred commitment.
+use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
+
+export fn block() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name    | build
+        "block" | build_block
+    }
+    let codes = table<DiagCode> {
+        kind                | id      | summary
+        "resolve.nested_fn" | "F3004" | "fn declarations live at the top level"
+    }
+    component LanguageFeature f {
+        name = "block"
+        docs = "`{ <statements> <expression> }`; the last expression is the value."
+        gram = """
+block = "{" v:expression "}" @expect("}", "expected `}` to close the block") -> v | "{" ( s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the block") -> block(s)
+"""
+        builders = rows
+        diags = codes
+    }
+    f
+}

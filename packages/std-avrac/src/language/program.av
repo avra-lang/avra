@@ -9,6 +9,7 @@ use features.str_lit.{StrSemantics}
 use features.bool_lit.{BoolSemantics}
 use features.if_expr.{IfSemantics}
 use features.when_expr.{WhenSemantics}
+use features.block.{BlockSemantics}
 use features.fns.{FnsSemantics}
 use diagnostics.{Diag, SourceFile, new_source_file}
 
@@ -32,6 +33,7 @@ export fn semantics_of(e: Expr) -> dyn NodeSemantics {
     let bools: dyn NodeSemantics = BoolSemantics { }
     let ifs: dyn NodeSemantics = IfSemantics { }
     let whens: dyn NodeSemantics = WhenSemantics { }
+    let blocks: dyn NodeSemantics = BlockSemantics { }
     let calls: dyn NodeSemantics = FnsSemantics { }
     match e {
         .IntLit(_) or .Ident(_) or .Binary(_, _, _) or .Error -> spine,
@@ -39,6 +41,7 @@ export fn semantics_of(e: Expr) -> dyn NodeSemantics {
         .BoolLit(_) -> bools,
         .If(_, _, _) -> ifs,
         .When(_, _, _) -> whens,
+        .Block(_, _) -> blocks,
         .Call(_, _) -> calls,
     }
 }
@@ -75,24 +78,38 @@ impl NodeStore {
             .Error -> null,
         }
     }
+
+    /// A fn declaration's body, when the statement is one.
+    fn fn_body(self, s: StmtId) -> ExprId? {
+        match self.stmt(s) {
+            .FnDecl(_, _, _, body) -> body,
+            _ -> null,
+        }
+    }
+
+    /// A fn declaration's name, when the statement is one.
+    fn fn_name(self, s: StmtId) -> string? {
+        match self.stmt(s) {
+            .FnDecl(name, _, _, _) -> name,
+            _ -> null,
+        }
+    }
 }
 
 export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
-    match lang.grammar {
-        null -> ParsedProgram { store: new_node_store(), stmts: [], source: src, diagnostics: lang.diagnostics },
-        let g -> {
-            let lexed = lex_source(src.text)
-            let store = new_node_store()
-            let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> dispatch(lang.features, store, name, args, span)
-            let o = run_grammar<LangNode>(g, lexed.tokens, build)
-            let engine = concat([lex_diagnostic(e) for e in lexed.errors], o.diagnostics)
-            ParsedProgram {
-                store: store,
-                stmts: program_stmts(store, o),
-                source: src,
-                diagnostics: project_all(engine, src.file, lang.codes),
-            }
-        }
+    if lang.grammar == null {
+        return ParsedProgram { store: new_node_store(), stmts: [], source: src, diagnostics: lang.diagnostics }
+    }
+    let lexed = lex_source(src.text)
+    let store = new_node_store()
+    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> dispatch(lang.features, store, name, args, span)
+    let o = run_grammar<LangNode>(lang.grammar!, lexed.tokens, build)
+    let engine = concat([lex_diagnostic(e) for e in lexed.errors], o.diagnostics)
+    ParsedProgram {
+        store: store,
+        stmts: program_stmts(store, o),
+        source: src,
+        diagnostics: project_all(engine, src.file, lang.codes),
     }
 }
 

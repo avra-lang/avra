@@ -26,6 +26,8 @@ export enum Expr {
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// Multi-way choice; `fallback` is the total `_` arm.
     When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
+    /// Statements then a value — a scope as an expression.
+    Block(stmts: List<StmtId>, value: ExprId)
     /// A direct call by name; fn values arrive later.
     Call(callee: string, args: List<ExprId>)
     /// A parse failure's placeholder — the tree survives bad input.
@@ -112,7 +114,7 @@ impl NodeStore {
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 14.
+    /// Tags are never reused; the next free tag is 15.
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -135,6 +137,12 @@ impl NodeStore {
                 for v in values { parts.push(self.expr_fingerprint(v)) }
                 parts.push(self.expr_fingerprint(fallback))
                 fp(13, parts)
+            }
+            .Block(stmts, value) -> {
+                mut parts: List<int> = []
+                for s in stmts { parts.push(self.stmt_fingerprint(s)) }
+                parts.push(self.expr_fingerprint(value))
+                fp(14, parts)
             }
         }
     }

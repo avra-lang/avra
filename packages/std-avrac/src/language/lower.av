@@ -79,14 +79,14 @@ type LoweredBody = { body: Body, failures: List<string> }
 /// one scope, the answer after the scope settles.
 fn lower_fn(a: Analysis, s: StmtId, fname: string, root: ExprId) -> LoweredBody {
     let sig: FnSig? = a.typing.sigs[s.index]
-    let ptypes: List<TypeId> = match sig { let sg -> sg.params, null -> [] }
-    let rt: TypeId = match sig { let sg -> sg.ret, null -> a.typing.types.intern(Type.Error) }
+    let ptypes: List<TypeId> = sig?.params ?? []
+    let rt: TypeId = sig?.ret ?? a.typing.types.intern(Type.Error)
     let lo = new_lower(a)
     mut tys = lo.reg_types
     for pt in ptypes { tys.push(pt) }
     lo.give(Ins.ScopeEnter(Level.Application))
     let r = lower_subtree(lo, root)
-    lo.give(Ins.ScopeExit)
+    lo.give(Ins.ScopeExit(r))
     lo.give(Ins.RetVal(r))
     LoweredBody {
         body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.ins, reg_types: lo.reg_types },
@@ -114,11 +114,8 @@ fn lower_main(a: Analysis) -> LoweredBody {
             }
         }
     }
-    match last {
-        let r -> lo.give(Ins.Print(r)),
-        null -> nothing(),
-    }
-    lo.give(Ins.ScopeExit)
+    if last != null { lo.give(Ins.Print(last!)) }
+    lo.give(Ins.ScopeExit(null))
     lo.give(Ins.Ret(0))
     LoweredBody {
         body: Body {
@@ -142,11 +139,36 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         def_reg: (k: ExprId) -> lo.def_reg(k),
         shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.a.type_at(k)),
         emit: (i: Ins) -> lo.give(i),
+        lower_block: (stmts: List<StmtId>, value: ExprId) -> block_reg(lo, stmts, value),
         fail: (msg: string) -> lo.record(msg),
     }
     let r = semantics_of(lo.a.store.expr(e)).lower(cx, e)
     mut rs = lo.regs
     rs.set(e.index, r)
+    r
+}
+
+/// A block is a scope: statements lower in order into it, and the
+/// value register escapes as the scope's yield.
+fn block_reg(lo: Lower, stmts: List<StmtId>, value: ExprId) -> Reg {
+    lo.give(Ins.ScopeEnter(Level.Application))
+    for s in stmts {
+        match lo.a.store.stmt(s) {
+            .FnDecl(_, _, _, _) -> lo.record("defect: a nested fn survived a clean analysis"),
+            .Let(_, _) or .ExprStmt(_) or .Error -> {
+                let v: ExprId? = lo.a.store.stmt_value(s)
+                if v == null {
+                    lo.record("defect: a hole survived a clean analysis")
+                } else {
+                    let r = lower_subtree(lo, v!)
+                    mut written = lo.slots
+                    written.set(s.index, r)
+                }
+            }
+        }
+    }
+    let r = lower_subtree(lo, value)
+    lo.give(Ins.ScopeExit(r))
     r
 }
 
@@ -169,10 +191,8 @@ impl Lower {
         let pi: int? = self.a.param_at(e)
         if pi != null { return Reg { index: pi! } }
         let target: StmtId? = self.a.target(e)
-        match target {
-            let s -> self.slots[s.index],
-            null -> null,
-        }
+        if target == null { return null }
+        self.slots[target!.index]
     }
 
     fn record(self, msg: string) {
