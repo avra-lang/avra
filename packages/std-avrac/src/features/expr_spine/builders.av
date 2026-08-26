@@ -1,5 +1,5 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{Expr, BinOp, want}
+use core.{Expr, BinOp, want, op_symbol, all_binops}
 use features.{LangNode, Builder, token_at}
 use grammar.{Token}
 
@@ -20,7 +20,7 @@ fn build_fold_binary(b: Builder) -> Result<LangNode, string> {
     let ops = b.tokens(1)?
     let rights = b.exprs(2)?
     for (i, t) in ops.enumerate() {
-        let op = want(binop_of(t.text), "`+` or `-`")?
+        let op = want(binop_of(t.text), "a binary operator")?
         acc = b.store.alloc_expr(Expr.Binary(op, acc, rights[i]), b.cover(acc, rights[i]))
     }
     b.wrap_expr(acc)
@@ -36,17 +36,13 @@ fn build_fold_cmp(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Binary(op, l, r))
 }
 
-type OpRow = { text: string, op: BinOp }
+fn build_not(b: Builder) -> Result<LangNode, string> {
+    let v = b.expr(0)?
+    b.make_expr(Expr.Not(v))
+}
 
-/// The operators this feature folds, as data — new rows are the whole
-/// cost of a new operator.
+/// The operator a source token names — derived from core's roster,
+/// so the symbol projection stays the single source.
 fn binop_of(text: string) -> BinOp? {
-    let ops = table<OpRow> {
-        text | op
-        "+"  | BinOp.Add
-        "-"  | BinOp.Sub
-        "==" | BinOp.Eq
-        "<"  | BinOp.Lt
-    }
-    ops.find(it.text == text)?.op
+    all_binops().find(op_symbol(it) == text)
 }

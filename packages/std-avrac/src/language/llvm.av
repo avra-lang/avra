@@ -5,7 +5,7 @@
 //! first, so call order never matters); `main` is the statement
 //! list. Programs link Avra's runtime library for printing, string
 //! equality, and reference counting — nothing else.
-use core.{Ins, Reg, BinOp, TypeId, TypeRegistry}
+use core.{Ins, Reg, BinOp, UnOp, TypeId, TypeRegistry}
 use features.{nothing}
 
 /// One body's emission world: the LLVM handles, this body's register
@@ -142,6 +142,7 @@ fn emit_ins(em: Emit, i: Ins) {
         .ConstBool(_, v) -> define(em, avra_llvm_const_int(avra_llvm_int1_type(em.lc), if v { 1 } else { 0 }, 0)),
         .ConstStr(_, s) -> define(em, avra_llvm_build_global_string_ptr(em.b, s, ".str")),
         .Bin(_, op, a, x) -> define(em, bin_value(em, op, em.vals[a.index], em.vals[x.index])),
+        .Un(_, op, src) -> define(em, un_value(em, op, em.vals[src.index])),
         .CallRt(dst, callee, args) -> define(em, call_rt_value(em, dst, callee, args)),
         .Call(_, callee, args) -> define(em, call(em, mangled(callee), [em.vals[a.index] for a in args])),
         .Release(r) -> released(em, r),
@@ -168,13 +169,30 @@ fn define(em: Emit, v: ptr) {
     vs.push(v)
 }
 
-/// icmp predicates by number: 32 eq, 40 slt.
+/// icmp predicates by number: 32 eq, 33 ne, 38 sgt, 39 sge, 40 slt,
+/// 41 sle. The lazy ops lower as regions and never reach a Bin; the
+/// arms stay honest (eager i1 and/or) for exhaustiveness.
 fn bin_value(em: Emit, op: BinOp, a: ptr, b: ptr) -> ptr {
     match op {
         .Add -> avra_llvm_build_add(em.b, a, b, "add"),
         .Sub -> avra_llvm_build_sub(em.b, a, b, "sub"),
+        .Mul -> avra_llvm_build_mul(em.b, a, b, "mul"),
+        .Div -> avra_llvm_build_sdiv(em.b, a, b, "div"),
+        .Mod -> avra_llvm_build_srem(em.b, a, b, "rem"),
         .Eq -> avra_llvm_build_icmp(em.b, 32, a, b, "cmp"),
+        .Ne -> avra_llvm_build_icmp(em.b, 33, a, b, "cmp"),
         .Lt -> avra_llvm_build_icmp(em.b, 40, a, b, "cmp"),
+        .Le -> avra_llvm_build_icmp(em.b, 41, a, b, "cmp"),
+        .Gt -> avra_llvm_build_icmp(em.b, 38, a, b, "cmp"),
+        .Ge -> avra_llvm_build_icmp(em.b, 39, a, b, "cmp"),
+        .And -> avra_llvm_build_and(em.b, a, b, "and"),
+        .Or -> avra_llvm_build_or(em.b, a, b, "or"),
+    }
+}
+
+fn un_value(em: Emit, op: UnOp, v: ptr) -> ptr {
+    match op {
+        .Not -> avra_llvm_build_not(em.b, v, "not"),
     }
 }
 

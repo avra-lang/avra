@@ -13,13 +13,26 @@ export type Reg = { index: int }
 /// A scope's abstraction level — which memory strategy owns it.
 export enum Level { Application, Systems, Bare, Hardware }
 
+/// The unary operators.
+export enum UnOp { Not }
+
+/// The operator's surface symbol — the projection beside its enum.
+export fn un_symbol(op: UnOp) -> string {
+    match op {
+        .Not -> "!",
+    }
+}
+
 export enum Ins {
     // Values.
     ConstInt(dst: Reg, v: int)
     ConstStr(dst: Reg, s: string)
     ConstBool(dst: Reg, v: bool)
-    /// Add/Sub over ints; Lt/Eq comparisons — operands same-typed.
+    /// The eager binary operations — operands same-typed. The lazy
+    /// ops (And/Or) never reach here: they lower as regions.
     Bin(dst: Reg, op: BinOp, a: Reg, b: Reg)
+    /// The unary operations.
+    Un(dst: Reg, op: UnOp, src: Reg)
     /// A call into the runtime's C surface — THE escape hatch that
     /// keeps this instruction set closed: features lower
     /// value-producing runtime needs here, never as new variants.
@@ -76,6 +89,7 @@ export fn dst_of(i: Ins) -> Reg? {
         .ConstStr(d, _) -> d,
         .ConstBool(d, _) -> d,
         .Bin(d, _, _, _) -> d,
+        .Un(d, _, _) -> d,
         .CallRt(d, _, _) -> d,
         .Call(d, _, _) -> d,
         .IfEnd(d, _) -> d,

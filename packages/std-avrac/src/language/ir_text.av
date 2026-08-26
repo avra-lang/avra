@@ -1,7 +1,7 @@
 //! The human projection of Lowered IR (P7): brackets as braces, one
 //! instruction per line, registers by mint order. What `avra ir`
 //! prints and the golden tests pin.
-use core.{Ins, Reg, Level, BinOp, joined}
+use core.{Ins, Reg, Level, joined, op_symbol, un_symbol}
 
 export fn render_ir(l: Lowered) -> string {
     mut lines: List<string> = []
@@ -58,7 +58,8 @@ fn body_lines(ins: List<Ins>) -> List<string> {
                 let word = if v { "true" } else { "false" }
                 lines.push(line(depth, "r${d.index} = bool ${word}"))
             }
-            .Bin(d, op, a, b) -> lines.push(line(depth, "r${d.index} = r${a.index} ${op_sym(op)} r${b.index}")),
+            .Bin(d, op, a, b) -> lines.push(line(depth, "r${d.index} = r${a.index} ${op_symbol(op)} r${b.index}")),
+            .Un(d, op, src) -> lines.push(line(depth, "r${d.index} = ${un_symbol(op)}r${src.index}")),
             .CallRt(d, callee, args) -> lines.push(line(depth, "r${d.index} = call ${callee}(${reg_list(args)})")),
             .Call(d, callee, args) -> lines.push(line(depth, "r${d.index} = call ${callee}(${reg_list(args)})")),
             .Alloca(d) -> lines.push(line(depth, "r${d.index} = slot")),
@@ -95,15 +96,6 @@ fn level_word(level: Level) -> string {
         .Systems -> "systems",
         .Bare -> "bare",
         .Hardware -> "hardware",
-    }
-}
-
-fn op_sym(op: BinOp) -> string {
-    match op {
-        .Add -> "+",
-        .Sub -> "-",
-        .Eq -> "==",
-        .Lt -> "<",
     }
 }
 

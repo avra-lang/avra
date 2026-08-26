@@ -3,7 +3,12 @@
 // structure, spans (cover in anger), and the fingerprint invariant
 // across differently-formatted sources.
 use @std.avrac.core.{NodeStore, Expr, BinOp, ExprId, StmtId}
-use @std.avrac.language.{parse_source}
+use @std.avrac.language.{parse_source, analyze_source}
+
+/// A program's printed value, or "<refused>".
+fn shown(source: string) -> string {
+    analyze_source(source).ran() ?? "<refused>"
+}
 
 type Parsed = { store: NodeStore, root: ExprId?, diagnostics: int }
 
@@ -69,6 +74,51 @@ spec "features/expr_spine" {
         then "diagnostics arrive instead of a crash" {
             let p = parse_expr("1 +")
             p.diagnostics >= 1
+        }
+    }
+    given "the operator ladder" {
+        then "multiplication binds tighter than addition" {
+            shown("2 + 3 * 4 - 10 / 2") == "9"
+        }
+        then "parens override precedence" {
+            shown("(2 + 3) * 4") == "20"
+        }
+        then "the comparisons answer" {
+            shown("(3 <= 3) == (4 > 3) && 19 % 4 == 3 && 5 != 4") == "true"
+        }
+        then "`!` negates" {
+            shown("!(1 == 2)") == "true"
+        }
+        then "strings compare with `!=` by value" {
+            shown("\"ab\" != \"cd\"") == "true"
+        }
+    }
+    given "the lazy ops" {
+        then "`&&` never touches a right side that cannot matter" {
+            shown("1 < 0 && 1 / 0 == 0") == "false"
+        }
+        then "`||` decides on a true left alone" {
+            shown("0 < 1 || 1 / 0 == 0") == "true"
+        }
+        then "a division by zero that DOES run refuses the run" {
+            shown("1 / 0") == "<refused>"
+        }
+    }
+    given "the operators' laws" {
+        then "a lazy op wants bools, in its own words" {
+            let a = analyze_source("1 && true")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`&&` needs `bool` operands, found `int`")
+        }
+        then "`!` wants a bool, in its own words" {
+            let a = analyze_source("!5")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`!` negates a `bool`, found `int`")
+        }
+        then "`!=` compares matching types, in its own words" {
+            let a = analyze_source("1 != \"a\"")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`!=` compares matching types, found `int` and `string`")
         }
     }
 }

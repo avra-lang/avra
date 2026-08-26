@@ -15,7 +15,38 @@ export type ExprId = { index: int }
 /// Typed index into the statement arena.
 export type StmtId = { index: int }
 
-export enum BinOp { Add, Sub, Eq, Lt }
+/// The binary operators. And/Or are LAZY — their owner evaluates
+/// and lowers them as control; every other op is an eager Bin.
+export enum BinOp { Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge, And, Or }
+
+/// The operator's surface symbol — THE one projection; consumers
+/// (parser, law wording, renderer) query, never keep their own.
+export fn op_symbol(op: BinOp) -> string {
+    match op {
+        .Add -> "+",
+        .Sub -> "-",
+        .Mul -> "*",
+        .Div -> "/",
+        .Mod -> "%",
+        .Eq -> "==",
+        .Ne -> "!=",
+        .Lt -> "<",
+        .Le -> "<=",
+        .Gt -> ">",
+        .Ge -> ">=",
+        .And -> "&&",
+        .Or -> "||",
+    }
+}
+
+/// Every binary operator — the roster symbol->op derivations scan.
+export fn all_binops() -> List<BinOp> {
+    let ops: List<BinOp> =
+        [BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.Div, BinOp.Mod,
+         BinOp.Eq, BinOp.Ne, BinOp.Lt, BinOp.Le, BinOp.Gt, BinOp.Ge,
+         BinOp.And, BinOp.Or]
+    ops
+}
 
 export enum Expr {
     IntLit(value: int)
@@ -23,6 +54,8 @@ export enum Expr {
     BoolLit(value: bool)
     Ident(name: string)
     Binary(op: BinOp, left: ExprId, right: ExprId)
+    /// Boolean negation — the one unary, until minus.
+    Not(value: ExprId)
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// Multi-way choice; `fallback` is the total `_` arm.
     When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
@@ -141,7 +174,7 @@ impl NodeStore {
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 19.
+    /// Tags are never reused; the next free tag is 20.
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -149,6 +182,7 @@ impl NodeStore {
             .Binary(op, left, right) ->
                 fp(3, [fp_binop(op), self.expr_fingerprint(left), self.expr_fingerprint(right)]),
             .Error -> fp(4, []),
+            .Not(value) -> fp(19, [self.expr_fingerprint(value)]),
             .StrLit(value) -> fp(8, [fp_str(value)]),
             .BoolLit(value) -> fp(9, [if value { 1 } else { 0 }]),
             .If(cond, on_true, on_false) ->
@@ -214,6 +248,15 @@ fn fp_binop(op: BinOp) -> int {
         .Sub -> 2,
         .Eq -> 3,
         .Lt -> 4,
+        .Mul -> 5,
+        .Div -> 6,
+        .Mod -> 7,
+        .Ne -> 8,
+        .Le -> 9,
+        .Gt -> 10,
+        .Ge -> 11,
+        .And -> 12,
+        .Or -> 13,
     }
 }
 

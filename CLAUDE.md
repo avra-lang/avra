@@ -219,6 +219,9 @@ against these before writing; probe in scratch when unsure.
   ("expected `]` after list"); use a loop there too.
 - In a value match producing a list, put a populated arm FIRST — a
   leading `[] `arm pins `List<>` and the sibling arms then clash.
+- A list literal of enum values as a fn's TAIL never adopts the
+  declared return (F1000 "body produces `List<>`") — bind it under
+  a typed let and return the name.
 - Method calls on a `const` string fail at codegen.
 - Rebuild bs2 with `make build`, never `build-quick` — its freshness
   check can silently skip rebuilds and leave a stale binary.

@@ -17,7 +17,8 @@
     2.  [x] blocks — statement scopes, multi-line bodies (`return`
         deferred to rung 3, recorded)
     3.  [x] mutation & loops — `mut`, assignment, `while`, range `for`
-    4.  operators complete — `&& || !`, `!= > >= <=`, `* / %`
+    4.  [x] operators complete — `&& || !`, `!= > >= <=`, `* / %`,
+        grouping parens
     5.  lists — the first aggregate; iteration; the method core
     6.  strings complete — `${}` interpolation, the method core
     7.  structs — declarations, literals, `with`, impl methods
@@ -475,6 +476,44 @@ swallowed every expression line in the language. Range `for` is
 rung 3's tail, next: it desugars to mut+while inside its feature,
 zero core events, the when-lesson replayed at statement level.
 
+## Milestone 11 — operators complete (landed with its design)
+
+Rung 4, and the closed-vocabulary IR's price check. The ladder:
+`|| && (== != < <= > >=) (+ -) (* / %) ! primary` — plus grouping
+parens, discovered MISSING by the first probe (`!(a != 7)` had
+nowhere to parse; precedence override is part of "complete").
+
+- EAGER ops (`* / % != > >= <=`): BinOp variants + table rows +
+  law arms — they ride Ins.Bin untouched. The doctrine's cheap
+  path, confirmed: zero IR, zero backend shape changes, the llvm
+  arm is one icmp number.
+- LAZY ops (`&&`/`||`): BinOps whose OWNER treats them as control —
+  eval short-circuits (the on-demand walk never touches a side
+  that cannot matter), lowering desugars onto the if-region
+  brackets exactly as `when` did. corpus/ops.av pins a division
+  by zero sitting UNEXECUTED behind both ops, natively. One new
+  general LowerCx verb (`mint` — a scratch register, mirroring
+  StmtLowerCx's) paid for the constant arm.
+- `!`: Expr.Not plus the IR's missing INSTRUCTION SHAPE — `Un(dst,
+  op, src)`, one core event that covers every future unary (minus
+  arrives free). String `!=` is streq + Un Not.
+- Division by zero: eval REFUSES the run ("division by zero");
+  native traps. A recorded divergence — the policy belongs to the
+  error spine (rung 10), not to an operator milestone.
+- Unary minus: deferred until literals/negation design (the spec's
+  call); recorded, not slipped.
+
+LANDED: 254/254; thirteen-for-thirteen corpus. No new keywords —
+all operators are symbolic, and the derived-keyword list did not
+move. Touch bill: core (BinOp + Not + Un), the spine's dir, the
+three backend arm sets (renderer, llvm, memory pass-through), one
+LowerCx verb, six lexer tokens. The round after: the op<->symbol
+truth moved beside its enum (`op_symbol`/`all_binops` in core —
+the parse table, the checker's wording map, and the renderer's map
+were three copies), the homogeneous-operand law extracted to ONE
+`needs` (int and bool mismatches were the same sentence), and the
+lexer's eight two-char munch arms became one data-driven scan.
+
 ## The growth ledger (what a feature costs)
 
 M7 was ~1200 lines, and the fair audit says where: ~600 were the
@@ -490,9 +529,10 @@ corpus program. The machinery that keeps it there:
 - The corpus gate: a feature's end-to-end proof is corpus/<name>.av
   plus its .expected — two tiny files — and `make gate` holds
   eval == native == expected for every program, forever.
-- `dst_of` lives beside Ins: IR consumers query, never keep their
-  own lists. IR growth is rare by doctrine; its touch points are
-  the enum, its accessor, the renderer's arm, the backend's arm.
+- `dst_of` lives beside Ins, `op_symbol`/`all_binops` beside BinOp:
+  consumers query the owner's projection, never keep their own
+  lists. IR growth is rare by doctrine; its touch points are the
+  enum, its accessor, the renderer's arm, the backend's arm.
 
 THE NODE MODEL, SETTLED (2026-08-26): typed enums stay. The Expr
 variant a feature adds is not registration — it IS the single

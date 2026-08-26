@@ -1,8 +1,10 @@
 //! Lowering rules: literals become constants, an ident IS its
 //! definition's register (the language is SSA by construction), and
-//! binaries become one instruction — string `==` routes to the
-//! runtime's value comparison.
-use core.{Expr, ExprId, BinOp, Reg, Ins}
+//! eager binaries become one instruction — string `==`/`!=` routes
+//! to the runtime's value comparison. The LAZY ops (`&&`/`||`)
+//! desugar onto the if-region brackets, so the right side's
+//! instructions live inside a branch and short-circuit natively.
+use core.{Expr, ExprId, BinOp, UnOp, Reg, Ins}
 use features.{LowerCx}
 
 fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
@@ -14,6 +16,7 @@ fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
         }
         .Ident(_) -> ident_reg(cx, e),
         .Binary(op, l, r) -> binary_reg(cx, e, op, l, r),
+        .Not(v) -> not_reg(cx, e, v),
         _ -> lower_failed(cx, e, "defect: a hole survived a clean analysis"),
     }
 }
@@ -24,14 +27,54 @@ fn ident_reg(cx: LowerCx, e: ExprId) -> Reg {
 }
 
 fn binary_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
+    if op == BinOp.And || op == BinOp.Or { return lazy_reg(cx, e, op, l, r) }
     let a = cx.reg_of(l)
     let b = cx.reg_of(r)
+    let stringy = cx.shape_at(l) is .Str
+    if op == BinOp.Ne && stringy {
+        let same = cx.mint(e)
+        cx.emit(Ins.CallRt(same, "avra_streq", [a, b]))
+        let dst = cx.result(e)
+        cx.emit(Ins.Un(dst, UnOp.Not, same))
+        return dst
+    }
     let dst = cx.result(e)
-    if op == BinOp.Eq && cx.shape_at(l) is .Str {
+    if op == BinOp.Eq && stringy {
         cx.emit(Ins.CallRt(dst, "avra_streq", [a, b]))
     } else {
         cx.emit(Ins.Bin(dst, op, a, b))
     }
+    dst
+}
+
+/// `a && b` is `if a { b } else { false }`; `a || b` is
+/// `if a { true } else { b }` — regions, so the taken side alone
+/// runs. Registers mint in instruction order at every step.
+fn lazy_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
+    let a = cx.reg_of(l)
+    cx.emit(Ins.IfStart(a))
+    if op == BinOp.And {
+        let rb = cx.reg_of(r)
+        cx.emit(Ins.Else(rb))
+        let short = cx.mint(e)
+        cx.emit(Ins.ConstBool(short, false))
+        let dst = cx.result(e)
+        cx.emit(Ins.IfEnd(dst, short))
+        return dst
+    }
+    let short = cx.mint(e)
+    cx.emit(Ins.ConstBool(short, true))
+    cx.emit(Ins.Else(short))
+    let rb = cx.reg_of(r)
+    let dst = cx.result(e)
+    cx.emit(Ins.IfEnd(dst, rb))
+    dst
+}
+
+fn not_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
+    let rv = cx.reg_of(v)
+    let dst = cx.result(e)
+    cx.emit(Ins.Un(dst, UnOp.Not, rv))
     dst
 }
 

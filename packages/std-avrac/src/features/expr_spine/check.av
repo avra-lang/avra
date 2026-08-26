@@ -1,9 +1,9 @@
-//! Typing rules: arithmetic wants ints and answers int; `<` wants
-//! ints and answers bool; `==` wants MATCHING operands and answers
-//! bool. An Error operand ABSORBS everywhere — its cause was
-//! diagnosed where it happened; a PRESENT wrong type is this
-//! feature's own news, and the wording lives here with the operator.
-use core.{Expr, ExprId, BinOp, Type, TypeId}
+//! Typing rules: one homogeneous-operand law (`op_over`) — both
+//! sides `want`, or each PRESENT wrong side speaks; `==`/`!=` want
+//! MATCHING operands. An Error operand ABSORBS everywhere — its
+//! cause was diagnosed where it happened; the wording lives here
+//! with the operators.
+use core.{Expr, ExprId, BinOp, Type, TypeId, op_symbol}
 use features.{TypeCx}
 use diagnostics.{error_at, pointed}
 
@@ -12,52 +12,58 @@ fn spine_type(cx: TypeCx, e: ExprId) -> TypeId {
         .IntLit(_) -> cx.intern(Type.Int),
         .Ident(_) -> cx.target_type(e),
         .Binary(op, l, r) -> binary_type(cx, op, l, r),
+        .Not(v) -> not_type(cx, v),
         _ -> cx.intern(Type.Error),
     }
 }
 
 fn binary_type(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     match op {
-        .Add or .Sub -> int_op_type(cx, op, l, r, Type.Int),
-        .Lt -> int_op_type(cx, op, l, r, Type.Bool),
-        .Eq -> eq_type(cx, l, r),
+        .Add or .Sub or .Mul or .Div or .Mod -> op_over(cx, op, l, r, Type.Int, Type.Int),
+        .Lt or .Le or .Gt or .Ge -> op_over(cx, op, l, r, Type.Int, Type.Bool),
+        .And or .Or -> op_over(cx, op, l, r, Type.Bool, Type.Bool),
+        .Eq or .Ne -> eq_type(cx, op, l, r),
     }
 }
 
-fn int_op_type(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId, answer: Type) -> TypeId {
-    if cx.shape_at(l) is .Int && cx.shape_at(r) is .Int {
+/// The homogeneous-operand law: both sides `want`, or each PRESENT
+/// wrong side speaks for itself.
+fn op_over(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId, want: Type, answer: Type) -> TypeId {
+    if cx.shape_at(l) == want && cx.shape_at(r) == want {
         return cx.intern(answer)
     }
-    mismatch(cx, op, l)
-    mismatch(cx, op, r)
+    needs(cx, op, l, want)
+    needs(cx, op, r, want)
     cx.intern(Type.Error)
 }
 
-fn eq_type(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {
+fn needs(cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
+    let sh = cx.shape_at(e)
+    if sh == want || sh is .Error { return }
+    cx.emit(pointed(
+        error_at("type.mismatch", cx.loc_of(e),
+            "`${op_symbol(op)}` needs `${cx.type_name(cx.intern(want))}` operands, found `${cx.name_at(e)}`"),
+        "this is a `${cx.name_at(e)}`"))
+}
+
+/// `!` negates a bool; Error absorbs to the answer.
+fn not_type(cx: TypeCx, v: ExprId) -> TypeId {
+    let sh = cx.shape_at(v)
+    if sh is .Bool || sh is .Error { return cx.intern(Type.Bool) }
+    cx.emit(pointed(
+        error_at("type.mismatch", cx.loc_of(v), "`!` negates a `bool`, found `${cx.name_at(v)}`"),
+        "this is a `${cx.name_at(v)}`"))
+    cx.intern(Type.Error)
+}
+
+fn eq_type(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     let ls = cx.shape_at(l)
     let rs = cx.shape_at(r)
     if ls is .Error || rs is .Error { return cx.intern(Type.Error) }
     if ls == rs { return cx.intern(Type.Bool) }
     cx.emit(pointed(
         error_at("type.mismatch", cx.loc_of(r),
-            "`==` compares matching types, found `${cx.name_at(l)}` and `${cx.name_at(r)}`"),
+            "`${op_symbol(op)}` compares matching types, found `${cx.name_at(l)}` and `${cx.name_at(r)}`"),
         "this is a `${cx.name_at(r)}`"))
     cx.intern(Type.Error)
-}
-
-fn mismatch(cx: TypeCx, op: BinOp, e: ExprId) {
-    let sh = cx.shape_at(e)
-    if sh is .Int || sh is .Error { return }
-    cx.emit(pointed(
-        error_at("type.mismatch", cx.loc_of(e), "`${op_text(op)}` needs `int` operands, found `${cx.name_at(e)}`"),
-        "this is a `${cx.name_at(e)}`"))
-}
-
-fn op_text(op: BinOp) -> string {
-    match op {
-        .Add -> "+",
-        .Sub -> "-",
-        .Eq -> "==",
-        .Lt -> "<",
-    }
 }
