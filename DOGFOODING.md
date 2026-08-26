@@ -452,7 +452,10 @@ in-package factory and extends the value with `with`.
 
 Grammar fragments, docs, fixtures, and GOLDEN test expectations —
 an exact multi-line rendering compares against one `"""` block —
-never `\n`-joined literals:
+never `\n`-joined literals. Interpolation (`${name}`, fn calls
+included) works inside them, and `\"\"\"` embeds a literal fence —
+so a triple-quoted TEMPLATE can generate a file that itself
+contains triple-quoted strings (the scaffolder's trick):
 
 ```avra
 gram = """

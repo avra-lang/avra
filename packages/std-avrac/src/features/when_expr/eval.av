@@ -1,0 +1,19 @@
+//! The evaluation rule: conditions in order, the first true arm's
+//! value — and nothing after it. The on-demand walk IS the
+//! short-circuit.
+use core.{ExprId, truth_of}
+use features.{EvalCx}
+
+fn when_eval(cx: EvalCx, e: ExprId) -> ExprId {
+    match cx.store.expr(e) {
+        .When(conds, values, fallback) -> {
+            for (j, c) in conds.enumerate() {
+                let taken: bool? = truth_of(cx.store.expr(cx.value_at(c)))
+                if taken == null { cx.fail("defect: a non-bool condition survived a clean analysis") }
+                if taken ?? false { return cx.value_at(values[j]) }
+            }
+            cx.value_at(fallback)
+        }
+        _ -> e,
+    }
+}

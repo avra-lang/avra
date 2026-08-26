@@ -108,6 +108,15 @@ spec.
   expressible, and has a golden rendering test.
 - Map iteration order never reaches output — iterate an ordered
   source.
+- Grammar authoring: a greedy star cannot be told to stop early. An
+  arm that could also START the star's required tail (`_` is a
+  NAME; a keyword is a NAME) must be an ordered choice INSIDE the
+  repeated slot, anchor-first — never a tail after the star. The
+  builder then owns the law the grammar cannot state (exactly one,
+  last).
+- A feature never matches ANOTHER feature's variants: cross-feature
+  value reads go through core's value protocol (`truth_of`), which
+  grows with value categories — a core event — never per feature.
 - The IR is CLOSED vocabulary: features lower into it, never grow
   it. A new Ins variant is a core event — a new control shape, value
   category, or memory boundary. Value-producing runtime needs ride
@@ -234,8 +243,13 @@ against these before writing; probe in scratch when unsure.
   (arity clashes, F1001, at unrelated call sites). Check for the
   name before writing a helper.
 - Package resolution is convention, not manifest: `use @scope.name`
-  resolves to `packages/scope-name/src/name.av` (else `mod.av`);
-  `[dependencies]` entries feed the build fingerprint only. A
+  resolves to `packages/scope-name/src/name.av` (else `mod.av`).
+  But `[dependencies]` entries are NOT optional decoration: without
+  them a runnable package's compile-unit cache is keyed on the
+  entry file's bytes alone, and edits to dependency packages serve
+  a STALE binary silently — phantom bugs, vanishing behavior, even
+  segfaults from mixed-version objects. Every runnable package
+  manifest lists what its src imports. A
   runnable ENTRY file gets a local module tree only through `mod x`
   declarations: `mod commands` loads sibling `commands.av` or
   `commands/mod.av`, and the directory's other files join the

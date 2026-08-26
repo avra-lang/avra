@@ -1,0 +1,39 @@
+//! The typing rule: every condition is a `bool`; every arm answers
+//! the `_` arm's type — the total arm anchors, since it always
+//! exists. Error absorbs everywhere.
+use core.{Expr, ExprId, Type, TypeId}
+use features.{TypeCx}
+use diagnostics.{error_at, pointed}
+
+fn when_type(cx: TypeCx, e: ExprId) -> TypeId {
+    match cx.store.expr(e) {
+        .When(conds, values, fallback) -> {
+            for c in conds {
+                let cs = cx.shape_at(c)
+                if !(cs is .Bool) && !(cs is .Error) {
+                    cx.emit(pointed(
+                        error_at("type.mismatch", cx.loc_of(c), "a `when` condition is a `bool`, found `${cx.name_at(c)}`"),
+                        "this decides an arm"))
+                }
+            }
+            arms_type(cx, values, fallback)
+        }
+        _ -> cx.intern(Type.Error),
+    }
+}
+
+fn arms_type(cx: TypeCx, values: List<ExprId>, fallback: ExprId) -> TypeId {
+    let anchor = cx.type_at(fallback)
+    if cx.shape_at(fallback) is .Error { return cx.intern(Type.Error) }
+    mut agreed = true
+    for v in values {
+        let wrong = !(cx.shape_at(v) is .Error) && cx.type_at(v).index != anchor.index
+        if wrong {
+            cx.emit(pointed(
+                error_at("type.mismatch", cx.loc_of(v), "a `when`'s arms disagree: `${cx.name_at(v)}` vs the `_` arm's `${cx.type_name(anchor)}`"),
+                "this is a `${cx.name_at(v)}`"))
+            agreed = false
+        }
+    }
+    if agreed { anchor } else { cx.intern(Type.Error) }
+}

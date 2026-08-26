@@ -24,10 +24,21 @@ export enum Expr {
     Ident(name: string)
     Binary(op: BinOp, left: ExprId, right: ExprId)
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
+    /// Multi-way choice; `fallback` is the total `_` arm.
+    When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
     /// A direct call by name; fn values arrive later.
     Call(callee: string, args: List<ExprId>)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
+}
+
+/// A value node's truth, when it carries one — the value protocol
+/// features read instead of matching another feature's variant.
+export fn truth_of(e: Expr) -> bool? {
+    match e {
+        .BoolLit(v) -> v,
+        _ -> null,
+    }
 }
 
 /// One declared parameter: its name and its annotated type NAME —
@@ -101,7 +112,7 @@ impl NodeStore {
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 13.
+    /// Tags are never reused; the next free tag is 14.
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -117,6 +128,13 @@ impl NodeStore {
                 mut parts = [fp_str(callee)]
                 for a in args { parts.push(self.expr_fingerprint(a)) }
                 fp(11, parts)
+            }
+            .When(conds, values, fallback) -> {
+                mut parts: List<int> = []
+                for c in conds { parts.push(self.expr_fingerprint(c)) }
+                for v in values { parts.push(self.expr_fingerprint(v)) }
+                parts.push(self.expr_fingerprint(fallback))
+                fp(13, parts)
             }
         }
     }

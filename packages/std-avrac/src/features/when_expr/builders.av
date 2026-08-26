@@ -1,0 +1,31 @@
+//! Parse-time lowering: parallel cond and value captures plus the
+//! `_` arm -> the When node. The grammar lets the `_` arm sit in
+//! any slot (each slot is an ordered choice, `_` first — a greedy
+//! star cannot be told to stop early); HERE is where totality and
+//! last-ness are the law.
+use core.{Expr, Span}
+use features.{LangNode, Builder}
+
+fn build_when(b: Builder) -> Result<LangNode, string> {
+    let conds = b.exprs(0)?
+    let values = b.exprs(1)?
+    let defaults = b.exprs(2)?
+    if conds.length != values.length {
+        return Result.Err("when arms and values disagree in count")
+    }
+    if defaults.length == 0 {
+        return Result.Err("a `when` needs its `_` arm")
+    }
+    if defaults.length > 1 {
+        return Result.Err("a `when` has ONE `_` arm")
+    }
+    let fallback = defaults[0]
+    let dspan: Span? = b.store.expr_span(fallback)
+    for v in values {
+        let vspan: Span? = b.store.expr_span(v)
+        if dspan != null && vspan != null && vspan!.lo > dspan!.lo {
+            return Result.Err("the `_` arm ends a `when` — move it last")
+        }
+    }
+    b.make_expr(Expr.When(conds, values, fallback))
+}

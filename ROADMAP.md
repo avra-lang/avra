@@ -1,5 +1,65 @@
 # Roadmap
 
+## The eras (the long path, each with its gate)
+
+- ERA I — THE VERTICAL (done): one thin language, source to native,
+  eval == native == expected held by gates, features as components,
+  the workflow that keeps growth cheap.
+- ERA II — EXPRESSIVE SUFFICIENCY (now): the language grows until
+  it can express its own compiler. Not "all features" — a measured
+  ladder derived from the vocabulary the compiler's own source
+  actually uses. GATE: the fraction of the compiler's own source
+  that parses, checks, and runs under `avra` — tracked, and only
+  ever rising.
+
+  The ladder (~15 rungs; five are heavyweights, marked ▲):
+    1.  `when` — the ledger trial, multi-way on existing regions
+    2.  blocks — statement scopes, multi-line bodies, `return`
+    3.  mutation & loops — `mut`, assignment, `while`/`for`, ranges
+    4.  operators complete — `&& || !`, `!= > >= <=`, `* / %`
+    5.  lists — the first aggregate; iteration; the method core
+    6.  strings complete — `${}` interpolation, the method core
+    7.  structs — declarations, literals, `with`, impl methods
+    8.  ▲ enums & match — payloads, patterns, exhaustiveness
+    9.  nullability — `T?`, `null` arms, `! ?? ?.`
+    10. Result & `?` — propagation as the error spine
+    11. ▲ generics — mono through OUR pipeline (List<T> becomes real)
+    12. ▲ traits & dyn — dispatch, cross-module impls
+    13. ▲ closures & fn values — capture meets the memory ABI
+    14. maps, components & tables — the self-describing surface
+    15. ▲ modules & multi-file — packages, the graph, exports
+  Plus the floor under it all: extern/ptr FFI (the backend already
+  dogfoods it) and the core stdlib + the spec/given/then test
+  feature, which ride the rungs they need. Lightweight rungs are
+  `when`-sized; heavyweights are M7-sized capability milestones —
+  the drivers learn machinery (patterns, mono, vtables, capture),
+  paid once each.
+- ERA III — SELF-HOST: module-by-module parity (avra compiles its
+  own lexer, then the engine, then the passes), then the fixed
+  point — avra1 compiles the compiler into avra2, and avra2 is
+  byte-identical to avra1. bs2 retires; runtime.c and the LLVM
+  wrapper come in-tree. GATE: the fixed point, plus the full gate
+  green under the self-hosted binary.
+- ERA IV — THE ENGINE: the speed doctrine made real, designed
+  around the language's own facilities — per-declaration red-green
+  incrementality, the content-addressed cache in ONE root,
+  `avra test` as one process with JIT execution, parallelism via
+  the language's own spawn/channels. Tooling as projections of the
+  compiler's fact tables (P10/P12): `avra lsp`, `avra fmt` (format
+  IS re-render — the AST is the source of truth), `avra doc` from
+  feature docs. GATE: rebuild-after-one-edit and suite wall time,
+  measured and budgeted.
+- ERA V — THE SUBSTRATE: what the language is FOR (P2, P13, P14).
+  The levels beyond Application become real strategies (Systems
+  ownership first); concurrency lands as language (Axis 18); the
+  error epic's typed effects and policies; boundaries as contracts
+  (P9); services that carry their ops with them. GATE: a real
+  autonomous service, written in Avra, deployed from `avra` alone.
+
+Eras overlap at their edges — parity gates start mid-Era II, the
+cache design lands with self-host — but the GATES are strict: an
+era is entered by measurement, never by declaration.
+
 The strategy: a THIN VERTICAL SLICE first — two statement kinds driven
 through every pass to a world-class error — then features widen, each
 vertically complete. This is the AST epic's own L0-tracer doctrine at
@@ -318,19 +378,44 @@ corpus program. The machinery that keeps it there:
   own lists. IR growth is rare by doctrine; its touch points are
   the enum, its accessor, the renderer's arm, the backend's arm.
 
+THE NODE MODEL, SETTLED (2026-08-26): typed enums stay. The Expr
+variant a feature adds is not registration — it IS the single
+definition (P12), and one definition site is the floor. The two
+genuinely mechanical arms beside it (the fingerprint fold, the
+semantics_of line — four lines, both exhaustive matches, so
+forgetting one is a loud compile break, never a silent bug) are
+temporary rent with a planned death: the epic's actual thesis is
+"the AST is defined once; every mechanical operation derives or is
+a compile error" — so at self-host, `@derive(fingerprint)` and
+manifest-derived dispatch erase them. A uniform untyped node was
+considered and REFUSED: it buys zero-growth by trading away typed
+payloads and pattern matching, and the O(1) it promised is already
+here — fingerprints are computed at alloc and compared in O(1)
+today, and hash-consing (memory sharing, automatic incremental)
+stages onto those SAME fingerprints at the cache layer in Era IV,
+node model untouched. Spans living in side tables and fingerprints
+ignoring them — designed in at M1 — is exactly what keeps that
+staging clean.
+
 Recorded triggers, unchanged in spirit:
 - Statement semantics join the contract at the FOURTH statement
   kind (dispatch is five exhaustive matches until then — loud, not
   smooth, on purpose).
-- The semantics_of match dies when the owner map carries a
-  feature's NodeSemantics — needs a probe that `dyn` survives
-  component config in bs2 (subset risk); until then the match is
-  two lines per feature and total by construction.
 
-The falsifiable claim: `when` (the next feature) touches the
-feature directory, nodes.av, two registration lines, and a corpus
-pair — nothing else. If it touches more, this ledger is wrong and
-gets rewritten.
+The falsifiable claim, TRIED (M8, `when`): the doctrine's core held
+perfectly — zero new instructions, zero edits to drivers, memory,
+backend, or renderer; `when` desugars entirely onto `if`'s region
+brackets from its own lower.av. The claim needed ONE amendment: a
+feature that claims a KEYWORD also adds one line to resolve's
+keyword list. The trial also surfaced two non-feature finds, which
+is what trials are for: a latent stale-cache trap (cli/avra.toml
+needed [dependencies] so the compile unit's cache key sees the
+compiler's sources — bs2's own cli manifest documents the same
+trap) and the GREEDY-STAR LESSON: a repetition cannot be told to
+stop early, so an arm that could also start the tail must be an
+ordered choice inside the slot, `_`-first — never a tail after the
+star. The engine could catch this class statically (star-item FIRST
+∩ tail FIRST): recorded for the gate, below.
 
 ## The IR doctrine (agreed 2026-08-25)
 
@@ -425,6 +510,11 @@ milestone answers to:
   linker.
 
 ## Engine sufficiency (recorded, not scheduled)
+
+- The dead-branch gate learns the greedy-star ambiguity: flag a
+  branch whose star-item FIRST set intersects its following
+  required tail's FIRST set — the star eats the tail's opening and
+  the branch can never finish (M8's `_`-arm lesson, made static).
 
 The engine as it stands parses everything Avra currently is and
 everything on this roadmap's near horizon — no engine work is owed.
