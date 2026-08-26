@@ -29,10 +29,14 @@ type FirstSet = { lits: List<string>, terms: List<string>, nullable: bool }
 type FirstCx = { g: Grammar, visiting: List<string>, defects: List<Diagnostic> }
 
 impl FirstCx {
+    fn note(self, d: Diagnostic) {
+        mut ds = self.defects
+        ds.push(d)
+    }
+
     fn rule_first(self, name: string) -> FirstSet {
         if self.visiting.contains(name) {
-            mut ds = self.defects
-            ds.push(defect(name, "rule is left-recursive — no first token can ever commit"))
+            self.note(defect(name, "rule is left-recursive — no first token can ever commit"))
             return FirstSet { lits: [], terms: [], nullable: false }
         }
         // An undefined ref is validate's defect, not a first set.
@@ -91,6 +95,31 @@ impl FirstCx {
         }
         true
     }
+
+    /// A COMMITTING earlier branch's start tokens against a later
+    /// branch's: any shared token — or a general token before a
+    /// keyword it also matches — makes the later branch dead. A
+    /// non-committing earlier branch backtracks, so its overlaps are
+    /// harmless.
+    fn overlap_defects(self, rule_name: string, i: int, fi: FirstSet, j: int, fj: FirstSet) {
+        for l in fj.lits {
+            if fi.lits.contains(l) {
+                self.note(defect(rule_name,
+                    "branches ${i + 1} and ${j + 1} both begin with `${l}` — branch ${j + 1} is unreachable"))
+            }
+            let sub: string? = subsuming_term(l)
+            if sub != null && fi.terms.contains(sub!) {
+                self.note(defect(rule_name,
+                    "branch ${j + 1}'s `${l}` is shadowed by branch ${i + 1}'s ${sub!} — anchor the literal branch first"))
+            }
+        }
+        for t in fj.terms {
+            if fi.terms.contains(t) {
+                self.note(defect(rule_name,
+                    "branches ${i + 1} and ${j + 1} both begin with ${t} — branch ${j + 1} is unreachable"))
+            }
+        }
+    }
 }
 
 fn first_union(a: FirstSet, b: FirstSet) -> FirstSet {
@@ -123,35 +152,13 @@ export fn first_defects(g: Grammar) -> List<Diagnostic> {
         }
         for (i, fi) in firsts.enumerate() {
             if fi.nullable && i < firsts.length - 1 {
-                mut ds = cx.defects
-                ds.push(defect(r.name, "branch ${i + 1} can match empty input — every later branch is unreachable"))
+                cx.note(defect(r.name,
+                    "branch ${i + 1} can match empty input — every later branch is unreachable"))
             }
             for (j, fj) in firsts.enumerate() {
-                if j > i && commit_flags[i] { overlap_defects(cx, r.name, i, fi, j, fj) }
+                if j > i && commit_flags[i] { cx.overlap_defects(r.name, i, fi, j, fj) }
             }
         }
     }
     cx.defects
-}
-
-/// A COMMITTING earlier branch's start tokens against a later
-/// branch's: any shared token — or a general token before a keyword
-/// it also matches — makes the later branch dead. A non-committing
-/// earlier branch backtracks, so its overlaps are harmless.
-fn overlap_defects(cx: FirstCx, rule_name: string, i: int, fi: FirstSet, j: int, fj: FirstSet) {
-    mut ds = cx.defects
-    for l in fj.lits {
-        if fi.lits.contains(l) {
-            ds.push(defect(rule_name, "branches ${i + 1} and ${j + 1} both begin with `${l}` — branch ${j + 1} is unreachable"))
-        }
-        let sub: string? = subsuming_term(l)
-        if sub != null && fi.terms.contains(sub!) {
-            ds.push(defect(rule_name, "branch ${j + 1}'s `${l}` is shadowed by branch ${i + 1}'s ${sub!} — anchor the literal branch first"))
-        }
-    }
-    for t in fj.terms {
-        if fi.terms.contains(t) {
-            ds.push(defect(rule_name, "branches ${i + 1} and ${j + 1} both begin with ${t} — branch ${j + 1} is unreachable"))
-        }
-    }
 }

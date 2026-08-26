@@ -1,9 +1,10 @@
 //! Lowers a program to IR. The driver owns refusal, statement order,
-//! registers, and the scope structure; HOW a node lowers lives in
-//! its owning feature's NodeSemantics. Lowering emits PURE
-//! semantics — the memory pass owns every Retain and Release. A
-//! definition's register is its slot, a param IS its register
-//! (params mint first), so names cost nothing, exactly as in eval.
+//! registers, and the slot tables; HOW a statement or node lowers —
+//! brackets included — lives in its owning feature. Lowering emits
+//! PURE semantics — the memory pass owns every Retain and Release.
+//! A definition's register is its slot (a mut binding's is a CELL,
+//! loaded at each read), a param IS its register (params mint
+//! first), so names cost nothing, exactly as in eval.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled}
@@ -38,6 +39,7 @@ type Lower = {
     reg_types: List<TypeId>,
     regs: List<Reg?>,
     slots: List<Reg?>,
+    boxed: List<bool>,
     failures: List<string>,
 }
 
@@ -46,6 +48,7 @@ fn new_lower(a: Analysis) -> Lower {
         a: a, ins: [], reg_types: [],
         regs: filled<Reg?>(a.store.exprs.count(), null),
         slots: filled<Reg?>(a.store.stmts.count(), null),
+        boxed: filled(a.store.stmts.count(), false),
         failures: [],
     }
 }
@@ -137,18 +140,29 @@ fn lower_stmts(lo: Lower, stmts: List<StmtId>) -> Reg? {
     let cx = StmtLowerCx {
         store: lo.a.store,
         lower: (v: ExprId) -> lower_subtree(lo, v),
+        lower_stmts: (body: List<StmtId>) -> lower_stmt_list(lo, body),
+        mint: (k: ExprId) -> lo.mint(k),
+        emit: (i: Ins) -> lo.give(i),
+        slot_of: (s: StmtId) -> lo.slots[s.index],
+        bind_slot: (s: StmtId, slot: Reg) -> lo.bind_slot(s, slot),
+        assign_target: (s: StmtId) -> lo.a.assign_target(s),
         fail: (msg: string) -> lo.record(msg),
     }
     mut last: Reg? = null
     for s in stmts {
         let r: Reg? = stmt_semantics_of(lo.a.store.stmt(s)).lower_stmt(cx, s)
         if r != null {
-            mut written = lo.slots
-            written.set(s.index, r!)
+            if lo.slots[s.index] == null { lo.set_slot(s, r!) }
             last = r
         }
     }
     last
+}
+
+/// A statement list lowered for its instructions alone — a loop
+/// body's turn.
+fn lower_stmt_list(lo: Lower, stmts: List<StmtId>) {
+    let _ = lower_stmts(lo, stmts)
 }
 
 /// A block is a scope: statements lower in order into it, and the
@@ -175,17 +189,40 @@ impl Lower {
     }
 
     /// An ident's register: its param's (params ARE registers
-    /// 0..N-1), or its definition's slot.
+    /// 0..N-1), or its definition's slot — LOADED first when the
+    /// slot is a memory cell, so the ident rule stays dumb.
     fn def_reg(self, e: ExprId) -> Reg? {
         let pi: int? = self.a.param_at(e)
         if pi != null { return Reg { index: pi! } }
         let target: StmtId? = self.a.target(e)
         if target == null { return null }
-        self.slots[target!.index]
+        let slot: Reg? = self.slots[target!.index]
+        if slot == null { return null }
+        if self.boxed[target!.index] {
+            let ld = self.mint(e)
+            self.give(Ins.Load(ld, slot!))
+            return ld
+        }
+        slot
     }
 
     fn record(self, msg: string) {
         mut fs = self.failures
         fs.push(msg)
+    }
+
+    /// A statement's slot entry — the driver's value write; a bound
+    /// CELL wins over it.
+    fn set_slot(self, s: StmtId, r: Reg) {
+        mut written = self.slots
+        written.set(s.index, r)
+    }
+
+    /// Binds a statement's slot as a memory CELL: idents load
+    /// through it, and the driver's value write defers to it.
+    fn bind_slot(self, s: StmtId, slot: Reg) {
+        mut cells = self.boxed
+        cells.set(s.index, true)
+        self.set_slot(s, slot)
     }
 }

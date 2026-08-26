@@ -1,0 +1,56 @@
+//! The while statement's StmtSemantics — dispatch one-liners. Eval
+//! owns the actual loop: the condition re-evaluates each turn
+//! because the on-demand walk never memoizes. The rule bodies live
+//! beside this file, by concern.
+use core.{NodeStore, StmtId, ExprId, Reg, truth_of}
+use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtEvalCx, StmtLowerCx, nothing}
+
+export type WhileSemantics = { }
+
+impl StmtSemantics for WhileSemantics {
+    fn binds(self, store: NodeStore, s: StmtId) -> string? {
+        null
+    }
+
+    fn value_of(self, store: NodeStore, s: StmtId) -> ExprId? {
+        null
+    }
+
+    fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
+        match cx.store.stmt(s) {
+            .While(cond, stmts) -> {
+                cx.walk(cond)
+                cx.scope_stmts(stmts)
+            }
+            _ -> nothing(),
+        }
+    }
+
+    fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
+        check_while(cx, s)
+    }
+
+    fn eval_stmt(self, cx: StmtEvalCx, s: StmtId) -> ExprId? {
+        match cx.store.stmt(s) {
+            .While(cond, stmts) -> {
+                mut going = truth_of(cx.store.expr(cx.eval(cond))) ?? false
+                while going {
+                    cx.run_stmts(stmts)
+                    going = truth_of(cx.store.expr(cx.eval(cond))) ?? false
+                }
+                null
+            }
+            _ -> null,
+        }
+    }
+
+    fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
+        match cx.store.stmt(s) {
+            .While(cond, stmts) -> {
+                lower_while(cx, cond, stmts)
+                null
+            }
+            _ -> null,
+        }
+    }
+}

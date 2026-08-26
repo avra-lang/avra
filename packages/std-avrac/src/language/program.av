@@ -14,6 +14,8 @@ use features.fns.{FnsSemantics, FnStmtSemantics}
 use features.let_stmt.{LetStmtSemantics}
 use features.expr_stmt.{ExprStmtSemantics}
 use features.stmt_spine.{HoleSemantics}
+use features.mutation.{MutLetSemantics, AssignSemantics}
+use features.loops.{WhileSemantics}
 use diagnostics.{Diag, SourceFile, new_source_file}
 
 /// One parsed source: the tree (holes included), the SourceFile it
@@ -23,6 +25,7 @@ export type ParsedProgram = {
     store: NodeStore,
     stmts: List<StmtId>,
     source: SourceFile,
+    keywords: List<string>,
     diagnostics: List<Diag>,
 }
 
@@ -57,10 +60,16 @@ export fn stmt_semantics_of(s: Stmt) -> dyn StmtSemantics {
     let exprs: dyn StmtSemantics = ExprStmtSemantics { }
     let decls: dyn StmtSemantics = FnStmtSemantics { }
     let holes: dyn StmtSemantics = HoleSemantics { }
+    let mutlets: dyn StmtSemantics = MutLetSemantics { }
+    let assigns: dyn StmtSemantics = AssignSemantics { }
+    let whiles: dyn StmtSemantics = WhileSemantics { }
     match s {
         .Let(_, _) -> lets,
+        .MutLet(_, _) -> mutlets,
+        .Assign(_, _) -> assigns,
         .ExprStmt(_) -> exprs,
         .FnDecl(_, _, _, _) -> decls,
+        .While(_, _) -> whiles,
         .Error -> holes,
     }
 }
@@ -77,25 +86,17 @@ impl NodeStore {
         concat(flatten([self.post_order(k) for k in semantics_of(node).kids(node)]), [root])
     }
 
-    /// A statement's bound name, when it binds one.
+    /// A statement's bound name, when it binds one — the owner's
+    /// answer, through the map.
     fn let_name(self, s: StmtId) -> string? {
-        match self.stmt(s) {
-            .Let(name, _) -> name,
-            _ -> null,
-        }
+        stmt_semantics_of(self.stmt(s)).binds(self, s)
     }
 
     /// A statement's value expression at its OWN position — the
-    /// projection the StmtSemantics impls read. A new statement
-    /// kind must decide here, once. A FnDecl's body is not its
-    /// value: it runs at call time, under a frame.
+    /// owner's answer, through the map. A body that runs later,
+    /// under a frame, is NOT a value.
     fn stmt_value(self, s: StmtId) -> ExprId? {
-        match self.stmt(s) {
-            .Let(_, v) -> v,
-            .ExprStmt(v) -> v,
-            .FnDecl(_, _, _, _) -> null,
-            .Error -> null,
-        }
+        stmt_semantics_of(self.stmt(s)).value_of(self, s)
     }
 
     /// A fn declaration's pieces, when the statement is one — ONE
@@ -114,7 +115,10 @@ export type FnParts = { name: string, params: List<Param>, ret: string, body: Ex
 
 export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
     if lang.grammar == null {
-        return ParsedProgram { store: new_node_store(), stmts: [], source: src, diagnostics: lang.diagnostics }
+        return ParsedProgram {
+            store: new_node_store(), stmts: [], source: src,
+            keywords: [], diagnostics: lang.diagnostics,
+        }
     }
     let lexed = lex_source(src.text)
     let store = new_node_store()
@@ -125,6 +129,7 @@ export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
         store: store,
         stmts: program_stmts(store, o),
         source: src,
+        keywords: lang.keywords,
         diagnostics: project_all(engine, src.file, lang.codes),
     }
 }

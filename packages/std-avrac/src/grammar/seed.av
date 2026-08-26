@@ -3,8 +3,9 @@
 //! hand-written parser for the DSL exists anywhere.
 //!
 //! The construction vocabulary below (`rule`, `seq`, `seq_to`, `item`,
-//! `cap`, `rule_ref`, `lit`, `named`, `group`) is how a grammar is written
-//! as data; rare modifiers ride `with` (`... with { rep: Rep.Star }`).
+//! `cap`, `expecting`, `rule_ref`, `lit`, `named`, `group`) is how a
+//! grammar is written as data; rare modifiers ride `with`
+//! (`... with { rep: Rep.Star }`).
 //!
 //! This grammar relies on one executor contract: an optional or
 //! repeated group that fails midway rolls back cleanly (`labeled`'s
@@ -18,6 +19,11 @@ export fn item(p: Prim) -> Item {
 /// A captured item matched exactly once.
 export fn cap(label: string, p: Prim) -> Item {
     Item { label: label, prim: p, rep: Rep.One, expect: null }
+}
+
+/// An unlabeled item whose absence speaks with its own message.
+export fn expecting(p: Prim, message: string) -> Item {
+    item(p) with { expect: Expect { message: message } }
 }
 
 /// A pass-through branch.
@@ -124,7 +130,7 @@ export fn grammar_of_grammars() -> Grammar {
                     [
                         item(lit("(")),
                         cap("inner", rule_ref("alt")),
-                        item(lit(")")) with { expect: Expect { message: "expected ')' to close the group" } },
+                        expecting(lit(")"), "expected ')' to close the group"),
                     ],
                     Build.Call("build_group", ["inner"]),
                 ),
@@ -143,7 +149,7 @@ export fn grammar_of_grammars() -> Grammar {
                             item(group([seq([item(lit(",")), cap("args", named("NAME"))])]))
                                 with { rep: Rep.Star },
                         ])])) with { rep: Rep.Opt },
-                        item(lit(")")) with { expect: Expect { message: "expected ')' to close the argument list" } },
+                        expecting(lit(")"), "expected ')' to close the argument list"),
                     ])])) with { rep: Rep.Opt },
                 ],
                 Build.Call("build_build", ["name", "lp", "args"]),
@@ -157,7 +163,7 @@ export fn grammar_of_grammars() -> Grammar {
                         item(lit("@expect")), item(lit("(")),
                         cap("token", named("STRING")), item(lit(",")),
                         cap("msg", named("STRING")),
-                        item(lit(")")) with { expect: Expect { message: "expected ')' to close @expect" } },
+                        expecting(lit(")"), "expected ')' to close @expect"),
                     ],
                     Build.Call("build_expect", ["token", "msg"]),
                 ),
@@ -166,7 +172,7 @@ export fn grammar_of_grammars() -> Grammar {
                         item(lit("@recover")), item(lit("(")),
                         item(lit("sync_to")), item(lit(":")),
                         cap("target", named("STRING")),
-                        item(lit(")")) with { expect: Expect { message: "expected ')' to close @recover" } },
+                        expecting(lit(")"), "expected ')' to close @recover"),
                     ],
                     Build.Call("build_recover", ["target"]),
                 ),

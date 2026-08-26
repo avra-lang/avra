@@ -161,14 +161,16 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
     for an in annots {
         match an {
             .AExpect(token, message) -> {
-                mut idx = -1
+                mut idx: int? = null
                 for (i, m) in out.enumerate() {
-                    if idx < 0 && m.expect == null && m.prim.answers_to(token) { idx = i }
+                    if idx == null && m.expect == null && m.prim.answers_to(token) { idx = i }
                 }
-                if idx < 0 { return Result.Err("@expect names `${token}` but the branch has no matching item") }
+                if idx == null {
+                    return Result.Err("@expect names `${token}` but the branch has no matching item")
+                }
                 mut next: List<Item> = []
                 for (i, m) in out.enumerate() {
-                    if i == idx {
+                    if i == idx! {
                         next.push(m with { expect: Expect { message: message } })
                     } else {
                         next.push(m)
@@ -198,7 +200,8 @@ export fn grammar_result(o: RunOutcome<GrammarNode>) -> Grammar? {
 
 /// The builder dispatch for the grammar DSL itself. Grammar values
 /// carry no spans, so the branch span goes unused here.
-export fn grammar_build(name: string, args: List<Captured<GrammarNode>>, span: Span?) -> Result<Captured<GrammarNode>, string> {
+export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
+                        span: Span?) -> Result<Captured<GrammarNode>, string> {
     match name {
         "build_grammar" -> {
             let rules = as_rules(args[0])?

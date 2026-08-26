@@ -1,0 +1,32 @@
+//! Mutation — `mut x = e` declares a reassignable binding and
+//! `x = e` assigns to one. Scalars only, until ownership analysis
+//! covers managed values. The assign branch is NAME-headed and
+//! non-committing: `x + 1` backtracks to the expression statement —
+//! which is also why it carries NO @recover: recovery converts a
+//! break into a hole HIT, and a recovering NAME-headed branch would
+//! swallow every expression line.
+use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
+
+export fn mutation() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name          | build
+        "mut_stmt"    | build_mut
+        "assign_stmt" | build_assign
+    }
+    let codes = table<DiagCode> {
+        kind                | id      | summary
+        "resolve.immutable" | "F3005" | "assignment needs a `mut` binding"
+        "type.mut_managed"  | "F2002" | "a mut binding holds scalars for now"
+    }
+    component LanguageFeature f {
+        name = "mutation"
+        docs = "`mut <name> = <expression>` declares; `<name> = <expression>` reassigns."
+        gram = """
+stmt = "mut" n:NAME "=" v:expression BREAK @recover(sync_to: "BREAK") -> mut_stmt(n, v) | n:NAME "=" v:expression BREAK -> assign_stmt(n, v)
+"""
+        builders = rows
+        diags = codes
+    }
+    f
+}

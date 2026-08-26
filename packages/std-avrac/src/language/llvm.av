@@ -21,7 +21,11 @@ type Emit = {
     tys: List<TypeId>,
     vals: List<ptr>,
     frames: List<IfFrame>,
+    loops: List<LoopFrame>,
 }
+
+/// One open loop: where the back edge returns and where false exits.
+type LoopFrame = { header: ptr, exit: ptr }
 
 /// One open region: where `else` and the merge build, and where the
 /// then-branch ended with what it yields — sealed when Else fires.
@@ -64,7 +68,10 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
 fn emit_body(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, bd: Body, f: ptr) -> string? {
     mut vals: List<ptr> = []
     for j in 0..bd.params.length { vals.push(avra_llvm_get_param(f, j)) }
-    let em = Emit { lc: lc, m: m, b: b, fn_val: f, types: types, tys: bd.reg_types, vals: vals, frames: [] }
+    let em = Emit {
+        lc: lc, m: m, b: b, fn_val: f, types: types,
+        tys: bd.reg_types, vals: vals, frames: [], loops: [],
+    }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     for i in bd.ins { emit_ins(em, i) }
     if avra_llvm_verify_function(f) != 0 {
@@ -116,6 +123,11 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
     }
 }
 
+/// A register's LLVM type.
+fn reg_type(em: Emit, r: Reg) -> ptr {
+    ll_type_of(em.lc, em.types, em.tys[r.index])
+}
+
 /// Call a declared fn by name with already-built values.
 fn call(em: Emit, name: string, args: List<ptr>) -> ptr {
     let f = avra_llvm_get_named_function(em.m, name)
@@ -140,6 +152,12 @@ fn emit_ins(em: Emit, i: Ins) {
         .IfStart(c) -> if_start(em, c),
         .Else(gives) -> else_branch(em, gives),
         .IfEnd(dst, gives) -> if_end(em, dst, gives),
+        .Alloca(dst) -> define(em, avra_llvm_build_alloca(em.b, reg_type(em, dst), "slot")),
+        .Load(dst, slot) -> define(em, avra_llvm_build_load(em.b, reg_type(em, dst), em.vals[slot.index], "ld")),
+        .Store(slot, src) -> stored(em, slot, src),
+        .LoopStart -> loop_start(em),
+        .LoopCond(c) -> loop_cond(em, c),
+        .LoopEnd -> loop_end(em),
         .ScopeEnter(_) or .ScopeExit(_) -> nothing(),
     }
 }
@@ -162,7 +180,7 @@ fn bin_value(em: Emit, op: BinOp, a: ptr, b: ptr) -> ptr {
 
 /// A runtime call, generic over every callee declare_runtime names.
 /// The runtime speaks i64 for truth; a bool-shaped register narrows
-/// to i1.
+/// to i1 (icmp 33, ne 0).
 fn call_rt_value(em: Emit, dst: Reg, callee: string, args: List<Reg>) -> ptr {
     let raw = call(em, callee, [em.vals[a.index] for a in args])
     if em.types.shape_of(em.tys[dst.index]) is .Bool {
@@ -202,8 +220,10 @@ fn puts(em: Emit, text: ptr) {
 /// An int's digits: snprintf into a runtime scratch buffer.
 fn int_text(em: Emit, v: ptr) -> ptr {
     let i64t = avra_llvm_int64_type(em.lc)
-    let buf = call(em, "avra_rc_alloc", [avra_llvm_const_int(i64t, 32, 0)])
-    let _ = call(em, "snprintf", [buf, avra_llvm_const_int(i64t, 32, 0), avra_llvm_build_global_string_ptr(em.b, "%lld", ".fmt"), v])
+    let size = avra_llvm_const_int(i64t, 32, 0)
+    let buf = call(em, "avra_rc_alloc", [size])
+    let fmt = avra_llvm_build_global_string_ptr(em.b, "%lld", ".fmt")
+    let _ = call(em, "snprintf", [buf, size, fmt, v])
     buf
 }
 
@@ -228,6 +248,37 @@ fn bool_word(em: Emit, v: ptr) -> ptr {
 
 fn ret_code(em: Emit, code: int) {
     let _ = avra_llvm_build_ret(em.b, avra_llvm_const_int(avra_llvm_int32_type(em.lc), code, 0))
+}
+
+fn stored(em: Emit, slot: Reg, src: Reg) {
+    let _ = avra_llvm_build_store(em.b, em.vals[src.index], em.vals[slot.index])
+}
+
+/// Open the loop: fall into the header, where the condition's
+/// instructions re-run each turn.
+fn loop_start(em: Emit) {
+    let header = avra_llvm_append_basic_block(em.lc, em.fn_val, "lhead")
+    let exit = avra_llvm_append_basic_block(em.lc, em.fn_val, "lexit")
+    let _ = avra_llvm_build_br(em.b, header)
+    avra_llvm_position_at_end(em.b, header)
+    mut ls = em.loops
+    ls.push(LoopFrame { header: header, exit: exit })
+}
+
+/// The condition decides: true falls into the body, false exits.
+fn loop_cond(em: Emit, c: Reg) {
+    let f = em.loops[em.loops.length - 1]
+    let body = avra_llvm_append_basic_block(em.lc, em.fn_val, "lbody")
+    let _ = avra_llvm_build_cond_br(em.b, em.vals[c.index], body, f.exit)
+    avra_llvm_position_at_end(em.b, body)
+}
+
+/// Close the back edge and stand at the exit.
+fn loop_end(em: Emit) {
+    mut ls = em.loops
+    let f = ls.pop()
+    let _ = avra_llvm_build_br(em.b, f.header)
+    avra_llvm_position_at_end(em.b, f.exit)
 }
 
 /// Open the region: branch on the condition, build into `then`. The
@@ -261,7 +312,7 @@ fn if_end(em: Emit, dst: Reg, gives: Reg) {
     let else_end = avra_llvm_get_insert_block(em.b)
     let _ = avra_llvm_build_br(em.b, f.merge_bb)
     avra_llvm_position_at_end(em.b, f.merge_bb)
-    let phi = avra_llvm_build_phi(em.b, ll_type_of(em.lc, em.types, em.tys[dst.index]), "ifval")
+    let phi = avra_llvm_build_phi(em.b, reg_type(em, dst), "ifval")
     avra_llvm_add_incoming(phi, em.vals[f.then_gives.index], f.then_end)
     avra_llvm_add_incoming(phi, em.vals[gives.index], else_end)
     define(em, phi)

@@ -1,7 +1,7 @@
 //! Name resolution — the first pure query. The driver owns scopes,
-//! statement order, and every diagnostic; what a NODE means for
-//! names lives in its owning feature's NodeSemantics, reached
-//! through the owner map. Facts land in a Resolution the pass owns.
+//! statement order, and the naming law; what a NODE means for names
+//! lives in its owning feature's NodeSemantics, and a feature's own
+//! rules speak their diagnostics through the context. Facts land in a Resolution the pass owns.
 //! A symbol's identity is its definition site. Two namespaces, one
 //! pass: `let` visibility is sequential and a later `let` shadows an
 //! earlier one; `fn` names are program-wide, so recursion and mutual
@@ -18,6 +18,7 @@ use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 export type Resolution = {
     targets: List<StmtId?>,
     params: List<int?>,
+    assign_targets: List<StmtId?>,
     diagnostics: List<Diag>,
 }
 
@@ -31,18 +32,20 @@ export fn param_of(r: Resolution, e: ExprId) -> int? {
     r.params[e.index]
 }
 
+/// The mut binding an assignment writes, when resolve accepted it.
+export fn assign_target_of(r: Resolution, s: StmtId) -> StmtId? {
+    r.assign_targets[s.index]
+}
+
 /// Words the spec reserves for future levels, memory, and
 /// concurrency: refusing them as names today means they become
-/// keywords tomorrow without breaking any program.
+/// keywords tomorrow without breaking any program. (Today's ACTUAL
+/// keywords derive from the grammar — `p.keywords` — never a list
+/// kept by hand.)
 fn reserved() -> List<string> {
     ["systems", "bare", "hardware", "owned", "borrow", "move",
      "level", "unsafe", "extern", "async", "spawn", "await",
      "channel", "select"]
-}
-
-/// Today's grammar anchors: already keywords, never names.
-fn keywords() -> List<string> {
-    ["let", "fn", "if", "else", "when", "true", "false"]
 }
 
 type Def = { name: string, stmt: StmtId }
@@ -57,6 +60,7 @@ type Resolver = {
     fn_names: List<string>,
     targets: List<StmtId?>,
     params: List<int?>,
+    assign_targets: List<StmtId?>,
     diagnostics: List<Diag>,
 }
 
@@ -68,11 +72,15 @@ export fn resolve(p: ParsedProgram) -> Resolution {
         visible: {}, overlays: [], fn_defs: {}, fn_names: [],
         targets: filled<StmtId?>(p.store.exprs.count(), null),
         params: filled<int?>(p.store.exprs.count(), null),
+        assign_targets: filled<StmtId?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
     r.declare_fns()
     resolve_stmts(r, [], false, p.stmts)
-    Resolution { targets: r.targets, params: r.params, diagnostics: r.diagnostics }
+    Resolution {
+        targets: r.targets, params: r.params,
+        assign_targets: r.assign_targets, diagnostics: r.diagnostics,
+    }
 }
 
 /// Statements in order, each through its own StmtSemantics — the
@@ -85,9 +93,23 @@ fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: 
         walk_under: (ps: List<Param>, body: ExprId) -> resolve_walk(r, [pp.name for pp in ps], body),
         bind_checked: (s: StmtId) -> r.bind_checked(s),
         check_params: (ps: List<Param>, s: StmtId) -> r.check_params(ps, s),
-        refuse_nested_fn: (s: StmtId) -> r.refuse_nested(s),
+        scope_stmts: (body: List<StmtId>) -> scoped_stmts(r, param_names, body),
+        is_param: (name: string) -> index_of_name(param_names, name) != null,
+        lookup: (name: string) -> r.binding_of(name),
+        record_assign: (s: StmtId, target: StmtId) -> r.record_assign(s, target),
+        loc_of: (s: StmtId) -> r.stmt_loc(s),
+        emit: (d: Diag) -> r.speak(d),
     }
     for s in stmts { stmt_semantics_of(r.p.store.stmt(s)).resolve_stmt(cx, s) }
+}
+
+/// A statement list under its own overlay scope — a loop body.
+fn scoped_stmts(r: Resolver, param_names: List<string>, stmts: List<StmtId>) {
+    mut ov = r.overlays
+    let fresh: Map<string, StmtId> = {}
+    ov.push(fresh)
+    resolve_stmts(r, param_names, true, stmts)
+    let _ = ov.pop()
 }
 
 /// A block's statements under a fresh overlay scope: binds are
@@ -153,9 +175,9 @@ impl Resolver {
     }
 
     fn declare_fn(self, name: string, s: StmtId) {
-        let at = loc_at(self.p.source.file, self.p.store.stmt_span(s))
+        let at = self.stmt_loc(s)
         when {
-            keywords().contains(name) -> self.refuse_keyword(name, at)
+            self.p.keywords.contains(name) -> self.refuse_keyword(name, at)
             reserved().contains(name) -> self.refuse_reserved(name, at)
             _ -> {
                 let prior: StmtId? = self.fn_defs.get(name)
@@ -165,7 +187,9 @@ impl Resolver {
                     mut ns = self.fn_names
                     ns.push(name)
                 } else {
-                    self.speak(pointed(error_at("resolve.duplicate_fn", at, "`${name}` is defined more than once"), "redefined here")
+                    self.speak(pointed(
+                        error_at("resolve.duplicate_fn", at, "`${name}` is defined more than once"),
+                        "redefined here")
                         with { help: "rename one of them" })
                 }
             }
@@ -173,10 +197,10 @@ impl Resolver {
     }
 
     fn check_params(self, fparams: List<Param>, s: StmtId) {
-        let at = loc_at(self.p.source.file, self.p.store.stmt_span(s))
+        let at = self.stmt_loc(s)
         for pp in fparams {
             when {
-                keywords().contains(pp.name) -> self.refuse_keyword(pp.name, at)
+                self.p.keywords.contains(pp.name) -> self.refuse_keyword(pp.name, at)
                 reserved().contains(pp.name) -> self.refuse_reserved(pp.name, at)
                 _ -> nothing()
             }
@@ -194,13 +218,7 @@ impl Resolver {
             ps.set(e.index, idx!)
             return
         }
-        let inner: StmtId? = overlay_hit(self.overlays, name)
-        if inner != null {
-            mut ts = self.targets
-            ts.set(e.index, inner!)
-            return
-        }
-        let found: StmtId? = self.visible.get(name)
+        let found: StmtId? = self.binding_of(name)
         if found != null {
             mut ts = self.targets
             ts.set(e.index, found!)
@@ -210,13 +228,16 @@ impl Resolver {
         let later: StmtId? = self.later_def(name)
         if later != null {
             // A loc-less frame renders no window — absence stays quiet.
-            let defined = [Frame { label: "defined here", loc: loc_at(self.p.source.file, self.p.store.stmt_span(later!)) }]
-            self.speak(pointed(error_at("resolve.use_before_def", at, "`${name}` is used before its definition"), "used here")
+            let defined = [Frame { label: "defined here", loc: self.stmt_loc(later!) }]
+            self.speak(pointed(
+                error_at("resolve.use_before_def", at, "`${name}` is used before its definition"),
+                "used here")
                 with { secondary: defined, help: "move the definition above this use" })
             return
         }
         self.speak(self.suggested(
-            pointed(error_at("resolve.unresolved", at, "`${name}` is not defined"), "not defined anywhere in this program"),
+            pointed(error_at("resolve.unresolved", at, "`${name}` is not defined"),
+                "not defined anywhere in this program"),
             e, name, self.def_names))
     }
 
@@ -233,13 +254,24 @@ impl Resolver {
             e, name, self.fn_names))
     }
 
-    fn refuse_nested(self, s: StmtId) {
-        self.speak(pointed(error_at("resolve.nested_fn", loc_at(self.p.source.file, self.p.store.stmt_span(s)), "fn declarations live at the top level"), "declared inside a block")
-            with { help: "move the fn out of the block" })
+    /// The innermost value binding of `name`: overlays, then the
+    /// program scope.
+    fn binding_of(self, name: string) -> StmtId? {
+        let inner: StmtId? = overlay_hit(self.overlays, name)
+        if inner != null { return inner }
+        let outer: StmtId? = self.visible.get(name)
+        outer
+    }
+
+    fn record_assign(self, s: StmtId, target: StmtId) {
+        mut ts = self.assign_targets
+        ts.set(s.index, target)
     }
 
     fn refuse_reserved(self, name: string, at: Loc?) {
-        self.speak(pointed(error_at("resolve.reserved", at, "`${name}` is reserved for a future Avra feature"), "cannot be a name")
+        self.speak(pointed(
+            error_at("resolve.reserved", at, "`${name}` is reserved for a future Avra feature"),
+            "cannot be a name")
             with { help: "pick another name — `${name}` becomes a keyword" })
     }
 
@@ -264,10 +296,10 @@ impl Resolver {
         let binds: string? = self.p.store.let_name(s)
         if binds == null { return }
         when {
-            keywords().contains(binds!) ->
-                self.refuse_keyword(binds!, loc_at(self.p.source.file, self.p.store.stmt_span(s)))
+            self.p.keywords.contains(binds!) ->
+                self.refuse_keyword(binds!, self.stmt_loc(s))
             reserved().contains(binds!) ->
-                self.refuse_reserved(binds!, loc_at(self.p.source.file, self.p.store.stmt_span(s)))
+                self.refuse_reserved(binds!, self.stmt_loc(s))
             _ -> self.bind(binds!, s)
         }
     }
@@ -286,6 +318,10 @@ impl Resolver {
 
     fn loc_of(self, e: ExprId) -> Loc? {
         loc_at(self.p.source.file, self.p.store.expr_span(e))
+    }
+
+    fn stmt_loc(self, s: StmtId) -> Loc? {
+        loc_at(self.p.source.file, self.p.store.stmt_span(s))
     }
 
     /// A "did you mean" from the given candidates — later and

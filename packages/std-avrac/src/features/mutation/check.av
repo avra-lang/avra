@@ -1,0 +1,36 @@
+//! Mutation's typing laws: a mut binding holds scalars for now, and
+//! an assignment keeps the binding's declared type.
+use core.{StmtId, ExprId}
+use features.{StmtTypeCx}
+use diagnostics.{error_at, pointed}
+
+export fn check_mut(cx: StmtTypeCx, s: StmtId) {
+    let v: ExprId? = cx.store.stmt_value(s)
+    if v == null { return }
+    cx.walk(v!)
+    if cx.expr.shape_at(v!) is .Str {
+        cx.expr.emit(pointed(
+            error_at("type.mut_managed", cx.loc_of(s), "a `mut` binding holds scalars for now"),
+            "this holds a `string`")
+            with { help: "mut strings arrive with ownership analysis — use `let` and rebind by shadowing" })
+    }
+}
+
+export fn check_assign(cx: StmtTypeCx, s: StmtId) {
+    let v: ExprId? = cx.store.stmt_value(s)
+    if v == null { return }
+    cx.walk(v!)
+    let target: StmtId? = cx.assign_target(s)
+    if target == null { return }
+    let tv: ExprId? = cx.store.stmt_value(target!)
+    if tv == null { return }
+    let want = cx.expr.type_at(tv!)
+    let got = cx.expr.type_at(v!)
+    let absorb = cx.expr.shape_at(v!) is .Error || cx.expr.shape_at(tv!) is .Error
+    if !absorb && got.index != want.index {
+        cx.expr.emit(pointed(
+            error_at("type.mismatch", cx.loc_of(s),
+                "assignment changes `${cx.store.let_name(target!)!}`: `${cx.expr.type_name(want)}` to `${cx.expr.type_name(got)}`"),
+            "this is a `${cx.expr.type_name(got)}`"))
+    }
+}

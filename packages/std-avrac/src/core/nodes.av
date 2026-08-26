@@ -64,9 +64,16 @@ export type Param = { name: string, ty: string }
 
 export enum Stmt {
     Let(name: string, value: ExprId)
+    /// A reassignable binding — scalars only, until ownership
+    /// analysis arrives for managed values.
+    MutLet(name: string, value: ExprId)
+    /// Reassignment of a `mut` binding, by name.
+    Assign(name: string, value: ExprId)
     /// An expression at statement position.
     ExprStmt(value: ExprId)
     FnDecl(name: string, params: List<Param>, ret: string, body: ExprId)
+    /// Condition re-evaluated each turn; the body is a scope.
+    While(cond: ExprId, stmts: List<StmtId>)
     Error
 }
 
@@ -129,7 +136,7 @@ impl NodeStore {
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 15.
+    /// Tags are never reused; the next free tag is 18.
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -140,7 +147,8 @@ impl NodeStore {
             .StrLit(value) -> fp(8, [fp_str(value)]),
             .BoolLit(value) -> fp(9, [if value { 1 } else { 0 }]),
             .If(cond, on_true, on_false) ->
-                fp(10, [self.expr_fingerprint(cond), self.expr_fingerprint(on_true), self.expr_fingerprint(on_false)]),
+                fp(10, [self.expr_fingerprint(cond), self.expr_fingerprint(on_true),
+                        self.expr_fingerprint(on_false)]),
             .Call(callee, args) -> {
                 mut parts = [fp_str(callee)]
                 for a in args { parts.push(self.expr_fingerprint(a)) }
@@ -165,6 +173,13 @@ impl NodeStore {
     fn fingerprint_stmt(self, s: Stmt) -> int {
         match s {
             .Let(name, value) -> fp(5, [fp_str(name), self.expr_fingerprint(value)]),
+            .MutLet(name, value) -> fp(15, [fp_str(name), self.expr_fingerprint(value)]),
+            .Assign(name, value) -> fp(16, [fp_str(name), self.expr_fingerprint(value)]),
+            .While(cond, stmts) -> {
+                mut parts = [self.expr_fingerprint(cond)]
+                for s2 in stmts { parts.push(self.stmt_fingerprint(s2)) }
+                fp(17, parts)
+            }
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
             .Error -> fp(7, []),
             .FnDecl(name, params, ret, body) -> {

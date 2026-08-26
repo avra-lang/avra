@@ -63,6 +63,30 @@ fn calc() -> Grammar {
     Grammar { name: "Calc", start: "expression", rules: [expression_rule(), term_rule()] }
 }
 
+/// defer_stmt = "defer" ( "if" e:expression | "defer" ) BREAK
+fn defer_rule() -> Rule {
+    let iffed = Seq {
+        items: [
+            Item { label: null, prim: Prim.Lit("if"), rep: Rep.One, expect: null },
+            Item { label: "e", prim: Prim.Ref("expression"), rep: Rep.One, expect: null },
+        ],
+        build: null, recover: null,
+    }
+    let again = Seq {
+        items: [Item { label: null, prim: Prim.Lit("defer"), rep: Rep.One, expect: null }],
+        build: null, recover: null,
+    }
+    let branch = Seq {
+        items: [
+            Item { label: null, prim: Prim.Lit("defer"), rep: Rep.One, expect: null },
+            Item { label: null, prim: Prim.Group(Alt { branches: [iffed, again] }), rep: Rep.One, expect: null },
+            Item { label: null, prim: Prim.Named("BREAK"), rep: Rep.One, expect: null },
+        ],
+        build: null, recover: null,
+    }
+    Rule { name: "defer_stmt", body: Alt { branches: [branch] } }
+}
+
 spec "grammar/ast" {
     given "the calculator grammar built by hand" {
         then "the grammar names its start explicitly" {
@@ -104,6 +128,16 @@ spec "grammar/ast" {
         then "a repeated group is one Item with Rep.Star" {
             let tail = expression_rule().body.branches[0].items[1]
             tail.prim is .Group && tail.rep == Rep.Star
+        }
+    }
+    given "the keywords a grammar claims" {
+        then "operator and bracket literals are not words" {
+            calc().keywords().is_empty()
+        }
+        then "word literals surface once each, groups included, in order" {
+            let g = Grammar { name: "K", start: "defer_stmt", rules: [defer_rule(), expression_rule(), term_rule()] }
+            let ks = g.keywords()
+            ks.length == 2 && ks[0] == "defer" && ks[1] == "if"
         }
     }
 }

@@ -61,6 +61,18 @@ fn body_lines(ins: List<Ins>) -> List<string> {
             .Bin(d, op, a, b) -> lines.push(line(depth, "r${d.index} = r${a.index} ${op_sym(op)} r${b.index}")),
             .CallRt(d, callee, args) -> lines.push(line(depth, "r${d.index} = call ${callee}(${reg_list(args)})")),
             .Call(d, callee, args) -> lines.push(line(depth, "r${d.index} = call ${callee}(${reg_list(args)})")),
+            .Alloca(d) -> lines.push(line(depth, "r${d.index} = slot")),
+            .Load(d, slot) -> lines.push(line(depth, "r${d.index} = load r${slot.index}")),
+            .Store(slot, src) -> lines.push(line(depth, "store r${slot.index} <- r${src.index}")),
+            .LoopStart -> {
+                lines.push(line(depth, "loop {"))
+                depth = depth + 1
+            }
+            .LoopCond(c) -> lines.push(line(depth, "while r${c.index}")),
+            .LoopEnd -> {
+                depth = depth - 1
+                lines.push(line(depth, "}"))
+            }
             .Release(r) -> lines.push(line(depth, "release r${r.index}")),
             .Retain(r) -> lines.push(line(depth, "retain r${r.index}")),
             .RetVal(r) -> lines.push(line(depth, "ret r${r.index}")),

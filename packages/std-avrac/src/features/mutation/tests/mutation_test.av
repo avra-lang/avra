@@ -1,0 +1,46 @@
+// Mutation, vertically: mut declares, assignment rewrites the slot,
+// immutability refuses with the remedy, and types hold still.
+use @std.avrac.language.{analyze_source}
+
+/// A program's printed value, or "<refused>".
+fn shown(source: string) -> string {
+    analyze_source(source).ran() ?? "<refused>"
+}
+
+spec "features/mutation" {
+    given "mut and assignment" {
+        then "a mut binding reassigns; the reads see the latest write" {
+            shown("mut x = 1\nx = x + 10\nx = x + 100\nx") == "111"
+        }
+        then "assignment inside a fn body writes the outer-block slot" {
+            shown("fn bump(n: int) -> int {\n    mut t = n\n    t = t + 1\n    t\n}\nbump(4)") == "5"
+        }
+    }
+    given "wrong shapes" {
+        then "assigning a plain let refuses with the remedy" {
+            let a = analyze_source("let x = 1\nx = 2\nx")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`x` is not `mut`") &&
+                a.report().contains("declare it `mut x = ...` to reassign")
+        }
+        then "assigning a parameter refuses" {
+            let a = analyze_source("fn f(x: int) -> int {\n    x = 2\n    x\n}\nf(1)")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`x` is a parameter — parameters are immutable")
+        }
+        then "assignment keeps the declared type" {
+            let a = analyze_source("mut x = 1\nx = true\nx")
+            a.diagnostics.length == 1 &&
+                a.report().contains("assignment changes `x`: `int` to `bool`")
+        }
+        then "a mut string waits for ownership analysis" {
+            let a = analyze_source("mut s = \"hi\"\ns")
+            a.diagnostics.length == 1 &&
+                a.report().contains("a `mut` binding holds scalars for now")
+        }
+        then "assigning an undefined name says so" {
+            let a = analyze_source("ghost = 1\n2")
+            a.diagnostics.length == 1 && a.report().contains("`ghost` is not defined")
+        }
+    }
+}

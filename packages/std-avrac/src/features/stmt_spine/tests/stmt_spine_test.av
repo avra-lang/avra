@@ -33,12 +33,9 @@ spec "features/stmt_spine" {
         then "statements accumulate in source order" {
             let p = parse_prog("alpha\nbeta")
             let shape_ok = p.diagnostics.is_empty() && p.stmts.length == 2
-            let names_ok = if shape_ok {
-                match p.store.stmt(p.stmts[0]) {
-                    .ExprStmt(e) -> p.store.expr(e) is .Ident,
-                    .Let(_, _) or .FnDecl(_, _, _, _) or .Error -> false,
-                }
-            } else { false }
+            let first = p.store.stmt_value(p.stmts[0])
+            let names_ok = shape_ok && p.store.stmt(p.stmts[0]) is .ExprStmt &&
+                first != null && p.store.expr(first!) is .Ident
             shape_ok && names_ok && p.store.stmts.count() == 2
         }
         then "blank lines between statements are noise" {

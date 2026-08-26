@@ -1,9 +1,32 @@
-//! The call's typing rule: the target's signature is the law —
-//! arity exact, every argument matching its param. The answer is
-//! the declared return either way; Error arguments absorb.
-use core.{Expr, ExprId, Type, TypeId}
-use features.{TypeCx, FnSig}
+//! The fn feature's typing rules. The call: the target's signature
+//! is the law — arity exact, every argument matching its param; the
+//! declared return answers either way; Error arguments absorb. The
+//! declaration: the body types under its params and must answer the
+//! declared return.
+use core.{Expr, ExprId, StmtId, Type, TypeId}
+use features.{TypeCx, StmtTypeCx, FnSig, nothing}
 use diagnostics.{error_at, pointed}
+
+export fn check_fn(cx: StmtTypeCx, s: StmtId) {
+    match cx.store.stmt(s) {
+        .FnDecl(fname, _, fret, body) -> checked_fn(cx, s, fname, fret, body),
+        _ -> nothing(),
+    }
+}
+
+fn checked_fn(cx: StmtTypeCx, s: StmtId, fname: string, fret: string, body: ExprId) {
+    let sig: FnSig? = cx.sig_of(s)
+    cx.walk_under(sig?.params ?? [], body)
+    let want: TypeId = sig?.ret ?? cx.expr.intern(Type.Error)
+    let got: TypeId = cx.expr.type_at(body)
+    let absorb = cx.expr.shape_of(got) is .Error || cx.expr.shape_of(want) is .Error
+    if !absorb && got.index != want.index {
+        cx.expr.emit(pointed(
+            error_at("type.mismatch", cx.expr.loc_of(body),
+                "the body answers `${cx.expr.type_name(got)}` but `${fname}` declares `${fret}`"),
+            "this is a `${cx.expr.type_name(got)}`"))
+    }
+}
 
 fn call_type(cx: TypeCx, e: ExprId) -> TypeId {
     match cx.store.expr(e) {
@@ -19,7 +42,8 @@ fn call_type(cx: TypeCx, e: ExprId) -> TypeId {
 fn checked_call(cx: TypeCx, e: ExprId, callee: string, args: List<ExprId>, s: FnSig) -> TypeId {
     if args.length != s.params.length {
         cx.emit(pointed(
-            error_at("type.mismatch", cx.loc_of(e), "`${callee}` takes ${s.params.length} arguments, found ${args.length}"),
+            error_at("type.mismatch", cx.loc_of(e),
+                "`${callee}` takes ${s.params.length} arguments, found ${args.length}"),
             "this call"))
         return s.ret
     }
@@ -28,7 +52,8 @@ fn checked_call(cx: TypeCx, e: ExprId, callee: string, args: List<ExprId>, s: Fn
             cx.type_at(args[j]).index != s.params[j].index
         if wrong {
             cx.emit(pointed(
-                error_at("type.mismatch", cx.loc_of(args[j]), "argument ${j + 1} of `${callee}` wants `${cx.type_name(s.params[j])}`, found `${cx.name_at(args[j])}`"),
+                error_at("type.mismatch", cx.loc_of(args[j]),
+                    "argument ${j + 1} of `${callee}` wants `${cx.type_name(s.params[j])}`, found `${cx.name_at(args[j])}`"),
                 "this is a `${cx.name_at(args[j])}`"))
         }
     }

@@ -24,6 +24,8 @@ use diagnostics.{Diag, DiagCode}
 use features.stmt_spine.{stmt_spine}
 use features.block.{block}
 use features.let_stmt.{let_stmt}
+use features.mutation.{mutation}
+use features.loops.{loops}
 use features.fns.{fns}
 use features.expr_stmt.{expr_stmt}
 use features.bool_lit.{bool_lit}
@@ -34,11 +36,14 @@ use features.str_lit.{str_lit}
 
 /// A feature set assembled once: composed, parsed, merged, and gated
 /// on grammar + builder coherence. `grammar` is null when assembly
-/// found defects — they are the diagnostics.
+/// found defects — they are the diagnostics. `keywords` derive from
+/// the grammar's own literals — the features' fragments ARE the
+/// keyword list.
 export type Language = {
     features: List<LanguageFeature>,
     grammar: Grammar?,
     codes: List<DiagCode>,
+    keywords: List<string>,
     diagnostics: List<Diag>,
 }
 
@@ -49,13 +54,13 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     let codes = code_registry(features)
     let defects = flatten([g.defects(), builder_defects(features, g), code_defects(codes)])
     if !defects.is_empty() { return unassembled(features, defects) }
-    Language { features: features, grammar: g, codes: codes, diagnostics: [] }
+    Language { features: features, grammar: g, codes: codes, keywords: g.keywords(), diagnostics: [] }
 }
 
 /// Assembly refused: the defects, projected, are the language's
 /// diagnostics.
 fn unassembled(features: List<LanguageFeature>, defects: List<Diagnostic>) -> Language {
-    Language { features: features, grammar: null, codes: [], diagnostics: as_defects(defects) }
+    Language { features: features, grammar: null, codes: [], keywords: [], diagnostics: as_defects(defects) }
 }
 
 /// Built-in codes plus every feature's registered codes, in feature
@@ -71,7 +76,9 @@ export fn language_features() -> List<LanguageFeature> {
         stmt_spine(),   // a program IS statements
         block(),        // { statements… value } — braces, defined once
         let_stmt(),     // `let` names a value
+        mutation(),     // `mut` declares; `name = e` reassigns
         fns(),          // `fn` declares a body; a call applies it
+        loops(),        // `while c { statements }`
         expr_stmt(),    // a bare expression is a statement
         bool_lit(),     // `true` and `false`
         if_expr(),      // `if c { a } else { b }`, an expression

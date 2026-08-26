@@ -1,0 +1,58 @@
+// Loops, vertically: the condition re-evaluates each turn, the body
+// scopes its bindings, and the IR carries the third bracket family.
+use @std.avrac.language.{analyze_source, render_ir, Lowered}
+
+/// A program's printed value, or "<refused>".
+fn shown(source: string) -> string {
+    analyze_source(source).ran() ?? "<refused>"
+}
+
+fn ir_of(source: string) -> Lowered {
+    analyze_source(source).lowered()
+}
+
+spec "features/loops" {
+    given "while" {
+        then "the loop turns until the condition falls" {
+            shown("mut total = 0\nmut i = 1\nwhile i < 5 {\n    total = total + i\n    i = i + 1\n}\ntotal") == "10"
+        }
+        then "a while whose condition starts false never turns" {
+            shown("mut hits = 0\nwhile 1 < 0 {\n    hits = hits + 1\n}\nhits") == "0"
+        }
+        then "a loop drives a fn to its answer" {
+            shown("fn sum_to(n: int) -> int {\n    mut total = 0\n    mut i = 1\n    while i < n + 1 {\n        total = total + i\n        i = i + 1\n    }\n    total\n}\nsum_to(10)") == "55"
+        }
+    }
+    given "wrong shapes" {
+        then "a non-bool condition points at itself" {
+            let a = analyze_source("while 1 {\n    2\n}\n3")
+            a.diagnostics.length == 1 &&
+                a.report().contains("a `while` condition is a `bool`, found `int`")
+        }
+    }
+    given "the loop in the IR, as `avra ir` prints it" {
+        then "slots, the re-run condition, and the back edge" {
+            let expected = """scope application {
+  r0 = int 0
+  r1 = slot
+  store r1 <- r0
+  loop {
+    r2 = load r1
+    r3 = int 3
+    r4 = r2 < r3
+    while r4
+    scope application {
+      r5 = load r1
+      r6 = int 1
+      r7 = r5 + r6
+      store r1 <- r7
+    }
+  }
+  r8 = load r1
+  print r8
+}
+ret 0"""
+            render_ir(ir_of("mut x = 0\nwhile x < 3 {\n    x = x + 1\n}\nx")) == expected
+        }
+    }
+}

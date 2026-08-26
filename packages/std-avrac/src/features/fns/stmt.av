@@ -2,15 +2,27 @@
 //! under its OWN params; inside a block it refuses. Its runtime
 //! value is nothing — the body runs at call time, and lowering
 //! collects declarations on its own axis.
-use core.{StmtId, ExprId, Reg}
+use core.{NodeStore, StmtId, ExprId, Reg}
 use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtEvalCx, StmtLowerCx, nothing}
+use diagnostics.{error_at, pointed}
 
 export type FnStmtSemantics = { }
 
 impl StmtSemantics for FnStmtSemantics {
+    fn binds(self, store: NodeStore, s: StmtId) -> string? {
+        null
+    }
+
+    fn value_of(self, store: NodeStore, s: StmtId) -> ExprId? {
+        null
+    }
+
     fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
         if cx.in_block {
-            cx.refuse_nested_fn(s)
+            cx.emit(pointed(
+                error_at("resolve.nested_fn", cx.loc_of(s), "fn declarations live at the top level"),
+                "declared inside a block")
+                with { help: "move the fn out of the block" })
             return
         }
         match cx.store.stmt(s) {
@@ -23,7 +35,7 @@ impl StmtSemantics for FnStmtSemantics {
     }
 
     fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
-        cx.check_fn(s)
+        check_fn(cx, s)
     }
 
     fn eval_stmt(self, cx: StmtEvalCx, s: StmtId) -> ExprId? {

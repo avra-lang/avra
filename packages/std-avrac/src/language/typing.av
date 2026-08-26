@@ -9,6 +9,7 @@
 use core.{StmtId, ExprId, TypeId, Type, Param, TypeRegistry, new_type_registry, filled}
 use diagnostics.{Diag, loc_at, error_at, pointed}
 use features.{TypeCx, StmtTypeCx, FnSig}
+use @std.errors.{Loc}
 
 /// The pass's facts: the registry, a dense expression table, and a
 /// dense signature table indexed by StmtId — total, O(1) reads for
@@ -50,22 +51,37 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
 }
 
 /// Statements in order, each through its own StmtSemantics — the
-/// ONE statement loop, top level and blocks alike.
+/// ONE statement loop, top level and blocks alike. The context is
+/// state verbs plus the whole expression vocabulary; the rules live
+/// with their features.
 fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
+    let ecx = expr_cx(t, param_types)
     let cx = StmtTypeCx {
         store: t.p.store,
+        expr: ecx,
         walk: (v: ExprId) -> type_walk(t, param_types, v),
-        check_fn: (s: StmtId) -> t.check_fn(s),
+        walk_under: (pts: List<TypeId>, body: ExprId) -> type_walk(t, pts, body),
+        type_stmts: (body: List<StmtId>) -> type_stmts(t, param_types, body),
+        sig_of: (s: StmtId) -> t.sigs[s.index],
+        assign_target: (s: StmtId) -> assign_target_of(t.resolution, s),
+        loc_of: (s: StmtId) -> t.stmt_loc(s),
     }
     for s in stmts { stmt_semantics_of(t.p.store.stmt(s)).type_stmt(cx, s) }
 }
 
 /// One subtree's types, under the given param types.
 fn type_walk(t: Typer, param_types: List<TypeId>, root: ExprId) {
+    let cx = expr_cx(t, param_types)
+    for e in t.p.store.post_order(root) { type_node(t, cx, e) }
+}
+
+/// The expression capabilities, wired once for a given param scope.
+fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
     let cx = TypeCx {
         store: t.p.store,
         type_at: (e: ExprId) -> t.of_expr[e.index],
         shape_at: (e: ExprId) -> t.types.shape_of(t.of_expr[e.index]),
+        shape_of: (ty: TypeId) -> t.types.shape_of(ty),
         intern: (sh: Type) -> t.types.intern(sh),
         target_type: (e: ExprId) -> t.target_type(e, param_types),
         sig_of: (e: ExprId) -> t.sig_at(e),
@@ -75,7 +91,7 @@ fn type_walk(t: Typer, param_types: List<TypeId>, root: ExprId) {
         loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
         emit: (d: Diag) -> t.speak(d),
     }
-    for e in t.p.store.post_order(root) { type_node(t, cx, e) }
+    cx
 }
 
 /// A block's statements type in order, then its value — which IS
@@ -123,29 +139,14 @@ impl Typer {
         let sh: Type? = shape_named(name)
         if sh != null { return self.types.intern(sh!) }
         self.speak(pointed(
-            error_at("type.unknown", loc_at(self.p.source.file, self.p.store.stmt_span(s)), "`${name}` names no type"),
+            error_at("type.unknown", self.stmt_loc(s), "`${name}` names no type"),
             "in this signature")
             with { help: "the types today are `int`, `string`, and `bool`" })
         self.types.intern(Type.Error)
     }
 
-    /// A fn body types under its params and must answer its
-    /// declared return.
-    fn check_fn(self, s: StmtId) {
-        let parts: FnParts? = self.p.store.fn_parts(s)
-        if parts == null { return }
-        let body = parts!.body
-        let sig: FnSig? = self.sigs[s.index]
-        let ptypes: List<TypeId> = sig?.params ?? []
-        type_walk(self, ptypes, body)
-        let want: TypeId = sig?.ret ?? self.types.intern(Type.Error)
-        let got = self.of_expr[body.index]
-        let absorb = self.types.shape_of(got) is .Error || self.types.shape_of(want) is .Error
-        if !absorb && got.index != want.index {
-            self.speak(pointed(
-                error_at("type.mismatch", loc_at(self.p.source.file, self.p.store.expr_span(body)), "the body answers `${self.types.name_of(got)}` but `${parts!.name}` declares `${parts!.ret}`"),
-                "this is a `${self.types.name_of(got)}`"))
-        }
+    fn stmt_loc(self, s: StmtId) -> Loc? {
+        loc_at(self.p.source.file, self.p.store.stmt_span(s))
     }
 
     /// An ident's type: its param's, or its definition's value type.

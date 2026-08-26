@@ -22,9 +22,42 @@
 //! token) are resolved at parse time into explicit fields (`start`,
 //! `Item.expect`), so consumers read structure, never conventions.
 
+use core.{code_at, is_name_start, flatten}
+
 /// A named bag of rules and which one parsing begins at. `start` always
 /// names a rule in `rules`.
 export type Grammar = { name: string, start: string, rules: List<Rule> }
+
+impl Grammar {
+    /// The identifier-shaped literals across every rule, deduped in
+    /// first-appearance order — the words this grammar claims, which
+    /// a language refuses as names.
+    fn keywords(self) -> List<string> {
+        mut out: List<string> = []
+        for r in self.rules {
+            for w in alt_words(r.body) {
+                if !out.contains(w) { out.push(w) }
+            }
+        }
+        out
+    }
+}
+
+fn alt_words(a: Alt) -> List<string> {
+    flatten([seq_words(s) for s in a.branches])
+}
+
+fn seq_words(s: Seq) -> List<string> {
+    flatten([item_words(x) for x in s.items])
+}
+
+fn item_words(x: Item) -> List<string> {
+    match x.prim {
+        .Lit(text) -> if text.length > 0 && is_name_start(code_at(text, 0)) { [text] } else { [] },
+        .Group(inner) -> alt_words(inner),
+        .Ref(_) or .Named(_) -> [],
+    }
+}
 
 /// One `name = body` line: a name and its right-hand side.
 export type Rule = { name: string, body: Alt }

@@ -114,6 +114,10 @@ spec.
   repeated slot, anchor-first — never a tail after the star. The
   builder then owns the law the grammar cannot state (exactly one,
   last).
+- Grammar authoring: @recover converts a branch's break into a hole
+  HIT, so it belongs only on branches anchored by a keyword no other
+  branch can start with. A NAME-headed branch (assignment) must stay
+  non-committing — recovery there swallows every expression line.
 - A feature never matches ANOTHER feature's variants — nor
   re-extracts its OWN literal's payload inline: all literal reads
   go through core's value protocol (`truth_of`, `int_of`,
@@ -133,6 +137,17 @@ spec.
   for evaluation. Passes NEVER match feature nodes: `semantics_of`
   (THE one exhaustive map, no strings) returns the node's semantics
   directly; the trait impl forces every pass method at compile time.
+- A pass CONTEXT carries the pass's STATE verbs only — walk, look
+  up, record, emit, mint, slots — never a feature's rule. A
+  feature-named fn on a cx (`check_mut`, `emit_loop`) is a rule
+  body living in a driver; it moves home to the feature dir and
+  reaches state through general verbs. contract.av changes only
+  when a feature needs a verb NO feature has ever needed. The
+  statement typing cx NESTS the whole expression vocabulary
+  (`cx.expr: TypeCx`) rather than re-wiring its verbs.
+- Keywords are never listed by hand: they derive from the assembled
+  grammar's identifier-shaped literals (`Grammar.keywords()`) — a
+  feature's gram fragment IS its keyword claim.
   A feature owning a STATEMENT kind also impls `StmtSemantics`
   (`stmt.av` or `semantics.av`) and joins `stmt_semantics_of` — the
   drivers' one statement loop reaches it there.
@@ -157,9 +172,15 @@ Discovered gaps between the spec and the bootstrap compiler. Verify
 against these before writing; probe in scratch when unsure.
 
 - Function types are spelled `fn(int) -> bool`, not `(int) -> bool`.
+- Multi-line fn signatures parse fine (probed) — stacked params with
+  a trailing comma, or aligned continuation lines. Wrap wide ones.
 - `ref`, `none`, `shape`, and `table` are reserved words — including
   as variable and method names; `then` refuses as a struct/enum
   field name.
+- `.reverse()` mutates IN PLACE and returns the SAME aliased list
+  (probed: the source list's order changes too) — never treat it as
+  a copy; assume `.sort()` matches. A safe reversed copy stays
+  hand-rolled.
 - `contains`/`index_of` compare non-string elements by IDENTITY —
   enum/struct values in lists need a semantic `==` scan (enumerate +
   compare); only string elements get value equality. `==` between two

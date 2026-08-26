@@ -409,6 +409,54 @@ alone) and killed structurally — ./avra generates a content-stamped
 entry, so cache keys are truthful and warm. Every phantom of the
 last two milestones was that one bug in costumes.
 
+## Milestone 10 — mutation & loops (the design)
+
+Rung 3 proper. Two features, three statement kinds, two core
+events — and the statements contract's first steady-state test.
+
+- MUTATION (one feature: `mutation`): `mut x = e` declares a
+  reassignable binding; `x = e` assigns to one. Assignment to an
+  immutable let, a param, or a fn refuses (resolve.immutable);
+  assignment must keep the declared type. V1 RESTRICTION, honest:
+  mut bindings hold SCALARS (int, bool) — a mut string needs
+  store-over-release ownership analysis, and that arrives with the
+  memory pass's next chapter, not as a footnote here.
+- LOOPS (one feature: `loops`): `while c { statements }` — a
+  statement, no value; its body is a statement list under its own
+  scope, cond re-evaluated each turn.
+- THE IR: mutation lands as SLOTS — `Alloca`/`Load`/`Store` (a mut
+  binding's slot is memory, loads mint fresh registers, so
+  born-SSA survives BY DESIGN: registers stay single-assignment
+  and mutation lives in memory, exactly LLVM's own answer, with
+  -O1 mem2reg recovering registers). Loops land as brackets —
+  `LoopStart`/`LoopCond(c)`/`LoopEnd` — the third bracket family
+  after scopes and regions. Both are core events by doctrine:
+  a memory boundary and a control shape.
+- The DRIVER seam stays thin: an ident whose target is mut gets
+  its Load minted by def_reg — the spine's ident rule stays dumb.
+  Eval is trivial: slots were always a table; assignment writes
+  the target's slot through one new capability.
+- `require_bool` extracts on its THIRD copy (if, when, while) —
+  the recorded trigger, fired on schedule.
+- Range `for` follows as its own quickie: it desugars to mut+while
+  INSIDE its feature — zero new instructions, the when-lesson
+  again. `return` stays deferred: early exit is its own
+  capability arc.
+- Gate: a native countdown loop — mut, assignment, while, and a
+  string built by branches inside the loop, eval == native ==
+  expected.
+
+LANDED: 233/233; ten-for-ten corpus, loop.av native through slots
+and the third bracket family. The statements contract's first
+steady-state test PASSED: three new statement kinds cost their
+semantics impls plus map lines — zero new driver walk loops. The
+arc's one regression taught a grammar law now in CLAUDE.md:
+@recover converts a break into a hole HIT, so it belongs only on
+keyword-anchored branches — a recovering NAME-headed assign branch
+swallowed every expression line in the language. Range `for` is
+rung 3's tail, next: it desugars to mut+while inside its feature,
+zero core events, the when-lesson replayed at statement level.
+
 ## The growth ledger (what a feature costs)
 
 M7 was ~1200 lines, and the fair audit says where: ~600 were the
@@ -446,6 +494,28 @@ stages onto those SAME fingerprints at the cache layer in Era IV,
 node model untouched. Spans living in side tables and fingerprints
 ignoring them — designed in at M1 — is exactly what keeps that
 staging clean.
+
+THE CAPABILITY INVERSION (2026-08-26): M10 shipped its rules as
+driver-side closures — `check_mut` in typing.av, `emit_loop` in
+lower.av, `resolve_assign` in resolve.av — and the statement
+contexts became switchboards: every statement feature would have
+edited contract.av plus four drivers, forever. Inverted the same
+day: contexts now carry STATE verbs only (lookup, record_assign,
+emit, mint, slot_of, bind_slot; the typing cx nests the whole
+expression TypeCx), and every rule body lives in its feature's
+directory by concern. Fallout, all wins: the driver's `is .MutLet`
+match died (a slot bound through `bind_slot` is a memory cell —
+mechanism, not feature knowledge), which also caught a LATENT
+eval/native divergence (a program ending in a mut declaration
+printed the cell POINTER natively — corpus/mut.av pins it);
+`binds`/`value_of` joined StmtSemantics so the spine projections
+stopped growing in program.av; and the hand-kept keyword list died
+— keywords derive from the assembled grammar's identifier-shaped
+literals, so a feature's gram fragment IS its keyword claim. The
+steady-state statement feature is now: its directory, the node
+variant + fingerprint arm (rent until @derive), one map line, one
+stanza line, the corpus pair. Range `for` is the proof: it must
+touch nothing else.
 
 Recorded triggers:
 - Statement semantics: FIRED and DONE (rung 3's opening act).
@@ -641,14 +711,39 @@ into features (or spec commitments) when their milestone comes.
   content hashes from type structure; wanted by every new Expr
   variant's hand-written fp arm. Same story for per-variant payload
   accessors (`truth_of`/`int_of`/`text_of`, the `_of` extractor
-  sets): mechanical, derivable, erased by `@derive` at self-host.
+  sets, and every StmtSemantics `binds`/`value_of` body — the same
+  one-variant projection match, per impl): mechanical, derivable,
+  erased by `@derive` at self-host.
+- String char iteration: `for c in s.codes()` (or chars) — every
+  char-wise walk hand-rolls `mut i` + `code_at` + `substring`
+  today; wanted by the lexer's whole scan loop, render's `quoted`,
+  and line_end. Index arithmetic is the licensed loop exception
+  ONLY because the language leaves no alternative.
+- String repeat: `s.repeat(n)` — the tree holds TWO hand-rolled
+  copies of the concept (diagnostics/render.av `repeated`,
+  ir_text.av `line`'s indent loop) that cannot merge because the
+  primitive is missing.
+- Module-level constants that cross imports: `reserved()`,
+  `engine_codes()`, and `pass_codes()` are DATA wearing fn clothes
+  — re-allocated per call, scanned per lookup — because a
+  module-level `let` does not resolve through imports (subset).
+  Data should get to be data.
 - `it` inside `is`-expressions: `ins.filter(it is .Release)` —
   wanted by every IR test; an explicit lambda today.
 - Or-patterns that BIND when the payloads agree in type:
   `.Lit(text) or .Named(text) -> text` — wanted by token_name.
 - In-place mutation through self: `self.diagnostics.push(d)` — the
   `mut alias` two-step in every speak/give/record is ceremony the
-  mutability rules (Axis 11) should erase.
+  mutability rules (Axis 11) should erase. Counted 2026-08-26: 38
+  sites in product code, and every new state struct pays it again —
+  the only backlog cost that still GROWS.
+- Fn-typed arguments that carry type evidence through generics — the
+  subset ban (F1002 + mono corruption) forces EIGHT copies of one
+  idea: grammar/builders.av's five `as_*` walkers and Builder's
+  three repeated-capture methods are each `for x in list {
+  out.push(want(kind_of(x), "...")?) }` with only the extractor
+  differing. One generic `as_each(v, of, what)` is the shape the
+  code wants to be.
 - Structural `==` for lists (and `contains` by value for all
   elements) — every list assertion in the suite hand-rolls it.
 - `??` guaranteed LAZY on the right — program_stmts wanted
@@ -673,7 +768,13 @@ into features (or spec commitments) when their milestone comes.
   kinds from names, messages from doc-comment templates, generating
   exactly `describe()`
 - Trait default method bodies (bs2 ICEs today): `kind()`/`message()`
-  return as defaults over `describe()`
+  return as defaults over `describe()` — and every `nothing()` /
+  bare-`null` pass method in the StmtSemantics impls collapses into
+  defaults, so an impl states only what it DOES.
+- The #1377 ICE class dies (a method call on a closure-captured
+  local in a loop with an early return): our codegen must not have
+  it, and the pass visitors then become methods — the vocabulary
+  rule applied to the hottest code in the tree, currently barred.
 - `grammar { }` blocks replace raw-string grams
 - Bare component instantiation (registry spans files)
 - Query engine (L6 red-green memoization) wraps the pure passes

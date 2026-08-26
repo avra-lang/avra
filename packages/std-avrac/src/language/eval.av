@@ -38,18 +38,25 @@ fn eval_stmts(ev: Evaluator, frame: List<ExprId>, stmts: List<StmtId>) -> ExprId
     let cx = StmtEvalCx {
         store: ev.a.store,
         eval: (v: ExprId) -> eval_subtree(ev, frame, v),
+        run_stmts: (body: List<StmtId>) -> run_stmt_list(ev, frame, body),
+        write_slot: (target: StmtId, v: ExprId) -> ev.write_slot(target, v),
+        assign_target: (s: StmtId) -> ev.a.assign_target(s),
         fail: (msg: string) -> ev.record(msg),
     }
     mut last: ExprId? = null
     for s in stmts {
         let v: ExprId? = stmt_semantics_of(ev.a.store.stmt(s)).eval_stmt(cx, s)
         if v != null {
-            mut written = ev.slots
-            written.set(s.index, v!)
+            ev.write_slot(s, v!)
             last = v
         }
     }
     last
+}
+
+/// A statement list run for its effects alone — a loop body's turn.
+fn run_stmt_list(ev: Evaluator, frame: List<ExprId>, stmts: List<StmtId>) {
+    let _ = eval_stmts(ev, frame, stmts)
 }
 
 /// One subtree's value under one frame. The recursion IS the walk:
@@ -102,6 +109,11 @@ impl Evaluator {
     fn record(self, msg: string) {
         mut fs = self.failures
         fs.push(msg)
+    }
+
+    fn write_slot(self, s: StmtId, v: ExprId) {
+        mut written = self.slots
+        written.set(s.index, v)
     }
 }
 

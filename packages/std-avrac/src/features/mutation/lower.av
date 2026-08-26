@@ -1,0 +1,29 @@
+//! Mutation in the IR: a mut binding is a memory CELL — allocated,
+//! seeded, bound as the statement's slot — and an assignment stores
+//! through its target's cell.
+use core.{StmtId, ExprId, Reg, Ins}
+use features.{StmtLowerCx}
+
+/// Declares the cell and answers the VALUE register — the driver's
+/// last-value tracking sees the value, never the pointer.
+export fn lower_mut(cx: StmtLowerCx, s: StmtId, vexpr: ExprId, v: Reg) -> Reg {
+    let slot = cx.mint(vexpr)
+    cx.emit(Ins.Alloca(slot))
+    cx.emit(Ins.Store(slot, v))
+    cx.bind_slot(s, slot)
+    v
+}
+
+export fn lower_assign(cx: StmtLowerCx, s: StmtId, v: Reg) {
+    let target: StmtId? = cx.assign_target(s)
+    if target == null {
+        cx.fail("defect: an unresolved assignment survived a clean analysis")
+        return
+    }
+    let slot: Reg? = cx.slot_of(target!)
+    if slot == null {
+        cx.fail("defect: an assignment before its binding survived a clean analysis")
+        return
+    }
+    cx.emit(Ins.Store(slot!, v))
+}

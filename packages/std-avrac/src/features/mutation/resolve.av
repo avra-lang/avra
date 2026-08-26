@@ -1,0 +1,33 @@
+//! The assignment's resolve rule: the name resolves in the value
+//! namespaces and must land on a `mut` binding — params and plain
+//! lets refuse with the remedy.
+use core.{StmtId}
+use features.{StmtResolveCx}
+use diagnostics.{error_at, pointed}
+use @std.errors.{Loc}
+
+export fn resolve_assign(cx: StmtResolveCx, s: StmtId) {
+    let name: string? = match cx.store.stmt(s) {
+        .Assign(n, _) -> n,
+        _ -> null,
+    }
+    if name == null { return }
+    let at: Loc? = cx.loc_of(s)
+    if cx.is_param(name!) {
+        cx.emit(pointed(
+            error_at("resolve.immutable", at, "`${name!}` is a parameter — parameters are immutable"),
+            "assigned here"))
+        return
+    }
+    let target: StmtId? = cx.lookup(name!)
+    if target == null {
+        cx.emit(pointed(error_at("resolve.unresolved", at, "`${name!}` is not defined"), "assigned here"))
+        return
+    }
+    if cx.store.stmt(target!) is .MutLet {
+        cx.record_assign(s, target!)
+    } else {
+        cx.emit(pointed(error_at("resolve.immutable", at, "`${name!}` is not `mut`"), "assigned here")
+            with { help: "declare it `mut ${name!} = ...` to reassign" })
+    }
+}
