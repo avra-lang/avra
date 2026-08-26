@@ -61,6 +61,8 @@ type Resolver = {
     targets: List<StmtId?>,
     params: List<int?>,
     assign_targets: List<StmtId?>,
+    walked: List<bool>,
+    scoped: List<bool>,
     diagnostics: List<Diag>,
 }
 
@@ -73,6 +75,8 @@ export fn resolve(p: ParsedProgram) -> Resolution {
         targets: filled<StmtId?>(p.store.exprs.count(), null),
         params: filled<int?>(p.store.exprs.count(), null),
         assign_targets: filled<StmtId?>(p.store.stmts.count(), null),
+        walked: filled(p.store.exprs.count(), false),
+        scoped: filled(p.store.stmts.count(), false),
         diagnostics: [],
     }
     r.declare_fns()
@@ -94,6 +98,8 @@ fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: 
         bind_checked: (s: StmtId) -> r.bind_checked(s),
         check_params: (ps: List<Param>, s: StmtId) -> r.check_params(ps, s),
         scope_stmts: (body: List<StmtId>) -> scoped_stmts(r, param_names, body),
+        bound_scope: (s: StmtId, exprs: List<ExprId>, body: List<StmtId>) ->
+            bound_scope(r, param_names, s, exprs, body),
         is_param: (name: string) -> index_of_name(param_names, name) != null,
         lookup: (name: string) -> r.binding_of(name),
         record_assign: (s: StmtId, target: StmtId) -> r.record_assign(s, target),
@@ -108,6 +114,22 @@ fn scoped_stmts(r: Resolver, param_names: List<string>, stmts: List<StmtId>) {
     mut ov = r.overlays
     let fresh: Map<string, StmtId> = {}
     ov.push(fresh)
+    resolve_stmts(r, param_names, true, stmts)
+    let _ = ov.pop()
+}
+
+/// A fresh scope where `s`'s own binding holds: the exprs walk and
+/// the statements resolve inside it, and the binding dies at exit —
+/// a loop variable's home. A scoped binder never counts as a
+/// later definition: its name outside the scope is plainly unknown.
+fn bound_scope(r: Resolver, param_names: List<string>, s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
+    mut sc = r.scoped
+    sc.set(s.index, true)
+    mut ov = r.overlays
+    let fresh: Map<string, StmtId> = {}
+    ov.push(fresh)
+    r.bind_checked(s)
+    for e in exprs { resolve_walk(r, param_names, e) }
     resolve_stmts(r, param_names, true, stmts)
     let _ = ov.pop()
 }
@@ -208,6 +230,7 @@ impl Resolver {
     }
 
     fn resolve_name(self, e: ExprId, name: string, param_names: List<string>) {
+        if self.once(e) { return }
         if reserved().contains(name) {
             self.refuse_reserved(name, self.loc_of(e))
             return
@@ -241,8 +264,19 @@ impl Resolver {
             e, name, self.def_names))
     }
 
+    /// A name resolves ONCE — the first walk wins, diagnostics
+    /// included. A bound scope re-walking a bound's subtree can
+    /// neither re-scope nor re-diagnose it.
+    fn once(self, e: ExprId) -> bool {
+        if self.walked[e.index] { return true }
+        mut w = self.walked
+        w.set(e.index, true)
+        false
+    }
+
     /// A callee resolves in the fn namespace alone.
     fn resolve_call(self, e: ExprId, name: string) {
+        if self.once(e) { return }
         let found: StmtId? = self.fn_defs.get(name)
         if found != null {
             mut ts = self.targets
@@ -285,9 +319,10 @@ impl Resolver {
         ds.push(d)
     }
 
-    /// The first definition of `name` anywhere in the program.
+    /// The first PROGRAM-SCOPE definition of `name` anywhere — a
+    /// scoped binder (a loop counter) is not one.
     fn later_def(self, name: string) -> StmtId? {
-        self.all_defs.find(it.name == name)?.stmt
+        self.all_defs.find(it.name == name && !self.scoped[it.stmt.index])?.stmt
     }
 
     /// A statement's binding, keyword- and reserved-checked — the

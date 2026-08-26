@@ -74,6 +74,11 @@ export enum Stmt {
     FnDecl(name: string, params: List<Param>, ret: string, body: ExprId)
     /// Condition re-evaluated each turn; the body is a scope.
     While(cond: ExprId, stmts: List<StmtId>)
+    /// `for name in from..to` — binds `name` over the body. `cond`
+    /// and `step` are parse-time desugar (`name < to`, `name + 1`):
+    /// real nodes every pass walks, so the loop is mut+while in
+    /// costume.
+    For(name: string, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>)
     Error
 }
 
@@ -136,7 +141,7 @@ impl NodeStore {
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 18.
+    /// Tags are never reused; the next free tag is 19.
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -179,6 +184,13 @@ impl NodeStore {
                 mut parts = [self.expr_fingerprint(cond)]
                 for s2 in stmts { parts.push(self.stmt_fingerprint(s2)) }
                 fp(17, parts)
+            }
+            .For(name, from, to, _, _, stmts) -> {
+                // cond and step derive from name/from/to — the
+                // identity needs only the sources.
+                mut parts = [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to)]
+                for s2 in stmts { parts.push(self.stmt_fingerprint(s2)) }
+                fp(18, parts)
             }
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
             .Error -> fp(7, []),

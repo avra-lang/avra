@@ -1,0 +1,29 @@
+//! The loops at runtime. Eval owns each actual loop: the condition
+//! re-evaluates every turn because the on-demand walk never
+//! memoizes. A for writes its OWN slot — the counter's value —
+//! before the first test and after each step.
+use core.{StmtId, ExprId, truth_of}
+use features.{StmtEvalCx}
+
+/// The condition, evaluated now, as this turn's verdict.
+fn holds(cx: StmtEvalCx, cond: ExprId) -> bool {
+    truth_of(cx.store.expr(cx.eval(cond))) ?? false
+}
+
+export fn run_while(cx: StmtEvalCx, cond: ExprId, stmts: List<StmtId>) {
+    mut going = holds(cx, cond)
+    while going {
+        cx.run_stmts(stmts)
+        going = holds(cx, cond)
+    }
+}
+
+export fn run_for(cx: StmtEvalCx, s: StmtId, from: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>) {
+    cx.write_slot(s, cx.eval(from))
+    mut going = holds(cx, cond)
+    while going {
+        cx.run_stmts(stmts)
+        cx.write_slot(s, cx.eval(step))
+        going = holds(cx, cond)
+    }
+}

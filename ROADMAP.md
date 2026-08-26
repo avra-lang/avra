@@ -16,7 +16,7 @@
     1.  [x] `when` — the ledger trial, multi-way on existing regions
     2.  [x] blocks — statement scopes, multi-line bodies (`return`
         deferred to rung 3, recorded)
-    3.  mutation & loops — `mut`, assignment, `while`/`for`, ranges
+    3.  [x] mutation & loops — `mut`, assignment, `while`, range `for`
     4.  operators complete — `&& || !`, `!= > >= <=`, `* / %`
     5.  lists — the first aggregate; iteration; the method core
     6.  strings complete — `${}` interpolation, the method core
@@ -445,6 +445,24 @@ events — and the statements contract's first steady-state test.
 - Gate: a native countdown loop — mut, assignment, while, and a
   string built by branches inside the loop, eval == native ==
   expected.
+
+RANGE-FOR LANDED (the rung 3 tail, and the inversion's PROOF):
+242/242; twelve-for-twelve corpus, for.av driving nested counters
+through a fn natively. The claim held where it mattered: every
+rule body lives in the loops directory — `for` joined the EXISTING
+feature, so even the stanza line was free, and its keywords
+(`for`, `in`) derived from the gram with zero list edits. Outside
+the dir: the node variant + fp arm, the map line + import (the
+four one-liners), the corpus pair — plus THREE capability events,
+honestly counted: the `..` token (the lexer is not
+feature-extensible yet — recorded endgame), the `bound_scope`
+resolve verb (a fresh scope holding its owner's binding — rung 5's
+for-each reuses it), and two resolve-law refinements the new scope
+shape forced (a name resolves ONCE, first walk wins, diagnostics
+included; a SCOPED binder never counts as a later definition). The
+desugar is parse-time and fully inspectable: `avra ir` shows the
+counter cell, the re-run condition, and the step store — mut+while
+in costume, zero new instructions (P7 held).
 
 LANDED: 233/233; ten-for-ten corpus, loop.av native through slots
 and the third bracket family. The statements contract's first

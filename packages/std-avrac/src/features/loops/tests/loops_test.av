@@ -23,11 +23,31 @@ spec "features/loops" {
             shown("fn sum_to(n: int) -> int {\n    mut total = 0\n    mut i = 1\n    while i < n + 1 {\n        total = total + i\n        i = i + 1\n    }\n    total\n}\nsum_to(10)") == "55"
         }
     }
+    given "for" {
+        then "the counter walks the range" {
+            shown("mut t = 0\nfor i in 0..5 {\n    t = t + i\n}\nt") == "10"
+        }
+        then "an empty range never turns" {
+            shown("mut hits = 0\nfor i in 3..3 {\n    hits = hits + 1\n}\nhits") == "0"
+        }
+        then "a bound sees the OUTER name, never the counter" {
+            shown("let i = 5\nmut t = 0\nfor i in 0..i {\n    t = t + i\n}\nt") == "10"
+        }
+        then "the counter dies with its loop — and says so exactly once" {
+            let a = analyze_source("for i in 0..3 {\n    i\n}\ni")
+            a.diagnostics.length == 1 && a.report().contains("`i` is not defined")
+        }
+    }
     given "wrong shapes" {
         then "a non-bool condition points at itself" {
             let a = analyze_source("while 1 {\n    2\n}\n3")
             a.diagnostics.length == 1 &&
                 a.report().contains("a `while` condition is a `bool`, found `int`")
+        }
+        then "a non-int range bound refuses once, in for's own words" {
+            let a = analyze_source("for i in 0..\"x\" {\n    1\n}\n2")
+            a.diagnostics.length == 1 &&
+                a.report().contains("a `for` range ends at an `int`, found `string`")
         }
     }
     given "the loop in the IR, as `avra ir` prints it" {
@@ -53,6 +73,36 @@ spec "features/loops" {
 }
 ret 0"""
             render_ir(ir_of("mut x = 0\nwhile x < 3 {\n    x = x + 1\n}\nx")) == expected
+        }
+        then "a for is mut+while in costume — cell, re-run cond, step store" {
+            let expected = """scope application {
+  r0 = int 0
+  r1 = slot
+  store r1 <- r0
+  r2 = int 0
+  r3 = slot
+  store r3 <- r2
+  loop {
+    r4 = load r3
+    r5 = int 2
+    r6 = r4 < r5
+    while r6
+    scope application {
+      r7 = load r1
+      r8 = load r3
+      r9 = r7 + r8
+      store r1 <- r9
+      r10 = load r3
+      r11 = int 1
+      r12 = r10 + r11
+      store r3 <- r12
+    }
+  }
+  r13 = load r1
+  print r13
+}
+ret 0"""
+            render_ir(ir_of("mut t = 0\nfor i in 0..2 {\n    t = t + i\n}\nt")) == expected
         }
     }
 }

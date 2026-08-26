@@ -1,8 +1,8 @@
-//! The while statement's StmtSemantics — dispatch one-liners. Eval
-//! owns the actual loop: the condition re-evaluates each turn
-//! because the on-demand walk never memoizes. The rule bodies live
-//! beside this file, by concern.
-use core.{NodeStore, StmtId, ExprId, Reg, truth_of}
+//! The loop statements' StmtSemantics — one impl per kind, dispatch
+//! one-liners. The rule bodies live beside this file, by concern:
+//! check.av for the typing laws, eval.av for the actual loops,
+//! lower.av for the brackets.
+use core.{NodeStore, StmtId, ExprId, Reg}
 use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtEvalCx, StmtLowerCx, nothing}
 
 export type WhileSemantics = { }
@@ -33,11 +33,7 @@ impl StmtSemantics for WhileSemantics {
     fn eval_stmt(self, cx: StmtEvalCx, s: StmtId) -> ExprId? {
         match cx.store.stmt(s) {
             .While(cond, stmts) -> {
-                mut going = truth_of(cx.store.expr(cx.eval(cond))) ?? false
-                while going {
-                    cx.run_stmts(stmts)
-                    going = truth_of(cx.store.expr(cx.eval(cond))) ?? false
-                }
+                run_while(cx, cond, stmts)
                 null
             }
             _ -> null,
@@ -48,6 +44,61 @@ impl StmtSemantics for WhileSemantics {
         match cx.store.stmt(s) {
             .While(cond, stmts) -> {
                 lower_while(cx, cond, stmts)
+                null
+            }
+            _ -> null,
+        }
+    }
+}
+
+export type ForSemantics = { }
+
+impl StmtSemantics for ForSemantics {
+    fn binds(self, store: NodeStore, s: StmtId) -> string? {
+        match store.stmt(s) {
+            .For(name, _, _, _, _, _) -> name,
+            _ -> null,
+        }
+    }
+
+    fn value_of(self, store: NodeStore, s: StmtId) -> ExprId? {
+        match store.stmt(s) {
+            .For(_, from, _, _, _, _) -> from,
+            _ -> null,
+        }
+    }
+
+    /// The bounds resolve OUTSIDE the binding (a range never sees
+    /// its own counter); cond and step resolve inside it.
+    fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
+        match cx.store.stmt(s) {
+            .For(_, from, to, cond, step, stmts) -> {
+                cx.walk(from)
+                cx.walk(to)
+                cx.bound_scope(s, [cond, step], stmts)
+            }
+            _ -> nothing(),
+        }
+    }
+
+    fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
+        check_for(cx, s)
+    }
+
+    fn eval_stmt(self, cx: StmtEvalCx, s: StmtId) -> ExprId? {
+        match cx.store.stmt(s) {
+            .For(_, from, _, cond, step, stmts) -> {
+                run_for(cx, s, from, cond, step, stmts)
+                null
+            }
+            _ -> null,
+        }
+    }
+
+    fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
+        match cx.store.stmt(s) {
+            .For(_, from, _, cond, step, stmts) -> {
+                lower_for(cx, s, from, cond, step, stmts)
                 null
             }
             _ -> null,

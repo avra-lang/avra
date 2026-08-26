@@ -1,7 +1,10 @@
-//! The while's typing law: the condition is a bool; the body types
-//! under this scope.
-use core.{StmtId}
+//! The loops' typing laws: a while condition is a bool; a for range
+//! is ints. When a bound refuses, the desugared cond/step stay
+//! unwalked — the refusal gate stops the program before their
+//! (absorbed) types matter.
+use core.{StmtId, ExprId}
 use features.{StmtTypeCx, require_bool, nothing}
+use diagnostics.{error_at, pointed}
 
 export fn check_while(cx: StmtTypeCx, s: StmtId) {
     match cx.store.stmt(s) {
@@ -12,4 +15,32 @@ export fn check_while(cx: StmtTypeCx, s: StmtId) {
         }
         _ -> nothing(),
     }
+}
+
+export fn check_for(cx: StmtTypeCx, s: StmtId) {
+    match cx.store.stmt(s) {
+        .For(_, from, to, cond, step, stmts) -> {
+            cx.walk(from)
+            cx.walk(to)
+            let ok = range_bound(cx, from, "starts") && range_bound(cx, to, "ends")
+            if ok {
+                cx.walk(cond)
+                cx.walk(step)
+            }
+            cx.type_stmts(stmts)
+        }
+        _ -> nothing(),
+    }
+}
+
+/// A range bound is an `int`; Error absorbs.
+fn range_bound(cx: StmtTypeCx, e: ExprId, verb: string) -> bool {
+    let sh = cx.expr.shape_at(e)
+    if sh is .Int { return true }
+    if sh is .Error { return false }
+    cx.expr.emit(pointed(
+        error_at("type.mismatch", cx.expr.loc_of(e),
+            "a `for` range ${verb} at an `int`, found `${cx.expr.name_at(e)}`"),
+        "this is a `${cx.expr.name_at(e)}`"))
+    false
 }

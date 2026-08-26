@@ -1,10 +1,26 @@
 //! Parse-time lowering: the condition and body statements -> the
-//! While node.
-use core.{Stmt}
+//! While node; a range head -> the For node plus its DESUGARED
+//! condition and step (`name < hi`, `name + 1`) as real nodes with
+//! null spans. The two Ident references are SEPARATE nodes — each
+//! lowering site mints its own load.
+use core.{Stmt, Expr, BinOp}
 use features.{LangNode, Builder}
 
 fn build_while(b: Builder) -> Result<LangNode, string> {
     let c = b.expr(0)?
     let stmts = b.stmts(1)?
     b.make_stmt(Stmt.While(c, stmts))
+}
+
+fn build_for(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let lo = b.expr(1)?
+    let hi = b.expr(2)?
+    let stmts = b.stmts(3)?
+    let cond_ref = b.store.alloc_expr(Expr.Ident(n.text), null)
+    let cond = b.store.alloc_expr(Expr.Binary(BinOp.Lt, cond_ref, hi), null)
+    let step_ref = b.store.alloc_expr(Expr.Ident(n.text), null)
+    let one = b.store.alloc_expr(Expr.IntLit(1), null)
+    let step = b.store.alloc_expr(Expr.Binary(BinOp.Add, step_ref, one), null)
+    b.make_stmt(Stmt.For(n.text, lo, hi, cond, step, stmts))
 }
