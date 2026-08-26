@@ -8,6 +8,7 @@ use features.expr_spine.{SpineSemantics}
 use features.str_lit.{StrSemantics}
 use features.bool_lit.{BoolSemantics}
 use features.if_expr.{IfSemantics}
+use features.fns.{FnsSemantics}
 use diagnostics.{Diag, SourceFile, new_source_file}
 
 /// One parsed source: the tree (holes included), the SourceFile it
@@ -29,37 +30,47 @@ export fn semantics_of(e: Expr) -> dyn NodeSemantics {
     let strs: dyn NodeSemantics = StrSemantics { }
     let bools: dyn NodeSemantics = BoolSemantics { }
     let ifs: dyn NodeSemantics = IfSemantics { }
+    let calls: dyn NodeSemantics = FnsSemantics { }
     match e {
         .IntLit(_) or .Ident(_) or .Binary(_, _, _) or .Error -> spine,
         .StrLit(_) -> strs,
         .BoolLit(_) -> bools,
         .If(_, _, _) -> ifs,
+        .Call(_, _) -> calls,
     }
 }
 
-/// Every node at and under `root`, children before owners — THE
-/// order every pass visits: facts a node reads exist before it
-/// speaks.
-export fn post_order(store: NodeStore, root: ExprId) -> List<ExprId> {
-    let node = store.expr(root)
-    concat(flatten([post_order(store, k) for k in semantics_of(node).kids(node)]), [root])
-}
-
-/// A statement's bound name, when it binds one.
-export fn let_name(store: NodeStore, s: StmtId) -> string? {
-    match store.stmt(s) {
-        .Let(name, _) -> name,
-        _ -> null,
+/// The store's language-level vocabulary: the walk and the
+/// stmt-spine questions every pass asks, grouped where they read as
+/// prose — `store.post_order(v)`, `store.stmt_value(s)`.
+impl NodeStore {
+    /// Every node at and under `root`, children before owners — THE
+    /// order every pass visits: facts a node reads exist before it
+    /// speaks.
+    fn post_order(self, root: ExprId) -> List<ExprId> {
+        let node = self.expr(root)
+        concat(flatten([self.post_order(k) for k in semantics_of(node).kids(node)]), [root])
     }
-}
 
-/// A statement's value expression — the stmt-spine dispatch every
-/// pass walks. A new statement kind must decide here, once.
-export fn stmt_value(store: NodeStore, s: StmtId) -> ExprId? {
-    match store.stmt(s) {
-        .Let(_, v) -> v,
-        .ExprStmt(v) -> v,
-        .Error -> null,
+    /// A statement's bound name, when it binds one.
+    fn let_name(self, s: StmtId) -> string? {
+        match self.stmt(s) {
+            .Let(name, _) -> name,
+            _ -> null,
+        }
+    }
+
+    /// A statement's value expression at its OWN position — the
+    /// stmt-spine dispatch every pass walks. A new statement kind
+    /// must decide here, once. A FnDecl's body is not its value: it
+    /// runs at call time, under a frame.
+    fn stmt_value(self, s: StmtId) -> ExprId? {
+        match self.stmt(s) {
+            .Let(_, v) -> v,
+            .ExprStmt(v) -> v,
+            .FnDecl(_, _, _, _) -> null,
+            .Error -> null,
+        }
     }
 }
 

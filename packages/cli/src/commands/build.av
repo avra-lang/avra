@@ -1,0 +1,42 @@
+//! `avra build` — compile a program to a native binary: the emitted
+//! `.ll` linked with Avra's runtime by clang.
+use @std.cli.{Subcommand, CliResult, Runnable}
+use @std.avrac.diagnostics.{SourceFile}
+
+type BuildCmd = { }
+
+impl Runnable for BuildCmd {
+    fn run(self, args: CliResult) -> int {
+        let src: SourceFile? = source_arg(args)
+        if src == null { return 2 }
+        match lowered_or_report(src!) {
+            .Ok(path) -> link(path),
+            .Err(report) -> {
+                println(report)
+                1
+            }
+        }
+    }
+}
+
+export fn build_command() -> Subcommand {
+    let body: BuildCmd = BuildCmd { }
+    Subcommand { meta: file_command("build", "Compile a program to a native binary"), body: body }
+}
+
+/// clang links the `.ll` with Avra's runtime into a native binary.
+fn link(ll_path: string) -> int {
+    let out = binary_name(ll_path)
+    if avra_shell_exec_status("clang -w -O1 ${ll_path} build/runtime.o -o ${out}") != 0 {
+        eprintln("avra: clang failed linking ${ll_path}")
+        return 1
+    }
+    println(out)
+    0
+}
+
+/// `x.av.ll` builds `x`.
+fn binary_name(ll_path: string) -> string {
+    let base = if ll_path.ends_with(".ll") { ll_path.substring(0, ll_path.length - 3) } else { ll_path }
+    if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
+}

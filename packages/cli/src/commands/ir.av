@@ -1,0 +1,25 @@
+//! `avra ir` — print a program's lowered IR, regions as brackets.
+use @std.cli.{Subcommand, CliResult, Runnable}
+use @std.avrac.language.{avra, render_ir}
+use @std.avrac.diagnostics.{SourceFile}
+
+type IrCmd = { }
+
+impl Runnable for IrCmd {
+    fn run(self, args: CliResult) -> int {
+        let src: SourceFile? = source_arg(args)
+        if src == null { return 2 }
+        let a = avra().analyze(src!)
+        if !a.clean() {
+            println(a.report())
+            return 1
+        }
+        println(render_ir(a.lowered()))
+        0
+    }
+}
+
+export fn ir_command() -> Subcommand {
+    let body: IrCmd = IrCmd { }
+    Subcommand { meta: file_command("ir", "Print a program's IR, regions as brackets"), body: body }
+}

@@ -1,39 +1,46 @@
-//! Runs a program. The driver owns refusal, statement order, and the
-//! slots; HOW a node evaluates lives in its owning feature's
-//! NodeSemantics. A VALUE IS A LITERAL NODE — `1 + 2` reduces to a
-//! synthesized `IntLit(3)` — so a feature's literal is its value
-//! representation, and this same reduction is tomorrow's `@comptime`
-//! fold. A program with any diagnostic refuses to run: past that
-//! gate there are no dynamic checks. Names cost nothing at runtime —
-//! an ident reads its definition's slot through the resolve target.
+//! Runs a program. The driver owns refusal, statement order, the
+//! slots, and the frames; HOW a node evaluates lives in its owning
+//! feature's NodeSemantics. A VALUE IS A LITERAL NODE — `1 + 2`
+//! reduces to a synthesized `IntLit(3)` — so a feature's literal is
+//! its value representation, and this same reduction is tomorrow's
+//! `@comptime` fold. A program with any diagnostic refuses to run:
+//! past that gate there are no dynamic checks. Names cost nothing
+//! at runtime — an ident reads its definition's slot through the
+//! resolve target, a param reads its frame slot by index, and a
+//! call is a fresh frame over the target's body.
 use core.{Expr, Stmt, StmtId, ExprId, filled}
-use features.{EvalCx}
+use features.{EvalCx, nothing}
 
 type Evaluator = {
     a: Analysis,
     slots: List<ExprId?>,
-    values: List<ExprId?>,
     failures: List<string>,
 }
 
 /// The program's value node, or the report that made it unrunnable.
 fn run_analysis(a: Analysis) -> Result<ExprId, string> {
     if !a.clean() { return Result.Err(a.report()) }
-    // Both tables dense by id — reads are one index, never a scan.
     let ev = Evaluator {
         a: a,
         slots: filled<ExprId?>(a.store.stmts.count(), null),
-        values: filled<ExprId?>(a.store.exprs.count(), null),
         failures: [],
     }
     mut last: ExprId? = null
     for s in a.stmts {
-        let value: ExprId? = stmt_value(a.store, s)
-        if value == null { return Result.Err("defect: a hole survived a clean analysis") }
-        let v = eval_subtree(ev, value!)
-        mut written = ev.slots
-        written.set(s.index, v)
-        last = v
+        match a.store.stmt(s) {
+            .FnDecl(_, _, _, _) -> nothing(),
+            .Let(_, _) or .ExprStmt(_) or .Error -> {
+                let value: ExprId? = a.store.stmt_value(s)
+                if value == null {
+                    ev.record("defect: a hole survived a clean analysis")
+                } else {
+                    let v = eval_subtree(ev, [], value!)
+                    mut written = ev.slots
+                    written.set(s.index, v)
+                    last = v
+                }
+            }
+        }
     }
     if !ev.failures.is_empty() { return Result.Err(ev.failures[0]) }
     match last {
@@ -42,39 +49,58 @@ fn run_analysis(a: Analysis) -> Result<ExprId, string> {
     }
 }
 
-/// One subtree's value, computed at first request and memoized. The
-/// recursion IS the walk: an impl asking for a child's value lands
-/// back here — so only the branches an impl asks for ever run.
-fn eval_subtree(ev: Evaluator, e: ExprId) -> ExprId {
-    let seen: ExprId? = ev.values[e.index]
-    if seen != null { return seen! }
+/// One subtree's value under one frame. The recursion IS the walk:
+/// an impl asking for a child's value lands back here — so only the
+/// branches an impl asks for ever run, and each call re-runs its
+/// body under its own frame.
+fn eval_subtree(ev: Evaluator, frame: List<ExprId>, e: ExprId) -> ExprId {
     let cx = EvalCx {
         store: ev.a.store,
-        value_at: (k: ExprId) -> eval_subtree(ev, k),
-        def_value: (k: ExprId) -> ev.def_value(k),
+        value_at: (k: ExprId) -> eval_subtree(ev, frame, k),
+        def_value: (k: ExprId) -> def_value_of(ev, frame, k),
         alloc: (node: Expr) -> ev.a.store.alloc_expr(node, null),
+        invoke: (call_e: ExprId, args: List<ExprId>) -> invoke_fn(ev, call_e, args),
         fail: (msg: string) -> ev.record(msg),
     }
-    let v = semantics_of(ev.a.store.expr(e)).eval(cx, e)
-    mut vals = ev.values
-    vals.set(e.index, v)
-    v
+    semantics_of(ev.a.store.expr(e)).eval(cx, e)
+}
+
+/// An ident's value: its param's frame slot, or its definition's
+/// statement slot — resolution already paid for the lookup.
+fn def_value_of(ev: Evaluator, frame: List<ExprId>, e: ExprId) -> ExprId? {
+    let pi: int? = ev.a.param_at(e)
+    if pi != null { return frame[pi!] }
+    let target: StmtId? = ev.a.target(e)
+    match target {
+        let s -> ev.slots[s.index],
+        null -> null,
+    }
+}
+
+/// A call: the target's body under a fresh frame of the argument
+/// values.
+fn invoke_fn(ev: Evaluator, call_e: ExprId, args: List<ExprId>) -> ExprId {
+    let target: StmtId? = ev.a.target(call_e)
+    let body: ExprId? = match target {
+        let s -> match ev.a.store.stmt(s) {
+            .FnDecl(_, _, _, b) -> b,
+            .Let(_, _) or .ExprStmt(_) or .Error -> null,
+        },
+        null -> null,
+    }
+    match body {
+        let b -> eval_subtree(ev, args, b),
+        null -> {
+            ev.record("defect: a call without a fn target survived a clean analysis")
+            call_e
+        }
+    }
 }
 
 impl Evaluator {
     fn record(self, msg: string) {
         mut fs = self.failures
         fs.push(msg)
-    }
-
-    /// An ident's value is its definition's slot — resolution
-    /// already paid for the lookup.
-    fn def_value(self, e: ExprId) -> ExprId? {
-        let target: StmtId? = self.a.target(e)
-        match target {
-            let s -> self.slots[s.index],
-            null -> null,
-        }
     }
 }
 

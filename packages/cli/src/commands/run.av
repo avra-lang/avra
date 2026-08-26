@@ -1,0 +1,29 @@
+//! `avra run` — run a program and print its value.
+use @std.cli.{Subcommand, CliResult, Runnable}
+use @std.avrac.language.{avra}
+use @std.avrac.diagnostics.{SourceFile}
+
+type RunCmd = { }
+
+impl Runnable for RunCmd {
+    fn run(self, args: CliResult) -> int {
+        let src: SourceFile? = source_arg(args)
+        if src == null { return 2 }
+        let a = avra().analyze(src!)
+        match a.run() {
+            .Ok(v) -> {
+                println(a.printed(v))
+                0
+            }
+            .Err(report) -> {
+                println(report)
+                1
+            }
+        }
+    }
+}
+
+export fn run_command() -> Subcommand {
+    let body: RunCmd = RunCmd { }
+    Subcommand { meta: file_command("run", "Run a program and print its value"), body: body }
+}

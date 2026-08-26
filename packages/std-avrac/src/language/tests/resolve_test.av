@@ -1,7 +1,7 @@
 // The first pass: uses resolve to definition sites, shadowing takes
 // the latest, and an unresolved name earns the milestone error —
 // kind, code, window, pointer, and a graded suggestion.
-use @std.avrac.language.{avra, parse_source, resolve, target_of, stmt_value}
+use @std.avrac.language.{avra, parse_source, resolve, target_of}
 use @std.errors.{Confidence}
 use @std.avrac.diagnostics.{new_source_file}
 
@@ -10,7 +10,7 @@ spec "language/resolve" {
         then "a use resolves to its definition site" {
             let p = parse_source("let x = 1\nx")
             let r = resolve(p)
-            let use_expr = stmt_value(p.store, p.stmts[1])!
+            let use_expr = p.store.stmt_value(p.stmts[1])!
             r.diagnostics.is_empty() &&
                 target_of(r, use_expr) != null &&
                 target_of(r, use_expr)!.index == p.stmts[0].index
@@ -18,7 +18,7 @@ spec "language/resolve" {
         then "a later let shadows an earlier one" {
             let p = parse_source("let x = 1\nlet x = 2\nx")
             let r = resolve(p)
-            target_of(r, stmt_value(p.store, p.stmts[2])!)!.index == p.stmts[1].index
+            target_of(r, p.store.stmt_value(p.stmts[2])!)!.index == p.stmts[1].index
         }
     }
     given "unresolved names" {

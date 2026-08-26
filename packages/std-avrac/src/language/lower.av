@@ -1,17 +1,33 @@
 //! Lowers a program to IR. The driver owns refusal, statement order,
 //! registers, and the scope structure; HOW a node lowers lives in
 //! its owning feature's NodeSemantics. Lowering emits PURE
-//! semantics — the memory pass owns every Release. A definition's
-//! register is its slot: idents cost nothing, exactly as in eval.
-use core.{StmtId, ExprId, TypeId, Reg, Ins, Level, TypeRegistry, filled}
+//! semantics — the memory pass owns every Retain and Release. A
+//! definition's register is its slot, a param IS its register
+//! (params mint first), so names cost nothing, exactly as in eval.
+//! Each fn lowers to its OWN body with its own registers; `main` is
+//! the statement list.
+use core.{Stmt, StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled}
 use diagnostics.{Diag, error_at}
-use features.{LowerCx, nothing}
+use features.{LowerCx, FnSig, nothing}
 
-/// The lowering facts: instructions in order, each register's type
-/// (dense by Reg), and the registry that names those types.
-export type Lowered = {
+/// One lowered body: instructions in order and each register's type
+/// (dense by Reg). For a fn, the first `params.length` registers ARE
+/// the params, and `gives` is the register RetVal answers with.
+export type Body = {
+    name: string,
+    params: List<TypeId>,
+    ret: TypeId,
+    gives: Reg?,
     ins: List<Ins>,
     reg_types: List<TypeId>,
+}
+
+/// The lowering facts: every fn body, the entry body (`main` — its
+/// specialness is explicit: no params, a Print, exit 0), the
+/// registry that names the types, and any defects.
+export type Lowered = {
+    fns: List<Body>,
+    entry: Body,
     types: TypeRegistry,
     diagnostics: List<Diag>,
 }
@@ -25,26 +41,77 @@ type Lower = {
     failures: List<string>,
 }
 
-/// The whole program as IR: one Application scope, the last
-/// statement's register printed, exit 0.
-export fn lower(a: Analysis) -> Lowered {
-    let lo = Lower {
+fn new_lower(a: Analysis) -> Lower {
+    Lower {
         a: a, ins: [], reg_types: [],
         regs: filled<Reg?>(a.store.exprs.count(), null),
         slots: filled<Reg?>(a.store.stmts.count(), null),
         failures: [],
     }
+}
+
+/// The whole program as IR: every fn body, then main — one
+/// Application scope each, main printing its last statement.
+export fn lower(a: Analysis) -> Lowered {
+    mut fns: List<Body> = []
+    mut failures: List<string> = []
+    for s in a.stmts {
+        match a.store.stmt(s) {
+            .FnDecl(fname, _, _, body) -> {
+                let lf = lower_fn(a, s, fname, body)
+                fns.push(lf.body)
+                for m in lf.failures { failures.push(m) }
+            }
+            .Let(_, _) or .ExprStmt(_) or .Error -> nothing(),
+        }
+    }
+    let lm = lower_main(a)
+    for m in lm.failures { failures.push(m) }
+    Lowered {
+        fns: fns, entry: lm.body, types: a.typing.types,
+        diagnostics: [error_at("language.defect", null, m) for m in failures],
+    }
+}
+
+type LoweredBody = { body: Body, failures: List<string> }
+
+/// One fn: params pre-minted as registers 0..N-1, the body inside
+/// one scope, the answer after the scope settles.
+fn lower_fn(a: Analysis, s: StmtId, fname: string, root: ExprId) -> LoweredBody {
+    let sig: FnSig? = a.typing.sigs[s.index]
+    let ptypes: List<TypeId> = match sig { let sg -> sg.params, null -> [] }
+    let rt: TypeId = match sig { let sg -> sg.ret, null -> a.typing.types.intern(Type.Error) }
+    let lo = new_lower(a)
+    mut tys = lo.reg_types
+    for pt in ptypes { tys.push(pt) }
+    lo.give(Ins.ScopeEnter(Level.Application))
+    let r = lower_subtree(lo, root)
+    lo.give(Ins.ScopeExit)
+    lo.give(Ins.RetVal(r))
+    LoweredBody {
+        body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.ins, reg_types: lo.reg_types },
+        failures: lo.failures,
+    }
+}
+
+fn lower_main(a: Analysis) -> LoweredBody {
+    let lo = new_lower(a)
     lo.give(Ins.ScopeEnter(Level.Application))
     mut last: Reg? = null
     for s in a.stmts {
-        let value: ExprId? = stmt_value(a.store, s)
-        if value == null {
-            lo.record("defect: a hole survived a clean analysis")
-        } else {
-            let r = lower_subtree(lo, value!)
-            mut written = lo.slots
-            written.set(s.index, r)
-            last = r
+        match a.store.stmt(s) {
+            .FnDecl(_, _, _, _) -> nothing(),
+            .Let(_, _) or .ExprStmt(_) or .Error -> {
+                let value: ExprId? = a.store.stmt_value(s)
+                if value == null {
+                    lo.record("defect: a hole survived a clean analysis")
+                } else {
+                    let r = lower_subtree(lo, value!)
+                    mut written = lo.slots
+                    written.set(s.index, r)
+                    last = r
+                }
+            }
         }
     }
     match last {
@@ -53,9 +120,12 @@ export fn lower(a: Analysis) -> Lowered {
     }
     lo.give(Ins.ScopeExit)
     lo.give(Ins.Ret(0))
-    Lowered {
-        ins: lo.ins, reg_types: lo.reg_types, types: a.typing.types,
-        diagnostics: [error_at("language.defect", null, m) for m in lo.failures],
+    LoweredBody {
+        body: Body {
+            name: "main", params: [], ret: a.typing.types.intern(Type.Int),
+            gives: null, ins: lo.ins, reg_types: lo.reg_types,
+        },
+        failures: lo.failures,
     }
 }
 
@@ -93,8 +163,11 @@ impl Lower {
         ins.push(i)
     }
 
-    /// An ident's register is its definition's slot.
+    /// An ident's register: its param's (params ARE registers
+    /// 0..N-1), or its definition's slot.
     fn def_reg(self, e: ExprId) -> Reg? {
+        let pi: int? = self.a.param_at(e)
+        if pi != null { return Reg { index: pi! } }
         let target: StmtId? = self.a.target(e)
         match target {
             let s -> self.slots[s.index],

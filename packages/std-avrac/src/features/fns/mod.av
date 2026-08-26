@@ -1,0 +1,30 @@
+//! Functions — `fn name(a: int) -> int { <expr> }` and direct calls.
+//! The decl is a keyword-anchored statement; the call branch merges
+//! into `primary` BEFORE the spine's bare NAME, and the executor's
+//! backtracking sends `f(x)` here while `f` alone falls through.
+use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
+
+export fn fns() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name      | build
+        "fn_decl" | build_fn
+        "call"    | build_call
+    }
+    let codes = table<DiagCode> {
+        kind                   | id      | summary
+        "type.unknown"         | "F2001" | "a type annotation names no known type"
+        "resolve.duplicate_fn" | "F3003" | "two fns share one name"
+    }
+    component LanguageFeature f {
+        name = "fns"
+        docs = "`fn name(params) -> type { expression }`, and calls `name(args)`."
+        gram = """
+stmt = "fn" n:NAME "(" ( ps:NAME ":" pt:NAME ( "," ps:NAME ":" pt:NAME )* )? ")" "->" r:NAME "{" b:expression "}" BREAK @recover(sync_to: "BREAK") -> fn_decl(n, ps, pt, r, b)
+primary = c:NAME "(" ( as:expression ( "," as:expression )* )? ")" @expect(")", "expected `)` to close the arguments") -> call(c, as)
+"""
+        builders = rows
+        diags = codes
+    }
+    f
+}

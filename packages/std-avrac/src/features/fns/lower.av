@@ -1,0 +1,17 @@
+//! The call's lowering rule: argument registers, then one Call —
+//! the memory pass owns the retains the ABI demands.
+use core.{Expr, ExprId, Reg, Ins}
+use features.{LowerCx}
+
+fn call_lower(cx: LowerCx, e: ExprId) -> Reg {
+    match cx.store.expr(e) {
+        .Call(callee, args) -> {
+            mut regs: List<Reg> = []
+            for a in args { regs.push(cx.reg_of(a)) }
+            let dst = cx.result(e)
+            cx.emit(Ins.Call(dst, callee, regs))
+            dst
+        }
+        _ -> cx.result(e),
+    }
+}

@@ -16,13 +16,20 @@ fn messages(g: Grammar) -> List<string> {
 
 spec "grammar/first" {
     given "two branches sharing a first token" {
-        then "a shared literal names both branches and the loser" {
+        then "a committing earlier branch names both branches and the loser" {
             let g = g1([rule("a", [
-                seq([item(lit("x")), item(named("NAME"))]),
+                seq([item(lit("x"))]),
                 seq([item(lit("x")), item(named("NUMBER"))]),
             ])])
             let m = messages(g)
             m.length == 1 && m[0] == "branches 1 and 2 both begin with `x` — branch 2 is unreachable"
+        }
+        then "a branch needing more after the shared token backtracks — no defect" {
+            let g = g1([rule("a", [
+                seq([item(lit("x")), item(named("NAME"))]),
+                seq([item(lit("x")), item(named("NUMBER"))]),
+            ])])
+            first_defects(g).is_empty()
         }
         then "a shared terminal is the same defect" {
             let g = g1([rule("a", [

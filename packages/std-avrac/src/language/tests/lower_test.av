@@ -10,7 +10,7 @@ fn ir_of(source: string) -> Lowered {
 }
 
 fn count_releases(l: Lowered) -> int {
-    l.ins.filter((i: Ins) -> i is .Release).length
+    l.entry.ins.filter((i: Ins) -> i is .Release).length
 }
 
 spec "language/lower" {
@@ -18,15 +18,15 @@ spec "language/lower" {
         then "one scope, constants, one Bin, a print, exit 0" {
             let l = ir_of("1 + 2")
             l.diagnostics.is_empty() &&
-                l.ins[0] is .ScopeEnter && l.ins.last()! is .Ret &&
-                l.ins.filter((i: Ins) -> i is .Bin).length == 1 &&
-                l.ins.filter((i: Ins) -> i is .ConstInt).length == 2 &&
-                l.ins.filter((i: Ins) -> i is .Print).length == 1
+                l.entry.ins[0] is .ScopeEnter && l.entry.ins.last()! is .Ret &&
+                l.entry.ins.filter((i: Ins) -> i is .Bin).length == 1 &&
+                l.entry.ins.filter((i: Ins) -> i is .ConstInt).length == 2 &&
+                l.entry.ins.filter((i: Ins) -> i is .Print).length == 1
         }
         then "an ident adds NO instruction — SSA by construction" {
             let direct = ir_of("1 + 2")
             let named = ir_of("let x = 1 + 2\nx")
-            named.ins.length == direct.ins.length
+            named.entry.ins.length == direct.entry.ins.length
         }
     }
     given "strings under the Application strategy" {
@@ -38,7 +38,7 @@ spec "language/lower" {
             count_releases(ir_of("let n = 1 + 2\nn < 4")) == 0
         }
         then "string == lowers through the runtime" {
-            ir_of("\"a\" == \"b\"").ins.filter((i: Ins) -> i is .CallRt).length == 1
+            ir_of("\"a\" == \"b\"").entry.ins.filter((i: Ins) -> i is .CallRt).length == 1
         }
     }
 }

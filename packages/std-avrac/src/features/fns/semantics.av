@@ -1,0 +1,40 @@
+//! The call's NodeSemantics: dispatch only. Typing lives in
+//! check.av, evaluation in eval.av, lowering in lower.av. The
+//! FnDecl STATEMENT is driver-handled until statements join the
+//! contract.
+use core.{Expr, ExprId, TypeId, NodeStore, Reg}
+use features.{NodeSemantics, ResolveCx, TypeCx, EvalCx, LowerCx, nothing}
+
+export type FnsSemantics = { }
+
+impl NodeSemantics for FnsSemantics {
+    fn kids(self, e: Expr) -> List<ExprId> {
+        match e {
+            .Call(_, args) -> args,
+            _ -> [],
+        }
+    }
+
+    fn resolve(self, cx: ResolveCx, e: ExprId) {
+        match cx.store.expr(e) {
+            .Call(callee, _) -> cx.use_call(e, callee),
+            _ -> nothing(),
+        }
+    }
+
+    fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
+        call_type(cx, e)
+    }
+
+    fn eval(self, cx: EvalCx, e: ExprId) -> ExprId {
+        call_eval(cx, e)
+    }
+
+    fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
+        call_lower(cx, e)
+    }
+
+    fn printed(self, store: NodeStore, e: ExprId) -> string? {
+        null
+    }
+}

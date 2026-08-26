@@ -1,0 +1,203 @@
+//! `avra new feature <name>` — the compiler writes its own next
+//! feature: the directory, the six files, the test, all compiling
+//! placeholder bodies. What remains is the semantics and three
+//! wiring edits, printed as a checklist.
+use @std.cli.{Subcommand, CommandSpec, CliResult, Runnable, ArgDef, result_get_arg}
+
+type NewCmd = { }
+
+impl Runnable for NewCmd {
+    fn run(self, args: CliResult) -> int {
+        let kind = result_get_arg(args, "kind")
+        if kind != "feature" {
+            eprintln("avra new: only `feature` exists today")
+            return 2
+        }
+        scaffold_feature(result_get_arg(args, "name"))
+    }
+}
+
+export fn new_command() -> Subcommand {
+    let body: NewCmd = NewCmd { }
+    let meta = CommandSpec {
+        name: "new",
+        description: "Scaffold the next feature",
+        hidden: false,
+        flags: [],
+        args: [
+            ArgDef { name: "kind", description: "what to scaffold (`feature`)", required: true, variadic: false },
+            ArgDef { name: "name", description: "its snake_case name", required: true, variadic: false },
+        ],
+        options: [],
+    }
+    Subcommand { meta: meta, body: body }
+}
+
+/// `foo` -> `Foo`.
+fn initial_upper(name: string) -> string {
+    let lower = "abcdefghijklmnopqrstuvwxyz"
+    let upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if name.length == 0 { return name }
+    let head = name.substring(0, 1)
+    mut out = head
+    mut j = 0
+    while j < 26 {
+        if lower.substring(j, j + 1) == head { out = upper.substring(j, j + 1) }
+        j = j + 1
+    }
+    "${out}${name.substring(1, name.length)}"
+}
+
+fn scaffold_feature(name: string) -> int {
+    let dir = "packages/std-avrac/src/features/${name}"
+    if avra_selfhost_file_exists("${dir}/mod.av") != 0 {
+        eprintln("avra new: `${dir}` already exists")
+        return 2
+    }
+    if avra_mkdir_p("${dir}/tests") == 0 {
+        eprintln("avra new: cannot create `${dir}`")
+        return 1
+    }
+    let ty = "${initial_upper(name)}Semantics"
+    write_or_die("${dir}/mod.av", mod_template(name))
+    write_or_die("${dir}/builders.av", builders_template(name))
+    write_or_die("${dir}/semantics.av", semantics_template(name, ty))
+    write_or_die("${dir}/check.av", check_template(name))
+    write_or_die("${dir}/eval.av", eval_template(name))
+    write_or_die("${dir}/lower.av", lower_template(name))
+    write_or_die("${dir}/tests/${name}_test.av", test_template(name))
+    println("feature `${name}` scaffolded at ${dir}")
+    println("wire it in (three edits):")
+    println("  1. core/nodes.av — the node variant and its fingerprint arm")
+    println("  2. language/program.av — import ${ty}; add the semantics_of arm")
+    println("  3. language/mod.av — the feature in language_features(), in its spot")
+    println("prove it: corpus/${name}.av with its .expected, then `make gate`")
+    0
+}
+
+fn write_or_die(path: string, content: string) {
+    if avra_selfhost_write_file(path, content) == 0 {
+        eprintln("avra new: cannot write `${path}`")
+        avra_process_exit(1)
+    }
+}
+
+fn mod_template(name: string) -> string {
+    """//! TODO: what `${name}` IS, in one breath.
+use features.{LanguageFeature, BuilderRow}
+
+export fn ${name}() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name      | build
+        "${name}" | build_${name}
+    }
+    component LanguageFeature f {
+        name = "${name}"
+        docs = "TODO: the one-line surface."
+        gram = \"\"\"
+TODO = TODO -> ${name}()
+\"\"\"
+        builders = rows
+    }
+    f
+}
+"""
+}
+
+fn builders_template(name: string) -> string {
+    """//! Parse-time lowering: captures -> the ${name} node.
+use core.{Expr}
+use features.{LangNode, Builder}
+
+fn build_${name}(b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.Error)
+}
+"""
+}
+
+fn semantics_template(name: string, ty: string) -> string {
+    """//! The ${name} NodeSemantics: dispatch only. Typing lives in
+//! check.av, evaluation in eval.av, lowering in lower.av.
+use core.{Expr, ExprId, TypeId, NodeStore, Reg}
+use features.{NodeSemantics, ResolveCx, TypeCx, EvalCx, LowerCx, nothing}
+
+export type ${ty} = { }
+
+impl NodeSemantics for ${ty} {
+    fn kids(self, e: Expr) -> List<ExprId> {
+        []
+    }
+
+    fn resolve(self, cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+
+    fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
+        ${name}_type(cx, e)
+    }
+
+    fn eval(self, cx: EvalCx, e: ExprId) -> ExprId {
+        ${name}_eval(cx, e)
+    }
+
+    fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
+        ${name}_lower(cx, e)
+    }
+
+    fn printed(self, store: NodeStore, e: ExprId) -> string? {
+        null
+    }
+}
+"""
+}
+
+fn check_template(name: string) -> string {
+    """//! The typing rule: TODO.
+use core.{ExprId, Type, TypeId}
+use features.{TypeCx}
+
+fn ${name}_type(cx: TypeCx, e: ExprId) -> TypeId {
+    cx.intern(Type.Error)
+}
+"""
+}
+
+fn eval_template(name: string) -> string {
+    """//! The evaluation rule: TODO.
+use core.{ExprId}
+use features.{EvalCx}
+
+fn ${name}_eval(cx: EvalCx, e: ExprId) -> ExprId {
+    e
+}
+"""
+}
+
+fn lower_template(name: string) -> string {
+    """//! The lowering rule: TODO.
+use core.{ExprId, Reg}
+use features.{LowerCx}
+
+fn ${name}_lower(cx: LowerCx, e: ExprId) -> Reg {
+    cx.result(e)
+}
+"""
+}
+
+fn test_template(name: string) -> string {
+    """// TODO: the vertical, tested — parse, type, run, and the IR.
+use @std.avrac.language.{analyze_source}
+
+fn shown(source: string) -> string {
+    analyze_source(source).ran() ?? "<refused>"
+}
+
+spec "features/${name}" {
+    given "TODO" {
+        then "TODO" {
+            shown("TODO") == "<refused>"
+        }
+    }
+}
+"""
+}

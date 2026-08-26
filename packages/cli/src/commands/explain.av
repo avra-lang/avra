@@ -1,0 +1,33 @@
+//! `avra explain` — what a diagnostic code means, from the
+//! assembled registry.
+use @std.cli.{Subcommand, CommandSpec, CliResult, Runnable, ArgDef, result_get_arg}
+use @std.avrac.language.{avra}
+
+type ExplainCmd = { }
+
+impl Runnable for ExplainCmd {
+    fn run(self, args: CliResult) -> int {
+        let q = result_get_arg(args, "code")
+        for c in avra().codes {
+            if c.id == q || c.kind == q {
+                println("${c.id} ${c.kind} — ${c.summary}")
+                return 0
+            }
+        }
+        eprintln("avra: nothing registered under `${q}`")
+        1
+    }
+}
+
+export fn explain_command() -> Subcommand {
+    let body: ExplainCmd = ExplainCmd { }
+    let meta = CommandSpec {
+        name: "explain",
+        description: "What a diagnostic code means",
+        hidden: false,
+        flags: [],
+        args: [ArgDef { name: "code", description: "an F-code or a kind", required: true, variadic: false }],
+        options: [],
+    }
+    Subcommand { meta: meta, body: body }
+}

@@ -110,10 +110,16 @@ spec "grammar/executor" {
             ])])
             result_str(run_sx(g, "\"hi\"")) == "(as_str hi)"
         }
-        then "an anchored branch commits: siblings are not tried" {
+        then "a broken branch defers: a sibling with the same anchor still hits" {
             let g = g1([rule("c", [
                 seq_to([item(lit("(")), cap("a", named("NAME")), item(lit(")")), item(named("BREAK"))], Build.Call("mk", ["a"])),
                 seq_to([item(lit("(")), cap("s", named("STRING")), item(lit(")")), item(named("BREAK"))], Build.Call("mk2", ["s"])),
+            ])])
+            result_str(run_sx(g, "( \"s\" )")) == "(mk2 s)"
+        }
+        then "when no sibling hits, the first break stands and reports from inside" {
+            let g = g1([rule("c", [
+                seq_to([item(lit("(")), cap("a", named("NAME")), item(lit(")")), item(named("BREAK"))], Build.Call("mk", ["a"])),
             ])])
             let o = run_sx(g, "( \"s\" )")
             o.result == null && o.diagnostics.length == 1

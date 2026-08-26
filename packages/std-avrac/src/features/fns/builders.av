@@ -1,0 +1,27 @@
+//! Parse-time lowering: captured tokens and expressions -> the
+//! FnDecl statement and the Call node. Param names and types arrive
+//! as two parallel token lists and zip into Params.
+use core.{Expr, Stmt, Param}
+use features.{LangNode, Builder}
+
+fn build_fn(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let ps = b.tokens(1)?
+    let pt = b.tokens(2)?
+    let r = b.token(3)?
+    let body = b.expr(4)?
+    if ps.length != pt.length {
+        return Result.Err("param names and types disagree in count")
+    }
+    mut params: List<Param> = []
+    for j in 0..ps.length {
+        params.push(Param { name: ps[j].text, ty: pt[j].text })
+    }
+    b.make_stmt(Stmt.FnDecl(n.text, params, r.text, body))
+}
+
+fn build_call(b: Builder) -> Result<LangNode, string> {
+    let c = b.token(0)?
+    let args = b.exprs(1)?
+    b.make_expr(Expr.Call(c.text, args))
+}

@@ -14,6 +14,7 @@ export type Reg = { index: int }
 export enum Level { Application, Systems, Bare, Hardware }
 
 export enum Ins {
+    // Values.
     ConstInt(dst: Reg, v: int)
     ConstStr(dst: Reg, s: string)
     ConstBool(dst: Reg, v: bool)
@@ -23,17 +24,45 @@ export enum Ins {
     /// keeps this instruction set closed: features lower
     /// value-producing runtime needs here, never as new variants.
     CallRt(dst: Reg, callee: string, args: List<Reg>)
+
+    // Structure: scopes, regions, and calls — all BRACKETS in the
+    // one flat list, never labels or jumps. Each branch of a region
+    // is a scope to the memory pass and names the register it
+    // yields; `dst` merges the two.
     ScopeEnter(level: Level)
     ScopeExit
-    /// Control flow as BRACKETS in the one flat list — regions,
-    /// never labels or jumps. Each branch is a scope to the memory
-    /// pass and names the register it yields; `dst` merges the two.
     IfStart(cond: Reg)
     Else(gives: Reg)
     IfEnd(dst: Reg, gives: Reg)
-    /// Inserted by the memory pass, never by lowering.
+    /// A call to an Avra fn body. The ABI is callee-cleans: the
+    /// caller retains managed arguments in, the callee's exit
+    /// releases its params minus what RetVal keeps.
+    Call(dst: Reg, callee: string, args: List<Reg>)
+    /// A fn body's answer, after its scope has settled its debts.
+    RetVal(r: Reg)
+
+    // Memory: inserted by the memory pass, never by lowering.
+    Retain(r: Reg)
     Release(r: Reg)
+
+    // Effects.
     /// The program's value, shown. How is decided by the reg's type.
     Print(src: Reg)
     Ret(code: int)
+}
+
+/// The register an instruction DEFINES, when it defines one — kept
+/// beside the enum so consumers never grow their own lists.
+export fn dst_of(i: Ins) -> Reg? {
+    match i {
+        .ConstInt(d, _) -> d,
+        .ConstStr(d, _) -> d,
+        .ConstBool(d, _) -> d,
+        .Bin(d, _, _, _) -> d,
+        .CallRt(d, _, _) -> d,
+        .Call(d, _, _) -> d,
+        .IfEnd(d, _) -> d,
+        .ScopeEnter(_) or .ScopeExit or .IfStart(_) or .Else(_) or
+        .Release(_) or .Retain(_) or .RetVal(_) or .Print(_) or .Ret(_) -> null,
+    }
 }

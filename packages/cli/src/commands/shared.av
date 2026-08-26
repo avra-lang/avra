@@ -1,0 +1,45 @@
+//! What every command shares: the host externs, the argued source
+//! file, and the two CommandSpec shapes.
+use @std.cli.{CommandSpec, CliResult, ArgDef, result_get_arg}
+use @std.avrac.diagnostics.{new_source_file, SourceFile}
+
+extern fn avra_selfhost_read_file(path: string) -> string
+extern fn avra_selfhost_file_exists(path: string) -> int
+extern fn avra_selfhost_write_file(path: string, content: string) -> int
+extern fn avra_shell_exec_status(cmd: string) -> int
+extern fn avra_mkdir_p(path: string) -> int
+extern fn avra_process_exit(code: int)
+
+/// The argued file as a SourceFile, or null when it does not exist.
+fn source_arg(args: CliResult) -> SourceFile? {
+    let path = result_get_arg(args, "file")
+    if avra_selfhost_file_exists(path) == 0 {
+        eprintln("avra: no such file: ${path}")
+        return null
+    }
+    new_source_file(path, avra_selfhost_read_file(path))
+}
+
+/// A subcommand over exactly one source-file argument.
+fn file_command(name: string, description: string) -> CommandSpec {
+    CommandSpec {
+        name: name,
+        description: description,
+        hidden: false,
+        flags: [],
+        args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
+        options: [],
+    }
+}
+
+/// A subcommand with no arguments.
+fn bare_command(name: string, description: string) -> CommandSpec {
+    CommandSpec {
+        name: name,
+        description: description,
+        hidden: false,
+        flags: [],
+        args: [],
+        options: [],
+    }
+}

@@ -1,19 +1,22 @@
 //! The type pass — the second pure query. The driver owns the
-//! registry, the dense table, and the walk; what a NODE's type IS
-//! lives in its owning feature's NodeSemantics. Facts stay TOTAL:
-//! every expression has a TypeId, never an option and never an
-//! Unknown — a hole or unresolved name types as the interned Error,
-//! which ABSORBS: the causing pass already spoke, so no diagnostic
-//! cascades from it.
-use core.{Expr, Stmt, StmtId, ExprId, TypeId, Type, TypeRegistry, new_type_registry, filled}
-use diagnostics.{Diag, loc_at}
-use features.{TypeCx}
+//! registry, the dense table, the fn signatures, and the walk; what
+//! a NODE's type IS lives in its owning feature's NodeSemantics.
+//! Facts stay TOTAL: every expression has a TypeId, never an option
+//! and never an Unknown — a hole or unresolved name types as the
+//! interned Error, which ABSORBS: the causing pass already spoke,
+//! so no diagnostic cascades from it. Signatures come first, from
+//! the annotations alone, so a call may name a fn declared later.
+use core.{Expr, Stmt, StmtId, ExprId, TypeId, Type, Param, TypeRegistry, new_type_registry, filled}
+use diagnostics.{Diag, loc_at, error_at, pointed}
+use features.{TypeCx, FnSig, nothing}
 
-/// The pass's facts: the registry and a dense table indexed by
-/// ExprId — total, O(1) reads for every later pass.
+/// The pass's facts: the registry, a dense expression table, and a
+/// dense signature table indexed by StmtId — total, O(1) reads for
+/// every later pass.
 export type Typing = {
     types: TypeRegistry,
     of_expr: List<TypeId>,
+    sigs: List<FnSig?>,
     diagnostics: List<Diag>,
 }
 
@@ -27,6 +30,7 @@ type Typer = {
     resolution: Resolution,
     types: TypeRegistry,
     of_expr: List<TypeId>,
+    sigs: List<FnSig?>,
     diagnostics: List<Diag>,
 }
 
@@ -36,25 +40,38 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
     let hole = registry.intern(Type.Error)
     let t = Typer {
         p: p, resolution: r, types: registry,
-        of_expr: filled(p.store.exprs.count(), hole), diagnostics: [],
+        of_expr: filled(p.store.exprs.count(), hole),
+        sigs: filled<FnSig?>(p.store.stmts.count(), null),
+        diagnostics: [],
     }
+    t.declare_sigs()
+    for s in p.stmts {
+        match p.store.stmt(s) {
+            .FnDecl(fname, _, fret, body) -> t.check_fn(s, fname, fret, body),
+            .Let(_, _) or .ExprStmt(_) or .Error -> {
+                let value: ExprId? = p.store.stmt_value(s)
+                if value != null { type_walk(t, [], value!) }
+            }
+        }
+    }
+    Typing { types: t.types, of_expr: t.of_expr, sigs: t.sigs, diagnostics: t.diagnostics }
+}
+
+/// One subtree's types, under the given param types.
+fn type_walk(t: Typer, param_types: List<TypeId>, root: ExprId) {
     let cx = TypeCx {
-        store: p.store,
+        store: t.p.store,
         type_at: (e: ExprId) -> t.of_expr[e.index],
         shape_at: (e: ExprId) -> t.types.shape_of(t.of_expr[e.index]),
         intern: (sh: Type) -> t.types.intern(sh),
-        target_type: (e: ExprId) -> t.target_type(e),
+        target_type: (e: ExprId) -> t.target_type(e, param_types),
+        sig_of: (e: ExprId) -> t.sig_at(e),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
+        type_name: (ty: TypeId) -> t.types.name_of(ty),
         loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
         emit: (d: Diag) -> t.speak(d),
     }
-    for s in p.stmts {
-        let value: ExprId? = stmt_value(p.store, s)
-        if value != null {
-            for e in post_order(p.store, value!) { type_node(t, cx, e) }
-        }
-    }
-    Typing { types: t.types, of_expr: t.of_expr, diagnostics: t.diagnostics }
+    for e in t.p.store.post_order(root) { type_node(t, cx, e) }
 }
 
 /// One node's fact: the owner speaks, the table records.
@@ -63,18 +80,87 @@ fn type_node(t: Typer, cx: TypeCx, e: ExprId) {
     facts.set(e.index, semantics_of(t.p.store.expr(e)).type_of(cx, e))
 }
 
+/// The type an annotation names, or null.
+fn shape_named(name: string) -> Type? {
+    if name == "int" { return Type.Int }
+    if name == "string" { return Type.Str }
+    if name == "bool" { return Type.Bool }
+    null
+}
+
 impl Typer {
-    /// An ident's type is its definition's value type. No target
-    /// means resolve already spoke — Error, silently.
-    fn target_type(self, e: ExprId) -> TypeId {
+    /// Every fn's signature, from its annotations alone — before any
+    /// body walks, so calls resolve signatures program-wide.
+    fn declare_sigs(self) {
+        for s in self.p.stmts {
+            match self.p.store.stmt(s) {
+                .FnDecl(_, fparams, fret, _) -> self.declare_sig(s, fparams, fret),
+                .Let(_, _) or .ExprStmt(_) or .Error -> nothing(),
+            }
+        }
+    }
+
+    fn declare_sig(self, s: StmtId, fparams: List<Param>, fret: string) {
+        mut ptypes: List<TypeId> = []
+        for pp in fparams { ptypes.push(self.annotated(s, pp.ty)) }
+        let rt = self.annotated(s, fret)
+        mut sig_table = self.sigs
+        sig_table.set(s.index, FnSig { params: ptypes, ret: rt })
+    }
+
+    /// An annotation's TypeId; an unknown name speaks and absorbs.
+    fn annotated(self, s: StmtId, name: string) -> TypeId {
+        let sh: Type? = shape_named(name)
+        match sh {
+            let shp -> self.types.intern(shp),
+            null -> {
+                self.speak(pointed(
+                    error_at("type.unknown", loc_at(self.p.source.file, self.p.store.stmt_span(s)), "`${name}` names no type"),
+                    "in this signature")
+                    with { help: "the types today are `int`, `string`, and `bool`" })
+                self.types.intern(Type.Error)
+            }
+        }
+    }
+
+    /// A fn body types under its params and must answer its
+    /// declared return.
+    fn check_fn(self, s: StmtId, fname: string, fret: string, body: ExprId) {
+        let sig: FnSig? = self.sigs[s.index]
+        let ptypes: List<TypeId> = match sig { let sg -> sg.params, null -> [] }
+        type_walk(self, ptypes, body)
+        let want: TypeId = match sig { let sg -> sg.ret, null -> self.types.intern(Type.Error) }
+        let got = self.of_expr[body.index]
+        let absorb = self.types.shape_of(got) is .Error || self.types.shape_of(want) is .Error
+        if !absorb && got.index != want.index {
+            self.speak(pointed(
+                error_at("type.mismatch", loc_at(self.p.source.file, self.p.store.expr_span(body)), "the body answers `${self.types.name_of(got)}` but `${fname}` declares `${fret}`"),
+                "this is a `${self.types.name_of(got)}`"))
+        }
+    }
+
+    /// An ident's type: its param's, or its definition's value type.
+    /// No target means resolve already spoke — Error, silently.
+    fn target_type(self, e: ExprId, param_types: List<TypeId>) -> TypeId {
+        let pi: int? = param_of(self.resolution, e)
+        if pi != null { return param_types[pi!] }
         let target: StmtId? = target_of(self.resolution, e)
         let v: ExprId? = match target {
-            let s -> stmt_value(self.p.store, s),
+            let s -> self.p.store.stmt_value(s),
             null -> null,
         }
         match v {
             let ve -> self.of_expr[ve.index],
             null -> self.types.intern(Type.Error),
+        }
+    }
+
+    /// A call's target signature, when resolve found one.
+    fn sig_at(self, e: ExprId) -> FnSig? {
+        let target: StmtId? = target_of(self.resolution, e)
+        match target {
+            let s -> self.sigs[s.index],
+            null -> null,
         }
     }
 

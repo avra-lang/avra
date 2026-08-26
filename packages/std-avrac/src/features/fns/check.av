@@ -1,0 +1,38 @@
+//! The call's typing rule: the target's signature is the law —
+//! arity exact, every argument matching its param. The answer is
+//! the declared return either way; Error arguments absorb.
+use core.{Expr, ExprId, Type, TypeId}
+use features.{TypeCx, FnSig}
+use diagnostics.{error_at, pointed}
+
+fn call_type(cx: TypeCx, e: ExprId) -> TypeId {
+    match cx.store.expr(e) {
+        .Call(callee, args) -> {
+            let sig: FnSig? = cx.sig_of(e)
+            match sig {
+                null -> cx.intern(Type.Error),
+                let s -> checked_call(cx, e, callee, args, s),
+            }
+        }
+        _ -> cx.intern(Type.Error),
+    }
+}
+
+fn checked_call(cx: TypeCx, e: ExprId, callee: string, args: List<ExprId>, s: FnSig) -> TypeId {
+    if args.length != s.params.length {
+        cx.emit(pointed(
+            error_at("type.mismatch", cx.loc_of(e), "`${callee}` takes ${s.params.length} arguments, found ${args.length}"),
+            "this call"))
+        return s.ret
+    }
+    for j in 0..args.length {
+        let wrong = !(cx.shape_at(args[j]) is .Error) &&
+            cx.type_at(args[j]).index != s.params[j].index
+        if wrong {
+            cx.emit(pointed(
+                error_at("type.mismatch", cx.loc_of(args[j]), "argument ${j + 1} of `${callee}` wants `${cx.type_name(s.params[j])}`, found `${cx.name_at(args[j])}`"),
+                "this is a `${cx.name_at(args[j])}`"))
+        }
+    }
+    s.ret
+}

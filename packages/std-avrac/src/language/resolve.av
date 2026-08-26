@@ -2,23 +2,33 @@
 //! statement order, and every diagnostic; what a NODE means for
 //! names lives in its owning feature's NodeSemantics, reached
 //! through the owner map. Facts land in a Resolution the pass owns.
-//! A symbol's identity is its definition site; visibility is
-//! sequential, and a later `let` shadows an earlier one.
-use core.{Expr, Stmt, StmtId, ExprId, Span, closest, Closest, some_list, filled}
+//! A symbol's identity is its definition site. Two namespaces, one
+//! pass: `let` visibility is sequential and a later `let` shadows an
+//! earlier one; `fn` names are program-wide, so recursion and mutual
+//! recursion are free. Inside a body, params bind innermost.
+use core.{Expr, Stmt, StmtId, ExprId, Span, Param, closest, Closest, some_list, filled}
 use diagnostics.{Diag, error_at, loc_at, pointed}
-use features.{ResolveCx}
+use features.{ResolveCx, nothing}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
-/// The pass's facts: a dense table indexed by ExprId — O(1) reads
-/// for every later pass.
+/// The pass's facts: dense tables indexed by ExprId — O(1) reads
+/// for every later pass. `targets` is the definition statement a
+/// use names; `params` is the param index an ident binds to inside
+/// its enclosing fn body.
 export type Resolution = {
     targets: List<StmtId?>,
+    params: List<int?>,
     diagnostics: List<Diag>,
 }
 
 /// The definition a resolved expression names, when it does.
 export fn target_of(r: Resolution, e: ExprId) -> StmtId? {
     r.targets[e.index]
+}
+
+/// The param index an ident binds to, when it is one.
+export fn param_of(r: Resolution, e: ExprId) -> int? {
+    r.params[e.index]
 }
 
 /// Words the spec reserves for future levels, memory, and
@@ -32,7 +42,7 @@ fn reserved() -> List<string> {
 
 /// Today's grammar anchors: already keywords, never names.
 fn keywords() -> List<string> {
-    ["let", "if", "else", "true", "false"]
+    ["let", "fn", "if", "else", "true", "false"]
 }
 
 type Def = { name: string, stmt: StmtId }
@@ -42,7 +52,10 @@ type Resolver = {
     all_defs: List<Def>,
     def_names: List<string>,
     visible: Map<string, StmtId>,
+    fn_defs: Map<string, StmtId>,
+    fn_names: List<string>,
     targets: List<StmtId?>,
+    params: List<int?>,
     diagnostics: List<Diag>,
 }
 
@@ -51,46 +64,121 @@ export fn resolve(p: ParsedProgram) -> Resolution {
     let r = Resolver {
         p: p, all_defs: defs,
         def_names: [d.name for d in defs],
-        visible: {}, targets: filled<StmtId?>(p.store.exprs.count(), null),
+        visible: {}, fn_defs: {}, fn_names: [],
+        targets: filled<StmtId?>(p.store.exprs.count(), null),
+        params: filled<int?>(p.store.exprs.count(), null),
         diagnostics: [],
     }
-    let cx = ResolveCx {
-        store: p.store,
-        use_name: (e: ExprId, name: string) -> r.resolve_name(e, name),
-    }
+    r.declare_fns()
     for s in p.stmts {
-        let value: ExprId? = stmt_value(p.store, s)
-        if value != null {
-            for e in post_order(p.store, value!) { semantics_of(p.store.expr(e)).resolve(cx, e) }
-        }
-        let binds: string? = let_name(p.store, s)
-        if binds != null {
-            when {
-                keywords().contains(binds!) ->
-                    r.refuse_keyword(binds!, loc_at(p.source.file, p.store.stmt_span(s)))
-                reserved().contains(binds!) ->
-                    r.refuse_reserved(binds!, loc_at(p.source.file, p.store.stmt_span(s)))
-                _ -> r.bind(binds!, s)
+        match p.store.stmt(s) {
+            .FnDecl(_, fparams, _, body) -> {
+                r.check_params(fparams, s)
+                let names = [pp.name for pp in fparams]
+                resolve_walk(r, names, body)
+            }
+            .Let(_, _) or .ExprStmt(_) or .Error -> {
+                let value: ExprId? = p.store.stmt_value(s)
+                if value != null { resolve_walk(r, [], value!) }
+                let binds: string? = p.store.let_name(s)
+                if binds != null {
+                    when {
+                        keywords().contains(binds!) ->
+                            r.refuse_keyword(binds!, loc_at(p.source.file, p.store.stmt_span(s)))
+                        reserved().contains(binds!) ->
+                            r.refuse_reserved(binds!, loc_at(p.source.file, p.store.stmt_span(s)))
+                        _ -> r.bind(binds!, s)
+                    }
+                }
             }
         }
     }
-    Resolution { targets: r.targets, diagnostics: r.diagnostics }
+    Resolution { targets: r.targets, params: r.params, diagnostics: r.diagnostics }
 }
 
-/// Every definition in the program, in order.
+/// One subtree's resolution, under the given param names.
+fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
+    let cx = ResolveCx {
+        store: r.p.store,
+        use_name: (e: ExprId, name: string) -> r.resolve_name(e, name, param_names),
+        use_call: (e: ExprId, name: string) -> r.resolve_call(e, name),
+    }
+    for e in r.p.store.post_order(root) { semantics_of(r.p.store.expr(e)).resolve(cx, e) }
+}
+
+/// Every let definition in the program, in order.
 fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
     mut out: List<Def> = []
     for s in stmts {
-        let name: string? = let_name(store, s)
+        let name: string? = store.let_name(s)
         if name != null { out.push(Def { name: name!, stmt: s }) }
     }
     out
 }
 
+/// First index of `name`, or null.
+fn index_of_name(names: List<string>, name: string) -> int? {
+    mut j = 0
+    mut found: int? = null
+    for n in names {
+        if found == null && n == name { found = j }
+        j = j + 1
+    }
+    found
+}
+
 impl Resolver {
-    fn resolve_name(self, e: ExprId, name: string) {
+    /// The program-wide fn namespace, gathered before any body walks
+    /// — a call may name a fn declared later.
+    fn declare_fns(self) {
+        for s in self.p.stmts {
+            match self.p.store.stmt(s) {
+                .FnDecl(name, _, _, _) -> self.declare_fn(name, s),
+                .Let(_, _) or .ExprStmt(_) or .Error -> nothing(),
+            }
+        }
+    }
+
+    fn declare_fn(self, name: string, s: StmtId) {
+        let at = loc_at(self.p.source.file, self.p.store.stmt_span(s))
+        when {
+            keywords().contains(name) -> self.refuse_keyword(name, at)
+            reserved().contains(name) -> self.refuse_reserved(name, at)
+            _ -> {
+                let prior: StmtId? = self.fn_defs.get(name)
+                if prior == null {
+                    mut m = self.fn_defs
+                    m.set(name, s)
+                    mut ns = self.fn_names
+                    ns.push(name)
+                } else {
+                    self.speak(pointed(error_at("resolve.duplicate_fn", at, "`${name}` is defined more than once"), "redefined here")
+                        with { help: "rename one of them" })
+                }
+            }
+        }
+    }
+
+    fn check_params(self, fparams: List<Param>, s: StmtId) {
+        let at = loc_at(self.p.source.file, self.p.store.stmt_span(s))
+        for pp in fparams {
+            when {
+                keywords().contains(pp.name) -> self.refuse_keyword(pp.name, at)
+                reserved().contains(pp.name) -> self.refuse_reserved(pp.name, at)
+                _ -> nothing()
+            }
+        }
+    }
+
+    fn resolve_name(self, e: ExprId, name: string, param_names: List<string>) {
         if reserved().contains(name) {
             self.refuse_reserved(name, self.loc_of(e))
+            return
+        }
+        let idx: int? = index_of_name(param_names, name)
+        if idx != null {
+            mut ps = self.params
+            ps.set(e.index, idx!)
             return
         }
         let found: StmtId? = self.visible.get(name)
@@ -110,7 +198,20 @@ impl Resolver {
         }
         self.speak(self.suggested(
             pointed(error_at("resolve.unresolved", at, "`${name}` is not defined"), "not defined anywhere in this program"),
-            e, name))
+            e, name, self.def_names))
+    }
+
+    /// A callee resolves in the fn namespace alone.
+    fn resolve_call(self, e: ExprId, name: string) {
+        let found: StmtId? = self.fn_defs.get(name)
+        if found != null {
+            mut ts = self.targets
+            ts.set(e.index, found!)
+            return
+        }
+        self.speak(self.suggested(
+            pointed(error_at("resolve.unresolved", self.loc_of(e), "no `fn ${name}` is defined"), "called here"),
+            e, name, self.fn_names))
     }
 
     fn refuse_reserved(self, name: string, at: Loc?) {
@@ -143,10 +244,10 @@ impl Resolver {
         loc_at(self.p.source.file, self.p.store.expr_span(e))
     }
 
-    /// A "did you mean" from every definition in the program — later
-    /// and shadowed names are honest candidates for a typo.
-    fn suggested(self, d: Diag, e: ExprId, name: string) -> Diag {
-        let near: Closest? = closest(name, self.def_names)
+    /// A "did you mean" from the given candidates — later and
+    /// shadowed names are honest candidates for a typo.
+    fn suggested(self, d: Diag, e: ExprId, name: string, candidates: List<string>) -> Diag {
+        let near: Closest? = closest(name, candidates)
         match near {
             null -> d,
             let n -> {

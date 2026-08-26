@@ -1,6 +1,19 @@
 //! The language driver: features -> one assembled grammar -> parsed
 //! programs. The single seam every consumer parses through — tests
-//! and `avra check` alike. The code table lives in codes.av.
+//! and `avra check` alike.
+//!
+//! The module, in pipeline order:
+//!   mod.av       assemble features; THE language (`avra()`)
+//!   program.av   parse: text -> ParsedProgram; the walk vocabulary
+//!   resolve.av   pass 1: names -> definition sites
+//!   typing.av    pass 2: expressions -> types, fns -> signatures
+//!   analysis.av  every fact in ONE artifact (Analysis)
+//!   eval.av      run: the reference semantics
+//!   lower.av     pass 3: programs -> IR bodies
+//!   memory.av    pass 4: the memory strategy, per scope level
+//!   llvm.av      the native backend (llvm_api.av: the C surface)
+//!   ir_text.av   the IR's human projection (`avra ir`)
+//!   codes.av     the built-in diagnostic registry
 use core.{concat, flatten}
 use grammar.{Diagnostic, Grammar, parse_grammar}
 use features.{
@@ -9,6 +22,7 @@ use features.{
 use diagnostics.{Diag, DiagCode}
 use features.stmt_spine.{stmt_spine}
 use features.let_stmt.{let_stmt}
+use features.fns.{fns}
 use features.expr_stmt.{expr_stmt}
 use features.bool_lit.{bool_lit}
 use features.if_expr.{if_expr}
@@ -50,7 +64,16 @@ fn code_registry(features: List<LanguageFeature>) -> List<DiagCode> {
 /// The Avra language: its features, in the order that defines it —
 /// feature order is branch order is the language.
 export fn language_features() -> List<LanguageFeature> {
-    [stmt_spine(), let_stmt(), expr_stmt(), bool_lit(), if_expr(), expr_spine(), str_lit()]
+    [
+        stmt_spine(),   // a program IS statements
+        let_stmt(),     // `let` names a value
+        fns(),          // `fn` declares a body; a call applies it
+        expr_stmt(),    // a bare expression is a statement
+        bool_lit(),     // `true` and `false`
+        if_expr(),      // `if c { a } else { b }`, an expression
+        expr_spine(),   // literals, names, + - and == <
+        str_lit(),      // "text"
+    ]
 }
 
 /// THE language, assembled — one word to hold Avra.

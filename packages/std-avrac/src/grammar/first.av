@@ -1,16 +1,21 @@
 //! Finds DEAD BRANCHES in a grammar before anything parses with it.
 //!
-//! The parser picks between a rule's branches by the next token
-//! only: the first branch that can start with it wins, the rest are
-//! never tried. So a branch is dead when an earlier branch can start
-//! with the same token — and nothing chose that, it fell out of
-//! merge order. This file computes which tokens each branch can
-//! start with, and refuses the grammar when:
-//!   - two branches of a rule can start with the same token,
+//! The executor tries branches in order and BACKTRACKS out of a
+//! branch that fails past its first token — so overlap alone is not
+//! death. A branch COMMITS when its head alone decides it: once the
+//! first required item matches, nothing after it can refuse. A later
+//! branch is dead only when an earlier COMMITTING branch can take
+//! its first token — that branch swallows the token and succeeds,
+//! and the later branch is never tried. This file computes each
+//! branch's first tokens and commitment, and refuses the grammar
+//! when:
+//!   - two branches can start with the same token and the earlier
+//!     one commits (`f(x)` before bare `f` passes: the call branch
+//!     needs its `(` and hands the tokens back),
 //!   - a branch can match nothing and is not last (it always wins),
-//!   - a keyword like `"let"` sits AFTER a NAME branch — NAME also
-//!     matches the word `let`, so the keyword never fires. The other
-//!     order (keyword first) is how keywords work, and passes,
+//!   - a keyword like `"let"` sits AFTER a committing NAME branch —
+//!     NAME also matches the word `let`, so the keyword never fires.
+//!     The other order (keyword first) is how keywords work,
 //!   - a rule starts with itself — the parser would recurse forever.
 //!
 //! Rules only: this guards what feature merging builds. Alternatives
@@ -76,6 +81,20 @@ impl FirstCx {
             .Group(inner) -> self.alt_first(inner),
         }
     }
+
+    /// True when the branch's head alone decides it: after its first
+    /// required item, every item is skippable — nothing left can
+    /// refuse, so the executor never backtracks out.
+    fn commits(self, s: Seq) -> bool {
+        mut seen_head = false
+        for m in s.items {
+            let f = self.prim_first(m.prim)
+            let skippable = m.rep == Rep.Opt || m.rep == Rep.Star || f.nullable
+            if seen_head && !skippable { return false }
+            if !skippable { seen_head = true }
+        }
+        true
+    }
 }
 
 fn first_union(a: FirstSet, b: FirstSet) -> FirstSet {
@@ -101,23 +120,28 @@ export fn first_defects(g: Grammar) -> List<Diagnostic> {
     let cx = FirstCx { g: g, visiting: [], defects: [] }
     for r in g.rules {
         mut firsts: List<FirstSet> = []
-        for s in r.body.branches { firsts.push(cx.seq_first(s)) }
+        mut commit_flags: List<bool> = []
+        for s in r.body.branches {
+            firsts.push(cx.seq_first(s))
+            commit_flags.push(cx.commits(s))
+        }
         for (i, fi) in firsts.enumerate() {
             if fi.nullable && i < firsts.length - 1 {
                 mut ds = cx.defects
                 ds.push(defect(r.name, "branch ${i + 1} can match empty input — every later branch is unreachable"))
             }
             for (j, fj) in firsts.enumerate() {
-                if j > i { overlap_defects(cx, r.name, i, fi, j, fj) }
+                if j > i && commit_flags[i] { overlap_defects(cx, r.name, i, fi, j, fj) }
             }
         }
     }
     cx.defects
 }
 
-/// An earlier branch's start tokens against a later branch's: any
-/// shared token — or a general token before a keyword it also
-/// matches — makes the later branch dead.
+/// A COMMITTING earlier branch's start tokens against a later
+/// branch's: any shared token — or a general token before a keyword
+/// it also matches — makes the later branch dead. A non-committing
+/// earlier branch backtracks, so its overlaps are harmless.
 fn overlap_defects(cx: FirstCx, rule_name: string, i: int, fi: FirstSet, j: int, fj: FirstSet) {
     mut ds = cx.defects
     for l in fj.lits {

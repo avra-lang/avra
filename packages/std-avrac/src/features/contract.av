@@ -8,36 +8,46 @@ use core.{NodeStore, Expr, ExprId, Type, TypeId, Reg, Ins}
 use diagnostics.{Diag}
 use @std.errors.{Loc}
 
-/// Resolve capabilities: an impl reports a name use; the driver owns
-/// scopes, suggestions, and diagnostics.
+/// Resolve capabilities: an impl reports a name use — as a value
+/// (`use_name`) or as a callee (`use_call`); the driver owns scopes,
+/// namespaces, suggestions, and diagnostics.
 export type ResolveCx = {
     store: NodeStore,
     use_name: fn(ExprId, string),
+    use_call: fn(ExprId, string),
 }
 
+/// A fn's typed signature, as the type pass computed it.
+export type FnSig = { params: List<TypeId>, ret: TypeId }
+
 /// Typing capabilities: read children's computed types (post-order —
-/// they exist), intern shapes, read an ident's definition type, and
-/// speak. The impl OWNS its diagnostics wording.
+/// they exist), intern shapes, read an ident's definition type, read
+/// a call's target signature, and speak. The impl OWNS its
+/// diagnostics wording.
 export type TypeCx = {
     store: NodeStore,
     type_at: fn(ExprId) -> TypeId,
     shape_at: fn(ExprId) -> Type,
     intern: fn(Type) -> TypeId,
     target_type: fn(ExprId) -> TypeId,
+    sig_of: fn(ExprId) -> FnSig?,
     name_at: fn(ExprId) -> string,
+    type_name: fn(TypeId) -> string,
     loc_of: fn(ExprId) -> Loc?,
     emit: fn(Diag),
 }
 
 /// Eval capabilities: a VALUE IS A LITERAL NODE. `value_at` computes
 /// a child at first request — only what an impl asks for ever runs;
-/// an ident reads its definition's slot; new values allocate as
-/// synthesized literals.
+/// an ident reads its definition's slot; `invoke` runs a call's
+/// target body under a fresh frame of argument VALUES; new values
+/// allocate as synthesized literals.
 export type EvalCx = {
     store: NodeStore,
     value_at: fn(ExprId) -> ExprId,
     def_value: fn(ExprId) -> ExprId?,
     alloc: fn(Expr) -> ExprId,
+    invoke: fn(ExprId, List<ExprId>) -> ExprId,
     fail: fn(string),
 }
 

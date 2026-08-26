@@ -1,0 +1,86 @@
+// Functions, vertically: declarations parse, calls resolve
+// program-wide (recursion free), signatures are the law, one frame
+// per call, and the IR carries the callee-cleans ABI — retains at
+// the call, param releases at the exit, the answer kept.
+use @std.avrac.core.{Stmt}
+use @std.avrac.language.{analyze_source, avra, lower, memory, render_ir, Lowered}
+use @std.avrac.diagnostics.{new_source_file}
+
+/// A program's printed value, or "<refused>".
+fn shown(source: string) -> string {
+    analyze_source(source).ran() ?? "<refused>"
+}
+
+fn ir_of(source: string) -> Lowered {
+    memory(lower(analyze_source(source)))
+}
+
+spec "features/fns" {
+    given "declarations and calls" {
+        then "a fn declares, a call answers" {
+            shown("fn double(x: int) -> int { x + x }\ndouble(21)") == "42"
+        }
+        then "recursion recurses" {
+            shown("fn fib(n: int) -> int { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }\nfib(10)") == "55"
+        }
+        then "a call may name a fn declared later" {
+            shown("fn a(n: int) -> int { b(n) + 1 }\nfn b(n: int) -> int { n + n }\na(5)") == "11"
+        }
+        then "strings pass and return" {
+            shown("fn greet(who: string) -> string { if who == \"world\" { \"hello world\" } else { \"hey\" } }\ngreet(\"world\")") == "hello world"
+        }
+        then "each call gets its own frame" {
+            shown("fn pick(a: int, b: int) -> int { a - b }\npick(10, 3) + pick(3, 1)") == "9"
+        }
+    }
+    given "wrong shapes" {
+        then "an unknown callee names the namespace it searched" {
+            let a = analyze_source("nope(1)")
+            a.diagnostics.length == 1 && a.report().contains("no `fn nope` is defined")
+        }
+        then "arity is exact" {
+            let a = analyze_source("fn f(x: int) -> int { x }\nf(1, 2)")
+            a.diagnostics.length == 1 && a.report().contains("`f` takes 1 arguments, found 2")
+        }
+        then "an argument matches its param" {
+            let a = analyze_source("fn f(x: int) -> int { x }\nf(\"no\")")
+            a.diagnostics.length == 1 &&
+                a.report().contains("argument 1 of `f` wants `int`, found `string`")
+        }
+        then "the body must answer the declared return" {
+            let a = analyze_source("fn f(x: int) -> string { x + 1 }\nf(1)")
+            a.diagnostics.length == 1 &&
+                a.report().contains("the body answers `int` but `f` declares `string`")
+        }
+        then "an unknown type annotation names today's types" {
+            let a = analyze_source("fn f(x: float) -> int { 1 }\nf(1)")
+            a.report().contains("`float` names no type") &&
+                a.report().contains("the types today are `int`, `string`, and `bool`")
+        }
+        then "two fns cannot share a name" {
+            let a = analyze_source("fn f(x: int) -> int { x }\nfn f(y: int) -> int { y }\nf(1)")
+            a.diagnostics.length == 1 && a.report().contains("`f` is defined more than once")
+        }
+    }
+    given "the ABI in the IR, as `avra ir` prints it" {
+        then "the caller retains what the callee will release; the answer is kept" {
+            let expected = """fn shout(r0: string) -> string
+scope application {
+  r1 = str "!"
+  release r0
+}
+ret r1
+
+scope application {
+  r0 = str "hi"
+  retain r0
+  r1 = call shout(r0)
+  print r1
+  release r1
+  release r0
+}
+ret 0"""
+            render_ir(ir_of("fn shout(s: string) -> string { \"!\" }\nshout(\"hi\")")) == expected
+        }
+    }
+}
