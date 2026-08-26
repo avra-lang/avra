@@ -8,12 +8,17 @@ BS2       := $(abspath $(BOOTSTRAP))/build/bs2
 
 RUNTIME_OBJS := build/runtime.o build/llvm_wrapper.o
 
-.PHONY: test clean fresh corpus gate
+.PHONY: test clean fresh libfresh corpus gate
 
 # bs2's lib-mode freshness truth is the .avra-sha256 sidecars; they
 # go stale against edits. Every bs2-run target clears them first.
 fresh:
 	@find packages -name "*.avra-sha256" -delete
+
+# Nuclear cache purge — ./avra's stamped entry makes routine runs
+# truthful, so this is for salvage, not the workflow.
+libfresh: fresh
+	@rm -rf packages/*/build
 
 test: $(RUNTIME_OBJS)
 	$(BS2) test

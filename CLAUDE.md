@@ -198,8 +198,8 @@ against these before writing; probe in scratch when unsure.
   returning `Newtype?` comes back null once instances crossed mono'd
   code. Use single-field STRUCTS for typed ids (`{ index: int }`).
 - A nullable GENERIC struct local (`mut x: Thing<N>? = null`)
-  corrupts the same way in lib-mode mono (test mode hides it) —
-  carry presence in a bool flag beside a non-null value instead.
+  corrupts through lib-mode mono — carry presence in a bool flag
+  beside non-generic pieces and reconstruct after the loop.
 - `bs2 run` can serve stale library builds silently — the
   `.avra-sha256` sidecars are its freshness truth, and they go stale
   against edited sources. `make test` is immune (metadata mode);
@@ -244,12 +244,17 @@ against these before writing; probe in scratch when unsure.
   name before writing a helper.
 - Package resolution is convention, not manifest: `use @scope.name`
   resolves to `packages/scope-name/src/name.av` (else `mod.av`).
-  But `[dependencies]` entries are NOT optional decoration: without
-  them a runnable package's compile-unit cache is keyed on the
-  entry file's bytes alone, and edits to dependency packages serve
-  a STALE binary silently — phantom bugs, vanishing behavior, even
-  segfaults from mixed-version objects. Every runnable package
-  manifest lists what its src imports. A
+  And THE staleness trap, root-caused: `bs2 run`'s cache keys the
+  unit by the ENTRY FILE'S BYTES ALONE — `[dependencies]` entries,
+  sidecar deletion, and package-cache purges all fail to reach that
+  key, so edits to dependency packages serve a STALE binary
+  silently: phantom bugs, vanishing grammar branches, segfaults.
+  The cure is `./avra`, which generates a stamped entry
+  (main_stamped.av — a content hash of every package source in the
+  first line) so the key is truthful and caches stay warm. Debug
+  probes get fresh bytes by being new files, which is why a probe
+  can pass while the CLI fails — NEVER trust that split as
+  evidence of a compiler bug before touching the entry's bytes. A
   runnable ENTRY file gets a local module tree only through `mod x`
   declarations: `mod commands` loads sibling `commands.av` or
   `commands/mod.av`, and the directory's other files join the

@@ -52,6 +52,28 @@ A loop earns its keep only for: `?` propagation in the body, folds
 with ordering semantics (`closest`'s tie-break), index arithmetic,
 and stateful transforms.
 
+## Absence reads STRAIGHT — the if-null rule
+
+One of the most important patterns in this tree.
+A null/`let x ->` MATCH earns its lines only when both arms carry
+real payload logic — absence handling reads straight, never as a
+two-arm ceremony:
+
+```avra
+if target == null { return null }     // not: match target { null -> null, let s -> ... }
+self.slots[target!.index]
+
+let f = r.farthest ?? FarthestFailure { cursor: c, expected: [p], in_rule: r }
+let ptypes: List<TypeId> = sig?.params ?? []      // ?. + ?? collapse both arms
+if m.label == null { repped } else { "${m.label!}:${repped}" }
+```
+
+And reach for the store's PROJECTION before writing an inline
+match: `stmt_value`, `fn_body`, `fn_name`, `truth_of` exist so no
+caller re-derives them. The proof case: a match enumerating
+statement kinds whose arms cannot differ is pure ceremony —
+`stmt_value` plus `if null` is the whole truth.
+
 ## `it` projection for lambdas
 
 ```avra
@@ -162,7 +184,7 @@ engine_codes().find(it.cause == c)?.kind ?? "language.defect"
 ```
 
 `?.` reaches FIELDS only; mapping a present value through a fn or
-constructor is still a null/`let x ->` match.
+constructor is a guarded `if`.
 
 ## Extractor + `want` for typed unwrapping
 

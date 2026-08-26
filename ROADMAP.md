@@ -14,7 +14,8 @@
 
   The ladder (~15 rungs; five are heavyweights, marked ▲):
     1.  [x] `when` — the ledger trial, multi-way on existing regions
-    2.  blocks — statement scopes, multi-line bodies, `return`
+    2.  [x] blocks — statement scopes, multi-line bodies (`return`
+        deferred to rung 3, recorded)
     3.  mutation & loops — `mut`, assignment, `while`/`for`, ranges
     4.  operators complete — `&& || !`, `!= > >= <=`, `* / %`
     5.  lists — the first aggregate; iteration; the method core
@@ -359,6 +360,53 @@ breaks loudly); the contract-join waits for the fourth statement
 kind to prove the pattern. Along the way lib-mode mono ate a
 nullable generic local — subset-noted, bool-flagged.
 
+## Milestone 9 — blocks (the design)
+
+Rung 2, a capability milestone: statement scopes inside
+expressions. ONE block construct, defined once and borrowed
+everywhere — the `when`-on-`if` composition lesson, applied again.
+
+- The `block` feature owns the rule and the node:
+  `block = "{" v:expression "}" -> v
+         | "{" ( s:stmt | BREAK )* "}" -> block(s)`
+  The inline form PASSES THROUGH (a one-expression block costs no
+  node — every existing one-line fn and if keeps its exact tree);
+  the multi-line form reaches the second alternative by deferred
+  commitment. `Expr.Block(stmts, value)`: the builder splits the
+  last statement, which must be an expression — "a block ends with
+  an expression" is the builder's law.
+- fn bodies and if branches reference `b:block`; `when` arms stay
+  expressions (the spec's shape).
+- A block is a CONTROL-OWNING node: kids() = [] and every pass
+  recurses through a driver capability — the on-demand doctrine,
+  extended to resolve and typing for scope-carrying nodes:
+  `block_scope` (sequential walk+bind under an UNDO-LOG scope;
+  shadowing restores at exit; nested fn decls refused — "fn
+  declarations live at the top level"), `block_type`, `run_block`
+  (stmts execute under the current frame), `lower_block`.
+- The IR's core event: `ScopeExit` grows `gives: Reg?` — a scope
+  YIELDS like a branch does. Memory releases the scope minus its
+  yield and the enclosing scope ADOPTS it (ownership moves out one
+  level); the fn-body `kept` parameter dies into the same
+  mechanism. Backend unchanged (scopes stay no-ops); renderer says
+  `yield rN` before the closing brace.
+- `return` is deferred to rung 3 (it belongs with loops and early
+  exit); recorded, not slipped.
+- Gate: multi-line fn bodies with block-scoped strings — releases
+  inside the block, the yield adopted outward — eval == native ==
+  expected.
+
+LANDED: 221/221; nine-for-nine corpus. Multi-line expressions
+arrived FREE — braces swallow their BREAKs, so a let whose value is
+a multi-line if needs no design at all. The inline pass-through
+held: every existing one-line construct kept its exact tree and
+every golden survived except the fn-scope yield line. The arc's
+real dragon was not blocks: the staleness class was finally
+ROOT-CAUSED (bs2 keys `bs2 run` caches by the entry file's bytes
+alone) and killed structurally — ./avra generates a content-stamped
+entry, so cache keys are truthful and warm. Every phantom of the
+last two milestones was that one bug in costumes.
+
 ## The growth ledger (what a feature costs)
 
 M7 was ~1200 lines, and the fair audit says where: ~600 were the
@@ -397,10 +445,13 @@ node model untouched. Spans living in side tables and fingerprints
 ignoring them — designed in at M1 — is exactly what keeps that
 staging clean.
 
-Recorded triggers, unchanged in spirit:
-- Statement semantics join the contract at the FOURTH statement
-  kind (dispatch is five exhaustive matches until then — loud, not
-  smooth, on purpose).
+Recorded triggers:
+- Statement semantics: the trigger has FIRED — not by the fourth
+  kind but by the second CONTEXT. Blocks doubled statement dispatch
+  (top-level + block, times four drivers: eight walk loops, and
+  typing's block copy was already carrying a dead match). The
+  statements contract lands as the OPENING act of rung 3, before
+  assignment adds a fourth kind on top of the doubled contexts.
 
 The falsifiable claim, TRIED (M8, `when`): the doctrine's core held
 perfectly — zero new instructions, zero edits to drivers, memory,

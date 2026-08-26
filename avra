@@ -1,8 +1,13 @@
 #!/bin/sh
 # The avra command, hosted by bs2 until self-host (ROADMAP: the
-# endgame). Sidecars clear first — bs2's lib-mode freshness truth
-# goes stale against edits (CLAUDE.md, subset notes).
+# endgame). bs2 keys `bs2 run`'s cache by the ENTRY FILE'S BYTES
+# ALONE — so the entry is generated with a content stamp of every
+# package source, making the cache key truthful: stale serves are
+# impossible, warm hits remain.
 root="$(cd "$(dirname "$0")" && pwd)"
 cd "$root" || exit 2
 find packages -name '*.avra-sha256' -delete
-exec "$root/../forge-crafting-intepreters/bootstrap/build/bs2" run packages/cli/src/main.av -- "$@"
+stamp=$(find packages -name '*.av' -not -path '*/build/*' -not -name 'main_stamped.av' -print0 | sort -z | xargs -0 cat | shasum -a 256 | cut -c1-16)
+gen="packages/cli/src/main_stamped.av"
+{ printf '// deps-stamp: %s\n' "$stamp"; cat packages/cli/src/main.av; } > "$gen"
+exec "$root/../forge-crafting-intepreters/bootstrap/build/bs2" run "$gen" -- "$@"
