@@ -120,6 +120,14 @@ spec.
   for evaluation. Passes NEVER match feature nodes: `semantics_of`
   (THE one exhaustive map, no strings) returns the node's semantics
   directly; the trait impl forces every pass method at compile time.
+  Start a feature with `avra new feature <name>`; prove it with a
+  corpus pair (`corpus/<name>.av` + `.expected`). `make gate` is
+  the bar.
+
+- The CLI: each subcommand is ONE file in
+  `packages/cli/src/commands/`, exporting
+  `<name>_command() -> Subcommand`; `cli/src/main.av` only composes
+  the list. A new command is a new file plus one line.
 
 ## Vendored code — do not imitate
 
@@ -180,12 +188,15 @@ against these before writing; probe in scratch when unsure.
 - Int-backed newtypes corrupt through generic/mono flows: a fn
   returning `Newtype?` comes back null once instances crossed mono'd
   code. Use single-field STRUCTS for typed ids (`{ index: int }`).
+- A nullable GENERIC struct local (`mut x: Thing<N>? = null`)
+  corrupts the same way in lib-mode mono (test mode hides it) —
+  carry presence in a bool flag beside a non-null value instead.
 - `bs2 run` can serve stale library builds silently — the
   `.avra-sha256` sidecars are its freshness truth, and they go stale
   against edited sources. `make test` is immune (metadata mode);
-  `bs2 run` of the CLI is not. When lib-mode behavior lags an edit,
-  `make clean` (which deletes the sidecars), never ad-hoc cache
-  hunting.
+  `bs2 run` of the CLI is not. `./avra <cmd>` is the front door — it
+  clears the sidecars itself; never invoke the CLI through raw
+  `bs2 run`. When lib-mode still lags, `make clean`.
 - `==` between a nullable string and a string is safe (null compares
   false) — for a VARIABLE operand only: a call result compared
   directly (`f() == s`) misses the null guard and SIGSEGVs (#1376).
@@ -222,6 +233,14 @@ against these before writing; probe in scratch when unsure.
   fn in one file shadows a same-name import for the WHOLE module
   (arity clashes, F1001, at unrelated call sites). Check for the
   name before writing a helper.
+- Package resolution is convention, not manifest: `use @scope.name`
+  resolves to `packages/scope-name/src/name.av` (else `mod.av`);
+  `[dependencies]` entries feed the build fingerprint only. A
+  runnable ENTRY file gets a local module tree only through `mod x`
+  declarations: `mod commands` loads sibling `commands.av` or
+  `commands/mod.av`, and the directory's other files join the
+  module. A bare `use commands.{..}` without the `mod` stub is
+  F3101.
 - `dyn` boxing happens ONLY under a typed let. A config-list
   assignment does not box, and a match ARM tail boxes with the WRONG
   vtable (silent mis-dispatch!) — box every impl under

@@ -240,6 +240,98 @@ the merge, released once at the outer exit.
 Then M7 — functions: the locked ABI (callee-cleans, Call/Ret
 carrying levels) and statement semantics joining NodeSemantics.
 
+## Milestone 7 — functions (the design)
+
+The locked ABI lands, and the yield machinery becomes the calling
+convention. Thin tracer: single-EXPRESSION bodies on one line —
+`fn fib(n: int) -> int { if n < 2 { n } else { fib(n-1) + fib(n-2) } }`
+— because that exercises the WHOLE vertical (declaration, params,
+calls, recursion, frames, multi-fn LLVM, callee-cleans) without
+nested statement scopes. Block bodies with `let`s are M7.5.
+
+- AST: `Stmt.FnDecl(name, params, ret, body)` with params carrying
+  their annotated type NAMES (surface syntax, resolved by typing);
+  `Expr.Call(callee, args)` — direct calls by name, fn values later.
+- Grammar: the decl is a `stmt` branch anchored on `fn`; the call
+  is a `primary` branch `NAME "(" args ")"` ORDERED BEFORE the
+  spine's bare-NAME ident — the executor backtracks, so `f(x)`
+  takes the call branch and `f` alone falls through to ident. The
+  dead-branch gate must sanction this second overlap class.
+- Resolve: two namespaces in one pass — fn names are visible
+  program-wide (recursion and mutual recursion are free); params
+  bind inside their body only, resolving to (fn, param index) in a
+  new dense fact; lets stay lexical.
+- Typing: annotations intern to shapes; the body types under its
+  params and must agree with the declared return; calls check
+  arity and every argument against the signature.
+- Eval: a CALL is a fresh frame of param values; body nodes are
+  computed per call (the global memo dies — it was single-pass
+  coupling, and each tree node still evaluates once per call).
+- IR: `Lowered` becomes one body per fn plus main; registers are
+  per-body, the first N minted as params. `Call(dst, callee,
+  args)` and `RetVal(r)` join the closed set — a call is a control
+  shape, so this is a core event by doctrine.
+- Memory — the ABI, callee-cleans: the caller RETAINS each managed
+  argument (`avra_rc_retain` — ownership transfers in), the callee
+  releases its params at body exit MINUS the returned value
+  (`kept_out` — the branch-yield rule, generalized), and the
+  caller owns the call's result. Balanced on every path, aliasing
+  safe.
+- LLVM: one function per body, params/ret typed by shape; `Call`
+  is a plain typed call. The verifier gates every fn.
+- Gate: `native == eval` with recursive corpus — `fib(10)`,
+  string-returning branches, mutual recursion.
+- The RECORDED TRIGGER fires: FnDecl is the third statement kind —
+  statement dispatch (stmt_value, binding, fingerprints, drivers)
+  is audited in-milestone and statements join the semantics
+  contract the moment the direct extension turns into arm-copying.
+
+LANDED: 210/210 green; `native == eval` across all seven corpus
+programs — recursive fib through LLVM included. The milestone's
+hidden gem: ALTERNATION GREW UP. The executor's first-token commit
+became DEFERRED commitment — a broken branch's diagnostics stand
+only when no later branch hits — and the dead-branch gate learned
+the matching notion of a COMMITTING branch, so `f(x)` and bare `f`
+share a rule and keyword statements live behind expression
+statements, all still golden-diagnosed. Statement dispatch stayed
+five explicit sites (each an exhaustive match, so every new kind
+breaks loudly); the contract-join waits for the fourth statement
+kind to prove the pattern. Along the way lib-mode mono ate a
+nullable generic local — subset-noted, bool-flagged.
+
+## The growth ledger (what a feature costs)
+
+M7 was ~1200 lines, and the fair audit says where: ~600 were the
+DRIVERS learning capabilities no feature had needed before —
+frames, signatures, one IR body per fn. Capability cost is
+per-MILESTONE, paid once. The steady-state FEATURE cost is what
+if_expr paid (~150 lines): its directory, three wiring lines, a
+corpus program. The machinery that keeps it there:
+
+- `avra new feature <name>` writes the directory — six compiling
+  files and a passing test skeleton — and prints the three wiring
+  edits. Review starts at the semantics, never the ceremony.
+- The corpus gate: a feature's end-to-end proof is corpus/<name>.av
+  plus its .expected — two tiny files — and `make gate` holds
+  eval == native == expected for every program, forever.
+- `dst_of` lives beside Ins: IR consumers query, never keep their
+  own lists. IR growth is rare by doctrine; its touch points are
+  the enum, its accessor, the renderer's arm, the backend's arm.
+
+Recorded triggers, unchanged in spirit:
+- Statement semantics join the contract at the FOURTH statement
+  kind (dispatch is five exhaustive matches until then — loud, not
+  smooth, on purpose).
+- The semantics_of match dies when the owner map carries a
+  feature's NodeSemantics — needs a probe that `dyn` survives
+  component config in bs2 (subset risk); until then the match is
+  two lines per feature and total by construction.
+
+The falsifiable claim: `when` (the next feature) touches the
+feature directory, nodes.av, two registration lines, and a corpus
+pair — nothing else. If it touches more, this ledger is wrong and
+gets rewritten.
+
 ## The IR doctrine (agreed 2026-08-25)
 
 The backend and memory pass never grow with features — they are
