@@ -42,6 +42,29 @@ points in time. Comments are evergreen: always relevant, or absent.
 Keep them very terse, in plain language. State what a thing is or the
 invariant it holds — no narration, no self-justification, no history.
 
+## The idiom bar — BEFORE writing any fn
+
+First drafts are written idiomatic, not cleaned up later. Before
+the body exists, answer:
+
+1. Is any loop a MAP/FILTER/FLAT-MAP? Comprehension (`?` works in
+   element and iterable; predicates hoist into named fns).
+2. Building head-plus-tail? `concat`/`flatten`, never push-ceremony.
+3. Is a projection being spelled twice? The second spelling names a
+   verb (`cx.int_at`, `expr_fps`) or uses the existing one.
+4. Does absence read straight? (`?? `, `?.`, if-null early return —
+   never a two-arm null match without payload logic on both arms.)
+5. Scanning for one element? `find`/`any`/`index_of`, not a flag
+   loop.
+6. Unsure a shape compiles in the subset? PROBE in scratch first —
+   fear of traps is how ugly-but-safe drafts happen, and every
+   probe result gets recorded so the fear shrinks.
+
+DOGFOODING.md is the full rulebook; `make idioms` ratchets the
+greppable subset and FAILS the gate when a smell count rises. A new
+idiom discovered while working lands in DOGFOODING.md's registry AT
+DISCOVERY, not at review.
+
 ## Style
 
 - Inline single-use values. A `let` earns its place only when the
@@ -74,7 +97,11 @@ The compiler is Avra's first user. When its code WANTS a construct
 the language lacks — a sugar, a projection, a rule — add the ask to
 the ROADMAP's sugar backlog, naming the wanting site, as part of the
 change that hit it. Request your own features: the backlog feeds the
-spec.
+spec. The same discipline runs one level down: a PATTERN discovered
+while writing (a beautiful form, a smell, a licensed exception) is
+an IDIOM — it lands in DOGFOODING.md's registry at discovery, and
+the greppable ones grow ratchet rules in tools/idioms.sh. The
+registry is the idiom engine's spec, written by dogfooding.
 
 ## Rules
 
@@ -219,9 +246,22 @@ against these before writing; probe in scratch when unsure.
   ("expected `]` after list"); use a loop there too.
 - In a value match producing a list, put a populated arm FIRST — a
   leading `[] `arm pins `List<>` and the sibling arms then clash.
-- A list literal of enum values as a fn's TAIL never adopts the
-  declared return (F1000 "body produces `List<>`") — bind it under
-  a typed let and return the name.
+- A list-typed fn TAIL from a bare enum-list literal or a `?? []`
+  fallback never adopts the declared return (F1000 "body produces
+  `List<>`") — bind it under a typed let and return the name.
+- `f(x)?.field` (Result-`?` then a field) is POISON: in plain code
+  it refuses to parse ("expected `)` after arguments"), but inside
+  a comprehension ELEMENT it parses and SILENTLY CORRUPTS the
+  payload (garbage strings, null ids downstream — no error at all).
+  Split it through a helper fn that `?`s first and projects second.
+- Comprehensions DO carry `?` propagation — in the element AND the
+  iterable (`[want(f(x), "…")? for x in as_list(v)?]` works,
+  short-circuit included). The filter takes fn-call predicates,
+  field access, `!= null`, and captured comparisons — hoist a
+  complex predicate into a named fn instead of writing a loop.
+- An early `return` of a GENERIC call's result (`return concat<T>(…)`)
+  poisons the fn's TAIL type (F1000 qualified-vs-unqualified) —
+  bind the call under a typed let and return the name.
 - Method calls on a `const` string fail at codegen.
 - Rebuild bs2 with `make build`, never `build-quick` — its freshness
   check can silently skip rebuilds and leave a stale binary.
@@ -302,7 +342,10 @@ against these before writing; probe in scratch when unsure.
 - An `impl Trait for X` block holds ONLY the trait's methods — extra
   methods live in a separate `impl X` block or free fns.
 - Working and dogfooded: traits + `impl Trait for`, subjectless `when`
-  (with `_` arm), list comprehensions `[x for x in xs if p]`, pipe
+  (with `_` arm), list comprehensions `[x for x in xs if p]` —
+  including method-call elements (`self.expr_fingerprint(k)`),
+  closure-field-call elements (`cx.value_at(k)`), and nested list
+  literals as elements (`flatten([[a, b] for p in ps])`), pipe
   `|>`, typed table literals, `with` on generics, cross-file `impl`,
   the native list scans (`find`/`any`/`all`/`first`/`last`/`is_empty`,
   in `<N>`-generic bodies too), `?.` field projection with `??`

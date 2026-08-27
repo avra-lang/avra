@@ -8,7 +8,7 @@
 //! recursion are free. Inside a body, params bind innermost.
 use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled}
 use diagnostics.{Diag, error_at, loc_at, pointed}
-use features.{ResolveCx, StmtResolveCx, nothing}
+use features.{ResolveCx, StmtResolveCx}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
 /// The pass's facts: dense tables indexed by ExprId — O(1) reads
@@ -169,21 +169,13 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
 
 /// Every let definition in the program, in order.
 fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
-    mut out: List<Def> = []
-    for s in stmts {
-        let name: string? = store.let_name(s)
-        if name != null { out.push(Def { name: name!, stmt: s }) }
-    }
-    out
+    [Def { name: store.let_name(s)!, stmt: s } for s in stmts if store.let_name(s) != null]
 }
 
 /// First index of `name`, or null.
 fn index_of_name(names: List<string>, name: string) -> int? {
-    mut found: int? = null
-    for (j, n) in names.enumerate() {
-        if found == null && n == name { found = j }
-    }
-    found
+    let i = names.index_of(name)
+    if i < 0 { null } else { i }
 }
 
 impl Resolver {
@@ -196,36 +188,42 @@ impl Resolver {
         }
     }
 
+    /// The naming law, in one place: keywords and reserved words
+    /// refuse as names. True means refused — the site keeps its
+    /// hands off the name.
+    fn refused_name(self, name: string, at: Loc?) -> bool {
+        if self.p.keywords.contains(name) {
+            self.refuse_keyword(name, at)
+            return true
+        }
+        if reserved().contains(name) {
+            self.refuse_reserved(name, at)
+            return true
+        }
+        false
+    }
+
     fn declare_fn(self, name: string, s: StmtId) {
         let at = self.stmt_loc(s)
-        when {
-            self.p.keywords.contains(name) -> self.refuse_keyword(name, at)
-            reserved().contains(name) -> self.refuse_reserved(name, at)
-            _ -> {
-                let prior: StmtId? = self.fn_defs.get(name)
-                if prior == null {
-                    mut m = self.fn_defs
-                    m.set(name, s)
-                    mut ns = self.fn_names
-                    ns.push(name)
-                } else {
-                    self.speak(pointed(
-                        error_at("resolve.duplicate_fn", at, "`${name}` is defined more than once"),
-                        "redefined here")
-                        with { help: "rename one of them" })
-                }
-            }
+        if self.refused_name(name, at) { return }
+        let prior: StmtId? = self.fn_defs.get(name)
+        if prior == null {
+            mut m = self.fn_defs
+            m.set(name, s)
+            mut ns = self.fn_names
+            ns.push(name)
+        } else {
+            self.speak(pointed(
+                error_at("resolve.duplicate_fn", at, "`${name}` is defined more than once"),
+                "redefined here")
+                with { help: "rename one of them" })
         }
     }
 
     fn check_params(self, fparams: List<Param>, s: StmtId) {
         let at = self.stmt_loc(s)
         for pp in fparams {
-            when {
-                self.p.keywords.contains(pp.name) -> self.refuse_keyword(pp.name, at)
-                reserved().contains(pp.name) -> self.refuse_reserved(pp.name, at)
-                _ -> nothing()
-            }
+            let _ = self.refused_name(pp.name, at)
         }
     }
 
@@ -325,18 +323,12 @@ impl Resolver {
         self.all_defs.find(it.name == name && !self.scoped[it.stmt.index])?.stmt
     }
 
-    /// A statement's binding, keyword- and reserved-checked — the
-    /// one law for top level and blocks alike.
+    /// A statement's binding, run through the naming law — the one
+    /// rule for top level and blocks alike.
     fn bind_checked(self, s: StmtId) {
         let binds: string? = self.p.store.let_name(s)
         if binds == null { return }
-        when {
-            self.p.keywords.contains(binds!) ->
-                self.refuse_keyword(binds!, self.stmt_loc(s))
-            reserved().contains(binds!) ->
-                self.refuse_reserved(binds!, self.stmt_loc(s))
-            _ -> self.bind(binds!, s)
-        }
+        if !self.refused_name(binds!, self.stmt_loc(s)) { self.bind(binds!, s) }
     }
 
     /// Latest binding wins — Map.set IS shadowing. Inside a block,

@@ -2,7 +2,7 @@
 //! agree, and their shared type is the expression's. An Error
 //! anywhere ABSORBS — its cause was already diagnosed.
 use core.{Expr, ExprId, Type, TypeId}
-use features.{TypeCx, require_bool}
+use features.{TypeCx, require_bool, spoken, types_disagree}
 use diagnostics.{error_at, pointed}
 
 fn if_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -16,13 +16,13 @@ fn if_type(cx: TypeCx, e: ExprId) -> TypeId {
 }
 
 fn branch_type(cx: TypeCx, t: ExprId, f: ExprId) -> TypeId {
-    let ts = cx.shape_at(t)
-    let fs = cx.shape_at(f)
-    if ts is .Error || fs is .Error { return cx.intern(Type.Error) }
-    if ts == fs { return cx.type_at(t) }
-    cx.emit(pointed(
-        error_at("type.mismatch", cx.loc_of(f),
-            "an `if`'s branches disagree: `${cx.name_at(t)}` vs `${cx.name_at(f)}`"),
-        "this is a `${cx.name_at(f)}`"))
-    cx.intern(Type.Error)
+    if cx.shape_at(t) is .Error || cx.shape_at(f) is .Error { return cx.intern(Type.Error) }
+    if types_disagree(cx, cx.type_at(t), cx.type_at(f)) {
+        let n = cx.name_at(f)
+        return spoken(cx, pointed(
+            error_at("type.mismatch", cx.loc_of(f),
+                "an `if`'s branches disagree: `${cx.name_at(t)}` vs `${n}`"),
+            "this is a `${n}`"))
+    }
+    cx.type_at(t)
 }

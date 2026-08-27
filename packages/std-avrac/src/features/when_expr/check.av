@@ -2,7 +2,7 @@
 //! the `_` arm's type — the total arm anchors, since it always
 //! exists. Error absorbs everywhere.
 use core.{Expr, ExprId, Type, TypeId}
-use features.{TypeCx, require_bool}
+use features.{TypeCx, require_bool, spoken, types_disagree}
 use diagnostics.{error_at, pointed}
 
 fn when_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -20,12 +20,12 @@ fn arms_type(cx: TypeCx, values: List<ExprId>, fallback: ExprId) -> TypeId {
     if cx.shape_at(fallback) is .Error { return cx.intern(Type.Error) }
     mut agreed = true
     for v in values {
-        let wrong = !(cx.shape_at(v) is .Error) && cx.type_at(v).index != anchor.index
-        if wrong {
+        if types_disagree(cx, cx.type_at(v), anchor) {
+            let n = cx.name_at(v)
             cx.emit(pointed(
                 error_at("type.mismatch", cx.loc_of(v),
-                    "a `when`'s arms disagree: `${cx.name_at(v)}` vs the `_` arm's `${cx.type_name(anchor)}`"),
-                "this is a `${cx.name_at(v)}`"))
+                    "a `when`'s arms disagree: `${n}` vs the `_` arm's `${cx.type_name(anchor)}`"),
+                "this is a `${n}`"))
             agreed = false
         }
     }

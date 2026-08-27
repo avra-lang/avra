@@ -12,14 +12,17 @@ export fn expr_spine() -> LanguageFeature {
         "fold_binary" | build_fold_binary
         "fold_cmp"    | build_fold_cmp
         "not_expr"    | build_not
+        "fold_index"  | build_fold_index
+        "fold_props"  | build_fold_props
     }
     let codes = table<DiagCode> {
-        kind            | id      | summary
-        "type.mismatch" | "F2000" | "an operand has the wrong type"
+        kind                | id      | summary
+        "type.mismatch"     | "F2000" | "an operand has the wrong type"
+        "type.unknown_prop" | "F2003" | "a property name nothing answers to"
     }
     component LanguageFeature spine {
         name = "expr_spine"
-        docs = "Expressions: literals, identifiers, the operator ladder — `|| && == != < <= > >= + - * / % !`."
+        docs = "Expressions: literals, identifiers, the operator ladder — `|| && == != < <= > >= + - * / % !` — and postfix access (`xs[i]`, `xs.length`)."
         gram = """
 expression = disjunction
 disjunction = l:conjunction ( op:"||" r:conjunction )* -> fold_binary(l, op, r)
@@ -27,7 +30,9 @@ conjunction = l:comparison ( op:"&&" r:comparison )* -> fold_binary(l, op, r)
 comparison = l:additive ( op:( "==" | "!=" | "<=" | ">=" | "<" | ">" ) r:additive )? -> fold_cmp(l, op, r)
 additive = l:multiplicative ( op:( "+" | "-" ) r:multiplicative )* -> fold_binary(l, op, r)
 multiplicative = l:unary ( op:( "*" | "/" | "%" ) r:unary )* -> fold_binary(l, op, r)
-unary = "!" v:unary -> not_expr(v) | primary
+unary = "!" v:unary -> not_expr(v) | postfix
+postfix = v:indexed ( "." p:NAME )* -> fold_props(v, p)
+indexed = v:primary ( "[" i:expression "]" @expect("]", "expected `]` to close the index") )* -> fold_index(v, i)
 primary = v:NUMBER -> int_lit(v) | n:NAME -> ident(n) | "(" e:expression ")" @expect(")", "expected `)` to close the group") -> e
 """
         builders = rows

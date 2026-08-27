@@ -6,8 +6,17 @@
 /// inspected. Text exists only in the registry's printing projection.
 export type TypeId = { index: int }
 
-/// A type's shape. Interned once; identity is the id.
-export enum Type { Int, Str, Bool, Error }
+/// A type's shape. Interned once; identity is the id — composites
+/// carry their children as interned ids, so equality stays an int
+/// comparison at every depth.
+export enum Type {
+    Int
+    Str
+    Bool
+    /// The first composite: a homogeneous aggregate.
+    List(elem: TypeId)
+    Error
+}
 
 /// The interner: shapes in, ids out — assigned once, compared as
 /// ints forever. The index map is keyed by each shape's CANONICAL
@@ -29,6 +38,7 @@ impl TypeRegistry {
             .Error -> "1",
             .Str -> "2",
             .Bool -> "3",
+            .List(elem) -> "4:${elem.index}",
         }
     }
 
@@ -53,6 +63,7 @@ impl TypeRegistry {
             .Int -> "int",
             .Str -> "string",
             .Bool -> "bool",
+            .List(elem) -> "List<${self.name_of(elem)}>",
             .Error -> "<error>",
         }
     }

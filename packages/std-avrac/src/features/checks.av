@@ -1,8 +1,15 @@
 //! Typing laws shared across features and drivers — extracted at
 //! their third copy, wording passed in so each site keeps its own
 //! words.
-use core.{ExprId}
-use diagnostics.{error_at, pointed}
+use core.{ExprId, TypeId, Type}
+use diagnostics.{Diag, error_at, pointed}
+
+/// Speak and ABSORB: the diagnostic lands and the answer is the
+/// interned Error — the standard refusal tail of a typing law.
+export fn spoken(cx: TypeCx, d: Diag) -> TypeId {
+    cx.emit(d)
+    cx.intern(Type.Error)
+}
 
 /// The condition law: `subject` names the site ("an `if`
 /// condition"), `label` points at it ("this decides the branch").
@@ -13,4 +20,12 @@ export fn require_bool(cx: TypeCx, e: ExprId, subject: string, label: string) {
             error_at("type.mismatch", cx.loc_of(e), "${subject} is a `bool`, found `${cx.name_at(e)}`"),
             label))
     }
+}
+
+/// The agreement law: an Error on EITHER side absorbs (its cause
+/// already spoke); otherwise interned ids must match. True means
+/// the site speaks, in its own words.
+export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
+    if cx.shape_of(got) is .Error || cx.shape_of(want) is .Error { return false }
+    got.index != want.index
 }

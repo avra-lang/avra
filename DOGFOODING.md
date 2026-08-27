@@ -4,6 +4,99 @@ Patterns proven in this tree — reach for these before writing the
 C-style version. Probe unfamiliar features in scratch first; known
 gaps live in CLAUDE.md "bs2 subset notes".
 
+## The idiom registry
+
+This file is the RULEBOOK of the future idiom engine (ROADMAP, Era
+IV): every entry below is a lint rule being written by hand. The
+mechanically-greppable subset is ENFORCED today by the ratchet
+(`make idioms`, wired into the gate — smells may never rise;
+deliberate exceptions bump `tools/idioms.baseline` in the same
+commit). When a review round or a milestone discovers a NEW idiom,
+it lands here AT DISCOVERY, with its smell, its licensed
+exceptions, and — where greppable — a ratchet rule.
+
+Ratcheted (tools/idioms.sh — eleven rules; noisy is fine, the
+baseline absorbs licensed sites and only a RISE fails):
+- I1  empty-list accumulator init (is the loop a map?)
+- I2  the spelled evaluated-payload chain (use `cx.int_at` family)
+- I3  single-line for-push (map -> comprehension; extend -> concat)
+- I4  nullable flag locals (is the scan a find/index_of?)
+- I7  last-element index arithmetic
+- I8  the spelled statement-value ritual
+- I9  hand-rolled type-id comparisons (the agreement law)
+- I11 duplicated long product strings (kind keys excluded)
+- I12 duplicated single-line struct literals (uniq-count)
+- I13 same projection twice on one line (BRE backrefs)
+- I14 emit-then-intern(Error) pairs (the `spoken` tail)
+NOT ratcheted, and why: I5 (remaining sites are duplicate-DETECTION
+by design), I6 (subsumed by I1/I3), I10 (too few and varied to
+grep — the review round hunts them).
+
+- I4  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
+      `index_of_name` is `names.index_of(name)` (returns -1 on a
+      miss — wrap to `int?`). `overlay_hit` stays a loop: reverse
+      scan, licensed until a reversed iterator exists.
+- I5  the dedupe/union fold — NAMED: core `distinct(xs)` (STRING-
+      only on purpose — `contains` compares non-strings by
+      identity). `Grammar.keywords` and `union_expected` use it;
+      validate's and coherence's `seen` folds are duplicate
+      DETECTION (they emit on the dup), a different concept, left.
+- I6  head-plus-tail list builds — `concat`/`flatten` today, spread
+      literals when the sugar lands (backlog).
+- I7  (ratcheted) `xs[xs.length - 1]` is `xs.last()!`; `xs[0]` read
+      MORE THAN ONCE binds a `head`. LICENSED exception: the
+      rebind-alias mutation pattern REQUIRES index syntax — `mut
+      top = xs[xs.length - 1].field` aliases for shared mutation,
+      and `last()` may copy (memory.av's two sites).
+- I8  the statement-value ritual is a VERB, never a two-step:
+      `cx.walk_value(s)` / `cx.eval_value(s)` / `cx.lower_value(s)`
+      (features/values.av) — eight spelled-out copies collapsed
+      across let_stmt, expr_stmt, and mutation.
+- I9  type agreement is ONE law: `types_disagree(cx, got, want)`
+      (features/checks.av) — two-sided Error absorb, then interned
+      ids. Its third hand-rolled copy (the call-argument check) was
+      ONE-SIDED and cascaded "wants `<error>`" at the user — the
+      extraction WAS the bug fix; the absorb test now counts
+      diagnostics, not just contains(). The deep dive found three
+      MORE hand copies (list elements, if branches, when arms) —
+      six consumers now; the if-branch copy compared SHAPES with
+      `==`, a latent hazard on payload shapes (List) that
+      id-comparison closes. Its sibling law: `spoken(cx, d)` —
+      speak and absorb, the standard refusal tail, which ten sites
+      spelled as emit-then-intern.
+- I10 an if-ladder mapping a value to values is a MATCH, returned
+      directly — match is an expression, `_ -> null` closes a
+      non-exhaustive subject (`shape_named`, `term_kind`). A TABLE
+      only when the mapping is consumed AS DATA: iterated, rows
+      with several fields, or queried in more than one direction
+      (the operator roster, builder registries). `when` is for
+      CONDITION arms — mapping one subject through `when` repeats
+      the subject in every arm. (Reserved words refuse as field
+      names: `shape`/`table`/`ref`/`none`.)
+- I11 shared MESSAGES are fns, defined once (`hole_defect()` in the
+      features root) — module-level lets do not cross imports, so a
+      shared string's one definition is a fn. Four drifting copies
+      collapsed. Repeat-a-string is data too:
+      `joined(filled(depth, "  "), "")`.
+- I12 an identical struct literal written twice is a CONSTRUCTOR
+      waiting for its name (`no_first()` — the empty FirstSet was
+      spelled out four times). Hunt with:
+      `grep -rhoE "[A-Z][a-zA-Z]+ \{ [^{}]* \}" | sort | uniq -c`.
+- I13 the same projection computed twice in ONE expression binds a
+      local (`let sh = cx.shape_at(e); sh is .Int || sh is .Bool`).
+      The commonest case: a diagnostic whose MESSAGE and LABEL both
+      project the same value (`found \`${n}\`` … `this is a
+      \`${n}\``) — twelve emit sites bound their `n`, and the two
+      lines now visibly agree. LICENSED exception: a
+      comprehension's filter and element cannot share a binding —
+      `defs_of` computes `let_name` twice by necessity;
+      comprehension bindings / `filter_map` are on the sugar
+      backlog for it.
+- I14 a GUARD PAIR repeated across sites is one law method
+      answering bool (`refused_name` — the keyword+reserved
+      refusal lived three times as when-pairs; sites now read
+      `if self.refused_name(n, at) { return }`).
+
 ## `when` for dispatch chains
 
 Any if/return ladder over conditions is a `when` expression:
@@ -84,6 +177,32 @@ let name: string? = store.fn_parts(s)?.name
 let parts: FnParts? = store.fn_parts(s)
 if parts != null { declare_sig(s, parts!.params, parts!.ret) }
 ```
+
+A projection that COMPOSES a pipeline gets a verb too: the
+evaluated payload of a child is `cx.int_at(e)` / `cx.truth_at(e)` /
+`cx.elems_at(e)` (features/values.av) — never the spelled-out
+`int_of(cx.store.expr(cx.value_at(e)))`, which appeared eight times
+before it was named. And after a null guard, a value read more than
+once REBINDS (`let es = elems!`) so the `!` happens exactly once —
+flow narrowing is on the sugar backlog; until the language absorbs
+it, the rebind is the pattern.
+
+## A pure map never mutates
+
+An accumulate loop that only pushes `f(x)` is a MAP — write the
+comprehension; the loop form is for effects, conditional pushes the
+filter can't spell, and index arithmetic:
+
+```avra
+.ListLit(elems) -> fp(20, self.expr_fps(elems)),   // not: mut parts + for + push
+let regs = [cx.reg_of(k) for k in elems]
+```
+
+A map the tree repeats gets a NAME (`expr_fps`, `stmt_fps`); a
+mixed head-plus-tail builds with `concat`/`flatten` (spread
+literals `[head, ..tail]` are on the sugar backlog); and a
+two-per-item map is `flatten([[a, b] for p in ps])` — proven in
+the subset (param_fps).
 
 ## `it` projection for lambdas
 

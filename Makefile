@@ -8,7 +8,7 @@ BS2       := $(abspath $(BOOTSTRAP))/build/bs2
 
 RUNTIME_OBJS := build/runtime.o build/llvm_wrapper.o
 
-.PHONY: test clean fresh libfresh corpus gate
+.PHONY: test clean fresh libfresh corpus gate idioms idioms-accept
 
 # bs2's lib-mode freshness truth is the .avra-sha256 sidecars; they
 # go stale against edits. Every bs2-run target clears them first.
@@ -66,8 +66,17 @@ corpus: $(RUNTIME_OBJS)
 	  echo "$$f: eval == native == expected"; \
 	done
 
-# The whole gate: unit specs, then the corpus end to end.
-gate: test corpus
+# The idiom ratchet: mechanical smells may never RISE. Counts are
+# pinned in tools/idioms.baseline; falling counts re-pin with
+# `make idioms-accept`.
+idioms:
+	@sh tools/idioms.sh
+
+idioms-accept:
+	@sh tools/idioms.sh --accept
+
+# The whole gate: idioms, unit specs, then the corpus end to end.
+gate: idioms test corpus
 
 # The differential gate: the compiled binary must say exactly what
 # the evaluator says.

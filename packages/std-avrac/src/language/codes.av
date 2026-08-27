@@ -3,7 +3,7 @@
 //! engine stays kind-free — and every projected kind is checked
 //! against the assembled registry. Passes never pass through this
 //! table: they emit Diag directly with their own registered kinds.
-use core.{concat}
+use core.{concat, flatten}
 use grammar.{Diagnostic, Cause}
 use diagnostics.{Diag, DiagCode, error_at, code_for, loc_at}
 use @std.errors.{Loc}
@@ -30,6 +30,7 @@ fn pass_codes() -> List<DiagCode> {
         "resolve.unresolved"     | "F3000" | "a name is not defined"
         "resolve.use_before_def" | "F3001" | "a name is used before its definition"
         "resolve.reserved"       | "F3002" | "the name is a keyword — today's or a future one"
+        "language.unsupported"   | "F0901" | "the construct waits on a capability the compiler lacks"
     }
     rows
 }
@@ -54,15 +55,16 @@ export fn project(d: Diagnostic, file: string?) -> Diag {
 /// Every engine diagnostic projected, then the net: a kind the
 /// registry does not know becomes a loud defect of its own.
 export fn project_all(ds: List<Diagnostic>, file: string?, codes: List<DiagCode>) -> List<Diag> {
-    mut out: List<Diag> = []
-    for d in ds {
-        let p = project(d, file)
-        out.push(p)
-        if code_for(codes, p.kind) == null {
-            out.push(error_at("language.defect", null, "`${p.kind}`: diagnostic kind is not registered"))
-        }
+    flatten([netted(project(d, file), codes) for d in ds])
+}
+
+/// The projected diagnostic — plus the net's defect when its kind
+/// is unregistered.
+fn netted(p: Diag, codes: List<DiagCode>) -> List<Diag> {
+    if code_for(codes, p.kind) == null {
+        return [p, error_at("language.defect", null, "`${p.kind}`: diagnostic kind is not registered")]
     }
-    out
+    [p]
 }
 
 /// Assembly problems are language defects regardless of engine cause —

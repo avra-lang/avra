@@ -2,20 +2,21 @@
 //! assembled registry.
 use @std.cli.{Subcommand, CommandSpec, CliResult, Runnable, ArgDef, result_get_arg}
 use @std.avrac.language.{avra}
+use @std.avrac.diagnostics.{DiagCode}
 
 type ExplainCmd = { }
 
 impl Runnable for ExplainCmd {
     fn run(self, args: CliResult) -> int {
         let q = result_get_arg(args, "code")
-        for c in avra().codes {
-            if c.id == q || c.kind == q {
-                println("${c.id} ${c.kind} — ${c.summary}")
-                return 0
-            }
+        let hit: DiagCode? = avra().codes.find(it.id == q || it.kind == q)
+        if hit == null {
+            eprintln("avra: nothing registered under `${q}`")
+            return 1
         }
-        eprintln("avra: nothing registered under `${q}`")
-        1
+        let c = hit!
+        println("${c.id} ${c.kind} — ${c.summary}")
+        0
     }
 }
 

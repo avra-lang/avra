@@ -3,7 +3,7 @@
 //! run a grammar with defects, so every check here is a guarantee the
 //! matcher can lean on.
 
-use core.{concat, flatten}
+use core.{concat, flatten, some_list}
 
 /// The TokenKind a terminal name denotes, or null for an unknown name.
 export fn term_kind(term: string) -> TokenKind? {
@@ -22,13 +22,13 @@ impl Seq {
     /// groups — capture accumulation makes them all visible to the
     /// build.
     fn labels(self) -> List<string> {
-        mut out: List<string> = []
-        for member in self.items {
-            if member.label != null { out.push(member.label!) }
-            for l in prim_labels(member.prim) { out.push(l) }
-        }
-        out
+        flatten([item_labels(m) for m in self.items])
     }
+}
+
+/// One item's labels: its own, then any inside its prim's groups.
+fn item_labels(m: Item) -> List<string> {
+    concat(some_list(m.label), prim_labels(m.prim))
 }
 
 fn prim_labels(p: Prim) -> List<string> {

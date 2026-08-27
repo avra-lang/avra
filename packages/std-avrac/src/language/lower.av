@@ -7,8 +7,8 @@
 //! first), so names cost nothing, exactly as in eval.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled}
-use diagnostics.{Diag, error_at}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, concat}
+use diagnostics.{Diag, error_at, pointed, loc_at}
 use features.{LowerCx, StmtLowerCx, FnSig}
 
 /// One lowered body: instructions in order and each register's type
@@ -70,11 +70,11 @@ export fn lower(a: Analysis) -> Lowered {
     for m in lm.failures { failures.push(m) }
     Lowered {
         fns: fns, entry: lm.body, types: a.typing.types,
-        diagnostics: [error_at("language.defect", null, m) for m in failures],
+        diagnostics: concat(lm.refusals, [error_at("language.defect", null, m) for m in failures]),
     }
 }
 
-type LoweredBody = { body: Body, failures: List<string> }
+type LoweredBody = { body: Body, failures: List<string>, refusals: List<Diag> }
 
 /// One fn: params pre-minted as registers 0..N-1, the body inside
 /// one scope, the answer after the scope settles.
@@ -92,6 +92,7 @@ fn lower_fn(a: Analysis, s: StmtId, fname: string, root: ExprId) -> LoweredBody 
     LoweredBody {
         body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.ins, reg_types: lo.reg_types },
         failures: lo.failures,
+        refusals: [],
     }
 }
 
@@ -99,7 +100,14 @@ fn lower_main(a: Analysis) -> LoweredBody {
     let lo = new_lower(a)
     lo.give(Ins.ScopeEnter(Level.Application))
     let last: Reg? = lower_stmts(lo, a.stmts)
-    if last != null { lo.give(Ins.Print(last!)) }
+    mut refusals: List<Diag> = []
+    if last != null {
+        if lo.a.typing.types.shape_of(lo.reg_types[last!.index]) is .List {
+            refusals.push(answer_refusal(a))
+        } else {
+            lo.give(Ins.Print(last!))
+        }
+    }
     lo.give(Ins.ScopeExit(null))
     lo.give(Ins.Ret(0))
     LoweredBody {
@@ -108,7 +116,16 @@ fn lower_main(a: Analysis) -> LoweredBody {
             gives: null, ins: lo.ins, reg_types: lo.reg_types,
         },
         failures: lo.failures,
+        refusals: refusals,
     }
+}
+
+/// A program's answer prints as a scalar — the native list printer
+/// arrives with the in-tree runtime.
+fn answer_refusal(a: Analysis) -> Diag {
+    let at = loc_at(a.source.file, a.store.stmt_span(a.stmts[a.stmts.length - 1]))
+    pointed(error_at("language.unsupported", at, "the program's answer is a list — it prints as a scalar for now"), "the answer")
+        with { help: "end with an element (`xs[i]`) or `xs.length`" }
 }
 
 /// One subtree's register, lowered at first request and memoized.

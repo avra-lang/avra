@@ -1,0 +1,28 @@
+//! Lists — the first aggregate. `[e, e, e]` builds one; access
+//! (`xs[i]`, `xs.length`) is the spine's postfix ladder. Elements
+//! are scalars until ownership analysis covers managed values.
+use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
+
+export fn lists() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name       | build
+        "list_lit" | build_list
+    }
+    let codes = table<DiagCode> {
+        kind                | id      | summary
+        "type.list_empty"   | "F2004" | "an empty list has no element type to infer"
+        "type.list_element" | "F2005" | "a list's elements share one type"
+        "type.list_scalar"  | "F2006" | "a list holds scalars for now"
+    }
+    component LanguageFeature f {
+        name = "lists"
+        docs = "`[first, second, third]` — a homogeneous aggregate; index with `xs[i]`, measure with `xs.length`."
+        gram = """
+primary = "[" ( first:expression ( "," rest:expression )* )? "]" @expect("]", "expected `]` to close the list") -> list_lit(first, rest)
+"""
+        builders = rows
+        diags = codes
+    }
+    f
+}

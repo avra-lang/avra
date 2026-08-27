@@ -1,7 +1,7 @@
 //! Coherence: the composed grammar, the feature tables, and the code
 //! registry must agree before any source parses.
-use core.{concat, joined}
-use grammar.{Grammar, Alt, Prim, Build, Diagnostic, defect}
+use core.{concat, flatten, joined}
+use grammar.{Grammar, Alt, Seq, Prim, Build, Diagnostic, defect}
 use diagnostics.{DiagCode}
 
 /// Every disagreement between a composed grammar's build calls and the
@@ -74,19 +74,21 @@ fn dead_defects(features: List<LanguageFeature>, referenced: Map<string, bool>) 
 /// Build-call names referenced anywhere in a branch tree, groups
 /// included.
 fn call_names_in_alt(a: Alt) -> List<string> {
-    mut out: List<string> = []
-    for s in a.branches {
-        if s.build != null {
-            match s.build! {
-                .Var(_) -> nothing(),
-                .Call(name, _) -> out.push(name),
-            }
-        }
-        for member in s.items {
-            out = concat(out, call_names_in_prim(member.prim))
-        }
+    flatten([branch_call_names(s) for s in a.branches])
+}
+
+/// One branch's build-call name (when it calls one) plus its items'.
+fn branch_call_names(s: Seq) -> List<string> {
+    concat(build_call_name(s.build), flatten([call_names_in_prim(m.prim) for m in s.items]))
+}
+
+/// The build's callee, as a list — empty for pass-through and Var.
+fn build_call_name(b: Build?) -> List<string> {
+    if b == null { return [] }
+    match b! {
+        .Call(name, _) -> [name],
+        .Var(_) -> [],
     }
-    out
 }
 
 fn call_names_in_prim(p: Prim) -> List<string> {

@@ -98,6 +98,10 @@ fn declare_runtime(lc: ptr, m: ptr) {
     declare(lc, m, "avra_rc_release", i64t, [pt], false)
     declare(lc, m, "avra_rc_retain", avra_llvm_void_type(lc), [pt], false)
     declare(lc, m, "snprintf", avra_llvm_int32_type(lc), [pt, i64t, pt], true)
+    declare(lc, m, "avra_array_new", pt, [], false)
+    declare(lc, m, "avra_array_push", avra_llvm_void_type(lc), [pt, i64t], false)
+    declare(lc, m, "avra_array_get", i64t, [pt, i64t], false)
+    declare(lc, m, "avra_array_len", i64t, [pt], false)
 }
 
 /// One user fn's declaration, typed from its signature's shapes.
@@ -119,7 +123,7 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
     match types.shape_of(ty) {
         .Int or .Error -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
-        .Str -> avra_llvm_pointer_type(lc),
+        .Str or .List(_) -> avra_llvm_pointer_type(lc),
     }
 }
 
@@ -143,6 +147,7 @@ fn emit_ins(em: Emit, i: Ins) {
         .ConstStr(_, s) -> define(em, avra_llvm_build_global_string_ptr(em.b, s, ".str")),
         .Bin(_, op, a, x) -> define(em, bin_value(em, op, em.vals[a.index], em.vals[x.index])),
         .Un(_, op, src) -> define(em, un_value(em, op, em.vals[src.index])),
+        .CallRtVoid(callee, args) -> void_rt_call(em, callee, args),
         .CallRt(dst, callee, args) -> define(em, call_rt_value(em, dst, callee, args)),
         .Call(_, callee, args) -> define(em, call(em, mangled(callee), [em.vals[a.index] for a in args])),
         .Release(r) -> released(em, r),
@@ -207,6 +212,10 @@ fn call_rt_value(em: Emit, dst: Reg, callee: string, args: List<Reg>) -> ptr {
     raw
 }
 
+fn void_rt_call(em: Emit, callee: string, args: List<Reg>) {
+    let _ = call(em, callee, [em.vals[a.index] for a in args])
+}
+
 fn released(em: Emit, r: Reg) {
     let _ = call(em, "avra_rc_release", [em.vals[r.index]])
 }
@@ -227,7 +236,8 @@ fn printed_value(em: Emit, src: Reg) {
         .Str -> puts(em, v),
         .Int -> puts(em, int_text(em, v)),
         .Bool -> puts(em, bool_word(em, v)),
-        .Error -> nothing(),
+        // Refused at lowering — a program's answer prints as a scalar.
+        .List(_) or .Error -> nothing(),
     }
 }
 

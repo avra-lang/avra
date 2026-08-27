@@ -19,13 +19,18 @@
     3.  [x] mutation & loops — `mut`, assignment, `while`, range `for`
     4.  [x] operators complete — `&& || !`, `!= > >= <=`, `* / %`,
         grouping parens
-    5.  lists — the first aggregate; iteration; the method core
+    5.  [x] lists — the first aggregate; iteration; `.length` opens
+        the method core (the scan methods ride closures, rung 13)
     6.  strings complete — `${}` interpolation, the method core
     7.  structs — declarations, literals, `with`, impl methods
         (and the spec's `shape`/width subtyping belongs to this
         rung — the cx family in contract.av is already waiting)
     8.  ▲ enums & match — payloads, patterns, exhaustiveness
-    9.  nullability — `T?`, `null` arms, `! ?? ?.`
+    9.  nullability — `T?`, `null` arms, `! ?? ?.` — and the
+        spec's bind-fresh trio (Axis 10): `let v? = e else { }`,
+        `if let v? = e`, effectively-final narrowing. The trio is
+        the answer to the guard-and-bang ceremony; index_value in
+        expr_spine/eval.av is the exhibit
     10. Result & `?` — propagation as the error spine
     11. ▲ generics — mono through OUR pipeline (List<T> becomes real)
     12. ▲ traits & dyn — dispatch, cross-module impls
@@ -51,8 +56,16 @@
   the language's own spawn/channels. Tooling as projections of the
   compiler's fact tables (P10/P12): `avra lsp`, `avra fmt` (format
   IS re-render — the AST is the source of truth), `avra doc` from
-  feature docs. GATE: rebuild-after-one-edit and suite wall time,
-  measured and budgeted.
+  feature docs — and THE IDIOM ENGINE: pattern-detecting rewrites
+  ("this accumulate loop is a map — here is the comprehension") as
+  warning-grade diagnostics with structured fixes, riding the
+  Suggestion/Edit machinery diagnostics already carry. Idiom rules
+  are PER-FEATURE manifest entries (an `idioms` table beside
+  `gram`/`builders`/`diags`) — each feature owns the beautiful
+  form of its own constructs; DOGFOODING.md is the rulebook being
+  written by hand until then, and the trigger is self-host: idiom
+  rules are Avra fns matching Avra's own AST. GATE: rebuild-after-
+  one-edit and suite wall time, measured and budgeted.
 - ERA V — THE SUBSTRATE: what the language is FOR (P2, P13, P14).
   The levels beyond Application become real strategies (Systems
   ownership first); concurrency lands as language (Axis 18); the
@@ -514,6 +527,62 @@ were three copies), the homogeneous-operand law extracted to ONE
 `needs` (int and bool mismatches were the same sentence), and the
 lexer's eight two-char munch arms became one data-driven scan.
 
+## Milestone 12 — lists (the design)
+
+Rung 5: the first aggregate, vertically. The native story cost
+zero design: the bootstrap runtime already ships dynamic arrays
+(`avra_array_new/push/get/len`, int64 slots), so lists ride CallRt
+— the closed vocabulary's escape hatch doing exactly its job.
+
+- SURFACE: `[e, e, e]` literals; `xs[i]` indexing; `xs.length`;
+  iteration is range-`for` over indices (`for i in 0..xs.length`)
+  — for-EACH sugar waits for the two-binding For design, recorded.
+- OWNERSHIP: the `lists` feature owns the literal and the List
+  TYPE's laws; the SPINE owns the postfix ladder rungs (`indexed`,
+  `postfix`) and the Index/Prop nodes — access is expression
+  structure, like Binary. Index's eval reads elements through the
+  value protocol's new projection (`elems_of`) — no cross-feature
+  match. Properties parse as ANY name; TYPING refuses unknown ones
+  by name — the method core's opening, better errors than a parse
+  refusal.
+- V1 RESTRICTIONS, honest, each with its trigger: elements are
+  SCALARS (strings-in-lists wait for ownership analysis, same
+  clause as mut strings); `[]` refuses at typing (no annotation
+  syntax can seed it yet); lists cannot cross fn boundaries (the
+  annotation grammar is one NAME — generic annotations are rung
+  11's); `==` on lists refuses (element-wise equality needs the
+  runtime story); a program cannot PRINT a list natively (the
+  in-tree runtime brings the printer — eval prints `[1, 2, 3]`);
+  `mut` still holds scalars only; v1 postfix stratifies — indexing
+  binds tighter than properties, interleaved chains redesign at
+  structs (rung 7).
+- MEMORY: bootstrap arrays are malloc'd and process-lifetime (no
+  avra_array_free exists) — List registers are NOT managed: the
+  memory pass passes them through like ints. The real strategy
+  arrives with the in-tree runtime; leak-by-design is the
+  bootstrap's own answer.
+- CORE EVENTS: `Type.List(elem)` — the first composite, exactly
+  what the registry's canon-key design waited for; `CallRtVoid` —
+  the effect-only runtime call (push has no value); the `elems_of`
+  value projection; three Expr variants (ListLit, Index, Prop).
+- Gate: a corpus program that builds a list, indexes it, measures
+  it, and folds it through a range-for — ending in a scalar,
+  eval == native == expected.
+
+LANDED: 269/269; fourteen-for-fourteen corpus, lists.av folding
+eight elements through a range-for natively. The design held with
+one addition earned along the way: the spine's postfix ladder
+(`indexed`, `postfix`) — property names parse generously and
+typing refuses them BY NAME (`no property `size` on `List<int>``,
+help naming the one that exists). The `.` token joined the lexer's
+single-op set (the golden that said a lone `.` is an error changed
+because the TRUTH changed). Every v1 restriction refuses with its
+remedy in words: empty literal, mixed elements, managed elements,
+list `==`, mut lists, and the native list answer — the last as
+F0901 language.unsupported at lowering, while `avra run` happily
+prints `[1, 2, 3]`. Two new subset pins recorded (enum-list and
+`?? []` tails both need typed lets).
+
 ## The growth ledger (what a feature costs)
 
 M7 was ~1200 lines, and the fair audit says where: ~600 were the
@@ -754,11 +823,35 @@ into features (or spec commitments) when their milestone comes.
   `T?` (`match o.result { .Node(.NGrammar(g)) -> g, null -> ... }`)
   — wanted by every unwrap-then-match two-step (grammar_result, the
   pass drivers); the subset refuses (F9001).
+- THE BIND-FRESH TRIO, from spec Axis 10 (already committed, lands
+  at rung 9): `let v? = e else { diverge }`, `if let v? = e`, and
+  effectively-final narrowing sugar. Wanted by expr_spine/eval.av's
+  index_value — three contract clauses cost eleven lines, two `!`,
+  and two rebinds today; the trio prices each clause at ONE line,
+  born unwrapped. Every guard-then-use rule body is a wanting site.
+- PARTIAL READS RETURN ABSENCE: `xs.get(i) -> T?` beside the
+  panicking `xs[i]` (spec: indexing panics, structured and
+  task-contained). A bounds check then isn't arithmetic, it's
+  absence — and absence composes with `??`, whose fallback may BE
+  the failure channel (`es.get(at) ?? failed(...)` — guard and
+  fallback were never different things, P6). Wanted by index_value;
+  rides the method core (method-with-args).
 - `?.` through calls, not just fields — `answers_to` wanted
   `token_name()` projected straight into a compare; today a bound
   let (and the direct compare is #1376).
 - Comprehension destructuring: `[fix(i, m) for (i, m) in
   xs.enumerate()]` — wanted by attach, first_defects, joined.
+- Comprehension BINDINGS (or `filter_map`): the filter and the
+  element cannot share a computed value — `[Def { name: n, ... }
+  for s in stmts let n = store.let_name(s) if n != null]` doesn't
+  exist, so defs_of projects `let_name` twice. Wanted by every
+  filter-map whose predicate IS the projection.
+- SPREAD in list literals: `[head, ..tail]` / `[..a, ..b, last]` —
+  the concat/flatten ceremony that remains AFTER comprehensions.
+  Wanted by every mixed fingerprint arm (`fp(14,
+  concat(self.stmt_fps(stmts), [self.expr_fingerprint(value)]))`
+  wants `fp(14, [..self.stmt_fps(stmts),
+  self.expr_fingerprint(value)])`) and the When/FnDecl flattens.
 - Any expression as a comprehension ELEMENT, generic bodies
   included — if-else elements die there today (F1000); wanted by
   bind_label. Same for the FILTER: `||`/`!` in a comprehension `if`

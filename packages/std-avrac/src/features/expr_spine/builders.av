@@ -41,6 +41,27 @@ fn build_not(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Not(v))
 }
 
+/// `v ( [i] )*` folds left: `m[i][j]` is `(m[i])[j]`.
+fn build_fold_index(b: Builder) -> Result<LangNode, string> {
+    mut acc = b.expr(0)?
+    let indices = b.exprs(1)?
+    for i in indices {
+        acc = b.store.alloc_expr(Expr.Index(acc, i), b.cover(acc, i))
+    }
+    b.wrap_expr(acc)
+}
+
+/// `v ( .name )*` folds left — the parse takes ANY name; typing
+/// refuses the unknown ones.
+fn build_fold_props(b: Builder) -> Result<LangNode, string> {
+    mut acc = b.expr(0)?
+    let names = b.tokens(1)?
+    for t in names {
+        acc = b.store.alloc_expr(Expr.Prop(acc, t.text), b.span)
+    }
+    b.wrap_expr(acc)
+}
+
 /// The operator a source token names — derived from core's roster,
 /// so the symbol projection stays the single source.
 fn binop_of(text: string) -> BinOp? {

@@ -1,0 +1,38 @@
+//! The literal's typing law: elements share ONE scalar type; the
+//! empty literal has nothing to infer from and says so.
+use core.{ExprId, Type, TypeId}
+use features.{TypeCx, spoken, types_disagree}
+use diagnostics.{error_at, pointed}
+
+fn list_type(cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
+    if elems.is_empty() {
+        return spoken(cx, pointed(
+            error_at("type.list_empty", cx.loc_of(e), "an empty list has no element type to infer"),
+            "nothing to look at")
+            with { help: "seed one element — annotations arrive with generics" })
+    }
+    let head = elems[0]
+    let elem = cx.type_at(head)
+    if cx.shape_at(head) is .Error { return cx.intern(Type.Error) }
+    if !scalar(cx, head) {
+        return spoken(cx, pointed(
+            error_at("type.list_scalar", cx.loc_of(head), "a list holds scalars for now"),
+            "this is a `${cx.name_at(head)}`")
+            with { help: "managed elements arrive with ownership analysis" })
+    }
+    for k in elems {
+        if types_disagree(cx, cx.type_at(k), elem) {
+            let n = cx.name_at(k)
+            return spoken(cx, pointed(
+                error_at("type.list_element", cx.loc_of(k), "a list's elements share one type — the first is `${cx.type_name(elem)}`, this is `${n}`"),
+                "this is a `${n}`"))
+        }
+    }
+    cx.intern(Type.List(elem))
+}
+
+/// Scalars ride int64 slots; everything else waits for ownership.
+fn scalar(cx: TypeCx, e: ExprId) -> bool {
+    let sh = cx.shape_at(e)
+    sh is .Int || sh is .Bool
+}

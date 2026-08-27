@@ -90,7 +90,8 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 out.push(i)
             }
             .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-            .Bin(_, _, _, _) or .Un(_, _, _) or .CallRt(_, _, _) or .Release(_) or
+            .Bin(_, _, _, _) or .Un(_, _, _) or
+            .CallRt(_, _, _) or .CallRtVoid(_, _) or .Release(_) or
             .Alloca(_) or .Load(_, _) or .Store(_, _) or
             .LoopStart or .LoopCond(_) or .LoopEnd or
             .Retain(_) or .RetVal(_) or .Print(_) or .Ret(_) -> {
@@ -105,7 +106,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
 /// The level a new scope inherits — its innermost open enclosure.
 fn enclosing_level(open_scopes: List<Scope>) -> Level {
     if open_scopes.is_empty() { return Level.Application }
-    open_scopes[open_scopes.length - 1].level
+    open_scopes.last()!.level
 }
 
 /// The strategy: what a scope owes at its exit. `kept` is a value
@@ -119,11 +120,12 @@ fn releases_for(scope: Scope, kept: Reg?) -> List<Reg> {
 
 /// All but the escaping register.
 fn kept_out(rs: List<Reg>, kept: Reg?) -> List<Reg> {
-    mut out: List<Reg> = []
-    for r in rs {
-        if kept == null || r.index != kept!.index { out.push(r) }
-    }
-    out
+    [r for r in rs if stays(r, kept)]
+}
+
+/// Held by the scope — not the value escaping through the yield.
+fn stays(r: Reg, kept: Reg?) -> bool {
+    kept == null || r.index != kept!.index
 }
 
 /// When `i` defines a managed value, the innermost open scope takes

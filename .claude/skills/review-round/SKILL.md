@@ -76,11 +76,65 @@ made after literally reading everything they cover.
    feature cost (steady state). Keep the growth ledger honest; audit
    falsifiable claims after the trial and AMEND them in writing.
 
+## The species hunt (the round that earned "EXACTLY the type of cleanup I want")
+
+Hunting NEW idiom species is a method, not a mood:
+
+1. GREP BATTERIES: name a candidate smell, grep the whole tree for
+   its shape (`mut found` flag scans, `xs[xs.length - 1]`,
+   bool-literal if-else, name->value if-ladders, spelled-out
+   pipelines, duplicated string literals, `.length == 0`). Run
+   several related patterns per battery; batch them.
+2. TRIAGE EVERY HIT, honestly: convert / license WITH A NAMED
+   EXCUSE (reverse scan, index pairing, rebind-alias, dual-channel
+   fold) / catalog for a later construct. A licensed site's excuse
+   goes in the registry entry so it is never re-litigated.
+3. PROBE BEFORE ASSUMING: when a conversion depends on a subset
+   capability nobody has proven (`?` in a comprehension, `||` in a
+   find predicate, index_of's miss value), write a scratch probe
+   FIRST. Record the result in CLAUDE.md either way — working
+   shapes shrink the trap-fear that causes ugly-but-safe drafts;
+   corrupting shapes get a symptom signature.
+4. EXTRACT SHARED LAWS, expecting bugs: a rule copied by hand is a
+   law waiting to disagree with itself. The types_disagree
+   extraction FOUND a user-facing cascade (one copy was one-sided).
+   When an extraction changes behavior, that is a finding, not a
+   conflict — probe it end to end (`./avra check` on a witness
+   program), fix, and TIGHTEN the test that let it hide
+   (contains() without a diagnostics COUNT hides cascades).
+5. SWEEP EVERY PACKAGE, cli and tools included, and smoke-test any
+   CLI path touched (`./avra explain F3005` both hit and miss).
+6. Choose the RIGHT form, not the fanciest: match (returned
+   directly) before table; table only when consumed as data; when
+   only for condition arms. Over-abstraction is a smell too.
+
+## The idiom registry and its ratchet
+
+DOGFOODING.md opens with a NUMBERED idiom registry (I-codes) — the
+future idiom engine's rulebook, written by dogfooding. Every round:
+
+- Apply the registry back at the code (that is axis 2), and HUNT
+  for idioms the registry does not know yet — a repeated shape
+  with a more beautiful form is a NEW entry, landed in the round.
+- A new idiom that a grep can catch gets a RATCHET RULE in
+  tools/idioms.sh with its count pinned in tools/idioms.baseline;
+  `make idioms` runs inside the gate and FAILS when a smell count
+  rises. Deliberate exceptions bump the baseline in the same
+  commit, visibly.
+- When a round's fixes make a count FALL, re-pin with
+  `make idioms-accept` in that round — a slack baseline lets new
+  smells hide under old headroom.
+- The write-time twin is CLAUDE.md's "idiom bar": first drafts are
+  idiomatic, probes beat defensive loops, and probe results are
+  recorded so the trap-fear zone shrinks.
+
 ## Feed the ledgers (every discovery has a home)
 
 - bs2 gap or trap discovered -> CLAUDE.md "bs2 subset notes", with
   the symptom signature so it is never re-diagnosed.
-- Pattern proven in tree -> DOGFOODING.md, with a real example.
+- Pattern proven in tree -> DOGFOODING.md, with a real example —
+  and an I-code entry in its registry when it is a RULE (smell +
+  idiomatic form + licensed exceptions).
 - The compiler's code WANTED a language construct -> ROADMAP sugar
   backlog, naming the wanting site (dogfooding is design; request
   your own features).

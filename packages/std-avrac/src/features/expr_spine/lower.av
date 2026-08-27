@@ -5,7 +5,7 @@
 //! desugar onto the if-region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
 use core.{Expr, ExprId, BinOp, UnOp, Reg, Ins}
-use features.{LowerCx}
+use features.{LowerCx, hole_defect}
 
 fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
     match cx.store.expr(e) {
@@ -17,8 +17,27 @@ fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
         .Ident(_) -> ident_reg(cx, e),
         .Binary(op, l, r) -> binary_reg(cx, e, op, l, r),
         .Not(v) -> not_reg(cx, e, v),
-        _ -> lower_failed(cx, e, "defect: a hole survived a clean analysis"),
+        .Index(s, i) -> index_reg(cx, e, s, i),
+        .Prop(s, _) -> length_reg(cx, e, s),
+        _ -> lower_failed(cx, e, hole_defect()),
     }
+}
+
+fn index_reg(cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
+    let arr = cx.reg_of(s)
+    let idx = cx.reg_of(i)
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, "avra_array_get", [arr, idx]))
+    dst
+}
+
+/// Only `length` survives typing, so the property lowers as one
+/// runtime call.
+fn length_reg(cx: LowerCx, e: ExprId, s: ExprId) -> Reg {
+    let arr = cx.reg_of(s)
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, "avra_array_len", [arr]))
+    dst
 }
 
 fn ident_reg(cx: LowerCx, e: ExprId) -> Reg {

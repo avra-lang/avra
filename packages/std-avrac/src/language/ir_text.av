@@ -1,17 +1,16 @@
 //! The human projection of Lowered IR (P7): brackets as braces, one
 //! instruction per line, registers by mint order. What `avra ir`
 //! prints and the golden tests pin.
-use core.{Ins, Reg, Level, joined, op_symbol, un_symbol}
+use core.{Ins, Reg, Level, joined, concat, flatten, filled, op_symbol, un_symbol}
 
 export fn render_ir(l: Lowered) -> string {
-    mut lines: List<string> = []
-    for b in l.fns {
-        lines.push("fn ${b.name}(${param_list(l, b)}) -> ${l.types.name_of(b.ret)}")
-        for ln in body_lines(b.ins) { lines.push(ln) }
-        lines.push("")
-    }
-    for ln in body_lines(l.entry.ins) { lines.push(ln) }
-    joined(lines, "\n")
+    joined(concat(flatten([fn_block(l, b) for b in l.fns]), body_lines(l.entry.ins)), "\n")
+}
+
+/// One fn as its lines: signature, body, a separating blank.
+fn fn_block(l: Lowered, b: Body) -> List<string> {
+    concat(["fn ${b.name}(${param_list(l, b)}) -> ${l.types.name_of(b.ret)}"],
+           concat(body_lines(b.ins), [""]))
 }
 
 /// A fn's params as registers with their type names.
@@ -61,6 +60,7 @@ fn body_lines(ins: List<Ins>) -> List<string> {
             .Bin(d, op, a, b) -> lines.push(line(depth, "r${d.index} = r${a.index} ${op_symbol(op)} r${b.index}")),
             .Un(d, op, src) -> lines.push(line(depth, "r${d.index} = ${un_symbol(op)}r${src.index}")),
             .CallRt(d, callee, args) -> lines.push(line(depth, "r${d.index} = call ${callee}(${reg_list(args)})")),
+            .CallRtVoid(callee, args) -> lines.push(line(depth, "call ${callee}(${reg_list(args)})")),
             .Call(d, callee, args) -> lines.push(line(depth, "r${d.index} = call ${callee}(${reg_list(args)})")),
             .Alloca(d) -> lines.push(line(depth, "r${d.index} = slot")),
             .Load(d, slot) -> lines.push(line(depth, "r${d.index} = load r${slot.index}")),
@@ -85,9 +85,7 @@ fn body_lines(ins: List<Ins>) -> List<string> {
 }
 
 fn line(depth: int, text: string) -> string {
-    mut s = ""
-    for j in 0..depth { s = "${s}  " }
-    "${s}${text}"
+    "${joined(filled(depth, "  "), "")}${text}"
 }
 
 fn level_word(level: Level) -> string {

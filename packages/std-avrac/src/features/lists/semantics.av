@@ -1,0 +1,50 @@
+//! The list literal's NodeSemantics — dispatch one-liners; the rule
+//! bodies live beside this file, by concern.
+use core.{Expr, ExprId, TypeId, NodeStore, Reg, Type, int_of, truth_of, elems_of, joined}
+use features.{NodeSemantics, ResolveCx, TypeCx, EvalCx, LowerCx, nothing}
+
+export type ListSemantics = { }
+
+impl NodeSemantics for ListSemantics {
+    fn kids(self, e: Expr) -> List<ExprId> {
+        let elems: List<ExprId> = elems_of(e) ?? []
+        elems
+    }
+
+    fn resolve(self, cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+
+    fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
+        let elems: List<ExprId>? = elems_of(cx.store.expr(e))
+        if elems == null { return cx.intern(Type.Error) }
+        list_type(cx, e, elems!)
+    }
+
+    fn eval(self, cx: EvalCx, e: ExprId) -> ExprId {
+        let elems: List<ExprId>? = elems_of(cx.store.expr(e))
+        if elems == null { return e }
+        list_value(cx, elems!)
+    }
+
+    fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
+        let elems: List<ExprId>? = elems_of(cx.store.expr(e))
+        list_reg(cx, e, elems ?? [])
+    }
+
+    fn printed(self, store: NodeStore, e: ExprId) -> string? {
+        let elems: List<ExprId>? = elems_of(store.expr(e))
+        if elems == null { return null }
+        "[" + joined([scalar_text(store, k) for k in elems!], ", ") + "]"
+    }
+}
+
+/// A scalar element's text — through the value protocol, so no
+/// other feature's variant is matched.
+fn scalar_text(store: NodeStore, k: ExprId) -> string {
+    let iv: int? = int_of(store.expr(k))
+    if iv != null { return "${iv!}" }
+    let bv: bool? = truth_of(store.expr(k))
+    if bv != null { return if bv! { "true" } else { "false" } }
+    "<unprintable>"
+}

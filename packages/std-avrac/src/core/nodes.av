@@ -56,6 +56,13 @@ export enum Expr {
     Binary(op: BinOp, left: ExprId, right: ExprId)
     /// Boolean negation — the one unary, until minus.
     Not(value: ExprId)
+    /// The first aggregate — homogeneous scalar elements.
+    ListLit(elems: List<ExprId>)
+    /// `subject[index]` — element access.
+    Index(subject: ExprId, index: ExprId)
+    /// `subject.name` — a property read; TYPING refuses unknown
+    /// names, so the parse stays generous.
+    Prop(subject: ExprId, name: string)
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// Multi-way choice; `fallback` is the total `_` arm.
     When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
@@ -87,6 +94,13 @@ export fn int_of(e: Expr) -> int? {
 export fn text_of(e: Expr) -> string? {
     match e {
         .StrLit(v) -> v,
+        _ -> null,
+    }
+}
+
+export fn elems_of(e: Expr) -> List<ExprId>? {
+    match e {
+        .ListLit(elems) -> elems,
         _ -> null,
     }
 }
@@ -174,7 +188,7 @@ impl NodeStore {
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 20.
+    /// Tags are never reused; the next free tag is 23.
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -183,30 +197,33 @@ impl NodeStore {
                 fp(3, [fp_binop(op), self.expr_fingerprint(left), self.expr_fingerprint(right)]),
             .Error -> fp(4, []),
             .Not(value) -> fp(19, [self.expr_fingerprint(value)]),
+            .ListLit(elems) -> fp(20, self.expr_fps(elems)),
+            .Index(subject, index) ->
+                fp(21, [self.expr_fingerprint(subject), self.expr_fingerprint(index)]),
+            .Prop(subject, name) ->
+                fp(22, [self.expr_fingerprint(subject), fp_str(name)]),
             .StrLit(value) -> fp(8, [fp_str(value)]),
             .BoolLit(value) -> fp(9, [if value { 1 } else { 0 }]),
             .If(cond, on_true, on_false) ->
                 fp(10, [self.expr_fingerprint(cond), self.expr_fingerprint(on_true),
                         self.expr_fingerprint(on_false)]),
-            .Call(callee, args) -> {
-                mut parts = [fp_str(callee)]
-                for a in args { parts.push(self.expr_fingerprint(a)) }
-                fp(11, parts)
-            }
-            .When(conds, values, fallback) -> {
-                mut parts: List<int> = []
-                for c in conds { parts.push(self.expr_fingerprint(c)) }
-                for v in values { parts.push(self.expr_fingerprint(v)) }
-                parts.push(self.expr_fingerprint(fallback))
-                fp(13, parts)
-            }
-            .Block(stmts, value) -> {
-                mut parts: List<int> = []
-                for s in stmts { parts.push(self.stmt_fingerprint(s)) }
-                parts.push(self.expr_fingerprint(value))
-                fp(14, parts)
-            }
+            .Call(callee, args) -> fp(11, concat([fp_str(callee)], self.expr_fps(args))),
+            .When(conds, values, fallback) ->
+                fp(13, flatten([self.expr_fps(conds), self.expr_fps(values),
+                                [self.expr_fingerprint(fallback)]])),
+            .Block(stmts, value) ->
+                fp(14, concat(self.stmt_fps(stmts), [self.expr_fingerprint(value)])),
         }
+    }
+
+    /// The fingerprints of expression children, in order.
+    fn expr_fps(self, ids: List<ExprId>) -> List<int> {
+        [self.expr_fingerprint(k) for k in ids]
+    }
+
+    /// The fingerprints of statement children, in order.
+    fn stmt_fps(self, ids: List<StmtId>) -> List<int> {
+        [self.stmt_fingerprint(k) for k in ids]
     }
 
     fn fingerprint_stmt(self, s: Stmt) -> int {
@@ -214,32 +231,25 @@ impl NodeStore {
             .Let(name, value) -> fp(5, [fp_str(name), self.expr_fingerprint(value)]),
             .MutLet(name, value) -> fp(15, [fp_str(name), self.expr_fingerprint(value)]),
             .Assign(name, value) -> fp(16, [fp_str(name), self.expr_fingerprint(value)]),
-            .While(cond, stmts) -> {
-                mut parts = [self.expr_fingerprint(cond)]
-                for s2 in stmts { parts.push(self.stmt_fingerprint(s2)) }
-                fp(17, parts)
-            }
-            .For(name, from, to, _, _, stmts) -> {
-                // cond and step derive from name/from/to — the
-                // identity needs only the sources.
-                mut parts = [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to)]
-                for s2 in stmts { parts.push(self.stmt_fingerprint(s2)) }
-                fp(18, parts)
-            }
+            .While(cond, stmts) ->
+                fp(17, concat([self.expr_fingerprint(cond)], self.stmt_fps(stmts))),
+            // For's cond and step derive from name/from/to — the
+            // identity needs only the sources.
+            .For(name, from, to, _, _, stmts) ->
+                fp(18, concat([fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to)],
+                              self.stmt_fps(stmts))),
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
             .Error -> fp(7, []),
-            .FnDecl(name, params, ret, body) -> {
-                mut parts = [fp_str(name)]
-                for p in params {
-                    parts.push(fp_str(p.name))
-                    parts.push(fp_str(p.ty))
-                }
-                parts.push(fp_str(ret))
-                parts.push(self.expr_fingerprint(body))
-                fp(12, parts)
-            }
+            .FnDecl(name, params, ret, body) ->
+                fp(12, flatten([[fp_str(name)], param_fps(params),
+                                [fp_str(ret), self.expr_fingerprint(body)]])),
         }
     }
+}
+
+/// A param list's fingerprint parts: name, type, in declaration order.
+fn param_fps(params: List<Param>) -> List<int> {
+    flatten([[fp_str(p.name), fp_str(p.ty)] for p in params])
 }
 
 fn fp_binop(op: BinOp) -> int {

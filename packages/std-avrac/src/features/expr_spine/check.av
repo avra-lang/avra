@@ -4,7 +4,7 @@
 //! cause was diagnosed where it happened; the wording lives here
 //! with the operators.
 use core.{Expr, ExprId, BinOp, Type, TypeId, op_symbol}
-use features.{TypeCx}
+use features.{TypeCx, spoken}
 use diagnostics.{error_at, pointed}
 
 fn spine_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -13,8 +13,51 @@ fn spine_type(cx: TypeCx, e: ExprId) -> TypeId {
         .Ident(_) -> cx.target_type(e),
         .Binary(op, l, r) -> binary_type(cx, op, l, r),
         .Not(v) -> not_type(cx, v),
+        .Index(s, i) -> index_type(cx, s, i),
+        .Prop(s, name) -> prop_type(cx, e, s, name),
         _ -> cx.intern(Type.Error),
     }
+}
+
+/// `subject[index]`: the subject is a List, the index an int, the
+/// answer the element type.
+fn index_type(cx: TypeCx, subject: ExprId, index: ExprId) -> TypeId {
+    let elem: TypeId? = match cx.shape_at(subject) {
+        .List(t) -> t,
+        _ -> null,
+    }
+    if elem == null {
+        if cx.shape_at(subject) is .Error { return cx.intern(Type.Error) }
+        let n = cx.name_at(subject)
+        return spoken(cx, pointed(
+            error_at("type.mismatch", cx.loc_of(subject), "`[...]` indexes a `List`, found `${n}`"),
+            "this is a `${n}`"))
+    }
+    let ish = cx.shape_at(index)
+    if !(ish is .Int) && !(ish is .Error) {
+        cx.emit(pointed(
+            error_at("type.mismatch", cx.loc_of(index), "an index is an `int`, found `${cx.name_at(index)}`"),
+            "this decides the position"))
+    }
+    elem!
+}
+
+/// `.length` on a List answers int; any other property refuses BY
+/// NAME — the parse was generous so this message can be precise.
+fn prop_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
+    let sh = cx.shape_at(subject)
+    if sh is .Error { return cx.intern(Type.Error) }
+    let n = cx.name_at(subject)
+    if name == "length" {
+        if sh is .List { return cx.intern(Type.Int) }
+        return spoken(cx, pointed(
+            error_at("type.mismatch", cx.loc_of(e), "`length` lives on `List` values for now, found `${n}`"),
+            "this is a `${n}`"))
+    }
+    spoken(cx, pointed(
+        error_at("type.unknown_prop", cx.loc_of(e), "no property `${name}` on `${n}`"),
+        "read here")
+        with { help: "the one property today is `length`" })
 }
 
 fn binary_type(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
@@ -40,30 +83,37 @@ fn op_over(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId, want: Type, answer: Type
 fn needs(cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
     let sh = cx.shape_at(e)
     if sh == want || sh is .Error { return }
+    let n = cx.name_at(e)
     cx.emit(pointed(
         error_at("type.mismatch", cx.loc_of(e),
-            "`${op_symbol(op)}` needs `${cx.type_name(cx.intern(want))}` operands, found `${cx.name_at(e)}`"),
-        "this is a `${cx.name_at(e)}`"))
+            "`${op_symbol(op)}` needs `${cx.type_name(cx.intern(want))}` operands, found `${n}`"),
+        "this is a `${n}`"))
 }
 
 /// `!` negates a bool; Error absorbs to the answer.
 fn not_type(cx: TypeCx, v: ExprId) -> TypeId {
     let sh = cx.shape_at(v)
     if sh is .Bool || sh is .Error { return cx.intern(Type.Bool) }
-    cx.emit(pointed(
-        error_at("type.mismatch", cx.loc_of(v), "`!` negates a `bool`, found `${cx.name_at(v)}`"),
-        "this is a `${cx.name_at(v)}`"))
-    cx.intern(Type.Error)
+    let n = cx.name_at(v)
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(v), "`!` negates a `bool`, found `${n}`"),
+        "this is a `${n}`"))
 }
 
 fn eq_type(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     let ls = cx.shape_at(l)
     let rs = cx.shape_at(r)
     if ls is .Error || rs is .Error { return cx.intern(Type.Error) }
+    if ls is .List || rs is .List {
+        return spoken(cx, pointed(
+            error_at("type.mismatch", cx.loc_of(l), "`${op_symbol(op)}` compares scalars for now"),
+            "this is a `${cx.name_at(l)}`")
+            with { help: "compare an element or the `length` instead" })
+    }
     if ls == rs { return cx.intern(Type.Bool) }
-    cx.emit(pointed(
+    let rn = cx.name_at(r)
+    spoken(cx, pointed(
         error_at("type.mismatch", cx.loc_of(r),
-            "`${op_symbol(op)}` compares matching types, found `${cx.name_at(l)}` and `${cx.name_at(r)}`"),
-        "this is a `${cx.name_at(r)}`"))
-    cx.intern(Type.Error)
+            "`${op_symbol(op)}` compares matching types, found `${cx.name_at(l)}` and `${rn}`"),
+        "this is a `${rn}`"))
 }

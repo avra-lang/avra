@@ -119,37 +119,31 @@ fn as_list(v: Captured<GrammarNode>) -> Result<List<Captured<GrammarNode>>, stri
 }
 
 fn as_seqs(v: Captured<GrammarNode>) -> Result<List<Seq>, string> {
-    mut out: List<Seq> = []
-    for x in as_list(v)? { out.push(want(seq_of(x), "a branch")?) }
-    Result.Ok(out)
+    Result.Ok([want(seq_of(x), "a branch")? for x in as_list(v)?])
 }
 
 fn as_items(v: Captured<GrammarNode>) -> Result<List<Item>, string> {
-    mut out: List<Item> = []
-    for x in as_list(v)? { out.push(want(item_of(x), "an item")?) }
-    Result.Ok(out)
+    Result.Ok([want(item_of(x), "an item")? for x in as_list(v)?])
 }
 
 fn as_rules(v: Captured<GrammarNode>) -> Result<List<Rule>, string> {
-    mut out: List<Rule> = []
-    for x in as_list(v)? { out.push(want(rule_of(x), "a rule")?) }
-    Result.Ok(out)
+    Result.Ok([want(rule_of(x), "a rule")? for x in as_list(v)?])
 }
 
 fn as_annots(v: Captured<GrammarNode>) -> Result<List<PendingAnnot>, string> {
-    mut out: List<PendingAnnot> = []
-    for x in as_list(v)? { out.push(want(annot_of(x), "an annotation")?) }
-    Result.Ok(out)
+    Result.Ok([want(annot_of(x), "an annotation")? for x in as_list(v)?])
 }
 
 /// The builder-call argument names from a repeated NAME capture.
 fn call_args(v: Captured<GrammarNode>) -> Result<List<string>, string> {
-    mut out: List<string> = []
-    for x in as_list(v)? {
-        let t = want(tok_of(x), "an argument name")?
-        out.push(t.text)
-    }
-    Result.Ok(out)
+    Result.Ok([arg_text(x)? for x in as_list(v)?])
+}
+
+/// One captured argument's text. (Never `want(...)?.text` — the
+/// `?.`-after-`?` shape corrupts inside a comprehension.)
+fn arg_text(x: Captured<GrammarNode>) -> Result<string, string> {
+    let t = want(tok_of(x), "an argument name")?
+    Result.Ok(t.text)
 }
 
 /// Attach each @expect to the first unclaimed matching item; land

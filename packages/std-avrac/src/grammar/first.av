@@ -28,6 +28,11 @@ type FirstSet = { lits: List<string>, terms: List<string>, nullable: bool }
 
 type FirstCx = { g: Grammar, visiting: List<string>, defects: List<Diagnostic> }
 
+/// The empty first set — nothing matchable, nothing skippable.
+fn no_first() -> FirstSet {
+    FirstSet { lits: [], terms: [], nullable: false }
+}
+
 impl FirstCx {
     fn note(self, d: Diagnostic) {
         mut ds = self.defects
@@ -37,11 +42,11 @@ impl FirstCx {
     fn rule_first(self, name: string) -> FirstSet {
         if self.visiting.contains(name) {
             self.note(defect(name, "rule is left-recursive — no first token can ever commit"))
-            return FirstSet { lits: [], terms: [], nullable: false }
+            return no_first()
         }
         // An undefined ref is validate's defect, not a first set.
         let body: Alt? = self.g.rules.find(it.name == name)?.body
-        if body == null { return FirstSet { lits: [], terms: [], nullable: false } }
+        if body == null { return no_first() }
         mut v = self.visiting
         v.push(name)
         let f = self.alt_first(body!)
@@ -50,7 +55,7 @@ impl FirstCx {
     }
 
     fn alt_first(self, a: Alt) -> FirstSet {
-        mut out = FirstSet { lits: [], terms: [], nullable: false }
+        mut out = no_first()
         for s in a.branches { out = first_union(out, self.seq_first(s)) }
         out
     }
@@ -59,7 +64,7 @@ impl FirstCx {
     /// set and the walk continues; the first required item ends it.
     /// All items skippable means the branch can match nothing.
     fn seq_first(self, s: Seq) -> FirstSet {
-        mut out = FirstSet { lits: [], terms: [], nullable: false }
+        mut out = no_first()
         for m in s.items {
             let f = self.prim_first(m.prim)
             out = FirstSet {
@@ -135,21 +140,19 @@ fn first_union(a: FirstSet, b: FirstSet) -> FirstSet {
 fn subsuming_term(text: string) -> string? {
     if text.length == 0 { return null }
     let c = code_at(text, 0)
-    if is_name_start(c) { return "NAME" }
-    if is_digit(c) { return "NUMBER" }
-    null
+    when {
+        is_name_start(c) -> "NAME"
+        is_digit(c) -> "NUMBER"
+        _ -> null
+    }
 }
 
 /// Every dead branch in the grammar, each defect saying why.
 export fn first_defects(g: Grammar) -> List<Diagnostic> {
     let cx = FirstCx { g: g, visiting: [], defects: [] }
     for r in g.rules {
-        mut firsts: List<FirstSet> = []
-        mut commit_flags: List<bool> = []
-        for s in r.body.branches {
-            firsts.push(cx.seq_first(s))
-            commit_flags.push(cx.commits(s))
-        }
+        let firsts = [cx.seq_first(s) for s in r.body.branches]
+        let commit_flags = [cx.commits(s) for s in r.body.branches]
         for (i, fi) in firsts.enumerate() {
             if fi.nullable && i < firsts.length - 1 {
                 cx.note(defect(r.name,
