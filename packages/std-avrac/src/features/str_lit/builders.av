@@ -1,8 +1,22 @@
-//! Parse-time lowering: a captured STRING token -> the StrLit node.
-use core.{Expr}
+//! Parse-time lowering: a captured STRING token -> the StrLit node;
+//! ISTR pieces and hole expressions -> the Interp node.
+use core.{Expr, concat}
 use features.{LangNode, Builder}
 
 fn build_str_lit(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     b.make_expr(Expr.StrLit(t.text))
+}
+
+fn build_interp(b: Builder) -> Result<LangNode, string> {
+    let head = b.token(0)?
+    let first = b.expr(1)?
+    let mids = b.tokens(2)?
+    let rest = b.exprs(3)?
+    let tail = b.token(4)?
+    if mids.length != rest.length {
+        return Result.Err("interpolation pieces disagree in count")
+    }
+    let parts = concat([head.text], concat([m.text for m in mids], [tail.text]))
+    b.make_expr(Expr.Interp(parts, concat([first], rest)))
 }

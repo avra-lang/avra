@@ -102,6 +102,10 @@ fn declare_runtime(lc: ptr, m: ptr) {
     declare(lc, m, "avra_array_push", avra_llvm_void_type(lc), [pt, i64t], false)
     declare(lc, m, "avra_array_get", i64t, [pt, i64t], false)
     declare(lc, m, "avra_array_len", i64t, [pt], false)
+    declare(lc, m, "avra_str_join", pt, [pt, pt], false)
+    declare(lc, m, "avra_json_stringify_int", pt, [i64t], false)
+    declare(lc, m, "avra_bool_to_string", pt, [i64t], false)
+    declare(lc, m, "strlen", i64t, [pt], false)
 }
 
 /// One user fn's declaration, typed from its signature's shapes.
@@ -205,7 +209,7 @@ fn un_value(em: Emit, op: UnOp, v: ptr) -> ptr {
 /// The runtime speaks i64 for truth; a bool-shaped register narrows
 /// to i1 (icmp 33, ne 0).
 fn call_rt_value(em: Emit, dst: Reg, callee: string, args: List<Reg>) -> ptr {
-    let raw = call(em, callee, [em.vals[a.index] for a in args])
+    let raw = call(em, callee, rt_args(em, callee, args))
     if em.types.shape_of(em.tys[dst.index]) is .Bool {
         return avra_llvm_build_icmp(em.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(em.lc), 0, 0), "b")
     }
@@ -213,7 +217,38 @@ fn call_rt_value(em: Emit, dst: Reg, callee: string, args: List<Reg>) -> ptr {
 }
 
 fn void_rt_call(em: Emit, callee: string, args: List<Reg>) {
-    let _ = call(em, callee, [em.vals[a.index] for a in args])
+    let _ = call(em, callee, rt_args(em, callee, args))
+}
+
+/// Runtime-call arguments, each coerced to its declared param —
+/// the runtime's int64 slots carry pointers too, so a
+/// pointer-shaped register entering `avra_array_push`'s element
+/// slot casts down.
+fn rt_args(em: Emit, callee: string, args: List<Reg>) -> List<ptr> {
+    mut out: List<ptr> = []
+    for (j, r) in args.enumerate() { out.push(rt_arg(em, callee, j, r)) }
+    out
+}
+
+fn rt_arg(em: Emit, callee: string, j: int, r: Reg) -> ptr {
+    let v = em.vals[r.index]
+    if !slot_param(callee, j) { return v }
+    let i64t = avra_llvm_int64_type(em.lc)
+    let sh = em.types.shape_of(em.tys[r.index])
+    if sh is .Str || sh is .List {
+        return avra_llvm_build_ptr_to_int(em.b, v, i64t, "slot")
+    }
+    if sh is .Bool {
+        return avra_llvm_build_zext(em.b, v, i64t, "slot")
+    }
+    v
+}
+
+/// Runtime params that are int64 SLOTS — every value category rides
+/// them, so pointers cast down and bools widen on the way in.
+fn slot_param(callee: string, j: int) -> bool {
+    (callee == "avra_array_push" && j == 1) ||
+        (callee == "avra_bool_to_string" && j == 0)
 }
 
 fn released(em: Emit, r: Reg) {

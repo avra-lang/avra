@@ -249,6 +249,10 @@ against these before writing; probe in scratch when unsure.
 - A list-typed fn TAIL from a bare enum-list literal or a `?? []`
   fallback never adopts the declared return (F1000 "body produces
   `List<>`") — bind it under a typed let and return the name.
+- bs2 has NO `\$` escape (`"\$"` stays a backslash-dollar): a bs2
+  test string that must CONTAIN `${` builds it by concatenation
+  (`"a $" + "{x} b"`) — on BOTH sides of an assertion. (Avra
+  itself escapes holes with `\$` — our lexer's rule, not bs2's.)
 - `f(x)?.field` (Result-`?` then a field) is POISON: in plain code
   it refuses to parse ("expected `)` after arguments"), but inside
   a comprehension ELEMENT it parses and SILENTLY CORRUPTS the

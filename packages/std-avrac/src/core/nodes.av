@@ -63,6 +63,8 @@ export enum Expr {
     /// `subject.name` — a property read; TYPING refuses unknown
     /// names, so the parse stays generous.
     Prop(subject: ExprId, name: string)
+    /// `"a ${x} b"` — parts always one longer than holes.
+    Interp(parts: List<string>, holes: List<ExprId>)
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// Multi-way choice; `fallback` is the total `_` arm.
     When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
@@ -188,7 +190,7 @@ impl NodeStore {
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 23.
+    /// Tags are never reused; the next free tag is 24.
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -202,6 +204,8 @@ impl NodeStore {
                 fp(21, [self.expr_fingerprint(subject), self.expr_fingerprint(index)]),
             .Prop(subject, name) ->
                 fp(22, [self.expr_fingerprint(subject), fp_str(name)]),
+            .Interp(parts, holes) ->
+                fp(23, concat([fp_str(p) for p in parts], self.expr_fps(holes))),
             .StrLit(value) -> fp(8, [fp_str(value)]),
             .BoolLit(value) -> fp(9, [if value { 1 } else { 0 }]),
             .If(cond, on_true, on_false) ->

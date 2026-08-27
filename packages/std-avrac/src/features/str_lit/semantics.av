@@ -1,5 +1,6 @@
-//! A string literal IS its value: no children, no names, types as
-//! string, evaluates to itself, prints its text.
+//! The strings' NodeSemantics — dispatch one-liners: a literal IS
+//! its value; an interpolation's rule bodies live beside this file,
+//! by concern.
 use core.{Expr, ExprId, Type, TypeId, NodeStore, Reg, Ins, text_of}
 use features.{NodeSemantics, ResolveCx, TypeCx, EvalCx, LowerCx, nothing}
 
@@ -7,7 +8,10 @@ export type StrSemantics = { }
 
 impl NodeSemantics for StrSemantics {
     fn kids(self, e: Expr) -> List<ExprId> {
-        []
+        match e {
+            .Interp(_, holes) -> holes,
+            _ -> [],
+        }
     }
 
     fn resolve(self, cx: ResolveCx, e: ExprId) {
@@ -15,17 +19,28 @@ impl NodeSemantics for StrSemantics {
     }
 
     fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
-        cx.intern(Type.Str)
+        match cx.store.expr(e) {
+            .Interp(_, holes) -> interp_type(cx, holes),
+            _ -> cx.intern(Type.Str),
+        }
     }
 
     fn eval(self, cx: EvalCx, e: ExprId) -> ExprId {
-        e
+        match cx.store.expr(e) {
+            .Interp(parts, holes) -> interp_value(cx, parts, holes),
+            _ -> e,
+        }
     }
 
     fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
-        let dst = cx.result(e)
-        cx.emit(Ins.ConstStr(dst, text_of(cx.store.expr(e)) ?? ""))
-        dst
+        match cx.store.expr(e) {
+            .Interp(parts, holes) -> interp_reg(cx, e, parts, holes),
+            _ -> {
+                let dst = cx.result(e)
+                cx.emit(Ins.ConstStr(dst, text_of(cx.store.expr(e)) ?? ""))
+                dst
+            }
+        }
     }
 
     fn printed(self, store: NodeStore, e: ExprId) -> string? {

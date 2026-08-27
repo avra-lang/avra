@@ -1,7 +1,7 @@
 //! The list literal's NodeSemantics — dispatch one-liners; the rule
 //! bodies live beside this file, by concern.
-use core.{Expr, ExprId, TypeId, NodeStore, Reg, Type, int_of, truth_of, elems_of, joined}
-use features.{NodeSemantics, ResolveCx, TypeCx, EvalCx, LowerCx, nothing}
+use core.{Expr, ExprId, TypeId, NodeStore, Reg, Type, elems_of, joined}
+use features.{NodeSemantics, ResolveCx, TypeCx, EvalCx, LowerCx, nothing, scalar_text}
 
 export type ListSemantics = { }
 
@@ -35,16 +35,6 @@ impl NodeSemantics for ListSemantics {
     fn printed(self, store: NodeStore, e: ExprId) -> string? {
         let elems: List<ExprId>? = elems_of(store.expr(e))
         if elems == null { return null }
-        "[" + joined([scalar_text(store, k) for k in elems!], ", ") + "]"
+        "[" + joined([scalar_text(store, k) ?? "<unprintable>" for k in elems!], ", ") + "]"
     }
-}
-
-/// A scalar element's text — through the value protocol, so no
-/// other feature's variant is matched.
-fn scalar_text(store: NodeStore, k: ExprId) -> string {
-    let iv: int? = int_of(store.expr(k))
-    if iv != null { return "${iv!}" }
-    let bv: bool? = truth_of(store.expr(k))
-    if bv != null { return if bv! { "true" } else { "false" } }
-    "<unprintable>"
 }

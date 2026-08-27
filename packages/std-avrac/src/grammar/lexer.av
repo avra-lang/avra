@@ -1,30 +1,38 @@
-//! DSL text -> tokens, for `parse_grammar`. Six kinds: Name, Num,
-//! Str, Op (single chars, `->`, and `@`-words), Break, Eof.
+//! Text -> tokens, in two flavors sharing one scanner: grammar-DSL
+//! (`lex_grammar` — rule-boundary layout, no interpolation) and
+//! language source (`lex_source` — every newline separates, and
+//! strings carry `${}` holes: IStrBegin/IStrMid/IStrEnd pieces
+//! around ordinary hole tokens, a stack tracking nested holes and
+//! their brace depths).
 //!
-//! The notation is line-structured: one rule per line. The lexer owns
-//! that layout — a newline becomes a Break token only where a rule can
-//! end (the next tokens are `NAME =`, or input ends); every other
-//! newline is whitespace, so continuation lines (`| …`, `-> …`,
-//! `@expect(…)`) need no special casing anywhere else. A final Break
-//! is guaranteed before Eof.
+//! Layout is the lexer's: a newline becomes a Break token only where
+//! the flavor's boundary allows; every other newline is whitespace.
+//! A final Break is guaranteed before Eof.
 //!
-//! Lexing is error-tolerant: a bad character or unterminated string is
-//! recorded and lexing continues, so one pass reports everything.
+//! Lexing is error-tolerant: a bad character, an unterminated
+//! string, or an unclosed hole is recorded and lexing continues, so
+//! one pass reports everything.
 use core.{Span}
 use core.{code_at, is_space, is_name_start, is_name_cont, is_digit}
 
-/// What a token is; Lit-vs-kind matching keys off this.
-export enum TokenKind { Name, Num, Str, Op, Break, Eof }
+/// What a token is; Lit-vs-kind matching keys off this. The IStr
+/// kinds are an interpolated string's pieces: `"a ${x} b ${y} c"`
+/// lexes as IStrBegin("a ") <hole> IStrMid(" b ") <hole>
+/// IStrEnd(" c").
+export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof }
 
-/// One DSL token. For Str, `text` is the unquoted, unescaped contents;
-/// the span covers the quotes.
+/// One DSL token. For Str and the IStr kinds, `text` is the
+/// unquoted, unescaped contents; the span covers the delimiters.
 export type Token = { kind: TokenKind, text: string, span: Span }
 
 impl Token {
     /// True when a grammar Lit matches this token: text equality, and
-    /// never against quoted input — a Str's text is data, not syntax.
+    /// never against quoted input — quoted text is data, not syntax.
     fn lit_matches(self, text: string) -> bool {
-        self.kind != TokenKind.Str && self.kind != TokenKind.Eof && self.text == text
+        match self.kind {
+            .Name or .Num or .Op or .Break -> self.text == text,
+            .Str or .IStrBegin or .IStrMid or .IStrEnd or .Eof -> false,
+        }
     }
 
     /// The integer a Num token's digits denote.
@@ -63,44 +71,58 @@ fn scan_while(src: string, from: int, pred: fn(int) -> bool) -> int {
 }
 
 /// One scanner step: at most one token, at most one error, always
-/// progress.
-type ScanStep = { token: Token?, err: LexError?, next: int }
+/// progress. `opens_hole` means the token ended at `${` and the
+/// loop now lexes the hole's expression.
+type ScanStep = { token: Token?, err: LexError?, opens_hole: bool, next: int }
 
 /// A step that produced a token.
-fn emit(t: Token, next: int) -> ScanStep { ScanStep { token: t, err: null, next: next } }
+fn emit(t: Token, next: int) -> ScanStep {
+    ScanStep { token: t, err: null, opens_hole: false, next: next }
+}
 
 /// A step that produced nothing (whitespace).
-fn skip(next: int) -> ScanStep { ScanStep { token: null, err: null, next: next } }
+fn skip(next: int) -> ScanStep {
+    ScanStep { token: null, err: null, opens_hole: false, next: next }
+}
 
 /// A step that produced only an error.
 fn fail(message: string, lo: int, hi: int) -> ScanStep {
-    ScanStep { token: null, err: LexError { message: message, span: Span { lo: lo, hi: hi } }, next: hi }
+    ScanStep {
+        token: null, opens_hole: false,
+        err: LexError { message: message, span: Span { lo: lo, hi: hi } },
+        next: hi,
+    }
 }
 
-/// The two escapes; anything else after `\` stays raw.
+/// The three escapes; anything else after `\` stays raw. `\$` exists
+/// so text can hold a literal `${`.
 fn unescape(e: int) -> string? {
     match e {
         34 -> "\"",
         92 -> "\\",
+        36 -> "$",
         _ -> null,
     }
 }
 
-/// A quoted string from `i`: emits the Str token even when
-/// unterminated, so the parse can keep going.
-fn scan_string(src: string, i: int) -> ScanStep {
+/// How one string piece ended: at its closing quote, at a `${` hole,
+/// or not at all.
+enum StrStop { Quote, Hole, Ragged }
+
+type StrPart = { text: string, stop: StrStop, next: int }
+
+/// Text from `from` (already inside the quotes) to the piece's end.
+fn scan_str_part(src: string, from: int, interpolate: bool) -> StrPart {
     let n = src.length
-    mut j = i + 1
+    mut j = from
     mut text = ""
-    mut closed = false
     while j < n {
         let c = code_at(src, j)
-        if c == 34 {
-            closed = true
-            j = j + 1
-            break
-        }
+        if c == 34 { return StrPart { text: text, stop: StrStop.Quote, next: j + 1 } }
         if c == 10 { break }
+        if interpolate && c == 36 && j + 1 < n && code_at(src, j + 1) == 123 {
+            return StrPart { text: text, stop: StrStop.Hole, next: j + 2 }
+        }
         if c == 92 && j + 1 < n {
             let un = unescape(code_at(src, j + 1))
             text = text + (un ?? src.substring(j, j + 2))
@@ -110,9 +132,28 @@ fn scan_string(src: string, i: int) -> ScanStep {
         text = text + src.substring(j, j + 1)
         j = j + 1
     }
-    let t = token(TokenKind.Str, text, i, j)
-    if closed { return emit(t, j) }
-    ScanStep { token: t, err: LexError { message: "unterminated string", span: Span { lo: i, hi: j } }, next: j }
+    StrPart { text: text, stop: StrStop.Ragged, next: j }
+}
+
+/// A string piece as its token: the OPENING piece is Str (no hole)
+/// or IStrBegin; a CONTINUATION piece (after a hole's `}`) is
+/// IStrMid or IStrEnd. `opens_hole` tells the loop to enter a hole.
+fn scan_string(src: string, i: int, opening: bool, interpolate: bool) -> ScanStep {
+    let from = if opening { i + 1 } else { i }
+    let p = scan_str_part(src, from, interpolate)
+    let kind = match p.stop {
+        .Quote or .Ragged -> if opening { TokenKind.Str } else { TokenKind.IStrEnd },
+        .Hole -> if opening { TokenKind.IStrBegin } else { TokenKind.IStrMid },
+    }
+    let t = token(kind, p.text, i, p.next)
+    if p.stop is .Ragged {
+        return ScanStep {
+            token: t, opens_hole: false,
+            err: LexError { message: "unterminated string", span: Span { lo: i, hi: p.next } },
+            next: p.next,
+        }
+    }
+    ScanStep { token: t, err: null, opens_hole: p.stop is .Hole, next: p.next }
 }
 
 /// First index at or after `from` that is a newline (or the end).
@@ -137,7 +178,7 @@ fn two_char_at(src: string, i: int) -> string? {
 }
 
 /// One token (or skip, or error) starting at `i`.
-fn scan_step(src: string, i: int) -> ScanStep {
+fn scan_step(src: string, i: int, interpolate: bool) -> ScanStep {
     let n = src.length
     let c = code_at(src, i)
     let pair: string? = two_char_at(src, i)
@@ -159,7 +200,7 @@ fn scan_step(src: string, i: int) -> ScanStep {
             emit(token(TokenKind.Num, src.substring(i, j), i, j), j)
         }
         // String: unquote and unescape.
-        c == 34 -> scan_string(src, i)
+        c == 34 -> scan_string(src, i, true, interpolate)
         // `@`-word: one Op token (`@expect`, `@recover`).
         c == 64 -> {
             let j = scan_while(src, i + 1, is_name_cont)
@@ -211,17 +252,40 @@ fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> 
 }
 
 /// The whole input, one ScanStep at a time; then the line policy, a
-/// final Break, and Eof.
-fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool) -> LexResult {
+/// final Break, and Eof. `holes` is the stack of open interpolation
+/// holes, each entry its brace depth — a depth-0 `}` resumes the
+/// string instead of emitting the brace.
+fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bool) -> LexResult {
     mut raw: List<Token> = []
     mut errors: List<LexError> = []
+    mut holes: List<int> = []
     mut i = 0
     while i < src.length {
-        let s = scan_step(src, i)
+        mut s = scan_step(src, i, interpolate)
+        if in_hole(holes, s.token) {
+            let t = s.token!
+            if t.text == "{" { holes.set(holes.length - 1, holes.last()! + 1) }
+            if t.text == "}" {
+                if holes.last()! == 0 {
+                    let _ = holes.pop()
+                    s = scan_string(src, s.next, false, interpolate)
+                } else {
+                    holes.set(holes.length - 1, holes.last()! - 1)
+                }
+            }
+        }
+        // A hole is single-line: a newline inside one is the missing
+        // `}`, said once, and lexing recovers to normal.
+        if !holes.is_empty() && s.token != null && s.token!.kind == TokenKind.Break {
+            errors.push(hole_error(s.token!.span.lo))
+            holes = []
+        }
         if s.token != null { raw.push(s.token!) }
         if s.err != null { errors.push(s.err!) }
+        if s.opens_hole { holes.push(0) }
         i = s.next
     }
+    if !holes.is_empty() { errors.push(hole_error(src.length)) }
     mut tokens = collapse_breaks(raw, boundary)
     // Every rule or statement ends in a Break, even without a trailing
     // newline.
@@ -233,12 +297,25 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool) -> LexResult {
     LexResult { tokens: tokens, errors: errors }
 }
 
-/// Grammar-DSL text: a line break survives only at a rule boundary.
-export fn lex_grammar(src: string) -> LexResult {
-    lex_with(src, rule_boundary)
+/// The unclosed-hole complaint, at `at`.
+fn hole_error(at: int) -> LexError {
+    LexError { message: "an interpolation hole is missing its `}`", span: Span { lo: at, hi: at } }
 }
 
-/// Language source: a line break survives between any two statements.
+/// True when the step's token is a brace the open hole owns.
+fn in_hole(holes: List<int>, t: Token?) -> bool {
+    if holes.is_empty() || t == null { return false }
+    t!.kind == TokenKind.Op && (t!.text == "{" || t!.text == "}")
+}
+
+/// Grammar-DSL text: a line break survives only at a rule boundary;
+/// quoted literals never interpolate.
+export fn lex_grammar(src: string) -> LexResult {
+    lex_with(src, rule_boundary, false)
+}
+
+/// Language source: a line break survives between any two
+/// statements, and strings carry `${}` holes.
 export fn lex_source(src: string) -> LexResult {
-    lex_with(src, line_boundary)
+    lex_with(src, line_boundary, true)
 }

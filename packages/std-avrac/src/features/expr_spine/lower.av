@@ -32,11 +32,12 @@ fn index_reg(cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
 }
 
 /// Only `length` survives typing, so the property lowers as one
-/// runtime call.
+/// runtime call, by the subject's shape.
 fn length_reg(cx: LowerCx, e: ExprId, s: ExprId) -> Reg {
-    let arr = cx.reg_of(s)
+    let subject = cx.reg_of(s)
     let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_len", [arr]))
+    let callee = if cx.shape_at(s) is .Str { "strlen" } else { "avra_array_len" }
+    cx.emit(Ins.CallRt(dst, callee, [subject]))
     dst
 }
 

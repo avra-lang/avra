@@ -40,13 +40,13 @@ fn index_value(cx: EvalCx, s: ExprId, i: ExprId) -> ExprId {
     es[at]
 }
 
-/// The one property: a list's length.
+/// The one property: a list's or a string's length.
 fn prop_value(cx: EvalCx, s: ExprId, name: string) -> ExprId {
     let elems: List<ExprId>? = cx.elems_at(s)
-    if elems == null {
-        return failed(cx, s, "defect: a non-list reached `${name}` in a clean program")
-    }
-    cx.alloc(Expr.IntLit(elems!.length))
+    if elems != null { return cx.alloc(Expr.IntLit(elems!.length)) }
+    let tv: string? = cx.text_at(s)
+    if tv != null { return cx.alloc(Expr.IntLit(tv!.length)) }
+    failed(cx, s, "defect: an unmeasurable value reached `${name}` in a clean program")
 }
 
 /// Record the defect and stand on the node itself — the driver

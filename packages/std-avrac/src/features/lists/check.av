@@ -1,7 +1,7 @@
 //! The literal's typing law: elements share ONE scalar type; the
 //! empty literal has nothing to infer from and says so.
 use core.{ExprId, Type, TypeId}
-use features.{TypeCx, spoken, types_disagree}
+use features.{TypeCx, spoken, types_disagree, this_is}
 use diagnostics.{error_at, pointed}
 
 fn list_type(cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
@@ -17,7 +17,7 @@ fn list_type(cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
     if !scalar(cx, head) {
         return spoken(cx, pointed(
             error_at("type.list_scalar", cx.loc_of(head), "a list holds scalars for now"),
-            "this is a `${cx.name_at(head)}`")
+            this_is(cx.name_at(head)))
             with { help: "managed elements arrive with ownership analysis" })
     }
     for k in elems {
@@ -25,7 +25,7 @@ fn list_type(cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
             let n = cx.name_at(k)
             return spoken(cx, pointed(
                 error_at("type.list_element", cx.loc_of(k), "a list's elements share one type — the first is `${cx.type_name(elem)}`, this is `${n}`"),
-                "this is a `${n}`"))
+                this_is(n)))
         }
     }
     cx.intern(Type.List(elem))

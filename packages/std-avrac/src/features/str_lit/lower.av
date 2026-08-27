@@ -1,0 +1,46 @@
+//! An interpolation lowers as the runtime aggregate: every piece
+//! (part or stringified hole) pushes into an array, and ONE
+//! str_join answers — zero new instructions, the escape hatch
+//! carrying the feature again.
+use core.{ExprId, Reg, Ins}
+use features.{LowerCx}
+
+fn interp_reg(cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) -> Reg {
+    mut pieces = [part_reg(cx, e, parts[0])]
+    for (j, h) in holes.enumerate() {
+        pieces.push(hole_reg(cx, e, h))
+        pieces.push(part_reg(cx, e, parts[j + 1]))
+    }
+    let arr = cx.mint(e)
+    cx.emit(Ins.CallRt(arr, "avra_array_new", []))
+    for r in pieces { cx.emit(Ins.CallRtVoid("avra_array_push", [arr, r])) }
+    let sep = part_reg(cx, e, "")
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, "avra_str_join", [arr, sep]))
+    dst
+}
+
+/// A literal piece as a fresh Str register.
+fn part_reg(cx: LowerCx, e: ExprId, text: string) -> Reg {
+    let r = cx.mint(e)
+    cx.emit(Ins.ConstStr(r, text))
+    r
+}
+
+/// A hole's value as a string register, by its shape. List and
+/// Error never pass typing; their arms stand on the raw register.
+fn hole_reg(cx: LowerCx, e: ExprId, h: ExprId) -> Reg {
+    let v = cx.reg_of(h)
+    match cx.shape_at(h) {
+        .Str -> v,
+        .Int -> rt1(cx, e, "avra_json_stringify_int", v),
+        .Bool -> rt1(cx, e, "avra_bool_to_string", v),
+        .List(_) or .Error -> v,
+    }
+}
+
+fn rt1(cx: LowerCx, e: ExprId, callee: string, v: Reg) -> Reg {
+    let dst = cx.mint(e)
+    cx.emit(Ins.CallRt(dst, callee, [v]))
+    dst
+}

@@ -21,7 +21,9 @@
         grouping parens
     5.  [x] lists — the first aggregate; iteration; `.length` opens
         the method core (the scan methods ride closures, rung 13)
-    6.  strings complete — `${}` interpolation, the method core
+    6.  [x] strings complete — `${}` interpolation and `.length`
+        (the remaining method words ride method-call-with-args,
+        recorded at the method core)
     7.  structs — declarations, literals, `with`, impl methods
         (and the spec's `shape`/width subtyping belongs to this
         rung — the cx family in contract.av is already waiting)
@@ -582,6 +584,62 @@ list `==`, mut lists, and the native list answer — the last as
 F0901 language.unsupported at lowering, while `avra run` happily
 prints `[1, 2, 3]`. Two new subset pins recorded (enum-list and
 `?? []` tails both need typed lets).
+
+## Milestone 13 — strings complete (the design)
+
+Rung 6: `${}` interpolation, and the string side of the property
+core. The native story again costs zero runtime edits: parts and
+stringified holes ride the SAME array machinery lists built, and
+ONE `avra_str_join(arr, "")` answers — plus `avra_json_stringify_int`
+(decimal IS json), `avra_bool_to_string`, and libc `strlen` for
+string `.length` (closing M12's recorded gap). `avra_bytes_concat`
+was probed and REFUSED: it reads length-prefixed bytes values, not
+C strings.
+
+- THE CAPABILITY COST, named: the lexer learns interpolation MODES.
+  `"a ${x + 1} b"` lexes as ISTR_BEGIN("a ") <hole tokens>
+  ISTR_MID/ISTR_END(" b") — a stack of open holes with per-hole
+  brace depth, so `}` closes the RIGHT thing. Three new terminals
+  join TokenKind and the DSL's term table; the engine matches them
+  by kind like every terminal.
+- The node: `Expr.Interp(parts, holes)` — parts one longer than
+  holes, owned by the str_lit feature (interpolation IS the string
+  feature growing; its gram gains one primary branch).
+- Typing: every hole prints as a scalar or string; the answer is
+  Str. Eval: the value protocol's projections build the text.
+  Lowering: stringify each hole (Str as-is, Int via
+  json_stringify_int, Bool via bool_to_string), array-push the
+  pieces, join once. Memory: the result is managed Str — the
+  existing machinery releases it; bootstrap-malloc'd intermediates
+  leak by the bootstrap's own design (rc_release no-ops on
+  pointers outside the rc set — probed in the source).
+- String `.length` (bytes, via strlen) joins Prop — the "for now"
+  message dies.
+- V1 RESTRICTIONS: a hole takes any brace-balanced expression
+  (depth-counted); List-valued holes refuse with the remedy
+  (print an element or `length`).
+- Gate: a corpus program interpolating ints, bools, strings, and
+  nested arithmetic natively — eval == native == expected.
+
+LANDED: 276/276; fifteen-for-fifteen corpus, interp.av printing
+`hello avra, 3 things are true: n=7` natively through array + join.
+The steady-state claim's strongest showing yet: interpolation cost
+ZERO driver edits — resolve, typing, eval, lower, and memory were
+untouched; the feature dir, the lexer capability, one map arm, and
+the backend's declares carried everything.
+The design held with one discovery the verifier forced: the
+runtime's int64 SLOTS carry every value category, so the backend
+grew `rt_arg` — pointer registers cast down (ptr_to_int) and bools
+widen (zext) on the way into a slot param, declared per callee in
+`slot_param`. That closed a LATENT native hazard too: a bool
+element pushed into a list had never met the verifier. String
+`.length` landed via libc strlen (the "for now" message died); the
+ratchet fired TWICE during the build — once on a label string the
+I13 binds had just unified (fixed by `this_is`, the pointing
+label's one definition) and once on rt_args' licensed
+enumerate-loop (bumped deliberately, in the open). bs2 note: `\$`
+is NOT a bs2 escape — test sources build `${` by concatenation;
+OUR `\$` escape is how Avra text holds a literal hole.
 
 ## The growth ledger (what a feature costs)
 

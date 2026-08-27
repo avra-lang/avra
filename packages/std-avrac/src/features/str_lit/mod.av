@@ -1,20 +1,28 @@
-//! String literals — `"hello"`. The first widening feature: its one
-//! branch merges into the spine's `primary`, and the STRING first
-//! token keeps it clear of the gate.
+//! Strings — `"hello"` and `"a ${x} b"`. The literal's branch
+//! merges into the spine's `primary`; interpolation is this
+//! feature GROWING: the lexer hands it ISTR pieces and the holes
+//! are ordinary expressions.
 use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
 
 export fn str_lit() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name      | build
         "str_lit" | build_str_lit
+        "interp"  | build_interp
+    }
+    let codes = table<DiagCode> {
+        kind               | id      | summary
+        "type.interp_hole" | "F2007" | "an interpolation hole prints as a scalar or string"
     }
     component LanguageFeature f {
         name = "str_lit"
-        docs = "A double-quoted string literal; its value is the unquoted text."
+        docs = "Double-quoted strings, with dollar-brace interpolation holes."
         gram = """
-primary = s:STRING -> str_lit(s)
+primary = s:STRING -> str_lit(s) | b:ISTR_BEGIN e:expression ( m:ISTR_MID e2:expression )* t:ISTR_END -> interp(b, e, m, e2, t)
 """
         builders = rows
+        diags = codes
     }
     f
 }
