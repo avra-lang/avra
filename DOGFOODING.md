@@ -30,6 +30,7 @@ baseline absorbs licensed sites and only a RISE fails):
 - I14 emit-then-intern(Error) pairs (the `spoken` tail)
 NOT ratcheted, and why: I5 (remaining sites are duplicate-DETECTION
 by design), I6 (subsumed by I1/I3), I10 (too few and varied to
+grep — the review round hunts them), I15 (push/pop pairs resist
 grep — the review round hunts them).
 
 - I4  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
@@ -96,6 +97,12 @@ grep — the review round hunts them).
       answering bool (`refused_name` — the keyword+reserved
       refusal lived three times as when-pairs; sites now read
       `if self.refused_name(n, at) { return }`).
+- I15 a PUSH/RUN/POP ritual around varying bodies is ONE bracket
+      fn taking a thunk (`under_overlay(r, () -> ...)` — the
+      overlay push/pop lived three times in resolve; the bracket
+      now guarantees the pop). Zero-arg closures work in bs2 and
+      mutate captured locals, so the body just closes over what it
+      needs.
 
 ## `when` for dispatch chains
 
@@ -712,13 +719,16 @@ let cx = TypeCx {
 Closures capture the LET-bound state struct (never a `mut` local) and
 mutate through it — the rebind-alias idiom underneath.
 
-## Values are literal nodes
+## One semantics: lowering IS the meaning
 
-Evaluation reduces an expression to a LITERAL in the tree —
-`1 + 2` becomes a synthesized `IntLit(3)` (null span). No parallel
-Value enum exists to grow per type (P6): a feature's literal IS its
-value representation, printing is the owner's projection, and the
-same reduction is `@comptime` folding when it arrives.
+A feature defines what its constructs DO exactly once — in
+lower.av. Evaluation is the IR interpreted (language/interp.av)
+over the SAME instruction stream the backend compiles, so eval and
+native cannot disagree by construction; the interpreter's Val enum
+and runtime dispatch are the host twins of runtime/avra_runtime.c,
+refusal wording included. (The earlier "values are literal nodes"
+tree-walking evaluator was RETIRED by the north star's L3 collapse
+— its whole per-feature eval.av layer died with it.)
 
 ## Proven but awaiting their first honest use
 

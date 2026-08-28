@@ -1,5 +1,68 @@
 # Roadmap
 
+## The north star (recorded 2026-08-26)
+
+The compiler is not a pipeline. It is a DATABASE: a
+content-addressed semantic store, a tiny pure-derivation kernel,
+the language itself as a hashed value, and everything else — the
+binary included — as a projection. The layers, from zero:
+
+- L0 STORE: machine-global, persistent, content-addressed. Keys
+  are content PLUS environment (a node's meaning depends on its
+  scope). Nothing is computed twice anywhere on the machine.
+  Fingerprints-at-alloc are this store's keys, already born.
+- L1 KERNEL: compilation is memoized evaluation of pure fns over
+  the store with automatic dependency capture — red-green at
+  declaration granularity. Incrementality and parallelism are the
+  EXECUTION MODEL, not features. The kernel stays small, boring,
+  and verified.
+- L2 LANGUAGE-AS-VALUE: the assembled language (grammar,
+  semantics, diagnostics, idiom rules) is a hashed object; every
+  program records the language hash it was written against — P9
+  applied to the language itself. explain/docs/LSP metadata are
+  its projections.
+- L3 ONE SEMANTICS, THREE ENGINES: features define meaning ONCE —
+  lowering to the IR — and the evaluator becomes an IR
+  INTERPRETER. The same semantics object runs interpreted
+  (comptime, tests, REPL), JITted (dev), and AOT (release).
+  eval == native graduates from our best test into a structural
+  impossibility. LANDED (same day): language/interp.av walks the
+  lowered stream — a Val enum, bracket-scan control flow, frames
+  and heaps in machine tables, and the runtime registry's fifth
+  consumer hosting every CallRt row with matched refusal wording.
+  The per-feature eval.av layer DIED (eight files, the EvalCx and
+  StmtEvalCx contracts, the printed method, literal_eq, the
+  evaluated-payload verbs): 688 lines out, 321 in, and every
+  behavioral test passed UNCHANGED — the semantics were already
+  one; now they are written once. The heavyweights will each be
+  specified exactly once. The collapse then went one deeper:
+  Ins.Print DIED — printing is lowering (the answer's text
+  projection call plus one puts), so the backend's per-type print
+  dispatch and the interpreter's print arm vanished, the registry's
+  coercion replaced the hand-written bool widening, and the IR
+  goldens now SHOW the provenance system working: an owned
+  int_text result releases, a static bool_text answer does not.
+- L4 MEMORY AS KNOWLEDGE: the ownership registry in the runtime
+  is scaffolding; the destination is full static ownership from
+  the memory pass — the runtime knows allocate and free,
+  refcounts only where escape analysis provably cannot decide.
+- L5 EVERYTHING IS A PROJECTION: text files render from the
+  semantic object (fmt = render, rename = graph edit);
+  diagnostics are structured repair objects (human text and
+  --json are two renderings, `avra fix` applies edit sets);
+  compilation is TOTAL (every program runs, holes refuse at the
+  hole); the compiler process is the one long-lived query engine
+  behind CLI, LSP, build, and — Era V — the service orchestrator.
+
+What the current tree already got right (build on, never churn):
+pure pass signatures ARE derivations; fingerprints ARE store
+keys; features-as-values IS the language object; the closed IR IS
+the one semantics; Analysis IS a query bundle; the idiom registry
+IS a language-object member. The deltas land by era: the
+eval-collapse next (queued), store/kernel at Era IV (contract
+recorded), static ownership with the ownership arc,
+text-as-projection after self-host, the service store at Era V.
+
 ## The eras (the long path, each with its gate)
 
 - ERA I — THE VERTICAL (done): one thin language, source to native,
@@ -641,6 +704,173 @@ enumerate-loop (bumped deliberately, in the open). bs2 note: `\$`
 is NOT a bs2 escape — test sources build `${` by concatenation;
 OUR `\$` escape is how Avra text holds a literal hole.
 
+## Milestone 14 — structs (the design)
+
+Rung 7: the first user-defined type. The native story is the lists
+machinery a THIRD time: a struct value is a fixed slot array —
+literals are array_new + one push per field, field reads are
+array_get at the field's compile-time INDEX. Zero new
+instructions; rt_arg's slot coercions already carry every field
+category.
+
+- SURFACE: `type Point = { x: int, y: int }` (a STATEMENT, name in
+  its own namespace, program-wide like fns); literals
+  `Point { x: 1, y: 2 }` (every field, once, any order); reads
+  `p.x` through the EXISTING Prop node — the postfix ladder was
+  built for this.
+- THE TYPE: `Type.Struct(decl: StmtId)` — nominal by declaration
+  site; the registry's canon key is the decl id. Field names,
+  types, and ORDER live in a pass fact (the decl's signature,
+  collected before bodies like fn sigs).
+- OWNERSHIP: a `structs` feature owns the declaration statement,
+  the literal, and the type's laws; the spine's Prop typing asks
+  the FIELD TABLE first, `length` second — property resolution
+  becomes a chain of owners.
+- V1 RESTRICTIONS, each with its trigger: scalar fields (managed
+  fields ride ownership analysis); no `with` yet (its own quickie
+  on this node); no impl methods (the method core); no struct
+  equality (`==` refuses with the remedy); annotations name
+  declared types (shape_named consults the decl registry — the
+  table gains rows at last); shapes/width subtyping deferred to
+  its recorded spec arc.
+- Gate: a corpus program declaring a struct, building literals in
+  a fn, reading fields through arithmetic and interpolation —
+  eval == native == expected.
+
+## The breather — architecture heads-up (decided 2026-08-26)
+
+Before the heavyweight rungs, six structural decisions, each made
+so the heavyweights land into ground built for them:
+
+1. OWN THE RUNTIME — LANDED: `runtime/avra_runtime.c` in-tree,
+   compiled by our Makefile — the bootstrap's runtime.o copy dies.
+   The runtime IS language semantics (join is what interpolation
+   MEANS); it cannot live in another repo. First-principles v1:
+   an ownership REGISTRY (ptr -> refcount) instead of headers or
+   trust — release/retain of unowned pointers (statics) are
+   no-ops by construction, owned strings actually reclaim, and
+   every fn is a documented CONTRACT. Native list printing came
+   with it — the F0901 answer-refusal died, corpus/show.av prints
+   a list answer natively, and the trap wording (out of bounds)
+   matches the evaluator's refusal exactly, pinned. The runtimes
+   are SEPARATE on purpose: build/runtime.o (bootstrap copy) is
+   what bs2-compiled binaries link — the COMPILER's runtime, dead
+   at self-host; build/avra_runtime.o is what avra-built programs
+   link — the LANGUAGE's.
+
+   THE OWNERSHIP DOCTRINE (the "move everything over?" answer):
+   there are two runtimes because there are two LANGUAGES in play.
+   Everything AVRA is ours already: the language runtime
+   (runtime/), and now the LLVM wrapper too
+   (backend/llvm_wrapper.c — adopted whole, compiled by our
+   Makefile, extended HERE from now on; it serves the backend
+   through self-host and beyond). What remains borrowed is bs2's
+   own flesh — the bs2 binary and ITS runtime.o for bs2-compiled
+   binaries — pure toolchain, like depending on clang, deleted
+   WHOLESALE at self-host rather than migrated piecemeal.
+   Reimplementing bs2's ABI now would be scaffolding work thrown
+   away with the scaffold.
+
+   THE RUNTIME REGISTRY (landed with it): the native seam is ONE
+   table — runtime_api.av's RtSig rows (name, ret, params,
+   owns_result) — with FOUR consumers: the backend DECLARES from
+   it, COERCES slot arguments by it (slot_param died into data),
+   the memory pass derives OWNERSHIP from it (a static answer like
+   bool_text never earns a release — provenance refining type),
+   and lowering REFUSES an unknown callee loudly instead of
+   crashing the backend. A new runtime fn is one row plus its C
+   body — nothing else, checked at every link in the chain.
+2. ONE BINDING CURRENCY — LANDED: Resolution's parallel tables
+   became one `Binding` enum fact (`Param(i) | Def(stmt)`) with
+   one projection; typing's target_type, the call signature
+   lookup, and lower's def_reg each dispatch ONCE, and rung 8's
+   pattern binds extend the ENUM. The arc also taught a lesson
+   the doctrine already knew: the let_name/stmt_value projections
+   returned to program.av as DIRECT matches (projections are data
+   about variants, zero dispatch cost; the trait carries
+   behavior) — and the first draft's `_ ->` catch-all silently
+   dropped For's counter arm, exactly what the no-catch-all
+   dispatch rule exists to prevent. Both registries are now
+   exhaustive; the trait shrank to three methods.
+3. DISPATCH BUILT ONCE — LANDED: the sixteen boxed impls build
+   once per parse into a Dispatch value on ParsedProgram (dyn
+   struct fields hold, boxed under typed lets); semantics_of and
+   stmt_semantics_of only SELECT. The allocate-per-node-visit
+   shape is gone before self-host could inherit it.
+4. PARSE-ERROR QUALITY ARC (named, scheduled): parse diagnostics
+   are the weakest in the system while pass diagnostics are the
+   strongest — P1 says close the gap: expected-set wording,
+   contextual help, an @expect coverage audit per feature, goldens
+   for the common stumbles.
+5. THE INCREMENTALITY CONTRACT (recorded, not built): Era IV keys
+   cached facts by fingerprint PLUS ENVIRONMENT (resolution is
+   context-dependent). Until then: passes stay pure, facts stay
+   dense-by-id, and no pass may bake in cross-declaration order
+   dependence beyond what ids already carry. Heavyweight fact
+   tables (mono instances, vtables, captures) are designed
+   against this contract.
+6. THE DIVERGENCE REGISTRY (recorded): every eval-vs-native
+   divergence (div-by-zero refuse/trap, OOB refuse/trap) is a
+   CHOSEN behavior pinned by paired tests, never an accident.
+   And rung 15 will stress the one-SourceFile assumption threaded
+   through Analysis — recorded trigger.
+
+The second ideas round (same day) added three, each a PRINCIPLE
+cashing out:
+7. `avra check --json` (P11): machine-readability is the
+   substrate — the human renderer is one projection of Diag;
+   agents get the structured one. Cheap: Diag is already
+   structured (kinds, locs, suggestions, edits).
+8. `avra trace <file> <line>` (P7/P10): visible magic — dump what
+   every pass KNOWS about a node (its type, its binding, its
+   register, its releases). The fact tables all exist; this is a
+   projection, and it becomes the debugging front door.
+9. THE QUALITY HARNESS — bench and fuzz LANDED: `make bench`
+   prints the measured curve (first reading, 2026-08-27: suite
+   ~2.2s, native corpus of 16 ~21.6s — bs2-era numbers, now
+   watchable); `make fuzz` runs 112 deterministic corpus mutants
+   through `avra check` — first pass: all diagnosed, none
+   crashed. Still open here: the render/parse fixed point as a
+   standing property test. F-codes are API: never renumbered,
+   like fingerprint tags — a reused code or kind REFUSES assembly
+   (coherence's law, both arms pinned by tests). And
+   `make scaffold-check` guards the scaffolder: the templates
+   rotted silently when the eval layer died (they still wrote
+   eval.av/EvalCx), so the harness now scaffolds a throwaway
+   feature, compiles the tree with it, and removes it.
+
+The consolidation round closing the breather (2026-08-27):
+`Analysis.run()` now interprets the POST-MEMORY stream — interp
+and backend consume the identical instruction list, Retain and
+Release included (interp no-ops them), so eval == native shares
+every bracket, not just the semantics. `under_overlay` (I15's
+first instance) collapsed resolve's three overlay push/pops;
+interp's three forward bracket scans became ONE `ahead` scanner
+taking open/close/target predicates (`loop_header` stays: the
+one backward scan); values.av merged into contract.av (a
+feature-root file under 40 lines was rent, not a concept).
+ACCEPTED RESIDUAL: interp's `rt_dispatch` is the registry's
+third consumer site by NAME (backend declares by row, memory
+asks `rt_owns`, interp hosts by match) — guarded twice: Lower
+refuses unknown callees at build, and the `_ ->` arm is a defect
+refusal, never a silent miss. It merges into the registry only
+when rows grow a hosted-fn field — blocked on fn-typed struct
+fields surviving mono (upstream ledger).
+
+THE UPSTREAM LEDGER: we may fix bs2 itself (license granted).
+Decisions in THIS tree shaped by bs2 defects, each with its
+post-fix simplification: the dyn-in-match-arm mis-dispatch
+(typed-lets-first maps — shape stays healthy regardless); #1377
+method-on-captured-local ICE (free-fn exception in the style
+doctrine — dies with the fix); fn-typed args through generics
+corrupt (fn_parts detours); the executor's nullable-generic mono
+corruption (fb_diags bool-flag reconstruction — the ugliest
+workaround standing); `?.field`-after-`?` silent corruption (the
+helper-split rule); trait default-method ICE (mandatory-methods
+doctrine). Fixing is its own arc per defect, prioritized by how
+much of our tree each unlocks; the executor's fb_diags and #1377
+lead.
+
 ## The growth ledger (what a feature costs)
 
 M7 was ~1200 lines, and the fair audit says where: ~600 were the
@@ -904,6 +1134,14 @@ into features (or spec commitments) when their milestone comes.
   for s in stmts let n = store.let_name(s) if n != null]` doesn't
   exist, so defs_of projects `let_name` twice. Wanted by every
   filter-map whose predicate IS the projection.
+- TOTAL MAPS over enum keys: `table<Feature, dyn NodeSemantics>`
+  whose literal the compiler checks EXHAUSTIVE — lookup answers
+  `V`, not `V?`, and a new key variant breaks every literal at
+  compile time. Wanted by Dispatch (program.av): today the struct
+  of dyn fields plus `semantics_of`'s match IS a hand-rolled total
+  map — the struct holds totality, the match holds the key mapping;
+  the sugar would let one table hold both without surrendering the
+  compile-time break.
 - SPREAD in list literals: `[head, ..tail]` / `[..a, ..b, last]` —
   the concat/flatten ceremony that remains AFTER comprehensions.
   Wanted by every mixed fingerprint arm (`fp(14,

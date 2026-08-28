@@ -22,8 +22,10 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       dies when our compiler owns resolution.
 - [ ] **[Low]** `src/` layer inside packages — bs2 resolves package
       entries only at `packages/<scope>-<name>/src/<name>.av`.
-- [ ] **[Low]** `build/runtime.o` + `build/llvm_wrapper.o` copies
-      (Makefile) — bs2 links against them but never builds them.
+- [ ] **[Low]** `build/runtime.o` copy (Makefile) — bs2's own
+      runtime, linked by bs2-compiled binaries; dies wholesale at
+      self-host. (`llvm_wrapper.c` and `avra_runtime.c` are OURS,
+      in-tree, built by our Makefile.)
 - [ ] **[Low]** bs2 invoked by absolute path only (Makefile) — it
       re-invokes itself via argv[0] from other working directories.
 - [ ] **[Med]** bs2 `make build-quick` freshness detection silently
@@ -73,11 +75,10 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
 - [ ] **[Low]** No `find_index(pred)` list method upstream — the
       runtime scan exists (`avra_array_find_idx`); an emitter arm
       would collapse first-match-index scans (builders.av `attach`).
-- [ ] **[Low]** `semantics_of` boxes three dyn markers per node
-      visit — allocation on every pass's hot path. Fix shape: a
-      Semantics bundle built once per pass run (or per process once
-      module-level values exist), the map selecting among held
-      values. Trigger: profiling, or the first big source file.
+- [x] **[Low]** `semantics_of` boxed three dyn markers per node
+      visit — fixed by dispatch-built-once: the impls box once per
+      parse into `ParsedProgram.dispatch`; `semantics_of` only
+      selects.
 - [ ] **[Low]** The intern path materializes a string key per probe
       (bs2 `Map` is string-keyed; FNV walks bytes). The endgame is
       the epic §15.2 in-process tier: fp_mix over the int tuple
@@ -111,6 +112,39 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       GENERIC enum carry no N-evidence). The pins stay.
 
 ## bs2 defects worked around in our code
+
+CLAUDE.md's "bs2 subset notes" is the CANONICAL working list of
+every trap with its symptom signature; entries here carry the rent's
+death condition. The small ergonomic gaps (no `\$` escape, in-place
+`.reverse()` aliasing, identity `contains`/list-`==`, no `mut`
+params, no map indexing, no `xs[i] =`) are all noted there and all
+die wholesale at self-host.
+
+- [ ] **[High]** `f(x)?.field` (Result-`?` then a projection)
+      refuses to parse in plain code but SILENTLY CORRUPTS the
+      payload inside a comprehension element (garbage strings, null
+      ids, no error). Split through a helper that `?`s first and
+      projects second. A silent-corruption parse defect deserves an
+      upstream fix before self-host.
+- [ ] **[Med]** A nullable GENERIC struct local (`mut x: Thing<N>? =
+      null`) corrupts through lib-mode mono — the executor carries
+      presence in a bool flag beside non-generic pieces and
+      reconstructs after the loop (fb_diags — the ugliest standing
+      workaround). Un-flag when fixed.
+- [ ] **[Med]** A METHOD call on a closure-captured local inside a
+      loop that also early-returns ICEs at codegen ("Referring to an
+      instruction in another function", forge-lang#1377) — the style
+      doctrine's free-fn exception (`eval_node(ev, cx, e)` shapes)
+      exists only for this and dies with the fix.
+- [ ] **[Med]** A call result compared directly to a string
+      (`f() == s`) misses the null guard and SIGSEGVs
+      (forge-lang#1376) — bind to a `let tn: string? =` first.
+- [ ] **[Med]** The F1000 tail-adoption class: a fn tail that is a
+      bare enum-list literal, a `?? []` fallback, an early-returned
+      generic call, or an if-else comprehension element in a generic
+      body never adopts the declared return type — each needs a
+      typed-let pin and a `return name`. The pins (and CLAUDE.md's
+      list of them) dissolve when tails thread expected types.
 
 - [ ] **[Med]** Present-bind (`let x ->`) match arms in expression
       position can lose their binding at codegen (hit in

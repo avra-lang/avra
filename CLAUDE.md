@@ -160,8 +160,9 @@ registry is the idiom engine's spec, written by dogfooding.
 - A feature is a directory: `mod.av` is the declarative manifest
   (component + tables), `builders.av` holds parse lowering,
   `semantics.av` holds its NodeSemantics impl (dispatch one-liners),
-  and rule bodies live by concern — `check.av` for typing, `eval.av`
-  for evaluation. Passes NEVER match feature nodes: `semantics_of`
+  and rule bodies live by concern — `check.av` for typing,
+  `lower.av` for MEANING (lowering is the one semantics; the IR
+  interpreter and the backend both consume it). Passes NEVER match feature nodes: `semantics_of`
   (THE one exhaustive map, no strings) returns the node's semantics
   directly; the trait impl forces every pass method at compile time.
 - A pass CONTEXT carries the pass's STATE verbs only — walk, look
@@ -236,8 +237,9 @@ against these before writing; probe in scratch when unsure.
 - Matching `null`/`let x ->` directly on a nullable fn call's result
   can mistype — bind to an annotated `let v: T? =` first.
 - Or-patterns spell `or`, never `|`: `.A(_) or .B or .C(_) -> x` works
-  (payload wildcards and unit variants alike); `.A | .B ->` does not
-  parse. Bindings cannot ride an `or` arm — wildcards only.
+  (payload wildcards and unit variants alike; string literals too —
+  probed); `.A | .B ->` does not parse. Bindings cannot ride an `or`
+  arm — wildcards only.
 - Struct destructuring in `let` (`let Sp { lo, hi } = s`) does not parse.
 - Comprehensions iterate lists only, not ranges (struct literals inside
   them are fine), and cannot destructure — `[.. for (i, m) in
@@ -361,6 +363,14 @@ against these before writing; probe in scratch when unsure.
 - A match on a NULLABLE enum takes only `null` and `let x ->` arms —
   variant arms on `T?` refuse as non-exhaustive (F9001); unwrap
   first, then match variants.
+- Zero-arg closures (`() -> expr`) work, as params and calls, and
+  MUTATE captured locals correctly — bracket fns taking a `fn()`
+  thunk (push/run/pop) are expressible (probed).
+- A match arm producing a bare struct literal unifies fine with a
+  nullable sibling arm (probed: `.P(i) -> Reg { index: i }` beside
+  `.D(s) -> maybe_reg(s)` under a `Reg?` return) — no typed-let
+  pin needed. Pin ONLY where a documented trap requires it; when
+  tempted to pin defensively, probe first.
 - A METHOD call on a closure-captured local inside a loop that also
   contains an early `return` ICEs at codegen ("Referring to an
   instruction in another function", #1377) — any struct, any loop.
