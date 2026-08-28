@@ -75,6 +75,9 @@ export enum Expr {
     /// `Name { field: value, ... }` — fields in WRITTEN order
     /// (evaluation order); lowering reorders to declaration slots.
     StructLit(name: string, fields: List<string>, values: List<ExprId>)
+    /// `subject with { field: value, ... }` — a modified COPY; the
+    /// unwritten fields carry over.
+    With(subject: ExprId, fields: List<string>, values: List<ExprId>)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
 }
@@ -185,7 +188,7 @@ impl NodeStore {
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 26.
+    /// Tags are never reused; the next free tag is 27.
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -215,6 +218,9 @@ impl NodeStore {
             .StructLit(name, fields, values) ->
                 fp(24, flatten([[fp_str(name)], [fp_str(f) for f in fields],
                                 self.expr_fps(values)])),
+            .With(subject, fields, values) ->
+                fp(26, flatten([[self.expr_fingerprint(subject)],
+                                [fp_str(f) for f in fields], self.expr_fps(values)])),
         }
     }
 

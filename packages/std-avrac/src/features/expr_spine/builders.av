@@ -1,6 +1,6 @@
 //! Parse-time lowering: captures -> expression nodes.
 use core.{Expr, BinOp, want, op_symbol, all_binops}
-use features.{LangNode, Builder, token_at}
+use features.{LangNode, Builder, token_at, zip_defect}
 use grammar.{Token}
 
 fn build_int_lit(b: Builder) -> Result<LangNode, string> {
@@ -39,6 +39,18 @@ fn build_fold_cmp(b: Builder) -> Result<LangNode, string> {
 fn build_not(b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
     b.make_expr(Expr.Not(v))
+}
+
+/// `v (with { f: e, ... })?` — the absent tail is v itself. The
+/// ladder owns the PARSE; the node's meaning lives with structs.
+fn build_fold_with(b: Builder) -> Result<LangNode, string> {
+    let subject = b.expr(0)?
+    let wn = b.tokens(1)?
+    if wn.is_empty() { return b.wrap_expr(subject) }
+    let wv = b.exprs(2)?
+    if wn.length != wv.length { return Result.Err(zip_defect()) }
+    let names = [k.text for k in wn]
+    b.make_expr(Expr.With(subject, names, wv))
 }
 
 /// `v ( [i] )*` folds left: `m[i][j]` is `(m[i])[j]`.

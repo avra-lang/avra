@@ -4,11 +4,12 @@
 //! Reads are the spine's property ladder (a slot read at the
 //! field's compile-time index) — zero new instructions anywhere.
 use core.{Expr, ExprId, Reg, Ins, filled}
-use features.{LowerCx, hole_defect}
+use features.{LowerCx, StructSig, hole_defect}
 
-fn struct_lit_reg(cx: LowerCx, e: ExprId) -> Reg {
+fn structs_reg(cx: LowerCx, e: ExprId) -> Reg {
     match cx.store.expr(e) {
         .StructLit(_, fields, values) -> lit_reg(cx, e, fields, values),
+        .With(subject, fields, values) -> with_reg(cx, e, subject, fields, values),
         _ -> {
             cx.fail(hole_defect())
             cx.result(e)
@@ -16,13 +17,42 @@ fn struct_lit_reg(cx: LowerCx, e: ExprId) -> Reg {
     }
 }
 
+/// The copy: values evaluate in written order, then one push per
+/// declaration slot — the written register, or the subject's own
+/// field read back. The subject is untouched.
+fn with_reg(cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
+    let src = cx.reg_of(subject)
+    let regs = [cx.reg_of(v) for v in values]
+    let sig: StructSig? = cx.fields_at(e)
+    if sig == null {
+        cx.fail("defect: a `with` on a non-struct survived typing")
+        return cx.result(e)
+    }
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    for (slot, n) in sig!.names.enumerate() {
+        let j = fields.index_of(n)
+        if j >= 0 {
+            cx.emit(Ins.CallRtVoid("avra_array_push", [dst, regs[j]]))
+        } else {
+            let idx = cx.mint_int()
+            cx.emit(Ins.ConstInt(idx, slot))
+            let carried = cx.mint_ty(sig!.types[slot])
+            cx.emit(Ins.CallRt(carried, "avra_array_get", [src, idx]))
+            cx.emit(Ins.CallRtVoid("avra_array_push", [dst, carried]))
+        }
+    }
+    dst
+}
+
 fn lit_reg(cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
     let regs = [cx.reg_of(v) for v in values]
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    let sig: StructSig? = cx.fields_at(e)
     mut by_slot: List<Reg?> = filled<Reg?>(fields.length, null)
     for (j, f) in fields.enumerate() {
-        let slot: int? = cx.field_slot(e, f)
+        let slot: int? = if sig == null { null } else { sig!.slot_of(f) }
         if slot != null {
             let r: Reg? = regs[j]
             by_slot.set(slot!, r)
