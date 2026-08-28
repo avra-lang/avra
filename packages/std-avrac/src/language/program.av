@@ -17,6 +17,7 @@ use features.stmt_spine.{HoleSemantics}
 use features.lists.{ListSemantics}
 use features.mutation.{MutLetSemantics, AssignSemantics}
 use features.loops.{WhileSemantics, ForSemantics}
+use features.structs.{StructsSemantics, StructDeclSemantics}
 use diagnostics.{Diag, SourceFile, new_source_file}
 
 /// One parsed source: the tree (holes included), the SourceFile it
@@ -44,6 +45,7 @@ export type Dispatch = {
     blocks: dyn NodeSemantics,
     calls: dyn NodeSemantics,
     aggs: dyn NodeSemantics,
+    structs: dyn NodeSemantics,
     lets: dyn StmtSemantics,
     exprs: dyn StmtSemantics,
     decls: dyn StmtSemantics,
@@ -52,6 +54,7 @@ export type Dispatch = {
     assigns: dyn StmtSemantics,
     whiles: dyn StmtSemantics,
     fors: dyn StmtSemantics,
+    structdecls: dyn StmtSemantics,
 }
 
 fn new_dispatch() -> Dispatch {
@@ -71,11 +74,14 @@ fn new_dispatch() -> Dispatch {
     let assigns: dyn StmtSemantics = AssignSemantics { }
     let whiles: dyn StmtSemantics = WhileSemantics { }
     let fors: dyn StmtSemantics = ForSemantics { }
+    let structs: dyn NodeSemantics = StructsSemantics { }
+    let structdecls: dyn StmtSemantics = StructDeclSemantics { }
     Dispatch {
         spine: spine, strs: strs, bools: bools, ifs: ifs, whens: whens,
-        blocks: blocks, calls: calls, aggs: aggs,
+        blocks: blocks, calls: calls, aggs: aggs, structs: structs,
         lets: lets, exprs: exprs, decls: decls, holes: holes,
         mutlets: mutlets, assigns: assigns, whiles: whiles, fors: fors,
+        structdecls: structdecls,
     }
 }
 
@@ -94,6 +100,7 @@ export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
         .When(_, _, _) -> d.whens,
         .Block(_, _) -> d.blocks,
         .Call(_, _) -> d.calls,
+        .StructLit(_, _, _) -> d.structs,
     }
 }
 
@@ -109,6 +116,7 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
         .FnDecl(_, _, _, _) -> d.decls,
         .While(_, _) -> d.whiles,
         .For(_, _, _, _, _, _) -> d.fors,
+        .StructDecl(_, _) -> d.structdecls,
         .Error -> d.holes,
     }
 }
@@ -137,7 +145,7 @@ impl NodeStore {
             .MutLet(name, _) -> name,
             .For(name, _, _, _, _, _) -> name,
             .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _)
-                or .While(_, _) or .Error -> null,
+                or .While(_, _) or .StructDecl(_, _) or .Error -> null,
         }
     }
 
@@ -150,7 +158,7 @@ impl NodeStore {
             .Assign(_, v) -> v,
             .ExprStmt(v) -> v,
             .FnDecl(_, _, _, _) or .While(_, _)
-                or .For(_, _, _, _, _, _) or .Error -> null,
+                or .For(_, _, _, _, _, _) or .StructDecl(_, _) or .Error -> null,
         }
     }
 
@@ -163,10 +171,21 @@ impl NodeStore {
             _ -> null,
         }
     }
+
+    /// A struct declaration's pieces, when the statement is one.
+    fn struct_parts(self, s: StmtId) -> StructParts? {
+        match self.stmt(s) {
+            .StructDecl(name, fields) -> StructParts { name: name, fields: fields },
+            _ -> null,
+        }
+    }
 }
 
 /// What a fn declaration carries, projected once.
 export type FnParts = { name: string, params: List<Param>, ret: string, body: ExprId }
+
+/// What a struct declaration carries, projected once.
+export type StructParts = { name: string, fields: List<Param> }
 
 export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
     if lang.grammar == null {

@@ -145,6 +145,11 @@ registry is the idiom engine's spec, written by dogfooding.
   HIT, so it belongs only on branches anchored by a keyword no other
   branch can start with. A NAME-headed branch (assignment) must stay
   non-committing — recovery there swallows every expression line.
+- Grammar authoring: expr_stmt is the stmt rule's FLOOR — its
+  recovering expression-line branch merges LAST in language_features,
+  and every statement feature lands BEFORE it (a keyword line like
+  `type P = ...` otherwise parses as ident-then-failed-BREAK and the
+  floor's @recover commits the hole, stealing the line).
 - A feature never matches ANOTHER feature's variants — nor
   re-extracts its OWN literal's payload inline: all literal reads
   go through core's value protocol (`truth_of`, `int_of`,

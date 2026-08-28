@@ -1,0 +1,65 @@
+//! The literal's typing law: the name resolved to a declaration
+//! (resolve spoke otherwise), and the written fields match it —
+//! each declared field exactly once, each value the field's type.
+use core.{Expr, ExprId, StmtId, Type, TypeId}
+use features.{TypeCx, StructSig, types_disagree, this_is}
+use diagnostics.{error_at, pointed}
+
+fn struct_lit_type(cx: TypeCx, e: ExprId) -> TypeId {
+    match cx.store.expr(e) {
+        .StructLit(name, fields, values) -> lit_type(cx, e, name, fields, values),
+        _ -> cx.intern(Type.Error),
+    }
+}
+
+fn lit_type(cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: List<ExprId>) -> TypeId {
+    let decl: StmtId? = cx.bound_def(e)
+    if decl == null { return cx.intern(Type.Error) }
+    let ty = cx.intern(Type.Struct(decl!, name))
+    let sig: StructSig? = cx.fields_of(ty)
+    if sig == null { return cx.intern(Type.Error) }
+    check_fields(cx, e, name, fields, values, sig!)
+    ty
+}
+
+/// Every written field checks against the table; every declared
+/// field must be written. A dup is a name whose FIRST position is
+/// earlier than this one.
+fn check_fields(cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: List<ExprId>, sig: StructSig) {
+    for (j, f) in fields.enumerate() {
+        field_check(cx, name, sig, f, values[j], fields.index_of(f) < j)
+    }
+    for n in sig.names {
+        if !fields.contains(n) {
+            cx.emit(pointed(
+                error_at("type.struct_fields", cx.loc_of(e), "`${name}` needs field `${n}`"),
+                "this literal")
+                with { help: "every declared field appears exactly once" })
+        }
+    }
+}
+
+/// One written field's law: declared, written once, right type.
+fn field_check(cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId, dup: bool) {
+    let slot: int? = sig.slot_of(f)
+    if slot == null {
+        cx.emit(pointed(
+            error_at("type.struct_fields", cx.loc_of(v), "`${name}` has no field `${f}`"),
+            "written here")
+            with { help: "the fields are ${sig.listed()}" })
+        return
+    }
+    if dup {
+        cx.emit(pointed(
+            error_at("type.struct_fields", cx.loc_of(v), "field `${f}` is written more than once"),
+            "written again here"))
+        return
+    }
+    if types_disagree(cx, cx.type_at(v), sig.types[slot!]) {
+        let n = cx.name_at(v)
+        cx.emit(pointed(
+            error_at("type.struct_fields", cx.loc_of(v),
+                "field `${f}` is `${cx.type_name(sig.types[slot!])}`, this is `${n}`"),
+            this_is(n)))
+    }
+}

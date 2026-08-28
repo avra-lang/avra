@@ -5,7 +5,7 @@
 //! carries the pass's STATE verbs — walk, look up, record, emit —
 //! wired by the driver; the RULES that call them live in the
 //! feature's own directory. A feature-named fn has no place here.
-use core.{NodeStore, Expr, ExprId, StmtId, Param, Type, TypeId, Reg, Ins}
+use core.{NodeStore, Expr, ExprId, StmtId, Param, Type, TypeId, Reg, Ins, joined}
 use diagnostics.{Diag}
 use @std.errors.{Loc}
 
@@ -16,11 +16,30 @@ export type ResolveCx = {
     store: NodeStore,
     use_name: fn(ExprId, string),
     use_call: fn(ExprId, string),
+    use_type: fn(ExprId, string),
     block_scope: fn(List<StmtId>, ExprId),
 }
 
 /// A fn's typed signature, as the type pass computed it.
 export type FnSig = { params: List<TypeId>, ret: TypeId }
+
+/// A struct's typed field table, in declaration order — the index
+/// IS the runtime slot.
+export type StructSig = { names: List<string>, types: List<TypeId> }
+
+impl StructSig {
+    /// A named field's slot, when declared — THE lookup every
+    /// consumer shares.
+    fn slot_of(self, name: string) -> int? {
+        let i = self.names.index_of(name)
+        if i < 0 { null } else { i }
+    }
+
+    /// The fields, listed for help text — one wording everywhere.
+    fn listed(self) -> string {
+        joined(["`${n}`" for n in self.names], ", ")
+    }
+}
 
 /// Typing capabilities: read children's computed types (post-order —
 /// they exist), intern shapes, read an ident's definition type, read
@@ -34,6 +53,8 @@ export type TypeCx = {
     intern: fn(Type) -> TypeId,
     target_type: fn(ExprId) -> TypeId,
     sig_of: fn(ExprId) -> FnSig?,
+    bound_def: fn(ExprId) -> StmtId?,
+    fields_of: fn(TypeId) -> StructSig?,
     block_type: fn(List<StmtId>, ExprId) -> TypeId,
     name_at: fn(ExprId) -> string,
     type_name: fn(TypeId) -> string,
@@ -55,6 +76,8 @@ export type LowerCx = {
     def_reg: fn(ExprId) -> Reg?,
     shape_at: fn(ExprId) -> Type,
     mint: fn(ExprId) -> Reg,
+    mint_int: fn() -> Reg,
+    field_slot: fn(ExprId, string) -> int?,
     emit: fn(Ins),
     lower_block: fn(List<StmtId>, ExprId) -> Reg,
     fail: fn(string),

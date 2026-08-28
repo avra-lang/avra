@@ -18,7 +18,7 @@ fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
         .Binary(op, l, r) -> binary_reg(cx, e, op, l, r),
         .Not(v) -> not_reg(cx, e, v),
         .Index(s, i) -> index_reg(cx, e, s, i),
-        .Prop(s, _) -> length_reg(cx, e, s),
+        .Prop(s, name) -> prop_reg(cx, e, s, name),
         _ -> lower_failed(cx, e, hole_defect()),
     }
 }
@@ -28,6 +28,19 @@ fn index_reg(cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
     let idx = cx.reg_of(i)
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, "avra_array_get", [arr, idx]))
+    dst
+}
+
+/// A property read: a struct field is a slot read at its
+/// declaration index; only `length` otherwise survives typing.
+fn prop_reg(cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
+    let slot: int? = cx.field_slot(s, name)
+    if slot == null { return length_reg(cx, e, s) }
+    let subject = cx.reg_of(s)
+    let idx = cx.mint_int()
+    cx.emit(Ins.ConstInt(idx, slot!))
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, "avra_array_get", [subject, idx]))
     dst
 }
 

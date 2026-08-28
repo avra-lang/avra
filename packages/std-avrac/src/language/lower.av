@@ -9,7 +9,7 @@
 //! the statement list.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, concat}
 use diagnostics.{Diag, error_at}
-use features.{LowerCx, StmtLowerCx, FnSig}
+use features.{LowerCx, StmtLowerCx, FnSig, StructSig}
 
 /// One lowered body: instructions in order and each register's type
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
@@ -126,6 +126,8 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         def_reg: (k: ExprId) -> lo.def_reg(k),
         shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.a.type_at(k)),
         mint: (k: ExprId) -> lo.mint(k),
+        mint_int: () -> lo.mint_ty(lo.a.typing.types.intern(Type.Int)),
+        field_slot: (k: ExprId, fname: string) -> lo.field_slot(k, fname),
         emit: (i: Ins) -> lo.give(i),
         lower_block: (stmts: List<StmtId>, value: ExprId) -> block_reg(lo, stmts, value),
         fail: (msg: string) -> lo.record(msg),
@@ -177,6 +179,9 @@ fn print_lowering(lo: Lower, last: Reg) {
         .Int -> text_call(lo, "avra_int_text", last),
         .Bool -> text_call(lo, "avra_bool_text", last),
         .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
+        // A struct answer has no text projection yet — it arrives
+        // with derived show; project a field instead.
+        .Struct(_, _) -> null,
         .Error -> null,
     }
     if text != null { lo.give(Ins.CallRtVoid("avra_puts", [text!])) }
@@ -256,6 +261,17 @@ impl Lower {
             return ld
         }
         slot
+    }
+
+    /// A field's runtime slot on a struct-typed expression — the
+    /// declaration index IS the array index.
+    fn field_slot(self, e: ExprId, fname: string) -> int? {
+        let sig: StructSig? = match self.a.typing.types.shape_of(self.a.type_at(e)) {
+            .Struct(decl, _) -> self.a.typing.struct_sigs[decl.index],
+            _ -> null,
+        }
+        if sig == null { return null }
+        sig!.slot_of(fname)
     }
 
     fn record(self, msg: string) {

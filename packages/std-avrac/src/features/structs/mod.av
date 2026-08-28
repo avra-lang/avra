@@ -1,0 +1,35 @@
+//! Structs — the first user-defined type. `type Name = { field: ty,
+//! ... }` declares a nominal record; `Name { field: value, ... }`
+//! builds one; reads ride the spine's postfix ladder (`p.x`).
+//! Fields are scalars until ownership analysis covers managed
+//! values. The literal branch merges into `primary` BEFORE the
+//! spine's bare NAME; a non-literal brace falls through by
+//! backtracking, so conditions like `if x { ... }` stay whole.
+use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
+
+export fn structs() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name          | build
+        "struct_decl" | build_struct_decl
+        "struct_lit"  | build_struct_lit
+    }
+    let codes = table<DiagCode> {
+        kind                     | id      | summary
+        "resolve.duplicate_type" | "F3006" | "two types share one name"
+        "type.struct_scalar"     | "F2008" | "struct fields hold scalars for now"
+        "type.duplicate_field"   | "F2009" | "a struct's fields have distinct names"
+        "type.struct_fields"     | "F2010" | "a literal provides each declared field exactly once"
+    }
+    component LanguageFeature f {
+        name = "structs"
+        docs = "`type Name = { field: ty, ... }` declares; `Name { field: value, ... }` builds; `value.field` reads."
+        gram = """
+stmt = "type" n:NAME "=" "{" fs:NAME ":" ft:NAME ( "," fs:NAME ":" ft:NAME )* "}" BREAK @recover(sync_to: "BREAK") -> struct_decl(n, fs, ft)
+primary = t:NAME "{" vn:NAME ":" ve:expression ( "," vn:NAME ":" ve:expression )* "}" -> struct_lit(t, vn, ve)
+"""
+        builders = rows
+        diags = codes
+    }
+    f
+}

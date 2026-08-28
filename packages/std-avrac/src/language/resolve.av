@@ -24,11 +24,12 @@ export enum Binding {
 }
 
 /// The pass's facts: ONE dense binding table indexed by ExprId
-/// (O(1) reads for every later pass), plus the assignment fact
-/// keyed by the assigning STATEMENT.
+/// (O(1) reads for every later pass), the assignment fact keyed by
+/// the assigning STATEMENT, and the program-wide TYPE namespace.
 export type Resolution = {
     bindings: List<Binding?>,
     assign_targets: List<StmtId?>,
+    type_defs: Map<string, StmtId>,
     diagnostics: List<Diag>,
 }
 
@@ -63,6 +64,8 @@ type Resolver = {
     overlays: List<Map<string, StmtId>>,
     fn_defs: Map<string, StmtId>,
     fn_names: List<string>,
+    type_defs: Map<string, StmtId>,
+    type_names: List<string>,
     bindings: List<Binding?>,
     assign_targets: List<StmtId?>,
     walked: List<bool>,
@@ -76,6 +79,7 @@ export fn resolve(p: ParsedProgram) -> Resolution {
         p: p, all_defs: defs,
         def_names: [d.name for d in defs],
         visible: {}, overlays: [], fn_defs: {}, fn_names: [],
+        type_defs: {}, type_names: [],
         bindings: filled<Binding?>(p.store.exprs.count(), null),
         assign_targets: filled<StmtId?>(p.store.stmts.count(), null),
         walked: filled(p.store.exprs.count(), false),
@@ -83,10 +87,11 @@ export fn resolve(p: ParsedProgram) -> Resolution {
         diagnostics: [],
     }
     r.declare_fns()
+    r.declare_types()
     resolve_stmts(r, [], false, p.stmts)
     Resolution {
-        bindings: r.bindings,
-        assign_targets: r.assign_targets, diagnostics: r.diagnostics,
+        bindings: r.bindings, assign_targets: r.assign_targets,
+        type_defs: r.type_defs, diagnostics: r.diagnostics,
     }
 }
 
@@ -174,6 +179,7 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
         store: r.p.store,
         use_name: (e: ExprId, name: string) -> r.resolve_name(e, name, param_names),
         use_call: (e: ExprId, name: string) -> r.resolve_call(e, name),
+        use_type: (e: ExprId, name: string) -> r.resolve_type_use(e, name),
         block_scope: (stmts: List<StmtId>, value: ExprId) -> block_scope(r, param_names, stmts, value),
     }
     for e in r.p.post_order(root) { semantics_of(r.p.dispatch, r.p.store.expr(e)).resolve(cx, e) }
@@ -280,6 +286,45 @@ impl Resolver {
         mut w = self.walked
         w.set(e.index, true)
         false
+    }
+
+    /// The program-wide TYPE namespace, gathered like fns — an
+    /// annotation or literal may name a type declared later.
+    fn declare_types(self) {
+        for s in self.p.stmts {
+            let name: string? = self.p.store.struct_parts(s)?.name
+            if name != null { self.declare_type(name!, s) }
+        }
+    }
+
+    fn declare_type(self, name: string, s: StmtId) {
+        let at = self.stmt_loc(s)
+        if self.refused_name(name, at) { return }
+        let prior: StmtId? = self.type_defs.get(name)
+        if prior == null {
+            mut m = self.type_defs
+            m.set(name, s)
+            mut ns = self.type_names
+            ns.push(name)
+        } else {
+            self.speak(pointed(
+                error_at("resolve.duplicate_type", at, "`${name}` is declared more than once"),
+                "redeclared here")
+                with { help: "rename one of them" })
+        }
+    }
+
+    /// A literal's type name resolves in the type namespace alone.
+    fn resolve_type_use(self, e: ExprId, name: string) {
+        if self.once(e) { return }
+        let found: StmtId? = self.type_defs.get(name)
+        if found != null {
+            self.bind_use(e, Binding.Def(found!))
+            return
+        }
+        self.speak(self.suggested(
+            pointed(error_at("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared"), "used here"),
+            e, name, self.type_names))
     }
 
     /// A callee resolves in the fn namespace alone.

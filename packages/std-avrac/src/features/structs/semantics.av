@@ -1,0 +1,59 @@
+//! The structs semantics: dispatch only. Typing lives in check.av;
+//! lowering — the MEANING — in lower.av. The declaration is a
+//! STATEMENT kind: names declare program-wide in the type
+//! namespace (the driver gathers them), so here it only runs its
+//! field names through the naming law.
+use core.{Expr, ExprId, StmtId, TypeId, Reg}
+use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx,
+              StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing}
+
+export type StructsSemantics = { }
+
+impl NodeSemantics for StructsSemantics {
+    fn kids(self, e: Expr) -> List<ExprId> {
+        match e {
+            .StructLit(_, _, values) -> values,
+            _ -> [],
+        }
+    }
+
+    fn resolve(self, cx: ResolveCx, e: ExprId) {
+        match cx.store.expr(e) {
+            .StructLit(name, _, _) -> cx.use_type(e, name),
+            _ -> nothing(),
+        }
+    }
+
+    fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
+        struct_lit_type(cx, e)
+    }
+
+    fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
+        struct_lit_reg(cx, e)
+    }
+}
+
+export type StructDeclSemantics = { }
+
+impl StmtSemantics for StructDeclSemantics {
+    fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
+        decl_resolve(cx, s)
+    }
+
+    fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
+        nothing()
+    }
+
+    fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
+        null
+    }
+}
+
+/// The declaration's field names run the naming law; the driver
+/// owns the namespace and the field table.
+fn decl_resolve(cx: StmtResolveCx, s: StmtId) {
+    match cx.store.stmt(s) {
+        .StructDecl(_, fields) -> cx.check_params(fields, s),
+        _ -> nothing(),
+    }
+}

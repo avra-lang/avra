@@ -103,6 +103,13 @@ grep — the review round hunts them).
       now guarantees the pop). Zero-arg closures work in bs2 and
       mutate captured locals, so the body just closes over what it
       needs.
+- I16 dup detection is a POSITION law, not a seen-accumulator:
+      inside `for (j, x) in xs.enumerate()`, a duplicate is
+      `xs.index_of(x) < j` — first occurrence earlier than here.
+      Kills the `mut seen + contains + push` ritual wherever the
+      list is small (structs' field laws, twice). The seen-list
+      stays licensed where detection must survive ACROSS lists
+      (coherence's cross-table scans).
 
 ## `when` for dispatch chains
 

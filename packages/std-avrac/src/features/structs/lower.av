@@ -1,0 +1,35 @@
+//! The lowering rule — the ONE meaning: a struct value IS a fixed
+//! slot array. The literal is one array_new plus a push per field
+//! in DECLARATION order; values evaluate in WRITTEN order first.
+//! Reads are the spine's property ladder (a slot read at the
+//! field's compile-time index) — zero new instructions anywhere.
+use core.{Expr, ExprId, Reg, Ins, filled}
+use features.{LowerCx, hole_defect}
+
+fn struct_lit_reg(cx: LowerCx, e: ExprId) -> Reg {
+    match cx.store.expr(e) {
+        .StructLit(_, fields, values) -> lit_reg(cx, e, fields, values),
+        _ -> {
+            cx.fail(hole_defect())
+            cx.result(e)
+        }
+    }
+}
+
+fn lit_reg(cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
+    let regs = [cx.reg_of(v) for v in values]
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    mut by_slot: List<Reg?> = filled<Reg?>(fields.length, null)
+    for (j, f) in fields.enumerate() {
+        let slot: int? = cx.field_slot(e, f)
+        if slot != null {
+            let r: Reg? = regs[j]
+            by_slot.set(slot!, r)
+        }
+    }
+    for r in by_slot {
+        if r != null { cx.emit(Ins.CallRtVoid("avra_array_push", [dst, r!])) }
+    }
+    dst
+}

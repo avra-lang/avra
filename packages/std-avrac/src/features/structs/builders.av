@@ -1,0 +1,30 @@
+//! Parse-time lowering: captured tokens and expressions -> the
+//! StructDecl statement and the StructLit node. Names and their
+//! types (or values) arrive as parallel capture lists and zip.
+use core.{Expr, Stmt, Param}
+use features.{LangNode, Builder}
+
+fn build_struct_decl(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let fs = b.tokens(1)?
+    let ft = b.tokens(2)?
+    if fs.length != ft.length {
+        return Result.Err("field names and types disagree in count")
+    }
+    mut fields: List<Param> = []
+    for j in 0..fs.length {
+        fields.push(Param { name: fs[j].text, ty: ft[j].text })
+    }
+    b.make_stmt(Stmt.StructDecl(n.text, fields))
+}
+
+fn build_struct_lit(b: Builder) -> Result<LangNode, string> {
+    let t = b.token(0)?
+    let vn = b.tokens(1)?
+    let ve = b.exprs(2)?
+    if vn.length != ve.length {
+        return Result.Err("field names and values disagree in count")
+    }
+    let names = [k.text for k in vn]
+    b.make_expr(Expr.StructLit(t.text, names, ve))
+}

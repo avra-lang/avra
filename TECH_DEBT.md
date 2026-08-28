@@ -35,6 +35,16 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
 - [ ] **[Low]** Toolchain droppings (`*.avra-sha256`, `*.av.ll`,
       `packages/*/build/`) — bs2 writes byproducts next to sources;
       `make clean` sweeps them.
+- [ ] **[Med]** Per-variant NODE CEREMONY is hand-written derive —
+      a new node variant costs a fingerprint arm (nodes.av), canon
+      and printing arms (types.av), a Dispatch field + boxed let +
+      dispatch arm (program.av), and backend type arms (llvm.av):
+      ~45 lines across 4 files at M14, every one a mechanical
+      consequence of the feature's node declaration. bs2 has no
+      derive/reflection, so the human executes it — SAFELY, because
+      exhaustive matches break every owed site at compile time.
+      Self-host derives all of it from the declaration and keeps
+      the exhaustiveness check (generated AND checked, P6).
 - [ ] **[Med]** Builder registration is a value-level table and
       builders take positional args off a `Builder` context — bs2 has
       no reflection, so `-> int_lit(v)` in a grammar cannot bind to a

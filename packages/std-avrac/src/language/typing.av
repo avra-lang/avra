@@ -8,7 +8,7 @@
 //! the annotations alone, so a call may name a fn declared later.
 use core.{StmtId, ExprId, TypeId, Type, Param, TypeRegistry, new_type_registry, filled}
 use diagnostics.{Diag, loc_at, error_at, pointed}
-use features.{TypeCx, StmtTypeCx, FnSig}
+use features.{TypeCx, StmtTypeCx, FnSig, StructSig}
 use @std.errors.{Loc}
 
 /// The pass's facts: the registry, a dense expression table, and a
@@ -18,6 +18,7 @@ export type Typing = {
     types: TypeRegistry,
     of_expr: List<TypeId>,
     sigs: List<FnSig?>,
+    struct_sigs: List<StructSig?>,
     diagnostics: List<Diag>,
 }
 
@@ -32,6 +33,7 @@ type Typer = {
     types: TypeRegistry,
     of_expr: List<TypeId>,
     sigs: List<FnSig?>,
+    struct_sigs: List<StructSig?>,
     diagnostics: List<Diag>,
 }
 
@@ -43,11 +45,16 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         p: p, resolution: r, types: registry,
         of_expr: filled(p.store.exprs.count(), hole),
         sigs: filled<FnSig?>(p.store.stmts.count(), null),
+        struct_sigs: filled<StructSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
+    t.declare_struct_sigs()
     t.declare_sigs()
     type_stmts(t, [], p.stmts)
-    Typing { types: t.types, of_expr: t.of_expr, sigs: t.sigs, diagnostics: t.diagnostics }
+    Typing {
+        types: t.types, of_expr: t.of_expr, sigs: t.sigs,
+        struct_sigs: t.struct_sigs, diagnostics: t.diagnostics,
+    }
 }
 
 /// Statements in order, each through its own StmtSemantics — the
@@ -85,6 +92,8 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         intern: (sh: Type) -> t.types.intern(sh),
         target_type: (e: ExprId) -> t.target_type(e, param_types),
         sig_of: (e: ExprId) -> t.sig_at(e),
+        bound_def: (e: ExprId) -> t.def_of(e),
+        fields_of: (ty: TypeId) -> t.fields_of(ty),
         block_type: (stmts: List<StmtId>, value: ExprId) -> block_type(t, param_types, stmts, value),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
         type_name: (ty: TypeId) -> t.types.name_of(ty),
@@ -119,6 +128,44 @@ fn shape_named(name: string) -> Type? {
 }
 
 impl Typer {
+    /// Every struct's field table, from its annotations alone —
+    /// BEFORE fn sigs, whose annotations may name these types.
+    fn declare_struct_sigs(self) {
+        for s in self.p.stmts {
+            let parts: StructParts? = self.p.store.struct_parts(s)
+            if parts != null { self.declare_struct_sig(s, parts!.fields) }
+        }
+    }
+
+    fn declare_struct_sig(self, s: StmtId, fields: List<Param>) {
+        let names = [f.name for f in fields]
+        for (j, f) in fields.enumerate() {
+            if names.index_of(f.name) < j {
+                self.speak(pointed(
+                    error_at("type.duplicate_field", self.stmt_loc(s),
+                        "field `${f.name}` is declared more than once"),
+                    "in this declaration")
+                    with { help: "rename one of them" })
+            }
+        }
+        let types = [self.field_type(s, f) for f in fields]
+        mut sig_table = self.struct_sigs
+        sig_table.set(s.index, StructSig { names: names, types: types })
+    }
+
+    /// A field's type — scalars only, until ownership analysis.
+    fn field_type(self, s: StmtId, f: Param) -> TypeId {
+        let sh: Type? = shape_named(f.ty)
+        if sh != null {
+            if sh! is .Int || sh! is .Bool { return self.types.intern(sh!) }
+        }
+        self.speak(pointed(
+            error_at("type.struct_scalar", self.stmt_loc(s), "struct fields hold scalars for now"),
+            "field `${f.name}` is `${f.ty}`")
+            with { help: "`int` and `bool` fields today — managed fields arrive with ownership analysis" })
+        self.types.intern(Type.Error)
+    }
+
     /// Every fn's signature, from its annotations alone — before any
     /// body walks, so calls resolve signatures program-wide.
     fn declare_sigs(self) {
@@ -135,14 +182,17 @@ impl Typer {
         sig_table.set(s.index, FnSig { params: ptypes, ret: rt })
     }
 
-    /// An annotation's TypeId; an unknown name speaks and absorbs.
+    /// An annotation's TypeId: a builtin shape, a declared type, or
+    /// a spoken absence.
     fn annotated(self, s: StmtId, name: string) -> TypeId {
         let sh: Type? = shape_named(name)
         if sh != null { return self.types.intern(sh!) }
+        let decl: StmtId? = self.resolution.type_defs.get(name)
+        if decl != null { return self.types.intern(Type.Struct(decl!, name)) }
         self.speak(pointed(
             error_at("type.unknown", self.stmt_loc(s), "`${name}` names no type"),
             "in this signature")
-            with { help: "the types today are `int`, `string`, and `bool`" })
+            with { help: "the types today are `int`, `string`, `bool`, and your declared types" })
         self.types.intern(Type.Error)
     }
 
@@ -175,6 +225,24 @@ impl Typer {
         match b! {
             .Def(s) -> self.sigs[s.index],
             .Param(_) -> null,
+        }
+    }
+
+    /// The definition statement an expression's binding names.
+    fn def_of(self, e: ExprId) -> StmtId? {
+        let b: Binding? = binding_of(self.resolution, e)
+        if b == null { return null }
+        match b! {
+            .Def(s) -> s,
+            .Param(_) -> null,
+        }
+    }
+
+    /// A struct type's field table; null for every other shape.
+    fn fields_of(self, ty: TypeId) -> StructSig? {
+        match self.types.shape_of(ty) {
+            .Struct(decl, _) -> self.struct_sigs[decl.index],
+            _ -> null,
         }
     }
 

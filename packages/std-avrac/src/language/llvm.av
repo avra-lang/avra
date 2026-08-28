@@ -125,7 +125,7 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
     match types.shape_of(ty) {
         .Int or .Error -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
-        .Str or .List(_) -> avra_llvm_pointer_type(lc),
+        .Str or .List(_) or .Struct(_, _) -> avra_llvm_pointer_type(lc),
     }
 }
 
@@ -237,7 +237,7 @@ fn rt_arg(em: Emit, callee: string, j: int, r: Reg) -> ptr {
     if !(sig!.params[j] is .I64) { return v }
     let i64t = avra_llvm_int64_type(em.lc)
     let sh = em.types.shape_of(em.tys[r.index])
-    if sh is .Str || sh is .List {
+    if sh is .Str || sh is .List || sh is .Struct {
         return avra_llvm_build_ptr_to_int(em.b, v, i64t, "slot")
     }
     if sh is .Bool {

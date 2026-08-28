@@ -4,7 +4,7 @@
 //! cause was diagnosed where it happened; the wording lives here
 //! with the operators.
 use core.{Expr, ExprId, BinOp, Type, TypeId, op_symbol}
-use features.{TypeCx, spoken, this_is}
+use features.{TypeCx, StructSig, spoken, this_is}
 use diagnostics.{error_at, pointed}
 
 fn spine_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -42,11 +42,14 @@ fn index_type(cx: TypeCx, subject: ExprId, index: ExprId) -> TypeId {
     elem!
 }
 
-/// `.length` on a List answers int; any other property refuses BY
-/// NAME — the parse was generous so this message can be precise.
+/// A property read asks the FIELD TABLE first — a struct answers
+/// its field's type — then `.length` on a List or string; any other
+/// property refuses BY NAME.
 fn prop_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
     let sh = cx.shape_at(subject)
     if sh is .Error { return cx.intern(Type.Error) }
+    let sig: StructSig? = cx.fields_of(cx.type_at(subject))
+    if sig != null { return field_type(cx, e, subject, name, sig!) }
     let n = cx.name_at(subject)
     if name == "length" {
         if sh is .List || sh is .Str { return cx.intern(Type.Int) }
@@ -58,6 +61,17 @@ fn prop_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
         error_at("type.unknown_prop", cx.loc_of(e), "no property `${name}` on `${n}`"),
         "read here")
         with { help: "the one property today is `length`" })
+}
+
+/// A struct's property IS a declared field; a miss names the
+/// fields that exist.
+fn field_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string, sig: StructSig) -> TypeId {
+    let i: int? = sig.slot_of(name)
+    if i != null { return sig.types[i!] }
+    spoken(cx, pointed(
+        error_at("type.unknown_prop", cx.loc_of(e), "no field `${name}` on `${cx.name_at(subject)}`"),
+        "read here")
+        with { help: "the fields are ${sig.listed()}" })
 }
 
 fn binary_type(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {

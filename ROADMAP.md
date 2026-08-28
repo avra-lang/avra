@@ -737,6 +737,61 @@ category.
   a fn, reading fields through arithmetic and interpolation —
   eval == native == expected.
 
+CAPABILITY STANDARDIZATION (considered here, from review — and
+DEFERRED to the query model): should driver machinery itself be
+modular, trait-shaped? The seams already ARE standard — cx structs
+(data + wired verbs, nested composition) for rules, the semantics
+traits for features, ONE pass signature for facts — and the
+machinery species with real copy-counts are recorded (dense
+id-keyed tables ~9 sites; namespaces 2, trigger at enums; scopes
+1). A bs2 trait kit is REFUSED: default methods ICE, dyn
+mis-boxes, generic containers corrupt through mono — it would
+stand on the toolchain's three weakest legs. The real
+standardization is Era IV's: a capability IS a query surface over
+DECLARED facts ("provides bindings: ExprId -> Binding; requires
+struct_sigs") and the compiler derives tables, wiring, and
+memoization from the schema. The cx structs are today's
+hand-written projection of that schema; at self-host the schema
+becomes the interface and fact-kinds become registrable forms.
+
+THE FORM-VS-HALLWAY LAW (settled here, from review): a capability
+lands either as a FORM — a slot later features register into — or
+a HALLWAY — driver code the next feature must edit again. Grammar
++ features IS the language; the drivers are the vocabulary of
+fact-KINDS, and that vocabulary grows only at capability events —
+but each growth must leave a form behind. M14's audit: the field
+table and its verbs are forms (the Prop chain was edited ONCE to
+ask fields_of; future field-bearing types answer through it); the
+TYPE NAMESPACE is a hallway — declare_types hand-parallels
+declare_fns, the second copy of "a program-wide namespace declared
+from a statement projection". RECORDED TRIGGER: the third
+namespace (enums) converts namespaces into feature-registered
+rows ({stmt projection, namespace, duplicate kind} in the
+manifest), collapsing fn_defs and type_defs into the same
+registration path as builders and diags. The declare-phase
+ordering (struct sigs before fn sigs) dissolves under Era IV's
+query model — sigs QUERY field tables, no phase to sequence.
+
+LANDED: 302/302; seventeen-for-seventeen corpus, structs.av
+building literals in ANY field order (slots reorder to the
+declaration) and crossing fn boundaries both ways. The design
+held: zero new instructions, zero interp changes, zero memory
+changes — the literal is array_new + ordered pushes, a field read
+is array_get at a compile-time slot, all over the registry's
+existing rows. The eval collapse and the runtime registry paid
+for themselves in one rung. Costs beyond the feature dir: two
+TypeCx verbs (bound_def, fields_of), two LowerCx verbs (mint_int,
+field_slot), resolve's third namespace (type_defs, mirroring
+fn_defs), Typing.struct_sigs declared BEFORE fn sigs. THE
+DISCOVERY — the stmt-floor law: expr_stmt's recovering
+NAME-headed branch was stealing keyword lines that merge after
+it (`type P = ...` parsed as ident + failed BREAK + hole), so
+expr_stmt now merges LAST and every statement feature lands
+before it (CLAUDE.md grammar authoring). V1 restrictions stand
+as designed (scalar fields, no `with`, no methods, `==` refuses,
+no struct text projection for main's answer — project a field);
+each trigger recorded in the design above.
+
 ## The breather — architecture heads-up (decided 2026-08-26)
 
 Before the heavyweight rungs, six structural decisions, each made
@@ -1128,7 +1183,9 @@ into features (or spec commitments) when their milestone comes.
   `token_name()` projected straight into a compare; today a bound
   let (and the direct compare is #1376).
 - Comprehension destructuring: `[fix(i, m) for (i, m) in
-  xs.enumerate()]` — wanted by attach, first_defects, joined.
+  xs.enumerate()]` — wanted by attach, first_defects, joined, and
+  both zip builders (fns and structs zip parallel token lists by
+  index loop).
 - Comprehension BINDINGS (or `filter_map`): the filter and the
   element cannot share a computed value — `[Def { name: n, ... }
   for s in stmts let n = store.let_name(s) if n != null]` doesn't
