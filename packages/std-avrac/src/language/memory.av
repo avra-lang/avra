@@ -94,7 +94,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .CallRt(_, _, _) or .CallRtVoid(_, _) or .Release(_) or
             .Alloca(_) or .Load(_, _) or .Store(_, _) or
             .LoopStart or .LoopCond(_) or .LoopEnd or
-            .Retain(_) or .RetVal(_) or .Print(_) or .Ret(_) -> {
+            .Retain(_) or .RetVal(_) or .Ret(_) -> {
                 manage(types, reg_types, open_scopes, i)
                 out.push(i)
             }
@@ -143,7 +143,14 @@ fn manage(types: TypeRegistry, reg_types: List<TypeId>, open_scopes: List<Scope>
 fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
     let dst: Reg? = dst_of(i)
     if dst == null { return null }
-    if types.shape_of(reg_types[dst!.index]) is .Str { dst } else { null }
+    if !(types.shape_of(reg_types[dst!.index]) is .Str) { return null }
+    // Provenance refines the type: a runtime call's result is
+    // managed only when the REGISTRY says it owns one — a static
+    // answer (bool_text) never earns a release.
+    match i {
+        .CallRt(_, callee, _) -> if rt_owns(callee) { dst } else { null },
+        _ -> dst,
+    }
 }
 
 /// Last bound, first released.

@@ -1,0 +1,39 @@
+//! THE runtime surface, as data — one table, five consumers: the
+//! backend DECLARES from it, COERCES arguments by it, the memory
+//! pass derives OWNERSHIP from it, lowering REFUSES a callee it
+//! does not know, and the interpreter HOSTS every row. The twins:
+//! runtime/avra_runtime.c natively, rt_dispatch in the interpreter
+//! — a new runtime fn is a row plus both bodies, nothing else.
+use core.{RtKind, RtSig}
+
+export fn rt_sigs() -> List<RtSig> {
+    let sigs: List<RtSig> = [
+        RtSig { name: "avra_puts", ret: RtKind.Void, params: [RtKind.Ptr], owns_result: false },
+        RtSig { name: "avra_streq", ret: RtKind.I64, params: [RtKind.Ptr, RtKind.Ptr], owns_result: false },
+        RtSig { name: "avra_rc_release", ret: RtKind.Void, params: [RtKind.Ptr], owns_result: false },
+        RtSig { name: "avra_rc_retain", ret: RtKind.Void, params: [RtKind.Ptr], owns_result: false },
+        RtSig { name: "avra_array_new", ret: RtKind.Ptr, params: [], owns_result: false },
+        RtSig { name: "avra_array_push", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64], owns_result: false },
+        RtSig { name: "avra_array_get", ret: RtKind.I64, params: [RtKind.Ptr, RtKind.I64], owns_result: false },
+        RtSig { name: "avra_array_len", ret: RtKind.I64, params: [RtKind.Ptr], owns_result: false },
+        RtSig { name: "avra_str_join", ret: RtKind.Ptr, params: [RtKind.Ptr, RtKind.Ptr], owns_result: true },
+        RtSig { name: "avra_int_text", ret: RtKind.Ptr, params: [RtKind.I64], owns_result: true },
+        RtSig { name: "avra_bool_text", ret: RtKind.Ptr, params: [RtKind.I64], owns_result: false },
+        RtSig { name: "avra_ints_text", ret: RtKind.Ptr, params: [RtKind.Ptr], owns_result: true },
+        RtSig { name: "avra_bools_text", ret: RtKind.Ptr, params: [RtKind.Ptr], owns_result: true },
+        RtSig { name: "strlen", ret: RtKind.I64, params: [RtKind.Ptr], owns_result: false },
+    ]
+    sigs
+}
+
+/// The callee's contract, when the registry knows it.
+export fn rt_sig_of(name: string) -> RtSig? {
+    rt_sigs().find(it.name == name)
+}
+
+/// True when the callee's result is a FRESH allocation the memory
+/// pass must release. (avra_array_new is deliberately false —
+/// aggregates are unregistered until ownership analysis.)
+export fn rt_owns(name: string) -> bool {
+    rt_sig_of(name)?.owns_result ?? false
+}

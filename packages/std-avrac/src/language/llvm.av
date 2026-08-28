@@ -3,9 +3,10 @@
 //! links), verified function-by-function, and written as `.ll` text
 //! for clang. Every fn body becomes its own function (declared
 //! first, so call order never matters); `main` is the statement
-//! list. Programs link Avra's runtime library for printing, string
-//! equality, and reference counting — nothing else.
-use core.{Ins, Reg, BinOp, UnOp, TypeId, TypeRegistry}
+//! list. Programs link OUR runtime (runtime/avra_runtime.c) —
+//! printing, string equality, aggregates, and ownership — and
+//! nothing else.
+use core.{Ins, Reg, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig}
 use features.{nothing}
 
 /// One body's emission world: the LLVM handles, this body's register
@@ -88,24 +89,21 @@ fn wreck(m: ptr, path: string, failure: string) -> string {
     "${failure} (module at ${path})"
 }
 
-/// The runtime surface a compiled program uses.
+/// The runtime surface, declared straight from the registry —
+/// runtime_api.av is the one definition, runtime/avra_runtime.c
+/// its implementation twin.
 fn declare_runtime(lc: ptr, m: ptr) {
-    let pt = avra_llvm_pointer_type(lc)
-    let i64t = avra_llvm_int64_type(lc)
-    declare(lc, m, "avra_puts", i64t, [pt], false)
-    declare(lc, m, "avra_streq", i64t, [pt, pt], false)
-    declare(lc, m, "avra_rc_alloc", pt, [i64t], false)
-    declare(lc, m, "avra_rc_release", i64t, [pt], false)
-    declare(lc, m, "avra_rc_retain", avra_llvm_void_type(lc), [pt], false)
-    declare(lc, m, "snprintf", avra_llvm_int32_type(lc), [pt, i64t, pt], true)
-    declare(lc, m, "avra_array_new", pt, [], false)
-    declare(lc, m, "avra_array_push", avra_llvm_void_type(lc), [pt, i64t], false)
-    declare(lc, m, "avra_array_get", i64t, [pt, i64t], false)
-    declare(lc, m, "avra_array_len", i64t, [pt], false)
-    declare(lc, m, "avra_str_join", pt, [pt, pt], false)
-    declare(lc, m, "avra_json_stringify_int", pt, [i64t], false)
-    declare(lc, m, "avra_bool_to_string", pt, [i64t], false)
-    declare(lc, m, "strlen", i64t, [pt], false)
+    for s in rt_sigs() {
+        declare(lc, m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
+    }
+}
+
+fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
+    match k {
+        .I64 -> avra_llvm_int64_type(lc),
+        .Ptr -> avra_llvm_pointer_type(lc),
+        .Void -> avra_llvm_void_type(lc),
+    }
 }
 
 /// One user fn's declaration, typed from its signature's shapes.
@@ -157,7 +155,6 @@ fn emit_ins(em: Emit, i: Ins) {
         .Release(r) -> released(em, r),
         .Retain(r) -> retained(em, r),
         .RetVal(r) -> ret_value(em, r),
-        .Print(src) -> printed_value(em, src),
         .Ret(code) -> ret_code(em, code),
         .IfStart(c) -> if_start(em, c),
         .Else(gives) -> else_branch(em, gives),
@@ -230,9 +227,14 @@ fn rt_args(em: Emit, callee: string, args: List<Reg>) -> List<ptr> {
     out
 }
 
+/// A registry I64 param is a SLOT — every value category rides it,
+/// so pointer registers cast down and bools widen on the way in.
 fn rt_arg(em: Emit, callee: string, j: int, r: Reg) -> ptr {
     let v = em.vals[r.index]
-    if !slot_param(callee, j) { return v }
+    let sig: RtSig? = rt_sig_of(callee)
+    if sig == null { return v }
+    if j >= sig!.params.length { return v }
+    if !(sig!.params[j] is .I64) { return v }
     let i64t = avra_llvm_int64_type(em.lc)
     let sh = em.types.shape_of(em.tys[r.index])
     if sh is .Str || sh is .List {
@@ -242,13 +244,6 @@ fn rt_arg(em: Emit, callee: string, j: int, r: Reg) -> ptr {
         return avra_llvm_build_zext(em.b, v, i64t, "slot")
     }
     v
-}
-
-/// Runtime params that are int64 SLOTS — every value category rides
-/// them, so pointers cast down and bools widen on the way in.
-fn slot_param(callee: string, j: int) -> bool {
-    (callee == "avra_array_push" && j == 1) ||
-        (callee == "avra_bool_to_string" && j == 0)
 }
 
 fn released(em: Emit, r: Reg) {
@@ -261,52 +256,6 @@ fn retained(em: Emit, r: Reg) {
 
 fn ret_value(em: Emit, r: Reg) {
     let _ = avra_llvm_build_ret(em.b, em.vals[r.index])
-}
-
-/// Print by the register's type: strings as-is, ints as digits,
-/// bools as their keywords.
-fn printed_value(em: Emit, src: Reg) {
-    let v = em.vals[src.index]
-    match em.types.shape_of(em.tys[src.index]) {
-        .Str -> puts(em, v),
-        .Int -> puts(em, int_text(em, v)),
-        .Bool -> puts(em, bool_word(em, v)),
-        // Refused at lowering — a program's answer prints as a scalar.
-        .List(_) or .Error -> nothing(),
-    }
-}
-
-fn puts(em: Emit, text: ptr) {
-    let _ = call(em, "avra_puts", [text])
-}
-
-/// An int's digits: snprintf into a runtime scratch buffer.
-fn int_text(em: Emit, v: ptr) -> ptr {
-    let i64t = avra_llvm_int64_type(em.lc)
-    let size = avra_llvm_const_int(i64t, 32, 0)
-    let buf = call(em, "avra_rc_alloc", [size])
-    let fmt = avra_llvm_build_global_string_ptr(em.b, "%lld", ".fmt")
-    let _ = call(em, "snprintf", [buf, size, fmt, v])
-    buf
-}
-
-/// A bool's keyword: a two-way branch merging into one phi word.
-fn bool_word(em: Emit, v: ptr) -> ptr {
-    let then_bb = avra_llvm_append_basic_block(em.lc, em.fn_val, "btrue")
-    let else_bb = avra_llvm_append_basic_block(em.lc, em.fn_val, "bfalse")
-    let merge_bb = avra_llvm_append_basic_block(em.lc, em.fn_val, "bdone")
-    let _ = avra_llvm_build_cond_br(em.b, v, then_bb, else_bb)
-    avra_llvm_position_at_end(em.b, then_bb)
-    let t = avra_llvm_build_global_string_ptr(em.b, "true", ".true")
-    let _ = avra_llvm_build_br(em.b, merge_bb)
-    avra_llvm_position_at_end(em.b, else_bb)
-    let f = avra_llvm_build_global_string_ptr(em.b, "false", ".false")
-    let _ = avra_llvm_build_br(em.b, merge_bb)
-    avra_llvm_position_at_end(em.b, merge_bb)
-    let word = avra_llvm_build_phi(em.b, avra_llvm_pointer_type(em.lc), "word")
-    avra_llvm_add_incoming(word, t, then_bb)
-    avra_llvm_add_incoming(word, f, else_bb)
-    word
 }
 
 fn ret_code(em: Emit, code: int) {
