@@ -41,21 +41,6 @@ export type TypeCx = {
     emit: fn(Diag),
 }
 
-/// Eval capabilities: a VALUE IS A LITERAL NODE. `value_at` computes
-/// a child at first request — only what an impl asks for ever runs;
-/// an ident reads its definition's slot; `invoke` runs a call's
-/// target body under a fresh frame of argument VALUES; new values
-/// allocate as synthesized literals.
-export type EvalCx = {
-    store: NodeStore,
-    value_at: fn(ExprId) -> ExprId,
-    def_value: fn(ExprId) -> ExprId?,
-    alloc: fn(Expr) -> ExprId,
-    invoke: fn(ExprId, List<ExprId>) -> ExprId,
-    run_block: fn(List<StmtId>, ExprId) -> ExprId,
-    fail: fn(string),
-}
-
 /// Lowering capabilities: `reg_of` lowers a child at first request —
 /// a region's branches lower inside its brackets. `result` mints the
 /// fresh register for a node, typed from the type pass; take every
@@ -80,9 +65,7 @@ export trait NodeSemantics {
     fn kids(self, e: Expr) -> List<ExprId>
     fn resolve(self, cx: ResolveCx, e: ExprId)
     fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId
-    fn eval(self, cx: EvalCx, e: ExprId) -> ExprId
     fn lower(self, cx: LowerCx, e: ExprId) -> Reg
-    fn printed(self, store: NodeStore, e: ExprId) -> string?
 }
 
 /// Statement resolve capabilities — the pass's STATE verbs, never a
@@ -122,17 +105,6 @@ export type StmtTypeCx = {
     loc_of: fn(StmtId) -> Loc?,
 }
 
-/// Statement eval capabilities: evaluate under the current frame,
-/// write a statement's slot, read the assignment fact.
-export type StmtEvalCx = {
-    store: NodeStore,
-    eval: fn(ExprId) -> ExprId,
-    run_stmts: fn(List<StmtId>),
-    write_slot: fn(StmtId, ExprId),
-    assign_target: fn(StmtId) -> StmtId?,
-    fail: fn(string),
-}
-
 /// Statement lowering capabilities: lower expressions and statement
 /// lists, mint typed registers, emit instructions, and own a slot —
 /// a slot bound through `bind_slot` is a memory CELL: idents load
@@ -152,17 +124,11 @@ export type StmtLowerCx = {
 /// The per-pass behavior of one feature's STATEMENT kinds — the
 /// stmt-spine's twin of NodeSemantics. Drivers loop statements
 /// through `stmt_semantics_of` and never match Stmt kinds; a
-/// value-producing statement answers its value (eval) or register
-/// (lower) and the DRIVER owns slots and last-value tracking.
-/// `binds` and `value_of` are the spine projections — what a
-/// statement names, and its value expression at its own position (a
-/// body that runs later, under a frame, is NOT a value).
+/// value-producing statement answers its register (lower) and the
+/// DRIVER owns slots and last-value tracking.
 export trait StmtSemantics {
-    fn binds(self, store: NodeStore, s: StmtId) -> string?
-    fn value_of(self, store: NodeStore, s: StmtId) -> ExprId?
     fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId)
     fn type_stmt(self, cx: StmtTypeCx, s: StmtId)
-    fn eval_stmt(self, cx: StmtEvalCx, s: StmtId) -> ExprId?
     fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg?
 }
 
@@ -176,4 +142,32 @@ export fn nothing() {
 /// runtime rule that meets a recovery hole says exactly this.
 export fn hole_defect() -> string {
     "defect: a hole survived a clean analysis"
+}
+
+// ── The statement-value rituals: one verb per shape, so no rule
+// ever spells the stmt_value-guard two-step. ──
+
+impl StmtResolveCx {
+    /// Walk the statement's value expression, when it carries one.
+    fn walk_value(self, s: StmtId) {
+        let v: ExprId? = self.store.stmt_value(s)
+        if v != null { self.walk(v!) }
+    }
+}
+
+impl StmtTypeCx {
+    /// Walk the statement's value expression, when it carries one.
+    fn walk_value(self, s: StmtId) {
+        let v: ExprId? = self.store.stmt_value(s)
+        if v != null { self.walk(v!) }
+    }
+}
+
+impl StmtLowerCx {
+    /// The statement's value, lowered — null when it carries none.
+    fn lower_value(self, s: StmtId) -> Reg? {
+        let v: ExprId? = self.store.stmt_value(s)
+        if v == null { return null }
+        self.lower(v!)
+    }
 }

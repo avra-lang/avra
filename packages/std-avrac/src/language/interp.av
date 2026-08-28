@@ -1,0 +1,419 @@
+//! The ONE semantics, executed — the IR interpreter. Features
+//! define meaning once (lowering); this walks the SAME instruction
+//! stream the backend compiles, so eval and native cannot disagree
+//! by construction. Every CallRt row in runtime_api.av has its host
+//! implementation here, contract-matched to runtime/avra_runtime.c
+//! — the registry's fifth consumer, refusal wording included.
+//!
+//! The IR is brackets, not jumps: control flow is a program counter
+//! plus depth-matched skips (if-regions, loop back edges). Values
+//! are a tiny closed enum; arrays, mut cells, and register frames
+//! live in machine tables addressed by handle.
+use core.{Ins, Reg, BinOp, UnOp, filled, joined}
+
+/// A runtime value: the interpreter's whole vocabulary.
+enum Val {
+    I(v: int)
+    B(v: bool)
+    S(v: string)
+    /// An aggregate — a handle into the machine's array table.
+    A(id: int)
+    /// A mut binding's cell — a handle into the cell table.
+    C(id: int)
+}
+
+/// The machine: the program, its heaps, the register frame stack
+/// (innermost last — mutated through element aliases), its output,
+/// and its refusal.
+type Machine = {
+    l: Lowered,
+    frames: List<List<Val?>>,
+    arrays: List<List<Val>>,
+    cells: List<Val>,
+    out: List<string>,
+    failures: List<string>,
+}
+
+/// Run a lowered program: its printed output, or the refusal.
+export fn run_lowered(l: Lowered) -> Result<string, string> {
+    let m = Machine { l: l, frames: [], arrays: [], cells: [], out: [], failures: [] }
+    let _ = run_body(m, l.entry, [])
+    if !m.failures.is_empty() { return Result.Err(m.failures.first()!) }
+    if m.out.is_empty() { return Result.Err("the program is empty") }
+    Result.Ok(joined(m.out, "\n"))
+}
+
+/// One body under its argument values; params ARE registers 0..N-1.
+/// The answer is RetVal's register, when one fires.
+fn run_body(m: Machine, b: Body, args: List<Val>) -> Val? {
+    mut frames = m.frames
+    frames.push(filled<Val?>(b.reg_types.length, null))
+    for (j, a) in args.enumerate() { put(m, Reg { index: j }, a) }
+    mut answer: Val? = null
+    mut pc = 0
+    while pc < b.ins.length && m.failures.is_empty() {
+        let i = b.ins[pc]
+        if i is .RetVal || i is .Ret {
+            answer = match i {
+                .RetVal(r) -> at(m, r),
+                _ -> null,
+            }
+            pc = b.ins.length
+        } else {
+            pc = step(m, b, pc)
+        }
+    }
+    let _ = frames.pop()
+    answer
+}
+
+/// One instruction: mutate the machine, answer the next pc.
+fn step(m: Machine, b: Body, pc: int) -> int {
+    match b.ins[pc] {
+        .ConstInt(d, v) -> put_at(m, d, Val.I(v), pc),
+        .ConstBool(d, v) -> put_at(m, d, Val.B(v), pc),
+        .ConstStr(d, s) -> put_at(m, d, Val.S(s), pc),
+        .Bin(d, op, a, x) -> put_at(m, d, bin_val(m, op, a, x), pc),
+        .Un(d, op, src) -> put_at(m, d, un_val(m, op, src), pc),
+        .CallRt(d, callee, args) -> put_at(m, d, rt_val(m, b, d, callee, args), pc),
+        .CallRtVoid(callee, args) -> rt_void(m, callee, args, pc),
+        .Call(d, callee, args) -> put_at(m, d, call_val(m, callee, args), pc),
+        .IfStart(c) -> if truth(m, c) { pc + 1 } else { past_else(b, pc) },
+        .Else(gives) -> merge_then(m, b, gives, pc),
+        .IfEnd(d, gives) -> put_at(m, d, at(m, gives) ?? Val.I(0), pc),
+        .LoopStart -> pc + 1,
+        .LoopCond(c) -> if truth(m, c) { pc + 1 } else { past_loop(b, pc) },
+        .LoopEnd -> loop_header(b, pc) + 1,
+        .Alloca(d) -> put_at(m, d, fresh_cell(m), pc),
+        .Load(d, slot) -> put_at(m, d, cell_read(m, slot), pc),
+        .Store(slot, src) -> store_step(m, slot, src, pc),
+        .ScopeEnter(_) or .ScopeExit(_) or .Retain(_) or .Release(_) or
+        .RetVal(_) or .Ret(_) -> pc + 1,
+    }
+}
+
+// ── Registers (the innermost frame, through element aliases) ────
+
+fn put(m: Machine, d: Reg, v: Val) {
+    mut regs = m.frames[m.frames.length - 1]
+    regs.set(d.index, v)
+}
+
+fn put_at(m: Machine, d: Reg, v: Val, pc: int) -> int {
+    put(m, d, v)
+    pc + 1
+}
+
+fn at(m: Machine, r: Reg) -> Val? {
+    m.frames[m.frames.length - 1][r.index]
+}
+
+fn fail(m: Machine, msg: string) {
+    mut fs = m.failures
+    fs.push(msg)
+}
+
+/// A register's value, which a clean program guarantees present.
+fn value(m: Machine, r: Reg) -> Val {
+    let v: Val? = at(m, r)
+    if v == null {
+        fail(m, "defect: an undefined register was read in a clean program")
+        return Val.I(0)
+    }
+    v!
+}
+
+fn truth(m: Machine, r: Reg) -> bool {
+    match value(m, r) {
+        .B(v) -> v,
+        _ -> {
+            fail(m, "defect: a non-bool decided a branch in a clean program")
+            false
+        }
+    }
+}
+
+fn int_val(m: Machine, r: Reg) -> int {
+    match value(m, r) {
+        .I(v) -> v,
+        _ -> {
+            fail(m, "defect: a non-int reached arithmetic in a clean program")
+            0
+        }
+    }
+}
+
+fn text_val(m: Machine, v: Val) -> string {
+    match v {
+        .S(s) -> s,
+        _ -> {
+            fail(m, "defect: a non-string reached text in a clean program")
+            ""
+        }
+    }
+}
+
+// ── Operations ──────────────────────────────────────────────────
+
+fn bin_val(m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
+    let bools: bool = value(m, a) is .B && value(m, x) is .B
+    if bools { return bool_eq_val(m, op, a, x) }
+    let l = int_val(m, a)
+    let r = int_val(m, x)
+    if (op == BinOp.Div || op == BinOp.Mod) && r == 0 {
+        fail(m, "division by zero")
+        return Val.I(0)
+    }
+    match op {
+        .Add -> Val.I(l + r),
+        .Sub -> Val.I(l - r),
+        .Mul -> Val.I(l * r),
+        .Div -> Val.I(l / r),
+        .Mod -> Val.I(l % r),
+        .Lt -> Val.B(l < r),
+        .Le -> Val.B(l <= r),
+        .Gt -> Val.B(l > r),
+        .Ge -> Val.B(l >= r),
+        .Eq -> Val.B(l == r),
+        .Ne -> Val.B(l != r),
+        .And or .Or -> defect_val(m, "a lazy op reached the eager path"),
+    }
+}
+
+/// `==`/`!=` over two bool registers — the one non-int Bin.
+fn bool_eq_val(m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
+    let l = truth(m, a)
+    let r = truth(m, x)
+    match op {
+        .Eq -> Val.B(l == r),
+        .Ne -> Val.B(l != r),
+        _ -> defect_val(m, "a non-equality op reached bool operands"),
+    }
+}
+
+fn un_val(m: Machine, op: UnOp, src: Reg) -> Val {
+    match op {
+        .Not -> Val.B(!truth(m, src)),
+    }
+}
+
+fn defect_val(m: Machine, what: string) -> Val {
+    fail(m, "defect: ${what} in a clean program")
+    Val.I(0)
+}
+
+// ── Control-flow bracket scans ──────────────────────────────────
+
+/// Forward from `from`+1: the pc of the first `target` at depth 0,
+/// with `opens`/`closes` tracking nesting. Target wins over close
+/// at depth 0, so a closer can BE the target.
+fn ahead(b: Body, from: int, opens: fn(Ins) -> bool, closes: fn(Ins) -> bool, target: fn(Ins) -> bool) -> int {
+    mut depth = 0
+    mut j = from + 1
+    while j < b.ins.length {
+        let i = b.ins[j]
+        if depth == 0 && target(i) { return j }
+        if opens(i) { depth = depth + 1 }
+        else {
+            if closes(i) { depth = depth - 1 }
+        }
+        j = j + 1
+    }
+    b.ins.length
+}
+
+/// From an IfStart: the pc just past its matching Else.
+fn past_else(b: Body, from: int) -> int {
+    ahead(b, from, (i: Ins) -> i is .IfStart, (i: Ins) -> i is .IfEnd, (i: Ins) -> i is .Else) + 1
+}
+
+/// At an Else after the then-branch ran: seal the merge at the
+/// matching IfEnd with the then-value and continue past it.
+fn merge_then(m: Machine, b: Body, gives: Reg, pc: int) -> int {
+    let v: Val? = at(m, gives)
+    let end = ahead(b, pc, (i: Ins) -> i is .IfStart, (i: Ins) -> i is .IfEnd, (i: Ins) -> i is .IfEnd)
+    if end < b.ins.length {
+        let d: Reg? = match b.ins[end] {
+            .IfEnd(dst, _) -> dst,
+            _ -> null,
+        }
+        if d != null { put(m, d!, v ?? Val.I(0)) }
+    }
+    end + 1
+}
+
+/// From a false LoopCond: the pc just past the matching LoopEnd.
+fn past_loop(b: Body, from: int) -> int {
+    ahead(b, from, (i: Ins) -> i is .LoopStart, (i: Ins) -> i is .LoopEnd, (i: Ins) -> i is .LoopEnd) + 1
+}
+
+/// From a LoopEnd: its matching LoopStart — the back edge.
+fn loop_header(b: Body, from: int) -> int {
+    mut depth = 0
+    mut j = from - 1
+    while j >= 0 {
+        let found: bool = match b.ins[j] {
+            .LoopEnd -> {
+                depth = depth + 1
+                false
+            }
+            .LoopStart -> {
+                if depth == 0 { true } else {
+                    depth = depth - 1
+                    false
+                }
+            }
+            _ -> false,
+        }
+        if found { return j }
+        j = j - 1
+    }
+    0
+}
+
+// ── Calls ───────────────────────────────────────────────────────
+
+fn call_val(m: Machine, callee: string, args: List<Reg>) -> Val {
+    let target: Body? = m.l.fns.find(it.name == callee)
+    if target == null { return defect_val(m, "a call without a body survived lowering") }
+    let vals = [value(m, r) for r in args]
+    let answer: Val? = run_body(m, target!, vals)
+    answer ?? defect_val(m, "a fn body answered nothing")
+}
+
+// ── Mut cells ───────────────────────────────────────────────────
+
+fn fresh_cell(m: Machine) -> Val {
+    mut cs = m.cells
+    cs.push(Val.I(0))
+    Val.C(cs.length - 1)
+}
+
+fn cell_read(m: Machine, slot: Reg) -> Val {
+    match value(m, slot) {
+        .C(id) -> m.cells[id],
+        _ -> defect_val(m, "a load through a non-cell"),
+    }
+}
+
+fn store_step(m: Machine, slot: Reg, src: Reg, pc: int) -> int {
+    let v = value(m, src)
+    match value(m, slot) {
+        .C(id) -> {
+            mut cs = m.cells
+            cs.set(id, v)
+        }
+        _ -> fail(m, "defect: a store through a non-cell in a clean program"),
+    }
+    pc + 1
+}
+
+// ── Text projections ────────────────────────────────────────────
+
+/// A value's printed text — the twin of the runtime's projections.
+fn val_text(m: Machine, v: Val) -> string {
+    match v {
+        .I(n) -> "${n}",
+        .B(t) -> if t { "true" } else { "false" },
+        .S(s) -> s,
+        .A(id) -> "[${joined([val_text(m, e) for e in m.arrays[id]], ", ")}]",
+        .C(_) -> "<cell>",
+    }
+}
+
+// ── The runtime surface, hosted — runtime_api.av's fifth consumer ─
+
+fn rt_void(m: Machine, callee: string, args: List<Reg>, pc: int) -> int {
+    let _ = rt_dispatch(m, callee, [value(m, r) for r in args])
+    pc + 1
+}
+
+/// A value-producing runtime call; a Bool-typed destination narrows
+/// the runtime's i64 answer, exactly as the backend does.
+fn rt_val(m: Machine, b: Body, d: Reg, callee: string, args: List<Reg>) -> Val {
+    let raw = rt_dispatch(m, callee, [value(m, r) for r in args])
+    if m.l.types.shape_of(b.reg_types[d.index]) is .Bool {
+        return match raw {
+            .I(n) -> Val.B(n != 0),
+            _ -> raw,
+        }
+    }
+    raw
+}
+
+fn rt_dispatch(m: Machine, callee: string, vals: List<Val>) -> Val {
+    match callee {
+        "avra_puts" -> puts_val(m, vals),
+        "avra_array_new" -> array_new_val(m),
+        "avra_array_push" -> array_push_val(m, vals),
+        "avra_array_get" -> array_get_val(m, vals),
+        "avra_array_len" -> array_len_val(m, vals),
+        "avra_str_join" -> str_join_val(m, vals),
+        "avra_int_text" or "avra_bool_text" or "avra_ints_text"
+            or "avra_bools_text" -> Val.S(val_text(m, vals[0])),
+        "avra_streq" -> streq_val(m, vals),
+        "strlen" -> Val.I(text_val(m, vals[0]).length),
+        _ -> defect_val(m, "an unknown runtime callee `${callee}` survived lowering"),
+    }
+}
+
+fn array_new_val(m: Machine) -> Val {
+    mut arrs = m.arrays
+    arrs.push([])
+    Val.A(arrs.length - 1)
+}
+
+fn array_push_val(m: Machine, vals: List<Val>) -> Val {
+    match vals[0] {
+        .A(id) -> {
+            mut arr = m.arrays[id]
+            arr.push(vals[1])
+        }
+        _ -> fail(m, "defect: a push into a non-array in a clean program"),
+    }
+    Val.I(0)
+}
+
+fn array_get_val(m: Machine, vals: List<Val>) -> Val {
+    let id: int? = match vals[0] {
+        .A(x) -> x,
+        _ -> null,
+    }
+    let i: int? = match vals[1] {
+        .I(x) -> x,
+        _ -> null,
+    }
+    if id == null || i == null { return defect_val(m, "a non-array index read") }
+    let arr = m.arrays[id!]
+    if i! < 0 || i! >= arr.length {
+        fail(m, "index ${i!} is out of bounds (length ${arr.length})")
+        return Val.I(0)
+    }
+    arr[i!]
+}
+
+fn array_len_val(m: Machine, vals: List<Val>) -> Val {
+    match vals[0] {
+        .A(id) -> Val.I(m.arrays[id].length),
+        _ -> defect_val(m, "a length of a non-array"),
+    }
+}
+
+fn str_join_val(m: Machine, vals: List<Val>) -> Val {
+    match vals[0] {
+        .A(id) -> Val.S(joined([text_val(m, e) for e in m.arrays[id]], text_val(m, vals[1]))),
+        _ -> defect_val(m, "a join over a non-array"),
+    }
+}
+
+/// One printed line lands in the machine's output.
+fn puts_val(m: Machine, vals: List<Val>) -> Val {
+    let line = text_val(m, vals[0])
+    mut o = m.out
+    o.push(line)
+    Val.I(0)
+}
+
+fn streq_val(m: Machine, vals: List<Val>) -> Val {
+    Val.I(if text_val(m, vals[0]) == text_val(m, vals[1]) { 1 } else { 0 })
+}

@@ -4,11 +4,11 @@
 //! PURE semantics — the memory pass owns every Retain and Release.
 //! A definition's register is its slot (a mut binding's is a CELL,
 //! loaded at each read), a param IS its register (params mint
-//! first), so names cost nothing, exactly as in eval.
+//! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, concat}
-use diagnostics.{Diag, error_at, pointed, loc_at}
+use diagnostics.{Diag, error_at}
 use features.{LowerCx, StmtLowerCx, FnSig}
 
 /// One lowered body: instructions in order and each register's type
@@ -24,7 +24,7 @@ export type Body = {
 }
 
 /// The lowering facts: every fn body, the entry body (`main` — its
-/// specialness is explicit: no params, a Print, exit 0), the
+/// specialness is explicit: no params, the answer's puts, exit 0), the
 /// registry that names the types, and any defects.
 export type Lowered = {
     fns: List<Body>,
@@ -100,14 +100,7 @@ fn lower_main(a: Analysis) -> LoweredBody {
     let lo = new_lower(a)
     lo.give(Ins.ScopeEnter(Level.Application))
     let last: Reg? = lower_stmts(lo, a.stmts)
-    mut refusals: List<Diag> = []
-    if last != null {
-        if lo.a.typing.types.shape_of(lo.reg_types[last!.index]) is .List {
-            refusals.push(answer_refusal(a))
-        } else {
-            lo.give(Ins.Print(last!))
-        }
-    }
+    if last != null { print_lowering(lo, last!) }
     lo.give(Ins.ScopeExit(null))
     lo.give(Ins.Ret(0))
     LoweredBody {
@@ -116,16 +109,8 @@ fn lower_main(a: Analysis) -> LoweredBody {
             gives: null, ins: lo.ins, reg_types: lo.reg_types,
         },
         failures: lo.failures,
-        refusals: refusals,
+        refusals: [],
     }
-}
-
-/// A program's answer prints as a scalar — the native list printer
-/// arrives with the in-tree runtime.
-fn answer_refusal(a: Analysis) -> Diag {
-    let at = loc_at(a.source.file, a.store.stmt_span(a.stmts[a.stmts.length - 1]))
-    pointed(error_at("language.unsupported", at, "the program's answer is a list — it prints as a scalar for now"), "the answer")
-        with { help: "end with an element (`xs[i]`) or `xs.length`" }
 }
 
 /// One subtree's register, lowered at first request and memoized.
@@ -145,7 +130,7 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         lower_block: (stmts: List<StmtId>, value: ExprId) -> block_reg(lo, stmts, value),
         fail: (msg: string) -> lo.record(msg),
     }
-    let r = semantics_of(lo.a.store.expr(e)).lower(cx, e)
+    let r = semantics_of(lo.a.dispatch, lo.a.store.expr(e)).lower(cx, e)
     mut rs = lo.regs
     rs.set(e.index, r)
     r
@@ -168,7 +153,7 @@ fn lower_stmts(lo: Lower, stmts: List<StmtId>) -> Reg? {
     }
     mut last: Reg? = null
     for s in stmts {
-        let r: Reg? = stmt_semantics_of(lo.a.store.stmt(s)).lower_stmt(cx, s)
+        let r: Reg? = stmt_semantics_of(lo.a.dispatch, lo.a.store.stmt(s)).lower_stmt(cx, s)
         if r != null {
             if lo.slots[s.index] == null { lo.set_slot(s, r!) }
             last = r
@@ -181,6 +166,31 @@ fn lower_stmts(lo: Lower, stmts: List<StmtId>) -> Reg? {
 /// body's turn.
 fn lower_stmt_list(lo: Lower, stmts: List<StmtId>) {
     let _ = lower_stmts(lo, stmts)
+}
+
+/// The program's answer, shown — printing IS lowering: the text
+/// projection for the answer's shape, then one puts. No Print
+/// instruction exists; both engines just run these calls.
+fn print_lowering(lo: Lower, last: Reg) {
+    let text: Reg? = match lo.a.typing.types.shape_of(lo.reg_types[last.index]) {
+        .Str -> last,
+        .Int -> text_call(lo, "avra_int_text", last),
+        .Bool -> text_call(lo, "avra_bool_text", last),
+        .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
+        .Error -> null,
+    }
+    if text != null { lo.give(Ins.CallRtVoid("avra_puts", [text!])) }
+}
+
+fn text_call(lo: Lower, callee: string, v: Reg) -> Reg {
+    let t = lo.mint_ty(lo.a.typing.types.intern(Type.Str))
+    lo.give(Ins.CallRt(t, callee, [v]))
+    t
+}
+
+/// The runtime printer for a list, by its element shape.
+fn list_text_callee(lo: Lower, elem: TypeId) -> string {
+    if lo.a.typing.types.shape_of(elem) is .Bool { "avra_bools_text" } else { "avra_ints_text" }
 }
 
 /// A block is a scope: statements lower in order into it, and the
@@ -196,12 +206,29 @@ fn block_reg(lo: Lower, stmts: List<StmtId>, value: ExprId) -> Reg {
 impl Lower {
     /// The fresh register for a node, typed by the type pass.
     fn mint(self, e: ExprId) -> Reg {
+        self.mint_ty(self.a.type_at(e))
+    }
+
+    /// A fresh register of an explicit type — for values no
+    /// expression names (the answer's printed text).
+    fn mint_ty(self, ty: TypeId) -> Reg {
         mut tys = self.reg_types
-        tys.push(self.a.type_at(e))
+        tys.push(ty)
         Reg { index: tys.length - 1 }
     }
 
+    /// Every instruction lands here — and a runtime callee the
+    /// registry does not know refuses the BUILD, loudly, instead of
+    /// crashing the backend.
     fn give(self, i: Ins) {
+        let callee: string? = match i {
+            .CallRt(_, c, _) -> c,
+            .CallRtVoid(c, _) -> c,
+            _ -> null,
+        }
+        if callee != null && rt_sig_of(callee!) == null {
+            self.record("defect: unknown runtime callee `${callee!}` — add its row to runtime_api.av")
+        }
         mut ins = self.ins
         ins.push(i)
     }
@@ -210,13 +237,20 @@ impl Lower {
     /// 0..N-1), or its definition's slot — LOADED first when the
     /// slot is a memory cell, so the ident rule stays dumb.
     fn def_reg(self, e: ExprId) -> Reg? {
-        let pi: int? = self.a.param_at(e)
-        if pi != null { return Reg { index: pi! } }
-        let target: StmtId? = self.a.target(e)
-        if target == null { return null }
-        let slot: Reg? = self.slots[target!.index]
+        let b: Binding? = self.a.binding(e)
+        if b == null { return null }
+        match b! {
+            .Param(i) -> Reg { index: i },
+            .Def(s) -> self.slot_reg(e, s),
+        }
+    }
+
+    /// A definition's register: its slot — LOADED first when the
+    /// slot is a memory cell, so the ident rule stays dumb.
+    fn slot_reg(self, e: ExprId, target: StmtId) -> Reg? {
+        let slot: Reg? = self.slots[target.index]
         if slot == null { return null }
-        if self.boxed[target!.index] {
+        if self.boxed[target.index] {
             let ld = self.mint(e)
             self.give(Ins.Load(ld, slot!))
             return ld

@@ -1,5 +1,5 @@
 //! `avra new feature <name>` — the compiler writes its own next
-//! feature: the directory, the six files, the test, all compiling
+//! feature: the directory, the five files, the test, all compiling
 //! placeholder bodies. What remains is the semantics and three
 //! wiring edits, printed as a checklist.
 use @std.cli.{Subcommand, CommandSpec, CliResult, Runnable, ArgDef, result_get_arg}
@@ -61,7 +61,6 @@ fn scaffold_feature(name: string) -> int {
     write_or_die("${dir}/builders.av", builders_template(name))
     write_or_die("${dir}/semantics.av", semantics_template(name, ty))
     write_or_die("${dir}/check.av", check_template(name))
-    write_or_die("${dir}/eval.av", eval_template(name))
     write_or_die("${dir}/lower.av", lower_template(name))
     write_or_die("${dir}/tests/${name}_test.av", test_template(name))
     println("feature `${name}` scaffolded at ${dir}")
@@ -116,9 +115,9 @@ fn build_${name}(b: Builder) -> Result<LangNode, string> {
 
 fn semantics_template(name: string, ty: string) -> string {
     """//! The ${name} NodeSemantics: dispatch only. Typing lives in
-//! check.av, evaluation in eval.av, lowering in lower.av.
-use core.{Expr, ExprId, TypeId, NodeStore, Reg}
-use features.{NodeSemantics, ResolveCx, TypeCx, EvalCx, LowerCx, nothing}
+//! check.av; lowering — the MEANING — in lower.av.
+use core.{Expr, ExprId, TypeId, Reg}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
 
 export type ${ty} = { }
 
@@ -135,16 +134,8 @@ impl NodeSemantics for ${ty} {
         ${name}_type(cx, e)
     }
 
-    fn eval(self, cx: EvalCx, e: ExprId) -> ExprId {
-        ${name}_eval(cx, e)
-    }
-
     fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
         ${name}_lower(cx, e)
-    }
-
-    fn printed(self, store: NodeStore, e: ExprId) -> string? {
-        null
     }
 }
 """
@@ -161,19 +152,8 @@ fn ${name}_type(cx: TypeCx, e: ExprId) -> TypeId {
 """
 }
 
-fn eval_template(name: string) -> string {
-    """//! The evaluation rule: TODO.
-use core.{ExprId}
-use features.{EvalCx}
-
-fn ${name}_eval(cx: EvalCx, e: ExprId) -> ExprId {
-    e
-}
-"""
-}
-
 fn lower_template(name: string) -> string {
-    """//! The lowering rule: TODO.
+    """//! The lowering rule — the ONE meaning: TODO.
 use core.{ExprId, Reg}
 use features.{LowerCx}
 

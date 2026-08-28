@@ -3,19 +3,11 @@
 //! check.av for the typing laws, eval.av for the actual loops,
 //! lower.av for the brackets.
 use core.{NodeStore, StmtId, ExprId, Reg}
-use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtEvalCx, StmtLowerCx, nothing}
+use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing}
 
 export type WhileSemantics = { }
 
 impl StmtSemantics for WhileSemantics {
-    fn binds(self, store: NodeStore, s: StmtId) -> string? {
-        null
-    }
-
-    fn value_of(self, store: NodeStore, s: StmtId) -> ExprId? {
-        null
-    }
-
     fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
         match cx.store.stmt(s) {
             .While(cond, stmts) -> {
@@ -28,16 +20,6 @@ impl StmtSemantics for WhileSemantics {
 
     fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
         check_while(cx, s)
-    }
-
-    fn eval_stmt(self, cx: StmtEvalCx, s: StmtId) -> ExprId? {
-        match cx.store.stmt(s) {
-            .While(cond, stmts) -> {
-                run_while(cx, cond, stmts)
-                null
-            }
-            _ -> null,
-        }
     }
 
     fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
@@ -54,20 +36,6 @@ impl StmtSemantics for WhileSemantics {
 export type ForSemantics = { }
 
 impl StmtSemantics for ForSemantics {
-    fn binds(self, store: NodeStore, s: StmtId) -> string? {
-        match store.stmt(s) {
-            .For(name, _, _, _, _, _) -> name,
-            _ -> null,
-        }
-    }
-
-    fn value_of(self, store: NodeStore, s: StmtId) -> ExprId? {
-        match store.stmt(s) {
-            .For(_, from, _, _, _, _) -> from,
-            _ -> null,
-        }
-    }
-
     /// The bounds resolve OUTSIDE the binding (a range never sees
     /// its own counter); cond and step resolve inside it.
     fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
@@ -83,16 +51,6 @@ impl StmtSemantics for ForSemantics {
 
     fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
         check_for(cx, s)
-    }
-
-    fn eval_stmt(self, cx: StmtEvalCx, s: StmtId) -> ExprId? {
-        match cx.store.stmt(s) {
-            .For(_, from, _, cond, step, stmts) -> {
-                run_for(cx, s, from, cond, step, stmts)
-                null
-            }
-            _ -> null,
-        }
     }
 
     fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {

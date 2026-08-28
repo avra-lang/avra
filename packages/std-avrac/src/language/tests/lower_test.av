@@ -2,8 +2,8 @@
 // its definition's register), scopes are structure, and the memory
 // pass releases a scope's managed values at its exit — Application
 // strategy, reverse binding order.
-use @std.avrac.core.{Ins}
-use @std.avrac.language.{analyze_source, Lowered}
+use @std.avrac.core.{Ins, RtSig, distinct}
+use @std.avrac.language.{analyze_source, Lowered, rt_sigs, rt_sig_of, rt_owns}
 
 fn ir_of(source: string) -> Lowered {
     analyze_source(source).lowered()
@@ -15,13 +15,13 @@ fn count_releases(l: Lowered) -> int {
 
 spec "language/lower" {
     given "arithmetic" {
-        then "one scope, constants, one Bin, a print, exit 0" {
+        then "one scope, constants, one Bin, the answer's puts, exit 0" {
             let l = ir_of("1 + 2")
             l.diagnostics.is_empty() &&
                 l.entry.ins[0] is .ScopeEnter && l.entry.ins.last()! is .Ret &&
                 l.entry.ins.filter((i: Ins) -> i is .Bin).length == 1 &&
                 l.entry.ins.filter((i: Ins) -> i is .ConstInt).length == 2 &&
-                l.entry.ins.filter((i: Ins) -> i is .Print).length == 1
+                l.entry.ins.filter((i: Ins) -> i is .CallRtVoid).length == 1
         }
         then "an ident adds NO instruction — SSA by construction" {
             let direct = ir_of("1 + 2")
@@ -38,7 +38,21 @@ spec "language/lower" {
             count_releases(ir_of("let n = 1 + 2\nn < 4")) == 0
         }
         then "string == lowers through the runtime" {
-            ir_of("\"a\" == \"b\"").entry.ins.filter((i: Ins) -> i is .CallRt).length == 1
+            ir_of("let t = \"a\" == \"b\"\n\"done\"").entry.ins.filter((i: Ins) -> i is .CallRt).length == 1
+        }
+    }
+    given "the runtime registry" {
+        then "a known callee answers its contract; an unknown answers null" {
+            let known: RtSig? = rt_sig_of("avra_puts")
+            let unknown: RtSig? = rt_sig_of("nonsense")
+            known != null && unknown == null
+        }
+        then "ownership is provenance: fresh text owns, static text does not" {
+            rt_owns("avra_int_text") && !rt_owns("avra_bool_text") && !rt_owns("nonsense")
+        }
+        then "every row names a distinct contract" {
+            let names = [s.name for s in rt_sigs()]
+            distinct(names).length == names.length
         }
     }
 }

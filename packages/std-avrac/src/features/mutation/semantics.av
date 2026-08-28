@@ -3,25 +3,11 @@
 //! in a cell; an assignment writes its target's cell. The rule
 //! bodies live beside this file, by concern.
 use core.{NodeStore, StmtId, ExprId, Reg}
-use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtEvalCx, StmtLowerCx}
+use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtLowerCx}
 
 export type MutLetSemantics = { }
 
 impl StmtSemantics for MutLetSemantics {
-    fn binds(self, store: NodeStore, s: StmtId) -> string? {
-        match store.stmt(s) {
-            .MutLet(name, _) -> name,
-            _ -> null,
-        }
-    }
-
-    fn value_of(self, store: NodeStore, s: StmtId) -> ExprId? {
-        match store.stmt(s) {
-            .MutLet(_, v) -> v,
-            _ -> null,
-        }
-    }
-
     fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
         cx.walk_value(s)
         cx.bind_checked(s)
@@ -29,10 +15,6 @@ impl StmtSemantics for MutLetSemantics {
 
     fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
         check_mut(cx, s)
-    }
-
-    fn eval_stmt(self, cx: StmtEvalCx, s: StmtId) -> ExprId? {
-        cx.eval_value(s)
     }
 
     fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
@@ -45,17 +27,6 @@ impl StmtSemantics for MutLetSemantics {
 export type AssignSemantics = { }
 
 impl StmtSemantics for AssignSemantics {
-    fn binds(self, store: NodeStore, s: StmtId) -> string? {
-        null
-    }
-
-    fn value_of(self, store: NodeStore, s: StmtId) -> ExprId? {
-        match store.stmt(s) {
-            .Assign(_, v) -> v,
-            _ -> null,
-        }
-    }
-
     fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
         cx.walk_value(s)
         resolve_assign(cx, s)
@@ -63,13 +34,6 @@ impl StmtSemantics for AssignSemantics {
 
     fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
         check_assign(cx, s)
-    }
-
-    fn eval_stmt(self, cx: StmtEvalCx, s: StmtId) -> ExprId? {
-        let v: ExprId? = cx.store.stmt_value(s)
-        if v == null { return null }
-        run_assign(cx, s, cx.eval(v!))
-        null
     }
 
     fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {

@@ -12,6 +12,7 @@ use diagnostics.{Diag, DiagCode, SourceFile, new_source_file, render}
 /// only place that knows their order.
 export type Analysis = {
     store: NodeStore,
+    dispatch: Dispatch,
     stmts: List<StmtId>,
     source: SourceFile,
     resolution: Resolution,
@@ -32,11 +33,9 @@ impl Analysis {
     fn expr(self, e: ExprId) -> Expr { self.store.expr(e) }
     fn stmt(self, s: StmtId) -> Stmt { self.store.stmt(s) }
 
-    /// The definition an expression names, when it does.
-    fn target(self, e: ExprId) -> StmtId? { target_of(self.resolution, e) }
-
-    /// The param index an ident binds to, when it is one.
-    fn param_at(self, e: ExprId) -> int? { param_of(self.resolution, e) }
+    /// What an expression's name resolves to, when it does — the
+    /// ONE binding currency.
+    fn binding(self, e: ExprId) -> Binding? { binding_of(self.resolution, e) }
 
     /// The mut binding an assignment writes, when resolve accepted it.
     fn assign_target(self, s: StmtId) -> StmtId? { assign_target_of(self.resolution, s) }
@@ -49,15 +48,13 @@ impl Analysis {
         self.typing.types.name_of(self.type_at(e))
     }
 
-    /// The program's value node, or the report that made it
-    /// unrunnable.
-    fn run(self) -> Result<ExprId, string> {
-        run_analysis(self)
-    }
-
-    /// A value node as `avra run` prints it — the owner's projection.
-    fn printed(self, v: ExprId) -> string {
-        print_value(self, v)
+    /// The program's printed answer, or the report/refusal that
+    /// stopped it — the ONE semantics, interpreted over the SAME
+    /// post-memory stream the backend compiles: every instruction,
+    /// Retain and Release included, shared to the last bracket.
+    fn run(self) -> Result<string, string> {
+        if !self.clean() { return Result.Err(self.report()) }
+        run_lowered(self.lowered())
     }
 
     /// The program as IR, memory strategy applied — what `avra
@@ -66,10 +63,10 @@ impl Analysis {
         memory(lower(self))
     }
 
-    /// The program's printed value, or null when it refused to run.
+    /// The program's printed answer, or null when it refused.
     fn ran(self) -> string? {
         match self.run() {
-            .Ok(v) -> self.printed(v),
+            .Ok(text) -> text,
             .Err(_) -> null,
         }
     }
@@ -82,7 +79,7 @@ impl Language {
         let r = resolve(p)
         let t = type_check(p, r)
         Analysis {
-            store: p.store, stmts: p.stmts, source: p.source,
+            store: p.store, dispatch: p.dispatch, stmts: p.stmts, source: p.source,
             resolution: r, typing: t, codes: self.codes,
             diagnostics: flatten([p.diagnostics, r.diagnostics, t.diagnostics]),
         }
