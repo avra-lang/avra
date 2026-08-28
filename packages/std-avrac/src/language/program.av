@@ -27,14 +27,34 @@ export type ParsedProgram = {
     stmts: List<StmtId>,
     source: SourceFile,
     keywords: List<string>,
+    dispatch: Dispatch,
     diagnostics: List<Diag>,
 }
 
-/// The semantics of each expression node — THE exhaustive map. A new
-/// variant breaks HERE at compile time, and the impl it names owes
-/// every pass, enforced by the trait. (Typed lets first: a dyn boxed
-/// in a match ARM mis-dispatches — subset note.)
-export fn semantics_of(e: Expr) -> dyn NodeSemantics {
+/// Every feature's boxed semantics, built ONCE per parse — the
+/// exhaustive maps below only SELECT. (Boxing happens under the
+/// typed lets in new_dispatch; per-node construction died with the
+/// dispatch-built-once decision.)
+export type Dispatch = {
+    spine: dyn NodeSemantics,
+    strs: dyn NodeSemantics,
+    bools: dyn NodeSemantics,
+    ifs: dyn NodeSemantics,
+    whens: dyn NodeSemantics,
+    blocks: dyn NodeSemantics,
+    calls: dyn NodeSemantics,
+    aggs: dyn NodeSemantics,
+    lets: dyn StmtSemantics,
+    exprs: dyn StmtSemantics,
+    decls: dyn StmtSemantics,
+    holes: dyn StmtSemantics,
+    mutlets: dyn StmtSemantics,
+    assigns: dyn StmtSemantics,
+    whiles: dyn StmtSemantics,
+    fors: dyn StmtSemantics,
+}
+
+fn new_dispatch() -> Dispatch {
     let spine: dyn NodeSemantics = SpineSemantics { }
     let strs: dyn NodeSemantics = StrSemantics { }
     let bools: dyn NodeSemantics = BoolSemantics { }
@@ -43,23 +63,6 @@ export fn semantics_of(e: Expr) -> dyn NodeSemantics {
     let blocks: dyn NodeSemantics = BlockSemantics { }
     let calls: dyn NodeSemantics = FnsSemantics { }
     let aggs: dyn NodeSemantics = ListSemantics { }
-    match e {
-        .IntLit(_) or .Ident(_) or .Binary(_, _, _) or .Not(_) or
-        .Index(_, _) or .Prop(_, _) or .Error -> spine,
-        .ListLit(_) -> aggs,
-        .StrLit(_) or .Interp(_, _) -> strs,
-        .BoolLit(_) -> bools,
-        .If(_, _, _) -> ifs,
-        .When(_, _, _) -> whens,
-        .Block(_, _) -> blocks,
-        .Call(_, _) -> calls,
-    }
-}
-
-/// The semantics of each STATEMENT kind — the stmt-spine's twin of
-/// semantics_of. A new statement kind breaks HERE at compile time,
-/// and the impl it names owes every pass, enforced by the trait.
-export fn stmt_semantics_of(s: Stmt) -> dyn StmtSemantics {
     let lets: dyn StmtSemantics = LetStmtSemantics { }
     let exprs: dyn StmtSemantics = ExprStmtSemantics { }
     let decls: dyn StmtSemantics = FnStmtSemantics { }
@@ -68,41 +71,87 @@ export fn stmt_semantics_of(s: Stmt) -> dyn StmtSemantics {
     let assigns: dyn StmtSemantics = AssignSemantics { }
     let whiles: dyn StmtSemantics = WhileSemantics { }
     let fors: dyn StmtSemantics = ForSemantics { }
+    Dispatch {
+        spine: spine, strs: strs, bools: bools, ifs: ifs, whens: whens,
+        blocks: blocks, calls: calls, aggs: aggs,
+        lets: lets, exprs: exprs, decls: decls, holes: holes,
+        mutlets: mutlets, assigns: assigns, whiles: whiles, fors: fors,
+    }
+}
+
+/// The semantics of each expression node — THE exhaustive map,
+/// selecting from the once-built Dispatch. A new variant breaks
+/// HERE at compile time, and the impl it names owes every pass,
+/// enforced by the trait.
+export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
+    match e {
+        .IntLit(_) or .Ident(_) or .Binary(_, _, _) or .Not(_) or
+        .Index(_, _) or .Prop(_, _) or .Error -> d.spine,
+        .ListLit(_) -> d.aggs,
+        .StrLit(_) or .Interp(_, _) -> d.strs,
+        .BoolLit(_) -> d.bools,
+        .If(_, _, _) -> d.ifs,
+        .When(_, _, _) -> d.whens,
+        .Block(_, _) -> d.blocks,
+        .Call(_, _) -> d.calls,
+    }
+}
+
+/// The semantics of each STATEMENT kind — the stmt-spine's twin of
+/// semantics_of. A new statement kind breaks HERE at compile time,
+/// and the impl it names owes every pass, enforced by the trait.
+export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
     match s {
-        .Let(_, _) -> lets,
-        .MutLet(_, _) -> mutlets,
-        .Assign(_, _) -> assigns,
-        .ExprStmt(_) -> exprs,
-        .FnDecl(_, _, _, _) -> decls,
-        .While(_, _) -> whiles,
-        .For(_, _, _, _, _, _) -> fors,
-        .Error -> holes,
+        .Let(_, _) -> d.lets,
+        .MutLet(_, _) -> d.mutlets,
+        .Assign(_, _) -> d.assigns,
+        .ExprStmt(_) -> d.exprs,
+        .FnDecl(_, _, _, _) -> d.decls,
+        .While(_, _) -> d.whiles,
+        .For(_, _, _, _, _, _) -> d.fors,
+        .Error -> d.holes,
     }
 }
 
 /// The store's language-level vocabulary: the walk and the
 /// stmt-spine questions every pass asks, grouped where they read as
 /// prose — `store.post_order(v)`, `store.stmt_value(s)`.
-impl NodeStore {
+impl ParsedProgram {
     /// Every node at and under `root`, children before owners — THE
     /// order every pass visits: facts a node reads exist before it
     /// speaks.
     fn post_order(self, root: ExprId) -> List<ExprId> {
-        let node = self.expr(root)
-        concat(flatten([self.post_order(k) for k in semantics_of(node).kids(node)]), [root])
+        let node = self.store.expr(root)
+        concat(flatten([self.post_order(k) for k in semantics_of(self.dispatch, node).kids(node)]), [root])
     }
+}
 
-    /// A statement's bound name, when it binds one — the owner's
-    /// answer, through the map.
+impl NodeStore {
+    /// A statement's bound name, when it binds one. A PROJECTION
+    /// registry beside the semantics map: one arm per binding
+    /// feature, zero dispatch cost — projections are DATA about
+    /// variants; the trait carries behavior.
     fn let_name(self, s: StmtId) -> string? {
-        stmt_semantics_of(self.stmt(s)).binds(self, s)
+        match self.stmt(s) {
+            .Let(name, _) -> name,
+            .MutLet(name, _) -> name,
+            .For(name, _, _, _, _, _) -> name,
+            .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _)
+                or .While(_, _) or .Error -> null,
+        }
     }
 
-    /// A statement's value expression at its OWN position — the
-    /// owner's answer, through the map. A body that runs later,
-    /// under a frame, is NOT a value.
+    /// A statement's value expression at its OWN position. A body
+    /// that runs later, under a frame, is NOT a value.
     fn stmt_value(self, s: StmtId) -> ExprId? {
-        stmt_semantics_of(self.stmt(s)).value_of(self, s)
+        match self.stmt(s) {
+            .Let(_, v) -> v,
+            .MutLet(_, v) -> v,
+            .Assign(_, v) -> v,
+            .ExprStmt(v) -> v,
+            .FnDecl(_, _, _, _) or .While(_, _)
+                or .For(_, _, _, _, _, _) or .Error -> null,
+        }
     }
 
     /// A fn declaration's pieces, when the statement is one — ONE
@@ -123,7 +172,7 @@ export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
     if lang.grammar == null {
         return ParsedProgram {
             store: new_node_store(), stmts: [], source: src,
-            keywords: [], diagnostics: lang.diagnostics,
+            keywords: [], dispatch: new_dispatch(), diagnostics: lang.diagnostics,
         }
     }
     let lexed = lex_source(src.text)
@@ -136,6 +185,7 @@ export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
         stmts: program_stmts(store, o),
         source: src,
         keywords: lang.keywords,
+        dispatch: new_dispatch(),
         diagnostics: project_all(engine, src.file, lang.codes),
     }
 }
