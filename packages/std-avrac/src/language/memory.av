@@ -22,12 +22,20 @@ export fn memory(l: Lowered) -> Lowered {
     l with { fns: fns, entry: entry }
 }
 
+/// THE strategy's managed law: which shapes the RC strategy
+/// manages TODAY — Str alone; aggregates stay unregistered until
+/// ownership analysis. Distinct from core's ptr_shape (what RIDES
+/// pointers): widening this fn is the ownership milestone.
+fn is_managed(types: TypeRegistry, ty: TypeId) -> bool {
+    types.shape_of(ty) is .Str
+}
+
 /// A fn's managed params — they arrive owned, so its first scope
 /// owns them from birth.
 fn managed_params(types: TypeRegistry, b: Body) -> List<Reg> {
     mut out: List<Reg> = []
     for (j, pt) in b.params.enumerate() {
-        if types.shape_of(pt) is .Str { out.push(Reg { index: j }) }
+        if is_managed(types, pt) { out.push(Reg { index: j }) }
     }
     out
 }
@@ -54,7 +62,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 let scope = open_scopes.pop()
                 for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
                 if gives != null && !open_scopes.is_empty() {
-                    if types.shape_of(reg_types[gives!.index]) is .Str {
+                    if is_managed(types, reg_types[gives!.index]) {
                         mut top = open_scopes[open_scopes.length - 1].managed
                         top.push(gives!)
                     }
@@ -84,7 +92,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             // callee will release.
             .Call(_, _, args) -> {
                 for ar in args {
-                    if types.shape_of(reg_types[ar.index]) is .Str { out.push(Ins.Retain(ar)) }
+                    if is_managed(types, reg_types[ar.index]) { out.push(Ins.Retain(ar)) }
                 }
                 manage(types, reg_types, open_scopes, i)
                 out.push(i)
@@ -143,7 +151,7 @@ fn manage(types: TypeRegistry, reg_types: List<TypeId>, open_scopes: List<Scope>
 fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
     let dst: Reg? = dst_of(i)
     if dst == null { return null }
-    if !(types.shape_of(reg_types[dst!.index]) is .Str) { return null }
+    if !is_managed(types, reg_types[dst!.index]) { return null }
     // Provenance refines the type: a runtime call's result is
     // managed only when the REGISTRY says it owns one — a static
     // answer (bool_text) never earns a release.

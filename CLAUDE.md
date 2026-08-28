@@ -145,6 +145,13 @@ registry is the idiom engine's spec, written by dogfooding.
   HIT, so it belongs only on branches anchored by a keyword no other
   branch can start with. A NAME-headed branch (assignment) must stay
   non-committing — recovery there swallows every expression line.
+- Grammar authoring: a rule's GRAM TEXT and its BUILDERS are one
+  unit — a builder named in feature A's grammar registers in
+  feature A, never in a feature that might be absent (a partial
+  assembly refuses on the dangling name; the let_stmt tests parse
+  with three features only). The NODE may still be another
+  feature's to give meaning: semantics_of decides ownership of
+  MEANING, the gram decides ownership of PARSE.
 - Grammar authoring: expr_stmt is the stmt rule's FLOOR — its
   recovering expression-line branch merges LAST in language_features,
   and every statement feature lands BEFORE it (a keyword line like
@@ -376,6 +383,20 @@ against these before writing; probe in scratch when unsure.
   `.D(s) -> maybe_reg(s)` under a `Reg?` return) — no typed-let
   pin needed. Pin ONLY where a documented trap requires it; when
   tempted to pin defensively, probe first.
+- THE CLOSURE-FIELD-CALL DISCIPLINE (one rule, three traps): a
+  fn-typed struct field's call result is consumed ONLY through an
+  ANNOTATED let. (1) A match directly on it SKIPS exhaustiveness
+  checking and ABORTS at runtime on an unlisted variant
+  ("unmatched tag N — probable use-after-free"); the annotated
+  bind restores the check (an untyped let does NOT). (2) `?`
+  directly on it can corrupt. (3) A LAMBDA (capturing or not)
+  returning a generic enum with a SCALAR payload through a fn
+  field corrupts its answers at the call site (same unmatched-tag
+  symptom) — register NAMED fns for Result-returning fields;
+  pointer payloads (Captured) survive, pinned by the suite.
+  Method calls, free-fn calls, and index subjects are all checked
+  and `?` correctly (probed) — `?` works on method results, in
+  argument position, and after the annotated bind.
 - A METHOD call on a closure-captured local inside a loop that also
   contains an early `return` ICEs at codegen ("Referring to an
   instruction in another function", #1377) — any struct, any loop.

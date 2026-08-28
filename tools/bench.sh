@@ -10,4 +10,5 @@ make -s test > /dev/null
 t1=$(ms)
 make -s corpus > /dev/null
 t2=$(ms)
-echo "bench: suite $((t1 - t0))ms | corpus (16 programs, build+run native) $((t2 - t1))ms"
+n=$(ls corpus/*.av | wc -l | tr -d ' ')
+echo "bench: suite $((t1 - t0))ms | corpus (${n} programs, build+run native) $((t2 - t1))ms"

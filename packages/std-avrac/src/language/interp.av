@@ -52,15 +52,17 @@ fn run_body(m: Machine, b: Body, args: List<Val>) -> Val? {
     mut answer: Val? = null
     mut pc = 0
     while pc < b.ins.length && m.failures.is_empty() {
-        let i = b.ins[pc]
-        if i is .RetVal || i is .Ret {
-            answer = match i {
-                .RetVal(r) -> at(m, r),
-                _ -> null,
+        match b.ins[pc] {
+            .RetVal(r) -> {
+                answer = at(m, r)
+                pc = b.ins.length
             }
-            pc = b.ins.length
-        } else {
-            pc = step(m, b, pc)
+            .Ret(_) -> {
+                pc = b.ins.length
+            }
+            _ -> {
+                pc = step(m, b, pc)
+            }
         }
     }
     let _ = frames.pop()
@@ -214,9 +216,7 @@ fn ahead(b: Body, from: int, opens: fn(Ins) -> bool, closes: fn(Ins) -> bool, ta
         let i = b.ins[j]
         if depth == 0 && target(i) { return j }
         if opens(i) { depth = depth + 1 }
-        else {
-            if closes(i) { depth = depth - 1 }
-        }
+        if closes(i) { depth = depth - 1 }
         j = j + 1
     }
     b.ins.length
@@ -247,25 +247,17 @@ fn past_loop(b: Body, from: int) -> int {
     ahead(b, from, (i: Ins) -> i is .LoopStart, (i: Ins) -> i is .LoopEnd, (i: Ins) -> i is .LoopEnd) + 1
 }
 
-/// From a LoopEnd: its matching LoopStart — the back edge.
+/// From a LoopEnd: its matching LoopStart — the back edge. The
+/// one backward scan, shaped exactly as `ahead`: target first at
+/// depth 0, then the open/close bookkeeping.
 fn loop_header(b: Body, from: int) -> int {
     mut depth = 0
     mut j = from - 1
     while j >= 0 {
-        let found: bool = match b.ins[j] {
-            .LoopEnd -> {
-                depth = depth + 1
-                false
-            }
-            .LoopStart -> {
-                if depth == 0 { true } else {
-                    depth = depth - 1
-                    false
-                }
-            }
-            _ -> false,
-        }
-        if found { return j }
+        let i = b.ins[j]
+        if depth == 0 && i is .LoopStart { return j }
+        if i is .LoopEnd { depth = depth + 1 }
+        if i is .LoopStart { depth = depth - 1 }
         j = j - 1
     }
     0

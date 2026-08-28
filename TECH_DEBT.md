@@ -130,6 +130,16 @@ death condition. The small ergonomic gaps (no `\$` escape, in-place
 params, no map indexing, no `xs[i] =`) are all noted there and all
 die wholesale at self-host.
 
+- [ ] **[High]** Match exhaustiveness is SILENTLY UNCHECKED when the
+      subject is a closure-field call (`match cx.verb(x) {...}`) —
+      compiles clean, runtime-aborts on an unlisted variant
+      ("unmatched tag", styled as use-after-free). Found when
+      str_lit's hole_reg survived M14 missing its .Struct arm; the
+      capability-context pattern makes this OUR most exposed shape.
+      Worked around by the annotated-let bind (untyped lets do NOT
+      restore the check — probed). The doctrine's "a new variant
+      breaks every site" holds only under that discipline until the
+      checker is fixed upstream.
 - [ ] **[High]** `f(x)?.field` (Result-`?` then a projection)
       refuses to parse in plain code but SILENTLY CORRUPTS the
       payload inside a comprehension element (garbage strings, null

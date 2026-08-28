@@ -87,9 +87,9 @@ text-as-projection after self-host, the service store at Era V.
     6.  [x] strings complete — `${}` interpolation and `.length`
         (the remaining method words ride method-call-with-args,
         recorded at the method core)
-    7.  structs — declarations, literals, `with`, impl methods
-        (and the spec's `shape`/width subtyping belongs to this
-        rung — the cx family in contract.av is already waiting)
+    7.  [x] structs — declarations, literals, `with` (impl methods
+        ride the method core, rung 13; the spec's `shape`/width
+        subtyping keeps its recorded arc)
     8.  ▲ enums & match — payloads, patterns, exhaustiveness
     9.  nullability — `T?`, `null` arms, `! ?? ?.` — and the
         spec's bind-fresh trio (Axis 10): `let v? = e else { }`,
@@ -771,6 +771,67 @@ manifest), collapsing fn_defs and type_defs into the same
 registration path as builders and diags. The declare-phase
 ordering (struct sigs before fn sigs) dissolves under Era IV's
 query model — sigs QUERY field tables, no phase to sequence.
+
+DEEP ROUND TWO (same day, from review — "can't we use `?`"): the
+user's instinct was right and the probe trail it opened found a
+THIRD closure-field trap. (1) `?` works on method results, in
+argument position, and after an annotated bind — the Err
+passthrough matches (run, emit, compose) were trap-fear, now `?`.
+(2) But `?` DIRECTLY on a closure-field call corrupts, and (3) a
+LAMBDA returning a scalar-payload generic enum through a fn field
+corrupts its answers wholesale (named fns are safe; the engine's
+pointer-payload build lambda survives, suite-pinned). All three
+traps are now ONE DISCIPLINE in CLAUDE.md: a closure-field call's
+result is consumed only through an annotated let. (4) `avra
+check` disagreed with run/build: it reported analysis only, so a
+no-projection program checked CLEAN yet refused to run — check
+now renders lowering's refusals too, test-pinned. Also read whole
+this round: first.av (which PROVES the struct-literal-before-NAME
+ordering safe: two required items → non-committing → overlap
+harmless), validate, coherence, builder.av, stmt_spine, bool_lit
+(stale printed-era doc fixed), expr_stmt, cli run/check/main,
+core span/arena/results/chars, diagnostics/mod, grammar/ast.
+
+THE DEEP ROUND after the `with` tail (2026-08-28) — the finds:
+(1) THE UNCHECKED-MATCH TRAP: bs2 skips exhaustiveness when a
+match's subject is a CLOSURE-FIELD call — compiles clean, aborts at
+runtime on an unlisted variant. Found because str_lit's hole_reg
+survived M14 missing its .Struct arm; the capability-cx pattern
+makes cx-verb matches our most exposed shape. Cure (probed):
+annotated-let bind restores the check; untyped lets do not;
+method/free-fn/index subjects are checked fine. One landmine
+existed tree-wide (hole_reg — unreachable only because the interp
+hole law is an allow-list); fixed, trap recorded in CLAUDE.md and
+the upstream ledger. (2) NO-PROJECTION ANSWERS diverged the
+engines: a struct-valued program answer printed nothing natively
+but refused as "empty" in eval — now a LOWERING refusal (F0901,
+with the remedy) through the new ONE checked seam,
+Analysis.lowered_checked(), which run/emit/build all take (build
+previously IGNORED lowering diagnostics entirely). (3) The managed
+laws named: core's ptr_shape (heap-shaped, exhaustive on purpose —
+enums must decide) closes the MUT-STRUCT GAP (mut p = P{..} slipped
+the scalar fence); memory's is_managed (the RC strategy's Str-only
+law) is now one fn with four callers and a comment separating the
+two laws. Beauty: interp's run loop is one match; both bracket
+scans share the ahead shape; loop_header's flag-match died.
+Read WHOLE this round: interp, llvm, memory, executor, lexer,
+grammar/builders, builder.av, ir, ir_text, render, source,
+core/lists, core/text, and every feature check/lower touched since
+M12; the rest swept by battery.
+
+THE `with` TAIL (landed same arc): `subject with { field: v, ... }`
+— its own precedence level (`withed`, between unary and postfix),
+copy-or-carry pushes per declaration slot, the subject untouched;
+zero new instructions again. The written-field law SHARED with the
+literal (`written_checks`); `with` on a non-struct refuses (F2011).
+Chained copies parenthesize today — a bare chain is a RECORDED
+TRIGGER (the star flattens group captures; chains need per-group
+boundaries from the executor). THE GRAM-BUILDER UNITY LAW,
+discovered by the partial-assembly tests crashing: a builder named
+in a feature's gram registers in THAT feature — the ladder's
+`fold_with` is spine's; the With node's MEANING stays structs' via
+semantics_of (parse ownership and meaning ownership are separate
+axes, and the map is where meaning is assigned).
 
 LANDED: 302/302; seventeen-for-seventeen corpus, structs.av
 building literals in ANY field order (slots reorder to the

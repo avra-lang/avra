@@ -2,7 +2,7 @@
 //! (part or stringified hole) pushes into an array, and ONE
 //! str_join answers — zero new instructions, the escape hatch
 //! carrying the feature again.
-use core.{ExprId, Reg, Ins}
+use core.{ExprId, Reg, Ins, Type}
 use features.{LowerCx}
 
 fn interp_reg(cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) -> Reg {
@@ -27,15 +27,18 @@ fn part_reg(cx: LowerCx, e: ExprId, text: string) -> Reg {
     r
 }
 
-/// A hole's value as a string register, by its shape. List and
-/// Error never pass typing; their arms stand on the raw register.
+/// A hole's value as a string register, by its shape. List, Struct,
+/// and Error never pass typing; their arms stand on the raw
+/// register. The shape binds under a TYPED let — a match on a
+/// cx-verb call skips the exhaustiveness check (subset note).
 fn hole_reg(cx: LowerCx, e: ExprId, h: ExprId) -> Reg {
     let v = cx.reg_of(h)
-    match cx.shape_at(h) {
+    let sh: Type = cx.shape_at(h)
+    match sh {
         .Str -> v,
         .Int -> rt1(cx, e, "avra_int_text", v),
         .Bool -> rt1(cx, e, "avra_bool_text", v),
-        .List(_) or .Error -> v,
+        .List(_) or .Struct(_, _) or .Error -> v,
     }
 }
 

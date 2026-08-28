@@ -7,9 +7,10 @@
 //! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, concat}
-use diagnostics.{Diag, error_at}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, concat, some_list}
+use diagnostics.{Diag, error_at, pointed, loc_at}
 use features.{LowerCx, StmtLowerCx, FnSig, StructSig}
+use @std.errors.{Loc}
 
 /// One lowered body: instructions in order and each register's type
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
@@ -100,7 +101,7 @@ fn lower_main(a: Analysis) -> LoweredBody {
     let lo = new_lower(a)
     lo.give(Ins.ScopeEnter(Level.Application))
     let last: Reg? = lower_stmts(lo, a.stmts)
-    if last != null { print_lowering(lo, last!) }
+    let refusal: Diag? = if last == null { null } else { print_lowering(lo, last!) }
     lo.give(Ins.ScopeExit(null))
     lo.give(Ins.Ret(0))
     LoweredBody {
@@ -109,7 +110,7 @@ fn lower_main(a: Analysis) -> LoweredBody {
             gives: null, ins: lo.ins, reg_types: lo.reg_types,
         },
         failures: lo.failures,
-        refusals: [],
+        refusals: some_list(refusal),
     }
 }
 
@@ -127,7 +128,8 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.a.type_at(k)),
         mint: (k: ExprId) -> lo.mint(k),
         mint_int: () -> lo.mint_ty(lo.a.typing.types.intern(Type.Int)),
-        field_slot: (k: ExprId, fname: string) -> lo.field_slot(k, fname),
+        mint_ty: (ty: TypeId) -> lo.mint_ty(ty),
+        fields_at: (k: ExprId) -> lo.fields_at(k),
         emit: (i: Ins) -> lo.give(i),
         lower_block: (stmts: List<StmtId>, value: ExprId) -> block_reg(lo, stmts, value),
         fail: (msg: string) -> lo.record(msg),
@@ -172,19 +174,36 @@ fn lower_stmt_list(lo: Lower, stmts: List<StmtId>) {
 
 /// The program's answer, shown — printing IS lowering: the text
 /// projection for the answer's shape, then one puts. No Print
-/// instruction exists; both engines just run these calls.
-fn print_lowering(lo: Lower, last: Reg) {
-    let text: Reg? = match lo.a.typing.types.shape_of(lo.reg_types[last.index]) {
+/// instruction exists; both engines just run these calls. An
+/// answer with NO projection refuses HERE, before either engine —
+/// so eval and native cannot diverge on it.
+fn print_lowering(lo: Lower, last: Reg) -> Diag? {
+    let sh = lo.a.typing.types.shape_of(lo.reg_types[last.index])
+    let unprintable: string? = match sh {
+        .Struct(_, n) -> n,
+        _ -> null,
+    }
+    if unprintable != null { return no_projection(lo, unprintable!) }
+    let text: Reg? = match sh {
         .Str -> last,
         .Int -> text_call(lo, "avra_int_text", last),
         .Bool -> text_call(lo, "avra_bool_text", last),
         .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
-        // A struct answer has no text projection yet — it arrives
-        // with derived show; project a field instead.
         .Struct(_, _) -> null,
         .Error -> null,
     }
     if text != null { lo.give(Ins.CallRtVoid("avra_puts", [text!])) }
+    null
+}
+
+/// The refusal: an answer without a text projection names its type
+/// and the remedy.
+fn no_projection(lo: Lower, tname: string) -> Diag {
+    pointed(
+        error_at("lower.no_projection", lo.answer_loc(),
+            "the program's answer is a `${tname}`, which has no text projection yet"),
+        "this is the answer")
+        with { help: "project a field instead — `p.x` prints" }
 }
 
 fn text_call(lo: Lower, callee: string, v: Reg) -> Reg {
@@ -263,20 +282,27 @@ impl Lower {
         slot
     }
 
-    /// A field's runtime slot on a struct-typed expression — the
-    /// declaration index IS the array index.
-    fn field_slot(self, e: ExprId, fname: string) -> int? {
-        let sig: StructSig? = match self.a.typing.types.shape_of(self.a.type_at(e)) {
+    /// A struct-typed expression's field table; null for every
+    /// other shape. The declaration index IS the array index.
+    fn fields_at(self, e: ExprId) -> StructSig? {
+        match self.a.typing.types.shape_of(self.a.type_at(e)) {
             .Struct(decl, _) -> self.a.typing.struct_sigs[decl.index],
             _ -> null,
         }
-        if sig == null { return null }
-        sig!.slot_of(fname)
     }
 
     fn record(self, msg: string) {
         mut fs = self.failures
         fs.push(msg)
+    }
+
+    /// Where the program's answer lives: the last value-bearing
+    /// statement's location.
+    fn answer_loc(self) -> Loc? {
+        let valued = self.a.stmts.filter((s: StmtId) -> self.a.store.stmt_value(s) != null)
+        let speaker: StmtId? = valued.last()
+        if speaker == null { return null }
+        loc_at(self.a.source.file, self.a.store.stmt_span(speaker!))
     }
 
     /// A statement's slot entry — the driver's value write; a bound

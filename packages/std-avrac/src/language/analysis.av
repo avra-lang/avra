@@ -27,7 +27,13 @@ impl Analysis {
 
     /// Every diagnostic rendered for the terminal; "" means clean.
     fn report(self) -> string {
-        joined([render(d, self.codes, self.source) for d in self.diagnostics], "\n\n")
+        self.rendered(self.diagnostics)
+    }
+
+    /// Any diagnostics rendered for the terminal — analysis's or a
+    /// later stage's, one look everywhere.
+    fn rendered(self, ds: List<Diag>) -> string {
+        joined([render(d, self.codes, self.source) for d in ds], "\n\n")
     }
 
     fn expr(self, e: ExprId) -> Expr { self.store.expr(e) }
@@ -53,14 +59,24 @@ impl Analysis {
     /// post-memory stream the backend compiles: every instruction,
     /// Retain and Release included, shared to the last bracket.
     fn run(self) -> Result<string, string> {
-        if !self.clean() { return Result.Err(self.report()) }
-        run_lowered(self.lowered())
+        run_lowered(self.lowered_checked()?)
     }
 
     /// The program as IR, memory strategy applied — what `avra
     /// build` compiles.
     fn lowered(self) -> Lowered {
         memory(lower(self))
+    }
+
+    /// The lowered program, CHECKED — analysis diagnostics first,
+    /// then lowering's own refusals, rendered the same way. THE
+    /// seam every engine takes: run, emit, and build refuse
+    /// identically or proceed identically.
+    fn lowered_checked(self) -> Result<Lowered, string> {
+        if !self.clean() { return Result.Err(self.report()) }
+        let lo = self.lowered()
+        if !lo.diagnostics.is_empty() { return Result.Err(self.rendered(lo.diagnostics)) }
+        Result.Ok(lo)
     }
 
     /// The program's printed answer, or null when it refused.
@@ -86,7 +102,12 @@ impl Language {
     }
 
     /// Everything wrong with one source, rendered; "" means clean.
+    /// EVERYTHING: analysis diagnostics first, and when those are
+    /// clean, lowering's refusals too — check agrees with run and
+    /// build about what is wrong.
     fn check(self, src: SourceFile) -> string {
-        self.analyze(src).report()
+        let a = self.analyze(src)
+        if !a.clean() { return a.report() }
+        a.rendered(a.lowered().diagnostics)
     }
 }

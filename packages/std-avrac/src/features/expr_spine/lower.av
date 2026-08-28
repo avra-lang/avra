@@ -5,7 +5,7 @@
 //! desugar onto the if-region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
 use core.{Expr, ExprId, BinOp, UnOp, Reg, Ins}
-use features.{LowerCx, hole_defect}
+use features.{LowerCx, StructSig, hole_defect}
 
 fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
     match cx.store.expr(e) {
@@ -34,8 +34,12 @@ fn index_reg(cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
 /// A property read: a struct field is a slot read at its
 /// declaration index; only `length` otherwise survives typing.
 fn prop_reg(cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
-    let slot: int? = cx.field_slot(s, name)
-    if slot == null { return length_reg(cx, e, s) }
+    let sig: StructSig? = cx.fields_at(s)
+    if sig == null { return length_reg(cx, e, s) }
+    let slot: int? = sig!.slot_of(name)
+    if slot == null {
+        return lower_failed(cx, e, "defect: a fieldless property on a struct survived typing")
+    }
     let subject = cx.reg_of(s)
     let idx = cx.mint_int()
     cx.emit(Ins.ConstInt(idx, slot!))
