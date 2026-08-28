@@ -11,25 +11,30 @@ use diagnostics.{Diag, error_at, loc_at, pointed}
 use features.{ResolveCx, StmtResolveCx}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
-/// The pass's facts: dense tables indexed by ExprId — O(1) reads
-/// for every later pass. `targets` is the definition statement a
-/// use names; `params` is the param index an ident binds to inside
-/// its enclosing fn body.
+/// What a name USE resolves to — the ONE binding currency every
+/// consumer dispatches on. A new binding kind (a pattern bind, a
+/// captured upvalue) is a new VARIANT here, and every consumer's
+/// match breaks loudly.
+export enum Binding {
+    /// The enclosing fn's Nth parameter — params ARE registers.
+    Param(index: int)
+    /// A binding statement (`let`, `mut`, `fn`) — the definition
+    /// site is the identity.
+    Def(stmt: StmtId)
+}
+
+/// The pass's facts: ONE dense binding table indexed by ExprId
+/// (O(1) reads for every later pass), plus the assignment fact
+/// keyed by the assigning STATEMENT.
 export type Resolution = {
-    targets: List<StmtId?>,
-    params: List<int?>,
+    bindings: List<Binding?>,
     assign_targets: List<StmtId?>,
     diagnostics: List<Diag>,
 }
 
-/// The definition a resolved expression names, when it does.
-export fn target_of(r: Resolution, e: ExprId) -> StmtId? {
-    r.targets[e.index]
-}
-
-/// The param index an ident binds to, when it is one.
-export fn param_of(r: Resolution, e: ExprId) -> int? {
-    r.params[e.index]
+/// The binding a resolved expression names, when it does.
+export fn binding_of(r: Resolution, e: ExprId) -> Binding? {
+    r.bindings[e.index]
 }
 
 /// The mut binding an assignment writes, when resolve accepted it.
@@ -58,8 +63,7 @@ type Resolver = {
     overlays: List<Map<string, StmtId>>,
     fn_defs: Map<string, StmtId>,
     fn_names: List<string>,
-    targets: List<StmtId?>,
-    params: List<int?>,
+    bindings: List<Binding?>,
     assign_targets: List<StmtId?>,
     walked: List<bool>,
     scoped: List<bool>,
@@ -72,8 +76,7 @@ export fn resolve(p: ParsedProgram) -> Resolution {
         p: p, all_defs: defs,
         def_names: [d.name for d in defs],
         visible: {}, overlays: [], fn_defs: {}, fn_names: [],
-        targets: filled<StmtId?>(p.store.exprs.count(), null),
-        params: filled<int?>(p.store.exprs.count(), null),
+        bindings: filled<Binding?>(p.store.exprs.count(), null),
         assign_targets: filled<StmtId?>(p.store.stmts.count(), null),
         walked: filled(p.store.exprs.count(), false),
         scoped: filled(p.store.stmts.count(), false),
@@ -82,7 +85,7 @@ export fn resolve(p: ParsedProgram) -> Resolution {
     r.declare_fns()
     resolve_stmts(r, [], false, p.stmts)
     Resolution {
-        targets: r.targets, params: r.params,
+        bindings: r.bindings,
         assign_targets: r.assign_targets, diagnostics: r.diagnostics,
     }
 }
@@ -106,16 +109,22 @@ fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: 
         loc_of: (s: StmtId) -> r.stmt_loc(s),
         emit: (d: Diag) -> r.speak(d),
     }
-    for s in stmts { stmt_semantics_of(r.p.store.stmt(s)).resolve_stmt(cx, s) }
+    for s in stmts { stmt_semantics_of(r.p.dispatch, r.p.store.stmt(s)).resolve_stmt(cx, s) }
+}
+
+/// A fresh overlay scope around `run`: binds made inside are
+/// visible onward and die at exit — the ONE scope ritual.
+fn under_overlay(r: Resolver, run: fn()) {
+    mut ov = r.overlays
+    let fresh: Map<string, StmtId> = {}
+    ov.push(fresh)
+    run()
+    let _ = ov.pop()
 }
 
 /// A statement list under its own overlay scope — a loop body.
 fn scoped_stmts(r: Resolver, param_names: List<string>, stmts: List<StmtId>) {
-    mut ov = r.overlays
-    let fresh: Map<string, StmtId> = {}
-    ov.push(fresh)
-    resolve_stmts(r, param_names, true, stmts)
-    let _ = ov.pop()
+    under_overlay(r, () -> resolve_stmts(r, param_names, true, stmts))
 }
 
 /// A fresh scope where `s`'s own binding holds: the exprs walk and
@@ -125,24 +134,27 @@ fn scoped_stmts(r: Resolver, param_names: List<string>, stmts: List<StmtId>) {
 fn bound_scope(r: Resolver, param_names: List<string>, s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
     mut sc = r.scoped
     sc.set(s.index, true)
-    mut ov = r.overlays
-    let fresh: Map<string, StmtId> = {}
-    ov.push(fresh)
+    under_overlay(r, () -> bound_body(r, param_names, s, exprs, stmts))
+}
+
+/// Inside the bound scope: the binder holds, the exprs walk, the
+/// statements resolve.
+fn bound_body(r: Resolver, param_names: List<string>, s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
     r.bind_checked(s)
     for e in exprs { resolve_walk(r, param_names, e) }
     resolve_stmts(r, param_names, true, stmts)
-    let _ = ov.pop()
 }
 
 /// A block's statements under a fresh overlay scope: binds are
 /// visible onward and restored at exit.
 fn block_scope(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId) {
-    mut ov = r.overlays
-    let fresh: Map<string, StmtId> = {}
-    ov.push(fresh)
+    under_overlay(r, () -> block_body(r, param_names, stmts, value))
+}
+
+/// Inside a block's scope: the statements, then the value.
+fn block_body(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId) {
     resolve_stmts(r, param_names, true, stmts)
     resolve_walk(r, param_names, value)
-    let _ = ov.pop()
 }
 
 /// The innermost overlay holding `name`, or null.
@@ -164,7 +176,7 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
         use_call: (e: ExprId, name: string) -> r.resolve_call(e, name),
         block_scope: (stmts: List<StmtId>, value: ExprId) -> block_scope(r, param_names, stmts, value),
     }
-    for e in r.p.store.post_order(root) { semantics_of(r.p.store.expr(e)).resolve(cx, e) }
+    for e in r.p.post_order(root) { semantics_of(r.p.dispatch, r.p.store.expr(e)).resolve(cx, e) }
 }
 
 /// Every let definition in the program, in order.
@@ -235,14 +247,12 @@ impl Resolver {
         }
         let idx: int? = index_of_name(param_names, name)
         if idx != null {
-            mut ps = self.params
-            ps.set(e.index, idx!)
+            self.bind_use(e, Binding.Param(idx!))
             return
         }
         let found: StmtId? = self.binding_of(name)
         if found != null {
-            mut ts = self.targets
-            ts.set(e.index, found!)
+            self.bind_use(e, Binding.Def(found!))
             return
         }
         let at = self.loc_of(e)
@@ -277,13 +287,18 @@ impl Resolver {
         if self.once(e) { return }
         let found: StmtId? = self.fn_defs.get(name)
         if found != null {
-            mut ts = self.targets
-            ts.set(e.index, found!)
+            self.bind_use(e, Binding.Def(found!))
             return
         }
         self.speak(self.suggested(
             pointed(error_at("resolve.unresolved", self.loc_of(e), "no `fn ${name}` is defined"), "called here"),
             e, name, self.fn_names))
+    }
+
+    /// One use's resolved binding lands in the fact table.
+    fn bind_use(self, e: ExprId, b: Binding) {
+        mut bs = self.bindings
+        bs.set(e.index, b)
     }
 
     /// The innermost value binding of `name`: overlays, then the

@@ -66,13 +66,13 @@ fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
         assign_target: (s: StmtId) -> assign_target_of(t.resolution, s),
         loc_of: (s: StmtId) -> t.stmt_loc(s),
     }
-    for s in stmts { stmt_semantics_of(t.p.store.stmt(s)).type_stmt(cx, s) }
+    for s in stmts { stmt_semantics_of(t.p.dispatch, t.p.store.stmt(s)).type_stmt(cx, s) }
 }
 
 /// One subtree's types, under the given param types.
 fn type_walk(t: Typer, param_types: List<TypeId>, root: ExprId) {
     let cx = expr_cx(t, param_types)
-    for e in t.p.store.post_order(root) { type_node(t, cx, e) }
+    for e in t.p.post_order(root) { type_node(t, cx, e) }
 }
 
 /// The expression capabilities, wired once for a given param scope.
@@ -105,7 +105,7 @@ fn block_type(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>, value: E
 /// One node's fact: the owner speaks, the table records.
 fn type_node(t: Typer, cx: TypeCx, e: ExprId) {
     mut facts = t.of_expr
-    facts.set(e.index, semantics_of(t.p.store.expr(e)).type_of(cx, e))
+    facts.set(e.index, semantics_of(t.p.dispatch, t.p.store.expr(e)).type_of(cx, e))
 }
 
 /// The type an annotation names, or null.
@@ -150,22 +150,32 @@ impl Typer {
         loc_at(self.p.source.file, self.p.store.stmt_span(s))
     }
 
-    /// An ident's type: its param's, or its definition's value type.
-    /// No target means resolve already spoke — Error, silently.
+    /// An ident's type, by its binding kind. No binding means
+    /// resolve already spoke — Error, silently.
     fn target_type(self, e: ExprId, param_types: List<TypeId>) -> TypeId {
-        let pi: int? = param_of(self.resolution, e)
-        if pi != null { return param_types[pi!] }
-        let target: StmtId? = target_of(self.resolution, e)
-        let v: ExprId? = if target == null { null } else { self.p.store.stmt_value(target!) }
+        let b: Binding? = binding_of(self.resolution, e)
+        if b == null { return self.types.intern(Type.Error) }
+        match b! {
+            .Param(i) -> param_types[i],
+            .Def(s) -> self.def_type(s),
+        }
+    }
+
+    /// A definition statement's value type; a valueless one absorbs.
+    fn def_type(self, s: StmtId) -> TypeId {
+        let v: ExprId? = self.p.store.stmt_value(s)
         if v == null { return self.types.intern(Type.Error) }
         self.of_expr[v!.index]
     }
 
     /// A call's target signature, when resolve found one.
     fn sig_at(self, e: ExprId) -> FnSig? {
-        let target: StmtId? = target_of(self.resolution, e)
-        if target == null { return null }
-        self.sigs[target!.index]
+        let b: Binding? = binding_of(self.resolution, e)
+        if b == null { return null }
+        match b! {
+            .Def(s) -> self.sigs[s.index],
+            .Param(_) -> null,
+        }
     }
 
     fn speak(self, d: Diag) {

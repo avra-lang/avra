@@ -1,9 +1,20 @@
 // The first pass: uses resolve to definition sites, shadowing takes
 // the latest, and an unresolved name earns the milestone error —
 // kind, code, window, pointer, and a graded suggestion.
-use @std.avrac.language.{avra, parse_source, resolve, target_of}
+use @std.avrac.language.{avra, parse_source, resolve, binding_of, Binding, Resolution}
 use @std.errors.{Confidence}
 use @std.avrac.diagnostics.{new_source_file}
+use @std.avrac.core.{ExprId}
+
+/// The statement index a use's Def binding names; -1 otherwise.
+fn defined_at(r: Resolution, e: ExprId) -> int {
+    let b: Binding? = binding_of(r, e)
+    if b == null { return -1 }
+    match b! {
+        .Def(s) -> s.index,
+        .Param(_) -> -1,
+    }
+}
 
 spec "language/resolve" {
     given "resolution facts" {
@@ -11,14 +22,12 @@ spec "language/resolve" {
             let p = parse_source("let x = 1\nx")
             let r = resolve(p)
             let use_expr = p.store.stmt_value(p.stmts[1])!
-            r.diagnostics.is_empty() &&
-                target_of(r, use_expr) != null &&
-                target_of(r, use_expr)!.index == p.stmts[0].index
+            r.diagnostics.is_empty() && defined_at(r, use_expr) == 0
         }
         then "a later let shadows an earlier one" {
             let p = parse_source("let x = 1\nlet x = 2\nx")
             let r = resolve(p)
-            target_of(r, p.store.stmt_value(p.stmts[2])!)!.index == p.stmts[1].index
+            defined_at(r, p.store.stmt_value(p.stmts[2])!) == 1
         }
     }
     given "unresolved names" {
