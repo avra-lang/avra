@@ -1,0 +1,235 @@
+// The RED TEAM's permanent record for enums (see
+// .claude/skills/red-team): every program here was written to BREAK
+// the feature, not to use it. Grouped by attack class. A case that
+// once produced a wrong answer, a crash, an internal defect, or an
+// engine divergence keeps its place here forever.
+//
+// The fixtures below carry the boilerplate so each test shows only
+// its attack.
+use @std.avrac.language.{analyze_source}
+
+/// A program's printed value, or "<refused>".
+fn shown(source: string) -> string {
+    analyze_source(source).ran() ?? "<refused>"
+}
+
+/// How many diagnostics one program earns.
+fn refusals(source: string) -> int {
+    analyze_source(source).diagnostics.length
+}
+
+/// THE subject under attack: one carrying variant, one unit.
+fn ab() -> string {
+    "enum E {\n    a(int)\n    b\n}\n"
+}
+
+/// A total match over `ab()`'s enum, answering 1 for a and 0 for b.
+fn ab_arms() -> string {
+    "match v {\n    .a -> 1\n    .b -> 0\n}"
+}
+
+/// Three unit variants, for order and coverage attacks.
+fn abc() -> string {
+    "enum E {\n    a\n    b\n    c\n}\n"
+}
+
+spec "features/enums (adversarial)" {
+    given "degenerate shapes" {
+        then "a single carrying variant, matched by its only arm" {
+            shown("enum E {\n    a(int)\n}\nmatch E.a(1) {\n    .a -> 7\n}") == "7"
+        }
+        then "a single unit variant reads no tag and still answers" {
+            shown("enum E {\n    a\n}\nmatch E.a {\n    .a -> 7\n}") == "7"
+        }
+        then "a zero payload is a value, not an absence" {
+            shown("${ab()}match E.a(0) {\n    .a -> 1\n    .b -> 2\n}") == "1"
+        }
+        then "an enum with no variants refuses once" {
+            refusals("enum E { }\n1") == 1
+        }
+    }
+    given "wrong types in every slot" {
+        then "a managed payload refuses — the slot cannot own yet" {
+            refusals("enum E {\n    a(string)\n    b\n}\n1") == 1
+        }
+        then "a payload naming no type refuses" {
+            refusals("enum E {\n    a(Nope)\n    b\n}\n1") == 1
+        }
+        then "a payload of the enum itself refuses" {
+            refusals("enum E {\n    a(E)\n    b\n}\n1") == 1
+        }
+        then "a record payload refuses like any non-scalar" {
+            refusals("type P = { x: int }\nenum E {\n    a(P)\n    b\n}\n1") == 1
+        }
+        then "a bool argument for an int payload refuses" {
+            refusals("${ab()}let x = E.a(true)\n2") == 1
+        }
+        then "a list argument refuses" {
+            refusals("${ab()}let x = E.a([1])\n2") >= 1
+        }
+        then "an enum VALUE as the argument refuses" {
+            refusals("${ab()}let x = E.a(E.b)\n2") == 1
+        }
+        then "a type NAME as the argument refuses" {
+            refusals("${ab()}let x = E.a(E)\n2") >= 1
+        }
+        then "matching over a non-enum refuses" {
+            refusals("let n = 3\nmatch n {\n    .a -> 1\n}") == 1
+        }
+        then "matching over a TYPE NAME refuses" {
+            refusals("${ab()}match E {\n    .a -> 1\n    .b -> 0\n}") >= 1
+        }
+    }
+    given "malformed surface, position by position" {
+        then "a variant with no payload type refuses, not crashes" {
+            refusals("enum E {\n    a()\n    b\n}\n1") >= 1
+        }
+        then "an unclosed payload refuses" {
+            refusals("enum E {\n    a(int\n}\n1") >= 1
+        }
+        then "construction with no argument names what is missing" {
+            let a = analyze_source("${ab()}let x = E.a()\n2")
+            a.diagnostics.length == 1 &&
+                a.report().contains("carries a `int`, given nothing")
+        }
+        then "construction with two arguments refuses" {
+            refusals("${ab()}let x = E.a(1, 2)\n2") >= 1
+        }
+        then "a doubled dot refuses" {
+            refusals("${ab()}let x = E..a(1)\n2") >= 1
+        }
+        // SETTLED by red-teaming: a variant name is NAMESPACED under
+        // its enum, so the reserved-word law — which keeps free
+        // identifiers clear of future keywords — does not reach it.
+        // `E.owned` can never collide with a future `owned`.
+        then "a keyword names a variant, and still works" {
+            shown("enum E {\n    let(int)\n    b\n}\nmatch E.let(1) {\n    .let -> 1\n    .b -> 0\n}") == "1"
+        }
+        then "a reserved word names a variant, and still works" {
+            shown("enum E {\n    owned\n    b\n}\nmatch E.owned {\n    .owned -> 1\n    .b -> 0\n}") == "1"
+        }
+    }
+    given "crossing every other feature" {
+        then "a payload variant crosses a fn boundary both ways" {
+            shown("${ab()}fn f(v: E) -> int { ${ab_arms()} }\nfn mk() -> E { E.a(2) }\nf(mk())") == "1"
+        }
+        then "it lives in an if branch" {
+            shown("${ab()}let v = if true { E.a(1) } else { E.b }\n${ab_arms()}") == "1"
+        }
+        then "it lives in a when arm, newline-separated" {
+            shown("${ab()}let v = when {\n    true -> E.a(1)\n    _ -> E.b\n}\n${ab_arms()}") == "1"
+        }
+        then "a match feeds a match" {
+            shown("${ab()}let v = match E.b {\n    .a -> E.b\n    .b -> E.a(9)\n}\n${ab_arms()}") == "1"
+        }
+        then "it survives a loop body" {
+            shown("${ab()}mut t = 0\nfor i in 0..3 {\n    t = t + match E.a(1) {\n        .a -> 1\n        .b -> 0\n    }\n}\nt") == "3"
+        }
+        then "it survives recursion" {
+            shown("${ab()}fn f(v: E, n: int) -> int {\n    if n == 0 { 0 } else { f(v, n - 1) + ${ab_arms()} }\n}\nf(E.a(1), 3)") == "3"
+        }
+        then "an enum VALUE refuses in an interpolation hole" {
+            let src = "${ab()}let v = E.a(1)\n\"x$" + "{v}\""
+            refusals(src) >= 1
+        }
+        then "a declaration inside a block refuses AT the declaration" {
+            let a = analyze_source("fn f() -> int {\n    enum E {\n        a\n    }\n    1\n}\nf()")
+            a.diagnostics.length == 1 &&
+                a.report().contains("type declarations live at the top level")
+        }
+    }
+    given "names against names" {
+        then "a type may be used entirely before it is declared" {
+            shown("fn mk() -> E { E.a(1) }\nlet v = mk()\n${ab_arms()}\nenum E {\n    a(int)\n    b\n}") == "1"
+        }
+        then "two enums may share variant names" {
+            shown("enum A {\n    x(int)\n    y\n}\nenum B {\n    x(int)\n    y\n}\nmatch A.x(1) {\n    .x -> 1\n    .y -> 0\n}") == "1"
+        }
+        then "a variant may carry its enum's own name" {
+            shown("enum E {\n    E(int)\n    b\n}\nmatch E.E(1) {\n    .E -> 1\n    .b -> 0\n}") == "1"
+        }
+        then "an enum declared twice refuses once" {
+            refusals("enum E {\n    a(int)\n}\nenum E {\n    b\n}\n1") == 1
+        }
+        then "a variant declared twice refuses once" {
+            refusals("enum E {\n    a(int)\n    a(int)\n}\n1") == 1
+        }
+    }
+    given "operators against an enum VALUE" {
+        // FOUND BY RED-TEAMING: `==` typed clean on two enums, then
+        // the interpreter refused with an internal defect while the
+        // backend quietly answered `false` — comparing ADDRESSES.
+        // An engine divergence AND a silently wrong native answer.
+        then "equality refuses, and says to match instead" {
+            let a = analyze_source("${ab()}E.a(1) == E.a(1)")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`==` compares scalars for now") &&
+                a.report().contains("match on it instead")
+        }
+        then "inequality refuses the same way" {
+            refusals("${ab()}E.b != E.b") == 1
+        }
+        then "an enum compared to an int refuses" {
+            refusals("${ab()}E.b == 1") == 1
+        }
+        then "arithmetic on an enum refuses" {
+            refusals("${ab()}E.b + 1") >= 1
+        }
+        then "negating an enum refuses" {
+            refusals("${ab()}!E.b") == 1
+        }
+        then "indexing an enum refuses" {
+            refusals("${ab()}E.b[0]") == 1
+        }
+        then "`with` on an enum refuses" {
+            refusals("${ab()}E.b with { x: 1 }") == 1
+        }
+        then "a field read off an enum refuses" {
+            refusals("${ab()}E.b.x") == 1
+        }
+    }
+    given "arm order against declaration order" {
+        // The switch takes its cases from ARM order and its default
+        // is the LAST arm, so a match written out of declaration
+        // order is exactly where an off-by-one would hide.
+        then "arms reversed still choose the subject" {
+            shown("${abc()}match E.b {\n    .c -> 3\n    .b -> 2\n    .a -> 1\n}") == "2"
+        }
+        then "the declared-first variant as the LAST arm" {
+            shown("${abc()}match E.a {\n    .c -> 3\n    .b -> 2\n    .a -> 1\n}") == "1"
+        }
+        then "a payload variant as the default arm" {
+            shown("enum E {\n    a(int)\n    b\n    c(int)\n}\nmatch E.c(9) {\n    .b -> 2\n    .a -> 1\n    .c -> 3\n}") == "3"
+        }
+    }
+    given "scale" {
+        then "six variants, the last one chosen" {
+            shown("enum B {\n    v0\n    v1\n    v2\n    v3\n    v4\n    v5\n}\nmatch B.v5 {\n    .v0 -> 0\n    .v1 -> 1\n    .v2 -> 2\n    .v3 -> 3\n    .v4 -> 4\n    .v5 -> 5\n}") == "5"
+        }
+        then "matches nest three deep" {
+            shown("enum E {\n    a\n    b\n}\nmatch E.a {\n    .a -> match E.b {\n        .a -> 1\n        .b -> match E.a {\n            .a -> 42\n            .b -> 2\n        }\n    }\n    .b -> 3\n}") == "42"
+        }
+        then "every arm answering the same value still chooses" {
+            shown("enum E {\n    a(int)\n    b\n    c\n}\nmatch E.b {\n    .a -> 5\n    .b -> 5\n    .c -> 5\n}") == "5"
+        }
+    }
+    given "subject shapes" {
+        then "the subject may be a call" {
+            shown("${ab()}fn mk() -> E { E.a(1) }\nmatch mk() {\n    .a -> 1\n    .b -> 0\n}") == "1"
+        }
+        then "the subject may be a match" {
+            shown("${ab()}match match E.b {\n    .a -> E.b\n    .b -> E.a(1)\n} {\n    .a -> 1\n    .b -> 0\n}") == "1"
+        }
+        then "one subject matched twice reads the same value" {
+            shown("${ab()}let v = E.a(1)\n${ab_arms()} + match v {\n    .a -> 10\n    .b -> 0\n}") == "11"
+        }
+    }
+    given "the answer, both engines" {
+        then "an enum answer refuses rather than printing a shape" {
+            match analyze_source("${ab()}E.a(1)").run() {
+                .Err(msg) -> msg.contains("no text projection yet"),
+                .Ok(_) -> false,
+            }
+        }
+    }
+}

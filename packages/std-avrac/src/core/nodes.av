@@ -81,6 +81,10 @@ export enum Expr {
     /// `match subject { .variant -> value, ... }` — total over the
     /// subject enum's variants; no catch-all arm exists.
     Match(subject: ExprId, variants: List<string>, values: List<ExprId>)
+    /// `Name.variant(arg)` — constructing a variant that carries a
+    /// payload. The BARE `Name.variant` rides the property ladder;
+    /// only the argument form needs a node of its own.
+    VariantLit(tname: string, variant: string, args: List<ExprId>)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
 }
@@ -133,9 +137,11 @@ export enum Stmt {
     /// `type Name = { field: ty, ... }` — a nominal record; the
     /// name lives in the TYPE namespace, program-wide like fns.
     StructDecl(name: string, fields: List<Param>)
-    /// `enum Name { VariantA VariantB }` — a nominal closed set;
-    /// the name shares the TYPE namespace with records.
-    EnumDecl(name: string, variants: List<string>)
+    /// `enum Name { A B(payload: int) }` — a nominal closed set
+    /// sharing the TYPE namespace with records. A variant is a
+    /// Param: an empty `ty` IS a unit variant, so one shape covers
+    /// both and no arm has to ask which kind it is.
+    EnumDecl(name: string, variants: List<Param>)
     Error
 }
 
@@ -187,7 +193,7 @@ impl NodeStore {
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 29.
+    /// Tags are never reused; the next free tag is 30.
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -223,6 +229,8 @@ impl NodeStore {
             .Match(subject, variants, values) ->
                 fp(28, flatten([[self.expr_fingerprint(subject)],
                                 [fp_str(v) for v in variants], self.expr_fps(values)])),
+            .VariantLit(tname, variant, args) ->
+                fp(29, flatten([[fp_str(tname), fp_str(variant)], self.expr_fps(args)])),
         }
     }
 
@@ -256,7 +264,7 @@ impl NodeStore {
             .StructDecl(name, fields) ->
                 fp(25, concat([fp_str(name)], param_fps(fields))),
             .EnumDecl(name, variants) ->
-                fp(27, concat([fp_str(name)], [fp_str(v) for v in variants])),
+                fp(27, concat([fp_str(name)], param_fps(variants))),
         }
     }
 }

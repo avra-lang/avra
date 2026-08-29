@@ -2,8 +2,9 @@
 //! `match` chooses over an ENUM, handles every variant exactly
 //! once, and its arms agree on one type. Totality is the point —
 //! adding a variant must break every match, so no catch-all exists.
-use core.{ExprId, StmtId, Type, TypeId}
-use features.{TypeCx, StmtTypeCx, EnumSig, spoken, this_is, nothing, duplicate_member, arms_agree}
+use core.{ExprId, StmtId, Param, Type, TypeId}
+use features.{TypeCx, StmtTypeCx, EnumSig, spoken, this_is, nothing, duplicate_member,
+              arms_agree, types_disagree}
 use diagnostics.{error_at, pointed}
 
 /// The declaration's own law.
@@ -16,24 +17,78 @@ export fn check_enum_decl(cx: StmtTypeCx, s: StmtId) {
 
 /// An enum names at least one variant, each of them once. A dup is
 /// a name whose FIRST position is earlier than this one.
-fn decl_checks(cx: StmtTypeCx, s: StmtId, name: string, variants: List<string>) {
+fn decl_checks(cx: StmtTypeCx, s: StmtId, name: string, variants: List<Param>) {
     if variants.is_empty() {
         cx.expr.emit(pointed(
             error_at("type.enum_decl", cx.loc_of(s), "`${name}` declares no variants"),
             "this enum is empty")
             with { help: "an enum names at least one variant" })
     }
-    for (j, v) in variants.enumerate() {
-        if variants.index_of(v) < j {
+    let named = [v.name for v in variants]
+    for (j, v) in named.enumerate() {
+        if named.index_of(v) < j {
             cx.expr.emit(duplicate_member("type.enum_decl", name, v, cx.loc_of(s)))
         }
     }
 }
 
-fn match_type(cx: TypeCx, e: ExprId) -> TypeId {
+fn enums_type(cx: TypeCx, e: ExprId) -> TypeId {
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.store.expr(e) {
         .Match(subject, variants, values) -> matched_type(cx, e, subject, variants, values),
+        .VariantLit(tname, variant, args) -> variant_lit_type(cx, e, tname, variant, args),
         _ -> cx.intern(Type.Error),
+    }
+}
+
+/// `Name.variant(arg)`: the variant must exist, must CARRY
+/// something, and the argument must be what it carries.
+fn variant_lit_type(cx: TypeCx, e: ExprId, tname: string, variant: string, args: List<ExprId>) -> TypeId {
+    let decl: StmtId? = cx.bound_def(e)
+    if decl == null { return cx.intern(Type.Error) }
+    let ty = cx.intern(Type.Enum(decl!, tname))
+    let sig: EnumSig? = cx.variants_of(ty)
+    if sig == null {
+        return spoken(cx, pointed(
+            error_at("type.unknown_prop", cx.loc_of(e), "`${tname}` is a record, not an enum"),
+            "built here")
+            with { help: "build a record with `${tname} { ... }`" })
+    }
+    if sig!.tag_of(variant) == null {
+        return spoken(cx, pointed(
+            error_at("type.unknown_prop", cx.loc_of(e), "`${tname}` has no variant `${variant}`"),
+            "built here")
+            with { help: "the variants are ${sig!.listed()}" })
+    }
+    let carried: TypeId? = sig!.payload_of(variant)
+    if carried == null {
+        return spoken(cx, pointed(
+            error_at("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries nothing"),
+            "given an argument here")
+            with { help: "write `${tname}.${variant}` on its own" })
+    }
+    arg_checks(cx, e, tname, variant, args, carried!)
+    ty
+}
+
+/// Exactly one argument, of the declared type. Nothing given is a
+/// refusal in its own words, not a silent pass.
+fn arg_checks(cx: TypeCx, e: ExprId, tname: string, variant: string, args: List<ExprId>, carried: TypeId) {
+    let arg: ExprId? = args.first()
+    if arg == null {
+        cx.emit(pointed(
+            error_at("type.variant_arity", cx.loc_of(e),
+                "`${tname}.${variant}` carries a `${cx.type_name(carried)}`, given nothing"),
+            "built empty here")
+            with { help: "write `${tname}.${variant}(<value>)`" })
+        return
+    }
+    if types_disagree(cx, cx.type_at(arg!), carried) {
+        let n = cx.name_at(arg!)
+        cx.emit(pointed(
+            error_at("type.variant_arity", cx.loc_of(arg!),
+                "`${tname}.${variant}` carries a `${cx.type_name(carried)}`, found `${n}`"),
+            this_is(n)))
     }
 }
 

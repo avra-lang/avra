@@ -1,13 +1,49 @@
-//! Parse-time lowering: captures -> the EnumDecl statement and the
-//! Match node. Variant names and arm values arrive as parallel
-//! capture lists and zip.
-use core.{Expr, Stmt}
-use features.{LangNode, Builder, zip_defect}
+//! Parse-time lowering: captures -> the EnumDecl statement, the
+//! Match node, and a carrying variant's construction. Arm names and
+//! values ZIP (both are written every time); a declaration's
+//! payloads cannot, because they are optional — see below.
+use core.{Expr, ExprId, Stmt, Param, some_list}
+use features.{LangNode, Builder, expr_id_at, zip_defect}
+use grammar.{Token}
 
+/// A variant's payload is POSITIONAL (the spec's style rule: the
+/// type IS the field for a single-value wrapper), so nothing the
+/// source wrote is dropped on the way into the node.
+///
+/// Names and their OPTIONAL payload arrive as parallel captures that
+/// do NOT align: a repetition accumulates only the payloads that
+/// were written, so index j means nothing. Spans restore the truth —
+/// a payload belongs to the variant whose name precedes it and whose
+/// successor follows it.
 fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
+    let ends: int? = b.span_end()
+    if ends == null { return Result.Err("an enum declaration without a span") }
     let vs = b.tokens(1)?
-    b.make_stmt(Stmt.EnumDecl(n.text, [v.text for v in vs]))
+    let vt = b.tokens(2)?
+    mut variants: List<Param> = []
+    for (j, v) in vs.enumerate() {
+        let upto = if j + 1 < vs.length { vs[j + 1].span.lo } else { ends! }
+        variants.push(Param { name: v.text, ty: carried_between(vt, v.span.lo, upto) })
+    }
+    b.make_stmt(Stmt.EnumDecl(n.text, variants))
+}
+
+/// The type written between two variant names, or "" — the empty
+/// type IS a unit variant.
+fn carried_between(types: List<Token>, after: int, before: int) -> string {
+    let hit: Token? = types.find(it.span.lo > after && it.span.lo < before)
+    if hit == null { return "" }
+    hit!.text
+}
+
+/// The argument is OPTIONAL in the grammar so the parse stays
+/// generous and typing can say precisely what is missing.
+fn build_variant_lit(b: Builder) -> Result<LangNode, string> {
+    let t = b.token(0)?
+    let v = b.token(1)?
+    let arg: ExprId? = expr_id_at(b.args, 2)
+    b.make_expr(Expr.VariantLit(t.text, v.text, some_list(arg)))
 }
 
 fn build_match(b: Builder) -> Result<LangNode, string> {

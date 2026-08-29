@@ -175,6 +175,10 @@ gate — there is no amnesty left to hide in.
       for four milestones with no code, and was violated three times
       — including both zip builders, where the index is still needed
       for the PARALLEL list and enumerate serves that perfectly.
+- I20a a test asserting `A || B` asserts NEITHER: if the outcome is
+      uncertain, run it and pin what happens. (Found writing the
+      first adversarial suite — the disjunction was hiding that I
+      did not know whether forward type references worked. They do.)
 - I20 a REFUSAL TEST pins the diagnostic COUNT, not just
       `contains`: `a.diagnostics.length == 1 && a.report()
       .contains(...)`. Without the count a CASCADE hides behind a

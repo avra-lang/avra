@@ -138,10 +138,22 @@ impl Typer {
         }
     }
 
-    /// An enum's variant table — the index IS the runtime tag.
-    fn declare_enum_sig(self, s: StmtId, variants: List<string>) {
-        let sig = EnumSig { names: variants }
+    /// An enum's variant table — the index IS the runtime tag, and
+    /// a payload rides slot 1 of the value.
+    fn declare_enum_sig(self, s: StmtId, variants: List<Param>) {
+        let sig = EnumSig {
+            names: [v.name for v in variants],
+            payloads: [self.carried_type(s, v) for v in variants],
+        }
         self.declare(s, DeclSig.Variants(sig))
+    }
+
+    /// What a variant carries — an empty annotation IS a unit
+    /// variant, and carries nothing.
+    fn carried_type(self, s: StmtId, v: Param) -> TypeId? {
+        if v.ty == "" { return null }
+        self.scalar_slot(s, "type.enum_payload", "an enum payload holds scalars for now",
+                         "`${v.name}` carries a `${v.ty}`", v.ty)
     }
 
     /// One declaration's table lands in the ONE dense record.
@@ -165,14 +177,22 @@ impl Typer {
 
     /// A field's type — scalars only, until ownership analysis.
     fn field_type(self, s: StmtId, f: Param) -> TypeId {
-        let sh: Type? = shape_named(f.ty)
+        self.scalar_slot(s, "type.struct_scalar", "struct fields hold scalars for now",
+                         "field `${f.name}` is `${f.ty}`", f.ty)
+    }
+
+    /// THE declared-slot law: a slot inside an aggregate holds a
+    /// SCALAR until ownership analysis covers managed values —
+    /// a record's field and an enum's payload alike, since both are
+    /// slots of an array the pass does not yet track.
+    fn scalar_slot(self, s: StmtId, kind: string, message: string,
+                   label: string, ty: string) -> TypeId {
+        let sh: Type? = shape_named(ty)
         if sh != null {
             if sh! is .Int || sh! is .Bool { return self.types.intern(sh!) }
         }
-        self.speak(pointed(
-            error_at("type.struct_scalar", self.stmt_loc(s), "struct fields hold scalars for now"),
-            "field `${f.name}` is `${f.ty}`")
-            with { help: "`int` and `bool` fields today — managed fields arrive with ownership analysis" })
+        self.speak(pointed(error_at(kind, self.stmt_loc(s), message), label)
+            with { help: "`int` and `bool` today — managed slots arrive with ownership analysis" })
         self.types.intern(Type.Error)
     }
 

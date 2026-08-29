@@ -40,6 +40,48 @@ spec "features/enums" {
             shown("enum B {\n    yes\n    no\n}\nmatch B.yes {\n    .yes -> match B.no { .yes -> 1, .no -> 2 }\n    .no -> 3\n}") == "2"
         }
     }
+    given "variants that carry" {
+        then "a payload variant constructs and matches" {
+            shown("enum S {\n    circle(int)\n    point\n}\nmatch S.circle(5) {\n    .circle -> 1\n    .point -> 0\n}") == "1"
+        }
+        then "unit and carrying variants share one enum" {
+            shown("enum S {\n    a(int)\n    b\n    c(int)\n}\nmatch S.c(9) {\n    .a -> 1\n    .b -> 2\n    .c -> 3\n}") == "3"
+        }
+        then "a carried value crosses a fn boundary" {
+            shown("enum S {\n    one(int)\n    none\n}\nfn mk(v: int) -> S { S.one(v) }\nmatch mk(7) {\n    .one -> 1\n    .none -> 0\n}") == "1"
+        }
+        then "a unit variant refuses an argument" {
+            let a = analyze_source("enum S {\n    a(int)\n    b\n}\nlet x = S.b(1)\n2")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`S.b` carries nothing")
+        }
+        then "a carrying variant refuses being named bare" {
+            let a = analyze_source("enum S {\n    a(int)\n    b\n}\nlet x = S.a\n2")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`S.a` carries a `int`") &&
+                a.report().contains("write `S.a(<value>)`")
+        }
+        then "a wrong-typed argument refuses" {
+            let a = analyze_source("enum S {\n    a(int)\n    b\n}\nlet x = S.a(true)\n2")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`S.a` carries a `int`, found `bool`")
+        }
+        then "a carrying variant refuses being built empty" {
+            let a = analyze_source("enum S {\n    a(int)\n    b\n}\nlet x = S.a()\n2")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`S.a` carries a `int`, given nothing")
+        }
+        then "a managed payload waits for ownership, like a struct field" {
+            let a = analyze_source("enum S {\n    s(string)\n    n\n}\n1")
+            a.diagnostics.length == 1 &&
+                a.report().contains("an enum payload holds scalars for now")
+        }
+        then "an unknown carrying variant names the real ones" {
+            let a = analyze_source("enum S {\n    a(int)\n    b\n}\nlet x = S.zz(1)\n2")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`S` has no variant `zz`")
+        }
+    }
     given "wrong shapes" {
         then "a missing variant refuses, naming it" {
             let a = analyze_source("${colors()}match C.red {\n    .red -> 1\n    .green -> 2\n}")

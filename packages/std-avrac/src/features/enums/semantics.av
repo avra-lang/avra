@@ -4,28 +4,34 @@
 //! the type namespace, so its own passes do nothing.
 use core.{Expr, ExprId, StmtId, TypeId, Reg, concat}
 use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx,
-              StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing}
+              StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing, nested_decl}
 
 export type EnumsSemantics = { }
 
 impl NodeSemantics for EnumsSemantics {
     fn kids(self, e: Expr) -> List<ExprId> {
+        // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
         match e {
             .Match(subject, _, values) -> concat([subject], values),
+            .VariantLit(_, _, args) -> args,
             _ -> [],
         }
     }
 
     fn resolve(self, cx: ResolveCx, e: ExprId) {
-        nothing()
+        // LICENSED I22: a feature cannot enumerate OTHER features' variants
+        match cx.store.expr(e) {
+            .VariantLit(tname, _, _) -> cx.use_type(e, tname),
+            _ -> nothing(),
+        }
     }
 
     fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
-        match_type(cx, e)
+        enums_type(cx, e)
     }
 
     fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
-        match_reg(cx, e)
+        enums_reg(cx, e)
     }
 }
 
@@ -33,7 +39,9 @@ export type EnumDeclSemantics = { }
 
 impl StmtSemantics for EnumDeclSemantics {
     fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
-        nothing()
+        if cx.in_block {
+            cx.emit(nested_decl("resolve.nested_type", "type declarations", cx.loc_of(s)))
+        }
     }
 
     fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {

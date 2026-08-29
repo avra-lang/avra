@@ -1148,6 +1148,122 @@ unit variants only (payloads are slice b); no `_` arm ever (the
 correctness guarantee); an enum answer has no text projection
 (derived show).
 
+## Milestone 15 slice (b) — payloads and pattern binds (the design)
+
+The rung that makes enums carry data, and the FIRST expression-level
+binding in the language. Two steps, each gate-able:
+
+(b1) PAYLOADS — a variant carries ONE named field in v1
+  (`circle(radius: int)`; multi-field rides the same shape later,
+  and the spec's positional wrappers wait for generics).
+  - REPR: the slot array already tags at 0; the payload joins at
+    slot 1. Still no new instructions.
+  - SURFACE: construction is `Shape.circle(5)` through its OWN
+    primary branch anchored by the `(` — three required items
+    before it, so the branch never commits and `p.x` still falls
+    through to the ladder (first.av's law, the same reasoning that
+    made the struct literal safe).
+  - NODES: `EnumDecl(name, variants: List<Param>)` (a Param with an
+    empty `ty` IS a unit variant — one shape for both) and
+    `VariantLit(tname, variant, args)`.
+  - FACTS: EnumSig gains `payloads: List<TypeId?>`, null for unit.
+  - LAWS: arity is exact — a unit variant refuses arguments, a
+    payload variant refuses bare `Shape.circle` (the Prop path
+    names the remedy), and the argument's type must match.
+
+(b1) LANDED (2026-08-29): 340/340; twenty-for-twenty corpus.
+  Construction with an argument is its own branch and never
+  commits, so `p.x` still reaches the ladder untouched. The ARITY
+  law lives on BOTH construction paths — a unit variant refuses an
+  argument (F2015) and a carrying variant refuses being named bare
+  (it would have built a value missing its payload, silently: found
+  by asking what the Prop path does with a payload variant).
+  THE BUILDER FINDING: optional captures in a repetition do NOT
+  align — `enum E { a b(x: int) }` accumulates one payload and index
+  0 would hand it to `a`. Tokens carry SPANS, so the builder aligns
+  by position: a payload belongs to the variant whose name precedes
+  it and whose successor follows it. Recorded because every future
+  optional-in-repetition capture hits this.
+  And the bar caught the rung's OWN new code within minutes — a
+  refusal test missing its count, and kids() becoming a 2-arm
+  registry — which is the whole point of it.
+
+THE EQUALITY DIVERGENCE (red team, second pass — the worst class
+of finding available, and it was PRE-EXISTING since M14): `==` typed
+clean on two aggregates, and then the engines DISAGREED. The
+interpreter refused with an internal defect ("a non-int reached
+arithmetic"); the backend quietly answered `false` — comparing
+ADDRESSES, so two identical records were "different". A silently
+wrong native answer AND a divergence, reachable by writing the most
+obvious thing a person writes about two values.
+The law now names what `==` can compare: values the runtime tests BY
+VALUE (int, bool, string). Everything holding a pointer refuses, and
+the help is shape-specific — a list says compare an element, a
+record says compare a field, an enum says MATCH on it, because a
+match is how an enum is asked what it is. Found by attacking a
+feature that turned out not to own the bug, which is the argument
+for red-teaming the CROSSINGS and not just the feature.
+
+RED-TEAMED b1 (the new skill's first run — 58 programs, every one
+enumerated from the feature's own surface). b1 itself held: no wrong
+answer, no crash, no engine divergence, no internal defect. What the
+attack surfaced was THREE pre-existing defects it happened to walk
+past, which is the argument for running it on every commit:
+  1. A TYPE DECLARED IN A BLOCK was silently ignored, and the later
+     USE was blamed ("`E` is not defined") for a mistake made at the
+     declaration. Nested fns already refused properly; types now do
+     too (F3007), through a `nested_decl` law the third copy earned.
+  2. MULTI-LINE `when` DID NOT PARSE — `match` accepted
+     newline-separated arms and `when` demanded commas, the same
+     construct written two ways. `when` now takes both.
+  3. A BLOCK IS NOT AN EXPRESSION: `let v = { let n = 2\n n + 1 }`
+     does not parse, because `primary` never references `block` —
+     only `if` and `fn` bodies do. RECORDED, not fixed: making
+     blocks general expressions is a surface decision with its own
+     parse consequences, and it wants its own rung.
+SETTLED while attacking: a variant name may be a keyword or a
+reserved word (`enum E { let(int) owned }` works in both engines) —
+variant names are NAMESPACED under their enum, so the law that keeps
+free identifiers clear of future keywords does not reach them.
+
+THE ROUND ON b1 (asked for immediately, and it earned its keep —
+five findings in code an hour old, two of them real defects):
+  1. THE PAYLOAD SURFACE WAS A MODELLING HACK. `circle(radius: int)`
+     forced a field name that the node then DISCARDED — so two enums
+     differing only in field name fingerprinted IDENTICALLY, and
+     content identity is supposed to be the source's content. The
+     spec's own style rule settles it: a single-value wrapper is
+     POSITIONAL (`circle(int)`), which loses nothing and is what
+     `Ok(T)`/`Some(T)` want. Named fields arrive with multi-field
+     variants, which need a real field list anyway.
+  2. MANAGED PAYLOADS WERE ACCEPTED. A record's field must be scalar
+     until ownership analysis; an enum's payload is the same kind of
+     slot in the same kind of array, and nothing refused
+     `s(string)`. Latent today (b1 cannot read a payload) and a
+     use-after-free the moment b2 can. Both now go through ONE
+     declared-slot law, each site keeping its kind and words.
+  3. `b.span_end()` answered 0 for an absent span — a sentinel that
+     would have silently mis-aligned every payload. It answers
+     `int?` now and the caller refuses.
+  4. `E.a()` said "expected BREAK". The grammar now accepts the
+     empty argument so TYPING can say "`E.a` carries a `int`, given
+     nothing" — the house rule that a generous parse buys a precise
+     message.
+  5. `zip_defect` said "field names" while match arms used it.
+  bs2 trap found: `given` is RESERVED as a local (the spec DSL's
+  words are lexed in ordinary code) — recorded in CLAUDE.md.
+
+(b2) PATTERN BINDS — `match s { .circle(r) -> r * 2, .point -> 0 }`.
+  - `Binding` grows the variant its arc PROMISED: the first bind
+    that is not a statement. Resolve gains an ARM scope (the
+    bound_scope shape, keyed by the arm rather than a StmtId), and
+    every consumer's Binding match breaks until it decides.
+  - TYPING: the bind's type is the variant's payload type.
+  - LOWERING: the bind reads slot 1 of the subject — inside the
+    arm's region, so it is only read when that arm is taken.
+  - The bind is IMMUTABLE and scoped to its arm; a bind shadowing
+    an outer name follows the existing shadowing law.
+
 ## The breather — architecture heads-up (decided 2026-08-26)
 
 Before the heavyweight rungs, six structural decisions, each made

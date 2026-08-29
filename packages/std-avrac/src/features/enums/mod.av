@@ -1,5 +1,5 @@
 //! Enums — the second user-defined type and the first closed set.
-//! `enum Name { A B }` declares (variants newline- or
+//! `enum Name { A B(int) }` declares (variants newline- or
 //! comma-separated); `Name.variant` constructs through the spine's
 //! property ladder (a TYPE NAME is the subject); `match subject {
 //! .variant -> value }` chooses, TOTALLY — every variant exactly
@@ -13,17 +13,21 @@ export fn enums() -> LanguageFeature {
         name        | build
         "enum_decl" | build_enum_decl
         "match_expr"| build_match
+        "variant_lit"| build_variant_lit
     }
     let codes = table<DiagCode> {
         kind               | id      | summary
         "type.enum_decl"   | "F2012" | "an enum declares at least one variant, each named once"
         "type.match"       | "F2013" | "`match` chooses over an enum, every variant exactly once"
+        "type.variant_arity" | "F2015" | "a variant carries exactly what it declares"
+        "type.enum_payload"  | "F2016" | "an enum payload holds scalars for now"
     }
     component LanguageFeature f {
         name = "enums"
         docs = "`enum Suit { clubs hearts }` declares a closed set; `Suit.clubs` constructs; a `match` handles every variant, exactly once."
         gram = """
-stmt = "enum" n:NAME "{" ( BREAK | "," | vs:NAME )* "}" BREAK @recover(sync_to: "BREAK") -> enum_decl(n, vs)
+stmt = "enum" n:NAME "{" ( BREAK | "," | vs:NAME ( "(" vt:NAME ")" )? )* "}" BREAK @recover(sync_to: "BREAK") -> enum_decl(n, vs, vt)
+primary = t:NAME "." v:NAME "(" ( a:expression )? ")" @expect(")", "expected `)` to close the variant's argument") -> variant_lit(t, v, a)
 primary = "match" subj:expression "{" ( BREAK | "," | "." vn:NAME "->" av:expression )* "}" @expect("}", "expected `}` to close the `match`") -> match_expr(subj, vn, av)
 """
         builders = rows
