@@ -15,6 +15,7 @@ export fn expr_spine() -> LanguageFeature {
         "fold_index"  | build_fold_index
         "fold_props"  | build_fold_props
         "fold_with"   | build_fold_with
+        "fold_coalesce" | build_fold_coalesce
     }
     let codes = table<DiagCode> {
         kind                | id      | summary
@@ -28,7 +29,8 @@ export fn expr_spine() -> LanguageFeature {
 expression = disjunction
 disjunction = l:conjunction ( op:"||" r:conjunction )* -> fold_binary(l, op, r)
 conjunction = l:comparison ( op:"&&" r:comparison )* -> fold_binary(l, op, r)
-comparison = l:additive ( op:( "==" | "!=" | "<=" | ">=" | "<" | ">" ) r:additive )? -> fold_cmp(l, op, r)
+comparison = l:coalescing ( op:( "==" | "!=" | "<=" | ">=" | "<" | ">" ) r:coalescing )? -> fold_cmp(l, op, r)
+coalescing = l:additive ( "??" r:additive )* -> fold_coalesce(l, r)
 additive = l:multiplicative ( op:( "+" | "-" ) r:multiplicative )* -> fold_binary(l, op, r)
 multiplicative = l:unary ( op:( "*" | "/" | "%" ) r:unary )* -> fold_binary(l, op, r)
 unary = "!" v:unary -> not_expr(v) | withed

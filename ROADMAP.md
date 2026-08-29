@@ -93,6 +93,9 @@ text-as-projection after self-host, the service store at Era V.
     8.  ▲ enums & match — slice (a) LANDED (declarations, unit
         variants, total match); slice (b) is payloads + pattern
         binds (Binding grows its variant)
+    8.5 [x] the TYPE SURFACE — annotations are a type EXPRESSION,
+        not a NAME (found blocking rung 9); slice (a) landed `T?`,
+        `null`, `??`, widening and the join
     9.  nullability — `T?`, `null` arms, `! ?? ?.` — and the
         spec's bind-fresh trio (Axis 10): `let v? = e else { }`,
         `if let v? = e`, effectively-final narrowing. The trio is
@@ -1295,6 +1298,94 @@ five findings in code an hour old, two of them real defects):
     the fix is an arm node, which waits until a second construct
     needs one (trigger: `match` guards, or `when` arms wanting
     spans).
+
+## Rung 8.5 — THE TYPE SURFACE (found 2026-08-29, designed)
+
+Rung 9 (nullability) could not start: `T?` is the language's first
+type CONSTRUCTOR, and an annotation cannot hold one. Types are a
+bare NAME token everywhere they are spelled — `Param.ty: string`.
+What that costs TODAY, before nullability is even considered:
+  - `fn f(xs: List<int>)` DOES NOT PARSE. A list cannot cross a fn
+    boundary. Rung 5 shipped lists that only ever lived local, so
+    nobody hit it.
+  - `let x: int = 1` does not parse either: a `let` takes no
+    annotation at all, while the spec writes `let x: int? = null`.
+  - Struct fields and enum payloads take a name, so neither can
+    ever hold a list, a nullable, or (rung 11) a generic.
+The measurement that settles the shape: `Param.ty` is read in FOUR
+places, ALL in typing.av. The annotation seam is already central;
+only the PRODUCERS (three grams) pay.
+
+THE SHAPE — annotations become a small type EXPRESSION, carried as
+DATA, not as a third node namespace:
+
+    export type TypeRef = { name: string, args: List<TypeRef>,
+                            optional: bool, span: Span }
+
+  - Why data and not nodes: no pass WALKS an annotation. Resolve
+    does not visit it, lowering never sees it — typing reads it and
+    interns a TypeId. Ids exist to key side tables for passes that
+    walk; a third namespace (Stmt, Expr, TypeExpr) would buy ids
+    nothing consumes. The span rides the ref itself because the ref
+    is not a node — this is the ONE place that is honest, and it
+    buys `int?` diagnostics that point AT the annotation instead of
+    at the statement. Probed: bs2 compiles a recursive struct
+    (a struct holding `List<Self>`), so the shape is expressible.
+  - REVERSIBLE by design: if generics (rung 11) turn out to want a
+    walk over type expressions, TypeRef promotes to a node kind and
+    the four reads move. Nothing else in the tree knows.
+  - A `types` FEATURE owns the `type` rule and its builder — the
+    gram-builder unity law. Other features REFERENCE the rule, the
+    way several already reference `expression`; the partial test
+    assemblies that parse annotations must include it, which is the
+    same dangling-name discipline the tree already keeps.
+
+SLICE (a) LANDED 2026-08-29 — the surface, `T?`, `null`, `??`,
+widening, and the join. What the build taught, beyond the design:
+  - THE JOIN was NOT in the design and the corpus demanded it: the
+    natural way to make a nullable is `if c { v } else { null }`,
+    and branches that disagree had no join. `joined_type` now lives
+    beside the assignment law — equal types join to themselves, a
+    value beside an ABSENCE joins to the nullable covering both, and
+    an already-nullable branch absorbs the absence without lifting
+    twice. Two laws, one home.
+  - WIDENING needed no expected-type threading: the assignment law
+    RECORDS the lift into `Typing.widens`, and `lower_subtree` — the
+    one place every expression passes through — wraps it. One table,
+    one wrap point.
+  - `??`'s PRECEDENCE was wrong first: placed above conjunction,
+    `x ?? 0 == 0` grouped as `x ?? (0 == 0)` and refused. It binds
+    TIGHTER than comparison and looser than arithmetic, so the
+    comparison asks about the ANSWER. Found by red-teaming.
+  - A NEW LOWERING LAW, found the hard way: registers must be MINTED
+    IN EMISSION ORDER or the backend indexes past its value table
+    (`index 6 out of bounds`) while the interpreter answers correctly
+    — an engine divergence with no diagnostic. Recorded in
+    DOGFOODING; the payload load in `??` had them reversed.
+  - A managed nullable (`string?`, `P?`) refuses through the SAME
+    declared-slot law a field and a payload obey. `T?` IS a slot
+    array, so it waits on ownership analysis with everything else.
+  - The tagged slot array is now ONE definition (`tagged_value`): an
+    enum's variant, a nullable's absence, and a widened value are
+    the same shape, which is why `match` and `??` read them alike.
+
+THE SLICES (each vertical, each gated):
+  (a) THE SURFACE + `T?` + `null` + `??` — the type constructor, the
+      value that inhabits it, and one consumer, so the slice is
+      observable end to end: `let x: int? = null` then `x ?? 0`
+      runs and prints. `Type.Opt(inner)` joins the type vocabulary
+      (nine exhaustive Type consumers break until each answers).
+      The agreement law gains ONE rule, in the ONE place it lives:
+      a `null` agrees with any `Opt`. Representation follows the
+      spec's own license — "the compiler MAY represent it
+      internally as a two-variant enum" — so a nullable IS the slot
+      array enums already lower to, tag 0 absent / tag 1 present,
+      and NO new instruction is needed.
+  (b) `List<int>` annotations — the args half of the same rule,
+      closing the fn-boundary hole above.
+  (c) `!`, `?.`, and the `null ->` / `v? ->` match arms, which reuse
+      b2's arm-bind machinery directly.
+  (d) `?` propagation and the bind-fresh trio (spec Axis 10.5).
 
 ## The breather — architecture heads-up (decided 2026-08-26)
 

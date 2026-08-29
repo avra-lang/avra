@@ -1,7 +1,7 @@
 //! One parsed program: the tree, its source, and the owner map —
 //! which feature speaks for which node. Parsing and the statement
 //! spine live here; analysis stacks on top in analysis.av.
-use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, concat, flatten}
+use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, TypeRef, concat, flatten}
 use grammar.{Captured, RunOutcome, run_grammar, lex_source, lex_diagnostic}
 use features.{LangNode, NodeSemantics, StmtSemantics, dispatch, list_at, stmt_id_at, LanguageFeature}
 use features.expr_spine.{SpineSemantics}
@@ -15,6 +15,7 @@ use features.let_stmt.{LetStmtSemantics}
 use features.expr_stmt.{ExprStmtSemantics}
 use features.stmt_spine.{HoleSemantics}
 use features.lists.{ListSemantics}
+use features.nullable.{NullableSemantics}
 use features.mutation.{MutLetSemantics, AssignSemantics}
 use features.loops.{WhileSemantics, ForSemantics}
 use features.structs.{StructsSemantics, StructDeclSemantics}
@@ -48,6 +49,7 @@ export type Dispatch = {
     aggs: dyn NodeSemantics,
     structs: dyn NodeSemantics,
     enums: dyn NodeSemantics,
+    nullables: dyn NodeSemantics,
     lets: dyn StmtSemantics,
     exprs: dyn StmtSemantics,
     decls: dyn StmtSemantics,
@@ -81,9 +83,11 @@ fn new_dispatch() -> Dispatch {
     let structdecls: dyn StmtSemantics = StructDeclSemantics { }
     let enums: dyn NodeSemantics = EnumsSemantics { }
     let enumdecls: dyn StmtSemantics = EnumDeclSemantics { }
+    let nullables: dyn NodeSemantics = NullableSemantics { }
     Dispatch {
         spine: spine, strs: strs, bools: bools, ifs: ifs, whens: whens,
         blocks: blocks, calls: calls, aggs: aggs, structs: structs, enums: enums,
+        nullables: nullables,
         lets: lets, exprs: exprs, decls: decls, holes: holes,
         mutlets: mutlets, assigns: assigns, whiles: whiles, fors: fors,
         structdecls: structdecls, enumdecls: enumdecls,
@@ -107,6 +111,7 @@ export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
         .Call(_, _) -> d.calls,
         .StructLit(_, _, _) or .With(_, _, _) -> d.structs,
         .Match(_, _, _, _) or .VariantLit(_, _, _) -> d.enums,
+        .NullLit or .Coalesce(_, _) -> d.nullables,
     }
 }
 
@@ -210,7 +215,7 @@ impl NodeStore {
 }
 
 /// What a fn declaration carries, projected once.
-export type FnParts = { name: string, params: List<Param>, ret: string, body: ExprId }
+export type FnParts = { name: string, params: List<Param>, ret: TypeRef, body: ExprId }
 
 /// What a struct declaration carries, projected once.
 export type StructParts = { name: string, fields: List<Param> }

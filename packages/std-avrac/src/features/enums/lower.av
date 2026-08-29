@@ -4,7 +4,7 @@
 //! chain of comparisons. Exhaustiveness makes the last arm the
 //! region's default, so nothing falls through.
 use core.{ExprId, Reg, Ins, Type, TypeId}
-use features.{LowerCx, EnumSig, hole_defect, lower_defect}
+use features.{LowerCx, EnumSig, tagged_value, hole_defect, lower_defect}
 
 fn enums_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -26,11 +26,7 @@ fn variant_lit_reg(cx: LowerCx, e: ExprId, variant: string, args: List<ExprId>) 
     }
     let carried = cx.reg_of(arg!)
     let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
-    let tag = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(tag, which!))
-    cx.emit(Ins.CallRtVoid("avra_array_push", [dst, tag]))
-    cx.emit(Ins.CallRtVoid("avra_array_push", [dst, carried]))
+    tagged_value(cx, dst, which!, carried)
     dst
 }
 

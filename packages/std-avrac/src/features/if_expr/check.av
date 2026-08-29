@@ -2,7 +2,7 @@
 //! agree, and their shared type is the expression's. An Error
 //! anywhere ABSORBS — its cause was already diagnosed.
 use core.{ExprId, Type, TypeId}
-use features.{TypeCx, require_bool, spoken, types_disagree, this_is}
+use features.{TypeCx, require_bool, spoken, types_disagree, joined_type, this_is}
 use diagnostics.{error_at, pointed}
 
 fn if_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -17,6 +17,8 @@ fn if_type(cx: TypeCx, e: ExprId) -> TypeId {
 
 fn branch_type(cx: TypeCx, t: ExprId, f: ExprId) -> TypeId {
     if cx.shape_at(t) is .Error || cx.shape_at(f) is .Error { return cx.intern(Type.Error) }
+    let both: TypeId? = joined_type(cx, t, f)
+    if both != null { return both! }
     if types_disagree(cx, cx.type_at(t), cx.type_at(f)) {
         let n = cx.name_at(f)
         return spoken(cx, pointed(

@@ -228,6 +228,23 @@ gate — there is no amnesty left to hide in.
       with ONE arity tree-wide are judged, so `Ins.Call` and
       `Expr.Call` never confuse it.
 
+## Lowering: MINT IN EMISSION ORDER
+
+A register must be minted in the order its defining instruction is
+emitted. The backend walks instructions once and indexes its value
+table by register number, so a register minted early and emitted
+late reads past the end — `index 6 out of bounds (length 6)` at
+`avra build`, with the interpreter answering correctly the whole
+time (it resolves by lookup, not by position). Found writing `??`:
+the payload register was minted before the constant it indexes with.
+
+```avra
+let one = cx.mint_shape(Type.Int)      // mint, then emit
+cx.emit(Ins.ConstInt(one, 1))
+let carried = cx.mint(e)
+cx.emit(Ins.CallRt(carried, "avra_array_get", [v, one]))
+```
+
 ## `when` for dispatch chains
 
 Any if/return ladder over conditions is a `when` expression:

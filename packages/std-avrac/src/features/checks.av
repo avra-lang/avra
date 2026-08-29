@@ -1,7 +1,7 @@
 //! Typing laws shared across features and drivers — extracted at
 //! their third copy, wording passed in so each site keeps its own
 //! words.
-use core.{ExprId, TypeId, Type}
+use core.{ExprId, TypeId, Type, ptr_shape}
 use diagnostics.{Diag, error_at, pointed}
 
 /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -30,6 +30,57 @@ export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
     if cx.shape_of(got) is .Error || cx.shape_of(want) is .Error { return false }
     // LICENSED I9: this IS the agreement law's body
     got.index != want.index
+}
+
+/// THE ASSIGNMENT LAW: what a slot of type `want` accepts from the
+/// expression `e`. A guarantee widens INTO a nullable — an `int` IS
+/// a valid `int?` — and the widening is RECORDED so lowering wraps
+/// it. Absence never widens back: `int?` into `int` refuses, which
+/// is the whole point of opting in. True means ACCEPTED.
+export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
+    let got = cx.type_at(e)
+    if !types_disagree(cx, got, want) { return true }
+    let inner: TypeId? = opt_inner(cx, want)
+    if inner == null { return false }
+    // `null` already IS the absent value; only a PRESENT value is
+    // lifted, so only that one is recorded.
+    if cx.shape_of(got) is .Null { return true }
+    if types_disagree(cx, got, inner!) { return false }
+    cx.widen(e, want)
+    true
+}
+
+/// THE JOIN: the one type two branches can BOTH answer with. Equal
+/// types join to themselves; a value beside an ABSENCE joins to the
+/// nullable that covers both, widening the value side. Anything else
+/// has no join, and the caller refuses in its own words.
+export fn joined_type(cx: TypeCx, a: ExprId, b: ExprId) -> TypeId? {
+    let at = cx.type_at(a)
+    let bt = cx.type_at(b)
+    if !types_disagree(cx, at, bt) { return at }
+    if cx.shape_of(bt) is .Null { return nullable_of(cx, a, at) }
+    if cx.shape_of(at) is .Null { return nullable_of(cx, b, bt) }
+    null
+}
+
+/// `T` beside an absence: the answer is `T?`, and the value side is
+/// recorded for lowering to lift.
+fn nullable_of(cx: TypeCx, value: ExprId, ty: TypeId) -> TypeId? {
+    // Already nullable: the absence joins straight in, and a value
+    // that is already lifted is never lifted twice.
+    if opt_inner(cx, ty) != null { return ty }
+    if ptr_shape(cx.shape_of(ty)) { return null }
+    let opt = cx.intern(Type.Opt(ty))
+    cx.widen(value, opt)
+    opt
+}
+
+/// What a nullable carries, or absent when the type is not one.
+export fn opt_inner(cx: TypeCx, ty: TypeId) -> TypeId? {
+    match cx.shape_of(ty) {
+        .Opt(inner) -> inner,
+        _ -> null,
+    }
 }
 
 /// The VALUE law: a type NAME is not a value. `Color` alone is

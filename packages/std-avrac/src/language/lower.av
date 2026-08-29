@@ -10,7 +10,7 @@
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, concat, some_list}
 use diagnostics.{Diag, error_at, pointed, loc_at}
 use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig,
-              fn_sig_of, record_sig_of, variant_sig_of}
+              fn_sig_of, record_sig_of, variant_sig_of, tagged_value}
 use @std.errors.{Loc}
 
 /// One lowered body: instructions in order and each register's type
@@ -139,10 +139,21 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         lower_block: (stmts: List<StmtId>, value: ExprId) -> block_reg(lo, stmts, value),
         fail: (msg: string) -> lo.record(msg),
     }
-    let r = semantics_of(lo.a.dispatch, lo.a.store.expr(e)).lower(cx, e)
+    let r = widened(cx, lo, e, semantics_of(lo.a.dispatch, lo.a.store.expr(e)).lower(cx, e))
     mut rs = lo.regs
     rs.set(e.index, r)
     r
+}
+
+/// A value the assignment law LIFTED into a nullable: the present
+/// shape is tag 1 plus the value. Recorded by typing, wrapped here —
+/// the one place every expression passes through.
+fn widened(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
+    let into: TypeId? = lo.a.typing.widens[e.index]
+    if into == null { return r }
+    let dst = lo.mint_ty(into!)
+    tagged_value(cx, dst, 1, r)
+    dst
 }
 
 /// Statements in order, each through its own StmtSemantics — the
@@ -189,6 +200,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Struct(_, n) -> n,
         .Enum(_, n) -> n,
         .TypeName(_, n) -> n,
+        .Opt(_) or .Null -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
         .Int or .Str or .Bool or .List(_) or .Error -> null,
     }
     if unprintable != null { return no_projection(lo, unprintable!) }
@@ -198,6 +210,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Bool -> text_call(lo, "avra_bool_text", last),
         .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
         .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) -> null,
+        .Opt(_) or .Null -> null,
         .Error -> null,
     }
     if text != null { lo.give(Ins.CallRtVoid("avra_puts", [text!])) }

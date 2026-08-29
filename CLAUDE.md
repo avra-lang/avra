@@ -443,6 +443,8 @@ against these before writing; probe in scratch when unsure.
 - A match on a NULLABLE enum takes only `null` and `let x ->` arms —
   variant arms on `T?` refuse as non-exhaustive (F9001); unwrap
   first, then match variants.
+- A RECURSIVE struct works (`type T = { args: List<T>, ... }`),
+  built and walked by a recursive fn (probed).
 - Zero-arg closures (`() -> expr`) work, as params and calls, and
   MUTATE captured locals correctly — bracket fns taking a `fn()`
   thunk (push/run/pop) are expressible (probed).

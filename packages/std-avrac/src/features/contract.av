@@ -142,6 +142,7 @@ export type TypeCx = {
     block_type: fn(List<StmtId>, ExprId) -> TypeId,
     walk_type: fn(ExprId) -> TypeId,
     bind_type: fn(ExprId, TypeId),
+    widen: fn(ExprId, TypeId),
     name_at: fn(ExprId) -> string,
     type_name: fn(TypeId) -> string,
     loc_of: fn(ExprId) -> Loc?,
@@ -264,6 +265,21 @@ export fn duplicate_member(kind: string, owner: string, member: string, at: Loc?
         error_at(kind, at, "`${owner}` declares `${member}` more than once"),
         "in this declaration")
         with { help: "rename one of them" }
+}
+
+/// THE TAGGED VALUE: every closed-set value is a slot array holding
+/// its TAG at slot 0 and its payload, when it has one, at slot 1.
+/// An enum's variant and a nullable's presence are the SAME shape,
+/// which is why `match` and `??` read them the same way. `dst` is
+/// minted by the caller, before the first instruction is emitted —
+/// registers are numbered in emission order.
+export fn tagged_value(cx: LowerCx, dst: Reg, tag: int, payload: Reg?) {
+    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    let slot = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(slot, tag))
+    cx.emit(Ins.CallRtVoid("avra_array_push", [dst, slot]))
+    if payload == null { return }
+    cx.emit(Ins.CallRtVoid("avra_array_push", [dst, payload!]))
 }
 
 /// A lowering defect: record it and stand on a fresh register — the

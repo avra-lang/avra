@@ -25,6 +25,12 @@ export enum Type {
     /// compile-only shape: no runtime value ever has it, so every
     /// operand law and the answer projection refuse it.
     TypeName(decl: StmtId, name: string)
+    /// `T?` — a value that may be ABSENT. Nullability is opt-in
+    /// (spec Axis 10.2), so every other shape is a guarantee.
+    Opt(inner: TypeId)
+    /// The `null` literal's own type: it inhabits every `Opt` and
+    /// nothing else, which is what makes `let x: int = null` refuse.
+    Null
     Error
 }
 
@@ -44,7 +50,7 @@ export fn new_type_registry() -> TypeRegistry {
 /// Exhaustive on purpose — a new shape must decide, consciously.
 export fn ptr_shape(t: Type) -> bool {
     match t {
-        .Str or .List(_) or .Struct(_, _) or .Enum(_, _) -> true,
+        .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or .Null -> true,
         .Int or .Bool or .Error or .TypeName(_, _) -> false,
     }
 }
@@ -62,6 +68,8 @@ impl TypeRegistry {
             .Struct(decl, _) -> "5:${decl.index}",
             .Enum(decl, _) -> "6:${decl.index}",
             .TypeName(decl, _) -> "7:${decl.index}",
+            .Opt(inner) -> "8:${inner.index}",
+            .Null -> "9",
         }
     }
 
@@ -90,6 +98,8 @@ impl TypeRegistry {
             .Struct(_, name) -> name,
             .Enum(_, name) -> name,
             .TypeName(_, name) -> "type ${name}",
+            .Opt(inner) -> "${self.name_of(inner)}?",
+            .Null -> "null",
             .Error -> "<error>",
         }
     }
