@@ -42,6 +42,7 @@ type Lower = {
     regs: List<Reg?>,
     slots: List<Reg?>,
     boxed: List<bool>,
+    pattern_regs: List<Reg?>,
     failures: List<string>,
 }
 
@@ -51,6 +52,7 @@ fn new_lower(a: Analysis) -> Lower {
         regs: filled<Reg?>(a.store.exprs.count(), null),
         slots: filled<Reg?>(a.store.stmts.count(), null),
         boxed: filled(a.store.stmts.count(), false),
+        pattern_regs: filled<Reg?>(a.store.exprs.count(), null),
         failures: [],
     }
 }
@@ -131,6 +133,7 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         mint_shape: (sh: Type) -> lo.mint_ty(lo.a.typing.types.intern(sh)),
         mint_ty: (ty: TypeId) -> lo.mint_ty(ty),
         fields_at: (k: ExprId) -> lo.fields_at(k),
+        bind_pattern: (k: ExprId, r: Reg) -> lo.bind_pattern(k, r),
         variants_at: (k: ExprId) -> lo.variants_at(k),
         emit: (i: Ins) -> lo.give(i),
         lower_block: (stmts: List<StmtId>, value: ExprId) -> block_reg(lo, stmts, value),
@@ -279,6 +282,7 @@ impl Lower {
         match b! {
             .Param(i) -> Reg { index: i },
             .Def(s) -> self.slot_reg(e, s),
+            .Pattern(v) -> self.pattern_regs[v.index],
         }
     }
 
@@ -311,6 +315,13 @@ impl Lower {
             .Enum(decl, _) -> variant_sig_of(self.a.decl_sig(decl)),
             _ -> null,
         }
+    }
+
+    /// The register an arm's bind reads — recorded as that arm
+    /// lowers, so an ident inside it finds the payload.
+    fn bind_pattern(self, v: ExprId, r: Reg) {
+        mut ps = self.pattern_regs
+        ps.set(v.index, r)
     }
 
     fn record(self, msg: string) {

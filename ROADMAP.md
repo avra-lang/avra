@@ -1253,16 +1253,48 @@ five findings in code an hour old, two of them real defects):
   bs2 trap found: `given` is RESERVED as a local (the spec DSL's
   words are lexed in ordinary code) — recorded in CLAUDE.md.
 
-(b2) PATTERN BINDS — `match s { .circle(r) -> r * 2, .point -> 0 }`.
-  - `Binding` grows the variant its arc PROMISED: the first bind
-    that is not a statement. Resolve gains an ARM scope (the
-    bound_scope shape, keyed by the arm rather than a StmtId), and
-    every consumer's Binding match breaks until it decides.
-  - TYPING: the bind's type is the variant's payload type.
-  - LOWERING: the bind reads slot 1 of the subject — inside the
-    arm's region, so it is only read when that arm is taken.
-  - The bind is IMMUTABLE and scoped to its arm; a bind shadowing
-    an outer name follows the existing shadowing law.
+(b2) PATTERN BINDS — LANDED 2026-08-29.
+  `match s { .circle(r) -> r * 2, .point -> 0 }`.
+  - `Binding` grew the variant its arc PROMISED: the first bind
+    that is not a statement. Its identity is the ARM'S VALUE, not
+    (match, index) — so both later passes key their fact by an
+    ExprId like every other node fact, and nested matches need no
+    special care at all.
+  - A match is now CONTROL-OWNING (the Block shape): `kids` hides
+    the arm values and the driver walks each under `arm_scope`,
+    the FIRST scope an expression opens.
+  - TYPING: the arm's OWNER speaks the bind's type into a table
+    before the arm is walked (`cx.bind_type`) — the pass never
+    matches a feature's node to learn it. The first draft DID,
+    and that was the doctrine violation this round removed.
+  - LOWERING: the bind reads slot 1 of the subject INSIDE the arm's
+    region — pinned by an IR golden, so an untaken arm provably
+    never loads. A called subject lowers ONCE, also pinned.
+  - THE RED TEAM'S HAUL (three real defects, all pre-existing or
+    new, now tests):
+    1. A fn PARAM outranked every inner scope. `resolve_name`
+       consulted params BEFORE the overlays, so `fn f(n: int)` made
+       `let n = 7` inside an if-branch a no-op — a SILENT wrong
+       answer shipped since blocks landed, found by attacking arm
+       binds. The chain is now ONE ordered ladder (`value_binding`)
+       whose order IS the shadowing law: overlays, params, program
+       scope, type-as-value.
+    2. An unknown variant with a bind earned TWO refusals — the
+       bind law now stays silent where `arm_checks` already spoke.
+    3. `semantics_of` matched `.Match(_, _, _)` after Match grew a
+       fourth payload, and a test helper `.Pattern(_, _)` after
+       Pattern shrank to one. bs2 accepts BOTH silently: it does
+       not check pattern arity. I25 now does (see DOGFOODING).
+  - Still refused, by design: a payload holds a SCALAR (strings and
+    aggregates wait for ownership analysis), and an arm's value
+    cannot be a block — blocks are not expressions anywhere yet
+    (that rung is already recorded).
+  - Sugar the compiler WANTED here: an arm's variant name has no
+    span of its own, so `.zz(m)`'s refusal points at the arm's
+    VALUE. Arms are not nodes, and node facts key by typed id —
+    the fix is an arm node, which waits until a second construct
+    needs one (trigger: `match` guards, or `when` arms wanting
+    spans).
 
 ## The breather — architecture heads-up (decided 2026-08-26)
 

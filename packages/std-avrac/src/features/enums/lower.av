@@ -3,13 +3,13 @@
 //! region over that tag — a jump table natively, not a walk down a
 //! chain of comparisons. Exhaustiveness makes the last arm the
 //! region's default, so nothing falls through.
-use core.{ExprId, Reg, Ins, Type}
+use core.{ExprId, Reg, Ins, Type, TypeId}
 use features.{LowerCx, EnumSig, hole_defect, lower_defect}
 
 fn enums_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.store.expr(e) {
-        .Match(subject, variants, values) -> matched_reg(cx, e, subject, variants, values),
+        .Match(subject, variants, binds, values) -> matched_reg(cx, e, subject, variants, binds, values),
         .VariantLit(_, variant, args) -> variant_lit_reg(cx, e, variant, args),
         _ -> lower_defect(cx, e, hole_defect()),
     }
@@ -34,7 +34,8 @@ fn variant_lit_reg(cx: LowerCx, e: ExprId, variant: string, args: List<ExprId>) 
     dst
 }
 
-fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>, values: List<ExprId>) -> Reg {
+fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
+               binds: List<string>, values: List<ExprId>) -> Reg {
     let sig: EnumSig? = cx.variants_at(subject)
     if sig == null || values.is_empty() {
         cx.fail("defect: a `match` without an enum subject survived typing")
@@ -43,7 +44,7 @@ fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>, 
     // The subject is evaluated either way; its TAG is only read
     // when something chooses on it.
     let v = cx.reg_of(subject)
-    if values.length == 1 { return cx.reg_of(values[0]) }
+    if values.length == 1 { return arm_reg(cx, sig!, v, variants[0], binds[0], values[0]) }
     // Every arm but the last is a CASE; the last is the default.
     let last_arm = values.length - 1
     let cases = arm_cases(sig!, variants, last_arm)
@@ -54,15 +55,20 @@ fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>, 
     let tag = tag_reg(cx, v)
     cx.emit(Ins.SwitchStart(tag, cases))
     for (j, av) in values.enumerate() {
-        if j < last_arm {
-            let g = cx.reg_of(av)
-            cx.emit(Ins.ArmEnd(g))
-        }
+        if j < last_arm { cx.emit(Ins.ArmEnd(arm_reg(cx, sig!, v, variants[j], binds[j], av))) }
     }
-    let last = cx.reg_of(values.last()!)
+    let last = arm_reg(cx, sig!, v, variants[last_arm], binds[last_arm], values[last_arm])
     let dst = cx.mint(e)
     cx.emit(Ins.RegionEnd(dst, last))
     dst
+}
+
+/// One arm: its bind, then its value — in that order, so a name
+/// inside the value finds the payload.
+fn arm_reg(cx: LowerCx, sig: EnumSig, subject: Reg, variant: string,
+           bind: string, value: ExprId) -> Reg {
+    bind_arm(cx, sig, subject, variant, bind, value)
+    cx.reg_of(value)
 }
 
 /// The first `count` arms' selector values, in arm order — the last
@@ -75,6 +81,20 @@ fn arm_cases(sig: EnumSig, variants: List<string>, count: int) -> List<int> {
         if j < count && which != null { cases.push(which!) }
     }
     cases
+}
+
+/// The bind reads slot 1 of the subject — emitted INSIDE the arm's
+/// region, so the payload is only read when that arm is taken.
+/// A variant carrying nothing binds nothing: typing refused it.
+fn bind_arm(cx: LowerCx, sig: EnumSig, subject: Reg, variant: string, bind: string, value: ExprId) {
+    if bind == "" { return }
+    let carried: TypeId? = sig.payload_of(variant)
+    if carried == null { return }
+    let one = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(one, 1))
+    let payload = cx.mint_ty(carried!)
+    cx.emit(Ins.CallRt(payload, "avra_array_get", [subject, one]))
+    cx.bind_pattern(value, payload)
 }
 
 /// The subject's tag: slot 0 of its array.

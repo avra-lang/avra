@@ -35,7 +35,7 @@ fn decl_checks(cx: StmtTypeCx, s: StmtId, name: string, variants: List<Param>) {
 fn enums_type(cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.store.expr(e) {
-        .Match(subject, variants, values) -> matched_type(cx, e, subject, variants, values),
+        .Match(subject, variants, binds, values) -> matched_type(cx, e, subject, variants, binds, values),
         .VariantLit(tname, variant, args) -> variant_lit_type(cx, e, tname, variant, args),
         _ -> cx.intern(Type.Error),
     }
@@ -92,7 +92,8 @@ fn arg_checks(cx: TypeCx, e: ExprId, tname: string, variant: string, args: List<
     }
 }
 
-fn matched_type(cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>, values: List<ExprId>) -> TypeId {
+fn matched_type(cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>,
+                binds: List<string>, values: List<ExprId>) -> TypeId {
     let sh: Type = cx.shape_at(subject)
     if sh is .Error { return cx.intern(Type.Error) }
     let sig: EnumSig? = cx.variants_of(cx.type_at(subject))
@@ -103,6 +104,10 @@ fn matched_type(cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>, 
             this_is(n)))
     }
     let sname = cx.name_at(subject)
+    bind_checks(cx, sname, variants, binds, values, sig!)
+    // The arms are hidden from the walk, so type them HERE — their
+    // binds are spoken above, in time for the names inside.
+    for v in values { let _ = cx.walk_type(v) }
     arm_checks(cx, sname, variants, values, sig!)
     coverage_checks(cx, e, sname, variants, sig!)
     arms_type(cx, values)
@@ -125,6 +130,31 @@ fn arm_checks(cx: TypeCx, sname: string, variants: List<string>, values: List<Ex
                 "matched again here"))
         }
     }
+}
+
+/// The bind law, arm by arm: a bind names the payload its variant
+/// carries, so the type is SPOKEN for the arm — typing reads it
+/// wherever the name is used — and a variant carrying NOTHING has
+/// nothing to name. An UNKNOWN variant is not this law's business:
+/// `arm_checks` speaks there, and a second refusal for one arm is
+/// a cascade.
+fn bind_checks(cx: TypeCx, sname: string, variants: List<string>, binds: List<string>,
+               values: List<ExprId>, sig: EnumSig) {
+    for (j, b) in binds.enumerate() { bind_law(cx, sname, variants[j], b, values[j], sig) }
+}
+
+fn bind_law(cx: TypeCx, sname: string, variant: string, bind: string, value: ExprId, sig: EnumSig) {
+    if bind == "" || sig.tag_of(variant) == null { return }
+    let carried: TypeId? = sig.payload_of(variant)
+    if carried == null {
+        cx.emit(pointed(
+            error_at("type.variant_arity", cx.loc_of(value),
+                "`${sname}.${variant}` carries nothing to bind"),
+            "bound here")
+            with { help: "write `.${variant} ->` — only a carrying variant binds" })
+        return
+    }
+    cx.bind_type(value, carried!)
 }
 
 /// Every declared variant is written — the totality half.

@@ -19,13 +19,16 @@ use @std.errors.{Loc}
 
 /// Resolve capabilities: an impl reports a name use — as a value
 /// (`use_name`) or as a callee (`use_call`); the driver owns scopes,
-/// namespaces, suggestions, and diagnostics.
+/// namespaces, suggestions, and diagnostics. `arm_scope` walks one
+/// match arm's value under its own bind ("" when the arm names
+/// none) — the first scope an EXPRESSION opens.
 export type ResolveCx = {
     store: NodeStore,
     use_name: fn(ExprId, string),
     use_call: fn(ExprId, string),
     use_type: fn(ExprId, string),
     block_scope: fn(List<StmtId>, ExprId),
+    arm_scope: fn(string, ExprId),
 }
 
 /// A fn's typed signature, as the type pass computed it.
@@ -137,6 +140,8 @@ export type TypeCx = {
     fields_of: fn(TypeId) -> StructSig?,
     variants_of: fn(TypeId) -> EnumSig?,
     block_type: fn(List<StmtId>, ExprId) -> TypeId,
+    walk_type: fn(ExprId) -> TypeId,
+    bind_type: fn(ExprId, TypeId),
     name_at: fn(ExprId) -> string,
     type_name: fn(TypeId) -> string,
     loc_of: fn(ExprId) -> Loc?,
@@ -161,6 +166,7 @@ export type LowerCx = {
     mint_ty: fn(TypeId) -> Reg,
     fields_at: fn(ExprId) -> StructSig?,
     variants_at: fn(ExprId) -> EnumSig?,
+    bind_pattern: fn(ExprId, Reg),
     emit: fn(Ins),
     lower_block: fn(List<StmtId>, ExprId) -> Reg,
     fail: fn(string),

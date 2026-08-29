@@ -1,8 +1,10 @@
 //! The enums semantics: dispatch only. Typing lives in check.av;
 //! lowering — the MEANING — in lower.av. The declaration is a
 //! STATEMENT kind whose name the driver declares program-wide in
-//! the type namespace, so its own passes do nothing.
-use core.{Expr, ExprId, StmtId, TypeId, Reg, concat}
+//! the type namespace, so its own passes do nothing. A match is
+//! CONTROL-OWNING: its arms are hidden from `kids` and walked
+//! through the driver, each under its own bind.
+use core.{Expr, ExprId, StmtId, TypeId, Reg}
 use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx,
               StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing, nested_decl}
 
@@ -12,7 +14,7 @@ impl NodeSemantics for EnumsSemantics {
     fn kids(self, e: Expr) -> List<ExprId> {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
         match e {
-            .Match(subject, _, values) -> concat([subject], values),
+            .Match(subject, _, _, _) -> [subject],
             .VariantLit(_, _, args) -> args,
             _ -> [],
         }
@@ -22,6 +24,7 @@ impl NodeSemantics for EnumsSemantics {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match cx.store.expr(e) {
             .VariantLit(tname, _, _) -> cx.use_type(e, tname),
+            .Match(_, _, binds, values) -> resolve_arms(cx, binds, values),
             _ -> nothing(),
         }
     }
@@ -51,4 +54,10 @@ impl StmtSemantics for EnumDeclSemantics {
     fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
         null
     }
+}
+
+/// Each arm walks under its OWN bind — a match is a CONTROL-OWNING
+/// node, so `kids` hides the arm values and this walks them instead.
+fn resolve_arms(cx: ResolveCx, binds: List<string>, values: List<ExprId>) {
+    for (j, v) in values.enumerate() { cx.arm_scope(binds[j], v) }
 }

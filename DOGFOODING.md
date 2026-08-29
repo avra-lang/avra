@@ -40,7 +40,7 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24.
+Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I25.
 I12 came BACK from unratcheted once its regex was repaired: it had
 been reading `if x is .Error { return ... }` as a struct literal,
 so it was retired for false positives that were the rule's fault,
@@ -216,6 +216,17 @@ gate — there is no amnesty left to hide in.
       direction (TECH_DEBT: no import closures), so imports are
       hand-kept truth and rot silently — 54 had accumulated, several
       created by the same day's refactors.
+
+- I25 a variant pattern writing the WRONG payload count. bs2 does
+      not check pattern arity at all: `.A(_, _)` compiles against a
+      three-payload variant and binds the wrong things, silently —
+      so growing a node's payload breaks NO call site, and the
+      doctrine's "a new field breaks every site at compile time"
+      is a promise only this rule keeps. Found two already stale:
+      `semantics_of`'s `.Match(_, _, _)` and a test helper's
+      `.Pattern(_, _)`, both accepted by the compiler. Only names
+      with ONE arity tree-wide are judged, so `Ins.Call` and
+      `Expr.Call` never confuse it.
 
 ## `when` for dispatch chains
 

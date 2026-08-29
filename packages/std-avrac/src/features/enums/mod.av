@@ -3,22 +3,23 @@
 //! comma-separated); `Name.variant` constructs through the spine's
 //! property ladder (a TYPE NAME is the subject); `match subject {
 //! .variant -> value }` chooses, TOTALLY — every variant exactly
-//! once, and no catch-all arm exists. Payload variants and pattern
-//! binds are the next slice.
+//! once, and no catch-all arm exists. A variant may CARRY one
+//! scalar (`B(int)`), built as `Name.B(v)` and unpacked by an arm's
+//! bind (`.B(v) -> v`), which lives for that arm alone.
 use features.{LanguageFeature, BuilderRow}
 use diagnostics.{DiagCode}
 
 export fn enums() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name        | build
-        "enum_decl" | build_enum_decl
-        "match_expr"| build_match
-        "variant_lit"| build_variant_lit
+        name          | build
+        "enum_decl"   | build_enum_decl
+        "match_expr"  | build_match
+        "variant_lit" | build_variant_lit
     }
     let codes = table<DiagCode> {
-        kind               | id      | summary
-        "type.enum_decl"   | "F2012" | "an enum declares at least one variant, each named once"
-        "type.match"       | "F2013" | "`match` chooses over an enum, every variant exactly once"
+        kind                 | id      | summary
+        "type.enum_decl"     | "F2012" | "an enum declares at least one variant, each named once"
+        "type.match"         | "F2013" | "`match` chooses over an enum, every variant exactly once"
         "type.variant_arity" | "F2015" | "a variant carries exactly what it declares"
         "type.enum_payload"  | "F2016" | "an enum payload holds scalars for now"
     }
@@ -28,7 +29,7 @@ export fn enums() -> LanguageFeature {
         gram = """
 stmt = "enum" n:NAME "{" ( BREAK | "," | vs:NAME ( "(" vt:NAME ")" )? )* "}" BREAK @recover(sync_to: "BREAK") -> enum_decl(n, vs, vt)
 primary = t:NAME "." v:NAME "(" ( a:expression )? ")" @expect(")", "expected `)` to close the variant's argument") -> variant_lit(t, v, a)
-primary = "match" subj:expression "{" ( BREAK | "," | "." vn:NAME "->" av:expression )* "}" @expect("}", "expected `}` to close the `match`") -> match_expr(subj, vn, av)
+primary = "match" subj:expression "{" ( BREAK | "," | "." vn:NAME ( "(" bn:NAME ")" )? "->" av:expression )* "}" @expect("}", "expected `}` to close the `match`") -> match_expr(subj, vn, bn, av)
 """
         builders = rows
         diags = codes

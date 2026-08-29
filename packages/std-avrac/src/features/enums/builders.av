@@ -20,19 +20,28 @@ fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
     let ends: int? = b.span_end()
     if ends == null { return Result.Err("an enum declaration without a span") }
     let vs = b.tokens(1)?
-    let vt = b.tokens(2)?
+    let tys = aligned(vs, b.tokens(2)?, ends!)
     mut variants: List<Param> = []
-    for (j, v) in vs.enumerate() {
-        let upto = if j + 1 < vs.length { vs[j + 1].span.lo } else { ends! }
-        variants.push(Param { name: v.text, ty: carried_between(vt, v.span.lo, upto) })
-    }
+    for (j, v) in vs.enumerate() { variants.push(Param { name: v.text, ty: tys[j] }) }
     b.make_stmt(Stmt.EnumDecl(n.text, variants))
 }
 
-/// The type written between two variant names, or "" — the empty
-/// type IS a unit variant.
-fn carried_between(types: List<Token>, after: int, before: int) -> string {
-    let hit: Token? = types.find(it.span.lo > after && it.span.lo < before)
+/// THE alignment law for a capture a repetition may SKIP: each
+/// anchor's one optional token, in anchor order. An anchor's window
+/// runs to the next anchor, or to the construct's end.
+fn aligned(anchors: List<Token>, optional: List<Token>, ends: int) -> List<string> {
+    mut found: List<string> = []
+    for (j, a) in anchors.enumerate() {
+        let upto = if j + 1 < anchors.length { anchors[j + 1].span.lo } else { ends }
+        found.push(token_between(optional, a.span.lo, upto))
+    }
+    found
+}
+
+/// The one optional token written between two anchors, or "" — an
+/// empty answer is the absence itself: no payload, no bind.
+fn token_between(tokens: List<Token>, after: int, before: int) -> string {
+    let hit: Token? = tokens.find(it.span.lo > after && it.span.lo < before)
     if hit == null { return "" }
     hit!.text
 }
@@ -46,10 +55,14 @@ fn build_variant_lit(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.VariantLit(t.text, v.text, some_list(arg)))
 }
 
+/// Arm names and values ZIP; a BIND is optional, so it aligns by
+/// span like a declaration's payload does.
 fn build_match(b: Builder) -> Result<LangNode, string> {
     let subject = b.expr(0)?
     let vn = b.tokens(1)?
-    let av = b.exprs(2)?
+    let av = b.exprs(3)?
+    let ends: int? = b.span_end()
     if vn.length != av.length { return Result.Err(zip_defect()) }
-    b.make_expr(Expr.Match(subject, [v.text for v in vn], av))
+    if ends == null { return Result.Err("a match without a span") }
+    b.make_expr(Expr.Match(subject, [v.text for v in vn], aligned(vn, b.tokens(2)?, ends!), av))
 }

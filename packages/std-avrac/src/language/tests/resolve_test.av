@@ -1,10 +1,15 @@
 // The first pass: uses resolve to definition sites, shadowing takes
 // the latest, and an unresolved name earns the milestone error —
 // kind, code, window, pointer, and a graded suggestion.
-use @std.avrac.language.{avra, parse_source, resolve, binding_of, Binding, Resolution}
+use @std.avrac.language.{avra, analyze_source, parse_source, resolve, binding_of, Binding, Resolution}
 use @std.errors.{Confidence}
 use @std.avrac.diagnostics.{new_source_file}
 use @std.avrac.core.{ExprId}
+
+/// A program's printed value, or "<refused>".
+fn shown(source: string) -> string {
+    analyze_source(source).ran() ?? "<refused>"
+}
 
 /// The statement index a use's Def binding names; -1 otherwise.
 fn defined_at(r: Resolution, e: ExprId) -> int {
@@ -12,7 +17,7 @@ fn defined_at(r: Resolution, e: ExprId) -> int {
     if b == null { return -1 }
     match b! {
         .Def(s) -> s.index,
-        .Param(_) -> -1,
+        .Param(_) or .Pattern(_) -> -1,
     }
 }
 
@@ -28,6 +33,17 @@ spec "language/resolve" {
             let p = parse_source("let x = 1\nlet x = 2\nx")
             let r = resolve(p)
             defined_at(r, p.store.stmt_value(p.stmts[2])!) == 1
+        }
+    }
+    given "the shadowing chain — the lookup ORDER is the law" {
+        then "innermost outward: an inner scope beats a param beats the top level" {
+            shown("let n = 1\nfn f(n: int) -> int {\n    if true {\n        let n = 100\n        n\n    } else { n }\n}\nf(10) + n") == "101"
+        }
+        then "a param beats the top level when no inner scope speaks" {
+            shown("let n = 1\nfn f(n: int) -> int { n }\nf(41) + n") == "42"
+        }
+        then "each scope's name dies at its exit" {
+            shown("let n = 1\nfn f(n: int) -> int {\n    if true {\n        let n = 100\n        n\n    } else { 0 } + n\n}\nf(41)") == "141"
         }
     }
     given "unresolved names" {

@@ -6,7 +6,7 @@
 //
 // The fixtures below carry the boilerplate so each test shows only
 // its attack.
-use @std.avrac.language.{analyze_source}
+use @std.avrac.language.{analyze_source, render_ir}
 
 /// A program's printed value, or "<refused>".
 fn shown(source: string) -> string {
@@ -26,6 +26,11 @@ fn ab() -> string {
 /// A total match over `ab()`'s enum, answering 1 for a and 0 for b.
 fn ab_arms() -> string {
     "match v {\n    .a -> 1\n    .b -> 0\n}"
+}
+
+/// The IR a program lowers to, as `avra ir` prints it.
+fn ir_text(source: string) -> string {
+    render_ir(analyze_source(source).lowered())
 }
 
 /// Three unit variants, for order and coverage attacks.
@@ -222,6 +227,166 @@ spec "features/enums (adversarial)" {
         }
         then "one subject matched twice reads the same value" {
             shown("${ab()}let v = E.a(1)\n${ab_arms()} + match v {\n    .a -> 10\n    .b -> 0\n}") == "11"
+        }
+    }
+    given "binds against every scope" {
+        then "a bind beats a fn PARAM of the same name" {
+            shown("${ab()}fn f(n: int) -> int {\n    match E.a(7) {\n        .a(n) -> n\n        .b -> 0\n    }\n}\nf(35)") == "7"
+        }
+        then "a bind beats an outer let, which survives the arm" {
+            shown("let n = 100\n${ab()}let r = match E.a(7) {\n    .a(n) -> n\n    .b -> 0\n}\nr + n") == "107"
+        }
+        then "three nested binds of one name: the innermost wins" {
+            shown("${ab()}match E.a(1) {\n    .a(n) -> match E.a(2) {\n        .a(n) -> match E.a(39) { .a(n) -> n, .b -> 0 }\n        .b -> 0\n    }\n    .b -> 0\n}") == "39"
+        }
+        then "an outer bind survives a nested match that rebinds" {
+            shown("${ab()}match E.a(40) {\n    .a(n) -> match E.a(2) { .a(m) -> m, .b -> 0 } + n\n    .b -> 0\n}") == "42"
+        }
+        then "sibling arms may reuse one bind name" {
+            shown("enum E {\n    a(int)\n    b(int)\n}\nmatch E.b(41) {\n    .a(v) -> v\n    .b(v) -> v + 1\n}") == "42"
+        }
+        then "a bind may take its own variant's name" {
+            shown("${ab()}match E.a(7) {\n    .a(a) -> a\n    .b -> 0\n}") == "7"
+        }
+        then "a bind may take the enum's name — types are a separate namespace" {
+            shown("${ab()}match E.a(9) {\n    .a(E) -> E\n    .b -> 0\n}") == "9"
+        }
+        then "a bind beats a fn name for the arm, and the fn still calls" {
+            shown("fn n(v: int) -> int { v }\n${ab()}match E.a(7) {\n    .a(n) -> n + n(1)\n    .b -> 0\n}") == "8"
+        }
+        then "a bind dies with its arm" {
+            refusals("${ab()}match E.a(1) {\n    .a(n) -> n\n    .b -> n\n}") == 1
+        }
+    }
+    given "binds in the bind slot" {
+        then "a keyword refuses as a bind name" {
+            let a = analyze_source("${ab()}match E.a(1) {\n    .a(match) -> 1\n    .b -> 0\n}")
+            a.diagnostics.length == 1 && a.report().contains("`match` is a keyword")
+        }
+        then "`_` refuses as a bind name — a hole is not a name" {
+            let a = analyze_source("${ab()}match E.a(1) {\n    .a(_) -> 1\n    .b -> 0\n}")
+            a.diagnostics.length == 1 && a.report().contains("`_` is a keyword")
+        }
+        then "a literal in the bind slot refuses" {
+            refusals("${ab()}match E.a(1) { .a(1) -> 1, .b -> 0 }") >= 1
+        }
+        then "empty parens refuse — a bind slot binds something" {
+            refusals("${ab()}match E.a(1) { .a() -> 1, .b -> 0 }") >= 1
+        }
+        then "two binds refuse — one payload, one name" {
+            refusals("${ab()}match E.a(1) { .a(n, m) -> 1, .b -> 0 }") >= 1
+        }
+        then "a trailing comma refuses" {
+            refusals("${ab()}match E.a(1) { .a(n,) -> 1, .b -> 0 }") >= 1
+        }
+        then "parens around the bind refuse" {
+            refusals("${ab()}match E.a(1) { .a((n)) -> 1, .b -> 0 }") >= 1
+        }
+        then "a bind with no arrow refuses" {
+            refusals("${ab()}match E.a(1) { .a(n) 1, .b -> 0 }") >= 1
+        }
+        then "an unclosed bind refuses" {
+            refusals("${ab()}match E.a(1) { .a(n -> 1, .b -> 0 }") >= 1
+        }
+        then "a bind with no value refuses" {
+            refusals("${ab()}match E.a(1) { .a(n) ->, .b -> 0 }") >= 1
+        }
+        then "a unit variant carries nothing to bind — ONE refusal" {
+            refusals("${ab()}match E.a(1) {\n    .a(n) -> n\n    .b(x) -> 0\n}") == 1
+        }
+        then "an unknown variant with a bind refuses ONCE" {
+            refusals("${ab()}match E.a(1) {\n    .a(n) -> n\n    .zz(m) -> 0\n    .b -> 0\n}") == 1
+        }
+        then "a repeated arm refuses once, binds or not" {
+            refusals("${ab()}match E.a(1) {\n    .a(n) -> n\n    .a(m) -> m\n    .b -> 0\n}") == 1
+        }
+        then "a missing arm still refuses when the others bind" {
+            refusals("${ab()}match E.a(1) {\n    .a(n) -> n\n}") == 1
+        }
+        then "a bind is its PAYLOAD's type, not the enum's" {
+            refusals("${ab()}match E.a(1) {\n    .a(n) -> match n { .a(m) -> m, .b -> 0 }\n    .b -> 0\n}") == 1
+        }
+    }
+    given "binds crossing every other feature" {
+        then "a bind fills an interpolation hole" {
+            shown("${ab()}match E.a(7) {\n    .a(n) -> \"got $" + "{n}\"\n    .b -> \"none\"\n}") == "got 7"
+        }
+        then "a bind steers an if" {
+            shown("${ab()}match E.a(7) {\n    .a(n) -> if n > 3 { 42 } else { 0 }\n    .b -> 0\n}") == "42"
+        }
+        then "a bind fills a struct field" {
+            shown("type P = { x: int }\n${ab()}let p = match E.a(42) {\n    .a(n) -> P { x: n }\n    .b -> P { x: 0 }\n}\np.x") == "42"
+        }
+        then "a bind feeds `with`" {
+            shown("type P = { x: int, y: int }\n${ab()}let base = P { x: 1, y: 2 }\nlet p = match E.a(42) {\n    .a(n) -> base with { x: n }\n    .b -> base\n}\np.x") == "42"
+        }
+        then "a bind rebuilds its own enum" {
+            shown("${ab()}match E.a(20) {\n    .a(n) -> match E.a(n + 1) { .a(m) -> m + 21, .b -> 0 }\n    .b -> 0\n}") == "42"
+        }
+        then "a bind drives recursion" {
+            shown("enum N {\n    more(int)\n    done\n}\nfn walk(n: N) -> int {\n    match n {\n        .more(k) -> if k == 0 { 0 } else { k + walk(N.more(k - 1)) }\n        .done -> 0\n    }\n}\nwalk(N.more(4))") == "10"
+        }
+        then "every arm of eight binds, and the sixth answers" {
+            shown("enum E {\n    a(int)\n    b(int)\n    c(int)\n    d(int)\n    e(int)\n    f(int)\n    g(int)\n    h(int)\n}\nmatch E.f(6) {\n    .a(n) -> n * 1\n    .b(n) -> n * 2\n    .c(n) -> n * 3\n    .d(n) -> n * 4\n    .e(n) -> n * 5\n    .f(n) -> n * 6\n    .g(n) -> n * 7\n    .h(n) -> n * 8\n}") == "36"
+        }
+    }
+    given "the payload load, in the IR" {
+        then "the load lives INSIDE its arm — an untaken arm never reads it" {
+            let expected = """scope application {
+  r0 = int 21
+  r1 = call avra_array_new()
+  r2 = int 0
+  call avra_array_push(r1, r2)
+  call avra_array_push(r1, r0)
+  r3 = int 0
+  r4 = call avra_array_get(r1, r3)
+  switch r4 over [0] {
+    r5 = int 1
+    r6 = call avra_array_get(r1, r5)
+    r7 = int 2
+    r8 = r6 * r7
+    yield r8
+  } arm {
+    r9 = int 0
+    yield r9
+  } -> r10
+  r11 = call avra_int_text(r10)
+  call avra_puts(r11)
+  release r11
+}
+ret 0"""
+            ir_text("${ab()}match E.a(21) {\n    .a(n) -> n * 2\n    .b -> 0\n}") == expected
+        }
+        then "a called subject is lowered ONCE — the arms read one value" {
+            let expected = """fn mk() -> E
+scope application {
+  r0 = int 1
+  r1 = call avra_array_new()
+  r2 = int 0
+  call avra_array_push(r1, r2)
+  call avra_array_push(r1, r0)
+  yield r1
+}
+ret r1
+
+scope application {
+  r0 = call mk()
+  r1 = int 0
+  r2 = call avra_array_get(r0, r1)
+  switch r2 over [0] {
+    r3 = int 1
+    r4 = call avra_array_get(r0, r3)
+    yield r4
+  } arm {
+    r5 = int 0
+    yield r5
+  } -> r6
+  r7 = call avra_int_text(r6)
+  call avra_puts(r7)
+  release r7
+}
+ret 0"""
+            ir_text("${ab()}fn mk() -> E { E.a(1) }\nmatch mk() {\n    .a(n) -> n\n    .b -> 0\n}") == expected
         }
     }
     given "the answer, both engines" {

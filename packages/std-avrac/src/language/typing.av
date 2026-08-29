@@ -27,11 +27,15 @@ export fn type_of(t: Typing, e: ExprId) -> TypeId {
     t.of_expr[e.index]
 }
 
+/// The pass's working state. `pattern_types` holds what each
+/// match arm's bind carries — spoken by the arm's OWNER before the
+/// arm is walked, and pass-internal: no later pass asks.
 type Typer = {
     p: ParsedProgram,
     resolution: Resolution,
     types: TypeRegistry,
     of_expr: List<TypeId>,
+    pattern_types: List<TypeId?>,
     decls: List<DeclSig?>,
     diagnostics: List<Diag>,
 }
@@ -43,6 +47,7 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
     let t = Typer {
         p: p, resolution: r, types: registry,
         of_expr: filled(p.store.exprs.count(), hole),
+        pattern_types: filled<TypeId?>(p.store.exprs.count(), null),
         decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
@@ -94,6 +99,8 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         fields_of: (ty: TypeId) -> t.fields_of(ty),
         variants_of: (ty: TypeId) -> t.variants_of(ty),
         block_type: (stmts: List<StmtId>, value: ExprId) -> block_type(t, param_types, stmts, value),
+        walk_type: (v: ExprId) -> typed_subtree(t, param_types, v),
+        bind_type: (v: ExprId, ty: TypeId) -> t.record_bind(v, ty),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
         type_name: (ty: TypeId) -> t.types.name_of(ty),
         loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
@@ -108,6 +115,13 @@ fn block_type(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>, value: E
     type_stmts(t, param_types, stmts)
     type_walk(t, param_types, value)
     t.of_expr[value.index]
+}
+
+/// A subtree typed on request, answering its own type — what a
+/// CONTROL-OWNING node uses for children it hides from the walk.
+fn typed_subtree(t: Typer, param_types: List<TypeId>, root: ExprId) -> TypeId {
+    type_walk(t, param_types, root)
+    t.of_expr[root.index]
 }
 
 /// One node's fact: the owner speaks, the table records.
@@ -245,7 +259,16 @@ impl Typer {
         match b! {
             .Param(i) -> param_types[i],
             .Def(s) -> self.def_type(s),
+            // The arm's OWNER spoke this type before the arm was
+            // walked; an absent one means the bind was refused.
+            .Pattern(v) -> self.pattern_types[v.index] ?? self.types.intern(Type.Error),
         }
+    }
+
+    /// What an arm's bind holds, as the arm's owner declared it.
+    fn record_bind(self, v: ExprId, ty: TypeId) {
+        mut ps = self.pattern_types
+        ps.set(v.index, ty)
     }
 
     /// A definition statement's value type. A TYPE declaration used
@@ -265,7 +288,7 @@ impl Typer {
         if b == null { return null }
         match b! {
             .Def(s) -> fn_sig_of(self.decls[s.index]),
-            .Param(_) -> null,
+            .Param(_) or .Pattern(_) -> null,
         }
     }
 
@@ -275,7 +298,7 @@ impl Typer {
         if b == null { return null }
         match b! {
             .Def(s) -> s,
-            .Param(_) -> null,
+            .Param(_) or .Pattern(_) -> null,
         }
     }
 

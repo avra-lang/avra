@@ -222,6 +222,60 @@ def unused_import(lines):
             if name and not re.search(rf"\b{re.escape(name)}\b", MODULE_BODY["text"]):
                 yield i, f"{l.strip()[:50]} [{name}]"
 
+# bs2 does NOT check a pattern's payload ARITY: `.A(_, _)` compiles
+# against a three-payload variant and silently binds the wrong
+# things. Node facts grow, so this is the guarantee our doctrine
+# assumes and the compiler never gives — enforced here instead.
+VARIANT_ARITY = {}
+
+def enum_arities(text):
+    """variant -> payload count, for every enum declared in `text`."""
+    out = {}
+    for m in re.finditer(r"^(?:export )?enum \w+ \{(.*?)^\}", text, re.S | re.M):
+        for v in re.finditer(r"^ {4}([A-Z]\w*)(\((.*?)\))?\s*$", m.group(1), re.M):
+            args = v.group(3)
+            out.setdefault(v.group(1), set()).add(
+                0 if not args else len([a for a in args.split(",") if a.strip()]))
+    return out
+
+def written_arity(text, i):
+    """How many payloads the group starting at text[i] == '(' writes."""
+    depth, commas, seen = 0, 0, False
+    while i < len(text):
+        c = text[i]
+        if c == '"':
+            seen, i = True, i + 1
+            while i < len(text) and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif c in "([{":
+            depth, seen = depth + 1, depth > 0
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                return commas + 1 if seen else 0
+        elif c == "," and depth == 1:
+            commas += 1
+        elif not c.isspace():
+            seen = True
+        i += 1
+    return None
+
+def stale_arity(lines):
+    """A variant pattern or construction writing the WRONG number of
+    payloads. Only names with ONE arity tree-wide are judged."""
+    text = "\n".join(lines)
+    known = {v: set(a) for v, a in VARIANT_ARITY.items()}
+    for v, arities in enum_arities(text).items():
+        known.setdefault(v, set()).update(arities)
+    for m in re.finditer(r"\.([A-Z]\w*)\(", text):
+        arities = known.get(m.group(1))
+        if not arities or len(arities) != 1:
+            continue
+        wrote = written_arity(text, m.end() - 1)
+        want = next(iter(arities))
+        if wrote is not None and wrote != want:
+            yield text[:m.start()].count("\n"), f".{m.group(1)}( wrote {wrote}, declares {want}"
+
 def duplicated(pattern, minimum=2):
     """Text repeated within one file — a name waiting to be given.
     Comment lines are skipped: a doc quoting the message it documents
@@ -285,6 +339,9 @@ RULES = {
             "a refusal test with no diagnostics COUNT — a cascade can hide behind it"),
     "I21": (unmutated_mut,
             "a `mut` nothing mutates — say `let`"),
+    "I25": (stale_arity,
+            "a variant pattern with the WRONG payload count — bs2 accepts it "
+            "silently and binds the wrong things"),
     "I16": (seen_accumulator,
             "a seen-accumulator — a dup is `xs.index_of(x) < j` over enumerate"),
 }
@@ -328,6 +385,7 @@ SPECIMENS = {
     "I20": ['        then "it refuses" {', '            let a = analyze_source("x")',
             '            a.report().contains("nope")', "        }"],
     "I21": ["    mut registry = new_type_registry()", "    registry.intern(t)"],
+    "I25": ["enum E {", "    A(x: int, y: int)", "}", "    match e {", "        .A(_) -> 1,", "    }"],
 }
 
 def selftest():
@@ -365,6 +423,10 @@ def scan():
                 "\n".join(l for l in open(s).read().split("\n")
                           if not l.strip().startswith("use "))
                 for s in glob.glob(os.path.join(d, "*.av")))
+
+    for path in sources():
+        for v, arities in enum_arities(open(path).read()).items():
+            VARIANT_ARITY.setdefault(v, set()).update(arities)
 
     found = {}
     for path in sources():
