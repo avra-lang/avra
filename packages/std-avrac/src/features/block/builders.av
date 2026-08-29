@@ -1,13 +1,13 @@
 //! Parse-time lowering: captured statements -> the Block node. The
 //! law the grammar cannot state lives here: a block ends with an
 //! expression, and that expression is the block's value.
-use core.{Expr, Stmt, StmtId, ExprId}
+use core.{Expr, StmtId, ExprId}
 use features.{LangNode, Builder}
 
 fn build_block(b: Builder) -> Result<LangNode, string> {
     let stmts = b.stmts(0)?
     if stmts.is_empty() {
-        return Result.Err("a block ends with an expression")
+        return Result.Err(block_tail_defect())
     }
     let last = stmts.last()!
     let value: ExprId? = match b.store.stmt(last) {
@@ -15,9 +15,14 @@ fn build_block(b: Builder) -> Result<LangNode, string> {
         _ -> null,
     }
     if value == null {
-        return Result.Err("a block ends with an expression")
+        return Result.Err(block_tail_defect())
     }
     mut body: List<StmtId> = []
     for j in 0..stmts.length - 1 { body.push(stmts[j]) }
     b.make_expr(Expr.Block(body, value!))
+}
+
+/// A block whose last statement carries no value — worded once.
+fn block_tail_defect() -> string {
+    "a block ends with an expression"
 }

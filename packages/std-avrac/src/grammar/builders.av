@@ -151,10 +151,12 @@ fn arg_text(x: Captured<GrammarNode>) -> Result<string, string> {
 /// collapse.
 fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> {
     mut out = [m for m in items]
+    // LICENSED I4: dual channel: finds AND refuses a duplicate
     mut rec: Recover? = null
     for an in annots {
         match an {
             .AExpect(token, message) -> {
+                // LICENSED I4: first-match INDEX; no find_index upstream (TECH_DEBT)
                 mut idx: int? = null
                 for (i, m) in out.enumerate() {
                     if idx == null && m.expect == null && m.prim.answers_to(token) { idx = i }
@@ -221,7 +223,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
                     let b = want(build_of(args[1]), "a build directive")?
                     ok(GrammarNode.NSeq(sq with { build: b }))
                 }
-                _ -> Result.Err("expected a build directive"),
+                .Terminal(_) or .Many(_) -> Result.Err("expected a build directive"),
             }
         }
         "build_labeled" -> {
@@ -229,7 +231,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
             match args[0] {
                 .Absent -> ok(GrammarNode.NItem(inner)),
                 .Terminal(t) -> ok(GrammarNode.NItem(inner with { label: t.text })),
-                _ -> Result.Err("expected a label"),
+                .Node(_) or .Many(_) -> Result.Err("expected a label"),
             }
         }
         "build_postfix" -> {
@@ -241,7 +243,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
                     t.text == "+" -> Rep.Plus
                     _ -> Rep.Opt
                 },
-                _ -> Rep.One,
+                .Node(_) or .Many(_) -> Rep.One,
             }
             ok(GrammarNode.NItem(item(inner) with { rep: rep }))
         }
@@ -266,7 +268,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
                     let arg_names = call_args(args[2])?
                     ok(GrammarNode.NBuild(Build.Call(t.text, arg_names)))
                 }
-                _ -> Result.Err("expected `(`"),
+                .Node(_) or .Many(_) -> Result.Err("expected `(`"),
             }
         }
         "build_expect" -> {

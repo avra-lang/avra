@@ -12,7 +12,7 @@
 //! Lexing is error-tolerant: a bad character, an unterminated
 //! string, or an unclosed hole is recorded and lexing continues, so
 //! one pass reports everything.
-use core.{Span}
+use core.{Span, span_of}
 use core.{code_at, is_space, is_name_start, is_name_cont, is_digit}
 
 /// What a token is; Lit-vs-kind matching keys off this. The IStr
@@ -60,7 +60,7 @@ fn is_single_op(ch: string) -> bool { "=|()*+?:,-<>{}/%![].".contains(ch) }
 
 /// A token spanning `[lo, hi)`.
 fn token(kind: TokenKind, text: string, lo: int, hi: int) -> Token {
-    Token { kind: kind, text: text, span: Span { lo: lo, hi: hi } }
+    Token { kind: kind, text: text, span: span_of(lo, hi) }
 }
 
 /// First index at or after `from` where `pred` stops holding.
@@ -89,7 +89,7 @@ fn skip(next: int) -> ScanStep {
 fn fail(message: string, lo: int, hi: int) -> ScanStep {
     ScanStep {
         token: null, opens_hole: false,
-        err: LexError { message: message, span: Span { lo: lo, hi: hi } },
+        err: LexError { message: message, span: span_of(lo, hi) },
         next: hi,
     }
 }
@@ -149,7 +149,7 @@ fn scan_string(src: string, i: int, opening: bool, interpolate: bool) -> ScanSte
     if p.stop is .Ragged {
         return ScanStep {
             token: t, opens_hole: false,
-            err: LexError { message: "unterminated string", span: Span { lo: i, hi: p.next } },
+            err: LexError { message: "unterminated string", span: span_of(i, p.next) },
             next: p.next,
         }
     }
@@ -227,6 +227,8 @@ fn rule_boundary(tokens: List<Token>, j: int) -> bool {
 }
 
 /// In language source every line break separates.
+// LICENSED I23: conforms to a callback signature — the CONTRACT owns
+// the parameter list, not this body
 fn line_boundary(tokens: List<Token>, j: int) -> bool {
     true
 }
@@ -299,7 +301,7 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
 
 /// The unclosed-hole complaint, at `at`.
 fn hole_error(at: int) -> LexError {
-    LexError { message: "an interpolation hole is missing its `}`", span: Span { lo: at, hi: at } }
+    LexError { message: "an interpolation hole is missing its `}`", span: span_of(at, at) }
 }
 
 /// True when the step's token is a brace the open hole owns.
