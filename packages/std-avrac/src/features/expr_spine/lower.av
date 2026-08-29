@@ -2,12 +2,13 @@
 //! definition's register (the language is SSA by construction), and
 //! eager binaries become one instruction — string `==`/`!=` routes
 //! to the runtime's value comparison. The LAZY ops (`&&`/`||`)
-//! desugar onto the if-region brackets, so the right side's
+//! desugar onto the region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
-use core.{Expr, ExprId, BinOp, UnOp, Reg, Ins}
-use features.{LowerCx, StructSig, hole_defect}
+use core.{ExprId, BinOp, UnOp, Reg, Ins, Type}
+use features.{LowerCx, StructSig, EnumSig, hole_defect, lower_defect}
 
 fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
     match cx.store.expr(e) {
         .IntLit(v) -> {
             let dst = cx.result(e)
@@ -19,7 +20,7 @@ fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
         .Not(v) -> not_reg(cx, e, v),
         .Index(s, i) -> index_reg(cx, e, s, i),
         .Prop(s, name) -> prop_reg(cx, e, s, name),
-        _ -> lower_failed(cx, e, hole_defect()),
+        _ -> lower_defect(cx, e, hole_defect()),
     }
 }
 
@@ -31,20 +32,42 @@ fn index_reg(cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
     dst
 }
 
-/// A property read: a struct field is a slot read at its
-/// declaration index; only `length` otherwise survives typing.
+/// A property read, by the subject's shape: a TYPE NAME builds a
+/// variant, a struct reads a slot at its declaration index, and
+/// only `length` otherwise survives typing.
 fn prop_reg(cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
+    let sh: Type = cx.shape_at(s)
+    if sh is .TypeName { return variant_reg(cx, e, name) }
     let sig: StructSig? = cx.fields_at(s)
     if sig == null { return length_reg(cx, e, s) }
     let slot: int? = sig!.slot_of(name)
     if slot == null {
-        return lower_failed(cx, e, "defect: a fieldless property on a struct survived typing")
+        return lower_defect(cx, e, "a fieldless property on a struct survived typing")
     }
     let subject = cx.reg_of(s)
-    let idx = cx.mint_int()
+    let idx = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(idx, slot!))
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, "avra_array_get", [subject, idx]))
+    dst
+}
+
+/// Constructing a variant: ONE array carrying the tag at slot 0.
+/// The type name itself lowers to nothing — it never was a value.
+fn variant_reg(cx: LowerCx, e: ExprId, name: string) -> Reg {
+    let sig: EnumSig? = cx.variants_at(e)
+    if sig == null {
+        return lower_defect(cx, e, "a variant construction without an enum type")
+    }
+    let which: int? = sig!.tag_of(name)
+    if which == null {
+        return lower_defect(cx, e, "an undeclared variant survived typing")
+    }
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    let tag = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(tag, which!))
+    cx.emit(Ins.CallRtVoid("avra_array_push", [dst, tag]))
     dst
 }
 
@@ -60,7 +83,7 @@ fn length_reg(cx: LowerCx, e: ExprId, s: ExprId) -> Reg {
 
 fn ident_reg(cx: LowerCx, e: ExprId) -> Reg {
     let def: Reg? = cx.def_reg(e)
-    def ?? lower_failed(cx, e, "defect: an unresolved name survived a clean analysis")
+    def ?? lower_defect(cx, e, "an unresolved name survived a clean analysis")
 }
 
 fn binary_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
@@ -92,19 +115,19 @@ fn lazy_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
     cx.emit(Ins.IfStart(a))
     if op == BinOp.And {
         let rb = cx.reg_of(r)
-        cx.emit(Ins.Else(rb))
+        cx.emit(Ins.ArmEnd(rb))
         let short = cx.mint(e)
         cx.emit(Ins.ConstBool(short, false))
         let dst = cx.result(e)
-        cx.emit(Ins.IfEnd(dst, short))
+        cx.emit(Ins.RegionEnd(dst, short))
         return dst
     }
     let short = cx.mint(e)
     cx.emit(Ins.ConstBool(short, true))
-    cx.emit(Ins.Else(short))
+    cx.emit(Ins.ArmEnd(short))
     let rb = cx.reg_of(r)
     let dst = cx.result(e)
-    cx.emit(Ins.IfEnd(dst, rb))
+    cx.emit(Ins.RegionEnd(dst, rb))
     dst
 }
 
@@ -115,9 +138,3 @@ fn not_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
     dst
 }
 
-/// Record the defect and stand on a fresh register — the driver
-/// refuses the whole build afterward.
-fn lower_failed(cx: LowerCx, e: ExprId, msg: string) -> Reg {
-    cx.fail(msg)
-    cx.result(e)
-}

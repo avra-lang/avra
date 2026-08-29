@@ -27,10 +27,12 @@ fn part_reg(cx: LowerCx, e: ExprId, text: string) -> Reg {
     r
 }
 
-/// A hole's value as a string register, by its shape. List, Struct,
-/// and Error never pass typing; their arms stand on the raw
-/// register. The shape binds under a TYPED let — a match on a
-/// cx-verb call skips the exhaustiveness check (subset note).
+/// A hole's value as a string register, by its shape. Only the
+/// scalars and strings pass typing; every other arm stands on the
+/// raw register. The shape binds under a TYPED let — a match on a
+/// cx-verb call skips the exhaustiveness check (subset note), and
+/// this very site proved it: the check caught the enum shapes the
+/// moment the bind restored it.
 fn hole_reg(cx: LowerCx, e: ExprId, h: ExprId) -> Reg {
     let v = cx.reg_of(h)
     let sh: Type = cx.shape_at(h)
@@ -38,7 +40,7 @@ fn hole_reg(cx: LowerCx, e: ExprId, h: ExprId) -> Reg {
         .Str -> v,
         .Int -> rt1(cx, e, "avra_int_text", v),
         .Bool -> rt1(cx, e, "avra_bool_text", v),
-        .List(_) or .Struct(_, _) or .Error -> v,
+        .List(_) or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Error -> v,
     }
 }
 

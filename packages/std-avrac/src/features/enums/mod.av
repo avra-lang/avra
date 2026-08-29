@@ -1,0 +1,33 @@
+//! Enums — the second user-defined type and the first closed set.
+//! `enum Name { A B }` declares (variants newline- or
+//! comma-separated); `Name.variant` constructs through the spine's
+//! property ladder (a TYPE NAME is the subject); `match subject {
+//! .variant -> value }` chooses, TOTALLY — every variant exactly
+//! once, and no catch-all arm exists. Payload variants and pattern
+//! binds are the next slice.
+use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
+
+export fn enums() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name        | build
+        "enum_decl" | build_enum_decl
+        "match_expr"| build_match
+    }
+    let codes = table<DiagCode> {
+        kind               | id      | summary
+        "type.enum_decl"   | "F2012" | "an enum declares at least one variant, each named once"
+        "type.match"       | "F2013" | "`match` chooses over an enum, every variant exactly once"
+    }
+    component LanguageFeature f {
+        name = "enums"
+        docs = "`enum Suit { clubs hearts }` declares a closed set; `Suit.clubs` constructs; a `match` handles every variant, exactly once."
+        gram = """
+stmt = "enum" n:NAME "{" ( BREAK | "," | vs:NAME )* "}" BREAK @recover(sync_to: "BREAK") -> enum_decl(n, vs)
+primary = "match" subj:expression "{" ( BREAK | "," | "." vn:NAME "->" av:expression )* "}" @expect("}", "expected `}` to close the `match`") -> match_expr(subj, vn, av)
+"""
+        builders = rows
+        diags = codes
+    }
+    f
+}

@@ -122,6 +122,7 @@ fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: 
 fn under_overlay(r: Resolver, run: fn()) {
     mut ov = r.overlays
     let fresh: Map<string, StmtId> = {}
+    // LICENSED I15: this IS the bracket fn
     ov.push(fresh)
     run()
     let _ = ov.pop()
@@ -165,6 +166,7 @@ fn block_body(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value
 /// The innermost overlay holding `name`, or null.
 fn overlay_hit(overlays: List<Map<string, StmtId>>, name: string) -> StmtId? {
     mut k = overlays.length - 1
+    // LICENSED I4: a REVERSE scan; no reversed iterator
     mut found: StmtId? = null
     while k >= 0 {
         if found == null { found = overlays[k].get(name) }
@@ -187,6 +189,8 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
 
 /// Every let definition in the program, in order.
 fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
+    // LICENSED I13: a comprehension's filter and element cannot share a
+    // binding — comprehension bindings are on the sugar backlog
     [Def { name: store.let_name(s)!, stmt: s } for s in stmts if store.let_name(s) != null]
 }
 
@@ -261,6 +265,13 @@ impl Resolver {
             self.bind_use(e, Binding.Def(found!))
             return
         }
+        // A TYPE used as a value: `Color` in `Color.red`. Typing
+        // gives it the compile-only TypeName shape.
+        let named_type: StmtId? = self.type_defs.get(name)
+        if named_type != null {
+            self.bind_use(e, Binding.Def(named_type!))
+            return
+        }
         let at = self.loc_of(e)
         let later: StmtId? = self.later_def(name)
         if later != null {
@@ -292,7 +303,7 @@ impl Resolver {
     /// annotation or literal may name a type declared later.
     fn declare_types(self) {
         for s in self.p.stmts {
-            let name: string? = self.p.store.struct_parts(s)?.name
+            let name: string? = self.p.store.type_decl_name(s)
             if name != null { self.declare_type(name!, s) }
         }
     }

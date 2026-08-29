@@ -1,7 +1,7 @@
 //! A boolean literal IS its value: no children, no names, types as
 //! bool, lowers as its constant.
-use core.{Expr, ExprId, Type, TypeId, NodeStore, Reg, Ins, truth_of}
-use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use core.{Expr, ExprId, Type, TypeId, Reg, Ins, truth_of}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, lower_defect}
 
 export type BoolSemantics = { }
 
@@ -19,9 +19,10 @@ impl NodeSemantics for BoolSemantics {
     }
 
     fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
-        let dst = cx.result(e)
         let v: bool? = truth_of(cx.store.expr(e))
-        cx.emit(Ins.ConstBool(dst, v ?? false))
+        if v == null { return lower_defect(cx, e, "a bool literal without its value") }
+        let dst = cx.result(e)
+        cx.emit(Ins.ConstBool(dst, v!))
         dst
     }
 

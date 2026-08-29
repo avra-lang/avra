@@ -31,7 +31,8 @@ spec "features/structs" {
     given "wrong shapes" {
         then "an unknown type refuses by name" {
             let a = analyze_source("let p = Q { x: 1 }\n2")
-            a.report().contains("no `type Q` is declared")
+            a.diagnostics.length == 1 &&
+                a.report().contains("no `type Q` is declared")
         }
         then "a missing field refuses" {
             let a = analyze_source("type P = { x: int, y: int }\nlet p = P { x: 1 }\n2")
@@ -59,10 +60,21 @@ spec "features/structs" {
             a.diagnostics.length == 1 &&
                 a.report().contains("struct fields hold scalars for now")
         }
+        then "a repeated FIELD declaration refuses" {
+            let a = analyze_source("type P = { x: int, x: bool }\nlet p = P { x: 1 }\n2")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`P` declares `x` more than once")
+        }
         then "a duplicate declaration refuses" {
             let a = analyze_source("type P = { x: int }\ntype P = { y: int }\n3")
             a.diagnostics.length == 1 &&
                 a.report().contains("`P` is declared more than once")
+        }
+        then "a record name is not a value either — one law" {
+            let a = analyze_source("type P = { x: int }\nmut p = P\n1")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`P` is a type, not a value") &&
+                a.report().contains("build a record")
         }
         then "a field read off a non-struct still refuses" {
             let a = analyze_source("let n = 3\nn.x")

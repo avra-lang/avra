@@ -9,7 +9,8 @@
 //! the statement list.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, concat, some_list}
 use diagnostics.{Diag, error_at, pointed, loc_at}
-use features.{LowerCx, StmtLowerCx, FnSig, StructSig}
+use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig,
+              fn_sig_of, record_sig_of, variant_sig_of}
 use @std.errors.{Loc}
 
 /// One lowered body: instructions in order and each register's type
@@ -80,7 +81,7 @@ type LoweredBody = { body: Body, failures: List<string>, refusals: List<Diag> }
 /// One fn: params pre-minted as registers 0..N-1, the body inside
 /// one scope, the answer after the scope settles.
 fn lower_fn(a: Analysis, s: StmtId, fname: string, root: ExprId) -> LoweredBody {
-    let sig: FnSig? = a.typing.sigs[s.index]
+    let sig: FnSig? = fn_sig_of(a.decl_sig(s))
     let ptypes: List<TypeId> = sig?.params ?? []
     let rt: TypeId = sig?.ret ?? a.typing.types.intern(Type.Error)
     let lo = new_lower(a)
@@ -127,9 +128,10 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         def_reg: (k: ExprId) -> lo.def_reg(k),
         shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.a.type_at(k)),
         mint: (k: ExprId) -> lo.mint(k),
-        mint_int: () -> lo.mint_ty(lo.a.typing.types.intern(Type.Int)),
+        mint_shape: (sh: Type) -> lo.mint_ty(lo.a.typing.types.intern(sh)),
         mint_ty: (ty: TypeId) -> lo.mint_ty(ty),
         fields_at: (k: ExprId) -> lo.fields_at(k),
+        variants_at: (k: ExprId) -> lo.variants_at(k),
         emit: (i: Ins) -> lo.give(i),
         lower_block: (stmts: List<StmtId>, value: ExprId) -> block_reg(lo, stmts, value),
         fail: (msg: string) -> lo.record(msg),
@@ -155,6 +157,7 @@ fn lower_stmts(lo: Lower, stmts: List<StmtId>) -> Reg? {
         assign_target: (s: StmtId) -> lo.a.assign_target(s),
         fail: (msg: string) -> lo.record(msg),
     }
+    // LICENSED I4: the running last register, not a scan
     mut last: Reg? = null
     for s in stmts {
         let r: Reg? = stmt_semantics_of(lo.a.dispatch, lo.a.store.stmt(s)).lower_stmt(cx, s)
@@ -181,7 +184,9 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
     let sh = lo.a.typing.types.shape_of(lo.reg_types[last.index])
     let unprintable: string? = match sh {
         .Struct(_, n) -> n,
-        _ -> null,
+        .Enum(_, n) -> n,
+        .TypeName(_, n) -> n,
+        .Int or .Str or .Bool or .List(_) or .Error -> null,
     }
     if unprintable != null { return no_projection(lo, unprintable!) }
     let text: Reg? = match sh {
@@ -189,7 +194,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Int -> text_call(lo, "avra_int_text", last),
         .Bool -> text_call(lo, "avra_bool_text", last),
         .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
-        .Struct(_, _) -> null,
+        .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) -> null,
         .Error -> null,
     }
     if text != null { lo.give(Ins.CallRtVoid("avra_puts", [text!])) }
@@ -245,10 +250,18 @@ impl Lower {
     /// registry does not know refuses the BUILD, loudly, instead of
     /// crashing the backend.
     fn give(self, i: Ins) {
+        // A new CALLING instruction must decide whether the runtime
+        // registry validates it; the arms make that unavoidable.
         let callee: string? = match i {
             .CallRt(_, c, _) -> c,
             .CallRtVoid(c, _) -> c,
-            _ -> null,
+            .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+            .Bin(_, _, _, _) or .Un(_, _, _) or .Call(_, _, _) or
+            .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
+            .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or
+            .Alloca(_) or .Load(_, _) or .Store(_, _) or
+            .LoopStart or .LoopCond(_) or .LoopEnd or
+            .Retain(_) or .Release(_) or .RetVal(_) or .Ret(_) -> null,
         }
         if callee != null && rt_sig_of(callee!) == null {
             self.record("defect: unknown runtime callee `${callee!}` — add its row to runtime_api.av")
@@ -286,7 +299,16 @@ impl Lower {
     /// other shape. The declaration index IS the array index.
     fn fields_at(self, e: ExprId) -> StructSig? {
         match self.a.typing.types.shape_of(self.a.type_at(e)) {
-            .Struct(decl, _) -> self.a.typing.struct_sigs[decl.index],
+            .Struct(decl, _) -> record_sig_of(self.a.decl_sig(decl)),
+            _ -> null,
+        }
+    }
+
+    /// An enum-typed expression's variant table; null otherwise.
+    /// The declaration index IS the runtime tag.
+    fn variants_at(self, e: ExprId) -> EnumSig? {
+        match self.a.typing.types.shape_of(self.a.type_at(e)) {
+            .Enum(decl, _) -> variant_sig_of(self.a.decl_sig(decl)),
             _ -> null,
         }
     }

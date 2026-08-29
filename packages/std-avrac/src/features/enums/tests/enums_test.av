@@ -1,0 +1,111 @@
+// Enums, vertically: declaration, construction through the type
+// name, total match (as a value and in a fn), and every law
+// refusing in its own words.
+use @std.avrac.language.{analyze_source}
+
+/// A program's printed value, or "<refused>".
+fn shown(source: string) -> string {
+    analyze_source(source).ran() ?? "<refused>"
+}
+
+/// A three-variant enum, newline-separated.
+fn colors() -> string {
+    "enum C {\n    red\n    green\n    blue\n}\n"
+}
+
+spec "features/enums" {
+    given "the closed set" {
+        then "a match chooses by variant" {
+            shown("${colors()}let c = C.green\nmatch c {\n    .red -> 1\n    .green -> 2\n    .blue -> 3\n}") == "2"
+        }
+        then "the first variant tags zero — order is the tag" {
+            shown("${colors()}match C.red {\n    .red -> 10\n    .green -> 20\n    .blue -> 30\n}") == "10"
+        }
+        then "the last variant is the chain's final else" {
+            shown("${colors()}match C.blue {\n    .red -> 1\n    .green -> 2\n    .blue -> 99\n}") == "99"
+        }
+        then "arms may be comma-separated on one line" {
+            shown("enum B {\n    yes\n    no\n}\nmatch B.no { .yes -> 1, .no -> 0 }") == "0"
+        }
+        then "variants declare comma-separated too" {
+            shown("enum B { yes, no }\nmatch B.yes { .yes -> 1, .no -> 0 }") == "1"
+        }
+        then "a variant crosses a fn boundary, both ways" {
+            shown("${colors()}fn mk() -> C { C.blue }\nfn n(c: C) -> int { match c {\n    .red -> 1\n    .green -> 2\n    .blue -> 3\n} }\nn(mk())") == "3"
+        }
+        then "arms answer strings too" {
+            shown("${colors()}match C.green {\n    .red -> \"r\"\n    .green -> \"g\"\n    .blue -> \"b\"\n}") == "g"
+        }
+        then "a match nests inside a match" {
+            shown("enum B {\n    yes\n    no\n}\nmatch B.yes {\n    .yes -> match B.no { .yes -> 1, .no -> 2 }\n    .no -> 3\n}") == "2"
+        }
+    }
+    given "wrong shapes" {
+        then "a missing variant refuses, naming it" {
+            let a = analyze_source("${colors()}match C.red {\n    .red -> 1\n    .green -> 2\n}")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`match` on `C` must handle `.blue`")
+        }
+        then "a repeated arm refuses" {
+            let a = analyze_source("${colors()}match C.red {\n    .red -> 1\n    .red -> 2\n    .green -> 3\n    .blue -> 4\n}")
+            a.diagnostics.length == 1 &&
+                a.report().contains("variant `red` is matched more than once")
+        }
+        then "an unknown arm names the real variants" {
+            let a = analyze_source("${colors()}match C.red {\n    .red -> 1\n    .green -> 2\n    .blue -> 3\n    .mauve -> 4\n}")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`C` has no variant `mauve`") &&
+                a.report().contains("the variants are `red`, `green`, `blue`")
+        }
+        then "arms must agree on one type" {
+            let a = analyze_source("${colors()}match C.red {\n    .red -> 1\n    .green -> true\n    .blue -> 3\n}")
+            a.diagnostics.length == 1 &&
+                a.report().contains("a `match`'s arms disagree")
+        }
+        then "a non-enum subject refuses" {
+            let a = analyze_source("let n = 3\nmatch n {\n    .a -> 1\n}")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`match` chooses over an enum, found `int`")
+        }
+        then "an unknown variant construction refuses" {
+            let a = analyze_source("${colors()}C.mauve")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`C` has no variant `mauve`")
+        }
+        then "an empty enum refuses" {
+            let a = analyze_source("enum E { }\n1")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`E` declares no variants")
+        }
+        then "a repeated variant declaration refuses" {
+            let a = analyze_source("enum E {\n    a\n    a\n}\n1")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`E` declares `a` more than once")
+        }
+        then "a duplicate type name refuses across kinds" {
+            let a = analyze_source("type P = { x: int }\nenum P {\n    a\n}\n1")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`P` is declared more than once")
+        }
+        then "a record used as an enum refuses" {
+            let a = analyze_source("type P = { x: int }\nP.a")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`P` is a record, not an enum")
+        }
+        then "a bare type name is not a value" {
+            let a = analyze_source("${colors()}let c = C\n1")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`C` is a type, not a value") &&
+                a.report().contains("name a variant")
+        }
+        then "a single-variant match reads no tag — nothing chooses" {
+            shown("enum One {\n    only\n}\nmatch One.only {\n    .only -> 7\n}") == "7"
+        }
+        then "an enum answer has no text projection" {
+            match analyze_source("${colors()}C.red").run() {
+                .Err(msg) -> msg.contains("no text projection yet"),
+                .Ok(_) -> false,
+            }
+        }
+    }
+}

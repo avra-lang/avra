@@ -78,6 +78,9 @@ export enum Expr {
     /// `subject with { field: value, ... }` — a modified COPY; the
     /// unwritten fields carry over.
     With(subject: ExprId, fields: List<string>, values: List<ExprId>)
+    /// `match subject { .variant -> value, ... }` — total over the
+    /// subject enum's variants; no catch-all arm exists.
+    Match(subject: ExprId, variants: List<string>, values: List<ExprId>)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
 }
@@ -88,13 +91,6 @@ export enum Expr {
 export fn truth_of(e: Expr) -> bool? {
     match e {
         .BoolLit(v) -> v,
-        _ -> null,
-    }
-}
-
-export fn int_of(e: Expr) -> int? {
-    match e {
-        .IntLit(v) -> v,
         _ -> null,
     }
 }
@@ -137,6 +133,9 @@ export enum Stmt {
     /// `type Name = { field: ty, ... }` — a nominal record; the
     /// name lives in the TYPE namespace, program-wide like fns.
     StructDecl(name: string, fields: List<Param>)
+    /// `enum Name { VariantA VariantB }` — a nominal closed set;
+    /// the name shares the TYPE namespace with records.
+    EnumDecl(name: string, variants: List<string>)
     Error
 }
 
@@ -188,7 +187,7 @@ impl NodeStore {
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 27.
+    /// Tags are never reused; the next free tag is 29.
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -221,6 +220,9 @@ impl NodeStore {
             .With(subject, fields, values) ->
                 fp(26, flatten([[self.expr_fingerprint(subject)],
                                 [fp_str(f) for f in fields], self.expr_fps(values)])),
+            .Match(subject, variants, values) ->
+                fp(28, flatten([[self.expr_fingerprint(subject)],
+                                [fp_str(v) for v in variants], self.expr_fps(values)])),
         }
     }
 
@@ -253,6 +255,8 @@ impl NodeStore {
                                 [fp_str(ret), self.expr_fingerprint(body)]])),
             .StructDecl(name, fields) ->
                 fp(25, concat([fp_str(name)], param_fps(fields))),
+            .EnumDecl(name, variants) ->
+                fp(27, concat([fp_str(name)], [fp_str(v) for v in variants])),
         }
     }
 }

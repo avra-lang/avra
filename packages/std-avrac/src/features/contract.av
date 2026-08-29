@@ -1,12 +1,20 @@
-//! What a feature's nodes DO at each pass — THE contract. The passes
-//! reach an impl through the semantics map and never match feature
-//! nodes themselves. Every method is mandatory: a feature that does
-//! nothing at a pass says so in its impl, visibly. Each context
-//! carries the pass's STATE verbs — walk, look up, record, emit —
-//! wired by the driver; the RULES that call them live in the
-//! feature's own directory. A feature-named fn has no place here.
+//! What a feature's nodes DO at each pass — THE contract, and the
+//! vocabulary every feature speaks across it.
+//!
+//! The contract: one capability context per pass (STATE verbs only —
+//! walk, look up, record, emit — wired by the driver) and the two
+//! semantics traits. Every method is mandatory: a feature that does
+//! nothing at a pass says so in its impl, visibly. The passes reach
+//! an impl through the semantics map and never match feature nodes.
+//!
+//! The vocabulary: the FACT shapes the declare phase records
+//! (FnSig, StructSig, EnumSig, and the one DeclSig currency that
+//! holds them), and the refusals features share word-for-word
+//! (hole_defect, zip_defect, duplicate_member, lower_defect) so no
+//! two sites drift. Typing LAWS live next door in checks.av.
+//! A feature-named fn has no place in either.
 use core.{NodeStore, Expr, ExprId, StmtId, Param, Type, TypeId, Reg, Ins, joined}
-use diagnostics.{Diag}
+use diagnostics.{Diag, error_at, pointed}
 use @std.errors.{Loc}
 
 /// Resolve capabilities: an impl reports a name use — as a value
@@ -27,17 +35,81 @@ export type FnSig = { params: List<TypeId>, ret: TypeId }
 /// IS the runtime slot.
 export type StructSig = { names: List<string>, types: List<TypeId> }
 
+/// A declared enum's variant table, in declaration order — the
+/// index IS the runtime tag.
+export type EnumSig = { names: List<string> }
+
+/// A named member's index in a declaration-ordered table, when it
+/// is one — the lookup structs and enums share.
+fn index_in(names: List<string>, name: string) -> int? {
+    let i = names.index_of(name)
+    if i < 0 { null } else { i }
+}
+
+/// Names listed for help text — one wording everywhere.
+fn named_list(names: List<string>) -> string {
+    joined(["`${n}`" for n in names], ", ")
+}
+
 impl StructSig {
     /// A named field's slot, when declared — THE lookup every
     /// consumer shares.
     fn slot_of(self, name: string) -> int? {
-        let i = self.names.index_of(name)
-        if i < 0 { null } else { i }
+        index_in(self.names, name)
     }
 
-    /// The fields, listed for help text — one wording everywhere.
+    /// The fields, listed for help text.
     fn listed(self) -> string {
-        joined(["`${n}`" for n in self.names], ", ")
+        named_list(self.names)
+    }
+}
+
+impl EnumSig {
+    /// A named variant's TAG, when declared.
+    fn tag_of(self, name: string) -> int? {
+        index_in(self.names, name)
+    }
+
+    /// The variants, listed for help text.
+    fn listed(self) -> string {
+        named_list(self.names)
+    }
+}
+
+/// What a DECLARATION declares — the ONE currency the declare
+/// phase records and every consumer reads. Three parallel tables
+/// (fns, records, enums) became one dense table of this, exactly as
+/// the parallel resolve tables became one Binding. A new declared
+/// kind is a new VARIANT, and the projections below break at
+/// compile time until it is handled.
+export enum DeclSig {
+    Fn(sig: FnSig)
+    Record(sig: StructSig)
+    Variants(sig: EnumSig)
+}
+
+/// The projections beside the enum — consumers ask, never match.
+export fn fn_sig_of(d: DeclSig?) -> FnSig? {
+    if d == null { return null }
+    match d! {
+        .Fn(s) -> s,
+        _ -> null,
+    }
+}
+
+export fn record_sig_of(d: DeclSig?) -> StructSig? {
+    if d == null { return null }
+    match d! {
+        .Record(s) -> s,
+        _ -> null,
+    }
+}
+
+export fn variant_sig_of(d: DeclSig?) -> EnumSig? {
+    if d == null { return null }
+    match d! {
+        .Variants(s) -> s,
+        _ -> null,
     }
 }
 
@@ -55,6 +127,7 @@ export type TypeCx = {
     sig_of: fn(ExprId) -> FnSig?,
     bound_def: fn(ExprId) -> StmtId?,
     fields_of: fn(TypeId) -> StructSig?,
+    variants_of: fn(TypeId) -> EnumSig?,
     block_type: fn(List<StmtId>, ExprId) -> TypeId,
     name_at: fn(ExprId) -> string,
     type_name: fn(TypeId) -> string,
@@ -76,9 +149,10 @@ export type LowerCx = {
     def_reg: fn(ExprId) -> Reg?,
     shape_at: fn(ExprId) -> Type,
     mint: fn(ExprId) -> Reg,
-    mint_int: fn() -> Reg,
+    mint_shape: fn(Type) -> Reg,
     mint_ty: fn(TypeId) -> Reg,
     fields_at: fn(ExprId) -> StructSig?,
+    variants_at: fn(ExprId) -> EnumSig?,
     emit: fn(Ins),
     lower_block: fn(List<StmtId>, ExprId) -> Reg,
     fail: fn(string),
@@ -162,10 +236,29 @@ export fn nothing() {
     let _ = 0
 }
 
-/// The impossible-past-the-gate message, defined once — every
-/// runtime rule that meets a recovery hole says exactly this.
+/// The impossible-past-the-gate PHRASE, worded once — every rule
+/// that meets a recovery hole says exactly this, and `lower_defect`
+/// supplies the "defect:" that fronts it.
 export fn hole_defect() -> string {
-    "defect: a hole survived a clean analysis"
+    "a hole survived a clean analysis"
+}
+
+/// A declaration naming the same member twice — one refusal for
+/// every declared table (a record's fields, an enum's variants).
+export fn duplicate_member(kind: string, owner: string, member: string, at: Loc?) -> Diag {
+    pointed(
+        error_at(kind, at, "`${owner}` declares `${member}` more than once"),
+        "in this declaration")
+        with { help: "rename one of them" }
+}
+
+/// A lowering defect: record it and stand on a fresh register — the
+/// driver refuses the whole build afterward. THE answer when a
+/// payload the dispatch GUARANTEES comes back absent; never a
+/// plausible default, which would compile a wrong program silently.
+export fn lower_defect(cx: LowerCx, e: ExprId, what: string) -> Reg {
+    cx.fail("defect: ${what}")
+    cx.result(e)
 }
 
 /// The parallel-capture mismatch, worded once — every zip builder
@@ -186,10 +279,14 @@ impl StmtResolveCx {
 }
 
 impl StmtTypeCx {
-    /// Walk the statement's value expression, when it carries one.
+    /// Walk the statement's value expression, when it carries one —
+    /// and refuse a TYPE standing where a value belongs, since
+    /// "the statement's value" says it must be one.
     fn walk_value(self, s: StmtId) {
         let v: ExprId? = self.store.stmt_value(s)
-        if v != null { self.walk(v!) }
+        if v == null { return }
+        self.walk(v!)
+        let _ = refuses_type_value(self.expr, v!)
     }
 }
 

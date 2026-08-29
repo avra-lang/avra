@@ -3,17 +3,15 @@
 //! in DECLARATION order; values evaluate in WRITTEN order first.
 //! Reads are the spine's property ladder (a slot read at the
 //! field's compile-time index) — zero new instructions anywhere.
-use core.{Expr, ExprId, Reg, Ins, filled}
-use features.{LowerCx, StructSig, hole_defect}
+use core.{ExprId, Reg, Ins, Type, filled}
+use features.{LowerCx, StructSig, hole_defect, lower_defect}
 
 fn structs_reg(cx: LowerCx, e: ExprId) -> Reg {
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
     match cx.store.expr(e) {
         .StructLit(_, fields, values) -> lit_reg(cx, e, fields, values),
         .With(subject, fields, values) -> with_reg(cx, e, subject, fields, values),
-        _ -> {
-            cx.fail(hole_defect())
-            cx.result(e)
-        }
+        _ -> lower_defect(cx, e, hole_defect()),
     }
 }
 
@@ -35,7 +33,7 @@ fn with_reg(cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, value
         if j >= 0 {
             cx.emit(Ins.CallRtVoid("avra_array_push", [dst, regs[j]]))
         } else {
-            let idx = cx.mint_int()
+            let idx = cx.mint_shape(Type.Int)
             cx.emit(Ins.ConstInt(idx, slot))
             let carried = cx.mint_ty(sig!.types[slot])
             cx.emit(Ins.CallRt(carried, "avra_array_get", [src, idx]))

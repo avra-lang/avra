@@ -1,12 +1,14 @@
 //! The list literal's NodeSemantics — dispatch one-liners; the rule
 //! bodies live beside this file, by concern.
-use core.{Expr, ExprId, TypeId, NodeStore, Reg, Type, elems_of, joined}
-use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, scalar_text}
+use core.{Expr, ExprId, TypeId, Reg, Type, elems_of}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, lower_defect}
 
 export type ListSemantics = { }
 
 impl NodeSemantics for ListSemantics {
     fn kids(self, e: Expr) -> List<ExprId> {
+        // LICENSED I18: kids() has no failure channel; [] is the
+        // right answer for a node that is not a list
         let elems: List<ExprId> = elems_of(e) ?? []
         elems
     }
@@ -23,7 +25,8 @@ impl NodeSemantics for ListSemantics {
 
     fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
         let elems: List<ExprId>? = elems_of(cx.store.expr(e))
-        list_reg(cx, e, elems ?? [])
+        if elems == null { return lower_defect(cx, e, "a list literal without its elements") }
+        list_reg(cx, e, elems!)
     }
 
 }

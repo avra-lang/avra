@@ -1,0 +1,93 @@
+//! The enum laws: a declaration names at least one variant; a
+//! `match` chooses over an ENUM, handles every variant exactly
+//! once, and its arms agree on one type. Totality is the point —
+//! adding a variant must break every match, so no catch-all exists.
+use core.{ExprId, StmtId, Type, TypeId}
+use features.{TypeCx, StmtTypeCx, EnumSig, spoken, this_is, nothing, duplicate_member, arms_agree}
+use diagnostics.{error_at, pointed}
+
+/// The declaration's own law.
+export fn check_enum_decl(cx: StmtTypeCx, s: StmtId) {
+    match cx.store.stmt(s) {
+        .EnumDecl(name, variants) -> decl_checks(cx, s, name, variants),
+        _ -> nothing(),
+    }
+}
+
+/// An enum names at least one variant, each of them once. A dup is
+/// a name whose FIRST position is earlier than this one.
+fn decl_checks(cx: StmtTypeCx, s: StmtId, name: string, variants: List<string>) {
+    if variants.is_empty() {
+        cx.expr.emit(pointed(
+            error_at("type.enum_decl", cx.loc_of(s), "`${name}` declares no variants"),
+            "this enum is empty")
+            with { help: "an enum names at least one variant" })
+    }
+    for (j, v) in variants.enumerate() {
+        if variants.index_of(v) < j {
+            cx.expr.emit(duplicate_member("type.enum_decl", name, v, cx.loc_of(s)))
+        }
+    }
+}
+
+fn match_type(cx: TypeCx, e: ExprId) -> TypeId {
+    match cx.store.expr(e) {
+        .Match(subject, variants, values) -> matched_type(cx, e, subject, variants, values),
+        _ -> cx.intern(Type.Error),
+    }
+}
+
+fn matched_type(cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>, values: List<ExprId>) -> TypeId {
+    let sh: Type = cx.shape_at(subject)
+    if sh is .Error { return cx.intern(Type.Error) }
+    let sig: EnumSig? = cx.variants_of(cx.type_at(subject))
+    if sig == null {
+        let n = cx.name_at(subject)
+        return spoken(cx, pointed(
+            error_at("type.match", cx.loc_of(subject), "`match` chooses over an enum, found `${n}`"),
+            this_is(n)))
+    }
+    let sname = cx.name_at(subject)
+    arm_checks(cx, sname, variants, values, sig!)
+    coverage_checks(cx, e, sname, variants, sig!)
+    arms_type(cx, values)
+}
+
+/// Every written arm names a variant, and names it once. A dup is
+/// a name whose FIRST position is earlier than this one.
+fn arm_checks(cx: TypeCx, sname: string, variants: List<string>, values: List<ExprId>, sig: EnumSig) {
+    for (j, v) in variants.enumerate() {
+        let tag: int? = sig.tag_of(v)
+        if tag == null {
+            cx.emit(pointed(
+                error_at("type.match", cx.loc_of(values[j]), "`${sname}` has no variant `${v}`"),
+                "matched here")
+                with { help: "the variants are ${sig.listed()}" })
+        }
+        if variants.index_of(v) < j {
+            cx.emit(pointed(
+                error_at("type.match", cx.loc_of(values[j]), "variant `${v}` is matched more than once"),
+                "matched again here"))
+        }
+    }
+}
+
+/// Every declared variant is written — the totality half.
+fn coverage_checks(cx: TypeCx, e: ExprId, sname: string, variants: List<string>, sig: EnumSig) {
+    for n in sig.names {
+        if !variants.contains(n) {
+            cx.emit(pointed(
+                error_at("type.match", cx.loc_of(e), "`match` on `${sname}` must handle `.${n}`"),
+                "this match")
+                with { help: "every variant exactly once — adding a variant breaks every match, on purpose" })
+        }
+    }
+}
+
+/// The arms agree on one type: the FIRST arm anchors.
+fn arms_type(cx: TypeCx, values: List<ExprId>) -> TypeId {
+    let head: ExprId? = values.first()
+    if head == null { return cx.intern(Type.Error) }
+    if cx.shape_at(head!) is .Error { return cx.intern(Type.Error) }
+    arms_agree(cx, "type.match", "match", "the first arm", cx.type_at(head!), values)
+}

@@ -1,0 +1,66 @@
+//! The lowering rule — the ONE meaning: an enum value is a slot
+//! array carrying its TAG at slot 0, and a `match` is ONE N-arm
+//! region over that tag — a jump table natively, not a walk down a
+//! chain of comparisons. Exhaustiveness makes the last arm the
+//! region's default, so nothing falls through.
+use core.{ExprId, Reg, Ins, Type}
+use features.{LowerCx, EnumSig, hole_defect, lower_defect}
+
+fn match_reg(cx: LowerCx, e: ExprId) -> Reg {
+    match cx.store.expr(e) {
+        .Match(subject, variants, values) -> matched_reg(cx, e, subject, variants, values),
+        _ -> lower_defect(cx, e, hole_defect()),
+    }
+}
+
+fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>, values: List<ExprId>) -> Reg {
+    let sig: EnumSig? = cx.variants_at(subject)
+    if sig == null || values.is_empty() {
+        cx.fail("defect: a `match` without an enum subject survived typing")
+        return cx.result(e)
+    }
+    // The subject is evaluated either way; its TAG is only read
+    // when something chooses on it.
+    let v = cx.reg_of(subject)
+    if values.length == 1 { return cx.reg_of(values[0]) }
+    // Every arm but the last is a CASE; the last is the default.
+    let last_arm = values.length - 1
+    let cases = arm_cases(sig!, variants, last_arm)
+    if cases.length != last_arm {
+        cx.fail("defect: an arm naming no variant survived typing")
+        return cx.mint(e)
+    }
+    let tag = tag_reg(cx, v)
+    cx.emit(Ins.SwitchStart(tag, cases))
+    for (j, av) in values.enumerate() {
+        if j < last_arm {
+            let g = cx.reg_of(av)
+            cx.emit(Ins.ArmEnd(g))
+        }
+    }
+    let last = cx.reg_of(values.last()!)
+    let dst = cx.mint(e)
+    cx.emit(Ins.RegionEnd(dst, last))
+    dst
+}
+
+/// The first `count` arms' selector values, in arm order — the last
+/// arm is the region's default and needs none. A SHORT answer means
+/// an arm named no variant, which typing already refuses.
+fn arm_cases(sig: EnumSig, variants: List<string>, count: int) -> List<int> {
+    mut cases: List<int> = []
+    for (j, v) in variants.enumerate() {
+        let which: int? = sig.tag_of(v)
+        if j < count && which != null { cases.push(which!) }
+    }
+    cases
+}
+
+/// The subject's tag: slot 0 of its array.
+fn tag_reg(cx: LowerCx, v: Reg) -> Reg {
+    let zero = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(zero, 0))
+    let tag = cx.mint_shape(Type.Int)
+    cx.emit(Ins.CallRt(tag, "avra_array_get", [v, zero]))
+    tag
+}

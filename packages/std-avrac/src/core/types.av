@@ -18,6 +18,13 @@ export enum Type {
     /// A declared record — NOMINAL: the declaration site is the
     /// identity, the name rides along for printing alone.
     Struct(decl: StmtId, name: string)
+    /// A declared enum's VALUE — nominal like a struct; a tagged
+    /// slot array at runtime.
+    Enum(decl: StmtId, name: string)
+    /// A type used as a VALUE (`Color` in `Color.red`) — the only
+    /// compile-only shape: no runtime value ever has it, so every
+    /// operand law and the answer projection refuse it.
+    TypeName(decl: StmtId, name: string)
     Error
 }
 
@@ -37,8 +44,8 @@ export fn new_type_registry() -> TypeRegistry {
 /// Exhaustive on purpose — a new shape must decide, consciously.
 export fn ptr_shape(t: Type) -> bool {
     match t {
-        .Str or .List(_) or .Struct(_, _) -> true,
-        .Int or .Bool or .Error -> false,
+        .Str or .List(_) or .Struct(_, _) or .Enum(_, _) -> true,
+        .Int or .Bool or .Error or .TypeName(_, _) -> false,
     }
 }
 
@@ -53,6 +60,8 @@ impl TypeRegistry {
             .Bool -> "3",
             .List(elem) -> "4:${elem.index}",
             .Struct(decl, _) -> "5:${decl.index}",
+            .Enum(decl, _) -> "6:${decl.index}",
+            .TypeName(decl, _) -> "7:${decl.index}",
         }
     }
 
@@ -79,6 +88,8 @@ impl TypeRegistry {
             .Bool -> "bool",
             .List(elem) -> "List<${self.name_of(elem)}>",
             .Struct(_, name) -> name,
+            .Enum(_, name) -> name,
+            .TypeName(_, name) -> "type ${name}",
             .Error -> "<error>",
         }
     }

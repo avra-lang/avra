@@ -8,7 +8,8 @@
 //! the annotations alone, so a call may name a fn declared later.
 use core.{StmtId, ExprId, TypeId, Type, Param, TypeRegistry, new_type_registry, filled}
 use diagnostics.{Diag, loc_at, error_at, pointed}
-use features.{TypeCx, StmtTypeCx, FnSig, StructSig}
+use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig,
+              fn_sig_of, record_sig_of, variant_sig_of, duplicate_member}
 use @std.errors.{Loc}
 
 /// The pass's facts: the registry, a dense expression table, and a
@@ -17,8 +18,7 @@ use @std.errors.{Loc}
 export type Typing = {
     types: TypeRegistry,
     of_expr: List<TypeId>,
-    sigs: List<FnSig?>,
-    struct_sigs: List<StructSig?>,
+    decls: List<DeclSig?>,
     diagnostics: List<Diag>,
 }
 
@@ -32,28 +32,26 @@ type Typer = {
     resolution: Resolution,
     types: TypeRegistry,
     of_expr: List<TypeId>,
-    sigs: List<FnSig?>,
-    struct_sigs: List<StructSig?>,
+    decls: List<DeclSig?>,
     diagnostics: List<Diag>,
 }
 
 export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
-    mut registry = new_type_registry()
+    let registry = new_type_registry()
     // The table is born total: every slot pre-typed as the hole.
     let hole = registry.intern(Type.Error)
     let t = Typer {
         p: p, resolution: r, types: registry,
         of_expr: filled(p.store.exprs.count(), hole),
-        sigs: filled<FnSig?>(p.store.stmts.count(), null),
-        struct_sigs: filled<StructSig?>(p.store.stmts.count(), null),
+        decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
-    t.declare_struct_sigs()
+    t.declare_type_sigs()
     t.declare_sigs()
     type_stmts(t, [], p.stmts)
     Typing {
-        types: t.types, of_expr: t.of_expr, sigs: t.sigs,
-        struct_sigs: t.struct_sigs, diagnostics: t.diagnostics,
+        types: t.types, of_expr: t.of_expr, decls: t.decls,
+        diagnostics: t.diagnostics,
     }
 }
 
@@ -69,7 +67,7 @@ fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
         walk: (v: ExprId) -> type_walk(t, param_types, v),
         walk_under: (pts: List<TypeId>, body: ExprId) -> type_walk(t, pts, body),
         type_stmts: (body: List<StmtId>) -> type_stmts(t, param_types, body),
-        sig_of: (s: StmtId) -> t.sigs[s.index],
+        sig_of: (s: StmtId) -> fn_sig_of(t.decls[s.index]),
         assign_target: (s: StmtId) -> assign_target_of(t.resolution, s),
         loc_of: (s: StmtId) -> t.stmt_loc(s),
     }
@@ -94,6 +92,7 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         sig_of: (e: ExprId) -> t.sig_at(e),
         bound_def: (e: ExprId) -> t.def_of(e),
         fields_of: (ty: TypeId) -> t.fields_of(ty),
+        variants_of: (ty: TypeId) -> t.variants_of(ty),
         block_type: (stmts: List<StmtId>, value: ExprId) -> block_type(t, param_types, stmts, value),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
         type_name: (ty: TypeId) -> t.types.name_of(ty),
@@ -128,29 +127,40 @@ fn shape_named(name: string) -> Type? {
 }
 
 impl Typer {
-    /// Every struct's field table, from its annotations alone —
+    /// Every declared type's table, from its declaration alone —
     /// BEFORE fn sigs, whose annotations may name these types.
-    fn declare_struct_sigs(self) {
+    fn declare_type_sigs(self) {
         for s in self.p.stmts {
-            let parts: StructParts? = self.p.store.struct_parts(s)
-            if parts != null { self.declare_struct_sig(s, parts!.fields) }
+            let sp: StructParts? = self.p.store.struct_parts(s)
+            if sp != null { self.declare_struct_sig(s, sp!.fields) }
+            let ep: EnumParts? = self.p.store.enum_parts(s)
+            if ep != null { self.declare_enum_sig(s, ep!.variants) }
         }
+    }
+
+    /// An enum's variant table — the index IS the runtime tag.
+    fn declare_enum_sig(self, s: StmtId, variants: List<string>) {
+        let sig = EnumSig { names: variants }
+        self.declare(s, DeclSig.Variants(sig))
+    }
+
+    /// One declaration's table lands in the ONE dense record.
+    fn declare(self, s: StmtId, d: DeclSig) {
+        mut sig_table = self.decls
+        sig_table.set(s.index, d)
     }
 
     fn declare_struct_sig(self, s: StmtId, fields: List<Param>) {
         let names = [f.name for f in fields]
+        let owner: string = self.p.store.type_decl_name(s) ?? "this type"
         for (j, f) in fields.enumerate() {
             if names.index_of(f.name) < j {
-                self.speak(pointed(
-                    error_at("type.duplicate_field", self.stmt_loc(s),
-                        "field `${f.name}` is declared more than once"),
-                    "in this declaration")
-                    with { help: "rename one of them" })
+                self.speak(duplicate_member("type.duplicate_field", owner, f.name, self.stmt_loc(s)))
             }
         }
         let types = [self.field_type(s, f) for f in fields]
-        mut sig_table = self.struct_sigs
-        sig_table.set(s.index, StructSig { names: names, types: types })
+        let sig = StructSig { names: names, types: types }
+        self.declare(s, DeclSig.Record(sig))
     }
 
     /// A field's type — scalars only, until ownership analysis.
@@ -178,8 +188,8 @@ impl Typer {
     fn declare_sig(self, s: StmtId, fparams: List<Param>, fret: string) {
         let ptypes = [self.annotated(s, pp.ty) for pp in fparams]
         let rt = self.annotated(s, fret)
-        mut sig_table = self.sigs
-        sig_table.set(s.index, FnSig { params: ptypes, ret: rt })
+        let sig = FnSig { params: ptypes, ret: rt }
+        self.declare(s, DeclSig.Fn(sig))
     }
 
     /// An annotation's TypeId: a builtin shape, a declared type, or
@@ -188,12 +198,19 @@ impl Typer {
         let sh: Type? = shape_named(name)
         if sh != null { return self.types.intern(sh!) }
         let decl: StmtId? = self.resolution.type_defs.get(name)
-        if decl != null { return self.types.intern(Type.Struct(decl!, name)) }
+        if decl != null { return self.declared_type(decl!, name) }
         self.speak(pointed(
             error_at("type.unknown", self.stmt_loc(s), "`${name}` names no type"),
             "in this signature")
             with { help: "the types today are `int`, `string`, `bool`, and your declared types" })
         self.types.intern(Type.Error)
+    }
+
+    /// A declared name's type: an enum's value shape or a record's.
+    fn declared_type(self, s: StmtId, name: string) -> TypeId {
+        let ep: EnumParts? = self.p.store.enum_parts(s)
+        if ep != null { return self.types.intern(Type.Enum(s, name)) }
+        self.types.intern(Type.Struct(s, name))
     }
 
     fn stmt_loc(self, s: StmtId) -> Loc? {
@@ -211,8 +228,12 @@ impl Typer {
         }
     }
 
-    /// A definition statement's value type; a valueless one absorbs.
+    /// A definition statement's value type. A TYPE declaration used
+    /// as a value is the compile-only TypeName — the shape variant
+    /// construction reads and nothing else accepts.
     fn def_type(self, s: StmtId) -> TypeId {
+        let tname: string? = self.p.store.type_decl_name(s)
+        if tname != null { return self.types.intern(Type.TypeName(s, tname!)) }
         let v: ExprId? = self.p.store.stmt_value(s)
         if v == null { return self.types.intern(Type.Error) }
         self.of_expr[v!.index]
@@ -223,7 +244,7 @@ impl Typer {
         let b: Binding? = binding_of(self.resolution, e)
         if b == null { return null }
         match b! {
-            .Def(s) -> self.sigs[s.index],
+            .Def(s) -> fn_sig_of(self.decls[s.index]),
             .Param(_) -> null,
         }
     }
@@ -241,7 +262,15 @@ impl Typer {
     /// A struct type's field table; null for every other shape.
     fn fields_of(self, ty: TypeId) -> StructSig? {
         match self.types.shape_of(ty) {
-            .Struct(decl, _) -> self.struct_sigs[decl.index],
+            .Struct(decl, _) -> record_sig_of(self.decls[decl.index]),
+            _ -> null,
+        }
+    }
+
+    /// An enum type's variant table; null for every other shape.
+    fn variants_of(self, ty: TypeId) -> EnumSig? {
+        match self.types.shape_of(ty) {
+            .Enum(decl, _) -> variant_sig_of(self.decls[decl.index]),
             _ -> null,
         }
     }

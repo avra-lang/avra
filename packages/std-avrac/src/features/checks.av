@@ -7,6 +7,7 @@ use diagnostics.{Diag, error_at, pointed}
 /// Speak and ABSORB: the diagnostic lands and the answer is the
 /// interned Error — the standard refusal tail of a typing law.
 export fn spoken(cx: TypeCx, d: Diag) -> TypeId {
+    // LICENSED I14: this IS `spoken` — the pair's one home
     cx.emit(d)
     cx.intern(Type.Error)
 }
@@ -27,7 +28,49 @@ export fn require_bool(cx: TypeCx, e: ExprId, subject: string, label: string) {
 /// the site speaks, in its own words.
 export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
     if cx.shape_of(got) is .Error || cx.shape_of(want) is .Error { return false }
+    // LICENSED I9: this IS the agreement law's body
     got.index != want.index
+}
+
+/// The VALUE law: a type NAME is not a value. `Color` alone is
+/// legal only as a property subject (`Color.red`), so anywhere a
+/// value is consumed it refuses here — and no type-name shape ever
+/// reaches lowering, where it could only be a defect. True means
+/// refused.
+export fn refuses_type_value(cx: TypeCx, e: ExprId) -> bool {
+    let sh: Type = cx.shape_at(e)
+    let tname: string? = match sh {
+        .TypeName(_, n) -> n,
+        _ -> null,
+    }
+    if tname == null { return false }
+    let n = tname!
+    cx.emit(pointed(
+        error_at("type.type_value", cx.loc_of(e), "`${n}` is a type, not a value"),
+        "used as a value here")
+        with { help: "name a variant (`${n}.<variant>`) or build a record (`${n} { ... }`)" })
+    true
+}
+
+/// The ARMS law: every arm agrees with the anchor, or each
+/// disagreeing arm speaks for itself; the answer is the anchor's
+/// type, or Error when any disagreed. `subject` names the construct
+/// and `anchor_name` says where the anchor came from, so each site
+/// keeps its own words.
+export fn arms_agree(cx: TypeCx, kind: string, subject: string, anchor_name: string,
+                     anchor: TypeId, values: List<ExprId>) -> TypeId {
+    mut agreed = true
+    for v in values {
+        if types_disagree(cx, cx.type_at(v), anchor) {
+            let n = cx.name_at(v)
+            cx.emit(pointed(
+                error_at(kind, cx.loc_of(v),
+                    "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${cx.type_name(anchor)}`"),
+                this_is(n)))
+            agreed = false
+        }
+    }
+    if agreed { anchor } else { cx.intern(Type.Error) }
 }
 
 /// The pointing label every mismatch uses: the offender, named.

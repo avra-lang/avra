@@ -1,13 +1,14 @@
 //! Mutation's typing laws: a mut binding holds scalars, and an
 //! assignment keeps the binding's declared type.
 use core.{StmtId, ExprId, ptr_shape}
-use features.{StmtTypeCx, types_disagree, this_is}
+use features.{StmtTypeCx, types_disagree, this_is, refuses_type_value}
 use diagnostics.{error_at, pointed}
 
 export fn check_mut(cx: StmtTypeCx, s: StmtId) {
     let v: ExprId? = cx.store.stmt_value(s)
     if v == null { return }
     cx.walk(v!)
+    if refuses_type_value(cx.expr, v!) { return }
     if ptr_shape(cx.expr.shape_at(v!)) {
         cx.expr.emit(pointed(
             error_at("type.mut_managed", cx.loc_of(s), "a `mut` binding holds scalars for now"),
