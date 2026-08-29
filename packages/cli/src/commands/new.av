@@ -1,7 +1,9 @@
-//! `avra new feature <name>` — the compiler writes its own next
-//! feature: the directory, the five files, the test, all compiling
-//! placeholder bodies. What remains is the semantics and three
-//! wiring edits, printed as a checklist.
+//! `avra new` — the compiler scaffolds its own growth.
+//! `feature <name>` writes the directory, the five files, and the
+//! test, all compiling, then prints the three wiring edits.
+//! `ins <Name>` prints the IR VOCABULARY PROTOCOL: the two
+//! questions that gate growth, then the five consumers a new
+//! instruction owes. Both end at `make gate`.
 use @std.cli.{Subcommand, CommandSpec, CliResult, Runnable, ArgDef, result_get_arg}
 
 type NewCmd = { }
@@ -9,11 +11,11 @@ type NewCmd = { }
 impl Runnable for NewCmd {
     fn run(self, args: CliResult) -> int {
         let kind = result_get_arg(args, "kind")
-        if kind != "feature" {
-            eprintln("avra new: only `feature` exists today")
-            return 2
-        }
-        scaffold_feature(result_get_arg(args, "name"))
+        let name = result_get_arg(args, "name")
+        if kind == "feature" { return scaffold_feature(name) }
+        if kind == "ins" { return scaffold_ins(name) }
+        eprintln("avra new: `feature` or `ins`")
+        2
     }
 }
 
@@ -21,11 +23,11 @@ export fn new_command() -> Subcommand {
     let body: NewCmd = NewCmd { }
     let meta = CommandSpec {
         name: "new",
-        description: "Scaffold the next feature",
+        description: "Scaffold the next feature, or an IR instruction's checklist",
         hidden: false,
         flags: [],
         args: [
-            ArgDef { name: "kind", description: "what to scaffold (`feature`)", required: true, variadic: false },
+            ArgDef { name: "kind", description: "what to scaffold (`feature` or `ins`)", required: true, variadic: false },
             ArgDef { name: "name", description: "its snake_case name", required: true, variadic: false },
         ],
         options: [],
@@ -70,6 +72,44 @@ fn scaffold_feature(name: string) -> int {
     println("  3. language/mod.av — the feature in language_features(), in its spot")
     println("     (keywords derive from your gram's literals — nothing to list)")
     println("prove it: corpus/${name}.av with its .expected, then `make gate`")
+    0
+}
+
+/// `avra new ins <Name>` — the IR vocabulary protocol, printed at
+/// the moment of use: the two questions that gate growth, then the
+/// five consumers the new variant owes.
+fn scaffold_ins(name: string) -> int {
+    println("`${name}` would join the IR vocabulary. Two questions first:")
+    println("")
+    println("  JUSTIFY     a new control shape, value category, memory")
+    println("              boundary — or a MACHINE SHAPE the backend can")
+    println("              exploit and cannot infer? Performance counts.")
+    println("              If an existing instruction already says it, stop:")
+    println("              every value-producing runtime need rides CallRt.")
+    println("  GENERALIZE  can an EXISTING variant become more general")
+    println("              instead? SwitchStart reuses ArmEnd/RegionEnd, so")
+    println("              regions and 2-arm ifs stayed ONE mechanism. One")
+    println("              variant that deepens a concept beats two that")
+    println("              split it.")
+    println("")
+    println("Then declare it in core/ir.av's `Ins` and pay its five")
+    println("consumers — each dispatch is exhaustive, so the compiler")
+    println("lists them for you and `make vocab` keeps it that way:")
+    println("")
+    println("  1. core/ir.av            dst_of      the register it defines")
+    println("       .${name}(...) -> null,")
+    println("  2. language/interp.av    step        its MEANING")
+    println("       .${name}(...) -> <mutate the machine, answer the next pc>,")
+    println("  3. language/memory.av    memory_ins  its ownership effect")
+    println("       .${name}(...) -> { manage(types, reg_types, open_scopes, i)")
+    println("                          out.push(i) }")
+    println("  4. language/ir_text.av   body_lines  its human projection")
+    println("       .${name}(...) -> lines.push(line(depth, \"...\")),")
+    println("  5. language/llvm.av      emit_ins    its machine projection")
+    println("       .${name}(...) -> <build it>,")
+    println("")
+    println("prove it: a corpus program (eval == native == expected) and the")
+    println("`avra ir` golden that shows the new shape. Then `make gate`.")
     0
 }
 

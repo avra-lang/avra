@@ -23,6 +23,28 @@ export fn un_symbol(op: UnOp) -> string {
     }
 }
 
+/// THE INSTRUCTION VOCABULARY. Features lower into it and never
+/// grow it; growth is a core event with a protocol (CLAUDE.md),
+/// and performance is a first-class reason to grow — a shape the
+/// backend can exploit but cannot infer earns a variant.
+///
+/// A new variant owes FIVE consumers, and the compiler names them
+/// for you because each dispatch is exhaustive — `make vocab`
+/// keeps them that way:
+///   dst_of (below)          the register it defines
+///   interp.av  step         its MEANING, interpreted
+///   memory.av  memory_ins   its ownership effect
+///   ir_text.av body_lines   its human projection
+///   llvm.av    emit_ins     its machine projection
+/// plus a corpus program (eval == native) and an IR golden.
+/// `avra new ins <Name>` prints the whole checklist.
+///
+/// GENERALIZE BEFORE ADDING: SwitchStart reuses ArmEnd/RegionEnd,
+/// so an
+/// N-arm region and a 2-arm `if` are ONE mechanism in all five —
+/// prefer making an existing concept more general over adding a
+/// parallel one. That is what keeps this vocabulary small while it
+/// grows.
 export enum Ins {
     // Values.
     ConstInt(dst: Reg, v: int)
@@ -49,9 +71,20 @@ export enum Ins {
     /// A scope YIELDS like a branch does: `gives` escapes upward —
     /// released never here, adopted by the enclosing scope.
     ScopeExit(gives: Reg?)
+    /// A TWO-arm region on a bool — the special case of the region
+    /// shape below.
     IfStart(cond: Reg)
-    Else(gives: Reg)
-    IfEnd(dst: Reg, gives: Reg)
+    /// An N-ARM region on an int selector: `cases` are the selector
+    /// values of arms 0..N-2 IN ARM ORDER, and the last arm is the
+    /// default, so a total match needs no fallthrough. The backend
+    /// emits one jump table; the arms are bracketed exactly like an
+    /// if's, because a region is a region.
+    SwitchStart(selector: Reg, cases: List<int>)
+    /// End of ONE arm, yielding — shared by both openers, which is
+    /// why it is not named for either.
+    ArmEnd(gives: Reg)
+    /// End of the LAST arm: every arm's yield merges into `dst`.
+    RegionEnd(dst: Reg, gives: Reg)
     /// A call to an Avra fn body. The ABI is callee-cleans: the
     /// caller retains managed arguments in, the callee's exit
     /// releases its params minus what RetVal keeps.
@@ -82,6 +115,16 @@ export enum Ins {
     Ret(code: int)
 }
 
+/// Which instructions BRACKET a region — kept beside the enum, like
+/// every fact about it, so no consumer re-derives the list.
+export fn opens_region(i: Ins) -> bool {
+    i is .IfStart || i is .SwitchStart
+}
+
+export fn closes_region(i: Ins) -> bool {
+    i is .RegionEnd
+}
+
 /// The register an instruction DEFINES, when it defines one — kept
 /// beside the enum so consumers never grow their own lists.
 export fn dst_of(i: Ins) -> Reg? {
@@ -94,10 +137,11 @@ export fn dst_of(i: Ins) -> Reg? {
         .CallRtVoid(_, _) -> null,
         .CallRt(d, _, _) -> d,
         .Call(d, _, _) -> d,
-        .IfEnd(d, _) -> d,
+        .RegionEnd(d, _) -> d,
         .Alloca(d) -> d,
         .Load(d, _) -> d,
-        .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .Else(_) or
+        .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
+        .SwitchStart(_, _) or .ArmEnd(_) or
         .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or
         .Release(_) or .Retain(_) or .RetVal(_) or .Ret(_) -> null,
     }

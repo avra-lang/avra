@@ -14,10 +14,8 @@ use core.{Ins, Reg, Level, TypeId, TypeRegistry, dst_of}
 type Scope = { level: Level, managed: List<Reg> }
 
 export fn memory(l: Lowered) -> Lowered {
-    mut fns: List<Body> = []
-    for b in l.fns {
-        fns.push(b with { ins: memory_ins(l.types, b.reg_types, b.ins, managed_params(l.types, b)) })
-    }
+    let fns = [b with { ins: memory_ins(l.types, b.reg_types, b.ins, managed_params(l.types, b)) }
+               for b in l.fns]
     let entry = l.entry with { ins: memory_ins(l.types, l.entry.reg_types, l.entry.ins, []) }
     l with { fns: fns, entry: entry }
 }
@@ -48,6 +46,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
     for i in ins {
         match i {
             .ScopeEnter(level) -> {
+                // LICENSED I15: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(Scope { level: level, managed: [] })
                 if open_scopes.length == 1 {
                     mut top = open_scopes[0].managed
@@ -63,6 +62,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
                 if gives != null && !open_scopes.is_empty() {
                     if is_managed(types, reg_types[gives!.index]) {
+                        // LICENSED I7: rebind-alias needs index syntax; last() may copy
                         mut top = open_scopes[open_scopes.length - 1].managed
                         top.push(gives!)
                     }
@@ -72,17 +72,19 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             // A branch is a scope at its enclosing level. Its yield
             // escapes to the merge: the branch never releases it —
             // the enclosing scope owns `dst`, the merge of both.
-            .IfStart(_) -> {
-                open_scopes.push(Scope { level: enclosing_level(open_scopes), managed: [] })
+            .IfStart(_) or .SwitchStart(_, _) -> {
+                // LICENSED I15: a scope STACK walked by the pass, not a bracket body
+                open_scopes.push(nested_scope(open_scopes))
                 out.push(i)
             }
-            .Else(gives) -> {
+            .ArmEnd(gives) -> {
                 let scope = open_scopes.pop()
                 for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
-                open_scopes.push(Scope { level: enclosing_level(open_scopes), managed: [] })
+                // LICENSED I15: a scope STACK walked by the pass, not a bracket body
+                open_scopes.push(nested_scope(open_scopes))
                 out.push(i)
             }
-            .IfEnd(_, gives) -> {
+            .RegionEnd(_, gives) -> {
                 let scope = open_scopes.pop()
                 for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
                 manage(types, reg_types, open_scopes, i)
@@ -111,6 +113,12 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
     out
 }
 
+/// A scope opened INSIDE another: it inherits the enclosing level
+/// and owns nothing yet.
+fn nested_scope(open_scopes: List<Scope>) -> Scope {
+    Scope { level: enclosing_level(open_scopes), managed: [] }
+}
+
 /// The level a new scope inherits — its innermost open enclosure.
 fn enclosing_level(open_scopes: List<Scope>) -> Level {
     if open_scopes.is_empty() { return Level.Application }
@@ -133,6 +141,7 @@ fn kept_out(rs: List<Reg>, kept: Reg?) -> List<Reg> {
 
 /// Held by the scope — not the value escaping through the yield.
 fn stays(r: Reg, kept: Reg?) -> bool {
+    // LICENSED I9: register identity, not type agreement
     kept == null || r.index != kept!.index
 }
 
@@ -141,6 +150,7 @@ fn stays(r: Reg, kept: Reg?) -> bool {
 fn manage(types: TypeRegistry, reg_types: List<TypeId>, open_scopes: List<Scope>, i: Ins) {
     let dst: Reg? = managed_dst(types, reg_types, i)
     if dst != null && !open_scopes.is_empty() {
+        // LICENSED I7: rebind-alias needs index syntax; last() may copy
         mut top = open_scopes[open_scopes.length - 1].managed
         top.push(dst!)
     }

@@ -6,10 +6,11 @@
 //! — the registry's fifth consumer, refusal wording included.
 //!
 //! The IR is brackets, not jumps: control flow is a program counter
-//! plus depth-matched skips (if-regions, loop back edges). Values
+//! plus depth-matched skips (regions — two-arm ifs and N-arm
+//! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{Ins, Reg, BinOp, UnOp, filled, joined}
+use core.{Ins, Reg, BinOp, UnOp, opens_region, closes_region, filled, joined}
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -49,9 +50,11 @@ fn run_body(m: Machine, b: Body, args: List<Val>) -> Val? {
     mut frames = m.frames
     frames.push(filled<Val?>(b.reg_types.length, null))
     for (j, a) in args.enumerate() { put(m, Reg { index: j }, a) }
+    // LICENSED I4: the run loop's answer, not a scan
     mut answer: Val? = null
     mut pc = 0
     while pc < b.ins.length && m.failures.is_empty() {
+        // LICENSED I22: everything else DELEGATES to `step`, which is exhaustive
         match b.ins[pc] {
             .RetVal(r) -> {
                 answer = at(m, r)
@@ -81,8 +84,9 @@ fn step(m: Machine, b: Body, pc: int) -> int {
         .CallRtVoid(callee, args) -> rt_void(m, callee, args, pc),
         .Call(d, callee, args) -> put_at(m, d, call_val(m, callee, args), pc),
         .IfStart(c) -> if truth(m, c) { pc + 1 } else { past_else(b, pc) },
-        .Else(gives) -> merge_then(m, b, gives, pc),
-        .IfEnd(d, gives) -> put_at(m, d, at(m, gives) ?? Val.I(0), pc),
+        .SwitchStart(sel, cases) -> arm_start(b, pc, chosen_arm(m, sel, cases)),
+        .ArmEnd(gives) -> merge_then(m, b, gives, pc),
+        .RegionEnd(d, gives) -> put_at(m, d, at(m, gives) ?? Val.I(0), pc),
         .LoopStart -> pc + 1,
         .LoopCond(c) -> if truth(m, c) { pc + 1 } else { past_loop(b, pc) },
         .LoopEnd -> loop_header(b, pc) + 1,
@@ -189,7 +193,8 @@ fn bool_eq_val(m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
     match op {
         .Eq -> Val.B(l == r),
         .Ne -> Val.B(l != r),
-        _ -> defect_val(m, "a non-equality op reached bool operands"),
+        .Add or .Sub or .Mul or .Div or .Mod or .Lt or .Le or .Gt or
+        .Ge or .And or .Or -> defect_val(m, "a non-equality op reached bool operands"),
     }
 }
 
@@ -205,6 +210,30 @@ fn defect_val(m: Machine, what: string) -> Val {
 }
 
 // ── Control-flow bracket scans ──────────────────────────────────
+
+/// Which arm the selector chooses: the case that matches, else the
+/// LAST arm (the default). A semantic scan — `index_of` compares
+/// non-string elements by identity (subset note).
+fn chosen_arm(m: Machine, sel: Reg, cases: List<int>) -> int {
+    let v = int_val(m, sel)
+    mut k = cases.length
+    for (j, c) in cases.enumerate() {
+        if k == cases.length && c == v { k = j }
+    }
+    k
+}
+
+/// Where arm `k` of the region opened at `from` begins: just past
+/// the k-th arm separator at depth 0.
+fn arm_start(b: Body, from: int, k: int) -> int {
+    mut at = from
+    mut n = 0
+    while n < k {
+        at = ahead(b, at, opens_region, closes_region, (i: Ins) -> i is .ArmEnd)
+        n = n + 1
+    }
+    at + 1
+}
 
 /// Forward from `from`+1: the pc of the first `target` at depth 0,
 /// with `opens`/`closes` tracking nesting. Target wins over close
@@ -224,17 +253,17 @@ fn ahead(b: Body, from: int, opens: fn(Ins) -> bool, closes: fn(Ins) -> bool, ta
 
 /// From an IfStart: the pc just past its matching Else.
 fn past_else(b: Body, from: int) -> int {
-    ahead(b, from, (i: Ins) -> i is .IfStart, (i: Ins) -> i is .IfEnd, (i: Ins) -> i is .Else) + 1
+    ahead(b, from, opens_region, closes_region, (i: Ins) -> i is .ArmEnd) + 1
 }
 
 /// At an Else after the then-branch ran: seal the merge at the
 /// matching IfEnd with the then-value and continue past it.
 fn merge_then(m: Machine, b: Body, gives: Reg, pc: int) -> int {
     let v: Val? = at(m, gives)
-    let end = ahead(b, pc, (i: Ins) -> i is .IfStart, (i: Ins) -> i is .IfEnd, (i: Ins) -> i is .IfEnd)
+    let end = ahead(b, pc, opens_region, closes_region, closes_region)
     if end < b.ins.length {
         let d: Reg? = match b.ins[end] {
-            .IfEnd(dst, _) -> dst,
+            .RegionEnd(dst, _) -> dst,
             _ -> null,
         }
         if d != null { put(m, d!, v ?? Val.I(0)) }

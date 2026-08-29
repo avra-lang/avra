@@ -664,6 +664,18 @@ LLVMValueRef avra_llvm_build_cond_br(LLVMBuilderRef b, LLVMValueRef cond, LLVMBa
     return LLVMBuildCondBr(b, cond, then_bb, else_bb);
 }
 
+// An N-way branch on an integer selector: the jump table. Cases are
+// added one at a time; `default_bb` takes every unlisted value, which
+// for a total match is simply the last arm.
+LLVMValueRef avra_llvm_build_switch(LLVMBuilderRef b, LLVMValueRef selector,
+                                    LLVMBasicBlockRef default_bb, int case_count) {
+    return LLVMBuildSwitch(b, selector, default_bb, (unsigned)case_count);
+}
+
+void avra_llvm_add_case(LLVMValueRef switch_val, LLVMValueRef on_val, LLVMBasicBlockRef dest) {
+    LLVMAddCase(switch_val, on_val, dest);
+}
+
 LLVMValueRef avra_llvm_build_ret(LLVMBuilderRef b, LLVMValueRef val) {
     return LLVMBuildRet(b, val);
 }

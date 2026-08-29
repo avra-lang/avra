@@ -15,9 +15,14 @@ LLVM_PREFIX ?= /opt/homebrew/opt/llvm
 BOOTSTRAP := ../forge-crafting-intepreters/bootstrap
 BS2       := $(abspath $(BOOTSTRAP))/build/bs2
 
-RUNTIME_OBJS := build/runtime.o build/llvm_wrapper.o build/avra_runtime.o
+# bs2 resolves its runtime objects relative to ITS OWN tree, so the
+# wrapper we own must be installed there too: `bs2 run` (what ./avra
+# is) otherwise links a stale copy and any builder we ADD comes back
+# undefined at link time. Ours is a strict superset — symbol-diffed.
+BOOT_WRAPPER := $(BOOTSTRAP)/build/llvm_wrapper.o
+RUNTIME_OBJS := build/runtime.o build/llvm_wrapper.o build/avra_runtime.o $(BOOT_WRAPPER)
 
-.PHONY: test clean fresh libfresh corpus gate idioms idioms-accept bench fuzz scaffold-check
+.PHONY: test clean fresh libfresh corpus gate idioms idioms-accept bench fuzz scaffold-check vocab
 
 # bs2's lib-mode freshness truth is the .avra-sha256 sidecars; they
 # go stale against edits. Every bs2-run target clears them first.
@@ -35,6 +40,9 @@ test: $(RUNTIME_OBJS)
 build/avra_runtime.o: runtime/avra_runtime.c
 	@mkdir -p build
 	cc -O2 -Wall -Werror -c runtime/avra_runtime.c -o build/avra_runtime.o
+
+$(BOOT_WRAPPER): build/llvm_wrapper.o
+	cp $< $@
 
 build/llvm_wrapper.o: backend/llvm_wrapper.c
 	@mkdir -p build
@@ -83,17 +91,23 @@ corpus: $(RUNTIME_OBJS)
 	  echo "$$f: eval == native == expected"; \
 	done
 
-# The idiom ratchet: mechanical smells may never RISE. Counts are
-# pinned in tools/idioms.baseline; falling counts re-pin with
-# `make idioms-accept`.
+# The idiom bar: the baseline LISTS sites and only ever shrinks —
+# `idioms-accept` prunes what is fixed and can never add. A new
+# violation is written idiomatically or licensed AT the site.
 idioms:
 	@sh tools/idioms.sh
 
 idioms-accept:
 	@sh tools/idioms.sh --accept
 
-# The whole gate: idioms, unit specs, then the corpus end to end.
-gate: idioms test corpus
+# The IR vocabulary's guarantee: every Ins consumer stays exhaustive,
+# so a new instruction cannot ship half-implemented.
+vocab:
+	@sh tools/vocab.sh
+
+# The whole gate: the vocabulary's guarantee, idioms, unit specs,
+# then the corpus end to end.
+gate: vocab idioms test corpus
 
 # The differential gate: the compiled binary must say exactly what
 # the evaluator says.

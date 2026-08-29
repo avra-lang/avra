@@ -6,13 +6,13 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
-use core.{Ins, Reg, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, ptr_shape}
+use core.{Ins, Reg, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, ptr_shape, concat}
 use features.{nothing}
 
 /// One body's emission world: the LLVM handles, this body's register
 /// types, the growing register value table (dense by Reg — registers
 /// mint in instruction order, params first), and the open
-/// if-regions, innermost last.
+/// open regions, innermost last.
 type Emit = {
     lc: ptr,
     m: ptr,
@@ -21,16 +21,25 @@ type Emit = {
     types: TypeRegistry,
     tys: List<TypeId>,
     vals: List<ptr>,
-    frames: List<IfFrame>,
+    frames: List<Region>,
     loops: List<LoopFrame>,
 }
 
 /// One open loop: where the back edge returns and where false exits.
 type LoopFrame = { header: ptr, exit: ptr }
 
-/// One open region: where `else` and the merge build, and where the
-/// then-branch ended with what it yields — sealed when Else fires.
-type IfFrame = { else_bb: ptr, merge_bb: ptr, then_end: ptr, then_gives: Reg }
+/// One open region: N arms merging into ONE value. `arms` holds
+/// every arm's block in order and `next` the one to build when the
+/// current arm ends; `ended`/`gives` accumulate each finished arm's
+/// exit block and yielded register, which the merge phis together.
+/// An `if` is the TWO-arm case of exactly this.
+type Region = {
+    arms: List<ptr>,
+    next: int,
+    merge_bb: ptr,
+    ended: List<ptr>,
+    gives: List<Reg>,
+}
 
 /// A user fn's symbol — prefixed clear of the runtime and `main`.
 fn mangled(name: string) -> string {
@@ -94,7 +103,7 @@ fn wreck(m: ptr, path: string, failure: string) -> string {
 /// its implementation twin.
 fn declare_runtime(lc: ptr, m: ptr) {
     for s in rt_sigs() {
-        declare(lc, m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
+        declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
     }
 }
 
@@ -108,11 +117,11 @@ fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
 
 /// One user fn's declaration, typed from its signature's shapes.
 fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
-    declare(lc, m, mangled(bd.name), ll_type_of(lc, types, bd.ret),
+    declare(m, mangled(bd.name), ll_type_of(lc, types, bd.ret),
             [ll_type_of(lc, types, pt) for pt in bd.params], false)
 }
 
-fn declare(lc: ptr, m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {
+fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {
     let arr = avra_llvm_type_array_new(params.length)
     for (i, p) in params.enumerate() { avra_llvm_type_array_set(arr, i, p) }
     let vararg = if variadic { 1 } else { 0 }
@@ -123,9 +132,10 @@ fn declare(lc: ptr, m: ptr, name: string, ret: ptr, params: List<ptr>, variadic:
 /// A shape's LLVM type.
 fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
     match types.shape_of(ty) {
-        .Int or .Error -> avra_llvm_int64_type(lc),
+        // TypeName never materializes: no value ever has it.
+        .Int or .Error or .TypeName(_, _) -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
-        .Str or .List(_) or .Struct(_, _) -> avra_llvm_pointer_type(lc),
+        .Str or .List(_) or .Struct(_, _) or .Enum(_, _) -> avra_llvm_pointer_type(lc),
     }
 }
 
@@ -157,8 +167,9 @@ fn emit_ins(em: Emit, i: Ins) {
         .RetVal(r) -> ret_value(em, r),
         .Ret(code) -> ret_code(em, code),
         .IfStart(c) -> if_start(em, c),
-        .Else(gives) -> else_branch(em, gives),
-        .IfEnd(dst, gives) -> if_end(em, dst, gives),
+        .SwitchStart(sel, cases) -> switch_start(em, sel, cases),
+        .ArmEnd(gives) -> arm_end(em, gives),
+        .RegionEnd(dst, gives) -> region_end(em, dst, gives),
         .Alloca(dst) -> define(em, avra_llvm_build_alloca(em.b, reg_type(em, dst), "slot")),
         .Load(dst, slot) -> define(em, avra_llvm_build_load(em.b, reg_type(em, dst), em.vals[slot.index], "ld")),
         .Store(slot, src) -> stored(em, slot, src),
@@ -293,39 +304,69 @@ fn loop_end(em: Emit) {
     avra_llvm_position_at_end(em.b, f.exit)
 }
 
-/// Open the region: branch on the condition, build into `then`. The
-/// frame's then-fields are placeholders until Else seals them.
+/// Open a two-arm region: branch on the condition, build into the
+/// first arm.
 fn if_start(em: Emit, c: Reg) {
     let then_bb = avra_llvm_append_basic_block(em.lc, em.fn_val, "then")
     let else_bb = avra_llvm_append_basic_block(em.lc, em.fn_val, "else")
     let merge_bb = avra_llvm_append_basic_block(em.lc, em.fn_val, "endif")
     let _ = avra_llvm_build_cond_br(em.b, em.vals[c.index], then_bb, else_bb)
     avra_llvm_position_at_end(em.b, then_bb)
-    mut fs = em.frames
-    fs.push(IfFrame { else_bb: else_bb, merge_bb: merge_bb, then_end: then_bb, then_gives: Reg { index: 0 } })
+    open_region(em, [then_bb, else_bb], merge_bb)
 }
 
-/// Seal `then` — where it ended, what it yields — and build into
-/// `else`. Nested regions moved the insert block; ask, never assume.
-fn else_branch(em: Emit, gives: Reg) {
+/// Open an N-arm region: ONE jump table over the selector, the last
+/// arm its default — which is why a total match needs no
+/// fallthrough. This is the whole point of the instruction: the
+/// machine indexes, it does not walk.
+fn switch_start(em: Emit, sel: Reg, cases: List<int>) {
+    // One block per case, plus the default's — the last arm.
+    let arms = concat([avra_llvm_append_basic_block(em.lc, em.fn_val, "arm") for c in cases],
+                      [avra_llvm_append_basic_block(em.lc, em.fn_val, "arm")])
+    let merge_bb = avra_llvm_append_basic_block(em.lc, em.fn_val, "endswitch")
+    let sw = avra_llvm_build_switch(em.b, em.vals[sel.index], arms[cases.length], cases.length)
+    let i64t = avra_llvm_int64_type(em.lc)
+    for (j, v) in cases.enumerate() {
+        avra_llvm_add_case(sw, avra_llvm_const_int(i64t, v, 1), arms[j])
+    }
+    avra_llvm_position_at_end(em.b, arms[0])
+    open_region(em, arms, merge_bb)
+}
+
+/// The region stack's push — arm 0 is already being built.
+fn open_region(em: Emit, arms: List<ptr>, merge_bb: ptr) {
+    mut fs = em.frames
+    let r = Region { arms: arms, next: 1, merge_bb: merge_bb, ended: [], gives: [] }
+    // LICENSED I15: a region STACK across fns, not a bracket body
+    fs.push(r)
+}
+
+/// End this arm — where it ended, what it yields — and build into
+/// the next. Nested regions moved the insert block; ask, never
+/// assume.
+fn arm_end(em: Emit, gives: Reg) {
     mut fs = em.frames
     let f = fs.pop()
-    let sealed = f with { then_end: avra_llvm_get_insert_block(em.b), then_gives: gives }
+    let here = avra_llvm_get_insert_block(em.b)
     let _ = avra_llvm_build_br(em.b, f.merge_bb)
-    avra_llvm_position_at_end(em.b, f.else_bb)
-    fs.push(sealed)
+    avra_llvm_position_at_end(em.b, f.arms[f.next])
+    let advanced = f with {
+        ended: concat(f.ended, [here]), gives: concat(f.gives, [gives]), next: f.next + 1,
+    }
+    // LICENSED I15: a region STACK across fns, not a bracket body
+    fs.push(advanced)
 }
 
-/// Seal `else` and merge: the phi over both yields is the if's
-/// register.
-fn if_end(em: Emit, dst: Reg, gives: Reg) {
+/// End the LAST arm and merge: one phi over every arm's yield is
+/// the region's register.
+fn region_end(em: Emit, dst: Reg, gives: Reg) {
     mut fs = em.frames
     let f = fs.pop()
-    let else_end = avra_llvm_get_insert_block(em.b)
+    let ended = concat(f.ended, [avra_llvm_get_insert_block(em.b)])
+    let gs = concat(f.gives, [gives])
     let _ = avra_llvm_build_br(em.b, f.merge_bb)
     avra_llvm_position_at_end(em.b, f.merge_bb)
-    let phi = avra_llvm_build_phi(em.b, reg_type(em, dst), "ifval")
-    avra_llvm_add_incoming(phi, em.vals[f.then_gives.index], f.then_end)
-    avra_llvm_add_incoming(phi, em.vals[gives.index], else_end)
+    let phi = avra_llvm_build_phi(em.b, reg_type(em, dst), "regval")
+    for (j, bb) in ended.enumerate() { avra_llvm_add_incoming(phi, em.vals[gs[j].index], bb) }
     define(em, phi)
 }
