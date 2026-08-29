@@ -5,7 +5,7 @@
 //! field names through the naming law.
 use core.{Expr, ExprId, StmtId, TypeId, Reg, concat}
 use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx,
-              StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing}
+              StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing, nested_decl}
 
 export type StructsSemantics = { }
 
@@ -54,6 +54,10 @@ impl StmtSemantics for StructDeclSemantics {
 /// The declaration's field names run the naming law; the driver
 /// owns the namespace and the field table.
 fn decl_resolve(cx: StmtResolveCx, s: StmtId) {
+    if cx.in_block {
+        cx.emit(nested_decl("resolve.nested_type", "type declarations", cx.loc_of(s)))
+        return
+    }
     match cx.store.stmt(s) {
         .StructDecl(_, fields) -> cx.check_params(fields, s),
         _ -> nothing(),

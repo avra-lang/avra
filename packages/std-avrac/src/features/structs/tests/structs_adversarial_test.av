@@ -1,0 +1,84 @@
+// The RED TEAM's permanent record for records (see
+// .claude/skills/red-team). Every program here was written to break
+// the feature, not to use it.
+use @std.avrac.language.{analyze_source}
+
+fn shown(source: string) -> string {
+    analyze_source(source).ran() ?? "<refused>"
+}
+
+fn refusals(source: string) -> int {
+    analyze_source(source).diagnostics.length
+}
+
+/// THE subject under attack: the smallest record there is.
+fn p1() -> string {
+    "type P = { x: int }\n"
+}
+
+/// That record, built and bound to `a`.
+fn p1_bound() -> string {
+    "type P = { x: int }\nlet a = P { x: 1 }\n"
+}
+
+spec "features/structs (adversarial)" {
+    given "operators against a record VALUE" {
+        // FOUND BY RED-TEAMING enums, and it was a RECORD bug too:
+        // `==` typed clean on two records, then the interpreter
+        // refused with an internal defect while the backend quietly
+        // answered `false` for two IDENTICAL records — an engine
+        // divergence and a silently wrong native answer.
+        then "equality refuses, and says to compare a field" {
+            let a = analyze_source("${p1_bound()}let b = P { x: 1 }\na == b")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`==` compares scalars for now") &&
+                a.report().contains("compare a field instead")
+        }
+        then "inequality refuses the same way" {
+            refusals("${p1_bound()}a != a") == 1
+        }
+        then "a record compared to an int refuses" {
+            refusals("${p1_bound()}a == 1") == 1
+        }
+        then "arithmetic on a record refuses" {
+            refusals("${p1_bound()}a + 1") >= 1
+        }
+        then "indexing a record refuses" {
+            refusals("${p1_bound()}a[0]") == 1
+        }
+        then "matching over a record refuses" {
+            refusals("${p1_bound()}match a {\n    .x -> 1\n}") == 1
+        }
+    }
+    given "degenerate shapes" {
+        then "a one-field record round-trips" {
+            shown("${p1()}let p = P { x: 9 }\np.x") == "9"
+        }
+        then "a record with no fields refuses rather than existing" {
+            refusals("type P = { }\nlet p = P { }\n1") >= 1
+        }
+        then "a field named like its type still reads" {
+            shown("type P = { P: int }\nlet p = P { P: 4 }\np.P") == "4"
+        }
+    }
+    given "crossing other features" {
+        then "a record survives a fn boundary both ways" {
+            shown("${p1()}fn mk(n: int) -> P { P { x: n } }\nfn get(p: P) -> int { p.x }\nget(mk(6))") == "6"
+        }
+        then "a record built inside a loop reads back" {
+            shown("${p1()}mut t = 0\nfor i in 0..3 {\n    t = t + P { x: 2 }.x\n}\nt") == "6"
+        }
+        then "a copy of a copy keeps the untouched fields" {
+            shown("type P = { x: int, y: int }\nlet p = P { x: 1, y: 2 }\nlet q = (p with { x: 5 }) with { y: 6 }\nq.x + q.y") == "11"
+        }
+        then "a record declared inside a block refuses AT the declaration" {
+            let a = analyze_source("fn f() -> int {\n    ${p1()}    1\n}\nf()")
+            a.diagnostics.length == 1 &&
+                a.report().contains("type declarations live at the top level")
+        }
+        then "a record in an interpolation hole refuses" {
+            let src = "${p1()}let p = P { x: 1 }\n\"v=$" + "{p}\""
+            refusals(src) >= 1
+        }
+    }
+}

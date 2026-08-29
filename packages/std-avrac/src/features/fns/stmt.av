@@ -3,7 +3,7 @@
 //! value is nothing — the body runs at call time, and lowering
 //! collects declarations on its own axis.
 use core.{StmtId, Reg}
-use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing}
+use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing, nested_decl}
 use diagnostics.{error_at, pointed}
 
 export type FnStmtSemantics = { }
@@ -11,10 +11,7 @@ export type FnStmtSemantics = { }
 impl StmtSemantics for FnStmtSemantics {
     fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
         if cx.in_block {
-            cx.emit(pointed(
-                error_at("resolve.nested_fn", cx.loc_of(s), "fn declarations live at the top level"),
-                "declared inside a block")
-                with { help: "move the fn out of the block" })
+            cx.emit(nested_decl("resolve.nested_fn", "fn declarations", cx.loc_of(s)))
             return
         }
         match cx.store.stmt(s) {

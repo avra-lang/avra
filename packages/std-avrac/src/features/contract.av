@@ -36,8 +36,9 @@ export type FnSig = { params: List<TypeId>, ret: TypeId }
 export type StructSig = { names: List<string>, types: List<TypeId> }
 
 /// A declared enum's variant table, in declaration order — the
-/// index IS the runtime tag.
-export type EnumSig = { names: List<string> }
+/// index IS the runtime tag, and a payload (when the variant
+/// carries one) rides slot 1 of the value.
+export type EnumSig = { names: List<string>, payloads: List<TypeId?> }
 
 /// A named member's index in a declaration-ordered table, when it
 /// is one — the lookup structs and enums share.
@@ -68,6 +69,13 @@ impl EnumSig {
     /// A named variant's TAG, when declared.
     fn tag_of(self, name: string) -> int? {
         index_in(self.names, name)
+    }
+
+    /// What the variant CARRIES, when it carries anything.
+    fn payload_of(self, name: string) -> TypeId? {
+        let tag: int? = self.tag_of(name)
+        if tag == null { return null }
+        self.payloads[tag!]
     }
 
     /// The variants, listed for help text.
@@ -261,10 +269,21 @@ export fn lower_defect(cx: LowerCx, e: ExprId, what: string) -> Reg {
     cx.result(e)
 }
 
+/// A declaration that must live at the TOP LEVEL, refused where it
+/// was written. The namespaces are gathered from the program's own
+/// statements, so a nested declaration is invisible — and blaming
+/// the later USE ("`E` is not defined") hides the real mistake.
+export fn nested_decl(kind: string, what: string, at: Loc?) -> Diag {
+    pointed(error_at(kind, at, "${what} live at the top level"),
+        "declared inside a block")
+        with { help: "move it out of the block" }
+}
+
 /// The parallel-capture mismatch, worded once — every zip builder
-/// that finds its lists disagreeing says exactly this.
+/// that finds its lists disagreeing says exactly this. Deliberately
+/// says NAMES, not "fields": arms and fields both zip through it.
 export fn zip_defect() -> string {
-    "field names and values disagree in count"
+    "names and values disagree in count"
 }
 
 // ── The statement-value rituals: one verb per shape, so no rule
