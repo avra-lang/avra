@@ -60,10 +60,13 @@ the body exists, answer:
    fear of traps is how ugly-but-safe drafts happen, and every
    probe result gets recorded so the fear shrinks.
 
-DOGFOODING.md is the full rulebook; `make idioms` ratchets the
-greppable subset and FAILS the gate when a smell count rises. A new
-idiom discovered while working lands in DOGFOODING.md's registry AT
-DISCOVERY, not at review.
+DOGFOODING.md is the full rulebook; `make idioms` FAILS the gate on
+any NEW violation — the baseline lists sites, never counts, and no
+tool path can add to it. Two honest exits: write the idiomatic
+form, or annotate `// LICENSED I<n>: reason` AT the site. Debt is
+zero; keep it there. A new idiom lands in DOGFOODING's registry AT
+DISCOVERY **with its matcher** (or an UNRATCHETED reason — the tool
+refuses a registry entry that has neither).
 
 ## Style
 
@@ -111,12 +114,24 @@ registry is the idiom engine's spec, written by dogfooding.
   driver and the ONE definition of Avra (feature order is branch
   order is the language).
 - No string tags or string-matching to detect behavior.
-- No `_ ->` catch-alls in DISPATCH matches over our own enums —
-  wherever arms decide different behavior, a new variant must break
-  the site at compile time (`or`-runs keep that affordable). A
-  PROJECTION — one variant's payload, every other arm the same
-  absence or rejection — uses `_ ->`: its contract already pins the
-  answer for variants that do not exist yet.
+- `_ ->` over our own enums is decided by COUNTING THE ANSWERING
+  ARMS. One arm answers -> a PROJECTION, and the catch-all is
+  honest: its contract pins the answer for variants that do not
+  exist yet. TWO OR MORE answer -> a REGISTRY, and a catch-all there
+  silently forgets the next variant (`let_name` dropped For's
+  counter exactly so; `type_decl_name` would have swallowed the next
+  type-declaring statement). Registries spell every arm — `or`-runs
+  keep that affordable. Ratcheted as I22; the two licensed shapes
+  are a feature matching its own variants (it cannot enumerate other
+  features') and a loop that DELEGATES the rest to an exhaustive
+  dispatch — both written at the site.
+- THE EXEMPTION LAW, which the above is one instance of: a doctrine
+  exemption that is not written AT THE SITE is an unbounded amnesty.
+  Prose exemptions are invisible to tooling and to the next reader,
+  so they rot into the default. Every licensed deviation carries
+  `// LICENSED I<n>: <reason>` where the code is — that is what
+  makes `make idioms` able to demand a decision instead of guessing
+  which deviations were once approved.
 - Node facts (spans included) live in side tables keyed by typed ids,
   never on nodes.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
@@ -159,16 +174,56 @@ registry is the idiom engine's spec, written by dogfooding.
   floor's @recover commits the hole, stealing the line).
 - A feature never matches ANOTHER feature's variants — nor
   re-extracts its OWN literal's payload inline: all literal reads
-  go through core's value protocol (`truth_of`, `int_of`,
-  `text_of`), one projection per value category. The protocol grows
-  with value categories — a core event — never per feature. (N
-  variants need N projections — payload types differ, and a unified
-  return would be the parallel Value enum the doctrine refuses.)
-- The IR is CLOSED vocabulary: features lower into it, never grow
-  it. A new Ins variant is a core event — a new control shape, value
-  category, or memory boundary. Value-producing runtime needs ride
-  `CallRt`; the backend and memory pass are functions of the IR,
-  dispatching on shapes, never on features.
+  go through core's value protocol (`truth_of`, `text_of`,
+  `elems_of`) — one projection per category a feature reads WITHOUT
+  its own dispatch. Int has none: its only reader binds it in its
+  own dispatch match, so the projection was dead; add one at the
+  second reader. The protocol grows with value categories — a core
+  event — never per feature. (N variants need N projections —
+  payload types differ, and a unified return would be the parallel
+  Value enum the doctrine refuses.) A protocol read is NEVER `?? <a
+  plausible default>`: the dispatch guaranteed that payload, so
+  absence is a DEFECT — `lower_defect(cx, e, ...)`, or the compiler
+  ships a silently wrong program.
+- The IR is a CURATED vocabulary, not a frozen one. Features lower
+  into it and never grow it; growth is a CORE event with a
+  protocol. NEVER refuse a variant that buys real performance —
+  P4 outranks minimalism — but obey the protocol:
+  1. JUSTIFY: a new control shape, a new value category, a new
+     memory boundary, or a MACHINE SHAPE the backend can exploit
+     and cannot reliably infer (`SwitchStart` -> a jump table).
+     Not justified when an existing shape says it: value-producing
+     runtime needs ride `CallRt`.
+  2. GENERALIZE BEFORE ADDING — the rule that keeps the vocabulary
+     from becoming a cluster. `SwitchStart` reuses `ArmEnd`/`RegionEnd`,
+     so N-arm regions and 2-arm ifs are ONE mechanism in every
+     consumer; it did NOT add SwitchArm/SwitchEnd. Prefer the
+     variant that makes an existing concept more general over one
+     that adds a parallel concept.
+  3. PAY THE FIVE CONSUMERS, which the compiler lists for you
+     because each dispatch is exhaustive: `dst_of` (core/ir.av),
+     `step` (interp), `memory_ins`, `body_lines` (ir_text),
+     `emit_ins` (llvm) — plus a corpus program proving
+     eval == native and the IR golden that shows the shape.
+  4. THE GUARANTEE: those five matches carry no `_ ->`, so a new
+     variant breaks all five at compile time. The vocabulary
+     cannot grow half-way, and a variant nobody implements cannot
+     ship. Keep them catch-all free.
+  The backend and memory pass stay functions of the IR, dispatching
+  on shapes, never on features.
+- THE VOCABULARY SEAM RULE — which shape a new vocabulary takes,
+  decided by ONE question: is the item DATA or BEHAVIOR?
+  DATA (a runtime fn: name, param kinds, ownership) -> a REGISTRY
+  ROW: `rt_sigs()` is one table and five consumers QUERY it;
+  adding is one row plus one C body, nothing dispatches.
+  BEHAVIOR (an instruction: five different per-pass meanings) ->
+  the ENUM plus exhaustive dispatch, because the exhaustive match
+  IS the registration — the build refuses until every consumer
+  answers, which no hand-written registry can enforce. Give that
+  seam discoverability (name the consumers at the definition
+  site), a scaffold (`avra new ins`), and a keeper (`make vocab`).
+  Per-instruction spec files were measured and REFUSED (ROADMAP);
+  re-measure at ~40 instructions, do not re-argue.
 - A feature is a directory: `mod.av` is the declarative manifest
   (component + tables), `builders.av` holds parse lowering,
   `semantics.av` holds its NodeSemantics impl (dispatch one-liners),

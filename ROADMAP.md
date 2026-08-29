@@ -90,7 +90,9 @@ text-as-projection after self-host, the service store at Era V.
     7.  [x] structs — declarations, literals, `with` (impl methods
         ride the method core, rung 13; the spec's `shape`/width
         subtyping keeps its recorded arc)
-    8.  ▲ enums & match — payloads, patterns, exhaustiveness
+    8.  ▲ enums & match — slice (a) LANDED (declarations, unit
+        variants, total match); slice (b) is payloads + pattern
+        binds (Binding grows its variant)
     9.  nullability — `T?`, `null` arms, `! ?? ?.` — and the
         spec's bind-fresh trio (Axis 10): `let v? = e else { }`,
         `if let v? = e`, effectively-final narrowing. The trio is
@@ -346,9 +348,11 @@ functions multiply the surface. Spec syntax, expression position:
 
 - The IR stays ONE flat list; control flow arrives as Wasm-shaped
   BRACKETS, exactly the shape ScopeEnter/ScopeExit already chose:
-  `IfStart(cond)` … `Else(gives)` … `IfEnd(dst, gives)`. Each
-  branch names the register it yields; no labels, no jumps, regions
-  reconstructible by matching brackets.
+  `IfStart(cond)` … `ArmEnd(gives)` … `RegionEnd(dst, gives)`. Each
+  arm names the register it yields; no labels, no jumps, regions
+  reconstructible by matching brackets. (The arm/region spellings
+  arrived with SwitchStart, which generalized this shape from two
+  arms to N — the design was right, the names were If-flavored.)
 - Lowering and eval walks become ON-DEMAND: `reg_of`/`value_at`
   compute a child at first request (memoized), so `if` lowers its
   branches INSIDE its brackets and eval runs only the taken branch.
@@ -852,6 +856,297 @@ before it (CLAUDE.md grammar authoring). V1 restrictions stand
 as designed (scalar fields, no `with`, no methods, `==` refuses,
 no struct text projection for main's answer — project a field);
 each trigger recorded in the design above.
+
+## Milestone 15 — enums & match (the design, rung 8)
+
+The second user-defined type and the first control-flow node a
+feature owns end to end. Two slices, each gate-able:
+(a) declarations, unit variants, exhaustive match;
+(b) payload variants and pattern BINDS (Binding grows its variant).
+
+- REPR: an enum value is the lists machinery AGAIN — a slot array
+  with the TAG at slot 0 ([tag] for unit variants; payloads join at
+  slots 1.. in slice b). Uniform array repr v1; a packed-int repr
+  for unit-only enums is an optimization with a recorded trigger
+  (profiling). ptr_shape(Enum) = true; is_managed stays Str.
+- SURFACE: `enum Name { VariantA\n VariantB }` — a statement,
+  newline-separated variants (spec 8.1); the name joins the ONE
+  type namespace (type_defs — enums and structs are both types, so
+  the duplicate-name law is free and the namespace-form trigger
+  did NOT fire: still two namespaces, recorded honestly).
+  Construction is QUALIFIED v1: `Color.red` (dot shorthand `.red`
+  waits on expected-type threading, recorded). Match:
+  `match subject { .red -> e, .green -> e }` — arms comma- OR
+  newline-separated via the block's mixed-star idiom; NO `_` arm:
+  exhaustive matching is the correctness guarantee (a `_` form is
+  a later, deliberate decision).
+- THE TypeName MARKER: `Color` in expression position resolves (a
+  name that is a type binds Def(decl) instead of refusing) and
+  types as Type.TypeName(decl, name) — a compile-only shape no
+  runtime value ever has (ptr_shape false; refused by operand laws
+  and the answer projection). The Prop chain grows its third
+  owner: TypeName subject -> variant construction (structs' field
+  table second, length third). Construction lowers WITHOUT
+  lowering the subject: array_new + push ConstInt(tag).
+- MATCH SEMANTICS: the enums feature owns Match (kids = subject +
+  arm values, the If precedent); typing checks the subject is an
+  enum, every variant exactly once, arms agree on one type (first
+  arm anchors, when's wording). AMENDED after the trial: lowering
+  was a region CHAIN of tag comparisons, and the user's call to let
+  performance grow the vocabulary replaced it with ONE `SwitchStart`
+  region — a jump table natively. The "zero new instructions" claim
+  held for the rung and was then deliberately spent, once, under the
+  protocol.
+- FACTS: EnumSig { names, payloads } beside StructSig; typing
+  declares enum sigs in the struct-sig phase; annotated() picks
+  Struct vs Enum by decl-kind projection (enum_parts beside
+  struct_parts).
+- Codes: F2012 (enum declaration laws), F2013 (match laws).
+- Gate: corpus/enums.av — declare, construct, match, cross a fn
+  boundary — eval == native == expected.
+
+SLICE (a) LANDED (2026-08-28): 330/330; nineteen-for-nineteen
+corpus. The design held end to end — zero new instructions, zero
+interpreter changes, zero memory changes, and the backend needed
+only its two type arms. `avra ir` shows the whole meaning: read
+tag at slot 0, then nested compare-regions, the last arm the
+final else. THE TYPENAME MARKER earned its place: `Color` in
+expression position resolves to its declaration and types as the
+compile-only `Type.TypeName`, which no runtime value ever has —
+so `Color.red` (construction) and `p.x` (field read) are ONE
+parse shape decided by the subject's TYPE, and every operand law
+and the answer projection refuse the marker for free.
+THE EXHAUSTIVENESS DIVIDEND, immediate: adding two Type variants
+broke `hole_reg` at COMPILE time — the same site that silently
+survived M14 and aborted at runtime, before last round's
+annotated-let fix restored the checker. The discipline paid for
+itself within one rung.
+THE NAMESPACE TRIGGER DID NOT FIRE, honestly: enums and records
+SHARE the type namespace (both are types), so `type_defs` grew a
+second declaration kind, not a third namespace — the
+feature-registered-namespace form still waits for a genuine third
+(recorded trigger unchanged). What DID arrive: `duplicate_member`,
+one refusal for every declared table (a record's fields, an
+enum's variants), which also revealed that the struct field-dup
+law lives in TYPING (a driver) rather than with structs — its own
+recorded trigger: it moves home when declaration sigs become
+feature-owned queries.
+THE POST-RUNG AUDIT (asked for, and it paid): two real defects of
+mine, fixed and pinned. (1) `let c = Color` answered with an
+INTERNAL DEFECT (F0900) — a compiler-blames-itself message for an
+ordinary mistake — because TypeName was accepted anywhere and only
+the Prop chain consumed it. Cured by ONE law, `refuses_type_value`
+in features/checks.av (F2014), called at the value seam: the
+statement-value ritual `walk_value` (so let, expr-stmt and every
+future value-taking statement inherit it) plus mutation's own read.
+The message names the remedy — a variant or a record literal — and
+covers records and enums alike. (2) TWO `?? 0` fallbacks in
+lowering would have SILENTLY built or compared the FIRST variant if
+typing ever grew a hole; both are now defect refusals, the shape
+every other lowering site already used. Also: a single-variant
+match no longer reads a tag nobody chooses on (the subject still
+evaluates — effects must not vanish), a dead parameter died, and
+F2012's kind became `type.enum_decl` so its registry summary stops
+lying about the duplicate-variant refusal it also fires on.
+
+THE DECLARATION CURRENCY (the audit's architecture find, LANDED):
+`sigs`, `struct_sigs`, and `enum_sigs` had become three parallel
+dense StmtId tables filled in one declare phase with three verbs —
+precisely the shape the Binding unification already collapsed once.
+They are now ONE `DeclSig` enum (`Fn | Record | Variants`) in one
+dense table, with three projections beside the enum; consumers ask
+(`fn_sig_of`, `record_sig_of`, `variant_sig_of`) and never match.
+Slice (b)'s payload tables join the enum instead of adding a
+fourth table, and the recorded "declaration sigs become
+feature-owned queries" move now has ONE seam to move, not three.
+
+DOCTRINE CHANGED (2026-08-28, the user's call, and it outranks the
+old rule): **performance may grow the vocabulary.** "I don't want
+to limit our vocab if it means we get optimizations or performance
+gains" — so P4 beats minimalism, and the old "the IR is CLOSED"
+line is retired. What replaces it is not licence but PROCESS: THE
+IR VOCABULARY PROTOCOL (CLAUDE.md holds the working copy).
+  1. JUSTIFY — a new control shape, value category, memory
+     boundary, or a MACHINE SHAPE the backend can exploit but
+     cannot reliably infer. Never when an existing shape says it.
+  2. GENERALIZE BEFORE ADDING — the anti-cluster rule. `SwitchStart`
+     reuses `ArmEnd` and `RegionEnd`, so an N-arm region and a 2-arm `if`
+     became ONE mechanism in all five consumers; adding
+     SwitchArm/SwitchEnd would have been three variants and a
+     parallel concept. One variant, and the region idea got
+     STRONGER instead of duplicated.
+  3. PAY THE FIVE CONSUMERS — dst_of, interp's step, memory_ins,
+     ir_text's body_lines, llvm's emit_ins — plus a corpus program
+     (eval == native) and an IR golden.
+  4. THE GUARANTEE that keeps it clean: all five dispatches are
+     exhaustive, so a new variant BREAKS every one at compile time.
+     The vocabulary cannot grow half-way; an unimplemented variant
+     cannot ship. This is why growth is safe here and would not be
+     in a codebase with catch-alls.
+
+THE VOCABULARY SEAM RULE (settled 2026-08-28 — the general answer
+to "what is the standard, pluggable way to add a vocabulary item?").
+This tree has TWO vocabularies and they take DIFFERENT shapes, on
+purpose, and the discriminator is one question:
+
+    IS THE ITEM DATA, OR IS IT BEHAVIOR?
+
+DATA -> A REGISTRY ROW. The runtime surface is data (a name, param
+kinds, whether the result is owned), so runtime_api.av is ONE table
+and adding a runtime fn is ONE row plus one C body — five consumers
+(backend declares, rt_arg coerces, memory asks ownership, lowering
+validates, interp hosts) all READ the row. Genuinely pluggable:
+nothing dispatches, everything queries. That is the shape whenever
+an item's whole nature fits in fields.
+
+BEHAVIOR -> THE ENUM PLUS EXHAUSTIVE DISPATCH, and here is the part
+worth saying out loud: THE EXHAUSTIVE MATCH *IS* THE REGISTRATION
+MECHANISM. You cannot forget to register an instruction, because
+the five dispatches refuse to compile until every one of them
+answers for it. A registry you can forget to write is weaker than a
+compiler that will not build without you. What that seam was
+missing was never enforcement — it was DISCOVERABILITY and
+DURABILITY, and both now exist: core/ir.av's `Ins` names its five
+consumers at the definition site, `avra new ins <Name>` prints the
+protocol and the paste-ready arms, and `make vocab` (in the gate)
+fails if any of the five grows a `_ ->` that would let the next
+variant ship unimplemented.
+
+CONSIDERED AND REFUSED — per-instruction spec files (`language/ins/
+switch.av` holding all five behaviors as fn fields, registered in a
+table, exactly as LanguageFeature does for features). The mechanism
+WOULD work (BuilderRow already proves fn-field tables in bs2), and
+the analogy is tempting. It is refused on a measurement: the five
+dispatches total 209 LINES for 24 instructions — under 9 lines per
+instruction across ALL five passes, most arms one-liners. Spec
+files would cost ~24 files x (imports + struct + five fns each
+re-destructuring its own payload) — roughly 4-5x MORE code to gain
+co-location, and it would scatter algorithms that read as wholes
+(the interpreter's step loop reads as a machine; the memory pass
+reads as a strategy in seven arms, not twenty-four). The
+LanguageFeature contrast is the point: a FEATURE owns ~150 lines of
+real per-pass logic, so a directory earns itself; an INSTRUCTION
+owns ~9, so a directory would be 90% ceremony. REVISIT TRIGGER: if
+instructions grow substantial per-pass logic, or the count passes
+~40, the trade flips — re-measure then, do not re-argue.
+
+THE IDIOM BAR REBUILT (2026-08-28, from "I am seeing a LOT of
+idioms being violated — why are they not being captured?"). The
+user was right and the old ratchet had FOUR holes, each measured:
+  1. IT COMPARED COUNTS. Fixing one smell while adding another
+     passed silently — a net-zero swap, which is exactly the shape
+     of a refactoring commit.
+  2. THE BASELINE WAS AN AMNESTY THAT DRIFTED UP: I1 went
+     39 -> 41 -> 40 -> 41 -> 43 across four milestones, every bump
+     self-licensed in the same commit. ~103 smells sat green.
+  3. SIX OF SEVENTEEN IDIOMS HAD NO RULE, and the three NEWEST
+     (I15, I16, I17) were all unenforced — backwards, since the
+     newest are the least internalized.
+  4. THE GREPS WERE LINE-LOCAL: I3 required the loop and its push
+     on ONE line (11 hits) while 14 ordinary multi-line loops were
+     invisible. It caught the rare shape and reported success.
+THE REPLACEMENT (tools/idioms.py) rests on five laws, each closing
+one hole and each PROVEN by a live test before being claimed:
+  1. the baseline LISTS SITES, so a new one fails at equal count;
+  2. NO TOOL PATH ADDS to it — `--accept` only prunes, so the debt
+     can only fall and "bump the number" is not an option;
+  3. a LICENSE LIVES AT THE SITE with its reason, in the code,
+     forever;
+  4. the REGISTRY MAY NOT OUTRUN THE RATCHET — every I-code needs a
+     matcher or an UNRATCHETED reason, or the tool refuses to run;
+  5. NO DEAD RULES — every matcher must catch its own specimen on
+     every run. This law caught I18 shipping with a regex that
+     could not span a nested call: a rule that cannot fire reports
+     success forever, which is the same disease one level up.
+THE BURN-DOWN: 117 sites -> ZERO. 33 licensed in place with real
+reasons; I11's 21 test/comment hits were rule INACCURACY (its
+domain is product messages that drift) and its 8 real hits became
+three extractions; I8 and I1 were RETIRED with written reasons —
+I8's matcher had a 100% false-positive rate (the ritual and the
+only legitimate use are textually identical), and I1's accumulator
+DECLARATION was a weak proxy for I3's precise loop shape. Debt is
+now zero, so a single new violation fails the gate with nothing to
+hide behind.
+
+THE DEEP ROUND'S OWN FIND — I18, THE PLAUSIBLE LIE: a projection
+the dispatch GUARANTEES, read with a default, compiles a silently
+wrong program. `truth_of(e) ?? false` emits `false` for a node that
+was not a bool. FIVE sites said a plausible lie (bool, string,
+list, and two in enums/structs); all now refuse through the
+extracted `lower_defect(cx, e, ...)` — which was itself the fourth
+copy of "record a defect and stand on a register". Ratcheted, with
+its specimen. And `int_of` died: the value protocol's only member
+with no consumer, because its one reader binds the payload in its
+own dispatch — the doctrine now says so instead of implying a
+completeness that was never used.
+
+THE ROUND THAT FOLLOWED THE SWITCH (2026-08-28) — four finds, all
+in code written the same day. (1) THE VOCABULARY WAS LYING: a
+switch's arms were separated by `Else` and closed by `IfEnd`, names
+inherited from the two-arm case they no longer described. Renamed
+to `ArmEnd`/`RegionEnd` across nine files with zero test churn (the
+IR text prints syntax, not instruction names) — and the exhaustive
+dispatches found every site. Recorded as I17: rename AT the
+generalization, because instruction names are published surface.
+(2) THE REGION FACTS JOINED THEIR ENUM: `opens_region`/
+`closes_region` moved to core beside `dst_of`, which is where every
+fact about the vocabulary already lives — the interpreter was
+re-deriving what the owner should answer. (3) A SEAM HAD BEEN
+CROSSED: lowering read `typing.decls[...]` directly three times,
+reaching past Analysis into a pass's private table while every
+other fact goes through a verb; `Analysis.decl_sig(s)` restores it.
+(4) TEST HONESTY: five refusal tests asserted `contains` with no
+diagnostic COUNT — the shape that once let a cascade hide. All five
+pinned, and all five counts held (no cascade was hiding). Also
+amended, not rewritten: two ROADMAP records that still named the
+old instructions, and the M15 design bullet whose "zero new
+instructions" claim was deliberately spent by the switch.
+
+THE M15 TOUCH-POINT AUDIT (the growth ledger, kept honest): the
+enums feature dir is 271 lines, its tests 111, its corpus proof 30.
+Everything else across the rung — TypeName, the type namespace, the
+DeclSig unification, the audit's fixes, the switch and its five
+consumers, the wrapper, the vocab gate — was capability and
+doctrine, paid once. Slice (b) (payloads, pattern binds) should
+show the steady-state shape: the feature dir plus a Binding
+variant, and little else.
+
+SWITCH LANDED (the first variant under the protocol): a `match`
+is now ONE N-arm region over the tag, and the backend emits a real
+`switch i64 %tag, label %default [...]` — a jump table, O(1),
+instead of walking up to N-1 comparisons. Owning the C paid again:
+`avra_llvm_build_switch`/`avra_llvm_add_case` were simply ADDED to
+backend/llvm_wrapper.c (and the Makefile now installs our wrapper
+where bs2 links from — recorded rent: `make test` cannot catch
+that class, since the interpreter never links LLVM). `avra ir`
+prints `switch r2 over [0, 1] { … } arm { … } -> r6`.
+
+SUPERSEDED — THE MATCH CHAIN'S SHAPE (the pending decision this
+replaces):
+a match lowers to nested compare-regions, so N variants cost up to
+N-1 comparisons at runtime; LLVM offers `switch` (a jump table).
+P4 says this matters eventually, and P17 says not to grow the IR
+for it lightly. The three options, in the order I'd rank them:
+(a) BACKEND RECOGNITION — llvm.av notices the compare-chain shape
+and emits a switch; the IR stays closed, the interpreter is
+untouched, and nothing above the backend changes. (b) A `Switch`
+Ins variant — a CORE event under the closed-vocabulary rule, paid
+once, honest in the IR text, but every consumer (interp, memory,
+ir_text, backend) grows an arm and features gain a second way to
+say "choose". (c) LEAVE IT — correct today, and small enums cost
+nothing measurable. Firing condition: the first enum wide enough to
+measure, or a profile showing match dispatch in the hot path —
+never before `make bench` can show the difference.
+
+THE PROP CHAIN NOW HAS THREE OWNERS (type name, struct field,
+length) asked in order inside expr_spine — the honest cost of one
+syntax serving three meanings. At self-host this collapses into a
+single member-resolution query; recorded as that trigger.
+V1 restrictions with triggers: qualified construction only
+(`Color.red` — dot shorthand waits on expected-type threading);
+unit variants only (payloads are slice b); no `_` arm ever (the
+correctness guarantee); an enum answer has no text projection
+(derived show).
 
 ## The breather — architecture heads-up (decided 2026-08-26)
 

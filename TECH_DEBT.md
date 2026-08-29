@@ -26,6 +26,13 @@ requiring it, or the defect is fixed. Priority = how much it hurts us.
       runtime, linked by bs2-compiled binaries; dies wholesale at
       self-host. (`llvm_wrapper.c` and `avra_runtime.c` are OURS,
       in-tree, built by our Makefile.)
+- [ ] **[Med]** bs2 links its runtime objects from ITS OWN tree, not
+      the working directory — so a builder ADDED to our
+      backend/llvm_wrapper.c is undefined at link time until the
+      Makefile installs our object into the bootstrap's build dir
+      (`BOOT_WRAPPER`). `make test` hides it (the interpreter never
+      links LLVM); only the native path fails. Dies when our own
+      driver owns linking.
 - [ ] **[Low]** bs2 invoked by absolute path only (Makefile) — it
       re-invokes itself via argv[0] from other working directories.
 - [ ] **[Med]** bs2 `make build-quick` freshness detection silently

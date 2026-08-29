@@ -15,24 +15,62 @@ commit). When a review round or a milestone discovers a NEW idiom,
 it lands here AT DISCOVERY, with its smell, its licensed
 exceptions, and — where greppable — a ratchet rule.
 
-Ratcheted (tools/idioms.sh — eleven rules; noisy is fine, the
-baseline absorbs licensed sites and only a RISE fails):
-- I1  empty-list accumulator init (is the loop a map?)
-- I2  the spelled evaluated-payload chain (use `cx.int_at` family)
-- I3  single-line for-push (map -> comprehension; extend -> concat)
-- I4  nullable flag locals (is the scan a find/index_of?)
-- I7  last-element index arithmetic
-- I8  the spelled statement-value ritual
-- I9  hand-rolled type-id comparisons (the agreement law)
-- I11 duplicated long product strings (kind keys excluded)
-- I12 duplicated single-line struct literals (uniq-count)
-- I13 same projection twice on one line (BRE backrefs)
-- I14 emit-then-intern(Error) pairs (the `spoken` tail)
-NOT ratcheted, and why: I5 (remaining sites are duplicate-DETECTION
-by design), I6 (subsumed by I1/I3), I10 (too few and varied to
-grep — the review round hunts them), I15 (push/pop pairs resist
-grep — the review round hunts them).
+THE BAR (tools/idioms.py) rests on four laws, and the first three
+exist because the old ratchet had a hole under each:
 
+  1. THE BASELINE LISTS SITES, NEVER COUNTS. The old tool compared
+     totals, so fixing one smell while adding another passed
+     silently — a net-zero swap. Now a new site fails on its own.
+  2. NO TOOL PATH ADDS TO THE BASELINE. `--accept` only PRUNES what
+     is gone, so the debt can only fall. The old escape hatch was
+     "bump the pinned number", which is how a ratchet becomes
+     theatre: I1 drifted 39 -> 41 -> 40 -> 41 -> 43 across four
+     milestones, each bump self-licensed in its own commit.
+  3. A LICENSE LIVES AT THE SITE: `// LICENSED I3: a ZIP of
+     parallel captures`. The reason sits where the code is,
+     forever, instead of as an integer nobody reads. A new
+     violation therefore has two honest exits — write the
+     idiomatic form, or say why it cannot be written.
+  4. THE REGISTRY MAY NOT OUTRUN THE RATCHET. Every I-code here
+     must have a matcher or an entry in the tool's UNRATCHETED with
+     its reason; the tool fails otherwise. New idioms arrive with
+     enforcement or with a written admission of why they cannot.
+
+Matchers are MULTI-LINE where the smell is: the old greps required
+the loop and its push on ONE line, catching the rare shape (11
+sites) while 14 ordinary multi-line loops were invisible.
+
+Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24.
+I12 came BACK from unratcheted once its regex was repaired: it had
+been reading `if x is .Error { return ... }` as a struct literal,
+so it was retired for false positives that were the rule's fault,
+not the code's. Requiring a `field:` pair inside the braces fixed
+it, and it immediately found three constructors waiting for names
+(Span's four spellings, seed's `alt`, memory's nested scope).
+Not ratcheted, each with its reason in tools/idioms.py's
+UNRATCHETED: I1 (the accumulator DECLARATION is a weak proxy — I3
+matches the real smell), I2 (died with the eval collapse), I5
+(duplicate DETECTION), I6 (subsumed by I3), I8 (the ritual and the
+only legitimate use are textually identical), I10 and I17
+(semantic — the review round hunts them), I12 (false-positives on
+doc prose).
+
+A RULE MUST BE ABLE TO FIRE. Every matcher carries a specimen the
+tool re-checks on every run — added after I18 shipped with a regex
+that could not span a nested call, which would have reported
+success forever. A dead rule is the same disease as a drifting
+baseline, one level up.
+
+DEBT TODAY: ZERO. Every site is either idiomatic or licensed in
+place with a reason. From here a single new violation fails the
+gate — there is no amnesty left to hide in.
+
+- I1  (ratcheted) an empty-list accumulator asks: is this loop a
+      MAP? If yes, it is a comprehension (`switch_start`'s arm
+      blocks). LICENSED where it cannot be: a STACK (`open_scopes`,
+      ir_text's `switched`), a dual-channel fold, or a filter that
+      needs the INDEX (`arm_cases` — comprehensions cannot
+      destructure an enumerate).
 - I4  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
       `index_of_name` is `names.index_of(name)` (returns -1 on a
       miss — wrap to `int?`). `overlay_hit` stays a loop: reverse
@@ -110,6 +148,70 @@ grep — the review round hunts them).
       list is small (structs' field laws, twice). The seen-list
       stays licensed where detection must survive ACROSS lists
       (coherence's cross-table scans).
+
+- I17 a construct that GENERALIZES gets a general NAME. When one
+      shape starts serving two masters, the special-case name
+      becomes a lie the vocabulary carries forever: `Else` and
+      `IfEnd` separated and closed a SWITCH's arms once regions
+      went N-way, so they became `ArmEnd` and `RegionEnd` — nine
+      files, zero test churn, and the compiler found every site.
+      Rename AT the generalization, never later: the names are the
+      published surface (`avra ir`, the IR goldens, every feature
+      that emits them).
+
+- I18 a projection the dispatch GUARANTEES, read with a plausible
+      default, is a SILENT WRONG ANSWER: `truth_of(e) ?? false`
+      compiles `false` into the program when the node was not a
+      bool. Absence there is a DEFECT — `lower_defect(cx, e, "a
+      bool literal without its value")` records it and the driver
+      refuses the build. Five sites (bool, string, list, and two in
+      enums/structs) said a plausible lie instead. LICENSED where
+      there is no failure channel and the default is the right
+      answer: `kids()` returning `[]` for a node that is not a list.
+
+- I19 an INDEX WALK over a list is `enumerate`: `for j in
+      0..xs.length` that then reads `xs[j]` should be `for (j, x) in
+      xs.enumerate()`, which hands over both. It survived as prose
+      for four milestones with no code, and was violated three times
+      — including both zip builders, where the index is still needed
+      for the PARALLEL list and enumerate serves that perfectly.
+- I20 a REFUSAL TEST pins the diagnostic COUNT, not just
+      `contains`: `a.diagnostics.length == 1 && a.report()
+      .contains(...)`. Without the count a CASCADE hides behind a
+      message that happens to appear — the types_disagree bug was
+      found exactly that way, and three tests still asserted
+      contains alone.
+- I21 a `mut` nothing mutates is a `let`. The reader is told to
+      expect a change that never comes; two survived (a type
+      registry threaded through a pass, and its test twin).
+
+- I22 a match where TWO OR MORE variants answer is a REGISTRY, and
+      a registry ending in `_ ->` silently forgets the NEXT variant.
+      One answering arm is a PROJECTION and its catch-all is honest:
+      the contract already pins the answer for variants that do not
+      exist yet. Eight registries were hiding behind catch-alls —
+      `type_decl_name` (a third type-declaring statement would never
+      have reached the type namespace), the answer projection's
+      unprintable shapes, `give`'s runtime-callee validation, the
+      bool comparison, and four capture shapes in the grammar
+      builders. LICENSED where the doctrine FORBIDS exhaustiveness:
+      a feature cannot enumerate other features' variants, and
+      interp's run loop delegates everything else to `step`.
+
+- I23 a PARAMETER nothing reads: the signature lies about what the
+      fn needs and every call site carries the lie (`declare` threaded
+      an `lc` it never used). LICENSED where a CALLBACK contract owns
+      the list — a policy fn or a test builder must match the
+      signature it is passed as.
+- I herein note why I24 is MODULE-scoped: bs2 merges a module's
+      files into one bundle, so an import in `program.av` serves
+      `mod.av`. Per-FILE unused-import analysis is wrong and will
+      delete imports that siblings depend on — it did, and the suite
+      caught it.
+- I24 an IMPORT nothing in the module uses. bs2 checks neither
+      direction (TECH_DEBT: no import closures), so imports are
+      hand-kept truth and rot silently — 54 had accumulated, several
+      created by the same day's refactors.
 
 ## `when` for dispatch chains
 
