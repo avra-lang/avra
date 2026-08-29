@@ -8,7 +8,7 @@
 //! recursion are free. Inside a body, params bind innermost.
 use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled}
 use diagnostics.{Diag, error_at, loc_at, pointed}
-use features.{ResolveCx, StmtResolveCx}
+use features.{ResolveCx, StmtResolveCx, ArmScope}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
 /// What a name USE resolves to — the ONE binding currency every
@@ -21,6 +21,12 @@ export enum Binding {
     /// A binding statement (`let`, `mut`, `fn`) — the definition
     /// site is the identity.
     Def(stmt: StmtId)
+    /// A PATTERN's payload, bound for one match arm only — the first
+    /// binding in the language that is not a statement. The match
+    /// node and the arm index are the identity: typing reads the
+    /// arm's variant to know the type, and lowering reads slot 1 of
+    /// the subject INSIDE that arm's region.
+    Pattern(match_at: ExprId, arm: int)
 }
 
 /// The pass's facts: ONE dense binding table indexed by ExprId
@@ -60,8 +66,8 @@ type Resolver = {
     p: ParsedProgram,
     all_defs: List<Def>,
     def_names: List<string>,
-    visible: Map<string, StmtId>,
-    overlays: List<Map<string, StmtId>>,
+    visible: Map<string, Binding>,
+    overlays: List<Map<string, Binding>>,
     fn_defs: Map<string, StmtId>,
     fn_names: List<string>,
     type_defs: Map<string, StmtId>,
@@ -109,7 +115,7 @@ fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: 
         bound_scope: (s: StmtId, exprs: List<ExprId>, body: List<StmtId>) ->
             bound_scope(r, param_names, s, exprs, body),
         is_param: (name: string) -> index_of_name(param_names, name) != null,
-        lookup: (name: string) -> r.binding_of(name),
+        lookup: (name: string) -> r.definition_of(name),
         record_assign: (s: StmtId, target: StmtId) -> r.record_assign(s, target),
         loc_of: (s: StmtId) -> r.stmt_loc(s),
         emit: (d: Diag) -> r.speak(d),
@@ -121,7 +127,7 @@ fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: 
 /// visible onward and die at exit — the ONE scope ritual.
 fn under_overlay(r: Resolver, run: fn()) {
     mut ov = r.overlays
-    let fresh: Map<string, StmtId> = {}
+    let fresh: Map<string, Binding> = {}
     // LICENSED I15: this IS the bracket fn
     ov.push(fresh)
     run()
@@ -163,11 +169,25 @@ fn block_body(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value
     resolve_walk(r, param_names, value)
 }
 
+/// One match arm's scope: its bind (when it names one) holds for
+/// the arm's value and dies with it — the first scope in the
+/// language opened by an EXPRESSION rather than a statement.
+fn arm_scope(r: Resolver, param_names: List<string>, a: ArmScope) {
+    under_overlay(r, () -> arm_body(r, param_names, a))
+}
+
+fn arm_body(r: Resolver, param_names: List<string>, a: ArmScope) {
+    if a.bind != "" && !r.refused_name(a.bind, r.loc_of(a.at)) {
+        r.bind(a.bind, Binding.Pattern(a.at, a.arm))
+    }
+    resolve_walk(r, param_names, a.value)
+}
+
 /// The innermost overlay holding `name`, or null.
-fn overlay_hit(overlays: List<Map<string, StmtId>>, name: string) -> StmtId? {
+fn overlay_hit(overlays: List<Map<string, Binding>>, name: string) -> Binding? {
     mut k = overlays.length - 1
     // LICENSED I4: a REVERSE scan; no reversed iterator
-    mut found: StmtId? = null
+    mut found: Binding? = null
     while k >= 0 {
         if found == null { found = overlays[k].get(name) }
         k = k - 1
@@ -182,6 +202,7 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
         use_name: (e: ExprId, name: string) -> r.resolve_name(e, name, param_names),
         use_call: (e: ExprId, name: string) -> r.resolve_call(e, name),
         use_type: (e: ExprId, name: string) -> r.resolve_type_use(e, name),
+        arm_scope: (a: ArmScope) -> arm_scope(r, param_names, a),
         block_scope: (stmts: List<StmtId>, value: ExprId) -> block_scope(r, param_names, stmts, value),
     }
     for e in r.p.post_order(root) { semantics_of(r.p.dispatch, r.p.store.expr(e)).resolve(cx, e) }
@@ -255,21 +276,9 @@ impl Resolver {
             self.refuse_reserved(name, self.loc_of(e))
             return
         }
-        let idx: int? = index_of_name(param_names, name)
-        if idx != null {
-            self.bind_use(e, Binding.Param(idx!))
-            return
-        }
-        let found: StmtId? = self.binding_of(name)
+        let found: Binding? = self.value_binding(name, param_names)
         if found != null {
-            self.bind_use(e, Binding.Def(found!))
-            return
-        }
-        // A TYPE used as a value: `Color` in `Color.red`. Typing
-        // gives it the compile-only TypeName shape.
-        let named_type: StmtId? = self.type_defs.get(name)
-        if named_type != null {
-            self.bind_use(e, Binding.Def(named_type!))
+            self.bind_use(e, found!)
             return
         }
         let at = self.loc_of(e)
@@ -357,13 +366,42 @@ impl Resolver {
         bs.set(e.index, b)
     }
 
-    /// The innermost value binding of `name`: overlays, then the
-    /// program scope.
-    fn binding_of(self, name: string) -> StmtId? {
-        let inner: StmtId? = overlay_hit(self.overlays, name)
+    /// What `name` names, INNERMOST SCOPE OUTWARD — the order IS
+    /// the shadowing law: arm and block overlays, then the fn's
+    /// params, then the program scope, then a TYPE used as a value
+    /// (`Color` in `Color.red`, which typing gives the compile-only
+    /// TypeName shape).
+    fn value_binding(self, name: string, param_names: List<string>) -> Binding? {
+        let inner: Binding? = overlay_hit(self.overlays, name)
         if inner != null { return inner }
-        let outer: StmtId? = self.visible.get(name)
+        let idx: int? = index_of_name(param_names, name)
+        if idx != null { return Binding.Param(idx!) }
+        let outer: Binding? = self.visible.get(name)
+        if outer != null { return outer }
+        let named_type: StmtId? = self.type_defs.get(name)
+        if named_type == null { return null }
+        Binding.Def(named_type!)
+    }
+
+    /// The chain's STATEMENT-shaped half — overlays, then the
+    /// program scope. Params are not definitions, so assignment
+    /// refuses them through `is_param` instead.
+    fn binding_of(self, name: string) -> Binding? {
+        let inner: Binding? = overlay_hit(self.overlays, name)
+        if inner != null { return inner }
+        let outer: Binding? = self.visible.get(name)
         outer
+    }
+
+    /// The DEFINITION `name` stands for, when it stands for one —
+    /// what assignment needs, and what a pattern bind refuses to be.
+    fn definition_of(self, name: string) -> StmtId? {
+        let b: Binding? = self.binding_of(name)
+        if b == null { return null }
+        match b! {
+            .Def(s) -> s,
+            .Param(_) or .Pattern(_, _) -> null,
+        }
     }
 
     fn record_assign(self, s: StmtId, target: StmtId) {
@@ -399,18 +437,18 @@ impl Resolver {
     fn bind_checked(self, s: StmtId) {
         let binds: string? = self.p.store.let_name(s)
         if binds == null { return }
-        if !self.refused_name(binds!, self.stmt_loc(s)) { self.bind(binds!, s) }
+        if !self.refused_name(binds!, self.stmt_loc(s)) { self.bind(binds!, Binding.Def(s)) }
     }
 
     /// Latest binding wins — Map.set IS shadowing. Inside a block,
     /// the binding lives in the innermost overlay and dies with it.
-    fn bind(self, name: string, s: StmtId) {
+    fn bind(self, name: string, b: Binding) {
         if self.overlays.is_empty() {
             mut v = self.visible
-            v.set(name, s)
+            v.set(name, b)
         } else {
             mut top = self.overlays[self.overlays.length - 1]
-            top.set(name, s)
+            top.set(name, b)
         }
     }
 

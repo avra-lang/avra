@@ -35,7 +35,7 @@ fn decl_checks(cx: StmtTypeCx, s: StmtId, name: string, variants: List<Param>) {
 fn enums_type(cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.store.expr(e) {
-        .Match(subject, variants, values) -> matched_type(cx, e, subject, variants, values),
+        .Match(subject, variants, binds, values) -> matched_type(cx, e, subject, variants, binds, values),
         .VariantLit(tname, variant, args) -> variant_lit_type(cx, e, tname, variant, args),
         _ -> cx.intern(Type.Error),
     }
@@ -92,7 +92,8 @@ fn arg_checks(cx: TypeCx, e: ExprId, tname: string, variant: string, args: List<
     }
 }
 
-fn matched_type(cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>, values: List<ExprId>) -> TypeId {
+fn matched_type(cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>,
+                binds: List<string>, values: List<ExprId>) -> TypeId {
     let sh: Type = cx.shape_at(subject)
     if sh is .Error { return cx.intern(Type.Error) }
     let sig: EnumSig? = cx.variants_of(cx.type_at(subject))
@@ -103,8 +104,12 @@ fn matched_type(cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>, 
             this_is(n)))
     }
     let sname = cx.name_at(subject)
+    // The arms are hidden from the walk, so type them HERE — each
+    // one's bind already carries its type through the Binding fact.
+    for v in values { let _ = cx.walk_type(v) }
     arm_checks(cx, sname, variants, values, sig!)
     coverage_checks(cx, e, sname, variants, sig!)
+    bind_checks(cx, sname, variants, binds, values, sig!)
     arms_type(cx, values)
 }
 
@@ -123,6 +128,21 @@ fn arm_checks(cx: TypeCx, sname: string, variants: List<string>, values: List<Ex
             cx.emit(pointed(
                 error_at("type.match", cx.loc_of(values[j]), "variant `${v}` is matched more than once"),
                 "matched again here"))
+        }
+    }
+}
+
+/// A bind names the payload its arm's variant carries — so a
+/// variant carrying NOTHING has nothing to name.
+fn bind_checks(cx: TypeCx, sname: string, variants: List<string>, binds: List<string>,
+               values: List<ExprId>, sig: EnumSig) {
+    for (j, b) in binds.enumerate() {
+        if b != "" && sig.payload_of(variants[j]) == null {
+            cx.emit(pointed(
+                error_at("type.variant_arity", cx.loc_of(values[j]),
+                    "`${sname}.${variants[j]}` carries nothing to bind"),
+                "bound here")
+                with { help: "write `.${variants[j]} ->` — only a carrying variant binds" })
         }
     }
 }

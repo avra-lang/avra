@@ -283,6 +283,10 @@ against these before writing; probe in scratch when unsure.
   compare); only string elements get value equality. `==` between two
   LISTS is not value equality either — assert length + per-element.
 - No `mut` parameters — in-place-mutating helpers are inexpressible.
+- An INDIRECT call (a fn-typed struct field or closure) takes at
+  most THREE arguments: four ICEs at codegen ("indirect calls with
+  4 args not yet supported"). A capability wanting more takes ONE
+  struct instead — which reads better anyway.
 - Generics infer ONLY from direct call arguments: not sibling fields,
   not return types. Pin with typed constructor fns
   (`captured_absent<N>()`) or explicit `f<N>(...)`. Constructions under
@@ -310,6 +314,9 @@ against these before writing; probe in scratch when unsure.
   probed); `.A | .B ->` does not parse. Bindings cannot ride an `or`
   arm — wildcards only.
 - Struct destructuring in `let` (`let Sp { lo, hi } = s`) does not parse.
+- A doc comment on a STRUCT FIELD does not parse ("expected field
+  name") — enum VARIANTS take them fine. Field prose goes in the
+  struct's own doc header.
 - Comprehensions iterate lists only, not ranges (struct literals inside
   them are fine), and cannot destructure — `[.. for (i, m) in
   xs.enumerate()]` fails to parse; use a loop. The `if` FILTER takes

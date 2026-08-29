@@ -78,9 +78,10 @@ export enum Expr {
     /// `subject with { field: value, ... }` — a modified COPY; the
     /// unwritten fields carry over.
     With(subject: ExprId, fields: List<string>, values: List<ExprId>)
-    /// `match subject { .variant -> value, ... }` — total over the
-    /// subject enum's variants; no catch-all arm exists.
-    Match(subject: ExprId, variants: List<string>, values: List<ExprId>)
+    /// `match subject { .variant(bind) -> value, ... }` — total over
+    /// the subject enum's variants; no catch-all arm exists. `binds`
+    /// is per-arm and "" where an arm names no payload.
+    Match(subject: ExprId, variants: List<string>, binds: List<string>, values: List<ExprId>)
     /// `Name.variant(arg)` — constructing a variant that carries a
     /// payload. The BARE `Name.variant` rides the property ladder;
     /// only the argument form needs a node of its own.
@@ -226,9 +227,10 @@ impl NodeStore {
             .With(subject, fields, values) ->
                 fp(26, flatten([[self.expr_fingerprint(subject)],
                                 [fp_str(f) for f in fields], self.expr_fps(values)])),
-            .Match(subject, variants, values) ->
+            .Match(subject, variants, binds, values) ->
                 fp(28, flatten([[self.expr_fingerprint(subject)],
-                                [fp_str(v) for v in variants], self.expr_fps(values)])),
+                                [fp_str(v) for v in variants], [fp_str(b) for b in binds],
+                                self.expr_fps(values)])),
             .VariantLit(tname, variant, args) ->
                 fp(29, flatten([[fp_str(tname), fp_str(variant)], self.expr_fps(args)])),
         }

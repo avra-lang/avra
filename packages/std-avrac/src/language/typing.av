@@ -94,6 +94,7 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         fields_of: (ty: TypeId) -> t.fields_of(ty),
         variants_of: (ty: TypeId) -> t.variants_of(ty),
         block_type: (stmts: List<StmtId>, value: ExprId) -> block_type(t, param_types, stmts, value),
+        walk_type: (v: ExprId) -> typed_subtree(t, param_types, v),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
         type_name: (ty: TypeId) -> t.types.name_of(ty),
         loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
@@ -108,6 +109,13 @@ fn block_type(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>, value: E
     type_stmts(t, param_types, stmts)
     type_walk(t, param_types, value)
     t.of_expr[value.index]
+}
+
+/// A subtree typed on request, answering its own type — what a
+/// CONTROL-OWNING node uses for children it hides from the walk.
+fn typed_subtree(t: Typer, param_types: List<TypeId>, root: ExprId) -> TypeId {
+    type_walk(t, param_types, root)
+    t.of_expr[root.index]
 }
 
 /// One node's fact: the owner speaks, the table records.
@@ -245,7 +253,25 @@ impl Typer {
         match b! {
             .Param(i) -> param_types[i],
             .Def(s) -> self.def_type(s),
+            .Pattern(at, arm) -> self.pattern_type(at, arm),
         }
+    }
+
+    /// What a pattern's bind HOLDS: the payload its arm's variant
+    /// carries. A variant carrying nothing absorbs — the arm law
+    /// speaks about that, in the feature's own words.
+    fn pattern_type(self, at: ExprId, arm: int) -> TypeId {
+        match self.p.store.expr(at) {
+            .Match(subject, variants, _, _) -> self.arm_payload(subject, variants, arm),
+            _ -> self.types.intern(Type.Error),
+        }
+    }
+
+    fn arm_payload(self, subject: ExprId, variants: List<string>, arm: int) -> TypeId {
+        let sig: EnumSig? = self.variants_of(self.of_expr[subject.index])
+        if sig == null || arm >= variants.length { return self.types.intern(Type.Error) }
+        let carried: TypeId? = sig!.payload_of(variants[arm])
+        carried ?? self.types.intern(Type.Error)
     }
 
     /// A definition statement's value type. A TYPE declaration used
@@ -265,7 +291,7 @@ impl Typer {
         if b == null { return null }
         match b! {
             .Def(s) -> fn_sig_of(self.decls[s.index]),
-            .Param(_) -> null,
+            .Param(_) or .Pattern(_, _) -> null,
         }
     }
 
@@ -275,7 +301,7 @@ impl Typer {
         if b == null { return null }
         match b! {
             .Def(s) -> s,
-            .Param(_) -> null,
+            .Param(_) or .Pattern(_, _) -> null,
         }
     }
 
