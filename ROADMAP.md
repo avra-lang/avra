@@ -1992,6 +1992,16 @@ evidence: whenever its own code WANTS a construct the language
 lacks, the ask lands here with the wanting site. Entries graduate
 into features (or spec commitments) when their milestone comes.
 
+- A PROJECTION PER VARIANT, generated. `fn_sig_of`, `record_sig_of`
+  and `variant_sig_of` (features/contract.av) are three copies of
+  six lines of ceremony for a one-line concept: guard the option,
+  match the one variant, `_ -> null`. They cannot merge in the
+  subset — a generic over an enum's VARIANT does not exist, and
+  threading the reader as a fn argument corrupts scalar payloads
+  through mono (F1002). Avra should generate `DeclSig.fn_sig()` and
+  its siblings from the declaration. Wanting site: every consumer
+  of a one-of-N declaration table, and the same shape will recur
+  for the next such enum. Filed 2026-08-30 by the slice (b) review.
 - Match THROUGH the nullable: variant arms plus a `null` arm on
   `T?` (`match o.result { .Node(.NGrammar(g)) -> g, null -> ... }`)
   — wanted by every unwrap-then-match two-step (grammar_result, the

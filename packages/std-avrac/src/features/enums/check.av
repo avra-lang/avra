@@ -3,7 +3,7 @@
 //! once, and its arms agree on one type. Totality is the point —
 //! adding a variant must break every match, so no catch-all exists.
 use core.{ExprId, StmtId, Param, Type, TypeId}
-use features.{TypeCx, StmtTypeCx, EnumSig, spoken, this_is, nothing, duplicate_member,
+use features.{TypeCx, StmtTypeCx, EnumSig, spoken, this_is, nothing, duplicate_names,
               arms_agree, types_disagree, variants_are, build_a_record}
 use diagnostics.{error_at, pointed}
 
@@ -24,11 +24,8 @@ fn decl_checks(cx: StmtTypeCx, s: StmtId, name: string, variants: List<Param>) {
             "this enum is empty")
             with { help: "an enum names at least one variant" })
     }
-    let named = [v.name for v in variants]
-    for (j, v) in named.enumerate() {
-        if named.index_of(v) < j {
-            cx.expr.emit(duplicate_member("type.enum_decl", name, v, cx.loc_of(s)))
-        }
+    for d in duplicate_names("type.enum_decl", name, [v.name for v in variants], cx.loc_of(s)) {
+        cx.expr.emit(d)
     }
 }
 

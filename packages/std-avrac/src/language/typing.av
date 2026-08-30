@@ -9,7 +9,7 @@
 use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, spelled, TypeRegistry, new_type_registry, filled, plain}
 use diagnostics.{Diag, loc_at, error_at, pointed}
 use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig,
-              fn_sig_of, record_sig_of, variant_sig_of, duplicate_member}
+              fn_sig_of, record_sig_of, variant_sig_of, duplicate_names}
 use @std.errors.{Loc}
 
 /// The pass's facts: the registry, a dense expression table, and a
@@ -207,10 +207,8 @@ impl Typer {
     fn declare_struct_sig(self, s: StmtId, fields: List<Param>) {
         let names = [f.name for f in fields]
         let owner: string = self.p.store.type_decl_name(s) ?? "this type"
-        for (j, f) in fields.enumerate() {
-            if names.index_of(f.name) < j {
-                self.speak(duplicate_member("type.duplicate_field", owner, f.name, self.stmt_loc(s)))
-            }
+        for d in duplicate_names("type.duplicate_field", owner, names, self.stmt_loc(s)) {
+            self.speak(d)
         }
         let types = [self.field_type(s, f) for f in fields]
         let sig = StructSig { names: names, types: types }
@@ -255,13 +253,10 @@ impl Typer {
     fn declare_sig(self, s: StmtId, fparams: List<Param>, fret: TypeRef) {
         // A parameter declared twice makes the second unreachable —
         // the body sees the first, silently. The same law a record's
-        // fields and an enum's variants already obey.
-        let names = [pp.name for pp in fparams]
+        // fields and an enum's variants obey, through the same scan.
         let owner: string = self.p.store.fn_parts(s)?.name ?? "this fn"
-        for (j, pp) in fparams.enumerate() {
-            if names.index_of(pp.name) < j {
-                self.speak(duplicate_member("type.duplicate_param", owner, pp.name, self.stmt_loc(s)))
-            }
+        for d in duplicate_names("type.duplicate_param", owner, [pp.name for pp in fparams], self.stmt_loc(s)) {
+            self.speak(d)
         }
         let ptypes = [self.annotated(s, pp.ty) for pp in fparams]
         let rt = self.annotated(s, fret)

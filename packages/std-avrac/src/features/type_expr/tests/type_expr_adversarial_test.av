@@ -7,21 +7,21 @@
 // it. A case that once produced a wrong answer, a crash, an internal
 // defect, or an engine divergence keeps its place here forever.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown, refusals}
+use @std.avrac.testing.{shown, refusals, refused_with}
 
 spec "features/type_expr (adversarial)" {
     given "the `?` position, mutated" {
-        then "a doubled `?` refuses — there is no nullable nullable" {
-            refusals("fn f(x: int??) -> int { 1 }\nf(1)") >= 1
+        then "a doubled `?` refuses — `??` lexes as ONE token" {
+            refusals("fn f(x: int??) -> int { 1 }\nf(1)") == 2
         }
         then "two `?` set apart refuse just the same" {
-            refusals("fn f(x: int ? ?) -> int { 1 }\nf(1)") >= 1
+            refusals("fn f(x: int ? ?) -> int { 1 }\nf(1)") == 2
         }
         then "`?` before the name refuses" {
-            refusals("fn f(x: ?int) -> int { 1 }\nf(1)") >= 1
+            refusals("fn f(x: ?int) -> int { 1 }\nf(1)") == 2
         }
         then "`?` with no name refuses" {
-            refusals("fn f(x: ?) -> int { 1 }\nf(1)") >= 1
+            refusals("fn f(x: ?) -> int { 1 }\nf(1)") == 2
         }
         then "a `?` set off by a space is still the type" {
             shown("fn f(x: int ?) -> int { x ?? 41 }\nf(null) + 1") == "42"
@@ -38,34 +38,30 @@ spec "features/type_expr (adversarial)" {
     }
     given "an annotation that is missing or malformed" {
         then "a param with no type refuses" {
-            refusals("fn f(x) -> int { 1 }\nf(1)") >= 1
+            refusals("fn f(x) -> int { 1 }\nf(1)") == 2
         }
         then "a param with `:` and no type refuses" {
-            refusals("fn f(x: ) -> int { 1 }\nf(1)") >= 1
+            refusals("fn f(x: ) -> int { 1 }\nf(1)") == 2
         }
         then "a return with no type refuses" {
-            refusals("fn f(x: int) -> { 1 }\nf(1)") >= 1
+            refusals("fn f(x: int) -> { 1 }\nf(1)") == 2
         }
         then "a missing `:` refuses" {
-            refusals("fn f(x int) -> int { 1 }\nf(1)") >= 1
+            refusals("fn f(x int) -> int { 1 }\nf(1)") == 2
         }
     }
     given "names in the type position" {
         then "an unknown name names no type" {
-            let a = analyze_source("fn f(x: Foo) -> int { 1 }\nf(1)")
-            a.diagnostics.length == 1 && a.report().contains("`Foo` names no type")
+            refused_with("fn f(x: Foo) -> int { 1 }\nf(1)", "`Foo` names no type")
         }
         then "an unknown NULLABLE name blames the NAME, not the slot" {
-            let a = analyze_source("fn f(x: Foo?) -> int { 1 }\nf(1)")
-            a.diagnostics.length == 1 && a.report().contains("`Foo` names no type")
+            refused_with("fn f(x: Foo?) -> int { 1 }\nf(1)", "`Foo` names no type")
         }
         then "a keyword names no type" {
-            let a = analyze_source("fn f(x: if) -> int { 1 }\nf(1)")
-            a.diagnostics.length == 1 && a.report().contains("names no type")
+            refused_with("fn f(x: if) -> int { 1 }\nf(1)", "names no type")
         }
         then "`null` names no type" {
-            let a = analyze_source("fn f(x: null) -> int { 1 }\nf(1)")
-            a.diagnostics.length == 1 && a.report().contains("`null` names no type")
+            refused_with("fn f(x: null) -> int { 1 }\nf(1)", "`null` names no type")
         }
         then "a declared record annotates" {
             shown("type P = { x: int }\nfn f(p: P) -> int { p.x }\nlet q = P { x: 7 }\nf(q)") == "7"
@@ -76,60 +72,49 @@ spec "features/type_expr (adversarial)" {
     }
     given "a type APPLIED to arguments" {
         then "a name that takes none refuses" {
-            let a = analyze_source("fn f(x: int<bool>) -> int { 1 }\nf(1)")
-            a.diagnostics.length == 1 && a.report().contains("`int` takes no type arguments")
+            refused_with("fn f(x: int<bool>) -> int { 1 }\nf(1)", "`int` takes no type arguments")
         }
         then "an UNKNOWN constructor names the NAME, not the arity" {
-            let a = analyze_source("fn f(x: Foo<int>) -> int { 1 }\n1")
-            a.diagnostics.length == 1 && a.report().contains("`Foo` names no type")
+            refused_with("fn f(x: Foo<int>) -> int { 1 }\n1", "`Foo` names no type")
         }
         then "a KEYWORD constructor names the keyword, not the arity" {
-            let a = analyze_source("fn f(x: if<int>) -> int { 1 }\n1")
-            a.diagnostics.length == 1 && a.report().contains("`if` names no type")
+            refused_with("fn f(x: if<int>) -> int { 1 }\n1", "`if` names no type")
         }
         then "the arity refusal reports the TABLE's arity, never a hardcoded word" {
-            let a = analyze_source("fn f(xs: List<int, bool>) -> int { 1 }\nf([1])")
-            a.diagnostics.length == 1 &&
-                a.report().contains("applied to 2 types; it takes 1")
+            refused_with("fn f(xs: List<int, bool>) -> int { 1 }\nf([1])",
+                         "applied to 2 types; it takes 1")
         }
         then "zero arguments is not an application" {
-            refusals("fn f(xs: List<>) -> int { 1 }\nf([1])") >= 1
+            refusals("fn f(xs: List<>) -> int { 1 }\nf([1])") == 2
         }
         then "an unclosed application refuses" {
-            refusals("fn f(xs: List<int) -> int { 1 }\nf([1])") >= 1
+            refusals("fn f(xs: List<int) -> int { 1 }\nf([1])") == 2
         }
         then "an unknown ELEMENT name is named, not swallowed" {
-            let a = analyze_source("fn f(xs: List<Foo>) -> int { 1 }\nf([1])")
-            a.diagnostics.length == 1 && a.report().contains("`Foo` names no type")
+            refused_with("fn f(xs: List<Foo>) -> int { 1 }\nf([1])", "`Foo` names no type")
         }
         then "a nullable LIST waits for ownership analysis" {
-            let a = analyze_source("fn f(xs: List<int>?) -> int { 1 }\nf(null)")
-            a.diagnostics.length == 1 && a.report().contains("a nullable holds scalars for now")
+            refused_with("fn f(xs: List<int>?) -> int { 1 }\nf(null)", "a nullable holds scalars for now")
         }
         then "the element may itself be APPLIED — nesting needs no rule" {
             analyze_source("fn f(xs: List<List<int>>) -> int { 1 }\n1").diagnostics.is_empty()
         }
         then "a nested LITERAL still meets the list-element law" {
-            let a = analyze_source("fn f(xs: List<List<int>>) -> int { 1 }\nf([[1]])")
-            a.diagnostics.length == 1 && a.report().contains("a list holds scalars for now")
+            refused_with("fn f(xs: List<List<int>>) -> int { 1 }\nf([[1]])", "a list holds scalars for now")
         }
     }
     given "the built-in names, which belong to the language" {
         then "a record cannot be named `int`" {
-            let a = analyze_source("type int = { x: bool }\n1")
-            a.diagnostics.length == 1 && a.report().contains("`int` is a built-in type")
+            refused_with("type int = { x: bool }\n1", "`int` is a built-in type")
         }
         then "an enum cannot be named `bool`" {
-            let a = analyze_source("enum bool {\n    a\n}\n1")
-            a.diagnostics.length == 1 && a.report().contains("`bool` is a built-in type")
+            refused_with("enum bool {\n    a\n}\n1", "`bool` is a built-in type")
         }
         then "a record cannot be named `string` either" {
-            let a = analyze_source("type string = { x: int }\n1")
-            a.diagnostics.length == 1 && a.report().contains("`string` is a built-in type")
+            refused_with("type string = { x: int }\n1", "`string` is a built-in type")
         }
         then "the refusal says what to do instead" {
-            let a = analyze_source("type int = { x: bool }\n1")
-            a.diagnostics.length == 1 && a.report().contains("choose another name")
+            refused_with("type int = { x: bool }\n1", "choose another name")
         }
     }
     given "the surface in every position it is written" {
@@ -143,12 +128,10 @@ spec "features/type_expr (adversarial)" {
             shown("enum E {\n    a(int)\n    b\n}\nmatch E.a(6) {\n    .a(n) -> n\n    .b -> 0\n}") == "6"
         }
         then "a nullable is refused in a FIELD, in the field's words" {
-            let a = analyze_source("type P = { x: int? }\nlet q = P { x: 1 }\nq.x ?? 0")
-            a.diagnostics.length == 1 && a.report().contains("struct fields hold scalars")
+            refused_with("type P = { x: int? }\nlet q = P { x: 1 }\nq.x ?? 0", "struct fields hold scalars")
         }
         then "a nullable is refused in a PAYLOAD, in the payload's words" {
-            let a = analyze_source("enum E {\n    a(int?)\n    b\n}\nmatch E.a(1) { .a(n) -> 0, .b -> 0 }")
-            a.diagnostics.length == 1 && a.report().contains("an enum payload holds scalars")
+            refused_with("enum E {\n    a(int?)\n    b\n}\nmatch E.a(1) { .a(n) -> 0, .b -> 0 }", "an enum payload holds scalars")
         }
     }
 }

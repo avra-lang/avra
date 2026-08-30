@@ -228,6 +228,21 @@ gate — there is no amnesty left to hide in.
       with ONE arity tree-wide are judged, so `Ins.Call` and
       `Expr.Call` never confuse it.
 
+A REFUSAL TEST THAT SAYS `>= 1` ASSERTS ALMOST NOTHING. One mistake
+earns one message, so the COUNT is half the assertion — a cascade of
+five passes `>= 1` silently. I20 already demands a count beside
+`contains`, but it never saw this spelling, and 33 sites used it.
+`refused_with(source, phrase)` in @std.avrac.testing makes the honest
+form the SHORT one: it pins the count at one and the phrase together,
+replacing a shape hand-spelled at 131 sites. `refused_n` is for the
+shapes where a cascade is today's truth and pinning it makes a later
+improvement VISIBLE — every malformed fn signature is exactly 2.
+
+TRIGGER for the remaining 23: converting them by script FAILED — the
+fixtures each suite interpolates differ, so the programs measured
+were not the programs the tests run, and nine tests broke. They need
+converting a suite at a time, by the round that touches that suite.
+
 THE REACH LAW (learned the hard way, four times): a rule claims a
 SHAPE, and one specimen proves only that its matcher is ALIVE. Four
 rules shipped blind spots a single specimen walked straight past —
