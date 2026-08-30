@@ -4,35 +4,27 @@ use core.{TypeRef}
 use features.{LangNode, Builder}
 
 fn build_applied_opt_type(b: Builder) -> Result<LangNode, string> {
-    applied_type(b, true)
+    written(b, b.type_refs(1)?, true)
 }
 
 fn build_applied_type(b: Builder) -> Result<LangNode, string> {
-    applied_type(b, false)
-}
-
-/// A type APPLIED to arguments — the name, what it was applied to,
-/// and whether a `?` followed. The arguments are types themselves,
-/// so `List<List<int>>` nests without another rule.
-fn applied_type(b: Builder, optional: bool) -> Result<LangNode, string> {
-    let n = b.token(0)?
-    let args = b.type_refs(1)?
-    let t = TypeRef { name: n.text, args: args, optional: optional, span: b.span }
-    b.make_type(t)
+    written(b, b.type_refs(1)?, false)
 }
 
 fn build_opt_type(b: Builder) -> Result<LangNode, string> {
-    named_type(b, true)
+    written(b, [], true)
 }
 
 fn build_plain_type(b: Builder) -> Result<LangNode, string> {
-    named_type(b, false)
+    written(b, [], false)
 }
 
-/// A written type IS a name plus what followed it — today only
-/// whether a `?` did. The next form (`List<int>`) fills `args`.
-fn named_type(b: Builder, optional: bool) -> Result<LangNode, string> {
+/// A written type IS three things: the NAME, what it was applied to,
+/// and whether a `?` followed. The four branches differ only in the
+/// last two, and the arguments are types themselves — so
+/// `List<List<int>>` nests with no rule of its own.
+fn written(b: Builder, args: List<TypeRef>, optional: bool) -> Result<LangNode, string> {
     let n = b.token(0)?
-    let t = TypeRef { name: n.text, args: [], optional: optional, span: b.span }
+    let t = TypeRef { name: n.text, args: args, optional: optional, span: b.span }
     b.make_type(t)
 }
