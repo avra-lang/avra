@@ -138,6 +138,23 @@ fn type_node(t: Typer, cx: TypeCx, e: ExprId) {
     facts.set(e.index, semantics_of(t.p.dispatch, t.p.store.expr(e)).type_of(cx, e))
 }
 
+/// A type CONSTRUCTOR the language owns, and how many arguments it
+/// takes — absent when the name is not one. THE definition: resolve
+/// refuses these names at a declaration, typing applies them here.
+/// `List` is alone because the registry has no shape for another.
+fn applied_arity(name: string) -> int? {
+    match name {
+        "List" -> 1,
+        _ -> null,
+    }
+}
+
+/// Every name the LANGUAGE owns — a scalar shape or a constructor.
+/// A declaration may take none of them.
+fn builtin_type_name(name: string) -> bool {
+    shape_named(name) != null || applied_arity(name) != null
+}
+
 /// The type an annotation names, or null.
 fn shape_named(name: string) -> Type? {
     match name {
@@ -273,7 +290,12 @@ impl Typer {
     /// the registry has no shape for another, and inventing one here
     /// would be a type nothing can lower.
     fn applied(self, s: StmtId, t: TypeRef) -> TypeId {
-        if t.name != "List" {
+        let arity: int? = applied_arity(t.name)
+        if arity == null {
+            // The NAME law speaks first: a constructor that names no
+            // type at all is not an arity mistake, and saying so
+            // would imply it IS a type that merely takes none.
+            if self.types.shape_of(self.named_type(s, t.name)) is .Error { return self.error_type }
             self.speak(pointed(
                 error_at("type.applied", self.stmt_loc(s),
                     "`${t.name}` takes no type arguments"),
@@ -281,10 +303,10 @@ impl Typer {
                 with { help: "`List<T>` is the one applied type today" })
             return self.error_type
         }
-        if t.args.length != 1 {
+        if t.args.length != arity! {
             self.speak(pointed(
                 error_at("type.applied", self.stmt_loc(s),
-                    "`List` takes ONE type argument, given ${t.args.length}"),
+                    "`${t.name}` is applied to ${t.args.length} types; it takes ${arity!}"),
                 "applied here")
                 with { help: "write `List<int>`" })
             return self.error_type

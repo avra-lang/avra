@@ -92,6 +92,33 @@ spec "core/nodes" {
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b) &&
                 s.stmt_fingerprint(a) != s.stmt_fingerprint(c)
         }
+        then "an APPLICATION is part of identity: `List<int>` vs `int`" {
+            let s = new_node_store()
+            let body = s.alloc_expr(Expr.IntLit(1), null)
+            let plain = param("x", ty("int", false))
+            let applied = TypeRef { name: "List", args: [ty("int", false)], optional: false, span: null }
+            let a = s.alloc_stmt(Stmt.FnDecl("f", [plain], ty("int", false), body), null)
+            let b = s.alloc_stmt(Stmt.FnDecl("f", [param("x", applied)], ty("int", false), body), null)
+            s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
+        }
+        then "the ELEMENT is part of identity: `List<int>` vs `List<bool>`" {
+            let s = new_node_store()
+            let body = s.alloc_expr(Expr.IntLit(1), null)
+            let li = TypeRef { name: "List", args: [ty("int", false)], optional: false, span: null }
+            let lb = TypeRef { name: "List", args: [ty("bool", false)], optional: false, span: null }
+            let a = s.alloc_stmt(Stmt.FnDecl("f", [param("x", li)], ty("int", false), body), null)
+            let b = s.alloc_stmt(Stmt.FnDecl("f", [param("x", lb)], ty("int", false), body), null)
+            s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
+        }
+        then "NESTING is part of identity: `List<int>` vs `List<List<int>>`" {
+            let s = new_node_store()
+            let body = s.alloc_expr(Expr.IntLit(1), null)
+            let li = TypeRef { name: "List", args: [ty("int", false)], optional: false, span: null }
+            let ll = TypeRef { name: "List", args: [li], optional: false, span: null }
+            let a = s.alloc_stmt(Stmt.FnDecl("f", [param("x", li)], ty("int", false), body), null)
+            let b = s.alloc_stmt(Stmt.FnDecl("f", [param("x", ll)], ty("int", false), body), null)
+            s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
+        }
         then "two spellings of one type still agree — spans never count" {
             let s = new_node_store()
             let here = TypeRef { name: "int", args: [], optional: true, span: at(0, 4) }

@@ -79,9 +79,18 @@ spec "features/type_expr (adversarial)" {
             let a = analyze_source("fn f(x: int<bool>) -> int { 1 }\nf(1)")
             a.diagnostics.length == 1 && a.report().contains("`int` takes no type arguments")
         }
-        then "`List` takes exactly ONE argument" {
+        then "an UNKNOWN constructor names the NAME, not the arity" {
+            let a = analyze_source("fn f(x: Foo<int>) -> int { 1 }\n1")
+            a.diagnostics.length == 1 && a.report().contains("`Foo` names no type")
+        }
+        then "a KEYWORD constructor names the keyword, not the arity" {
+            let a = analyze_source("fn f(x: if<int>) -> int { 1 }\n1")
+            a.diagnostics.length == 1 && a.report().contains("`if` names no type")
+        }
+        then "the arity refusal reports the TABLE's arity, never a hardcoded word" {
             let a = analyze_source("fn f(xs: List<int, bool>) -> int { 1 }\nf([1])")
-            a.diagnostics.length == 1 && a.report().contains("takes ONE type argument, given 2")
+            a.diagnostics.length == 1 &&
+                a.report().contains("applied to 2 types; it takes 1")
         }
         then "zero arguments is not an application" {
             refusals("fn f(xs: List<>) -> int { 1 }\nf([1])") >= 1

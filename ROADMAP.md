@@ -1546,6 +1546,32 @@ THE SLICES (each vertical, each gated):
       The declared-slot law reads the WHOLE written type now, so
       `List<int>?` refuses in the slot law's words rather than
       claiming `List` names no type.
+      RED TEAM, three rounds, ~70 programs. THREE defects, all in
+      the slice's own week-old code:
+        1. THE SPECIFIC LAW SPOKE OVER THE NAME LAW — a THIRD time.
+           `Foo<int>` said "`Foo` takes no type arguments", which
+           implies Foo IS a type that merely is not generic. It
+           names no type at all. The name law speaks first now.
+        2. `type List = { x: int }` WAS ACCEPTED, and the program
+           then RAN, answering 6: `List<int>` meant the builtin
+           while `List { x: 5 }` meant the record — one name, two
+           types, no diagnostic. Exactly the bug fixed for `int` a
+           day earlier, and missed because `List` is a CONSTRUCTOR
+           rather than a shape. `applied_arity` is now the ONE
+           table: resolve refuses those names, typing applies them.
+        3. A LATENT LIE: the arity refusal hardcoded the word ONE
+           while checking against the table, so the first
+           two-argument constructor would have refused correctly
+           and then explained itself wrongly.
+      CLEAN under attack: content identity (`List<int>` vs `int` vs
+      `List<bool>` vs `List<List<int>>` all distinct); the registry
+      (distinguishes element types, unifies the same type across
+      fns); the `<` ambiguity against comparison and `>=`; ordered
+      choice in every parameter order; 20-deep nesting; and
+      OWNERSHIP under AVRA_RC_STRICT — a list param survives being
+      passed twice, escaping as a return, crossing three frames,
+      and 500 allocations in a loop, with eval == native throughout.
+
       WHAT THE SLICE MET, all pre-existing and none of them its
       business: `for x in xs` iterates ranges only, list literals
       still refuse managed elements (so `List<string>` annotates but
