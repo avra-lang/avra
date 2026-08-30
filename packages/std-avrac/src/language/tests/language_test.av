@@ -2,7 +2,8 @@
 // parse through one fn, recovery holes are VISIBLE Stmt.Error nodes,
 // and lex errors ride the same diagnostics list.
 use @std.avrac.core.{concat}
-use @std.avrac.language.{avra, assemble, language_features, parse_source, project, builtin_codes}
+use @std.avrac.language.{avra, assemble, language_features, parse_source, project, builtin_codes, analyze_source}
+use @std.avrac.testing.{shown}
 use @std.avrac.grammar.{Diagnostic, Cause}
 use @std.avrac.diagnostics.{code_for, new_source_file}
 use @std.avrac.diagnostics.{DiagCode}
@@ -97,6 +98,26 @@ spec "language" {
             let p = parse_source("let a = 1\n$\nlet b = 2")
             let lets = [s for s in p.stmts if p.store.stmt(s) is .Let]
             p.diagnostics.length >= 1 && lets.length == 2
+        }
+    }
+}
+
+spec "language — a keyword is never a callee" {
+    given "a parenthesised condition, the habit every C-shaped language teaches" {
+        then "`if (c) { }` parses" {
+            shown("if (true) { 1 } else { 0 }") == "1"
+        }
+        then "`while (c) { }` parses" {
+            shown("mut i = 0\nwhile (i < 1) {\n    i = i + 1\n}\ni") == "1"
+        }
+        then "`match (v) { }` parses" {
+            shown("enum E {\n    a\n}\nmatch (E.a) {\n    .a -> 7\n}") == "7"
+        }
+        then "a parenthesised range bound parses" {
+            shown("mut t = 0\nfor i in (0)..3 {\n    t = t + 1\n}\nt") == "3"
+        }
+        then "the unparenthesised forms still parse" {
+            shown("if true { 1 } else { 0 }") == "1"
         }
     }
 }

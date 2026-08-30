@@ -167,6 +167,13 @@ registry is the idiom engine's spec, written by dogfooding.
   with three features only). The NODE may still be another
   feature's to give meaning: semantics_of decides ownership of
   MEANING, the gram decides ownership of PARSE.
+- Grammar authoring: a KEYWORD ANCHOR merges before every
+  NAME-HEADED branch, not merely before the spine's bare `ident`.
+  `fns` contributes `primary = NAME "(" args ")"`, so with `fns`
+  ahead of `if_expr` the parser read `if (c) { }` as a CALL to a fn
+  named `if` and reported "expected BREAK" — `if`, `match` and
+  `while` all lost their parenthesised condition, the habit every
+  C-shaped language teaches. `fns` now merges after the anchors.
 - Grammar authoring: expr_stmt is the stmt rule's FLOOR — its
   recovering expression-line branch merges LAST in language_features,
   and every statement feature lands BEFORE it (a keyword line like
