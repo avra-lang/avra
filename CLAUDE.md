@@ -376,6 +376,19 @@ against these before writing; probe in scratch when unsure.
   false) — for a VARIABLE operand only: a call result compared
   directly (`f() == s`) misses the null guard and SIGSEGVs (#1376).
   Bind to a `let tn: string? =` first.
+- `s.char_code(i)` SILENTLY IGNORES its index and answers index 0's
+  code (`"hello".char_code(1)` is 104, `'h'`, not 101, `'e'`) — no
+  error, just the wrong character. The runtime primitive takes the
+  index (`avra_str_char_code(ptr, i64)`); the Avra method drops it.
+  So indexed reads go through `s.substring(i, i + 1).char_code()`,
+  which allocates a one-character string PER BYTE — what `code_at`
+  spells, and why a scanner cannot read a character for free.
+- A STRING's `.length` is `strlen` — O(length), EVERY time it is
+  asked, so `while i < s.length` re-measures the whole string per
+  iteration and the loop is quadratic. Hoist it (`let n = s.length`).
+  A LIST's `.length` is a cheap field read; only strings bite.
+  Ratcheted as I27; eight sites were found the day it was written,
+  and fixing them took the front end from 6.8s to 1.6s at 8k lines.
 - `is_empty()` is a LIST method only — on a string it ICEs at
   codegen ("string method `is_empty` not implemented"), so
   `s.length == 0` is the idiomatic emptiness test for text.
