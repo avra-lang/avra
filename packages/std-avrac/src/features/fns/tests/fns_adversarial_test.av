@@ -1,0 +1,61 @@
+// The RED TEAM's permanent record for fns — declarations, calls,
+// params, returns. Every program here was written to BREAK the
+// feature, not to use it.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown, refusals}
+
+spec "features/fns (adversarial)" {
+    given "the parameter list, at every size" {
+        then "zero parameters answer" {
+            shown("fn f() -> int { 7 }\nf()") == "7"
+        }
+        then "eight parameters all arrive, first and last" {
+            shown("fn f(a: int, b: int, c: int, d: int, e: int, g: int, h: int, i: int) -> int { a + i }\nf(1, 2, 3, 4, 5, 6, 7, 8)") == "9"
+        }
+        then "a name declared TWICE is refused, as a field or variant would be" {
+            let a = analyze_source("fn f(a: int, a: int) -> int { a }\nf(1, 2)")
+            a.diagnostics.length == 1 && a.report().contains("declares `a` more than once")
+        }
+        then "each EXTRA copy speaks — the same count a record gives" {
+            refusals("fn f(a: int, a: int, a: int) -> int { a }\nf(1, 2, 3)") ==
+                refusals("type P = { x: int, x: int, x: int }\n1")
+        }
+        then "two DIFFERENT names are fine" {
+            shown("fn f(a: int, b: int) -> int { a + b }\nf(1, 2)") == "3"
+        }
+    }
+    given "arity at the call" {
+        then "too few arguments refuses" {
+            refusals("fn f(a: int, b: int) -> int { a }\nf(1)") == 1
+        }
+        then "too many arguments refuses" {
+            refusals("fn f(a: int) -> int { a }\nf(1, 2)") == 1
+        }
+    }
+    given "declarations against each other" {
+        then "a duplicate fn is refused once" {
+            refusals("fn f() -> int { 1 }\nfn f() -> int { 2 }\nf()") == 1
+        }
+        then "a call may precede its declaration — fns are program-wide" {
+            shown("f()\nfn f() -> int { 1 }") == "1"
+        }
+        then "mutual recursion terminates" {
+            shown("fn a(n: int) -> int { if n <= 0 { 0 } else { b(n - 1) } }\nfn b(n: int) -> int { a(n - 1) }\na(4)") == "0"
+        }
+        then "a parameter may shadow a fn name" {
+            shown("fn f(f: int) -> int { f }\nf(3)") == "3"
+        }
+        then "a nested declaration refuses — fns live at the top level" {
+            let a = analyze_source("fn f() -> int {\n    fn g() -> int { 1 }\n    g()\n}\nf()")
+            a.diagnostics.length == 2 && a.report().contains("live at the top level")
+        }
+    }
+    given "the body against its declared return" {
+        then "a disagreeing body refuses" {
+            refusals("fn f() -> int { true }\nf()") == 1
+        }
+        then "an empty body refuses" {
+            refusals("fn f() -> int { }\nf()") >= 1
+        }
+    }
+}

@@ -250,6 +250,16 @@ impl Typer {
     }
 
     fn declare_sig(self, s: StmtId, fparams: List<Param>, fret: TypeRef) {
+        // A parameter declared twice makes the second unreachable —
+        // the body sees the first, silently. The same law a record's
+        // fields and an enum's variants already obey.
+        let names = [pp.name for pp in fparams]
+        let owner: string = self.p.store.fn_parts(s)?.name ?? "this fn"
+        for (j, pp) in fparams.enumerate() {
+            if names.index_of(pp.name) < j {
+                self.speak(duplicate_member("type.duplicate_param", owner, pp.name, self.stmt_loc(s)))
+            }
+        }
         let ptypes = [self.annotated(s, pp.ty) for pp in fparams]
         let rt = self.annotated(s, fret)
         let sig = FnSig { params: ptypes, ret: rt }

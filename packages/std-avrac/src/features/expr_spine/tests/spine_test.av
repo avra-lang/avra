@@ -118,3 +118,32 @@ spec "features/expr_spine" {
         }
     }
 }
+
+spec "features/expr_spine — arithmetic that must not diverge" {
+    given "a zero divisor" {
+        then "`/` by zero REFUSES rather than answering" {
+            match analyze_source("1 / 0").run() {
+                .Err(msg) -> msg.contains("division by zero"),
+                .Ok(_) -> false,
+            }
+        }
+        then "`%` by zero refuses the same way" {
+            match analyze_source("1 % 0").run() {
+                .Err(msg) -> msg.contains("division by zero"),
+                .Ok(_) -> false,
+            }
+        }
+        then "a divisor computed at RUNTIME is caught too" {
+            match analyze_source("fn z() -> int { 0 }\n10 / z()").run() {
+                .Err(msg) -> msg.contains("division by zero"),
+                .Ok(_) -> false,
+            }
+        }
+        then "ordinary division still answers" {
+            analyze_source("100 / 7").ran() == "14"
+        }
+        then "ordinary modulo still answers" {
+            analyze_source("100 % 7").ran() == "2"
+        }
+    }
+}

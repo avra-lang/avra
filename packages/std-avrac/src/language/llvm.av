@@ -196,8 +196,10 @@ fn bin_value(em: Emit, op: BinOp, a: ptr, b: ptr) -> ptr {
         .Add -> avra_llvm_build_add(em.b, a, b, "add"),
         .Sub -> avra_llvm_build_sub(em.b, a, b, "sub"),
         .Mul -> avra_llvm_build_mul(em.b, a, b, "mul"),
-        .Div -> avra_llvm_build_sdiv(em.b, a, b, "div"),
-        .Mod -> avra_llvm_build_srem(em.b, a, b, "rem"),
+        // Guarded: sdiv/srem by zero is undefined, and the
+        // interpreter refuses, so the two engines must agree.
+        .Div -> call(em, "avra_int_div", [a, b]),
+        .Mod -> call(em, "avra_int_mod", [a, b]),
         .Eq -> avra_llvm_build_icmp(em.b, 32, a, b, "cmp"),
         .Ne -> avra_llvm_build_icmp(em.b, 33, a, b, "cmp"),
         .Lt -> avra_llvm_build_icmp(em.b, 40, a, b, "cmp"),

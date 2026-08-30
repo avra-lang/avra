@@ -140,6 +140,20 @@ int64_t avra_streq(const char* a, const char* b) {
 
 // An int's decimal text — what `${n}` interpolates and `print`
 // shows. Owned.
+// `/` and `%` by zero: the interpreter REFUSES, so the native
+// binary must too. LLVM's sdiv/srem by zero is undefined behaviour —
+// left raw it printed an answer and exited 0, which is a silently
+// wrong program.
+int64_t avra_int_div(int64_t a, int64_t b) {
+    if (b == 0) { fprintf(stderr, "division by zero\n"); exit(1); }
+    return a / b;
+}
+
+int64_t avra_int_mod(int64_t a, int64_t b) {
+    if (b == 0) { fprintf(stderr, "division by zero\n"); exit(1); }
+    return a % b;
+}
+
 const char* avra_int_text(int64_t v) {
     char* buf = (char*)malloc(24);
     snprintf(buf, 24, "%lld", (long long)v);
