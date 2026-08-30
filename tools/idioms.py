@@ -312,6 +312,20 @@ def repeated_unwrap(lines):
     for h in hits:
         yield h
 
+# A STRING's `.length` is `strlen` in the runtime — O(length), every
+# time it is asked. Re-asking inside a loop makes the loop quadratic.
+# A LIST's `.length` is a field read, so only string-shaped receivers
+# are the smell; the rule looks for the names our scanners use.
+STRING_LEN_LOOP = re.compile(
+    r"while [^{]*\b(s|src|a|b|text|name|source)\.length\b")
+
+def restrlen(lines):
+    """A loop condition that re-measures a STRING's length. Hoist it:
+    `let n = s.length` before the loop, then test `i < n`."""
+    for i, l in enumerate(lines):
+        if STRING_LEN_LOOP.search(l):
+            yield i, l.strip()
+
 def duplicated(pattern, minimum=2):
     """Text repeated within one file — a name waiting to be given.
     Comment lines are skipped: a doc quoting the message it documents
@@ -378,6 +392,9 @@ RULES = {
     "I25": (stale_arity,
             "a variant pattern with the WRONG payload count — bs2 accepts it "
             "silently and binds the wrong things"),
+    "I27": (restrlen,
+            "a STRING's `.length` re-measured in a loop condition — "
+            "that is `strlen` per iteration; hoist it"),
     "I26": (repeated_unwrap,
             "one nullable local forced open 3+ times — guard once, bind once, "
             "and read the name"),
@@ -432,6 +449,8 @@ SPECIMENS = {
     "I23": [["fn f(a: int, b: int) -> int {", "    a + a", "}"]],
     "I24": [["use core.{Span}"]],
     "I25": [["enum E {", "    A(x: int, y: int)", "}", "    match e {", "        .A(_) -> 1,", "    }"]],
+    "I27": [["    while i < s.length {"], ["    while j <= b.length {"],
+            ["    while i < src.length && p(i) {"]],
     "I26": [["fn f(x: int?) -> int {", "    if x == null { return 0 }",
              "    x! + x! + x!", "}"]],
 }

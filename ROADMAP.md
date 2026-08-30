@@ -1808,12 +1808,29 @@ rendering is no longer measurable against the front end at all
 (ir 6.0s vs check 6.6s). The same accumulator trap as
 `out = concat(out, x)`, in the helper nobody had tested.
 
-STILL OPEN, and now the largest curve: the FRONT END is superlinear
-— check runs 0.71 / 0.88 / 1.97 / 6.56s at n = 500 / 1000 / 2000 /
-4000, about 3.3x for the last doubling. Milder than the render bug
-was and tolerable at today's sizes; it will matter around 20k lines.
-TRIGGER: split parse / resolve / typecheck the same way this one was
-split before theorising about the cause.
+CLOSED 2026-08-30, and the cause was one line repeated eight times.
+A STRING's `.length` is `strlen` in the runtime — O(length), every
+time it is asked — so every `while i < s.length` re-measured the
+whole string per iteration. The lexer did it per character AND per
+token; `fp_str` did it for every string in the AST; `edit_distance`
+did it inside an O(a*b) matrix, making the distance O(a*b*(a+b)).
+
+  check, n=4000   2.22s -> 0.96s
+  check, n=8000   6.81s -> 1.64s
+  per line        0.81ms -> 0.17ms, and FLAT: 0.17 at both sizes
+
+The curve is linear now. Found only by profiling (`sample` on the
+forked child): two prior hypotheses — the per-node LowerCx, then the
+parser's repetition accumulator — were both measured and both WRONG.
+Ratcheted as I27, which immediately found an eighth site the hand
+sweep had missed.
+
+WHAT REMAINS is diffuse and normal: allocation and refcounting ~27%,
+array ops ~9%, closure dispatch ~5% (the capability contexts),
+bs2's own memory polling ~5%. No single lever left at this scale.
+The one large win still available needs bs2: `s.char_code(i)`
+SILENTLY IGNORES its index (returns index 0's code), which is why
+`code_at` allocates a one-character string per byte.
 
 Sources: Zig's incremental-compilation internals (mlugg, 2026-07),
 the L6 query-engine and codegen-cache designs. The laws every
