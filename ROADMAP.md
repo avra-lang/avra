@@ -1536,8 +1536,21 @@ THE SLICES (each vertical, each gated):
       internally as a two-variant enum" — so a nullable IS the slot
       array enums already lower to, tag 0 absent / tag 1 present,
       and NO new instruction is needed.
-  (b) `List<int>` annotations — the args half of the same rule,
-      closing the fn-boundary hole above.
+  (b) [x] LANDED 2026-08-30 — `List<int>` annotations, closing the
+      fn-boundary hole. The type rule gained two branches, ordered
+      LONGEST FIRST because every branch starts with NAME. The
+      element goes back through `full_type`, so `List<List<int>>`
+      and `List<int?>` need no rule of their own — and the ONE
+      applied type is `List`, because the registry has no shape for
+      another and inventing one would be a type nothing can lower.
+      The declared-slot law reads the WHOLE written type now, so
+      `List<int>?` refuses in the slot law's words rather than
+      claiming `List` names no type.
+      WHAT THE SLICE MET, all pre-existing and none of them its
+      business: `for x in xs` iterates ranges only, list literals
+      still refuse managed elements (so `List<string>` annotates but
+      `["a"]` does not build), and `if` without `else` is not a
+      statement. Each is a rung of its own.
   (c) `!`, `?.`, and the `null ->` / `v? ->` match arms, which reuse
       b2's arm-bind machinery directly.
   (d) `?` propagation and the bind-fresh trio (spec Axis 10.5).

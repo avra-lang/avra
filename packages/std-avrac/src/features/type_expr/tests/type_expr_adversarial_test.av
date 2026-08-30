@@ -74,6 +74,37 @@ spec "features/type_expr (adversarial)" {
             shown("enum E {\n    a\n    b\n}\nfn f(e: E) -> int {\n    match e {\n        .a -> 4\n        .b -> 0\n    }\n}\nf(E.a)") == "4"
         }
     }
+    given "a type APPLIED to arguments" {
+        then "a name that takes none refuses" {
+            let a = analyze_source("fn f(x: int<bool>) -> int { 1 }\nf(1)")
+            a.diagnostics.length == 1 && a.report().contains("`int` takes no type arguments")
+        }
+        then "`List` takes exactly ONE argument" {
+            let a = analyze_source("fn f(xs: List<int, bool>) -> int { 1 }\nf([1])")
+            a.diagnostics.length == 1 && a.report().contains("takes ONE type argument, given 2")
+        }
+        then "zero arguments is not an application" {
+            refusals("fn f(xs: List<>) -> int { 1 }\nf([1])") >= 1
+        }
+        then "an unclosed application refuses" {
+            refusals("fn f(xs: List<int) -> int { 1 }\nf([1])") >= 1
+        }
+        then "an unknown ELEMENT name is named, not swallowed" {
+            let a = analyze_source("fn f(xs: List<Foo>) -> int { 1 }\nf([1])")
+            a.diagnostics.length == 1 && a.report().contains("`Foo` names no type")
+        }
+        then "a nullable LIST waits for ownership analysis" {
+            let a = analyze_source("fn f(xs: List<int>?) -> int { 1 }\nf(null)")
+            a.diagnostics.length == 1 && a.report().contains("a nullable holds scalars for now")
+        }
+        then "the element may itself be APPLIED — nesting needs no rule" {
+            analyze_source("fn f(xs: List<List<int>>) -> int { 1 }\n1").diagnostics.is_empty()
+        }
+        then "a nested LITERAL still meets the list-element law" {
+            let a = analyze_source("fn f(xs: List<List<int>>) -> int { 1 }\nf([[1]])")
+            a.diagnostics.length == 1 && a.report().contains("a list holds scalars for now")
+        }
+    }
     given "the built-in names, which belong to the language" {
         then "a record cannot be named `int`" {
             let a = analyze_source("type int = { x: bool }\n1")

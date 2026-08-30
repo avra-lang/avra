@@ -21,6 +21,18 @@ spec "features/type_expr" {
             let a = analyze_source("fn g(x: int?) -> int { 1 }\nfn h(y: int) -> int { g(y) }\nh(1)")
             a.diagnostics.is_empty()
         }
+        then "`List<int>` annotates a PARAM — the fn-boundary hole, closed" {
+            shown("fn head(xs: List<int>) -> int { xs[0] }\nhead([9, 8])") == "9"
+        }
+        then "`List<int>` annotates a RETURN" {
+            shown("fn pair() -> List<int> { [7, 8] }\npair()[1]") == "8"
+        }
+        then "a list crosses TWO boundaries, made by one fn and read by another" {
+            shown("fn make() -> List<int> { [3, 4] }\nfn take(xs: List<int>) -> int { xs[0] + xs[1] }\ntake(make())") == "7"
+        }
+        then "the element type is carried, not guessed" {
+            shown("fn f(xs: List<bool>) -> bool { xs[0] }\nif f([true]) { 1 } else { 0 }") == "1"
+        }
         then "an unknown name still names no type" {
             let a = analyze_source("fn f(x: float) -> int { 1 }\nf(1)")
             a.diagnostics.length == 1 && a.report().contains("`float` names no type")

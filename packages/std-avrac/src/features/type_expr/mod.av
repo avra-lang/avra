@@ -1,7 +1,9 @@
 //! The TYPE SURFACE — the one rule every annotation is written in.
 //! A type is a name, optionally applied (`List<int>`) and optionally
-//! nullable (`int?`). Ordered choice, anchor-first: the `?` branch
-//! must precede the bare one, because a bare NAME also starts it.
+//! nullable (`int?`). Ordered choice, LONGEST FIRST: every branch
+//! starts with NAME, so a shorter one placed earlier would win and
+//! strand the rest — the applied branches precede `?`, which
+//! precedes the bare name.
 //!
 //! This feature owns no node and no semantics — an annotation is
 //! DATA a builder hands over, never a node a pass walks. Features
@@ -9,21 +11,31 @@
 //! reference `expression`; an assembly that parses annotations must
 //! therefore include this feature.
 use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
 
 export fn type_expr() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name         | build
-        "opt_type"   | build_opt_type
-        "plain_type" | build_plain_type
+        name                | build
+        "applied_opt_type"  | build_applied_opt_type
+        "applied_type"      | build_applied_type
+        "opt_type"          | build_opt_type
+        "plain_type"        | build_plain_type
+    }
+    let codes = table<DiagCode> {
+        kind           | id      | summary
+        "type.applied" | "F2019" | "a type applied to arguments it does not take"
     }
     component LanguageFeature f {
         name = "type_expr"
         docs = "A written type: `int`, `int?` — the surface every annotation shares."
         gram = """
+type = n:NAME "<" a:type ( "," a:type )* ">" "?" -> applied_opt_type(n, a)
+type = n:NAME "<" a:type ( "," a:type )* ">" -> applied_type(n, a)
 type = n:NAME "?" -> opt_type(n)
 type = n:NAME -> plain_type(n)
 """
         builders = rows
+        diags = codes
     }
     f
 }

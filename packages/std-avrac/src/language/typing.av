@@ -214,7 +214,7 @@ impl Typer {
     /// for one mistake is a cascade.
     fn scalar_slot(self, s: StmtId, kind: string, message: string,
                    label: string, ty: TypeRef) -> TypeId {
-        let named = self.named_type(s, ty.name)
+        let named = self.written_type(s, ty)
         let sh: Type = self.types.shape_of(named)
         if sh is .Error { return named }
         if !ty.optional && (sh is .Int || sh is .Bool) { return named }
@@ -244,8 +244,14 @@ impl Typer {
     /// here from any grammar the language assembles.
     fn annotated(self, s: StmtId, ann: TypeRef?) -> TypeId {
         if ann == null { return self.error_type }
-        let t = ann!
-        if !t.optional { return self.named_type(s, t.name) }
+        self.full_type(s, ann!)
+    }
+
+    /// A written type in full — its arguments and its `?` both. The
+    /// element of an application comes back through here, so
+    /// `List<int?>` and `List<List<int>>` need no rule of their own.
+    fn full_type(self, s: StmtId, t: TypeRef) -> TypeId {
+        if !t.optional { return self.written_type(s, t) }
         // A nullable IS a slot array, so it obeys the SAME
         // declared-slot law a field and a payload obey.
         let base = TypeRef { name: t.name, args: t.args, optional: false, span: t.span }
@@ -254,6 +260,38 @@ impl Typer {
                                      "`${spelled(t)}` here", base)
         if self.types.shape_of(inner) is .Error { return inner }
         self.types.intern(Type.Opt(inner))
+    }
+
+    /// What a written type stands for, arguments included: a bare
+    /// name, or an application like `List<int>`.
+    fn written_type(self, s: StmtId, t: TypeRef) -> TypeId {
+        if t.args.is_empty() { return self.named_type(s, t.name) }
+        self.applied(s, t)
+    }
+
+    /// A type APPLIED to arguments. `List<T>` is the only one today —
+    /// the registry has no shape for another, and inventing one here
+    /// would be a type nothing can lower.
+    fn applied(self, s: StmtId, t: TypeRef) -> TypeId {
+        if t.name != "List" {
+            self.speak(pointed(
+                error_at("type.applied", self.stmt_loc(s),
+                    "`${t.name}` takes no type arguments"),
+                "applied here")
+                with { help: "`List<T>` is the one applied type today" })
+            return self.error_type
+        }
+        if t.args.length != 1 {
+            self.speak(pointed(
+                error_at("type.applied", self.stmt_loc(s),
+                    "`List` takes ONE type argument, given ${t.args.length}"),
+                "applied here")
+                with { help: "write `List<int>`" })
+            return self.error_type
+        }
+        let elem = self.full_type(s, t.args[0])
+        if self.types.shape_of(elem) is .Error { return elem }
+        self.types.intern(Type.List(elem))
     }
 
     /// What a written NAME stands for: a builtin shape, a declared
