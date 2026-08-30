@@ -406,7 +406,10 @@ against these before writing; probe in scratch when unsure.
 - Trait DEFAULT method bodies typecheck but ICE at codegen
   ("undefined method") — traits carry mandatory methods only.
 - Module-level `let` values work within their file but do NOT resolve
-  through imports — constants cross modules only as fns.
+  through imports — constants cross modules only as fns. And a
+  module-level `let` read from an `impl` METHOD crashes at runtime
+  (23 specs crashed at once, no diagnostic) — the constant must stay
+  a fn there, even for a hot per-name check.
 - Fns share ONE namespace per module across sibling files: a private
   fn in one file shadows a same-name import for the WHOLE module
   (arity clashes, F1001, at unrelated call sites). Check for the
