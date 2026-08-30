@@ -15,6 +15,7 @@ export fn expr_spine() -> LanguageFeature {
         "fold_index"  | build_fold_index
         "fold_props"  | build_fold_props
         "fold_with"   | build_fold_with
+        "fold_force"  | build_fold_force
         "fold_coalesce" | build_fold_coalesce
     }
     let codes = table<DiagCode> {
@@ -34,7 +35,8 @@ coalescing = l:additive ( "??" r:additive )* -> fold_coalesce(l, r)
 additive = l:multiplicative ( op:( "+" | "-" ) r:multiplicative )* -> fold_binary(l, op, r)
 multiplicative = l:unary ( op:( "*" | "/" | "%" ) r:unary )* -> fold_binary(l, op, r)
 unary = "!" v:unary -> not_expr(v) | withed
-withed = v:postfix ( "with" "{" wn:NAME ":" wv:expression ( "," wn:NAME ":" wv:expression )* "}" )? -> fold_with(v, wn, wv)
+withed = v:forced ( "with" "{" wn:NAME ":" wv:expression ( "," wn:NAME ":" wv:expression )* "}" )? -> fold_with(v, wn, wv)
+forced = v:postfix ( f:"!" )* -> fold_force(v, f)
 postfix = v:indexed ( "." p:NAME )* -> fold_props(v, p)
 indexed = v:primary ( "[" i:expression "]" @expect("]", "expected `]` to close the index") )* -> fold_index(v, i)
 primary = v:NUMBER -> int_lit(v) | n:NAME -> ident(n) | "(" e:expression ")" @expect(")", "expected `)` to close the group") -> e

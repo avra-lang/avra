@@ -145,12 +145,12 @@ int64_t avra_streq(const char* a, const char* b) {
 // left raw it printed an answer and exited 0, which is a silently
 // wrong program.
 int64_t avra_int_div(int64_t a, int64_t b) {
-    if (b == 0) { fprintf(stderr, "division by zero\n"); exit(1); }
+    if (b == 0) { avra_trap("division by zero"); }
     return a / b;
 }
 
 int64_t avra_int_mod(int64_t a, int64_t b) {
-    if (b == 0) { fprintf(stderr, "division by zero\n"); exit(1); }
+    if (b == 0) { avra_trap("division by zero"); }
     return a % b;
 }
 
@@ -200,6 +200,17 @@ int64_t avra_array_len(void* arr) {
 
 // Worded exactly like the evaluator's refusal — the divergence
 // registry pins both.
+// `v!` — slot 1 of a tagged value, insisting slot 0 says PRESENT.
+// The writer claimed absence would not happen; if it does the
+// program STOPS rather than reading a slot never written.
+int64_t avra_unwrap(void* v) {
+    AvraArray* a = (AvraArray*)v;
+    if (!v || a->len < 2 || a->data[0] == 0) {
+        avra_trap("unwrapped an absent value");
+    }
+    return a->data[1];
+}
+
 int64_t avra_array_get(void* arr, int64_t i) {
     AvraArray* a = (AvraArray*)arr;
     if (i < 0 || i >= a->len) {

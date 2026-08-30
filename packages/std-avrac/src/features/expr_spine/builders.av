@@ -53,6 +53,17 @@ fn build_fold_with(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.With(subject, names, wv))
 }
 
+/// `v ( ! )*` folds left: `x!!` insists twice, which the TYPE then
+/// refuses — the second `!` has nothing left to unwrap. The LADDER
+/// owns this parse; the node's meaning lives in `nullable`.
+fn build_fold_force(b: Builder) -> Result<LangNode, string> {
+    mut acc = b.expr(0)?
+    for _ in b.tokens(1)? {
+        acc = b.store.alloc_expr(Expr.Force(acc), b.span)
+    }
+    b.wrap_expr(acc)
+}
+
 /// `l ( ?? r )*` folds left: `a ?? b ?? c` is `(a ?? b) ?? c`. The
 /// LADDER owns this parse; the node's meaning lives in `nullable`.
 fn build_fold_coalesce(b: Builder) -> Result<LangNode, string> {

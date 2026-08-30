@@ -3,7 +3,7 @@
 // left is absent. Non-null by default is the law every refusal here
 // is defending.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_with}
 
 /// A present-maker and an absent-maker over `int?`.
 fn makers() -> string {
@@ -32,6 +32,32 @@ spec "features/nullable" {
         }
         then "a nullable param answers either way" {
             shown("fn ans(x: int?) -> int { x ?? 9 }\n${makers()}ans(none()) + ans(some(1))") == "10"
+        }
+    }
+    given "`!` — the absence answered by insisting" {
+        then "a present value unwraps" {
+            shown("${makers()}some(41)! + 1") == "42"
+        }
+        then "an ABSENT value refuses at runtime, in both engines' words" {
+            match analyze_source("${makers()}none()!").run() {
+                .Err(msg) -> msg.contains("unwrapped an absent value"),
+                .Ok(_) -> false,
+            }
+        }
+        then "insisting on a GUARANTEE is refused at compile time" {
+            refused_with("let x = 1\nx!", "`!` insists on a nullable, this is `int`")
+        }
+        then "a second `!` has nothing left to unwrap" {
+            refused_with("${makers()}some(1)!!", "`!` insists on a nullable")
+        }
+        then "it composes with arithmetic" {
+            shown("${makers()}some(20)! + some(22)!") == "42"
+        }
+        then "it composes with `??`" {
+            shown("${makers()}some(5)! + (none() ?? 2)") == "7"
+        }
+        then "a bool nullable unwraps to a condition" {
+            shown("fn mb(b: bool) -> bool? { b }\nif mb(true)! { 1 } else { 0 }") == "1"
         }
     }
     given "non-null by default" {

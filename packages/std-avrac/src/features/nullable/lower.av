@@ -10,6 +10,7 @@ fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
     match cx.store.expr(e) {
         .NullLit -> null_reg(cx, e),
         .Coalesce(l, r) -> coalesce_reg(cx, e, l, r),
+        .Force(v) -> forced_reg(cx, e, v),
         _ -> lower_defect(cx, e, hole_defect()),
     }
 }
@@ -30,5 +31,15 @@ fn coalesce_reg(cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
     let carried = payload_of(cx, v, cx.type_at(e))
     let dst = cx.mint(e)
     cx.emit(Ins.RegionEnd(dst, carried))
+    dst
+}
+
+/// `v!` — the payload, with the runtime insisting the tag says
+/// PRESENT. The check cannot be elided: absence is exactly what the
+/// writer claimed would not happen, so it is what must be caught.
+fn forced_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
+    let held = cx.reg_of(v)
+    let dst = cx.mint(e)
+    cx.emit(Ins.CallRt(dst, "avra_unwrap", [held]))
     dst
 }
