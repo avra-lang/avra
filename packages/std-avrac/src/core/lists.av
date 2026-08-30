@@ -32,12 +32,29 @@ export fn some_list<T>(x: T?) -> List<T> {
 
 /// Elements joined with `sep`.
 export fn joined(xs: List<string>, sep: string) -> string {
-    mut out = ""
-    for (i, x) in xs.enumerate() {
-        if i > 0 { out = "${out}${sep}" }
-        out = "${out}${x}"
+    if xs.is_empty() { return "" }
+    // MERGED IN PAIRS, not accumulated. `out = "${out}${x}"` per
+    // element re-copies everything built so far, which is quadratic
+    // in the TEXT — 41s to render a 2000-statement program's IR.
+    // Each pass halves the run count and copies each character once,
+    // so the whole join costs O(total length * log n).
+    // Exactly one separator lands between two already-joined runs,
+    // which is why the count comes out at n - 1.
+    mut level: List<string> = xs
+    while level.length > 1 {
+        mut merged: List<string> = []
+        mut i = 0
+        while i < level.length {
+            if i + 1 < level.length {
+                merged.push("${level[i]}${sep}${level[i + 1]}")
+            } else {
+                merged.push(level[i])
+            }
+            i = i + 2
+        }
+        level = merged
     }
-    out
+    level[0]
 }
 
 /// The list with each string's FIRST appearance kept, order intact.

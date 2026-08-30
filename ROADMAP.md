@@ -1791,17 +1791,29 @@ answer is CallRt or a design conversation, in that order.
 
 ## The speed doctrine (builds, caches, tests)
 
-A MEASURED COST, recorded 2026-08-29 (found by reading lower.av
-whole): typing builds its capability context ONCE per walk, while
-lowering rebuilds all fifteen closures PER NODE — `lower_subtree`
-constructs a fresh `LowerCx` on every call. It is structurally
-forced today: `reg_of` closes over the very recursion that would
-have to receive the hoisted context, so hoisting needs either a
-self-referential struct or a second entry point. Not a defect and
-not fixed — the asymmetry is written down so the Era IV pass has
-a number to chase rather than a suspicion. TRIGGER: measure it
-when the query engine lands; if lowering shows up in a profile,
-the fix is a context built per BODY and threaded, not per node.
+AMENDED 2026-08-30 — THE FIRST ENTRY WAS WRONG, and the way it was
+wrong is the lesson. It blamed lowering (a per-node `LowerCx`) for a
+superlinear curve, on reasoning alone. Measuring by SPLITTING the
+commands settled it in one run: `run` lowers exactly as `ir` does and
+then interprets, and `run` tracked `check` linearly while `ir` blew
+up — so lowering was never implicated. The per-node context costs
+something, but nothing that shows.
+
+THE ACTUAL BUG was `joined`, in core/lists.av: it accumulated with
+`out = "${out}${x}"` per element, re-copying the whole string every
+turn — quadratic in the TEXT, and `avra ir` renders a lot of text.
+n=2000 took 41.1s. Merging in PAIRS instead (log n passes, each
+copying every character once) took it to 2.1s, and at n=4000
+rendering is no longer measurable against the front end at all
+(ir 6.0s vs check 6.6s). The same accumulator trap as
+`out = concat(out, x)`, in the helper nobody had tested.
+
+STILL OPEN, and now the largest curve: the FRONT END is superlinear
+— check runs 0.71 / 0.88 / 1.97 / 6.56s at n = 500 / 1000 / 2000 /
+4000, about 3.3x for the last doubling. Milder than the render bug
+was and tolerable at today's sizes; it will matter around 20k lines.
+TRIGGER: split parse / resolve / typecheck the same way this one was
+split before theorising about the cause.
 
 Sources: Zig's incremental-compilation internals (mlugg, 2026-07),
 the L6 query-engine and codegen-cache designs. The laws every
