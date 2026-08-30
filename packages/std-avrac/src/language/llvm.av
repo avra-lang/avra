@@ -6,7 +6,7 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
-use core.{Ins, Reg, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, ptr_shape, concat}
+use core.{Ins, Reg, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, ptr_shape}
 use features.{nothing}
 
 /// One body's emission world: the LLVM handles, this body's register
@@ -325,8 +325,7 @@ fn if_start(em: Emit, c: Reg) {
 /// machine indexes, it does not walk.
 fn switch_start(em: Emit, sel: Reg, cases: List<int>) {
     // One block per case, plus the default's — the last arm.
-    let arms = concat([avra_llvm_append_basic_block(em.lc, em.fn_val, "arm") for c in cases],
-                      [avra_llvm_append_basic_block(em.lc, em.fn_val, "arm")])
+    let arms = [avra_llvm_append_basic_block(em.lc, em.fn_val, "arm") for c in cases].concat([avra_llvm_append_basic_block(em.lc, em.fn_val, "arm")])
     let merge_bb = avra_llvm_append_basic_block(em.lc, em.fn_val, "endswitch")
     let sw = avra_llvm_build_switch(em.b, em.vals[sel.index], arms[cases.length], cases.length)
     let i64t = avra_llvm_int64_type(em.lc)
@@ -355,7 +354,7 @@ fn arm_end(em: Emit, gives: Reg) {
     let _ = avra_llvm_build_br(em.b, f.merge_bb)
     avra_llvm_position_at_end(em.b, f.arms[f.next])
     let advanced = f with {
-        ended: concat(f.ended, [here]), gives: concat(f.gives, [gives]), next: f.next + 1,
+        ended: f.ended.concat([here]), gives: f.gives.concat([gives]), next: f.next + 1,
     }
     // LICENSED I15: a region STACK across fns, not a bracket body
     fs.push(advanced)
@@ -366,8 +365,8 @@ fn arm_end(em: Emit, gives: Reg) {
 fn region_end(em: Emit, dst: Reg, gives: Reg) {
     mut fs = em.frames
     let f = fs.pop()
-    let ended = concat(f.ended, [avra_llvm_get_insert_block(em.b)])
-    let gs = concat(f.gives, [gives])
+    let ended = f.ended.concat([avra_llvm_get_insert_block(em.b)])
+    let gs = f.gives.concat([gives])
     let _ = avra_llvm_build_br(em.b, f.merge_bb)
     avra_llvm_position_at_end(em.b, f.merge_bb)
     let phi = avra_llvm_build_phi(em.b, reg_type(em, dst), "regval")

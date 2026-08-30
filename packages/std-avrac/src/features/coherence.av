@@ -1,16 +1,15 @@
 //! Coherence: the composed grammar, the feature tables, and the code
 //! registry must agree before any source parses.
-use core.{concat, flatten, joined}
+use core.{flatten, joined}
 use grammar.{Grammar, Alt, Seq, Prim, Build, Diagnostic, defect}
 use diagnostics.{DiagCode}
 
 /// Every disagreement between a composed grammar's build calls and the
 /// features' builder tables.
 export fn builder_defects(features: List<LanguageFeature>, g: Grammar) -> List<Diagnostic> {
-    concat(
-        concat(duplicate_defects(features), unregistered_defects(features, g)),
-        dead_defects(features, referenced_names(g)),
-    )
+    duplicate_defects(features)
+        .concat(unregistered_defects(features, g))
+        .concat(dead_defects(features, referenced_names(g)))
 }
 
 /// The feature whose registration of `name` wins — dispatch's search
@@ -55,7 +54,7 @@ fn unregistered_defects(features: List<LanguageFeature>, g: Grammar) -> List<Dia
     for r in g.rules {
         let missing = [defect(r.name, "no feature registers builder `${name}` (searched ${searched})")
             for name in call_names_in_alt(r.body) if registrar_of(features, name) == null]
-        out = concat(out, missing)
+        out = out.concat(missing)
     }
     out
 }
@@ -66,7 +65,7 @@ fn dead_defects(features: List<LanguageFeature>, referenced: Map<string, bool>) 
     for f in features {
         let dead = [defect(f.name, "builder `${row.name}` is never called by any grammar rule")
             for row in f.builders if referenced.get(row.name) == null]
-        out = concat(out, dead)
+        out = out.concat(dead)
     }
     out
 }
@@ -79,7 +78,7 @@ fn call_names_in_alt(a: Alt) -> List<string> {
 
 /// One branch's build-call name (when it calls one) plus its items'.
 fn branch_call_names(s: Seq) -> List<string> {
-    concat(build_call_name(s.build), flatten([call_names_in_prim(m.prim) for m in s.items]))
+    build_call_name(s.build).concat(flatten([call_names_in_prim(m.prim) for m in s.items]))
 }
 
 /// The build's callee, as a list — empty for pass-through and Var.
