@@ -39,7 +39,8 @@ impl Token {
     fn int_value(self) -> int {
         mut v = 0
         mut i = 0
-        while i < self.text.length {
+        let n = self.text.length
+        while i < n {
             v = v * 10 + (code_at(self.text, i) - 48)
             i = i + 1
         }
@@ -63,10 +64,12 @@ fn token(kind: TokenKind, text: string, lo: int, hi: int) -> Token {
     Token { kind: kind, text: text, span: span_of(lo, hi) }
 }
 
-/// First index at or after `from` where `pred` stops holding.
-fn scan_while(src: string, from: int, pred: fn(int) -> bool) -> int {
+/// First index at or after `from` where `pred` stops holding. The
+/// length is PASSED, never re-asked: `src.length` is `strlen` in the
+/// runtime, so testing it per character makes a scan quadratic.
+fn scan_while(src: string, n: int, from: int, pred: fn(int) -> bool) -> int {
     mut j = from
-    while j < src.length && pred(code_at(src, j)) { j = j + 1 }
+    while j < n && pred(code_at(src, j)) { j = j + 1 }
     j
 }
 
@@ -157,9 +160,9 @@ fn scan_string(src: string, i: int, opening: bool, interpolate: bool) -> ScanSte
 }
 
 /// First index at or after `from` that is a newline (or the end).
-fn line_end(src: string, from: int) -> int {
+fn line_end(src: string, n: int, from: int) -> int {
     mut j = from
-    while j < src.length && code_at(src, j) != 10 { j = j + 1 }
+    while j < n && code_at(src, j) != 10 { j = j + 1 }
     j
 }
 
@@ -170,40 +173,39 @@ fn two_char_ops() -> List<string> {
 }
 
 /// The two-char operator starting at `i`, or null.
-fn two_char_at(src: string, i: int) -> string? {
-    if i + 1 >= src.length { return null }
+fn two_char_at(src: string, n: int, i: int) -> string? {
+    if i + 1 >= n { return null }
     let hit: string? = two_char_ops().find(
         code_at(it, 0) == code_at(src, i) && code_at(it, 1) == code_at(src, i + 1))
     hit
 }
 
 /// One token (or skip, or error) starting at `i`.
-fn scan_step(src: string, i: int, interpolate: bool) -> ScanStep {
-    let n = src.length
+fn scan_step(src: string, n: int, i: int, interpolate: bool) -> ScanStep {
     let c = code_at(src, i)
-    let pair: string? = two_char_at(src, i)
+    let pair: string? = two_char_at(src, n, i)
     when {
         // Newline: raw Break, resolved to layout after the scan.
         c == 10 -> emit(token(TokenKind.Break, "", i, i + 1), i + 1)
         is_space(c) -> skip(i + 1)
         // `//` comment: whitespace to end of line — the newline
         // itself still arrives as layout.
-        c == 47 && i + 1 < n && code_at(src, i + 1) == 47 -> skip(line_end(src, i))
+        c == 47 && i + 1 < n && code_at(src, i + 1) == 47 -> skip(line_end(src, n, i))
         // Name: idents and named terminals alike.
         is_name_start(c) -> {
-            let j = scan_while(src, i + 1, is_name_cont)
+            let j = scan_while(src, n, i + 1, is_name_cont)
             emit(token(TokenKind.Name, src.substring(i, j), i, j), j)
         }
         // Number: a digit run; adjacent letters lex as their own Name.
         is_digit(c) -> {
-            let j = scan_while(src, i + 1, is_digit)
+            let j = scan_while(src, n, i + 1, is_digit)
             emit(token(TokenKind.Num, src.substring(i, j), i, j), j)
         }
         // String: unquote and unescape.
         c == 34 -> scan_string(src, i, true, interpolate)
         // `@`-word: one Op token (`@expect`, `@recover`).
         c == 64 -> {
-            let j = scan_while(src, i + 1, is_name_cont)
+            let j = scan_while(src, n, i + 1, is_name_cont)
             if j == i + 1 { fail("expected a name after `@`", i, i + 1) }
             else { emit(token(TokenKind.Op, src.substring(i, j), i, j), j) }
         }
@@ -262,8 +264,9 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
     mut errors: List<LexError> = []
     mut holes: List<int> = []
     mut i = 0
-    while i < src.length {
-        mut s = scan_step(src, i, interpolate)
+    let n = src.length
+    while i < n {
+        mut s = scan_step(src, n, i, interpolate)
         if in_hole(holes, s.token) {
             let t = s.token!
             if t.text == "{" { holes.set(holes.length - 1, holes.last()! + 1) }
