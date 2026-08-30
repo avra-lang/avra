@@ -211,6 +211,15 @@ int64_t avra_unwrap(void* v) {
     return a->data[1];
 }
 
+// `v!` on a NICHE nullable — the pointer IS the value and absence is
+// the null pointer, so insisting is identity through the guard. The
+// wording matches avra_unwrap and the evaluator: the divergence
+// registry pins all three.
+void* avra_insist(void* p) {
+    if (!p) { avra_trap("unwrapped an absent value"); }
+    return p;
+}
+
 int64_t avra_array_get(void* arr, int64_t i) {
     AvraArray* a = (AvraArray*)arr;
     if (i < 0 || i >= a->len) {

@@ -1577,9 +1577,194 @@ THE SLICES (each vertical, each gated):
       still refuse managed elements (so `List<string>` annotates but
       `["a"]` does not build), and `if` without `else` is not a
       statement. Each is a rung of its own.
-  (c) `!`, `?.`, and the `null ->` / `v? ->` match arms, which reuse
-      b2's arm-bind machinery directly.
+  (c) [x] `!` LANDED and `match v { b? -> }` LANDED. `?.` is
+      BLOCKED, with evidence: it has no valid subject. The only
+      nullable that types today is a SCALAR (`int?`, `bool?`), and a
+      scalar has no members — every nullable that could carry one
+      (a record, a list, a string) is refused by the declared-slot
+      law. `?.` therefore waits on nullable MANAGED values, which
+      wait on ownership analysis. SUPERSEDED: that last clause
+      conflated two problems — the representation decision below
+      unblocks `fn f(p: P?)` with NO ownership work, and `?.`
+      builds the day slice (N1) lands.
+      The match arms took their OWN node rather than extending
+      `Match`: an enum's arms are keyed by a variant NAME, and
+      keying `null`/`b?` by a string would be tagging behaviour with
+      text. A nullable has exactly TWO cases — that is its nature —
+      so `MatchOpt(subject, bind, present, absent)` says it without
+      a tag. `nullable` merges BEFORE `enums` because its arms are
+      more specific and enums' branch `@expect`s its own `}`.
   (d) `?` propagation and the bind-fresh trio (spec Axis 10.5).
+
+## The nullable representation (decided 2026-08-30)
+
+The question DECISION_nullable_representation.md carried, answered
+so it is never re-litigated. The box chose itself in slice (a) for
+uniformity with enums, unmeasured against alternatives; measuring
+inverted the frame — `User?` is the EASY case and `int?` the hard
+one, and we had built the hard one and gated the easy one.
+
+THE DECISION: dual representation behind ONE protocol. Pointer
+inners (`string?`, `List<int>?`, `User?`, enum values) take the
+NULL-POINTER NICHE — the nullable IS the value, absence is address
+zero, which no legitimate value ever holds (verified: the runtime
+allocates or interns every pointer it hands out). Scalar inners
+(`int?`, `bool?`) become an UNBOXED PAIR `{present, value}` living
+in registers. The heap box dies. The old tree ratified this same
+dual shape (NULLABILITY_OPTION_EPIC §1.1, "done correctly from day
+one") and its reason to refuse "uniform first, niche later" —
+swapping a shipped representation is the expensive path — holds
+here too.
+
+WHY, each a paradox collapsed (P6):
+- UNIFORM VS SPECIALIZED dissolves at a seam already built:
+  values.av. The surface stays ONE (`T?`, `null`, `??`, `!`,
+  match), the protocol stays ONE — the verbs become `absent_into`,
+  `present_into`, `presence_of` (an i1), `carried_of` — and the
+  layouts go plural behind one `repr_of(inner)` query. The feature
+  never learns which layout it got. Uniformity lives in the
+  vocabulary; specialization lives in the dispatch.
+- "SAFETY WAITS ON OWNERSHIP" was TRUE for containers and FALSE
+  for nullable pointers, and one law (F2018) gated both. A nullable
+  pointer is NOT a container: under the niche, `carried_of` is
+  IDENTITY — the nullable is the very value the memory pass already
+  manages — and absence is a null pointer the runtime already
+  no-ops BY CONSTRUCTION (avra_rc_release guards NULL and ignores
+  unregistered pointers). The representation IS the safety
+  argument. `is_managed` learns one thing: see through `Opt`.
+- THE BOX WAS AN OPTIMIZATION BARRIER, not merely an allocation.
+  LLVM cannot see through `avra_array_new`; it sees straight
+  through `{i1, i64}` — SROA splits the pair into scalars and the
+  discriminant CONSTANT-FOLDS AWAY wherever flow already proved
+  presence, which after rung 9's bind-fresh trio is most checked
+  code. We do not build presence-elision; we choose the shape that
+  lets the optimizer do it. The discriminant is a ghost.
+- NULL HAS NO LAYOUT UNTIL A TYPE CLAIMS IT. The absent literal
+  gets no representation of its own: `accepts` records the widen
+  target for `null` too (it currently skips it), and `widened` —
+  the one edge every expression already crosses — mints the
+  claiming type's absent form. One line in the checker, one
+  dispatch at an existing edge.
+
+THE IR ANSWER (the genuinely open question): FIRST-CLASS AGGREGATE
+REGISTERS — none of the three shapes the decision doc listed.
+`Reg`'s contract changes from "one machine word" to "ONE SSA
+VALUE", and a value may be a small immutable aggregate. Two
+instructions, general on purpose:
+    Pack(dst, elems: List<Reg>)      build a register aggregate
+    Extract(dst, src, i: int)        project element i
+`int?` is LLVM `{i1, i64}` — two machine registers through the
+existing C ABI, never memory. The five consumers each answer in a
+line or two; the interpreter rides its existing arrays table (its
+Val vocabulary is private bookkeeping, not layout). Not
+option-machinery: rung 8(b) scalar enum payloads and any future
+multi-return ride the same pair. Pack of a MANAGED element is
+refused at lowering until ownership analysis — the declared-slot
+law restated at the IR seam, so the container problem stays where
+it belongs.
+
+THE LAW, ratcheted: NULLABILITY NEVER ALLOCATES. Once (N2) lands,
+no nullable lowering may emit `avra_array_new` — pinned by the IR
+goldens plus a negative assertion in the nullable suite. Rust's
+"Option<Box<T>> is one word" is folklore; ours is a tested,
+citable guarantee. Honesty about prior art, per the spec's own
+Axis 9 assessment: niche and pair are 40-year-old primitives; the
+stance — representation as a PUBLISHED, TESTED CONTRACT — is the
+innovation, and it is shipping-level, not research-level.
+
+THE SLICES (each vertical, each gated):
+  (N1) [x] THE NICHE — LANDED 2026-08-30. No vocabulary growth, the
+       unlock: `repr_of` + the verbs in values.av (`presence_of`,
+       `carried_of`, `adopted`, `insisted`; scalars keep the box PRO
+       TEM behind the same verbs, so nothing user-visible
+       regresses); F2018 died (typing.av `full_type`);
+       `nullable_over` lifts pointer shapes; null literals recorded
+       as widens; nullable/lower.av rewrote onto
+       `IfStart(presence)` — the SwitchStart-on-tag shape was a box
+       artifact; the interpreter grew a private `Val.N`;
+       `avra_insist` joined the runtime (`!` for pointers, refusing
+       in `avra_unwrap`'s exact words). What the build taught:
+       - The predicted `int→ptr` coercion gap NEVER OPENED:
+         `avra_insist` declares `ret: Ptr`, so `call_rt_value`
+         needed nothing — the registry's ret kinds were already the
+         seam. `ll_type_of` needed nothing either: every N1 repr is
+         pointer-shaped, so `Opt(_) -> pointer` stayed true.
+       - The null CONSTANT is `ConstInt 0` aimed at a pointer-shaped
+         register; both engines share one rule (backend: const null
+         pointer; interp: `Val.N`) — no new instruction, exactly as
+         designed. The presence test is one `Bin Ne` against it.
+       - LowerCx grew ONE verb (`shape_of: TypeId -> Type`) — the
+         first time a feature's lowering needed a TypeId's shape,
+         and TypeCx already had the twin.
+       - The c2 lowering typed a box's payload as the PRESENT ARM's
+         type, not the subject's carried type — latent (rt_owns
+         false kept it from releasing wrong), fixed by
+         `carried_type` in the rewrite.
+       - Widening a pointer into its nullable adds NO instruction,
+         a pointer nullable builds NO box, a scalar still boxes
+         exactly once — all three now PINNED as lower_test laws;
+         the never-allocates gate law completes at (N2).
+       Corpus: nullable_niche.av (`User?`, `string?`, `List<int>?`
+       through `??`/`!`/match, fn boundaries both ways) and
+       nullable_churn.av (500 owned strings widened, answered and
+       released per iteration — the evaluator has no refcounts, so
+       eval == native there IS the ownership proof), eval == native.
+       THE RED TEAM on the slice: 59 programs across the eight
+       classes — zero wrong answers, zero divergences, zero crashes,
+       zero defects shown; every guarantee shape refused at every
+       nullable slot in its own words, exactly once. Survivors
+       pinned: the ownership seven (owned escape, force-alias,
+       absent-through-frames, relay+force, double-read, loop-500,
+       enum niche) and the field-law-speaks-once cascade guard.
+       Found and left, recorded: the match FAMILY cascades 3–4
+       parse errors on a malformed arm (pre-existing — enum matches
+       cascade identically; belongs to the match-chain arc); an
+       unannotated `let x = null` binds an inert `null`-typed name
+       (every USE refuses; rung 9's bind-fresh trio owns the
+       revisit). `?.` now has real subjects — next.
+  (N2) THE PAIR — one vocabulary event. Pack/Extract paid to all
+       five consumers + corpus + golden; the scalar repr flips
+       box→pair INSIDE values.av and nowhere else; the box path
+       and `avra_unwrap` retire; the never-allocates law switches
+       on.
+
+THE RULINGS on the decision doc's open questions:
+- VISIBLE (P7): yes. `avra ir` already shows the truth (a bare
+  pointer, a pair); `repr_of` is one projection from answering
+  "what did the compiler do with my `T?`" in tooling. TRIGGER:
+  ship that projection when `avra explain` exists.
+- `?.` FLATTENS at the chain: `a?.b` where `b: V?` types `V?` —
+  the Swift/Kotlin convention, the maximal P1 prior. The whole
+  chain short-circuits on first absence.
+- `T??` cannot even be SPELLED today (`TypeRef.optional` is a
+  bool); generics will manufacture it. Recorded for rung 11, built
+  never until needed: structurally the registry already interns
+  `Opt(Opt(T))` distinctly, and the niche extends by SENTINEL
+  LADDER — 0, 1, 2… are all invalid addresses (every mainstream OS
+  guards the zero page), so pointer nullables get ~4096 nesting
+  levels free; scalar pairs nest structurally.
+- ZIG'S POINTER-STABILITY LOCKS (2026-08-27): recorded as a
+  systems/bare-level tool and debug-build backstop for the
+  CONTAINER problem; rejected as app-level default — a runtime
+  panic is strong feedback in a human loop and weak for a
+  generator judged before anything runs (P1).
+- THE SURFACE STANDS WITH THE SPEC: `null` (not the old epic's
+  `none`) and UNIFIED `?` (not its Zig split). The epic's
+  counterarguments are recorded here so rung 10 rules with both in
+  hand: `none` co-occurs with safe-optional code in training data
+  while `null` co-occurs with unsafe code; and a split `?` gives
+  one token one meaning where unified `?` couples the meaning to
+  the enclosing return type. Against them: `T?`+`null` is the
+  Kotlin/TS surface with enormous prior, the spec's `u? / null`
+  match arms are load-bearing, and the clean room dogfoods `null`
+  pervasively. If rung 10 finds the split argument winning in
+  practice, it re-opens THERE, with evidence.
+
+THE BOUNDARY, kept honest so §4's conflation never reforms:
+`repr_of` decides the REGISTER/ABI form only. A container slot —
+`List<int?>` elements, a struct field, an enum payload — stays the
+container laws' problem (F2008 family) until ownership analysis
+sizes elements by type. Two problems, two laws, on purpose.
 
 ## The breather — architecture heads-up (decided 2026-08-26)
 

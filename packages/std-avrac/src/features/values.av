@@ -2,15 +2,18 @@
 //! feature that builds or reads one. The contract next door says
 //! what a feature DOES at each pass; this says what its values ARE.
 //!
-//! One shape today — the tagged slot array behind enums and
-//! nullables. A new value CATEGORY joins here, beside the readers
-//! that make its slot numbers nobody else's business.
-use core.{Reg, Ins, Type, TypeId}
+//! Two shapes today. The tagged slot array behind enums and boxed
+//! nullables; and the NICHE — a pointer-shaped nullable IS its own
+//! value, absence is the null pointer. Which one a nullable takes
+//! is this file's `repr_of`, and every consumer asks the verbs
+//! below instead of knowing. A new value CATEGORY joins here,
+//! beside the readers that make its layout nobody else's business.
+use core.{Reg, Ins, BinOp, Type, TypeId, ExprId, ptr_shape}
 
 /// THE TAGGED VALUE: every closed-set value is a slot array holding
 /// its TAG at slot 0 and its payload, when it has one, at slot 1.
-/// An enum's variant and a nullable's presence are the SAME shape,
-/// which is why `match` and `??` read them the same way. `dst` is
+/// An enum's variant and a boxed nullable's presence are the SAME
+/// shape, which is why `match` reads them the same way. `dst` is
 /// minted by the caller, before the first instruction is emitted —
 /// registers are numbered in emission order.
 export fn tagged_value(cx: LowerCx, dst: Reg, tag: int, payload: Reg?) {
@@ -43,4 +46,106 @@ fn slot_read(cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
     let got = if ty == null { cx.mint_shape(Type.Int) } else { cx.mint_ty(ty!) }
     cx.emit(Ins.CallRt(got, "avra_array_get", [v, at]))
     got
+}
+
+// ── The nullable, behind four verbs ─────────────────────────────
+// The surface is ONE (`null`, `??`, `!`, match); the layouts are
+// two; the seam is here. ROADMAP: the nullable representation.
+
+/// Which layout a nullable takes, decided by what it CARRIES. A
+/// pointer-shaped value IS its own nullable — absence is the null
+/// pointer, which no legitimate value ever holds — so presence
+/// costs nothing and the memory pass sees the value it already
+/// manages. A scalar has no impossible bit pattern, so it rides
+/// the tagged slot array until the register pair lands.
+enum Repr { Niche, Boxed }
+
+/// The representation of a nullable TYPE — a projection, and the
+/// catch-all is honest: a non-`Opt` shape is the absorbing error
+/// path, which lowers nothing, so the box it names is never built.
+fn repr_of(cx: LowerCx, opt: TypeId) -> Repr {
+    match cx.shape_of(opt) {
+        .Opt(inner) -> if ptr_shape(cx.shape_of(inner)) { Repr.Niche } else { Repr.Boxed },
+        _ -> Repr.Boxed,
+    }
+}
+
+/// What a nullable type carries — the `Opt`'s inner, with the
+/// catch-all pinned to the asker's own type on the error path.
+fn carried_type(cx: LowerCx, opt: TypeId) -> TypeId {
+    match cx.shape_of(opt) {
+        .Opt(inner) -> inner,
+        _ -> opt,
+    }
+}
+
+/// Is the value THERE — an i1. Both reprs are ONE `!=` against
+/// their own zero: the niche holds the value itself against the
+/// null constant, the box holds its tag against the absent tag.
+export fn presence_of(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
+    match repr_of(cx, opt) {
+        .Niche -> nonzero(cx, v, zeroed(cx, cx.mint_ty(opt))),
+        .Boxed -> nonzero(cx, tag_of(cx, v), zeroed(cx, cx.mint_shape(Type.Int))),
+    }
+}
+
+/// The zero of the register's own type, emitted — the null pointer
+/// for pointer shapes, the absent tag for ints.
+fn zeroed(cx: LowerCx, z: Reg) -> Reg {
+    cx.emit(Ins.ConstInt(z, 0))
+    z
+}
+
+/// `a != z`, as an i1.
+fn nonzero(cx: LowerCx, a: Reg, z: Reg) -> Reg {
+    let p = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Bin(p, BinOp.Ne, a, z))
+    p
+}
+
+/// What the nullable CARRIES, once presence is settled: a niche
+/// nullable IS its value — identity, no instruction — and a box
+/// holds it at slot 1.
+export fn carried_of(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
+    match repr_of(cx, opt) {
+        .Niche -> v,
+        .Boxed -> payload_of(cx, v, carried_type(cx, opt)),
+    }
+}
+
+/// A value ADOPTED by a nullable — the widening edge's runtime
+/// form, and the ONE place absence takes a layout: `from_null`
+/// marks the null literal, which arrives already absent (a null
+/// constant). A niche adoption is IDENTITY both ways — the pointer
+/// is the nullable, the null constant is the absence — so widening
+/// a pointer costs nothing.
+export fn adopted(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
+    match repr_of(cx, into) {
+        .Niche -> r,
+        .Boxed -> boxed_adoption(cx, into, from_null, r),
+    }
+}
+
+fn boxed_adoption(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
+    let dst = cx.mint_ty(into)
+    if from_null {
+        tagged_value(cx, dst, 0, null)
+    } else {
+        tagged_value(cx, dst, 1, r)
+    }
+    dst
+}
+
+/// `v!` — the carried value, with the runtime insisting the value
+/// is PRESENT. Each repr asks its own runtime word; both refuse in
+/// the same words, and the check cannot be elided — absence is
+/// exactly what the writer claimed would not happen.
+export fn insisted(cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
+    let word = match repr_of(cx, opt) {
+        .Niche -> "avra_insist",
+        .Boxed -> "avra_unwrap",
+    }
+    let dst = cx.mint(e)
+    cx.emit(Ins.CallRt(dst, word, [v]))
+    dst
 }

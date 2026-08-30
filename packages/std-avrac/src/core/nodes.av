@@ -92,6 +92,10 @@ export enum Expr {
     /// `left ?? right` — the left value unless it is absent. The
     /// right side is evaluated ONLY then.
     Coalesce(left: ExprId, right: ExprId)
+    /// `match v { b? -> present, null -> absent }` — the absence
+    /// answered by ASKING. Exactly two arms, and `bind` names what
+    /// the present arm receives, so no arm needs a string tag.
+    MatchOpt(subject: ExprId, bind: string, present: ExprId, absent: ExprId)
     /// `value!` — the absence answered by INSISTING. The type loses
     /// its `?`; a value that is absent anyway refuses at runtime,
     /// which is the whole cost of writing it.
@@ -267,6 +271,9 @@ impl NodeStore {
             .Coalesce(l, r) ->
                 fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
             .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
+            .MatchOpt(subject, bind, present, absent) ->
+                fp(33, [self.expr_fingerprint(subject), fp_str(bind),
+                        self.expr_fingerprint(present), self.expr_fingerprint(absent)]),
         }
     }
 

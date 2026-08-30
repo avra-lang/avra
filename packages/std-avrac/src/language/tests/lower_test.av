@@ -13,6 +13,44 @@ fn count_releases(l: Lowered) -> int {
     l.entry.ins.filter((i: Ins) -> i is .Release).length
 }
 
+/// Every box a program builds, across all bodies — the counting
+/// probe behind the never-allocates law (ROADMAP: the nullable
+/// representation).
+fn boxes_built(l: Lowered) -> int {
+    mut n = 0
+    for b in l.fns.concat([l.entry]) {
+        n = n + b.ins.filter(is_box_call(it)).length
+    }
+    n
+}
+
+fn is_box_call(i: Ins) -> bool {
+    match i {
+        .CallRt(_, callee, _) -> callee == "avra_array_new",
+        _ -> false,
+    }
+}
+
+/// A `string?` made and read through `??` — the niche subject.
+fn niche_read() -> string {
+    "fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(true) ?? \"y\""
+}
+
+/// An `int?` made and read — the boxed subject, until the pair.
+fn boxed_read() -> string {
+    "fn f(v: int) -> int? { v }\nf(1) ?? 0"
+}
+
+/// The identity fn whose tail WIDENS into a nullable…
+fn lifting_id_fn() -> string {
+    "fn f(s: string) -> string? { s }\nf(\"a\") ?? \"b\""
+}
+
+/// …and its guarantee twin, instruction-for-instruction.
+fn plain_id_fn() -> string {
+    "fn f(s: string) -> string { s }\nf(\"a\")"
+}
+
 spec "language/lower" {
     given "arithmetic" {
         then "one scope, constants, one Bin, the answer's puts, exit 0" {
@@ -39,6 +77,19 @@ spec "language/lower" {
         }
         then "string == lowers through the runtime" {
             ir_of("let t = \"a\" == \"b\"\n\"done\"").entry.ins.filter((i: Ins) -> i is .CallRt).length == 1
+        }
+    }
+    given "the nullable representations — the niche's law" {
+        then "a pointer nullable builds NO box anywhere — the niche is free" {
+            boxes_built(ir_of(niche_read())) == 0
+        }
+        then "widening a pointer into its nullable adds NO instruction" {
+            let lifted = ir_of(lifting_id_fn())
+            let plain = ir_of(plain_id_fn())
+            lifted.fns[0].ins.length == plain.fns[0].ins.length
+        }
+        then "a scalar nullable still boxes — the pair is the recorded next slice" {
+            boxes_built(ir_of(boxed_read())) == 1
         }
     }
     given "the runtime registry" {

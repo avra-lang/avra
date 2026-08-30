@@ -10,7 +10,7 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{Ins, Reg, BinOp, UnOp, opens_region, closes_region, filled, joined}
+use core.{Ins, Reg, BinOp, UnOp, opens_region, closes_region, filled, joined, ptr_shape}
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -21,6 +21,8 @@ enum Val {
     A(id: int)
     /// A mut binding's cell — a handle into the cell table.
     C(id: int)
+    /// The null pointer — a niche nullable's absence.
+    N
 }
 
 /// The machine: the program, its heaps, the register frame stack
@@ -75,7 +77,7 @@ fn run_body(m: Machine, b: Body, args: List<Val>) -> Val? {
 /// One instruction: mutate the machine, answer the next pc.
 fn step(m: Machine, b: Body, pc: int) -> int {
     match b.ins[pc] {
-        .ConstInt(d, v) -> put_at(m, d, Val.I(v), pc),
+        .ConstInt(d, v) -> put_at(m, d, const_int_val(m, b, d, v), pc),
         .ConstBool(d, v) -> put_at(m, d, Val.B(v), pc),
         .ConstStr(d, s) -> put_at(m, d, Val.S(s), pc),
         .Bin(d, op, a, x) -> put_at(m, d, bin_val(m, op, a, x), pc),
@@ -96,6 +98,14 @@ fn step(m: Machine, b: Body, pc: int) -> int {
         .ScopeEnter(_) or .ScopeExit(_) or .Retain(_) or .Release(_) or
         .RetVal(_) or .Ret(_) -> pc + 1,
     }
+}
+
+/// The backend's twin rule: a POINTER-SHAPED destination makes the
+/// constant the null pointer — the absence value. The two engines
+/// must read one instruction alike.
+fn const_int_val(m: Machine, b: Body, d: Reg, v: int) -> Val {
+    if ptr_shape(m.l.types.shape_of(b.reg_types[d.index])) { return Val.N }
+    Val.I(v)
 }
 
 // ── Registers (the innermost frame, through element aliases) ────
@@ -162,6 +172,8 @@ fn text_val(m: Machine, v: Val) -> string {
 // ── Operations ──────────────────────────────────────────────────
 
 fn bin_val(m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
+    let nulls: bool = value(m, a) is .N || value(m, x) is .N
+    if nulls { return null_eq_val(m, op, a, x) }
     let bools: bool = value(m, a) is .B && value(m, x) is .B
     if bools { return bool_eq_val(m, op, a, x) }
     let l = int_val(m, a)
@@ -183,6 +195,19 @@ fn bin_val(m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
         .Eq -> Val.B(l == r),
         .Ne -> Val.B(l != r),
         .And or .Or -> defect_val(m, "a lazy op reached the eager path"),
+    }
+}
+
+/// `==`/`!=` where an operand is the ABSENCE — the presence test a
+/// niche nullable lowers to. Two absences agree; an absence and a
+/// present value never do.
+fn null_eq_val(m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
+    let same: bool = value(m, a) is .N && value(m, x) is .N
+    match op {
+        .Eq -> Val.B(same),
+        .Ne -> Val.B(!same),
+        .Add or .Sub or .Mul or .Div or .Mod or .Lt or .Le or .Gt or
+        .Ge or .And or .Or -> defect_val(m, "a non-equality op reached an absence"),
     }
 }
 
@@ -345,6 +370,7 @@ fn val_text(m: Machine, v: Val) -> string {
         .S(s) -> s,
         .A(id) -> "[${joined([val_text(m, e) for e in m.arrays[id]], ", ")}]",
         .C(_) -> "<cell>",
+        .N -> "null",
     }
 }
 
@@ -375,6 +401,7 @@ fn rt_dispatch(m: Machine, callee: string, vals: List<Val>) -> Val {
         "avra_array_push" -> array_push_val(m, vals),
         "avra_array_get" -> array_get_val(m, vals),
         "avra_unwrap" -> unwrap_val(m, vals),
+        "avra_insist" -> insist_val(m, vals),
         "avra_array_len" -> array_len_val(m, vals),
         "avra_str_join" -> str_join_val(m, vals),
         "avra_int_text" or "avra_bool_text" or "avra_ints_text"
@@ -402,8 +429,15 @@ fn array_push_val(m: Machine, vals: List<Val>) -> Val {
     Val.I(0)
 }
 
-/// `v!` — slot 1, insisting slot 0 says PRESENT. The wording MATCHES
-/// the runtime's, because the two engines must refuse alike.
+/// `!` met an absence — the ONE refusal both repr paths give, its
+/// wording matched to the runtime's: the two engines must refuse
+/// alike, and the divergence registry pins all of them.
+fn absent_refused(m: Machine) -> Val {
+    fail(m, "unwrapped an absent value")
+    Val.I(0)
+}
+
+/// `v!` on a BOXED nullable — slot 1, insisting slot 0 says PRESENT.
 fn unwrap_val(m: Machine, vals: List<Val>) -> Val {
     let id: int? = match vals[0] {
         .A(x) -> x,
@@ -411,11 +445,14 @@ fn unwrap_val(m: Machine, vals: List<Val>) -> Val {
     }
     if id == null { return defect_val(m, "a non-array reached `!`") }
     let arr = m.arrays[id!]
-    if arr.length < 2 || !present_tag(arr) {
-        fail(m, "unwrapped an absent value")
-        return Val.I(0)
-    }
+    if arr.length < 2 || !present_tag(arr) { return absent_refused(m) }
     arr[1]
+}
+
+/// `v!` on a NICHE nullable — identity through the presence guard.
+fn insist_val(m: Machine, vals: List<Val>) -> Val {
+    if vals[0] is .N { return absent_refused(m) }
+    vals[0]
 }
 
 /// The tag a nullable carries: slot 0, present when it is not zero.

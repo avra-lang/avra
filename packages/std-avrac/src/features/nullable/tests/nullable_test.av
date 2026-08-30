@@ -60,6 +60,34 @@ spec "features/nullable" {
             shown("fn mb(b: bool) -> bool? { b }\nif mb(true)! { 1 } else { 0 }") == "1"
         }
     }
+    given "`match` over an absence — the third consumer" {
+        then "the present arm binds what the nullable carries" {
+            shown("${makers()}match some(7) {\n    v? -> v + 1\n    null -> 0\n}") == "8"
+        }
+        then "the absent arm answers when it is absent" {
+            shown("${makers()}match none() {\n    v? -> v + 1\n    null -> 42\n}") == "42"
+        }
+        then "`null` may be written FIRST — the node records meaning, not order" {
+            shown("${makers()}match none() {\n    null -> 5\n    v? -> v\n}") == "5"
+        }
+        then "the bind is a value like any other, usable twice" {
+            shown("${makers()}match some(4) {\n    v? -> v * v\n    null -> 0\n}") == "16"
+        }
+        then "it nests, each bind in its own scope" {
+            shown("${makers()}match some(1) {\n    v? -> match some(2) {\n        w? -> v + w\n        null -> 0\n    }\n    null -> 0\n}") == "3"
+        }
+        then "asking a GUARANTEE is refused" {
+            refused_with("let x = 1\nmatch x {\n    v? -> v\n    null -> 0\n}",
+                         "`match` over `null` asks a nullable, this is `int`")
+        }
+        then "the arms must agree, like any other pair of branches" {
+            refused_with("${makers()}match some(1) {\n    v? -> v\n    null -> \"s\"\n}",
+                         "the arms disagree: `int` vs `string`")
+        }
+        then "an ENUM match is untouched by the new branch" {
+            shown("enum E {\n    a\n    b\n}\nmatch E.a {\n    .a -> 1\n    .b -> 0\n}") == "1"
+        }
+    }
     given "non-null by default" {
         then "`null` is not an `int`" {
             let a = analyze_source("fn f() -> int { null }\nf()")
@@ -93,12 +121,31 @@ spec "features/nullable" {
             a.diagnostics.length == 1 && a.report().contains("groups to the RIGHT")
         }
     }
-    given "the declared-slot law, which a nullable obeys too" {
-        then "a managed nullable waits for ownership analysis" {
-            let a = analyze_source("fn f(b: bool) -> string? { \"x\" }\nf(true) ?? \"y\"")
-            a.diagnostics.length == 1 &&
-                a.report().contains("a nullable holds scalars for now") &&
-                a.report().contains("`string?` here")
+    given "the niche — a pointer-shaped nullable IS its value" {
+        then "`string?` answers through `??`, present and absent" {
+            shown("fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(true) ?? \"y\"") == "x" &&
+                shown("fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(false) ?? \"y\"") == "y"
+        }
+        then "the spec's headline example types and runs: `find_user -> User?`" {
+            shown("type User = { age: int }\n" +
+                  "fn find_user(id: int) -> User? { if id == 7 { User { age: 30 } } else { null } }\n" +
+                  "match find_user(7) {\n    u? -> u.age\n    null -> 0\n}") == "30"
+        }
+        then "`List<int>?` rides the same niche" {
+            shown("fn f(b: bool) -> List<int>? { if b { [1, 2] } else { null } }\n(f(false) ?? [9]).length") == "1"
+        }
+        then "`!` insists on a niche nullable, and refuses in the shared words" {
+            match analyze_source("fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(false)!").run() {
+                .Err(msg) -> msg.contains("unwrapped an absent value"),
+                .Ok(_) -> false,
+            }
+        }
+        then "a nullable param passes through by IDENTITY — widening is free" {
+            shown("fn hand(s: string?) -> string? { s }\nhand(\"kept\") ?? \"lost\"") == "kept"
+        }
+        then "the present arm binds the CARRIED record, fields reachable" {
+            shown("type P = { x: int }\nfn mk(b: bool) -> P? { if b { P { x: 4 } } else { null } }\n" +
+                  "match mk(true) {\n    p? -> p.x * p.x\n    null -> 0\n}") == "16"
         }
     }
 }

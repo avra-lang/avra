@@ -10,7 +10,7 @@
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, some_list}
 use diagnostics.{Diag, error_at, pointed, loc_at}
 use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig,
-              fn_sig_of, record_sig_of, variant_sig_of, tagged_value}
+              fn_sig_of, record_sig_of, variant_sig_of, adopted}
 use @std.errors.{Loc}
 
 /// One lowered body: instructions in order and each register's type
@@ -131,6 +131,7 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         reg_of: (k: ExprId) -> lower_subtree(lo, k),
         def_reg: (k: ExprId) -> lo.def_reg(k),
         shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.a.type_at(k)),
+        shape_of: (ty: TypeId) -> lo.a.typing.types.shape_of(ty),
         type_at: (k: ExprId) -> lo.a.type_at(k),
         mint: (k: ExprId) -> lo.mint(k),
         mint_shape: (sh: Type) -> lo.mint_ty(lo.a.typing.types.intern(sh)),
@@ -148,15 +149,15 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
     r
 }
 
-/// A value the assignment law LIFTED into a nullable: the present
-/// shape is tag 1 plus the value. Recorded by typing, wrapped here —
-/// the one place every expression passes through.
+/// A value the assignment law LIFTED into a nullable, minted in
+/// the claiming type's representation (values.av). Recorded by
+/// typing, adopted here — the one place every expression passes
+/// through, so absence takes its layout at exactly one edge: the
+/// null literal arrives already absent, and `adopted` knows.
 fn widened(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
     let into: TypeId? = lo.a.typing.widens[e.index]
     if into == null { return r }
-    let dst = lo.mint_ty(into!)
-    tagged_value(cx, dst, 1, r)
-    dst
+    adopted(cx, into!, cx.shape_at(e) is .Null, r)
 }
 
 /// Statements in order, each through its own StmtSemantics — the

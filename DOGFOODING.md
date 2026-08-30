@@ -168,6 +168,12 @@ gate — there is no amnesty left to hide in.
       enums/structs) said a plausible lie instead. LICENSED where
       there is no failure channel and the default is the right
       answer: `kids()` returning `[]` for a node that is not a list.
+      FALSE-POSITIVE signature: a TEST line pairing an `*_of(...)`
+      helper with an embedded source's own `??` (`ir_of("… f(1) ??
+      0")`) trips the regex. The cure is the fixture discipline,
+      not a license: name the source (`fn boxed_read() -> string`)
+      and the attack line carries no `_of(` — which is how the
+      adversarial files want to read anyway.
 
 - I19 an INDEX WALK over a list is `enumerate`: `for j in
       0..xs.length` that then reads `xs[j]` should be `for (j, x) in

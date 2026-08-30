@@ -225,11 +225,12 @@ impl Typer {
 
     /// THE declared-slot law: a slot inside an aggregate holds a
     /// SCALAR until ownership analysis covers managed values — a
-    /// record's field, an enum's payload, and a nullable's carried
-    /// value alike, since all three are slots of an array the pass
-    /// does not yet track. An UNKNOWN name is not this law's
-    /// business: the NAME law speaks first, and a second refusal
-    /// for one mistake is a cascade.
+    /// record's field and an enum's payload alike, since both are
+    /// slots of an array the pass does not yet track. (A nullable
+    /// is NOT a container: its representation is values.av's
+    /// per-shape choice, so no law speaks there.) An UNKNOWN name
+    /// is not this law's business: the NAME law speaks first, and
+    /// a second refusal for one mistake is a cascade.
     fn scalar_slot(self, s: StmtId, kind: string, message: string,
                    label: string, ty: TypeRef) -> TypeId {
         let named = self.written_type(s, ty)
@@ -275,13 +276,11 @@ impl Typer {
     /// A written type in full — its arguments and its `?` both. The
     /// element of an application comes back through here, so
     /// `List<int?>` and `List<List<int>>` need no rule of their own.
+    /// The `?` wraps ANY well-named type: which layout a nullable
+    /// takes is values.av's per-shape choice, not a law's business.
     fn full_type(self, s: StmtId, t: TypeRef) -> TypeId {
         if !t.optional { return self.written_type(s, t) }
-        // A nullable IS a slot array, so it obeys the SAME
-        // declared-slot law a field and a payload obey.
-        let inner = self.scalar_slot(s, "type.nullable_scalar",
-                                     "a nullable holds scalars for now",
-                                     "`${spelled(t)}` here", plain(t))
+        let inner = self.written_type(s, plain(t))
         if self.types.shape_of(inner) is .Error { return inner }
         self.types.intern(Type.Opt(inner))
     }

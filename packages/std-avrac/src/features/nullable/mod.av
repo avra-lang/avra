@@ -6,27 +6,31 @@
 //! precedent — the spine owns precedence, a feature owns meaning);
 //! only `null` anchors a branch of its own, keyword-first.
 //!
-//! Representation: a nullable IS a slot array, tag 0 absent and
-//! tag 1 present — the shape enums already lower to, which the spec
-//! licenses explicitly. No instruction was added.
+//! Representation is values.av's per-shape choice (`repr_of`): a
+//! pointer-shaped nullable IS its value with the null pointer as
+//! absence, a scalar rides the tagged slot array. This file never
+//! knows which — lowering asks the verbs.
 use features.{LanguageFeature, BuilderRow}
 use diagnostics.{DiagCode}
 
 export fn nullable() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name       | build
-        "null_lit" | build_null
+        name          | build
+        "null_lit"    | build_null
+        "match_opt"   | build_match_opt
     }
     let codes = table<DiagCode> {
         kind                   | id      | summary
         "type.coalesce"        | "F2017" | "`??` answers a nullable with a value of its type"
-        "type.nullable_scalar" | "F2018" | "a nullable holds scalars for now"
         "type.force"           | "F2021" | "`!` insists on a nullable"
+        "type.match_opt"       | "F2022" | "`match` over `null` asks a nullable"
     }
     component LanguageFeature f {
         name = "nullable"
         docs = "`T?` may be absent; `null` is the absence, and `a ?? b` answers it."
         gram = """
+primary = "match" s:expression "{" BREAK? b:NAME "?" "->" p:expression BREAK? "null" "->" a:expression BREAK? "}" -> match_opt(s, b, p, a)
+primary = "match" s:expression "{" BREAK? "null" "->" a:expression BREAK? b:NAME "?" "->" p:expression BREAK? "}" -> match_opt(s, b, p, a)
 primary = "null" -> null_lit()
 """
         builders = rows

@@ -13,12 +13,21 @@ impl NodeSemantics for NullableSemantics {
         match e {
             .Coalesce(l, r) -> [l, r],
             .Force(v) -> [v],
+            // the arms are hidden: each is typed under its own scope,
+            // and the present one lowers INSIDE its region
+            .MatchOpt(subject, _, _, _) -> [subject],
             _ -> [],
         }
     }
 
     fn resolve(self, cx: ResolveCx, e: ExprId) {
-        nothing()
+        match cx.store.expr(e) {
+            .MatchOpt(_, bind, present, absent) -> {
+                cx.arm_scope(bind, present)
+                cx.arm_scope("", absent)
+            }
+            _ -> nothing(),
+        }
     }
 
     fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {

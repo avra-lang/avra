@@ -156,7 +156,7 @@ fn call(em: Emit, name: string, args: List<ptr>) -> ptr {
 
 fn emit_ins(em: Emit, i: Ins) {
     match i {
-        .ConstInt(_, v) -> define(em, avra_llvm_const_int(avra_llvm_int64_type(em.lc), v, 1)),
+        .ConstInt(dst, v) -> define(em, const_int_value(em, dst, v)),
         .ConstBool(_, v) -> define(em, avra_llvm_const_int(avra_llvm_int1_type(em.lc), if v { 1 } else { 0 }, 0)),
         .ConstStr(_, s) -> define(em, avra_llvm_build_global_string_ptr(em.b, s, ".str")),
         .Bin(_, op, a, x) -> define(em, bin_value(em, op, em.vals[a.index], em.vals[x.index])),
@@ -180,6 +180,17 @@ fn emit_ins(em: Emit, i: Ins) {
         .LoopEnd -> loop_end(em),
         .ScopeEnter(_) or .ScopeExit(_) -> nothing(),
     }
+}
+
+/// An int constant — or the NULL POINTER when the destination is
+/// pointer-shaped: absence is the zero of its type, and the only
+/// ConstInt lowering ever aims at a pointer register is 0. The
+/// interpreter's const_int_val is this rule's twin.
+fn const_int_value(em: Emit, dst: Reg, v: int) -> ptr {
+    if ptr_shape(em.types.shape_of(em.tys[dst.index])) {
+        return avra_llvm_const_pointer_null(avra_llvm_pointer_type(em.lc))
+    }
+    avra_llvm_const_int(avra_llvm_int64_type(em.lc), v, 1)
 }
 
 /// The next register's value — registers mint in instruction order.

@@ -1,7 +1,7 @@
 //! Typing laws shared across features and drivers — extracted at
 //! their third copy, wording passed in so each site keeps its own
 //! words.
-use core.{ExprId, TypeId, Type, ptr_shape}
+use core.{ExprId, TypeId, Type}
 use diagnostics.{Diag, error_at, pointed}
 
 /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -42,10 +42,12 @@ export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
     if !types_disagree(cx, got, want) { return true }
     let inner: TypeId? = opt_inner(cx, want)
     if inner == null { return false }
-    // `null` already IS the absent value; only a PRESENT value is
-    // lifted, so only that one is recorded.
-    if cx.shape_of(got) is .Null { return true }
-    if types_disagree(cx, got, inner!) { return false }
+    // `null` inhabits every nullable; a present value must be the
+    // carried type. Either way the lift is RECORDED, in this one
+    // place — absence has no layout of its own, and lowering's
+    // adoption edge mints each form from this record.
+    let absent: bool = cx.shape_of(got) is .Null
+    if !absent && types_disagree(cx, got, inner!) { return false }
     cx.widen(e, want)
     true
 }
@@ -62,12 +64,10 @@ export fn join_of(cx: TypeCx, a: TypeId, b: TypeId) -> TypeId? {
     null
 }
 
-/// `T` covered by an absence: `T?`. An already-nullable type stands
-/// (nothing is lifted twice), and a managed value has no nullable
-/// yet — the declared-slot law again.
+/// `T` covered by an absence: `T?`. An already-nullable type
+/// stands — nothing is lifted twice.
 fn nullable_over(cx: TypeCx, ty: TypeId) -> TypeId? {
     if opt_inner(cx, ty) != null { return ty }
-    if ptr_shape(cx.shape_of(ty)) { return null }
     cx.intern(Type.Opt(ty))
 }
 

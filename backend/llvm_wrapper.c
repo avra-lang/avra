@@ -163,6 +163,10 @@ LLVMValueRef avra_llvm_const_int(LLVMTypeRef ty, int64_t value, int sign_extend)
     return LLVMConstInt(ty, (unsigned long long)value, sign_extend);
 }
 
+LLVMValueRef avra_llvm_const_pointer_null(LLVMTypeRef ty) {
+    return LLVMConstPointerNull(ty);
+}
+
 // ── Functions ──
 
 // Mangle a logical Avra symbol name into a valid object-file symbol.
