@@ -1,7 +1,7 @@
 //! One parsed program: the tree, its source, and the owner map —
 //! which feature speaks for which node. Parsing and the statement
 //! spine live here; analysis stacks on top in analysis.av.
-use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, TypeRef, concat, flatten}
+use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, TypeRef, flatten}
 use grammar.{Captured, RunOutcome, run_grammar, lex_source, lex_diagnostic}
 use features.{LangNode, NodeSemantics, StmtSemantics, dispatch, list_at, stmt_id_at, LanguageFeature}
 use features.expr_spine.{SpineSemantics}
@@ -142,7 +142,7 @@ impl ParsedProgram {
     /// speaks.
     fn post_order(self, root: ExprId) -> List<ExprId> {
         let node = self.store.expr(root)
-        concat(flatten([self.post_order(k) for k in semantics_of(self.dispatch, node).kids(node)]), [root])
+        flatten([self.post_order(k) for k in semantics_of(self.dispatch, node).kids(node)]).concat([root])
     }
 }
 
@@ -234,7 +234,7 @@ export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
     let store = new_node_store()
     let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> dispatch(lang.features, store, name, args, span)
     let o = run_grammar<LangNode>(lang.grammar!, lexed.tokens, build)
-    let engine = concat([lex_diagnostic(e) for e in lexed.errors], o.diagnostics)
+    let engine = [lex_diagnostic(e) for e in lexed.errors].concat(o.diagnostics)
     ParsedProgram {
         store: store,
         stmts: program_stmts(store, o),

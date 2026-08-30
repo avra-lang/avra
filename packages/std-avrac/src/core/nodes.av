@@ -229,18 +229,18 @@ impl NodeStore {
             .Prop(subject, name) ->
                 fp(22, [self.expr_fingerprint(subject), fp_str(name)]),
             .Interp(parts, holes) ->
-                fp(23, concat([fp_str(p) for p in parts], self.expr_fps(holes))),
+                fp(23, [fp_str(p) for p in parts].concat(self.expr_fps(holes))),
             .StrLit(value) -> fp(8, [fp_str(value)]),
             .BoolLit(value) -> fp(9, [if value { 1 } else { 0 }]),
             .If(cond, on_true, on_false) ->
                 fp(10, [self.expr_fingerprint(cond), self.expr_fingerprint(on_true),
                         self.expr_fingerprint(on_false)]),
-            .Call(callee, args) -> fp(11, concat([fp_str(callee)], self.expr_fps(args))),
+            .Call(callee, args) -> fp(11, [fp_str(callee)].concat(self.expr_fps(args))),
             .When(conds, values, fallback) ->
                 fp(13, flatten([self.expr_fps(conds), self.expr_fps(values),
                                 [self.expr_fingerprint(fallback)]])),
             .Block(stmts, value) ->
-                fp(14, concat(self.stmt_fps(stmts), [self.expr_fingerprint(value)])),
+                fp(14, self.stmt_fps(stmts).concat([self.expr_fingerprint(value)])),
             .StructLit(name, fields, values) ->
                 fp(24, flatten([[fp_str(name)], [fp_str(f) for f in fields],
                                 self.expr_fps(values)])),
@@ -275,21 +275,20 @@ impl NodeStore {
             .MutLet(name, value) -> fp(15, [fp_str(name), self.expr_fingerprint(value)]),
             .Assign(name, value) -> fp(16, [fp_str(name), self.expr_fingerprint(value)]),
             .While(cond, stmts) ->
-                fp(17, concat([self.expr_fingerprint(cond)], self.stmt_fps(stmts))),
+                fp(17, [self.expr_fingerprint(cond)].concat(self.stmt_fps(stmts))),
             // For's cond and step derive from name/from/to — the
             // identity needs only the sources.
             .For(name, from, to, _, _, stmts) ->
-                fp(18, concat([fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to)],
-                              self.stmt_fps(stmts))),
+                fp(18, [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to)].concat(self.stmt_fps(stmts))),
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
             .Error -> fp(7, []),
             .FnDecl(name, params, ret, body) ->
                 fp(12, flatten([[fp_str(name)], param_fps(params),
                                 [type_fp(ret), self.expr_fingerprint(body)]])),
             .StructDecl(name, fields) ->
-                fp(25, concat([fp_str(name)], param_fps(fields))),
+                fp(25, [fp_str(name)].concat(param_fps(fields))),
             .EnumDecl(name, variants) ->
-                fp(27, concat([fp_str(name)], param_fps(variants))),
+                fp(27, [fp_str(name)].concat(param_fps(variants))),
         }
     }
 }
@@ -305,7 +304,7 @@ fn type_fp(t: TypeRef?) -> int {
     if t == null { return 0 }
     let written = t!
     fp(if written.optional { 2 } else { 1 },
-       concat([fp_str(written.name)], [type_fp(a) for a in written.args]))
+       [fp_str(written.name)].concat([type_fp(a) for a in written.args]))
 }
 
 fn fp_binop(op: BinOp) -> int {

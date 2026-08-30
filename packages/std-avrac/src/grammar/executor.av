@@ -21,7 +21,7 @@
 //! rolling back a speculative attempt is keeping the old one.
 //! Diagnostics are structured (span, expected set, rule); prose
 //! rendering is a projection.
-use core.{concat, Span}
+use core.{Span}
 
 /// What a builder receives and returns. The engine never looks inside
 /// `Node` — `N` belongs to whoever supplies the builders.
@@ -266,14 +266,14 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq,
         let r = match_item<N>(cx, rule_name, member, state, acc)
         farthest = far_merge(farthest, r.farthest)
         if r.status == MatchStatus.Hit {
-            diagnostics = concat<Diagnostic>(diagnostics, r.diagnostics)
+            diagnostics = diagnostics.concat(r.diagnostics)
             if r.state.cursor > state.cursor { anchored = true }
             state = r.state
             vals.push(r.value)
             continue
         }
         if r.status == MatchStatus.Broke || r.status == MatchStatus.Fatal {
-            diagnostics = concat<Diagnostic>(diagnostics, r.diagnostics)
+            diagnostics = diagnostics.concat(r.diagnostics)
             return ended<N>(r.status, state, diagnostics, farthest)
         }
         if !anchored { return missed<N>(entry_state, diagnostics, farthest) }
@@ -384,7 +384,7 @@ fn match_repetition<N>(cx: MatchContext<N>, rule_name: string, member: Item,
         // A repetition is a speculation boundary: a failed iteration
         // (committed included) ends the loop; its story lives in `farthest`.
         if r.status == MatchStatus.Fatal {
-            diagnostics = concat<Diagnostic>(diagnostics, r.diagnostics)
+            diagnostics = diagnostics.concat(r.diagnostics)
             return fatal_defect<N>(state, diagnostics, farthest)
         }
         if r.status != MatchStatus.Hit {
@@ -400,7 +400,7 @@ fn match_repetition<N>(cx: MatchContext<N>, rule_name: string, member: Item,
             going = false
             continue
         }
-        diagnostics = concat<Diagnostic>(diagnostics, r.diagnostics)
+        diagnostics = diagnostics.concat(r.diagnostics)
         collected.push(r.value)
         mut nb = r.state.bindings
         if member.label != null { nb = bind_label<N>(nb, member.label!, r.value, true) }
