@@ -12,9 +12,19 @@ use features.{ResolveCx, StmtResolveCx}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
 /// What a name USE resolves to — the ONE binding currency every
-/// consumer dispatches on. A new binding kind (a pattern bind, a
-/// captured upvalue) is a new VARIANT here, and every consumer's
+/// consumer dispatches on. A new binding kind (a captured upvalue,
+/// a loop's counter) is a new VARIANT here, and every consumer's
 /// match breaks loudly.
+///
+/// EVERY VARIANT OWES TWO FACTS, one per pass — the passes cannot
+/// share a table, so each keeps its own and the shapes MIRROR:
+///
+///   variant    TYPE fact (typing)     REGISTER fact (lowering)
+///   Param      param_types[i]         the index IS the register
+///   Def        decls[stmt]            slots[stmt]
+///   Pattern    pattern_types[arm]     pattern_regs[arm]
+///
+/// A new variant answers both columns or the build refuses.
 export enum Binding {
     /// The enclosing fn's Nth parameter — params ARE registers.
     Param(index: int)
@@ -182,16 +192,17 @@ fn arm_body(r: Resolver, param_names: List<string>, bind: string, value: ExprId)
     resolve_walk(r, param_names, value)
 }
 
-/// The innermost overlay holding `name`, or null.
+/// The innermost overlay holding `name`, or null — the scan stops
+/// at the first hit, which IS the shadowing rule: the nearest
+/// scope wins and the outer ones are never consulted.
 fn overlay_hit(overlays: List<Map<string, Binding>>, name: string) -> Binding? {
     mut k = overlays.length - 1
-    // LICENSED I4: a REVERSE scan; no reversed iterator
-    mut found: Binding? = null
     while k >= 0 {
-        if found == null { found = overlays[k].get(name) }
+        let found: Binding? = overlays[k].get(name)
+        if found != null { return found }
         k = k - 1
     }
-    found
+    null
 }
 
 /// One subtree's resolution, under the given param names.
@@ -271,10 +282,10 @@ impl Resolver {
 
     fn resolve_name(self, e: ExprId, name: string, param_names: List<string>) {
         if self.once(e) { return }
-        if reserved().contains(name) {
-            self.refuse_reserved(name, self.loc_of(e))
-            return
-        }
+        // The SAME naming law every other site runs: a keyword can
+        // never be a name, so "not defined" would send the reader
+        // hunting for a definition that could not exist.
+        if self.refused_name(name, self.loc_of(e)) { return }
         let found: Binding? = self.value_binding(name, param_names)
         if found != null {
             self.bind_use(e, found!)
@@ -319,6 +330,16 @@ impl Resolver {
     fn declare_type(self, name: string, s: StmtId) {
         let at = self.stmt_loc(s)
         if self.refused_name(name, at) { return }
+        // A built-in name resolves to its SHAPE in annotations and
+        // to the declaration everywhere else — one name, two
+        // meanings, and no error. It is refused at the declaration.
+        if shape_named(name) != null {
+            self.speak(pointed(
+                error_at("resolve.builtin_type", at, "`${name}` is a built-in type"),
+                "declared here")
+                with { help: "choose another name — `int`, `string` and `bool` are the language's" })
+            return
+        }
         let prior: StmtId? = self.type_defs.get(name)
         if prior == null {
             mut m = self.type_defs
@@ -349,6 +370,9 @@ impl Resolver {
     /// A callee resolves in the fn namespace alone.
     fn resolve_call(self, e: ExprId, name: string) {
         if self.once(e) { return }
+        // A keyword can never NAME a fn, so "no `fn if` is defined"
+        // would offer a remedy the naming law itself forbids.
+        if self.refused_name(name, self.loc_of(e)) { return }
         let found: StmtId? = self.fn_defs.get(name)
         if found != null {
             self.bind_use(e, Binding.Def(found!))
@@ -446,7 +470,7 @@ impl Resolver {
             mut v = self.visible
             v.set(name, b)
         } else {
-            mut top = self.overlays[self.overlays.length - 1]
+            mut top = self.overlays.last()!
             top.set(name, b)
         }
     }

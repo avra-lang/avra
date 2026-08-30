@@ -1,0 +1,35 @@
+//! Nullability — `T?` opts IN to absence (spec Axis 10.2), so every
+//! other type is a guarantee. This feature owns the two nodes that
+//! MEAN absence: the `null` literal, and `??`, which answers it.
+//!
+//! `??`'s PARSE lives in the expression ladder (the `with`
+//! precedent — the spine owns precedence, a feature owns meaning);
+//! only `null` anchors a branch of its own, keyword-first.
+//!
+//! Representation: a nullable IS a slot array, tag 0 absent and
+//! tag 1 present — the shape enums already lower to, which the spec
+//! licenses explicitly. No instruction was added.
+use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
+
+export fn nullable() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name       | build
+        "null_lit" | build_null
+    }
+    let codes = table<DiagCode> {
+        kind                   | id      | summary
+        "type.coalesce"        | "F2017" | "`??` answers a nullable with a value of its type"
+        "type.nullable_scalar" | "F2018" | "a nullable holds scalars for now"
+    }
+    component LanguageFeature f {
+        name = "nullable"
+        docs = "`T?` may be absent; `null` is the absence, and `a ?? b` answers it."
+        gram = """
+primary = "null" -> null_lit()
+"""
+        builders = rows
+        diags = codes
+    }
+    f
+}

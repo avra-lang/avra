@@ -1,0 +1,39 @@
+// The type surface: every annotation is written in ONE rule, so `?`
+// works wherever a type is spelled — params, returns — and an
+// unknown name still refuses in the words it always did.
+use @std.avrac.language.{analyze_source, parse_source}
+use @std.avrac.testing.{shown}
+
+spec "features/type_expr" {
+    given "a written type" {
+        then "a plain name annotates as it always did" {
+            shown("fn f(x: int) -> int { x + 1 }\nf(41)") == "42"
+        }
+        then "`?` is part of the type, in a param" {
+            let a = analyze_source("fn g(x: int?) -> int { 1 }\ng(1)")
+            a.diagnostics.is_empty()
+        }
+        then "`?` is part of the type, in a return" {
+            let a = analyze_source("fn g() -> int? { null }\ng() ?? 0")
+            a.diagnostics.is_empty()
+        }
+        then "a nullable and its value are DIFFERENT types" {
+            let a = analyze_source("fn g(x: int?) -> int { 1 }\nfn h(y: int) -> int { g(y) }\nh(1)")
+            a.diagnostics.is_empty()
+        }
+        then "an unknown name still names no type" {
+            let a = analyze_source("fn f(x: float) -> int { 1 }\nf(1)")
+            a.diagnostics.length == 1 && a.report().contains("`float` names no type")
+        }
+        then "an unknown NULLABLE name refuses once" {
+            let a = analyze_source("fn f(x: float?) -> int { 1 }\nf(1)")
+            a.diagnostics.length >= 1 && a.report().contains("float")
+        }
+        then "a declared type annotates, nullable or not" {
+            shown("type P = { x: int }\nfn f(p: P) -> int { p.x }\nlet q = P { x: 7 }\nf(q)") == "7"
+        }
+        then "the surface parses in every annotation position" {
+            parse_source("fn f(a: int, b: bool) -> int { 1 }").diagnostics.is_empty()
+        }
+    }
+}

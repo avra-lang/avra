@@ -23,7 +23,7 @@ A FOURTH law keeps the rules from rotting: every I-code in
 DOGFOODING.md must have a matcher here or an entry in UNRATCHETED
 with its reason. The registry can never again outrun the ratchet.
 """
-import os, re, sys, glob
+import collections, os, re, sys, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = ["packages/std-avrac/src", "packages/cli/src"]
@@ -54,8 +54,13 @@ def block_end(lines, start):
 
 def push_loop(lines):
     """A `for` whose whole body is one `push` — that loop is a MAP.
-    Catches the multi-line form the line-greps could not see."""
+    BOTH forms: the body on its own lines, and the whole loop on one.
+    The multi-line matcher that replaced the old line-grep dropped
+    the one-line form and hid 14 sites for as long as it stood."""
     for i, l in enumerate(lines):
+        if re.match(r"\s*for .+ in .+\{\s*[a-z_]+\.push\(.*\}\s*$", l):
+            yield i, l.strip()
+            continue
         if not re.match(r"\s*for .+ in .+\{\s*$", l):
             continue
         end = block_end(lines, i)
@@ -276,6 +281,37 @@ def stale_arity(lines):
         if wrote is not None and wrote != want:
             yield text[:m.start()].count("\n"), f".{m.group(1)}( wrote {wrote}, declares {want}"
 
+# A nullable opened with `!` again and again is a value the code
+# already knows it has. CLAUDE.md's style rule settles it: a `let`
+# earns its place when the value is read more than once.
+BARE_UNWRAP = re.compile(r"(?<![.\w])([a-z_][a-z0-9_]*)!")
+
+def repeated_unwrap(lines):
+    """One nullable LOCAL forced open 3+ times in a fn — guard once,
+    bind once, and read the name. A `mut` accumulator is not this
+    smell: it changes every turn, so there is no one value to bind."""
+    hits = []
+
+    def scan(start, body):
+        if start is None or not body:
+            return
+        text = "\n".join(body)
+        accumulators = set(re.findall(r"\bmut ([a-z_][a-z0-9_]*)", text))
+        for name, n in collections.Counter(BARE_UNWRAP.findall(text)).items():
+            if n >= 3 and name not in accumulators:
+                hits.append((start, f"{lines[start].strip()[:46]} [{name}! x{n}]"))
+
+    start, body = None, []
+    for i, l in enumerate(lines):
+        if re.match(r"\s*(export )?fn ", l):
+            scan(start, body)
+            start, body = i, []
+        elif start is not None:
+            body.append(l)
+    scan(start, body)
+    for h in hits:
+        yield h
+
 def duplicated(pattern, minimum=2):
     """Text repeated within one file — a name waiting to be given.
     Comment lines are skipped: a doc quoting the message it documents
@@ -305,9 +341,9 @@ TESTS_ONLY = {"I20": "it is a law about how a REFUSAL is asserted"}
 RULES = {
     "I3":  (push_loop,
             "a for-loop whose body is one push — that is a comprehension (or concat)"),
-    "I4":  (line_rx(r"mut [a-z_]+: *[A-Za-z<>]+\? *= *null"),
+    "I4":  (line_rx(r"mut [a-z_]+: *[A-Za-z][A-Za-z<>, ]*\? *= *null"),
             "a nullable flag local — is this scan a find/index_of?"),
-    "I7":  (line_rx(r"\[[a-z_]+\.length - 1\]"),
+    "I7":  (line_rx(r"\[[a-z_][\w.]*\.length - 1\]"),
             "last-element index arithmetic — `xs.last()!`"),
     "I9":  (line_rx(r"\.index != |\.index == "),
             "a hand-rolled type-id comparison — the agreement law is `types_disagree`"),
@@ -342,6 +378,9 @@ RULES = {
     "I25": (stale_arity,
             "a variant pattern with the WRONG payload count — bs2 accepts it "
             "silently and binds the wrong things"),
+    "I26": (repeated_unwrap,
+            "one nullable local forced open 3+ times — guard once, bind once, "
+            "and read the name"),
     "I16": (seen_accumulator,
             "a seen-accumulator — a dup is `xs.index_of(x) < j` over enumerate"),
 }
@@ -366,37 +405,55 @@ UNRATCHETED = {
 # run — this caught I18 shipping with a regex that could not span a
 # nested call.
 SPECIMENS = {
-    "I3":  ["for x in xs {", "    out.push(x)", "}"],
-    "I4":  ["    mut best: Thing? = null"],
-    "I7":  ["    let v = xs[xs.length - 1]"],
-    "I9":  ["    if a.index != b.index { }"],
-    "I11": ['    let a = "a message long enough to be shared"',
-            '    let b = "a message long enough to be shared"'],
-    "I13": ["    let ok = cx.shape_at(e) && cx.shape_at(e)"],
-    "I14": ["    cx.emit(d)", "    cx.intern(Type.Error)"],
-    "I15": ["    v.push(name)", "    let f = go()", "    let _ = v.pop()"],
-    "I16": ["    mut seen: List<string> = []", "    if seen.contains(x) { }", "    seen.push(x)"],
-    "I18": ["    cx.emit(Ins.ConstBool(dst, truth_of(cx.store.expr(e)) ?? false))"],
-    "I12": ['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }'],
-    "I23": ["fn f(a: int, b: int) -> int {", "    a + a", "}"],
-    "I24": ["use core.{Span}"],
-    "I22": ["    match s {", "        .A(x) -> x,", "        .B(y) -> y,", "        _ -> null,", "    }"],
-    "I19": ["    for j in 0..args.length {", "        let a = args[j]", "    }"],
-    "I20": ['        then "it refuses" {', '            let a = analyze_source("x")',
-            '            a.report().contains("nope")', "        }"],
-    "I21": ["    mut registry = new_type_registry()", "    registry.intern(t)"],
-    "I25": ["enum E {", "    A(x: int, y: int)", "}", "    match e {", "        .A(_) -> 1,", "    }"],
+    "I3":  [["for x in xs {", "    out.push(x)", "}"],
+            ["    for x in xs { out.push(x) }"],
+            ["    for (j, x) in xs.enumerate() { out.push(x) }"]],
+    "I4":  [["    mut best: Thing? = null"],
+            ["    mut hit: List<int>? = null"],
+            ["    mut seen: Map<string, int>? = null"]],
+    "I7":  [["    let v = xs[xs.length - 1]"],
+            ["    let v = a.b[a.b.length - 1]"],
+            ["    let v = self.items[self.items.length - 1]"]],
+    "I9":  [["    if a.index != b.index { }"], ["    if a.index == b.index { }"]],
+    "I11": [['    let a = "a message long enough to be shared"',
+             '    let b = "a message long enough to be shared"']],
+    "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
+    "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
+    "I14": [["    cx.emit(d)", "    cx.intern(Type.Error)"]],
+    "I15": [["    v.push(name)", "    let f = go()", "    let _ = v.pop()"]],
+    "I16": [["    mut seen: List<string> = []", "    if seen.contains(x) { }", "    seen.push(x)"]],
+    "I18": [["    cx.emit(Ins.ConstBool(dst, truth_of(cx.store.expr(e)) ?? false))"],
+            ['    let v = text_of(node) ?? ""']],
+    "I19": [["    for j in 0..args.length {", "        let a = args[j]", "    }"]],
+    "I20": [['        then "it refuses" {', '            let a = analyze_source("x")',
+             '            a.report().contains("nope")', "        }"]],
+    "I21": [["    mut registry = new_type_registry()", "    registry.intern(t)"]],
+    "I22": [["    match s {", "        .A(x) -> x,", "        .B(y) -> y,", "        _ -> null,", "    }"]],
+    "I23": [["fn f(a: int, b: int) -> int {", "    a + a", "}"]],
+    "I24": [["use core.{Span}"]],
+    "I25": [["enum E {", "    A(x: int, y: int)", "}", "    match e {", "        .A(_) -> 1,", "    }"]],
+    "I26": [["fn f(x: int?) -> int {", "    if x == null { return 0 }",
+             "    x! + x! + x!", "}"]],
 }
 
 def selftest():
-    """Every rule catches its specimen, or the tool refuses to run."""
+    """Every rule catches EVERY specimen, or the tool refuses to run.
+
+    One specimen proves a matcher is alive; it does not prove its
+    REACH. Four rules shipped blind spots that a single specimen
+    passed straight over — I7 could not see a dotted receiver, I3
+    could not see a one-line loop, I4 could not see a generic with
+    two parameters, and I26 counted field unwraps as locals. A rule
+    claims a SHAPE, so every spelling of that shape belongs here."""
     dead = []
     for code, (matcher, _) in RULES.items():
-        spec = SPECIMENS.get(code)
-        if spec is None:
+        specimens = SPECIMENS.get(code)
+        if specimens is None:
             dead.append(f"{code} has no specimen")
-        elif not list(matcher(spec)):
-            dead.append(f"{code}'s matcher does not catch its own specimen")
+            continue
+        for spec in specimens:
+            if not list(matcher(spec)):
+                dead.append(f"{code}'s matcher misses `{' / '.join(spec)[:52]}`")
     return dead
 
 def sources():

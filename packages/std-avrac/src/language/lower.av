@@ -10,7 +10,7 @@
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, concat, some_list}
 use diagnostics.{Diag, error_at, pointed, loc_at}
 use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig,
-              fn_sig_of, record_sig_of, variant_sig_of}
+              fn_sig_of, record_sig_of, variant_sig_of, tagged_value}
 use @std.errors.{Loc}
 
 /// One lowered body: instructions in order and each register's type
@@ -67,11 +67,11 @@ export fn lower(a: Analysis) -> Lowered {
         if parts != null {
             let lf = lower_fn(a, s, parts!.name, parts!.body)
             fns.push(lf.body)
-            for m in lf.failures { failures.push(m) }
+            failures = concat<string>(failures, lf.failures)
         }
     }
     let lm = lower_main(a)
-    for m in lm.failures { failures.push(m) }
+    failures = concat<string>(failures, lm.failures)
     Lowered {
         fns: fns, entry: lm.body, types: a.typing.types,
         diagnostics: concat(lm.refusals, [error_at("language.defect", null, m) for m in failures]),
@@ -88,6 +88,8 @@ fn lower_fn(a: Analysis, s: StmtId, fname: string, root: ExprId) -> LoweredBody 
     let rt: TypeId = sig?.ret ?? a.typing.types.intern(Type.Error)
     let lo = new_lower(a)
     mut tys = lo.reg_types
+    // LICENSED I3: `tys` ALIASES lo.reg_types — `concat` would rebind
+    // the local and the registers would never reach the body
     for pt in ptypes { tys.push(pt) }
     lo.give(Ins.ScopeEnter(Level.Application))
     let r = lower_subtree(lo, root)
@@ -129,6 +131,7 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         reg_of: (k: ExprId) -> lower_subtree(lo, k),
         def_reg: (k: ExprId) -> lo.def_reg(k),
         shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.a.type_at(k)),
+        type_at: (k: ExprId) -> lo.a.type_at(k),
         mint: (k: ExprId) -> lo.mint(k),
         mint_shape: (sh: Type) -> lo.mint_ty(lo.a.typing.types.intern(sh)),
         mint_ty: (ty: TypeId) -> lo.mint_ty(ty),
@@ -139,10 +142,21 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         lower_block: (stmts: List<StmtId>, value: ExprId) -> block_reg(lo, stmts, value),
         fail: (msg: string) -> lo.record(msg),
     }
-    let r = semantics_of(lo.a.dispatch, lo.a.store.expr(e)).lower(cx, e)
+    let r = widened(cx, lo, e, semantics_of(lo.a.dispatch, lo.a.store.expr(e)).lower(cx, e))
     mut rs = lo.regs
     rs.set(e.index, r)
     r
+}
+
+/// A value the assignment law LIFTED into a nullable: the present
+/// shape is tag 1 plus the value. Recorded by typing, wrapped here —
+/// the one place every expression passes through.
+fn widened(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
+    let into: TypeId? = lo.a.typing.widens[e.index]
+    if into == null { return r }
+    let dst = lo.mint_ty(into!)
+    tagged_value(cx, dst, 1, r)
+    dst
 }
 
 /// Statements in order, each through its own StmtSemantics — the
@@ -189,6 +203,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Struct(_, n) -> n,
         .Enum(_, n) -> n,
         .TypeName(_, n) -> n,
+        .Opt(_) or .Null -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
         .Int or .Str or .Bool or .List(_) or .Error -> null,
     }
     if unprintable != null { return no_projection(lo, unprintable!) }
@@ -198,6 +213,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Bool -> text_call(lo, "avra_bool_text", last),
         .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
         .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) -> null,
+        .Opt(_) or .Null -> null,
         .Error -> null,
     }
     if text != null { lo.give(Ins.CallRtVoid("avra_puts", [text!])) }

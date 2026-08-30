@@ -2,14 +2,7 @@
 // .claude/skills/red-team). Every program here was written to break
 // the feature, not to use it.
 use @std.avrac.language.{analyze_source}
-
-fn shown(source: string) -> string {
-    analyze_source(source).ran() ?? "<refused>"
-}
-
-fn refusals(source: string) -> int {
-    analyze_source(source).diagnostics.length
-}
+use @std.avrac.testing.{shown, refusals}
 
 /// THE subject under attack: the smallest record there is.
 fn p1() -> string {
@@ -22,6 +15,12 @@ fn p1_bound() -> string {
 }
 
 spec "features/structs (adversarial)" {
+    given "the slot law vs the name law" {
+        then "an unknown FIELD type names the NAME, not the slot law" {
+            let a = analyze_source("type P = { x: Foo }\nlet q = P { x: 1 }\nq.x")
+            a.diagnostics.length == 1 && a.report().contains("`Foo` names no type")
+        }
+    }
     given "operators against a record VALUE" {
         // FOUND BY RED-TEAMING enums, and it was a RECORD bug too:
         // `==` typed clean on two records, then the interpreter

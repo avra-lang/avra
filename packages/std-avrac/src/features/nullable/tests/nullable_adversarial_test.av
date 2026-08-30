@@ -1,0 +1,218 @@
+// The RED TEAM's permanent record for nullability (see
+// .claude/skills/red-team): every program here was written to BREAK
+// the feature, not to use it. Grouped by attack class. A case that
+// once produced a wrong answer, a crash, an internal defect, or an
+// engine divergence keeps its place here forever.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown, refusals}
+
+/// A present-maker and an absent-maker over `int?`.
+fn makers() -> string {
+    "fn some(v: int) -> int? { v }\nfn none() -> int? { null }\n"
+}
+
+spec "features/nullable (adversarial)" {
+    given "degenerate shapes" {
+        then "a bare `null` is not a printable answer" {
+            match analyze_source("null").run() {
+                .Err(msg) -> msg.contains("no text projection yet"),
+                .Ok(_) -> false,
+            }
+        }
+        then "`null ?? x` says the left is ALWAYS absent" {
+            let a = analyze_source("null ?? 1")
+            a.diagnostics.length == 1 && a.report().contains("always absent")
+        }
+        then "`null ?? null` refuses the same way" {
+            refusals("null ?? null") == 1
+        }
+        then "`??` with nothing on the right refuses" {
+            refusals("${makers()}none() ??") >= 1
+        }
+        then "`??` with nothing on the left refuses" {
+            refusals("${makers()}?? 3") >= 1
+        }
+    }
+    given "the absence in every wrong slot" {
+        then "a condition wants a bool, not an absence" {
+            refusals("if null { 1 } else { 2 }") == 1
+        }
+        then "arithmetic refuses an absence" {
+            refusals("null + 1") == 1
+        }
+        then "an index subject refuses a nullable" {
+            refusals("${makers()}some(1)[0]") == 1
+        }
+        then "a property refuses a nullable" {
+            refusals("${makers()}some(1).length") == 1
+        }
+        then "a match subject refuses a nullable" {
+            refusals("${makers()}match some(1) { .a -> 1 }") == 1
+        }
+        then "a nullable is not a printable answer either" {
+            match analyze_source("${makers()}some(1)").run() {
+                .Err(msg) -> msg.contains("no text projection yet"),
+                .Ok(_) -> false,
+            }
+        }
+    }
+    given "the declared-slot law, which every slot shares" {
+        then "a struct field refuses a nullable, in ITS words" {
+            let a = analyze_source("type P = { x: int? }\nlet p = P { x: 1 }\np.x ?? 0")
+            a.diagnostics.length == 1 && a.report().contains("struct fields hold scalars")
+        }
+        then "an enum payload refuses a nullable, in ITS words" {
+            let a = analyze_source("enum E {\n    a(int?)\n    b\n}\nmatch E.a(1) { .a(n) -> 0, .b -> 0 }")
+            a.diagnostics.length == 1 && a.report().contains("an enum payload holds scalars")
+        }
+        then "a list element refuses a nullable, in ITS words" {
+            let a = analyze_source("${makers()}[some(1), none()]")
+            a.diagnostics.length == 1 && a.report().contains("a list holds scalars")
+        }
+        then "a managed nullable waits for ownership analysis" {
+            let a = analyze_source("fn f(b: bool) -> string? { \"x\" }\nf(true) ?? \"y\"")
+            a.diagnostics.length == 1 && a.report().contains("a nullable holds scalars for now")
+        }
+        then "a declared type refuses being made nullable, for now" {
+            let a = analyze_source("type P = { x: int }\nfn f(p: P?) -> int { 1 }\nf(null)")
+            a.diagnostics.length == 1 && a.report().contains("a nullable holds scalars for now")
+        }
+    }
+    given "precedence, which decides what `??` even asks" {
+        then "`??` binds TIGHTER than comparison — it asks about the ANSWER" {
+            shown("${makers()}if none() ?? 0 == 0 { 1 } else { 2 }") == "1"
+        }
+        then "`??` binds LOOSER than arithmetic" {
+            shown("${makers()}none() ?? 1 + 1") == "2"
+        }
+        then "`??` binds looser than `*` too" {
+            shown("${makers()}none() ?? 2 * 3") == "6"
+        }
+        then "`&&` sees the answer, not the nullable" {
+            shown("fn mb(b: bool) -> bool? { b }\nif mb(false) ?? false && true { 1 } else { 2 }") == "2"
+        }
+        then "an ungrouped chain refuses and says how to group it" {
+            let a = analyze_source("${makers()}none() ?? none() ?? 7")
+            a.diagnostics.length == 1 && a.report().contains("groups to the RIGHT")
+        }
+        then "the grouped chain answers" {
+            shown("${makers()}none() ?? (none() ?? 7)") == "7"
+        }
+    }
+    given "the join, where two branches must agree" {
+        then "a value beside an absence joins to the nullable" {
+            shown("fn f(b: bool) -> int? { if b { null } else { 3 } }\nf(false) ?? 0") == "3"
+        }
+        then "the absence may come FIRST" {
+            shown("fn f(b: bool) -> int? { if b { 3 } else { null } }\nf(true) ?? 0") == "3"
+        }
+        then "an ALREADY nullable branch joins without lifting twice" {
+            shown("fn f(n: int) -> int? { if n > 0 { if n > 5 { n } else { null } } else { null } }\nf(9) ?? 0") == "9"
+        }
+        then "a `when` arm joins with an absence too" {
+            shown("fn f(b: bool) -> int? {\n    when {\n        b -> 1\n        _ -> null\n    }\n}\nf(true) ?? 0") == "1"
+        }
+        then "a `when` joins when the ABSENCE anchors" {
+            shown("fn f(b: bool) -> int? {\n    when {\n        b -> null\n        _ -> 5\n    }\n}\nf(false) ?? 0") == "5"
+        }
+        then "a `match` arm joins with an absence" {
+            shown("enum E {\n    a\n    b\n}\nfn f(e: E) -> int? {\n    match e {\n        .a -> 1\n        .b -> null\n    }\n}\nf(E.a) ?? 0") == "1"
+        }
+        then "a `match` joins when the absence comes FIRST" {
+            shown("enum E {\n    a\n    b\n}\nfn f(e: E) -> int? {\n    match e {\n        .a -> null\n        .b -> 7\n    }\n}\nf(E.b) ?? 0") == "7"
+        }
+        then "an absent `match` arm answers absent" {
+            shown("enum E {\n    a\n    b\n}\nfn f(e: E) -> int? {\n    match e {\n        .a -> null\n        .b -> 7\n    }\n}\nf(E.a) ?? 42") == "42"
+        }
+        then "an ALREADY nullable arm joins without lifting twice" {
+            shown("fn g(v: int) -> int? { v }\nfn f(b: bool) -> int? {\n    when {\n        b -> g(3)\n        _ -> null\n    }\n}\nf(true) ?? 0") == "3"
+        }
+        then "arms that genuinely disagree STILL refuse" {
+            let a = analyze_source("fn f(b: bool) -> int {\n    when {\n        b -> 1\n        _ -> \"s\"\n    }\n}\nf(true)")
+            a.diagnostics.length == 1 && a.report().contains("arms disagree")
+        }
+        then "two disagreeing values still refuse" {
+            refusals("fn f(b: bool) -> int { if b { 1 } else { \"s\" } }\nf(true)") == 1
+        }
+    }
+    given "widening, at every boundary that has one" {
+        then "an argument widens" {
+            shown("fn ans(x: int?) -> int { x ?? 9 }\nans(33) + ans(null)") == "42"
+        }
+        then "a return widens" {
+            shown("fn keep(x: int) -> int? { x }\nkeep(7) ?? 0") == "7"
+        }
+        then "a widen inside another call still lands" {
+            shown("fn ans(x: int?) -> int { x ?? 9 }\nfn t(v: int) -> int { ans(v) }\nt(33)") == "33"
+        }
+        then "an absence crosses two fns unchanged" {
+            shown("fn a() -> int? { null }\nfn b() -> int? { a() }\nb() ?? 5") == "5"
+        }
+        then "a nullable NEVER widens back" {
+            let a = analyze_source("fn f(x: int) -> int { x }\n${makers()}f(some(1))")
+            a.diagnostics.length == 1 &&
+                a.report().contains("argument 1 of `f` wants `int`, found `int?`")
+        }
+    }
+    given "crossing every other feature" {
+        then "a `while` condition takes the answer" {
+            shown("fn mb(b: bool) -> bool? { b }\nmut i = 0\nwhile mb(i < 3) ?? false {\n    i = i + 1\n}\ni") == "3"
+        }
+        then "a `for` bound takes the answer" {
+            shown("${makers()}mut t = 0\nfor k in 0..(none() ?? 3) {\n    t = t + 1\n}\nt") == "3"
+        }
+        then "a list element takes the answer" {
+            shown("${makers()}[none() ?? 1, some(2) ?? 0]") == "[1, 2]"
+        }
+        then "a struct field value takes the answer" {
+            shown("type P = { x: int }\n${makers()}let p = P { x: none() ?? 7 }\np.x") == "7"
+        }
+        then "`with` takes the answer" {
+            shown("type P = { x: int, y: int }\n${makers()}let base = P { x: 1, y: 2 }\nlet q = base with { x: none() ?? 9 }\nq.x") == "9"
+        }
+        then "an index takes the answer" {
+            shown("${makers()}let xs = [10, 20, 30]\nxs[none() ?? 1]") == "20"
+        }
+        then "a variant payload takes the answer" {
+            shown("${makers()}enum E {\n    a(int)\n    b\n}\nmatch E.a(none() ?? 7) { .a(n) -> n, .b -> 0 }") == "7"
+        }
+        then "a `mut` binding takes the answer" {
+            shown("${makers()}mut x = none() ?? 1\nx = x + 1\nx") == "2"
+        }
+        then "an absence crosses five fns unchanged" {
+            shown("fn a() -> int? { null }\nfn b() -> int? { a() }\nfn c() -> int? { b() }\nfn d() -> int? { c() }\nd() ?? 5") == "5"
+        }
+        then "eight grouped coalesces answer the innermost" {
+            shown("fn n() -> int? { null }\nn() ?? (n() ?? (n() ?? (n() ?? (n() ?? (n() ?? (n() ?? (n() ?? 8)))))))") == "8"
+        }
+        then "a thousand nullables allocate and answer" {
+            shown("fn some(v: int) -> int? { v }\nmut t = 0\nmut i = 0\nwhile i < 1000 {\n    t = t + (some(i) ?? 0)\n    i = i + 1\n}\nt") == "499500"
+        }
+    }
+    given "the naming law, which reaches the absence" {
+        then "`null` cannot be bound" {
+            let a = analyze_source("let null = 1\nnull")
+            a.diagnostics.length == 1 && a.report().contains("`null` is a keyword")
+        }
+        then "`null` cannot name a param" {
+            let a = analyze_source("fn f(null: int) -> int { 1 }\nf(1)")
+            a.diagnostics.length == 1 && a.report().contains("`null` is a keyword")
+        }
+        then "`null` cannot be CALLED" {
+            let a = analyze_source("null()")
+            a.diagnostics.length == 1 && a.report().contains("`null` is a keyword")
+        }
+        then "`null` cannot name a type" {
+            let a = analyze_source("type null = { x: int }\n1")
+            a.diagnostics.length == 1 && a.report().contains("`null` is a keyword")
+        }
+    }
+    given "the right side, which must not run early" {
+        then "a present left never evaluates the right" {
+            shown("fn boom(x: int) -> int { x / 0 }\n${makers()}some(5) ?? boom(1)") == "5"
+        }
+        then "an absent left DOES evaluate it" {
+            shown("fn double(x: int) -> int { x + x }\n${makers()}none() ?? double(21)") == "42"
+        }
+    }
+}

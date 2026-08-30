@@ -1,0 +1,78 @@
+// Nullability, vertically: `T?` opts in to absence, `null` is that
+// absence, `??` answers it — and the right side runs ONLY when the
+// left is absent. Non-null by default is the law every refusal here
+// is defending.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown}
+
+/// A present-maker and an absent-maker over `int?`.
+fn makers() -> string {
+    "fn some(v: int) -> int? { v }\nfn none() -> int? { null }\n"
+}
+
+spec "features/nullable" {
+    given "the absence and the answer" {
+        then "a present value unwraps through `??`" {
+            shown("${makers()}some(5) ?? 0") == "5"
+        }
+        then "an absent value takes the right side" {
+            shown("${makers()}none() ?? 42") == "42"
+        }
+        then "a guarantee WIDENS into a nullable at the boundary" {
+            shown("fn ans(x: int?) -> int { x ?? 9 }\nans(33) + ans(null)") == "42"
+        }
+        then "the right side is evaluated ONLY on absence" {
+            shown("fn boom(x: int) -> int { x / 0 }\n${makers()}some(5) ?? boom(1)") == "5"
+        }
+        then "bools are nullable too" {
+            shown("fn maybe(b: bool) -> bool? { b }\nif maybe(true) ?? false { 1 } else { 0 }") == "1"
+        }
+        then "a chain groups to the right" {
+            shown("${makers()}none() ?? (none() ?? 7)") == "7"
+        }
+        then "a nullable param answers either way" {
+            shown("fn ans(x: int?) -> int { x ?? 9 }\n${makers()}ans(none()) + ans(some(1))") == "10"
+        }
+    }
+    given "non-null by default" {
+        then "`null` is not an `int`" {
+            let a = analyze_source("fn f() -> int { null }\nf()")
+            a.diagnostics.length == 1 &&
+                a.report().contains("the body answers `null` but `f` declares `int`")
+        }
+        then "a nullable is not its value" {
+            let a = analyze_source("${makers()}some(1) + 1")
+            a.diagnostics.length == 1 && a.report().contains("`+` needs `int` operands, found `int?`")
+        }
+        then "a nullable never widens BACK" {
+            let a = analyze_source("fn f(x: int) -> int { x }\n${makers()}f(some(1))")
+            a.diagnostics.length == 1 &&
+                a.report().contains("argument 1 of `f` wants `int`, found `int?`")
+        }
+    }
+    given "`??`'s own law" {
+        then "it answers a NULLABLE — a guarantee is already answered" {
+            let a = analyze_source("1 ?? 2")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`??` answers a nullable, this is `int`") &&
+                a.report().contains("is a guarantee")
+        }
+        then "the right side carries the nullable's own type" {
+            let a = analyze_source("${makers()}some(1) ?? \"s\"")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`??` answers with a `int`, this is `string`")
+        }
+        then "an ungrouped chain says how to group it" {
+            let a = analyze_source("${makers()}none() ?? none() ?? 7")
+            a.diagnostics.length == 1 && a.report().contains("groups to the RIGHT")
+        }
+    }
+    given "the declared-slot law, which a nullable obeys too" {
+        then "a managed nullable waits for ownership analysis" {
+            let a = analyze_source("fn f(b: bool) -> string? { \"x\" }\nf(true) ?? \"y\"")
+            a.diagnostics.length == 1 &&
+                a.report().contains("a nullable holds scalars for now") &&
+                a.report().contains("`string?` here")
+        }
+    }
+}

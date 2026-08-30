@@ -2,7 +2,7 @@
 //! Match node, and a carrying variant's construction. Arm names and
 //! values ZIP (both are written every time); a declaration's
 //! payloads cannot, because they are optional — see below.
-use core.{Expr, ExprId, Stmt, Param, some_list}
+use core.{Expr, ExprId, Stmt, Param, TypeRef, some_list}
 use features.{LangNode, Builder, expr_id_at, zip_defect}
 use grammar.{Token}
 
@@ -20,26 +20,54 @@ fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
     let ends: int? = b.span_end()
     if ends == null { return Result.Err("an enum declaration without a span") }
     let vs = b.tokens(1)?
-    let tys = aligned(vs, b.tokens(2)?, ends!)
+    let tys = aligned_types(vs, b.type_refs(2)?, ends!)
     mut variants: List<Param> = []
+    // LICENSED I3: a ZIP of parallel captures; comprehensions cannot destructure enumerate
     for (j, v) in vs.enumerate() { variants.push(Param { name: v.text, ty: tys[j] }) }
     b.make_stmt(Stmt.EnumDecl(n.text, variants))
 }
 
-/// THE alignment law for a capture a repetition may SKIP: each
-/// anchor's one optional token, in anchor order. An anchor's window
-/// runs to the next anchor, or to the construct's end.
-fn aligned(anchors: List<Token>, optional: List<Token>, ends: int) -> List<string> {
-    mut found: List<string> = []
+/// THE alignment law for a capture a repetition may SKIP: an
+/// anchor's window runs to the next anchor, or to the construct's
+/// end. WHAT is found in the window differs by capture kind; the
+/// window itself is one rule.
+fn window_end(anchors: List<Token>, j: int, ends: int) -> int {
+    if j + 1 < anchors.length { return anchors[j + 1].span.lo }
+    ends
+}
+
+/// Each variant's optional payload type — absence IS a unit variant.
+fn aligned_types(anchors: List<Token>, optional: List<TypeRef>, ends: int) -> List<TypeRef?> {
+    mut found: List<TypeRef?> = []
+    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
     for (j, a) in anchors.enumerate() {
-        let upto = if j + 1 < anchors.length { anchors[j + 1].span.lo } else { ends }
-        found.push(token_between(optional, a.span.lo, upto))
+        found.push(type_between(optional, a.span.lo, window_end(anchors, j, ends)))
     }
     found
 }
 
-/// The one optional token written between two anchors, or "" — an
-/// empty answer is the absence itself: no payload, no bind.
+/// Each arm's optional bind — "" IS an arm that names nothing.
+fn aligned_binds(anchors: List<Token>, optional: List<Token>, ends: int) -> List<string> {
+    mut found: List<string> = []
+    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
+    for (j, a) in anchors.enumerate() {
+        found.push(token_between(optional, a.span.lo, window_end(anchors, j, ends)))
+    }
+    found
+}
+
+/// The one type written between two anchors, or absent.
+fn type_between(types: List<TypeRef>, after: int, before: int) -> TypeRef? {
+    types.find(started_within(it, after, before))
+}
+
+fn started_within(t: TypeRef, after: int, before: int) -> bool {
+    let lo: int? = t.span?.lo
+    if lo == null { return false }
+    lo! > after && lo! < before
+}
+
+/// The one optional token written between two anchors, or "".
 fn token_between(tokens: List<Token>, after: int, before: int) -> string {
     let hit: Token? = tokens.find(it.span.lo > after && it.span.lo < before)
     if hit == null { return "" }
@@ -64,5 +92,5 @@ fn build_match(b: Builder) -> Result<LangNode, string> {
     let ends: int? = b.span_end()
     if vn.length != av.length { return Result.Err(zip_defect()) }
     if ends == null { return Result.Err("a match without a span") }
-    b.make_expr(Expr.Match(subject, [v.text for v in vn], aligned(vn, b.tokens(2)?, ends!), av))
+    b.make_expr(Expr.Match(subject, [v.text for v in vn], aligned_binds(vn, b.tokens(2)?, ends!), av))
 }

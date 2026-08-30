@@ -3,8 +3,8 @@
 //! declared return answers either way; Error arguments absorb. The
 //! declaration: the body types under its params and must answer the
 //! declared return.
-use core.{ExprId, StmtId, Type, TypeId}
-use features.{TypeCx, StmtTypeCx, FnSig, nothing, types_disagree, this_is}
+use core.{ExprId, StmtId, TypeId, TypeRef, spelled}
+use features.{TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is}
 use diagnostics.{error_at, pointed}
 
 export fn check_fn(cx: StmtTypeCx, s: StmtId) {
@@ -14,16 +14,16 @@ export fn check_fn(cx: StmtTypeCx, s: StmtId) {
     }
 }
 
-fn checked_fn(cx: StmtTypeCx, s: StmtId, fname: string, fret: string, body: ExprId) {
+fn checked_fn(cx: StmtTypeCx, s: StmtId, fname: string, fret: TypeRef, body: ExprId) {
     let sig: FnSig? = cx.sig_of(s)
     cx.walk_under(sig?.params ?? [], body)
-    let want: TypeId = sig?.ret ?? cx.expr.intern(Type.Error)
+    let want: TypeId = sig?.ret ?? cx.expr.error_type
     let got: TypeId = cx.expr.type_at(body)
-    if types_disagree(cx.expr, got, want) {
+    if !accepts(cx.expr, body, want) {
         let gn = cx.expr.type_name(got)
         cx.expr.emit(pointed(
             error_at("type.mismatch", cx.expr.loc_of(body),
-                "the body answers `${gn}` but `${fname}` declares `${fret}`"),
+                "the body answers `${gn}` but `${fname}` declares `${spelled(fret)}`"),
             this_is(gn)))
     }
 }
@@ -32,10 +32,10 @@ fn call_type(cx: TypeCx, e: ExprId) -> TypeId {
     match cx.store.expr(e) {
         .Call(callee, args) -> {
             let sig: FnSig? = cx.sig_of(e)
-            if sig == null { return cx.intern(Type.Error) }
+            if sig == null { return cx.error_type }
             checked_call(cx, e, callee, args, sig!)
         }
-        _ -> cx.intern(Type.Error),
+        _ -> cx.error_type,
     }
 }
 
@@ -48,7 +48,7 @@ fn checked_call(cx: TypeCx, e: ExprId, callee: string, args: List<ExprId>, s: Fn
         return s.ret
     }
     for (j, a) in args.enumerate() {
-        if types_disagree(cx, cx.type_at(a), s.params[j]) {
+        if !accepts(cx, a, s.params[j]) {
             let n = cx.name_at(a)
             cx.emit(pointed(
                 error_at("type.mismatch", cx.loc_of(a),

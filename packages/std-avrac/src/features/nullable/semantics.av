@@ -1,0 +1,30 @@
+//! The nullable semantics: dispatch only. Typing lives in check.av;
+//! lowering — the MEANING — in lower.av. `??` is CONTROL-OWNING at
+//! lowering (its right side runs only on absence) but plain for the
+//! earlier passes: both sides resolve and type in the same scope.
+use core.{Expr, ExprId, TypeId, Reg}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+
+export type NullableSemantics = { }
+
+impl NodeSemantics for NullableSemantics {
+    fn kids(self, e: Expr) -> List<ExprId> {
+        // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
+        match e {
+            .Coalesce(l, r) -> [l, r],
+            _ -> [],
+        }
+    }
+
+    fn resolve(self, cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+
+    fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
+        nullable_type(cx, e)
+    }
+
+    fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
+        nullable_reg(cx, e)
+    }
+}

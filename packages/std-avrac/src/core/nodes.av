@@ -86,6 +86,12 @@ export enum Expr {
     /// payload. The BARE `Name.variant` rides the property ladder;
     /// only the argument form needs a node of its own.
     VariantLit(tname: string, variant: string, args: List<ExprId>)
+    /// The absent value. Its type inhabits every `T?` and nothing
+    /// else, which is what makes `let x: int = null` refuse.
+    NullLit
+    /// `left ?? right` — the left value unless it is absent. The
+    /// right side is evaluated ONLY then.
+    Coalesce(left: ExprId, right: ExprId)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
 }
@@ -114,9 +120,24 @@ export fn elems_of(e: Expr) -> List<ExprId>? {
     }
 }
 
-/// One declared parameter: its name and its annotated type NAME —
-/// surface syntax, resolved to a shape by the type pass.
-export type Param = { name: string, ty: string }
+/// A WRITTEN type: its name, its arguments (`List<int>`), and
+/// whether it was written nullable (`int?`). An annotation is DATA,
+/// not a node — no pass walks one — so its span rides here rather
+/// than in a side table.
+export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, span: Span? }
+
+/// A written type, spelled back — what a diagnostic quotes.
+export fn spelled(t: TypeRef) -> string {
+    let base = if t.args.is_empty() { t.name }
+               else { "${t.name}<${joined([spelled(a) for a in t.args], ", ")}>" }
+    if t.optional { return "${base}?" }
+    base
+}
+
+/// One declared parameter: its name and its written type. An ABSENT
+/// type IS a unit enum variant, so one shape covers both and no arm
+/// has to ask which kind it is.
+export type Param = { name: string, ty: TypeRef? }
 
 export enum Stmt {
     Let(name: string, value: ExprId)
@@ -127,7 +148,7 @@ export enum Stmt {
     Assign(name: string, value: ExprId)
     /// An expression at statement position.
     ExprStmt(value: ExprId)
-    FnDecl(name: string, params: List<Param>, ret: string, body: ExprId)
+    FnDecl(name: string, params: List<Param>, ret: TypeRef, body: ExprId)
     /// Condition re-evaluated each turn; the body is a scope.
     While(cond: ExprId, stmts: List<StmtId>)
     /// `for name in from..to` — binds `name` over the body. `cond`
@@ -140,8 +161,7 @@ export enum Stmt {
     StructDecl(name: string, fields: List<Param>)
     /// `enum Name { A B(payload: int) }` — a nominal closed set
     /// sharing the TYPE namespace with records. A variant is a
-    /// Param: an empty `ty` IS a unit variant, so one shape covers
-    /// both and no arm has to ask which kind it is.
+    /// Param: an ABSENT `ty` IS a unit variant.
     EnumDecl(name: string, variants: List<Param>)
     Error
 }
@@ -233,6 +253,9 @@ impl NodeStore {
                                 self.expr_fps(values)])),
             .VariantLit(tname, variant, args) ->
                 fp(29, flatten([[fp_str(tname), fp_str(variant)], self.expr_fps(args)])),
+            .NullLit -> fp(30, []),
+            .Coalesce(l, r) ->
+                fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
         }
     }
 
@@ -262,7 +285,7 @@ impl NodeStore {
             .Error -> fp(7, []),
             .FnDecl(name, params, ret, body) ->
                 fp(12, flatten([[fp_str(name)], param_fps(params),
-                                [fp_str(ret), self.expr_fingerprint(body)]])),
+                                [type_fp(ret), self.expr_fingerprint(body)]])),
             .StructDecl(name, fields) ->
                 fp(25, concat([fp_str(name)], param_fps(fields))),
             .EnumDecl(name, variants) ->
@@ -273,7 +296,16 @@ impl NodeStore {
 
 /// A param list's fingerprint parts: name, type, in declaration order.
 fn param_fps(params: List<Param>) -> List<int> {
-    flatten([[fp_str(p.name), fp_str(p.ty)] for p in params])
+    flatten([[fp_str(p.name), type_fp(p.ty)] for p in params])
+}
+
+/// A written type's identity: absence is its own value, and the `?`
+/// is part of what the type IS.
+fn type_fp(t: TypeRef?) -> int {
+    if t == null { return 0 }
+    let written = t!
+    fp(if written.optional { 2 } else { 1 },
+       concat([fp_str(written.name)], [type_fp(a) for a in written.args]))
 }
 
 fn fp_binop(op: BinOp) -> int {

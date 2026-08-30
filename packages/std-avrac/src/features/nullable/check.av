@@ -1,0 +1,48 @@
+//! The nullability laws. `null` IS its own type — it inhabits every
+//! `T?` and nothing else. `??` ANSWERS an absence: its left side
+//! must be nullable, and the right must be what that nullable
+//! carries; the answer is the carried type, never nullable again.
+use core.{ExprId, Type, TypeId}
+use features.{TypeCx, opt_inner, accepts, spoken, this_is}
+use diagnostics.{error_at, pointed}
+
+fn nullable_type(cx: TypeCx, e: ExprId) -> TypeId {
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
+    match cx.store.expr(e) {
+        .NullLit -> cx.intern(Type.Null),
+        .Coalesce(l, r) -> coalesce_type(cx, l, r),
+        _ -> cx.error_type,
+    }
+}
+
+fn coalesce_type(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {
+    if cx.shape_at(l) is .Error { return cx.error_type }
+    let held: TypeId? = opt_inner(cx, cx.type_at(l))
+    if held == null { return not_nullable(cx, l) }
+    let carried = held!
+    if accepts(cx, r, carried) { return carried }
+    let n = cx.name_at(r)
+    spoken(cx, pointed(
+        error_at("type.coalesce", cx.loc_of(r),
+            "`??` answers with a `${cx.type_name(carried)}`, this is `${n}`"),
+        this_is(n))
+        with { help: "a chain groups to the RIGHT — `a ?? (b ?? c)`" })
+}
+
+/// `??` on a guarantee is a question already answered — and on a
+/// bare `null`, a question whose answer was written twice.
+fn not_nullable(cx: TypeCx, l: ExprId) -> TypeId {
+    if cx.shape_at(l) is .Null {
+        return spoken(cx, pointed(
+            error_at("type.coalesce", cx.loc_of(l),
+                "this is always absent, so `??` always answers with the right side"),
+            "always absent")
+            with { help: "write the right side alone" })
+    }
+    let n = cx.name_at(l)
+    spoken(cx, pointed(
+        error_at("type.coalesce", cx.loc_of(l),
+            "`??` answers a nullable, this is `${n}`"),
+        this_is(n))
+        with { help: "`${n}` is a guarantee — it is never absent" })
+}

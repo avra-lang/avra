@@ -282,7 +282,16 @@ against these before writing; probe in scratch when unsure.
   enum/struct values in lists need a semantic `==` scan (enumerate +
   compare); only string elements get value equality. `==` between two
   LISTS is not value equality either — assert length + per-element.
-- No `mut` parameters — in-place-mutating helpers are inexpressible.
+- No `mut` parameters — but in-place-mutating helpers ARE
+  expressible, because LISTS ALIAS: a helper takes `out: List<T>`,
+  rebinds `mut inner = out`, and pushes; the caller sees it (probed —
+  the non-mutating control traps on `xs[0]`, the mutating one does
+  not). We do NOT use this: mutation invisible at the call site is
+  worse than `out = concat(out, made())`, which the mut-local sites
+  in memory.av and lower.av now spell. The shape is recorded because
+  it also explains the TRAP: `mut x = thing.list` then `x.push(..)`
+  mutates `thing`, so rewriting such a loop as `concat` silently
+  drops the writes (two sites, LICENSED I3 at the code).
 - An INDIRECT call (a fn-typed struct field or closure) takes at
   most THREE arguments: four ICEs at codegen ("indirect calls with
   4 args not yet supported"). A capability wanting more takes ONE
@@ -367,6 +376,9 @@ against these before writing; probe in scratch when unsure.
   false) — for a VARIABLE operand only: a call result compared
   directly (`f() == s`) misses the null guard and SIGSEGVs (#1376).
   Bind to a `let tn: string? =` first.
+- `is_empty()` is a LIST method only — on a string it ICEs at
+  codegen ("string method `is_empty` not implemented"), so
+  `s.length == 0` is the idiomatic emptiness test for text.
 - Maps reject `m["k"]` indexing — use `.get(key)`, which returns `T?`.
 - `xs[i] = v` is an invalid assignment target; `xs.set(i, v)` works.
 - A struct literal directly in a call's argument list fails to parse —
@@ -443,6 +455,16 @@ against these before writing; probe in scratch when unsure.
 - A match on a NULLABLE enum takes only `null` and `let x ->` arms —
   variant arms on `T?` refuse as non-exhaustive (F9001); unwrap
   first, then match variants.
+- A RECURSIVE struct works (`type T = { args: List<T>, ... }`),
+  built and walked by a recursive fn (probed).
+- `.last()!` ALIASES the element, like indexing does: mutating
+  through it changes the list (proved by converting the
+  interpreter's frame reads — every register write still lands, and
+  the corpus agrees eval == native).
+- An early `return` inside a `while` scan works, including a method
+  call on an indexed element (`maps[k].get(name)`) — probed; the
+  #1377 ICE needs a CLOSURE-CAPTURED receiver, not any receiver. A
+  reverse scan therefore stops at its hit instead of folding a flag.
 - Zero-arg closures (`() -> expr`) work, as params and calls, and
   MUTATE captured locals correctly — bracket fns taking a `fn()`
   thunk (push/run/pop) are expressible (probed).

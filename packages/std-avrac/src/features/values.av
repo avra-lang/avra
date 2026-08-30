@@ -1,0 +1,46 @@
+//! How a VALUE is represented at runtime, written once for every
+//! feature that builds or reads one. The contract next door says
+//! what a feature DOES at each pass; this says what its values ARE.
+//!
+//! One shape today — the tagged slot array behind enums and
+//! nullables. A new value CATEGORY joins here, beside the readers
+//! that make its slot numbers nobody else's business.
+use core.{Reg, Ins, Type, TypeId}
+
+/// THE TAGGED VALUE: every closed-set value is a slot array holding
+/// its TAG at slot 0 and its payload, when it has one, at slot 1.
+/// An enum's variant and a nullable's presence are the SAME shape,
+/// which is why `match` and `??` read them the same way. `dst` is
+/// minted by the caller, before the first instruction is emitted —
+/// registers are numbered in emission order.
+export fn tagged_value(cx: LowerCx, dst: Reg, tag: int, payload: Reg?) {
+    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    let slot = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(slot, tag))
+    cx.emit(Ins.CallRtVoid("avra_array_push", [dst, slot]))
+    if payload == null { return }
+    cx.emit(Ins.CallRtVoid("avra_array_push", [dst, payload!]))
+}
+
+/// The TAG a tagged value carries. Slot 0, always an int — asking
+/// here is how a consumer avoids knowing the number.
+export fn tag_of(cx: LowerCx, v: Reg) -> Reg {
+    slot_read(cx, v, 0, null)
+}
+
+/// The PAYLOAD a tagged value carries, as the type it was written
+/// with. Slot 1 — the other half of `tagged_value`'s shape.
+export fn payload_of(cx: LowerCx, v: Reg, ty: TypeId) -> Reg {
+    slot_read(cx, v, 1, ty)
+}
+
+/// One slot read: the index is a constant, so it is minted and
+/// emitted BEFORE the read that uses it — registers are numbered in
+/// emission order. An absent type reads as an int.
+fn slot_read(cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
+    let at = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(at, n))
+    let got = if ty == null { cx.mint_shape(Type.Int) } else { cx.mint_ty(ty!) }
+    cx.emit(Ins.CallRt(got, "avra_array_get", [v, at]))
+    got
+}
