@@ -9,10 +9,13 @@
 //!
 //! The vocabulary: the FACT shapes the declare phase records
 //! (FnSig, StructSig, EnumSig, and the one DeclSig currency that
-//! holds them), and the refusals features share word-for-word
-//! (hole_defect, zip_defect, duplicate_member, lower_defect) so no
-//! two sites drift. Typing LAWS live next door in checks.av.
-//! A feature-named fn has no place in either.
+//! holds them), and the refusals and help PHRASES features share
+//! word-for-word, so no two sites drift.
+//!
+//! Siblings, by concern: checks.av holds the typing LAWS,
+//! values.av the runtime VALUE representation, builder.av the
+//! parse-time authoring surface. A feature-named fn has no place
+//! in any of them.
 use core.{NodeStore, Expr, ExprId, StmtId, Param, Type, TypeId, Reg, Ins, joined}
 use diagnostics.{Diag, error_at, pointed}
 use @std.errors.{Loc}
@@ -128,7 +131,11 @@ export fn variant_sig_of(d: DeclSig?) -> EnumSig? {
 /// they exist), intern shapes, read an ident's definition type, read
 /// a call's target signature, and speak. The impl OWNS its
 /// diagnostics wording.
+/// `error_type` is the ABSORBING answer, interned once: a site
+/// whose operand already refused answers with it and says nothing
+/// more. It is a value, not a verb — no second diagnostic.
 export type TypeCx = {
+    error_type: TypeId,
     store: NodeStore,
     type_at: fn(ExprId) -> TypeId,
     shape_at: fn(ExprId) -> Type,
@@ -142,6 +149,7 @@ export type TypeCx = {
     block_type: fn(List<StmtId>, ExprId) -> TypeId,
     walk_type: fn(ExprId) -> TypeId,
     bind_type: fn(ExprId, TypeId),
+    widen: fn(ExprId, TypeId),
     name_at: fn(ExprId) -> string,
     type_name: fn(TypeId) -> string,
     loc_of: fn(ExprId) -> Loc?,
@@ -161,6 +169,7 @@ export type LowerCx = {
     reg_of: fn(ExprId) -> Reg,
     def_reg: fn(ExprId) -> Reg?,
     shape_at: fn(ExprId) -> Type,
+    type_at: fn(ExprId) -> TypeId,
     mint: fn(ExprId) -> Reg,
     mint_shape: fn(Type) -> Reg,
     mint_ty: fn(TypeId) -> Reg,
@@ -290,6 +299,31 @@ export fn nested_decl(kind: string, what: string, at: Loc?) -> Diag {
 /// says NAMES, not "fields": arms and fields both zip through it.
 export fn zip_defect() -> string {
     "names and values disagree in count"
+}
+
+/// The help EVERY "no such variant" refusal gives — what there IS.
+/// Construction and `match` both name a variant, so both offer the
+/// same list, in the same words.
+export fn variants_are(sig: EnumSig) -> string {
+    "the variants are ${sig.listed()}"
+}
+
+/// The same, for a record: a property read and a literal both name
+/// a field, so both offer the same list.
+export fn fields_are(sig: StructSig) -> string {
+    "the fields are ${sig.listed()}"
+}
+
+/// What to write when a RECORD name was used where an enum was
+/// expected — the two features that can hit it say it alike.
+export fn build_a_record(tname: string) -> string {
+    "build a record with `${tname} { ... }`"
+}
+
+/// A variant that typing accepted and lowering cannot find: the
+/// two lowering paths that construct one share the words.
+export fn variant_defect() -> string {
+    "an undeclared variant survived typing"
 }
 
 // ── The statement-value rituals: one verb per shape, so no rule

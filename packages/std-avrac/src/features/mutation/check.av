@@ -5,14 +5,15 @@ use features.{StmtTypeCx, types_disagree, this_is, refuses_type_value}
 use diagnostics.{error_at, pointed}
 
 export fn check_mut(cx: StmtTypeCx, s: StmtId) {
-    let v: ExprId? = cx.store.stmt_value(s)
-    if v == null { return }
-    cx.walk(v!)
-    if refuses_type_value(cx.expr, v!) { return }
-    if ptr_shape(cx.expr.shape_at(v!)) {
+    let held: ExprId? = cx.store.stmt_value(s)
+    if held == null { return }
+    let v = held!
+    cx.walk(v)
+    if refuses_type_value(cx.expr, v) { return }
+    if ptr_shape(cx.expr.shape_at(v)) {
         cx.expr.emit(pointed(
             error_at("type.mut_managed", cx.loc_of(s), "a `mut` binding holds scalars for now"),
-            "this holds a `${cx.expr.name_at(v!)}`")
+            "this holds a `${cx.expr.name_at(v)}`")
             with { help: "mut managed values arrive with ownership analysis — use `let` and rebind by shadowing" })
     }
 }

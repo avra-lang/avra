@@ -53,6 +53,17 @@ fn build_fold_with(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.With(subject, names, wv))
 }
 
+/// `l ( ?? r )*` folds left: `a ?? b ?? c` is `(a ?? b) ?? c`. The
+/// LADDER owns this parse; the node's meaning lives in `nullable`.
+fn build_fold_coalesce(b: Builder) -> Result<LangNode, string> {
+    mut acc = b.expr(0)?
+    let rights = b.exprs(1)?
+    for r in rights {
+        acc = b.store.alloc_expr(Expr.Coalesce(acc, r), b.cover(acc, r))
+    }
+    b.wrap_expr(acc)
+}
+
 /// `v ( [i] )*` folds left: `m[i][j]` is `(m[i])[j]`.
 fn build_fold_index(b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?

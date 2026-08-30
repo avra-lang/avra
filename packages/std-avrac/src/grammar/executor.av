@@ -97,26 +97,29 @@ fn matched<N>(state: MatchState<N>, v: Captured<N>, diagnostics: List<Diagnostic
     }
 }
 
-fn missed<N>(state: MatchState<N>, diagnostics: List<Diagnostic>, farthest: FarthestFailure?) -> MatchResult<N> {
+/// A non-hit outcome: no value was built, so only HOW it ended
+/// differs. The three verbs below are the vocabulary; this is the
+/// one shape behind them, and a site holding a status in hand
+/// (a sub-match's, passed straight through) calls it directly.
+fn ended<N>(status: MatchStatus, state: MatchState<N>,
+            diagnostics: List<Diagnostic>, farthest: FarthestFailure?) -> MatchResult<N> {
     MatchResult {
-        status: MatchStatus.Miss, state: state, value: captured_absent<N>(),
+        status: status, state: state, value: captured_absent<N>(),
         diagnostics: diagnostics, farthest: farthest,
     }
 }
 
+fn missed<N>(state: MatchState<N>, diagnostics: List<Diagnostic>, farthest: FarthestFailure?) -> MatchResult<N> {
+    ended<N>(MatchStatus.Miss, state, diagnostics, farthest)
+}
+
 fn broke<N>(state: MatchState<N>, diagnostics: List<Diagnostic>, farthest: FarthestFailure?) -> MatchResult<N> {
-    MatchResult {
-        status: MatchStatus.Broke, state: state, value: captured_absent<N>(),
-        diagnostics: diagnostics, farthest: farthest,
-    }
+    ended<N>(MatchStatus.Broke, state, diagnostics, farthest)
 }
 
 fn fatal_defect<N>(state: MatchState<N>, diagnostics: List<Diagnostic>,
                    farthest: FarthestFailure?) -> MatchResult<N> {
-    MatchResult {
-        status: MatchStatus.Fatal, state: state, value: captured_absent<N>(),
-        diagnostics: diagnostics, farthest: farthest,
-    }
+    ended<N>(MatchStatus.Fatal, state, diagnostics, farthest)
 }
 
 /// The deeper of two farthest points; a tie unions the expected sets.
@@ -271,11 +274,7 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq,
         }
         if r.status == MatchStatus.Broke || r.status == MatchStatus.Fatal {
             diagnostics = concat<Diagnostic>(diagnostics, r.diagnostics)
-            let out: MatchResult<N> = MatchResult {
-                status: r.status, state: state, value: captured_absent<N>(),
-                diagnostics: diagnostics, farthest: farthest,
-            }
-            return out
+            return ended<N>(r.status, state, diagnostics, farthest)
         }
         if !anchored { return missed<N>(entry_state, diagnostics, farthest) }
         // Committed territory: this failure is real.
@@ -317,7 +316,14 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq,
 /// builder called over its named captures.
 fn built<N>(cx: MatchContext<N>, s: Seq, state: MatchState<N>,
             vals: List<Captured<N>>, branch: Span?) -> Result<Captured<N>, string> {
-    if s.build == null { return Result.Ok(vals[0]) }
+    // A pass-through branch carries exactly one item — the validator
+    // says so where a value is needed, and an empty one would index
+    // nothing, so it refuses through the builder's own channel.
+    if s.build == null {
+        let only: Captured<N>? = vals.first()
+        if only == null { return Result.Err("a pass-through branch captured nothing") }
+        return Result.Ok(only!)
+    }
     match s.build! {
         .Var(name) -> Result.Ok(binding_for<N>(state.bindings, name) ?? captured_absent<N>()),
         .Call(name, args) -> {
@@ -434,11 +440,7 @@ fn match_prim<N>(cx: MatchContext<N>, rule_name: string, member: Item,
             if r.status == MatchStatus.Hit {
                 matched<N>(state_at<N>(r.state.cursor, state.bindings), r.value, r.diagnostics, r.farthest)
             } else {
-                let out: MatchResult<N> = MatchResult {
-                    status: r.status, state: state, value: captured_absent<N>(),
-                    diagnostics: r.diagnostics, farthest: r.farthest,
-                }
-                out
+                ended<N>(r.status, state, r.diagnostics, r.farthest)
             }
         }
         .Group(inner) -> {

@@ -12,22 +12,24 @@ export fn resolve_assign(cx: StmtResolveCx, s: StmtId) {
         _ -> null,
     }
     if name == null { return }
+    let n = name!
     let at: Loc? = cx.loc_of(s)
-    if cx.is_param(name!) {
+    if cx.is_param(n) {
         cx.emit(pointed(
-            error_at("resolve.immutable", at, "`${name!}` is a parameter — parameters are immutable"),
+            error_at("resolve.immutable", at, "`${n}` is a parameter — parameters are immutable"),
             "assigned here"))
         return
     }
-    let target: StmtId? = cx.lookup(name!)
-    if target == null {
-        cx.emit(pointed(error_at("resolve.unresolved", at, "`${name!}` is not defined"), "assigned here"))
+    let found: StmtId? = cx.lookup(n)
+    if found == null {
+        cx.emit(pointed(error_at("resolve.unresolved", at, "`${n}` is not defined"), "assigned here"))
         return
     }
-    if cx.store.stmt(target!) is .MutLet {
-        cx.record_assign(s, target!)
+    let target = found!
+    if cx.store.stmt(target) is .MutLet {
+        cx.record_assign(s, target)
     } else {
-        cx.emit(pointed(error_at("resolve.immutable", at, "`${name!}` is not `mut`"), "assigned here")
-            with { help: "declare it `mut ${name!} = ...` to reassign" })
+        cx.emit(pointed(error_at("resolve.immutable", at, "`${n}` is not `mut`"), "assigned here")
+            with { help: "declare it `mut ${n} = ...` to reassign" })
     }
 }

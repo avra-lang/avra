@@ -77,6 +77,7 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
 /// instruction emits, the verifier gates.
 fn emit_body(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, bd: Body, f: ptr) -> string? {
     mut vals: List<ptr> = []
+    // LICENSED I3: a RANGE walk — comprehensions iterate lists only
     for j in 0..bd.params.length { vals.push(avra_llvm_get_param(f, j)) }
     let em = Emit {
         lc: lc, m: m, b: b, fn_val: f, types: types,
@@ -135,7 +136,8 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
         // TypeName never materializes: no value ever has it.
         .Int or .Error or .TypeName(_, _) -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
-        .Str or .List(_) or .Struct(_, _) or .Enum(_, _) -> avra_llvm_pointer_type(lc),
+        .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or
+        .Opt(_) or .Null -> avra_llvm_pointer_type(lc),
     }
 }
 
@@ -234,6 +236,8 @@ fn void_rt_call(em: Emit, callee: string, args: List<Reg>) {
 /// slot casts down.
 fn rt_args(em: Emit, callee: string, args: List<Reg>) -> List<ptr> {
     mut out: List<ptr> = []
+    // LICENSED I3: the coercion needs the param INDEX; comprehensions
+    // cannot destructure enumerate
     for (j, r) in args.enumerate() { out.push(rt_arg(em, callee, j, r)) }
     out
 }
@@ -290,7 +294,7 @@ fn loop_start(em: Emit) {
 
 /// The condition decides: true falls into the body, false exits.
 fn loop_cond(em: Emit, c: Reg) {
-    let f = em.loops[em.loops.length - 1]
+    let f = em.loops.last()!
     let body = avra_llvm_append_basic_block(em.lc, em.fn_val, "lbody")
     let _ = avra_llvm_build_cond_br(em.b, em.vals[c.index], body, f.exit)
     avra_llvm_position_at_end(em.b, body)

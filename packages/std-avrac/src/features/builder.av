@@ -1,6 +1,6 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
-use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, want}
+use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, want}
 use grammar.{Captured, Token}
 
 /// One build call's world: the store, the captured arguments in
@@ -22,6 +22,22 @@ impl Builder {
     /// The statement argument at `i`.
     fn stmt(self, i: int) -> Result<StmtId, string> {
         want(stmt_id_at(self.args, i), "a statement argument")
+    }
+
+    /// The written-type argument at `i`.
+    fn type_ref(self, i: int) -> Result<TypeRef, string> {
+        want(type_ref_at(self.args, i), "a type argument")
+    }
+
+    /// The repeated capture at `i`, as written types.
+    fn type_refs(self, i: int) -> Result<List<TypeRef>, string> {
+        let items = list_at(self.args, i)
+        mut out: List<TypeRef> = []
+        // LICENSED I3: index-taking extractors: a bare Captured arg misreads
+        for j in 0..items.length {
+            out.push(want(type_ref_at(items, j), "a type in a repeated capture")?)
+        }
+        Result.Ok(out)
     }
 
     /// The repeated capture at `i`, as plain tokens.
@@ -67,6 +83,11 @@ impl Builder {
         Result.Ok(LangNode.NStmt(self.store.alloc_stmt(s, self.span)))
     }
 
+    /// A written type as this build's result — no arena, no id.
+    fn make_type(self, t: TypeRef) -> Result<LangNode, string> {
+        Result.Ok(LangNode.NType(t))
+    }
+
     /// An already-allocated expression as this build's result.
     fn wrap_expr(self, id: ExprId) -> Result<LangNode, string> {
         Result.Ok(LangNode.NExpr(id))
@@ -107,6 +128,14 @@ export fn expr_id_at(args: List<Captured<LangNode>>, i: int) -> ExprId? {
 export fn stmt_id_at(args: List<Captured<LangNode>>, i: int) -> StmtId? {
     match args[i] {
         .Node(.NStmt(id)) -> id,
+        _ -> null,
+    }
+}
+
+/// The written type at `args[i]`, when that capture is one.
+export fn type_ref_at(args: List<Captured<LangNode>>, i: int) -> TypeRef? {
+    match args[i] {
+        .Node(.NType(t)) -> t,
         _ -> null,
     }
 }

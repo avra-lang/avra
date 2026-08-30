@@ -25,11 +25,15 @@ fib(10)
 
 The language so far: `let` and `mut` with assignment, `fn` with
 calls and recursion, `if c { a } else { b }` as an expression,
-subjectless `when`, `while` and range `for`, blocks as expressions,
-ints, bools, strings with `${}` interpolation, lists with indexing
-and `.length`, the arithmetic, comparison, equality, and logic
-operators, comments — every construct golden-tested from its parse
-tree to its diagnostics to its native output.
+subjectless `when`, `while` and range `for`, blocks that answer (a
+fn's body and an `if`'s branches), ints, bools, strings with `${}`
+interpolation, lists with indexing and `.length`, records
+(`type P = { x: int }`, literals and `with`), enums with a total
+`match` and pattern binds (`.circle(r) -> r * 2`), nullability
+(`T?`, `null`, `??`) where every other type is a guarantee, the
+arithmetic, comparison, equality, and logic operators, comments —
+every construct golden-tested from its parse tree to its
+diagnostics to its native output.
 
 ## The compiler, in pipeline order
 

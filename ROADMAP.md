@@ -93,6 +93,9 @@ text-as-projection after self-host, the service store at Era V.
     8.  ▲ enums & match — slice (a) LANDED (declarations, unit
         variants, total match); slice (b) is payloads + pattern
         binds (Binding grows its variant)
+    8.5 [x] the TYPE SURFACE — annotations are a type EXPRESSION,
+        not a NAME (found blocking rung 9); slice (a) landed `T?`,
+        `null`, `??`, widening and the join
     9.  nullability — `T?`, `null` arms, `! ?? ?.` — and the
         spec's bind-fresh trio (Axis 10): `let v? = e else { }`,
         `if let v? = e`, effectively-final narrowing. The trio is
@@ -1296,6 +1299,249 @@ five findings in code an hour old, two of them real defects):
     needs one (trigger: `match` guards, or `when` arms wanting
     spans).
 
+## Rung 8.5 — THE TYPE SURFACE (found 2026-08-29, designed)
+
+Rung 9 (nullability) could not start: `T?` is the language's first
+type CONSTRUCTOR, and an annotation cannot hold one. Types are a
+bare NAME token everywhere they are spelled — `Param.ty: string`.
+What that costs TODAY, before nullability is even considered:
+  - `fn f(xs: List<int>)` DOES NOT PARSE. A list cannot cross a fn
+    boundary. Rung 5 shipped lists that only ever lived local, so
+    nobody hit it.
+  - `let x: int = 1` does not parse either: a `let` takes no
+    annotation at all, while the spec writes `let x: int? = null`.
+  - Struct fields and enum payloads take a name, so neither can
+    ever hold a list, a nullable, or (rung 11) a generic.
+The measurement that settles the shape: `Param.ty` is read in FOUR
+places, ALL in typing.av. The annotation seam is already central;
+only the PRODUCERS (three grams) pay.
+
+THE SHAPE — annotations become a small type EXPRESSION, carried as
+DATA, not as a third node namespace:
+
+    export type TypeRef = { name: string, args: List<TypeRef>,
+                            optional: bool, span: Span }
+
+  - Why data and not nodes: no pass WALKS an annotation. Resolve
+    does not visit it, lowering never sees it — typing reads it and
+    interns a TypeId. Ids exist to key side tables for passes that
+    walk; a third namespace (Stmt, Expr, TypeExpr) would buy ids
+    nothing consumes. The span rides the ref itself because the ref
+    is not a node — this is the ONE place that is honest, and it
+    buys `int?` diagnostics that point AT the annotation instead of
+    at the statement. Probed: bs2 compiles a recursive struct
+    (a struct holding `List<Self>`), so the shape is expressible.
+  - REVERSIBLE by design: if generics (rung 11) turn out to want a
+    walk over type expressions, TypeRef promotes to a node kind and
+    the four reads move. Nothing else in the tree knows.
+  - A `types` FEATURE owns the `type` rule and its builder — the
+    gram-builder unity law. Other features REFERENCE the rule, the
+    way several already reference `expression`; the partial test
+    assemblies that parse annotations must include it, which is the
+    same dangling-name discipline the tree already keeps.
+
+SLICE (a) LANDED 2026-08-29 — the surface, `T?`, `null`, `??`,
+widening, and the join. What the build taught, beyond the design:
+  - THE JOIN was NOT in the design and the corpus demanded it: the
+    natural way to make a nullable is `if c { v } else { null }`,
+    and branches that disagree had no join. `joined_type` now lives
+    beside the assignment law — equal types join to themselves, a
+    value beside an ABSENCE joins to the nullable covering both, and
+    an already-nullable branch absorbs the absence without lifting
+    twice. Two laws, one home.
+  - WIDENING needed no expected-type threading: the assignment law
+    RECORDS the lift into `Typing.widens`, and `lower_subtree` — the
+    one place every expression passes through — wraps it. One table,
+    one wrap point.
+  - `??`'s PRECEDENCE was wrong first: placed above conjunction,
+    `x ?? 0 == 0` grouped as `x ?? (0 == 0)` and refused. It binds
+    TIGHTER than comparison and looser than arithmetic, so the
+    comparison asks about the ANSWER. Found by red-teaming.
+  - A NEW LOWERING LAW, found the hard way: registers must be MINTED
+    IN EMISSION ORDER or the backend indexes past its value table
+    (`index 6 out of bounds`) while the interpreter answers correctly
+    — an engine divergence with no diagnostic. Recorded in
+    DOGFOODING; the payload load in `??` had them reversed.
+  - A managed nullable (`string?`, `P?`) refuses through the SAME
+    declared-slot law a field and a payload obey. `T?` IS a slot
+    array, so it waits on ownership analysis with everything else.
+  - The tagged slot array is now ONE definition (`tagged_value`): an
+    enum's variant, a nullable's absence, and a widened value are
+    the same shape, which is why `match` and `??` read them alike.
+
+THE RED TEAM ON SLICE (a) — 118 programs across the eight attack
+classes; three defects, TWO of them older than this rung:
+  1. THE SLOT LAW SPOKE OVER THE NAME LAW. `x: Foo` in a struct
+     field said "struct fields hold scalars for now" when the real
+     mistake was that `Foo` names no type — and the enum payload
+     and the new nullable inherited it, three features misreporting
+     one mistake. The name law now speaks FIRST and the slot law
+     absorbs; one fix, three features, found by attacking `Foo?`.
+  2. A KEYWORD AS A CALLEE offered an impossible remedy: `if()`
+     said "no `fn if` is defined" while the naming law forbids ever
+     declaring one. `resolve_call` now runs the SAME `refused_name`
+     law `let` and params run — general to every keyword, found
+     by attacking `null()`.
+  3. THE JOIN LIVED IN ONE FEATURE. `if` joined a value with an
+     absence; `when` and `match` did not, so the natural
+     `match e { .a -> 1, .b -> null }` refused. The join is now
+     PURE (`join_of`) with `accepts` doing every recording, and the
+     SHARED arms law joins across all arms — one rule, and any
+     branching construct added later joins by asking it.
+  CLEAN under attack: all 18 slot×type positions of `??`; every
+  malformed-surface mutation (delete/duplicate/swap/keyword at each
+  token) produced a diagnostic, never a crash; 15 crossings with
+  other features and 4 name attacks agreed eval == native; 1000
+  nullables allocated in a loop; and the diagnostic COUNT was exact
+  everywhere (the one 2-count program contained two real mistakes).
+
+THE SECOND RED-TEAM ROUND (deeper, past the mechanical classes) —
+three more defects, all of them OLDER than this rung:
+  4. A BUILT-IN TYPE NAME COULD BE REDECLARED, and the two
+     resolution paths then DISAGREED: `type int = { x: bool }` was
+     accepted, `fn f(v: int)` still meant the builtin (so the user's
+     own type was invisible and the error blamed the property),
+     while `int { x: true }` resolved to the DECLARATION and ran
+     clean. One name, two meanings, no diagnostic. Refused at the
+     declaration now (F3008), where the keyword law already sat.
+  5. THE SLOT LAW SPOKE OVER THE NAME LAW (round one, restated
+     because it was the same shape): the name law speaks first.
+  6. A KEYWORD AS A CALLEE offered an impossible remedy (round one).
+  WHAT THE DEEP PASS PROVED, beyond the mechanical classes:
+  - CONTENT IDENTITY holds for the new surface: `int` and `int?`
+    fingerprint differently, an ABSENT annotation differs from every
+    written one, a field's written type is part of its record's
+    identity, and two spellings of one type still agree — spans
+    never count. Five attacks, now tests in core/nodes.
+  - THE TWO FACT TABLES COEXIST: a pattern bind and a widening key
+    the same ExprId, and the IR shows both landing INSIDE the arm —
+    payload load, then wrap, registers sequential.
+  - THE WRAP IS NEVER EAGER: an untaken branch allocates nothing;
+    the IR golden shows the lift inside the branch that answers.
+  - `??` AS A NEW TOKEN munches nothing it should not — tight
+    against `)`, `{`, `,` and with no spaces at all — and a `??`
+    split across lines refuses exactly as `+` does.
+  - Every branching construct now joins, and every ALL-absent shape
+    (`if`, `when`, `match`) answers absent rather than refusing.
+
+TEST ORGANIZATION (the same round): the enums adversarial suite had
+grown to 406 lines — the largest file in the tree — so the PATTERN
+BIND attacks moved to `enums_binds_adversarial_test.av`: the closed
+SET and the bind are two surfaces, each with its own attack list.
+The TYPE SURFACE got its own suite too (`type_expr_adversarial`),
+taking the spelling attacks that had been living in nullable's,
+which now holds only what a nullable MEANS.
+RECORDED GAP: 14 of 17 features still have no adversarial suite —
+the red team began at enums, and everything older than it was never
+attacked. Trigger: when a rung touches one of those features, it
+earns its suite then, rather than a sweep nobody would review.
+
+THE TREE-WIDE ROUND (after the arc was called near-dry, the hunt
+widened past it — and the tree, not the arc, is where the weight
+was):
+  - THE ABSORBING ANSWER had THREE spellings and 35 sites. Typing's
+    most-typed phrase was `cx.intern(Type.Error)`, which says how
+    rather than what. `error_type` is now a VALUE on the context,
+    interned once, and the absorb law reads at a glance:
+    `if sh is .Error { return cx.error_type }` — Error in, Error
+    out. Extracting the absorb one-liner itself was REFUSED: every
+    shared form was longer than the line it replaced, which is the
+    over-abstraction smell.
+  - THREE SHARED PHRASES were split across two features each —
+    `fields_are`, `build_a_record`, `variant_defect` — the same
+    species as `variants_are`, whose home they now share. A help
+    that two features give must be one sentence.
+  - 26 COPIES of two test helpers. `shown` was byte-identical in 21
+    files and `refusals` in 5, because test files are separate
+    compilation units. `@std.avrac.testing` now holds both; the
+    ratchet then caught FOUR unused imports the sweep had orphaned,
+    which is the gate doing what it is for.
+  - A NON-FINDING, recorded so nobody re-hunts it: `.length == 0`
+    looked like six missing `is_empty()` calls. It is a bs2 GAP —
+    `is_empty` is a list method and ICEs on a string — so
+    `s.length == 0` IS the idiomatic emptiness test for text. The
+    one list-typed site is inside vendored spec_test.
+  - I11 catches duplicate strings within ONE file only; the
+    cross-FILE sweep that found the three shared phrases was
+    hand-run. Trigger: ratchet it when a fourth cross-file phrase
+    appears — a rule that must exempt every legitimate
+    summary/message/test echo would flag ~45 honest sites today.
+
+THE READ-IT-WHOLE ROUND. The previous round called the well dry on
+the strength of greps; the skill says that claim is earned only by
+READING. Three files read end to end (resolve, contract, interp)
+produced five findings, two of them defects:
+  - A KEYWORD USED AS A VALUE still said "`while` is not defined".
+    The earlier fix reached CALLEES only, and a plain name use takes
+    a different path — `resolve_name` was checking `reserved()`
+    directly instead of the one `refused_name` law. Every path now
+    runs the same law, and `reserved()` is reachable only through it.
+  - THE SCOPE SCAN read every overlay even after finding its answer,
+    folding a `mut found` flag under a LICENSED I4 exemption it did
+    not need. An early `return` inside a `while` was probed first
+    (it works; the #1377 ICE needs a closure-captured receiver), so
+    the scan now stops at the first hit — which IS the shadowing
+    rule: the nearest scope wins and the outer ones are never asked.
+  - I7 WAS BLIND TO DOTTED RECEIVERS, hiding six product sites
+    including the interpreter's per-instruction register read.
+    `.last()!` was proved to ALIAS by converting them and watching
+    all 21 corpus programs still agree eval == native — recorded,
+    since a copying `.last()` would have made every register write
+    vanish.
+  - CONTRACT.AV HELD TWO CONCERNS: what a feature DOES at each pass,
+    and what its VALUES are. The tagged slot array moved to
+    values.av (394 -> 359 + 46), where the next value CATEGORY will
+    join it; the module map, which still named four of eight shared
+    phrases, now tells the truth.
+  - The interpreter spelled "in a clean program" by hand four times
+    while `defect_val` was already building it. One `defect` verb.
+
+THE WIDE-AND-DEEP ROUND. Reading kept paying, and the RULES turned
+out to be the richest seam:
+  - THE LARGEST UNREVIEWED FILE (executor.av, 492 lines) wrote its
+    non-hit result FIVE times — three named constructors differing
+    only in a status constant, plus two inline copies holding a
+    status in hand. One `ended` shape behind the three verbs; the
+    two inline sites now call it directly. Its pass-through branch
+    also indexed `vals[0]` where an empty branch would trap, and now
+    refuses through the builder's own channel.
+  - FOUR MATCHER BLIND SPOTS, and the fourth changed the tooling.
+    I3 could not see a ONE-LINE push loop and had hidden 13 sites
+    (its own docstring admitted replacing a line-grep); I4 could not
+    see `Map<a, b>?`. The lesson outgrew the rules: SPECIMENS now
+    holds every SPELLING a rule claims, and the self-test refuses
+    the tool when any is missed. Proved by reintroducing I3's blind
+    spot and watching it name the two spellings lost.
+  - THE SCOPE-CLOSING TRIO in memory.av — pop, then release what the
+    scope still owns — was written three times. One
+    `closing_releases`, and the sites read as `out = concat(...)`.
+  - TWO I3 SITES WOULD HAVE BROKEN IF CONVERTED: `tys` and `top`
+    ALIAS a list inside another structure, so `concat` would rebind
+    the local and silently drop every write. LICENSED at the code
+    with that reason — and the aliasing itself is now a recorded
+    bs2 fact, correcting a note that claimed in-place-mutating
+    helpers are inexpressible. They are expressible; we decline
+    them, because mutation invisible at the call site is worse than
+    an explicit `concat`.
+
+THE SLICES (each vertical, each gated):
+  (a) THE SURFACE + `T?` + `null` + `??` — the type constructor, the
+      value that inhabits it, and one consumer, so the slice is
+      observable end to end: `let x: int? = null` then `x ?? 0`
+      runs and prints. `Type.Opt(inner)` joins the type vocabulary
+      (nine exhaustive Type consumers break until each answers).
+      The agreement law gains ONE rule, in the ONE place it lives:
+      a `null` agrees with any `Opt`. Representation follows the
+      spec's own license — "the compiler MAY represent it
+      internally as a two-variant enum" — so a nullable IS the slot
+      array enums already lower to, tag 0 absent / tag 1 present,
+      and NO new instruction is needed.
+  (b) `List<int>` annotations — the args half of the same rule,
+      closing the fn-boundary hole above.
+  (c) `!`, `?.`, and the `null ->` / `v? ->` match arms, which reuse
+      b2's arm-bind machinery directly.
+  (d) `?` propagation and the bind-fresh trio (spec Axis 10.5).
+
 ## The breather — architecture heads-up (decided 2026-08-26)
 
 Before the heavyweight rungs, six structural decisions, each made
@@ -1544,6 +1790,18 @@ so they are core. The day a feature wants its own instruction, the
 answer is CallRt or a design conversation, in that order.
 
 ## The speed doctrine (builds, caches, tests)
+
+A MEASURED COST, recorded 2026-08-29 (found by reading lower.av
+whole): typing builds its capability context ONCE per walk, while
+lowering rebuilds all fifteen closures PER NODE — `lower_subtree`
+constructs a fresh `LowerCx` on every call. It is structurally
+forced today: `reg_of` closes over the very recursion that would
+have to receive the hoisted context, so hoisting needs either a
+self-referential struct or a second entry point. Not a defect and
+not fixed — the asymmetry is written down so the Era IV pass has
+a number to chase rather than a suspicion. TRIGGER: measure it
+when the query engine lands; if lowering shows up in a profile,
+the fix is a context built per BODY and threaded, not per node.
 
 Sources: Zig's incremental-compilation internals (mlugg, 2026-07),
 the L6 query-engine and codegen-cache designs. The laws every

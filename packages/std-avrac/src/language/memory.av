@@ -50,6 +50,9 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 open_scopes.push(Scope { level: level, managed: [] })
                 if open_scopes.length == 1 {
                     mut top = open_scopes[0].managed
+                    // `top` ALIASES the scope's own list, so a rebind
+                    // would drop the seed on the floor
+                    // LICENSED I3: pushing through an alias, not building a list
                     for r in seed { top.push(r) }
                 }
                 out.push(i)
@@ -59,11 +62,12 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             // one level; at the outermost it escapes to the caller).
             .ScopeExit(gives) -> {
                 let scope = open_scopes.pop()
+                // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
                 for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
                 if gives != null && !open_scopes.is_empty() {
                     if is_managed(types, reg_types[gives!.index]) {
                         // LICENSED I7: rebind-alias needs index syntax; last() may copy
-                        mut top = open_scopes[open_scopes.length - 1].managed
+                        mut top = open_scopes.last()!.managed
                         top.push(gives!)
                     }
                 }
@@ -79,6 +83,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             }
             .ArmEnd(gives) -> {
                 let scope = open_scopes.pop()
+                // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
                 for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
                 // LICENSED I15: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(nested_scope(open_scopes))
@@ -86,6 +91,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             }
             .RegionEnd(_, gives) -> {
                 let scope = open_scopes.pop()
+                // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
                 for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
                 manage(types, reg_types, open_scopes, i)
                 out.push(i)
@@ -134,6 +140,13 @@ fn releases_for(scope: Scope, kept: Reg?) -> List<Reg> {
     }
 }
 
+/// CLOSING a scope, as instructions: a release for everything it
+/// still owns. Three sites close one — a scope's exit, an arm's end,
+/// and a region's — and they must emit the same thing.
+fn closing_releases(scope: Scope, gives: Reg?) -> List<Ins> {
+    [Ins.Release(r) for r in releases_for(scope, gives)]
+}
+
 /// All but the escaping register.
 fn kept_out(rs: List<Reg>, kept: Reg?) -> List<Reg> {
     [r for r in rs if stays(r, kept)]
@@ -151,7 +164,7 @@ fn manage(types: TypeRegistry, reg_types: List<TypeId>, open_scopes: List<Scope>
     let dst: Reg? = managed_dst(types, reg_types, i)
     if dst != null && !open_scopes.is_empty() {
         // LICENSED I7: rebind-alias needs index syntax; last() may copy
-        mut top = open_scopes[open_scopes.length - 1].managed
+        mut top = open_scopes.last()!.managed
         top.push(dst!)
     }
 }

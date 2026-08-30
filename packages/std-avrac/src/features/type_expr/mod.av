@@ -1,0 +1,29 @@
+//! The TYPE SURFACE — the one rule every annotation is written in.
+//! A type is a name, optionally applied (`List<int>`) and optionally
+//! nullable (`int?`). Ordered choice, anchor-first: the `?` branch
+//! must precede the bare one, because a bare NAME also starts it.
+//!
+//! This feature owns no node and no semantics — an annotation is
+//! DATA a builder hands over, never a node a pass walks. Features
+//! that spell a type REFERENCE `type`, the way several already
+//! reference `expression`; an assembly that parses annotations must
+//! therefore include this feature.
+use features.{LanguageFeature, BuilderRow}
+
+export fn type_expr() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name         | build
+        "opt_type"   | build_opt_type
+        "plain_type" | build_plain_type
+    }
+    component LanguageFeature f {
+        name = "type_expr"
+        docs = "A written type: `int`, `int?` — the surface every annotation shares."
+        gram = """
+type = n:NAME "?" -> opt_type(n)
+type = n:NAME -> plain_type(n)
+"""
+        builders = rows
+    }
+    f
+}

@@ -1,7 +1,7 @@
 //! The typing rule: every condition is a `bool`; every arm answers
 //! the `_` arm's type — the total arm anchors, since it always
 //! exists. Error absorbs everywhere.
-use core.{ExprId, Type, TypeId}
+use core.{ExprId, TypeId}
 use features.{TypeCx, require_bool, arms_agree}
 
 fn when_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -10,11 +10,11 @@ fn when_type(cx: TypeCx, e: ExprId) -> TypeId {
             for c in conds { require_bool(cx, c, "a `when` condition", "this decides an arm") }
             arms_type(cx, values, fallback)
         }
-        _ -> cx.intern(Type.Error),
+        _ -> cx.error_type,
     }
 }
 
 fn arms_type(cx: TypeCx, values: List<ExprId>, fallback: ExprId) -> TypeId {
-    if cx.shape_at(fallback) is .Error { return cx.intern(Type.Error) }
-    arms_agree(cx, "type.mismatch", "when", "the `_` arm", cx.type_at(fallback), values)
+    if cx.shape_at(fallback) is .Error { return cx.error_type }
+    arms_agree(cx, "type.mismatch", "when", "the `_` arm", fallback, values)
 }

@@ -2,14 +2,10 @@
 // the latest, and an unresolved name earns the milestone error —
 // kind, code, window, pointer, and a graded suggestion.
 use @std.avrac.language.{avra, analyze_source, parse_source, resolve, binding_of, Binding, Resolution}
+use @std.avrac.testing.{shown}
 use @std.errors.{Confidence}
 use @std.avrac.diagnostics.{new_source_file}
 use @std.avrac.core.{ExprId}
-
-/// A program's printed value, or "<refused>".
-fn shown(source: string) -> string {
-    analyze_source(source).ran() ?? "<refused>"
-}
 
 /// The statement index a use's Def binding names; -1 otherwise.
 fn defined_at(r: Resolution, e: ExprId) -> int {
@@ -82,6 +78,28 @@ spec "language/resolve" {
             let r = resolve(parse_source("let while = 1"))
             r.diagnostics.length == 1 &&
                 r.diagnostics[0].message == "`while` is a keyword"
+        }
+        then "USING one as a value is a keyword, not a missing name" {
+            let r = resolve(parse_source("let y = 1\ny + while"))
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`while` is a keyword"
+        }
+        then "CALLING one is reserved too — `fn if` can never exist" {
+            let r = resolve(parse_source("if()"))
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`if` is a keyword"
+        }
+        then "the absence is not callable either" {
+            let r = resolve(parse_source("null()"))
+            r.diagnostics.length == 1 && r.diagnostics[0].message == "`null` is a keyword"
+        }
+        then "a BUILT-IN type name cannot be redeclared" {
+            let r = resolve(parse_source("type int = { x: bool }"))
+            r.diagnostics.length == 1 &&
+                r.diagnostics[0].message == "`int` is a built-in type"
+        }
+        then "every built-in name is protected, enums too" {
+            let r = resolve(parse_source("enum bool {\n    a\n}"))
+            r.diagnostics.length == 1 &&
+                r.diagnostics[0].message == "`bool` is a built-in type"
         }
         then "using one is reserved, never a typo hunt" {
             let r = resolve(parse_source("spawn"))

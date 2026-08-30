@@ -40,7 +40,7 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I25.
+Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I25 I26.
 I12 came BACK from unratcheted once its regex was repaired: it had
 been reading `if x is .Error { return ... }` as a struct literal,
 so it was retired for false positives that were the rule's fault,
@@ -227,6 +227,53 @@ gate — there is no amnesty left to hide in.
       `.Pattern(_, _)`, both accepted by the compiler. Only names
       with ONE arity tree-wide are judged, so `Ins.Call` and
       `Expr.Call` never confuse it.
+
+THE REACH LAW (learned the hard way, four times): a rule claims a
+SHAPE, and one specimen proves only that its matcher is ALIVE. Four
+rules shipped blind spots a single specimen walked straight past —
+I7 could not see a dotted receiver, I3 could not see a one-line
+loop, I4 could not see a generic with two parameters, and I26 read
+`s.token!` as a local. SPECIMENS now holds EVERY spelling a rule
+claims, and the self-test refuses the tool when any is missed:
+reintroducing I3's blind spot names the two spellings it lost.
+
+- I7's matcher was BLIND to a dotted receiver: it read
+      `xs[xs.length - 1]` but never `m.frames[m.frames.length - 1]`,
+      so six product sites hid from it — including the interpreter's
+      register path, run on every instruction. Two matchers in a row
+      have now been wrong in the same direction (I26 over-counted
+      field unwraps; I7 under-counted dotted ones), which is the
+      lesson: a rule's REACH is as much a claim as its wording, and
+      both need a hit list read by eye before the rule is believed.
+
+- I26 one nullable LOCAL forced open with `!` three or more times
+      in a fn. The value is already known to be there — CLAUDE.md's
+      own style rule settles it ("a `let` earns its place when the
+      value is read more than once"), so guard once, bind once, and
+      read the name. Eleven sites when the rule landed, in code as
+      old as the lexer; `annotated` had SIX `t!` in five lines.
+      NOT the smell, and excluded by the matcher rather than by an
+      annotation: a `mut` ACCUMULATOR (`closest`'s `best!`), which
+      changes every turn — there is no one value to bind. The first
+      matcher over-counted by reading `s.token!` as a local; a rule
+      must justify every hit it prints.
+
+## Lowering: MINT IN EMISSION ORDER
+
+A register must be minted in the order its defining instruction is
+emitted. The backend walks instructions once and indexes its value
+table by register number, so a register minted early and emitted
+late reads past the end — `index 6 out of bounds (length 6)` at
+`avra build`, with the interpreter answering correctly the whole
+time (it resolves by lookup, not by position). Found writing `??`:
+the payload register was minted before the constant it indexes with.
+
+```avra
+let one = cx.mint_shape(Type.Int)      // mint, then emit
+cx.emit(Ins.ConstInt(one, 1))
+let carried = cx.mint(e)
+cx.emit(Ins.CallRt(carried, "avra_array_get", [v, one]))
+```
 
 ## `when` for dispatch chains
 

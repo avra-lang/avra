@@ -101,7 +101,7 @@ fn step(m: Machine, b: Body, pc: int) -> int {
 // ── Registers (the innermost frame, through element aliases) ────
 
 fn put(m: Machine, d: Reg, v: Val) {
-    mut regs = m.frames[m.frames.length - 1]
+    mut regs = m.frames.last()!
     regs.set(d.index, v)
 }
 
@@ -111,7 +111,7 @@ fn put_at(m: Machine, d: Reg, v: Val, pc: int) -> int {
 }
 
 fn at(m: Machine, r: Reg) -> Val? {
-    m.frames[m.frames.length - 1][r.index]
+    m.frames.last()![r.index]
 }
 
 fn fail(m: Machine, msg: string) {
@@ -123,7 +123,7 @@ fn fail(m: Machine, msg: string) {
 fn value(m: Machine, r: Reg) -> Val {
     let v: Val? = at(m, r)
     if v == null {
-        fail(m, "defect: an undefined register was read in a clean program")
+        defect(m, "an undefined register was read")
         return Val.I(0)
     }
     v!
@@ -133,7 +133,7 @@ fn truth(m: Machine, r: Reg) -> bool {
     match value(m, r) {
         .B(v) -> v,
         _ -> {
-            fail(m, "defect: a non-bool decided a branch in a clean program")
+            defect(m, "a non-bool decided a branch")
             false
         }
     }
@@ -143,7 +143,7 @@ fn int_val(m: Machine, r: Reg) -> int {
     match value(m, r) {
         .I(v) -> v,
         _ -> {
-            fail(m, "defect: a non-int reached arithmetic in a clean program")
+            defect(m, "a non-int reached arithmetic")
             0
         }
     }
@@ -153,7 +153,7 @@ fn text_val(m: Machine, v: Val) -> string {
     match v {
         .S(s) -> s,
         _ -> {
-            fail(m, "defect: a non-string reached text in a clean program")
+            defect(m, "a non-string reached text")
             ""
         }
     }
@@ -204,8 +204,14 @@ fn un_val(m: Machine, op: UnOp, src: Reg) -> Val {
     }
 }
 
-fn defect_val(m: Machine, what: string) -> Val {
+/// THE defect phrase, worded once: everything here is impossible
+/// past the gate, so each site says only what it saw.
+fn defect(m: Machine, what: string) {
     fail(m, "defect: ${what} in a clean program")
+}
+
+fn defect_val(m: Machine, what: string) -> Val {
+    defect(m, what)
     Val.I(0)
 }
 
@@ -405,9 +411,10 @@ fn array_get_val(m: Machine, vals: List<Val>) -> Val {
         _ -> null,
     }
     if id == null || i == null { return defect_val(m, "a non-array index read") }
+    let at = i!
     let arr = m.arrays[id!]
-    if i! < 0 || i! >= arr.length {
-        fail(m, "index ${i!} is out of bounds (length ${arr.length})")
+    if at < 0 || at >= arr.length {
+        fail(m, "index ${at} is out of bounds (length ${arr.length})")
         return Val.I(0)
     }
     arr[i!]

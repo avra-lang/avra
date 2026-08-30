@@ -1,0 +1,34 @@
+//! The lowering rule — the ONE meaning. A nullable IS a slot array:
+//! tag 0 and nothing else when absent, tag 1 plus the value when
+//! present. `??` reads the tag through the SAME N-arm region a
+//! `match` uses, so the right side runs only on absence.
+use core.{ExprId, Reg, Ins, Type}
+use features.{LowerCx, tagged_value, tag_of, payload_of, hole_defect, lower_defect}
+
+fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants
+    match cx.store.expr(e) {
+        .NullLit -> null_reg(cx, e),
+        .Coalesce(l, r) -> coalesce_reg(cx, e, l, r),
+        _ -> lower_defect(cx, e, hole_defect()),
+    }
+}
+
+/// The absence: a one-slot array carrying tag 0.
+fn null_reg(cx: LowerCx, e: ExprId) -> Reg {
+    let dst = cx.result(e)
+    tagged_value(cx, dst, 0, null)
+    dst
+}
+
+/// `l ?? r` — one region over the tag: the ABSENT case answers with
+/// `r`, and the default unwraps the value `l` was carrying.
+fn coalesce_reg(cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
+    let v = cx.reg_of(l)
+    cx.emit(Ins.SwitchStart(tag_of(cx, v), [0]))
+    cx.emit(Ins.ArmEnd(cx.reg_of(r)))
+    let carried = payload_of(cx, v, cx.type_at(e))
+    let dst = cx.mint(e)
+    cx.emit(Ins.RegionEnd(dst, carried))
+    dst
+}

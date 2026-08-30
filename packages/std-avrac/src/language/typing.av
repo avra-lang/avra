@@ -6,7 +6,7 @@
 //! interned Error, which ABSORBS: the causing pass already spoke,
 //! so no diagnostic cascades from it. Signatures come first, from
 //! the annotations alone, so a call may name a fn declared later.
-use core.{StmtId, ExprId, TypeId, Type, Param, TypeRegistry, new_type_registry, filled}
+use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, spelled, TypeRegistry, new_type_registry, filled}
 use diagnostics.{Diag, loc_at, error_at, pointed}
 use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig,
               fn_sig_of, record_sig_of, variant_sig_of, duplicate_member}
@@ -14,10 +14,12 @@ use @std.errors.{Loc}
 
 /// The pass's facts: the registry, a dense expression table, and a
 /// dense signature table indexed by StmtId — total, O(1) reads for
-/// every later pass.
+/// every later pass. `widens` names the expressions the assignment
+/// law LIFTED into a nullable: recorded here, wrapped by lowering.
 export type Typing = {
     types: TypeRegistry,
     of_expr: List<TypeId>,
+    widens: List<TypeId?>,
     decls: List<DeclSig?>,
     diagnostics: List<Diag>,
 }
@@ -31,10 +33,12 @@ export fn type_of(t: Typing, e: ExprId) -> TypeId {
 /// match arm's bind carries — spoken by the arm's OWNER before the
 /// arm is walked, and pass-internal: no later pass asks.
 type Typer = {
+    error_type: TypeId,
     p: ParsedProgram,
     resolution: Resolution,
     types: TypeRegistry,
     of_expr: List<TypeId>,
+    widens: List<TypeId?>,
     pattern_types: List<TypeId?>,
     decls: List<DeclSig?>,
     diagnostics: List<Diag>,
@@ -45,8 +49,10 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
     // The table is born total: every slot pre-typed as the hole.
     let hole = registry.intern(Type.Error)
     let t = Typer {
+        error_type: hole,
         p: p, resolution: r, types: registry,
         of_expr: filled(p.store.exprs.count(), hole),
+        widens: filled<TypeId?>(p.store.exprs.count(), null),
         pattern_types: filled<TypeId?>(p.store.exprs.count(), null),
         decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
@@ -55,7 +61,7 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
     t.declare_sigs()
     type_stmts(t, [], p.stmts)
     Typing {
-        types: t.types, of_expr: t.of_expr, decls: t.decls,
+        types: t.types, of_expr: t.of_expr, widens: t.widens, decls: t.decls,
         diagnostics: t.diagnostics,
     }
 }
@@ -88,6 +94,7 @@ fn type_walk(t: Typer, param_types: List<TypeId>, root: ExprId) {
 /// The expression capabilities, wired once for a given param scope.
 fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
     let cx = TypeCx {
+        error_type: t.error_type,
         store: t.p.store,
         type_at: (e: ExprId) -> t.of_expr[e.index],
         shape_at: (e: ExprId) -> t.types.shape_of(t.of_expr[e.index]),
@@ -101,6 +108,7 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         block_type: (stmts: List<StmtId>, value: ExprId) -> block_type(t, param_types, stmts, value),
         walk_type: (v: ExprId) -> typed_subtree(t, param_types, v),
         bind_type: (v: ExprId, ty: TypeId) -> t.record_bind(v, ty),
+        widen: (v: ExprId, ty: TypeId) -> t.record_widen(v, ty),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
         type_name: (ty: TypeId) -> t.types.name_of(ty),
         loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
@@ -162,12 +170,12 @@ impl Typer {
         self.declare(s, DeclSig.Variants(sig))
     }
 
-    /// What a variant carries — an empty annotation IS a unit
+    /// What a variant carries — an ABSENT annotation IS a unit
     /// variant, and carries nothing.
     fn carried_type(self, s: StmtId, v: Param) -> TypeId? {
-        if v.ty == "" { return null }
+        if v.ty == null { return null }
         self.scalar_slot(s, "type.enum_payload", "an enum payload holds scalars for now",
-                         "`${v.name}` carries a `${v.ty}`", v.ty)
+                         "`${v.name}` carries a `${spelled(v.ty!)}`", v.ty!)
     }
 
     /// One declaration's table lands in the ONE dense record.
@@ -189,25 +197,30 @@ impl Typer {
         self.declare(s, DeclSig.Record(sig))
     }
 
-    /// A field's type — scalars only, until ownership analysis.
+    /// A field's type — scalars only, until ownership analysis. The
+    /// grammar always writes one, so absence is unreachable.
     fn field_type(self, s: StmtId, f: Param) -> TypeId {
+        if f.ty == null { return self.error_type }
         self.scalar_slot(s, "type.struct_scalar", "struct fields hold scalars for now",
-                         "field `${f.name}` is `${f.ty}`", f.ty)
+                         "field `${f.name}` is `${spelled(f.ty!)}`", f.ty!)
     }
 
     /// THE declared-slot law: a slot inside an aggregate holds a
-    /// SCALAR until ownership analysis covers managed values —
-    /// a record's field and an enum's payload alike, since both are
-    /// slots of an array the pass does not yet track.
+    /// SCALAR until ownership analysis covers managed values — a
+    /// record's field, an enum's payload, and a nullable's carried
+    /// value alike, since all three are slots of an array the pass
+    /// does not yet track. An UNKNOWN name is not this law's
+    /// business: the NAME law speaks first, and a second refusal
+    /// for one mistake is a cascade.
     fn scalar_slot(self, s: StmtId, kind: string, message: string,
-                   label: string, ty: string) -> TypeId {
-        let sh: Type? = shape_named(ty)
-        if sh != null {
-            if sh! is .Int || sh! is .Bool { return self.types.intern(sh!) }
-        }
+                   label: string, ty: TypeRef) -> TypeId {
+        let named = self.named_type(s, ty.name)
+        let sh: Type = self.types.shape_of(named)
+        if sh is .Error { return named }
+        if !ty.optional && (sh is .Int || sh is .Bool) { return named }
         self.speak(pointed(error_at(kind, self.stmt_loc(s), message), label)
             with { help: "`int` and `bool` today — managed slots arrive with ownership analysis" })
-        self.types.intern(Type.Error)
+        self.error_type
     }
 
     /// Every fn's signature, from its annotations alone — before any
@@ -219,16 +232,33 @@ impl Typer {
         }
     }
 
-    fn declare_sig(self, s: StmtId, fparams: List<Param>, fret: string) {
+    fn declare_sig(self, s: StmtId, fparams: List<Param>, fret: TypeRef) {
         let ptypes = [self.annotated(s, pp.ty) for pp in fparams]
         let rt = self.annotated(s, fret)
         let sig = FnSig { params: ptypes, ret: rt }
         self.declare(s, DeclSig.Fn(sig))
     }
 
-    /// An annotation's TypeId: a builtin shape, a declared type, or
-    /// a spoken absence.
-    fn annotated(self, s: StmtId, name: string) -> TypeId {
+    /// An annotation's TypeId: what its NAME stands for, wrapped
+    /// once when `?` was written. An absent annotation cannot reach
+    /// here from any grammar the language assembles.
+    fn annotated(self, s: StmtId, ann: TypeRef?) -> TypeId {
+        if ann == null { return self.error_type }
+        let t = ann!
+        if !t.optional { return self.named_type(s, t.name) }
+        // A nullable IS a slot array, so it obeys the SAME
+        // declared-slot law a field and a payload obey.
+        let base = TypeRef { name: t.name, args: t.args, optional: false, span: t.span }
+        let inner = self.scalar_slot(s, "type.nullable_scalar",
+                                     "a nullable holds scalars for now",
+                                     "`${spelled(t)}` here", base)
+        if self.types.shape_of(inner) is .Error { return inner }
+        self.types.intern(Type.Opt(inner))
+    }
+
+    /// What a written NAME stands for: a builtin shape, a declared
+    /// type, or a spoken absence.
+    fn named_type(self, s: StmtId, name: string) -> TypeId {
         let sh: Type? = shape_named(name)
         if sh != null { return self.types.intern(sh!) }
         let decl: StmtId? = self.resolution.type_defs.get(name)
@@ -237,7 +267,7 @@ impl Typer {
             error_at("type.unknown", self.stmt_loc(s), "`${name}` names no type"),
             "in this signature")
             with { help: "the types today are `int`, `string`, `bool`, and your declared types" })
-        self.types.intern(Type.Error)
+        self.error_type
     }
 
     /// A declared name's type: an enum's value shape or a record's.
@@ -255,13 +285,13 @@ impl Typer {
     /// resolve already spoke — Error, silently.
     fn target_type(self, e: ExprId, param_types: List<TypeId>) -> TypeId {
         let b: Binding? = binding_of(self.resolution, e)
-        if b == null { return self.types.intern(Type.Error) }
+        if b == null { return self.error_type }
         match b! {
             .Param(i) -> param_types[i],
             .Def(s) -> self.def_type(s),
             // The arm's OWNER spoke this type before the arm was
             // walked; an absent one means the bind was refused.
-            .Pattern(v) -> self.pattern_types[v.index] ?? self.types.intern(Type.Error),
+            .Pattern(v) -> self.pattern_types[v.index] ?? self.error_type,
         }
     }
 
@@ -271,6 +301,12 @@ impl Typer {
         ps.set(v.index, ty)
     }
 
+    /// This expression is lifted into a nullable before it lands.
+    fn record_widen(self, v: ExprId, ty: TypeId) {
+        mut ws = self.widens
+        ws.set(v.index, ty)
+    }
+
     /// A definition statement's value type. A TYPE declaration used
     /// as a value is the compile-only TypeName — the shape variant
     /// construction reads and nothing else accepts.
@@ -278,7 +314,7 @@ impl Typer {
         let tname: string? = self.p.store.type_decl_name(s)
         if tname != null { return self.types.intern(Type.TypeName(s, tname!)) }
         let v: ExprId? = self.p.store.stmt_value(s)
-        if v == null { return self.types.intern(Type.Error) }
+        if v == null { return self.error_type }
         self.of_expr[v!.index]
     }
 
