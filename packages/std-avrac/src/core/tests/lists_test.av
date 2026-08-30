@@ -1,0 +1,137 @@
+// The shared list helpers — infrastructure 19 call sites lean on and
+// nothing pinned until now. `concat` used to live here too; the
+// language provides it, so what remains is what the language does
+// not: gathering, prefilling, absence-as-a-list, joining, dedup.
+//
+// Written adversarially: every helper is attacked at N=0, N=1, and
+// with the shape most likely to break it.
+use @std.avrac.core.{flatten, filled, some_list, joined, distinct}
+
+/// A list's elements, comma-joined — so a test asserts CONTENT and
+/// ORDER together rather than length alone.
+fn shown(xs: List<string>) -> string {
+    joined(xs, ",")
+}
+
+fn ints_shown(xs: List<int>) -> string {
+    joined([string(x) for x in xs], ",")
+}
+
+spec "core/lists" {
+    given "flatten — the gather" {
+        then "nothing to gather is empty" {
+            let nothing: List<List<int>> = []
+            flatten(nothing).is_empty()
+        }
+        then "gathering EMPTIES is still empty" {
+            let empties: List<List<int>> = [[], [], []]
+            flatten(empties).is_empty()
+        }
+        then "one list gathers to itself" {
+            ints_shown(flatten([[1, 2, 3]])) == "1,2,3"
+        }
+        then "ORDER is the concatenation order, not the arrival order" {
+            ints_shown(flatten([[1, 2], [3], [4, 5]])) == "1,2,3,4,5"
+        }
+        then "an empty in the MIDDLE does not break the seam" {
+            ints_shown(flatten([[1], [], [2]])) == "1,2"
+        }
+        then "an empty at each END is absorbed" {
+            ints_shown(flatten([[], [1, 2], []])) == "1,2"
+        }
+        then "duplicates survive — flatten gathers, it does not dedup" {
+            ints_shown(flatten([[1, 1], [1]])) == "1,1,1"
+        }
+        then "strings gather too" {
+            shown(flatten([["a"], ["b", "c"]])) == "a,b,c"
+        }
+        then "the INPUTS are not disturbed" {
+            let a = [1, 2]
+            let b = [3]
+            let _ = flatten([a, b])
+            a.length == 2 && b.length == 1
+        }
+    }
+    given "filled — the dense-table prefill" {
+        then "zero copies is empty" {
+            filled(0, 7).is_empty()
+        }
+        then "one copy holds the value" {
+            ints_shown(filled(1, 7)) == "7"
+        }
+        then "n copies are all the value" {
+            ints_shown(filled(4, 7)) == "7,7,7,7"
+        }
+        then "a NEGATIVE count is empty, not a trap" {
+            filled(0 - 3, 7).is_empty()
+        }
+        then "the length is exactly n" {
+            filled(100, 0).length == 100
+        }
+        then "a nullable fills as absent" {
+            let holes: List<int?> = filled<int?>(3, null)
+            holes.length == 3 && holes[0] == null
+        }
+    }
+    given "some_list — absence as a list" {
+        then "absence is the empty list" {
+            let missing: int? = null
+            some_list(missing).is_empty()
+        }
+        then "presence is a one-element list" {
+            let here: int? = 7
+            ints_shown(some_list(here)) == "7"
+        }
+        then "a present ZERO is still present" {
+            let zero: int? = 0
+            some_list(zero).length == 1
+        }
+        then "it composes with flatten — the reason it exists" {
+            let a: int? = 1
+            let b: int? = null
+            ints_shown(flatten([some_list(a), some_list(b)])) == "1"
+        }
+    }
+    given "joined — the one wording for lists in prose" {
+        then "nothing joins to nothing" {
+            let nothing: List<string> = []
+            joined(nothing, ", ") == ""
+        }
+        then "one element is itself, with no separator" {
+            joined(["only"], ", ") == "only"
+        }
+        then "the separator falls BETWEEN, never at an end" {
+            joined(["a", "b", "c"], ", ") == "a, b, c"
+        }
+        then "an empty separator concatenates" {
+            joined(["a", "b"], "") == "ab"
+        }
+        then "EMPTY elements still take their slots" {
+            joined(["", "b", ""], ",") == ",b,"
+        }
+        then "a separator appearing IN an element is not special" {
+            joined(["a,b", "c"], ",") == "a,b,c"
+        }
+    }
+    given "distinct — first-wins dedup" {
+        then "nothing is distinct" {
+            let nothing: List<string> = []
+            distinct(nothing).is_empty()
+        }
+        then "all-same collapses to one" {
+            shown(distinct(["x", "x", "x"])) == "x"
+        }
+        then "all-different is unchanged" {
+            shown(distinct(["a", "b", "c"])) == "a,b,c"
+        }
+        then "FIRST occurrence wins, and order is first-seen order" {
+            shown(distinct(["b", "a", "b", "c", "a"])) == "b,a,c"
+        }
+        then "duplicates far APART are still caught" {
+            shown(distinct(["a", "b", "c", "a"])) == "a,b,c"
+        }
+        then "the empty string is a value like any other" {
+            shown(distinct(["", "a", ""])) == ",a"
+        }
+    }
+}
