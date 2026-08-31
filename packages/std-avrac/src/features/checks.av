@@ -63,7 +63,18 @@ export fn join_of(cx: TypeCx, a: TypeId, b: TypeId) -> TypeId? {
     if !types_disagree(cx, a, b) { return a }
     if cx.shape_of(b) is .Null { return nullable_over(cx, a) }
     if cx.shape_of(a) is .Null { return nullable_over(cx, b) }
+    // A guarantee beside ITS OWN nullable joins wide — a narrowed
+    // branch meeting the un-narrowed name is the natural case, and
+    // `accepts` then lifts the guarantee side.
+    if carries(cx, b, a) { return b }
+    if carries(cx, a, b) { return a }
     null
+}
+
+/// Does the nullable `opt` carry exactly `inner`?
+fn carries(cx: TypeCx, opt: TypeId, inner: TypeId) -> bool {
+    let held: TypeId? = opt_inner(cx, opt)
+    held != null && !types_disagree(cx, held!, inner)
 }
 
 /// `T` covered by an absence: `T?`. An already-nullable type

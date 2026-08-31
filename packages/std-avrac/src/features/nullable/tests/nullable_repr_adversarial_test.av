@@ -61,6 +61,35 @@ spec "features/nullable (representation, adversarial)" {
                   "match f(false) {\n    e? -> 9\n    null -> 0 - 1\n}") == "-1"
         }
     }
+    given "the narrow under attack — shadows, frames, every subject kind" {
+        then "a SHADOW inside the branch is a fresh binding, not the narrow" {
+            shown("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
+                  "fn f(v: int?) -> int {\n    if v != null {\n        let v = half(3)\n        v ?? 9\n    } else {\n        0\n    }\n}\nf(4)") == "9"
+        }
+        then "TWO frames nest — each name narrowed exactly where proven" {
+            shown("fn f(a: int?, b: int?) -> int {\n    if a != null {\n        if b != null { a + b } else { a }\n    } else {\n        0\n    }\n}\nf(4, 6) + f(4, null) + f(null, 6)") == "14"
+        }
+        then "the narrow DIES with its branch" {
+            refused_with("fn f(v: int?) -> int {\n    let got = if v != null { v } else { 0 }\n    got + v\n}\nf(4)",
+                         "`+` needs `int` operands, found `int?`")
+        }
+        then "a PATTERN bind is already the carried value — asking again refuses" {
+            refused_with("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
+                         "match half(4) {\n    v? -> if v != null { 1 } else { 0 }\n    null -> 9\n}",
+                         "`!= null` asks a nullable, this is `int`")
+        }
+        then "RE-ASKING a narrowed name is told the question is answered" {
+            refused_with("fn f(v: int?) -> int {\n    if v != null {\n        if v != null { v } else { 0 }\n    } else {\n        0\n    }\n}\nf(8)",
+                         "`!= null` asks a nullable, this is `int`")
+        }
+        then "an ENUM narrows to a matchable guarantee" {
+            shown("enum E {\n    a\n    b\n}\nfn pick(b: bool) -> E? { if b { E.a } else { null } }\n" +
+                  "let e = pick(true)\nif e != null {\n    match e {\n        .a -> 1\n        .b -> 2\n    }\n} else {\n    0\n}") == "1"
+        }
+        then "RECORDED TRIGGER: a `when` condition tests presence but narrows nothing yet" {
+            shown("fn f(v: int?) -> int {\n    when {\n        v != null -> v ?? 0\n        _ -> 9\n    }\n}\nf(4)") == "4"
+        }
+    }
     given "`?.` under attack — links, subjects, composition" {
         then "the chain FEEDS `match` — one nullable currency end to end" {
             shown("${finder()}match find_user(7)?.age {\n    v? -> v * 2\n    null -> 0 - 1\n}") == "60"

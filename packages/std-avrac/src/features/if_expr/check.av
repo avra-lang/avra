@@ -1,18 +1,41 @@
 //! The typing rule: the condition is a `bool`; the branches must
 //! agree, and their shared type is the expression's. An Error
-//! anywhere ABSORBS — its cause was already diagnosed.
+//! anywhere ABSORBS — its cause was already diagnosed. A condition
+//! that is a PRESENCE TEST on an effectively-final name narrows
+//! that name inside the branch its truth proves: `!= null` the
+//! then, `== null` the else — sugar over bind-fresh, never
+//! load-bearing (spec 10.4).
 use core.{ExprId, TypeId}
-use features.{TypeCx, require_bool, spoken, types_disagree, join_of, accepts, this_is}
+use features.{TypeCx, Asked, require_bool, spoken, types_disagree, join_of, accepts, this_is}
 use diagnostics.{error_at, pointed}
 
 fn if_type(cx: TypeCx, e: ExprId) -> TypeId {
     match cx.store.expr(e) {
         .If(c, t, f) -> {
             require_bool(cx, c, "an `if` condition", "this decides the branch")
+            walk_branches(cx, c, t, f)
             branch_type(cx, t, f)
         }
         _ -> cx.error_type,
     }
+}
+
+/// Both branches typed — the PROVEN one under its narrow.
+fn walk_branches(cx: TypeCx, c: ExprId, t: ExprId, f: ExprId) {
+    let asked: Asked? = cx.ask_of(c)
+    if asked == null {
+        let _ = cx.walk_type(t)
+        let _ = cx.walk_type(f)
+        return
+    }
+    let a = asked!
+    if a.on_present {
+        let _ = cx.walk_narrowed(a.subject, t)
+        let _ = cx.walk_type(f)
+        return
+    }
+    let _ = cx.walk_type(t)
+    let _ = cx.walk_narrowed(a.subject, f)
 }
 
 fn branch_type(cx: TypeCx, t: ExprId, f: ExprId) -> TypeId {

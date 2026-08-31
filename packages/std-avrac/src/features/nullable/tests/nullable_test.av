@@ -156,6 +156,54 @@ spec "features/nullable" {
             shown("${finder()}if let a? = find_user(7) {\n    if let b? = find_user(3) {\n        a.age + b.age\n    } else {\n        a.age\n    }\n} else {\n    0\n}") == "30"
         }
     }
+    given "the presence test and the narrow — `!= null` proves a branch" {
+        then "`!= null` and `== null` answer bools, either operand order" {
+            shown("${finder()}if find_user(7) != null { 1 } else { 0 }") == "1" &&
+                shown("${finder()}if null == find_user(3) { 1 } else { 0 }") == "1"
+        }
+        then "a PARAM narrows in the proven branch — the ceremony retires" {
+            shown("type U = { age: int }\nfn find(b: bool) -> U? { if b { U { age: 30 } } else { null } }\n" +
+                  "fn describe(u: U?) -> int {\n    if u != null { u.age } else { 0 - 1 }\n}\n" +
+                  "describe(find(true)) + describe(find(false))") == "29"
+        }
+        then "`== null` proves the ELSE branch" {
+            shown("fn h(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
+                  "fn f(v: int?) -> int { if v == null { 0 - 5 } else { v * 10 } }\n" +
+                  "f(h(4)) + f(h(3))") == "15"
+        }
+        then "a LET narrows; the same read outside the branch still refuses" {
+            shown("${finder()}let u = find_user(7)\nif u != null { u.age } else { 0 }") == "30" &&
+                refused_with("${finder()}let u = find_user(7)\nif u != null { 1 } else { 0 }\nu.age",
+                             "`.age` reads a guarantee, this is `User?`")
+        }
+        then "a MUT never narrows — reassignment could lie" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            refused_with("mut x: int? = 5\nlet a = if x != null { x + 1 } else { 0 }\na",
+                         "`+` needs `int` operands, found `int?`")
+        }
+        then "the UNPROVEN branch stays wide" {
+            refused_with("fn f(v: int?) -> int { if v != null { v } else { v + 1 } }\nf(1)",
+                         "`+` needs `int` operands, found `int?`")
+        }
+        then "`!` under the narrow is told it insists on a GUARANTEE" {
+            refused_with("fn f(v: int?) -> int { if v != null { v! } else { 0 } }\nf(1)",
+                         "`!` insists on a nullable, this is `int`")
+        }
+        then "a GUARANTEE beside null refuses toward the family words" {
+            refused_with("let n = 5\nif n != null { 1 } else { 0 }",
+                         "`!= null` asks a nullable, this is `int`")
+        }
+        then "`null == null` is a question already answered" {
+            refused_with("if null == null { 1 } else { 0 }", "always absent")
+        }
+        then "a NARROWED branch joins WIDE beside its own nullable" {
+            shown("fn f(v: int?) -> int? {\n    if v != null { v } else { v }\n}\nf(4) ?? 9") == "4" &&
+                shown("fn f(v: int?) -> int? {\n    if v != null { v } else { v }\n}\nf(null) ?? 9") == "9"
+        }
+        then "a narrowed read WIDENS back when a nullable slot claims it" {
+            shown("fn f(v: int?) -> int {\n    if v != null {\n        let again: int? = v\n        again ?? 9\n    } else {\n        0\n    }\n}\nf(4)") == "4"
+        }
+    }
     given "the niche — a pointer-shaped nullable IS its value" {
         then "`string?` answers through `??`, present and absent" {
             shown("fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(true) ?? \"y\"") == "x" &&

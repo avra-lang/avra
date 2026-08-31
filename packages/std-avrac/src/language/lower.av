@@ -10,7 +10,7 @@
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, some_list}
 use diagnostics.{Diag, error_at, pointed, loc_at}
 use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig,
-              fn_sig_of, record_sig_of, variant_sig_of, adopted}
+              fn_sig_of, record_sig_of, variant_sig_of, adopted, carried_of}
 use @std.errors.{Loc}
 
 /// One lowered body: instructions in order and each register's type
@@ -144,10 +144,21 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         lower_block: (stmts: List<StmtId>, value: ExprId) -> block_reg(lo, stmts, value),
         fail: (msg: string) -> lo.record(msg),
     }
-    let r = widened(cx, lo, e, semantics_of(lo.a.dispatch, lo.a.store.expr(e)).lower(cx, e))
+    let born = semantics_of(lo.a.dispatch, lo.a.store.expr(e)).lower(cx, e)
+    let r = widened(cx, lo, e, narrowed(cx, lo, e, born))
     mut rs = lo.regs
     rs.set(e.index, r)
     r
+}
+
+/// A read a presence test PROVED — typing recorded the nullable it
+/// wears; the read unwraps here, at the same one edge widening
+/// lifts. Narrow first, widen after: a proven read may itself be
+/// lifted into a fresh nullable.
+fn narrowed(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
+    let worn: TypeId? = lo.a.typing.narrows[e.index]
+    if worn == null { return r }
+    carried_of(cx, r, worn!)
 }
 
 /// A value the assignment law LIFTED into a nullable, minted in

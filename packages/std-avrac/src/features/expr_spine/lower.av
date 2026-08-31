@@ -5,7 +5,7 @@
 //! desugar onto the region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
 use core.{ExprId, BinOp, UnOp, Reg, Ins, Type}
-use features.{LowerCx, StructSig, EnumSig, hole_defect, lower_defect, variant_defect}
+use features.{LowerCx, StructSig, EnumSig, presence_of, hole_defect, lower_defect, variant_defect}
 
 fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
@@ -22,6 +22,25 @@ fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
         .Prop(s, name) -> prop_reg(cx, e, s, name),
         _ -> lower_defect(cx, e, hole_defect()),
     }
+}
+
+/// The presence test's subject — the typing projection's shape
+/// twin: exactly one nullable beside the absence, for `==`/`!=`.
+fn asked_subject(cx: LowerCx, op: BinOp, l: ExprId, r: ExprId) -> ExprId? {
+    if op != BinOp.Eq && op != BinOp.Ne { return null }
+    if cx.shape_at(l) is .Opt && cx.shape_at(r) is .Null { return l }
+    if cx.shape_at(r) is .Opt && cx.shape_at(l) is .Null { return r }
+    null
+}
+
+/// `x != null` IS the presence bit; `x == null` is its negation.
+/// The null side lowers to nothing at all.
+fn presence_reg(cx: LowerCx, e: ExprId, op: BinOp, subject: ExprId) -> Reg {
+    let p = presence_of(cx, cx.reg_of(subject), cx.type_at(subject))
+    if op == BinOp.Ne { return p }
+    let dst = cx.result(e)
+    cx.emit(Ins.Un(dst, UnOp.Not, p))
+    dst
 }
 
 fn index_reg(cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
@@ -88,6 +107,8 @@ fn ident_reg(cx: LowerCx, e: ExprId) -> Reg {
 
 fn binary_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
     if op == BinOp.And || op == BinOp.Or { return lazy_reg(cx, e, op, l, r) }
+    let asked: ExprId? = asked_subject(cx, op, l, r)
+    if asked != null { return presence_reg(cx, e, op, asked!) }
     let a = cx.reg_of(l)
     let b = cx.reg_of(r)
     let stringy = cx.shape_at(l) is .Str

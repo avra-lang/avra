@@ -8,7 +8,7 @@
 //! the annotations alone, so a call may name a fn declared later.
 use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, spelled, TypeRegistry, new_type_registry, filled, plain}
 use diagnostics.{Diag, loc_at, error_at, pointed}
-use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig,
+use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig, Asked,
               fn_sig_of, record_sig_of, variant_sig_of, duplicate_names}
 use @std.errors.{Loc}
 
@@ -20,6 +20,7 @@ export type Typing = {
     types: TypeRegistry,
     of_expr: List<TypeId>,
     widens: List<TypeId?>,
+    narrows: List<TypeId?>,
     decls: List<DeclSig?>,
     diagnostics: List<Diag>,
 }
@@ -28,6 +29,12 @@ export type Typing = {
 export fn type_of(t: Typing, e: ExprId) -> TypeId {
     t.of_expr[e.index]
 }
+
+/// One narrow in force: the proven binding (a def's stmt index in
+/// `narrow_defs`, a param's position in `narrow_params` — the two
+/// stacks keep the keyspaces apart), the INNER its reads answer,
+/// and the OPT each read is recorded as wearing, for lowering.
+type NarrowFrame = { key: int, inner: TypeId, opt: TypeId }
 
 /// The pass's working state. `pattern_types` holds what each
 /// match arm's bind carries — spoken by the arm's OWNER before the
@@ -39,8 +46,12 @@ type Typer = {
     types: TypeRegistry,
     of_expr: List<TypeId>,
     widens: List<TypeId?>,
+    narrows: List<TypeId?>,
+    asks: List<Asked?>,
     pattern_types: List<TypeId?>,
     binding_types: List<TypeId?>,
+    narrow_defs: List<NarrowFrame>,
+    narrow_params: List<NarrowFrame>,
     decls: List<DeclSig?>,
     diagnostics: List<Diag>,
 }
@@ -54,8 +65,11 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         p: p, resolution: r, types: registry,
         of_expr: filled(p.store.exprs.count(), hole),
         widens: filled<TypeId?>(p.store.exprs.count(), null),
+        narrows: filled<TypeId?>(p.store.exprs.count(), null),
+        asks: filled<Asked?>(p.store.exprs.count(), null),
         pattern_types: filled<TypeId?>(p.store.exprs.count(), null),
         binding_types: filled<TypeId?>(p.store.stmts.count(), null),
+        narrow_defs: [], narrow_params: [],
         decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
@@ -63,7 +77,8 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
     t.declare_sigs()
     type_stmts(t, [], p.stmts)
     Typing {
-        types: t.types, of_expr: t.of_expr, widens: t.widens, decls: t.decls,
+        types: t.types, of_expr: t.of_expr, widens: t.widens,
+        narrows: t.narrows, decls: t.decls,
         diagnostics: t.diagnostics,
     }
 }
@@ -114,6 +129,9 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         bind_type: (v: ExprId, ty: TypeId) -> t.record_bind(v, ty),
         widen: (v: ExprId, ty: TypeId) -> t.record_widen(v, ty),
         rides_pointer: (ty: TypeId) -> t.types.rides_pointer(ty),
+        record_ask: (e: ExprId, subject: ExprId, on_present: bool) -> t.record_ask(e, subject, on_present),
+        ask_of: (e: ExprId) -> t.asks[e.index],
+        walk_narrowed: (subject: ExprId, branch: ExprId) -> narrowed_subtree(t, param_types, subject, branch),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
         type_name: (ty: TypeId) -> t.types.name_of(ty),
         loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
@@ -135,6 +153,49 @@ fn block_type(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>, value: E
 fn typed_subtree(t: Typer, param_types: List<TypeId>, root: ExprId) -> TypeId {
     type_walk(t, param_types, root)
     t.of_expr[root.index]
+}
+
+/// A branch typed under a PROVEN-PRESENT binding: when the asked
+/// subject is an effectively-final nullable — a `let` (never a
+/// `mut`) or a param — its reads inside the branch narrow to the
+/// carried type, each read recorded so lowering unwraps it. A
+/// subject that cannot be proven simply walks un-narrowed: the
+/// sugar is never load-bearing (spec 10.4).
+fn narrowed_subtree(t: Typer, param_types: List<TypeId>, subject: ExprId, branch: ExprId) -> TypeId {
+    let b: Binding? = binding_of(t.resolution, subject)
+    if b == null { return typed_subtree(t, param_types, branch) }
+    match b! {
+        .Def(s) -> narrowed_def_walk(t, param_types, s, branch),
+        .Param(i) -> narrowed_param_walk(t, param_types, i, branch),
+        .Pattern(_) -> typed_subtree(t, param_types, branch),
+    }
+}
+
+fn narrowed_def_walk(t: Typer, param_types: List<TypeId>, s: StmtId, branch: ExprId) -> TypeId {
+    // A `mut` can be reassigned mid-branch — never narrowed.
+    if !(t.p.store.stmt(s) is .Let) { return typed_subtree(t, param_types, branch) }
+    framed(t, t.narrow_defs, s.index, t.def_type(s),
+           () -> typed_subtree(t, param_types, branch))
+}
+
+fn narrowed_param_walk(t: Typer, param_types: List<TypeId>, i: int, branch: ExprId) -> TypeId {
+    framed(t, t.narrow_params, i, param_types[i],
+           () -> typed_subtree(t, param_types, branch))
+}
+
+/// The narrow bracket: when `opt` really is a nullable, its frame
+/// lives on the given stack exactly as long as the thunk's walk;
+/// otherwise the walk runs bare. The stack ALIASES the Typer's own
+/// list, so the push is seen by every nested read.
+fn framed(t: Typer, frames: List<NarrowFrame>, key: int, opt: TypeId, walk: fn() -> TypeId) -> TypeId {
+    let inner: TypeId? = t.types.carried(opt)
+    if inner == null { return walk() }
+    // LICENSED I15: this IS the bracket
+    mut fs = frames
+    fs.push(NarrowFrame { key: key, inner: inner!, opt: opt })
+    let answer = walk()
+    let _ = fs.pop()
+    answer
 }
 
 /// One node's fact: the owner speaks, the table records.
@@ -353,18 +414,53 @@ impl Typer {
         loc_at(self.p.source.file, self.p.store.stmt_span(s))
     }
 
-    /// An ident's type, by its binding kind. No binding means
-    /// resolve already spoke — Error, silently.
+    /// An ident's type, by its binding kind — NARROWED when a
+    /// presence test proved this binding present in the branch
+    /// being walked (the narrow is recorded for lowering, which
+    /// unwraps the read at its one edge). No binding means resolve
+    /// already spoke — Error, silently.
     fn target_type(self, e: ExprId, param_types: List<TypeId>) -> TypeId {
         let b: Binding? = binding_of(self.resolution, e)
         if b == null { return self.error_type }
         match b! {
-            .Param(i) -> param_types[i],
-            .Def(s) -> self.def_type(s),
+            .Param(i) -> self.narrowed_param(e, i) ?? param_types[i],
+            .Def(s) -> self.narrowed_def(e, s) ?? self.def_type(s),
             // The arm's OWNER spoke this type before the arm was
             // walked; an absent one means the bind was refused.
             .Pattern(v) -> self.pattern_types[v.index] ?? self.error_type,
         }
+    }
+
+    /// The narrowed INNER for a def-bound read, when a frame proves
+    /// it — recorded so lowering unwraps this very read.
+    fn narrowed_def(self, e: ExprId, s: StmtId) -> TypeId? {
+        self.narrow_hit(e, self.narrow_defs, s.index)
+    }
+
+    fn narrowed_param(self, e: ExprId, i: int) -> TypeId? {
+        self.narrow_hit(e, self.narrow_params, i)
+    }
+
+    /// One stack's answer: the frame whose key matches, its read
+    /// recorded as wearing the frame's OPT.
+    fn narrow_hit(self, e: ExprId, frames: List<NarrowFrame>, key: int) -> TypeId? {
+        let hit: NarrowFrame? = frames.find(it.key == key)
+        if hit == null { return null }
+        self.record_narrow(e, hit!.opt)
+        hit!.inner
+    }
+
+    /// This READ is proven present: lowering unwraps it from the
+    /// recorded nullable.
+    fn record_narrow(self, e: ExprId, opt: TypeId) {
+        mut ns = self.narrows
+        ns.set(e.index, opt)
+    }
+
+    /// A presence test's fact: the spine records, `if` queries.
+    fn record_ask(self, e: ExprId, subject: ExprId, on_present: bool) {
+        mut aa = self.asks
+        aa.set(e.index, Asked { subject: subject, on_present: on_present })
     }
 
     /// What an arm's bind holds, as the arm's owner declared it.

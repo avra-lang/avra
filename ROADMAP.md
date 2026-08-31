@@ -2488,9 +2488,31 @@ recommended order was accepted as the working sequence):
    and the strongest structural prior in training data. Deferred
    from rung 2/3; PROMOTED to its own designed arc (divergence
    typing + scope-unwind releases are real design, not a quickie).
-3. `!= null` presence tests + effectively-final narrowing —
-   REFRAMED from "ergonomic sugar" to P1-critical: models emit
-   `if x != null` by reflex. Rides after annotated let.
+3. [x] `!= null` presence tests + effectively-final narrowing —
+   LANDED 2026-08-30, the P1 sequence's third promotion. The eq
+   law gained THE PRESENCE TEST (a nullable beside `null` answers
+   a bool; a guarantee beside null and `null == null` refuse in
+   the family's words), and NARROWING landed as sugar over
+   bind-fresh, exactly as spec 10.4 bounds it:
+   - `if` became CONTROL-OWNING (branches hidden from the walk,
+     the MatchOpt pattern) so a branch can type under its proof.
+   - THE ASK IS A FACT: the spine RECORDS which name a presence
+     test asked about (`Asked`, a side-table row); `if` QUERIES
+     it — features never match each other's nodes.
+   - NARROWS MIRROR WIDENS: each proven read is recorded by
+     typing and unwrapped by lowering at the same one edge where
+     widening lifts — carried_of in, adopted out.
+   - EFFECTIVELY-FINAL means a `let` or a PARAM; a `mut` never
+     narrows (reassignment could lie — pinned); a pattern bind is
+     already the carried value and re-asking refuses; re-asking a
+     NARROWED name is told the question is answered; `!` under
+     the narrow is told it insists on a guarantee.
+   - THE JOIN COMPLETED while landing it: a guarantee beside ITS
+     OWN nullable joins wide (`if v != null { v } else { v }` is
+     `int?`), which every branching construct inherits.
+   TRIGGERS: `when` conditions test presence but narrow nothing
+   yet (pinned); `&&`-compound tests narrow nothing (single test
+   only); both ride a later slice.
 4. LEFT-CHAINED `??` — filed in the sugar backlog; spec touch,
    awaits ratification.
 5. THE PARSE-RECOVERY FLOOR — "expected BREAK" at the wrong token

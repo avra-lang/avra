@@ -7,14 +7,22 @@ export type IfSemantics = { }
 
 impl NodeSemantics for IfSemantics {
     fn kids(self, e: Expr) -> List<ExprId> {
+        // the BRANCHES are hidden: each types under the narrow a
+        // presence-test condition may prove, so the rule walks them
         match e {
-            .If(c, t, f) -> [c, t, f],
+            .If(c, _, _) -> [c],
             _ -> [],
         }
     }
 
     fn resolve(self, cx: ResolveCx, e: ExprId) {
-        nothing()
+        match cx.store.expr(e) {
+            .If(_, t, f) -> {
+                cx.arm_scope("", t)
+                cx.arm_scope("", f)
+            }
+            _ -> nothing(),
+        }
     }
 
     fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {

@@ -12,7 +12,7 @@ fn spine_type(cx: TypeCx, e: ExprId) -> TypeId {
     match cx.store.expr(e) {
         .IntLit(_) -> cx.intern(Type.Int),
         .Ident(_) -> cx.target_type(e),
-        .Binary(op, l, r) -> binary_type(cx, op, l, r),
+        .Binary(op, l, r) -> binary_type(cx, e, op, l, r),
         .Not(v) -> not_type(cx, v),
         .Index(s, i) -> index_type(cx, s, i),
         .Prop(s, name) -> prop_type(cx, e, s, name),
@@ -88,18 +88,27 @@ fn variant_type(cx: TypeCx, e: ExprId, decl: StmtId, tname: string, name: string
     ty
 }
 
+/// The nullable side of `x == null` / `null != x` — exactly one
+/// nullable beside the absence; null otherwise. The lowering keeps
+/// a shape-twin of this projection.
+fn presence_subject(cx: TypeCx, l: ExprId, r: ExprId) -> ExprId? {
+    if cx.shape_at(l) is .Opt && cx.shape_at(r) is .Null { return l }
+    if cx.shape_at(r) is .Opt && cx.shape_at(l) is .Null { return r }
+    null
+}
+
 /// A property on a VALUE — the shared member law (checks.av), the
 /// subject shown by its expression's name.
 fn member_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
     member_type_of(cx, e, cx.name_at(subject), cx.type_at(subject), name)
 }
 
-fn binary_type(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+fn binary_type(cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     match op {
         .Add or .Sub or .Mul or .Div or .Mod -> op_over(cx, op, l, r, Type.Int, Type.Int),
         .Lt or .Le or .Gt or .Ge -> op_over(cx, op, l, r, Type.Int, Type.Bool),
         .And or .Or -> op_over(cx, op, l, r, Type.Bool, Type.Bool),
-        .Eq or .Ne -> eq_type(cx, op, l, r),
+        .Eq or .Ne -> eq_type(cx, e, op, l, r),
     }
 }
 
@@ -160,10 +169,37 @@ fn compare_help(sh: Type) -> string {
     }
 }
 
-fn eq_type(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+fn eq_type(cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     let ls = cx.shape_at(l)
     let rs = cx.shape_at(r)
     if ls is .Error || rs is .Error { return cx.error_type }
+    // THE PRESENCE TEST: a nullable beside `null` asks IS IT THERE —
+    // the one comparison absence answers, and the answer is a bool.
+    // A NAMED subject records the ask as a fact `if` can query:
+    // `!= null` proves the then-branch, `== null` the else.
+    let asked: ExprId? = presence_subject(cx, l, r)
+    if asked != null {
+        if cx.store.expr(asked!) is .Ident {
+            cx.record_ask(e, asked!, op == BinOp.Ne)
+        }
+        return cx.intern(Type.Bool)
+    }
+    // A GUARANTEE beside `null` is a question with only one answer.
+    if ls is .Null && rs is .Null {
+        return spoken(cx, pointed(
+            error_at("type.mismatch", cx.loc_of(l), "both sides are always absent, so `${op_symbol(op)}` always answers"),
+            "always absent")
+            with { help: "write the answer alone" })
+    }
+    if ls is .Null || rs is .Null {
+        let solid = if ls is .Null { r } else { l }
+        let n = cx.name_at(solid)
+        return spoken(cx, pointed(
+            error_at("type.mismatch", cx.loc_of(solid),
+                "`${op_symbol(op)} null` asks a nullable, this is `${n}`"),
+            this_is(n))
+            with { help: "`${n}` is a guarantee — it is never absent" })
+    }
     // An AGGREGATE would compare by ADDRESS — never what the writer
     // meant, and the engines disagreed about it: the interpreter
     // refused while the backend quietly answered `false` for two
