@@ -19,6 +19,12 @@ fn makers() -> string {
     "fn some(v: int) -> int? { v }\nfn none() -> int? { null }\n"
 }
 
+/// The spec's headline example — `if let`'s standard subject.
+fn finder() -> string {
+    "type User = { age: int }\n" +
+    "fn find_user(id: int) -> User? { if id == 7 { User { age: 30 } } else { null } }\n"
+}
+
 spec "features/nullable (adversarial)" {
     given "degenerate shapes" {
         then "a bare `null` is not a printable answer" {
@@ -232,6 +238,45 @@ spec "features/nullable (adversarial)" {
         then "a list element refuses a nullable, in ITS words" {
             let a = analyze_source("${makers()}[some(1), none()]")
             a.diagnostics.length == 1 && a.report().contains("a list holds scalars")
+        }
+    }
+    given "`if let`, adversarially — the sugar meets every law" {
+        then "a KEYWORD bind refuses through the naming law" {
+            refused_with("${finder()}if let while? = find_user(7) {\n    1\n} else {\n    0\n}",
+                         "`while` is a keyword")
+        }
+        then "the bind DIES with the branch — no escape to the scope after" {
+            refused_with("${finder()}let got = if let u? = find_user(7) {\n    u.age\n} else {\n    0\n}\nu.age",
+                         "`u` is not defined")
+        }
+        then "disagreeing arms refuse through the sugar in the arms' words" {
+            refused_with("${finder()}if let u? = find_user(7) {\n    u\n} else {\n    \"stranger\"\n}",
+                         "the arms disagree: `User` vs `string`")
+        }
+        then "a single-line `if let` rides an interpolation hole" {
+            shown("${finder()}\"got $" + "{if let u? = find_user(7) { u.age } else { 0 }}\"") == "got 30"
+        }
+        then "the SUBJECT reads the outer name; the bind shadows only inside" {
+            shown("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
+                  "let v = half(4)\nlet got = if let v? = v {\n    v * 10\n} else {\n    0 - 1\n}\n" +
+                  "\"$" + "{got} and $" + "{v ?? 0 - 5}\"") == "20 and 2"
+        }
+        then "RECORDED FUTURE-FORM: `if let u = e` (no `?`) refuses today" {
+            // a plain-binding if-let would be a NEW form — this pin
+            // makes landing one a conscious change, not an accident
+            refusals("${finder()}if let u = find_user(7) {\n    1\n} else {\n    0\n}") == 2
+        }
+    }
+    given "the asking arms, mis-aimed" {
+        then "arms over ABSENCE ITSELF say so — never call `null` a guarantee" {
+            let a = analyze_source("match null {\n    v? -> 1\n    null -> 2\n}")
+            a.diagnostics.length == 1 &&
+                a.report().contains("always absent") &&
+                !a.report().contains("guarantee")
+        }
+        then "arms over a guarantee name the BIND, not the form" {
+            refused_with("let x = 1\nmatch x {\n    v? -> v\n    null -> 0\n}",
+                         "`v?` asks a nullable, this is `int`")
         }
     }
     given "precedence, which decides what `??` even asks" {

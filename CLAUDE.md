@@ -156,6 +156,12 @@ registry is the idiom engine's spec, written by dogfooding.
   repeated slot, anchor-first — never a tail after the star. The
   builder then owns the law the grammar cannot state (exactly one,
   last).
+- Grammar authoring: `@expect` attaches only at a sequence's (or a
+  repeated group's) TAIL. A MID-sequence `@expect` fails the DSL
+  parse of the WHOLE assembly, and the symptom points everywhere
+  but home: every feature cascades "references undefined rule
+  `expression`" / "builder never called" defects, and the offending
+  fragment is never named. (Probed landing `if let`.)
 - Grammar authoring: @recover converts a branch's break into a hole
   HIT, so it belongs only on branches anchored by a keyword no other
   branch can start with. A NAME-headed branch (assignment) must stay

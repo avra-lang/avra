@@ -4,7 +4,11 @@
 //!
 //! `??`, `!` and `?.` PARSE in the expression ladder (the `with`
 //! precedent — the spine owns precedence, a feature owns meaning);
-//! only `null` anchors a branch of its own, keyword-first.
+//! `null`, the asking `match` arms, and `if let` anchor branches
+//! of their own, keyword-first. `if let` is pure sugar: its action
+//! IS the `match_opt` builder, so the two surfaces share one node,
+//! one typing, one lowering — and one set of refusals, worded by
+//! the BIND so both read naturally.
 //!
 //! Representation is values.av's per-shape choice (`repr_of`): a
 //! pointer-shaped nullable IS its value with the null pointer as
@@ -23,13 +27,14 @@ export fn nullable() -> LanguageFeature {
         kind                   | id      | summary
         "type.coalesce"        | "F2017" | "`??` answers a nullable with a value of its type"
         "type.force"           | "F2021" | "`!` insists on a nullable"
-        "type.match_opt"       | "F2022" | "`match` over `null` asks a nullable"
+        "type.match_opt"       | "F2022" | "the `v?`/`null` arms ask a nullable"
         "type.chain"           | "F2023" | "`?.` reaches into a nullable"
     }
     component LanguageFeature f {
         name = "nullable"
-        docs = "`T?` may be absent; `null` is the absence, `a ?? b` answers it, and `a?.b` reaches through it."
+        docs = "`T?` may be absent; `null` is the absence, `a ?? b` answers it, `a?.b` reaches through it, and `if let v? = e` binds it fresh."
         gram = """
+primary = "if" "let" b:NAME "?" "=" s:expression p:block "else" a:block @expect("else", "an `if let` needs its `else` branch — absence must be answered") -> match_opt(s, b, p, a)
 primary = "match" s:expression "{" BREAK? b:NAME "?" "->" p:expression BREAK? "null" "->" a:expression BREAK? "}" -> match_opt(s, b, p, a)
 primary = "match" s:expression "{" BREAK? "null" "->" a:expression BREAK? b:NAME "?" "->" p:expression BREAK? "}" -> match_opt(s, b, p, a)
 primary = "null" -> null_lit()

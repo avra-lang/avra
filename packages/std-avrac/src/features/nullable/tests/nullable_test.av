@@ -3,7 +3,7 @@
 // left is absent. Non-null by default is the law every refusal here
 // is defending.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.testing.{shown, refused_with, refusals}
 
 /// A present-maker and an absent-maker over `int?`.
 fn makers() -> string {
@@ -78,7 +78,7 @@ spec "features/nullable" {
         }
         then "asking a GUARANTEE is refused" {
             refused_with("let x = 1\nmatch x {\n    v? -> v\n    null -> 0\n}",
-                         "`match` over `null` asks a nullable, this is `int`")
+                         "`v?` asks a nullable, this is `int`")
         }
         then "the arms must agree, like any other pair of branches" {
             refused_with("${makers()}match some(1) {\n    v? -> v\n    null -> \"s\"\n}",
@@ -119,6 +119,41 @@ spec "features/nullable" {
         then "an ungrouped chain says how to group it" {
             let a = analyze_source("${makers()}none() ?? none() ?? 7")
             a.diagnostics.length == 1 && a.report().contains("groups to the RIGHT")
+        }
+    }
+    given "`if let` — the bind-fresh form, sugar over the asking arms" {
+        then "the present branch binds what the nullable carries" {
+            shown("${finder()}if let u? = find_user(7) {\n    u.age * 2\n} else {\n    0 - 1\n}") == "60"
+        }
+        then "the absent branch answers when nothing bound" {
+            shown("${finder()}if let u? = find_user(3) {\n    u.age\n} else {\n    0 - 5\n}") == "-5"
+        }
+        then "it IS an expression — a `let` takes it whole" {
+            shown("${finder()}let got = if let u? = find_user(7) {\n    u.age\n} else {\n    0\n}\ngot + 1") == "31"
+        }
+        then "the arms are BLOCKS — statements live inside" {
+            shown("${finder()}if let u? = find_user(7) {\n    let doubled = u.age * 2\n    doubled + 1\n} else {\n    0\n}") == "61"
+        }
+        then "the bind lives in the present branch ONLY" {
+            refused_with("${finder()}if let u? = find_user(7) {\n    u.age\n} else {\n    u.age\n}",
+                         "`u` is not defined")
+        }
+        then "a GUARANTEE subject refuses in the BIND's words, not `match`'s" {
+            refused_with("if let v? = 5 {\n    v\n} else {\n    0\n}",
+                         "`v?` asks a nullable, this is `int`")
+        }
+        then "a missing `else` refuses exactly as the plain `if`'s does" {
+            // BOTH if forms fall to the floor here (2 errors, no
+            // @expect fired) — the if-family's recovery debt, one
+            // bucket with the match-family cascade. Parity pinned.
+            refusals("${finder()}if let u? = find_user(7) {\n    u.age\n}") == 2 &&
+                refusals("if true {\n    1\n}") == 2
+        }
+        then "the chain feeds it — one nullable currency" {
+            shown("${finder()}if let age? = find_user(7)?.age {\n    age + 100\n} else {\n    0\n}") == "130"
+        }
+        then "it nests, each bind in its own scope" {
+            shown("${finder()}if let a? = find_user(7) {\n    if let b? = find_user(3) {\n        a.age + b.age\n    } else {\n        a.age\n    }\n} else {\n    0\n}") == "30"
         }
     }
     given "the niche — a pointer-shaped nullable IS its value" {

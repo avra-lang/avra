@@ -90,17 +90,18 @@ text-as-projection after self-host, the service store at Era V.
     7.  [x] structs — declarations, literals, `with` (impl methods
         ride the method core, rung 13; the spec's `shape`/width
         subtyping keeps its recorded arc)
-    8.  ▲ enums & match — slice (a) LANDED (declarations, unit
-        variants, total match); slice (b) is payloads + pattern
-        binds (Binding grows its variant)
+    8.  [x] ▲ enums & match — slices (a)+(b) LANDED: declarations,
+        unit and payload variants, pattern binds, total match (the
+        match-chain SHAPE decision stays recorded, not blocking)
     8.5 [x] the TYPE SURFACE — annotations are a type EXPRESSION,
         not a NAME (found blocking rung 9); slice (a) landed `T?`,
         `null`, `??`, widening and the join
-    9.  nullability — `T?`, `null` arms, `! ?? ?.` — and the
-        spec's bind-fresh trio (Axis 10): `let v? = e else { }`,
-        `if let v? = e`, effectively-final narrowing. The trio is
-        the answer to the guard-and-bang ceremony; index_value in
-        expr_spine/eval.av is the exhibit
+    9.  nullability — MOSTLY LANDED: `T?`, `null` arms, `! ?? ?.`
+        all [x] (the representation decision below: niche + pair,
+        never-allocates law ON); `if let v? = e` [x] (sugar over
+        the asking arms). REMAINS: `let v? = e else { }` (blocked
+        on `return` — recorded at slice N3), effectively-final
+        narrowing, and slice (d) `?` propagation
     10. Result & `?` — propagation as the error spine
     11. ▲ generics — mono through OUR pipeline (List<T> becomes real)
     12. ▲ traits & dyn — dispatch, cross-module impls
@@ -1594,7 +1595,9 @@ THE SLICES (each vertical, each gated):
       so `MatchOpt(subject, bind, present, absent)` says it without
       a tag. `nullable` merges BEFORE `enums` because its arms are
       more specific and enums' branch `@expect`s its own `}`.
-  (d) `?` propagation and the bind-fresh trio (spec Axis 10.5).
+  (d) `?` propagation (spec Axis 10.5). The bind-fresh trio's
+      `if let` landed at slice N3 below; let-else and narrowing
+      carry recorded triggers there.
 
 ## The nullable representation (decided 2026-08-30)
 
@@ -1808,6 +1811,35 @@ THE SLICES (each vertical, each gated):
        beat a vtable in the hottest lowering path (P4), and the
        match IS the readable registry — re-argue only if a THIRD
        repr ever appears.
+  (N3) [x] `if let` — LANDED 2026-08-30. The bind-fresh form (spec
+       Axis 10.4), PURE SUGAR: one gram branch in `nullable` whose
+       action is the existing `match_opt` builder, arms as BLOCKS —
+       zero new nodes, zero new semantics, every pass untouched.
+       The refusal wording centralized to serve both surfaces: the
+       asking arms now speak the BIND's name (`` `v?` asks a
+       nullable, this is `int` `` — form-neutral, F2022 reworded),
+       and arms over absence itself say "always absent" instead of
+       falsely calling `null` a guarantee (found test-first).
+       What the build taught:
+       - A MID-SEQUENCE `@expect` fails the DSL parse of the WHOLE
+         assembly, with cascades that never name the offending
+         fragment — probed, recorded as a grammar-authoring law in
+         CLAUDE.md. The DSL wants a pointed refusal there someday.
+       - The `@expect("else", …)` at a branch TAIL never fires on a
+         bare missing `else` — in PLAIN `if` too (parity probed,
+         both fall to the floor with 2 errors). Pinned as a parity
+         test; the if-family's recovery debt, one bucket with the
+         match-family cascade (the match-chain arc owns both).
+       - `if let` lands AFTER if_expr in branch order and works
+         because plain-if fails NON-COMMITTING on `let` — the
+         clean-failure path is proven by the corpus, not assumed.
+       DEFERRED with triggers: `let v? = e else { }` rides the
+       `return` rung (its else must DIVERGE, and the language has
+       no diverging statement yet); `while let` rides the same;
+       effectively-final narrowing is its own slice (needs `!=
+       null` presence tests in the eq law first).
+       Corpus: if_let.av (present/absent, chain-fed, block bodies,
+       string? length), eval == native. 749/749, 30 corpus.
 
 THE RULINGS on the decision doc's open questions:
 - VISIBLE (P7): yes. `avra ir` already shows the truth (a bare
@@ -2269,6 +2301,25 @@ into features (or spec commitments) when their milestone comes.
   of a one-of-N declaration table, and the same shape will recur
   for the next such enum. Filed 2026-08-30 by the slice (b) review.
 
+- MULTI-CLAUSE `if let` — `if let a? = f(), b? = g() { use both }
+  else { }` (Swift's precedent). One absent clause takes the else;
+  each bind is fresh. Kills the nesting pyramid that
+  nullable_test's "it nests, each bind in its own scope" exhibits —
+  written BY the primary consumer, who reached for the flat form
+  first. Pure sugar over nested MatchOpt; can land any time after
+  N3. Filed 2026-08-30 by the consumer's-hat review.
+
+- LEFT-CHAINED `??` — `a ?? b ?? c` with no parens: relax the
+  coalesce RIGHT side to accept the carried type OR its nullable;
+  the chain stays nullable until a guarantee closes it. The
+  JS/Kotlin/C# elvis prior is left-associative chains that just
+  work, so P1 says models will write it (this one did, in the
+  first red team). Today it refuses with the group-right help —
+  good message, wrong requirement. SPEC TOUCH (Axis 10.3's
+  "right side is the guaranteed-present fallback") — needs
+  ratification before building. Filed 2026-08-30 by the
+  consumer's-hat review.
+
 - ONE INTERLEAVED POSTFIX FOLD — a GRAMMAR-ENGINE ask, found by the
   deep red team on `?.`: `x!.length` does not parse, because `!`
   (the `forced` level) sits BELOW member access in the ladder, so a
@@ -2384,6 +2435,62 @@ into features (or spec commitments) when their milestone comes.
   algebra names the family. `shape` is reserved in bs2 for exactly
   this. contract.av is the wanting site, and this evidence bumps
   shapes' priority when rung 7 (structs) lands.
+
+## The consumer's-hat review (2026-08-30, recorded)
+
+The primary consumer (the LLM building this compiler) reviewed the
+nullability arc wearing the "world's best language" hat. What it
+wrote wrong FIRST TRY this session is P1's own metric failing, so
+the friction list is evidence, not opinion:
+
+THE P1 FRICTION LIST, with proposed promotions (the consumer's
+recommended order was accepted as the working sequence):
+1. ANNOTATED `let` — `let x: string? = null` does not parse; the
+   let takes no annotation. Universal prior (TS/Rust/Kotlin), the
+   cheapest P1 hole on the board. APPROVED: the next slice.
+2. `return` — no early exit exists; blocks let-else, guard idioms,
+   and the strongest structural prior in training data. Deferred
+   from rung 2/3; PROMOTED to its own designed arc (divergence
+   typing + scope-unwind releases are real design, not a quickie).
+3. `!= null` presence tests + effectively-final narrowing —
+   REFRAMED from "ergonomic sugar" to P1-critical: models emit
+   `if x != null` by reflex. Rides after annotated let.
+4. LEFT-CHAINED `??` — filed in the sugar backlog; spec touch,
+   awaits ratification.
+5. THE PARSE-RECOVERY FLOOR — "expected BREAK" at the wrong token
+   is the most EXPENSIVE error class for a generating consumer (a
+   wrong span means a wrong repair). The match-chain/recovery arc
+   is a P1 arc, not polish.
+
+WHAT IS ALREADY WORLD-CLASS from the consumer's seat, named so it
+is amplified, not diluted: refusals that contain the fix; the
+eval == native differential; visible IR (`avra ir` was used to
+debug the compiler's own author this session); the ratchets
+(mechanical guardrails outrank documentation for a consumer whose
+failure mode is plausible-but-wrong).
+
+FUTURE FEATURES RECORDED (ideas, not commitments — each needs a
+design round when its time comes):
+- TYPED HOLES as the drafting workflow: promote the error-tolerant
+  parse's holes to surface (`todo` as a typed expression); the
+  compiler answers each hole's expected type + in-scope candidates;
+  generation becomes draft-holes-fill. Agda/Idris precedent for
+  humans; nobody ships it as the GENERATION loop's interface.
+- DIAGNOSTICS AS STRUCTURED EDITS: every refusal carries
+  `suggested_edit { span, replacement }`; `--diagnostics=json`;
+  `avra fix` applies the deterministic ones. The old tree's epic
+  ratified this (its Phase 6); the clean room re-commits. Our
+  remedies are already English one step from being edits.
+- `avra why <span>` — PROVENANCE as a query (P10): the chain of
+  facts that made an expression's type what it is, printed from
+  the side tables that already hold them.
+- LAYOUT AS A SOCIAL FACT: extend the never-allocates pattern —
+  every representation choice queryable (`avra layout User?`) and
+  CI-pinned, so guarantees are citable artifacts.
+- THE TRAP LIST AS NEGATIVE SPEC: every bs2 subset trap in
+  CLAUDE.md is a sentence of the form "the real Avra must make
+  this impossible". TRIGGER: at self-host, the list converts into
+  a test suite — the language's negative space, pinned.
 
 ## Self-host endgames (recorded, not scheduled)
 
