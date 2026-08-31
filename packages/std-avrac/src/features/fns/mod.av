@@ -7,9 +7,10 @@ use diagnostics.{DiagCode}
 
 export fn fns() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name      | build
-        "fn_decl" | build_fn
-        "call"    | build_call
+        name          | build
+        "fn_decl"     | build_fn
+        "call"        | build_call
+        "pinned_call" | build_pinned_call
         "return_stmt" | build_return
     }
     let codes = table<DiagCode> {
@@ -21,10 +22,11 @@ export fn fns() -> LanguageFeature {
     }
     component LanguageFeature f {
         name = "fns"
-        docs = "`fn name(params) -> type { expression }`, and calls `name(args)`."
+        docs = "`fn name(params) -> type { expression }` — generic with `fn name<T>(…)`, one abstract check, one lowering per instantiation; calls `name(args)`, `name<int>(args)` pinning what arguments cannot; `return` answers early."
         gram = """
-stmt = "fn" n:NAME "(" ( ps:NAME ":" pt:type ( "," ps:NAME ":" pt:type )* )? ")" "->" r:type b:block BREAK @recover(sync_to: "BREAK") -> fn_decl(n, ps, pt, r, b)
+stmt = "fn" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ">" )? "(" ( ps:NAME ":" pt:type ( "," ps:NAME ":" pt:type )* )? ")" "->" r:type b:block BREAK @recover(sync_to: "BREAK") -> fn_decl(n, tp, ps, pt, r, b)
 stmt = "return" v:expression BREAK @recover(sync_to: "BREAK") -> return_stmt(v)
+primary = c:NAME "<" pin:type ( "," pin:type )* ">" "(" ( as:expression ( "," as:expression )* )? ")" -> pinned_call(c, pin, as)
 primary = c:NAME "(" ( as:expression ( "," as:expression )* )? ")" @expect(")", "expected `)` to close the arguments") -> call(c, as)
 """
         builders = rows

@@ -73,8 +73,9 @@ export enum Expr {
     /// (`return`, `fail`): a block that leaves needs no tail, and
     /// it answers whatever the fn it leaves promises.
     Block(stmts: List<StmtId>, value: ExprId?)
-    /// A direct call by name; fn values arrive later.
-    Call(callee: string, args: List<ExprId>)
+    /// A direct call by name; fn values arrive later. `pins` are
+    /// explicit type arguments (`f<int>(x)`) — empty when inferred.
+    Call(callee: string, pins: List<TypeRef>, args: List<ExprId>)
     /// `Name { field: value, ... }` — fields in WRITTEN order
     /// (evaluation order); lowering reorders to declaration slots.
     StructLit(name: string, fields: List<string>, values: List<ExprId>)
@@ -184,7 +185,9 @@ export enum Stmt {
     Assign(name: string, value: ExprId)
     /// An expression at statement position.
     ExprStmt(value: ExprId)
-    FnDecl(name: string, params: List<Param>, ret: TypeRef, body: ExprId)
+    /// `tparams` are the declared type parameters, in order — the
+    /// ordinal IS the Var identity.
+    FnDecl(name: string, tparams: List<string>, params: List<Param>, ret: TypeRef, body: ExprId)
     /// Condition re-evaluated each turn; the body is a scope.
     While(cond: ExprId, stmts: List<StmtId>)
     /// `if c { … }` (optionally `else { … }`) at STATEMENT
@@ -289,7 +292,9 @@ impl NodeStore {
             .If(cond, on_true, on_false) ->
                 fp(10, [self.expr_fingerprint(cond), self.expr_fingerprint(on_true),
                         self.expr_fingerprint(on_false)]),
-            .Call(callee, args) -> fp(11, [fp_str(callee)].concat(self.expr_fps(args))),
+            .Call(callee, pins, args) ->
+                fp(11, flatten([[fp_str(callee)], [type_fp(p) for p in pins],
+                                self.expr_fps(args)])),
             .When(conds, values, fallback) ->
                 fp(13, flatten([self.expr_fps(conds), self.expr_fps(values),
                                 [self.expr_fingerprint(fallback)]])),
@@ -363,8 +368,9 @@ impl NodeStore {
                 fp(18, [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to)].concat(self.stmt_fps(stmts))),
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
             .Error -> fp(7, []),
-            .FnDecl(name, params, ret, body) ->
-                fp(12, flatten([[fp_str(name)], param_fps(params),
+            .FnDecl(name, tparams, params, ret, body) ->
+                fp(12, flatten([[fp_str(name)], [fp_str(t) for t in tparams],
+                                param_fps(params),
                                 [type_fp(ret), self.expr_fingerprint(body)]])),
             .StructDecl(name, fields) ->
                 fp(25, [fp_str(name)].concat(param_fps(fields))),

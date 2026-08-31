@@ -6,10 +6,11 @@ use features.{LangNode, Builder}
 
 fn build_fn(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    let ps = b.tokens(1)?
-    let pt = b.type_refs(2)?
-    let r = b.type_ref(3)?
-    let body = b.expr(4)?
+    let tp = b.tokens(1)?
+    let ps = b.tokens(2)?
+    let pt = b.type_refs(3)?
+    let r = b.type_ref(4)?
+    let body = b.expr(5)?
     if ps.length != pt.length {
         return Result.Err("param names and types disagree in count")
     }
@@ -18,13 +19,23 @@ fn build_fn(b: Builder) -> Result<LangNode, string> {
     for (j, p) in ps.enumerate() {
         params.push(Param { name: p.text, ty: pt[j] })
     }
-    b.make_stmt(Stmt.FnDecl(n.text, params, r, body))
+    b.make_stmt(Stmt.FnDecl(n.text, [t.text for t in tp], params, r, body))
 }
 
 fn build_call(b: Builder) -> Result<LangNode, string> {
     let c = b.token(0)?
     let args = b.exprs(1)?
-    b.make_expr(Expr.Call(c.text, args))
+    b.make_expr(Expr.Call(c.text, [], args))
+}
+
+/// `f<int>(x)` — the explicit pins. The no-chain comparison law is
+/// what makes this branch safe to claim: `a<b>(c)` has no legal
+/// comparison reading to steal.
+fn build_pinned_call(b: Builder) -> Result<LangNode, string> {
+    let c = b.token(0)?
+    let pins = b.type_refs(1)?
+    let args = b.exprs(2)?
+    b.make_expr(Expr.Call(c.text, pins, args))
 }
 
 fn build_return(b: Builder) -> Result<LangNode, string> {

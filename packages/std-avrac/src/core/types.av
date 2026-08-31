@@ -28,6 +28,12 @@ export enum Type {
     /// `T?` — a value that may be ABSENT. Nullability is opt-in
     /// (spec Axis 10.2), so every other shape is a guarantee.
     Opt(inner: TypeId)
+    /// A generic fn's TYPE PARAMETER — nominal to its declaration
+    /// site, by ordinal (`fn f<A, B>` interns Var(f, 0) and
+    /// Var(f, 1); the name rides for printing). Abstract: a value
+    /// of this type can only MOVE, and mono guarantees no register
+    /// is ever minted wearing it.
+    Var(decl: StmtId, ordinal: int, name: string)
     /// `Result<T, E>` — an answer OR a failure. A BUILT-IN enum
     /// (variants `Ok`/`Err`), structural like `Opt`: interned by
     /// its sides, no generics involved. A tagged slot array at
@@ -61,7 +67,7 @@ export fn ptr_shape(t: Type) -> bool {
     match t {
         .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
         .Res(_, _) or .Null -> true,
-        .Int or .Bool or .Error or .TypeName(_, _) -> false,
+        .Int or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) -> false,
     }
 }
 
@@ -81,6 +87,7 @@ impl TypeRegistry {
             .Opt(inner) -> "8:${inner.index}",
             .Null -> "9",
             .Res(ok, err) -> "10:${ok.index}.${err.index}",
+            .Var(decl, ordinal, _) -> "11:${decl.index}.${ordinal}",
         }
     }
 
@@ -130,6 +137,23 @@ impl TypeRegistry {
         }
     }
 
+    /// `ty` with the TARGET fn's Vars replaced by `args`, by
+    /// ordinal — THE substitution, recursive through every
+    /// composite. Another fn's Vars pass through untouched.
+    fn substituted(self, ty: TypeId, target: StmtId, args: List<TypeId>) -> TypeId {
+        match self.shape_of(ty) {
+            // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
+            .Var(decl, j, _) ->
+                if decl.index == target.index { args[j] } else { ty },
+            .List(elem) -> self.intern(Type.List(self.substituted(elem, target, args))),
+            .Opt(inner) -> self.intern(Type.Opt(self.substituted(inner, target, args))),
+            .Res(ok, err) -> self.intern(Type.Res(self.substituted(ok, target, args),
+                                                  self.substituted(err, target, args))),
+            .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+            .TypeName(_, _) or .Null or .Error -> ty,
+        }
+    }
+
     /// The printing projection — the ONLY place a type becomes text.
     fn name_of(self, id: TypeId) -> string {
         match self.shape_of(id) {
@@ -142,6 +166,7 @@ impl TypeRegistry {
             .TypeName(_, name) -> "type ${name}",
             .Opt(inner) -> "${self.name_of(inner)}?",
             .Res(ok, err) -> "Result<${self.name_of(ok)}, ${self.name_of(err)}>",
+            .Var(_, _, name) -> name,
             .Null -> "null",
             .Error -> "<error>",
         }

@@ -222,3 +222,113 @@ fn arms_answer(cx: TypeCx, anchor: ExprId, values: List<ExprId>) -> TypeId {
 export fn this_is(n: string) -> string {
     "this is a `${n}`"
 }
+
+/// UNIFICATION, exact: bind the callee's Vars from an argument's
+/// computed type, recursing through the composites. No widening
+/// rides through a generic param — a lift needs a visible concrete
+/// target (the recorded G1 law). Errors absorb.
+export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+    if cx.types.shape_of(got) is .Error { return true }
+    if cx.types.shape_of(want) is .Error { return true }
+    match cx.types.shape_of(want) {
+        .Var(decl, j, _) -> var_binds(decl, j, got, target, bound),
+        .List(w) -> elem_unifies(cx, w, got, target, bound),
+        .Opt(w) -> carried_unifies(cx, w, got, target, bound),
+        .Res(wo, we) -> sides_unify(cx, wo, we, got, target, bound),
+        // LICENSED I9: type identity — interned ids ARE the agreement
+        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+        .TypeName(_, _) or .Null or .Error -> want.index == got.index,
+    }
+}
+
+/// One Var meets one concrete type: first sight binds (through the
+/// caller's slots — an out param), a second must agree.
+// LICENSED I3: `bound` is the caller's slot list; set() through the alias IS the answer
+fn var_binds(decl: StmtId, j: int, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+    // a sig speaks only its OWN fn's Vars; anything else is no match
+    // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
+    if decl.index != target.index { return false }
+    let seen: TypeId? = bound[j]
+    if seen == null {
+        // LICENSED I7: rebind-alias — set() needs a mut binding
+        mut slots = bound
+        slots.set(j, got)
+        return true
+    }
+    // LICENSED I9: type identity — interned ids ARE the agreement
+    seen!.index == got.index
+}
+
+fn elem_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+    match cx.types.shape_of(got) {
+        .List(g) -> unify(cx, w, g, target, bound),
+        _ -> false,
+    }
+}
+
+fn carried_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+    match cx.types.shape_of(got) {
+        .Opt(g) -> unify(cx, w, g, target, bound),
+        _ -> false,
+    }
+}
+
+fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+    let sides: ResSides? = cx.types.res_parts(got)
+    if sides == null { return false }
+    unify(cx, wo, sides!.ok, target, bound) && unify(cx, we, sides!.err, target, bound)
+}
+
+/// A shape a SLOT may hold: a scalar word, or an unmanaged
+/// pointer. Managed values and register-pair nullables wait for
+/// ownership analysis; Error absorbs (the name law already spoke).
+/// A Var passes ABSTRACTLY — each instantiation re-judges it
+/// (`instantiation_lawful`), so nothing smuggles past by wearing T.
+export fn slot_worthy(sh: Type) -> bool {
+    match sh {
+        .Int or .Bool or .Struct(_, _) or .Enum(_, _) or
+        .Res(_, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) -> true,
+        .Str or .Opt(_) or .Null or .Error -> false,
+    }
+}
+
+/// The representation laws, re-judged on a SUBSTITUTED type: every
+/// `Result` side must still be slot-worthy once T is concrete — a
+/// call binding `T` to `int?` cannot smuggle a pair into a box's
+/// word slot. Answers the offending side, or absence when lawful.
+export fn unlawful_side(cx: TypeCx, ty: TypeId) -> TypeId? {
+    match cx.types.shape_of(ty) {
+        .Res(ok, err) -> res_side_unlawful(cx, ok, err),
+        .List(elem) -> unlawful_side(cx, elem),
+        .Opt(inner) -> unlawful_side(cx, inner),
+        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+        .TypeName(_, _) or .Var(_, _, _) or .Null or .Error -> null,
+    }
+}
+
+fn res_side_unlawful(cx: TypeCx, ok: TypeId, err: TypeId) -> TypeId? {
+    if !slot_worthy(cx.types.shape_of(ok)) { return ok }
+    if !slot_worthy(cx.types.shape_of(err)) { return err }
+    unlawful_side(cx, ok) ?? unlawful_side(cx, err)
+}
+
+/// Whether every Var of `target` inside `ty` is already bound —
+/// when true, the param is effectively concrete and the ordinary
+/// assignment law (widening included) can judge the argument.
+export fn fully_bound(cx: TypeCx, ty: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+    match cx.types.shape_of(ty) {
+        // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
+        .Var(decl, j, _) ->
+            if decl.index == target.index { bound[j] != null } else { true },
+        .List(elem) -> fully_bound(cx, elem, target, bound),
+        .Opt(inner) -> fully_bound(cx, inner, target, bound),
+        .Res(ok, err) -> fully_bound(cx, ok, target, bound) && fully_bound(cx, err, target, bound),
+        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+        .TypeName(_, _) or .Null or .Error -> true,
+    }
+}
+
+/// The bound slots as a full substitution — unbound slots absorb.
+export fn bound_args(cx: TypeCx, bound: List<TypeId?>) -> List<TypeId> {
+    [b ?? cx.error_type for b in bound]
+}

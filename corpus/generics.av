@@ -1,0 +1,52 @@
+// proves: generic fns, monomorphized — one abstract body, one
+// specialized lowering per distinct instantiation, registers
+// concrete every time. Composition (generic calls generic — the
+// substitutions compose), List<T> params, T? and Result<T, E> in
+// generic signatures, explicit pins, and a string specialization
+// churning owned values.
+enum E {
+    empty
+}
+
+fn id<T>(x: T) -> T {
+    x
+}
+
+fn twice_id<T>(x: T) -> T {
+    id(id(x))
+}
+
+fn pick<T>(a: T, b: T, first: bool) -> T {
+    if first { a } else { b }
+}
+
+fn or_else<T>(v: T?, alt: T) -> T {
+    v ?? alt
+}
+
+fn head_or<T>(xs: List<T>) -> Result<T, E> {
+    if xs.length == 0 {
+        fail E.empty
+    }
+    xs[0]
+}
+
+fn some_int(v: int) -> int? { v }
+fn none_int() -> int? { null }
+
+fn first_of(xs: List<int>) -> int {
+    head_or(xs) catch 0 - 1
+}
+
+fn churn(i: int) -> int {
+    let held = id("turn ${i}")
+    held.length + id(i)
+}
+
+mut t = 0
+mut i = 0
+while i < 100 {
+    t = t + churn(i)
+    i = i + 1
+}
+"${id(41) + 1} ${twice_id("deep")} ${pick(1, 2, false)} ${id<bool>(true)} ${or_else(some_int(4), 0)} ${or_else(none_int(), 9)} ${first_of([7, 8])} ${first_of([4])} c ${t}"

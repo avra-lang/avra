@@ -293,9 +293,9 @@ against these before writing; probe in scratch when unsure.
   a trailing comma, or aligned continuation lines. Wrap wide ones.
 - `ref`, `none`, `shape`, and `table` are reserved words — including
   as variable and method names; `then` refuses as a struct/enum
-  field name, and `given` refuses as a LOCAL (the spec DSL's
-  words are lexed even in ordinary code: "expected variable
-  name" at the `let`).
+  field name, and `given` and `spec` refuse as LOCALS (the spec
+  DSL's words are lexed even in ordinary code: "expected variable
+  name" at the `let` — `spec` bit during the mono worklist).
 - `.reverse()` mutates IN PLACE and returns the SAME aliased list
   (probed: the source list's order changes too) — never treat it as
   a copy; assume `.sort()` matches. A safe reversed copy stays

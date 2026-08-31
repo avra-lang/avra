@@ -1,0 +1,97 @@
+// Generic fns, vertically: one abstract body checked once, one
+// specialization lowered per instantiation (mono, ROADMAP rung 11
+// G1). Unification is exact and by direct arguments; pins fill the
+// rest; an unconstrained T can only MOVE.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+spec "features/fns/generics" {
+    given "one recipe, many types" {
+        then "the identity serves int" {
+            shown("fn id<T>(x: T) -> T {\n    x\n}\nid(41) + 1") == "42"
+        }
+        then "the identity serves bool" {
+            shown("fn id<T>(x: T) -> T {\n    x\n}\nid(true)") == "true"
+        }
+        then "the identity serves string" {
+            shown("fn id<T>(x: T) -> T {\n    x\n}\nid(\"w\")") == "w"
+        }
+        then "a generic calls a generic — substitutions compose" {
+            shown("fn id<T>(x: T) -> T {\n    x\n}\nfn twice<T>(x: T) -> T {\n    id(id(x))\n}\ntwice(7)") == "7"
+        }
+        then "`List<T>` binds from the element" {
+            shown("fn head<T>(xs: List<T>, alt: T) -> T {\n    if xs.length > 0 { xs[0] } else { alt }\n}\nhead([4, 5], 0)") == "4"
+        }
+        then "`T?` rides a generic signature" {
+            shown("fn or_else<T>(v: T?, alt: T) -> T {\n    v ?? alt\n}\nfn none_int() -> int? { null }\nor_else(none_int(), 9)") == "9"
+        }
+        then "`Result<T, E>` rides one too — and `?` inside the body" {
+            shown("enum E {\n    empty\n}\nfn head_or<T>(xs: List<T>) -> Result<T, E> {\n    if xs.length == 0 {\n        fail E.empty\n    }\n    xs[0]\n}\nhead_or([5]) catch 0 - 1") == "5"
+        }
+        then "an explicit pin fills what arguments cannot" {
+            shown("fn id<T>(x: T) -> T {\n    x\n}\nid<int>(8)") == "8"
+        }
+        then "self-recursion at the same T terminates the worklist" {
+            shown("fn burn<T>(x: T, n: int) -> T {\n    if n == 0 {\n        return x\n    }\n    burn(x, n - 1)\n}\nburn(7, 50)") == "7"
+        }
+    }
+    given "the fully-bound fallback — pins make a param concrete" {
+        then "`null` rides a PINNED `T?` — the ordinary law judges it" {
+            shown("fn or_else<T>(v: T?, alt: T) -> T {\n    v ?? alt\n}\nor_else<int>(null, 5)") == "5"
+        }
+        then "a plain value widens into a pinned `T?`" {
+            shown("fn f<T>(v: T?, alt: T) -> T {\n    v ?? alt\n}\n2 + f<int>(5, 9)") == "7"
+        }
+        then "an UNPINNED `null` refuses and names the pin" {
+            refused_with("fn or_else<T>(v: T?, alt: T) -> T {\n    v ?? alt\n}\nor_else(null, 5)",
+                         "a bare `null` cannot pin `T`")
+        }
+        then "comparisons survive the pinned-call branch everywhere" {
+            shown("let a = 3\nlet b = 5\nif a < b { 1 } else { 0 }") == "1"
+        }
+        then "T binds through nested composites" {
+            shown("fn or_else<T>(v: T?, alt: T) -> T {\n    v ?? alt\n}\nfn some_int(v: int) -> int? { v }\nor_else(some_int(4), 0)") == "4"
+        }
+    }
+    given "the abstract body — T can only move" {
+        then "arithmetic on T refuses through the existing law — one voice per operand" {
+            refusals("fn bad<T>(x: T) -> T {\n    x + x\n}\nbad(1)") == 2
+        }
+        then "a mut cell refuses T conservatively — it could be managed" {
+            refused_with("fn bad<T>(x: T) -> T {\n    mut y = x\n    y\n}\nbad(1)",
+                         "a `mut` binding cannot hold a managed value yet")
+        }
+    }
+    given "instantiation, refused in its own words" {
+        then "arguments that disagree name the argument" {
+            refused_with("fn pick<T>(a: T, b: T) -> T {\n    a\n}\npick(1, \"s\")",
+                         "argument 2 of `pick` wants `T`, found `string`")
+        }
+        then "an unpinnable T says how to pin it" {
+            refused_with("fn zero<T>(n: int) -> int {\n    n\n}\nzero(5)",
+                         "`T` is not pinned by the arguments")
+        }
+        then "a pin against a disagreeing argument refuses" {
+            refused_with("fn id<T>(x: T) -> T {\n    x\n}\nid<int>(\"s\")",
+                         "argument 1 of `id` wants `T`, found `string`")
+        }
+        then "pins on a plain fn refuse" {
+            refused_with("fn plain(x: int) -> int {\n    x\n}\nplain<int>(5)",
+                         "`plain` takes no type arguments")
+        }
+        then "a binding cannot smuggle a nullable into a Result side" {
+            refused_with("enum E {\n    empty\n}\nfn wrap<T>(x: T) -> Result<T, E> {\n    x\n}\nfn none_int() -> int? { null }\nwrap(none_int())",
+                         "this call makes a `Result` side `int?`, which a side cannot hold yet")
+        }
+        then "a type parameter cannot take the language's names" {
+            refused_with("fn f<int>(x: int) -> int {\n    x\n}\nf(1)",
+                         "a type parameter cannot take `int`'s name")
+        }
+        then "printing T waits for traits — MOVE only, conservatively" {
+            refused_with("fn tagged<T>(x: T) -> string {\n    \"v=$" + "{x}\"\n}\ntagged(1)",
+                         "an interpolation hole prints as a scalar or string, found `T`")
+        }
+        then "RECORDED TRIGGER: an empty list under a pin waits for target-typing" {
+            refusals("fn head<T>(xs: List<T>, alt: T) -> T {\n    alt\n}\nhead<int>([], 9)") == 1
+        }
+    }
+}

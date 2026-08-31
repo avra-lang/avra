@@ -8,8 +8,9 @@
 //! the annotations alone, so a call may name a fn declared later.
 use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, spelled, TypeRegistry, new_type_registry, filled, plain}
 use diagnostics.{Diag, loc_at, error_at, pointed}
-use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig, Asked,
-              fn_sig_of, record_sig_of, variant_sig_of, duplicate_names, res_enum_sig}
+use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig, Asked, Sub,
+              fn_sig_of, record_sig_of, variant_sig_of, duplicate_names, res_enum_sig,
+              slot_worthy}
 use @std.errors.{Loc}
 
 /// The pass's facts: the registry, a dense expression table, and a
@@ -21,6 +22,7 @@ export type Typing = {
     of_expr: List<TypeId>,
     widens: List<TypeId?>,
     narrows: List<TypeId?>,
+    substs: List<Sub?>,
     decls: List<DeclSig?>,
     diagnostics: List<Diag>,
 }
@@ -53,6 +55,8 @@ type Typer = {
     narrow_defs: List<NarrowFrame>,
     narrow_params: List<NarrowFrame>,
     fn_ret: List<TypeId>,
+    tscope: List<TypeId>,
+    substs: List<Sub?>,
     decls: List<DeclSig?>,
     diagnostics: List<Diag>,
 }
@@ -70,7 +74,8 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         asks: filled<Asked?>(p.store.exprs.count(), null),
         pattern_types: filled<TypeId?>(p.store.exprs.count(), null),
         binding_types: filled<TypeId?>(p.store.stmts.count(), null),
-        narrow_defs: [], narrow_params: [], fn_ret: [],
+        narrow_defs: [], narrow_params: [], fn_ret: [], tscope: [],
+        substs: filled<Sub?>(p.store.exprs.count(), null),
         decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
@@ -79,7 +84,7 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
     type_stmts(t, [], p.stmts)
     Typing {
         types: t.types, of_expr: t.of_expr, widens: t.widens,
-        narrows: t.narrows, decls: t.decls,
+        narrows: t.narrows, substs: t.substs, decls: t.decls,
         diagnostics: t.diagnostics,
     }
 }
@@ -94,7 +99,7 @@ fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
         store: t.p.store,
         expr: ecx,
         walk: (v: ExprId) -> type_walk(t, param_types, v),
-        walk_under: (pts: List<TypeId>, ret: TypeId, body: ExprId) -> walk_fn_body(t, pts, ret, body),
+        walk_under: (s: StmtId, body: ExprId) -> walk_fn_body(t, s, body),
         type_stmts: (body: List<StmtId>) -> type_stmts(t, param_types, body),
         sig_of: (s: StmtId) -> fn_sig_of(t.decls[s.index]),
         assign_target: (s: StmtId) -> assign_target_of(t.resolution, s),
@@ -106,13 +111,17 @@ fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
     for s in stmts { stmt_semantics_of(t.p.dispatch, t.p.store.stmt(s)).type_stmt(cx, s) }
 }
 
-/// A fn BODY's walk: the declared answer is in scope for exactly
-/// the walk, so `return` statements can be judged where they stand.
-fn walk_fn_body(t: Typer, param_types: List<TypeId>, ret: TypeId, body: ExprId) {
+/// A fn BODY's walk: the declared answer AND the type parameters
+/// are in scope for exactly the walk — `return` judges where it
+/// stands, and a body-level `let x: T` resolves the fn's own Vars.
+fn walk_fn_body(t: Typer, s: StmtId, body: ExprId) {
+    let sig: FnSig? = fn_sig_of(t.decls[s.index])
     // LICENSED I15: this IS the bracket
     mut rs = t.fn_ret
-    rs.push(ret)
-    type_walk(t, param_types, body)
+    rs.push(sig?.ret ?? t.error_type)
+    t.enter_tscope(s)
+    type_walk(t, sig?.params ?? [], body)
+    t.leave_tscope()
     let _ = rs.pop()
 }
 
@@ -143,6 +152,8 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         ask_of: (e: ExprId) -> t.asks[e.index],
         walk_narrowed: (subject: ExprId, branch: ExprId) -> narrowed_subtree(t, param_types, subject, branch),
         enclosing_ret: () -> t.fn_ret.last(),
+        record_subst: (e: ExprId, target: StmtId, targs: List<TypeId>) -> t.record_subst(e, target, targs),
+        written: (s: StmtId, tr: TypeRef) -> t.full_type(s, tr),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
         loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
         emit: (d: Diag) -> t.speak(d),
@@ -352,10 +363,61 @@ impl Typer {
         for d in duplicate_names("type.duplicate_param", owner, [pp.name for pp in fparams], self.stmt_loc(s)) {
             self.speak(d)
         }
+        self.refuse_taken_tparams(s, owner)
+        self.enter_tscope(s)
         let ptypes = [self.annotated(s, pp.ty) for pp in fparams]
         let rt = self.annotated(s, fret)
+        self.leave_tscope()
         let sig = FnSig { params: ptypes, ret: rt }
         self.declare(s, DeclSig.Fn(sig))
+    }
+
+    /// A type parameter cannot take a name the LANGUAGE owns — the
+    /// shadow would be unreadable; declared-type shadowing is the
+    /// ordinary lexical kind and stands.
+    fn refuse_taken_tparams(self, s: StmtId, owner: string) {
+        let parts: FnParts? = self.p.store.fn_parts(s)
+        if parts == null { return }
+        for d in duplicate_names("type.tparam", owner, parts!.tparams, self.stmt_loc(s)) {
+            self.speak(d)
+        }
+        for n in parts!.tparams {
+            if builtin_type_name(n) {
+                self.speak(pointed(
+                    error_at("type.tparam", self.stmt_loc(s),
+                        "a type parameter cannot take `${n}`'s name — the language owns it"),
+                    "declared here")
+                    with { help: "pick another name — `T`, `E`, `Elem`" })
+            }
+        }
+    }
+
+    /// The fn's type parameters as interned Vars — the ordinal IS
+    /// the identity, so every ask agrees by construction.
+    fn tvars_of(self, s: StmtId) -> List<TypeId> {
+        let parts: FnParts? = self.p.store.fn_parts(s)
+        if parts == null { return [] }
+        mut out: List<TypeId> = []
+        // LICENSED I3: the ordinal needs the index; comprehensions cannot destructure enumerate
+        for (j, n) in parts!.tparams.enumerate() {
+            out.push(self.types.intern(Type.Var(s, j, n)))
+        }
+        out
+    }
+
+    /// The type-parameter scope brackets — one fn at a time, no
+    /// nesting (the language has no nested fns).
+    fn enter_tscope(self, s: StmtId) {
+        mut ts = self.tscope
+        // LICENSED I3: pushing through the field alias — concat would rebind the local
+        for v in self.tvars_of(s) { ts.push(v) }
+    }
+
+    fn leave_tscope(self) {
+        mut ts = self.tscope
+        while !ts.is_empty() {
+            let _ = ts.pop()
+        }
     }
 
     /// An annotation's TypeId: what its NAME stands for, wrapped
@@ -416,7 +478,8 @@ impl Typer {
             let ty = self.full_type(s, a)
             if self.types.shape_of(ty) is .Error { return ty }
             // A Result's sides are SLOTS of its box — the slot law
-            // (unmanaged words) judges them like any payload.
+            // (unmanaged words) judges them like any payload. A Var
+            // passes here and every INSTANTIATION re-judges.
             if t.name == "Result" && !slot_worthy(self.types.shape_of(ty)) {
                 self.speak(pointed(
                     error_at("type.applied", self.stmt_loc(s),
@@ -432,9 +495,12 @@ impl Typer {
         self.types.intern(sh!)
     }
 
-    /// What a written NAME stands for: a builtin shape, a declared
-    /// type, or a spoken absence.
+    /// What a written NAME stands for: the enclosing fn's type
+    /// parameter first, then a builtin shape, a declared type, or a
+    /// spoken absence.
     fn named_type(self, s: StmtId, name: string) -> TypeId {
+        let tv: TypeId? = self.tscope.find(var_named(self.types, it, name))
+        if tv != null { return tv! }
         let sh: Type? = shape_named(name)
         if sh != null { return self.types.intern(sh!) }
         let decl: StmtId? = self.resolution.type_defs.get(name)
@@ -555,6 +621,12 @@ impl Typer {
         bs.set(s.index, ty)
     }
 
+    /// A call's recorded instantiation — what mono lowers from.
+    fn record_subst(self, e: ExprId, target: StmtId, targs: List<TypeId>) {
+        mut ss = self.substs
+        ss.set(e.index, Sub { target: target, args: targs })
+    }
+
     /// A call's target signature, when resolve found one.
     fn sig_at(self, e: ExprId) -> FnSig? {
         let b: Binding? = binding_of(self.resolution, e)
@@ -589,7 +661,7 @@ impl Typer {
             .Enum(decl, _) -> variant_sig_of(self.decls[decl.index]),
             .Res(ok, err) -> res_enum_sig(ok, err),
             .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
-            .TypeName(_, _) or .Opt(_) or .Null or .Error -> null,
+            .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or .Error -> null,
         }
     }
 
@@ -599,13 +671,11 @@ impl Typer {
     }
 }
 
-/// A shape a SLOT may hold: a scalar word, or an unmanaged
-/// pointer. Managed values and register-pair nullables wait for
-/// ownership analysis; Error absorbs (the name law already spoke).
-fn slot_worthy(sh: Type) -> bool {
-    match sh {
-        .Int or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .Res(_, _) or .TypeName(_, _) or .List(_) -> true,
-        .Str or .Opt(_) or .Null or .Error -> false,
+
+/// Whether an interned id is the Var wearing this name.
+fn var_named(types: TypeRegistry, id: TypeId, name: string) -> bool {
+    match types.shape_of(id) {
+        .Var(_, _, n) -> n == name,
+        _ -> false,
     }
 }

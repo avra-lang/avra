@@ -37,6 +37,11 @@ export type ResolveCx = {
 /// A fn's typed signature, as the type pass computed it.
 export type FnSig = { params: List<TypeId>, ret: TypeId }
 
+/// A recorded INSTANTIATION: which generic fn a call targets and
+/// what each of its Vars bound to, by ordinal. Typing records it;
+/// mono lowers one body per distinct binding.
+export type Sub = { target: StmtId, args: List<TypeId> }
+
 /// A recorded PRESENCE TEST: which subject a `== null`/`!= null`
 /// asked about, and which branch its truth proves PRESENT. The
 /// spine records it as a fact; `if` queries it — features never
@@ -169,6 +174,8 @@ export type TypeCx = {
     ask_of: fn(ExprId) -> Asked?,
     walk_narrowed: fn(ExprId, ExprId) -> TypeId,
     enclosing_ret: fn() -> TypeId?,
+    record_subst: fn(ExprId, StmtId, List<TypeId>),
+    written: fn(StmtId, TypeRef) -> TypeId,
     name_at: fn(ExprId) -> string,
     loc_of: fn(ExprId) -> Loc?,
     emit: fn(Diag),
@@ -201,6 +208,7 @@ export type LowerCx = {
     emit: fn(Ins),
     lower_block: fn(List<StmtId>, ExprId?) -> Reg,
     enclosing_ret: fn() -> TypeId?,
+    callee_of: fn(ExprId, string) -> string,
     fail: fn(string),
 }
 
@@ -242,7 +250,7 @@ export type StmtTypeCx = {
     store: NodeStore,
     expr: TypeCx,
     walk: fn(ExprId),
-    walk_under: fn(List<TypeId>, TypeId, ExprId),
+    walk_under: fn(StmtId, ExprId),
     type_stmts: fn(List<StmtId>),
     sig_of: fn(StmtId) -> FnSig?,
     assign_target: fn(StmtId) -> StmtId?,

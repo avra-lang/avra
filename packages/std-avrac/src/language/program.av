@@ -138,7 +138,7 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
         .MutLet(_, _, _) -> d.mutlets,
         .Assign(_, _) -> d.assigns,
         .ExprStmt(_) -> d.exprs,
-        .FnDecl(_, _, _, _) -> d.decls,
+        .FnDecl(_, _, _, _, _) -> d.decls,
         .While(_, _) -> d.whiles,
         .For(_, _, _, _, _, _) -> d.fors,
         .StructDecl(_, _) -> d.structdecls,
@@ -175,7 +175,7 @@ impl NodeStore {
             .MutLet(name, _, _) -> name,
             .For(name, _, _, _, _, _) -> name,
             .LetElse(name, _, _) -> name,
-            .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _)
+            .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _, _)
                 or .While(_, _) or .IfStmt(_, _, _) or .Return(_)
                 or .Fail(_) or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
         }
@@ -187,7 +187,7 @@ impl NodeStore {
         match self.stmt(s) {
             .Let(_, t, _) -> t,
             .MutLet(_, t, _) -> t,
-            .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _)
+            .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _, _)
                 or .While(_, _) or .For(_, _, _, _, _, _)
                 or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _)
                 or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
@@ -205,7 +205,7 @@ impl NodeStore {
             .Return(v) -> v,
             .Fail(v) -> v,
             .LetElse(_, v, _) -> v,
-            .FnDecl(_, _, _, _) or .While(_, _)
+            .FnDecl(_, _, _, _, _) or .While(_, _)
                 or .For(_, _, _, _, _, _) or .IfStmt(_, _, _)
                 or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
         }
@@ -220,7 +220,7 @@ impl NodeStore {
             .Return(_) -> true,
             .Fail(_) -> true,
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
-            .FnDecl(_, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
+            .FnDecl(_, _, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .IfStmt(_, _, _) or .LetElse(_, _, _) or
             .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> false,
         }
@@ -230,8 +230,8 @@ impl NodeStore {
     /// projection for the whole variant; callers pick fields.
     fn fn_parts(self, s: StmtId) -> FnParts? {
         match self.stmt(s) {
-            .FnDecl(name, params, ret, body) ->
-                FnParts { name: name, params: params, ret: ret, body: body },
+            .FnDecl(name, tparams, params, ret, body) ->
+                FnParts { name: name, tparams: tparams, params: params, ret: ret, body: body },
             _ -> null,
         }
     }
@@ -243,7 +243,7 @@ impl NodeStore {
             .StructDecl(name, _) -> name,
             .EnumDecl(name, _) -> name,
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
-            .FnDecl(_, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
+            .FnDecl(_, _, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .Error -> null,
         }
     }
@@ -266,7 +266,7 @@ impl NodeStore {
 }
 
 /// What a fn declaration carries, projected once.
-export type FnParts = { name: string, params: List<Param>, ret: TypeRef, body: ExprId }
+export type FnParts = { name: string, tparams: List<string>, params: List<Param>, ret: TypeRef, body: ExprId }
 
 /// What a struct declaration carries, projected once.
 export type StructParts = { name: string, fields: List<Param> }

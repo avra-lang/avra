@@ -7,11 +7,11 @@
 //! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, some_list}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, some_list, joined}
 use diagnostics.{Diag, error_at, pointed, loc_at}
 use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig,
               fn_sig_of, record_sig_of, variant_sig_of, res_enum_sig,
-              adopted, carried_of, okayed, hollow_of}
+              adopted, carried_of, okayed, hollow_of, Sub}
 use @std.errors.{Loc}
 
 /// One lowered body: instructions in order and each register's type
@@ -39,6 +39,8 @@ export type Lowered = {
 type Lower = {
     a: Analysis,
     fn_ret: TypeId?,
+    sub: Sub?,
+    jobs: Jobs,
     ins: List<Ins>,
     reg_types: List<TypeId>,
     regs: List<Reg?>,
@@ -48,11 +50,22 @@ type Lower = {
     failures: List<string>,
 }
 
+/// One SPECIALIZATION to lower: a generic fn under concrete Vars,
+/// named by its mangling.
+type Spec = { name: string, sub: Sub }
+
+/// The mono worklist, ONE instance threaded through every body's
+/// lowering (lists and maps alias): call sites enqueue, the driver
+/// drains. `seen` keys by mangled name.
+type Jobs = { pending: List<Spec>, seen: Map<string, bool> }
+
 /// One lowering per BODY — `fn_ret` is that body's declared answer
-/// (null for main), which is why it is a field, not a stack.
-fn new_lower(a: Analysis, fn_ret: TypeId?) -> Lower {
+/// (null for main) and `sub` its instantiation (null when the body
+/// is not a specialization), which is why they are fields, not
+/// stacks.
+fn new_lower(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> Lower {
     Lower {
-        a: a, fn_ret: fn_ret, ins: [], reg_types: [],
+        a: a, fn_ret: fn_ret, sub: sub, jobs: jobs, ins: [], reg_types: [],
         regs: filled<Reg?>(a.store.exprs.count(), null),
         slots: filled<Reg?>(a.store.stmts.count(), null),
         boxed: filled(a.store.stmts.count(), false),
@@ -61,20 +74,40 @@ fn new_lower(a: Analysis, fn_ret: TypeId?) -> Lower {
     }
 }
 
-/// The whole program as IR: every fn body, then main — one
-/// Application scope each, main printing its last statement.
+/// The whole program as IR: every plain fn body, then main, then
+/// the mono worklist drained — each generic fn lowered ONCE per
+/// distinct instantiation its call sites recorded, under a
+/// substitution VIEW that makes every register concrete. The guard
+/// is the polymorphic-recursion refusal.
 export fn lower(a: Analysis) -> Lowered {
+    let jobs = Jobs { pending: [], seen: {} }
     mut fns: List<Body> = []
     mut failures: List<string> = []
     for s in a.stmts {
         let parts: FnParts? = a.store.fn_parts(s)
-        if parts != null {
-            let lf = lower_fn(a, s, parts!.name, parts!.body)
+        let p: FnParts? = directly_lowered(parts)
+        if p != null {
+            let lf = lower_fn(a, s, p!.name, p!.body, null, jobs)
             fns.push(lf.body)
             failures = failures.concat(lf.failures)
         }
     }
-    let lm = lower_main(a)
+    let lm = lower_main(a, jobs)
+    mut pending = jobs.pending
+    mut drained = 0
+    while !pending.is_empty() && drained < 1000 {
+        let job = pending.pop()
+        let body: ExprId? = fn_body_of(a, job.sub.target)
+        if body != null {
+            let lf = lower_fn(a, job.sub.target, job.name, body!, job.sub, jobs)
+            fns.push(lf.body)
+            failures = failures.concat(lf.failures)
+        }
+        drained = drained + 1
+    }
+    if !pending.is_empty() {
+        failures.push("specializations exploded past 1000 — polymorphic recursion is not supported")
+    }
     failures = failures.concat(lm.failures)
     Lowered {
         fns: fns, entry: lm.body, types: a.typing.types,
@@ -86,11 +119,12 @@ type LoweredBody = { body: Body, failures: List<string>, refusals: List<Diag> }
 
 /// One fn: params pre-minted as registers 0..N-1, the body inside
 /// one scope, the answer after the scope settles.
-fn lower_fn(a: Analysis, s: StmtId, fname: string, root: ExprId) -> LoweredBody {
+fn lower_fn(a: Analysis, s: StmtId, fname: string, root: ExprId, sub: Sub?, jobs: Jobs) -> LoweredBody {
     let sig: FnSig? = fn_sig_of(a.decl_sig(s))
-    let ptypes: List<TypeId> = sig?.params ?? []
-    let rt: TypeId = sig?.ret ?? a.typing.types.intern(Type.Error)
-    let lo = new_lower(a, rt)
+    let raw: List<TypeId> = sig?.params ?? []
+    let rt: TypeId = viewed_ty(a, sub, sig?.ret ?? a.typing.types.intern(Type.Error))
+    let ptypes = [viewed_ty(a, sub, pt) for pt in raw]
+    let lo = new_lower(a, rt, sub, jobs)
     mut tys = lo.reg_types
     // LICENSED I3: `tys` ALIASES lo.reg_types — `concat` would rebind
     // the local and the registers would never reach the body
@@ -106,8 +140,8 @@ fn lower_fn(a: Analysis, s: StmtId, fname: string, root: ExprId) -> LoweredBody 
     }
 }
 
-fn lower_main(a: Analysis) -> LoweredBody {
-    let lo = new_lower(a, null)
+fn lower_main(a: Analysis, jobs: Jobs) -> LoweredBody {
+    let lo = new_lower(a, null, null, jobs)
     lo.give(Ins.ScopeEnter(Level.Application))
     let last: Reg? = lower_stmts(lo, a.stmts)
     let refusal: Diag? = if last == null { null } else { print_lowering(lo, last!) }
@@ -137,6 +171,15 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
     r
 }
 
+/// A type under the body's instantiation — IDENTITY for a plain
+/// body; the substitution for a specialization. Every type and
+/// fact read in lowering passes through here, which is what makes
+/// every minted register concrete.
+fn viewed_ty(a: Analysis, sub: Sub?, ty: TypeId) -> TypeId {
+    if sub == null { return ty }
+    a.typing.types.substituted(ty, sub!.target, sub!.args)
+}
+
 /// The expression capabilities, wired once per request — what
 /// lower_subtree runs and StmtLowerCx nests as `expr`.
 fn expr_lower_cx(lo: Lower) -> LowerCx {
@@ -146,8 +189,8 @@ fn expr_lower_cx(lo: Lower) -> LowerCx {
         result: (k: ExprId) -> lo.mint(k),
         reg_of: (k: ExprId) -> lower_subtree(lo, k),
         def_reg: (k: ExprId) -> lo.def_reg(k),
-        shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.a.type_at(k)),
-        type_at: (k: ExprId) -> lo.a.type_at(k),
+        shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.view(lo.a.type_at(k))),
+        type_at: (k: ExprId) -> lo.view(lo.a.type_at(k)),
         mint: (k: ExprId) -> lo.mint(k),
         mint_like: (r: Reg) -> lo.mint_ty(lo.reg_types[r.index]),
         mint_shape: (sh: Type) -> lo.mint_ty(lo.a.typing.types.intern(sh)),
@@ -160,6 +203,7 @@ fn expr_lower_cx(lo: Lower) -> LowerCx {
         emit: (i: Ins) -> lo.give(i),
         lower_block: (stmts: List<StmtId>, value: ExprId?) -> block_reg(lo, stmts, value),
         enclosing_ret: () -> lo.fn_ret,
+        callee_of: (k: ExprId, name: string) -> lo.callee_of(k, name),
         fail: (msg: string) -> lo.record(msg),
     }
 }
@@ -171,7 +215,7 @@ fn expr_lower_cx(lo: Lower) -> LowerCx {
 fn narrowed(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
     let worn: TypeId? = lo.a.typing.narrows[e.index]
     if worn == null { return r }
-    carried_of(cx, r, worn!)
+    carried_of(cx, r, lo.view(worn!))
 }
 
 /// A value a boundary LIFTED — into a nullable, or into a Result's
@@ -183,7 +227,7 @@ fn narrowed(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
 fn widened(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
     let worn: TypeId? = lo.a.typing.widens[e.index]
     if worn == null { return r }
-    let into = worn!
+    let into = lo.view(worn!)
     if lo.a.typing.types.shape_of(into) is .Res { return okayed(cx, into, r) }
     adopted(cx, into, cx.shape_at(e) is .Null, r)
 }
@@ -230,6 +274,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Enum(_, n) -> n,
         .Res(_, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
         .TypeName(_, n) -> n,
+        .Var(_, _, n) -> n,
         .Opt(_) or .Null -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
         .Int or .Str or .Bool or .List(_) or .Error -> null,
     }
@@ -239,7 +284,8 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Int -> text_call(lo, "avra_int_text", last),
         .Bool -> text_call(lo, "avra_bool_text", last),
         .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
-        .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) -> null,
+        .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) or
+        .Var(_, _, _) -> null,
         .Opt(_) or .Null -> null,
         .Error -> null,
     }
@@ -290,7 +336,31 @@ fn departed_tail(lo: Lower) -> Reg {
 impl Lower {
     /// The fresh register for a node, typed by the type pass.
     fn mint(self, e: ExprId) -> Reg {
-        self.mint_ty(self.a.type_at(e))
+        self.mint_ty(self.view(self.a.type_at(e)))
+    }
+
+    /// The body's substitution view — identity for plain bodies.
+    fn view(self, ty: TypeId) -> TypeId {
+        viewed_ty(self.a, self.sub, ty)
+    }
+
+    /// The name a call site targets: the plain name, or — when
+    /// typing recorded an instantiation — the mangling of that
+    /// instantiation COMPOSED with this body's own view, enqueued
+    /// for the worklist on first sight.
+    fn callee_of(self, e: ExprId, name: string) -> string {
+        let held: Sub? = self.a.typing.substs[e.index]
+        if held == null { return name }
+        let composed = Sub { target: held!.target, args: [self.view(t) for t in held!.args] }
+        let mangled = mangle(name, composed)
+        let met: bool? = self.jobs.seen.get(mangled)
+        if met == null {
+            mut seen = self.jobs.seen
+            seen.set(mangled, true)
+            mut pending = self.jobs.pending
+            pending.push(Spec { name: mangled, sub: composed })
+        }
+        mangled
     }
 
     /// A fresh register of an explicit type — for values no
@@ -356,7 +426,7 @@ impl Lower {
     /// A struct-typed expression's field table; null for every
     /// other shape. The declaration index IS the array index.
     fn fields_at(self, e: ExprId) -> StructSig? {
-        self.fields_of(self.a.type_at(e))
+        self.fields_of(self.view(self.a.type_at(e)))
     }
 
     /// A struct TYPE's field table — `fields_at`'s TypeId-keyed
@@ -372,7 +442,7 @@ impl Lower {
     /// An enum-typed expression's variant table; null otherwise.
     /// The declaration index IS the runtime tag.
     fn variants_at(self, e: ExprId) -> EnumSig? {
-        self.variants_ty(self.a.type_at(e))
+        self.variants_ty(self.view(self.a.type_at(e)))
     }
 
     /// The variant table by TYPE — Result IS an enum, the built-in
@@ -382,7 +452,7 @@ impl Lower {
             .Enum(decl, _) -> variant_sig_of(self.a.decl_sig(decl)),
             .Res(ok, err) -> res_enum_sig(ok, err),
             .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
-            .TypeName(_, _) or .Opt(_) or .Null or .Error -> null,
+            .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or .Error -> null,
         }
     }
 
@@ -421,4 +491,23 @@ impl Lower {
         cells.set(s.index, true)
         self.set_slot(s, slot)
     }
+}
+
+/// A fn the driver lowers DIRECTLY — generic ones wait for their
+/// instantiations to arrive on the worklist.
+fn directly_lowered(parts: FnParts?) -> FnParts? {
+    if parts != null && parts!.tparams.is_empty() { parts } else { null }
+}
+
+/// The specialization's name: uncollidable (`$` is unwritable) and
+/// stable per run — interned ids in ordinal order.
+fn mangle(name: string, sub: Sub) -> string {
+    "${name}$${joined(["${a.index}" for a in sub.args], "_")}"
+}
+
+/// A declaration's body, when the statement is a fn.
+fn fn_body_of(a: Analysis, s: StmtId) -> ExprId? {
+    let parts: FnParts? = a.store.fn_parts(s)
+    if parts == null { return null }
+    parts!.body
 }

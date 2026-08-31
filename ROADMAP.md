@@ -108,7 +108,9 @@ text-as-projection after self-host, the service store at Era V.
         `?`, match-for-free, divergence-aware blocks, catch at
         four granularities). The R4 triggers (unions, topology,
         handlers, `? context`) wait on their enabling rungs
-    11. ▲ generics — mono through OUR pipeline (List<T> becomes real)
+    11. ▲ generics — G1 [x] (generic FNS, monomorphized — two
+        red-team rounds deep); REMAINS: G2 generic type
+        declarations, G3 the List vocabulary
     11.5 ▲ THE OWNERSHIP MILESTONE — scheduled HERE deliberately
         (recorded 2026-08-31): retain-at-pack + aggregate release
         teaches the memory pass the boxes, which unlocks AT ONCE:
@@ -2513,6 +2515,12 @@ into features (or spec commitments) when their milestone comes.
   this. contract.av is the wanting site, and this evidence bumps
   shapes' priority when rung 7 (structs) lands.
 
+ASK FROM G1 (2026-08-31): FOUR hand-written walks now recurse the
+Type composite (unify, substituted, fully_bound, unlawful_side —
+checks.av and core/types.av), each a different fold over the same
+shape. The compiler wants DERIVED STRUCTURAL RECURSION (a visitor/
+fold the enum carries). Trigger: the FIFTH walk forces the seam.
+
 ASKS FROM THE PROPAGATE SLICE (2026-08-30), both hit writing its
 tests: (1) string `+` concatenation — `(shout(true) ?? "q") + ...`
 refused (`+` is int-only), and the test had to split in two;
@@ -2747,11 +2755,51 @@ the substituted-view keeps ONE body, ONE check, N lowerings — and
 the pass signatures stay pure queries.
 
 THE SLICES:
-  (G1) generic FNS end to end: `fn first<T>(xs: List<T>) -> T?` —
-       Var shapes, the abstract check, call-site unification +
-       explicit pins, the instantiation worklist, substituted
-       lowering, mangled bodies. Corpus: identity/first/swap over
-       int, bool, string, struct — eval == native.
+  (G1) [x] generic FNS end to end — LANDED 2026-08-31, the design
+       executed as recorded: Var shapes (nine Type consumers
+       answered; the mut-cell and slot laws go CONSERVATIVE on T),
+       the abstract body checked ONCE (T refuses arithmetic and
+       comparison through the EXISTING laws — zero new refusal
+       code), exact unification with first-bind-wins, explicit
+       pins (`id<int>(9)` — the no-chain dissolution held), the
+       worklist draining behind the substitution view (registers
+       concrete; backend/memory/interp untouched, as promised),
+       `$`-mangled bodies, subst COMPOSITION proven live
+       (generic-calls-generic), self-recursion terminating the
+       worklist, and the 1000-spec guard standing.
+       THE RED TEAM'S REAL FIND (rt15, 25 programs): `Result<T,E>`
+       in a generic sig hit the conservative slot law — and fixing
+       it surfaced the MIRROR hole: a call binding T = `int?`
+       could smuggle a pair into a Res side past the surface law.
+       The cure is the pair: Var passes slot laws ABSTRACTLY, and
+       `unlawful_side` RE-JUDGES every substituted param and
+       return per instantiation ("this call makes a `Result` side
+       `int?`…"). Also: `spec` is a reserved word (the DSL-lexing
+       family); pin-failure and duplicate-tparam cascades absorb;
+       per-operand refusals are convention, pinned. RECORDED: the
+       empty-list-literal-under-a-pin waits on target-typing (the
+       existing "annotations arrive with generics" help names it —
+       G3's literal laws). Corpus generics.av: identity over four
+       types, composition, List<T>, T?, Result<T,E> with `?` and
+       catch in generic bodies, 100-iteration string-spec churn —
+       eval == native.
+       ROUND TWO (rt16, 22 programs — the consequential-feature
+       pass): found and PAID the fully-bound fallback — once pins
+       (or earlier arguments) make a param concrete, the ordinary
+       assignment law judges it, so `or_else<int>(null, 5)` and
+       widening-into-pinned-`T?` work; an UNPINNED `null` refuses
+       naming the pin. Unify absorbs an already-refused param.
+       PROVEN CLEAN: four tparams; pin-only calls (unused or
+       zero-arg T); T = int?/Result/List (a pair-typed T rides fn
+       ABI structs correctly); deep List<List<T>>-style conflicts
+       refuse; the comparison ladder survives the pinned-call
+       branch everywhere; `f<T, U>` whose body cannot make a U
+       refuses at the body; 200-iteration two-string pick churn
+       and composed-string churn agree across engines. HONEST
+       REFUSALS pinned: member-of-T, printing-T (MOVE only —
+       Display rides rung 12), match/`??` mixing T with concretes.
+       Arg-order dependence of inference recorded as LAW (direct
+       arguments, left to right; pins lift it).
   (G2) generic TYPE declarations (`type Pair<A, B>`), fields of
        Var type, construction inference; the Res fold re-measure.
   (G3) the LIST vocabulary the compiler wants: push/find/any/all/
