@@ -108,9 +108,9 @@ text-as-projection after self-host, the service store at Era V.
         `?`, match-for-free, divergence-aware blocks, catch at
         four granularities). The R4 triggers (unions, topology,
         handlers, `? context`) wait on their enabling rungs
-    11. ▲ generics — G1 [x] (generic FNS, monomorphized — two
-        red-team rounds deep); REMAINS: G2 generic type
-        declarations, G3 the List vocabulary
+    11. ▲ generics — G1 [x] (generic FNS, monomorphized) and
+        G2 [x] (generic TYPE declarations — Type.App; the Res fold
+        re-measured and REFUSED); REMAINS: G3 the List vocabulary
     11.5 ▲ THE OWNERSHIP MILESTONE — scheduled HERE deliberately
         (recorded 2026-08-31): retain-at-pack + aggregate release
         teaches the memory pass the boxes, which unlocks AT ONCE:
@@ -2515,6 +2515,21 @@ into features (or spec commitments) when their milestone comes.
   this. contract.av is the wanting site, and this evidence bumps
   shapes' priority when rung 7 (structs) lands.
 
+FLAGS FROM THE G2 ROUND (2026-08-31), each with its trigger:
+- THE PLAIN PATH IS THE ZERO-TPARAM DEGENERATE: calls, struct
+  lits, and variant lits each carry TWO paths (plain + generic),
+  and the fully-bound fallback makes unify degenerate to accepts
+  when no Vars exist — the pairs can likely COLLAPSE to one law
+  each. Trigger: the G3 round measures it on the call pair first.
+- THE COMPILER'S OWN CODE WANTS ITS OWN NEW FEATURES: every guard
+  ladder in the check files is a hand-spelled `let sig? = … else
+  { return voice(…) }`, and every `X? -> refuse -> unwrap` wants
+  the error spine. Recorded as SELF-HOST PAYOFF EVIDENCE — the
+  ladders are the before pictures.
+- I28 MINTED (laws call voices): the enums exemplar landed; the
+  round applies it opportunistically file by file — structs and
+  fns are half-converted, nullable's not_absent_able led the way.
+
 ASK FROM G1 (2026-08-31): FOUR hand-written walks now recurse the
 Type composite (unify, substituted, fully_bound, unlawful_side —
 checks.av and core/types.av), each a different fold over the same
@@ -2800,8 +2815,8 @@ THE SLICES:
        Display rides rung 12), match/`??` mixing T with concretes.
        Arg-order dependence of inference recorded as LAW (direct
        arguments, left to right; pins lift it).
-  (G2) generic TYPE declarations — DESIGNED 2026-08-31, building
-       next. `type Pair<A, B> = { first: A, second: B }` and
+  (G2) [x] generic TYPE declarations — LANDED 2026-08-31, the
+       design executed: `type Pair<A, B> = { first: A, second: B }` and
        `enum Opt2<T> { some(T) none }`.
        THE SHAPE: `Type.App(decl, args)` joins the registry — a
        generic declaration INSTANTIATED, nominal by decl + interned
@@ -2832,6 +2847,29 @@ THE SLICES:
        REFUSED FOR NOW: generic type aliases, nested tparam
        shadowing (a type's T inside a fn's T scope — outer wins,
        red-team pins).
+       WHAT LANDED, beyond the design: Lower.fields_of missing its
+       App arm shipped a WRONG ANSWER for one probe cycle (an
+       empty box + a length-read fallback — silent!) — the fix is
+       the arm plus a HARDENED lit_reg (a null sig is a defect
+       now, never a silent empty box). rt17 (25 programs): the
+       tparam-name law now covers TYPE declarations (`type
+       Box<int>` had sailed through to a printing refusal);
+       bare unit variants of generic enums refuse ("nothing
+       carries it" — they ride the property ladder, a path the
+       design missed); dup-tparam absorbs mirror the call path.
+       PROVEN both engines: swap<A,B> (an instantiation
+       REVERSED), Box<Box<int>>, recursive Tree<T> with
+       generic-payload unification, App-in-Result, App? via
+       let-else, `with` on an App, match-generic-in-generic,
+       200-churn. The field-law voices extracted (both paths, one
+       wording); the slot-law help worded once.
+       THE RES-FOLD RE-MEASURE, answered: Type.Res STAYS. App is
+       nominal by a DECLARATION SITE and Result has none — folding
+       would mint a synthetic stmt (the fake-id smell the test-
+       honesty rounds purge), and `?`/fail/catch key off res_parts
+       (folding would re-detect Result by name — string-matching
+       the doctrine bans). Re-measure ONLY if a stdlib prelude
+       with real declarations arrives at self-host.
   (G3) the LIST vocabulary the compiler wants: push/find/any/all/
        first/last/contains/index_of as generic fns (std or
        intrinsic — decide by measuring what mono makes free), plus

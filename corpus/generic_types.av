@@ -1,0 +1,68 @@
+// proves: generic TYPE declarations — Type.App, the user-name
+// instantiation. Construction infers by the call-site law (unify +
+// fully-bound fallback), members and match ride the substituted
+// sig bridges, Apps nest (Box<Box<int>>), recurse (Tree<T>), cross
+// Result and nullability, and `with` copies an instantiation.
+type Pair<A, B> = { first: A, second: B }
+type Box<T> = { v: T }
+
+enum Tree<T> {
+    leaf(T)
+    wrap(Tree<T>)
+}
+
+enum E {
+    missing
+}
+
+fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {
+    Pair { first: p.second, second: p.first }
+}
+
+fn boxed<T>(x: T) -> Box<T> {
+    Box { v: x }
+}
+
+fn depth<T>(t: Tree<T>) -> int {
+    match t {
+        .leaf(v) -> 0
+        .wrap(inner) -> 1 + depth(inner)
+    }
+}
+
+fn find(b: bool) -> Result<Box<int>, E> {
+    if b {
+        return Box { v: 5 }
+    }
+    fail E.missing
+}
+
+fn read(b: bool) -> int {
+    match find(b) {
+        .Ok(x) -> x.v
+        .Err(e) -> 0 - 1
+    }
+}
+
+fn maybe(b: bool) -> Box<int>? {
+    if b { Box { v: 8 } } else { null }
+}
+
+fn unwrapped(b: bool) -> int {
+    let got? = maybe(b) else {
+        return 0 - 1
+    }
+    got.v
+}
+
+let s = swap(Pair { first: 1, second: true })
+let two = if s.first { s.second } else { 0 - 9 }
+let bb = boxed(boxed(6))
+let q = Pair { first: 3, second: false } with { first: 9 }
+mut t = 0
+mut i = 0
+while i < 100 {
+    t = t + boxed(i).v
+    i = i + 1
+}
+"s ${two} bb ${bb.v.v} d ${depth(Tree.wrap(Tree.wrap(Tree.leaf(true))))} r ${read(true)} ${read(false)} n ${unwrapped(true)} ${unwrapped(false)} w ${q.first} c ${t}"

@@ -11,7 +11,8 @@ use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, s
 use diagnostics.{Diag, error_at, pointed, loc_at}
 use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig,
               fn_sig_of, record_sig_of, variant_sig_of, res_enum_sig,
-              adopted, carried_of, okayed, hollow_of, Sub}
+              adopted, carried_of, okayed, hollow_of, Sub,
+              subbed_variants, subbed_fields}
 use @std.errors.{Loc}
 
 /// One lowered body: instructions in order and each register's type
@@ -273,6 +274,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Struct(_, n) -> n,
         .Enum(_, n) -> n,
         .Res(_, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
+        .App(_, _, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
         .TypeName(_, n) -> n,
         .Var(_, _, n) -> n,
         .Opt(_) or .Null -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
@@ -284,8 +286,8 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Int -> text_call(lo, "avra_int_text", last),
         .Bool -> text_call(lo, "avra_bool_text", last),
         .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
-        .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) or
-        .Var(_, _, _) -> null,
+        .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or
+        .TypeName(_, _) or .Var(_, _, _) -> null,
         .Opt(_) or .Null -> null,
         .Error -> null,
     }
@@ -435,7 +437,10 @@ impl Lower {
     fn fields_of(self, ty: TypeId) -> StructSig? {
         match self.a.typing.types.shape_of(ty) {
             .Struct(decl, _) -> record_sig_of(self.a.decl_sig(decl)),
-            _ -> null,
+            .App(decl, _, args) ->
+                subbed_fields(self.a.typing.types, record_sig_of(self.a.decl_sig(decl)), decl, args),
+            .Int or .Str or .Bool or .List(_) or .Enum(_, _) or .Res(_, _) or
+            .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or .Error -> null,
         }
     }
 
@@ -451,6 +456,8 @@ impl Lower {
         match self.a.typing.types.shape_of(ty) {
             .Enum(decl, _) -> variant_sig_of(self.a.decl_sig(decl)),
             .Res(ok, err) -> res_enum_sig(ok, err),
+            .App(decl, _, args) ->
+                subbed_variants(self.a.typing.types, variant_sig_of(self.a.decl_sig(decl)), decl, args),
             .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
             .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or .Error -> null,
         }

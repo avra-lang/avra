@@ -34,6 +34,13 @@ export enum Type {
     /// of this type can only MOVE, and mono guarantees no register
     /// is ever minted wearing it.
     Var(decl: StmtId, ordinal: int, name: string)
+    /// A USER generic declaration INSTANTIATED — nominal by its
+    /// decl, interned by its arguments (the List/Opt/Res precedent
+    /// generalized to declared names). The declared field/variant
+    /// tables keep their Vars; `fields_of`/`variants_of` answer
+    /// them substituted. A tagged/slot box at runtime, like the
+    /// plain declaration it instantiates.
+    App(decl: StmtId, name: string, args: List<TypeId>)
     /// `Result<T, E>` — an answer OR a failure. A BUILT-IN enum
     /// (variants `Ok`/`Err`), structural like `Opt`: interned by
     /// its sides, no generics involved. A tagged slot array at
@@ -66,7 +73,7 @@ export fn new_type_registry() -> TypeRegistry {
 export fn ptr_shape(t: Type) -> bool {
     match t {
         .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
-        .Res(_, _) or .Null -> true,
+        .Res(_, _) or .App(_, _, _) or .Null -> true,
         .Int or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) -> false,
     }
 }
@@ -88,6 +95,7 @@ impl TypeRegistry {
             .Null -> "9",
             .Res(ok, err) -> "10:${ok.index}.${err.index}",
             .Var(decl, ordinal, _) -> "11:${decl.index}.${ordinal}",
+            .App(decl, _, args) -> "12:${decl.index}.${joined(["${a.index}" for a in args], ".")}",
         }
     }
 
@@ -149,6 +157,8 @@ impl TypeRegistry {
             .Opt(inner) -> self.intern(Type.Opt(self.substituted(inner, target, args))),
             .Res(ok, err) -> self.intern(Type.Res(self.substituted(ok, target, args),
                                                   self.substituted(err, target, args))),
+            .App(decl, name, aa) ->
+                self.intern(Type.App(decl, name, [self.substituted(a, target, args) for a in aa])),
             .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
             .TypeName(_, _) or .Null or .Error -> ty,
         }
@@ -167,6 +177,7 @@ impl TypeRegistry {
             .Opt(inner) -> "${self.name_of(inner)}?",
             .Res(ok, err) -> "Result<${self.name_of(ok)}, ${self.name_of(err)}>",
             .Var(_, _, name) -> name,
+            .App(_, name, args) -> "${name}<${joined([self.name_of(a) for a in args], ", ")}>",
             .Null -> "null",
             .Error -> "<error>",
         }

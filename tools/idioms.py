@@ -415,6 +415,11 @@ UNRATCHETED = {
     "I6":  "head-plus-tail builds are subsumed by I1 and I3",
     "I10": "name->value if-ladders are too varied to grep — the review round hunts them",
     "I17": "a name serving two masters is semantic — no text pattern can see it",
+    "I28": "voice-vs-law is a LAYOUT judgment: the pointed( assembly is the\n"
+           "           legitimate BODY of a voice fn, and voicehood (a fn that exists\n"
+           "           to word one refusal) is intent a grep cannot see. The review\n"
+           "           round hunts inline assemblies; the exemplars are enums/check.av\n"
+           "           and not_absent_able",
 }
 
 # A rule that cannot fire is worse than no rule: it reports success

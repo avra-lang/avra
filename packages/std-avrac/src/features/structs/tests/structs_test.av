@@ -2,7 +2,7 @@
 // field reads, fn boundaries, and every law refusing in its own
 // words.
 use @std.avrac.language.{analyze_source, avra}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_with}
 use @std.avrac.diagnostics.{new_source_file}
 
 spec "features/structs" {
@@ -121,6 +121,30 @@ spec "features/structs" {
     given "the condition ambiguity" {
         then "`if x { ... }` stays a condition, not a literal" {
             shown("let x = true\nif x { 1 } else { 2 }") == "1"
+        }
+    }
+    given "generic records — Type.App, the user-name instantiation" {
+        then "construction infers from the fields" {
+            shown("type Box<T> = { v: T }\nlet b = Box { v: 41 }\nb.v + 1") == "42"
+        }
+        then "two parameters bind independently and members substitute" {
+            shown("type Pair<A, B> = { first: A, second: B }\nlet p = Pair { first: 7, second: true }\nif p.second { p.first } else { 0 }") == "7"
+        }
+        then "instantiations are DISTINCT types" {
+            refused_with("type Box<T> = { v: T }\nfn f(b: Box<int>) -> int {\n    b.v\n}\nf(Box { v: true })",
+                         "argument 1 of `f` wants `Box<int>`, found `Box<bool>`")
+        }
+        then "a bare generic name refuses and names the arity" {
+            refused_with("type Box<T> = { v: T }\nfn f(b: Box) -> int {\n    1\n}\nf(Box { v: 1 })",
+                         "`Box` is generic — it takes 1 type arguments")
+        }
+        then "a managed binding cannot ride a slot — re-judged per instantiation" {
+            refused_with("type Box<T> = { v: T }\nBox { v: \"held\" }",
+                         "this literal makes a slot `string`, which a slot cannot hold yet")
+        }
+        then "fields that disagree on T refuse in the field's words" {
+            refused_with("type Twin<T> = { a: T, b: T }\nTwin { a: 1, b: true }",
+                         "field `b` is `T`, this is `bool`")
         }
     }
 }

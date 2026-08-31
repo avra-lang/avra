@@ -53,7 +53,8 @@ matches the real smell), I2 (died with the eval collapse), I5
 (duplicate DETECTION), I6 (subsumed by I3), I8 (the ritual and the
 only legitimate use are textually identical), I10 and I17
 (semantic — the review round hunts them), I12 (false-positives on
-doc prose).
+doc prose), I28 (voicehood is intent — the round hunts inline
+prose; I11 catches the duplicated-wording consequence).
 
 A RULE MUST BE ABLE TO FIRE. Every matcher carries a specimen the
 tool re-checks on every run — added after I18 shipped with a regex
@@ -267,6 +268,23 @@ reintroducing I3's blind spot names the two spellings it lost.
       lesson: a rule's REACH is as much a claim as its wording, and
       both need a hit list read by eye before the rule is believed.
 
+- I28 a LAW that assembles PROSE. A `spoken(cx, pointed(error_at(…`
+      block inline in a rule body drowns the law in ceremony: the
+      guard ladder in enums' variant_lit_type was 32 lines, 24 of
+      them wording. The idiomatic form: every refusal is a NAMED
+      VOICE — a fn whose whole body is the one refusal, living in
+      a `── The voices ──` section at the file's tail (or shared
+      in checks.av/contract.av when features share words). The LAW
+      then reads as guard + verb: `if sig.tag_of(v) == null {
+      return no_such_variant(cx, e, tname, v, sig) }`. Exemplars:
+      enums/check.av (the refactor that minted this), nullable's
+      `not_absent_able` (one voice, four operators), structs'
+      field voices, fns' wrong_argument/wrong_arity. NOT the
+      smell: the voice fn's own body, and a refusal spoken exactly
+      once in a fn that is otherwise one guard (extraction would
+      just rename it). Unratcheted — voicehood is intent, not
+      text; the review round hunts it, and I11 (duplicated long
+      strings) catches the worst consequence mechanically.
 - I26 one nullable LOCAL forced open with `!` three or more times
       in a fn. The value is already known to be there — CLAUDE.md's
       own style rule settles it ("a `let` earns its place when the

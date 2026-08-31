@@ -2,7 +2,7 @@
 // name, total match (as a value and in a fn), and every law
 // refusing in its own words.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_with}
 
 /// A three-variant enum, newline-separated.
 fn colors() -> string {
@@ -182,6 +182,22 @@ spec "features/enums" {
                 .Err(msg) -> msg.contains("no text projection yet"),
                 .Ok(_) -> false,
             }
+        }
+    }
+    given "generic enums — instantiation from the payload" {
+        then "a variant lit pins T and match rides the substituted sig" {
+            shown("enum Opt2<T> {\n    some(T)\n    nope\n}\nmatch Opt2.some(41) {\n    .some(x) -> x + 1\n    .nope -> 0\n}") == "42"
+        }
+        then "recursion rides the box — a generic tree" {
+            shown("enum Tree<T> {\n    leaf(T)\n    wrap(Tree<T>)\n}\nfn depth<T>(t: Tree<T>) -> int {\n    match t {\n        .leaf(v) -> 0\n        .wrap(inner) -> 1 + depth(inner)\n    }\n}\ndepth(Tree.wrap(Tree.leaf(false)))") == "1"
+        }
+        then "a bare unit variant cannot pin — the pinned surface is recorded" {
+            refused_with("enum Opt2<T> {\n    some(T)\n    nope\n}\nmatch Opt2.nope {\n    .some(x) -> x\n    .nope -> 0\n}",
+                         "`Opt2.nope` cannot pin `Opt2`'s type — nothing carries it")
+        }
+        then "a type parameter cannot take the language's names — types too" {
+            refused_with("enum Bad<int> {\n    a(int)\n}\n1",
+                         "a type parameter cannot take `int`'s name")
         }
     }
 }

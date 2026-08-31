@@ -215,11 +215,11 @@ export enum Stmt {
     For(name: string, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>)
     /// `type Name = { field: ty, ... }` — a nominal record; the
     /// name lives in the TYPE namespace, program-wide like fns.
-    StructDecl(name: string, fields: List<Param>)
+    StructDecl(name: string, tparams: List<string>, fields: List<Param>)
     /// `enum Name { A B(payload: int) }` — a nominal closed set
     /// sharing the TYPE namespace with records. A variant is a
     /// Param: an ABSENT `ty` IS a unit variant.
-    EnumDecl(name: string, variants: List<Param>)
+    EnumDecl(name: string, tparams: List<string>, variants: List<Param>)
     Error
 }
 
@@ -372,10 +372,12 @@ impl NodeStore {
                 fp(12, flatten([[fp_str(name)], [fp_str(t) for t in tparams],
                                 param_fps(params),
                                 [type_fp(ret), self.expr_fingerprint(body)]])),
-            .StructDecl(name, fields) ->
-                fp(25, [fp_str(name)].concat(param_fps(fields))),
-            .EnumDecl(name, variants) ->
-                fp(27, [fp_str(name)].concat(param_fps(variants))),
+            .StructDecl(name, tparams, fields) ->
+                fp(25, flatten([[fp_str(name)], [fp_str(t) for t in tparams],
+                                param_fps(fields)])),
+            .EnumDecl(name, tparams, variants) ->
+                fp(27, flatten([[fp_str(name)], [fp_str(t) for t in tparams],
+                                param_fps(variants)])),
         }
     }
 }

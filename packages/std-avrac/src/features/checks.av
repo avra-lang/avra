@@ -235,6 +235,7 @@ export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: StmtId, bound: Li
         .List(w) -> elem_unifies(cx, w, got, target, bound),
         .Opt(w) -> carried_unifies(cx, w, got, target, bound),
         .Res(wo, we) -> sides_unify(cx, wo, we, got, target, bound),
+        .App(wd, _, wa) -> app_unifies(cx, wd, wa, got, target, bound),
         // LICENSED I9: type identity — interned ids ARE the agreement
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
         .TypeName(_, _) or .Null or .Error -> want.index == got.index,
@@ -287,7 +288,7 @@ fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: StmtId, 
 export fn slot_worthy(sh: Type) -> bool {
     match sh {
         .Int or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .Res(_, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) -> true,
+        .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) -> true,
         .Str or .Opt(_) or .Null or .Error -> false,
     }
 }
@@ -301,6 +302,7 @@ export fn unlawful_side(cx: TypeCx, ty: TypeId) -> TypeId? {
         .Res(ok, err) -> res_side_unlawful(cx, ok, err),
         .List(elem) -> unlawful_side(cx, elem),
         .Opt(inner) -> unlawful_side(cx, inner),
+        .App(_, _, args) -> args.find(unlawful_side(cx, it) != null),
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
         .TypeName(_, _) or .Var(_, _, _) or .Null or .Error -> null,
     }
@@ -323,6 +325,7 @@ export fn fully_bound(cx: TypeCx, ty: TypeId, target: StmtId, bound: List<TypeId
         .List(elem) -> fully_bound(cx, elem, target, bound),
         .Opt(inner) -> fully_bound(cx, inner, target, bound),
         .Res(ok, err) -> fully_bound(cx, ok, target, bound) && fully_bound(cx, err, target, bound),
+        .App(_, _, args) -> args.all(fully_bound(cx, it, target, bound)),
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
         .TypeName(_, _) or .Null or .Error -> true,
     }
@@ -331,4 +334,27 @@ export fn fully_bound(cx: TypeCx, ty: TypeId, target: StmtId, bound: List<TypeId
 /// The bound slots as a full substitution — unbound slots absorb.
 export fn bound_args(cx: TypeCx, bound: List<TypeId?>) -> List<TypeId> {
     [b ?? cx.error_type for b in bound]
+}
+
+/// Two instantiations of the SAME declaration unify argument by
+/// argument; anything else is no match.
+fn app_unifies(cx: TypeCx, wd: StmtId, wa: List<TypeId>, got: TypeId,
+               target: StmtId, bound: List<TypeId?>) -> bool {
+    match cx.types.shape_of(got) {
+        // LICENSED I9: DECLARATION identity, not type agreement — whose instantiation this is
+        .App(gd, _, ga) ->
+            gd.index == wd.index && paired_unify(cx, wa, ga, target, bound),
+        _ -> false,
+    }
+}
+
+fn paired_unify(cx: TypeCx, want: List<TypeId>, got: List<TypeId>,
+                target: StmtId, bound: List<TypeId?>) -> bool {
+    if want.length != got.length { return false }
+    mut ok = true
+    // LICENSED I3: pairwise walk; comprehensions cannot destructure enumerate
+    for (j, w) in want.enumerate() {
+        if !unify(cx, w, got[j], target, bound) { ok = false }
+    }
+    ok
 }

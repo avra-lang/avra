@@ -59,6 +59,13 @@ fn prop_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
 /// A property on a TYPE NAME constructs one of its variants — the
 /// answer is the enum's own type.
 fn variant_type(cx: TypeCx, e: ExprId, decl: StmtId, tname: string, name: string) -> TypeId {
+    if !cx.store.decl_tparams(decl).is_empty() {
+        return spoken(cx, pointed(
+            error_at("type.unknown_prop", cx.loc_of(e),
+                "`${tname}.${name}` cannot pin `${tname}`'s type — nothing carries it"),
+            "read here")
+            with { help: "a payload pins the type; the pinned unit surface is recorded" })
+    }
     let ty = cx.types.intern(Type.Enum(decl, tname))
     let sig: EnumSig? = cx.variants_of(ty)
     if sig == null {
@@ -166,6 +173,7 @@ fn compare_help(sh: Type) -> string {
         .Enum(_, _) or .Res(_, _) -> "match on it instead — a `match` is how an enum is asked what it is",
         .Opt(_) or .Null -> "answer the absence first — `??` gives it a value",
         .Var(_, _, _) -> "an unconstrained type parameter can only MOVE — bounds arrive with traits",
+        .App(_, _, _) -> "reach for a member instead — the declaration decides field or `match`",
         .Int or .Bool or .Str or .TypeName(_, _) or .Error -> "compare scalars or strings",
     }
 }

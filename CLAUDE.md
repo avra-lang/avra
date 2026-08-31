@@ -88,6 +88,11 @@ refuses a registry entry that has neither).
   with a one-line contract (`match_seq` matches, `built` builds;
   `printed_value` dispatches, `bool_word` branches). If a fn needs
   a paragraph comment mid-body, that paragraph is a helper's name.
+- A LAW never assembles PROSE: every refusal is a NAMED VOICE fn
+  (its whole body the one `spoken`/`emit`), in a voices section at
+  the file's tail or shared where features share words. Rule
+  bodies read as guard + verb (I28; enums/check.av is the
+  exemplar).
 - A projection is ONE match: nested patterns
   (`.Node(.NAlt(a)) -> a, _ -> null`), never an unwrap ladder.
 - The third copy of a shape names the concept: shared walks and

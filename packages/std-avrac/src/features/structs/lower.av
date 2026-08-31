@@ -45,9 +45,10 @@ fn with_reg(cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, value
 
 fn lit_reg(cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
     let regs = [cx.reg_of(v) for v in values]
+    let sig: StructSig? = cx.fields_at(e)
+    if sig == null { return lower_defect(cx, e, "a field-less literal survived typing") }
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, "avra_array_new", []))
-    let sig: StructSig? = cx.fields_at(e)
     mut by_slot: List<Reg?> = filled<Reg?>(fields.length, null)
     for (j, f) in fields.enumerate() {
         let slot: int? = if sig == null { null } else { sig!.slot_of(f) }

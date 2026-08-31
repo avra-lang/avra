@@ -141,8 +141,8 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
         .FnDecl(_, _, _, _, _) -> d.decls,
         .While(_, _) -> d.whiles,
         .For(_, _, _, _, _, _) -> d.fors,
-        .StructDecl(_, _) -> d.structdecls,
-        .EnumDecl(_, _) -> d.enumdecls,
+        .StructDecl(_, _, _) -> d.structdecls,
+        .EnumDecl(_, _, _) -> d.enumdecls,
         .IfStmt(_, _, _) -> d.ifstmts,
         .Return(_) -> d.returns,
         .LetElse(_, _, _) -> d.letelses,
@@ -177,7 +177,7 @@ impl NodeStore {
             .LetElse(name, _, _) -> name,
             .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _, _)
                 or .While(_, _) or .IfStmt(_, _, _) or .Return(_)
-                or .Fail(_) or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
+                or .Fail(_) or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .Error -> null,
         }
     }
 
@@ -190,7 +190,7 @@ impl NodeStore {
             .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _, _)
                 or .While(_, _) or .For(_, _, _, _, _, _)
                 or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _)
-                or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
+                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .Error -> null,
         }
     }
 
@@ -207,7 +207,20 @@ impl NodeStore {
             .LetElse(_, v, _) -> v,
             .FnDecl(_, _, _, _, _) or .While(_, _)
                 or .For(_, _, _, _, _, _) or .IfStmt(_, _, _)
-                or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
+                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .Error -> null,
+        }
+    }
+
+    /// A declaration's type parameters — whichever kind declares;
+    /// empty when plain. The ordinal IS the Var identity.
+    fn decl_tparams(self, s: StmtId) -> List<string> {
+        match self.stmt(s) {
+            .FnDecl(_, tparams, _, _, _) -> tparams,
+            .StructDecl(_, tparams, _) -> tparams,
+            .EnumDecl(_, tparams, _) -> tparams,
+            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
+            .While(_, _) or .For(_, _, _, _, _, _) or .IfStmt(_, _, _) or
+            .Return(_) or .Fail(_) or .LetElse(_, _, _) or .Error -> [],
         }
     }
 
@@ -222,7 +235,7 @@ impl NodeStore {
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
             .FnDecl(_, _, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .IfStmt(_, _, _) or .LetElse(_, _, _) or
-            .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> false,
+            .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .Error -> false,
         }
     }
 
@@ -240,8 +253,8 @@ impl NodeStore {
     /// records and enums share the ONE type namespace.
     fn type_decl_name(self, s: StmtId) -> string? {
         match self.stmt(s) {
-            .StructDecl(name, _) -> name,
-            .EnumDecl(name, _) -> name,
+            .StructDecl(name, _, _) -> name,
+            .EnumDecl(name, _, _) -> name,
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
             .FnDecl(_, _, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .Error -> null,
@@ -251,7 +264,7 @@ impl NodeStore {
     /// An enum declaration's pieces, when the statement is one.
     fn enum_parts(self, s: StmtId) -> EnumParts? {
         match self.stmt(s) {
-            .EnumDecl(name, variants) -> EnumParts { name: name, variants: variants },
+            .EnumDecl(name, tparams, variants) -> EnumParts { name: name, tparams: tparams, variants: variants },
             _ -> null,
         }
     }
@@ -259,7 +272,7 @@ impl NodeStore {
     /// A struct declaration's pieces, when the statement is one.
     fn struct_parts(self, s: StmtId) -> StructParts? {
         match self.stmt(s) {
-            .StructDecl(name, fields) -> StructParts { name: name, fields: fields },
+            .StructDecl(name, tparams, fields) -> StructParts { name: name, tparams: tparams, fields: fields },
             _ -> null,
         }
     }
@@ -269,10 +282,10 @@ impl NodeStore {
 export type FnParts = { name: string, tparams: List<string>, params: List<Param>, ret: TypeRef, body: ExprId }
 
 /// What a struct declaration carries, projected once.
-export type StructParts = { name: string, fields: List<Param> }
+export type StructParts = { name: string, tparams: List<string>, fields: List<Param> }
 
 /// What an enum declaration carries, projected once.
-export type EnumParts = { name: string, variants: List<Param> }
+export type EnumParts = { name: string, tparams: List<string>, variants: List<Param> }
 
 export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
     if lang.grammar == null {
