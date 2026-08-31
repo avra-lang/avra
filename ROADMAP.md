@@ -2686,6 +2686,65 @@ THE SLICES:
        catch auto (traits, rung 12); @derive(failure_tests)
        (derive infra).
 
+## Generics — rung 11 (designed 2026-08-31, awaiting ratification)
+
+Spec Axis 5 governs: parametric + traits BOTH, MONO by default
+(P4), `dyn` the later escape hatch. Rung 11 takes the UNCONSTRAINED
+subset — bounds (trait/shape) arrive with rung 12's traits; const
+generics are spec-deferred to v1.x. The old tree left no mono
+pipeline design (its standardization doc stops at parsing), so this
+is ours, shaped by our pass architecture.
+
+THE ARCHITECTURE (recommended): abstract bodies, substituted views.
+1. TYPE VARIABLES ARE SHAPES: `Type.Var(decl, name)` joins the
+   registry — a generic fn's `T` interns once per declaration site,
+   nominal like TypeName. An UNCONSTRAINED T is fully checkable
+   abstractly: its values can only be moved (bound, passed,
+   returned, stored in slots) — every operator law already refuses
+   what T cannot prove. The generic body TYPE-CHECKS ONCE.
+2. CALLS INSTANTIATE BY DIRECT ARGUMENTS ONLY (the bs2 rule kept as
+   LAW, not limitation — local legibility: the substitution is
+   readable at the call): unify each param type against its arg's
+   computed type; every Var must bind or the call refuses
+   ("`T` is not pinned by the arguments — write `f<int>(…)`");
+   explicit `f<int>(…)` pins the rest. The call's answer is the
+   substituted return. Typing records the SUBSTITUTION as a fact
+   keyed by call expr (a table, like widens/narrows).
+3. MONO AT LOWERING, BEHIND A VIEW: the lowering driver walks
+   (fn, substitution) pairs discovered by typing — a worklist
+   seeded by concrete calls, closed under generic-calls-generic
+   (each body lowered once per DISTINCT substitution, keyed by
+   substituted param types; names mangle as `first__int`). The
+   ONE mechanism: `subst(types, map, ty)` applied inside the
+   lowering context's type_at/enclosing_ret wirings when a body
+   lowers under a substitution — registers mint CONCRETE types, so
+   values.av's reprs, the backend, memory, and the interpreter are
+   ALL UNTOUCHED. Call lowering routes to the mangled name.
+4. GENERIC USER TYPES (`type Pair<A, B>`) are slice G2: the same
+   Var machinery + `applied` growing user names (arity from the
+   declaration); instantiation is interning (the List/Opt/Res
+   precedent — R4's fold re-measure lands here naturally).
+WHY NOT AST-CLONING MONO (considered, refused): cloning specialized
+subtrees into the store re-types every clone, bloats the arenas the
+fingerprints exist to keep honest, and forces typing to iterate;
+the substituted-view keeps ONE body, ONE check, N lowerings — and
+the pass signatures stay pure queries.
+
+THE SLICES:
+  (G1) generic FNS end to end: `fn first<T>(xs: List<T>) -> T?` —
+       Var shapes, the abstract check, call-site unification +
+       explicit pins, the instantiation worklist, substituted
+       lowering, mangled bodies. Corpus: identity/first/swap over
+       int, bool, string, struct — eval == native.
+  (G2) generic TYPE declarations (`type Pair<A, B>`), fields of
+       Var type, construction inference; the Res fold re-measure.
+  (G3) the LIST vocabulary the compiler wants: push/find/any/all/
+       first/last/contains/index_of as generic fns (std or
+       intrinsic — decide by measuring what mono makes free), plus
+       list elements widening past scalars (the recorded trigger).
+  (G4) recorded: bounds ride rung 12; `dyn` rides rung 12;
+       for-over-lists rides G3; comprehensions ride G3.
+
 ## The capability diet (decided 2026-08-30)
 
 The user's concern, made doctrine: the capability surface was
