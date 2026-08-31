@@ -29,7 +29,7 @@ export fn require_bool(cx: TypeCx, e: ExprId, subject: string, label: string) {
 /// already spoke); otherwise interned ids must match. True means
 /// the site speaks, in its own words.
 export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
-    if cx.shape_of(got) is .Error || cx.shape_of(want) is .Error { return false }
+    if cx.types.shape_of(got) is .Error || cx.types.shape_of(want) is .Error { return false }
     // LICENSED I9: this IS the agreement law's body
     got.index != want.index
 }
@@ -42,13 +42,13 @@ export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
 export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
     let got = cx.type_at(e)
     if !types_disagree(cx, got, want) { return true }
-    let inner: TypeId? = opt_inner(cx, want)
+    let inner: TypeId? = cx.types.carried(want)
     if inner == null { return false }
     // `null` inhabits every nullable; a present value must be the
     // carried type. Either way the lift is RECORDED, in this one
     // place — absence has no layout of its own, and lowering's
     // adoption edge mints each form from this record.
-    let absent: bool = cx.shape_of(got) is .Null
+    let absent: bool = cx.types.shape_of(got) is .Null
     if !absent && types_disagree(cx, got, inner!) { return false }
     cx.widen(e, want)
     true
@@ -61,8 +61,8 @@ export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
 /// construct joins the same way by asking this and then accepting.
 export fn join_of(cx: TypeCx, a: TypeId, b: TypeId) -> TypeId? {
     if !types_disagree(cx, a, b) { return a }
-    if cx.shape_of(b) is .Null { return nullable_over(cx, a) }
-    if cx.shape_of(a) is .Null { return nullable_over(cx, b) }
+    if cx.types.shape_of(b) is .Null { return nullable_over(cx, a) }
+    if cx.types.shape_of(a) is .Null { return nullable_over(cx, b) }
     // A guarantee beside ITS OWN nullable joins wide — a narrowed
     // branch meeting the un-narrowed name is the natural case, and
     // `accepts` then lifts the guarantee side.
@@ -73,7 +73,7 @@ export fn join_of(cx: TypeCx, a: TypeId, b: TypeId) -> TypeId? {
 
 /// Does the nullable `opt` carry exactly `inner`?
 fn carries(cx: TypeCx, opt: TypeId, inner: TypeId) -> bool {
-    let held: TypeId? = opt_inner(cx, opt)
+    let held: TypeId? = cx.types.carried(opt)
     held != null && !types_disagree(cx, held!, inner)
 }
 
@@ -81,8 +81,8 @@ fn carries(cx: TypeCx, opt: TypeId, inner: TypeId) -> bool {
 /// stands — nothing is lifted twice, which is also why a chain
 /// FLATTENS: `a?.b` over a nullable member answers ONE absence.
 export fn nullable_over(cx: TypeCx, ty: TypeId) -> TypeId {
-    if opt_inner(cx, ty) != null { return ty }
-    cx.intern(Type.Opt(ty))
+    if cx.types.carried(ty) != null { return ty }
+    cx.types.intern(Type.Opt(ty))
 }
 
 /// THE member law: what a type answers to a property name — a
@@ -93,7 +93,7 @@ export fn nullable_over(cx: TypeCx, ty: TypeId) -> TypeId {
 export fn member_type_of(cx: TypeCx, e: ExprId, shown: string, ty: TypeId, name: string) -> TypeId {
     // Members live on GUARANTEES: a nullable subject's remedy is
     // the chain, never a property list it does not have.
-    if cx.shape_of(ty) is .Opt {
+    if cx.types.shape_of(ty) is .Opt {
         return spoken(cx, pointed(
             error_at("type.mismatch", cx.loc_of(e), "`.${name}` reads a guarantee, this is `${shown}`"),
             this_is(shown))
@@ -121,8 +121,8 @@ fn field_member(cx: TypeCx, e: ExprId, shown: string, sig: StructSig, name: stri
 
 /// `length` measures the shapes with an extent.
 fn length_member(cx: TypeCx, e: ExprId, shown: string, ty: TypeId) -> TypeId {
-    let sh = cx.shape_of(ty)
-    if sh is .List || sh is .Str { return cx.intern(Type.Int) }
+    let sh = cx.types.shape_of(ty)
+    if sh is .List || sh is .Str { return cx.types.intern(Type.Int) }
     spoken(cx, pointed(
         error_at("type.mismatch", cx.loc_of(e), "`length` lives on `List` and `string` values, found `${shown}`"),
         this_is(shown)))
@@ -133,7 +133,7 @@ fn length_member(cx: TypeCx, e: ExprId, shown: string, ty: TypeId) -> TypeId {
 /// widening recorded like any other slot's. Every annotated
 /// binding form asks here, so the wording never drifts.
 export fn declared_binding(cx: TypeCx, v: ExprId, name: string, declared: TypeId) {
-    if cx.shape_of(declared) is .Error { return }
+    if cx.types.shape_of(declared) is .Error { return }
     if cx.shape_at(v) is .Error { return }
     // A TYPE standing where the value belongs already spoke through
     // the value law — a second refusal would be a cascade.
@@ -142,16 +142,8 @@ export fn declared_binding(cx: TypeCx, v: ExprId, name: string, declared: TypeId
     let n = cx.name_at(v)
     cx.emit(pointed(
         error_at("type.binding", cx.loc_of(v),
-            "`${name}` declares `${cx.type_name(declared)}`, this is `${n}`"),
+            "`${name}` declares `${cx.types.name_of(declared)}`, this is `${n}`"),
         this_is(n)))
-}
-
-/// What a nullable carries, or absent when the type is not one.
-export fn opt_inner(cx: TypeCx, ty: TypeId) -> TypeId? {
-    match cx.shape_of(ty) {
-        .Opt(inner) -> inner,
-        _ -> null,
-    }
 }
 
 /// The VALUE law: a type NAME is not a value. `Color` alone is
@@ -188,7 +180,7 @@ export fn arms_agree(cx: TypeCx, kind: string, subject: string, anchor_name: str
             let n = cx.name_at(v)
             cx.emit(pointed(
                 error_at(kind, cx.loc_of(v),
-                    "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${cx.type_name(want)}`"),
+                    "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${cx.types.name_of(want)}`"),
                 this_is(n)))
             agreed = false
         }

@@ -18,7 +18,7 @@ fn structs_type(cx: TypeCx, e: ExprId) -> TypeId {
 /// and the answer IS the subject's type.
 fn with_type(cx: TypeCx, e: ExprId, subject: ExprId, fields: List<string>, values: List<ExprId>) -> TypeId {
     let ty = cx.type_at(subject)
-    if cx.shape_of(ty) is .Error { return cx.error_type }
+    if cx.types.shape_of(ty) is .Error { return cx.error_type }
     let sig: StructSig? = cx.fields_of(ty)
     if sig == null {
         let n = cx.name_at(subject)
@@ -26,14 +26,14 @@ fn with_type(cx: TypeCx, e: ExprId, subject: ExprId, fields: List<string>, value
             error_at("type.with_struct", cx.loc_of(e), "`with` copies a struct, found `${n}`"),
             this_is(n)))
     }
-    written_checks(cx, cx.type_name(ty), fields, values, sig!)
+    written_checks(cx, cx.types.name_of(ty), fields, values, sig!)
     ty
 }
 
 fn lit_type(cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: List<ExprId>) -> TypeId {
     let decl: StmtId? = cx.bound_def(e)
     if decl == null { return cx.error_type }
-    let ty = cx.intern(Type.Struct(decl!, name))
+    let ty = cx.types.intern(Type.Struct(decl!, name))
     let sig: StructSig? = cx.fields_of(ty)
     if sig == null { return cx.error_type }
     check_fields(cx, e, name, fields, values, sig!)
@@ -82,7 +82,7 @@ fn field_check(cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId, d
         let n = cx.name_at(v)
         cx.emit(pointed(
             error_at("type.struct_fields", cx.loc_of(v),
-                "field `${f}` is `${cx.type_name(sig.types[slot!])}`, this is `${n}`"),
+                "field `${f}` is `${cx.types.name_of(sig.types[slot!])}`, this is `${n}`"),
             this_is(n)))
     }
 }

@@ -65,8 +65,8 @@ enum Repr { Niche, Pair }
 /// catch-all is honest: a non-`Opt` shape is the absorbing error
 /// path, which lowers nothing, so the pair it names is never built.
 fn repr_of(cx: LowerCx, opt: TypeId) -> Repr {
-    match cx.shape_of(opt) {
-        .Opt(inner) -> if ptr_shape(cx.shape_of(inner)) { Repr.Niche } else { Repr.Pair },
+    match cx.types.shape_of(opt) {
+        .Opt(inner) -> if ptr_shape(cx.types.shape_of(inner)) { Repr.Niche } else { Repr.Pair },
         _ -> Repr.Pair,
     }
 }
@@ -74,7 +74,7 @@ fn repr_of(cx: LowerCx, opt: TypeId) -> Repr {
 /// What a nullable type carries — the `Opt`'s inner, with the
 /// catch-all pinned to the asker's own type on the error path.
 export fn carried_type(cx: LowerCx, opt: TypeId) -> TypeId {
-    match cx.shape_of(opt) {
+    match cx.types.shape_of(opt) {
         .Opt(inner) -> inner,
         _ -> opt,
     }
@@ -163,7 +163,7 @@ fn flagged_pair(cx: LowerCx, opt: TypeId, present: bool, payload: Reg) -> Reg {
 /// The payload slot of an ABSENT pair — never read (the flag
 /// guards it), but a pack is total: the inner type's zero.
 fn hollow_payload(cx: LowerCx, inner: TypeId) -> Reg {
-    if cx.shape_of(inner) is .Bool {
+    if cx.types.shape_of(inner) is .Bool {
         let z = cx.mint_ty(inner)
         cx.emit(Ins.ConstBool(z, false))
         return z

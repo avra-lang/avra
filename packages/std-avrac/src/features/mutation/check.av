@@ -25,10 +25,10 @@ export fn check_mut(cx: StmtTypeCx, s: StmtId) {
     // ownership analysis. A scalar PAIR is two unmanaged words and
     // passes; the niche IS its managed pointer and does not.
     let cell = cx.binding_type(s)
-    if cx.expr.rides_pointer(cell) {
+    if cx.expr.types.rides_pointer(cell) {
         cx.expr.emit(pointed(
             error_at("type.mut_managed", cx.loc_of(s), "a `mut` binding cannot hold a managed value yet"),
-            "this holds a `${cx.expr.type_name(cell)}`")
+            "this holds a `${cx.expr.types.name_of(cell)}`")
             with { help: "mut managed values arrive with ownership analysis — use `let` and rebind by shadowing" })
     }
 }
@@ -45,10 +45,10 @@ export fn check_assign(cx: StmtTypeCx, s: StmtId) {
     // inferred otherwise — and acceptance WIDENS like every slot.
     let want = cx.binding_type(target)
     if !accepts(cx.expr, v, want) {
-        let gn = cx.expr.type_name(cx.expr.type_at(v))
+        let gn = cx.expr.types.name_of(cx.expr.type_at(v))
         cx.expr.emit(pointed(
             error_at("type.mismatch", cx.loc_of(s),
-                "assignment changes `${cx.store.let_name(target) ?? "this binding"}`: `${cx.expr.type_name(want)}` to `${gn}`"),
+                "assignment changes `${cx.store.let_name(target) ?? "this binding"}`: `${cx.expr.types.name_of(want)}` to `${gn}`"),
             this_is(gn)))
     }
 }

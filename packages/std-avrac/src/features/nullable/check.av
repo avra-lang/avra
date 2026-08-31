@@ -3,14 +3,14 @@
 //! must be nullable, and the right must be what that nullable
 //! carries; the answer is the carried type, never nullable again.
 use core.{ExprId, Type, TypeId}
-use features.{TypeCx, opt_inner, accepts, join_of, spoken, this_is,
+use features.{TypeCx, accepts, join_of, spoken, this_is,
               member_type_of, nullable_over}
 use diagnostics.{error_at, pointed}
 
 fn nullable_type(cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
     match cx.store.expr(e) {
-        .NullLit -> cx.intern(Type.Null),
+        .NullLit -> cx.types.intern(Type.Null),
         .Coalesce(l, r) -> coalesce_type(cx, l, r),
         .Force(v) -> forced_type(cx, v),
         .MatchOpt(s, b, p, a) -> match_opt_type(cx, s, b, p, a),
@@ -25,10 +25,10 @@ fn nullable_type(cx: TypeCx, e: ExprId) -> TypeId {
 /// nullable member is still ONE absence.
 fn chain_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
     if cx.shape_at(subject) is .Error { return cx.error_type }
-    let held: TypeId? = opt_inner(cx, cx.type_at(subject))
+    let held: TypeId? = cx.types.carried(cx.type_at(subject))
     if held == null { return not_chainable(cx, subject, name) }
-    let member = member_type_of(cx, e, cx.type_name(held!), held!, name)
-    if cx.shape_of(member) is .Error { return cx.error_type }
+    let member = member_type_of(cx, e, cx.types.name_of(held!), held!, name)
+    if cx.types.shape_of(member) is .Error { return cx.error_type }
     nullable_over(cx, member)
 }
 
@@ -52,14 +52,14 @@ fn not_chainable(cx: TypeCx, subject: ExprId, name: string) -> TypeId {
 
 fn coalesce_type(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {
     if cx.shape_at(l) is .Error { return cx.error_type }
-    let held: TypeId? = opt_inner(cx, cx.type_at(l))
+    let held: TypeId? = cx.types.carried(cx.type_at(l))
     if held == null { return not_nullable(cx, l) }
     let carried = held!
     if accepts(cx, r, carried) { return carried }
     let n = cx.name_at(r)
     spoken(cx, pointed(
         error_at("type.coalesce", cx.loc_of(r),
-            "`??` answers with a `${cx.type_name(carried)}`, this is `${n}`"),
+            "`??` answers with a `${cx.types.name_of(carried)}`, this is `${n}`"),
         this_is(n))
         with { help: "a chain groups to the RIGHT — `a ?? (b ?? c)`" })
 }
@@ -72,7 +72,7 @@ fn coalesce_type(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {
 fn match_opt_type(cx: TypeCx, subject: ExprId, bind: string,
                   present: ExprId, absent: ExprId) -> TypeId {
     if cx.shape_at(subject) is .Error { return cx.error_type }
-    let held: TypeId? = opt_inner(cx, cx.type_at(subject))
+    let held: TypeId? = cx.types.carried(cx.type_at(subject))
     if held == null { return not_asked(cx, subject, bind) }
     // the bind holds what the nullable carries, spoken BEFORE the
     // arm walks, exactly as an enum arm's payload bind is
@@ -115,7 +115,7 @@ fn not_asked(cx: TypeCx, subject: ExprId, bind: string) -> TypeId {
 /// guarantee has nothing to insist about.
 fn forced_type(cx: TypeCx, v: ExprId) -> TypeId {
     if cx.shape_at(v) is .Error { return cx.error_type }
-    let held: TypeId? = opt_inner(cx, cx.type_at(v))
+    let held: TypeId? = cx.types.carried(cx.type_at(v))
     if held != null { return held! }
     // A bare `null` is not a guarantee that happens to be absent —
     // it is absence itself, so the insistence can only ever fail.

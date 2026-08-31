@@ -16,7 +16,7 @@
 //! values.av the runtime VALUE representation, builder.av the
 //! parse-time authoring surface. A feature-named fn has no place
 //! in any of them.
-use core.{NodeStore, Expr, ExprId, StmtId, Param, Type, TypeId, TypeRef, Reg, Ins, joined}
+use core.{NodeStore, Expr, ExprId, StmtId, Param, Type, TypeId, TypeRef, TypeRegistry, Reg, Ins, joined}
 use diagnostics.{Diag, error_at, pointed}
 use @std.errors.{Loc}
 
@@ -134,19 +134,20 @@ export fn variant_sig_of(d: DeclSig?) -> EnumSig? {
 }
 
 /// Typing capabilities: read children's computed types (post-order —
-/// they exist), intern shapes, read an ident's definition type, read
-/// a call's target signature, and speak. The impl OWNS its
-/// diagnostics wording.
-/// `error_type` is the ABSORBING answer, interned once: a site
-/// whose operand already refused answers with it and says nothing
-/// more. It is a value, not a verb — no second diagnostic.
+/// they exist), read an ident's definition type, read a call's
+/// target signature, and speak. The impl OWNS its diagnostics
+/// wording. `error_type` is the ABSORBING answer, interned once: a
+/// site whose operand already refused answers with it and says
+/// nothing more. `types` is THE registry, carried whole — shapes,
+/// interning, printing, and every carried/pointer query ride the
+/// one field instead of a verb per question, so this vocabulary
+/// stops growing when the registry does.
 export type TypeCx = {
     error_type: TypeId,
     store: NodeStore,
+    types: TypeRegistry,
     type_at: fn(ExprId) -> TypeId,
     shape_at: fn(ExprId) -> Type,
-    shape_of: fn(TypeId) -> Type,
-    intern: fn(Type) -> TypeId,
     target_type: fn(ExprId) -> TypeId,
     sig_of: fn(ExprId) -> FnSig?,
     bound_def: fn(ExprId) -> StmtId?,
@@ -156,12 +157,10 @@ export type TypeCx = {
     walk_type: fn(ExprId) -> TypeId,
     bind_type: fn(ExprId, TypeId),
     widen: fn(ExprId, TypeId),
-    rides_pointer: fn(TypeId) -> bool,
     record_ask: fn(ExprId, ExprId, bool),
     ask_of: fn(ExprId) -> Asked?,
     walk_narrowed: fn(ExprId, ExprId) -> TypeId,
     name_at: fn(ExprId) -> string,
-    type_name: fn(TypeId) -> string,
     loc_of: fn(ExprId) -> Loc?,
     emit: fn(Diag),
 }
@@ -175,11 +174,11 @@ export type TypeCx = {
 /// beyond the node's own.
 export type LowerCx = {
     store: NodeStore,
+    types: TypeRegistry,
     result: fn(ExprId) -> Reg,
     reg_of: fn(ExprId) -> Reg,
     def_reg: fn(ExprId) -> Reg?,
     shape_at: fn(ExprId) -> Type,
-    shape_of: fn(TypeId) -> Type,
     type_at: fn(ExprId) -> TypeId,
     mint: fn(ExprId) -> Reg,
     mint_shape: fn(Type) -> Reg,

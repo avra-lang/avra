@@ -2440,6 +2440,24 @@ into features (or spec commitments) when their milestone comes.
   this. contract.av is the wanting site, and this evidence bumps
   shapes' priority when rung 7 (structs) lands.
 
+## The capability diet (decided 2026-08-30)
+
+The user's concern, made doctrine: the capability surface was
+compounding — a verb per registry question, a mirror projection per
+capability space. THE RULE NOW: **a context carries the registry
+WHOLE (`types: TypeRegistry`) and never wraps a registry query in a
+verb again.** Applied retroactively: `intern`, `shape_of`,
+`type_name` and `rides_pointer` died from TypeCx, `shape_of` from
+LowerCx, and checks.av's `opt_inner` mirror died outright — 47 call
+sites now ask `cx.types.*` directly, five verbs and one mirror
+gone, and every FUTURE registry query (carried, layouts, the
+member-resolution query rung 13 wants) costs zero contract growth.
+The test of any new capability verb from here: does it carry PASS
+STATE the driver owns (walks, records, mints)? A pure query over a
+value the cx can simply CARRY is not a verb. values.av's
+`carried_type` stays as lowering's one pinned-catch-all projection;
+the scaffold templates teach the new shape.
+
 ## The consumer's-hat review (2026-08-30, recorded)
 
 The primary consumer (the LLM building this compiler) reviewed the
