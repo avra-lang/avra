@@ -3,7 +3,7 @@
 //! each declared field exactly once, each value the field's type.
 use core.{ExprId, StmtId, Type, TypeId, filled}
 use features.{TypeCx, StructSig, spoken, types_disagree, this_is, fields_are,
-              unify, fully_bound, bound_args, accepts, slot_worthy}
+              unify, fully_bound, bound_args, accepts, slot_worthy, tparams_refused, unpinned_of, bound_closed}
 use diagnostics.{error_at, pointed}
 
 fn structs_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -52,10 +52,7 @@ fn lit_type(cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: L
 fn generic_lit(cx: TypeCx, e: ExprId, name: string, fields: List<string>,
                values: List<ExprId>, decl: StmtId, sig: StructSig) -> TypeId {
     let tp = cx.store.decl_tparams(decl)
-    // a declaration naming T twice already refused — absorb
-    for (j, n) in tp.enumerate() {
-        if tp.index_of(n) < j { return cx.error_type }
-    }
+    if tparams_refused(tp) { return cx.error_type }
     let bound: List<TypeId?> = filled<TypeId?>(tp.length, null)
     mut spoke = false
     // LICENSED I3: a ZIP of parallel captures; comprehensions cannot destructure enumerate
@@ -71,19 +68,9 @@ fn generic_lit(cx: TypeCx, e: ExprId, name: string, fields: List<string>,
         }
     }
     if spoke { return cx.error_type }
-    mut concrete: List<TypeId> = []
-    // LICENSED I3: a ZIP with the name list; comprehensions cannot destructure enumerate
-    for (j, n) in tp.enumerate() {
-        let b: TypeId? = bound[j]
-        if b == null {
-            return spoken(cx, pointed(
-                error_at("type.struct_fields", cx.loc_of(e),
-                    "`${n}` is not pinned by the fields"),
-                "in this literal")
-                with { help: "give `${n}`'s field a value of a concrete type" })
-        }
-        concrete.push(b!)
-    }
+    let missing: string? = unpinned_of(tp, bound)
+    if missing != null { return unpinned_by_fields(cx, e, missing!) }
+    let concrete = bound_closed(cx, bound)
     for ft in sig.types {
         let landed = cx.types.substituted(ft, decl, concrete)
         if !slot_worthy(cx.types.shape_of(landed)) {
@@ -183,4 +170,11 @@ fn repeated_field(cx: TypeCx, v: ExprId, f: string) {
     cx.emit(pointed(
         error_at("type.struct_fields", cx.loc_of(v), "field `${f}` is written more than once"),
         "written again here"))
+}
+
+fn unpinned_by_fields(cx: TypeCx, e: ExprId, tparam: string) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.struct_fields", cx.loc_of(e), "`${tparam}` is not pinned by the fields"),
+        "in this literal")
+        with { help: "give `${tparam}`'s field a value of a concrete type" })
 }

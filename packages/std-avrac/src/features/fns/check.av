@@ -7,7 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{ExprId, StmtId, TypeId, TypeRef, spelled, filled}
-use features.{TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, unify, unlawful_side, fully_bound, bound_args}
+use features.{TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, unify, unlawful_side, fully_bound, bound_args, tparams_refused, unpinned_of, bound_closed}
 use diagnostics.{error_at, pointed}
 
 export fn check_fn(cx: StmtTypeCx, s: StmtId) {
@@ -74,11 +74,7 @@ fn tparams_of(cx: TypeCx, decl: StmtId) -> List<string> {
 /// the bindings applied. Recorded for mono.
 fn generic_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                 args: List<ExprId>, s: FnSig, decl: StmtId, tp: List<string>) -> TypeId {
-    // a declaration naming T twice already refused — absorb here,
-    // or every call would echo it as "not pinned"
-    for (j, n) in tp.enumerate() {
-        if tp.index_of(n) < j { return cx.error_type }
-    }
+    if tparams_refused(tp) { return cx.error_type }
     if args.length != s.params.length {
         wrong_arity(cx, e, callee, s.params.length, args.length)
         return cx.error_type
@@ -93,35 +89,20 @@ fn generic_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
         if !generic_argument(cx, callee, j, s.params[j], a, decl, bound) { spoke = true }
     }
     if spoke { return cx.error_type }
-    let held: List<TypeId>? = closed_bindings(cx, e, callee, tp, bound)
-    if held == null { return cx.error_type }
-    let concrete = held!
+    let missing: string? = unpinned_of(tp, bound)
+    if missing != null { return unpinned_by_arguments(cx, e, callee, missing!) }
+    let concrete = bound_closed(cx, bound)
     if !lawful_instantiation(cx, e, callee, s, decl, concrete) { return cx.error_type }
     cx.record_subst(e, decl, concrete)
     cx.types.substituted(s.ret, decl, concrete)
 }
 
-/// Every Var landed, or the refusal that names the pin — the
-/// bindings CLOSE into the concrete substitution.
-fn closed_bindings(cx: TypeCx, e: ExprId, callee: string,
-                   tp: List<string>, bound: List<TypeId?>) -> List<TypeId>? {
-    mut concrete: List<TypeId> = []
-    // LICENSED I3: a ZIP with the name list; comprehensions cannot destructure enumerate
-    for (j, n) in tp.enumerate() {
-        let b: TypeId? = bound[j]
-        if b == null {
-            cx.emit(pointed(
-                error_at("type.mismatch", cx.loc_of(e),
-                    "`${n}` is not pinned by the arguments"),
-                "in this call")
-                with { help: "write the type explicitly — `${callee}<...>(...)`" })
-            return null
-        }
-        let landed = b!
-        if cx.types.shape_of(landed) is .Error { return null }
-        concrete.push(landed)
-    }
-    concrete
+fn unpinned_by_arguments(cx: TypeCx, e: ExprId, callee: string, tparam: string) -> TypeId {
+    cx.emit(pointed(
+        error_at("type.mismatch", cx.loc_of(e), "`${tparam}` is not pinned by the arguments"),
+        "in this call")
+        with { help: "write the type explicitly — `${callee}<...>(...)`" })
+    cx.error_type
 }
 
 /// The representation laws re-judge every substituted slot — a

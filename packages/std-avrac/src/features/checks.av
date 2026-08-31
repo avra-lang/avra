@@ -358,3 +358,34 @@ fn paired_unify(cx: TypeCx, want: List<TypeId>, got: List<TypeId>,
     }
     ok
 }
+
+// ── The instantiation rituals: three verbs every generic surface
+// (calls, struct lits, variant lits) shares, so no site re-spells
+// the absorb loop or the closing walk. ──
+
+/// A declaration naming T twice already refused at the declaration
+/// — every use site absorbs instead of echoing.
+export fn tparams_refused(tp: List<string>) -> bool {
+    mut dup = false
+    // LICENSED I3: the dup test needs the index; comprehensions cannot destructure enumerate
+    for (j, n) in tp.enumerate() {
+        if tp.index_of(n) < j { dup = true }
+    }
+    dup
+}
+
+/// The first type parameter the bindings left OPEN — the caller
+/// voices it in its own surface's words.
+export fn unpinned_of(tp: List<string>, bound: List<TypeId?>) -> string? {
+    // LICENSED I3: names and slots pair by index; comprehensions cannot destructure enumerate
+    for (j, n) in tp.enumerate() {
+        if bound[j] == null { return n }
+    }
+    null
+}
+
+/// Every binding, closed — ask ONLY after `unpinned_of` answered
+/// absence; an open slot here is the caller's defect.
+export fn bound_closed(cx: TypeCx, bound: List<TypeId?>) -> List<TypeId> {
+    [b ?? cx.error_type for b in bound]
+}

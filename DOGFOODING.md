@@ -268,6 +268,15 @@ reintroducing I3's blind spot names the two spellings it lost.
       lesson: a rule's REACH is as much a claim as its wording, and
       both need a hit list read by eye before the rule is believed.
 
+- THE INSTANTIATION RITUALS (checks.av): every generic surface
+      (calls, struct lits, variant lits) shares three verbs —
+      `tparams_refused` (the declaration already spoke; absorb),
+      `unpinned_of` (the first open Var, voiced by the caller in
+      its surface's words), `bound_closed` (ask after unpinned_of
+      answered absence). The rule of three minted them: the absorb
+      loop and the closing walk had each been hand-spelled three
+      times before the extraction. A fourth generic surface joins
+      by calling the verbs, never re-spelling the walks.
 - I28 a LAW that assembles PROSE. A `spoken(cx, pointed(error_at(…`
       block inline in a rule body drowns the law in ceremony: the
       guard ladder in enums' variant_lit_type was 32 lines, 24 of

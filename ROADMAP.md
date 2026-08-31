@@ -2516,11 +2516,18 @@ into features (or spec commitments) when their milestone comes.
   shapes' priority when rung 7 (structs) lands.
 
 FLAGS FROM THE G2 ROUND (2026-08-31), each with its trigger:
-- THE PLAIN PATH IS THE ZERO-TPARAM DEGENERATE: calls, struct
-  lits, and variant lits each carry TWO paths (plain + generic),
-  and the fully-bound fallback makes unify degenerate to accepts
-  when no Vars exist — the pairs can likely COLLAPSE to one law
-  each. Trigger: the G3 round measures it on the call pair first.
+- THE PLAIN PATH IS THE ZERO-TPARAM DEGENERATE: PROVEN on the
+  variant-lit pair (2026-08-31) — generic_variant_lit is DEAD,
+  one law serves both (unify with no Vars IS the agreement
+  check), and the shared instantiation rituals (tparams_refused/
+  unpinned_of/bound_closed) replaced the thrice-spelled walks in
+  all three surfaces. REMAINS: the call pair (checked_call vs
+  generic_call) and the struct-lit pair (check_fields vs
+  generic_lit) — same collapse, trigger: the G3 round. Bonus
+  find: the interner keeps the FIRST shape per key, so a
+  throwaway name in an intern call poisons printing program-wide
+  — recorded at variants_declared, worth a registry guard when
+  content-addressing lands.
 - THE COMPILER'S OWN CODE WANTS ITS OWN NEW FEATURES: every guard
   ladder in the check files is a hand-spelled `let sig? = … else
   { return voice(…) }`, and every `X? -> refuse -> unwrap` wants
