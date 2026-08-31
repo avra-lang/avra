@@ -138,7 +138,7 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
         .Bool -> avra_llvm_int1_type(lc),
         .Opt(inner) -> opt_ll_type(lc, types, inner),
         .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or
-        .Null -> avra_llvm_pointer_type(lc),
+        .Res(_, _) or .Null -> avra_llvm_pointer_type(lc),
     }
 }
 
@@ -264,7 +264,19 @@ fn call_rt_value(em: Emit, dst: Reg, callee: string, args: List<Reg>) -> ptr {
     if em.types.shape_of(em.tys[dst.index]) is .Bool {
         return avra_llvm_build_icmp(em.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(em.lc), 0, 0), "b")
     }
+    // The result coercion, rt_arg's mirror: an I64 answer is a WORD,
+    // and a pointer-shaped destination rides back out of it.
+    if em.types.rides_pointer(em.tys[dst.index]) && answers_word(callee) {
+        return avra_llvm_build_int_to_ptr(em.b, raw, avra_llvm_pointer_type(em.lc), "boxed")
+    }
     raw
+}
+
+/// Whether the registry declares an I64 answer for this callee.
+fn answers_word(callee: string) -> bool {
+    let sig: RtSig? = rt_sig_of(callee)
+    if sig == null { return false }
+    sig!.ret is .I64
 }
 
 fn void_rt_call(em: Emit, callee: string, args: List<Reg>) {

@@ -168,14 +168,15 @@ fn bound_body(r: Resolver, param_names: List<string>, s: StmtId, exprs: List<Exp
 
 /// A block's statements under a fresh overlay scope: binds are
 /// visible onward and restored at exit.
-fn block_scope(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId) {
+fn block_scope(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId?) {
     under_overlay(r, () -> block_body(r, param_names, stmts, value))
 }
 
-/// Inside a block's scope: the statements, then the value.
-fn block_body(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId) {
+/// Inside a block's scope: the statements, then the value — absent
+/// when the block leaves instead of answering.
+fn block_body(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId?) {
     resolve_stmts(r, param_names, true, stmts)
-    resolve_walk(r, param_names, value)
+    if value != null { resolve_walk(r, param_names, value!) }
 }
 
 /// One match arm's scope: its bind (when it names one) holds for
@@ -213,7 +214,7 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
         use_call: (e: ExprId, name: string) -> r.resolve_call(e, name),
         use_type: (e: ExprId, name: string) -> r.resolve_type_use(e, name),
         arm_scope: (bind: string, v: ExprId) -> arm_scope(r, param_names, bind, v),
-        block_scope: (stmts: List<StmtId>, value: ExprId) -> block_scope(r, param_names, stmts, value),
+        block_scope: (stmts: List<StmtId>, value: ExprId?) -> block_scope(r, param_names, stmts, value),
     }
     for e in r.p.post_order(root) { semantics_of(r.p.dispatch, r.p.store.expr(e)).resolve(cx, e) }
 }

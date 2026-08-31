@@ -2,7 +2,7 @@
 //! `T?` and nothing else. `??` ANSWERS an absence: its left side
 //! must be nullable, and the right must be what that nullable
 //! carries; the answer is the carried type, never nullable again.
-use core.{ExprId, StmtId, Type, TypeId}
+use core.{ExprId, StmtId, Type, TypeId, ResSides}
 use features.{TypeCx, StmtTypeCx, accepts, join_of, spoken, this_is,
               member_type_of, nullable_over}
 use diagnostics.{error_at, pointed}
@@ -166,6 +166,8 @@ fn check_let_else(cx: StmtTypeCx, s: StmtId) {
 /// its promise must itself be nullable.
 fn propagate_type(cx: TypeCx, v: ExprId) -> TypeId {
     if cx.shape_at(v) is .Error { return cx.error_type }
+    let sides: ResSides? = cx.types.res_parts(cx.type_at(v))
+    if sides != null { return propagate_res_type(cx, v, sides!) }
     let held: TypeId? = cx.types.carried(cx.type_at(v))
     if held == null {
         return not_absent_able(cx, v, "type.propagate", "`?` propagates",
@@ -179,11 +181,53 @@ fn propagate_type(cx: TypeCx, v: ExprId) -> TypeId {
             "at the top level")
             with { help: "answer the absence here — `?? value`, or ask with `== null`" })
     }
-    if cx.types.carried(ret!) != null { return held! }
-    let promise = cx.types.name_of(ret!)
+    let promised = ret!
+    if cx.types.carried(promised) != null { return held! }
+    let promise = cx.types.name_of(promised)
     spoken(cx, pointed(
         error_at("type.propagate", cx.loc_of(v),
             "`?` makes this fn answer `null`, but it promises a `${promise}`"),
         "propagates here")
-        with { help: "declare the answer nullable — `-> ${promise}?` — or answer the absence here with `??`" })
+        with { help: propagate_remedy(cx, promised, promise) })
+}
+
+/// The nullable channel's remedy — shape-aware: a fn promising a
+/// RESULT wants the failure channel, not a nullable answer.
+fn propagate_remedy(cx: TypeCx, ret: TypeId, promise: string) -> string {
+    if cx.types.shape_of(ret) is .Res {
+        return "a nullable propagates `null` — to ride the failure channel, the subject must be a `Result`; answer the absence here with `??`"
+    }
+    "declare the answer nullable — `-> ${promise}?` — or answer the absence here with `??`"
+}
+
+/// `v?` on a RESULT — the failure channel: a present answer unwraps
+/// to the ok side; a failure makes the enclosing fn answer THE SAME
+/// failure, so the fn must promise a Result carrying the same E.
+fn propagate_res_type(cx: TypeCx, v: ExprId, sides: ResSides) -> TypeId {
+    let ret: TypeId? = cx.enclosing_ret()
+    if ret == null {
+        return spoken(cx, pointed(
+            error_at("type.propagate", cx.loc_of(v),
+                "`?` passes the failure to a caller, and the top level has none"),
+            "at the top level")
+            with { help: "handle it here — `match` the `.Ok`/`.Err`" })
+    }
+    let rsides: ResSides? = cx.types.res_parts(ret!)
+    if rsides == null {
+        let promise = cx.types.name_of(ret!)
+        return spoken(cx, pointed(
+            error_at("type.propagate", cx.loc_of(v),
+                "`?` makes this fn answer the failure, but it promises a `${promise}`"),
+            "propagates here")
+            with { help: "declare the answer fallible — `-> Result<${promise}, ${cx.types.name_of(sides.err)}>`" })
+    }
+    // LICENSED I9: type identity — interned ids ARE the agreement
+    if rsides!.err.index != sides.err.index {
+        return spoken(cx, pointed(
+            error_at("type.propagate", cx.loc_of(v),
+                "the failures disagree: this raises `${cx.types.name_of(sides.err)}`, the fn promises `${cx.types.name_of(rsides!.err)}`"),
+            "propagates here")
+            with { help: "error unions arrive later — today the channels must carry the same type" })
+    }
+    sides.ok
 }

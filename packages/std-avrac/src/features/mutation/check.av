@@ -3,7 +3,7 @@
 //! an assignment must be ACCEPTED by the binding's type, widening
 //! recorded like any other slot's.
 use core.{StmtId, ExprId, TypeId, TypeRef}
-use features.{StmtTypeCx, accepts, declared_binding, this_is, refuses_type_value}
+use features.{TypeCx, StmtTypeCx, accepts, declared_binding, this_is, refuses_type_value}
 use diagnostics.{error_at, pointed}
 
 export fn check_mut(cx: StmtTypeCx, s: StmtId) {
@@ -21,15 +21,28 @@ export fn check_mut(cx: StmtTypeCx, s: StmtId) {
         declared_binding(cx.expr, v, cx.store.let_name(s) ?? "this binding", declared!)
     }
     // THE CELL LAW: the slot must hold a value the memory pass need
-    // not track — a managed value in a reassignable cell waits for
-    // ownership analysis. A scalar PAIR is two unmanaged words and
+    // not track. A managed value in a reassignable cell waits for
+    // ownership analysis; unmanaged aggregates pass — nothing
+    // releases them yet. A scalar PAIR is two unmanaged words and
     // passes; the niche IS its managed pointer and does not.
     let cell = cx.binding_type(s)
-    if cx.expr.types.rides_pointer(cell) {
+    if managed_cell(cx.expr, cell) {
         cx.expr.emit(pointed(
             error_at("type.mut_managed", cx.loc_of(s), "a `mut` binding cannot hold a managed value yet"),
             "this holds a `${cx.expr.types.name_of(cell)}`")
             with { help: "mut managed values arrive with ownership analysis — use `let` and rebind by shadowing" })
+    }
+}
+
+/// The strategy's managed truth, asked shape-down: a string, or a
+/// nullable carrying one (the niche IS its pointer). Every arm
+/// spelled: a NEW shape must answer whether the strategy tracks it.
+fn managed_cell(cx: TypeCx, cell: TypeId) -> bool {
+    match cx.types.shape_of(cell) {
+        .Str -> true,
+        .Opt(inner) -> managed_cell(cx, inner),
+        .Int or .Bool or .List(_) or .Struct(_, _) or .Enum(_, _) or
+        .Res(_, _) or .TypeName(_, _) or .Null or .Error -> false,
     }
 }
 

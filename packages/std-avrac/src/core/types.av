@@ -28,6 +28,12 @@ export enum Type {
     /// `T?` — a value that may be ABSENT. Nullability is opt-in
     /// (spec Axis 10.2), so every other shape is a guarantee.
     Opt(inner: TypeId)
+    /// `Result<T, E>` — an answer OR a failure. A BUILT-IN enum
+    /// (variants `Ok`/`Err`), structural like `Opt`: interned by
+    /// its sides, no generics involved. A tagged slot array at
+    /// runtime, exactly an enum's layout — which is why the enum
+    /// machinery serves it whole.
+    Res(ok: TypeId, err: TypeId)
     /// The `null` literal's own type: it inhabits every `Opt` and
     /// nothing else, which is what makes `let x: int = null` refuse.
     Null
@@ -53,7 +59,8 @@ export fn new_type_registry() -> TypeRegistry {
 /// truth the machine projections ask.
 export fn ptr_shape(t: Type) -> bool {
     match t {
-        .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or .Null -> true,
+        .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
+        .Res(_, _) or .Null -> true,
         .Int or .Bool or .Error or .TypeName(_, _) -> false,
     }
 }
@@ -73,6 +80,7 @@ impl TypeRegistry {
             .TypeName(decl, _) -> "7:${decl.index}",
             .Opt(inner) -> "8:${inner.index}",
             .Null -> "9",
+            .Res(ok, err) -> "10:${ok.index}.${err.index}",
         }
     }
 
@@ -102,6 +110,15 @@ impl TypeRegistry {
         }
     }
 
+    /// A Result's two sides, or absent when the id is not one —
+    /// `carried`'s twin for the failure channel.
+    fn res_parts(self, id: TypeId) -> ResSides? {
+        match self.shape_of(id) {
+            .Res(ok, err) -> ResSides { ok: ok, err: err },
+            _ -> null,
+        }
+    }
+
     /// Does a value of this type RIDE A POINTER at runtime —
     /// `ptr_shape` with `Opt` answering as what it CARRIES: a niche
     /// nullable IS its pointer, a scalar pair is registers and no
@@ -124,9 +141,13 @@ impl TypeRegistry {
             .Enum(_, name) -> name,
             .TypeName(_, name) -> "type ${name}",
             .Opt(inner) -> "${self.name_of(inner)}?",
+            .Res(ok, err) -> "Result<${self.name_of(ok)}, ${self.name_of(err)}>",
             .Null -> "null",
             .Error -> "<error>",
         }
     }
 }
 
+
+/// What a `Result` carries on each side — res_parts' answer.
+export type ResSides = { ok: TypeId, err: TypeId }

@@ -2,13 +2,15 @@
 //! feature that builds or reads one. The contract next door says
 //! what a feature DOES at each pass; this says what its values ARE.
 //!
-//! Three shapes today. The tagged slot array behind ENUMS; and the
-//! nullable's two — the NICHE (a pointer-shaped nullable IS its own
-//! value, absence is the null pointer) and the PAIR (a scalar rides
-//! {present, value} in registers). Which one a nullable takes is
-//! this file's `repr_of`, and every consumer asks the verbs below
-//! instead of knowing. A new value CATEGORY joins here, beside the
-//! readers that make its layout nobody else's business.
+//! Three layouts today, four vocabularies. The tagged slot array
+//! behind ENUMS — which RESULT rides too (the built-in enum: Ok
+//! tag 0, Err tag 1); and the nullable's two — the NICHE (a
+//! pointer-shaped nullable IS its own value, absence is the null
+//! pointer) and the PAIR (a scalar rides {present, value} in
+//! registers). Which one a nullable takes is this file's
+//! `repr_of`, and every consumer asks the verbs below instead of
+//! knowing. A new value CATEGORY joins here, beside the readers
+//! that make its layout nobody else's business.
 use core.{Reg, Ins, BinOp, Type, TypeId, ExprId, ptr_shape}
 
 /// THE TAGGED VALUE: an enum's variant is a slot array holding its
@@ -45,6 +47,36 @@ fn slot_read(cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
     let got = if ty == null { cx.mint_shape(Type.Int) } else { cx.mint_ty(ty!) }
     cx.emit(Ins.CallRt(got, "avra_array_get", [v, at]))
     got
+}
+
+// ── The Result, behind its verbs ────────────────────────────────
+// The built-in enum rides the tagged value above: tag 0 = Ok,
+// tag 1 = Err, the live side at slot 1. An `.Err` box is therefore
+// a valid `.Err` of EVERY `Result<_, E>` — propagation moves the
+// pointer and repacks nothing. (ROADMAP: the error spine.)
+
+/// A success, wrapped — the auto-Ok lift's mint.
+export fn okayed(cx: LowerCx, into: TypeId, r: Reg) -> Reg {
+    let dst = cx.mint_ty(into)
+    tagged_value(cx, dst, 0, r)
+    dst
+}
+
+/// A failure, wrapped — what `fail` exits with.
+export fn failed(cx: LowerCx, into: TypeId, r: Reg) -> Reg {
+    let dst = cx.mint_ty(into)
+    tagged_value(cx, dst, 1, r)
+    dst
+}
+
+/// Is the result an ANSWER — its tag read against Ok's, as an i1.
+export fn okness_of(cx: LowerCx, v: Reg) -> Reg {
+    let tag = tag_of(cx, v)
+    let zero = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(zero, 0))
+    let ok = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Bin(ok, BinOp.Eq, tag, zero))
+    ok
 }
 
 // ── The nullable, behind its verbs ──────────────────────────────

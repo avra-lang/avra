@@ -68,8 +68,11 @@ export enum Expr {
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// Multi-way choice; `fallback` is the total `_` arm.
     When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
-    /// Statements then a value — a scope as an expression.
-    Block(stmts: List<StmtId>, value: ExprId)
+    /// Statements then a value — a scope as an expression. The
+    /// value is ABSENT only when the last statement DIVERGES
+    /// (`return`, `fail`): a block that leaves needs no tail, and
+    /// it answers whatever the fn it leaves promises.
+    Block(stmts: List<StmtId>, value: ExprId?)
     /// A direct call by name; fn values arrive later.
     Call(callee: string, args: List<ExprId>)
     /// `Name { field: value, ... }` — fields in WRITTEN order
@@ -186,6 +189,9 @@ export enum Stmt {
     /// `v` against the declared return; lowering exits with every
     /// open scope's debts settled at the site.
     Return(value: ExprId)
+    /// `fail value` — raise: the enclosing fn answers the failure
+    /// channel of its Result right here. Diverges, like `return`.
+    Fail(value: ExprId)
     /// `let name? = subject else { stmts }` — the bind-fresh form
     /// that KEEPS GOING: a present subject binds its carried value
     /// in the enclosing scope; an absent one runs the else, which
@@ -281,7 +287,7 @@ impl NodeStore {
                 fp(13, flatten([self.expr_fps(conds), self.expr_fps(values),
                                 [self.expr_fingerprint(fallback)]])),
             .Block(stmts, value) ->
-                fp(14, self.stmt_fps(stmts).concat([self.expr_fingerprint(value)])),
+                fp(14, self.stmt_fps(stmts).concat(self.tail_fp(value))),
             .StructLit(name, fields, values) ->
                 fp(24, flatten([[fp_str(name)], [fp_str(f) for f in fields],
                                 self.expr_fps(values)])),
@@ -307,6 +313,13 @@ impl NodeStore {
         }
     }
 
+    /// A block tail's fingerprint contribution — nothing when the
+    /// block leaves instead of answering.
+    fn tail_fp(self, value: ExprId?) -> List<int> {
+        if value == null { return [] }
+        [self.expr_fingerprint(value!)]
+    }
+
     /// The fingerprints of expression children, in order.
     fn expr_fps(self, ids: List<ExprId>) -> List<int> {
         [self.expr_fingerprint(k) for k in ids]
@@ -329,6 +342,7 @@ impl NodeStore {
                                 self.stmt_fps(then_stmts), [0],
                                 self.stmt_fps(else_stmts)])),
             .Return(value) -> fp(36, [self.expr_fingerprint(value)]),
+            .Fail(value) -> fp(39, [self.expr_fingerprint(value)]),
             .LetElse(name, subject, stmts) ->
                 fp(38, [fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
             // For's cond and step derive from name/from/to — the

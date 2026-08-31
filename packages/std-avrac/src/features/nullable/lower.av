@@ -6,7 +6,8 @@
 //! the value is not there.
 use core.{ExprId, StmtId, TypeId, Reg, Ins, Type}
 use features.{LowerCx, StmtLowerCx, StructSig, presence_of, carried_of, carried_type,
-              adopted, absent_of, insisted, hollow_of, hole_defect, lower_defect}
+              adopted, absent_of, insisted, hollow_of, okness_of, payload_of,
+              hole_defect, lower_defect}
 
 fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -77,9 +78,24 @@ fn match_opt_reg(cx: LowerCx, e: ExprId, subject: ExprId,
 fn propagate_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
     let r = cx.reg_of(v)
     let held = cx.type_at(v)
+    if cx.types.shape_of(held) is .Res { return propagate_res_reg(cx, e, r) }
     presence_region(cx, e, r, held,
         () -> carried_of(cx, r, held),
         () -> departed(cx, e))
+}
+
+/// `v?` on a RESULT: one region on OKNESS. The ok arm unwraps the
+/// payload; the failure arm exits with THE SUBJECT'S OWN BOX — an
+/// `.Err` of `Result<_, E>` is a valid `.Err` of every `Result<_,
+/// E>`, so propagation moves the pointer and repacks nothing.
+fn propagate_res_reg(cx: LowerCx, e: ExprId, r: Reg) -> Reg {
+    cx.emit(Ins.IfStart(okness_of(cx, r)))
+    cx.emit(Ins.ArmEnd(payload_of(cx, r, cx.type_at(e))))
+    cx.emit(Ins.FnExit(r))
+    let hollow = hollow_of(cx, cx.type_at(e))
+    let dst = cx.mint(e)
+    cx.emit(Ins.RegionEnd(dst, hollow))
+    dst
 }
 
 /// The absent arm's whole story: the enclosing fn answers absence.

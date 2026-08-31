@@ -51,11 +51,11 @@ spec "features/enums (adversarial)" {
         then "a payload naming no type refuses" {
             refusals("enum E {\n    a(Nope)\n    b\n}\n1") == 1
         }
-        then "a payload of the enum itself refuses" {
-            refusals("enum E {\n    a(E)\n    b\n}\n1") == 1
+        then "a payload of the enum ITSELF works — recursion rides the box" {
+            shown("enum E {\n    a(E)\n    b\n}\nmatch E.a(E.b) {\n    .a(inner) -> match inner {\n        .a(deep) -> 2\n        .b -> 1\n    }\n    .b -> 0\n}") == "1"
         }
-        then "a record payload refuses like any non-scalar" {
-            refusals("type P = { x: int }\nenum E {\n    a(P)\n    b\n}\n1") == 1
+        then "a record payload works — the slot holds the pointer" {
+            shown("type P = { x: int }\nenum E {\n    a(P)\n    b\n}\nmatch E.a(P { x: 5 }) {\n    .a(p) -> p.x\n    .b -> 0\n}") == "5"
         }
         then "a bool argument for an int payload refuses" {
             refusals("${ab()}let x = E.a(true)\n2") == 1

@@ -10,7 +10,8 @@
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, some_list}
 use diagnostics.{Diag, error_at, pointed, loc_at}
 use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig,
-              fn_sig_of, record_sig_of, variant_sig_of, adopted, carried_of}
+              fn_sig_of, record_sig_of, variant_sig_of, res_enum_sig,
+              adopted, carried_of, okayed, hollow_of}
 use @std.errors.{Loc}
 
 /// One lowered body: instructions in order and each register's type
@@ -156,7 +157,7 @@ fn expr_lower_cx(lo: Lower) -> LowerCx {
         bind_pattern: (k: ExprId, r: Reg) -> lo.bind_pattern(k, r),
         variants_at: (k: ExprId) -> lo.variants_at(k),
         emit: (i: Ins) -> lo.give(i),
-        lower_block: (stmts: List<StmtId>, value: ExprId) -> block_reg(lo, stmts, value),
+        lower_block: (stmts: List<StmtId>, value: ExprId?) -> block_reg(lo, stmts, value),
         enclosing_ret: () -> lo.fn_ret,
         fail: (msg: string) -> lo.record(msg),
     }
@@ -172,15 +173,18 @@ fn narrowed(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
     carried_of(cx, r, worn!)
 }
 
-/// A value the assignment law LIFTED into a nullable, minted in
-/// the claiming type's representation (values.av). Recorded by
-/// typing, adopted here — the one place every expression passes
-/// through, so absence takes its layout at exactly one edge: the
-/// null literal arrives already absent, and `adopted` knows.
+/// A value a boundary LIFTED — into a nullable, or into a Result's
+/// success (the auto-Ok wrap). Recorded by typing, minted here —
+/// the one place every expression passes through, so a lift takes
+/// its layout at exactly one edge; the target's shape decides
+/// which: the null literal arrives already absent and `adopted`
+/// knows; anything else lifting into a Res is a success.
 fn widened(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
-    let into: TypeId? = lo.a.typing.widens[e.index]
-    if into == null { return r }
-    adopted(cx, into!, cx.shape_at(e) is .Null, r)
+    let worn: TypeId? = lo.a.typing.widens[e.index]
+    if worn == null { return r }
+    let into = worn!
+    if lo.a.typing.types.shape_of(into) is .Res { return okayed(cx, into, r) }
+    adopted(cx, into, cx.shape_at(e) is .Null, r)
 }
 
 /// Statements in order, each through its own StmtSemantics — the
@@ -223,6 +227,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
     let unprintable: string? = match sh {
         .Struct(_, n) -> n,
         .Enum(_, n) -> n,
+        .Res(_, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
         .TypeName(_, n) -> n,
         .Opt(_) or .Null -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
         .Int or .Str or .Bool or .List(_) or .Error -> null,
@@ -233,7 +238,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Int -> text_call(lo, "avra_int_text", last),
         .Bool -> text_call(lo, "avra_bool_text", last),
         .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
-        .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) -> null,
+        .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) -> null,
         .Opt(_) or .Null -> null,
         .Error -> null,
     }
@@ -263,13 +268,22 @@ fn list_text_callee(lo: Lower, elem: TypeId) -> string {
 }
 
 /// A block is a scope: statements lower in order into it, and the
-/// value register escapes as the scope's yield.
-fn block_reg(lo: Lower, stmts: List<StmtId>, value: ExprId) -> Reg {
+/// value register escapes as the scope's yield. A block that
+/// LEAVES yields a hollow typed as the fn's promise — the exit
+/// already happened, and everything after it is the backend's dead
+/// continuation.
+fn block_reg(lo: Lower, stmts: List<StmtId>, value: ExprId?) -> Reg {
     lo.give(Ins.ScopeEnter(Level.Application))
     let _ = lower_stmts(lo, stmts)
-    let r = lower_subtree(lo, value)
+    let r = if value == null { departed_tail(lo) } else { lower_subtree(lo, value!) }
     lo.give(Ins.ScopeExit(r))
     r
+}
+
+/// The never-read yield of a block that left — typed as the fn's
+/// promise, so every merge it feeds stays type-consistent.
+fn departed_tail(lo: Lower) -> Reg {
+    hollow_of(expr_lower_cx(lo), lo.fn_ret ?? lo.a.typing.types.intern(Type.Error))
 }
 
 impl Lower {
@@ -359,7 +373,9 @@ impl Lower {
     fn variants_at(self, e: ExprId) -> EnumSig? {
         match self.a.typing.types.shape_of(self.a.type_at(e)) {
             .Enum(decl, _) -> variant_sig_of(self.a.decl_sig(decl)),
-            _ -> null,
+            .Res(ok, err) -> res_enum_sig(ok, err),
+            .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
+            .TypeName(_, _) or .Opt(_) or .Null or .Error -> null,
         }
     }
 

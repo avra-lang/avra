@@ -103,7 +103,10 @@ text-as-projection after self-host, the service store at Era V.
         FnExit); and `let v? = e else { }` (slice N4 — the
         divergence law arrived with the `diverges` registry).
         `while let` stays a recorded trigger (wants loops polish)
-    10. Result & `?` — propagation as the error spine
+    10. Result & `?` — R0+R1 LANDED 2026-08-31 (the spine:
+        Type.Res, fail, auto-Ok, `?`, match-for-free, divergence-
+        aware blocks); REMAINS: R2 `catch`, then the recorded
+        R4 triggers (unions, topology, handlers)
     11. ▲ generics — mono through OUR pipeline (List<T> becomes real)
     12. ▲ traits & dyn — dispatch, cross-module impls
     13. ▲ closures & fn values — capture meets the memory ABI
@@ -2506,6 +2509,124 @@ strings has no spelling outside a hole. (2) `for` over a LIST —
 `for x in [1, 2]` refuses ("expected `..`"); ranges only today.
 Both wait on their natural rungs (strings polish; lists/generics),
 recorded here so the wanting sites are named.
+
+## The error spine (rung 10 — designed 2026-08-31, from the epic)
+
+Source: `../forge-crafting-intepreters/docs/2026_06_08_ERROR_HANDLING_EPIC.md`
+read in full, with spec Axis 12 under it. The epic is a five-phase
+program (produce -> handle -> topology -> resumption -> agent layer);
+this record fixes what OUR tree takes now, what waits on which rung,
+and the three places we deliberately diverge. Read the epic before
+touching any slice — it is the ergonomics contract.
+
+THE COLLAPSES (P6), each killing a machinery bill:
+
+1. RESULT IS A BUILT-IN ENUM. `Result<T, E>` needs no generics:
+   `Type.Res(ok, err)` is a structural core constructor, interned
+   like `Opt` (the nullable precedent, replayed). `variants_of`
+   answers `{Ok: T, Err: E}` for a Res type, so MATCH, its
+   exhaustiveness, payload binds, and refusals all ride the enums
+   feature UNCHANGED — the match story costs zero new nodes.
+2. THE ERROR PATH IS A POINTER MOVE. v1 repr = the enum layout
+   (tagged box, tag 0 = Ok / 1 = Err, payload slot 1). An `.Err`
+   box of `Result<_, E>` is bit-for-bit a valid `.Err` of EVERY
+   `Result<_, E>` — `?` on failure re-emits the SAME register
+   through FnExit. No repacking, no allocation on the propagation
+   path. The register TRIPLE `{tag, ok, err}` (never-allocates,
+   Pack/Extract already paid) is the recorded POST-OWNERSHIP
+   optimization: a managed payload in a triple needs retain-at-pack
+   accounting the memory pass cannot balance yet. Re-measure at the
+   ownership milestone; do not re-argue before it.
+3. `?` STAYS UNIFIED — the epic's F1202 `?`-split is REFUSED for
+   Avra (it depended on a nullability epic we superseded). Our
+   ratified 2026-08-30 decision + spec 12.2 stand: ONE operator,
+   "pass it on", channel picked by the SUBJECT's type — `T?`
+   propagates null (needs nullable ret), `Result` propagates the
+   Err (needs Result ret, same E in v1). Locally legible: the
+   subject's type and the signature are both at hand. The epic's
+   real invariant survives intact: `??` is Option-only, `catch`
+   is Result-only, `fail` is raise — one verb per intent.
+
+DECIDED SURFACE (v1 spellings):
+- `.Ok` / `.Err` UPPERCASE — the epic's consistent spelling and the
+  self-host source's own (bs2's Result); spec 12.1's lowercase is
+  superseded.
+- `fail e` — a STATEMENT v1 (keyword-anchored, @recover like
+  `return`), desugaring to an Err exit; it DIVERGES, so it joins
+  the `diverges` registry and a let-else's else can `fail`.
+  Expression-position fail rides the divergence-aware-blocks
+  trigger with return's.
+- AUTO-OK (epic §3.2, implicit, the Gleam way): a tail/return value
+  of exactly T Ok-wraps at the ONE widening edge (the widens table
+  already dispatches on the target's shape — Res joins Opt there).
+  The guard rule is law: a Result-shaped value never silently
+  double-wraps.
+- E v1 is ONE nominal enum type, matched exactly. UNION error types
+  + auto-widening at `?` (the epic's crown) need union types — a
+  design of their own, NOT rushed here; recorded as the R4 trigger.
+
+THE SLICES:
+  (R0) [x] the SLOT LAW widened — LANDED 2026-08-31. ONE law
+       (`slot_law`, was scalar_slot) for enum payloads and struct
+       fields: unmanaged word-shaped types ride slots — Int, Bool,
+       Struct, Enum, TypeName, List, and now Res. Str stays refused
+       (managed); Opt slots stay refused (the pair is a register
+       aggregate, not a word — nullable fields are a recorded
+       want). The MUT CELL law widened the same day to the same
+       truth (`managed_cell` — the strategy's answer, shape-down).
+       WHAT THE RED TEAM FOUND (rt12): the native backend had never
+       moved a pointer through the runtime's I64 word slots — the
+       result-coercion half of the ABI shim was missing
+       (`answers_word` + inttoptr, rt_arg's mirror); the evaluator
+       hid it, the differential caught it. SELF-RECURSIVE enums
+       (`a(E)`) now legal — recursion rides the box; pinned with
+       50-deep churn. The LIST ELEMENT law deliberately not
+       widened — its trigger is rung 11's List<T> work.
+  (R1) [x] the SPINE — LANDED 2026-08-31, eval == native on first
+       run of the kitchen-sink witness. `Result<T, E>` -> Type.Res
+       (7 Type consumers answered, compiler-listed); the
+       variants_of/variants_at bridges answer `res_enum_sig` and
+       MATCH, exhaustiveness, payload binds all arrived FREE
+       through the enums feature (zero new nodes); `fail` (its own
+       feature dir, keyword-anchored, diverges — let-else's else
+       can fail); auto-Ok at the ONE widening edge (res_accepts +
+       widened's Res arm; the guard rule holds — identity meets
+       the equality case first, Ok(Ok(x)) cannot happen silently);
+       `?` extended to Res subjects (okness region; the Err arm
+       FnExits THE SUBJECT'S OWN BOX — zero repacking, the pointer
+       move the record promised). Diet cost: ZERO context verbs —
+       okayed/failed/okness_of are values.av vocabulary.
+       AND THE TRIGGER PAID: divergence-aware block tails. A
+       fail-last body broke the block law ("a block ends with an
+       expression"), so the recorded trigger fired mid-slice:
+       Block's tail is now OPTIONAL, built tailless only when the
+       builder PROVES the last statement diverges (the `diverges`
+       registry, syntactic); a block that LEAVES answers WHATEVER
+       THE FN IT LEAVES PROMISES — the body check passes exactly,
+       and a value-position arm joins only where the promise's
+       type fits (codegen's phi protected by typing, no Never type
+       needed). `let got = if let v? = e { v } else { return -1 }`
+       — the epic's guard shape — now runs, pinned both engines.
+       RT13: 25 programs — every mis-aim refused in its own words
+       (fail at top/plain fn/wrong E/ok-side value; `?` in plain,
+       nullable, and wrong-E fns; Result arity; match missing
+       .Err), 200-iteration owned churn through failure exits,
+       fail inside let-else, mut Result cells, Result<User, E>
+       riding R0's slots.
+  (R2) `catch` — the epic §5.0 grammar read off the operand: value
+       form, `{ it }` block, `e ->` arm, selective (propagates the
+       rest), total (exhaustive, F1210), left-assoc chaining. One
+       postfix operator, binding looser than `?`.
+  (R3) `.Ok(v)`/`.Err(e)` in EXPRESSION position, `is`-patterns
+       over Res, `? context "…"`.
+  (R4) recorded triggers, each on its enabling rung: union types +
+       inferred unions + widening (own design doc first); managed
+       payloads + the register triple (ownership milestone);
+       errdefer (ownership milestone); resumable handlers /
+       retry / handler values (fibers, rung 18); failure topology +
+       explain-failures (after unions); Transient/Remediation/
+       catch auto (traits, rung 12); @derive(failure_tests)
+       (derive infra).
 
 ## The capability diet (decided 2026-08-30)
 

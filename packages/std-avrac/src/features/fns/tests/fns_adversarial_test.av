@@ -22,13 +22,12 @@ spec "features/fns (adversarial)" {
             refused_with("mut i = 0\nwhile i < 3 {\n    return 5\n    i = i + 1\n}\ni",
                          "a `return` answers a fn, and there is none enclosing")
         }
-        then "RECORDED TRIGGER: a return cannot END an expression block yet" {
-            // `if let v? = e { v } else { return d }` — the let-else
-            // shape — waits on divergence-aware blocks (the block
-            // tail law would need to accept a diverging last stmt).
-            refused_with("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
-                         "fn f(id: int) -> int {\n    let got = if let v? = half(id) {\n        v\n    } else {\n        return 0 - 1\n    }\n    got * 10\n}\nf(8)",
-                         "a block ends with an expression")
+        then "a return ENDS an expression block — divergence-aware tails" {
+            // The trigger fired with the error spine: a block that
+            // LEAVES needs no tail, and answers what the fn
+            // promises — so it joins only where that type fits.
+            shown("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
+                  "fn f(id: int) -> int {\n    let got = if let v? = half(id) {\n        v\n    } else {\n        return 0 - 1\n    }\n    got * 10\n}\nf(8) + f(3)") == "39"
         }
     }
     given "the parameter list, at every size" {

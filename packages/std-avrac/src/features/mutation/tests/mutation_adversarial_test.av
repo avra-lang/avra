@@ -19,14 +19,17 @@ spec "features/mutation (adversarial)" {
                   "a = 2\nb = false\nc = 3\nd = true\n" +
                   "a + (c ?? 0) + (if b { 0 } else { 5 }) + (if d ?? false { 7 } else { 0 })") == "17"
         }
-        then "a struct cell refuses through the cell law" {
-            refused_with("type U = { age: int }\nmut x: U = U { age: 1 }\nx.age",
+        then "a struct cell WORKS — unmanaged aggregates ride the slot" {
+            shown("type U = { age: int }\nmut x: U = U { age: 1 }\nx = U { age: 5 }\nx.age") == "5"
+        }
+        then "a MANAGED niche cell still refuses — it IS its string" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            refused_with("mut x: string? = null\n1",
                          "a `mut` binding cannot hold a managed value yet")
         }
-        then "a NICHE nullable cell refuses — it IS its managed pointer" {
+        then "an UNMANAGED niche cell passes — the pointee owes nothing" {
             // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
-            refused_with("mut x: List<int>? = null\n1",
-                         "a `mut` binding cannot hold a managed value yet")
+            shown("mut x: List<int>? = null\nx = [1, 2, 3]\nx?.length ?? 0") == "3"
         }
     }
     given "the assignment law, aimed at the DECLARED cell" {

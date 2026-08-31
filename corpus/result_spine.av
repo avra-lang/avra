@@ -1,0 +1,36 @@
+// proves: the error spine — `Result<T, E>` the built-in enum.
+// `fail` raises (unit and payload variants), a bare success wraps
+// itself (auto-Ok), `?` passes the failure on (the same Err box,
+// moved), and `match` asks `.Ok`/`.Err` through the enum machinery
+// unchanged. Debts settle at every exit (the owned string proves).
+enum ParseError {
+    empty
+    negative(int)
+}
+
+fn parse_port(raw: int) -> Result<int, ParseError> {
+    if raw == 0 {
+        fail ParseError.empty
+    }
+    if raw < 0 {
+        fail ParseError.negative(raw)
+    }
+    raw
+}
+
+fn doubled(raw: int) -> Result<int, ParseError> {
+    let held = "working"
+    let p = parse_port(raw)?
+    p * 2 + (held.length * 0)
+}
+
+fn describe(raw: int) -> int {
+    match doubled(raw) {
+        .Ok(v) -> v
+        .Err(e) -> match e {
+            .empty -> 0 - 1
+            .negative(n) -> n
+        }
+    }
+}
+"${describe(21)} ${describe(0)} ${describe(0 - 9)}"

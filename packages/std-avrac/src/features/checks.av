@@ -3,7 +3,7 @@
 //! words. A LAW extracts at its SECOND: a rule copied by hand
 //! disagrees with itself the day the copies drift (`member_type_of`
 //! serves the bare read and the chain for exactly that reason).
-use core.{ExprId, TypeId, Type}
+use core.{ExprId, TypeId, Type, ResSides}
 use diagnostics.{Diag, error_at, pointed}
 
 /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -43,7 +43,7 @@ export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
     let got = cx.type_at(e)
     if !types_disagree(cx, got, want) { return true }
     let inner: TypeId? = cx.types.carried(want)
-    if inner == null { return false }
+    if inner == null { return res_accepts(cx, e, got, want) }
     // `null` inhabits every nullable; a present value must be the
     // carried type. Either way the lift is RECORDED, in this one
     // place — absence has no layout of its own, and lowering's
@@ -53,6 +53,21 @@ export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
     cx.widen(e, want)
     true
 }
+
+/// A success LIFTS into its Result at the boundary — the auto-Ok
+/// wrap (ROADMAP: the error spine). THE GUARD RULE: only a value of
+/// exactly the ok side wraps; a value already Result-shaped met the
+/// identity case above and never wraps again, so `Ok(Ok(x))` cannot
+/// happen silently. Recorded at the same one widening edge as the
+/// nullable lift.
+fn res_accepts(cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
+    let sides: ResSides? = cx.types.res_parts(want)
+    if sides == null { return false }
+    if types_disagree(cx, got, sides!.ok) { return false }
+    cx.widen(e, want)
+    true
+}
+
 
 /// THE JOIN: the one type two branches can BOTH answer with, or
 /// absent when there is none. Equal types join to themselves; a

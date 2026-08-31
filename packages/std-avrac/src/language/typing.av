@@ -9,7 +9,7 @@
 use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, spelled, TypeRegistry, new_type_registry, filled, plain}
 use diagnostics.{Diag, loc_at, error_at, pointed}
 use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig, Asked,
-              fn_sig_of, record_sig_of, variant_sig_of, duplicate_names}
+              fn_sig_of, record_sig_of, variant_sig_of, duplicate_names, res_enum_sig}
 use @std.errors.{Loc}
 
 /// The pass's facts: the registry, a dense expression table, and a
@@ -135,7 +135,7 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         bound_def: (e: ExprId) -> t.def_of(e),
         fields_of: (ty: TypeId) -> t.fields_of(ty),
         variants_of: (ty: TypeId) -> t.variants_of(ty),
-        block_type: (stmts: List<StmtId>, value: ExprId) -> block_type(t, param_types, stmts, value),
+        block_type: (stmts: List<StmtId>, value: ExprId?) -> block_type(t, param_types, stmts, value),
         walk_type: (v: ExprId) -> typed_subtree(t, param_types, v),
         bind_type: (v: ExprId, ty: TypeId) -> t.record_bind(v, ty),
         widen: (v: ExprId, ty: TypeId) -> t.record_widen(v, ty),
@@ -151,11 +151,15 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
 }
 
 /// A block's statements type in order, then its value — which IS
-/// the block's type.
-fn block_type(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>, value: ExprId) -> TypeId {
+/// the block's type. A block that LEAVES (no tail — the builder
+/// proved its last statement diverges) answers whatever the fn it
+/// leaves promises: the body check passes exactly, and a
+/// value-position arm joins only where the promise's type fits.
+fn block_type(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>, value: ExprId?) -> TypeId {
     type_stmts(t, param_types, stmts)
-    type_walk(t, param_types, value)
-    t.of_expr[value.index]
+    if value == null { return t.fn_ret.last() ?? t.error_type }
+    type_walk(t, param_types, value!)
+    t.of_expr[value!.index]
 }
 
 /// A subtree typed on request, answering its own type — what a
@@ -224,6 +228,17 @@ fn type_node(t: Typer, cx: TypeCx, e: ExprId) {
 fn applied_arity(name: string) -> int? {
     match name {
         "List" -> 1,
+        "Result" -> 2,
+        _ -> null,
+    }
+}
+
+/// The applied constructors' SHAPES — applied_arity's twin, fed
+/// arity-checked arguments.
+fn applied_shape(name: string, parts: List<TypeId>) -> Type? {
+    match name {
+        "List" -> Type.List(parts[0]),
+        "Result" -> Type.Res(parts[0], parts[1]),
         _ -> null,
     }
 }
@@ -270,7 +285,7 @@ impl Typer {
     /// variant, and carries nothing.
     fn carried_type(self, s: StmtId, v: Param) -> TypeId? {
         if v.ty == null { return null }
-        self.scalar_slot(s, "type.enum_payload", "an enum payload holds scalars for now",
+        self.slot_law(s, "type.enum_payload", "an enum payload cannot hold this yet",
                          "`${v.name}` carries a `${spelled(v.ty!)}`", v.ty!)
     }
 
@@ -295,26 +310,28 @@ impl Typer {
     /// grammar always writes one, so absence is unreachable.
     fn field_type(self, s: StmtId, f: Param) -> TypeId {
         if f.ty == null { return self.error_type }
-        self.scalar_slot(s, "type.struct_scalar", "struct fields hold scalars for now",
+        self.slot_law(s, "type.struct_scalar", "a struct field cannot hold this yet",
                          "field `${f.name}` is `${spelled(f.ty!)}`", f.ty!)
     }
 
     /// THE declared-slot law: a slot inside an aggregate holds a
-    /// SCALAR until ownership analysis covers managed values — a
-    /// record's field and an enum's payload alike, since both are
-    /// slots of an array the pass does not yet track. (A nullable
-    /// is NOT a container: its representation is values.av's
-    /// per-shape choice, so no law speaks there.) An UNKNOWN name
-    /// is not this law's business: the NAME law speaks first, and
-    /// a second refusal for one mistake is a cascade.
-    fn scalar_slot(self, s: StmtId, kind: string, message: string,
-                   label: string, ty: TypeRef) -> TypeId {
+    /// value the memory pass need not track — a WORD it may copy
+    /// freely. Scalars and the unmanaged pointer shapes qualify
+    /// (nothing releases an aggregate today); a MANAGED value (a
+    /// string) waits for ownership analysis, and a scalar nullable
+    /// is a register PAIR, not a word — nullable slots are their
+    /// own recorded want. A record's field and an enum's payload
+    /// are one law. An UNKNOWN name is not this law's business:
+    /// the NAME law speaks first, and a second refusal for one
+    /// mistake is a cascade.
+    fn slot_law(self, s: StmtId, kind: string, message: string,
+                label: string, ty: TypeRef) -> TypeId {
         let named = self.written_type(s, ty)
         let sh: Type = self.types.shape_of(named)
         if sh is .Error { return named }
-        if !ty.optional && (sh is .Int || sh is .Bool) { return named }
+        if !ty.optional && slot_worthy(sh) { return named }
         self.speak(pointed(error_at(kind, self.stmt_loc(s), message), label)
-            with { help: "`int` and `bool` today — managed slots arrive with ownership analysis" })
+            with { help: "unmanaged values today — strings and nullable slots arrive with ownership analysis" })
         self.error_type
     }
 
@@ -382,7 +399,7 @@ impl Typer {
                 error_at("type.applied", self.stmt_loc(s),
                     "`${t.name}` takes no type arguments"),
                 "applied here")
-                with { help: "`List<T>` is the one applied type today" })
+                with { help: "the applied types today are `List<T>` and `Result<T, E>`" })
             return self.error_type
         }
         let arity = takes!
@@ -394,9 +411,15 @@ impl Typer {
                 with { help: "`${t.name}` needs exactly ${arity}" })
             return self.error_type
         }
-        let elem = self.full_type(s, t.args[0])
-        if self.types.shape_of(elem) is .Error { return elem }
-        self.types.intern(Type.List(elem))
+        mut parts: List<TypeId> = []
+        for a in t.args {
+            let ty = self.full_type(s, a)
+            if self.types.shape_of(ty) is .Error { return ty }
+            parts.push(ty)
+        }
+        let sh: Type? = applied_shape(t.name, parts)
+        if sh == null { return self.error_type }
+        self.types.intern(sh!)
     }
 
     /// What a written NAME stands for: a builtin shape, a declared
@@ -554,12 +577,25 @@ impl Typer {
     fn variants_of(self, ty: TypeId) -> EnumSig? {
         match self.types.shape_of(ty) {
             .Enum(decl, _) -> variant_sig_of(self.decls[decl.index]),
-            _ -> null,
+            .Res(ok, err) -> res_enum_sig(ok, err),
+            .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
+            .TypeName(_, _) or .Opt(_) or .Null or .Error -> null,
         }
     }
 
     fn speak(self, d: Diag) {
         mut ds = self.diagnostics
         ds.push(d)
+    }
+}
+
+/// A shape a SLOT may hold: a scalar word, or an unmanaged
+/// pointer. Managed values and register-pair nullables wait for
+/// ownership analysis; Error absorbs (the name law already spoke).
+fn slot_worthy(sh: Type) -> bool {
+    match sh {
+        .Int or .Bool or .Struct(_, _) or .Enum(_, _) or
+        .Res(_, _) or .TypeName(_, _) or .List(_) -> true,
+        .Str or .Opt(_) or .Null or .Error -> false,
     }
 }

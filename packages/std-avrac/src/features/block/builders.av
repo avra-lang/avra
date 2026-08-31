@@ -14,6 +14,11 @@ fn build_block(b: Builder) -> Result<LangNode, string> {
         .ExprStmt(v) -> v,
         _ -> null,
     }
+    // A block that LEAVES needs no tail — its last statement
+    // diverges, so no value could ever be read.
+    if value == null && b.store.diverges(last) {
+        return b.make_expr(Expr.Block(stmts, null))
+    }
     if value == null {
         return Result.Err(block_tail_defect())
     }
@@ -26,5 +31,5 @@ fn build_block(b: Builder) -> Result<LangNode, string> {
 
 /// A block whose last statement carries no value — worded once.
 fn block_tail_defect() -> string {
-    "a block ends with an expression"
+    "a block ends with an expression — or leaves (`return`, `fail`)"
 }
