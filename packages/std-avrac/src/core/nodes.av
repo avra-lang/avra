@@ -158,7 +158,10 @@ export fn spelled(t: TypeRef) -> string {
 export type Param = { name: string, ty: TypeRef? }
 
 export enum Stmt {
-    Let(name: string, value: ExprId)
+    /// `let name = v`, optionally `let name: T = v` — the written
+    /// type, when declared, is what the binding HOLDS; the value
+    /// must be accepted by it.
+    Let(name: string, ty: TypeRef?, value: ExprId)
     /// A reassignable binding — scalars only, until ownership
     /// analysis arrives for managed values.
     MutLet(name: string, value: ExprId)
@@ -295,7 +298,7 @@ impl NodeStore {
 
     fn fingerprint_stmt(self, s: Stmt) -> int {
         match s {
-            .Let(name, value) -> fp(5, [fp_str(name), self.expr_fingerprint(value)]),
+            .Let(name, ty, value) -> fp(5, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
             .MutLet(name, value) -> fp(15, [fp_str(name), self.expr_fingerprint(value)]),
             .Assign(name, value) -> fp(16, [fp_str(name), self.expr_fingerprint(value)]),
             .While(cond, stmts) ->

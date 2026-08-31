@@ -121,7 +121,7 @@ export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
 /// and the impl it names owes every pass, enforced by the trait.
 export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
     match s {
-        .Let(_, _) -> d.lets,
+        .Let(_, _, _) -> d.lets,
         .MutLet(_, _) -> d.mutlets,
         .Assign(_, _) -> d.assigns,
         .ExprStmt(_) -> d.exprs,
@@ -154,7 +154,7 @@ impl NodeStore {
     /// variants; the trait carries behavior.
     fn let_name(self, s: StmtId) -> string? {
         match self.stmt(s) {
-            .Let(name, _) -> name,
+            .Let(name, _, _) -> name,
             .MutLet(name, _) -> name,
             .For(name, _, _, _, _, _) -> name,
             .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _)
@@ -162,11 +162,19 @@ impl NodeStore {
         }
     }
 
+    /// A let's WRITTEN type, when one was declared.
+    fn let_ty(self, s: StmtId) -> TypeRef? {
+        match self.stmt(s) {
+            .Let(_, t, _) -> t,
+            _ -> null,
+        }
+    }
+
     /// A statement's value expression at its OWN position. A body
     /// that runs later, under a frame, is NOT a value.
     fn stmt_value(self, s: StmtId) -> ExprId? {
         match self.stmt(s) {
-            .Let(_, v) -> v,
+            .Let(_, _, v) -> v,
             .MutLet(_, v) -> v,
             .Assign(_, v) -> v,
             .ExprStmt(v) -> v,
@@ -192,7 +200,7 @@ impl NodeStore {
         match self.stmt(s) {
             .StructDecl(name, _) -> name,
             .EnumDecl(name, _) -> name,
-            .Let(_, _) or .MutLet(_, _) or .Assign(_, _) or .ExprStmt(_) or
+            .Let(_, _, _) or .MutLet(_, _) or .Assign(_, _) or .ExprStmt(_) or
             .FnDecl(_, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .Error -> null,
         }

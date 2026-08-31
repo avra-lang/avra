@@ -3,15 +3,23 @@
 // statement costing one diagnostic while its neighbors parse around
 // the visible hole.
 use @std.avrac.core.{BinOp}
-use @std.avrac.language.{assemble, parse_program, ParsedProgram}
+use @std.avrac.language.{assemble, parse_program, ParsedProgram, analyze_source}
+use @std.avrac.testing.{shown, refused_with, refusals}
 use @std.avrac.diagnostics.{new_source_file}
 use @std.avrac.features.stmt_spine.{stmt_spine}
 use @std.avrac.features.let_stmt.{let_stmt}
 use @std.avrac.features.expr_spine.{expr_spine}
+use @std.avrac.features.type_expr.{type_expr}
 
 /// This feature subset: programs of lets only.
 fn parse_prog(source: string) -> ParsedProgram {
-    parse_program(assemble([stmt_spine(), let_stmt(), expr_spine()]), new_source_file(null, source))
+    parse_program(assemble([stmt_spine(), let_stmt(), expr_spine(), type_expr()]), new_source_file(null, source))
+}
+
+/// The binding is named `x` and declares `int?`.
+fn declares_opt_int(name: string, t: TypeRef?) -> bool {
+    if t == null { return false }
+    name == "x" && t!.optional && t!.name == "int"
 }
 
 spec "features/let_stmt" {
@@ -19,7 +27,7 @@ spec "features/let_stmt" {
         then "one Let lands in the arena with the expression tree under it" {
             let p = parse_prog("let x = 1 + y")
             let tree_ok = match p.store.stmt(p.stmts[0]) {
-                .Let(name, value) -> name == "x" && match p.store.expr(value) {
+                .Let(name, _, value) -> name == "x" && match p.store.expr(value) {
                     .Binary(op, l, r) -> op == BinOp.Add &&
                         p.store.expr(l) is .IntLit && p.store.expr(r) is .Ident,
                     _ -> false,
@@ -37,15 +45,56 @@ spec "features/let_stmt" {
     given "several statements" {
         then "lets accumulate in source order" {
             let p = parse_prog("let a = 1\nlet b = 2")
-            let a_ok = match p.store.stmt(p.stmts[0]) { .Let(name, _) -> name == "a", _ -> false }
-            let b_ok = match p.store.stmt(p.stmts[1]) { .Let(name, _) -> name == "b", _ -> false }
+            let a_ok = match p.store.stmt(p.stmts[0]) { .Let(name, _, _) -> name == "a", _ -> false }
+            let b_ok = match p.store.stmt(p.stmts[1]) { .Let(name, _, _) -> name == "b", _ -> false }
             p.diagnostics.is_empty() && p.stmts.length == 2 && a_ok && b_ok
+        }
+    }
+    given "the annotation, parsed — `let x: T = v`" {
+        then "the WRITTEN type rides the node, `?` included" {
+            let p = parse_prog("let x: int? = 1")
+            match p.store.stmt(p.stmts[0]) {
+                .Let(name, t, _) -> declares_opt_int(name, t),
+                _ -> false,
+            }
+        }
+        then "an unannotated let carries NO type — absence is its own value" {
+            let p = parse_prog("let x = 1")
+            match p.store.stmt(p.stmts[0]) {
+                .Let(_, t, _) -> t == null,
+                _ -> false,
+            }
+        }
+    }
+    given "the declared-binding law" {
+        then "the SPEC'S OWN SENTENCE: `let x: int = null` refuses; `let x: int? = null` is fine" {
+            refused_with("let x: int = null\nx", "`x` declares `int`, this is `null`") &&
+                analyze_source("let x: int? = null\nx ?? 7").diagnostics.is_empty()
+        }
+        then "a mismatch names the binding and both sides" {
+            refused_with("let x: int = \"s\"\nx", "`x` declares `int`, this is `string`")
+        }
+        then "an unknown annotation name speaks ONCE — the name law first" {
+            refusals("let x: Foo = 1\nx") == 1
+        }
+        then "the annotation WIDENS the value" {
+            shown("let x: int? = 5\nx ?? 9") == "5"
+        }
+        then "the DECLARED type is what every later read sees" {
+            refused_with("let x: int? = 5\nx + 1", "`+` needs `int` operands, found `int?`")
+        }
+        then "a TYPE used as the value speaks ONCE — the value law, not both" {
+            let a = analyze_source("type User = { age: int }\nlet x: int = User\nx")
+            a.diagnostics.length == 1 && a.report().contains("`User` is a type, not a value")
+        }
+        then "a niche annotation adopts a call's answer" {
+            shown("fn g(b: bool) -> string? { if b { \"x\" } else { null } }\nlet s: string? = g(true)\ns ?? \"d\"") == "x"
         }
     }
     given "a broken statement between good ones" {
         then "one diagnostic, a visible hole, and whole neighbors" {
             let p = parse_prog("let a = 1\nlet = 3\nlet y = 2")
-            let tail_ok = match p.store.stmt(p.stmts[2]) { .Let(name, _) -> name == "y", _ -> false }
+            let tail_ok = match p.store.stmt(p.stmts[2]) { .Let(name, _, _) -> name == "y", _ -> false }
             p.diagnostics.length == 1 && p.stmts.length == 3 &&
                 p.store.stmt(p.stmts[1]) is .Error && tail_ok
         }

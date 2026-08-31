@@ -117,6 +117,24 @@ fn length_member(cx: TypeCx, e: ExprId, shown: string, ty: TypeId) -> TypeId {
         this_is(shown)))
 }
 
+/// THE DECLARED-BINDING LAW: an annotated binding holds what it
+/// declares — the value must be ACCEPTED by the written type, its
+/// widening recorded like any other slot's. Every annotated
+/// binding form asks here, so the wording never drifts.
+export fn declared_binding(cx: TypeCx, v: ExprId, name: string, declared: TypeId) {
+    if cx.shape_of(declared) is .Error { return }
+    if cx.shape_at(v) is .Error { return }
+    // A TYPE standing where the value belongs already spoke through
+    // the value law — a second refusal would be a cascade.
+    if cx.shape_at(v) is .TypeName { return }
+    if accepts(cx, v, declared) { return }
+    let n = cx.name_at(v)
+    cx.emit(pointed(
+        error_at("type.binding", cx.loc_of(v),
+            "`${name}` declares `${cx.type_name(declared)}`, this is `${n}`"),
+        this_is(n)))
+}
+
 /// What a nullable carries, or absent when the type is not one.
 export fn opt_inner(cx: TypeCx, ty: TypeId) -> TypeId? {
     match cx.shape_of(ty) {

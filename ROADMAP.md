@@ -2445,9 +2445,22 @@ the friction list is evidence, not opinion:
 
 THE P1 FRICTION LIST, with proposed promotions (the consumer's
 recommended order was accepted as the working sequence):
-1. ANNOTATED `let` — `let x: string? = null` does not parse; the
-   let takes no annotation. Universal prior (TS/Rust/Kotlin), the
-   cheapest P1 hole on the board. APPROVED: the next slice.
+1. [x] ANNOTATED `let` — LANDED 2026-08-30. `let x: T = v` parses;
+   the binding HOLDS WHAT IT DECLARES: `bind_declared` records the
+   type, `def_type` prefers it over inference, and the shared
+   `declared_binding` law (checks.av, F2024 — ready for `mut`)
+   accepts the value with widening recorded, so `let x: int? = 5`
+   births the pair and `let x: int? = null` — the spec's own
+   sentence — finally runs. What the build taught: the RED TEAM
+   (23 programs) found ONE cascade — a TYPE as the value spoke
+   through the value law AND the binding law; the binding law now
+   absorbs TypeName (test-first). Non-findings by design:
+   `let int: int = 1` binds the VALUE namespace (the two
+   namespaces are separate), and same-scope re-`let` shadows
+   intentionally (the mut law's own help recommends it). bs2 trap
+   recorded: `v!.field` fails inside a match ARM (fine in fn
+   bodies) — hoist the predicate. Corpus: annotated_let.av,
+   eval == native. 764/764, 31 corpus.
 2. `return` — no early exit exists; blocks let-else, guard idioms,
    and the strongest structural prior in training data. Deferred
    from rung 2/3; PROMOTED to its own designed arc (divergence

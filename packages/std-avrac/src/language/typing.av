@@ -40,6 +40,7 @@ type Typer = {
     of_expr: List<TypeId>,
     widens: List<TypeId?>,
     pattern_types: List<TypeId?>,
+    binding_types: List<TypeId?>,
     decls: List<DeclSig?>,
     diagnostics: List<Diag>,
 }
@@ -54,6 +55,7 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         of_expr: filled(p.store.exprs.count(), hole),
         widens: filled<TypeId?>(p.store.exprs.count(), null),
         pattern_types: filled<TypeId?>(p.store.exprs.count(), null),
+        binding_types: filled<TypeId?>(p.store.stmts.count(), null),
         decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
@@ -80,6 +82,7 @@ fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
         type_stmts: (body: List<StmtId>) -> type_stmts(t, param_types, body),
         sig_of: (s: StmtId) -> fn_sig_of(t.decls[s.index]),
         assign_target: (s: StmtId) -> assign_target_of(t.resolution, s),
+        bind_declared: (s: StmtId, ann: TypeRef) -> t.bind_declared(s, ann),
         loc_of: (s: StmtId) -> t.stmt_loc(s),
     }
     for s in stmts { stmt_semantics_of(t.p.dispatch, t.p.store.stmt(s)).type_stmt(cx, s) }
@@ -374,15 +377,29 @@ impl Typer {
         ws.set(v.index, ty)
     }
 
-    /// A definition statement's value type. A TYPE declaration used
-    /// as a value is the compile-only TypeName — the shape variant
-    /// construction reads and nothing else accepts.
+    /// A definition statement's value type. An ANNOTATED binding
+    /// answers what it DECLARED (recorded by `bind_declared` when
+    /// the statement typed); a TYPE declaration used as a value is
+    /// the compile-only TypeName; everything else infers from its
+    /// value.
     fn def_type(self, s: StmtId) -> TypeId {
+        let declared: TypeId? = self.binding_types[s.index]
+        if declared != null { return declared! }
         let tname: string? = self.p.store.type_decl_name(s)
         if tname != null { return self.types.intern(Type.TypeName(s, tname!)) }
         let v: ExprId? = self.p.store.stmt_value(s)
         if v == null { return self.error_type }
         self.of_expr[v!.index]
+    }
+
+    /// An annotated binding's DECLARED type: interned once, recorded
+    /// so every later read of the name answers it, and returned for
+    /// the value's acceptance check.
+    fn bind_declared(self, s: StmtId, ann: TypeRef) -> TypeId {
+        let ty = self.full_type(s, ann)
+        mut bs = self.binding_types
+        bs.set(s.index, ty)
+        ty
     }
 
     /// A call's target signature, when resolve found one.

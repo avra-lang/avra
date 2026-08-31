@@ -358,6 +358,10 @@ against these before writing; probe in scratch when unsure.
   test string that must CONTAIN `${` builds it by concatenation
   (`"a $" + "{x} b"`) — on BOTH sides of an assertion. (Avra
   itself escapes holes with `\$` — our lexer's rule, not bs2's.)
+- `v!.field` inside a match ARM's expression fails to parse
+  ("expected `}` after match arms") — the same read is fine in a
+  plain fn body (`sig!.params` is everywhere). Hoist the projection
+  into a named predicate and call it from the arm.
 - `f(x)?.field` (Result-`?` then a field) is POISON: in plain code
   it refuses to parse ("expected `)` after arguments"), but inside
   a comprehension ELEMENT it parses and SILENTLY CORRUPTS the
