@@ -10,7 +10,7 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{Ins, Reg, BinOp, UnOp, opens_region, closes_region, filled, joined, ptr_shape}
+use core.{Ins, Reg, BinOp, UnOp, opens_region, closes_region, filled, joined}
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -83,6 +83,8 @@ fn step(m: Machine, b: Body, pc: int) -> int {
         .Bin(d, op, a, x) -> put_at(m, d, bin_val(m, op, a, x), pc),
         .Un(d, op, src) -> put_at(m, d, un_val(m, op, src), pc),
         .CallRt(d, callee, args) -> put_at(m, d, rt_val(m, b, d, callee, args), pc),
+        .Pack(d, elems) -> put_at(m, d, pack_val(m, elems), pc),
+        .Extract(d, src, at) -> put_at(m, d, extract_val(m, src, at), pc),
         .CallRtVoid(callee, args) -> rt_void(m, callee, args, pc),
         .Call(d, callee, args) -> put_at(m, d, call_val(m, callee, args), pc),
         .IfStart(c) -> if truth(m, c) { pc + 1 } else { past_else(b, pc) },
@@ -100,12 +102,31 @@ fn step(m: Machine, b: Body, pc: int) -> int {
     }
 }
 
-/// The backend's twin rule: a POINTER-SHAPED destination makes the
+/// The backend's twin rule: a POINTER-RIDING destination makes the
 /// constant the null pointer — the absence value. The two engines
 /// must read one instruction alike.
 fn const_int_val(m: Machine, b: Body, d: Reg, v: int) -> Val {
-    if ptr_shape(m.l.types.shape_of(b.reg_types[d.index])) { return Val.N }
+    if m.l.types.rides_pointer(b.reg_types[d.index]) { return Val.N }
     Val.I(v)
+}
+
+/// A packed value rides the same table an aggregate does — the
+/// interpreter's bookkeeping, not the machine's layout.
+fn pack_val(m: Machine, elems: List<Reg>) -> Val {
+    mut arrs = m.arrays
+    arrs.push([value(m, r) for r in elems])
+    Val.A(arrs.length - 1)
+}
+
+fn extract_val(m: Machine, src: Reg, at: int) -> Val {
+    let id: int? = match value(m, src) {
+        .A(x) -> x,
+        _ -> null,
+    }
+    if id == null { return defect_val(m, "an extract from a non-pack") }
+    let arr = m.arrays[id!]
+    if at < 0 || at >= arr.length { return defect_val(m, "an extract past a pack's end") }
+    arr[at]
 }
 
 // ── Registers (the innermost frame, through element aliases) ────
@@ -400,8 +421,8 @@ fn rt_dispatch(m: Machine, callee: string, vals: List<Val>) -> Val {
         "avra_array_new" -> array_new_val(m),
         "avra_array_push" -> array_push_val(m, vals),
         "avra_array_get" -> array_get_val(m, vals),
-        "avra_unwrap" -> unwrap_val(m, vals),
         "avra_insist" -> insist_val(m, vals),
+        "avra_insist_scalar" -> insist_scalar_val(m, vals),
         "avra_array_len" -> array_len_val(m, vals),
         "avra_str_join" -> str_join_val(m, vals),
         "avra_int_text" or "avra_bool_text" or "avra_ints_text"
@@ -437,30 +458,20 @@ fn absent_refused(m: Machine) -> Val {
     Val.I(0)
 }
 
-/// `v!` on a BOXED nullable — slot 1, insisting slot 0 says PRESENT.
-fn unwrap_val(m: Machine, vals: List<Val>) -> Val {
-    let id: int? = match vals[0] {
-        .A(x) -> x,
-        _ -> null,
-    }
-    if id == null { return defect_val(m, "a non-array reached `!`") }
-    let arr = m.arrays[id!]
-    if arr.length < 2 || !present_tag(arr) { return absent_refused(m) }
-    arr[1]
-}
-
 /// `v!` on a NICHE nullable — identity through the presence guard.
 fn insist_val(m: Machine, vals: List<Val>) -> Val {
     if vals[0] is .N { return absent_refused(m) }
     vals[0]
 }
 
-/// The tag a nullable carries: slot 0, present when it is not zero.
-fn present_tag(arr: List<Val>) -> bool {
-    match arr[0] {
-        .I(n) -> n != 0,
+/// `v!` on a PAIR nullable — the flag guards, the value passes.
+fn insist_scalar_val(m: Machine, vals: List<Val>) -> Val {
+    let present: bool = match vals[0] {
+        .B(t) -> t,
         _ -> false,
     }
+    if !present { return absent_refused(m) }
+    vals[1]
 }
 
 fn array_get_val(m: Machine, vals: List<Val>) -> Val {

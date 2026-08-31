@@ -17,7 +17,8 @@ CONSUMERS="packages/std-avrac/src/core/ir.av	dst_of	the register it defines
 packages/std-avrac/src/language/interp.av	step	its MEANING, interpreted
 packages/std-avrac/src/language/memory.av	memory_ins	its ownership effect
 packages/std-avrac/src/language/ir_text.av	body_lines	its human projection
-packages/std-avrac/src/language/llvm.av	emit_ins	its machine projection"
+packages/std-avrac/src/language/llvm.av	emit_ins	its machine projection
+packages/std-avrac/src/language/lower.av	give	whether the runtime registry validates it"
 
 fail=0
 echo "$CONSUMERS" | while IFS='	' read -r file fn what; do

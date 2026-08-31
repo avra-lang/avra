@@ -3,7 +3,7 @@
 // pass releases a scope's managed values at its exit — Application
 // strategy, reverse binding order.
 use @std.avrac.core.{Ins, RtSig, distinct}
-use @std.avrac.language.{analyze_source, Lowered, rt_sigs, rt_sig_of, rt_owns}
+use @std.avrac.language.{analyze_source, Lowered, rt_sigs, rt_sig_of, rt_owns, render_ir}
 
 fn ir_of(source: string) -> Lowered {
     analyze_source(source).lowered()
@@ -36,9 +36,22 @@ fn niche_read() -> string {
     "fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(true) ?? \"y\""
 }
 
-/// An `int?` made and read — the boxed subject, until the pair.
-fn boxed_read() -> string {
+/// An `int?` made and read — the pair subject.
+fn pair_read() -> string {
     "fn f(v: int) -> int? { v }\nf(1) ?? 0"
+}
+
+/// Every consumer of absence in one program — the law's witness.
+/// Deliberately aggregate-free: a struct literal's box is a STRUCT
+/// cost, and this law speaks only for the nullable's own lowering.
+fn every_consumer() -> string {
+    "fn g(b: bool) -> string? { if b { \"hi\" } else { null } }\n" +
+    "fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
+    "let a = half(4) ?? 0\n" +
+    "let b = half(4)!\n" +
+    "let c = match half(3) {\n    v? -> v\n    null -> 0\n}\n" +
+    "let d = g(true)?.length ?? 0\n" +
+    "a + b + c + d"
 }
 
 /// The identity fn whose tail WIDENS into a nullable…
@@ -79,17 +92,24 @@ spec "language/lower" {
             ir_of("let t = \"a\" == \"b\"\n\"done\"").entry.ins.filter((i: Ins) -> i is .CallRt).length == 1
         }
     }
-    given "the nullable representations — the niche's law" {
+    given "THE LAW: nullability never allocates" {
         then "a pointer nullable builds NO box anywhere — the niche is free" {
             boxes_built(ir_of(niche_read())) == 0
+        }
+        then "a scalar nullable builds NO box either — the pair rides registers" {
+            boxes_built(ir_of(pair_read())) == 0
         }
         then "widening a pointer into its nullable adds NO instruction" {
             let lifted = ir_of(lifting_id_fn())
             let plain = ir_of(plain_id_fn())
             lifted.fns[0].ins.length == plain.fns[0].ins.length
         }
-        then "a scalar nullable still boxes — the pair is the recorded next slice" {
-            boxes_built(ir_of(boxed_read())) == 1
+        then "the whole nullable surface at once — still not one box" {
+            boxes_built(ir_of(every_consumer())) == 0
+        }
+        then "`avra ir` SHOWS the pair — the pack and its element reads" {
+            let text = render_ir(ir_of(pair_read()))
+            text.contains("= pack ") && text.contains(".0") && text.contains(".1")
         }
     }
     given "the runtime registry" {

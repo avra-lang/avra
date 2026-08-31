@@ -6,7 +6,7 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
-use core.{Ins, Reg, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, ptr_shape}
+use core.{Ins, Reg, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig}
 use features.{nothing}
 
 /// One body's emission world: the LLVM handles, this body's register
@@ -136,9 +136,23 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
         // TypeName never materializes: no value ever has it.
         .Int or .Error or .TypeName(_, _) -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
+        .Opt(inner) -> opt_ll_type(lc, types, inner),
         .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or
-        .Opt(_) or .Null -> avra_llvm_pointer_type(lc),
+        .Null -> avra_llvm_pointer_type(lc),
     }
+}
+
+/// A nullable's machine type: the niche IS its value's pointer; a
+/// scalar pair is a first-class {present: i1, value} aggregate that
+/// lives in registers and never touches memory.
+fn opt_ll_type(lc: ptr, types: TypeRegistry, inner: TypeId) -> ptr {
+    if types.rides_pointer(inner) { return avra_llvm_pointer_type(lc) }
+    let arr = avra_llvm_type_array_new(2)
+    avra_llvm_type_array_set(arr, 0, avra_llvm_int1_type(lc))
+    avra_llvm_type_array_set(arr, 1, ll_type_of(lc, types, inner))
+    let st = avra_llvm_struct_type(lc, arr, 2)
+    avra_llvm_type_array_free(arr)
+    st
 }
 
 /// A register's LLVM type.
@@ -163,6 +177,8 @@ fn emit_ins(em: Emit, i: Ins) {
         .Un(_, op, src) -> define(em, un_value(em, op, em.vals[src.index])),
         .CallRtVoid(callee, args) -> void_rt_call(em, callee, args),
         .CallRt(dst, callee, args) -> define(em, call_rt_value(em, dst, callee, args)),
+        .Pack(dst, elems) -> define(em, pack_value(em, dst, elems)),
+        .Extract(_, src, at) -> define(em, avra_llvm_build_extract_value(em.b, em.vals[src.index], at, "x")),
         .Call(_, callee, args) -> define(em, call(em, mangled(callee), [em.vals[a.index] for a in args])),
         .Release(r) -> released(em, r),
         .Retain(r) -> retained(em, r),
@@ -182,15 +198,26 @@ fn emit_ins(em: Emit, i: Ins) {
     }
 }
 
-/// An int constant — or the NULL POINTER when the destination is
-/// pointer-shaped: absence is the zero of its type, and the only
+/// An int constant — or the NULL POINTER when the destination
+/// rides one: absence is the zero of its type, and the only
 /// ConstInt lowering ever aims at a pointer register is 0. The
 /// interpreter's const_int_val is this rule's twin.
 fn const_int_value(em: Emit, dst: Reg, v: int) -> ptr {
-    if ptr_shape(em.types.shape_of(em.tys[dst.index])) {
+    if em.types.rides_pointer(em.tys[dst.index]) {
         return avra_llvm_const_pointer_null(avra_llvm_pointer_type(em.lc))
     }
     avra_llvm_const_int(avra_llvm_int64_type(em.lc), v, 1)
+}
+
+/// A packed value: element by element into an undef aggregate —
+/// registers all the way, which is what lets SROA see through it.
+fn pack_value(em: Emit, dst: Reg, elems: List<Reg>) -> ptr {
+    mut agg = avra_llvm_get_undef(reg_type(em, dst))
+    // LICENSED I4: the running aggregate, not a scan
+    for (j, r) in elems.enumerate() {
+        agg = avra_llvm_build_insert_value(em.b, agg, em.vals[r.index], j, "pack")
+    }
+    agg
 }
 
 /// The next register's value — registers mint in instruction order.
@@ -256,7 +283,7 @@ fn rt_args(em: Emit, callee: string, args: List<Reg>) -> List<ptr> {
 }
 
 /// A registry I64 param is a SLOT — every value category rides it,
-/// so pointer registers cast down and bools widen on the way in.
+/// so pointer-riding registers cast down and bools widen in.
 fn rt_arg(em: Emit, callee: string, j: int, r: Reg) -> ptr {
     let v = em.vals[r.index]
     let sig: RtSig? = rt_sig_of(callee)
@@ -264,11 +291,10 @@ fn rt_arg(em: Emit, callee: string, j: int, r: Reg) -> ptr {
     if j >= sig!.params.length { return v }
     if !(sig!.params[j] is .I64) { return v }
     let i64t = avra_llvm_int64_type(em.lc)
-    let sh = em.types.shape_of(em.tys[r.index])
-    if ptr_shape(sh) {
+    if em.types.rides_pointer(em.tys[r.index]) {
         return avra_llvm_build_ptr_to_int(em.b, v, i64t, "slot")
     }
-    if sh is .Bool {
+    if em.types.shape_of(em.tys[r.index]) is .Bool {
         return avra_llvm_build_zext(em.b, v, i64t, "slot")
     }
     v

@@ -48,6 +48,9 @@ export fn new_type_registry() -> TypeRegistry {
 /// A heap-shaped value: it rides POINTERS, and it waits on
 /// ownership analysis wherever mutation or management is concerned.
 /// Exhaustive on purpose — a new shape must decide, consciously.
+/// A bare shape cannot see what an `Opt` carries, so it answers
+/// pointer; the registry's `rides_pointer` is the carried-aware
+/// truth the machine projections ask.
 export fn ptr_shape(t: Type) -> bool {
     match t {
         .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or .Null -> true,
@@ -87,6 +90,17 @@ impl TypeRegistry {
     }
 
     fn shape_of(self, id: TypeId) -> Type { self.shapes[id.index] }
+
+    /// Does a value of this type RIDE A POINTER at runtime —
+    /// `ptr_shape` with `Opt` answering as what it CARRIES: a niche
+    /// nullable IS its pointer, a scalar pair is registers and no
+    /// pointer at all. The machine projections ask here.
+    fn rides_pointer(self, id: TypeId) -> bool {
+        match self.shape_of(id) {
+            .Opt(inner) -> self.rides_pointer(inner),
+            _ -> ptr_shape(self.shape_of(id)),
+        }
+    }
 
     /// The printing projection — the ONLY place a type becomes text.
     fn name_of(self, id: TypeId) -> string {

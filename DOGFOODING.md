@@ -296,6 +296,15 @@ let carried = cx.mint(e)
 cx.emit(Ins.CallRt(carried, "avra_array_get", [v, one]))
 ```
 
+THE COMPOSITION COROLLARY (found collapsing the presence verbs,
+relied on again by `flagged_pair`): a helper that mints IMMEDIATELY
+before each emit is order-independent AT ITS CALL SITE — nesting
+such helpers as sibling arguments (`nonzero(cx, tag_of(cx, v),
+zeroed(cx, ...))`) keeps mint/emit aligned no matter which argument
+evaluates first, because no register ever waits, unemitted, while
+another helper runs. Helpers that mint EARLY and emit late lose
+this and must stay sequential statements.
+
 ## `when` for dispatch chains
 
 Any if/return ladder over conditions is a `when` expression:

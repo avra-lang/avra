@@ -203,21 +203,19 @@ int64_t avra_array_len(void* arr) {
 // `v!` — slot 1 of a tagged value, insisting slot 0 says PRESENT.
 // The writer claimed absence would not happen; if it does the
 // program STOPS rather than reading a slot never written.
-int64_t avra_unwrap(void* v) {
-    AvraArray* a = (AvraArray*)v;
-    if (!v || a->len < 2 || a->data[0] == 0) {
-        avra_trap("unwrapped an absent value");
-    }
-    return a->data[1];
-}
-
 // `v!` on a NICHE nullable — the pointer IS the value and absence is
 // the null pointer, so insisting is identity through the guard. The
-// wording matches avra_unwrap and the evaluator: the divergence
-// registry pins all three.
+// wording matches avra_insist_scalar and the evaluator: the
+// divergence registry pins all three.
 void* avra_insist(void* p) {
     if (!p) { avra_trap("unwrapped an absent value"); }
     return p;
+}
+
+// `v!` on a PAIR nullable — the flag guards, the value passes.
+int64_t avra_insist_scalar(int64_t present, int64_t value) {
+    if (!present) { avra_trap("unwrapped an absent value"); }
+    return value;
 }
 
 int64_t avra_array_get(void* arr, int64_t i) {

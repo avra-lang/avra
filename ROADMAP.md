@@ -1654,8 +1654,9 @@ instructions, general on purpose:
     Pack(dst, elems: List<Reg>)      build a register aggregate
     Extract(dst, src, i: int)        project element i
 `int?` is LLVM `{i1, i64}` — two machine registers through the
-existing C ABI, never memory. The five consumers each answer in a
-line or two; the interpreter rides its existing arrays table (its
+existing C ABI, never memory. The consumers each answer in a line
+or two (the build counted SIX — `give` joined the five, see the
+N2 record); the interpreter rides its existing arrays table (its
 Val vocabulary is private bookkeeping, not layout). Not
 option-machinery: rung 8(b) scalar enum payloads and any future
 multi-return ride the same pair. Pack of a MANAGED element is
@@ -1761,11 +1762,52 @@ THE SLICES (each vertical, each gated):
        expr-keyed, chain type-keyed) — the method core (rung 13)
        owns the one member-resolution query, typing and lowering
        both; `?.` on METHODS rides the same rung.
-  (N2) THE PAIR — one vocabulary event. Pack/Extract paid to all
-       five consumers + corpus + golden; the scalar repr flips
-       box→pair INSIDE values.av and nowhere else; the box path
-       and `avra_unwrap` retire; the never-allocates law switches
-       on.
+  (N2) [x] THE PAIR — LANDED 2026-08-30. One vocabulary event:
+       `Pack(dst, elems)` / `Extract(dst, src, at)` — first-class
+       aggregate REGISTERS, the register's contract now ONE VALUE,
+       not one word. `int?` is LLVM `{i1, i64}`, `bool?` is
+       `{i1, i1}`; the scalar repr flipped box→pair INSIDE
+       values.av and nowhere else; the box path and `avra_unwrap`
+       retired (`avra_insist_scalar` guards the pair `!`).
+       THE LAW IS ON: nullability never allocates — pinned by
+       lower_test's law block (niche, pair, identity widening, and
+       an aggregate-free every-consumer witness), plus the
+       visible-magic pin: `avra ir` SHOWS `pack r7, r6` and `r1.0`.
+       What the build taught:
+       - A SIXTH consumer surfaced, by the guarantee working: the
+         driver's `give` (does the runtime registry validate this
+         instruction?) broke exhaustively alongside the five. The
+         doctrine now says SIX everywhere — CLAUDE.md, core/ir.av,
+         vocab.sh's consumer registry, and `avra new ins`.
+       - `ptr_shape` CANNOT see what an `Opt` carries (a bare shape
+         holds a TypeId it cannot resolve), so the carried-aware
+         truth is the registry's `rides_pointer` — the machine
+         projections (rt_arg coercion, both engines' null-constant
+         rule, `ll_type_of`) ask it; the flat shape question stays
+         for the laws that mean "not a scalar".
+       - The LAW's witness must be AGGREGATE-FREE: a struct
+         literal's box is a struct cost, not the nullable's, and
+         the first witness said otherwise until it was cut down.
+       - The pair's corpus twin (pair_zero.av) pins the two
+         distinctions only a flag can carry: present ZERO beats the
+         fallback, present FALSE is not absence — eval == native.
+       RED TEAM: the three standing suites (120 programs) rerun
+       green ON the pair — rt1's whole scalar attack record now
+       exercises it — plus 8 pair-edge attacks (present-false
+       asked/forced/compared, hollow payload never observable,
+       three-frame relays, region-join into match, trap parity on
+       both scalar shapes) and a 1000-iteration churn, eval ==
+       native throughout.
+       TRIGGER left: the `mut` law still refuses `mut x: int?` via
+       flat ptr_shape — the pair makes it SAFE (an unmanaged slot);
+       relax it when mut nullables are wanted, via a TypeCx-side
+       rides_pointer, not by weakening ptr_shape.
+       CONSIDERED AND REFUSED (the N2 beauty round): making the two
+       reprs TRAIT IMPLS when rung 12 lands, dissolving values.av's
+       per-verb `match repr_of`. Refused: two statically-known arms
+       beat a vtable in the hottest lowering path (P4), and the
+       match IS the readable registry — re-argue only if a THIRD
+       repr ever appears.
 
 THE RULINGS on the decision doc's open questions:
 - VISIBLE (P7): yes. `avra ir` already shows the truth (a bare

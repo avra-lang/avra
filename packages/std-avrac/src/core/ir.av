@@ -28,7 +28,7 @@ export fn un_symbol(op: UnOp) -> string {
 /// and performance is a first-class reason to grow — a shape the
 /// backend can exploit but cannot infer earns a variant.
 ///
-/// A new variant owes FIVE consumers, and the compiler names them
+/// A new variant owes SIX consumers, and the compiler names them
 /// for you because each dispatch is exhaustive — `make vocab`
 /// keeps them that way:
 ///   dst_of (below)          the register it defines
@@ -36,6 +36,7 @@ export fn un_symbol(op: UnOp) -> string {
 ///   memory.av  memory_ins   its ownership effect
 ///   ir_text.av body_lines   its human projection
 ///   llvm.av    emit_ins     its machine projection
+///   lower.av   give         whether the runtime registry validates it
 /// plus a corpus program (eval == native) and an IR golden.
 /// `avra new ins <Name>` prints the whole checklist.
 ///
@@ -62,6 +63,14 @@ export enum Ins {
     /// keeps this instruction set closed: features lower
     /// value-producing runtime needs here, never as new variants.
     CallRt(dst: Reg, callee: string, args: List<Reg>)
+    /// A small immutable aggregate built IN REGISTERS — the machine
+    /// shape behind the unboxed pair (a scalar nullable's
+    /// {present, value}); the backend keeps it out of memory
+    /// entirely, so the optimizer sees through it. A register holds
+    /// ONE VALUE, not one word — this is the variant that says so.
+    Pack(dst: Reg, elems: List<Reg>)
+    /// One element of a packed value.
+    Extract(dst: Reg, src: Reg, at: int)
 
     // Structure: scopes, regions, and calls — all BRACKETS in the
     // one flat list, never labels or jumps. Each branch of a region
@@ -136,6 +145,8 @@ export fn dst_of(i: Ins) -> Reg? {
         .Un(d, _, _) -> d,
         .CallRtVoid(_, _) -> null,
         .CallRt(d, _, _) -> d,
+        .Pack(d, _) -> d,
+        .Extract(d, _, _) -> d,
         .Call(d, _, _) -> d,
         .RegionEnd(d, _) -> d,
         .Alloca(d) -> d,

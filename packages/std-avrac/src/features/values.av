@@ -2,20 +2,19 @@
 //! feature that builds or reads one. The contract next door says
 //! what a feature DOES at each pass; this says what its values ARE.
 //!
-//! Two shapes today. The tagged slot array behind enums and boxed
-//! nullables; and the NICHE — a pointer-shaped nullable IS its own
-//! value, absence is the null pointer. Which one a nullable takes
-//! is this file's `repr_of`, and every consumer asks the verbs
-//! below instead of knowing. A new value CATEGORY joins here,
-//! beside the readers that make its layout nobody else's business.
+//! Three shapes today. The tagged slot array behind ENUMS; and the
+//! nullable's two — the NICHE (a pointer-shaped nullable IS its own
+//! value, absence is the null pointer) and the PAIR (a scalar rides
+//! {present, value} in registers). Which one a nullable takes is
+//! this file's `repr_of`, and every consumer asks the verbs below
+//! instead of knowing. A new value CATEGORY joins here, beside the
+//! readers that make its layout nobody else's business.
 use core.{Reg, Ins, BinOp, Type, TypeId, ExprId, ptr_shape}
 
-/// THE TAGGED VALUE: every closed-set value is a slot array holding
-/// its TAG at slot 0 and its payload, when it has one, at slot 1.
-/// An enum's variant and a boxed nullable's presence are the SAME
-/// shape, which is why `match` reads them the same way. `dst` is
-/// minted by the caller, before the first instruction is emitted —
-/// registers are numbered in emission order.
+/// THE TAGGED VALUE: an enum's variant is a slot array holding its
+/// TAG at slot 0 and its payload, when it has one, at slot 1.
+/// `dst` is minted by the caller, before the first instruction is
+/// emitted — registers are numbered in emission order.
 export fn tagged_value(cx: LowerCx, dst: Reg, tag: int, payload: Reg?) {
     cx.emit(Ins.CallRt(dst, "avra_array_new", []))
     let slot = cx.mint_shape(Type.Int)
@@ -56,17 +55,19 @@ fn slot_read(cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
 /// pointer-shaped value IS its own nullable — absence is the null
 /// pointer, which no legitimate value ever holds — so presence
 /// costs nothing and the memory pass sees the value it already
-/// manages. A scalar has no impossible bit pattern, so it rides
-/// the tagged slot array until the register pair lands.
-enum Repr { Niche, Boxed }
+/// manages. A scalar has no impossible bit pattern, so it rides an
+/// unboxed {present, value} PAIR in registers — two values the
+/// optimizer sees straight through. NULLABILITY NEVER ALLOCATES:
+/// that is the law (ROADMAP), and lower_test pins it.
+enum Repr { Niche, Pair }
 
 /// The representation of a nullable TYPE — a projection, and the
 /// catch-all is honest: a non-`Opt` shape is the absorbing error
-/// path, which lowers nothing, so the box it names is never built.
+/// path, which lowers nothing, so the pair it names is never built.
 fn repr_of(cx: LowerCx, opt: TypeId) -> Repr {
     match cx.shape_of(opt) {
-        .Opt(inner) -> if ptr_shape(cx.shape_of(inner)) { Repr.Niche } else { Repr.Boxed },
-        _ -> Repr.Boxed,
+        .Opt(inner) -> if ptr_shape(cx.shape_of(inner)) { Repr.Niche } else { Repr.Pair },
+        _ -> Repr.Pair,
     }
 }
 
@@ -79,14 +80,19 @@ export fn carried_type(cx: LowerCx, opt: TypeId) -> TypeId {
     }
 }
 
-/// Is the value THERE — an i1. Both reprs are ONE `!=` against
-/// their own zero: the niche holds the value itself against the
-/// null constant, the box holds its tag against the absent tag.
+/// Is the value THERE — an i1: the niche compares itself against
+/// the null constant, the pair already CARRIES its answer.
 export fn presence_of(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
     match repr_of(cx, opt) {
         .Niche -> nonzero(cx, v, zeroed(cx, cx.mint_ty(opt))),
-        .Boxed -> nonzero(cx, tag_of(cx, v), zeroed(cx, cx.mint_shape(Type.Int))),
+        .Pair -> extracted(cx, v, 0, cx.mint_shape(Type.Bool)),
     }
+}
+
+/// One element of a packed value, into a caller-typed register.
+fn extracted(cx: LowerCx, v: Reg, at: int, dst: Reg) -> Reg {
+    cx.emit(Ins.Extract(dst, v, at))
+    dst
 }
 
 /// The zero of the register's own type, emitted — the null pointer
@@ -104,12 +110,12 @@ fn nonzero(cx: LowerCx, a: Reg, z: Reg) -> Reg {
 }
 
 /// What the nullable CARRIES, once presence is settled: a niche
-/// nullable IS its value — identity, no instruction — and a box
-/// holds it at slot 1.
+/// nullable IS its value — identity, no instruction — and a pair
+/// holds it beside the flag.
 export fn carried_of(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
     match repr_of(cx, opt) {
         .Niche -> v,
-        .Boxed -> payload_of(cx, v, carried_type(cx, opt)),
+        .Pair -> extracted(cx, v, 1, cx.mint_ty(carried_type(cx, opt))),
     }
 }
 
@@ -122,30 +128,47 @@ export fn carried_of(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
 export fn adopted(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
     match repr_of(cx, into) {
         .Niche -> r,
-        .Boxed -> boxed_adoption(cx, into, from_null, r),
+        .Pair -> pair_adoption(cx, into, from_null, r),
     }
 }
 
-fn boxed_adoption(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
+fn pair_adoption(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
     if from_null { return absent_of(cx, into) }
-    let dst = cx.mint_ty(into)
-    tagged_value(cx, dst, 1, r)
-    dst
+    flagged_pair(cx, into, true, r)
 }
 
 /// The ABSENT value of a nullable type, minted fresh — the niche's
-/// null constant, or the box carrying tag 0 and nothing else.
+/// null constant, or the pair whose flag says no.
 export fn absent_of(cx: LowerCx, opt: TypeId) -> Reg {
     match repr_of(cx, opt) {
         .Niche -> zeroed(cx, cx.mint_ty(opt)),
-        .Boxed -> absent_box(cx, opt),
+        .Pair -> absent_pair(cx, opt),
     }
 }
 
-fn absent_box(cx: LowerCx, opt: TypeId) -> Reg {
+fn absent_pair(cx: LowerCx, opt: TypeId) -> Reg {
+    flagged_pair(cx, opt, false, hollow_payload(cx, carried_type(cx, opt)))
+}
+
+/// A pair packed under its flag — the ONE builder the present and
+/// absent forms share.
+fn flagged_pair(cx: LowerCx, opt: TypeId, present: bool, payload: Reg) -> Reg {
+    let flag = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.ConstBool(flag, present))
     let dst = cx.mint_ty(opt)
-    tagged_value(cx, dst, 0, null)
+    cx.emit(Ins.Pack(dst, [flag, payload]))
     dst
+}
+
+/// The payload slot of an ABSENT pair — never read (the flag
+/// guards it), but a pack is total: the inner type's zero.
+fn hollow_payload(cx: LowerCx, inner: TypeId) -> Reg {
+    if cx.shape_of(inner) is .Bool {
+        let z = cx.mint_ty(inner)
+        cx.emit(Ins.ConstBool(z, false))
+        return z
+    }
+    zeroed(cx, cx.mint_ty(inner))
 }
 
 /// `v!` — the carried value, with the runtime insisting the value
@@ -153,11 +176,22 @@ fn absent_box(cx: LowerCx, opt: TypeId) -> Reg {
 /// the same words, and the check cannot be elided — absence is
 /// exactly what the writer claimed would not happen.
 export fn insisted(cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
-    let word = match repr_of(cx, opt) {
-        .Niche -> "avra_insist",
-        .Boxed -> "avra_unwrap",
+    match repr_of(cx, opt) {
+        .Niche -> insisted_niche(cx, e, v),
+        .Pair -> insisted_pair(cx, e, v, opt),
     }
+}
+
+fn insisted_niche(cx: LowerCx, e: ExprId, v: Reg) -> Reg {
     let dst = cx.mint(e)
-    cx.emit(Ins.CallRt(dst, word, [v]))
+    cx.emit(Ins.CallRt(dst, "avra_insist", [v]))
+    dst
+}
+
+fn insisted_pair(cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
+    let flag = extracted(cx, v, 0, cx.mint_shape(Type.Bool))
+    let payload = extracted(cx, v, 1, cx.mint_ty(carried_type(cx, opt)))
+    let dst = cx.mint(e)
+    cx.emit(Ins.CallRt(dst, "avra_insist_scalar", [flag, payload]))
     dst
 }

@@ -167,6 +167,22 @@ LLVMValueRef avra_llvm_const_pointer_null(LLVMTypeRef ty) {
     return LLVMConstPointerNull(ty);
 }
 
+LLVMTypeRef avra_llvm_struct_type(LLVMContextRef ctx, LLVMTypeRef* elems, int count) {
+    return LLVMStructTypeInContext(ctx, elems, (unsigned)count, 0);
+}
+
+LLVMValueRef avra_llvm_get_undef(LLVMTypeRef ty) {
+    return LLVMGetUndef(ty);
+}
+
+LLVMValueRef avra_llvm_build_insert_value(LLVMBuilderRef b, LLVMValueRef agg, LLVMValueRef v, int idx, const char* name) {
+    return LLVMBuildInsertValue(b, agg, v, (unsigned)idx, name);
+}
+
+LLVMValueRef avra_llvm_build_extract_value(LLVMBuilderRef b, LLVMValueRef agg, int idx, const char* name) {
+    return LLVMBuildExtractValue(b, agg, (unsigned)idx, name);
+}
+
 // ── Functions ──
 
 // Mangle a logical Avra symbol name into a valid object-file symbol.

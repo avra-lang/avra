@@ -207,13 +207,14 @@ registry is the idiom engine's spec, written by dogfooding.
      consumer; it did NOT add SwitchArm/SwitchEnd. Prefer the
      variant that makes an existing concept more general over one
      that adds a parallel concept.
-  3. PAY THE FIVE CONSUMERS, which the compiler lists for you
+  3. PAY THE SIX CONSUMERS, which the compiler lists for you
      because each dispatch is exhaustive: `dst_of` (core/ir.av),
      `step` (interp), `memory_ins`, `body_lines` (ir_text),
-     `emit_ins` (llvm) — plus a corpus program proving
+     `emit_ins` (llvm), `give` (lower.av — does the runtime
+     registry validate it) — plus a corpus program proving
      eval == native and the IR golden that shows the shape.
-  4. THE GUARANTEE: those five matches carry no `_ ->`, so a new
-     variant breaks all five at compile time. The vocabulary
+  4. THE GUARANTEE: those six matches carry no `_ ->`, so a new
+     variant breaks all six at compile time. The vocabulary
      cannot grow half-way, and a variant nobody implements cannot
      ship. Keep them catch-all free.
   The backend and memory pass stay functions of the IR, dispatching
