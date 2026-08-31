@@ -122,7 +122,7 @@ export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
 export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
     match s {
         .Let(_, _, _) -> d.lets,
-        .MutLet(_, _) -> d.mutlets,
+        .MutLet(_, _, _) -> d.mutlets,
         .Assign(_, _) -> d.assigns,
         .ExprStmt(_) -> d.exprs,
         .FnDecl(_, _, _, _) -> d.decls,
@@ -155,18 +155,22 @@ impl NodeStore {
     fn let_name(self, s: StmtId) -> string? {
         match self.stmt(s) {
             .Let(name, _, _) -> name,
-            .MutLet(name, _) -> name,
+            .MutLet(name, _, _) -> name,
             .For(name, _, _, _, _, _) -> name,
             .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _)
                 or .While(_, _) or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
         }
     }
 
-    /// A let's WRITTEN type, when one was declared.
-    fn let_ty(self, s: StmtId) -> TypeRef? {
+    /// A BINDING's written type, when one was declared — `let` and
+    /// `mut` alike.
+    fn binding_ty(self, s: StmtId) -> TypeRef? {
         match self.stmt(s) {
             .Let(_, t, _) -> t,
-            _ -> null,
+            .MutLet(_, t, _) -> t,
+            .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _)
+                or .While(_, _) or .For(_, _, _, _, _, _)
+                or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
         }
     }
 
@@ -175,7 +179,7 @@ impl NodeStore {
     fn stmt_value(self, s: StmtId) -> ExprId? {
         match self.stmt(s) {
             .Let(_, _, v) -> v,
-            .MutLet(_, v) -> v,
+            .MutLet(_, _, v) -> v,
             .Assign(_, v) -> v,
             .ExprStmt(v) -> v,
             .FnDecl(_, _, _, _) or .While(_, _)
@@ -200,7 +204,7 @@ impl NodeStore {
         match self.stmt(s) {
             .StructDecl(name, _) -> name,
             .EnumDecl(name, _) -> name,
-            .Let(_, _, _) or .MutLet(_, _) or .Assign(_, _) or .ExprStmt(_) or
+            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
             .FnDecl(_, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .Error -> null,
         }

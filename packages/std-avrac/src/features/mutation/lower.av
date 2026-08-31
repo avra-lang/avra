@@ -1,13 +1,15 @@
 //! Mutation in the IR: a mut binding is a memory CELL — allocated,
 //! seeded, bound as the statement's slot — and an assignment stores
 //! through its target's cell.
-use core.{StmtId, ExprId, Reg, Ins}
+use core.{StmtId, Reg, Ins}
 use features.{StmtLowerCx}
 
 /// Declares the cell and answers the VALUE register — the driver's
-/// last-value tracking sees the value, never the pointer.
-export fn lower_mut(cx: StmtLowerCx, s: StmtId, vexpr: ExprId, v: Reg) -> Reg {
-    let slot = cx.mint(vexpr)
+/// last-value tracking sees the value, never the pointer. The slot
+/// wears the STORED register's type: a widened value arrives as
+/// its binding's declared shape, not the expression's.
+export fn lower_mut(cx: StmtLowerCx, s: StmtId, v: Reg) -> Reg {
+    let slot = cx.mint_like(v)
     cx.emit(Ins.Alloca(slot))
     cx.emit(Ins.Store(slot, v))
     cx.bind_slot(s, slot)

@@ -162,9 +162,10 @@ export enum Stmt {
     /// type, when declared, is what the binding HOLDS; the value
     /// must be accepted by it.
     Let(name: string, ty: TypeRef?, value: ExprId)
-    /// A reassignable binding — scalars only, until ownership
-    /// analysis arrives for managed values.
-    MutLet(name: string, value: ExprId)
+    /// A reassignable binding — unmanaged values only, until
+    /// ownership analysis; optionally annotated, holding what it
+    /// declares exactly as `let` does.
+    MutLet(name: string, ty: TypeRef?, value: ExprId)
     /// Reassignment of a `mut` binding, by name.
     Assign(name: string, value: ExprId)
     /// An expression at statement position.
@@ -299,7 +300,7 @@ impl NodeStore {
     fn fingerprint_stmt(self, s: Stmt) -> int {
         match s {
             .Let(name, ty, value) -> fp(5, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
-            .MutLet(name, value) -> fp(15, [fp_str(name), self.expr_fingerprint(value)]),
+            .MutLet(name, ty, value) -> fp(15, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
             .Assign(name, value) -> fp(16, [fp_str(name), self.expr_fingerprint(value)]),
             .While(cond, stmts) ->
                 fp(17, [self.expr_fingerprint(cond)].concat(self.stmt_fps(stmts))),

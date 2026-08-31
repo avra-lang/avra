@@ -1,0 +1,90 @@
+// The RED TEAM's permanent record for the mutable CELL — annotated
+// or inferred, and the assignments into it (see
+// .claude/skills/red-team): every program here was written to BREAK
+// it. A case that once produced a wrong answer, a crash, an internal
+// defect, or an engine divergence keeps its place here forever.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown, refusals, refused_with}
+
+/// The scalar-nullable maker every cell attack shares.
+fn halver() -> string {
+    "fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n"
+}
+
+spec "features/mutation (adversarial)" {
+    given "the cell law — every managed shape refused, every unmanaged held" {
+        then "all four UNMANAGED cells live: int, bool, and both pairs" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            shown("mut a: int = 1\nmut b: bool = true\nmut c: int? = null\nmut d: bool? = null\n" +
+                  "a = 2\nb = false\nc = 3\nd = true\n" +
+                  "a + (c ?? 0) + (if b { 0 } else { 5 }) + (if d ?? false { 7 } else { 0 })") == "17"
+        }
+        then "a struct cell refuses through the cell law" {
+            refused_with("type U = { age: int }\nmut x: U = U { age: 1 }\nx.age",
+                         "a `mut` binding cannot hold a managed value yet")
+        }
+        then "a NICHE nullable cell refuses — it IS its managed pointer" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            refused_with("mut x: List<int>? = null\n1",
+                         "a `mut` binding cannot hold a managed value yet")
+        }
+    }
+    given "the assignment law, aimed at the DECLARED cell" {
+        then "SELF-assignment round-trips the pair" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            shown("mut x: int? = 5\nx = x\nx ?? 0") == "5"
+        }
+        then "a wrong NULLABLE refuses nullable-to-nullable, exactly once" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            refusals("fn g(b: bool) -> string? { if b { \"x\" } else { null } }\n" +
+                     "mut x: int? = 5\nx = g(true)\nx ?? 0") == 1
+        }
+        then "an optional never widens BACK into a guarantee cell" {
+            refused_with("${halver()}mut x: int = 1\nx = half(4)\nx",
+                         "assignment changes `x`: `int` to `int?`")
+        }
+    }
+    given "the counter, which once typed as the ABSORBING hole" {
+        then "a for counter assigned into a pair cell WRAPS — the divergence that found it" {
+            // eval defected (extract from a non-pack) while native read
+            // a raw int's low bit as the flag; the counter typed as
+            // Error and absorbed the widen. Forever pinned.
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            shown("mut t: int? = null\nfor i in 0..5 {\n    t = i + (t ?? 0)\n}\nt ?? 0 - 1") == "10"
+        }
+    }
+    given "the cell under attack — types as values, order, names" {
+        then "a TYPE as the value speaks ONCE, and later reads see the DECLARATION" {
+            let a = analyze_source("type U = { age: int }\nmut x: int = U\nx")
+            a.diagnostics.length == 1 && a.report().contains("`U` is a type, not a value")
+        }
+        then "a use before its cell exists refuses at resolve" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            refused_with("mut x: int? = x\nx ?? 0", "`x` is used before its definition")
+        }
+        then "a `let` shadows a cell; the cell's last value survives underneath" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            shown("mut x: int? = null\nlet got = x ?? 1\nlet x = 50\nx + got") == "51"
+        }
+        then "a cell named like a fn shadows it for reads" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            shown("${halver()}mut half: int? = half(4)\nhalf ?? 0") == "2"
+        }
+    }
+    given "the two engines refuse alike at the absent cell" {
+        then "forcing an absent cell traps in the evaluator's words" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            match analyze_source("mut x: int? = null\nx!").run() {
+                .Err(msg) -> msg.contains("unwrapped an absent value"),
+                .Ok(_) -> false,
+            }
+        }
+        then "REASSIGNED to absent then forced — 10.4's scenario traps, never lies" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            match analyze_source("mut x: int? = 7\nx = null\nx!").run() {
+                .Err(msg) -> msg.contains("unwrapped an absent value"),
+                .Ok(_) -> false,
+            }
+        }
+    }
+}

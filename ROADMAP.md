@@ -1801,10 +1801,14 @@ THE SLICES (each vertical, each gated):
        three-frame relays, region-join into match, trap parity on
        both scalar shapes) and a 1000-iteration churn, eval ==
        native throughout.
-       TRIGGER left: the `mut` law still refuses `mut x: int?` via
-       flat ptr_shape — the pair makes it SAFE (an unmanaged slot);
-       relax it when mut nullables are wanted, via a TypeCx-side
-       rides_pointer, not by weakening ptr_shape.
+       TRIGGER FIRED 2026-08-30, with mut annotations: the cell law
+       now asks TypeCx's `rides_pointer` — `mut x: int? = null`
+       lives (the pair is two unmanaged words), the niche still
+       refuses (it IS its managed pointer), ptr_shape untouched,
+       exactly as prescribed. The red team's reassign-to-absent
+       then `!` traps at runtime in both engines — the soundness
+       hole 10.4 warns about cannot open, because no narrowing
+       exists to fool.
        CONSIDERED AND REFUSED (the N2 beauty round): making the two
        reprs TRAIT IMPLS when rung 12 lands, dissolving values.av's
        per-verb `match repr_of`. Refused: two statically-known arms
@@ -2451,7 +2455,26 @@ recommended order was accepted as the working sequence):
    `declared_binding` law (checks.av, F2024 — ready for `mut`)
    accepts the value with widening recorded, so `let x: int? = 5`
    births the pair and `let x: int? = null` — the spec's own
-   sentence — finally runs. What the build taught: the RED TEAM
+   sentence — finally runs.
+   FOLLOWED 2026-08-30 by `mut` annotations riding the same shared
+   law (`declared_binding`, `bind_declared`, `binding_ty` covering
+   both forms), the ASSIGNMENT law upgraded from raw disagreement
+   to ACCEPTANCE against the binding's DECLARED type (widening at
+   the assign edge — it silently never widened before), and the
+   cell slot now minted from the STORED register's type
+   (`mint_like`), which the annotated widen made load-bearing.
+   THE FULL RED TEAM (41 programs, eight classes) then found the
+   arc's best catch: an ENGINE DIVERGENCE — a for counter assigned
+   into a pair cell defected in eval and mis-flagged natively,
+   because the COUNTER HAD NO TYPE: def_type fell through For's
+   absent value to the absorbing Error, and every law had silently
+   forgiven the counter since rung 3. `let s: string = i` inside a
+   for PASSED. The counter now types as the int the range law
+   always implied; the absorb-detector and the divergence are
+   pinned in loops and mutation adversarial records. A second
+   cascade fixed the same day: check_mut now RECORDS the declared
+   type before refusing a type-as-value, so later reads see the
+   declaration, not the wreckage. What the build taught: the RED TEAM
    (23 programs) found ONE cascade — a TYPE as the value spoke
    through the value law AND the binding law; the binding law now
    absorbs TypeName (test-first). Non-findings by design:

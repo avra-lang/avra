@@ -1,7 +1,7 @@
 // Mutation, vertically: mut declares, assignment rewrites the slot,
 // immutability refuses with the remedy, and types hold still.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_with}
 
 spec "features/mutation" {
     given "mut and assignment" {
@@ -10,6 +10,37 @@ spec "features/mutation" {
         }
         then "assignment inside a fn body writes the outer-block slot" {
             shown("fn bump(n: int) -> int {\n    mut t = n\n    t = t + 1\n    t\n}\nbump(4)") == "5"
+        }
+    }
+    given "the annotated cell — `mut x: T = v` and the pair unlock" {
+        then "a mut nullable SCALAR is a legal cell — the state machine lives" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            shown("mut best: int? = null\nbest = 5\nbest = null\nbest = 4\nbest ?? 0 - 1") == "4"
+        }
+        then "assignment WIDENS into the declared cell" {
+            shown("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
+                  // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+                  "mut t: int? = half(4)\nt = half(3)\nt ?? 0 - 7") == "-7"
+        }
+        then "a plain annotated mut declares and reassigns" {
+            shown("mut plain: int = 40\nplain = plain + 2\nplain") == "42"
+        }
+        then "a bool? cell carries present FALSE" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            shown("mut f: bool? = null\nf = false\nif f ?? true { 1 } else { 0 }") == "0"
+        }
+        then "the cell law: a MANAGED value still refuses, niche included" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            refused_with("mut s: string? = null\ns ?? \"d\"", "a `mut` binding cannot hold a managed value yet")
+        }
+        then "the declared-binding law reaches mut: `mut x: int = null` refuses" {
+            refused_with("mut x: int = null\nx", "`x` declares `int`, this is `null`")
+        }
+        then "an assignment against the DECLARED type refuses in its words" {
+            refused_with("mut x: int? = 5\nx = \"s\"\nx ?? 0", "assignment changes `x`: `int?` to `string`")
+        }
+        then "an UNANNOTATED mut still infers — null does not fit an int cell" {
+            refused_with("mut x = 5\nx = null\nx", "assignment changes `x`: `int` to `null`")
         }
     }
     given "wrong shapes" {
@@ -32,12 +63,12 @@ spec "features/mutation" {
         then "a mut string waits for ownership analysis" {
             let a = analyze_source("mut s = \"hi\"\ns")
             a.diagnostics.length == 1 &&
-                a.report().contains("a `mut` binding holds scalars for now")
+                a.report().contains("a `mut` binding cannot hold a managed value yet")
         }
         then "a mut struct waits too — every heap shape does" {
             let a = analyze_source("type P = { x: int }\nmut p = P { x: 1 }\np.x")
             a.diagnostics.length == 1 &&
-                a.report().contains("a `mut` binding holds scalars for now")
+                a.report().contains("a `mut` binding cannot hold a managed value yet")
         }
         then "assigning an undefined name says so" {
             let a = analyze_source("ghost = 1\n2")

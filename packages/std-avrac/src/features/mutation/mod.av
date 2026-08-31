@@ -1,6 +1,8 @@
-//! Mutation — `mut x = e` declares a reassignable binding and
-//! `x = e` assigns to one. Scalars only, until ownership analysis
-//! covers managed values. The assign branch is NAME-headed and
+//! Mutation — `mut x = e` (or `mut x: T = e`, holding what it
+//! declares) makes a reassignable cell and `x = e` assigns to one,
+//! ACCEPTED by the binding's type with widening recorded. The cell
+//! holds UNMANAGED values only — scalars and their pairs — until
+//! ownership analysis covers managed ones. The assign branch is NAME-headed and
 //! non-committing: `x + 1` backtracks to the expression statement —
 //! which is also why it carries NO @recover: recovery converts a
 //! break into a hole HIT, and a recovering NAME-headed branch would
@@ -17,13 +19,13 @@ export fn mutation() -> LanguageFeature {
     let codes = table<DiagCode> {
         kind                | id      | summary
         "resolve.immutable" | "F3005" | "assignment needs a `mut` binding"
-        "type.mut_managed"  | "F2002" | "a mut binding holds scalars for now"
+        "type.mut_managed"  | "F2002" | "a mut binding cannot hold a managed value yet"
     }
     component LanguageFeature f {
         name = "mutation"
-        docs = "`mut <name> = <expression>` declares; `<name> = <expression>` reassigns."
+        docs = "`mut <name>[: <type>] = <e>` declares a reassignable cell; `<name> = <e>` assigns, accepted by the cell's type."
         gram = """
-stmt = "mut" n:NAME "=" v:expression BREAK @recover(sync_to: "BREAK") -> mut_stmt(n, v) | n:NAME "=" v:expression BREAK -> assign_stmt(n, v)
+stmt = "mut" n:NAME ( ":" t:type )? "=" v:expression BREAK @recover(sync_to: "BREAK") -> mut_stmt(n, t, v) | n:NAME "=" v:expression BREAK -> assign_stmt(n, v)
 """
         builders = rows
         diags = codes

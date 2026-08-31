@@ -83,6 +83,7 @@ fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
         sig_of: (s: StmtId) -> fn_sig_of(t.decls[s.index]),
         assign_target: (s: StmtId) -> assign_target_of(t.resolution, s),
         bind_declared: (s: StmtId, ann: TypeRef) -> t.bind_declared(s, ann),
+        binding_type: (s: StmtId) -> t.def_type(s),
         loc_of: (s: StmtId) -> t.stmt_loc(s),
     }
     for s in stmts { stmt_semantics_of(t.p.dispatch, t.p.store.stmt(s)).type_stmt(cx, s) }
@@ -112,6 +113,7 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         walk_type: (v: ExprId) -> typed_subtree(t, param_types, v),
         bind_type: (v: ExprId, ty: TypeId) -> t.record_bind(v, ty),
         widen: (v: ExprId, ty: TypeId) -> t.record_widen(v, ty),
+        rides_pointer: (ty: TypeId) -> t.types.rides_pointer(ty),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
         type_name: (ty: TypeId) -> t.types.name_of(ty),
         loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
@@ -387,6 +389,11 @@ impl Typer {
         if declared != null { return declared! }
         let tname: string? = self.p.store.type_decl_name(s)
         if tname != null { return self.types.intern(Type.TypeName(s, tname!)) }
+        // A for's COUNTER binds no value expression of its own —
+        // the range law already pinned what it IS. Without this
+        // arm the counter typed as the absorbing Error and every
+        // law silently forgave it.
+        if self.p.store.stmt(s) is .For { return self.types.intern(Type.Int) }
         let v: ExprId? = self.p.store.stmt_value(s)
         if v == null { return self.error_type }
         self.of_expr[v!.index]

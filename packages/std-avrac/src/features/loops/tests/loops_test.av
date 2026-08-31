@@ -1,13 +1,23 @@
 // Loops, vertically: the condition re-evaluates each turn, the body
 // scopes its bindings, and the IR carries the third bracket family.
 use @std.avrac.language.{analyze_source, render_ir, Lowered}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{refused_with, shown}
 
 fn ir_of(source: string) -> Lowered {
     analyze_source(source).lowered()
 }
 
 spec "features/loops" {
+    given "the counter's TYPE — an int, never an absorbing hole" {
+        then "the counter refuses where an int must: it is NOT Error" {
+            refused_with("for i in 0..2 {\n    let s: string = i\n}\n1",
+                         "`s` declares `string`, this is `int`")
+        }
+        then "the counter WIDENS into a nullable cell like any int" {
+            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
+            shown("mut t: int? = null\nfor i in 0..3 {\n    t = i\n}\nt ?? 0 - 1") == "2"
+        }
+    }
     given "while" {
         then "the loop turns until the condition falls" {
             shown("mut total = 0\nmut i = 1\nwhile i < 5 {\n    total = total + i\n    i = i + 1\n}\ntotal") == "10"
