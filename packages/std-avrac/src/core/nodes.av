@@ -104,6 +104,10 @@ export enum Expr {
     /// its `?`; a value that is absent anyway refuses at runtime,
     /// which is the whole cost of writing it.
     Force(value: ExprId)
+    /// `value?` — the absence answered by PASSING IT ON: a present
+    /// value unwraps; an absent one makes the ENCLOSING fn answer
+    /// `null` right here, so the fn must promise a nullable.
+    Propagate(value: ExprId)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
 }
@@ -288,6 +292,7 @@ impl NodeStore {
             .Coalesce(l, r) ->
                 fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
             .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
+            .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),
             .MatchOpt(subject, bind, present, absent) ->
                 fp(33, [self.expr_fingerprint(subject), fp_str(bind),
                         self.expr_fingerprint(present), self.expr_fingerprint(absent)]),

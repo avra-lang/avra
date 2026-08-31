@@ -40,4 +40,4 @@ echo "$CONSUMERS" | while IFS='	' read -r file fn what; do
   fi
 done
 
-echo "vocab: Ins has 5 exhaustive consumers; a new variant breaks all 5"
+echo "vocab: Ins has $(echo "$CONSUMERS" | wc -l | tr -d ' ') exhaustive consumers; a new variant breaks them all"

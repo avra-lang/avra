@@ -13,10 +13,33 @@ fn nullable_type(cx: TypeCx, e: ExprId) -> TypeId {
         .NullLit -> cx.types.intern(Type.Null),
         .Coalesce(l, r) -> coalesce_type(cx, l, r),
         .Force(v) -> forced_type(cx, v),
+        .Propagate(v) -> propagate_type(cx, v),
         .MatchOpt(s, b, p, a) -> match_opt_type(cx, s, b, p, a),
         .Chain(s, name) -> chain_type(cx, e, s, name),
         _ -> cx.error_type,
     }
+}
+
+/// The family's two mis-aims, worded once: an operator pointed at a
+/// GUARANTEE (never absent), or at absence itself (always absent).
+/// `asks` is the operator's verb phrase ("`!` insists on"), `so`
+/// finishes "this is always absent, so ...", and `remedy` is the
+/// always-absent arm's help. The chain refuses on its own words —
+/// its guarantee remedy is actionable (`write .name`), not the
+/// family's generic line.
+fn not_absent_able(cx: TypeCx, v: ExprId, kind: string, asks: string,
+                   so: string, remedy: string) -> TypeId {
+    if cx.shape_at(v) is .Null {
+        return spoken(cx, pointed(
+            error_at(kind, cx.loc_of(v), "this is always absent, so ${so}"),
+            "always absent")
+            with { help: remedy })
+    }
+    let n = cx.name_at(v)
+    spoken(cx, pointed(
+        error_at(kind, cx.loc_of(v), "${asks} a nullable, this is `${n}`"),
+        this_is(n))
+        with { help: "`${n}` is a guarantee — it is never absent" })
 }
 
 /// `a?.b` — the member of what the nullable CARRIES, nullable
@@ -53,7 +76,10 @@ fn not_chainable(cx: TypeCx, subject: ExprId, name: string) -> TypeId {
 fn coalesce_type(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {
     if cx.shape_at(l) is .Error { return cx.error_type }
     let held: TypeId? = cx.types.carried(cx.type_at(l))
-    if held == null { return not_nullable(cx, l) }
+    if held == null {
+        return not_absent_able(cx, l, "type.coalesce", "`??` answers",
+            "`??` always answers with the right side", "write the right side alone")
+    }
     let carried = held!
     if accepts(cx, r, carried) { return carried }
     let n = cx.name_at(r)
@@ -73,7 +99,10 @@ fn match_opt_type(cx: TypeCx, subject: ExprId, bind: string,
                   present: ExprId, absent: ExprId) -> TypeId {
     if cx.shape_at(subject) is .Error { return cx.error_type }
     let held: TypeId? = cx.types.carried(cx.type_at(subject))
-    if held == null { return not_asked(cx, subject, bind) }
+    if held == null {
+        return not_absent_able(cx, subject, "type.match_opt", "`${bind}?` asks",
+            "`${bind}?` can never bind", "write the absent arm's answer alone")
+    }
     // the bind holds what the nullable carries, spoken BEFORE the
     // arm walks, exactly as an enum arm's payload bind is
     cx.bind_type(present, held!)
@@ -93,61 +122,40 @@ fn match_opt_type(cx: TypeCx, subject: ExprId, bind: string,
         this_is(n)))
 }
 
-/// The asking arms over a guarantee, or over absence itself — the
-/// same two refusals `!`, `??` and `?.` give, in the arms' words.
-fn not_asked(cx: TypeCx, subject: ExprId, bind: string) -> TypeId {
-    if cx.shape_at(subject) is .Null {
-        return spoken(cx, pointed(
-            error_at("type.match_opt", cx.loc_of(subject),
-                "this is always absent, so `${bind}?` can never bind"),
-            "always absent")
-            with { help: "write the absent arm's answer alone" })
-    }
-    let n = cx.name_at(subject)
-    spoken(cx, pointed(
-        error_at("type.match_opt", cx.loc_of(subject),
-            "`${bind}?` asks a nullable, this is `${n}`"),
-        this_is(n))
-        with { help: "`${n}` is a guarantee — it is never absent" })
-}
-
 /// `v!` INSISTS: the answer is what the nullable carries, and a
 /// guarantee has nothing to insist about.
 fn forced_type(cx: TypeCx, v: ExprId) -> TypeId {
     if cx.shape_at(v) is .Error { return cx.error_type }
     let held: TypeId? = cx.types.carried(cx.type_at(v))
     if held != null { return held! }
-    // A bare `null` is not a guarantee that happens to be absent —
-    // it is absence itself, so the insistence can only ever fail.
-    if cx.shape_at(v) is .Null {
-        return spoken(cx, pointed(
-            error_at("type.force", cx.loc_of(v),
-                "this is always absent, so `!` always fails"),
-            "always absent")
-            with { help: "there is nothing here to insist on" })
-    }
-    let n = cx.name_at(v)
-    spoken(cx, pointed(
-        error_at("type.force", cx.loc_of(v),
-            "`!` insists on a nullable, this is `${n}`"),
-        this_is(n))
-        with { help: "`${n}` is a guarantee — it is never absent" })
+    not_absent_able(cx, v, "type.force", "`!` insists on",
+        "`!` always fails", "there is nothing here to insist on")
 }
 
-/// `??` on a guarantee is a question already answered — and on a
-/// bare `null`, a question whose answer was written twice.
-fn not_nullable(cx: TypeCx, l: ExprId) -> TypeId {
-    if cx.shape_at(l) is .Null {
-        return spoken(cx, pointed(
-            error_at("type.coalesce", cx.loc_of(l),
-                "this is always absent, so `??` always answers with the right side"),
-            "always absent")
-            with { help: "write the right side alone" })
+/// `v?` PROPAGATES: a present value unwraps to what the nullable
+/// carries; an absent one makes the ENCLOSING fn answer `null`
+/// right where it stands — so there must BE an enclosing fn, and
+/// its promise must itself be nullable.
+fn propagate_type(cx: TypeCx, v: ExprId) -> TypeId {
+    if cx.shape_at(v) is .Error { return cx.error_type }
+    let held: TypeId? = cx.types.carried(cx.type_at(v))
+    if held == null {
+        return not_absent_able(cx, v, "type.propagate", "`?` propagates",
+            "`?` always propagates", "write `return null`")
     }
-    let n = cx.name_at(l)
+    let ret: TypeId? = cx.enclosing_ret()
+    if ret == null {
+        return spoken(cx, pointed(
+            error_at("type.propagate", cx.loc_of(v),
+                "`?` passes absence to a caller, and the top level has none"),
+            "at the top level")
+            with { help: "answer the absence here — `?? value`, or ask with `== null`" })
+    }
+    if cx.types.carried(ret!) != null { return held! }
+    let promise = cx.types.name_of(ret!)
     spoken(cx, pointed(
-        error_at("type.coalesce", cx.loc_of(l),
-            "`??` answers a nullable, this is `${n}`"),
-        this_is(n))
-        with { help: "`${n}` is a guarantee — it is never absent" })
+        error_at("type.propagate", cx.loc_of(v),
+            "`?` makes this fn answer `null`, but it promises a `${promise}`"),
+        "propagates here")
+        with { help: "declare the answer nullable — `-> ${promise}?` — or answer the absence here with `??`" })
 }

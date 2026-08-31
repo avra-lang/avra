@@ -147,7 +147,7 @@ export fn absent_of(cx: LowerCx, opt: TypeId) -> Reg {
 }
 
 fn absent_pair(cx: LowerCx, opt: TypeId) -> Reg {
-    flagged_pair(cx, opt, false, hollow_payload(cx, carried_type(cx, opt)))
+    flagged_pair(cx, opt, false, hollow_of(cx, carried_type(cx, opt)))
 }
 
 /// A pair packed under its flag — the ONE builder the present and
@@ -160,9 +160,10 @@ fn flagged_pair(cx: LowerCx, opt: TypeId, present: bool, payload: Reg) -> Reg {
     dst
 }
 
-/// The payload slot of an ABSENT pair — never read (the flag
-/// guards it), but a pack is total: the inner type's zero.
-fn hollow_payload(cx: LowerCx, inner: TypeId) -> Reg {
+/// A slot of a type that will NEVER be read, but must be total:
+/// the type's zero. An absent pair's payload rides one, and so
+/// does the yield of an arm that already EXITED the fn.
+export fn hollow_of(cx: LowerCx, inner: TypeId) -> Reg {
     if cx.types.shape_of(inner) is .Bool {
         let z = cx.mint_ty(inner)
         cx.emit(Ins.ConstBool(z, false))

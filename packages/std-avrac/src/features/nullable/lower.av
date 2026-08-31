@@ -6,7 +6,7 @@
 //! the value is not there.
 use core.{ExprId, TypeId, Reg, Ins, Type}
 use features.{LowerCx, StructSig, presence_of, carried_of, carried_type, adopted,
-              absent_of, insisted, hole_defect, lower_defect}
+              absent_of, insisted, hollow_of, hole_defect, lower_defect}
 
 fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -14,6 +14,7 @@ fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
         .NullLit -> null_reg(cx, e),
         .Coalesce(l, r) -> coalesce_reg(cx, e, l, r),
         .Force(v) -> insisted(cx, e, cx.reg_of(v), cx.type_at(v)),
+        .Propagate(v) -> propagate_reg(cx, e, v),
         .MatchOpt(s, _, p, a) -> match_opt_reg(cx, e, s, p, a),
         .Chain(s, name) -> chain_reg(cx, e, s, name),
         _ -> lower_defect(cx, e, hole_defect()),
@@ -66,6 +67,27 @@ fn match_opt_reg(cx: LowerCx, e: ExprId, subject: ExprId,
             cx.reg_of(present)
         },
         () -> cx.reg_of(absent))
+}
+
+/// `v?` — the present arm unwraps what the nullable carries; the
+/// absent arm makes the FN answer absence right here (`FnExit` —
+/// the memory pass settles every open scope at the site) and
+/// yields a hollow the merge never reads, since the backend parks
+/// everything after the exit in a dead continuation.
+fn propagate_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
+    let r = cx.reg_of(v)
+    let held = cx.type_at(v)
+    presence_region(cx, e, r, held,
+        () -> carried_of(cx, r, held),
+        () -> departed(cx, e))
+}
+
+/// The absent arm's whole story: the enclosing fn answers absence.
+fn departed(cx: LowerCx, e: ExprId) -> Reg {
+    let ret: TypeId? = cx.enclosing_ret()
+    if ret == null { return lower_defect(cx, e, "a propagation without an enclosing fn survived typing") }
+    cx.emit(Ins.FnExit(absent_of(cx, ret!)))
+    hollow_of(cx, cx.type_at(e))
 }
 
 /// `a?.b` — the member of the CARRIED value on the present arm,

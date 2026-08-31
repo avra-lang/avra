@@ -60,6 +60,39 @@ spec "features/nullable" {
             shown("fn mb(b: bool) -> bool? { b }\nif mb(true)! { 1 } else { 0 }") == "1"
         }
     }
+    given "`?` — the absence passed to the caller" {
+        then "a present value unwraps in place" {
+            shown("fn half(v: int?) -> int? { v? / 2 }\n${makers()}half(some(84)) ?? 0 - 1") == "42"
+        }
+        then "an absent value makes the enclosing fn answer `null`" {
+            shown("fn half(v: int?) -> int? { v? / 2 }\n${makers()}half(none()) ?? 0 - 1") == "-1"
+        }
+        then "the exit happens where the `?` stands — nothing after it runs" {
+            shown("fn boom(x: int) -> int { x / 0 }\nfn f(v: int?) -> int? {\n    let x = v?\n    boom(x)\n}\n${makers()}f(none()) ?? 5") == "5"
+        }
+        then "the niche propagates too — a string rides its pointer" {
+            shown("fn measured(w: string?) -> int? { (w?).length }\nfn word(b: bool) -> string? { if b { \"hey\" } else { null } }\n(measured(word(true)) ?? 0 - 1) + (measured(word(false)) ?? 0 - 1)") == "2"
+        }
+        then "`w?.length` stays the CHAIN — propagation before a member takes parens" {
+            shown("fn a(w: string?) -> int? { w?.length }\nfn word(b: bool) -> string? { if b { \"hey\" } else { null } }\n(a(word(true)) ?? 0 - 1) + (a(word(false)) ?? 0 - 1)") == "2"
+        }
+        then "propagating a GUARANTEE is refused at compile time" {
+            refused_with("fn f(x: int) -> int? { x? }\n${makers()}f(1) ?? 0",
+                         "`?` propagates a nullable, this is `int`")
+        }
+        then "the top level has no caller to pass absence to" {
+            refused_with("${makers()}some(1)?",
+                         "`?` passes absence to a caller, and the top level has none")
+        }
+        then "the enclosing fn must promise a nullable" {
+            refused_with("fn f(v: int?) -> int { v? }\n${makers()}f(some(1))",
+                         "`?` makes this fn answer `null`, but it promises a `int`")
+        }
+        then "absence itself always propagates — refused as always absent" {
+            refused_with("fn f() -> int? { null? }\nf() ?? 0",
+                         "this is always absent, so `?` always propagates")
+        }
+    }
     given "`match` over an absence — the third consumer" {
         then "the present arm binds what the nullable carries" {
             shown("${makers()}match some(7) {\n    v? -> v + 1\n    null -> 0\n}") == "8"

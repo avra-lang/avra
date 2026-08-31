@@ -96,12 +96,13 @@ text-as-projection after self-host, the service store at Era V.
     8.5 [x] the TYPE SURFACE — annotations are a type EXPRESSION,
         not a NAME (found blocking rung 9); slice (a) landed `T?`,
         `null`, `??`, widening and the join
-    9.  nullability — MOSTLY LANDED: `T?`, `null` arms, `! ?? ?.`
-        all [x] (the representation decision below: niche + pair,
-        never-allocates law ON); `if let v? = e` [x] (sugar over
-        the asking arms). REMAINS: `let v? = e else { }` (blocked
-        on `return` — recorded at slice N3), effectively-final
-        narrowing, and slice (d) `?` propagation
+    9.  nullability — LANDED but one: `T?`, `null` arms,
+        `! ?? ?. ?` all [x] (the representation decision below:
+        niche + pair, never-allocates law ON); `if let v? = e` [x];
+        effectively-final narrowing [x] (the consumer's-hat arc);
+        `?` propagation [x] (slice d — rides FnExit, no new
+        instruction). REMAINS: `let v? = e else { }` alone, on
+        divergence-aware blocks (trigger at the return arc)
     10. Result & `?` — propagation as the error spine
     11. ▲ generics — mono through OUR pipeline (List<T> becomes real)
     12. ▲ traits & dyn — dispatch, cross-module impls
@@ -1595,9 +1596,34 @@ THE SLICES (each vertical, each gated):
       so `MatchOpt(subject, bind, present, absent)` says it without
       a tag. `nullable` merges BEFORE `enums` because its arms are
       more specific and enums' branch `@expect`s its own `}`.
-  (d) `?` propagation (spec Axis 10.5). The bind-fresh trio's
-      `if let` landed at slice N3 below; let-else and narrowing
-      carry recorded triggers there.
+  (d) [x] `?` propagation LANDED 2026-08-30 (spec Axis 10.5),
+      and it is the vocabulary paying rent: NO new instruction —
+      the same presence region every consumer of absence opens,
+      with the return arc's `FnExit` on the absent arm (the memory
+      pass settles every open scope at the site; the backend parks
+      the arm's dead yield in the exit's continuation). The parse
+      is one token-alt in the spine's forced rule — `!` and `?`
+      fold link by link, the `prop_link` precedent. SURFACE LAW,
+      decided by maximal munch and worth remembering: `w?.length`
+      is the CHAIN (`?.` wins the lex); propagation before a
+      member takes parens, `(w?).length` — pinned. Typing needs
+      the enclosing fn's promise, so `enclosing_ret` MOVED from
+      StmtTypeCx into TypeCx (which the stmt cx nests — net zero
+      verbs) and LowerCx gained the twin (diet cost: one verb, one
+      Lower field). The round's find: FIVE copies of the
+      guarantee/always-absent refusal shape had accreted in
+      check.av — extracted as `not_absent_able`, three fns died,
+      the chain stays licensed apart (its remedy is actionable).
+      RT10: 32 programs, all clean — every interleaving (`v!?`,
+      `v?!`, `v? ?? x`, a match subject eating the `?`), every
+      crossing (switch arms, loops, `??`'s lazy right side,
+      beside `return`), 200-iteration owned churn through
+      propagating exits, two-scope-deep exits. Refusal-quality
+      DEBT found and recorded (pre-existing, not this slice's): a
+      garbage token at a block's head cascades to TWO errors and
+      shows users "builder failed: a block ends with an
+      expression" (F0102) — fix with the diagnostics-quality pass,
+      trigger: any user report or the next parser-recovery arc.
 
 ## The nullable representation (decided 2026-08-30)
 
@@ -2439,6 +2465,15 @@ into features (or spec commitments) when their milestone comes.
   algebra names the family. `shape` is reserved in bs2 for exactly
   this. contract.av is the wanting site, and this evidence bumps
   shapes' priority when rung 7 (structs) lands.
+
+ASKS FROM THE PROPAGATE SLICE (2026-08-30), both hit writing its
+tests: (1) string `+` concatenation — `(shout(true) ?? "q") + ...`
+refused (`+` is int-only), and the test had to split in two;
+interpolation covers most cases but concatenation of two computed
+strings has no spelling outside a hole. (2) `for` over a LIST —
+`for x in [1, 2]` refuses ("expected `..`"); ranges only today.
+Both wait on their natural rungs (strings polish; lists/generics),
+recorded here so the wanting sites are named.
 
 ## The capability diet (decided 2026-08-30)
 

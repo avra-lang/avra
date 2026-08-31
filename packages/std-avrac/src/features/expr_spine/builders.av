@@ -53,15 +53,22 @@ fn build_fold_with(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.With(subject, names, wv))
 }
 
-/// `v ( ! )*` folds left: `x!!` insists twice, which the TYPE then
-/// refuses — the second `!` has nothing left to unwrap. The LADDER
-/// owns this parse; the node's meaning lives in `nullable`.
+/// `v ( ! | ? )*` folds left, each link choosing its node: `!`
+/// insists, `?` propagates. `x!!` insists twice, which the TYPE
+/// then refuses — the second `!` has nothing left to unwrap. The
+/// LADDER owns this parse; both nodes' meaning lives in `nullable`.
 fn build_fold_force(b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
-    for _ in b.tokens(1)? {
-        acc = b.store.alloc_expr(Expr.Force(acc), b.span)
+    for t in b.tokens(1)? {
+        acc = b.store.alloc_expr(force_link(t.text, acc), b.span)
     }
     b.wrap_expr(acc)
+}
+
+/// The node a force-position token names — propagation when `?`.
+fn force_link(link: string, value: ExprId) -> Expr {
+    if link == "?" { return Expr.Propagate(value) }
+    Expr.Force(value)
 }
 
 /// `l ( ?? r )*` folds left: `a ?? b ?? c` is `(a ?? b) ?? c`. The
