@@ -3,7 +3,8 @@
 //! must be nullable, and the right must be what that nullable
 //! carries; the answer is the carried type, never nullable again.
 use core.{ExprId, Type, TypeId}
-use features.{TypeCx, opt_inner, accepts, join_of, spoken, this_is}
+use features.{TypeCx, opt_inner, accepts, join_of, spoken, this_is,
+              member_type_of, nullable_over}
 use diagnostics.{error_at, pointed}
 
 fn nullable_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -13,8 +14,40 @@ fn nullable_type(cx: TypeCx, e: ExprId) -> TypeId {
         .Coalesce(l, r) -> coalesce_type(cx, l, r),
         .Force(v) -> forced_type(cx, v),
         .MatchOpt(s, b, p, a) -> match_opt_type(cx, s, b, p, a),
+        .Chain(s, name) -> chain_type(cx, e, s, name),
         _ -> cx.error_type,
     }
+}
+
+/// `a?.b` — the member of what the nullable CARRIES, nullable
+/// again. The member is the SAME law `a.b` asks (checks.av), shown
+/// as the carried type; the answer FLATTENS — a chain over a
+/// nullable member is still ONE absence.
+fn chain_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
+    if cx.shape_at(subject) is .Error { return cx.error_type }
+    let held: TypeId? = opt_inner(cx, cx.type_at(subject))
+    if held == null { return not_chainable(cx, subject, name) }
+    let member = member_type_of(cx, e, cx.type_name(held!), held!, name)
+    if cx.shape_of(member) is .Error { return cx.error_type }
+    nullable_over(cx, member)
+}
+
+/// `?.` on a guarantee, or on absence itself — the same two
+/// refusals `!` and `??` give, in the chain's words.
+fn not_chainable(cx: TypeCx, subject: ExprId, name: string) -> TypeId {
+    if cx.shape_at(subject) is .Null {
+        return spoken(cx, pointed(
+            error_at("type.chain", cx.loc_of(subject),
+                "this is always absent, so `?.${name}` never reaches anything"),
+            "always absent")
+            with { help: "there is nothing here to reach into" })
+    }
+    let n = cx.name_at(subject)
+    spoken(cx, pointed(
+        error_at("type.chain", cx.loc_of(subject),
+            "`?.` reaches into a nullable, this is `${n}`"),
+        this_is(n))
+        with { help: "`${n}` is a guarantee — write `.${name}`" })
 }
 
 fn coalesce_type(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {

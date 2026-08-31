@@ -1722,6 +1722,45 @@ THE SLICES (each vertical, each gated):
        unannotated `let x = null` binds an inert `null`-typed name
        (every USE refuses; rung 9's bind-fresh trio owns the
        revisit). `?.` now has real subjects — next.
+  (N1b) [x] `?.` LANDED 2026-08-30 — the chain, on the niche's
+       subjects. The `"?."` token joined the two-char roster; the
+       spine's postfix slot became a LINK choice (`( "?." | "." )
+       NAME`, the op-alternative precedent) with parse in the
+       ladder and meaning in `nullable`, exactly as `??` and `!`.
+       What the build taught:
+       - THE MEMBER LAW CENTRALIZED AT ITS SECOND COPY, because a
+         law copied by hand disagrees with itself: `member_type_of`
+         (checks.av) now answers fields and `length` for the bare
+         read AND the chain, shown as the caller displays the
+         subject — the chain shows the CARRIED type, so
+         `find_user(7)?.nope` says "no field `nope` on `User`".
+       - THE PRESENCE REGION got its ONE definition at its third
+         copy, as the review round's trigger predicted: `??`,
+         `match` and `?.` all open `presence_region` (block-bodied
+         zero-arg thunks — probed into CLAUDE.md — keep each arm's
+         instructions inside its brackets, which is what makes the
+         absent side lazy).
+       - FLATTENING is typed by `nullable_over` (nothing lifts
+         twice) and GUARDED at lowering: a member wearing a type
+         the lift does not expect is a loud lower_defect, so the
+         day nullable members exist, the flatten lowering must be
+         written — it cannot silently double-wrap.
+       - THE RED TEAM (35 programs, eight classes; the N1 suite
+         rerun bit-clean beside it): one real finding — a PLAIN
+         `.` on a nullable subject offered "the one property today
+         is `length`" as its remedy; the member law now refuses it
+         toward the chain ("`?.age` reaches through the absence —
+         or answer it first with `??`"), test-first. Parity probes
+         settled two non-findings: spaced `?. name` reads fine
+         (plain `.` spaces too) and a keyword member reaches
+         typing's "no property" on both link forms.
+       Corpus: chain.av (fields and `length` through `User?`,
+       `string?`, `List<int>?`; absent short-circuit; `??` and `!`
+       over the chain), eval == native. 732/732.
+       LEFT with triggers: member LOWERING exists twice (spine
+       expr-keyed, chain type-keyed) — the method core (rung 13)
+       owns the one member-resolution query, typing and lowering
+       both; `?.` on METHODS rides the same rung.
   (N2) THE PAIR — one vocabulary event. Pack/Extract paid to all
        five consumers + corpus + golden; the scalar repr flips
        box→pair INSIDE values.av and nowhere else; the box path
@@ -2187,6 +2226,21 @@ into features (or spec commitments) when their milestone comes.
   its siblings from the declaration. Wanting site: every consumer
   of a one-of-N declaration table, and the same shape will recur
   for the next such enum. Filed 2026-08-30 by the slice (b) review.
+
+- ONE INTERLEAVED POSTFIX FOLD — a GRAMMAR-ENGINE ask, found by the
+  deep red team on `?.`: `x!.length` does not parse, because `!`
+  (the `forced` level) sits BELOW member access in the ladder, so a
+  member can never follow a force. Kotlin's `a!!.b` is the everyday
+  spelling this blocks; the workarounds hold (`(x!).length`, or
+  bind then read — both probed) and the bind-fresh trio will thin
+  the need, but the honest fix is postfix operators as ONE fold:
+  `( "?." NAME | "." NAME | "!" )*`. The DSL can SPELL that today;
+  the builder cannot RECONSTRUCT it — captures arrive per-slot
+  (`b.tokens(n)`), so the interleaving of links and forces is lost.
+  The engine wants a POSITION-TAGGED capture stream for alternated
+  groups in a star. Wanting site: expr_spine's `forced`+`postfix`
+  split (mod.av). Pinned: the refusal is a test, so closing the gap
+  is noticed. Filed 2026-08-30 by the deep red team.
 - Match THROUGH the nullable: variant arms plus a `null` arm on
   `T?` (`match o.result { .Node(.NGrammar(g)) -> g, null -> ... }`)
   — wanted by every unwrap-then-match two-step (grammar_result, the

@@ -1,0 +1,92 @@
+// The REPRESENTATION's attack record — the niche, its ownership,
+// and the chain that rides it (see .claude/skills/red-team). The
+// OPERATORS' record lives in nullable_adversarial_test.av; this
+// file attacks what a nullable IS at runtime.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown, refusals, refused_with}
+
+/// A `string?` maker — the niche's plainest subject.
+fn greet() -> string {
+    "fn g(b: bool) -> string? { if b { \"x\" } else { null } }\n"
+}
+
+/// The spec's headline example — the chain's standard subject.
+fn finder() -> string {
+    "type User = { age: int }\n" +
+    "fn find_user(id: int) -> User? { if id == 7 { User { age: 30 } } else { null } }\n"
+}
+
+spec "features/nullable (representation, adversarial)" {
+    given "the niche, where the slot law ended" {
+        then "a MANAGED nullable is no slot at all — the niche carries it" {
+            shown("fn f(b: bool) -> string? { \"x\" }\nf(true) ?? \"y\"") == "x"
+        }
+        then "a declared type wears `?` like any other" {
+            let a = analyze_source("type P = { x: int }\nfn f(p: P?) -> int { 1 }\nf(null)")
+            a.diagnostics.is_empty()
+        }
+        then "a struct with a MANAGED field meets the FIELD law once — `?` adds no cascade" {
+            let a = analyze_source("type U = { name: string }\nfn f(u: U?) -> int { 1 }\n1")
+            a.diagnostics.length == 1 && a.report().contains("struct fields hold scalars")
+        }
+    }
+    given "the niche under ownership — managed values through absence" {
+        then "an OWNED string escapes through the widening identity" {
+            shown("fn f(n: int) -> string? { \"a$" + "{n}\" }\nf(1) ?? \"x\"") == "a1"
+        }
+        then "`!` hands back the very pointer — the alias returns, the param settles" {
+            shown("fn f(s: string?) -> string { s! }\nf(\"kept\")") == "kept"
+        }
+        then "absence crosses two frames untouched" {
+            shown("fn a() -> string? { null }\nfn b() -> string? { a() }\nb() ?? \"bottom\"") == "bottom"
+        }
+        then "an owned string survives a relay frame and a force" {
+            shown("fn make(n: int) -> string? { \"v$" + "{n}\" }\nfn relay(b: bool) -> string? { make(7) }\nrelay(true)!") == "v7"
+        }
+        then "one nullable read TWICE keeps its value both times" {
+            shown("${greet()}let s = g(true)\n(s ?? \"a\").length + (s ?? \"b\").length") == "2"
+        }
+        then "500 owned strings through `??` in a loop, none corrupted" {
+            shown("fn f(n: int) -> string? { if n % 2 == 0 { \"e$" + "{n}\" } else { null } }\n" +
+                  "mut total = 0\nmut i = 0\nwhile i < 500 {\n    total = total + (f(i) ?? \"-\").length\n    i = i + 1\n}\ntotal") == "1195"
+        }
+        then "a PLAIN `.` on a nullable subject offers the chain, not a property list" {
+            let a = analyze_source("${finder()}find_user(7).age")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`.age` reads a guarantee, this is `User?`") &&
+                a.report().contains("`?.age` reaches through the absence")
+        }
+        then "an ENUM value rides the niche like any pointer" {
+            shown("enum E {\n    a\n    b\n}\nfn f(b: bool) -> E? { if b { E.a } else { null } }\n" +
+                  "match f(false) {\n    e? -> 9\n    null -> 0 - 1\n}") == "-1"
+        }
+    }
+    given "`?.` under attack — links, subjects, composition" {
+        then "the chain FEEDS `match` — one nullable currency end to end" {
+            shown("${finder()}match find_user(7)?.age {\n    v? -> v * 2\n    null -> 0 - 1\n}") == "60"
+        }
+        then "a field named `length` WINS over measuring" {
+            shown("type Odd = { length: int }\nfn mk(b: bool) -> Odd? { if b { Odd { length: 99 } } else { null } }\nmk(true)?.length ?? 0") == "99"
+        }
+        then "space after the link reads fine — `.` and `?.` agree on it" {
+            shown("${greet()}g(true)?. length ?? 0") == "1"
+        }
+        then "two real mistakes speak twice — the chain never cascades one" {
+            refusals("${finder()}(find_user(1)?.nope ?? 0) + (find_user(2)?.nope ?? 0)") == 2
+        }
+        then "`??.` is the coalesce token plus a dot, refused as such" {
+            refusals("${greet()}g(true)??.length") == 1
+        }
+        then "a TYPE NAME subject is refused as the guarantee it is" {
+            refused_with("type User = { age: int }\nUser?.age",
+                         "`?.` reaches into a nullable, this is `type User`")
+        }
+        then "RECORDED GAP: a member cannot follow `!` — the ladder splits them" {
+            // `x!.length` wants ONE interleaved postfix fold (ROADMAP,
+            // sugar backlog); until then the refusal is pinned so the
+            // gap's closing is noticed. `(x!).length` is the spelling.
+            refusals("${greet()}g(true)!.length") == 1 &&
+                shown("${greet()}(g(true)!).length") == "1"
+        }
+    }
+}

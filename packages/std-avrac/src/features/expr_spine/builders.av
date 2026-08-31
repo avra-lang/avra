@@ -1,5 +1,5 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{Expr, BinOp, want, op_symbol, all_binops}
+use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops}
 use features.{LangNode, Builder, token_at, zip_defect}
 use grammar.{Token}
 
@@ -85,15 +85,25 @@ fn build_fold_index(b: Builder) -> Result<LangNode, string> {
     b.wrap_expr(acc)
 }
 
-/// `v ( .name )*` folds left — the parse takes ANY name; typing
-/// refuses the unknown ones.
+/// `v ( .name | ?.name )*` folds left — the parse takes ANY name
+/// (typing refuses the unknown ones), and each LINK chooses its
+/// node: `.` reads, `?.` chains through absence. The ladder owns
+/// the parse; `Chain`'s meaning lives in `nullable`.
 fn build_fold_props(b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
-    let names = b.tokens(1)?
-    for t in names {
-        acc = b.store.alloc_expr(Expr.Prop(acc, t.text), b.span)
+    let links = b.tokens(1)?
+    let names = b.tokens(2)?
+    if links.length != names.length { return Result.Err(zip_defect()) }
+    for (i, t) in names.enumerate() {
+        acc = b.store.alloc_expr(prop_link(links[i].text, acc, t.text), b.span)
     }
     b.wrap_expr(acc)
+}
+
+/// The node a link token names — the chain when absence rides it.
+fn prop_link(link: string, subject: ExprId, name: string) -> Expr {
+    if link == "?." { return Expr.Chain(subject, name) }
+    Expr.Prop(subject, name)
 }
 
 /// The operator a source token names — derived from core's roster,

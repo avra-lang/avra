@@ -148,4 +148,39 @@ spec "features/nullable" {
                   "match mk(true) {\n    p? -> p.x * p.x\n    null -> 0\n}") == "16"
         }
     }
+    given "`?.` — the chain: reach through, or answer absence" {
+        then "a present subject answers its member, still nullable" {
+            shown("${finder()}find_user(7)?.age ?? 0 - 1") == "30"
+        }
+        then "an absent subject short-circuits to the fallback" {
+            shown("${finder()}find_user(3)?.age ?? 0 - 1") == "-1"
+        }
+        then "`length` reaches through a `string?` and a `List<int>?` alike" {
+            shown("fn g(b: bool) -> string? { if b { \"hello\" } else { null } }\ng(true)?.length ?? 0") == "5" &&
+                shown("fn f(b: bool) -> List<int>? { if b { [1, 2, 3] } else { null } }\nf(true)?.length ?? 0") == "3"
+        }
+        then "the chain's answer takes `!` — present proven, insisted" {
+            shown("${finder()}find_user(7)?.age!") == "30"
+        }
+        then "a chain OVER the chain's nullable answer asks the carried scalar" {
+            refused_with("${finder()}find_user(7)?.age?.length ?? 0",
+                         "`length` lives on `List` and `string` values, found `int`")
+        }
+        then "a GUARANTEE subject is refused toward the plain read" {
+            refused_with("type P = { x: int }\nlet p = P { x: 1 }\np?.x",
+                         "`P` is a guarantee — write `.x`")
+        }
+        then "absence itself never reaches anything" {
+            refused_with("null?.age", "this is always absent, so `?.age` never reaches anything")
+        }
+        then "an unknown member names the CARRIED type, not the nullable" {
+            refused_with("${finder()}find_user(7)?.nope ?? 0", "no field `nope` on `User`")
+        }
+    }
+}
+
+/// The spec's own headline example, as test fixture.
+fn finder() -> string {
+    "type User = { age: int }\n" +
+    "fn find_user(id: int) -> User? { if id == 7 { User { age: 30 } } else { null } }\n"
 }

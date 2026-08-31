@@ -1,6 +1,8 @@
 //! Typing laws shared across features and drivers — extracted at
 //! their third copy, wording passed in so each site keeps its own
-//! words.
+//! words. A LAW extracts at its SECOND: a rule copied by hand
+//! disagrees with itself the day the copies drift (`member_type_of`
+//! serves the bare read and the chain for exactly that reason).
 use core.{ExprId, TypeId, Type}
 use diagnostics.{Diag, error_at, pointed}
 
@@ -65,10 +67,54 @@ export fn join_of(cx: TypeCx, a: TypeId, b: TypeId) -> TypeId? {
 }
 
 /// `T` covered by an absence: `T?`. An already-nullable type
-/// stands — nothing is lifted twice.
-fn nullable_over(cx: TypeCx, ty: TypeId) -> TypeId? {
+/// stands — nothing is lifted twice, which is also why a chain
+/// FLATTENS: `a?.b` over a nullable member answers ONE absence.
+export fn nullable_over(cx: TypeCx, ty: TypeId) -> TypeId {
     if opt_inner(cx, ty) != null { return ty }
     cx.intern(Type.Opt(ty))
+}
+
+/// THE member law: what a type answers to a property name — a
+/// record's field, or `length` on the measurable shapes. The bare
+/// read (`a.b`) and the chain (`a?.b`) both ask HERE, so the two
+/// spellings can never drift; `shown` is the subject as the caller
+/// displays it.
+export fn member_type_of(cx: TypeCx, e: ExprId, shown: string, ty: TypeId, name: string) -> TypeId {
+    // Members live on GUARANTEES: a nullable subject's remedy is
+    // the chain, never a property list it does not have.
+    if cx.shape_of(ty) is .Opt {
+        return spoken(cx, pointed(
+            error_at("type.mismatch", cx.loc_of(e), "`.${name}` reads a guarantee, this is `${shown}`"),
+            this_is(shown))
+            with { help: "`?.${name}` reaches through the absence — or answer it first with `??`" })
+    }
+    let sig: StructSig? = cx.fields_of(ty)
+    if sig != null { return field_member(cx, e, shown, sig!, name) }
+    if name == "length" { return length_member(cx, e, shown, ty) }
+    spoken(cx, pointed(
+        error_at("type.unknown_prop", cx.loc_of(e), "no property `${name}` on `${shown}`"),
+        "read here")
+        with { help: "the one property today is `length`" })
+}
+
+/// A record's property IS a declared field; a miss names the
+/// fields that exist.
+fn field_member(cx: TypeCx, e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
+    let i: int? = sig.slot_of(name)
+    if i != null { return sig.types[i!] }
+    spoken(cx, pointed(
+        error_at("type.unknown_prop", cx.loc_of(e), "no field `${name}` on `${shown}`"),
+        "read here")
+        with { help: fields_are(sig) })
+}
+
+/// `length` measures the shapes with an extent.
+fn length_member(cx: TypeCx, e: ExprId, shown: string, ty: TypeId) -> TypeId {
+    let sh = cx.shape_of(ty)
+    if sh is .List || sh is .Str { return cx.intern(Type.Int) }
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(e), "`length` lives on `List` and `string` values, found `${shown}`"),
+        this_is(shown)))
 }
 
 /// What a nullable carries, or absent when the type is not one.

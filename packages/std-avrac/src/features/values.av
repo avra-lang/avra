@@ -48,9 +48,9 @@ fn slot_read(cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
     got
 }
 
-// ── The nullable, behind four verbs ─────────────────────────────
-// The surface is ONE (`null`, `??`, `!`, match); the layouts are
-// two; the seam is here. ROADMAP: the nullable representation.
+// ── The nullable, behind its verbs ──────────────────────────────
+// The surface is ONE (`null`, `??`, `!`, match, `?.`); the layouts
+// are two; the seam is here. ROADMAP: the nullable representation.
 
 /// Which layout a nullable takes, decided by what it CARRIES. A
 /// pointer-shaped value IS its own nullable — absence is the null
@@ -72,7 +72,7 @@ fn repr_of(cx: LowerCx, opt: TypeId) -> Repr {
 
 /// What a nullable type carries — the `Opt`'s inner, with the
 /// catch-all pinned to the asker's own type on the error path.
-fn carried_type(cx: LowerCx, opt: TypeId) -> TypeId {
+export fn carried_type(cx: LowerCx, opt: TypeId) -> TypeId {
     match cx.shape_of(opt) {
         .Opt(inner) -> inner,
         _ -> opt,
@@ -127,12 +127,24 @@ export fn adopted(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
 }
 
 fn boxed_adoption(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
+    if from_null { return absent_of(cx, into) }
     let dst = cx.mint_ty(into)
-    if from_null {
-        tagged_value(cx, dst, 0, null)
-    } else {
-        tagged_value(cx, dst, 1, r)
+    tagged_value(cx, dst, 1, r)
+    dst
+}
+
+/// The ABSENT value of a nullable type, minted fresh — the niche's
+/// null constant, or the box carrying tag 0 and nothing else.
+export fn absent_of(cx: LowerCx, opt: TypeId) -> Reg {
+    match repr_of(cx, opt) {
+        .Niche -> zeroed(cx, cx.mint_ty(opt)),
+        .Boxed -> absent_box(cx, opt),
     }
+}
+
+fn absent_box(cx: LowerCx, opt: TypeId) -> Reg {
+    let dst = cx.mint_ty(opt)
+    tagged_value(cx, dst, 0, null)
     dst
 }
 

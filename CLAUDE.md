@@ -490,7 +490,9 @@ against these before writing; probe in scratch when unsure.
   reverse scan therefore stops at its hit instead of folding a flag.
 - Zero-arg closures (`() -> expr`) work, as params and calls, and
   MUTATE captured locals correctly — bracket fns taking a `fn()`
-  thunk (push/run/pop) are expressible (probed).
+  thunk (push/run/pop) are expressible (probed). BLOCK-bodied
+  thunk arguments (`() -> { ... }`) capturing locals and returning
+  single-field structs also work (probed — presence_region's shape).
 - A match arm producing a bare struct literal unifies fine with a
   nullable sibling arm (probed: `.P(i) -> Reg { index: i }` beside
   `.D(s) -> maybe_reg(s)` under a `Reg?` return) — no typed-let

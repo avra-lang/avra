@@ -58,6 +58,31 @@ spec "core/nodes" {
             s.expr_fingerprint(a) != s.expr_fingerprint(b) &&
                 s.expr_fingerprint(a) != s.expr_fingerprint(c)
         }
+        then "the LINK is part of identity: `a?.b` and `a.b` differ" {
+            let s = new_node_store()
+            let subject = s.alloc_expr(Expr.Ident("a"), null)
+            let read = s.alloc_expr(Expr.Prop(subject, "b"), null)
+            let chain = s.alloc_expr(Expr.Chain(subject, "b"), null)
+            s.expr_fingerprint(read) != s.expr_fingerprint(chain)
+        }
+        then "the chain's MEMBER is part of identity" {
+            let s = new_node_store()
+            let subject = s.alloc_expr(Expr.Ident("a"), null)
+            let b = s.alloc_expr(Expr.Chain(subject, "b"), null)
+            let c = s.alloc_expr(Expr.Chain(subject, "c"), null)
+            s.expr_fingerprint(b) != s.expr_fingerprint(c)
+        }
+        then "a nullable match records MEANING — the written arm order never counts" {
+            let s = new_node_store()
+            let subject = s.alloc_expr(Expr.Ident("v"), null)
+            let present = s.alloc_expr(Expr.IntLit(1), null)
+            let absent = s.alloc_expr(Expr.IntLit(2), null)
+            // both writings build the SAME node shape (the builder
+            // hands captures by meaning), so identity follows
+            let a = s.alloc_expr(Expr.MatchOpt(subject, "x", present, absent), at(0, 9))
+            let b = s.alloc_expr(Expr.MatchOpt(subject, "x", present, absent), at(20, 29))
+            s.expr_fingerprint(a) == s.expr_fingerprint(b)
+        }
         then "a WRITTEN TYPE is part of identity: `int` and `int?` differ" {
             let s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1), null)

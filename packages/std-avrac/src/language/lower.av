@@ -137,6 +137,7 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         mint_shape: (sh: Type) -> lo.mint_ty(lo.a.typing.types.intern(sh)),
         mint_ty: (ty: TypeId) -> lo.mint_ty(ty),
         fields_at: (k: ExprId) -> lo.fields_at(k),
+        fields_of: (ty: TypeId) -> lo.fields_of(ty),
         bind_pattern: (k: ExprId, r: Reg) -> lo.bind_pattern(k, r),
         variants_at: (k: ExprId) -> lo.variants_at(k),
         emit: (i: Ins) -> lo.give(i),
@@ -319,7 +320,14 @@ impl Lower {
     /// A struct-typed expression's field table; null for every
     /// other shape. The declaration index IS the array index.
     fn fields_at(self, e: ExprId) -> StructSig? {
-        match self.a.typing.types.shape_of(self.a.type_at(e)) {
+        self.fields_of(self.a.type_at(e))
+    }
+
+    /// A struct TYPE's field table — `fields_at`'s TypeId-keyed
+    /// twin, for members read on a type no expression wears (what
+    /// a nullable carries).
+    fn fields_of(self, ty: TypeId) -> StructSig? {
+        match self.a.typing.types.shape_of(ty) {
             .Struct(decl, _) -> record_sig_of(self.a.decl_sig(decl)),
             _ -> null,
         }

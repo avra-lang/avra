@@ -1,7 +1,10 @@
-// The RED TEAM's permanent record for nullability (see
+// The RED TEAM's permanent record for the absence OPERATORS —
+// `null`, `??`, `!`, and the two-arm match (see
 // .claude/skills/red-team): every program here was written to BREAK
-// the feature, not to use it. Grouped by attack class. A case that
-// once produced a wrong answer, a crash, an internal defect, or an
+// the feature, not to use it. Grouped by attack class; the
+// REPRESENTATION's record (the niche, its ownership, the chain)
+// lives in nullable_repr_adversarial_test.av. A case that once
+// produced a wrong answer, a crash, an internal defect, or an
 // engine divergence keeps its place here forever.
 use @std.avrac.language.{analyze_source}
 use @std.avrac.testing.{shown, refusals, refused_with}
@@ -229,42 +232,6 @@ spec "features/nullable (adversarial)" {
         then "a list element refuses a nullable, in ITS words" {
             let a = analyze_source("${makers()}[some(1), none()]")
             a.diagnostics.length == 1 && a.report().contains("a list holds scalars")
-        }
-        then "a MANAGED nullable is no slot at all — the niche carries it" {
-            shown("fn f(b: bool) -> string? { \"x\" }\nf(true) ?? \"y\"") == "x"
-        }
-        then "a declared type wears `?` like any other" {
-            let a = analyze_source("type P = { x: int }\nfn f(p: P?) -> int { 1 }\nf(null)")
-            a.diagnostics.is_empty()
-        }
-        then "a struct with a MANAGED field meets the FIELD law once — `?` adds no cascade" {
-            let a = analyze_source("type U = { name: string }\nfn f(u: U?) -> int { 1 }\n1")
-            a.diagnostics.length == 1 && a.report().contains("struct fields hold scalars")
-        }
-    }
-    given "the niche under ownership — managed values through absence" {
-        then "an OWNED string escapes through the widening identity" {
-            shown("fn f(n: int) -> string? { \"a$" + "{n}\" }\nf(1) ?? \"x\"") == "a1"
-        }
-        then "`!` hands back the very pointer — the alias returns, the param settles" {
-            shown("fn f(s: string?) -> string { s! }\nf(\"kept\")") == "kept"
-        }
-        then "absence crosses two frames untouched" {
-            shown("fn a() -> string? { null }\nfn b() -> string? { a() }\nb() ?? \"bottom\"") == "bottom"
-        }
-        then "an owned string survives a relay frame and a force" {
-            shown("fn make(n: int) -> string? { \"v$" + "{n}\" }\nfn relay(b: bool) -> string? { make(7) }\nrelay(true)!") == "v7"
-        }
-        then "one nullable read TWICE keeps its value both times" {
-            shown("fn g(b: bool) -> string? { if b { \"x\" } else { null } }\nlet s = g(true)\n(s ?? \"a\").length + (s ?? \"b\").length") == "2"
-        }
-        then "500 owned strings through `??` in a loop, none corrupted" {
-            shown("fn f(n: int) -> string? { if n % 2 == 0 { \"e$" + "{n}\" } else { null } }\n" +
-                  "mut total = 0\nmut i = 0\nwhile i < 500 {\n    total = total + (f(i) ?? \"-\").length\n    i = i + 1\n}\ntotal") == "1195"
-        }
-        then "an ENUM value rides the niche like any pointer" {
-            shown("enum E {\n    a\n    b\n}\nfn f(b: bool) -> E? { if b { E.a } else { null } }\n" +
-                  "match f(false) {\n    e? -> 9\n    null -> 0 - 1\n}") == "-1"
         }
     }
     given "precedence, which decides what `??` even asks" {

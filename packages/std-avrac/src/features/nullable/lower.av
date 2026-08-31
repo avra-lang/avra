@@ -1,10 +1,12 @@
 //! The lowering rule — the ONE meaning. WHICH layout a nullable
 //! takes is values.av's business (`repr_of` and its verbs); this
-//! file only says what each consumer MEANS: `??` and `match` open
-//! one region on presence — so the right side and the absent arm
-//! run only on absence — and `!` insists through the runtime.
-use core.{ExprId, Reg, Ins}
-use features.{LowerCx, presence_of, carried_of, insisted, hole_defect, lower_defect}
+//! file only says what each consumer MEANS, and every consumer of
+//! absence opens the SAME region on presence — so `??`'s right
+//! side, the absent arm, and the chain's absence all run only when
+//! the value is not there.
+use core.{ExprId, TypeId, Reg, Ins, Type}
+use features.{LowerCx, StructSig, presence_of, carried_of, carried_type, adopted,
+              absent_of, insisted, hole_defect, lower_defect}
 
 fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -13,6 +15,7 @@ fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
         .Coalesce(l, r) -> coalesce_reg(cx, e, l, r),
         .Force(v) -> insisted(cx, e, cx.reg_of(v), cx.type_at(v)),
         .MatchOpt(s, _, p, a) -> match_opt_reg(cx, e, s, p, a),
+        .Chain(s, name) -> chain_reg(cx, e, s, name),
         _ -> lower_defect(cx, e, hole_defect()),
     }
 }
@@ -26,34 +29,92 @@ fn null_reg(cx: LowerCx, e: ExprId) -> Reg {
     dst
 }
 
-/// `l ?? r` — one region on presence: the PRESENT arm unwraps what
-/// `l` carries, the absent arm answers with `r`, evaluated only
-/// then.
-fn coalesce_reg(cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
-    let v = cx.reg_of(l)
-    let held = cx.type_at(l)
+/// ONE region on PRESENCE — the shape every consumer of absence
+/// opens: the present arm's value, then the absent arm's, merged
+/// into the node's register. Thunks keep each arm's instructions
+/// INSIDE its brackets, which is what makes the absent side lazy.
+fn presence_region(cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
+                   present: fn() -> Reg, absent: fn() -> Reg) -> Reg {
     cx.emit(Ins.IfStart(presence_of(cx, v, held)))
-    cx.emit(Ins.ArmEnd(carried_of(cx, v, held)))
-    let answer = cx.reg_of(r)
+    cx.emit(Ins.ArmEnd(present()))
+    let answer = absent()
     let dst = cx.mint(e)
     cx.emit(Ins.RegionEnd(dst, answer))
     dst
 }
 
-/// `match v { b? -> p, null -> a }` — the SAME region `??` opens.
-/// The bind receives what the nullable carries before the present
-/// arm lowers inside the region; the absent arm is the other arm.
+/// `l ?? r` — the present arm unwraps what `l` carries; the absent
+/// arm answers with `r`, evaluated only then.
+fn coalesce_reg(cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
+    let v = cx.reg_of(l)
+    let held = cx.type_at(l)
+    presence_region(cx, e, v, held,
+        () -> carried_of(cx, v, held),
+        () -> cx.reg_of(r))
+}
+
+/// `match v { b? -> p, null -> a }` — the bind receives what the
+/// nullable carries before the present arm lowers inside its
+/// bracket; the absent arm is the other bracket.
 fn match_opt_reg(cx: LowerCx, e: ExprId, subject: ExprId,
                  present: ExprId, absent: ExprId) -> Reg {
     let v = cx.reg_of(subject)
     let held = cx.type_at(subject)
-    cx.emit(Ins.IfStart(presence_of(cx, v, held)))
-    cx.bind_pattern(present, carried_of(cx, v, held))
-    // the arm lowers BEFORE `dst` is minted — registers are numbered
-    // in emission order, and `dst` is emitted last
-    cx.emit(Ins.ArmEnd(cx.reg_of(present)))
-    let answer = cx.reg_of(absent)
-    let dst = cx.mint(e)
-    cx.emit(Ins.RegionEnd(dst, answer))
+    presence_region(cx, e, v, held,
+        () -> {
+            cx.bind_pattern(present, carried_of(cx, v, held))
+            cx.reg_of(present)
+        },
+        () -> cx.reg_of(absent))
+}
+
+/// `a?.b` — the member of the CARRIED value on the present arm,
+/// lifted into the chain's nullable answer; absence on the other.
+fn chain_reg(cx: LowerCx, e: ExprId, subject: ExprId, name: string) -> Reg {
+    let v = cx.reg_of(subject)
+    let held = cx.type_at(subject)
+    let answer = cx.type_at(e)
+    presence_region(cx, e, v, held,
+        () -> lifted_member(cx, e, v, held, name, answer),
+        () -> absent_of(cx, answer))
+}
+
+/// The present arm: read the member of what the subject carries,
+/// then lift it into the chain's answer.
+fn lifted_member(cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
+                 name: string, answer: TypeId) -> Reg {
+    let member = member_reg(cx, e, carried_of(cx, v, held), carried_type(cx, held),
+                            name, carried_type(cx, answer))
+    adopted(cx, answer, false, member)
+}
+
+/// The member read on the carried value: a field's slot, or the
+/// length word for the measurable shapes. `want` is what the CHAIN
+/// expects the member to wear — the sig is the truth, and a
+/// disagreement means the flatten rule changed without this
+/// lowering learning it, which must break loudly, not lift twice.
+fn member_reg(cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
+              name: string, want: TypeId) -> Reg {
+    let sig: StructSig? = cx.fields_of(held)
+    if sig == null { return length_reg(cx, carried, held) }
+    let slot: int? = sig!.slot_of(name)
+    if slot == null { return lower_defect(cx, e, "a memberless chain survived typing") }
+    // LICENSED I9: type identity — interned ids ARE the agreement
+    if sig!.types[slot!].index != want.index {
+        return lower_defect(cx, e, "a chain's member wears a type its lift does not expect")
+    }
+    let idx = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(idx, slot!))
+    let dst = cx.mint_ty(want)
+    cx.emit(Ins.CallRt(dst, "avra_array_get", [carried, idx]))
+    dst
+}
+
+/// `length` on the carried value, by its shape — a string measures
+/// through strlen, a list through its len word.
+fn length_reg(cx: LowerCx, carried: Reg, held: TypeId) -> Reg {
+    let word = if cx.shape_of(held) is .Str { "strlen" } else { "avra_array_len" }
+    let dst = cx.mint_shape(Type.Int)
+    cx.emit(Ins.CallRt(dst, word, [carried]))
     dst
 }

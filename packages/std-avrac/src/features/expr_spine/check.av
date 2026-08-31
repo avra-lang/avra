@@ -4,7 +4,7 @@
 //! cause was diagnosed where it happened; the wording lives here
 //! with the operators.
 use core.{ExprId, StmtId, BinOp, Type, TypeId, op_symbol}
-use features.{TypeCx, StructSig, EnumSig, spoken, this_is, variants_are, build_a_record, fields_are}
+use features.{TypeCx, EnumSig, spoken, this_is, variants_are, build_a_record, member_type_of}
 use diagnostics.{error_at, pointed}
 
 fn spine_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -88,33 +88,10 @@ fn variant_type(cx: TypeCx, e: ExprId, decl: StmtId, tname: string, name: string
     ty
 }
 
-/// A property on a VALUE: its field, or its length.
+/// A property on a VALUE — the shared member law (checks.av), the
+/// subject shown by its expression's name.
 fn member_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
-    let sh: Type = cx.shape_at(subject)
-    let sig: StructSig? = cx.fields_of(cx.type_at(subject))
-    if sig != null { return field_type(cx, e, subject, name, sig!) }
-    let n = cx.name_at(subject)
-    if name == "length" {
-        if sh is .List || sh is .Str { return cx.intern(Type.Int) }
-        return spoken(cx, pointed(
-            error_at("type.mismatch", cx.loc_of(e), "`length` lives on `List` and `string` values, found `${n}`"),
-            this_is(n)))
-    }
-    spoken(cx, pointed(
-        error_at("type.unknown_prop", cx.loc_of(e), "no property `${name}` on `${n}`"),
-        "read here")
-        with { help: "the one property today is `length`" })
-}
-
-/// A struct's property IS a declared field; a miss names the
-/// fields that exist.
-fn field_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string, sig: StructSig) -> TypeId {
-    let i: int? = sig.slot_of(name)
-    if i != null { return sig.types[i!] }
-    spoken(cx, pointed(
-        error_at("type.unknown_prop", cx.loc_of(e), "no field `${name}` on `${cx.name_at(subject)}`"),
-        "read here")
-        with { help: fields_are(sig) })
+    member_type_of(cx, e, cx.name_at(subject), cx.type_at(subject), name)
 }
 
 fn binary_type(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
