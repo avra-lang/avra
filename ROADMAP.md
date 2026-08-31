@@ -96,13 +96,13 @@ text-as-projection after self-host, the service store at Era V.
     8.5 [x] the TYPE SURFACE — annotations are a type EXPRESSION,
         not a NAME (found blocking rung 9); slice (a) landed `T?`,
         `null`, `??`, widening and the join
-    9.  nullability — LANDED but one: `T?`, `null` arms,
-        `! ?? ?. ?` all [x] (the representation decision below:
-        niche + pair, never-allocates law ON); `if let v? = e` [x];
-        effectively-final narrowing [x] (the consumer's-hat arc);
-        `?` propagation [x] (slice d — rides FnExit, no new
-        instruction). REMAINS: `let v? = e else { }` alone, on
-        divergence-aware blocks (trigger at the return arc)
+    9.  [x] ▲ nullability — COMPLETE 2026-08-31: `T?`, `null`
+        arms, `! ?? ?. ?` (the representation decision below:
+        niche + pair, never-allocates law ON); `if let v? = e`;
+        effectively-final narrowing; `?` propagation (rides
+        FnExit); and `let v? = e else { }` (slice N4 — the
+        divergence law arrived with the `diverges` registry).
+        `while let` stays a recorded trigger (wants loops polish)
     10. Result & `?` — propagation as the error spine
     11. ▲ generics — mono through OUR pipeline (List<T> becomes real)
     12. ▲ traits & dyn — dispatch, cross-module impls
@@ -1870,6 +1870,38 @@ THE SLICES (each vertical, each gated):
        null` presence tests in the eq law first).
        Corpus: if_let.av (present/absent, chain-fed, block bodies,
        string? length), eval == native. 749/749, 30 corpus.
+  (N4) [x] `let v? = e else { }` — LANDED 2026-08-31, closing rung
+       9. The trigger fired exactly as recorded: `return` gave the
+       language its first diverging statement, and let-else needed
+       only a DIVERGENCE FACT, not a Never type — `diverges(s)` is
+       a NodeStore registry spelling every Stmt arm (a new
+       statement kind must answer; a diverging one cannot slip in
+       as a silent false). PARSE lives in `let_stmt` — the
+       recovering plain-let branch COMMITS on `let b? =` (probed),
+       so the let-else branch merges FIRST in that feature's own
+       gram, non-committing (an @recover there would eat every
+       plain let: two branches share the anchor); MEANING lives in
+       nullable (the Chain precedent, now proven for statements).
+       The bind lands in the ENCLOSING scope by making the
+       presence region's MERGE register the binding — present arm
+       yields the carried value, absent arm runs the else (typing
+       demands its LAST stmt diverge) and yields a hollow the
+       merge never reads. No new instruction, again. Diet: ONE
+       verb (`record_binding` — the computed twin of the annotated
+       law's write) — and the slice PAID DOWN the contract:
+       StmtLowerCx now NESTS `expr: LowerCx` (the typing cx's
+       twin) and its six duplicate verbs died (mint, mint_like,
+       mint_shape, emit, fail, lower — 12 fields to 6; mint_like
+       moved to its one home on LowerCx). RT11: 25 programs, all
+       clean — the divergence law position by position (dead code
+       after return still refuses: the LAST stmt is the law;
+       if-then-return ending in bare return is legal), the shared
+       parse's fall-through (a forgotten `else` refuses via the
+       plain let's "expected `=`" — misleading first words, filed
+       with the F0102 recovery debt), shadowing (legal, consistent
+       with plain re-`let`), `??`-in-subject makes a guarantee
+       (pinned — coalesce answers carried, so the two never
+       stack), 200-iteration owned churn through both exits.
 
 THE RULINGS on the decision doc's open questions:
 - VISIBLE (P7): yes. `avra ir` already shows the truth (a bare

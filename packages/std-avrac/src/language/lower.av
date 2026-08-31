@@ -128,7 +128,18 @@ fn lower_main(a: Analysis) -> LoweredBody {
 fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
     let seen: Reg? = lo.regs[e.index]
     if seen != null { return seen! }
-    let cx = LowerCx {
+    let cx = expr_lower_cx(lo)
+    let born = semantics_of(lo.a.dispatch, lo.a.store.expr(e)).lower(cx, e)
+    let r = widened(cx, lo, e, narrowed(cx, lo, e, born))
+    mut rs = lo.regs
+    rs.set(e.index, r)
+    r
+}
+
+/// The expression capabilities, wired once per request — what
+/// lower_subtree runs and StmtLowerCx nests as `expr`.
+fn expr_lower_cx(lo: Lower) -> LowerCx {
+    LowerCx {
         store: lo.a.store,
         types: lo.a.typing.types,
         result: (k: ExprId) -> lo.mint(k),
@@ -137,6 +148,7 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.a.type_at(k)),
         type_at: (k: ExprId) -> lo.a.type_at(k),
         mint: (k: ExprId) -> lo.mint(k),
+        mint_like: (r: Reg) -> lo.mint_ty(lo.reg_types[r.index]),
         mint_shape: (sh: Type) -> lo.mint_ty(lo.a.typing.types.intern(sh)),
         mint_ty: (ty: TypeId) -> lo.mint_ty(ty),
         fields_at: (k: ExprId) -> lo.fields_at(k),
@@ -148,11 +160,6 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
         enclosing_ret: () -> lo.fn_ret,
         fail: (msg: string) -> lo.record(msg),
     }
-    let born = semantics_of(lo.a.dispatch, lo.a.store.expr(e)).lower(cx, e)
-    let r = widened(cx, lo, e, narrowed(cx, lo, e, born))
-    mut rs = lo.regs
-    rs.set(e.index, r)
-    r
 }
 
 /// A read a presence test PROVED — typing recorded the nullable it
@@ -182,16 +189,11 @@ fn widened(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
 fn lower_stmts(lo: Lower, stmts: List<StmtId>) -> Reg? {
     let cx = StmtLowerCx {
         store: lo.a.store,
-        lower: (v: ExprId) -> lower_subtree(lo, v),
+        expr: expr_lower_cx(lo),
         lower_stmts: (body: List<StmtId>) -> lower_stmt_list(lo, body),
-        mint: (k: ExprId) -> lo.mint(k),
-        mint_like: (r: Reg) -> lo.mint_ty(lo.reg_types[r.index]),
-        mint_shape: (sh: Type) -> lo.mint_ty(lo.a.typing.types.intern(sh)),
-        emit: (i: Ins) -> lo.give(i),
         slot_of: (s: StmtId) -> lo.slots[s.index],
         bind_slot: (s: StmtId, slot: Reg) -> lo.bind_slot(s, slot),
         assign_target: (s: StmtId) -> lo.a.assign_target(s),
-        fail: (msg: string) -> lo.record(msg),
     }
     // LICENSED I4: the running last register, not a scan
     mut last: Reg? = null

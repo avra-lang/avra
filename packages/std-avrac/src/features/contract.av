@@ -182,6 +182,7 @@ export type LowerCx = {
     shape_at: fn(ExprId) -> Type,
     type_at: fn(ExprId) -> TypeId,
     mint: fn(ExprId) -> Reg,
+    mint_like: fn(Reg) -> Reg,
     mint_shape: fn(Type) -> Reg,
     mint_ty: fn(TypeId) -> Reg,
     fields_at: fn(ExprId) -> StructSig?,
@@ -238,25 +239,23 @@ export type StmtTypeCx = {
     assign_target: fn(StmtId) -> StmtId?,
     bind_declared: fn(StmtId, TypeRef) -> TypeId,
     binding_type: fn(StmtId) -> TypeId,
+    record_binding: fn(StmtId, TypeId),
     loc_of: fn(StmtId) -> Loc?,
 }
 
-/// Statement lowering capabilities: lower expressions and statement
-/// lists, mint typed registers, emit instructions, and own a slot —
-/// a slot bound through `bind_slot` is a memory CELL: idents load
-/// through it, and the driver's value write defers to it.
+/// Statement lowering capabilities: `expr` is the WHOLE expression
+/// lowering vocabulary (registers, types, minting, the emit seam) —
+/// the typing cx's twin; the rest are the statement-level verbs:
+/// statement lists, and the slot a `mut` binding owns — a slot
+/// bound through `bind_slot` is a memory CELL: idents load through
+/// it, and the driver's value write defers to it.
 export type StmtLowerCx = {
     store: NodeStore,
-    lower: fn(ExprId) -> Reg,
+    expr: LowerCx,
     lower_stmts: fn(List<StmtId>),
-    mint: fn(ExprId) -> Reg,
-    mint_like: fn(Reg) -> Reg,
-    mint_shape: fn(Type) -> Reg,
-    emit: fn(Ins),
     slot_of: fn(StmtId) -> Reg?,
     bind_slot: fn(StmtId, Reg),
     assign_target: fn(StmtId) -> StmtId?,
-    fail: fn(string),
 }
 
 /// The per-pass behavior of one feature's STATEMENT kinds — the
@@ -383,6 +382,6 @@ impl StmtLowerCx {
     fn lower_value(self, s: StmtId) -> Reg? {
         let v: ExprId? = self.store.stmt_value(s)
         if v == null { return null }
-        self.lower(v!)
+        self.expr.reg_of(v!)
     }
 }

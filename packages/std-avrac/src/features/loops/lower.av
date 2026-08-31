@@ -7,30 +7,30 @@ use core.{StmtId, ExprId, Ins, Level}
 use features.{StmtLowerCx}
 
 export fn lower_while(cx: StmtLowerCx, cond: ExprId, stmts: List<StmtId>) {
-    cx.emit(Ins.LoopStart)
-    let c = cx.lower(cond)
-    cx.emit(Ins.LoopCond(c))
-    cx.emit(Ins.ScopeEnter(Level.Application))
+    let ex = cx.expr
+    ex.emit(Ins.LoopStart)
+    ex.emit(Ins.LoopCond(ex.reg_of(cond)))
+    ex.emit(Ins.ScopeEnter(Level.Application))
     cx.lower_stmts(stmts)
-    cx.emit(Ins.ScopeExit(null))
-    cx.emit(Ins.LoopEnd)
+    ex.emit(Ins.ScopeExit(null))
+    ex.emit(Ins.LoopEnd)
 }
 
 /// The counter is born before the loop, read through its cell each
 /// turn, and stepped after the body — bind_slot BEFORE the cond
 /// lowers, so the counter's ident loads through the cell.
 export fn lower_for(cx: StmtLowerCx, s: StmtId, from: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>) {
-    let start = cx.lower(from)
-    let slot = cx.mint(from)
-    cx.emit(Ins.Alloca(slot))
-    cx.emit(Ins.Store(slot, start))
+    let ex = cx.expr
+    let start = ex.reg_of(from)
+    let slot = ex.mint(from)
+    ex.emit(Ins.Alloca(slot))
+    ex.emit(Ins.Store(slot, start))
     cx.bind_slot(s, slot)
-    cx.emit(Ins.LoopStart)
-    let c = cx.lower(cond)
-    cx.emit(Ins.LoopCond(c))
-    cx.emit(Ins.ScopeEnter(Level.Application))
+    ex.emit(Ins.LoopStart)
+    ex.emit(Ins.LoopCond(ex.reg_of(cond)))
+    ex.emit(Ins.ScopeEnter(Level.Application))
     cx.lower_stmts(stmts)
-    cx.emit(Ins.Store(slot, cx.lower(step)))
-    cx.emit(Ins.ScopeExit(null))
-    cx.emit(Ins.LoopEnd)
+    ex.emit(Ins.Store(slot, ex.reg_of(step)))
+    ex.emit(Ins.ScopeExit(null))
+    ex.emit(Ins.LoopEnd)
 }

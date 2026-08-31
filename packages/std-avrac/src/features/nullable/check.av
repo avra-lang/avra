@@ -2,8 +2,8 @@
 //! `T?` and nothing else. `??` ANSWERS an absence: its left side
 //! must be nullable, and the right must be what that nullable
 //! carries; the answer is the carried type, never nullable again.
-use core.{ExprId, Type, TypeId}
-use features.{TypeCx, accepts, join_of, spoken, this_is,
+use core.{ExprId, StmtId, Type, TypeId}
+use features.{TypeCx, StmtTypeCx, accepts, join_of, spoken, this_is,
               member_type_of, nullable_over}
 use diagnostics.{error_at, pointed}
 
@@ -130,6 +130,34 @@ fn forced_type(cx: TypeCx, v: ExprId) -> TypeId {
     if held != null { return held! }
     not_absent_able(cx, v, "type.force", "`!` insists on",
         "`!` always fails", "there is nothing here to insist on")
+}
+
+/// `let v? = e else { ... }` — the bind-fresh form that KEEPS
+/// GOING: the subject must be nullable; the bind holds what it
+/// carries, recorded for every later read; the else types in its
+/// own walk and must LEAVE, or control would reach the bind with
+/// nothing bound.
+fn check_let_else(cx: StmtTypeCx, s: StmtId) {
+    let subject: ExprId? = cx.store.stmt_value(s)
+    if subject == null { return }
+    let v = subject!
+    let bind = cx.store.let_name(s) ?? "this binding"
+    let held: TypeId? = cx.expr.types.carried(cx.expr.type_at(v))
+    if held == null && !(cx.expr.shape_at(v) is .Error) {
+        let _ = not_absent_able(cx.expr, v, "type.let_else", "`${bind}?` asks",
+            "`${bind}?` can never bind", "the else always runs — write its statements alone")
+    }
+    cx.record_binding(s, held ?? cx.expr.error_type)
+    let stmts = else_stmts_of(cx.store.stmt(s))
+    cx.type_stmts(stmts)
+    let last: StmtId? = stmts.last()
+    if last == null || !cx.store.diverges(last!) {
+        cx.expr.emit(pointed(
+            error_at("type.let_else", cx.loc_of(s),
+                "the `else` must LEAVE — control cannot fall through to `${bind}`"),
+            "falls through")
+            with { help: "end the else with `return`" })
+    }
 }
 
 /// `v?` PROPAGATES: a present value unwraps to what the nullable

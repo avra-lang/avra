@@ -4,9 +4,9 @@
 //! absence opens the SAME region on presence — so `??`'s right
 //! side, the absent arm, and the chain's absence all run only when
 //! the value is not there.
-use core.{ExprId, TypeId, Reg, Ins, Type}
-use features.{LowerCx, StructSig, presence_of, carried_of, carried_type, adopted,
-              absent_of, insisted, hollow_of, hole_defect, lower_defect}
+use core.{ExprId, StmtId, TypeId, Reg, Ins, Type}
+use features.{LowerCx, StmtLowerCx, StructSig, presence_of, carried_of, carried_type,
+              adopted, absent_of, insisted, hollow_of, hole_defect, lower_defect}
 
 fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -88,6 +88,26 @@ fn departed(cx: LowerCx, e: ExprId) -> Reg {
     if ret == null { return lower_defect(cx, e, "a propagation without an enclosing fn survived typing") }
     cx.emit(Ins.FnExit(absent_of(cx, ret!)))
     hollow_of(cx, cx.type_at(e))
+}
+
+/// `let v? = e else { ... }` — the same presence region, with the
+/// merge REGISTER as the binding: the present arm yields the
+/// carried value; the absent arm runs the else, which LEAVES
+/// (typing enforced it), and yields a hollow the merge never
+/// reads. The driver binds the answered register like any let's.
+fn let_else_reg(cx: StmtLowerCx, s: StmtId) -> Reg? {
+    let subject: ExprId? = cx.store.stmt_value(s)
+    if subject == null { return null }
+    let ex = cx.expr
+    let v = ex.reg_of(subject!)
+    let held = ex.type_at(subject!)
+    ex.emit(Ins.IfStart(presence_of(ex, v, held)))
+    ex.emit(Ins.ArmEnd(carried_of(ex, v, held)))
+    cx.lower_stmts(else_stmts_of(cx.store.stmt(s)))
+    let hollow = hollow_of(ex, carried_type(ex, held))
+    let dst = ex.mint_ty(carried_type(ex, held))
+    ex.emit(Ins.RegionEnd(dst, hollow))
+    dst
 }
 
 /// `a?.b` — the member of the CARRIED value on the present arm,

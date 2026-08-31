@@ -186,6 +186,12 @@ export enum Stmt {
     /// `v` against the declared return; lowering exits with every
     /// open scope's debts settled at the site.
     Return(value: ExprId)
+    /// `let name? = subject else { stmts }` — the bind-fresh form
+    /// that KEEPS GOING: a present subject binds its carried value
+    /// in the enclosing scope; an absent one runs the else, which
+    /// must leave. Parsed by `let_stmt`; nullability gives it
+    /// meaning.
+    LetElse(name: string, subject: ExprId, stmts: List<StmtId>)
     /// `for name in from..to` — binds `name` over the body. `cond`
     /// and `step` are parse-time desugar (`name < to`, `name + 1`):
     /// real nodes every pass walks, so the loop is mut+while in
@@ -323,6 +329,8 @@ impl NodeStore {
                                 self.stmt_fps(then_stmts), [0],
                                 self.stmt_fps(else_stmts)])),
             .Return(value) -> fp(36, [self.expr_fingerprint(value)]),
+            .LetElse(name, subject, stmts) ->
+                fp(38, [fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
             // For's cond and step derive from name/from/to — the
             // identity needs only the sources.
             .For(name, from, to, _, _, stmts) ->

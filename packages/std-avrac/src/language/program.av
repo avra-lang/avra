@@ -15,7 +15,7 @@ use features.let_stmt.{LetStmtSemantics}
 use features.expr_stmt.{ExprStmtSemantics}
 use features.stmt_spine.{HoleSemantics}
 use features.lists.{ListSemantics}
-use features.nullable.{NullableSemantics}
+use features.nullable.{NullableSemantics, LetElseSemantics}
 use features.mutation.{MutLetSemantics, AssignSemantics}
 use features.loops.{WhileSemantics, ForSemantics}
 use features.structs.{StructsSemantics, StructDeclSemantics}
@@ -62,6 +62,7 @@ export type Dispatch = {
     enumdecls: dyn StmtSemantics,
     ifstmts: dyn StmtSemantics,
     returns: dyn StmtSemantics,
+    letelses: dyn StmtSemantics,
 }
 
 fn new_dispatch() -> Dispatch {
@@ -88,6 +89,7 @@ fn new_dispatch() -> Dispatch {
     let ifstmts: dyn StmtSemantics = IfStmtSemantics { }
     let returns: dyn StmtSemantics = ReturnSemantics { }
     let nullables: dyn NodeSemantics = NullableSemantics { }
+    let letelses: dyn StmtSemantics = LetElseSemantics { }
     Dispatch {
         spine: spine, strs: strs, bools: bools, ifs: ifs, whens: whens,
         blocks: blocks, calls: calls, aggs: aggs, structs: structs, enums: enums,
@@ -95,7 +97,7 @@ fn new_dispatch() -> Dispatch {
         lets: lets, exprs: exprs, decls: decls, holes: holes,
         mutlets: mutlets, assigns: assigns, whiles: whiles, fors: fors,
         structdecls: structdecls, enumdecls: enumdecls,
-        ifstmts: ifstmts, returns: returns,
+        ifstmts: ifstmts, returns: returns, letelses: letelses,
     }
 }
 
@@ -137,6 +139,7 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
         .EnumDecl(_, _) -> d.enumdecls,
         .IfStmt(_, _, _) -> d.ifstmts,
         .Return(_) -> d.returns,
+        .LetElse(_, _, _) -> d.letelses,
         .Error -> d.holes,
     }
 }
@@ -164,6 +167,7 @@ impl NodeStore {
             .Let(name, _, _) -> name,
             .MutLet(name, _, _) -> name,
             .For(name, _, _, _, _, _) -> name,
+            .LetElse(name, _, _) -> name,
             .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _)
                 or .While(_, _) or .IfStmt(_, _, _) or .Return(_)
                 or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
@@ -178,7 +182,7 @@ impl NodeStore {
             .MutLet(_, t, _) -> t,
             .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _)
                 or .While(_, _) or .For(_, _, _, _, _, _)
-                or .IfStmt(_, _, _) or .Return(_)
+                or .IfStmt(_, _, _) or .Return(_) or .LetElse(_, _, _)
                 or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
         }
     }
@@ -192,9 +196,24 @@ impl NodeStore {
             .Assign(_, v) -> v,
             .ExprStmt(v) -> v,
             .Return(v) -> v,
+            .LetElse(_, v, _) -> v,
             .FnDecl(_, _, _, _) or .While(_, _)
                 or .For(_, _, _, _, _, _) or .IfStmt(_, _, _)
                 or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
+        }
+    }
+
+    /// Whether control LEAVES through this statement — the line
+    /// after it never runs. A REGISTRY spelling every arm: a new
+    /// statement kind must answer here, so a diverging one cannot
+    /// slip in as a silent `false`.
+    fn diverges(self, s: StmtId) -> bool {
+        match self.stmt(s) {
+            .Return(_) -> true,
+            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
+            .FnDecl(_, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
+            .IfStmt(_, _, _) or .LetElse(_, _, _) or
+            .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> false,
         }
     }
 
@@ -216,7 +235,7 @@ impl NodeStore {
             .EnumDecl(name, _) -> name,
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
             .FnDecl(_, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
-            .IfStmt(_, _, _) or .Return(_) or .Error -> null,
+            .IfStmt(_, _, _) or .Return(_) or .LetElse(_, _, _) or .Error -> null,
         }
     }
 

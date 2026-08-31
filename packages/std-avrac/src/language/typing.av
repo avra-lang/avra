@@ -100,6 +100,7 @@ fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
         assign_target: (s: StmtId) -> assign_target_of(t.resolution, s),
         bind_declared: (s: StmtId, ann: TypeRef) -> t.bind_declared(s, ann),
         binding_type: (s: StmtId) -> t.def_type(s),
+        record_binding: (s: StmtId, ty: TypeId) -> t.record_binding(s, ty),
         loc_of: (s: StmtId) -> t.stmt_loc(s),
     }
     for s in stmts { stmt_semantics_of(t.p.dispatch, t.p.store.stmt(s)).type_stmt(cx, s) }
@@ -509,9 +510,16 @@ impl Typer {
     /// the value's acceptance check.
     fn bind_declared(self, s: StmtId, ann: TypeRef) -> TypeId {
         let ty = self.full_type(s, ann)
+        self.record_binding(s, ty)
+        ty
+    }
+
+    /// A binding's COMPUTED type, recorded by the rule that knows it
+    /// (a `let v? =` bind holds what the subject carries) — the same
+    /// table the annotated law writes.
+    fn record_binding(self, s: StmtId, ty: TypeId) {
         mut bs = self.binding_types
         bs.set(s.index, ty)
-        ty
     }
 
     /// A call's target signature, when resolve found one.

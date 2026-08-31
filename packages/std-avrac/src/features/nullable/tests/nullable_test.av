@@ -190,6 +190,32 @@ spec "features/nullable" {
             shown("${finder()}if let a? = find_user(7) {\n    if let b? = find_user(3) {\n        a.age + b.age\n    } else {\n        a.age\n    }\n} else {\n    0\n}") == "30"
         }
     }
+    given "`let v? = e else` — bind through absence, keep going" {
+        then "a present subject binds its carried value, enclosing scope" {
+            shown("${finder()}fn age(id: int) -> int {\n    let u? = find_user(id) else {\n        return 0 - 1\n    }\n    u.age * 2\n}\nage(7)") == "60"
+        }
+        then "an absent subject leaves through the else" {
+            shown("${finder()}fn age(id: int) -> int {\n    let u? = find_user(id) else {\n        return 0 - 1\n    }\n    u.age\n}\nage(3)") == "-1"
+        }
+        then "the else is a BLOCK — it works, then leaves" {
+            shown("${finder()}fn age(id: int) -> int {\n    let u? = find_user(id) else {\n        let apology = 0 - 9\n        return apology\n    }\n    u.age\n}\nage(3)") == "-9"
+        }
+        then "a GUARANTEE subject refuses in the bind's words" {
+            refused_with("fn f(x: int) -> int {\n    let a? = x else {\n        return 0\n    }\n    a\n}\nf(1)",
+                         "`a?` asks a nullable, this is `int`")
+        }
+        then "an else that could FALL THROUGH refuses — the bind would be hollow" {
+            refused_with("fn h(v: int?) -> int {\n    let a? = v else {\n        let x = 1\n    }\n    a\n}\nh(2)",
+                         "the `else` must LEAVE — control cannot fall through to `a`")
+        }
+        then "an empty else refuses the same way" {
+            refused_with("fn h(v: int?) -> int {\n    let a? = v else {\n    }\n    a\n}\nh(2)",
+                         "the `else` must LEAVE")
+        }
+        then "the plain `let` is untouched — annotation, value, all of it" {
+            shown("let a: int = 4\nlet b = a + 1\nb") == "5"
+        }
+    }
     given "the presence test and the narrow — `!= null` proves a branch" {
         then "`!= null` and `== null` answer bools, either operand order" {
             shown("${finder()}if find_user(7) != null { 1 } else { 0 }") == "1" &&
