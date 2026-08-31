@@ -415,6 +415,16 @@ impl Typer {
         for a in t.args {
             let ty = self.full_type(s, a)
             if self.types.shape_of(ty) is .Error { return ty }
+            // A Result's sides are SLOTS of its box — the slot law
+            // (unmanaged words) judges them like any payload.
+            if t.name == "Result" && !slot_worthy(self.types.shape_of(ty)) {
+                self.speak(pointed(
+                    error_at("type.applied", self.stmt_loc(s),
+                        "a `Result` side cannot hold this yet"),
+                    "this side is `${self.types.name_of(ty)}`")
+                    with { help: "unmanaged values today — strings and nullable sides arrive with ownership analysis" })
+                return self.error_type
+            }
             parts.push(ty)
         }
         let sh: Type? = applied_shape(t.name, parts)

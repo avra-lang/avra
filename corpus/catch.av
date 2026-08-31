@@ -1,0 +1,52 @@
+// proves: `catch` — recovery at four granularities, one node. A
+// value (total, nothing bound), a catch-all bind, braces arms over
+// every variant (total), and a SELECTIVE arm whose unmatched
+// failures leave through the same exit `?` uses. The answer is
+// always the ok side; coverage only decides whether a channel is
+// needed.
+enum E {
+    boom
+    small(int)
+}
+
+fn checked(n: int) -> Result<int, E> {
+    if n == 0 {
+        fail E.boom
+    }
+    if n < 10 {
+        fail E.small(n)
+    }
+    n
+}
+
+fn value_form(n: int) -> int {
+    checked(n) catch 99
+}
+
+fn bind_form(n: int) -> int {
+    checked(n) catch e -> match e {
+        .boom -> 0 - 1
+        .small(m) -> m
+    }
+}
+
+fn arms_form(n: int) -> int {
+    checked(n) catch {
+        .boom -> 0 - 1
+        .small(m) -> m * 100
+    }
+}
+
+fn selective(n: int) -> Result<int, E> {
+    let v = checked(n) catch .small(m) -> m * 1000
+    v + 1
+}
+
+fn read_sel(n: int) -> int {
+    match selective(n) {
+        .Ok(v) -> v
+        .Err(e) -> 0 - 7
+    }
+}
+
+"v ${value_form(42)} ${value_form(0)} b ${bind_form(3)} ${bind_form(0)} a ${arms_form(42)} ${arms_form(7)} s ${read_sel(42)} ${read_sel(7)} ${read_sel(0)}"

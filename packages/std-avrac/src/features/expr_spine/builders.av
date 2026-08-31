@@ -1,6 +1,6 @@
 //! Parse-time lowering: captures -> expression nodes.
 use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops}
-use features.{LangNode, Builder, token_at, zip_defect}
+use features.{LangNode, Builder, token_at, zip_defect, aligned_binds}
 use grammar.{Token}
 
 fn build_int_lit(b: Builder) -> Result<LangNode, string> {
@@ -117,4 +117,40 @@ fn prop_link(link: string, subject: ExprId, name: string) -> Expr {
 /// so the symbol projection stays the single source.
 fn binop_of(text: string) -> BinOp? {
     all_binops().find(op_symbol(it) == text)
+}
+
+/// The one catch builder — the four surfaces are alternatives of
+/// ONE optional group, so `disjunction` parses once and the form is
+/// read off which captures arrived: braces arms (cv/cb/ca), one
+/// selective arm (sv/sb/sa), a catch-all bind (eb/ea), or a value
+/// (rv). No captures at all means no `catch` was written.
+fn build_catch(b: Builder) -> Result<LangNode, string> {
+    let l = b.expr(0)?
+    let rv = b.exprs(10)?
+    if !rv.is_empty() { return b.make_expr(Expr.Catch(l, [""], [""], [rv[0]])) }
+    let eb = b.tokens(8)?
+    if !eb.is_empty() {
+        let ea = b.expr(9)?
+        return b.make_expr(Expr.Catch(l, [""], [eb[0].text], [ea]))
+    }
+    let sv = b.tokens(5)?
+    if !sv.is_empty() {
+        let sa = b.expr(7)?
+        let sb = b.tokens(6)?
+        let bound: Token? = sb.first()
+        return b.make_expr(Expr.Catch(l, [sv[0].text], [bound?.text ?? ""], [sa]))
+    }
+    let cv = b.tokens(2)?
+    if cv.is_empty() {
+        // the keyword is the witness: `catch { }` wrote a recovery
+        // with nothing in it; NO keyword means no catch at all.
+        let ck = b.tokens(1)?
+        if ck.is_empty() { return b.wrap_expr(l) }
+        return Result.Err("a `catch` needs at least one arm")
+    }
+    let ca = b.exprs(4)?
+    let ends: int? = b.span_end()
+    if cv.length != ca.length { return Result.Err(zip_defect()) }
+    if ends == null { return Result.Err("a catch without a span") }
+    b.make_expr(Expr.Catch(l, [v.text for v in cv], aligned_binds(cv, b.tokens(3)?, ends!), ca))
 }

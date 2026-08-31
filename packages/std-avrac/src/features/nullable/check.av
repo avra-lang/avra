@@ -182,6 +182,7 @@ fn propagate_type(cx: TypeCx, v: ExprId) -> TypeId {
             with { help: "answer the absence here — `?? value`, or ask with `== null`" })
     }
     let promised = ret!
+    if cx.types.shape_of(promised) is .Error { return cx.error_type }
     if cx.types.carried(promised) != null { return held! }
     let promise = cx.types.name_of(promised)
     spoken(cx, pointed(
@@ -212,9 +213,11 @@ fn propagate_res_type(cx: TypeCx, v: ExprId, sides: ResSides) -> TypeId {
             "at the top level")
             with { help: "handle it here — `match` the `.Ok`/`.Err`" })
     }
-    let rsides: ResSides? = cx.types.res_parts(ret!)
+    let promised = ret!
+    if cx.types.shape_of(promised) is .Error { return cx.error_type }
+    let rsides: ResSides? = cx.types.res_parts(promised)
     if rsides == null {
-        let promise = cx.types.name_of(ret!)
+        let promise = cx.types.name_of(promised)
         return spoken(cx, pointed(
             error_at("type.propagate", cx.loc_of(v),
                 "`?` makes this fn answer the failure, but it promises a `${promise}`"),

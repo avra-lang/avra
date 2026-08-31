@@ -16,7 +16,7 @@ use features.expr_stmt.{ExprStmtSemantics}
 use features.stmt_spine.{HoleSemantics}
 use features.lists.{ListSemantics}
 use features.nullable.{NullableSemantics, LetElseSemantics}
-use features.results.{FailSemantics}
+use features.results.{FailSemantics, CatchSemantics}
 use features.mutation.{MutLetSemantics, AssignSemantics}
 use features.loops.{WhileSemantics, ForSemantics}
 use features.structs.{StructsSemantics, StructDeclSemantics}
@@ -51,6 +51,7 @@ export type Dispatch = {
     structs: dyn NodeSemantics,
     enums: dyn NodeSemantics,
     nullables: dyn NodeSemantics,
+    catches: dyn NodeSemantics,
     lets: dyn StmtSemantics,
     exprs: dyn StmtSemantics,
     decls: dyn StmtSemantics,
@@ -93,10 +94,11 @@ fn new_dispatch() -> Dispatch {
     let nullables: dyn NodeSemantics = NullableSemantics { }
     let letelses: dyn StmtSemantics = LetElseSemantics { }
     let fails: dyn StmtSemantics = FailSemantics { }
+    let catches: dyn NodeSemantics = CatchSemantics { }
     Dispatch {
         spine: spine, strs: strs, bools: bools, ifs: ifs, whens: whens,
         blocks: blocks, calls: calls, aggs: aggs, structs: structs, enums: enums,
-        nullables: nullables,
+        nullables: nullables, catches: catches,
         lets: lets, exprs: exprs, decls: decls, holes: holes,
         mutlets: mutlets, assigns: assigns, whiles: whiles, fors: fors,
         structdecls: structdecls, enumdecls: enumdecls,
@@ -123,6 +125,7 @@ export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
         .Match(_, _, _, _) or .VariantLit(_, _, _) -> d.enums,
         .NullLit or .Coalesce(_, _) or .Force(_) or .Propagate(_) or
         .MatchOpt(_, _, _, _) or .Chain(_, _) -> d.nullables,
+        .Catch(_, _, _, _) -> d.catches,
     }
 }
 

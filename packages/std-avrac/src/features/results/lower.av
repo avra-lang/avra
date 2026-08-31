@@ -1,0 +1,109 @@
+//! The catch lowering — the ONE meaning: a region on OKNESS whose
+//! failure arm recovers. The ok arm unwraps the payload; the
+//! failure arm binds and answers — a catch-all directly, variant
+//! arms through one switch on the error's tag, and a SELECTIVE
+//! catch's default arm exits with the SUBJECT'S OWN BOX, exactly
+//! as `?` does: the unmatched failure propagates by pointer move.
+use core.{ExprId, TypeId, Reg, Ins, ResSides}
+use features.{LowerCx, EnumSig, okness_of, payload_of, tag_of, hollow_of,
+              hole_defect, lower_defect}
+
+fn catch_reg(cx: LowerCx, e: ExprId) -> Reg {
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants
+    match cx.store.expr(e) {
+        .Catch(s, vs, bs, arms) -> catched_reg(cx, e, s, vs, bs, arms),
+        _ -> lower_defect(cx, e, hole_defect()),
+    }
+}
+
+fn catched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
+               binds: List<string>, values: List<ExprId>) -> Reg {
+    let r = cx.reg_of(subject)
+    let sides: ResSides? = cx.types.res_parts(cx.type_at(subject))
+    if sides == null { return lower_defect(cx, e, "a catch without a Result survived typing") }
+    cx.emit(Ins.IfStart(okness_of(cx, r)))
+    cx.emit(Ins.ArmEnd(payload_of(cx, r, sides!.ok)))
+    let recovered = failure_reg(cx, e, r, sides!, variants, binds, values)
+    let dst = cx.mint(e)
+    cx.emit(Ins.RegionEnd(dst, recovered))
+    dst
+}
+
+/// The failure arm's whole story. A single catch-all arm answers
+/// directly; variant arms switch on the error's tag.
+fn failure_reg(cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
+               variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
+    if variants.length == 1 && variants[0] == "" {
+        return all_arm_reg(cx, r, sides, binds[0], values[0])
+    }
+    switched_reg(cx, e, r, sides, variants, binds, values)
+}
+
+/// The catch-all arm: the whole error binds (when named), the value
+/// answers.
+fn all_arm_reg(cx: LowerCx, r: Reg, sides: ResSides, bind: string, value: ExprId) -> Reg {
+    if bind != "" { cx.bind_pattern(value, payload_of(cx, r, sides.err)) }
+    cx.reg_of(value)
+}
+
+/// Variant arms as ONE switch on the error's tag — a jump table,
+/// like any enum match. A TOTAL catch's last written arm is the
+/// switch's default; a SELECTIVE one gains a default arm that
+/// exits with the subject's own box, propagating the unmatched.
+fn switched_reg(cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
+                variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
+    let held: EnumSig? = cx.variants_of(sides.err)
+    if held == null { return lower_defect(cx, e, "catch arms without variants survived typing") }
+    let sig = held!
+    let err = payload_of(cx, r, sides.err)
+    let selective = !total(sig, variants)
+    let tags = arm_tags(sig, variants, selective)
+    cx.emit(Ins.SwitchStart(tag_of(cx, err), tags))
+    // LICENSED I4: the running yield closes each PRIOR arm's bracket — an emit fold, not a scan
+    mut answer: Reg? = null
+    // LICENSED I3: a ZIP of parallel captures; comprehensions cannot destructure enumerate
+    for (j, v) in values.enumerate() {
+        if answer != null { cx.emit(Ins.ArmEnd(answer!)) }
+        if binds[j] != "" { bind_payload(cx, err, sig, variants[j], v) }
+        answer = cx.reg_of(v)
+    }
+    if selective {
+        cx.emit(Ins.ArmEnd(answer!))
+        cx.emit(Ins.FnExit(r))
+        answer = hollow_of(cx, cx.type_at(e))
+    }
+    let dst = cx.mint(e)
+    cx.emit(Ins.RegionEnd(dst, answer!))
+    dst
+}
+
+/// One arm's bind: the payload read INSIDE the arm's bracket.
+fn bind_payload(cx: LowerCx, err: Reg, sig: EnumSig, vn: string, value: ExprId) {
+    let carried: TypeId? = sig.payload_of(vn)
+    if carried == null { return }
+    cx.bind_pattern(value, payload_of(cx, err, carried!))
+}
+
+/// Every variant named — the switch needs no propagating default.
+fn total(sig: EnumSig, variants: List<string>) -> bool {
+    sig.names.all(named_arm(variants, it))
+}
+
+/// The pronoun cannot ride a nested method call — the wrapper can.
+fn named_arm(variants: List<string>, name: string) -> bool {
+    variants.contains(name)
+}
+
+/// The selector values, arm order. A total switch's LAST arm is the
+/// default (no case); a selective switch cases EVERY written arm,
+/// leaving the default to the propagating exit.
+fn arm_tags(sig: EnumSig, variants: List<string>, selective: bool) -> List<int> {
+    let upto = if selective { variants.length } else { variants.length - 1 }
+    mut tags: List<int> = []
+    // LICENSED I3: the tag lookup needs the window; comprehensions cannot early-exit
+    for j in 0..upto {
+        let tag: int? = sig.tag_of(variants[j])
+        tags.push(tag ?? 0)
+    }
+    tags
+}

@@ -111,6 +111,13 @@ export enum Expr {
     /// value unwraps; an absent one makes the ENCLOSING fn answer
     /// `null` right here, so the fn must promise a nullable.
     Propagate(value: ExprId)
+    /// `subject catch <recovery>` — recover from a Result's
+    /// failure. Arms mirror Match's shape: `variants[j]` names the
+    /// error variant an arm takes ("" is a catch-all arm),
+    /// `binds[j]` what it receives ("" is nothing). COVERAGE
+    /// decides the type: a total catch recovers to the ok side; a
+    /// selective one stays the Result, the unmatched propagating.
+    Catch(subject: ExprId, variants: List<string>, binds: List<string>, values: List<ExprId>)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
 }
@@ -305,6 +312,11 @@ impl NodeStore {
                 fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
             .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
             .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),
+            .Catch(subject, variants, binds, values) ->
+                fp(40, flatten([[self.expr_fingerprint(subject)],
+                                [fp_str(v) for v in variants],
+                                [fp_str(bn) for bn in binds],
+                                self.expr_fps(values)])),
             .MatchOpt(subject, bind, present, absent) ->
                 fp(33, [self.expr_fingerprint(subject), fp_str(bind),
                         self.expr_fingerprint(present), self.expr_fingerprint(absent)]),

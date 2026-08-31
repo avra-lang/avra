@@ -3,7 +3,7 @@
 //! values ZIP (both are written every time); a declaration's
 //! payloads cannot, because they are optional — see below.
 use core.{Expr, ExprId, Stmt, Param, TypeRef, some_list}
-use features.{LangNode, Builder, expr_id_at, zip_defect}
+use features.{LangNode, Builder, expr_id_at, zip_defect, aligned_binds, window_end}
 use grammar.{Token}
 
 /// A variant's payload is POSITIONAL (the spec's style rule: the
@@ -31,10 +31,7 @@ fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
 /// anchor's window runs to the next anchor, or to the construct's
 /// end. WHAT is found in the window differs by capture kind; the
 /// window itself is one rule.
-fn window_end(anchors: List<Token>, j: int, ends: int) -> int {
-    if j + 1 < anchors.length { return anchors[j + 1].span.lo }
-    ends
-}
+
 
 /// Each variant's optional payload type — absence IS a unit variant.
 fn aligned_types(anchors: List<Token>, optional: List<TypeRef>, ends: int) -> List<TypeRef?> {
@@ -46,15 +43,7 @@ fn aligned_types(anchors: List<Token>, optional: List<TypeRef>, ends: int) -> Li
     found
 }
 
-/// Each arm's optional bind — "" IS an arm that names nothing.
-fn aligned_binds(anchors: List<Token>, optional: List<Token>, ends: int) -> List<string> {
-    mut found: List<string> = []
-    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
-    for (j, a) in anchors.enumerate() {
-        found.push(token_between(optional, a.span.lo, window_end(anchors, j, ends)))
-    }
-    found
-}
+
 
 /// The one type written between two anchors, or absent.
 fn type_between(types: List<TypeRef>, after: int, before: int) -> TypeRef? {
@@ -67,12 +56,7 @@ fn started_within(t: TypeRef, after: int, before: int) -> bool {
     lo! > after && lo! < before
 }
 
-/// The one optional token written between two anchors, or "".
-fn token_between(tokens: List<Token>, after: int, before: int) -> string {
-    let hit: Token? = tokens.find(it.span.lo > after && it.span.lo < before)
-    if hit == null { return "" }
-    hit!.text
-}
+
 
 /// The argument is OPTIONAL in the grammar so the parse stays
 /// generous and typing can say precisely what is missing.

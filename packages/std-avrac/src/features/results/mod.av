@@ -4,8 +4,11 @@
 //! match whole. This feature owns the PRODUCE side: `fail e` raises
 //! (a diverging statement, `return`'s twin on the failure channel),
 //! and the auto-Ok lift wraps a bare success at the one widening
-//! edge (checks.av, `res_accepts`). The CONSUME side is `?` — the
-//! unified operator, in `nullable` with its family — and `match`.
+//! edge (checks.av, `res_accepts`). The CONSUME side: `?` (the
+//! unified operator, in `nullable` with its family), `match`
+//! (free, through the variants bridge), and `catch` — whose parse
+//! rides the ladder's loosest layer and whose meaning lives here,
+//! in check.av and lower.av.
 use features.{LanguageFeature, BuilderRow}
 use diagnostics.{DiagCode}
 
@@ -17,10 +20,11 @@ export fn results() -> LanguageFeature {
     let codes = table<DiagCode> {
         kind          | id      | summary
         "type.fail"   | "F2028" | "`fail` raises on a Result fn's failure channel"
+        "type.catch"  | "F2029" | "`catch` recovers a Result, arm by arm"
     }
     component LanguageFeature f {
         name = "results"
-        docs = "`Result<T, E>` answers or fails; `fail e` raises, a bare success wraps itself, `?` passes the failure on, and `match` asks `.Ok`/`.Err`."
+        docs = "`Result<T, E>` answers or fails; `fail e` raises, a bare success wraps itself, `?` passes the failure on, `catch` recovers (a value, a bind, or arms — total or selective), and `match` asks `.Ok`/`.Err`."
         gram = """
 stmt = "fail" v:expression BREAK @recover(sync_to: "BREAK") -> fail_stmt(v)
 """

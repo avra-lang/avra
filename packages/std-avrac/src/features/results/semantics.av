@@ -1,0 +1,35 @@
+//! The catch node's semantics: dispatch only. Typing lives in
+//! check.av, lowering in lower.av. The arms are hidden kids — each
+//! types and lowers under its own bind, inside its own bracket.
+use core.{Expr, ExprId, TypeId, Reg}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+
+export type CatchSemantics = { }
+
+impl NodeSemantics for CatchSemantics {
+    fn kids(self, e: Expr) -> List<ExprId> {
+        // LICENSED I22: a feature cannot enumerate OTHER features' variants
+        match e {
+            .Catch(subject, _, _, _) -> [subject],
+            _ -> [],
+        }
+    }
+
+    fn resolve(self, cx: ResolveCx, e: ExprId) {
+        match cx.store.expr(e) {
+            .Catch(_, _, binds, values) -> {
+                // LICENSED I3: a ZIP of parallel captures; comprehensions cannot destructure enumerate
+                for (j, v) in values.enumerate() { cx.arm_scope(binds[j], v) }
+            }
+            _ -> nothing(),
+        }
+    }
+
+    fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
+        catch_type(cx, e)
+    }
+
+    fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
+        catch_reg(cx, e)
+    }
+}

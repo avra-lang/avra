@@ -103,11 +103,23 @@ text-as-projection after self-host, the service store at Era V.
         FnExit); and `let v? = e else { }` (slice N4 — the
         divergence law arrived with the `diverges` registry).
         `while let` stays a recorded trigger (wants loops polish)
-    10. Result & `?` — R0+R1 LANDED 2026-08-31 (the spine:
-        Type.Res, fail, auto-Ok, `?`, match-for-free, divergence-
-        aware blocks); REMAINS: R2 `catch`, then the recorded
-        R4 triggers (unions, topology, handlers)
+    10. [x] Result & `?` — the ERROR SPINE COMPLETE 2026-08-31
+        (R0 slots + R1 spine + R2 catch: Type.Res, fail, auto-Ok,
+        `?`, match-for-free, divergence-aware blocks, catch at
+        four granularities). The R4 triggers (unions, topology,
+        handlers, `? context`) wait on their enabling rungs
     11. ▲ generics — mono through OUR pipeline (List<T> becomes real)
+    11.5 ▲ THE OWNERSHIP MILESTONE — scheduled HERE deliberately
+        (recorded 2026-08-31): retain-at-pack + aggregate release
+        teaches the memory pass the boxes, which unlocks AT ONCE:
+        strings in slots (`Result<T, string>` — the SELF-HOST
+        critical path: the builders' own shape), errdefer, list
+        elements widening, releasing what today leaks by design,
+        and the Result register TRIPLE (never-allocates extends to
+        the whole error path). Every swap lands behind values.av's
+        verbs with the corpus differential as proof — the seams
+        were built for exactly this. P4 is NOT met until then; do
+        not half-optimize representations before it.
     12. ▲ traits & dyn — dispatch, cross-module impls
     13. ▲ closures & fn values — capture meets the memory ABI
     14. maps, components & tables — the self-describing surface
@@ -2613,13 +2625,59 @@ THE SLICES:
        .Err), 200-iteration owned churn through failure exits,
        fail inside let-else, mut Result cells, Result<User, E>
        riding R0's slots.
-  (R2) `catch` — the epic §5.0 grammar read off the operand: value
-       form, `{ it }` block, `e ->` arm, selective (propagates the
-       rest), total (exhaustive, F1210), left-assoc chaining. One
-       postfix operator, binding looser than `?`.
+  (R2) [x] `catch` — LANDED 2026-08-31, one node, four surfaces:
+       a VALUE (`catch 99`), a catch-all BIND (`catch e ->`),
+       braces ARMS (total when every variant answers), and a
+       SELECTIVE arm whose unmatched failures leave through the
+       SAME exit `?` uses (the §5.10 rule landed exactly: the
+       answer is always the ok side; coverage only decides whether
+       a channel is needed). PARSE: the LOOSEST ladder layer, in
+       the spine (the `??` precedent) — ONE branch, the four
+       surfaces as alternatives of one optional group (the
+       enum-decl group-alternation precedent), so `disjunction`
+       parses once; a captured `catch` keyword is the WITNESS that
+       separates `catch { }` (refused: needs an arm) from no catch
+       at all. WHAT THE BUILD TAUGHT: (1) four competing
+       expression branches re-parse and ORPHAN arena nodes — the
+       assembly's coherence checker refused the shadowing outright
+       (a defense that WORKED); (2) `b.tokens(i)?.method()` is the
+       recorded bs2 poison, twice; (3) `Result<int?, E>` broke the
+       verifier — a Res SIDE is a slot of its box, so the slot law
+       now judges both sides at the surface (nullable and string
+       sides wait for ownership, consistently); (4) Error-shaped
+       enclosing rets now ABSORB in fail/`?`/catch (one mistake,
+       one message). Aligned_binds moved to the shared authoring
+       surface (two features needed the span-window law). CHAINS
+       v1: value-form nests right (`a catch b catch c` recovers
+       with `b catch c` — lazily evaluated, the or_else meaning);
+       arm-form chains take parens; flat left-assoc chaining is
+       recorded with unions. `it`-blocks wait for closures' pronoun
+       (rung 13). RT14: 22 programs, all clean — 200-iteration
+       churn through selective recovery, `?` inside arms (the
+       fallback chain's spelling), catch feeding let-else.
+       COMPOUND LIFT recorded: a bare `null` tail into
+       `Result<T?, E>` would need null -> T? -> Ok — explicit for
+       now, revisit with unions.
   (R3) `.Ok(v)`/`.Err(e)` in EXPRESSION position, `is`-patterns
        over Res, `? context "…"`.
-  (R4) recorded triggers, each on its enabling rung: union types +
+  (R4) recorded triggers, each on its enabling rung — PLUS, from
+       the 2026-08-31 debts review:
+       - AT RUNG 11, RE-MEASURE: does `Type.Res` fold into the
+         general instantiation machinery (a built-in generic enum
+         declaration)? Instantiation is already pure interning —
+         nothing multiplies per Result type — the question is only
+         whether THREE hard-wired constructors (List, Opt, Res)
+         become instances of one mechanism. The surface (`?`,
+         `fail`, auto-Ok, `catch`) stays language-level either way.
+       - a true NEVER type replaces "a diverging block answers the
+         fn's promise" when it earns its keep (the wording wart in
+         join refusals is the only cost today; sound, codegen-safe).
+       - the variants bridge lives in TWO files (typing.variants_of,
+         lower.variants_ty — one match each); the third copy forces
+         a shared home.
+       - flat left-assoc `catch` chains (arm forms) ride the unions
+         design; value-form chains already nest usefully.
+       Original list, each on its enabling rung: union types +
        inferred unions + widening (own design doc first); managed
        payloads + the register triple (ownership milestone);
        errdefer (ownership milestone); resumable handlers /

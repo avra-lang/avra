@@ -3,7 +3,7 @@
 //! err side accepts; lowering wraps the value as the built-in
 //! enum's `.Err` and exits — `FnExit` settles every open scope's
 //! debts at the site, exactly as `return` does.
-use core.{StmtId, ExprId, TypeId, Reg, Ins, ResSides}
+use core.{StmtId, ExprId, Type, TypeId, Reg, Ins, ResSides}
 use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtLowerCx,
               accepts, this_is, failed}
 use diagnostics.{error_at, pointed}
@@ -39,9 +39,11 @@ fn check_fail(cx: StmtTypeCx, s: StmtId) {
             with { help: "at the top level there is no failure channel" })
         return
     }
-    let sides: ResSides? = cx.expr.types.res_parts(ret!)
+    let promised = ret!
+    if cx.expr.types.shape_of(promised) is .Error { return }
+    let sides: ResSides? = cx.expr.types.res_parts(promised)
     if sides == null {
-        let promise = cx.expr.types.name_of(ret!)
+        let promise = cx.expr.types.name_of(promised)
         cx.expr.emit(pointed(
             error_at("type.fail", cx.loc_of(s),
                 "`fail` raises on a `Result`'s failure channel, and this fn promises a `${promise}`"),

@@ -159,3 +159,28 @@ export fn list_at(args: List<Captured<LangNode>>, i: int) -> List<Captured<LangN
         .Node(n) -> [Captured.Node(n)],
     }
 }
+
+/// The window an arm's captures live in: from this anchor to the
+/// next (or the whole span's end) — how PER-ARM optional captures
+/// re-align with their arms after a flat repeated parse.
+export fn window_end(anchors: List<Token>, j: int, ends: int) -> int {
+    if j + 1 < anchors.length { return anchors[j + 1].span.lo }
+    ends
+}
+
+/// Each arm's optional bind — "" IS an arm that names nothing.
+export fn aligned_binds(anchors: List<Token>, optional: List<Token>, ends: int) -> List<string> {
+    mut found: List<string> = []
+    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
+    for (j, a) in anchors.enumerate() {
+        found.push(token_between(optional, a.span.lo, window_end(anchors, j, ends)))
+    }
+    found
+}
+
+/// The one optional token written between two anchors, or "".
+fn token_between(tokens: List<Token>, after: int, before: int) -> string {
+    let hit: Token? = tokens.find(it.span.lo > after && it.span.lo < before)
+    if hit == null { return "" }
+    hit!.text
+}
