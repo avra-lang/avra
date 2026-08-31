@@ -2724,6 +2724,22 @@ THE ARCHITECTURE (recommended): abstract bodies, substituted views.
    Var machinery + `applied` growing user names (arity from the
    declaration); instantiation is interning (the List/Opt/Res
    precedent — R4's fold re-measure lands here naturally).
+SHARPENINGS (2026-08-31, the measure-twice pass):
+- THE `f<int>(x)` AMBIGUITY DISSOLVES FREE: comparison refuses
+  chains (`( op … )?` — at most one), so `a<b>(c)` has NO legal
+  comparison reading — a pinned-call primary branch claims it
+  outright, stealing nothing. The no-chain law pays twice.
+- THE VIEW COVERS THE FACT TABLES: widens/narrows/asks hold
+  ABSTRACT types (T widening into T?), so substitution sits at the
+  Lower level and every fact read passes through it — not only
+  type_at/enclosing_ret.
+- SUBSTITUTIONS COMPOSE: an inner generic call's recorded subst is
+  in the OUTER's Vars; lowering under map m applies m ∘ inner.
+- MANGLING: `name$` + interned type ids (uncollidable, stable per
+  run); ir_text pretty-prints via name_of.
+- POLYMORPHIC RECURSION (f<T> calling f<List<T>>) diverges the
+  worklist: v1 refuses at a specialization-count guard with a
+  named message.
 WHY NOT AST-CLONING MONO (considered, refused): cloning specialized
 subtrees into the store re-types every clone, bloats the arenas the
 fingerprints exist to keep honest, and forces typing to iterate;
