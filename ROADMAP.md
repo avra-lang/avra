@@ -2800,8 +2800,38 @@ THE SLICES:
        Display rides rung 12), match/`??` mixing T with concretes.
        Arg-order dependence of inference recorded as LAW (direct
        arguments, left to right; pins lift it).
-  (G2) generic TYPE declarations (`type Pair<A, B>`), fields of
-       Var type, construction inference; the Res fold re-measure.
+  (G2) generic TYPE declarations — DESIGNED 2026-08-31, building
+       next. `type Pair<A, B> = { first: A, second: B }` and
+       `enum Opt2<T> { some(T) none }`.
+       THE SHAPE: `Type.App(decl, args)` joins the registry — a
+       generic declaration INSTANTIATED, nominal by decl + interned
+       by args (the List/Opt/Res precedent generalized to USER
+       names). The declared field/variant tables keep their Vars
+       (the SAME Var machinery — a type decl's tparams intern
+       Var(decl, ordinal, name)); `fields_of(App)`/`variants_of(App)`
+       answer the declared sig SUBSTITUTED — one projection, so
+       member reads, match, exhaustiveness, and construction all
+       ride existing machinery. `applied_arity` learns user names
+       from the declarations (the built-ins stay hard-wired until
+       the fold re-measure).
+       CONSTRUCTION: `Pair { first: 1, second: true }` infers by
+       unifying declared field types against value types (the
+       call-site law reused verbatim — same unify, same
+       fully-bound fallback, same re-judged slot laws);
+       `Pair<int, bool> { ... }` pins. Enum variants infer from
+       the payload (`Opt2.some(5)`); unit variants need the pin
+       (`Opt2<int>.none` — surface TBD at build, recorded).
+       THE RES-FOLD RE-MEASURE lands here: once App exists,
+       Result COULD become a built-in generic enum declaration —
+       re-measure whether Type.Res folds into App or stays (the
+       six-consumer arms and res_parts weigh against two shapes
+       for one concept).
+       LAWS: an App is a BOX (ptr_shape true); its slots re-judge
+       per instantiation exactly like calls (unlawful_side grows
+       App); recursion through App (a generic tree!) rides the box.
+       REFUSED FOR NOW: generic type aliases, nested tparam
+       shadowing (a type's T inside a fn's T scope — outer wins,
+       red-team pins).
   (G3) the LIST vocabulary the compiler wants: push/find/any/all/
        first/last/contains/index_of as generic fns (std or
        intrinsic — decide by measuring what mono makes free), plus
