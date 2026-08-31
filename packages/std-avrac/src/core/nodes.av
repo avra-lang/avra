@@ -173,6 +173,15 @@ export enum Stmt {
     FnDecl(name: string, params: List<Param>, ret: TypeRef, body: ExprId)
     /// Condition re-evaluated each turn; the body is a scope.
     While(cond: ExprId, stmts: List<StmtId>)
+    /// `if c { … }` (optionally `else { … }`) at STATEMENT
+    /// position: the branches are statement lists and the whole
+    /// carries no value — the guard idiom's home. An absent else
+    /// IS the empty list.
+    IfStmt(cond: ExprId, then_stmts: List<StmtId>, else_stmts: List<StmtId>)
+    /// `return v` — the enclosing fn answers NOW. Typing accepts
+    /// `v` against the declared return; lowering exits with every
+    /// open scope's debts settled at the site.
+    Return(value: ExprId)
     /// `for name in from..to` — binds `name` over the body. `cond`
     /// and `step` are parse-time desugar (`name < to`, `name + 1`):
     /// real nodes every pass walks, so the loop is mut+while in
@@ -304,6 +313,11 @@ impl NodeStore {
             .Assign(name, value) -> fp(16, [fp_str(name), self.expr_fingerprint(value)]),
             .While(cond, stmts) ->
                 fp(17, [self.expr_fingerprint(cond)].concat(self.stmt_fps(stmts))),
+            .IfStmt(cond, then_stmts, else_stmts) ->
+                fp(35, flatten([[self.expr_fingerprint(cond)],
+                                self.stmt_fps(then_stmts), [0],
+                                self.stmt_fps(else_stmts)])),
+            .Return(value) -> fp(36, [self.expr_fingerprint(value)]),
             // For's cond and step derive from name/from/to — the
             // identity needs only the sources.
             .For(name, from, to, _, _, stmts) ->

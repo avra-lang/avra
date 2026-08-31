@@ -2,9 +2,35 @@
 // params, returns. Every program here was written to BREAK the
 // feature, not to use it.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown, refusals}
+use @std.avrac.testing.{refused_with, shown, refusals}
 
 spec "features/fns (adversarial)" {
+    given "`return` under attack — depths, tails, boundaries" {
+        then "TWO loop depths unwind at once" {
+            shown("fn f(n: int) -> int {\n    mut i = 0\n    while i < n {\n        mut j = 0\n        while j < n {\n            if i * j == 6 {\n                return i * 10 + j\n            }\n            j = j + 1\n        }\n        i = i + 1\n    }\n    0 - 1\n}\nf(5) + f(2)") == "22"
+        }
+        then "the tail after a certain return is UNREACHABLE but still typed" {
+            shown("fn f() -> int {\n    return 1\n    2\n}\nf()") == "1" &&
+                refused_with("fn f() -> int {\n    return 1\n    \"tail\"\n}\nf()",
+                             "the body answers `string` but `f` declares `int`")
+        }
+        then "the guard-then-bang reads straight: absence answered, then insisted" {
+            shown("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
+                  "fn f(v: int?) -> int {\n    if v == null {\n        return 0 - 1\n    }\n    v!\n}\nf(half(4)) + f(half(3))") == "1"
+        }
+        then "a return at the TOP LEVEL is told where answers live" {
+            refused_with("mut i = 0\nwhile i < 3 {\n    return 5\n    i = i + 1\n}\ni",
+                         "a `return` answers a fn, and there is none enclosing")
+        }
+        then "RECORDED TRIGGER: a return cannot END an expression block yet" {
+            // `if let v? = e { v } else { return d }` — the let-else
+            // shape — waits on divergence-aware blocks (the block
+            // tail law would need to accept a diverging last stmt).
+            refused_with("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
+                         "fn f(id: int) -> int {\n    let got = if let v? = half(id) {\n        v\n    } else {\n        return 0 - 1\n    }\n    got * 10\n}\nf(8)",
+                         "a block ends with an expression")
+        }
+    }
     given "the parameter list, at every size" {
         then "zero parameters answer" {
             shown("fn f() -> int { 7 }\nf()") == "7"

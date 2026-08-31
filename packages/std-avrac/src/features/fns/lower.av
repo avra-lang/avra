@@ -14,3 +14,14 @@ fn call_lower(cx: LowerCx, e: ExprId) -> Reg {
         _ -> cx.result(e),
     }
 }
+
+/// `return v`: the value's register exits the fn HERE — the memory
+/// pass settles every open scope's debts before the exit. Answers
+/// no statement value: the driver's last-value tracking never sees
+/// a return.
+export fn lower_return(cx: StmtLowerCx, s: StmtId) -> Reg? {
+    let v: Reg? = cx.lower_value(s)
+    if v == null { return null }
+    cx.emit(Ins.FnExit(v!))
+    null
+}

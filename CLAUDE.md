@@ -162,6 +162,14 @@ registry is the idiom engine's spec, written by dogfooding.
   but home: every feature cascades "references undefined rule
   `expression`" / "builder never called" defects, and the offending
   fragment is never named. (Probed landing `if let`.)
+- Grammar authoring: a NEW branch embedding a stmt-list star
+  (`( s:stmt | BREAK )*`) must not admit SINGLE-LINE expression
+  arms: the floor's @recover COMMITS inside them (parsing `n`
+  before `}` fires expected-BREAK recovery, and the sync eats the
+  brace). Demand an opening BREAK (`"{" BREAK ( s:stmt … )`) so
+  single-line bodies fail cleanly into the expression form —
+  probed landing the elseless statement-`if`, which broke 49
+  tests before the BREAK anchored it.
 - Grammar authoring: @recover converts a branch's break into a hole
   HIT, so it belongs only on branches anchored by a keyword no other
   branch can start with. A NAME-headed branch (assignment) must stay

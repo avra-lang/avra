@@ -16,7 +16,7 @@ export fn check_fn(cx: StmtTypeCx, s: StmtId) {
 
 fn checked_fn(cx: StmtTypeCx, s: StmtId, fname: string, fret: TypeRef, body: ExprId) {
     let sig: FnSig? = cx.sig_of(s)
-    cx.walk_under(sig?.params ?? [], body)
+    cx.walk_under(sig?.params ?? [], sig?.ret ?? cx.expr.error_type, body)
     let want: TypeId = sig?.ret ?? cx.expr.error_type
     let got: TypeId = cx.expr.type_at(body)
     if !accepts(cx.expr, body, want) {
@@ -57,4 +57,28 @@ fn checked_call(cx: TypeCx, e: ExprId, callee: string, args: List<ExprId>, s: Fn
         }
     }
     s.ret
+}
+
+/// `return v` — legal only inside a fn, and `v` must be ACCEPTED
+/// by the declared answer (widening recorded, like every slot).
+export fn check_return(cx: StmtTypeCx, s: StmtId) {
+    let held: ExprId? = cx.store.stmt_value(s)
+    if held == null { return }
+    let v = held!
+    cx.walk(v)
+    let want: TypeId? = cx.enclosing_ret()
+    if want == null {
+        cx.expr.emit(pointed(
+            error_at("type.return", cx.loc_of(s), "a `return` answers a fn, and there is none enclosing"),
+            "returned here")
+            with { help: "at the top level the last statement IS the answer" })
+        return
+    }
+    if cx.expr.shape_at(v) is .Error { return }
+    if accepts(cx.expr, v, want!) { return }
+    let gn = cx.expr.name_at(v)
+    cx.expr.emit(pointed(
+        error_at("type.return", cx.loc_of(s),
+            "`return` answers `${cx.expr.types.name_of(want!)}`, this is `${gn}`"),
+        this_is(gn)))
 }

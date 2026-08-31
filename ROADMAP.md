@@ -2502,10 +2502,34 @@ recommended order was accepted as the working sequence):
    recorded: `v!.field` fails inside a match ARM (fine in fn
    bodies) — hoist the predicate. Corpus: annotated_let.av,
    eval == native. 764/764, 31 corpus.
-2. `return` — no early exit exists; blocks let-else, guard idioms,
-   and the strongest structural prior in training data. Deferred
-   from rung 2/3; PROMOTED to its own designed arc (divergence
-   typing + scope-unwind releases are real design, not a quickie).
+2. [x] `return` — LANDED 2026-08-30, with the elseless MULTILINE
+   statement-`if` as its companion (the guard idiom's home).
+   `FnExit(gives)` joined the vocabulary (six consumers paid): the
+   backend rets IN PLACE and opens a dead continuation; the memory
+   pass settles EVERY open scope's debts at the site without
+   popping (`exit_releases`); the interpreter answers and jumps.
+   `return null` widens into a declared nullable; the TAIL value
+   stays the law (return is for early exits — full divergence
+   typing deferred). Capability cost under the diet: ONE Typer
+   field (`fn_ret` + its bracket), ONE StmtTypeCx verb
+   (`enclosing_ret`), walk_under threading the declared answer,
+   and mint_shape joining StmtLowerCx — everything else is
+   feature-dir rule bodies.
+   WHAT THE BUILD TAUGHT, the hard way: the first statement-if
+   STOLE 49 value-position ifs, and the fix is a design sentence —
+   ELSELESS keeps the two if-forms unambiguous, and an OPENING
+   BREAK keeps single-line arms out of the statement parse
+   (the floor's @recover commits inside single-line stmt-list
+   arms — now a recorded grammar-authoring law). The old
+   missing-else parity debt is HALF PAID: elseless plain `if` is
+   now legal; `if let` still demands its else.
+   RED TEAM: 16 programs — two-deep unwinds, for-loops, nested
+   guards, unreachable-tail typing, 200-iteration two-scope owned
+   churn (eval == native IS the exit-release proof), exact refusal
+   counts. TRIGGERS: divergence-aware blocks (a diverging last
+   stmt should satisfy the block tail — the LAST piece of
+   let-else); statement-if WITH else (needs a disambiguated
+   form); `?` propagation now unblocked (slice d rides FnExit).
 3. [x] `!= null` presence tests + effectively-final narrowing —
    LANDED 2026-08-30, the P1 sequence's third promotion. The eq
    law gained THE PRESENCE TEST (a nullable beside `null` answers

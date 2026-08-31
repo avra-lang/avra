@@ -7,10 +7,10 @@ use features.{LangNode, NodeSemantics, StmtSemantics, dispatch, list_at, stmt_id
 use features.expr_spine.{SpineSemantics}
 use features.str_lit.{StrSemantics}
 use features.bool_lit.{BoolSemantics}
-use features.if_expr.{IfSemantics}
+use features.if_expr.{IfSemantics, IfStmtSemantics}
 use features.when_expr.{WhenSemantics}
 use features.block.{BlockSemantics}
-use features.fns.{FnsSemantics, FnStmtSemantics}
+use features.fns.{FnsSemantics, FnStmtSemantics, ReturnSemantics}
 use features.let_stmt.{LetStmtSemantics}
 use features.expr_stmt.{ExprStmtSemantics}
 use features.stmt_spine.{HoleSemantics}
@@ -60,6 +60,8 @@ export type Dispatch = {
     fors: dyn StmtSemantics,
     structdecls: dyn StmtSemantics,
     enumdecls: dyn StmtSemantics,
+    ifstmts: dyn StmtSemantics,
+    returns: dyn StmtSemantics,
 }
 
 fn new_dispatch() -> Dispatch {
@@ -83,6 +85,8 @@ fn new_dispatch() -> Dispatch {
     let structdecls: dyn StmtSemantics = StructDeclSemantics { }
     let enums: dyn NodeSemantics = EnumsSemantics { }
     let enumdecls: dyn StmtSemantics = EnumDeclSemantics { }
+    let ifstmts: dyn StmtSemantics = IfStmtSemantics { }
+    let returns: dyn StmtSemantics = ReturnSemantics { }
     let nullables: dyn NodeSemantics = NullableSemantics { }
     Dispatch {
         spine: spine, strs: strs, bools: bools, ifs: ifs, whens: whens,
@@ -91,6 +95,7 @@ fn new_dispatch() -> Dispatch {
         lets: lets, exprs: exprs, decls: decls, holes: holes,
         mutlets: mutlets, assigns: assigns, whiles: whiles, fors: fors,
         structdecls: structdecls, enumdecls: enumdecls,
+        ifstmts: ifstmts, returns: returns,
     }
 }
 
@@ -130,6 +135,8 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
         .For(_, _, _, _, _, _) -> d.fors,
         .StructDecl(_, _) -> d.structdecls,
         .EnumDecl(_, _) -> d.enumdecls,
+        .IfStmt(_, _, _) -> d.ifstmts,
+        .Return(_) -> d.returns,
         .Error -> d.holes,
     }
 }
@@ -158,7 +165,8 @@ impl NodeStore {
             .MutLet(name, _, _) -> name,
             .For(name, _, _, _, _, _) -> name,
             .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _)
-                or .While(_, _) or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
+                or .While(_, _) or .IfStmt(_, _, _) or .Return(_)
+                or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
         }
     }
 
@@ -170,6 +178,7 @@ impl NodeStore {
             .MutLet(_, t, _) -> t,
             .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _)
                 or .While(_, _) or .For(_, _, _, _, _, _)
+                or .IfStmt(_, _, _) or .Return(_)
                 or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
         }
     }
@@ -182,9 +191,10 @@ impl NodeStore {
             .MutLet(_, _, v) -> v,
             .Assign(_, v) -> v,
             .ExprStmt(v) -> v,
+            .Return(v) -> v,
             .FnDecl(_, _, _, _) or .While(_, _)
-                or .For(_, _, _, _, _, _) or .StructDecl(_, _)
-                or .EnumDecl(_, _) or .Error -> null,
+                or .For(_, _, _, _, _, _) or .IfStmt(_, _, _)
+                or .StructDecl(_, _) or .EnumDecl(_, _) or .Error -> null,
         }
     }
 
@@ -206,7 +216,7 @@ impl NodeStore {
             .EnumDecl(name, _) -> name,
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
             .FnDecl(_, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
-            .Error -> null,
+            .IfStmt(_, _, _) or .Return(_) or .Error -> null,
         }
     }
 

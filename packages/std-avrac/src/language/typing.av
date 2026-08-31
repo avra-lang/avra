@@ -52,6 +52,7 @@ type Typer = {
     binding_types: List<TypeId?>,
     narrow_defs: List<NarrowFrame>,
     narrow_params: List<NarrowFrame>,
+    fn_ret: List<TypeId>,
     decls: List<DeclSig?>,
     diagnostics: List<Diag>,
 }
@@ -69,7 +70,7 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         asks: filled<Asked?>(p.store.exprs.count(), null),
         pattern_types: filled<TypeId?>(p.store.exprs.count(), null),
         binding_types: filled<TypeId?>(p.store.stmts.count(), null),
-        narrow_defs: [], narrow_params: [],
+        narrow_defs: [], narrow_params: [], fn_ret: [],
         decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
@@ -93,15 +94,26 @@ fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
         store: t.p.store,
         expr: ecx,
         walk: (v: ExprId) -> type_walk(t, param_types, v),
-        walk_under: (pts: List<TypeId>, body: ExprId) -> type_walk(t, pts, body),
+        walk_under: (pts: List<TypeId>, ret: TypeId, body: ExprId) -> walk_fn_body(t, pts, ret, body),
         type_stmts: (body: List<StmtId>) -> type_stmts(t, param_types, body),
         sig_of: (s: StmtId) -> fn_sig_of(t.decls[s.index]),
         assign_target: (s: StmtId) -> assign_target_of(t.resolution, s),
         bind_declared: (s: StmtId, ann: TypeRef) -> t.bind_declared(s, ann),
         binding_type: (s: StmtId) -> t.def_type(s),
+        enclosing_ret: () -> t.fn_ret.last(),
         loc_of: (s: StmtId) -> t.stmt_loc(s),
     }
     for s in stmts { stmt_semantics_of(t.p.dispatch, t.p.store.stmt(s)).type_stmt(cx, s) }
+}
+
+/// A fn BODY's walk: the declared answer is in scope for exactly
+/// the walk, so `return` statements can be judged where they stand.
+fn walk_fn_body(t: Typer, param_types: List<TypeId>, ret: TypeId, body: ExprId) {
+    // LICENSED I15: this IS the bracket
+    mut rs = t.fn_ret
+    rs.push(ret)
+    type_walk(t, param_types, body)
+    let _ = rs.pop()
 }
 
 /// One subtree's types, under the given param types.

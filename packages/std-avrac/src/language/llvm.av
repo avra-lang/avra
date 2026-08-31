@@ -183,6 +183,7 @@ fn emit_ins(em: Emit, i: Ins) {
         .Release(r) -> released(em, r),
         .Retain(r) -> retained(em, r),
         .RetVal(r) -> ret_value(em, r),
+        .FnExit(r) -> fn_exit(em, r),
         .Ret(code) -> ret_code(em, code),
         .IfStart(c) -> if_start(em, c),
         .SwitchStart(sel, cases) -> switch_start(em, sel, cases),
@@ -310,6 +311,15 @@ fn retained(em: Emit, r: Reg) {
 
 fn ret_value(em: Emit, r: Reg) {
     let _ = avra_llvm_build_ret(em.b, em.vals[r.index])
+}
+
+/// An early return: ret RIGHT HERE, then open a dead block so the
+/// arm's unreachable tail (its yield, the region's br) lands
+/// somewhere harmless.
+fn fn_exit(em: Emit, r: Reg) {
+    let _ = avra_llvm_build_ret(em.b, em.vals[r.index])
+    let dead = avra_llvm_append_basic_block(em.lc, em.fn_val, "postret")
+    avra_llvm_position_at_end(em.b, dead)
 }
 
 fn ret_code(em: Emit, code: int) {

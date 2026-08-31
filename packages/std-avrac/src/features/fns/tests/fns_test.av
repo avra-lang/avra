@@ -3,13 +3,35 @@
 // per call, and the IR carries the callee-cleans ABI — retains at
 // the call, param releases at the exit, the answer kept.
 use @std.avrac.language.{analyze_source, avra, render_ir, Lowered}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{refused_with, shown}
 
 fn ir_of(source: string) -> Lowered {
     analyze_source(source).lowered()
 }
 
 spec "features/fns" {
+    given "`return` — the enclosing fn answers now" {
+        then "an early return exits a loop mid-search" {
+            shown("fn f(n: int) -> int {\n    mut i = 0\n    while i < n {\n        if i * 2 == n {\n            return i\n        }\n        i = i + 1\n    }\n    0 - 1\n}\nf(8) + f(9)") == "3"
+        }
+        then "the guard idiom: elseless statement-if plus return" {
+            shown("fn f(n: int) -> int {\n    if n < 0 {\n        return 0\n    }\n    n + 1\n}\nf(0 - 9) + f(9)") == "10"
+        }
+        then "`return null` WIDENS into the declared nullable" {
+            shown("fn f(n: int) -> int? {\n    if n < 0 {\n        return null\n    }\n    n\n}\n(f(0 - 1) ?? 7) + (f(2) ?? 7)") == "9"
+        }
+        then "a return refuses OUTSIDE any fn, with the top-level truth" {
+            refused_with("return 5\n1", "a `return` answers a fn, and there is none enclosing")
+        }
+        then "a return's value must be ACCEPTED by the declared answer" {
+            refused_with("fn f(n: int) -> int {\n    if n < 0 {\n        return \"no\"\n    }\n    n\n}\nf(1)",
+                         "`return` answers `int`, this is `string`")
+        }
+        then "the TAIL value is still the law — return is for early exits" {
+            refused_with("fn f(n: int) -> int {\n    if n < 0 {\n        return 0\n    }\n    \"tail\"\n}\nf(1)",
+                         "the body answers `string` but `f` declares `int`")
+        }
+    }
     given "declarations and calls" {
         then "a fn declares, a call answers" {
             shown("fn double(x: int) -> int { x + x }\ndouble(21)") == "42"

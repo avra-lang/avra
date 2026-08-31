@@ -100,6 +100,12 @@ export enum Ins {
     Call(dst: Reg, callee: string, args: List<Reg>)
     /// A fn body's answer, after its scope has settled its debts.
     RetVal(r: Reg)
+    /// An EARLY answer — `return` from anywhere in a body. The
+    /// memory pass settles every open scope's debts at the site
+    /// (nothing pops: other paths continue); the backend returns
+    /// right here and opens a dead continuation for the arm's
+    /// unreachable tail.
+    FnExit(gives: Reg)
 
     // Slots: mutation lives in MEMORY so registers stay
     // single-assignment — a mut binding allocates a slot, loads
@@ -154,7 +160,8 @@ export fn dst_of(i: Ins) -> Reg? {
         .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
         .SwitchStart(_, _) or .ArmEnd(_) or
         .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or
-        .Release(_) or .Retain(_) or .RetVal(_) or .Ret(_) -> null,
+        .Release(_) or .Retain(_) or .RetVal(_) or .FnExit(_) or
+        .Ret(_) -> null,
     }
 }
 

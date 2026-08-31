@@ -1,7 +1,7 @@
 //! The if-expression's NodeSemantics: dispatch only. The typing rule
 //! lives in check.av, evaluation in eval.av, lowering in lower.av.
-use core.{Expr, ExprId, TypeId, Reg}
-use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use core.{Expr, Stmt, ExprId, StmtId, TypeId, Reg, Ins, Type}
+use features.{NodeSemantics, StmtSemantics, ResolveCx, StmtResolveCx, TypeCx, StmtTypeCx, LowerCx, StmtLowerCx, require_bool, nothing}
 
 export type IfSemantics = { }
 
@@ -33,4 +33,59 @@ impl NodeSemantics for IfSemantics {
         if_lower(cx, e)
     }
 
+}
+
+/// The STATEMENT form's semantics: a valueless region — the guard
+/// idiom's home. Each branch scopes its own statements.
+export type IfStmtSemantics = { }
+
+impl StmtSemantics for IfStmtSemantics {
+    fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
+        match cx.store.stmt(s) {
+            .IfStmt(c, t, e) -> {
+                cx.walk(c)
+                cx.scope_stmts(t)
+                cx.scope_stmts(e)
+            }
+            _ -> nothing(),
+        }
+    }
+
+    fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
+        match cx.store.stmt(s) {
+            .IfStmt(c, t, e) -> {
+                cx.walk(c)
+                require_bool(cx.expr, c, "an `if` condition", "this decides the branch")
+                cx.type_stmts(t)
+                cx.type_stmts(e)
+            }
+            _ -> nothing(),
+        }
+    }
+
+    fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
+        match cx.store.stmt(s) {
+            .IfStmt(c, t, e) -> {
+                lower_if_stmt(cx, c, t, e)
+                null
+            }
+            _ -> null,
+        }
+    }
+}
+
+/// The valueless region: both arms yield a THROWAWAY zero — the
+/// merge register exists because every region merges, and nothing
+/// reads it. A branch that RETURNS never reaches its yield.
+fn lower_if_stmt(cx: StmtLowerCx, c: ExprId, t: List<StmtId>, e: List<StmtId>) {
+    cx.emit(Ins.IfStart(cx.lower(c)))
+    cx.lower_stmts(t)
+    let td = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(td, 0))
+    cx.emit(Ins.ArmEnd(td))
+    cx.lower_stmts(e)
+    let ed = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(ed, 0))
+    let dst = cx.mint_shape(Type.Int)
+    cx.emit(Ins.RegionEnd(dst, ed))
 }

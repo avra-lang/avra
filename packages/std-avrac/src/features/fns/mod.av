@@ -10,18 +10,21 @@ export fn fns() -> LanguageFeature {
         name      | build
         "fn_decl" | build_fn
         "call"    | build_call
+        "return_stmt" | build_return
     }
     let codes = table<DiagCode> {
         kind                   | id      | summary
         "type.duplicate_param" | "F2020" | "a fn's parameters have distinct names"
         "type.unknown"         | "F2001" | "a type annotation names no known type"
         "resolve.duplicate_fn" | "F3003" | "two fns share one name"
+        "type.return"     | "F2025" | "`return` answers the enclosing fn"
     }
     component LanguageFeature f {
         name = "fns"
         docs = "`fn name(params) -> type { expression }`, and calls `name(args)`."
         gram = """
 stmt = "fn" n:NAME "(" ( ps:NAME ":" pt:type ( "," ps:NAME ":" pt:type )* )? ")" "->" r:type b:block BREAK @recover(sync_to: "BREAK") -> fn_decl(n, ps, pt, r, b)
+stmt = "return" v:expression BREAK @recover(sync_to: "BREAK") -> return_stmt(v)
 primary = c:NAME "(" ( as:expression ( "," as:expression )* )? ")" @expect(")", "expected `)` to close the arguments") -> call(c, as)
 """
         builders = rows

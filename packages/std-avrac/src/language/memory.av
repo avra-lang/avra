@@ -114,6 +114,13 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 manage(types, reg_types, open_scopes, i)
                 out.push(i)
             }
+            // An EARLY exit settles EVERY open scope's debts at the
+            // site — nothing pops, because other paths continue.
+            .FnExit(gives) -> {
+                // LICENSED I3: the pass's OUTPUT accumulates
+                for r in exit_releases(open_scopes, gives) { out.push(Ins.Release(r)) }
+                out.push(i)
+            }
             .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
             .Bin(_, _, _, _) or .Un(_, _, _) or
             .CallRt(_, _, _) or .CallRtVoid(_, _) or .Release(_) or
@@ -125,6 +132,19 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 out.push(i)
             }
         }
+    }
+    out
+}
+
+/// Everything EVERY open scope owes at an early exit, innermost
+/// first — the returned value excluded at every level.
+fn exit_releases(open_scopes: List<Scope>, kept: Reg) -> List<Reg> {
+    mut out: List<Reg> = []
+    // LICENSED I19: a REVERSE walk — innermost debts settle first
+    mut j = open_scopes.length - 1
+    while j >= 0 {
+        out = out.concat(releases_for(open_scopes[j], kept))
+        j = j - 1
     }
     out
 }
