@@ -3,32 +3,17 @@
 //! region over that tag — a jump table natively, not a walk down a
 //! chain of comparisons. Exhaustiveness makes the last arm the
 //! region's default, so nothing falls through.
-use core.{ExprId, Reg, Ins, Type, TypeId}
-use features.{LowerCx, EnumSig, tagged_value, tag_of, payload_of, hole_defect, lower_defect, variant_defect}
+use core.{ExprId, Reg, Ins, TypeId}
+use features.{LowerCx, EnumSig, tag_of, payload_of, hole_defect, lower_defect}
 
 fn enums_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.store.expr(e) {
         .Match(subject, variants, binds, values) -> matched_reg(cx, e, subject, variants, binds, values),
-        .VariantLit(_, variant, args) -> variant_lit_reg(cx, e, variant, args),
         _ -> lower_defect(cx, e, hole_defect()),
     }
 }
 
-/// A carrying variant: the tag at slot 0, its payload at slot 1.
-fn variant_lit_reg(cx: LowerCx, e: ExprId, variant: string, args: List<ExprId>) -> Reg {
-    let sig: EnumSig? = cx.variants_at(e)
-    if sig == null { return lower_defect(cx, e, "a variant built without an enum type") }
-    let which: int? = sig!.tag_of(variant)
-    let arg: ExprId? = args.first()
-    if which == null || arg == null {
-        return lower_defect(cx, e, variant_defect())
-    }
-    let carried = cx.reg_of(arg!)
-    let dst = cx.result(e)
-    tagged_value(cx, dst, which!, carried)
-    dst
-}
 
 fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
                binds: List<string>, values: List<ExprId>) -> Reg {

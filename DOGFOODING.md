@@ -268,6 +268,22 @@ reintroducing I3's blind spot names the two spellings it lost.
       lesson: a rule's REACH is as much a claim as its wording, and
       both need a hit list read by eye before the rule is believed.
 
+- ONE SURFACE, KINDS FORK AT TYPING. When two features want the
+      same SPELLING, the parse stays ONE node and the meaning forks
+      where knowledge exists: `X.y(args)` is MethodCall, and typing
+      routes a VALUE receiver to the impl table, a TYPE NAME to
+      variant construction (the shared `construct_variant` law);
+      `catch`'s four surfaces fork on which CAPTURES arrived. The
+      smell this kills: two grammar branches racing for one shape —
+      the loser's @recover eats the winner (the let/let-else and
+      for/for-each merges are the ordering lessons; the
+      variant-lit/method clash was the breaking case).
+- DECLARE THE WRECKAGE. A declaration that REFUSES still records a
+      total, error-typed stand-in (a method without `self` declares
+      every param a hole; an annotated binding records its declared
+      type before refusing its value). One mistake, one message —
+      and every downstream pass stays total instead of crashing on
+      the gap. rt19's index-out-of-bounds is why this is a rule.
 - THE INSTANTIATION RITUALS (checks.av): every generic surface
       (calls, struct lits, variant lits) shares three verbs —
       `tparams_refused` (the declaration already spoke; absorb),
