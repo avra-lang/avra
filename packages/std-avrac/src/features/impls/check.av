@@ -2,7 +2,7 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, Type, TypeId}
+use core.{ExprId, Type, TypeId, StmtId, TypeRef}
 use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant}
 use diagnostics.{error_at, pointed}
 
@@ -21,6 +21,8 @@ fn methoded(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<Exp
     // on a type NAME constructs its variant
     let built: TypeId? = type_receiver(cx, e, subject, name, args)
     if built != null { return built! }
+    let bound: TypeId? = bounded_call(cx, e, subject, name, args)
+    if bound != null { return bound! }
     let named: string? = receiver_name(cx, subject)
     if named == null { return no_methods_here(cx, subject, name) }
     let target = named!
@@ -57,7 +59,7 @@ fn no_methods_here(cx: TypeCx, subject: ExprId, name: string) -> TypeId {
     spoken(cx, pointed(
         error_at("type.method", cx.loc_of(subject), "`.${name}(…)` calls a method, and `${n}` has none"),
         this_is(n))
-        with { help: "methods live on declared types — generic receivers arrive with traits" })
+        with { help: "methods live on declared types — builtin vocabularies are recorded" })
 }
 
 fn no_such_method(cx: TypeCx, e: ExprId, target: string, name: string) -> TypeId {
@@ -89,4 +91,58 @@ fn type_receiver(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: Lis
         .TypeName(decl, tname) -> construct_variant(cx, e, decl, tname, name, args),
         _ -> null,
     }
+}
+
+/// A method on a BOUNDED type parameter: the bound's trait supplies
+/// the sig (self omitted — the receiver fills that seat trivially);
+/// mono resolves the concrete impl per specialization. Absent for
+/// every non-Var receiver; an UNBOUNDED T refuses with the spec's
+/// own remedy.
+fn bounded_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
+    let seat: BoundSeat? = var_bound(cx, subject)
+    if seat == null { return null }
+    let tname = seat!.tparam
+    let trait_name = seat!.bound
+    if trait_name == "" {
+        return spoken(cx, pointed(
+            error_at("type.method", cx.loc_of(e),
+                "`${tname}` has no known methods"),
+            "called here")
+            with { help: "add a bound — `<${tname}: SomeTrait>`" })
+    }
+    let found: FnSig? = cx.trait_sig(trait_name, name)
+    if found == null {
+        return spoken(cx, pointed(
+            error_at("type.method", cx.loc_of(e), "`${trait_name}` has no method `${name}`"),
+            "called here")
+            with { help: "the bound decides what `${tname}` can do" })
+    }
+    let sig = found!
+    if args.length != sig.params.length {
+        return wrong_method_arity(cx, e, trait_name, name, sig.params.length, args.length)
+    }
+    // LICENSED I3: seat-by-seat; comprehensions cannot destructure enumerate
+    for (j, a) in args.enumerate() {
+        if !accepts(cx, a, sig.params[j]) { wrong_method_argument(cx, trait_name, name, j, sig.params[j], a) }
+    }
+    sig.ret
+}
+
+/// The subject's tparam name and its bound ("" unbounded), when the
+/// subject is a Var.
+type BoundSeat = { tparam: string, bound: string }
+
+fn var_bound(cx: TypeCx, subject: ExprId) -> BoundSeat? {
+    match cx.shape_at(subject) {
+        .Var(decl, j, tname) -> BoundSeat { tparam: tname, bound: bound_name(cx, decl, j) },
+        _ -> null,
+    }
+}
+
+fn bound_name(cx: TypeCx, decl: StmtId, j: int) -> string {
+    let tb = cx.store.decl_tbounds(decl)
+    if j >= tb.length { return "" }
+    let ann: TypeRef? = tb[j].ty
+    if ann == null { return "" }
+    ann!.name
 }

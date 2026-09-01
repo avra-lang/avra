@@ -1,0 +1,73 @@
+// proves: rung 12 T2 — traits, the behavior contracts. A trait's
+// sigs, impls-for on a struct AND an enum, bounded generics whose
+// abstract method calls resolve per specialization (mono hands the
+// concrete receiver to the same impl table), inherent and trait
+// impls coexisting, and bounds riding Result fns.
+trait Show {
+    fn show(self) -> int
+}
+
+trait Scale {
+    fn by(self, k: int) -> int
+}
+
+type P = { x: int }
+
+enum G {
+    hot
+    cold
+}
+
+enum E {
+    boom
+}
+
+impl Show for P {
+    fn show(self) -> int {
+        self.x
+    }
+}
+
+impl Show for G {
+    fn show(self) -> int {
+        match self {
+            .hot -> 100
+            .cold -> 1
+        }
+    }
+}
+
+impl Scale for P {
+    fn by(self, k: int) -> int {
+        self.x * k
+    }
+}
+
+impl P {
+    fn double_x(self) -> int {
+        self.x * 2
+    }
+}
+
+fn twice<T: Show>(v: T) -> int {
+    v.show() * 2
+}
+
+fn both<A: Show, B: Show>(a: A, b: B) -> int {
+    a.show() + b.show()
+}
+
+fn safe_show<T: Show>(v: T, ok: bool) -> Result<int, E> {
+    if ok {
+        return v.show()
+    }
+    fail E.boom
+}
+
+mut t = 0
+mut i = 0
+while i < 100 {
+    t = t + twice(P { x: i })
+    i = i + 1
+}
+"t ${twice(P { x: 21 })} ${twice(G.hot)} b ${both(P { x: 30 }, G.cold)} s ${P { x: 3 }.by(4) + P { x: 3 }.double_x()} r ${safe_show(G.hot, true) catch 0 - 1} ${safe_show(G.hot, false) catch 0 - 1} c ${t}"

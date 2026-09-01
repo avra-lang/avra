@@ -1,18 +1,77 @@
-//! Parse-time lowering: captures -> the ImplDecl statement. The
-//! contained statements must each be fn declarations — anything
-//! else refuses at the build, where the shape is still visible.
-use core.{Stmt, StmtId}
-use features.{LangNode, Builder}
+//! Parse-time lowering: captures -> the ImplDecl and TraitDecl
+//! statements. An impl's contained statements must each be fn
+//! declarations; a trait's SIGS mint as BODYLESS FnDecls (the body
+//! is a hole no pass walks), so declare and totality reuse the fn
+//! machinery whole.
+use core.{Expr, Stmt, StmtId, Param, TypeRef}
+use features.{LangNode, Builder, window_end}
+use grammar.{Token}
 
 fn build_impl(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
-    let fns = b.stmts(1)?
+    let ib = b.tokens(1)?
+    let fns = b.stmts(2)?
     for s in fns {
         if !is_fn(b, s) { return Result.Err("an `impl` block holds `fn` declarations only") }
     }
-    b.make_stmt(Stmt.ImplDecl(t.text, fns))
+    // with a `for`, the FIRST name is the trait and the for-name
+    // is the target; without one, the first name IS the target.
+    let forred: Token? = ib.first()
+    if forred == null { return b.make_stmt(Stmt.ImplDecl("", t.text, fns)) }
+    b.make_stmt(Stmt.ImplDecl(t.text, forred!.text, fns))
 }
 
 fn is_fn(b: Builder, s: StmtId) -> bool {
     b.store.stmt(s) is .FnDecl
+}
+
+/// The trait's sig lines, each minted as a bodyless FnDecl — the
+/// method anchors window their own params, the rets zip.
+fn build_trait(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let mn = b.tokens(1)?
+    let ps = b.tokens(2)?
+    let tys = b.type_refs(3)?
+    let rets = b.type_refs(4)?
+    let ends: int? = b.span_end()
+    if ends == null { return Result.Err("a trait declaration without a span") }
+    if mn.length != rets.length { return Result.Err("method names and returns disagree in count") }
+    mut fns: List<StmtId> = []
+    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
+    for (j, m) in mn.enumerate() {
+        let upto = window_end(mn, j, ends!)
+        fns.push(sig_stmt(b, m.text, params_between(ps, tys, m.span.lo, upto), rets[j]))
+    }
+    b.make_stmt(Stmt.TraitDecl(n.text, fns))
+}
+
+/// One sig's params — the names inside the window, each typed by
+/// its own inner window (bare `self` has none).
+fn params_between(ps: List<Token>, tys: List<TypeRef>, after: int, before: int) -> List<Param> {
+    mut mine: List<Token> = []
+    for p in ps {
+        if p.span.lo > after && p.span.lo < before { mine.push(p) }
+    }
+    mut out: List<Param> = []
+    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
+    for (j, p) in mine.enumerate() {
+        out.push(Param { name: p.text, ty: ty_between(tys, p.span.lo, window_end(mine, j, before)) })
+    }
+    out
+}
+
+fn ty_between(tys: List<TypeRef>, after: int, before: int) -> TypeRef? {
+    tys.find(ref_starts_within(it, after, before))
+}
+
+fn ref_starts_within(t: TypeRef, after: int, before: int) -> bool {
+    let lo: int? = t.span?.lo
+    if lo == null { return false }
+    lo! > after && lo! < before
+}
+
+/// A bodyless fn: the body is a HOLE no pass walks.
+fn sig_stmt(b: Builder, name: string, params: List<Param>, ret: TypeRef) -> StmtId {
+    let hollow = b.store.alloc_expr(Expr.Error, null)
+    b.store.alloc_stmt(Stmt.FnDecl(name, [], params, ret, hollow), null)
 }

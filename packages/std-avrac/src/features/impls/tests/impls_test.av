@@ -4,6 +4,16 @@
 // typing (spec 4.5); rt19 is the adversarial record.
 use @std.avrac.testing.{shown, refused_with}
 
+/// The standard contract and its signatory-to-be.
+fn showp() -> string {
+    "trait Show {\n    fn show(self) -> int\n}\ntype P = { x: int }\n"
+}
+
+/// The standard signed impl.
+fn showed() -> string {
+    "${showp()}impl Show for P {\n    fn show(self) -> int {\n        self.x\n    }\n}\n"
+}
+
 /// The standard receiver.
 fn boxy() -> string {
     "type P = { x: int, y: int }\nimpl P {\n    fn area(self) -> int {\n        self.x * self.y\n    }\n    fn scaled(self, k: int) -> P {\n        P { x: self.x * k, y: self.y * k }\n    }\n}\n"
@@ -51,6 +61,31 @@ spec "features/impls" {
         then "`self` outside an impl refuses" {
             refused_with("fn f(self) -> int {\n    1\n}\n2",
                          "`self` lives in an `impl` block")
+        }
+    }
+    given "traits — the behavior contracts (T2)" {
+        then "a bound resolves the abstract call per specialization" {
+            shown("${showed()}fn twice<T: Show>(v: T) -> int {\n    v.show() * 2\n}\ntwice(P { x: 21 })") == "42"
+        }
+        then "an unbounded T names the spec's remedy" {
+            refused_with("fn f<T>(x: T) -> int {\n    x.show()\n}\nf(1)",
+                         "`T` has no known methods")
+        }
+        then "a binding without the impl refuses at the call" {
+            refused_with("${showed()}type Q = { y: int }\nfn f<T: Show>(v: T) -> int {\n    v.show()\n}\nf(Q { y: 1 })",
+                         "`Q` does not implement `Show`")
+        }
+        then "an impl-for answers every method — a missing one names itself" {
+            refused_with("${showp()}impl Show for P {\n}\n2",
+                         "`impl Show for P` must answer `show`")
+        }
+        then "an impl-for holds ONLY the trait's methods" {
+            refused_with("${showp()}impl Show for P {\n    fn show(self) -> int {\n        self.x\n    }\n    fn extra(self) -> int {\n        1\n    }\n}\n2",
+                         "`extra` is not part of `Show`")
+        }
+        then "a wrong signature refuses naming both sides" {
+            refused_with("${showp()}impl Show for P {\n    fn show(self) -> bool {\n        true\n    }\n}\n2",
+                         "`P.show` does not wear `Show.show`'s signature")
         }
     }
 }

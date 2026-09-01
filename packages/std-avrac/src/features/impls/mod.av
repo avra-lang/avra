@@ -10,19 +10,22 @@ use diagnostics.{DiagCode}
 
 export fn impls() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name        | build
-        "impl_decl" | build_impl
+        name         | build
+        "impl_decl"  | build_impl
+        "trait_decl" | build_trait
     }
     let codes = table<DiagCode> {
         kind          | id      | summary
         "type.method" | "F2030" | "a method call resolves through the receiver's impl"
         "type.impl"   | "F2031" | "an impl block serves one declared type"
+        "type.trait"  | "F2032" | "an impl-for answers every trait method, exactly"
     }
     component LanguageFeature f {
         name = "impls"
-        docs = "`impl Target { fn m(self, …) -> T { … } }` and `value.m(…)` — methods, statically dispatched through the receiver's type."
+        docs = "`impl Target { … }`, `trait Show { fn sigs }`, `impl Show for Target { … }`, and `value.m(…)` — methods and behavior contracts, statically dispatched."
         gram = """
-stmt = "impl" it:NAME "{" ( fs:stmt | BREAK )* "}" BREAK @recover(sync_to: "BREAK") -> impl_decl(it, fs)
+stmt = "impl" it:NAME ( "for" ib:NAME )? "{" ( fs:stmt | BREAK )* "}" BREAK @recover(sync_to: "BREAK") -> impl_decl(it, ib, fs)
+stmt = "trait" tn:NAME "{" ( BREAK | "fn" mn:NAME "(" ( tps:NAME ( ":" tpt:type )? ( "," tps:NAME ( ":" tpt:type )? )* )? ")" "->" mr:type )* "}" BREAK @recover(sync_to: "BREAK") -> trait_decl(tn, mn, tps, tpt, mr)
 """
         diags = codes
         builders = rows

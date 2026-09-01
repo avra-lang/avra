@@ -38,7 +38,11 @@ made after literally reading everything they cover.
 
 1. DEBRIS: probe files, dead fns, stale scratch, leftover
    `gprobe`-style mains, no-longer-true comments. `git status` and
-   grep are the brooms.
+   grep are the brooms. When a RUNG lands, grep the diagnostics for
+   promises of it (`arrive with`, `are recorded`) — a refusal that
+   promised the future must either speak the landed remedy or name
+   the NEXT recorded rung (the T2 round found four; two exposed an
+   unscheduled ladder hole).
 2. DOGFOODING VIOLATIONS: DOGFOODING.md is a CHECKLIST, not a
    suggestion — apply it back at the code. Loop shapes (`mut j`
    counters where `enumerate`/range-`for` belong — index arithmetic

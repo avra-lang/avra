@@ -6,11 +6,11 @@
 //! interned Error, which ABSORBS: the causing pass already spoke,
 //! so no diagnostic cascades from it. Signatures come first, from
 //! the annotations alone, so a call may name a fn declared later.
-use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, spelled, TypeRegistry, new_type_registry, filled, plain}
+use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, spelled, TypeRegistry, new_type_registry, filled, plain, NodeStore}
 use diagnostics.{Diag, loc_at, error_at, pointed}
 use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig, Asked, Sub,
               fn_sig_of, record_sig_of, variant_sig_of, duplicate_names, res_enum_sig,
-              slot_worthy,
+              slot_worthy, method_symbol,
               subbed_variants, subbed_fields}
 use @std.errors.{Loc}
 
@@ -59,6 +59,8 @@ type Typer = {
     tscope: List<TypeId>,
     substs: List<Sub?>,
     methods: Map<string, StmtId>,
+    traits: Map<string, StmtId>,
+    trait_impls: Map<string, bool>,
     decls: List<DeclSig?>,
     diagnostics: List<Diag>,
 }
@@ -78,12 +80,13 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         binding_types: filled<TypeId?>(p.store.stmts.count(), null),
         narrow_defs: [], narrow_params: [], fn_ret: [], tscope: [],
         substs: filled<Sub?>(p.store.exprs.count(), null),
-        methods: {},
+        methods: {}, traits: {}, trait_impls: {},
         decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
     t.declare_type_sigs()
     t.declare_sigs()
+    t.declare_traits()
     t.declare_impls()
     type_stmts(t, [], p.stmts)
     Typing {
@@ -159,6 +162,8 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         record_subst: (e: ExprId, target: StmtId, targs: List<TypeId>) -> t.record_subst(e, target, targs),
         written: (s: StmtId, tr: TypeRef) -> t.full_type(s, tr),
         method_sig: (target: string, mname: string) -> t.method_sig(target, mname),
+        trait_sig: (tr: string, mname: string) -> t.trait_sig(tr, mname),
+        implements: (ty: TypeId, tr: string) -> t.implements(ty, tr),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
         loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
         emit: (d: Diag) -> t.speak(d),
@@ -355,17 +360,80 @@ impl Typer {
         self.error_type
     }
 
+    /// Every trait's contract: the name registers, and each SIG
+    /// declares under its own bodyless fn stmt — the self seat
+    /// OMITTED (a bound call's receiver fills it trivially).
+    fn declare_traits(self) {
+        for s in self.p.stmts {
+            let parts: TraitParts? = self.p.store.trait_parts(s)
+            if parts != null { self.declare_trait(s, parts!.name, parts!.fns) }
+        }
+    }
+
+    fn declare_trait(self, s: StmtId, name: string, fns: List<StmtId>) {
+        mut ts = self.traits
+        ts.set(name, s)
+        for f in fns { self.declare_trait_sig(name, f) }
+    }
+
+    fn declare_trait_sig(self, tname: string, f: StmtId) {
+        let parts: FnParts? = self.p.store.fn_parts(f)
+        if parts == null { return }
+        let fp = parts!
+        if !selfed(fp.params) {
+            self.speak(pointed(
+                error_at("type.trait", self.stmt_loc(f), "a trait method's first parameter is `self`"),
+                "declared here")
+                with { help: self_first(fp.name) })
+            return
+        }
+        self.declare(f, DeclSig.Fn(FnSig {
+            params: self.seatless_params(f, fp),
+            ret: self.annotated(f, fp.ret),
+        }))
+    }
+
+    /// The params BEYOND the self seat, annotated — what a trait
+    /// sig declares, and what a method's sig appends to its target.
+    fn seatless_params(self, f: StmtId, fp: FnParts) -> List<TypeId> {
+        mut ptypes: List<TypeId> = []
+        // LICENSED I3: the self seat is skipped; comprehensions cannot skip the head
+        for (j, pp) in fp.params.enumerate() {
+            if j > 0 { ptypes.push(self.annotated(f, pp.ty)) }
+        }
+        ptypes
+    }
+
+    /// A trait method's sig — self OMITTED — or absence.
+    fn trait_sig(self, tname: string, mname: string) -> FnSig? {
+        let decl: StmtId? = self.traits.get(tname)
+        if decl == null { return null }
+        let parts: TraitParts? = self.p.store.trait_parts(decl!)
+        if parts == null { return null }
+        let f: StmtId? = parts!.fns.find(named_fn(self.p.store, it, mname))
+        if f == null { return null }
+        fn_sig_of(self.decls[f!.index])
+    }
+
+    /// Whether a type's NAME registered an impl for the trait.
+    fn implements(self, ty: TypeId, tname: string) -> bool {
+        let n: string? = declared_name(self.types.shape_of(ty))
+        if n == null { return false }
+        self.trait_impls.get(trait_key(tname, n!)) ?? false
+    }
+
     /// Every impl block's methods: `self` types as the TARGET, the
     /// sig declares under the fn's own stmt (so body walks and mono
     /// see an ordinary fn), and the table maps `Target.name` to it.
     fn declare_impls(self) {
         for s in self.p.stmts {
             let parts: ImplParts? = self.p.store.impl_parts(s)
-            if parts != null { self.declare_impl(s, parts!.target, parts!.fns) }
+            if parts != null { self.declare_impl(s, parts!) }
         }
     }
 
-    fn declare_impl(self, s: StmtId, target: string, fns: List<StmtId>) {
+    fn declare_impl(self, s: StmtId, parts: ImplParts) {
+        let target = parts.target
         let decl: StmtId? = self.resolution.type_defs.get(target)
         if decl == null {
             self.speak(pointed(
@@ -376,12 +444,64 @@ impl Typer {
         }
         if !self.p.store.decl_tparams(decl!).is_empty() {
             self.speak(pointed(
-                error_at("type.impl", self.stmt_loc(s), "`${target}` is generic — impls on generic types arrive with traits"),
+                error_at("type.impl", self.stmt_loc(s), "`${target}` is generic — generic impls are recorded, not landed"),
                 "this impl"))
             return
         }
         let ty = self.declared_type(decl!, target)
-        for f in fns { self.declare_method(target, ty, f) }
+        for f in parts.fns { self.declare_method(target, ty, f) }
+        if parts.of != "" { self.check_trait_impl(s, parts.of, target, parts.fns) }
+    }
+
+    /// An impl-for answers EVERY trait method, exactly — name,
+    /// arity, param types, and return — and nothing beyond them
+    /// (the recorded bs2 law, now ours).
+    fn check_trait_impl(self, s: StmtId, of: string, target: string, fns: List<StmtId>) {
+        let tdecl: StmtId? = self.traits.get(of)
+        if tdecl == null {
+            self.speak(pointed(
+                error_at("type.trait", self.stmt_loc(s), "`impl ${of} for` names no trait"),
+                "this impl")
+                with { help: "declare it — `trait ${of} { … }`" })
+            return
+        }
+        let parts: TraitParts? = self.p.store.trait_parts(tdecl!)
+        if parts == null { return }
+        let wanted = [self.p.store.fn_parts(f)?.name ?? "" for f in parts!.fns]
+        for f in parts!.fns { self.check_trait_member(s, of, target, f) }
+        for f in fns {
+            let mn: string = self.p.store.fn_parts(f)?.name ?? ""
+            if !wanted.contains(mn) {
+                self.speak(pointed(
+                    error_at("type.trait", self.stmt_loc(f),
+                        "`${mn}` is not part of `${of}` — an impl-for holds only the trait's methods"),
+                    "declared here")
+                    with { help: "move it to a separate `impl ${target} { … }` block" })
+            }
+        }
+        mut ti = self.trait_impls
+        ti.set(trait_key(of, target), true)
+    }
+
+    fn check_trait_member(self, s: StmtId, of: string, target: string, f: StmtId) {
+        let mn: string = self.p.store.fn_parts(f)?.name ?? ""
+        let want: FnSig? = fn_sig_of(self.decls[f.index])
+        let got: FnSig? = self.method_sig(target, mn)
+        if got == null {
+            self.speak(pointed(
+                error_at("type.trait", self.stmt_loc(s),
+                    "`impl ${of} for ${target}` must answer `${mn}`"),
+                "this impl")
+                with { help: "add `fn ${mn}(self, …)`" })
+            return
+        }
+        if want != null && !sigs_agree(want!, got!) {
+            self.speak(pointed(
+                error_at("type.trait", self.stmt_loc(s),
+                    "`${target}.${mn}` does not wear `${of}.${mn}`'s signature"),
+                "this impl")
+                with { help: "match the trait's parameters and return exactly" })
+        }
     }
 
     fn declare_method(self, target: string, ty: TypeId, f: StmtId) {
@@ -390,7 +510,7 @@ impl Typer {
         let fp = parts!
         if !fp.tparams.is_empty() {
             self.speak(pointed(
-                error_at("type.impl", self.stmt_loc(f), "`${fp.name}` is generic — generic methods arrive with traits"),
+                error_at("type.impl", self.stmt_loc(f), "`${fp.name}` is generic — generic methods are recorded, not landed"),
                 "this method"))
             return
         }
@@ -398,7 +518,7 @@ impl Typer {
             self.speak(pointed(
                 error_at("type.impl", self.stmt_loc(f), "a method's first parameter is `self`"),
                 "declared here")
-                with { help: "write `fn ${fp.name}(self, …)`" })
+                with { help: self_first(fp.name) })
             // declare the WRECKAGE anyway — every param a hole — so
             // the body walk and the fn loop stay total (one
             // mistake, one message, no crash downstream)
@@ -408,19 +528,17 @@ impl Typer {
             }))
             return
         }
-        mut ptypes: List<TypeId> = [ty]
-        // LICENSED I3: the self seat is seeded; comprehensions cannot skip the head
-        for (j, pp) in fp.params.enumerate() {
-            if j > 0 { ptypes.push(self.annotated(f, pp.ty)) }
-        }
-        self.declare(f, DeclSig.Fn(FnSig { params: ptypes, ret: self.annotated(f, fp.ret) }))
+        self.declare(f, DeclSig.Fn(FnSig {
+            params: [ty].concat(self.seatless_params(f, fp)),
+            ret: self.annotated(f, fp.ret),
+        }))
         mut ms = self.methods
-        ms.set("${target}.${fp.name}", f)
+        ms.set(method_symbol(target, fp.name), f)
     }
 
     /// The impl table's answer — a sig whose params[0] is `self`.
     fn method_sig(self, target: string, mname: string) -> FnSig? {
-        let f: StmtId? = self.methods.get("${target}.${mname}")
+        let f: StmtId? = self.methods.get(method_symbol(target, mname))
         if f == null { return null }
         fn_sig_of(self.decls[f!.index])
     }
@@ -855,4 +973,47 @@ fn selfed(params: List<Param>) -> bool {
     let head: Param? = params.first()
     if head == null { return false }
     head!.name == "self" && head!.ty == null
+}
+
+/// A declared type's NAME, when its shape carries one.
+fn declared_name(sh: Type) -> string? {
+    match sh {
+        .Struct(_, n) -> n,
+        .Enum(_, n) -> n,
+        .Int or .Str or .Bool or .List(_) or .Opt(_) or .Null or
+        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or
+        .TypeName(_, _) or .EmptyList or .Error -> null,
+    }
+}
+
+/// Two sigs agree seat by seat — the trait's has no self, the
+/// method's does, so the method's params offset by one.
+fn sigs_agree(want: FnSig, got: FnSig) -> bool {
+    if got.params.length != want.params.length + 1 { return false }
+    // LICENSED I9: type identity — interned ids ARE the agreement
+    if want.ret.index != got.ret.index { return false }
+    // LICENSED I3: the offset ZIP; comprehensions cannot destructure enumerate
+    for (j, w) in want.params.enumerate() {
+        // LICENSED I9: type identity — interned ids ARE the agreement
+        if got.params[j + 1].index != w.index { return false }
+    }
+    true
+}
+
+/// The trait-impl registry's key — one spelling for its write and
+/// its read.
+fn trait_key(of: string, target: string) -> string {
+    "${of}.${target}"
+}
+
+/// The pronoun cannot ride a nested method call — the wrapper can.
+fn named_fn(store: NodeStore, f: StmtId, mname: string) -> bool {
+    let parts: FnParts? = store.fn_parts(f)
+    if parts == null { return false }
+    parts!.name == mname
+}
+
+/// The self-first help, worded once.
+fn self_first(name: string) -> string {
+    "write `fn ${name}(self, …)`"
 }

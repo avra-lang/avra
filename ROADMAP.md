@@ -2970,20 +2970,45 @@ THE SLICES:
        - v1 BOUNDS: none — concrete receivers only; impls on
          plain declared types (generic receivers ride T2 with
          the impl's own tparams).
-  (T2) TRAITS: `trait Show { fn show(self) -> string }` +
-       `impl Show for P` + bounds `fn f<T: Show>(x: T)` — the
-       abstract body may call bound methods; mono resolves them
-       per specialization (the subst view hands the concrete
-       receiver, the method table answers). Trait totality: an
-       impl block for a trait must answer every method. Printing
-       T unlocks (Display); generic receivers land here.
+  (T2) [x] LANDED 2026-08-31 — TRAITS with static dispatch, the
+       design executed to the letter. A trait's sigs mint as
+       BODYLESS FnDecls (the body an Error hole no pass walks) so
+       declare/totality reuse the fn machinery whole; the sigs
+       declare SELF-OMITTED, and `sigs_agree` compares offset by
+       one seat. `impl Show for P` keys `trait_impls` as
+       "Trait.Target"; TOTALITY is three laws at declare: every
+       trait method answered (its absence named), no method
+       beyond the trait, and both sigs agree exactly (the refusal
+       names both sides: "`P.show` does not wear `Show.show`'s
+       signature"). Bounds ride Param.ty on FnDecl.tparams (now
+       List<Param> — the List<string> change corrupted through
+       ONE stale typed-let route; decl_tparams is the projection).
+       A bounded T's method call resolves through the TRAIT's sig
+       at checking (`bounded_call`), and `bounds_hold` re-judges
+       every instantiation — "`Q` does not implement `Show`" at
+       the CALL, mono never sees an unproven bind. An unbounded
+       T refuses with the spec's remedy ("add a bound —
+       `<T: SomeTrait>`"). Backend/memory/interp untouched a
+       FIFTH consecutive slice. RT20: 16 programs clean first
+       run — totality violations, sig drift, bound churn 200×,
+       inherent+trait coexistence. corpus/traits.av pins the
+       story; the vertical pins carry rt20's refusal wordings.
+       POLISH RECORDED: a bound is validated only at
+       instantiation — a never-called `fn f<T: Bogus>` sails; the
+       declare-time "is the bound a declared trait" law waits for
+       T3's vtable minting, which must look bounds up anyway.
   (T3) DYN: `dyn Show` values (fat pointer: value + vtable — the
        box gains a slot), dyn-typed fields/lets, dynamic calls.
        The Dispatch registry shape our own source uses becomes
        expressible — self-host's gate.
-  (T4) recorded: shape bounds + `&` intersections, where clauses,
-       default methods, associated types, @derive (Error/
-       failure_tests ride it), operator traits.
+  (T4) recorded: GENERIC IMPLS (`impl Show for List<T>`, generic
+       methods, impl tparams — T2's round found the refusals still
+       promising "arrive with traits" after traits landed; the
+       messages now say "recorded, not landed" and this entry is
+       the record), shape bounds + `&` intersections, where
+       clauses, default methods, associated types, @derive (Error/
+       failure_tests ride it), operator traits (the Var
+       compare-help names them).
 
 ## The capability diet (decided 2026-08-30)
 

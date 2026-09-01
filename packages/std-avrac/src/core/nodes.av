@@ -187,8 +187,9 @@ export enum Stmt {
     /// An expression at statement position.
     ExprStmt(value: ExprId)
     /// `tparams` are the declared type parameters, in order — the
-    /// ordinal IS the Var identity.
-    FnDecl(name: string, tparams: List<string>, params: List<Param>, ret: TypeRef, body: ExprId)
+    /// ordinal IS the Var identity; a tparam's `ty` names its
+    /// BOUND (`<T: Show>`), absent when unconstrained.
+    FnDecl(name: string, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId)
     /// Condition re-evaluated each turn; the body is a scope.
     While(cond: ExprId, stmts: List<StmtId>)
     /// `if c { … }` (optionally `else { … }`) at STATEMENT
@@ -205,8 +206,14 @@ export enum Stmt {
     Fail(value: ExprId)
     /// `impl Target { fns… }` — methods for a declared type: each
     /// fn's bare `self` first param types as the target, and the
-    /// fn lowers under a QUALIFIED name (`Target.method`).
-    ImplDecl(target: string, fns: List<StmtId>)
+    /// fn lowers under a QUALIFIED name (`Target.method`). `of`
+    /// names the TRAIT being implemented — "" for an inherent impl
+    /// — and an impl-for must answer every trait method.
+    ImplDecl(of: string, target: string, fns: List<StmtId>)
+    /// `trait Name { fn sigs… }` — a nominal behavior contract.
+    /// The sigs ride as BODYLESS fn declarations (body = a hole no
+    /// pass walks), so declare and totality reuse fn machinery.
+    TraitDecl(name: string, fns: List<StmtId>)
     /// `let name? = subject else { stmts }` — the bind-fresh form
     /// that KEEPS GOING: a present subject binds its carried value
     /// in the enclosing scope; an absent one runs the else, which
@@ -369,8 +376,10 @@ impl NodeStore {
                                 self.stmt_fps(else_stmts)])),
             .Return(value) -> fp(36, [self.expr_fingerprint(value)]),
             .Fail(value) -> fp(39, [self.expr_fingerprint(value)]),
-            .ImplDecl(target, fns) ->
-                fp(44, [fp_str(target)].concat(self.stmt_fps(fns))),
+            .ImplDecl(of, target, fns) ->
+                fp(44, [fp_str(of), fp_str(target)].concat(self.stmt_fps(fns))),
+            .TraitDecl(name, fns) ->
+                fp(45, [fp_str(name)].concat(self.stmt_fps(fns))),
             .LetElse(name, subject, stmts) ->
                 fp(38, [fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
             // For's cond and step derive from name/from/to — the
@@ -382,7 +391,7 @@ impl NodeStore {
                 fp(42, [fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
             .Error -> fp(7, []),
             .FnDecl(name, tparams, params, ret, body) ->
-                fp(12, flatten([[fp_str(name)], [fp_str(t) for t in tparams],
+                fp(12, flatten([[fp_str(name)], param_fps(tparams),
                                 param_fps(params),
                                 [type_fp(ret), self.expr_fingerprint(body)]])),
             .StructDecl(name, tparams, fields) ->

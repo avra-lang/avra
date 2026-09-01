@@ -63,10 +63,7 @@ fn dispatched_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
 }
 
 fn tparams_of(cx: TypeCx, decl: StmtId) -> List<string> {
-    // the typed pin then the bare name — the recorded list-tail
-    // trap's cure, not ceremony
-    let held: List<string> = cx.store.fn_parts(decl)?.tparams ?? []
-    held
+    cx.store.decl_tparams(decl)
 }
 
 /// The instantiation: pins pre-fill by position, arguments unify
@@ -92,6 +89,7 @@ fn generic_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
     let missing: string? = unpinned_of(tp, bound)
     if missing != null { return unpinned_by_arguments(cx, e, callee, missing!) }
     let concrete = bound_closed(cx, bound)
+    if !bounds_hold(cx, e, callee, decl, tp, concrete) { return cx.error_type }
     if !lawful_instantiation(cx, e, callee, s, decl, concrete) { return cx.error_type }
     cx.record_subst(e, decl, concrete)
     cx.types.substituted(s.ret, decl, concrete)
@@ -220,4 +218,30 @@ export fn check_return(cx: StmtTypeCx, s: StmtId) {
         error_at("type.return", cx.loc_of(s),
             "`return` answers `${cx.expr.types.name_of(want!)}`, this is `${gn}`"),
         this_is(gn)))
+}
+
+/// One bound, one binding: implemented, or refused with the remedy.
+fn bound_held(cx: TypeCx, e: ExprId, tname: string, ty: TypeId) -> bool {
+    if cx.implements(ty, tname) { return true }
+    cx.emit(pointed(
+        error_at("type.mismatch", cx.loc_of(e),
+            "`${cx.types.name_of(ty)}` does not implement `${tname}`"),
+        "in this call")
+        with { help: "write `impl ${tname} for ${cx.types.name_of(ty)} { … }`" })
+    false
+}
+
+/// Every bounded tparam's binding must IMPLEMENT its trait — the
+/// instantiation check that makes abstract method calls sound.
+fn bounds_hold(cx: TypeCx, e: ExprId, callee: string, decl: StmtId,
+               tp: List<string>, concrete: List<TypeId>) -> bool {
+    let tb = cx.store.decl_tbounds(decl)
+    // LICENSED I3: bounds pair with bindings by ordinal; comprehensions cannot destructure enumerate
+    for (j, seat) in tb.enumerate() {
+        let ann: TypeRef? = seat.ty
+        if ann != null {
+            if !bound_held(cx, e, ann!.name, concrete[j]) { return false }
+        }
+    }
+    true
 }

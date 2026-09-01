@@ -157,7 +157,7 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
         .LetElse(_, _, _) -> d.letelses,
         .Fail(_) -> d.fails,
         .ForEach(_, _, _) -> d.foreaches,
-        .ImplDecl(_, _) -> d.implds,
+        .ImplDecl(_, _, _) or .TraitDecl(_, _) -> d.implds,
         .Error -> d.holes,
     }
 }
@@ -190,7 +190,7 @@ impl NodeStore {
             .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _, _)
                 or .While(_, _) or .IfStmt(_, _, _) or .Return(_)
                 or .Fail(_) or .StructDecl(_, _, _) or .EnumDecl(_, _, _)
-                or .ImplDecl(_, _) or .Error -> null,
+                or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Error -> null,
         }
     }
 
@@ -203,7 +203,7 @@ impl NodeStore {
             .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _, _)
                 or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _)
                 or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _)
-                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _)
+                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _)
                 or .Error -> null,
         }
     }
@@ -221,7 +221,7 @@ impl NodeStore {
             .LetElse(_, v, _) -> v,
             .FnDecl(_, _, _, _, _) or .While(_, _)
                 or .For(_, _, _, _, _, _) or .ForEach(_, _, _) or .IfStmt(_, _, _)
-                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _) or .Error -> null,
+                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Error -> null,
         }
     }
 
@@ -229,13 +229,22 @@ impl NodeStore {
     /// empty when plain. The ordinal IS the Var identity.
     fn decl_tparams(self, s: StmtId) -> List<string> {
         match self.stmt(s) {
-            .FnDecl(_, tparams, _, _, _) -> tparams,
+            .FnDecl(_, tparams, _, _, _) -> [t.name for t in tparams],
             .StructDecl(_, tparams, _) -> tparams,
             .EnumDecl(_, tparams, _) -> tparams,
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _) or
             .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or
-            .ImplDecl(_, _) or .Error -> [],
+            .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Error -> [],
+        }
+    }
+
+    /// A fn's type parameters WITH their bounds — the constrained
+    /// twin of decl_tparams; empty for every other declaring kind.
+    fn decl_tbounds(self, s: StmtId) -> List<Param> {
+        match self.stmt(s) {
+            .FnDecl(_, tparams, _, _, _) -> tparams,
+            _ -> [],
         }
     }
 
@@ -250,14 +259,22 @@ impl NodeStore {
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
             .FnDecl(_, _, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .ForEach(_, _, _) or .IfStmt(_, _, _) or .LetElse(_, _, _) or
-            .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _) or .Error -> false,
+            .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Error -> false,
+        }
+    }
+
+    /// A trait declaration's pieces, when the statement is one.
+    fn trait_parts(self, s: StmtId) -> TraitParts? {
+        match self.stmt(s) {
+            .TraitDecl(name, fns) -> TraitParts { name: name, fns: fns },
+            _ -> null,
         }
     }
 
     /// An impl block's pieces, when the statement is one.
     fn impl_parts(self, s: StmtId) -> ImplParts? {
         match self.stmt(s) {
-            .ImplDecl(target, fns) -> ImplParts { target: target, fns: fns },
+            .ImplDecl(of, target, fns) -> ImplParts { of: of, target: target, fns: fns },
             _ -> null,
         }
     }
@@ -281,7 +298,7 @@ impl NodeStore {
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
             .FnDecl(_, _, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .ForEach(_, _, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or
-            .LetElse(_, _, _) or .ImplDecl(_, _) or .Error -> null,
+            .LetElse(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Error -> null,
         }
     }
 
@@ -302,11 +319,14 @@ impl NodeStore {
     }
 }
 
+/// What a trait declaration carries, projected once.
+export type TraitParts = { name: string, fns: List<StmtId> }
+
 /// What an impl block carries, projected once.
-export type ImplParts = { target: string, fns: List<StmtId> }
+export type ImplParts = { of: string, target: string, fns: List<StmtId> }
 
 /// What a fn declaration carries, projected once.
-export type FnParts = { name: string, tparams: List<string>, params: List<Param>, ret: TypeRef, body: ExprId }
+export type FnParts = { name: string, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId }
 
 /// What a struct declaration carries, projected once.
 export type StructParts = { name: string, tparams: List<string>, fields: List<Param> }
