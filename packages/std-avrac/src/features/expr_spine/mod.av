@@ -12,8 +12,7 @@ export fn expr_spine() -> LanguageFeature {
         "fold_binary" | build_fold_binary
         "fold_cmp"    | build_fold_cmp
         "not_expr"    | build_not
-        "fold_index"  | build_fold_index
-        "fold_props"  | build_fold_props
+        "fold_postfix"      | build_fold_postfix
         "fold_with"   | build_fold_with
         "fold_force"  | build_fold_force
         "fold_coalesce" | build_fold_coalesce
@@ -38,8 +37,7 @@ multiplicative = l:unary ( op:( "*" | "/" | "%" ) r:unary )* -> fold_binary(l, o
 unary = "!" v:unary -> not_expr(v) | withed
 withed = v:forced ( "with" "{" wn:NAME ":" wv:expression ( "," wn:NAME ":" wv:expression )* "}" )? -> fold_with(v, wn, wv)
 forced = v:postfix ( f:( "!" | "?" ) )* -> fold_force(v, f)
-postfix = v:indexed ( q:( "?." | "." ) p:NAME ( mo:"(" ( ma:expression ( "," ma:expression )* )? ")" )? )* -> fold_props(v, q, p, mo, ma)
-indexed = v:primary ( "[" i:expression "]" @expect("]", "expected `]` to close the index") )* -> fold_index(v, i)
+postfix = v:primary ( q:( "?." | "." ) p:NAME ( mo:"(" ( ma:expression ( "," ma:expression )* )? ")" )? | "[" i:expression "]" @expect("]", "expected `]` to close the index") | co:"(" ( ca:expression ( "," ca:expression )* )? ")" )* -> fold_postfix(v, q, p, mo, ma, i, co, ca)
 primary = v:NUMBER -> int_lit(v) | n:NAME -> ident(n) | "(" e:expression ")" @expect(")", "expected `)` to close the group") -> e
 """
         builders = rows

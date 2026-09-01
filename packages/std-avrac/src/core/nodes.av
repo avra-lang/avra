@@ -102,6 +102,10 @@ export enum Expr {
     /// Param types ride Param.ty; an unannotated param refuses
     /// until the expected-type channel lands.
     Lambda(params: List<Param>, body: ExprId)
+    /// `subject(args)` — a call on an EXPRESSION: the fn value the
+    /// subject holds is applied. `f(x)` by NAME stays the direct
+    /// Call; this node is the postfix `pick(m)(x)` / `(lambda)(x)`.
+    CallValue(subject: ExprId, args: List<ExprId>)
     /// `subject?.name` — the member of what a nullable CARRIES,
     /// nullable again: an absent subject answers absence, and the
     /// whole chain short-circuits on the first one.
@@ -341,6 +345,8 @@ impl NodeStore {
                                 self.expr_fps(margs)])),
             .Lambda(params, body) ->
                 fp(46, param_fps(params).concat([self.expr_fingerprint(body)])),
+            .CallValue(subject, cargs) ->
+                fp(47, [self.expr_fingerprint(subject)].concat(self.expr_fps(cargs))),
             .Catch(subject, variants, binds, values) ->
                 fp(40, flatten([[self.expr_fingerprint(subject)],
                                 [fp_str(v) for v in variants],

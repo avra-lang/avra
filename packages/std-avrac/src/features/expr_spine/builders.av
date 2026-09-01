@@ -82,6 +82,25 @@ fn build_fold_coalesce(b: Builder) -> Result<LangNode, string> {
     b.wrap_expr(acc)
 }
 
+/// `v ( (args) )*` folds left: each paren group applies the value
+/// so far — `pick(m)(x)` calls what `pick(m)` answered. The open
+/// parens anchor the windows, exactly as the props fold's do.
+fn build_fold_apply(b: Builder) -> Result<LangNode, string> {
+    mut acc = b.expr(0)?
+    let opens = b.tokens(1)?
+    if opens.is_empty() { return b.wrap_expr(acc) }
+    let cargs = b.exprs(2)?
+    let ends: int? = b.span_end()
+    if ends == null { return Result.Err("an application chain without a span") }
+    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
+    for (j, o) in opens.enumerate() {
+        let upto = window_end(opens, j, ends!)
+        acc = b.store.alloc_expr(
+            Expr.CallValue(acc, args_between(b, cargs, o.span.lo, upto)), b.span)
+    }
+    b.wrap_expr(acc)
+}
+
 /// `v ( [i] )*` folds left: `m[i][j]` is `(m[i])[j]`.
 fn build_fold_index(b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
@@ -92,34 +111,73 @@ fn build_fold_index(b: Builder) -> Result<LangNode, string> {
     b.wrap_expr(acc)
 }
 
-/// `v ( .name | ?.name | .name(args) )*` folds left — the parse
-/// takes ANY name (typing refuses the unknown ones), and each LINK
-/// chooses its node: `.` reads, `?.` chains through absence, and a
-/// paren WITNESS in the link's span window makes it a METHOD call
-/// (the witness is what tells `p.double()` from `p.x`). The ladder
-/// owns the parse; Chain's and MethodCall's meanings live with
-/// their features.
-fn build_fold_props(b: Builder) -> Result<LangNode, string> {
+/// `v ( .name | .name(args) | ?.name | [i] | (args) )*` — ONE
+/// postfix star: property links, method calls, chains, indexes,
+/// and applications interleave freely, folded left in SOURCE
+/// order (a three-way merge over the capture families' spans).
+/// The paren WITNESS in a link's window makes a dot a METHOD call;
+/// a bare paren group applies the value built so far. The ladder
+/// owns the parse; each node's meaning lives with its feature.
+fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
     let links = b.tokens(1)?
     let names = b.tokens(2)?
     let opens = b.tokens(3)?
     let margs = b.exprs(4)?
+    let indexes = b.exprs(5)?
+    let calls = b.tokens(6)?
+    let cargs = b.exprs(7)?
     if links.length != names.length { return Result.Err(zip_defect()) }
-    let ends: int? = b.span_end()
-    if ends == null { return Result.Err("a postfix chain without a span") }
-    for (i, t) in names.enumerate() {
-        let upto = window_end(names, i, ends!)
-        let called = opens.any(within(it.span.lo, t.span.lo, upto))
-        if called {
-            if links[i].text == "?." { return Result.Err("`?.` cannot call a method yet — chain methods are recorded") }
-            acc = b.store.alloc_expr(
-                Expr.MethodCall(acc, t.text, args_between(b, margs, t.span.lo, upto)), b.span)
+    let held: int? = b.span_end()
+    if held == null { return Result.Err("a postfix chain without a span") }
+    let ends = held!
+    // the three families' cursors — each turn folds the link whose
+    // anchor comes first in the source
+    mut jn = 0
+    mut ji = 0
+    mut jc = 0
+    while jn < names.length || ji < indexes.length || jc < calls.length {
+        let np = if jn < names.length { names[jn].span.lo } else { ends }
+        let ip = if ji < indexes.length { span_lo(b, indexes[ji]) ?? ends } else { ends }
+        let cp = if jc < calls.length { calls[jc].span.lo } else { ends }
+        if np <= ip && np <= cp {
+            let upto = next_anchor(b, names, indexes, calls, jn + 1, ji, jc, ends)
+            let called = opens.any(within(it.span.lo, np, upto))
+            if called {
+                if links[jn].text == "?." { return Result.Err("`?.` cannot call a method yet — chain methods are recorded") }
+                acc = b.store.alloc_expr(
+                    Expr.MethodCall(acc, names[jn].text, args_between(b, margs, np, upto)), b.span)
+            } else {
+                acc = b.store.alloc_expr(prop_link(links[jn].text, acc, names[jn].text), b.span)
+            }
+            jn = jn + 1
         } else {
-            acc = b.store.alloc_expr(prop_link(links[i].text, acc, t.text), b.span)
+            if ip <= cp {
+                acc = b.store.alloc_expr(Expr.Index(acc, indexes[ji]), b.span)
+                ji = ji + 1
+            } else {
+                let upto = next_anchor(b, names, indexes, calls, jn, ji, jc + 1, ends)
+                acc = b.store.alloc_expr(
+                    Expr.CallValue(acc, args_between(b, cargs, cp, upto)), b.span)
+                jc = jc + 1
+            }
         }
     }
     b.wrap_expr(acc)
+}
+
+/// The nearest UNCONSUMED anchor past the cursors — the window's
+/// end for the link being folded.
+fn next_anchor(b: Builder, names: List<Token>, indexes: List<ExprId>, calls: List<Token>,
+               jn: int, ji: int, jc: int, ends: int) -> int {
+    mut best = ends
+    if jn < names.length && names[jn].span.lo < best { best = names[jn].span.lo }
+    if ji < indexes.length {
+        let lo: int? = span_lo(b, indexes[ji])
+        if lo != null && lo! < best { best = lo! }
+    }
+    if jc < calls.length && calls[jc].span.lo < best { best = calls[jc].span.lo }
+    best
 }
 
 fn within(at: int, after: int, before: int) -> bool {

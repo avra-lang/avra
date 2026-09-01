@@ -2382,15 +2382,9 @@ into features (or spec commitments) when their milestone comes.
   five-fork dot-call dispatch would read as one `??` chain if
   continuations parsed. Probed 2026-09-01; a lexer/BREAK design
   question, not a grammar rule.
-- POSTFIX CALL ON AN EXPRESSION: `make_adder(i)(1)` and
-  `(lambda)(args)` refuse — calls are NAME-headed; a call postfix
-  in the props fold would serve both. Wanting site: rt23's
-  lambda_everywhere attack, bound-first today. Rides an
-  expr_spine touch.
-- MULTILINE STRUCT LITERALS: `Ops {\n  scale: …,\n}` never
-  parsed (pre-existing, found by the closures probes) — the
-  literal's gram admits no BREAKs. Wanting site: corpus/closures
-  writes single-line literals + bound lambdas.
+- [x] POSTFIX CALL + MULTILINE LITERALS — landed with L2
+  2026-09-01 (the unified postfix star; BREAK-tolerant literal
+  grams for structs, decls, and lists).
 - THE LAMBDA BARRIER'S VOICES: return/`?` inside a lambda refuse
   through the top-level wordings ("the top level has none") —
   correct law, misleading flavor. And a keyword PARAM speaks
@@ -3134,13 +3128,27 @@ THE SLICES:
        written-type family went Loc-based (annotations now live
        at expressions too). ZERO new IR: FnAddr + CallPtr,
        prepaid at T3, carry the whole rung.
-  (L2) THE LIST METHOD CORE: map/filter/find/any/all — the FOURTH
-       fork of the one dot-call surface (value impls, TypeName
-       construction, bound/dyn contracts, now BUILTIN
-       vocabularies): a lists-feature registry of method rules,
-       since impls on generic types are a recorded T4 hole.
-       Lowering is a loop per call site with a CallPtr per
-       element.
+  (L2) [x] LANDED 2026-09-01 — THE LIST VOCABULARY: map/filter/
+       find/any/all as the builtin fork of the one dot-call
+       surface. Typing is ONE registry law in checks.av
+       (list_method_call: the fn argument's single seat IS the
+       element, identity-exact; predicates answer bool; `[]`
+       refuses with the typed-let remedy). Lowering is walks.av —
+       one loop skeleton (opened/turn_open/turn_elem/turn_call/
+       turn_close), five aftermaths; early exit is the BREAK
+       IDIOM (store the index past the length); find/any/all ride
+       CELLS under the mut-cell protocol, so ownership costs
+       nothing new. Walks chain, nest, run inside lambdas and
+       generic bodies (Var elements re-judged per specialization),
+       and carry managed elements — 200-churn agreed. LANDED WITH
+       IT, pulled from the backlog by rt24: THE UNIFIED POSTFIX —
+       props, indexes, and calls are ONE star folded in source
+       order (a three-way span merge), so `xs.map(f)[2]`,
+       `pickers()[1]`, `adder(40)(2)`, and `m[k](x)` all read;
+       CallValue is the node (`null()` moved from a parse error
+       to a NAMED typing refusal). Multiline struct, decl, and
+       list literals landed (BREAK-tolerant grams). rt24 11/11;
+       corpus/walks.av is the witness; corpus 50.
   (L3) recorded: the `it` pronoun (parse-time lambda sugar), pipe
        `|>`, mut-ref captures (rung 14 + Systems), fn-value
        equality (refuses — compare_help), closure printing

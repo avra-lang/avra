@@ -540,6 +540,55 @@ export fn seats_judged(cx: TypeCx, e: ExprId, callee: string, ps: List<TypeId>, 
     ret
 }
 
+/// THE LIST VOCABULARY — the builtin fork of the one dot-call
+/// surface: five walks, each judging its fn argument's seats and
+/// answer before any loop exists. Absent for non-list receivers
+/// and unknown names (the impl table gets its turn).
+export fn list_method_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
+    if !walk_name(name) { return null }
+    let elem: TypeId? = match cx.shape_at(subject) {
+        .List(t) -> t,
+        _ -> null,
+    }
+    if elem == null {
+        if cx.shape_at(subject) is .EmptyList { return unknowable_walk(cx, e, name) }
+        return null
+    }
+    let held: Arrow? = walk_arg(cx, e, name, elem!, args)
+    if held == null { return cx.error_type }
+    let arrow = held!
+    if name == "map" { return cx.types.intern(Type.List(arrow.answer)) }
+    if !(cx.types.shape_of(arrow.answer) is .Bool) { return unpredicated(cx, e, name, arrow.answer) }
+    if name == "find" { return cx.types.intern(Type.Opt(elem!)) }
+    if name == "filter" { return cx.type_at(subject) }
+    cx.types.intern(Type.Bool)
+}
+
+/// Membership in the vocabulary — walks.av's list is the truth.
+fn walk_name(name: string) -> bool {
+    walk_names().contains(name)
+}
+
+/// A walk takes exactly ONE fn, whose single seat IS the element.
+fn walk_arg(cx: TypeCx, e: ExprId, name: string, elem: TypeId, args: List<ExprId>) -> Arrow? {
+    if args.length != 1 {
+        let _ = one_fn_wanted(cx, e, name, args.length)
+        return null
+    }
+    let held: Arrow? = cx.types.arrow_parts(cx.type_at(args[0]))
+    if held == null {
+        let _ = fnless_walk(cx, name, args[0])
+        return null
+    }
+    let arrow = held!
+    // LICENSED I9: type identity — the seat IS the element, exactly
+    if arrow.seats.length != 1 || arrow.seats[0].index != elem.index {
+        let _ = seat_not_element(cx, e, name, elem, arrow)
+        return null
+    }
+    held
+}
+
 // ── The voices: every refusal worded HERE, once — the laws above
 // call the verb and stay legible. (DOGFOODING: laws call voices.) ──
 
@@ -610,4 +659,39 @@ export fn wrong_argument(cx: TypeCx, callee: string, j: int, want: TypeId, a: Ex
         error_at("type.mismatch", cx.loc_of(a),
             "argument ${j + 1} of `${callee}` wants `${cx.types.name_of(want)}`, found `${n}`"),
         this_is(n)))
+}
+
+/// A walk on `[]` cannot know its elements.
+fn unknowable_walk(cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.list_element", cx.loc_of(e), "`[].${name}` cannot know its elements"),
+        "walked here")
+        with { help: "bind the list under a typed let first — `let xs: List<int> = []`" })
+}
+
+fn one_fn_wanted(cx: TypeCx, e: ExprId, name: string, found: int) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(e), "`${name}` takes one fn, found ${found} arguments"),
+        "this call"))
+}
+
+fn fnless_walk(cx: TypeCx, name: string, a: ExprId) -> TypeId {
+    let n = cx.name_at(a)
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(a), "`${name}` wants a fn taking the element, found `${n}`"),
+        this_is(n)))
+}
+
+fn seat_not_element(cx: TypeCx, e: ExprId, name: string, elem: TypeId, arrow: Arrow) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(e),
+            "`${name}`'s fn takes the element `${cx.types.name_of(elem)}` — this one is `${cx.types.name_of(cx.types.intern(Type.Fn(arrow.seats, arrow.answer)))}`"),
+        "this call"))
+}
+
+/// A predicate walk's fn must answer bool.
+fn unpredicated(cx: TypeCx, e: ExprId, name: string, got: TypeId) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(e), "`${name}`'s fn must answer `bool`, this one answers `${cx.types.name_of(got)}`"),
+        "this call"))
 }

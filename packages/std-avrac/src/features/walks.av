@@ -1,0 +1,213 @@
+//! The list vocabulary's WALKS — map, filter, find, any, all: one
+//! loop skeleton, five aftermaths. A walk emits the same brackets
+//! `for` does, calls the fn box once per element, and lets the
+//! memory pass own every count (owned element reads, retain-at-pack
+//! pushes, cell settlement — nothing here spells a retain).
+//! Early exit is the BREAK IDIOM: store the index past the length
+//! and the condition ends the loop.
+use core.{ExprId, Reg, Ins, Type, TypeId, BinOp, UnOp, Level}
+
+/// THE VOCABULARY's membership, spelled once — typing's gate, the
+/// dispatch below, and the no-method help all read this list.
+export fn walk_names() -> List<string> {
+    ["map", "filter", "find", "any", "all"]
+}
+
+/// One walk's fixtures: subject, fn box, its code pointer (read
+/// once — loop-invariant), bounds, the index cell the loop steps,
+/// and the element type each turn reads.
+type Walk = { xs: Reg, f: Reg, fp: Reg, len: Reg, idx: Reg, elem: TypeId }
+
+/// The walk dispatch — the builtin fork of the dot-call's
+/// LOWERING. Absent for non-list receivers and unknown names.
+export fn walk_reg(cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> Reg? {
+    let held: TypeId? = match cx.types.shape_of(cx.type_at(subject)) {
+        .List(t) -> t,
+        _ -> null,
+    }
+    if held == null { return null }
+    let elem = held!
+    let first: ExprId? = args.first()
+    if first == null { return null }
+    let farg = first!
+    if name == "map" { return mapped(cx, e, subject, farg, elem) }
+    if name == "filter" { return kept(cx, e, subject, farg, elem) }
+    if name == "find" { return found(cx, e, subject, farg, elem) }
+    if name == "any" { return judged(cx, e, subject, farg, elem, false) }
+    if name == "all" { return judged(cx, e, subject, farg, elem, true) }
+    null
+}
+
+/// `xs.map(f)` — a fresh box, one pushed answer per element.
+fn mapped(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId) -> Reg {
+    let out = cx.result(e)
+    grown_box(cx, out, [])
+    let w = opened(cx, subject, farg, elem)
+    turn_open(cx, w)
+    let v = turn_elem(cx, w)
+    push_slot(cx, out, turn_call(cx, w, v, mapped_to(cx, e)))
+    turn_close(cx, w)
+    out
+}
+
+/// `xs.filter(p)` — the same box, the elements the predicate keeps.
+fn kept(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId) -> Reg {
+    let out = cx.result(e)
+    grown_box(cx, out, [])
+    let w = opened(cx, subject, farg, elem)
+    turn_open(cx, w)
+    let v = turn_elem(cx, w)
+    cx.emit(Ins.IfStart(turn_call(cx, w, v, bool_ty(cx))))
+    push_slot(cx, out, v)
+    void_arm(cx)
+    void_close(cx)
+    turn_close(cx, w)
+    out
+}
+
+/// `xs.find(p)` — an Opt cell, absent until the first hit, which
+/// also ends the walk.
+fn found(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId) -> Reg {
+    let opt = cx.type_at(e)
+    let seed = absent_of(cx, opt)
+    let cell = cx.mint_ty(opt)
+    cx.emit(Ins.Alloca(cell))
+    cx.emit(Ins.Store(cell, seed))
+    let w = opened(cx, subject, farg, elem)
+    turn_open(cx, w)
+    let v = turn_elem(cx, w)
+    cx.emit(Ins.IfStart(turn_call(cx, w, v, bool_ty(cx))))
+    cx.emit(Ins.Store(cell, adopted(cx, opt, false, v)))
+    early_exit(cx, w)
+    void_arm(cx)
+    void_close(cx)
+    turn_close(cx, w)
+    let dst = cx.result(e)
+    cx.emit(Ins.Load(dst, cell))
+    dst
+}
+
+/// `xs.any(p)` / `xs.all(p)` — a bool cell seeded with the verdict
+/// an EMPTY walk gives; the first counterexample flips it and ends
+/// the walk.
+fn judged(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId, all: bool) -> Reg {
+    let seed = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.ConstBool(seed, all))
+    let cell = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Alloca(cell))
+    cx.emit(Ins.Store(cell, seed))
+    let w = opened(cx, subject, farg, elem)
+    turn_open(cx, w)
+    let v = turn_elem(cx, w)
+    let p = turn_call(cx, w, v, bool_ty(cx))
+    cx.emit(Ins.IfStart(flipping(cx, p, all)))
+    let flipped = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.ConstBool(flipped, !all))
+    cx.emit(Ins.Store(cell, flipped))
+    early_exit(cx, w)
+    void_arm(cx)
+    void_close(cx)
+    turn_close(cx, w)
+    let dst = cx.result(e)
+    cx.emit(Ins.Load(dst, cell))
+    dst
+}
+
+// ── The skeleton ────────────────────────────────────────────────
+
+/// The fixtures, minted before the brackets open.
+fn opened(cx: LowerCx, subject: ExprId, farg: ExprId, elem: TypeId) -> Walk {
+    let xs = cx.reg_of(subject)
+    let f = cx.reg_of(farg)
+    let fp = slot_read(cx, f, 0, null)
+    let len = cx.mint_shape(Type.Int)
+    cx.emit(Ins.CallRt(len, "avra_array_len", [xs]))
+    let zero = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(zero, 0))
+    let idx = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Alloca(idx))
+    cx.emit(Ins.Store(idx, zero))
+    Walk { xs: xs, f: f, fp: fp, len: len, idx: idx, elem: elem }
+}
+
+/// LoopStart, the condition, and the turn's scope.
+fn turn_open(cx: LowerCx, w: Walk) {
+    cx.emit(Ins.LoopStart)
+    let at = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Load(at, w.idx))
+    let more = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Bin(more, BinOp.Lt, at, w.len))
+    cx.emit(Ins.LoopCond(more))
+    cx.emit(Ins.ScopeEnter(Level.Application))
+}
+
+/// This turn's element — a RUNTIME index, so the read stays raw.
+fn turn_elem(cx: LowerCx, w: Walk) -> Reg {
+    let here = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Load(here, w.idx))
+    let v = cx.mint_ty(w.elem)
+    cx.emit(Ins.CallRt(v, "avra_array_get", [w.xs, here]))
+    v
+}
+
+/// The fn box asked about this element.
+fn turn_call(cx: LowerCx, w: Walk, v: Reg, ret: TypeId) -> Reg {
+    let r = cx.mint_ty(ret)
+    cx.emit(Ins.CallPtr(r, w.fp, [w.f, v]))
+    r
+}
+
+/// Step, settle the turn's scope, close the back edge.
+fn turn_close(cx: LowerCx, w: Walk) {
+    let again = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Load(again, w.idx))
+    let one = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(one, 1))
+    let next = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Bin(next, BinOp.Add, again, one))
+    cx.emit(Ins.Store(w.idx, next))
+    cx.emit(Ins.ScopeExit(null))
+    cx.emit(Ins.LoopEnd)
+}
+
+/// The BREAK idiom: an index past the length ends the walk.
+fn early_exit(cx: LowerCx, w: Walk) {
+    cx.emit(Ins.Store(w.idx, w.len))
+}
+
+/// An effects-only ARM closes on a throwaway zero — shared with
+/// the statement-if's lowering; every valueless region speaks
+/// these two verbs.
+export fn void_arm(cx: LowerCx) {
+    let td = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(td, 0))
+    cx.emit(Ins.ArmEnd(td))
+}
+
+/// The valueless region's LAST arm and merge — nothing reads dst.
+export fn void_close(cx: LowerCx) {
+    let ed = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(ed, 0))
+    let dst = cx.mint_shape(Type.Int)
+    cx.emit(Ins.RegionEnd(dst, ed))
+}
+
+/// `any` fires ON the predicate; `all` fires on its failure.
+fn flipping(cx: LowerCx, p: Reg, all: bool) -> Reg {
+    if !all { return p }
+    let np = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Un(np, UnOp.Not, p))
+    np
+}
+
+/// What `map` answers per element — the result list's own element.
+fn mapped_to(cx: LowerCx, e: ExprId) -> TypeId {
+    match cx.types.shape_of(cx.type_at(e)) {
+        .List(u) -> u,
+        _ -> cx.type_at(e),
+    }
+}
+
+fn bool_ty(cx: LowerCx) -> TypeId {
+    cx.types.intern(Type.Bool)
+}

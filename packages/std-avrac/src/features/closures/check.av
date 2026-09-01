@@ -2,8 +2,8 @@
 //! rides the recorded expected-type channel), the body typed under
 //! the params behind the return barrier, the whole wearing
 //! `fn(params) -> body`.
-use core.{ExprId, Type, TypeId, Param}
-use features.{TypeCx, spoken}
+use core.{ExprId, Type, TypeId, Arrow, Param}
+use features.{TypeCx, spoken, seats_judged, this_is}
 use diagnostics.{error_at, pointed}
 
 fn lambda_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -30,7 +30,24 @@ fn erred(cx: TypeCx, ty: TypeId) -> bool {
     cx.types.shape_of(ty) is .Error
 }
 
+/// A call on an EXPRESSION: whatever fn value the subject holds,
+/// its seats judge — the same one law every call shape shares.
+fn call_value_type(cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> TypeId {
+    let held: Arrow? = cx.types.arrow_parts(cx.type_at(subject))
+    if held != null { return seats_judged(cx, e, cx.name_at(subject), held!.seats, held!.answer, args) }
+    if cx.shape_at(subject) is .Error { return cx.error_type }
+    uncallable(cx, e, subject)
+}
+
 // ── The voices ──
+
+fn uncallable(cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {
+    let n = cx.name_at(subject)
+    spoken(cx, pointed(
+        error_at("type.lambda", cx.loc_of(e), "this is not callable — it holds a `${n}`"),
+        this_is(n))
+        with { help: "only fns and fn-typed values take arguments" })
+}
 
 fn unannotated_param(cx: TypeCx, e: ExprId, name: string) -> TypeId {
     spoken(cx, pointed(

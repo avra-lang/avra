@@ -92,4 +92,39 @@ spec "features/lists" {
             shown("enum E {\n    boom\n}\nfn f() -> Result<List<int>, E> {\n    []\n}\nmatch f() {\n    .Ok(xs) -> xs.length\n    .Err(e) -> 0 - 1\n}") == "0"
         }
     }
+    given "the walk vocabulary (L2)" {
+        then "map answers a fresh list of the fn's answers" {
+            shown("[1, 2, 3].map((x: int) -> x * 2)[2]") == "6"
+        }
+        then "filter keeps what the predicate blesses" {
+            shown("[1, 2, 3, 4].filter((x: int) -> x % 2 == 0).length") == "2"
+        }
+        then "find answers the first hit" {
+            shown("[3, 8, 5].find((x: int) -> x > 4) ?? 0 - 1") == "8"
+        }
+        then "find answers absence on a miss" {
+            shown("[3, 8, 5].find((x: int) -> x > 9) ?? 0 - 1") == "-1"
+        }
+        then "any gives the empty walk's verdict" {
+            shown("let none: List<int> = []\nnone.any((x: int) -> true)") == "false"
+        }
+        then "all gives the empty walk's verdict" {
+            shown("let none: List<int> = []\nnone.all((x: int) -> false)") == "true"
+        }
+        then "walks chain, and the unified postfix indexes the answer" {
+            shown("[1, 2, 3].filter((x: int) -> x > 1).map((x: int) -> x * 10)[1]") == "30"
+        }
+        then "a walk's fn seat must BE the element" {
+            refused_with("[1, 2].filter((s: string) -> true)\n2",
+                         "`filter`'s fn takes the element `int`")
+        }
+        then "a predicate answers bool or refuses" {
+            refused_with("[1, 2].filter((x: int) -> x + 1)\n2",
+                         "`filter`'s fn must answer `bool`")
+        }
+        then "the empty literal cannot be walked" {
+            refused_with("[].map((x: int) -> x)\n2",
+                         "`[].map` cannot know its elements")
+        }
+    }
 }

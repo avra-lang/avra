@@ -2,8 +2,8 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, Type, TypeId, Arrow, StmtId, TypeRef, StructSig}
-use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant, bound_name, seats_judged}
+use core.{ExprId, Type, TypeId, Arrow, StmtId, TypeRef, StructSig, joined}
+use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant, bound_name, seats_judged, list_method_call, walk_names}
 use diagnostics.{error_at, pointed}
 
 fn method_call_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -27,6 +27,8 @@ fn methoded(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<Exp
     if contracted != null { return contracted! }
     let fielded: TypeId? = fn_field_call(cx, e, subject, name, args)
     if fielded != null { return fielded! }
+    let walked: TypeId? = list_method_call(cx, e, subject, name, args)
+    if walked != null { return walked! }
     let named: string? = receiver_name(cx, subject)
     if named == null { return no_methods_here(cx, subject, name) }
     let target = named!
@@ -67,7 +69,7 @@ fn no_methods_here(cx: TypeCx, subject: ExprId, name: string) -> TypeId {
     spoken(cx, pointed(
         error_at("type.method", cx.loc_of(subject), "`.${name}(…)` calls a method, and `${n}` has none"),
         this_is(n))
-        with { help: "methods live on declared types — builtin vocabularies are recorded" })
+        with { help: "the list vocabulary today: ${joined(walk_names(), ", ")}" })
 }
 
 fn no_such_method(cx: TypeCx, e: ExprId, target: string, name: string) -> TypeId {

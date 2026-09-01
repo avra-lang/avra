@@ -8,7 +8,13 @@ export type ClosureSemantics = { }
 
 impl NodeSemantics for ClosureSemantics {
     fn kids(self, e: Expr) -> List<ExprId> {
-        []
+        // the LAMBDA's body hides (control-owning); a CallValue's
+        // subject and arguments are ordinary children
+        // LICENSED I22: a feature cannot enumerate OTHER features' variants
+        match e {
+            .CallValue(subject, args) -> [subject].concat(args),
+            _ -> [],
+        }
     }
 
     fn resolve(self, cx: ResolveCx, e: ExprId) {
@@ -20,10 +26,18 @@ impl NodeSemantics for ClosureSemantics {
     }
 
     fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
-        lambda_type(cx, e)
+        // LICENSED I22: a feature cannot enumerate OTHER features' variants
+        match cx.store.expr(e) {
+            .CallValue(subject, args) -> call_value_type(cx, e, subject, args),
+            _ -> lambda_type(cx, e),
+        }
     }
 
     fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
-        lambda_reg(cx, e)
+        // LICENSED I22: a feature cannot enumerate OTHER features' variants
+        match cx.store.expr(e) {
+            .CallValue(subject, args) -> call_value_reg(cx, e, subject, args),
+            _ -> lambda_reg(cx, e),
+        }
     }
 }

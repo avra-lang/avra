@@ -1,7 +1,7 @@
 //! The if-expression's NodeSemantics: dispatch only. The typing rule
 //! lives in check.av, evaluation in eval.av, lowering in lower.av.
-use core.{Expr, Stmt, ExprId, StmtId, TypeId, Reg, Ins, Type}
-use features.{NodeSemantics, StmtSemantics, ResolveCx, StmtResolveCx, TypeCx, StmtTypeCx, LowerCx, StmtLowerCx, require_bool, nothing}
+use core.{Expr, Stmt, ExprId, StmtId, TypeId, Reg, Ins}
+use features.{NodeSemantics, StmtSemantics, ResolveCx, StmtResolveCx, TypeCx, StmtTypeCx, LowerCx, StmtLowerCx, require_bool, nothing, void_arm, void_close}
 
 export type IfSemantics = { }
 
@@ -81,12 +81,7 @@ fn lower_if_stmt(cx: StmtLowerCx, c: ExprId, t: List<StmtId>, e: List<StmtId>) {
     let ex = cx.expr
     ex.emit(Ins.IfStart(ex.reg_of(c)))
     cx.lower_stmts(t)
-    let td = ex.mint_shape(Type.Int)
-    ex.emit(Ins.ConstInt(td, 0))
-    ex.emit(Ins.ArmEnd(td))
+    void_arm(ex)
     cx.lower_stmts(e)
-    let ed = ex.mint_shape(Type.Int)
-    ex.emit(Ins.ConstInt(ed, 0))
-    let dst = ex.mint_shape(Type.Int)
-    ex.emit(Ins.RegionEnd(dst, ed))
+    void_close(ex)
 }
