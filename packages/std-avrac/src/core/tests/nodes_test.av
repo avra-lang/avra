@@ -9,7 +9,7 @@ fn at(lo: int, hi: int) -> Span? { Span { lo: lo, hi: hi } }
 
 /// A written type, as the parser would hand it over.
 fn ty(name: string, optional: bool) -> TypeRef {
-    TypeRef { name: name, args: [], optional: optional, span: null }
+    TypeRef { name: name, args: [], optional: optional, dynamic: false, span: null }
 }
 
 /// One param carrying a written type.
@@ -121,7 +121,7 @@ spec "core/nodes" {
             let s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1), null)
             let plain = param("x", ty("int", false))
-            let applied = TypeRef { name: "List", args: [ty("int", false)], optional: false, span: null }
+            let applied = TypeRef { name: "List", args: [ty("int", false)], optional: false, dynamic: false, span: null }
             let a = s.alloc_stmt(Stmt.FnDecl("f", [], [plain], ty("int", false), body), null)
             let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", applied)], ty("int", false), body), null)
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
@@ -129,8 +129,8 @@ spec "core/nodes" {
         then "the ELEMENT is part of identity: `List<int>` vs `List<bool>`" {
             let s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1), null)
-            let li = TypeRef { name: "List", args: [ty("int", false)], optional: false, span: null }
-            let lb = TypeRef { name: "List", args: [ty("bool", false)], optional: false, span: null }
+            let li = TypeRef { name: "List", args: [ty("int", false)], optional: false, dynamic: false, span: null }
+            let lb = TypeRef { name: "List", args: [ty("bool", false)], optional: false, dynamic: false, span: null }
             let a = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", li)], ty("int", false), body), null)
             let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", lb)], ty("int", false), body), null)
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
@@ -138,16 +138,16 @@ spec "core/nodes" {
         then "NESTING is part of identity: `List<int>` vs `List<List<int>>`" {
             let s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1), null)
-            let li = TypeRef { name: "List", args: [ty("int", false)], optional: false, span: null }
-            let ll = TypeRef { name: "List", args: [li], optional: false, span: null }
+            let li = TypeRef { name: "List", args: [ty("int", false)], optional: false, dynamic: false, span: null }
+            let ll = TypeRef { name: "List", args: [li], optional: false, dynamic: false, span: null }
             let a = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", li)], ty("int", false), body), null)
             let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", ll)], ty("int", false), body), null)
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "two spellings of one type still agree — spans never count" {
             let s = new_node_store()
-            let here = TypeRef { name: "int", args: [], optional: true, span: at(0, 4) }
-            let there = TypeRef { name: "int", args: [], optional: true, span: at(90, 94) }
+            let here = TypeRef { name: "int", args: [], optional: true, dynamic: false, span: at(0, 4) }
+            let there = TypeRef { name: "int", args: [], optional: true, dynamic: false, span: at(90, 94) }
             let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", here)]), null)
             let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", there)]), null)
             s.stmt_fingerprint(a) == s.stmt_fingerprint(b)

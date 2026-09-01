@@ -138,7 +138,7 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
         .Int or .Error or .TypeName(_, _) or .Var(_, _, _) -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
         .Opt(inner) -> opt_ll_type(lc, types, inner),
-        .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or
+        .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
         .Res(_, _) or .App(_, _, _) or .Null or .EmptyList -> avra_llvm_pointer_type(lc),
     }
 }
@@ -162,6 +162,26 @@ fn reg_type(em: Emit, r: Reg) -> ptr {
 }
 
 /// Call a declared fn by name with already-built values.
+/// The indirect call: the fn TYPE derives from the site's own
+/// registers (ret from dst, params from args), so the built type
+/// matches the callee that boxing named — every seat is cast to
+/// its register's declared shape on the way in.
+fn call_ptr_value(em: Emit, d: Reg, f: Reg, args: List<Reg>) -> ptr {
+    let ptys = avra_llvm_type_array_new(args.length)
+    for (j, a) in args.enumerate() {
+        avra_llvm_type_array_set(ptys, j, ll_type_of(em.lc, em.types, em.tys[a.index]))
+    }
+    let fty = avra_llvm_function_type(ll_type_of(em.lc, em.types, em.tys[d.index]), ptys, args.length, 0)
+    avra_llvm_type_array_free(ptys)
+    let vargs = avra_llvm_value_array_new(args.length)
+    for (j, a) in args.enumerate() {
+        avra_llvm_value_array_set(vargs, j,
+            avra_llvm_cast_to_type(em.b, em.vals[a.index], ll_type_of(em.lc, em.types, em.tys[a.index])))
+    }
+    let fp = avra_llvm_cast_to_type(em.b, em.vals[f.index], avra_llvm_pointer_type(em.lc))
+    avra_llvm_build_call(em.b, fty, fp, vargs, args.length, "")
+}
+
 fn call(em: Emit, name: string, args: List<ptr>) -> ptr {
     let f = avra_llvm_get_named_function(em.m, name)
     let arr = avra_llvm_value_array_new(args.length)
@@ -181,6 +201,9 @@ fn emit_ins(em: Emit, i: Ins) {
         .Pack(dst, elems) -> define(em, pack_value(em, dst, elems)),
         .Extract(_, src, at) -> define(em, avra_llvm_build_extract_value(em.b, em.vals[src.index], at, "x")),
         .Call(_, callee, args) -> define(em, call(em, mangled(callee), [em.vals[a.index] for a in args])),
+        .FnAddr(_, sym) -> define(em, avra_llvm_cast_to_type(em.b,
+            avra_llvm_get_named_function(em.m, mangled(sym)), avra_llvm_int64_type(em.lc))),
+        .CallPtr(d, f, args) -> define(em, call_ptr_value(em, d, f, args)),
         .Release(r) -> released(em, r),
         .Retain(r) -> retained(em, r),
         .RetVal(r) -> ret_value(em, r),

@@ -84,9 +84,12 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
+    // trait NAMES land before any sig resolves — a struct field,
+    // a fn param, or another trait's sig may wear `dyn Show`
+    t.name_traits()
     t.declare_type_sigs()
+    t.declare_trait_sigs()
     t.declare_sigs()
-    t.declare_traits()
     t.declare_impls()
     type_stmts(t, [], p.stmts)
     Typing {
@@ -360,19 +363,32 @@ impl Typer {
         self.error_type
     }
 
-    /// Every trait's contract: the name registers, and each SIG
-    /// declares under its own bodyless fn stmt — the self seat
-    /// OMITTED (a bound call's receiver fills it trivially).
-    fn declare_traits(self) {
+    /// Wave one of the trait contract: every NAME registers before
+    /// any sig anywhere resolves, so `dyn Show` reads regardless
+    /// of declaration order.
+    fn name_traits(self) {
         for s in self.p.stmts {
             let parts: TraitParts? = self.p.store.trait_parts(s)
-            if parts != null { self.declare_trait(s, parts!.name, parts!.fns) }
+            if parts != null { self.name_trait(parts!.name, s) }
         }
     }
 
-    fn declare_trait(self, s: StmtId, name: string, fns: List<StmtId>) {
+    fn name_trait(self, name: string, s: StmtId) {
         mut ts = self.traits
         ts.set(name, s)
+    }
+
+    /// Wave two: each SIG declares under its own bodyless fn stmt —
+    /// the self seat OMITTED (a bound call's receiver fills it
+    /// trivially).
+    fn declare_trait_sigs(self) {
+        for s in self.p.stmts {
+            let parts: TraitParts? = self.p.store.trait_parts(s)
+            if parts != null { self.declare_trait(parts!.name, parts!.fns) }
+        }
+    }
+
+    fn declare_trait(self, name: string, fns: List<StmtId>) {
         for f in fns { self.declare_trait_sig(name, f) }
     }
 
@@ -415,8 +431,12 @@ impl Typer {
         fn_sig_of(self.decls[f!.index])
     }
 
-    /// Whether a type's NAME registered an impl for the trait.
+    /// Whether a type's NAME registered an impl for the trait — and
+    /// a `dyn` of the very trait implements it BY CONSTRUCTION:
+    /// every boxed value already answers the contract.
     fn implements(self, ty: TypeId, tname: string) -> bool {
+        let worn: string? = dyn_contract(self.types.shape_of(ty))
+        if worn != null { return worn! == tname }
         let n: string? = declared_name(self.types.shape_of(ty))
         if n == null { return false }
         self.trait_impls.get(trait_key(tname, n!)) ?? false
@@ -532,6 +552,16 @@ impl Typer {
             params: [ty].concat(self.seatless_params(f, fp)),
             ret: self.annotated(f, fp.ret),
         }))
+        // one impl owns each name — a second declaration would
+        // silently shadow the first at the shared symbol
+        let taken: StmtId? = self.methods.get(method_symbol(target, fp.name))
+        if taken != null {
+            self.speak(pointed(
+                error_at("type.impl", self.stmt_loc(f), "`${target}.${fp.name}` is declared twice"),
+                "declared again here")
+                with { help: "one `impl` block owns each method name — rename or merge" })
+            return
+        }
         mut ms = self.methods
         ms.set(method_symbol(target, fp.name), f)
     }
@@ -657,8 +687,22 @@ impl Typer {
     /// What a written type stands for, arguments included: a bare
     /// name, or an application like `List<int>`.
     fn written_type(self, s: StmtId, t: TypeRef) -> TypeId {
+        if t.dynamic { return self.dyn_type(s, t.name) }
         if t.args.is_empty() { return self.named_type(s, t.name) }
         self.applied(s, t)
+    }
+
+    /// `dyn Name` wears a declared trait — the contract is the type.
+    fn dyn_type(self, s: StmtId, name: string) -> TypeId {
+        let tdecl: StmtId? = self.traits.get(name)
+        if tdecl == null {
+            self.speak(pointed(
+                error_at("type.trait", self.stmt_loc(s), "`dyn ${name}` names no trait"),
+                "written here")
+                with { help: "declare it — `trait ${name} { … }`" })
+            return self.error_type
+        }
+        self.types.intern(Type.Dyn(tdecl!, name))
     }
 
     /// A type APPLIED to arguments. `List<T>` is the only one today —
@@ -919,7 +963,7 @@ impl Typer {
             .App(decl, _, args) ->
                 subbed_fields(self.types, record_sig_of(self.decls[decl.index]), decl, args),
             .Int or .Str or .Bool or .List(_) or .Enum(_, _) or .Res(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or .EmptyList or
+            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Opt(_) or .Null or .EmptyList or
             .Error -> null,
         }
     }
@@ -932,7 +976,7 @@ impl Typer {
             .App(decl, _, args) ->
                 subbed_variants(self.types, variant_sig_of(self.decls[decl.index]), decl, args),
             .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or .EmptyList or
+            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Opt(_) or .Null or .EmptyList or
             .Error -> null,
         }
     }
@@ -975,13 +1019,21 @@ fn selfed(params: List<Param>) -> bool {
     head!.name == "self" && head!.ty == null
 }
 
+/// The trait a `dyn` wears, when the shape is one.
+fn dyn_contract(sh: Type) -> string? {
+    match sh {
+        .Dyn(_, n) -> n,
+        _ -> null,
+    }
+}
+
 /// A declared type's NAME, when its shape carries one.
 fn declared_name(sh: Type) -> string? {
     match sh {
         .Struct(_, n) -> n,
         .Enum(_, n) -> n,
         .Int or .Str or .Bool or .List(_) or .Opt(_) or .Null or
-        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or
+        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or
         .TypeName(_, _) or .EmptyList or .Error -> null,
     }
 }

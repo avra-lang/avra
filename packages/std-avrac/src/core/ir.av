@@ -71,6 +71,10 @@ export enum Ins {
     Pack(dst: Reg, elems: List<Reg>)
     /// One element of a packed value.
     Extract(dst: Reg, src: Reg, at: int)
+    /// A named fn's ADDRESS as a value — the code pointer a dyn
+    /// box (and, ahead, a closure) carries; `CallPtr` calls
+    /// through it. An opaque word to every other consumer.
+    FnAddr(dst: Reg, sym: string)
 
     // Structure: scopes, regions, and calls — all BRACKETS in the
     // one flat list, never labels or jumps. Each branch of a region
@@ -98,6 +102,9 @@ export enum Ins {
     /// caller retains managed arguments in, the callee's exit
     /// releases its params minus what RetVal keeps.
     Call(dst: Reg, callee: string, args: List<Reg>)
+    /// An INDIRECT call through a register-held fn address — dyn
+    /// dispatch (and, ahead, closures). The ABI is `Call`'s.
+    CallPtr(dst: Reg, f: Reg, args: List<Reg>)
     /// A fn body's answer, after its scope has settled its debts.
     RetVal(r: Reg)
     /// An EARLY answer — `return` from anywhere in a body. The
@@ -154,6 +161,8 @@ export fn dst_of(i: Ins) -> Reg? {
         .Pack(d, _) -> d,
         .Extract(d, _, _) -> d,
         .Call(d, _, _) -> d,
+        .FnAddr(d, _) -> d,
+        .CallPtr(d, _, _) -> d,
         .RegionEnd(d, _) -> d,
         .Alloca(d) -> d,
         .Load(d, _) -> d,

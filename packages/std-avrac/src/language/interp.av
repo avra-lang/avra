@@ -91,6 +91,8 @@ fn step(m: Machine, b: Body, pc: int) -> int {
         .Extract(d, src, at) -> put_at(m, d, extract_val(m, src, at), pc),
         .CallRtVoid(callee, args) -> rt_void(m, callee, args, pc),
         .Call(d, callee, args) -> put_at(m, d, call_val(m, callee, args), pc),
+        .FnAddr(d, sym) -> put_at(m, d, fn_addr_val(m, sym), pc),
+        .CallPtr(d, f, args) -> put_at(m, d, call_ptr_val(m, f, args), pc),
         .IfStart(c) -> if truth(m, c) { pc + 1 } else { past_else(b, pc) },
         .SwitchStart(sel, cases) -> arm_start(b, pc, chosen_arm(m, sel, cases)),
         .ArmEnd(gives) -> merge_then(m, b, gives, pc),
@@ -350,11 +352,42 @@ fn loop_header(b: Body, from: int) -> int {
 
 // ── Calls ───────────────────────────────────────────────────────
 
+/// A fn address in EVAL-land is the body's index — opaque, like
+/// the machine address it stands in for.
+fn fn_addr_val(m: Machine, sym: string) -> Val {
+    // LICENSED I3: the INDEX is the value; find answers the element
+    for (j, b) in m.l.fns.enumerate() {
+        if b.name == sym { return Val.I(j) }
+    }
+    defect_val(m, "a fn address without a body survived lowering")
+}
+
+fn call_ptr_val(m: Machine, f: Reg, args: List<Reg>) -> Val {
+    let held: Val = value(m, f)
+    let idx: int? = match held {
+        .I(j) -> j,
+        _ -> null,
+    }
+    if idx == null { return non_address(m) }
+    let at = idx!
+    if at < 0 || at >= m.l.fns.length { return non_address(m) }
+    run_call(m, m.l.fns[at], args)
+}
+
+fn non_address(m: Machine) -> Val {
+    defect_val(m, "an indirect call through a non-address")
+}
+
 fn call_val(m: Machine, callee: string, args: List<Reg>) -> Val {
     let target: Body? = m.l.fns.find(it.name == callee)
     if target == null { return defect_val(m, "a call without a body survived lowering") }
-    let vals = [value(m, r) for r in args]
-    let answer: Val? = run_body(m, target!, vals)
+    run_call(m, target!, args)
+}
+
+/// Both call shapes land here: arguments read, the body run, an
+/// answerless body a defect.
+fn run_call(m: Machine, target: Body, args: List<Reg>) -> Val {
+    let answer: Val? = run_body(m, target, [value(m, r) for r in args])
     answer ?? defect_val(m, "a fn body answered nothing")
 }
 

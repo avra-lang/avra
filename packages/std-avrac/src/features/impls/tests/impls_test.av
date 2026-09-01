@@ -88,4 +88,31 @@ spec "features/impls" {
                          "`P.show` does not wear `Show.show`'s signature")
         }
     }
+    given "dyn — the contract as a value (T3)" {
+        then "a box dispatches through its own impl" {
+            shown("${showed()}let d: dyn Show = P { x: 42 }\nd.show()") == "42"
+        }
+        then "two signatories ride one dyn slot" {
+            shown("${showed()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show(self) -> int {\n        100\n    }\n}\nmut d: dyn Show = P { x: 7 }\nlet a = d.show()\nd = G.hot\na + d.show()") == "107"
+        }
+        then "a non-signatory refuses at the binding" {
+            refused_with("${showp()}type Q = { y: int }\nlet d: dyn Show = Q { y: 1 }\n2",
+                         "`d` declares `dyn Show`, this is `Q`")
+        }
+        then "a dyn call reaches only the contract's methods" {
+            refused_with("${showed()}let d: dyn Show = P { x: 1 }\nd.volume()",
+                         "`Show` has no method `volume`")
+        }
+        then "`dyn` of a non-trait names the remedy" {
+            refused_with("type P = { x: int }\nlet d: dyn P = P { x: 1 }\n2",
+                         "`dyn P` names no trait")
+        }
+        then "a bounded T boxes into a dyn slot — the bound is the proof" {
+            shown("${showed()}fn speak(v: dyn Show) -> int {\n    v.show()\n}\nfn relay<T: Show>(v: T) -> int {\n    speak(v)\n}\nlet pre: dyn Show = P { x: 20 }\nrelay(P { x: 13 }) + relay(pre)") == "33"
+        }
+        then "a second declaration of one method name refuses" {
+            refused_with("${showed()}impl P {\n    fn show(self) -> int {\n        999\n    }\n}\n2",
+                         "`P.show` is declared twice")
+        }
+    }
 }

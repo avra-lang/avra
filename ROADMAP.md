@@ -2372,6 +2372,21 @@ evidence: whenever its own code WANTS a construct the language
 lacks, the ask lands here with the wanting site. Entries graduate
 into features (or spec commitments) when their milestone comes.
 
+- THE EXPECTED-TYPE CHANNEL. A literal cannot hear what its slot
+  declares: `[P{…}, G.hot]` under a `let xs: List<dyn Show>`
+  refuses at its own site (elements judged against the head), and
+  a branch join meets the same wall — the widen laws only run at
+  the boundary AFTER the value typed itself bottom-up. bs2 grew
+  exactly this channel (mono threads expected types through match
+  arms, list elements, if-branches) and its dyn shares the
+  limitation. Wanting site: corpus/dyn.av's heterogeneous list,
+  written with three pre-boxed lets. Lands as its own milestone —
+  the ask threads the driver, not one feature.
+- PROP-READ HELP ON A DYN: `d.show` (no parens) says "no property
+  `show` on `dyn Show`" — when the contract HAS that method, the
+  help should say "write `d.show()`". Wanting site: rt21's
+  no_c3_prop_read. Small; rides any chain-feature touch.
+
 - A PROJECTION PER VARIANT, generated. `fn_sig_of`, `record_sig_of`
   and `variant_sig_of` (features/contract.av) are three copies of
   six lines of ceremony for a one-line concept: guard the option,
@@ -2997,10 +3012,43 @@ THE SLICES:
        instantiation — a never-called `fn f<T: Bogus>` sails; the
        declare-time "is the bound a declared trait" law waits for
        T3's vtable minting, which must look bounds up anyway.
-  (T3) DYN: `dyn Show` values (fat pointer: value + vtable — the
-       box gains a slot), dyn-typed fields/lets, dynamic calls.
-       The Dispatch registry shape our own source uses becomes
-       expressible — self-host's gate.
+  (T3) [x] LANDED 2026-08-31 — DYN, the recorded design executed:
+       the box carries [value, methods…] as an ORDINARY slot array
+       (the same runtime arrays structs ride — zero new memory
+       machinery), and boxing is the FOURTH widening at the one
+       lifting edge (nullable, auto-Ok, empty-list, dyn) — typing
+       records `widens[e]`, the target's shape picks the wrap.
+       Type.Dyn(decl, name), canon "14:", `dyn Name` and
+       `dyn Name?` in the type grammar (TypeRef gains `dynamic` —
+       `dyn` is a bs2 RESERVED word, so the field could not wear
+       the name). Trait NAMES now register before ANY sig
+       resolves (three declare waves) so a struct field, fn
+       param, or another trait's sig wears `dyn Show` regardless
+       of order. IR grew TWO variants — the whole rung's total:
+       FnAddr (a named fn's address as a value) and CallPtr (the
+       indirect call) — both GENERAL machine shapes rung 13's
+       closures reuse; the six consumers paid, `make vocab`
+       green, the indirect fn TYPE derived from the call site's
+       own registers. Typing shares ONE `trait_judged` law
+       between the bound half and the dyn half of the dot-call
+       surface. The Dispatch shape works: dyn struct fields, dyn
+       params/returns, List<dyn Show> walked by for-each,
+       mut-rebinding across impls, dyn riding Result payloads and
+       catch joins, self-referential trait sigs. RT21: 30
+       programs — TWO REAL FINDS fixed: (1) `impl P { fn show }`
+       beside `impl Show for P`'s `show` silently shadowed one
+       body at the shared symbol — now "`P.show` is declared
+       twice" at declare; (2) struct FIELD slots judged by raw
+       type-identity instead of the one assignment door — fields
+       now `accepts` (dyn boxing AND auto-Ok reach fields). Plus
+       a latent-abort class disarmed: matches spelled directly on
+       fn-field call results skip exhaustiveness (the recorded
+       discipline) — receiver_name and walked_elem got annotated
+       binds; a new Type variant now breaks them at compile time.
+       V1 SCOPE, recorded: a heterogeneous list LITERAL
+       (`[P{…}, G.hot]` under `List<dyn Show>`) refuses — bs2
+       shares this exact shape (box under typed lets, then
+       select); the cure is the expected-type channel (backlog).
   (T4) recorded: GENERIC IMPLS (`impl Show for List<T>`, generic
        methods, impl tparams — T2's round found the refusals still
        promising "arrive with traits" after traits landed; the

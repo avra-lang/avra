@@ -3,7 +3,7 @@
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
 use core.{ExprId, Type, TypeId, StmtId, TypeRef}
-use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant}
+use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant, bound_name}
 use diagnostics.{error_at, pointed}
 
 fn method_call_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -23,6 +23,8 @@ fn methoded(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<Exp
     if built != null { return built! }
     let bound: TypeId? = bounded_call(cx, e, subject, name, args)
     if bound != null { return bound! }
+    let contracted: TypeId? = dyn_call(cx, e, subject, name, args)
+    if contracted != null { return contracted! }
     let named: string? = receiver_name(cx, subject)
     if named == null { return no_methods_here(cx, subject, name) }
     let target = named!
@@ -43,11 +45,15 @@ fn methoded(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<Exp
 /// The name a receiver's type answers to — the impl table's key.
 /// Generic receivers wait for T2 (the impl's own tparams).
 fn receiver_name(cx: TypeCx, subject: ExprId) -> string? {
-    match cx.shape_at(subject) {
+    // the annotated bind RESTORES exhaustiveness checking (the
+    // closure-field-call discipline) — matched directly, a new
+    // Type variant would abort at runtime instead of failing here
+    let sh: Type = cx.shape_at(subject)
+    match sh {
         .Struct(_, n) -> n,
         .Enum(_, n) -> n,
         .Int or .Str or .Bool or .List(_) or .Res(_, _) or .App(_, _, _) or
-        .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Opt(_) or .Null or
         .EmptyList or .Error -> null,
     }
 }
@@ -74,6 +80,20 @@ fn wrong_method_arity(cx: TypeCx, e: ExprId, target: string, name: string, wants
         error_at("type.method", cx.loc_of(e),
             "`${target}.${name}` takes ${wants} arguments beside `self`, found ${found}"),
         "this call"))
+}
+
+fn no_trait_method(cx: TypeCx, e: ExprId, trait_name: string, name: string, tname: string) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.method", cx.loc_of(e), "`${trait_name}` has no method `${name}`"),
+        "called here")
+        with { help: "the bound decides what `${tname}` can do" })
+}
+
+fn no_dyn_method(cx: TypeCx, e: ExprId, tname: string, name: string) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.method", cx.loc_of(e), "`${tname}` has no method `${name}`"),
+        "called here")
+        with { help: "the contract decides what a `dyn ${tname}` can do" })
 }
 
 fn wrong_method_argument(cx: TypeCx, target: string, name: string, j: int, want: TypeId, a: ExprId) {
@@ -110,13 +130,29 @@ fn bounded_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List
             "called here")
             with { help: "add a bound — `<${tname}: SomeTrait>`" })
     }
-    let found: FnSig? = cx.trait_sig(trait_name, name)
-    if found == null {
-        return spoken(cx, pointed(
-            error_at("type.method", cx.loc_of(e), "`${trait_name}` has no method `${name}`"),
-            "called here")
-            with { help: "the bound decides what `${tname}` can do" })
+    trait_judged(cx, e, trait_name, name, args) ?? no_trait_method(cx, e, trait_name, name, tname)
+}
+
+/// A method on a CONTRACT value: the trait's sig judges (self
+/// omitted — the boxed value fills that seat at dispatch); the
+/// runtime answers through the box. Absent for every non-dyn
+/// receiver.
+fn dyn_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
+    let sh: Type = cx.shape_at(subject)
+    let tname: string? = match sh {
+        .Dyn(_, n) -> n,
+        _ -> null,
     }
+    if tname == null { return null }
+    trait_judged(cx, e, tname!, name, args) ?? no_dyn_method(cx, e, tname!, name)
+}
+
+/// The contract's judgment, shared by the bound and dyn halves:
+/// the trait's sig judges arity and every seat — or absence when
+/// the trait lacks the method (each caller speaks its own remedy).
+fn trait_judged(cx: TypeCx, e: ExprId, trait_name: string, name: string, args: List<ExprId>) -> TypeId? {
+    let found: FnSig? = cx.trait_sig(trait_name, name)
+    if found == null { return null }
     let sig = found!
     if args.length != sig.params.length {
         return wrong_method_arity(cx, e, trait_name, name, sig.params.length, args.length)
@@ -139,10 +175,3 @@ fn var_bound(cx: TypeCx, subject: ExprId) -> BoundSeat? {
     }
 }
 
-fn bound_name(cx: TypeCx, decl: StmtId, j: int) -> string {
-    let tb = cx.store.decl_tbounds(decl)
-    if j >= tb.length { return "" }
-    let ann: TypeRef? = tb[j].ty
-    if ann == null { return "" }
-    ann!.name
-}

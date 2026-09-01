@@ -31,6 +31,26 @@ fn is_box_call(i: Ins) -> bool {
     }
 }
 
+/// The dyn subject: one contract, one signatory, one boxed call.
+fn dyn_read() -> string {
+    "trait Show {\n    fn show(self) -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show(self) -> int {\n        self.x\n    }\n}\nlet d: dyn Show = P { x: 3 }\nd.show()"
+}
+
+fn addr_syms(l: Lowered) -> List<string> {
+    mut out: List<string> = []
+    for i in l.entry.ins {
+        match i {
+            .FnAddr(_, sym) -> out.push(sym),
+            _ -> {}
+        }
+    }
+    out
+}
+
+fn call_ptrs(l: Lowered) -> int {
+    l.entry.ins.filter((i: Ins) -> i is .CallPtr).length
+}
+
 /// A `string?` made and read through `??` — the niche subject.
 fn niche_read() -> string {
     "fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(true) ?? \"y\""
@@ -126,6 +146,18 @@ spec "language/lower" {
         then "every row names a distinct contract" {
             let names = [s.name for s in rt_sigs()]
             distinct(names).length == names.length
+        }
+    }
+    given "the dyn box and its indirect call (T3)" {
+        then "boxing writes one address per trait method, qualified" {
+            let syms = addr_syms(ir_of(dyn_read()))
+            syms.length == 1 && syms[0] == "P.show"
+        }
+        then "the call goes through the pointer, not a name" {
+            call_ptrs(ir_of(dyn_read())) == 1
+        }
+        then "a boxed empty contract carries the value alone" {
+            addr_syms(ir_of("trait Mark {\n}\ntype P = { x: int }\nimpl Mark for P {\n}\nlet d: dyn Mark = P { x: 1 }\n2")).length == 0
         }
     }
 }

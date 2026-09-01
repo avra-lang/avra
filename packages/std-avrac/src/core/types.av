@@ -47,6 +47,11 @@ export enum Type {
     /// runtime, exactly an enum's layout — which is why the enum
     /// machinery serves it whole.
     Res(ok: TypeId, err: TypeId)
+    /// `dyn Trait` — a value known only by its CONTRACT: a boxed
+    /// pair of the value and its methods (spec 5.x, the
+    /// heterogeneity hatch — dispatch cost made visible, P7).
+    /// Nominal to the trait's declaration.
+    Dyn(decl: StmtId, name: string)
     /// The `null` literal's own type: it inhabits every `Opt` and
     /// nothing else, which is what makes `let x: int = null` refuse.
     Null
@@ -78,7 +83,7 @@ export fn new_type_registry() -> TypeRegistry {
 export fn ptr_shape(t: Type) -> bool {
     match t {
         .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
-        .Res(_, _) or .App(_, _, _) or .Null or .EmptyList -> true,
+        .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Null or .EmptyList -> true,
         .Int or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) -> false,
     }
 }
@@ -102,6 +107,7 @@ impl TypeRegistry {
             .Res(ok, err) -> "10:${ok.index}.${err.index}",
             .Var(decl, ordinal, _) -> "11:${decl.index}.${ordinal}",
             .App(decl, _, args) -> "12:${decl.index}.${joined(["${a.index}" for a in args], ".")}",
+            .Dyn(decl, _) -> "14:${decl.index}",
         }
     }
 
@@ -166,7 +172,7 @@ impl TypeRegistry {
             .App(decl, name, aa) ->
                 self.intern(Type.App(decl, name, [self.substituted(a, target, args) for a in aa])),
             .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-            .TypeName(_, _) or .Null or .EmptyList or .Error -> ty,
+            .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error -> ty,
         }
     }
 
@@ -178,6 +184,7 @@ impl TypeRegistry {
             .Bool -> "bool",
             .List(elem) -> "List<${self.name_of(elem)}>",
             .Struct(_, name) -> name,
+            .Dyn(_, name) -> "dyn ${name}",
             .Enum(_, name) -> name,
             .TypeName(_, name) -> "type ${name}",
             .Opt(inner) -> "${self.name_of(inner)}?",

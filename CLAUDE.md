@@ -296,7 +296,8 @@ against these before writing; probe in scratch when unsure.
 - Function types are spelled `fn(int) -> bool`, not `(int) -> bool`.
 - Multi-line fn signatures parse fine (probed) — stacked params with
   a trailing comma, or aligned continuation lines. Wrap wide ones.
-- `ref`, `none`, `shape`, and `table` are reserved words — including
+- `ref`, `none`, `shape`, `dyn`, and `table` are reserved words
+  (`dyn` refuses as a FIELD name: "expected field name" at the decl) — including
   as variable and method names; `then` refuses as a struct/enum
   field name, and `given` and `spec` refuse as LOCALS (the spec
   DSL's words are lexed even in ordinary code: "expected variable

@@ -3,7 +3,7 @@
 //! words. A LAW extracts at its SECOND: a rule copied by hand
 //! disagrees with itself the day the copies drift (`member_type_of`
 //! serves the bare read and the chain for exactly that reason).
-use core.{ExprId, TypeId, Type, ResSides, filled}
+use core.{ExprId, TypeId, Type, ResSides, StmtId, TypeRef, filled}
 use diagnostics.{Diag, error_at, pointed}
 
 /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -84,9 +84,46 @@ fn other_accepts(cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
         cx.widen(e, want)
         return true
     }
+    if dyn_accepts(cx, e, got, want) { return true }
     res_accepts(cx, e, got, want)
 }
 
+/// A signatory LIFTS into its contract — the boxing widen, the
+/// fourth form at the one edge (nullable, auto-Ok, empty-list,
+/// dyn). Only a type that can SIGN boxes; a value already
+/// dyn-shaped met the identity case and never re-boxes.
+fn dyn_accepts(cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
+    let tname: string? = match cx.types.shape_of(want) {
+        .Dyn(_, n) -> n,
+        _ -> null,
+    }
+    if tname == null { return false }
+    if !boxable(cx, got, tname!) { return false }
+    cx.widen(e, want)
+    true
+}
+
+/// Whether a value can sign the contract: a concrete implementor,
+/// or a type parameter whose BOUND is the very trait — each
+/// instantiation re-proves the bound, so the abstract body may box
+/// (an instantiation that arrives ALREADY dyn lifts by identity).
+fn boxable(cx: TypeCx, got: TypeId, tname: string) -> bool {
+    if cx.implements(got, tname) { return true }
+    match cx.types.shape_of(got) {
+        .Var(decl, j, _) -> bound_name(cx, decl, j) == tname,
+        _ -> false,
+    }
+}
+
+/// The bound a tparam SEAT declares — "" when unconstrained. The
+/// one law both the bounded-call and the boxing widen read.
+export fn bound_name(cx: TypeCx, decl: StmtId, j: int) -> string {
+    let tb = cx.store.decl_tbounds(decl)
+    if j >= tb.length { return "" }
+    let ann: TypeRef? = tb[j].ty
+    if ann == null { return "" }
+    ann!.name
+}
 
 /// THE JOIN: the one type two branches can BOTH answer with, or
 /// absent when there is none. Equal types join to themselves; a
@@ -257,7 +294,7 @@ export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: StmtId, bound: Li
         .App(wd, _, wa) -> app_unifies(cx, wd, wa, got, target, bound),
         // LICENSED I9: type identity — interned ids ARE the agreement
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Null or .EmptyList or .Error -> want.index == got.index,
+        .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error -> want.index == got.index,
     }
 }
 
@@ -310,7 +347,7 @@ fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: StmtId, 
 /// (`instantiation_lawful`), so nothing smuggles past by wearing T.
 export fn slot_worthy(sh: Type) -> bool {
     match sh {
-        .Int or .Bool or .Struct(_, _) or .Enum(_, _) or
+        .Int or .Bool or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
         .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) -> true,
         .Str or .Opt(_) or .Null or .EmptyList or .Error -> false,
     }
@@ -327,7 +364,7 @@ export fn unlawful_side(cx: TypeCx, ty: TypeId) -> TypeId? {
         .Opt(inner) -> unlawful_side(cx, inner),
         .App(_, _, args) -> args.find(unlawful_side(cx, it) != null),
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Var(_, _, _) or .Null or .EmptyList or .Error -> null,
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Null or .EmptyList or .Error -> null,
     }
 }
 
@@ -350,7 +387,7 @@ export fn fully_bound(cx: TypeCx, ty: TypeId, target: StmtId, bound: List<TypeId
         .Res(ok, err) -> fully_bound(cx, ok, target, bound) && fully_bound(cx, err, target, bound),
         .App(_, _, args) -> args.all(fully_bound(cx, it, target, bound)),
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Null or .EmptyList or .Error -> true,
+        .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error -> true,
     }
 }
 
