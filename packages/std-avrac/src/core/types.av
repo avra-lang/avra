@@ -10,30 +10,19 @@ export type TypeId = { index: int }
 /// carry their children as interned ids, so equality stays an int
 /// comparison at every depth.
 export enum Type {
+    // ── The words: one unmanaged register each. ──
     Int
-    Str
     Bool
-    /// The first composite: a homogeneous aggregate.
-    List(elem: TypeId)
-    /// A declared record — NOMINAL: the declaration site is the
-    /// identity, the name rides along for printing alone.
+    /// Text — the first MANAGED value: a registered pointer the
+    /// ownership registry reclaims at count zero.
+    Str
+
+    // ── The declared boxes — NOMINAL: the declaration site is the
+    // identity, the name rides along for printing alone. ──
+    /// A record: a slot array at runtime.
     Struct(decl: StmtId, name: string)
-    /// A declared enum's VALUE — nominal like a struct; a tagged
-    /// slot array at runtime.
+    /// An enum's VALUE: a tagged slot array at runtime.
     Enum(decl: StmtId, name: string)
-    /// A type used as a VALUE (`Color` in `Color.red`) — the only
-    /// compile-only shape: no runtime value ever has it, so every
-    /// operand law and the answer projection refuse it.
-    TypeName(decl: StmtId, name: string)
-    /// `T?` — a value that may be ABSENT. Nullability is opt-in
-    /// (spec Axis 10.2), so every other shape is a guarantee.
-    Opt(inner: TypeId)
-    /// A generic fn's TYPE PARAMETER — nominal to its declaration
-    /// site, by ordinal (`fn f<A, B>` interns Var(f, 0) and
-    /// Var(f, 1); the name rides for printing). Abstract: a value
-    /// of this type can only MOVE, and mono guarantees no register
-    /// is ever minted wearing it.
-    Var(decl: StmtId, ordinal: int, name: string)
     /// A USER generic declaration INSTANTIATED — nominal by its
     /// decl, interned by its arguments (the List/Opt/Res precedent
     /// generalized to declared names). The declared field/variant
@@ -41,17 +30,29 @@ export enum Type {
     /// them substituted. A tagged/slot box at runtime, like the
     /// plain declaration it instantiates.
     App(decl: StmtId, name: string, args: List<TypeId>)
-    /// `Result<T, E>` — an answer OR a failure. A BUILT-IN enum
-    /// (variants `Ok`/`Err`), structural like `Opt`: interned by
-    /// its sides, no generics involved. A tagged slot array at
-    /// runtime, exactly an enum's layout — which is why the enum
-    /// machinery serves it whole.
-    Res(ok: TypeId, err: TypeId)
-    /// `dyn Trait` — a value known only by its CONTRACT: a boxed
-    /// pair of the value and its methods (spec 5.x, the
-    /// heterogeneity hatch — dispatch cost made visible, P7).
-    /// Nominal to the trait's declaration.
+    /// `dyn Trait` — a value known only by its CONTRACT: a box of
+    /// the value and its methods (spec 5.x, the heterogeneity
+    /// hatch — dispatch cost made visible, P7). Nominal to the
+    /// trait's declaration.
     Dyn(decl: StmtId, name: string)
+
+    // ── The built-in boxes — STRUCTURAL: interned by their parts. ──
+    /// A homogeneous aggregate.
+    List(elem: TypeId)
+    /// `Result<T, E>` — an answer OR a failure. A BUILT-IN enum
+    /// (variants `Ok`/`Err`), interned by its sides, no generics
+    /// involved. A tagged slot array at runtime, exactly an enum's
+    /// layout — which is why the enum machinery serves it whole.
+    Res(ok: TypeId, err: TypeId)
+    /// A FN VALUE — `fn(int) -> bool`: what a lambda or a named fn
+    /// wears. The runtime shape is a box `[code address,
+    /// captures…]`; a call rides CallPtr with the box at seat 0.
+    Fn(params: List<TypeId>, ret: TypeId)
+
+    // ── Absence, and the values that inhabit it. ──
+    /// `T?` — a value that may be ABSENT. Nullability is opt-in
+    /// (spec Axis 10.2), so every other shape is a guarantee.
+    Opt(inner: TypeId)
     /// The `null` literal's own type: it inhabits every `Opt` and
     /// nothing else, which is what makes `let x: int = null` refuse.
     Null
@@ -60,6 +61,19 @@ export enum Type {
     /// else, adopted at the one widening edge. The value needs no
     /// lift: an empty array IS a valid list of anything.
     EmptyList
+
+    // ── Compile-only: no runtime value ever wears these. ──
+    /// A type used as a VALUE (`Color` in `Color.red`): every
+    /// operand law and the answer projection refuse it.
+    TypeName(decl: StmtId, name: string)
+    /// A generic fn's TYPE PARAMETER — nominal to its declaration
+    /// site, by ordinal (`fn f<A, B>` interns Var(f, 0) and
+    /// Var(f, 1); the name rides for printing). Abstract: a value
+    /// of this type can only MOVE, and mono guarantees no register
+    /// is ever minted wearing it.
+    Var(decl: StmtId, ordinal: int, name: string)
+
+    /// The absorber: laws already spoke; downstream stays quiet.
     Error
 }
 
@@ -83,7 +97,7 @@ export fn new_type_registry() -> TypeRegistry {
 export fn ptr_shape(t: Type) -> bool {
     match t {
         .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
-        .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Null or .EmptyList -> true,
+        .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Null or .EmptyList -> true,
         .Int or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) -> false,
     }
 }
@@ -108,6 +122,7 @@ impl TypeRegistry {
             .Var(decl, ordinal, _) -> "11:${decl.index}.${ordinal}",
             .App(decl, _, args) -> "12:${decl.index}.${joined(["${a.index}" for a in args], ".")}",
             .Dyn(decl, _) -> "14:${decl.index}",
+            .Fn(params, ret) -> "15:${joined(["${a.index}" for a in params], ".")}:${ret.index}",
         }
     }
 
@@ -146,6 +161,14 @@ impl TypeRegistry {
         }
     }
 
+    /// A fn type's seats and answer — res_parts' twin.
+    fn arrow_parts(self, id: TypeId) -> Arrow? {
+        match self.shape_of(id) {
+            .Fn(params, ret) -> Arrow { seats: params, answer: ret },
+            _ -> null,
+        }
+    }
+
     /// Does a value of this type RIDE A POINTER at runtime —
     /// `ptr_shape` with `Opt` answering as what it CARRIES: a niche
     /// nullable IS its pointer, a scalar pair is registers and no
@@ -171,6 +194,9 @@ impl TypeRegistry {
                                                   self.substituted(err, target, args))),
             .App(decl, name, aa) ->
                 self.intern(Type.App(decl, name, [self.substituted(a, target, args) for a in aa])),
+            .Fn(ps, ret) ->
+                self.intern(Type.Fn([self.substituted(a, target, args) for a in ps],
+                                    self.substituted(ret, target, args))),
             .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
             .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error -> ty,
         }
@@ -185,6 +211,8 @@ impl TypeRegistry {
             .List(elem) -> "List<${self.name_of(elem)}>",
             .Struct(_, name) -> name,
             .Dyn(_, name) -> "dyn ${name}",
+            .Fn(params, ret) ->
+                "fn(${joined([self.name_of(a) for a in params], ", ")}) -> ${self.name_of(ret)}",
             .Enum(_, name) -> name,
             .TypeName(_, name) -> "type ${name}",
             .Opt(inner) -> "${self.name_of(inner)}?",
@@ -201,3 +229,6 @@ impl TypeRegistry {
 
 /// What a `Result` carries on each side — res_parts' answer.
 export type ResSides = { ok: TypeId, err: TypeId }
+
+/// What a fn type promises — arrow_parts' answer.
+export type Arrow = { seats: List<TypeId>, answer: TypeId }

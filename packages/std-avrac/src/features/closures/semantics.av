@@ -1,0 +1,29 @@
+//! The lambda's semantics: dispatch only. CONTROL-OWNING — the
+//! body hides from `kids` and walks under the lambda's own frame
+//! (resolve) and law (typing); the lift owns its lowering.
+use core.{Expr, ExprId, TypeId, Reg}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+
+export type ClosureSemantics = { }
+
+impl NodeSemantics for ClosureSemantics {
+    fn kids(self, e: Expr) -> List<ExprId> {
+        []
+    }
+
+    fn resolve(self, cx: ResolveCx, e: ExprId) {
+        // LICENSED I22: a feature cannot enumerate OTHER features' variants
+        match cx.store.expr(e) {
+            .Lambda(params, body) -> cx.lambda_scope(e, params, body),
+            _ -> nothing(),
+        }
+    }
+
+    fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
+        lambda_type(cx, e)
+    }
+
+    fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
+        lambda_reg(cx, e)
+    }
+}

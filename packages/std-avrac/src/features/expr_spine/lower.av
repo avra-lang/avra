@@ -5,7 +5,7 @@
 //! desugar onto the region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
 use core.{ExprId, BinOp, UnOp, Reg, Ins, Type}
-use features.{LowerCx, StructSig, EnumSig, presence_of, hole_defect, lower_defect, variant_defect}
+use features.{LowerCx, StructSig, EnumSig, presence_of, hole_defect, lower_defect, variant_defect, tagged_value}
 
 fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
@@ -83,10 +83,7 @@ fn variant_reg(cx: LowerCx, e: ExprId, name: string) -> Reg {
         return lower_defect(cx, e, variant_defect())
     }
     let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
-    let tag = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(tag, which!))
-    cx.emit(Ins.CallRtVoid("avra_array_push", [dst, tag]))
+    tagged_value(cx, dst, which!, null)
     dst
 }
 

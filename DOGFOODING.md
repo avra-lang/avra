@@ -310,6 +310,20 @@ reintroducing I3's blind spot names the two spellings it lost.
       just rename it). Unratcheted — voicehood is intent, not
       text; the review round hunts it, and I11 (duplicated long
       strings) catches the worst consequence mechanically.
+- I29 an EMISSION VERB that mints its answer register early. The
+      lowering contract is one line — registers are numbered in
+      emission order — and a shared verb that takes `dst` from its
+      caller invites the caller to mint it BEFORE the verb's own
+      scratch registers, which desynchronizes numbering from
+      definition order and crashes the backend on a recycled
+      index. The idiomatic form: the verb mints its ANSWER LAST
+      (taking `e` and calling `cx.result(e)` after its scratch),
+      or emits the answer's defining instruction FIRST
+      (tagged_value's shape — dst minted by the caller, defined
+      by the verb's first emit). Found when called_through's
+      first draft took a pre-minted dst: the corpus caught native
+      reading register 7 of 7. Unratcheted — mint order is
+      structure, not a greppable string.
 - I26 one nullable LOCAL forced open with `!` three or more times
       in a fn. The value is already known to be there — CLAUDE.md's
       own style rule settles it ("a `let` earns its place when the

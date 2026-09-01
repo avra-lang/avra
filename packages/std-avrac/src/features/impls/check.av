@@ -2,8 +2,8 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, Type, TypeId, StmtId, TypeRef}
-use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant, bound_name}
+use core.{ExprId, Type, TypeId, Arrow, StmtId, TypeRef, StructSig}
+use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant, bound_name, seats_judged}
 use diagnostics.{error_at, pointed}
 
 fn method_call_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -25,6 +25,8 @@ fn methoded(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<Exp
     if bound != null { return bound! }
     let contracted: TypeId? = dyn_call(cx, e, subject, name, args)
     if contracted != null { return contracted! }
+    let fielded: TypeId? = fn_field_call(cx, e, subject, name, args)
+    if fielded != null { return fielded! }
     let named: string? = receiver_name(cx, subject)
     if named == null { return no_methods_here(cx, subject, name) }
     let target = named!
@@ -53,7 +55,7 @@ fn receiver_name(cx: TypeCx, subject: ExprId) -> string? {
         .Struct(_, n) -> n,
         .Enum(_, n) -> n,
         .Int or .Str or .Bool or .List(_) or .Res(_, _) or .App(_, _, _) or
-        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Opt(_) or .Null or
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or
         .EmptyList or .Error -> null,
     }
 }
@@ -102,6 +104,20 @@ fn wrong_method_argument(cx: TypeCx, target: string, name: string, j: int, want:
         error_at("type.method", cx.loc_of(a),
             "argument ${j + 1} of `${target}.${name}` wants `${cx.types.name_of(want)}`, found `${n}`"),
         this_is(n)))
+}
+
+/// A dot-call on a FN-TYPED FIELD — the capability-record pattern:
+/// `cx.walk(v)` calls the value the field holds. Absent when the
+/// receiver has no such field or it is not fn-typed; the impl
+/// table then gets its turn.
+fn fn_field_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
+    let sig: StructSig? = cx.fields_of(cx.type_at(subject))
+    if sig == null { return null }
+    let slot: int? = sig!.slot_of(name)
+    if slot == null { return null }
+    let held: Arrow? = cx.types.arrow_parts(sig!.types[slot!])
+    if held == null { return null }
+    seats_judged(cx, e, name, held!.seats, held!.answer, args)
 }
 
 /// A dot-call whose receiver is a TYPE NAME — variant construction

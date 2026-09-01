@@ -1,13 +1,12 @@
 //! A list lowers as the runtime aggregate: one `avra_array_new`,
 //! then a push per element — the CallRt escape hatch carrying the
 //! whole feature, zero new instructions.
-use core.{ExprId, Reg, Ins}
-use features.{LowerCx}
+use core.{ExprId, Reg}
+use features.{LowerCx, grown_box}
 
 fn list_reg(cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
     let regs = [cx.reg_of(k) for k in elems]
     let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
-    for r in regs { cx.emit(Ins.CallRtVoid("avra_array_push", [dst, r])) }
+    grown_box(cx, dst, regs)
     dst
 }

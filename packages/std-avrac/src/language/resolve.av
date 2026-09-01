@@ -36,7 +36,20 @@ export enum Binding {
     /// statement. The arm's value IS the identity, so both later
     /// passes key their fact by it like any other node fact.
     Pattern(arm: ExprId)
+    /// A LAMBDA's Nth parameter — in the LIFTED body, register N+1
+    /// (the env box rides seat 0). Type fact: the lambda's own
+    /// annotation table.
+    LambdaParam(lam: ExprId, index: int)
+    /// A name a lambda CAPTURED — slot 1+index of its env box. The
+    /// lambda's capture fact names the underlying outer binding;
+    /// nesting chains Capture through Capture.
+    Capture(lam: ExprId, index: int)
 }
+
+/// One lambda's capture set, in first-use order — the box's lane
+/// assignment: creation packs sources[j] into slot 1+j, and the
+/// lifted body reads the same lanes.
+export type Cap = { names: List<string>, sources: List<Binding> }
 
 /// The pass's facts: ONE dense binding table indexed by ExprId
 /// (O(1) reads for every later pass), the assignment fact keyed by
@@ -45,7 +58,13 @@ export type Resolution = {
     bindings: List<Binding?>,
     assign_targets: List<StmtId?>,
     type_defs: Map<string, StmtId>,
+    captures: List<Cap?>,
     diagnostics: List<Diag>,
+}
+
+/// A lambda's capture set, when resolve recorded one.
+export fn captures_of(r: Resolution, lam: ExprId) -> Cap? {
+    r.captures[lam.index]
 }
 
 /// The binding a resolved expression names, when it does.
@@ -71,12 +90,19 @@ fn reserved() -> List<string> {
 
 type Def = { name: string, stmt: StmtId }
 
+/// One OPEN lambda during the walk: its params, and the overlay
+/// depth at entry — an overlay at or above the floor is
+/// lambda-local; below it lies the outer world, reached by capture.
+type LFrame = { lam: ExprId, params: List<string>, floor: int }
+
 type Resolver = {
     p: ParsedProgram,
     all_defs: List<Def>,
     def_names: List<string>,
     visible: Map<string, Binding>,
     overlays: List<Map<string, Binding>>,
+    lframes: List<LFrame>,
+    captures: List<Cap?>,
     fn_defs: Map<string, StmtId>,
     fn_names: List<string>,
     type_defs: Map<string, StmtId>,
@@ -93,7 +119,9 @@ export fn resolve(p: ParsedProgram) -> Resolution {
     let r = Resolver {
         p: p, all_defs: defs,
         def_names: [d.name for d in defs],
-        visible: {}, overlays: [], fn_defs: {}, fn_names: [],
+        visible: {}, overlays: [], lframes: [],
+        captures: filled<Cap?>(p.store.exprs.count(), null),
+        fn_defs: {}, fn_names: [],
         type_defs: {}, type_names: [],
         bindings: filled<Binding?>(p.store.exprs.count(), null),
         assign_targets: filled<StmtId?>(p.store.stmts.count(), null),
@@ -106,7 +134,8 @@ export fn resolve(p: ParsedProgram) -> Resolution {
     resolve_stmts(r, [], false, p.stmts)
     Resolution {
         bindings: r.bindings, assign_targets: r.assign_targets,
-        type_defs: r.type_defs, diagnostics: r.diagnostics,
+        type_defs: r.type_defs, captures: r.captures,
+        diagnostics: r.diagnostics,
     }
 }
 
@@ -194,6 +223,74 @@ fn arm_body(r: Resolver, param_names: List<string>, bind: string, value: ExprId)
     resolve_walk(r, param_names, value)
 }
 
+// ── The lambda frames ───────────────────────────────────────────
+// A lambda opens a FRAME: its params, and the overlay depth at
+// entry. A name inside resolves innermost-out — frame params and
+// frame-local overlays first, then the outer world, and every
+// frame crossed on the way out records a CAPTURE. Nesting chains
+// Capture through Capture; the stack lives on the Resolver, so
+// blocks and arms inside a body need no threading at all.
+
+/// The topmost overlay INDEX holding `name`, or null.
+fn overlay_index(overlays: List<Map<string, Binding>>, name: string) -> int? {
+    // LICENSED I19: a REVERSE scan — the nearest scope wins
+    mut j = overlays.length - 1
+    while j >= 0 {
+        if overlays[j].get(name) != null { return j }
+        j = j - 1
+    }
+    null
+}
+
+/// The binding an overlay index holds for `name`.
+fn overlay_at(overlays: List<Map<string, Binding>>, at: int, name: string) -> Binding? {
+    let held: Binding? = overlays[at].get(name)
+    held
+}
+
+/// The home of a name that lives OUTSIDE every lambda frame.
+fn no_frame() -> int {
+    0 - 1
+}
+
+/// The innermost frame whose FLOOR admits the overlay — the frame
+/// the overlay was opened inside.
+fn overlay_home(lframes: List<LFrame>, ohit: int) -> int {
+    // LICENSED I19: a REVERSE scan — innermost frame first
+    mut k = lframes.length - 1
+    while k >= 0 {
+        if lframes[k].floor <= ohit { return k }
+        k = k - 1
+    }
+    no_frame()
+}
+
+/// The innermost frame whose PARAMS hold `name`, or null.
+fn frame_param_hit(lframes: List<LFrame>, name: string) -> int? {
+    // LICENSED I19: a REVERSE scan — innermost frame first
+    mut k = lframes.length - 1
+    while k >= 0 {
+        if index_of_name(lframes[k].params, name) != null { return k }
+        k = k - 1
+    }
+    null
+}
+
+/// A lambda's body under its own frame: params bind, outer names
+/// capture, and the frame dies with the walk.
+fn lambda_scope(r: Resolver, param_names: List<string>, lam: ExprId, params: List<Param>, body: ExprId) {
+    // a refused param name still BINDS (declare the wreckage) — the
+    // body resolves quietly and the one refusal stands alone
+    for pp in params {
+        let _ = r.refused_name(pp.name, r.loc_of(lam))
+    }
+    mut fs = r.lframes
+    // LICENSED I15: this IS the bracket fn
+    fs.push(LFrame { lam: lam, params: [pp.name for pp in params], floor: r.overlays.length })
+    resolve_walk(r, param_names, body)
+    let _ = fs.pop()
+}
+
 /// The innermost overlay holding `name`, or null — the scan stops
 /// at the first hit, which IS the shadowing rule: the nearest
 /// scope wins and the outer ones are never consulted.
@@ -212,10 +309,11 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
     let cx = ResolveCx {
         store: r.p.store,
         use_name: (e: ExprId, name: string) -> r.resolve_name(e, name, param_names),
-        use_call: (e: ExprId, name: string) -> r.resolve_call(e, name),
+        use_call: (e: ExprId, name: string) -> r.resolve_call(e, name, param_names),
         use_type: (e: ExprId, name: string) -> r.resolve_type_use(e, name),
         arm_scope: (bind: string, v: ExprId) -> arm_scope(r, param_names, bind, v),
         block_scope: (stmts: List<StmtId>, value: ExprId?) -> block_scope(r, param_names, stmts, value),
+        lambda_scope: (lam: ExprId, ps: List<Param>, body: ExprId) -> lambda_scope(r, param_names, lam, ps, body),
     }
     for e in r.p.post_order(root) { semantics_of(r.p.dispatch, r.p.store.expr(e)).resolve(cx, e) }
 }
@@ -370,7 +468,7 @@ impl Resolver {
     }
 
     /// A callee resolves in the fn namespace alone.
-    fn resolve_call(self, e: ExprId, name: string) {
+    fn resolve_call(self, e: ExprId, name: string, param_names: List<string>) {
         if self.once(e) { return }
         // A keyword can never NAME a fn, so "no `fn if` is defined"
         // would offer a remedy the naming law itself forbids.
@@ -378,6 +476,15 @@ impl Resolver {
         let found: StmtId? = self.fn_defs.get(name)
         if found != null {
             self.bind_use(e, Binding.Def(found!))
+            return
+        }
+        // no declared fn wears the name: the call may go through a
+        // fn-typed LOCAL value (typing judges its shape). Declared
+        // fns stay first — a pattern bind shadows READS, never the
+        // call (the pinned arm law).
+        let local: Binding? = self.local_binding(name, param_names)
+        if local != null {
+            self.bind_use(e, local!)
             return
         }
         self.speak(self.suggested(
@@ -397,15 +504,74 @@ impl Resolver {
     /// (`Color` in `Color.red`, which typing gives the compile-only
     /// TypeName shape).
     fn value_binding(self, name: string, param_names: List<string>) -> Binding? {
-        let inner: Binding? = overlay_hit(self.overlays, name)
-        if inner != null { return inner }
-        let idx: int? = index_of_name(param_names, name)
-        if idx != null { return Binding.Param(idx!) }
-        let outer: Binding? = self.visible.get(name)
-        if outer != null { return outer }
+        let local: Binding? = self.local_binding(name, param_names)
+        if local != null { return local }
         let named_type: StmtId? = self.type_defs.get(name)
-        if named_type == null { return null }
-        Binding.Def(named_type!)
+        if named_type != null { return Binding.Def(named_type!) }
+        // a NAMED FN is a value too — global, so no capture chains
+        let f: StmtId? = self.fn_defs.get(name)
+        if f == null { return null }
+        Binding.Def(f!)
+    }
+
+    /// The LOCAL half of the name chain, lambda-aware: the
+    /// innermost hit wins — a lambda param or an overlay inside a
+    /// frame is frame-local; anything below the innermost floor is
+    /// the outer world, and every frame between records a CAPTURE
+    /// (nesting chains Capture through Capture).
+    fn local_binding(self, name: string, param_names: List<string>) -> Binding? {
+        let ohit: int? = overlay_index(self.overlays, name)
+        let fhit: int? = frame_param_hit(self.lframes, name)
+        let ohome = if ohit == null { no_frame() } else { overlay_home(self.lframes, ohit!) }
+        let fhome = fhit ?? no_frame()
+        // the deeper home wins; a tie is the overlay's — a `let`
+        // after the params shadows them
+        if ohit != null && ohome >= fhome {
+            return self.chained(ohome + 1, name, overlay_at(self.overlays, ohit!, name)!)
+        }
+        if fhit != null {
+            let f = self.lframes[fhit!]
+            return self.chained(fhit! + 1, name,
+                Binding.LambdaParam(f.lam, index_of_name(f.params, name)!))
+        }
+        let idx: int? = index_of_name(param_names, name)
+        if idx != null { return self.chained(0, name, Binding.Param(idx!)) }
+        let outer: Binding? = self.visible.get(name)
+        if outer == null { return null }
+        self.chained(0, name, outer!)
+    }
+
+    /// Wrap a binding in Capture links for every frame from
+    /// `from_k` inward — each lambda between the name's home and
+    /// the use captures it (or finds it already captured).
+    fn chained(self, from_k: int, name: string, b: Binding) -> Binding {
+        mut wrapped = b
+        mut k = from_k
+        while k < self.lframes.length {
+            let lam = self.lframes[k].lam
+            wrapped = Binding.Capture(lam, self.captured(lam, name, wrapped))
+            k = k + 1
+        }
+        wrapped
+    }
+
+    /// The capture's lane in the lambda's set — found, or minted at
+    /// the tail. The set's order IS the box's slot order.
+    fn captured(self, lam: ExprId, name: string, source: Binding) -> int {
+        let held: Cap? = self.captures[lam.index]
+        if held == null {
+            mut cs = self.captures
+            cs.set(lam.index, Cap { names: [name], sources: [source] })
+            return 0
+        }
+        let cap = held!
+        let at = cap.names.index_of(name)
+        if at >= 0 { return at }
+        mut ns = cap.names
+        ns.push(name)
+        mut ss = cap.sources
+        ss.push(source)
+        ns.length - 1
     }
 
     /// The chain's STATEMENT-shaped half — overlays, then the
@@ -425,7 +591,7 @@ impl Resolver {
         if b == null { return null }
         match b! {
             .Def(s) -> s,
-            .Param(_) or .Pattern(_) -> null,
+            .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) -> null,
         }
     }
 

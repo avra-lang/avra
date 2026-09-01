@@ -3,7 +3,7 @@
 //! words. A LAW extracts at its SECOND: a rule copied by hand
 //! disagrees with itself the day the copies drift (`member_type_of`
 //! serves the bare read and the chain for exactly that reason).
-use core.{ExprId, TypeId, Type, ResSides, StmtId, TypeRef, filled}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, StmtId, TypeRef, filled}
 use diagnostics.{Diag, error_at, pointed}
 
 /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -292,10 +292,26 @@ export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: StmtId, bound: Li
         .Opt(w) -> carried_unifies(cx, w, got, target, bound),
         .Res(wo, we) -> sides_unify(cx, wo, we, got, target, bound),
         .App(wd, _, wa) -> app_unifies(cx, wd, wa, got, target, bound),
+        .Fn(wp, wr) -> fn_unifies(cx, wp, wr, got, target, bound),
         // LICENSED I9: type identity — interned ids ARE the agreement
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
         .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error -> want.index == got.index,
     }
+}
+
+/// A fn type unifies STRUCTURALLY: seat by seat, then the answer —
+/// `fn(T) -> T` meets `fn(int) -> int` and binds T. Invariant in
+/// every seat (v1 — variance is recorded).
+fn fn_unifies(cx: TypeCx, wp: List<TypeId>, wr: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+    let held: Arrow? = cx.types.arrow_parts(got)
+    if held == null { return false }
+    let g = held!
+    if g.seats.length != wp.length { return false }
+    // LICENSED I3: seat pairs; comprehensions cannot destructure enumerate
+    for (j, w) in wp.enumerate() {
+        if !unify(cx, w, g.seats[j], target, bound) { return false }
+    }
+    unify(cx, wr, g.answer, target, bound)
 }
 
 /// One Var meets one concrete type: first sight binds (through the
@@ -348,7 +364,7 @@ fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: StmtId, 
 export fn slot_worthy(sh: Type) -> bool {
     match sh {
         .Int or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
-        .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) -> true,
+        .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) or .Fn(_, _) -> true,
         .Opt(_) or .Null or .EmptyList or .Error -> false,
     }
 }
@@ -364,7 +380,7 @@ export fn unlawful_side(cx: TypeCx, ty: TypeId) -> TypeId? {
         .Opt(inner) -> unlawful_side(cx, inner),
         .App(_, _, args) -> args.find(unlawful_side(cx, it) != null),
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Null or .EmptyList or .Error -> null,
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Null or .EmptyList or .Error -> null,
     }
 }
 
@@ -386,6 +402,7 @@ export fn fully_bound(cx: TypeCx, ty: TypeId, target: StmtId, bound: List<TypeId
         .Opt(inner) -> fully_bound(cx, inner, target, bound),
         .Res(ok, err) -> fully_bound(cx, ok, target, bound) && fully_bound(cx, err, target, bound),
         .App(_, _, args) -> args.all(fully_bound(cx, it, target, bound)),
+        .Fn(ps, ret) -> ps.all(fully_bound(cx, it, target, bound)) && fully_bound(cx, ret, target, bound),
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
         .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error -> true,
     }
@@ -508,6 +525,21 @@ fn variants_declared(cx: TypeCx, decl: StmtId, tname: string) -> EnumSig? {
     cx.variants_of(cx.types.intern(Type.Enum(decl, tname)))
 }
 
+/// A FN VALUE's seats judge a call — the one law the indirect
+/// call, the fn-field call, and the lambda share, refusing in the
+/// same words every call does.
+export fn seats_judged(cx: TypeCx, e: ExprId, callee: string, ps: List<TypeId>, ret: TypeId, args: List<ExprId>) -> TypeId {
+    if args.length != ps.length {
+        wrong_arity(cx, e, callee, ps.length, args.length)
+        return cx.error_type
+    }
+    // LICENSED I3: seat-by-seat; comprehensions cannot destructure enumerate
+    for (j, a) in args.enumerate() {
+        if !accepts(cx, a, ps[j]) { wrong_argument(cx, callee, j, ps[j], a) }
+    }
+    ret
+}
+
 // ── The voices: every refusal worded HERE, once — the laws above
 // call the verb and stay legible. (DOGFOODING: laws call voices.) ──
 
@@ -561,4 +593,21 @@ fn unpinned_by_payload(cx: TypeCx, e: ExprId, tparam: string) -> TypeId {
         error_at("type.unknown_prop", cx.loc_of(e), "`${tparam}` is not pinned by the payload"),
         "built here")
         with { help: "the pinned unit surface is recorded — carry `${tparam}` for now" })
+}
+
+/// THE arity refusal — every call shape shares the words.
+export fn wrong_arity(cx: TypeCx, e: ExprId, callee: string, want: int, found: int) {
+    cx.emit(pointed(
+        error_at("type.mismatch", cx.loc_of(e),
+            "`${callee}` takes ${want} arguments, found ${found}"),
+        "this call"))
+}
+
+/// THE argument refusal — every call shape shares the words.
+export fn wrong_argument(cx: TypeCx, callee: string, j: int, want: TypeId, a: ExprId) {
+    let n = cx.name_at(a)
+    cx.emit(pointed(
+        error_at("type.mismatch", cx.loc_of(a),
+            "argument ${j + 1} of `${callee}` wants `${cx.types.name_of(want)}`, found `${n}`"),
+        this_is(n)))
 }

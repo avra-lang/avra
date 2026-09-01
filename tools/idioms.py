@@ -415,6 +415,9 @@ UNRATCHETED = {
     "I6":  "head-plus-tail builds are subsumed by I1 and I3",
     "I10": "name->value if-ladders are too varied to grep — the review round hunts them",
     "I17": "a name serving two masters is semantic — no text pattern can see it",
+    "I29": "mint order is STRUCTURE, not a greppable string: whether a\n"
+    "        verb's answer register mints before or after its scratch\n"
+    "        registers needs the emission sequence, not a pattern",
     "I28": "voice-vs-law is a LAYOUT judgment: the pointed( assembly is the\n"
            "           legitimate BODY of a voice fn, and voicehood (a fn that exists\n"
            "           to word one refusal) is intent a grep cannot see. The review\n"

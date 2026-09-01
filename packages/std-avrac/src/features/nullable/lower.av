@@ -7,7 +7,7 @@
 use core.{ExprId, StmtId, TypeId, Reg, Ins, Type}
 use features.{LowerCx, StmtLowerCx, StructSig, presence_of, carried_of, carried_type,
               adopted, absent_of, insisted, hollow_of, okness_of, payload_of,
-              hole_defect, lower_defect}
+              hole_defect, lower_defect, slot_read}
 
 fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -161,11 +161,7 @@ fn member_reg(cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
     if sig!.types[slot!].index != want.index {
         return lower_defect(cx, e, "a chain's member wears a type its lift does not expect")
     }
-    let idx = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(idx, slot!))
-    let dst = cx.mint_ty(want)
-    cx.emit(Ins.CallRt(dst, "avra_array_get", [carried, idx]))
-    dst
+    slot_read(cx, carried, slot!, want)
 }
 
 /// `length` on the carried value, by its shape — a string measures

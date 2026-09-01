@@ -18,6 +18,7 @@ use features.lists.{ListSemantics}
 use features.nullable.{NullableSemantics, LetElseSemantics}
 use features.results.{FailSemantics, CatchSemantics}
 use features.impls.{ImplSemantics, MethodSemantics}
+use features.closures.{ClosureSemantics}
 use features.mutation.{MutLetSemantics, AssignSemantics}
 use features.loops.{WhileSemantics, ForSemantics, ForEachSemantics}
 use features.structs.{StructsSemantics, StructDeclSemantics}
@@ -70,6 +71,7 @@ export type Dispatch = {
     foreaches: dyn StmtSemantics,
     implds: dyn StmtSemantics,
     methods: dyn NodeSemantics,
+    lambdas: dyn NodeSemantics,
 }
 
 fn new_dispatch() -> Dispatch {
@@ -101,6 +103,7 @@ fn new_dispatch() -> Dispatch {
     let foreaches: dyn StmtSemantics = ForEachSemantics { }
     let implds: dyn StmtSemantics = ImplSemantics { }
     let methods: dyn NodeSemantics = MethodSemantics { }
+    let lambdas: dyn NodeSemantics = ClosureSemantics { }
     let catches: dyn NodeSemantics = CatchSemantics { }
     Dispatch {
         spine: spine, strs: strs, bools: bools, ifs: ifs, whens: whens,
@@ -111,6 +114,7 @@ fn new_dispatch() -> Dispatch {
         structdecls: structdecls, enumdecls: enumdecls,
         ifstmts: ifstmts, returns: returns, letelses: letelses, fails: fails,
         foreaches: foreaches, implds: implds, methods: methods,
+        lambdas: lambdas,
     }
 }
 
@@ -135,6 +139,7 @@ export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
         .MatchOpt(_, _, _, _) or .Chain(_, _) -> d.nullables,
         .Catch(_, _, _, _) -> d.catches,
         .MethodCall(_, _, _) -> d.methods,
+        .Lambda(_, _) -> d.lambdas,
     }
 }
 
@@ -263,6 +268,14 @@ impl NodeStore {
         }
     }
 
+    /// A lambda's pieces, when the expression is one.
+    fn lambda_parts(self, e: ExprId) -> LambdaParts? {
+        match self.expr(e) {
+            .Lambda(params, body) -> LambdaParts { params: params, body: body },
+            _ -> null,
+        }
+    }
+
     /// A trait declaration's pieces, when the statement is one.
     fn trait_parts(self, s: StmtId) -> TraitParts? {
         match self.stmt(s) {
@@ -318,6 +331,9 @@ impl NodeStore {
         }
     }
 }
+
+/// What a lambda carries, projected once.
+export type LambdaParts = { params: List<Param>, body: ExprId }
 
 /// What a trait declaration carries, projected once.
 export type TraitParts = { name: string, fns: List<StmtId> }

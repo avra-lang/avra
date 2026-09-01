@@ -9,7 +9,7 @@
 //! the statement list.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, some_list, joined}
 use diagnostics.{Diag, error_at, pointed, loc_at}
-use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig,
+use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig, fn_box, capture_lane, slot_read, push_slot,
               fn_sig_of, record_sig_of, variant_sig_of, res_enum_sig,
               adopted, carried_of, okayed, hollow_of, Sub,
               subbed_variants, subbed_fields, method_symbol}
@@ -58,7 +58,15 @@ type Spec = { name: string, sub: Sub }
 /// The mono worklist, ONE instance threaded through every body's
 /// lowering (lists and maps alias): call sites enqueue, the driver
 /// drains. `seen` keys by mangled name.
-type Jobs = { pending: List<Spec>, seen: Map<string, bool> }
+type Jobs = { pending: List<Spec>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap> }
+
+/// A NAMED fn boxed as a value calls through a generated WRAPPER
+/// that wears the uniform convention: env at seat 0, forwarded.
+type Wrap = { target: string, seats: List<TypeId>, ret: TypeId, name: string }
+
+/// One lambda awaiting its LIFT: the body lowers as a top-level fn
+/// taking (env, params…) under the enclosing body's view.
+type Lift = { lam: ExprId, name: string, sub: Sub? }
 
 /// One lowering per BODY — `fn_ret` is that body's declared answer
 /// (null for main) and `sub` its instantiation (null when the body
@@ -81,7 +89,7 @@ fn new_lower(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> Lower {
 /// substitution VIEW that makes every register concrete. The guard
 /// is the polymorphic-recursion refusal.
 export fn lower(a: Analysis) -> Lowered {
-    let jobs = Jobs { pending: [], seen: {} }
+    let jobs = Jobs { pending: [], seen: {}, lifts: [], wraps: [] }
     mut fns: List<Body> = []
     mut failures: List<string> = []
     for s in a.stmts {
@@ -106,18 +114,32 @@ export fn lower(a: Analysis) -> Lowered {
     }
     let lm = lower_main(a, jobs)
     mut pending = jobs.pending
+    mut lifts = jobs.lifts
+    mut wraps = jobs.wraps
     mut drained = 0
-    while !pending.is_empty() && drained < 1000 {
-        let job = pending.pop()
-        let body: ExprId? = fn_body_of(a, job.sub.target)
-        if body != null {
-            let lf = lower_fn(a, job.sub.target, job.name, body!, job.sub, jobs)
+    // one worklist rhythm, three job kinds: a specialization may
+    // mint lambdas and wrappers, and a lambda body more of each
+    while (!pending.is_empty() || !lifts.is_empty() || !wraps.is_empty()) && drained < 1000 {
+        if pending.is_empty() && lifts.is_empty() {
+            let wj = wraps.pop()
+            fns.push(wrapped_body(a, wj))
+        } else if pending.is_empty() {
+            let lj = lifts.pop()
+            let lf = lower_lambda(a, lj, jobs)
             fns.push(lf.body)
             failures = failures.concat(lf.failures)
+        } else {
+            let job = pending.pop()
+            let body: ExprId? = fn_body_of(a, job.sub.target)
+            if body != null {
+                let lf = lower_fn(a, job.sub.target, job.name, body!, job.sub, jobs)
+                fns.push(lf.body)
+                failures = failures.concat(lf.failures)
+            }
         }
         drained = drained + 1
     }
-    if !pending.is_empty() {
+    if !pending.is_empty() || !lifts.is_empty() || !wraps.is_empty() {
         failures.push("specializations exploded past 1000 — polymorphic recursion is not supported")
     }
     failures = failures.concat(lm.failures)
@@ -150,6 +172,57 @@ fn lower_fn(a: Analysis, s: StmtId, fname: string, root: ExprId, sub: Sub?, jobs
         failures: lo.failures,
         refusals: [],
     }
+}
+
+/// One LIFTED lambda: register 0 is the env box (typed as the
+/// lambda's own fn type — a pointer, managed, released by the
+/// callee per the ABI), registers 1..N its params; the body reads
+/// captures through slot 1+j of the env.
+fn lower_lambda(a: Analysis, lj: Lift, jobs: Jobs) -> LoweredBody {
+    let lam_ty = viewed_ty(a, lj.sub, a.typing.of_expr[lj.lam.index])
+    let held: Arrow? = a.typing.types.arrow_parts(lam_ty)
+    let seats: List<TypeId> = held?.seats ?? []
+    let rt: TypeId = held?.answer ?? a.typing.types.intern(Type.Error)
+    let body: ExprId? = a.store.lambda_parts(lj.lam)?.body
+    let lo = new_lower(a, rt, lj.sub, jobs)
+    mut tys = lo.reg_types
+    // LICENSED I3: `tys` ALIASES lo.reg_types — `concat` would rebind
+    tys.push(lam_ty)
+    for pt in seats { tys.push(pt) }
+    lo.give(Ins.ScopeEnter(Level.Application))
+    if body == null {
+        lo.record("defect: a lift without a lambda survived typing")
+    }
+    let r = lower_subtree(lo, body ?? lj.lam)
+    lo.give(Ins.ScopeExit(r))
+    lo.give(Ins.RetVal(r))
+    LoweredBody {
+        body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: rt, gives: r, ins: lo.ins, reg_types: lo.reg_types },
+        failures: lo.failures,
+        refusals: [],
+    }
+}
+
+/// The wrapper, built directly in IR — no AST exists for it: env
+/// ignored at seat 0, the target called with the forwarded seats.
+fn wrapped_body(a: Analysis, w: Wrap) -> Body {
+    let fnty = a.typing.types.intern(Type.Fn(w.seats, w.ret))
+    mut tys: List<TypeId> = [fnty]
+    mut args: List<Reg> = []
+    // LICENSED I3: seat registers by ordinal; the ZIP is positional
+    for (j, st) in w.seats.enumerate() {
+        tys.push(st)
+        args.push(Reg { index: j + 1 })
+    }
+    let dst = Reg { index: tys.length }
+    tys.push(w.ret)
+    let ins: List<Ins> = [
+        Ins.ScopeEnter(Level.Application),
+        Ins.Call(dst, w.target, args),
+        Ins.ScopeExit(dst),
+        Ins.RetVal(dst),
+    ]
+    Body { name: w.name, params: [fnty].concat(w.seats), ret: w.ret, gives: dst, ins: ins, reg_types: tys }
 }
 
 fn lower_main(a: Analysis, jobs: Jobs) -> LoweredBody {
@@ -217,6 +290,9 @@ fn expr_lower_cx(lo: Lower) -> LowerCx {
         enclosing_ret: () -> lo.fn_ret,
         callee_of: (k: ExprId, name: string) -> lo.callee_of(k, name),
         trait_methods: (decl: StmtId) -> trait_method_names(lo.a.store, decl),
+        lift: (k: ExprId) -> lo.lift(k),
+        capture_regs: (k: ExprId) -> lo.capture_regs(k),
+        indirect_callee: (k: ExprId) -> lo.indirect_callee(k),
         fail: (msg: string) -> lo.record(msg),
     }
 }
@@ -266,11 +342,11 @@ fn boxed_into(cx: LowerCx, lo: Lower, into: TypeId, r: Reg) -> Reg {
     }
     let dst = lo.mint_ty(into)
     lo.give(Ins.CallRt(dst, "avra_array_new", []))
-    lo.give(Ins.CallRtVoid("avra_array_push", [dst, r]))
+    push_slot(cx, dst, r)
     for mn in trait_method_names(lo.a.store, tdecl!) {
         let a = lo.mint_ty(lo.a.typing.types.intern(Type.Int))
         lo.give(Ins.FnAddr(a, method_symbol(target!, mn)))
-        lo.give(Ins.CallRtVoid("avra_array_push", [dst, a]))
+        push_slot(cx, dst, a)
     }
     dst
 }
@@ -281,7 +357,7 @@ fn boxed_target(lo: Lower, r: Reg) -> string? {
         .Struct(_, n) -> n,
         .Enum(_, n) -> n,
         .Int or .Str or .Bool or .List(_) or .Opt(_) or .Null or
-        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or
+        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or
         .TypeName(_, _) or .EmptyList or .Error -> null,
     }
 }
@@ -339,7 +415,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .TypeName(_, n) -> n,
         .Var(_, _, n) -> n,
         .EmptyList -> "[]",
-        .Opt(_) or .Null or .Dyn(_, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
+        .Opt(_) or .Null or .Dyn(_, _) or .Fn(_, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
         .Int or .Str or .Bool or .List(_) or .Error -> null,
     }
     if unprintable != null { return no_projection(lo, unprintable!) }
@@ -349,7 +425,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Bool -> text_call(lo, "avra_bool_text", last),
         .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
         .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or
-        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) -> null,
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) -> null,
         .Opt(_) or .Null or .EmptyList -> null,
         .Error -> null,
     }
@@ -419,14 +495,21 @@ impl Lower {
         if held == null { return name }
         let composed = Sub { target: held!.target, args: [self.view(t) for t in held!.args] }
         let mangled = mangle(name, composed)
-        let met: bool? = self.jobs.seen.get(mangled)
-        if met == null {
-            mut seen = self.jobs.seen
-            seen.set(mangled, true)
+        if self.unseen(mangled) {
             mut pending = self.jobs.pending
             pending.push(Spec { name: mangled, sub: composed })
         }
         mangled
+    }
+
+    /// A worklist name's FIRST sighting — true exactly once; the
+    /// three queues share this one dedupe.
+    fn unseen(self, name: string) -> bool {
+        let met: bool? = self.jobs.seen.get(name)
+        if met != null { return false }
+        mut seen = self.jobs.seen
+        seen.set(name, true)
+        true
     }
 
     /// A fresh register of an explicit type — for values no
@@ -470,11 +553,92 @@ impl Lower {
     fn def_reg(self, e: ExprId) -> Reg? {
         let b: Binding? = self.a.binding(e)
         if b == null { return null }
-        match b! {
+        self.read_binding(e, b!)
+    }
+
+    /// A binding's VALUE in the current body — the ident rule and
+    /// the capture pack share this one projection.
+    fn read_binding(self, e: ExprId, b: Binding) -> Reg? {
+        match b {
             .Param(i) -> Reg { index: i },
-            .Def(s) -> self.slot_reg(e, s),
+            .Def(s) -> if self.a.store.fn_parts(s) != null { self.fn_value_reg(e, s) } else { self.slot_reg(e, s) },
             .Pattern(v) -> self.pattern_regs[v.index],
+            // valid only inside the LIFTED body: env rides seat 0
+            .LambdaParam(_, i) -> Reg { index: i + 1 },
+            .Capture(_, j) -> self.env_read(e, j),
         }
+    }
+
+    /// A NAMED fn as a value: a captureless box holding a WRAPPER's
+    /// address — the wrapper wears the uniform (env, args…)
+    /// convention, so one call path serves lambdas and fns alike.
+    fn fn_value_reg(self, e: ExprId, s: StmtId) -> Reg? {
+        let name: string? = self.a.store.fn_parts(s)?.name
+        if name == null { return null }
+        let wname = "${name!}$w"
+        if self.unseen(wname) {
+            let fnty = self.view(self.a.typing.of_expr[e.index])
+            let held: Arrow? = self.a.typing.types.arrow_parts(fnty)
+            mut wraps = self.jobs.wraps
+            wraps.push(Wrap {
+                target: name!,
+                seats: held?.seats ?? [],
+                ret: held?.answer ?? self.a.typing.types.intern(Type.Error),
+                name: wname,
+            })
+        }
+        let dst = self.mint(e)
+        fn_box(expr_lower_cx(self), dst, wname, [])
+        dst
+    }
+
+    /// A capture read: its LANE of the env box at register 0 — the
+    /// lane law lives with the fn value's other verbs.
+    fn env_read(self, e: ExprId, j: int) -> Reg? {
+        slot_read(expr_lower_cx(self), Reg { index: 0 }, capture_lane(j), self.view(self.a.type_at(e)))
+    }
+
+    /// The lift: names the lambda's body (mangled under the view
+    /// when the enclosing body is a specialization) and enqueues it
+    /// once.
+    fn lift(self, e: ExprId) -> string {
+        let name = if self.sub == null { "l${e.index}" } else { mangle("l${e.index}", self.sub!) }
+        if self.unseen(name) {
+            mut lifts = self.jobs.lifts
+            lifts.push(Lift { lam: e, name: name, sub: self.sub })
+        }
+        name
+    }
+
+    /// The capture pack's values, in lane order — each source read
+    /// in the CURRENT body (a chained capture reads this body's own
+    /// env).
+    fn capture_regs(self, e: ExprId) -> List<Reg> {
+        let cap: Cap? = captures_of(self.a.resolution, e)
+        if cap == null { return [] }
+        mut out: List<Reg> = []
+        for b in cap!.sources {
+            let r: Reg? = self.read_binding(e, b)
+            if r == null {
+                self.record("defect: a capture without a value survived resolve")
+            } else {
+                out.push(r!)
+            }
+        }
+        out
+    }
+
+    /// The box a call goes THROUGH, when the callee is a fn-typed
+    /// VALUE — null for a declared fn (the direct path).
+    fn indirect_callee(self, e: ExprId) -> Reg? {
+        let b: Binding? = self.a.binding(e)
+        if b == null { return null }
+        let direct: bool = match b! {
+            .Def(s) -> self.a.store.fn_parts(s) != null,
+            _ -> false,
+        }
+        if direct { return null }
+        self.read_binding(e, b!)
     }
 
     /// A definition's register: its slot — LOADED first when the
@@ -505,7 +669,7 @@ impl Lower {
             .App(decl, _, args) ->
                 subbed_fields(self.a.typing.types, record_sig_of(self.a.decl_sig(decl)), decl, args),
             .Int or .Str or .Bool or .List(_) or .Enum(_, _) or .Res(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Opt(_) or .Null or .EmptyList or
+            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
             .Error -> null,
         }
     }
@@ -525,7 +689,7 @@ impl Lower {
             .App(decl, _, args) ->
                 subbed_variants(self.a.typing.types, variant_sig_of(self.a.decl_sig(decl)), decl, args),
             .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Opt(_) or .Null or .EmptyList or
+            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
             .Error -> null,
         }
     }

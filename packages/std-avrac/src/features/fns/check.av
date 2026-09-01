@@ -6,8 +6,8 @@
 //! generic call INSTANTIATES: pins pre-fill, arguments unify, a
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
-use core.{ExprId, StmtId, TypeId, TypeRef, spelled, filled}
-use features.{TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, unify, unlawful_side, fully_bound, bound_args, tparams_refused, unpinned_of, bound_closed}
+use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, filled}
+use features.{TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unify, unlawful_side, fully_bound, bound_args, tparams_refused, unpinned_of, bound_closed}
 use diagnostics.{error_at, pointed}
 
 export fn check_fn(cx: StmtTypeCx, s: StmtId) {
@@ -35,12 +35,33 @@ fn call_type(cx: TypeCx, e: ExprId) -> TypeId {
     match cx.store.expr(e) {
         .Call(callee, pins, args) -> {
             let sig: FnSig? = cx.sig_of(e)
-            if sig == null { return cx.error_type }
+            if sig == null { return valued_call(cx, e, callee, pins, args) }
             dispatched_call(cx, e, callee, pins, args, sig!)
         }
         _ -> cx.error_type,
     }
 }
+
+/// A call through a FN-TYPED VALUE — a lambda, a captured fn, a
+/// fn-typed param: the value's own seats judge the arguments.
+fn valued_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, args: List<ExprId>) -> TypeId {
+    if !pins.is_empty() {
+        cx.emit(pointed(
+            error_at("type.lambda", cx.loc_of(e), "`${callee}` is a fn VALUE — it takes no type arguments"),
+            "pinned here"))
+        return cx.error_type
+    }
+    let bound = cx.target_type(e)
+    let held: Arrow? = cx.types.arrow_parts(bound)
+    if held != null { return seats_judged(cx, e, callee, held!.seats, held!.answer, args) }
+    if cx.types.shape_of(bound) is .Error { return cx.error_type }
+    spoken(cx, pointed(
+        error_at("type.lambda", cx.loc_of(e), "`${callee}` is not callable — it holds a `${cx.types.name_of(bound)}`"),
+        "called here")
+        with { help: "only fns and fn-typed values take arguments" })
+}
+
+
 
 /// A GENERIC callee unifies; a plain one type-checks directly. The
 /// tparams come from the declaration itself — the registry the
@@ -180,22 +201,6 @@ fn generic_argument(cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId
 }
 
 /// THE arity refusal — plain and generic calls share the words.
-fn wrong_arity(cx: TypeCx, e: ExprId, callee: string, want: int, found: int) {
-    cx.emit(pointed(
-        error_at("type.mismatch", cx.loc_of(e),
-            "`${callee}` takes ${want} arguments, found ${found}"),
-        "this call"))
-}
-
-/// THE argument refusal — plain and generic calls share the words.
-fn wrong_argument(cx: TypeCx, callee: string, j: int, want: TypeId, a: ExprId) {
-    let n = cx.name_at(a)
-    cx.emit(pointed(
-        error_at("type.mismatch", cx.loc_of(a),
-            "argument ${j + 1} of `${callee}` wants `${cx.types.name_of(want)}`, found `${n}`"),
-        this_is(n)))
-}
-
 /// `return v` — legal only inside a fn, and `v` must be ACCEPTED
 /// by the declared answer (widening recorded, like every slot).
 export fn check_return(cx: StmtTypeCx, s: StmtId) {

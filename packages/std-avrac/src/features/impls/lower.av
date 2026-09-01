@@ -2,8 +2,8 @@
 //! the QUALIFIED name, the subject riding the self seat. The name
 //! derives from the receiver's type both here and at the fn loop,
 //! so no fact table carries it.
-use core.{ExprId, StmtId, Reg, Ins, Type}
-use features.{LowerCx, method_symbol, hole_defect, lower_defect, EnumSig, tagged_value}
+use core.{ExprId, StmtId, Reg, Ins, Type, StructSig}
+use features.{LowerCx, method_symbol, hole_defect, lower_defect, EnumSig, tagged_value, called_through, slot_read}
 
 fn method_call_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -12,6 +12,8 @@ fn method_call_reg(cx: LowerCx, e: ExprId) -> Reg {
             if cx.shape_at(subject) is .TypeName { return built_variant(cx, e, name, args) }
             let dispatched: Reg? = dyn_dispatch(cx, e, subject, name, args)
             if dispatched != null { return dispatched! }
+            let fielded: Reg? = fn_field_dispatch(cx, e, subject, name, args)
+            if fielded != null { return fielded! }
             let recv = cx.reg_of(subject)
             let regs = [cx.reg_of(a) for a in args]
             let target: string? = lowered_receiver(cx, subject)
@@ -39,17 +41,26 @@ fn dyn_dispatch(cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: Lis
     if ordinal < 0 { return lower_defect(cx, e, "a dyn method outside its trait survived typing") }
     let box = cx.reg_of(subject)
     let regs = [cx.reg_of(a) for a in args]
-    let zero = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(zero, 0))
-    let data = cx.mint_ty(cx.type_at(subject))
-    cx.emit(Ins.CallRt(data, "avra_array_get", [box, zero]))
-    let lane = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(lane, 1 + ordinal))
-    let fp = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(fp, "avra_array_get", [box, lane]))
+    let data = slot_read(cx, box, 0, cx.type_at(subject))
+    let fp = slot_read(cx, box, 1 + ordinal, null)
     let dst = cx.result(e)
     cx.emit(Ins.CallPtr(dst, fp, [data].concat(regs)))
     dst
+}
+
+/// The fn-FIELD call's lowering: read the field's box, then the
+/// box's slot 0 — the code address — and go through the pointer,
+/// the box riding seat 0. Absent when the receiver's type has no
+/// fn-typed field of the name.
+fn fn_field_dispatch(cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> Reg? {
+    let sig: StructSig? = cx.fields_of(cx.type_at(subject))
+    if sig == null { return null }
+    let slot: int? = sig!.slot_of(name)
+    if slot == null { return null }
+    let fty = sig!.types[slot!]
+    if !(cx.types.shape_of(fty) is .Fn) { return null }
+    let box = slot_read(cx, cx.reg_of(subject), slot!, fty)
+    called_through(cx, e, box, [cx.reg_of(a) for a in args])
 }
 
 /// The receiver's type name, under the body's view.
@@ -58,7 +69,7 @@ fn lowered_receiver(cx: LowerCx, subject: ExprId) -> string? {
         .Struct(_, n) -> n,
         .Enum(_, n) -> n,
         .Int or .Str or .Bool or .List(_) or .Res(_, _) or .App(_, _, _) or
-        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Opt(_) or .Null or
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or
         .EmptyList or .Error -> null,
     }
 }

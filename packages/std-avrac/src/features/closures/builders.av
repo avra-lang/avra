@@ -1,0 +1,28 @@
+//! Parse-time lowering: captures -> the Lambda node and the fn
+//! TYPE. A param's annotation is optional in the PARSE (the typing
+//! law demands it until the expected-type channel lands); spans
+//! re-align them, the same window law fns use.
+use core.{Expr, TypeRef, Param}
+use features.{LangNode, Builder, aligned_param_types}
+
+fn build_lambda(b: Builder) -> Result<LangNode, string> {
+    let ps = b.tokens(0)?
+    let body = b.expr(2)?
+    let ends: int? = b.span_end()
+    if ends == null { return Result.Err("a lambda without a span") }
+    let tys = aligned_param_types(ps, b.type_refs(1)?, ends!)
+    mut params: List<Param> = []
+    // LICENSED I3: a ZIP of parallel captures; comprehensions cannot
+    for (j, p) in ps.enumerate() {
+        params.push(Param { name: p.text, ty: tys[j] })
+    }
+    b.make_expr(Expr.Lambda(params, body))
+}
+
+/// `fn(int) -> bool` — the LAST arg is the return; `arrow` is the
+/// pinned witness of that contract.
+fn build_fn_type(b: Builder) -> Result<LangNode, string> {
+    let ps = b.type_refs(0)?
+    let r = b.type_ref(1)?
+    b.make_type(TypeRef { name: "fn", args: ps.concat([r]), optional: false, dynamic: false, arrow: true, span: b.span })
+}

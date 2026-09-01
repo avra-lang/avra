@@ -4,7 +4,7 @@
 //! Reads are the spine's property ladder (a slot read at the
 //! field's compile-time index) — zero new instructions anywhere.
 use core.{ExprId, Reg, Ins, Type, filled}
-use features.{LowerCx, StructSig, hole_defect, lower_defect}
+use features.{LowerCx, StructSig, hole_defect, lower_defect, push_slot, slot_read}
 
 fn structs_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
@@ -31,13 +31,9 @@ fn with_reg(cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, value
     for (slot, n) in sig!.names.enumerate() {
         let j = fields.index_of(n)
         if j >= 0 {
-            cx.emit(Ins.CallRtVoid("avra_array_push", [dst, regs[j]]))
+            push_slot(cx, dst, regs[j])
         } else {
-            let idx = cx.mint_shape(Type.Int)
-            cx.emit(Ins.ConstInt(idx, slot))
-            let carried = cx.mint_ty(sig!.types[slot])
-            cx.emit(Ins.CallRt(carried, "avra_array_get", [src, idx]))
-            cx.emit(Ins.CallRtVoid("avra_array_push", [dst, carried]))
+            push_slot(cx, dst, slot_read(cx, src, slot, sig!.types[slot]))
         }
     }
     dst
@@ -58,7 +54,7 @@ fn lit_reg(cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -
         }
     }
     for r in by_slot {
-        if r != null { cx.emit(Ins.CallRtVoid("avra_array_push", [dst, r!])) }
+        if r != null { push_slot(cx, dst, r!) }
     }
     dst
 }

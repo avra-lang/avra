@@ -2372,6 +2372,30 @@ evidence: whenever its own code WANTS a construct the language
 lacks, the ask lands here with the wanting site. Entries graduate
 into features (or spec commitments) when their milestone comes.
 
+- GRAM FRAGMENTS: the parameter-list shape
+  `( ps:NAME ( ":" pt:type )? ( "," … )* )?` is spelled THRICE
+  (fns, trait sigs, lambdas) — the grammar DSL wants named,
+  reusable fragments (`fragment params = …`). An ENGINE feature
+  (grammar/ is language-agnostic); wanting sites: the three grams.
+- EXPRESSION CONTINUATION: a leading-operator continuation line
+  (`a(x)\n    ?? b(x)`) refuses — BREAK ends the statement. The
+  five-fork dot-call dispatch would read as one `??` chain if
+  continuations parsed. Probed 2026-09-01; a lexer/BREAK design
+  question, not a grammar rule.
+- POSTFIX CALL ON AN EXPRESSION: `make_adder(i)(1)` and
+  `(lambda)(args)` refuse — calls are NAME-headed; a call postfix
+  in the props fold would serve both. Wanting site: rt23's
+  lambda_everywhere attack, bound-first today. Rides an
+  expr_spine touch.
+- MULTILINE STRUCT LITERALS: `Ops {\n  scale: …,\n}` never
+  parsed (pre-existing, found by the closures probes) — the
+  literal's gram admits no BREAKs. Wanting site: corpus/closures
+  writes single-line literals + bound lambdas.
+- THE LAMBDA BARRIER'S VOICES: return/`?` inside a lambda refuse
+  through the top-level wordings ("the top level has none") —
+  correct law, misleading flavor. And a keyword PARAM speaks
+  twice (the lambda's refusal + the body ident's — the same
+  pre-existing cascade fns have). Both polish-grade.
 - THE EXPECTED-TYPE CHANNEL. A literal cannot hear what its slot
   declares: `[P{…}, G.hot]` under a `let xs: List<dyn Show>`
   refuses at its own site (elements judged against the head), and
@@ -3057,6 +3081,70 @@ THE SLICES:
        clauses, default methods, associated types, @derive (Error/
        failure_tests ride it), operator traits (the Var
        compare-help names them).
+
+## Closures & fn values — rung 13 (designed 2026-09-01)
+
+Spec: `(params) -> body` (one arrow, one meaning), param types
+inferred from call-site context (annotate only without context),
+capture inferred. The self-host stake: the capability records our
+own source lives on (TypeCx's fn fields) become expressible.
+
+V1 CAPTURE LAW, narrowed by the value-semantics doctrine: capture
+BY VALUE at creation — each captured name is retained-at-pack into
+the closure's box; assignment to a captured name inside a lambda
+REFUSES ("a closure captures values — it cannot assign the
+original"; the spec's mut-ref capture waits on rung 14's interior-
+mutation design and the Systems level). Sharing being unobservable
+makes by-value capture semantically silent.
+
+REPRESENTATION — everything is already paid for: a closure IS a
+box `[FnAddr(lifted body), captured…]` (managed, reclaimed, slots
+owned like any box); the lambda body LIFTS to a top-level fn
+taking (env, params…); a call through a fn-typed value is
+CallPtr(box[0], [box, args…]) — the env rides seat 0 exactly as
+`self` does. A NAMED fn as a value wraps in a captureless box —
+ONE uniform representation, one call path (unboxing direct calls
+is a V2-class optimization; a generic fn as a value refuses in v1
+— instantiate first).
+
+THE SLICES:
+  (L1) [x] LANDED 2026-09-01 — LAMBDAS + FN VALUES, the design
+       executed plus TWO unplanned wins the probes demanded:
+       fn-FIELD calls (`ops.describe(v)` — the capability-record
+       pattern, a FIFTH fork of the one dot-call surface) and
+       STRUCTURAL Fn unification (`fn(T) -> T` meets
+       `fn(int) -> int` and binds T — apply/map's shape). The
+       resolver grew LAMBDA FRAMES: a stack on the Resolver (no
+       context threading — nested scopes just work), overlay
+       FLOORS telling frame-local binds from captures, and
+       TRANSITIVE capture chains (Capture through Capture) for
+       nested lambdas. Binding grew LambdaParam + Capture — both
+       columns answered (annotation table + env reads). The LIFT
+       rides the mono worklist (three job kinds: specializations,
+       lifts, WRAPPERS — a named fn boxes behind a generated
+       wrapper wearing the uniform (env, args…) convention; the
+       convention mismatch was caught by the corpus as an eval
+       DEFECT: `double` received the box as its argument).
+       Captures are BY VALUE per the doctrine; return/`?`/fail
+       inside a lambda refuse through the fn_ret BARRIER; a
+       refused param name still binds (wreckage). Managed
+       captures ride retain-at-pack unchanged — a struct with a
+       string field captured into an ESCAPING closure churned
+       100 deep, both engines agreeing. rt23 16/16; the
+       written-type family went Loc-based (annotations now live
+       at expressions too). ZERO new IR: FnAddr + CallPtr,
+       prepaid at T3, carry the whole rung.
+  (L2) THE LIST METHOD CORE: map/filter/find/any/all — the FOURTH
+       fork of the one dot-call surface (value impls, TypeName
+       construction, bound/dyn contracts, now BUILTIN
+       vocabularies): a lists-feature registry of method rules,
+       since impls on generic types are a recorded T4 hole.
+       Lowering is a loop per call site with a CallPtr per
+       element.
+  (L3) recorded: the `it` pronoun (parse-time lambda sugar), pipe
+       `|>`, mut-ref captures (rung 14 + Systems), fn-value
+       equality (refuses — compare_help), closure printing
+       (unprintable, names its type).
 
 ## Ownership 11.5 — the design (recorded 2026-08-31)
 

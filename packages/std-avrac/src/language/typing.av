@@ -45,6 +45,7 @@ type NarrowFrame = { key: int, inner: TypeId, opt: TypeId }
 type Typer = {
     error_type: TypeId,
     p: ParsedProgram,
+    store: NodeStore,
     resolution: Resolution,
     types: TypeRegistry,
     of_expr: List<TypeId>,
@@ -56,6 +57,8 @@ type Typer = {
     narrow_defs: List<NarrowFrame>,
     narrow_params: List<NarrowFrame>,
     fn_ret: List<TypeId>,
+    lambda_params: List<List<TypeId>?>,
+    lam_bar: List<int>,
     tscope: List<TypeId>,
     substs: List<Sub?>,
     methods: Map<string, StmtId>,
@@ -71,7 +74,7 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
     let hole = registry.intern(Type.Error)
     let t = Typer {
         error_type: hole,
-        p: p, resolution: r, types: registry,
+        p: p, store: p.store, resolution: r, types: registry,
         of_expr: filled(p.store.exprs.count(), hole),
         widens: filled<TypeId?>(p.store.exprs.count(), null),
         narrows: filled<TypeId?>(p.store.exprs.count(), null),
@@ -81,6 +84,8 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         narrow_defs: [], narrow_params: [], fn_ret: [], tscope: [],
         substs: filled<Sub?>(p.store.exprs.count(), null),
         methods: {}, traits: {}, trait_impls: {},
+        lambda_params: filled<List<TypeId>?>(p.store.exprs.count(), null),
+        lam_bar: [],
         decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
@@ -106,7 +111,7 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
 fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
     let ecx = expr_cx(t, param_types)
     let cx = StmtTypeCx {
-        store: t.p.store,
+        store: t.store,
         expr: ecx,
         walk: (v: ExprId) -> type_walk(t, param_types, v),
         walk_under: (s: StmtId, body: ExprId) -> walk_fn_body(t, s, body),
@@ -118,7 +123,7 @@ fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
         record_binding: (s: StmtId, ty: TypeId) -> t.record_binding(s, ty),
         loc_of: (s: StmtId) -> t.stmt_loc(s),
     }
-    for s in stmts { stmt_semantics_of(t.p.dispatch, t.p.store.stmt(s)).type_stmt(cx, s) }
+    for s in stmts { stmt_semantics_of(t.p.dispatch, t.store.stmt(s)).type_stmt(cx, s) }
 }
 
 /// A fn BODY's walk: the declared answer AND the type parameters
@@ -145,7 +150,7 @@ fn type_walk(t: Typer, param_types: List<TypeId>, root: ExprId) {
 fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
     let cx = TypeCx {
         error_type: t.error_type,
-        store: t.p.store,
+        store: t.store,
         types: t.types,
         type_at: (e: ExprId) -> t.of_expr[e.index],
         shape_at: (e: ExprId) -> t.types.shape_of(t.of_expr[e.index]),
@@ -161,14 +166,17 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         record_ask: (e: ExprId, subject: ExprId, on_present: bool) -> t.record_ask(e, subject, on_present),
         ask_of: (e: ExprId) -> t.asks[e.index],
         walk_narrowed: (subject: ExprId, branch: ExprId) -> narrowed_subtree(t, param_types, subject, branch),
-        enclosing_ret: () -> t.fn_ret.last(),
+        enclosing_ret: () -> t.reachable_ret(),
         record_subst: (e: ExprId, target: StmtId, targs: List<TypeId>) -> t.record_subst(e, target, targs),
-        written: (s: StmtId, tr: TypeRef) -> t.full_type(s, tr),
+        written: (s: StmtId, tr: TypeRef) -> t.full_type(t.stmt_loc(s), tr),
+        written_at: (e: ExprId, tr: TypeRef) -> t.full_type(loc_at(t.p.source.file, t.store.expr_span(e)), tr),
+        lambda_body: (lam: ExprId, ptys: List<TypeId>, body: ExprId) ->
+            lambda_walked(t, param_types, lam, ptys, body),
         method_sig: (target: string, mname: string) -> t.method_sig(target, mname),
         trait_sig: (tr: string, mname: string) -> t.trait_sig(tr, mname),
         implements: (ty: TypeId, tr: string) -> t.implements(ty, tr),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
-        loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
+        loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.store.expr_span(e)),
         emit: (d: Diag) -> t.speak(d),
     }
     cx
@@ -199,19 +207,34 @@ fn typed_subtree(t: Typer, param_types: List<TypeId>, root: ExprId) -> TypeId {
 /// carried type, each read recorded so lowering unwraps it. A
 /// subject that cannot be proven simply walks un-narrowed: the
 /// sugar is never load-bearing (spec 10.4).
+/// A lambda's body typed under its params, behind the BARRIER —
+/// `return`/`?`/`fail` inside see no enclosing fn. Params register
+/// FIRST so the body's reads answer.
+fn lambda_walked(t: Typer, param_types: List<TypeId>, lam: ExprId, ptys: List<TypeId>, body: ExprId) -> TypeId {
+    mut lp = t.lambda_params
+    lp.set(lam.index, ptys)
+    mut bar = t.lam_bar
+    // LICENSED I15: this IS the bracket fn
+    bar.push(t.fn_ret.length)
+    let ret = typed_subtree(t, param_types, body)
+    let _ = bar.pop()
+    ret
+}
+
 fn narrowed_subtree(t: Typer, param_types: List<TypeId>, subject: ExprId, branch: ExprId) -> TypeId {
     let b: Binding? = binding_of(t.resolution, subject)
     if b == null { return typed_subtree(t, param_types, branch) }
     match b! {
         .Def(s) -> narrowed_def_walk(t, param_types, s, branch),
         .Param(i) -> narrowed_param_walk(t, param_types, i, branch),
-        .Pattern(_) -> typed_subtree(t, param_types, branch),
+        // lambda params and captures never narrow — walk wide
+        .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) -> typed_subtree(t, param_types, branch),
     }
 }
 
 fn narrowed_def_walk(t: Typer, param_types: List<TypeId>, s: StmtId, branch: ExprId) -> TypeId {
     // A `mut` can be reassigned mid-branch — never narrowed.
-    if !(t.p.store.stmt(s) is .Let) { return typed_subtree(t, param_types, branch) }
+    if !(t.store.stmt(s) is .Let) { return typed_subtree(t, param_types, branch) }
     framed(t, t.narrow_defs, s.index, t.def_type(s),
            () -> typed_subtree(t, param_types, branch))
 }
@@ -239,7 +262,7 @@ fn framed(t: Typer, frames: List<NarrowFrame>, key: int, opt: TypeId, walk: fn()
 /// One node's fact: the owner speaks, the table records.
 fn type_node(t: Typer, cx: TypeCx, e: ExprId) {
     mut facts = t.of_expr
-    facts.set(e.index, semantics_of(t.p.dispatch, t.p.store.expr(e)).type_of(cx, e))
+    facts.set(e.index, semantics_of(t.p.dispatch, t.store.expr(e)).type_of(cx, e))
 }
 
 /// A type CONSTRUCTOR the language owns, and how many arguments it
@@ -288,12 +311,12 @@ impl Typer {
     /// BEFORE fn sigs, whose annotations may name these types.
     fn declare_type_sigs(self) {
         for s in self.p.stmts {
-            let owner: string? = self.p.store.type_decl_name(s)
+            let owner: string? = self.store.type_decl_name(s)
             if owner != null { self.refuse_taken_tparams(s, owner!) }
             self.enter_tscope(s)
-            let sp: StructParts? = self.p.store.struct_parts(s)
+            let sp: StructParts? = self.store.struct_parts(s)
             if sp != null { self.declare_struct_sig(s, sp!.fields) }
-            let ep: EnumParts? = self.p.store.enum_parts(s)
+            let ep: EnumParts? = self.store.enum_parts(s)
             if ep != null { self.declare_enum_sig(s, ep!.variants) }
             self.leave_tscope()
         }
@@ -325,7 +348,7 @@ impl Typer {
 
     fn declare_struct_sig(self, s: StmtId, fields: List<Param>) {
         let names = [f.name for f in fields]
-        let owner: string = self.p.store.type_decl_name(s) ?? "this type"
+        let owner: string = self.store.type_decl_name(s) ?? "this type"
         for d in duplicate_names("type.duplicate_field", owner, names, self.stmt_loc(s)) {
             self.speak(d)
         }
@@ -354,7 +377,7 @@ impl Typer {
     /// mistake is a cascade.
     fn slot_law(self, s: StmtId, kind: string, message: string,
                 label: string, ty: TypeRef) -> TypeId {
-        let named = self.written_type(s, ty)
+        let named = self.written_type(self.stmt_loc(s), ty)
         let sh: Type = self.types.shape_of(named)
         if sh is .Error { return named }
         if !ty.optional && slot_worthy(sh) { return named }
@@ -368,7 +391,7 @@ impl Typer {
     /// of declaration order.
     fn name_traits(self) {
         for s in self.p.stmts {
-            let parts: TraitParts? = self.p.store.trait_parts(s)
+            let parts: TraitParts? = self.store.trait_parts(s)
             if parts != null { self.name_trait(parts!.name, s) }
         }
     }
@@ -383,7 +406,7 @@ impl Typer {
     /// trivially).
     fn declare_trait_sigs(self) {
         for s in self.p.stmts {
-            let parts: TraitParts? = self.p.store.trait_parts(s)
+            let parts: TraitParts? = self.store.trait_parts(s)
             if parts != null { self.declare_trait(parts!.name, parts!.fns) }
         }
     }
@@ -393,16 +416,10 @@ impl Typer {
     }
 
     fn declare_trait_sig(self, tname: string, f: StmtId) {
-        let parts: FnParts? = self.p.store.fn_parts(f)
+        let parts: FnParts? = self.store.fn_parts(f)
         if parts == null { return }
         let fp = parts!
-        if !selfed(fp.params) {
-            self.speak(pointed(
-                error_at("type.trait", self.stmt_loc(f), "a trait method's first parameter is `self`"),
-                "declared here")
-                with { help: self_first(fp.name) })
-            return
-        }
+        if !selfed(fp.params) { return self.selfless_sig(f, fp.name) }
         self.declare(f, DeclSig.Fn(FnSig {
             params: self.seatless_params(f, fp),
             ret: self.annotated(f, fp.ret),
@@ -424,9 +441,9 @@ impl Typer {
     fn trait_sig(self, tname: string, mname: string) -> FnSig? {
         let decl: StmtId? = self.traits.get(tname)
         if decl == null { return null }
-        let parts: TraitParts? = self.p.store.trait_parts(decl!)
+        let parts: TraitParts? = self.store.trait_parts(decl!)
         if parts == null { return null }
-        let f: StmtId? = parts!.fns.find(named_fn(self.p.store, it, mname))
+        let f: StmtId? = parts!.fns.find(named_fn(self.store, it, mname))
         if f == null { return null }
         fn_sig_of(self.decls[f!.index])
     }
@@ -447,7 +464,7 @@ impl Typer {
     /// see an ordinary fn), and the table maps `Target.name` to it.
     fn declare_impls(self) {
         for s in self.p.stmts {
-            let parts: ImplParts? = self.p.store.impl_parts(s)
+            let parts: ImplParts? = self.store.impl_parts(s)
             if parts != null { self.declare_impl(s, parts!) }
         }
     }
@@ -455,19 +472,8 @@ impl Typer {
     fn declare_impl(self, s: StmtId, parts: ImplParts) {
         let target = parts.target
         let decl: StmtId? = self.resolution.type_defs.get(target)
-        if decl == null {
-            self.speak(pointed(
-                error_at("type.impl", self.stmt_loc(s), "`impl ${target}` serves no declared type"),
-                "this impl")
-                with { help: "declare `${target}` first — `type` or `enum`" })
-            return
-        }
-        if !self.p.store.decl_tparams(decl!).is_empty() {
-            self.speak(pointed(
-                error_at("type.impl", self.stmt_loc(s), "`${target}` is generic — generic impls are recorded, not landed"),
-                "this impl"))
-            return
-        }
+        if decl == null { return self.no_such_target(s, target) }
+        if !self.store.decl_tparams(decl!).is_empty() { return self.generic_target(s, target) }
         let ty = self.declared_type(decl!, target)
         for f in parts.fns { self.declare_method(target, ty, f) }
         if parts.of != "" { self.check_trait_impl(s, parts.of, target, parts.fns) }
@@ -478,67 +484,34 @@ impl Typer {
     /// (the recorded bs2 law, now ours).
     fn check_trait_impl(self, s: StmtId, of: string, target: string, fns: List<StmtId>) {
         let tdecl: StmtId? = self.traits.get(of)
-        if tdecl == null {
-            self.speak(pointed(
-                error_at("type.trait", self.stmt_loc(s), "`impl ${of} for` names no trait"),
-                "this impl")
-                with { help: "declare it — `trait ${of} { … }`" })
-            return
-        }
-        let parts: TraitParts? = self.p.store.trait_parts(tdecl!)
+        if tdecl == null { return self.no_such_trait(s, of) }
+        let parts: TraitParts? = self.store.trait_parts(tdecl!)
         if parts == null { return }
-        let wanted = [self.p.store.fn_parts(f)?.name ?? "" for f in parts!.fns]
+        let wanted = [self.fn_named(f) for f in parts!.fns]
         for f in parts!.fns { self.check_trait_member(s, of, target, f) }
         for f in fns {
-            let mn: string = self.p.store.fn_parts(f)?.name ?? ""
-            if !wanted.contains(mn) {
-                self.speak(pointed(
-                    error_at("type.trait", self.stmt_loc(f),
-                        "`${mn}` is not part of `${of}` — an impl-for holds only the trait's methods"),
-                    "declared here")
-                    with { help: "move it to a separate `impl ${target} { … }` block" })
-            }
+            let mn = self.fn_named(f)
+            if !wanted.contains(mn) { self.beyond_the_trait(f, of, target, mn) }
         }
         mut ti = self.trait_impls
         ti.set(trait_key(of, target), true)
     }
 
     fn check_trait_member(self, s: StmtId, of: string, target: string, f: StmtId) {
-        let mn: string = self.p.store.fn_parts(f)?.name ?? ""
+        let mn = self.fn_named(f)
         let want: FnSig? = fn_sig_of(self.decls[f.index])
         let got: FnSig? = self.method_sig(target, mn)
-        if got == null {
-            self.speak(pointed(
-                error_at("type.trait", self.stmt_loc(s),
-                    "`impl ${of} for ${target}` must answer `${mn}`"),
-                "this impl")
-                with { help: "add `fn ${mn}(self, …)`" })
-            return
-        }
-        if want != null && !sigs_agree(want!, got!) {
-            self.speak(pointed(
-                error_at("type.trait", self.stmt_loc(s),
-                    "`${target}.${mn}` does not wear `${of}.${mn}`'s signature"),
-                "this impl")
-                with { help: "match the trait's parameters and return exactly" })
-        }
+        if got == null { return self.unanswered(s, of, target, mn) }
+        if want != null && !sigs_agree(want!, got!) { self.sig_unworn(s, of, target, mn) }
     }
 
     fn declare_method(self, target: string, ty: TypeId, f: StmtId) {
-        let parts: FnParts? = self.p.store.fn_parts(f)
+        let parts: FnParts? = self.store.fn_parts(f)
         if parts == null { return }
         let fp = parts!
-        if !fp.tparams.is_empty() {
-            self.speak(pointed(
-                error_at("type.impl", self.stmt_loc(f), "`${fp.name}` is generic — generic methods are recorded, not landed"),
-                "this method"))
-            return
-        }
+        if !fp.tparams.is_empty() { return self.generic_method(f, fp.name) }
         if !selfed(fp.params) {
-            self.speak(pointed(
-                error_at("type.impl", self.stmt_loc(f), "a method's first parameter is `self`"),
-                "declared here")
-                with { help: self_first(fp.name) })
+            self.selfless_method(f, fp.name)
             // declare the WRECKAGE anyway — every param a hole — so
             // the body walk and the fn loop stay total (one
             // mistake, one message, no crash downstream)
@@ -555,15 +528,86 @@ impl Typer {
         // one impl owns each name — a second declaration would
         // silently shadow the first at the shared symbol
         let taken: StmtId? = self.methods.get(method_symbol(target, fp.name))
-        if taken != null {
-            self.speak(pointed(
-                error_at("type.impl", self.stmt_loc(f), "`${target}.${fp.name}` is declared twice"),
-                "declared again here")
-                with { help: "one `impl` block owns each method name — rename or merge" })
-            return
-        }
+        if taken != null { return self.method_taken(f, target, fp.name) }
         mut ms = self.methods
         ms.set(method_symbol(target, fp.name), f)
+    }
+
+    // ── The declare voices — each refusal worded once, at its name ──
+
+    fn selfless_sig(self, f: StmtId, name: string) {
+        self.speak(pointed(
+            error_at("type.trait", self.stmt_loc(f), "a trait method's first parameter is `self`"),
+            "declared here")
+            with { help: self_first(name) })
+    }
+
+    /// A declared fn's name, or the empty word — the totality laws
+    /// compare names, and a nameless decl matches nothing.
+    fn fn_named(self, f: StmtId) -> string {
+        self.store.fn_parts(f)?.name ?? ""
+    }
+
+    fn no_such_target(self, s: StmtId, target: string) {
+        self.speak(pointed(
+            error_at("type.impl", self.stmt_loc(s), "`impl ${target}` serves no declared type"),
+            "this impl")
+            with { help: "declare `${target}` first — `type` or `enum`" })
+    }
+
+    fn generic_target(self, s: StmtId, target: string) {
+        self.speak(pointed(
+            error_at("type.impl", self.stmt_loc(s), "`${target}` is generic — generic impls are recorded, not landed"),
+            "this impl"))
+    }
+
+    fn no_such_trait(self, s: StmtId, of: string) {
+        self.speak(pointed(
+            error_at("type.trait", self.stmt_loc(s), "`impl ${of} for` names no trait"),
+            "this impl")
+            with { help: "declare it — `trait ${of} { … }`" })
+    }
+
+    fn beyond_the_trait(self, f: StmtId, of: string, target: string, mn: string) {
+        self.speak(pointed(
+            error_at("type.trait", self.stmt_loc(f),
+                "`${mn}` is not part of `${of}` — an impl-for holds only the trait's methods"),
+            "declared here")
+            with { help: "move it to a separate `impl ${target} { … }` block" })
+    }
+
+    fn unanswered(self, s: StmtId, of: string, target: string, mn: string) {
+        self.speak(pointed(
+            error_at("type.trait", self.stmt_loc(s), "`impl ${of} for ${target}` must answer `${mn}`"),
+            "this impl")
+            with { help: "add `fn ${mn}(self, …)`" })
+    }
+
+    fn sig_unworn(self, s: StmtId, of: string, target: string, mn: string) {
+        self.speak(pointed(
+            error_at("type.trait", self.stmt_loc(s), "`${target}.${mn}` does not wear `${of}.${mn}`'s signature"),
+            "this impl")
+            with { help: "match the trait's parameters and return exactly" })
+    }
+
+    fn generic_method(self, f: StmtId, name: string) {
+        self.speak(pointed(
+            error_at("type.impl", self.stmt_loc(f), "`${name}` is generic — generic methods are recorded, not landed"),
+            "this method"))
+    }
+
+    fn selfless_method(self, f: StmtId, name: string) {
+        self.speak(pointed(
+            error_at("type.impl", self.stmt_loc(f), "a method's first parameter is `self`"),
+            "declared here")
+            with { help: self_first(name) })
+    }
+
+    fn method_taken(self, f: StmtId, target: string, name: string) {
+        self.speak(pointed(
+            error_at("type.impl", self.stmt_loc(f), "`${target}.${name}` is declared twice"),
+            "declared again here")
+            with { help: "one `impl` block owns each method name — rename or merge" })
     }
 
     /// The impl table's answer — a sig whose params[0] is `self`.
@@ -577,7 +621,7 @@ impl Typer {
     /// body walks, so calls resolve signatures program-wide.
     fn declare_sigs(self) {
         for s in self.p.stmts {
-            let parts: FnParts? = self.p.store.fn_parts(s)
+            let parts: FnParts? = self.store.fn_parts(s)
             if parts != null { self.declare_sig(s, parts!.params, parts!.ret) }
         }
     }
@@ -586,7 +630,7 @@ impl Typer {
         // A parameter declared twice makes the second unreachable —
         // the body sees the first, silently. The same law a record's
         // fields and an enum's variants obey, through the same scan.
-        let owner: string = self.p.store.fn_parts(s)?.name ?? "this fn"
+        let owner: string = self.store.fn_parts(s)?.name ?? "this fn"
         for d in duplicate_names("type.duplicate_param", owner, [pp.name for pp in fparams], self.stmt_loc(s)) {
             self.speak(d)
         }
@@ -604,17 +648,23 @@ impl Typer {
     /// sigs with the target riding the seat).
     fn param_type(self, s: StmtId, pp: Param) -> TypeId {
         if pp.ty != null { return self.annotated(s, pp.ty) }
-        if pp.name == "self" {
-            self.speak(pointed(
-                error_at("type.impl", self.stmt_loc(s), "`self` lives in an `impl` block"),
-                "declared here")
-                with { help: "move this fn into `impl <Type> { … }`" })
-            return self.error_type
-        }
+        if pp.name == "self" { return self.homeless_self(s) }
+        self.typeless_param(s, pp.name)
+    }
+
+    fn homeless_self(self, s: StmtId) -> TypeId {
         self.speak(pointed(
-            error_at("type.mismatch", self.stmt_loc(s), "parameter `${pp.name}` declares no type"),
+            error_at("type.impl", self.stmt_loc(s), "`self` lives in an `impl` block"),
             "declared here")
-            with { help: "write `${pp.name}: <type>` — only `self` goes bare" })
+            with { help: "move this fn into `impl <Type> { … }`" })
+        self.error_type
+    }
+
+    fn typeless_param(self, s: StmtId, name: string) -> TypeId {
+        self.speak(pointed(
+            error_at("type.mismatch", self.stmt_loc(s), "parameter `${name}` declares no type"),
+            "declared here")
+            with { help: "write `${name}: <type>` — only `self` goes bare" })
         self.error_type
     }
 
@@ -622,19 +672,21 @@ impl Typer {
     /// shadow would be unreadable; declared-type shadowing is the
     /// ordinary lexical kind and stands.
     fn refuse_taken_tparams(self, s: StmtId, owner: string) {
-        let tp = self.p.store.decl_tparams(s)
+        let tp = self.store.decl_tparams(s)
         for d in duplicate_names("type.tparam", owner, tp, self.stmt_loc(s)) {
             self.speak(d)
         }
         for n in tp {
-            if builtin_type_name(n) {
-                self.speak(pointed(
-                    error_at("type.tparam", self.stmt_loc(s),
-                        "a type parameter cannot take `${n}`'s name — the language owns it"),
-                    "declared here")
-                    with { help: "pick another name — `T`, `E`, `Elem`" })
-            }
+            if builtin_type_name(n) { self.owned_name(s, n) }
         }
+    }
+
+    fn owned_name(self, s: StmtId, n: string) {
+        self.speak(pointed(
+            error_at("type.tparam", self.stmt_loc(s),
+                "a type parameter cannot take `${n}`'s name — the language owns it"),
+            "declared here")
+            with { help: "pick another name — `T`, `E`, `Elem`" })
     }
 
     /// A declaration's type parameters as interned Vars — fns and
@@ -643,7 +695,7 @@ impl Typer {
     fn tvars_of(self, s: StmtId) -> List<TypeId> {
         mut out: List<TypeId> = []
         // LICENSED I3: the ordinal needs the index; comprehensions cannot destructure enumerate
-        for (j, n) in self.p.store.decl_tparams(s).enumerate() {
+        for (j, n) in self.store.decl_tparams(s).enumerate() {
             out.push(self.types.intern(Type.Var(s, j, n)))
         }
         out
@@ -669,7 +721,7 @@ impl Typer {
     /// here from any grammar the language assembles.
     fn annotated(self, s: StmtId, ann: TypeRef?) -> TypeId {
         if ann == null { return self.error_type }
-        self.full_type(s, ann!)
+        self.full_type(self.stmt_loc(s), ann!)
     }
 
     /// A written type in full — its arguments and its `?` both. The
@@ -677,70 +729,91 @@ impl Typer {
     /// `List<int?>` and `List<List<int>>` need no rule of their own.
     /// The `?` wraps ANY well-named type: which layout a nullable
     /// takes is values.av's per-shape choice, not a law's business.
-    fn full_type(self, s: StmtId, t: TypeRef) -> TypeId {
-        if !t.optional { return self.written_type(s, t) }
-        let inner = self.written_type(s, plain(t))
+    fn full_type(self, at: Loc?, t: TypeRef) -> TypeId {
+        if !t.optional { return self.written_type(at, t) }
+        let inner = self.written_type(at, plain(t))
         if self.types.shape_of(inner) is .Error { return inner }
         self.types.intern(Type.Opt(inner))
     }
 
     /// What a written type stands for, arguments included: a bare
     /// name, or an application like `List<int>`.
-    fn written_type(self, s: StmtId, t: TypeRef) -> TypeId {
-        if t.dynamic { return self.dyn_type(s, t.name) }
-        if t.args.is_empty() { return self.named_type(s, t.name) }
-        self.applied(s, t)
+    fn written_type(self, at: Loc?, t: TypeRef) -> TypeId {
+        if t.arrow { return self.fn_written(at, t) }
+        if t.dynamic { return self.dyn_type(at, t.name) }
+        if t.args.is_empty() { return self.named_type(at, t.name) }
+        self.applied(at, t)
+    }
+
+    /// `fn(a, b) -> r` — the args carry the seats, the LAST is the
+    /// return (the builder's pinned contract).
+    fn fn_written(self, at: Loc?, t: TypeRef) -> TypeId {
+        mut seats: List<TypeId> = []
+        mut answer = self.error_type
+        // LICENSED I3: the tail is the answer; comprehensions cannot split it off
+        for (j, a) in t.args.enumerate() {
+            let ty = self.full_type(at, a)
+            if self.types.shape_of(ty) is .Error { return ty }
+            if j == t.args.length - 1 { answer = ty } else { seats.push(ty) }
+        }
+        self.types.intern(Type.Fn(seats, answer))
     }
 
     /// `dyn Name` wears a declared trait — the contract is the type.
-    fn dyn_type(self, s: StmtId, name: string) -> TypeId {
+    fn dyn_type(self, at: Loc?, name: string) -> TypeId {
         let tdecl: StmtId? = self.traits.get(name)
-        if tdecl == null {
-            self.speak(pointed(
-                error_at("type.trait", self.stmt_loc(s), "`dyn ${name}` names no trait"),
-                "written here")
-                with { help: "declare it — `trait ${name} { … }`" })
-            return self.error_type
-        }
+        if tdecl == null { return self.undeclared_contract(at, name) }
         self.types.intern(Type.Dyn(tdecl!, name))
+    }
+
+    fn unappliable(self, at: Loc?, name: string) -> TypeId {
+        self.speak(pointed(
+            error_at("type.applied", at, "`${name}` takes no type arguments"),
+            "applied here")
+            with { help: "the applied types today are `List<T>` and `Result<T, E>`" })
+        self.error_type
+    }
+
+    fn arity_wrong(self, at: Loc?, name: string, found: int, takes: int) -> TypeId {
+        self.speak(pointed(
+            error_at("type.applied", at, "`${name}` is applied to ${found} types; it takes ${takes}"),
+            "applied here")
+            with { help: "`${name}` needs exactly ${takes}" })
+        self.error_type
+    }
+
+    fn undeclared_contract(self, at: Loc?, name: string) -> TypeId {
+        self.speak(pointed(
+            error_at("type.trait", at, "`dyn ${name}` names no trait"),
+            "written here")
+            with { help: "declare it — `trait ${name} { … }`" })
+        self.error_type
     }
 
     /// A type APPLIED to arguments. `List<T>` is the only one today —
     /// the registry has no shape for another, and inventing one here
     /// would be a type nothing can lower.
-    fn applied(self, s: StmtId, t: TypeRef) -> TypeId {
+    fn applied(self, at: Loc?, t: TypeRef) -> TypeId {
         let takes: int? = applied_arity(t.name) ?? declared_arity(self, t.name)
         if takes == null {
             // The NAME law speaks first: a constructor that names no
             // type at all is not an arity mistake, and saying so
             // would imply it IS a type that merely takes none.
-            if self.types.shape_of(self.named_type(s, t.name)) is .Error { return self.error_type }
-            self.speak(pointed(
-                error_at("type.applied", self.stmt_loc(s),
-                    "`${t.name}` takes no type arguments"),
-                "applied here")
-                with { help: "the applied types today are `List<T>` and `Result<T, E>`" })
-            return self.error_type
+            if self.types.shape_of(self.named_type(at, t.name)) is .Error { return self.error_type }
+            return self.unappliable(at, t.name)
         }
         let arity = takes!
-        if t.args.length != arity {
-            self.speak(pointed(
-                error_at("type.applied", self.stmt_loc(s),
-                    "`${t.name}` is applied to ${t.args.length} types; it takes ${arity}"),
-                "applied here")
-                with { help: "`${t.name}` needs exactly ${arity}" })
-            return self.error_type
-        }
+        if t.args.length != arity { return self.arity_wrong(at, t.name, t.args.length, arity) }
         mut parts: List<TypeId> = []
         for a in t.args {
-            let ty = self.full_type(s, a)
+            let ty = self.full_type(at, a)
             if self.types.shape_of(ty) is .Error { return ty }
             // A Result's sides are SLOTS of its box — the slot law
             // (unmanaged words) judges them like any payload. A Var
             // passes here and every INSTANTIATION re-judges.
             if t.name == "Result" && !slot_worthy(self.types.shape_of(ty)) {
                 self.speak(pointed(
-                    error_at("type.applied", self.stmt_loc(s),
+                    error_at("type.applied", at,
                         "a `Result` side cannot hold this yet"),
                     "this side is `${self.types.name_of(ty)}`")
                     with { help: "nullable sides arrive with ownership's next slice" })
@@ -750,28 +823,28 @@ impl Typer {
         }
         let sh: Type? = applied_shape(t.name, parts)
         if sh != null { return self.types.intern(sh!) }
-        self.applied_decl(s, t.name, parts)
+        self.applied_decl(at, t.name, parts)
     }
 
     /// A USER generic instantiated: the declaration by name, its
     /// slots RE-JUDGED under the arguments when the sig is already
     /// declared (source order — a construction judges again anyway).
-    fn applied_decl(self, s: StmtId, name: string, parts: List<TypeId>) -> TypeId {
+    fn applied_decl(self, at: Loc?, name: string, parts: List<TypeId>) -> TypeId {
         let decl: StmtId? = self.resolution.type_defs.get(name)
         if decl == null { return self.error_type }
         let target = decl!
-        if self.refused_app(s, name, target, parts) { return self.error_type }
+        if self.refused_app(at, name, target, parts) { return self.error_type }
         self.types.intern(Type.App(target, name, parts))
     }
 
     /// Every declared slot of the instantiation, substituted and
     /// judged — a `Pair<string, int>` refuses like the field law.
-    fn refused_app(self, s: StmtId, name: string, decl: StmtId, parts: List<TypeId>) -> bool {
+    fn refused_app(self, at: Loc?, name: string, decl: StmtId, parts: List<TypeId>) -> bool {
         for ty in self.declared_slots(decl) {
             let landed = self.types.substituted(ty, decl, parts)
             if !slot_worthy(self.types.shape_of(landed)) {
                 self.speak(pointed(
-                    error_at("type.applied", self.stmt_loc(s),
+                    error_at("type.applied", at,
                         "`${name}<...>` makes a slot `${self.types.name_of(landed)}`, which a slot cannot hold yet"),
                     "applied here")
                     with { help: slots_await_ownership() })
@@ -797,7 +870,7 @@ impl Typer {
     /// What a written NAME stands for: the enclosing fn's type
     /// parameter first, then a builtin shape, a declared type, or a
     /// spoken absence.
-    fn named_type(self, s: StmtId, name: string) -> TypeId {
+    fn named_type(self, at: Loc?, name: string) -> TypeId {
         let tv: TypeId? = self.tscope.find(var_named(self.types, it, name))
         if tv != null { return tv! }
         let sh: Type? = shape_named(name)
@@ -805,7 +878,7 @@ impl Typer {
         let decl: StmtId? = self.resolution.type_defs.get(name)
         if decl != null { return self.declared_type(decl!, name) }
         self.speak(pointed(
-            error_at("type.unknown", self.stmt_loc(s), "`${name}` names no type"),
+            error_at("type.unknown", at, "`${name}` names no type"),
             "in this signature")
             with { help: "the types today are `int`, `string`, `bool`, and your declared types" })
         self.error_type
@@ -814,7 +887,7 @@ impl Typer {
     /// A declared name's type: an enum's value shape or a record's —
     /// and a GENERIC declaration needs its arguments.
     fn declared_type(self, s: StmtId, name: string) -> TypeId {
-        let arity = self.p.store.decl_tparams(s).length
+        let arity = self.store.decl_tparams(s).length
         if arity > 0 {
             self.speak(pointed(
                 error_at("type.applied", self.stmt_loc(s),
@@ -823,13 +896,13 @@ impl Typer {
                 with { help: "write `${name}<...>`" })
             return self.error_type
         }
-        let ep: EnumParts? = self.p.store.enum_parts(s)
+        let ep: EnumParts? = self.store.enum_parts(s)
         if ep != null { return self.types.intern(Type.Enum(s, name)) }
         self.types.intern(Type.Struct(s, name))
     }
 
     fn stmt_loc(self, s: StmtId) -> Loc? {
-        loc_at(self.p.source.file, self.p.store.stmt_span(s))
+        loc_at(self.p.source.file, self.store.stmt_span(s))
     }
 
     /// An ident's type, by its binding kind — NARROWED when a
@@ -846,7 +919,27 @@ impl Typer {
             // The arm's OWNER spoke this type before the arm was
             // walked; an absent one means the bind was refused.
             .Pattern(v) -> self.pattern_types[v.index] ?? self.error_type,
+            .LambdaParam(l, i) -> self.lambda_param_ty(l, i),
+            // captures never narrow — the box holds the wide value
+            .Capture(l, j) -> self.capture_ty(l, j, param_types),
         }
+    }
+
+    /// A NAMED fn as a VALUE: it wears its own signature. A generic
+    /// fn has no single signature to wear — instantiate it first.
+    fn fn_value_type(self, s: StmtId) -> TypeId {
+        if !self.store.decl_tparams(s).is_empty() { return self.unwearable_generic(s) }
+        let sig: FnSig? = fn_sig_of(self.decls[s.index])
+        if sig == null { return self.error_type }
+        self.types.intern(Type.Fn(sig!.params, sig!.ret))
+    }
+
+    fn unwearable_generic(self, s: StmtId) -> TypeId {
+        self.speak(pointed(
+            error_at("type.lambda", self.stmt_loc(s), "a generic fn is not a value — no single signature to wear"),
+            "declared here")
+            with { help: "wrap it — `(x: T0) -> ${self.store.fn_parts(s)?.name ?? "f"}(x)` with the types pinned" })
+        self.error_type
     }
 
     /// The narrowed INNER for a def-bound read, when a frame proves
@@ -898,17 +991,54 @@ impl Typer {
     /// the statement typed); a TYPE declaration used as a value is
     /// the compile-only TypeName; everything else infers from its
     /// value.
+    /// The enclosing fn's answer — unless a LAMBDA BARRIER stands
+    /// between: a lambda body answers itself, so `return`, `?`, and
+    /// `fail` inside one see no enclosing fn at all.
+    fn reachable_ret(self) -> TypeId? {
+        let bar: int? = self.lam_bar.last()
+        if bar != null && self.fn_ret.length <= bar! { return null }
+        self.fn_ret.last()
+    }
+
+    /// A lambda param's declared type, by seat.
+    fn lambda_param_ty(self, l: ExprId, i: int) -> TypeId {
+        let ps: List<TypeId>? = self.lambda_params[l.index]
+        if ps == null { return self.error_type }
+        ps![i]
+    }
+
+    /// A capture's type — its SOURCE binding's, chained through
+    /// nested lambdas.
+    fn capture_ty(self, l: ExprId, j: int, param_types: List<TypeId>) -> TypeId {
+        let cap: Cap? = captures_of(self.resolution, l)
+        if cap == null { return self.error_type }
+        self.binding_ty(cap!.sources[j], param_types)
+    }
+
+    /// The un-narrowed type a binding wears — the capture law's
+    /// projection.
+    fn binding_ty(self, b: Binding, param_types: List<TypeId>) -> TypeId {
+        match b {
+            .Param(i) -> param_types[i],
+            .Def(s) -> self.def_type(s),
+            .Pattern(v) -> self.pattern_types[v.index] ?? self.error_type,
+            .LambdaParam(l, i) -> self.lambda_param_ty(l, i),
+            .Capture(l, j) -> self.capture_ty(l, j, param_types),
+        }
+    }
+
     fn def_type(self, s: StmtId) -> TypeId {
         let declared: TypeId? = self.binding_types[s.index]
         if declared != null { return declared! }
-        let tname: string? = self.p.store.type_decl_name(s)
+        let tname: string? = self.store.type_decl_name(s)
         if tname != null { return self.types.intern(Type.TypeName(s, tname!)) }
+        if self.store.fn_parts(s) != null { return self.fn_value_type(s) }
         // A for's COUNTER binds no value expression of its own —
         // the range law already pinned what it IS. Without this
         // arm the counter typed as the absorbing Error and every
         // law silently forgave it.
-        if self.p.store.stmt(s) is .For { return self.types.intern(Type.Int) }
-        let v: ExprId? = self.p.store.stmt_value(s)
+        if self.store.stmt(s) is .For { return self.types.intern(Type.Int) }
+        let v: ExprId? = self.store.stmt_value(s)
         if v == null { return self.error_type }
         self.of_expr[v!.index]
     }
@@ -917,7 +1047,7 @@ impl Typer {
     /// so every later read of the name answers it, and returned for
     /// the value's acceptance check.
     fn bind_declared(self, s: StmtId, ann: TypeRef) -> TypeId {
-        let ty = self.full_type(s, ann)
+        let ty = self.full_type(self.stmt_loc(s), ann)
         self.record_binding(s, ty)
         ty
     }
@@ -942,7 +1072,7 @@ impl Typer {
         if b == null { return null }
         match b! {
             .Def(s) -> fn_sig_of(self.decls[s.index]),
-            .Param(_) or .Pattern(_) -> null,
+            .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) -> null,
         }
     }
 
@@ -952,7 +1082,7 @@ impl Typer {
         if b == null { return null }
         match b! {
             .Def(s) -> s,
-            .Param(_) or .Pattern(_) -> null,
+            .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) -> null,
         }
     }
 
@@ -963,7 +1093,7 @@ impl Typer {
             .App(decl, _, args) ->
                 subbed_fields(self.types, record_sig_of(self.decls[decl.index]), decl, args),
             .Int or .Str or .Bool or .List(_) or .Enum(_, _) or .Res(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Opt(_) or .Null or .EmptyList or
+            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
             .Error -> null,
         }
     }
@@ -976,7 +1106,7 @@ impl Typer {
             .App(decl, _, args) ->
                 subbed_variants(self.types, variant_sig_of(self.decls[decl.index]), decl, args),
             .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Opt(_) or .Null or .EmptyList or
+            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
             .Error -> null,
         }
     }
@@ -1001,7 +1131,7 @@ fn var_named(types: TypeRegistry, id: TypeId, name: string) -> bool {
 fn declared_arity(t: Typer, name: string) -> int? {
     let decl: StmtId? = t.resolution.type_defs.get(name)
     if decl == null { return null }
-    let arity = t.p.store.decl_tparams(decl!).length
+    let arity = t.store.decl_tparams(decl!).length
     if arity == 0 { return null }
     arity
 }
@@ -1033,7 +1163,7 @@ fn declared_name(sh: Type) -> string? {
         .Struct(_, n) -> n,
         .Enum(_, n) -> n,
         .Int or .Str or .Bool or .List(_) or .Opt(_) or .Null or
-        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or
+        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or
         .TypeName(_, _) or .EmptyList or .Error -> null,
     }
 }

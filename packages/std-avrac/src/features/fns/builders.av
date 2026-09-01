@@ -3,7 +3,7 @@
 //! types arrive as two parallel captures and zip into Params.
 use core.{Expr, Stmt, Param, TypeRef}
 use grammar.{Token}
-use features.{LangNode, Builder, window_end, aligned_binds}
+use features.{LangNode, Builder, aligned_binds, aligned_param_types}
 
 fn build_fn(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
@@ -34,7 +34,7 @@ fn build_fn(b: Builder) -> Result<LangNode, string> {
 /// A bound as a written type — the trait's bare name.
 fn bound_ref(bound: string, at: Token) -> TypeRef? {
     if bound == "" { return null }
-    TypeRef { name: bound, args: [], optional: false, dynamic: false, span: at.span }
+    TypeRef { name: bound, args: [], optional: false, dynamic: false, arrow: false, span: at.span }
 }
 
 fn build_call(b: Builder) -> Result<LangNode, string> {
@@ -58,23 +58,4 @@ fn build_return(b: Builder) -> Result<LangNode, string> {
     b.make_stmt(Stmt.Return(v))
 }
 
-/// Each param's optional written type — absence IS the self seat.
-/// The window law, third user (enum payloads, catch binds, here).
-fn aligned_param_types(anchors: List<Token>, optional: List<TypeRef>, ends: int) -> List<TypeRef?> {
-    mut found: List<TypeRef?> = []
-    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
-    for (j, a) in anchors.enumerate() {
-        found.push(one_between(optional, a.span.lo, window_end(anchors, j, ends)))
-    }
-    found
-}
 
-fn one_between(types: List<TypeRef>, after: int, before: int) -> TypeRef? {
-    types.find(ref_within(it, after, before))
-}
-
-fn ref_within(t: TypeRef, after: int, before: int) -> bool {
-    let lo: int? = t.span?.lo
-    if lo == null { return false }
-    lo! > after && lo! < before
-}

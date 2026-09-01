@@ -1,0 +1,44 @@
+// Closures, vertically: lambdas capture by value, fn values box
+// behind one call convention, and the capability-record pattern
+// dispatches through fn-typed fields. rt23 is the adversarial
+// record.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/closures" {
+    given "the fn value surface" {
+        then "a lambda takes its seats and answers" {
+            shown("let f = (x: int) -> x * 2\nf(21)") == "42"
+        }
+        then "a capture rides by value — the box outlives the frame" {
+            shown("fn adder(n: int) -> fn(int) -> int {\n    (x: int) -> x + n\n}\nlet f = adder(40)\nf(2)") == "42"
+        }
+        then "a named fn is a value wearing its signature" {
+            shown("fn double(x: int) -> int {\n    x * 2\n}\nfn apply(f: fn(int) -> int, v: int) -> int {\n    f(v)\n}\napply(double, 21)") == "42"
+        }
+        then "fn seats unify structurally through generics" {
+            shown("fn apply<T>(f: fn(T) -> T, v: T) -> T {\n    f(v)\n}\napply((x: int) -> x + 2, 40)") == "42"
+        }
+        then "a fn-typed FIELD dispatches through the dot — the capability record" {
+            shown("type Ops = { scale: fn(int) -> int }\nlet s: fn(int) -> int = (x: int) -> x * 7\nlet ops = Ops { scale: s }\nops.scale(6)") == "42"
+        }
+    }
+    given "the refusals, each in its own words" {
+        then "an unannotated param names the channel it waits for" {
+            refused_with("let f = (x) -> x + 1\n2", "`x` needs a type — a lambda cannot hear its slot yet")
+        }
+        then "a non-fn refuses the call" {
+            refused_with("let n = 5\nn(1)", "`n` is not callable — it holds a `int`")
+        }
+        then "a generic fn is not a value" {
+            refused_with("fn id<T>(v: T) -> T {\n    v\n}\nlet g = id\n2", "a generic fn is not a value")
+        }
+        then "`return` cannot escape a lambda" {
+            refused_with("fn f() -> int {\n    let g = (v: int) -> if v > 0 {\n        return v\n    } else {\n        0\n    }\n    g(1)\n}\nf()",
+                         "a `return` answers a fn, and there is none enclosing")
+        }
+        then "a fn value refuses the seat it does not wear" {
+            refused_with("let f: fn(int) -> bool = (x: int) -> x + 1\n2",
+                         "`f` declares `fn(int) -> bool`, this is `fn(int) -> int`")
+        }
+    }
+}

@@ -13,17 +13,35 @@
 //! that make its layout nobody else's business.
 use core.{Reg, Ins, BinOp, Type, TypeId, ExprId, ptr_shape}
 
+// ── The slot array, behind its verbs ────────────────────────────
+// Every aggregate — a struct, an enum's box, a list, a dyn box, a
+// fn box — is ONE runtime shape: the slot array. These verbs are
+// the only spellings of its runtime names; a consumer that pushes
+// or reads a lane says so in a word.
+
+/// A fresh box, its slots pushed in order. `dst` is minted by the
+/// caller, before the first instruction is emitted — registers are
+/// numbered in emission order.
+export fn grown_box(cx: LowerCx, dst: Reg, slots: List<Reg>) {
+    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    for r in slots { push_slot(cx, dst, r) }
+}
+
+/// One more slot.
+export fn push_slot(cx: LowerCx, box: Reg, v: Reg) {
+    cx.emit(Ins.CallRtVoid("avra_array_push", [box, v]))
+}
+
 /// THE TAGGED VALUE: an enum's variant is a slot array holding its
 /// TAG at slot 0 and its payload, when it has one, at slot 1.
-/// `dst` is minted by the caller, before the first instruction is
-/// emitted — registers are numbered in emission order.
+/// `dst` is minted by the caller — the box verbs' shared contract.
 export fn tagged_value(cx: LowerCx, dst: Reg, tag: int, payload: Reg?) {
     cx.emit(Ins.CallRt(dst, "avra_array_new", []))
     let slot = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(slot, tag))
-    cx.emit(Ins.CallRtVoid("avra_array_push", [dst, slot]))
+    push_slot(cx, dst, slot)
     if payload == null { return }
-    cx.emit(Ins.CallRtVoid("avra_array_push", [dst, payload!]))
+    push_slot(cx, dst, payload!)
 }
 
 /// The TAG a tagged value carries. Slot 0, always an int — asking
@@ -41,7 +59,7 @@ export fn payload_of(cx: LowerCx, v: Reg, ty: TypeId) -> Reg {
 /// One slot read: the index is a constant, so it is minted and
 /// emitted BEFORE the read that uses it — registers are numbered in
 /// emission order. An absent type reads as an int.
-fn slot_read(cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
+export fn slot_read(cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
     let at = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(at, n))
     let got = if ty == null { cx.mint_shape(Type.Int) } else { cx.mint_ty(ty!) }
@@ -77,6 +95,37 @@ export fn okness_of(cx: LowerCx, v: Reg) -> Reg {
     let ok = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(ok, BinOp.Eq, tag, zero))
     ok
+}
+
+// ── The fn value, behind its verbs ──────────────────────────────
+// A closure or boxed fn is a slot array: the CODE ADDRESS at slot
+// 0, captures after. Every call rides CallPtr with the box at seat
+// 0 — the env is `self` by another name. The lanes are this
+// file's business alone.
+
+/// The box, minted: the code address first, the captures in lane
+/// order — the lifted body reads them back by `capture_lane`.
+export fn fn_box(cx: LowerCx, dst: Reg, sym: string, caps: List<Reg>) {
+    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    let ad = cx.mint_shape(Type.Int)
+    cx.emit(Ins.FnAddr(ad, sym))
+    push_slot(cx, dst, ad)
+    for r in caps { push_slot(cx, dst, r) }
+}
+
+/// A capture's slot — lane j lives past the code address.
+export fn capture_lane(j: int) -> int {
+    1 + j
+}
+
+/// The call THROUGH a box: slot 0 is the code, the box rides seat
+/// 0, and the arguments follow. The answer register mints LAST —
+/// registers are numbered in emission order.
+export fn called_through(cx: LowerCx, e: ExprId, box: Reg, args: List<Reg>) -> Reg {
+    let fp = slot_read(cx, box, 0, null)
+    let dst = cx.result(e)
+    cx.emit(Ins.CallPtr(dst, fp, [box].concat(args)))
+    dst
 }
 
 // ── The nullable, behind its verbs ──────────────────────────────

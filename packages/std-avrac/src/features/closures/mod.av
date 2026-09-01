@@ -1,0 +1,30 @@
+//! Closures: `(x: int) -> x * 2` — a fn as a VALUE. The body
+//! captures outer names BY VALUE into the closure's box; the box
+//! is `[code address, captures…]` and a call rides CallPtr with
+//! the box at seat 0, exactly as `self` rides a method call.
+//! `fn(int) -> bool` is the type a fn value wears.
+use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
+
+export fn closures() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name      | build
+        "lambda"  | build_lambda
+        "fn_type" | build_fn_type
+    }
+    let codes = table<DiagCode> {
+        kind          | id      | summary
+        "type.lambda" | "F2033" | "a lambda's parameters, body, and captures obey the closure laws"
+    }
+    component LanguageFeature f {
+        name = "closures"
+        docs = "`(x: int) -> x * 2` closures capturing outer names by value; `fn(int) -> bool` fn-value types; calls dispatch through fn-typed bindings."
+        gram = """
+type = "fn" "(" ( ft:type ( "," ft:type )* )? ")" "->" fr:type -> fn_type(ft, fr)
+primary = "(" ( lp:NAME ( ":" lt:type )? ( "," lp:NAME ( ":" lt:type )? )* )? ")" "->" lb:expression -> lambda(lp, lt, lb)
+"""
+        diags = codes
+        builders = rows
+    }
+    f
+}

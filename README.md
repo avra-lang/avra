@@ -25,15 +25,23 @@ fib(10)
 
 The language so far: `let` and `mut` with assignment, `fn` with
 calls and recursion, `if c { a } else { b }` as an expression,
-subjectless `when`, `while` and range `for`, blocks that answer (a
-fn's body and an `if`'s branches), ints, bools, strings with `${}`
-interpolation, lists with indexing and `.length`, records
-(`type P = { x: int }`, literals and `with`), enums with a total
-`match` and pattern binds (`.circle(r) -> r * 2`), nullability
-(`T?`, `null`, `??`) where every other type is a guarantee, the
-arithmetic, comparison, equality, and logic operators, comments —
-every construct golden-tested from its parse tree to its
-diagnostics to its native output.
+subjectless `when`, `while`, range `for` and `for x in xs`, blocks
+that answer, ints, bools, strings with `${}` interpolation, lists,
+records (`type P = { x: int }`, literals and `with`), enums with a
+total `match` and pattern binds, nullability (`T?`, `null`, `??`,
+`!`, `?.`, `if let`, let-else) where every other type is a
+guarantee, the full error spine (`Result<T, E>`, `fail`, auto-Ok,
+`?` propagation, `catch` at four granularities), generics with
+monomorphization (`fn id<T>`, `type Box<T>`, `List<T>` for real),
+methods and traits with static dispatch (`impl P`, `trait Show`,
+`impl Show for P`, bounds `fn f<T: Show>`), `dyn Show` when
+heterogeneity is worth its visible cost, ownership (every box
+reclaims; strings ride struct fields, enum payloads, list
+elements, and `Result<T, string>` — the self-host shape), and
+closures (`(x: int) -> x + n` capturing by value, fn-typed fields
+making capability records first-class) — every construct
+golden-tested from its parse tree to its diagnostics to its
+native output, on both engines.
 
 ## The compiler, in pipeline order
 

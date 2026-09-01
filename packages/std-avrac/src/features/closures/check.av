@@ -1,0 +1,40 @@
+//! The lambda's typing law: every parameter ANNOTATED (inference
+//! rides the recorded expected-type channel), the body typed under
+//! the params behind the return barrier, the whole wearing
+//! `fn(params) -> body`.
+use core.{ExprId, Type, TypeId, Param}
+use features.{TypeCx, spoken}
+use diagnostics.{error_at, pointed}
+
+fn lambda_type(cx: TypeCx, e: ExprId) -> TypeId {
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants
+    match cx.store.expr(e) {
+        .Lambda(params, body) -> lambdaed(cx, e, params, body),
+        _ -> cx.error_type,
+    }
+}
+
+fn lambdaed(cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> TypeId {
+    mut ptys: List<TypeId> = []
+    for pp in params {
+        if pp.ty == null { return unannotated_param(cx, e, pp.name) }
+        ptys.push(cx.written_at(e, pp.ty!))
+    }
+    if ptys.any(erred(cx, it)) { return cx.error_type }
+    let ret = cx.lambda_body(e, ptys, body)
+    if cx.types.shape_of(ret) is .Error { return cx.error_type }
+    cx.types.intern(Type.Fn(ptys, ret))
+}
+
+fn erred(cx: TypeCx, ty: TypeId) -> bool {
+    cx.types.shape_of(ty) is .Error
+}
+
+// ── The voices ──
+
+fn unannotated_param(cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.lambda", cx.loc_of(e), "`${name}` needs a type — a lambda cannot hear its slot yet"),
+        "in this lambda")
+        with { help: "write `(${name}: int) -> …`; inference rides the expected-type channel (recorded)" })
+}
