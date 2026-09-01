@@ -114,17 +114,17 @@ text-as-projection after self-host, the service store at Era V.
         REFUSED), G3 List<T> real (elements widened, `[]`
         adopted, the element walk). The METHOD vocabulary rides
         rung 13's closures
-    11.5 ▲ THE OWNERSHIP MILESTONE — scheduled HERE deliberately
-        (recorded 2026-08-31): retain-at-pack + aggregate release
-        teaches the memory pass the boxes, which unlocks AT ONCE:
-        strings in slots (`Result<T, string>` — the SELF-HOST
-        critical path: the builders' own shape), errdefer, list
-        elements widening, releasing what today leaks by design,
-        and the Result register TRIPLE (never-allocates extends to
-        the whole error path). Every swap lands behind values.av's
-        verbs with the corpus differential as proof — the seams
-        were built for exactly this. P4 is NOT met until then; do
-        not half-optimize representations before it.
+    11.5 [x] ▲ THE OWNERSHIP MILESTONE — CORE LANDED 2026-09-01
+        (O1 registry kinds + O2 managed aggregates + O3 strings in
+        slots + the MUT-CELL PROTOCOL). Result<T, string> works —
+        the self-host critical path: fail carries an interpolated
+        owned message through `?` and catch. What today leaked by
+        design now releases; 47 corpus pairs prove it thrice over
+        (the evaluator has no memory model — agreement IS the
+        proof). The design record below carries the slice detail
+        and the two use-after-frees the differential caught. O4
+        remains recorded: nullable slots in aggregates, errdefer,
+        the Result register TRIPLE (P4's gate).
     12. ▲ traits & dyn — dispatch, cross-module impls
     13. ▲ closures & fn values — capture meets the memory ABI
     14. maps, components & tables — the self-describing surface
@@ -3057,6 +3057,145 @@ THE SLICES:
        clauses, default methods, associated types, @derive (Error/
        failure_tests ride it), operator traits (the Var
        compare-help names them).
+
+## Ownership 11.5 — the design (recorded 2026-08-31)
+
+The registry model extends, headers stay refused. THE LAW that
+makes it cheap: `avra_rc_retain/release` no-op on unregistered
+pointers BY CONSTRUCTION — so statics, literals, and the niche's
+null pointer need no guards anywhere.
+
+  (O1) THE RUNTIME LEARNS AGGREGATES: OwnEntry gains a KIND (str |
+       array); `avra_array_new` registers rc 1; AvraArray carries
+       a parallel owned-slot byte map; release at rc 0 first
+       deletes the entry (reentrancy), then releases each owned
+       slot (nesting recurses naturally), then frees data+struct.
+       Two new fns, rows, and interp hosts: `avra_array_push_owned`
+       (push + mark + retain — RETAIN-AT-PACK) and
+       `avra_array_get_owned` (get + retain — every managed read
+       is an owned +1, adopted by the reader's scope; aliasing
+       stays intact because the POINTER is shared, only the count
+       moves). Unused until O2; gate trivially green.
+  (O2) THE PASS OWNS THE STORY: memory.av — is_managed grows the
+       aggregate shapes; rt_owns(avra_array_new) flips true; and
+       the pass REWRITES pack/read sites by REGISTER TYPES
+       (push with a managed arg -> push_owned; get with a managed
+       dst -> get_owned). Lowering changes NOWHERE — ownership
+       stays one file's concern, and every existing corpus
+       program becomes the no-premature-free proof (the evaluator
+       has no memory model; agreement IS the ownership proof).
+       Today's by-design leaks start releasing.
+  (O3) STRINGS IN SLOTS: slot_worthy(Str) = true; the slot-law
+       voices retire their string clause; `avra_strs_text` prints
+       List<string>. THE WITNESS: `Result<Thing, string>` — the
+       builders' own shape, the self-host critical path. rt22
+       hunts use-after-free: strings through struct fields,
+       Result payloads, catch joins, dyn boxes, 10k churn.
+  (O2/O3 LANDINGS, 2026-09-01): the differential caught TWO real
+       use-after-frees on the way in. (1) corpus/methods.av: a mut
+       cell's managed content — loads adopted the box per turn and
+       released it while the cell still pointed; the cure is THE
+       MUT-CELL PROTOCOL, forced from O4 into O2: the cell owns
+       ONE reference (seed store retains; an overwrite retains the
+       incoming value FIRST — a self-store must not free what it
+       keeps — then releases the old through avra_cell_release,
+       which reads the slot so the pass mints no registers; loads
+       are owned +1s so borrows survive overwrites; the cell
+       settles when its scope does — lower_test pins the shape).
+       The CELL LAW in mutation/check RETIRED with it: mut
+       strings, mut string?-niches, and mut T cells all work.
+       (2) corpus/foreach.av, nondeterministic: EmptyList is the
+       one identity widen whose pointer is a REAL box — the caller
+       judged it unmanaged while the callee's List param released
+       it; EmptyList joined the managed shapes. Five test files'
+       "waits for ownership" pins flipped to working stories; two
+       IR goldens gained their release lines; six rt suites' stale
+       no_ attacks flipped to ok_ differentials.
+  (O4) recorded, each with its trigger: Opt in AGGREGATE slots
+       (slot_worthy needs the registry to see the carried shape —
+       niche strings in mut CELLS already work); errdefer; the
+       Result register TRIPLE (P4 — after the corpus can measure
+       it).
+
+## The memory doctrine — safe + fast + beautiful (recorded 2026-09-01)
+
+The goal, stated once: Rust's safety, Rust/Zig's speed, Swift/TS's
+surface — refusing the trilemma (P6). RC is the FLOOR STRATEGY,
+never the identity; the identity is GRADUAL MEMORY DISCIPLINE over
+strategy-independent semantics.
+
+THE TWO LOAD-BEARING FACTS, already built:
+- Semantics are strategy-independent: the IR interpreter has no
+  memory model, and eval == native over the corpus is the proof
+  every strategy must re-earn. THE INTERPRETER IS A PERMANENT
+  ORGAN, not bootstrap scaffolding — it is the executable spec of
+  the IR, the future `avra test` JIT (Era IV), and the referee
+  that lets the strategy ladder below land one rung at a time
+  without semantic drift. (bs2 retires at self-host; the
+  differential does not.)
+- VALUE SEMANTICS, currently by accident, henceforth BY LAW:
+  today no field or element assigns — only whole cells rebind —
+  so sharing is UNOBSERVABLE and the compiler may copy, share, or
+  move at will; cycles are unconstructible, so RC's classic leak
+  cannot be written. STANDING CONSTRAINT on every future mutation
+  design (interior mutation, rung 14+): `u.age = 5` demands
+  exclusivity — statically proven where possible, copy-on-write
+  where not — and aliasing NEVER becomes observable. A mutation
+  feature that would let a program detect sharing forfeits phases
+  V1/V3 and the cycle guarantee at once; refuse it.
+
+THE LADDER (each phase differential-verified, none blocks self-host):
+  (V1) value-semantics lock-in — the constraint above, enforced at
+       every mutation-design review.
+  (V2) OWNERSHIP INFERENCE: liveness in the memory pass — move at
+       last use, cancel adjacent retain/release pairs, stack/arena
+       for provably scope-local values (Lobster ~95% elision;
+       Perceus precision). No surface change; pass work only.
+  (V3) UNIQUENESS REUSE: a proven-unique value updates IN PLACE —
+       `with` stops copying when the count is one (Koka/Roc FBIP).
+       The prettiest code becomes the fastest code.
+  (V4) THE SYSTEMS LEVEL: per-scope promotion to full static
+       discipline — zero rc, arenas, moves proven, refusals that
+       NAME the escaping value and the remedy. Gradual the way TS
+       types are gradual; signatures stay clean (Application is
+       the default ABI; promotion checks at boundaries, P9). The
+       substrate case: request = region = free-at-once (P2).
+  (V5) HARDENING: leak-accounting gate (rc_outstanding == 0 at
+       exit for witness programs), ASan corpus lane, and Vale-
+       style GENERATIONS on the registry (a stale release or read
+       becomes a deterministic named trap, never corruption).
+       CHERI rides the Hardware level when it arrives.
+
+THE FRONTIER (explored 2026-09-01; maturity labeled, none
+committed):
+  (F1) TEST-WITNESSED OWNERSHIP — every module already OWES
+       spec/given/then tests; run them instrumented and the
+       OBSERVED lifetimes become candidate facts the compiler
+       merely VERIFIES (checking a guess is far cheaper than
+       inference). Profile-guided ownership; the mandated test
+       culture becomes the ownership oracle. Novel as a design;
+       sound only through the verifier.
+  (F2) OWNERSHIP AS SUBSTRATE, NEVER SURFACE (P11 applied to
+       memory) — ownership facts live in the machine projection as
+       CHECKED CERTIFICATES (proof-carrying code, economics
+       transformed by LLM generation: the GENERATOR proposes,
+       the compiler only checks, locally and fast); the human
+       projection stays annotation-free forever. A missing or
+       wrong certificate degrades gracefully to the RC floor plus
+       a NAMED fact request. Gradual per-VALUE, not just
+       per-scope. `avra explain ownership <fn>` renders the facts
+       (P7 — the magic stays visible on demand).
+  (F3) THE CALL TREE IS THE LIFETIME — structured concurrency's
+       task tree as the default region tree: a value lives with
+       its task node; escape is explicit PROMOTION to the parent.
+       For the service substrate this is the true shape of P2.
+       Rides Axis 18's concurrency design.
+Honest note: V2/V3 recombine published work (Perceus, Lobster,
+Hylo, Nim ARC, Vale); the INVENTION is the composition — gradual
+discipline over fixed semantics, certificates over annotations,
+surface/substrate split, differential-refereed — the way Rust's
+invention was composing Cyclone's regions and affine types
+shippably. Nobody has shipped this composition.
 
 ## The capability diet (decided 2026-08-30)
 

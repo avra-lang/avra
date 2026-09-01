@@ -29,9 +29,9 @@ spec "features/mutation" {
             // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
             shown("mut f: bool? = null\nf = false\nif f ?? true { 1 } else { 0 }") == "0"
         }
-        then "the cell law: a MANAGED value still refuses, niche included" {
+        then "a MANAGED niche cell works — the null no-ops by construction" {
             // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
-            refused_with("mut s: string? = null\ns ?? \"d\"", "a `mut` binding cannot hold a managed value yet")
+            shown("mut s: string? = null\ns ?? \"d\"") == "d"
         }
         then "the declared-binding law reaches mut: `mut x: int = null` refuses" {
             refused_with("mut x: int = null\nx", "`x` declares `int`, this is `null`")
@@ -60,10 +60,8 @@ spec "features/mutation" {
             a.diagnostics.length == 1 &&
                 a.report().contains("assignment changes `x`: `int` to `bool`")
         }
-        then "a mut string waits for ownership analysis" {
-            let a = analyze_source("mut s = \"hi\"\ns")
-            a.diagnostics.length == 1 &&
-                a.report().contains("a `mut` binding cannot hold a managed value yet")
+        then "a mut string rebinds through the cell — ownership landed" {
+            shown("mut s = \"hi\"\ns = \"re ${2}\"\ns") == "re 2"
         }
         then "a mut struct works — reassignment swaps the pointer" {
             shown("type P = { x: int }\nmut p = P { x: 1 }\np = P { x: 2 }\np.x") == "2"

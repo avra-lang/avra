@@ -5,16 +5,18 @@
 // out of bounds does. Language semantics live in this tree, in this
 // file — never in a dependency.
 //
-// MEMORY MODEL (v1): an ownership REGISTRY, not headers and not
+// MEMORY MODEL (v2): an ownership REGISTRY, not headers and not
 // trust. Every allocation this runtime hands to a program is
 // registered with refcount 1. avra_rc_retain / avra_rc_release act
 // only on registered pointers — statics, literals, and foreign
 // pointers pass through as no-ops BY CONSTRUCTION, with no header
-// reads and no undefined behavior. Owned strings genuinely reclaim
-// at zero. Aggregates (arrays) are deliberately unregistered until
-// ownership analysis arrives for managed elements — releasing an
-// array is a no-op, and that is a choice this file states, not an
-// accident.
+// reads and no undefined behavior. Strings and ARRAYS both
+// register; an array's entry knows its kind, and releasing one at
+// rc 0 releases its OWNED slots first (the compiler marks them at
+// pack time via avra_array_push_owned), so nesting reclaims by
+// recursion. Reads of owned slots go through avra_array_get_owned,
+// which retains — every managed read is a +1 the reader's scope
+// releases, so aliasing shares the pointer while counts balance.
 //
 // TRAP CONTRACT: an impossible-at-runtime operation (index out of
 // bounds) prints one line to stderr — worded EXACTLY like the
@@ -31,6 +33,7 @@
 typedef struct {
     void* ptr;
     int64_t rc;
+    int64_t is_array;
 } OwnEntry;
 
 static OwnEntry* g_own = NULL;
@@ -60,14 +63,19 @@ static void own_grow(void) {
 }
 
 // Registers a fresh allocation as owned, refcount 1.
-static void* own(void* p) {
+static void* own_kind(void* p, int64_t is_array) {
     if (p == NULL) return p;
     if (g_own_len * 10 >= g_own_cap * 7) own_grow();
     size_t i = own_slot(g_own, g_own_cap, p);
     g_own[i].ptr = p;
     g_own[i].rc = 1;
+    g_own[i].is_array = is_array;
     g_own_len++;
     return p;
+}
+
+static void* own(void* p) {
+    return own_kind(p, 0);
 }
 
 static OwnEntry* owned(void* p) {
@@ -102,14 +110,23 @@ static void own_delete(size_t i) {
     }
 }
 
+static void array_reclaim(void* p);
+
 void avra_rc_release(void* p) {
     if (g_own_cap == 0 || p == NULL) return;
     size_t i = own_slot(g_own, g_own_cap, p);
     if (g_own[i].ptr != p) return;
     g_own[i].rc--;
     if (g_own[i].rc <= 0) {
-        free(p);
+        int64_t is_array = g_own[i].is_array;
+        // The entry dies FIRST: slot releases below may reshape the
+        // table, and a dead entry must not be found mid-walk.
         own_delete(i);
+        if (is_array) {
+            array_reclaim(p);
+        } else {
+            free(p);
+        }
     }
 }
 
@@ -174,6 +191,9 @@ typedef struct {
     int64_t cap;
     int64_t len;
     int64_t* data;
+    // Which slots hold OWNED managed values — marked at pack time
+    // by the compiler, walked at reclaim. Parallel to data.
+    uint8_t* owned;
 } AvraArray;
 
 void* avra_array_new(void) {
@@ -181,7 +201,20 @@ void* avra_array_new(void) {
     a->cap = 8;
     a->len = 0;
     a->data = (int64_t*)malloc((size_t)a->cap * sizeof(int64_t));
-    return a;
+    a->owned = (uint8_t*)calloc((size_t)a->cap, 1);
+    return own_kind(a, 1);
+}
+
+// Releases every owned slot, then the array itself. The registry
+// entry is already gone — see avra_rc_release.
+static void array_reclaim(void* p) {
+    AvraArray* a = (AvraArray*)p;
+    for (int64_t i = 0; i < a->len; i++) {
+        if (a->owned[i]) avra_rc_release((void*)(uintptr_t)a->data[i]);
+    }
+    free(a->data);
+    free(a->owned);
+    free(a);
 }
 
 void avra_array_push(void* arr, int64_t v) {
@@ -189,9 +222,21 @@ void avra_array_push(void* arr, int64_t v) {
     if (a->len == a->cap) {
         a->cap *= 2;
         a->data = (int64_t*)realloc(a->data, (size_t)a->cap * sizeof(int64_t));
+        a->owned = (uint8_t*)realloc(a->owned, (size_t)a->cap);
+        memset(a->owned + a->len, 0, (size_t)(a->cap - a->len));
     }
     a->data[a->len] = v;
+    a->owned[a->len] = 0;
     a->len++;
+}
+
+// RETAIN-AT-PACK: the array takes its own reference to a managed
+// value and remembers the slot, so reclaim releases it.
+void avra_array_push_owned(void* arr, void* v) {
+    avra_array_push(arr, (int64_t)(uintptr_t)v);
+    AvraArray* a = (AvraArray*)arr;
+    a->owned[a->len - 1] = 1;
+    avra_rc_retain(v);
 }
 
 int64_t avra_array_len(void* arr) {
@@ -227,6 +272,20 @@ int64_t avra_array_get(void* arr, int64_t i) {
         avra_trap(msg);
     }
     return a->data[i];
+}
+
+// A managed read is an owned +1: the reader's scope releases it,
+// the pointer stays shared. The bounds trap is avra_array_get's.
+void* avra_array_get_owned(void* arr, int64_t i) {
+    void* v = (void*)(uintptr_t)avra_array_get(arr, i);
+    avra_rc_retain(v);
+    return v;
+}
+
+// A mut CELL's own reference dies: releases whatever the cell
+// currently holds. Unregistered content no-ops by construction.
+void avra_cell_release(void* slot) {
+    avra_rc_release(*(void**)slot);
 }
 
 // ── Text building ───────────────────────────────────────────────
@@ -278,4 +337,14 @@ const char* avra_ints_text(void* arr) {
 // `[true, false]` — exactly how the evaluator prints a bool list.
 const char* avra_bools_text(void* arr) {
     return list_text(arr, avra_bool_text);
+}
+
+// A string slot prints as itself, unquoted — the evaluator's way.
+static const char* str_slot_text(int64_t v) {
+    return v ? (const char*)(uintptr_t)v : "null";
+}
+
+// `[a, b]` — exactly how the evaluator prints a string list.
+const char* avra_strs_text(void* arr) {
+    return list_text(arr, str_slot_text);
 }

@@ -1,0 +1,46 @@
+// proves: 11.5 O3 — strings in slots, the self-host critical path.
+// A string field stored and read back, a string enum payload, a
+// List<string> printed, and the builders' own shape:
+// Result<Thing, string> with fail-a-message, `?` propagation, and
+// catch — plus churn proving reclaim never frees a live name.
+type User = { name: string, age: int }
+
+enum Word {
+    said(string)
+    silent
+}
+
+type Parsed = { title: string, pages: int }
+
+fn parse(src: string, ok: bool) -> Result<Parsed, string> {
+    if !ok {
+        fail "cannot parse ${src}"
+    }
+    Parsed { title: src, pages: 3 }
+}
+
+fn relay(ok: bool) -> Result<int, string> {
+    let p = parse("spec", ok)?
+    p.pages
+}
+
+fn speak(w: Word) -> string {
+    match w {
+        .said(s) -> s
+        .silent -> "-"
+    }
+}
+
+mut u = User { name: "ada", age: 1 }
+mut i = 0
+while i < 200 {
+    u = User { name: "${u.name}", age: u.age + 1 }
+    i = i + 1
+}
+let words = [speak(Word.said("hi")), speak(Word.silent), "end"]
+let good = parse("book", true) catch Parsed { title: "none", pages: 0 }
+let bad: string = match parse("junk", false) {
+    .Ok(p) -> p.title
+    .Err(m) -> m
+}
+"${u.name} ${u.age} ${words[0]}${words[1]}${words[2]} n${words.length} ${good.title} ${relay(true) catch 0 - 1} ${relay(false) catch 0 - 1} ${bad}"

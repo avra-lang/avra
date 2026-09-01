@@ -51,10 +51,8 @@ spec "features/structs" {
             a.diagnostics.length == 1 &&
                 a.report().contains("field `x` is written more than once")
         }
-        then "a managed field waits for ownership" {
-            let a = analyze_source("type P = { name: string }\nlet p = P { name: \"hi\" }\n2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("a struct field cannot hold this yet")
+        then "a managed field lands and reads back — ownership landed" {
+            analyze_source("type P = { name: string }\nlet p = P { name: \"hi\" }\n2").diagnostics.is_empty()
         }
         then "a repeated FIELD declaration refuses" {
             let a = analyze_source("type P = { x: int, x: bool }\nlet p = P { x: 1 }\n2")
@@ -138,9 +136,9 @@ spec "features/structs" {
             refused_with("type Box<T> = { v: T }\nfn f(b: Box) -> int {\n    1\n}\nf(Box { v: 1 })",
                          "`Box` is generic — it takes 1 type arguments")
         }
-        then "a managed binding cannot ride a slot — re-judged per instantiation" {
-            refused_with("type Box<T> = { v: T }\nBox { v: \"held\" }",
-                         "this literal makes a slot `string`, which a slot cannot hold yet")
+        then "a managed binding rides the slot per instantiation — ownership landed" {
+            let a = analyze_source("type Box<T> = { v: T }\nBox { v: \"held\" }\n2")
+            a.diagnostics.is_empty()
         }
         then "fields that disagree on T refuse in the field's words" {
             refused_with("type Twin<T> = { a: T, b: T }\nTwin { a: 1, b: true }",

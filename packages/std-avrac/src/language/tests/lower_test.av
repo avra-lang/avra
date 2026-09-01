@@ -160,4 +160,35 @@ spec "language/lower" {
             addr_syms(ir_of("trait Mark {\n}\ntype P = { x: int }\nimpl Mark for P {\n}\nlet d: dyn Mark = P { x: 1 }\n2")).length == 0
         }
     }
+    given "the mut-cell protocol (ownership 11.5)" {
+        then "seed retains; overwrite retains FIRST, releases old, stores; the scope settles the cell" {
+            let expected = """scope application {
+  r0 = int 1
+  r1 = call avra_array_new()
+  call avra_array_push(r1, r0)
+  r2 = slot
+  retain r1
+  store r2 <- r1
+  r3 = int 2
+  r4 = call avra_array_new()
+  call avra_array_push(r4, r3)
+  retain r4
+  call avra_cell_release(r2)
+  store r2 <- r4
+  r5 = load r2
+  retain r5
+  r6 = int 0
+  r7 = call avra_array_get(r5, r6)
+  r8 = call avra_int_text(r7)
+  call avra_puts(r8)
+  call avra_cell_release(r2)
+  release r8
+  release r5
+  release r4
+  release r1
+}
+ret 0"""
+            render_ir(ir_of("type P = { x: int }\nmut a = P { x: 1 }\na = P { x: 2 }\na.x")) == expected
+        }
+    }
 }

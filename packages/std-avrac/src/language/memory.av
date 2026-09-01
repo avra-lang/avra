@@ -11,7 +11,7 @@
 use core.{Ins, Reg, Level, TypeId, TypeRegistry, dst_of}
 
 /// Managed registers bound in one open scope, its level remembered.
-type Scope = { level: Level, managed: List<Reg> }
+type Scope = { level: Level, managed: List<Reg>, cells: List<Reg> }
 
 export fn memory(l: Lowered) -> Lowered {
     let fns = [b with { ins: memory_ins(l.types, b.reg_types, b.ins, managed_params(l.types, b)) }
@@ -20,21 +20,23 @@ export fn memory(l: Lowered) -> Lowered {
     l with { fns: fns, entry: entry }
 }
 
-/// THE strategy's managed law: which shapes the RC strategy
-/// manages TODAY — Str alone; aggregates stay unregistered until
-/// ownership analysis. `Opt` is INVISIBLE here: a niche nullable
-/// IS its carried value (the runtime's rc ops no-op on the null
-/// pointer by construction), and a boxed scalar's box is an
-/// unregistered aggregate either way. Distinct from core's
-/// ptr_shape (what RIDES pointers): widening this fn is the
-/// ownership milestone.
+/// THE strategy's managed law: strings AND the aggregate shapes —
+/// the ownership milestone. `Opt` is INVISIBLE here: a niche
+/// nullable IS its carried value, and the runtime's rc ops no-op
+/// on the null pointer by construction. Distinct from core's
+/// ptr_shape (what RIDES pointers): TypeName/Var never mint
+/// registers, and scalars have nothing to reclaim.
 fn is_managed(types: TypeRegistry, ty: TypeId) -> bool {
     match types.shape_of(ty) {
         .Str -> true,
+        // EmptyList is the one identity widen whose pointer is a
+        // REAL box: the callee's List param releases it, so the
+        // caller must own it too, or the seam frees a live name.
+        .List(_) or .Struct(_, _) or .Enum(_, _) or .EmptyList or
+        .Res(_, _) or .App(_, _, _) or .Dyn(_, _) -> true,
         .Opt(inner) -> is_managed(types, inner),
-        .Int or .Bool or .List(_) or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
-        .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Null or
-        .EmptyList or .Error -> false,
+        .Int or .Bool or .TypeName(_, _) or .Var(_, _, _) or .Null or
+        .Error -> false,
     }
 }
 
@@ -53,11 +55,15 @@ fn managed_params(types: TypeRegistry, b: Body) -> List<Reg> {
 fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed: List<Reg>) -> List<Ins> {
     mut out: List<Ins> = []
     mut open_scopes: List<Scope> = []
-    for i in ins {
+    // slot regs that have SEEN a store — the first store per cell
+    // is its seed and finds no old value to release
+    mut stored: List<int> = []
+    for raw in ins {
+        let i = owned_form(types, reg_types, raw)
         match i {
             .ScopeEnter(level) -> {
                 // LICENSED I15: a scope STACK walked by the pass, not a bracket body
-                open_scopes.push(Scope { level: level, managed: [] })
+                open_scopes.push(Scope { level: level, managed: [], cells: [] })
                 if open_scopes.length == 1 {
                     mut top = open_scopes[0].managed
                     // `top` ALIASES the scope's own list, so a rebind
@@ -73,6 +79,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .ScopeExit(gives) -> {
                 let scope = open_scopes.pop()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
+                for c in reversed(scope.cells) { out.push(cell_settle(c)) }
                 for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
                 if gives != null && !open_scopes.is_empty() {
                     if is_managed(types, reg_types[gives!.index]) {
@@ -94,6 +101,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .ArmEnd(gives) -> {
                 let scope = open_scopes.pop()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
+                for c in reversed(scope.cells) { out.push(cell_settle(c)) }
                 for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
                 // LICENSED I15: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(nested_scope(open_scopes))
@@ -102,6 +110,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .RegionEnd(_, gives) -> {
                 let scope = open_scopes.pop()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
+                for c in reversed(scope.cells) { out.push(cell_settle(c)) }
                 for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
                 manage(types, reg_types, open_scopes, i)
                 out.push(i)
@@ -128,14 +137,42 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             // site — nothing pops, because other paths continue.
             .FnExit(gives) -> {
                 // LICENSED I3: the pass's OUTPUT accumulates
+                for c in exit_cells(open_scopes) { out.push(cell_settle(c)) }
                 for r in exit_releases(open_scopes, gives) { out.push(Ins.Release(r)) }
                 out.push(i)
+            }
+            // THE MUT-CELL PROTOCOL: the cell owns ONE reference.
+            // A store RETAINS the incoming value FIRST (a self-store
+            // must not free what it is keeping), then releases the
+            // old content — except the seed store, which finds none.
+            // The cell's own reference settles when its scope does.
+            .Alloca(dst) -> {
+                if is_managed(types, reg_types[dst.index]) && !open_scopes.is_empty() {
+                    // LICENSED I7: rebind-alias needs index syntax; last() may copy
+                    mut top = open_scopes.last()!.cells
+                    top.push(dst)
+                }
+                out.push(i)
+            }
+            .Store(slot, src) -> {
+                if is_managed(types, reg_types[src.index]) {
+                    out.push(Ins.Retain(src))
+                    if stored.contains(slot.index) { out.push(cell_settle(slot)) }
+                }
+                stored.push(slot.index)
+                out.push(i)
+            }
+            // A managed LOAD is an owned +1 — the borrowed pointer
+            // must survive the cell's next overwrite.
+            .Load(dst, _) -> {
+                out.push(i)
+                if is_managed(types, reg_types[dst.index]) { out.push(Ins.Retain(dst)) }
+                manage(types, reg_types, open_scopes, i)
             }
             .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
             .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or
             .CallRt(_, _, _) or .CallRtVoid(_, _) or .Release(_) or
             .Pack(_, _) or .Extract(_, _, _) or
-            .Alloca(_) or .Load(_, _) or .Store(_, _) or
             .LoopStart or .LoopCond(_) or .LoopEnd or
             .Retain(_) or .RetVal(_) or .Ret(_) -> {
                 manage(types, reg_types, open_scopes, i)
@@ -162,7 +199,7 @@ fn exit_releases(open_scopes: List<Scope>, kept: Reg) -> List<Reg> {
 /// A scope opened INSIDE another: it inherits the enclosing level
 /// and owns nothing yet.
 fn nested_scope(open_scopes: List<Scope>) -> Scope {
-    Scope { level: enclosing_level(open_scopes), managed: [] }
+    Scope { level: enclosing_level(open_scopes), managed: [], cells: [] }
 }
 
 /// The level a new scope inherits — its innermost open enclosure.
@@ -215,6 +252,51 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
         .CallRt(_, callee, _) -> if rt_owns(callee) { dst } else { null },
         _ -> dst,
     }
+}
+
+/// The pack/read REWRITE — where compile-time type knowledge
+/// becomes the runtime's ownership plan: a push whose VALUE is
+/// managed becomes retain-at-pack, a get whose DESTINATION is
+/// managed becomes an owned +1 read. Lowering never chooses;
+/// ownership stays this pass's one concern.
+fn owned_form(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Ins {
+    // LICENSED I22: a pre-filter — the caller's dispatch is exhaustive
+    // over Ins; this rewrite touches only the two array verbs
+    match i {
+        .CallRtVoid(callee, args) ->
+            if callee == "avra_array_push" && pushes_managed(types, reg_types, args) {
+                Ins.CallRtVoid("avra_array_push_owned", args)
+            } else { i },
+        .CallRt(dst, callee, args) ->
+            if callee == "avra_array_get" && is_managed(types, reg_types[dst.index]) {
+                Ins.CallRt(dst, "avra_array_get_owned", args)
+            } else { i },
+        _ -> i,
+    }
+}
+
+/// A push's VALUE seat (arg 1) holds a managed type.
+fn pushes_managed(types: TypeRegistry, reg_types: List<TypeId>, args: List<Reg>) -> bool {
+    let v: Reg? = args.last()
+    v != null && is_managed(types, reg_types[v!.index])
+}
+
+/// The cell's held reference, released through the SLOT — the
+/// pass mints no registers, so the runtime reads the cell itself.
+fn cell_settle(slot: Reg) -> Ins {
+    Ins.CallRtVoid("avra_cell_release", [slot])
+}
+
+/// Every open scope's cells at an early exit, innermost first.
+fn exit_cells(open_scopes: List<Scope>) -> List<Reg> {
+    mut out: List<Reg> = []
+    // LICENSED I19: a REVERSE walk — innermost debts settle first
+    mut j = open_scopes.length - 1
+    while j >= 0 {
+        out = out.concat(reversed(open_scopes[j].cells))
+        j = j - 1
+    }
+    out
 }
 
 /// Last bound, first released.
