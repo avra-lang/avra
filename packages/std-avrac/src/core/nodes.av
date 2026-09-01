@@ -213,6 +213,9 @@ export enum Stmt {
     /// real nodes every pass walks, so the loop is mut+while in
     /// costume.
     For(name: string, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>)
+    /// `for name in xs { … }` — the ELEMENT walk: `name` binds each
+    /// element in turn, in its own scope per iteration.
+    ForEach(name: string, subject: ExprId, stmts: List<StmtId>)
     /// `type Name = { field: ty, ... }` — a nominal record; the
     /// name lives in the TYPE namespace, program-wide like fns.
     StructDecl(name: string, tparams: List<string>, fields: List<Param>)
@@ -367,6 +370,8 @@ impl NodeStore {
             .For(name, from, to, _, _, stmts) ->
                 fp(18, [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to)].concat(self.stmt_fps(stmts))),
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
+            .ForEach(name, subject, stmts) ->
+                fp(42, [fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
             .Error -> fp(7, []),
             .FnDecl(name, tparams, params, ret, body) ->
                 fp(12, flatten([[fp_str(name)], [fp_str(t) for t in tparams],

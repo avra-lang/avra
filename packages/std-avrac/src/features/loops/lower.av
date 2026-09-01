@@ -3,7 +3,7 @@
 //! scope per turn. A for adds its counter CELL before the brackets
 //! and its step store after the body — nothing the IR does not
 //! already say.
-use core.{StmtId, ExprId, Ins, Level}
+use core.{StmtId, ExprId, Ins, Level, TypeId, BinOp}
 use features.{StmtLowerCx}
 
 export fn lower_while(cx: StmtLowerCx, cond: ExprId, stmts: List<StmtId>) {
@@ -33,4 +33,53 @@ export fn lower_for(cx: StmtLowerCx, s: StmtId, from: ExprId, cond: ExprId, step
     ex.emit(Ins.Store(slot, ex.reg_of(step)))
     ex.emit(Ins.ScopeExit(null))
     ex.emit(Ins.LoopEnd)
+}
+
+/// `for x in xs`: length once, an index CELL, and the ELEMENT cell
+/// the name binds through — stored fresh each turn, read wherever
+/// the body says the name. The body is a scope per turn, like every
+/// loop's.
+export fn lower_for_each(cx: StmtLowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
+    let ex = cx.expr
+    let xs = ex.reg_of(subject)
+    let len = ex.mint_shape(Type.Int)
+    ex.emit(Ins.CallRt(len, "avra_array_len", [xs]))
+    let zero = ex.mint_shape(Type.Int)
+    ex.emit(Ins.ConstInt(zero, 0))
+    let idx = ex.mint_shape(Type.Int)
+    ex.emit(Ins.Alloca(idx))
+    ex.emit(Ins.Store(idx, zero))
+    let cell = ex.mint_ty(elem_of(ex, subject))
+    ex.emit(Ins.Alloca(cell))
+    cx.bind_slot(s, cell)
+    ex.emit(Ins.LoopStart)
+    let at = ex.mint_shape(Type.Int)
+    ex.emit(Ins.Load(at, idx))
+    let more = ex.mint_shape(Type.Bool)
+    ex.emit(Ins.Bin(more, BinOp.Lt, at, len))
+    ex.emit(Ins.LoopCond(more))
+    ex.emit(Ins.ScopeEnter(Level.Application))
+    let here = ex.mint_shape(Type.Int)
+    ex.emit(Ins.Load(here, idx))
+    let v = ex.mint_ty(elem_of(ex, subject))
+    ex.emit(Ins.CallRt(v, "avra_array_get", [xs, here]))
+    ex.emit(Ins.Store(cell, v))
+    cx.lower_stmts(stmts)
+    let again = ex.mint_shape(Type.Int)
+    ex.emit(Ins.Load(again, idx))
+    let one = ex.mint_shape(Type.Int)
+    ex.emit(Ins.ConstInt(one, 1))
+    let next = ex.mint_shape(Type.Int)
+    ex.emit(Ins.Bin(next, BinOp.Add, again, one))
+    ex.emit(Ins.Store(idx, next))
+    ex.emit(Ins.ScopeExit(null))
+    ex.emit(Ins.LoopEnd)
+}
+
+/// The subject's element type — typing proved it a List.
+fn elem_of(ex: LowerCx, subject: ExprId) -> TypeId {
+    match ex.types.shape_of(ex.type_at(subject)) {
+        .List(elem) -> elem,
+        _ -> ex.type_at(subject),
+    }
 }

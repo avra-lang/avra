@@ -108,9 +108,12 @@ text-as-projection after self-host, the service store at Era V.
         `?`, match-for-free, divergence-aware blocks, catch at
         four granularities). The R4 triggers (unions, topology,
         handlers, `? context`) wait on their enabling rungs
-    11. ▲ generics — G1 [x] (generic FNS, monomorphized) and
-        G2 [x] (generic TYPE declarations — Type.App; the Res fold
-        re-measured and REFUSED); REMAINS: G3 the List vocabulary
+    11. [x] ▲ generics — COMPLETE 2026-08-31: G1 generic fns
+        (monomorphized, two red-team rounds), G2 generic type
+        declarations (Type.App; the Res fold re-measured and
+        REFUSED), G3 List<T> real (elements widened, `[]`
+        adopted, the element walk). The METHOD vocabulary rides
+        rung 13's closures
     11.5 ▲ THE OWNERSHIP MILESTONE — scheduled HERE deliberately
         (recorded 2026-08-31): retain-at-pack + aggregate release
         teaches the memory pass the boxes, which unlocks AT ONCE:
@@ -2877,10 +2880,40 @@ THE SLICES:
        (folding would re-detect Result by name — string-matching
        the doctrine bans). Re-measure ONLY if a stdlib prelude
        with real declarations arrives at self-host.
-  (G3) the LIST vocabulary the compiler wants: push/find/any/all/
-       first/last/contains/index_of as generic fns (std or
-       intrinsic — decide by measuring what mono makes free), plus
-       list elements widening past scalars (the recorded trigger).
+       THE CONSTRUCTOR TAXONOMY (asked twice, settled 2026-08-31):
+       instantiation is interning for EVERY constructor — nothing
+       is per-X anywhere. Of the built-ins: RES is semantically a
+       declaration (folds at the prelude, per the re-measure
+       above); LIST is a true primitive (a growable runtime array
+       is not expressible as any declaration); OPT is primitive
+       for a sharper reason — its REPR forks per carried type
+       (niche/pair, the never-allocates law), which no declaration
+       could say. The residual cost of a constructor (~10 match
+       arms across the type consumers) is the exhaustiveness
+       guarantee, and it shrinks when the type-walk visitor ask
+       lands.
+  (G3) [x] List<T> BECOMES REAL — LANDED 2026-08-31, three moves:
+       (1) the ELEMENT LAW widened to the slot law (R0's widening
+       reached lists): List<Struct>, List<Enum>, List<App>, nested
+       List<List<…>> all live; strings and nullables wait for
+       ownership, same words as every slot. (2) `[]` IS TO LIST
+       WHAT NULL IS TO OPT: Type.EmptyList inhabits every List<T>,
+       adopted at the ONE widening edge with an IDENTITY lift (an
+       empty array is a valid list of anything) — typed lets,
+       pinned generic args, and the one honest compound lift
+       ([] Ok-wraps raw; null->T?->Ok stays explicit/recorded). A
+       Var never binds absence — `null` and `[]` force the pin.
+       The "seed one element" wart is dead. (3) `for x in xs` —
+       the ELEMENT WALK: its own node, the let-else merge lesson
+       applied (non-committing branch first, the range's @recover
+       second), lowered as index cell + element CELL the name
+       binds through; early return unwinds it; nested walks nest;
+       the range form untouched. RT18 (18 programs): shadowing,
+       walks in generic bodies, list-of-enums matched per element,
+       OOB reads trap identically both engines, owned churn in
+       bodies. STILL WAITING (recorded): the METHOD vocabulary
+       (push/find/any/all…) needs method-call surface + closures —
+       rung 13's opening slice; `while let` likewise.
   (G4) recorded: bounds ride rung 12; `dyn` rides rung 12;
        for-over-lists rides G3; comprehensions ride G3.
 

@@ -1,7 +1,7 @@
 // Lists, vertically: the literal, indexing, length, iteration
 // through range-for, and every law refusing in its own words.
 use @std.avrac.language.{analyze_source, lower, memory}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_with}
 
 spec "features/lists" {
     given "the aggregate" {
@@ -25,10 +25,8 @@ spec "features/lists" {
         }
     }
     given "wrong shapes" {
-        then "an empty list has nothing to infer" {
-            let a = analyze_source("[]\n1")
-            a.diagnostics.length == 1 &&
-                a.report().contains("an empty list has no element type to infer")
+        then "an empty list is ADOPTED by whatever list claims it" {
+            shown("let xs: List<int> = []\nxs.length") == "0"
         }
         then "elements share one type" {
             let a = analyze_source("[1, true]\n2")
@@ -38,7 +36,7 @@ spec "features/lists" {
         then "managed elements wait for ownership analysis" {
             let a = analyze_source("[\"a\"]\n2")
             a.diagnostics.length == 1 &&
-                a.report().contains("a list holds scalars for now")
+                a.report().contains("a list element cannot hold this yet")
         }
         then "indexing a non-list points at the subject" {
             let a = analyze_source("1[0]\n2")
@@ -69,6 +67,31 @@ spec "features/lists" {
         then "a list answer prints — no refusal anywhere" {
             let l = memory(lower(analyze_source("[1, 2]")))
             l.diagnostics.is_empty() && shown("[1, 2]") == "[1, 2]"
+        }
+    }
+    given "G3 — the element walk and the widened law" {
+        then "`for x in xs` binds each element" {
+            shown("mut t = 0\nfor x in [4, 5, 6] {\n    t = t + x\n}\nt") == "15"
+        }
+        then "struct elements ride the widened slot law" {
+            shown("type P = { x: int }\nmut t = 0\nfor p in [P { x: 2 }, P { x: 3 }] {\n    t = t + p.x\n}\nt") == "5"
+        }
+        then "nested lists nest their walks" {
+            shown("mut t = 0\nfor row in [[1], [2, 3]] {\n    t = t + row.length\n}\nt") == "3"
+        }
+        then "the RANGE form is untouched beside it" {
+            shown("mut t = 0\nfor i in 1..4 {\n    t = t + i\n}\nt") == "6"
+        }
+        then "walking a non-list refuses and names the range spelling" {
+            refused_with("mut t = 0\nfor x in 5 {\n    t = t + x\n}\nt",
+                         "`for … in` walks a `List`, this is `int`")
+        }
+        then "walking `[]` refuses — the loop would never run" {
+            refused_with("mut t = 0\nfor x in [] {\n    t = t + x\n}\nt",
+                         "`for` walks an empty literal — nothing to bind")
+        }
+        then "`[]` Ok-wraps raw — the identity compound lift" {
+            shown("enum E {\n    boom\n}\nfn f() -> Result<List<int>, E> {\n    []\n}\nmatch f() {\n    .Ok(xs) -> xs.length\n    .Err(e) -> 0 - 1\n}") == "0"
         }
     }
 }

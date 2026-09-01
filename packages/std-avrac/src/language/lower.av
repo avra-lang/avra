@@ -230,6 +230,8 @@ fn widened(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
     if worn == null { return r }
     let into = lo.view(worn!)
     if lo.a.typing.types.shape_of(into) is .Res { return okayed(cx, into, r) }
+    // an empty array IS a valid list of anything — identity lift
+    if lo.a.typing.types.shape_of(into) is .List { return r }
     adopted(cx, into, cx.shape_at(e) is .Null, r)
 }
 
@@ -277,6 +279,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .App(_, _, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
         .TypeName(_, n) -> n,
         .Var(_, _, n) -> n,
+        .EmptyList -> "[]",
         .Opt(_) or .Null -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
         .Int or .Str or .Bool or .List(_) or .Error -> null,
     }
@@ -288,7 +291,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
         .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or
         .TypeName(_, _) or .Var(_, _, _) -> null,
-        .Opt(_) or .Null -> null,
+        .Opt(_) or .Null or .EmptyList -> null,
         .Error -> null,
     }
     if text != null { lo.give(Ins.CallRtVoid("avra_puts", [text!])) }
@@ -440,7 +443,8 @@ impl Lower {
             .App(decl, _, args) ->
                 subbed_fields(self.a.typing.types, record_sig_of(self.a.decl_sig(decl)), decl, args),
             .Int or .Str or .Bool or .List(_) or .Enum(_, _) or .Res(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or .Error -> null,
+            .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or .EmptyList or
+            .Error -> null,
         }
     }
 
@@ -459,7 +463,8 @@ impl Lower {
             .App(decl, _, args) ->
                 subbed_variants(self.a.typing.types, variant_sig_of(self.a.decl_sig(decl)), decl, args),
             .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or .Error -> null,
+            .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or .EmptyList or
+            .Error -> null,
         }
     }
 

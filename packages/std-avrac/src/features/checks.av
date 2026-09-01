@@ -43,7 +43,7 @@ export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
     let got = cx.type_at(e)
     if !types_disagree(cx, got, want) { return true }
     let inner: TypeId? = cx.types.carried(want)
-    if inner == null { return res_accepts(cx, e, got, want) }
+    if inner == null { return other_accepts(cx, e, got, want) }
     // `null` inhabits every nullable; a present value must be the
     // carried type. Either way the lift is RECORDED, in this one
     // place — absence has no layout of its own, and lowering's
@@ -63,9 +63,28 @@ export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
 fn res_accepts(cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
     let sides: ResSides? = cx.types.res_parts(want)
     if sides == null { return false }
-    if types_disagree(cx, got, sides!.ok) { return false }
+    if types_disagree(cx, got, sides!.ok) && !empty_into(cx, got, sides!.ok) { return false }
     cx.widen(e, want)
     true
+}
+
+/// The ONE compound lift whose inner step is IDENTITY: an empty
+/// array IS a valid list of anything, so `[]` Ok-wraps raw. Every
+/// other compound lift (null -> T? -> Ok) stays explicit — its
+/// value would need staged minting (recorded).
+fn empty_into(cx: TypeCx, got: TypeId, ok: TypeId) -> bool {
+    cx.types.shape_of(got) is .EmptyList && cx.types.shape_of(ok) is .List
+}
+
+/// The non-nullable lifts share one door: the auto-Ok wrap, and the
+/// empty list adopted by whatever list claims it (`[]` is to List
+/// what `null` is to Opt — and the VALUE needs no lift at all).
+fn other_accepts(cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
+    if cx.types.shape_of(got) is .EmptyList && cx.types.shape_of(want) is .List {
+        cx.widen(e, want)
+        return true
+    }
+    res_accepts(cx, e, got, want)
 }
 
 
@@ -231,24 +250,28 @@ export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: StmtId, bound: Li
     if cx.types.shape_of(got) is .Error { return true }
     if cx.types.shape_of(want) is .Error { return true }
     match cx.types.shape_of(want) {
-        .Var(decl, j, _) -> var_binds(decl, j, got, target, bound),
+        .Var(decl, j, _) -> var_binds(cx, decl, j, got, target, bound),
         .List(w) -> elem_unifies(cx, w, got, target, bound),
         .Opt(w) -> carried_unifies(cx, w, got, target, bound),
         .Res(wo, we) -> sides_unify(cx, wo, we, got, target, bound),
         .App(wd, _, wa) -> app_unifies(cx, wd, wa, got, target, bound),
         // LICENSED I9: type identity — interned ids ARE the agreement
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Null or .Error -> want.index == got.index,
+        .TypeName(_, _) or .Null or .EmptyList or .Error -> want.index == got.index,
     }
 }
 
 /// One Var meets one concrete type: first sight binds (through the
 /// caller's slots — an out param), a second must agree.
 // LICENSED I3: `bound` is the caller's slot list; set() through the alias IS the answer
-fn var_binds(decl: StmtId, j: int, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+fn var_binds(cx: TypeCx, decl: StmtId, j: int, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
     // a sig speaks only its OWN fn's Vars; anything else is no match
     // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
     if decl.index != target.index { return false }
+    // absence never pins a Var — `null` and `[]` have no one type;
+    // the pin (or another argument) must land first
+    if cx.types.shape_of(got) is .Null { return false }
+    if cx.types.shape_of(got) is .EmptyList { return false }
     let seen: TypeId? = bound[j]
     if seen == null {
         // LICENSED I7: rebind-alias — set() needs a mut binding
@@ -289,7 +312,7 @@ export fn slot_worthy(sh: Type) -> bool {
     match sh {
         .Int or .Bool or .Struct(_, _) or .Enum(_, _) or
         .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) -> true,
-        .Str or .Opt(_) or .Null or .Error -> false,
+        .Str or .Opt(_) or .Null or .EmptyList or .Error -> false,
     }
 }
 
@@ -304,7 +327,7 @@ export fn unlawful_side(cx: TypeCx, ty: TypeId) -> TypeId? {
         .Opt(inner) -> unlawful_side(cx, inner),
         .App(_, _, args) -> args.find(unlawful_side(cx, it) != null),
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Var(_, _, _) or .Null or .Error -> null,
+        .TypeName(_, _) or .Var(_, _, _) or .Null or .EmptyList or .Error -> null,
     }
 }
 
@@ -327,7 +350,7 @@ export fn fully_bound(cx: TypeCx, ty: TypeId, target: StmtId, bound: List<TypeId
         .Res(ok, err) -> fully_bound(cx, ok, target, bound) && fully_bound(cx, err, target, bound),
         .App(_, _, args) -> args.all(fully_bound(cx, it, target, bound)),
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Null or .Error -> true,
+        .TypeName(_, _) or .Null or .EmptyList or .Error -> true,
     }
 }
 

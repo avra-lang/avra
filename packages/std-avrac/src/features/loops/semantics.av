@@ -63,3 +63,33 @@ impl StmtSemantics for ForSemantics {
         }
     }
 }
+
+export type ForEachSemantics = { }
+
+impl StmtSemantics for ForEachSemantics {
+    /// The subject resolves OUTSIDE the binding (a list never sees
+    /// its own element name); the body inside it.
+    fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
+        match cx.store.stmt(s) {
+            .ForEach(_, subject, stmts) -> {
+                cx.walk(subject)
+                cx.bound_scope(s, [], stmts)
+            }
+            _ -> nothing(),
+        }
+    }
+
+    fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
+        check_for_each(cx, s)
+    }
+
+    fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
+        match cx.store.stmt(s) {
+            .ForEach(_, subject, stmts) -> {
+                lower_for_each(cx, s, subject, stmts)
+                null
+            }
+            _ -> null,
+        }
+    }
+}

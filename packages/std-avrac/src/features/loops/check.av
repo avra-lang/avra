@@ -2,8 +2,8 @@
 //! is ints. When a bound refuses, the desugared cond/step stay
 //! unwalked — the refusal gate stops the program before their
 //! (absorbed) types matter.
-use core.{StmtId, ExprId}
-use features.{StmtTypeCx, require_bool, nothing, this_is}
+use core.{StmtId, ExprId, TypeId}
+use features.{StmtTypeCx, require_bool, nothing, this_is, spoken}
 use diagnostics.{error_at, pointed}
 
 export fn check_while(cx: StmtTypeCx, s: StmtId) {
@@ -44,4 +44,46 @@ fn range_bound(cx: StmtTypeCx, e: ExprId, verb: string) -> bool {
             "a `for` range ${verb} at an `int`, found `${n}`"),
         this_is(n)))
     false
+}
+
+/// `for x in xs` — the subject is a LIST; the name binds its
+/// element type for every read in the body.
+export fn check_for_each(cx: StmtTypeCx, s: StmtId) {
+    match cx.store.stmt(s) {
+        .ForEach(_, subject, stmts) -> {
+            cx.walk(subject)
+            cx.record_binding(s, walked_elem(cx, subject))
+            cx.type_stmts(stmts)
+        }
+        _ -> nothing(),
+    }
+}
+
+/// The element type the walk hands out — or the refusal.
+fn walked_elem(cx: StmtTypeCx, subject: ExprId) -> TypeId {
+    match cx.expr.shape_at(subject) {
+        .List(elem) -> elem,
+        .Error -> cx.expr.error_type,
+        .EmptyList -> nothing_to_walk(cx.expr, subject),
+        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or
+        .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or
+        .Null -> not_walkable(cx.expr, subject),
+    }
+}
+
+// ── The voices ──
+
+fn nothing_to_walk(cx: TypeCx, subject: ExprId) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(subject), "`for` walks an empty literal — nothing to bind"),
+        "always empty")
+        with { help: "the loop would never run; drop it, or walk a named list" })
+}
+
+fn not_walkable(cx: TypeCx, subject: ExprId) -> TypeId {
+    let n = cx.name_at(subject)
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(subject), "`for … in` walks a `List`, this is `${n}`"),
+        this_is(n))
+        with { help: "ranges spell `for i in lo..hi`" })
 }

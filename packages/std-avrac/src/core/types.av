@@ -50,6 +50,11 @@ export enum Type {
     /// The `null` literal's own type: it inhabits every `Opt` and
     /// nothing else, which is what makes `let x: int = null` refuse.
     Null
+    /// The empty list literal's own type — `[]` is to `List` what
+    /// `null` is to `Opt`: it inhabits every `List<T>` and nothing
+    /// else, adopted at the one widening edge. The value needs no
+    /// lift: an empty array IS a valid list of anything.
+    EmptyList
     Error
 }
 
@@ -73,7 +78,7 @@ export fn new_type_registry() -> TypeRegistry {
 export fn ptr_shape(t: Type) -> bool {
     match t {
         .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
-        .Res(_, _) or .App(_, _, _) or .Null -> true,
+        .Res(_, _) or .App(_, _, _) or .Null or .EmptyList -> true,
         .Int or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) -> false,
     }
 }
@@ -93,6 +98,7 @@ impl TypeRegistry {
             .TypeName(decl, _) -> "7:${decl.index}",
             .Opt(inner) -> "8:${inner.index}",
             .Null -> "9",
+            .EmptyList -> "13",
             .Res(ok, err) -> "10:${ok.index}.${err.index}",
             .Var(decl, ordinal, _) -> "11:${decl.index}.${ordinal}",
             .App(decl, _, args) -> "12:${decl.index}.${joined(["${a.index}" for a in args], ".")}",
@@ -160,7 +166,7 @@ impl TypeRegistry {
             .App(decl, name, aa) ->
                 self.intern(Type.App(decl, name, [self.substituted(a, target, args) for a in aa])),
             .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-            .TypeName(_, _) or .Null or .Error -> ty,
+            .TypeName(_, _) or .Null or .EmptyList or .Error -> ty,
         }
     }
 
@@ -179,6 +185,7 @@ impl TypeRegistry {
             .Var(_, _, name) -> name,
             .App(_, name, args) -> "${name}<${joined([self.name_of(a) for a in args], ", ")}>",
             .Null -> "null",
+            .EmptyList -> "[]",
             .Error -> "<error>",
         }
     }
