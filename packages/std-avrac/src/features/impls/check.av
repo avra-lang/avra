@@ -1,0 +1,92 @@
+//! The method laws. A call resolves through the RECEIVER'S TYPE —
+//! its name keys the impl table — and the found sig judges the
+//! arguments exactly as a fn call's does, `self` excluded (the
+//! subject rides that seat).
+use core.{ExprId, Type, TypeId}
+use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant}
+use diagnostics.{error_at, pointed}
+
+fn method_call_type(cx: TypeCx, e: ExprId) -> TypeId {
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants
+    match cx.store.expr(e) {
+        .MethodCall(subject, name, args) -> methoded(cx, e, subject, name, args),
+        _ -> cx.error_type,
+    }
+}
+
+fn methoded(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId {
+    let sh: Type = cx.shape_at(subject)
+    if sh is .Error { return cx.error_type }
+    // the TYPE-receiver half of the one dot-call surface: a call
+    // on a type NAME constructs its variant
+    let built: TypeId? = type_receiver(cx, e, subject, name, args)
+    if built != null { return built! }
+    let named: string? = receiver_name(cx, subject)
+    if named == null { return no_methods_here(cx, subject, name) }
+    let target = named!
+    let found: FnSig? = cx.method_sig(target, name)
+    if found == null { return no_such_method(cx, e, target, name) }
+    let sig = found!
+    let wants = sig.params.length - 1
+    if args.length != wants {
+        return wrong_method_arity(cx, e, target, name, wants, args.length)
+    }
+    // LICENSED I3: params offset by the self seat; comprehensions cannot destructure enumerate
+    for (j, a) in args.enumerate() {
+        if !accepts(cx, a, sig.params[j + 1]) { wrong_method_argument(cx, target, name, j, sig.params[j + 1], a) }
+    }
+    sig.ret
+}
+
+/// The name a receiver's type answers to — the impl table's key.
+/// Generic receivers wait for T2 (the impl's own tparams).
+fn receiver_name(cx: TypeCx, subject: ExprId) -> string? {
+    match cx.shape_at(subject) {
+        .Struct(_, n) -> n,
+        .Enum(_, n) -> n,
+        .Int or .Str or .Bool or .List(_) or .Res(_, _) or .App(_, _, _) or
+        .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or
+        .EmptyList or .Error -> null,
+    }
+}
+
+// ── The voices ──
+
+fn no_methods_here(cx: TypeCx, subject: ExprId, name: string) -> TypeId {
+    let n = cx.name_at(subject)
+    spoken(cx, pointed(
+        error_at("type.method", cx.loc_of(subject), "`.${name}(…)` calls a method, and `${n}` has none"),
+        this_is(n))
+        with { help: "methods live on declared types — generic receivers arrive with traits" })
+}
+
+fn no_such_method(cx: TypeCx, e: ExprId, target: string, name: string) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.method", cx.loc_of(e), "`${target}` has no method `${name}`"),
+        "called here")
+        with { help: "declare it — `impl ${target} { fn ${name}(self, …) -> … }`" })
+}
+
+fn wrong_method_arity(cx: TypeCx, e: ExprId, target: string, name: string, wants: int, found: int) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.method", cx.loc_of(e),
+            "`${target}.${name}` takes ${wants} arguments beside `self`, found ${found}"),
+        "this call"))
+}
+
+fn wrong_method_argument(cx: TypeCx, target: string, name: string, j: int, want: TypeId, a: ExprId) {
+    let n = cx.name_at(a)
+    cx.emit(pointed(
+        error_at("type.method", cx.loc_of(a),
+            "argument ${j + 1} of `${target}.${name}` wants `${cx.types.name_of(want)}`, found `${n}`"),
+        this_is(n)))
+}
+
+/// A dot-call whose receiver is a TYPE NAME — variant construction
+/// through the shared law; absent for every value receiver.
+fn type_receiver(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
+    match cx.shape_at(subject) {
+        .TypeName(decl, tname) -> construct_variant(cx, e, decl, tname, name, args),
+        _ -> null,
+    }
+}

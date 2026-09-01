@@ -58,6 +58,7 @@ type Typer = {
     fn_ret: List<TypeId>,
     tscope: List<TypeId>,
     substs: List<Sub?>,
+    methods: Map<string, StmtId>,
     decls: List<DeclSig?>,
     diagnostics: List<Diag>,
 }
@@ -77,11 +78,13 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         binding_types: filled<TypeId?>(p.store.stmts.count(), null),
         narrow_defs: [], narrow_params: [], fn_ret: [], tscope: [],
         substs: filled<Sub?>(p.store.exprs.count(), null),
+        methods: {},
         decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
     t.declare_type_sigs()
     t.declare_sigs()
+    t.declare_impls()
     type_stmts(t, [], p.stmts)
     Typing {
         types: t.types, of_expr: t.of_expr, widens: t.widens,
@@ -155,6 +158,7 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         enclosing_ret: () -> t.fn_ret.last(),
         record_subst: (e: ExprId, target: StmtId, targs: List<TypeId>) -> t.record_subst(e, target, targs),
         written: (s: StmtId, tr: TypeRef) -> t.full_type(s, tr),
+        method_sig: (target: string, mname: string) -> t.method_sig(target, mname),
         name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
         loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.p.store.expr_span(e)),
         emit: (d: Diag) -> t.speak(d),
@@ -351,6 +355,76 @@ impl Typer {
         self.error_type
     }
 
+    /// Every impl block's methods: `self` types as the TARGET, the
+    /// sig declares under the fn's own stmt (so body walks and mono
+    /// see an ordinary fn), and the table maps `Target.name` to it.
+    fn declare_impls(self) {
+        for s in self.p.stmts {
+            let parts: ImplParts? = self.p.store.impl_parts(s)
+            if parts != null { self.declare_impl(s, parts!.target, parts!.fns) }
+        }
+    }
+
+    fn declare_impl(self, s: StmtId, target: string, fns: List<StmtId>) {
+        let decl: StmtId? = self.resolution.type_defs.get(target)
+        if decl == null {
+            self.speak(pointed(
+                error_at("type.impl", self.stmt_loc(s), "`impl ${target}` serves no declared type"),
+                "this impl")
+                with { help: "declare `${target}` first — `type` or `enum`" })
+            return
+        }
+        if !self.p.store.decl_tparams(decl!).is_empty() {
+            self.speak(pointed(
+                error_at("type.impl", self.stmt_loc(s), "`${target}` is generic — impls on generic types arrive with traits"),
+                "this impl"))
+            return
+        }
+        let ty = self.declared_type(decl!, target)
+        for f in fns { self.declare_method(target, ty, f) }
+    }
+
+    fn declare_method(self, target: string, ty: TypeId, f: StmtId) {
+        let parts: FnParts? = self.p.store.fn_parts(f)
+        if parts == null { return }
+        let fp = parts!
+        if !fp.tparams.is_empty() {
+            self.speak(pointed(
+                error_at("type.impl", self.stmt_loc(f), "`${fp.name}` is generic — generic methods arrive with traits"),
+                "this method"))
+            return
+        }
+        if !selfed(fp.params) {
+            self.speak(pointed(
+                error_at("type.impl", self.stmt_loc(f), "a method's first parameter is `self`"),
+                "declared here")
+                with { help: "write `fn ${fp.name}(self, …)`" })
+            // declare the WRECKAGE anyway — every param a hole — so
+            // the body walk and the fn loop stay total (one
+            // mistake, one message, no crash downstream)
+            self.declare(f, DeclSig.Fn(FnSig {
+                params: [self.error_type for pp in fp.params],
+                ret: self.error_type,
+            }))
+            return
+        }
+        mut ptypes: List<TypeId> = [ty]
+        // LICENSED I3: the self seat is seeded; comprehensions cannot skip the head
+        for (j, pp) in fp.params.enumerate() {
+            if j > 0 { ptypes.push(self.annotated(f, pp.ty)) }
+        }
+        self.declare(f, DeclSig.Fn(FnSig { params: ptypes, ret: self.annotated(f, fp.ret) }))
+        mut ms = self.methods
+        ms.set("${target}.${fp.name}", f)
+    }
+
+    /// The impl table's answer — a sig whose params[0] is `self`.
+    fn method_sig(self, target: string, mname: string) -> FnSig? {
+        let f: StmtId? = self.methods.get("${target}.${mname}")
+        if f == null { return null }
+        fn_sig_of(self.decls[f!.index])
+    }
+
     /// Every fn's signature, from its annotations alone — before any
     /// body walks, so calls resolve signatures program-wide.
     fn declare_sigs(self) {
@@ -370,11 +444,30 @@ impl Typer {
         }
         self.refuse_taken_tparams(s, owner)
         self.enter_tscope(s)
-        let ptypes = [self.annotated(s, pp.ty) for pp in fparams]
+        let ptypes = [self.param_type(s, pp) for pp in fparams]
         let rt = self.annotated(s, fret)
         self.leave_tscope()
         let sig = FnSig { params: ptypes, ret: rt }
         self.declare(s, DeclSig.Fn(sig))
+    }
+
+    /// Parameters declare their types — only `self` goes bare, and
+    /// `self` lives in impl blocks (declare_impls re-declares those
+    /// sigs with the target riding the seat).
+    fn param_type(self, s: StmtId, pp: Param) -> TypeId {
+        if pp.ty != null { return self.annotated(s, pp.ty) }
+        if pp.name == "self" {
+            self.speak(pointed(
+                error_at("type.impl", self.stmt_loc(s), "`self` lives in an `impl` block"),
+                "declared here")
+                with { help: "move this fn into `impl <Type> { … }`" })
+            return self.error_type
+        }
+        self.speak(pointed(
+            error_at("type.mismatch", self.stmt_loc(s), "parameter `${pp.name}` declares no type"),
+            "declared here")
+            with { help: "write `${pp.name}: <type>` — only `self` goes bare" })
+        self.error_type
     }
 
     /// A type parameter cannot take a name the LANGUAGE owns — the
@@ -755,4 +848,11 @@ fn declared_arity(t: Typer, name: string) -> int? {
 /// exactly this.
 fn slots_await_ownership() -> string {
     "unmanaged values today — strings and nullable slots arrive with ownership analysis"
+}
+
+/// The first parameter is the bare `self` seat.
+fn selfed(params: List<Param>) -> bool {
+    let head: Param? = params.first()
+    if head == null { return false }
+    head!.name == "self" && head!.ty == null
 }

@@ -12,7 +12,7 @@ use diagnostics.{Diag, error_at, pointed, loc_at}
 use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig,
               fn_sig_of, record_sig_of, variant_sig_of, res_enum_sig,
               adopted, carried_of, okayed, hollow_of, Sub,
-              subbed_variants, subbed_fields}
+              subbed_variants, subbed_fields, method_symbol}
 use @std.errors.{Loc}
 
 /// One lowered body: instructions in order and each register's type
@@ -91,6 +91,17 @@ export fn lower(a: Analysis) -> Lowered {
             let lf = lower_fn(a, s, p!.name, p!.body, null, jobs)
             fns.push(lf.body)
             failures = failures.concat(lf.failures)
+        }
+        let ip: ImplParts? = a.store.impl_parts(s)
+        if ip != null {
+            for f in ip!.fns {
+                let mp: FnParts? = a.store.fn_parts(f)
+                if mp != null {
+                    let lf = lower_fn(a, f, method_symbol(ip!.target, mp!.name), mp!.body, null, jobs)
+                    fns.push(lf.body)
+                    failures = failures.concat(lf.failures)
+                }
+            }
         }
     }
     let lm = lower_main(a, jobs)

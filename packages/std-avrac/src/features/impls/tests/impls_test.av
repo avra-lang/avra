@@ -1,0 +1,56 @@
+// Methods, vertically: `impl Target { … }` + the one dot-call
+// surface — a value receiver dispatches through the impl table, a
+// TYPE receiver constructs its variant. Resolution is provable at
+// typing (spec 4.5); rt19 is the adversarial record.
+use @std.avrac.testing.{shown, refused_with}
+
+/// The standard receiver.
+fn boxy() -> string {
+    "type P = { x: int, y: int }\nimpl P {\n    fn area(self) -> int {\n        self.x * self.y\n    }\n    fn scaled(self, k: int) -> P {\n        P { x: self.x * k, y: self.y * k }\n    }\n}\n"
+}
+
+spec "features/impls" {
+    given "the method surface" {
+        then "a zero-argument method reads through self" {
+            shown("${boxy()}P { x: 3, y: 4 }.area()") == "12"
+        }
+        then "arguments follow the self seat; calls chain" {
+            shown("${boxy()}P { x: 1, y: 2 }.scaled(3).scaled(2).area()") == "72"
+        }
+        then "methods call methods, and free fns, from self" {
+            shown("fn bump(n: int) -> int {\n    n + 1\n}\ntype P = { x: int }\nimpl P {\n    fn next(self) -> int {\n        bump(self.x)\n    }\n    fn two(self) -> int {\n        self.next() + 1\n    }\n}\nP { x: 40 }.two()") == "42"
+        }
+        then "enums take methods too — match on self inside" {
+            shown("enum G {\n    pass(int)\n    tiny\n}\nimpl G {\n    fn score(self) -> int {\n        match self {\n            .pass(n) -> n\n            .tiny -> 0\n        }\n    }\n}\nG.pass(7).score()") == "7"
+        }
+        then "the paren witness tells a call from a property" {
+            shown("${boxy()}let p = P { x: 5, y: 6 }\np.x + p.area()") == "35"
+        }
+    }
+    given "the refusals, each in its own words" {
+        then "an unknown method names the impl spelling" {
+            refused_with("${boxy()}P { x: 1, y: 1 }.volume()",
+                         "`P` has no method `volume`")
+        }
+        then "a method on a scalar says methods live on declared types" {
+            refused_with("let n = 5\nn.area()",
+                         "`.area(…)` calls a method, and `int` has none")
+        }
+        then "arity counts beside self" {
+            refused_with("${boxy()}P { x: 1, y: 1 }.scaled(2, 3)",
+                         "`P.scaled` takes 1 arguments beside `self`, found 2")
+        }
+        then "an impl on nothing refuses" {
+            refused_with("impl Ghost {\n    fn boo(self) -> int {\n        1\n    }\n}\n2",
+                         "`impl Ghost` serves no declared type")
+        }
+        then "a selfless method refuses ONCE and stays total" {
+            refused_with("type P = { x: int }\nimpl P {\n    fn area(k: int) -> int {\n        k\n    }\n}\n2",
+                         "a method's first parameter is `self`")
+        }
+        then "`self` outside an impl refuses" {
+            refused_with("fn f(self) -> int {\n    1\n}\n2",
+                         "`self` lives in an `impl` block")
+        }
+    }
+}

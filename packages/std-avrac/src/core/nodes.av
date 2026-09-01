@@ -119,6 +119,11 @@ export enum Expr {
     /// decides the type: a total catch recovers to the ok side; a
     /// selective one stays the Result, the unmatched propagating.
     Catch(subject: ExprId, variants: List<string>, binds: List<string>, values: List<ExprId>)
+    /// `subject.name(args)` — a METHOD call: the impl the
+    /// receiver's TYPE names supplies the fn; `subject` rides as
+    /// its first argument. Resolution is provable at typing —
+    /// never a runtime lookup.
+    MethodCall(subject: ExprId, name: string, args: List<ExprId>)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
 }
@@ -202,6 +207,10 @@ export enum Stmt {
     /// `fail value` — raise: the enclosing fn answers the failure
     /// channel of its Result right here. Diverges, like `return`.
     Fail(value: ExprId)
+    /// `impl Target { fns… }` — methods for a declared type: each
+    /// fn's bare `self` first param types as the target, and the
+    /// fn lowers under a QUALIFIED name (`Target.method`).
+    ImplDecl(target: string, fns: List<StmtId>)
     /// `let name? = subject else { stmts }` — the bind-fresh form
     /// that KEEPS GOING: a present subject binds its carried value
     /// in the enclosing scope; an absent one runs the else, which
@@ -320,6 +329,9 @@ impl NodeStore {
                 fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
             .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
             .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),
+            .MethodCall(subject, name, margs) ->
+                fp(43, flatten([[self.expr_fingerprint(subject)], [fp_str(name)],
+                                self.expr_fps(margs)])),
             .Catch(subject, variants, binds, values) ->
                 fp(40, flatten([[self.expr_fingerprint(subject)],
                                 [fp_str(v) for v in variants],
@@ -363,6 +375,8 @@ impl NodeStore {
                                 self.stmt_fps(else_stmts)])),
             .Return(value) -> fp(36, [self.expr_fingerprint(value)]),
             .Fail(value) -> fp(39, [self.expr_fingerprint(value)]),
+            .ImplDecl(target, fns) ->
+                fp(44, [fp_str(target)].concat(self.stmt_fps(fns))),
             .LetElse(name, subject, stmts) ->
                 fp(38, [fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
             // For's cond and step derive from name/from/to — the

@@ -1,6 +1,6 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops}
-use features.{LangNode, Builder, token_at, zip_defect, aligned_binds}
+use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, Span}
+use features.{LangNode, Builder, token_at, zip_defect, aligned_binds, window_end}
 use grammar.{Token}
 
 fn build_int_lit(b: Builder) -> Result<LangNode, string> {
@@ -92,19 +92,54 @@ fn build_fold_index(b: Builder) -> Result<LangNode, string> {
     b.wrap_expr(acc)
 }
 
-/// `v ( .name | ?.name )*` folds left — the parse takes ANY name
-/// (typing refuses the unknown ones), and each LINK chooses its
-/// node: `.` reads, `?.` chains through absence. The ladder owns
-/// the parse; `Chain`'s meaning lives in `nullable`.
+/// `v ( .name | ?.name | .name(args) )*` folds left — the parse
+/// takes ANY name (typing refuses the unknown ones), and each LINK
+/// chooses its node: `.` reads, `?.` chains through absence, and a
+/// paren WITNESS in the link's span window makes it a METHOD call
+/// (the witness is what tells `p.double()` from `p.x`). The ladder
+/// owns the parse; Chain's and MethodCall's meanings live with
+/// their features.
 fn build_fold_props(b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
     let links = b.tokens(1)?
     let names = b.tokens(2)?
+    let opens = b.tokens(3)?
+    let margs = b.exprs(4)?
     if links.length != names.length { return Result.Err(zip_defect()) }
+    let ends: int? = b.span_end()
+    if ends == null { return Result.Err("a postfix chain without a span") }
     for (i, t) in names.enumerate() {
-        acc = b.store.alloc_expr(prop_link(links[i].text, acc, t.text), b.span)
+        let upto = window_end(names, i, ends!)
+        let called = opens.any(within(it.span.lo, t.span.lo, upto))
+        if called {
+            if links[i].text == "?." { return Result.Err("`?.` cannot call a method yet — chain methods are recorded") }
+            acc = b.store.alloc_expr(
+                Expr.MethodCall(acc, t.text, args_between(b, margs, t.span.lo, upto)), b.span)
+        } else {
+            acc = b.store.alloc_expr(prop_link(links[i].text, acc, t.text), b.span)
+        }
     }
     b.wrap_expr(acc)
+}
+
+fn within(at: int, after: int, before: int) -> bool {
+    at > after && at < before
+}
+
+/// The argument exprs written inside one link's window.
+fn args_between(b: Builder, margs: List<ExprId>, after: int, before: int) -> List<ExprId> {
+    mut out: List<ExprId> = []
+    for a in margs {
+        let lo: int? = span_lo(b, a)
+        if lo != null && within(lo!, after, before) { out.push(a) }
+    }
+    out
+}
+
+fn span_lo(b: Builder, e: ExprId) -> int? {
+    let sp: Span? = b.store.expr_span(e)
+    if sp == null { return null }
+    sp!.lo
 }
 
 /// The node a link token names — the chain when absence rides it.

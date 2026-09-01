@@ -1,0 +1,59 @@
+// proves: rung 12 T1 — methods, statically dispatched. Inherent
+// impls on structs and enums, `self` typed as the target, chained
+// calls, methods calling methods and free fns, Result-returning
+// methods with catch, and the dot-call surface's other half:
+// variant construction through the same one parse.
+type P = { x: int, y: int }
+
+impl P {
+    fn area(self) -> int {
+        self.x * self.y
+    }
+    fn scaled(self, k: int) -> P {
+        P { x: self.x * k, y: self.y * k }
+    }
+    fn wider(self, than: P) -> bool {
+        self.x > than.x
+    }
+}
+
+enum Grade {
+    pass(int)
+    tiny
+}
+
+enum E {
+    boom
+}
+
+impl Grade {
+    fn score(self) -> int {
+        match self {
+            .pass(n) -> n
+            .tiny -> 0
+        }
+    }
+    fn ok(self) -> bool {
+        self.score() > 10
+    }
+}
+
+type Cfg = { port: int }
+
+impl Cfg {
+    fn checked(self) -> Result<int, E> {
+        if self.port == 0 {
+            fail E.boom
+        }
+        self.port
+    }
+}
+
+mut a = P { x: 1, y: 1 }
+mut i = 0
+while i < 100 {
+    a = a.scaled(1)
+    i = i + 1
+}
+let p = P { x: 3, y: 4 }
+"a ${p.area()} c ${p.scaled(2).area()} w ${p.wider(P { x: 1, y: 9 })} g ${Grade.pass(50).ok()} ${Grade.tiny.ok()} r ${Cfg { port: 80 }.checked() catch 0 - 1} ${Cfg { port: 0 }.checked() catch 0 - 1} m ${a.area()}"

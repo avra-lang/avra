@@ -1,23 +1,25 @@
 //! Parse-time lowering: captured tokens and expressions -> the
 //! FnDecl statement and the Call node. Param names and their WRITTEN
 //! types arrive as two parallel captures and zip into Params.
-use core.{Expr, Stmt, Param}
-use features.{LangNode, Builder}
+use core.{Expr, Stmt, Param, TypeRef}
+use grammar.{Token}
+use features.{LangNode, Builder, window_end}
 
 fn build_fn(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
     let ps = b.tokens(2)?
-    let pt = b.type_refs(3)?
     let r = b.type_ref(4)?
     let body = b.expr(5)?
-    if ps.length != pt.length {
-        return Result.Err("param names and types disagree in count")
-    }
+    let ends: int? = b.span_end()
+    if ends == null { return Result.Err("a fn declaration without a span") }
+    // a param's TYPE is optional in the PARSE (only `self` may go
+    // bare — the declare law enforces it); spans re-align them.
+    let tys = aligned_param_types(ps, b.type_refs(3)?, ends!)
     mut params: List<Param> = []
     // LICENSED I3: a ZIP of parallel captures; comprehensions cannot
     for (j, p) in ps.enumerate() {
-        params.push(Param { name: p.text, ty: pt[j] })
+        params.push(Param { name: p.text, ty: tys[j] })
     }
     b.make_stmt(Stmt.FnDecl(n.text, [t.text for t in tp], params, r, body))
 }
@@ -41,4 +43,25 @@ fn build_pinned_call(b: Builder) -> Result<LangNode, string> {
 fn build_return(b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
     b.make_stmt(Stmt.Return(v))
+}
+
+/// Each param's optional written type — absence IS the self seat.
+/// The window law, third user (enum payloads, catch binds, here).
+fn aligned_param_types(anchors: List<Token>, optional: List<TypeRef>, ends: int) -> List<TypeRef?> {
+    mut found: List<TypeRef?> = []
+    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
+    for (j, a) in anchors.enumerate() {
+        found.push(one_between(optional, a.span.lo, window_end(anchors, j, ends)))
+    }
+    found
+}
+
+fn one_between(types: List<TypeRef>, after: int, before: int) -> TypeRef? {
+    types.find(ref_within(it, after, before))
+}
+
+fn ref_within(t: TypeRef, after: int, before: int) -> bool {
+    let lo: int? = t.span?.lo
+    if lo == null { return false }
+    lo! > after && lo! < before
 }

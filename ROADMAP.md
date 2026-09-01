@@ -2928,7 +2928,29 @@ target shape: NodeSemantics/StmtSemantics — traits, impls, dyn
 fields, method calls — so this rung is self-host's beating heart.
 
 THE SLICES:
-  (T1) the METHOD SURFACE + INHERENT IMPLS, static dispatch:
+  (T1) [x] LANDED 2026-08-31 — the METHOD SURFACE + INHERENT
+       IMPLS, static dispatch, the design executed with ONE
+       collapse it did not predict: `X.y(args)` clashed with
+       enum-variant construction (the enums primary claimed
+       `p.area()` and demanded `type p`), and the cure is the
+       spec's own "dot-contextual" reading — ONE parse
+       (MethodCall), typing dispatching by RECEIVER KIND: a value
+       routes through the impl table, a TYPE NAME constructs its
+       variant (`construct_variant` moved to checks.av as the
+       shared law; the VariantLit node is parse-dead, its removal
+       recorded for the round). Params' types went OPTIONAL in
+       the PARSE (span-window law, third user) so bare `self`
+       needs no keyword — `self.x` stays an ordinary ident. A
+       refused method declares its WRECKAGE (every param a hole)
+       so the walks stay total — rt19 found the crash. Methods
+       lower as qualified fns (`P.area`), the call as a direct
+       Call with self riding seat 0 — mono, memory, backend,
+       interp untouched AGAIN. N-arg construction arity law
+       landed (the old single-arg gram had hidden it). RT19: 20
+       programs — chains, methods-calling-methods, Result-
+       returning methods with catch, shadowing a free fn, 200
+       method churn, construction intact.
+       ORIGINAL DESIGN NOTE —
        `impl P { fn double(self) -> int { … } }` and `p.double()`.
        - PARSE: `impl` blocks hold ordinary fn decls whose first
          param may be BARE `self` (Param.ty is already nullable —

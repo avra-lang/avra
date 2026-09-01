@@ -1,0 +1,48 @@
+//! The method call's lowering — the ONE meaning: a direct Call to
+//! the QUALIFIED name, the subject riding the self seat. The name
+//! derives from the receiver's type both here and at the fn loop,
+//! so no fact table carries it.
+use core.{ExprId, Reg, Ins}
+use features.{LowerCx, method_symbol, hole_defect, lower_defect, EnumSig, tagged_value}
+
+fn method_call_reg(cx: LowerCx, e: ExprId) -> Reg {
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants
+    match cx.store.expr(e) {
+        .MethodCall(subject, name, args) -> {
+            if cx.shape_at(subject) is .TypeName { return built_variant(cx, e, name, args) }
+            let recv = cx.reg_of(subject)
+            let regs = [cx.reg_of(a) for a in args]
+            let target: string? = lowered_receiver(cx, subject)
+            if target == null { return lower_defect(cx, e, "a method on a nameless receiver survived typing") }
+            let dst = cx.result(e)
+            cx.emit(Ins.Call(dst, method_symbol(target!, name), [recv].concat(regs)))
+            dst
+        }
+        _ -> lower_defect(cx, e, hole_defect()),
+    }
+}
+
+/// The receiver's type name, under the body's view.
+fn lowered_receiver(cx: LowerCx, subject: ExprId) -> string? {
+    match cx.types.shape_of(cx.type_at(subject)) {
+        .Struct(_, n) -> n,
+        .Enum(_, n) -> n,
+        .Int or .Str or .Bool or .List(_) or .Res(_, _) or .App(_, _, _) or
+        .TypeName(_, _) or .Var(_, _, _) or .Opt(_) or .Null or
+        .EmptyList or .Error -> null,
+    }
+}
+
+/// The type-receiver half lowered: the variant's tagged box — the
+/// same shape enums' own lowering mints, through the same verbs.
+fn built_variant(cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -> Reg {
+    let sig: EnumSig? = cx.variants_at(e)
+    if sig == null { return lower_defect(cx, e, "a variant built without an enum type") }
+    let which: int? = sig!.tag_of(name)
+    let arg: ExprId? = args.first()
+    if which == null || arg == null { return lower_defect(cx, e, "an undeclared variant survived typing") }
+    let carried = cx.reg_of(arg!)
+    let dst = cx.result(e)
+    tagged_value(cx, dst, which!, carried)
+    dst
+}

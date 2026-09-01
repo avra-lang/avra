@@ -1,0 +1,18 @@
+//! Parse-time lowering: captures -> the ImplDecl statement. The
+//! contained statements must each be fn declarations — anything
+//! else refuses at the build, where the shape is still visible.
+use core.{Stmt, StmtId}
+use features.{LangNode, Builder}
+
+fn build_impl(b: Builder) -> Result<LangNode, string> {
+    let t = b.token(0)?
+    let fns = b.stmts(1)?
+    for s in fns {
+        if !is_fn(b, s) { return Result.Err("an `impl` block holds `fn` declarations only") }
+    }
+    b.make_stmt(Stmt.ImplDecl(t.text, fns))
+}
+
+fn is_fn(b: Builder, s: StmtId) -> bool {
+    b.store.stmt(s) is .FnDecl
+}

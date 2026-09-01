@@ -1,0 +1,31 @@
+//! Methods (ROADMAP: rung 12 T1). An `impl Target { fns… }` block
+//! gives a declared type its methods: each fn's bare `self` first
+//! param types as the target, the fn LOWERS under a qualified name
+//! (`Target.method`), and a call `v.name(args)` — parsed in the
+//! ladder, the paren witness telling it from a property — resolves
+//! PROVABLY at typing through the receiver's type. Never a runtime
+//! lookup (spec 4.5).
+use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
+
+export fn impls() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name        | build
+        "impl_decl" | build_impl
+    }
+    let codes = table<DiagCode> {
+        kind          | id      | summary
+        "type.method" | "F2030" | "a method call resolves through the receiver's impl"
+        "type.impl"   | "F2031" | "an impl block serves one declared type"
+    }
+    component LanguageFeature f {
+        name = "impls"
+        docs = "`impl Target { fn m(self, …) -> T { … } }` and `value.m(…)` — methods, statically dispatched through the receiver's type."
+        gram = """
+stmt = "impl" it:NAME "{" ( fs:stmt | BREAK )* "}" BREAK @recover(sync_to: "BREAK") -> impl_decl(it, fs)
+"""
+        diags = codes
+        builders = rows
+    }
+    f
+}
