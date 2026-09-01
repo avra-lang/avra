@@ -2917,6 +2917,52 @@ THE SLICES:
   (G4) recorded: bounds ride rung 12; `dyn` rides rung 12;
        for-over-lists rides G3; comprehensions ride G3.
 
+## Traits & dyn — rung 12 (designed 2026-08-31)
+
+Spec: Axis 3.4 (nominal behavior — `trait` is the third keyword of
+the nominal/structural collapse), 4.5 (method calls resolve
+PROVABLY: bounds or concrete types, never Go-style lookup), 5.x
+(mono by default, `dyn` the heterogeneity hatch), 12.10 (the Error
+trait rides this rung). The compiler's own bs2 source IS the
+target shape: NodeSemantics/StmtSemantics — traits, impls, dyn
+fields, method calls — so this rung is self-host's beating heart.
+
+THE SLICES:
+  (T1) the METHOD SURFACE + INHERENT IMPLS, static dispatch:
+       `impl P { fn double(self) -> int { … } }` and `p.double()`.
+       - PARSE: `impl` blocks hold ordinary fn decls whose first
+         param may be BARE `self` (Param.ty is already nullable —
+         zero node cost); the call rides the postfix props fold
+         with per-link optional argument lists (the span-window
+         alignment law, third user). One node: MethodCall.
+       - SELF IS A PARAM: the inner fn's sig types `self` as the
+         impl's target — methods ARE fns with a qualified name
+         (`P.double` — `$`-mangled like specializations), so
+         declare, mono, lowering, and the backend change almost
+         nowhere: a method CALL lowers as Call(qualified, [self,
+         args…]). The drivers learn ONE thing: impl bodies join
+         the fn walks (declare/resolve/type/lower).
+       - RESOLUTION AT TYPING, not resolve: the receiver's TYPE
+         names the impl (its decl name); the method table is
+         (type name × method) -> fn stmt, built at declare.
+       - v1 BOUNDS: none — concrete receivers only; impls on
+         plain declared types (generic receivers ride T2 with
+         the impl's own tparams).
+  (T2) TRAITS: `trait Show { fn show(self) -> string }` +
+       `impl Show for P` + bounds `fn f<T: Show>(x: T)` — the
+       abstract body may call bound methods; mono resolves them
+       per specialization (the subst view hands the concrete
+       receiver, the method table answers). Trait totality: an
+       impl block for a trait must answer every method. Printing
+       T unlocks (Display); generic receivers land here.
+  (T3) DYN: `dyn Show` values (fat pointer: value + vtable — the
+       box gains a slot), dyn-typed fields/lets, dynamic calls.
+       The Dispatch registry shape our own source uses becomes
+       expressible — self-host's gate.
+  (T4) recorded: shape bounds + `&` intersections, where clauses,
+       default methods, associated types, @derive (Error/
+       failure_tests ride it), operator traits.
+
 ## The capability diet (decided 2026-08-30)
 
 The user's concern, made doctrine: the capability surface was
