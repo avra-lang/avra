@@ -40,6 +40,7 @@ export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
 /// it. Absence never widens back: `int?` into `int` refuses, which
 /// is the whole point of opting in. True means ACCEPTED.
 export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
+    heard(cx, e, want)
     let got = cx.type_at(e)
     if !types_disagree(cx, got, want) { return true }
     let inner: TypeId? = cx.types.carried(want)
@@ -123,6 +124,15 @@ export fn bound_name(cx: TypeCx, decl: StmtId, j: int) -> string {
     let ann: TypeRef? = tb[j].ty
     if ann == null { return "" }
     ann!.name
+}
+
+/// The channel's RESCUE at the one assignment door: a hungry
+/// lambda meeting a fn-shaped slot re-types under its seats — the
+/// facts converge as if the annotations had been written, and the
+/// comparison then judges the real type.
+fn heard(cx: TypeCx, e: ExprId, want: TypeId) {
+    let arrow: Arrow? = cx.types.arrow_parts(want)
+    if arrow != null { let _ = cx.retype_seated(e, arrow!.seats) }
 }
 
 /// THE JOIN: the one type two branches can BOTH answer with, or
@@ -575,7 +585,12 @@ fn walk_arg(cx: TypeCx, e: ExprId, name: string, elem: TypeId, args: List<ExprId
         let _ = one_fn_wanted(cx, e, name, args.length)
         return null
     }
-    let held: Arrow? = cx.types.arrow_parts(cx.type_at(args[0]))
+    let rescued: TypeId? = cx.retype_seated(args[0], [elem])
+    let fnty: TypeId = rescued ?? cx.type_at(args[0])
+    // a still-hungry lambda absorbs here — the walk's end speaks
+    // its one refusal; a second voice would be a cascade
+    if cx.types.shape_of(fnty) is .Error { return null }
+    let held: Arrow? = cx.types.arrow_parts(fnty)
     if held == null {
         let _ = fnless_walk(cx, name, args[0])
         return null

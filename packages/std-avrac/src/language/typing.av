@@ -59,6 +59,8 @@ type Typer = {
     fn_ret: List<TypeId>,
     lambda_params: List<List<TypeId>?>,
     lam_bar: List<int>,
+    wants: List<TypeId?>,
+    hungry: List<bool>,
     tscope: List<TypeId>,
     substs: List<Sub?>,
     methods: Map<string, StmtId>,
@@ -86,6 +88,8 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         methods: {}, traits: {}, trait_impls: {},
         lambda_params: filled<List<TypeId>?>(p.store.exprs.count(), null),
         lam_bar: [],
+        wants: filled<TypeId?>(p.store.exprs.count(), null),
+        hungry: filled(p.store.exprs.count(), false),
         decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
@@ -97,6 +101,7 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
     t.declare_sigs()
     t.declare_impls()
     type_stmts(t, [], p.stmts)
+    t.speak_hungry()
     Typing {
         types: t.types, of_expr: t.of_expr, widens: t.widens,
         narrows: t.narrows, substs: t.substs, decls: t.decls,
@@ -135,6 +140,8 @@ fn walk_fn_body(t: Typer, s: StmtId, body: ExprId) {
     mut rs = t.fn_ret
     rs.push(sig?.ret ?? t.error_type)
     t.enter_tscope(s)
+    let ret: TypeId? = sig?.ret
+    if ret != null { t.plant_want(body, ret!) }
     type_walk(t, sig?.params ?? [], body)
     t.leave_tscope()
     let _ = rs.pop()
@@ -172,6 +179,10 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         written_at: (e: ExprId, tr: TypeRef) -> t.full_type(loc_at(t.p.source.file, t.store.expr_span(e)), tr),
         lambda_body: (lam: ExprId, ptys: List<TypeId>, body: ExprId) ->
             lambda_walked(t, param_types, lam, ptys, body),
+        want_at: (e: ExprId) -> t.wants[e.index],
+        plant_want: (e: ExprId, ty: TypeId) -> t.plant_want(e, ty),
+        go_hungry: (e: ExprId) -> t.go_hungry(e),
+        retype_seated: (a: ExprId, seats: List<TypeId>) -> reseated(t, param_types, a, seats),
         method_sig: (target: string, mname: string) -> t.method_sig(target, mname),
         trait_sig: (tr: string, mname: string) -> t.trait_sig(tr, mname),
         implements: (ty: TypeId, tr: string) -> t.implements(ty, tr),
@@ -219,6 +230,31 @@ fn lambda_walked(t: Typer, param_types: List<TypeId>, lam: ExprId, ptys: List<Ty
     let ret = typed_subtree(t, param_types, body)
     let _ = bar.pop()
     ret
+}
+
+/// THE RESCUE: a hungry lambda re-types under the seats it lands
+/// in — the judging boundary hands them over, the body walks once,
+/// and every fact (of_expr, lambda_params) converges as if the
+/// annotations had been written.
+fn reseated(t: Typer, param_types: List<TypeId>, a: ExprId, seats: List<TypeId>) -> TypeId? {
+    if !t.hungry[a.index] { return null }
+    let parts: LambdaParts? = t.store.lambda_parts(a)
+    if parts == null { return null }
+    if parts!.params.length != seats.length { return null }
+    mut hs = t.hungry
+    hs.set(a.index, false)
+    let ret = lambda_walked(t, param_types, a, seats, parts!.body)
+    let ty = t.types.intern(Type.Fn(seats, ret))
+    mut oe = t.of_expr
+    oe.set(a.index, ty)
+    ty
+}
+
+/// A lambda's leading param name, for the hunger refusal.
+fn first_param_name(store: NodeStore, e: ExprId) -> string {
+    let parts: LambdaParts? = store.lambda_parts(e)
+    if parts == null { return "the parameter" }
+    parts!.params.first()?.name ?? "the parameter"
 }
 
 fn narrowed_subtree(t: Typer, param_types: List<TypeId>, subject: ExprId, branch: ExprId) -> TypeId {
@@ -991,6 +1027,44 @@ impl Typer {
     /// the statement typed); a TYPE declaration used as a value is
     /// the compile-only TypeName; everything else infers from its
     /// value.
+    /// THE EXPECTED-TYPE CHANNEL's write side: a boundary that
+    /// knows its slot plants the want BEFORE the value walks — and
+    /// the want flows through every HEIR (branch arms, block
+    /// values), so a lambda three arms deep still hears it.
+    fn plant_want(self, e: ExprId, ty: TypeId) {
+        mut ws = self.wants
+        ws.set(e.index, ty)
+        let node = self.store.expr(e)
+        for h in semantics_of(self.p.dispatch, node).heirs(node) {
+            self.plant_want(h, ty)
+        }
+    }
+
+    /// A lambda that heard nothing DEFERS — marked here, rescued
+    /// by the first judging seat, or refused at the walk's end.
+    fn go_hungry(self, e: ExprId) {
+        mut hs = self.hungry
+        hs.set(e.index, true)
+    }
+
+    /// Every lambda still hungry when typing ends never met a seat
+    /// — the refusal fires once, here.
+    fn speak_hungry(self) {
+        // LICENSED I3: the index IS the expression id
+        for (j, h) in self.hungry.enumerate() {
+            if h { self.never_heard(ExprId { index: j }) }
+        }
+    }
+
+    fn never_heard(self, e: ExprId) {
+        let name = first_param_name(self.store, e)
+        self.speak(pointed(
+            error_at("type.lambda", loc_at(self.p.source.file, self.store.expr_span(e)),
+                "`${name}` needs a type — this lambda's slot tells it nothing"),
+            "in this lambda")
+            with { help: "annotate — `(${name}: int) -> …` — or hand the lambda to a slot that knows its seats" })
+    }
+
     /// The enclosing fn's answer — unless a LAMBDA BARRIER stands
     /// between: a lambda body answers itself, so `return`, `?`, and
     /// `fail` inside one see no enclosing fn at all.

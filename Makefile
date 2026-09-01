@@ -22,7 +22,7 @@ BS2       := $(abspath $(BOOTSTRAP))/build/bs2
 BOOT_WRAPPER := $(BOOTSTRAP)/build/llvm_wrapper.o
 RUNTIME_OBJS := build/runtime.o build/llvm_wrapper.o build/avra_runtime.o $(BOOT_WRAPPER)
 
-.PHONY: test clean fresh libfresh corpus gate idioms idioms-accept bench fuzz scaffold-check vocab
+.PHONY: test clean fresh libfresh corpus gate idioms idioms-accept bench fuzz scaffold-check vocab sweep
 
 # bs2's lib-mode freshness truth is the .avra-sha256 sidecars; they
 # go stale against edits. Every bs2-run target clears them first.
@@ -34,7 +34,18 @@ fresh:
 libfresh: fresh
 	@rm -rf packages/*/build
 
-test: $(RUNTIME_OBJS)
+# The bs2 compile caches grow without bound across edits — every
+# content change mints new entries. Swept past ~2GB; the next run
+# rebuilds warm. Shards are per-run scratch and always go.
+sweep:
+	@rm -rf build/test_shards
+	@for d in packages/*/build/cache; do \
+	  if [ -d $$d ] && [ $$(du -sm $$d | cut -f1) -gt 2048 ]; then \
+	    rm -rf $$d && echo "swept $$d (past 2GB)"; \
+	  fi; \
+	done; true
+
+test: sweep $(RUNTIME_OBJS)
 	$(BS2) test
 
 build/avra_runtime.o: runtime/avra_runtime.c

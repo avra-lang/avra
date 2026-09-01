@@ -15,15 +15,46 @@ fn lambda_type(cx: TypeCx, e: ExprId) -> TypeId {
 }
 
 fn lambdaed(cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> TypeId {
-    mut ptys: List<TypeId> = []
-    for pp in params {
-        if pp.ty == null { return unannotated_param(cx, e, pp.name) }
-        ptys.push(cx.written_at(e, pp.ty!))
+    let heard: List<TypeId>? = heard_seats(cx, e, params)
+    if heard == null {
+        // no annotations, no want: DEFER — the first judging seat
+        // rescues, or the walk's end refuses
+        cx.go_hungry(e)
+        return cx.error_type
     }
+    let ptys = heard!
     if ptys.any(erred(cx, it)) { return cx.error_type }
     let ret = cx.lambda_body(e, ptys, body)
     if cx.types.shape_of(ret) is .Error { return cx.error_type }
     cx.types.intern(Type.Fn(ptys, ret))
+}
+
+/// The seats a lambda's params wear: each annotation speaks for
+/// itself; an unannotated param hears the WANT's matching seat.
+/// Null when a seat stays silent.
+fn heard_seats(cx: TypeCx, e: ExprId, params: List<Param>) -> List<TypeId>? {
+    let arrow: Arrow? = wanted_arrow(cx, e, params.length)
+    mut ptys: List<TypeId> = []
+    // LICENSED I3: seat by ordinal; comprehensions cannot destructure enumerate
+    for (j, pp) in params.enumerate() {
+        if pp.ty != null {
+            ptys.push(cx.written_at(e, pp.ty!))
+        } else {
+            if arrow == null { return null }
+            ptys.push(arrow!.seats[j])
+        }
+    }
+    ptys
+}
+
+/// The want's arrow, when one was planted and its arity fits.
+fn wanted_arrow(cx: TypeCx, e: ExprId, arity: int) -> Arrow? {
+    let w: TypeId? = cx.want_at(e)
+    if w == null { return null }
+    let arrow: Arrow? = cx.types.arrow_parts(w!)
+    if arrow == null { return null }
+    if arrow!.seats.length != arity { return null }
+    arrow
 }
 
 fn erred(cx: TypeCx, ty: TypeId) -> bool {
@@ -47,11 +78,4 @@ fn uncallable(cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {
         error_at("type.lambda", cx.loc_of(e), "this is not callable — it holds a `${n}`"),
         this_is(n))
         with { help: "only fns and fn-typed values take arguments" })
-}
-
-fn unannotated_param(cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.lambda", cx.loc_of(e), "`${name}` needs a type — a lambda cannot hear its slot yet"),
-        "in this lambda")
-        with { help: "write `(${name}: int) -> …`; inference rides the expected-type channel (recorded)" })
 }

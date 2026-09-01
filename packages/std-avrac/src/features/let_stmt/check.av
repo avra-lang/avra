@@ -4,11 +4,20 @@
 use core.{StmtId, ExprId, TypeRef}
 use features.{StmtTypeCx, declared_binding}
 
-export fn check_let(cx: StmtTypeCx, s: StmtId) {
+/// BEFORE the value walks: the declaration records, and the want
+/// plants — a lambda or literal underneath hears its slot.
+export fn plant_let(cx: StmtTypeCx, s: StmtId) {
     let ann: TypeRef? = cx.store.binding_ty(s)
     if ann == null { return }
     let declared = cx.bind_declared(s, ann!)
     let v: ExprId? = cx.store.stmt_value(s)
+    if v != null { cx.expr.plant_want(v!, declared) }
+}
+
+/// AFTER: the walked value must be what the name declared.
+export fn check_let(cx: StmtTypeCx, s: StmtId) {
+    if cx.store.binding_ty(s) == null { return }
+    let v: ExprId? = cx.store.stmt_value(s)
     if v == null { return }
-    declared_binding(cx.expr, v!, cx.store.let_name(s) ?? "this binding", declared)
+    declared_binding(cx.expr, v!, cx.store.let_name(s) ?? "this binding", cx.binding_type(s))
 }

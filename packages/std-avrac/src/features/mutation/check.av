@@ -10,12 +10,13 @@ export fn check_mut(cx: StmtTypeCx, s: StmtId) {
     let held: ExprId? = cx.store.stmt_value(s)
     if held == null { return }
     let v = held!
-    cx.walk(v)
-    // The DECLARED type records even when the value refuses, so
-    // downstream reads of the name see the declaration, not the
-    // wreckage — one mistake, one message.
+    // The DECLARED type records BEFORE the value walks — it is the
+    // want the channel plants, and downstream reads of the name
+    // see the declaration even when the value refuses.
     let ann: TypeRef? = cx.store.binding_ty(s)
     let declared: TypeId? = if ann == null { null } else { cx.bind_declared(s, ann!) }
+    if declared != null { cx.expr.plant_want(v, declared!) }
+    cx.walk(v)
     if refuses_type_value(cx.expr, v) { return }
     if declared != null {
         declared_binding(cx.expr, v, cx.store.let_name(s) ?? "this binding", declared!)

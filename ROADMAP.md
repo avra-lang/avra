@@ -2390,16 +2390,28 @@ into features (or spec commitments) when their milestone comes.
   correct law, misleading flavor. And a keyword PARAM speaks
   twice (the lambda's refusal + the body ident's — the same
   pre-existing cascade fns have). Both polish-grade.
-- THE EXPECTED-TYPE CHANNEL. A literal cannot hear what its slot
-  declares: `[P{…}, G.hot]` under a `let xs: List<dyn Show>`
-  refuses at its own site (elements judged against the head), and
-  a branch join meets the same wall — the widen laws only run at
-  the boundary AFTER the value typed itself bottom-up. bs2 grew
-  exactly this channel (mono threads expected types through match
-  arms, list elements, if-branches) and its dyn shares the
-  limitation. Wanting site: corpus/dyn.av's heterogeneous list,
-  written with three pre-boxed lets. Lands as its own milestone —
-  the ask threads the driver, not one feature.
+- CHANNEL TRIGGERS, recorded with the landing: a want does not
+  yet TRANSFORM through nested literals (`List<List<fn>>` — the
+  inner literal walks before the outer consults; the refusal is
+  one clean hunger voice, so nothing cascades — the fix is a
+  transforming-heirs hook, wanted the day a real program nests);
+  and `catch` arms are not heirs (a lambda in a catch arm stays
+  hungry — same shape, same trigger).
+- [x] THE EXPECTED-TYPE CHANNEL — LANDED 2026-09-01, its own
+  slice. THE DESIGN: wants are a side table PLANTED before values
+  walk (annotated let/mut, return, the fn body's tail) and
+  DISTRIBUTED through `heirs` — NodeSemantics' fifth method: the
+  sub-exprs a want flows into unchanged (if/when/match arms,
+  block values) — so a lambda three arms deep hears its slot. A
+  lambda that hears nothing DEFERS (hungry, quiet); the first
+  judging seat RESCUES it (retype_seated — inside `accepts`, the
+  one assignment door, so calls/args/fields/assignment all rescue
+  for free; the walks hand their element seat directly); a lambda
+  still hungry when typing ends speaks ONE refusal. List literals
+  under a known slot judge every element by the door —
+  heterogeneous `List<dyn Show>` literals box in place (the T3
+  scope-cut repaid), lambda lists hear their seats.
+  corpus/hears.av is the witness; rt25 6/6.
 - PROP-READ HELP ON A DYN: `d.show` (no parens) says "no property
   `show` on `dyn Show`" — when the contract HAS that method, the
   help should say "write `d.show()`". Wanting site: rt21's

@@ -356,7 +356,9 @@ against these before writing; probe in scratch when unsure.
   arm — wildcards only.
 - Struct destructuring in `let` (`let Sp { lo, hi } = s`) does not parse.
 - A doc comment on a STRUCT FIELD does not parse ("expected field
-  name") — enum VARIANTS take them fine. Field prose goes in the
+  name") — enum VARIANTS take them fine. A doc comment BETWEEN a
+  TRAIT's method sigs refuses too ("expected `type` or `fn` in
+  trait body") — trait prose lives in the trait's own header. Field prose goes in the
   struct's own doc header.
 - Comprehensions iterate lists only, not ranges (struct literals inside
   them are fine), and cannot destructure — `[.. for (i, m) in
