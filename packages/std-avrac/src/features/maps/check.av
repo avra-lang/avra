@@ -1,0 +1,83 @@
+//! The map literal's typing law: every key is accepted by `string`,
+//! the values share one type — the head's, or the slot's when a
+//! want was planted (heterogeneity boxes, lambdas hear seats) — and
+//! a value must be slot-worthy. `{}` wears EmptyMap until a map
+//! adopts it.
+use core.{ExprId, Type, TypeId}
+use features.{TypeCx, spoken, this_is, accepts, types_disagree, slot_worthy, slice_promise}
+use diagnostics.{error_at, pointed}
+
+fn map_type(cx: TypeCx, e: ExprId, keys: List<ExprId>, values: List<ExprId>) -> TypeId {
+    if keys.is_empty() { return cx.types.intern(Type.EmptyMap) }
+    let str = cx.types.intern(Type.Str)
+    for k in keys {
+        if !accepts(cx, k, str) { return key_not_string(cx, k) }
+    }
+    let want: TypeId? = wanted_value(cx, e)
+    if want != null { return heard_map(cx, e, values, want!) }
+    let head = values[0]
+    let v = cx.type_at(head)
+    if cx.shape_at(head) is .Error { return cx.error_type }
+    if !slot_worthy(cx.shape_at(head)) { return unslottable_value(cx, head) }
+    for x in values {
+        if types_disagree(cx, cx.type_at(x), v) { return disagreeing_value(cx, x, v) }
+    }
+    cx.types.intern(Type.Map(str, v))
+}
+
+/// The value type the planted want declares, when the slot is a map.
+fn wanted_value(cx: TypeCx, e: ExprId) -> TypeId? {
+    let w: TypeId? = cx.want_at(e)
+    if w == null { return null }
+    match cx.types.shape_of(w!) {
+        .Map(_, v) -> v,
+        _ -> null,
+    }
+}
+
+/// Every value through `accepts` against the declared value type.
+fn heard_map(cx: TypeCx, e: ExprId, values: List<ExprId>, want: TypeId) -> TypeId {
+    if !slot_worthy(cx.types.shape_of(want)) { return unslottable_want(cx, e, want) }
+    for x in values {
+        if !accepts(cx, x, want) { return unwanted_value(cx, x, want) }
+    }
+    cx.types.intern(Type.Map(cx.types.intern(Type.Str), want))
+}
+
+// ── The voices ──
+
+fn key_not_string(cx: TypeCx, k: ExprId) -> TypeId {
+    let n = cx.name_at(k)
+    spoken(cx, pointed(
+        error_at("type.map_key", cx.loc_of(k), "a map's keys are strings, this is `${n}`"),
+        this_is(n))
+        with { help: "other key types are recorded — spell the key as text" })
+}
+
+fn disagreeing_value(cx: TypeCx, x: ExprId, v: TypeId) -> TypeId {
+    let n = cx.name_at(x)
+    spoken(cx, pointed(
+        error_at("type.map_value", cx.loc_of(x), "this map holds `${cx.types.name_of(v)}`, this is `${n}`"),
+        this_is(n)))
+}
+
+fn unwanted_value(cx: TypeCx, x: ExprId, want: TypeId) -> TypeId {
+    let n = cx.name_at(x)
+    spoken(cx, pointed(
+        error_at("type.map_value", cx.loc_of(x), "this map holds `${cx.types.name_of(want)}`, this is `${n}`"),
+        this_is(n)))
+}
+
+fn unslottable_value(cx: TypeCx, head: ExprId) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.list_scalar", cx.loc_of(head), "a map value cannot hold this yet"),
+        this_is(cx.name_at(head)))
+        with { help: slice_promise("values") })
+}
+
+fn unslottable_want(cx: TypeCx, e: ExprId, want: TypeId) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.list_scalar", cx.loc_of(e), "a map value cannot hold `${cx.types.name_of(want)}` yet"),
+        "this map")
+        with { help: slice_promise("values") })
+}

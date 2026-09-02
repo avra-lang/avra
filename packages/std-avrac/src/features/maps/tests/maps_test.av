@@ -1,0 +1,67 @@
+// Maps, the vertical: the literal, `{}` adopted, `get` answering
+// absence, `set` on a place, `length`, and the refusals in their
+// own words.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+spec "features/maps" {
+    given "the literal" {
+        then "a pair reads back" {
+            shown("let m = { \"x\": 5, \"y\": 6 }\nm.get(\"y\") ?? 0") == "6"
+        }
+        then "a missing key answers absence" {
+            shown("let m = { \"x\": 5 }\nm.get(\"zz\") ?? 0 - 1") == "-1"
+        }
+        then "length counts the pairs" {
+            shown("let m = { \"x\": 5, \"y\": 6 }\nm.length") == "2"
+        }
+        then "string values" {
+            shown("let m = { \"hi\": \"there\" }\nm.get(\"hi\") ?? \"-\"") == "there"
+        }
+        then "`{}` is adopted by a declared map" {
+            shown("mut m: Map<string, int> = {}\nm.set(\"a\", 1)\nm.length") == "1"
+        }
+        then "`{}` fills a struct's map field" {
+            shown("type R = { ids: Map<string, int> }\nmut r = R { ids: {} }\nr.ids.set(\"k\", 42)\nr.ids.get(\"k\") ?? 0") == "42"
+        }
+    }
+    given "set — the place law on a method" {
+        then "a new key appends, an old key overwrites" {
+            shown("mut m: Map<string, int> = {}\nm.set(\"a\", 1)\nm.set(\"b\", 2)\nm.set(\"a\", 10)\nlet a = m.get(\"a\") ?? 0\n\"" + "$" + "{a} " + "$" + "{m.length}\"") == "10 2"
+        }
+        then "a snapshot keeps its pairs — copy-on-write" {
+            shown("mut m: Map<string, int> = {}\nm.set(\"a\", 1)\nlet s = m\nm.set(\"b\", 2)\n\"" + "$" + "{m.length} " + "$" + "{s.length}\"") == "2 1"
+        }
+        then "a `let` map refuses — set mutates it" {
+            refused_with("let m = { \"a\": 1 }\nm.set(\"b\", 2)\n2", "`m` is not `mut` — `set` mutates it")
+        }
+        then "a literal is a value, not a place" {
+            refused_with("{ \"a\": 1 }.set(\"b\", 2)\n2", "`set` mutates a place")
+        }
+        then "the value seat judges" {
+            refused_with("mut m: Map<string, int> = {}\nm.set(\"a\", \"s\")\n2", "argument 2 of `set` wants `int`, found `string`")
+        }
+        then "set answers nothing" {
+            refused_with("mut m: Map<string, int> = {}\nlet n = m.set(\"a\", 1)\n2", "answers nothing")
+        }
+    }
+    given "the refusals" {
+        then "a non-string key in a literal" {
+            refused_with("let m = { 1: 5 }\n2", "a map's keys are strings, this is `int`")
+        }
+        then "values disagree" {
+            refused_with("let m = { \"a\": 1, \"b\": \"s\" }\n2", "this map holds `int`, this is `string`")
+        }
+        then "a non-string key TYPE" {
+            refused_with("mut m: Map<int, int> = {}\n2", "a map's keys are strings, not `int`")
+        }
+        then "a nullable value type waits for the slice" {
+            refused_with("mut m: Map<string, int?> = {}\n2", "a `Map` slot cannot hold this yet")
+        }
+        then "get takes one key" {
+            refused_with("let m = { \"a\": 1 }\nm.get()\n2", "`get` takes 1 arguments, found 0")
+        }
+        then "get's key is a string" {
+            refused_with("let m = { \"a\": 1 }\nm.get(1)\n2", "argument 1 of `get` wants `string`, found `int`")
+        }
+    }
+}

@@ -58,6 +58,8 @@ export enum Expr {
     Not(value: ExprId)
     /// The first aggregate — homogeneous scalar elements.
     ListLit(elems: List<ExprId>)
+    /// `{ "k": v, … }` — keys and values in written order.
+    MapLit(keys: List<ExprId>, values: List<ExprId>)
     /// `subject[index]` — element access.
     Index(subject: ExprId, index: ExprId)
     /// `subject.name` — a property read; TYPING refuses unknown
@@ -147,6 +149,17 @@ export fn truth_of(e: Expr) -> bool? {
 export fn text_of(e: Expr) -> string? {
     match e {
         .StrLit(v) -> v,
+        _ -> null,
+    }
+}
+
+/// A map literal's keys and values, in written order.
+export type MapPairs = { keys: List<ExprId>, values: List<ExprId> }
+
+/// The map-literal projection of the value protocol.
+export fn pairs_of(e: Expr) -> MapPairs? {
+    match e {
+        .MapLit(keys, values) -> MapPairs { keys: keys, values: values },
         _ -> null,
     }
 }
@@ -314,7 +327,7 @@ impl NodeStore {
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
             .IntLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or
-            .Not(_) or .ListLit(_) or .Interp(_, _) or .If(_, _, _) or .Call(_, _, _) or
+            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Interp(_, _) or .If(_, _, _) or .Call(_, _, _) or
             .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or
             .With(_, _, _) or .Match(_, _, _, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
             .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _) or
@@ -360,6 +373,7 @@ impl NodeStore {
             .Force(v) -> self.pronoun_rides(v),
             .Propagate(v) -> self.pronoun_rides(v),
             .ListLit(elems) -> self.any_rides(elems),
+            .MapLit(keys, values) -> self.any_rides(keys) || self.any_rides(values),
             .Index(subject, index) -> self.pronoun_rides(subject) || self.pronoun_rides(index),
             .Prop(subject, _) -> self.pronoun_rides(subject),
             .Chain(subject, _) -> self.pronoun_rides(subject),
@@ -399,6 +413,7 @@ impl NodeStore {
             .Error -> fp(4, []),
             .Not(value) -> fp(19, [self.expr_fingerprint(value)]),
             .ListLit(elems) -> fp(20, self.expr_fps(elems)),
+            .MapLit(keys, values) -> fp(48, self.expr_fps(keys).concat(self.expr_fps(values))),
             .Index(subject, index) ->
                 fp(21, [self.expr_fingerprint(subject), self.expr_fingerprint(index)]),
             .Prop(subject, name) ->

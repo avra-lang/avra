@@ -11,7 +11,7 @@ use diagnostics.{Diag, loc_at, error_at, pointed}
 use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig, Asked, Sub,
               fn_sig_of, record_sig_of, variant_sig_of, duplicate_names, res_enum_sig,
               slot_worthy, method_symbol,
-              subbed_variants, subbed_fields}
+              subbed_variants, subbed_fields, slice_promise}
 use features.closures.{unfed_lambda}
 use @std.errors.{Loc}
 
@@ -307,10 +307,10 @@ fn type_node(t: Typer, cx: TypeCx, e: ExprId) {
 /// at a declaration), `applied`'s arity check, and `applied`'s
 /// INTERNING, which is hardcoded to `Type.List` — a new row here
 /// needs a shape there, or the constructor silently builds a list.
-/// `List` is alone because the registry has no shape for another.
 fn applied_arity(name: string) -> int? {
     match name {
         "List" -> 1,
+        "Map" -> 2,
         "Result" -> 2,
         _ -> null,
     }
@@ -321,6 +321,7 @@ fn applied_arity(name: string) -> int? {
 fn applied_shape(name: string, parts: List<TypeId>) -> Type? {
     match name {
         "List" -> Type.List(parts[0]),
+        "Map" -> Type.Map(parts[0], parts[1]),
         "Result" -> Type.Res(parts[0], parts[1]),
         _ -> null,
     }
@@ -844,22 +845,32 @@ impl Typer {
         for a in t.args {
             let ty = self.full_type(at, a)
             if self.types.shape_of(ty) is .Error { return ty }
-            // A Result's sides are SLOTS of its box — the slot law
-            // (unmanaged words) judges them like any payload. A Var
-            // passes here and every INSTANTIATION re-judges.
-            if t.name == "Result" && !slot_worthy(self.types.shape_of(ty)) {
+            // A Result's sides and a Map's values are SLOTS of a box —
+            // the slot law judges them like any payload. A Var passes
+            // here and every INSTANTIATION re-judges.
+            if (t.name == "Result" || t.name == "Map") && !slot_worthy(self.types.shape_of(ty)) {
                 self.speak(pointed(
                     error_at("type.applied", at,
-                        "a `Result` side cannot hold this yet"),
-                    "this side is `${self.types.name_of(ty)}`")
-                    with { help: "nullable sides arrive with ownership's next slice" })
+                        "a `${t.name}` slot cannot hold this yet"),
+                    "this slot is `${self.types.name_of(ty)}`")
+                    with { help: slice_promise("slots") })
                 return self.error_type
             }
             parts.push(ty)
         }
+        if t.name == "Map" && !(self.types.shape_of(parts[0]) is .Str) { return self.keys_not_strings(at, parts[0]) }
         let sh: Type? = applied_shape(t.name, parts)
         if sh != null { return self.types.intern(sh!) }
         self.applied_decl(at, t.name, parts)
+    }
+
+    /// A map's keys are strings — other key types are recorded.
+    fn keys_not_strings(self, at: Loc?, key: TypeId) -> TypeId {
+        self.speak(pointed(
+            error_at("type.applied", at, "a map's keys are strings, not `${self.types.name_of(key)}`"),
+            "this key type")
+            with { help: "other key types are recorded — `Map<string, …>`" })
+        self.error_type
     }
 
     /// A USER generic instantiated: the declaration by name, its
@@ -1199,7 +1210,7 @@ impl Typer {
                 subbed_fields(self.types, record_sig_of(self.decls[decl.index]), decl, args),
             .Int or .Str or .Bool or .List(_) or .Enum(_, _) or .Res(_, _) or
             .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
-            .Error or .Void -> null,
+            .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
     }
 
@@ -1212,7 +1223,7 @@ impl Typer {
                 subbed_variants(self.types, variant_sig_of(self.decls[decl.index]), decl, args),
             .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
             .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
-            .Error or .Void -> null,
+            .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
     }
 
@@ -1269,7 +1280,7 @@ fn declared_name(sh: Type) -> string? {
         .Enum(_, n) -> n,
         .Int or .Str or .Bool or .List(_) or .Opt(_) or .Null or
         .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or
-        .TypeName(_, _) or .EmptyList or .Error or .Void -> null,
+        .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
     }
 }
 

@@ -1,0 +1,17 @@
+//! A map lowers as the runtime aggregate: one `avra_map_new`, then
+//! a set per pair — the memory pass marks managed values owned; the
+//! runtime keeps its own reference to every key.
+use core.{ExprId, Reg, Ins}
+use features.{LowerCx}
+
+fn map_reg(cx: LowerCx, e: ExprId, keys: List<ExprId>, values: List<ExprId>) -> Reg {
+    let ks = [cx.reg_of(k) for k in keys]
+    let vs = [cx.reg_of(v) for v in values]
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, "avra_map_new", []))
+    // LICENSED I3: keys and values pair by ordinal
+    for (j, k) in ks.enumerate() {
+        cx.emit(Ins.CallRtVoid("avra_map_set", [dst, k, vs[j]]))
+    }
+    dst
+}

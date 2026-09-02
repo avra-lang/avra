@@ -30,10 +30,12 @@
 
 // ── The ownership registry ──────────────────────────────────────
 
+// A box's KIND decides how it reclaims and clones: 0 a plain
+// allocation, 1 an array, 2 a map.
 typedef struct {
     void* ptr;
     int64_t rc;
-    int64_t is_array;
+    int64_t kind;
 } OwnEntry;
 
 static OwnEntry* g_own = NULL;
@@ -63,13 +65,13 @@ static void own_grow(void) {
 }
 
 // Registers a fresh allocation as owned, refcount 1.
-static void* own_kind(void* p, int64_t is_array) {
+static void* own_kind(void* p, int64_t kind) {
     if (p == NULL) return p;
     if (g_own_len * 10 >= g_own_cap * 7) own_grow();
     size_t i = own_slot(g_own, g_own_cap, p);
     g_own[i].ptr = p;
     g_own[i].rc = 1;
-    g_own[i].is_array = is_array;
+    g_own[i].kind = kind;
     g_own_len++;
     return p;
 }
@@ -111,6 +113,8 @@ static void own_delete(size_t i) {
 }
 
 static void array_reclaim(void* p);
+static void map_reclaim(void* p);
+static void* box_clone(void* p);
 
 void avra_rc_release(void* p) {
     if (g_own_cap == 0 || p == NULL) return;
@@ -118,12 +122,14 @@ void avra_rc_release(void* p) {
     if (g_own[i].ptr != p) return;
     g_own[i].rc--;
     if (g_own[i].rc <= 0) {
-        int64_t is_array = g_own[i].is_array;
+        int64_t kind = g_own[i].kind;
         // The entry dies FIRST: slot releases below may reshape the
         // table, and a dead entry must not be found mid-walk.
         own_delete(i);
-        if (is_array) {
+        if (kind == 1) {
             array_reclaim(p);
+        } else if (kind == 2) {
+            map_reclaim(p);
         } else {
             free(p);
         }
@@ -317,7 +323,7 @@ static int is_shared(void* p) {
 void* avra_cell_unique(void* slot) {
     void* p = *(void**)slot;
     if (!is_shared(p)) return p;
-    void* c = array_clone((AvraArray*)p);
+    void* c = box_clone(p);
     *(void**)slot = c;
     avra_rc_release(p);
     return c;
@@ -328,7 +334,7 @@ void* avra_slot_unique(void* arr, int64_t i) {
     void* p = (void*)(uintptr_t)avra_array_get(arr, i);
     if (!is_shared(p)) return p;
     AvraArray* a = (AvraArray*)arr;
-    void* c = array_clone((AvraArray*)p);
+    void* c = box_clone(p);
     a->data[i] = (int64_t)(uintptr_t)c;
     a->owned[i] = 1;
     avra_rc_release(p);
@@ -351,6 +357,130 @@ void avra_slot_set_owned(void* arr, int64_t i, void* v) {
     avra_rc_retain(v);
     avra_slot_set(arr, i, (int64_t)(uintptr_t)v);
     ((AvraArray*)arr)->owned[i] = 1;
+}
+
+// ── Maps: string-keyed, insertion-ordered ───────────────────────
+
+// Two arrays keep the written order (keys owned — the map holds
+// its own reference to every key; values marked owned at set) and
+// an open-addressing index over key hashes finds a slot. Kind 2.
+typedef struct {
+    AvraArray* keys;
+    AvraArray* vals;
+    int64_t* index;   // slot + 1, 0 when empty
+    int64_t icap;
+} AvraMap;
+
+static uint64_t str_hash(const char* s) {
+    uint64_t h = 1469598103934665603ull;
+    for (; *s; s++) { h ^= (unsigned char)*s; h *= 1099511628211ull; }
+    return h;
+}
+
+static void map_index_rebuild(AvraMap* m, int64_t icap) {
+    free(m->index);
+    m->icap = icap;
+    m->index = (int64_t*)calloc((size_t)icap, sizeof(int64_t));
+    for (int64_t s = 0; s < m->keys->len; s++) {
+        const char* k = (const char*)(uintptr_t)m->keys->data[s];
+        uint64_t i = str_hash(k) & (uint64_t)(icap - 1);
+        while (m->index[i] != 0) i = (i + 1) & (uint64_t)(icap - 1);
+        m->index[i] = s + 1;
+    }
+}
+
+void* avra_map_new(void) {
+    AvraMap* m = (AvraMap*)malloc(sizeof(AvraMap));
+    m->keys = (AvraArray*)avra_array_new();
+    m->vals = (AvraArray*)avra_array_new();
+    m->index = NULL;
+    m->icap = 0;
+    map_index_rebuild(m, 16);
+    return own_kind(m, 2);
+}
+
+// Releases both arrays (their owned slots follow), then the map.
+static void map_reclaim(void* p) {
+    AvraMap* m = (AvraMap*)p;
+    avra_rc_release(m->keys);
+    avra_rc_release(m->vals);
+    free(m->index);
+    free(m);
+}
+
+// The slot a key names, or -1.
+static int64_t map_find(AvraMap* m, const char* key) {
+    uint64_t i = str_hash(key) & (uint64_t)(m->icap - 1);
+    while (m->index[i] != 0) {
+        int64_t s = m->index[i] - 1;
+        if (avra_streq((const char*)(uintptr_t)m->keys->data[s], key)) return s;
+        i = (i + 1) & (uint64_t)(m->icap - 1);
+    }
+    return -1;
+}
+
+int64_t avra_map_len(void* map) {
+    return ((AvraMap*)map)->keys->len;
+}
+
+int64_t avra_map_has(void* map, const char* key) {
+    return map_find((AvraMap*)map, key) >= 0;
+}
+
+// The value under a key — read only after avra_map_has said so.
+int64_t avra_map_get(void* map, const char* key) {
+    AvraMap* m = (AvraMap*)map;
+    int64_t s = map_find(m, key);
+    return s < 0 ? 0 : m->vals->data[s];
+}
+
+void* avra_map_get_owned(void* map, const char* key) {
+    void* v = (void*)(uintptr_t)avra_map_get(map, key);
+    avra_rc_retain(v);
+    return v;
+}
+
+// A write under a key: an existing slot is overwritten (the old
+// owned value released), a new key appends in written order and
+// the map takes its own reference to the key.
+void avra_map_set(void* map, const char* key, int64_t v) {
+    AvraMap* m = (AvraMap*)map;
+    int64_t s = map_find(m, key);
+    if (s >= 0) { avra_slot_set(m->vals, s, v); return; }
+    avra_array_push_owned(m->keys, (void*)key);
+    avra_array_push(m->vals, v);
+    if (m->keys->len * 10 >= m->icap * 7) { map_index_rebuild(m, m->icap * 2); return; }
+    uint64_t i = str_hash(key) & (uint64_t)(m->icap - 1);
+    while (m->index[i] != 0) i = (i + 1) & (uint64_t)(m->icap - 1);
+    m->index[i] = m->keys->len;
+}
+
+void avra_map_set_owned(void* map, const char* key, void* v) {
+    AvraMap* m = (AvraMap*)map;
+    int64_t s = map_find(m, key);
+    if (s >= 0) { avra_slot_set_owned(m->vals, s, v); return; }
+    avra_map_set(map, key, (int64_t)(uintptr_t)v);
+    s = map_find(m, key);
+    m->vals->owned[s] = 1;
+    avra_rc_retain(v);
+}
+
+// A map's shallow clone: both arrays cloned (their owned slots
+// retained), the index rebuilt. Registered, rc 1.
+static void* map_clone(AvraMap* m) {
+    AvraMap* c = (AvraMap*)malloc(sizeof(AvraMap));
+    c->keys = (AvraArray*)array_clone(m->keys);
+    c->vals = (AvraArray*)array_clone(m->vals);
+    c->index = NULL;
+    c->icap = 0;
+    map_index_rebuild(c, m->icap);
+    return own_kind(c, 2);
+}
+
+// The clone a place opens — by the box's kind.
+static void* box_clone(void* p) {
+    OwnEntry* e = owned(p);
+    return (e && e->kind == 2) ? map_clone((AvraMap*)p) : array_clone((AvraArray*)p);
 }
 
 // ── Text building ───────────────────────────────────────────────

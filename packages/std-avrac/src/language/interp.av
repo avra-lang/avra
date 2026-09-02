@@ -21,6 +21,8 @@ enum Val {
     A(id: int)
     /// A mut binding's cell — a handle into the cell table.
     C(id: int)
+    /// A map — a handle into the map table.
+    M(id: int)
     /// The null pointer — a niche nullable's absence.
     N
 }
@@ -32,6 +34,7 @@ type Machine = {
     l: Lowered,
     frames: List<List<Val?>>,
     arrays: List<List<Val>>,
+    maps: List<MapVal>,
     cells: List<Val>,
     out: List<string>,
     failures: List<string>,
@@ -39,7 +42,7 @@ type Machine = {
 
 /// Run a lowered program: its printed output, or the refusal.
 export fn run_lowered(l: Lowered) -> Result<string, string> {
-    let m = Machine { l: l, frames: [], arrays: [], cells: [], out: [], failures: [] }
+    let m = Machine { l: l, frames: [], arrays: [], maps: [], cells: [], out: [], failures: [] }
     let _ = run_body(m, l.entry, [])
     if !m.failures.is_empty() { return Result.Err(m.failures.first()!) }
     if m.out.is_empty() { return Result.Err("the program is empty") }
@@ -428,6 +431,7 @@ fn val_text(m: Machine, v: Val) -> string {
         .S(s) -> s,
         .A(id) -> "[${joined([val_text(m, e) for e in m.arrays[id]], ", ")}]",
         .C(_) -> "<cell>",
+        .M(_) -> "<map>",
         .N -> "null",
     }
 }
@@ -459,6 +463,11 @@ fn rt_dispatch(m: Machine, callee: string, vals: List<Val>) -> Val {
         "avra_array_push" or "avra_array_push_owned" -> array_push_val(m, vals),
         "avra_cell_release" -> Val.I(0),
         "avra_cell_unique" -> cell_unique_val(m, vals),
+        "avra_map_new" -> map_new_val(m),
+        "avra_map_len" -> map_len_val(m, vals),
+        "avra_map_has" -> map_has_val(m, vals),
+        "avra_map_get" or "avra_map_get_owned" -> map_get_val(m, vals),
+        "avra_map_set" or "avra_map_set_owned" -> map_set_val(m, vals),
         "avra_slot_unique" -> slot_unique_val(m, vals),
         "avra_slot_set" or "avra_slot_set_owned" -> slot_set_val(m, vals),
         "avra_array_get" or "avra_array_get_owned" -> array_get_val(m, vals),
@@ -491,8 +500,72 @@ fn cloned_val(m: Machine, v: Val) -> Val {
             arrs.push([x for x in m.arrays[id]])
             Val.A(arrs.length - 1)
         }
-        _ -> v,
+        .M(id) -> {
+            mut ms = m.maps
+            ms.push(MapVal { keys: [k for k in m.maps[id].keys], vals: [x for x in m.maps[id].vals] })
+            Val.M(ms.length - 1)
+        }
+        .I(_) or .B(_) or .S(_) or .C(_) or .N -> v,
     }
+}
+
+/// A map's keys and values in written order — the spec's map,
+/// found by a scan.
+type MapVal = { keys: List<string>, vals: List<Val> }
+
+fn map_new_val(m: Machine) -> Val {
+    mut ms = m.maps
+    ms.push(MapVal { keys: [], vals: [] })
+    Val.M(ms.length - 1)
+}
+
+fn map_id(v: Val) -> int? {
+    match v {
+        .M(id) -> id,
+        _ -> null,
+    }
+}
+
+fn map_slot(m: Machine, id: int, key: string) -> int {
+    m.maps[id].keys.index_of(key)
+}
+
+fn map_len_val(m: Machine, vals: List<Val>) -> Val {
+    let id: int? = map_id(vals[0])
+    if id == null { return defect_val(m, "a length of a non-map") }
+    Val.I(m.maps[id!].keys.length)
+}
+
+fn map_has_val(m: Machine, vals: List<Val>) -> Val {
+    let id: int? = map_id(vals[0])
+    if id == null { return defect_val(m, "a lookup in a non-map") }
+    Val.B(map_slot(m, id!, text_val(m, vals[1])) >= 0)
+}
+
+fn map_get_val(m: Machine, vals: List<Val>) -> Val {
+    let id: int? = map_id(vals[0])
+    if id == null { return defect_val(m, "a read from a non-map") }
+    let s = map_slot(m, id!, text_val(m, vals[1]))
+    if s < 0 { return Val.N }
+    m.maps[id!].vals[s]
+}
+
+fn map_set_val(m: Machine, vals: List<Val>) -> Val {
+    let id: int? = map_id(vals[0])
+    if id == null { return defect_val(m, "a write into a non-map") }
+    let key = text_val(m, vals[1])
+    let s = map_slot(m, id!, key)
+    let entry = m.maps[id!]
+    if s >= 0 {
+        mut vs = entry.vals
+        vs.set(s, vals[2])
+    } else {
+        mut ks = entry.keys
+        ks.push(key)
+        mut vs = entry.vals
+        vs.push(vals[2])
+    }
+    Val.I(0)
 }
 
 fn cell_unique_val(m: Machine, vals: List<Val>) -> Val {

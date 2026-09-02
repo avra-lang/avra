@@ -3183,6 +3183,83 @@ form works), mutating methods (`self` is a parameter — the
 compiler's own vocabulary structs need `mut self`; spec silent;
 needs ratification).
 
+M2 LANDED 2026-09-01: maps — `Map<string, V>` (every one of the
+compiler's 21 declarations is string-keyed; other keys recorded),
+`{ "k": v }` literals, `{}` adopted by any map exactly as `[]` is
+by a list (Type.EmptyMap, the identity lift), `get` answering
+`V?` through the nullable protocol's own adoption, `set` as the
+place law on a method (Void), `length`. The runtime keeps two
+arrays in written order plus an open-addressing index; kinds
+(array | map) decide reclaim and the copy-on-write clone; the
+interpreter's map is a scan. Map values obey the slot law with
+the shared promise. TRAPS recorded: string literals inside `${}`
+holes and negative literals do not lex/parse yet.
+
+rt29 51/51 (31 agreeing, 20 refusing at exact counts). TRIGGERS
+recorded by it: (1) a MALFORMED LITERAL speaks twice — the
+literal's `@expect` and then the statement floor's recovery
+(`[1 2]` does it too; pre-existing) — the engine wants an
+@expect'd failure to sync the floor without a second voice;
+(2) the pronoun binds to the NEAREST method call, so
+`xs.map(m.get(it) ?? 0)` starves at `get` and the outer walk
+refuses too — two true voices; the starvation hint now names
+the outer-lambda spelling. Considered: binding to the OUTERMOST
+call instead would break the nested-scope law both engines pin.
+
+MAP KEYS, the decision (2026-09-01): STRING KEYS ONLY in M2 —
+the census, not a wall: every one of the compiler's 21 map
+declarations is `Map<string, …>`, so P17 built exactly that and
+`Map<int, …>` refuses with a recorded voice. The ladder for
+keys: (K1) INT KEYS — cheaper than strings (hash the word,
+compare by identity, nothing to retain): a key KIND chosen at
+`avra_map_new` plus `string | int` in the typing rule, ~20
+lines, lands the day a program wants it; (K2) STRUCT and ENUM
+keys wait on STRUCTURAL EQUALITY AND HASHING over declarations
+(spec 11.1's first rationale; `==` "compares scalars for now")
+— a derive-style rung, and keys ride it for free; (K3) generic
+`Map<K, V>` in a generic fn already types — `K` must unify to
+`string` today.
+
+THE LEAK, NAMED (asked 2026-09-01: "why is map code in
+interp.av and not under the maps feature?"). What belongs to a
+feature — grammar, builders, typing, lowering — IS under
+features/maps. Three things are elsewhere, and they are not the
+same kind of thing:
+  (1) THE INTERPRETER'S HOSTS (`map_get_val` …) are the eval twin
+      of runtime/avra_runtime.c — the executable spec of the
+      runtime, one organ mirroring one C file, exactly as the
+      backend is one organ. They are not feature semantics. But
+      `rt_dispatch` reaches them by STRING MATCH on the callee —
+      the accepted residual above — and every rung adds arms.
+  (2) THE MEMORY PASS's owned-twin chain (`avra_array_push` ->
+      `_owned`, `avra_slot_set`, `avra_map_set`, the two gets):
+      five names matched by hand in owned_form. A registry
+      COLUMN (`owned_twin: string?` on RtSig) kills the chain
+      with no fn-typed field — nothing blocks it.
+  (3) THE METHOD FORKS: walks.av, keyed.av, places.av's grow_reg
+      and checks.av's list_method_call/grow_call live in the
+      features ROOT because impls' dispatch cannot import a
+      feature, and method_answer/method_call_reg are a growing
+      IF-CHAIN of forks (keyed, grown, walked, …). That is the
+      same disease the vocabulary seam rule diagnoses: N builtin
+      methods on M receivers is DATA. BuilderRow proves fn-typed
+      table rows work when the fn is NAMED and its payloads are
+      pointers (TypeId, Reg are single-field structs — they
+      survive); the 3-argument indirect-call ceiling is met by
+      ONE `MethodCall { e, subject, args }` struct.
+DESIGNED — R1, THE REGISTRY COMPLETION (one slice, before or
+after M3 at the user's word; M3's components & tables are the
+same shape in the language): (a) `MethodRow { receiver, name,
+check, lower }` tables in each feature's manifest (`methods =`),
+assembled like keywords and builders; impls queries the table by
+receiver shape and name; the fork chain and the root files fold
+into features/lists/methods.av and features/maps/methods.av.
+(b) RtSig gains `owned_twin`; owned_form becomes a lookup.
+(c) rt_dispatch matches a `RtHost` ENUM column instead of
+strings — adding a runtime fn is a row plus a variant plus an
+exhaustive interp arm (the guarantee), never a silent typo. The
+hosts themselves stay in interp.av: they are the runtime's twin.
+
 SLICES: M1 places (assignment through paths, `push`, COW, Void)
 — M2 maps (`Map<K, V>`, insertion-ordered BY DESIGN so "iterate an
 ordered source" needs no rule; `get` answers `V?`; `m[k] = v` is

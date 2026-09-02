@@ -32,7 +32,7 @@ fn is_managed(types: TypeRegistry, ty: TypeId) -> bool {
         // EmptyList is the one identity widen whose pointer is a
         // REAL box: the callee's List param releases it, so the
         // caller must own it too, or the seam frees a live name.
-        .List(_) or .Struct(_, _) or .Enum(_, _) or .EmptyList or
+        .List(_) or .Struct(_, _) or .Enum(_, _) or .EmptyList or .Map(_, _) or .EmptyMap or
         .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) -> true,
         .Opt(inner) -> is_managed(types, inner),
         .Int or .Bool or .TypeName(_, _) or .Var(_, _, _) or .Null or
@@ -268,10 +268,14 @@ fn owned_form(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Ins {
                 Ins.CallRtVoid("avra_array_push_owned", args)
             } else if callee == "avra_slot_set" && pushes_managed(types, reg_types, args) {
                 Ins.CallRtVoid("avra_slot_set_owned", args)
+            } else if callee == "avra_map_set" && pushes_managed(types, reg_types, args) {
+                Ins.CallRtVoid("avra_map_set_owned", args)
             } else { i },
         .CallRt(dst, callee, args) ->
             if callee == "avra_array_get" && is_managed(types, reg_types[dst.index]) {
                 Ins.CallRt(dst, "avra_array_get_owned", args)
+            } else if callee == "avra_map_get" && is_managed(types, reg_types[dst.index]) {
+                Ins.CallRt(dst, "avra_map_get_owned", args)
             } else { i },
         _ -> i,
     }

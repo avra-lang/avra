@@ -39,6 +39,10 @@ export enum Type {
     // ── The built-in boxes — STRUCTURAL: interned by their parts. ──
     /// A homogeneous aggregate.
     List(elem: TypeId)
+    /// A string-keyed, insertion-ordered map — order is BY DESIGN,
+    /// so iterating one never needs a rule. Other key types are
+    /// recorded.
+    Map(key: TypeId, value: TypeId)
     /// `Result<T, E>` — an answer OR a failure. A BUILT-IN enum
     /// (variants `Ok`/`Err`), interned by its sides, no generics
     /// involved. A tagged slot array at runtime, exactly an enum's
@@ -63,6 +67,9 @@ export enum Type {
     /// else, adopted at the one widening edge. The value needs no
     /// lift: an empty array IS a valid list of anything.
     EmptyList
+    /// The empty map literal's own type — `{}` is to `Map` what `[]`
+    /// is to `List`: adopted at the one widening edge, no lift.
+    EmptyMap
 
     // ── Compile-only: no runtime value ever wears these. ──
     /// A type used as a VALUE (`Color` in `Color.red`): every
@@ -99,7 +106,8 @@ export fn new_type_registry() -> TypeRegistry {
 export fn ptr_shape(t: Type) -> bool {
     match t {
         .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
-        .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Null or .EmptyList -> true,
+        .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Null or .EmptyList or
+        .Map(_, _) or .EmptyMap -> true,
         .Int or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
     }
 }
@@ -120,6 +128,8 @@ impl TypeRegistry {
             .Opt(inner) -> "8:${inner.index}",
             .Null -> "9",
             .EmptyList -> "13",
+            .Map(k, v) -> "17:${k.index}.${v.index}",
+            .EmptyMap -> "18",
             .Res(ok, err) -> "10:${ok.index}.${err.index}",
             .Var(decl, ordinal, _) -> "11:${decl.index}.${ordinal}",
             .App(decl, _, args) -> "12:${decl.index}.${joined(["${a.index}" for a in args], ".")}",
@@ -192,6 +202,7 @@ impl TypeRegistry {
             .Var(decl, j, _) ->
                 if decl.index == target.index { args[j] } else { ty },
             .List(elem) -> self.intern(Type.List(self.substituted(elem, target, args))),
+            .Map(k, v) -> self.intern(Type.Map(self.substituted(k, target, args), self.substituted(v, target, args))),
             .Opt(inner) -> self.intern(Type.Opt(self.substituted(inner, target, args))),
             .Res(ok, err) -> self.intern(Type.Res(self.substituted(ok, target, args),
                                                   self.substituted(err, target, args))),
@@ -201,7 +212,7 @@ impl TypeRegistry {
                 self.intern(Type.Fn([self.substituted(a, target, args) for a in ps],
                                     self.substituted(ret, target, args))),
             .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-            .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void -> ty,
+            .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> ty,
         }
     }
 
@@ -225,6 +236,8 @@ impl TypeRegistry {
             .App(_, name, args) -> "${name}<${joined([self.name_of(a) for a in args], ", ")}>",
             .Null -> "null",
             .EmptyList -> "[]",
+            .Map(k, v) -> "Map<${self.name_of(k)}, ${self.name_of(v)}>",
+            .EmptyMap -> "{}",
             .Error -> "<error>",
         }
     }

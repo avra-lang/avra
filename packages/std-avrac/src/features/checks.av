@@ -78,14 +78,21 @@ fn res_accepts(cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
 /// other compound lift (null -> T? -> Ok) stays explicit — its
 /// value would need staged minting (recorded).
 fn empty_into(cx: TypeCx, got: TypeId, ok: TypeId) -> bool {
-    cx.types.shape_of(got) is .EmptyList && cx.types.shape_of(ok) is .List
+    empty_adopted(cx, got, ok)
+}
+
+/// `[]` is adopted by any list, `{}` by any map — the two identity
+/// widens.
+export fn empty_adopted(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
+    (cx.types.shape_of(got) is .EmptyList && cx.types.shape_of(want) is .List) ||
+        (cx.types.shape_of(got) is .EmptyMap && cx.types.shape_of(want) is .Map)
 }
 
 /// The non-nullable lifts share one door: the auto-Ok wrap, and the
 /// empty list adopted by whatever list claims it (`[]` is to List
 /// what `null` is to Opt — and the VALUE needs no lift at all).
 fn other_accepts(cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
-    if cx.types.shape_of(got) is .EmptyList && cx.types.shape_of(want) is .List {
+    if empty_adopted(cx, got, want) {
         cx.widen(e, want)
         return true
     }
@@ -207,9 +214,9 @@ fn field_member(cx: TypeCx, e: ExprId, shown: string, sig: StructSig, name: stri
 /// `length` measures the shapes with an extent.
 fn length_member(cx: TypeCx, e: ExprId, shown: string, ty: TypeId) -> TypeId {
     let sh = cx.types.shape_of(ty)
-    if sh is .List || sh is .Str { return cx.types.intern(Type.Int) }
+    if sh is .List || sh is .Str || sh is .Map { return cx.types.intern(Type.Int) }
     spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(e), "`length` lives on `List` and `string` values, found `${shown}`"),
+        error_at("type.mismatch", cx.loc_of(e), "`length` lives on `List`, `Map` and `string` values, found `${shown}`"),
         this_is(shown)))
 }
 
@@ -305,13 +312,14 @@ export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: StmtId, bound: Li
     match cx.types.shape_of(want) {
         .Var(decl, j, _) -> var_binds(cx, decl, j, got, target, bound),
         .List(w) -> elem_unifies(cx, w, got, target, bound),
+        .Map(_, wv) -> value_unifies(cx, wv, got, target, bound),
         .Opt(w) -> carried_unifies(cx, w, got, target, bound),
         .Res(wo, we) -> sides_unify(cx, wo, we, got, target, bound),
         .App(wd, _, wa) -> app_unifies(cx, wd, wa, got, target, bound),
         .Fn(wp, wr) -> fn_unifies(cx, wp, wr, got, target, bound),
         // LICENSED I9: type identity — interned ids ARE the agreement
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void -> want.index == got.index,
+        .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> want.index == got.index,
     }
 }
 
@@ -340,7 +348,8 @@ fn var_binds(cx: TypeCx, decl: StmtId, j: int, got: TypeId, target: StmtId, boun
     // absence never pins a Var — `null` and `[]` have no one type;
     // the pin (or another argument) must land first
     if cx.types.shape_of(got) is .Null { return false }
-    if cx.types.shape_of(got) is .EmptyList { return false }
+    let g = cx.types.shape_of(got)
+    if g is .EmptyList || g is .EmptyMap { return false }
     let seen: TypeId? = bound[j]
     if seen == null {
         // LICENSED I7: rebind-alias — set() needs a mut binding
@@ -355,6 +364,13 @@ fn var_binds(cx: TypeCx, decl: StmtId, j: int, got: TypeId, target: StmtId, boun
 fn elem_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
     match cx.types.shape_of(got) {
         .List(g) -> unify(cx, w, g, target, bound),
+        _ -> false,
+    }
+}
+
+fn value_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+    match cx.types.shape_of(got) {
+        .Map(_, g) -> unify(cx, w, g, target, bound),
         _ -> false,
     }
 }
@@ -380,8 +396,9 @@ fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: StmtId, 
 export fn slot_worthy(sh: Type) -> bool {
     match sh {
         .Int or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
-        .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) or .Fn(_, _) -> true,
-        .Opt(_) or .Null or .EmptyList or .Error or .Void -> false,
+        .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) or .Fn(_, _) or
+        .Map(_, _) -> true,
+        .Opt(_) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> false,
     }
 }
 
@@ -394,6 +411,8 @@ export fn unlawful_side(cx: TypeCx, ty: TypeId) -> TypeId? {
         .Res(ok, err) -> res_side_unlawful(cx, ok, err),
         .List(elem) -> unlawful_side(cx, elem),
         .Opt(inner) -> unlawful_side(cx, inner),
+        .Map(_, v) -> unlawful_side(cx, v),
+        .EmptyMap -> null,
         .App(_, _, args) -> args.find(unlawful_side(cx, it) != null),
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
         .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Null or .EmptyList or .Error or
@@ -416,6 +435,8 @@ export fn fully_bound(cx: TypeCx, ty: TypeId, target: StmtId, bound: List<TypeId
         .Var(decl, j, _) ->
             if decl.index == target.index { bound[j] != null } else { true },
         .List(elem) -> fully_bound(cx, elem, target, bound),
+        .Map(k, v) -> fully_bound(cx, k, target, bound) && fully_bound(cx, v, target, bound),
+        .EmptyMap -> true,
         .Opt(inner) -> fully_bound(cx, inner, target, bound),
         .Res(ok, err) -> fully_bound(cx, ok, target, bound) && fully_bound(cx, err, target, bound),
         .App(_, _, args) -> args.all(fully_bound(cx, it, target, bound)),
@@ -597,7 +618,10 @@ export fn grow_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: 
         _ -> null,
     }
     if elem == null { return null }
-    if args.length != 1 { return one_value_wanted(cx, e, name, args.length) }
+    if args.length != 1 {
+        wrong_arity(cx, e, name, 1, args.length)
+        return cx.error_type
+    }
     let root: ExprId? = cx.store.place_root(subject)
     if root == null { return not_a_place_call(cx, e, name) }
     if !cx.is_mut(root!) { return not_mut_call(cx, e, name, cx.store.ident_name(root!) ?? "this name") }
@@ -774,12 +798,6 @@ fn measured_not_stored(cx: TypeCx, e: ExprId, name: string, subject: string) -> 
         "not a slot")
         with { help: "a place is a field a struct declares, or an index into a list" })
     false
-}
-
-fn one_value_wanted(cx: TypeCx, e: ExprId, name: string, found: int) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(e), "`${name}` takes one value, found ${found} arguments"),
-        "this call"))
 }
 
 fn not_a_place_call(cx: TypeCx, e: ExprId, name: string) -> TypeId {

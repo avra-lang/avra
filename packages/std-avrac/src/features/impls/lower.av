@@ -3,7 +3,7 @@
 //! derives from the receiver's type both here and at the fn loop,
 //! so no fact table carries it.
 use core.{ExprId, StmtId, Reg, Ins, Type, StructSig}
-use features.{LowerCx, method_symbol, hole_defect, lower_defect, EnumSig, tagged_value, called_through, slot_read, walk_reg, grow_reg}
+use features.{LowerCx, method_symbol, hole_defect, lower_defect, EnumSig, tagged_value, called_through, slot_read, walk_reg, grow_reg, keyed_reg}
 
 fn method_call_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -14,6 +14,8 @@ fn method_call_reg(cx: LowerCx, e: ExprId) -> Reg {
             if dispatched != null { return dispatched! }
             let fielded: Reg? = fn_field_dispatch(cx, e, subject, name, args)
             if fielded != null { return fielded! }
+            let keyed: Reg? = keyed_reg(cx, e, subject, name, args)
+            if keyed != null { return keyed! }
             let grown: Reg? = grow_reg(cx, e, subject, name, args)
             if grown != null { return grown! }
             let walked: Reg? = walk_reg(cx, e, subject, name, args)
@@ -74,7 +76,7 @@ fn lowered_receiver(cx: LowerCx, subject: ExprId) -> string? {
         .Enum(_, n) -> n,
         .Int or .Str or .Bool or .List(_) or .Res(_, _) or .App(_, _, _) or
         .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or
-        .EmptyList or .Error or .Void -> null,
+        .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
     }
 }
 
