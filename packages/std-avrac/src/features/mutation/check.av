@@ -1,9 +1,9 @@
-//! Mutation's typing laws: a mut binding holds UNMANAGED values —
-//! scalars and their pairs — and may declare its type like `let`;
-//! an assignment must be ACCEPTED by the binding's type, widening
-//! recorded like any other slot's.
+//! Mutation's typing laws: a mut binding may declare its type like
+//! `let` (the want the channel plants); an assignment lands on a
+//! PLACE whose type — read off the target — is the slot's law, the
+//! value ACCEPTED by it with widening recorded like every slot's.
 use core.{StmtId, ExprId, TypeId, TypeRef}
-use features.{StmtTypeCx, accepts, declared_binding, this_is, refuses_type_value}
+use features.{StmtTypeCx, accepts, declared_binding, this_is, refuses_type_value, refuses_void_value, place_lawful}
 use diagnostics.{error_at, pointed}
 
 export fn check_mut(cx: StmtTypeCx, s: StmtId) {
@@ -18,6 +18,7 @@ export fn check_mut(cx: StmtTypeCx, s: StmtId) {
     if declared != null { cx.expr.plant_want(v, declared!) }
     cx.walk(v)
     if refuses_type_value(cx.expr, v) { return }
+    if refuses_void_value(cx.expr, v) { return }
     if declared != null {
         declared_binding(cx.expr, v, cx.store.let_name(s) ?? "this binding", declared!)
     }
@@ -26,22 +27,42 @@ export fn check_mut(cx: StmtTypeCx, s: StmtId) {
     // old value on overwrite, and settles with its scope.
 }
 
+/// THE PLACE LAW's typing half: the target types as a READ — its
+/// type IS the slot's law — the want is planted so the value hears
+/// its seat, and acceptance WIDENS like every slot's.
 export fn check_assign(cx: StmtTypeCx, s: StmtId) {
     let held: ExprId? = cx.store.stmt_value(s)
-    if held == null { return }
+    let target: ExprId? = assign_place(cx, s)
+    if held == null || target == null { return }
     let v = held!
-    cx.walk(v)
-    let found: StmtId? = cx.assign_target(s)
-    if found == null { return }
-    let target = found!
-    // The binding's type is the slot's law — declared when written,
-    // inferred otherwise — and acceptance WIDENS like every slot.
-    let want = cx.binding_type(target)
-    if !accepts(cx.expr, v, want) {
-        let gn = cx.expr.types.name_of(cx.expr.type_at(v))
-        cx.expr.emit(pointed(
-            error_at("type.mismatch", cx.loc_of(s),
-                "assignment changes `${cx.store.let_name(target) ?? "this binding"}`: `${cx.expr.types.name_of(want)}` to `${gn}`"),
-            this_is(gn)))
+    let t = target!
+    cx.walk(t)
+    let want = cx.expr.type_at(t)
+    if cx.expr.types.shape_of(want) is .Error || !place_lawful(cx.expr, t) {
+        cx.walk(v)
+        return
     }
+    cx.expr.plant_want(v, want)
+    cx.walk(v)
+    if !accepts(cx.expr, v, want) { slot_refused(cx, s, t, want, v) }
+}
+
+fn assign_place(cx: StmtTypeCx, s: StmtId) -> ExprId? {
+    match cx.store.stmt(s) {
+        .Assign(t, _) -> t,
+        _ -> null,
+    }
+}
+
+// ── The voices ──
+
+fn slot_refused(cx: StmtTypeCx, s: StmtId, t: ExprId, want: TypeId, v: ExprId) {
+    let gn = cx.expr.types.name_of(cx.expr.type_at(v))
+    let root: ExprId? = cx.store.place_root(t)
+    let named = if root == null { "this place" } else { "`${cx.store.ident_name(root!) ?? "this place"}`" }
+    let spot = if cx.store.ident_name(t) == null { "a slot of ${named}" } else { named }
+    cx.expr.emit(pointed(
+        error_at("type.mismatch", cx.loc_of(s),
+            "assignment changes ${spot}: `${cx.expr.types.name_of(want)}` to `${gn}`"),
+        this_is(gn)))
 }

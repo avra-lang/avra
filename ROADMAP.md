@@ -125,9 +125,13 @@ text-as-projection after self-host, the service store at Era V.
         and the two use-after-frees the differential caught. O4
         remains recorded: nullable slots in aggregates, errdefer,
         the Result register TRIPLE (P4's gate).
-    12. ▲ traits & dyn — dispatch, cross-module impls
-    13. ▲ closures & fn values — capture meets the memory ABI
-    14. maps, components & tables — the self-describing surface
+    12. [x] ▲ traits & dyn — T1-T3 LANDED 2026-09-01 (dispatch,
+        cross-module impls, the contract carried through dyn)
+    13. [x] ▲ closures & fn values — L1-L3 LANDED 2026-09-01
+        (lambdas, the walk vocabulary, the expected-type channel,
+        the `it` pronoun); mut-ref captures wait on rung 14
+    14. ▲ interior mutation, maps, components & tables — the
+        self-describing surface (design below)
     15. ▲ modules & multi-file — packages, the graph, exports
   Plus the floor under it all: extern/ptr FFI (the backend already
   dogfoods it) and the core stdlib + the spec/given/then test
@@ -3111,6 +3115,82 @@ THE SLICES:
        clauses, default methods, associated types, @derive (Error/
        failure_tests ride it), operator traits (the Var
        compare-help names them).
+
+## Interior mutation & maps — rung 14 (designed 2026-09-01)
+
+Spec: Axis 11.1 (`mut` opts in), 11.5 (`let` is DEEPLY immutable;
+a `mut` binding permits mutation at any depth — `u.address.city =
+x`, `u.posts.push(p)`), 11.3 (interior mutability only through
+later `Cell<T>` wrappers), 4.2 (void fns omit `-> T`; `Void` is
+the spec's word). The memory doctrine's standing constraint
+binds every line: aliasing NEVER observable. The census that
+ordered the slices (the compiler's own non-test source): `.push`
+207 sites, `Map<`/`.get`/`.set` 21/28/47, `component`/`table<`
+24/36 (every feature manifest), `for (i, x) in xs.enumerate()`
+64. NOTE: the spec's own `gather_points` writes `let xs = []`
+then `xs.push(p)`, which 11.5 forbids — 11.5 is the decision.
+
+THE PLACE LAW (M1): a mutation lands on a PLACE — a path from a
+`mut` binding through fields and indexes (`NAME ( .f | [i] )*`).
+The target parses as an ordinary expression (the postfix chain
+already builds Prop/Index in order; the grammar engine's per-slot
+captures cannot); core's `place_step` projects it (Root | Field |
+At — the one projection for the place CATEGORY, like elems_of for
+values) and `place_root` names the binding. Resolve: the root is
+a `mut` binding or the refusal names the remedy (`mut x`, or
+`with`). Typing: the target types as a READ — its type IS the
+slot's law, the value is accepted by it (widening recorded), and
+the want is planted so a lambda assigned into a fn-typed field
+hears its seat. `xs.push(v)` is the same law on a method: the
+receiver is a place, the argument is accepted by the element,
+and it answers VOID.
+
+THE MECHANISM: copy-on-write along the path, top-down. A write
+opens the root's cell (`avra_cell_unique`: the box is returned
+as-is when its count is one — the cell's own reference — and
+CLONED into the cell otherwise), then each field/index step
+(`avra_slot_unique`: same, one level down, the clone stored back
+into the parent slot), and the last step writes (`avra_slot_set`,
+rewritten to `_owned` by the memory pass's type knowledge, like
+push). The clone is shallow and retains the children the box's
+own owned-map names — the runtime knows exactly what release
+would release, so the compiler carries nothing. THE INTERPRETER
+ALWAYS COPIES: it has no counts, so `unique` clones every time —
+the executable spec of value semantics; native copies only when
+shared, and the differential proves they agree. Uniqueness
+proofs (V2) later cancel the loads that inflate a count (`xs.push
+(xs[0])` clones today — correct, one copy too many).
+
+VOID enters the type vocabulary (`Type.Void`, spec 4.2): `push`
+answers it; a `let` of a void value refuses ("answers nothing —
+there is nothing to bind"); slots refuse it. Void FNS (`fn log(m:
+string) { … }`) ride a follow-up slice — the compiler's own trait
+methods (`resolve`, `lower_stmt`) answer nothing, so self-host
+needs them.
+
+M1 LANDED 2026-09-01: places — assignment through any path,
+`push`, copy-on-write on both engines, `Type.Void`. rt28 55/55
+(the red team caught a measured property (`xs.length = 3`)
+reaching lowering as a place — the structural half of the law
+now refuses it in typing — and a type-name root). The
+assignment parses at the statement FLOOR as an optional tail
+(`expression ( "=" expression )? BREAK`): one parse, order kept —
+an expression-headed branch had parsed every expression statement
+twice and leaked the first attempt's nodes into the arena.
+Recorded: `+=` (refuses as "expected BREAK" today — wants a
+hint), if-else as a STATEMENT with statement arms (the elseless
+form works), mutating methods (`self` is a parameter — the
+compiler's own vocabulary structs need `mut self`; spec silent;
+needs ratification).
+
+SLICES: M1 places (assignment through paths, `push`, COW, Void)
+— M2 maps (`Map<K, V>`, insertion-ordered BY DESIGN so "iterate an
+ordered source" needs no rule; `get` answers `V?`; `m[k] = v` is
+the place law again) — M3 components & tables (the manifests'
+shape) — M4 index pairing (`for i, x in xs`). Recorded: `+=`
+and friends (sugar over the place law), mut-ref captures (spec
+11.4's `counter += 1` closure — refused by the V1 capture law
+until the systems level), `Cell<T>`.
 
 ## Closures & fn values — rung 13 (designed 2026-09-01)
 

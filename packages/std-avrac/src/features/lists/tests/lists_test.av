@@ -136,4 +136,27 @@ spec "features/lists" {
                          "`[].map` cannot know its elements")
         }
     }
+    given "growth — `push` mutates a place" {
+        then "a mut list grows in place" {
+            shown("mut xs = [1]\nxs.push(2)\nxs.push(3)\n\"" + "$" + "{xs.length}" + " " + "$" + "{xs[2]}" + "\"") == "3 3"
+        }
+        then "an alias taken before the push keeps its length" {
+            shown("mut xs = [1]\nlet ys = xs\nxs.push(2)\n\"" + "$" + "{xs.length}" + " " + "$" + "{ys.length}" + "\"") == "2 1"
+        }
+        then "a `let` list refuses — push mutates it" {
+            refused_with("let xs = [1]\nxs.push(2)\n2", "`xs` is not `mut` — `push` mutates it")
+        }
+        then "a literal is a value, not a place" {
+            refused_with("[1].push(2)\n2", "`push` mutates a place, and this list is a value")
+        }
+        then "the element seat judges the argument" {
+            refused_with("mut xs = [1]\nxs.push(\"s\")\n2", "argument 1 of `push` wants `int`, found `string`")
+        }
+        then "push answers nothing — it cannot be bound" {
+            refused_with("mut xs = [1]\nlet n = xs.push(2)\n2", "answers nothing")
+        }
+        then "a nested list grows through its path" {
+            shown("mut g = [[1], [2]]\ng[1].push(3)\n\"" + "$" + "{g[1].length}" + " " + "$" + "{g[0].length}" + "\"") == "2 1"
+        }
+    }
 }

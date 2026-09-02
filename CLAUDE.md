@@ -193,6 +193,14 @@ registry is the idiom engine's spec, written by dogfooding.
   named `if` and reported "expected BREAK" — `if`, `match` and
   `while` all lost their parenthesised condition, the habit every
   C-shaped language teaches. `fns` now merges after the anchors.
+- Grammar authoring: an EXPRESSION-HEADED statement branch before
+  the floor (`t:expression "=" …`) parses every expression
+  statement TWICE and leaks the failed attempt's nodes into the
+  arena (node counts double, orphan exprs go untyped). An optional
+  TAIL belongs AT the floor — `v:expression ( "=" a:expression )?
+  BREAK` — and the floor's builder picks the node (assignment
+  landed so; the Assign node is built by expr_stmt, given meaning
+  by mutation).
 - Grammar authoring: expr_stmt is the stmt rule's FLOOR — its
   recovering expression-line branch merges LAST in language_features,
   and every statement feature lands BEFORE it (a keyword line like
@@ -296,7 +304,7 @@ against these before writing; probe in scratch when unsure.
 - Function types are spelled `fn(int) -> bool`, not `(int) -> bool`.
 - Multi-line fn signatures parse fine (probed) — stacked params with
   a trailing comma, or aligned continuation lines. Wrap wide ones.
-- `ref`, `none`, `shape`, `dyn`, and `table` are reserved words
+- `ref`, `none`, `shape`, `dyn`, `table`, and `where` are reserved words
   (`dyn` refuses as a FIELD name: "expected field name" at the decl) — including
   as variable and method names; `then` refuses as a struct/enum
   field name, and `given` and `spec` refuse as LOCALS (the spec

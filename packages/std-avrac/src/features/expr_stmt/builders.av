@@ -1,8 +1,14 @@
-//! Parse-time lowering: a captured expression -> the ExprStmt.
+//! Parse-time lowering: a captured expression -> the ExprStmt — or,
+//! with the `=` tail, the Assign the mutation feature gives meaning
+//! to. One parse serves both: the target is an ordinary expression
+//! whose place-ness resolve judges.
 use core.{Stmt}
 use features.{LangNode, Builder}
 
 fn build_expr_stmt(b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
-    b.make_stmt(Stmt.ExprStmt(v))
+    let assigned = b.exprs(1)?
+    let a = assigned.first()
+    if a == null { return b.make_stmt(Stmt.ExprStmt(v)) }
+    b.make_stmt(Stmt.Assign(v, a!))
 }

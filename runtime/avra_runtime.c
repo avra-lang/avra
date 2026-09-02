@@ -288,6 +288,71 @@ void avra_cell_release(void* slot) {
     avra_rc_release(*(void**)slot);
 }
 
+// ── Places: copy-on-write ───────────────────────────────────────
+
+// A shallow clone that takes its own reference to every owned
+// slot — exactly what reclaim would release. Registered, rc 1.
+static void* array_clone(AvraArray* a) {
+    AvraArray* c = (AvraArray*)avra_array_new();
+    for (int64_t i = 0; i < a->len; i++) {
+        avra_array_push(c, a->data[i]);
+        if (a->owned[i]) {
+            c->owned[i] = 1;
+            avra_rc_retain((void*)(uintptr_t)a->data[i]);
+        }
+    }
+    return c;
+}
+
+// Shared means a count above one — the holder's own reference is
+// the one. Unregistered pointers are never boxes a place opens.
+static int is_shared(void* p) {
+    OwnEntry* e = owned(p);
+    return e != NULL && e->rc > 1;
+}
+
+// Opens a mut cell's box for writing: itself when nothing else
+// holds it, else a clone stored into the cell (the old reference
+// released). The answer is BORROWED from the cell.
+void* avra_cell_unique(void* slot) {
+    void* p = *(void**)slot;
+    if (!is_shared(p)) return p;
+    void* c = array_clone((AvraArray*)p);
+    *(void**)slot = c;
+    avra_rc_release(p);
+    return c;
+}
+
+// The same one level down: the box in a slot, made unique in place.
+void* avra_slot_unique(void* arr, int64_t i) {
+    void* p = (void*)(uintptr_t)avra_array_get(arr, i);
+    if (!is_shared(p)) return p;
+    AvraArray* a = (AvraArray*)arr;
+    void* c = array_clone((AvraArray*)p);
+    a->data[i] = (int64_t)(uintptr_t)c;
+    a->owned[i] = 1;
+    avra_rc_release(p);
+    return c;
+}
+
+// A write into a slot: the old owned content is released.
+void avra_slot_set(void* arr, int64_t i, int64_t v) {
+    AvraArray* a = (AvraArray*)arr;
+    avra_array_get(arr, i);
+    if (a->owned[i]) avra_rc_release((void*)(uintptr_t)a->data[i]);
+    a->data[i] = v;
+    a->owned[i] = 0;
+}
+
+// RETAIN-AT-PACK for a slot write: the incoming value is retained
+// FIRST (a self-store must not free what it keeps), then the old
+// content goes.
+void avra_slot_set_owned(void* arr, int64_t i, void* v) {
+    avra_rc_retain(v);
+    avra_slot_set(arr, i, (int64_t)(uintptr_t)v);
+    ((AvraArray*)arr)->owned[i] = 1;
+}
+
 // ── Text building ───────────────────────────────────────────────
 
 // Concatenate string slots with `sep` between — what interpolation

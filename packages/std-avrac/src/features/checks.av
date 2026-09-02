@@ -3,7 +3,7 @@
 //! words. A LAW extracts at its SECOND: a rule copied by hand
 //! disagrees with itself the day the copies drift (`member_type_of`
 //! serves the bare read and the chain for exactly that reason).
-use core.{ExprId, TypeId, Type, ResSides, Arrow, StmtId, TypeRef, filled, LambdaParts}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, StmtId, TypeRef, filled, LambdaParts, PlaceStep, StructSig}
 use diagnostics.{Diag, error_at, pointed}
 
 /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -311,7 +311,7 @@ export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: StmtId, bound: Li
         .Fn(wp, wr) -> fn_unifies(cx, wp, wr, got, target, bound),
         // LICENSED I9: type identity — interned ids ARE the agreement
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error -> want.index == got.index,
+        .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void -> want.index == got.index,
     }
 }
 
@@ -381,7 +381,7 @@ export fn slot_worthy(sh: Type) -> bool {
     match sh {
         .Int or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
         .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) or .Fn(_, _) -> true,
-        .Opt(_) or .Null or .EmptyList or .Error -> false,
+        .Opt(_) or .Null or .EmptyList or .Error or .Void -> false,
     }
 }
 
@@ -396,7 +396,8 @@ export fn unlawful_side(cx: TypeCx, ty: TypeId) -> TypeId? {
         .Opt(inner) -> unlawful_side(cx, inner),
         .App(_, _, args) -> args.find(unlawful_side(cx, it) != null),
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Null or .EmptyList or .Error -> null,
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Null or .EmptyList or .Error or
+        .Void -> null,
     }
 }
 
@@ -420,7 +421,7 @@ export fn fully_bound(cx: TypeCx, ty: TypeId, target: StmtId, bound: List<TypeId
         .App(_, _, args) -> args.all(fully_bound(cx, it, target, bound)),
         .Fn(ps, ret) -> ps.all(fully_bound(cx, it, target, bound)) && fully_bound(cx, ret, target, bound),
         .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error -> true,
+        .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void -> true,
     }
 }
 
@@ -585,6 +586,59 @@ export fn list_method_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string,
     cx.types.intern(Type.Bool)
 }
 
+/// THE GROWTH WORD: `xs.push(v)` mutates a PLACE — the receiver is
+/// rooted in a mut binding, the argument is accepted by the
+/// element, and the answer is nothing. Absent for every other name
+/// and for non-list receivers.
+export fn grow_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
+    if name != "push" { return null }
+    let elem: TypeId? = match cx.shape_at(subject) {
+        .List(t) -> t,
+        _ -> null,
+    }
+    if elem == null { return null }
+    if args.length != 1 { return one_value_wanted(cx, e, name, args.length) }
+    let root: ExprId? = cx.store.place_root(subject)
+    if root == null { return not_a_place_call(cx, e, name) }
+    if !cx.is_mut(root!) { return not_mut_call(cx, e, name, cx.store.ident_name(root!) ?? "this name") }
+    if !accepts(cx, args[0], elem!) { wrong_argument(cx, name, 0, elem!, args[0]) }
+    cx.types.intern(Type.Void)
+}
+
+/// THE PLACE LAW's structural half: every step of a target is a
+/// SLOT — a field a struct declares, an index into a list — rooted
+/// in a value binding. A measured property (`length`) and a type
+/// name refuse here, in their own words; the target's own typing
+/// already refused unknown fields and non-list indexes. True means
+/// lawful.
+export fn place_lawful(cx: TypeCx, e: ExprId) -> bool {
+    let step: PlaceStep? = cx.store.place_step(e)
+    if step == null { return true }
+    match step! {
+        .Root(name) -> if cx.shape_at(e) is .TypeName { type_not_place(cx, e, name) } else { true },
+        .Field(subject, name) -> place_lawful(cx, subject) && field_slot_lawful(cx, e, subject, name),
+        .At(subject, _) -> place_lawful(cx, subject),
+    }
+}
+
+fn field_slot_lawful(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> bool {
+    let sig: StructSig? = cx.fields_of(cx.type_at(subject))
+    if sig != null && sig!.slot_of(name) != null { return true }
+    if cx.shape_at(subject) is .Error { return false }
+    measured_not_stored(cx, e, name, cx.name_at(subject))
+}
+
+/// THE VOID LAW: a value that is nothing cannot be bound. True
+/// means refused.
+export fn refuses_void_value(cx: TypeCx, e: ExprId) -> bool {
+    if !(cx.shape_at(e) is .Void) { return false }
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(e), "this answers nothing — there is nothing to bind"),
+        "answers nothing")
+        with { help: "a mutation is a statement; drop the binding" })
+    true
+}
+
 /// Membership in the vocabulary — walks.av's list is the truth.
 fn walk_name(name: string) -> bool {
     walk_names().contains(name)
@@ -705,6 +759,41 @@ fn one_fn_wanted(cx: TypeCx, e: ExprId, name: string, found: int) -> TypeId {
     spoken(cx, pointed(
         error_at("type.mismatch", cx.loc_of(e), "`${name}` takes one fn, found ${found} arguments"),
         "this call"))
+}
+
+fn type_not_place(cx: TypeCx, e: ExprId, name: string) -> bool {
+    let _ = spoken(cx, pointed(
+        error_at("type.place", cx.loc_of(e), "`${name}` is a type — a mutation lands on a `mut` binding"),
+        "a type"))
+    false
+}
+
+fn measured_not_stored(cx: TypeCx, e: ExprId, name: string, subject: string) -> bool {
+    let _ = spoken(cx, pointed(
+        error_at("type.place", cx.loc_of(e), "`${name}` is measured, not stored — `${subject}` has no such slot"),
+        "not a slot")
+        with { help: "a place is a field a struct declares, or an index into a list" })
+    false
+}
+
+fn one_value_wanted(cx: TypeCx, e: ExprId, name: string, found: int) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(e), "`${name}` takes one value, found ${found} arguments"),
+        "this call"))
+}
+
+fn not_a_place_call(cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.place", cx.loc_of(e), "`${name}` mutates a place, and this list is a value"),
+        "a value")
+        with { help: "bind it first — `mut xs = …` — then `xs.${name}(…)`; or build a new list with `concat`" })
+}
+
+fn not_mut_call(cx: TypeCx, e: ExprId, name: string, root: string) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.place", cx.loc_of(e), "`${root}` is not `mut` — `${name}` mutates it"),
+        "mutated here")
+        with { help: "declare it `mut ${root} = ...` — or build a changed copy" })
 }
 
 fn misseated_walk(cx: TypeCx, name: string, a: ExprId, seats: int) -> TypeId {

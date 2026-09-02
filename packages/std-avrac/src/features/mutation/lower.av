@@ -1,8 +1,8 @@
 //! Mutation in the IR: a mut binding is a memory CELL — allocated,
 //! seeded, bound as the statement's slot — and an assignment stores
 //! through its target's cell.
-use core.{StmtId, Reg, Ins}
-use features.{StmtLowerCx}
+use core.{StmtId, ExprId, Reg, Ins}
+use features.{StmtLowerCx, Place, opened_place}
 
 /// Declares the cell and answers the VALUE register — the driver's
 /// last-value tracking sees the value, never the pointer. The slot
@@ -16,16 +16,22 @@ export fn lower_mut(cx: StmtLowerCx, s: StmtId, v: Reg) -> Reg {
     v
 }
 
+/// The write lands where the opened place says: a cell takes a
+/// store (the mut-cell protocol owns the counts), a slot takes the
+/// runtime's set (the memory pass marks a managed value owned).
 export fn lower_assign(cx: StmtLowerCx, s: StmtId, v: Reg) {
-    let target: StmtId? = cx.assign_target(s)
-    if target == null {
-        cx.expr.fail("defect: an unresolved assignment survived a clean analysis")
+    let target: ExprId? = match cx.store.stmt(s) {
+        .Assign(t, _) -> t,
+        _ -> null,
+    }
+    if target == null { return }
+    let place: Place? = opened_place(cx.expr, target!)
+    if place == null {
+        cx.expr.fail("defect: an assignment to a non-place survived a clean analysis")
         return
     }
-    let slot: Reg? = cx.slot_of(target!)
-    if slot == null {
-        cx.expr.fail("defect: an assignment before its binding survived a clean analysis")
-        return
+    match place! {
+        .Cell(slot) -> cx.expr.emit(Ins.Store(slot, v)),
+        .Slot(box, at) -> cx.expr.emit(Ins.CallRtVoid("avra_slot_set", [box, at, v])),
     }
-    cx.expr.emit(Ins.Store(slot!, v))
 }

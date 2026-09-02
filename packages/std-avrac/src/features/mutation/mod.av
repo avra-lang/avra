@@ -14,18 +14,17 @@ export fn mutation() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name          | build
         "mut_stmt"    | build_mut
-        "assign_stmt" | build_assign
     }
     let codes = table<DiagCode> {
         kind                | id      | summary
         "resolve.immutable" | "F3005" | "assignment needs a `mut` binding"
-        "type.mut_managed"  | "F2002" | "a mut binding cannot hold a managed value yet"
+        "resolve.place"     | "F3009" | "a mutation lands on a place — a name, a field, or an index"
     }
     component LanguageFeature f {
         name = "mutation"
-        docs = "`mut <name>[: <type>] = <e>` declares a reassignable cell; `<name> = <e>` assigns, accepted by the cell's type."
+        docs = "`mut <name>[: <type>] = <e>` declares a reassignable cell; `<place> = <e>` assigns — a name, a field, or an index rooted in a `mut` binding — accepted by the slot's type; `let` is deeply immutable."
         gram = """
-stmt = "mut" n:NAME ( ":" t:type )? "=" v:expression BREAK @recover(sync_to: "BREAK") -> mut_stmt(n, t, v) | n:NAME "=" v:expression BREAK -> assign_stmt(n, v)
+stmt = "mut" n:NAME ( ":" t:type )? "=" v:expression BREAK @recover(sync_to: "BREAK") -> mut_stmt(n, t, v)
 """
         builders = rows
         diags = codes

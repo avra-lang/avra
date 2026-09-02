@@ -56,7 +56,6 @@ export type Cap = { names: List<string>, sources: List<Binding> }
 /// the assigning STATEMENT, and the program-wide TYPE namespace.
 export type Resolution = {
     bindings: List<Binding?>,
-    assign_targets: List<StmtId?>,
     type_defs: Map<string, StmtId>,
     captures: List<Cap?>,
     diagnostics: List<Diag>,
@@ -73,9 +72,6 @@ export fn binding_of(r: Resolution, e: ExprId) -> Binding? {
 }
 
 /// The mut binding an assignment writes, when resolve accepted it.
-export fn assign_target_of(r: Resolution, s: StmtId) -> StmtId? {
-    r.assign_targets[s.index]
-}
 
 /// Words the spec reserves for future levels, memory, and
 /// concurrency: refusing them as names today means they become
@@ -108,7 +104,6 @@ type Resolver = {
     type_defs: Map<string, StmtId>,
     type_names: List<string>,
     bindings: List<Binding?>,
-    assign_targets: List<StmtId?>,
     walked: List<bool>,
     scoped: List<bool>,
     diagnostics: List<Diag>,
@@ -124,7 +119,6 @@ export fn resolve(p: ParsedProgram) -> Resolution {
         fn_defs: {}, fn_names: [],
         type_defs: {}, type_names: [],
         bindings: filled<Binding?>(p.store.exprs.count(), null),
-        assign_targets: filled<StmtId?>(p.store.stmts.count(), null),
         walked: filled(p.store.exprs.count(), false),
         scoped: filled(p.store.stmts.count(), false),
         diagnostics: [],
@@ -133,7 +127,7 @@ export fn resolve(p: ParsedProgram) -> Resolution {
     r.declare_types()
     resolve_stmts(r, [], false, p.stmts)
     Resolution {
-        bindings: r.bindings, assign_targets: r.assign_targets,
+        bindings: r.bindings,
         type_defs: r.type_defs, captures: r.captures,
         diagnostics: r.diagnostics,
     }
@@ -155,7 +149,6 @@ fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: 
             bound_scope(r, param_names, s, exprs, body),
         is_param: (name: string) -> index_of_name(param_names, name) != null,
         lookup: (name: string) -> r.definition_of(name),
-        record_assign: (s: StmtId, target: StmtId) -> r.record_assign(s, target),
         loc_of: (s: StmtId) -> r.stmt_loc(s),
         emit: (d: Diag) -> r.speak(d),
     }
@@ -594,11 +587,6 @@ impl Resolver {
             .Def(s) -> s,
             .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) -> null,
         }
-    }
-
-    fn record_assign(self, s: StmtId, target: StmtId) {
-        mut ts = self.assign_targets
-        ts.set(s.index, target)
     }
 
     fn unbound_pronoun(self, at: Loc) {

@@ -1,35 +1,46 @@
-//! The assignment's resolve rule: the name resolves in the value
-//! namespaces and must land on a `mut` binding — params and plain
-//! lets refuse with the remedy.
-use core.{StmtId}
+//! The assignment's resolve rule: the target is a PLACE — a path
+//! rooted in a name — and that name must land on a `mut` binding;
+//! params and plain lets refuse with the remedy. The path itself
+//! resolves like any expression.
+use core.{StmtId, ExprId}
 use features.{StmtResolveCx}
 use diagnostics.{error_at, pointed}
 use @std.errors.{Loc}
 
 export fn resolve_assign(cx: StmtResolveCx, s: StmtId) {
-    let name: string? = match cx.store.stmt(s) {
-        .Assign(n, _) -> n,
+    let target: ExprId? = match cx.store.stmt(s) {
+        .Assign(t, _) -> t,
         _ -> null,
     }
-    if name == null { return }
-    let n = name!
+    if target == null { return }
+    let t = target!
     let at: Loc? = cx.loc_of(s)
-    if cx.is_param(n) {
-        cx.emit(pointed(
-            error_at("resolve.immutable", at, "`${n}` is a parameter — parameters are immutable"),
-            "assigned here"))
-        return
-    }
+    let root: ExprId? = cx.store.place_root(t)
+    if root == null { return not_a_place(cx, at) }
+    cx.walk(t)
+    let n = cx.store.ident_name(root!) ?? "this name"
+    if cx.is_param(n) { return immutable_param(cx, n, at) }
     let found: StmtId? = cx.lookup(n)
-    if found == null {
-        cx.emit(pointed(error_at("resolve.unresolved", at, "`${n}` is not defined"), "assigned here"))
-        return
-    }
-    let target = found!
-    if cx.store.stmt(target) is .MutLet {
-        cx.record_assign(s, target)
-    } else {
-        cx.emit(pointed(error_at("resolve.immutable", at, "`${n}` is not `mut`"), "assigned here")
-            with { help: "declare it `mut ${n} = ...` to reassign" })
-    }
+    if found == null { return }
+    if !(cx.store.stmt(found!) is .MutLet) { not_mut(cx, n, at) }
+}
+
+// ── The voices ──
+
+fn not_a_place(cx: StmtResolveCx, at: Loc?) {
+    cx.emit(pointed(
+        error_at("resolve.place", at, "a mutation lands on a place — a name, a field, or an index"),
+        "assigned here")
+        with { help: "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding" })
+}
+
+fn immutable_param(cx: StmtResolveCx, n: string, at: Loc?) {
+    cx.emit(pointed(
+        error_at("resolve.immutable", at, "`${n}` is a parameter — parameters are immutable"),
+        "assigned here"))
+}
+
+fn not_mut(cx: StmtResolveCx, n: string, at: Loc?) {
+    cx.emit(pointed(error_at("resolve.immutable", at, "`${n}` is not `mut`"), "assigned here")
+        with { help: "declare it `mut ${n} = ...` to mutate it — or build a changed copy with `with`" })
 }

@@ -2,7 +2,7 @@
 //! declares — the shared declared-binding law, aimed by name. An
 //! unannotated let keeps inferring from its value.
 use core.{StmtId, ExprId, TypeRef}
-use features.{StmtTypeCx, declared_binding}
+use features.{StmtTypeCx, declared_binding, refuses_void_value}
 
 /// BEFORE the value walks: the declaration records, and the want
 /// plants — a lambda or literal underneath hears its slot.
@@ -16,8 +16,9 @@ export fn plant_let(cx: StmtTypeCx, s: StmtId) {
 
 /// AFTER: the walked value must be what the name declared.
 export fn check_let(cx: StmtTypeCx, s: StmtId) {
-    if cx.store.binding_ty(s) == null { return }
     let v: ExprId? = cx.store.stmt_value(s)
     if v == null { return }
+    if refuses_void_value(cx.expr, v!) { return }
+    if cx.store.binding_ty(s) == null { return }
     declared_binding(cx.expr, v!, cx.store.let_name(s) ?? "this binding", cx.binding_type(s))
 }

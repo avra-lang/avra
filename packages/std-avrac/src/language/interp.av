@@ -458,6 +458,9 @@ fn rt_dispatch(m: Machine, callee: string, vals: List<Val>) -> Val {
         "avra_array_new" -> array_new_val(m),
         "avra_array_push" or "avra_array_push_owned" -> array_push_val(m, vals),
         "avra_cell_release" -> Val.I(0),
+        "avra_cell_unique" -> cell_unique_val(m, vals),
+        "avra_slot_unique" -> slot_unique_val(m, vals),
+        "avra_slot_set" or "avra_slot_set_owned" -> slot_set_val(m, vals),
         "avra_array_get" or "avra_array_get_owned" -> array_get_val(m, vals),
         "avra_insist" -> insist_val(m, vals),
         "avra_insist_scalar" -> insist_scalar_val(m, vals),
@@ -475,6 +478,64 @@ fn array_new_val(m: Machine) -> Val {
     mut arrs = m.arrays
     arrs.push([])
     Val.A(arrs.length - 1)
+}
+
+/// VALUE SEMANTICS, spelled as the spec: the interpreter has no
+/// counts, so opening a place for writing ALWAYS copies the box —
+/// native copies only when shared, and the differential proves
+/// the two agree.
+fn cloned_val(m: Machine, v: Val) -> Val {
+    match v {
+        .A(id) -> {
+            mut arrs = m.arrays
+            arrs.push([x for x in m.arrays[id]])
+            Val.A(arrs.length - 1)
+        }
+        _ -> v,
+    }
+}
+
+fn cell_unique_val(m: Machine, vals: List<Val>) -> Val {
+    match vals[0] {
+        .C(id) -> {
+            let fresh = cloned_val(m, m.cells[id])
+            mut cs = m.cells
+            cs.set(id, fresh)
+            fresh
+        }
+        _ -> defect_val(m, "a place opened through a non-cell"),
+    }
+}
+
+fn slot_unique_val(m: Machine, vals: List<Val>) -> Val {
+    let held = array_get_val(m, vals)
+    let fresh = cloned_val(m, held)
+    let _ = slot_set_val(m, [vals[0], vals[1], fresh])
+    fresh
+}
+
+fn slot_set_val(m: Machine, vals: List<Val>) -> Val {
+    let id: int? = match vals[0] {
+        .A(x) -> x,
+        _ -> null,
+    }
+    let i: int? = match vals[1] {
+        .I(x) -> x,
+        _ -> null,
+    }
+    if id == null || i == null { return defect_val(m, "a non-array slot write") }
+    let at = i!
+    mut arr = m.arrays[id!]
+    if at < 0 || at >= arr.length { return out_of_bounds(m, at, arr.length) }
+    arr.set(at, vals[2])
+    Val.I(0)
+}
+
+/// The bounds refusal, worded exactly like the runtime's — the
+/// divergence registry pins both.
+fn out_of_bounds(m: Machine, at: int, len: int) -> Val {
+    fail(m, "index ${at} is out of bounds (length ${len})")
+    Val.I(0)
 }
 
 fn array_push_val(m: Machine, vals: List<Val>) -> Val {
@@ -524,10 +585,7 @@ fn array_get_val(m: Machine, vals: List<Val>) -> Val {
     if id == null || i == null { return defect_val(m, "a non-array index read") }
     let at = i!
     let arr = m.arrays[id!]
-    if at < 0 || at >= arr.length {
-        fail(m, "index ${at} is out of bounds (length ${arr.length})")
-        return Val.I(0)
-    }
+    if at < 0 || at >= arr.length { return out_of_bounds(m, at, arr.length) }
     arr[i!]
 }
 

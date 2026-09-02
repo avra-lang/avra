@@ -125,7 +125,6 @@ fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
         walk_under: (s: StmtId, body: ExprId) -> walk_fn_body(t, s, body),
         type_stmts: (body: List<StmtId>) -> type_stmts(t, param_types, body),
         sig_of: (s: StmtId) -> fn_sig_of(t.decls[s.index]),
-        assign_target: (s: StmtId) -> assign_target_of(t.resolution, s),
         bind_declared: (s: StmtId, ann: TypeRef) -> t.bind_declared(s, ann),
         binding_type: (s: StmtId) -> t.def_type(s),
         record_binding: (s: StmtId, ty: TypeId) -> t.record_binding(s, ty),
@@ -188,6 +187,7 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         absorb_hunger: (e: ExprId) -> t.absorb_hunger(e),
         starve: (e: ExprId, want: TypeId) -> t.starve(e, want),
         behind_lambda: () -> t.behind_lambda(),
+        is_mut: (e: ExprId) -> t.is_mut(e),
         retype_seated: (a: ExprId, seats: List<TypeId>) -> reseated(t, param_types, a, seats),
         method_sig: (target: string, mname: string) -> t.method_sig(target, mname),
         trait_sig: (tr: string, mname: string) -> t.trait_sig(tr, mname),
@@ -1063,6 +1063,16 @@ impl Typer {
         true
     }
 
+    /// Is this name bound by a `mut` — the root a place may open.
+    fn is_mut(self, e: ExprId) -> bool {
+        let b: Binding? = binding_of(self.resolution, e)
+        if b == null { return false }
+        match b! {
+            .Def(s) -> self.store.stmt(s) is .MutLet,
+            _ -> false,
+        }
+    }
+
     /// Inside a lambda body — behind its barrier, no enclosing fn
     /// answers.
     fn behind_lambda(self) -> bool {
@@ -1189,7 +1199,7 @@ impl Typer {
                 subbed_fields(self.types, record_sig_of(self.decls[decl.index]), decl, args),
             .Int or .Str or .Bool or .List(_) or .Enum(_, _) or .Res(_, _) or
             .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
-            .Error -> null,
+            .Error or .Void -> null,
         }
     }
 
@@ -1202,7 +1212,7 @@ impl Typer {
                 subbed_variants(self.types, variant_sig_of(self.decls[decl.index]), decl, args),
             .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
             .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
-            .Error -> null,
+            .Error or .Void -> null,
         }
     }
 
@@ -1259,7 +1269,7 @@ fn declared_name(sh: Type) -> string? {
         .Enum(_, n) -> n,
         .Int or .Str or .Bool or .List(_) or .Opt(_) or .Null or
         .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or
-        .TypeName(_, _) or .EmptyList or .Error -> null,
+        .TypeName(_, _) or .EmptyList or .Error or .Void -> null,
     }
 }
 

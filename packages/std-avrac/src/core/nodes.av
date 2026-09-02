@@ -183,6 +183,13 @@ export fn spelled(t: TypeRef) -> string {
 /// has to ask which kind it is.
 export type Param = { name: string, ty: TypeRef? }
 
+/// One step of a PLACE — where a mutation lands.
+export enum PlaceStep {
+    Root(name: string)
+    Field(subject: ExprId, name: string)
+    At(subject: ExprId, index: ExprId)
+}
+
 export enum Stmt {
     /// `let name = v`, optionally `let name: T = v` — the written
     /// type, when declared, is what the binding HOLDS; the value
@@ -193,7 +200,7 @@ export enum Stmt {
     /// declares exactly as `let` does.
     MutLet(name: string, ty: TypeRef?, value: ExprId)
     /// Reassignment of a `mut` binding, by name.
-    Assign(name: string, value: ExprId)
+    Assign(target: ExprId, value: ExprId)
     /// An expression at statement position.
     ExprStmt(value: ExprId)
     /// `tparams` are the declared type parameters, in order — the
@@ -297,6 +304,44 @@ impl NodeStore {
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
     /// Tags are never reused; the next free tag is 30.
+    /// A PLACE's last step, when the expression is one: a bare name,
+    /// a field of a subject, or an index into one. The one
+    /// projection for the place category — every other shape is a
+    /// value, not a place.
+    fn place_step(self, e: ExprId) -> PlaceStep? {
+        match self.expr(e) {
+            .Ident(name) -> PlaceStep.Root(name),
+            .Prop(subject, name) -> PlaceStep.Field(subject, name),
+            .Index(subject, index) -> PlaceStep.At(subject, index),
+            .IntLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or
+            .Not(_) or .ListLit(_) or .Interp(_, _) or .If(_, _, _) or .Call(_, _, _) or
+            .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or
+            .With(_, _, _) or .Match(_, _, _, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
+            .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _) or
+            .Lambda(_, _) -> null,
+        }
+    }
+
+    /// The binding a place is rooted in — the name at the bottom of
+    /// its path; null when the expression is not a place.
+    fn place_root(self, e: ExprId) -> ExprId? {
+        let step: PlaceStep? = self.place_step(e)
+        if step == null { return null }
+        match step! {
+            .Root(_) -> e,
+            .Field(subject, _) -> self.place_root(subject),
+            .At(subject, _) -> self.place_root(subject),
+        }
+    }
+
+    /// A bare name's text; null for every other expression.
+    fn ident_name(self, e: ExprId) -> string? {
+        match self.expr(e) {
+            .Ident(name) -> name,
+            _ -> null,
+        }
+    }
+
     /// Does the PRONOUN ride this subtree unbound? `it` belongs to
     /// the nearest enclosing METHOD call: a lambda binds its own
     /// scope (false), a nested method call's arguments started
@@ -429,7 +474,7 @@ impl NodeStore {
         match s {
             .Let(name, ty, value) -> fp(5, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
             .MutLet(name, ty, value) -> fp(15, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
-            .Assign(name, value) -> fp(16, [fp_str(name), self.expr_fingerprint(value)]),
+            .Assign(target, value) -> fp(16, [self.expr_fingerprint(target), self.expr_fingerprint(value)]),
             .While(cond, stmts) ->
                 fp(17, [self.expr_fingerprint(cond)].concat(self.stmt_fps(stmts))),
             .IfStmt(cond, then_stmts, else_stmts) ->

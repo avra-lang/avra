@@ -274,6 +274,7 @@ fn expr_lower_cx(lo: Lower) -> LowerCx {
         result: (k: ExprId) -> lo.mint(k),
         reg_of: (k: ExprId) -> lower_subtree(lo, k),
         def_reg: (k: ExprId) -> lo.def_reg(k),
+        cell_of: (k: ExprId) -> lo.cell_of(k),
         shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.view(lo.a.type_at(k))),
         type_at: (k: ExprId) -> lo.view(lo.a.type_at(k)),
         mint: (k: ExprId) -> lo.mint(k),
@@ -358,7 +359,7 @@ fn boxed_target(lo: Lower, r: Reg) -> string? {
         .Enum(_, n) -> n,
         .Int or .Str or .Bool or .List(_) or .Opt(_) or .Null or
         .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or
-        .TypeName(_, _) or .EmptyList or .Error -> null,
+        .TypeName(_, _) or .EmptyList or .Error or .Void -> null,
     }
 }
 
@@ -380,7 +381,6 @@ fn lower_stmts(lo: Lower, stmts: List<StmtId>) -> Reg? {
         lower_stmts: (body: List<StmtId>) -> lower_stmt_list(lo, body),
         slot_of: (s: StmtId) -> lo.slots[s.index],
         bind_slot: (s: StmtId, slot: Reg) -> lo.bind_slot(s, slot),
-        assign_target: (s: StmtId) -> lo.a.assign_target(s),
     }
     // LICENSED I4: the running last register, not a scan
     mut last: Reg? = null
@@ -416,7 +416,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Var(_, _, n) -> n,
         .EmptyList -> "[]",
         .Opt(_) or .Null or .Dyn(_, _) or .Fn(_, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
-        .Int or .Str or .Bool or .List(_) or .Error -> null,
+        .Int or .Str or .Bool or .List(_) or .Error or .Void -> null,
     }
     if unprintable != null { return no_projection(lo, unprintable!) }
     let text: Reg? = match sh {
@@ -427,7 +427,7 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
         .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or
         .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) -> null,
         .Opt(_) or .Null or .EmptyList -> null,
-        .Error -> null,
+        .Error or .Void -> null,
     }
     if text != null { lo.give(Ins.CallRtVoid("avra_puts", [text!])) }
     null
@@ -556,6 +556,17 @@ impl Lower {
         self.read_binding(e, b!)
     }
 
+    /// The mut CELL behind a name — null for every binding that is
+    /// not a boxed mut.
+    fn cell_of(self, e: ExprId) -> Reg? {
+        let b: Binding? = self.a.binding(e)
+        if b == null { return null }
+        match b! {
+            .Def(s) -> if self.boxed[s.index] { self.slots[s.index] } else { null },
+            _ -> null,
+        }
+    }
+
     /// A binding's VALUE in the current body — the ident rule and
     /// the capture pack share this one projection.
     fn read_binding(self, e: ExprId, b: Binding) -> Reg? {
@@ -670,7 +681,7 @@ impl Lower {
                 subbed_fields(self.a.typing.types, record_sig_of(self.a.decl_sig(decl)), decl, args),
             .Int or .Str or .Bool or .List(_) or .Enum(_, _) or .Res(_, _) or
             .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
-            .Error -> null,
+            .Error or .Void -> null,
         }
     }
 
@@ -690,7 +701,7 @@ impl Lower {
                 subbed_variants(self.a.typing.types, variant_sig_of(self.a.decl_sig(decl)), decl, args),
             .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
             .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
-            .Error -> null,
+            .Error or .Void -> null,
         }
     }
 

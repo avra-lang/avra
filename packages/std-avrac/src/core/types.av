@@ -48,6 +48,8 @@ export enum Type {
     /// wears. The runtime shape is a box `[code address,
     /// captures…]`; a call rides CallPtr with the box at seat 0.
     Fn(params: List<TypeId>, ret: TypeId)
+    /// The answer of a mutation — a value that is nothing. Spec 4.2.
+    Void
 
     // ── Absence, and the values that inhabit it. ──
     /// `T?` — a value that may be ABSENT. Nullability is opt-in
@@ -98,7 +100,7 @@ export fn ptr_shape(t: Type) -> bool {
     match t {
         .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
         .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Null or .EmptyList -> true,
-        .Int or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) -> false,
+        .Int or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
     }
 }
 
@@ -123,6 +125,7 @@ impl TypeRegistry {
             .App(decl, _, args) -> "12:${decl.index}.${joined(["${a.index}" for a in args], ".")}",
             .Dyn(decl, _) -> "14:${decl.index}",
             .Fn(params, ret) -> "15:${joined(["${a.index}" for a in params], ".")}:${ret.index}",
+            .Void -> "16",
         }
     }
 
@@ -198,7 +201,7 @@ impl TypeRegistry {
                 self.intern(Type.Fn([self.substituted(a, target, args) for a in ps],
                                     self.substituted(ret, target, args))),
             .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-            .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error -> ty,
+            .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void -> ty,
         }
     }
 
@@ -213,6 +216,7 @@ impl TypeRegistry {
             .Dyn(_, name) -> "dyn ${name}",
             .Fn(params, ret) ->
                 "fn(${joined([self.name_of(a) for a in params], ", ")}) -> ${self.name_of(ret)}",
+            .Void -> "void",
             .Enum(_, name) -> name,
             .TypeName(_, name) -> "type ${name}",
             .Opt(inner) -> "${self.name_of(inner)}?",
