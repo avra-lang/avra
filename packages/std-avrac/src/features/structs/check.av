@@ -1,9 +1,9 @@
 //! The literal's typing law: the name resolved to a declaration
 //! (resolve spoke otherwise), and the written fields match it —
 //! each declared field exactly once, each value the field's type.
-use core.{ExprId, StmtId, Type, TypeId, filled}
+use core.{ExprId, StmtId, Type, TypeId, filled, StructParts}
 use features.{TypeCx, StructSig, spoken, types_disagree, this_is, fields_are,
-              unify, fully_bound, bound_args, accepts, slot_worthy, tparams_refused, unpinned_of, bound_closed, slice_promise}
+              unify, fully_bound, bound_args, accepts, slot_worthy, tparams_refused, unpinned_of, bound_closed, slice_promise, StmtTypeCx}
 use diagnostics.{error_at, pointed}
 
 fn structs_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -37,7 +37,7 @@ fn lit_type(cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: L
     let target = decl!
     let ty = cx.types.intern(Type.Struct(target, name))
     let sig: StructSig? = cx.fields_of(ty)
-    if sig == null { return cx.error_type }
+    if sig == null { return not_a_record(cx, e, name) }
     if !cx.store.decl_tparams(target).is_empty() {
         return generic_lit(cx, e, name, fields, values, target, sig!)
     }
@@ -61,8 +61,9 @@ fn generic_lit(cx: TypeCx, e: ExprId, name: string, fields: List<string>,
             spoke = true
         }
     }
-    for n in sig.names {
-        if !fields.contains(n) {
+    // LICENSED I3: the slot's ORDINAL finds its default
+    for (j, n) in sig.names.enumerate() {
+        if !fields.contains(n) && sig.defaults[j] == null {
             missing_field(cx, e, name, n)
             spoke = true
         }
@@ -117,8 +118,9 @@ fn generic_field(cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId,
 /// field must ALSO be written — the literal's completeness half.
 fn check_fields(cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: List<ExprId>, sig: StructSig) {
     written_checks(cx, name, fields, values, sig)
-    for n in sig.names {
-        if !fields.contains(n) { missing_field(cx, e, name, n) }
+    // LICENSED I3: the slot's ORDINAL finds its default
+    for (j, n) in sig.names.enumerate() {
+        if !fields.contains(n) && sig.defaults[j] == null { missing_field(cx, e, name, n) }
     }
 }
 
@@ -179,4 +181,38 @@ fn unpinned_by_fields(cx: TypeCx, e: ExprId, tparam: string) -> TypeId {
         error_at("type.struct_fields", cx.loc_of(e), "`${tparam}` is not pinned by the fields"),
         "in this literal")
         with { help: "give `${tparam}`'s field a value of a concrete type" })
+}
+
+/// A literal under a name that declares no fields — an enum's.
+fn not_a_record(cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.struct_fields", cx.loc_of(e), "`${name}` is an enum, not a record — it has no fields to fill"),
+        "built here")
+        with { help: "construct a variant instead — `${name}.<variant>`" })
+}
+
+/// THE DEFAULT LAW, at the declaration: a field's default is typed
+/// under the field's want and accepted by it — every literal that
+/// omits the field then fills it without judging it again.
+export fn check_defaults(cx: StmtTypeCx, s: StmtId) {
+    let sp: StructParts? = cx.store.struct_parts(s)
+    if sp == null { return }
+    let parts = sp!
+    let sig: StructSig? = cx.expr.fields_of(cx.expr.types.intern(Type.Struct(s, parts.name)))
+    if sig == null { return }
+    // LICENSED I3: the field's ORDINAL finds its slot type
+    for (j, f) in parts.fields.enumerate() {
+        if f.default != null { defaulted(cx, f.default!, f.name, sig!.types[j]) }
+    }
+}
+
+fn defaulted(cx: StmtTypeCx, d: ExprId, name: string, want: TypeId) {
+    cx.expr.plant_want(d, want)
+    cx.walk(d)
+    if accepts(cx.expr, d, want) { return }
+    let n = cx.expr.name_at(d)
+    cx.expr.emit(pointed(
+        error_at("type.struct_fields", cx.expr.loc_of(d),
+            "field `${name}` defaults to `${n}`, and it is `${cx.expr.types.name_of(want)}`"),
+        this_is(n)))
 }

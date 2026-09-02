@@ -1,0 +1,24 @@
+//! Tables — `table<Row> { header | names \n cell | cell … }`: the
+//! manifest shape. PURE SUGAR: the header names the row type's
+//! fields and every row becomes a `Row { … }` literal, so the struct
+//! literal's own laws judge each cell and the list's law the rows.
+//! No node, no rule of its own — a builder.
+use features.{LanguageFeature, BuilderRow}
+
+export fn tables() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name        | build
+        "table_lit" | build_table
+        "table_row" | build_row
+    }
+    component LanguageFeature f {
+        name = "tables"
+        docs = "`table<Row> { a | b \\n x | y }` — a list of `Row` literals, the header naming the fields, one row per line."
+        gram = """
+primary = "table" "<" t:NAME ">" "{" BREAK h:NAME ( "|" h:NAME )* BREAK ( r:table_row BREAK )* "}" @expect("}", "expected `}` to close the table") -> table_lit(t, h, r)
+table_row = c:expression ( "|" c:expression )* -> table_row(c)
+"""
+        builders = rows
+    }
+    f
+}

@@ -41,20 +41,29 @@ fn with_reg(cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, value
 
 fn lit_reg(cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
     let regs = [cx.reg_of(v) for v in values]
-    let sig: StructSig? = cx.fields_at(e)
-    if sig == null { return lower_defect(cx, e, "a field-less literal survived typing") }
+    let held: StructSig? = cx.fields_at(e)
+    if held == null { return lower_defect(cx, e, "a field-less literal survived typing") }
+    let sig = held!
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, "avra_array_new", []))
-    mut by_slot: List<Reg?> = filled<Reg?>(fields.length, null)
+    mut by_slot: List<Reg?> = filled<Reg?>(sig.names.length, null)
     for (j, f) in fields.enumerate() {
-        let slot: int? = if sig == null { null } else { sig!.slot_of(f) }
+        let slot: int? = sig.slot_of(f)
         if slot != null {
             let r: Reg? = regs[j]
             by_slot.set(slot!, r)
         }
     }
-    for r in by_slot {
-        if r != null { push_slot(cx, dst, r!) }
+    // LICENSED I3: the slot's ORDINAL finds its default
+    for (slot, r) in by_slot.enumerate() {
+        if r != null { push_slot(cx, dst, r!) } else { push_slot(cx, dst, defaulted_reg(cx, e, sig, slot)) }
     }
     dst
+}
+
+/// The default an omitted slot lowers to — typing guaranteed one.
+fn defaulted_reg(cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
+    let d: ExprId? = sig.defaults[slot]
+    if d == null { return lower_defect(cx, e, "a literal missing a field without a default survived typing") }
+    cx.reg_of(d!)
 }

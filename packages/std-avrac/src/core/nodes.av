@@ -194,7 +194,9 @@ export fn spelled(t: TypeRef) -> string {
 /// One declared parameter: its name and its written type. An ABSENT
 /// type IS a unit enum variant, so one shape covers both and no arm
 /// has to ask which kind it is.
-export type Param = { name: string, ty: TypeRef? }
+/// A declared seat — a fn's param, a lambda's, a struct's field, an
+/// enum variant's payload — with the DEFAULT a field may declare.
+export type Param = { name: string, ty: TypeRef?, default: ExprId? }
 
 /// One step of a PLACE — where a mutation lands.
 export enum PlaceStep {
@@ -518,7 +520,8 @@ impl NodeStore {
                                 [type_fp(ret), self.expr_fingerprint(body)]])),
             .StructDecl(name, tparams, fields) ->
                 fp(25, flatten([[fp_str(name)], [fp_str(t) for t in tparams],
-                                param_fps(fields)])),
+                                param_fps(fields),
+                                self.expr_fps([f.default! for f in fields if f.default != null])])),
             .EnumDecl(name, tparams, variants) ->
                 fp(27, flatten([[fp_str(name)], [fp_str(t) for t in tparams],
                                 param_fps(variants)])),

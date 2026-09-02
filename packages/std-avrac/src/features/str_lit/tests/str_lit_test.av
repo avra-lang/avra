@@ -3,7 +3,7 @@
 // mixing them into arithmetic renders the first type.mismatch.
 use @std.avrac.core.{ExprId}
 use @std.avrac.language.{analyze_source, avra, Analysis}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_with}
 use @std.avrac.diagnostics.{new_source_file}
 
 
@@ -66,6 +66,17 @@ spec "features/str_lit" {
         }
         then "length composes with interpolation" {
             shown("let s = \"ab\"\n\"$" + "{s.length}$" + "{s}\"") == "2ab"
+        }
+    }
+    given "raw strings — three quotes to three quotes" {
+        then "quotes and holes inside stay raw" {
+            shown("let r = \"\"\"say \"hi\" and $" + "{not a hole}\"\"\"\nr.length") == "26"
+        }
+        then "newlines are kept" {
+            shown("let r = \"\"\"a\nb\"\"\"\nr.length") == "3"
+        }
+        then "an unterminated raw string is a lex error" {
+            refused_with("let r = \"\"\"never closed\n2", "unterminated string")
         }
     }
 }

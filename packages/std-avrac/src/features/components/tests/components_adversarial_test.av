@@ -1,0 +1,74 @@
+// Components and field defaults under attack (rt31): degenerate
+// shapes, every wrong default, the malformed surface (the parser's
+// per-line cascade is a recorded trigger — counts pinned as they
+// are), defaults crossed with every feature, keywords, and churn.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+fn cfg() -> string {
+    "component Cfg {\n    config {\n        name: string,\n        depth: int = 3,\n    }\n}\n"
+}
+
+spec "features/components/adversarial" {
+    given "degenerate shapes" {
+        then "all defaults — the empty literal, the empty instantiation" {
+            shown("type P = { x: int = 1, y: int = 2 }\nlet p = P { }\n\"" + "$" + "{p.x} " + "$" + "{p.y}\"") == "1 2" &&
+                shown("component Empty {\n    config {\n        k: int = 1,\n    }\n}\ncomponent Empty e {\n}\ne.k") == "1"
+        }
+        then "the empty raw string, a raw string holding a quote" {
+            shown("let r = \"\"\"\"\"\"\nr.length") == "0" &&
+                shown("let r = \"\"\"a \"b\" c\"\"\"\nr.length") == "7"
+        }
+    }
+    given "every wrong default" {
+        then "the wrong type, null, a generic field" {
+            refused_with("type P = { x: int = \"s\" }\n2", "field `x` defaults to `string`, and it is `int`") &&
+                refused_with("type P = { x: int = null }\n2", "defaults to `null`") &&
+                refused_with("type B<T> = { v: T = 1 }\n2", "field `v` defaults to `int`, and it is `T`")
+        }
+        then "a repeated field at instantiation, a duplicate at declaration" {
+            refused_with("${cfg()}component Cfg c {\n    name = \"x\"\n    name = \"y\"\n}\n2", "written more than once") &&
+                refused_with("component Dup {\n    config {\n        a: int = 1,\n        a: int = 2,\n    }\n}\n2", "`Dup` declares `a` more than once")
+        }
+        then "a default may call a fn declared later; a lambda default hears its seat" {
+            shown("type P = { x: int = later() }\nfn later() -> int {\n    5\n}\nP { }.x") == "5" &&
+                shown("type P = { f: fn(int) -> int = (x) -> x + 1 }\nP { }.f(1)") == "2"
+        }
+    }
+    given "the malformed surface — a diagnostic every time, the cascade pinned" {
+        then "no config, one line, a missing default, a missing `=`, three names" {
+            refusals("component Cfg {\n    name: string\n}\n2") == 2 &&
+                refusals("component Cfg { config { a: int } }\n2") == 1 &&
+                refusals("type P = { x: int = }\n2") == 1 &&
+                refusals("${cfg()}component Cfg c {\n    name \"x\"\n}\n2") == 3 &&
+                refusals("${cfg()}component Cfg c d {\n    name = \"x\"\n}\n2") == 2
+        }
+    }
+    given "defaults across every feature" {
+        then "`with` keeps a default; a default may be a literal of another defaulted type" {
+            shown("type P = { x: int, y: int = 7 }\nlet p = P { x: 1 }\n(p with { x: 2 }).y") == "7" &&
+                shown("type In = { v: int = 4 }\ntype Out = { inner: In = In { } }\nOut { }.inner.v") == "4"
+        }
+        then "a table default, a map default, defaults in a walk" {
+            shown("type Row = { k: int }\ntype T = { rows: List<Row> = table<Row> {\n    k\n    1\n    2\n} }\nT { }.rows.length") == "2" &&
+                shown("type M = { m: Map<string, int> = { \"a\": 1 } }\nM { }.m.get(\"a\") ?? 0") == "1" &&
+                shown("type P = { x: int = 1 }\nlet xs = [P { }, P { x: 5 }]\nxs.map(it.x)[1]") == "5"
+        }
+        then "an instantiation inside a fn; raw strings in a hole and as a key" {
+            shown("${cfg()}fn made() -> Cfg {\n    component Cfg c {\n        name = \"in\"\n    }\n    c\n}\nmade().depth") == "3" &&
+                shown("let s = \"$" + "{\"\"\"x\"\"\"}\"\ns.length") == "1" &&
+                shown("let m = { \"\"\"k\"\"\": 1 }\nm.get(\"k\") ?? 0") == "1"
+        }
+    }
+    given "names against names" {
+        then "`config` and `component` are keywords; an instance may share its type's name" {
+            refused_with("type P = { config: int }\n2", "`config` is a keyword") &&
+                refused_with("let component = 1\n2", "`component` is a keyword") &&
+                shown("${cfg()}component Cfg Cfg {\n    name = \"x\"\n}\nCfg.depth") == "3"
+        }
+    }
+    given "ownership" {
+        then "five hundred instances with managed defaults, each its own box" {
+            shown("type P = { s: string = \"default text\", tags: List<string> = [\"t\"] }\nmut i = 0\nmut n = 0\nwhile i < 500 {\n    mut p = P { }\n    p.tags.push(\"x" + "$" + "{i}\")\n    n = n + p.s.length + p.tags.length\n    i = i + 1\n}\nn") == "7000"
+        }
+    }
+}

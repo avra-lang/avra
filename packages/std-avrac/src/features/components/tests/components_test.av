@@ -1,0 +1,45 @@
+// Components, the vertical: a declaration is a record with
+// defaults, an instantiation a literal that fills the rest — and
+// every refusal is the struct law's.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+fn cfg() -> string {
+    "fn twice(n: int) -> int {\n    n * 2\n}\ncomponent Cfg {\n    config {\n        name: string,\n        depth: int = 3,\n        f: fn(int) -> int = twice,\n        notes: List<string> = [\"a\"],\n    }\n}\n"
+}
+
+spec "features/components" {
+    given "declaration and instantiation" {
+        then "omitted fields take their defaults" {
+            shown("${cfg()}component Cfg c {\n    name = \"one\"\n}\n\"" + "$" + "{c.depth} " + "$" + "{c.f(21)} " + "$" + "{c.notes[0]}\"") == "3 42 a"
+        }
+        then "a written field wins" {
+            shown("${cfg()}component Cfg d {\n    name = \"two\"\n    depth = 9\n}\nd.depth") == "9"
+        }
+        then "the instance is a plain record — `with` and fields work" {
+            shown("${cfg()}component Cfg c {\n    name = \"one\"\n}\n(c with { depth: 5 }).depth") == "5"
+        }
+        then "an ordinary `type` may declare defaults too" {
+            shown("type P = { x: int, y: int = 7 }\nP { x: 1 }.y") == "7"
+        }
+        then "a managed default is value-semantic — two instances, two boxes" {
+            shown("type P = { x: int, tags: List<string> = [] }\nmut a = P { x: 0 }\nmut b = P { x: 0 }\na.tags.push(\"only-a\")\n\"" + "$" + "{a.tags.length} " + "$" + "{b.tags.length}\"") == "1 0"
+        }
+        then "a lambda default hears the field's seat" {
+            shown("type H = { f: fn(int) -> int = (x) -> x + 1 }\nH { }.f(1)") == "2"
+        }
+    }
+    given "the refusals" {
+        then "a default of the wrong type, at the declaration" {
+            refused_with("type P = { x: int = \"s\" }\n2", "field `x` defaults to `string`, and it is `int`")
+        }
+        then "a field without a default is still required" {
+            refused_with("${cfg()}component Cfg c {\n    depth = 1\n}\n2", "`Cfg` needs field `name`")
+        }
+        then "an unknown field at instantiation" {
+            refused_with("${cfg()}component Cfg c {\n    name = \"x\"\n    size = 1\n}\n2", "`Cfg` has no field `size`")
+        }
+        then "instantiating a name that is not a record" {
+            refusals("enum K {\n    a\n}\ncomponent K k {\n    x = 1\n}\n2") == 1
+        }
+    }
+}

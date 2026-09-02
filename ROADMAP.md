@@ -3301,6 +3301,41 @@ PROPERTY is special-cased by receiver shape in checks.av
 property row in the same registry. Neither blocks anything;
 both are the next fork a new aggregate would add.
 
+M3a LANDED 2026-09-02: TABLES as PURE SUGAR — `table<Row> { h |
+h \n c | c }` is a builder, no node: each row becomes `Row { … }`
+with the header naming the fields, so the struct literal's laws
+judge every cell and the list's law the rows; a row's cell count
+is the builder's one refusal (`row 2 has 2 cells…`). rt30 29
+programs; it caught a PRE-EXISTING silent hole — a struct
+literal under an ENUM's name returned Error without a voice and
+reached lowering as a defect (three defects, the new mint-order
+law among them) — now "`K` is an enum, not a record". Recorded:
+generic row types (`table<Box<int>>` — the gram takes a NAME),
+a bare empty table is `[]` (a typed empty literal is the ask),
+`table<int>` says "no type int is declared" (a builtin-name
+wording), and the malformed cascade per line (the @expect +
+floor trigger, counts pinned).
+
+M3b+M3c LANDED 2026-09-02: COMPONENTS AS SUGAR OVER FIELD
+DEFAULTS, and RAW STRINGS. The one real feature is a field's
+DEFAULT (`type P = { x: int, y: int = 7 }`): declared once, typed
+under the field's want (a lambda default hears its seat, `[]`
+adopts) and accepted by it — THE DEFAULT LAW, at the
+declaration; every literal that omits the field fills it at
+lowering (a managed default is value-semantic across instances —
+copy-on-write, proven). `Param` carries `default: ExprId?`;
+captures arrive per slot, so a default finds its field by
+POSITION (`fields_zipped`, shared by both spellings). `component
+Name { config { … } }` builds the StructDecl; `component Name
+inst { f = v … }` builds `let inst = Name { … }` — no node, the
+struct laws judge everything. THE EMPTY LITERAL `Name { }` now
+parses (defaults made it the common form; the compiler's own
+`ListSemantics { }` needs it). Raw strings: `"""` to `"""`, no
+escapes, no holes — one Str token; the grams. rt31 29 programs;
+the empty-literal gap was its find. Recorded: an instance is a
+`let` (a `mut` instance is a spelling away); defaults on
+generic fields refuse ("`T`"); `level` is reserved.
+
 SLICES: M1 places (assignment through paths, `push`, COW, Void)
 — M2 maps (`Map<K, V>`, insertion-ordered BY DESIGN so "iterate an
 ordered source" needs no rule; `get` answers `V?`; `m[k] = v` is

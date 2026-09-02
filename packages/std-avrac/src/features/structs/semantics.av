@@ -3,7 +3,7 @@
 //! STATEMENT kind: names declare program-wide in the type
 //! namespace (the driver gathers them), so here it only runs its
 //! field names through the naming law.
-use core.{Expr, ExprId, StmtId, TypeId, Reg}
+use core.{Expr, ExprId, StmtId, TypeId, Reg, NodeStore, StructParts}
 use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx,
               StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing, nested_decl}
 
@@ -44,10 +44,11 @@ export type StructDeclSemantics = { }
 impl StmtSemantics for StructDeclSemantics {
     fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
         decl_resolve(cx, s)
+        for d in default_exprs(cx.store, s) { cx.walk(d) }
     }
 
     fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
-        nothing()
+        check_defaults(cx, s)
     }
 
     fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
@@ -66,4 +67,15 @@ fn decl_resolve(cx: StmtResolveCx, s: StmtId) {
         .StructDecl(_, _, fields) -> cx.check_params(fields, s),
         _ -> nothing(),
     }
+}
+
+/// The defaults a declaration's fields carry.
+fn default_exprs(store: NodeStore, s: StmtId) -> List<ExprId> {
+    let sp: StructParts? = store.struct_parts(s)
+    if sp == null { return [] }
+    mut out: List<ExprId> = []
+    for f in sp!.fields {
+        if f.default != null { out.push(f.default!) }
+    }
+    out
 }

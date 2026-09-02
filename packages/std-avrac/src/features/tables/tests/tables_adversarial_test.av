@@ -1,0 +1,74 @@
+// Tables under attack (rt30): degenerate shapes, every wrong row
+// type and cell, the malformed surface (its per-line cascade is a
+// recorded parser trigger — the counts are pinned as they are),
+// every feature crossed, keywords, and string cells under churn.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+fn row() -> string {
+    "type Row = { name: string, n: int, on: bool }\n"
+}
+
+spec "features/tables/adversarial" {
+    given "degenerate shapes" {
+        then "one row, one column" {
+            shown("${row()}let rows = table<Row> {\n    name | n | on\n    \"a\"  | 1 | true\n}\nrows[0].n") == "1" &&
+                shown("type One = { k: int }\nlet rows = table<One> {\n    k\n    7\n    8\n}\nrows[1].k") == "8"
+        }
+        then "a bare empty table is `[]` and says so when measured" {
+            refused_with("${row()}let rows = table<Row> {\n    name | n | on\n}\nrows.length", "`[]` has no length yet")
+        }
+    }
+    given "every wrong row type and cell" {
+        then "an enum row type is not a record — one voice, no defect" {
+            refused_with("enum K {\n    a\n}\nlet rows = table<K> {\n    x\n    1\n}\n2", "`K` is an enum, not a record")
+        }
+        then "a scalar row type names no declaration" {
+            refusals("let rows = table<int> {\n    a\n    1\n}\n2") == 1
+        }
+        then "an extra column, a row too long" {
+            refused_with("${row()}let rows = table<Row> {\n    name | n | on | extra\n    \"a\"  | 1 | true | 2\n}\n2", "`Row` has no field `extra`") &&
+                refused_with("${row()}let rows = table<Row> {\n    name | n | on\n    \"a\"  | 1 | true | 9\n}\n2", "row 1 has 4 cells, and the header names 3 columns")
+        }
+        then "a repeated column — repeated, and the field it displaced" {
+            refusals("${row()}let rows = table<Row> {\n    name | name | on\n    \"a\"  | \"b\"  | true\n}\n2") == 2
+        }
+    }
+    given "the malformed surface — a diagnostic every time, the cascade pinned" {
+        then "a one-line table, a missing pipe, an empty cell, an unclosed table" {
+            refusals("${row()}let rows = table<Row> { name | n | on }\n2") == 1 &&
+                refusals("${row()}let rows = table<Row> {\n    name | n | on\n    \"a\"  1 | true\n}\n2") == 3 &&
+                refusals("${row()}let rows = table<Row> {\n    name | n | on\n    \"a\"  | | true\n}\n2") == 3 &&
+                refusals("${row()}let rows = table<Row> {\n    name | n | on\n    \"a\"  | 1 | true\n2") == 2
+        }
+        then "a generic row type is recorded — a plain name only" {
+            refusals("type Box<T> = { v: T }\nlet rows = table<Box<int>> {\n    v\n    1\n}\n2") == 2
+        }
+    }
+    given "tables across every feature" {
+        then "as a fn's tail, with aggregate cells, nested in a cell" {
+            shown("${row()}fn made() -> List<Row> {\n    table<Row> {\n        name | n | on\n        \"q\"  | 5 | false\n    }\n}\nmade()[0].n") == "5" &&
+                shown("type Cell = { xs: List<int>, m: Map<string, int> }\nlet rows = table<Cell> {\n    xs     | m\n    [1, 2] | { \"a\": 1 }\n}\nrows[0].xs.length") == "2" &&
+                shown("type In = { v: int }\ntype Out = { rows: List<In> }\nlet nested = table<Out> {\n    rows\n    table<In> {\n        v\n        1\n        2\n    }\n}\nnested[0].rows.length") == "2"
+        }
+        then "cells are expressions; rows walk and mutate like any list" {
+            shown("type S = { rows: List<int> }\nlet s = S { rows: [1] }\ntype Row = { k: int }\nlet t = table<Row> {\n    k\n    s.rows[0] + 1\n}\nt[0].k") == "2" &&
+                shown("${row()}let rows = table<Row> {\n    name | n | on\n    \"a\"  | 1 | true\n}\nrows.map(it.n * 2)[0]") == "2" &&
+                shown("${row()}mut rows = table<Row> {\n    name | n | on\n    \"a\"  | 1 | true\n}\nrows.push(Row { name: \"b\", n: 2, on: false })\nrows[1].n = 5\nrows[1].n") == "5"
+        }
+        then "lambda cells" {
+            shown("type Fn = { name: string, f: fn(int) -> int }\nlet rows = table<Fn> {\n    name  | f\n    \"sq\"  | (x: int) -> x * x\n}\nrows[0].f(7)") == "49"
+        }
+    }
+    given "names against names" {
+        then "`table` is a keyword; a keyword cannot head a column" {
+            refused_with("type table = { k: int }\n2", "`table` is a keyword") &&
+                refused_with("type Kw = { fn: int }\nlet rows = table<Kw> {\n    fn\n    1\n}\n2", "`fn` is a keyword")
+        }
+    }
+    given "ownership" {
+        then "string cells under five hundred rebuilds" {
+            shown("type S = { s: string }\nmut i = 0\nmut last = \"\"\nwhile i < 500 {\n    let rows = table<S> {\n        s\n        \"v" + "$" + "{i}\"\n        \"w" + "$" + "{i}\"\n    }\n    last = rows[1].s\n    i = i + 1\n}\nlast") == "w499"
+        }
+    }
+}

@@ -1,6 +1,6 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
-use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, want}
+use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, want, Param}
 use grammar.{Captured, Token}
 
 /// One build call's world: the store, the captured arguments in
@@ -206,4 +206,32 @@ fn token_between(tokens: List<Token>, after: int, before: int) -> string {
     let hit: Token? = tokens.find(it.span.lo > after && it.span.lo < before)
     if hit == null { return "" }
     hit!.text
+}
+
+/// Field names, their types, and the DEFAULTS some carry, zipped —
+/// captures arrive per slot, so a default finds its field by
+/// POSITION: the last name that starts before it.
+export fn fields_zipped(b: Builder, fs: List<Token>, ft: List<TypeRef>, fds: List<ExprId>) -> Result<List<Param>, string> {
+    if fs.length != ft.length {
+        return Result.Err("field names and types disagree in count")
+    }
+    mut fields: List<Param> = []
+    // LICENSED I3: a ZIP of parallel captures; comprehensions cannot destructure enumerate
+    for (j, f) in fs.enumerate() {
+        fields.push(Param { name: f.text, ty: ft[j], default: default_before(b, fs, fds, j) })
+    }
+    Result.Ok(fields)
+}
+
+/// The default whose position falls between field `j`'s name and
+/// the next field's — null when none does.
+fn default_before(b: Builder, fs: List<Token>, fds: List<ExprId>, j: int) -> ExprId? {
+    let lo = fs[j].span.lo
+    let hi: int = if j + 1 < fs.length { fs[j + 1].span.lo } else { 1000000000 }
+    fds.find(starts_between(b, it, lo, hi))
+}
+
+fn starts_between(b: Builder, e: ExprId, lo: int, hi: int) -> bool {
+    let sp: Span? = b.store.expr_span(e)
+    sp != null && sp!.lo > lo && sp!.lo < hi
 }

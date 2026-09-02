@@ -1,0 +1,24 @@
+//! Components — the self-describing surface, both spellings SUGAR:
+//! `component Name { config { field: T = default, … } }` declares
+//! a record whose fields carry defaults, and `component Name inst {
+//! field = value … }` binds `inst` to a literal of it, the omitted
+//! fields taking their defaults. No node of its own — the struct
+//! declaration's and literal's laws judge everything.
+use features.{LanguageFeature, BuilderRow}
+
+export fn components() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name             | build
+        "component_decl" | build_component_decl
+        "component_inst" | build_component_inst
+    }
+    component LanguageFeature f {
+        name = "components"
+        docs = "`component Name { config { f: T = d, … } }` declares a record with defaults; `component Name inst { f = v … }` instantiates one, defaults filling the rest."
+        gram = """
+stmt = "component" n:NAME i:NAME "{" BREAK ( k:NAME "=" v:expression BREAK )* "}" BREAK -> component_inst(n, i, k, v) | "component" n:NAME "{" BREAK "config" "{" BREAK? fs:NAME ":" ft:type ( "=" fd:expression )? ( "," BREAK? fs:NAME ":" ft:type ( "=" fd:expression )? )* ","? BREAK? "}" BREAK "}" BREAK @recover(sync_to: "BREAK") -> component_decl(n, fs, ft, fd)
+"""
+        builders = rows
+    }
+    f
+}
