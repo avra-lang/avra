@@ -392,6 +392,7 @@ impl Resolver {
             return
         }
         let at = self.loc_of(e)
+        if name == "it" { return self.unbound_pronoun(at) }
         let later: StmtId? = self.later_def(name)
         if later != null {
             // A loc-less frame renders no window — absence stays quiet.
@@ -598,6 +599,13 @@ impl Resolver {
     fn record_assign(self, s: StmtId, target: StmtId) {
         mut ts = self.assign_targets
         ts.set(s.index, target)
+    }
+
+    fn unbound_pronoun(self, at: Loc) {
+        self.speak(pointed(
+            error_at("resolve.unresolved", at, "`it` rides a METHOD call's arguments — nothing binds it here"),
+            "the pronoun")
+            with { help: "inside `xs.map(…)` and friends `it` is the element; elsewhere, name the value" })
     }
 
     fn refuse_reserved(self, name: string, at: Loc?) {

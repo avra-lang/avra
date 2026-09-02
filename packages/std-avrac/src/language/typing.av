@@ -12,6 +12,7 @@ use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig, Asked, Sub
               fn_sig_of, record_sig_of, variant_sig_of, duplicate_names, res_enum_sig,
               slot_worthy, method_symbol,
               subbed_variants, subbed_fields}
+use features.closures.{unfed_lambda}
 use @std.errors.{Loc}
 
 /// The pass's facts: the registry, a dense expression table, and a
@@ -61,6 +62,7 @@ type Typer = {
     lam_bar: List<int>,
     wants: List<TypeId?>,
     hungry: List<bool>,
+    starved: List<int>,
     tscope: List<TypeId>,
     substs: List<Sub?>,
     methods: Map<string, StmtId>,
@@ -90,6 +92,7 @@ export fn type_check(p: ParsedProgram, r: Resolution) -> Typing {
         lam_bar: [],
         wants: filled<TypeId?>(p.store.exprs.count(), null),
         hungry: filled(p.store.exprs.count(), false),
+        starved: filled(p.store.exprs.count(), -1),
         decls: filled<DeclSig?>(p.store.stmts.count(), null),
         diagnostics: [],
     }
@@ -182,6 +185,9 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         want_at: (e: ExprId) -> t.wants[e.index],
         plant_want: (e: ExprId, ty: TypeId) -> t.plant_want(e, ty),
         go_hungry: (e: ExprId) -> t.go_hungry(e),
+        absorb_hunger: (e: ExprId) -> t.absorb_hunger(e),
+        starve: (e: ExprId, want: TypeId) -> t.starve(e, want),
+        behind_lambda: () -> t.behind_lambda(),
         retype_seated: (a: ExprId, seats: List<TypeId>) -> reseated(t, param_types, a, seats),
         method_sig: (target: string, mname: string) -> t.method_sig(target, mname),
         trait_sig: (tr: string, mname: string) -> t.trait_sig(tr, mname),
@@ -251,12 +257,6 @@ fn reseated(t: Typer, param_types: List<TypeId>, a: ExprId, seats: List<TypeId>)
 }
 
 /// A lambda's leading param name, for the hunger refusal.
-fn first_param_name(store: NodeStore, e: ExprId) -> string {
-    let parts: LambdaParts? = store.lambda_parts(e)
-    if parts == null { return "the parameter" }
-    parts!.params.first()?.name ?? "the parameter"
-}
-
 fn narrowed_subtree(t: Typer, param_types: List<TypeId>, subject: ExprId, branch: ExprId) -> TypeId {
     let b: Binding? = binding_of(t.resolution, subject)
     if b == null { return typed_subtree(t, param_types, branch) }
@@ -1047,22 +1047,43 @@ impl Typer {
         hs.set(e.index, true)
     }
 
+    /// A judging context that BAILS on its own error silences its
+    /// arguments' hunger — one mistake, one message.
+    fn absorb_hunger(self, e: ExprId) {
+        mut hs = self.hungry
+        hs.set(e.index, false)
+    }
+
+    /// A seat that could not feed a hungry lambda records itself;
+    /// answers whether it did.
+    fn starve(self, e: ExprId, want: TypeId) -> bool {
+        if !self.hungry[e.index] { return false }
+        mut ss = self.starved
+        ss.set(e.index, want.index)
+        true
+    }
+
+    /// Inside a lambda body — behind its barrier, no enclosing fn
+    /// answers.
+    fn behind_lambda(self) -> bool {
+        let bar: int? = self.lam_bar.last()
+        bar != null && self.fn_ret.length <= bar!
+    }
+
     /// Every lambda still hungry when typing ends never met a seat
     /// — the refusal fires once, here.
     fn speak_hungry(self) {
         // LICENSED I3: the index IS the expression id
         for (j, h) in self.hungry.enumerate() {
-            if h { self.never_heard(ExprId { index: j }) }
+            if h { unfed_lambda(expr_cx(self, []), ExprId { index: j }, self.starved_seat(j)) }
         }
     }
 
-    fn never_heard(self, e: ExprId) {
-        let name = first_param_name(self.store, e)
-        self.speak(pointed(
-            error_at("type.lambda", loc_at(self.p.source.file, self.store.expr_span(e)),
-                "`${name}` needs a type — this lambda's slot tells it nothing"),
-            "in this lambda")
-            with { help: "annotate — `(${name}: int) -> …` — or hand the lambda to a slot that knows its seats" })
+    /// The seat that starved a hungry lambda, when one judged it.
+    fn starved_seat(self, j: int) -> TypeId? {
+        let s = self.starved[j]
+        if s < 0 { return null }
+        TypeId { index: s }
     }
 
     /// The enclosing fn's answer — unless a LAMBDA BARRIER stands

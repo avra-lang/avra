@@ -175,11 +175,7 @@ fn propagate_type(cx: TypeCx, v: ExprId) -> TypeId {
     }
     let ret: TypeId? = cx.enclosing_ret()
     if ret == null {
-        return spoken(cx, pointed(
-            error_at("type.propagate", cx.loc_of(v),
-                "`?` passes absence to a caller, and the top level has none"),
-            "at the top level")
-            with { help: "answer the absence here — `?? value`, or ask with `== null`" })
+        return no_caller(cx, v, "absence", "answer the absence here — `?? value`, or ask with `== null`")
     }
     let promised = ret!
     if cx.types.shape_of(promised) is .Error { return cx.error_type }
@@ -201,17 +197,29 @@ fn propagate_remedy(cx: TypeCx, ret: TypeId, promise: string) -> string {
     "declare the answer nullable — `-> ${promise}?` — or answer the absence here with `??`"
 }
 
+/// `?` with no enclosing fn to pass to — the top level, or a lambda,
+/// whose answer is inferred and so promises nothing.
+fn no_caller(cx: TypeCx, v: ExprId, what: string, help: string) -> TypeId {
+    if cx.behind_lambda() {
+        return spoken(cx, pointed(
+            error_at("type.propagate", cx.loc_of(v),
+                "`?` passes ${what} to a caller, and a lambda promises none — its answer is inferred"),
+            "inside this lambda")
+            with { help: help })
+    }
+    spoken(cx, pointed(
+        error_at("type.propagate", cx.loc_of(v), "`?` passes ${what} to a caller, and the top level has none"),
+        "at the top level")
+        with { help: help })
+}
+
 /// `v?` on a RESULT — the failure channel: a present answer unwraps
 /// to the ok side; a failure makes the enclosing fn answer THE SAME
 /// failure, so the fn must promise a Result carrying the same E.
 fn propagate_res_type(cx: TypeCx, v: ExprId, sides: ResSides) -> TypeId {
     let ret: TypeId? = cx.enclosing_ret()
     if ret == null {
-        return spoken(cx, pointed(
-            error_at("type.propagate", cx.loc_of(v),
-                "`?` passes the failure to a caller, and the top level has none"),
-            "at the top level")
-            with { help: "handle it here — `match` the `.Ok`/`.Err`" })
+        return no_caller(cx, v, "the failure", "handle it here — `match` the `.Ok`/`.Err`")
     }
     let promised = ret!
     if cx.types.shape_of(promised) is .Error { return cx.error_type }

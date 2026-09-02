@@ -297,6 +297,54 @@ impl NodeStore {
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
     /// Tags are never reused; the next free tag is 30.
+    /// Does the PRONOUN ride this subtree unbound? `it` belongs to
+    /// the nearest enclosing METHOD call: a lambda binds its own
+    /// scope (false), a nested method call's arguments started
+    /// fresh scopes at their own build (subject only), and every
+    /// other node asks its children. A block's STATEMENTS do not
+    /// carry the pronoun (recorded) — only its answering value.
+    /// Exhaustive: a new expression must answer.
+    fn pronoun_rides(self, id: ExprId) -> bool {
+        match self.expr(id) {
+            .Ident(name) -> name == "it",
+            .Lambda(_, _) -> false,
+            .MethodCall(subject, _, _) -> self.pronoun_rides(subject),
+            .IntLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error -> false,
+            .Binary(_, left, right) -> self.pronoun_rides(left) || self.pronoun_rides(right),
+            .Not(v) -> self.pronoun_rides(v),
+            .Force(v) -> self.pronoun_rides(v),
+            .Propagate(v) -> self.pronoun_rides(v),
+            .ListLit(elems) -> self.any_rides(elems),
+            .Index(subject, index) -> self.pronoun_rides(subject) || self.pronoun_rides(index),
+            .Prop(subject, _) -> self.pronoun_rides(subject),
+            .Chain(subject, _) -> self.pronoun_rides(subject),
+            .Interp(_, holes) -> self.any_rides(holes),
+            .If(cond, on_true, on_false) ->
+                self.pronoun_rides(cond) || self.pronoun_rides(on_true) || self.pronoun_rides(on_false),
+            .Call(callee, _, args) -> callee == "it" || self.any_rides(args),
+            .CallValue(subject, cargs) -> self.pronoun_rides(subject) || self.any_rides(cargs),
+            .When(conds, values, fallback) ->
+                self.any_rides(conds) || self.any_rides(values) || self.pronoun_rides(fallback),
+            .Block(_, value) -> if value == null { false } else { self.pronoun_rides(value!) },
+            .StructLit(_, _, values) -> self.any_rides(values),
+            .With(subject, _, values) -> self.pronoun_rides(subject) || self.any_rides(values),
+            .Match(subject, _, _, values) -> self.pronoun_rides(subject) || self.any_rides(values),
+            .Catch(subject, _, _, values) -> self.pronoun_rides(subject) || self.any_rides(values),
+            .MatchOpt(subject, _, present, absent) ->
+                self.pronoun_rides(subject) || self.pronoun_rides(present) || self.pronoun_rides(absent),
+            .Coalesce(l, r) -> self.pronoun_rides(l) || self.pronoun_rides(r),
+        }
+    }
+
+    fn any_rides(self, ids: List<ExprId>) -> bool {
+        // LICENSED I5: bs2's pronoun detector misses self-method
+        // wrappers — the scan is spelled
+        for k in ids {
+            if self.pronoun_rides(k) { return true }
+        }
+        false
+    }
+
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),

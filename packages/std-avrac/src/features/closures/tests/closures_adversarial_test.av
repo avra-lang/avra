@@ -1,0 +1,211 @@
+// The pronoun and the expected-type channel under attack: every
+// degenerate shape, every wrong type at every seat, the malformed
+// surface, every feature crossed both ways, names against names,
+// ownership through the walks, and refusal quality (one mistake,
+// one voice). The vertical story lives in closures_test.av; these
+// are the programs that tried to break it (rt25, rt27).
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+/// The standard users list — two records, one adult.
+fn users() -> string {
+    "type U = { name: string, age: int }\nlet us = [U { name: \"ada\", age: 36 }, U { name: \"bo\", age: 7 }]\n"
+}
+
+/// A struct with an int-seated method — the seat no pronoun fits.
+fn scaled() -> string {
+    "type P = { x: int }\nimpl P {\n    fn scaled(self, k: int) -> int {\n        self.x * k\n    }\n}\n"
+}
+
+spec "features/closures/adversarial" {
+    given "degenerate shapes" {
+        then "the pronoun alone is the identity walk" {
+            shown("[3].map(it)[0]") == "3"
+        }
+        then "the pronoun twice in one argument is one lambda" {
+            shown("[3].map(it + it)[0]") == "6"
+        }
+        then "nested identity walks" {
+            shown("[[3]].map(it)[0][0]") == "3"
+        }
+        then "an empty subject refuses ONCE — the hungry lambda is absorbed" {
+            refusals("[].map(it)\n2") == 1
+        }
+        then "two pronoun arguments at int seats — two seats, two voices" {
+            refusals("type P = { x: int }\nimpl P {\n    fn two(self, a: int, b: int) -> int {\n        self.x + a + b\n    }\n}\nP { x: 1 }.two(it, it)\n2") == 2
+        }
+    }
+    given "every wrong type at the seat — one refusal each" {
+        then "a string element under int arithmetic" {
+            refused_with("[\"a\"].map(it + 1)\n2", "`+` needs `int` operands, found `string`")
+        }
+        then "a field on an int element" {
+            refusals("[1].map(it.name)\n2") == 1
+        }
+        then "calling an int element" {
+            refused_with("[1].map(it(3))\n2", "`it` is not callable")
+        }
+        then "a list as an index" {
+            refusals("[[1]].map(it[it])\n2") == 1
+        }
+        then "the pronoun at a plain int seat names its element's absence" {
+            refused_with("${scaled()}P { x: 3 }.scaled(it)\n2",
+                         "`it` has no element here — this seat takes `int`, not a fn")
+        }
+        then "a walk on an int subject refuses once" {
+            refusals("let n = 5\nn.map(it)\n2") == 1
+        }
+        then "a two-param lambda at a walk names the seat count" {
+            refused_with("let xs = [1, 2]\nxs.map((a, b) -> a)\n2", "`map` seats one param")
+        }
+        then "a predicate whose body errs speaks once" {
+            refusals("[1].filter(it.name)\n2") == 1
+        }
+    }
+    given "the malformed surface — a diagnostic every time" {
+        then "a dangling operator" {
+            refusals("[1].map(it *)\n2") == 1
+        }
+        then "the pronoun doubled" {
+            refusals("[1].map(it it)\n2") == 1
+        }
+        then "a parenthesised pronoun still rides" {
+            shown("[1].map((it))[0]") == "1"
+        }
+        then "no parentheses at all" {
+            refusals("[1].map it\n2") == 1
+        }
+        then "an unclosed call" {
+            refusals("[1].map(it\n2") == 1
+        }
+    }
+    given "the pronoun across every feature" {
+        then "inside an if" {
+            shown("[1, 5].map(if it > 2 { it } else { 0 })[1]") == "5"
+        }
+        then "inside a when" {
+            shown("[1, 5].map(when {\n    it > 2 -> 1\n    _ -> 0\n})[0]") == "0"
+        }
+        then "matched on directly" {
+            shown("enum K {\n    a\n    b\n}\n[K.a, K.b].map(match it {\n    .a -> 1\n    .b -> 2\n})[1]") == "2"
+        }
+        then "inside a struct literal" {
+            shown("type P = { x: int }\n[4].map(P { x: it })[0].x") == "4"
+        }
+        then "inside a list literal" {
+            shown("[1].map([it, it])[0].length") == "2"
+        }
+        then "inside an explicit lambda it is unbound — the lambda is its own scope" {
+            refused_with("[1].map((y: int) -> it + y)\n2", "nothing binds it here")
+        }
+        then "chained walks each bind their own" {
+            shown("[1, 2].map(it * 2).filter(it > 2).length") == "1"
+        }
+        then "in a fn body" {
+            shown("fn dbl(xs: List<int>) -> List<int> {\n    xs.map(it * 2)\n}\ndbl([4])[0]") == "8"
+        }
+        then "through recursion" {
+            shown("fn down(n: int) -> int {\n    if n == 0 { 0 } else { [n].map(down(it - 1))[0] }\n}\ndown(5)") == "0"
+        }
+        then "in a while condition" {
+            shown("mut xs = [3, 2]\nmut n = 0\nwhile xs.any(it > 2) {\n    xs = xs.map(it - 1)\n    n = n + 1\n}\nn") == "1"
+        }
+        then "the pronoun as a nested walk's subject — inner and outer bind apart" {
+            shown("[[1, 2, 3]].map(it.filter(it > 1).length)[0]") == "2"
+        }
+        then "under with" {
+            shown("${users()}us.map(it with { age: 1 })[0].age") == "1"
+        }
+        then "in a mut rebinding" {
+            shown("mut ys = [1]\nys = ys.map(it + 1)\nys[0]") == "2"
+        }
+        then "indexed" {
+            shown("[[1, 2]].map(it[1])[0]") == "2"
+        }
+        then "negated" {
+            shown("[true].map(!it)[0]") == "false"
+        }
+        then "matched for presence — the element found by an inner walk" {
+            shown("[[1, 2], [5]].map(match it.find(it > 1) {\n    w? -> w\n    null -> 0\n})[1]") == "5"
+        }
+        then "captures ride beside the pronoun" {
+            shown("fn f(k: int) -> List<int> {\n    [k].map(it + k)\n}\nf(2)[0]") == "4"
+        }
+        then "calling the element — `it(…)` rides too" {
+            shown("let fs: List<fn(int) -> int> = [(x) -> x + 1]\nfs.map(it(3))[0]") == "4"
+        }
+        then "a walk cannot collect a nullable scalar yet" {
+            refused_with("fn g(n: int) -> int? {\n    n\n}\n[1].map(g(it))\n2", "`map` cannot collect `int?` yet")
+        }
+        then "a list literal cannot hold a nullable scalar yet — under a want too" {
+            refused_with("let xs: List<int?> = [3, null]\nxs.map(it ?? 0)[1]", "a list element cannot hold `int?` yet")
+        }
+        then "a fn's list tail is gated the same" {
+            refusals("fn g(v: int?) -> List<int?> {\n    [v]\n}\ng(1).length") == 1
+        }
+        then "`?` behind the lambda barrier names the lambda, not the top level" {
+            refused_with("type U = { n: int }\nfn g(u: U) -> U? {\n    u\n}\nfn f(us: List<U>) -> U? {\n    us.map(g(it)?)[0]\n}\nf([U { n: 1 }])",
+                         "a lambda promises none")
+        }
+    }
+    given "names against names" {
+        then "a fn named `it` — callee position finds the fn, the argument finds the element" {
+            shown("fn it(n: int) -> int {\n    n * 2\n}\n[3].map(it(it))[0]") == "6"
+        }
+        then "a param named `it` — the pronoun wins inside the call" {
+            shown("fn f(it: int) -> int {\n    [1].map(it + 1)[0] + it\n}\nf(10)") == "12"
+        }
+        then "a field named `it`" {
+            shown("type P = { it: int }\n[P { it: 4 }].map(it.it)[0]") == "4"
+        }
+        then "a mut named `it`" {
+            shown("mut it = 1\nit = [5].map(it)[0]\nit") == "5"
+        }
+        then "`it` re-let twice — the pronoun still wins" {
+            shown("let it = 1\nlet it = 2\n[7].map(it)[0]") == "7"
+        }
+        then "an enum named `it`" {
+            shown("enum it {\n    a\n}\n[1].map(it)[0]") == "1"
+        }
+        then "another name used before definition — one refusal, no walk cascade" {
+            refused_with("let y = [1].map(it + z)\nlet z = 1\n2", "used before its definition")
+        }
+    }
+    given "ownership through the walks" {
+        then "string elements" {
+            shown("[\"ab\", \"c\"].filter(it.length > 1)[0]") == "ab"
+        }
+        then "a found managed record" {
+            shown("${users()}(us.find(it.name == \"bo\") ?? U { name: \"-\", age: 0 }).name") == "bo"
+        }
+        then "nested managed walks" {
+            shown("${users()}[us].map(it.map(it.name)[0])[0]") == "ada"
+        }
+        then "filter-then-map under churn" {
+            shown("${users()}mut n = 0\nmut i = 0\nwhile i < 200 {\n    n = n + us.filter(it.name != \"ada\").map(it.name).length\n    i = i + 1\n}\nn") == "200"
+        }
+    }
+    given "the channel's own seats (rt25)" {
+        then "a body disagreeing with the declared answer names both" {
+            refused_with("let f: fn(int) -> bool = (x) -> x + 1\n2", "declares `fn(int) -> bool`, this is `fn(int) -> int`")
+        }
+        then "wants flow through match and when arms" {
+            shown("enum Mode {\n    up\n    down\n}\nfn shift(m: Mode) -> fn(int) -> int {\n    match m {\n        .up -> (x) -> x + 1\n        .down -> (x) -> x - 1\n    }\n}\nfn pick(n: int) -> fn(int) -> int {\n    when {\n        n > 0 -> (x) -> x * n\n        _ -> (x) -> 0 - x\n    }\n}\n\"$" + "{shift(Mode.up)(3)} $" + "{pick(3)(7)} $" + "{pick(0 - 1)(7)}\"") == "4 21 -7"
+        }
+        then "one lambda at two seats" {
+            shown("fn twice(f: fn(int) -> int, v: int) -> int {\n    f(f(v))\n}\ntwice((x) -> x * 2, 5)") == "20"
+        }
+        then "a lambda at a scalar slot names the slot" {
+            refused_with("let n: int = (x) -> x + 1\n2", "a lambda cannot sit here — this seat takes `int`")
+        }
+        then "a lambda no slot ever judges speaks once" {
+            refused_with("let f = (x) -> x + 1\n2", "needs a type")
+        }
+        then "a heterogeneous literal under a dyn want boxes; a non-implementor is named" {
+            refused_with("trait Show {\n    fn show(self) -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show(self) -> int {\n        self.x\n    }\n}\nlet xs: List<dyn Show> = [P { x: 1 }, 5]\n2",
+                         "this list holds `dyn Show`, this is `int`")
+        }
+        then "a nested literal want does not cascade — one hunger voice" {
+            refusals("let m: List<List<fn(int) -> int>> = [[(x) -> x + 1]]\n2") == 1
+        }
+    }
+}

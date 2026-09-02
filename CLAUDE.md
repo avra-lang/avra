@@ -340,7 +340,9 @@ against these before writing; probe in scratch when unsure.
   own `it` scope. A top-level plain call never binds `it` (pipe RHS
   excepted: `x |> f(it + 1)` hands `f` a closure). The pronoun
   detector misses `is`-expressions — `xs.filter(it is .A)` fails to
-  bind; use an explicit param there.
+  bind; use an explicit param there — and SELF-METHOD wrappers:
+  `ids.any(self.rides(it))` ICEs at codegen (F1007 "cannot
+  determine the type of lambda parameter `it`"); spell the scan.
 - Present-bind (`let x ->`) in expression-position match loses its
   binding at codegen inside mono-SPECIALIZED bodies (fine in plain
   fns) — restructure to `if k == null { } else { k! }`.
@@ -394,6 +396,11 @@ against these before writing; probe in scratch when unsure.
 - Method calls on a `const` string fail at codegen.
 - Rebuild bs2 with `make build`, never `build-quick` — its freshness
   check can silently skip rebuilds and leave a stale binary.
+  A bootstrap `make build` also plants ITS older `llvm_wrapper.o`
+  with a fresh mtime — our Makefile reinstalls ours by content
+  comparison, so run any `make` target here afterwards (a raw
+  `./avra` right after a bootstrap rebuild links the stale wrapper:
+  "Undefined symbols … _avra_llvm_add_case").
 - Int-backed newtypes corrupt through generic/mono flows: a fn
   returning `Newtype?` comes back null once instances crossed mono'd
   code. Use single-field STRUCTS for typed ids (`{ index: int }`).

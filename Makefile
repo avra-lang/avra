@@ -52,8 +52,11 @@ build/avra_runtime.o: runtime/avra_runtime.c
 	@mkdir -p build
 	cc -O2 -Wall -Werror -c runtime/avra_runtime.c -o build/avra_runtime.o
 
-$(BOOT_WRAPPER): build/llvm_wrapper.o
-	cp $< $@
+# Compared by CONTENT: the bootstrap's own `make build` plants its
+# older wrapper with a fresh mtime, which a timestamp rule believes.
+$(BOOT_WRAPPER): build/llvm_wrapper.o FORCE
+	@cmp -s $< $@ || cp $< $@
+FORCE:
 
 build/llvm_wrapper.o: backend/llvm_wrapper.c
 	@mkdir -p build

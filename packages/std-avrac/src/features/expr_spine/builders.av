@@ -1,5 +1,5 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, Span}
+use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, Span, Param}
 use features.{LangNode, Builder, token_at, zip_defect, aligned_binds, window_end}
 use grammar.{Token}
 
@@ -146,7 +146,8 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
             if called {
                 if links[jn].text == "?." { return Result.Err("`?.` cannot call a method yet — chain methods are recorded") }
                 acc = b.store.alloc_expr(
-                    Expr.MethodCall(acc, names[jn].text, args_between(b, margs, np, upto)), b.span)
+                    Expr.MethodCall(acc, names[jn].text,
+                        [pronouned(b, a) for a in args_between(b, margs, np, upto)]), b.span)
             } else {
                 acc = b.store.alloc_expr(prop_link(links[jn].text, acc, names[jn].text), b.span)
             }
@@ -198,6 +199,16 @@ fn span_lo(b: Builder, e: ExprId) -> int? {
     let sp: Span? = b.store.expr_span(e)
     if sp == null { return null }
     sp!.lo
+}
+
+/// An argument the PRONOUN rides becomes an implicit one-param
+/// lambda — `xs.map(it * 2)` is `xs.map((it) -> it * 2)`, and the
+/// expected-type channel seats it like any other. The wrap is the
+/// pronoun's WHOLE mechanism: nothing downstream knows it exists.
+fn pronouned(b: Builder, a: ExprId) -> ExprId {
+    if !b.store.pronoun_rides(a) { return a }
+    b.store.alloc_expr(
+        Expr.Lambda([Param { name: "it", ty: null }], a), b.store.expr_span(a))
 }
 
 /// The node a link token names — the chain when absence rides it.

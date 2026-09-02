@@ -2390,6 +2390,30 @@ into features (or spec commitments) when their milestone comes.
   correct law, misleading flavor. And a keyword PARAM speaks
   twice (the lambda's refusal + the body ident's — the same
   pre-existing cascade fns have). Both polish-grade.
+- NULLABLE SLOTS, the policy (rt27): a nullable is two words and
+  a list slot is one — `List<int?>` built natively and ICEd at
+  LLVM verification, the first program ever to build one. The
+  struct-field gate (F2008) already refuses nullable slots; lists
+  now refuse the same way at BOTH construction paths (the literal
+  under any want, and `map` collecting a nullable answer), with
+  the same voice: "arrive with ownership's next slice". Nullable
+  POINTERS in lists happened to work natively and are refused
+  too — unmodeled by the memory pass, consistent with F2008.
+  `find`'s `T?` answer is a register, untouched. Settled laws:
+  a refused call ABSORBS its arguments' hunger (one mistake, one
+  voice) — THE SETTLEMENT LAW, one fn (`settled_call`) every call
+  shape passes through; extracting it found `checked_call`, a
+  hand copy of `seats_judged` that answered `s.ret` after an
+  arity refusal where every other copy answered Error, so the
+  named-fn path alone cascaded — the copy is dead; a seat that cannot feed a hungry lambda STARVES it and
+  the walk-end voice speaks in the seat's words (pronoun-aware);
+  callee position finds FNS before locals (`fn it` + `[3].map(it(it))`
+  is 6 — the pronoun's param is shadowed as callee only); `?`
+  behind the lambda barrier names the lambda (trigger: could a
+  lambda's inferred answer BECOME nullable under `?`? Rust says
+  yes for closures — decide with rung 14). Bare block
+  expressions are not in the language (pronoun_rides' Block arm
+  is dormant, kept for exhaustiveness).
 - CHANNEL TRIGGERS, recorded with the landing: a want does not
   yet TRANSFORM through nested literals (`List<List<fn>>` — the
   inner literal walks before the outer consults; the refusal is
@@ -3161,10 +3185,28 @@ THE SLICES:
        to a NAMED typing refusal). Multiline struct, decl, and
        list literals landed (BREAK-tolerant grams). rt24 11/11;
        corpus/walks.av is the witness; corpus 50.
-  (L3) recorded: the `it` pronoun (parse-time lambda sugar), pipe
-       `|>`, mut-ref captures (rung 14 + Systems), fn-value
-       equality (refuses — compare_help), closure printing
-       (unprintable, names its type).
+  (L3) [x] THE `it` PRONOUN — LANDED 2026-09-01, a parse bow on
+       the channel: a method-call argument the pronoun rides wraps
+       as an implicit one-param lambda named `it`, and the channel
+       seats it — nothing downstream knows the pronoun exists.
+       The one real artifact is core's `pronoun_rides`: the
+       fingerprint walk's boolean twin, exhaustive over Expr (a
+       new expression must answer whether the pronoun crosses it);
+       a LAMBDA is its own scope, a nested METHOD call's arguments
+       started fresh scopes at their own build (subject only), a
+       block's STATEMENTS do not carry it (recorded). THE
+       SHADOWING LAW, pinned: inside the call the pronoun wins
+       (`let it = 100` stands outside). An unbound `it` names its
+       home; a judging context that bails absorbs its arguments'
+       hunger (one mistake, one voice). rt26 7/7;
+       corpus/pronoun.av. TOUCH-POINTS: ~70 lines (core's
+       pronoun_rides, the builder's wrap, one resolve voice), no
+       trait growth, zero per-feature cost. The seat-starvation
+       voices (rt27) are pronoun-aware. TRIGGER: `wanted_elem`
+       (lists) and `wanted_arrow` (closures) are two copies of
+       "the want projected through a shape" — the third want
+       consumer names `wanted_as`. Still recorded: pipe `|>`, mut-ref captures (rung 14 +
+       Systems), fn-value equality, closure printing.
 
 ## Ownership 11.5 — the design (recorded 2026-08-31)
 

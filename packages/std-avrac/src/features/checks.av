@@ -3,7 +3,7 @@
 //! words. A LAW extracts at its SECOND: a rule copied by hand
 //! disagrees with itself the day the copies drift (`member_type_of`
 //! serves the bare read and the chain for exactly that reason).
-use core.{ExprId, TypeId, Type, ResSides, Arrow, StmtId, TypeRef, filled}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, StmtId, TypeRef, filled, LambdaParts}
 use diagnostics.{Diag, error_at, pointed}
 
 /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -41,6 +41,10 @@ export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
 /// is the whole point of opting in. True means ACCEPTED.
 export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
     heard(cx, e, want)
+    // still hungry after the seat had its say: the seat can never
+    // feed it. Recorded, and the door closes quietly — the walk's
+    // end speaks once, in the seat's words
+    if cx.starve(e, want) { return true }
     let got = cx.type_at(e)
     if !types_disagree(cx, got, want) { return true }
     let inner: TypeId? = cx.types.carried(want)
@@ -215,6 +219,8 @@ fn length_member(cx: TypeCx, e: ExprId, shown: string, ty: TypeId) -> TypeId {
 /// binding form asks here, so the wording never drifts.
 export fn declared_binding(cx: TypeCx, v: ExprId, name: string, declared: TypeId) {
     if cx.types.shape_of(declared) is .Error { return }
+    // a hungry lambda is not yet an error — the seat records itself
+    if cx.starve(v, declared) { return }
     if cx.shape_at(v) is .Error { return }
     // A TYPE standing where the value belongs already spoke through
     // the value law — a second refusal would be a cascade.
@@ -567,7 +573,12 @@ export fn list_method_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string,
     let held: Arrow? = walk_arg(cx, e, name, elem!, args)
     if held == null { return cx.error_type }
     let arrow = held!
-    if name == "map" { return cx.types.intern(Type.List(arrow.answer)) }
+    // a body that erred already spoke — its answer absorbs here
+    if cx.types.shape_of(arrow.answer) is .Error { return cx.error_type }
+    if name == "map" {
+        if !slot_worthy(cx.types.shape_of(arrow.answer)) { return uncollectable(cx, e, arrow.answer) }
+        return cx.types.intern(Type.List(arrow.answer))
+    }
     if !(cx.types.shape_of(arrow.answer) is .Bool) { return unpredicated(cx, e, name, arrow.answer) }
     if name == "find" { return cx.types.intern(Type.Opt(elem!)) }
     if name == "filter" { return cx.type_at(subject) }
@@ -587,9 +598,15 @@ fn walk_arg(cx: TypeCx, e: ExprId, name: string, elem: TypeId, args: List<ExprId
     }
     let rescued: TypeId? = cx.retype_seated(args[0], [elem])
     let fnty: TypeId = rescued ?? cx.type_at(args[0])
-    // a still-hungry lambda absorbs here — the walk's end speaks
-    // its one refusal; a second voice would be a cascade
-    if cx.types.shape_of(fnty) is .Error { return null }
+    if cx.types.shape_of(fnty) is .Error {
+        // a lambda with the wrong seat count could never be fed —
+        // the walk says so; any other error already spoke
+        let parts: LambdaParts? = cx.store.lambda_parts(args[0])
+        if parts != null && parts!.params.length != 1 {
+            let _ = misseated_walk(cx, name, args[0], parts!.params.length)
+        }
+        return null
+    }
     let held: Arrow? = cx.types.arrow_parts(fnty)
     if held == null {
         let _ = fnless_walk(cx, name, args[0])
@@ -688,6 +705,38 @@ fn one_fn_wanted(cx: TypeCx, e: ExprId, name: string, found: int) -> TypeId {
     spoken(cx, pointed(
         error_at("type.mismatch", cx.loc_of(e), "`${name}` takes one fn, found ${found} arguments"),
         "this call"))
+}
+
+fn misseated_walk(cx: TypeCx, name: string, a: ExprId, seats: int) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(a),
+            "`${name}` seats one param — the element — and this lambda takes ${seats}"),
+        "this lambda"))
+}
+
+fn uncollectable(cx: TypeCx, e: ExprId, answer: TypeId) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.list_scalar", cx.loc_of(e),
+            "`map` cannot collect `${cx.types.name_of(answer)}` yet"),
+        "this walk")
+        with { help: slice_promise("elements") })
+}
+
+/// THE PROMISE every nullable-in-a-slot refusal makes — one fn, so
+/// the day the slice lands there is one place to keep it.
+export fn slice_promise(what: string) -> string {
+    "nullable ${what} arrive with ownership's next slice"
+}
+
+/// THE SETTLEMENT LAW: a call refused as a whole absorbs its
+/// arguments' hunger — the call spoke, and a hungry lambda's own
+/// voice would be a second one for the same mistake. Every call
+/// shape (named, valued, method) settles here.
+export fn settled_call(cx: TypeCx, args: List<ExprId>, answer: TypeId) -> TypeId {
+    if cx.types.shape_of(answer) is .Error {
+        for a in args { cx.absorb_hunger(a) }
+    }
+    answer
 }
 
 fn fnless_walk(cx: TypeCx, name: string, a: ExprId) -> TypeId {

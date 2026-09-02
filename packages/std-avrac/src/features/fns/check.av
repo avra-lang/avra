@@ -7,7 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, filled}
-use features.{TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unify, unlawful_side, fully_bound, bound_args, tparams_refused, unpinned_of, bound_closed}
+use features.{TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unify, unlawful_side, fully_bound, bound_args, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise}
 use diagnostics.{error_at, pointed}
 
 export fn check_fn(cx: StmtTypeCx, s: StmtId) {
@@ -35,8 +35,8 @@ fn call_type(cx: TypeCx, e: ExprId) -> TypeId {
     match cx.store.expr(e) {
         .Call(callee, pins, args) -> {
             let sig: FnSig? = cx.sig_of(e)
-            if sig == null { return valued_call(cx, e, callee, pins, args) }
-            dispatched_call(cx, e, callee, pins, args, sig!)
+            if sig == null { return settled_call(cx, args, valued_call(cx, e, callee, pins, args)) }
+            settled_call(cx, args, dispatched_call(cx, e, callee, pins, args, sig!))
         }
         _ -> cx.error_type,
     }
@@ -69,7 +69,7 @@ fn valued_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, args:
 fn dispatched_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                    args: List<ExprId>, s: FnSig) -> TypeId {
     let decl: StmtId? = cx.bound_def(e)
-    if decl == null { return checked_call(cx, e, callee, args, s) }
+    if decl == null { return seats_judged(cx, e, callee, s.params, s.ret, args) }
     let tp: List<string> = tparams_of(cx, decl!)
     if tp.is_empty() {
         if !pins.is_empty() {
@@ -78,7 +78,7 @@ fn dispatched_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                     "`${callee}` takes no type arguments"),
                 "pinned here"))
         }
-        return checked_call(cx, e, callee, args, s)
+        return seats_judged(cx, e, callee, s.params, s.ret, args)
     }
     generic_call(cx, e, callee, pins, args, s, decl!, tp)
 }
@@ -143,7 +143,7 @@ fn refused_instantiation(cx: TypeCx, e: ExprId, callee: string, raw: TypeId,
         error_at("type.mismatch", cx.loc_of(e),
             "this call makes a `Result` side `${cx.types.name_of(offender!)}`, which a side cannot hold yet"),
         "in this call")
-        with { help: "nullable sides arrive with ownership's next slice" })
+        with { help: slice_promise("sides") })
     true
 }
 
@@ -164,17 +164,6 @@ fn pinned_slots(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
         bound.set(j, cx.written(decl, tr))
     }
     bound
-}
-
-fn checked_call(cx: TypeCx, e: ExprId, callee: string, args: List<ExprId>, s: FnSig) -> TypeId {
-    if args.length != s.params.length {
-        wrong_arity(cx, e, callee, s.params.length, args.length)
-        return s.ret
-    }
-    for (j, a) in args.enumerate() {
-        if !accepts(cx, a, s.params[j]) { wrong_argument(cx, callee, j, s.params[j], a) }
-    }
-    s.ret
 }
 
 /// One generic argument: unification first; when the param's Vars
