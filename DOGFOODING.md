@@ -322,8 +322,11 @@ reintroducing I3's blind spot names the two spellings it lost.
       (tagged_value's shape — dst minted by the caller, defined
       by the verb's first emit). Found when called_through's
       first draft took a pre-minted dst: the corpus caught native
-      reading register 7 of 7. Unratcheted — mint order is
-      structure, not a greppable string.
+      reading register 7 of 7. RATCHETED BY THE LOWERING itself
+      (2026-09-02, after R2's three property lowerings re-hit it
+      and only the red-team ladder noticed): `give` records every
+      defining instruction's register and refuses a mint-order
+      break as a NAMED build defect — never a native crash.
 - I26 one nullable LOCAL forced open with `!` three or more times
       in a fn. The value is already known to be there — CLAUDE.md's
       own style rule settles it ("a `let` earns its place when the

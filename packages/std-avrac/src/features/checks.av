@@ -3,7 +3,7 @@
 //! words. A LAW extracts at its SECOND: a rule copied by hand
 //! disagrees with itself the day the copies drift (`member_type_of`
 //! serves the bare read and the chain for exactly that reason).
-use core.{ExprId, TypeId, Type, ResSides, Arrow, StmtId, TypeRef, filled, LambdaParts, PlaceStep, StructSig}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, StmtId, TypeRef, filled, PlaceStep, StructSig}
 use diagnostics.{Diag, error_at, pointed}
 
 /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -193,11 +193,16 @@ export fn member_type_of(cx: TypeCx, e: ExprId, shown: string, ty: TypeId, name:
     }
     let sig: StructSig? = cx.fields_of(ty)
     if sig != null { return field_member(cx, e, shown, sig!, name) }
-    if name == "length" { return length_member(cx, e, shown, ty) }
+    let row: PropertyRow? = property_row(cx.properties, name, cx.types.shape_of(ty))
+    if row != null {
+        let r = row!
+        let answered: TypeId = r.check(cx, e, ty)
+        return answered
+    }
     spoken(cx, pointed(
         error_at("type.unknown_prop", cx.loc_of(e), "no property `${name}` on `${shown}`"),
         "read here")
-        with { help: "the one property today is `length`" })
+        with { help: "a property is a record's field, or a measure like `length` on the shapes that have one" })
 }
 
 /// A record's property IS a declared field; a miss names the
@@ -210,16 +215,6 @@ fn field_member(cx: TypeCx, e: ExprId, shown: string, sig: StructSig, name: stri
         "read here")
         with { help: fields_are(sig) })
 }
-
-/// `length` measures the shapes with an extent.
-fn length_member(cx: TypeCx, e: ExprId, shown: string, ty: TypeId) -> TypeId {
-    let sh = cx.types.shape_of(ty)
-    if sh is .List || sh is .Str || sh is .Map { return cx.types.intern(Type.Int) }
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(e), "`length` lives on `List`, `Map` and `string` values, found `${shown}`"),
-        this_is(shown)))
-}
-
 /// THE DECLARED-BINDING LAW: an annotated binding holds what it
 /// declares — the value must be ACCEPTED by the written type, its
 /// widening recorded like any other slot's. Every annotated
@@ -578,57 +573,6 @@ export fn seats_judged(cx: TypeCx, e: ExprId, callee: string, ps: List<TypeId>, 
     ret
 }
 
-/// THE LIST VOCABULARY — the builtin fork of the one dot-call
-/// surface: five walks, each judging its fn argument's seats and
-/// answer before any loop exists. Absent for non-list receivers
-/// and unknown names (the impl table gets its turn).
-export fn list_method_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
-    if !walk_name(name) { return null }
-    let elem: TypeId? = match cx.shape_at(subject) {
-        .List(t) -> t,
-        _ -> null,
-    }
-    if elem == null {
-        if cx.shape_at(subject) is .EmptyList { return unknowable_walk(cx, e, name) }
-        return null
-    }
-    let held: Arrow? = walk_arg(cx, e, name, elem!, args)
-    if held == null { return cx.error_type }
-    let arrow = held!
-    // a body that erred already spoke — its answer absorbs here
-    if cx.types.shape_of(arrow.answer) is .Error { return cx.error_type }
-    if name == "map" {
-        if !slot_worthy(cx.types.shape_of(arrow.answer)) { return uncollectable(cx, e, arrow.answer) }
-        return cx.types.intern(Type.List(arrow.answer))
-    }
-    if !(cx.types.shape_of(arrow.answer) is .Bool) { return unpredicated(cx, e, name, arrow.answer) }
-    if name == "find" { return cx.types.intern(Type.Opt(elem!)) }
-    if name == "filter" { return cx.type_at(subject) }
-    cx.types.intern(Type.Bool)
-}
-
-/// THE GROWTH WORD: `xs.push(v)` mutates a PLACE — the receiver is
-/// rooted in a mut binding, the argument is accepted by the
-/// element, and the answer is nothing. Absent for every other name
-/// and for non-list receivers.
-export fn grow_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
-    if name != "push" { return null }
-    let elem: TypeId? = match cx.shape_at(subject) {
-        .List(t) -> t,
-        _ -> null,
-    }
-    if elem == null { return null }
-    if args.length != 1 {
-        wrong_arity(cx, e, name, 1, args.length)
-        return cx.error_type
-    }
-    let root: ExprId? = cx.store.place_root(subject)
-    if root == null { return not_a_place_call(cx, e, name) }
-    if !cx.is_mut(root!) { return not_mut_call(cx, e, name, cx.store.ident_name(root!) ?? "this name") }
-    if !accepts(cx, args[0], elem!) { wrong_argument(cx, name, 0, elem!, args[0]) }
-    cx.types.intern(Type.Void)
-}
-
 /// THE PLACE LAW's structural half: every step of a target is a
 /// SLOT — a field a struct declares, an index into a list — rooted
 /// in a value binding. A measured property (`length`) and a type
@@ -661,42 +605,6 @@ export fn refuses_void_value(cx: TypeCx, e: ExprId) -> bool {
         "answers nothing")
         with { help: "a mutation is a statement; drop the binding" })
     true
-}
-
-/// Membership in the vocabulary — walks.av's list is the truth.
-fn walk_name(name: string) -> bool {
-    walk_names().contains(name)
-}
-
-/// A walk takes exactly ONE fn, whose single seat IS the element.
-fn walk_arg(cx: TypeCx, e: ExprId, name: string, elem: TypeId, args: List<ExprId>) -> Arrow? {
-    if args.length != 1 {
-        let _ = one_fn_wanted(cx, e, name, args.length)
-        return null
-    }
-    let rescued: TypeId? = cx.retype_seated(args[0], [elem])
-    let fnty: TypeId = rescued ?? cx.type_at(args[0])
-    if cx.types.shape_of(fnty) is .Error {
-        // a lambda with the wrong seat count could never be fed —
-        // the walk says so; any other error already spoke
-        let parts: LambdaParts? = cx.store.lambda_parts(args[0])
-        if parts != null && parts!.params.length != 1 {
-            let _ = misseated_walk(cx, name, args[0], parts!.params.length)
-        }
-        return null
-    }
-    let held: Arrow? = cx.types.arrow_parts(fnty)
-    if held == null {
-        let _ = fnless_walk(cx, name, args[0])
-        return null
-    }
-    let arrow = held!
-    // LICENSED I9: type identity — the seat IS the element, exactly
-    if arrow.seats.length != 1 || arrow.seats[0].index != elem.index {
-        let _ = seat_not_element(cx, e, name, elem, arrow)
-        return null
-    }
-    held
 }
 
 // ── The voices: every refusal worded HERE, once — the laws above
@@ -771,20 +679,6 @@ export fn wrong_argument(cx: TypeCx, callee: string, j: int, want: TypeId, a: Ex
         this_is(n)))
 }
 
-/// A walk on `[]` cannot know its elements.
-fn unknowable_walk(cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.list_element", cx.loc_of(e), "`[].${name}` cannot know its elements"),
-        "walked here")
-        with { help: "bind the list under a typed let first — `let xs: List<int> = []`" })
-}
-
-fn one_fn_wanted(cx: TypeCx, e: ExprId, name: string, found: int) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(e), "`${name}` takes one fn, found ${found} arguments"),
-        "this call"))
-}
-
 fn type_not_place(cx: TypeCx, e: ExprId, name: string) -> bool {
     let _ = spoken(cx, pointed(
         error_at("type.place", cx.loc_of(e), "`${name}` is a type — a mutation lands on a `mut` binding"),
@@ -800,33 +694,18 @@ fn measured_not_stored(cx: TypeCx, e: ExprId, name: string, subject: string) -> 
     false
 }
 
-fn not_a_place_call(cx: TypeCx, e: ExprId, name: string) -> TypeId {
+export fn not_a_place_call(cx: TypeCx, e: ExprId, name: string) -> TypeId {
     spoken(cx, pointed(
         error_at("type.place", cx.loc_of(e), "`${name}` mutates a place, and this list is a value"),
         "a value")
         with { help: "bind it first — `mut xs = …` — then `xs.${name}(…)`; or build a new list with `concat`" })
 }
 
-fn not_mut_call(cx: TypeCx, e: ExprId, name: string, root: string) -> TypeId {
+export fn not_mut_call(cx: TypeCx, e: ExprId, name: string, root: string) -> TypeId {
     spoken(cx, pointed(
         error_at("type.place", cx.loc_of(e), "`${root}` is not `mut` — `${name}` mutates it"),
         "mutated here")
         with { help: "declare it `mut ${root} = ...` — or build a changed copy" })
-}
-
-fn misseated_walk(cx: TypeCx, name: string, a: ExprId, seats: int) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(a),
-            "`${name}` seats one param — the element — and this lambda takes ${seats}"),
-        "this lambda"))
-}
-
-fn uncollectable(cx: TypeCx, e: ExprId, answer: TypeId) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.list_scalar", cx.loc_of(e),
-            "`map` cannot collect `${cx.types.name_of(answer)}` yet"),
-        "this walk")
-        with { help: slice_promise("elements") })
 }
 
 /// THE PROMISE every nullable-in-a-slot refusal makes — one fn, so
@@ -846,23 +725,11 @@ export fn settled_call(cx: TypeCx, args: List<ExprId>, answer: TypeId) -> TypeId
     answer
 }
 
-fn fnless_walk(cx: TypeCx, name: string, a: ExprId) -> TypeId {
-    let n = cx.name_at(a)
+/// An empty literal has no measure until a declared type adopts
+/// it — the shared voice for `[]` and `{}`.
+export fn unmeasurable_empty(cx: TypeCx, e: ExprId, lit: string, example: string) -> TypeId {
     spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(a), "`${name}` wants a fn taking the element, found `${n}`"),
-        this_is(n)))
-}
-
-fn seat_not_element(cx: TypeCx, e: ExprId, name: string, elem: TypeId, arrow: Arrow) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(e),
-            "`${name}`'s fn takes the element `${cx.types.name_of(elem)}` — this one is `${cx.types.name_of(cx.types.intern(Type.Fn(arrow.seats, arrow.answer)))}`"),
-        "this call"))
-}
-
-/// A predicate walk's fn must answer bool.
-fn unpredicated(cx: TypeCx, e: ExprId, name: string, got: TypeId) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(e), "`${name}`'s fn must answer `bool`, this one answers `${cx.types.name_of(got)}`"),
-        "this call"))
+        error_at("type.mismatch", cx.loc_of(e), "`${lit}` has no length yet — a declared type gives it one"),
+        "measured here")
+        with { help: "bind it first — `let xs: ${example} = ${lit}`" })
 }

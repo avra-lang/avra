@@ -255,28 +255,23 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
 }
 
 /// The pack/read REWRITE — where compile-time type knowledge
-/// becomes the runtime's ownership plan: a push whose VALUE is
-/// managed becomes retain-at-pack, a get whose DESTINATION is
-/// managed becomes an owned +1 read. Lowering never chooses;
-/// ownership stays this pass's one concern.
+/// becomes the runtime's ownership plan: a store whose VALUE is
+/// managed becomes retain-at-pack, a read whose DESTINATION is
+/// managed becomes an owned +1 read — each by the registry's OWNED
+/// TWIN column. Lowering never chooses; ownership stays this
+/// pass's one concern, and no runtime name is spelled here.
 fn owned_form(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Ins {
     // LICENSED I22: a pre-filter — the caller's dispatch is exhaustive
-    // over Ins; this rewrite touches only the two array verbs
+    // over Ins; this rewrite touches only the runtime call shapes
     match i {
-        .CallRtVoid(callee, args) ->
-            if callee == "avra_array_push" && pushes_managed(types, reg_types, args) {
-                Ins.CallRtVoid("avra_array_push_owned", args)
-            } else if callee == "avra_slot_set" && pushes_managed(types, reg_types, args) {
-                Ins.CallRtVoid("avra_slot_set_owned", args)
-            } else if callee == "avra_map_set" && pushes_managed(types, reg_types, args) {
-                Ins.CallRtVoid("avra_map_set_owned", args)
-            } else { i },
-        .CallRt(dst, callee, args) ->
-            if callee == "avra_array_get" && is_managed(types, reg_types[dst.index]) {
-                Ins.CallRt(dst, "avra_array_get_owned", args)
-            } else if callee == "avra_map_get" && is_managed(types, reg_types[dst.index]) {
-                Ins.CallRt(dst, "avra_map_get_owned", args)
-            } else { i },
+        .CallRtVoid(callee, args) -> {
+            let twin: string? = rt_owned_twin(callee)
+            if twin != null && pushes_managed(types, reg_types, args) { Ins.CallRtVoid(twin!, args) } else { i }
+        }
+        .CallRt(dst, callee, args) -> {
+            let twin: string? = rt_owned_twin(callee)
+            if twin != null && is_managed(types, reg_types[dst.index]) { Ins.CallRt(dst, twin!, args) } else { i }
+        }
         _ -> i,
     }
 }

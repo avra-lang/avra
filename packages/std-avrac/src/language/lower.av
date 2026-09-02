@@ -7,7 +7,7 @@
 //! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, some_list, joined}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, some_list, joined, dst_of}
 use diagnostics.{Diag, error_at, pointed, loc_at}
 use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig, fn_box, capture_lane, slot_read, push_slot,
               fn_sig_of, record_sig_of, variant_sig_of, res_enum_sig,
@@ -48,6 +48,7 @@ type Lower = {
     slots: List<Reg?>,
     boxed: List<bool>,
     pattern_regs: List<Reg?>,
+    defined: List<Reg>,
     failures: List<string>,
 }
 
@@ -74,7 +75,7 @@ type Lift = { lam: ExprId, name: string, sub: Sub? }
 /// stacks.
 fn new_lower(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> Lower {
     Lower {
-        a: a, fn_ret: fn_ret, sub: sub, jobs: jobs, ins: [], reg_types: [],
+        a: a, fn_ret: fn_ret, sub: sub, jobs: jobs, ins: [], reg_types: [], defined: [],
         regs: filled<Reg?>(a.store.exprs.count(), null),
         slots: filled<Reg?>(a.store.stmts.count(), null),
         boxed: filled(a.store.stmts.count(), false),
@@ -163,6 +164,7 @@ fn lower_fn(a: Analysis, s: StmtId, fname: string, root: ExprId, sub: Sub?, jobs
     // LICENSED I3: `tys` ALIASES lo.reg_types — `concat` would rebind
     // the local and the registers would never reach the body
     for pt in ptypes { tys.push(pt) }
+    lo.seeded()
     lo.give(Ins.ScopeEnter(Level.Application))
     let r = lower_subtree(lo, root)
     lo.give(Ins.ScopeExit(r))
@@ -189,6 +191,7 @@ fn lower_lambda(a: Analysis, lj: Lift, jobs: Jobs) -> LoweredBody {
     // LICENSED I3: `tys` ALIASES lo.reg_types — `concat` would rebind
     tys.push(lam_ty)
     for pt in seats { tys.push(pt) }
+    lo.seeded()
     lo.give(Ins.ScopeEnter(Level.Application))
     if body == null {
         lo.record("defect: a lift without a lambda survived typing")
@@ -271,6 +274,8 @@ fn expr_lower_cx(lo: Lower) -> LowerCx {
     LowerCx {
         store: lo.a.store,
         types: lo.a.typing.types,
+        methods: lo.a.methods,
+        properties: lo.a.properties,
         result: (k: ExprId) -> lo.mint(k),
         reg_of: (k: ExprId) -> lower_subtree(lo, k),
         def_reg: (k: ExprId) -> lo.def_reg(k),
@@ -545,8 +550,37 @@ impl Lower {
         if callee != null && rt_sig_of(callee!) == null {
             self.record("defect: unknown runtime callee `${callee!}` — add its row to runtime_api.av")
         }
+        self.defined_in_order(i)
         mut ins = self.ins
         ins.push(i)
+    }
+
+    /// THE MINT-ORDER LAW: registers define in the order they were
+    /// minted — the backend's value table is definition order, read
+    /// by mint index. A rule that mints its answer before its
+    /// operands breaks it; the break is a defect HERE, named, never
+    /// a native crash. `seeded` records the params, which define at
+    /// entry without an instruction.
+    fn defined_in_order(self, i: Ins) {
+        let d: Reg? = dst_of(i)
+        if d == null { return }
+        let dst = d!
+        let expected = self.defined.length
+        // LICENSED I9: REGISTER identity — a mint index, not a type
+        if dst.index != expected {
+            self.record("defect: register r${dst.index} defines out of mint order — r${expected} is next (mint operands first, the answer last)")
+        }
+        mut ds = self.defined
+        ds.push(dst)
+    }
+
+    /// The registers a body's entry defines without an instruction
+    /// — its params (and a lambda's env) — recorded so the law
+    /// counts from the first minted body register.
+    fn seeded(self) {
+        mut ds = self.defined
+        // LICENSED I3: the register IS its index
+        for j in 0..self.reg_types.length { ds.push(Reg { index: j }) }
     }
 
     /// An ident's register: its param's (params ARE registers

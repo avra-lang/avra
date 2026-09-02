@@ -3260,6 +3260,47 @@ strings — adding a runtime fn is a row plus a variant plus an
 exhaustive interp arm (the guarantee), never a silent typo. The
 hosts themselves stay in interp.av: they are the runtime's twin.
 
+R1 LANDED 2026-09-01 — THE REGISTRY COMPLETION. (a) THE METHOD
+VOCABULARY IS ROWS: `MethodRow { name, takes, check, lower }`
+declared in each feature's manifest (`methods = table<MethodRow>`
+— lists: map/filter/find/any/all/push; maps: get/set), assembled
+with the language like keywords and builders, carried on every
+context, and selected by ONE lookup (`method_row`) in the
+dot-call's typing and lowering; the fork chains died, and
+walks.av/keyed.av/grow_reg folded into features/lists/{methods,
+walks}.av and features/maps/methods.av (the place-call voices
+stay shared). The 3-argument indirect-call ceiling is met by ONE
+`MethodCall { e, subject, args }`. (b) RtSig gained `has_owned_twin` (the twin is `<name>_owned` by convention):
+the memory pass's five-name chain is one lookup and spells no
+runtime name. (c) RtSig gained `host: RtHost`: the interpreter
+dispatches EXHAUSTIVELY on the column — a new runtime row names
+its host and the compiler demands the arm; no string matching
+remains in either engine. The hosts themselves stay in interp.av
+— the runtime's twin. rt21–rt29 all clean across the refactor;
+one drift caught by a pin (`[]` and `{}` take the rows too).
+
+R2 LANDED 2026-09-02 — the residual hand tables are rows. (a)
+`TypeRow { name, arity, slots, judge, builds }` declared by the
+owning features (lists: List; maps: Map with its string-key law
+in the row's own words; results: Result), assembled with the
+language; the annotation rule queries `type_row` and the driver
+names no constructor. (b) `PropertyRow { name, takes, check,
+lower }` for `length`, declared by lists, maps and str_lit; the
+member law and the spine's property lowering query
+`property_row`; `length_member` and `length_reg` died. Three pins
+followed the rows' words. TRAPS recorded (CLAUDE.md): in a struct
+field's fn type a generic PARAMETER and a nullable ANSWER refuse
+(a law answers a list, its arguments ride one struct), and
+`shape` is a reserved word. AS RECORDED: (a) the TYPE-CONSTRUCTOR table in
+typing.av (`applied_arity`/`applied_shape`: "List" 1, "Map" 2,
+"Result" 2) is a driver table naming the language's built-in
+constructors — it wants to be rows the owning features declare
+(`types = table<TypeRow>`), like methods; (b) the `length`
+PROPERTY is special-cased by receiver shape in checks.av
+(length_member) and expr_spine/lower.av (length_reg) — a
+property row in the same registry. Neither blocks anything;
+both are the next fork a new aggregate would add.
+
 SLICES: M1 places (assignment through paths, `push`, COW, Void)
 — M2 maps (`Map<K, V>`, insertion-ordered BY DESIGN so "iterate an
 ordered source" needs no rule; `get` answers `V?`; `m[k] = v` is

@@ -3,7 +3,7 @@
 //! spine live here; analysis stacks on top in analysis.av.
 use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, TypeRef, flatten}
 use grammar.{Captured, RunOutcome, run_grammar, lex_source, lex_diagnostic}
-use features.{LangNode, NodeSemantics, StmtSemantics, dispatch, list_at, stmt_id_at, LanguageFeature}
+use features.{LangNode, NodeSemantics, StmtSemantics, dispatch, list_at, stmt_id_at, LanguageFeature, MethodRow, TypeRow, PropertyRow}
 use features.expr_spine.{SpineSemantics}
 use features.str_lit.{StrSemantics}
 use features.bool_lit.{BoolSemantics}
@@ -34,6 +34,9 @@ export type ParsedProgram = {
     stmts: List<StmtId>,
     source: SourceFile,
     keywords: List<string>,
+    methods: List<MethodRow>,
+    types: List<TypeRow>,
+    properties: List<PropertyRow>,
     dispatch: Dispatch,
     diagnostics: List<Diag>,
 }
@@ -358,7 +361,7 @@ export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
     if lang.grammar == null {
         return ParsedProgram {
             store: new_node_store(), stmts: [], source: src,
-            keywords: [], dispatch: new_dispatch(), diagnostics: lang.diagnostics,
+            keywords: [], methods: [], types: [], properties: [], dispatch: new_dispatch(), diagnostics: lang.diagnostics,
         }
     }
     let lexed = lex_source(src.text)
@@ -371,6 +374,9 @@ export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
         stmts: program_stmts(store, o),
         source: src,
         keywords: lang.keywords,
+        methods: lang.methods,
+        types: lang.types,
+        properties: lang.properties,
         dispatch: new_dispatch(),
         diagnostics: project_all(engine, src.file, lang.codes),
     }

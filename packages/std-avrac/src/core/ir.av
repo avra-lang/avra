@@ -177,6 +177,38 @@ export fn dst_of(i: Ins) -> Reg? {
 /// A slot in a runtime signature — the CallRt contract's currency.
 export enum RtKind { I64, Ptr, Void }
 
-/// One runtime fn's contract: its shape and whether its result is
-/// OWNED (a fresh allocation the memory pass must release).
-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool }
+/// Where the interpreter HOSTS a runtime fn — one variant per host
+/// body, so the interpreter's dispatch is exhaustive: a new row
+/// names its host and the compiler demands the arm.
+export enum RtHost {
+    Puts
+    Streq
+    ArrayNew
+    ArrayPush
+    ArrayGet
+    ArrayLen
+    CellRelease
+    CellUnique
+    SlotUnique
+    SlotSet
+    MapNew
+    MapLen
+    MapHas
+    MapGet
+    MapSet
+    StrJoin
+    Insist
+    InsistScalar
+    Text
+    Strlen
+    /// Reached by the backend only — an instruction or a Bin op
+    /// covers it in the interpreter.
+    Unhosted
+}
+
+/// One runtime fn's contract: its shape, whether its result is
+/// OWNED (a fresh allocation the memory pass must release), whether
+/// an OWNED TWIN (`<name>_owned`) exists for the memory pass to
+/// substitute when the value stored or answered is managed, and
+/// its interpreter host.
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost }

@@ -302,6 +302,10 @@ Discovered gaps between the spec and the bootstrap compiler. Verify
 against these before writing; probe in scratch when unsure.
 
 - Function types are spelled `fn(int) -> bool`, not `(int) -> bool`.
+  In a STRUCT FIELD's fn type, a GENERIC parameter (`fn(List<T>)
+  -> …`) and a NULLABLE answer (`-> T?`) both refuse ("expected
+  field name" at the `>`/`?`); a generic ANSWER (`-> Result<A, B>`)
+  is fine. Wrap the parameter in a struct, answer a list.
 - Multi-line fn signatures parse fine (probed) — stacked params with
   a trailing comma, or aligned continuation lines. Wrap wide ones.
 - `ref`, `none`, `shape`, `dyn`, `table`, and `where` are reserved words

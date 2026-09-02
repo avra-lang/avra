@@ -1,7 +1,7 @@
 //! Lists — the first aggregate. `[e, e, e]` builds one; access
-//! (`xs[i]`, `xs.length`) is the spine's postfix ladder. Elements
-//! are scalars until ownership analysis covers managed values.
-use features.{LanguageFeature, BuilderRow}
+//! (`xs[i]`, `xs.length`) is the spine's postfix ladder; the walks
+//! and `push` are this feature's method rows.
+use features.{LanguageFeature, BuilderRow, MethodRow, TypeRow, PropertyRow, no_law}
 use diagnostics.{DiagCode}
 
 export fn lists() -> LanguageFeature {
@@ -16,6 +16,23 @@ export fn lists() -> LanguageFeature {
         "type.list_scalar"  | "F2006" | "a list holds scalars for now"
         "type.place"        | "F2034" | "a mutation needs a mut place"
     }
+    let methods = table<MethodRow> {
+        name     | takes   | check        | lower
+        "map"    | on_list | check_map    | lower_map
+        "filter" | on_list | check_filter | lower_filter
+        "find"   | on_list | check_find   | lower_find
+        "any"    | on_list | check_any    | lower_any
+        "all"    | on_list | check_all    | lower_all
+        "push"   | on_list | check_push   | lower_push
+    }
+    let types = table<TypeRow> {
+        name   | arity | slots | judge  | builds
+        "List" | 1     | false | no_law | list_shape
+    }
+    let properties = table<PropertyRow> {
+        name     | takes   | check        | lower
+        "length" | on_list | check_length | lower_length
+    }
     component LanguageFeature f {
         name = "lists"
         docs = "`[first, second, third]` — a homogeneous aggregate; index with `xs[i]`, measure with `xs.length`."
@@ -24,6 +41,9 @@ primary = "[" BREAK? ( first:expression ( "," BREAK? rest:expression )* ","? BRE
 """
         builders = rows
         diags = codes
+        methods = methods
+        types = types
+        properties = properties
     }
     f
 }

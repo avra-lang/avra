@@ -18,9 +18,7 @@
 //!   codes.av     the built-in diagnostic registry
 use core.{flatten}
 use grammar.{Diagnostic, Grammar, parse_grammar}
-use features.{
-    LanguageFeature, compose_text, builder_defects, code_defects,
-}
+use features.{LanguageFeature, compose_text, builder_defects, code_defects, MethodRow, TypeRow, PropertyRow}
 use diagnostics.{Diag, DiagCode}
 use features.type_expr.{type_expr}
 use features.stmt_spine.{stmt_spine}
@@ -54,6 +52,9 @@ export type Language = {
     grammar: Grammar?,
     codes: List<DiagCode>,
     keywords: List<string>,
+    methods: List<MethodRow>,
+    types: List<TypeRow>,
+    properties: List<PropertyRow>,
     diagnostics: List<Diag>,
 }
 
@@ -64,13 +65,15 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     let codes = code_registry(features)
     let defects = flatten([g.defects(), builder_defects(features, g), code_defects(codes)])
     if !defects.is_empty() { return unassembled(features, defects) }
-    Language { features: features, grammar: g, codes: codes, keywords: g.keywords(), diagnostics: [] }
+    Language { features: features, grammar: g, codes: codes, keywords: g.keywords(),
+               methods: flatten([f.methods for f in features]), types: flatten([f.types for f in features]),
+               properties: flatten([f.properties for f in features]), diagnostics: [] }
 }
 
 /// Assembly refused: the defects, projected, are the language's
 /// diagnostics.
 fn unassembled(features: List<LanguageFeature>, defects: List<Diagnostic>) -> Language {
-    Language { features: features, grammar: null, codes: [], keywords: [], diagnostics: as_defects(defects) }
+    Language { features: features, grammar: null, codes: [], keywords: [], methods: [], types: [], properties: [], diagnostics: as_defects(defects) }
 }
 
 /// Built-in codes plus every feature's registered codes, in feature

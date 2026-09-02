@@ -6,7 +6,7 @@
 //! fact/refusal vocabulary), checks.av (typing laws shared across
 //! features), builder.av (the authoring surface), compose.av
 //! (assembly + dispatch), coherence.av (feature/grammar agreement).
-use core.{ExprId, StmtId, TypeRef}
+use core.{ExprId, StmtId, TypeRef, Type, TypeId, Reg, TypeRegistry}
 use diagnostics.{DiagCode}
 
 /// The language client's node wrapper: builders hand the engine typed
@@ -23,8 +23,71 @@ export enum LangNode {
 /// that answers it.
 export type BuilderRow = { name: string, build: fn(Builder) -> Result<LangNode, string> }
 
-/// A language feature: its grammar fragment in DSL text, and the
-/// builder table linking the fragment's build names to fns.
+/// A method call's seat: the call, its receiver, its arguments —
+/// one value, so a row's rules take two arguments.
+export type MethodCall = { e: ExprId, subject: ExprId, args: List<ExprId> }
+
+/// One builtin method: its name, which receiver shapes it takes,
+/// and its typing and lowering rules. THE METHOD VOCABULARY is
+/// these rows — declared by the feature that owns the receiver,
+/// assembled with the language, queried by the dot-call — never
+/// a chain of forks.
+export type MethodRow = { name: string, takes: fn(Type) -> bool, check: fn(TypeCx, MethodCall) -> TypeId, lower: fn(LowerCx, MethodCall) -> Reg }
+
+/// The row a receiver shape and a name select; null when the
+/// vocabulary offers none.
+export fn method_row(rows: List<MethodRow>, name: string, sh: Type) -> MethodRow? {
+    for r in rows {
+        if r.name == name && r.takes(sh) { return r }
+    }
+    null
+}
+
+/// A refusal in the row's own words — what a constructor's law
+/// answers when the arguments break it (a law answers a list,
+/// empty when it holds — a nullable fn answer does not parse in a
+/// field type).
+export type Refusal = { message: string, help: string }
+
+/// One type CONSTRUCTOR the language owns: its name and arity,
+/// whether its arguments are SLOTS (judged by the slot law), a law
+/// over the arguments, and the shape it builds. THE CONSTRUCTOR
+/// VOCABULARY is these rows — the driver's annotation rule queries
+/// them; nothing names a constructor by hand.
+export type TypeRow = { name: string, arity: int, slots: bool, judge: fn(TypeRegistry, TypeArgs) -> List<Refusal>, builds: fn(TypeArgs) -> Type }
+
+/// A constructor's arity-checked arguments — one value, because a
+/// generic type does not parse as a fn-type parameter in a field.
+export type TypeArgs = { parts: List<TypeId> }
+
+/// One PROPERTY a receiver shape answers (`.length` and its kin):
+/// the typing rule takes the read and the receiver's TYPE (the
+/// chain asks with a carried type, no subject), the lowering takes
+/// the read and the subject.
+export type PropertyRow = { name: string, takes: fn(Type) -> bool, check: fn(TypeCx, ExprId, TypeId) -> TypeId, lower: fn(LowerCx, ExprId, ExprId) -> Reg }
+
+/// The constructor a name selects; null when the language owns none.
+export fn type_row(rows: List<TypeRow>, name: string) -> TypeRow? {
+    rows.find(it.name == name)
+}
+
+/// The property a receiver shape and a name select.
+export fn property_row(rows: List<PropertyRow>, name: string, sh: Type) -> PropertyRow? {
+    for r in rows {
+        if r.name == name && r.takes(sh) { return r }
+    }
+    null
+}
+
+/// A constructor with no law over its arguments — the law holds.
+// LICENSED I23: a row's law wears the row's signature
+export fn no_law(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
+    []
+}
+
+/// A language feature: its grammar fragment in DSL text, the
+/// builder table linking the fragment's build names to fns, its
+/// diagnostic codes, and its method, constructor and property rows.
 export component LanguageFeature {
     config {
         name: string,
@@ -32,6 +95,9 @@ export component LanguageFeature {
         gram: string = "",
         builders: List<BuilderRow> = [],
         diags: List<DiagCode> = [],
+        methods: List<MethodRow> = [],
+        types: List<TypeRow> = [],
+        properties: List<PropertyRow> = [],
     }
 }
 

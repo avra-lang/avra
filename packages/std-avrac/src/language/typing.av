@@ -11,7 +11,7 @@ use diagnostics.{Diag, loc_at, error_at, pointed}
 use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig, Asked, Sub,
               fn_sig_of, record_sig_of, variant_sig_of, duplicate_names, res_enum_sig,
               slot_worthy, method_symbol,
-              subbed_variants, subbed_fields, slice_promise}
+              subbed_variants, subbed_fields, slice_promise, TypeRow, Refusal, type_row, TypeArgs}
 use features.closures.{unfed_lambda}
 use @std.errors.{Loc}
 
@@ -161,6 +161,8 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         error_type: t.error_type,
         store: t.store,
         types: t.types,
+        methods: t.p.methods,
+        properties: t.p.properties,
         type_at: (e: ExprId) -> t.of_expr[e.index],
         shape_at: (e: ExprId) -> t.types.shape_of(t.of_expr[e.index]),
         target_type: (e: ExprId) -> t.target_type(e, param_types),
@@ -300,37 +302,10 @@ fn type_node(t: Typer, cx: TypeCx, e: ExprId) {
     mut facts = t.of_expr
     facts.set(e.index, semantics_of(t.p.dispatch, t.store.expr(e)).type_of(cx, e))
 }
-
-/// A type CONSTRUCTOR the language owns, and how many arguments it
-/// takes — absent when the name is not one. THE definition, with
-/// THREE consumers: `builtin_type_name` (so resolve refuses the name
-/// at a declaration), `applied`'s arity check, and `applied`'s
-/// INTERNING, which is hardcoded to `Type.List` — a new row here
-/// needs a shape there, or the constructor silently builds a list.
-fn applied_arity(name: string) -> int? {
-    match name {
-        "List" -> 1,
-        "Map" -> 2,
-        "Result" -> 2,
-        _ -> null,
-    }
-}
-
-/// The applied constructors' SHAPES — applied_arity's twin, fed
-/// arity-checked arguments.
-fn applied_shape(name: string, parts: List<TypeId>) -> Type? {
-    match name {
-        "List" -> Type.List(parts[0]),
-        "Map" -> Type.Map(parts[0], parts[1]),
-        "Result" -> Type.Res(parts[0], parts[1]),
-        _ -> null,
-    }
-}
-
-/// Every name the LANGUAGE owns — a scalar shape or a constructor.
-/// A declaration may take none of them.
-fn builtin_type_name(name: string) -> bool {
-    shape_named(name) != null || applied_arity(name) != null
+/// Every name the LANGUAGE owns — a scalar shape or a constructor
+/// row. A declaration may take none of them.
+export fn builtin_type_name(rows: List<TypeRow>, name: string) -> bool {
+    shape_named(name) != null || type_row(rows, name) != null
 }
 
 /// The type an annotation names, or null.
@@ -714,7 +689,7 @@ impl Typer {
             self.speak(d)
         }
         for n in tp {
-            if builtin_type_name(n) { self.owned_name(s, n) }
+            if builtin_type_name(self.p.types, n) { self.owned_name(s, n) }
         }
     }
 
@@ -831,7 +806,8 @@ impl Typer {
     /// the registry has no shape for another, and inventing one here
     /// would be a type nothing can lower.
     fn applied(self, at: Loc?, t: TypeRef) -> TypeId {
-        let takes: int? = applied_arity(t.name) ?? declared_arity(self, t.name)
+        let row: TypeRow? = type_row(self.p.types, t.name)
+        let takes: int? = row?.arity ?? declared_arity(self, t.name)
         if takes == null {
             // The NAME law speaks first: a constructor that names no
             // type at all is not an arity mistake, and saying so
@@ -841,38 +817,40 @@ impl Typer {
         }
         let arity = takes!
         if t.args.length != arity { return self.arity_wrong(at, t.name, t.args.length, arity) }
+        let slots: bool = row?.slots ?? false
         mut parts: List<TypeId> = []
         for a in t.args {
             let ty = self.full_type(at, a)
             if self.types.shape_of(ty) is .Error { return ty }
-            // A Result's sides and a Map's values are SLOTS of a box —
-            // the slot law judges them like any payload. A Var passes
-            // here and every INSTANTIATION re-judges.
-            if (t.name == "Result" || t.name == "Map") && !slot_worthy(self.types.shape_of(ty)) {
-                self.speak(pointed(
-                    error_at("type.applied", at,
-                        "a `${t.name}` slot cannot hold this yet"),
-                    "this slot is `${self.types.name_of(ty)}`")
-                    with { help: slice_promise("slots") })
-                return self.error_type
-            }
+            // A constructor's SLOTS are judged by the slot law like
+            // any payload. A Var passes here and every INSTANTIATION
+            // re-judges.
+            if slots && !slot_worthy(self.types.shape_of(ty)) { return self.unslottable_slot(at, t.name, ty) }
             parts.push(ty)
         }
-        if t.name == "Map" && !(self.types.shape_of(parts[0]) is .Str) { return self.keys_not_strings(at, parts[0]) }
-        let sh: Type? = applied_shape(t.name, parts)
-        if sh != null { return self.types.intern(sh!) }
-        self.applied_decl(at, t.name, parts)
+        if row == null { return self.applied_decl(at, t.name, parts) }
+        let r = row!
+        let args = TypeArgs { parts: parts }
+        let refused: List<Refusal> = r.judge(self.types, args)
+        if !refused.is_empty() { return self.applied_refused(at, refused[0]) }
+        let sh: Type = r.builds(args)
+        self.types.intern(sh)
     }
 
-    /// A map's keys are strings — other key types are recorded.
-    fn keys_not_strings(self, at: Loc?, key: TypeId) -> TypeId {
+    fn unslottable_slot(self, at: Loc?, name: string, ty: TypeId) -> TypeId {
         self.speak(pointed(
-            error_at("type.applied", at, "a map's keys are strings, not `${self.types.name_of(key)}`"),
-            "this key type")
-            with { help: "other key types are recorded — `Map<string, …>`" })
+            error_at("type.applied", at, "a `${name}` slot cannot hold this yet"),
+            "this slot is `${self.types.name_of(ty)}`")
+            with { help: slice_promise("slots") })
         self.error_type
     }
 
+    /// A constructor's own law refused its arguments — in the row's
+    /// words.
+    fn applied_refused(self, at: Loc?, r: Refusal) -> TypeId {
+        self.speak(pointed(error_at("type.applied", at, r.message), "this type") with { help: r.help })
+        self.error_type
+    }
     /// A USER generic instantiated: the declaration by name, its
     /// slots RE-JUDGED under the arguments when the sig is already
     /// declared (source order — a construction judges again anyway).

@@ -1,0 +1,179 @@
+//! The list vocabulary's TYPING — the five walks (each judging its
+//! fn argument's seats and answer before any loop exists) and the
+//! growth word, each a row's rule; the receiver is always a list
+//! because the row's `takes` said so.
+use core.{ExprId, TypeId, Type, Arrow, LambdaParts}
+use features.{TypeCx, MethodCall, spoken, this_is, accepts, wrong_argument, wrong_arity, slot_worthy, slice_promise, not_a_place_call, not_mut_call, TypeArgs, unmeasurable_empty}
+use diagnostics.{error_at, pointed}
+
+/// The empty literal takes the rows too — each rule refuses it in
+/// the walk's own words.
+export fn on_list(t: Type) -> bool {
+    t is .List || t is .EmptyList
+}
+
+fn walked_type(cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
+    list_method_call(cx, mc.e, mc.subject, name, mc.args) ?? cx.error_type
+}
+
+// ── The rows' rules ──
+
+export fn check_map(cx: TypeCx, mc: MethodCall) -> TypeId { walked_type(cx, mc, "map") }
+export fn check_filter(cx: TypeCx, mc: MethodCall) -> TypeId { walked_type(cx, mc, "filter") }
+export fn check_find(cx: TypeCx, mc: MethodCall) -> TypeId { walked_type(cx, mc, "find") }
+export fn check_any(cx: TypeCx, mc: MethodCall) -> TypeId { walked_type(cx, mc, "any") }
+export fn check_all(cx: TypeCx, mc: MethodCall) -> TypeId { walked_type(cx, mc, "all") }
+export fn check_push(cx: TypeCx, mc: MethodCall) -> TypeId {
+    grow_call(cx, mc.e, mc.subject, "push", mc.args) ?? cx.error_type
+}
+
+/// THE LIST VOCABULARY — the builtin fork of the one dot-call
+/// surface: five walks, each judging its fn argument's seats and
+/// answer before any loop exists. Absent for non-list receivers
+/// and unknown names (the impl table gets its turn).
+fn list_method_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
+    if !walk_name(name) { return null }
+    let elem: TypeId? = match cx.shape_at(subject) {
+        .List(t) -> t,
+        _ -> null,
+    }
+    if elem == null {
+        if cx.shape_at(subject) is .EmptyList { return unknowable_walk(cx, e, name) }
+        return null
+    }
+    let held: Arrow? = walk_arg(cx, e, name, elem!, args)
+    if held == null { return cx.error_type }
+    let arrow = held!
+    // a body that erred already spoke — its answer absorbs here
+    if cx.types.shape_of(arrow.answer) is .Error { return cx.error_type }
+    if name == "map" {
+        if !slot_worthy(cx.types.shape_of(arrow.answer)) { return uncollectable(cx, e, arrow.answer) }
+        return cx.types.intern(Type.List(arrow.answer))
+    }
+    if !(cx.types.shape_of(arrow.answer) is .Bool) { return unpredicated(cx, e, name, arrow.answer) }
+    if name == "find" { return cx.types.intern(Type.Opt(elem!)) }
+    if name == "filter" { return cx.type_at(subject) }
+    cx.types.intern(Type.Bool)
+}
+
+/// Membership in the vocabulary — walks.av's list is the truth.
+fn walk_name(name: string) -> bool {
+    walk_names().contains(name)
+}
+
+/// A walk takes exactly ONE fn, whose single seat IS the element.
+fn walk_arg(cx: TypeCx, e: ExprId, name: string, elem: TypeId, args: List<ExprId>) -> Arrow? {
+    if args.length != 1 {
+        let _ = one_fn_wanted(cx, e, name, args.length)
+        return null
+    }
+    let rescued: TypeId? = cx.retype_seated(args[0], [elem])
+    let fnty: TypeId = rescued ?? cx.type_at(args[0])
+    if cx.types.shape_of(fnty) is .Error {
+        // a lambda with the wrong seat count could never be fed —
+        // the walk says so; any other error already spoke
+        let parts: LambdaParts? = cx.store.lambda_parts(args[0])
+        if parts != null && parts!.params.length != 1 {
+            let _ = misseated_walk(cx, name, args[0], parts!.params.length)
+        }
+        return null
+    }
+    let held: Arrow? = cx.types.arrow_parts(fnty)
+    if held == null {
+        let _ = fnless_walk(cx, name, args[0])
+        return null
+    }
+    let arrow = held!
+    // LICENSED I9: type identity — the seat IS the element, exactly
+    if arrow.seats.length != 1 || arrow.seats[0].index != elem.index {
+        let _ = seat_not_element(cx, e, name, elem, arrow)
+        return null
+    }
+    held
+}
+
+/// THE GROWTH WORD: `xs.push(v)` mutates a PLACE — the receiver is
+/// rooted in a mut binding, the argument is accepted by the
+/// element, and the answer is nothing. Absent for every other name
+/// and for non-list receivers.
+fn grow_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
+    if name != "push" { return null }
+    let elem: TypeId? = match cx.shape_at(subject) {
+        .List(t) -> t,
+        _ -> null,
+    }
+    if elem == null { return null }
+    if args.length != 1 {
+        wrong_arity(cx, e, name, 1, args.length)
+        return cx.error_type
+    }
+    let root: ExprId? = cx.store.place_root(subject)
+    if root == null { return not_a_place_call(cx, e, name) }
+    if !cx.is_mut(root!) { return not_mut_call(cx, e, name, cx.store.ident_name(root!) ?? "this name") }
+    if !accepts(cx, args[0], elem!) { wrong_argument(cx, name, 0, elem!, args[0]) }
+    cx.types.intern(Type.Void)
+}
+
+/// A walk on `[]` cannot know its elements.
+fn unknowable_walk(cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.list_element", cx.loc_of(e), "`[].${name}` cannot know its elements"),
+        "walked here")
+        with { help: "bind the list under a typed let first — `let xs: List<int> = []`" })
+}
+
+fn misseated_walk(cx: TypeCx, name: string, a: ExprId, seats: int) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(a),
+            "`${name}` seats one param — the element — and this lambda takes ${seats}"),
+        "this lambda"))
+}
+
+fn uncollectable(cx: TypeCx, e: ExprId, answer: TypeId) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.list_scalar", cx.loc_of(e),
+            "`map` cannot collect `${cx.types.name_of(answer)}` yet"),
+        "this walk")
+        with { help: slice_promise("elements") })
+}
+
+fn fnless_walk(cx: TypeCx, name: string, a: ExprId) -> TypeId {
+    let n = cx.name_at(a)
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(a), "`${name}` wants a fn taking the element, found `${n}`"),
+        this_is(n)))
+}
+
+fn seat_not_element(cx: TypeCx, e: ExprId, name: string, elem: TypeId, arrow: Arrow) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(e),
+            "`${name}`'s fn takes the element `${cx.types.name_of(elem)}` — this one is `${cx.types.name_of(cx.types.intern(Type.Fn(arrow.seats, arrow.answer)))}`"),
+        "this call"))
+}
+
+/// A predicate walk's fn must answer bool.
+fn unpredicated(cx: TypeCx, e: ExprId, name: string, got: TypeId) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(e), "`${name}`'s fn must answer `bool`, this one answers `${cx.types.name_of(got)}`"),
+        "this call"))
+}
+
+fn one_fn_wanted(cx: TypeCx, e: ExprId, name: string, found: int) -> TypeId {
+    spoken(cx, pointed(
+        error_at("type.mismatch", cx.loc_of(e), "`${name}` takes one fn, found ${found} arguments"),
+        "this call"))
+}
+
+// ── The constructor and property rows' rules ──
+
+export fn list_shape(args: TypeArgs) -> Type {
+    Type.List(args.parts[0])
+}
+
+/// `xs.length` — an int; the empty literal has no length until a
+/// declared type adopts it.
+export fn check_length(cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
+    if cx.types.shape_of(ty) is .EmptyList { return unmeasurable_empty(cx, e, "[]", "List<int>") }
+    cx.types.intern(Type.Int)
+}
+
