@@ -20,6 +20,7 @@ export fn resolve_assign(cx: StmtResolveCx, s: StmtId) {
     cx.walk(t)
     let n = cx.store.ident_name(root!) ?? "this name"
     if cx.is_param(n) { return immutable_param(cx, n, at) }
+    if cx.is_index(n) { return immutable_index(cx, n, at) }
     let found: StmtId? = cx.lookup(n)
     if found == null { return }
     if !(cx.store.stmt(found!) is .MutLet) { not_mut(cx, n, at) }
@@ -38,6 +39,13 @@ fn immutable_param(cx: StmtResolveCx, n: string, at: Loc?) {
     cx.emit(pointed(
         error_at("resolve.immutable", at, "`${n}` is a parameter — parameters are immutable"),
         "assigned here"))
+}
+
+fn immutable_index(cx: StmtResolveCx, n: string, at: Loc?) {
+    cx.emit(pointed(
+        error_at("resolve.immutable", at, "`${n}` is a loop index — it counts, it is not assigned"),
+        "assigned here")
+        with { help: "bind a `mut` copy to change — `mut k = ${n}`" })
 }
 
 fn not_mut(cx: StmtResolveCx, n: string, at: Loc?) {

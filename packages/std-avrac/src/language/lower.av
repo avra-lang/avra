@@ -48,6 +48,7 @@ type Lower = {
     slots: List<Reg?>,
     boxed: List<bool>,
     pattern_regs: List<Reg?>,
+    index_regs: List<Reg?>,
     defined: List<Reg>,
     failures: List<string>,
 }
@@ -80,6 +81,7 @@ fn new_lower(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> Lower {
         slots: filled<Reg?>(a.store.stmts.count(), null),
         boxed: filled(a.store.stmts.count(), false),
         pattern_regs: filled<Reg?>(a.store.exprs.count(), null),
+        index_regs: filled<Reg?>(a.store.stmts.count(), null),
         failures: [],
     }
 }
@@ -388,6 +390,7 @@ fn lower_stmts(lo: Lower, stmts: List<StmtId>) -> Reg? {
         lower_stmts: (body: List<StmtId>) -> lower_stmt_list(lo, body),
         slot_of: (s: StmtId) -> lo.slots[s.index],
         bind_slot: (s: StmtId, slot: Reg) -> lo.bind_slot(s, slot),
+        bind_index: (s: StmtId, r: Reg) -> lo.bind_index(s, r),
     }
     // LICENSED I4: the running last register, not a scan
     mut last: Reg? = null
@@ -613,7 +616,14 @@ impl Lower {
             // valid only inside the LIFTED body: env rides seat 0
             .LambdaParam(_, i) -> Reg { index: i + 1 },
             .Capture(_, j) -> self.env_read(e, j),
+            .Index(s) -> self.index_regs[s.index],
         }
+    }
+
+    /// The register a pairing loop's index reads this turn.
+    fn bind_index(self, s: StmtId, r: Reg) {
+        mut rs = self.index_regs
+        rs.set(s.index, r)
     }
 
     /// A NAMED fn as a value: a captureless box holding a WRAPPER's

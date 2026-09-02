@@ -130,8 +130,11 @@ text-as-projection after self-host, the service store at Era V.
     13. [x] ▲ closures & fn values — L1-L3 LANDED 2026-09-01
         (lambdas, the walk vocabulary, the expected-type channel,
         the `it` pronoun); mut-ref captures wait on rung 14
-    14. ▲ interior mutation, maps, components & tables — the
-        self-describing surface (design below)
+    14. [x] ▲ interior mutation, maps, components & tables — M1-M4
+        LANDED 2026-09-02 (places by copy-on-write, string-keyed
+        maps, tables and components as sugar over field defaults,
+        raw strings, index pairing); mutating methods and the pass-
+        state pattern wait on ratification (design below)
     15. ▲ modules & multi-file — packages, the graph, exports
   Plus the floor under it all: extern/ptr FFI (the backend already
   dogfoods it) and the core stdlib + the spec/given/then test
@@ -3335,6 +3338,18 @@ escapes, no holes — one Str token; the grams. rt31 29 programs;
 the empty-literal gap was its find. Recorded: an instance is a
 `let` (a `mut` instance is a spelling away); defaults on
 generic fields refuse ("`T`"); `level` is reserved.
+
+M4 LANDED 2026-09-02 — INDEX PAIRING: `for i, x in xs` (or `for
+(i, x) in xs`) binds the loop's own counter beside the element:
+`Binding.Index(stmt)` — a new binding KIND, because the
+resolver's Def binds one name per statement — typed int, never
+narrowed, immutable (the place law refuses it), captured by
+value; lowering binds it to the turn's index register, so it
+costs nothing. No tuples, no `enumerate`: bs2's spelling is
+rewritten at parity. rt32 24/24; the one find: index and element
+with one name shadowed silently — now "`i` names both". RUNG 14
+COMPLETE: places, maps, tables, defaults + components, raw
+strings, pairing.
 
 SLICES: M1 places (assignment through paths, `push`, COW, Void)
 — M2 maps (`Map<K, V>`, insertion-ordered BY DESIGN so "iterate an

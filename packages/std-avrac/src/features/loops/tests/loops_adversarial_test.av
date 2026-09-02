@@ -1,0 +1,67 @@
+// Index pairing under attack (rt32): degenerate subjects, the
+// index in every wrong place, the malformed header (the parser's
+// second voice is a recorded trigger — counts pinned), every
+// feature crossed, names against names, and churn.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+spec "features/loops/adversarial" {
+    given "degenerate subjects" {
+        then "an empty literal cannot be walked; a declared empty list walks nothing" {
+            refused_with("mut t = 0\nfor i, x in [] {\n    t = t + i\n}\nt", "walks an empty literal") &&
+                shown("let xs: List<int> = []\nmut t = 0\nfor i, x in xs {\n    t = t + i\n}\nt") == "0"
+        }
+        then "one element" {
+            shown("mut t = 0\nfor i, x in [7] {\n    t = i + x\n}\nt") == "7"
+        }
+    }
+    given "the index in every wrong place" {
+        then "it does not outlive the loop" {
+            refused_with("mut t = 0\nfor i, x in [1, 2] {\n    t = t + i\n}\ni", "`i` is not defined")
+        }
+        then "the index is not assigned — it counts" {
+            refused_with("mut t = 0\nfor i, x in [1] {\n    i = 5\n    t = i\n}\nt", "`i` is a loop index")
+        }
+        then "one name for both index and element" {
+            refused_with("for i, i in [1, 2] {\n    2\n}\n2", "`i` names both the index and the element")
+        }
+        then "non-list subjects refuse in the walk's words" {
+            refused_with("mut t = 0\nfor i, x in 5 {\n    t = t + i\n}\nt", "walks a `List`, this is `int`") &&
+                refused_with("let m = { \"a\": 1 }\nmut t = 0\nfor i, x in m {\n    t = t + i\n}\nt", "this is `Map<string, int>`") &&
+                refused_with("mut t = 0\nfor i, x in \"abc\" {\n    t = t + i\n}\nt", "this is `string`")
+        }
+    }
+    given "the malformed header — a diagnostic every time, the cascade pinned" {
+        then "a missing comma, element, index, a third name, an unclosed paren" {
+            refusals("for i x in [1] {\n    2\n}\n2") == 2 &&
+                refusals("for i, in [1] {\n    2\n}\n2") == 2 &&
+                refusals("for , x in [1] {\n    2\n}\n2") == 2 &&
+                refusals("for i, x, y in [1] {\n    2\n}\n2") == 2 &&
+                refusals("for (i, x in [1] {\n    2\n}\n2") == 2
+        }
+    }
+    given "pairing across every feature" {
+        then "a walked subject, an if on the index, both pushed" {
+            shown("mut t = 0\nfor i, x in [3, 4].map(it * 2) {\n    t = t + i * x\n}\nt") == "8" &&
+                shown("mut t = 0\nfor i, x in [1, 2, 3] {\n    t = t + (if i == 1 { 100 } else { x })\n}\nt") == "104" &&
+                shown("mut out: List<int> = []\nfor i, x in [5, 6] {\n    out.push(i)\n    out.push(x)\n}\nout.length") == "4"
+        }
+        then "in a fn, returning the index early" {
+            shown("fn first_big(xs: List<int>) -> int {\n    for i, x in xs {\n        if x > 10 {\n            return i\n        }\n    }\n    0 - 1\n}\nfirst_big([1, 50, 3])") == "1"
+        }
+        then "the index in an interpolation" {
+            shown("mut s = \"\"\nfor i, w in [\"a\", \"b\"] {\n    s = \"" + "$" + "{s}" + "$" + "{i}:" + "$" + "{w} \"\n}\ns") == "0:a 1:b "
+        }
+    }
+    given "names against names" {
+        then "an inner loop's index shadows the outer's; a loop index shadows an outer let" {
+            shown("mut t = 0\nfor i, x in [1, 2] {\n    for i, y in [3] {\n        t = t + i\n    }\n    t = t + i\n}\nt") == "1" &&
+                shown("let i = 100\nmut t = 0\nfor i, x in [1, 2] {\n    t = t + i\n}\n\"" + "$" + "{t} " + "$" + "{i}\"") == "1 100"
+        }
+    }
+    given "ownership and churn" {
+        then "three hundred loops over managed elements; two hundred captured indexes" {
+            shown("mut n = 0\nmut i2 = 0\nwhile i2 < 300 {\n    let ws = [\"w" + "$" + "{i2}\", \"v\"]\n    for i, w in ws {\n        n = n + i + w.length\n    }\n    i2 = i2 + 1\n}\nn") == "1690" &&
+                shown("mut fs: List<fn(int) -> int> = []\nmut i2 = 0\nwhile i2 < 100 {\n    for i, v in [1, 2] {\n        fs.push((k: int) -> k + i + v)\n    }\n    i2 = i2 + 1\n}\nfs[199](0)") == "3"
+        }
+    }
+}

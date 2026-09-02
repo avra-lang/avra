@@ -44,6 +44,9 @@ export enum Binding {
     /// lambda's capture fact names the underlying outer binding;
     /// nesting chains Capture through Capture.
     Capture(lam: ExprId, index: int)
+    /// A pairing loop's INDEX — an int, the loop's own counter; the
+    /// statement is the identity, beside its element binding.
+    Index(stmt: StmtId)
 }
 
 /// One lambda's capture set, in first-use order — the box's lane
@@ -148,6 +151,7 @@ fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: 
         bound_scope: (s: StmtId, exprs: List<ExprId>, body: List<StmtId>) ->
             bound_scope(r, param_names, s, exprs, body),
         is_param: (name: string) -> index_of_name(param_names, name) != null,
+        is_index: (name: string) -> r.index_bound(name),
         lookup: (name: string) -> r.definition_of(name),
         loc_of: (s: StmtId) -> r.stmt_loc(s),
         emit: (d: Diag) -> r.speak(d),
@@ -185,6 +189,7 @@ fn bound_scope(r: Resolver, param_names: List<string>, s: StmtId, exprs: List<Ex
 /// statements resolve.
 fn bound_body(r: Resolver, param_names: List<string>, s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
     r.bind_checked(s)
+    r.bind_index(s)
     for e in exprs { resolve_walk(r, param_names, e) }
     resolve_stmts(r, param_names, true, stmts)
 }
@@ -585,7 +590,7 @@ impl Resolver {
         if b == null { return null }
         match b! {
             .Def(s) -> s,
-            .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) -> null,
+            .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
         }
     }
 
@@ -621,6 +626,33 @@ impl Resolver {
 
     /// A statement's binding, run through the naming law — the one
     /// rule for top level and blocks alike.
+    /// Is the name a pairing loop's index — the counter no
+    /// assignment may touch.
+    fn index_bound(self, name: string) -> bool {
+        let b: Binding? = self.binding_of(name)
+        b != null && b! is .Index
+    }
+
+    /// The index a pairing loop names, bound beside its element
+    /// under the same naming law.
+    fn bind_index(self, s: StmtId) {
+        let ix: string? = self.p.store.loop_index(s)
+        if ix == null { return }
+        let name = ix!
+        if self.refused_name(name, self.stmt_loc(s)) { return }
+        if name == (self.p.store.let_name(s) ?? "") { return self.paired_alike(s, name) }
+        self.bind(name, Binding.Index(s))
+    }
+
+    /// A pairing loop names its index and its element apart — one
+    /// name for both would shadow one of them silently.
+    fn paired_alike(self, s: StmtId, name: string) {
+        self.speak(pointed(
+            error_at("resolve.paired", self.stmt_loc(s), "`${name}` names both the index and the element"),
+            "bound here")
+            with { help: "give the index its own name — `for i, ${name} in …`" })
+    }
+
     fn bind_checked(self, s: StmtId) {
         let binds: string? = self.p.store.let_name(s)
         if binds == null { return }
