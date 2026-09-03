@@ -91,7 +91,7 @@ fn skip(next: int) -> ScanStep {
 }
 
 /// A step that produced only an error.
-fn fail(message: string, lo: int, hi: int) -> ScanStep {
+fn refused(message: string, lo: int, hi: int) -> ScanStep {
     ScanStep {
         token: null, opens_hole: false,
         err: LexError { message: message, span: span_of(lo, hi) },
@@ -232,14 +232,14 @@ fn scan_step(src: string, n: int, i: int, interpolate: bool) -> ScanStep {
         // `@`-word: one Op token (`@expect`, `@recover`).
         c == 64 -> {
             let j = scan_while(src, n, i + 1, is_name_cont)
-            if j == i + 1 { fail("expected a name after `@`", i, i + 1) }
+            if j == i + 1 { refused("expected a name after `@`", i, i + 1) }
             else { emit(token(TokenKind.Pkg, src.substring(i, j), i, j), j) }
         }
         // A two-char op munches before its single-char prefix.
         pair != null -> emit(token(TokenKind.Op, pair!, i, i + 2), i + 2)
         is_single_op(src.substring(i, i + 1)) ->
             emit(token(TokenKind.Op, src.substring(i, i + 1), i, i + 1), i + 1)
-        _ -> fail("unexpected character", i, i + 1)
+        _ -> refused("unexpected character", i, i + 1)
     }
 }
 
@@ -256,8 +256,11 @@ fn rule_boundary(tokens: List<Token>, j: int) -> bool {
 
 /// In language source every line break separates — except directly
 /// inside `(` or `[` (a brace opened inside them separates again),
-/// and after a token that promises more (a binary operator, `=`,
-/// `->`, a comma), where the line CONTINUES.
+/// after a token that promises more (a binary operator, `=`, `->`,
+/// a comma), before an `else`, and before a `.name` line indented
+/// deeper than the line it continues (a method chain; a match arm
+/// sits level with its siblings and follows a `{`), where the line
+/// CONTINUES.
 // LICENSED I23: conforms to a callback signature — the CONTRACT owns
 // the parameter list, not this body
 fn line_boundary(tokens: List<Token>, j: int) -> bool {
@@ -269,13 +272,18 @@ fn line_boundary(tokens: List<Token>, j: int) -> bool {
 fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> List<Token> {
     mut out: List<Token> = []
     mut open: List<string> = []
+    mut line_indent = if raw.is_empty() { 0 } else { raw[0].span.lo }
     mut i = 0
     while i < raw.length {
         let t = raw[i]
         if t.kind == TokenKind.Break {
             mut j = i + 1
             while j < raw.length && raw[j].kind == TokenKind.Break { j = j + 1 }
-            if boundary(raw, j) && !out.is_empty() && separates(open) && !continues(out.last()!) { out.push(t) }
+            let next_indent = if j < raw.length { raw[j].span.lo - raw[j - 1].span.hi } else { 0 }
+            if boundary(raw, j) && !out.is_empty() && separates(open) && !continues(out.last()!) && !continued_by(raw, j, next_indent > line_indent, out.last()!) {
+                out.push(t)
+                line_indent = next_indent
+            }
             i = j
         } else {
             open = opened(open, t)
@@ -284,6 +292,18 @@ fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> 
         }
     }
     out
+}
+
+/// Whether the next line continues this one by how it BEGINS: an
+/// `else` or an `or`, or a `.name` chain step indented deeper than the line it
+/// continues — unless this line opened a brace (a first match arm)
+/// or ended in a comma (a listed item).
+fn continued_by(raw: List<Token>, j: int, deeper: bool, last: Token) -> bool {
+    if j >= raw.length { return false }
+    let next = raw[j]
+    if next.kind == TokenKind.Name && (next.text == "else" || next.text == "or") { return true }
+    let chain = next.kind == TokenKind.Op && next.text == "." && j + 1 < raw.length && raw[j + 1].kind == TokenKind.Name
+    chain && deeper && !(last.kind == TokenKind.Op && (last.text == "{" || last.text == ","))
 }
 
 /// Whether a line break separates here: outside every bracket, or
@@ -301,9 +321,10 @@ fn opened(open: List<string>, t: Token) -> List<string> {
     open
 }
 
-/// A token after which the line continues.
+/// A token after which the line continues — an operator that wants
+/// a right side, or the `or` between a pattern's alternatives.
 fn continues(t: Token) -> bool {
-    t.kind == TokenKind.Op && continuing_ops().contains(t.text)
+    (t.kind == TokenKind.Op && continuing_ops().contains(t.text)) || (t.kind == TokenKind.Name && t.text == "or")
 }
 
 fn continuing_ops() -> List<string> {

@@ -3475,6 +3475,22 @@ T7, T8, `where`, `should_fail`, `skip`/`todo`, results caching and
 tests in parallel (seconds, against 55 today); warm run after a one-
 line change under a second.
 
+LAYOUT TAIL (2026-09-03, after rung 5): a `.name` line indented
+deeper than the line it continues joins it (a method chain; a match
+arm sits level with its siblings and follows a `{`, so it stays an
+arm); an `else` on its own line continues the if; `or` at a line's
+end continues an arm's alternatives; our lexer's helper named
+`fail` (a keyword) is `refused` at parity, and `-> return x` in an
+arm is spelled `-> { return x }` (a block that leaves) — the
+expression form is not a construct; a trailing comma closes an
+argument list (`f(a,\n    b,\n)`). CENSUS: 99 -> 82 files — the test
+DSL (71) and the last few constructs (fn types in fields, extern,
+generic impls). And the block's expression form is GONE: since
+END, `{ x }` parses as a statement list whose tail answers, so the
+`"{" v:expression "}"` alternative was redundant — and wrong: a
+keyword lexes as a NAME, so `-> { return x }` read `return` as an
+identifier and the @expect'd `}` hole-hit. One form, one law.
+
 PARITY RUNG 5 LANDED (2026-09-03) — COMPREHENSIONS. `[elem for
 name in source if cond]` and `[elem for (index, name) in source]`
 are one Expr (`Comp`) the lists feature owns, its branch tried
