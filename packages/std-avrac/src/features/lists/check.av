@@ -3,7 +3,7 @@
 //! widening reached lists at G3); the empty literal is the
 //! absence-of-elements value, adopted by whatever list claims it.
 use core.{ExprId, Type, TypeId}
-use features.{TypeCx, spoken, types_disagree, this_is, slot_worthy, accepts, slice_promise}
+use features.{TypeCx, spoken, types_disagree, this_is, slot_worthy, accepts, slice_promise, require_bool}
 use diagnostics.{refusal}
 
 fn list_type(cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
@@ -62,4 +62,39 @@ fn disagreeing_element(cx: TypeCx, k: ExprId, elem: TypeId) -> TypeId {
 fn unwanted_element(cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {
     let n = cx.name_at(k)
     spoken(cx, refusal("type.list_element", cx.loc_of(k), "this list holds `${cx.view.types.name_of(want)}`, this is `${n}`", this_is(n), null))
+}
+
+/// THE COMPREHENSION LAW: the source is a list, its element type is
+/// the name's (and the index is an int); the filter is a bool; the
+/// answer is a list of the element expression's type.
+fn comp_type(cx: TypeCx, elem: ExprId, index: string, source: ExprId, cond: ExprId?) -> TypeId {
+    let st = cx.walk_type(source)
+    if cx.shape_at(source) is .Error { return cx.error_type }
+    let held: TypeId? = cx.view.types.element(st)
+    if held == null { return not_walkable(cx, source) }
+    let tys = comp_types(cx, index, held!)
+    cx.bind_types(elem, tys)
+    if cond != null { filter_checks(cx, cond!, tys) }
+    let ety = cx.walk_type(elem)
+    if cx.shape_at(elem) is .Error { return cx.error_type }
+    if !slot_worthy(cx.shape_at(elem)) { return unslottable_element(cx, elem) }
+    cx.view.types.intern(Type.List(ety))
+}
+
+/// The filter, under the binders: a bool.
+fn filter_checks(cx: TypeCx, cond: ExprId, tys: List<TypeId>) {
+    cx.bind_types(cond, tys)
+    let _ = cx.walk_type(cond)
+    require_bool(cx, cond, "a comprehension's filter", "this decides the element")
+}
+
+/// The binders' types in pre-order: the index's int first when named.
+fn comp_types(cx: TypeCx, index: string, elem: TypeId) -> List<TypeId> {
+    if index == "" { return [elem] }
+    [cx.view.types.intern(Type.Int), elem]
+}
+
+fn not_walkable(cx: TypeCx, source: ExprId) -> TypeId {
+    let n = cx.name_at(source)
+    spoken(cx, refusal("type.list", cx.loc_of(source), "a comprehension walks a list, found `${n}`", this_is(n), "`for x in xs` needs a `List<T>` — an empty `[]` has no element yet"))
 }

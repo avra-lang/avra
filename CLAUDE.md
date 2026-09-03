@@ -176,6 +176,16 @@ registry is the idiom engine's spec, written by dogfooding.
   out.push(v) }`) with no second grammar; a tail spelled BREAK
   would refuse the one-liner and, with a recovering floor, eat the
   brace (the trap that once forced `"{" BREAK` anchors).
+- Grammar authoring: an `@expect` is a HOLE-HIT, not a break — a
+  branch that reaches its @expect'd item stands as matched (with a
+  hole), and later alternatives are never tried. So an alternative
+  meant to catch what an earlier branch cannot must be tried FIRST,
+  or the earlier branch must require a distinguishing prefix before
+  its @expect'd tail (the map requires `key :` before its `}`, so a
+  block can follow as the fallback; the empty map is its own
+  branch). And the LINE LAW lives in the lexer: breaks are dropped
+  directly inside `(`/`[` and after a continuing operator — a
+  grammar never spells `BREAK?` for those.
 - Grammar authoring: @recover converts a branch's break into a hole
   HIT, so it belongs only on branches anchored by a keyword no other
   branch can start with. A NAME-headed branch (assignment) must stay
@@ -602,6 +612,16 @@ against these before writing; probe in scratch when unsure.
   dies at codegen in some shards ("unknown struct
   `@std::errors::Suggestion`"), never in others. The product
   library projects it (`suggested(d)` -> strings); tests read that.
+- TYPED IDS ARE INTERCHANGEABLE TO bs2: `DeclId`, `StmtId`, `ExprId`
+  and `PatId` are all `{ index: int }`, and a call passing one where
+  another is declared COMPILES. It surfaced as "index 1290 out of
+  bounds (length 265)" deep in a whole-package check (a DeclId
+  handed to a StmtId verb — fine in a lone file whose decl count is
+  small, a crash once the package's table grew). Two rules: a verb
+  that only needs a LOCATION takes the ExprId of the site that
+  asked, never a declaration's stmt; and when a trap names an index
+  far past the table, suspect a different id family before a
+  missing bound.
 - A CONSTRUCTION with the wrong payload count is not checked either:
   a test building `Stmt.EnumDecl(name, tparams, [param])` after
   the variant's payload became a `List<Variant>` compiled, corrupted

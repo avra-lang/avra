@@ -119,7 +119,7 @@ fn pinned_slots(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
     }
     // LICENSED I3: positional fill; comprehensions cannot destructure enumerate
     for (j, tr) in pins.enumerate() {
-        bound.set(j, cx.written(decl, tr))
+        bound.set(j, cx.written(e, tr))
     }
     bound
 }
@@ -147,7 +147,7 @@ fn generic_argument(cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId
 /// by the declared answer (widening recorded, like every slot).
 export fn check_return(cx: StmtTypeCx, s: StmtId) {
     let held: ExprId? = cx.view.store.stmt_value(s)
-    if held == null { return }
+    if held == null { return bare_return(cx, s) }
     let v = held!
     let early: TypeId? = cx.expr.enclosing_ret()
     if early != null { cx.expr.plant_want(v, early!) }
@@ -220,6 +220,13 @@ fn null_cannot_pin(cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId)
 
 fn no_fn_to_answer(cx: StmtTypeCx, s: StmtId) {
     cx.expr.emit(refusal("type.return", cx.loc_of(s), "a `return` answers a fn, and there is none enclosing", "returned here", "at the top level the last statement IS the answer"))
+}
+
+fn bare_return(cx: StmtTypeCx, s: StmtId) {
+    let want: TypeId? = cx.expr.enclosing_ret()
+    if want == null { return no_fn_to_answer(cx, s) }
+    if cx.expr.view.types.shape_of(want!) is .Void { return }
+    cx.expr.emit(refusal("type.return", cx.loc_of(s), "a bare `return` answers nothing, but this fn declares `${cx.expr.view.types.name_of(want!)}`", "here", "write `return <value>`, or declare no return"))
 }
 
 fn wrong_return(cx: StmtTypeCx, s: StmtId, v: ExprId, want: TypeId) {

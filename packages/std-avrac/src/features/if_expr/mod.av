@@ -13,8 +13,10 @@ export fn if_expr() -> LanguageFeature {
         name = "if_expr"
         docs = "`if <cond> { <expr> } else { <expr> }` as a value; ELSELESS `if <cond> { <stmts> }` as a statement, on one line or many — the guard idiom's home. Elseless keeps the two forms unambiguous; the opening BREAK keeps single-line expression arms out of the statement parse."
         gram = """
-stmt = "if" c:expression "{" ( t:stmt | BREAK )* "}" END -> if_stmt(c, t)
-primary = "if" c:expression t:block "else" e:block @expect("else", "an `if` expression needs its `else` branch") -> if_expr(c, t, e)
+stmt = v:if_stmt END -> v
+if_stmt = "if" c:expression "{" ( t:stmt | BREAK )* "}" ( "else" ( "{" ( e:stmt | BREAK )* "}" | e:if_stmt ) )? -> if_stmt(c, t, e)
+primary = "if" c:expression t:block "else" ( e:block | e:if_expr ) @expect("else", "an `if` expression needs its `else` branch") -> if_expr(c, t, e)
+if_expr = "if" c:expression t:block "else" ( e:block | e:if_expr ) -> if_expr(c, t, e)
 """
         builders = rows
     }

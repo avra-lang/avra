@@ -1,10 +1,20 @@
 //! Parse-time lowering: captures -> the list node. An absent first
 //! element is the empty literal — typing owns its refusal.
-use core.{Expr, ExprId}
-use features.{LangNode, Builder, expr_id_at}
+use core.{Token, Expr, ExprId}
+use features.{token_at, expr_id_at, LangNode, Builder, expr_id_at}
 
 fn build_list(b: Builder) -> Result<LangNode, string> {
     let first: ExprId? = expr_id_at(b.args, 0)
     if first == null { return b.make_expr(Expr.ListLit([])) }
     b.make_expr(Expr.ListLit([first!].concat(b.exprs(1)?)))
+}
+
+/// `[v for (ix, en) in src if c]` — the index name is "" when the
+/// binder is a bare name; the filter is absent when unwritten.
+fn build_comp(b: Builder) -> Result<LangNode, string> {
+    let v = b.expr(0)?
+    let ix: Token? = token_at(b.args, 1)
+    let en = b.token(2)?
+    let src = b.expr(3)?
+    b.make_expr(Expr.Comp(v, ix?.text ?? "", en.text, src, expr_id_at(b.args, 4)))
 }

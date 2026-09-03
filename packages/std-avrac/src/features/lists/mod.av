@@ -8,6 +8,7 @@ export fn lists() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name       | build
         "list_lit" | build_list
+        "comp"     | build_comp
     }
     let codes = table<DiagCode> {
         kind                | id      | summary
@@ -15,6 +16,7 @@ export fn lists() -> LanguageFeature {
         "type.list_element" | "F2005" | "a list's elements share one type"
         "type.list_scalar"  | "F2006" | "a list holds scalars for now"
         "type.place"        | "F2034" | "a mutation needs a mut place"
+        "type.list"         | "F2041" | "a comprehension walks a list"
     }
     let methods = table<MethodRow> {
         name     | takes   | check        | lower
@@ -35,9 +37,9 @@ export fn lists() -> LanguageFeature {
     }
     component LanguageFeature f {
         name = "lists"
-        docs = "`[first, second, third]` — a homogeneous aggregate; index with `xs[i]`, measure with `xs.length`."
+        docs = "`[e for x in xs if p]` builds a list by walking another (`(i, x)` names the index too); `[first, second, third]` — a homogeneous aggregate; index with `xs[i]`, measure with `xs.length`."
         gram = """
-primary = "[" BREAK? ( first:expression ( "," BREAK? rest:expression )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> list_lit(first, rest)
+primary = "[" v:expression "for" ( "(" ix:NAME "," en:NAME ")" | en:NAME ) "in" src:expression ( "if" c:expression )? "]" @expect("]", "expected `]` to close the comprehension") -> comp(v, ix, en, src, c) | "[" BREAK? ( first:expression ( "," BREAK? rest:expression )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> list_lit(first, rest)
 """
         builders = rows
         diags = codes

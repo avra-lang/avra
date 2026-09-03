@@ -156,7 +156,18 @@ export fn join_of(cx: TypeCx, a: TypeId, b: TypeId) -> TypeId? {
     // `accepts` then lifts the guarantee side.
     if carries(cx, b, a) { return b }
     if carries(cx, a, b) { return a }
+    // A value beside ITS OWN Result joins to the Result — a branch
+    // that LEAVES answers the fn's promise, and the other branch's
+    // guarantee auto-Ok-wraps at the same one edge.
+    if answers(cx, b, a) { return b }
+    if answers(cx, a, b) { return a }
     null
+}
+
+/// Does the Result `res` carry exactly `ok` on its answer side?
+fn answers(cx: TypeCx, res: TypeId, ok: TypeId) -> bool {
+    let sides: ResSides? = cx.view.types.res_parts(res)
+    sides != null && !types_disagree(cx, sides!.ok, ok)
 }
 
 /// Does the nullable `opt` carry exactly `inner`?

@@ -254,31 +254,60 @@ fn rule_boundary(tokens: List<Token>, j: int) -> bool {
     }
 }
 
-/// In language source every line break separates.
+/// In language source every line break separates — except directly
+/// inside `(` or `[` (a brace opened inside them separates again),
+/// and after a token that promises more (a binary operator, `=`,
+/// `->`, a comma), where the line CONTINUES.
 // LICENSED I23: conforms to a callback signature — the CONTRACT owns
 // the parameter list, not this body
 fn line_boundary(tokens: List<Token>, j: int) -> bool {
     true
 }
 
-/// Collapse each Break run to one, kept only where `boundary` allows;
-/// leading breaks always drop.
+/// Collapse each Break run to one, kept only where `boundary` allows
+/// and the line does not continue; leading breaks always drop.
 fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> List<Token> {
     mut out: List<Token> = []
+    mut open: List<string> = []
     mut i = 0
     while i < raw.length {
         let t = raw[i]
         if t.kind == TokenKind.Break {
             mut j = i + 1
             while j < raw.length && raw[j].kind == TokenKind.Break { j = j + 1 }
-            if boundary(raw, j) && !out.is_empty() { out.push(t) }
+            if boundary(raw, j) && !out.is_empty() && separates(open) && !continues(out.last()!) { out.push(t) }
             i = j
         } else {
+            open = opened(open, t)
             out.push(t)
             i = i + 1
         }
     }
     out
+}
+
+/// Whether a line break separates here: outside every bracket, or
+/// directly inside a brace — inside `(` or `[` it never does.
+fn separates(open: List<string>) -> bool {
+    let top: string? = open.last()
+    top == null || top! == "{"
+}
+
+/// The bracket stack after a token: an opener pushes, a closer pops.
+fn opened(open: List<string>, t: Token) -> List<string> {
+    if t.kind != TokenKind.Op { return open }
+    if t.text == "(" || t.text == "[" || t.text == "{" { return open.concat([t.text]) }
+    if (t.text == ")" || t.text == "]" || t.text == "}") && !open.is_empty() { return open.slice(0, open.length - 1) }
+    open
+}
+
+/// A token after which the line continues.
+fn continues(t: Token) -> bool {
+    t.kind == TokenKind.Op && continuing_ops().contains(t.text)
+}
+
+fn continuing_ops() -> List<string> {
+    ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "&&", "||", "??", "=", "->", "|>", ","]
 }
 
 /// The whole input, one ScanStep at a time; then the line policy, a

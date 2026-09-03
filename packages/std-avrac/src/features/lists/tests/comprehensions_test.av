@@ -1,0 +1,51 @@
+// Comprehensions: the element, the binders, the filter, `?` inside,
+// nesting — and the laws they must obey.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown, refused_with}
+
+fn halver() -> string {
+    "enum Oddness {\n    odd\n}\nfn half(n: int) -> Result<int, Oddness> {\n    if n % 2 == 0 { n / 2 } else { fail Oddness.odd }\n}\n"
+}
+
+spec "features/lists (comprehensions)" {
+    given "the shape" {
+        then "an element expression over every source element" {
+            shown("let xs = [x * 2 for x in [1, 2, 3]]\nxs[0] + xs[1] + xs[2]") == "12"
+        }
+        then "a filter keeps what holds" {
+            shown("let xs = [x for x in [1, 2, 3, 4, 5, 6] if x % 2 == 0]\nxs.length * 10 + xs[2]") == "36"
+        }
+        then "an index binder walks beside the element" {
+            shown("let xs = [i * 100 + x for (i, x) in [7, 8, 9]]\nxs[2]") == "209"
+        }
+        then "the source may be any list expression" {
+            shown("fn seed() -> List<int> {\n    [3, 1]\n}\n[x + 1 for x in seed()][1]") == "2"
+        }
+        then "a comprehension nests" {
+            shown("let grid = [[x * y for y in [1, 2]] for x in [10, 20]]\ngrid[1][1]") == "40"
+        }
+        then "the binder dies with its comprehension" {
+            refused_with("let xs = [x for x in [1]]\nx", "`x` is not defined")
+        }
+        then "strings ride the slots — the element may be text" {
+            shown("let words = [\"$" + "{x}!\" for x in [\"a\", \"b\"]]\nwords[1]") == "b!"
+        }
+    }
+    given "propagation inside" {
+        then "`?` in the element leaves the fn on the first failure" {
+            shown("${halver()}fn halves(xs: List<int>) -> Result<List<int>, Oddness> {\n    [half(x)? for x in xs]\n}\nmatch halves([2, 4]) {\n    .Ok(v) -> v[1]\n    .Err(_) -> -1\n}") == "2" &&
+                shown("${halver()}fn halves(xs: List<int>) -> Result<List<int>, Oddness> {\n    [half(x)? for x in xs]\n}\nmatch halves([2, 3]) {\n    .Ok(v) -> v[1]\n    .Err(_) -> -1\n}") == "-1"
+        }
+    }
+    given "the laws" {
+        then "the source must be a list" {
+            refused_with("[x for x in 5]", "a comprehension walks a list, found `int`")
+        }
+        then "the filter must be a bool" {
+            refused_with("[x for x in [1] if x]", "a comprehension's filter is a `bool`")
+        }
+        then "the element rides a slot" {
+            refused_with("[x for x in [1] if true][0] + [null for x in [1]][0]", "cannot")
+        }
+    }
+}

@@ -3475,6 +3475,69 @@ T7, T8, `where`, `should_fail`, `skip`/`todo`, results caching and
 tests in parallel (seconds, against 55 today); warm run after a one-
 line change under a second.
 
+PARITY RUNG 5 LANDED (2026-09-03) — COMPREHENSIONS. `[elem for
+name in source if cond]` and `[elem for (index, name) in source]`
+are one Expr (`Comp`) the lists feature owns, its branch tried
+before the literal's (its failure at `for` is a deferred break, so
+a plain list still hits). The SOURCE is a kid (resolved outside the
+binders); the element and the filter are heirs walked under them —
+the binders ride the PATTERN-BIND machinery (`Binding.Pattern(elem,
+j)` and `(cond, j)`, index first when named), so no new binding
+currency and no statement-keyed slot. Typing: the source is a list
+(an empty `[]` has no element — refused, F2041), the filter a bool,
+the element slot-worthy, the answer `List<elem type>`; `?` inside
+propagates like anywhere. Lowering: a fresh box, one loop over the
+source, each turn binding the element register (and the index)
+and pushing when the filter's region holds; the memory pass owns
+the pushes by the element type as it does for literals. FOUND: the
+join law lacked the Result twin of its nullable rule — `if c { v }
+else { fail e }` in tail position typed the leaving branch as the
+fn's promise and refused against `v`; a value beside ITS OWN Result
+now joins to the Result and the auto-Ok lift wraps it at the same
+edge (a leaving branch in an if-chain answers, too). corpus/
+comprehensions.av; 11 specs. CENSUS: files with a parse failure
+135 -> 99, comprehensions 45 -> 0; what remains is the test DSL
+(71 — every test file) and a layout tail (leading-dot chain lines
+16, `else` on its own line, the `fail` keyword clash in our lexer).
+
+PARITY RUNG 4 LANDED (2026-09-03) — LAYOUT. THE LINE LAW (lexer):
+a line break separates except directly inside `(` or `[` (a brace
+opened inside them separates again — a `match` written inside a
+call keeps its arms on their lines) and after a token that promises
+more (a binary operator, `=`, `->`, `,`); an unclosed bracket runs
+to the file's end, one refusal (pinned). A bare `return` leaves a
+void fn and refuses where a value was declared. A BLOCK IS AN
+EXPRESSION wherever one may stand — a match arm's `-> { … }`, a
+`let`'s value — reached through the map's brace: the empty map is
+its own branch and the full map requires `key :` before its
+@expect'd close, so the block alternative can be tried (an @expect
+is a HOLE-HIT, not a break: a branch whose only remaining item is
+@expect'd always wins). IF-CHAINS: the statement form takes `else
+{ … }` and `else if …` (a chain need not end in else), the
+expression form chains `else if` too, and a chain in TAIL position
+— a fn body's, a block's, the program's — is the if-expression when
+every branch answers (the node store's `answered` law, one place
+for blocks and the top level; a one-expression branch stays bare so
+the IR is unchanged). FOUND BY IT: a latent id-family bug — a
+pinned generic call handed a DeclId to a StmtId verb, invisible in
+lone files and a crash in a whole-package check once the table
+grew (CLAUDE.md); the verb now takes the call's own site. corpus/
+layout.av; 13 specs; three cascade pins re-pinned to the bracket
+law. CENSUS: files with a parse failure 163 -> 135. NEXT:
+comprehensions 45 (element/iterable/filter, `?` inside, `(i, x)`
+binders — binders ride the pattern-bind machinery), then a layout
+tail (a leading-dot chain line 12 — continuation when the dot line
+is indented deeper than the line before and that line did not open
+a brace; `else` on its own line; a fn named `fail` in our lexer
+clashes with the keyword and is renamed at parity), then the test
+DSL 64. AND A LAW, from the crash hunt: EVERY RUNTIME TRAP NAMES
+ITS SITE — an avra-built program's index or unwrap failure carries
+file:line (the bootstrap's does not, which cost an hour of
+bisection); the runtime rows gain a site argument minted as a
+constant at each risky read, and the evaluator prints the same
+text so the differential holds. Its own small rung, before the
+fixed point.
+
 PARITY RUNG 3 LANDED (2026-09-03) — PATTERNS. THE MODEL: patterns
 are nodes in the store's own table (`Pat`: Wild, Rest, Bind,
 Variant(name, args), Lit(expr); `PatId`), an arm is `{ pats, value }`

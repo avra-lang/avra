@@ -141,6 +141,11 @@ export enum Expr {
     Not(value: ExprId)
     /// The first aggregate — homogeneous scalar elements.
     ListLit(elems: List<ExprId>)
+    /// `[elem for name in source if cond]` — a list built by walking
+    /// another; `index` names the position when written as
+    /// `(index, name)`, "" otherwise. The binders hold for `elem`
+    /// and `cond` alone.
+    Comp(elem: ExprId, index: string, name: string, source: ExprId, cond: ExprId?)
     /// `{ "k": v, … }` — keys and values in written order.
     MapLit(keys: List<ExprId>, values: List<ExprId>)
     /// `subject[index]` — element access.
@@ -344,7 +349,8 @@ export enum Stmt {
     /// `return v` — the enclosing fn answers NOW. Typing accepts
     /// `v` against the declared return; lowering exits with every
     /// open scope's debts settled at the site.
-    Return(value: ExprId)
+    /// `return`, with a value or bare — a bare one leaves a void fn.
+    Return(value: ExprId?)
     /// `fail value` — raise: the enclosing fn answers the failure
     /// channel of its Result right here. Diverges, like `return`.
     Fail(value: ExprId)
@@ -412,6 +418,63 @@ impl NodeStore {
         mut fingerprints = self.expr_fingerprints
         fingerprints.push(self.fingerprint_expr(e))
         ExprId { index: self.exprs.add(e, span) }
+    }
+
+    /// The value a tail statement answers with: an expression
+    /// statement's expression, or an if-chain every branch of which
+    /// answers — rebuilt as the if-expression over branch blocks, so
+    /// a chain in tail position is a value wherever a block is.
+    fn answer_of(self, s: StmtId) -> ExprId? {
+        match self.stmt(s) {
+            .ExprStmt(v) -> v,
+            .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
+            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or
+            .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or
+            .LetElse(_, _, _) or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or
+            .TraitDecl(_, _) or .Error -> null,
+        }
+    }
+
+    /// A chain answers when it has an else and both sides answer.
+    fn chain_value(self, s: StmtId, c: ExprId, t: List<StmtId>, e: List<StmtId>) -> ExprId? {
+        if e.is_empty() { return null }
+        let tv: ExprId? = self.branch_value(t)
+        let ev: ExprId? = self.branch_value(e)
+        if tv == null || ev == null { return null }
+        self.alloc_expr(Expr.If(c, tv!, ev!), self.stmt_span(s))
+    }
+
+    /// A branch's statements as its answer: the one expression when
+    /// that is all the branch holds, else a block answering with its
+    /// tail.
+    fn branch_value(self, stmts: List<StmtId>) -> ExprId? {
+        let held: StmtId? = stmts.last()
+        if held == null { return null }
+        let last = held!
+        // a branch that LEAVES answers the fn's promise — a block
+        // whose value is absent, as the block law reads it
+        if self.diverges(last) { return self.alloc_expr(Expr.Block(stmts, null), self.stmt_span(last)) }
+        let value: ExprId? = self.answer_of(last)
+        if value == null { return null }
+        if stmts.length == 1 { return value }
+        self.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value!), self.stmt_span(last))
+    }
+
+    /// The statements with a trailing if-chain that answers turned
+    /// into the expression statement it is — the top level's tail
+    /// law, the same as a block's.
+    fn answered(self, stmts: List<StmtId>) -> List<StmtId> {
+        let held: StmtId? = stmts.last()
+        if held == null { return stmts }
+        let last = held!
+        let chained: bool = match self.stmt(last) {
+            .IfStmt(_, _, e) -> !e.is_empty(),
+            _ -> false,
+        }
+        if !chained { return stmts }
+        let value: ExprId? = self.answer_of(last)
+        if value == null { return stmts }
+        stmts.slice(0, stmts.length - 1).concat([self.alloc_stmt(Stmt.ExprStmt(value!), self.stmt_span(last))])
     }
 
     /// The one pattern-allocation seam.
@@ -522,7 +585,7 @@ impl NodeStore {
             .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or
             .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
             .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _) or
-            .Lambda(_, _) or .Is(_, _) -> null,
+            .Lambda(_, _) or .Is(_, _) or .Comp(_, _, _, _, _) -> null,
         }
     }
 
@@ -572,6 +635,7 @@ impl NodeStore {
             .Not(v) -> self.pronoun_rides(v),
             .Force(v) -> self.pronoun_rides(v),
             .Is(v, _) -> self.pronoun_rides(v),
+            .Comp(elem, _, _, source, cond) -> self.pronoun_rides(elem) || self.pronoun_rides(source) || (cond != null && self.pronoun_rides(cond!)),
             .Propagate(v) -> self.pronoun_rides(v),
             .ListLit(elems) -> self.any_rides(elems),
             .MapLit(keys, values) -> self.any_rides(keys) || self.any_rides(values),
@@ -650,6 +714,8 @@ impl NodeStore {
                 fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
             .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
             .Is(v, variant) -> fp(49, [self.expr_fingerprint(v), fp_str(variant)]),
+            .Comp(elem, index, name, source, cond) ->
+                fp(55, [self.expr_fingerprint(elem), fp_str(index), fp_str(name), self.expr_fingerprint(source), self.expr_fingerprint(cond ?? elem)]),
             .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),
             .MethodCall(subject, name, margs) ->
                 fp(43, flatten([[self.expr_fingerprint(subject)], [fp_str(name)],
@@ -699,7 +765,7 @@ impl NodeStore {
                 fp(35, flatten([[self.expr_fingerprint(cond)],
                                 self.stmt_fps(then_stmts), [0],
                                 self.stmt_fps(else_stmts)])),
-            .Return(value) -> fp(36, [self.expr_fingerprint(value)]),
+            .Return(value) -> fp(36, [self.expr_fingerprint(v) for v in some_list(value)]),
             .Fail(value) -> fp(39, [self.expr_fingerprint(value)]),
             .ImplDecl(of, target, fns) ->
                 fp(44, [fp_str(of), fp_str(target)].concat(self.stmt_fps(fns))),
