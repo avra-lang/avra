@@ -68,13 +68,16 @@ impl Builder {
         Result.Ok(out)
     }
 
-    /// The repeated capture at `i`, as statement ids.
+    /// The repeated capture at `i`, as statement ids. A recovery hole
+    /// becomes an explicit Stmt.Error node, as at the program's top
+    /// level — every body survives bad input visibly.
     fn stmts(self, i: int) -> Result<List<StmtId>, string> {
         let items = list_at(self.args, i)
         mut out: List<StmtId> = []
         // LICENSED I3: index-taking extractors: a bare Captured arg misreads
         for j in 0..items.length {
-            out.push(want(stmt_id_at(items, j), "a statement in a repeated capture")?)
+            let sid: StmtId? = stmt_id_at(items, j)
+            out.push(sid ?? self.store.alloc_stmt(Stmt.Error, null))
         }
         Result.Ok(out)
     }

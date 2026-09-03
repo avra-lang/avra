@@ -179,8 +179,12 @@ fn binding_for<N>(bindings: List<Binding<N>>, label: string) -> Captured<N>? {
 }
 
 /// Skip to just past the sync target: an uppercase known terminal
-/// syncs by kind, anything else by text. Stops at Eof.
-fn sync_past<N>(cx: MatchContext<N>, target: string, from: int) -> int {
+/// syncs by kind, anything else by text. `END` syncs to the
+/// statement's end: past the next Break, or BEFORE a `}` the
+/// statement did not open — braces it consumed between its entry
+/// and its failure are its own to close. Stops at Eof.
+fn sync_past<N>(cx: MatchContext<N>, target: string, entry: int, from: int) -> int {
+    if is_end(target) { return sync_to_end<N>(cx, entry, from) }
     let k = term_kind(target)
     mut i = from
     while cx.tokens[i].kind != TokenKind.Eof {
@@ -190,6 +194,48 @@ fn sync_past<N>(cx: MatchContext<N>, target: string, from: int) -> int {
         i = i + 1
     }
     i
+}
+
+fn sync_to_end<N>(cx: MatchContext<N>, entry: int, from: int) -> int {
+    mut depth = open_braces<N>(cx, entry, from)
+    mut i = from
+    while cx.tokens[i].kind != TokenKind.Eof {
+        let t = cx.tokens[i]
+        if t.kind == TokenKind.Break { return i + 1 }
+        if t.lit_matches("{") { depth = depth + 1 }
+        if closes_body(t) {
+            if depth == 0 { return i }
+            depth = depth - 1
+        }
+        i = i + 1
+    }
+    i
+}
+
+/// How many `{` the tokens in [lo, hi) leave open.
+fn open_braces<N>(cx: MatchContext<N>, lo: int, hi: int) -> int {
+    mut depth = 0
+    for j in lo..hi {
+        if cx.tokens[j].lit_matches("{") { depth = depth + 1 }
+        if closes_body(cx.tokens[j]) && depth > 0 { depth = depth - 1 }
+    }
+    depth
+}
+
+/// The statement-end terminal.
+fn is_end(term: string) -> bool {
+    term == "END"
+}
+
+/// A `}` — the token a statement may end against without consuming.
+fn closes_body(t: Token) -> bool {
+    t.lit_matches("}")
+}
+
+/// How a terminal reads when it was expected: `END` asks for the
+/// line's end.
+fn expected_word(term: string) -> string {
+    if is_end(term) { "BREAK" } else { term }
 }
 
 fn match_rule<N>(cx: MatchContext<N>, name: string, cursor: int) -> MatchResult<N> {
@@ -294,7 +340,7 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq,
         }
         diagnostics.push(committed_failure<N>(cx, rule_name, member, r, state))
         if s.recover == null { return broke<N>(state, diagnostics, farthest) }
-        let c = sync_past<N>(cx, s.recover!.sync_to, state.cursor)
+        let c = sync_past<N>(cx, s.recover!.sync_to, entry_state.cursor, state.cursor)
         return matched<N>(state_at<N>(c, state.bindings), captured_absent<N>(), diagnostics, farthest)
     }
     // Build phase. The branch's consumed range is the builder's span.
@@ -430,8 +476,12 @@ fn match_prim<N>(cx: MatchContext<N>, rule_name: string, member: Item,
                 // Eof is a position, not a token: match without consuming.
                 let step = if t.kind == TokenKind.Eof { 0 } else { 1 }
                 matched<N>(state_at<N>(state.cursor + step, state.bindings), captured_terminal<N>(t), [], null)
+            } else if is_end(term) && closes_body(t) {
+                // A statement ends where its body closes: the `}` is
+                // the body's to consume.
+                matched<N>(state, captured_terminal<N>(t), [], null)
             } else {
-                let far = FarthestFailure { cursor: state.cursor, expected: [term], in_rule: rule_name }
+                let far = FarthestFailure { cursor: state.cursor, expected: [expected_word(term)], in_rule: rule_name }
                 missed<N>(state, [], far)
             }
         }

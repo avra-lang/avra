@@ -1,0 +1,37 @@
+// A statement ends where its line ends or its body closes: every
+// body takes a one-line form, and a broken one-liner recovers at
+// its own brace.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/stmt_spine (one-line bodies)" {
+    given "bodies on one line" {
+        then "a for body" {
+            shown("mut out = 0\nfor i in 0..3 { out = out + i }\nout") == "3"
+        }
+        then "a while body" {
+            shown("mut i = 0\nwhile i < 4 { i = i + 1 }\ni") == "4"
+        }
+        then "an if body that returns" {
+            shown("fn f(n: int) -> int {\n    if n > 1 { return 10 }\n    n\n}\nf(5) + f(0)") == "10"
+        }
+        then "a let-else body" {
+            shown("fn h(x: int?) -> int {\n    let v? = x else { return 0 }\n    v\n}\nh(3) + h(null)") == "3"
+        }
+        then "a for-each body holding an if body" {
+            shown("fn g(xs: List<int>) -> int {\n    mut t = 0\n    for x in xs { if x > 1 { t = t + x } }\n    t\n}\ng([1, 2, 3])") == "5"
+        }
+        then "an expression block still answers as a value" {
+            shown("fn k() -> int { 7 }\nk()") == "7"
+        }
+    }
+    given "the line's end still rules" {
+        then "two statements on one line refuse, asking for the line's end" {
+            refused_with("let a = 1 let b = 2\n3", "expected BREAK")
+        }
+        then "a broken one-line body recovers at its brace — the rest of the program still parses" {
+            let a = analyze_source("mut i = 0\nwhile i < 2 { i = i + }\ni")
+            a.diagnostics.length == 1 && a.report().contains("expected")
+        }
+    }
+}

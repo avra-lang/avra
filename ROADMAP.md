@@ -3392,6 +3392,36 @@ compiler that owns semantics: computed needs for a native
 language, contracts by use kind replacing versions, the manifest
 as a compiler output.
 
+PARITY RUNG 1 LANDED (2026-09-03) — ONE-LINE BODIES, by one
+engine terminal: `END` is "a Break consumed, or a `}` left for the
+body that opened it"; every statement tail is spelled `END` (not
+BREAK), `@recover(sync_to: "END")` syncs past the next Break or
+stops before a `}` the statement did not open (braces it consumed
+between entry and failure are its own to close — credited, so a
+broken `let m = { "a" 1 }` still syncs line-wise and every pinned
+cascade count held), and a recovery hole inside ANY body becomes a
+Stmt.Error node as at the top level (the "expected a statement in a
+repeated capture" builder failure is gone). The `"{" BREAK` anchors
+that the floor's recovery once forced (if_stmt, let_else) are gone
+with the trap. corpus/one_liners.av; 8 specs; the let-else one-liner
+re-pinned as a positive. CENSUS AFTER: no remaining first failure is
+a one-line body; what the brace-shaped classifier now catches is the
+NEXT construct in those files — empty struct declarations `type X =
+{ }` (24 files), force-then-field chains `x!.f` (several), unary
+minus (`-1`), `is` expressions — recorded in the ladder below as the
+SMALL-GAPS SWEEP, the next rung.
+
+PARITY LADDER, as measured 2026-09-03 (first failure per compiler
+file, so true totals are larger): one-line bodies 58 · spec/given/
+then + runner 50 · THE SMALL-GAPS SWEEP: empty struct declarations
+`{ }` 24, `x!.f` chains, unary minus, `is` expressions 4, void fns
+20, named payloads 8 · comprehensions 24 · match patterns (nested, or,
+literal, wildcard) 23 · void fns 15 · named payloads 8 · `is` /
+extern / fn types in fields / generic impl 10 · continuation lines,
+multi-line struct literals, if/else STATEMENTS with effect bodies
+(a block ending in an assignment refuses as a value block today)
+12 · then the second-failure unknowns · then the fixed point.
+
 15b.1 LANDED (2026-09-03): `@std/toml` is its own package
 (packages/std-toml — the reader the manifest reads with, self-
 contained, in the idiom ratchet's roots); `language/manifest.av`
