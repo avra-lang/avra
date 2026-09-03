@@ -543,3 +543,183 @@ static const char* str_slot_text(int64_t v) {
 const char* avra_strs_text(void* arr) {
     return list_text(arr, str_slot_text);
 }
+
+// ── The list vocabulary ─────────────────────────────────────────
+
+// The last slot, removed — a trap on an empty list. The plain form
+// answers a scalar; the owned twin hands the slot's reference to
+// the caller (no retain when the slot owned it, one when it did
+// not), so the answer is owned either way.
+int64_t avra_array_pop(void* arr) {
+    AvraArray* a = (AvraArray*)arr;
+    if (a->len == 0) avra_trap("pop on an empty list");
+    a->len--;
+    int64_t v = a->data[a->len];
+    if (a->owned[a->len]) {
+        a->owned[a->len] = 0;
+        avra_rc_release((void*)(uintptr_t)v);
+    }
+    return v;
+}
+
+void* avra_array_pop_owned(void* arr) {
+    AvraArray* a = (AvraArray*)arr;
+    if (a->len == 0) avra_trap("pop on an empty list");
+    a->len--;
+    void* v = (void*)(uintptr_t)a->data[a->len];
+    if (a->owned[a->len]) {
+        a->owned[a->len] = 0;
+    } else {
+        avra_rc_retain(v);
+    }
+    return v;
+}
+
+// `src`'s slots from lo up to hi appended to `out`, owned ones
+// retained — a copy holds its own references.
+static void array_append(void* out, AvraArray* src, int64_t lo, int64_t hi) {
+    for (int64_t i = lo; i < hi; i++) {
+        if (src->owned[i]) {
+            avra_array_push_owned(out, (void*)(uintptr_t)src->data[i]);
+        } else {
+            avra_array_push(out, src->data[i]);
+        }
+    }
+}
+
+// A fresh list: `a`'s slots, then `b`'s. Owned.
+void* avra_array_concat(void* a, void* b) {
+    void* out = avra_array_new();
+    array_append(out, (AvraArray*)a, 0, ((AvraArray*)a)->len);
+    array_append(out, (AvraArray*)b, 0, ((AvraArray*)b)->len);
+    return out;
+}
+
+// A fresh list of the slots from lo up to hi, clamped to the list;
+// nothing when lo is not below hi. Owned.
+void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
+    AvraArray* a = (AvraArray*)arr;
+    if (lo < 0) lo = 0;
+    if (hi > a->len) hi = a->len;
+    void* out = avra_array_new();
+    if (lo < hi) array_append(out, a, lo, hi);
+    return out;
+}
+
+// ── The string vocabulary ───────────────────────────────────────
+// Byte offsets, ends exclusive, clamped to the text; every answer
+// that is new text is owned.
+
+static const char* str_owned(const char* s, size_t n) {
+    char* buf = (char*)malloc(n + 1);
+    memcpy(buf, s, n);
+    buf[n] = '\0';
+    return (const char*)own(buf);
+}
+
+// A list slot holding fresh text — the list owns the one reference.
+static void push_fresh_text(void* arr, const char* s, size_t n) {
+    avra_array_push(arr, (int64_t)(uintptr_t)str_owned(s, n));
+    AvraArray* a = (AvraArray*)arr;
+    a->owned[a->len - 1] = 1;
+}
+
+const char* avra_str_substring(const char* s, int64_t lo, int64_t hi) {
+    int64_t n = (int64_t)strlen(s);
+    if (lo < 0) lo = 0;
+    if (hi > n) hi = n;
+    if (lo >= hi) return str_owned("", 0);
+    return str_owned(s + lo, (size_t)(hi - lo));
+}
+
+int64_t avra_str_contains(const char* s, const char* needle) {
+    return strstr(s, needle) != NULL;
+}
+
+int64_t avra_str_starts_with(const char* s, const char* prefix) {
+    return strncmp(s, prefix, strlen(prefix)) == 0;
+}
+
+int64_t avra_str_ends_with(const char* s, const char* suffix) {
+    size_t n = strlen(s);
+    size_t m = strlen(suffix);
+    return m <= n && memcmp(s + n - m, suffix, m) == 0;
+}
+
+// The first position of `needle`, or -1.
+int64_t avra_str_index_of(const char* s, const char* needle) {
+    const char* at = strstr(s, needle);
+    return at ? (int64_t)(at - s) : -1;
+}
+
+// The byte at `i` as a code — a trap past the text, worded like a
+// list's.
+int64_t avra_str_char_code(const char* s, int64_t i) {
+    int64_t n = (int64_t)strlen(s);
+    if (i < 0 || i >= n) {
+        char msg[80];
+        snprintf(msg, sizeof msg, "index %lld is out of bounds (length %lld)",
+                 (long long)i, (long long)n);
+        avra_trap(msg);
+    }
+    return (unsigned char)s[i];
+}
+
+static int is_blank(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+const char* avra_str_trim(const char* s) {
+    size_t n = strlen(s);
+    size_t lo = 0;
+    while (lo < n && is_blank(s[lo])) lo++;
+    while (n > lo && is_blank(s[n - 1])) n--;
+    return str_owned(s + lo, n - lo);
+}
+
+// Every occurrence of `from` becomes `to`; an empty `from` changes
+// nothing.
+const char* avra_str_replace(const char* s, const char* from, const char* to) {
+    size_t n = strlen(s);
+    size_t fl = strlen(from);
+    size_t tl = strlen(to);
+    if (fl == 0) return str_owned(s, n);
+    size_t count = 0;
+    for (const char* p = strstr(s, from); p; p = strstr(p + fl, from)) count++;
+    char* buf = (char*)malloc(n + count * tl - count * fl + 1);
+    char* w = buf;
+    const char* r = s;
+    for (const char* p = strstr(r, from); p; p = strstr(r, from)) {
+        memcpy(w, r, (size_t)(p - r));
+        w += p - r;
+        memcpy(w, to, tl);
+        w += tl;
+        r = p + fl;
+    }
+    strcpy(w, r);
+    return (const char*)own(buf);
+}
+
+// The pieces between separators: a leading empty piece stays, one
+// trailing empty piece is dropped, and empty text splits to
+// nothing. An empty separator keeps the text whole. Owned, holding
+// owned pieces.
+void* avra_str_split(const char* s, const char* sep) {
+    void* out = avra_array_new();
+    size_t sl = strlen(sep);
+    if (*s == '\0') return out;
+    if (sl == 0) {
+        push_fresh_text(out, s, strlen(s));
+        return out;
+    }
+    const char* r = s;
+    for (;;) {
+        const char* p = strstr(r, sep);
+        if (p == NULL) {
+            if (*r != '\0') push_fresh_text(out, r, strlen(r));
+            return out;
+        }
+        push_fresh_text(out, r, (size_t)(p - r));
+        r = p + sl;
+    }
+}

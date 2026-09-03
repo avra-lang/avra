@@ -1,9 +1,9 @@
 //! The list vocabulary's TYPING — the five walks (each judging its
-//! fn argument's seats and answer before any loop exists) and the
-//! growth word, each a row's rule; the receiver is always a list
-//! because the row's `takes` said so.
+//! fn argument's seats and answer before any loop exists), the
+//! scans, the growth words and the copies, each a row's rule; the
+//! receiver is always a list because the row's `takes` said so.
 use core.{ExprId, TypeId, Type, Arrow, LambdaParts}
-use features.{TypeCx, MethodCall, spoken, this_is, accepts, wrong_argument, wrong_arity, slot_worthy, slice_promise, not_a_place_call, not_mut_call, TypeArgs, unmeasurable_empty}
+use features.{TypeCx, MethodCall, spoken, this_is, accepts, wrong_argument, wrong_arity, slot_worthy, slice_promise, not_a_place_call, not_mut_call, TypeArgs, unmeasurable_empty, comparable}
 use diagnostics.{refusal}
 
 /// The empty literal takes the rows too — each rule refuses it in
@@ -53,18 +53,131 @@ fn judged_type(cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
 /// element, and the answer is nothing. The empty literal has no
 /// element to accept and answers the absorbing type.
 export fn check_push(cx: TypeCx, mc: MethodCall) -> TypeId {
-    let elem: TypeId? = cx.view.types.element(cx.type_at(mc.subject))
-    if elem == null { return cx.error_type }
-    if mc.args.length != 1 {
-        wrong_arity(cx, mc.e, "push", 1, mc.args.length)
-        return cx.error_type
-    }
-    let root: ExprId? = cx.view.store.place_root(mc.subject)
-    if root == null { return not_a_place_call(cx, mc.e, "push") }
-    if !cx.is_mut(root!) { return not_mut_call(cx, mc.e, "push", cx.view.store.ident_name(root!) ?? "this name") }
-    if !accepts(cx, mc.args[0], elem!) { wrong_argument(cx, "push", 0, elem!, mc.args[0]) }
+    let elem: TypeId? = elem_held(cx, mc, "push")
+    if elem == null || !opened_place(cx, mc, "push") || !seated(cx, mc, "push", [elem!]) { return cx.error_type }
     cx.view.types.intern(Type.Void)
 }
+
+/// `xs.pop()` — the last element, removed; the list is a mut place.
+export fn check_pop(cx: TypeCx, mc: MethodCall) -> TypeId {
+    let elem: TypeId? = elem_held(cx, mc, "pop")
+    if elem == null || !opened_place(cx, mc, "pop") || !seated(cx, mc, "pop", []) { return cx.error_type }
+    elem!
+}
+
+/// `xs.set(i, v)` — one slot rewritten; the list is a mut place.
+export fn check_set(cx: TypeCx, mc: MethodCall) -> TypeId {
+    let elem: TypeId? = elem_held(cx, mc, "set")
+    if elem == null || !opened_place(cx, mc, "set") || !seated(cx, mc, "set", [int_type(cx), elem!]) { return cx.error_type }
+    cx.view.types.intern(Type.Void)
+}
+
+/// `xs.contains(v)` — whether some element is `v`.
+export fn check_contains(cx: TypeCx, mc: MethodCall) -> TypeId {
+    let elem: TypeId? = scanned(cx, mc, "contains")
+    if elem == null || !seated(cx, mc, "contains", [elem!]) { return cx.error_type }
+    cx.view.types.intern(Type.Bool)
+}
+
+/// `xs.index_of(v)` — the first position of `v`, or -1.
+export fn check_index_of(cx: TypeCx, mc: MethodCall) -> TypeId {
+    let elem: TypeId? = scanned(cx, mc, "index_of")
+    if elem == null || !seated(cx, mc, "index_of", [elem!]) { return cx.error_type }
+    int_type(cx)
+}
+
+/// A scan's element: held, and tested by value — the `==` law.
+fn scanned(cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
+    let elem: TypeId? = elem_held(cx, mc, name)
+    if elem == null { return null }
+    if comparable(cx.view.types.shape_of(elem!)) { return elem }
+    let _ = scans_by_value(cx, mc.e, name, elem!)
+    null
+}
+
+/// `xs.is_empty()` — measured, like `length`.
+export fn check_is_empty(cx: TypeCx, mc: MethodCall) -> TypeId {
+    if cx.shape_at(mc.subject) is .EmptyList { return unmeasurable_empty(cx, mc.e, "[]", "List<int>") }
+    if !seated(cx, mc, "is_empty", []) { return cx.error_type }
+    cx.view.types.intern(Type.Bool)
+}
+
+/// `xs.first()` / `xs.last()` — the edge element, nullable.
+export fn check_first(cx: TypeCx, mc: MethodCall) -> TypeId { edge_type(cx, mc, "first") }
+export fn check_last(cx: TypeCx, mc: MethodCall) -> TypeId { edge_type(cx, mc, "last") }
+
+fn edge_type(cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
+    let elem: TypeId? = elem_held(cx, mc, name)
+    if elem == null || !seated(cx, mc, name, []) { return cx.error_type }
+    cx.view.types.intern(Type.Opt(elem!))
+}
+
+/// `xs.concat(ys)` — a fresh list of both, the same type.
+export fn check_concat(cx: TypeCx, mc: MethodCall) -> TypeId {
+    if elem_held(cx, mc, "concat") == null || !seated(cx, mc, "concat", [cx.type_at(mc.subject)]) { return cx.error_type }
+    cx.type_at(mc.subject)
+}
+
+/// `xs.slice(lo, hi)` — a fresh list of a range, the same type.
+export fn check_slice(cx: TypeCx, mc: MethodCall) -> TypeId {
+    if elem_held(cx, mc, "slice") == null || !seated(cx, mc, "slice", [int_type(cx), int_type(cx)]) { return cx.error_type }
+    cx.type_at(mc.subject)
+}
+
+/// `xs.enumerate()` — the list itself: a paired `for` head reads
+/// the index beside the element, and this word names that walk.
+export fn check_enumerate(cx: TypeCx, mc: MethodCall) -> TypeId {
+    if elem_held(cx, mc, "enumerate") == null || !seated(cx, mc, "enumerate", []) { return cx.error_type }
+    cx.type_at(mc.subject)
+}
+
+/// `xs.join(sep)` — text from a list of text.
+export fn check_join(cx: TypeCx, mc: MethodCall) -> TypeId {
+    let elem: TypeId? = elem_held(cx, mc, "join")
+    if elem == null { return cx.error_type }
+    if !(cx.view.types.shape_of(elem!) is .Str) { return joins_text(cx, mc.e, elem!) }
+    if !seated(cx, mc, "join", [cx.view.types.intern(Type.Str)]) { return cx.error_type }
+    cx.view.types.intern(Type.Str)
+}
+
+/// THE PRELUDE the plain rows share: the element the receiver
+/// holds. The empty literal refuses in the row's words and absorbs.
+fn elem_held(cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
+    let elem: TypeId? = cx.view.types.element(cx.type_at(mc.subject))
+    if elem == null && cx.shape_at(mc.subject) is .EmptyList { let _ = unknowable_walk(cx, mc.e, name) }
+    elem
+}
+
+/// The mutation prelude: the receiver is a mut place.
+fn opened_place(cx: TypeCx, mc: MethodCall, name: string) -> bool {
+    let root: ExprId? = cx.view.store.place_root(mc.subject)
+    if root == null {
+        let _ = not_a_place_call(cx, mc.e, name)
+        return false
+    }
+    if cx.is_mut(root!) { return true }
+    let _ = not_mut_call(cx, mc.e, name, cx.view.store.ident_name(root!) ?? "this name")
+    false
+}
+
+/// The seats: exactly `wants.length` arguments, each accepted by
+/// its seat — a wrong argument speaks and the row still answers.
+fn seated(cx: TypeCx, mc: MethodCall, name: string, wants: List<TypeId>) -> bool {
+    if mc.args.length != wants.length {
+        wrong_arity(cx, mc.e, name, wants.length, mc.args.length)
+        return false
+    }
+    // LICENSED I3: seat pairs; comprehensions cannot destructure enumerate
+    for (j, w) in wants.enumerate() {
+        if !accepts(cx, mc.args[j], w) { wrong_argument(cx, name, j, w, mc.args[j]) }
+    }
+    true
+}
+
+fn int_type(cx: TypeCx) -> TypeId {
+    cx.view.types.intern(Type.Int)
+}
+
 
 // ── The walk prelude ──
 
@@ -77,11 +190,8 @@ type WalkSeat = { elem: TypeId, answer: TypeId }
 /// judged against it — absent when either refused, or when the fn's
 /// own body already spoke.
 fn walk_seat(cx: TypeCx, mc: MethodCall, name: string) -> WalkSeat? {
-    let elem: TypeId? = cx.view.types.element(cx.type_at(mc.subject))
-    if elem == null {
-        if cx.shape_at(mc.subject) is .EmptyList { let _ = unknowable_walk(cx, mc.e, name) }
-        return null
-    }
+    let elem: TypeId? = elem_held(cx, mc, name)
+    if elem == null { return null }
     let held: Arrow? = walk_arg(cx, mc.e, name, elem!, mc.args)
     if held == null { return null }
     // a body that erred already spoke — its answer absorbs here
@@ -145,6 +255,14 @@ export fn check_length(cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
 }
 
 // ── The voices ──
+
+fn scans_by_value(cx: TypeCx, e: ExprId, name: string, elem: TypeId) -> TypeId {
+    spoken(cx, refusal("type.list_element", cx.loc_of(e), "`${name}` scans by value — scalars and text for now, this list holds `${cx.view.types.name_of(elem)}`", "scanned here", "spell the scan — `xs.any(same(it))` with the fields you mean"))
+}
+
+fn joins_text(cx: TypeCx, e: ExprId, elem: TypeId) -> TypeId {
+    spoken(cx, refusal("type.list_element", cx.loc_of(e), "`join` reads a list of text, this one holds `${cx.view.types.name_of(elem)}`", "joined here", "map the elements to strings first"))
+}
 
 /// A walk on `[]` cannot know its elements.
 fn unknowable_walk(cx: TypeCx, e: ExprId, name: string) -> TypeId {

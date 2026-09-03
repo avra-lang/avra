@@ -3491,6 +3491,66 @@ END, `{ x }` parses as a statement list whose tail answers, so the
 keyword lexes as a NAME, so `-> { return x }` read `return` as an
 identifier and the @expect'd `}` hole-hit. One form, one law.
 
+PARITY RUNG 8 LANDED (2026-09-03) — THE BUILT-IN VOCABULARY, as
+ROWS. Nineteen method rows, each the owning feature's (the seam
+rule: a method is DATA — a row of `takes | check | lower` — and a
+runtime fn is a row of `rt_sigs()` plus one C body plus one
+interpreter host arm; nothing dispatches on a name). LISTS
+(features/lists): `contains`, `index_of` (the walk skeleton
+without a fn box — `same_value`, the `==` law's `comparable`
+shared from checks.av so a list of records REFUSES like `==`
+does, never compares pointers), `push`, `pop`, `set` (the mut-place
+prelude `opened_place`, shared), `is_empty` (length against
+zero), `first`/`last` (an Opt cell seeded absent, the edge slot
+adopted), `concat`/`slice`/`join` (one runtime call each, owned
+answers), `enumerate` (the list ITSELF — a paired `for` head does
+the pairing, so `for (i, x) in xs.enumerate()` and `for i, x in
+xs` are one walk). TEXT (features/str_lit): `contains`,
+`starts_with`, `ends_with`, `index_of`, `substring`, `split`,
+`replace`, `char_code` (0 or 1 args — the runtime takes the
+INDEX, unlike bs2's), `trim` — one runtime call each, byte
+offsets, ends exclusive, clamped; `split` keeps a leading empty
+piece, drops one trailing, splits empty text to nothing and keeps
+the text whole under an empty separator — the interpreter cuts
+it by hand (`pieces_of`) so eval == native (bs2's own `split("")`
+disagrees, found by the probes). The typing rules share two
+preludes (`elem_held`, `seated`: exactly N seats, each accepted —
+a wrong argument speaks and the row still answers) and the walks'
+skeleton split into the loop (`Walk`) and the fn box (`Box`) so
+the scans reuse it. RUNTIME: `avra_array_pop` (+ `_owned` twin:
+the slot's reference MOVES to the caller), `avra_array_concat`,
+`avra_array_slice` (copies retain owned slots), nine `avra_str_*`
+bodies; twelve `RtHost` arms. The interpreter gained
+`fresh_array`/`with_array`/`whole`/`verdict`/`clamped` as its
+vocabulary. MEASURED: the census's first failure moved off F2030
+for 61 files (73 -> 12; the twelve left are cross-file `impl`
+blocks on core types — the orphan rule, next). Suite 1484 (lists
++13, str_lit +9), corpus/vocabulary proves every row native.
+
+PARITY RUNG 7 LANDED (2026-09-03) — PARSE CLOSURE. (a) fn TYPES
+omit the answer — `fn(int)`, `fn()` — the closures gram's
+`( "->" fr:type )?`; `void_ref` on the shared authoring surface
+(features/builder.av) with the Builder verb `answer(i)` (the
+written answer or void — fns and fn types read it alike);
+`name_of` spells `fn(int)` for a void answer, the writable form.
+(b) `let _ = e` — the DISCARD statement: `Stmt.Discard`, never a
+block's answer (the review caught the first draft, an
+`ExprStmt`, ANSWERING at a block's tail — `fn f() { let _ = 5 }`
+refused as answering int); its meaning is the expression
+statement's. Ordered FIRST of the three `let` branches, WITHOUT
+`@recover` — a recovering first branch on a shared anchor
+swallows its siblings (352 tests; the law rewritten in CLAUDE.md
+with the mechanism: a committed miss recovers into a HIT and a
+hit ends the choice). (c) `level` is spec-reserved (F3002), so
+the compiler's own identifiers moved off it — `Scope.tier`,
+`ScopeEnter(tier: Level)`, `joined`'s `runs`, the manifest's
+`opt_level`; `tier` is the one value word (`enclosing_tier`,
+`tier_word`). (d) A package REACHES itself: `reaches(ws, from,
+k)` = its own key or a manifest dependency — the compiler's 71
+test files `use @std.avrac.…` from inside @std/avrac. CENSUS: 8
+-> 4 files fail to parse (`extern fn` ×3, `impl Arena<N>`), and
+the first failure moved to TYPE for 126 files. Suite 1461.
+
 PARITY RUNG 6 LANDED (2026-09-03) — THE TEST DSL, and `avra test`
 (T1 and T9 of the test system; the minimal in-process runner).
 THE MODEL: `spec "…" { given "…" { then "…" { body } } }` is ONE

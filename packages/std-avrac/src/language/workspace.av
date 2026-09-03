@@ -680,7 +680,7 @@ fn imported_line(ws: Workspace, p: Parsed, u: UseParts) -> Imported {
     if ws.lone { return Imported { imports: [], diagnostics: [unpackaged_use(at)] } }
     if m.malformed() { return Imported { imports: [], diagnostics: [package_form(at, m)] } }
     let from = ws.packages[holder_of_path(ws, p.source.file)]
-    if m.package() != null && !depends_on(ws, from, m.package()!) {
+    if m.package() != null && !reaches(ws, from, m.package()!) {
         return Imported { imports: [], diagnostics: [not_a_dependency(ws, at, from, m.package()!)] }
     }
     if ambiguous_module(ws, m) { return Imported { imports: [], diagnostics: [module_ambiguous(at, m)] } }
@@ -1001,6 +1001,12 @@ fn holder(ws: Workspace, m: ModulePath) -> Package? {
     if k == null { return ws.packages[0] }
     let found: Package? = ws.packages.find(it.key == k!)
     found
+}
+
+/// A package reaches itself — its own files `use` it by name — and
+/// every package its manifest declares.
+fn reaches(ws: Workspace, from: Package, k: string) -> bool {
+    k == from.key || depends_on(ws, from, k)
 }
 
 /// Whether a package's manifest declares the key.

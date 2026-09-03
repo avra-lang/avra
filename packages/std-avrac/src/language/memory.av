@@ -10,8 +10,8 @@
 //! lowering nor the backend.
 use core.{Ins, Reg, Level, TypeId, TypeRegistry, dst_of, rt_owns, rt_owned_twin, reversed}
 
-/// Managed registers bound in one open scope, its level remembered.
-type Scope = { level: Level, managed: List<Reg>, cells: List<Reg> }
+/// Managed registers bound in one open scope, its tier remembered.
+type Scope = { tier: Level, managed: List<Reg>, cells: List<Reg> }
 
 export fn memory(l: Lowered) -> Lowered {
     let fns = [b with { ins: memory_ins(l.types, b.reg_types, b.ins, managed_params(l.types, b)) }
@@ -61,9 +61,9 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
     for raw in ins {
         let i = owned_form(types, reg_types, raw)
         match i {
-            .ScopeEnter(level) -> {
+            .ScopeEnter(tier) -> {
                 // LICENSED I15: a scope STACK walked by the pass, not a bracket body
-                open_scopes.push(Scope { level: level, managed: [], cells: [] })
+                open_scopes.push(Scope { tier: tier, managed: [], cells: [] })
                 if open_scopes.length == 1 {
                     mut top = open_scopes[0].managed
                     // `top` ALIASES the scope's own list, so a rebind
@@ -75,7 +75,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             }
             // A scope YIELDS like a branch: released never here,
             // adopted by the enclosing scope (ownership moves out
-            // one level; at the outermost it escapes to the caller).
+            // one scope; at the outermost it escapes to the caller).
             .ScopeExit(gives) -> {
                 let scope = open_scopes.pop()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
@@ -89,7 +89,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 }
                 out.push(i)
             }
-            // A branch is a scope at its enclosing level. Its yield
+            // A branch is a scope at its enclosing tier. Its yield
             // escapes to the merge: the branch never releases it —
             // the enclosing scope owns `dst`, the merge of both.
             .IfStart(_) or .SwitchStart(_, _) -> {
@@ -179,7 +179,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
 }
 
 /// Everything EVERY open scope owes at an early exit, innermost
-/// first — the returned value excluded at every level.
+/// first — the returned value excluded in every open scope.
 fn exit_releases(open_scopes: List<Scope>, kept: Reg) -> List<Reg> {
     mut out: List<Reg> = []
     // LICENSED I19: a REVERSE walk — innermost debts settle first
@@ -191,22 +191,22 @@ fn exit_releases(open_scopes: List<Scope>, kept: Reg) -> List<Reg> {
     out
 }
 
-/// A scope opened INSIDE another: it inherits the enclosing level
+/// A scope opened INSIDE another: it inherits the enclosing tier
 /// and owns nothing yet.
 fn nested_scope(open_scopes: List<Scope>) -> Scope {
-    Scope { level: enclosing_level(open_scopes), managed: [], cells: [] }
+    Scope { tier: enclosing_tier(open_scopes), managed: [], cells: [] }
 }
 
-/// The level a new scope inherits — its innermost open enclosure.
-fn enclosing_level(open_scopes: List<Scope>) -> Level {
+/// The tier a new scope inherits — its innermost open enclosure.
+fn enclosing_tier(open_scopes: List<Scope>) -> Level {
     if open_scopes.is_empty() { return Level.Application }
-    open_scopes.last()!.level
+    open_scopes.last()!.tier
 }
 
 /// The strategy: what a scope owes at its exit. `kept` is a value
 /// that escapes the scope and is owned elsewhere.
 fn releases_for(scope: Scope, kept: Reg?) -> List<Reg> {
-    match scope.level {
+    match scope.tier {
         .Application -> kept_out(reversed(scope.managed), kept),
         .Systems or .Bare or .Hardware -> [],
     }

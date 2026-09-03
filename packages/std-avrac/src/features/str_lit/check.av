@@ -1,7 +1,7 @@
 //! The hole law: an interpolation hole prints as a scalar or a
 //! string; the answer is always a string.
 use core.{ExprId, Type, TypeId}
-use features.{TypeCx, spoken, this_is}
+use features.{TypeCx, MethodCall, spoken, this_is, accepts, wrong_arity, wrong_argument}
 use diagnostics.{refusal}
 
 fn interp_type(cx: TypeCx, holes: List<ExprId>) -> TypeId {
@@ -14,6 +14,53 @@ fn interp_type(cx: TypeCx, holes: List<ExprId>) -> TypeId {
         }
     }
     cx.view.types.intern(Type.Str)
+}
+
+// ── The method rows' rules: the seats, then the answer ──
+
+/// `s.contains(t)`, `s.starts_with(t)`, `s.ends_with(t)` — verdicts.
+export fn check_contains(cx: TypeCx, mc: MethodCall) -> TypeId { seated(cx, mc, "contains", [Type.Str], Type.Bool) }
+export fn check_starts_with(cx: TypeCx, mc: MethodCall) -> TypeId { seated(cx, mc, "starts_with", [Type.Str], Type.Bool) }
+export fn check_ends_with(cx: TypeCx, mc: MethodCall) -> TypeId { seated(cx, mc, "ends_with", [Type.Str], Type.Bool) }
+
+/// `s.index_of(t)` — the first position, or -1.
+export fn check_index_of(cx: TypeCx, mc: MethodCall) -> TypeId { seated(cx, mc, "index_of", [Type.Str], Type.Int) }
+
+/// `s.substring(lo, hi)` — the bytes from lo up to hi.
+export fn check_substring(cx: TypeCx, mc: MethodCall) -> TypeId { seated(cx, mc, "substring", [Type.Int, Type.Int], Type.Str) }
+
+/// `s.split(sep)` — the pieces between separators.
+export fn check_split(cx: TypeCx, mc: MethodCall) -> TypeId {
+    seated(cx, mc, "split", [Type.Str], Type.List(cx.view.types.intern(Type.Str)))
+}
+
+/// `s.replace(from, to)` — every occurrence.
+export fn check_replace(cx: TypeCx, mc: MethodCall) -> TypeId { seated(cx, mc, "replace", [Type.Str, Type.Str], Type.Str) }
+
+/// `s.char_code()` / `s.char_code(i)` — the byte at the start, or
+/// at `i`, as a code.
+export fn check_char_code(cx: TypeCx, mc: MethodCall) -> TypeId {
+    if mc.args.is_empty() { return cx.view.types.intern(Type.Int) }
+    seated(cx, mc, "char_code", [Type.Int], Type.Int)
+}
+
+/// `s.trim()` — the text without its surrounding blanks.
+export fn check_trim(cx: TypeCx, mc: MethodCall) -> TypeId { seated(cx, mc, "trim", [], Type.Str) }
+
+/// The seats, then the answer: exactly `wants.length` arguments,
+/// each accepted by its seat — a wrong argument speaks and the row
+/// still answers; a wrong count absorbs.
+fn seated(cx: TypeCx, mc: MethodCall, name: string, wants: List<Type>, answers: Type) -> TypeId {
+    if mc.args.length != wants.length {
+        wrong_arity(cx, mc.e, name, wants.length, mc.args.length)
+        return cx.error_type
+    }
+    // LICENSED I3: seat pairs; comprehensions cannot destructure enumerate
+    for (j, w) in wants.enumerate() {
+        let want = cx.view.types.intern(w)
+        if !accepts(cx, mc.args[j], want) { wrong_argument(cx, name, j, want, mc.args[j]) }
+    }
+    cx.view.types.intern(answers)
 }
 
 // ── The property row's rules ──

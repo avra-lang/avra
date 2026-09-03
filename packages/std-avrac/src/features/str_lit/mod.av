@@ -1,8 +1,9 @@
 //! Strings — `"hello"` and `"a ${x} b"`. The literal's branch
 //! merges into the spine's `primary`; interpolation is this
 //! feature GROWING: the lexer hands it ISTR pieces and the holes
-//! are ordinary expressions.
-use features.{LanguageFeature, BuilderRow, PropertyRow}
+//! are ordinary expressions. The text vocabulary is its method
+//! rows, each one runtime call.
+use features.{LanguageFeature, BuilderRow, PropertyRow, MethodRow}
 use diagnostics.{DiagCode}
 
 export fn str_lit() -> LanguageFeature {
@@ -15,18 +16,31 @@ export fn str_lit() -> LanguageFeature {
         kind               | id      | summary
         "type.interp_hole" | "F2007" | "an interpolation hole prints as a scalar or string"
     }
+    let methods = table<MethodRow> {
+        name          | takes  | check             | lower
+        "contains"    | on_str | check_contains    | lower_contains
+        "starts_with" | on_str | check_starts_with | lower_starts_with
+        "ends_with"   | on_str | check_ends_with   | lower_ends_with
+        "index_of"    | on_str | check_index_of    | lower_index_of
+        "substring"   | on_str | check_substring   | lower_substring
+        "split"       | on_str | check_split       | lower_split
+        "replace"     | on_str | check_replace     | lower_replace
+        "char_code"   | on_str | check_char_code   | lower_char_code
+        "trim"        | on_str | check_trim        | lower_trim
+    }
     let properties = table<PropertyRow> {
         name     | takes  | check            | lower
         "length" | on_str | check_str_length | lower_str_length
     }
     component LanguageFeature f {
         name = "str_lit"
-        docs = "Double-quoted strings, with dollar-brace interpolation holes."
+        docs = "Double-quoted strings, with dollar-brace interpolation holes; the text vocabulary — `contains`, `starts_with`, `ends_with`, `index_of`, `substring`, `split`, `replace`, `char_code`, `trim` — is this feature's method rows."
         gram = """
 primary = s:STRING -> str_lit(s) | b:ISTR_BEGIN e:expression ( m:ISTR_MID e2:expression )* t:ISTR_END -> interp(b, e, m, e2, t)
 """
         builders = rows
         diags = codes
+        methods = methods
         properties = properties
     }
     f

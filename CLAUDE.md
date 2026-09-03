@@ -186,10 +186,16 @@ registry is the idiom engine's spec, written by dogfooding.
   branch). And the LINE LAW lives in the lexer: breaks are dropped
   directly inside `(`/`[` and after a continuing operator — a
   grammar never spells `BREAK?` for those.
-- Grammar authoring: @recover converts a branch's break into a hole
-  HIT, so it belongs only on branches anchored by a keyword no other
-  branch can start with. A NAME-headed branch (assignment) must stay
-  non-committing — recovery there swallows every expression line.
+- Grammar authoring: @recover converts a COMMITTED miss into a HIT
+  (a hole, synced to END), and a hit ends the ordered choice, while
+  a plain break only DEFERS it — later alternatives still try. So
+  among branches sharing an anchor keyword, ONLY THE LAST may
+  recover; the earlier ones fail as breaks so the anchor's floor can
+  try. `let _`, `let x? … else` and `let x` all anchor on `let`:
+  recovery lives on the plain `let` alone (a `@recover` on the `_`
+  branch swallowed every let line — 352 tests). And a NAME-headed
+  branch (assignment) must stay non-committing — recovery there
+  swallows every expression line.
 - Grammar authoring: a rule's GRAM TEXT and its BUILDERS are one
   unit — a builder named in feature A's grammar registers in
   feature A, never in a feature that might be absent (a partial
@@ -294,7 +300,9 @@ registry is the idiom engine's spec, written by dogfooding.
   drivers' one statement loop reaches it there.
   Start a feature with `avra new feature <name>`; prove it with a
   corpus pair (`corpus/<name>.av` + `.expected`). `make gate` is
-  the bar.
+  the bar. A corpus program prints its LAST expression only, and
+  an interpolation hole prints scalars and strings only — a list
+  is shown through `join`, an index or `length`.
 
 - The CLI: each subcommand is ONE file in
   `packages/cli/src/commands/`, exporting

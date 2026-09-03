@@ -3,7 +3,7 @@
 // mixing them into arithmetic renders the first type.mismatch.
 use @std.avrac.core.{ExprId}
 use @std.avrac.language.{analyze_source, avra, Analysis}
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.testing.{shown, refused_with, refused_at_run}
 use @std.avrac.diagnostics.{new_source_file}
 
 
@@ -77,6 +77,37 @@ spec "features/str_lit" {
         }
         then "an unterminated raw string is a lex error" {
             refused_with("let r = \"\"\"never closed\n2", "unterminated string")
+        }
+    }
+    given "the vocabulary" {
+        then "the scans" {
+            shown("let s = \"hello world\"\n\"" + "$" + "{s.contains(\"lo w\")} " + "$" + "{s.starts_with(\"hell\")} " + "$" + "{s.ends_with(\"d\")} " + "$" + "{s.index_of(\"o\")} " + "$" + "{s.index_of(\"z\")}\"") == "true true true 4 -1"
+        }
+        then "substring clamps and answers empty past its bounds" {
+            shown("let s = \"hello\"\n\"" + "$" + "{s.substring(1, 3)}|" + "$" + "{s.substring(3, 99)}|" + "$" + "{s.substring(4, 2)}|\"") == "el|lo||"
+        }
+        then "split keeps a leading empty piece, drops one trailing, and splits nothing from empty text" {
+            shown("let a = \"a.b\".split(\".\")\nlet b = \".a\".split(\".\")\nlet c = \"a.\".split(\".\")\n\"" + "$" + "{a.join(\"|\")} " + "$" + "{a.length} " + "$" + "{b.join(\"|\")} " + "$" + "{b.length} " + "$" + "{c.join(\"|\")} " + "$" + "{c.length} " + "$" + "{\"\".split(\".\").length}\"") == "a|b 2 |a 2 a 1 0"
+        }
+        then "replace changes every occurrence" {
+            shown("\"a/b/c\".replace(\"/\", \".\")") == "a.b.c"
+        }
+        then "char_code reads a byte, at the start or at an index" {
+            shown("let s = \"hello\"\n\"" + "$" + "{s.char_code()} " + "$" + "{s.char_code(1)}\"") == "104 101"
+        }
+        then "trim strips surrounding blanks" {
+            shown("\"  x y \".trim()") == "x y"
+        }
+    }
+    given "the vocabulary's laws" {
+        then "a wrong argument speaks in the seat's words" {
+            refused_with("\"a\".substring(\"b\", 2)", "argument 1 of `substring` wants `int`, found `string`")
+        }
+        then "the count is the row's" {
+            refused_with("\"a\".contains()", "`contains` takes 1 arguments, found 0")
+        }
+        then "char_code past the text is the bounds trap" {
+            refused_at_run("\"ab\".char_code(5)", "index 5 is out of bounds (length 2)")
         }
     }
 }

@@ -159,4 +159,47 @@ spec "features/lists" {
             shown("mut g = [[1], [2]]\ng[1].push(3)\n\"" + "$" + "{g[1].length}" + " " + "$" + "{g[0].length}" + "\"") == "2 1"
         }
     }
+    given "the vocabulary" {
+        then "contains and index_of scan by value — strings by text, scalars by value" {
+            shown("let xs = [\"a\", \"b\"]\nlet ns = [4, 5, 6]\n\"" + "$" + "{xs.contains(\"b\")} " + "$" + "{xs.index_of(\"b\")} " + "$" + "{ns.contains(7)} " + "$" + "{ns.index_of(7)}\"") == "true 1 false -1"
+        }
+        then "pop removes the last element and answers it" {
+            shown("mut xs = [1, 2, 3]\nlet last = xs.pop()\n\"" + "$" + "{last} " + "$" + "{xs.length}\"") == "3 2"
+        }
+        then "set rewrites one slot" {
+            shown("mut xs = [1, 2, 3]\nxs.set(1, 9)\n\"" + "$" + "{xs[0]} " + "$" + "{xs[1]} " + "$" + "{xs[2]}\"") == "1 9 3"
+        }
+        then "is_empty, first and last read the edges" {
+            shown("let xs = [7, 8]\nlet none: List<int> = []\n\"" + "$" + "{xs.is_empty()} " + "$" + "{none.is_empty()} " + "$" + "{xs.first() ?? 0} " + "$" + "{xs.last() ?? 0} " + "$" + "{none.first() ?? 0}\"") == "false true 7 8 0"
+        }
+        then "concat and slice are fresh copies" {
+            shown("let xs = [1, 2]\nlet ys = xs.concat([3, 4])\nlet mid = ys.slice(1, 3)\n\"" + "$" + "{ys.length} " + "$" + "{ys[3]} " + "$" + "{mid.length} " + "$" + "{mid[1]} " + "$" + "{xs.length} " + "$" + "{ys.slice(3, 9).length}\"") == "4 4 2 3 2 1"
+        }
+        then "join makes text of text" {
+            shown("[\"a\", \"b\", \"c\"].join(\"-\")") == "a-b-c"
+        }
+        then "enumerate is the list, walked by a paired head" {
+            shown("let xs = [5, 6]\nmut total = 0\nfor (i, x) in xs.enumerate() {\n    total = total + i * x\n}\ntotal") == "6"
+        }
+        then "the copies hold strings too" {
+            shown("let xs = [\"p\", \"q\"]\nxs.concat([\"r\"]).slice(1, 3).join(\"\")") == "qr"
+        }
+    }
+    given "the vocabulary's laws" {
+        then "pop and set need a mut place" {
+            refused_with("let xs = [1]\nxs.pop()", "`xs` is not `mut` — `pop` mutates it")
+        }
+        then "a wrong argument speaks in the seat's words" {
+            refused_with("let xs = [1]\nxs.contains(\"a\")", "argument 1 of `contains` wants `int`, found `string`")
+        }
+        then "the count is the row's" {
+            refused_with("let xs = [1]\nxs.slice(1)", "`slice` takes 2 arguments, found 1")
+        }
+        then "a scan reads by value — a list of records refuses like `==` does" {
+            refused_with("type P = { n: int }\nlet ps = [P { n: 1 }]\nps.contains(P { n: 1 })", "`contains` scans by value — scalars and text for now, this list holds `P`")
+        }
+        then "join reads text only" {
+            refused_with("[1, 2].join(\",\")", "`join` reads a list of text, this one holds `int`")
+        }
+    }
 }

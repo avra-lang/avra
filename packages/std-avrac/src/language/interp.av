@@ -10,7 +10,7 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, filled, joined, rt_sig_of}
+use core.{Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, filled, joined, rt_sig_of, code_at}
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -164,9 +164,7 @@ fn const_int_val(m: Machine, b: Body, d: Reg, v: int) -> Val {
 /// A packed value rides the same table an aggregate does — the
 /// interpreter's bookkeeping, not the machine's layout.
 fn pack_val(m: Machine, elems: List<Reg>) -> Val {
-    mut arrs = m.arrays
-    arrs.push([value(m, r) for r in elems])
-    Val.A(arrs.length - 1)
+    fresh_array(m, [value(m, r) for r in elems])
 }
 
 fn extract_val(m: Machine, src: Reg, at: int) -> Val {
@@ -520,14 +518,137 @@ fn rt_dispatch(m: Machine, callee: string, vals: List<Val>) -> Val {
         .InsistScalar -> insist_scalar_val(m, vals),
         .Text -> Val.S(val_text(m, vals[0])),
         .Strlen -> Val.I(text_val(m, vals[0]).length),
+        .ArrayPop -> array_pop_val(m, vals),
+        .ArrayConcat -> array_concat_val(m, vals),
+        .ArraySlice -> array_slice_val(m, vals),
+        .StrContains -> verdict(text_val(m, vals[0]).contains(text_val(m, vals[1]))),
+        .StrStartsWith -> verdict(text_val(m, vals[0]).starts_with(text_val(m, vals[1]))),
+        .StrEndsWith -> verdict(text_val(m, vals[0]).ends_with(text_val(m, vals[1]))),
+        .StrIndexOf -> Val.I(text_val(m, vals[0]).index_of(text_val(m, vals[1]))),
+        .StrSubstring -> str_substring_val(m, vals),
+        .StrSplit -> fresh_array(m, [Val.S(piece) for piece in pieces_of(text_val(m, vals[0]), text_val(m, vals[1]))]),
+        .StrReplace -> Val.S(text_val(m, vals[0]).replace(text_val(m, vals[1]), text_val(m, vals[2]))),
+        .StrCharCode -> str_char_code_val(m, vals),
+        .StrTrim -> Val.S(text_val(m, vals[0]).trim()),
         .Unhosted -> defect_val(m, "a runtime callee the interpreter does not host: `${callee}`"),
     }
 }
 
 fn array_new_val(m: Machine) -> Val {
+    fresh_array(m, [])
+}
+
+/// A new array in the table, holding these values.
+fn fresh_array(m: Machine, elems: List<Val>) -> Val {
     mut arrs = m.arrays
-    arrs.push([])
+    arrs.push(elems)
     Val.A(arrs.length - 1)
+}
+
+fn array_id(v: Val) -> int? {
+    match v {
+        .A(id) -> id,
+        _ -> null,
+    }
+}
+
+/// The array a value names, handed to `f` — or the defect.
+fn with_array(m: Machine, v: Val, what: string, f: fn(int) -> Val) -> Val {
+    let id: int? = array_id(v)
+    if id == null { return defect_val(m, what) }
+    f(id!)
+}
+
+/// An int argument's value — a defect answers zero.
+fn whole(m: Machine, v: Val) -> int {
+    match v {
+        .I(n) -> n,
+        _ -> {
+            defect(m, "a non-int reached a runtime seat")
+            0
+        }
+    }
+}
+
+/// A bool answer as the runtime words it — a word, which the
+/// register's type reads back as a bool.
+fn verdict(b: bool) -> Val {
+    Val.I(if b { 1 } else { 0 })
+}
+
+/// `n` held within [lo, hi].
+fn clamped(n: int, lo: int, hi: int) -> int {
+    if n < lo { return lo }
+    if n > hi { return hi }
+    n
+}
+
+fn array_pop_val(m: Machine, vals: List<Val>) -> Val {
+    with_array(m, vals[0], "a pop from a non-array", (id: int) -> popped(m, id))
+}
+
+fn popped(m: Machine, id: int) -> Val {
+    mut arr = m.arrays[id]
+    if arr.is_empty() {
+        trapped(m, "pop on an empty list")
+        return Val.I(0)
+    }
+    arr.pop()
+}
+
+fn array_concat_val(m: Machine, vals: List<Val>) -> Val {
+    let a: int? = array_id(vals[0])
+    let b: int? = array_id(vals[1])
+    if a == null || b == null { return defect_val(m, "a concat over a non-array") }
+    fresh_array(m, m.arrays[a!].concat(m.arrays[b!]))
+}
+
+/// The slots from lo up to hi, clamped — worded like the runtime's.
+fn array_slice_val(m: Machine, vals: List<Val>) -> Val {
+    with_array(m, vals[0], "a slice of a non-array", (id: int) -> sliced(m, id, whole(m, vals[1]), whole(m, vals[2])))
+}
+
+fn sliced(m: Machine, id: int, from: int, to: int) -> Val {
+    let xs = m.arrays[id]
+    let lo = clamped(from, 0, xs.length)
+    let hi = clamped(to, 0, xs.length)
+    fresh_array(m, if lo < hi { xs.slice(lo, hi) } else { [] })
+}
+
+/// The bytes from lo up to hi, clamped — worded like the runtime's.
+fn str_substring_val(m: Machine, vals: List<Val>) -> Val {
+    let s = text_val(m, vals[0])
+    let n = s.length
+    let lo = clamped(whole(m, vals[1]), 0, n)
+    let hi = clamped(whole(m, vals[2]), 0, n)
+    Val.S(if lo < hi { s.substring(lo, hi) } else { "" })
+}
+
+/// The pieces between separators, cut as the runtime cuts them: a
+/// leading empty piece stays, one trailing is dropped, empty text
+/// splits to nothing, and an empty separator keeps the text whole.
+fn pieces_of(s: string, sep: string) -> List<string> {
+    if s.length == 0 { return [] }
+    if sep.length == 0 { return [s] }
+    mut out: List<string> = []
+    mut rest = s
+    mut at = rest.index_of(sep)
+    while at >= 0 {
+        out.push(rest.substring(0, at))
+        rest = rest.substring(at + sep.length, rest.length)
+        at = rest.index_of(sep)
+    }
+    if rest.length > 0 { out.push(rest) }
+    out
+}
+
+/// The byte at `i` as a code; past the text, the runtime's trap.
+fn str_char_code_val(m: Machine, vals: List<Val>) -> Val {
+    let s = text_val(m, vals[0])
+    let i = whole(m, vals[1])
+    let n = s.length
+    if i < 0 || i >= n { return out_of_bounds(m, i, n) }
+    Val.I(code_at(s, i))
 }
 
 /// VALUE SEMANTICS, spelled as the spec: the interpreter has no
@@ -733,5 +854,5 @@ fn puts_val(m: Machine, vals: List<Val>) -> Val {
 }
 
 fn streq_val(m: Machine, vals: List<Val>) -> Val {
-    Val.I(if text_val(m, vals[0]) == text_val(m, vals[1]) { 1 } else { 0 })
+    verdict(text_val(m, vals[0]) == text_val(m, vals[1]))
 }
