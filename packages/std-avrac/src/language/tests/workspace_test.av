@@ -1,0 +1,129 @@
+// The workspace over an in-memory host: a module is a directory or a
+// file, siblings see each other, `use` reaches a module's exports,
+// and every failed `use` speaks in its own words.
+use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, namespace_of_file, file_id, module_of, all_files, program}
+
+/// A small package: a root file, a root sibling, a directory module
+/// with two files, and a lone-file module.
+fn files() -> Map<string, string> {
+    {
+        "/w/main.av": "use util.{twice, Pair}\nuse solo.{once}\nlet p = Pair { a: 1, b: 2 }\ntwice(21) + once(1) + helper(3)\n",
+        "/w/helper.av": "fn helper(n: int) -> int {\n    n\n}\n",
+        "/w/util/mathx.av": "export fn twice(n: int) -> int {\n    n * 2\n}\nfn hidden() -> int {\n    0\n}\nexport fn ident<T>(x: T) -> T {\n    x\n}\n",
+        "/w/util/pair.av": "export type Pair = { a: int, b: int }\nexport type Box<T> = { v: T }\nexport enum Shape {\n    Dot\n    Line(int)\n}\n",
+        "/w/solo.av": "export fn once(n: int) -> int {\n    n\n}\n",
+    }
+}
+
+fn names() -> List<string> {
+    ["/w/main.av", "/w/helper.av", "/w/util/mathx.av", "/w/util/pair.av", "/w/solo.av"]
+}
+
+fn workspace() -> Workspace {
+    new_workspace(memory_host(files(), names()), "/w", avra())
+}
+
+/// The package with its root file replaced.
+fn with_main(text: string) -> Workspace {
+    mut fs = files()
+    fs.set("/w/main.av", text)
+    new_workspace(memory_host(fs, names()), "/w", avra())
+}
+
+fn main_report(text: string) -> string {
+    analyze_file(with_main(text), "/w/main.av").report()
+}
+
+/// ONE refusal for the root file, saying this.
+fn main_refuses(text: string, saying: string) -> bool {
+    let a = analyze_file(with_main(text), "/w/main.av")
+    a.diagnostics.length == 1 && a.report().contains(saying)
+}
+
+spec "language/workspace" {
+    given "modules are directories, or a file" {
+        then "a root file belongs to the root module; a nested one to its directory" {
+            let ws = workspace()
+            module_of(ws, "/w/main.av") == "" && module_of(ws, "/w/util/mathx.av") == "util"
+        }
+        then "every file under the root is found" {
+            all_files(workspace(), "/w").length == 5
+        }
+    }
+    given "what a file sees" {
+        then "a root sibling's fn, a directory module's exports, and a lone-file module resolve" {
+            let ws = workspace()
+            let f = namespace_of_file(ws, file_id(ws, "/w/main.av"))
+            f.fns.get("helper") != null && f.fns.get("twice") != null && f.types.get("Pair") != null &&
+                f.fns.get("once") != null && f.diagnostics.is_empty()
+        }
+        then "a module's private fn is not on its surface" {
+            let ws = workspace()
+            namespace_of_file(ws, file_id(ws, "/w/main.av")).fns.get("hidden") == null
+        }
+        then "the whole file analyzes with nothing unresolved" {
+            analyze_file(workspace(), "/w/main.av").report() == ""
+        }
+    }
+    given "typed across files — the table is one" {
+        then "a foreign fn's parameter judges the argument" {
+            main_refuses("use util.{twice}\ntwice(\"x\")\n", "`int`")
+        }
+        then "a foreign record's fields are known — the missing one is named" {
+            main_refuses("use util.{Pair}\nlet p = Pair { a: 1 }\np.a\n", "`b`")
+        }
+        then "a foreign record reads and adds" {
+            main_report("use util.{Pair}\nlet p = Pair { a: 1, b: 2 }\np.a + p.b\n") == ""
+        }
+        then "a foreign fn is a value" {
+            main_report("use util.{twice}\nlet f = twice\nf(4)\n") == ""
+        }
+        then "a foreign enum constructs and matches" {
+            main_report("use util.{Shape}\nlet s = Shape.Line(3)\nmatch s {\n    .Dot -> 0\n    .Line(n) -> n\n}\n") == ""
+        }
+        then "a foreign generic record applies in a signature and instantiates" {
+            main_report("use util.{Box}\nfn peek(b: Box<int>) -> int {\n    b.v\n}\npeek(Box { v: 7 })\n") == ""
+        }
+        then "a foreign generic fn types; its specialization waits for the union" {
+            let a = analyze_file(with_main("use util.{ident}\nident(3)\n"), "/w/main.av")
+            a.report() == "" && a.lowered().diagnostics.length == 1
+        }
+        then "a nested module's fn lowers under its qualified symbol" {
+            analyze_file(workspace(), "/w/util/mathx.av").lowered().fns.any(it.name == "util.twice")
+        }
+    }
+    given "the program runs across files — one worklist" {
+        then "a sibling, a directory module, a lone-file module, and a generic specialized in its home" {
+            program(with_main("use util.{twice, ident}\nuse solo.{once}\ntwice(20) + ident(1) + once(1) + helper(1)\n"), "/w/main.av").run() == Result.Ok("43")
+        }
+        then "a foreign fn worn as a value calls through its wrapper" {
+            program(with_main("use util.{twice}\nlet f = twice\nf(21)\n"), "/w/main.av").run() == Result.Ok("42")
+        }
+        then "a foreign enum matches by its variants" {
+            program(with_main("use util.{Shape}\nlet s = Shape.Line(7)\nmatch s {\n    .Dot -> 0\n    .Line(n) -> n\n}\n"), "/w/main.av").run() == Result.Ok("7")
+        }
+        then "a foreign generic record instantiates and reads" {
+            program(with_main("use util.{Box}\nlet b = Box { v: 9 }\nb.v\n"), "/w/main.av").run() == Result.Ok("9")
+        }
+        then "a run-time statement outside the entry refuses, naming the entry" {
+            mut fs = files()
+            fs.set("/w/helper.av", "fn helper(n: int) -> int {\n    n\n}\nhelper(2)\n")
+            let ws = new_workspace(memory_host(fs, names()), "/w", avra())
+            let p = program(ws, "/w/main.av")
+            p.clean() && p.lowered().diagnostics.length == 1 &&
+                p.rendered(p.lowered().diagnostics).contains("only the entry `/w/main.av` runs statements")
+        }
+    }
+    given "a failed use speaks" {
+        then "a module the root does not have" {
+            main_refuses("use nope.{x}\n2\n", "no module `nope` under the package root")
+        }
+        then "an item the module does not export — the exports named" {
+            main_refuses("use util.{hidden}\n2\n", "`util` does not export `hidden`") &&
+                main_report("use util.{hidden}\n2\n").contains("its exports: twice, ident, Pair, Box, Shape")
+        }
+        then "a package path waits for 15b, in its own words" {
+            main_refuses("use @std.errors.{Loc}\n2\n", "packages arrive with slice 15b")
+        }
+    }
+}

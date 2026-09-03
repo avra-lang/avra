@@ -1,0 +1,280 @@
+//! THE DECLARATION TABLE — every declaration of the program, ONCE:
+//! its file, its statement, its name and kind; its signature once
+//! typing declares it; its methods and the traits it implements.
+//! Ids are INTERNED by key (file, kind, name — a method under its
+//! owner), so an id is dense, stable across edits, and the same when
+//! an edited file is admitted again; a name declared twice in one
+//! file is two declarations, the second keyed by its statement, so
+//! the namespace law can refuse it. Per-file facts live once, by
+//! FileId: the path, the module, the store, and which of its
+//! statements declare. The workspace mints; every pass reads.
+use core.{DeclId, FileId, DeclKind, StmtId, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, same_decl}
+use diagnostics.{loc_at}
+use @std.errors.{Loc}
+
+/// A file's path facts — known at first mention, before its parse.
+export type FileInfo = { id: FileId, path: string, module: string }
+
+/// One declaration: where it lives and what it is; a method also
+/// names the type it serves.
+export type Decl = { id: DeclId, file: FileId, stmt: StmtId, name: string, kind: DeclKind, exported: bool, owner: string }
+
+/// A method's entry under its type.
+export type MethodEntry = { name: string, decl: DeclId }
+
+/// `decls`, `sigs`, `methods` and `impls` are dense by DeclId;
+/// `stores` and `decl_ids` dense by FileId.
+export type Decls = {
+    types: TypeRegistry,
+    files: List<FileInfo>,
+    paths: Map<string, FileId>,
+    stores: List<NodeStore?>,
+    decl_ids: List<List<DeclId?>>,
+    decls: List<Decl>,
+    keys: Map<string, DeclId>,
+    sigs: List<DeclSig?>,
+    methods: List<List<MethodEntry>>,
+    impls: List<List<DeclId>>,
+}
+
+export fn new_decls() -> Decls {
+    Decls {
+        types: new_type_registry(), files: [], paths: {}, stores: [], decl_ids: [],
+        decls: [], keys: {}, sigs: [], methods: [], impls: [],
+    }
+}
+
+/// A kind's word — the key's middle, and prose.
+export fn kind_word(k: DeclKind) -> string {
+    match k {
+        .Fn -> "fn",
+        .Record -> "type",
+        .Enum -> "enum",
+        .Trait -> "trait",
+        .Method -> "method",
+    }
+}
+
+impl Decls {
+    // ── files ──
+
+    /// A path's identity — minted at first mention.
+    fn file_id(self, path: string, module: string) -> FileId {
+        let known: FileId? = self.paths.get(path)
+        if known != null { return known! }
+        let id = FileId { index: self.files.length }
+        mut ps = self.paths
+        ps.set(path, id)
+        mut fs = self.files
+        fs.push(FileInfo { id: id, path: path, module: module })
+        mut ss = self.stores
+        ss.push(null)
+        mut ds = self.decl_ids
+        ds.push([])
+        id
+    }
+
+    fn file(self, f: FileId) -> FileInfo { self.files[f.index] }
+
+    fn store_of(self, f: FileId) -> NodeStore { self.stores[f.index]! }
+
+    /// A file admitted with its parse: which statements declare, and
+    /// every declaration minted — the top-level ones, then each
+    /// trait's and impl's methods under their owner. Answers the
+    /// top-level ids, in order.
+    fn admit(self, f: FileId, store: NodeStore, stmts: List<StmtId>) -> List<DeclId> {
+        mut ss = self.stores
+        ss.set(f.index, store)
+        mut by_stmt: List<DeclId?> = filled<DeclId?>(store.stmts.count(), null)
+        mut out: List<DeclId> = []
+        mut seen: List<string> = []
+        let path = self.file(f).path
+        for s in stmts {
+            let kind: DeclKind? = store.declared_kind(s)
+            if kind != null {
+                let k = kind!
+                let name = store.declared_name(s) ?? ""
+                let key = fresh_key("${path}::${kind_word(k)}::${name}", s, seen)
+                seen.push(key)
+                let d = self.mint(key, f, s, name, k, store.is_exported(s), "")
+                by_stmt.set(s.index, d)
+                out.push(d)
+                let fns: List<StmtId> = store.trait_parts(s)?.fns ?? []
+                for m in fns { by_stmt.set(m.index, self.mint_method(key, f, store, m, name)) }
+            }
+            let ip: ImplParts? = store.impl_parts(s)
+            if ip != null {
+                let block = ip!
+                for m in block.fns { by_stmt.set(m.index, self.mint_method("${path}::impl ${block.target}", f, store, m, block.target)) }
+            }
+        }
+        // A declaration NESTED in a body is refused by its feature, but
+        // typing still walks it: it gets an identity under a key no
+        // module-level name can take, and joins no namespace.
+        for i in 0..store.stmts.count() {
+            let s = StmtId { index: i }
+            let nested: DeclKind? = store.declared_kind(s)
+            if by_stmt[i] == null && nested != null {
+                let name = store.declared_name(s) ?? ""
+                by_stmt.set(i, self.mint("${path}::nested ${i}::${name}", f, s, name, nested!, false, ""))
+            }
+        }
+        mut di = self.decl_ids
+        di.set(f.index, by_stmt)
+        out
+    }
+
+    fn mint_method(self, owner_key: string, f: FileId, store: NodeStore, m: StmtId, owner: string) -> DeclId {
+        let name = store.fn_parts(m)?.name ?? ""
+        self.mint("${owner_key}#${name}", f, m, name, DeclKind.Method, false, owner)
+    }
+
+    /// An id for a key: the existing one (its row refreshed), or the
+    /// next.
+    fn mint(self, key: string, f: FileId, s: StmtId, name: string, kind: DeclKind, exported: bool, owner: string) -> DeclId {
+        let known: DeclId? = self.keys.get(key)
+        let id: DeclId = if known == null { DeclId { index: self.decls.length } } else { known! }
+        let d = Decl { id: id, file: f, stmt: s, name: name, kind: kind, exported: exported, owner: owner }
+        mut ds = self.decls
+        if known != null {
+            ds.set(id.index, d)
+            return id
+        }
+        ds.push(d)
+        mut ks = self.keys
+        ks.set(key, id)
+        mut sg = self.sigs
+        sg.push(null)
+        mut ms = self.methods
+        ms.push([])
+        mut im = self.impls
+        im.push([])
+        id
+    }
+
+    // ── declarations ──
+
+    fn decl(self, d: DeclId) -> Decl { self.decls[d.index] }
+
+    /// The declaration a statement of a file makes, when it does.
+    fn decl_of(self, f: FileId, s: StmtId) -> DeclId? {
+        let held: DeclId? = self.decl_ids[f.index][s.index]
+        held
+    }
+
+    fn store(self, d: DeclId) -> NodeStore { self.store_of(self.decl(d).file) }
+
+    fn module_of(self, d: DeclId) -> string { self.file(self.decl(d).file).module }
+
+    fn sig(self, d: DeclId) -> DeclSig? {
+        let held: DeclSig? = self.sigs[d.index]
+        held
+    }
+
+    fn declare(self, d: DeclId, sig: DeclSig) {
+        mut ss = self.sigs
+        ss.set(d.index, sig)
+    }
+
+    fn tparams(self, d: DeclId) -> List<string> {
+        self.store(d).decl_tparams(self.decl(d).stmt)
+    }
+
+    fn tbounds(self, d: DeclId) -> List<Param> {
+        self.store(d).decl_tbounds(self.decl(d).stmt)
+    }
+
+    fn is_trait(self, d: DeclId) -> bool { self.decl(d).kind is .Trait }
+
+    fn is_enum(self, d: DeclId) -> bool { self.decl(d).kind is .Enum }
+
+    /// A type's name — records and enums.
+    fn type_name(self, d: DeclId) -> string? {
+        let x = self.decl(d)
+        match x.kind {
+            .Record or .Enum -> x.name,
+            .Fn or .Trait or .Method -> null,
+        }
+    }
+
+    /// A fn's name — free fns and methods.
+    fn fn_name(self, d: DeclId) -> string? {
+        let x = self.decl(d)
+        match x.kind {
+            .Fn or .Method -> x.name,
+            .Record or .Enum or .Trait -> null,
+        }
+    }
+
+    fn loc(self, d: DeclId) -> Loc? {
+        let x = self.decl(d)
+        loc_at(self.file(x.file).path, self.store(d).stmt_span(x.stmt))
+    }
+
+    /// THE symbol a declaration lowers to — its name under its
+    /// module; a method's under its type's name first. Every symbol
+    /// a body or a call site carries comes from here.
+    fn symbol(self, d: DeclId) -> string {
+        let x = self.decl(d)
+        let local_name = match x.kind {
+            .Method -> "${x.owner}.${x.name}",
+            .Fn or .Record or .Enum or .Trait -> x.name,
+        }
+        module_symbol(self.module_of(d), local_name)
+    }
+
+    // ── traits and methods ──
+
+    /// A trait's method declarations, in declaration order.
+    fn trait_fns(self, d: DeclId) -> List<DeclId> {
+        let x = self.decl(d)
+        let fns: List<StmtId> = self.store(d).trait_parts(x.stmt)?.fns ?? []
+        mut out: List<DeclId> = []
+        for f in fns {
+            let m: DeclId? = self.decl_of(x.file, f)
+            if m != null { out.push(m!) }
+        }
+        out
+    }
+
+    /// A trait's method names — the vtable's order.
+    fn trait_method_names(self, d: DeclId) -> List<string> {
+        [self.decl(m).name for m in self.trait_fns(d)]
+    }
+
+    fn method(self, target: DeclId, name: string) -> MethodEntry? {
+        let held: MethodEntry? = self.methods[target.index].find(it.name == name)
+        held
+    }
+
+    fn declare_method(self, target: DeclId, entry: MethodEntry) {
+        // LICENSED I3: the type's own method list, pushed in place
+        mut ms = self.methods[target.index]
+        ms.push(entry)
+    }
+
+    /// The symbol a method call targets, when the type has it.
+    fn method_symbol_of(self, target: DeclId, name: string) -> string? {
+        let m: MethodEntry? = self.method(target, name)
+        if m == null { return null }
+        self.symbol(m!.decl)
+    }
+
+    fn record_impl(self, ty: DeclId, tr: DeclId) {
+        // LICENSED I3: the type's own trait list, pushed in place
+        mut ts = self.impls[ty.index]
+        ts.push(tr)
+    }
+
+    fn implements(self, ty: DeclId, tr: DeclId) -> bool {
+        self.impls[ty.index].any(same_decl(it, tr))
+    }
+}
+
+/// A key seen already in this admit is a repeated declaration: the
+/// repeat is keyed by its statement, so it stays a declaration of
+/// its own for the namespace law to refuse.
+fn fresh_key(key: string, s: StmtId, seen: List<string>) -> string {
+    if seen.contains(key) { return "${key}#${s.index}" }
+    key
+}

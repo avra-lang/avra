@@ -1,25 +1,24 @@
 //! `avra emit` — print a program's verified LLVM module. Also owns
 //! the analyze-or-refuse step `build` shares.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.language.{avra, emit_ll}
-use @std.avrac.diagnostics.{SourceFile}
+use @std.avrac.language.{emit_ll, Program, Analysis}
 
 type EmitCmd = { }
 
 impl Runnable for EmitCmd {
     fn run(self, args: CliResult) -> int {
-        let src: SourceFile? = source_arg(args)
-        if src == null { return 2 }
-        match lowered_or_report(src!) {
-            .Ok(path) -> {
-                println(avra_selfhost_read_file(path))
-                0
+        on_program(args, (p: Program) -> {
+            match lowered_or_report(p) {
+                .Ok(path) -> {
+                    println(avra_selfhost_read_file(path))
+                    0
+                }
+                .Err(report) -> {
+                    println(report)
+                    1
+                }
             }
-            .Err(report) -> {
-                println(report)
-                1
-            }
-        }
+        })
     }
 }
 
@@ -30,12 +29,13 @@ export fn emit_command() -> Subcommand {
 
 /// Analyze, refuse with the report, or write the verified `.ll`
 /// beside the source and answer its path.
-fn lowered_or_report(src: SourceFile) -> Result<string, string> {
-    let a = avra().analyze(src)
-    if !a.clean() { return Result.Err(a.report()) }
-    if a.stmts.is_empty() { return Result.Err("the program is empty") }
-    let lo = a.lowered_checked()?
-    let path = "${src.file ?? "out"}.ll"
+fn lowered_or_report(p: Program) -> Result<string, string> {
+    if !p.clean() { return Result.Err(p.report()) }
+    let entry: Analysis? = p.entry_file()
+    if entry == null { return Result.Err("the program has no entry") }
+    if entry!.p.stmts.is_empty() { return Result.Err("the program is empty") }
+    let lo = p.lowered_checked()?
+    let path = "${entry!.p.source.file}.ll"
     let failure: string? = emit_ll(lo, path)
     if failure != null { return Result.Err(failure!) }
     Result.Ok(path)

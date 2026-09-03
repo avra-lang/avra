@@ -8,9 +8,18 @@
 //!                maps; the store's walk vocabulary
 //!   resolve.av   pass 1: names -> bindings; the value, fn and
 //!                type namespaces
-//!   typing.av    pass 2: expressions -> types; declarations -> DeclSig
+//!   typing.av    pass 2: expressions -> types (the walk, the facts)
+//!   typing_declare.av   the declaration rounds; the types annotations write
+//!   typing_impls.av     traits, impls, methods, the orphan rule
 //!   analysis.av  every fact in ONE artifact (Analysis)
-//!   lower.av     pass 3: programs -> IR bodies — THE semantics
+//!   decls.av     THE declaration table: every declaration once,
+//!                interned ids, per-file facts
+//!   workspace.av many files, one program over the query kernel
+//!                (query/db.av): modules, imports, the union (Program)
+//!   lower.av     pass 3: programs -> IR bodies — THE semantics:
+//!                every file's bodies, one mono worklist
+//!   lower_walk.av       one body's walk; the contexts; the entry's answer
+//!   lower_state.av      the lowering state's verbs: registers, slots, values
 //!   interp.av    run: the IR interpreted, backend-identical
 //!   memory.av    pass 4: the memory strategy, per scope level
 //!   llvm.av      the native backend (llvm_api.av: the C surface)
@@ -42,6 +51,7 @@ use features.lists.{lists}
 use features.maps.{maps}
 use features.tables.{tables}
 use features.components.{components}
+use features.modules.{modules}
 use features.str_lit.{str_lit}
 
 /// A feature set assembled once: composed, parsed, merged, and gated
@@ -95,6 +105,7 @@ export fn language_features() -> List<LanguageFeature> {
                         // the paren group in the primary ladder
         type_expr(),    // `int`, `int?` — the surface annotations share
         block(),        // { statements… value } — braces, defined once
+        modules(),      // `use a.b.{x}` and the `export` prefix
         let_stmt(),     // `let` names a value
         mutation(),     // `mut` declares; `name = e` reassigns
         loops(),        // `while c { statements }`
@@ -132,10 +143,10 @@ export fn avra() -> Language {
 
 /// The canonical language over one nameless source.
 export fn parse_source(text: string) -> ParsedProgram {
-    parse_program(avra(), new_source_file(null, text))
+    parse_program(avra(), new_source_file("<source>", text))
 }
 
 /// The canonical language's whole pipeline over one nameless source.
 export fn analyze_source(text: string) -> Analysis {
-    avra().analyze(new_source_file(null, text))
+    avra().analyze(new_source_file("<source>", text))
 }

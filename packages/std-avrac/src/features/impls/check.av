@@ -2,9 +2,9 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, Type, TypeId, Arrow, StmtId, TypeRef, StructSig}
+use core.{ExprId, Type, TypeId, Arrow, StructSig, DeclId}
 use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant, bound_name, seats_judged, settled_call, MethodRow, MethodCall, method_row}
-use diagnostics.{error_at, pointed}
+use diagnostics.{refusal}
 
 fn method_call_type(cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -40,10 +40,10 @@ fn method_answer(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: Lis
         let answered: TypeId = r.check(cx, mc)
         return answered
     }
-    let named: string? = receiver_name(cx, subject)
-    if named == null { return no_methods_here(cx, subject, name) }
-    let target = named!
-    let found: FnSig? = cx.method_sig(target, name)
+    let recv: Receiver? = receiver_of(cx, subject)
+    if recv == null { return no_methods_here(cx, subject, name) }
+    let target = recv!.name
+    let found: FnSig? = cx.method_sig(recv!.decl, name)
     if found == null { return no_such_method(cx, e, target, name) }
     let sig = found!
     let wants = sig.params.length - 1
@@ -57,16 +57,24 @@ fn method_answer(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: Lis
     sig.ret
 }
 
-/// The name a receiver's type answers to — the impl table's key.
-/// Generic receivers wait for T2 (the impl's own tparams).
-fn receiver_name(cx: TypeCx, subject: ExprId) -> string? {
+/// A receiver's declared type: the impl table's key, and the name
+/// the voices use.
+type Receiver = { decl: DeclId, name: string }
+
+fn receiver(d: DeclId, n: string) -> Receiver {
+    Receiver { decl: d, name: n }
+}
+
+/// The declared type a receiver answers to, or absence. Generic
+/// receivers wait for T2 (the impl's own tparams).
+fn receiver_of(cx: TypeCx, subject: ExprId) -> Receiver? {
     // the annotated bind RESTORES exhaustiveness checking (the
     // closure-field-call discipline) — matched directly, a new
     // Type variant would abort at runtime instead of failing here
     let sh: Type = cx.shape_at(subject)
     match sh {
-        .Struct(_, n) -> n,
-        .Enum(_, n) -> n,
+        .Struct(d, n) -> receiver(d, n),
+        .Enum(d, n) -> receiver(d, n),
         .Int or .Str or .Bool or .List(_) or .Res(_, _) or .App(_, _, _) or
         .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or
         .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
@@ -77,46 +85,28 @@ fn receiver_name(cx: TypeCx, subject: ExprId) -> string? {
 
 fn no_methods_here(cx: TypeCx, subject: ExprId, name: string) -> TypeId {
     let n = cx.name_at(subject)
-    spoken(cx, pointed(
-        error_at("type.method", cx.loc_of(subject), "`.${name}(…)` calls a method, and `${n}` has none"),
-        this_is(n))
-        with { help: "methods live on lists, maps, and declared types with an `impl`" })
+    spoken(cx, refusal("type.method", cx.loc_of(subject), "`.${name}(…)` calls a method, and `${n}` has none", this_is(n), "methods live on lists, maps, and declared types with an `impl`"))
 }
 
 fn no_such_method(cx: TypeCx, e: ExprId, target: string, name: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.method", cx.loc_of(e), "`${target}` has no method `${name}`"),
-        "called here")
-        with { help: "declare it — `impl ${target} { fn ${name}(self, …) -> … }`" })
+    spoken(cx, refusal("type.method", cx.loc_of(e), "`${target}` has no method `${name}`", "called here", "declare it — `impl ${target} { fn ${name}(self, …) -> … }`"))
 }
 
 fn wrong_method_arity(cx: TypeCx, e: ExprId, target: string, name: string, wants: int, found: int) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.method", cx.loc_of(e),
-            "`${target}.${name}` takes ${wants} arguments beside `self`, found ${found}"),
-        "this call"))
+    spoken(cx, refusal("type.method", cx.loc_of(e), "`${target}.${name}` takes ${wants} arguments beside `self`, found ${found}", "this call", null))
 }
 
 fn no_trait_method(cx: TypeCx, e: ExprId, trait_name: string, name: string, tname: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.method", cx.loc_of(e), "`${trait_name}` has no method `${name}`"),
-        "called here")
-        with { help: "the bound decides what `${tname}` can do" })
+    spoken(cx, refusal("type.method", cx.loc_of(e), "`${trait_name}` has no method `${name}`", "called here", "the bound decides what `${tname}` can do"))
 }
 
 fn no_dyn_method(cx: TypeCx, e: ExprId, tname: string, name: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.method", cx.loc_of(e), "`${tname}` has no method `${name}`"),
-        "called here")
-        with { help: "the contract decides what a `dyn ${tname}` can do" })
+    spoken(cx, refusal("type.method", cx.loc_of(e), "`${tname}` has no method `${name}`", "called here", "the contract decides what a `dyn ${tname}` can do"))
 }
 
 fn wrong_method_argument(cx: TypeCx, target: string, name: string, j: int, want: TypeId, a: ExprId) {
     let n = cx.name_at(a)
-    cx.emit(pointed(
-        error_at("type.method", cx.loc_of(a),
-            "argument ${j + 1} of `${target}.${name}` wants `${cx.types.name_of(want)}`, found `${n}`"),
-        this_is(n)))
+    cx.emit(refusal("type.method", cx.loc_of(a), "argument ${j + 1} of `${target}.${name}` wants `${cx.types.name_of(want)}`, found `${n}`", this_is(n), null))
 }
 
 /// A dot-call on a FN-TYPED FIELD — the capability-record pattern:
@@ -153,11 +143,7 @@ fn bounded_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List
     let tname = seat!.tparam
     let trait_name = seat!.bound
     if trait_name == "" {
-        return spoken(cx, pointed(
-            error_at("type.method", cx.loc_of(e),
-                "`${tname}` has no known methods"),
-            "called here")
-            with { help: "add a bound — `<${tname}: SomeTrait>`" })
+        return spoken(cx, refusal("type.method", cx.loc_of(e), "`${tname}` has no known methods", "called here", "add a bound — `<${tname}: SomeTrait>`"))
     }
     trait_judged(cx, e, trait_name, name, args) ?? no_trait_method(cx, e, trait_name, name, tname)
 }

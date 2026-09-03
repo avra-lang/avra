@@ -1,7 +1,9 @@
 //! What every command shares: the host externs, the argued source
 //! file, and the two CommandSpec shapes.
-use @std.cli.{CommandSpec, CliResult, ArgDef, result_get_arg}
-use @std.avrac.diagnostics.{new_source_file, SourceFile}
+use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef, result_get_arg, result_has_flag}
+use @std.avrac.diagnostics.{new_source_file}
+use @std.avrac.language.{Host, Program, program, lone_program, timed_workspace, avra}
+use @std.avrac.core.{joined, dir_of}
 
 extern fn avra_selfhost_read_file(path: string) -> string
 extern fn avra_selfhost_file_exists(path: string) -> int
@@ -9,16 +11,101 @@ extern fn avra_selfhost_write_file(path: string, content: string) -> int
 extern fn avra_shell_exec_status(cmd: string) -> int
 extern fn avra_mkdir_p(path: string) -> int
 extern fn avra_process_exit(code: int)
+extern fn avra_host_list_dir(path: string) -> string
+extern fn avra_host_is_dir(path: string) -> int
+extern fn avra_now_ns() -> int
 
-/// The argued file as a SourceFile, or null when it does not exist.
-fn source_arg(args: CliResult) -> SourceFile? {
-    let path = result_get_arg(args, "file")
+/// The disk, as the workspace's four questions.
+fn disk_host() -> Host {
+    Host {
+        exists: (p: string) -> avra_selfhost_file_exists(p) != 0,
+        read: (p: string) -> avra_selfhost_read_file(p),
+        list: (dir: string) -> named_lines(avra_host_list_dir(dir)),
+        is_dir: (dir: string) -> avra_host_is_dir(dir) != 0,
+    }
+}
+
+/// A newline-joined listing as names — the empty tail dropped.
+fn named_lines(text: string) -> List<string> {
+    [l for l in text.split("\n") if l.length > 0]
+}
+
+/// The argued path, whatever it is.
+fn path_arg(args: CliResult) -> string {
+    result_get_arg(args, "file")
+}
+
+/// The argued file as a PROGRAM: inside a package — an `avra.toml`
+/// ancestor marks the root — every file of it, entered here; outside
+/// one, the lone file. Null when the file does not exist.
+fn program_arg(args: CliResult) -> Program? {
+    let path = path_arg(args)
     if avra_selfhost_file_exists(path) == 0 {
         eprintln("avra: no such file: ${path}")
         return null
     }
-    new_source_file(path, avra_selfhost_read_file(path))
+    let root: string? = package_root(dir_of(path))
+    if root == null {
+        let lone: Program = lone_program(avra().analyze(new_source_file(path, avra_selfhost_read_file(path))))
+        return lone
+    }
+    let whole: Program = program(timed_workspace(disk_host(), root!, avra(), () -> avra_now_ns()), path)
+    whole
 }
+
+/// A package root as a program with no entry — every file, checked.
+fn root_program(root: string) -> Program {
+    program(timed_workspace(disk_host(), root, avra(), () -> avra_now_ns()), null)
+}
+
+/// The argued path as a program: a directory is a root with no
+/// entry, a file is entered.
+fn program_at(args: CliResult) -> Program? {
+    let path = path_arg(args)
+    if avra_host_is_dir(path) != 0 {
+        let whole: Program = root_program(path)
+        return whole
+    }
+    program_arg(args)
+}
+
+/// A command over the argued program — every command's one prologue:
+/// no such file exits 2.
+fn on_program(args: CliResult, act: fn(Program) -> int) -> int {
+    let held: Program? = program_at(args)
+    if held == null { return 2 }
+    act(held!)
+}
+
+/// The `--time` report: analysis by phase, then what the command
+/// itself did, then the memo's hits and misses.
+fn timings(p: Program, own: string, own_ns: int) -> string {
+    let inner = joined(["${ph.name} ${ms(ph.ns)}" for ph in p.phases], ", ")
+    let cache = if p.cache == "" { "" } else { " · memo ${p.cache}" }
+    "time: ${inner} · ${own} ${ms(own_ns)}${cache}"
+}
+
+/// Nanoseconds as milliseconds with one decimal.
+fn ms(ns: int) -> string {
+    let tenths = ns / 100000
+    "${tenths / 10}.${tenths % 10}ms"
+}
+
+fn timed(args: CliResult) -> bool {
+    result_has_flag(args, "time")
+}
+
+
+/// The nearest ancestor holding `avra.toml`, if any.
+fn package_root(dir: string) -> string? {
+    mut d = dir
+    while d.length > 0 {
+        if avra_selfhost_file_exists("${d}/avra.toml") != 0 { return d }
+        d = dir_of(d)
+    }
+    null
+}
+
 
 /// A subcommand over exactly one source-file argument.
 fn file_command(name: string, description: string) -> CommandSpec {
@@ -26,7 +113,7 @@ fn file_command(name: string, description: string) -> CommandSpec {
         name: name,
         description: description,
         hidden: false,
-        flags: [],
+        flags: [FlagDef { name: "--time", short: "", description: "print phase timings and memo hits", aliases: [] }],
         args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
         options: [],
     }

@@ -1,21 +1,21 @@
 //! `avra build` — compile a program to a native binary: the emitted
 //! `.ll` linked with Avra's runtime by clang.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.diagnostics.{SourceFile}
+use @std.avrac.language.{Program}
 
 type BuildCmd = { }
 
 impl Runnable for BuildCmd {
     fn run(self, args: CliResult) -> int {
-        let src: SourceFile? = source_arg(args)
-        if src == null { return 2 }
-        match lowered_or_report(src!) {
-            .Ok(path) -> link(path),
-            .Err(report) -> {
-                println(report)
-                1
+        on_program(args, (p: Program) -> {
+            match lowered_or_report(p) {
+                .Ok(path) -> link(path),
+                .Err(report) -> {
+                    println(report)
+                    1
+                }
             }
-        }
+        })
     }
 }
 

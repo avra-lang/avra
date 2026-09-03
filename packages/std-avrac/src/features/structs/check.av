@@ -1,10 +1,10 @@
 //! The literal's typing law: the name resolved to a declaration
 //! (resolve spoke otherwise), and the written fields match it —
 //! each declared field exactly once, each value the field's type.
-use core.{ExprId, StmtId, Type, TypeId, filled, StructParts}
+use core.{ExprId, StmtId, Type, TypeId, filled, StructParts, DeclId}
 use features.{TypeCx, StructSig, spoken, types_disagree, this_is, fields_are,
               unify, fully_bound, bound_args, accepts, slot_worthy, tparams_refused, unpinned_of, bound_closed, slice_promise, StmtTypeCx}
-use diagnostics.{error_at, pointed}
+use diagnostics.{refusal}
 
 fn structs_type(cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
@@ -23,22 +23,20 @@ fn with_type(cx: TypeCx, e: ExprId, subject: ExprId, fields: List<string>, value
     let sig: StructSig? = cx.fields_of(ty)
     if sig == null {
         let n = cx.name_at(subject)
-        return spoken(cx, pointed(
-            error_at("type.with_struct", cx.loc_of(e), "`with` copies a struct, found `${n}`"),
-            this_is(n)))
+        return spoken(cx, refusal("type.with_struct", cx.loc_of(e), "`with` copies a struct, found `${n}`", this_is(n), null))
     }
     written_checks(cx, cx.types.name_of(ty), fields, values, sig!)
     ty
 }
 
 fn lit_type(cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: List<ExprId>) -> TypeId {
-    let decl: StmtId? = cx.bound_def(e)
+    let decl: DeclId? = cx.bound_decl(e)
     if decl == null { return cx.error_type }
     let target = decl!
     let ty = cx.types.intern(Type.Struct(target, name))
     let sig: StructSig? = cx.fields_of(ty)
     if sig == null { return not_a_record(cx, e, name) }
-    if !cx.store.decl_tparams(target).is_empty() {
+    if !cx.decls.tparams(target).is_empty() {
         return generic_lit(cx, e, name, fields, values, target, sig!)
     }
     check_fields(cx, e, name, fields, values, sig!)
@@ -50,8 +48,8 @@ fn lit_type(cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: L
 /// field-worded — every Var must land, and the slots re-judge
 /// under the bindings before the instantiation interns.
 fn generic_lit(cx: TypeCx, e: ExprId, name: string, fields: List<string>,
-               values: List<ExprId>, decl: StmtId, sig: StructSig) -> TypeId {
-    let tp = cx.store.decl_tparams(decl)
+               values: List<ExprId>, decl: DeclId, sig: StructSig) -> TypeId {
+    let tp = cx.decls.tparams(decl)
     if tparams_refused(tp) { return cx.error_type }
     let bound: List<TypeId?> = filled<TypeId?>(tp.length, null)
     mut spoke = false
@@ -75,11 +73,7 @@ fn generic_lit(cx: TypeCx, e: ExprId, name: string, fields: List<string>,
     for ft in sig.types {
         let landed = cx.types.substituted(ft, decl, concrete)
         if !slot_worthy(cx.types.shape_of(landed)) {
-            return spoken(cx, pointed(
-                error_at("type.struct_fields", cx.loc_of(e),
-                    "this literal makes a slot `${cx.types.name_of(landed)}`, which a slot cannot hold yet"),
-                "in this literal")
-                with { help: slice_promise("slots") })
+            return spoken(cx, refusal("type.struct_fields", cx.loc_of(e), "this literal makes a slot `${cx.types.name_of(landed)}`, which a slot cannot hold yet", "in this literal", slice_promise("slots")))
         }
     }
     cx.record_subst(e, decl, concrete)
@@ -90,7 +84,7 @@ fn generic_lit(cx: TypeCx, e: ExprId, name: string, fields: List<string>,
 /// and its declared type UNIFIES with the value — a fully-bound
 /// field falls back to the ordinary law, so widening still rides.
 fn generic_field(cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId,
-                 dup: bool, decl: StmtId, bound: List<TypeId?>) -> bool {
+                 dup: bool, decl: DeclId, bound: List<TypeId?>) -> bool {
     let slot: int? = sig.slot_of(f)
     if slot == null {
         unknown_field(cx, v, name, f, sig)
@@ -107,10 +101,7 @@ fn generic_field(cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId,
         if accepts(cx, v, landed) { return true }
     }
     let n = cx.name_at(v)
-    let _ = spoken(cx, pointed(
-        error_at("type.struct_fields", cx.loc_of(v),
-            "field `${f}` is `${cx.types.name_of(want)}`, this is `${n}`"),
-        this_is(n)))
+    let _ = spoken(cx, refusal("type.struct_fields", cx.loc_of(v), "field `${f}` is `${cx.types.name_of(want)}`, this is `${n}`", this_is(n), null))
     false
 }
 
@@ -147,48 +138,31 @@ fn field_check(cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId, d
     // (auto-Ok, dyn boxing), and the lift is recorded for lowering
     if !accepts(cx, v, sig.types[slot!]) {
         let n = cx.name_at(v)
-        cx.emit(pointed(
-            error_at("type.struct_fields", cx.loc_of(v),
-                "field `${f}` is `${cx.types.name_of(sig.types[slot!])}`, this is `${n}`"),
-            this_is(n)))
+        cx.emit(refusal("type.struct_fields", cx.loc_of(v), "field `${f}` is `${cx.types.name_of(sig.types[slot!])}`, this is `${n}`", this_is(n), null))
     }
 }
 
 // ── The field-law voices, worded once for both paths ──
 
 fn missing_field(cx: TypeCx, e: ExprId, name: string, n: string) {
-    cx.emit(pointed(
-        error_at("type.struct_fields", cx.loc_of(e), "`${name}` needs field `${n}`"),
-        "this literal")
-        with { help: "every declared field appears exactly once" })
+    cx.emit(refusal("type.struct_fields", cx.loc_of(e), "`${name}` needs field `${n}`", "this literal", "every declared field appears exactly once"))
 }
 
 fn unknown_field(cx: TypeCx, v: ExprId, name: string, f: string, sig: StructSig) {
-    cx.emit(pointed(
-        error_at("type.struct_fields", cx.loc_of(v), "`${name}` has no field `${f}`"),
-        "written here")
-        with { help: fields_are(sig) })
+    cx.emit(refusal("type.struct_fields", cx.loc_of(v), "`${name}` has no field `${f}`", "written here", fields_are(sig)))
 }
 
 fn repeated_field(cx: TypeCx, v: ExprId, f: string) {
-    cx.emit(pointed(
-        error_at("type.struct_fields", cx.loc_of(v), "field `${f}` is written more than once"),
-        "written again here"))
+    cx.emit(refusal("type.struct_fields", cx.loc_of(v), "field `${f}` is written more than once", "written again here", null))
 }
 
 fn unpinned_by_fields(cx: TypeCx, e: ExprId, tparam: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.struct_fields", cx.loc_of(e), "`${tparam}` is not pinned by the fields"),
-        "in this literal")
-        with { help: "give `${tparam}`'s field a value of a concrete type" })
+    spoken(cx, refusal("type.struct_fields", cx.loc_of(e), "`${tparam}` is not pinned by the fields", "in this literal", "give `${tparam}`'s field a value of a concrete type"))
 }
 
 /// A literal under a name that declares no fields — an enum's.
 fn not_a_record(cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.struct_fields", cx.loc_of(e), "`${name}` is an enum, not a record — it has no fields to fill"),
-        "built here")
-        with { help: "construct a variant instead — `${name}.<variant>`" })
+    spoken(cx, refusal("type.struct_fields", cx.loc_of(e), "`${name}` is an enum, not a record — it has no fields to fill", "built here", "construct a variant instead — `${name}.<variant>`"))
 }
 
 /// THE DEFAULT LAW, at the declaration: a field's default is typed
@@ -198,7 +172,7 @@ export fn check_defaults(cx: StmtTypeCx, s: StmtId) {
     let sp: StructParts? = cx.store.struct_parts(s)
     if sp == null { return }
     let parts = sp!
-    let sig: StructSig? = cx.expr.fields_of(cx.expr.types.intern(Type.Struct(s, parts.name)))
+    let sig: StructSig? = cx.expr.fields_of(cx.expr.types.intern(Type.Struct(cx.expr.decl_of(s), parts.name)))
     if sig == null { return }
     // LICENSED I3: the field's ORDINAL finds its slot type
     for (j, f) in parts.fields.enumerate() {
@@ -211,8 +185,5 @@ fn defaulted(cx: StmtTypeCx, d: ExprId, name: string, want: TypeId) {
     cx.walk(d)
     if accepts(cx.expr, d, want) { return }
     let n = cx.expr.name_at(d)
-    cx.expr.emit(pointed(
-        error_at("type.struct_fields", cx.expr.loc_of(d),
-            "field `${name}` defaults to `${n}`, and it is `${cx.expr.types.name_of(want)}`"),
-        this_is(n)))
+    cx.expr.emit(refusal("type.struct_fields", cx.expr.loc_of(d), "field `${name}` defaults to `${n}`, and it is `${cx.expr.types.name_of(want)}`", this_is(n), null))
 }

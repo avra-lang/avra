@@ -20,21 +20,21 @@ export enum Type {
     // ── The declared boxes — NOMINAL: the declaration site is the
     // identity, the name rides along for printing alone. ──
     /// A record: a slot array at runtime.
-    Struct(decl: StmtId, name: string)
+    Struct(decl: DeclId, name: string)
     /// An enum's VALUE: a tagged slot array at runtime.
-    Enum(decl: StmtId, name: string)
+    Enum(decl: DeclId, name: string)
     /// A USER generic declaration INSTANTIATED — nominal by its
     /// decl, interned by its arguments (the List/Opt/Res precedent
     /// generalized to declared names). The declared field/variant
     /// tables keep their Vars; `fields_of`/`variants_of` answer
     /// them substituted. A tagged/slot box at runtime, like the
     /// plain declaration it instantiates.
-    App(decl: StmtId, name: string, args: List<TypeId>)
+    App(decl: DeclId, name: string, args: List<TypeId>)
     /// `dyn Trait` — a value known only by its CONTRACT: a box of
     /// the value and its methods (spec 5.x, the heterogeneity
     /// hatch — dispatch cost made visible, P7). Nominal to the
     /// trait's declaration.
-    Dyn(decl: StmtId, name: string)
+    Dyn(decl: DeclId, name: string)
 
     // ── The built-in boxes — STRUCTURAL: interned by their parts. ──
     /// A homogeneous aggregate.
@@ -74,13 +74,13 @@ export enum Type {
     // ── Compile-only: no runtime value ever wears these. ──
     /// A type used as a VALUE (`Color` in `Color.red`): every
     /// operand law and the answer projection refuse it.
-    TypeName(decl: StmtId, name: string)
+    TypeName(decl: DeclId, name: string)
     /// A generic fn's TYPE PARAMETER — nominal to its declaration
     /// site, by ordinal (`fn f<A, B>` interns Var(f, 0) and
     /// Var(f, 1); the name rides for printing). Abstract: a value
     /// of this type can only MOVE, and mono guarantees no register
     /// is ever minted wearing it.
-    Var(decl: StmtId, ordinal: int, name: string)
+    Var(decl: DeclId, ordinal: int, name: string)
 
     /// The absorber: laws already spoke; downstream stays quiet.
     Error
@@ -196,7 +196,7 @@ impl TypeRegistry {
     /// `ty` with the TARGET fn's Vars replaced by `args`, by
     /// ordinal — THE substitution, recursive through every
     /// composite. Another fn's Vars pass through untouched.
-    fn substituted(self, ty: TypeId, target: StmtId, args: List<TypeId>) -> TypeId {
+    fn substituted(self, ty: TypeId, target: DeclId, args: List<TypeId>) -> TypeId {
         match self.shape_of(ty) {
             // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
             .Var(decl, j, _) ->

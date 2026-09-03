@@ -3119,6 +3119,410 @@ THE SLICES:
        failure_tests ride it), operator traits (the Var
        compare-help names them).
 
+## Modules & multi-file — rung 15 (designed 2026-09-02, amended after the ps3t read; ratified 2026-09-02; 15a LANDED 2026-09-02)
+
+Sources, in authority order: the L6 query-engine design
+(`docs/2026_07_16_L6_QUERY_ENGINE_DESIGN.md`, `ps3t.8.1` — the
+Salsa-shaped red-green engine, per-ITEM granularity, resolution
+as a query keyed by (scope chain, visible imports), the two
+fingerprints sig_fp/body_fp, symbol id = hash(qualified path +
+kind), persistence in-process -> mmap'd on-disk -> daemon/LSP,
+diagnostics riding with values, parallelism free by purity); the
+codegen-cache design (per-fn units keyed by body_fp; ORC JIT for
+the dev loop, ThinLTO for release); the manifest spec
+(`spec_build_manifest.md`: [package]/[bin]/[lib]/[dependencies]);
+spec Axis 16; the engine doctrine above. THE CENSUS (152 files):
+309 `use path.{items}`, 32 `@std.<pkg>`; 0 aliases/globs/`export
+use`; 242 `export fn`, 100 `export type`, 23 `export enum`. THE
+BASELINE (bs2-compiled compiler): ~4.2 KLOC/s to check, 0.46 s
+fixed startup, +0.34 s LLVM+link on 5.4k lines.
+
+THE ONE AMENDMENT THE ps3t READ FORCES: rung 15 is not "a
+workspace pass"; it is THE FIRST CONSUMER OF THE QUERY ENGINE.
+The multi-file driver IS the in-process memo core (L6 P1): a `Db`
+of queries with red-green verification, and the module graph is
+its first multi-key query family. Building the graph any other
+way would build it twice.
+
+THE DESIGN, in laws:
+
+1. A MODULE IS A DIRECTORY (proposed amendment to spec 16.1 —
+   the owner decides). `use a.b` names the directory `a/b/`
+   (every `.av` file in it, ONE namespace) or, absent that, the
+   file `a/b.av`. Files inside a directory see each other without
+   ceremony; `export` marks what crosses the MODULE boundary.
+   Why not per-file modules (the spec's 16.1, and what the first
+   draft argued): under L6 the unit of caching is the ITEM, not
+   the file — a private edit in a sibling changes no sig_fp, so
+   no importer recomputes — and the per-file-closure argument
+   loses its teeth. What remains is the ergonomics: Go's
+   directory-package (no sibling `use`, no `mod` declarations,
+   no `super::`) is the shape P3 asks for and the shape the
+   compiler's own 152 files are already written in — zero
+   rewrite at parity. Rust's import surface (`use path.{items}`,
+   `export`) stays. `mod.av` is conventional, not special: the
+   file that curates a module's surface.
+2. ONE SEPARATOR, ONE RESOLVER (decided by the owner): `.` is the
+   path separator EVERYWHERE — modules `a.b`, packages `@std.errors`,
+   members. No `/` form. `ModulePath` is ONE core type and
+   `locate(path)` ONE fn (package root -> directory or file) that
+   every consumer queries — `use`, the CLI, tests, the manifest.
+   Spec 16.3/16.4's `@std/http` becomes `@std.http` (amendment).
+3. SURFACES, NOT TREES. `surface(module)` = name -> (symbol,
+   kind, sig_fp). Importers read surfaces. Exportable: fn, type,
+   enum, trait, component, const — annotation-complete
+   signatures; a top-level `let` is module-private.
+4. ITEMS ARE THE UNIT. Interfaces are known before any body types
+   (annotation-complete signatures), so bodies type per item in
+   any order across files: intra-package cycles are legal (spec
+   16.6's declare-then-resolve IS this), cross-package cycles
+   refuse naming the cycle, and typing is parallel-ready.
+5. IDENTITY IS CONTENT. Symbol id = hash(qualified path + kind)
+   (`Binding.Foreign(symbol)`); types intern in ONE registry per
+   Db now, content-addressed TypeIds (sh48) as the zero-churn
+   swap behind the opaque-handle rule; fingerprints-at-alloc
+   (already born) become body_fp; sig_fp composes them over
+   signatures.
+6. THE Db IS THE DRIVER: inputs `source(file)`, `flags()`;
+   derived `parsed(file)` (pure: lex, parse, declare), `graph()`
+   (from the `use` heads — no typing to know the program's
+   shape), `surface(module)`, `analysis(file)` keyed by (content,
+   imported surfaces), `lowered(item)`, `linked()`. Red-green
+   fetch with early cutoff; deps discovered by execution; a
+   cycle among queries is a defect (fixpoint opt-in later).
+   THE ORACLE: incremental == scratch, byte-identical IR, pinned
+   by a workspace test that edits and re-fetches.
+7. COHERENCE: the strict orphan rule (16.5); impls are program-
+   global facts collected per module.
+8. VISIBLE MAGIC (P7): `avra check --time` prints per-phase ms
+   and per-query hit/miss/cutoff counts; `--json` carries them.
+   `make bench` gains the compiler's own source the day it
+   parses. Every performance claim in this rung is a number.
+
+THE PERFORMANCE PROGRAM (owner's bar: Rust/Zig class, "as fast
+as possible"):
+- ARCHITECTURE first: O(what-changed) rebuilds (L6), per-item
+  early cutoff, per-file parse memo, one content-addressed cache
+  root, the dev loop on ORC JIT per fn (no linker), release on
+  per-fn object cache + ThinLTO. These are the 100x; they land
+  through 15a-15e.
+- CONSTANT FACTORS now, under bs2: the front end's known traps
+  are the bootstrap's — `code_at` allocates a string per byte,
+  string `.length` is strlen — and bs2-compiled binaries are
+  unoptimized. The compiler links our own C (the LLVM wrapper is
+  ours already), so BYTE-LEVEL primitives can be extern'd today:
+  a byte-at, a substring-free scanner, a hash — a 10x on lexing
+  without waiting for self-host. PF-slices: PF1 `--time` + bench
+  corpus; PF2 the lexer over bytes; PF3 the PEG engine's hot
+  loop (captures, memo); PF4 at self-host: LLVM -O2 + value-
+  semantics COW + arenas — the compiler compiling itself.
+- TARGETS, stated to be measured: now (bs2) — the compiler's own
+  17k lines check under 3 s cold, `--time` proving no per-line
+  regression from the module machinery; at self-host — lex+parse
+  >= 5 MLOC/s per core, full check >= 1 MLOC/s per core cold,
+  warm daemon edit-to-diagnostics <= 200 ms (the old tree's M1),
+  parallel per item across cores.
+
+THE SLICES:
+- 15a THE KERNEL AND THE GRAPH: the `Db` memo core with red-green
+  (L6 P0+P1) driving the existing per-file pipeline as coarse
+  queries; directory-modules; `export`; `use path.{items}`; the
+  ONE resolver; surfaces, Foreign bindings, cross-file calls,
+  types, enums, traits, impls; intra-package cycles; the shared
+  registry; `avra check <root>` / `run`/`build` an entry's
+  closure; `--time`; the differential oracle. Red team + round.
+- 15b PACKAGES: `avra.toml` per the manifest spec, path
+  dependencies, `@scope.name`, cross-package cycle refusal.
+- 15c THE IMPORT SURFACE: `use a.b.x` (braces optional for one
+  item), `use a.b` whole-module and `as`, `export use`, glob
+  (linted), the unused-`use` warning, and `avra fix use` — the
+  compiler writes the imports (P10): an unresolved name that one
+  visible module exports becomes a structured fix, so neither a
+  person nor an LLM needs to know the layout. Avra programs get
+  the syntax now; the compiler's own source adopts at parity
+  (bs2 parses it until then).
+- 15d FINGERPRINTS PER ITEM (L6 P3/P4): sig_fp/body_fp, resolve-
+  as-a-query, per-item typeck with early cutoff — real
+  incrementality.
+- 15e PERSISTENCE AND THE DAEMON (L6 P5/P6, Era IV): the mmap'd
+  on-disk cache namespaced by (compiler, hash-version), the warm
+  daemon that IS the LSP and the agent surface.
+
+THE IMPORT SYSTEM, DREAMED (proposed 2026-09-02; each line a
+paradox collapsed, none built until ratified):
+- (REFUSED by the owner 2026-09-02 — explicit `use` in every file is
+  the law; the compiler WRITES them.) IMPORTS ARE FACTS, NOT SYNTAX. Resolution order: local scope ->
+  the module (its directory) -> the PACKAGE's exports, unqualified
+  (your own package is in scope everywhere; an ambiguity is a
+  loud error carrying the qualified fix) -> other packages by
+  qualified path (`@std.http.get`) or `use`. The `use` block
+  becomes a PROJECTION: the compiler writes it on request (`avra
+  fix use`, an LSP action, `--json` for agents) for readers who
+  want provenance in the file. Explicit-vs-implicit collapses:
+  implicit to write, explicit to read.
+- (REFUSED 2026-09-02 — a second place to look; files stay self-
+  contained.) A MODULE HAS ONE PRELUDE. `use` lines in a directory's
+  `mod.av` apply to every sibling file — imports are per module,
+  not per file. The census says this alone retires ~70% of the
+  compiler's 309 `use` lines.
+- PACKAGES ARE HASHES, VERSIONS ARE SURFACES. A dependency is a
+  content hash (16.8); a version's compatibility is COMPUTED —
+  the new surface must contain every old sig_fp (16.9's
+  compiler-enforced floor, made exact). "Will this upgrade break
+  me" is a query, and a build is reproducible by construction.
+- IMPORTS ARE CAPABILITIES. With Axis 13's effects, a module's
+  import graph IS its permission graph: a module that imports no
+  `@std.fs` provably touches no file. Security-vs-ergonomics
+  collapses: the same lines serve both, and `avra explain
+  effects <module>` shows it.
+- TESTS SEE PRIVATES. A `tests/` directory lives inside its
+  parent's privacy boundary and outside its artifact.
+- ONE SEPARATOR, ONE SIGIL, ONE WORD: `.` for every path, `@` for
+  a package, `export` for the boundary. Nothing else.
+- EVERYTHING IS A QUERY: `avra where <name>`, `avra explain
+  import <path>`, who-uses, what-breaks-if — the module system's
+  surface for humans and agents alike.
+
+THE IMPORT SURFACE, RATIFIED 2026-09-02 (the owner's taste, line by
+line): every import is a `use` at the top of its scope — nothing
+inline, nothing implicit, every path absolute from the package
+root, `.` the only separator, `@` the package sigil.
+    use core.{ExprId, TypeId}          items — 15a, the census's form
+    use core.ExprId                    one item, no braces
+    use core.{                          newlines ARE the separators;
+        ExprId                          no commas, no trailing-comma
+        TypeId                          question
+    }
+    use @std.http / use @std.http as h whole module, qualified use
+    use features {                     a PREFIX block: shared prefix,
+        contract.{TypeCx}               one path per line
+        lists
+    }
+    use { … }                          the file's block, no prefix
+    use core.{ExprId as E}             an item alias
+    export use lists.{lists}           a re-export (mod.av curates)
+    use @std.fs.{read} in a block      scoped: the use belongs to
+                                        the block it heads
+    use core.*                         a glob — allowed and LINTED
+                                        (spec 16.3); a collision is
+                                        a loud error naming both
+REFUSED: inline `@std.http.get(url)` (messy over time), implicit
+local modules, relative paths, string paths, a mod.av prelude.
+THE LOOP (P1): the author — a person or an LLM — writes the
+`use` it believes; a wrong one is a diagnostic WITH THE FIX
+("no `accepts` in `features.lists` — it lives in
+`features.checks`"), and `avra fix use` is that fix in bulk
+(add, drop unused, sort, fold into prefix blocks). 15a lands the
+first form; 15c the rest — Avra programs get them then, the
+compiler's own source at parity.
+
+DECISIONS (D1 RATIFIED 2026-09-02: a module is a DIRECTORY — amend
+spec 16.1):
+(D2, decided) `.` everywhere, one resolver; (D3) 15a's imports
+are `use path.{items}`; 15c widens; (D4) top-level `let` is
+never exported; (D5) `check <root>` = every file, `run`/`build`
+= the entry's closure; (D6, RATIFIED) 15a builds the memo core itself
+rather than a one-off driver.
+
+15a LANDED (2026-09-02) — what it is, in one breath: a program is
+every `.av` file under a root, typed together, run as one. The
+pieces, each one file:
+- `language/db.av` — THE QUERY KERNEL (D6): cells with deps,
+  changed_at/verified_at, red-green `needs_compute`, early cutoff
+  in `settle`, one verifier per family, hit/miss counters. Values
+  live in the families' typed tables; the kernel is bookkeeping.
+- `core/modules.av` — `ModulePath` (`.`-joined, `@` package sigil,
+  `dir_under`/`file_under`), `module_symbol(module, name)` (a fn's
+  symbol is its name under its module — `util.twice`; the root's
+  stay bare, so lone files are unchanged), `dir_of`/`last_slash`.
+- `language/workspace.av` — the families `source` (input, hashed),
+  `parsed`, `items` (a file's declarations, ids minted as `base +
+  statement index` — THE SAME arithmetic the typing table uses, so
+  the workspace's ids ARE typing's), `surface`, `foreign_of`;
+  `analyze_all` (four declaration rounds across every file before
+  any body); `Program { files, entry, phases, cache }` — the
+  many-file artifact with the Analysis vocabulary (report,
+  lowered, run, check); a lone file is `lone_program(a)`, so the
+  law lives ONCE and Analysis delegates.
+- typing's `DeclTable` — one type registry, one signature table by
+  DeclId, every declaration's `Home` (store, stmt, module, file,
+  base), methods keyed by the TARGET's DeclId with their symbol,
+  impls keyed (type, trait). `typer` admits a file; the rounds are
+  `declare_types/traits/fns/impls`; `type_bodies` ends it.
+  `Binding.Foreign(DeclId)` is how a file's resolver names what it
+  cannot see; typing reaches sigs/tparams/kinds through the table.
+- lowering's `lower_all(files, entry?)` — every file's bodies,
+  the entry's main (an empty one for `check`), ONE worklist: a
+  specialization lowers in ITS declaring file (`home_of`), a lift
+  in the file it was written (`Lift.home`), wrappers likewise.
+  `Ins.Call` targets are qualified symbols; a method's symbol is
+  its type's name under the IMPL's module (`x.P.v` and `y.P.v`
+  coexist — pinned).
+- the CLI — `check <root>` (every file, no entry) and `check|run|
+  build|ir|emit <file>`: an `avra.toml` ancestor marks the root
+  (15b gives it contents); a file outside any package is a LONE
+  program, unchanged — the flat corpus never touches the
+  workspace. `--time` prints the phases + memo hits/misses.
+  `corpus/<name>/main.av` + `expected` + `avra.toml` is the
+  package corpus shape (`corpus/modules` lands it).
+
+LAWS THAT LANDED WITH IT (each a red-team find, each pinned in
+workspace_adversarial_test.av):
+- ONE NAMESPACE PER MODULE: a name declares once across a module's
+  files (F3017 names the other file); a local declaration never
+  shadows a sibling — the symbols would collide and the union
+  would run the WRONG body silently (found: `helper` printed the
+  sibling's answer).
+- IMPORTS NEVER SHADOW: an import already visible under its name
+  refuses (F3018) — unless it is the SAME declaration (a root file
+  is both a sibling and a lone-file module; re-importing it is
+  redundant, not a clash — silent today, a lint in 15c). Listed
+  twice in one `use` refuses.
+- A MODULE IS ONE THING: a directory and a file of one name refuse
+  (F3016) rather than the directory winning silently.
+- `export` MARKS A DECLARATION — fn, type, enum, trait (F3014);
+  `export use` names 15c; `export impl` says methods travel with
+  their type; `export export` is a builder refusal.
+- `use` LIVES AT THE TOP LEVEL (F3019, the nested_decl voice); a
+  lone file's `use` says it needs a package root (F3015).
+- THE ORPHAN RULE (STRICT): an impl lives in its type's module, or
+  in its trait's when the trait is this module's (F2037). A
+  refused impl still declares its methods as WRECKAGE (hole sigs)
+  — found as a CRASH (`self` read from an empty param list).
+- ONLY THE ENTRY RUNS STATEMENTS (F0902): a module file holds
+  declarations; run-time statements elsewhere are refused naming
+  the entry.
+- fn and type namespaces stay APART per module, as the lone-file
+  rule keeps them — one law (namespace.av), two maps.
+
+MEASURED (152 compiler files through `check --time`): parse+resolve
+760ms (the parse is the cost; declare/bodies ≈ 0 because most
+files still refuse at parse), lower 5ms, memo 1731 hits / 442
+misses on first run. The number the performance program (PF1) now
+attacks is the 760ms.
+
+DEFERRED, WITH TRIGGERS: cross-file generic METHODS (T2, with generic
+impls); `analyze_file` re-runs `analyze_all` (per-item memo of
+typing is 15d — the differential oracle `incremental == scratch`
+lands with it); diagnostics from ANOTHER file's Loc render with
+the entry's source (the renderer takes one SourceFile — 15b's
+multi-source renderer); the redundant-import and unused-import
+lints (15c); host directory listings are readdir-ordered (sort at
+the host when a determinism test needs it); a keyword as a module
+name (`use fn.{x}`) works by the lexer's leniency in paths —
+harmless, unratified.
+
+THE CRUFT ROUND (2026-09-02, the same day, before anything stacked
+on 15a) — eight structural findings, all fixed, feature set held,
+the adversarial suite as the oracle:
+1. Identity is INTERNED, not positional: `decls.av` is THE
+   declaration table — dense ids minted by key (file, kind, name; a
+   method under its owner; a repeat within a file keyed by its
+   statement so the namespace law can refuse it), stable across
+   edits and re-admits. Per-file facts live once, by FileId. Typing's
+   `DeclTable`/`Home` and the workspace's parallel `Decl` list are
+   gone; ~10 rows per real declaration became one.
+2. THE KERNEL is its own module, `query/` (core -> query -> grammar
+   -> features -> language): typed keys (family number + dense id,
+   two list indexes, no strings), cycle detection (`Verdict.Cycle`
+   instead of recursion), a sweep, and — for the first time — its
+   own spec (reuse, early cutoff, cycle, sweep).
+3. ONE LAW for "a name binds once": `namespace.av`. A module's
+   namespace is every file's declarations (fns and types apart); a
+   file's namespace adds its imports; the second binder refuses in
+   its own words (same file: F3003/F3006; sibling: F3017; import:
+   F3018; the same declaration again: redundant, silent). The
+   resolver no longer declares top-level names — it keeps only the
+   naming laws (keywords, built-in type names) and looks names up.
+   `Binding.Decl(DeclId)` is every declaration, this file's or not;
+   `Binding.Def` is a `let`. `Foreign`, `provenance`, `Taken`,
+   `module_clashes` are gone.
+4. ONE PIPELINE: `typed_together` holds the rounds once; a lone file
+   is a program of one (its own declarations are its namespace, a
+   `use` line is refused as needing a package); `analyze_with`,
+   `no_foreign`, `packaged` are gone.
+5. Diagnostics render over EVERY file's source (`render_among`): a
+   frame's window comes from the file its Loc names — found as a
+   bug (a non-entry file's refusal windowed the entry's text).
+6. `analyze_all` is a memoized family (`analyzed`, one cell) — its
+   deps are every parse and item table it read; `program` and
+   `analyze_file` are queries.
+7. String keys off the hot paths: methods are per-declaration
+   lists, impls per-declaration trait lists, kernel keys are typed.
+   Mono's symbol-string dedupe stays (symbols ARE strings; interning
+   them is PF-work).
+8. Deterministic listings: both hosts answer names in byte order
+   (`qsort` on disk, `sorted_texts` in memory), so ids, IR order and
+   the LLVM module are the same on every machine.
+Also: `declared_kind`/`is_declaration` live on the store (three
+copies became one), `DeclKind` is core's one vocabulary, `Program.
+entry` is honestly optional, `Analysis` delegates every law to
+`Program`.
+
+THE SECOND CRUFT ROUND (2026-09-02, same day) — ten findings, nine
+done, one refused on reflection:
+1. ONE VOICE SHAPE: `refusal(kind, at, message, label, help)` in
+   diagnostics — 173 hand assemblies became one call each; the
+   shape is now ratcheted (I28), the constructor and the one
+   two-frame voice licensed at their sites.
+2. REGISTRIES ARE DATA: `decls` rides TypeCx and LowerCx like
+   `store` and `types`; the table-read verbs (`decl_tparams`,
+   `decl_tbounds`, `method_symbol`, `trait_methods`) are gone.
+   `decl_of` stays a verb — it needs the file. The table itself
+   moved to `features/decls.av`, the registry floor where DeclSig
+   lives, so the contract can name it (features never import
+   language).
+3. ONE SYMBOL SOURCE: `decls.symbol(d)` names every fn AND method
+   symbol (a method's owner rides its row); typing no longer
+   computes symbols, `MethodEntry.symbol` and lowering's two
+   constructions are gone, `method_symbol` left the contract.
+4. `Analysis` is a parsed program plus facts (`p`, resolution,
+   typing, decls, file); the six copied fields and the two bridge
+   verbs are gone.
+5. `lone_resolve` is gone — the resolver's tests read
+   `analyze_source(text).resolution`. `analyze`, `check`,
+   `analyze_source`, `parse_source` remain: each is a distinct seam
+   (a source, a report, a text, a parse).
+6. ONE CLI PROLOGUE: `on_program(args, act)` — a directory is a root
+   with no entry, a file is entered, no such file exits 2.
+7. THE SPLITS: typing is `typing.av` (the walk, the facts),
+   `typing_declare.av` (the rounds; the types annotations write),
+   `typing_impls.av` (traits, impls, methods, orphans); lowering is
+   `lower.av` (every file's bodies, one worklist), `lower_walk.av`
+   (one body's walk, the contexts, the entry's answer),
+   `lower_state.av` (registers, slots, values, captures, symbols).
+   Sibling files, one module, imports pruned to what each uses.
+8. REFUSED: merging the per-expression columns (`wants`/`hungry`/
+   `starved`, `widens`/`narrows`) into per-expression records. The
+   columns are the columnar layout — dense, allocation-free, sized
+   once by exprs.count() at ONE site — and a record per expression
+   would trade that for an allocation each. Alignment is by
+   construction, not by discipline. "No simpler."
+9. PATHS IN ONE PLACE: `core/paths.av` (dir_of, last_slash,
+   first_slash, under_dir); text ordering in `core/text.av`;
+   `.ends_with` where a hand scan was.
+10. A SOURCE ALWAYS HAS A NAME: `SourceFile.file: string`; the
+   nameless test source is `<source>`, which the renderer already
+   printed for null — no golden moved. `Loc.file` stays nullable:
+   a defect has no file.
+
+THE DB VISION (the questions asked with this round): the kernel is
+bookkeeping only — cells with deps, changed_at, verified_at, a
+value hash; VALUES live in typed family tables. Three tiers: in-
+process (now, one kernel per invocation); on-disk (15e: the cell
+graph plus the expensive family tables, content-addressed, mmap'd
+from `.avra/`, our own format — P14 — which is exactly why ids are
+interned: an interner persists); daemon (15e: the kernel in a
+long-lived process that is also the LSP, the CLI handing it input
+changes). What makes the tiers pay is per-ITEM granularity (15d): a
+signature query and a body query per declaration, early cutoff on
+the signature's hash, so editing a body re-verifies no caller.
+
+FOUND ON THE WAY, NOT MODULES: `match 2 { 2 -> … }` — an int
+LITERAL pattern does not parse ("expected `}` to close the match")
+— the match feature's literal patterns are unlanded; sugar
+backlog.
+
 ## Interior mutation & maps — rung 14 (designed 2026-09-01)
 
 Spec: Axis 11.1 (`mut` opts in), 11.5 (`let` is DEEPLY immutable;

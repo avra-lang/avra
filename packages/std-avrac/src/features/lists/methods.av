@@ -4,7 +4,7 @@
 //! because the row's `takes` said so.
 use core.{ExprId, TypeId, Type, Arrow, LambdaParts}
 use features.{TypeCx, MethodCall, spoken, this_is, accepts, wrong_argument, wrong_arity, slot_worthy, slice_promise, not_a_place_call, not_mut_call, TypeArgs, unmeasurable_empty}
-use diagnostics.{error_at, pointed}
+use diagnostics.{refusal}
 
 /// The empty literal takes the rows too — each rule refuses it in
 /// the walk's own words.
@@ -116,52 +116,33 @@ fn grow_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<Ex
 
 /// A walk on `[]` cannot know its elements.
 fn unknowable_walk(cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.list_element", cx.loc_of(e), "`[].${name}` cannot know its elements"),
-        "walked here")
-        with { help: "bind the list under a typed let first — `let xs: List<int> = []`" })
+    spoken(cx, refusal("type.list_element", cx.loc_of(e), "`[].${name}` cannot know its elements", "walked here", "bind the list under a typed let first — `let xs: List<int> = []`"))
 }
 
 fn misseated_walk(cx: TypeCx, name: string, a: ExprId, seats: int) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(a),
-            "`${name}` seats one param — the element — and this lambda takes ${seats}"),
-        "this lambda"))
+    spoken(cx, refusal("type.mismatch", cx.loc_of(a), "`${name}` seats one param — the element — and this lambda takes ${seats}", "this lambda", null))
 }
 
 fn uncollectable(cx: TypeCx, e: ExprId, answer: TypeId) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.list_scalar", cx.loc_of(e),
-            "`map` cannot collect `${cx.types.name_of(answer)}` yet"),
-        "this walk")
-        with { help: slice_promise("elements") })
+    spoken(cx, refusal("type.list_scalar", cx.loc_of(e), "`map` cannot collect `${cx.types.name_of(answer)}` yet", "this walk", slice_promise("elements")))
 }
 
 fn fnless_walk(cx: TypeCx, name: string, a: ExprId) -> TypeId {
     let n = cx.name_at(a)
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(a), "`${name}` wants a fn taking the element, found `${n}`"),
-        this_is(n)))
+    spoken(cx, refusal("type.mismatch", cx.loc_of(a), "`${name}` wants a fn taking the element, found `${n}`", this_is(n), null))
 }
 
 fn seat_not_element(cx: TypeCx, e: ExprId, name: string, elem: TypeId, arrow: Arrow) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(e),
-            "`${name}`'s fn takes the element `${cx.types.name_of(elem)}` — this one is `${cx.types.name_of(cx.types.intern(Type.Fn(arrow.seats, arrow.answer)))}`"),
-        "this call"))
+    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${name}`'s fn takes the element `${cx.types.name_of(elem)}` — this one is `${cx.types.name_of(cx.types.intern(Type.Fn(arrow.seats, arrow.answer)))}`", "this call", null))
 }
 
 /// A predicate walk's fn must answer bool.
 fn unpredicated(cx: TypeCx, e: ExprId, name: string, got: TypeId) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(e), "`${name}`'s fn must answer `bool`, this one answers `${cx.types.name_of(got)}`"),
-        "this call"))
+    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${name}`'s fn must answer `bool`, this one answers `${cx.types.name_of(got)}`", "this call", null))
 }
 
 fn one_fn_wanted(cx: TypeCx, e: ExprId, name: string, found: int) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(e), "`${name}` takes one fn, found ${found} arguments"),
-        "this call"))
+    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${name}` takes one fn, found ${found} arguments", "this call", null))
 }
 
 // ── The constructor and property rows' rules ──

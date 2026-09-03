@@ -6,8 +6,9 @@
 //! pass: `let` visibility is sequential and a later `let` shadows an
 //! earlier one; `fn` names are program-wide, so recursion and mutual
 //! recursion are free. Inside a body, params bind innermost.
-use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled}
-use diagnostics.{Diag, error_at, loc_at, pointed}
+use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled, DeclId, flatten}
+use diagnostics.{Diag, error_at, loc_at, pointed, refusal}
+use features.modules.{module_laws}
 use features.{ResolveCx, StmtResolveCx}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
@@ -47,6 +48,9 @@ export enum Binding {
     /// A pairing loop's INDEX — an int, the loop's own counter; the
     /// statement is the identity, beside its element binding.
     Index(stmt: StmtId)
+    /// A DECLARATION — a fn, a type, a trait — this file's or any
+    /// other's, by the table's identity; the scope resolved it.
+    Decl(decl: DeclId)
 }
 
 /// One lambda's capture set, in first-use order — the box's lane
@@ -59,7 +63,7 @@ export type Cap = { names: List<string>, sources: List<Binding> }
 /// the assigning STATEMENT, and the program-wide TYPE namespace.
 export type Resolution = {
     bindings: List<Binding?>,
-    type_defs: Map<string, StmtId>,
+    scope: Namespace,
     captures: List<Cap?>,
     diagnostics: List<Diag>,
 }
@@ -96,43 +100,37 @@ type LFrame = { lam: ExprId, params: List<string>, floor: int }
 
 type Resolver = {
     p: ParsedProgram,
+    scope: Namespace,
     all_defs: List<Def>,
     def_names: List<string>,
     visible: Map<string, Binding>,
     overlays: List<Map<string, Binding>>,
     lframes: List<LFrame>,
     captures: List<Cap?>,
-    fn_defs: Map<string, StmtId>,
-    fn_names: List<string>,
-    type_defs: Map<string, StmtId>,
-    type_names: List<string>,
     bindings: List<Binding?>,
     walked: List<bool>,
     scoped: List<bool>,
     diagnostics: List<Diag>,
 }
 
-export fn resolve(p: ParsedProgram) -> Resolution {
+export fn resolve(p: ParsedProgram, scope: Namespace) -> Resolution {
     let defs = defs_of(p.store, p.stmts)
     let r = Resolver {
-        p: p, all_defs: defs,
+        p: p, scope: scope, all_defs: defs,
         def_names: [d.name for d in defs],
         visible: {}, overlays: [], lframes: [],
         captures: filled<Cap?>(p.store.exprs.count(), null),
-        fn_defs: {}, fn_names: [],
-        type_defs: {}, type_names: [],
         bindings: filled<Binding?>(p.store.exprs.count(), null),
         walked: filled(p.store.exprs.count(), false),
         scoped: filled(p.store.stmts.count(), false),
         diagnostics: [],
     }
-    r.declare_fns()
-    r.declare_types()
+    r.name_laws()
     resolve_stmts(r, [], false, p.stmts)
     Resolution {
         bindings: r.bindings,
-        type_defs: r.type_defs, captures: r.captures,
-        diagnostics: r.diagnostics,
+        scope: scope, captures: r.captures,
+        diagnostics: flatten([scope.diagnostics, module_laws(p.store, p.source.file, p.stmts), r.diagnostics]),
     }
 }
 
@@ -330,12 +328,34 @@ fn index_of_name(names: List<string>, name: string) -> int? {
 }
 
 impl Resolver {
-    /// The program-wide fn namespace, gathered before any body walks
-    /// — a call may name a fn declared later.
-    fn declare_fns(self) {
+    /// A scoped name, whichever namespace holds it — a fn's before
+    /// a type's.
+    fn scope_named(self, name: string) -> DeclId? {
+        let as_fn: DeclId? = self.scope.fns.get(name)
+        if as_fn != null { return as_fn }
+        let as_type: DeclId? = self.scope.types.get(name)
+        as_type
+    }
+
+    /// The naming law over this file's declarations: keywords and
+    /// reserved words refuse as names, and a built-in type name
+    /// refuses at its declaration — it resolves to its SHAPE in
+    /// annotations and to the declaration everywhere else, one name
+    /// with two meanings. The scope already bound the names.
+    fn name_laws(self) {
         for s in self.p.stmts {
-            let name: string? = self.p.store.fn_parts(s)?.name
-            if name != null { self.declare_fn(name!, s) }
+            let fname: string? = self.p.store.fn_parts(s)?.name
+            if fname != null { let _ = self.refused_name(fname!, self.stmt_loc(s)) }
+            let tname: string? = self.p.store.type_decl_name(s)
+            if tname != null { self.type_name_law(tname!, s) }
+        }
+    }
+
+    fn type_name_law(self, name: string, s: StmtId) {
+        let at = self.stmt_loc(s)
+        if self.refused_name(name, at) { return }
+        if builtin_type_name(self.p.types, name) {
+            self.speak(refusal("resolve.builtin_type", at, "`${name}` is a built-in type", "declared here", "choose another name — `int`, `string` and `bool` are the language's"))
         }
     }
 
@@ -352,23 +372,6 @@ impl Resolver {
             return true
         }
         false
-    }
-
-    fn declare_fn(self, name: string, s: StmtId) {
-        let at = self.stmt_loc(s)
-        if self.refused_name(name, at) { return }
-        let prior: StmtId? = self.fn_defs.get(name)
-        if prior == null {
-            mut m = self.fn_defs
-            m.set(name, s)
-            mut ns = self.fn_names
-            ns.push(name)
-        } else {
-            self.speak(pointed(
-                error_at("resolve.duplicate_fn", at, "`${name}` is defined more than once"),
-                "redefined here")
-                with { help: "rename one of them" })
-        }
     }
 
     fn check_params(self, fparams: List<Param>, s: StmtId) {
@@ -395,6 +398,7 @@ impl Resolver {
         if later != null {
             // A loc-less frame renders no window — absence stays quiet.
             let defined = [Frame { label: "defined here", loc: self.stmt_loc(later!) }]
+            // LICENSED I28: the one voice with a SECOND frame — the definition's
             self.speak(pointed(
                 error_at("resolve.use_before_def", at, "`${name}` is used before its definition"),
                 "used here")
@@ -402,8 +406,7 @@ impl Resolver {
             return
         }
         self.speak(self.suggested(
-            pointed(error_at("resolve.unresolved", at, "`${name}` is not defined"),
-                "not defined anywhere in this program"),
+            refusal("resolve.unresolved", at, "`${name}` is not defined", "not defined anywhere in this program", null),
             e, name, self.def_names))
     }
 
@@ -417,53 +420,17 @@ impl Resolver {
         false
     }
 
-    /// The program-wide TYPE namespace, gathered like fns — an
-    /// annotation or literal may name a type declared later.
-    fn declare_types(self) {
-        for s in self.p.stmts {
-            let name: string? = self.p.store.type_decl_name(s)
-            if name != null { self.declare_type(name!, s) }
-        }
-    }
-
-    fn declare_type(self, name: string, s: StmtId) {
-        let at = self.stmt_loc(s)
-        if self.refused_name(name, at) { return }
-        // A built-in name resolves to its SHAPE in annotations and
-        // to the declaration everywhere else — one name, two
-        // meanings, and no error. It is refused at the declaration.
-        if builtin_type_name(self.p.types, name) {
-            self.speak(pointed(
-                error_at("resolve.builtin_type", at, "`${name}` is a built-in type"),
-                "declared here")
-                with { help: "choose another name — `int`, `string` and `bool` are the language's" })
-            return
-        }
-        let prior: StmtId? = self.type_defs.get(name)
-        if prior == null {
-            mut m = self.type_defs
-            m.set(name, s)
-            mut ns = self.type_names
-            ns.push(name)
-        } else {
-            self.speak(pointed(
-                error_at("resolve.duplicate_type", at, "`${name}` is declared more than once"),
-                "redeclared here")
-                with { help: "rename one of them" })
-        }
-    }
-
     /// A literal's type name resolves in the type namespace alone.
     fn resolve_type_use(self, e: ExprId, name: string) {
         if self.once(e) { return }
-        let found: StmtId? = self.type_defs.get(name)
+        let found: DeclId? = self.scope.types.get(name)
         if found != null {
-            self.bind_use(e, Binding.Def(found!))
+            self.bind_use(e, Binding.Decl(found!))
             return
         }
         self.speak(self.suggested(
-            pointed(error_at("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared"), "used here"),
-            e, name, self.type_names))
+            refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared", "used here", null),
+            e, name, self.scope.type_names))
     }
 
     /// A callee resolves in the fn namespace alone.
@@ -472,9 +439,9 @@ impl Resolver {
         // A keyword can never NAME a fn, so "no `fn if` is defined"
         // would offer a remedy the naming law itself forbids.
         if self.refused_name(name, self.loc_of(e)) { return }
-        let found: StmtId? = self.fn_defs.get(name)
+        let found: DeclId? = self.scope.fns.get(name)
         if found != null {
-            self.bind_use(e, Binding.Def(found!))
+            self.bind_use(e, Binding.Decl(found!))
             return
         }
         // no declared fn wears the name: the call may go through a
@@ -487,8 +454,8 @@ impl Resolver {
             return
         }
         self.speak(self.suggested(
-            pointed(error_at("resolve.unresolved", self.loc_of(e), "no `fn ${name}` is defined"), "called here"),
-            e, name, self.fn_names))
+            refusal("resolve.unresolved", self.loc_of(e), "no `fn ${name}` is defined", "called here", null),
+            e, name, self.scope.fn_names))
     }
 
     /// One use's resolved binding lands in the fact table.
@@ -505,12 +472,13 @@ impl Resolver {
     fn value_binding(self, name: string, param_names: List<string>) -> Binding? {
         let local: Binding? = self.local_binding(name, param_names)
         if local != null { return local }
-        let named_type: StmtId? = self.type_defs.get(name)
-        if named_type != null { return Binding.Def(named_type!) }
-        // a NAMED FN is a value too — global, so no capture chains
-        let f: StmtId? = self.fn_defs.get(name)
+        // a type's name, then a NAMED FN as a value — both global,
+        // so no capture chains
+        let named_type: DeclId? = self.scope.types.get(name)
+        if named_type != null { return Binding.Decl(named_type!) }
+        let f: DeclId? = self.scope.fns.get(name)
         if f == null { return null }
-        Binding.Def(f!)
+        Binding.Decl(f!)
     }
 
     /// The LOCAL half of the name chain, lambda-aware: the
@@ -590,27 +558,20 @@ impl Resolver {
         if b == null { return null }
         match b! {
             .Def(s) -> s,
-            .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+            .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
         }
     }
 
     fn unbound_pronoun(self, at: Loc) {
-        self.speak(pointed(
-            error_at("resolve.unresolved", at, "`it` rides a METHOD call's arguments — nothing binds it here"),
-            "the pronoun")
-            with { help: "inside `xs.map(…)` and friends `it` is the element; elsewhere, name the value" })
+        self.speak(refusal("resolve.unresolved", at, "`it` rides a METHOD call's arguments — nothing binds it here", "the pronoun", "inside `xs.map(…)` and friends `it` is the element; elsewhere, name the value"))
     }
 
     fn refuse_reserved(self, name: string, at: Loc?) {
-        self.speak(pointed(
-            error_at("resolve.reserved", at, "`${name}` is reserved for a future Avra feature"),
-            "cannot be a name")
-            with { help: "pick another name — `${name}` becomes a keyword" })
+        self.speak(refusal("resolve.reserved", at, "`${name}` is reserved for a future Avra feature", "cannot be a name", "pick another name — `${name}` becomes a keyword"))
     }
 
     fn refuse_keyword(self, name: string, at: Loc?) {
-        self.speak(pointed(error_at("resolve.reserved", at, "`${name}` is a keyword"), "cannot be a name")
-            with { help: "pick another name" })
+        self.speak(refusal("resolve.reserved", at, "`${name}` is a keyword", "cannot be a name", "pick another name"))
     }
 
     fn speak(self, d: Diag) {
@@ -647,10 +608,7 @@ impl Resolver {
     /// A pairing loop names its index and its element apart — one
     /// name for both would shadow one of them silently.
     fn paired_alike(self, s: StmtId, name: string) {
-        self.speak(pointed(
-            error_at("resolve.paired", self.stmt_loc(s), "`${name}` names both the index and the element"),
-            "bound here")
-            with { help: "give the index its own name — `for i, ${name} in …`" })
+        self.speak(refusal("resolve.paired", self.stmt_loc(s), "`${name}` names both the index and the element", "bound here", "give the index its own name — `for i, ${name} in …`"))
     }
 
     fn bind_checked(self, s: StmtId) {

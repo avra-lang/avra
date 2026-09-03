@@ -1,24 +1,23 @@
-//! `avra check` — report everything wrong with a source file.
+//! `avra check` — report everything wrong with a source file, or
+//! with every file of a package root.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.language.{avra}
-use @std.avrac.diagnostics.{SourceFile}
+use @std.avrac.language.{Program}
 
 type CheckCmd = { }
 
 impl Runnable for CheckCmd {
     fn run(self, args: CliResult) -> int {
-        let src: SourceFile? = source_arg(args)
-        if src == null { return 2 }
-        let out = avra().check(src!)
-        if out != "" {
-            println(out)
-            return 1
-        }
-        0
+        on_program(args, (p: Program) -> {
+            let t0 = avra_now_ns()
+            let out = p.check()
+            if timed(args) { eprintln(timings(p, "lower", avra_now_ns() - t0)) }
+            if out != "" { println(out) }
+            if out == "" { 0 } else { 1 }
+        })
     }
 }
 
 export fn check_command() -> Subcommand {
     let body: CheckCmd = CheckCmd { }
-    Subcommand { meta: file_command("check", "Report everything wrong with a source file"), body: body }
+    Subcommand { meta: file_command("check", "Report everything wrong with a source file or a package root"), body: body }
 }

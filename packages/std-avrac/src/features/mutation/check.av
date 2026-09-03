@@ -4,7 +4,7 @@
 //! value ACCEPTED by it with widening recorded like every slot's.
 use core.{StmtId, ExprId, TypeId, TypeRef}
 use features.{StmtTypeCx, accepts, declared_binding, this_is, refuses_type_value, refuses_void_value, place_lawful}
-use diagnostics.{error_at, pointed}
+use diagnostics.{refusal}
 
 export fn check_mut(cx: StmtTypeCx, s: StmtId) {
     let held: ExprId? = cx.store.stmt_value(s)
@@ -61,8 +61,5 @@ fn slot_refused(cx: StmtTypeCx, s: StmtId, t: ExprId, want: TypeId, v: ExprId) {
     let root: ExprId? = cx.store.place_root(t)
     let named = if root == null { "this place" } else { "`${cx.store.ident_name(root!) ?? "this place"}`" }
     let spot = if cx.store.ident_name(t) == null { "a slot of ${named}" } else { named }
-    cx.expr.emit(pointed(
-        error_at("type.mismatch", cx.loc_of(s),
-            "assignment changes ${spot}: `${cx.expr.types.name_of(want)}` to `${gn}`"),
-        this_is(gn)))
+    cx.expr.emit(refusal("type.mismatch", cx.loc_of(s), "assignment changes ${spot}: `${cx.expr.types.name_of(want)}` to `${gn}`", this_is(gn), null))
 }

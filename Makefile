@@ -70,7 +70,7 @@ clean:
 	rm -rf build
 	find packages corpus -name "*.avra-sha256" -delete
 	find packages corpus -name "*.av.ll" -delete
-	find corpus -type f ! -name "*.av" ! -name "*.expected" -delete
+	find corpus -type f ! -name "*.av" ! -name "*.expected" ! -name "expected" ! -name "avra.toml" -delete
 	rm -rf packages/*/build
 
 check: $(RUNTIME_OBJS)
@@ -91,6 +91,8 @@ build-native: $(RUNTIME_OBJS)
 # The corpus gate: every corpus/*.av must say its .expected — first
 # through the evaluator, then through the native binary. A feature's
 # end-to-end proof is one tiny program plus one tiny expected file.
+# A PACKAGE proves the same as corpus/<name>/main.av (its avra.toml
+# marks the root) beside corpus/<name>/expected.
 corpus: $(RUNTIME_OBJS)
 	@for f in corpus/*.av; do \
 	  ./avra run $$f > /tmp/avra-corpus-eval.out 2>&1 \
@@ -103,6 +105,19 @@ corpus: $(RUNTIME_OBJS)
 	  diff $${f%.av}.expected /tmp/avra-corpus-native.out \
 	    || { echo "$$f: native != expected"; exit 1; }; \
 	  echo "$$f: eval == native == expected"; \
+	done
+	@for d in corpus/*/; do \
+	  d=$${d%/}; [ -f $$d/main.av ] || continue; \
+	  ./avra run $$d/main.av > /tmp/avra-corpus-eval.out 2>&1 \
+	    || { echo "$$d: eval FAILED"; cat /tmp/avra-corpus-eval.out; exit 1; }; \
+	  diff $$d/expected /tmp/avra-corpus-eval.out \
+	    || { echo "$$d: eval != expected"; exit 1; }; \
+	  ./avra build $$d/main.av > /tmp/avra-bin.path 2>&1 \
+	    || { echo "$$d: build FAILED"; cat /tmp/avra-bin.path; exit 1; }; \
+	  $$(cat /tmp/avra-bin.path) > /tmp/avra-corpus-native.out; \
+	  diff $$d/expected /tmp/avra-corpus-native.out \
+	    || { echo "$$d: native != expected"; exit 1; }; \
+	  echo "$$d: eval == native == expected"; \
 	done
 
 # The idiom bar: the baseline LISTS sites and only ever shrinks —

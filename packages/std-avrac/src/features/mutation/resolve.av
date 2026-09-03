@@ -4,7 +4,7 @@
 //! resolves like any expression.
 use core.{StmtId, ExprId}
 use features.{StmtResolveCx}
-use diagnostics.{error_at, pointed}
+use diagnostics.{refusal}
 use @std.errors.{Loc}
 
 export fn resolve_assign(cx: StmtResolveCx, s: StmtId) {
@@ -29,26 +29,17 @@ export fn resolve_assign(cx: StmtResolveCx, s: StmtId) {
 // ── The voices ──
 
 fn not_a_place(cx: StmtResolveCx, at: Loc?) {
-    cx.emit(pointed(
-        error_at("resolve.place", at, "a mutation lands on a place — a name, a field, or an index"),
-        "assigned here")
-        with { help: "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding" })
+    cx.emit(refusal("resolve.place", at, "a mutation lands on a place — a name, a field, or an index", "assigned here", "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding"))
 }
 
 fn immutable_param(cx: StmtResolveCx, n: string, at: Loc?) {
-    cx.emit(pointed(
-        error_at("resolve.immutable", at, "`${n}` is a parameter — parameters are immutable"),
-        "assigned here"))
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is a parameter — parameters are immutable", "assigned here", null))
 }
 
 fn immutable_index(cx: StmtResolveCx, n: string, at: Loc?) {
-    cx.emit(pointed(
-        error_at("resolve.immutable", at, "`${n}` is a loop index — it counts, it is not assigned"),
-        "assigned here")
-        with { help: "bind a `mut` copy to change — `mut k = ${n}`" })
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is a loop index — it counts, it is not assigned", "assigned here", "bind a `mut` copy to change — `mut k = ${n}`"))
 }
 
 fn not_mut(cx: StmtResolveCx, n: string, at: Loc?) {
-    cx.emit(pointed(error_at("resolve.immutable", at, "`${n}` is not `mut`"), "assigned here")
-        with { help: "declare it `mut ${n} = ...` to mutate it — or build a changed copy with `with`" })
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is not `mut`", "assigned here", "declare it `mut ${n} = ...` to mutate it — or build a changed copy with `with`"))
 }

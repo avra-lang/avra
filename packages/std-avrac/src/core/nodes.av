@@ -15,6 +15,37 @@ export type ExprId = { index: int }
 /// Typed index into the statement arena.
 export type StmtId = { index: int }
 
+/// A DECLARATION's identity across the workspace — a fn, type, enum,
+/// trait or method — minted once per declaration; every type shape
+/// that names a declaration carries it, never a file-local StmtId.
+/// In a lone file the two coincide; the workspace makes them differ.
+export type DeclId = { index: int }
+
+/// Declaration identity — one id, one declaration.
+export fn same_decl(a: DeclId, b: DeclId) -> bool {
+    // LICENSED I9: declaration identity, not type agreement — ids compare by index
+    a.index == b.index
+}
+
+/// A FILE's identity across the workspace — minted once per path,
+/// before its parse.
+export type FileId = { index: int }
+
+export fn same_file(a: FileId, b: FileId) -> bool {
+    // LICENSED I9: file identity, not type agreement — ids compare by index
+    a.index == b.index
+}
+
+/// What a declaring statement declares. A Method is an impl's or a
+/// trait's fn, minted under its owner.
+export enum DeclKind {
+    Fn
+    Record
+    Enum
+    Trait
+    Method
+}
+
 /// The binary operators. And/Or are LAZY — their owner evaluates
 /// and lowers them as control; every other op is an eager Bin.
 export enum BinOp { Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge, And, Or }
@@ -205,6 +236,9 @@ export enum PlaceStep {
     At(subject: ExprId, index: ExprId)
 }
 
+/// A `use` statement's projection: the path, the items, the site.
+export type UseParts = { path: List<string>, items: List<string>, stmt: StmtId }
+
 export enum Stmt {
     /// `let name = v`, optionally `let name: T = v` — the written
     /// type, when declared, is what the binding HOLDS; the value
@@ -259,6 +293,9 @@ export enum Stmt {
     For(name: string, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>)
     /// `for name in xs { … }` — the ELEMENT walk: `name` binds each
     /// element in turn, in its own scope per iteration.
+    /// `use a.b.{x, y}` — the path's segments (a `@pkg` head kept
+    /// as written) and the items brought into scope.
+    Use(path: List<string>, items: List<string>)
     /// `for x in xs` — or `for i, x in xs`, the index beside the
     /// element, the loop's own counter with a name.
     ForEach(index: string?, name: string, subject: ExprId, stmts: List<StmtId>)
@@ -279,12 +316,13 @@ export type NodeStore = {
     expr_fingerprints: List<int>,
     stmts: Arena<Stmt>,
     stmt_fingerprints: List<int>,
+    exported: List<bool>,
 }
 
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena<Expr>(), expr_fingerprints: [],
-        stmts: new_arena<Stmt>(), stmt_fingerprints: [],
+        stmts: new_arena<Stmt>(), stmt_fingerprints: [], exported: [],
     }
 }
 
@@ -300,7 +338,28 @@ impl NodeStore {
     fn alloc_stmt(self, s: Stmt, span: Span?) -> StmtId {
         mut fingerprints = self.stmt_fingerprints
         fingerprints.push(self.fingerprint_stmt(s))
+        mut ex = self.exported
+        ex.push(false)
         StmtId { index: self.stmts.add(s, span) }
+    }
+
+    /// `export` crossed this declaration — the module's surface
+    /// carries it.
+    fn mark_exported(self, s: StmtId) {
+        mut ex = self.exported
+        ex.set(s.index, true)
+    }
+
+    fn is_exported(self, s: StmtId) -> bool {
+        self.exported[s.index]
+    }
+
+    /// A `use` statement's parts, when the statement is one.
+    fn use_parts(self, s: StmtId) -> UseParts? {
+        match self.stmt(s) {
+            .Use(path, items) -> UseParts { path: path, items: items, stmt: s },
+            _ -> null,
+        }
     }
 
     fn expr(self, id: ExprId) -> Expr { self.exprs.node_at(id.index) }
@@ -522,6 +581,7 @@ impl NodeStore {
             .For(name, from, to, _, _, stmts) ->
                 fp(18, [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to)].concat(self.stmt_fps(stmts))),
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
+            .Use(path, items) -> fp(50, [fp_str(p) for p in path].concat([fp_str(i) for i in items])),
             .ForEach(index, name, subject, stmts) ->
                 fp(42, [fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
             .Error -> fp(7, []),
@@ -588,7 +648,7 @@ fn fp_mix(h: int, v: int) -> int {
     (h * 131 + nv + 7) % 1000000007
 }
 
-fn fp_str(s: string) -> int {
+export fn fp_str(s: string) -> int {
     mut h = 0
     mut i = 0
     // A string's `.length` is `strlen`: asked once, not per character.

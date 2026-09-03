@@ -12,6 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 // All functions use the avra_llvm_* naming convention matching
@@ -1543,4 +1546,55 @@ int64_t avra_llvm_emit_object(LLVMModuleRef module, const char* output_path) {
 
     LLVMDisposeTargetMachine(tm);
     return 0;
+}
+
+// ── Host: the filesystem the compiler asks about ────────────────
+
+static int name_order(const void* a, const void* b) {
+    return strcmp(*(const char* const*)a, *(const char* const*)b);
+}
+
+// The names in a directory, newline-joined, in BYTE order — the
+// same on every machine; "" when the path is not a directory.
+const char* avra_host_list_dir(const char* path) {
+    DIR* d = opendir(path);
+    if (!d) return "";
+    size_t cap = 64, count = 0;
+    char** names = (char**)malloc(cap * sizeof(char*));
+    struct dirent* e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        if (count == cap) { cap *= 2; names = (char**)realloc(names, cap * sizeof(char*)); }
+        names[count++] = strdup(e->d_name);
+    }
+    closedir(d);
+    qsort(names, count, sizeof(char*), name_order);
+    size_t len = 0;
+    for (size_t i = 0; i < count; i++) len += strlen(names[i]) + 1;
+    char* out = (char*)malloc(len + 1);
+    size_t at = 0;
+    for (size_t i = 0; i < count; i++) {
+        size_t n = strlen(names[i]);
+        memcpy(out + at, names[i], n);
+        at += n;
+        out[at++] = '\n';
+        free(names[i]);
+    }
+    out[at] = 0;
+    free(names);
+    return out;
+}
+
+// 1 when the path is a directory.
+int64_t avra_host_is_dir(const char* path) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+/* A monotonic clock in nanoseconds — the phase profiler's ruler. */
+int64_t avra_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }

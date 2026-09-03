@@ -1,0 +1,479 @@
+//! THE WORKSPACE — many files, one program, driven by the query
+//! kernel. A module is a DIRECTORY (its `.av` files, one namespace)
+//! or, absent that, a file; paths are absolute from the package
+//! root, `.`-joined. Every step is a family of queries over the Db,
+//! keyed by FileId: `source` (an input), `parsed` (pure, per file),
+//! `items` (the declarations a file mints into THE table, decls.av),
+//! and `analyzed` (every file typed against every other — the four
+//! declaration rounds across all files before any body — ONE cell
+//! whose deps are every parse and item table it read). `surface` and
+//! a file's namespace derive from `items`. The host is a record of fns, so
+//! tests hand in memory and the CLI hands in the disk.
+use features.{Decls, new_decls, kind_word, FileInfo, Decl}
+use core.{ModulePath, module_path, DeclId, FileId, StmtId, UseParts, fp_str, joined, flatten, dir_of, sorted_texts, first_slash, under_dir}
+use diagnostics.{SourceFile, new_source_file, Diag, error_at, pointed, loc_at, render_among, refusal}
+use query.{Db, new_db, Key}
+use @std.errors.{Loc}
+
+/// The filesystem, as four questions.
+export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool }
+
+/// A host over an in-memory file table — the tests' host.
+export fn memory_host(files: Map<string, string>, names: List<string>) -> Host {
+    Host {
+        exists: (p: string) -> files.get(p) != null,
+        read: (p: string) -> files.get(p) ?? "",
+        list: (dir: string) -> children_of(names, dir),
+        is_dir: (dir: string) -> names.any(under_dir(it, dir)),
+    }
+}
+
+/// The direct children of `dir` among `names` — the base names, in
+/// byte order like the disk host's.
+fn children_of(names: List<string>, dir: string) -> List<string> {
+    mut out: List<string> = []
+    for n in names {
+        if under_dir(n, dir) {
+            let rest = n.substring(dir.length + 1, n.length)
+            let cut: int = first_slash(rest)
+            let child = if cut < 0 { rest } else { rest.substring(0, cut) }
+            if !out.contains(child) { out.push(child) }
+        }
+    }
+    sorted_texts(out)
+}
+
+/// `programs`, `file_items` are the families' value tables, dense by
+/// FileId; `analyses` is the one `analyzed` cell's value.
+export type Workspace = {
+    host: Host,
+    root: string,
+    lang: Language,
+    db: Db,
+    decls: Decls,
+    programs: List<ParsedProgram?>,
+    file_items: List<List<DeclId>?>,
+    analyses: List<List<Analysis>?>,
+    defects: List<Diag>,
+    clock: fn() -> int,
+    phases: List<Phase>,
+}
+
+/// One timed phase, in nanoseconds of the workspace's clock.
+export type Phase = { name: string, ns: int }
+
+// The families' keys: numbers by registration order in
+// `timed_workspace`, args by FileId.
+fn source_key(arg: int) -> Key { Key { family: 0, arg: arg } }
+fn parsed_key(arg: int) -> Key { Key { family: 1, arg: arg } }
+fn items_key(arg: int) -> Key { Key { family: 2, arg: arg } }
+fn analyzed_key() -> Key { Key { family: 3, arg: 0 } }
+
+export fn new_workspace(host: Host, root: string, lang: Language) -> Workspace {
+    timed_workspace(host, root, lang, () -> 0)
+}
+
+/// A workspace that times its phases by the given clock (nanoseconds).
+export fn timed_workspace(host: Host, root: string, lang: Language, clock: fn() -> int) -> Workspace {
+    let ws = Workspace {
+        host: host, root: root, lang: lang, db: new_db(), decls: new_decls(),
+        programs: [], file_items: [], analyses: [null], defects: [],
+        clock: clock, phases: [],
+    }
+    let _ = ws.db.family((arg: int) -> verified_source(ws, arg))
+    let _ = ws.db.family((arg: int) -> verified_parse(ws, arg))
+    let _ = ws.db.family((arg: int) -> verified_items(ws, arg))
+    let _ = ws.db.family((arg: int) -> verified_analyzed(ws, arg))
+    ws
+}
+
+/// A family's arg, as the file it keys by.
+fn file_at(arg: int) -> FileId {
+    FileId { index: arg }
+}
+
+// The verifiers: re-fetch, then answer the cell's changed_at.
+fn verified_source(ws: Workspace, arg: int) -> int {
+    let _ = source(ws, file_at(arg))
+    ws.db.changed_at(source_key(arg))
+}
+
+fn verified_parse(ws: Workspace, arg: int) -> int {
+    let _ = parsed(ws, file_at(arg))
+    ws.db.changed_at(parsed_key(arg))
+}
+
+fn verified_items(ws: Workspace, arg: int) -> int {
+    let _ = items(ws, file_at(arg))
+    ws.db.changed_at(items_key(arg))
+}
+
+// LICENSED I23: the kernel's verifier contract carries an arg the one-cell family never keys by
+fn verified_analyzed(ws: Workspace, arg: int) -> int {
+    let _ = analyze_all(ws)
+    ws.db.changed_at(analyzed_key())
+}
+
+impl Workspace {
+    fn timed(self, name: string, ns: int) {
+        mut ps = self.phases
+        ps.push(Phase { name: name, ns: ns })
+    }
+
+    fn defect(self, message: string) {
+        mut ds = self.defects
+        ds.push(error_at("language.defect", null, message))
+    }
+}
+
+// ── The families ──
+
+/// A path's identity — the table mints it at first mention; the
+/// value tables grow to hold it.
+export fn file_id(ws: Workspace, path: string) -> FileId {
+    let f = ws.decls.file_id(path, module_of(ws, path))
+    // LICENSED I3: the value tables grown in place to the new id
+    mut ps = ws.programs
+    while ps.length <= f.index { ps.push(null) }
+    mut fi = ws.file_items
+    while fi.length <= f.index { fi.push(null) }
+    f
+}
+
+/// An INPUT: the file's text, hashed; the revision moves only when
+/// the text did.
+export fn source(ws: Workspace, f: FileId) -> SourceFile {
+    let path = ws.decls.file(f).path
+    let text = ws.host.read(path)
+    let key = source_key(f.index)
+    ws.db.set_input(key, fp_str(text))
+    ws.db.record_dep(key)
+    new_source_file(path, text)
+}
+
+/// The file parsed — pure in its text.
+export fn parsed(ws: Workspace, f: FileId) -> ParsedProgram {
+    let key = parsed_key(f.index)
+    if ws.db.ask(key) is .Reuse {
+        let held: ParsedProgram = ws.programs[f.index]!
+        return held
+    }
+    ws.db.begin(key)
+    let p = parse_program(ws.lang, source(ws, f))
+    ws.db.settle(key, program_hash(p))
+    mut ps = ws.programs
+    ps.set(f.index, p)
+    p
+}
+
+/// A program's fingerprint — the fold of its statements'.
+fn program_hash(p: ParsedProgram) -> int {
+    mut h = 17
+    for s in p.stmts { h = h * 31 + p.store.stmt_fingerprint(s) }
+    h
+}
+
+/// The declarations a file MINTS into the one table; the answer's
+/// hash is the item tree's — names and kinds.
+export fn items(ws: Workspace, f: FileId) -> List<DeclId> {
+    let key = items_key(f.index)
+    if ws.db.ask(key) is .Reuse {
+        let held: List<DeclId> = ws.file_items[f.index] ?? []
+        return held
+    }
+    ws.db.begin(key)
+    let ids = admitted(ws, f)
+    mut h = 7
+    for d in ids {
+        let x = decl_at(ws, d)
+        h = h * 31 + fp_str("${x.name}/${kind_word(x.kind)}/${x.exported}")
+    }
+    ws.db.settle(key, h)
+    mut fi = ws.file_items
+    fi.set(f.index, ids)
+    ids
+}
+
+/// A file's parse admitted to the table.
+fn admitted(ws: Workspace, f: FileId) -> List<DeclId> {
+    let p = parsed(ws, f)
+    ws.decls.admit(f, p.store, p.stmts)
+}
+
+/// The declaration behind an id.
+export fn decl_at(ws: Workspace, d: DeclId) -> Decl {
+    ws.decls.decl(d)
+}
+
+/// A declaration's file path.
+fn path_of(ws: Workspace, d: DeclId) -> string {
+    ws.decls.file(ws.decls.decl(d).file).path
+}
+
+// ── Modules ──
+
+/// A path as the user reads it: relative to the root.
+fn shown(ws: Workspace, path: string) -> string {
+    if under_dir(path, ws.root) { return path.substring(ws.root.length + 1, path.length) }
+    path
+}
+
+/// The module a file belongs to: its directory under the root,
+/// `.`-joined; "" for a file at the root.
+export fn module_of(ws: Workspace, path: string) -> string {
+    dir_of(shown(ws, path)).replace("/", ".")
+}
+
+/// The files a module path names: a directory's `.av` files, else
+/// the one file, else nothing (the module does not exist).
+export fn module_files(ws: Workspace, m: ModulePath) -> List<string> {
+    let dir = m.dir_under(ws.root)
+    if ws.host.is_dir(dir) {
+        return [ "${dir}/${f}" for f in ws.host.list(dir) if f.ends_with(".av") ]
+    }
+    let file = m.file_under(ws.root)
+    if ws.host.exists(file) { return [file] }
+    []
+}
+
+/// Every `.av` file under a directory, recursively — `check <root>`.
+export fn all_files(ws: Workspace, dir: string) -> List<string> {
+    mut out: List<string> = []
+    for f in ws.host.list(dir) {
+        let full = "${dir}/${f}"
+        if ws.host.is_dir(full) {
+            out = out.concat(all_files(ws, full))
+        } else if f.ends_with(".av") {
+            out.push(full)
+        }
+    }
+    out
+}
+
+/// A module's exported declarations, in file and declaration order.
+fn exported_decls(ws: Workspace, m: ModulePath) -> List<Decl> {
+    [decl_at(ws, id) for id in flatten([items(ws, file_id(ws, f)) for f in module_files(ws, m)]) if is_exported(ws, id)]
+}
+
+fn is_exported(ws: Workspace, id: DeclId) -> bool {
+    decl_at(ws, id).exported
+}
+
+/// A module's exported names.
+export fn surface(ws: Workspace, m: ModulePath) -> Map<string, DeclId> {
+    mut out: Map<string, DeclId> = {}
+    for d in exported_decls(ws, m) { out.set(d.name, d.id) }
+    out
+}
+
+/// A file's namespace: its module's declarations (its own included,
+/// in file then declaration order) and its imports — with what the
+/// `use` lines earned, then what binding earned.
+export fn namespace_of_file(ws: Workspace, f: FileId) -> Namespace {
+    let p = parsed(ws, f)
+    let m = module_path(segments_of(ws.decls.file(f).module))
+    let module_decls: List<DeclId> = flatten([items(ws, file_id(ws, s)) for s in module_files(ws, m)])
+    mut imports: List<Import> = []
+    mut diags: List<Diag> = []
+    for u in use_lines(p) {
+        let line = imported_line(ws, p, u)
+        imports = imports.concat(line.imports)
+        diags = diags.concat(line.diagnostics)
+    }
+    let names = namespace_of(ws.decls, f, module_decls, imports, (path: string) -> shown(ws, path))
+    names with { diagnostics: diags.concat(names.diagnostics) }
+}
+
+fn use_lines(p: ParsedProgram) -> List<UseParts> {
+    mut out: List<UseParts> = []
+    for s in p.stmts {
+        let u: UseParts? = p.store.use_parts(s)
+        if u != null { out.push(u!) }
+    }
+    out
+}
+
+/// What one `use` line brought in, and what it earned.
+type Imported = { imports: List<Import>, diagnostics: List<Diag> }
+
+/// One `use a.b.{x, y}`: the module must exist and be one thing,
+/// each item must be exported by it and listed once.
+fn imported_line(ws: Workspace, p: ParsedProgram, u: UseParts) -> Imported {
+    let at = loc_at(p.source.file, p.store.stmt_span(u.stmt))
+    let m = module_path(u.path)
+    if m.package() != null { return Imported { imports: [], diagnostics: [package_later(at, m)] } }
+    if ambiguous_module(ws, m) { return Imported { imports: [], diagnostics: [module_ambiguous(at, m)] } }
+    if module_files(ws, m).is_empty() { return Imported { imports: [], diagnostics: [no_module(at, m)] } }
+    let surf = surface(ws, m)
+    mut imports: List<Import> = []
+    mut diags: List<Diag> = []
+    mut listed: List<string> = []
+    for item in u.items {
+        let id: DeclId? = surf.get(item)
+        if listed.contains(item) {
+            diags.push(listed_twice(at, item))
+        } else if id == null {
+            diags.push(not_exported(at, m, item, exported_names(ws, m)))
+        } else {
+            imports.push(Import { decl: id!, at: at, from: m.text() })
+        }
+        listed.push(item)
+    }
+    Imported { imports: imports, diagnostics: diags }
+}
+
+/// A name that is both a directory and a file under the root.
+fn ambiguous_module(ws: Workspace, m: ModulePath) -> bool {
+    ws.host.is_dir(m.dir_under(ws.root)) && ws.host.exists(m.file_under(ws.root))
+}
+
+fn exported_names(ws: Workspace, m: ModulePath) -> List<string> {
+    [d.name for d in exported_decls(ws, m)]
+}
+
+fn segments_of(dotted_text: string) -> List<string> {
+    if dotted_text.length == 0 { return [] }
+    dotted_text.split(".")
+}
+
+// ── The whole program, typed together ──
+
+/// Every file typed against every other: one shared table, the four
+/// declaration rounds across all files, then bodies — a signature in
+/// any file may name any file's types. Every file is admitted first;
+/// the analyses ride in FileId order. ONE cell, keyed 0: an edit
+/// anywhere recomputes it; nothing else does.
+export fn analyze_all(ws: Workspace) -> List<Analysis> {
+    let key = analyzed_key()
+    let verdict = ws.db.ask(key)
+    if verdict is .Cycle { ws.defect("the program asked for itself while being analyzed") }
+    if !(verdict is .Compute) {
+        let held: List<Analysis> = ws.analyses[0] ?? []
+        return held
+    }
+    ws.db.begin(key)
+    let t0 = ws.clock()
+    for f in all_files(ws, ws.root) { let _ = items(ws, file_id(ws, f)) }
+    let staged = [staged_file(ws, fi) for fi in ws.decls.files]
+    let t1 = ws.clock()
+    let out = typed_together(ws.lang, staged, ws.decls)
+    ws.timed("parse+resolve", t1 - t0)
+    ws.timed("type", ws.clock() - t1)
+    ws.db.settle(key, ws.db.revision())
+    mut held = ws.analyses
+    held.set(0, out)
+    out
+}
+
+fn staged_file(ws: Workspace, fi: FileInfo) -> Staged {
+    let p = parsed(ws, fi.id)
+    let r = resolve(p, namespace_of_file(ws, fi.id))
+    Staged { p: p, r: r, t: typer(p, r, ws.decls, fi.id) }
+}
+
+/// One file's analysis, typed with everything it sees.
+export fn analyze_file(ws: Workspace, path: string) -> Analysis {
+    analyze_all(ws).find(it.p.source.file == path)!
+}
+
+// ── The program ──
+
+/// A whole program: every file analyzed together, and the entry
+/// among them (none when the program is only checked). It answers
+/// as a lone Analysis does — report, lowered, run — so every engine
+/// takes either.
+export type Program = { files: List<Analysis>, entry: int?, phases: List<Phase>, cache: string, defects: List<Diag> }
+
+/// A lone file as a program of one.
+export fn lone_program(a: Analysis) -> Program {
+    Program { files: [a], entry: 0, phases: [], cache: "", defects: [] }
+}
+
+/// The program rooted at `ws.root`, entered at one of its files.
+export fn program(ws: Workspace, entry: string?) -> Program {
+    let files = analyze_all(ws)
+    let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
+    Program { files: files, entry: at, phases: ws.phases, cache: ws.db.stats(), defects: ws.defects }
+}
+
+fn index_of_file(files: List<Analysis>, path: string) -> int? {
+    for (i, a) in files.enumerate() {
+        if a.p.source.file == path { return i }
+    }
+    null
+}
+
+fn unclean(a: Analysis) -> bool {
+    !a.clean()
+}
+
+impl Program {
+    /// The entry file's analysis — absent for a program only checked.
+    fn entry_file(self) -> Analysis? {
+        if self.entry == null { return null }
+        self.files[self.entry!]
+    }
+
+    fn clean(self) -> bool { self.defects.is_empty() && !self.files.any(unclean(it)) }
+
+    /// Every file's diagnostics rendered, the workspace's defects
+    /// last; "" means clean.
+    fn report(self) -> string {
+        let files = [a.report() for a in self.files if unclean(a)]
+        let all: List<string> = if self.defects.is_empty() { files } else { files.concat([self.rendered(self.defects)]) }
+        joined(all, "\n\n")
+    }
+
+    /// Diagnostics rendered over every file's source — a frame's
+    /// window comes from the file its Loc names.
+    fn rendered(self, ds: List<Diag>) -> string {
+        let sources = [a.p.source for a in self.files]
+        joined([render_among(d, self.files[0].codes, sources) for d in ds], "\n\n")
+    }
+
+    /// The program as IR, memory strategy applied.
+    fn lowered(self) -> Lowered { memory(lower_all(self.files, self.entry)) }
+
+    /// The lowered program, CHECKED — every file's analysis first,
+    /// then lowering's own refusals.
+    fn lowered_checked(self) -> Result<Lowered, string> {
+        if !self.clean() { return Result.Err(self.report()) }
+        let lo = self.lowered()
+        if !lo.diagnostics.is_empty() { return Result.Err(self.rendered(lo.diagnostics)) }
+        Result.Ok(lo)
+    }
+
+    fn run(self) -> Result<string, string> {
+        run_lowered(self.lowered_checked()?)
+    }
+
+    /// Everything wrong, rendered; "" means clean.
+    fn check(self) -> string {
+        if !self.clean() { return self.report() }
+        self.rendered(self.lowered().diagnostics)
+    }
+}
+
+// ── voices ──
+
+fn package_later(at: Loc?, m: ModulePath) -> Diag {
+    refusal("resolve.package_later", at, "`${m.text()}` names a package — packages arrive with slice 15b", "in this use", null)
+}
+
+fn no_module(at: Loc?, m: ModulePath) -> Diag {
+    refusal("resolve.no_module", at, "no module `${m.text()}` under the package root", "in this use", "a module is a directory of `.av` files or one `.av` file, named from the root — `${m.dir_under("")}` was looked for")
+}
+
+fn not_exported(at: Loc?, m: ModulePath, item: string, exports: List<string>) -> Diag {
+    refusal("resolve.not_exported", at, "`${m.text()}` does not export `${item}`", "in this use", "its exports: ${joined(exports, ", ")}")
+}
+
+fn module_ambiguous(at: Loc?, m: ModulePath) -> Diag {
+    refusal("resolve.module_ambiguous", at, "`${m.text()}` is both a directory and a file under the root", "in this use", "a module is one or the other — keep `${m.dir_under("")}/` or `${m.dir_under("")}.av`")
+}
+
+
+fn listed_twice(at: Loc?, item: string) -> Diag {
+    refusal("resolve.import_clash", at, "`${item}` is listed twice", "in this use", null)
+}
+

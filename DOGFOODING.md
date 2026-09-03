@@ -40,7 +40,7 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I25 I26.
+Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I25 I26 I28.
 I12 came BACK from unratcheted once its regex was repaired: it had
 been reading `if x is .Error { return ... }` as a struct literal,
 so it was retired for false positives that were the rule's fault,
@@ -293,7 +293,11 @@ reintroducing I3's blind spot names the two spellings it lost.
       loop and the closing walk had each been hand-spelled three
       times before the extraction. A fourth generic surface joins
       by calling the verbs, never re-spelling the walks.
-- I28 a LAW that assembles PROSE. A `spoken(cx, pointed(error_at(…`
+- I28 a LAW that assembles PROSE. RATCHETED since the second cruft
+      round: every refusal is ONE call, `refusal(kind, at, message,
+      label, help)` (diagnostics/mod.av) — 173 hand assemblies became
+      that call, and `pointed(error_at(` outside the constructor is
+      the greppable smell. A `spoken(cx, pointed(error_at(…`
       block inline in a rule body drowns the law in ceremony: the
       guard ladder in enums' variant_lit_type was 32 lines, 24 of
       them wording. The idiomatic form: every refusal is a NAMED
@@ -990,6 +994,18 @@ and runtime dispatch are the host twins of runtime/avra_runtime.c,
 refusal wording included. (The earlier "values are literal nodes"
 tree-walking evaluator was RETIRED by the north star's L3 collapse
 — its whole per-feature eval.av layer died with it.)
+
+## A refused declaration still declares
+
+A declaration the checker REFUSES (an orphan impl, an impl of an
+undeclared type, a selfless method) still lands a signature — every
+param a hole, the answer a hole — so every later walk stays total:
+the body walk reads `self` from a real param list, the fn loop
+finds a sig, mono finds a home. The alternative was found as a
+crash: `impl Pair` on another module's type spoke its refusal and
+then the body walk indexed an empty param list. One mistake, one
+message, no crash downstream — `declare_wreckage(f)` in typing is
+the one verb; `refused_impl` calls it for every method.
 
 ## Proven but awaiting their first honest use
 

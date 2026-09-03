@@ -4,7 +4,7 @@
 //! absence-of-elements value, adopted by whatever list claims it.
 use core.{ExprId, Type, TypeId}
 use features.{TypeCx, spoken, types_disagree, this_is, slot_worthy, accepts, slice_promise}
-use diagnostics.{error_at, pointed}
+use diagnostics.{refusal}
 
 fn list_type(cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
     if elems.is_empty() { return cx.types.intern(Type.EmptyList) }
@@ -47,36 +47,21 @@ fn heard_list(cx: TypeCx, e: ExprId, elems: List<ExprId>, want: TypeId) -> TypeI
 
 fn unslottable_element(cx: TypeCx, head: ExprId) -> TypeId {
     if cx.shape_at(head) is .Void {
-        return spoken(cx, pointed(
-            error_at("type.list_scalar", cx.loc_of(head), "a list element cannot hold nothing — this answers no value"),
-            "answers nothing"))
+        return spoken(cx, refusal("type.list_scalar", cx.loc_of(head), "a list element cannot hold nothing — this answers no value", "answers nothing", null))
     }
-    spoken(cx, pointed(
-        error_at("type.list_scalar", cx.loc_of(head), "a list element cannot hold this yet"),
-        this_is(cx.name_at(head)))
-        with { help: slice_promise("elements") })
+    spoken(cx, refusal("type.list_scalar", cx.loc_of(head), "a list element cannot hold this yet", this_is(cx.name_at(head)), slice_promise("elements")))
 }
 
 fn unslottable_want(cx: TypeCx, e: ExprId, want: TypeId) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.list_scalar", cx.loc_of(e),
-            "a list element cannot hold `${cx.types.name_of(want)}` yet"),
-        "this list")
-        with { help: slice_promise("elements") })
+    spoken(cx, refusal("type.list_scalar", cx.loc_of(e), "a list element cannot hold `${cx.types.name_of(want)}` yet", "this list", slice_promise("elements")))
 }
 
 fn disagreeing_element(cx: TypeCx, k: ExprId, elem: TypeId) -> TypeId {
     let n = cx.name_at(k)
-    spoken(cx, pointed(
-        error_at("type.list_element", cx.loc_of(k),
-            "a list's elements share one type — the first is `${cx.types.name_of(elem)}`, this is `${n}`"),
-        this_is(n)))
+    spoken(cx, refusal("type.list_element", cx.loc_of(k), "a list's elements share one type — the first is `${cx.types.name_of(elem)}`, this is `${n}`", this_is(n), null))
 }
 
 fn unwanted_element(cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {
     let n = cx.name_at(k)
-    spoken(cx, pointed(
-        error_at("type.list_element", cx.loc_of(k),
-            "this list holds `${cx.types.name_of(want)}`, this is `${n}`"),
-        this_is(n)))
+    spoken(cx, refusal("type.list_element", cx.loc_of(k), "this list holds `${cx.types.name_of(want)}`, this is `${n}`", this_is(n), null))
 }

@@ -16,8 +16,8 @@
 //! values.av the runtime VALUE representation, builder.av the
 //! parse-time authoring surface. A feature-named fn has no place
 //! in any of them.
-use core.{NodeStore, Expr, ExprId, StmtId, Param, Type, TypeId, TypeRef, TypeRegistry, Reg, Ins, joined}
-use diagnostics.{Diag, error_at, pointed}
+use core.{NodeStore, Expr, ExprId, StmtId, Param, Type, TypeId, TypeRef, TypeRegistry, Reg, Ins, joined, DeclId}
+use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 
 /// Resolve capabilities: an impl reports a name use — as a value
@@ -41,7 +41,7 @@ export type FnSig = { params: List<TypeId>, ret: TypeId }
 /// A recorded INSTANTIATION: which generic fn a call targets and
 /// what each of its Vars bound to, by ordinal. Typing records it;
 /// mono lowers one body per distinct binding.
-export type Sub = { target: StmtId, args: List<TypeId> }
+export type Sub = { target: DeclId, args: List<TypeId> }
 
 /// A recorded PRESENCE TEST: which subject a `== null`/`!= null`
 /// asked about, and which branch its truth proves PRESENT. The
@@ -161,12 +161,14 @@ export type TypeCx = {
     store: NodeStore,
     types: TypeRegistry,
     methods: List<MethodRow>,
+    decls: Decls,
+    decl_of: fn(StmtId) -> DeclId,
     properties: List<PropertyRow>,
     type_at: fn(ExprId) -> TypeId,
     shape_at: fn(ExprId) -> Type,
     target_type: fn(ExprId) -> TypeId,
     sig_of: fn(ExprId) -> FnSig?,
-    bound_def: fn(ExprId) -> StmtId?,
+    bound_decl: fn(ExprId) -> DeclId?,
     fields_of: fn(TypeId) -> StructSig?,
     variants_of: fn(TypeId) -> EnumSig?,
     block_type: fn(List<StmtId>, ExprId?) -> TypeId,
@@ -177,7 +179,7 @@ export type TypeCx = {
     ask_of: fn(ExprId) -> Asked?,
     walk_narrowed: fn(ExprId, ExprId) -> TypeId,
     enclosing_ret: fn() -> TypeId?,
-    record_subst: fn(ExprId, StmtId, List<TypeId>),
+    record_subst: fn(ExprId, DeclId, List<TypeId>),
     written: fn(StmtId, TypeRef) -> TypeId,
     written_at: fn(ExprId, TypeRef) -> TypeId,
     lambda_body: fn(ExprId, List<TypeId>, ExprId) -> TypeId,
@@ -189,7 +191,7 @@ export type TypeCx = {
     behind_lambda: fn() -> bool,
     is_mut: fn(ExprId) -> bool,
     retype_seated: fn(ExprId, List<TypeId>) -> TypeId?,
-    method_sig: fn(string, string) -> FnSig?,
+    method_sig: fn(DeclId, string) -> FnSig?,
     trait_sig: fn(string, string) -> FnSig?,
     implements: fn(TypeId, string) -> bool,
     name_at: fn(ExprId) -> string,
@@ -209,6 +211,7 @@ export type LowerCx = {
     types: TypeRegistry,
     methods: List<MethodRow>,
     properties: List<PropertyRow>,
+    decls: Decls,
     result: fn(ExprId) -> Reg,
     reg_of: fn(ExprId) -> Reg,
     def_reg: fn(ExprId) -> Reg?,
@@ -228,7 +231,6 @@ export type LowerCx = {
     lower_block: fn(List<StmtId>, ExprId?) -> Reg,
     enclosing_ret: fn() -> TypeId?,
     callee_of: fn(ExprId, string) -> string,
-    trait_methods: fn(StmtId) -> List<string>,
     lift: fn(ExprId) -> string,
     capture_regs: fn(ExprId) -> List<Reg>,
     indirect_callee: fn(ExprId) -> Reg?,
@@ -342,10 +344,7 @@ export fn duplicate_names(kind: string, owner: string, names: List<string>, at: 
 /// A declaration naming the same member twice — one refusal for
 /// every declared table (a record's fields, an enum's variants).
 export fn duplicate_member(kind: string, owner: string, member: string, at: Loc?) -> Diag {
-    pointed(
-        error_at(kind, at, "`${owner}` declares `${member}` more than once"),
-        "in this declaration")
-        with { help: "rename one of them" }
+    refusal(kind, at, "`${owner}` declares `${member}` more than once", "in this declaration", "rename one of them")
 }
 
 /// A lowering defect: record it and stand on a fresh register — the
@@ -362,9 +361,7 @@ export fn lower_defect(cx: LowerCx, e: ExprId, what: string) -> Reg {
 /// statements, so a nested declaration is invisible — and blaming
 /// the later USE ("`E` is not defined") hides the real mistake.
 export fn nested_decl(kind: string, what: string, at: Loc?) -> Diag {
-    pointed(error_at(kind, at, "${what} live at the top level"),
-        "declared inside a block")
-        with { help: "move it out of the block" }
+    refusal(kind, at, "${what} live at the top level", "declared inside a block", "move it out of the block")
 }
 
 /// The parallel-capture mismatch, worded once — every zip builder
@@ -433,7 +430,7 @@ impl StmtLowerCx {
 
 /// A declared sig with the declaration's Vars substituted — how an
 /// instantiation answers `variants_of`.
-export fn subbed_variants(types: TypeRegistry, sig: EnumSig?, decl: StmtId, args: List<TypeId>) -> EnumSig? {
+export fn subbed_variants(types: TypeRegistry, sig: EnumSig?, decl: DeclId, args: List<TypeId>) -> EnumSig? {
     if sig == null { return null }
     EnumSig {
         names: sig!.names,
@@ -441,13 +438,13 @@ export fn subbed_variants(types: TypeRegistry, sig: EnumSig?, decl: StmtId, args
     }
 }
 
-fn subbed_payload(types: TypeRegistry, p: TypeId?, decl: StmtId, args: List<TypeId>) -> TypeId? {
+fn subbed_payload(types: TypeRegistry, p: TypeId?, decl: DeclId, args: List<TypeId>) -> TypeId? {
     if p == null { return null }
     types.substituted(p!, decl, args)
 }
 
 /// The struct twin.
-export fn subbed_fields(types: TypeRegistry, sig: StructSig?, decl: StmtId, args: List<TypeId>) -> StructSig? {
+export fn subbed_fields(types: TypeRegistry, sig: StructSig?, decl: DeclId, args: List<TypeId>) -> StructSig? {
     if sig == null { return null }
     let held = sig!
     StructSig {
@@ -457,9 +454,3 @@ export fn subbed_fields(types: TypeRegistry, sig: StructSig?, decl: StmtId, args
     }
 }
 
-/// The qualified symbol a method lowers under — derived from the
-/// receiver's type name at BOTH the fn loop and the call site, so
-/// no fact table carries it.
-export fn method_symbol(target: string, name: string) -> string {
-    "${target}.${name}"
-}

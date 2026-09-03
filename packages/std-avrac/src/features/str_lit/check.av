@@ -2,7 +2,7 @@
 //! string; the answer is always a string.
 use core.{ExprId, Type, TypeId}
 use features.{TypeCx, spoken, this_is}
-use diagnostics.{error_at, pointed}
+use diagnostics.{refusal}
 
 fn interp_type(cx: TypeCx, holes: List<ExprId>) -> TypeId {
     for h in holes {
@@ -10,10 +10,7 @@ fn interp_type(cx: TypeCx, holes: List<ExprId>) -> TypeId {
         let ok = sh is .Int || sh is .Bool || sh is .Str || sh is .Error
         if !ok {
             let n = cx.name_at(h)
-            return spoken(cx, pointed(
-                error_at("type.interp_hole", cx.loc_of(h), "an interpolation hole prints as a scalar or string, found `${n}`"),
-                this_is(n))
-                with { help: "interpolate an element or the `length` instead" })
+            return spoken(cx, refusal("type.interp_hole", cx.loc_of(h), "an interpolation hole prints as a scalar or string, found `${n}`", this_is(n), "interpolate an element or the `length` instead"))
         }
     }
     cx.types.intern(Type.Str)

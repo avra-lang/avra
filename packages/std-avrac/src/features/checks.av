@@ -3,8 +3,8 @@
 //! words. A LAW extracts at its SECOND: a rule copied by hand
 //! disagrees with itself the day the copies drift (`member_type_of`
 //! serves the bare read and the chain for exactly that reason).
-use core.{ExprId, TypeId, Type, ResSides, Arrow, StmtId, TypeRef, filled, PlaceStep, StructSig}
-use diagnostics.{Diag, error_at, pointed}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, StructSig, DeclId}
+use diagnostics.{Diag, refusal}
 
 /// Speak and ABSORB: the diagnostic lands and the answer is the
 /// interned Error — the standard refusal tail of a typing law.
@@ -19,9 +19,7 @@ export fn spoken(cx: TypeCx, d: Diag) -> TypeId {
 export fn require_bool(cx: TypeCx, e: ExprId, subject: string, label: string) {
     let sh = cx.shape_at(e)
     if !(sh is .Bool) && !(sh is .Error) {
-        cx.emit(pointed(
-            error_at("type.mismatch", cx.loc_of(e), "${subject} is a `bool`, found `${cx.name_at(e)}`"),
-            label))
+        cx.emit(refusal("type.mismatch", cx.loc_of(e), "${subject} is a `bool`, found `${cx.name_at(e)}`", label, null))
     }
 }
 
@@ -129,8 +127,8 @@ fn boxable(cx: TypeCx, got: TypeId, tname: string) -> bool {
 
 /// The bound a tparam SEAT declares — "" when unconstrained. The
 /// one law both the bounded-call and the boxing widen read.
-export fn bound_name(cx: TypeCx, decl: StmtId, j: int) -> string {
-    let tb = cx.store.decl_tbounds(decl)
+export fn bound_name(cx: TypeCx, decl: DeclId, j: int) -> string {
+    let tb = cx.decls.tbounds(decl)
     if j >= tb.length { return "" }
     let ann: TypeRef? = tb[j].ty
     if ann == null { return "" }
@@ -186,10 +184,7 @@ export fn member_type_of(cx: TypeCx, e: ExprId, shown: string, ty: TypeId, name:
     // Members live on GUARANTEES: a nullable subject's remedy is
     // the chain, never a property list it does not have.
     if cx.types.shape_of(ty) is .Opt {
-        return spoken(cx, pointed(
-            error_at("type.mismatch", cx.loc_of(e), "`.${name}` reads a guarantee, this is `${shown}`"),
-            this_is(shown))
-            with { help: "`?.${name}` reaches through the absence — or answer it first with `??`" })
+        return spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`.${name}` reads a guarantee, this is `${shown}`", this_is(shown), "`?.${name}` reaches through the absence — or answer it first with `??`"))
     }
     let sig: StructSig? = cx.fields_of(ty)
     if sig != null { return field_member(cx, e, shown, sig!, name) }
@@ -199,10 +194,7 @@ export fn member_type_of(cx: TypeCx, e: ExprId, shown: string, ty: TypeId, name:
         let answered: TypeId = r.check(cx, e, ty)
         return answered
     }
-    spoken(cx, pointed(
-        error_at("type.unknown_prop", cx.loc_of(e), "no property `${name}` on `${shown}`"),
-        "read here")
-        with { help: "a property is a record's field, or a measure like `length` on the shapes that have one" })
+    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "no property `${name}` on `${shown}`", "read here", "a property is a record's field, or a measure like `length` on the shapes that have one"))
 }
 
 /// A record's property IS a declared field; a miss names the
@@ -210,10 +202,7 @@ export fn member_type_of(cx: TypeCx, e: ExprId, shown: string, ty: TypeId, name:
 fn field_member(cx: TypeCx, e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
     let i: int? = sig.slot_of(name)
     if i != null { return sig.types[i!] }
-    spoken(cx, pointed(
-        error_at("type.unknown_prop", cx.loc_of(e), "no field `${name}` on `${shown}`"),
-        "read here")
-        with { help: fields_are(sig) })
+    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "no field `${name}` on `${shown}`", "read here", fields_are(sig)))
 }
 /// THE DECLARED-BINDING LAW: an annotated binding holds what it
 /// declares — the value must be ACCEPTED by the written type, its
@@ -229,10 +218,7 @@ export fn declared_binding(cx: TypeCx, v: ExprId, name: string, declared: TypeId
     if cx.shape_at(v) is .TypeName { return }
     if accepts(cx, v, declared) { return }
     let n = cx.name_at(v)
-    cx.emit(pointed(
-        error_at("type.binding", cx.loc_of(v),
-            "`${name}` declares `${cx.types.name_of(declared)}`, this is `${n}`"),
-        this_is(n)))
+    cx.emit(refusal("type.binding", cx.loc_of(v), "`${name}` declares `${cx.types.name_of(declared)}`, this is `${n}`", this_is(n), null))
 }
 
 /// The VALUE law: a type NAME is not a value. `Color` alone is
@@ -248,10 +234,7 @@ export fn refuses_type_value(cx: TypeCx, e: ExprId) -> bool {
     }
     if tname == null { return false }
     let n = tname!
-    cx.emit(pointed(
-        error_at("type.type_value", cx.loc_of(e), "`${n}` is a type, not a value"),
-        "used as a value here")
-        with { help: "name a variant (`${n}.<variant>`) or build a record (`${n} { ... }`)" })
+    cx.emit(refusal("type.type_value", cx.loc_of(e), "`${n}` is a type, not a value", "used as a value here", "name a variant (`${n}.<variant>`) or build a record (`${n} { ... }`)"))
     true
 }
 
@@ -267,10 +250,7 @@ export fn arms_agree(cx: TypeCx, kind: string, subject: string, anchor_name: str
     for v in values {
         if !accepts(cx, v, want) {
             let n = cx.name_at(v)
-            cx.emit(pointed(
-                error_at(kind, cx.loc_of(v),
-                    "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${cx.types.name_of(want)}`"),
-                this_is(n)))
+            cx.emit(refusal(kind, cx.loc_of(v), "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${cx.types.name_of(want)}`", this_is(n), null))
             agreed = false
         }
     }
@@ -301,7 +281,7 @@ export fn this_is(n: string) -> string {
 /// computed type, recursing through the composites. No widening
 /// rides through a generic param — a lift needs a visible concrete
 /// target (the recorded G1 law). Errors absorb.
-export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
     if cx.types.shape_of(got) is .Error { return true }
     if cx.types.shape_of(want) is .Error { return true }
     match cx.types.shape_of(want) {
@@ -321,7 +301,7 @@ export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: StmtId, bound: Li
 /// A fn type unifies STRUCTURALLY: seat by seat, then the answer —
 /// `fn(T) -> T` meets `fn(int) -> int` and binds T. Invariant in
 /// every seat (v1 — variance is recorded).
-fn fn_unifies(cx: TypeCx, wp: List<TypeId>, wr: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+fn fn_unifies(cx: TypeCx, wp: List<TypeId>, wr: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
     let held: Arrow? = cx.types.arrow_parts(got)
     if held == null { return false }
     let g = held!
@@ -336,7 +316,7 @@ fn fn_unifies(cx: TypeCx, wp: List<TypeId>, wr: TypeId, got: TypeId, target: Stm
 /// One Var meets one concrete type: first sight binds (through the
 /// caller's slots — an out param), a second must agree.
 // LICENSED I3: `bound` is the caller's slot list; set() through the alias IS the answer
-fn var_binds(cx: TypeCx, decl: StmtId, j: int, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+fn var_binds(cx: TypeCx, decl: DeclId, j: int, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
     // a sig speaks only its OWN fn's Vars; anything else is no match
     // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
     if decl.index != target.index { return false }
@@ -356,28 +336,28 @@ fn var_binds(cx: TypeCx, decl: StmtId, j: int, got: TypeId, target: StmtId, boun
     seen!.index == got.index
 }
 
-fn elem_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+fn elem_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
     match cx.types.shape_of(got) {
         .List(g) -> unify(cx, w, g, target, bound),
         _ -> false,
     }
 }
 
-fn value_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+fn value_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
     match cx.types.shape_of(got) {
         .Map(_, g) -> unify(cx, w, g, target, bound),
         _ -> false,
     }
 }
 
-fn carried_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+fn carried_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
     match cx.types.shape_of(got) {
         .Opt(g) -> unify(cx, w, g, target, bound),
         _ -> false,
     }
 }
 
-fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
     let sides: ResSides? = cx.types.res_parts(got)
     if sides == null { return false }
     unify(cx, wo, sides!.ok, target, bound) && unify(cx, we, sides!.err, target, bound)
@@ -424,7 +404,7 @@ fn res_side_unlawful(cx: TypeCx, ok: TypeId, err: TypeId) -> TypeId? {
 /// Whether every Var of `target` inside `ty` is already bound —
 /// when true, the param is effectively concrete and the ordinary
 /// assignment law (widening included) can judge the argument.
-export fn fully_bound(cx: TypeCx, ty: TypeId, target: StmtId, bound: List<TypeId?>) -> bool {
+export fn fully_bound(cx: TypeCx, ty: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
     match cx.types.shape_of(ty) {
         // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
         .Var(decl, j, _) ->
@@ -448,8 +428,8 @@ export fn bound_args(cx: TypeCx, bound: List<TypeId?>) -> List<TypeId> {
 
 /// Two instantiations of the SAME declaration unify argument by
 /// argument; anything else is no match.
-fn app_unifies(cx: TypeCx, wd: StmtId, wa: List<TypeId>, got: TypeId,
-               target: StmtId, bound: List<TypeId?>) -> bool {
+fn app_unifies(cx: TypeCx, wd: DeclId, wa: List<TypeId>, got: TypeId,
+               target: DeclId, bound: List<TypeId?>) -> bool {
     match cx.types.shape_of(got) {
         // LICENSED I9: DECLARATION identity, not type agreement — whose instantiation this is
         .App(gd, _, ga) ->
@@ -459,7 +439,7 @@ fn app_unifies(cx: TypeCx, wd: StmtId, wa: List<TypeId>, got: TypeId,
 }
 
 fn paired_unify(cx: TypeCx, want: List<TypeId>, got: List<TypeId>,
-                target: StmtId, bound: List<TypeId?>) -> bool {
+                target: DeclId, bound: List<TypeId?>) -> bool {
     if want.length != got.length { return false }
     mut ok = true
     // LICENSED I3: pairwise walk; comprehensions cannot destructure enumerate
@@ -506,12 +486,12 @@ export fn bound_closed(cx: TypeCx, bound: List<TypeId?>) -> List<TypeId> {
 /// UNIFIES, pinning a generic declaration's Vars — with none, the
 /// unification IS the plain agreement check); the answer is the
 /// declared type, instantiated when generic.
-export fn construct_variant(cx: TypeCx, e: ExprId, decl: StmtId, tname: string, variant: string, args: List<ExprId>) -> TypeId {
+export fn construct_variant(cx: TypeCx, e: ExprId, decl: DeclId, tname: string, variant: string, args: List<ExprId>) -> TypeId {
     let declared: EnumSig? = variants_declared(cx, decl, tname)
     if declared == null { return not_an_enum(cx, e, tname) }
     let sig = declared!
     if sig.tag_of(variant) == null { return no_such_variant(cx, e, tname, variant, sig) }
-    let tp = cx.store.decl_tparams(decl)
+    let tp = cx.decls.tparams(decl)
     if tparams_refused(tp) { return cx.error_type }
     let held: TypeId? = sig.payload_of(variant)
     if held == null { return unit_variant(cx, e, tname, variant, tp) }
@@ -519,11 +499,7 @@ export fn construct_variant(cx: TypeCx, e: ExprId, decl: StmtId, tname: string, 
     let first: ExprId? = args.first()
     if first == null { return given_nothing(cx, e, tname, variant, carried) }
     if args.length > 1 {
-        return spoken(cx, pointed(
-            error_at("type.variant_arity", cx.loc_of(e),
-                "`${tname}.${variant}` carries ONE value, given ${args.length}"),
-            "built here")
-            with { help: "a variant's payload is a single value — wrap several in a record" })
+        return spoken(cx, refusal("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries ONE value, given ${args.length}", "built here", "a variant's payload is a single value — wrap several in a record"))
     }
     let bound: List<TypeId?> = filled<TypeId?>(tp.length, null)
     if !unify(cx, carried, cx.type_at(first!), decl, bound) {
@@ -540,7 +516,7 @@ fn unit_variant(cx: TypeCx, e: ExprId, tname: string, variant: string, tp: List<
 }
 
 /// The answer: the plain enum, or the App the bindings close into.
-fn instantiated(cx: TypeCx, e: ExprId, tname: string, decl: StmtId,
+fn instantiated(cx: TypeCx, e: ExprId, tname: string, decl: DeclId,
                 tp: List<string>, bound: List<TypeId?>) -> TypeId {
     if tp.is_empty() { return cx.types.intern(Type.Enum(decl, tname)) }
     let missing: string? = unpinned_of(tp, bound)
@@ -554,7 +530,7 @@ fn instantiated(cx: TypeCx, e: ExprId, tname: string, decl: StmtId,
 /// declaration is a record. The REAL name interns: the registry
 /// keeps the FIRST shape it sees for a key, so a throwaway name
 /// here would poison every later printing of this enum.
-fn variants_declared(cx: TypeCx, decl: StmtId, tname: string) -> EnumSig? {
+fn variants_declared(cx: TypeCx, decl: DeclId, tname: string) -> EnumSig? {
     cx.variants_of(cx.types.intern(Type.Enum(decl, tname)))
 }
 
@@ -600,10 +576,7 @@ fn field_slot_lawful(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> bo
 /// means refused.
 export fn refuses_void_value(cx: TypeCx, e: ExprId) -> bool {
     if !(cx.shape_at(e) is .Void) { return false }
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(e), "this answers nothing — there is nothing to bind"),
-        "answers nothing")
-        with { help: "a mutation is a statement; drop the binding" })
+    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "this answers nothing — there is nothing to bind", "answers nothing", "a mutation is a statement; drop the binding"))
     true
 }
 
@@ -611,101 +584,61 @@ export fn refuses_void_value(cx: TypeCx, e: ExprId) -> bool {
 // call the verb and stay legible. (DOGFOODING: laws call voices.) ──
 
 fn not_an_enum(cx: TypeCx, e: ExprId, tname: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.unknown_prop", cx.loc_of(e), "`${tname}` is a record, not an enum"),
-        "built here")
-        with { help: build_a_record(tname) })
+    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` is a record, not an enum", "built here", build_a_record(tname)))
 }
 
 fn no_such_variant(cx: TypeCx, e: ExprId, tname: string, variant: string, sig: EnumSig) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.unknown_prop", cx.loc_of(e), "`${tname}` has no variant `${variant}`"),
-        "built here")
-        with { help: variants_are(sig) })
+    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` has no variant `${variant}`", "built here", variants_are(sig)))
 }
 
 fn carries_nothing(cx: TypeCx, e: ExprId, tname: string, variant: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries nothing"),
-        "given an argument here")
-        with { help: "write `${tname}.${variant}` on its own" })
+    spoken(cx, refusal("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries nothing", "given an argument here", "write `${tname}.${variant}` on its own"))
 }
 
 fn cannot_pin(cx: TypeCx, e: ExprId, tname: string, variant: string, tparam: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.unknown_prop", cx.loc_of(e),
-            "`${tname}.${variant}` cannot pin `${tparam}` — nothing carries it"),
-        "built here")
-        with { help: "a payload pins the type; the pinned unit surface is recorded" })
+    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}.${variant}` cannot pin `${tparam}` — nothing carries it", "built here", "a payload pins the type; the pinned unit surface is recorded"))
 }
 
 fn wrong_payload(cx: TypeCx, v: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
     let n = cx.name_at(v)
-    spoken(cx, pointed(
-        error_at("type.variant_arity", cx.loc_of(v),
-            "`${tname}.${variant}` carries a `${cx.types.name_of(carried)}`, found `${n}`"),
-        this_is(n)))
+    spoken(cx, refusal("type.variant_arity", cx.loc_of(v), "`${tname}.${variant}` carries a `${cx.types.name_of(carried)}`, found `${n}`", this_is(n), null))
 }
 
 fn given_nothing(cx: TypeCx, e: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.variant_arity", cx.loc_of(e),
-            "`${tname}.${variant}` carries a `${cx.types.name_of(carried)}`, given nothing"),
-        "built empty here")
-        with { help: "write `${tname}.${variant}(<value>)`" })
+    spoken(cx, refusal("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries a `${cx.types.name_of(carried)}`, given nothing", "built empty here", "write `${tname}.${variant}(<value>)`"))
 }
 
 fn unpinned_by_payload(cx: TypeCx, e: ExprId, tparam: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.unknown_prop", cx.loc_of(e), "`${tparam}` is not pinned by the payload"),
-        "built here")
-        with { help: "the pinned unit surface is recorded — carry `${tparam}` for now" })
+    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tparam}` is not pinned by the payload", "built here", "the pinned unit surface is recorded — carry `${tparam}` for now"))
 }
 
 /// THE arity refusal — every call shape shares the words.
 export fn wrong_arity(cx: TypeCx, e: ExprId, callee: string, want: int, found: int) {
-    cx.emit(pointed(
-        error_at("type.mismatch", cx.loc_of(e),
-            "`${callee}` takes ${want} arguments, found ${found}"),
-        "this call"))
+    cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${callee}` takes ${want} arguments, found ${found}", "this call", null))
 }
 
 /// THE argument refusal — every call shape shares the words.
 export fn wrong_argument(cx: TypeCx, callee: string, j: int, want: TypeId, a: ExprId) {
     let n = cx.name_at(a)
-    cx.emit(pointed(
-        error_at("type.mismatch", cx.loc_of(a),
-            "argument ${j + 1} of `${callee}` wants `${cx.types.name_of(want)}`, found `${n}`"),
-        this_is(n)))
+    cx.emit(refusal("type.mismatch", cx.loc_of(a), "argument ${j + 1} of `${callee}` wants `${cx.types.name_of(want)}`, found `${n}`", this_is(n), null))
 }
 
 fn type_not_place(cx: TypeCx, e: ExprId, name: string) -> bool {
-    let _ = spoken(cx, pointed(
-        error_at("type.place", cx.loc_of(e), "`${name}` is a type — a mutation lands on a `mut` binding"),
-        "a type"))
+    let _ = spoken(cx, refusal("type.place", cx.loc_of(e), "`${name}` is a type — a mutation lands on a `mut` binding", "a type", null))
     false
 }
 
 fn measured_not_stored(cx: TypeCx, e: ExprId, name: string, subject: string) -> bool {
-    let _ = spoken(cx, pointed(
-        error_at("type.place", cx.loc_of(e), "`${name}` is measured, not stored — `${subject}` has no such slot"),
-        "not a slot")
-        with { help: "a place is a field a struct declares, or an index into a list" })
+    let _ = spoken(cx, refusal("type.place", cx.loc_of(e), "`${name}` is measured, not stored — `${subject}` has no such slot", "not a slot", "a place is a field a struct declares, or an index into a list"))
     false
 }
 
 export fn not_a_place_call(cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.place", cx.loc_of(e), "`${name}` mutates a place, and this list is a value"),
-        "a value")
-        with { help: "bind it first — `mut xs = …` — then `xs.${name}(…)`; or build a new list with `concat`" })
+    spoken(cx, refusal("type.place", cx.loc_of(e), "`${name}` mutates a place, and this list is a value", "a value", "bind it first — `mut xs = …` — then `xs.${name}(…)`; or build a new list with `concat`"))
 }
 
 export fn not_mut_call(cx: TypeCx, e: ExprId, name: string, root: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.place", cx.loc_of(e), "`${root}` is not `mut` — `${name}` mutates it"),
-        "mutated here")
-        with { help: "declare it `mut ${root} = ...` — or build a changed copy" })
+    spoken(cx, refusal("type.place", cx.loc_of(e), "`${root}` is not `mut` — `${name}` mutates it", "mutated here", "declare it `mut ${root} = ...` — or build a changed copy"))
 }
 
 /// THE PROMISE every nullable-in-a-slot refusal makes — one fn, so
@@ -728,8 +661,5 @@ export fn settled_call(cx: TypeCx, args: List<ExprId>, answer: TypeId) -> TypeId
 /// An empty literal has no measure until a declared type adopts
 /// it — the shared voice for `[]` and `{}`.
 export fn unmeasurable_empty(cx: TypeCx, e: ExprId, lit: string, example: string) -> TypeId {
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(e), "`${lit}` has no length yet — a declared type gives it one"),
-        "measured here")
-        with { help: "bind it first — `let xs: ${example} = ${lit}`" })
+    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${lit}` has no length yet — a declared type gives it one", "measured here", "bind it first — `let xs: ${example} = ${lit}`"))
 }

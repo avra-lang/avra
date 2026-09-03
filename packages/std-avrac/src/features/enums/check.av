@@ -5,7 +5,7 @@
 use core.{ExprId, StmtId, Param, Type, TypeId}
 use features.{TypeCx, StmtTypeCx, EnumSig, spoken, this_is, nothing, duplicate_names,
               arms_agree, variants_are, construct_variant}
-use diagnostics.{error_at, pointed}
+use diagnostics.{refusal}
 
 /// The declaration's own law.
 export fn check_enum_decl(cx: StmtTypeCx, s: StmtId) {
@@ -19,10 +19,7 @@ export fn check_enum_decl(cx: StmtTypeCx, s: StmtId) {
 /// a name whose FIRST position is earlier than this one.
 fn decl_checks(cx: StmtTypeCx, s: StmtId, name: string, variants: List<Param>) {
     if variants.is_empty() {
-        cx.expr.emit(pointed(
-            error_at("type.enum_decl", cx.loc_of(s), "`${name}` declares no variants"),
-            "this enum is empty")
-            with { help: "an enum names at least one variant" })
+        cx.expr.emit(refusal("type.enum_decl", cx.loc_of(s), "`${name}` declares no variants", "this enum is empty", "an enum names at least one variant"))
     }
     for d in duplicate_names("type.enum_decl", name, [v.name for v in variants], cx.loc_of(s)) {
         cx.expr.emit(d)
@@ -45,9 +42,7 @@ fn matched_type(cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>,
     let declared: EnumSig? = cx.variants_of(cx.type_at(subject))
     if declared == null {
         let n = cx.name_at(subject)
-        return spoken(cx, pointed(
-            error_at("type.match", cx.loc_of(subject), "`match` chooses over an enum, found `${n}`"),
-            this_is(n)))
+        return spoken(cx, refusal("type.match", cx.loc_of(subject), "`match` chooses over an enum, found `${n}`", this_is(n), null))
     }
     let sig = declared!
     let sname = cx.name_at(subject)
@@ -66,15 +61,10 @@ fn arm_checks(cx: TypeCx, sname: string, variants: List<string>, values: List<Ex
     for (j, v) in variants.enumerate() {
         let tag: int? = sig.tag_of(v)
         if tag == null {
-            cx.emit(pointed(
-                error_at("type.match", cx.loc_of(values[j]), "`${sname}` has no variant `${v}`"),
-                "matched here")
-                with { help: variants_are(sig) })
+            cx.emit(refusal("type.match", cx.loc_of(values[j]), "`${sname}` has no variant `${v}`", "matched here", variants_are(sig)))
         }
         if variants.index_of(v) < j {
-            cx.emit(pointed(
-                error_at("type.match", cx.loc_of(values[j]), "variant `${v}` is matched more than once"),
-                "matched again here"))
+            cx.emit(refusal("type.match", cx.loc_of(values[j]), "variant `${v}` is matched more than once", "matched again here", null))
         }
     }
 }
@@ -94,11 +84,7 @@ fn bind_law(cx: TypeCx, sname: string, variant: string, bind: string, value: Exp
     if bind == "" || sig.tag_of(variant) == null { return }
     let carried: TypeId? = sig.payload_of(variant)
     if carried == null {
-        cx.emit(pointed(
-            error_at("type.variant_arity", cx.loc_of(value),
-                "`${sname}.${variant}` carries nothing to bind"),
-            "bound here")
-            with { help: "write `.${variant} ->` — only a carrying variant binds" })
+        cx.emit(refusal("type.variant_arity", cx.loc_of(value), "`${sname}.${variant}` carries nothing to bind", "bound here", "write `.${variant} ->` — only a carrying variant binds"))
         return
     }
     cx.bind_type(value, carried!)
@@ -108,10 +94,7 @@ fn bind_law(cx: TypeCx, sname: string, variant: string, bind: string, value: Exp
 fn coverage_checks(cx: TypeCx, e: ExprId, sname: string, variants: List<string>, sig: EnumSig) {
     for n in sig.names {
         if !variants.contains(n) {
-            cx.emit(pointed(
-                error_at("type.match", cx.loc_of(e), "`match` on `${sname}` must handle `.${n}`"),
-                "this match")
-                with { help: "every variant exactly once — adding a variant breaks every match, on purpose" })
+            cx.emit(refusal("type.match", cx.loc_of(e), "`match` on `${sname}` must handle `.${n}`", "this match", "every variant exactly once — adding a variant breaks every match, on purpose"))
         }
     }
 }

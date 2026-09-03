@@ -4,7 +4,7 @@
 //! `fn(params) -> body`.
 use core.{ExprId, Type, TypeId, Arrow, Param, LambdaParts}
 use features.{TypeCx, spoken, seats_judged, this_is, settled_call}
-use diagnostics.{error_at, pointed}
+use diagnostics.{refusal}
 
 fn lambda_type(cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -95,38 +95,22 @@ fn first_param_name(cx: TypeCx, e: ExprId) -> string {
 // ── The voices ──
 
 fn never_heard(cx: TypeCx, e: ExprId, name: string) {
-    cx.emit(pointed(
-        error_at("type.lambda", cx.loc_of(e), "`${name}` needs a type — this lambda's slot tells it nothing"),
-        "in this lambda")
-        with { help: "annotate — `(${name}: int) -> …` — or hand the lambda to a slot that knows its seats" })
+    cx.emit(refusal("type.lambda", cx.loc_of(e), "`${name}` needs a type — this lambda's slot tells it nothing", "in this lambda", "annotate — `(${name}: int) -> …` — or hand the lambda to a slot that knows its seats"))
 }
 
 fn pronoun_starved(cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx.emit(pointed(
-        error_at("type.lambda", cx.loc_of(e),
-            "`it` has no element here — this seat takes `${cx.types.name_of(seat)}`, not a fn"),
-        "the pronoun")
-        with { help: "`it` binds to the NEAREST method call — inside another call's argument, write the outer lambda out: `(k) -> …`" })
+    cx.emit(refusal("type.lambda", cx.loc_of(e), "`it` has no element here — this seat takes `${cx.types.name_of(seat)}`, not a fn", "the pronoun", "`it` binds to the NEAREST method call — inside another call's argument, write the outer lambda out: `(k) -> …`"))
 }
 
 fn misfit_lambda(cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx.emit(pointed(
-        error_at("type.lambda", cx.loc_of(e), "this lambda does not fit its seat, `${cx.types.name_of(seat)}`"),
-        "in this lambda")
-        with { help: "match the seat's params, or annotate them" })
+    cx.emit(refusal("type.lambda", cx.loc_of(e), "this lambda does not fit its seat, `${cx.types.name_of(seat)}`", "in this lambda", "match the seat's params, or annotate them"))
 }
 
 fn lambda_at_scalar(cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx.emit(pointed(
-        error_at("type.lambda", cx.loc_of(e), "a lambda cannot sit here — this seat takes `${cx.types.name_of(seat)}`"),
-        "in this lambda")
-        with { help: "hand it to a fn-typed slot, or call it" })
+    cx.emit(refusal("type.lambda", cx.loc_of(e), "a lambda cannot sit here — this seat takes `${cx.types.name_of(seat)}`", "in this lambda", "hand it to a fn-typed slot, or call it"))
 }
 
 fn uncallable(cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
-    spoken(cx, pointed(
-        error_at("type.lambda", cx.loc_of(e), "this is not callable — it holds a `${n}`"),
-        this_is(n))
-        with { help: "only fns and fn-typed values take arguments" })
+    spoken(cx, refusal("type.lambda", cx.loc_of(e), "this is not callable — it holds a `${n}`", this_is(n), "only fns and fn-typed values take arguments"))
 }

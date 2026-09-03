@@ -1,0 +1,37 @@
+//! Modules — `use a.b.{x, y}` brings a module's exported items into
+//! scope; `export` marks the declarations a module's surface
+//! carries. Both are keyword anchors: `use` builds the Use node the
+//! workspace resolves before any file's names do; `export` is a
+//! prefix that marks the declaration it heads — no node of its own.
+use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
+
+export fn modules() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name          | build
+        "use_stmt"    | build_use
+        "export_stmt" | build_export
+    }
+    let codes = table<DiagCode> {
+        kind                    | id      | summary
+        "resolve.no_module"     | "F3011" | "a `use` names a module the package does not have"
+        "resolve.not_exported"  | "F3012" | "a `use` names an item the module does not export"
+        "resolve.package_later" | "F3013" | "packages (`@pkg`) arrive with slice 15b"
+        "resolve.export_kind"   | "F3014" | "`export` marks a declaration — a fn, type, enum or trait"
+        "resolve.unpackaged"    | "F3015" | "a `use` line needs a package root (an `avra.toml` above the file)"
+        "resolve.module_ambiguous" | "F3016" | "a module is a directory OR a file, never both"
+        "resolve.duplicate_in_module" | "F3017" | "a module's files share one namespace — a name declares once"
+        "resolve.import_clash"  | "F3018" | "an imported name clashes with one already visible"
+        "resolve.nested_use"    | "F3019" | "use lines live at the top level"
+    }
+    component LanguageFeature f {
+        name = "modules"
+        docs = "`use a.b.{x, y}` imports a module's exported items; `export fn/type/…` marks a module's surface. Paths are absolute from the package root, `.`-separated."
+        gram = """
+stmt = "use" ( h:PKG | h:NAME ) ( "." p:NAME )* "." "{" BREAK? i:NAME ( ( "," | BREAK ) BREAK? i:NAME )* ","? BREAK? "}" BREAK @recover(sync_to: "BREAK") -> use_stmt(h, p, i) | "export" d:stmt -> export_stmt(d)
+"""
+        builders = rows
+        diags = codes
+    }
+    f
+}

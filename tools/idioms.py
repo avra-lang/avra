@@ -395,6 +395,9 @@ RULES = {
     "I27": (restrlen,
             "a STRING's `.length` re-measured in a loop condition — "
             "that is `strlen` per iteration; hoist it"),
+    "I28": (line_rx(r"pointed\(error_at\("),
+            "a refusal assembled by hand — the one shape is "
+            "`refusal(kind, at, message, label, help)`"),
     "I26": (repeated_unwrap,
             "one nullable local forced open 3+ times — guard once, bind once, "
             "and read the name"),
@@ -418,11 +421,6 @@ UNRATCHETED = {
     "I29": "mint order is STRUCTURE, not a greppable string: whether a\n"
     "        verb's answer register mints before or after its scratch\n"
     "        registers needs the emission sequence, not a pattern",
-    "I28": "voice-vs-law is a LAYOUT judgment: the pointed( assembly is the\n"
-           "           legitimate BODY of a voice fn, and voicehood (a fn that exists\n"
-           "           to word one refusal) is intent a grep cannot see. The review\n"
-           "           round hunts inline assemblies; the exemplars are enums/check.av\n"
-           "           and not_absent_able",
 }
 
 # A rule that cannot fire is worse than no rule: it reports success
@@ -459,6 +457,7 @@ SPECIMENS = {
     "I25": [["enum E {", "    A(x: int, y: int)", "}", "    match e {", "        .A(_) -> 1,", "    }"]],
     "I27": [["    while i < s.length {"], ["    while j <= b.length {"],
             ["    while i < src.length && p(i) {"]],
+    "I28": [['    cx.emit(pointed(error_at("k", at, "m"), "l"))']],
     "I26": [["fn f(x: int?) -> int {", "    if x == null { return 0 }",
              "    x! + x! + x!", "}"]],
 }

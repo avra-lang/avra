@@ -1,0 +1,194 @@
+//! THE QUERY KERNEL — the compiler as a spreadsheet (L6, ps3t.8):
+//! every step is a query that remembers its answer, the queries it
+//! read (its deps, discovered by execution), the revision its answer
+//! last CHANGED and the revision it was last VERIFIED. `ask` is the
+//! red-green decision: a cell verified this revision is current;
+//! otherwise its deps are re-verified through their families, and a
+//! cell none of whose deps changed since its own verification is
+//! re-marked current without running (green). A recomputed answer
+//! whose hash is unchanged keeps its changed_at — the wave dies
+//! there (early cutoff). A query that reaches itself is a CYCLE,
+//! answered as such rather than recursed into. Inputs are cells the
+//! driver sets. A key is a FAMILY number and the dense id the family
+//! keys by — two list indexes, no strings. Values live in the
+//! families' own typed tables; the kernel holds only bookkeeping.
+/// A cell's address: its family, and the dense id the family keys
+/// by (a FileId, a DeclId).
+export type Key = { family: int, arg: int }
+
+export fn same_key(a: Key, b: Key) -> bool {
+    a.family == b.family && a.arg == b.arg
+}
+
+/// The red-green verdict for a derived query.
+export enum Verdict {
+    /// The held value is current.
+    Reuse
+    /// Run the query; `begin` and `settle` bracket it.
+    Compute
+    /// The query is already running above this ask.
+    Cycle
+}
+
+type Cell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int }
+
+/// The revision, hits and misses are one-cell lists (the mut-cell
+/// protocol). `cells` is by family, then by arg; `verifiers` by
+/// family — the fn that re-fetches one of its keys and answers the
+/// cell's changed_at. `open` is the stack of queries computing now.
+export type Db = {
+    rev: List<int>,
+    cells: List<List<Cell?>>,
+    verifiers: List<fn(int) -> int>,
+    frames: List<List<Key>>,
+    open: List<Key>,
+    cycles: List<Key>,
+    hits: List<int>,
+    misses: List<int>,
+}
+
+export fn new_db() -> Db {
+    Db { rev: [1], cells: [], verifiers: [], frames: [], open: [], cycles: [], hits: [0], misses: [0] }
+}
+
+impl Db {
+    fn revision(self) -> int { self.rev[0] }
+
+    /// An input changed (or arrived): the revision advances.
+    fn bump(self) {
+        mut r = self.rev
+        r.set(0, r[0] + 1)
+    }
+
+    /// A family registered with its verifier; its number answers.
+    fn family(self, verify: fn(int) -> int) -> int {
+        mut vs = self.verifiers
+        vs.push(verify)
+        mut cs = self.cells
+        cs.push([])
+        cs.length - 1
+    }
+
+    /// The driver sets an INPUT: a cell with no deps whose changed_at
+    /// advances only when the hash moved.
+    fn set_input(self, key: Key, value_hash: int) {
+        let prior: Cell? = self.cell(key)
+        if prior != null && prior!.value_hash == value_hash {
+            self.write(key, Cell { deps: [], changed_at: prior!.changed_at, verified_at: self.revision(), value_hash: value_hash })
+            return
+        }
+        if prior != null { self.bump() }
+        self.write(key, Cell { deps: [], changed_at: self.revision(), verified_at: self.revision(), value_hash: value_hash })
+    }
+
+    /// The red-green decision for a derived query, recording the
+    /// read in the open frame.
+    fn ask(self, key: Key) -> Verdict {
+        self.record_dep(key)
+        if self.open.any(same_key(it, key)) {
+            mut cy = self.cycles
+            cy.push(key)
+            return Verdict.Cycle
+        }
+        let held: Cell? = self.cell(key)
+        if held == null { return self.miss() }
+        let cell = held!
+        if cell.verified_at == self.revision() { return self.hit() }
+        if self.any_dep_changed(cell) { return self.miss() }
+        self.write(key, Cell { deps: cell.deps, changed_at: cell.changed_at, verified_at: self.revision(), value_hash: cell.value_hash })
+        self.hit()
+    }
+
+    /// Re-verify each dep through its family; true when one changed
+    /// after this cell was last verified.
+    fn any_dep_changed(self, cell: Cell) -> bool {
+        for d in cell.deps {
+            if self.changed_after(d, cell.verified_at) { return true }
+        }
+        false
+    }
+
+    fn changed_after(self, dep: Key, since: int) -> bool {
+        let verify = self.verifiers[dep.family]
+        verify(dep.arg) > since
+    }
+
+    /// The cell's changed_at, or the current revision for a key the
+    /// kernel has never seen (an unknown is always new).
+    fn changed_at(self, key: Key) -> int {
+        self.cell(key)?.changed_at ?? self.revision()
+    }
+
+    /// A computation begins: its reads land in a fresh frame, and it
+    /// is open until it settles.
+    fn begin(self, key: Key) {
+        mut fs = self.frames
+        // LICENSED I15: the bracketed VALUE is the caller's — a thunk cannot carry a generic answer (F1002)
+        fs.push([])
+        mut op = self.open
+        // LICENSED I15: the open stack brackets the same computation
+        op.push(key)
+    }
+
+    /// A computation ends: its frame becomes the cell's deps; an
+    /// unchanged hash keeps changed_at (early cutoff).
+    fn settle(self, key: Key, value_hash: int) {
+        mut fs = self.frames
+        let deps: List<Key> = fs.pop() ?? []
+        mut op = self.open
+        let _ = op.pop()
+        let prior: Cell? = self.cell(key)
+        let changed = if prior != null && prior!.value_hash == value_hash { prior!.changed_at } else { self.revision() }
+        self.write(key, Cell { deps: deps, changed_at: changed, verified_at: self.revision(), value_hash: value_hash })
+    }
+
+    fn record_dep(self, key: Key) {
+        if self.frames.is_empty() { return }
+        // LICENSED I7: rebind-alias needs index syntax; last() may copy
+        mut top = self.frames.last()!
+        top.push(key)
+    }
+
+    fn cell(self, key: Key) -> Cell? {
+        let row = self.cells[key.family]
+        if key.arg >= row.length { return null }
+        let held: Cell? = row[key.arg]
+        held
+    }
+
+    fn write(self, key: Key, cell: Cell) {
+        // LICENSED I3: the family's own row, grown in place
+        mut row = self.cells[key.family]
+        while row.length <= key.arg { row.push(null) }
+        row.set(key.arg, cell)
+    }
+
+    /// Cells not verified this revision are dead: dropped, so a
+    /// long-lived kernel holds only what the last full pass touched.
+    fn sweep(self) {
+        for row in self.cells {
+            // LICENSED I3: the family's own row, rewritten in place
+            mut cells = row
+            for (i, held) in row.enumerate() {
+                if held != null && held!.verified_at != self.revision() { cells.set(i, null) }
+            }
+        }
+    }
+
+    fn hit(self) -> Verdict {
+        mut h = self.hits
+        h.set(0, h[0] + 1)
+        Verdict.Reuse
+    }
+
+    fn miss(self) -> Verdict {
+        mut m = self.misses
+        m.set(0, m[0] + 1)
+        Verdict.Compute
+    }
+
+    /// The counters, rendered — `--time`'s cache line.
+    fn stats(self) -> string {
+        "rev ${self.revision()}: ${self.hits[0]} hits, ${self.misses[0]} misses"
+    }
+}

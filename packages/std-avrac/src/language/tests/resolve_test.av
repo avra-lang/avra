@@ -1,7 +1,7 @@
 // The first pass: uses resolve to definition sites, shadowing takes
 // the latest, and an unresolved name earns the milestone error —
 // kind, code, window, pointer, and a graded suggestion.
-use @std.avrac.language.{avra, analyze_source, parse_source, resolve, binding_of, Binding, Resolution}
+use @std.avrac.language.{avra, analyze_source, parse_source, binding_of, Binding, Resolution}
 use @std.avrac.testing.{shown}
 use @std.errors.{Confidence}
 use @std.avrac.diagnostics.{new_source_file}
@@ -13,21 +13,23 @@ fn defined_at(r: Resolution, e: ExprId) -> int {
     if b == null { return -1 }
     match b! {
         .Def(s) -> s.index,
-        .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> -1,
+        .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> -1,
     }
 }
 
 spec "language/resolve" {
     given "resolution facts" {
         then "a use resolves to its definition site" {
-            let p = parse_source("let x = 1\nx")
-            let r = resolve(p)
+            let a = analyze_source("let x = 1\nx")
+            let p = a.p
+            let r = a.resolution
             let use_expr = p.store.stmt_value(p.stmts[1])!
             r.diagnostics.is_empty() && defined_at(r, use_expr) == 0
         }
         then "a later let shadows an earlier one" {
-            let p = parse_source("let x = 1\nlet x = 2\nx")
-            let r = resolve(p)
+            let a = analyze_source("let x = 1\nlet x = 2\nx")
+            let p = a.p
+            let r = a.resolution
             defined_at(r, p.store.stmt_value(p.stmts[2])!) == 1
         }
     }
@@ -44,15 +46,17 @@ spec "language/resolve" {
     }
     given "unresolved names" {
         then "a use before its definition names the remedy" {
-            let p = parse_source("x\nlet x = 1")
-            let r = resolve(p)
+            let a = analyze_source("x\nlet x = 1")
+            let p = a.p
+            let r = a.resolution
             r.diagnostics.length == 1 &&
                 r.diagnostics[0].kind == "resolve.use_before_def" &&
                 r.diagnostics[0].help != null
         }
         then "a typo one edit away suggests with High confidence" {
-            let p = parse_source("let value = 1 + valu")
-            let r = resolve(p)
+            let a = analyze_source("let value = 1 + valu")
+            let p = a.p
+            let r = a.resolution
             r.diagnostics.length == 1 &&
                 r.diagnostics[0].kind == "resolve.unresolved" &&
                 r.diagnostics[0].suggestions.length == 1 &&
@@ -61,30 +65,32 @@ spec "language/resolve" {
                 r.diagnostics[0].suggestions[0].edits[0].replacement == "value"
         }
         then "two edits away is Medium; far away is silent" {
-            let near = parse_source("let value = 1\nvlaue")
-            let rn = resolve(near)
-            let far = parse_source("let alpha = 1\nzz")
-            let rf = resolve(far)
+            let an = analyze_source("let value = 1\nvlaue")
+            let near = an.p
+            let rn = an.resolution
+            let af = analyze_source("let alpha = 1\nzz")
+            let far = af.p
+            let rf = af.resolution
             rn.diagnostics[0].suggestions[0].confidence == Confidence.Medium &&
                 rf.diagnostics[0].suggestions.is_empty() && rf.diagnostics[0].help == null
         }
     }
     given "reserved words" {
         then "binding one is refused as reserved" {
-            let r = resolve(parse_source("let systems = 1"))
+            let r = analyze_source("let systems = 1").resolution
             r.diagnostics.length == 1 && r.diagnostics[0].kind == "resolve.reserved"
         }
         then "binding a grammar keyword refuses — the list derives from the grammar" {
-            let r = resolve(parse_source("let while = 1"))
+            let r = analyze_source("let while = 1").resolution
             r.diagnostics.length == 1 &&
                 r.diagnostics[0].message == "`while` is a keyword"
         }
         then "USING one as a value is a keyword, not a missing name" {
-            let r = resolve(parse_source("let y = 1\ny + while"))
+            let r = analyze_source("let y = 1\ny + while").resolution
             r.diagnostics.length == 1 && r.diagnostics[0].message == "`while` is a keyword"
         }
         then "CALLING one is reserved too — `fn if` can never exist" {
-            let r = resolve(parse_source("if()"))
+            let r = analyze_source("if()").resolution
             r.diagnostics.length == 1 && r.diagnostics[0].message == "`if` is a keyword"
         }
         then "the absence PARSES in callee position — typing refuses it" {
@@ -94,22 +100,22 @@ spec "language/resolve" {
             parse_source("null()").diagnostics.is_empty()
         }
         then "a BUILT-IN type name cannot be redeclared" {
-            let r = resolve(parse_source("type int = { x: bool }"))
+            let r = analyze_source("type int = { x: bool }").resolution
             r.diagnostics.length == 1 &&
                 r.diagnostics[0].message == "`int` is a built-in type"
         }
         then "a type CONSTRUCTOR name is protected too" {
-            let r = resolve(parse_source("type List = { x: int }"))
+            let r = analyze_source("type List = { x: int }").resolution
             r.diagnostics.length == 1 &&
                 r.diagnostics[0].message == "`List` is a built-in type"
         }
         then "every built-in name is protected, enums too" {
-            let r = resolve(parse_source("enum bool {\n    a\n}"))
+            let r = analyze_source("enum bool {\n    a\n}").resolution
             r.diagnostics.length == 1 &&
                 r.diagnostics[0].message == "`bool` is a built-in type"
         }
         then "using one is reserved, never a typo hunt" {
-            let r = resolve(parse_source("spawn"))
+            let r = analyze_source("spawn").resolution
             r.diagnostics.length == 1 && r.diagnostics[0].kind == "resolve.reserved"
         }
         then "the rendering names the future keyword" {

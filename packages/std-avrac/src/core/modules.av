@@ -1,0 +1,52 @@
+//! MODULE PATHS — one type for every path a module system speaks:
+//! `a.b` (a directory `a/b/` or a file `a/b.av` under the package
+//! root) and `@pkg.a.b` (a package's module). `.` is the only
+//! separator, `@` the only sigil; the text form is the spelling in
+//! source, the file form is where the host looks.
+use core.{joined}
+
+export type ModulePath = { segments: List<string> }
+
+impl ModulePath {
+    /// `a.b.c` — the spelling in source.
+    fn text(self) -> string {
+        joined(self.segments, ".")
+    }
+
+    /// The `@pkg` head, when the path names another package.
+    fn package(self) -> string? {
+        let head: string? = self.segments.first()
+        if head == null || head!.length == 0 || code_at(head!, 0) != 64 { return null }
+        head
+    }
+
+    /// The segments under the package head (or all of them).
+    fn local(self) -> List<string> {
+        if self.package() == null { return self.segments }
+        self.segments.filter(code_at(it, 0) != 64)
+    }
+
+    /// The path as a directory under a root: `root/a/b` — the root
+    /// itself for the empty path (the root module).
+    fn dir_under(self, root: string) -> string {
+        let local = self.local()
+        if local.is_empty() { return root }
+        "${root}/${joined(local, "/")}"
+    }
+
+    /// The path as a file under a root: `root/a/b.av`.
+    fn file_under(self, root: string) -> string {
+        "${self.dir_under(root)}.av"
+    }
+}
+
+/// A fn's symbol under its module: `a.b.name`, or the bare name at
+/// the root.
+export fn module_symbol(module: string, name: string) -> string {
+    if module.length == 0 { return name }
+    "${module}.${name}"
+}
+
+export fn module_path(segments: List<string>) -> ModulePath {
+    ModulePath { segments: segments }
+}

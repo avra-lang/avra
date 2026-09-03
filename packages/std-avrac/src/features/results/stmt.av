@@ -3,10 +3,10 @@
 //! err side accepts; lowering wraps the value as the built-in
 //! enum's `.Err` and exits — `FnExit` settles every open scope's
 //! debts at the site, exactly as `return` does.
-use core.{StmtId, ExprId, Type, TypeId, Reg, Ins, ResSides}
+use core.{StmtId, ExprId, TypeId, Reg, Ins, ResSides}
 use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtLowerCx,
               accepts, this_is, failed}
-use diagnostics.{error_at, pointed}
+use diagnostics.{refusal}
 
 export type FailSemantics = { }
 
@@ -33,10 +33,7 @@ fn check_fail(cx: StmtTypeCx, s: StmtId) {
     let v = held!
     let ret: TypeId? = cx.expr.enclosing_ret()
     if ret == null {
-        cx.expr.emit(pointed(
-            error_at("type.fail", cx.loc_of(s), "a `fail` raises to a caller, and there is none enclosing"),
-            "raised here")
-            with { help: "at the top level there is no failure channel" })
+        cx.expr.emit(refusal("type.fail", cx.loc_of(s), "a `fail` raises to a caller, and there is none enclosing", "raised here", "at the top level there is no failure channel"))
         return
     }
     let promised = ret!
@@ -44,20 +41,13 @@ fn check_fail(cx: StmtTypeCx, s: StmtId) {
     let sides: ResSides? = cx.expr.types.res_parts(promised)
     if sides == null {
         let promise = cx.expr.types.name_of(promised)
-        cx.expr.emit(pointed(
-            error_at("type.fail", cx.loc_of(s),
-                "`fail` raises on a `Result`'s failure channel, and this fn promises a `${promise}`"),
-            "raised here")
-            with { help: "declare the answer fallible — `-> Result<${promise}, E>`" })
+        cx.expr.emit(refusal("type.fail", cx.loc_of(s), "`fail` raises on a `Result`'s failure channel, and this fn promises a `${promise}`", "raised here", "declare the answer fallible — `-> Result<${promise}, E>`"))
         return
     }
     if cx.expr.shape_at(v) is .Error { return }
     if accepts(cx.expr, v, sides!.err) { return }
     let gn = cx.expr.name_at(v)
-    cx.expr.emit(pointed(
-        error_at("type.fail", cx.loc_of(s),
-            "`fail` raises a `${cx.expr.types.name_of(sides!.err)}`, this is `${gn}`"),
-        this_is(gn)))
+    cx.expr.emit(refusal("type.fail", cx.loc_of(s), "`fail` raises a `${cx.expr.types.name_of(sides!.err)}`, this is `${gn}`", this_is(gn), null))
 }
 
 /// The failure wrapped and exited — the memory pass settles every

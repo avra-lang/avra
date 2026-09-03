@@ -1,7 +1,7 @@
 //! One parsed program: the tree, its source, and the owner map —
 //! which feature speaks for which node. Parsing and the statement
 //! spine live here; analysis stacks on top in analysis.av.
-use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, TypeRef, flatten}
+use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, TypeRef, flatten, DeclKind}
 use grammar.{Captured, RunOutcome, run_grammar, lex_source, lex_diagnostic}
 use features.{LangNode, NodeSemantics, StmtSemantics, dispatch, list_at, stmt_id_at, LanguageFeature, MethodRow, TypeRow, PropertyRow}
 use features.expr_spine.{SpineSemantics}
@@ -16,6 +16,7 @@ use features.expr_stmt.{ExprStmtSemantics}
 use features.stmt_spine.{HoleSemantics}
 use features.lists.{ListSemantics}
 use features.maps.{MapsSemantics}
+use features.modules.{UseSemantics}
 use features.nullable.{NullableSemantics, LetElseSemantics}
 use features.results.{FailSemantics, CatchSemantics}
 use features.impls.{ImplSemantics, MethodSemantics}
@@ -77,6 +78,7 @@ export type Dispatch = {
     methods: dyn NodeSemantics,
     lambdas: dyn NodeSemantics,
     maps: dyn NodeSemantics,
+    uses: dyn StmtSemantics,
 }
 
 fn new_dispatch() -> Dispatch {
@@ -111,6 +113,7 @@ fn new_dispatch() -> Dispatch {
     let methods: dyn NodeSemantics = MethodSemantics { }
     let lambdas: dyn NodeSemantics = ClosureSemantics { }
     let catches: dyn NodeSemantics = CatchSemantics { }
+    let uses: dyn StmtSemantics = UseSemantics { }
     Dispatch {
         spine: spine, strs: strs, bools: bools, ifs: ifs, whens: whens,
         blocks: blocks, calls: calls, aggs: aggs, structs: structs, enums: enums,
@@ -120,7 +123,7 @@ fn new_dispatch() -> Dispatch {
         structdecls: structdecls, enumdecls: enumdecls,
         ifstmts: ifstmts, returns: returns, letelses: letelses, fails: fails,
         foreaches: foreaches, implds: implds, methods: methods,
-        lambdas: lambdas, maps: mapping,
+        lambdas: lambdas, maps: mapping, uses: uses,
     }
 }
 
@@ -170,6 +173,7 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
         .Fail(_) -> d.fails,
         .ForEach(_, _, _, _) -> d.foreaches,
         .ImplDecl(_, _, _) or .TraitDecl(_, _) -> d.implds,
+        .Use(_, _) -> d.uses,
         .Error -> d.holes,
     }
 }
@@ -199,7 +203,7 @@ impl NodeStore {
             .For(name, _, _, _, _, _) -> name,
             .ForEach(_, name, _, _) -> name,
             .LetElse(name, _, _) -> name,
-            .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _, _)
+            .Assign(_, _) or .ExprStmt(_) or .Use(_, _) or .FnDecl(_, _, _, _, _)
                 or .While(_, _) or .IfStmt(_, _, _) or .Return(_)
                 or .Fail(_) or .StructDecl(_, _, _) or .EnumDecl(_, _, _)
                 or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Error -> null,
@@ -212,7 +216,7 @@ impl NodeStore {
         match self.stmt(s) {
             .Let(_, t, _) -> t,
             .MutLet(_, t, _) -> t,
-            .Assign(_, _) or .ExprStmt(_) or .FnDecl(_, _, _, _, _)
+            .Assign(_, _) or .ExprStmt(_) or .Use(_, _) or .FnDecl(_, _, _, _, _)
                 or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _)
                 or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _)
                 or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _)
@@ -232,7 +236,7 @@ impl NodeStore {
             .Fail(v) -> v,
             .LetElse(_, v, _) -> v,
             .FnDecl(_, _, _, _, _) or .While(_, _)
-                or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _)
+                or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Use(_, _)
                 or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Error -> null,
         }
     }
@@ -244,7 +248,7 @@ impl NodeStore {
             .FnDecl(_, tparams, _, _, _) -> [t.name for t in tparams],
             .StructDecl(_, tparams, _) -> tparams,
             .EnumDecl(_, tparams, _) -> tparams,
-            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
+            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Use(_, _) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or
             .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or
             .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Error -> [],
@@ -268,7 +272,7 @@ impl NodeStore {
         match self.stmt(s) {
             .Return(_) -> true,
             .Fail(_) -> true,
-            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
+            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Use(_, _) or
             .FnDecl(_, _, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .LetElse(_, _, _) or
             .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Error -> false,
@@ -315,7 +319,7 @@ impl NodeStore {
         match self.stmt(s) {
             .StructDecl(name, _, _) -> name,
             .EnumDecl(name, _, _) -> name,
-            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or
+            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Use(_, _) or
             .FnDecl(_, _, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or
             .LetElse(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Error -> null,
@@ -336,6 +340,27 @@ impl NodeStore {
             .StructDecl(name, tparams, fields) -> StructParts { name: name, tparams: tparams, fields: fields },
             _ -> null,
         }
+    }
+
+    /// What a top-level statement DECLARES, or absence — an impl's
+    /// methods are minted by the impl walk, not here.
+    fn declared_kind(self, s: StmtId) -> DeclKind? {
+        if self.fn_parts(s) != null { return DeclKind.Fn }
+        if self.enum_parts(s) != null { return DeclKind.Enum }
+        if self.struct_parts(s) != null { return DeclKind.Record }
+        if self.trait_parts(s) != null { return DeclKind.Trait }
+        null
+    }
+
+    /// A declaring statement's name.
+    fn declared_name(self, s: StmtId) -> string? {
+        self.fn_parts(s)?.name ?? self.type_decl_name(s) ?? self.trait_parts(s)?.name
+    }
+
+    /// A statement that declares rather than runs: a declaration,
+    /// an impl block, or a `use` line.
+    fn is_declaration(self, s: StmtId) -> bool {
+        self.declared_kind(s) != null || self.impl_parts(s) != null || self.use_parts(s) != null
     }
 }
 

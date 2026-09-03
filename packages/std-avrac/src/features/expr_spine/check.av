@@ -3,9 +3,9 @@
 //! MATCHING operands. An Error operand ABSORBS everywhere — its
 //! cause was diagnosed where it happened; the wording lives here
 //! with the operators.
-use core.{ExprId, StmtId, BinOp, Type, TypeId, op_symbol}
+use core.{ExprId, BinOp, Type, TypeId, op_symbol, DeclId}
 use features.{TypeCx, EnumSig, spoken, this_is, variants_are, build_a_record, member_type_of}
-use diagnostics.{error_at, pointed}
+use diagnostics.{refusal}
 
 fn spine_type(cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
@@ -30,15 +30,11 @@ fn index_type(cx: TypeCx, subject: ExprId, index: ExprId) -> TypeId {
     if elem == null {
         if cx.shape_at(subject) is .Error { return cx.error_type }
         let n = cx.name_at(subject)
-        return spoken(cx, pointed(
-            error_at("type.mismatch", cx.loc_of(subject), "`[...]` indexes a `List`, found `${n}`"),
-            this_is(n)))
+        return spoken(cx, refusal("type.mismatch", cx.loc_of(subject), "`[...]` indexes a `List`, found `${n}`", this_is(n), null))
     }
     let ish = cx.shape_at(index)
     if !(ish is .Int) && !(ish is .Error) {
-        cx.emit(pointed(
-            error_at("type.mismatch", cx.loc_of(index), "an index is an `int`, found `${cx.name_at(index)}`"),
-            "this decides the position"))
+        cx.emit(refusal("type.mismatch", cx.loc_of(index), "an index is an `int`, found `${cx.name_at(index)}`", "this decides the position", null))
     }
     elem!
 }
@@ -58,39 +54,25 @@ fn prop_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
 
 /// A property on a TYPE NAME constructs one of its variants — the
 /// answer is the enum's own type.
-fn variant_type(cx: TypeCx, e: ExprId, decl: StmtId, tname: string, name: string) -> TypeId {
-    if !cx.store.decl_tparams(decl).is_empty() {
-        return spoken(cx, pointed(
-            error_at("type.unknown_prop", cx.loc_of(e),
-                "`${tname}.${name}` cannot pin `${tname}`'s type — nothing carries it"),
-            "read here")
-            with { help: "a payload pins the type; the pinned unit surface is recorded" })
+fn variant_type(cx: TypeCx, e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
+    if !cx.decls.tparams(decl).is_empty() {
+        return spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}.${name}` cannot pin `${tname}`'s type — nothing carries it", "read here", "a payload pins the type; the pinned unit surface is recorded"))
     }
     let ty = cx.types.intern(Type.Enum(decl, tname))
     let sig: EnumSig? = cx.variants_of(ty)
     if sig == null {
-        return spoken(cx, pointed(
-            error_at("type.unknown_prop", cx.loc_of(e), "`${tname}` is a record, not an enum"),
-            "read here")
-            with { help: build_a_record(tname) })
+        return spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` is a record, not an enum", "read here", build_a_record(tname)))
     }
     let declared = sig!
     let tag: int? = declared.tag_of(name)
     if tag == null {
-        return spoken(cx, pointed(
-            error_at("type.unknown_prop", cx.loc_of(e), "`${tname}` has no variant `${name}`"),
-            "read here")
-            with { help: variants_are(declared) })
+        return spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` has no variant `${name}`", "read here", variants_are(declared)))
     }
     // A carrying variant named bare would build a value missing its
     // payload — the arity law belongs on both construction paths.
     let carried: TypeId? = declared.payload_of(name)
     if carried != null {
-        return spoken(cx, pointed(
-            error_at("type.mismatch", cx.loc_of(e),
-                "`${tname}.${name}` carries a `${cx.types.name_of(carried!)}`"),
-            "named without it here")
-            with { help: "write `${tname}.${name}(<value>)`" })
+        return spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${tname}.${name}` carries a `${cx.types.name_of(carried!)}`", "named without it here", "write `${tname}.${name}(<value>)`"))
     }
     ty
 }
@@ -134,10 +116,7 @@ fn needs(cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
     let sh = cx.shape_at(e)
     if sh == want || sh is .Error { return }
     let n = cx.name_at(e)
-    cx.emit(pointed(
-        error_at("type.mismatch", cx.loc_of(e),
-            "`${op_symbol(op)}` needs `${cx.types.name_of(cx.types.intern(want))}` operands, found `${n}`"),
-        this_is(n)))
+    cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${op_symbol(op)}` needs `${cx.types.name_of(cx.types.intern(want))}` operands, found `${n}`", this_is(n), null))
 }
 
 /// `!` negates a bool; Error absorbs to the answer.
@@ -145,9 +124,7 @@ fn not_type(cx: TypeCx, v: ExprId) -> TypeId {
     let sh = cx.shape_at(v)
     if sh is .Bool || sh is .Error { return cx.types.intern(Type.Bool) }
     let n = cx.name_at(v)
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(v), "`!` negates a `bool`, found `${n}`"),
-        this_is(n)))
+    spoken(cx, refusal("type.mismatch", cx.loc_of(v), "`!` negates a `bool`, found `${n}`", this_is(n), null))
 }
 
 /// What `==` can compare TODAY: the values the runtime tests BY
@@ -200,19 +177,12 @@ fn eq_type(cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     }
     // A GUARANTEE beside `null` is a question with only one answer.
     if ls is .Null && rs is .Null {
-        return spoken(cx, pointed(
-            error_at("type.mismatch", cx.loc_of(l), "both sides are always absent, so `${op_symbol(op)}` always answers"),
-            "always absent")
-            with { help: "write the answer alone" })
+        return spoken(cx, refusal("type.mismatch", cx.loc_of(l), "both sides are always absent, so `${op_symbol(op)}` always answers", "always absent", "write the answer alone"))
     }
     if ls is .Null || rs is .Null {
         let solid = if ls is .Null { r } else { l }
         let n = cx.name_at(solid)
-        return spoken(cx, pointed(
-            error_at("type.mismatch", cx.loc_of(solid),
-                "`${op_symbol(op)} null` asks a nullable, this is `${n}`"),
-            this_is(n))
-            with { help: "`${n}` is a guarantee — it is never absent" })
+        return spoken(cx, refusal("type.mismatch", cx.loc_of(solid), "`${op_symbol(op)} null` asks a nullable, this is `${n}`", this_is(n), "`${n}` is a guarantee — it is never absent"))
     }
     // An AGGREGATE would compare by ADDRESS — never what the writer
     // meant, and the engines disagreed about it: the interpreter
@@ -222,15 +192,9 @@ fn eq_type(cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     if found != null {
         let offender = found!
         let n = cx.name_at(offender)
-        return spoken(cx, pointed(
-            error_at("type.mismatch", cx.loc_of(offender), "`${op_symbol(op)}` compares scalars for now"),
-            this_is(n))
-            with { help: compare_help(cx.shape_at(offender)) })
+        return spoken(cx, refusal("type.mismatch", cx.loc_of(offender), "`${op_symbol(op)}` compares scalars for now", this_is(n), compare_help(cx.shape_at(offender))))
     }
     if ls == rs { return cx.types.intern(Type.Bool) }
     let rn = cx.name_at(r)
-    spoken(cx, pointed(
-        error_at("type.mismatch", cx.loc_of(r),
-            "`${op_symbol(op)}` compares matching types, found `${cx.name_at(l)}` and `${rn}`"),
-        this_is(rn)))
+    spoken(cx, refusal("type.mismatch", cx.loc_of(r), "`${op_symbol(op)}` compares matching types, found `${cx.name_at(l)}` and `${rn}`", this_is(rn), null))
 }

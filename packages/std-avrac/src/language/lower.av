@@ -7,13 +7,9 @@
 //! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, some_list, joined, dst_of}
-use diagnostics.{Diag, error_at, pointed, loc_at}
-use features.{LowerCx, StmtLowerCx, FnSig, StructSig, EnumSig, fn_box, capture_lane, slot_read, push_slot,
-              fn_sig_of, record_sig_of, variant_sig_of, res_enum_sig,
-              adopted, carried_of, okayed, hollow_of, Sub,
-              subbed_variants, subbed_fields, method_symbol}
-use @std.errors.{Loc}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, some_list, joined, FileId, DeclId, NodeStore}
+use diagnostics.{Diag, error_at, loc_at, refusal}
+use features.{FnSig, fn_sig_of, Sub}
 
 /// One lowered body: instructions in order and each register's type
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
@@ -39,6 +35,7 @@ export type Lowered = {
 
 type Lower = {
     a: Analysis,
+    home: int,
     fn_ret: TypeId?,
     sub: Sub?,
     jobs: Jobs,
@@ -64,58 +61,56 @@ type Jobs = { pending: List<Spec>, seen: Map<string, bool>, lifts: List<Lift>, w
 
 /// A NAMED fn boxed as a value calls through a generated WRAPPER
 /// that wears the uniform convention: env at seat 0, forwarded.
-type Wrap = { target: string, seats: List<TypeId>, ret: TypeId, name: string }
+type Wrap = { target: string, seats: List<TypeId>, ret: TypeId, name: string, home: int }
 
 /// One lambda awaiting its LIFT: the body lowers as a top-level fn
 /// taking (env, params…) under the enclosing body's view.
-type Lift = { lam: ExprId, name: string, sub: Sub? }
+type Lift = { lam: ExprId, name: string, sub: Sub?, home: int }
 
 /// One lowering per BODY — `fn_ret` is that body's declared answer
 /// (null for main) and `sub` its instantiation (null when the body
 /// is not a specialization), which is why they are fields, not
-/// stacks.
-fn new_lower(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> Lower {
+/// stacks. `home` is the file among the program's, so the jobs a
+/// body mints lower where they were written.
+fn new_lower(a: Analysis, home: int, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> Lower {
     Lower {
-        a: a, fn_ret: fn_ret, sub: sub, jobs: jobs, ins: [], reg_types: [], defined: [],
-        regs: filled<Reg?>(a.store.exprs.count(), null),
-        slots: filled<Reg?>(a.store.stmts.count(), null),
-        boxed: filled(a.store.stmts.count(), false),
-        pattern_regs: filled<Reg?>(a.store.exprs.count(), null),
-        index_regs: filled<Reg?>(a.store.stmts.count(), null),
+        a: a, home: home, fn_ret: fn_ret, sub: sub, jobs: jobs, ins: [], reg_types: [], defined: [],
+        regs: filled<Reg?>(a.p.store.exprs.count(), null),
+        slots: filled<Reg?>(a.p.store.stmts.count(), null),
+        boxed: filled(a.p.store.stmts.count(), false),
+        pattern_regs: filled<Reg?>(a.p.store.exprs.count(), null),
+        index_regs: filled<Reg?>(a.p.store.stmts.count(), null),
         failures: [],
     }
 }
 
-/// The whole program as IR: every plain fn body, then main, then
-/// the mono worklist drained — each generic fn lowered ONCE per
-/// distinct instantiation its call sites recorded, under a
-/// substitution VIEW that makes every register concrete. The guard
-/// is the polymorphic-recursion refusal.
+/// A lone file is a program of one.
 export fn lower(a: Analysis) -> Lowered {
+    lower_all([a], 0)
+}
+
+/// The whole program as IR: every file's plain fn bodies, the
+/// entry's main (an empty one when the program is only CHECKED —
+/// no entry), then ONE mono worklist drained across files — a
+/// generic fn lowered ONCE per distinct instantiation any file
+/// recorded, in the file that declares it, under a substitution
+/// VIEW that makes every register concrete; a lifted lambda lowers
+/// in the file it was written. The guard is the polymorphic-
+/// recursion refusal.
+export fn lower_all(files: List<Analysis>, entry: int?) -> Lowered {
     let jobs = Jobs { pending: [], seen: {}, lifts: [], wraps: [] }
     mut fns: List<Body> = []
     mut failures: List<string> = []
-    for s in a.stmts {
-        let parts: FnParts? = a.store.fn_parts(s)
-        let p: FnParts? = directly_lowered(parts)
-        if p != null {
-            let lf = lower_fn(a, s, p!.name, p!.body, null, jobs)
+    mut refusals: List<Diag> = []
+    let at: int = entry ?? 0
+    for (i, a) in files.enumerate() {
+        for lf in declared_bodies(a, i, jobs) {
             fns.push(lf.body)
             failures = failures.concat(lf.failures)
         }
-        let ip: ImplParts? = a.store.impl_parts(s)
-        if ip != null {
-            for f in ip!.fns {
-                let mp: FnParts? = a.store.fn_parts(f)
-                if mp != null {
-                    let lf = lower_fn(a, f, method_symbol(ip!.target, mp!.name), mp!.body, null, jobs)
-                    fns.push(lf.body)
-                    failures = failures.concat(lf.failures)
-                }
-            }
-        }
+        if entry != null && i != at { refusals = refusals.concat(entry_only(a, files[at])) }
     }
-    let lm = lower_main(a, jobs)
+    let lm = if entry == null { empty_main(files[0]) } else { lower_main(files[at], at, jobs) }
     mut pending = jobs.pending
     mut lifts = jobs.lifts
     mut wraps = jobs.wraps
@@ -125,19 +120,26 @@ export fn lower(a: Analysis) -> Lowered {
     while (!pending.is_empty() || !lifts.is_empty() || !wraps.is_empty()) && drained < 1000 {
         if pending.is_empty() && lifts.is_empty() {
             let wj = wraps.pop()
-            fns.push(wrapped_body(a, wj))
+            fns.push(wrapped_body(files[wj.home], wj))
         } else if pending.is_empty() {
             let lj = lifts.pop()
-            let lf = lower_lambda(a, lj, jobs)
+            let lf = lower_lambda(files[lj.home], lj, jobs)
             fns.push(lf.body)
             failures = failures.concat(lf.failures)
         } else {
             let job = pending.pop()
-            let body: ExprId? = fn_body_of(a, job.sub.target)
-            if body != null {
-                let lf = lower_fn(a, job.sub.target, job.name, body!, job.sub, jobs)
-                fns.push(lf.body)
-                failures = failures.concat(lf.failures)
+            let home: int? = home_of(files, job.sub.target)
+            if home == null {
+                failures.push("a specialization of `${job.name}` names no file")
+            } else {
+                let h = home!
+                let a = files[h]
+                let body: ExprId? = fn_body_of(a, a.decls.decl(job.sub.target).stmt)
+                if body != null {
+                    let lf = lower_fn(a, h, a.decls.decl(job.sub.target).stmt, job.name, body!, job.sub, jobs)
+                    fns.push(lf.body)
+                    failures = failures.concat(lf.failures)
+                }
             }
         }
         drained = drained + 1
@@ -147,21 +149,60 @@ export fn lower(a: Analysis) -> Lowered {
     }
     failures = failures.concat(lm.failures)
     Lowered {
-        fns: fns, entry: lm.body, types: a.typing.types,
-        diagnostics: lm.refusals.concat([error_at("language.defect", null, m) for m in failures]),
+        fns: fns, entry: lm.body, types: files[0].typing.types,
+        diagnostics: refusals.concat(lm.refusals).concat([error_at("language.defect", null, m) for m in failures]),
     }
+}
+
+/// A file's declared bodies: its fns and its impls' methods.
+fn declared_bodies(a: Analysis, home: int, jobs: Jobs) -> List<LoweredBody> {
+    mut out: List<LoweredBody> = []
+    for s in a.p.stmts {
+        let p: FnParts? = directly_lowered(a.p.store.fn_parts(s))
+        if p != null { out.push(lower_fn(a, home, s, a.decls.symbol(a.decl_of(s)), p!.body, null, jobs)) }
+        let ip: ImplParts? = a.p.store.impl_parts(s)
+        if ip != null { out = out.concat(method_bodies(a, home, ip!, jobs)) }
+    }
+    out
+}
+
+fn method_bodies(a: Analysis, home: int, ip: ImplParts, jobs: Jobs) -> List<LoweredBody> {
+    mut out: List<LoweredBody> = []
+    for f in ip.fns {
+        let mp: FnParts? = a.p.store.fn_parts(f)
+        if mp != null { out.push(lower_fn(a, home, f, a.decls.symbol(a.decl_of(f)), mp!.body, null, jobs)) }
+    }
+    out
+}
+
+/// The file a declaration lives in, among the program's — files
+/// ride in FileId order.
+fn home_of(files: List<Analysis>, d: DeclId) -> int? {
+    let h = files[0].decls.decl(d).file.index
+    if h >= files.length { return null }
+    h
+}
+
+/// A module file holds declarations; run-time statements belong to
+/// the entry alone.
+fn entry_only(a: Analysis, entry: Analysis) -> List<Diag> {
+    [runs_outside_entry(a, s, entry) for s in a.p.stmts if runs_at_top(a.p.store, s)]
+}
+
+fn runs_at_top(store: NodeStore, s: StmtId) -> bool {
+    !store.is_declaration(s)
 }
 
 type LoweredBody = { body: Body, failures: List<string>, refusals: List<Diag> }
 
 /// One fn: params pre-minted as registers 0..N-1, the body inside
 /// one scope, the answer after the scope settles.
-fn lower_fn(a: Analysis, s: StmtId, fname: string, root: ExprId, sub: Sub?, jobs: Jobs) -> LoweredBody {
-    let sig: FnSig? = fn_sig_of(a.decl_sig(s))
+fn lower_fn(a: Analysis, home: int, s: StmtId, fname: string, root: ExprId, sub: Sub?, jobs: Jobs) -> LoweredBody {
+    let sig: FnSig? = fn_sig_of(a.decls.sig(a.decl_of(s)))
     let raw: List<TypeId> = sig?.params ?? []
     let rt: TypeId = viewed_ty(a, sub, sig?.ret ?? a.typing.types.intern(Type.Error))
     let ptypes = [viewed_ty(a, sub, pt) for pt in raw]
-    let lo = new_lower(a, rt, sub, jobs)
+    let lo = new_lower(a, home, rt, sub, jobs)
     mut tys = lo.reg_types
     // LICENSED I3: `tys` ALIASES lo.reg_types — `concat` would rebind
     // the local and the registers would never reach the body
@@ -187,8 +228,8 @@ fn lower_lambda(a: Analysis, lj: Lift, jobs: Jobs) -> LoweredBody {
     let held: Arrow? = a.typing.types.arrow_parts(lam_ty)
     let seats: List<TypeId> = held?.seats ?? []
     let rt: TypeId = held?.answer ?? a.typing.types.intern(Type.Error)
-    let body: ExprId? = a.store.lambda_parts(lj.lam)?.body
-    let lo = new_lower(a, rt, lj.sub, jobs)
+    let body: ExprId? = a.p.store.lambda_parts(lj.lam)?.body
+    let lo = new_lower(a, lj.home, rt, lj.sub, jobs)
     mut tys = lo.reg_types
     // LICENSED I3: `tys` ALIASES lo.reg_types — `concat` would rebind
     tys.push(lam_ty)
@@ -230,10 +271,10 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
     Body { name: w.name, params: [fnty].concat(w.seats), ret: w.ret, gives: dst, ins: ins, reg_types: tys }
 }
 
-fn lower_main(a: Analysis, jobs: Jobs) -> LoweredBody {
-    let lo = new_lower(a, null, null, jobs)
+fn lower_main(a: Analysis, home: int, jobs: Jobs) -> LoweredBody {
+    let lo = new_lower(a, home, null, null, jobs)
     lo.give(Ins.ScopeEnter(Level.Application))
-    let last: Reg? = lower_stmts(lo, a.stmts)
+    let last: Reg? = lower_stmts(lo, a.p.stmts)
     let refusal: Diag? = if last == null { null } else { print_lowering(lo, last!) }
     lo.give(Ins.ScopeExit(null))
     lo.give(Ins.Ret(0))
@@ -247,546 +288,16 @@ fn lower_main(a: Analysis, jobs: Jobs) -> LoweredBody {
     }
 }
 
-/// One subtree's register, lowered at first request and memoized.
-/// The recursion IS the walk: an impl asking for a child's register
-/// lands back here — so a region's branches lower INSIDE it.
-fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
-    let seen: Reg? = lo.regs[e.index]
-    if seen != null { return seen! }
-    let cx = expr_lower_cx(lo)
-    let born = semantics_of(lo.a.dispatch, lo.a.store.expr(e)).lower(cx, e)
-    let r = widened(cx, lo, e, narrowed(cx, lo, e, born))
-    mut rs = lo.regs
-    rs.set(e.index, r)
-    r
-}
-
-/// A type under the body's instantiation — IDENTITY for a plain
-/// body; the substitution for a specialization. Every type and
-/// fact read in lowering passes through here, which is what makes
-/// every minted register concrete.
-fn viewed_ty(a: Analysis, sub: Sub?, ty: TypeId) -> TypeId {
-    if sub == null { return ty }
-    a.typing.types.substituted(ty, sub!.target, sub!.args)
-}
-
-/// The expression capabilities, wired once per request — what
-/// lower_subtree runs and StmtLowerCx nests as `expr`.
-fn expr_lower_cx(lo: Lower) -> LowerCx {
-    LowerCx {
-        store: lo.a.store,
-        types: lo.a.typing.types,
-        methods: lo.a.methods,
-        properties: lo.a.properties,
-        result: (k: ExprId) -> lo.mint(k),
-        reg_of: (k: ExprId) -> lower_subtree(lo, k),
-        def_reg: (k: ExprId) -> lo.def_reg(k),
-        cell_of: (k: ExprId) -> lo.cell_of(k),
-        shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.view(lo.a.type_at(k))),
-        type_at: (k: ExprId) -> lo.view(lo.a.type_at(k)),
-        mint: (k: ExprId) -> lo.mint(k),
-        mint_like: (r: Reg) -> lo.mint_ty(lo.reg_types[r.index]),
-        mint_shape: (sh: Type) -> lo.mint_ty(lo.a.typing.types.intern(sh)),
-        mint_ty: (ty: TypeId) -> lo.mint_ty(ty),
-        fields_at: (k: ExprId) -> lo.fields_at(k),
-        fields_of: (ty: TypeId) -> lo.fields_of(ty),
-        bind_pattern: (k: ExprId, r: Reg) -> lo.bind_pattern(k, r),
-        variants_at: (k: ExprId) -> lo.variants_at(k),
-        variants_of: (ty: TypeId) -> lo.variants_ty(ty),
-        emit: (i: Ins) -> lo.give(i),
-        lower_block: (stmts: List<StmtId>, value: ExprId?) -> block_reg(lo, stmts, value),
-        enclosing_ret: () -> lo.fn_ret,
-        callee_of: (k: ExprId, name: string) -> lo.callee_of(k, name),
-        trait_methods: (decl: StmtId) -> trait_method_names(lo.a.store, decl),
-        lift: (k: ExprId) -> lo.lift(k),
-        capture_regs: (k: ExprId) -> lo.capture_regs(k),
-        indirect_callee: (k: ExprId) -> lo.indirect_callee(k),
-        fail: (msg: string) -> lo.record(msg),
+/// The entry of a program that is only checked: nothing runs.
+fn empty_main(a: Analysis) -> LoweredBody {
+    let ins: List<Ins> = [Ins.ScopeEnter(Level.Application), Ins.ScopeExit(null), Ins.Ret(0)]
+    LoweredBody {
+        body: Body { name: "main", params: [], ret: a.typing.types.intern(Type.Int), gives: null, ins: ins, reg_types: [] },
+        failures: [],
+        refusals: [],
     }
 }
 
-/// A read a presence test PROVED — typing recorded the nullable it
-/// wears; the read unwraps here, at the same one edge widening
-/// lifts. Narrow first, widen after: a proven read may itself be
-/// lifted into a fresh nullable.
-fn narrowed(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
-    let worn: TypeId? = lo.a.typing.narrows[e.index]
-    if worn == null { return r }
-    carried_of(cx, r, lo.view(worn!))
-}
-
-/// A value a boundary LIFTED — into a nullable, or into a Result's
-/// success (the auto-Ok wrap). Recorded by typing, minted here —
-/// the one place every expression passes through, so a lift takes
-/// its layout at exactly one edge; the target's shape decides
-/// which: the null literal arrives already absent and `adopted`
-/// knows; anything else lifting into a Res is a success.
-fn widened(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
-    let worn: TypeId? = lo.a.typing.widens[e.index]
-    if worn == null { return r }
-    let into = lo.view(worn!)
-    let sh: Type = lo.a.typing.types.shape_of(into)
-    if sh is .Res { return okayed(cx, into, r) }
-    // an empty array IS a valid list of anything, an empty map a
-    // valid map of anything — identity lifts
-    if sh is .List || sh is .Map { return r }
-    if sh is .Dyn { return boxed_into(cx, lo, into, r) }
-    adopted(cx, into, cx.shape_at(e) is .Null, r)
-}
-
-/// The dyn lift: the box is [value, methods…] in trait order — an
-/// ordinary slot array, minted here at the one widening edge. The
-/// value's own declared name picks whose methods ride along;
-/// dispatch reads the same lanes by the same list.
-fn boxed_into(cx: LowerCx, lo: Lower, into: TypeId, r: Reg) -> Reg {
-    let tdecl: StmtId? = match lo.a.typing.types.shape_of(into) {
-        .Dyn(d, _) -> d,
-        _ -> null,
-    }
-    // an instantiation may arrive already boxed — identity lift
-    if lo.a.typing.types.shape_of(lo.reg_types[r.index]) is .Dyn { return r }
-    let target: string? = boxed_target(lo, r)
-    if tdecl == null || target == null {
-        cx.fail("defect: a dyn lift from an unnamed shape survived typing")
-        return r
-    }
-    let dst = lo.mint_ty(into)
-    lo.give(Ins.CallRt(dst, "avra_array_new", []))
-    push_slot(cx, dst, r)
-    for mn in trait_method_names(lo.a.store, tdecl!) {
-        let a = lo.mint_ty(lo.a.typing.types.intern(Type.Int))
-        lo.give(Ins.FnAddr(a, method_symbol(target!, mn)))
-        push_slot(cx, dst, a)
-    }
-    dst
-}
-
-/// The lifted value's declared name — whose impl the box carries.
-fn boxed_target(lo: Lower, r: Reg) -> string? {
-    match lo.a.typing.types.shape_of(lo.reg_types[r.index]) {
-        .Struct(_, n) -> n,
-        .Enum(_, n) -> n,
-        .Int or .Str or .Bool or .List(_) or .Opt(_) or .Null or
-        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or
-        .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-    }
-}
-
-/// A trait's method names, declaration order — the box's lane
-/// assignment; boxing writes and dispatch reads the same list.
-fn trait_method_names(store: NodeStore, decl: StmtId) -> List<string> {
-    let parts: TraitParts? = store.trait_parts(decl)
-    if parts == null { return [] }
-    [store.fn_parts(f)?.name ?? "" for f in parts!.fns]
-}
-
-/// Statements in order, each through its own StmtSemantics — the
-/// ONE statement loop, top level and blocks alike. The driver owns
-/// slots and the running last register.
-fn lower_stmts(lo: Lower, stmts: List<StmtId>) -> Reg? {
-    let cx = StmtLowerCx {
-        store: lo.a.store,
-        expr: expr_lower_cx(lo),
-        lower_stmts: (body: List<StmtId>) -> lower_stmt_list(lo, body),
-        slot_of: (s: StmtId) -> lo.slots[s.index],
-        bind_slot: (s: StmtId, slot: Reg) -> lo.bind_slot(s, slot),
-        bind_index: (s: StmtId, r: Reg) -> lo.bind_index(s, r),
-    }
-    // LICENSED I4: the running last register, not a scan
-    mut last: Reg? = null
-    for s in stmts {
-        let r: Reg? = stmt_semantics_of(lo.a.dispatch, lo.a.store.stmt(s)).lower_stmt(cx, s)
-        if r != null {
-            if lo.slots[s.index] == null { lo.set_slot(s, r!) }
-            last = r
-        }
-    }
-    last
-}
-
-/// A statement list lowered for its instructions alone — a loop
-/// body's turn.
-fn lower_stmt_list(lo: Lower, stmts: List<StmtId>) {
-    let _ = lower_stmts(lo, stmts)
-}
-
-/// The program's answer, shown — printing IS lowering: the text
-/// projection for the answer's shape, then one puts. No Print
-/// instruction exists; both engines just run these calls. An
-/// answer with NO projection refuses HERE, before either engine —
-/// so eval and native cannot diverge on it.
-fn print_lowering(lo: Lower, last: Reg) -> Diag? {
-    let sh = lo.a.typing.types.shape_of(lo.reg_types[last.index])
-    let unprintable: string? = match sh {
-        .Struct(_, n) -> n,
-        .Enum(_, n) -> n,
-        .Res(_, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
-        .App(_, _, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
-        .TypeName(_, n) -> n,
-        .Var(_, _, n) -> n,
-        .EmptyList -> "[]",
-        .Opt(_) or .Null or .Dyn(_, _) or .Fn(_, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
-        .Int or .Str or .Bool or .List(_) or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-    }
-    if unprintable != null { return no_projection(lo, unprintable!) }
-    let text: Reg? = match sh {
-        .Str -> last,
-        .Int -> text_call(lo, "avra_int_text", last),
-        .Bool -> text_call(lo, "avra_bool_text", last),
-        .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
-        .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or
-        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) -> null,
-        .Opt(_) or .Null or .EmptyList -> null,
-        .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-    }
-    if text != null { lo.give(Ins.CallRtVoid("avra_puts", [text!])) }
-    null
-}
-
-/// The refusal: an answer without a text projection names its type
-/// and the remedy.
-fn no_projection(lo: Lower, tname: string) -> Diag {
-    pointed(
-        error_at("lower.no_projection", lo.answer_loc(),
-            "the program's answer is a `${tname}`, which has no text projection yet"),
-        "this is the answer")
-        with { help: "project a field instead — `p.x` prints" }
-}
-
-fn text_call(lo: Lower, callee: string, v: Reg) -> Reg {
-    let t = lo.mint_ty(lo.a.typing.types.intern(Type.Str))
-    lo.give(Ins.CallRt(t, callee, [v]))
-    t
-}
-
-/// The runtime printer for a list, by its element shape.
-fn list_text_callee(lo: Lower, elem: TypeId) -> string {
-    if lo.a.typing.types.shape_of(elem) is .Bool { return "avra_bools_text" }
-    if lo.a.typing.types.shape_of(elem) is .Str { return "avra_strs_text" }
-    "avra_ints_text"
-}
-
-/// A block is a scope: statements lower in order into it, and the
-/// value register escapes as the scope's yield. A block that
-/// LEAVES yields a hollow typed as the fn's promise — the exit
-/// already happened, and everything after it is the backend's dead
-/// continuation.
-fn block_reg(lo: Lower, stmts: List<StmtId>, value: ExprId?) -> Reg {
-    lo.give(Ins.ScopeEnter(Level.Application))
-    let _ = lower_stmts(lo, stmts)
-    let r = if value == null { departed_tail(lo) } else { lower_subtree(lo, value!) }
-    lo.give(Ins.ScopeExit(r))
-    r
-}
-
-/// The never-read yield of a block that left — typed as the fn's
-/// promise, so every merge it feeds stays type-consistent.
-fn departed_tail(lo: Lower) -> Reg {
-    hollow_of(expr_lower_cx(lo), lo.fn_ret ?? lo.a.typing.types.intern(Type.Error))
-}
-
-impl Lower {
-    /// The fresh register for a node, typed by the type pass.
-    fn mint(self, e: ExprId) -> Reg {
-        self.mint_ty(self.view(self.a.type_at(e)))
-    }
-
-    /// The body's substitution view — identity for plain bodies.
-    fn view(self, ty: TypeId) -> TypeId {
-        viewed_ty(self.a, self.sub, ty)
-    }
-
-    /// The name a call site targets: the plain name, or — when
-    /// typing recorded an instantiation — the mangling of that
-    /// instantiation COMPOSED with this body's own view, enqueued
-    /// for the worklist on first sight.
-    fn callee_of(self, e: ExprId, name: string) -> string {
-        let held: Sub? = self.a.typing.substs[e.index]
-        if held == null { return name }
-        let composed = Sub { target: held!.target, args: [self.view(t) for t in held!.args] }
-        let mangled = mangle(name, composed)
-        if self.unseen(mangled) {
-            mut pending = self.jobs.pending
-            pending.push(Spec { name: mangled, sub: composed })
-        }
-        mangled
-    }
-
-    /// A worklist name's FIRST sighting — true exactly once; the
-    /// three queues share this one dedupe.
-    fn unseen(self, name: string) -> bool {
-        let met: bool? = self.jobs.seen.get(name)
-        if met != null { return false }
-        mut seen = self.jobs.seen
-        seen.set(name, true)
-        true
-    }
-
-    /// A fresh register of an explicit type — for values no
-    /// expression names (the answer's printed text).
-    fn mint_ty(self, ty: TypeId) -> Reg {
-        mut tys = self.reg_types
-        tys.push(ty)
-        Reg { index: tys.length - 1 }
-    }
-
-    /// Every instruction lands here — and a runtime callee the
-    /// registry does not know refuses the BUILD, loudly, instead of
-    /// crashing the backend.
-    fn give(self, i: Ins) {
-        // A new CALLING instruction must decide whether the runtime
-        // registry validates it; the arms make that unavoidable.
-        let callee: string? = match i {
-            .CallRt(_, c, _) -> c,
-            .CallRtVoid(c, _) -> c,
-            .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-            .Bin(_, _, _, _) or .Un(_, _, _) or .Call(_, _, _) or
-            .FnAddr(_, _) or .CallPtr(_, _, _) or
-            .Pack(_, _) or .Extract(_, _, _) or
-            .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
-            .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or
-            .Alloca(_) or .Load(_, _) or .Store(_, _) or
-            .LoopStart or .LoopCond(_) or .LoopEnd or
-            .Retain(_) or .Release(_) or .RetVal(_) or .FnExit(_) or
-            .Ret(_) -> null,
-        }
-        if callee != null && rt_sig_of(callee!) == null {
-            self.record("defect: unknown runtime callee `${callee!}` — add its row to runtime_api.av")
-        }
-        self.defined_in_order(i)
-        mut ins = self.ins
-        ins.push(i)
-    }
-
-    /// THE MINT-ORDER LAW: registers define in the order they were
-    /// minted — the backend's value table is definition order, read
-    /// by mint index. A rule that mints its answer before its
-    /// operands breaks it; the break is a defect HERE, named, never
-    /// a native crash. `seeded` records the params, which define at
-    /// entry without an instruction.
-    fn defined_in_order(self, i: Ins) {
-        let d: Reg? = dst_of(i)
-        if d == null { return }
-        let dst = d!
-        let expected = self.defined.length
-        // LICENSED I9: REGISTER identity — a mint index, not a type
-        if dst.index != expected {
-            self.record("defect: register r${dst.index} defines out of mint order — r${expected} is next (mint operands first, the answer last)")
-        }
-        mut ds = self.defined
-        ds.push(dst)
-    }
-
-    /// The registers a body's entry defines without an instruction
-    /// — its params (and a lambda's env) — recorded so the law
-    /// counts from the first minted body register.
-    fn seeded(self) {
-        mut ds = self.defined
-        // LICENSED I3: the register IS its index
-        for j in 0..self.reg_types.length { ds.push(Reg { index: j }) }
-    }
-
-    /// An ident's register: its param's (params ARE registers
-    /// 0..N-1), or its definition's slot — LOADED first when the
-    /// slot is a memory cell, so the ident rule stays dumb.
-    fn def_reg(self, e: ExprId) -> Reg? {
-        let b: Binding? = self.a.binding(e)
-        if b == null { return null }
-        self.read_binding(e, b!)
-    }
-
-    /// The mut CELL behind a name — null for every binding that is
-    /// not a boxed mut.
-    fn cell_of(self, e: ExprId) -> Reg? {
-        let b: Binding? = self.a.binding(e)
-        if b == null { return null }
-        match b! {
-            .Def(s) -> if self.boxed[s.index] { self.slots[s.index] } else { null },
-            _ -> null,
-        }
-    }
-
-    /// A binding's VALUE in the current body — the ident rule and
-    /// the capture pack share this one projection.
-    fn read_binding(self, e: ExprId, b: Binding) -> Reg? {
-        match b {
-            .Param(i) -> Reg { index: i },
-            .Def(s) -> if self.a.store.fn_parts(s) != null { self.fn_value_reg(e, s) } else { self.slot_reg(e, s) },
-            .Pattern(v) -> self.pattern_regs[v.index],
-            // valid only inside the LIFTED body: env rides seat 0
-            .LambdaParam(_, i) -> Reg { index: i + 1 },
-            .Capture(_, j) -> self.env_read(e, j),
-            .Index(s) -> self.index_regs[s.index],
-        }
-    }
-
-    /// The register a pairing loop's index reads this turn.
-    fn bind_index(self, s: StmtId, r: Reg) {
-        mut rs = self.index_regs
-        rs.set(s.index, r)
-    }
-
-    /// A NAMED fn as a value: a captureless box holding a WRAPPER's
-    /// address — the wrapper wears the uniform (env, args…)
-    /// convention, so one call path serves lambdas and fns alike.
-    fn fn_value_reg(self, e: ExprId, s: StmtId) -> Reg? {
-        let name: string? = self.a.store.fn_parts(s)?.name
-        if name == null { return null }
-        let wname = "${name!}$w"
-        if self.unseen(wname) {
-            let fnty = self.view(self.a.typing.of_expr[e.index])
-            let held: Arrow? = self.a.typing.types.arrow_parts(fnty)
-            mut wraps = self.jobs.wraps
-            wraps.push(Wrap {
-                target: name!,
-                seats: held?.seats ?? [],
-                ret: held?.answer ?? self.a.typing.types.intern(Type.Error),
-                name: wname,
-            })
-        }
-        let dst = self.mint(e)
-        fn_box(expr_lower_cx(self), dst, wname, [])
-        dst
-    }
-
-    /// A capture read: its LANE of the env box at register 0 — the
-    /// lane law lives with the fn value's other verbs.
-    fn env_read(self, e: ExprId, j: int) -> Reg? {
-        slot_read(expr_lower_cx(self), Reg { index: 0 }, capture_lane(j), self.view(self.a.type_at(e)))
-    }
-
-    /// The lift: names the lambda's body (mangled under the view
-    /// when the enclosing body is a specialization) and enqueues it
-    /// once.
-    fn lift(self, e: ExprId) -> string {
-        let name = if self.sub == null { "l${e.index}" } else { mangle("l${e.index}", self.sub!) }
-        if self.unseen(name) {
-            mut lifts = self.jobs.lifts
-            lifts.push(Lift { lam: e, name: name, sub: self.sub })
-        }
-        name
-    }
-
-    /// The capture pack's values, in lane order — each source read
-    /// in the CURRENT body (a chained capture reads this body's own
-    /// env).
-    fn capture_regs(self, e: ExprId) -> List<Reg> {
-        let cap: Cap? = captures_of(self.a.resolution, e)
-        if cap == null { return [] }
-        mut out: List<Reg> = []
-        for b in cap!.sources {
-            let r: Reg? = self.read_binding(e, b)
-            if r == null {
-                self.record("defect: a capture without a value survived resolve")
-            } else {
-                out.push(r!)
-            }
-        }
-        out
-    }
-
-    /// The box a call goes THROUGH, when the callee is a fn-typed
-    /// VALUE — null for a declared fn (the direct path).
-    fn indirect_callee(self, e: ExprId) -> Reg? {
-        let b: Binding? = self.a.binding(e)
-        if b == null { return null }
-        let direct: bool = match b! {
-            .Def(s) -> self.a.store.fn_parts(s) != null,
-            _ -> false,
-        }
-        if direct { return null }
-        self.read_binding(e, b!)
-    }
-
-    /// A definition's register: its slot — LOADED first when the
-    /// slot is a memory cell, so the ident rule stays dumb.
-    fn slot_reg(self, e: ExprId, target: StmtId) -> Reg? {
-        let slot: Reg? = self.slots[target.index]
-        if slot == null { return null }
-        if self.boxed[target.index] {
-            let ld = self.mint(e)
-            self.give(Ins.Load(ld, slot!))
-            return ld
-        }
-        slot
-    }
-
-    /// A struct-typed expression's field table; null for every
-    /// other shape. The declaration index IS the array index.
-    fn fields_at(self, e: ExprId) -> StructSig? {
-        self.fields_of(self.view(self.a.type_at(e)))
-    }
-
-    /// A struct TYPE's field table — `fields_at`'s TypeId-keyed
-    /// twin, for members read on a type no expression wears (what
-    /// a nullable carries).
-    fn fields_of(self, ty: TypeId) -> StructSig? {
-        match self.a.typing.types.shape_of(ty) {
-            .Struct(decl, _) -> record_sig_of(self.a.decl_sig(decl)),
-            .App(decl, _, args) ->
-                subbed_fields(self.a.typing.types, record_sig_of(self.a.decl_sig(decl)), decl, args),
-            .Int or .Str or .Bool or .List(_) or .Enum(_, _) or .Res(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
-            .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-        }
-    }
-
-    /// An enum-typed expression's variant table; null otherwise.
-    /// The declaration index IS the runtime tag.
-    fn variants_at(self, e: ExprId) -> EnumSig? {
-        self.variants_ty(self.view(self.a.type_at(e)))
-    }
-
-    /// The variant table by TYPE — Result IS an enum, the built-in
-    /// one; same bridge as the typing side.
-    fn variants_ty(self, ty: TypeId) -> EnumSig? {
-        match self.a.typing.types.shape_of(ty) {
-            .Enum(decl, _) -> variant_sig_of(self.a.decl_sig(decl)),
-            .Res(ok, err) -> res_enum_sig(ok, err),
-            .App(decl, _, args) ->
-                subbed_variants(self.a.typing.types, variant_sig_of(self.a.decl_sig(decl)), decl, args),
-            .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
-            .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-        }
-    }
-
-    /// The register an arm's bind reads — recorded as that arm
-    /// lowers, so an ident inside it finds the payload.
-    fn bind_pattern(self, v: ExprId, r: Reg) {
-        mut ps = self.pattern_regs
-        ps.set(v.index, r)
-    }
-
-    fn record(self, msg: string) {
-        mut fs = self.failures
-        fs.push(msg)
-    }
-
-    /// Where the program's answer lives: the last value-bearing
-    /// statement's location.
-    fn answer_loc(self) -> Loc? {
-        let valued = self.a.stmts.filter((s: StmtId) -> self.a.store.stmt_value(s) != null)
-        let speaker: StmtId? = valued.last()
-        if speaker == null { return null }
-        loc_at(self.a.source.file, self.a.store.stmt_span(speaker!))
-    }
-
-    /// A statement's slot entry — the driver's value write; a bound
-    /// CELL wins over it.
-    fn set_slot(self, s: StmtId, r: Reg) {
-        mut written = self.slots
-        written.set(s.index, r)
-    }
-
-    /// Binds a statement's slot as a memory CELL: idents load
-    /// through it, and the driver's value write defers to it.
-    fn bind_slot(self, s: StmtId, slot: Reg) {
-        mut cells = self.boxed
-        cells.set(s.index, true)
-        self.set_slot(s, slot)
-    }
-}
 
 /// A fn the driver lowers DIRECTLY — generic ones wait for their
 /// instantiations to arrive on the worklist.
@@ -802,7 +313,13 @@ fn mangle(name: string, sub: Sub) -> string {
 
 /// A declaration's body, when the statement is a fn.
 fn fn_body_of(a: Analysis, s: StmtId) -> ExprId? {
-    let parts: FnParts? = a.store.fn_parts(s)
+    let parts: FnParts? = a.p.store.fn_parts(s)
     if parts == null { return null }
     parts!.body
+}
+
+// ── voices ──
+
+fn runs_outside_entry(a: Analysis, s: StmtId, entry: Analysis) -> Diag {
+    refusal("lower.entry_only", loc_at(a.p.source.file, a.p.store.stmt_span(s)), "a module file holds declarations — only the entry `${entry.p.source.file ?? "the entry"}` runs statements", "runs here", "move it into the entry, or wrap it in a fn the entry calls")
 }

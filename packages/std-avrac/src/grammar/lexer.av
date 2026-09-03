@@ -19,7 +19,9 @@ use core.{code_at, is_space, is_name_start, is_name_cont, is_digit}
 /// kinds are an interpolated string's pieces: `"a ${x} b ${y} c"`
 /// lexes as IStrBegin("a ") <hole> IStrMid(" b ") <hole>
 /// IStrEnd(" c").
-export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof }
+/// `Pkg` is an `@name` — a package's head in a `use` path, and the
+/// grammar DSL's own `@expect`/`@recover` words.
+export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg }
 
 /// One DSL token. For Str and the IStr kinds, `text` is the
 /// unquoted, unescaped contents; the span covers the delimiters.
@@ -30,7 +32,7 @@ impl Token {
     /// never against quoted input — quoted text is data, not syntax.
     fn lit_matches(self, text: string) -> bool {
         match self.kind {
-            .Name or .Num or .Op or .Break -> self.text == text,
+            .Name or .Num or .Op or .Break or .Pkg -> self.text == text,
             .Str or .IStrBegin or .IStrMid or .IStrEnd or .Eof -> false,
         }
     }
@@ -231,7 +233,7 @@ fn scan_step(src: string, n: int, i: int, interpolate: bool) -> ScanStep {
         c == 64 -> {
             let j = scan_while(src, n, i + 1, is_name_cont)
             if j == i + 1 { fail("expected a name after `@`", i, i + 1) }
-            else { emit(token(TokenKind.Op, src.substring(i, j), i, j), j) }
+            else { emit(token(TokenKind.Pkg, src.substring(i, j), i, j), j) }
         }
         // A two-char op munches before its single-char prefix.
         pair != null -> emit(token(TokenKind.Op, pair!, i, i + 2), i + 2)

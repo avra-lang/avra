@@ -1,0 +1,240 @@
+//! One body's walk: a subtree lowered at first request (the
+//! recursion IS the walk), the expression and statement contexts
+//! wired once per body, the narrow/widen edge every expression
+//! passes through, the dyn lift, and the entry's printed answer.
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId}
+use diagnostics.{Diag, refusal}
+use features.{LowerCx, StmtLowerCx, push_slot, adopted, carried_of, okayed, hollow_of, Sub}
+
+/// One subtree's register, lowered at first request and memoized.
+/// The recursion IS the walk: an impl asking for a child's register
+/// lands back here — so a region's branches lower INSIDE it.
+fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
+    let seen: Reg? = lo.regs[e.index]
+    if seen != null { return seen! }
+    let cx = expr_lower_cx(lo)
+    let born = semantics_of(lo.a.p.dispatch, lo.a.p.store.expr(e)).lower(cx, e)
+    let r = widened(cx, lo, e, narrowed(cx, lo, e, born))
+    mut rs = lo.regs
+    rs.set(e.index, r)
+    r
+}
+
+/// A type under the body's instantiation — IDENTITY for a plain
+/// body; the substitution for a specialization. Every type and
+/// fact read in lowering passes through here, which is what makes
+/// every minted register concrete.
+fn viewed_ty(a: Analysis, sub: Sub?, ty: TypeId) -> TypeId {
+    if sub == null { return ty }
+    a.typing.types.substituted(ty, sub!.target, sub!.args)
+}
+
+/// The expression capabilities, wired once per request — what
+/// lower_subtree runs and StmtLowerCx nests as `expr`.
+fn expr_lower_cx(lo: Lower) -> LowerCx {
+    LowerCx {
+        store: lo.a.p.store,
+        types: lo.a.typing.types,
+        methods: lo.a.p.methods,
+        properties: lo.a.p.properties,
+        decls: lo.a.decls,
+        result: (k: ExprId) -> lo.mint(k),
+        reg_of: (k: ExprId) -> lower_subtree(lo, k),
+        def_reg: (k: ExprId) -> lo.def_reg(k),
+        cell_of: (k: ExprId) -> lo.cell_of(k),
+        shape_at: (k: ExprId) -> lo.a.typing.types.shape_of(lo.view(lo.a.type_at(k))),
+        type_at: (k: ExprId) -> lo.view(lo.a.type_at(k)),
+        mint: (k: ExprId) -> lo.mint(k),
+        mint_like: (r: Reg) -> lo.mint_ty(lo.reg_types[r.index]),
+        mint_shape: (sh: Type) -> lo.mint_ty(lo.a.typing.types.intern(sh)),
+        mint_ty: (ty: TypeId) -> lo.mint_ty(ty),
+        fields_at: (k: ExprId) -> lo.fields_at(k),
+        fields_of: (ty: TypeId) -> lo.fields_of(ty),
+        bind_pattern: (k: ExprId, r: Reg) -> lo.bind_pattern(k, r),
+        variants_at: (k: ExprId) -> lo.variants_at(k),
+        variants_of: (ty: TypeId) -> lo.variants_ty(ty),
+        emit: (i: Ins) -> lo.give(i),
+        lower_block: (stmts: List<StmtId>, value: ExprId?) -> block_reg(lo, stmts, value),
+        enclosing_ret: () -> lo.fn_ret,
+        callee_of: (k: ExprId, name: string) -> lo.callee_of(k, name),
+        lift: (k: ExprId) -> lo.lift(k),
+        capture_regs: (k: ExprId) -> lo.capture_regs(k),
+        indirect_callee: (k: ExprId) -> lo.indirect_callee(k),
+        fail: (msg: string) -> lo.record(msg),
+    }
+}
+
+/// A read a presence test PROVED — typing recorded the nullable it
+/// wears; the read unwraps here, at the same one edge widening
+/// lifts. Narrow first, widen after: a proven read may itself be
+/// lifted into a fresh nullable.
+fn narrowed(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
+    let worn: TypeId? = lo.a.typing.narrows[e.index]
+    if worn == null { return r }
+    carried_of(cx, r, lo.view(worn!))
+}
+
+/// A value a boundary LIFTED — into a nullable, or into a Result's
+/// success (the auto-Ok wrap). Recorded by typing, minted here —
+/// the one place every expression passes through, so a lift takes
+/// its layout at exactly one edge; the target's shape decides
+/// which: the null literal arrives already absent and `adopted`
+/// knows; anything else lifting into a Res is a success.
+fn widened(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
+    let worn: TypeId? = lo.a.typing.widens[e.index]
+    if worn == null { return r }
+    let into = lo.view(worn!)
+    let sh: Type = lo.a.typing.types.shape_of(into)
+    if sh is .Res { return okayed(cx, into, r) }
+    // an empty array IS a valid list of anything, an empty map a
+    // valid map of anything — identity lifts
+    if sh is .List || sh is .Map { return r }
+    if sh is .Dyn { return boxed_into(cx, lo, into, r) }
+    adopted(cx, into, cx.shape_at(e) is .Null, r)
+}
+
+/// The dyn lift: the box is [value, methods…] in trait order — an
+/// ordinary slot array, minted here at the one widening edge. The
+/// value's own declared name picks whose methods ride along;
+/// dispatch reads the same lanes by the same list.
+fn boxed_into(cx: LowerCx, lo: Lower, into: TypeId, r: Reg) -> Reg {
+    let tdecl: DeclId? = match lo.a.typing.types.shape_of(into) {
+        .Dyn(d, _) -> d,
+        _ -> null,
+    }
+    // an instantiation may arrive already boxed — identity lift
+    if lo.a.typing.types.shape_of(lo.reg_types[r.index]) is .Dyn { return r }
+    let target: DeclId? = boxed_decl(lo, r)
+    if tdecl == null || target == null {
+        cx.fail("defect: a dyn lift from an unnamed shape survived typing")
+        return r
+    }
+    let dst = lo.mint_ty(into)
+    lo.give(Ins.CallRt(dst, "avra_array_new", []))
+    push_slot(cx, dst, r)
+    for mn in lo.a.decls.trait_method_names(tdecl!) {
+        let sym: string? = lo.a.decls.method_symbol_of(target!, mn)
+        if sym == null {
+            cx.fail("defect: an unanswered trait method survived typing")
+            return r
+        }
+        let a = lo.mint_ty(lo.a.typing.types.intern(Type.Int))
+        lo.give(Ins.FnAddr(a, sym!))
+        push_slot(cx, dst, a)
+    }
+    dst
+}
+
+/// The lifted value's declared name — whose impl the box carries.
+fn boxed_decl(lo: Lower, r: Reg) -> DeclId? {
+    match lo.a.typing.types.shape_of(lo.reg_types[r.index]) {
+        .Struct(d, _) -> d,
+        .Enum(d, _) -> d,
+        .Int or .Str or .Bool or .List(_) or .Opt(_) or .Null or
+        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or
+        .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+    }
+}
+
+/// A trait's method names, declaration order — the box's lane
+/// assignment; boxing writes and dispatch reads the same list.
+/// Statements in order, each through its own StmtSemantics — the
+/// ONE statement loop, top level and blocks alike. The driver owns
+/// slots and the running last register.
+fn lower_stmts(lo: Lower, stmts: List<StmtId>) -> Reg? {
+    let cx = StmtLowerCx {
+        store: lo.a.p.store,
+        expr: expr_lower_cx(lo),
+        lower_stmts: (body: List<StmtId>) -> lower_stmt_list(lo, body),
+        slot_of: (s: StmtId) -> lo.slots[s.index],
+        bind_slot: (s: StmtId, slot: Reg) -> lo.bind_slot(s, slot),
+        bind_index: (s: StmtId, r: Reg) -> lo.bind_index(s, r),
+    }
+    // LICENSED I4: the running last register, not a scan
+    mut last: Reg? = null
+    for s in stmts {
+        let r: Reg? = stmt_semantics_of(lo.a.p.dispatch, lo.a.p.store.stmt(s)).lower_stmt(cx, s)
+        if r != null {
+            if lo.slots[s.index] == null { lo.set_slot(s, r!) }
+            last = r
+        }
+    }
+    last
+}
+
+/// A statement list lowered for its instructions alone — a loop
+/// body's turn.
+fn lower_stmt_list(lo: Lower, stmts: List<StmtId>) {
+    let _ = lower_stmts(lo, stmts)
+}
+
+/// The program's answer, shown — printing IS lowering: the text
+/// projection for the answer's shape, then one puts. No Print
+/// instruction exists; both engines just run these calls. An
+/// answer with NO projection refuses HERE, before either engine —
+/// so eval and native cannot diverge on it.
+fn print_lowering(lo: Lower, last: Reg) -> Diag? {
+    let sh = lo.a.typing.types.shape_of(lo.reg_types[last.index])
+    let unprintable: string? = match sh {
+        .Struct(_, n) -> n,
+        .Enum(_, n) -> n,
+        .Res(_, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
+        .App(_, _, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
+        .TypeName(_, n) -> n,
+        .Var(_, _, n) -> n,
+        .EmptyList -> "[]",
+        .Opt(_) or .Null or .Dyn(_, _) or .Fn(_, _) -> lo.a.typing.types.name_of(lo.reg_types[last.index]),
+        .Int or .Str or .Bool or .List(_) or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+    }
+    if unprintable != null { return no_projection(lo, unprintable!) }
+    let text: Reg? = match sh {
+        .Str -> last,
+        .Int -> text_call(lo, "avra_int_text", last),
+        .Bool -> text_call(lo, "avra_bool_text", last),
+        .List(elem) -> text_call(lo, list_text_callee(lo, elem), last),
+        .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) -> null,
+        .Opt(_) or .Null or .EmptyList -> null,
+        .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+    }
+    if text != null { lo.give(Ins.CallRtVoid("avra_puts", [text!])) }
+    null
+}
+
+/// The refusal: an answer without a text projection names its type
+/// and the remedy.
+fn no_projection(lo: Lower, tname: string) -> Diag {
+    refusal("lower.no_projection", lo.answer_loc(), "the program's answer is a `${tname}`, which has no text projection yet", "this is the answer", "project a field instead — `p.x` prints")
+}
+
+fn text_call(lo: Lower, callee: string, v: Reg) -> Reg {
+    let t = lo.mint_ty(lo.a.typing.types.intern(Type.Str))
+    lo.give(Ins.CallRt(t, callee, [v]))
+    t
+}
+
+/// The runtime printer for a list, by its element shape.
+fn list_text_callee(lo: Lower, elem: TypeId) -> string {
+    if lo.a.typing.types.shape_of(elem) is .Bool { return "avra_bools_text" }
+    if lo.a.typing.types.shape_of(elem) is .Str { return "avra_strs_text" }
+    "avra_ints_text"
+}
+
+/// A block is a scope: statements lower in order into it, and the
+/// value register escapes as the scope's yield. A block that
+/// LEAVES yields a hollow typed as the fn's promise — the exit
+/// already happened, and everything after it is the backend's dead
+/// continuation.
+fn block_reg(lo: Lower, stmts: List<StmtId>, value: ExprId?) -> Reg {
+    lo.give(Ins.ScopeEnter(Level.Application))
+    let _ = lower_stmts(lo, stmts)
+    let r = if value == null { departed_tail(lo) } else { lower_subtree(lo, value!) }
+    lo.give(Ins.ScopeExit(r))
+    r
+}
+
+/// The never-read yield of a block that left — typed as the fn's
+/// promise, so every merge it feeds stays type-consistent.
+fn departed_tail(lo: Lower) -> Reg {
+    hollow_of(expr_lower_cx(lo), lo.fn_ret ?? lo.a.typing.types.intern(Type.Error))
+}

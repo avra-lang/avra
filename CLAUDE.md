@@ -114,7 +114,8 @@ registry is the idiom engine's spec, written by dogfooding.
 ## Rules
 
 - `core/` is infrastructure only. Features never import features.
-- Layering is one-way: core -> grammar -> features -> language.
+- Layering is one-way: core -> query -> grammar -> features -> language.
+  `query/` is the memo kernel — infrastructure, language-agnostic.
   `grammar/` is the language-agnostic engine; `language/` is the
   driver and the ONE definition of Avra (feature order is branch
   order is the language).
@@ -308,7 +309,7 @@ against these before writing; probe in scratch when unsure.
   is fine. Wrap the parameter in a struct, answer a list.
 - Multi-line fn signatures parse fine (probed) — stacked params with
   a trailing comma, or aligned continuation lines. Wrap wide ones.
-- `ref`, `none`, `shape`, `dyn`, `table`, and `where` are reserved words
+- `ref`, `none`, `shape`, `dyn`, `table`, `is`, `bare`, and `where` are reserved words
   (`dyn` refuses as a FIELD name: "expected field name" at the decl) — including
   as variable and method names; `then` refuses as a struct/enum
   field name, and `given` and `spec` refuse as LOCALS (the spec
@@ -381,6 +382,14 @@ against these before writing; probe in scratch when unsure.
   ("expected `]` after list"); use a loop there too.
 - In a value match producing a list, put a populated arm FIRST — a
   leading `[] `arm pins `List<>` and the sibling arms then clash.
+- A `map.get(k)` as a fn's TAIL (or `return`ed) never adopts a
+  nullable STRUCT return (F1000 "returns `@pkg::T?`, but body
+  produces `T?`" — qualified vs unqualified) — bind it under a
+  typed let and return the name. Hit twice landing the DeclTable.
+- A Python patch script that inserts before an anchor MUST NOT be
+  re-run after a partial failure: the anchor is still there, and
+  the insertion lands twice ("duplicate function" from bs2, with
+  the fn defined ONCE per grep — grep -c, not -l, tells the truth).
 - A list-typed fn TAIL from a bare enum-list literal or a `?? []`
   fallback never adopts the declared return (F1000 "body produces
   `List<>`") — bind it under a typed let and return the name.
@@ -476,6 +485,14 @@ against these before writing; probe in scratch when unsure.
   module-level `let` read from an `impl` METHOD crashes at runtime
   (23 specs crashed at once, no diagnostic) — the constant must stay
   a fn there, even for a hot per-name check.
+- TYPES share one namespace per module across sibling files too: a
+  `type Scope` in memory.av refused a second `Scope` in a new
+  sibling file ("no field `fns` on type Scope" — the OTHER struct's
+  fields). Grep the module for the name before declaring a type.
+- An idempotent patch script checks `new in s` BEFORE `old in s`:
+  when the new text CONTAINS the old (an `export` prefix, a doc
+  comment), a re-run applies it twice (the doubled `export ///`
+  parse error) — the same double-insert trap in a second costume.
 - Fns share ONE namespace per module across sibling files: a private
   fn in one file shadows a same-name import for the WHOLE module
   (arity clashes, F1001, at unrelated call sites). Check for the

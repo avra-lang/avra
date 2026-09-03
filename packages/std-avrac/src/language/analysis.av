@@ -1,9 +1,9 @@
 //! The one artifact consumers hold: every pass's facts, every
 //! diagnostic, and every question — analyze, report, run — as
 //! methods. `analyze` is the only place pass order exists.
-use core.{NodeStore, Expr, Stmt, StmtId, ExprId, TypeId, flatten, joined}
+use core.{NodeStore, Expr, Stmt, StmtId, ExprId, TypeId, flatten, joined, DeclId, FileId, same_file}
 use diagnostics.{Diag, DiagCode, SourceFile, render, new_source_file}
-use features.{DeclSig, MethodRow, PropertyRow}
+use features.{DeclSig, Decls, new_decls}
 
 /// One source, fully analyzed: the tree, every pass's facts, every
 /// diagnostic in pipeline order, and the code registry to render
@@ -12,14 +12,11 @@ use features.{DeclSig, MethodRow, PropertyRow}
 /// `pass(p, ...upstream facts) -> Facts` — and `analyze` is the
 /// only place that knows their order.
 export type Analysis = {
-    store: NodeStore,
-    dispatch: Dispatch,
-    stmts: List<StmtId>,
-    source: SourceFile,
-    methods: List<MethodRow>,
-    properties: List<PropertyRow>,
+    p: ParsedProgram,
     resolution: Resolution,
     typing: Typing,
+    decls: Decls,
+    file: FileId,
     codes: List<DiagCode>,
     diagnostics: List<Diag>,
 }
@@ -36,11 +33,11 @@ impl Analysis {
     /// Any diagnostics rendered for the terminal — analysis's or a
     /// later stage's, one look everywhere.
     fn rendered(self, ds: List<Diag>) -> string {
-        joined([render(d, self.codes, self.source) for d in ds], "\n\n")
+        joined([render(d, self.codes, self.p.source) for d in ds], "\n\n")
     }
 
-    fn expr(self, e: ExprId) -> Expr { self.store.expr(e) }
-    fn stmt(self, s: StmtId) -> Stmt { self.store.stmt(s) }
+    fn expr(self, e: ExprId) -> Expr { self.p.store.expr(e) }
+    fn stmt(self, s: StmtId) -> Stmt { self.p.store.stmt(s) }
 
     /// What an expression's name resolves to, when it does — the
     /// ONE binding currency.
@@ -50,7 +47,14 @@ impl Analysis {
 
     /// What a statement DECLARED, when it declares — the fn's
     /// signature, the record's fields, the enum's variants.
-    fn decl_sig(self, s: StmtId) -> DeclSig? { self.typing.decls[s.index] }
+    /// A declaring statement of this file, as its declaration.
+    fn decl_of(self, s: StmtId) -> DeclId { self.decls.decl_of(self.file, s)! }
+
+    /// Whether a declaration is this file's own.
+    fn is_local(self, d: DeclId) -> bool { same_file(self.decls.decl(d).file, self.file) }
+
+    /// This file's module.
+    fn module(self) -> string { self.decls.file(self.file).module }
 
     /// An expression's type — total: every expression has one.
     fn type_at(self, e: ExprId) -> TypeId { type_of(self.typing, e) }
@@ -63,15 +67,16 @@ impl Analysis {
     /// The program's printed answer, or the report/refusal that
     /// stopped it — the ONE semantics, interpreted over the SAME
     /// post-memory stream the backend compiles: every instruction,
-    /// Retain and Release included, shared to the last bracket.
+    /// Retain and Release included, shared to the last bracket. A
+    /// lone file is a program of one; the Program owns the law.
     fn run(self) -> Result<string, string> {
-        run_lowered(self.lowered_checked()?)
+        lone_program(self).run()
     }
 
     /// The program as IR, memory strategy applied — what `avra
     /// build` compiles.
     fn lowered(self) -> Lowered {
-        memory(lower(self))
+        lone_program(self).lowered()
     }
 
     /// The lowered program, CHECKED — analysis diagnostics first,
@@ -79,10 +84,7 @@ impl Analysis {
     /// seam every engine takes: run, emit, and build refuse
     /// identically or proceed identically.
     fn lowered_checked(self) -> Result<Lowered, string> {
-        if !self.clean() { return Result.Err(self.report()) }
-        let lo = self.lowered()
-        if !lo.diagnostics.is_empty() { return Result.Err(self.rendered(lo.diagnostics)) }
-        Result.Ok(lo)
+        lone_program(self).lowered_checked()
     }
 
     /// The program's printed answer, or null when it refused.
@@ -94,15 +96,38 @@ impl Analysis {
     }
 }
 
+/// A file between its passes: parsed, resolved, its typer on the
+/// shared table — waiting for the rounds.
+export type Staged = { p: ParsedProgram, r: Resolution, t: Typer }
+
+/// THE ROUNDS — the only place pass order exists past resolution:
+/// every file's types, then traits, then fns, then impls, across
+/// all files; only then each file's bodies. A signature may name
+/// any file's declaration.
+export fn typed_together(lang: Language, staged: List<Staged>, decls: Decls) -> List<Analysis> {
+    for x in staged { x.t.declare_types() }
+    for x in staged { x.t.declare_traits() }
+    for x in staged { x.t.declare_fns() }
+    for x in staged { x.t.declare_impls() }
+    [lang.assembled(x.p, x.r, type_bodies(x.t), decls, x.t.file) for x in staged]
+}
+
 impl Language {
-    /// The whole pipeline: a source in, its Analysis out.
+    /// The whole pipeline over ONE file — a program of one: its own
+    /// declarations are its scope, and a `use` has no package to
+    /// reach.
     fn analyze(self, src: SourceFile) -> Analysis {
         let p = parse_program(self, src)
-        let r = resolve(p)
-        let t = type_check(p, r)
+        let decls = new_decls()
+        let f = decls.file_id(src.file, "")
+        let r = resolve(p, lone_namespace(decls, f, decls.admit(f, p.store, p.stmts), p))
+        typed_together(self, [Staged { p: p, r: r, t: typer(p, r, decls, f) }], decls)[0]
+    }
+
+    /// The artifact from its passes' facts.
+    fn assembled(self, p: ParsedProgram, r: Resolution, t: Typing, decls: Decls, f: FileId) -> Analysis {
         Analysis {
-            store: p.store, dispatch: p.dispatch, stmts: p.stmts, source: p.source, methods: p.methods, properties: p.properties,
-            resolution: r, typing: t, codes: self.codes,
+            p: p, resolution: r, typing: t, decls: decls, file: f, codes: self.codes,
             diagnostics: flatten([p.diagnostics, r.diagnostics, t.diagnostics]),
         }
     }
@@ -112,8 +137,6 @@ impl Language {
     /// clean, lowering's refusals too — check agrees with run and
     /// build about what is wrong.
     fn check(self, src: SourceFile) -> string {
-        let a = self.analyze(src)
-        if !a.clean() { return a.report() }
-        a.rendered(a.lowered().diagnostics)
+        lone_program(self.analyze(src)).check()
     }
 }
