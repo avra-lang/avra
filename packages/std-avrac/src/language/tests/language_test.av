@@ -38,9 +38,9 @@ spec "language" {
         then "it assembles with no defects and the builtin registry" {
             let lang = avra()
             lang.grammar != null && lang.diagnostics.is_empty() &&
-                code_for(lang.codes, "parse.expected") == "F0100" &&
-                code_for(lang.codes, "resolve.unresolved") == "F3000" &&
-                code_for(lang.codes, "type.mismatch") == "F2000"
+                code_for(lang.rows.codes, "parse.expected") == "F0100" &&
+                code_for(lang.rows.codes, "resolve.unresolved") == "F3000" &&
+                code_for(lang.rows.codes, "type.mismatch") == "F2000"
         }
         then "a feature registering a taken kind refuses assembly" {
             let lang = assemble(language_features().concat([clashing()]))
@@ -74,14 +74,14 @@ spec "language" {
     given "a commented program" {
         then "comments vanish; the program is untouched" {
             let p = parse_source("// leading\nlet x = 1 // trailing\n// alone\nx")
-            p.diagnostics.is_empty() && p.stmts.length == 2
+            p.voices.list.is_empty() && p.stmts.length == 2
         }
     }
     given "a well-formed program" {
         then "lets and expression statements land in order" {
             let p = parse_source("let x = 1 + y\nx")
             let let_ok = match p.store.stmt(p.stmts[0]) { .Let(name, _, _) -> name == "x", _ -> false }
-            p.diagnostics.is_empty() && p.stmts.length == 2 && let_ok &&
+            p.voices.list.is_empty() && p.stmts.length == 2 && let_ok &&
                 p.store.stmt(p.stmts[1]) is .ExprStmt
         }
     }
@@ -90,14 +90,14 @@ spec "language" {
             let p = parse_source("let a = 1\nlet = 3\nlet y = 2")
             let hole_ok = p.stmts.length == 3 && p.store.stmt(p.stmts[1]) is .Error
             let tail_ok = match p.store.stmt(p.stmts[2]) { .Let(name, _, _) -> name == "y", _ -> false }
-            p.diagnostics.length == 1 && hole_ok && tail_ok
+            p.voices.list.length == 1 && hole_ok && tail_ok
         }
     }
     given "a lex error" {
         then "it joins the diagnostics and parsing continues" {
             let p = parse_source("let a = 1\n$\nlet b = 2")
             let lets = [s for s in p.stmts if p.store.stmt(s) is .Let]
-            p.diagnostics.length >= 1 && lets.length == 2
+            p.voices.list.length == 1 && lets.length == 2
         }
     }
 }

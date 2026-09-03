@@ -7,38 +7,35 @@ use features.{StmtTypeCx, accepts, declared_binding, this_is, refuses_type_value
 use diagnostics.{refusal}
 
 export fn check_mut(cx: StmtTypeCx, s: StmtId) {
-    let held: ExprId? = cx.store.stmt_value(s)
+    let held: ExprId? = cx.view.store.stmt_value(s)
     if held == null { return }
     let v = held!
     // The DECLARED type records BEFORE the value walks — it is the
     // want the channel plants, and downstream reads of the name
     // see the declaration even when the value refuses.
-    let ann: TypeRef? = cx.store.binding_ty(s)
+    let ann: TypeRef? = cx.view.store.binding_ty(s)
     let declared: TypeId? = if ann == null { null } else { cx.bind_declared(s, ann!) }
     if declared != null { cx.expr.plant_want(v, declared!) }
     cx.walk(v)
     if refuses_type_value(cx.expr, v) { return }
     if refuses_void_value(cx.expr, v) { return }
     if declared != null {
-        declared_binding(cx.expr, v, cx.store.let_name(s) ?? "this binding", declared!)
+        declared_binding(cx.expr, v, cx.view.store.let_name(s) ?? "this binding", declared!)
     }
-    // THE CELL LAW retired (ownership 11.5): the mut-cell protocol
-    // owns any content — the cell retains on store, releases the
-    // old value on overwrite, and settles with its scope.
 }
 
 /// THE PLACE LAW's typing half: the target types as a READ — its
 /// type IS the slot's law — the want is planted so the value hears
 /// its seat, and acceptance WIDENS like every slot's.
 export fn check_assign(cx: StmtTypeCx, s: StmtId) {
-    let held: ExprId? = cx.store.stmt_value(s)
+    let held: ExprId? = cx.view.store.stmt_value(s)
     let target: ExprId? = assign_place(cx, s)
     if held == null || target == null { return }
     let v = held!
     let t = target!
     cx.walk(t)
     let want = cx.expr.type_at(t)
-    if cx.expr.types.shape_of(want) is .Error || !place_lawful(cx.expr, t) {
+    if cx.expr.view.types.shape_of(want) is .Error || !place_lawful(cx.expr, t) {
         cx.walk(v)
         return
     }
@@ -48,7 +45,7 @@ export fn check_assign(cx: StmtTypeCx, s: StmtId) {
 }
 
 fn assign_place(cx: StmtTypeCx, s: StmtId) -> ExprId? {
-    match cx.store.stmt(s) {
+    match cx.view.store.stmt(s) {
         .Assign(t, _) -> t,
         _ -> null,
     }
@@ -57,9 +54,9 @@ fn assign_place(cx: StmtTypeCx, s: StmtId) -> ExprId? {
 // ── The voices ──
 
 fn slot_refused(cx: StmtTypeCx, s: StmtId, t: ExprId, want: TypeId, v: ExprId) {
-    let gn = cx.expr.types.name_of(cx.expr.type_at(v))
-    let root: ExprId? = cx.store.place_root(t)
-    let named = if root == null { "this place" } else { "`${cx.store.ident_name(root!) ?? "this place"}`" }
-    let spot = if cx.store.ident_name(t) == null { "a slot of ${named}" } else { named }
-    cx.expr.emit(refusal("type.mismatch", cx.loc_of(s), "assignment changes ${spot}: `${cx.expr.types.name_of(want)}` to `${gn}`", this_is(gn), null))
+    let gn = cx.expr.view.types.name_of(cx.expr.type_at(v))
+    let root: ExprId? = cx.view.store.place_root(t)
+    let named = if root == null { "this place" } else { "`${cx.view.store.ident_name(root!) ?? "this place"}`" }
+    let spot = if cx.view.store.ident_name(t) == null { "a slot of ${named}" } else { named }
+    cx.expr.emit(refusal("type.mismatch", cx.loc_of(s), "assignment changes ${spot}: `${cx.expr.view.types.name_of(want)}` to `${gn}`", this_is(gn), null))
 }

@@ -3,7 +3,7 @@
 //! str_join answers — zero new instructions, the escape hatch
 //! carrying the feature again.
 use core.{ExprId, Reg, Ins, Type}
-use features.{LowerCx, grown_box}
+use features.{LowerCx, grown_box, lower_defect, length_word}
 
 fn interp_reg(cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) -> Reg {
     mut pieces = [part_reg(cx, e, parts[0])]
@@ -11,7 +11,7 @@ fn interp_reg(cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) 
         pieces.push(hole_reg(cx, e, h))
         pieces.push(part_reg(cx, e, parts[j + 1]))
     }
-    let arr = cx.mint(e)
+    let arr = cx.mint_ty(cx.type_at(e))
     grown_box(cx, arr, pieces)
     let sep = part_reg(cx, e, "")
     let dst = cx.result(e)
@@ -21,7 +21,7 @@ fn interp_reg(cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) 
 
 /// A literal piece as a fresh Str register.
 fn part_reg(cx: LowerCx, e: ExprId, text: string) -> Reg {
-    let r = cx.mint(e)
+    let r = cx.mint_ty(cx.type_at(e))
     cx.emit(Ins.ConstStr(r, text))
     r
 }
@@ -46,15 +46,18 @@ fn hole_reg(cx: LowerCx, e: ExprId, h: ExprId) -> Reg {
 }
 
 fn rt1(cx: LowerCx, e: ExprId, callee: string, v: Reg) -> Reg {
-    let dst = cx.mint(e)
+    let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, callee, [v]))
     dst
 }
 
-/// `s.length` is `strlen` — measured, every time it is asked.
+/// `s.length` — the word the one measure table gives the string's
+/// shape; measured, every time it is asked.
 export fn lower_str_length(cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
     let s = cx.reg_of(subject)
+    let word: string? = length_word(cx.view.types.shape_of(cx.type_at(subject)))
+    if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }
     let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "strlen", [s]))
+    cx.emit(Ins.CallRt(dst, word!, [s]))
     dst
 }

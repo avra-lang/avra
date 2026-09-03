@@ -5,7 +5,7 @@
 //
 // Written adversarially: every helper is attacked at N=0, N=1, and
 // with the shape most likely to break it.
-use @std.avrac.core.{flatten, filled, some_list, joined, distinct}
+use @std.avrac.core.{flatten, filled, some_list, joined, distinct, placed, placed_at, inserted, reversed, found_at}
 
 /// A list's elements, comma-joined — so a test asserts CONTENT and
 /// ORDER together rather than length alone.
@@ -132,6 +132,81 @@ spec "core/lists" {
         }
         then "the empty string is a value like any other" {
             shown(distinct(["", "a", ""])) == ",a"
+        }
+    }
+    given "placed / placed_at — the sparse table" {
+        then "placing past the end grows the table to hold it" {
+            let t: List<int?> = []
+            placed(t, 2, 7)
+            let got: int? = placed_at(t, 2)
+            t.length == 3 && got == 7
+        }
+        then "the slots grown over are absent" {
+            let t: List<int?> = []
+            placed(t, 2, 7)
+            let head: int? = placed_at(t, 0)
+            let next: int? = placed_at(t, 1)
+            head == null && next == null
+        }
+        then "past the end is absent, never a trap" {
+            let t: List<int?> = []
+            placed(t, 0, 1)
+            let beyond: int? = placed_at(t, 5)
+            beyond == null
+        }
+        then "placing again overwrites without growing" {
+            let t: List<int?> = []
+            placed(t, 1, 7)
+            placed(t, 1, 9)
+            let got: int? = placed_at(t, 1)
+            t.length == 2 && got == 9
+        }
+    }
+    given "inserted — a copy with one more element" {
+        then "at the front" {
+            ints_shown(inserted([1, 2], 0, 9)) == "9,1,2"
+        }
+        then "in the middle" {
+            ints_shown(inserted([1, 2], 1, 9)) == "1,9,2"
+        }
+        then "at the end" {
+            ints_shown(inserted([1, 2], 2, 9)) == "1,2,9"
+        }
+        then "into nothing" {
+            let nothing: List<int> = []
+            ints_shown(inserted(nothing, 0, 9)) == "9"
+        }
+        then "the source is untouched" {
+            let src = [1, 2]
+            let _ = inserted(src, 0, 9)
+            ints_shown(src) == "1,2"
+        }
+    }
+    given "reversed — a copy, unlike `.reverse()`" {
+        then "nothing reverses to nothing" {
+            let nothing: List<int> = []
+            reversed(nothing).is_empty()
+        }
+        then "one is itself" {
+            ints_shown(reversed([4])) == "4"
+        }
+        then "many come back in reverse order" {
+            ints_shown(reversed([1, 2, 3])) == "3,2,1"
+        }
+        then "the source keeps its order" {
+            let src = [1, 2, 3]
+            let _ = reversed(src)
+            ints_shown(src) == "1,2,3"
+        }
+    }
+    given "found_at — a miss is absence, not -1" {
+        then "a hit answers its first position" {
+            let hit: int? = found_at(["a", "b", "b"], "b")
+            hit == 1
+        }
+        then "a miss answers absence" {
+            let miss: int? = found_at(["a", "b"], "z")
+            miss == null
         }
     }
 }

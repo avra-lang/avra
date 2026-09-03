@@ -8,7 +8,7 @@ use diagnostics.{refusal}
 
 fn lambda_type(cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
-    match cx.store.expr(e) {
+    match cx.view.store.expr(e) {
         .Lambda(params, body) -> lambdaed(cx, e, params, body),
         _ -> cx.error_type,
     }
@@ -25,8 +25,8 @@ fn lambdaed(cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> TypeId 
     let ptys = heard!
     if ptys.any(erred(cx, it)) { return cx.error_type }
     let ret = cx.lambda_body(e, ptys, body)
-    if cx.types.shape_of(ret) is .Error { return cx.error_type }
-    cx.types.intern(Type.Fn(ptys, ret))
+    if cx.view.types.shape_of(ret) is .Error { return cx.error_type }
+    cx.view.types.intern(Type.Fn(ptys, ret))
 }
 
 /// The seats a lambda's params wear: each annotation speaks for
@@ -51,14 +51,14 @@ fn heard_seats(cx: TypeCx, e: ExprId, params: List<Param>) -> List<TypeId>? {
 fn wanted_arrow(cx: TypeCx, e: ExprId, arity: int) -> Arrow? {
     let w: TypeId? = cx.want_at(e)
     if w == null { return null }
-    let arrow: Arrow? = cx.types.arrow_parts(w!)
+    let arrow: Arrow? = cx.view.types.arrow_parts(w!)
     if arrow == null { return null }
     if arrow!.seats.length != arity { return null }
     arrow
 }
 
 fn erred(cx: TypeCx, ty: TypeId) -> bool {
-    cx.types.shape_of(ty) is .Error
+    cx.view.types.shape_of(ty) is .Error
 }
 
 /// A call on an EXPRESSION: whatever fn value the subject holds,
@@ -68,7 +68,7 @@ fn call_value_type(cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -
 }
 
 fn valued(cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> TypeId {
-    let held: Arrow? = cx.types.arrow_parts(cx.type_at(subject))
+    let held: Arrow? = cx.view.types.arrow_parts(cx.type_at(subject))
     if held != null { return seats_judged(cx, e, cx.name_at(subject), held!.seats, held!.answer, args) }
     if cx.shape_at(subject) is .Error { return cx.error_type }
     uncallable(cx, e, subject)
@@ -82,12 +82,12 @@ export fn unfed_lambda(cx: TypeCx, e: ExprId, seat: TypeId?) {
     if seat == null { return never_heard(cx, e, name) }
     let at = seat!
     if name == "it" { return pronoun_starved(cx, e, at) }
-    if cx.types.arrow_parts(at) != null { return misfit_lambda(cx, e, at) }
+    if cx.view.types.arrow_parts(at) != null { return misfit_lambda(cx, e, at) }
     lambda_at_scalar(cx, e, at)
 }
 
 fn first_param_name(cx: TypeCx, e: ExprId) -> string {
-    let parts: LambdaParts? = cx.store.lambda_parts(e)
+    let parts: LambdaParts? = cx.view.store.lambda_parts(e)
     if parts == null { return "the parameter" }
     parts!.params.first()?.name ?? "the parameter"
 }
@@ -99,15 +99,15 @@ fn never_heard(cx: TypeCx, e: ExprId, name: string) {
 }
 
 fn pronoun_starved(cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx.emit(refusal("type.lambda", cx.loc_of(e), "`it` has no element here — this seat takes `${cx.types.name_of(seat)}`, not a fn", "the pronoun", "`it` binds to the NEAREST method call — inside another call's argument, write the outer lambda out: `(k) -> …`"))
+    cx.emit(refusal("type.lambda", cx.loc_of(e), "`it` has no element here — this seat takes `${cx.view.types.name_of(seat)}`, not a fn", "the pronoun", "`it` binds to the NEAREST method call — inside another call's argument, write the outer lambda out: `(k) -> …`"))
 }
 
 fn misfit_lambda(cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx.emit(refusal("type.lambda", cx.loc_of(e), "this lambda does not fit its seat, `${cx.types.name_of(seat)}`", "in this lambda", "match the seat's params, or annotate them"))
+    cx.emit(refusal("type.lambda", cx.loc_of(e), "this lambda does not fit its seat, `${cx.view.types.name_of(seat)}`", "in this lambda", "match the seat's params, or annotate them"))
 }
 
 fn lambda_at_scalar(cx: TypeCx, e: ExprId, seat: TypeId) {
-    cx.emit(refusal("type.lambda", cx.loc_of(e), "a lambda cannot sit here — this seat takes `${cx.types.name_of(seat)}`", "in this lambda", "hand it to a fn-typed slot, or call it"))
+    cx.emit(refusal("type.lambda", cx.loc_of(e), "a lambda cannot sit here — this seat takes `${cx.view.types.name_of(seat)}`", "in this lambda", "hand it to a fn-typed slot, or call it"))
 }
 
 fn uncallable(cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {

@@ -22,7 +22,7 @@ export fn lower_while(cx: StmtLowerCx, cond: ExprId, stmts: List<StmtId>) {
 export fn lower_for(cx: StmtLowerCx, s: StmtId, from: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>) {
     let ex = cx.expr
     let start = ex.reg_of(from)
-    let slot = ex.mint(from)
+    let slot = ex.mint_ty(ex.type_at(from))
     ex.emit(Ins.Alloca(slot))
     ex.emit(Ins.Store(slot, start))
     cx.bind_slot(s, slot)
@@ -77,10 +77,9 @@ export fn lower_for_each(cx: StmtLowerCx, s: StmtId, subject: ExprId, stmts: Lis
     ex.emit(Ins.LoopEnd)
 }
 
-/// The subject's element type — typing proved it a List.
+/// The subject's element type — typing proved it a List, and the
+/// miss answers the subject's own type.
 fn elem_of(ex: LowerCx, subject: ExprId) -> TypeId {
-    match ex.types.shape_of(ex.type_at(subject)) {
-        .List(elem) -> elem,
-        _ -> ex.type_at(subject),
-    }
+    let elem: TypeId? = ex.view.types.element(ex.type_at(subject))
+    elem ?? ex.type_at(subject)
 }

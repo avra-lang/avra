@@ -1,7 +1,8 @@
 //! What a feature's nodes DO at each pass — THE contract, and the
 //! vocabulary every feature speaks across it.
 //!
-//! The contract: one capability context per pass (STATE verbs only —
+//! The contract: one capability context per pass per spine — the
+//! statement one nesting the expression one — (STATE verbs only:
 //! walk, look up, record, emit — wired by the driver) and the two
 //! semantics traits. Every method is mandatory: a feature that does
 //! nothing at a pass says so in its impl, visibly. The passes reach
@@ -16,7 +17,7 @@
 //! values.av the runtime VALUE representation, builder.av the
 //! parse-time authoring surface. A feature-named fn has no place
 //! in any of them.
-use core.{NodeStore, Expr, ExprId, StmtId, Param, Type, TypeId, TypeRef, TypeRegistry, Reg, Ins, joined, DeclId}
+use core.{Expr, ExprId, StmtId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at, Binding}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 
@@ -26,7 +27,7 @@ use @std.errors.{Loc}
 /// match arm's value under its own bind ("" when the arm names
 /// none) — the first scope an EXPRESSION opens.
 export type ResolveCx = {
-    store: NodeStore,
+    view: FileView,
     use_name: fn(ExprId, string),
     use_call: fn(ExprId, string),
     use_type: fn(ExprId, string),
@@ -43,27 +44,15 @@ export type FnSig = { params: List<TypeId>, ret: TypeId }
 /// mono lowers one body per distinct binding.
 export type Sub = { target: DeclId, args: List<TypeId> }
 
-/// A recorded PRESENCE TEST: which subject a `== null`/`!= null`
-/// asked about, and which branch its truth proves PRESENT. The
-/// spine records it as a fact; `if` queries it — features never
-/// match each other's nodes.
-export type Asked = { subject: ExprId, on_present: bool }
-
 /// A struct's typed field table, in declaration order — the index
-/// IS the runtime slot.
-export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<ExprId?> }
+/// IS the runtime slot; a default is the declaration whose body
+/// fills it.
+export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?> }
 
 /// A declared enum's variant table, in declaration order — the
 /// index IS the runtime tag, and a payload (when the variant
 /// carries one) rides slot 1 of the value.
 export type EnumSig = { names: List<string>, payloads: List<TypeId?> }
-
-/// A named member's index in a declaration-ordered table, when it
-/// is one — the lookup structs and enums share.
-fn index_in(names: List<string>, name: string) -> int? {
-    let i = names.index_of(name)
-    if i < 0 { null } else { i }
-}
 
 /// Names listed for help text — one wording everywhere.
 fn named_list(names: List<string>) -> string {
@@ -74,7 +63,7 @@ impl StructSig {
     /// A named field's slot, when declared — THE lookup every
     /// consumer shares.
     fn slot_of(self, name: string) -> int? {
-        index_in(self.names, name)
+        found_at(self.names, name)
     }
 
     /// The fields, listed for help text.
@@ -86,7 +75,7 @@ impl StructSig {
 impl EnumSig {
     /// A named variant's TAG, when declared.
     fn tag_of(self, name: string) -> int? {
-        index_in(self.names, name)
+        found_at(self.names, name)
     }
 
     /// What the variant CARRIES, when it carries anything.
@@ -157,84 +146,52 @@ export fn variant_sig_of(d: DeclSig?) -> EnumSig? {
 /// one field instead of a verb per question, so this vocabulary
 /// stops growing when the registry does.
 export type TypeCx = {
+    view: FileView,
+    names: NameFacts,
+    facts: TypeFacts,
     error_type: TypeId,
-    store: NodeStore,
-    types: TypeRegistry,
-    methods: List<MethodRow>,
-    decls: Decls,
-    decl_of: fn(StmtId) -> DeclId,
-    properties: List<PropertyRow>,
-    type_at: fn(ExprId) -> TypeId,
-    shape_at: fn(ExprId) -> Type,
-    target_type: fn(ExprId) -> TypeId,
-    sig_of: fn(ExprId) -> FnSig?,
-    bound_decl: fn(ExprId) -> DeclId?,
-    fields_of: fn(TypeId) -> StructSig?,
-    variants_of: fn(TypeId) -> EnumSig?,
-    block_type: fn(List<StmtId>, ExprId?) -> TypeId,
+    // the verbs that need the walk's state: what is in scope, what
+    // the enclosing fn promises, where a lambda's barrier stands
     walk_type: fn(ExprId) -> TypeId,
-    bind_type: fn(ExprId, TypeId),
-    widen: fn(ExprId, TypeId),
-    record_ask: fn(ExprId, ExprId, bool),
-    ask_of: fn(ExprId) -> Asked?,
+    block_type: fn(List<StmtId>, ExprId?) -> TypeId,
     walk_narrowed: fn(ExprId, ExprId) -> TypeId,
+    lambda_body: fn(ExprId, List<TypeId>, ExprId) -> TypeId,
+    retype_seated: fn(ExprId, List<TypeId>) -> TypeId?,
+    target_type: fn(ExprId) -> TypeId,
     enclosing_ret: fn() -> TypeId?,
-    record_subst: fn(ExprId, DeclId, List<TypeId>),
+    behind_lambda: fn() -> bool,
     written: fn(StmtId, TypeRef) -> TypeId,
     written_at: fn(ExprId, TypeRef) -> TypeId,
-    lambda_body: fn(ExprId, List<TypeId>, ExprId) -> TypeId,
-    want_at: fn(ExprId) -> TypeId?,
     plant_want: fn(ExprId, TypeId),
-    go_hungry: fn(ExprId),
-    absorb_hunger: fn(ExprId),
-    starve: fn(ExprId, TypeId) -> bool,
-    behind_lambda: fn() -> bool,
-    is_mut: fn(ExprId) -> bool,
-    retype_seated: fn(ExprId, List<TypeId>) -> TypeId?,
-    method_sig: fn(DeclId, string) -> FnSig?,
-    trait_sig: fn(string, string) -> FnSig?,
-    implements: fn(TypeId, string) -> bool,
-    name_at: fn(ExprId) -> string,
-    loc_of: fn(ExprId) -> Loc?,
-    emit: fn(Diag),
 }
 
 /// Lowering capabilities: `reg_of` lowers a child at first request —
 /// a region's branches lower inside its brackets. `result` mints the
 /// fresh register for a node, typed from the type pass; take every
 /// child's register FIRST — registers mint in instruction order —
-/// then `emit` the instruction that defines it. `mint` is a fresh
-/// SCRATCH register typed like the node, for desugars that need one
-/// beyond the node's own.
+/// then `emit` the instruction that defines it. A desugar's SCRATCH
+/// register is `mint_ty(cx.type_at(e))` — spelled as what it is,
+/// never a second name for the answer.
 export type LowerCx = {
-    store: NodeStore,
-    types: TypeRegistry,
-    methods: List<MethodRow>,
-    properties: List<PropertyRow>,
-    decls: Decls,
-    result: fn(ExprId) -> Reg,
+    view: FileView,
+    names: NameFacts,
+    facts: TypeFacts,
+    out: Emitter,
+    body: BodyRegs,
+    sub: Sub?,
+    fn_ret: TypeId?,
+    // the verbs that need the walk: a child lowered on request, a
+    // block, a binding's register (a fn value mints a wrapper), a
+    // lambda lifted, captures packed, a declaration's body named
+    // as instantiated at a site (and wanted — the program lowers
+    // what it reaches)
     reg_of: fn(ExprId) -> Reg,
-    def_reg: fn(ExprId) -> Reg?,
-    shape_at: fn(ExprId) -> Type,
-    type_at: fn(ExprId) -> TypeId,
-    mint: fn(ExprId) -> Reg,
-    mint_like: fn(Reg) -> Reg,
-    mint_shape: fn(Type) -> Reg,
-    mint_ty: fn(TypeId) -> Reg,
-    fields_at: fn(ExprId) -> StructSig?,
-    fields_of: fn(TypeId) -> StructSig?,
-    variants_at: fn(ExprId) -> EnumSig?,
-    variants_of: fn(TypeId) -> EnumSig?,
-    cell_of: fn(ExprId) -> Reg?,
-    bind_pattern: fn(ExprId, Reg),
-    emit: fn(Ins),
     lower_block: fn(List<StmtId>, ExprId?) -> Reg,
-    enclosing_ret: fn() -> TypeId?,
-    callee_of: fn(ExprId, string) -> string,
+    def_reg: fn(ExprId) -> Reg?,
     lift: fn(ExprId) -> string,
     capture_regs: fn(ExprId) -> List<Reg>,
+    symbol_at: fn(DeclId, ExprId) -> string,
     indirect_callee: fn(ExprId) -> Reg?,
-    fail: fn(string),
 }
 
 /// The per-pass behavior of one feature's expression nodes.
@@ -257,7 +214,8 @@ export trait NodeSemantics {
 /// scope where the statement's own binding holds: the exprs walk
 /// and the statements resolve inside it — a loop variable's home.
 export type StmtResolveCx = {
-    store: NodeStore,
+    view: FileView,
+    facts: NameFacts,
     in_block: bool,
     walk: fn(ExprId),
     walk_under: fn(List<Param>, ExprId),
@@ -266,11 +224,9 @@ export type StmtResolveCx = {
     scope_stmts: fn(List<StmtId>),
     bound_scope: fn(StmtId, List<ExprId>, List<StmtId>),
     impl_stmts: fn(List<StmtId>),
-    is_param: fn(string) -> bool,
-    is_index: fn(string) -> bool,
-    lookup: fn(string) -> StmtId?,
-    loc_of: fn(StmtId) -> Loc?,
-    emit: fn(Diag),
+    // what a name is bound to where this statement stands — the ONE
+    // binding currency, so a rule dispatches on the kind
+    binding_of: fn(string) -> Binding?,
 }
 
 /// Statement typing capabilities: `expr` is the WHOLE expression
@@ -278,16 +234,12 @@ export type StmtResolveCx = {
 /// the statement-level state verbs — walks, signatures, and the
 /// assignment fact.
 export type StmtTypeCx = {
-    store: NodeStore,
+    view: FileView,
     expr: TypeCx,
     walk: fn(ExprId),
     walk_under: fn(StmtId, ExprId),
     type_stmts: fn(List<StmtId>),
-    sig_of: fn(StmtId) -> FnSig?,
     bind_declared: fn(StmtId, TypeRef) -> TypeId,
-    binding_type: fn(StmtId) -> TypeId,
-    record_binding: fn(StmtId, TypeId),
-    loc_of: fn(StmtId) -> Loc?,
 }
 
 /// Statement lowering capabilities: `expr` is the WHOLE expression
@@ -297,12 +249,9 @@ export type StmtTypeCx = {
 /// bound through `bind_slot` is a memory CELL: idents load through
 /// it, and the driver's value write defers to it.
 export type StmtLowerCx = {
-    store: NodeStore,
+    view: FileView,
     expr: LowerCx,
     lower_stmts: fn(List<StmtId>),
-    slot_of: fn(StmtId) -> Reg?,
-    bind_slot: fn(StmtId, Reg),
-    bind_index: fn(StmtId, Reg),
 }
 
 /// The per-pass behavior of one feature's STATEMENT kinds — the
@@ -352,8 +301,15 @@ export fn duplicate_member(kind: string, owner: string, member: string, at: Loc?
 /// payload the dispatch GUARANTEES comes back absent; never a
 /// plausible default, which would compile a wrong program silently.
 export fn lower_defect(cx: LowerCx, e: ExprId, what: string) -> Reg {
-    cx.fail("defect: ${what}")
+    cx.defect(what)
     cx.result(e)
+}
+
+/// A node another feature owns reached this one's lowering: the
+/// dispatch map is wrong, and the answer is a recorded defect on a
+/// fresh register — never a silent register with nothing behind it.
+export fn foreign_node(cx: LowerCx, e: ExprId) -> Reg {
+    lower_defect(cx, e, hole_defect())
 }
 
 /// A declaration that must live at the TOP LEVEL, refused where it
@@ -364,11 +320,25 @@ export fn nested_decl(kind: string, what: string, at: Loc?) -> Diag {
     refusal(kind, at, "${what} live at the top level", "declared inside a block", "move it out of the block")
 }
 
+/// THE nested-declaration guard every declaring statement opens
+/// with: inside a block it refuses and answers true, so the rule
+/// returns; at the top level it answers false.
+export fn refuses_nested(cx: StmtResolveCx, s: StmtId, kind: string, what: string) -> bool {
+    if !cx.in_block { return false }
+    cx.emit(nested_decl(kind, what, cx.loc_of(s)))
+    true
+}
+
 /// The parallel-capture mismatch, worded once — every zip builder
-/// that finds its lists disagreeing says exactly this. Deliberately
-/// says NAMES, not "fields": arms and fields both zip through it.
+/// that finds its lists disagreeing says exactly this, naming the
+/// two lists it zipped.
+export fn zip_defect_of(what: string) -> string {
+    "${what} disagree in count"
+}
+
+/// The common zip: names against values — arms and fields both.
 export fn zip_defect() -> string {
-    "names and values disagree in count"
+    zip_defect_of("names and values")
 }
 
 /// The help EVERY "no such variant" refusal gives — what there IS.
@@ -402,7 +372,7 @@ export fn variant_defect() -> string {
 impl StmtResolveCx {
     /// Walk the statement's value expression, when it carries one.
     fn walk_value(self, s: StmtId) {
-        let v: ExprId? = self.store.stmt_value(s)
+        let v: ExprId? = self.view.store.stmt_value(s)
         if v != null { self.walk(v!) }
     }
 }
@@ -412,7 +382,7 @@ impl StmtTypeCx {
     /// and refuse a TYPE standing where a value belongs, since
     /// "the statement's value" says it must be one.
     fn walk_value(self, s: StmtId) {
-        let v: ExprId? = self.store.stmt_value(s)
+        let v: ExprId? = self.view.store.stmt_value(s)
         if v == null { return }
         self.walk(v!)
         let _ = refuses_type_value(self.expr, v!)
@@ -422,7 +392,7 @@ impl StmtTypeCx {
 impl StmtLowerCx {
     /// The statement's value, lowered — null when it carries none.
     fn lower_value(self, s: StmtId) -> Reg? {
-        let v: ExprId? = self.store.stmt_value(s)
+        let v: ExprId? = self.view.store.stmt_value(s)
         if v == null { return null }
         self.expr.reg_of(v!)
     }

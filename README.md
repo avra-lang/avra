@@ -37,16 +37,25 @@ methods and traits with static dispatch (`impl P`, `trait Show`,
 `impl Show for P`, bounds `fn f<T: Show>`), `dyn Show` when
 heterogeneity is worth its visible cost, ownership (every box
 reclaims; strings ride struct fields, enum payloads, list
-elements, and `Result<T, string>` — the self-host shape), and
+elements, and `Result<T, string>` — the self-host shape),
 closures (`(x: int) -> x + n` capturing by value, fn-typed fields
-making capability records first-class) — every construct
-golden-tested from its parse tree to its diagnostics to its
-native output, on both engines.
+making capability records first-class), maps (`Map<string, T>`,
+insertion-ordered, `.get`/`.set`), typed table literals
+(`table<Row> { … }`), components and record field defaults
+(`type P = { y: int = 2 }` — a default is a declaration every
+literal that omits the field calls), index-paired `for i, x in xs`,
+and modules (`use a.b.{f}`, `export`, an `avra.toml` marking the
+package root, and `avra check <dir>` checking every file under it)
+— every construct golden-tested from its parse tree to its
+diagnostics to its native output, on both engines.
 
 ## The compiler, in pipeline order
 
 ```
-source
+source(s)
+  │  workspace     a package root's files; every stage below is a
+  │                memoized query family over the red-green kernel
+  │                (`query/`), so a body edit re-runs only what read it
   │  lex + parse   the grammar engine, executing the merged
   │                feature grammar; holes survive bad input
   │  resolve       names -> bindings (a param or a definition)
@@ -76,10 +85,11 @@ module (`emit`), the diagnostics registry.
 ## The gates
 
 ```sh
-make gate     # the bar for every change: idioms + test + corpus
+make gate     # the bar for every change: vocab + idioms + test + corpus
+make vocab    # the IR seam: every Ins consumer stays exhaustive
+make idioms   # the ratchet: mechanical smells may never RISE
 make test     # every module's spec/given/then suite
 make corpus   # every corpus/*.av: eval == native == .expected
-make idioms   # the ratchet: mechanical smells may never RISE
 make bench    # the measured curve: suite + corpus wall times
 make fuzz     # corpus mutants through `avra check`: diagnose, never crash
 make scaffold-check   # `avra new feature` templates still compile
@@ -106,10 +116,13 @@ claim that this stays true.
 ```
 packages/std-avrac/src/
   core/        shared vocabulary: spans, nodes, types, the IR
+  query/       the memo kernel: red-green cells, families, revisions
   grammar/     the grammar engine (language-agnostic)
-  features/    the language, one directory per feature
-  language/    the driver: assembly, passes, interp, backend
+  features/    the language, one directory per feature; the contract
+  language/    the driver: assembly, the workspace's query families,
+               passes, interp, backend
   diagnostics/ structured errors and their rendering
+  testing/     what every spec asks of a program: shown, refused_with
 packages/cli/  the avra command; each subcommand one file
 runtime/       avra_runtime.c — the native half of the semantics
 backend/       llvm_wrapper.c — the compiler's LLVM binding
@@ -117,7 +130,9 @@ corpus/        the proof-by-example suite
 tools/         the gate's scripts: the idiom ratchet, bench, fuzz
 ```
 
-Layering is one-way: core → grammar → features → language.
+Layering is one-way: core → query → grammar → features → language.
+`query/` and `diagnostics/` are infrastructure — language-agnostic,
+imported by everything above them.
 
 ## Toolchain
 

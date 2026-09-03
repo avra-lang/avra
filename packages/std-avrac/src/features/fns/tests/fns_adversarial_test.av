@@ -2,7 +2,7 @@
 // params, returns. Every program here was written to BREAK the
 // feature, not to use it.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{refused_with, shown, refusals}
+use @std.avrac.testing.{refused_with, shown, refusals, halver}
 
 spec "features/fns (adversarial)" {
     given "`return` under attack — depths, tails, boundaries" {
@@ -15,8 +15,7 @@ spec "features/fns (adversarial)" {
                              "the body answers `string` but `f` declares `int`")
         }
         then "the guard-then-bang reads straight: absence answered, then insisted" {
-            shown("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
-                  "fn f(v: int?) -> int {\n    if v == null {\n        return 0 - 1\n    }\n    v!\n}\nf(half(4)) + f(half(3))") == "1"
+            shown("${halver()}fn f(v: int?) -> int {\n    if v == null {\n        return 0 - 1\n    }\n    v!\n}\nf(half(4)) + f(half(3))") == "1"
         }
         then "a return at the TOP LEVEL is told where answers live" {
             refused_with("mut i = 0\nwhile i < 3 {\n    return 5\n    i = i + 1\n}\ni",
@@ -26,8 +25,7 @@ spec "features/fns (adversarial)" {
             // The trigger fired with the error spine: a block that
             // LEAVES needs no tail, and answers what the fn
             // promises — so it joins only where that type fits.
-            shown("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
-                  "fn f(id: int) -> int {\n    let got = if let v? = half(id) {\n        v\n    } else {\n        return 0 - 1\n    }\n    got * 10\n}\nf(8) + f(3)") == "39"
+            shown("${halver()}fn f(id: int) -> int {\n    let got = if let v? = half(id) {\n        v\n    } else {\n        return 0 - 1\n    }\n    got * 10\n}\nf(8) + f(3)") == "39"
         }
     }
     given "the parameter list, at every size" {
@@ -80,7 +78,28 @@ spec "features/fns (adversarial)" {
             refusals("fn f() -> int { true }\nf()") == 1
         }
         then "an empty body refuses" {
-            refusals("fn f() -> int { }\nf()") >= 1
+            refused_with("fn f() -> int { }\nf()", "a block ends with an expression — or leaves")
+        }
+    }
+    given "the body floor — a fn sees declarations, never the top level's values" {
+        then "a read refuses once, naming the remedy" {
+            refused_with("let k = 5\nfn f(n: int) -> int {\n    n + k\n}\nf(1)", "`k` is a run-time binding of the top level")
+        }
+        then "an assignment refuses the same way" {
+            refused_with("mut k = 1\nfn f() -> int {\n    k = 2\n    3\n}\nf()", "`k` is a run-time binding of the top level")
+        }
+        then "a binding declared AFTER the fn is hidden too — not `used before its definition`" {
+            refused_with("fn f() -> int {\n    k\n}\nlet k = 1\nf()", "`k` is a run-time binding of the top level")
+        }
+        then "inside a nested block and a lambda of the body — one refusal" {
+            refusals("let k = 1\nfn f() -> int {\n    if true {\n        let g = () -> k\n        g()\n    } else {\n        0\n    }\n}\nf()") == 1
+        }
+        then "a param or a local of the same name shadows nothing — it simply binds" {
+            shown("let k = 1\nfn f(k: int) -> int {\n    let j = k + 1\n    j\n}\nf(41) + k") == "43"
+        }
+        then "a METHOD body stands on the same floor" {
+            refused_with("type P = { x: int }\nlet k = 3\nimpl P {\n    fn m(self) -> int {\n        k\n    }\n}\nP { x: 1 }.m()",
+                         "`k` is a run-time binding of the top level")
         }
     }
 }

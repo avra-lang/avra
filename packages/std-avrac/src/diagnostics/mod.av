@@ -2,7 +2,7 @@
 //! marks, a severity, and remedies. Structured first (P11); rendering
 //! is a projection. A diagnostic names its KIND; the F-code is the
 //! registry's projection of that kind (codes.av).
-use core.{Span}
+use core.{Span, inserted}
 use @std.errors.{Loc, Frame, Suggestion, Error, ErrorInfo, info}
 
 export enum Severity { Error, Warning }
@@ -42,7 +42,48 @@ export fn loc_at(file: string?, s: Span?) -> Loc? {
     Loc { file: file, lo: s!.lo, hi: s!.hi }
 }
 
-/// The diagnostic's primary frame, labeled.
+/// Every query value's diagnostics, one sink; `report` folds sinks.
+export type Voices = { list: List<Diag> }
+
+export fn no_voices() -> Voices {
+    Voices { list: [] }
+}
+
+impl Voices {
+    fn speak(self, d: Diag) {
+        mut ds = self.list
+        ds.push(d)
+    }
+
+    fn heard(self) -> bool { !self.list.is_empty() }
+}
+
+/// Diagnostics in source order — by where each points, the order
+/// spoken breaking ties. Bodies typed apart fold back into the
+/// order one walk would have spoken.
+export fn by_position(ds: List<Diag>) -> List<Diag> {
+    mut out: List<Diag> = []
+    for d in ds {
+        let at = first_after(out, start_of(d))
+        out = inserted(out, at, d)
+    }
+    out
+}
+
+/// The first index whose diagnostic starts past `start` — the
+/// insertion point that keeps equal starts in spoken order.
+fn first_after(ds: List<Diag>, start: int) -> int {
+    for (i, d) in ds.enumerate() {
+        if start_of(d) > start { return i }
+    }
+    ds.length
+}
+
+/// Where a diagnostic points; an unanchored one sorts first.
+fn start_of(d: Diag) -> int {
+    d.primary.loc?.lo ?? 0 - 1
+}
+
 /// A refusal in the one shape every voice takes: the kind, where,
 /// the message, the label at the site, and the help (or none).
 export fn refusal(kind: string, at: Loc?, message: string, label: string, help: string?) -> Diag {
@@ -50,8 +91,19 @@ export fn refusal(kind: string, at: Loc?, message: string, label: string, help: 
     pointed(error_at(kind, at, message), label) with { help: help }
 }
 
+/// The diagnostic's primary frame, labeled.
 export fn pointed(d: Diag, label: string) -> Diag {
     d with { primary: d.primary with { label: label } }
+}
+
+/// THE compiler-blames-itself kind, named once.
+export fn defect_kind() -> string {
+    "language.defect"
+}
+
+/// A defect — the compiler's own mistake, never the program's.
+export fn defect_at(loc: Loc?, message: string) -> Diag {
+    error_at(defect_kind(), loc, message)
 }
 
 /// An error at a source position; the common construction. Extend

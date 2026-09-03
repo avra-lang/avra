@@ -5,12 +5,12 @@
 use core.{ExprId, StmtId, Type, TypeId, ResSides}
 use features.{TypeCx, StmtTypeCx, accepts, join_of, spoken, this_is,
               member_type_of, nullable_over}
-use diagnostics.{pointed, refusal}
+use diagnostics.{refusal}
 
 fn nullable_type(cx: TypeCx, e: ExprId) -> TypeId {
-    // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
-    match cx.store.expr(e) {
-        .NullLit -> cx.types.intern(Type.Null),
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) {
+        .NullLit -> cx.view.types.intern(Type.Null),
         .Coalesce(l, r) -> coalesce_type(cx, l, r),
         .Force(v) -> forced_type(cx, v),
         .Propagate(v) -> propagate_type(cx, v),
@@ -19,6 +19,131 @@ fn nullable_type(cx: TypeCx, e: ExprId) -> TypeId {
         _ -> cx.error_type,
     }
 }
+
+/// `a?.b` — the member of what the nullable CARRIES, nullable
+/// again. The member is the SAME law `a.b` asks (checks.av), shown
+/// as the carried type; the answer FLATTENS — a chain over a
+/// nullable member is still ONE absence.
+fn chain_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
+    if cx.shape_at(subject) is .Error { return cx.error_type }
+    let held: TypeId? = cx.view.types.carried(cx.type_at(subject))
+    if held == null { return not_chainable(cx, subject, name) }
+    let member = member_type_of(cx, e, cx.view.types.name_of(held!), held!, name)
+    if cx.view.types.shape_of(member) is .Error { return cx.error_type }
+    nullable_over(cx, member)
+}
+
+fn coalesce_type(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {
+    if cx.shape_at(l) is .Error { return cx.error_type }
+    let held: TypeId? = cx.view.types.carried(cx.type_at(l))
+    if held == null {
+        return not_absent_able(cx, l, "type.coalesce", "`??` answers",
+            "`??` always answers with the right side", "write the right side alone")
+    }
+    let carried = held!
+    if accepts(cx, r, carried) { return carried }
+    wrong_answer(cx, r, carried)
+}
+
+/// The asking arms — `match v { b? -> p, null -> a }` and the
+/// `if let b? = v` sugar build the SAME node: the subject must be
+/// nullable, the bind carries what it holds, and the two arms JOIN
+/// like any other pair of branches. Refusals name the BIND, so
+/// both surfaces read their own words.
+fn match_opt_type(cx: TypeCx, subject: ExprId, bind: string,
+                  present: ExprId, absent: ExprId) -> TypeId {
+    if cx.shape_at(subject) is .Error { return cx.error_type }
+    let held: TypeId? = cx.view.types.carried(cx.type_at(subject))
+    if held == null {
+        return not_absent_able(cx, subject, "type.match_opt", "`${bind}?` asks",
+            "`${bind}?` can never bind", "write the absent arm's answer alone")
+    }
+    // the bind holds what the nullable carries, spoken BEFORE the
+    // arm walks, exactly as an enum arm's payload bind is
+    cx.bind_type(present, held!)
+    let pt = cx.walk_type(present)
+    let at = cx.walk_type(absent)
+    let both: TypeId? = join_of(cx, pt, at)
+    if both == null { return arms_disagree(cx, present, absent) }
+    let answer = both!
+    let _ = accepts(cx, present, answer)
+    let _ = accepts(cx, absent, answer)
+    answer
+}
+
+/// `v!` INSISTS: the answer is what the nullable carries, and a
+/// guarantee has nothing to insist about.
+fn forced_type(cx: TypeCx, v: ExprId) -> TypeId {
+    if cx.shape_at(v) is .Error { return cx.error_type }
+    let held: TypeId? = cx.view.types.carried(cx.type_at(v))
+    if held != null { return held! }
+    not_absent_able(cx, v, "type.force", "`!` insists on",
+        "`!` always fails", "there is nothing here to insist on")
+}
+
+/// `let v? = e else { ... }` — the bind-fresh form that KEEPS
+/// GOING: the subject must be nullable; the bind holds what it
+/// carries, recorded for every later read; the else types in its
+/// own walk and must LEAVE, or control would reach the bind with
+/// nothing bound.
+fn check_let_else(cx: StmtTypeCx, s: StmtId) {
+    let subject: ExprId? = cx.view.store.stmt_value(s)
+    if subject == null { return }
+    let v = subject!
+    let bind = cx.view.store.let_name(s) ?? "this binding"
+    let held: TypeId? = cx.expr.view.types.carried(cx.expr.type_at(v))
+    if held == null && !(cx.expr.shape_at(v) is .Error) {
+        let _ = not_absent_able(cx.expr, v, "type.let_else", "`${bind}?` asks",
+            "`${bind}?` can never bind", "the else always runs — write its statements alone")
+    }
+    cx.record_binding(s, held ?? cx.expr.error_type)
+    let stmts = else_stmts_of(cx.view.store.stmt(s))
+    cx.type_stmts(stmts)
+    let last: StmtId? = stmts.last()
+    if last == null || !cx.view.store.diverges(last!) { else_falls_through(cx, s, bind) }
+}
+
+/// `v?` PROPAGATES: a present value unwraps to what the nullable
+/// carries; an absent one makes the ENCLOSING fn answer `null`
+/// right where it stands — so there must BE an enclosing fn, and
+/// its promise must itself be nullable.
+fn propagate_type(cx: TypeCx, v: ExprId) -> TypeId {
+    if cx.shape_at(v) is .Error { return cx.error_type }
+    let sides: ResSides? = cx.view.types.res_parts(cx.type_at(v))
+    if sides != null { return propagate_res_type(cx, v, sides!) }
+    let held: TypeId? = cx.view.types.carried(cx.type_at(v))
+    if held == null {
+        return not_absent_able(cx, v, "type.propagate", "`?` propagates",
+            "`?` always propagates", "write `return null`")
+    }
+    let ret: TypeId? = cx.enclosing_ret()
+    if ret == null {
+        return no_caller(cx, v, "absence", "answer the absence here — `?? value`, or ask with `== null`")
+    }
+    let promised = ret!
+    if cx.view.types.shape_of(promised) is .Error { return cx.error_type }
+    if cx.view.types.carried(promised) != null { return held! }
+    absence_unpromised(cx, v, promised)
+}
+
+/// `v?` on a RESULT — the failure channel: a present answer unwraps
+/// to the ok side; a failure makes the enclosing fn answer THE SAME
+/// failure, so the fn must promise a Result carrying the same E.
+fn propagate_res_type(cx: TypeCx, v: ExprId, sides: ResSides) -> TypeId {
+    let ret: TypeId? = cx.enclosing_ret()
+    if ret == null {
+        return no_caller(cx, v, "the failure", "handle it here — `match` the `.Ok`/`.Err`")
+    }
+    let promised = ret!
+    if cx.view.types.shape_of(promised) is .Error { return cx.error_type }
+    let rsides: ResSides? = cx.view.types.res_parts(promised)
+    if rsides == null { return failure_unpromised(cx, v, promised, sides) }
+    // LICENSED I9: type identity — interned ids ARE the agreement
+    if rsides!.err.index != sides.err.index { return failures_disagree(cx, v, sides, rsides!) }
+    sides.ok
+}
+
+// ── The voices ──
 
 /// The family's two mis-aims, worded once: an operator pointed at a
 /// GUARANTEE (never absent), or at absence itself (always absent).
@@ -36,19 +161,6 @@ fn not_absent_able(cx: TypeCx, v: ExprId, kind: string, asks: string,
     spoken(cx, refusal(kind, cx.loc_of(v), "${asks} a nullable, this is `${n}`", this_is(n), "`${n}` is a guarantee — it is never absent"))
 }
 
-/// `a?.b` — the member of what the nullable CARRIES, nullable
-/// again. The member is the SAME law `a.b` asks (checks.av), shown
-/// as the carried type; the answer FLATTENS — a chain over a
-/// nullable member is still ONE absence.
-fn chain_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
-    if cx.shape_at(subject) is .Error { return cx.error_type }
-    let held: TypeId? = cx.types.carried(cx.type_at(subject))
-    if held == null { return not_chainable(cx, subject, name) }
-    let member = member_type_of(cx, e, cx.types.name_of(held!), held!, name)
-    if cx.types.shape_of(member) is .Error { return cx.error_type }
-    nullable_over(cx, member)
-}
-
 /// `?.` on a guarantee, or on absence itself — the same two
 /// refusals `!` and `??` give, in the chain's words.
 fn not_chainable(cx: TypeCx, subject: ExprId, name: string) -> TypeId {
@@ -59,110 +171,29 @@ fn not_chainable(cx: TypeCx, subject: ExprId, name: string) -> TypeId {
     spoken(cx, refusal("type.chain", cx.loc_of(subject), "`?.` reaches into a nullable, this is `${n}`", this_is(n), "`${n}` is a guarantee — write `.${name}`"))
 }
 
-fn coalesce_type(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {
-    if cx.shape_at(l) is .Error { return cx.error_type }
-    let held: TypeId? = cx.types.carried(cx.type_at(l))
-    if held == null {
-        return not_absent_able(cx, l, "type.coalesce", "`??` answers",
-            "`??` always answers with the right side", "write the right side alone")
-    }
-    let carried = held!
-    if accepts(cx, r, carried) { return carried }
+fn wrong_answer(cx: TypeCx, r: ExprId, carried: TypeId) -> TypeId {
     let n = cx.name_at(r)
-    spoken(cx, refusal("type.coalesce", cx.loc_of(r), "`??` answers with a `${cx.types.name_of(carried)}`, this is `${n}`", this_is(n), "a chain groups to the RIGHT — `a ?? (b ?? c)`"))
+    spoken(cx, refusal("type.coalesce", cx.loc_of(r), "`??` answers with a `${cx.view.types.name_of(carried)}`, this is `${n}`", this_is(n), "a chain groups to the RIGHT — `a ?? (b ?? c)`"))
 }
 
-/// The asking arms — `match v { b? -> p, null -> a }` and the
-/// `if let b? = v` sugar build the SAME node: the subject must be
-/// nullable, the bind carries what it holds, and the two arms JOIN
-/// like any other pair of branches. Refusals name the BIND, so
-/// both surfaces read their own words.
-fn match_opt_type(cx: TypeCx, subject: ExprId, bind: string,
-                  present: ExprId, absent: ExprId) -> TypeId {
-    if cx.shape_at(subject) is .Error { return cx.error_type }
-    let held: TypeId? = cx.types.carried(cx.type_at(subject))
-    if held == null {
-        return not_absent_able(cx, subject, "type.match_opt", "`${bind}?` asks",
-            "`${bind}?` can never bind", "write the absent arm's answer alone")
-    }
-    // the bind holds what the nullable carries, spoken BEFORE the
-    // arm walks, exactly as an enum arm's payload bind is
-    cx.bind_type(present, held!)
-    let pt = cx.walk_type(present)
-    let at = cx.walk_type(absent)
-    let both: TypeId? = join_of(cx, pt, at)
-    if both != null {
-        let answer = both!
-        let _ = accepts(cx, present, answer)
-        let _ = accepts(cx, absent, answer)
-        return answer
-    }
+fn arms_disagree(cx: TypeCx, present: ExprId, absent: ExprId) -> TypeId {
     let n = cx.name_at(absent)
     spoken(cx, refusal("type.match_opt", cx.loc_of(absent), "the arms disagree: `${cx.name_at(present)}` vs `${n}`", this_is(n), null))
 }
 
-/// `v!` INSISTS: the answer is what the nullable carries, and a
-/// guarantee has nothing to insist about.
-fn forced_type(cx: TypeCx, v: ExprId) -> TypeId {
-    if cx.shape_at(v) is .Error { return cx.error_type }
-    let held: TypeId? = cx.types.carried(cx.type_at(v))
-    if held != null { return held! }
-    not_absent_able(cx, v, "type.force", "`!` insists on",
-        "`!` always fails", "there is nothing here to insist on")
+fn else_falls_through(cx: StmtTypeCx, s: StmtId, bind: string) {
+    cx.expr.emit(refusal("type.let_else", cx.loc_of(s), "the `else` must LEAVE — control cannot fall through to `${bind}`", "falls through", "end the else with `return`"))
 }
 
-/// `let v? = e else { ... }` — the bind-fresh form that KEEPS
-/// GOING: the subject must be nullable; the bind holds what it
-/// carries, recorded for every later read; the else types in its
-/// own walk and must LEAVE, or control would reach the bind with
-/// nothing bound.
-fn check_let_else(cx: StmtTypeCx, s: StmtId) {
-    let subject: ExprId? = cx.store.stmt_value(s)
-    if subject == null { return }
-    let v = subject!
-    let bind = cx.store.let_name(s) ?? "this binding"
-    let held: TypeId? = cx.expr.types.carried(cx.expr.type_at(v))
-    if held == null && !(cx.expr.shape_at(v) is .Error) {
-        let _ = not_absent_able(cx.expr, v, "type.let_else", "`${bind}?` asks",
-            "`${bind}?` can never bind", "the else always runs — write its statements alone")
-    }
-    cx.record_binding(s, held ?? cx.expr.error_type)
-    let stmts = else_stmts_of(cx.store.stmt(s))
-    cx.type_stmts(stmts)
-    let last: StmtId? = stmts.last()
-    if last == null || !cx.store.diverges(last!) {
-        cx.expr.emit(refusal("type.let_else", cx.loc_of(s), "the `else` must LEAVE — control cannot fall through to `${bind}`", "falls through", "end the else with `return`"))
-    }
-}
-
-/// `v?` PROPAGATES: a present value unwraps to what the nullable
-/// carries; an absent one makes the ENCLOSING fn answer `null`
-/// right where it stands — so there must BE an enclosing fn, and
-/// its promise must itself be nullable.
-fn propagate_type(cx: TypeCx, v: ExprId) -> TypeId {
-    if cx.shape_at(v) is .Error { return cx.error_type }
-    let sides: ResSides? = cx.types.res_parts(cx.type_at(v))
-    if sides != null { return propagate_res_type(cx, v, sides!) }
-    let held: TypeId? = cx.types.carried(cx.type_at(v))
-    if held == null {
-        return not_absent_able(cx, v, "type.propagate", "`?` propagates",
-            "`?` always propagates", "write `return null`")
-    }
-    let ret: TypeId? = cx.enclosing_ret()
-    if ret == null {
-        return no_caller(cx, v, "absence", "answer the absence here — `?? value`, or ask with `== null`")
-    }
-    let promised = ret!
-    if cx.types.shape_of(promised) is .Error { return cx.error_type }
-    if cx.types.carried(promised) != null { return held! }
-    let promise = cx.types.name_of(promised)
+fn absence_unpromised(cx: TypeCx, v: ExprId, promised: TypeId) -> TypeId {
+    let promise = cx.view.types.name_of(promised)
     spoken(cx, refusal("type.propagate", cx.loc_of(v), "`?` makes this fn answer `null`, but it promises a `${promise}`", "propagates here", propagate_remedy(cx, promised, promise)))
 }
 
 /// The nullable channel's remedy — shape-aware: a fn promising a
 /// RESULT wants the failure channel, not a nullable answer.
 fn propagate_remedy(cx: TypeCx, ret: TypeId, promise: string) -> string {
-    if cx.types.shape_of(ret) is .Res {
+    if cx.view.types.shape_of(ret) is .Res {
         return "a nullable propagates `null` — to ride the failure channel, the subject must be a `Result`; answer the absence here with `??`"
     }
     "declare the answer nullable — `-> ${promise}?` — or answer the absence here with `??`"
@@ -177,24 +208,11 @@ fn no_caller(cx: TypeCx, v: ExprId, what: string, help: string) -> TypeId {
     spoken(cx, refusal("type.propagate", cx.loc_of(v), "`?` passes ${what} to a caller, and the top level has none", "at the top level", help))
 }
 
-/// `v?` on a RESULT — the failure channel: a present answer unwraps
-/// to the ok side; a failure makes the enclosing fn answer THE SAME
-/// failure, so the fn must promise a Result carrying the same E.
-fn propagate_res_type(cx: TypeCx, v: ExprId, sides: ResSides) -> TypeId {
-    let ret: TypeId? = cx.enclosing_ret()
-    if ret == null {
-        return no_caller(cx, v, "the failure", "handle it here — `match` the `.Ok`/`.Err`")
-    }
-    let promised = ret!
-    if cx.types.shape_of(promised) is .Error { return cx.error_type }
-    let rsides: ResSides? = cx.types.res_parts(promised)
-    if rsides == null {
-        let promise = cx.types.name_of(promised)
-        return spoken(cx, refusal("type.propagate", cx.loc_of(v), "`?` makes this fn answer the failure, but it promises a `${promise}`", "propagates here", "declare the answer fallible — `-> Result<${promise}, ${cx.types.name_of(sides.err)}>`"))
-    }
-    // LICENSED I9: type identity — interned ids ARE the agreement
-    if rsides!.err.index != sides.err.index {
-        return spoken(cx, refusal("type.propagate", cx.loc_of(v), "the failures disagree: this raises `${cx.types.name_of(sides.err)}`, the fn promises `${cx.types.name_of(rsides!.err)}`", "propagates here", "error unions arrive later — today the channels must carry the same type"))
-    }
-    sides.ok
+fn failure_unpromised(cx: TypeCx, v: ExprId, promised: TypeId, sides: ResSides) -> TypeId {
+    let promise = cx.view.types.name_of(promised)
+    spoken(cx, refusal("type.propagate", cx.loc_of(v), "`?` makes this fn answer the failure, but it promises a `${promise}`", "propagates here", "declare the answer fallible — `-> Result<${promise}, ${cx.view.types.name_of(sides.err)}>`"))
+}
+
+fn failures_disagree(cx: TypeCx, v: ExprId, sides: ResSides, promised: ResSides) -> TypeId {
+    spoken(cx, refusal("type.propagate", cx.loc_of(v), "the failures disagree: this raises `${cx.view.types.name_of(sides.err)}`, the fn promises `${cx.view.types.name_of(promised.err)}`", "propagates here", "error unions arrive later — today the channels must carry the same type"))
 }

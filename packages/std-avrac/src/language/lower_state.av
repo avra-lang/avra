@@ -2,50 +2,43 @@
 //! order, slots and cells, bindings read, fn values and their
 //! wrappers, lambdas lifted, captures packed, callee symbols and
 //! the mono worklist's enqueue — the verbs the walk speaks.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, dst_of}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, DeclId}
 use diagnostics.{loc_at}
-use features.{StructSig, EnumSig, fn_box, capture_lane, slot_read, record_sig_of, variant_sig_of, res_enum_sig, Sub, subbed_variants, subbed_fields}
+use features.{fn_box, capture_lane, slot_read, Sub, Cap, viewed}
 use @std.errors.{Loc}
 
 impl Lower {
     /// The fresh register for a node, typed by the type pass.
     fn mint(self, e: ExprId) -> Reg {
-        self.mint_ty(self.view(self.a.type_at(e)))
+        self.out.mint_ty(self.concrete(self.a.type_at(e)))
     }
 
     /// The body's substitution view — identity for plain bodies.
-    fn view(self, ty: TypeId) -> TypeId {
-        viewed_ty(self.a, self.sub, ty)
+    fn concrete(self, ty: TypeId) -> TypeId {
+        viewed(self.a.view.decls.types, self.sub, ty)
     }
 
-    /// The name a call site targets: the plain name, or — when
-    /// typing recorded an instantiation — the mangling of that
-    /// instantiation COMPOSED with this body's own view, enqueued
-    /// for the worklist on first sight.
-    fn callee_of(self, e: ExprId, name: string) -> string {
-        let sym = self.symbol_of(e, name)
-        let held: Sub? = self.a.typing.substs[e.index]
-        if held == null { return sym }
-        let composed = Sub { target: held!.target, args: [self.view(t) for t in held!.args] }
-        let mangled = mangle(sym, composed)
-        if self.unseen(mangled) {
+    /// A declaration's body as instantiated at a site: its plain
+    /// symbol, or — when typing recorded an instantiation there —
+    /// the mangling of that instantiation COMPOSED with this body's
+    /// own view. Wanted either way.
+    fn symbol_at(self, d: DeclId, e: ExprId) -> string {
+        let held: Sub? = self.a.facts.subst_at(e)
+        if held == null { return self.wanted(d, null) }
+        self.wanted(d, Sub { target: held!.target, args: [self.concrete(t) for t in held!.args] })
+    }
+
+    /// A declaration's body under an instantiation, as the symbol a
+    /// call or an address names — enqueued on first sight, so the
+    /// program lowers exactly what it reaches.
+    fn wanted(self, d: DeclId, sub: Sub?) -> string {
+        let sym = self.a.view.decls.symbol(d)
+        let name = if sub == null { sym } else { mangle(sym, sub!) }
+        if self.unseen(name) {
             mut pending = self.jobs.pending
-            pending.push(Spec { name: mangled, sub: composed })
+            pending.push(Wanted { file: self.a.view.decls.decl(d).file, decl: d, name: name, sub: sub })
         }
-        mangled
-    }
-
-    /// A call's target symbol: a declared fn under its module —
-    /// this file's, or another's through a `use`; anything else (a
-    /// method, a runtime name) is its own symbol.
-    fn symbol_of(self, e: ExprId, name: string) -> string {
-        let b: Binding? = self.a.binding(e)
-        if b == null { return name }
-        match b! {
-            .Decl(d) -> self.a.decls.symbol(d),
-            .Def(_) -> name,
-            .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> name,
-        }
+        name
     }
 
     /// A worklist name's FIRST sighting — true exactly once; the
@@ -58,70 +51,6 @@ impl Lower {
         true
     }
 
-    /// A fresh register of an explicit type — for values no
-    /// expression names (the answer's printed text).
-    fn mint_ty(self, ty: TypeId) -> Reg {
-        mut tys = self.reg_types
-        tys.push(ty)
-        Reg { index: tys.length - 1 }
-    }
-
-    /// Every instruction lands here — and a runtime callee the
-    /// registry does not know refuses the BUILD, loudly, instead of
-    /// crashing the backend.
-    fn give(self, i: Ins) {
-        // A new CALLING instruction must decide whether the runtime
-        // registry validates it; the arms make that unavoidable.
-        let callee: string? = match i {
-            .CallRt(_, c, _) -> c,
-            .CallRtVoid(c, _) -> c,
-            .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-            .Bin(_, _, _, _) or .Un(_, _, _) or .Call(_, _, _) or
-            .FnAddr(_, _) or .CallPtr(_, _, _) or
-            .Pack(_, _) or .Extract(_, _, _) or
-            .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
-            .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or
-            .Alloca(_) or .Load(_, _) or .Store(_, _) or
-            .LoopStart or .LoopCond(_) or .LoopEnd or
-            .Retain(_) or .Release(_) or .RetVal(_) or .FnExit(_) or
-            .Ret(_) -> null,
-        }
-        if callee != null && rt_sig_of(callee!) == null {
-            self.record("defect: unknown runtime callee `${callee!}` — add its row to runtime_api.av")
-        }
-        self.defined_in_order(i)
-        mut ins = self.ins
-        ins.push(i)
-    }
-
-    /// THE MINT-ORDER LAW: registers define in the order they were
-    /// minted — the backend's value table is definition order, read
-    /// by mint index. A rule that mints its answer before its
-    /// operands breaks it; the break is a defect HERE, named, never
-    /// a native crash. `seeded` records the params, which define at
-    /// entry without an instruction.
-    fn defined_in_order(self, i: Ins) {
-        let d: Reg? = dst_of(i)
-        if d == null { return }
-        let dst = d!
-        let expected = self.defined.length
-        // LICENSED I9: REGISTER identity — a mint index, not a type
-        if dst.index != expected {
-            self.record("defect: register r${dst.index} defines out of mint order — r${expected} is next (mint operands first, the answer last)")
-        }
-        mut ds = self.defined
-        ds.push(dst)
-    }
-
-    /// The registers a body's entry defines without an instruction
-    /// — its params (and a lambda's env) — recorded so the law
-    /// counts from the first minted body register.
-    fn seeded(self) {
-        mut ds = self.defined
-        // LICENSED I3: the register IS its index
-        for j in 0..self.reg_types.length { ds.push(Reg { index: j }) }
-    }
-
     /// An ident's register: its param's (params ARE registers
     /// 0..N-1), or its definition's slot — LOADED first when the
     /// slot is a memory cell, so the ident rule stays dumb.
@@ -131,36 +60,19 @@ impl Lower {
         self.read_binding(e, b!)
     }
 
-    /// The mut CELL behind a name — null for every binding that is
-    /// not a boxed mut.
-    fn cell_of(self, e: ExprId) -> Reg? {
-        let b: Binding? = self.a.binding(e)
-        if b == null { return null }
-        match b! {
-            .Def(s) -> if self.boxed[s.index] { self.slots[s.index] } else { null },
-            _ -> null,
-        }
-    }
-
     /// A binding's VALUE in the current body — the ident rule and
     /// the capture pack share this one projection.
     fn read_binding(self, e: ExprId, b: Binding) -> Reg? {
         match b {
             .Param(i) -> Reg { index: i },
             .Def(s) -> self.slot_reg(e, s),
-            .Pattern(v) -> self.pattern_regs[v.index],
+            .Pattern(v) -> self.body.pattern_reg(v),
             // valid only inside the LIFTED body: env rides seat 0
             .LambdaParam(_, i) -> Reg { index: i + 1 },
             .Capture(_, j) -> self.env_read(e, j),
-            .Index(s) -> self.index_regs[s.index],
-            .Decl(d) -> if self.a.decls.fn_name(d) != null { self.fn_value_reg(e, self.a.decls.symbol(d)) } else { null },
+            .Index(s) -> self.body.index_reg(s),
+            .Decl(d) -> if self.a.view.decls.fn_name(d) != null { self.fn_value_reg(e, self.wanted(d, null)) } else { null },
         }
-    }
-
-    /// The register a pairing loop's index reads this turn.
-    fn bind_index(self, s: StmtId, r: Reg) {
-        mut rs = self.index_regs
-        rs.set(s.index, r)
     }
 
     /// A NAMED fn as a value: a captureless box holding a WRAPPER's
@@ -169,15 +81,14 @@ impl Lower {
     fn fn_value_reg(self, e: ExprId, symbol: string) -> Reg? {
         let wname = "${symbol}$w"
         if self.unseen(wname) {
-            let fnty = self.view(self.a.typing.of_expr[e.index])
-            let held: Arrow? = self.a.typing.types.arrow_parts(fnty)
+            let fnty = self.concrete(self.a.facts.type_at(e))
+            let held: Arrow? = self.a.view.decls.types.arrow_parts(fnty)
             mut wraps = self.jobs.wraps
             wraps.push(Wrap {
                 target: symbol,
                 seats: held?.seats ?? [],
-                ret: held?.answer ?? self.a.typing.types.intern(Type.Error),
+                ret: held?.answer ?? self.a.view.decls.types.intern(Type.Error),
                 name: wname,
-                home: self.home,
             })
         }
         let dst = self.mint(e)
@@ -188,7 +99,7 @@ impl Lower {
     /// A capture read: its LANE of the env box at register 0 — the
     /// lane law lives with the fn value's other verbs.
     fn env_read(self, e: ExprId, j: int) -> Reg? {
-        slot_read(expr_lower_cx(self), Reg { index: 0 }, capture_lane(j), self.view(self.a.type_at(e)))
+        slot_read(expr_lower_cx(self), Reg { index: 0 }, capture_lane(j), self.concrete(self.a.type_at(e)))
     }
 
     /// The lift: names the lambda's body (mangled under the view
@@ -198,7 +109,7 @@ impl Lower {
         let name = if self.sub == null { "l${e.index}" } else { mangle("l${e.index}", self.sub!) }
         if self.unseen(name) {
             mut lifts = self.jobs.lifts
-            lifts.push(Lift { lam: e, name: name, sub: self.sub, home: self.home })
+            lifts.push(Lift { lam: e, name: name, sub: self.sub })
         }
         name
     }
@@ -207,13 +118,13 @@ impl Lower {
     /// in the CURRENT body (a chained capture reads this body's own
     /// env).
     fn capture_regs(self, e: ExprId) -> List<Reg> {
-        let cap: Cap? = captures_of(self.a.resolution, e)
+        let cap: Cap? = self.a.names.capture(e)
         if cap == null { return [] }
         mut out: List<Reg> = []
         for b in cap!.sources {
             let r: Reg? = self.read_binding(e, b)
             if r == null {
-                self.record("defect: a capture without a value survived resolve")
+                self.out.defect("a capture without a value survived resolve")
             } else {
                 out.push(r!)
             }
@@ -227,7 +138,7 @@ impl Lower {
         let b: Binding? = self.a.binding(e)
         if b == null { return null }
         let direct: bool = match b! {
-            .Decl(d) -> self.a.decls.fn_name(d) != null,
+            .Decl(d) -> self.a.view.decls.fn_name(d) != null,
             .Def(_) -> false,
             .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
         }
@@ -238,89 +149,23 @@ impl Lower {
     /// A definition's register: its slot — LOADED first when the
     /// slot is a memory cell, so the ident rule stays dumb.
     fn slot_reg(self, e: ExprId, target: StmtId) -> Reg? {
-        let slot: Reg? = self.slots[target.index]
+        let slot: Reg? = self.body.slot_of(target)
         if slot == null { return null }
-        if self.boxed[target.index] {
+        if self.body.is_boxed(target) {
             let ld = self.mint(e)
-            self.give(Ins.Load(ld, slot!))
+            self.out.give(Ins.Load(ld, slot!))
             return ld
         }
         slot
     }
 
-    /// A struct-typed expression's field table; null for every
-    /// other shape. The declaration index IS the array index.
-    fn fields_at(self, e: ExprId) -> StructSig? {
-        self.fields_of(self.view(self.a.type_at(e)))
-    }
-
-    /// A struct TYPE's field table — `fields_at`'s TypeId-keyed
-    /// twin, for members read on a type no expression wears (what
-    /// a nullable carries).
-    fn fields_of(self, ty: TypeId) -> StructSig? {
-        match self.a.typing.types.shape_of(ty) {
-            .Struct(decl, _) -> record_sig_of(self.a.decls.sig(decl)),
-            .App(decl, _, args) ->
-                subbed_fields(self.a.typing.types, record_sig_of(self.a.decls.sig(decl)), decl, args),
-            .Int or .Str or .Bool or .List(_) or .Enum(_, _) or .Res(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
-            .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-        }
-    }
-
-    /// An enum-typed expression's variant table; null otherwise.
-    /// The declaration index IS the runtime tag.
-    fn variants_at(self, e: ExprId) -> EnumSig? {
-        self.variants_ty(self.view(self.a.type_at(e)))
-    }
-
-    /// The variant table by TYPE — Result IS an enum, the built-in
-    /// one; same bridge as the typing side.
-    fn variants_ty(self, ty: TypeId) -> EnumSig? {
-        match self.a.typing.types.shape_of(ty) {
-            .Enum(decl, _) -> variant_sig_of(self.a.decls.sig(decl)),
-            .Res(ok, err) -> res_enum_sig(ok, err),
-            .App(decl, _, args) ->
-                subbed_variants(self.a.typing.types, variant_sig_of(self.a.decls.sig(decl)), decl, args),
-            .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
-            .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-        }
-    }
-
-    /// The register an arm's bind reads — recorded as that arm
-    /// lowers, so an ident inside it finds the payload.
-    fn bind_pattern(self, v: ExprId, r: Reg) {
-        mut ps = self.pattern_regs
-        ps.set(v.index, r)
-    }
-
-    fn record(self, msg: string) {
-        mut fs = self.failures
-        fs.push(msg)
-    }
-
     /// Where the program's answer lives: the last value-bearing
     /// statement's location.
     fn answer_loc(self) -> Loc? {
-        let valued = self.a.p.stmts.filter((s: StmtId) -> self.a.p.store.stmt_value(s) != null)
+        let valued = self.a.view.stmts.filter((s: StmtId) -> self.a.view.store.stmt_value(s) != null)
         let speaker: StmtId? = valued.last()
         if speaker == null { return null }
-        loc_at(self.a.p.source.file, self.a.p.store.stmt_span(speaker!))
+        loc_at(self.a.view.source.file, self.a.view.store.stmt_span(speaker!))
     }
 
-    /// A statement's slot entry — the driver's value write; a bound
-    /// CELL wins over it.
-    fn set_slot(self, s: StmtId, r: Reg) {
-        mut written = self.slots
-        written.set(s.index, r)
-    }
-
-    /// Binds a statement's slot as a memory CELL: idents load
-    /// through it, and the driver's value write defers to it.
-    fn bind_slot(self, s: StmtId, slot: Reg) {
-        mut cells = self.boxed
-        cells.set(s.index, true)
-        self.set_slot(s, slot)
-    }
 }

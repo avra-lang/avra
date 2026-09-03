@@ -146,8 +146,8 @@ enum Repr { Niche, Pair }
 /// catch-all is honest: a non-`Opt` shape is the absorbing error
 /// path, which lowers nothing, so the pair it names is never built.
 fn repr_of(cx: LowerCx, opt: TypeId) -> Repr {
-    match cx.types.shape_of(opt) {
-        .Opt(inner) -> if ptr_shape(cx.types.shape_of(inner)) { Repr.Niche } else { Repr.Pair },
+    match cx.view.types.shape_of(opt) {
+        .Opt(inner) -> if ptr_shape(cx.view.types.shape_of(inner)) { Repr.Niche } else { Repr.Pair },
         _ -> Repr.Pair,
     }
 }
@@ -155,7 +155,7 @@ fn repr_of(cx: LowerCx, opt: TypeId) -> Repr {
 /// What a nullable type carries — the `Opt`'s inner, with the
 /// catch-all pinned to the asker's own type on the error path.
 export fn carried_type(cx: LowerCx, opt: TypeId) -> TypeId {
-    match cx.types.shape_of(opt) {
+    match cx.view.types.shape_of(opt) {
         .Opt(inner) -> inner,
         _ -> opt,
     }
@@ -245,7 +245,7 @@ fn flagged_pair(cx: LowerCx, opt: TypeId, present: bool, payload: Reg) -> Reg {
 /// the type's zero. An absent pair's payload rides one, and so
 /// does the yield of an arm that already EXITED the fn.
 export fn hollow_of(cx: LowerCx, inner: TypeId) -> Reg {
-    if cx.types.shape_of(inner) is .Bool {
+    if cx.view.types.shape_of(inner) is .Bool {
         let z = cx.mint_ty(inner)
         cx.emit(Ins.ConstBool(z, false))
         return z
@@ -265,7 +265,7 @@ export fn insisted(cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
 }
 
 fn insisted_niche(cx: LowerCx, e: ExprId, v: Reg) -> Reg {
-    let dst = cx.mint(e)
+    let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, "avra_insist", [v]))
     dst
 }
@@ -273,7 +273,7 @@ fn insisted_niche(cx: LowerCx, e: ExprId, v: Reg) -> Reg {
 fn insisted_pair(cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
     let flag = extracted(cx, v, 0, cx.mint_shape(Type.Bool))
     let payload = extracted(cx, v, 1, cx.mint_ty(carried_type(cx, opt)))
-    let dst = cx.mint(e)
+    let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, "avra_insist_scalar", [flag, payload]))
     dst
 }
@@ -293,4 +293,18 @@ export fn void_close(cx: LowerCx) {
     cx.emit(Ins.ConstInt(ed, 0))
     let dst = cx.mint_shape(Type.Int)
     cx.emit(Ins.RegionEnd(dst, ed))
+}
+
+/// THE `length` table: the runtime word that measures a shape, or
+/// absence for a shape nothing measures. Every `length` — a
+/// property row's, a nullable chain's — reads this one row.
+export fn length_word(sh: Type) -> string? {
+    match sh {
+        .Str -> "strlen",
+        .List(_) -> "avra_array_len",
+        .Map(_, _) -> "avra_map_len",
+        .Int or .Bool or .Opt(_) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or
+        .Dyn(_, _) or .Fn(_, _) or .TypeName(_, _) or .EmptyList or .Error or .Void or .EmptyMap or
+        .Struct(_, _) or .Enum(_, _) -> null,
+    }
 }

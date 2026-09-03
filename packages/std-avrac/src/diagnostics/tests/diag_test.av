@@ -2,7 +2,8 @@
 // its kind namespaces by prefix, and the F-code is a registry
 // projection of the kind.
 use @std.errors.{Loc, Error}
-use @std.avrac.diagnostics.{DiagCode, Severity, error_at, code_for, Diag}
+use @std.avrac.core.{joined}
+use @std.avrac.diagnostics.{DiagCode, Severity, error_at, code_for, Diag, by_position, no_voices}
 
 fn registry() -> List<DiagCode> {
     let rows = table<DiagCode> {
@@ -10,6 +11,17 @@ fn registry() -> List<DiagCode> {
         "parse.expected" | "F0100" | "the parse needed a token that is not there"
     }
     rows
+}
+
+/// A diagnostic anchored at `lo`, its message the anchor's name.
+fn at(lo: int, message: string) -> Diag {
+    let loc = Loc { file: null, lo: lo, hi: lo + 1 }
+    error_at("k", loc, message)
+}
+
+/// The messages of a list, in order — content AND order in one string.
+fn messages(ds: List<Diag>) -> string {
+    joined([d.message for d in ds], ",")
 }
 
 spec "diagnostics" {
@@ -37,6 +49,36 @@ spec "diagnostics" {
         then "a registered kind yields its F-code; an unknown one null" {
             code_for(registry(), "parse.expected") == "F0100" &&
                 code_for(registry(), "no.such.kind") == null
+        }
+    }
+    given "by_position — source order, spoken order breaking ties" {
+        then "it sorts by where the primary mark starts" {
+            messages(by_position([at(10, "ten"), at(2, "two"), at(5, "five")])) == "two,five,ten"
+        }
+        then "equal starts keep their spoken order" {
+            messages(by_position([at(5, "first"), at(5, "second"), at(5, "third")])) == "first,second,third"
+        }
+        then "an unanchored diagnostic takes a defined slot — first" {
+            let sorted = by_position([at(0, "zero"), error_at("k", null, "nowhere")])
+            messages(sorted) == "nowhere,zero" && sorted[0].primary.loc == null
+        }
+        then "nothing sorts to nothing" {
+            let nothing: List<Diag> = []
+            by_position(nothing).is_empty()
+        }
+        then "one is itself" {
+            messages(by_position([at(3, "only")])) == "only"
+        }
+    }
+    given "Voices — the one sink" {
+        then "nothing spoken is nothing heard" {
+            !no_voices().heard()
+        }
+        then "speaking lands in the list, in order, and is heard" {
+            let v = no_voices()
+            v.speak(at(1, "a"))
+            v.speak(at(0, "b"))
+            v.heard() && messages(v.list) == "a,b"
         }
     }
 }

@@ -2,9 +2,8 @@
 //! Match node, and a carrying variant's construction. Arm names and
 //! values ZIP (both are written every time); a declaration's
 //! payloads cannot, because they are optional — see below.
-use core.{Expr, Stmt, Param, TypeRef}
-use features.{LangNode, Builder, zip_defect, aligned_binds, window_end}
-use grammar.{Token}
+use core.{Expr, Stmt, Param}
+use features.{LangNode, Builder, zip_defect, aligned_binds, aligned_param_types}
 
 /// A variant's payload is POSITIONAL (the spec's style rule: the
 /// type IS the field for a single-value wrapper), so nothing the
@@ -21,44 +20,12 @@ fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
     let ends: int? = b.span_end()
     if ends == null { return Result.Err("an enum declaration without a span") }
     let vs = b.tokens(2)?
-    let tys = aligned_types(vs, b.type_refs(3)?, ends!)
+    let tys = aligned_param_types(vs, b.type_refs(3)?, ends!)
     mut variants: List<Param> = []
     // LICENSED I3: a ZIP of parallel captures; comprehensions cannot destructure enumerate
     for (j, v) in vs.enumerate() { variants.push(Param { name: v.text, ty: tys[j], default: null }) }
     b.make_stmt(Stmt.EnumDecl(n.text, [t.text for t in tp], variants))
 }
-
-/// THE alignment law for a capture a repetition may SKIP: an
-/// anchor's window runs to the next anchor, or to the construct's
-/// end. WHAT is found in the window differs by capture kind; the
-/// window itself is one rule.
-
-
-/// Each variant's optional payload type — absence IS a unit variant.
-fn aligned_types(anchors: List<Token>, optional: List<TypeRef>, ends: int) -> List<TypeRef?> {
-    mut found: List<TypeRef?> = []
-    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
-    for (j, a) in anchors.enumerate() {
-        found.push(type_between(optional, a.span.lo, window_end(anchors, j, ends)))
-    }
-    found
-}
-
-
-
-/// The one type written between two anchors, or absent.
-fn type_between(types: List<TypeRef>, after: int, before: int) -> TypeRef? {
-    types.find(started_within(it, after, before))
-}
-
-fn started_within(t: TypeRef, after: int, before: int) -> bool {
-    let lo: int? = t.span?.lo
-    if lo == null { return false }
-    lo! > after && lo! < before
-}
-
-
-
 
 /// Arm names and values ZIP; a BIND is optional, so it aligns by
 /// span like a declaration's payload does.

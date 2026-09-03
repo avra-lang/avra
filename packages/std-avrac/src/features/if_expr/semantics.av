@@ -1,5 +1,5 @@
 //! The if-expression's NodeSemantics: dispatch only. The typing rule
-//! lives in check.av, evaluation in eval.av, lowering in lower.av.
+//! lives in check.av; lowering — the MEANING — in lower.av.
 use core.{Expr, ExprId, StmtId, TypeId, Reg, Ins}
 use features.{NodeSemantics, StmtSemantics, ResolveCx, StmtResolveCx, TypeCx, StmtTypeCx, LowerCx, StmtLowerCx, require_bool, nothing, void_arm, void_close}
 
@@ -24,7 +24,7 @@ impl NodeSemantics for IfSemantics {
     }
 
     fn resolve(self, cx: ResolveCx, e: ExprId) {
-        match cx.store.expr(e) {
+        match cx.view.store.expr(e) {
             .If(_, t, f) -> {
                 cx.arm_scope("", t)
                 cx.arm_scope("", f)
@@ -49,7 +49,7 @@ export type IfStmtSemantics = { }
 
 impl StmtSemantics for IfStmtSemantics {
     fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
-        match cx.store.stmt(s) {
+        match cx.view.store.stmt(s) {
             .IfStmt(c, t, e) -> {
                 cx.walk(c)
                 cx.scope_stmts(t)
@@ -60,7 +60,7 @@ impl StmtSemantics for IfStmtSemantics {
     }
 
     fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
-        match cx.store.stmt(s) {
+        match cx.view.store.stmt(s) {
             .IfStmt(c, t, e) -> {
                 cx.walk(c)
                 require_bool(cx.expr, c, "an `if` condition", "this decides the branch")
@@ -72,7 +72,7 @@ impl StmtSemantics for IfStmtSemantics {
     }
 
     fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
-        match cx.store.stmt(s) {
+        match cx.view.store.stmt(s) {
             .IfStmt(c, t, e) -> {
                 lower_if_stmt(cx, c, t, e)
                 null

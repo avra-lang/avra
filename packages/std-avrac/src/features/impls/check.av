@@ -8,7 +8,7 @@ use diagnostics.{refusal}
 
 fn method_call_type(cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
-    match cx.store.expr(e) {
+    match cx.view.store.expr(e) {
         .MethodCall(subject, name, args) -> methoded(cx, e, subject, name, args),
         _ -> cx.error_type,
     }
@@ -33,7 +33,7 @@ fn method_answer(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: Lis
     if fielded != null { return fielded! }
     // THE METHOD VOCABULARY: the rows the features declared, one
     // lookup by receiver shape and name
-    let row: MethodRow? = method_row(cx.methods, name, sh)
+    let row: MethodRow? = method_row(cx.view.lang.methods, name, sh)
     if row != null {
         let r = row!
         let mc = MethodCall { e: e, subject: subject, args: args }
@@ -106,7 +106,7 @@ fn no_dyn_method(cx: TypeCx, e: ExprId, tname: string, name: string) -> TypeId {
 
 fn wrong_method_argument(cx: TypeCx, target: string, name: string, j: int, want: TypeId, a: ExprId) {
     let n = cx.name_at(a)
-    cx.emit(refusal("type.method", cx.loc_of(a), "argument ${j + 1} of `${target}.${name}` wants `${cx.types.name_of(want)}`, found `${n}`", this_is(n), null))
+    cx.emit(refusal("type.method", cx.loc_of(a), "argument ${j + 1} of `${target}.${name}` wants `${cx.view.types.name_of(want)}`, found `${n}`", this_is(n), null))
 }
 
 /// A dot-call on a FN-TYPED FIELD — the capability-record pattern:
@@ -118,7 +118,7 @@ fn fn_field_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: Lis
     if sig == null { return null }
     let slot: int? = sig!.slot_of(name)
     if slot == null { return null }
-    let held: Arrow? = cx.types.arrow_parts(sig!.types[slot!])
+    let held: Arrow? = cx.view.types.arrow_parts(sig!.types[slot!])
     if held == null { return null }
     seats_judged(cx, e, name, held!.seats, held!.answer, args)
 }

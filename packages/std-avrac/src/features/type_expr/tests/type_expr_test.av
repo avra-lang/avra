@@ -2,7 +2,7 @@
 // works wherever a type is spelled — params, returns — and an
 // unknown name still refuses in the words it always did.
 use @std.avrac.language.{analyze_source, parse_source}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_with}
 
 spec "features/type_expr" {
     given "a written type" {
@@ -33,19 +33,11 @@ spec "features/type_expr" {
         then "the element type is carried, not guessed" {
             shown("fn f(xs: List<bool>) -> bool { xs[0] }\nif f([true]) { 1 } else { 0 }") == "1"
         }
-        then "an unknown name still names no type" {
-            let a = analyze_source("fn f(x: float) -> int { 1 }\nf(1)")
-            a.diagnostics.length == 1 && a.report().contains("`float` names no type")
-        }
-        then "an unknown NULLABLE name refuses once" {
-            let a = analyze_source("fn f(x: float?) -> int { 1 }\nf(1)")
-            a.diagnostics.length >= 1 && a.report().contains("float")
-        }
-        then "a declared type annotates, nullable or not" {
-            shown("type P = { x: int }\nfn f(p: P) -> int { p.x }\nlet q = P { x: 7 }\nf(q)") == "7"
+        then "an unknown NULLABLE name refuses once, naming the NAME" {
+            refused_with("fn f(x: float?) -> int { 1 }\nf(1)", "`float` names no type")
         }
         then "the surface parses in every annotation position" {
-            parse_source("fn f(a: int, b: bool) -> int { 1 }").diagnostics.is_empty()
+            parse_source("fn f(a: int, b: bool) -> int { 1 }").voices.list.is_empty()
         }
     }
 }

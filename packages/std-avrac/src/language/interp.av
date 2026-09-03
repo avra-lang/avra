@@ -10,7 +10,7 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, filled, joined}
+use core.{Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, filled, joined, rt_sig_of}
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -277,22 +277,17 @@ fn defect_val(m: Machine, what: string) -> Val {
 /// non-string elements by identity (subset note).
 fn chosen_arm(m: Machine, sel: Reg, cases: List<int>) -> int {
     let v = int_val(m, sel)
-    mut k = cases.length
     for (j, c) in cases.enumerate() {
-        if k == cases.length && c == v { k = j }
+        if c == v { return j }
     }
-    k
+    cases.length
 }
 
 /// Where arm `k` of the region opened at `from` begins: just past
 /// the k-th arm separator at depth 0.
 fn arm_start(b: Body, from: int, k: int) -> int {
     mut at = from
-    mut n = 0
-    while n < k {
-        at = ahead(b, at, opens_region, closes_region, (i: Ins) -> i is .ArmEnd)
-        n = n + 1
-    }
+    for j in 0..k { at = ahead(b, at, opens_region, closes_region, (i: Ins) -> i is .ArmEnd) }
     at + 1
 }
 
@@ -312,13 +307,13 @@ fn ahead(b: Body, from: int, opens: fn(Ins) -> bool, closes: fn(Ins) -> bool, ta
     b.ins.length
 }
 
-/// From an IfStart: the pc just past its matching Else.
+/// From an IfStart: the pc just past its matching ArmEnd.
 fn past_else(b: Body, from: int) -> int {
     ahead(b, from, opens_region, closes_region, (i: Ins) -> i is .ArmEnd) + 1
 }
 
-/// At an Else after the then-branch ran: seal the merge at the
-/// matching IfEnd with the then-value and continue past it.
+/// At an ArmEnd after the then-branch ran: seal the merge at the
+/// matching RegionEnd with the then-value and continue past it.
 fn merge_then(m: Machine, b: Body, gives: Reg, pc: int) -> int {
     let v: Val? = at(m, gives)
     let end = ahead(b, pc, opens_region, closes_region, closes_region)
@@ -416,7 +411,7 @@ fn store_step(m: Machine, slot: Reg, src: Reg, pc: int) -> int {
             mut cs = m.cells
             cs.set(id, v)
         }
-        _ -> fail(m, "defect: a store through a non-cell in a clean program"),
+        _ -> defect(m, "a store through a non-cell"),
     }
     pc + 1
 }
@@ -534,40 +529,47 @@ fn map_slot(m: Machine, id: int, key: string) -> int {
     m.maps[id].keys.index_of(key)
 }
 
+/// The map a handle names, or the defect for a value that is none —
+/// the guard every map primitive opens with.
+fn with_map(m: Machine, v: Val, what: string, f: fn(int) -> Val) -> Val {
+    let id: int? = map_id(v)
+    if id == null { return defect_val(m, what) }
+    f(id!)
+}
+
 fn map_len_val(m: Machine, vals: List<Val>) -> Val {
-    let id: int? = map_id(vals[0])
-    if id == null { return defect_val(m, "a length of a non-map") }
-    Val.I(m.maps[id!].keys.length)
+    with_map(m, vals[0], "a length of a non-map", (id: int) -> Val.I(m.maps[id].keys.length))
 }
 
 fn map_has_val(m: Machine, vals: List<Val>) -> Val {
-    let id: int? = map_id(vals[0])
-    if id == null { return defect_val(m, "a lookup in a non-map") }
-    Val.B(map_slot(m, id!, text_val(m, vals[1])) >= 0)
+    with_map(m, vals[0], "a lookup in a non-map", (id: int) -> Val.B(map_slot(m, id, text_val(m, vals[1])) >= 0))
 }
 
 fn map_get_val(m: Machine, vals: List<Val>) -> Val {
-    let id: int? = map_id(vals[0])
-    if id == null { return defect_val(m, "a read from a non-map") }
-    let s = map_slot(m, id!, text_val(m, vals[1]))
+    with_map(m, vals[0], "a read from a non-map", (id: int) -> map_read(m, id, text_val(m, vals[1])))
+}
+
+fn map_read(m: Machine, id: int, key: string) -> Val {
+    let s = map_slot(m, id, key)
     if s < 0 { return Val.N }
-    m.maps[id!].vals[s]
+    m.maps[id].vals[s]
 }
 
 fn map_set_val(m: Machine, vals: List<Val>) -> Val {
-    let id: int? = map_id(vals[0])
-    if id == null { return defect_val(m, "a write into a non-map") }
-    let key = text_val(m, vals[1])
-    let s = map_slot(m, id!, key)
-    let entry = m.maps[id!]
+    with_map(m, vals[0], "a write into a non-map", (id: int) -> map_write(m, id, text_val(m, vals[1]), vals[2]))
+}
+
+fn map_write(m: Machine, id: int, key: string, v: Val) -> Val {
+    let s = map_slot(m, id, key)
+    let entry = m.maps[id]
     if s >= 0 {
         mut vs = entry.vals
-        vs.set(s, vals[2])
+        vs.set(s, v)
     } else {
         mut ks = entry.keys
         ks.push(key)
         mut vs = entry.vals
-        vs.push(vals[2])
+        vs.push(v)
     }
     Val.I(0)
 }
@@ -621,7 +623,7 @@ fn array_push_val(m: Machine, vals: List<Val>) -> Val {
             mut arr = m.arrays[id]
             arr.push(vals[1])
         }
-        _ -> fail(m, "defect: a push into a non-array in a clean program"),
+        _ -> defect(m, "a push into a non-array"),
     }
     Val.I(0)
 }
@@ -663,7 +665,7 @@ fn array_get_val(m: Machine, vals: List<Val>) -> Val {
     let at = i!
     let arr = m.arrays[id!]
     if at < 0 || at >= arr.length { return out_of_bounds(m, at, arr.length) }
-    arr[i!]
+    arr[at]
 }
 
 fn array_len_val(m: Machine, vals: List<Val>) -> Val {

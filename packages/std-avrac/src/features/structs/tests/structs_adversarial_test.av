@@ -2,7 +2,7 @@
 // .claude/skills/red-team). Every program here was written to break
 // the feature, not to use it.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown, refusals}
+use @std.avrac.testing.{shown, refusals, refused_with}
 
 /// THE subject under attack: the smallest record there is.
 fn p1() -> string {
@@ -40,7 +40,7 @@ spec "features/structs (adversarial)" {
             refusals("${p1_bound()}a == 1") == 1
         }
         then "arithmetic on a record refuses" {
-            refusals("${p1_bound()}a + 1") >= 1
+            refused_with("${p1_bound()}a + 1", "`+` needs `int` operands, found `P`")
         }
         then "indexing a record refuses" {
             refusals("${p1_bound()}a[0]") == 1
@@ -54,7 +54,8 @@ spec "features/structs (adversarial)" {
             shown("${p1()}let p = P { x: 9 }\np.x") == "9"
         }
         then "a record with no fields refuses rather than existing" {
-            refusals("type P = { }\nlet p = P { }\n1") >= 1
+            // today's truth: 2 — `{ }` fails the declaration at the stmt, then the literal finds no `type P`
+            refusals("type P = { }\nlet p = P { }\n1") == 2
         }
         then "a field named like its type still reads" {
             shown("type P = { P: int }\nlet p = P { P: 4 }\np.P") == "4"
@@ -77,7 +78,24 @@ spec "features/structs (adversarial)" {
         }
         then "a record in an interpolation hole refuses" {
             let src = "${p1()}let p = P { x: 1 }\n\"v=$" + "{p}\""
-            refusals(src) >= 1
+            refused_with(src, "an interpolation hole prints as a scalar or string, found `P`")
+        }
+    }
+    given "a default is a body of its own" {
+        then "it cannot read the top level's run-time bindings — one refusal, the floor's" {
+            refused_with("let k = 3\ntype Q = { y: int = k }\nQ {}.y", "`k` is a run-time binding of the top level")
+        }
+        then "a top-level `mut` is hidden the same way" {
+            refused_with("mut k = 3\ntype Q = { y: int = k }\nQ {}.y", "`k` is a run-time binding of the top level")
+        }
+        then "it may call a fn, and a fn value, declared anywhere in the file" {
+            shown("type Q = { y: int = twice(4), f: fn(int) -> int = twice }\nfn twice(n: int) -> int {\n    n * 2\n}\nlet q = Q {}\nq.y + q.f(1)") == "10"
+        }
+        then "a method reached only through a default lowers — the program reaches it" {
+            shown("type P = { x: int }\nimpl P {\n    fn m(self) -> int {\n        self.x * 2\n    }\n}\ntype Q = { v: int = P { x: 4 }.m() }\nQ {}.v") == "8"
+        }
+        then "every literal calls the one body — a managed default is fresh per instance" {
+            shown("type Q = { tags: List<string> = [] }\nmut a = Q {}\nlet b = Q {}\na.tags.push(\"x\")\na.tags.length * 10 + b.tags.length") == "10"
         }
     }
 }

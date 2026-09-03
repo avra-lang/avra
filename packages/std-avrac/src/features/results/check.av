@@ -10,7 +10,7 @@ use diagnostics.{refusal}
 
 fn catch_type(cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
-    match cx.store.expr(e) {
+    match cx.view.store.expr(e) {
         .Catch(s, vs, bs, arms) -> catched_type(cx, e, s, vs, bs, arms),
         _ -> cx.error_type,
     }
@@ -19,27 +19,22 @@ fn catch_type(cx: TypeCx, e: ExprId) -> TypeId {
 fn catched_type(cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>,
                 binds: List<string>, values: List<ExprId>) -> TypeId {
     if cx.shape_at(subject) is .Error { return cx.error_type }
-    let sides: ResSides? = cx.types.res_parts(cx.type_at(subject))
-    if sides == null {
-        let n = cx.name_at(subject)
-        return spoken(cx, refusal("type.catch", cx.loc_of(subject), "`catch` recovers a `Result`, this is `${n}`", this_is(n), "only a fallible value has a failure to recover from"))
-    }
+    let sides: ResSides? = cx.view.types.res_parts(cx.type_at(subject))
+    if sides == null { return not_a_result(cx, subject) }
     let t = sides!.ok
     let err = sides!.err
     // LICENSED I3: a ZIP of parallel captures; comprehensions cannot destructure enumerate
     for (j, vn) in variants.enumerate() { arm_bind(cx, e, err, vn, binds[j], values[j]) }
-    for (j, v) in values.enumerate() { arm_answer(cx, t, v) }
+    for v in values { arm_answer(cx, t, v) }
     if covers(cx, err, variants) { return t }
     // SELECTIVE: the answer is STILL the ok side — the matched kinds
     // recover, and the unmatched have already LEFT through the same
     // exit `?` uses. Which is why the channel must exist (§5.6).
     let ret: TypeId? = cx.enclosing_ret()
-    if ret != null && cx.types.shape_of(ret!) is .Error { return cx.error_type }
-    let rsides: ResSides? = if ret == null { null } else { cx.types.res_parts(ret!) }
+    if ret != null && cx.view.types.shape_of(ret!) is .Error { return cx.error_type }
+    let rsides: ResSides? = if ret == null { null } else { cx.view.types.res_parts(ret!) }
     // LICENSED I9: type identity — interned ids ARE the agreement
-    if rsides == null || rsides!.err.index != err.index {
-        return spoken(cx, refusal("type.catch", cx.loc_of(e), "a selective `catch` lets the other failures pass, and this fn cannot carry them", "the rest propagate", "name every variant (a total catch), add a catch-all arm `e ->`, or promise `Result<_, ${cx.types.name_of(err)}>`"))
-    }
+    if rsides == null || rsides!.err.index != err.index { return uncarried_rest(cx, e, err) }
     t
 }
 
@@ -53,17 +48,17 @@ fn arm_bind(cx: TypeCx, e: ExprId, err: TypeId, vn: string, bind: string, value:
     }
     let held: EnumSig? = cx.variants_of(err)
     if held == null {
-        let _ = spoken(cx, refusal("type.catch", cx.loc_of(e), "`.${vn}` names a variant, but `${cx.types.name_of(err)}` has none", "in this arm", "bind the whole error instead — `catch e ->`"))
+        no_variants_to_name(cx, e, vn, err)
         return
     }
     let sig = held!
     let carried: TypeId? = sig.payload_of(vn)
     if sig.tag_of(vn) == null {
-        let _ = spoken(cx, refusal("type.catch", cx.loc_of(e), "`${cx.types.name_of(err)}` has no variant `${vn}`", "in this arm", variants_are(sig)))
+        no_such_failure(cx, e, err, vn, sig)
         return
     }
     if carried == null && bind != "" {
-        let _ = spoken(cx, refusal("type.catch", cx.loc_of(e), "`.${vn}` carries nothing, so `${bind}` has nothing to hold", "in this arm", "drop the parentheses"))
+        nothing_to_hold(cx, e, vn, bind)
         return
     }
     if carried != null { cx.bind_type(value, carried!) }
@@ -73,10 +68,9 @@ fn arm_bind(cx: TypeCx, e: ExprId, err: TypeId, vn: string, bind: string, value:
 /// (widening recorded, like every slot).
 fn arm_answer(cx: TypeCx, t: TypeId, value: ExprId) {
     let at = cx.walk_type(value)
-    if cx.types.shape_of(at) is .Error { return }
+    if cx.view.types.shape_of(at) is .Error { return }
     if accepts(cx, value, t) { return }
-    let gn = cx.name_at(value)
-    let _ = spoken(cx, refusal("type.catch", cx.loc_of(value), "a `catch` arm answers the ok side: `${cx.types.name_of(t)}`, this is `${gn}`", this_is(gn), null))
+    arm_not_ok(cx, value, t)
 }
 
 /// TOTAL when a catch-all arm exists, or every variant is named.
@@ -88,6 +82,7 @@ fn covers(cx: TypeCx, err: TypeId, variants: List<string>) -> bool {
 }
 
 /// The pronoun cannot ride a nested method call — the wrapper can.
+/// Shared with lowering's totality test.
 fn named_in(variants: List<string>, name: string) -> bool {
     variants.contains(name)
 }
@@ -95,4 +90,32 @@ fn named_in(variants: List<string>, name: string) -> bool {
 /// `Result<T, E>` — the constructor row's shape.
 export fn res_shape(args: TypeArgs) -> Type {
     Type.Res(args.parts[0], args.parts[1])
+}
+
+// ── The voices ──
+
+fn not_a_result(cx: TypeCx, subject: ExprId) -> TypeId {
+    let n = cx.name_at(subject)
+    spoken(cx, refusal("type.catch", cx.loc_of(subject), "`catch` recovers a `Result`, this is `${n}`", this_is(n), "only a fallible value has a failure to recover from"))
+}
+
+fn uncarried_rest(cx: TypeCx, e: ExprId, err: TypeId) -> TypeId {
+    spoken(cx, refusal("type.catch", cx.loc_of(e), "a selective `catch` lets the other failures pass, and this fn cannot carry them", "the rest propagate", "name every variant (a total catch), add a catch-all arm `e ->`, or promise `Result<_, ${cx.view.types.name_of(err)}>`"))
+}
+
+fn no_variants_to_name(cx: TypeCx, e: ExprId, vn: string, err: TypeId) {
+    cx.emit(refusal("type.catch", cx.loc_of(e), "`.${vn}` names a variant, but `${cx.view.types.name_of(err)}` has none", "in this arm", "bind the whole error instead — `catch e ->`"))
+}
+
+fn no_such_failure(cx: TypeCx, e: ExprId, err: TypeId, vn: string, sig: EnumSig) {
+    cx.emit(refusal("type.catch", cx.loc_of(e), "`${cx.view.types.name_of(err)}` has no variant `${vn}`", "in this arm", variants_are(sig)))
+}
+
+fn nothing_to_hold(cx: TypeCx, e: ExprId, vn: string, bind: string) {
+    cx.emit(refusal("type.catch", cx.loc_of(e), "`.${vn}` carries nothing, so `${bind}` has nothing to hold", "in this arm", "drop the parentheses"))
+}
+
+fn arm_not_ok(cx: TypeCx, value: ExprId, t: TypeId) {
+    let gn = cx.name_at(value)
+    cx.emit(refusal("type.catch", cx.loc_of(value), "a `catch` arm answers the ok side: `${cx.view.types.name_of(t)}`, this is `${gn}`", this_is(gn), null))
 }

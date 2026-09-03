@@ -3,7 +3,7 @@
 //! the scope discipline (binding order, frames, releases) stays
 //! with the drivers that own it.
 use core.{Expr, ExprId, TypeId, Reg, some_list}
-use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, foreign_node}
 
 export type BlockSemantics = { }
 
@@ -21,23 +21,23 @@ impl NodeSemantics for BlockSemantics {
     }
 
     fn resolve(self, cx: ResolveCx, e: ExprId) {
-        match cx.store.expr(e) {
+        match cx.view.store.expr(e) {
             .Block(stmts, value) -> cx.block_scope(stmts, value),
             _ -> nothing(),
         }
     }
 
     fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
-        match cx.store.expr(e) {
+        match cx.view.store.expr(e) {
             .Block(stmts, value) -> cx.block_type(stmts, value),
             _ -> cx.error_type,
         }
     }
 
     fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
-        match cx.store.expr(e) {
+        match cx.view.store.expr(e) {
             .Block(stmts, value) -> cx.lower_block(stmts, value),
-            _ -> cx.result(e),
+            _ -> foreign_node(cx, e),
         }
     }
 

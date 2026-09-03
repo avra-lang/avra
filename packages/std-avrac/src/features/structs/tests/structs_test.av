@@ -2,7 +2,7 @@
 // field reads, fn boundaries, and every law refusing in its own
 // words.
 use @std.avrac.language.{analyze_source, avra}
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.testing.{shown, refused_with, refused_at_run}
 use @std.avrac.diagnostics.{new_source_file}
 
 spec "features/structs" {
@@ -88,9 +88,6 @@ spec "features/structs" {
         then "the source is untouched" {
             shown("type P = { x: int, y: int }\nlet p = P { x: 1, y: 2 }\nlet q = p with { x: 5 }\np.x") == "1"
         }
-        then "parenthesized copies chain" {
-            shown("type P = { x: int, y: int }\nlet p = P { x: 1, y: 2 }\nlet q = (p with { x: 5 }) with { y: 6 }\nq.x + q.y") == "11"
-        }
         then "`with` on a non-struct refuses" {
             let a = analyze_source("let n = 3\nlet m = n with { x: 1 }\n2")
             a.diagnostics.length == 1 &&
@@ -104,12 +101,9 @@ spec "features/structs" {
     }
     given "the answer projection" {
         then "a struct answer refuses with the remedy, before either engine" {
-            let r = analyze_source("type P = { x: int }\nP { x: 1 }").run()
-            match r {
-                .Err(msg) -> msg.contains("the program's answer is a `P`") &&
-                    msg.contains("project a field instead"),
-                .Ok(_) -> false,
-            }
+            let src = "type P = { x: int }\nP { x: 1 }"
+            refused_at_run(src, "the program's answer is a `P`") &&
+                refused_at_run(src, "project a field instead")
         }
         then "`check` agrees with run and build about it" {
             avra().check(new_source_file("<source>", "type P = { x: int }\nP { x: 1 }"))

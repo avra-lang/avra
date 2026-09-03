@@ -1,0 +1,25 @@
+// The Emitter's one law: registers define in mint order. A `give`
+// whose destination is not the next mint records the compiler's own
+// defect — named, never silent — and an in-order give records nothing.
+use @std.avrac.core.{Ins, Reg, TypeId}
+use @std.avrac.features.{new_emitter}
+
+spec "features/facts" {
+    given "the mint-order law" {
+        then "a destination out of mint order records the named defect" {
+            let out = new_emitter()
+            let int_ty = TypeId { index: 0 }
+            let _ = out.mint_ty(int_ty)
+            let stray = Reg { index: 5 }
+            out.give(Ins.ConstInt(stray, 1))
+            out.voices.list.length == 1 && out.voices.list[0].message.contains("out of mint order")
+        }
+        then "an in-order give records nothing" {
+            let out = new_emitter()
+            let int_ty = TypeId { index: 0 }
+            let r = out.mint_ty(int_ty)
+            out.give(Ins.ConstInt(r, 1))
+            out.voices.list.is_empty() && out.ins.length == 1
+        }
+    }
+}

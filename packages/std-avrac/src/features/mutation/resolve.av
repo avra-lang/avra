@@ -2,28 +2,38 @@
 //! rooted in a name — and that name must land on a `mut` binding;
 //! params and plain lets refuse with the remedy. The path itself
 //! resolves like any expression.
-use core.{StmtId, ExprId}
-use features.{StmtResolveCx}
+use core.{StmtId, ExprId, Binding}
+use features.{StmtResolveCx, nothing}
 use diagnostics.{refusal}
 use @std.errors.{Loc}
 
 export fn resolve_assign(cx: StmtResolveCx, s: StmtId) {
-    let target: ExprId? = match cx.store.stmt(s) {
+    let target: ExprId? = match cx.view.store.stmt(s) {
         .Assign(t, _) -> t,
         _ -> null,
     }
     if target == null { return }
     let t = target!
     let at: Loc? = cx.loc_of(s)
-    let root: ExprId? = cx.store.place_root(t)
+    let root: ExprId? = cx.view.store.place_root(t)
     if root == null { return not_a_place(cx, at) }
     cx.walk(t)
-    let n = cx.store.ident_name(root!) ?? "this name"
-    if cx.is_param(n) { return immutable_param(cx, n, at) }
-    if cx.is_index(n) { return immutable_index(cx, n, at) }
-    let found: StmtId? = cx.lookup(n)
-    if found == null { return }
-    if !(cx.store.stmt(found!) is .MutLet) { not_mut(cx, n, at) }
+    let n = cx.view.store.ident_name(root!) ?? "this name"
+    let b: Binding? = cx.binding_of(n)
+    if b == null { return }
+    match b! {
+        .Param(_) -> immutable_param(cx, n, at),
+        .Index(_) -> immutable_index(cx, n, at),
+        .Def(s) -> mut_or_refused(cx, s, n, at),
+        // a fn, a pattern bind, a lambda's param, a capture: none is
+        // a place, and the walk already spoke where it had to
+        .Decl(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) -> nothing(),
+    }
+}
+
+/// A definition is a place only when it was declared `mut`.
+fn mut_or_refused(cx: StmtResolveCx, s: StmtId, n: string, at: Loc?) {
+    if !(cx.view.store.stmt(s) is .MutLet) { not_mut(cx, n, at) }
 }
 
 // ── The voices ──

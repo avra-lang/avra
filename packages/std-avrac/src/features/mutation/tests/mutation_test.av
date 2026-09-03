@@ -1,7 +1,7 @@
 // Mutation, vertically: mut declares, assignment rewrites the slot,
 // immutability refuses with the remedy, and types hold still.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.testing.{shown, refused_with, halver}
 
 spec "features/mutation" {
     given "mut and assignment" {
@@ -18,9 +18,7 @@ spec "features/mutation" {
             shown("mut best: int? = null\nbest = 5\nbest = null\nbest = 4\nbest ?? 0 - 1") == "4"
         }
         then "assignment WIDENS into the declared cell" {
-            shown("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
-                  // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
-                  "mut t: int? = half(4)\nt = half(3)\nt ?? 0 - 7") == "-7"
+            shown("${halver()}mut t: int? = half(4)\nt = half(3)\nt ?? 0 - 7") == "-7"
         }
         then "a plain annotated mut declares and reassigns" {
             shown("mut plain: int = 40\nplain = plain + 2\nplain") == "42"
@@ -61,7 +59,7 @@ spec "features/mutation" {
                 a.report().contains("assignment changes `x`: `int` to `bool`")
         }
         then "a mut string rebinds through the cell — ownership landed" {
-            shown("mut s = \"hi\"\ns = \"re ${2}\"\ns") == "re 2"
+            shown("mut s = \"hi\"\ns = \"re $" + "{2}\"\ns") == "re 2"
         }
         then "a mut struct works — reassignment swaps the pointer" {
             shown("type P = { x: int }\nmut p = P { x: 1 }\np = P { x: 2 }\np.x") == "2"

@@ -42,13 +42,12 @@ export type Db = {
     verifiers: List<fn(int) -> int>,
     frames: List<List<Key>>,
     open: List<Key>,
-    cycles: List<Key>,
     hits: List<int>,
     misses: List<int>,
 }
 
 export fn new_db() -> Db {
-    Db { rev: [1], cells: [], verifiers: [], frames: [], open: [], cycles: [], hits: [0], misses: [0] }
+    Db { rev: [1], cells: [], verifiers: [], frames: [], open: [], hits: [0], misses: [0] }
 }
 
 impl Db {
@@ -85,11 +84,7 @@ impl Db {
     /// read in the open frame.
     fn ask(self, key: Key) -> Verdict {
         self.record_dep(key)
-        if self.open.any(same_key(it, key)) {
-            mut cy = self.cycles
-            cy.push(key)
-            return Verdict.Cycle
-        }
+        if self.open.any(same_key(it, key)) { return Verdict.Cycle }
         let held: Cell? = self.cell(key)
         if held == null { return self.miss() }
         let cell = held!
@@ -111,6 +106,11 @@ impl Db {
     fn changed_after(self, dep: Key, since: int) -> bool {
         let verify = self.verifiers[dep.family]
         verify(dep.arg) > since
+    }
+
+    /// Whether a computation of this key is open right now.
+    fn active(self, key: Key) -> bool {
+        self.open.any(same_key(it, key))
     }
 
     /// The cell's changed_at, or the current revision for a key the

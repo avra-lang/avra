@@ -22,7 +22,8 @@ BS2       := $(abspath $(BOOTSTRAP))/build/bs2
 BOOT_WRAPPER := $(BOOTSTRAP)/build/llvm_wrapper.o
 RUNTIME_OBJS := build/runtime.o build/llvm_wrapper.o build/avra_runtime.o $(BOOT_WRAPPER)
 
-.PHONY: test clean fresh libfresh corpus gate idioms idioms-accept bench fuzz scaffold-check vocab sweep
+.PHONY: test clean fresh libfresh corpus gate idioms idioms-accept bench fuzz scaffold-check vocab sweep \
+        check run ir emit build-native native-check
 
 # bs2's lib-mode freshness truth is the .avra-sha256 sidecars; they
 # go stale against edits. Every bs2-run target clears them first.
@@ -36,9 +37,17 @@ libfresh: fresh
 
 # The bs2 compile caches grow without bound across edits — every
 # content change mints new entries. Swept past ~2GB; the next run
-# rebuilds warm. Shards are per-run scratch and always go.
+# rebuilds warm. Shards are per-run scratch and always go — the
+# per-run objects `bs2 test` drops in build/ ROOT (`_test_*`, with
+# their sidecars) carry the run's PID in their name, so a run still
+# alive keeps its own; everything older than an hour, or whose run
+# is gone, is an orphan.
 sweep:
 	@rm -rf build/test_shards
+	@find build -maxdepth 1 -name '_test_*' -mmin +60 -delete 2>/dev/null; true
+	@ls build 2>/dev/null | grep '^_test_' | awk -F. '{ print $$2, $$0 }' \
+	  | while read -r pid f; do kill -0 $$pid 2>/dev/null || echo "build/$$f"; done \
+	  | xargs rm -f; true
 	@for d in packages/*/build/cache; do \
 	  if [ -d $$d ] && [ $$(du -sm $$d | cut -f1) -gt 2048 ]; then \
 	    rm -rf $$d && echo "swept $$d (past 2GB)"; \
@@ -67,7 +76,7 @@ build/%.o: $(BOOTSTRAP)/build/%.o
 	cp $< $@
 
 clean:
-	rm -rf build
+	rm -rf build scratch
 	find packages corpus -name "*.avra-sha256" -delete
 	find packages corpus -name "*.av.ll" -delete
 	find corpus -type f ! -name "*.av" ! -name "*.expected" ! -name "expected" ! -name "avra.toml" -delete

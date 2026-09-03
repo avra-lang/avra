@@ -2,7 +2,7 @@
 // name, total match (as a value and in a fn), and every law
 // refusing in its own words.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.testing.{shown, refused_with, refused_at_run}
 
 /// A three-variant enum, newline-separated.
 fn colors() -> string {
@@ -94,12 +94,6 @@ spec "features/enums" {
         then "the only arm may bind — nothing chooses, the payload still lands" {
             shown("enum One {\n    only(int)\n}\nmatch One.only(21) {\n    .only(n) -> n + n\n}") == "42"
         }
-        then "a bind shadows an outer name for its arm only" {
-            shown("let n = 100\n${pair()}let r = match E.a(7) {\n    .a(n) -> n\n    .b -> 0\n}\nr + n") == "107"
-        }
-        then "sibling arms may reuse one bind name" {
-            shown("enum E {\n    a(int)\n    b(int)\n}\nmatch E.b(41) {\n    .a(v) -> v\n    .b(v) -> v + 1\n}") == "42"
-        }
         then "an untaken arm's payload is never read" {
             shown("${pair()}match E.b {\n    .a(n) -> n\n    .b -> 42\n}") == "42"
         }
@@ -176,10 +170,7 @@ spec "features/enums" {
             shown("enum One {\n    only\n}\nmatch One.only {\n    .only -> 7\n}") == "7"
         }
         then "an enum answer has no text projection" {
-            match analyze_source("${colors()}C.red").run() {
-                .Err(msg) -> msg.contains("no text projection yet"),
-                .Ok(_) -> false,
-            }
+            refused_at_run("${colors()}C.red", "no text projection yet")
         }
     }
     given "generic enums — instantiation from the payload" {

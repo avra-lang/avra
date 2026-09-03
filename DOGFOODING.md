@@ -40,7 +40,7 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I25 I26 I28.
+Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I25 I26 I28 I30.
 I12 came BACK from unratcheted once its regex was repaired: it had
 been reading `if x is .Error { return ... }` as a struct literal,
 so it was retired for false positives that were the rule's fault,
@@ -191,7 +191,21 @@ gate — there is no amnesty left to hide in.
       .contains(...)`. Without the count a CASCADE hides behind a
       message that happens to appear — the types_disagree bug was
       found exactly that way, and three tests still asserted
-      contains alone.
+      contains alone. The matcher's first guard looked for the
+      SUBSTRING `diagnostics.length`, so `>= 1` passed as a count;
+      it now demands the real thing — `== n`, `refused_with(`,
+      `refused_n(`.
+- I30 a refusal asserted as `>= 1`: `refusals(src) >= 1`,
+      `a.diagnostics.length >= 1`, `p.diagnostics >= 1`,
+      `p.voices.list.length >= 1`. Each says "something was
+      refused", which a cascade of five says just as well — one
+      mistake earns one message, so the number IS the assertion.
+      The idiomatic form pins it: `refused_with(src, phrase)` for
+      the one-refusal case, `refusals(src) == n` where a cascade is
+      today's truth and pinning it makes a later improvement
+      VISIBLE. LICENSED only where the count is genuinely not
+      deterministic (none in the tree today) — the reason at the
+      site, or it is a bug being hidden.
 - I21 a `mut` nothing mutates is a `let`. The reader is told to
       expect a change that never comes; two survived (a type
       registry threaded through a pass, and its test twin).
@@ -213,7 +227,13 @@ gate — there is no amnesty left to hide in.
       fn needs and every call site carries the lie (`declare` threaded
       an `lc` it never used). LICENSED where a CALLBACK contract owns
       the list — a policy fn or a test builder must match the
-      signature it is passed as.
+      signature it is passed as. The matcher was anchored at column
+      0 and never read a METHOD for four milestones; it reads
+      indented fns now, and excludes BY MATCHER the one shape that
+      cannot drop a parameter — a method under `impl Trait for T`,
+      whose signature the trait owns (fifty `nothing()` pass
+      methods would otherwise each carry a license). Bodiless trait
+      signatures and template text are skipped the same way.
 - I herein note why I24 is MODULE-scoped: bs2 merges a module's
       files into one bundle, so an import in `program.av` serves
       `mod.av`. Per-FILE unused-import analysis is wrong and will
@@ -245,10 +265,13 @@ replacing a shape hand-spelled at 131 sites. `refused_n` is for the
 shapes where a cascade is today's truth and pinning it makes a later
 improvement VISIBLE — every malformed fn signature is exactly 2.
 
-TRIGGER for the remaining 23: converting them by script FAILED — the
-fixtures each suite interpolates differ, so the programs measured
-were not the programs the tests run, and nine tests broke. They need
-converting a suite at a time, by the round that touches that suite.
+The remainder is no longer a hand-kept tally: I30 ratchets the
+`>= 1` spelling and I20's guard demands a real count, so the number
+is whatever `make idioms` prints and the gate refuses a new one. The
+sites were converted a suite at a time — a script conversion had
+FAILED, because each suite interpolates its own fixtures, so the
+programs measured were not the programs the tests run, and nine
+tests broke.
 
 THE REACH LAW (learned the hard way, four times): a rule claims a
 SHAPE, and one specimen proves only that its matcher is ALIVE. Four
@@ -994,6 +1017,43 @@ and runtime dispatch are the host twins of runtime/avra_runtime.c,
 refusal wording included. (The earlier "values are literal nodes"
 tree-walking evaluator was RETIRED by the north star's L3 collapse
 — its whole per-feature eval.av layer died with it.)
+
+## A table's read is the query
+
+A fact table that consumers read by id (`Decls.sig(d)`) holds ONE
+hook the driver arms (`ensure: fn(DeclId)`); the read calls it
+first. The hook is the memoized query — it computes on first ask,
+records the dependency, and detects a cycle — so every reader,
+features included, asks lazily without knowing there is a kernel,
+and declaration ORDER stops being a concern anywhere. The hook is a
+one-slot list of a fn (the mut-cell protocol), armed after the
+workspace exists; the table's default is a no-op. This is how the
+four declaration rounds were deleted.
+
+## A body's reads are its own
+
+A body — a fn's, a method's, a field default's — is typed and
+lowered as ONE unit over its own expression range, so it must never
+read another body's facts. The language guarantees it with the BODY
+FLOOR (resolve refuses a body's read of the top level's run-time
+bindings — `F3020`, the remedy a parameter) and with one rule for
+cross-module expressions: an expression another body needs is a
+DECLARATION with a body of its own, and the needing body CALLS it.
+A field default is the first instance (`DeclKind.Default`, `P.y`);
+a struct literal that omits the field emits one `Call`. When a
+feature wants to lower "that expression over there" inline, that is
+the smell — mint the declaration.
+
+## A type's methods are a namespace
+
+Registration is the container's job (an impl block registers its
+methods under the target when its own sig computes), and a name
+taken twice is a CLASH computed once per table, in declaration
+order, blamed at the later one — `method_clashes` beside
+`module_names`, folded into the file that holds the later
+declaration. A "declared twice" spoken by the second REGISTRANT is
+ask-order dependent (the lone-file path asks bodies before sigs and
+blamed the first block); a clash law over the finished table is not.
 
 ## A refused declaration still declares
 

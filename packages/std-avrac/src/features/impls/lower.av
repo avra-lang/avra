@@ -3,18 +3,18 @@
 //! derives from the receiver's type both here and at the fn loop,
 //! so no fact table carries it.
 use core.{ExprId, Reg, Ins, Type, StructSig, DeclId}
-use features.{LowerCx, hole_defect, lower_defect, EnumSig, tagged_value, called_through, slot_read, MethodRow, MethodCall, method_row}
+use features.{LowerCx, lower_defect, foreign_node, EnumSig, tagged_value, called_through, slot_read, MethodRow, MethodCall, method_row}
 
 fn method_call_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
-    match cx.store.expr(e) {
+    match cx.view.store.expr(e) {
         .MethodCall(subject, name, args) -> {
             if cx.shape_at(subject) is .TypeName { return built_variant(cx, e, name, args) }
             let dispatched: Reg? = dyn_dispatch(cx, e, subject, name, args)
             if dispatched != null { return dispatched! }
             let fielded: Reg? = fn_field_dispatch(cx, e, subject, name, args)
             if fielded != null { return fielded! }
-            let row: MethodRow? = method_row(cx.methods, name, cx.shape_at(subject))
+            let row: MethodRow? = method_row(cx.view.lang.methods, name, cx.shape_at(subject))
             if row != null {
                 let r = row!
                 let mc = MethodCall { e: e, subject: subject, args: args }
@@ -25,13 +25,13 @@ fn method_call_reg(cx: LowerCx, e: ExprId) -> Reg {
             let regs = [cx.reg_of(a) for a in args]
             let target: DeclId? = lowered_receiver(cx, subject)
             if target == null { return lower_defect(cx, e, "a method on a nameless receiver survived typing") }
-            let symbol: string? = cx.decls.method_symbol_of(target!, name)
-            if symbol == null { return lower_defect(cx, e, "a method with no symbol survived typing") }
+            let m: DeclId? = cx.view.decls.method(target!, name)
+            if m == null { return lower_defect(cx, e, "a method with no symbol survived typing") }
             let dst = cx.result(e)
-            cx.emit(Ins.Call(dst, symbol!, [recv].concat(regs)))
+            cx.emit(Ins.Call(dst, cx.symbol_at(m!, e), [recv].concat(regs)))
             dst
         }
-        _ -> lower_defect(cx, e, hole_defect()),
+        _ -> foreign_node(cx, e),
     }
 }
 
@@ -46,7 +46,7 @@ fn dyn_dispatch(cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: Lis
         _ -> null,
     }
     if tdecl == null { return null }
-    let ordinal = cx.decls.trait_method_names(tdecl!).index_of(name)
+    let ordinal = cx.view.decls.trait_method_names(tdecl!).index_of(name)
     if ordinal < 0 { return lower_defect(cx, e, "a dyn method outside its trait survived typing") }
     let box = cx.reg_of(subject)
     let regs = [cx.reg_of(a) for a in args]
@@ -67,14 +67,14 @@ fn fn_field_dispatch(cx: LowerCx, e: ExprId, subject: ExprId, name: string, args
     let slot: int? = sig!.slot_of(name)
     if slot == null { return null }
     let fty = sig!.types[slot!]
-    if !(cx.types.shape_of(fty) is .Fn) { return null }
+    if !(cx.view.types.shape_of(fty) is .Fn) { return null }
     let box = slot_read(cx, cx.reg_of(subject), slot!, fty)
     called_through(cx, e, box, [cx.reg_of(a) for a in args])
 }
 
 /// The receiver's declared type, under the body's view.
 fn lowered_receiver(cx: LowerCx, subject: ExprId) -> DeclId? {
-    match cx.types.shape_of(cx.type_at(subject)) {
+    match cx.view.types.shape_of(cx.type_at(subject)) {
         .Struct(d, _) -> d,
         .Enum(d, _) -> d,
         .Int or .Str or .Bool or .List(_) or .Res(_, _) or .App(_, _, _) or

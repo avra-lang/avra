@@ -2,32 +2,34 @@
 //! programs. The single seam every consumer parses through — tests
 //! and `avra check` alike.
 //!
-//! The module, in pipeline order:
+//! The module, as the query graph asks it (workspace.av's
+//! `Family` is the order):
 //!   mod.av       assemble features; THE language (`avra()`)
-//!   program.av   parse: text -> ParsedProgram; the two semantics
+//!   program.av   parse: text -> Parsed; the two semantics
 //!                maps; the store's walk vocabulary
-//!   resolve.av   pass 1: names -> bindings; the value, fn and
-//!                type namespaces
-//!   typing.av    pass 2: expressions -> types (the walk, the facts)
-//!   typing_declare.av   the declaration rounds; the types annotations write
+//!   resolve.av   names -> bindings, one file (NameFacts)
+//!   typing.av    one declaration's body -> types (the walk, the facts)
+//!   typing_declare.av   a declaration's signature; the types annotations write
 //!   typing_impls.av     traits, impls, methods, the orphan rule
-//!   analysis.av  every fact in ONE artifact (Analysis)
-//!   decls.av     THE declaration table: every declaration once,
-//!                interned ids, per-file facts
-//!   workspace.av many files, one program over the query kernel
-//!                (query/db.av): modules, imports, the union (Program)
-//!   lower.av     pass 3: programs -> IR bodies — THE semantics:
-//!                every file's bodies, one mono worklist
+//!   analysis.av  every fact of one file in ONE artifact (Analysis)
+//!   workspace.av the twelve families over the query kernel
+//!                (query/db.av) and the Program facade. THE tables
+//!                live in features/: decls.av (declarations),
+//!                facts.av (the pass values and the contexts'
+//!                reads), namespace.av (the binding and method-table
+//!                laws).
+//!   lower.av     one body -> IR (a unit), the program its entry's
+//!                closure — THE semantics
 //!   lower_walk.av       one body's walk; the contexts; the entry's answer
 //!   lower_state.av      the lowering state's verbs: registers, slots, values
 //!   interp.av    run: the IR interpreted, backend-identical
-//!   memory.av    pass 4: the memory strategy, per scope level
+//!   memory.av    the memory strategy, per scope level
 //!   llvm.av      the native backend (llvm_api.av: the C surface)
 //!   ir_text.av   the IR's human projection (`avra ir`)
 //!   codes.av     the built-in diagnostic registry
 use core.{flatten}
 use grammar.{Diagnostic, Grammar, parse_grammar}
-use features.{LanguageFeature, compose_text, builder_defects, code_defects, MethodRow, TypeRow, PropertyRow}
+use features.{LanguageFeature, compose_text, builder_defects, code_defects, LanguageRows}
 use diagnostics.{Diag, DiagCode}
 use features.type_expr.{type_expr}
 use features.stmt_spine.{stmt_spine}
@@ -62,11 +64,9 @@ use features.str_lit.{str_lit}
 export type Language = {
     features: List<LanguageFeature>,
     grammar: Grammar?,
-    codes: List<DiagCode>,
     keywords: List<string>,
-    methods: List<MethodRow>,
-    types: List<TypeRow>,
-    properties: List<PropertyRow>,
+    rows: LanguageRows,
+    dispatch: Dispatch,
     diagnostics: List<Diag>,
 }
 
@@ -77,15 +77,21 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     let codes = code_registry(features)
     let defects = flatten([g.defects(), builder_defects(features, g), code_defects(codes)])
     if !defects.is_empty() { return unassembled(features, defects) }
-    Language { features: features, grammar: g, codes: codes, keywords: g.keywords(),
-               methods: flatten([f.methods for f in features]), types: flatten([f.types for f in features]),
-               properties: flatten([f.properties for f in features]), diagnostics: [] }
+    Language { features: features, grammar: g, keywords: g.keywords(), rows: rows_of(features, codes), dispatch: new_dispatch(), diagnostics: [] }
+}
+
+/// The language's registries, gathered once from its features.
+fn rows_of(features: List<LanguageFeature>, codes: List<DiagCode>) -> LanguageRows {
+    LanguageRows {
+        methods: flatten([f.methods for f in features]), types: flatten([f.types for f in features]),
+        properties: flatten([f.properties for f in features]), codes: codes,
+    }
 }
 
 /// Assembly refused: the defects, projected, are the language's
 /// diagnostics.
 fn unassembled(features: List<LanguageFeature>, defects: List<Diagnostic>) -> Language {
-    Language { features: features, grammar: null, codes: [], keywords: [], methods: [], types: [], properties: [], diagnostics: as_defects(defects) }
+    Language { features: features, grammar: null, keywords: [], rows: rows_of(features, []), dispatch: new_dispatch(), diagnostics: as_defects(defects) }
 }
 
 /// Built-in codes plus every feature's registered codes, in feature
@@ -142,7 +148,7 @@ export fn avra() -> Language {
 }
 
 /// The canonical language over one nameless source.
-export fn parse_source(text: string) -> ParsedProgram {
+export fn parse_source(text: string) -> Parsed {
     parse_program(avra(), new_source_file("<source>", text))
 }
 

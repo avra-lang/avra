@@ -8,7 +8,7 @@
 //! RetVal keeps, and the caller owns the call's result. Systems
 //! ownership lands here later as a strategy, touching neither
 //! lowering nor the backend.
-use core.{Ins, Reg, Level, TypeId, TypeRegistry, dst_of}
+use core.{Ins, Reg, Level, TypeId, TypeRegistry, dst_of, rt_owns, rt_owned_twin, reversed}
 
 /// Managed registers bound in one open scope, its level remembered.
 type Scope = { level: Level, managed: List<Reg>, cells: List<Reg> }
@@ -79,8 +79,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .ScopeExit(gives) -> {
                 let scope = open_scopes.pop()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
-                for c in reversed(scope.cells) { out.push(cell_settle(c)) }
-                for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
+                for s in settled(scope, gives) { out.push(s) }
                 if gives != null && !open_scopes.is_empty() {
                     if is_managed(types, reg_types[gives!.index]) {
                         // LICENSED I7: rebind-alias needs index syntax; last() may copy
@@ -101,8 +100,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .ArmEnd(gives) -> {
                 let scope = open_scopes.pop()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
-                for c in reversed(scope.cells) { out.push(cell_settle(c)) }
-                for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
+                for s in settled(scope, gives) { out.push(s) }
                 // LICENSED I15: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(nested_scope(open_scopes))
                 out.push(i)
@@ -110,26 +108,23 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .RegionEnd(_, gives) -> {
                 let scope = open_scopes.pop()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
-                for c in reversed(scope.cells) { out.push(cell_settle(c)) }
-                for r in releases_for(scope, gives) { out.push(Ins.Release(r)) }
+                for s in settled(scope, gives) { out.push(s) }
                 manage(types, reg_types, open_scopes, i)
                 out.push(i)
             }
             // The caller's half of callee-cleans: retain what the
-            // callee will release.
+            // callee will release. The indirect call wears the same
+            // ABI — a binding cannot ride an or-arm, so the arm is
+            // spelled twice; the law once.
             .Call(_, _, args) -> {
-                for ar in args {
-                    if is_managed(types, reg_types[ar.index]) { out.push(Ins.Retain(ar)) }
-                }
+                // LICENSED I3: the pass's OUTPUT accumulates
+                for r in retained_args(types, reg_types, args) { out.push(r) }
                 manage(types, reg_types, open_scopes, i)
                 out.push(i)
             }
-            // The indirect call wears the same ABI as `Call` — a
-            // binding cannot ride an or-arm, so the twin is spelled.
             .CallPtr(_, _, args) -> {
-                for ar in args {
-                    if is_managed(types, reg_types[ar.index]) { out.push(Ins.Retain(ar)) }
-                }
+                // LICENSED I3: the pass's OUTPUT accumulates
+                for r in retained_args(types, reg_types, args) { out.push(r) }
                 manage(types, reg_types, open_scopes, i)
                 out.push(i)
             }
@@ -300,13 +295,13 @@ fn exit_cells(open_scopes: List<Scope>) -> List<Reg> {
     out
 }
 
-/// Last bound, first released.
-fn reversed(xs: List<Reg>) -> List<Reg> {
-    mut out: List<Reg> = []
-    mut i = xs.length - 1
-    while i >= 0 {
-        out.push(xs[i])
-        i = i - 1
-    }
-    out
+/// What a closing scope owes: its cells settled, last bound first,
+/// then the releases its yield leaves behind.
+fn settled(scope: Scope, gives: Reg?) -> List<Ins> {
+    [cell_settle(c) for c in reversed(scope.cells)].concat([Ins.Release(r) for r in releases_for(scope, gives)])
+}
+
+/// The caller's retains for a call's managed arguments.
+fn retained_args(types: TypeRegistry, reg_types: List<TypeId>, args: List<Reg>) -> List<Ins> {
+    [Ins.Retain(ar) for ar in args if is_managed(types, reg_types[ar.index])]
 }

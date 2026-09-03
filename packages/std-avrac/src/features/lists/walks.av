@@ -7,13 +7,73 @@
 //! Early exit is the BREAK IDIOM: store the index past the length
 //! and the condition ends the loop.
 use core.{ExprId, Reg, Ins, Type, TypeId, BinOp, UnOp, Level}
-use features.{LowerCx, MethodCall, lower_defect, grown_box, push_slot, slot_read, absent_of, adopted, void_arm, void_close, unique_box}
+use features.{LowerCx, MethodCall, lower_defect, grown_box, push_slot, slot_read, absent_of, adopted, void_arm, void_close, unique_box, length_word}
 
-/// THE VOCABULARY's membership, spelled once — typing's gate, the
-/// dispatch below, and the no-method help all read this list.
-export fn walk_names() -> List<string> {
-    ["map", "filter", "find", "any", "all"]
+// ── The rows' rules ──
+
+export fn lower_map(cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat: Seat? = seat_of(cx, mc)
+    if seat == null { return seatless(cx, mc) }
+    mapped(cx, mc, seat!)
 }
+
+export fn lower_filter(cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat: Seat? = seat_of(cx, mc)
+    if seat == null { return seatless(cx, mc) }
+    kept(cx, mc, seat!)
+}
+
+export fn lower_find(cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat: Seat? = seat_of(cx, mc)
+    if seat == null { return seatless(cx, mc) }
+    found(cx, mc, seat!)
+}
+
+export fn lower_any(cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat: Seat? = seat_of(cx, mc)
+    if seat == null { return seatless(cx, mc) }
+    judged(cx, mc, seat!, false)
+}
+
+export fn lower_all(cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat: Seat? = seat_of(cx, mc)
+    if seat == null { return seatless(cx, mc) }
+    judged(cx, mc, seat!, true)
+}
+
+export fn lower_push(cx: LowerCx, mc: MethodCall) -> Reg {
+    grow_reg(cx, mc.e, mc.subject, mc.args) ?? lower_defect(cx, mc.e, "a push without its value survived typing")
+}
+
+/// `xs.length` — the word the one measure table gives the list's
+/// shape.
+export fn lower_length(cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
+    let xs = cx.reg_of(subject)
+    let word: string? = length_word(cx.view.types.shape_of(cx.type_at(subject)))
+    if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, word!, [xs]))
+    dst
+}
+
+/// What typing seated a walk with: the element the receiver holds
+/// and the fn argument. Absent only when a seatless walk survived
+/// typing — a defect.
+type Seat = { elem: TypeId, f: ExprId }
+
+fn seat_of(cx: LowerCx, mc: MethodCall) -> Seat? {
+    let elem: TypeId? = cx.view.types.element(cx.type_at(mc.subject))
+    let first: ExprId? = mc.args.first()
+    if elem == null || first == null { return null }
+    let seat = Seat { elem: elem!, f: first! }
+    seat
+}
+
+fn seatless(cx: LowerCx, mc: MethodCall) -> Reg {
+    lower_defect(cx, mc.e, "a walk without its seat survived typing")
+}
+
+// ── The walks ──
 
 /// One walk's fixtures: subject, fn box, its code pointer (read
 /// once — loop-invariant), bounds, the index cell the loop steps,
@@ -21,22 +81,22 @@ export fn walk_names() -> List<string> {
 type Walk = { xs: Reg, f: Reg, fp: Reg, len: Reg, idx: Reg, elem: TypeId }
 
 /// `xs.map(f)` — a fresh box, one pushed answer per element.
-fn mapped(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId) -> Reg {
-    let out = cx.result(e)
+fn mapped(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+    let out = cx.result(mc.e)
     grown_box(cx, out, [])
-    let w = opened(cx, subject, farg, elem)
+    let w = opened(cx, mc.subject, s)
     turn_open(cx, w)
     let v = turn_elem(cx, w)
-    push_slot(cx, out, turn_call(cx, w, v, mapped_to(cx, e)))
+    push_slot(cx, out, turn_call(cx, w, v, mapped_to(cx, mc.e)))
     turn_close(cx, w)
     out
 }
 
 /// `xs.filter(p)` — the same box, the elements the predicate keeps.
-fn kept(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId) -> Reg {
-    let out = cx.result(e)
+fn kept(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+    let out = cx.result(mc.e)
     grown_box(cx, out, [])
-    let w = opened(cx, subject, farg, elem)
+    let w = opened(cx, mc.subject, s)
     turn_open(cx, w)
     let v = turn_elem(cx, w)
     cx.emit(Ins.IfStart(turn_call(cx, w, v, bool_ty(cx))))
@@ -49,13 +109,13 @@ fn kept(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId) -> 
 
 /// `xs.find(p)` — an Opt cell, absent until the first hit, which
 /// also ends the walk.
-fn found(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId) -> Reg {
-    let opt = cx.type_at(e)
+fn found(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+    let opt = cx.type_at(mc.e)
     let seed = absent_of(cx, opt)
     let cell = cx.mint_ty(opt)
     cx.emit(Ins.Alloca(cell))
     cx.emit(Ins.Store(cell, seed))
-    let w = opened(cx, subject, farg, elem)
+    let w = opened(cx, mc.subject, s)
     turn_open(cx, w)
     let v = turn_elem(cx, w)
     cx.emit(Ins.IfStart(turn_call(cx, w, v, bool_ty(cx))))
@@ -64,7 +124,7 @@ fn found(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId) ->
     void_arm(cx)
     void_close(cx)
     turn_close(cx, w)
-    let dst = cx.result(e)
+    let dst = cx.result(mc.e)
     cx.emit(Ins.Load(dst, cell))
     dst
 }
@@ -72,13 +132,13 @@ fn found(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId) ->
 /// `xs.any(p)` / `xs.all(p)` — a bool cell seeded with the verdict
 /// an EMPTY walk gives; the first counterexample flips it and ends
 /// the walk.
-fn judged(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId, all: bool) -> Reg {
+fn judged(cx: LowerCx, mc: MethodCall, s: Seat, all: bool) -> Reg {
     let seed = cx.mint_shape(Type.Bool)
     cx.emit(Ins.ConstBool(seed, all))
     let cell = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Alloca(cell))
     cx.emit(Ins.Store(cell, seed))
-    let w = opened(cx, subject, farg, elem)
+    let w = opened(cx, mc.subject, s)
     turn_open(cx, w)
     let v = turn_elem(cx, w)
     let p = turn_call(cx, w, v, bool_ty(cx))
@@ -90,7 +150,7 @@ fn judged(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId, a
     void_arm(cx)
     void_close(cx)
     turn_close(cx, w)
-    let dst = cx.result(e)
+    let dst = cx.result(mc.e)
     cx.emit(Ins.Load(dst, cell))
     dst
 }
@@ -98,9 +158,9 @@ fn judged(cx: LowerCx, e: ExprId, subject: ExprId, farg: ExprId, elem: TypeId, a
 // ── The skeleton ────────────────────────────────────────────────
 
 /// The fixtures, minted before the brackets open.
-fn opened(cx: LowerCx, subject: ExprId, farg: ExprId, elem: TypeId) -> Walk {
+fn opened(cx: LowerCx, subject: ExprId, s: Seat) -> Walk {
     let xs = cx.reg_of(subject)
-    let f = cx.reg_of(farg)
+    let f = cx.reg_of(s.f)
     let fp = slot_read(cx, f, 0, null)
     let len = cx.mint_shape(Type.Int)
     cx.emit(Ins.CallRt(len, "avra_array_len", [xs]))
@@ -109,7 +169,7 @@ fn opened(cx: LowerCx, subject: ExprId, farg: ExprId, elem: TypeId) -> Walk {
     let idx = cx.mint_shape(Type.Int)
     cx.emit(Ins.Alloca(idx))
     cx.emit(Ins.Store(idx, zero))
-    Walk { xs: xs, f: f, fp: fp, len: len, idx: idx, elem: elem }
+    Walk { xs: xs, f: f, fp: fp, len: len, idx: idx, elem: s.elem }
 }
 
 /// LoopStart, the condition, and the turn's scope.
@@ -165,16 +225,15 @@ fn flipping(cx: LowerCx, p: Reg, all: bool) -> Reg {
     np
 }
 
-/// What `map` answers per element — the result list's own element.
+/// What `map` answers per element — the result list's own element,
+/// or the node's own type on the absorbing path.
 fn mapped_to(cx: LowerCx, e: ExprId) -> TypeId {
-    match cx.types.shape_of(cx.type_at(e)) {
-        .List(u) -> u,
-        _ -> cx.type_at(e),
-    }
+    let elem: TypeId? = cx.view.types.element(cx.type_at(e))
+    elem ?? cx.type_at(e)
 }
 
 fn bool_ty(cx: LowerCx) -> TypeId {
-    cx.types.intern(Type.Bool)
+    cx.view.types.intern(Type.Bool)
 }
 
 /// `xs.push(v)` — the list vocabulary's one GROWTH word: the place
@@ -187,45 +246,5 @@ fn grow_reg(cx: LowerCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> Reg?
     cx.emit(Ins.CallRtVoid("avra_array_push", [box, cx.reg_of(first!)]))
     let dst = cx.result(e)
     cx.emit(Ins.ConstInt(dst, 0))
-    dst
-}
-
-/// The element a list receiver holds — a row's rule never sees
-/// another shape.
-fn elem_held(cx: LowerCx, subject: ExprId) -> TypeId? {
-    match cx.types.shape_of(cx.type_at(subject)) {
-        .List(t) -> t,
-        _ -> null,
-    }
-}
-
-fn walked(cx: LowerCx, mc: MethodCall, name: string) -> Reg {
-    let elem: TypeId? = elem_held(cx, mc.subject)
-    let first: ExprId? = mc.args.first()
-    if elem == null || first == null { return lower_defect(cx, mc.e, "a walk without its seat survived typing") }
-    let el = elem!
-    let f = first!
-    if name == "map" { return mapped(cx, mc.e, mc.subject, f, el) }
-    if name == "filter" { return kept(cx, mc.e, mc.subject, f, el) }
-    if name == "find" { return found(cx, mc.e, mc.subject, f, el) }
-    if name == "any" { return judged(cx, mc.e, mc.subject, f, el, false) }
-    judged(cx, mc.e, mc.subject, f, el, true)
-}
-
-// ── The rows' rules ──
-
-export fn lower_map(cx: LowerCx, mc: MethodCall) -> Reg { walked(cx, mc, "map") }
-export fn lower_filter(cx: LowerCx, mc: MethodCall) -> Reg { walked(cx, mc, "filter") }
-export fn lower_find(cx: LowerCx, mc: MethodCall) -> Reg { walked(cx, mc, "find") }
-export fn lower_any(cx: LowerCx, mc: MethodCall) -> Reg { walked(cx, mc, "any") }
-export fn lower_all(cx: LowerCx, mc: MethodCall) -> Reg { walked(cx, mc, "all") }
-export fn lower_push(cx: LowerCx, mc: MethodCall) -> Reg {
-    grow_reg(cx, mc.e, mc.subject, mc.args) ?? lower_defect(cx, mc.e, "a push without its value survived typing")
-}
-
-export fn lower_length(cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
-    let xs = cx.reg_of(subject)
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_len", [xs]))
     dst
 }

@@ -1,10 +1,10 @@
 //! The call's lowering rule: argument registers, then one Call —
 //! the memory pass owns the retains the ABI demands.
 use core.{ExprId, Reg, Ins}
-use features.{LowerCx, called_through}
+use features.{LowerCx, called_through, foreign_node}
 
 fn call_lower(cx: LowerCx, e: ExprId) -> Reg {
-    match cx.store.expr(e) {
+    match cx.view.store.expr(e) {
         .Call(callee, _, args) -> {
             let regs = [cx.reg_of(a) for a in args]
             let through: Reg? = cx.indirect_callee(e)
@@ -13,7 +13,7 @@ fn call_lower(cx: LowerCx, e: ExprId) -> Reg {
             cx.emit(Ins.Call(dst, cx.callee_of(e, callee), regs))
             dst
         }
-        _ -> cx.result(e),
+        _ -> foreign_node(cx, e),
     }
 }
 

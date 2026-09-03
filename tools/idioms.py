@@ -113,6 +113,10 @@ def index_walk(lines):
         if re.search(rf"{re.escape(coll)}\[{j}\]", body):
             yield i, l.strip()
 
+# A REAL count pins a number: `== n`, or the testing verbs that pin
+# it for you. `>= 1` is not a count — it is I30's smell.
+COUNTED = re.compile(r"diagnostics\.length ==|refusals\(.*\) ==|refused_with\(|refused_n\(")
+
 def uncounted_refusal(lines):
     """A refusal test asserting only `contains` — the shape that lets
     a CASCADE hide behind a message that happens to appear."""
@@ -120,8 +124,14 @@ def uncounted_refusal(lines):
         if not re.search(r'then "', l):
             continue
         block = "\n".join(lines[i + 1:i + 10]).split('        then ')[0]
-        if ".report().contains(" in block and "diagnostics.length" not in block:
+        if ".report().contains(" in block and not COUNTED.search(block):
             yield i, l.strip()
+
+# The `>= 1` spelling of a refusal count, in every costume the tree
+# has worn it: `refusals(src) >= 1`, `a.diagnostics.length >= 1`,
+# `p.diagnostics >= 1`, `p.voices.list.length >= 1`.
+AT_LEAST_ONE = re.compile(
+    r"(refusals\(.*\)|diagnostics(\.length)?|voices\.list\.length) >= 1\b")
 
 def unmutated_mut(lines):
     """`mut` that nothing ever mutates — the reader is told to expect
@@ -197,10 +207,28 @@ def fn_body(lines, start):
 
 def dead_parameter(lines):
     """A parameter nothing reads — the signature lies about what the
-    fn needs, and every call site carries the lie."""
+    fn needs, and every call site carries the lie. Methods count,
+    except under `impl Trait for T`, where the TRAIT owns the
+    signature and a `nothing()` body cannot drop a parameter."""
+    contract, in_text = False, False
     for i, l in enumerate(lines):
-        m = re.match(r"(?:export )?fn ([a-z_]+)\((.*)\)", l)
-        if not m or "(" not in l:
+        # Template text is prose; its fn heads are not fns.
+        if l.count('\"\"\"') % 2 == 1:
+            in_text = not in_text
+            continue
+        if in_text:
+            continue
+        if re.match(r"impl .+ for \w", l):
+            contract = True
+        if l == "}":
+            contract = False
+        if contract:
+            continue
+        # A head with no `{` is a trait's signature: nothing reads
+        # its params by design. String contents are not a head.
+        bare = re.sub(r'"(\\.|[^"\\])*"', '""', l)
+        m = re.match(r"\s*(?:export )?fn ([a-z_]+)\((.*)\)", bare)
+        if not m or "{" not in bare:
             continue
         params = [p.strip().split(":")[0].strip()
                   for p in m.group(2).split(",") if ":" in p]
@@ -350,7 +378,8 @@ PRODUCT_ONLY = {
     "I11": "a repeated fixture in a test is not a message that can drift",
     "I12": "a fixture built twice in a test is the test being explicit",
 }
-TESTS_ONLY = {"I20": "it is a law about how a REFUSAL is asserted"}
+TESTS_ONLY = {"I20": "it is a law about how a REFUSAL is asserted",
+              "I30": "it is a law about how a REFUSAL is asserted"}
 
 RULES = {
     "I3":  (push_loop,
@@ -387,6 +416,9 @@ RULES = {
             "an index walk over a list — `for (j, x) in xs.enumerate()` hands over both"),
     "I20": (uncounted_refusal,
             "a refusal test with no diagnostics COUNT — a cascade can hide behind it"),
+    "I30": (line_rx(AT_LEAST_ONE.pattern),
+            "a refusal asserted as `>= 1` — a cascade of five passes it; pin the "
+            "count (`refused_with`, or `== n`)"),
     "I21": (unmutated_mut,
             "a `mut` nothing mutates — say `let`"),
     "I25": (stale_arity,
@@ -449,10 +481,19 @@ SPECIMENS = {
             ['    let v = text_of(node) ?? ""']],
     "I19": [["    for j in 0..args.length {", "        let a = args[j]", "    }"]],
     "I20": [['        then "it refuses" {', '            let a = analyze_source("x")',
-             '            a.report().contains("nope")', "        }"]],
+             '            a.report().contains("nope")', "        }"],
+            ['        then "it refuses" {', '            let a = analyze_source("x")',
+             '            a.diagnostics.length >= 1 && a.report().contains("nope")', "        }"]],
+    "I30": [['            refusals("x") >= 1'],
+            ['            refusals(src) >= 1'],
+            ['            a.diagnostics.length >= 1 && a.report().contains("nope")'],
+            ["            p.diagnostics >= 1"],
+            ["            p.voices.list.length >= 1 && lets.length == 2"]],
     "I21": [["    mut registry = new_type_registry()", "    registry.intern(t)"]],
     "I22": [["    match s {", "        .A(x) -> x,", "        .B(y) -> y,", "        _ -> null,", "    }"]],
-    "I23": [["fn f(a: int, b: int) -> int {", "    a + a", "}"]],
+    "I23": [["fn f(a: int, b: int) -> int {", "    a + a", "}"],
+            ["    fn m(self, a: int, b: int) -> int {", "        a + a", "    }"],
+            ["    fn m(self, a: int) -> int { 1 }"]],
     "I24": [["use core.{Span}"]],
     "I25": [["enum E {", "    A(x: int, y: int)", "}", "    match e {", "        .A(_) -> 1,", "    }"]],
     "I27": [["    while i < s.length {"], ["    while j <= b.length {"],

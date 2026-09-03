@@ -7,13 +7,12 @@ type IrCmd = { }
 impl Runnable for IrCmd {
     fn run(self, args: CliResult) -> int {
         on_program(args, (p: Program) -> {
-            if !p.clean() {
-                println(p.report())
-                1
-            } else {
-                println(render_ir(p.lowered()))
-                0
-            }
+            let t0 = avra_now_ns()
+            let clean = p.clean()
+            let out = if clean { render_ir(p.lowered()) } else { p.report() }
+            if timed(args) { eprintln(timings(p, "lower+render", avra_now_ns() - t0)) }
+            println(out)
+            if clean { 0 } else { 1 }
         })
     }
 }

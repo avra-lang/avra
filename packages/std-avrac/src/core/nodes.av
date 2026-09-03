@@ -36,15 +36,66 @@ export fn same_file(a: FileId, b: FileId) -> bool {
     a.index == b.index
 }
 
+/// What a name USE resolves to — the ONE binding currency every
+/// consumer dispatches on. A new binding kind (a captured upvalue,
+/// a loop's counter) is a new VARIANT here, and every consumer's
+/// match breaks loudly.
+///
+/// EVERY VARIANT OWES TWO FACTS, one per pass — the passes cannot
+/// share a table, so each keeps its own and the shapes MIRROR:
+///
+///   variant    TYPE fact (typing)     REGISTER fact (lowering)
+///   Param      param_types[i]         the index IS the register
+///   Def        decls[stmt]            slots[stmt]
+///   Pattern    pattern_types[arm]     pattern_regs[arm]
+///
+/// A new variant answers both columns or the build refuses.
+export enum Binding {
+    /// The enclosing fn's Nth parameter — params ARE registers.
+    Param(index: int)
+    /// A binding statement (`let`, `mut`, `fn`) — the definition
+    /// site is the identity.
+    Def(stmt: StmtId)
+    /// A PATTERN's payload, bound for the ONE arm whose value this
+    /// is — the first binding in the language that is not a
+    /// statement. The arm's value IS the identity, so both later
+    /// passes key their fact by it like any other node fact.
+    Pattern(arm: ExprId)
+    /// A LAMBDA's Nth parameter — in the LIFTED body, register N+1
+    /// (the env box rides seat 0). Type fact: the lambda's own
+    /// annotation table.
+    LambdaParam(lam: ExprId, index: int)
+    /// A name a lambda CAPTURED — slot 1+index of its env box. The
+    /// lambda's capture fact names the underlying outer binding;
+    /// nesting chains Capture through Capture.
+    Capture(lam: ExprId, index: int)
+    /// A pairing loop's INDEX — an int, the loop's own counter; the
+    /// statement is the identity, beside its element binding.
+    Index(stmt: StmtId)
+    /// A DECLARATION — a fn, a type, a trait — this file's or any
+    /// other's, by the table's identity; the scope resolved it.
+    Decl(decl: DeclId)
+}
+
 /// What a declaring statement declares. A Method is an impl's or a
-/// trait's fn, minted under its owner.
+/// trait's fn, minted under its owner; a Default is a record
+/// field's default value — a body of its own, called by every
+/// literal that omits the field; an Impl is the block itself (its
+/// contract is checked as one); Main is a file's run-time
+/// statements, one synthetic declaration per file.
 export enum DeclKind {
     Fn
     Record
     Enum
     Trait
     Method
+    Default
+    Impl
+    Main
 }
+
+/// A MODULE's identity — a directory under the root, interned.
+export type ModuleId = { index: int }
 
 /// The binary operators. And/Or are LAZY — their owner evaluates
 /// and lowers them as control; every other op is an eager Bin.
@@ -291,8 +342,6 @@ export enum Stmt {
     /// real nodes every pass walks, so the loop is mut+while in
     /// costume.
     For(name: string, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>)
-    /// `for name in xs { … }` — the ELEMENT walk: `name` binds each
-    /// element in turn, in its own scope per iteration.
     /// `use a.b.{x, y}` — the path's segments (a `@pkg` head kept
     /// as written) and the items brought into scope.
     Use(path: List<string>, items: List<string>)
@@ -377,9 +426,6 @@ impl NodeStore {
         sa!.cover(sb!)
     }
 
-    /// Content identity: a stable variant tag folded with payloads
-    /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 30.
     /// A PLACE's last step, when the expression is one: a bare name,
     /// a field of a subject, or an index into one. The one
     /// projection for the place category — every other shape is a
@@ -476,6 +522,9 @@ impl NodeStore {
         false
     }
 
+    /// Content identity: a stable variant tag folded with payloads
+    /// and child fingerprints, in order. Spans never participate.
+    /// Tags are never reused; the next free tag is 51.
     fn fingerprint_expr(self, e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -632,8 +681,9 @@ fn fp_binop(op: BinOp) -> int {
     }
 }
 
-/// A variant tag folded with its parts, in order.
-fn fp(tag: int, parts: List<int>) -> int {
+/// A variant tag folded with its parts, in order — THE fingerprint
+/// fold, for nodes and for every query value's hash alike.
+export fn fp(tag: int, parts: List<int>) -> int {
     mut h = tag
     for p in parts { h = fp_mix(h, p) }
     h

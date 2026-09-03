@@ -5,11 +5,11 @@
 //! desugar onto the region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
 use core.{ExprId, BinOp, UnOp, Reg, Ins, Type}
-use features.{LowerCx, StructSig, EnumSig, presence_of, hole_defect, lower_defect, variant_defect, tagged_value, PropertyRow, property_row}
+use features.{LowerCx, StructSig, EnumSig, presence_of, lower_defect, foreign_node, variant_defect, tagged_value, PropertyRow, property_row}
 
 fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
-    // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
-    match cx.store.expr(e) {
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) {
         .IntLit(v) -> {
             let dst = cx.result(e)
             cx.emit(Ins.ConstInt(dst, v))
@@ -20,7 +20,7 @@ fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
         .Not(v) -> not_reg(cx, e, v),
         .Index(s, i) -> index_reg(cx, e, s, i),
         .Prop(s, name) -> prop_reg(cx, e, s, name),
-        _ -> lower_defect(cx, e, hole_defect()),
+        _ -> foreign_node(cx, e),
     }
 }
 
@@ -99,7 +99,7 @@ fn binary_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
     let b = cx.reg_of(r)
     let stringy = cx.shape_at(l) is .Str
     if op == BinOp.Ne && stringy {
-        let same = cx.mint(e)
+        let same = cx.mint_ty(cx.type_at(e))
         cx.emit(Ins.CallRt(same, "avra_streq", [a, b]))
         let dst = cx.result(e)
         cx.emit(Ins.Un(dst, UnOp.Not, same))
@@ -123,13 +123,13 @@ fn lazy_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
     if op == BinOp.And {
         let rb = cx.reg_of(r)
         cx.emit(Ins.ArmEnd(rb))
-        let short = cx.mint(e)
+        let short = cx.mint_ty(cx.type_at(e))
         cx.emit(Ins.ConstBool(short, false))
         let dst = cx.result(e)
         cx.emit(Ins.RegionEnd(dst, short))
         return dst
     }
-    let short = cx.mint(e)
+    let short = cx.mint_ty(cx.type_at(e))
     cx.emit(Ins.ConstBool(short, true))
     cx.emit(Ins.ArmEnd(short))
     let rb = cx.reg_of(r)
@@ -147,7 +147,7 @@ fn not_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
 
 /// A property the receiver's shape answers — its row's lowering.
 fn property_reg(cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
-    let row: PropertyRow? = property_row(cx.properties, name, cx.shape_at(s))
+    let row: PropertyRow? = property_row(cx.view.lang.properties, name, cx.shape_at(s))
     if row == null { return lower_defect(cx, e, "a property without a row survived typing") }
     let r = row!
     let lowered: Reg = r.lower(cx, e, s)

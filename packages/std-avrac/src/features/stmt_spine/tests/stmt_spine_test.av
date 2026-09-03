@@ -4,7 +4,7 @@
 // mechanism, exercised as designed.
 use @std.avrac.core.{Expr, Stmt}
 use @std.avrac.diagnostics.{new_source_file}
-use @std.avrac.language.{assemble, parse_program, ParsedProgram}
+use @std.avrac.language.{assemble, parse_program, Parsed}
 use @std.avrac.features.{LangNode, LanguageFeature, Builder, BuilderRow, feature}
 use @std.avrac.features.stmt_spine.{stmt_spine}
 
@@ -24,7 +24,7 @@ fn name_stmts() -> LanguageFeature {
     feature("name_stmts", "stmt = n:NAME BREAK -> mk_name(n)") with { builders: rows }
 }
 
-fn parse_prog(source: string) -> ParsedProgram {
+fn parse_prog(source: string) -> Parsed {
     parse_program(assemble([stmt_spine(), name_stmts()]), new_source_file("<source>", source))
 }
 
@@ -32,7 +32,7 @@ spec "features/stmt_spine" {
     given "statements over merged rules" {
         then "statements accumulate in source order" {
             let p = parse_prog("alpha\nbeta")
-            let shape_ok = p.diagnostics.is_empty() && p.stmts.length == 2
+            let shape_ok = p.voices.list.is_empty() && p.stmts.length == 2
             let first = p.store.stmt_value(p.stmts[0])
             let names_ok = shape_ok && p.store.stmt(p.stmts[0]) is .ExprStmt &&
                 first != null && p.store.expr(first!) is .Ident
@@ -40,15 +40,15 @@ spec "features/stmt_spine" {
         }
         then "blank lines between statements are noise" {
             let p = parse_prog("alpha\n\n\nbeta")
-            p.diagnostics.is_empty() && p.stmts.length == 2
+            p.voices.list.is_empty() && p.stmts.length == 2
         }
         then "a leading blank line is noise" {
             let p = parse_prog("\nalpha")
-            p.diagnostics.is_empty() && p.stmts.length == 1
+            p.voices.list.is_empty() && p.stmts.length == 1
         }
         then "an empty program is zero statements, no complaints" {
             let p = parse_prog("")
-            p.diagnostics.is_empty() && p.stmts.is_empty()
+            p.voices.list.is_empty() && p.stmts.is_empty()
         }
     }
 }

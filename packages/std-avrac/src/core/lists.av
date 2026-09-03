@@ -23,6 +23,60 @@ export fn filled<T>(n: int, v: T) -> List<T> {
     out
 }
 
+/// `src` laid into `dst` from position `at` — lists alias, so the
+/// caller's table changes. Proven by the fold (typing_test's
+/// totality, the corpus), never by a unit spec: a test shard that
+/// instantiates a list-writing generic twice loses its writes
+/// (CLAUDE.md).
+export fn copy_into<T>(dst: List<T>, src: List<T>, at: int) {
+    mut d = dst
+    for (j, v) in src.enumerate() { d.set(at + j, v) }
+}
+
+/// A value placed in a sparse table by id — the table grows to
+/// hold it; lists alias, so the caller's table changes.
+export fn placed<T>(xs: List<T?>, i: int, v: T) {
+    mut d = xs
+    while d.length <= i { d.push(null) }
+    d.set(i, v)
+}
+
+/// A sparse table's value by id — absent past its end.
+export fn placed_at<T>(xs: List<T?>, i: int) -> T? {
+    if i >= xs.length { return null }
+    let held: T? = xs[i]
+    held
+}
+
+/// A value asked for its effect alone.
+// LICENSED I23: the parameter IS the contract — the value was computed
+export fn touch<T>(x: T) {
+}
+
+/// A copy with `x` at position `at` — the insertion every ordered
+/// build shares.
+export fn inserted<T>(xs: List<T>, at: int, x: T) -> List<T> {
+    xs.slice(0, at).concat([x]).concat(xs.slice(at, xs.length))
+}
+
+/// A copy in reverse — `.reverse()` mutates in place and aliases.
+export fn reversed<T>(xs: List<T>) -> List<T> {
+    mut out: List<T> = []
+    mut i = xs.length - 1
+    while i >= 0 {
+        out.push(xs[i])
+        i = i - 1
+    }
+    out
+}
+
+/// A name's first position, or absence — `index_of` answers a miss
+/// as -1.
+export fn found_at(names: List<string>, name: string) -> int? {
+    let i = names.index_of(name)
+    if i < 0 { null } else { i }
+}
+
 /// An optional as a 0/1-element list — comprehensions consume absence
 /// without a match.
 export fn some_list<T>(x: T?) -> List<T> {

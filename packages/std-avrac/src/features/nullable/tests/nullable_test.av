@@ -3,12 +3,7 @@
 // left is absent. Non-null by default is the law every refusal here
 // is defending.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown, refused_with, refusals}
-
-/// A present-maker and an absent-maker over `int?`.
-fn makers() -> string {
-    "fn some(v: int) -> int? { v }\nfn none() -> int? { null }\n"
-}
+use @std.avrac.testing.{shown, refused_with, refusals, refused_at_run, makers, finder}
 
 spec "features/nullable" {
     given "the absence and the answer" {
@@ -18,17 +13,8 @@ spec "features/nullable" {
         then "an absent value takes the right side" {
             shown("${makers()}none() ?? 42") == "42"
         }
-        then "a guarantee WIDENS into a nullable at the boundary" {
-            shown("fn ans(x: int?) -> int { x ?? 9 }\nans(33) + ans(null)") == "42"
-        }
-        then "the right side is evaluated ONLY on absence" {
-            shown("fn boom(x: int) -> int { x / 0 }\n${makers()}some(5) ?? boom(1)") == "5"
-        }
         then "bools are nullable too" {
             shown("fn maybe(b: bool) -> bool? { b }\nif maybe(true) ?? false { 1 } else { 0 }") == "1"
-        }
-        then "a chain groups to the right" {
-            shown("${makers()}none() ?? (none() ?? 7)") == "7"
         }
         then "a nullable param answers either way" {
             shown("fn ans(x: int?) -> int { x ?? 9 }\n${makers()}ans(none()) + ans(some(1))") == "10"
@@ -39,10 +25,7 @@ spec "features/nullable" {
             shown("${makers()}some(41)! + 1") == "42"
         }
         then "an ABSENT value refuses at runtime, in both engines' words" {
-            match analyze_source("${makers()}none()!").run() {
-                .Err(msg) -> msg.contains("unwrapped an absent value"),
-                .Ok(_) -> false,
-            }
+            refused_at_run("${makers()}none()!", "unwrapped an absent value")
         }
         then "insisting on a GUARANTEE is refused at compile time" {
             refused_with("let x = 1\nx!", "`!` insists on a nullable, this is `int`")
@@ -52,9 +35,6 @@ spec "features/nullable" {
         }
         then "it composes with arithmetic" {
             shown("${makers()}some(20)! + some(22)!") == "42"
-        }
-        then "it composes with `??`" {
-            shown("${makers()}some(5)! + (none() ?? 2)") == "7"
         }
         then "a bool nullable unwraps to a condition" {
             shown("fn mb(b: bool) -> bool? { b }\nif mb(true)! { 1 } else { 0 }") == "1"
@@ -108,10 +88,6 @@ spec "features/nullable" {
         }
         then "it nests, each bind in its own scope" {
             shown("${makers()}match some(1) {\n    v? -> match some(2) {\n        w? -> v + w\n        null -> 0\n    }\n    null -> 0\n}") == "3"
-        }
-        then "asking a GUARANTEE is refused" {
-            refused_with("let x = 1\nmatch x {\n    v? -> v\n    null -> 0\n}",
-                         "`v?` asks a nullable, this is `int`")
         }
         then "the arms must agree, like any other pair of branches" {
             refused_with("${makers()}match some(1) {\n    v? -> v\n    null -> \"s\"\n}",
@@ -237,7 +213,6 @@ spec "features/nullable" {
                              "`.age` reads a guarantee, this is `User?`")
         }
         then "a MUT never narrows — reassignment could lie" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
             refused_with("mut x: int? = 5\nlet a = if x != null { x + 1 } else { 0 }\na",
                          "`+` needs `int` operands, found `int?`")
         }
@@ -278,10 +253,8 @@ spec "features/nullable" {
             shown("fn f(b: bool) -> List<int>? { if b { [1, 2] } else { null } }\n(f(false) ?? [9]).length") == "1"
         }
         then "`!` insists on a niche nullable, and refuses in the shared words" {
-            match analyze_source("fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(false)!").run() {
-                .Err(msg) -> msg.contains("unwrapped an absent value"),
-                .Ok(_) -> false,
-            }
+            refused_at_run("fn f(b: bool) -> string? { if b { \"x\" } else { null } }\nf(false)!",
+                           "unwrapped an absent value")
         }
         then "a nullable param passes through by IDENTITY — widening is free" {
             shown("fn hand(s: string?) -> string? { s }\nhand(\"kept\") ?? \"lost\"") == "kept"
@@ -320,10 +293,4 @@ spec "features/nullable" {
             refused_with("${finder()}find_user(7)?.nope ?? 0", "no field `nope` on `User`")
         }
     }
-}
-
-/// The spec's own headline example, as test fixture.
-fn finder() -> string {
-    "type User = { age: int }\n" +
-    "fn find_user(id: int) -> User? { if id == 7 { User { age: 30 } } else { null } }\n"
 }

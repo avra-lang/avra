@@ -7,7 +7,7 @@ use features.{StmtTypeCx, require_bool, nothing, this_is, spoken}
 use diagnostics.{refusal}
 
 export fn check_while(cx: StmtTypeCx, s: StmtId) {
-    match cx.store.stmt(s) {
+    match cx.view.store.stmt(s) {
         .While(cond, stmts) -> {
             cx.walk(cond)
             require_bool(cx.expr, cond, "a `while` condition", "this decides the loop")
@@ -18,7 +18,7 @@ export fn check_while(cx: StmtTypeCx, s: StmtId) {
 }
 
 export fn check_for(cx: StmtTypeCx, s: StmtId) {
-    match cx.store.stmt(s) {
+    match cx.view.store.stmt(s) {
         .For(_, from, to, cond, step, stmts) -> {
             cx.walk(from)
             cx.walk(to)
@@ -46,7 +46,7 @@ fn range_bound(cx: StmtTypeCx, e: ExprId, verb: string) -> bool {
 /// `for x in xs` — the subject is a LIST; the name binds its
 /// element type for every read in the body.
 export fn check_for_each(cx: StmtTypeCx, s: StmtId) {
-    match cx.store.stmt(s) {
+    match cx.view.store.stmt(s) {
         .ForEach(_, _, subject, stmts) -> {
             cx.walk(subject)
             cx.record_binding(s, walked_elem(cx, subject))
@@ -58,17 +58,17 @@ export fn check_for_each(cx: StmtTypeCx, s: StmtId) {
 
 /// The element type the walk hands out — or the refusal.
 fn walked_elem(cx: StmtTypeCx, subject: ExprId) -> TypeId {
-    // annotated bind: the closure-field-call discipline — a direct
-    // match here would skip exhaustiveness and abort on new shapes
-    let sh: Type = cx.expr.shape_at(subject)
-    match sh {
-        .List(elem) -> elem,
-        .Error -> cx.expr.error_type,
-        .EmptyList -> nothing_to_walk(cx.expr, subject),
-        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or
-        .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or
-        .Null or .Void or .Map(_, _) or .EmptyMap -> not_walkable(cx.expr, subject),
-    }
+    let elem: TypeId? = cx.expr.view.types.element(cx.expr.type_at(subject))
+    elem ?? not_a_walk(cx.expr, subject)
+}
+
+/// Not a list: Error absorbs; the empty literal and every other
+/// shape refuse, each in its own words.
+fn not_a_walk(cx: TypeCx, subject: ExprId) -> TypeId {
+    let sh: Type = cx.shape_at(subject)
+    if sh is .Error { return cx.error_type }
+    if sh is .EmptyList { return nothing_to_walk(cx, subject) }
+    not_walkable(cx, subject)
 }
 
 // ── The voices ──

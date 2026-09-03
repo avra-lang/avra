@@ -8,40 +8,55 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{DeclId, FileId, DeclKind, StmtId, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, same_decl}
+use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, same_decl}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
 
 /// A file's path facts — known at first mention, before its parse.
-export type FileInfo = { id: FileId, path: string, module: string }
+export type FileInfo = { id: FileId, path: string, module_id: ModuleId }
 
-/// One declaration: where it lives and what it is; a method also
-/// names the type it serves.
-export type Decl = { id: DeclId, file: FileId, stmt: StmtId, name: string, kind: DeclKind, exported: bool, owner: string }
+/// One declaration: where it lives, what it is, the expression its
+/// body IS (a fn's, a default's; absent for the rest), and the
+/// expression range [lo, hi) that body occupies in its file's arena
+/// — a method or a default also names the type it serves.
+export type Decl = { id: DeclId, file: FileId, stmt: StmtId, name: string, kind: DeclKind, exported: bool, owner: string, parent: DeclId?, nested: bool, root: ExprId?, lo: int, hi: int }
 
-/// A method's entry under its type.
-export type MethodEntry = { name: string, decl: DeclId }
-
-/// `decls`, `sigs`, `methods` and `impls` are dense by DeclId;
-/// `stores` and `decl_ids` dense by FileId.
+/// `decls`, `sigs`, `children`, `methods` and `impls` are dense by
+/// DeclId; `stores` and `decl_ids` dense by FileId. The two hooks
+/// make the table's reads queries: `ensure` computes a sig on first
+/// ask, `ensure_methods` fills a type's method table.
 export type Decls = {
     types: TypeRegistry,
     files: List<FileInfo>,
     paths: Map<string, FileId>,
+    modules: List<string>,
+    module_ids: Map<string, ModuleId>,
+    module_files: List<List<FileId>>,
+    mains: List<DeclId?>,
     stores: List<NodeStore?>,
     decl_ids: List<List<DeclId?>>,
+    file_decls: List<List<DeclId>>,
     decls: List<Decl>,
     keys: Map<string, DeclId>,
     sigs: List<DeclSig?>,
-    methods: List<List<MethodEntry>>,
+    children: List<List<DeclId>>,
+    methods: List<List<DeclId>>,
     impls: List<List<DeclId>>,
+    ensure: List<fn(DeclId)>,
+    ensure_methods: List<fn(DeclId)>,
 }
 
 export fn new_decls() -> Decls {
     Decls {
-        types: new_type_registry(), files: [], paths: {}, stores: [], decl_ids: [],
-        decls: [], keys: {}, sigs: [], methods: [], impls: [],
+        types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
+        stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], children: [], methods: [], impls: [],
+        ensure: [no_ensure], ensure_methods: [no_ensure],
     }
+}
+
+/// The table's own reads ask nothing more.
+// LICENSED I23: the hook's contract carries the declaration
+fn no_ensure(d: DeclId) {
 }
 
 /// A kind's word — the key's middle, and prose.
@@ -52,6 +67,9 @@ export fn kind_word(k: DeclKind) -> string {
         .Enum -> "enum",
         .Trait -> "trait",
         .Method -> "method",
+        .Default -> "default",
+        .Impl -> "impl",
+        .Main -> "main",
     }
 }
 
@@ -63,15 +81,45 @@ impl Decls {
         let known: FileId? = self.paths.get(path)
         if known != null { return known! }
         let id = FileId { index: self.files.length }
+        let m = self.module_id(module)
         mut ps = self.paths
         ps.set(path, id)
         mut fs = self.files
-        fs.push(FileInfo { id: id, path: path, module: module })
+        fs.push(FileInfo { id: id, path: path, module_id: m })
+        // LICENSED I3: the module's own file list, pushed in place
+        mut mf = self.module_files[m.index]
+        mf.push(id)
         mut ss = self.stores
         ss.push(null)
         mut ds = self.decl_ids
         ds.push([])
+        mut fd = self.file_decls
+        fd.push([])
+        mut mn = self.mains
+        mn.push(null)
         id
+    }
+
+    /// A module's identity — minted at first mention.
+    fn module_id(self, module: string) -> ModuleId {
+        let known: ModuleId? = self.module_ids.get(module)
+        if known != null { return known! }
+        let m = ModuleId { index: self.modules.length }
+        mut ids = self.module_ids
+        ids.set(module, m)
+        mut ms = self.modules
+        ms.push(module)
+        mut mf = self.module_files
+        mf.push([])
+        m
+    }
+
+    fn module_name(self, m: ModuleId) -> string { self.modules[m.index] }
+
+    /// A file's Main: its run-time statements as one declaration.
+    fn main_of(self, f: FileId) -> DeclId? {
+        let held: DeclId? = self.mains[f.index]
+        held
     }
 
     fn file(self, f: FileId) -> FileInfo { self.files[f.index] }
@@ -87,6 +135,7 @@ impl Decls {
         ss.set(f.index, store)
         mut by_stmt: List<DeclId?> = filled<DeclId?>(store.stmts.count(), null)
         mut out: List<DeclId> = []
+        mut made: List<DeclId> = []
         mut seen: List<string> = []
         let path = self.file(f).path
         for s in stmts {
@@ -96,18 +145,42 @@ impl Decls {
                 let name = store.declared_name(s) ?? ""
                 let key = fresh_key("${path}::${kind_word(k)}::${name}", s, seen)
                 seen.push(key)
-                let d = self.mint(key, f, s, name, k, store.is_exported(s), "")
+                let d = self.mint(key, f, s, name, k, store.is_exported(s), "", null, false, store.fn_parts(s)?.body)
                 by_stmt.set(s.index, d)
                 out.push(d)
+                made.push(d)
+                self.orphan(d)
                 let fns: List<StmtId> = store.trait_parts(s)?.fns ?? []
-                for m in fns { by_stmt.set(m.index, self.mint_method(key, f, store, m, name)) }
+                for m in fns {
+                    let md = self.mint_method(key, f, store, m, name, d, null)
+                    by_stmt.set(m.index, md)
+                    made.push(md)
+                }
+                let fields: List<Param> = store.struct_parts(s)?.fields ?? []
+                for fd in fields {
+                    if fd.default != null { made.push(self.mint_default(key, f, s, fd, name, d)) }
+                }
             }
             let ip: ImplParts? = store.impl_parts(s)
             if ip != null {
                 let block = ip!
-                for m in block.fns { by_stmt.set(m.index, self.mint_method("${path}::impl ${block.target}", f, store, m, block.target)) }
+                let key = fresh_key("${path}::impl ${block.target}", s, seen)
+                seen.push(key)
+                let block_decl = self.mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
+                by_stmt.set(s.index, block_decl)
+                made.push(block_decl)
+                self.orphan(block_decl)
+                for m in block.fns {
+                    let md = self.mint_method(key, f, store, m, block.target, block_decl, store.fn_parts(m)?.body)
+                    by_stmt.set(m.index, md)
+                    made.push(md)
+                }
             }
         }
+        let main = self.mint("${path}::main", f, stmts.first() ?? StmtId { index: 0 }, "main", DeclKind.Main, false, "", null, false, null)
+        made.push(main)
+        mut mn = self.mains
+        mn.set(f.index, main)
         // A declaration NESTED in a body is refused by its feature, but
         // typing still walks it: it gets an identity under a key no
         // module-level name can take, and joins no namespace.
@@ -116,39 +189,122 @@ impl Decls {
             let nested: DeclKind? = store.declared_kind(s)
             if by_stmt[i] == null && nested != null {
                 let name = store.declared_name(s) ?? ""
-                by_stmt.set(i, self.mint("${path}::nested ${i}::${name}", f, s, name, nested!, false, ""))
+                let nd = self.mint("${path}::nested ${i}::${name}", f, s, name, nested!, false, "", null, true, null)
+                by_stmt.set(i, nd)
+                made.push(nd)
             }
         }
         mut di = self.decl_ids
         di.set(f.index, by_stmt)
+        mut fd = self.file_decls
+        fd.set(f.index, made)
+        self.range_bodies(f, store, main)
         out
     }
 
-    fn mint_method(self, owner_key: string, f: FileId, store: NodeStore, m: StmtId, owner: string) -> DeclId {
+    /// Every declaration's expression range: each expression belongs
+    /// to the INNERMOST declaration whose span holds it; the rest —
+    /// the run-time statements' — belong to Main.
+    fn range_bodies(self, f: FileId, store: NodeStore, main: DeclId) {
+        let owners: List<DeclId> = [d for d in self.decls_of_file(f) if self.owns_a_range(d)]
+        mut lo: List<int?> = filled<int?>(self.decls.length, null)
+        mut hi: List<int?> = filled<int?>(self.decls.length, null)
+        for i in 0..store.exprs.count() {
+            let sp: Span? = store.expr_span(ExprId { index: i })
+            if sp != null {
+                let owner = self.innermost(owners, sp!) ?? main
+                if lo[owner.index] == null { lo.set(owner.index, i) }
+                hi.set(owner.index, i + 1)
+            }
+        }
+        for d in owners.concat([main]) {
+            let i = d.index
+            mut ds = self.decls
+            ds.set(i, self.decl(d) with { lo: lo[i] ?? 0, hi: hi[i] ?? 0 })
+        }
+    }
+
+    /// This file's declarations, every kind, in the order admitted:
+    /// each top-level one with its members, then Main, then the
+    /// nested ones.
+    fn decls_of_file(self, f: FileId) -> List<DeclId> { self.file_decls[f.index] }
+
+    /// A declaration whose body owns its expressions: not Main (it
+    /// takes the rest), not nested (its enclosing body walks it).
+    fn owns_a_range(self, d: DeclId) -> bool {
+        let x = self.decl(d)
+        !(x.kind is .Main) && !x.nested && self.decl_span(d) != null
+    }
+
+    /// The source a declaration occupies: its statement's span — a
+    /// default's, the default expression's alone.
+    fn decl_span(self, d: DeclId) -> Span? {
+        let x = self.decl(d)
+        if x.kind is .Default { return self.store(d).expr_span(x.root!) }
+        self.store(d).stmt_span(x.stmt)
+    }
+
+    /// The smallest declaration span holding `sp`, or absence — every
+    /// owner has a span (`owns_a_range` said so).
+    fn innermost(self, owners: List<DeclId>, sp: Span) -> DeclId? {
+        // LICENSED I4: a min-scan keeps the SMALLEST holder, not a membership
+        mut best: DeclId? = null
+        mut best_size = 0 - 1
+        for d in owners {
+            let ds: Span = self.decl_span(d)!
+            if ds.lo <= sp.lo && sp.hi <= ds.hi && (best_size < 0 || ds.hi - ds.lo < best_size) {
+                best = d
+                best_size = ds.hi - ds.lo
+            }
+        }
+        best
+    }
+
+    /// A trait's method has no body to lower; an impl's does.
+    fn mint_method(self, owner_key: string, f: FileId, store: NodeStore, m: StmtId, owner: string, parent: DeclId, root: ExprId?) -> DeclId {
         let name = store.fn_parts(m)?.name ?? ""
-        self.mint("${owner_key}#${name}", f, m, name, DeclKind.Method, false, owner)
+        self.mint("${owner_key}#${name}", f, m, name, DeclKind.Method, false, owner, parent, false, root)
+    }
+
+    /// A field's default: a body under the record, named by the
+    /// field, its statement the record's.
+    fn mint_default(self, owner_key: string, f: FileId, s: StmtId, field: Param, owner: string, parent: DeclId) -> DeclId {
+        self.mint("${owner_key}#${field.name}", f, s, field.name, DeclKind.Default, false, owner, parent, false, field.default)
+    }
+
+    /// A parent admitted again lists its members afresh.
+    fn orphan(self, parent: DeclId) {
+        mut cs = self.children
+        cs.set(parent.index, [])
     }
 
     /// An id for a key: the existing one (its row refreshed), or the
-    /// next.
-    fn mint(self, key: string, f: FileId, s: StmtId, name: string, kind: DeclKind, exported: bool, owner: string) -> DeclId {
+    /// next; a member joins its parent's children.
+    fn mint(self, key: string, f: FileId, s: StmtId, name: string, kind: DeclKind, exported: bool, owner: string, parent: DeclId?, nested: bool, root: ExprId?) -> DeclId {
         let known: DeclId? = self.keys.get(key)
         let id: DeclId = if known == null { DeclId { index: self.decls.length } } else { known! }
-        let d = Decl { id: id, file: f, stmt: s, name: name, kind: kind, exported: exported, owner: owner }
+        let d = Decl { id: id, file: f, stmt: s, name: name, kind: kind, exported: exported, owner: owner, parent: parent, nested: nested, root: root, lo: 0, hi: 0 }
         mut ds = self.decls
-        if known != null {
+        if known == null {
+            ds.push(d)
+            mut ks = self.keys
+            ks.set(key, id)
+            mut sg = self.sigs
+            sg.push(null)
+            mut cs = self.children
+            cs.push([])
+            mut ms = self.methods
+            ms.push([])
+            mut im = self.impls
+            im.push([])
+        } else {
             ds.set(id.index, d)
-            return id
         }
-        ds.push(d)
-        mut ks = self.keys
-        ks.set(key, id)
-        mut sg = self.sigs
-        sg.push(null)
-        mut ms = self.methods
-        ms.push([])
-        mut im = self.impls
-        im.push([])
+        if parent != null {
+            // LICENSED I3: the parent's own member list, pushed in place
+            mut members = self.children[parent!.index]
+            members.push(id)
+        }
         id
     }
 
@@ -164,11 +320,22 @@ impl Decls {
 
     fn store(self, d: DeclId) -> NodeStore { self.store_of(self.decl(d).file) }
 
-    fn module_of(self, d: DeclId) -> string { self.file(self.decl(d).file).module }
+    fn module_of(self, d: DeclId) -> string { self.module_name(self.file(self.decl(d).file).module_id) }
 
+    /// A declaration's signature — asking it IS the query: the hook
+    /// the workspace arms computes it on first ask and records the
+    /// dependency; the table only holds.
     fn sig(self, d: DeclId) -> DeclSig? {
+        let ensure = self.ensure[0]
+        ensure(d)
         let held: DeclSig? = self.sigs[d.index]
         held
+    }
+
+    /// The workspace arms the sig hook once.
+    fn arm(self, ensure: fn(DeclId)) {
+        mut es = self.ensure
+        es.set(0, ensure)
     }
 
     fn declare(self, d: DeclId, sig: DeclSig) {
@@ -193,7 +360,7 @@ impl Decls {
         let x = self.decl(d)
         match x.kind {
             .Record or .Enum -> x.name,
-            .Fn or .Trait or .Method -> null,
+            .Fn or .Trait or .Method or .Default or .Impl or .Main -> null,
         }
     }
 
@@ -202,23 +369,38 @@ impl Decls {
         let x = self.decl(d)
         match x.kind {
             .Fn or .Method -> x.name,
-            .Record or .Enum or .Trait -> null,
+            .Record or .Enum or .Trait or .Default or .Impl or .Main -> null,
         }
     }
 
+    /// Whether a declaration has a body to type and lower.
+    fn has_body(self, d: DeclId) -> bool { self.decl(d).root != null }
+
+    /// A declaration's members, in declaration order: a trait's or
+    /// impl's methods, a record's defaults.
+    fn children_of(self, d: DeclId) -> List<DeclId> { self.children[d.index] }
+
+    /// A record field's default, when the field declares one.
+    fn default_named(self, record: DeclId, field: string) -> DeclId? {
+        // LICENSED I5: a self-method predicate under `it` ICEs at codegen
+        for c in self.children_of(record) {
+            if self.decl(c).name == field { return c }
+        }
+        null
+    }
+
     fn loc(self, d: DeclId) -> Loc? {
-        let x = self.decl(d)
-        loc_at(self.file(x.file).path, self.store(d).stmt_span(x.stmt))
+        loc_at(self.file(self.decl(d).file).path, self.decl_span(d))
     }
 
     /// THE symbol a declaration lowers to — its name under its
-    /// module; a method's under its type's name first. Every symbol
+    /// module; a member's under its type's name first. Every symbol
     /// a body or a call site carries comes from here.
     fn symbol(self, d: DeclId) -> string {
         let x = self.decl(d)
         let local_name = match x.kind {
-            .Method -> "${x.owner}.${x.name}",
-            .Fn or .Record or .Enum or .Trait -> x.name,
+            .Method or .Default -> "${x.owner}.${x.name}",
+            .Fn or .Record or .Enum or .Trait or .Impl or .Main -> x.name,
         }
         module_symbol(self.module_of(d), local_name)
     }
@@ -242,31 +424,59 @@ impl Decls {
         [self.decl(m).name for m in self.trait_fns(d)]
     }
 
-    fn method(self, target: DeclId, name: string) -> MethodEntry? {
-        let held: MethodEntry? = self.methods[target.index].find(it.name == name)
-        held
+    /// A type's method by name — asking IS the query: the hook fills
+    /// the type's table from every impl that names it, and the ask
+    /// records the dependency.
+    fn method(self, target: DeclId, name: string) -> DeclId? {
+        let ensure = self.ensure_methods[0]
+        ensure(target)
+        self.held_method(target, name)
     }
 
-    fn declare_method(self, target: DeclId, entry: MethodEntry) {
+    /// The table as it stands — the registering side's own read.
+    fn held_method(self, target: DeclId, name: string) -> DeclId? {
+        // LICENSED I5: a self-method predicate under `it` ICEs at codegen
+        for m in self.methods_of(target) {
+            if self.decl(m).name == name { return m }
+        }
+        null
+    }
+
+    /// A type's registered methods, as they stand — the hook-free read.
+    fn methods_of(self, target: DeclId) -> List<DeclId> { self.methods[target.index] }
+
+    /// The workspace arms the method-table hook once.
+    fn arm_methods(self, ensure: fn(DeclId)) {
+        mut es = self.ensure_methods
+        es.set(0, ensure)
+    }
+
+    /// A method registered under its type — the same declaration
+    /// again (a recomputed sig) is the same entry.
+    fn declare_method(self, target: DeclId, m: DeclId) {
+        let prior: DeclId? = self.held_method(target, self.decl(m).name)
+        if prior != null && same_decl(prior!, m) { return }
         // LICENSED I3: the type's own method list, pushed in place
         mut ms = self.methods[target.index]
-        ms.push(entry)
-    }
-
-    /// The symbol a method call targets, when the type has it.
-    fn method_symbol_of(self, target: DeclId, name: string) -> string? {
-        let m: MethodEntry? = self.method(target, name)
-        if m == null { return null }
-        self.symbol(m!.decl)
+        ms.push(m)
     }
 
     fn record_impl(self, ty: DeclId, tr: DeclId) {
+        if self.holds_impl(ty, tr) { return }
         // LICENSED I3: the type's own trait list, pushed in place
         mut ts = self.impls[ty.index]
         ts.push(tr)
     }
 
+    /// Whether a type implements a trait — asked through the hook,
+    /// like a method.
     fn implements(self, ty: DeclId, tr: DeclId) -> bool {
+        let ensure = self.ensure_methods[0]
+        ensure(ty)
+        self.holds_impl(ty, tr)
+    }
+
+    fn holds_impl(self, ty: DeclId, tr: DeclId) -> bool {
         self.impls[ty.index].any(same_decl(it, tr))
     }
 }

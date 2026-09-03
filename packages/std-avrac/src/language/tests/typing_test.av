@@ -2,51 +2,65 @@
 // holes and unresolved names type as Error — and Error absorbs
 // without cascading a second diagnostic. Everything reaches the
 // pass through the driver's one artifact.
-use @std.avrac.language.{analyze_source, Analysis, Typing, Type, TypeId}
+use @std.avrac.language.{analyze_source, Analysis, Type, TypeId}
 
 // Plain-fn shape tests: a method call in a lambda body would bind
 // `it` at ITS fold (innermost method wins); a plain call leaves the
 // pronoun to the scan that owns it.
-fn int_shape(t: Typing, id: TypeId) -> bool { t.types.shape_of(id) is .Int }
-fn err_shape(t: Typing, id: TypeId) -> bool { t.types.shape_of(id) is .Error }
+fn int_shape(a: Analysis, id: TypeId) -> bool { a.view.decls.types.shape_of(id) is .Int }
+fn err_shape(a: Analysis, id: TypeId) -> bool { a.view.decls.types.shape_of(id) is .Error }
 
 /// Error-typed slots in one analysis.
 fn holes(a: Analysis) -> int {
-    a.typing.of_expr.filter(err_shape(a.typing, it)).length
+    a.facts.of_expr.filter(err_shape(a, it)).length
 }
 
 spec "language/typing" {
     given "a clean program" {
         then "every expression is int, idents through their definition" {
-            let t = analyze_source("let x = 1 + 2\nx").typing
-            t.of_expr.all(int_shape(t, it)) && t.diagnostics.is_empty()
+            let a = analyze_source("let x = 1 + 2\nx")
+            a.facts.of_expr.all(int_shape(a, it)) && a.facts.voices.list.is_empty()
         }
     }
     given "an unresolved name in an expression" {
         then "the tree types as Error and NOTHING cascades" {
             let a = analyze_source("let x = 1 + y")
             // resolve spoke once; typing adds no echo.
-            a.diagnostics.length == 1 && a.typing.diagnostics.is_empty() &&
+            a.diagnostics.length == 1 && a.facts.voices.list.is_empty() &&
                 holes(a) == 2
         }
     }
     given "a recovery hole between good statements" {
         then "totality holds — the table covers every expression" {
             let a = analyze_source("let a = 1\nlet = 3\nlet y = 2")
-            a.typing.of_expr.length == a.p.store.exprs.count() &&
-                a.typing.diagnostics.is_empty()
+            a.facts.of_expr.length == a.view.store.exprs.count() &&
+                a.facts.voices.list.is_empty()
+        }
+    }
+    given "several declarations in one file" {
+        then "totality holds across every body — one table covers the file" {
+            let a = analyze_source("type P = { x: int }\nenum E {\n    a\n    b\n}\nfn f(p: P) -> int {\n    p.x\n}\nfn g(e: E) -> int {\n    match e {\n        .a -> 1\n        .b -> 2\n    }\n}\nf(P { x: 1 }) + g(E.b)")
+            a.diagnostics.is_empty() && a.facts.of_expr.length == a.view.store.exprs.count()
+        }
+        then "two erroring bodies report in SOURCE order, whatever order they were asked in" {
+            // the entry calls `b` before `a`, so `b`'s body is asked first;
+            // the report still reads top to bottom.
+            let a = analyze_source("fn a() -> int {\n    \"s\"\n}\nfn b() -> int {\n    true\n}\nb() + a()")
+            a.diagnostics.length == 2 &&
+                a.diagnostics[0].message.contains("`a` declares") &&
+                a.diagnostics[1].message.contains("`b` declares")
         }
     }
     given "a use before its definition" {
         then "the use types as Error, silently" {
             let a = analyze_source("x\nlet x = 1")
             // One resolve diagnostic exists; typing stays quiet and total.
-            a.typing.diagnostics.is_empty() && holes(a) == 1
+            a.facts.voices.list.is_empty() && holes(a) == 1
         }
     }
     given "the registry" {
         then "interning is idempotent and printing is the projection" {
-            let reg = analyze_source("let x = 1").typing.types
+            let reg = analyze_source("let x = 1").view.decls.types
             let a = reg.intern(Type.Int)
             let b = reg.intern(Type.Int)
             // LICENSED I9: interning identity is what this test asserts

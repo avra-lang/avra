@@ -66,7 +66,7 @@ spec "language/workspace (adversarial)" {
                          "an impl is not exported — its methods travel with their type")
         }
         then "on a use — the re-export waits for 15c" {
-            refuses_once({ "/w/main.av": "export use util.{twice}\ntwice(1)\n", "/w/util/m.av": twice() }, ["/w/main.av", "/w/util/m.av"], "`export use` — a re-export — arrives with slice 15c")
+            refuses_once({ "/w/main.av": "export use util.{twice}\ntwice(1)\n", "/w/util/m.av": twice() }, ["/w/main.av", "/w/util/m.av"], "`export use` — a re-export — arrives with a later slice")
         }
         then "written twice" {
             refuses_once({ "/w/main.av": "export export fn f() -> int {\n    1\n}\nf()\n" }, ["/w/main.av"], "`export` written twice")
@@ -116,6 +116,34 @@ spec "language/workspace (adversarial)" {
         then "strings cross the line and come back owned" {
             runs({ "/w/main.av": "use util.{greet, rep}\nlet s = greet(\"avra\")\n\"$" + "{rep(s, 2)}!\".length\n", "/w/util/s.av": "export fn greet(name: string) -> string {\n    \"hi $" + "{name}\"\n}\nexport fn rep(s: string, n: int) -> string {\n    if n == 0 { \"\" } else { \"$" + "{s}$" + "{rep(s, n - 1)}\" }\n}\n" },
                  ["/w/main.av", "/w/util/s.av"]) == "15"
+        }
+    }
+    given "a field default is a body of its module" {
+        then "a foreign record's defaults fill a literal here — an int and a managed string" {
+            runs({ "/w/main.av": "use util.{P}\nlet p = P {}\np.x * 100 + p.tag.length\n", "/w/util/shapes.av": "export type P = { x: int = 3, tag: string = \"t-$" + "{1 + 2}\" }\n" },
+                 ["/w/main.av", "/w/util/shapes.av"]) == "303"
+        }
+        then "a default may call its module's PRIVATE fn — the literal's file never sees the name" {
+            runs({ "/w/main.av": "use util.{Q}\nQ {}.x\n", "/w/util/shapes.av": "fn twice(n: int) -> int {\n    n * 2\n}\nexport type Q = { x: int = twice(21) }\n" },
+                 ["/w/main.av", "/w/util/shapes.av"]) == "42"
+        }
+        then "a generic record's default instantiates under the literal's arguments" {
+            runs({ "/w/main.av": "use util.{Pair}\nlet p = Pair { a: 1 }\np.rest.length + 5\n", "/w/util/shapes.av": "export type Pair<T> = { a: T, rest: List<T> = [] }\n" },
+                 ["/w/main.av", "/w/util/shapes.av"]) == "5"
+        }
+        then "a default reading its file's top-level binding refuses in ITS file, not the literal's" {
+            let ws = package({ "/w/main.av": "use util.{Q}\nQ {}.y\n", "/w/util/shapes.av": "let k = 3\nexport type Q = { y: int = k }\n" }, ["/w/main.av", "/w/util/shapes.av"])
+            let shapes = analyze_file(ws, "/w/util/shapes.av")
+            analyze_file(ws, "/w/main.av").clean() &&
+                shapes.diagnostics.length == 1 && shapes.report().contains("`k` is a run-time binding of the top level")
+        }
+    }
+    given "a type's methods are one namespace across its module's files" {
+        then "the same method in two files of one module clashes at the LATER file, once" {
+            let ws = package({ "/w/main.av": "use util.{P}\nP { x: 1 }.show()\n", "/w/util/a.av": "export type P = { x: int }\nimpl P {\n    fn show(self) -> int {\n        self.x\n    }\n}\n", "/w/util/b.av": "impl P {\n    fn show(self) -> int {\n        self.x + 1\n    }\n}\n" }, ["/w/main.av", "/w/util/a.av", "/w/util/b.av"])
+            let later = analyze_file(ws, "/w/util/b.av")
+            analyze_file(ws, "/w/util/a.av").clean() &&
+                later.diagnostics.length == 1 && later.report().contains("`P.show` is declared twice")
         }
     }
 }

@@ -1,8 +1,7 @@
 //! What every command shares: the host externs, the argued source
-//! file, and the two CommandSpec shapes.
+//! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef, result_get_arg, result_has_flag}
-use @std.avrac.diagnostics.{new_source_file}
-use @std.avrac.language.{Host, Program, program, lone_program, timed_workspace, avra}
+use @std.avrac.language.{Host, Program, Analysis, program, lone_workspace, timed_workspace, avra, emit_ll}
 use @std.avrac.core.{joined, dir_of}
 
 extern fn avra_selfhost_read_file(path: string) -> string
@@ -46,7 +45,7 @@ fn program_arg(args: CliResult) -> Program? {
     }
     let root: string? = package_root(dir_of(path))
     if root == null {
-        let lone: Program = lone_program(avra().analyze(new_source_file(path, avra_selfhost_read_file(path))))
+        let lone: Program = program(lone_workspace(path, avra_selfhost_read_file(path), avra()), path)
         return lone
     }
     let whole: Program = program(timed_workspace(disk_host(), root!, avra(), () -> avra_now_ns()), path)
@@ -75,6 +74,21 @@ fn on_program(args: CliResult, act: fn(Program) -> int) -> int {
     let held: Program? = program_at(args)
     if held == null { return 2 }
     act(held!)
+}
+
+/// Analyze, refuse with the report, or write the verified `.ll`
+/// beside the source and answer its path — what `emit` and `build`
+/// both do before they differ.
+fn lowered_or_report(p: Program) -> Result<string, string> {
+    if !p.clean() { return Result.Err(p.report()) }
+    let entry: Analysis? = p.entry_file()
+    if entry == null { return Result.Err("the program has no entry") }
+    if entry!.view.stmts.is_empty() { return Result.Err("the program is empty") }
+    let lo = p.lowered_checked()?
+    let path = "${entry!.view.source.file}.ll"
+    let failure: string? = emit_ll(lo, path)
+    if failure != null { return Result.Err(failure!) }
+    Result.Ok(path)
 }
 
 /// The `--time` report: analysis by phase, then what the command
@@ -115,6 +129,18 @@ fn file_command(name: string, description: string) -> CommandSpec {
         hidden: false,
         flags: [FlagDef { name: "--time", short: "", description: "print phase timings and memo hits", aliases: [] }],
         args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
+        options: [],
+    }
+}
+
+/// A subcommand over positional arguments of its own.
+fn arg_command(name: string, description: string, args: List<ArgDef>) -> CommandSpec {
+    CommandSpec {
+        name: name,
+        description: description,
+        hidden: false,
+        flags: [],
+        args: args,
         options: [],
     }
 }

@@ -1,17 +1,18 @@
 //! The structs semantics: dispatch only. Typing lives in check.av;
 //! lowering — the MEANING — in lower.av. The declaration is a
 //! STATEMENT kind: names declare program-wide in the type
-//! namespace (the driver gathers them), so here it only runs its
-//! field names through the naming law.
+//! namespace (the driver gathers them), so here it runs its field
+//! names through the naming law and walks each field default as a
+//! body of its own.
 use core.{Expr, ExprId, StmtId, TypeId, Reg, NodeStore, StructParts}
 use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx,
-              StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing, nested_decl}
+              StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing, refuses_nested}
 
 export type StructsSemantics = { }
 
 impl NodeSemantics for StructsSemantics {
     fn kids(self, e: Expr) -> List<ExprId> {
-        // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
+        // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match e {
             .StructLit(_, _, values) -> values,
             .With(subject, _, values) -> [subject].concat(values),
@@ -24,7 +25,7 @@ impl NodeSemantics for StructsSemantics {
     }
 
     fn resolve(self, cx: ResolveCx, e: ExprId) {
-        match cx.store.expr(e) {
+        match cx.view.store.expr(e) {
             .StructLit(name, _, _) -> cx.use_type(e, name),
             _ -> nothing(),
         }
@@ -42,13 +43,16 @@ impl NodeSemantics for StructsSemantics {
 export type StructDeclSemantics = { }
 
 impl StmtSemantics for StructDeclSemantics {
+    // a default is a body of its own: it sees declarations, never
+    // the top level's run-time bindings
     fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
         decl_resolve(cx, s)
-        for d in default_exprs(cx.store, s) { cx.walk(d) }
+        for d in default_exprs(cx.view.store, s) { cx.walk_under([], d) }
     }
 
+    // a field's default is a declaration of its own, typed as one
     fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
-        check_defaults(cx, s)
+        nothing()
     }
 
     fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
@@ -59,11 +63,8 @@ impl StmtSemantics for StructDeclSemantics {
 /// The declaration's field names run the naming law; the driver
 /// owns the namespace and the field table.
 fn decl_resolve(cx: StmtResolveCx, s: StmtId) {
-    if cx.in_block {
-        cx.emit(nested_decl("resolve.nested_type", "type declarations", cx.loc_of(s)))
-        return
-    }
-    match cx.store.stmt(s) {
+    if refuses_nested(cx, s, "resolve.nested_type", "type declarations") { return }
+    match cx.view.store.stmt(s) {
         .StructDecl(_, _, fields) -> cx.check_params(fields, s),
         _ -> nothing(),
     }
@@ -73,9 +74,5 @@ fn decl_resolve(cx: StmtResolveCx, s: StmtId) {
 fn default_exprs(store: NodeStore, s: StmtId) -> List<ExprId> {
     let sp: StructParts? = store.struct_parts(s)
     if sp == null { return [] }
-    mut out: List<ExprId> = []
-    for f in sp!.fields {
-        if f.default != null { out.push(f.default!) }
-    }
-    out
+    [f.default! for f in sp!.fields if f.default != null]
 }

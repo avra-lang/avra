@@ -4,16 +4,16 @@
 // across differently-formatted sources.
 use @std.avrac.core.{NodeStore, BinOp, ExprId, StmtId}
 use @std.avrac.language.{parse_source, analyze_source}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_at_run}
 
-type Parsed = { store: NodeStore, root: ExprId?, diagnostics: int }
+type Tree = { store: NodeStore, root: ExprId?, diagnostics: int }
 
 /// One expression line, parsed as a program; the root is its value.
-fn parse_expr(source: string) -> Parsed {
+fn parse_expr(source: string) -> Tree {
     let p = parse_source(source)
     let head: StmtId? = p.stmts.first()
     let root: ExprId? = if head == null { null } else { p.store.stmt_value(head!) }
-    Parsed { store: p.store, root: root, diagnostics: p.diagnostics.length }
+    Tree { store: p.store, root: root, diagnostics: p.voices.list.length }
 }
 
 spec "features/expr_spine" {
@@ -69,7 +69,7 @@ spec "features/expr_spine" {
     given "broken source" {
         then "diagnostics arrive instead of a crash" {
             let p = parse_expr("1 +")
-            p.diagnostics >= 1
+            p.diagnostics == 1
         }
     }
     given "the operator ladder" {
@@ -122,22 +122,13 @@ spec "features/expr_spine" {
 spec "features/expr_spine — arithmetic that must not diverge" {
     given "a zero divisor" {
         then "`/` by zero REFUSES rather than answering" {
-            match analyze_source("1 / 0").run() {
-                .Err(msg) -> msg.contains("division by zero"),
-                .Ok(_) -> false,
-            }
+            refused_at_run("1 / 0", "division by zero")
         }
         then "`%` by zero refuses the same way" {
-            match analyze_source("1 % 0").run() {
-                .Err(msg) -> msg.contains("division by zero"),
-                .Ok(_) -> false,
-            }
+            refused_at_run("1 % 0", "division by zero")
         }
         then "a divisor computed at RUNTIME is caught too" {
-            match analyze_source("fn z() -> int { 0 }\n10 / z()").run() {
-                .Err(msg) -> msg.contains("division by zero"),
-                .Ok(_) -> false,
-            }
+            refused_at_run("fn z() -> int { 0 }\n10 / z()", "division by zero")
         }
         then "ordinary division still answers" {
             analyze_source("100 / 7").ran() == "14"

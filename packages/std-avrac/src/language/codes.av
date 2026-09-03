@@ -5,7 +5,7 @@
 //! table: they emit Diag directly with their own registered kinds.
 use core.{flatten}
 use grammar.{Diagnostic, Cause}
-use diagnostics.{Diag, DiagCode, error_at, code_for, loc_at}
+use diagnostics.{Diag, DiagCode, error_at, code_for, loc_at, defect_at, defect_kind}
 
 /// One engine cause's projection row.
 type EngineCode = { cause: Cause, kind: string, id: string, summary: string }
@@ -35,6 +35,7 @@ fn pass_codes() -> List<DiagCode> {
         "resolve.nested_type"    | "F3007" | "type declarations live at the top level"
         "resolve.builtin_type"   | "F3008" | "a built-in type name cannot be redeclared"
         "resolve.paired"         | "F3010" | "a pairing loop names its index and element apart"
+        "resolve.runtime_binding" | "F3020" | "a fn body cannot read the top level's run-time bindings"
     }
     rows
 }
@@ -44,16 +45,22 @@ export fn builtin_codes() -> List<DiagCode> {
     [DiagCode { kind: r.kind, id: r.id, summary: r.summary } for r in engine_codes()].concat(pass_codes())
 }
 
-/// The dotted kind an engine cause projects to.
+/// The dotted kind an engine cause projects to — a defect when the
+/// registry has no row for it.
 fn kind_for(c: Cause) -> string {
-    engine_codes().find(it.cause == c)?.kind ?? "language.defect"
+    engine_codes().find(it.cause == c)?.kind ?? defect_kind()
 }
 
 /// One engine diagnostic in language currency. A defect names its
 /// subject up front; parse messages already carry their rule.
 export fn project(d: Diagnostic, file: string?) -> Diag {
-    let message = if d.cause is .Defect { "`${d.in_rule}`: ${d.message}" } else { d.message }
+    let message = if d.cause is .Defect { in_rule(d) } else { d.message }
     error_at(kind_for(d.cause), loc_at(file, d.span), message)
+}
+
+/// An engine message with the rule it came from up front.
+fn in_rule(d: Diagnostic) -> string {
+    "`${d.in_rule}`: ${d.message}"
 }
 
 /// Every engine diagnostic projected, then the net: a kind the
@@ -66,7 +73,7 @@ export fn project_all(ds: List<Diagnostic>, file: string?, codes: List<DiagCode>
 /// is unregistered.
 fn netted(p: Diag, codes: List<DiagCode>) -> List<Diag> {
     if code_for(codes, p.kind) == null {
-        return [p, error_at("language.defect", null, "`${p.kind}`: diagnostic kind is not registered")]
+        return [p, defect_at(null, "`${p.kind}`: diagnostic kind is not registered")]
     }
     [p]
 }
@@ -74,5 +81,5 @@ fn netted(p: Diag, codes: List<DiagCode>) -> List<Diag> {
 /// Assembly problems are language defects regardless of engine cause —
 /// their spans reference composed grammar text, not user source.
 export fn as_defects(ds: List<Diagnostic>) -> List<Diag> {
-    [error_at("language.defect", null, "`${d.in_rule}`: ${d.message}") for d in ds]
+    [defect_at(null, in_rule(d)) for d in ds]
 }

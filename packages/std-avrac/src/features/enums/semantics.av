@@ -6,13 +6,13 @@
 //! through the driver, each under its own bind.
 use core.{Expr, ExprId, StmtId, TypeId, Reg}
 use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx,
-              StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing, nested_decl}
+              StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing, refuses_nested}
 
 export type EnumsSemantics = { }
 
 impl NodeSemantics for EnumsSemantics {
     fn kids(self, e: Expr) -> List<ExprId> {
-        // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
+        // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match e {
             .Match(subject, _, _, _) -> [subject],
             _ -> [],
@@ -20,7 +20,7 @@ impl NodeSemantics for EnumsSemantics {
     }
 
     fn heirs(self, e: Expr) -> List<ExprId> {
-        // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
+        // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match e {
             .Match(_, _, _, values) -> values,
             _ -> [],
@@ -29,7 +29,7 @@ impl NodeSemantics for EnumsSemantics {
 
     fn resolve(self, cx: ResolveCx, e: ExprId) {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
-        match cx.store.expr(e) {
+        match cx.view.store.expr(e) {
             .Match(_, _, binds, values) -> resolve_arms(cx, binds, values),
             _ -> nothing(),
         }
@@ -48,9 +48,7 @@ export type EnumDeclSemantics = { }
 
 impl StmtSemantics for EnumDeclSemantics {
     fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
-        if cx.in_block {
-            cx.emit(nested_decl("resolve.nested_type", "type declarations", cx.loc_of(s)))
-        }
+        let _ = refuses_nested(cx, s, "resolve.nested_type", "type declarations")
     }
 
     fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {

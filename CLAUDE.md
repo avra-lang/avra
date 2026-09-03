@@ -309,7 +309,7 @@ against these before writing; probe in scratch when unsure.
   is fine. Wrap the parameter in a struct, answer a list.
 - Multi-line fn signatures parse fine (probed) — stacked params with
   a trailing comma, or aligned continuation lines. Wrap wide ones.
-- `ref`, `none`, `shape`, `dyn`, `table`, `is`, `bare`, and `where` are reserved words
+- `ref`, `none`, `shape`, `dyn`, `table`, `is`, `bare`, `mod`, and `where` are reserved words
   (`dyn` refuses as a FIELD name: "expected field name" at the decl) — including
   as variable and method names; `then` refuses as a struct/enum
   field name, and `given` and `spec` refuse as LOCALS (the spec
@@ -489,6 +489,11 @@ against these before writing; probe in scratch when unsure.
   `type Scope` in memory.av refused a second `Scope` in a new
   sibling file ("no field `fns` on type Scope" — the OTHER struct's
   fields). Grep the module for the name before declaring a type.
+- A multi-line `use a.{x,\n  y}` statement: any tool that reads
+  imports line by line sees `use a.{x,` — a truncated statement —
+  and a consumer that scans "to the closing brace" then EATS the
+  code after it (the split's headers lost fn heads this way).
+  Join continuation lines first, or write imports on one line.
 - An idempotent patch script checks `new in s` BEFORE `old in s`:
   when the new text CONTAINS the old (an `export` prefix, a doc
   comment), a re-run applies it twice (the doubled `export ///`
@@ -579,3 +584,19 @@ against these before writing; probe in scratch when unsure.
   contains an early `return` ICEs at codegen ("Referring to an
   instruction in another function", #1377) — any struct, any loop.
   Use a free fn taking the struct first.
+- A GENERIC fn IMPORTED into a metadata-compiled TEST unit that
+  WRITES through a list it was handed (`copy_into<T>`: `mut d = dst;
+  d.set(i, v)`) loses its writes for EVERY instantiation as soon as
+  that unit instantiates it at TWO element types (probed: strings
+  alone alias; add an `int` instantiation to the same spec file and
+  the string cases fail too; a standalone `bs2 run` aliases in all
+  shapes) — and the UNIT is a hashed SHARD of several test files,
+  not one file, so which specs share it is nobody's choice: the same
+  spec passed in one file name and failed in another. Product code
+  is unaffected (the fold's `absorb` runs `copy_into` at seven
+  element types; typing_test's totality and the corpus prove it). A
+  list-writing generic therefore has NO unit test — its proof is the
+  product path, and that is written at the site.
+- Three concurrent `make test` runs (each spawns eight compiler
+  shards) crashed the machine; builds are serial — never let two
+  agents build at once.

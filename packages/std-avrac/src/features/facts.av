@@ -1,0 +1,613 @@
+//! FACTS — the data every context and facade reads. The language's
+//! registries once (`LanguageRows`), a file's view (`FileView`), and
+//! the pass values that are pure data. Behavior lives in query
+//! functions and in features' rules; these only hold.
+use core.{FileId, DeclId, StmtId, ExprId, TypeId, Type, NodeStore, TypeRegistry, Binding, Param, filled, copy_into, Reg, Ins, dst_of, rt_sig_of}
+use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
+use @std.errors.{Loc}
+
+/// The language's registries, once — never copied into a program.
+export type LanguageRows = { methods: List<MethodRow>, types: List<TypeRow>, properties: List<PropertyRow>, codes: List<DiagCode> }
+
+/// What every context and facade reads of a file: its identity, its
+/// nodes, its text, the declaration table, the type registry, and
+/// the language's rows.
+export type FileView = { file: FileId, store: NodeStore, stmts: List<StmtId>, source: SourceFile, decls: Decls, types: TypeRegistry, lang: LanguageRows }
+
+impl FileView {
+    /// Where an expression is — THE source position, every context
+    /// forwards here.
+    fn loc_of(self, e: ExprId) -> Loc? { loc_at(self.source.file, self.store.expr_span(e)) }
+
+    fn stmt_loc(self, s: StmtId) -> Loc? { loc_at(self.source.file, self.store.stmt_span(s)) }
+
+    /// The module this file belongs to.
+    fn module(self) -> string { self.decls.module_name(self.decls.file(self.file).module_id) }
+}
+
+/// A lambda's captures: the names it reached outside itself and the
+/// binding each came from — creation packs sources[j] into slot 1+j,
+/// and the lifted body reads the same lanes.
+export type Cap = { names: List<string>, sources: List<Binding> }
+
+/// A file's names: what each expression's name resolves to, each
+/// lambda's captures, the namespace they were resolved in, and the
+/// voices resolving earned.
+export type NameFacts = { bindings: List<Binding?>, captures: List<Cap?>, names: Namespace, voices: Voices }
+
+impl NameFacts {
+    fn binding(self, e: ExprId) -> Binding? {
+        let held: Binding? = self.bindings[e.index]
+        held
+    }
+
+    fn capture(self, lam: ExprId) -> Cap? {
+        let held: Cap? = self.captures[lam.index]
+        held
+    }
+}
+
+/// What a nullable was asked, for lowering: the subject, and whether
+/// the branch runs on presence.
+export type Asked = { subject: ExprId, on_present: bool }
+
+/// A body's typing facts — columns dense over its expression RANGE
+/// [lo, hi) (a declaration's body occupies one), and over the
+/// file's statements for what a binding declared. `widens` names the
+/// expressions a boundary LIFTED into a nullable; `narrows` the
+/// reads a presence test proved; `substs` the instantiations mono
+/// specializes; the want columns are the expected-type channel.
+export type TypeFacts = {
+    lo: int,
+    of_expr: List<TypeId>,
+    widens: List<TypeId?>,
+    narrows: List<TypeId?>,
+    asks: List<Asked?>,
+    substs: List<Sub?>,
+    lambda_params: List<List<TypeId>?>,
+    wants: List<TypeId?>,
+    hungry: List<bool>,
+    starved: List<TypeId?>,
+    pattern_types: List<TypeId?>,
+    binding_types: List<TypeId?>,
+    voices: Voices,
+}
+
+/// Born total: every expression in the range pre-typed as the hole.
+export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFacts {
+    let exprs = hi - lo
+    TypeFacts {
+        lo: lo,
+        of_expr: filled(exprs, hole),
+        widens: filled<TypeId?>(exprs, null),
+        narrows: filled<TypeId?>(exprs, null),
+        asks: filled<Asked?>(exprs, null),
+        substs: filled<Sub?>(exprs, null),
+        lambda_params: filled<List<TypeId>?>(exprs, null),
+        wants: filled<TypeId?>(exprs, null),
+        hungry: filled(exprs, false),
+        starved: filled<TypeId?>(exprs, null),
+        pattern_types: filled<TypeId?>(exprs, null),
+        binding_types: filled<TypeId?>(stmts, null),
+        voices: no_voices(),
+    }
+}
+
+impl TypeFacts {
+    fn type_at(self, e: ExprId) -> TypeId { self.of_expr[e.index - self.lo] }
+
+    fn hungry_at(self, e: ExprId) -> bool { self.hungry[e.index - self.lo] }
+
+    /// The hungry expressions, in range order.
+    fn hungry_ones(self) -> List<ExprId> {
+        mut out: List<ExprId> = []
+        // LICENSED I3: the column's index IS the expression, offset by lo
+        for (j, h) in self.hungry.enumerate() {
+            if h { out.push(ExprId { index: self.lo + j }) }
+        }
+        out
+    }
+
+    /// The seat a starved expression wanted, when it was starved.
+    fn starved_at(self, e: ExprId) -> TypeId? {
+        let held: TypeId? = self.starved[e.index - self.lo]
+        held
+    }
+
+    fn set_type(self, e: ExprId, ty: TypeId) {
+        mut ts = self.of_expr
+        ts.set(e.index - self.lo, ty)
+    }
+
+    fn widen(self, v: ExprId, ty: TypeId) {
+        mut ws = self.widens
+        ws.set(v.index - self.lo, ty)
+    }
+
+    fn widened_at(self, e: ExprId) -> TypeId? {
+        let held: TypeId? = self.widens[e.index - self.lo]
+        held
+    }
+
+    fn narrow(self, e: ExprId, opt: TypeId) {
+        mut ns = self.narrows
+        ns.set(e.index - self.lo, opt)
+    }
+
+    fn narrowed_at(self, e: ExprId) -> TypeId? {
+        let held: TypeId? = self.narrows[e.index - self.lo]
+        held
+    }
+
+    fn record_ask(self, e: ExprId, subject: ExprId, on_present: bool) {
+        mut aa = self.asks
+        aa.set(e.index - self.lo, Asked { subject: subject, on_present: on_present })
+    }
+
+    fn ask_of(self, e: ExprId) -> Asked? {
+        let held: Asked? = self.asks[e.index - self.lo]
+        held
+    }
+
+    fn record_subst(self, e: ExprId, target: DeclId, targs: List<TypeId>) {
+        mut ss = self.substs
+        ss.set(e.index - self.lo, Sub { target: target, args: targs })
+    }
+
+    fn subst_at(self, e: ExprId) -> Sub? {
+        let held: Sub? = self.substs[e.index - self.lo]
+        held
+    }
+
+    fn set_want(self, e: ExprId, ty: TypeId) {
+        mut ws = self.wants
+        ws.set(e.index - self.lo, ty)
+    }
+
+    fn want_at(self, e: ExprId) -> TypeId? {
+        let held: TypeId? = self.wants[e.index - self.lo]
+        held
+    }
+
+    fn go_hungry(self, e: ExprId) {
+        mut hs = self.hungry
+        hs.set(e.index - self.lo, true)
+    }
+
+    fn absorb_hunger(self, e: ExprId) {
+        mut hs = self.hungry
+        hs.set(e.index - self.lo, false)
+    }
+
+    /// A hungry expression starved of the seat it wanted; true when
+    /// it was hungry.
+    fn starve(self, e: ExprId, want: TypeId) -> bool {
+        if !self.hungry[e.index - self.lo] { return false }
+        mut ss = self.starved
+        ss.set(e.index - self.lo, want)
+        true
+    }
+
+    fn bind_type(self, v: ExprId, ty: TypeId) {
+        mut ps = self.pattern_types
+        ps.set(v.index - self.lo, ty)
+    }
+
+    fn pattern_type(self, v: ExprId) -> TypeId? {
+        let held: TypeId? = self.pattern_types[v.index - self.lo]
+        held
+    }
+
+    fn record_binding(self, s: StmtId, ty: TypeId) {
+        mut bs = self.binding_types
+        bs.set(s.index, ty)
+    }
+
+    /// Another body's facts laid into this table over its range,
+    /// and every binding it declared — the per-file fold. The
+    /// hunger columns (`hungry`, `starved`) are a body's own
+    /// working state, spoken before its facts settle; the voices
+    /// fold at the workspace, in source order.
+    fn absorb(self, other: TypeFacts) {
+        let at = other.lo - self.lo
+        copy_into(self.of_expr, other.of_expr, at)
+        copy_into(self.widens, other.widens, at)
+        copy_into(self.narrows, other.narrows, at)
+        copy_into(self.asks, other.asks, at)
+        copy_into(self.substs, other.substs, at)
+        copy_into(self.lambda_params, other.lambda_params, at)
+        copy_into(self.wants, other.wants, at)
+        copy_into(self.pattern_types, other.pattern_types, at)
+        mut bs = self.binding_types
+        for (j, b) in other.binding_types.enumerate() {
+            if b != null { bs.set(j, b) }
+        }
+    }
+
+    fn declared_binding(self, s: StmtId) -> TypeId? {
+        let held: TypeId? = self.binding_types[s.index]
+        held
+    }
+
+    fn seat_lambda(self, lam: ExprId, tys: List<TypeId>) {
+        mut lp = self.lambda_params
+        lp.set(lam.index - self.lo, tys)
+    }
+
+    fn lambda_seats(self, lam: ExprId) -> List<TypeId>? {
+        let held: List<TypeId>? = self.lambda_params[lam.index - self.lo]
+        held
+    }
+
+    fn speak(self, d: Diag) { self.voices.speak(d) }
+
+}
+
+// ── The reads over facts — ONE definition each; the contexts and the
+// drivers forward to these ──
+
+/// A record's fields, the declaration's or the instantiation's.
+export fn fields_of_type(decls: Decls, ty: TypeId) -> StructSig? {
+    match decls.types.shape_of(ty) {
+        .Struct(decl, _) -> record_sig_of(decls.sig(decl)),
+        .App(decl, _, args) -> subbed_fields(decls.types, record_sig_of(decls.sig(decl)), decl, args),
+        .Int or .Str or .Bool or .List(_) or .Enum(_, _) or .Res(_, _) or
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
+        .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+    }
+}
+
+/// An enum's variants, the declaration's, a Result's, or the
+/// instantiation's.
+export fn variants_of_type(decls: Decls, ty: TypeId) -> EnumSig? {
+    match decls.types.shape_of(ty) {
+        .Enum(decl, _) -> variant_sig_of(decls.sig(decl)),
+        .Res(ok, err) -> res_enum_sig(ok, err),
+        .App(decl, _, args) -> subbed_variants(decls.types, variant_sig_of(decls.sig(decl)), decl, args),
+        .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
+        .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+    }
+}
+
+/// The declaration a call's name stands for, when it is one.
+export fn bound_decl_of(names: NameFacts, e: ExprId) -> DeclId? {
+    let b: Binding? = names.binding(e)
+    if b == null { return null }
+    match b! {
+        .Decl(d) -> d,
+        .Def(_) -> null,
+        .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+    }
+}
+
+/// A call's declared signature, when its name is a declared fn.
+export fn sig_of_at(names: NameFacts, decls: Decls, e: ExprId) -> FnSig? {
+    let d: DeclId? = bound_decl_of(names, e)
+    if d == null { return null }
+    fn_sig_of(decls.sig(d!))
+}
+
+/// Whether a name reads a `mut` binding.
+export fn is_mut_at(names: NameFacts, store: NodeStore, e: ExprId) -> bool {
+    let b: Binding? = names.binding(e)
+    if b == null { return false }
+    match b! {
+        .Def(s) -> store.stmt(s) is .MutLet,
+        .Decl(_) or .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+    }
+}
+
+/// The declaration a type name stands for, in the file's namespace.
+export fn type_named(names: NameFacts, name: string) -> DeclId? {
+    let d: DeclId? = names.names.types.get(name)
+    d
+}
+
+/// The trait a name stands for, in the file's namespace.
+export fn trait_named(decls: Decls, names: NameFacts, name: string) -> DeclId? {
+    let d: DeclId? = names.names.types.get(name)
+    if d == null || !decls.is_trait(d!) { return null }
+    d
+}
+
+/// The impl table's answer — a sig whose params[0] is `self`.
+export fn method_sig_of(decls: Decls, target: DeclId, mname: string) -> FnSig? {
+    let m: DeclId? = decls.method(target, mname)
+    if m == null { return null }
+    fn_sig_of(decls.sig(m!))
+}
+
+/// A trait method's sig — self OMITTED — or absence.
+export fn trait_sig_of(decls: Decls, names: NameFacts, tname: string, mname: string) -> FnSig? {
+    let decl: DeclId? = trait_named(decls, names, tname)
+    if decl == null { return null }
+    let f: DeclId? = decls.trait_fns(decl!).find(decl_named(decls, it, mname))
+    if f == null { return null }
+    fn_sig_of(decls.sig(f!))
+}
+
+fn decl_named(decls: Decls, f: DeclId, mname: string) -> bool {
+    let n: string? = decls.fn_name(f)
+    n == mname
+}
+
+/// Whether a type registered an impl for the trait — and a `dyn` of
+/// the very trait implements it BY CONSTRUCTION.
+export fn implements_of(types: TypeRegistry, decls: Decls, names: NameFacts, ty: TypeId, tname: string) -> bool {
+    let worn: string? = dyn_contract(types.shape_of(ty))
+    if worn != null { return worn! == tname }
+    let d: DeclId? = declared_decl(types.shape_of(ty))
+    let tr: DeclId? = trait_named(decls, names, tname)
+    if d == null || tr == null { return false }
+    decls.implements(d!, tr!)
+}
+
+export fn dyn_contract(sh: Type) -> string? {
+    match sh {
+        .Dyn(_, n) -> n,
+        _ -> null,
+    }
+}
+
+/// A declared type's DECLARATION, when its shape carries one —
+/// the impl table's key. Generic receivers wait for T2.
+export fn declared_decl(sh: Type) -> DeclId? {
+    match sh {
+        .Struct(d, _) -> d,
+        .Enum(d, _) -> d,
+        .Int or .Str or .Bool or .List(_) or .Opt(_) or .Null or
+        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or
+        .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+    }
+}
+
+/// A declaration read as a value: a type's name, or a fn worn as a
+/// value (a generic fn wears no single signature).
+export fn decl_type_of(decls: Decls, voices: Voices, error_type: TypeId, d: DeclId) -> TypeId {
+    let tname: string? = decls.type_name(d)
+    if tname != null { return decls.types.intern(Type.TypeName(d, tname!)) }
+    if !decls.tparams(d).is_empty() {
+        voices.speak(not_a_value(decls, d))
+        return error_type
+    }
+    let sig: FnSig? = fn_sig_of(decls.sig(d))
+    if sig == null { return error_type }
+    decls.types.intern(Type.Fn(sig!.params, sig!.ret))
+}
+
+/// What a `let`/`mut` binding holds: its declared type, its value's
+/// type, or — for a loop's counter — int.
+export fn def_type_of(facts: TypeFacts, store: NodeStore, types: TypeRegistry, error_type: TypeId, s: StmtId) -> TypeId {
+    let declared: TypeId? = facts.declared_binding(s)
+    if declared != null { return declared! }
+    if store.stmt(s) is .For { return types.intern(Type.Int) }
+    let v: ExprId? = store.stmt_value(s)
+    if v == null { return error_type }
+    facts.type_at(v!)
+}
+
+// ── The contexts' reads: forwards to the one definition ──
+
+impl TypeCx {
+    fn type_at(self, e: ExprId) -> TypeId { self.facts.type_at(e) }
+    fn shape_at(self, e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
+    fn name_at(self, e: ExprId) -> string { self.view.types.name_of(self.type_at(e)) }
+    fn loc_of(self, e: ExprId) -> Loc? { self.view.loc_of(e) }
+    fn stmt_loc(self, s: StmtId) -> Loc? { self.view.stmt_loc(s) }
+    fn emit(self, d: Diag) { self.facts.speak(d) }
+    fn stmt_sig(self, s: StmtId) -> FnSig? {
+        let d: DeclId? = self.view.decls.decl_of(self.view.file, s)
+        if d == null { return null }
+        fn_sig_of(self.view.decls.sig(d!))
+    }
+    fn bound_decl(self, e: ExprId) -> DeclId? { bound_decl_of(self.names, e) }
+    fn tparams(self, d: DeclId) -> List<string> { self.view.decls.tparams(d) }
+    fn tbounds(self, d: DeclId) -> List<Param> { self.view.decls.tbounds(d) }
+    fn sig_of(self, e: ExprId) -> FnSig? { sig_of_at(self.names, self.view.decls, e) }
+    fn fields_of(self, ty: TypeId) -> StructSig? { fields_of_type(self.view.decls, ty) }
+    fn variants_of(self, ty: TypeId) -> EnumSig? { variants_of_type(self.view.decls, ty) }
+    fn method_sig(self, target: DeclId, mname: string) -> FnSig? { method_sig_of(self.view.decls, target, mname) }
+    fn trait_sig(self, tname: string, mname: string) -> FnSig? { trait_sig_of(self.view.decls, self.names, tname, mname) }
+    fn implements(self, ty: TypeId, tname: string) -> bool { implements_of(self.view.types, self.view.decls, self.names, ty, tname) }
+    fn is_mut(self, e: ExprId) -> bool { is_mut_at(self.names, self.view.store, e) }
+    fn def_type(self, s: StmtId) -> TypeId { def_type_of(self.facts, self.view.store, self.view.types, self.error_type, s) }
+    fn bind_type(self, v: ExprId, ty: TypeId) { self.facts.bind_type(v, ty) }
+    fn widen(self, v: ExprId, ty: TypeId) { self.facts.widen(v, ty) }
+    fn record_ask(self, e: ExprId, subject: ExprId, on_present: bool) { self.facts.record_ask(e, subject, on_present) }
+    fn ask_of(self, e: ExprId) -> Asked? { self.facts.ask_of(e) }
+    fn record_subst(self, e: ExprId, target: DeclId, targs: List<TypeId>) { self.facts.record_subst(e, target, targs) }
+    fn record_binding(self, s: StmtId, ty: TypeId) { self.facts.record_binding(s, ty) }
+    fn want_at(self, e: ExprId) -> TypeId? { self.facts.want_at(e) }
+    fn go_hungry(self, e: ExprId) { self.facts.go_hungry(e) }
+    fn absorb_hunger(self, e: ExprId) { self.facts.absorb_hunger(e) }
+    fn starve(self, e: ExprId, want: TypeId) -> bool { self.facts.starve(e, want) }
+}
+
+impl StmtTypeCx {
+    fn loc_of(self, s: StmtId) -> Loc? { self.expr.stmt_loc(s) }
+    fn sig_of(self, s: StmtId) -> FnSig? { self.expr.stmt_sig(s) }
+    fn binding_type(self, s: StmtId) -> TypeId { self.expr.def_type(s) }
+    fn record_binding(self, s: StmtId, ty: TypeId) { self.expr.record_binding(s, ty) }
+}
+
+impl StmtResolveCx {
+    fn loc_of(self, s: StmtId) -> Loc? { self.view.stmt_loc(s) }
+    fn emit(self, d: Diag) { self.facts.voices.speak(d) }
+}
+
+/// A type under a body's instantiation — IDENTITY for a plain body.
+export fn viewed(types: TypeRegistry, sub: Sub?, ty: TypeId) -> TypeId {
+    if sub == null { return ty }
+    types.substituted(ty, sub!.target, sub!.args)
+}
+
+/// A body's instruction list under construction: registers mint in
+/// instruction order, `give` is the mint-order law, and a runtime
+/// callee must have its row in the registry.
+export type Emitter = { ins: List<Ins>, reg_types: List<TypeId>, defined: List<Reg>, voices: Voices }
+
+export fn new_emitter() -> Emitter {
+    Emitter { ins: [], reg_types: [], defined: [], voices: no_voices() }
+}
+
+impl Emitter {
+    /// THE defect phrase, worded once — the compiler blaming itself
+    /// for a shape the gate should have refused.
+    fn defect(self, what: string) { self.record("defect: ${what}") }
+
+    fn mint_ty(self, ty: TypeId) -> Reg {
+        mut tys = self.reg_types
+        tys.push(ty)
+        Reg { index: tys.length - 1 }
+    }
+
+    fn type_of_reg(self, r: Reg) -> TypeId { self.reg_types[r.index] }
+
+    fn give(self, i: Ins) {
+        // A new CALLING instruction must decide whether the runtime
+        // registry validates it; the arms make that unavoidable.
+        let callee: string? = match i {
+            .CallRt(_, c, _) -> c,
+            .CallRtVoid(c, _) -> c,
+            .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+            .Bin(_, _, _, _) or .Un(_, _, _) or .Call(_, _, _) or
+            .FnAddr(_, _) or .CallPtr(_, _, _) or
+            .Pack(_, _) or .Extract(_, _, _) or
+            .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
+            .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or
+            .Alloca(_) or .Load(_, _) or .Store(_, _) or
+            .LoopStart or .LoopCond(_) or .LoopEnd or
+            .Retain(_) or .Release(_) or .RetVal(_) or .FnExit(_) or
+            .Ret(_) -> null,
+        }
+        if callee != null && rt_sig_of(callee!) == null {
+            self.defect("unknown runtime callee `${callee!}` — add its row to runtime_api.av")
+        }
+        self.defined_in_order(i)
+        mut ins = self.ins
+        ins.push(i)
+    }
+
+    fn defined_in_order(self, i: Ins) {
+        let d: Reg? = dst_of(i)
+        if d == null { return }
+        let dst = d!
+        let expected = self.defined.length
+        // LICENSED I9: REGISTER identity — a mint index, not a type
+        if dst.index != expected {
+            self.defect("register r${dst.index} defines out of mint order — r${expected} is next (mint operands first, the answer last)")
+        }
+        mut ds = self.defined
+        ds.push(dst)
+    }
+
+    /// The params are registers 0..N-1, defined before any instruction.
+    fn seeded(self) {
+        mut ds = self.defined
+        // LICENSED I3: the register IS its index
+        for j in 0..self.reg_types.length { ds.push(Reg { index: j }) }
+    }
+
+    fn record(self, msg: string) { self.voices.speak(defect_at(null, msg)) }
+}
+
+/// A body's per-node registers: each expression's, each binding's
+/// slot (a cell when boxed), each pattern bind's, each pairing
+/// loop's index.
+export type BodyRegs = { regs: List<Reg?>, slots: List<Reg?>, boxed: List<bool>, pattern_regs: List<Reg?>, index_regs: List<Reg?> }
+
+export fn new_body_regs(exprs: int, stmts: int) -> BodyRegs {
+    BodyRegs {
+        regs: filled<Reg?>(exprs, null), slots: filled<Reg?>(stmts, null), boxed: filled(stmts, false),
+        pattern_regs: filled<Reg?>(exprs, null), index_regs: filled<Reg?>(stmts, null),
+    }
+}
+
+impl BodyRegs {
+    fn reg_at(self, e: ExprId) -> Reg? {
+        let held: Reg? = self.regs[e.index]
+        held
+    }
+    fn set_reg(self, e: ExprId, r: Reg) {
+        mut rs = self.regs
+        rs.set(e.index, r)
+    }
+    fn slot_of(self, s: StmtId) -> Reg? {
+        let held: Reg? = self.slots[s.index]
+        held
+    }
+    fn set_slot(self, s: StmtId, r: Reg) {
+        mut ss = self.slots
+        ss.set(s.index, r)
+    }
+    fn bind_slot(self, s: StmtId, cell: Reg) {
+        mut bs = self.boxed
+        bs.set(s.index, true)
+        self.set_slot(s, cell)
+    }
+    fn is_boxed(self, s: StmtId) -> bool { self.boxed[s.index] }
+    fn pattern_reg(self, v: ExprId) -> Reg? {
+        let held: Reg? = self.pattern_regs[v.index]
+        held
+    }
+    fn bind_pattern(self, v: ExprId, r: Reg) {
+        mut ps = self.pattern_regs
+        ps.set(v.index, r)
+    }
+    fn index_reg(self, s: StmtId) -> Reg? {
+        let held: Reg? = self.index_regs[s.index]
+        held
+    }
+    fn bind_index(self, s: StmtId, r: Reg) {
+        mut is_ = self.index_regs
+        is_.set(s.index, r)
+    }
+}
+
+impl LowerCx {
+    fn viewed(self, ty: TypeId) -> TypeId { viewed(self.view.types, self.sub, ty) }
+    fn type_at(self, e: ExprId) -> TypeId { self.viewed(self.facts.type_at(e)) }
+    fn shape_at(self, e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
+    fn result(self, e: ExprId) -> Reg { self.out.mint_ty(self.type_at(e)) }
+    fn mint_like(self, r: Reg) -> Reg { self.out.mint_ty(self.out.type_of_reg(r)) }
+    fn mint_shape(self, sh: Type) -> Reg { self.out.mint_ty(self.view.types.intern(sh)) }
+    fn mint_ty(self, ty: TypeId) -> Reg { self.out.mint_ty(ty) }
+    fn emit(self, i: Ins) { self.out.give(i) }
+    fn fail(self, msg: string) { self.out.record(msg) }
+    fn defect(self, what: string) { self.out.defect(what) }
+    fn enclosing_ret(self) -> TypeId? { self.fn_ret }
+
+    /// A call's target: the bound declaration's body as instantiated
+    /// here — or the name itself, a run-time fn's.
+    fn callee_of(self, e: ExprId, name: string) -> string {
+        let d: DeclId? = bound_decl_of(self.names, e)
+        if d == null { return name }
+        self.symbol_at(d!, e)
+    }
+    fn fields_at(self, e: ExprId) -> StructSig? { fields_of_type(self.view.decls, self.type_at(e)) }
+    fn fields_of(self, ty: TypeId) -> StructSig? { fields_of_type(self.view.decls, ty) }
+    fn variants_at(self, e: ExprId) -> EnumSig? { variants_of_type(self.view.decls, self.type_at(e)) }
+    fn variants_of(self, ty: TypeId) -> EnumSig? { variants_of_type(self.view.decls, ty) }
+    fn bind_pattern(self, v: ExprId, r: Reg) { self.body.bind_pattern(v, r) }
+    /// A `mut` binding's cell, when the binding lives in one.
+    fn cell_of(self, e: ExprId) -> Reg? {
+        let b: Binding? = self.names.binding(e)
+        if b == null { return null }
+        match b! {
+            .Def(s) -> if self.body.is_boxed(s) { self.body.slot_of(s) } else { null },
+            .Decl(_) or .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+        }
+    }
+}
+
+impl StmtLowerCx {
+    fn bind_slot(self, s: StmtId, cell: Reg) { self.expr.body.bind_slot(s, cell) }
+    fn bind_index(self, s: StmtId, r: Reg) { self.expr.body.bind_index(s, r) }
+}
+
+// ── voices ──
+
+fn not_a_value(decls: Decls, d: DeclId) -> Diag {
+    refusal("type.lambda", decls.loc(d), "a generic fn is not a value — no single signature to wear", "declared here", "wrap it — `(x: T0) -> ${decls.fn_name(d) ?? "f"}(x)` with the types pinned")
+}

@@ -7,31 +7,17 @@
 // produced a wrong answer, a crash, an internal defect, or an
 // engine divergence keeps its place here forever.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown, refusals, refused_with}
+use @std.avrac.testing.{shown, refusals, refused_with, refused_at_run, makers, finder, halver}
 
 /// A nullable BOOL maker — the operand `!` meets under a condition.
 fn mb() -> string {
     "fn mb(b: bool) -> bool? { b }\n"
 }
 
-/// A present-maker and an absent-maker over `int?`.
-fn makers() -> string {
-    "fn some(v: int) -> int? { v }\nfn none() -> int? { null }\n"
-}
-
-/// The spec's headline example — `if let`'s standard subject.
-fn finder() -> string {
-    "type User = { age: int }\n" +
-    "fn find_user(id: int) -> User? { if id == 7 { User { age: 30 } } else { null } }\n"
-}
-
 spec "features/nullable (adversarial)" {
     given "degenerate shapes" {
         then "a bare `null` is not a printable answer" {
-            match analyze_source("null").run() {
-                .Err(msg) -> msg.contains("no text projection yet"),
-                .Ok(_) -> false,
-            }
+            refused_at_run("null", "no text projection yet")
         }
         then "`null ?? x` says the left is ALWAYS absent" {
             let a = analyze_source("null ?? 1")
@@ -41,10 +27,10 @@ spec "features/nullable (adversarial)" {
             refusals("null ?? null") == 1
         }
         then "`??` with nothing on the right refuses" {
-            refusals("${makers()}none() ??") >= 1
+            refused_with("${makers()}none() ??", "expected BREAK")
         }
         then "`??` with nothing on the left refuses" {
-            refusals("${makers()}?? 3") >= 1
+            refused_with("${makers()}?? 3", "expected EOF")
         }
     }
     given "`!` — degenerate shapes" {
@@ -59,11 +45,8 @@ spec "features/nullable (adversarial)" {
         }
         then "no `!` at all leaves the nullable unprintable" {
             // The refusal is LOWERING's, not analysis's — `diagnostics`
-            // is empty here, which is why this asks `run()`.
-            match analyze_source("${makers()}some(7)").run() {
-                .Err(msg) -> msg.contains("no text projection yet"),
-                .Ok(_) -> false,
-            }
+            // is empty here, which is why this asks the run.
+            refused_at_run("${makers()}some(7)", "no text projection yet")
         }
     }
     given "`!` — prefix NOT against postfix FORCE" {
@@ -191,10 +174,7 @@ spec "features/nullable (adversarial)" {
     }
     given "`!` — the refusal itself" {
         then "an ABSENT value refuses at RUNTIME, not compile time" {
-            match analyze_source("${makers()}none()!").run() {
-                .Err(msg) -> msg.contains("unwrapped an absent value"),
-                .Ok(_) -> false,
-            }
+            refused_at_run("${makers()}none()!", "unwrapped an absent value")
         }
         then "one mistake earns one message" {
             refusals("let a = 1\na! + 0") == 1
@@ -220,10 +200,7 @@ spec "features/nullable (adversarial)" {
             refusals("${makers()}match some(1) { .a -> 1 }") == 1
         }
         then "a nullable is not a printable answer either" {
-            match analyze_source("${makers()}some(1)").run() {
-                .Err(msg) -> msg.contains("no text projection yet"),
-                .Ok(_) -> false,
-            }
+            refused_at_run("${makers()}some(1)", "no text projection yet")
         }
     }
     given "the declared-slot law, which every slot shares" {
@@ -257,8 +234,7 @@ spec "features/nullable (adversarial)" {
             shown("${finder()}\"got $" + "{if let u? = find_user(7) { u.age } else { 0 }}\"") == "got 30"
         }
         then "the SUBJECT reads the outer name; the bind shadows only inside" {
-            shown("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
-                  "let v = half(4)\nlet got = if let v? = v {\n    v * 10\n} else {\n    0 - 1\n}\n" +
+            shown("${halver()}let v = half(4)\nlet got = if let v? = v {\n    v * 10\n} else {\n    0 - 1\n}\n" +
                   "\"$" + "{got} and $" + "{v ?? 0 - 5}\"") == "20 and 2"
         }
         then "RECORDED FUTURE-FORM: `if let u = e` (no `?`) refuses today" {
@@ -376,6 +352,9 @@ spec "features/nullable (adversarial)" {
         }
         then "a variant payload takes the answer" {
             shown("${makers()}enum E {\n    a(int)\n    b\n}\nmatch E.a(none() ?? 7) { .a(n) -> n, .b -> 0 }") == "7"
+        }
+        then "`?.length` on a nullable map measures the MAP" {
+            shown("fn m(b: bool) -> Map<string, int>? {\n    mut x: Map<string, int> = {}\n    x.set(\"a\", 1)\n    x.set(\"b\", 2)\n    if b { x } else { null }\n}\n(m(true)?.length ?? 0) * 10 + (m(false)?.length ?? 0)") == "20"
         }
         then "a `mut` binding takes the answer" {
             shown("${makers()}mut x = none() ?? 1\nx = x + 1\nx") == "2"

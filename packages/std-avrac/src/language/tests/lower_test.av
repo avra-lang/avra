@@ -3,11 +3,9 @@
 // pass releases a scope's managed values at its exit — Application
 // strategy, reverse binding order.
 use @std.avrac.core.{Ins, RtSig, distinct}
-use @std.avrac.language.{analyze_source, Lowered, rt_sigs, rt_sig_of, rt_owns, render_ir}
-
-fn ir_of(source: string) -> Lowered {
-    analyze_source(source).lowered()
-}
+use @std.avrac.language.{Lowered, render_ir}
+use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns}
+use @std.avrac.testing.{ir_of, halver}
 
 fn count_releases(l: Lowered) -> int {
     l.entry.ins.filter((i: Ins) -> i is .Release).length
@@ -66,7 +64,7 @@ fn pair_read() -> string {
 /// cost, and this law speaks only for the nullable's own lowering.
 fn every_consumer() -> string {
     "fn g(b: bool) -> string? { if b { \"hi\" } else { null } }\n" +
-    "fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
+    halver() +
     "fn fwd(v: int?) -> int? { v? + 1 }\n" +
     "let a = half(4) ?? 0\n" +
     "let b = half(4)!\n" +
@@ -202,6 +200,26 @@ ret 0"""
             let names = [b.name for b in l.fns]
             let syms = addr_syms(l)
             syms.length == 1 && syms[0] == "double$w" && names.contains("double$w")
+        }
+    }
+    given "the program is the entry's closure" {
+        then "a fn reached only from a lambda's body lowers; one nothing reaches stays out" {
+            let l = ir_of("fn helper(n: int) -> int {\n    n + 1\n}\nfn unused(n: int) -> int {\n    n\n}\nlet f = (n: int) -> helper(n)\nf(1)")
+            let names = [b.name for b in l.fns]
+            names.contains("helper") && !names.contains("unused")
+        }
+        then "a struct literal calls its omitted field's default — one body, named for the field" {
+            let l = ir_of("type P = { x: int, y: int = 7 }\nP { x: 1 }.y")
+            [b.name for b in l.fns].contains("P.y")
+        }
+        then "a method reached only through a dyn box's vtable lowers; its uncalled sibling stays out" {
+            let l = ir_of("trait Show {\n    fn show(self) -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show(self) -> int {\n        self.x\n    }\n}\nimpl P {\n    fn unused(self) -> int {\n        0\n    }\n}\nlet d: dyn Show = P { x: 3 }\nd.show()")
+            let names = [b.name for b in l.fns]
+            names.contains("P.show") && !names.contains("P.unused")
+        }
+        then "a fn reached only through a fn value in a struct field lowers" {
+            let l = ir_of("type H = { f: fn(int) -> int }\nfn inc(n: int) -> int {\n    n + 1\n}\nlet h = H { f: inc }\nh.f(1)")
+            [b.name for b in l.fns].contains("inc")
         }
     }
 }

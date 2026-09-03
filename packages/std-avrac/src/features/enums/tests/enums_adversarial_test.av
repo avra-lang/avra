@@ -6,8 +6,8 @@
 //
 // The fixtures below carry the boilerplate so each test shows only
 // its attack.
-use @std.avrac.language.{analyze_source, render_ir}
-use @std.avrac.testing.{shown, refusals}
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown, refusals, refused_with, refused_at_run}
 
 /// THE subject under attack: one carrying variant, one unit.
 fn ab() -> string {
@@ -17,11 +17,6 @@ fn ab() -> string {
 /// A total match over `ab()`'s enum, answering 1 for a and 0 for b.
 fn ab_arms() -> string {
     "match v {\n    .a -> 1\n    .b -> 0\n}"
-}
-
-/// The IR a program lowers to, as `avra ir` prints it.
-fn ir_text(source: string) -> string {
-    render_ir(analyze_source(source).lowered())
 }
 
 /// Three unit variants, for order and coverage attacks.
@@ -61,27 +56,29 @@ spec "features/enums (adversarial)" {
             refusals("${ab()}let x = E.a(true)\n2") == 1
         }
         then "a list argument refuses" {
-            refusals("${ab()}let x = E.a([1])\n2") >= 1
+            refused_with("${ab()}let x = E.a([1])\n2", "`E.a` carries a `int`, found `List<int>`")
         }
         then "an enum VALUE as the argument refuses" {
             refusals("${ab()}let x = E.a(E.b)\n2") == 1
         }
         then "a type NAME as the argument refuses" {
-            refusals("${ab()}let x = E.a(E)\n2") >= 1
+            refused_with("${ab()}let x = E.a(E)\n2", "`E.a` carries a `int`, found `type E`")
         }
         then "matching over a non-enum refuses" {
             refusals("let n = 3\nmatch n {\n    .a -> 1\n}") == 1
         }
         then "matching over a TYPE NAME refuses" {
-            refusals("${ab()}match E {\n    .a -> 1\n    .b -> 0\n}") >= 1
+            refused_with("${ab()}match E {\n    .a -> 1\n    .b -> 0\n}", "`match` chooses over an enum, found `type E`")
         }
     }
     given "malformed surface, position by position" {
         then "a variant with no payload type refuses, not crashes" {
-            refusals("enum E {\n    a()\n    b\n}\n1") >= 1
+            // today's truth: 2 — the empty `()` fails the stmt, then the program's EOF cascades
+            refusals("enum E {\n    a()\n    b\n}\n1") == 2
         }
         then "an unclosed payload refuses" {
-            refusals("enum E {\n    a(int\n}\n1") >= 1
+            // today's truth: 2 — the unclosed `(` fails the stmt, then the program's EOF cascades
+            refusals("enum E {\n    a(int\n}\n1") == 2
         }
         then "construction with no argument names what is missing" {
             let a = analyze_source("${ab()}let x = E.a()\n2")
@@ -89,10 +86,10 @@ spec "features/enums (adversarial)" {
                 a.report().contains("carries a `int`, given nothing")
         }
         then "construction with two arguments refuses" {
-            refusals("${ab()}let x = E.a(1, 2)\n2") >= 1
+            refused_with("${ab()}let x = E.a(1, 2)\n2", "`E.a` carries ONE value, given 2")
         }
         then "a doubled dot refuses" {
-            refusals("${ab()}let x = E..a(1)\n2") >= 1
+            refused_with("${ab()}let x = E..a(1)\n2", "expected BREAK")
         }
         // SETTLED by red-teaming: a variant name is NAMESPACED under
         // its enum, so the reserved-word law — which keeps free
@@ -126,7 +123,7 @@ spec "features/enums (adversarial)" {
         }
         then "an enum VALUE refuses in an interpolation hole" {
             let src = "${ab()}let v = E.a(1)\n\"x$" + "{v}\""
-            refusals(src) >= 1
+            refused_with(src, "an interpolation hole prints as a scalar or string, found `E`")
         }
         then "a declaration inside a block refuses AT the declaration" {
             let a = analyze_source("fn f() -> int {\n    enum E {\n        a\n    }\n    1\n}\nf()")
@@ -169,7 +166,7 @@ spec "features/enums (adversarial)" {
             refusals("${ab()}E.b == 1") == 1
         }
         then "arithmetic on an enum refuses" {
-            refusals("${ab()}E.b + 1") >= 1
+            refused_with("${ab()}E.b + 1", "`+` needs `int` operands, found `E`")
         }
         then "negating an enum refuses" {
             refusals("${ab()}!E.b") == 1
@@ -228,10 +225,7 @@ spec "features/enums (adversarial)" {
     }
     given "the answer, both engines" {
         then "an enum answer refuses rather than printing a shape" {
-            match analyze_source("${ab()}E.a(1)").run() {
-                .Err(msg) -> msg.contains("no text projection yet"),
-                .Ok(_) -> false,
-            }
+            refused_at_run("${ab()}E.a(1)", "no text projection yet")
         }
     }
 }

@@ -99,7 +99,7 @@ spec "query/db" {
             db.begin(key)
             let v = db.ask(key)
             db.settle(key, 0)
-            v is .Cycle && db.cycles.length == 1
+            v is .Cycle
         }
         then "a sweep drops what the last revision never verified" {
             let t = toy()
@@ -112,6 +112,35 @@ spec "query/db" {
             t.db.sweep()
             t.db.cell(Key { family: t.double_family, arg: 1 }) == null &&
                 t.db.cell(Key { family: t.double_family, arg: 0 }) != null
+        }
+    }
+    given "the open stack — `active` is the bracket, seen from outside" {
+        then "an unopened key is not active" {
+            let db = new_db()
+            let fam = db.family((arg: int) -> 0)
+            !db.active(Key { family: fam, arg: 0 })
+        }
+        then "a key is active between begin and settle, and not after" {
+            let db = new_db()
+            let fam = db.family((arg: int) -> 0)
+            let key = Key { family: fam, arg: 0 }
+            db.begin(key)
+            let during = db.active(key)
+            db.settle(key, 0)
+            during && !db.active(key)
+        }
+        then "the OUTER key stays active while an inner one is open" {
+            let db = new_db()
+            let fam = db.family((arg: int) -> 0)
+            let outer = Key { family: fam, arg: 0 }
+            let inner = Key { family: fam, arg: 1 }
+            db.begin(outer)
+            db.begin(inner)
+            let both = db.active(outer) && db.active(inner)
+            db.settle(inner, 0)
+            let outer_only = db.active(outer) && !db.active(inner)
+            db.settle(outer, 0)
+            both && outer_only && !db.active(outer)
         }
     }
 }

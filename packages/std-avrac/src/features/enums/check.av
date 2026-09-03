@@ -4,12 +4,12 @@
 //! adding a variant must break every match, so no catch-all exists.
 use core.{ExprId, StmtId, Param, Type, TypeId}
 use features.{TypeCx, StmtTypeCx, EnumSig, spoken, this_is, nothing, duplicate_names,
-              arms_agree, variants_are, construct_variant}
+              arms_agree, variants_are, repeated_at}
 use diagnostics.{refusal}
 
 /// The declaration's own law.
 export fn check_enum_decl(cx: StmtTypeCx, s: StmtId) {
-    match cx.store.stmt(s) {
+    match cx.view.store.stmt(s) {
         .EnumDecl(name, _, variants) -> decl_checks(cx, s, name, variants),
         _ -> nothing(),
     }
@@ -18,9 +18,7 @@ export fn check_enum_decl(cx: StmtTypeCx, s: StmtId) {
 /// An enum names at least one variant, each of them once. A dup is
 /// a name whose FIRST position is earlier than this one.
 fn decl_checks(cx: StmtTypeCx, s: StmtId, name: string, variants: List<Param>) {
-    if variants.is_empty() {
-        cx.expr.emit(refusal("type.enum_decl", cx.loc_of(s), "`${name}` declares no variants", "this enum is empty", "an enum names at least one variant"))
-    }
+    if variants.is_empty() { no_variants(cx, s, name) }
     for d in duplicate_names("type.enum_decl", name, [v.name for v in variants], cx.loc_of(s)) {
         cx.expr.emit(d)
     }
@@ -28,22 +26,18 @@ fn decl_checks(cx: StmtTypeCx, s: StmtId, name: string, variants: List<Param>) {
 
 fn enums_type(cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
-    match cx.store.expr(e) {
+    match cx.view.store.expr(e) {
         .Match(subject, variants, binds, values) -> matched_type(cx, e, subject, variants, binds, values),
         _ -> cx.error_type,
     }
 }
-
 
 fn matched_type(cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>,
                 binds: List<string>, values: List<ExprId>) -> TypeId {
     let sh: Type = cx.shape_at(subject)
     if sh is .Error { return cx.error_type }
     let declared: EnumSig? = cx.variants_of(cx.type_at(subject))
-    if declared == null {
-        let n = cx.name_at(subject)
-        return spoken(cx, refusal("type.match", cx.loc_of(subject), "`match` chooses over an enum, found `${n}`", this_is(n), null))
-    }
+    if declared == null { return not_matchable(cx, subject) }
     let sig = declared!
     let sname = cx.name_at(subject)
     bind_checks(cx, sname, variants, binds, values, sig)
@@ -59,13 +53,8 @@ fn matched_type(cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>,
 /// a name whose FIRST position is earlier than this one.
 fn arm_checks(cx: TypeCx, sname: string, variants: List<string>, values: List<ExprId>, sig: EnumSig) {
     for (j, v) in variants.enumerate() {
-        let tag: int? = sig.tag_of(v)
-        if tag == null {
-            cx.emit(refusal("type.match", cx.loc_of(values[j]), "`${sname}` has no variant `${v}`", "matched here", variants_are(sig)))
-        }
-        if variants.index_of(v) < j {
-            cx.emit(refusal("type.match", cx.loc_of(values[j]), "variant `${v}` is matched more than once", "matched again here", null))
-        }
+        if sig.tag_of(v) == null { unknown_arm(cx, values[j], sname, v, sig) }
+        if repeated_at(variants, j) { repeated_arm(cx, values[j], v) }
     }
 }
 
@@ -84,7 +73,7 @@ fn bind_law(cx: TypeCx, sname: string, variant: string, bind: string, value: Exp
     if bind == "" || sig.tag_of(variant) == null { return }
     let carried: TypeId? = sig.payload_of(variant)
     if carried == null {
-        cx.emit(refusal("type.variant_arity", cx.loc_of(value), "`${sname}.${variant}` carries nothing to bind", "bound here", "write `.${variant} ->` — only a carrying variant binds"))
+        nothing_to_bind(cx, value, sname, variant)
         return
     }
     cx.bind_type(value, carried!)
@@ -93,9 +82,7 @@ fn bind_law(cx: TypeCx, sname: string, variant: string, bind: string, value: Exp
 /// Every declared variant is written — the totality half.
 fn coverage_checks(cx: TypeCx, e: ExprId, sname: string, variants: List<string>, sig: EnumSig) {
     for n in sig.names {
-        if !variants.contains(n) {
-            cx.emit(refusal("type.match", cx.loc_of(e), "`match` on `${sname}` must handle `.${n}`", "this match", "every variant exactly once — adding a variant breaks every match, on purpose"))
-        }
+        if !variants.contains(n) { unhandled_variant(cx, e, sname, n) }
     }
 }
 
@@ -105,4 +92,31 @@ fn arms_type(cx: TypeCx, values: List<ExprId>) -> TypeId {
     if head == null { return cx.error_type }
     if cx.shape_at(head!) is .Error { return cx.error_type }
     arms_agree(cx, "type.match", "match", "the first arm", head!, values)
+}
+
+// ── The voices ──
+
+fn no_variants(cx: StmtTypeCx, s: StmtId, name: string) {
+    cx.expr.emit(refusal("type.enum_decl", cx.loc_of(s), "`${name}` declares no variants", "this enum is empty", "an enum names at least one variant"))
+}
+
+fn not_matchable(cx: TypeCx, subject: ExprId) -> TypeId {
+    let n = cx.name_at(subject)
+    spoken(cx, refusal("type.match", cx.loc_of(subject), "`match` chooses over an enum, found `${n}`", this_is(n), null))
+}
+
+fn unknown_arm(cx: TypeCx, value: ExprId, sname: string, v: string, sig: EnumSig) {
+    cx.emit(refusal("type.match", cx.loc_of(value), "`${sname}` has no variant `${v}`", "matched here", variants_are(sig)))
+}
+
+fn repeated_arm(cx: TypeCx, value: ExprId, v: string) {
+    cx.emit(refusal("type.match", cx.loc_of(value), "variant `${v}` is matched more than once", "matched again here", null))
+}
+
+fn nothing_to_bind(cx: TypeCx, value: ExprId, sname: string, variant: string) {
+    cx.emit(refusal("type.variant_arity", cx.loc_of(value), "`${sname}.${variant}` carries nothing to bind", "bound here", "write `.${variant} ->` — only a carrying variant binds"))
+}
+
+fn unhandled_variant(cx: TypeCx, e: ExprId, sname: string, n: string) {
+    cx.emit(refusal("type.match", cx.loc_of(e), "`match` on `${sname}` must handle `.${n}`", "this match", "every variant exactly once — adding a variant breaks every match, on purpose"))
 }

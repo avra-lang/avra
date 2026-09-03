@@ -3,33 +3,33 @@
 // and ownership at the else's exits. The vertical story lives in
 // nullable_test.av; these are the programs that tried to break it
 // (rt11). Topic-split like the family's other adversarial files.
-use @std.avrac.language.{analyze_source}
 use @std.avrac.testing.{shown, refused_with, refusals}
 
-/// The standard nullable maker the attacks share.
-fn finder() -> string {
+/// The standard nullable maker the attacks share — an `int?`, so the
+/// bind is a scalar, unlike the family's record-carrying `finder`.
+fn int_finder() -> string {
     "fn find(id: int) -> int? { if id == 7 { 36 } else { null } }\n"
 }
 
 spec "features/nullable/let_else" {
     given "the divergence law, position by position" {
         then "dead code AFTER the return still refuses — the LAST stmt is the law" {
-            refused_with("${finder()}fn f(id: int) -> int {\n    let a? = find(id) else {\n        return 0\n        let x = 1\n    }\n    a\n}\nf(7)",
+            refused_with("${int_finder()}fn f(id: int) -> int {\n    let a? = find(id) else {\n        return 0\n        let x = 1\n    }\n    a\n}\nf(7)",
                          "the `else` must LEAVE")
         }
         then "an if-then-return ENDING in a bare return is legal — both paths leave" {
-            shown("${finder()}fn f(id: int, b: bool) -> int {\n    let a? = find(id) else {\n        if b {\n            return 0\n        }\n        return 1\n    }\n    a\n}\nf(7, true)") == "36"
+            shown("${int_finder()}fn f(id: int, b: bool) -> int {\n    let a? = find(id) else {\n        if b {\n            return 0\n        }\n        return 1\n    }\n    a\n}\nf(7, true)") == "36"
         }
         then "a top-level let-else refuses at the `return`, once" {
-            refusals("${finder()}let a? = find(7) else {\n    return 0\n}\na") == 1
+            refusals("${int_finder()}let a? = find(7) else {\n    return 0\n}\na") == 1
         }
     }
     given "the parse it shares with plain `let`" {
         then "a missing else falls to the plain let — refused, count pinned" {
-            refusals("${finder()}fn f(id: int) -> int {\n    let a? = find(id)\n    a\n}\nf(7)") == 2
+            refusals("${int_finder()}fn f(id: int) -> int {\n    let a? = find(id)\n    a\n}\nf(7)") == 2
         }
         then "a single-line else falls the same way — the block demands its BREAK" {
-            refusals("${finder()}fn f(id: int) -> int {\n    let a? = find(id) else { return 0 }\n    a\n}\nf(7)") == 2
+            refusals("${int_finder()}fn f(id: int) -> int {\n    let a? = find(id) else { return 0 }\n    a\n}\nf(7)") == 2
         }
     }
     given "crossing the family" {
@@ -37,17 +37,17 @@ spec "features/nullable/let_else" {
             shown("type U = { age: int }\nfn fu(id: int) -> U? { if id == 7 { U { age: 36 } } else { null } }\nfn f(id: int) -> int {\n    let age? = fu(id)?.age else {\n        return 0 - 1\n    }\n    age\n}\nf(3)") == "-1"
         }
         then "`??` in the subject makes a guarantee — refused in the bind's words" {
-            refused_with("${finder()}fn f(id: int) -> int {\n    let a? = find(id) ?? 5 else {\n        return 0 - 1\n    }\n    a\n}\nf(3)",
+            refused_with("${int_finder()}fn f(id: int) -> int {\n    let a? = find(id) ?? 5 else {\n        return 0 - 1\n    }\n    a\n}\nf(3)",
                          "`a?` asks a nullable, this is `int`")
         }
         then "`?` propagation rides the same body" {
-            shown("${finder()}fn f(id: int, v: int?) -> int? {\n    let a? = find(id) else {\n        return null\n    }\n    a + v?\n}\nf(7, null) ?? 0 - 1") == "-1"
+            shown("${int_finder()}fn f(id: int, v: int?) -> int? {\n    let a? = find(id) else {\n        return null\n    }\n    a + v?\n}\nf(7, null) ?? 0 - 1") == "-1"
         }
         then "an early exit from a WHILE settles the loop's scopes" {
-            shown("${finder()}fn total(n: int) -> int {\n    mut t = 0\n    mut i = 0\n    while i < n {\n        let a? = find(7 - (i % 2)) else {\n            return t\n        }\n        t = t + a + i\n        i = i + 1\n    }\n    t\n}\ntotal(5)") == "36"
+            shown("${int_finder()}fn total(n: int) -> int {\n    mut t = 0\n    mut i = 0\n    while i < n {\n        let a? = find(7 - (i % 2)) else {\n            return t\n        }\n        t = t + a + i\n        i = i + 1\n    }\n    t\n}\ntotal(5)") == "36"
         }
         then "the bind is a `let` — assigning it refuses" {
-            refused_with("${finder()}fn f(id: int) -> int {\n    let a? = find(id) else {\n        return 0\n    }\n    a = 5\n    a\n}\nf(7)",
+            refused_with("${int_finder()}fn f(id: int) -> int {\n    let a? = find(id) else {\n        return 0\n    }\n    a = 5\n    a\n}\nf(7)",
                          "`a` is not `mut`")
         }
     }
@@ -56,15 +56,15 @@ spec "features/nullable/let_else" {
             shown("fn wrap(v: int) -> int? { v }\nfn f(v: int?) -> int {\n    let v? = v else {\n        return 0 - 1\n    }\n    v + 1\n}\nf(wrap(41))") == "42"
         }
         then "outer names still read inside the else" {
-            shown("${finder()}fn f(id: int, d: int) -> int {\n    let a? = find(id) else {\n        return d * 10\n    }\n    a + d\n}\nf(3, 2)") == "20"
+            shown("${int_finder()}fn f(id: int, d: int) -> int {\n    let a? = find(id) else {\n        return d * 10\n    }\n    a + d\n}\nf(3, 2)") == "20"
         }
     }
     given "ownership at the else's exits" {
         then "an owned string held ACROSS the bind settles on the absent exit" {
-            shown("${finder()}fn f(id: int) -> int {\n    let held = \"holding\"\n    let a? = find(id) else {\n        return 0 - held.length\n    }\n    a + held.length\n}\nf(3)") == "-7"
+            shown("${int_finder()}fn f(id: int) -> int {\n    let held = \"holding\"\n    let a? = find(id) else {\n        return 0 - held.length\n    }\n    a + held.length\n}\nf(3)") == "-7"
         }
         then "the else may build owned work of its own and return it" {
-            shown("${finder()}fn f(id: int) -> string {\n    let a? = find(id) else {\n        return \"quiet\"\n    }\n    \"loud\"\n}\nf(3)") == "quiet"
+            shown("${int_finder()}fn f(id: int) -> string {\n    let a? = find(id) else {\n        return \"quiet\"\n    }\n    \"loud\"\n}\nf(3)") == "quiet"
         }
     }
 }

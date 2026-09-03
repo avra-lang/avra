@@ -2,9 +2,9 @@
 //! `feature <name>` writes the directory, the five files, and the
 //! test, all compiling, then prints the three wiring edits.
 //! `ins <Name>` prints the IR VOCABULARY PROTOCOL: the two
-//! questions that gate growth, then the five consumers a new
+//! questions that gate growth, then the six consumers a new
 //! instruction owes. Both end at `make gate`.
-use @std.cli.{Subcommand, CommandSpec, CliResult, Runnable, ArgDef, result_get_arg}
+use @std.cli.{Subcommand, CliResult, Runnable, ArgDef, result_get_arg}
 
 type NewCmd = { }
 
@@ -21,18 +21,11 @@ impl Runnable for NewCmd {
 
 export fn new_command() -> Subcommand {
     let body: NewCmd = NewCmd { }
-    let meta = CommandSpec {
-        name: "new",
-        description: "Scaffold the next feature, or an IR instruction's checklist",
-        hidden: false,
-        flags: [],
-        args: [
-            ArgDef { name: "kind", description: "what to scaffold (`feature` or `ins`)", required: true, variadic: false },
-            ArgDef { name: "name", description: "its snake_case name", required: true, variadic: false },
-        ],
-        options: [],
-    }
-    Subcommand { meta: meta, body: body }
+    let args = [
+        ArgDef { name: "kind", description: "what to scaffold (`feature` or `ins`)", required: true, variadic: false },
+        ArgDef { name: "name", description: "its snake_case name", required: true, variadic: false },
+    ]
+    Subcommand { meta: arg_command("new", "Scaffold the next feature, or an IR instruction's checklist", args), body: body }
 }
 
 /// `foo` -> `Foo`.
@@ -77,7 +70,7 @@ fn scaffold_feature(name: string) -> int {
 
 /// `avra new ins <Name>` — the IR vocabulary protocol, printed at
 /// the moment of use: the two questions that gate growth, then the
-/// five consumers the new variant owes.
+/// six consumers the new variant owes.
 fn scaffold_ins(name: string) -> int {
     println("`${name}` would join the IR vocabulary. Two questions first:")
     println("")
@@ -168,6 +161,10 @@ impl NodeSemantics for ${ty} {
         []
     }
 
+    fn heirs(self, e: Expr) -> List<ExprId> {
+        []
+    }
+
     fn resolve(self, cx: ResolveCx, e: ExprId) {
         nothing()
     }
@@ -185,11 +182,11 @@ impl NodeSemantics for ${ty} {
 
 fn check_template(name: string) -> string {
     """//! The typing rule: TODO.
-use core.{ExprId, Type, TypeId}
+use core.{ExprId, TypeId}
 use features.{TypeCx}
 
 fn ${name}_type(cx: TypeCx, e: ExprId) -> TypeId {
-    cx.types.intern(Type.Error)
+    cx.error_type
 }
 """
 }
@@ -207,11 +204,7 @@ fn ${name}_lower(cx: LowerCx, e: ExprId) -> Reg {
 
 fn test_template(name: string) -> string {
     """// TODO: the vertical, tested — parse, type, run, and the IR.
-use @std.avrac.language.{analyze_source}
-
-fn shown(source: string) -> string {
-    analyze_source(source).ran() ?? "<refused>"
-}
+use @std.avrac.testing.{shown}
 
 spec "features/${name}" {
     given "TODO" {

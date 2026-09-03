@@ -3,7 +3,7 @@
 // statement costing one diagnostic while its neighbors parse around
 // the visible hole.
 use @std.avrac.core.{BinOp}
-use @std.avrac.language.{assemble, parse_program, ParsedProgram, analyze_source}
+use @std.avrac.language.{assemble, parse_program, Parsed, analyze_source}
 use @std.avrac.testing.{shown, refused_with, refusals}
 use @std.avrac.diagnostics.{new_source_file}
 use @std.avrac.features.stmt_spine.{stmt_spine}
@@ -12,7 +12,7 @@ use @std.avrac.features.expr_spine.{expr_spine}
 use @std.avrac.features.type_expr.{type_expr}
 
 /// This feature subset: programs of lets only.
-fn parse_prog(source: string) -> ParsedProgram {
+fn parse_prog(source: string) -> Parsed {
     parse_program(assemble([stmt_spine(), let_stmt(), expr_spine(), type_expr()]), new_source_file("<source>", source))
 }
 
@@ -34,7 +34,7 @@ spec "features/let_stmt" {
                 },
                 _ -> false,
             }
-            p.diagnostics.is_empty() && p.stmts.length == 1 && tree_ok
+            p.voices.list.is_empty() && p.stmts.length == 1 && tree_ok
         }
         then "the statement's span covers the whole line, engine-attributed" {
             let p = parse_prog("let x = 1 + y")
@@ -47,7 +47,7 @@ spec "features/let_stmt" {
             let p = parse_prog("let a = 1\nlet b = 2")
             let a_ok = match p.store.stmt(p.stmts[0]) { .Let(name, _, _) -> name == "a", _ -> false }
             let b_ok = match p.store.stmt(p.stmts[1]) { .Let(name, _, _) -> name == "b", _ -> false }
-            p.diagnostics.is_empty() && p.stmts.length == 2 && a_ok && b_ok
+            p.voices.list.is_empty() && p.stmts.length == 2 && a_ok && b_ok
         }
     }
     given "the annotation, parsed — `let x: T = v`" {
@@ -95,7 +95,7 @@ spec "features/let_stmt" {
         then "one diagnostic, a visible hole, and whole neighbors" {
             let p = parse_prog("let a = 1\nlet = 3\nlet y = 2")
             let tail_ok = match p.store.stmt(p.stmts[2]) { .Let(name, _, _) -> name == "y", _ -> false }
-            p.diagnostics.length == 1 && p.stmts.length == 3 &&
+            p.voices.list.length == 1 && p.stmts.length == 3 &&
                 p.store.stmt(p.stmts[1]) is .Error && tail_ok
         }
     }

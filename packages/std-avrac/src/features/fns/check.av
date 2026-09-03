@@ -11,7 +11,7 @@ use features.{TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, spoken, seat
 use diagnostics.{refusal}
 
 export fn check_fn(cx: StmtTypeCx, s: StmtId) {
-    match cx.store.stmt(s) {
+    match cx.view.store.stmt(s) {
         .FnDecl(fname, _, _, fret, body) -> checked_fn(cx, s, fname, fret, body),
         _ -> nothing(),
     }
@@ -22,14 +22,11 @@ fn checked_fn(cx: StmtTypeCx, s: StmtId, fname: string, fret: TypeRef, body: Exp
     cx.walk_under(s, body)
     let want: TypeId = sig?.ret ?? cx.expr.error_type
     let got: TypeId = cx.expr.type_at(body)
-    if !accepts(cx.expr, body, want) {
-        let gn = cx.expr.types.name_of(got)
-        cx.expr.emit(refusal("type.mismatch", cx.expr.loc_of(body), "the body answers `${gn}` but `${fname}` declares `${spelled(fret)}`", this_is(gn), null))
-    }
+    if !accepts(cx.expr, body, want) { body_disagrees(cx, body, fname, fret, got) }
 }
 
 fn call_type(cx: TypeCx, e: ExprId) -> TypeId {
-    match cx.store.expr(e) {
+    match cx.view.store.expr(e) {
         .Call(callee, pins, args) -> {
             let sig: FnSig? = cx.sig_of(e)
             if sig == null { return settled_call(cx, args, valued_call(cx, e, callee, pins, args)) }
@@ -42,18 +39,13 @@ fn call_type(cx: TypeCx, e: ExprId) -> TypeId {
 /// A call through a FN-TYPED VALUE — a lambda, a captured fn, a
 /// fn-typed param: the value's own seats judge the arguments.
 fn valued_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, args: List<ExprId>) -> TypeId {
-    if !pins.is_empty() {
-        cx.emit(refusal("type.lambda", cx.loc_of(e), "`${callee}` is a fn VALUE — it takes no type arguments", "pinned here", null))
-        return cx.error_type
-    }
+    if !pins.is_empty() { return value_takes_no_pins(cx, e, callee) }
     let bound = cx.target_type(e)
-    let held: Arrow? = cx.types.arrow_parts(bound)
+    let held: Arrow? = cx.view.types.arrow_parts(bound)
     if held != null { return seats_judged(cx, e, callee, held!.seats, held!.answer, args) }
-    if cx.types.shape_of(bound) is .Error { return cx.error_type }
-    spoken(cx, refusal("type.lambda", cx.loc_of(e), "`${callee}` is not callable — it holds a `${cx.types.name_of(bound)}`", "called here", "only fns and fn-typed values take arguments"))
+    if cx.view.types.shape_of(bound) is .Error { return cx.error_type }
+    not_callable(cx, e, callee, bound)
 }
-
-
 
 /// A GENERIC callee unifies; a plain one type-checks directly. The
 /// tparams come from the declaration itself — the registry the
@@ -62,18 +54,12 @@ fn dispatched_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                    args: List<ExprId>, s: FnSig) -> TypeId {
     let decl: DeclId? = cx.bound_decl(e)
     if decl == null { return seats_judged(cx, e, callee, s.params, s.ret, args) }
-    let tp: List<string> = tparams_of(cx, decl!)
+    let tp: List<string> = cx.tparams(decl!)
     if tp.is_empty() {
-        if !pins.is_empty() {
-            cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${callee}` takes no type arguments", "pinned here", null))
-        }
+        if !pins.is_empty() { takes_no_pins(cx, e, callee) }
         return seats_judged(cx, e, callee, s.params, s.ret, args)
     }
     generic_call(cx, e, callee, pins, args, s, decl!, tp)
-}
-
-fn tparams_of(cx: TypeCx, decl: DeclId) -> List<string> {
-    cx.decls.tparams(decl)
 }
 
 /// The instantiation: pins pre-fill by position, arguments unify
@@ -89,7 +75,7 @@ fn generic_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
     let bound: List<TypeId?> = pinned_slots(cx, e, callee, pins, decl, tp)
     // a pin that failed to name a type already spoke — absorb
     for b in bound {
-        if b != null && cx.types.shape_of(b!) is .Error { return cx.error_type }
+        if b != null && cx.view.types.shape_of(b!) is .Error { return cx.error_type }
     }
     mut spoke = false
     for (j, a) in args.enumerate() {
@@ -99,33 +85,26 @@ fn generic_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
     let missing: string? = unpinned_of(tp, bound)
     if missing != null { return unpinned_by_arguments(cx, e, callee, missing!) }
     let concrete = bound_closed(cx, bound)
-    if !bounds_hold(cx, e, callee, decl, tp, concrete) { return cx.error_type }
-    if !lawful_instantiation(cx, e, callee, s, decl, concrete) { return cx.error_type }
+    if !bounds_hold(cx, e, decl, concrete) { return cx.error_type }
+    if !lawful_instantiation(cx, e, s, decl, concrete) { return cx.error_type }
     cx.record_subst(e, decl, concrete)
-    cx.types.substituted(s.ret, decl, concrete)
-}
-
-fn unpinned_by_arguments(cx: TypeCx, e: ExprId, callee: string, tparam: string) -> TypeId {
-    cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${tparam}` is not pinned by the arguments", "in this call", "write the type explicitly — `${callee}<...>(...)`"))
-    cx.error_type
+    cx.view.types.substituted(s.ret, decl, concrete)
 }
 
 /// The representation laws re-judge every substituted slot — a
 /// binding cannot smuggle past what a declaration would refuse.
-fn lawful_instantiation(cx: TypeCx, e: ExprId, callee: string, s: FnSig,
-                        decl: DeclId, concrete: List<TypeId>) -> bool {
+fn lawful_instantiation(cx: TypeCx, e: ExprId, s: FnSig, decl: DeclId, concrete: List<TypeId>) -> bool {
     for pt in s.params {
-        if refused_instantiation(cx, e, callee, pt, decl, concrete) { return false }
+        if refused_instantiation(cx, e, pt, decl, concrete) { return false }
     }
-    !refused_instantiation(cx, e, callee, s.ret, decl, concrete)
+    !refused_instantiation(cx, e, s.ret, decl, concrete)
 }
 
 /// One substituted type checked against the representation laws.
-fn refused_instantiation(cx: TypeCx, e: ExprId, callee: string, raw: TypeId,
-                         decl: DeclId, concrete: List<TypeId>) -> bool {
-    let offender: TypeId? = unlawful_side(cx, cx.types.substituted(raw, decl, concrete))
+fn refused_instantiation(cx: TypeCx, e: ExprId, raw: TypeId, decl: DeclId, concrete: List<TypeId>) -> bool {
+    let offender: TypeId? = unlawful_side(cx, cx.view.types.substituted(raw, decl, concrete))
     if offender == null { return false }
-    cx.emit(refusal("type.mismatch", cx.loc_of(e), "this call makes a `Result` side `${cx.types.name_of(offender!)}`, which a side cannot hold yet", "in this call", slice_promise("sides")))
+    side_unholdable(cx, e, offender!)
     true
 }
 
@@ -135,7 +114,7 @@ fn pinned_slots(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
     mut bound: List<TypeId?> = filled<TypeId?>(tp.length, null)
     if pins.is_empty() { return bound }
     if pins.length != tp.length {
-        cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${callee}` takes ${tp.length} type arguments, found ${pins.length}", "pinned here", null))
+        wrong_pin_count(cx, e, callee, tp.length, pins.length)
         return bound
     }
     // LICENSED I3: positional fill; comprehensions cannot destructure enumerate
@@ -153,22 +132,21 @@ fn generic_argument(cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId
                     decl: DeclId, bound: List<TypeId?>) -> bool {
     if unify(cx, param, cx.type_at(a), decl, bound) { return true }
     if fully_bound(cx, param, decl, bound) {
-        let landed = cx.types.substituted(param, decl, bound_args(cx, bound))
+        let landed = cx.view.types.substituted(param, decl, bound_args(cx, bound))
         if accepts(cx, a, landed) { return true }
     }
     if cx.shape_at(a) is .Null {
-        cx.emit(refusal("type.mismatch", cx.loc_of(a), "argument ${j + 1} of `${callee}` wants `${cx.types.name_of(param)}`, found `null`", "always absent", "a bare `null` cannot pin `T` — write `${callee}<...>(...)`"))
+        null_cannot_pin(cx, callee, j, param, a)
         return false
     }
     wrong_argument(cx, callee, j, param, a)
     false
 }
 
-/// THE arity refusal — plain and generic calls share the words.
 /// `return v` — legal only inside a fn, and `v` must be ACCEPTED
 /// by the declared answer (widening recorded, like every slot).
 export fn check_return(cx: StmtTypeCx, s: StmtId) {
-    let held: ExprId? = cx.store.stmt_value(s)
+    let held: ExprId? = cx.view.store.stmt_value(s)
     if held == null { return }
     let v = held!
     let early: TypeId? = cx.expr.enclosing_ret()
@@ -176,28 +154,25 @@ export fn check_return(cx: StmtTypeCx, s: StmtId) {
     cx.walk(v)
     let want: TypeId? = cx.expr.enclosing_ret()
     if want == null {
-        cx.expr.emit(refusal("type.return", cx.loc_of(s), "a `return` answers a fn, and there is none enclosing", "returned here", "at the top level the last statement IS the answer"))
+        no_fn_to_answer(cx, s)
         return
     }
     if cx.expr.shape_at(v) is .Error { return }
     if accepts(cx.expr, v, want!) { return }
-    let gn = cx.expr.name_at(v)
-    cx.expr.emit(refusal("type.return", cx.loc_of(s), "`return` answers `${cx.expr.types.name_of(want!)}`, this is `${gn}`", this_is(gn), null))
+    wrong_return(cx, s, v, want!)
 }
 
 /// One bound, one binding: implemented, or refused with the remedy.
 fn bound_held(cx: TypeCx, e: ExprId, tname: string, ty: TypeId) -> bool {
     if cx.implements(ty, tname) { return true }
-    let tn = cx.types.name_of(ty)
-    cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${tn}` does not implement `${tname}`", "in this call", "write `impl ${tname} for ${tn} { … }`"))
+    bound_unheld(cx, e, tname, ty)
     false
 }
 
 /// Every bounded tparam's binding must IMPLEMENT its trait — the
 /// instantiation check that makes abstract method calls sound.
-fn bounds_hold(cx: TypeCx, e: ExprId, callee: string, decl: DeclId,
-               tp: List<string>, concrete: List<TypeId>) -> bool {
-    let tb = cx.decls.tbounds(decl)
+fn bounds_hold(cx: TypeCx, e: ExprId, decl: DeclId, concrete: List<TypeId>) -> bool {
+    let tb = cx.tbounds(decl)
     // LICENSED I3: bounds pair with bindings by ordinal; comprehensions cannot destructure enumerate
     for (j, seat) in tb.enumerate() {
         let ann: TypeRef? = seat.ty
@@ -206,4 +181,53 @@ fn bounds_hold(cx: TypeCx, e: ExprId, callee: string, decl: DeclId,
         }
     }
     true
+}
+
+// ── The voices ──
+
+fn body_disagrees(cx: StmtTypeCx, body: ExprId, fname: string, fret: TypeRef, got: TypeId) {
+    let gn = cx.expr.view.types.name_of(got)
+    cx.expr.emit(refusal("type.mismatch", cx.expr.loc_of(body), "the body answers `${gn}` but `${fname}` declares `${spelled(fret)}`", this_is(gn), null))
+}
+
+fn value_takes_no_pins(cx: TypeCx, e: ExprId, callee: string) -> TypeId {
+    spoken(cx, refusal("type.lambda", cx.loc_of(e), "`${callee}` is a fn VALUE — it takes no type arguments", "pinned here", null))
+}
+
+fn not_callable(cx: TypeCx, e: ExprId, callee: string, bound: TypeId) -> TypeId {
+    spoken(cx, refusal("type.lambda", cx.loc_of(e), "`${callee}` is not callable — it holds a `${cx.view.types.name_of(bound)}`", "called here", "only fns and fn-typed values take arguments"))
+}
+
+fn takes_no_pins(cx: TypeCx, e: ExprId, callee: string) {
+    cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${callee}` takes no type arguments", "pinned here", null))
+}
+
+fn unpinned_by_arguments(cx: TypeCx, e: ExprId, callee: string, tparam: string) -> TypeId {
+    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${tparam}` is not pinned by the arguments", "in this call", "write the type explicitly — `${callee}<...>(...)`"))
+}
+
+fn side_unholdable(cx: TypeCx, e: ExprId, offender: TypeId) {
+    cx.emit(refusal("type.mismatch", cx.loc_of(e), "this call makes a `Result` side `${cx.view.types.name_of(offender)}`, which a side cannot hold yet", "in this call", slice_promise("sides")))
+}
+
+fn wrong_pin_count(cx: TypeCx, e: ExprId, callee: string, want: int, found: int) {
+    cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${callee}` takes ${want} type arguments, found ${found}", "pinned here", null))
+}
+
+fn null_cannot_pin(cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId) {
+    cx.emit(refusal("type.mismatch", cx.loc_of(a), "argument ${j + 1} of `${callee}` wants `${cx.view.types.name_of(param)}`, found `null`", "always absent", "a bare `null` cannot pin `T` — write `${callee}<...>(...)`"))
+}
+
+fn no_fn_to_answer(cx: StmtTypeCx, s: StmtId) {
+    cx.expr.emit(refusal("type.return", cx.loc_of(s), "a `return` answers a fn, and there is none enclosing", "returned here", "at the top level the last statement IS the answer"))
+}
+
+fn wrong_return(cx: StmtTypeCx, s: StmtId, v: ExprId, want: TypeId) {
+    let gn = cx.expr.name_at(v)
+    cx.expr.emit(refusal("type.return", cx.loc_of(s), "`return` answers `${cx.expr.view.types.name_of(want)}`, this is `${gn}`", this_is(gn), null))
+}
+
+fn bound_unheld(cx: TypeCx, e: ExprId, tname: string, ty: TypeId) {
+    let tn = cx.view.types.name_of(ty)
+    cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${tn}` does not implement `${tname}`", "in this call", "write `impl ${tname} for ${tn} { … }`"))
 }

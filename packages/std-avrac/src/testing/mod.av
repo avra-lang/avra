@@ -1,7 +1,7 @@
 //! What every spec file needs to ask of a program, in one place.
 //! Test files are separate compilation units, so each used to carry
-//! its own copy of these two — 26 of them, byte-identical.
-use language.{analyze_source}
+//! its own copy of these — 26 of them, byte-identical.
+use language.{analyze_source, Lowered}
 
 /// A program's printed value, or "<refused>".
 export fn shown(source: string) -> string {
@@ -22,4 +22,38 @@ export fn refusals(source: string) -> int {
 export fn refused_with(source: string, phrase: string) -> bool {
     let a = analyze_source(source)
     a.diagnostics.length == 1 && a.report().contains(phrase)
+}
+
+/// A program that analyzes CLEAN and then refuses to RUN, saying
+/// `phrase` — the refusal is lowering's or the evaluator's, never
+/// analysis's. A diagnosed program refusing to run proves nothing
+/// about the run, so the clean premise is half the assertion.
+export fn refused_at_run(source: string, phrase: string) -> bool {
+    let a = analyze_source(source)
+    if !a.diagnostics.is_empty() { return false }
+    match a.run() {
+        .Err(msg) -> msg.contains(phrase),
+        .Ok(_) -> false,
+    }
+}
+
+/// The program as IR, memory strategy applied.
+export fn ir_of(source: string) -> Lowered {
+    analyze_source(source).lowered()
+}
+
+/// A present-maker and an absent-maker over `int?`.
+export fn makers() -> string {
+    "fn some(v: int) -> int? { v }\nfn none() -> int? { null }\n"
+}
+
+/// The spec's headline example — `if let`'s standard subject.
+export fn finder() -> string {
+    "type User = { age: int }\n" +
+    "fn find_user(id: int) -> User? { if id == 7 { User { age: 30 } } else { null } }\n"
+}
+
+/// The scalar-nullable maker: half of an even, absence of an odd.
+export fn halver() -> string {
+    "fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n"
 }

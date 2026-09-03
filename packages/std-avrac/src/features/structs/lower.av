@@ -3,15 +3,15 @@
 //! in DECLARATION order; values evaluate in WRITTEN order first.
 //! Reads are the spine's property ladder (a slot read at the
 //! field's compile-time index) — zero new instructions anywhere.
-use core.{ExprId, Reg, Ins, filled}
-use features.{LowerCx, StructSig, hole_defect, lower_defect, push_slot, slot_read}
+use core.{ExprId, Reg, Ins, filled, DeclId}
+use features.{LowerCx, StructSig, lower_defect, foreign_node, push_slot, slot_read}
 
 fn structs_reg(cx: LowerCx, e: ExprId) -> Reg {
-    // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
-    match cx.store.expr(e) {
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) {
         .StructLit(_, fields, values) -> lit_reg(cx, e, fields, values),
         .With(subject, fields, values) -> with_reg(cx, e, subject, fields, values),
-        _ -> lower_defect(cx, e, hole_defect()),
+        _ -> foreign_node(cx, e),
     }
 }
 
@@ -23,7 +23,7 @@ fn with_reg(cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, value
     let regs = [cx.reg_of(v) for v in values]
     let sig: StructSig? = cx.fields_at(e)
     if sig == null {
-        cx.fail("defect: a `with` on a non-struct survived typing")
+        cx.defect("a `with` on a non-struct survived typing")
         return cx.result(e)
     }
     let dst = cx.result(e)
@@ -61,9 +61,12 @@ fn lit_reg(cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -
     dst
 }
 
-/// The default an omitted slot lowers to — typing guaranteed one.
+/// The default an omitted slot lowers to — typing guaranteed one:
+/// a call to the field's own body, as instantiated at this literal.
 fn defaulted_reg(cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
-    let d: ExprId? = sig.defaults[slot]
+    let d: DeclId? = sig.defaults[slot]
     if d == null { return lower_defect(cx, e, "a literal missing a field without a default survived typing") }
-    cx.reg_of(d!)
+    let dst = cx.mint_ty(cx.viewed(sig.types[slot]))
+    cx.emit(Ins.Call(dst, cx.symbol_at(d!, e), []))
+    dst
 }

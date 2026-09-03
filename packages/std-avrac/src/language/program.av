@@ -3,7 +3,7 @@
 //! spine live here; analysis stacks on top in analysis.av.
 use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, TypeRef, flatten, DeclKind}
 use grammar.{Captured, RunOutcome, run_grammar, lex_source, lex_diagnostic}
-use features.{LangNode, NodeSemantics, StmtSemantics, dispatch, list_at, stmt_id_at, LanguageFeature, MethodRow, TypeRow, PropertyRow}
+use features.{LangNode, NodeSemantics, StmtSemantics, dispatch, list_at, stmt_id_at}
 use features.expr_spine.{SpineSemantics}
 use features.str_lit.{StrSemantics}
 use features.bool_lit.{BoolSemantics}
@@ -25,21 +25,16 @@ use features.mutation.{MutLetSemantics, AssignSemantics}
 use features.loops.{WhileSemantics, ForSemantics, ForEachSemantics}
 use features.structs.{StructsSemantics, StructDeclSemantics}
 use features.enums.{EnumsSemantics, EnumDeclSemantics}
-use diagnostics.{Diag, SourceFile, new_source_file}
+use diagnostics.{SourceFile, Voices}
 
 /// One parsed source: the tree (holes included), the SourceFile it
 /// came from, and every diagnostic from lexing and parsing, in
 /// source order. THE value every later pass takes first.
-export type ParsedProgram = {
+export type Parsed = {
     store: NodeStore,
     stmts: List<StmtId>,
     source: SourceFile,
-    keywords: List<string>,
-    methods: List<MethodRow>,
-    types: List<TypeRow>,
-    properties: List<PropertyRow>,
-    dispatch: Dispatch,
-    diagnostics: List<Diag>,
+    voices: Voices,
 }
 
 /// Every feature's boxed semantics, built ONCE per parse — the
@@ -81,7 +76,7 @@ export type Dispatch = {
     uses: dyn StmtSemantics,
 }
 
-fn new_dispatch() -> Dispatch {
+export fn new_dispatch() -> Dispatch {
     let spine: dyn NodeSemantics = SpineSemantics { }
     let strs: dyn NodeSemantics = StrSemantics { }
     let bools: dyn NodeSemantics = BoolSemantics { }
@@ -178,16 +173,15 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
     }
 }
 
-/// The store's language-level vocabulary: the walk and the
-/// stmt-spine questions every pass asks, grouped where they read as
-/// prose — `store.post_order(v)`, `store.stmt_value(s)`.
-impl ParsedProgram {
+/// The walk is the LANGUAGE's: which nodes are a node's children
+/// is each feature's answer, reached through the dispatch.
+impl Language {
     /// Every node at and under `root`, children before owners — THE
     /// order every pass visits: facts a node reads exist before it
     /// speaks.
-    fn post_order(self, root: ExprId) -> List<ExprId> {
-        let node = self.store.expr(root)
-        flatten([self.post_order(k) for k in semantics_of(self.dispatch, node).kids(node)]).concat([root])
+    fn post_order(self, store: NodeStore, root: ExprId) -> List<ExprId> {
+        let node = store.expr(root)
+        flatten([self.post_order(store, k) for k in semantics_of(self.dispatch, node).kids(node)]).concat([root])
     }
 }
 
@@ -382,28 +376,20 @@ export type StructParts = { name: string, tparams: List<string>, fields: List<Pa
 /// What an enum declaration carries, projected once.
 export type EnumParts = { name: string, tparams: List<string>, variants: List<Param> }
 
-export fn parse_program(lang: Language, src: SourceFile) -> ParsedProgram {
+export fn parse_program(lang: Language, src: SourceFile) -> Parsed {
     if lang.grammar == null {
-        return ParsedProgram {
-            store: new_node_store(), stmts: [], source: src,
-            keywords: [], methods: [], types: [], properties: [], dispatch: new_dispatch(), diagnostics: lang.diagnostics,
-        }
+        return Parsed { store: new_node_store(), stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
     }
     let lexed = lex_source(src.text)
     let store = new_node_store()
     let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> dispatch(lang.features, store, name, args, span)
     let o = run_grammar<LangNode>(lang.grammar!, lexed.tokens, build)
     let engine = [lex_diagnostic(e) for e in lexed.errors].concat(o.diagnostics)
-    ParsedProgram {
+    Parsed {
         store: store,
         stmts: program_stmts(store, o),
         source: src,
-        keywords: lang.keywords,
-        methods: lang.methods,
-        types: lang.types,
-        properties: lang.properties,
-        dispatch: new_dispatch(),
-        diagnostics: project_all(engine, src.file, lang.codes),
+        voices: Voices { list: project_all(engine, src.file, lang.rows.codes) },
     }
 }
 

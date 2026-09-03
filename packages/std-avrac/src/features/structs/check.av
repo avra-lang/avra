@@ -2,13 +2,13 @@
 //! (resolve spoke otherwise), and the written fields match it —
 //! each declared field exactly once, each value the field's type.
 use core.{ExprId, StmtId, Type, TypeId, filled, StructParts, DeclId}
-use features.{TypeCx, StructSig, spoken, types_disagree, this_is, fields_are,
+use features.{TypeCx, StructSig, spoken, this_is, fields_are, repeated_at,
               unify, fully_bound, bound_args, accepts, slot_worthy, tparams_refused, unpinned_of, bound_closed, slice_promise, StmtTypeCx}
 use diagnostics.{refusal}
 
 fn structs_type(cx: TypeCx, e: ExprId) -> TypeId {
-    // LICENSED I22: a feature cannot enumerate OTHER features' variants (the isolation doctrine); its own are listed
-    match cx.store.expr(e) {
+    // LICENSED I22: a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) {
         .StructLit(name, fields, values) -> lit_type(cx, e, name, fields, values),
         .With(subject, fields, values) -> with_type(cx, e, subject, fields, values),
         _ -> cx.error_type,
@@ -19,13 +19,13 @@ fn structs_type(cx: TypeCx, e: ExprId) -> TypeId {
 /// and the answer IS the subject's type.
 fn with_type(cx: TypeCx, e: ExprId, subject: ExprId, fields: List<string>, values: List<ExprId>) -> TypeId {
     let ty = cx.type_at(subject)
-    if cx.types.shape_of(ty) is .Error { return cx.error_type }
+    if cx.view.types.shape_of(ty) is .Error { return cx.error_type }
     let sig: StructSig? = cx.fields_of(ty)
     if sig == null {
         let n = cx.name_at(subject)
         return spoken(cx, refusal("type.with_struct", cx.loc_of(e), "`with` copies a struct, found `${n}`", this_is(n), null))
     }
-    written_checks(cx, cx.types.name_of(ty), fields, values, sig!)
+    written_checks(cx, cx.view.types.name_of(ty), fields, values, sig!)
     ty
 }
 
@@ -33,10 +33,10 @@ fn lit_type(cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: L
     let decl: DeclId? = cx.bound_decl(e)
     if decl == null { return cx.error_type }
     let target = decl!
-    let ty = cx.types.intern(Type.Struct(target, name))
+    let ty = cx.view.types.intern(Type.Struct(target, name))
     let sig: StructSig? = cx.fields_of(ty)
     if sig == null { return not_a_record(cx, e, name) }
-    if !cx.decls.tparams(target).is_empty() {
+    if !cx.tparams(target).is_empty() {
         return generic_lit(cx, e, name, fields, values, target, sig!)
     }
     check_fields(cx, e, name, fields, values, sig!)
@@ -49,13 +49,13 @@ fn lit_type(cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: L
 /// under the bindings before the instantiation interns.
 fn generic_lit(cx: TypeCx, e: ExprId, name: string, fields: List<string>,
                values: List<ExprId>, decl: DeclId, sig: StructSig) -> TypeId {
-    let tp = cx.decls.tparams(decl)
+    let tp = cx.tparams(decl)
     if tparams_refused(tp) { return cx.error_type }
     let bound: List<TypeId?> = filled<TypeId?>(tp.length, null)
     mut spoke = false
     // LICENSED I3: a ZIP of parallel captures; comprehensions cannot destructure enumerate
     for (j, f) in fields.enumerate() {
-        if !generic_field(cx, name, sig, f, values[j], fields.index_of(f) < j, decl, bound) {
+        if !generic_field(cx, name, sig, f, values[j], repeated_at(fields, j), decl, bound) {
             spoke = true
         }
     }
@@ -71,13 +71,13 @@ fn generic_lit(cx: TypeCx, e: ExprId, name: string, fields: List<string>,
     if missing != null { return unpinned_by_fields(cx, e, missing!) }
     let concrete = bound_closed(cx, bound)
     for ft in sig.types {
-        let landed = cx.types.substituted(ft, decl, concrete)
-        if !slot_worthy(cx.types.shape_of(landed)) {
-            return spoken(cx, refusal("type.struct_fields", cx.loc_of(e), "this literal makes a slot `${cx.types.name_of(landed)}`, which a slot cannot hold yet", "in this literal", slice_promise("slots")))
+        let landed = cx.view.types.substituted(ft, decl, concrete)
+        if !slot_worthy(cx.view.types.shape_of(landed)) {
+            return spoken(cx, refusal("type.struct_fields", cx.loc_of(e), "this literal makes a slot `${cx.view.types.name_of(landed)}`, which a slot cannot hold yet", "in this literal", slice_promise("slots")))
         }
     }
     cx.record_subst(e, decl, concrete)
-    cx.types.intern(Type.App(decl, name, concrete))
+    cx.view.types.intern(Type.App(decl, name, concrete))
 }
 
 /// One written field of a generic literal: declared, written once,
@@ -97,11 +97,11 @@ fn generic_field(cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId,
     let want = sig.types[slot!]
     if unify(cx, want, cx.type_at(v), decl, bound) { return true }
     if fully_bound(cx, want, decl, bound) {
-        let landed = cx.types.substituted(want, decl, bound_args(cx, bound))
+        let landed = cx.view.types.substituted(want, decl, bound_args(cx, bound))
         if accepts(cx, v, landed) { return true }
     }
     let n = cx.name_at(v)
-    let _ = spoken(cx, refusal("type.struct_fields", cx.loc_of(v), "field `${f}` is `${cx.types.name_of(want)}`, this is `${n}`", this_is(n), null))
+    let _ = spoken(cx, refusal("type.struct_fields", cx.loc_of(v), "field `${f}` is `${cx.view.types.name_of(want)}`, this is `${n}`", this_is(n), null))
     false
 }
 
@@ -119,7 +119,7 @@ fn check_fields(cx: TypeCx, e: ExprId, name: string, fields: List<string>, value
 /// `with`. A dup is a name whose FIRST position is earlier.
 fn written_checks(cx: TypeCx, name: string, fields: List<string>, values: List<ExprId>, sig: StructSig) {
     for (j, f) in fields.enumerate() {
-        field_check(cx, name, sig, f, values[j], fields.index_of(f) < j)
+        field_check(cx, name, sig, f, values[j], repeated_at(fields, j))
     }
 }
 
@@ -138,7 +138,7 @@ fn field_check(cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId, d
     // (auto-Ok, dyn boxing), and the lift is recorded for lowering
     if !accepts(cx, v, sig.types[slot!]) {
         let n = cx.name_at(v)
-        cx.emit(refusal("type.struct_fields", cx.loc_of(v), "field `${f}` is `${cx.types.name_of(sig.types[slot!])}`, this is `${n}`", this_is(n), null))
+        cx.emit(refusal("type.struct_fields", cx.loc_of(v), "field `${f}` is `${cx.view.types.name_of(sig.types[slot!])}`, this is `${n}`", this_is(n), null))
     }
 }
 
@@ -165,25 +165,11 @@ fn not_a_record(cx: TypeCx, e: ExprId, name: string) -> TypeId {
     spoken(cx, refusal("type.struct_fields", cx.loc_of(e), "`${name}` is an enum, not a record — it has no fields to fill", "built here", "construct a variant instead — `${name}.<variant>`"))
 }
 
-/// THE DEFAULT LAW, at the declaration: a field's default is typed
-/// under the field's want and accepted by it — every literal that
-/// omits the field then fills it without judging it again.
-export fn check_defaults(cx: StmtTypeCx, s: StmtId) {
-    let sp: StructParts? = cx.store.struct_parts(s)
-    if sp == null { return }
-    let parts = sp!
-    let sig: StructSig? = cx.expr.fields_of(cx.expr.types.intern(Type.Struct(cx.expr.decl_of(s), parts.name)))
-    if sig == null { return }
-    // LICENSED I3: the field's ORDINAL finds its slot type
-    for (j, f) in parts.fields.enumerate() {
-        if f.default != null { defaulted(cx, f.default!, f.name, sig!.types[j]) }
-    }
-}
-
-fn defaulted(cx: StmtTypeCx, d: ExprId, name: string, want: TypeId) {
-    cx.expr.plant_want(d, want)
-    cx.walk(d)
-    if accepts(cx.expr, d, want) { return }
-    let n = cx.expr.name_at(d)
-    cx.expr.emit(refusal("type.struct_fields", cx.expr.loc_of(d), "field `${name}` defaults to `${n}`, and it is `${cx.expr.types.name_of(want)}`", this_is(n), null))
+/// THE DEFAULT LAW, at the declaration: a field's default (walked
+/// under the field's want) is accepted by the field — every literal
+/// that omits the field then calls it without judging it again.
+export fn fits_default(cx: TypeCx, d: ExprId, name: string, want: TypeId) {
+    if accepts(cx, d, want) { return }
+    let n = cx.name_at(d)
+    cx.emit(refusal("type.struct_fields", cx.loc_of(d), "field `${name}` defaults to `${n}`, and it is `${cx.view.types.name_of(want)}`", this_is(n), null))
 }

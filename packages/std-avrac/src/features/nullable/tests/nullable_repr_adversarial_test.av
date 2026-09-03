@@ -3,17 +3,11 @@
 // OPERATORS' record lives in nullable_adversarial_test.av; this
 // file attacks what a nullable IS at runtime.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown, refusals, refused_with}
+use @std.avrac.testing.{shown, refusals, refused_with, finder, halver}
 
 /// A `string?` maker — the niche's plainest subject.
 fn greet() -> string {
     "fn g(b: bool) -> string? { if b { \"x\" } else { null } }\n"
-}
-
-/// The spec's headline example — the chain's standard subject.
-fn finder() -> string {
-    "type User = { age: int }\n" +
-    "fn find_user(id: int) -> User? { if id == 7 { User { age: 30 } } else { null } }\n"
 }
 
 spec "features/nullable (representation, adversarial)" {
@@ -62,8 +56,7 @@ spec "features/nullable (representation, adversarial)" {
     }
     given "the narrow under attack — shadows, frames, every subject kind" {
         then "a SHADOW inside the branch is a fresh binding, not the narrow" {
-            shown("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
-                  "fn f(v: int?) -> int {\n    if v != null {\n        let v = half(3)\n        v ?? 9\n    } else {\n        0\n    }\n}\nf(4)") == "9"
+            shown("${halver()}fn f(v: int?) -> int {\n    if v != null {\n        let v = half(3)\n        v ?? 9\n    } else {\n        0\n    }\n}\nf(4)") == "9"
         }
         then "TWO frames nest — each name narrowed exactly where proven" {
             shown("fn f(a: int?, b: int?) -> int {\n    if a != null {\n        if b != null { a + b } else { a }\n    } else {\n        0\n    }\n}\nf(4, 6) + f(4, null) + f(null, 6)") == "14"
@@ -73,8 +66,7 @@ spec "features/nullable (representation, adversarial)" {
                          "`+` needs `int` operands, found `int?`")
         }
         then "a PATTERN bind is already the carried value — asking again refuses" {
-            refused_with("fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n" +
-                         "match half(4) {\n    v? -> if v != null { 1 } else { 0 }\n    null -> 9\n}",
+            refused_with("${halver()}match half(4) {\n    v? -> if v != null { 1 } else { 0 }\n    null -> 9\n}",
                          "`!= null` asks a nullable, this is `int`")
         }
         then "RE-ASKING a narrowed name is told the question is answered" {

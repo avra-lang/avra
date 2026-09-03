@@ -4,7 +4,7 @@
 //! method, like `push`.
 use core.{ExprId, Reg, Ins, Type, TypeId, TypeRegistry}
 use diagnostics.{refusal}
-use features.{TypeCx, LowerCx, MethodCall, spoken, accepts, wrong_argument, wrong_arity, not_a_place_call, not_mut_call, absent_of, adopted, carried_type, void_arm, void_close, unique_box, Refusal, unmeasurable_empty, TypeArgs}
+use features.{TypeCx, LowerCx, MethodCall, spoken, accepts, wrong_argument, wrong_arity, not_a_place_call, not_mut_call, absent_of, adopted, carried_type, void_arm, void_close, unique_box, Refusal, unmeasurable_empty, TypeArgs, lower_defect, length_word}
 
 /// The empty literal takes the rows too — it is refused in the
 /// map's own words.
@@ -15,10 +15,14 @@ export fn on_map(t: Type) -> bool {
 // ── The rows' rules ──
 
 export fn check_get(cx: TypeCx, mc: MethodCall) -> TypeId {
-    keyed_call(cx, mc.e, mc.subject, "get", mc.args) ?? cx.error_type
+    let value: TypeId? = value_held(cx, mc, "get")
+    if value == null { return cx.error_type }
+    got_type(cx, mc.e, mc.args, value!)
 }
 export fn check_set(cx: TypeCx, mc: MethodCall) -> TypeId {
-    keyed_call(cx, mc.e, mc.subject, "set", mc.args) ?? cx.error_type
+    let value: TypeId? = value_held(cx, mc, "set")
+    if value == null { return cx.error_type }
+    set_type(cx, mc.e, mc.subject, mc.args, value!)
 }
 export fn lower_get(cx: LowerCx, mc: MethodCall) -> Reg {
     got_reg(cx, mc.e, mc.subject, mc.args[0])
@@ -27,17 +31,18 @@ export fn lower_set(cx: LowerCx, mc: MethodCall) -> Reg {
     set_reg(cx, mc.e, mc.subject, mc.args[0], mc.args[1])
 }
 
-fn keyed_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
-    if cx.shape_at(subject) is .EmptyMap { return unknowable_map(cx, e, name) }
-    let held: TypeId? = match cx.shape_at(subject) {
+/// THE PRELUDE both rows share: the value type the receiver holds.
+/// The empty literal refuses in the row's words and absorbs.
+fn value_held(cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
+    if cx.shape_at(mc.subject) is .EmptyMap {
+        let _ = unknowable_map(cx, mc.e, name)
+        return null
+    }
+    let held: TypeId? = match cx.shape_at(mc.subject) {
         .Map(_, v) -> v,
         _ -> null,
     }
-    if held == null { return null }
-    let value = held!
-    if name == "get" { return got_type(cx, e, args, value) }
-    if name == "set" { return set_type(cx, e, subject, args, value) }
-    null
+    held
 }
 
 fn got_type(cx: TypeCx, e: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
@@ -45,8 +50,8 @@ fn got_type(cx: TypeCx, e: ExprId, args: List<ExprId>, value: TypeId) -> TypeId 
         wrong_arity(cx, e, "get", 1, args.length)
         return cx.error_type
     }
-    if !accepts(cx, args[0], cx.types.intern(Type.Str)) { wrong_argument(cx, "get", 0, cx.types.intern(Type.Str), args[0]) }
-    cx.types.intern(Type.Opt(value))
+    if !accepts(cx, args[0], cx.view.types.intern(Type.Str)) { wrong_argument(cx, "get", 0, cx.view.types.intern(Type.Str), args[0]) }
+    cx.view.types.intern(Type.Opt(value))
 }
 
 fn set_type(cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
@@ -54,12 +59,12 @@ fn set_type(cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, value: T
         wrong_arity(cx, e, "set", 2, args.length)
         return cx.error_type
     }
-    let root: ExprId? = cx.store.place_root(subject)
+    let root: ExprId? = cx.view.store.place_root(subject)
     if root == null { return not_a_place_call(cx, e, "set") }
-    if !cx.is_mut(root!) { return not_mut_call(cx, e, "set", cx.store.ident_name(root!) ?? "this name") }
-    if !accepts(cx, args[0], cx.types.intern(Type.Str)) { wrong_argument(cx, "set", 0, cx.types.intern(Type.Str), args[0]) }
+    if !cx.is_mut(root!) { return not_mut_call(cx, e, "set", cx.view.store.ident_name(root!) ?? "this name") }
+    if !accepts(cx, args[0], cx.view.types.intern(Type.Str)) { wrong_argument(cx, "set", 0, cx.view.types.intern(Type.Str), args[0]) }
     if !accepts(cx, args[1], value) { wrong_argument(cx, "set", 1, value, args[1]) }
-    cx.types.intern(Type.Void)
+    cx.view.types.intern(Type.Void)
 }
 
 /// `m.get(k)`: presence asked first, the value adopted into the
@@ -117,13 +122,17 @@ export fn string_keys(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
 }
 
 export fn check_map_length(cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
-    if cx.types.shape_of(ty) is .EmptyMap { return unmeasurable_empty(cx, e, "{}", "Map<string, int>") }
-    cx.types.intern(Type.Int)
+    if cx.view.types.shape_of(ty) is .EmptyMap { return unmeasurable_empty(cx, e, "{}", "Map<string, int>") }
+    cx.view.types.intern(Type.Int)
 }
 
+/// `m.length` — the word the one measure table gives the map's
+/// shape.
 export fn lower_map_length(cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
     let m = cx.reg_of(subject)
+    let word: string? = length_word(cx.view.types.shape_of(cx.type_at(subject)))
+    if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }
     let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_map_len", [m]))
+    cx.emit(Ins.CallRt(dst, word!, [m]))
     dst
 }

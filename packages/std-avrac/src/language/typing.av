@@ -1,34 +1,17 @@
-//! The type pass — the second pure query. The driver owns the
-//! registry, the dense table, the fn signatures, and the walk; what
-//! a NODE's type IS lives in its owning feature's NodeSemantics.
-//! Facts stay TOTAL: every expression has a TypeId, never an option
-//! and never an Unknown — a hole or unresolved name types as the
-//! interned Error, which ABSORBS: the causing pass already spoke,
-//! so no diagnostic cascades from it. Signatures come first, from
-//! the annotations alone, so a call may name a fn declared later.
-use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, filled, NodeStore, FileId, DeclId}
+//! The type pass: one declaration's body over its own expression
+//! range, the signatures it names asked lazily as it reads them.
+//! The driver owns the table and the walk; what a NODE's type IS
+//! lives in its owning feature's NodeSemantics. Facts stay TOTAL:
+//! every expression has a TypeId, never an option and never an
+//! Unknown — a hole or unresolved name types as the interned Error,
+//! which ABSORBS: the causing pass already spoke, so no diagnostic
+//! cascades from it.
+use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, NodeStore, FileId, DeclId}
 use diagnostics.{Diag, loc_at, refusal}
-use features.{TypeCx, StmtTypeCx, FnSig, StructSig, EnumSig, DeclSig, Asked, Sub, fn_sig_of, record_sig_of, variant_sig_of, res_enum_sig, subbed_variants, subbed_fields, TypeRow, type_row, Decls, FnParts}
+use features.{TypeCx, StmtTypeCx, FnSig, DeclSig, fn_sig_of, TypeRow, type_row, Decls, Decl, FnParts, Cap, new_type_facts, decl_type_of, def_type_of, type_named, TypeFacts, NameFacts, FileView, nothing}
 use features.closures.{unfed_lambda}
+use features.structs.{fits_default}
 use @std.errors.{Loc}
-
-/// The pass's facts: the registry, a dense expression table, and a
-/// dense signature table indexed by StmtId — total, O(1) reads for
-/// every later pass. `widens` names the expressions the assignment
-/// law LIFTED into a nullable: recorded here, wrapped by lowering.
-export type Typing = {
-    types: TypeRegistry,
-    of_expr: List<TypeId>,
-    widens: List<TypeId?>,
-    narrows: List<TypeId?>,
-    substs: List<Sub?>,
-    diagnostics: List<Diag>,
-}
-
-/// The type of a typed expression.
-export fn type_of(t: Typing, e: ExprId) -> TypeId {
-    t.of_expr[e.index]
-}
 
 /// One narrow in force: the proven binding (a def's stmt index in
 /// `narrow_defs`, a param's position in `narrow_params` — the two
@@ -41,84 +24,63 @@ type NarrowFrame = { key: int, inner: TypeId, opt: TypeId }
 /// arm is walked, and pass-internal: no later pass asks.
 export type Typer = {
     error_type: TypeId,
-    p: ParsedProgram,
-    store: NodeStore,
-    resolution: Resolution,
-    types: TypeRegistry,
-    of_expr: List<TypeId>,
-    widens: List<TypeId?>,
-    narrows: List<TypeId?>,
-    asks: List<Asked?>,
-    pattern_types: List<TypeId?>,
-    binding_types: List<TypeId?>,
+    lang: Language,
+    view: FileView,
+    names: NameFacts,
+    facts: TypeFacts,
     narrow_defs: List<NarrowFrame>,
     narrow_params: List<NarrowFrame>,
     fn_ret: List<TypeId>,
-    lambda_params: List<List<TypeId>?>,
     lam_bar: List<int>,
-    wants: List<TypeId?>,
-    hungry: List<bool>,
-    starved: List<int>,
     tscope: List<TypeId>,
-    substs: List<Sub?>,
-    decls: Decls,
-    file: FileId,
-    module: string,
-    diagnostics: List<Diag>,
 }
 
-/// A file's typer over the SHARED declaration table — the workspace
-/// admits every file, runs the four declaration rounds across all of
-/// them, and only then types bodies: a signature may name any file's
-/// types.
-export fn typer(p: ParsedProgram, r: Resolution, decls: Decls, file: FileId) -> Typer {
+/// A typer over one expression range of a file, reading the SHARED
+/// declaration table — a signature may name any file's types, and
+/// asking for one computes it.
+export fn typer(lang: Language, view: FileView, names: NameFacts, lo: int, hi: int) -> Typer {
     // The table is born total: every slot pre-typed as the hole.
-    let hole = decls.types.intern(Type.Error)
+    let hole = view.types.intern(Type.Error)
     Typer {
         error_type: hole,
-        p: p, store: p.store, resolution: r, types: decls.types,
-        of_expr: filled(p.store.exprs.count(), hole),
-        widens: filled<TypeId?>(p.store.exprs.count(), null),
-        narrows: filled<TypeId?>(p.store.exprs.count(), null),
-        asks: filled<Asked?>(p.store.exprs.count(), null),
-        pattern_types: filled<TypeId?>(p.store.exprs.count(), null),
-        binding_types: filled<TypeId?>(p.store.stmts.count(), null),
-        narrow_defs: [], narrow_params: [], fn_ret: [], tscope: [],
-        substs: filled<Sub?>(p.store.exprs.count(), null),
-        lambda_params: filled<List<TypeId>?>(p.store.exprs.count(), null),
-        lam_bar: [],
-        wants: filled<TypeId?>(p.store.exprs.count(), null),
-        hungry: filled(p.store.exprs.count(), false),
-        starved: filled(p.store.exprs.count(), -1),
-        decls: decls, file: file, module: decls.file(file).module,
-        diagnostics: [],
+        lang: lang, view: view, names: names,
+        facts: new_type_facts(lo, hi, view.store.stmts.count(), hole),
+        narrow_defs: [], narrow_params: [], fn_ret: [], lam_bar: [], tscope: [],
     }
 }
 
-/// The last round: every body, then the facts.
-export fn type_bodies(t: Typer) -> Typing {
-    type_stmts(t, [], t.p.stmts)
+/// One declaration typed, then its facts: a fn's or method's body
+/// under its signature (asked lazily), a default's under its field,
+/// Main's run-time statements in order, a type's statement-level
+/// law. A trait's and an impl's members are declarations of their
+/// own.
+export fn type_decl(t: Typer, x: Decl) -> TypeFacts {
+    match x.kind {
+        .Main -> type_stmts(t, [], runtime_stmts(t.view)),
+        .Fn or .Method -> if x.root == null { nothing() } else { type_stmts(t, [], [x.stmt]) },
+        .Default -> default_body(t, x),
+        .Record or .Enum -> type_stmts(t, [], [x.stmt]),
+        .Trait or .Impl -> nothing(),
+    }
     t.speak_hungry()
-    Typing {
-        types: t.types, of_expr: t.of_expr, widens: t.widens,
-        narrows: t.narrows, substs: t.substs,
-        diagnostics: t.diagnostics,
-    }
+    t.facts
 }
 
-impl Typer {
-    /// Round one: the record and enum sigs — trait NAMES are the
-    /// scope's already, so a field may wear `dyn Show` regardless of
-    /// declaration order.
-    fn declare_types(self) {
-        self.declare_type_sigs()
-    }
+/// A file's statements that RUN — everything that declares nothing.
+fn runtime_stmts(view: FileView) -> List<StmtId> {
+    [s for s in view.stmts if !view.store.is_declaration(s)]
+}
 
-    /// Round two: the traits' method sigs.
-    fn declare_traits(self) { self.declare_trait_sigs() }
-
-    /// Round three: every fn's sig.
-    fn declare_fns(self) { self.declare_sigs() }
+/// A default walks under its field's want, in the record's type
+/// scope, and the field judges it.
+fn default_body(t: Typer, x: Decl) {
+    let root: ExprId = x.root!
+    let want: TypeId = fn_sig_of(t.view.decls.sig(x.id))?.ret ?? t.error_type
+    t.enter_tscope(x.stmt)
+    t.plant_want(root, want)
+    type_walk(t, [], root)
+    t.leave_tscope()
+    fits_default(expr_cx(t, []), root, x.name, want)
 }
 
 /// Statements in order, each through its own StmtSemantics — the
@@ -128,18 +90,14 @@ impl Typer {
 fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
     let ecx = expr_cx(t, param_types)
     let cx = StmtTypeCx {
-        store: t.store,
+        view: t.view,
         expr: ecx,
         walk: (v: ExprId) -> type_walk(t, param_types, v),
         walk_under: (s: StmtId, body: ExprId) -> walk_fn_body(t, s, body),
         type_stmts: (body: List<StmtId>) -> type_stmts(t, param_types, body),
-        sig_of: (s: StmtId) -> fn_sig_of(t.stmt_sig(s)),
         bind_declared: (s: StmtId, ann: TypeRef) -> t.bind_declared(s, ann),
-        binding_type: (s: StmtId) -> t.def_type(s),
-        record_binding: (s: StmtId, ty: TypeId) -> t.record_binding(s, ty),
-        loc_of: (s: StmtId) -> t.stmt_loc(s),
     }
-    for s in stmts { stmt_semantics_of(t.p.dispatch, t.store.stmt(s)).type_stmt(cx, s) }
+    for s in stmts { stmt_semantics_of(t.lang.dispatch, t.view.store.stmt(s)).type_stmt(cx, s) }
 }
 
 /// A fn BODY's walk: the declared answer AND the type parameters
@@ -161,55 +119,25 @@ fn walk_fn_body(t: Typer, s: StmtId, body: ExprId) {
 /// One subtree's types, under the given param types.
 fn type_walk(t: Typer, param_types: List<TypeId>, root: ExprId) {
     let cx = expr_cx(t, param_types)
-    for e in t.p.post_order(root) { type_node(t, cx, e) }
+    for e in t.lang.post_order(t.view.store, root) { type_node(t, cx, e) }
 }
 
 /// The expression capabilities, wired once for a given param scope.
 fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
-    let cx = TypeCx {
-        error_type: t.error_type,
-        store: t.store,
-        types: t.types,
-        methods: t.p.methods,
-        properties: t.p.properties,
-        decls: t.decls,
-        decl_of: (s: StmtId) -> t.decl_of(s),
-        type_at: (e: ExprId) -> t.of_expr[e.index],
-        shape_at: (e: ExprId) -> t.types.shape_of(t.of_expr[e.index]),
-        target_type: (e: ExprId) -> t.target_type(e, param_types),
-        sig_of: (e: ExprId) -> t.sig_at(e),
-        bound_decl: (e: ExprId) -> t.bound_decl(e),
-        fields_of: (ty: TypeId) -> t.fields_of(ty),
-        variants_of: (ty: TypeId) -> t.variants_of(ty),
-        block_type: (stmts: List<StmtId>, value: ExprId?) -> block_type(t, param_types, stmts, value),
+    TypeCx {
+        view: t.view, names: t.names, facts: t.facts, error_type: t.error_type,
         walk_type: (v: ExprId) -> typed_subtree(t, param_types, v),
-        bind_type: (v: ExprId, ty: TypeId) -> t.record_bind(v, ty),
-        widen: (v: ExprId, ty: TypeId) -> t.record_widen(v, ty),
-        record_ask: (e: ExprId, subject: ExprId, on_present: bool) -> t.record_ask(e, subject, on_present),
-        ask_of: (e: ExprId) -> t.asks[e.index],
+        block_type: (stmts: List<StmtId>, value: ExprId?) -> block_type(t, param_types, stmts, value),
         walk_narrowed: (subject: ExprId, branch: ExprId) -> narrowed_subtree(t, param_types, subject, branch),
-        enclosing_ret: () -> t.reachable_ret(),
-        record_subst: (e: ExprId, target: DeclId, targs: List<TypeId>) -> t.record_subst(e, target, targs),
-        written: (s: StmtId, tr: TypeRef) -> t.full_type(t.stmt_loc(s), tr),
-        written_at: (e: ExprId, tr: TypeRef) -> t.full_type(loc_at(t.p.source.file, t.store.expr_span(e)), tr),
-        lambda_body: (lam: ExprId, ptys: List<TypeId>, body: ExprId) ->
-            lambda_walked(t, param_types, lam, ptys, body),
-        want_at: (e: ExprId) -> t.wants[e.index],
-        plant_want: (e: ExprId, ty: TypeId) -> t.plant_want(e, ty),
-        go_hungry: (e: ExprId) -> t.go_hungry(e),
-        absorb_hunger: (e: ExprId) -> t.absorb_hunger(e),
-        starve: (e: ExprId, want: TypeId) -> t.starve(e, want),
-        behind_lambda: () -> t.behind_lambda(),
-        is_mut: (e: ExprId) -> t.is_mut(e),
+        lambda_body: (lam: ExprId, ptys: List<TypeId>, body: ExprId) -> lambda_walked(t, param_types, lam, ptys, body),
         retype_seated: (a: ExprId, seats: List<TypeId>) -> reseated(t, param_types, a, seats),
-        method_sig: (target: DeclId, mname: string) -> t.method_sig(target, mname),
-        trait_sig: (tr: string, mname: string) -> t.trait_sig(tr, mname),
-        implements: (ty: TypeId, tr: string) -> t.implements(ty, tr),
-        name_at: (e: ExprId) -> t.types.name_of(t.of_expr[e.index]),
-        loc_of: (e: ExprId) -> loc_at(t.p.source.file, t.store.expr_span(e)),
-        emit: (d: Diag) -> t.speak(d),
+        target_type: (e: ExprId) -> t.target_type(e, param_types),
+        enclosing_ret: () -> t.reachable_ret(),
+        behind_lambda: () -> t.behind_lambda(),
+        written: (s: StmtId, tr: TypeRef) -> t.full_type(t.stmt_loc(s), tr),
+        written_at: (e: ExprId, tr: TypeRef) -> t.full_type(loc_at(t.view.source.file, t.view.store.expr_span(e)), tr),
+        plant_want: (e: ExprId, ty: TypeId) -> t.plant_want(e, ty),
     }
-    cx
 }
 
 /// A block's statements type in order, then its value — which IS
@@ -221,28 +149,21 @@ fn block_type(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>, value: E
     type_stmts(t, param_types, stmts)
     if value == null { return t.fn_ret.last() ?? t.error_type }
     type_walk(t, param_types, value!)
-    t.of_expr[value!.index]
+    t.facts.type_at(value!)
 }
 
 /// A subtree typed on request, answering its own type — what a
 /// CONTROL-OWNING node uses for children it hides from the walk.
 fn typed_subtree(t: Typer, param_types: List<TypeId>, root: ExprId) -> TypeId {
     type_walk(t, param_types, root)
-    t.of_expr[root.index]
+    t.facts.type_at(root)
 }
 
-/// A branch typed under a PROVEN-PRESENT binding: when the asked
-/// subject is an effectively-final nullable — a `let` (never a
-/// `mut`) or a param — its reads inside the branch narrow to the
-/// carried type, each read recorded so lowering unwraps it. A
-/// subject that cannot be proven simply walks un-narrowed: the
-/// sugar is never load-bearing (spec 10.4).
 /// A lambda's body typed under its params, behind the BARRIER —
 /// `return`/`?`/`fail` inside see no enclosing fn. Params register
 /// FIRST so the body's reads answer.
 fn lambda_walked(t: Typer, param_types: List<TypeId>, lam: ExprId, ptys: List<TypeId>, body: ExprId) -> TypeId {
-    mut lp = t.lambda_params
-    lp.set(lam.index, ptys)
+    t.facts.seat_lambda(lam, ptys)
     mut bar = t.lam_bar
     // LICENSED I15: this IS the bracket fn
     bar.push(t.fn_ret.length)
@@ -256,22 +177,25 @@ fn lambda_walked(t: Typer, param_types: List<TypeId>, lam: ExprId, ptys: List<Ty
 /// and every fact (of_expr, lambda_params) converges as if the
 /// annotations had been written.
 fn reseated(t: Typer, param_types: List<TypeId>, a: ExprId, seats: List<TypeId>) -> TypeId? {
-    if !t.hungry[a.index] { return null }
-    let parts: LambdaParts? = t.store.lambda_parts(a)
+    if !t.facts.hungry_at(a) { return null }
+    let parts: LambdaParts? = t.view.store.lambda_parts(a)
     if parts == null { return null }
     if parts!.params.length != seats.length { return null }
-    mut hs = t.hungry
-    hs.set(a.index, false)
+    t.facts.absorb_hunger(a)
     let ret = lambda_walked(t, param_types, a, seats, parts!.body)
-    let ty = t.types.intern(Type.Fn(seats, ret))
-    mut oe = t.of_expr
-    oe.set(a.index, ty)
+    let ty = t.view.types.intern(Type.Fn(seats, ret))
+    t.facts.set_type(a, ty)
     ty
 }
 
-/// A lambda's leading param name, for the hunger refusal.
+/// A branch typed under a PROVEN-PRESENT binding: when the asked
+/// subject is an effectively-final nullable — a `let` (never a
+/// `mut`) or a param — its reads inside the branch narrow to the
+/// carried type, each read recorded so lowering unwraps it. A
+/// subject that cannot be proven simply walks un-narrowed: the
+/// sugar is never load-bearing (spec 10.4).
 fn narrowed_subtree(t: Typer, param_types: List<TypeId>, subject: ExprId, branch: ExprId) -> TypeId {
-    let b: Binding? = binding_of(t.resolution, subject)
+    let b: Binding? = t.names.binding(subject)
     if b == null { return typed_subtree(t, param_types, branch) }
     match b! {
         .Def(s) -> narrowed_def_walk(t, param_types, s, branch),
@@ -283,7 +207,7 @@ fn narrowed_subtree(t: Typer, param_types: List<TypeId>, subject: ExprId, branch
 
 fn narrowed_def_walk(t: Typer, param_types: List<TypeId>, s: StmtId, branch: ExprId) -> TypeId {
     // A `mut` can be reassigned mid-branch — never narrowed.
-    if !(t.store.stmt(s) is .Let) { return typed_subtree(t, param_types, branch) }
+    if !(t.view.store.stmt(s) is .Let) { return typed_subtree(t, param_types, branch) }
     framed(t, t.narrow_defs, s.index, t.def_type(s),
            () -> typed_subtree(t, param_types, branch))
 }
@@ -298,7 +222,7 @@ fn narrowed_param_walk(t: Typer, param_types: List<TypeId>, i: int, branch: Expr
 /// otherwise the walk runs bare. The stack ALIASES the Typer's own
 /// list, so the push is seen by every nested read.
 fn framed(t: Typer, frames: List<NarrowFrame>, key: int, opt: TypeId, walk: fn() -> TypeId) -> TypeId {
-    let inner: TypeId? = t.types.carried(opt)
+    let inner: TypeId? = t.view.types.carried(opt)
     if inner == null { return walk() }
     // LICENSED I15: this IS the bracket
     mut fs = frames
@@ -310,8 +234,7 @@ fn framed(t: Typer, frames: List<NarrowFrame>, key: int, opt: TypeId, walk: fn()
 
 /// One node's fact: the owner speaks, the table records.
 fn type_node(t: Typer, cx: TypeCx, e: ExprId) {
-    mut facts = t.of_expr
-    facts.set(e.index, semantics_of(t.p.dispatch, t.store.expr(e)).type_of(cx, e))
+    t.facts.set_type(e, semantics_of(t.lang.dispatch, t.view.store.expr(e)).type_of(cx, e))
 }
 /// Every name the LANGUAGE owns — a scalar shape or a constructor
 /// row. A declaration may take none of them.
@@ -331,7 +254,7 @@ fn shape_named(name: string) -> Type? {
 
 impl Typer {
     fn stmt_loc(self, s: StmtId) -> Loc? {
-        loc_at(self.p.source.file, self.store.stmt_span(s))
+        loc_at(self.view.source.file, self.view.store.stmt_span(s))
     }
 
     /// An ident's type, by its binding kind — NARROWED when a
@@ -340,34 +263,20 @@ impl Typer {
     /// unwraps the read at its one edge). No binding means resolve
     /// already spoke — Error, silently.
     fn target_type(self, e: ExprId, param_types: List<TypeId>) -> TypeId {
-        let b: Binding? = binding_of(self.resolution, e)
+        let b: Binding? = self.names.binding(e)
         if b == null { return self.error_type }
         match b! {
             .Param(i) -> self.narrowed_param(e, i) ?? param_types[i],
             .Def(s) -> self.narrowed_def(e, s) ?? self.def_type(s),
             // The arm's OWNER spoke this type before the arm was
             // walked; an absent one means the bind was refused.
-            .Pattern(v) -> self.pattern_types[v.index] ?? self.error_type,
+            .Pattern(v) -> self.facts.pattern_type(v) ?? self.error_type,
             .LambdaParam(l, i) -> self.lambda_param_ty(l, i),
             // captures never narrow — the box holds the wide value
             .Capture(l, j) -> self.capture_ty(l, j, param_types),
-            .Index(_) -> self.types.intern(Type.Int),
+            .Index(_) -> self.view.types.intern(Type.Int),
             .Decl(d) -> self.decl_type(d),
         }
-    }
-
-    /// A NAMED fn as a VALUE: it wears its own signature. A generic
-    /// fn has no single signature to wear — instantiate it first.
-    fn fn_value_type(self, d: DeclId) -> TypeId {
-        if !self.decls.tparams(d).is_empty() { return self.unwearable_generic(d) }
-        let sig: FnSig? = fn_sig_of(self.decls.sig(d))
-        if sig == null { return self.error_type }
-        self.types.intern(Type.Fn(sig!.params, sig!.ret))
-    }
-
-    fn unwearable_generic(self, d: DeclId) -> TypeId {
-        self.speak(refusal("type.lambda", self.decls.loc(d), "a generic fn is not a value — no single signature to wear", "declared here", "wrap it — `(x: T0) -> ${self.decls.fn_name(d) ?? "f"}(x)` with the types pinned"))
-        self.error_type
     }
 
     /// The narrowed INNER for a def-bound read, when a frame proves
@@ -385,105 +294,39 @@ impl Typer {
     fn narrow_hit(self, e: ExprId, frames: List<NarrowFrame>, key: int) -> TypeId? {
         let hit: NarrowFrame? = frames.find(it.key == key)
         if hit == null { return null }
-        self.record_narrow(e, hit!.opt)
+        self.facts.narrow(e, hit!.opt)
         hit!.inner
     }
 
-    /// This READ is proven present: lowering unwraps it from the
-    /// recorded nullable.
-    fn record_narrow(self, e: ExprId, opt: TypeId) {
-        mut ns = self.narrows
-        ns.set(e.index, opt)
-    }
-
-    /// A presence test's fact: the spine records, `if` queries.
-    fn record_ask(self, e: ExprId, subject: ExprId, on_present: bool) {
-        mut aa = self.asks
-        aa.set(e.index, Asked { subject: subject, on_present: on_present })
-    }
-
-    /// What an arm's bind holds, as the arm's owner declared it.
-    fn record_bind(self, v: ExprId, ty: TypeId) {
-        mut ps = self.pattern_types
-        ps.set(v.index, ty)
-    }
-
-    /// This expression is lifted into a nullable before it lands.
-    fn record_widen(self, v: ExprId, ty: TypeId) {
-        mut ws = self.widens
-        ws.set(v.index, ty)
-    }
-
-    /// A definition statement's value type. An ANNOTATED binding
-    /// answers what it DECLARED (recorded by `bind_declared` when
-    /// the statement typed); a TYPE declaration used as a value is
-    /// the compile-only TypeName; everything else infers from its
-    /// value.
     /// THE EXPECTED-TYPE CHANNEL's write side: a boundary that
     /// knows its slot plants the want BEFORE the value walks — and
     /// the want flows through every HEIR (branch arms, block
     /// values), so a lambda three arms deep still hears it.
     fn plant_want(self, e: ExprId, ty: TypeId) {
-        mut ws = self.wants
-        ws.set(e.index, ty)
-        let node = self.store.expr(e)
-        for h in semantics_of(self.p.dispatch, node).heirs(node) {
+        self.facts.set_want(e, ty)
+        let node = self.view.store.expr(e)
+        for h in semantics_of(self.lang.dispatch, node).heirs(node) {
             self.plant_want(h, ty)
-        }
-    }
-
-    /// A lambda that heard nothing DEFERS — marked here, rescued
-    /// by the first judging seat, or refused at the walk's end.
-    fn go_hungry(self, e: ExprId) {
-        mut hs = self.hungry
-        hs.set(e.index, true)
-    }
-
-    /// A judging context that BAILS on its own error silences its
-    /// arguments' hunger — one mistake, one message.
-    fn absorb_hunger(self, e: ExprId) {
-        mut hs = self.hungry
-        hs.set(e.index, false)
-    }
-
-    /// A seat that could not feed a hungry lambda records itself;
-    /// answers whether it did.
-    fn starve(self, e: ExprId, want: TypeId) -> bool {
-        if !self.hungry[e.index] { return false }
-        mut ss = self.starved
-        ss.set(e.index, want.index)
-        true
-    }
-
-    /// Is this name bound by a `mut` — the root a place may open.
-    fn is_mut(self, e: ExprId) -> bool {
-        let b: Binding? = binding_of(self.resolution, e)
-        if b == null { return false }
-        match b! {
-            .Def(s) -> self.store.stmt(s) is .MutLet,
-            _ -> false,
         }
     }
 
     /// A foreign name read as a value: a type's name, or a fn worn
     /// as a value — the answers a local declaration gives.
     fn decl_type(self, d: DeclId) -> TypeId {
-        let tname: string? = self.decls.type_name(d)
-        if tname != null { return self.types.intern(Type.TypeName(d, tname!)) }
-        self.fn_value_type(d)
+        decl_type_of(self.view.decls, self.facts.voices, self.error_type, d)
     }
 
     /// A declaring statement's identity in the shared table.
     fn decl_of(self, s: StmtId) -> DeclId {
-        self.decls.decl_of(self.file, s)!
+        self.view.decls.decl_of(self.view.file, s)!
     }
 
     /// A statement's declared signature — absent for a statement that
     /// declares nothing (a `let` bound to a value).
     fn stmt_sig(self, s: StmtId) -> DeclSig? {
-        let d: DeclId? = self.decls.decl_of(self.file, s)
+        let d: DeclId? = self.view.decls.decl_of(self.view.file, s)
         if d == null { return null }
-        self.decls.sig(d!)
+        self.view.decls.sig(d!)
     }
 
     /// Inside a lambda body — behind its barrier, no enclosing fn
@@ -496,17 +339,7 @@ impl Typer {
     /// Every lambda still hungry when typing ends never met a seat
     /// — the refusal fires once, here.
     fn speak_hungry(self) {
-        // LICENSED I3: the index IS the expression id
-        for (j, h) in self.hungry.enumerate() {
-            if h { unfed_lambda(expr_cx(self, []), ExprId { index: j }, self.starved_seat(j)) }
-        }
-    }
-
-    /// The seat that starved a hungry lambda, when one judged it.
-    fn starved_seat(self, j: int) -> TypeId? {
-        let s = self.starved[j]
-        if s < 0 { return null }
-        TypeId { index: s }
+        for e in self.facts.hungry_ones() { unfed_lambda(expr_cx(self, []), e, self.facts.starved_at(e)) }
     }
 
     /// The enclosing fn's answer — unless a LAMBDA BARRIER stands
@@ -520,7 +353,7 @@ impl Typer {
 
     /// A lambda param's declared type, by seat.
     fn lambda_param_ty(self, l: ExprId, i: int) -> TypeId {
-        let ps: List<TypeId>? = self.lambda_params[l.index]
+        let ps: List<TypeId>? = self.facts.lambda_seats(l)
         if ps == null { return self.error_type }
         ps![i]
     }
@@ -528,7 +361,7 @@ impl Typer {
     /// A capture's type — its SOURCE binding's, chained through
     /// nested lambdas.
     fn capture_ty(self, l: ExprId, j: int, param_types: List<TypeId>) -> TypeId {
-        let cap: Cap? = captures_of(self.resolution, l)
+        let cap: Cap? = self.names.capture(l)
         if cap == null { return self.error_type }
         self.binding_ty(cap!.sources[j], param_types)
     }
@@ -539,25 +372,16 @@ impl Typer {
         match b {
             .Param(i) -> param_types[i],
             .Def(s) -> self.def_type(s),
-            .Pattern(v) -> self.pattern_types[v.index] ?? self.error_type,
+            .Pattern(v) -> self.facts.pattern_type(v) ?? self.error_type,
             .LambdaParam(l, i) -> self.lambda_param_ty(l, i),
             .Capture(l, j) -> self.capture_ty(l, j, param_types),
-            .Index(_) -> self.types.intern(Type.Int),
+            .Index(_) -> self.view.types.intern(Type.Int),
             .Decl(d) -> self.decl_type(d),
         }
     }
 
     fn def_type(self, s: StmtId) -> TypeId {
-        let declared: TypeId? = self.binding_types[s.index]
-        if declared != null { return declared! }
-        // A for's COUNTER binds no value expression of its own —
-        // the range law already pinned what it IS. Without this
-        // arm the counter typed as the absorbing Error and every
-        // law silently forgave it.
-        if self.store.stmt(s) is .For { return self.types.intern(Type.Int) }
-        let v: ExprId? = self.store.stmt_value(s)
-        if v == null { return self.error_type }
-        self.of_expr[v!.index]
+        def_type_of(self.facts, self.view.store, self.view.types, self.error_type, s)
     }
 
     /// An annotated binding's DECLARED type: interned once, recorded
@@ -572,69 +396,9 @@ impl Typer {
     /// A binding's COMPUTED type, recorded by the rule that knows it
     /// (a `let v? =` bind holds what the subject carries) — the same
     /// table the annotated law writes.
-    fn record_binding(self, s: StmtId, ty: TypeId) {
-        mut bs = self.binding_types
-        bs.set(s.index, ty)
-    }
+    fn record_binding(self, s: StmtId, ty: TypeId) { self.facts.record_binding(s, ty) }
 
-    /// A call's recorded instantiation — what mono lowers from.
-    fn record_subst(self, e: ExprId, target: DeclId, targs: List<TypeId>) {
-        mut ss = self.substs
-        ss.set(e.index, Sub { target: target, args: targs })
-    }
-
-    /// A call's target signature, when resolve found one.
-    fn sig_at(self, e: ExprId) -> FnSig? {
-        let b: Binding? = binding_of(self.resolution, e)
-        if b == null { return null }
-        match b! {
-            .Decl(d) -> fn_sig_of(self.decls.sig(d)),
-            .Def(_) -> null,
-            .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
-        }
-    }
-
-    /// The definition statement an expression's binding names.
-    /// The declaration a name stands for, this file's or another's.
-    fn bound_decl(self, e: ExprId) -> DeclId? {
-        let b: Binding? = binding_of(self.resolution, e)
-        if b == null { return null }
-        match b! {
-            .Decl(d) -> d,
-            .Def(_) -> null,
-            .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
-        }
-    }
-
-    /// A struct type's field table; null for every other shape.
-    fn fields_of(self, ty: TypeId) -> StructSig? {
-        match self.types.shape_of(ty) {
-            .Struct(decl, _) -> record_sig_of(self.decls.sig(decl)),
-            .App(decl, _, args) ->
-                subbed_fields(self.types, record_sig_of(self.decls.sig(decl)), decl, args),
-            .Int or .Str or .Bool or .List(_) or .Enum(_, _) or .Res(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
-            .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-        }
-    }
-
-    /// An enum type's variant table; null for every other shape.
-    fn variants_of(self, ty: TypeId) -> EnumSig? {
-        match self.types.shape_of(ty) {
-            .Enum(decl, _) -> variant_sig_of(self.decls.sig(decl)),
-            .Res(ok, err) -> res_enum_sig(ok, err),
-            .App(decl, _, args) ->
-                subbed_variants(self.types, variant_sig_of(self.decls.sig(decl)), decl, args),
-            .Int or .Str or .Bool or .List(_) or .Struct(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or
-            .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-        }
-    }
-
-    fn speak(self, d: Diag) {
-        mut ds = self.diagnostics
-        ds.push(d)
-    }
+    fn speak(self, d: Diag) { self.facts.speak(d) }
 }
 
 
@@ -649,9 +413,9 @@ fn var_named(types: TypeRegistry, id: TypeId, name: string) -> bool {
 /// A declared generic's arity by NAME, for the applied-type path —
 /// null when the name is not a generic declaration.
 fn declared_arity(t: Typer, name: string) -> int? {
-    let decl: DeclId? = t.type_decl_named(name)
+    let decl: DeclId? = type_named(t.names, name)
     if decl == null { return null }
-    let arity = t.decls.tparams(decl!).length
+    let arity = t.view.decls.tparams(decl!).length
     if arity == 0 { return null }
     arity
 }
@@ -669,43 +433,6 @@ fn selfed(params: List<Param>) -> bool {
     head!.name == "self" && head!.ty == null
 }
 
-/// The trait a `dyn` wears, when the shape is one.
-fn dyn_contract(sh: Type) -> string? {
-    match sh {
-        .Dyn(_, n) -> n,
-        _ -> null,
-    }
-}
-
-/// A declared type's DECLARATION, when its shape carries one —
-/// the impl table's key. Generic receivers wait for T2.
-fn declared_decl(sh: Type) -> DeclId? {
-    match sh {
-        .Struct(d, _) -> d,
-        .Enum(d, _) -> d,
-        .Int or .Str or .Bool or .List(_) or .Opt(_) or .Null or
-        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or
-        .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-    }
-}
-
-/// A trait method declaration named so.
-fn decl_named(decls: Decls, f: DeclId, mname: string) -> bool {
-    let n: string? = decls.fn_name(f)
-    n == mname
-}
-
-/// A declared type's NAME, when its shape carries one.
-fn declared_name(sh: Type) -> string? {
-    match sh {
-        .Struct(_, n) -> n,
-        .Enum(_, n) -> n,
-        .Int or .Str or .Bool or .List(_) or .Opt(_) or .Null or
-        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or
-        .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-    }
-}
-
 /// Two sigs agree seat by seat — the trait's has no self, the
 /// method's does, so the method's params offset by one.
 fn sigs_agree(want: FnSig, got: FnSig) -> bool {
@@ -718,15 +445,6 @@ fn sigs_agree(want: FnSig, got: FnSig) -> bool {
         if got.params[j + 1].index != w.index { return false }
     }
     true
-}
-
-/// The trait-impl registry's key — one spelling for its write and
-/// its read.
-/// The pronoun cannot ride a nested method call — the wrapper can.
-fn named_fn(store: NodeStore, f: StmtId, mname: string) -> bool {
-    let parts: FnParts? = store.fn_parts(f)
-    if parts == null { return false }
-    parts!.name == mname
 }
 
 /// The self-first help, worded once.

@@ -20,8 +20,9 @@ packages/std-avrac/src/language/ir_text.av	body_lines	its human projection
 packages/std-avrac/src/language/llvm.av	emit_ins	its machine projection
 packages/std-avrac/src/language/lower.av	give	whether the runtime registry validates it"
 
-fail=0
-echo "$CONSUMERS" | while IFS='	' read -r file fn what; do
+# A here-doc, not a pipe: the loop runs in THIS shell, so `exit 1`
+# ends the script rather than a subshell the gate never sees.
+while IFS='	' read -r file fn what; do
   if [ ! -f "$file" ]; then
     echo "vocab: $file is gone — the consumer registry is stale"
     exit 1
@@ -38,6 +39,8 @@ echo "$CONSUMERS" | while IFS='	' read -r file fn what; do
     echo "  Spell the arms — or-runs keep it affordable."
     exit 1
   fi
-done
+done <<EOF
+$CONSUMERS
+EOF
 
 echo "vocab: Ins has $(echo "$CONSUMERS" | wc -l | tr -d ' ') exhaustive consumers; a new variant breaks them all"

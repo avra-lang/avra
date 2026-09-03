@@ -3506,6 +3506,94 @@ done, one refused on reflection:
    printed for null — no golden moved. `Loc.file` stays nullable:
    a defect has no file.
 
+THE MINIMUM (2026-09-02, designed; D7–D16 RATIFIED the same day) — `docs/MINIMUM.md` holds the design whole: one rule
+(memoized queries over inputs, values are fact tables keyed by
+dense ids), six ids, the TWELVE query families (the table lives
+there, verbatim), twelve structs, one feature contract (facts plus
+walk verbs), diagnostics riding values, the language out of the
+program — and every struct, impl and interface that supports it,
+by layer. The decisions:
+  D7  per-declaration granularity: `sig`, `typed`, `lowered` as
+      queries; the four declaration rounds deleted (15d, pulled
+      forward — it falls out of the minimum).
+  D8  `Parsed` sheds the language's registries; contexts get
+      `LanguageRows`.
+  D9  diagnostics ride query values in one `Voices` sink; `report`
+      folds; pass-owned lists and `emit` closures go.
+  D10 contexts are facts plus walk verbs; reads and writes are
+      methods on the fact structs (the NodeStore precedent:
+      declared in a lower layer, implemented above, called from
+      features).
+  D11 `Analysis` and `Program` stay as facades, holding no logic.
+  D12 one FileView shared by every context and facade;
+  D13 mono's worklist IS the memo: `lowered(d, sub)` returns its
+      lifts and wraps with the body and its cross-body wants as
+      data; `program` asks; `Jobs`/`Spec`/`Lift`/`Wrap` go;
+      specializations are interned (SpecId);
+  D14 facades hold a workspace and a key; a lone file is a
+      workspace over a memory host with root "" — the lone pipeline
+      is deleted;
+  D15 ModuleId; `namespace(module)` once per module;
+  D16 `folded(file)` folds a file's declarations' facts.
+Also decided: `TypeFacts` per declaration over its arena range;
+`DeclKind.Main` for a file's run-time statements.
+Order: the CONTRACT step (D8+D9+D10+D12), then the QUERY step
+(D7+D13+D14+D15+D16) in two halves. First probe: a declaration's
+nodes are one contiguous arena range.
+
+THE MINIMUM, LANDED (2026-09-02, one big-bang slice, gate green):
+the contract step (D8 D9 D10 D12), the query step (D13 D14 D15 D16,
+and D7's signature half). `docs/MINIMUM.md` § "What landed" is the
+ledger: TypeCx 16 fields / 11 verbs (was 40 / 34), LowerCx 15 / 7
+(was 28 / 23); every read a method defined ONCE on the fact structs
+(`features/facts.av`); `Parsed` is a store, statements, a source and
+voices; the language's rows ride `Language`; signatures are lazy
+per-declaration queries through the table's own read (`Decls.sig`
+asks the workspace's `sig` family; `type.cycle` when a sig reaches
+itself); the four declaration rounds, `typed_together`, `Staged`,
+`lone_program`, `Foreign` are gone; the module namespace binds once
+per ModuleId; `lower_unit` returns lifts, wrappers and wants as
+data and `union` asks a memoized `unit_of` — the worklist IS the
+memo; `Program { ws, … }`; a lone file is `lone_workspace`. D7's
+other half — bodies per declaration — waits on cross-body reads of
+top-level bindings' inferred types (found as a crash, recorded).
+Measured: unchanged parse-bound timing; the memo now sees 2432
+hits / 1505 misses on the compiler's own files.
+
+THE MINIMUM, THE REST (2026-09-02, second slice, gate green): D7
+whole — `typed(decl)` per declaration, `folded(file)` the fold,
+`methods(decl)` a family the table's reads ask, the union the
+entry's closure (`symbol_at` wants what it names; check mode seeds
+every body). What the first slice misdiagnosed: bodies were not
+per-declaration because a fn body could READ a top-level `let` —
+resolve let it through and lowering hit a defect. That is not a
+cross-body read to support; it is a law: THE BODY FLOOR (F3020,
+`resolve.runtime_binding`) — a fn body, and a field default, sees
+declarations and its own bindings, never the top level's run-time
+values (the remedy is a parameter; module-level CONSTANTS readable
+by fns are a rung of their own — trigger: the spec's module-level
+`let`). Found by attack, fixed the same way: a struct literal in
+one file omitting a defaulted field declared in ANOTHER lowered the
+default's ExprId against the caller's store — stack overflow. A
+FIELD DEFAULT IS A DECLARATION (`DeclKind.Default`): typed once in
+its module, lowered once as a zero-parameter body (`P.y`), CALLED by
+every literal that omits the field — its private helpers reach the
+program without the literal's file naming them; a generic record's
+default instantiates under the literal's arguments. The false
+cycle: a recursive payload's slot re-judge asked its own sig and
+the first slice's `type.cycle` voice fired (silently overwritten
+then; surfaced by the merge) — the voice is gone, the kind with it;
+no sig depends on another's VALUE today (trigger: type aliases).
+"`P.show` is declared twice" moved from the method's sig to the
+method-table CLASH law (`method_clashes` beside `module_names`):
+registration is the impl block's, blame is the later declaration in
+source order, whatever order the impls were asked in — the
+lone-file path asks bodies before sigs and had blamed the wrong
+side. `--time` now shows parse / resolve / sigs / bodies apart.
+`Decls.decls_of_file` lists every kind (members and Main included)
+in admitted order — a Default has no statement of its own, so the
+by-statement list could not carry it.
+
 THE DB VISION (the questions asked with this round): the kernel is
 bookkeeping only — cells with deps, changed_at, verified_at, a
 value hash; VALUES live in typed family tables. Three tiers: in-
@@ -3522,6 +3610,67 @@ FOUND ON THE WAY, NOT MODULES: `match 2 { 2 -> … }` — an int
 LITERAL pattern does not parse ("expected `}` to close the match")
 — the match feature's literal patterns are unlanded; sugar
 backlog.
+
+REVIEW ROUND (2026-09-02, the round after THE MINIMUM; recorded
+from `git diff --stat` — 141 files, +3229/−2889 — and the tree as
+it stood when this was written). What the round REMOVED:
+  - `home`: the file index every lowering job carried (`Lower`,
+    `Wrap`, `Lift`, `new_lower`, `home_of`, `declared_bodies`,
+    `method_bodies`) — a body's file is its view's; the field, the
+    parameter and the lookup are gone.
+  - The workspace's per-family ceremony: the `<family>_key` fns,
+    the `verified_<family>` verifiers and the hand-grown table
+    loops became ONE `enum Family` with `ordinal` and `refetched`
+    (both exhaustive — a new family cannot ship half-registered)
+    and two core verbs, `placed`/`placed_at`, for the sparse
+    tables. `namespace` keys by ModuleId; `visible(file)` adds the
+    imports; `analysis(file)` is a family, not a facade's cache.
+  - `Typing`, `Resolution`, `Staged`, `typed_together`,
+    `lower_all`, `lone_program`, `namespace_of_file`: the pass
+    values that copied columns out of `Typer`/`Resolver`, and the
+    exploded store/source/file/decls fields on `Typer`, `Resolver`,
+    `Lower` and `Analysis` — each holds ONE `FileView` now, which
+    gained the file's STATEMENTS (`runtime_stmts` is a view read).
+    `TypeCx` is 4 data fields + 11 verbs, `LowerCx` 7 + 7.
+    `language/namespace.av` moved to `features/namespace.av`,
+    `language/runtime_api.av` to `core/runtime_api.av`; the fact
+    structs and their reads live in `features/facts.av` (new).
+  - The Map `length` miscompile: `m.length` has its own property
+    row (`check_map_length`/`lower_map_length`), corpus/maps prints
+    it, and the interpreter's map length reads through `with_map`.
+  - Tests read `r.voices.list` where they read `r.diagnostics`, and
+    `shown`/`refusals`/`refused_with` come from `@std.avrac.testing`
+    instead of a copy per file.
+  - Tooling holes: the I23 matcher was anchored at column 0 and had
+    never read a METHOD (three real dead parameters surfaced in
+    typing_impls.av; trait-impl methods are excluded by matcher,
+    since the trait owns the signature); the I20 guard accepted
+    `>= 1` as a count by substring — it now demands `== n` /
+    `refused_with`, and I30 ratchets the `>= 1` spelling itself
+    (28 sites the day it landed); `tools/vocab.sh`'s `exit 1` fired
+    in a pipe's subshell and never failed the gate; `make sweep`
+    now removes the per-run shard objects `bs2 test` leaves in
+    build/ ROOT (21,917 of them: 3.9G → 3.6G) by run liveness and
+    age; `make clean` removes `scratch/`; the run targets are
+    `.PHONY`. The CLI: `--time` reaches `ir`/`emit`/`build`,
+    `lowered_or_report` and `arg_command` live in shared.av, the
+    scaffold's test template imports `shown`.
+  Landed after that was written: `Spec`/`Ask` → ONE `Wanted { file,
+  decl?, name, sub? }`, the unit of lowering — `lowered(id)` asks the
+  file's `analysis` (a recorded dependency, no hand-touched fold);
+  `Unit` and `Emitter` speak `Voices` like every other value (no
+  string failure channel; `defect_at` is the one defect kind);
+  `foreign_node(cx, e)` in the contract is the ONE lowering
+  catch-all (nine features; three had minted a silent register).
+  FOUND THE HARD WAY: three agents building at once crashed the
+  machine — builds are serial (CLAUDE.md). And a bootstrap trap that
+  ate an afternoon: a metadata-compiled test SHARD that instantiates
+  an imported list-writing generic twice loses every instantiation's
+  writes — `copy_into` has no unit spec; the fold and the corpus are
+  its proof (CLAUDE.md). The scaffold template had rotted past the
+  contract (`cx.types`, no `heirs`) because `make scaffold-check` is
+  outside `make gate`; fixed, and the gate should grow it (trigger:
+  the next template change).
 
 ## Interior mutation & maps — rung 14 (designed 2026-09-01)
 
@@ -4168,7 +4317,9 @@ design round when its time comes):
   rule applied to the hottest code in the tree, currently barred.
 - `grammar { }` blocks replace raw-string grams
 - Bare component instantiation (registry spans files)
-- Query engine (L6 red-green memoization) wraps the pure passes
+- ~~Query engine (L6 red-green memoization) wraps the pure passes~~
+  — LANDED 2026-09-02 (15a): `query/db.av` is the kernel, the twelve
+  families in `language/workspace.av` are the passes as queries.
 - A real feature-extensible language lexer
 
 Update this file whenever a slice lands or the plan changes — the

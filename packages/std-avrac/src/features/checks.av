@@ -27,7 +27,7 @@ export fn require_bool(cx: TypeCx, e: ExprId, subject: string, label: string) {
 /// already spoke); otherwise interned ids must match. True means
 /// the site speaks, in its own words.
 export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
-    if cx.types.shape_of(got) is .Error || cx.types.shape_of(want) is .Error { return false }
+    if cx.view.types.shape_of(got) is .Error || cx.view.types.shape_of(want) is .Error { return false }
     // LICENSED I9: this IS the agreement law's body
     got.index != want.index
 }
@@ -45,13 +45,13 @@ export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
     if cx.starve(e, want) { return true }
     let got = cx.type_at(e)
     if !types_disagree(cx, got, want) { return true }
-    let inner: TypeId? = cx.types.carried(want)
+    let inner: TypeId? = cx.view.types.carried(want)
     if inner == null { return other_accepts(cx, e, got, want) }
     // `null` inhabits every nullable; a present value must be the
     // carried type. Either way the lift is RECORDED, in this one
     // place — absence has no layout of its own, and lowering's
     // adoption edge mints each form from this record.
-    let absent: bool = cx.types.shape_of(got) is .Null
+    let absent: bool = cx.view.types.shape_of(got) is .Null
     if !absent && types_disagree(cx, got, inner!) { return false }
     cx.widen(e, want)
     true
@@ -64,9 +64,10 @@ export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
 /// happen silently. Recorded at the same one widening edge as the
 /// nullable lift.
 fn res_accepts(cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
-    let sides: ResSides? = cx.types.res_parts(want)
+    let sides: ResSides? = cx.view.types.res_parts(want)
     if sides == null { return false }
-    if types_disagree(cx, got, sides!.ok) && !empty_into(cx, got, sides!.ok) { return false }
+    let ok = sides!.ok
+    if types_disagree(cx, got, ok) && !empty_into(cx, got, ok) { return false }
     cx.widen(e, want)
     true
 }
@@ -82,8 +83,8 @@ fn empty_into(cx: TypeCx, got: TypeId, ok: TypeId) -> bool {
 /// `[]` is adopted by any list, `{}` by any map — the two identity
 /// widens.
 export fn empty_adopted(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
-    (cx.types.shape_of(got) is .EmptyList && cx.types.shape_of(want) is .List) ||
-        (cx.types.shape_of(got) is .EmptyMap && cx.types.shape_of(want) is .Map)
+    (cx.view.types.shape_of(got) is .EmptyList && cx.view.types.shape_of(want) is .List) ||
+        (cx.view.types.shape_of(got) is .EmptyMap && cx.view.types.shape_of(want) is .Map)
 }
 
 /// The non-nullable lifts share one door: the auto-Ok wrap, and the
@@ -103,10 +104,7 @@ fn other_accepts(cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
 /// dyn). Only a type that can SIGN boxes; a value already
 /// dyn-shaped met the identity case and never re-boxes.
 fn dyn_accepts(cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
-    let tname: string? = match cx.types.shape_of(want) {
-        .Dyn(_, n) -> n,
-        _ -> null,
-    }
+    let tname: string? = dyn_contract(cx.view.types.shape_of(want))
     if tname == null { return false }
     if !boxable(cx, got, tname!) { return false }
     cx.widen(e, want)
@@ -119,7 +117,7 @@ fn dyn_accepts(cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
 /// (an instantiation that arrives ALREADY dyn lifts by identity).
 fn boxable(cx: TypeCx, got: TypeId, tname: string) -> bool {
     if cx.implements(got, tname) { return true }
-    match cx.types.shape_of(got) {
+    match cx.view.types.shape_of(got) {
         .Var(decl, j, _) -> bound_name(cx, decl, j) == tname,
         _ -> false,
     }
@@ -128,7 +126,7 @@ fn boxable(cx: TypeCx, got: TypeId, tname: string) -> bool {
 /// The bound a tparam SEAT declares — "" when unconstrained. The
 /// one law both the bounded-call and the boxing widen read.
 export fn bound_name(cx: TypeCx, decl: DeclId, j: int) -> string {
-    let tb = cx.decls.tbounds(decl)
+    let tb = cx.view.decls.tbounds(decl)
     if j >= tb.length { return "" }
     let ann: TypeRef? = tb[j].ty
     if ann == null { return "" }
@@ -140,7 +138,7 @@ export fn bound_name(cx: TypeCx, decl: DeclId, j: int) -> string {
 /// facts converge as if the annotations had been written, and the
 /// comparison then judges the real type.
 fn heard(cx: TypeCx, e: ExprId, want: TypeId) {
-    let arrow: Arrow? = cx.types.arrow_parts(want)
+    let arrow: Arrow? = cx.view.types.arrow_parts(want)
     if arrow != null { let _ = cx.retype_seated(e, arrow!.seats) }
 }
 
@@ -151,8 +149,8 @@ fn heard(cx: TypeCx, e: ExprId, want: TypeId) {
 /// construct joins the same way by asking this and then accepting.
 export fn join_of(cx: TypeCx, a: TypeId, b: TypeId) -> TypeId? {
     if !types_disagree(cx, a, b) { return a }
-    if cx.types.shape_of(b) is .Null { return nullable_over(cx, a) }
-    if cx.types.shape_of(a) is .Null { return nullable_over(cx, b) }
+    if cx.view.types.shape_of(b) is .Null { return nullable_over(cx, a) }
+    if cx.view.types.shape_of(a) is .Null { return nullable_over(cx, b) }
     // A guarantee beside ITS OWN nullable joins wide — a narrowed
     // branch meeting the un-narrowed name is the natural case, and
     // `accepts` then lifts the guarantee side.
@@ -163,7 +161,7 @@ export fn join_of(cx: TypeCx, a: TypeId, b: TypeId) -> TypeId? {
 
 /// Does the nullable `opt` carry exactly `inner`?
 fn carries(cx: TypeCx, opt: TypeId, inner: TypeId) -> bool {
-    let held: TypeId? = cx.types.carried(opt)
+    let held: TypeId? = cx.view.types.carried(opt)
     held != null && !types_disagree(cx, held!, inner)
 }
 
@@ -171,8 +169,8 @@ fn carries(cx: TypeCx, opt: TypeId, inner: TypeId) -> bool {
 /// stands — nothing is lifted twice, which is also why a chain
 /// FLATTENS: `a?.b` over a nullable member answers ONE absence.
 export fn nullable_over(cx: TypeCx, ty: TypeId) -> TypeId {
-    if cx.types.carried(ty) != null { return ty }
-    cx.types.intern(Type.Opt(ty))
+    if cx.view.types.carried(ty) != null { return ty }
+    cx.view.types.intern(Type.Opt(ty))
 }
 
 /// THE member law: what a type answers to a property name — a
@@ -183,12 +181,12 @@ export fn nullable_over(cx: TypeCx, ty: TypeId) -> TypeId {
 export fn member_type_of(cx: TypeCx, e: ExprId, shown: string, ty: TypeId, name: string) -> TypeId {
     // Members live on GUARANTEES: a nullable subject's remedy is
     // the chain, never a property list it does not have.
-    if cx.types.shape_of(ty) is .Opt {
+    if cx.view.types.shape_of(ty) is .Opt {
         return spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`.${name}` reads a guarantee, this is `${shown}`", this_is(shown), "`?.${name}` reaches through the absence — or answer it first with `??`"))
     }
     let sig: StructSig? = cx.fields_of(ty)
     if sig != null { return field_member(cx, e, shown, sig!, name) }
-    let row: PropertyRow? = property_row(cx.properties, name, cx.types.shape_of(ty))
+    let row: PropertyRow? = property_row(cx.view.lang.properties, name, cx.view.types.shape_of(ty))
     if row != null {
         let r = row!
         let answered: TypeId = r.check(cx, e, ty)
@@ -209,7 +207,7 @@ fn field_member(cx: TypeCx, e: ExprId, shown: string, sig: StructSig, name: stri
 /// widening recorded like any other slot's. Every annotated
 /// binding form asks here, so the wording never drifts.
 export fn declared_binding(cx: TypeCx, v: ExprId, name: string, declared: TypeId) {
-    if cx.types.shape_of(declared) is .Error { return }
+    if cx.view.types.shape_of(declared) is .Error { return }
     // a hungry lambda is not yet an error — the seat records itself
     if cx.starve(v, declared) { return }
     if cx.shape_at(v) is .Error { return }
@@ -218,7 +216,7 @@ export fn declared_binding(cx: TypeCx, v: ExprId, name: string, declared: TypeId
     if cx.shape_at(v) is .TypeName { return }
     if accepts(cx, v, declared) { return }
     let n = cx.name_at(v)
-    cx.emit(refusal("type.binding", cx.loc_of(v), "`${name}` declares `${cx.types.name_of(declared)}`, this is `${n}`", this_is(n), null))
+    cx.emit(refusal("type.binding", cx.loc_of(v), "`${name}` declares `${cx.view.types.name_of(declared)}`, this is `${n}`", this_is(n), null))
 }
 
 /// The VALUE law: a type NAME is not a value. `Color` alone is
@@ -250,7 +248,7 @@ export fn arms_agree(cx: TypeCx, kind: string, subject: string, anchor_name: str
     for v in values {
         if !accepts(cx, v, want) {
             let n = cx.name_at(v)
-            cx.emit(refusal(kind, cx.loc_of(v), "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${cx.types.name_of(want)}`", this_is(n), null))
+            cx.emit(refusal(kind, cx.loc_of(v), "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${cx.view.types.name_of(want)}`", this_is(n), null))
             agreed = false
         }
     }
@@ -282,9 +280,9 @@ export fn this_is(n: string) -> string {
 /// rides through a generic param — a lift needs a visible concrete
 /// target (the recorded G1 law). Errors absorb.
 export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
-    if cx.types.shape_of(got) is .Error { return true }
-    if cx.types.shape_of(want) is .Error { return true }
-    match cx.types.shape_of(want) {
+    if cx.view.types.shape_of(got) is .Error { return true }
+    if cx.view.types.shape_of(want) is .Error { return true }
+    match cx.view.types.shape_of(want) {
         .Var(decl, j, _) -> var_binds(cx, decl, j, got, target, bound),
         .List(w) -> elem_unifies(cx, w, got, target, bound),
         .Map(_, wv) -> value_unifies(cx, wv, got, target, bound),
@@ -302,7 +300,7 @@ export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: DeclId, bound: Li
 /// `fn(T) -> T` meets `fn(int) -> int` and binds T. Invariant in
 /// every seat (v1 — variance is recorded).
 fn fn_unifies(cx: TypeCx, wp: List<TypeId>, wr: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
-    let held: Arrow? = cx.types.arrow_parts(got)
+    let held: Arrow? = cx.view.types.arrow_parts(got)
     if held == null { return false }
     let g = held!
     if g.seats.length != wp.length { return false }
@@ -322,8 +320,8 @@ fn var_binds(cx: TypeCx, decl: DeclId, j: int, got: TypeId, target: DeclId, boun
     if decl.index != target.index { return false }
     // absence never pins a Var — `null` and `[]` have no one type;
     // the pin (or another argument) must land first
-    if cx.types.shape_of(got) is .Null { return false }
-    let g = cx.types.shape_of(got)
+    if cx.view.types.shape_of(got) is .Null { return false }
+    let g = cx.view.types.shape_of(got)
     if g is .EmptyList || g is .EmptyMap { return false }
     let seen: TypeId? = bound[j]
     if seen == null {
@@ -337,28 +335,28 @@ fn var_binds(cx: TypeCx, decl: DeclId, j: int, got: TypeId, target: DeclId, boun
 }
 
 fn elem_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
-    match cx.types.shape_of(got) {
+    match cx.view.types.shape_of(got) {
         .List(g) -> unify(cx, w, g, target, bound),
         _ -> false,
     }
 }
 
 fn value_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
-    match cx.types.shape_of(got) {
+    match cx.view.types.shape_of(got) {
         .Map(_, g) -> unify(cx, w, g, target, bound),
         _ -> false,
     }
 }
 
 fn carried_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
-    match cx.types.shape_of(got) {
+    match cx.view.types.shape_of(got) {
         .Opt(g) -> unify(cx, w, g, target, bound),
         _ -> false,
     }
 }
 
 fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
-    let sides: ResSides? = cx.types.res_parts(got)
+    let sides: ResSides? = cx.view.types.res_parts(got)
     if sides == null { return false }
     unify(cx, wo, sides!.ok, target, bound) && unify(cx, we, sides!.err, target, bound)
 }
@@ -382,7 +380,7 @@ export fn slot_worthy(sh: Type) -> bool {
 /// call binding `T` to `int?` cannot smuggle a pair into a box's
 /// word slot. Answers the offending side, or absence when lawful.
 export fn unlawful_side(cx: TypeCx, ty: TypeId) -> TypeId? {
-    match cx.types.shape_of(ty) {
+    match cx.view.types.shape_of(ty) {
         .Res(ok, err) -> res_side_unlawful(cx, ok, err),
         .List(elem) -> unlawful_side(cx, elem),
         .Opt(inner) -> unlawful_side(cx, inner),
@@ -396,8 +394,8 @@ export fn unlawful_side(cx: TypeCx, ty: TypeId) -> TypeId? {
 }
 
 fn res_side_unlawful(cx: TypeCx, ok: TypeId, err: TypeId) -> TypeId? {
-    if !slot_worthy(cx.types.shape_of(ok)) { return ok }
-    if !slot_worthy(cx.types.shape_of(err)) { return err }
+    if !slot_worthy(cx.view.types.shape_of(ok)) { return ok }
+    if !slot_worthy(cx.view.types.shape_of(err)) { return err }
     unlawful_side(cx, ok) ?? unlawful_side(cx, err)
 }
 
@@ -405,7 +403,7 @@ fn res_side_unlawful(cx: TypeCx, ok: TypeId, err: TypeId) -> TypeId? {
 /// when true, the param is effectively concrete and the ordinary
 /// assignment law (widening included) can judge the argument.
 export fn fully_bound(cx: TypeCx, ty: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
-    match cx.types.shape_of(ty) {
+    match cx.view.types.shape_of(ty) {
         // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
         .Var(decl, j, _) ->
             if decl.index == target.index { bound[j] != null } else { true },
@@ -430,7 +428,7 @@ export fn bound_args(cx: TypeCx, bound: List<TypeId?>) -> List<TypeId> {
 /// argument; anything else is no match.
 fn app_unifies(cx: TypeCx, wd: DeclId, wa: List<TypeId>, got: TypeId,
                target: DeclId, bound: List<TypeId?>) -> bool {
-    match cx.types.shape_of(got) {
+    match cx.view.types.shape_of(got) {
         // LICENSED I9: DECLARATION identity, not type agreement — whose instantiation this is
         .App(gd, _, ga) ->
             gd.index == wd.index && paired_unify(cx, wa, ga, target, bound),
@@ -456,12 +454,17 @@ fn paired_unify(cx: TypeCx, want: List<TypeId>, got: List<TypeId>,
 /// A declaration naming T twice already refused at the declaration
 /// — every use site absorbs instead of echoing.
 export fn tparams_refused(tp: List<string>) -> bool {
-    mut dup = false
     // LICENSED I3: the dup test needs the index; comprehensions cannot destructure enumerate
     for (j, n) in tp.enumerate() {
-        if tp.index_of(n) < j { dup = true }
+        if repeated_at(tp, j) { return true }
     }
-    dup
+    false
+}
+
+/// THE position-dup law: the name at `j` was already declared
+/// earlier in the list — its FIRST position wins.
+export fn repeated_at(names: List<string>, j: int) -> bool {
+    names.index_of(names[j]) < j
 }
 
 /// The first type parameter the bindings left OPEN — the caller
@@ -481,17 +484,19 @@ export fn bound_closed(cx: TypeCx, bound: List<TypeId?>) -> List<TypeId> {
 }
 
 // ── VARIANT CONSTRUCTION — `Type.variant(arg)`, the type-receiver
-// half of the one dot-call surface. Plain or generic, ONE law: the variant
-/// must exist; a carrying variant takes exactly its payload (which
-/// UNIFIES, pinning a generic declaration's Vars — with none, the
-/// unification IS the plain agreement check); the answer is the
-/// declared type, instantiated when generic.
+// half of the one dot-call surface ──
+
+/// Plain or generic, ONE law: the variant must exist; a carrying
+/// variant takes exactly its payload (which UNIFIES, pinning a
+/// generic declaration's Vars — with none, the unification IS the
+/// plain agreement check); the answer is the declared type,
+/// instantiated when generic.
 export fn construct_variant(cx: TypeCx, e: ExprId, decl: DeclId, tname: string, variant: string, args: List<ExprId>) -> TypeId {
     let declared: EnumSig? = variants_declared(cx, decl, tname)
     if declared == null { return not_an_enum(cx, e, tname) }
     let sig = declared!
     if sig.tag_of(variant) == null { return no_such_variant(cx, e, tname, variant, sig) }
-    let tp = cx.decls.tparams(decl)
+    let tp = cx.view.decls.tparams(decl)
     if tparams_refused(tp) { return cx.error_type }
     let held: TypeId? = sig.payload_of(variant)
     if held == null { return unit_variant(cx, e, tname, variant, tp) }
@@ -518,12 +523,12 @@ fn unit_variant(cx: TypeCx, e: ExprId, tname: string, variant: string, tp: List<
 /// The answer: the plain enum, or the App the bindings close into.
 fn instantiated(cx: TypeCx, e: ExprId, tname: string, decl: DeclId,
                 tp: List<string>, bound: List<TypeId?>) -> TypeId {
-    if tp.is_empty() { return cx.types.intern(Type.Enum(decl, tname)) }
+    if tp.is_empty() { return cx.view.types.intern(Type.Enum(decl, tname)) }
     let missing: string? = unpinned_of(tp, bound)
     if missing != null { return unpinned_by_payload(cx, e, missing!) }
     let concrete = bound_closed(cx, bound)
     cx.record_subst(e, decl, concrete)
-    cx.types.intern(Type.App(decl, tname, concrete))
+    cx.view.types.intern(Type.App(decl, tname, concrete))
 }
 
 /// The raw declared table — Vars intact — or absence when the
@@ -531,7 +536,7 @@ fn instantiated(cx: TypeCx, e: ExprId, tname: string, decl: DeclId,
 /// keeps the FIRST shape it sees for a key, so a throwaway name
 /// here would poison every later printing of this enum.
 fn variants_declared(cx: TypeCx, decl: DeclId, tname: string) -> EnumSig? {
-    cx.variants_of(cx.types.intern(Type.Enum(decl, tname)))
+    cx.variants_of(cx.view.types.intern(Type.Enum(decl, tname)))
 }
 
 /// A FN VALUE's seats judge a call — the one law the indirect
@@ -556,7 +561,7 @@ export fn seats_judged(cx: TypeCx, e: ExprId, callee: string, ps: List<TypeId>, 
 /// already refused unknown fields and non-list indexes. True means
 /// lawful.
 export fn place_lawful(cx: TypeCx, e: ExprId) -> bool {
-    let step: PlaceStep? = cx.store.place_step(e)
+    let step: PlaceStep? = cx.view.store.place_step(e)
     if step == null { return true }
     match step! {
         .Root(name) -> if cx.shape_at(e) is .TypeName { type_not_place(cx, e, name) } else { true },
@@ -601,11 +606,11 @@ fn cannot_pin(cx: TypeCx, e: ExprId, tname: string, variant: string, tparam: str
 
 fn wrong_payload(cx: TypeCx, v: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
     let n = cx.name_at(v)
-    spoken(cx, refusal("type.variant_arity", cx.loc_of(v), "`${tname}.${variant}` carries a `${cx.types.name_of(carried)}`, found `${n}`", this_is(n), null))
+    spoken(cx, refusal("type.variant_arity", cx.loc_of(v), "`${tname}.${variant}` carries a `${cx.view.types.name_of(carried)}`, found `${n}`", this_is(n), null))
 }
 
 fn given_nothing(cx: TypeCx, e: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
-    spoken(cx, refusal("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries a `${cx.types.name_of(carried)}`, given nothing", "built empty here", "write `${tname}.${variant}(<value>)`"))
+    spoken(cx, refusal("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries a `${cx.view.types.name_of(carried)}`, given nothing", "built empty here", "write `${tname}.${variant}(<value>)`"))
 }
 
 fn unpinned_by_payload(cx: TypeCx, e: ExprId, tparam: string) -> TypeId {
@@ -620,7 +625,7 @@ export fn wrong_arity(cx: TypeCx, e: ExprId, callee: string, want: int, found: i
 /// THE argument refusal — every call shape shares the words.
 export fn wrong_argument(cx: TypeCx, callee: string, j: int, want: TypeId, a: ExprId) {
     let n = cx.name_at(a)
-    cx.emit(refusal("type.mismatch", cx.loc_of(a), "argument ${j + 1} of `${callee}` wants `${cx.types.name_of(want)}`, found `${n}`", this_is(n), null))
+    cx.emit(refusal("type.mismatch", cx.loc_of(a), "argument ${j + 1} of `${callee}` wants `${cx.view.types.name_of(want)}`, found `${n}`", this_is(n), null))
 }
 
 fn type_not_place(cx: TypeCx, e: ExprId, name: string) -> bool {
@@ -652,7 +657,7 @@ export fn slice_promise(what: string) -> string {
 /// voice would be a second one for the same mistake. Every call
 /// shape (named, valued, method) settles here.
 export fn settled_call(cx: TypeCx, args: List<ExprId>, answer: TypeId) -> TypeId {
-    if cx.types.shape_of(answer) is .Error {
+    if cx.view.types.shape_of(answer) is .Error {
         for a in args { cx.absorb_hunger(a) }
     }
     answer

@@ -28,7 +28,7 @@ impl StmtSemantics for FailSemantics {
 /// `fail v` — legal only inside a fn promising a `Result`, with `v`
 /// ACCEPTED by the err side (widening recorded, like every slot).
 fn check_fail(cx: StmtTypeCx, s: StmtId) {
-    let held: ExprId? = cx.store.stmt_value(s)
+    let held: ExprId? = cx.view.store.stmt_value(s)
     if held == null { return }
     let v = held!
     let ret: TypeId? = cx.expr.enclosing_ret()
@@ -37,17 +37,17 @@ fn check_fail(cx: StmtTypeCx, s: StmtId) {
         return
     }
     let promised = ret!
-    if cx.expr.types.shape_of(promised) is .Error { return }
-    let sides: ResSides? = cx.expr.types.res_parts(promised)
+    if cx.expr.view.types.shape_of(promised) is .Error { return }
+    let sides: ResSides? = cx.expr.view.types.res_parts(promised)
     if sides == null {
-        let promise = cx.expr.types.name_of(promised)
+        let promise = cx.expr.view.types.name_of(promised)
         cx.expr.emit(refusal("type.fail", cx.loc_of(s), "`fail` raises on a `Result`'s failure channel, and this fn promises a `${promise}`", "raised here", "declare the answer fallible — `-> Result<${promise}, E>`"))
         return
     }
     if cx.expr.shape_at(v) is .Error { return }
     if accepts(cx.expr, v, sides!.err) { return }
     let gn = cx.expr.name_at(v)
-    cx.expr.emit(refusal("type.fail", cx.loc_of(s), "`fail` raises a `${cx.expr.types.name_of(sides!.err)}`, this is `${gn}`", this_is(gn), null))
+    cx.expr.emit(refusal("type.fail", cx.loc_of(s), "`fail` raises a `${cx.expr.view.types.name_of(sides!.err)}`, this is `${gn}`", this_is(gn), null))
 }
 
 /// The failure wrapped and exited — the memory pass settles every
@@ -57,7 +57,7 @@ fn lower_fail(cx: StmtLowerCx, s: StmtId) -> Reg? {
     if v == null { return null }
     let ret: TypeId? = cx.expr.enclosing_ret()
     if ret == null {
-        cx.expr.fail("defect: a `fail` without an enclosing fn survived typing")
+        cx.expr.defect("a `fail` without an enclosing fn survived typing")
         return null
     }
     cx.expr.emit(Ins.FnExit(failed(cx.expr, ret!, v!)))

@@ -7,9 +7,9 @@
 //! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, filled, some_list, joined, FileId, DeclId, NodeStore}
-use diagnostics.{Diag, error_at, loc_at, refusal}
-use features.{FnSig, fn_sig_of, Sub}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, NodeStore, DeclId, FileId}
+use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
+use features.{FnSig, fn_sig_of, Sub, Emitter, BodyRegs, new_emitter, new_body_regs, viewed, Decl, Decls}
 
 /// One lowered body: instructions in order and each register's type
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
@@ -35,187 +35,174 @@ export type Lowered = {
 
 type Lower = {
     a: Analysis,
-    home: int,
     fn_ret: TypeId?,
     sub: Sub?,
     jobs: Jobs,
-    ins: List<Ins>,
-    reg_types: List<TypeId>,
-    regs: List<Reg?>,
-    slots: List<Reg?>,
-    boxed: List<bool>,
-    pattern_regs: List<Reg?>,
-    index_regs: List<Reg?>,
-    defined: List<Reg>,
-    failures: List<string>,
+    out: Emitter,
+    body: BodyRegs,
 }
 
-/// One SPECIALIZATION to lower: a generic fn under concrete Vars,
-/// named by its mangling.
-type Spec = { name: string, sub: Sub }
+/// One body WANTED — the unit of lowering: a declaration's body (or
+/// a file's main, when `decl` is absent), under concrete Vars when
+/// it is generic, named by its symbol or mangling, in its file.
+export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub? }
 
 /// The mono worklist, ONE instance threaded through every body's
 /// lowering (lists and maps alias): call sites enqueue, the driver
 /// drains. `seen` keys by mangled name.
-type Jobs = { pending: List<Spec>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap> }
+type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap> }
 
 /// A NAMED fn boxed as a value calls through a generated WRAPPER
 /// that wears the uniform convention: env at seat 0, forwarded.
-type Wrap = { target: string, seats: List<TypeId>, ret: TypeId, name: string, home: int }
+type Wrap = { target: string, seats: List<TypeId>, ret: TypeId, name: string }
 
 /// One lambda awaiting its LIFT: the body lowers as a top-level fn
-/// taking (env, params…) under the enclosing body's view.
-type Lift = { lam: ExprId, name: string, sub: Sub?, home: int }
+/// taking (env, params…) under the enclosing body's view — in the
+/// enclosing body's own file, like every job a unit mints.
+type Lift = { lam: ExprId, name: string, sub: Sub? }
 
 /// One lowering per BODY — `fn_ret` is that body's declared answer
 /// (null for main) and `sub` its instantiation (null when the body
 /// is not a specialization), which is why they are fields, not
-/// stacks. `home` is the file among the program's, so the jobs a
-/// body mints lower where they were written.
-fn new_lower(a: Analysis, home: int, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> Lower {
+/// stacks.
+fn new_lower(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> Lower {
     Lower {
-        a: a, home: home, fn_ret: fn_ret, sub: sub, jobs: jobs, ins: [], reg_types: [], defined: [],
-        regs: filled<Reg?>(a.p.store.exprs.count(), null),
-        slots: filled<Reg?>(a.p.store.stmts.count(), null),
-        boxed: filled(a.p.store.stmts.count(), false),
-        pattern_regs: filled<Reg?>(a.p.store.exprs.count(), null),
-        index_regs: filled<Reg?>(a.p.store.stmts.count(), null),
-        failures: [],
+        a: a, fn_ret: fn_ret, sub: sub, jobs: jobs,
+        out: new_emitter(),
+        body: new_body_regs(a.view.store.exprs.count(), a.view.store.stmts.count()),
     }
 }
 
-/// A lone file is a program of one.
+/// A lone file's program, lowered without a memo — the tests' seam.
 export fn lower(a: Analysis) -> Lowered {
-    lower_all([a], 0)
+    union(a.view.decls, [a], 0, (w: Wanted) -> lower_unit(a, w))
 }
 
-/// The whole program as IR: every file's plain fn bodies, the
-/// entry's main (an empty one when the program is only CHECKED —
-/// no entry), then ONE mono worklist drained across files — a
-/// generic fn lowered ONCE per distinct instantiation any file
-/// recorded, in the file that declares it, under a substitution
-/// VIEW that makes every register concrete; a lifted lambda lowers
-/// in the file it was written. The guard is the polymorphic-
-/// recursion refusal.
-export fn lower_all(files: List<Analysis>, entry: int?) -> Lowered {
+/// One unit LOWERED: its body with the lambdas it lifted and the
+/// wrappers it minted (they never escape it), the bodies of OTHER
+/// declarations it wants — the program asks for those, and asking
+/// twice reuses — and every voice lowering earned.
+export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices }
+
+/// A unit lowered in its file's analysis: the body, then its own
+/// lifts and wrappers drained locally — a lambda's body may mint
+/// more of each.
+export fn lower_unit(a: Analysis, w: Wanted) -> Unit {
     let jobs = Jobs { pending: [], seen: {}, lifts: [], wraps: [] }
-    mut fns: List<Body> = []
-    mut failures: List<string> = []
-    mut refusals: List<Diag> = []
-    let at: int = entry ?? 0
-    for (i, a) in files.enumerate() {
-        for lf in declared_bodies(a, i, jobs) {
-            fns.push(lf.body)
-            failures = failures.concat(lf.failures)
-        }
-        if entry != null && i != at { refusals = refusals.concat(entry_only(a, files[at])) }
+    if w.decl != null && !a.view.decls.has_body(w.decl!) {
+        let out = new_emitter()
+        out.defect("a unit without a body was asked for — `${w.name}`")
+        return Unit { bodies: [], wants: [], voices: out.voices }
     }
-    let lm = if entry == null { empty_main(files[0]) } else { lower_main(files[at], at, jobs) }
-    mut pending = jobs.pending
+    let first = if w.decl == null { lower_main(a, jobs) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, jobs) }
+    mut bodies: List<Body> = [first.body]
+    mut spoken: List<Diag> = first.voices.list
     mut lifts = jobs.lifts
     mut wraps = jobs.wraps
-    mut drained = 0
-    // one worklist rhythm, three job kinds: a specialization may
-    // mint lambdas and wrappers, and a lambda body more of each
-    while (!pending.is_empty() || !lifts.is_empty() || !wraps.is_empty()) && drained < 1000 {
-        if pending.is_empty() && lifts.is_empty() {
+    while !lifts.is_empty() || !wraps.is_empty() {
+        if lifts.is_empty() {
             let wj = wraps.pop()
-            fns.push(wrapped_body(files[wj.home], wj))
-        } else if pending.is_empty() {
-            let lj = lifts.pop()
-            let lf = lower_lambda(files[lj.home], lj, jobs)
-            fns.push(lf.body)
-            failures = failures.concat(lf.failures)
+            bodies.push(wrapped_body(a, wj))
         } else {
-            let job = pending.pop()
-            let home: int? = home_of(files, job.sub.target)
-            if home == null {
-                failures.push("a specialization of `${job.name}` names no file")
-            } else {
-                let h = home!
-                let a = files[h]
-                let body: ExprId? = fn_body_of(a, a.decls.decl(job.sub.target).stmt)
-                if body != null {
-                    let lf = lower_fn(a, h, a.decls.decl(job.sub.target).stmt, job.name, body!, job.sub, jobs)
-                    fns.push(lf.body)
-                    failures = failures.concat(lf.failures)
-                }
-            }
+            let lj = lifts.pop()
+            let lf = lower_lambda(a, lj, jobs)
+            bodies.push(lf.body)
+            spoken = spoken.concat(lf.voices.list)
+        }
+    }
+    Unit { bodies: bodies, wants: jobs.pending, voices: Voices { list: spoken } }
+}
+
+/// The whole program as IR: the entry's main and every body it
+/// reaches, transitively — each unit through `unit_of`, which the
+/// workspace memoizes. A program only CHECKED has no entry: every
+/// declared body lowers instead, so each speaks its refusals. A
+/// unit is asked once per symbol; the guard is the
+/// polymorphic-recursion refusal.
+export fn union(decls: Decls, files: List<Analysis>, entry: int?, unit_of: fn(Wanted) -> Unit) -> Lowered {
+    mut fns: List<Body> = []
+    mut spoken: List<Diag> = []
+    mut wants: List<Wanted> = []
+    let at: int = entry ?? 0
+    for (i, a) in files.enumerate() {
+        if entry == null { wants = wants.concat(declared(a)) }
+        if entry != null && i != at { spoken = spoken.concat(entry_only(a, files[at])) }
+    }
+    let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: "main", sub: null }) }
+    mut entry_body: Body = empty_main(decls.types).body
+    if main_unit != null {
+        let mu = main_unit!
+        entry_body = mu.bodies.first() ?? entry_body
+        fns = fns.concat(mu.bodies.slice(1, mu.bodies.length))
+        spoken = spoken.concat(mu.voices.list)
+        wants = wants.concat(mu.wants)
+    }
+    mut seen: Map<string, bool> = {}
+    mut drained = 0
+    while !wants.is_empty() && drained < 1000 {
+        let w = wants.pop()
+        if seen.get(w.name) == null {
+            seen.set(w.name, true)
+            let u = unit_of(w)
+            fns = fns.concat(u.bodies)
+            spoken = spoken.concat(u.voices.list)
+            wants = wants.concat(u.wants)
         }
         drained = drained + 1
     }
-    if !pending.is_empty() || !lifts.is_empty() || !wraps.is_empty() {
-        failures.push("specializations exploded past 1000 — polymorphic recursion is not supported")
+    if !wants.is_empty() {
+        spoken.push(defect_at(null, "specializations exploded past 1000 — polymorphic recursion is not supported"))
     }
-    failures = failures.concat(lm.failures)
-    Lowered {
-        fns: fns, entry: lm.body, types: files[0].typing.types,
-        diagnostics: refusals.concat(lm.refusals).concat([error_at("language.defect", null, m) for m in failures]),
-    }
+    Lowered { fns: fns, entry: entry_body, types: decls.types, diagnostics: spoken }
 }
 
-/// A file's declared bodies: its fns and its impls' methods.
-fn declared_bodies(a: Analysis, home: int, jobs: Jobs) -> List<LoweredBody> {
-    mut out: List<LoweredBody> = []
-    for s in a.p.stmts {
-        let p: FnParts? = directly_lowered(a.p.store.fn_parts(s))
-        if p != null { out.push(lower_fn(a, home, s, a.decls.symbol(a.decl_of(s)), p!.body, null, jobs)) }
-        let ip: ImplParts? = a.p.store.impl_parts(s)
-        if ip != null { out = out.concat(method_bodies(a, home, ip!, jobs)) }
-    }
-    out
+/// A file's declared bodies to ask for, plain — a generic one waits
+/// for an instantiation to want it.
+fn declared(a: Analysis) -> List<Wanted> {
+    [Wanted { file: a.view.file, decl: d, name: a.view.decls.symbol(d), sub: null } for d in a.view.decls.decls_of_file(a.view.file) if lowers_plain(a, d)]
 }
 
-fn method_bodies(a: Analysis, home: int, ip: ImplParts, jobs: Jobs) -> List<LoweredBody> {
-    mut out: List<LoweredBody> = []
-    for f in ip.fns {
-        let mp: FnParts? = a.p.store.fn_parts(f)
-        if mp != null { out.push(lower_fn(a, home, f, a.decls.symbol(a.decl_of(f)), mp!.body, null, jobs)) }
-    }
-    out
-}
-
-/// The file a declaration lives in, among the program's — files
-/// ride in FileId order.
-fn home_of(files: List<Analysis>, d: DeclId) -> int? {
-    let h = files[0].decls.decl(d).file.index
-    if h >= files.length { return null }
-    h
+/// A body lowered without an instantiation: one that has no type
+/// parameters of its own or its type's.
+fn lowers_plain(a: Analysis, d: DeclId) -> bool {
+    let x = a.view.decls.decl(d)
+    x.root != null && a.view.decls.tparams(d).is_empty() && a.view.decls.tparams(x.parent ?? d).is_empty()
 }
 
 /// A module file holds declarations; run-time statements belong to
 /// the entry alone.
 fn entry_only(a: Analysis, entry: Analysis) -> List<Diag> {
-    [runs_outside_entry(a, s, entry) for s in a.p.stmts if runs_at_top(a.p.store, s)]
+    [runs_outside_entry(a, s, entry) for s in a.view.stmts if runs_at_top(a.view.store, s)]
 }
 
 fn runs_at_top(store: NodeStore, s: StmtId) -> bool {
     !store.is_declaration(s)
 }
 
-type LoweredBody = { body: Body, failures: List<string>, refusals: List<Diag> }
+type LoweredBody = { body: Body, voices: Voices }
 
-/// One fn: params pre-minted as registers 0..N-1, the body inside
-/// one scope, the answer after the scope settles.
-fn lower_fn(a: Analysis, home: int, s: StmtId, fname: string, root: ExprId, sub: Sub?, jobs: Jobs) -> LoweredBody {
-    let sig: FnSig? = fn_sig_of(a.decls.sig(a.decl_of(s)))
+/// One body — a fn's, a method's, a default's: params pre-minted as
+/// registers 0..N-1, the body inside one scope, the answer after
+/// the scope settles.
+fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, jobs: Jobs) -> LoweredBody {
+    let root: ExprId = x.root!
+    let sig: FnSig? = fn_sig_of(a.view.decls.sig(x.id))
     let raw: List<TypeId> = sig?.params ?? []
-    let rt: TypeId = viewed_ty(a, sub, sig?.ret ?? a.typing.types.intern(Type.Error))
-    let ptypes = [viewed_ty(a, sub, pt) for pt in raw]
-    let lo = new_lower(a, home, rt, sub, jobs)
-    mut tys = lo.reg_types
+    let rt: TypeId = viewed(a.view.decls.types, sub, sig?.ret ?? a.view.decls.types.intern(Type.Error))
+    let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
+    let lo = new_lower(a, rt, sub, jobs)
+    mut tys = lo.out.reg_types
     // LICENSED I3: `tys` ALIASES lo.reg_types — `concat` would rebind
     // the local and the registers would never reach the body
     for pt in ptypes { tys.push(pt) }
-    lo.seeded()
-    lo.give(Ins.ScopeEnter(Level.Application))
+    lo.out.seeded()
+    lo.out.give(Ins.ScopeEnter(Level.Application))
     let r = lower_subtree(lo, root)
-    lo.give(Ins.ScopeExit(r))
-    lo.give(Ins.RetVal(r))
+    lo.out.give(Ins.ScopeExit(r))
+    lo.out.give(Ins.RetVal(r))
     LoweredBody {
-        body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.ins, reg_types: lo.reg_types },
-        failures: lo.failures,
-        refusals: [],
+        body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types },
+        voices: lo.out.voices,
     }
 }
 
@@ -224,35 +211,34 @@ fn lower_fn(a: Analysis, home: int, s: StmtId, fname: string, root: ExprId, sub:
 /// callee per the ABI), registers 1..N its params; the body reads
 /// captures through slot 1+j of the env.
 fn lower_lambda(a: Analysis, lj: Lift, jobs: Jobs) -> LoweredBody {
-    let lam_ty = viewed_ty(a, lj.sub, a.typing.of_expr[lj.lam.index])
-    let held: Arrow? = a.typing.types.arrow_parts(lam_ty)
+    let lam_ty = viewed(a.view.decls.types, lj.sub, a.facts.type_at(lj.lam))
+    let held: Arrow? = a.view.decls.types.arrow_parts(lam_ty)
     let seats: List<TypeId> = held?.seats ?? []
-    let rt: TypeId = held?.answer ?? a.typing.types.intern(Type.Error)
-    let body: ExprId? = a.p.store.lambda_parts(lj.lam)?.body
-    let lo = new_lower(a, lj.home, rt, lj.sub, jobs)
-    mut tys = lo.reg_types
+    let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
+    let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
+    let lo = new_lower(a, rt, lj.sub, jobs)
+    mut tys = lo.out.reg_types
     // LICENSED I3: `tys` ALIASES lo.reg_types — `concat` would rebind
     tys.push(lam_ty)
     for pt in seats { tys.push(pt) }
-    lo.seeded()
-    lo.give(Ins.ScopeEnter(Level.Application))
+    lo.out.seeded()
+    lo.out.give(Ins.ScopeEnter(Level.Application))
     if body == null {
-        lo.record("defect: a lift without a lambda survived typing")
+        lo.out.defect("a lift without a lambda survived typing")
     }
     let r = lower_subtree(lo, body ?? lj.lam)
-    lo.give(Ins.ScopeExit(r))
-    lo.give(Ins.RetVal(r))
+    lo.out.give(Ins.ScopeExit(r))
+    lo.out.give(Ins.RetVal(r))
     LoweredBody {
-        body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: rt, gives: r, ins: lo.ins, reg_types: lo.reg_types },
-        failures: lo.failures,
-        refusals: [],
+        body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types },
+        voices: lo.out.voices,
     }
 }
 
 /// The wrapper, built directly in IR — no AST exists for it: env
 /// ignored at seat 0, the target called with the forwarded seats.
 fn wrapped_body(a: Analysis, w: Wrap) -> Body {
-    let fnty = a.typing.types.intern(Type.Fn(w.seats, w.ret))
+    let fnty = a.view.decls.types.intern(Type.Fn(w.seats, w.ret))
     mut tys: List<TypeId> = [fnty]
     mut args: List<Reg> = []
     // LICENSED I3: seat registers by ordinal; the ZIP is positional
@@ -271,39 +257,32 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
     Body { name: w.name, params: [fnty].concat(w.seats), ret: w.ret, gives: dst, ins: ins, reg_types: tys }
 }
 
-fn lower_main(a: Analysis, home: int, jobs: Jobs) -> LoweredBody {
-    let lo = new_lower(a, home, null, null, jobs)
-    lo.give(Ins.ScopeEnter(Level.Application))
-    let last: Reg? = lower_stmts(lo, a.p.stmts)
+fn lower_main(a: Analysis, jobs: Jobs) -> LoweredBody {
+    let lo = new_lower(a, null, null, jobs)
+    lo.out.give(Ins.ScopeEnter(Level.Application))
+    let last: Reg? = lower_stmts(lo, a.view.stmts)
     let refusal: Diag? = if last == null { null } else { print_lowering(lo, last!) }
-    lo.give(Ins.ScopeExit(null))
-    lo.give(Ins.Ret(0))
+    if refusal != null { lo.out.voices.speak(refusal!) }
+    lo.out.give(Ins.ScopeExit(null))
+    lo.out.give(Ins.Ret(0))
     LoweredBody {
         body: Body {
-            name: "main", params: [], ret: a.typing.types.intern(Type.Int),
-            gives: null, ins: lo.ins, reg_types: lo.reg_types,
+            name: "main", params: [], ret: a.view.decls.types.intern(Type.Int),
+            gives: null, ins: lo.out.ins, reg_types: lo.out.reg_types,
         },
-        failures: lo.failures,
-        refusals: some_list(refusal),
+        voices: lo.out.voices,
     }
 }
 
 /// The entry of a program that is only checked: nothing runs.
-fn empty_main(a: Analysis) -> LoweredBody {
+fn empty_main(types: TypeRegistry) -> LoweredBody {
     let ins: List<Ins> = [Ins.ScopeEnter(Level.Application), Ins.ScopeExit(null), Ins.Ret(0)]
     LoweredBody {
-        body: Body { name: "main", params: [], ret: a.typing.types.intern(Type.Int), gives: null, ins: ins, reg_types: [] },
-        failures: [],
-        refusals: [],
+        body: Body { name: "main", params: [], ret: types.intern(Type.Int), gives: null, ins: ins, reg_types: [] },
+        voices: no_voices(),
     }
 }
 
-
-/// A fn the driver lowers DIRECTLY — generic ones wait for their
-/// instantiations to arrive on the worklist.
-fn directly_lowered(parts: FnParts?) -> FnParts? {
-    if parts != null && parts!.tparams.is_empty() { parts } else { null }
-}
 
 /// The specialization's name: uncollidable (`$` is unwritable) and
 /// stable per run — interned ids in ordinal order.
@@ -311,15 +290,8 @@ fn mangle(name: string, sub: Sub) -> string {
     "${name}$${joined(["${a.index}" for a in sub.args], "_")}"
 }
 
-/// A declaration's body, when the statement is a fn.
-fn fn_body_of(a: Analysis, s: StmtId) -> ExprId? {
-    let parts: FnParts? = a.p.store.fn_parts(s)
-    if parts == null { return null }
-    parts!.body
-}
-
 // ── voices ──
 
 fn runs_outside_entry(a: Analysis, s: StmtId, entry: Analysis) -> Diag {
-    refusal("lower.entry_only", loc_at(a.p.source.file, a.p.store.stmt_span(s)), "a module file holds declarations — only the entry `${entry.p.source.file ?? "the entry"}` runs statements", "runs here", "move it into the entry, or wrap it in a fn the entry calls")
+    refusal("lower.entry_only", loc_at(a.view.source.file, a.view.store.stmt_span(s)), "a module file holds declarations — only the entry `${entry.view.source.file ?? "the entry"}` runs statements", "runs here", "move it into the entry, or wrap it in a fn the entry calls")
 }

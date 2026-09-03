@@ -5,26 +5,26 @@
 //! catch's default arm exits with the SUBJECT'S OWN BOX, exactly
 //! as `?` does: the unmatched failure propagates by pointer move.
 use core.{ExprId, TypeId, Reg, Ins, ResSides}
-use features.{LowerCx, EnumSig, okness_of, payload_of, tag_of, hollow_of,
+use features.{LowerCx, foreign_node, EnumSig, okness_of, payload_of, tag_of, hollow_of,
               hole_defect, lower_defect}
 
 fn catch_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
-    match cx.store.expr(e) {
+    match cx.view.store.expr(e) {
         .Catch(s, vs, bs, arms) -> catched_reg(cx, e, s, vs, bs, arms),
-        _ -> lower_defect(cx, e, hole_defect()),
+        _ -> foreign_node(cx, e),
     }
 }
 
 fn catched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
                binds: List<string>, values: List<ExprId>) -> Reg {
     let r = cx.reg_of(subject)
-    let sides: ResSides? = cx.types.res_parts(cx.type_at(subject))
+    let sides: ResSides? = cx.view.types.res_parts(cx.type_at(subject))
     if sides == null { return lower_defect(cx, e, "a catch without a Result survived typing") }
     cx.emit(Ins.IfStart(okness_of(cx, r)))
     cx.emit(Ins.ArmEnd(payload_of(cx, r, sides!.ok)))
     let recovered = failure_reg(cx, e, r, sides!, variants, binds, values)
-    let dst = cx.mint(e)
+    let dst = cx.result(e)
     cx.emit(Ins.RegionEnd(dst, recovered))
     dst
 }
@@ -72,7 +72,7 @@ fn switched_reg(cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
         cx.emit(Ins.FnExit(r))
         answer = hollow_of(cx, cx.type_at(e))
     }
-    let dst = cx.mint(e)
+    let dst = cx.result(e)
     cx.emit(Ins.RegionEnd(dst, answer!))
     dst
 }
@@ -86,12 +86,7 @@ fn bind_payload(cx: LowerCx, err: Reg, sig: EnumSig, vn: string, value: ExprId) 
 
 /// Every variant named — the switch needs no propagating default.
 fn total(sig: EnumSig, variants: List<string>) -> bool {
-    sig.names.all(named_arm(variants, it))
-}
-
-/// The pronoun cannot ride a nested method call — the wrapper can.
-fn named_arm(variants: List<string>, name: string) -> bool {
-    variants.contains(name)
+    sig.names.all(named_in(variants, it))
 }
 
 /// The selector values, arm order. A total switch's LAST arm is the

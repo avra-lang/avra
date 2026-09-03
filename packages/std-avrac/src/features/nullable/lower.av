@@ -5,20 +5,20 @@
 //! side, the absent arm, and the chain's absence all run only when
 //! the value is not there.
 use core.{ExprId, StmtId, TypeId, Reg, Ins, Type}
-use features.{LowerCx, StmtLowerCx, StructSig, presence_of, carried_of, carried_type,
+use features.{LowerCx, StmtLowerCx, StructSig, foreign_node, presence_of, carried_of, carried_type,
               adopted, absent_of, insisted, hollow_of, okness_of, payload_of,
-              hole_defect, lower_defect, slot_read}
+              lower_defect, slot_read, length_word}
 
 fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
-    match cx.store.expr(e) {
+    match cx.view.store.expr(e) {
         .NullLit -> null_reg(cx, e),
         .Coalesce(l, r) -> coalesce_reg(cx, e, l, r),
         .Force(v) -> insisted(cx, e, cx.reg_of(v), cx.type_at(v)),
         .Propagate(v) -> propagate_reg(cx, e, v),
         .MatchOpt(s, _, p, a) -> match_opt_reg(cx, e, s, p, a),
         .Chain(s, name) -> chain_reg(cx, e, s, name),
-        _ -> lower_defect(cx, e, hole_defect()),
+        _ -> foreign_node(cx, e),
     }
 }
 
@@ -40,7 +40,7 @@ fn presence_region(cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
     cx.emit(Ins.IfStart(presence_of(cx, v, held)))
     cx.emit(Ins.ArmEnd(present()))
     let answer = absent()
-    let dst = cx.mint(e)
+    let dst = cx.result(e)
     cx.emit(Ins.RegionEnd(dst, answer))
     dst
 }
@@ -78,7 +78,7 @@ fn match_opt_reg(cx: LowerCx, e: ExprId, subject: ExprId,
 fn propagate_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
     let r = cx.reg_of(v)
     let held = cx.type_at(v)
-    if cx.types.shape_of(held) is .Res { return propagate_res_reg(cx, e, r) }
+    if cx.view.types.shape_of(held) is .Res { return propagate_res_reg(cx, e, r) }
     presence_region(cx, e, r, held,
         () -> carried_of(cx, r, held),
         () -> departed(cx, e))
@@ -93,7 +93,7 @@ fn propagate_res_reg(cx: LowerCx, e: ExprId, r: Reg) -> Reg {
     cx.emit(Ins.ArmEnd(payload_of(cx, r, cx.type_at(e))))
     cx.emit(Ins.FnExit(r))
     let hollow = hollow_of(cx, cx.type_at(e))
-    let dst = cx.mint(e)
+    let dst = cx.result(e)
     cx.emit(Ins.RegionEnd(dst, hollow))
     dst
 }
@@ -112,14 +112,14 @@ fn departed(cx: LowerCx, e: ExprId) -> Reg {
 /// (typing enforced it), and yields a hollow the merge never
 /// reads. The driver binds the answered register like any let's.
 fn let_else_reg(cx: StmtLowerCx, s: StmtId) -> Reg? {
-    let subject: ExprId? = cx.store.stmt_value(s)
+    let subject: ExprId? = cx.view.store.stmt_value(s)
     if subject == null { return null }
     let ex = cx.expr
     let v = ex.reg_of(subject!)
     let held = ex.type_at(subject!)
     ex.emit(Ins.IfStart(presence_of(ex, v, held)))
     ex.emit(Ins.ArmEnd(carried_of(ex, v, held)))
-    cx.lower_stmts(else_stmts_of(cx.store.stmt(s)))
+    cx.lower_stmts(else_stmts_of(cx.view.store.stmt(s)))
     let hollow = hollow_of(ex, carried_type(ex, held))
     let dst = ex.mint_ty(carried_type(ex, held))
     ex.emit(Ins.RegionEnd(dst, hollow))
@@ -154,7 +154,7 @@ fn lifted_member(cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
 fn member_reg(cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
               name: string, want: TypeId) -> Reg {
     let sig: StructSig? = cx.fields_of(held)
-    if sig == null { return length_reg(cx, carried, held) }
+    if sig == null { return length_reg(cx, e, carried, held) }
     let slot: int? = sig!.slot_of(name)
     if slot == null { return lower_defect(cx, e, "a memberless chain survived typing") }
     // LICENSED I9: type identity — interned ids ARE the agreement
@@ -164,11 +164,12 @@ fn member_reg(cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
     slot_read(cx, carried, slot!, want)
 }
 
-/// `length` on the carried value, by its shape — a string measures
-/// through strlen, a list through its len word.
-fn length_reg(cx: LowerCx, carried: Reg, held: TypeId) -> Reg {
-    let word = if cx.types.shape_of(held) is .Str { "strlen" } else { "avra_array_len" }
+/// `length` on the carried value — the word the one measure table
+/// gives its shape; a shape nothing measures is a defect.
+fn length_reg(cx: LowerCx, e: ExprId, carried: Reg, held: TypeId) -> Reg {
+    let word: string? = length_word(cx.view.types.shape_of(held))
+    if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }
     let dst = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(dst, word, [carried]))
+    cx.emit(Ins.CallRt(dst, word!, [carried]))
     dst
 }

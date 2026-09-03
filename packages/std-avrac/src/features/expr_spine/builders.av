@@ -1,6 +1,6 @@
 //! Parse-time lowering: captures -> expression nodes.
 use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, Span, Param}
-use features.{LangNode, Builder, token_at, zip_defect, aligned_binds, window_end}
+use features.{LangNode, Builder, token_at, zip_defect, aligned_binds}
 use grammar.{Token}
 
 fn build_int_lit(b: Builder) -> Result<LangNode, string> {
@@ -78,35 +78,6 @@ fn build_fold_coalesce(b: Builder) -> Result<LangNode, string> {
     let rights = b.exprs(1)?
     for r in rights {
         acc = b.store.alloc_expr(Expr.Coalesce(acc, r), b.cover(acc, r))
-    }
-    b.wrap_expr(acc)
-}
-
-/// `v ( (args) )*` folds left: each paren group applies the value
-/// so far — `pick(m)(x)` calls what `pick(m)` answered. The open
-/// parens anchor the windows, exactly as the props fold's do.
-fn build_fold_apply(b: Builder) -> Result<LangNode, string> {
-    mut acc = b.expr(0)?
-    let opens = b.tokens(1)?
-    if opens.is_empty() { return b.wrap_expr(acc) }
-    let cargs = b.exprs(2)?
-    let ends: int? = b.span_end()
-    if ends == null { return Result.Err("an application chain without a span") }
-    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
-    for (j, o) in opens.enumerate() {
-        let upto = window_end(opens, j, ends!)
-        acc = b.store.alloc_expr(
-            Expr.CallValue(acc, args_between(b, cargs, o.span.lo, upto)), b.span)
-    }
-    b.wrap_expr(acc)
-}
-
-/// `v ( [i] )*` folds left: `m[i][j]` is `(m[i])[j]`.
-fn build_fold_index(b: Builder) -> Result<LangNode, string> {
-    mut acc = b.expr(0)?
-    let indices = b.exprs(1)?
-    for i in indices {
-        acc = b.store.alloc_expr(Expr.Index(acc, i), b.cover(acc, i))
     }
     b.wrap_expr(acc)
 }

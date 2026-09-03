@@ -1,24 +1,26 @@
 //! THE WORKSPACE — many files, one program, driven by the query
-//! kernel. A module is a DIRECTORY (its `.av` files, one namespace)
-//! or, absent that, a file; paths are absolute from the package
-//! root, `.`-joined. Every step is a family of queries over the Db,
-//! keyed by FileId: `source` (an input), `parsed` (pure, per file),
-//! `items` (the declarations a file mints into THE table, decls.av),
-//! and `analyzed` (every file typed against every other — the four
-//! declaration rounds across all files before any body — ONE cell
-//! whose deps are every parse and item table it read). `surface` and
-//! a file's namespace derive from `items`. The host is a record of fns, so
-//! tests hand in memory and the CLI hands in the disk.
-use features.{Decls, new_decls, kind_word, FileInfo, Decl}
-use core.{ModulePath, module_path, DeclId, FileId, StmtId, UseParts, fp_str, joined, flatten, dir_of, sorted_texts, first_slash, under_dir}
-use diagnostics.{SourceFile, new_source_file, Diag, error_at, pointed, loc_at, render_among, refusal}
+//! kernel. Every step is a family of queries: `source`, `parsed`,
+//! `items` by FileId; `namespace` by ModuleId; `visible`, `resolved`
+//! by FileId; `sig`, `methods`, `typed` by DeclId; `folded` and
+//! `analysis` by FileId; `lowered` by unit. A declaration's
+//! signature and a type's method table are asked LAZILY — the
+//! table's own reads are the queries, armed here — so declaration
+//! order stops mattering, a cycle speaks, and a body depends on
+//! exactly what it read. `program` composes the files for lowering.
+//! The host is a record of fns, so tests hand in memory and the CLI
+//! hands in the disk; the empty root is a lone file's package of
+//! one.
+use core.{ModulePath, module_path, DeclId, FileId, ModuleId, UseParts, fp, fp_str, joined, flatten, dir_of, sorted_texts, first_slash, under_dir, joined_path, TypeId, Type, some_list, same_file, placed, placed_at, touch}
+use features.{Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, module_names, file_names, Clash, method_clashes, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig}
+use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position}
 use query.{Db, new_db, Key}
 use @std.errors.{Loc}
 
 /// The filesystem, as four questions.
 export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool }
 
-/// A host over an in-memory file table — the tests' host.
+/// A host over an in-memory file table — the tests' host, and a
+/// lone file's.
 export fn memory_host(files: Map<string, string>, names: List<string>) -> Host {
     Host {
         exists: (p: string) -> files.get(p) != null,
@@ -34,27 +36,39 @@ fn children_of(names: List<string>, dir: string) -> List<string> {
     mut out: List<string> = []
     for n in names {
         if under_dir(n, dir) {
-            let rest = n.substring(dir.length + 1, n.length)
+            let rest = if dir.length == 0 { n } else { n.substring(dir.length + 1, n.length) }
             let cut: int = first_slash(rest)
             let child = if cut < 0 { rest } else { rest.substring(0, cut) }
-            if !out.contains(child) { out.push(child) }
+            if child.length > 0 && !out.contains(child) { out.push(child) }
         }
     }
     sorted_texts(out)
 }
 
-/// `programs`, `file_items` are the families' value tables, dense by
-/// FileId; `analyses` is the one `analyzed` cell's value.
+/// The families' value tables, sparse by their keys and grown as
+/// values are placed; `sigs` and `methods` live in the declaration
+/// table itself.
 export type Workspace = {
     host: Host,
     root: string,
     lang: Language,
     db: Db,
     decls: Decls,
-    programs: List<ParsedProgram?>,
+    programs: List<Parsed?>,
     file_items: List<List<DeclId>?>,
-    analyses: List<List<Analysis>?>,
+    module_names: List<ModuleNames?>,
+    visibles: List<Namespace?>,
+    name_facts: List<NameFacts?>,
+    sig_voices: List<Voices?>,
+    decl_facts: List<TypeFacts?>,
+    method_clashes: List<List<Clash>?>,
+    folds: List<TypeFacts?>,
+    analyses: List<Analysis?>,
+    specs: Map<string, int>,
+    asks: List<Wanted>,
+    units: List<Unit?>,
     defects: List<Diag>,
+    lone: bool,
     clock: fn() -> int,
     phases: List<Phase>,
 }
@@ -62,56 +76,116 @@ export type Workspace = {
 /// One timed phase, in nanoseconds of the workspace's clock.
 export type Phase = { name: string, ns: int }
 
-// The families' keys: numbers by registration order in
-// `timed_workspace`, args by FileId.
-fn source_key(arg: int) -> Key { Key { family: 0, arg: arg } }
-fn parsed_key(arg: int) -> Key { Key { family: 1, arg: arg } }
-fn items_key(arg: int) -> Key { Key { family: 2, arg: arg } }
-fn analyzed_key() -> Key { Key { family: 3, arg: 0 } }
+/// THE FAMILIES — the compiler's query vocabulary, in pipeline
+/// order. Keys by FileId (`Source` … `Resolved`, `Folded`,
+/// `Analysis`), ModuleId (`Namespace`), DeclId (`Sig`, `Methods`,
+/// `Typed`) or unit (`Lowered`). `ordinal` is the kernel's number
+/// for each; `refetched` re-asks any of them — both exhaustive, so
+/// a new family cannot ship half-registered.
+enum Family {
+    Source
+    Parsed
+    Items
+    Namespace
+    Visible
+    Resolved
+    Sig
+    Methods
+    Typed
+    Folded
+    Analysis
+    Lowered
+}
+
+fn key(f: Family, arg: int) -> Key {
+    Key { family: ordinal(f), arg: arg }
+}
+
+fn ordinal(f: Family) -> int {
+    match f {
+        .Source -> 0,
+        .Parsed -> 1,
+        .Items -> 2,
+        .Namespace -> 3,
+        .Visible -> 4,
+        .Resolved -> 5,
+        .Sig -> 6,
+        .Methods -> 7,
+        .Typed -> 8,
+        .Folded -> 9,
+        .Analysis -> 10,
+        .Lowered -> 11,
+    }
+}
+
+/// The families in ordinal order — the kernel registers them so.
+fn families() -> List<Family> {
+    let all: List<Family> = [Family.Source, Family.Parsed, Family.Items, Family.Namespace, Family.Visible, Family.Resolved,
+                             Family.Sig, Family.Methods, Family.Typed, Family.Folded, Family.Analysis, Family.Lowered]
+    all
+}
 
 export fn new_workspace(host: Host, root: string, lang: Language) -> Workspace {
     timed_workspace(host, root, lang, () -> 0)
+}
+
+/// A lone file as a package of one: a memory host holding just it,
+/// rooted at its directory, with no modules to import from.
+export fn lone_workspace(path: string, text: string, lang: Language) -> Workspace {
+    mut files: Map<string, string> = {}
+    files.set(path, text)
+    let ws = new_workspace(memory_host(files, [path]), dir_of(path), lang)
+    ws with { lone: true }
 }
 
 /// A workspace that times its phases by the given clock (nanoseconds).
 export fn timed_workspace(host: Host, root: string, lang: Language, clock: fn() -> int) -> Workspace {
     let ws = Workspace {
         host: host, root: root, lang: lang, db: new_db(), decls: new_decls(),
-        programs: [], file_items: [], analyses: [null], defects: [],
+        programs: [], file_items: [], module_names: [], visibles: [], name_facts: [],
+        sig_voices: [], decl_facts: [], method_clashes: [], folds: [], analyses: [], specs: {}, asks: [], units: [], defects: [], lone: false,
         clock: clock, phases: [],
     }
-    let _ = ws.db.family((arg: int) -> verified_source(ws, arg))
-    let _ = ws.db.family((arg: int) -> verified_parse(ws, arg))
-    let _ = ws.db.family((arg: int) -> verified_items(ws, arg))
-    let _ = ws.db.family((arg: int) -> verified_analyzed(ws, arg))
+    for f in families() {
+        if ws.db.family((arg: int) -> refetched(ws, f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
+    }
+    // the table's reads ARE the queries
+    ws.decls.arm((d: DeclId) -> ensured(ws, d))
+    ws.decls.arm_methods((d: DeclId) -> methods_ensured(ws, d))
     ws
 }
 
-/// A family's arg, as the file it keys by.
-fn file_at(arg: int) -> FileId {
-    FileId { index: arg }
+fn ensured(ws: Workspace, d: DeclId) {
+    let _ = sig(ws, d)
 }
 
-// The verifiers: re-fetch, then answer the cell's changed_at.
-fn verified_source(ws: Workspace, arg: int) -> int {
-    let _ = source(ws, file_at(arg))
-    ws.db.changed_at(source_key(arg))
+fn methods_ensured(ws: Workspace, d: DeclId) {
+    let _ = methods(ws, d)
 }
 
-fn verified_parse(ws: Workspace, arg: int) -> int {
-    let _ = parsed(ws, file_at(arg))
-    ws.db.changed_at(parsed_key(arg))
-}
+/// A family's arg, as the file, module or declaration it keys by.
+fn file_at(arg: int) -> FileId { FileId { index: arg } }
+fn module_at(arg: int) -> ModuleId { ModuleId { index: arg } }
+fn decl_at_arg(arg: int) -> DeclId { DeclId { index: arg } }
 
-fn verified_items(ws: Workspace, arg: int) -> int {
-    let _ = items(ws, file_at(arg))
-    ws.db.changed_at(items_key(arg))
-}
-
-// LICENSED I23: the kernel's verifier contract carries an arg the one-cell family never keys by
-fn verified_analyzed(ws: Workspace, arg: int) -> int {
-    let _ = analyze_all(ws)
-    ws.db.changed_at(analyzed_key())
+/// The kernel's verifier for every family: the key re-asked through
+/// its own query, then the cell's changed_at.
+fn refetched(ws: Workspace, f: Family, arg: int) -> int {
+    match f {
+        .Source -> touch(source(ws, file_at(arg))),
+        .Parsed -> touch(parsed(ws, file_at(arg))),
+        .Items -> touch(items(ws, file_at(arg))),
+        .Namespace -> touch(namespace(ws, module_at(arg))),
+        .Visible -> touch(visible(ws, file_at(arg))),
+        .Resolved -> touch(resolved(ws, file_at(arg))),
+        .Sig -> touch(sig(ws, decl_at_arg(arg))),
+        .Methods -> touch(methods(ws, decl_at_arg(arg))),
+        .Typed -> touch(typed(ws, decl_at_arg(arg))),
+        .Folded -> touch(folded(ws, file_at(arg))),
+        .Analysis -> touch(analysis(ws, file_at(arg))),
+        .Lowered -> touch(lowered(ws, arg)),
+    }
+    ws.db.changed_at(key(f, arg))
 }
 
 impl Workspace {
@@ -124,20 +198,14 @@ impl Workspace {
         mut ds = self.defects
         ds.push(error_at("language.defect", null, message))
     }
+
 }
 
 // ── The families ──
 
-/// A path's identity — the table mints it at first mention; the
-/// value tables grow to hold it.
+/// A path's identity — the table mints it at first mention.
 export fn file_id(ws: Workspace, path: string) -> FileId {
-    let f = ws.decls.file_id(path, module_of(ws, path))
-    // LICENSED I3: the value tables grown in place to the new id
-    mut ps = ws.programs
-    while ps.length <= f.index { ps.push(null) }
-    mut fi = ws.file_items
-    while fi.length <= f.index { fi.push(null) }
-    f
+    ws.decls.file_id(path, module_of(ws, path))
 }
 
 /// An INPUT: the file's text, hashed; the revision moves only when
@@ -145,59 +213,42 @@ export fn file_id(ws: Workspace, path: string) -> FileId {
 export fn source(ws: Workspace, f: FileId) -> SourceFile {
     let path = ws.decls.file(f).path
     let text = ws.host.read(path)
-    let key = source_key(f.index)
-    ws.db.set_input(key, fp_str(text))
-    ws.db.record_dep(key)
+    let k = key(Family.Source, f.index)
+    ws.db.set_input(k, fp_str(text))
+    ws.db.record_dep(k)
     new_source_file(path, text)
 }
 
 /// The file parsed — pure in its text.
-export fn parsed(ws: Workspace, f: FileId) -> ParsedProgram {
-    let key = parsed_key(f.index)
-    if ws.db.ask(key) is .Reuse {
-        let held: ParsedProgram = ws.programs[f.index]!
-        return held
-    }
-    ws.db.begin(key)
+export fn parsed(ws: Workspace, f: FileId) -> Parsed {
+    let k = key(Family.Parsed, f.index)
+    if ws.db.ask(k) is .Reuse { return placed_at(ws.programs, f.index)! }
+    ws.db.begin(k)
     let p = parse_program(ws.lang, source(ws, f))
-    ws.db.settle(key, program_hash(p))
-    mut ps = ws.programs
-    ps.set(f.index, p)
+    ws.db.settle(k, program_hash(p))
+    placed(ws.programs, f.index, p)
     p
 }
 
 /// A program's fingerprint — the fold of its statements'.
-fn program_hash(p: ParsedProgram) -> int {
-    mut h = 17
-    for s in p.stmts { h = h * 31 + p.store.stmt_fingerprint(s) }
-    h
+fn program_hash(p: Parsed) -> int {
+    fp(17, [p.store.stmt_fingerprint(s) for s in p.stmts])
 }
 
 /// The declarations a file MINTS into the one table; the answer's
 /// hash is the item tree's — names and kinds.
 export fn items(ws: Workspace, f: FileId) -> List<DeclId> {
-    let key = items_key(f.index)
-    if ws.db.ask(key) is .Reuse {
-        let held: List<DeclId> = ws.file_items[f.index] ?? []
+    let k = key(Family.Items, f.index)
+    if ws.db.ask(k) is .Reuse {
+        let held: List<DeclId> = placed_at(ws.file_items, f.index) ?? []
         return held
     }
-    ws.db.begin(key)
-    let ids = admitted(ws, f)
-    mut h = 7
-    for d in ids {
-        let x = decl_at(ws, d)
-        h = h * 31 + fp_str("${x.name}/${kind_word(x.kind)}/${x.exported}")
-    }
-    ws.db.settle(key, h)
-    mut fi = ws.file_items
-    fi.set(f.index, ids)
-    ids
-}
-
-/// A file's parse admitted to the table.
-fn admitted(ws: Workspace, f: FileId) -> List<DeclId> {
+    ws.db.begin(k)
     let p = parsed(ws, f)
-    ws.decls.admit(f, p.store, p.stmts)
+    let ids = ws.decls.admit(f, p.store, p.stmts)
+    ws.db.settle(k, fp(7, [item_print(ws, d) for d in ids]))
+    placed(ws.file_items, f.index, ids)
+    ids
 }
 
 /// The declaration behind an id.
@@ -205,15 +256,274 @@ export fn decl_at(ws: Workspace, d: DeclId) -> Decl {
     ws.decls.decl(d)
 }
 
-/// A declaration's file path.
-fn path_of(ws: Workspace, d: DeclId) -> string {
-    ws.decls.file(ws.decls.decl(d).file).path
+/// An item's print in the item tree's hash: its name, kind and
+/// visibility.
+fn item_print(ws: Workspace, d: DeclId) -> int {
+    let x = decl_at(ws, d)
+    fp_str("${x.name}/${kind_word(x.kind)}/${x.exported}")
+}
+
+/// A module's names, bound ONCE: every file's declarations in file
+/// then declaration order.
+export fn namespace(ws: Workspace, m: ModuleId) -> ModuleNames {
+    let k = key(Family.Namespace, m.index)
+    if ws.db.ask(k) is .Reuse { return placed_at(ws.module_names, m.index)! }
+    ws.db.begin(k)
+    let paths = module_files(ws, module_path(segments_of(ws.decls.module_name(m))))
+    let ordered: List<DeclId> = flatten([items(ws, file_id(ws, path)) for path in paths])
+    let names = module_names(ws.decls, ordered, (path: string) -> shown(ws, path))
+    ws.db.settle(k, fp(3, [d.index for d in names.bound].concat([names.clashes.length])))
+    placed(ws.module_names, m.index, names)
+    names
+}
+
+/// What a file's top level sees: its module's names, then its
+/// imports — with what the `use` lines earned.
+export fn visible(ws: Workspace, f: FileId) -> Namespace {
+    let k = key(Family.Visible, f.index)
+    if ws.db.ask(k) is .Reuse { return placed_at(ws.visibles, f.index)! }
+    ws.db.begin(k)
+    let p = parsed(ws, f)
+    mut imports: List<Import> = []
+    mut diags: List<Diag> = []
+    for u in use_lines(p) {
+        let line = imported_line(ws, p, u)
+        imports = imports.concat(line.imports)
+        diags = diags.concat(line.diagnostics)
+    }
+    let names = file_names(ws.decls, f, namespace(ws, ws.decls.file(f).module_id), imports, (path: string) -> shown(ws, path))
+    let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
+    ws.db.settle(k, ws.db.revision())
+    placed(ws.visibles, f.index, out)
+    out
+}
+
+/// A file's names resolved.
+export fn resolved(ws: Workspace, f: FileId) -> NameFacts {
+    let k = key(Family.Resolved, f.index)
+    if ws.db.ask(k) is .Reuse { return placed_at(ws.name_facts, f.index)! }
+    ws.db.begin(k)
+    touch(items(ws, f))
+    let p = parsed(ws, f)
+    let out = resolve(ws.lang, file_view(ws.lang, p, ws.decls, f), visible(ws, f))
+    ws.db.settle(k, ws.db.revision())
+    placed(ws.name_facts, f.index, out)
+    out
+}
+
+/// A declaration's signature, computed on first ask: the ONE place
+/// declaration order stops mattering — a sig asks the sigs it names
+/// lazily through the table. A sig reached from inside its own
+/// computation (a recursive payload re-judging its slots) is
+/// simply not there yet.
+export fn sig(ws: Workspace, d: DeclId) -> DeclSig? {
+    let k = key(Family.Sig, d.index)
+    if !(ws.db.ask(k) is .Compute) {
+        let held: DeclSig? = ws.decls.sigs[d.index]
+        return held
+    }
+    ws.db.begin(k)
+    let x = ws.decls.decl(d)
+    let t = typer_for(ws, x)
+    declare_one(t, x)
+    placed(ws.sig_voices, d.index, t.facts.voices)
+    let out: DeclSig? = ws.decls.sigs[d.index]
+    ws.db.settle(k, sig_hash(out))
+    out
+}
+
+/// A signature's fingerprint — interned type ids and member names,
+/// so an unchanged sig cuts the wave at every caller.
+fn sig_hash(s: DeclSig?) -> int {
+    if s == null { return 0 }
+    let f: FnSig? = fn_sig_of(s)
+    if f != null { return fp(11, [t.index for t in [f!.ret].concat(f!.params)]) }
+    let r: StructSig? = record_sig_of(s)
+    if r != null { return fp(13, [t.index for t in r!.types].concat([fp_str(joined(r!.names, ","))])) }
+    let v: EnumSig? = variant_sig_of(s)
+    if v == null { return 1 }
+    fp(5, [p?.index ?? 0 - 1 for p in v!.payloads].concat([fp_str(joined(v!.names, ","))]))
+}
+
+/// A type's method table, filled from its own members and every
+/// impl block that names it — asked through the table's read, so a
+/// body depends on exactly the impls it dispatches through. Asked
+/// again from inside one of those impls' own registration, it
+/// answers what stands.
+export fn methods(ws: Workspace, target: DeclId) -> List<DeclId> {
+    let blocks = ws.decls.children_of(target).concat(impls_named(ws, ws.decls.decl(target).name))
+    // asked while one of its impls registers: the table so far,
+    // remembered by nobody
+    if blocks.any(registering(ws, it)) { return ws.decls.methods_of(target) }
+    let k = key(Family.Methods, target.index)
+    if !(ws.db.ask(k) is .Compute) { return ws.decls.methods_of(target) }
+    ws.db.begin(k)
+    for b in blocks { touch(sig(ws, b)) }
+    let out = ws.decls.methods_of(target)
+    placed(ws.method_clashes, target.index, method_clashes(ws.decls, target))
+    ws.db.settle(k, fp_str(joined([ws.decls.decl(m).name for m in out], ",")))
+    out
+}
+
+/// Whether a declaration's signature is being computed right now.
+fn registering(ws: Workspace, d: DeclId) -> bool {
+    ws.db.active(key(Family.Sig, d.index))
+}
+
+/// Every impl block of the program naming a type by this name.
+fn impls_named(ws: Workspace, name: string) -> List<DeclId> {
+    [x.id for x in ws.decls.decls if is_impl_of(x, name)]
+}
+
+fn is_impl_of(x: Decl, name: string) -> bool {
+    x.kind is .Impl && x.name == name
+}
+
+/// A typer over one declaration's expression range, in its file.
+fn typer_for(ws: Workspace, x: Decl) -> Typer {
+    let p = parsed(ws, x.file)
+    typer(ws.lang, file_view(ws.lang, p, ws.decls, x.file), resolved(ws, x.file), x.lo, x.hi)
+}
+
+/// One declaration's body typed — a table over its own expression
+/// range, the sigs it names asked as it reads them.
+export fn typed(ws: Workspace, d: DeclId) -> TypeFacts {
+    let k = key(Family.Typed, d.index)
+    if ws.db.ask(k) is .Reuse { return placed_at(ws.decl_facts, d.index)! }
+    ws.db.begin(k)
+    let x = ws.decls.decl(d)
+    let out = type_decl(typer_for(ws, x), x)
+    ws.db.settle(k, ws.db.revision())
+    placed(ws.decl_facts, d.index, out)
+    out
+}
+
+/// A file's bodies as one table: Main's facts first (its range
+/// spans the file), each declaration's laid over its own range,
+/// their voices in source order — what the facade and lowering
+/// read by expression.
+export fn folded(ws: Workspace, f: FileId) -> TypeFacts {
+    let k = key(Family.Folded, f.index)
+    if ws.db.ask(k) is .Reuse { return placed_at(ws.folds, f.index)! }
+    ws.db.begin(k)
+    let p = parsed(ws, f)
+    let hole = ws.decls.types.intern(Type.Error)
+    let out = new_type_facts(0, p.store.exprs.count(), p.store.stmts.count(), hole)
+    mut spoken: List<Diag> = []
+    for d in bodies_of(ws, f) {
+        let facts = typed(ws, d)
+        out.absorb(facts)
+        spoken = spoken.concat(facts.voices.list)
+    }
+    let folded_facts = out with { voices: Voices { list: by_position(spoken) } }
+    ws.db.settle(k, ws.db.revision())
+    placed(ws.folds, f.index, folded_facts)
+    folded_facts
+}
+
+/// A file's bodies to type: Main, then every declaration owning a
+/// range, in declaration order.
+fn bodies_of(ws: Workspace, f: FileId) -> List<DeclId> {
+    some_list(ws.decls.main_of(f)).concat([d for d in ws.decls.decls_of_file(f) if ws.decls.owns_a_range(d)])
+}
+
+/// A file's signature diagnostics, in the order the rounds spoke
+/// them: types, then traits' members, then fns, then impls.
+fn sig_diagnostics(ws: Workspace, f: FileId) -> List<Diag> {
+    let own = top_level_decls(ws, f)
+    mut out: List<Diag> = []
+    for rank in 0..4 {
+        for d in own {
+            if sig_rank(ws.decls, ws.decls.decl(d)) == rank {
+                touch(sig(ws, d))
+                let v: Voices? = placed_at(ws.sig_voices, d.index)
+                if v != null { out = out.concat(v!.list) }
+            }
+        }
+    }
+    out
+}
+
+fn sig_rank(decls: Decls, x: Decl) -> int {
+    match x.kind {
+        .Record or .Enum -> 0,
+        .Method -> if x.parent != null && decls.decl(x.parent!).kind is .Trait { 1 } else { 3 },
+        .Fn -> 2,
+        .Impl -> 3,
+        .Trait or .Default or .Main -> 4,
+    }
+}
+
+/// The method-table clashes spoken in a file: every type's table
+/// asked, the clashes whose later declaration lives here.
+fn method_diagnostics(ws: Workspace, f: FileId) -> List<Diag> {
+    mut out: List<Diag> = []
+    for t in typed_decls(ws) {
+        touch(methods(ws, t))
+        let held: List<Clash> = placed_at(ws.method_clashes, t.index) ?? []
+        out = out.concat([c.diag for c in held if same_file(c.file, f)])
+    }
+    out
+}
+
+/// Every record and enum of the program, in id order.
+fn typed_decls(ws: Workspace) -> List<DeclId> {
+    [x.id for x in ws.decls.decls if is_type_decl(x)]
+}
+
+fn is_type_decl(x: Decl) -> bool {
+    x.kind is .Record || x.kind is .Enum
+}
+
+/// One file's analysis: the snapshot every facade reads.
+export fn analysis(ws: Workspace, f: FileId) -> Analysis {
+    let k = key(Family.Analysis, f.index)
+    if ws.db.ask(k) is .Reuse { return placed_at(ws.analyses, f.index)! }
+    ws.db.begin(k)
+    let p = parsed(ws, f)
+    let names = resolved(ws, f)
+    let facts = folded(ws, f)
+    let path = ws.decls.file(f).path
+    let out = Analysis {
+        view: file_view(ws.lang, p, ws.decls, f), names: names, facts: facts, lang: ws.lang,
+        diagnostics: flatten([p.voices.list, names.voices.list, sig_diagnostics(ws, f), method_diagnostics(ws, f), facts.voices.list]),
+        program: () -> program(ws, path),
+    }
+    ws.db.settle(k, ws.db.revision())
+    placed(ws.analyses, f.index, out)
+    out
+}
+
+/// A unit's identity: its symbol, interned.
+fn spec_id(ws: Workspace, w: Wanted) -> int {
+    let known: int? = ws.specs.get(w.name)
+    if known != null { return known! }
+    let id = ws.asks.length
+    mut ss = ws.specs
+    ss.set(w.name, id)
+    mut as_ = ws.asks
+    as_.push(w)
+    id
+}
+
+/// One unit lowered and remembered: a body edit re-lowers its own
+/// unit; the specializations it wants are other units.
+export fn lowered(ws: Workspace, id: int) -> Unit {
+    let k = key(Family.Lowered, id)
+    if ws.db.ask(k) is .Reuse { return placed_at(ws.units, id)! }
+    ws.db.begin(k)
+    let w = ws.asks[id]
+    let out = lower_unit(analysis(ws, w.file), w)
+    ws.db.settle(k, ws.db.revision())
+    placed(ws.units, id, out)
+    out
 }
 
 // ── Modules ──
 
 /// A path as the user reads it: relative to the root.
 fn shown(ws: Workspace, path: string) -> string {
+    if ws.root.length == 0 { return path }
     if under_dir(path, ws.root) { return path.substring(ws.root.length + 1, path.length) }
     path
 }
@@ -229,21 +539,40 @@ export fn module_of(ws: Workspace, path: string) -> string {
 export fn module_files(ws: Workspace, m: ModulePath) -> List<string> {
     let dir = m.dir_under(ws.root)
     if ws.host.is_dir(dir) {
-        return [ "${dir}/${f}" for f in ws.host.list(dir) if f.ends_with(".av") ]
+        return [ joined_path(dir, f) for f in ws.host.list(dir) if is_source(f, dir) ]
     }
     let file = m.file_under(ws.root)
     if ws.host.exists(file) { return [file] }
     []
 }
 
+/// A source file: `.av`, or anything at all under the empty root —
+/// a lone file's package of one holds exactly what it was given.
+fn is_source(name: string, dir: string) -> bool {
+    name.ends_with(".av") || dir.length == 0
+}
+
+/// A file's declarations that speak for themselves — a NESTED one
+/// (refused by its feature, or an orphan of a failed parse) is
+/// asked only if a walk reaches it.
+fn top_level_decls(ws: Workspace, f: FileId) -> List<DeclId> {
+    [d for d in ws.decls.decls_of_file(f) if is_top_level(ws, d)]
+}
+
+fn is_top_level(ws: Workspace, d: DeclId) -> bool {
+    !ws.decls.decl(d).nested
+}
+
 /// Every `.av` file under a directory, recursively — `check <root>`.
+/// The empty root is a lone file's package of one: every name it
+/// was given is a file of it, whatever the name.
 export fn all_files(ws: Workspace, dir: string) -> List<string> {
     mut out: List<string> = []
     for f in ws.host.list(dir) {
-        let full = "${dir}/${f}"
+        let full = joined_path(dir, f)
         if ws.host.is_dir(full) {
             out = out.concat(all_files(ws, full))
-        } else if f.ends_with(".av") {
+        } else if is_source(f, dir) {
             out.push(full)
         }
     }
@@ -266,25 +595,7 @@ export fn surface(ws: Workspace, m: ModulePath) -> Map<string, DeclId> {
     out
 }
 
-/// A file's namespace: its module's declarations (its own included,
-/// in file then declaration order) and its imports — with what the
-/// `use` lines earned, then what binding earned.
-export fn namespace_of_file(ws: Workspace, f: FileId) -> Namespace {
-    let p = parsed(ws, f)
-    let m = module_path(segments_of(ws.decls.file(f).module))
-    let module_decls: List<DeclId> = flatten([items(ws, file_id(ws, s)) for s in module_files(ws, m)])
-    mut imports: List<Import> = []
-    mut diags: List<Diag> = []
-    for u in use_lines(p) {
-        let line = imported_line(ws, p, u)
-        imports = imports.concat(line.imports)
-        diags = diags.concat(line.diagnostics)
-    }
-    let names = namespace_of(ws.decls, f, module_decls, imports, (path: string) -> shown(ws, path))
-    names with { diagnostics: diags.concat(names.diagnostics) }
-}
-
-fn use_lines(p: ParsedProgram) -> List<UseParts> {
+fn use_lines(p: Parsed) -> List<UseParts> {
     mut out: List<UseParts> = []
     for s in p.stmts {
         let u: UseParts? = p.store.use_parts(s)
@@ -296,11 +607,13 @@ fn use_lines(p: ParsedProgram) -> List<UseParts> {
 /// What one `use` line brought in, and what it earned.
 type Imported = { imports: List<Import>, diagnostics: List<Diag> }
 
-/// One `use a.b.{x, y}`: the module must exist and be one thing,
-/// each item must be exported by it and listed once.
-fn imported_line(ws: Workspace, p: ParsedProgram, u: UseParts) -> Imported {
+/// One `use a.b.{x, y}`: a package root must exist, the module must
+/// exist and be one thing, each item must be exported by it and
+/// listed once.
+fn imported_line(ws: Workspace, p: Parsed, u: UseParts) -> Imported {
     let at = loc_at(p.source.file, p.store.stmt_span(u.stmt))
     let m = module_path(u.path)
+    if ws.lone { return Imported { imports: [], diagnostics: [unpackaged_use(at)] } }
     if m.package() != null { return Imported { imports: [], diagnostics: [package_later(at, m)] } }
     if ambiguous_module(ws, m) { return Imported { imports: [], diagnostics: [module_ambiguous(at, m)] } }
     if module_files(ws, m).is_empty() { return Imported { imports: [], diagnostics: [no_module(at, m)] } }
@@ -315,7 +628,7 @@ fn imported_line(ws: Workspace, p: ParsedProgram, u: UseParts) -> Imported {
         } else if id == null {
             diags.push(not_exported(at, m, item, exported_names(ws, m)))
         } else {
-            imports.push(Import { decl: id!, at: at, from: m.text() })
+            imports.push(Import { decl: id!, at: at })
         }
         listed.push(item)
     }
@@ -336,69 +649,47 @@ fn segments_of(dotted_text: string) -> List<string> {
     dotted_text.split(".")
 }
 
-// ── The whole program, typed together ──
+// ── The whole program ──
 
-/// Every file typed against every other: one shared table, the four
-/// declaration rounds across all files, then bodies — a signature in
-/// any file may name any file's types. Every file is admitted first;
-/// the analyses ride in FileId order. ONE cell, keyed 0: an edit
-/// anywhere recomputes it; nothing else does.
+/// Every file under the root analyzed, in FileId order — each step
+/// asked for every file before the next, so the phases time apart.
 export fn analyze_all(ws: Workspace) -> List<Analysis> {
-    let key = analyzed_key()
-    let verdict = ws.db.ask(key)
-    if verdict is .Cycle { ws.defect("the program asked for itself while being analyzed") }
-    if !(verdict is .Compute) {
-        let held: List<Analysis> = ws.analyses[0] ?? []
-        return held
-    }
-    ws.db.begin(key)
     let t0 = ws.clock()
-    for f in all_files(ws, ws.root) { let _ = items(ws, file_id(ws, f)) }
-    let staged = [staged_file(ws, fi) for fi in ws.decls.files]
+    for path in all_files(ws, ws.root) { let _ = items(ws, file_id(ws, path)) }
+    ws.timed("parse", ws.clock() - t0)
     let t1 = ws.clock()
-    let out = typed_together(ws.lang, staged, ws.decls)
-    ws.timed("parse+resolve", t1 - t0)
-    ws.timed("type", ws.clock() - t1)
-    ws.db.settle(key, ws.db.revision())
-    mut held = ws.analyses
-    held.set(0, out)
+    for fi in ws.decls.files { let _ = resolved(ws, fi.id) }
+    ws.timed("resolve", ws.clock() - t1)
+    let t2 = ws.clock()
+    for fi in ws.decls.files { let _ = sig_diagnostics(ws, fi.id) }
+    ws.timed("sigs", ws.clock() - t2)
+    let t3 = ws.clock()
+    let out = [analysis(ws, fi.id) for fi in ws.decls.files]
+    ws.timed("bodies", ws.clock() - t3)
     out
 }
 
-fn staged_file(ws: Workspace, fi: FileInfo) -> Staged {
-    let p = parsed(ws, fi.id)
-    let r = resolve(p, namespace_of_file(ws, fi.id))
-    Staged { p: p, r: r, t: typer(p, r, ws.decls, fi.id) }
-}
-
-/// One file's analysis, typed with everything it sees.
+/// One file's analysis by path.
 export fn analyze_file(ws: Workspace, path: string) -> Analysis {
-    analyze_all(ws).find(it.p.source.file == path)!
+    analysis(ws, file_id(ws, path))
 }
-
-// ── The program ──
 
 /// A whole program: every file analyzed together, and the entry
 /// among them (none when the program is only checked). It answers
 /// as a lone Analysis does — report, lowered, run — so every engine
 /// takes either.
-export type Program = { files: List<Analysis>, entry: int?, phases: List<Phase>, cache: string, defects: List<Diag> }
-
-/// A lone file as a program of one.
-export fn lone_program(a: Analysis) -> Program {
-    Program { files: [a], entry: 0, phases: [], cache: "", defects: [] }
-}
+export type Program = { ws: Workspace, files: List<Analysis>, entry: int?, phases: List<Phase>, cache: string, defects: List<Diag> }
 
 /// The program rooted at `ws.root`, entered at one of its files.
 export fn program(ws: Workspace, entry: string?) -> Program {
     let files = analyze_all(ws)
     let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
-    Program { files: files, entry: at, phases: ws.phases, cache: ws.db.stats(), defects: ws.defects }
+    Program { ws: ws, files: files, entry: at, phases: ws.phases, cache: ws.db.stats(), defects: ws.defects }
 }
 
 fn index_of_file(files: List<Analysis>, path: string) -> int? {
     for (i, a) in files.enumerate() {
-        if a.p.source.file == path { return i }
+        if a.view.source.file == path { return i }
     }
     null
 }
@@ -427,12 +718,16 @@ impl Program {
     /// Diagnostics rendered over every file's source — a frame's
     /// window comes from the file its Loc names.
     fn rendered(self, ds: List<Diag>) -> string {
-        let sources = [a.p.source for a in self.files]
-        joined([render_among(d, self.files[0].codes, sources) for d in ds], "\n\n")
+        let sources = [a.view.source for a in self.files]
+        joined([render_among(d, self.ws.lang.rows.codes, sources) for d in ds], "\n\n")
     }
 
-    /// The program as IR, memory strategy applied.
-    fn lowered(self) -> Lowered { memory(lower_all(self.files, self.entry)) }
+    /// The program as IR, memory strategy applied — every unit
+    /// through the workspace's memo.
+    fn lowered(self) -> Lowered {
+        let ws = self.ws
+        memory(union(self.ws.decls, self.files, self.entry, (w: Wanted) -> lowered(ws, spec_id(ws, w))))
+    }
 
     /// The lowered program, CHECKED — every file's analysis first,
     /// then lowering's own refusals.
@@ -457,7 +752,7 @@ impl Program {
 // ── voices ──
 
 fn package_later(at: Loc?, m: ModulePath) -> Diag {
-    refusal("resolve.package_later", at, "`${m.text()}` names a package — packages arrive with slice 15b", "in this use", null)
+    refusal("resolve.package_later", at, "`${m.text()}` names a package — packages arrive with a later slice", "in this use", null)
 }
 
 fn no_module(at: Loc?, m: ModulePath) -> Diag {
@@ -477,3 +772,6 @@ fn listed_twice(at: Loc?, item: string) -> Diag {
     refusal("resolve.import_clash", at, "`${item}` is listed twice", "in this use", null)
 }
 
+fn unpackaged_use(at: Loc?) -> Diag {
+    refusal("resolve.unpackaged", at, "this file is not in a package — `use` needs a root", "this use", "put an `avra.toml` at the package root above this file; modules are named from there")
+}

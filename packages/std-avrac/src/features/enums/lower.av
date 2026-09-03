@@ -4,13 +4,13 @@
 //! chain of comparisons. Exhaustiveness makes the last arm the
 //! region's default, so nothing falls through.
 use core.{ExprId, Reg, Ins, TypeId}
-use features.{LowerCx, EnumSig, tag_of, payload_of, hole_defect, lower_defect}
+use features.{LowerCx, EnumSig, tag_of, payload_of, foreign_node}
 
 fn enums_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
-    match cx.store.expr(e) {
+    match cx.view.store.expr(e) {
         .Match(subject, variants, binds, values) -> matched_reg(cx, e, subject, variants, binds, values),
-        _ -> lower_defect(cx, e, hole_defect()),
+        _ -> foreign_node(cx, e),
     }
 }
 
@@ -19,7 +19,7 @@ fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
                binds: List<string>, values: List<ExprId>) -> Reg {
     let declared: EnumSig? = cx.variants_at(subject)
     if declared == null || values.is_empty() {
-        cx.fail("defect: a `match` without an enum subject survived typing")
+        cx.defect("a `match` without an enum subject survived typing")
         return cx.result(e)
     }
     // The subject is evaluated either way; its TAG is only read
@@ -31,8 +31,8 @@ fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
     let last_arm = values.length - 1
     let cases = arm_cases(sig, variants, last_arm)
     if cases.length != last_arm {
-        cx.fail("defect: an arm naming no variant survived typing")
-        return cx.mint(e)
+        cx.defect("an arm naming no variant survived typing")
+        return cx.result(e)
     }
     let tag = tag_of(cx, v)
     cx.emit(Ins.SwitchStart(tag, cases))
@@ -40,7 +40,7 @@ fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
         if j < last_arm { cx.emit(Ins.ArmEnd(arm_reg(cx, sig, v, variants[j], binds[j], av))) }
     }
     let last = arm_reg(cx, sig, v, variants[last_arm], binds[last_arm], values[last_arm])
-    let dst = cx.mint(e)
+    let dst = cx.result(e)
     cx.emit(Ins.RegionEnd(dst, last))
     dst
 }

@@ -1,0 +1,213 @@
+//! A FILE'S NAMESPACE — what its top level sees, under ONE law: a
+//! name binds once. A MODULE's names are bound once, every file's
+//! declarations in file then declaration order: the first binder of
+//! a name wins and every later binder is a CLASH, filed under the
+//! file whose declaration lost. A file's namespace is those bindings
+//! plus its imports; an import of a name already visible clashes —
+//! unless it is the very declaration, which is redundant, not wrong.
+//! Fns and types are namespaces apart, as the language keeps them.
+use core.{DeclId, FileId, DeclKind, same_decl, same_file, text_before, inserted}
+use diagnostics.{Diag, refusal, Voices, no_voices}
+use @std.errors.{Loc}
+
+/// A file's namespace: the bindings, the names in declaration order
+/// (for suggestions), and the diagnostics building it earned.
+export type Namespace = {
+    fns: Map<string, DeclId>,
+    types: Map<string, DeclId>,
+    fn_names: List<string>,
+    type_names: List<string>,
+    voices: Voices,
+}
+
+export fn no_names() -> Namespace {
+    Namespace { fns: {}, types: {}, fn_names: [], type_names: [], voices: no_voices() }
+}
+
+/// A module's names, bound once: the declarations that won, in
+/// order, and every clash — filed under the losing file.
+export type ModuleNames = { bound: List<DeclId>, clashes: List<Clash> }
+
+export type Clash = { file: FileId, diag: Diag }
+
+/// One imported declaration: what, where the `use` stands, and the
+/// module it came from.
+export type Import = { decl: DeclId, at: Loc? }
+
+/// A module's declarations bound, in the order given. `shown`
+/// renders a path for prose.
+export fn module_names(decls: Decls, ordered: List<DeclId>, shown: fn(string) -> string) -> ModuleNames {
+    let b = binder(decls, shown)
+    for d in ordered { b.declare(d) }
+    ModuleNames { bound: b.bound, clashes: b.clashes }
+}
+
+/// A file's namespace: its module's winners, then its imports; the
+/// module's clashes at this file's own declarations ride along.
+export fn file_names(decls: Decls, file: FileId, module: ModuleNames, imports: List<Import>, shown: fn(string) -> string) -> Namespace {
+    let b = binder(decls, shown)
+    for d in module.bound { b.bind_decl(d) }
+    for i in imports { b.import(i, file) }
+    let own = [c.diag for c in module.clashes if in_file(c, file)]
+    b.names with { voices: Voices { list: own.concat(b.names.voices.list) } }
+}
+
+fn in_file(c: Clash, f: FileId) -> bool {
+    same_file(c.file, f)
+}
+
+/// A namespace under construction.
+type Binder = { decls: Decls, shown: fn(string) -> string, names: Namespace, bound: List<DeclId>, clashes: List<Clash> }
+
+fn binder(decls: Decls, shown: fn(string) -> string) -> Binder {
+    Binder { decls: decls, shown: shown, names: no_names(), bound: [], clashes: [] }
+}
+
+impl Binder {
+    /// A module declaration binds; a taken name is a clash at the
+    /// LATER declaration, filed under its file.
+    fn declare(self, d: DeclId) {
+        let x = self.decls.decl(d)
+        let prior: DeclId? = self.held(x.kind, x.name)
+        if prior == null {
+            self.bind(x.kind, x.name, d)
+            mut bs = self.bound
+            bs.push(d)
+            return
+        }
+        if same_decl(prior!, d) { return }
+        let p = self.decls.decl(prior!)
+        let at = self.decls.loc(d)
+        let diag = if same_file(p.file, x.file) { defined_twice(at, x.kind, x.name) } else { declared_twice(at, x.name, self.shown(self.decls.file(p.file).path)) }
+        mut cs = self.clashes
+        cs.push(Clash { file: x.file, diag: diag })
+    }
+
+    /// A winner bound without a law: the module already applied it.
+    fn bind_decl(self, d: DeclId) {
+        let x = self.decls.decl(d)
+        self.bind(x.kind, x.name, d)
+    }
+
+    /// An import binds in the file's namespace; a name already
+    /// visible refuses — unless it is the very same declaration.
+    fn import(self, i: Import, file: FileId) {
+        let x = self.decls.decl(i.decl)
+        let prior: DeclId? = self.held(x.kind, x.name)
+        if prior == null { return self.bind(x.kind, x.name, i.decl) }
+        if same_decl(prior!, i.decl) { return }
+        self.speak(import_clash(i.at, x.name, self.holder(prior!, file)))
+    }
+
+    /// Who holds a name already: this module (by file), or a module.
+    fn holder(self, prior: DeclId, file: FileId) -> string {
+        let p = self.decls.decl(prior)
+        if self.decls.module_of(prior) == self.decls.module_name(self.decls.file(file).module_id) {
+            return "this module (`${self.shown(self.decls.file(p.file).path)}`)"
+        }
+        "`${self.decls.module_of(prior)}`"
+    }
+
+    fn held(self, kind: DeclKind, name: string) -> DeclId? {
+        let as_fn: DeclId? = self.names.fns.get(name)
+        let as_type: DeclId? = self.names.types.get(name)
+        match kind {
+            .Fn -> as_fn,
+            .Record or .Enum or .Trait -> as_type,
+            .Method or .Default or .Impl or .Main -> null,
+        }
+    }
+
+    fn bind(self, kind: DeclKind, name: string, d: DeclId) {
+        match kind {
+            .Fn -> self.bind_fn(name, d),
+            .Record or .Enum or .Trait -> self.bind_type(name, d),
+            .Method or .Default or .Impl or .Main -> not_bound(),
+        }
+    }
+
+    fn bind_fn(self, name: string, d: DeclId) {
+        mut m = self.names.fns
+        m.set(name, d)
+        mut ns = self.names.fn_names
+        ns.push(name)
+    }
+
+    fn bind_type(self, name: string, d: DeclId) {
+        mut m = self.names.types
+        m.set(name, d)
+        mut ns = self.names.type_names
+        ns.push(name)
+    }
+
+    fn speak(self, d: Diag) { self.names.voices.speak(d) }
+}
+
+/// A member, an impl and a Main never enter a namespace.
+fn not_bound() {
+}
+
+// ── voices ──
+
+/// THE METHOD-TABLE LAW: a type's methods are a namespace — one
+/// impl owns each name, and a second declaration (any block, any
+/// file, whichever registered first) is a clash spoken at the
+/// later one, in declaration order.
+export fn method_clashes(decls: Decls, target: DeclId) -> List<Clash> {
+    mut out: List<Clash> = []
+    mut taken: List<string> = []
+    for m in by_declaration(decls, decls.methods_of(target)) {
+        let x = decls.decl(m)
+        if taken.contains(x.name) {
+            out.push(Clash { file: x.file, diag: method_taken(decls.loc(m), x.owner, x.name) })
+        }
+        taken.push(x.name)
+    }
+    out
+}
+
+/// Methods in declaration order — file, then statement — whatever
+/// order they registered in.
+fn by_declaration(decls: Decls, methods: List<DeclId>) -> List<DeclId> {
+    mut out: List<DeclId> = []
+    for m in methods {
+        let at = first_later(decls, out, decls.decl(m))
+        out = inserted(out, at, m)
+    }
+    out
+}
+
+/// The first index whose declaration comes after `x`.
+fn first_later(decls: Decls, methods: List<DeclId>, x: Decl) -> int {
+    for (i, m) in methods.enumerate() {
+        if declared_after(decls, decls.decl(m), x) { return i }
+    }
+    methods.length
+}
+
+/// Source order: by path (a FileId is minted in ASK order, which
+/// is nobody's source order), then by statement.
+fn declared_after(decls: Decls, a: Decl, b: Decl) -> bool {
+    if same_file(a.file, b.file) { return a.stmt.index > b.stmt.index }
+    text_before(decls.file(b.file).path, decls.file(a.file).path)
+}
+
+fn method_taken(at: Loc?, target: string, name: string) -> Diag {
+    refusal("type.impl", at, "`${target}.${name}` is declared twice", "declared again here", "one `impl` block owns each method name — rename or merge")
+}
+
+fn defined_twice(at: Loc?, kind: DeclKind, name: string) -> Diag {
+    match kind {
+        .Fn -> refusal("resolve.duplicate_fn", at, "`${name}` is defined more than once", "redefined here", "rename one of them"),
+        .Record or .Enum or .Trait or .Method or .Default or .Impl or .Main ->
+            refusal("resolve.duplicate_type", at, "`${name}` is declared more than once", "redeclared here", "rename one of them"),
+    }
+}
+
+fn declared_twice(at: Loc?, name: string, other: string) -> Diag {
+    refusal("resolve.duplicate_in_module", at, "`${name}` is declared twice in this module — here and in `${other}`", "declared here", "a module's files share one namespace — rename one, or move it to another module")
+}
+
+fn import_clash(at: Loc?, item: string, holder: string) -> Diag {
+    refusal("resolve.import_clash", at, "`${item}` is imported, but ${holder} already has it", "in this use", "drop the import, or rename the local declaration")
+}

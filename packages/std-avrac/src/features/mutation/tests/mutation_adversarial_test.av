@@ -4,12 +4,7 @@
 // it. A case that once produced a wrong answer, a crash, an internal
 // defect, or an engine divergence keeps its place here forever.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown, refusals, refused_with}
-
-/// The scalar-nullable maker every cell attack shares.
-fn halver() -> string {
-    "fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n"
-}
+use @std.avrac.testing.{shown, refusals, refused_with, refused_at_run, halver}
 
 spec "features/mutation (adversarial)" {
     given "the cell law — every managed shape refused, every unmanaged held" {
@@ -24,7 +19,7 @@ spec "features/mutation (adversarial)" {
         }
         then "a MANAGED niche cell stores present and absent alike" {
             // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
-            shown("mut x: string? = null\nx = \"got ${1}\"\nx ?? \"-\"") == "got 1"
+            shown("mut x: string? = null\nx = \"got $" + "{1}\"\nx ?? \"-\"") == "got 1"
         }
         then "an UNMANAGED niche cell passes — the pointee owes nothing" {
             // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
@@ -33,11 +28,9 @@ spec "features/mutation (adversarial)" {
     }
     given "the assignment law, aimed at the DECLARED cell" {
         then "SELF-assignment round-trips the pair" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
             shown("mut x: int? = 5\nx = x\nx ?? 0") == "5"
         }
         then "a wrong NULLABLE refuses nullable-to-nullable, exactly once" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
             refusals("fn g(b: bool) -> string? { if b { \"x\" } else { null } }\n" +
                      "mut x: int? = 5\nx = g(true)\nx ?? 0") == 1
         }
@@ -61,7 +54,6 @@ spec "features/mutation (adversarial)" {
             a.diagnostics.length == 1 && a.report().contains("`U` is a type, not a value")
         }
         then "a use before its cell exists refuses at resolve" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
             refused_with("mut x: int? = x\nx ?? 0", "`x` is used before its definition")
         }
         then "a `let` shadows a cell; the cell's last value survives underneath" {
@@ -69,24 +61,16 @@ spec "features/mutation (adversarial)" {
             shown("mut x: int? = null\nlet got = x ?? 1\nlet x = 50\nx + got") == "51"
         }
         then "a cell named like a fn shadows it for reads" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
             shown("${halver()}mut half: int? = half(4)\nhalf ?? 0") == "2"
         }
     }
     given "the two engines refuse alike at the absent cell" {
         then "forcing an absent cell traps in the evaluator's words" {
             // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
-            match analyze_source("mut x: int? = null\nx!").run() {
-                .Err(msg) -> msg.contains("unwrapped an absent value"),
-                .Ok(_) -> false,
-            }
+            refused_at_run("mut x: int? = null\nx!", "unwrapped an absent value")
         }
         then "REASSIGNED to absent then forced — 10.4's scenario traps, never lies" {
-            // LICENSED I4: the embedded SOURCE under test IS the nullable cell being proven
-            match analyze_source("mut x: int? = 7\nx = null\nx!").run() {
-                .Err(msg) -> msg.contains("unwrapped an absent value"),
-                .Ok(_) -> false,
-            }
+            refused_at_run("mut x: int? = 7\nx = null\nx!", "unwrapped an absent value")
         }
     }
     given "places under attack (rt28)" {
