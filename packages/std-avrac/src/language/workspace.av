@@ -586,17 +586,23 @@ export fn module_files(ws: Workspace, m: ModulePath) -> List<string> {
     if crosses_package(ws, src, m.local()) { return [] }
     let dir = m.dir_under(src)
     if ws.host.is_dir(dir) {
-        return [ joined_path(dir, f) for f in ws.host.list(dir) if is_source(f, dir) ]
+        return [ joined_path(dir, f) for f in ws.host.list(dir) if listed_source(ws, dir, f) ]
     }
     let file = m.file_under(src)
     if ws.host.exists(file) { return [file] }
     []
 }
 
-/// Whether a directory is one its package's manifest EXCLUDES.
-fn excluded_dir(ws: Workspace, dir: string) -> bool {
-    let pkg = ws.packages[holder_of_path(ws, dir)]
-    manifest(ws, pkg.ordinal).excludes.any(under_dir(dir, joined_path(pkg.root, it)) || dir == joined_path(pkg.root, it))
+/// Whether a path — a directory or a file — is one its package's
+/// manifest EXCLUDES.
+fn excluded(ws: Workspace, path: string) -> bool {
+    let pkg = ws.packages[holder_of_path(ws, path)]
+    manifest(ws, pkg.ordinal).excludes.any(under_dir(path, joined_path(pkg.root, it)) || path == joined_path(pkg.root, it))
+}
+
+/// A source file the package lists — `.av`, and not excluded.
+fn listed_source(ws: Workspace, dir: string, f: string) -> bool {
+    is_source(f, dir) && !excluded(ws, joined_path(dir, f))
 }
 
 /// Whether a directory is a package root of its own.
@@ -641,8 +647,8 @@ export fn all_files(ws: Workspace, dir: string) -> List<string> {
     for f in ws.host.list(dir) {
         let full = joined_path(dir, f)
         if ws.host.is_dir(full) {
-            if !is_package_dir(ws, full) && !excluded_dir(ws, full) { out = out.concat(all_files(ws, full)) }
-        } else if is_source(f, dir) {
+            if !is_package_dir(ws, full) && !excluded(ws, full) { out = out.concat(all_files(ws, full)) }
+        } else if is_source(f, dir) && !excluded(ws, full) {
             out.push(full)
         }
     }

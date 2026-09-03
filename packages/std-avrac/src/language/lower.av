@@ -158,23 +158,28 @@ export fn union(decls: Decls, files: List<Analysis>, entry: int?, every: bool, u
         wants = wants.concat(mu.wants)
     }
     mut seen: Map<string, bool> = {}
-    mut drained = 0
-    while !wants.is_empty() && drained < 1000 {
+    mut minted = 0
+    while !wants.is_empty() && minted < unit_ceiling() {
         let w = wants.pop()
         if seen.get(w.name) == null {
             seen.set(w.name, true)
+            minted = minted + 1
             let u = unit_of(w)
             fns = fns.concat(u.bodies)
             spoken = spoken.concat(u.voices.list)
             wants = wants.concat(u.wants)
         }
-        drained = drained + 1
     }
     if !wants.is_empty() {
-        spoken.push(defect_at(null, "specializations exploded past 1000 — polymorphic recursion is not supported"))
+        spoken.push(defect_at(null, "specializations exploded past ${unit_ceiling()} — polymorphic recursion is not supported"))
     }
     Lowered { fns: fns, entry: entry_body, types: decls.types, diagnostics: spoken, externs: extern_rows(decls) }
 }
+
+/// The ceiling on DISTINCT bodies one program mints. A source
+/// bounds its own count; only polymorphic recursion — each turn a
+/// wider substitution, none ever repeated — climbs forever.
+fn unit_ceiling() -> int { 100000 }
 
 /// A file's declared bodies to ask for, plain — a generic one waits
 /// for an instantiation to want it.

@@ -1,0 +1,21 @@
+// proves: equality across presence reads the same whichever side
+// wrote the nullable — the plain value may lead, for a pointer-shaped
+// nullable and a scalar one alike, and inside a predicate that
+// CAPTURES the nullable (the shape a `find` over a list takes).
+type Src = { file: string, text: string }
+
+fn plain_leads(s: string?) -> bool { "a" == s }
+
+fn scalar_leads(n: int?) -> bool { 1 == n }
+
+fn named(sources: List<Src>, file: string?) -> string {
+    let hit: Src? = sources.find(it.file == file)
+    hit?.text ?? "none"
+}
+
+let srcs = [Src { file: "a.av", text: "alpha" }, Src { file: "b.av", text: "beta" }]
+let leads = "${plain_leads("a")} ${plain_leads("z")} ${plain_leads(null)}"
+let scalars = "${scalar_leads(1)} ${scalar_leads(2)} ${scalar_leads(null)}"
+let want: string? = "b.av"
+let miss: string? = null
+"${leads} · ${scalars} · ${named(srcs, want)} ${named(srcs, miss)}"

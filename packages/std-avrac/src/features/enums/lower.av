@@ -5,7 +5,7 @@
 //! chain of comparisons; any other match is a CHAIN of tests in arm
 //! order, each arm's binds read inside its own region.
 use core.{ExprId, Reg, Ins, TypeId, Type, BinOp, Arm, PatId}
-use features.{LowerCx, EnumSig, tag_of, payload_at, foreign_node, same_value, tagged_value, lower_defect}
+use features.{LowerCx, EnumSig, arm_yield, tag_of, payload_at, foreign_node, same_value, tagged_value, lower_defect}
 use features.enums.{arm_binds, all_irrefutable}
 
 fn enums_reg(cx: LowerCx, e: ExprId) -> Reg {
@@ -44,7 +44,7 @@ fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, arms: List<Arm>) -> Reg 
     }
     let v = cx.reg_of(subject)
     let vty = cx.type_at(subject)
-    if arms.length == 1 { return arm_reg(cx, v, vty, arms[0]) }
+    if arms.length == 1 { return arm_reg(cx, v, vty, arms[0], cx.type_at(e)) }
     let declared: EnumSig? = cx.variants_at(subject)
     if declared != null && switchable(cx, arms, arms.length - 1) {
         return switched_reg(cx, e, v, vty, declared!, arms)
@@ -82,9 +82,9 @@ fn switched_reg(cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, sig: EnumSig, arms:
     }
     cx.emit(Ins.SwitchStart(tag_of(cx, v), cases))
     for (j, a) in arms.enumerate() {
-        if j < last_arm { cx.emit(Ins.ArmEnd(arm_reg(cx, v, vty, a))) }
+        if j < last_arm { cx.emit(Ins.ArmEnd(arm_reg(cx, v, vty, a, cx.type_at(e)))) }
     }
-    let last = arm_reg(cx, v, vty, arms[last_arm])
+    let last = arm_reg(cx, v, vty, arms[last_arm], cx.type_at(e))
     let dst = cx.result(e)
     cx.emit(Ins.RegionEnd(dst, last))
     dst
@@ -107,9 +107,9 @@ fn arm_cases(cx: LowerCx, sig: EnumSig, arms: List<Arm>, count: int) -> List<int
 /// answers unconditionally (coverage proved it).
 fn chained_reg(cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, arms: List<Arm>, k: int) -> Reg {
     let a = arms[k]
-    if k == arms.length - 1 { return arm_reg(cx, v, vty, a) }
+    if k == arms.length - 1 { return arm_reg(cx, v, vty, a, cx.type_at(e)) }
     cx.emit(Ins.IfStart(accepts_reg(cx, v, vty, a)))
-    cx.emit(Ins.ArmEnd(arm_reg(cx, v, vty, a)))
+    cx.emit(Ins.ArmEnd(arm_reg(cx, v, vty, a, cx.type_at(e))))
     let rest = chained_reg(cx, e, v, vty, arms, k + 1)
     let dst = cx.mint_ty(cx.type_at(e))
     cx.emit(Ins.RegionEnd(dst, rest))
@@ -119,11 +119,11 @@ fn chained_reg(cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, arms: List<Arm>, k: 
 /// One arm taken: its binds read from the subject (inside the arm's
 /// region, so an untaken arm's payloads are never read), then its
 /// value.
-fn arm_reg(cx: LowerCx, v: Reg, vty: TypeId, a: Arm) -> Reg {
+fn arm_reg(cx: LowerCx, v: Reg, vty: TypeId, a: Arm, want: TypeId) -> Reg {
     let first: PatId? = a.pats.first()
     let regs: List<Reg> = if first == null { [] } else { bind_regs(cx, first!, v, vty) }
     cx.bind_patterns(a.value, regs)
-    cx.reg_of(a.value)
+    arm_yield(cx, a.value, cx.reg_of(a.value), want)
 }
 
 /// The registers an arm's binds read, in pattern order — each

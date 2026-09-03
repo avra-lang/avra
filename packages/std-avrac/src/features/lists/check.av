@@ -3,11 +3,12 @@
 //! widening reached lists at G3); the empty literal is the
 //! absence-of-elements value, adopted by whatever list claims it.
 use core.{ExprId, Type, TypeId}
-use features.{TypeCx, spoken, this_is, slot_worthy, accepts, slice_promise, require_bool}
+use features.{TypeCx, spoken, this_is, slot_worthy, want_refused, accepts, slice_promise, require_bool}
 use diagnostics.{refusal}
 
 fn list_type(cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
     if elems.is_empty() { return cx.view.types.intern(Type.EmptyList) }
+    if want_refused(cx, e) { return cx.error_type }
     // a slot that KNOWS its elements judges each by the one
     // assignment door — heterogeneity boxes, lambdas hear seats
     let want: TypeId? = wanted_elem(cx, e)
@@ -78,7 +79,7 @@ fn unwanted_element(cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {
 /// THE COMPREHENSION LAW: the source is a list, its element type is
 /// the name's (and the index is an int); the filter is a bool; the
 /// answer is a list of the element expression's type.
-fn comp_type(cx: TypeCx, elem: ExprId, index: string, source: ExprId, cond: ExprId?) -> TypeId {
+fn comp_type(cx: TypeCx, e: ExprId, elem: ExprId, index: string, source: ExprId, cond: ExprId?) -> TypeId {
     let st = cx.walk_type(source)
     if cx.shape_at(source) is .Error { return cx.error_type }
     let held: TypeId? = cx.view.types.element(st)
@@ -87,7 +88,7 @@ fn comp_type(cx: TypeCx, elem: ExprId, index: string, source: ExprId, cond: Expr
     cx.bind_types(elem, tys)
     if cond != null { filter_checks(cx, cond!, tys) }
     let ety = cx.walk_type(elem)
-    if cx.shape_at(elem) is .Error { return cx.error_type }
+    if cx.shape_at(elem) is .Error || want_refused(cx, e) { return cx.error_type }
     if !slot_worthy(cx.view.types, cx.shape_at(elem)) { return unslottable_element(cx, elem) }
     cx.view.types.intern(Type.List(ety))
 }

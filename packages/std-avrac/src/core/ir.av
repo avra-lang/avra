@@ -173,6 +173,46 @@ export fn dst_of(i: Ins) -> Reg? {
     }
 }
 
+/// THE USER BODY a step names — a call's callee, a fn value's
+/// address. Runtime and host callees name no body of ours, so they
+/// answer nothing. Every symbol a program's bodies name must be a
+/// body the program holds: the emitter's closure law.
+export fn body_symbol(i: Ins) -> string? {
+    match i {
+        .Call(_, callee, _) -> callee,
+        .FnAddr(_, symbol) -> symbol,
+        .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+        .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or
+        .Pack(_, _) or .Extract(_, _, _) or .CallPtr(_, _, _) or
+        .RegionEnd(_, _) or .Alloca(_) or .Load(_, _) or
+        .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
+        .SwitchStart(_, _) or .ArmEnd(_) or
+        .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or
+        .Release(_) or .Retain(_) or .RetVal(_) or .FnExit(_) or
+        .Ret(_) -> null,
+    }
+}
+
+/// THE HOSTED FN a step calls — the runtime's rows and the
+/// program's own externs share one call shape, so they share one
+/// projection. Every name here must be a declared row.
+export fn hosted_symbol(i: Ins) -> string? {
+    match i {
+        .CallRt(_, callee, _) -> callee,
+        .CallRtVoid(callee, _) -> callee,
+        .Call(_, _, _) or .FnAddr(_, _) or
+        .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+        .Bin(_, _, _, _) or .Un(_, _, _) or
+        .Pack(_, _) or .Extract(_, _, _) or .CallPtr(_, _, _) or
+        .RegionEnd(_, _) or .Alloca(_) or .Load(_, _) or
+        .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
+        .SwitchStart(_, _) or .ArmEnd(_) or
+        .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or
+        .Release(_) or .Retain(_) or .RetVal(_) or .FnExit(_) or
+        .Ret(_) -> null,
+    }
+}
+
 /// A slot in a runtime signature — the CallRt contract's currency.
 export enum RtKind { I64, Ptr, Void }
 

@@ -8,7 +8,7 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type}
+use core.{stem_of, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
 use features.{TypeRow, TypeArgs}
@@ -228,19 +228,21 @@ impl Decls {
     /// the run-time statements' — belong to Main.
     fn range_bodies(self, f: FileId, store: NodeStore, main: DeclId) {
         let owners: List<DeclId> = [d for d in self.decls_of_file(f) if self.owns_a_range(d)]
-        mut lo: List<int?> = filled<int?>(self.decls.length, null)
-        mut hi: List<int?> = filled<int?>(self.decls.length, null)
+        // -1 until a first expression lands: an ownerless decl's
+        // range is the empty 0..0
+        mut lo: List<int> = filled(self.decls.length, 0 - 1)
+        mut hi: List<int> = filled(self.decls.length, 0)
         for i in 0..store.exprs.count() {
             let sp: Span? = store.expr_span(ExprId { index: i })
             if sp != null {
                 let owner = self.innermost(owners, sp!) ?? main
-                if lo[owner.index] == null { lo.set(owner.index, i) }
+                if lo[owner.index] < 0 { lo.set(owner.index, i) }
                 hi.set(owner.index, i + 1)
             }
         }
         for d in owners.concat([main]) {
             let i = d.index
-            self.decls.set(i, self.decl(d) with { lo: lo[i] ?? 0, hi: hi[i] ?? 0 })
+            self.decls.set(i, self.decl(d) with { lo: started_at(lo[i]), hi: hi[i] })
         }
     }
 
@@ -492,6 +494,15 @@ impl Decls {
         module_symbol(self.module_of(d), local_name)
     }
 
+    /// THE symbol a LIFTED body lowers to. A lambda has no name of
+    /// its own, so it takes its FILE's — module and stem — and the
+    /// node that wrote it: program-unique, as every body's symbol
+    /// must be (a node id is unique in its file alone).
+    fn lifted_symbol(self, f: FileId, e: ExprId) -> string {
+        let info = self.file(f)
+        module_symbol(self.module_name(info.module_id), "${stem_of(info.path)}$l${e.index}")
+    }
+
     // ── traits and methods ──
 
     /// A trait's method declarations, in declaration order.
@@ -573,4 +584,9 @@ impl Decls {
 fn fresh_key(key: string, s: StmtId, seen: List<string>) -> string {
     if seen.contains(key) { return "${key}#${s.index}" }
     key
+}
+
+/// A range whose first expression never landed starts at zero.
+fn started_at(i: int) -> int {
+    if i < 0 { 0 } else { i }
 }

@@ -6,7 +6,7 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
-use core.{Ins, Reg, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_sig_of}
+use core.{Ins, Reg, body_symbol, hosted_symbol, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_sig_of}
 use features.{nothing}
 
 /// One body's emission world: the LLVM handles, this body's register
@@ -53,6 +53,8 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
     let lc = avra_llvm_context_create()
     let m = avra_llvm_module_create("avra", lc)
     let b = avra_llvm_create_builder(lc)
+    let missing: string? = unheld_name(l)
+    if missing != null { return "internal compiler error: nothing declares `${missing!}` — the program is not closed" }
     declare_runtime(lc, m)
     declare_externs(lc, m, l.externs)
     for bd in l.fns { declare_user(lc, m, l.types, bd) }
@@ -72,6 +74,24 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
     }
     avra_llvm_dispose_builder(b)
     avra_llvm_context_dispose(lc)
+    null
+}
+
+/// THE CLOSURE LAW: every name a program's steps call is one the
+/// module will declare — a body the program lowered, a runtime row,
+/// or one of its own externs. The first that is not, named, instead
+/// of a null function at emission.
+fn unheld_name(l: Lowered) -> string? {
+    let bodies = [bd.name for bd in l.fns].concat([l.entry.name])
+    let hosted = [s.name for s in rt_sigs()].concat([s.name for s in l.externs])
+    for bd in l.fns.concat([l.entry]) {
+        for i in bd.ins {
+            let body: string? = body_symbol(i)
+            if body != null && !bodies.contains(body!) { return body }
+            let host: string? = hosted_symbol(i)
+            if host != null && !hosted.contains(host!) { return host }
+        }
+    }
     null
 }
 

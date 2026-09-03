@@ -2,16 +2,15 @@
 //! branch lowers INSIDE them and names the register it yields; the
 //! if's own register is the merge.
 use core.{ExprId, Reg, Ins}
-use features.{LowerCx, foreign_node}
+use features.{LowerCx, foreign_node, arm_yield}
 
 fn if_lower(cx: LowerCx, e: ExprId) -> Reg {
     match cx.view.store.expr(e) {
         .If(c, t, f) -> {
-            let cr = cx.reg_of(c)
-            cx.emit(Ins.IfStart(cr))
-            let tr = cx.reg_of(t)
-            cx.emit(Ins.ArmEnd(tr))
-            let fr = cx.reg_of(f)
+            let want = cx.type_at(e)
+            cx.emit(Ins.IfStart(cx.reg_of(c)))
+            cx.emit(Ins.ArmEnd(arm_yield(cx, t, cx.reg_of(t), want)))
+            let fr = arm_yield(cx, f, cx.reg_of(f), want)
             let dst = cx.result(e)
             cx.emit(Ins.RegionEnd(dst, fr))
             dst

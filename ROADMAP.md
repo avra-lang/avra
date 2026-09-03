@@ -3491,6 +3491,47 @@ END, `{ x }` parses as a statement list whose tail answers, so the
 keyword lexes as a NAME, so `-> { return x }` read `return` as an
 identifier and the @expect'd `}` hole-hit. One form, one law.
 
+RUNG 13 LANDED (2026-09-03) — THE WHOLE-PROGRAM LOWERING, proved
+by lowering the compiler itself. `./avra build packages/cli` walked
+1718 bodies and every step of it named a law the small corpus never
+reached:
+(1) THE ENTRY IS ITS STATEMENTS. A package's entry file runs its
+top-level statements; a `fn main()` is an ordinary declaration
+nobody calls, so the CLI's entry now IS the composition (bs2 runs
+top-level statements first, so one file serves both toolchains).
+(2) A LIFTED BODY CARRIES ITS FILE. A lambda's symbol was its node
+id alone, which is unique in ONE file — two files' `l217` collided
+and LLVM tolerated the drift until the verifier refused. A lifted
+body now takes its file's module and stem (`Decls.lifted_symbol`,
+`stem_of`), as every named body already did.
+(3) A VALUELESS BLOCK YIELDS ITS OWN TYPE. Lowering typed the tail
+of every valueless block as the FN's promise (right for a block
+that departed, wrong for a statement block, whose type is void):
+the merge phi disagreed with its arms. `block_reg` takes the type
+typing settled.
+(4) AN ARM'S YIELD WEARS THE REGION'S TYPE. A LEAVING arm
+(`{ return x }`) yields the fn's promise into a merge typed by the
+staying arms; `arm_yield` gives the region's hollow instead —
+nothing reads a departed arm's value.
+(5) EITHER SIDE MAY BE THE NULLABLE. `a == b` across presence
+tested the LEFT for presence, so `it.file == file` read a presence
+pair out of a plain string. The nullable side leads now, whichever
+side wrote it (corpus/nullable_eq).
+(6) A LIST'S ELEMENT OBEYS THE SLOT LAW. `List` alone declared
+`slots = false`, so `List<int?>` was expressible by ANNOTATION and
+lowered a register pair into an i64 cell — silently. The row says
+`true`; the written type is refused where it is written, and the
+value beneath it says nothing more (`want_refused` — one mistake,
+one voice).
+(7) THE CLOSURE LAW: before emission, every name a program's steps
+call must be one the module will declare — a lowered body, a
+runtime row, or an extern (`body_symbol`, `hosted_symbol`,
+`unheld_name`). A missing body was a null function pointer and a
+segfault inside LLVM; it is a named defect now.
+Also: the drain guard counts DISTINCT bodies against a ceiling only
+polymorphic recursion can climb (1000 pops refused the compiler's
+own 1718 bodies).
+
 PARITY RUNG 12 LANDED (2026-09-03) — THE HOST SEAM: `extern fn`.
 `extern fn name(p: T, …) -> R` is a statement of the fns feature
 (`Stmt.ExternFn`, `ExternParts`): a fn declaration (`DeclKind.Fn`)
@@ -3630,6 +3671,17 @@ disagree and the tree spells bs2's side.
 - The vendored `spec_test` feature and `std-cli`: bs2's test runner
   and CLI. FIX: `avra test` (landed) replaces the runner; delete
   both packages at self-host.
+- THE STAMPED ENTRY (`packages/cli/src/main_stamped.av`, written by
+  `./avra` and EXCLUDED from the cli package's own manifest): bs2
+  keys a run's cache by the entry file's bytes alone, so the front
+  door regenerates an entry carrying a hash of every package source.
+  Our compiler needs no such stamp — it keys each file. FIX: delete
+  the generator, the `exclude`, and the `./avra` shim at self-host;
+  `avra` is then the built binary.
+- `extern fn println` / `eprintln` in the compiler's own entry and
+  commands: bs2 has no host surface of its own, so the tree declares
+  the C prototypes it links against. FIX: a `@std/io` package over
+  the same externs, so a program prints without declaring C.
 
 PARITY RUNG 10 LANDED (2026-09-03) — SLOTS: a nullable POINTER is
 its own word. THE SLOT LAW sees through a nullable to what it

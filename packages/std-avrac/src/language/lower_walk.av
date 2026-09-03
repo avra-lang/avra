@@ -25,7 +25,7 @@ fn expr_lower_cx(lo: Lower) -> LowerCx {
     LowerCx {
         view: lo.a.view, names: lo.a.names, facts: lo.a.facts, out: lo.out, body: lo.body, sub: lo.sub, fn_ret: lo.fn_ret,
         reg_of: (k: ExprId) -> lower_subtree(lo, k),
-        lower_block: (stmts: List<StmtId>, value: ExprId?) -> block_reg(lo, stmts, value),
+        lower_block: (stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> block_reg(lo, stmts, value, ty),
         def_reg: (k: ExprId) -> lo.def_reg(k),
         lift: (k: ExprId) -> lo.lift(k),
         capture_regs: (k: ExprId) -> lo.capture_regs(k),
@@ -187,19 +187,14 @@ fn list_text_callee(lo: Lower, elem: TypeId) -> string {
 
 /// A block is a scope: statements lower in order into it, and the
 /// value register escapes as the scope's yield. A block that
-/// LEAVES yields a hollow typed as the fn's promise — the exit
-/// already happened, and everything after it is the backend's dead
-/// continuation.
-fn block_reg(lo: Lower, stmts: List<StmtId>, value: ExprId?) -> Reg {
+/// LEAVES — or simply ends in a statement — yields a hollow of the
+/// block's OWN type, which typing already settled: the fn's promise
+/// for a block that departed, void for one that merely ended. Every
+/// merge it feeds is typed by that same answer.
+fn block_reg(lo: Lower, stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> Reg {
     lo.out.give(Ins.ScopeEnter(Level.Application))
     let _ = lower_stmts(lo, stmts)
-    let r = if value == null { departed_tail(lo) } else { lower_subtree(lo, value!) }
+    let r = if value == null { hollow_of(expr_lower_cx(lo), ty) } else { lower_subtree(lo, value!) }
     lo.out.give(Ins.ScopeExit(r))
     r
-}
-
-/// The never-read yield of a block that left — typed as the fn's
-/// promise, so every merge it feeds stays type-consistent.
-fn departed_tail(lo: Lower) -> Reg {
-    hollow_of(expr_lower_cx(lo), lo.fn_ret ?? lo.a.view.decls.types.intern(Type.Error))
 }

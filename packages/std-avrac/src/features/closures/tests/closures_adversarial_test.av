@@ -136,11 +136,14 @@ spec "features/closures/adversarial" {
         then "a walk cannot collect a nullable scalar yet" {
             refused_with("fn g(n: int) -> int? {\n    n\n}\n[1].map(g(it))\n2", "`map` cannot collect `int?` yet")
         }
-        then "a list literal cannot hold a nullable scalar yet — under a want too" {
-            refused_with("let xs: List<int?> = [3, null]\nxs.map(it ?? 0)[1]", "a list element cannot hold `int?` yet")
+        then "the WRITTEN type is refused, and the literal beneath it says nothing more" {
+            refused_with("let xs: List<int?> = [3, null]\nxs.map(it ?? 0)[1]", "a `List` slot cannot hold this yet")
         }
-        then "a fn's list tail is gated the same" {
+        then "a fn's list tail is gated the same — one voice, not two" {
             refusals("fn g(v: int?) -> List<int?> {\n    [v]\n}\ng(1).length") == 1
+        }
+        then "an INFERRED list still hears it from the element" {
+            refused_with("fn g(v: int?) -> int {\n    [v].length\n}\ng(1)", "a list element cannot hold this yet")
         }
         then "`?` behind the lambda barrier names the lambda, not the top level" {
             refused_with("type U = { n: int }\nfn g(u: U) -> U? {\n    u\n}\nfn f(us: List<U>) -> U? {\n    us.map(g(it)?)[0]\n}\nf([U { n: 1 }])",
