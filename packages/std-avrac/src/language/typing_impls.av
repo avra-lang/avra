@@ -2,7 +2,7 @@
 //! an impl's methods under their target (self typed as the target),
 //! the impl-for contract (every trait method, exactly, nothing
 //! beyond), the orphan rule, and the voices these laws speak.
-use core.{StmtId, TypeId, DeclId, FnParts, ImplParts}
+use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type}
 use diagnostics.{refusal}
 use features.{FnSig, DeclSig, fn_sig_of, trait_named, method_sig_of, Decl}
 
@@ -51,7 +51,33 @@ impl Typer {
         let parts = ip!
         let target: DeclId? = self.impl_target(block, parts, false)
         if target == null { return self.declare_wreckage(f) }
-        self.declare_method(self.declared_type(target!, parts.target), f)
+        let d = target!
+        self.view.decls.record_target(self.decl_of(block), d)
+        self.enter_target_scope(d)
+        self.declare_method(self.impl_self_type(d, parts.target), f)
+        self.leave_tscope()
+    }
+
+    /// The type an impl's `self` wears: the declared type, or — for
+    /// a generic target — its application to its own Vars.
+    fn impl_self_type(self, d: DeclId, name: string) -> TypeId {
+        if self.view.decls.tparams(d).is_empty() { return self.declared_type(d, name) }
+        self.view.types.intern(Type.App(d, name, self.target_vars(d)))
+    }
+
+    /// A generic target's Vars, in scope for its impl's signatures
+    /// under the names the TYPE declared — `impl Arena<N>` spells
+    /// them as `type Arena<N>` did.
+    fn target_vars(self, d: DeclId) -> List<TypeId> {
+        mut out: List<TypeId> = []
+        // LICENSED I3: the ordinal needs the index; comprehensions cannot destructure enumerate
+        for (j, n) in self.view.decls.tparams(d).enumerate() { out.push(self.view.types.intern(Type.Var(d, j, n))) }
+        out
+    }
+
+    fn enter_target_scope(self, d: DeclId) {
+        // LICENSED I3: pushing through the field alias — concat would rebind the local
+        for v in self.target_vars(d) { self.tscope.push(v) }
     }
 
     /// The impl block's law: its target is declared, plain, and
@@ -65,12 +91,14 @@ impl Typer {
         let parts = ip!
         let target: DeclId? = self.impl_target(s, parts, true)
         if target == null { return }
+        let d = target!
+        self.view.decls.record_target(self.decl_of(s), d)
         for f in parts.fns {
             let m = self.decl_of(f)
             let _ = self.view.decls.sig(m)
-            if self.registrable(f) { self.view.decls.declare_method(target!, m) }
+            if self.registrable(f) { self.view.decls.declare_method(d, m) }
         }
-        if parts.of != "" { self.check_trait_impl(s, parts.of, target!, parts.target, parts.fns) }
+        if parts.of != "" { self.check_trait_impl(s, parts.of, d, parts.target, parts.fns) }
     }
 
     /// A method the table can serve: plain, and riding `self`.
@@ -89,7 +117,9 @@ impl Typer {
             return null
         }
         let d = decl!
-        if !self.view.decls.tparams(d).is_empty() {
+        // a generic target lands for an INHERENT impl; a trait impl
+        // over one is recorded
+        if parts.of != "" && !self.view.decls.tparams(d).is_empty() {
             if loud { self.generic_target(s, target) }
             return null
         }
@@ -174,7 +204,7 @@ impl Typer {
     }
 
     fn generic_target(self, s: StmtId, target: string) {
-        self.speak(refusal("type.impl", self.stmt_loc(s), "`${target}` is generic — generic impls are recorded, not landed", "this impl", null))
+        self.speak(refusal("type.impl", self.stmt_loc(s), "`${target}` is generic — a trait impl over a generic type is recorded, not landed", "this impl", null))
     }
 
     fn no_such_trait(self, s: StmtId, of: string) {

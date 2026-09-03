@@ -20,6 +20,37 @@ fn boxy() -> string {
 }
 
 spec "features/impls" {
+    given "a method writes through its receiver" {
+        then "a field assigned through `self` is the caller's box" {
+            shown("type C = { n: int }\nimpl C {\n    fn bump(self) { self.n = self.n + 1 }\n}\nlet c = C { n: 1 }\nc.bump()\nc.bump()\nc.n") == "3"
+        }
+        then "a list grown through `self`" {
+            shown("type Bag = { xs: List<int> }\nimpl Bag {\n    fn put(self, x: int) { self.xs.push(x) }\n}\nlet b = Bag { xs: [] }\nb.put(4)\nb.put(5)\nb.xs.length") == "2"
+        }
+        then "`self` itself is no place" {
+            refused_with("type C = { n: int }\nimpl C {\n    fn swap(self) { self = C { n: 2 } }\n}\n2", "`self` is a parameter — parameters are immutable")
+        }
+    }
+    given "a generic type's impl — methods over the type's own Vars" {
+        then "a method reads the payload as the receiver's argument" {
+            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get(self) -> T { self.v }\n}\nBox { v: 4 }.get() + 1") == "5"
+        }
+        then "two instantiations lower two bodies" {
+            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get(self) -> T { self.v }\n}\nlet a = Box { v: 4 }\nlet b = Box { v: \"s\" }\n\"" + "$" + "{a.get()} " + "$" + "{b.get()}\"") == "4 s"
+        }
+        then "a method takes and answers the type's argument, and calls a sibling" {
+            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get(self) -> T { self.v }\n    fn with(self, x: T) -> Box<T> { Box { v: x } }\n    fn twice(self) -> T { self.with(self.get()).get() }\n}\nBox { v: \"q\" }.with(\"r\").twice()") == "r"
+        }
+        then "a wrong argument is judged against the instantiated seat" {
+            refused_with("type Box<T> = { v: T }\nimpl Box<T> {\n    fn with(self, x: T) -> Box<T> { Box { v: x } }\n}\nBox { v: 4 }.with(\"s\")\n2", "argument 1 of `Box.with` wants `int`, found `string`")
+        }
+        then "a name the type did not declare names no type" {
+            refused_with("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get(self) -> Q { self.v }\n}\n2", "`Q` names no type")
+        }
+        then "a trait impl over a generic type is still recorded" {
+            refused_with("trait Show {\n    fn show(self) -> int\n}\ntype Box<T> = { v: T }\nimpl Show for Box<T> {\n    fn show(self) -> int { 1 }\n}\n2", "a trait impl over a generic type is recorded, not landed")
+        }
+    }
     given "the method surface" {
         then "a zero-argument method reads through self" {
             shown("${boxy()}P { x: 3, y: 4 }.area()") == "12"

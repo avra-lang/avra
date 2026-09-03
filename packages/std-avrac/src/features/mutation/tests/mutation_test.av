@@ -4,6 +4,14 @@ use @std.avrac.language.{analyze_source}
 use @std.avrac.testing.{shown, refused_with, halver}
 
 spec "features/mutation" {
+    given "the borrow — bs2's aliasing, honored until self-host" {
+        then "a mut bound to a parameter's field writes through to the record" {
+            shown("type M = { xs: List<int> }\nfn grow(m: M, x: int) {\n    mut xs = m.xs\n    xs.push(x)\n}\nlet m = M { xs: [] }\ngrow(m, 1)\ngrow(m, 2)\nm.xs.length") == "2"
+        }
+        then "a mut bound to a local's field is a copy — value semantics" {
+            shown("type M = { xs: List<int> }\nlet m = M { xs: [1] }\nmut xs = m.xs\nxs.push(2)\n\"" + "$" + "{xs.length} " + "$" + "{m.xs.length}\"") == "2 1"
+        }
+    }
     given "mut and assignment" {
         then "a mut binding reassigns; the reads see the latest write" {
             shown("mut x = 1\nx = x + 10\nx = x + 100\nx") == "111"

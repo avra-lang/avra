@@ -4,7 +4,7 @@
 //! text; what needs the disk — a dependency's directory, the name it
 //! calls itself, the cycle — is the workspace's to judge, in this
 //! file's words.
-use core.{span_of, joined, is_package_key, is_name_word, is_digit, code_at}
+use core.{span_of, joined, is_package_key, is_name_word, is_digit, code_at, Span}
 use @std.toml.{TomlDoc, TomlValue, TomlEntry, TomlHeader, parse_toml, toml_text, toml_field}
 use diagnostics.{SourceFile, Diag, refusal, warning, loc_at}
 use @std.errors.{Loc}
@@ -19,7 +19,7 @@ export type Dependency = { key: string, path: string?, dev: bool, at: Loc? }
 /// `deps_at` is where a new dependency line goes: after the last
 /// one, else after the `[dependencies]` header, else absent (the
 /// file has no such section yet).
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: int?, voices: List<Diag> }
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, voices: List<Diag> }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
@@ -96,8 +96,7 @@ fn lawful_opt_level(v: TomlValue) -> bool {
 
 impl Reader {
     fn speak(self, d: Diag) {
-        mut vs = self.voices
-        vs.push(d)
+        self.voices.push(d)
     }
 
     fn at(self, lo: int, hi: int) -> Loc? {
@@ -191,12 +190,12 @@ impl Reader {
     }
 
     /// Where the next dependency line goes.
-    fn deps_at(self) -> int? {
+    fn deps_at(self) -> Span? {
         let last: TomlEntry? = self.doc.entries_of("dependencies").last()
-        if last != null { return last!.hi }
+        if last != null { return after(last!.hi) }
         let h: TomlHeader? = self.doc.headers.find(it.name == "dependencies")
         if h == null { return null }
-        h!.hi
+        after(h!.hi)
     }
 
     // ── voices ──
@@ -250,4 +249,15 @@ export fn duplicate_package(at: Loc?, key: string, first: string, second: string
 
 export fn no_target(root: string) -> Diag {
     refusal("manifest.no_target", null, "`${root}/avra.toml` declares no `[bin]`, and `src/main.av` does not exist — nothing to run", "", "add `[bin]` with `path`, or `src/main.av`")
+}
+
+/// Where a new dependency line goes, as an offset — what the fix
+/// and its tests read.
+export fn deps_offset(m: Manifest) -> int? {
+    m.deps_at?.hi
+}
+
+/// The empty span at an offset — where a line goes.
+fn after(at: int) -> Span {
+    Span { lo: at, hi: at }
 }

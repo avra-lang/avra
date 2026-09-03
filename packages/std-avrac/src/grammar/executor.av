@@ -316,15 +316,13 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq,
             if r.state.cursor > state.cursor { anchored = true }
             state = r.state
             vals.push(r.value)
-            continue
-        }
-        if r.status == MatchStatus.Broke || r.status == MatchStatus.Fatal {
+        } else if r.status == MatchStatus.Broke || r.status == MatchStatus.Fatal {
             diagnostics = diagnostics.concat(r.diagnostics)
             return ended<N>(r.status, state, diagnostics, farthest)
-        }
-        if !anchored { return missed<N>(entry_state, diagnostics, farthest) }
-        // Committed territory: this failure is real.
-        if member.expect != null {
+        } else if !anchored {
+            return missed<N>(entry_state, diagnostics, farthest)
+        } else if member.expect != null {
+            // Committed territory: this failure is real — a hole.
             diagnostics.push(Diagnostic {
                 cause: Cause.Expected,
                 message: member.expect!.message,
@@ -336,12 +334,12 @@ fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq,
                 state = state_at<N>(state.cursor, holed)
             }
             vals.push(captured_absent<N>())
-            continue
+        } else {
+            diagnostics.push(committed_failure<N>(cx, rule_name, member, r, state))
+            if s.recover == null { return broke<N>(state, diagnostics, farthest) }
+            let c = sync_past<N>(cx, s.recover!.sync_to, entry_state.cursor, state.cursor)
+            return matched<N>(state_at<N>(c, state.bindings), captured_absent<N>(), diagnostics, farthest)
         }
-        diagnostics.push(committed_failure<N>(cx, rule_name, member, r, state))
-        if s.recover == null { return broke<N>(state, diagnostics, farthest) }
-        let c = sync_past<N>(cx, s.recover!.sync_to, entry_state.cursor, state.cursor)
-        return matched<N>(state_at<N>(c, state.bindings), captured_absent<N>(), diagnostics, farthest)
     }
     // Build phase. The branch's consumed range is the builder's span.
     let branch = consumed_span(cx.tokens, entry_state.cursor, state.cursor)
@@ -435,23 +433,21 @@ fn match_repetition<N>(cx: MatchContext<N>, rule_name: string, member: Item,
         }
         if r.status != MatchStatus.Hit {
             going = false
-            continue
-        }
-        if r.state.cursor == state.cursor {
+        } else if r.state.cursor == state.cursor {
             diagnostics.push(Diagnostic {
                 cause: Cause.Defect,
                 message: "repetition matched without consuming input; stopped",
                 span: null, expected: [], in_rule: rule_name,
             })
             going = false
-            continue
+        } else {
+            diagnostics = diagnostics.concat(r.diagnostics)
+            collected.push(r.value)
+            mut nb = r.state.bindings
+            if member.label != null { nb = bind_label<N>(nb, member.label!, r.value, true) }
+            state = state_at<N>(r.state.cursor, nb)
+            count = count + 1
         }
-        diagnostics = diagnostics.concat(r.diagnostics)
-        collected.push(r.value)
-        mut nb = r.state.bindings
-        if member.label != null { nb = bind_label<N>(nb, member.label!, r.value, true) }
-        state = state_at<N>(r.state.cursor, nb)
-        count = count + 1
     }
     if count < min { return missed<N>(entry_state, diagnostics, farthest) }
     matched<N>(state, captured_many<N>(collected), diagnostics, farthest)

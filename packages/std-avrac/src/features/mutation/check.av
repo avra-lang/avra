@@ -2,8 +2,8 @@
 //! `let` (the want the channel plants); an assignment lands on a
 //! PLACE whose type — read off the target — is the slot's law, the
 //! value ACCEPTED by it with widening recorded like every slot's.
-use core.{StmtId, ExprId, TypeId, TypeRef}
-use features.{StmtTypeCx, accepts, declared_binding, this_is, refuses_type_value, refuses_void_value, place_lawful}
+use core.{StmtId, ExprId, TypeId, TypeRef, same_expr, Binding}
+use features.{StmtTypeCx, accepts, declared_binding, this_is, refuses_type_value, refuses_void_value, place_lawful, TypeCx}
 use diagnostics.{refusal}
 
 export fn check_mut(cx: StmtTypeCx, s: StmtId) {
@@ -19,9 +19,22 @@ export fn check_mut(cx: StmtTypeCx, s: StmtId) {
     cx.walk(v)
     if refuses_type_value(cx.expr, v) { return }
     if refuses_void_value(cx.expr, v) { return }
+    if borrows_field(cx.expr, v) { cx.expr.mark_borrow(s) }
     if declared != null {
         declared_binding(cx.expr, v, cx.view.store.let_name(s) ?? "this binding", declared!)
     }
+}
+
+/// A `mut` bound to a PARAMETER'S FIELD PATH borrows that field —
+/// writes through the binding land in the parameter's record. bs2's
+/// aliasing, which the compiler's own state fns spell; honored until
+/// self-host, then refused (ROADMAP: the bs2 debt ledger).
+fn borrows_field(cx: TypeCx, v: ExprId) -> bool {
+    let root: ExprId? = cx.view.store.place_root(v)
+    if root == null || same_expr(root!, v) { return false }
+    let b: Binding? = cx.names.binding(root!)
+    if b == null { return false }
+    b! is .Param
 }
 
 /// THE PLACE LAW's typing half: the target types as a READ — its

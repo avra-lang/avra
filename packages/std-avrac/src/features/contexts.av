@@ -55,7 +55,10 @@ export fn is_mut_at(names: NameFacts, store: NodeStore, e: ExprId) -> bool {
     if b == null { return false }
     match b! {
         .Def(s) -> store.stmt(s) is .MutLet,
-        .Decl(_) or .Param(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+        // a method's receiver is a place: what it holds is the
+        // caller's box, and the method writes it by design
+        .Param(_) -> store.ident_name(e) == "self",
+        .Decl(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
     }
 }
 
@@ -79,11 +82,18 @@ export fn method_sig_of(decls: Decls, target: DeclId, mname: string) -> FnSig? {
     fn_sig_of(decls.sig(m!))
 }
 
-/// A trait method's sig — self OMITTED — or absence.
+/// A trait method's sig — self OMITTED — or absence, the trait by
+/// its name in this file's scope.
 export fn trait_sig_of(decls: Decls, names: NameFacts, tname: string, mname: string) -> FnSig? {
     let decl: DeclId? = trait_named(decls, names, tname)
     if decl == null { return null }
-    let f: DeclId? = decls.trait_fns(decl!).find(decl_named(decls, it, mname))
+    trait_sig_under(decls, decl!, mname)
+}
+
+/// A trait method's sig under the trait's DECLARATION — what a
+/// `dyn` carries, so a contract dispatches wherever it travels.
+export fn trait_sig_under(decls: Decls, tdecl: DeclId, mname: string) -> FnSig? {
+    let f: DeclId? = decls.trait_fns(tdecl).find(decl_named(decls, it, mname))
     if f == null { return null }
     fn_sig_of(decls.sig(f!))
 }
@@ -181,6 +191,7 @@ impl TypeCx {
     fn ask_of(self, e: ExprId) -> Asked? { self.facts.ask_of(e) }
     fn record_subst(self, e: ExprId, target: DeclId, targs: List<TypeId>) { self.facts.record_subst(e, target, targs) }
     fn record_binding(self, s: StmtId, ty: TypeId) { self.facts.record_binding(s, ty) }
+    fn mark_borrow(self, s: StmtId) { self.facts.mark_borrow(s) }
     fn want_at(self, e: ExprId) -> TypeId? { self.facts.want_at(e) }
     fn narrowed_at(self, e: ExprId) -> TypeId? { self.facts.narrowed_at(e) }
     fn starved_at(self, e: ExprId) -> TypeId? { self.facts.starved_at(e) }

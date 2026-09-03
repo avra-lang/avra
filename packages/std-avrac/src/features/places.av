@@ -6,7 +6,7 @@
 //! observed. The runtime clones by its own owned-map; the
 //! interpreter clones every time (the executable spec). Mutation
 //! and the list vocabulary's `push` both land here.
-use core.{ExprId, Reg, Ins, Type, PlaceStep}
+use core.{ExprId, Reg, Ins, Type, PlaceStep, Binding}
 
 /// An opened place: a cell (a bare mut name) or a slot of a box
 /// already made unique.
@@ -41,13 +41,31 @@ export fn unique_box(cx: LowerCx, s: ExprId) -> Reg {
     match step! {
         .Root(_) -> {
             let cell: Reg? = cx.cell_of(s)
-            if cell == null { return lower_defect(cx, s, "a mutation rooted outside a mut cell survived resolve") }
-            let dst = cx.mint_ty(cx.type_at(s))
-            cx.emit(Ins.CallRt(dst, "avra_cell_unique", [cell!]))
-            dst
+            if cell != null {
+                let dst = cx.mint_ty(cx.type_at(s))
+                // a BORROW of a parameter's field writes through to the
+                // field (bs2's aliasing, honored until self-host); any
+                // other cell opens unique — copy-on-write
+                if borrows(cx, s) { cx.emit(Ins.Load(dst, cell!)) } else { cx.emit(Ins.CallRt(dst, "avra_cell_unique", [cell!])) }
+                return dst
+            }
+            // a method's receiver: `self` is the box itself — shared
+            // by design, so no uniqueness is asked of it
+            cx.def_reg(s) ?? lower_defect(cx, s, "a mutation rooted outside a mut cell survived resolve")
         }
         .Field(subject, name) -> slot_opened(cx, s, unique_box(cx, subject), field_slot(cx, subject, name)),
         .At(subject, index) -> slot_opened(cx, s, unique_box(cx, subject), cx.reg_of(index)),
+    }
+}
+
+/// Whether a root name is a `mut` binding that borrows a parameter's
+/// field.
+fn borrows(cx: LowerCx, root: ExprId) -> bool {
+    let b: Binding? = cx.names.binding(root)
+    if b == null { return false }
+    match b! {
+        .Def(s) -> cx.facts.is_borrow(s),
+        .Param(_) or .Decl(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
     }
 }
 

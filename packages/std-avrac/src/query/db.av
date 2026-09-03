@@ -55,17 +55,14 @@ impl Db {
 
     /// An input changed (or arrived): the revision advances.
     fn bump(self) {
-        mut r = self.rev
-        r.set(0, r[0] + 1)
+            self.rev.set(0, self.rev[0] + 1)
     }
 
     /// A family registered with its verifier; its number answers.
     fn family(self, verify: fn(int) -> int) -> int {
-        mut vs = self.verifiers
-        vs.push(verify)
-        mut cs = self.cells
-        cs.push([])
-        cs.length - 1
+        self.verifiers.push(verify)
+        self.cells.push([])
+        self.cells.length - 1
     }
 
     /// The driver sets an INPUT: a cell with no deps whose changed_at
@@ -122,21 +119,17 @@ impl Db {
     /// A computation begins: its reads land in a fresh frame, and it
     /// is open until it settles.
     fn begin(self, key: Key) {
-        mut fs = self.frames
         // LICENSED I15: the bracketed VALUE is the caller's — a thunk cannot carry a generic answer (F1002)
-        fs.push([])
-        mut op = self.open
+        self.frames.push([])
         // LICENSED I15: the open stack brackets the same computation
-        op.push(key)
+        self.open.push(key)
     }
 
     /// A computation ends: its frame becomes the cell's deps; an
     /// unchanged hash keeps changed_at (early cutoff).
     fn settle(self, key: Key, value_hash: int) {
-        mut fs = self.frames
-        let deps: List<Key> = fs.pop() ?? []
-        mut op = self.open
-        let _ = op.pop()
+        let deps: List<Key> = self.frames.pop() ?? []
+        let _ = self.open.pop()
         let prior: Cell? = self.cell(key)
         let changed = if prior != null && prior!.value_hash == value_hash { prior!.changed_at } else { self.revision() }
         self.write(key, Cell { deps: deps, changed_at: changed, verified_at: self.revision(), value_hash: value_hash })
@@ -176,14 +169,12 @@ impl Db {
     }
 
     fn hit(self) -> Verdict {
-        mut h = self.hits
-        h.set(0, h[0] + 1)
+            self.hits.set(0, self.hits[0] + 1)
         Verdict.Reuse
     }
 
     fn miss(self) -> Verdict {
-        mut m = self.misses
-        m.set(0, m[0] + 1)
+            self.misses.set(0, self.misses[0] + 1)
         Verdict.Compute
     }
 

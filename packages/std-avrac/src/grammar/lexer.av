@@ -146,7 +146,7 @@ fn scan_str_part(src: string, from: int, interpolate: bool) -> StrPart {
     while j < n {
         let c = code_at(src, j)
         if c == 34 { return StrPart { text: text, stop: StrStop.Quote, next: j + 1 } }
-        if c == 10 { break }
+        if c == 10 { return ragged(text, j) }
         if interpolate && c == 36 && j + 1 < n && code_at(src, j + 1) == 123 {
             return StrPart { text: text, stop: StrStop.Hole, next: j + 2 }
         }
@@ -154,12 +154,17 @@ fn scan_str_part(src: string, from: int, interpolate: bool) -> StrPart {
             let un = unescape(code_at(src, j + 1))
             text = text + (un ?? src.substring(j, j + 2))
             j = j + 2
-            continue
+        } else {
+            text = text + src.substring(j, j + 1)
+            j = j + 1
         }
-        text = text + src.substring(j, j + 1)
-        j = j + 1
     }
-    StrPart { text: text, stop: StrStop.Ragged, next: j }
+    ragged(text, j)
+}
+
+/// A string piece the line ended before its quote did.
+fn ragged(text: string, at: int) -> StrPart {
+    StrPart { text: text, stop: StrStop.Ragged, next: at }
 }
 
 /// A string piece as its token: the OPENING piece is Str (no hole)

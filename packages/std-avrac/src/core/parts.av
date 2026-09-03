@@ -84,6 +84,15 @@ impl NodeStore {
     /// after it never runs. A REGISTRY spelling every arm: a new
     /// statement kind must answer here, so a diverging one cannot
     /// slip in as a silent `false`.
+    /// A block that LEAVES: no value, and a last statement that
+    /// diverges — it answers nothing, so it joins with anything.
+    fn leaves(self, e: ExprId) -> bool {
+        match self.expr(e) {
+            .Block(stmts, value) -> value == null && stmts.last() != null && self.diverges(stmts.last()!),
+            _ -> false,
+        }
+    }
+
     fn diverges(self, s: StmtId) -> bool {
         match self.stmt(s) {
             .Return(_) -> true,

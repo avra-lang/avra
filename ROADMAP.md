@@ -3491,6 +3491,108 @@ END, `{ x }` parses as a statement list whose tail answers, so the
 keyword lexes as a NAME, so `-> { return x }` read `return` as an
 identifier and the @expect'd `}` hole-hit. One form, one law.
 
+PARITY RUNG 11 LANDED (2026-09-03) — GENERIC IMPLS, THE RECEIVER,
+AND THE PACKAGE SEAM. (1) `impl Arena<N> { … }` LANDS: an impl's
+type parameters parse (after either name) and are the TARGET's own
+— its methods declare under the target's Vars (`enter_target_scope`,
+`impl_self_type` = the App over its Vars), the impl decl REMEMBERS
+its target (`Decls.targets`; an impl's `tparams` are its target's,
+so `lowers_plain` waits), a call on an instantiated receiver
+(`Arena<Expr>`) substitutes the sig by the receiver's arguments and
+RECORDS the instantiation (`instantiated_sig`), and the body lowers
+once per instantiation through the generic machinery unchanged.
+A trait impl over a generic type stays recorded. (2) THE RECEIVER
+IS A PLACE: a method writes through `self` (`self.n = v`,
+`self.xs.push(v)` — `through_receiver` at resolve, `is_mut_at`,
+`unique_box` handing a param's register through); 61 alias-trick
+sites in the tree rewrote to it (`self.field.push(v)`, which bs2
+takes), and a `mut` bound to a PARAMETER'S FIELD PATH is a BORROW
+(`borrows_field`/`mark_borrow`/`unique_box`'s Load) — both entries
+of THE bs2 DEBT LEDGER below, with their post-self-host fix. (3)
+HUNGER, completed: a hungry node remembers its parameter scope
+(`ParamScope`; starving under an empty scope crashed the census —
+lldb named `target_type`), a generic construction with nothing
+pinned goes hungry (`unfed_construction`), a generic unit variant
+reads the want, a list literal's leading element skips the hungry,
+and a LEAVING arm (`{ return … }`) joins with anything (`leaves`,
+`stays`). (4) THE PACKAGE SEAM: `holder_of_path` compared a
+dependency's source path length against the ROOT's even when the
+root did not hold the file, so any dependency shorter than the root
+lost to it — a dependency's own names resolved only by luck of path
+length (found by checking the compiler with three dependencies);
+and a dependency's own local `use` paths now QUALIFY by its package
+(`qualified`). `dyn` dispatch reads the contract's DECLARATION
+(`trait_sig_under`), never a name in the caller's scope. (5) The
+tree, made honest by its own compiler: `.Call(_, _)` (a wrong-arity
+pattern bs2 took), five `break`/`continue` sites restructured, the
+scalar-nullable fields retyped (`deps_at: Span?`, `Program.entry:
+Entry?`), `string(n)` and `owned`/`none` gone, seven helper names
+unclashed, the TOML package's own `break`. CENSUS: std-avrac 27 ->
+4 files — llvm_api.av and the vendored spec_test, all `extern fn`;
+std-toml, std-errors, std-testing CLEAN; cli 15 (externs and the
+printing fns). Suite 1538, corpus/generic_impls proves two
+instantiations native.
+
+THE bs2 DEBT LEDGER (opened 2026-09-03, the owner's order: every
+problem borrowed from bs2 is written here at discovery and FIXED,
+all of them, once the compiler compiles itself). Each line: the
+habit or law, where it lives, and the fix. The bootstrap dialect is
+the INTERSECTION of bs2 and Avra; each entry is a place the two
+disagree and the tree spells bs2's side.
+- THE ALIAS BORROW. bs2 has no `mut` parameters and lists alias, so
+  a state fn writes `mut xs = m.field; xs.push(v)` and the caller's
+  record changes. Avra's law is value semantics (copy-on-write);
+  the tree's 38 free state fns (interp.av `m.frames`, resolve.av
+  `r.overlays`, workspace.av `ws.specs`, llvm.av `em.vals`, …)
+  rely on the alias. HONORED as a `borrow`: a `mut` bound to a
+  PARAMETER'S FIELD PATH writes through (`borrows_field`,
+  `mark_borrow`, `unique_box`'s Load); a local's field copies. FIX:
+  make each state fn a METHOD (`impl Machine { fn run_body(self,
+  …) }` — bs2's #1377 ICE is why they are free fns) writing
+  `self.field.push(v)`, then delete the borrow and refuse a `mut`
+  bound to a parameter's path.
+- RECEIVER ALIASING. A method writes through `self` (`self.n = v`,
+  `self.xs.push(v)`) into the caller's box without opening it
+  unique — `let d = c; d.set(5)` changes `c`, which the V1 law
+  ("aliasing never observable", ROADMAP: the memory doctrine)
+  forbids. Needed because the compiler's methods mutate their
+  state structs through `self` (61 sites rewritten from the alias
+  trick to `self.field.push(v)`, which bs2 accepts). FIX: infer
+  `mut self` (a method that writes through self), require a mut
+  place at the call, open it unique before the call.
+- `Result.Ok(v)` / `Result.Err(e)` (89 sites): bs2's spelling; the
+  epic's is `.Ok(v)` / `.Err(e)`. FIX: rewrite the tree; keep the
+  type-receiver form as the ordinary enum surface.
+- `for (j, v) in xs.enumerate()` (77 sites) and the LICENSED I3
+  loops it forces: bs2 cannot pair an index in a comprehension.
+  FIX: `for j, v in xs` and `[f(j, v) for j, v in xs]` (rung 14 M4).
+- `code_at(s, i)` = `s.substring(i, i + 1).char_code()` (bs2's
+  `char_code` drops its index): an allocation per byte in every
+  scanner. FIX: `s.char_code(i)` (landed in rung 8) everywhere;
+  `code_at` becomes it.
+- `s.length` is `strlen` (hoisted at 8+ sites, I27). FIX:
+  length-carrying strings in the runtime; the ratchet retires.
+- Typed ids interchangeable, pattern and construction arity
+  unchecked (the `.Call(_, _)` in program.av survived bs2; Avra
+  refused it). FIX: none needed — Avra checks; the I25 ratchet
+  retires at self-host.
+- The reserved words bs2 lexes even as fields/locals (`spec`,
+  `given`, `then`, `none`, `level`, `owned`): renames across the
+  tree (`suite`, `group`, `tier`, `runs`, `moved`). FIX: none
+  needed; the renames stand.
+- Test-string `${`, struct literals pinned under `let` in free-fn
+  argument lists and closure-field calls, `dyn` boxing only under
+  typed lets, explicit `<N>` pins, the `it` pronoun's limits, the
+  closure-field-call discipline, comprehension limits, one-line
+  enums, multi-line `use`, `.reverse()` in place, `contains` by
+  identity, `is_empty` on strings, module-level `let` across files,
+  trait default bodies — every entry of CLAUDE.md's "bs2 subset
+  notes" is a borrowed constraint on the tree; each is lifted the
+  day bs2 retires, and the notes section is deleted with it.
+- The vendored `spec_test` feature and `std-cli`: bs2's test runner
+  and CLI. FIX: `avra test` (landed) replaces the runner; delete
+  both packages at self-host.
+
 PARITY RUNG 10 LANDED (2026-09-03) — SLOTS: a nullable POINTER is
 its own word. THE SLOT LAW sees through a nullable to what it
 carries (`slot_worthy(types, sh)`: `Opt(inner)` qualifies when

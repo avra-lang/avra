@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, dir_of, sorted_texts, first_slash, under_dir, joined_path, normalized, relative_path, TypeId, Type, some_list, same_file, placed, placed_at, touch}
+use core.{NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, dir_of, sorted_texts, first_slash, under_dir, joined_path, normalized, relative_path, TypeId, Type, some_list, same_file, placed, placed_at, touch, SpecParts}
 use features.{Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, module_names, file_names, Clash, method_clashes, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key}
@@ -221,13 +221,11 @@ fn refetched(ws: Workspace, f: Family, arg: int) -> int {
 
 impl Workspace {
     fn timed(self, name: string, ns: int) {
-        mut ps = self.phases
-        ps.push(Phase { name: name, ns: ns })
+        self.phases.push(Phase { name: name, ns: ns })
     }
 
     fn defect(self, message: string) {
-        mut ds = self.defects
-        ds.push(error_at("language.defect", null, message))
+        self.defects.push(error_at("language.defect", null, message))
     }
 
 }
@@ -684,10 +682,10 @@ type Imported = { imports: List<Import>, diagnostics: List<Diag> }
 /// and listed once.
 fn imported_line(ws: Workspace, p: Parsed, u: UseParts) -> Imported {
     let at = loc_at(p.source.file, p.store.stmt_span(u.stmt))
-    let m = module_path(u.path)
+    let from = ws.packages[holder_of_path(ws, p.source.file)]
+    let m = qualified(module_path(u.path), from)
     if ws.lone { return Imported { imports: [], diagnostics: [unpackaged_use(at)] } }
     if m.malformed() { return Imported { imports: [], diagnostics: [package_form(at, m)] } }
-    let from = ws.packages[holder_of_path(ws, p.source.file)]
     if m.package() != null && !reaches(ws, from, m.package()!) {
         return Imported { imports: [], diagnostics: [not_a_dependency(ws, at, from, m.package()!)] }
     }
@@ -755,14 +753,18 @@ export fn analyze_file(ws: Workspace, path: string) -> Analysis {
 /// among them (none when the program is only checked). It answers
 /// as a lone Analysis does — report, lowered, run — so every engine
 /// takes either.
-export type Program = { ws: Workspace, files: List<Analysis>, entry: int?, phases: List<Phase>, cache: string, defects: List<Diag>, voices: List<Diag>, manifests: List<SourceFile> }
+export type Program = { ws: Workspace, files: List<Analysis>, entry: Entry?, phases: List<Phase>, cache: string, defects: List<Diag>, voices: List<Diag>, manifests: List<SourceFile> }
+
+/// The entry's seat among the program's files.
+type Entry = { at: int }
 
 /// The program rooted at `ws.root`, entered at one of its files.
 export fn program(ws: Workspace, entry: string?) -> Program {
     let files = analyze_all(ws)
     let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
+    let seat: Entry? = if at == null { null } else { Entry { at: at! } }
     Program {
-        ws: ws, files: files, entry: at, phases: ws.phases, cache: ws.db.stats(), defects: ws.defects,
+        ws: ws, files: files, entry: seat, phases: ws.phases, cache: ws.db.stats(), defects: ws.defects,
         voices: package_voices(ws), manifests: [manifest_source(ws, pkg) for pkg in ws.packages if has_manifest(ws, pkg)],
     }
 }
@@ -834,7 +836,7 @@ impl Program {
     /// The entry file's analysis — absent for a program only checked.
     fn entry_file(self) -> Analysis? {
         if self.entry == null { return null }
-        self.files[self.entry!]
+        self.files[self.entry!.at]
     }
 
     fn clean(self) -> bool { self.defects.is_empty() && !has_errors(self.voices) && !self.files.any(unclean(it)) }
@@ -858,7 +860,7 @@ impl Program {
 
     /// The program as IR, memory strategy applied — every unit
     /// through the workspace's memo.
-    fn lowered(self) -> Lowered { self.lowered_from(self.entry, false) }
+    fn lowered(self) -> Lowered { self.lowered_from(self.entry?.at, false) }
 
     /// The program lowered from `entry`: its main and what it
     /// reaches — or, with no entry, every declared body; `every`
@@ -870,12 +872,12 @@ impl Program {
 
     /// The lowered program, CHECKED — every file's analysis first,
     /// then lowering's own refusals.
-    fn lowered_checked(self) -> Result<Lowered, string> { self.checked_from(self.entry, false) }
+    fn lowered_checked(self) -> Result<Lowered, string> { self.checked_from(self.entry?.at, false) }
 
     /// The program lowered for its cases, CHECKED: a case is a
     /// declaration nothing reaches, so every declared body lowers —
     /// under the entry's laws all the same.
-    fn cases_checked(self) -> Result<Lowered, string> { self.checked_from(self.entry, true) }
+    fn cases_checked(self) -> Result<Lowered, string> { self.checked_from(self.entry?.at, true) }
 
     fn checked_from(self, entry: int?, every: bool) -> Result<Lowered, string> {
         if !self.clean() { return Result.Err(self.report()) }
@@ -995,11 +997,15 @@ fn package_voices(ws: Workspace) -> List<Diag> {
 /// The package a file belongs to — the one whose source root holds
 /// it, the deepest when nested; the root package otherwise.
 fn holder_of_path(ws: Workspace, path: string) -> int {
-    mut best = 0
+    // the DEEPEST package whose source root holds the path — a
+    // nested package wins over the one around it; a path no package
+    // holds is the root's (a lone file)
+    // LICENSED I4: a max-by fold (the deepest holder), not a scan
+    mut best: int? = null
     for pkg in ws.packages {
-        if under_dir(path, pkg.src) && pkg.src.length >= ws.packages[best].src.length { best = pkg.ordinal }
+        if under_dir(path, pkg.src) && (best == null || pkg.src.length > ws.packages[best!].src.length) { best = pkg.ordinal }
     }
-    best
+    best ?? 0
 }
 
 /// The package a module path names: the root package for a local
@@ -1015,6 +1021,14 @@ fn holder(ws: Workspace, m: ModulePath) -> Package? {
 /// every package its manifest declares.
 fn reaches(ws: Workspace, from: Package, k: string) -> bool {
     k == from.key || depends_on(ws, from, k)
+}
+
+/// A module path as the whole workspace names it: a dependency's
+/// own local path carries its package's head, so `use core.{…}`
+/// inside `@std/avrac` names `@std.avrac.core` from anywhere.
+fn qualified(m: ModulePath, from: Package) -> ModulePath {
+    if m.packaged() || from.ordinal == 0 { return m }
+    ModulePath { segments: key_spelled(from.key).split(".").concat(m.segments) }
 }
 
 /// Whether a package's manifest declares the key.
@@ -1033,7 +1047,7 @@ fn dependency_fix(ws: Workspace, from: Package, k: string) -> List<Suggestion> {
     let line = "\"${k}\" = { path = \"${relative_path(from.root, known!.root)}\" }"
     let manifest_path = joined_path(from.root, "avra.toml")
     let text = if m.deps_at == null { "\n[dependencies]\n${line}\n" } else { "\n${line}" }
-    let at = m.deps_at ?? ws.host.read(manifest_path).length
+    let at = deps_offset(m) ?? ws.host.read(manifest_path).length
     [Suggestion { confidence: Confidence.High, description: "add `${line}` under `[dependencies]` in `${manifest_path}`", edits: [Edit { loc: Loc { file: manifest_path, lo: at, hi: at }, replacement: text }] }]
 }
 

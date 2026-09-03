@@ -43,7 +43,7 @@ fn unit_variant(cx: TypeCx, e: ExprId, tname: string, variant: string, tp: List<
 export fn unit_instantiated(cx: TypeCx, e: ExprId, tname: string, variant: string, decl: DeclId, tp: List<string>) -> TypeId {
     let pinned = pinned_by_want(cx, e, decl, filled<TypeId?>(tp.length, null))
     let missing: string? = unpinned_of(tp, pinned)
-    if missing != null { return cannot_pin(cx, e, tname, variant, missing!) }
+    if missing != null { return unfed_construction(cx, e, () -> cannot_pin(cx, e, tname, variant, missing!)) }
     instantiated(cx, e, tname, decl, tp, pinned)
 }
 
@@ -56,7 +56,7 @@ fn instantiated(cx: TypeCx, e: ExprId, tname: string, decl: DeclId,
     if tp.is_empty() { return cx.view.types.intern(Type.Enum(decl, tname)) }
     let pinned = pinned_by_want(cx, e, decl, bound)
     let missing: string? = unpinned_of(tp, pinned)
-    if missing != null { return unpinned_by_payload(cx, e, missing!) }
+    if missing != null { return unfed_construction(cx, e, () -> unpinned_by_payload(cx, e, missing!)) }
     let concrete = bound_closed(cx, pinned)
     let row: TypeRow? = cx.view.decls.row_of(decl)
     let args = TypeArgs { parts: concrete }
@@ -80,9 +80,17 @@ fn wants_decl(cx: TypeCx, want: TypeId, decl: DeclId) -> bool {
     }
 }
 
+/// A construction whose Vars nothing pinned goes HUNGRY for a want;
+/// only when the walk ends starving does it speak.
+export fn unfed_construction(cx: TypeCx, e: ExprId, voice: fn() -> TypeId) -> TypeId {
+    if cx.starving { return voice() }
+    cx.go_hungry(e)
+    cx.error_type
+}
+
 /// The bindings with every empty slot filled from the want's type
 /// arguments, when the want has as many.
-fn pinned_by_want(cx: TypeCx, e: ExprId, decl: DeclId, bound: List<TypeId?>) -> List<TypeId?> {
+export fn pinned_by_want(cx: TypeCx, e: ExprId, decl: DeclId, bound: List<TypeId?>) -> List<TypeId?> {
     let wanted: TypeId? = cx.want_at(e)
     if wanted == null { return bound }
     let want = cx.view.types.carried(wanted!) ?? wanted!

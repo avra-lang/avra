@@ -144,6 +144,12 @@ fn heard(cx: TypeCx, e: ExprId, want: TypeId) {
     cx.feed(e, want)
 }
 
+/// Whether an arm's value stays to answer — every value but a
+/// leaving block.
+export fn stays(cx: TypeCx, v: ExprId) -> bool {
+    !cx.view.store.leaves(v)
+}
+
 /// THE JOIN: the one type two branches can BOTH answer with, or
 /// absent when there is none. Equal types join to themselves; a
 /// value beside an ABSENCE joins to the nullable covering both.
@@ -259,9 +265,11 @@ export fn refuses_type_value(cx: TypeCx, e: ExprId) -> bool {
 /// keeps its own words.
 export fn arms_agree(cx: TypeCx, kind: string, subject: string, anchor_name: string,
                      anchor: ExprId, values: List<ExprId>) -> TypeId {
-    let want = arms_answer(cx, anchor, values)
+    // an arm that LEAVES answers nothing and joins with anything
+    let answering = [v for v in values if stays(cx, v)]
+    let want = arms_answer(cx, anchor, answering)
     mut agreed = true
-    for v in values {
+    for v in answering {
         if !accepts(cx, v, want) {
             let n = cx.name_at(v)
             cx.emit(refusal(kind, cx.loc_of(v), "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${cx.view.types.name_of(want)}`", this_is(n), null))

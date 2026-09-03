@@ -2,7 +2,7 @@
 //! (resolve spoke otherwise), and the written fields match it —
 //! each declared field exactly once, each value the field's type.
 use core.{ExprId, StmtId, Type, TypeId, filled, StructParts, DeclId}
-use features.{TypeCx, StructSig, spoken, this_is, fields_are, repeated_at, unify, fully_bound, bound_args, accepts, slot_worthy, tparams_refused, unpinned_of, bound_closed, slice_promise, StmtTypeCx}
+use features.{TypeCx, StructSig, spoken, this_is, fields_are, repeated_at, unify, fully_bound, bound_args, accepts, slot_worthy, tparams_refused, unpinned_of, bound_closed, slice_promise, StmtTypeCx, pinned_by_want, unfed_construction}
 use diagnostics.{refusal}
 
 fn structs_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -66,9 +66,10 @@ fn generic_lit(cx: TypeCx, e: ExprId, name: string, fields: List<string>,
         }
     }
     if spoke { return cx.error_type }
-    let missing: string? = unpinned_of(tp, bound)
-    if missing != null { return unpinned_by_fields(cx, e, missing!) }
-    let concrete = bound_closed(cx, bound)
+    let pinned = pinned_by_want(cx, e, decl, bound)
+    let missing: string? = unpinned_of(tp, pinned)
+    if missing != null { return unfed_construction(cx, e, () -> unpinned_by_fields(cx, e, missing!)) }
+    let concrete = bound_closed(cx, pinned)
     for ft in sig.types {
         let landed = cx.view.types.substituted(ft, decl, concrete)
         if !slot_worthy(cx.view.types, cx.view.types.shape_of(landed)) {

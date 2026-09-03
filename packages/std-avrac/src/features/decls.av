@@ -49,13 +49,16 @@ export type Decls = {
     // enum — and the rows they read their parts from
     builtins: List<DeclId>,
     rows: List<TypeRow>,
+    // an impl block's target type, once typing found it — dense by
+    // DeclId; a method's instantiation is its target's
+    targets: List<DeclId?>,
 }
 
 export fn new_decls() -> Decls {
     Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
         stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], children: [], methods: [], impls: [],
-        ensure: [no_ensure], ensure_methods: [no_ensure], builtins: [], rows: [],
+        ensure: [no_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
     }
 }
 
@@ -101,15 +104,12 @@ impl Decls {
         if known != null { return known! }
         let id = FileId { index: self.files.length }
         let m = self.module_id(module)
-        mut ps = self.paths
-        ps.set(path, id)
-        mut fs = self.files
-        fs.push(FileInfo { id: id, path: path, module_id: m })
+        self.paths.set(path, id)
+        self.files.push(FileInfo { id: id, path: path, module_id: m })
         // LICENSED I3: the module's own file list, pushed in place
         mut mf = self.module_files[m.index]
         mf.push(id)
-        mut ss = self.stores
-        ss.push(null)
+        self.stores.push(null)
         mut ds = self.decl_ids
         ds.push([])
         mut fd = self.file_decls
@@ -124,12 +124,9 @@ impl Decls {
         let known: ModuleId? = self.module_ids.get(module)
         if known != null { return known! }
         let m = ModuleId { index: self.modules.length }
-        mut ids = self.module_ids
-        ids.set(module, m)
-        mut ms = self.modules
-        ms.push(module)
-        mut mf = self.module_files
-        mf.push([])
+        self.module_ids.set(module, m)
+        self.modules.push(module)
+        self.module_files.push([])
         m
     }
 
@@ -150,8 +147,7 @@ impl Decls {
     /// trait's and impl's methods under their owner. Answers the
     /// top-level ids, in order.
     fn admit(self, f: FileId, store: NodeStore, stmts: List<StmtId>) -> List<DeclId> {
-        mut ss = self.stores
-        ss.set(f.index, store)
+        self.stores.set(f.index, store)
         mut by_stmt: List<DeclId?> = filled<DeclId?>(store.stmts.count(), null)
         mut out: List<DeclId> = []
         mut made: List<DeclId> = []
@@ -206,8 +202,7 @@ impl Decls {
         }
         let main = self.mint("${path}::main", f, stmts.first() ?? no_stmt(), "main", DeclKind.Main, false, "", null, false, null)
         made.push(main)
-        mut mn = self.mains
-        mn.set(f.index, main)
+        self.mains.set(f.index, main)
         // A declaration NESTED in a body is refused by its feature, but
         // typing still walks it: it gets an identity under a key no
         // module-level name can take, and joins no namespace.
@@ -221,8 +216,7 @@ impl Decls {
                 made.push(nd)
             }
         }
-        mut di = self.decl_ids
-        di.set(f.index, by_stmt)
+        self.decl_ids.set(f.index, by_stmt)
         mut fd = self.file_decls
         fd.set(f.index, made)
         self.range_bodies(f, store, main)
@@ -246,8 +240,7 @@ impl Decls {
         }
         for d in owners.concat([main]) {
             let i = d.index
-            mut ds = self.decls
-            ds.set(i, self.decl(d) with { lo: lo[i] ?? 0, hi: hi[i] ?? 0 })
+            self.decls.set(i, self.decl(d) with { lo: lo[i] ?? 0, hi: hi[i] ?? 0 })
         }
     }
 
@@ -302,8 +295,7 @@ impl Decls {
 
     /// A parent admitted again lists its members afresh.
     fn orphan(self, parent: DeclId) {
-        mut cs = self.children
-        cs.set(parent.index, [])
+        self.children.set(parent.index, [])
     }
 
     /// An id for a key: the existing one (its row refreshed), or the
@@ -312,13 +304,12 @@ impl Decls {
         let known: DeclId? = self.keys.get(key)
         let id: DeclId = if known == null { DeclId { index: self.decls.length } } else { known! }
         let d = Decl { id: id, file: f, stmt: s, name: name, kind: kind, exported: exported, owner: owner, parent: parent, nested: nested, root: root, lo: 0, hi: 0 }
-        mut ds = self.decls
         if known == null {
-            ds.push(d)
-            mut ks = self.keys
-            ks.set(key, id)
-            mut sg = self.sigs
-            sg.push(null)
+            self.decls.push(d)
+            self.keys.set(key, id)
+            self.sigs.push(null)
+            mut tg = self.targets
+            tg.push(null)
             mut cs = self.children
             cs.push([])
             mut ms = self.methods
@@ -326,7 +317,7 @@ impl Decls {
             mut im = self.impls
             im.push([])
         } else {
-            ds.set(id.index, d)
+            self.decls.set(id.index, d)
         }
         if parent != null {
             // LICENSED I3: the parent's own member list, pushed in place
@@ -362,18 +353,35 @@ impl Decls {
 
     /// The workspace arms the sig hook once.
     fn arm(self, ensure: fn(DeclId)) {
-        mut es = self.ensure
-        es.set(0, ensure)
+        self.ensure.set(0, ensure)
     }
 
     fn declare(self, d: DeclId, sig: DeclSig) {
-        mut ss = self.sigs
-        ss.set(d.index, sig)
+        self.sigs.set(d.index, sig)
     }
 
     fn tparams(self, d: DeclId) -> List<string> {
-        if self.decl(d).kind is .Builtin { return builtin_tparams(self.row_of(d)!.arity) }
-        self.store(d).decl_tparams(self.decl(d).stmt)
+        let x = self.decl(d)
+        if x.kind is .Builtin { return builtin_tparams(self.row_of(d)!.arity) }
+        if x.kind is .Impl { return self.target_tparams(d) }
+        self.store(d).decl_tparams(x.stmt)
+    }
+
+    /// An impl block's type parameters are its TARGET's — a method
+    /// under `impl Arena<N>` instantiates with `Arena`'s Vars.
+    fn target_tparams(self, impl_decl: DeclId) -> List<string> {
+        let t: DeclId? = self.target_of(impl_decl)
+        if t == null { return [] }
+        self.tparams(t!)
+    }
+
+    fn record_target(self, impl_decl: DeclId, target: DeclId) {
+        self.targets.set(impl_decl.index, target)
+    }
+
+    fn target_of(self, impl_decl: DeclId) -> DeclId? {
+        let held: DeclId? = self.targets[impl_decl.index]
+        held
     }
 
     fn tbounds(self, d: DeclId) -> List<Param> {
@@ -393,12 +401,14 @@ impl Decls {
         for r in self.rows {
             let holes = TypeArgs { parts: filled<TypeId>(r.arity, hole) }
             let answers: EnumSig? = r.variants(holes)
-            if answers == null { continue }
-            let id = self.mint("builtin::${r.name}", FileId { index: 0 }, no_stmt(), r.name, DeclKind.Builtin, true, "", null, false, null)
-            mut bs = self.builtins
-            bs.push(id)
-            self.declare_builtin(id, r)
+            if answers != null { self.admit_builtin(r) }
         }
+    }
+
+    fn admit_builtin(self, r: TypeRow) {
+        let id = self.mint("builtin::${r.name}", FileId { index: 0 }, no_stmt(), r.name, DeclKind.Builtin, true, "", null, false, null)
+        self.builtins.push(id)
+        self.declare_builtin(id, r)
     }
 
     /// A builtin's signature: its variants over its own Vars — the
@@ -516,8 +526,7 @@ impl Decls {
 
     /// The workspace arms the method-table hook once.
     fn arm_methods(self, ensure: fn(DeclId)) {
-        mut es = self.ensure_methods
-        es.set(0, ensure)
+        self.ensure_methods.set(0, ensure)
     }
 
     /// A method registered under its type — the same declaration

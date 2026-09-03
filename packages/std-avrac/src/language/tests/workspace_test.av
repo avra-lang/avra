@@ -16,19 +16,19 @@ fn ws_files() -> Map<string, string> {
     }
 }
 
-fn names() -> List<string> {
+fn ws_names() -> List<string> {
     ["/w/src/main.av", "/w/src/helper.av", "/w/src/util/mathx.av", "/w/src/util/pair.av", "/w/src/solo.av"]
 }
 
-fn workspace() -> Workspace {
-    new_workspace(memory_host(ws_files(), names()), "/w", avra())
+fn ws_of() -> Workspace {
+    new_workspace(memory_host(ws_files(), ws_names()), "/w", avra())
 }
 
 /// The package with its root file replaced.
 fn with_main(text: string) -> Workspace {
     mut fs = ws_files()
     fs.set("/w/src/main.av", text)
-    new_workspace(memory_host(fs, names()), "/w", avra())
+    new_workspace(memory_host(fs, ws_names()), "/w", avra())
 }
 
 fn main_report(text: string) -> string {
@@ -41,29 +41,37 @@ fn main_refuses(text: string, saying: string) -> bool {
     a.diagnostics.length == 1 && a.report().contains(saying)
 }
 
+/// Whether a run answered exactly `text`.
+fn ran_as(r: Result<string, string>, text: string) -> bool {
+    match r {
+        .Ok(t) -> t == text,
+        .Err(_) -> false,
+    }
+}
+
 spec "language/workspace" {
     given "modules are directories, or a file" {
         then "a root file belongs to the root module; a nested one to its directory" {
-            let ws = workspace()
+            let ws = ws_of()
             module_of(ws, "/w/src/main.av") == "" && module_of(ws, "/w/src/util/mathx.av") == "util"
         }
         then "every file under the root is found" {
-            all_files(workspace(), "/w/src").length == 5
+            all_files(ws_of(), "/w/src").length == 5
         }
     }
     given "what a file sees" {
         then "a root sibling's fn, a directory module's exports, and a lone-file module resolve" {
-            let ws = workspace()
+            let ws = ws_of()
             let f = visible(ws, file_id(ws, "/w/src/main.av"))
             f.fns.get("helper") != null && f.fns.get("twice") != null && f.types.get("Pair") != null &&
                 f.fns.get("once") != null && f.voices.list.is_empty()
         }
         then "a module's private fn is not on its surface" {
-            let ws = workspace()
+            let ws = ws_of()
             visible(ws, file_id(ws, "/w/src/main.av")).fns.get("hidden") == null
         }
         then "the whole file analyzes with nothing unresolved" {
-            analyze_file(workspace(), "/w/src/main.av").report() == ""
+            analyze_file(ws_of(), "/w/src/main.av").report() == ""
         }
     }
     given "typed across ws_files — the table is one" {
@@ -86,7 +94,7 @@ spec "language/workspace" {
             main_report("use util.{Box}\nfn peek(b: Box<int>) -> int {\n    b.v\n}\npeek(Box { v: 7 })\n") == ""
         }
         then "a foreign generic fn types, and its specialization lowers in its home" {
-            program(with_main("use util.{ident}\nident(3)\n"), "/w/src/main.av").run() == Result.Ok("3")
+            ran_as(program(with_main("use util.{ident}\nident(3)\n"), "/w/src/main.av").run(), "3")
         }
         then "a nested module's fn lowers under its qualified symbol" {
             program(with_main("use util.{twice}\ntwice(2)\n"), "/w/src/main.av").lowered().fns.any(it.name == "util.twice")
@@ -97,21 +105,21 @@ spec "language/workspace" {
     }
     given "the program runs across ws_files — one worklist" {
         then "a sibling, a directory module, a lone-file module, and a generic specialized in its home" {
-            program(with_main("use util.{twice, ident}\nuse solo.{once}\ntwice(20) + ident(1) + once(1) + helper(1)\n"), "/w/src/main.av").run() == Result.Ok("43")
+            ran_as(program(with_main("use util.{twice, ident}\nuse solo.{once}\ntwice(20) + ident(1) + once(1) + helper(1)\n"), "/w/src/main.av").run(), "43")
         }
         then "a foreign fn worn as a value calls through its wrapper" {
-            program(with_main("use util.{twice}\nlet f = twice\nf(21)\n"), "/w/src/main.av").run() == Result.Ok("42")
+            ran_as(program(with_main("use util.{twice}\nlet f = twice\nf(21)\n"), "/w/src/main.av").run(), "42")
         }
         then "a foreign enum matches by its variants" {
-            program(with_main("use util.{Shape}\nlet s = Shape.Line(7)\nmatch s {\n    .Dot -> 0\n    .Line(n) -> n\n}\n"), "/w/src/main.av").run() == Result.Ok("7")
+            ran_as(program(with_main("use util.{Shape}\nlet s = Shape.Line(7)\nmatch s {\n    .Dot -> 0\n    .Line(n) -> n\n}\n"), "/w/src/main.av").run(), "7")
         }
         then "a foreign generic record instantiates and reads" {
-            program(with_main("use util.{Box}\nlet b = Box { v: 9 }\nb.v\n"), "/w/src/main.av").run() == Result.Ok("9")
+            ran_as(program(with_main("use util.{Box}\nlet b = Box { v: 9 }\nb.v\n"), "/w/src/main.av").run(), "9")
         }
         then "a run-time statement outside the entry refuses, naming the entry" {
             mut fs = ws_files()
             fs.set("/w/src/helper.av", "fn helper(n: int) -> int {\n    n\n}\nhelper(2)\n")
-            let ws = new_workspace(memory_host(fs, names()), "/w", avra())
+            let ws = new_workspace(memory_host(fs, ws_names()), "/w", avra())
             let p = program(ws, "/w/src/main.av")
             p.clean() && p.lowered().diagnostics.length == 1 &&
                 p.rendered(p.lowered().diagnostics).contains("only the entry `/w/src/main.av` runs statements")

@@ -60,6 +60,9 @@ export type Asked = { subject: ExprId, on_present: bool }
 /// expressions a boundary LIFTED into a nullable; `narrows` the
 /// reads a presence test proved; `substs` the instantiations mono
 /// specializes; the want columns are the expected-type channel.
+/// The enclosing fn's parameter types — a hungry node's typing scope.
+type ParamScope = { params: List<TypeId> }
+
 export type TypeFacts = {
     lo: int,
     of_expr: List<TypeId>,
@@ -71,8 +74,14 @@ export type TypeFacts = {
     wants: List<TypeId?>,
     hungry: List<bool>,
     starved: List<TypeId?>,
+    // the parameter scope a hungry node was typed under — what its
+    // rule runs under again when fed or starving
+    scopes: List<ParamScope?>,
     pattern_types: List<List<TypeId>>,
     binding_types: List<TypeId?>,
+    // a `mut` binding that BORROWS a parameter's field (bs2's
+    // aliasing, honored until self-host — ROADMAP: the bs2 debt ledger)
+    borrows: List<bool>,
     voices: Voices,
 }
 
@@ -90,8 +99,10 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         wants: filled<TypeId?>(exprs, null),
         hungry: filled(exprs, false),
         starved: filled<TypeId?>(exprs, null),
+        scopes: filled<ParamScope?>(exprs, null),
         pattern_types: empty_lists_ty(exprs),
         binding_types: filled<TypeId?>(stmts, null),
+        borrows: filled(stmts, false),
         voices: no_voices(),
     }
 }
@@ -118,13 +129,11 @@ impl TypeFacts {
     }
 
     fn set_type(self, e: ExprId, ty: TypeId) {
-        mut ts = self.of_expr
-        ts.set(e.index - self.lo, ty)
+        self.of_expr.set(e.index - self.lo, ty)
     }
 
     fn widen(self, v: ExprId, ty: TypeId) {
-        mut ws = self.widens
-        ws.set(v.index - self.lo, ty)
+        self.widens.set(v.index - self.lo, ty)
     }
 
     fn widened_at(self, e: ExprId) -> TypeId? {
@@ -133,8 +142,7 @@ impl TypeFacts {
     }
 
     fn narrow(self, e: ExprId, opt: TypeId) {
-        mut ns = self.narrows
-        ns.set(e.index - self.lo, opt)
+        self.narrows.set(e.index - self.lo, opt)
     }
 
     fn narrowed_at(self, e: ExprId) -> TypeId? {
@@ -143,8 +151,7 @@ impl TypeFacts {
     }
 
     fn record_ask(self, e: ExprId, subject: ExprId, on_present: bool) {
-        mut aa = self.asks
-        aa.set(e.index - self.lo, Asked { subject: subject, on_present: on_present })
+        self.asks.set(e.index - self.lo, Asked { subject: subject, on_present: on_present })
     }
 
     fn ask_of(self, e: ExprId) -> Asked? {
@@ -153,8 +160,7 @@ impl TypeFacts {
     }
 
     fn record_subst(self, e: ExprId, target: DeclId, targs: List<TypeId>) {
-        mut ss = self.substs
-        ss.set(e.index - self.lo, Sub { target: target, args: targs })
+        self.substs.set(e.index - self.lo, Sub { target: target, args: targs })
     }
 
     fn subst_at(self, e: ExprId) -> Sub? {
@@ -163,8 +169,7 @@ impl TypeFacts {
     }
 
     fn set_want(self, e: ExprId, ty: TypeId) {
-        mut ws = self.wants
-        ws.set(e.index - self.lo, ty)
+        self.wants.set(e.index - self.lo, ty)
     }
 
     fn want_at(self, e: ExprId) -> TypeId? {
@@ -173,28 +178,33 @@ impl TypeFacts {
     }
 
     fn go_hungry(self, e: ExprId) {
-        mut hs = self.hungry
-        hs.set(e.index - self.lo, true)
+        self.hungry.set(e.index - self.lo, true)
+    }
+
+    fn remember_scope(self, e: ExprId, params: List<TypeId>) {
+        self.scopes.set(e.index - self.lo, ParamScope { params: params })
+    }
+
+    fn scope_at(self, e: ExprId) -> List<TypeId>? {
+        let held: ParamScope? = self.scopes[e.index - self.lo]
+        held?.params
     }
 
     fn absorb_hunger(self, e: ExprId) {
-        mut hs = self.hungry
-        hs.set(e.index - self.lo, false)
+        self.hungry.set(e.index - self.lo, false)
     }
 
     /// A hungry expression starved of the seat it wanted; true when
     /// it was hungry.
     fn starve(self, e: ExprId, want: TypeId) -> bool {
         if !self.hungry[e.index - self.lo] { return false }
-        mut ss = self.starved
-        ss.set(e.index - self.lo, want)
+        self.starved.set(e.index - self.lo, want)
         true
     }
 
     /// An arm's binds, typed in pattern order.
     fn bind_types(self, v: ExprId, tys: List<TypeId>) {
-        mut ps = self.pattern_types
-        ps.set(v.index - self.lo, tys)
+        self.pattern_types.set(v.index - self.lo, tys)
     }
 
     /// The arm's Nth bind, when the arm's owner spoke it.
@@ -205,9 +215,14 @@ impl TypeFacts {
     }
 
     fn record_binding(self, s: StmtId, ty: TypeId) {
-        mut bs = self.binding_types
-        bs.set(s.index, ty)
+        self.binding_types.set(s.index, ty)
     }
+
+    fn mark_borrow(self, s: StmtId) {
+        self.borrows.set(s.index, true)
+    }
+
+    fn is_borrow(self, s: StmtId) -> bool { self.borrows[s.index] }
 
     /// Another body's facts laid into this table over its range,
     /// and every binding it declared — the per-file fold. The
@@ -224,9 +239,11 @@ impl TypeFacts {
         copy_into(self.lambda_params, other.lambda_params, at)
         copy_into(self.wants, other.wants, at)
         copy_into(self.pattern_types, other.pattern_types, at)
-        mut bs = self.binding_types
+        for (j, b) in other.borrows.enumerate() {
+            if b { self.borrows.set(j, true) }
+        }
         for (j, b) in other.binding_types.enumerate() {
-            if b != null { bs.set(j, b) }
+            if b != null { self.binding_types.set(j, b) }
         }
     }
 
@@ -236,8 +253,7 @@ impl TypeFacts {
     }
 
     fn seat_lambda(self, lam: ExprId, tys: List<TypeId>) {
-        mut lp = self.lambda_params
-        lp.set(lam.index - self.lo, tys)
+        self.lambda_params.set(lam.index - self.lo, tys)
     }
 
     fn lambda_seats(self, lam: ExprId) -> List<TypeId>? {
@@ -269,9 +285,8 @@ impl Emitter {
     fn defect(self, what: string) { self.record("defect: ${what}") }
 
     fn mint_ty(self, ty: TypeId) -> Reg {
-        mut tys = self.reg_types
-        tys.push(ty)
-        Reg { index: tys.length - 1 }
+        self.reg_types.push(ty)
+        Reg { index: self.reg_types.length - 1 }
     }
 
     fn type_of_reg(self, r: Reg) -> TypeId { self.reg_types[r.index] }
@@ -297,8 +312,7 @@ impl Emitter {
             self.defect("unknown runtime callee `${callee!}` — add its row to runtime_api.av")
         }
         self.defined_in_order(i)
-        mut ins = self.ins
-        ins.push(i)
+        self.ins.push(i)
     }
 
     fn defined_in_order(self, i: Ins) {
@@ -310,15 +324,13 @@ impl Emitter {
         if dst.index != expected {
             self.defect("register r${dst.index} defines out of mint order — r${expected} is next (mint operands first, the answer last)")
         }
-        mut ds = self.defined
-        ds.push(dst)
+        self.defined.push(dst)
     }
 
     /// The params are registers 0..N-1, defined before any instruction.
     fn seeded(self) {
-        mut ds = self.defined
         // LICENSED I3: the register IS its index
-        for j in 0..self.reg_types.length { ds.push(Reg { index: j }) }
+        for j in 0..self.reg_types.length { self.defined.push(Reg { index: j }) }
     }
 
     fn record(self, msg: string) { self.voices.speak(defect_at(null, msg)) }
@@ -342,20 +354,17 @@ impl BodyRegs {
         held
     }
     fn set_reg(self, e: ExprId, r: Reg) {
-        mut rs = self.regs
-        rs.set(e.index, r)
+        self.regs.set(e.index, r)
     }
     fn slot_of(self, s: StmtId) -> Reg? {
         let held: Reg? = self.slots[s.index]
         held
     }
     fn set_slot(self, s: StmtId, r: Reg) {
-        mut ss = self.slots
-        ss.set(s.index, r)
+        self.slots.set(s.index, r)
     }
     fn bind_slot(self, s: StmtId, cell: Reg) {
-        mut bs = self.boxed
-        bs.set(s.index, true)
+        self.boxed.set(s.index, true)
         self.set_slot(s, cell)
     }
     fn is_boxed(self, s: StmtId) -> bool { self.boxed[s.index] }
@@ -365,16 +374,14 @@ impl BodyRegs {
         regs[j]
     }
     fn bind_patterns(self, v: ExprId, regs: List<Reg>) {
-        mut ps = self.pattern_regs
-        ps.set(v.index, regs)
+        self.pattern_regs.set(v.index, regs)
     }
     fn index_reg(self, s: StmtId) -> Reg? {
         let held: Reg? = self.index_regs[s.index]
         held
     }
     fn bind_index(self, s: StmtId, r: Reg) {
-        mut is_ = self.index_regs
-        is_.set(s.index, r)
+        self.index_regs.set(s.index, r)
     }
 }
 

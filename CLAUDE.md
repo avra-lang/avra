@@ -317,6 +317,11 @@ reference code for anything — see spec_test's VENDORED.md.
 
 ## bs2 subset notes
 
+Every note here is BORROWED DEBT: a place the bootstrap dialect
+forces bs2's side of a disagreement. Each is listed in ROADMAP's
+"THE bs2 DEBT LEDGER" with its fix, and all of them are lifted once
+the compiler compiles itself. Add to the ledger at discovery.
+
 Discovered gaps between the spec and the bootstrap compiler. Verify
 against these before writing; probe in scratch when unsure.
 
