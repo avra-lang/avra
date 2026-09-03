@@ -6,6 +6,45 @@ use @std.avrac.language.{analyze_source}
 use @std.avrac.testing.{shown, refused_with, refusals, refused_at_run, makers, finder}
 
 spec "features/nullable" {
+    given "a nullable pointer in a slot — the niche" {
+        then "a field holds a nullable string, absent or present" {
+            shown("type P = { name: string? }\nlet a = P { name: null }\nlet b = P { name: \"x\" }\n\"" + "$" + "{a.name ?? \"-\"} " + "$" + "{b.name ?? \"-\"}\"") == "- x"
+        }
+        then "a list holds nullable strings" {
+            shown("let xs: List<string?> = [null, \"a\"]\n\"" + "$" + "{xs[0] ?? \"-\"} " + "$" + "{xs[1] ?? \"-\"}\"") == "- a"
+        }
+        then "an enum payload holds one" {
+            shown("enum W {\n    Named(n: string?)\n}\nmatch W.Named(null) {\n    .Named(n) -> n ?? \"none\"\n}") == "none"
+        }
+        then "`?.` into a field that is itself nullable flattens — one absence, never two" {
+            shown("type P = { name: string? }\ntype Q = { p: P? }\nfn f(q: Q) -> string { q.p?.name ?? \"-\" }\n\"" + "$" + "{f(Q { p: P { name: \"n\" } })} " + "$" + "{f(Q { p: P { name: null } })} " + "$" + "{f(Q { p: null })}\"") == "n - -"
+        }
+        then "a scalar nullable still waits for its slot" {
+            refused_with("type Q = { n: int? }\n2", "a struct field cannot hold this yet")
+        }
+    }
+    given "a redundant ask after narrowing, and the chained `??`" {
+        then "`!` on a read a narrowing proved present is the value" {
+            shown("fn f(s: string?) -> string {\n    if s != null { s! } else { \"-\" }\n}\n\"" + "$" + "{f(\"a\")} " + "$" + "{f(null)}\"") == "a -"
+        }
+        then "`??` chains through nullables" {
+            shown("fn g(a: string?, b: string?) -> string { a ?? b ?? \"z\" }\n\"" + "$" + "{g(null, \"b\")} " + "$" + "{g(null, null)} " + "$" + "{g(\"a\", null)}\"") == "b z a"
+        }
+        then "`??` on a value that is never absent warns and answers it" {
+            refused_with("let n = 3\nn ?? 4", "`??` never fires — a `int` is never absent")
+        }
+    }
+    given "equality through presence" {
+        then "a nullable beside its value: equal when present and equal" {
+            shown("fn f(s: string?) -> bool { s == \"a\" }\n\"" + "$" + "{f(\"a\")} " + "$" + "{f(\"b\")} " + "$" + "{f(null)}\"") == "true false false"
+        }
+        then "two nullables: both absent is equal, one absent is not" {
+            shown("fn f(a: int?, b: int?) -> bool { a == b }\n\"" + "$" + "{f(null, null)} " + "$" + "{f(1, null)} " + "$" + "{f(1, 1)} " + "$" + "{f(1, 2)}\"") == "true false true false"
+        }
+        then "`!=` negates it" {
+            shown("fn f(s: string?) -> bool { s != \"a\" }\n\"" + "$" + "{f(\"a\")} " + "$" + "{f(null)}\"") == "false true"
+        }
+    }
     given "the absence and the answer" {
         then "a present value unwraps through `??`" {
             shown("${makers()}some(5) ?? 0") == "5"
@@ -114,20 +153,17 @@ spec "features/nullable" {
         }
     }
     given "`??`'s own law" {
-        then "it answers a NULLABLE — a guarantee is already answered" {
+        then "on a guarantee it warns — never fires — and answers the guarantee" {
             let a = analyze_source("1 ?? 2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`??` answers a nullable, this is `int`") &&
-                a.report().contains("is a guarantee")
+            a.diagnostics.length == 1 && a.report().contains("never fires") && a.ran() == "1"
         }
         then "the right side carries the nullable's own type" {
             let a = analyze_source("${makers()}some(1) ?? \"s\"")
             a.diagnostics.length == 1 &&
                 a.report().contains("`??` answers with a `int`, this is `string`")
         }
-        then "an ungrouped chain says how to group it" {
-            let a = analyze_source("${makers()}none() ?? none() ?? 7")
-            a.diagnostics.length == 1 && a.report().contains("groups to the RIGHT")
+        then "a chain reads left to right, staying nullable until the last" {
+            shown("${makers()}\"" + "$" + "{none() ?? none() ?? 7} " + "$" + "{some(1) ?? none() ?? 7} " + "$" + "{none() ?? some(2) ?? 7}\"") == "7 1 2"
         }
     }
     given "`if let` — the bind-fresh form, sugar over the asking arms" {
@@ -220,9 +256,8 @@ spec "features/nullable" {
             refused_with("fn f(v: int?) -> int { if v != null { v } else { v + 1 } }\nf(1)",
                          "`+` needs `int` operands, found `int?`")
         }
-        then "`!` under the narrow is told it insists on a GUARANTEE" {
-            refused_with("fn f(v: int?) -> int { if v != null { v! } else { 0 } }\nf(1)",
-                         "`!` insists on a nullable, this is `int`")
+        then "`!` under the narrow is the value — redundant, and silent" {
+            shown("fn f(v: int?) -> int { if v != null { v! } else { 0 } }\nf(1)") == "1"
         }
         then "a GUARANTEE beside null refuses toward the family words" {
             refused_with("let n = 5\nif n != null { 1 } else { 0 }",

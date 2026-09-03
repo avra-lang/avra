@@ -3,7 +3,7 @@
 //! variant must exist; a carrying variant takes exactly its payload
 //! (which UNIFIES, pinning a generic declaration's Vars); the answer
 //! is the declared type, instantiated when generic.
-use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, same_decl}
 use diagnostics.{Diag, refusal}
 
 /// Plain or generic, ONE law: the variant must exist; a carrying
@@ -38,6 +38,15 @@ fn unit_variant(cx: TypeCx, e: ExprId, tname: string, variant: string, tp: List<
     carries_nothing(cx, e, tname, variant)
 }
 
+/// A bare generic unit variant — `Opt.none` — pins from the want
+/// alone; with none, nothing carries the type and it says so.
+export fn unit_instantiated(cx: TypeCx, e: ExprId, tname: string, variant: string, decl: DeclId, tp: List<string>) -> TypeId {
+    let pinned = pinned_by_want(cx, e, decl, filled<TypeId?>(tp.length, null))
+    let missing: string? = unpinned_of(tp, pinned)
+    if missing != null { return cannot_pin(cx, e, tname, variant, missing!) }
+    instantiated(cx, e, tname, decl, tp, pinned)
+}
+
 /// The answer: the plain enum, or the App the bindings close into.
 /// A Var no payload pinned is read from the WANT — the type the
 /// site is expected to be, when it is this declaration's — and a
@@ -45,7 +54,7 @@ fn unit_variant(cx: TypeCx, e: ExprId, tname: string, variant: string, tp: List<
 fn instantiated(cx: TypeCx, e: ExprId, tname: string, decl: DeclId,
                 tp: List<string>, bound: List<TypeId?>) -> TypeId {
     if tp.is_empty() { return cx.view.types.intern(Type.Enum(decl, tname)) }
-    let pinned = pinned_by_want(cx, e, bound)
+    let pinned = pinned_by_want(cx, e, decl, bound)
     let missing: string? = unpinned_of(tp, pinned)
     if missing != null { return unpinned_by_payload(cx, e, missing!) }
     let concrete = bound_closed(cx, pinned)
@@ -56,12 +65,29 @@ fn instantiated(cx: TypeCx, e: ExprId, tname: string, decl: DeclId,
     cx.view.types.intern(Type.App(decl, tname, concrete))
 }
 
+/// Whether a type is THIS declaration's: an App naming it, or a
+/// builtin's row rebuilt over the type's own arguments.
+fn wants_decl(cx: TypeCx, want: TypeId, decl: DeclId) -> bool {
+    let row: TypeRow? = cx.view.decls.row_of(decl)
+    if row != null {
+        let args = TypeArgs { parts: cx.view.types.args_of(want) }
+        return args.parts.length == row!.arity && !types_disagree(cx, cx.view.types.intern(row!.builds(args)), want)
+    }
+    match cx.view.types.shape_of(want) {
+        .App(d, _, _) -> same_decl(d, decl),
+        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+        .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .List(_) or .Map(_, _) or .EmptyMap -> false,
+    }
+}
+
 /// The bindings with every empty slot filled from the want's type
 /// arguments, when the want has as many.
-fn pinned_by_want(cx: TypeCx, e: ExprId, bound: List<TypeId?>) -> List<TypeId?> {
-    let want: TypeId? = cx.want_at(e)
-    if want == null { return bound }
-    let args = cx.view.types.args_of(want!)
+fn pinned_by_want(cx: TypeCx, e: ExprId, decl: DeclId, bound: List<TypeId?>) -> List<TypeId?> {
+    let wanted: TypeId? = cx.want_at(e)
+    if wanted == null { return bound }
+    let want = cx.view.types.carried(wanted!) ?? wanted!
+    if !wants_decl(cx, want, decl) { return bound }
+    let args = cx.view.types.args_of(want)
     if args.length != bound.length { return bound }
     mut out: List<TypeId?> = []
     // LICENSED I3: slots and want args pair by index; comprehensions cannot destructure enumerate

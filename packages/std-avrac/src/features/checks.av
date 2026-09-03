@@ -141,7 +141,7 @@ export fn bound_name(cx: TypeCx, decl: DeclId, j: int) -> string {
 fn heard(cx: TypeCx, e: ExprId, want: TypeId) {
     let arrow: Arrow? = cx.view.types.arrow_parts(want)
     if arrow != null { let _ = cx.retype_seated(e, arrow!.seats) }
-    let _ = cx.feed(e, want)
+    cx.feed(e, want)
 }
 
 /// THE JOIN: the one type two branches can BOTH answer with, or
@@ -151,6 +151,8 @@ fn heard(cx: TypeCx, e: ExprId, want: TypeId) {
 /// construct joins the same way by asking this and then accepting.
 export fn join_of(cx: TypeCx, a: TypeId, b: TypeId) -> TypeId? {
     if !types_disagree(cx, a, b) { return a }
+    if empty_adopted(cx, a, b) { return b }
+    if empty_adopted(cx, b, a) { return a }
     if cx.view.types.shape_of(b) is .Null { return nullable_over(cx, a) }
     if cx.view.types.shape_of(a) is .Null { return nullable_over(cx, b) }
     // A guarantee beside ITS OWN nullable joins wide — a narrowed
@@ -293,15 +295,23 @@ export fn this_is(n: string) -> string {
 /// call, the fn-field call, and the lambda share, refusing in the
 /// same words every call does.
 export fn seats_judged(cx: TypeCx, e: ExprId, callee: string, ps: List<TypeId>, ret: TypeId, args: List<ExprId>) -> TypeId {
-    if args.length != ps.length {
-        wrong_arity(cx, e, callee, ps.length, args.length)
-        return cx.error_type
+    if !seats_fit(cx, e, callee, args, ps) { return cx.error_type }
+    ret
+}
+
+/// THE SEAT LAW every call shape shares: exactly `wants.length`
+/// arguments, each accepted by its seat — a wrong argument speaks
+/// and the caller still answers; a wrong count absorbs.
+export fn seats_fit(cx: TypeCx, e: ExprId, callee: string, args: List<ExprId>, wants: List<TypeId>) -> bool {
+    if args.length != wants.length {
+        wrong_arity(cx, e, callee, wants.length, args.length)
+        return false
     }
     // LICENSED I3: seat-by-seat; comprehensions cannot destructure enumerate
     for (j, a) in args.enumerate() {
-        if !accepts(cx, a, ps[j]) { wrong_argument(cx, callee, j, ps[j], a) }
+        if !accepts(cx, a, wants[j]) { wrong_argument(cx, callee, j, wants[j], a) }
     }
-    ret
+    true
 }
 
 /// THE PLACE LAW's structural half: every step of a target is a
@@ -339,14 +349,7 @@ export fn refuses_void_value(cx: TypeCx, e: ExprId) -> bool {
 /// arguments, each accepted by its seat — a wrong argument speaks
 /// and the row still answers; a wrong count absorbs.
 export fn seated(cx: TypeCx, mc: MethodCall, name: string, wants: List<TypeId>) -> bool {
-    if mc.args.length != wants.length {
-        wrong_arity(cx, mc.e, name, wants.length, mc.args.length)
-        return false
-    }
-    for (j, w) in wants.enumerate() {
-        if !accepts(cx, mc.args[j], w) { wrong_argument(cx, name, j, w, mc.args[j]) }
-    }
-    true
+    seats_fit(cx, mc.e, name, mc.args, wants)
 }
 
 /// What the runtime tests BY VALUE — what `==` compares and a scan

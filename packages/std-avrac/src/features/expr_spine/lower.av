@@ -4,8 +4,8 @@
 //! to the runtime's value comparison. The LAZY ops (`&&`/`||`)
 //! desugar onto the region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
-use core.{ExprId, BinOp, UnOp, Reg, Ins, Type}
-use features.{LowerCx, StructSig, EnumSig, presence_of, lower_defect, foreign_node, variant_defect, tagged_value, PropertyRow, property_row, same_value}
+use core.{ExprId, BinOp, UnOp, Reg, Ins, Type, TypeId}
+use features.{LowerCx, StructSig, EnumSig, presence_of, lower_defect, foreign_node, variant_defect, tagged_value, PropertyRow, property_row, same_value, presence_region, carried_of}
 
 fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -98,6 +98,9 @@ fn binary_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
     let a = cx.reg_of(l)
     let b = cx.reg_of(r)
     let sh: Type = cx.shape_at(l)
+    if (op == BinOp.Eq || op == BinOp.Ne) && (sh is .Opt || cx.shape_at(r) is .Opt) {
+        return negated_when(cx, e, op == BinOp.Ne, nullable_eq_reg(cx, e, l, r))
+    }
     if op == BinOp.Add && sh is .Str {
         let dst = cx.result(e)
         cx.emit(Ins.CallRt(dst, "avra_str_concat", [a, b]))
@@ -115,6 +118,51 @@ fn binary_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
     let dst = cx.result(e)
     cx.emit(Ins.Bin(dst, op, a, b))
     dst
+}
+
+/// `a == b` with a nullable side: equal when both are present and
+/// their values are, or when both are absent — a value beside a
+/// nullable counts as present.
+fn nullable_eq_reg(cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
+    let a = cx.reg_of(l)
+    let b = cx.reg_of(r)
+    let lt = cx.type_at(l)
+    let rt = cx.type_at(r)
+    let inner: TypeId = cx.view.types.carried(lt) ?? lt
+    presence_region(cx, e, a, lt,
+        () -> present_beside(cx, e, carried_of(cx, a, lt), b, rt, inner),
+        () -> absent_beside(cx, b, rt))
+}
+
+/// The present side's value against the other: equal values when
+/// the other is present too, false when it is absent.
+fn present_beside(cx: LowerCx, e: ExprId, av: Reg, b: Reg, rt: TypeId, inner: TypeId) -> Reg {
+    if cx.view.types.carried(rt) == null { return same_value(cx, av, b, inner) }
+    presence_region(cx, e, b, rt,
+        () -> same_value(cx, av, carried_of(cx, b, rt), inner),
+        () -> const_bool(cx, false))
+}
+
+/// The absent side against the other: equal only to absence.
+fn absent_beside(cx: LowerCx, b: Reg, rt: TypeId) -> Reg {
+    if cx.view.types.carried(rt) == null { return const_bool(cx, false) }
+    let present = presence_of(cx, b, rt)
+    let dst = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Un(dst, UnOp.Not, present))
+    dst
+}
+
+fn negated_when(cx: LowerCx, e: ExprId, negate: bool, v: Reg) -> Reg {
+    if !negate { return v }
+    let dst = cx.result(e)
+    cx.emit(Ins.Un(dst, UnOp.Not, v))
+    dst
+}
+
+fn const_bool(cx: LowerCx, b: bool) -> Reg {
+    let r = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.ConstBool(r, b))
+    r
 }
 
 /// `a && b` is `if a { b } else { false }`; `a || b` is

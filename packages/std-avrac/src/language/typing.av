@@ -6,7 +6,7 @@
 //! Unknown — a hole or unresolved name types as the interned Error,
 //! which ABSORBS: the causing pass already spoke, so no diagnostic
 //! cascades from it.
-use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, NodeStore, FileId, DeclId, FnParts, Binding, same_expr}
+use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, NodeStore, FileId, DeclId, FnParts, Binding, same_expr, flatten}
 use diagnostics.{Diag, loc_at, refusal}
 use features.{TypeCx, StmtTypeCx, FnSig, DeclSig, fn_sig_of, TypeRow, type_row, Decls, Decl, Cap, new_type_facts, decl_type_of, def_type_of, type_named, TypeFacts, NameFacts, FileView, nothing}
 use features.structs.{fits_default}
@@ -158,10 +158,8 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         written: (e: ExprId, tr: TypeRef) -> t.full_type(t.view.loc_of(e), tr),
         written_at: (e: ExprId, tr: TypeRef) -> t.full_type(loc_at(t.view.source.file, t.view.store.expr_span(e)), tr),
         plant_want: (e: ExprId, ty: TypeId) -> t.plant_want(e, ty),
-        want_at: (e: ExprId) -> t.facts.want_at(e),
         feed: (e: ExprId, want: TypeId) -> fed(t, param_types, e, want),
-        starving: () -> false,
-        starved_at: (e: ExprId) -> t.facts.starved_at(e),
+        starving: false,
         pair: (e: ExprId) -> t.pair(e),
         paired: (e: ExprId) -> t.paired.any(same_expr(it, e)),
     }
@@ -224,14 +222,19 @@ fn reseated(t: Typer, param_types: List<TypeId>, a: ExprId, seats: List<TypeId>)
 }
 
 /// THE FEED: a hungry expression re-typed under the want the door
-/// hands it — the want planted, its rule run once more (its kids
-/// were typed already), its type set.
-fn fed(t: Typer, param_types: List<TypeId>, e: ExprId, want: TypeId) -> TypeId? {
-    if !t.facts.hungry_at(e) { return null }
-    t.facts.absorb_hunger(e)
+/// hands it — the want planted (it flows to the heirs), then every
+/// hungry node beneath re-run in post-order and the expression
+/// last; kids that were never hungry keep their types.
+fn fed(t: Typer, param_types: List<TypeId>, e: ExprId, want: TypeId) {
+    if !t.facts.hungry_at(e) { return }
     t.plant_want(e, want)
-    type_node(t, expr_cx(t, param_types), e)
-    t.facts.type_at(e)
+    let cx = expr_cx(t, param_types)
+    for h in beneath(t, e) {
+        if t.facts.hungry_at(h) {
+            t.facts.absorb_hunger(h)
+            type_node(t, cx, h)
+        }
+    }
 }
 
 /// A branch typed under a PROVEN-PRESENT binding: when the asked
@@ -279,8 +282,29 @@ fn framed(t: Typer, frames: List<NarrowFrame>, key: int, opt: TypeId, walk: fn()
 }
 
 /// One node's fact: the owner speaks, the table records.
+/// One node typed by its feature — and HUNGRY when a kid is: the
+/// want that feeds the kid arrives through this node.
 fn type_node(t: Typer, cx: TypeCx, e: ExprId) {
-    t.facts.set_type(e, semantics_of(t.lang.dispatch, t.view.store.expr(e)).type_of(cx, e))
+    let node = t.view.store.expr(e)
+    let sem = semantics_of(t.lang.dispatch, node)
+    t.facts.set_type(e, sem.type_of(cx, e))
+    if any_hungry(t, sem.kids(node).concat(sem.heirs(node))) { t.facts.go_hungry(e) }
+}
+
+fn any_hungry(t: Typer, ids: List<ExprId>) -> bool {
+    // LICENSED I5: a captured method under `it` ICEs at codegen
+    for k in ids {
+        if t.facts.hungry_at(k) { return true }
+    }
+    false
+}
+
+/// Every node beneath `e` — through kids AND heirs, the arms a
+/// control node hides from the walk — in post-order, `e` last.
+fn beneath(t: Typer, e: ExprId) -> List<ExprId> {
+    let node = t.view.store.expr(e)
+    let sem = semantics_of(t.lang.dispatch, node)
+    flatten([beneath(t, k) for k in sem.kids(node).concat(sem.heirs(node))]).concat([e])
 }
 /// Every name the LANGUAGE owns — a scalar shape or a constructor
 /// row. A declaration may take none of them.
@@ -393,7 +417,7 @@ impl Typer {
     /// want it needed — its rule runs once more, STARVING, and
     /// speaks in its own words.
     fn speak_hungry(self) {
-        let cx = expr_cx(self, []) with { starving: () -> true }
+        let cx = expr_cx(self, []) with { starving: true }
         for e in self.facts.hungry_ones() { type_node(self, cx, e) }
     }
 

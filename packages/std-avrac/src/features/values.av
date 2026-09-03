@@ -256,6 +256,20 @@ fn pair_adoption(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
     flagged_pair(cx, into, true, r)
 }
 
+/// ONE region on PRESENCE — the shape every consumer of absence
+/// opens: the present arm's value, then the absent arm's, merged
+/// into the node's register. Thunks keep each arm's instructions
+/// INSIDE its brackets, which is what makes the absent side lazy.
+export fn presence_region(cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
+                          present: fn() -> Reg, absent: fn() -> Reg) -> Reg {
+    cx.emit(Ins.IfStart(presence_of(cx, v, held)))
+    cx.emit(Ins.ArmEnd(present()))
+    let answer = absent()
+    let dst = cx.result(e)
+    cx.emit(Ins.RegionEnd(dst, answer))
+    dst
+}
+
 /// The ABSENT value of a nullable type, minted fresh — the niche's
 /// null constant, or the pair whose flag says no.
 export fn absent_of(cx: LowerCx, opt: TypeId) -> Reg {

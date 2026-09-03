@@ -4,7 +4,7 @@
 //! cause was diagnosed where it happened; the wording lives here
 //! with the operators.
 use core.{ExprId, BinOp, Type, TypeId, op_symbol, DeclId}
-use features.{TypeCx, EnumSig, spoken, this_is, variants_are, build_a_record, member_type_of, compares_by_value, types_disagree}
+use features.{TypeCx, EnumSig, spoken, this_is, variants_are, build_a_record, member_type_of, compares_by_value, types_disagree, unit_instantiated}
 use diagnostics.{refusal}
 
 fn spine_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -49,7 +49,8 @@ fn prop_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
 /// A property on a TYPE NAME constructs one of its variants — the
 /// answer is the enum's own type.
 fn variant_type(cx: TypeCx, e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
-    if !cx.tparams(decl).is_empty() { return unpinned_read(cx, e, tname, name) }
+    let tp = cx.tparams(decl)
+    if !tp.is_empty() { return unit_instantiated(cx, e, tname, name, decl, tp) }
     let ty = cx.view.types.intern(Type.Enum(decl, tname))
     let sig: EnumSig? = cx.variants_of(ty)
     if sig == null { return record_read(cx, e, tname) }
@@ -131,6 +132,20 @@ fn not_type(cx: TypeCx, v: ExprId) -> TypeId {
     not_negatable(cx, v)
 }
 
+/// What a nullable comparison compares — the carried type — when
+/// one side is a nullable and the other is what it carries, or the
+/// same nullable; absence otherwise.
+fn nullable_compared(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId? {
+    let lc: TypeId? = cx.view.types.carried(cx.type_at(l))
+    let rc: TypeId? = cx.view.types.carried(cx.type_at(r))
+    if lc == null && rc == null { return null }
+    let inner: TypeId = lc ?? rc!
+    let other = if lc == null { cx.type_at(l) } else { cx.type_at(r) }
+    if !types_disagree(cx, other, inner) { return inner }
+    if lc != null && rc != null && !types_disagree(cx, lc!, rc!) { return inner }
+    null
+}
+
 /// The side that cannot be compared, LEFT first — the one the
 /// refusal should point at.
 fn uncomparable(cx: TypeCx, l: ExprId, r: ExprId) -> ExprId? {
@@ -177,6 +192,13 @@ fn eq_type(cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     if ls is .Null || rs is .Null {
         let solid = if ls is .Null { r } else { l }
         return not_askable(cx, op, solid)
+    }
+    // A NULLABLE beside its value, or beside its own nullable,
+    // compares THROUGH PRESENCE: absent equals nothing but absence.
+    let inner: TypeId? = nullable_compared(cx, l, r)
+    if inner != null {
+        if !compares_by_value(cx, inner!) { return not_comparable(cx, op, l) }
+        return cx.view.types.intern(Type.Bool)
     }
     // An AGGREGATE would compare by ADDRESS — never what the writer
     // meant, and the engines disagreed about it: the interpreter

@@ -3,7 +3,7 @@
 //! widening reached lists at G3); the empty literal is the
 //! absence-of-elements value, adopted by whatever list claims it.
 use core.{ExprId, Type, TypeId}
-use features.{TypeCx, spoken, types_disagree, this_is, slot_worthy, accepts, slice_promise, require_bool}
+use features.{TypeCx, spoken, this_is, slot_worthy, accepts, slice_promise, require_bool}
 use diagnostics.{refusal}
 
 fn list_type(cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
@@ -12,14 +12,23 @@ fn list_type(cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
     // assignment door — heterogeneity boxes, lambdas hear seats
     let want: TypeId? = wanted_elem(cx, e)
     if want != null { return heard_list(cx, e, elems, want!) }
-    let head = elems[0]
+    let head = leading_element(cx, elems)
     let elem = cx.type_at(head)
     if cx.shape_at(head) is .Error { return cx.error_type }
-    if !slot_worthy(cx.shape_at(head)) { return unslottable_element(cx, head) }
+    if !slot_worthy(cx.view.types, cx.shape_at(head)) { return unslottable_element(cx, head) }
     for k in elems {
-        if types_disagree(cx, cx.type_at(k), elem) { return disagreeing_element(cx, k, elem) }
+        if !accepts(cx, k, elem) { return disagreeing_element(cx, k, elem) }
     }
     cx.view.types.intern(Type.List(elem))
+}
+
+/// The element that names the list's type: the first that is not
+/// an empty literal — `[]` is adopted by whatever its siblings are.
+fn leading_element(cx: TypeCx, elems: List<ExprId>) -> ExprId {
+    for k in elems {
+        if !(cx.shape_at(k) is .EmptyList) { return k }
+    }
+    elems[0]
 }
 
 /// The element the planted want declares, when the slot is a list.
@@ -34,7 +43,7 @@ fn wanted_elem(cx: TypeCx, e: ExprId) -> TypeId? {
 /// widens record (dyn boxes, auto-Ok), and the refusals speak the
 /// slot's words, not the head's.
 fn heard_list(cx: TypeCx, e: ExprId, elems: List<ExprId>, want: TypeId) -> TypeId {
-    if !slot_worthy(cx.view.types.shape_of(want)) { return unslottable_want(cx, e, want) }
+    if !slot_worthy(cx.view.types, cx.view.types.shape_of(want)) { return unslottable_want(cx, e, want) }
     for k in elems {
         if !accepts(cx, k, want) { return unwanted_element(cx, k, want) }
     }
@@ -77,7 +86,7 @@ fn comp_type(cx: TypeCx, elem: ExprId, index: string, source: ExprId, cond: Expr
     if cond != null { filter_checks(cx, cond!, tys) }
     let ety = cx.walk_type(elem)
     if cx.shape_at(elem) is .Error { return cx.error_type }
-    if !slot_worthy(cx.shape_at(elem)) { return unslottable_element(cx, elem) }
+    if !slot_worthy(cx.view.types, cx.shape_at(elem)) { return unslottable_element(cx, elem) }
     cx.view.types.intern(Type.List(ety))
 }
 

@@ -3,7 +3,7 @@
 //! wrote, the slot law every aggregate obeys, and the three verbs
 //! every generic surface runs (refused tparams, the unpinned Var,
 //! the closed bindings). Laws only — the voices are the callers'.
-use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, TypeRegistry}
 use diagnostics.{Diag, refusal}
 
 /// UNIFICATION, exact: bind the callee's Vars from an argument's
@@ -65,24 +65,37 @@ fn var_binds(cx: TypeCx, decl: DeclId, j: int, got: TypeId, target: DeclId, boun
     seen!.index == got.index
 }
 
+/// `[]` is a list of anything — it unifies without pinning.
 fn elem_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
     match cx.view.types.shape_of(got) {
         .List(g) -> unify(cx, w, g, target, bound),
-        _ -> false,
+        .EmptyList -> true,
+        .Opt(_) or .Null or .Map(_, _) or .EmptyMap or
+        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+        .Dyn(_, _) or .Fn(_, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
     }
 }
 
+/// `{}` is a map of anything — it unifies without pinning.
 fn value_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
     match cx.view.types.shape_of(got) {
         .Map(_, g) -> unify(cx, w, g, target, bound),
-        _ -> false,
+        .EmptyMap -> true,
+        .Opt(_) or .Null or .List(_) or .EmptyList or
+        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+        .Dyn(_, _) or .Fn(_, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
     }
 }
 
+/// `null` inhabits every CONCRETE nullable — it unifies without
+/// pinning; against a Var it cannot pin, and the caller says so.
 fn carried_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, bound: List<TypeId?>) -> bool {
     match cx.view.types.shape_of(got) {
         .Opt(g) -> unify(cx, w, g, target, bound),
-        _ -> false,
+        .Null -> !(cx.view.types.shape_of(w) is .Var),
+        .List(_) or .EmptyList or .Map(_, _) or .EmptyMap or
+        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+        .Dyn(_, _) or .Fn(_, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
     }
 }
 
@@ -97,12 +110,16 @@ fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: DeclId, 
 /// ownership analysis; Error absorbs (the name law already spoke).
 /// A Var passes ABSTRACTLY — each instantiation re-judges it
 /// (`instantiation_lawful`), so nothing smuggles past by wearing T.
-export fn slot_worthy(sh: Type) -> bool {
+export fn slot_worthy(types: TypeRegistry, sh: Type) -> bool {
     match sh {
         .Int or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
         .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) or .Fn(_, _) or
         .Map(_, _) -> true,
-        .Opt(_) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> false,
+        // a nullable POINTER is its own nullable — the slot holds
+        // the pointer, absence the null one (the niche); a scalar
+        // nullable is a register pair, which no word holds
+        .Opt(inner) -> types.rides_pointer(inner),
+        .Null or .EmptyList or .Error or .Void or .EmptyMap -> false,
     }
 }
 
@@ -125,8 +142,8 @@ export fn unlawful_side(cx: TypeCx, ty: TypeId) -> TypeId? {
 }
 
 fn res_side_unlawful(cx: TypeCx, ok: TypeId, err: TypeId) -> TypeId? {
-    if !slot_worthy(cx.view.types.shape_of(ok)) { return ok }
-    if !slot_worthy(cx.view.types.shape_of(err)) { return err }
+    if !slot_worthy(cx.view.types, cx.view.types.shape_of(ok)) { return ok }
+    if !slot_worthy(cx.view.types, cx.view.types.shape_of(err)) { return err }
     unlawful_side(cx, ok) ?? unlawful_side(cx, err)
 }
 
