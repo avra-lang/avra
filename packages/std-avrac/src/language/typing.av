@@ -147,9 +147,17 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
 /// value-position arm joins only where the promise's type fits.
 fn block_type(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>, value: ExprId?) -> TypeId {
     type_stmts(t, param_types, stmts)
-    if value == null { return t.fn_ret.last() ?? t.error_type }
+    if value == null { return valueless_type(t, stmts) }
     type_walk(t, param_types, value!)
     t.facts.type_at(value!)
+}
+
+/// A block with no value: the fn's promise when its last statement
+/// LEAVES (nothing reads the tail), void otherwise.
+fn valueless_type(t: Typer, stmts: List<StmtId>) -> TypeId {
+    let last: StmtId? = stmts.last()
+    if last != null && t.view.store.diverges(last!) { return t.fn_ret.last() ?? t.error_type }
+    t.view.decls.types.intern(Type.Void)
 }
 
 /// A subtree typed on request, answering its own type — what a
@@ -248,6 +256,7 @@ fn shape_named(name: string) -> Type? {
         "int" -> Type.Int,
         "string" -> Type.Str,
         "bool" -> Type.Bool,
+        "void" -> Type.Void,
         _ -> null,
     }
 }

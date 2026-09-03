@@ -198,6 +198,9 @@ export enum Expr {
     /// its `?`; a value that is absent anyway refuses at runtime,
     /// which is the whole cost of writing it.
     Force(value: ExprId)
+    /// `subject is .variant` — the tag test; typing demands an enum
+    /// subject that names the variant, and answers bool.
+    Is(subject: ExprId, variant: string)
     /// `value?` — the absence answered by PASSING IT ON: a present
     /// value unwraps; an absent one makes the ENCLOSING fn answer
     /// `null` right here, so the fn must promise a nullable.
@@ -440,7 +443,7 @@ impl NodeStore {
             .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or
             .With(_, _, _) or .Match(_, _, _, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
             .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _) or
-            .Lambda(_, _) -> null,
+            .Lambda(_, _) or .Is(_, _) -> null,
         }
     }
 
@@ -489,6 +492,7 @@ impl NodeStore {
             .Binary(_, left, right) -> self.pronoun_rides(left) || self.pronoun_rides(right),
             .Not(v) -> self.pronoun_rides(v),
             .Force(v) -> self.pronoun_rides(v),
+            .Is(v, _) -> self.pronoun_rides(v),
             .Propagate(v) -> self.pronoun_rides(v),
             .ListLit(elems) -> self.any_rides(elems),
             .MapLit(keys, values) -> self.any_rides(keys) || self.any_rides(values),
@@ -568,6 +572,7 @@ impl NodeStore {
             .Coalesce(l, r) ->
                 fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
             .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
+            .Is(v, variant) -> fp(49, [self.expr_fingerprint(v), fp_str(variant)]),
             .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),
             .MethodCall(subject, name, margs) ->
                 fp(43, flatten([[self.expr_fingerprint(subject)], [fp_str(name)],

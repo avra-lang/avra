@@ -1,31 +1,17 @@
-//! Parse-time lowering: captured statements -> the Block node. The
-//! law the grammar cannot state lives here: a block ends with an
-//! expression, and that expression is the block's value.
+//! Parse-time lowering: captured statements -> the Block node. A
+//! block's value is its final expression; a block that ends in any
+//! other statement (or is empty) has none, and TYPING says what that
+//! means — void, or the fn's promise when the statement leaves.
 use core.{Expr, ExprId}
 use features.{LangNode, Builder}
 
 fn build_block(b: Builder) -> Result<LangNode, string> {
     let stmts = b.stmts(0)?
-    if stmts.is_empty() {
-        return Result.Err(block_tail_defect())
-    }
-    let last = stmts.last()!
-    let value: ExprId? = match b.store.stmt(last) {
+    if stmts.is_empty() { return b.make_expr(Expr.Block(stmts, null)) }
+    let value: ExprId? = match b.store.stmt(stmts.last()!) {
         .ExprStmt(v) -> v,
         _ -> null,
     }
-    // A block that LEAVES needs no tail — its last statement
-    // diverges, so no value could ever be read.
-    if value == null && b.store.diverges(last) {
-        return b.make_expr(Expr.Block(stmts, null))
-    }
-    if value == null {
-        return Result.Err(block_tail_defect())
-    }
+    if value == null { return b.make_expr(Expr.Block(stmts, null)) }
     b.make_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value!))
-}
-
-/// A block whose last statement carries no value — worded once.
-fn block_tail_defect() -> string {
-    "a block ends with an expression — or leaves (`return`, `fail`)"
 }

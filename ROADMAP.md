@@ -3392,6 +3392,115 @@ compiler that owns semantics: computed needs for a native
 language, contracts by use kind replacing versions, the manifest
 as a compiler output.
 
+THE TEST SYSTEM, DESIGNED (2026-09-03; the owner asked for it after
+bs2's runner: 55 s for 1372 tests, and one machine crash):
+
+WHAT BS2 GOT WRONG, PRECISELY: each test file is its own whole-
+program unit, so a suite is N compiles of the compiler (sharding
+eight files per unit only trades N for N/8: warm 39 s -> 19 s, cold
+471 s -> 334 s on 4 cores, per the TRD's d4jv log); concurrency was
+bounded by a per-shard memory RESERVE and a retry floor (a race
+still OOM-killed ~40 shards); which files share a shard is a hash
+nobody chose, and results depended on neighbours; no memory of
+results, so a one-line change cost a cold start. The old tree's
+docs (feat_std_test.md, feat_test_runner_upgrades.md, spec Axis
+24) carry the VISION this design keeps: spec/given/then with
+boolean bodies and an expression diff, where-tables, should_fail,
+`is`, roughly, eventually, snapshots with an accept workflow and
+sanitizers, properties with derived Arbitrary<T> and shrinking,
+bench with branch comparison, skip/todo, live progress, a streaming
+JSON format whose fail events carry a structured fix for agents,
+watch mode re-running only affected tests, coverage, @test_only.
+(Axis 24's `test`/`describe`/`assert_eq` spelling is superseded by
+the feature doc's spec/given/then, which 1372 tests already use.)
+
+THE DECISIONS:
+T1 ONE COMPILE. `avra test` is one invocation over the workspace
+   through the query engine; tests are declarations in the module
+   graph, compiled once, only their reachable closure lowered. No
+   shard, no second unit — the root fix; every mitigation bs2 built
+   (admission, fixture locks, striping) has nothing left to mitigate.
+T2 TESTS ARE ITEMS: each `then` has an identity (body hash + the
+   signature closure it reaches). With 15d: only affected tests
+   re-run; green results are cached facts keyed by that hash and
+   the compiler hash; coverage is a query (which exported items no
+   test reaches); watch mode is the same question asked on change.
+T3 COMPILE ONCE, FORK WORKERS: N workers forked from the compiled
+   image (copy-on-write), each pulling ONE test at a time from a
+   shared queue — a slow test never blocks a group. Scheduling is
+   COST-AWARE: every test's measured duration lives in the results
+   cache and the next run schedules longest-first (bs2's lesson:
+   source size is a poor proxy for cost).
+T4 MEMORY CANNOT RUN AWAY, BY CONSTRUCTION: a hard address-space
+   limit per worker, a wall-clock budget per test (over budget
+   FAILS, with the measured cost — the suite cannot drift slow
+   silently), the pool sized from MEASURED free memory (min(cores,
+   free / per-worker cap)), and a second `avra test` in the same
+   workspace QUEUES on the first (the daemon's shape, 15e).
+T5 CRASH ISOLATION WITHOUT PROCESS-PER-TEST: a trap unwinds to the
+   worker and records the failure; a worker that dies is respawned,
+   its test marked crashed with the signal, the run continues; the
+   parent never executes test code.
+T6 THE COMPILER EXPLAINS THE FAILURE: a `then` body stays a boolean
+   expression; the compiler owns the tree, so a failing conjunction
+   prints each conjunct's value (`a.diagnostics.length = 2`), and
+   `==` over structs and lists renders a structured diff. No
+   assertion vocabulary; the same rendering feeds `--json`, whose
+   fail events carry a `Suggestion` when the compiler has one.
+T7 DETERMINISTIC REPORTS: declaration order whatever the
+   scheduling; quiet by default (one summary line, then failures);
+   `--time` lists the slowest; randomness runs from a recorded
+   seed; live progress and colour only on a TTY.
+T8 SNAPSHOTS ARE FILES beside the spec (`<spec>.snap/<name>`),
+   first run records, mismatch fails with a diff, `--accept` (all
+   or one) rewrites, CI never accepts, sanitizers for volatile
+   values — Axis 24.3 as written.
+T9 THE DSL IS A FEATURE, THE RUNNER IS A PACKAGE: spec/given/then
+   are grammar lowering each `then` to a fn registered with its
+   name path, location and needs; queue, workers, budgets, reporter,
+   snapshots, `where`, `should_fail`, `skip`/`todo` are
+   `@std/testing` (packages/std-testing), Avra over a few externs
+   (fork, pipes, limits); the compiler-specific helpers stay in
+   std-avrac's testing module; the CLI is the driver only —
+   `avra test` CALLS the library, and `@std/testing` ships no CLI
+   of its own (the owner's rule, 2026-09-03).
+
+STAGES: the parity rung lands T1, T9 and a minimal in-process
+sequential runner with T6's expression diff (the Era III gate is
+the suite green under our binary); the Era IV test rung lands T2–T5,
+T7, T8, `where`, `should_fail`, `skip`/`todo`, results caching and
+`--json`; later: properties with derived generators and shrinking,
+`eventually`, `bench` with branch comparison, coverage, `@test_only`
+(with 15c). Targets: cold run = one compile of the closure plus the
+tests in parallel (seconds, against 55 today); warm run after a one-
+line change under a second.
+
+PARITY RUNG 2 LANDED (2026-09-03) — THE SMALL-GAPS SWEEP: empty
+record declarations (`type X = { }` — the field group optional);
+force and propagate join the POSTFIX chain as a fourth family
+folded by source position (`sig!.field`, `f(x)?.g` — the `forced`
+ladder rung and its builder are gone); unary minus desugars at the
+parse to `0 - v` (no pass learns a node); a fn or trait sig with no
+`->` returns `void` (`void` names Type.Void; the trait builder
+aligns returns by window like params); A BLOCK WITHOUT A VALUE IS
+VOID — the block builder no longer refuses a body ending in a non-
+expression statement: typing says void (or the fn's promise when
+the last statement leaves), so `fn f(n: int) { let m = n }` and a
+void method type and lower, and a valueless block in a value
+position refuses at the RETURN ("the body answers `void` but `f`
+declares `int`"); `subject is .variant` is a new Expr (`Is`) the
+enums feature owns — typing demands an enum naming the variant and
+answers bool, lowering reads the tag once and compares (one Bin, no
+region). Five pins of the superseded laws re-pinned as the new laws;
+corpus/small_gaps.av; 10 specs. CENSUS: files with a parse failure
+195 -> 178; the ladder's next three families by files unblocked:
+match patterns 49 (nested `.Node(.NExpr(id))`, `or`-arms, `_`
+payloads and catch-all, literal arms), comprehensions 31, the test
+DSL 57; then a LAYOUT tail (~20: bare `return` in void fns,
+multi-line struct literals, trailing-operator and leading-dot
+continuation lines, multi-line signatures and call arguments,
+statement-position block arms `-> {`).
+
 PARITY RUNG 1 LANDED (2026-09-03) — ONE-LINE BODIES, by one
 engine terminal: `END` is "a Break consumed, or a `}` left for the
 body that opened it"; every statement tail is spelled `END` (not
@@ -3413,7 +3522,10 @@ SMALL-GAPS SWEEP, the next rung.
 
 PARITY LADDER, as measured 2026-09-03 (first failure per compiler
 file, so true totals are larger): one-line bodies 58 · spec/given/
-then + runner 50 · THE SMALL-GAPS SWEEP: empty struct declarations
+then + runner 50 (the runner and reporter land as their OWN
+package, `@std/testing`, the owner's call 2026-09-03; the
+compiler-specific helpers stay in std-avrac's testing module) · THE
+SMALL-GAPS SWEEP: empty struct declarations
 `{ }` 24, `x!.f` chains, unary minus, `is` expressions 4, void fns
 20, named payloads 8 · comprehensions 24 · match patterns (nested, or,
 literal, wildcard) 23 · void fns 15 · named payloads 8 · `is` /

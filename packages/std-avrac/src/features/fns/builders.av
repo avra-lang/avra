@@ -3,13 +3,13 @@
 //! types arrive as two parallel captures and zip into Params.
 use core.{Expr, Stmt, Param, TypeRef}
 use grammar.{Token}
-use features.{LangNode, Builder, aligned_binds, aligned_param_types}
+use features.{LangNode, Builder, aligned_binds, aligned_param_types, type_ref_at}
 
 fn build_fn(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
     let ps = b.tokens(3)?
-    let r = b.type_ref(5)?
+    let r = type_ref_at(b.args, 5) ?? void_ref()
     let body = b.expr(6)?
     let ends: int? = b.span_end()
     if ends == null { return Result.Err("a fn declaration without a span") }
@@ -58,4 +58,7 @@ fn build_return(b: Builder) -> Result<LangNode, string> {
     b.make_stmt(Stmt.Return(v))
 }
 
-
+/// The return a fn declares by writing none: `void`.
+export fn void_ref() -> TypeRef {
+    TypeRef { name: "void", args: [], optional: false, dynamic: false, arrow: false, span: null }
+}

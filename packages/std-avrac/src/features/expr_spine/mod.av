@@ -11,10 +11,10 @@ export fn expr_spine() -> LanguageFeature {
         "ident"       | build_ident
         "fold_binary" | build_fold_binary
         "fold_cmp"    | build_fold_cmp
+        "neg_expr"     | build_neg
         "not_expr"    | build_not
         "fold_postfix"      | build_fold_postfix
         "fold_with"   | build_fold_with
-        "fold_force"  | build_fold_force
         "fold_coalesce" | build_fold_coalesce
         "catch_any"   | build_catch
     }
@@ -30,14 +30,13 @@ export fn expr_spine() -> LanguageFeature {
 expression = l:disjunction ( ck:"catch" ( "{" BREAK ( "." cv:NAME ( "(" cb:NAME ")" )? "->" ca:expression BREAK )* "}" | "." sv:NAME ( "(" sb:NAME ")" )? "->" sa:expression | eb:NAME "->" ea:expression | rv:expression ) )? -> catch_any(l, ck, cv, cb, ca, sv, sb, sa, eb, ea, rv)
 disjunction = l:conjunction ( op:"||" r:conjunction )* -> fold_binary(l, op, r)
 conjunction = l:comparison ( op:"&&" r:comparison )* -> fold_binary(l, op, r)
-comparison = l:coalescing ( op:( "==" | "!=" | "<=" | ">=" | "<" | ">" ) r:coalescing )? -> fold_cmp(l, op, r)
+comparison = l:coalescing ( op:( "==" | "!=" | "<=" | ">=" | "<" | ">" ) r:coalescing | "is" "." iv:NAME )? -> fold_cmp(l, op, r, iv)
 coalescing = l:additive ( "??" r:additive )* -> fold_coalesce(l, r)
 additive = l:multiplicative ( op:( "+" | "-" ) r:multiplicative )* -> fold_binary(l, op, r)
 multiplicative = l:unary ( op:( "*" | "/" | "%" ) r:unary )* -> fold_binary(l, op, r)
-unary = "!" v:unary -> not_expr(v) | withed
-withed = v:forced ( "with" "{" wn:NAME ":" wv:expression ( "," wn:NAME ":" wv:expression )* "}" )? -> fold_with(v, wn, wv)
-forced = v:postfix ( f:( "!" | "?" ) )* -> fold_force(v, f)
-postfix = v:primary ( q:( "?." | "." ) p:NAME ( mo:"(" ( ma:expression ( "," ma:expression )* )? ")" )? | "[" i:expression "]" @expect("]", "expected `]` to close the index") | co:"(" ( ca:expression ( "," ca:expression )* )? ")" )* -> fold_postfix(v, q, p, mo, ma, i, co, ca)
+unary = "!" v:unary -> not_expr(v) | "-" v:unary -> neg_expr(v) | withed
+withed = v:postfix ( "with" "{" wn:NAME ":" wv:expression ( "," wn:NAME ":" wv:expression )* "}" )? -> fold_with(v, wn, wv)
+postfix = v:primary ( q:( "?." | "." ) p:NAME ( mo:"(" ( ma:expression ( "," ma:expression )* )? ")" )? | "[" i:expression "]" @expect("]", "expected `]` to close the index") | co:"(" ( ca:expression ( "," ca:expression )* )? ")" | f:( "!" | "?" ) )* -> fold_postfix(v, q, p, mo, ma, i, co, ca, f)
 primary = v:NUMBER -> int_lit(v) | n:NAME -> ident(n) | "(" e:expression ")" @expect(")", "expected `)` to close the group") -> e
 """
         builders = rows

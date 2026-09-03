@@ -1,0 +1,41 @@
+// The small-gaps sweep: unary minus, void fns and methods, `is`.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown, refused_with}
+
+fn ab() -> string {
+    "enum E {\n    a(int)\n    b\n}\n"
+}
+
+spec "features/stmt_spine (small gaps)" {
+    given "unary minus" {
+        then "a negative literal" { shown("-1 + 3") == "2" }
+        then "a negated name, in an argument" { shown("fn id(n: int) -> int {\n    n\n}\nlet x = 5\nid(-x) + 10") == "5" }
+        then "binary minus still binds first" { shown("let x = 5\nx - -1") == "6" }
+    }
+    given "a fn declares no return" {
+        then "a void fn calls as a statement and lowers" {
+            shown("fn noop(n: int) {\n    let m = n + 1\n}\nnoop(3)\n7") == "7"
+        }
+        then "a void method" {
+            shown("type C = { v: int }\nimpl C {\n    fn poke(self) {\n        let m = self.v\n    }\n}\nlet c = C { v: 1 }\nc.poke()\nc.v") == "1"
+        }
+        then "a void body that answers a value refuses" {
+            refused_with("fn f() {\n    1\n}\nf()\n2", "the body answers `int` but `f` declares `void`")
+        }
+    }
+    given "`is` asks a variant" {
+        then "true for the variant it is, false otherwise" {
+            shown("${ab()}let v = E.a(1)\nif v is .a { 1 } else { 0 }") == "1" &&
+                shown("${ab()}let v = E.b\nif v is .a { 1 } else { 0 }") == "0"
+        }
+        then "it composes under `!` and `&&`" {
+            shown("${ab()}let v = E.a(2)\nif !(v is .b) && v is .a { 1 } else { 0 }") == "1"
+        }
+        then "a non-enum subject refuses" {
+            refused_with("${ab()}1 is .a", "`is` asks an enum for its variant, found `int`")
+        }
+        then "an unknown variant refuses, the variants named" {
+            refused_with("${ab()}let v = E.b\nv is .c", "`E` has no variant `c`")
+        }
+    }
+}

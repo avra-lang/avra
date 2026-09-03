@@ -3,17 +3,35 @@
 //! region over that tag — a jump table natively, not a walk down a
 //! chain of comparisons. Exhaustiveness makes the last arm the
 //! region's default, so nothing falls through.
-use core.{ExprId, Reg, Ins, TypeId}
+use core.{ExprId, Reg, Ins, TypeId, Type, BinOp}
 use features.{LowerCx, EnumSig, tag_of, payload_of, foreign_node}
 
 fn enums_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .Match(subject, variants, binds, values) -> matched_reg(cx, e, subject, variants, binds, values),
+        .Is(subject, variant) -> asked_reg(cx, e, subject, variant),
         _ -> foreign_node(cx, e),
     }
 }
 
+
+/// `subject is .variant`: the tag read once, compared to the
+/// variant's ordinal — one instruction, no region.
+fn asked_reg(cx: LowerCx, e: ExprId, subject: ExprId, variant: string) -> Reg {
+    let declared: EnumSig? = cx.variants_at(subject)
+    let which: int? = if declared == null { null } else { declared!.tag_of(variant) }
+    if which == null {
+        cx.defect("an `is` without an enum variant survived typing")
+        return cx.result(e)
+    }
+    let tag = tag_of(cx, cx.reg_of(subject))
+    let k = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(k, which!))
+    let dst = cx.result(e)
+    cx.emit(Ins.Bin(dst, BinOp.Eq, tag, k))
+    dst
+}
 
 fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
                binds: List<string>, values: List<ExprId>) -> Reg {

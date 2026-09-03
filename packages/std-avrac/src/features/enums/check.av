@@ -28,8 +28,20 @@ fn enums_type(cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .Match(subject, variants, binds, values) -> matched_type(cx, e, subject, variants, binds, values),
+        .Is(subject, variant) -> asked_type(cx, e, subject, variant),
         _ -> cx.error_type,
     }
+}
+
+/// `subject is .variant` — the subject is an enum that names the
+/// variant; the answer is a bool either way once the subject is.
+fn asked_type(cx: TypeCx, e: ExprId, subject: ExprId, variant: string) -> TypeId {
+    let sh: Type = cx.shape_at(subject)
+    if sh is .Error { return cx.error_type }
+    let declared: EnumSig? = cx.variants_of(cx.type_at(subject))
+    if declared == null { return not_askable(cx, subject) }
+    if declared!.tag_of(variant) == null { no_variant_asked(cx, e, cx.name_at(subject), variant, declared!) }
+    cx.view.types.intern(Type.Bool)
 }
 
 fn matched_type(cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>,
@@ -98,6 +110,15 @@ fn arms_type(cx: TypeCx, values: List<ExprId>) -> TypeId {
 
 fn no_variants(cx: StmtTypeCx, s: StmtId, name: string) {
     cx.expr.emit(refusal("type.enum_decl", cx.loc_of(s), "`${name}` declares no variants", "this enum is empty", "an enum names at least one variant"))
+}
+
+fn not_askable(cx: TypeCx, subject: ExprId) -> TypeId {
+    let n = cx.name_at(subject)
+    spoken(cx, refusal("type.match", cx.loc_of(subject), "`is` asks an enum for its variant, found `${n}`", this_is(n), null))
+}
+
+fn no_variant_asked(cx: TypeCx, e: ExprId, sname: string, v: string, sig: EnumSig) {
+    cx.emit(refusal("type.match", cx.loc_of(e), "`${sname}` has no variant `${v}`", "asked here", variants_are(sig)))
 }
 
 fn not_matchable(cx: TypeCx, subject: ExprId) -> TypeId {

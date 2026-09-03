@@ -26,9 +26,12 @@ fn build_fold_binary(b: Builder) -> Result<LangNode, string> {
     b.wrap_expr(acc)
 }
 
-/// `l (op r)?` — at most one comparison, never a chain.
+/// `l (op r)?` — at most one comparison, never a chain; or `l is
+/// .variant`, the tag test, which enums give meaning.
 fn build_fold_cmp(b: Builder) -> Result<LangNode, string> {
     let l = b.expr(0)?
+    let asked: Token? = token_at(b.args, 3)
+    if asked != null { return b.make_expr(Expr.Is(l, asked!.text)) }
     let op_tok: Token? = token_at(b.args, 1)
     if op_tok == null { return b.wrap_expr(l) }
     let r = b.expr(2)?
@@ -39,6 +42,14 @@ fn build_fold_cmp(b: Builder) -> Result<LangNode, string> {
 fn build_not(b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
     b.make_expr(Expr.Not(v))
+}
+
+/// `-v` is `0 - v`: the parse desugars, so no pass learns a node.
+fn build_neg(b: Builder) -> Result<LangNode, string> {
+    let v = b.expr(0)?
+    let zero = b.store.alloc_expr(Expr.IntLit(0), b.span)
+    let minus = want(binop_of("-"), "the minus operator")?
+    b.make_expr(Expr.Binary(minus, zero, v))
 }
 
 /// `v (with { f: e, ... })?` — the absent tail is v itself. The
@@ -57,14 +68,6 @@ fn build_fold_with(b: Builder) -> Result<LangNode, string> {
 /// insists, `?` propagates. `x!!` insists twice, which the TYPE
 /// then refuses — the second `!` has nothing left to unwrap. The
 /// LADDER owns this parse; both nodes' meaning lives in `nullable`.
-fn build_fold_force(b: Builder) -> Result<LangNode, string> {
-    mut acc = b.expr(0)?
-    for t in b.tokens(1)? {
-        acc = b.store.alloc_expr(force_link(t.text, acc), b.span)
-    }
-    b.wrap_expr(acc)
-}
-
 /// The node a force-position token names — propagation when `?`.
 fn force_link(link: string, value: ExprId) -> Expr {
     if link == "?" { return Expr.Propagate(value) }
@@ -98,20 +101,26 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
     let indexes = b.exprs(5)?
     let calls = b.tokens(6)?
     let cargs = b.exprs(7)?
+    let forces = b.tokens(8)?
     if links.length != names.length { return Result.Err(zip_defect()) }
     let held: int? = b.span_end()
     if held == null { return Result.Err("a postfix chain without a span") }
     let ends = held!
-    // the three families' cursors — each turn folds the link whose
+    // the four families' cursors — each turn folds the link whose
     // anchor comes first in the source
     mut jn = 0
     mut ji = 0
     mut jc = 0
-    while jn < names.length || ji < indexes.length || jc < calls.length {
+    mut jf = 0
+    while jn < names.length || ji < indexes.length || jc < calls.length || jf < forces.length {
         let np = if jn < names.length { names[jn].span.lo } else { ends }
         let ip = if ji < indexes.length { span_lo(b, indexes[ji]) ?? ends } else { ends }
         let cp = if jc < calls.length { calls[jc].span.lo } else { ends }
-        if np <= ip && np <= cp {
+        let fp = if jf < forces.length { forces[jf].span.lo } else { ends }
+        if fp < np && fp < ip && fp < cp {
+            acc = b.store.alloc_expr(force_link(forces[jf].text, acc), b.span)
+            jf = jf + 1
+        } else if np <= ip && np <= cp {
             let upto = next_anchor(b, names, indexes, calls, jn + 1, ji, jc, ends)
             let called = opens.any(within(it.span.lo, np, upto))
             if called {
