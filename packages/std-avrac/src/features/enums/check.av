@@ -4,7 +4,7 @@
 //! type. Coverage is the point: adding a variant breaks every match
 //! that spelled them, and a hole that hides several is warned.
 use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, joined, filled}
-use features.{TypeCx, StmtTypeCx, EnumSig, spoken, this_is, nothing, duplicate_names, arms_agree, variants_are, types_disagree}
+use features.{TypeCx, StmtTypeCx, EnumSig, spoken, this_is, nothing, duplicate_names, arms_agree, variants_are, types_disagree, seated, MethodCall}
 use features.enums.{all_irrefutable, hole_of}
 use diagnostics.{refusal, warning}
 
@@ -30,6 +30,7 @@ fn enums_type(cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) {
         .Match(subject, arms) -> matched_type(cx, e, subject, arms),
         .Is(subject, variant) -> asked_type(cx, e, subject, variant),
+        .VariantLit(name, args) -> literal_type(cx, e, name, args),
         _ -> cx.error_type,
     }
 }
@@ -43,6 +44,33 @@ fn asked_type(cx: TypeCx, e: ExprId, subject: ExprId, variant: string) -> TypeId
     if declared == null { return not_askable(cx, subject) }
     if declared!.tag_of(variant) == null { no_variant_asked(cx, e, cx.name_at(subject), variant, declared!) }
     cx.view.types.intern(Type.Bool)
+}
+
+/// THE LITERAL LAW: `.name(args)` is the variant of the enum the
+/// site EXPECTS — the want names the enum (a Result's sides
+/// included), the variant must be its, and it takes exactly its
+/// payloads, each accepted; the answer is the want itself.
+fn literal_type(cx: TypeCx, e: ExprId, name: string, args: List<ExprId>) -> TypeId {
+    let wanted: TypeId? = cx.want_at(e)
+    if wanted == null { return unfed_literal(cx, e, name) }
+    let want = wanted!
+    let declared: EnumSig? = cx.variants_of(want)
+    if declared == null { return unenumerated_want(cx, e, name, want) }
+    let sig = declared!
+    if sig.tag_of(name) == null { return no_variant_wanted(cx, e, cx.view.types.name_of(want), name, sig) }
+    let carried = sig.payloads_of(name)
+    if carried.length != args.length { return literal_arity(cx, e, name, carried.length, args.length) }
+    let seats = MethodCall { e: e, subject: e, args: args }
+    if !seated(cx, seats, ".${name}", carried) { return cx.error_type }
+    want
+}
+
+/// No want yet: the literal goes hungry for the door to feed it,
+/// and speaks only when the walk ends and it is still starving.
+fn unfed_literal(cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    if cx.starving() { return unwanted_literal(cx, e, name) }
+    cx.go_hungry(e)
+    cx.error_type
 }
 
 /// THE MATCH LAW: every arm's patterns fit the subject; each arm's
@@ -317,6 +345,23 @@ fn no_variant_asked(cx: TypeCx, e: ExprId, sname: string, v: string, sig: EnumSi
 fn not_matchable(cx: TypeCx, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
     spoken(cx, refusal("type.match", cx.loc_of(subject), "`match` chooses over an enum, found `${n}`", this_is(n), null))
+}
+
+fn unwanted_literal(cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    spoken(cx, refusal("type.variant_lit", cx.loc_of(e), "`.${name}` needs a known enum — nothing here says which", "built here", "annotate the binding, return it from a fn that declares the type, or write `Type.${name}`"))
+}
+
+fn unenumerated_want(cx: TypeCx, e: ExprId, name: string, want: TypeId) -> TypeId {
+    let n = cx.view.types.name_of(want)
+    spoken(cx, refusal("type.variant_lit", cx.loc_of(e), "`.${name}` builds a variant, and `${n}` has none", this_is(n), null))
+}
+
+fn no_variant_wanted(cx: TypeCx, e: ExprId, tname: string, name: string, sig: EnumSig) -> TypeId {
+    spoken(cx, refusal("type.variant_lit", cx.loc_of(e), "`${tname}` has no variant `${name}`", "built here", variants_are(sig)))
+}
+
+fn literal_arity(cx: TypeCx, e: ExprId, name: string, carried: int, given: int) -> TypeId {
+    spoken(cx, refusal("type.variant_lit", cx.loc_of(e), "`.${name}` carries ${carried}, given ${given}", "built here", null))
 }
 
 fn unknown_arm(cx: TypeCx, p: PatId, sname: string, v: string, sig: EnumSig) -> List<TypeId> {

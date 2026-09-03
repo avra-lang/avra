@@ -135,11 +135,13 @@ export fn bound_name(cx: TypeCx, decl: DeclId, j: int) -> string {
 
 /// The channel's RESCUE at the one assignment door: a hungry
 /// lambda meeting a fn-shaped slot re-types under its seats — the
-/// facts converge as if the annotations had been written, and the
-/// comparison then judges the real type.
+/// facts converge as if the annotations had been written — and any
+/// other hungry expression is FED the want; the comparison then
+/// judges the real type.
 fn heard(cx: TypeCx, e: ExprId, want: TypeId) {
     let arrow: Arrow? = cx.view.types.arrow_parts(want)
     if arrow != null { let _ = cx.retype_seated(e, arrow!.seats) }
+    let _ = cx.feed(e, want)
 }
 
 /// THE JOIN: the one type two branches can BOTH answer with, or
@@ -352,6 +354,19 @@ export fn seated(cx: TypeCx, mc: MethodCall, name: string, wants: List<TypeId>) 
 /// answers a question nobody asked.
 export fn comparable(sh: Type) -> bool {
     sh is .Int || sh is .Bool || sh is .Str
+}
+
+/// The by-value law over a TYPE: the scalars and text, and an enum
+/// whose variants carry nothing — it compares by variant.
+export fn compares_by_value(cx: TypeCx, ty: TypeId) -> bool {
+    comparable(cx.view.types.shape_of(ty)) || unit_enum(cx, ty)
+}
+
+/// An enum every variant of which carries nothing — a tag alone.
+fn unit_enum(cx: TypeCx, ty: TypeId) -> bool {
+    if !(cx.view.types.shape_of(ty) is .Enum) { return false }
+    let sig: EnumSig? = cx.variants_of(ty)
+    sig != null && sig!.payloads.all(it.is_empty())
 }
 
 // ── The voices: every refusal worded HERE, once ──

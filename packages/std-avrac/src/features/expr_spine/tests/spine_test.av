@@ -4,7 +4,7 @@
 // across differently-formatted sources.
 use @std.avrac.core.{NodeStore, BinOp, ExprId, StmtId}
 use @std.avrac.language.{parse_source, analyze_source}
-use @std.avrac.testing.{shown, refused_at_run}
+use @std.avrac.testing.{shown, refused_with, refused_at_run}
 
 type Tree = { store: NodeStore, root: ExprId?, diagnostics: int }
 
@@ -70,6 +70,20 @@ spec "features/expr_spine" {
         then "diagnostics arrive instead of a crash" {
             let p = parse_expr("1 +")
             p.diagnostics == 1
+        }
+    }
+    given "`+` on text and `==` on enums" {
+        then "plus joins two texts" {
+            shown("let a = \"ab\"\na + \"cd\" + \"e\"") == "abcde"
+        }
+        then "a text and an int refuse in the seat's words" {
+            refused_with("\"a\" + 1", "`+` needs `string` operands, found `int`")
+        }
+        then "an enum carrying nothing compares by variant" {
+            shown("enum C {\n    red\n    blue\n}\nfn pick(b: bool) -> C { if b { C.red } else { C.blue } }\n\"" + "$" + "{pick(true) == C.red} " + "$" + "{pick(false) != C.blue}\"") == "true false"
+        }
+        then "an enum carrying a payload still refuses" {
+            refused_with("enum E {\n    a(int)\n    b\n}\nE.b == E.b", "`==` compares scalars for now")
         }
     }
     given "the operator ladder" {

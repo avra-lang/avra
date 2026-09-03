@@ -158,11 +158,18 @@ export fn timed_workspace(host: Host, root: string, lang: Language, clock: fn() 
     built(host, root, joined_path(root, "src"), lang, clock, false)
 }
 
+/// The declaration table with the language's own declarations in it.
+fn language_decls(lang: Language) -> Decls {
+    let decls = new_decls()
+    decls.admit_builtins(lang.rows.types)
+    decls
+}
+
 /// The workspace with its families registered, its table armed,
 /// and its packages loaded from the root's manifest outward.
 fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool) -> Workspace {
     let ws = Workspace {
-        host: host, root: root, lang: lang, db: new_db(), decls: new_decls(),
+        host: host, root: root, lang: lang, db: new_db(), decls: language_decls(lang),
         programs: [], file_items: [], module_names: [], visibles: [], name_facts: [],
         sig_voices: [], decl_facts: [], method_clashes: [], folds: [], analyses: [], specs: {}, asks: [], units: [], defects: [],
         packages: [], package_voices: [], lone: lone,
@@ -470,7 +477,7 @@ fn sig_diagnostics(ws: Workspace, f: FileId) -> List<Diag> {
 
 fn sig_rank(decls: Decls, x: Decl) -> int {
     match x.kind {
-        .Record or .Enum -> 0,
+        .Record or .Enum or .Builtin -> 0,
         .Method -> if x.parent != null && decls.decl(x.parent!).kind is .Trait { 1 } else { 3 },
         .Fn -> 2,
         .Impl -> 3,

@@ -3491,6 +3491,46 @@ END, `{ x }` parses as a statement list whose tail answers, so the
 keyword lexes as a NAME, so `-> { return x }` read `return` as an
 identifier and the @expect'd `}` hole-hit. One form, one law.
 
+PARITY RUNG 9 LANDED (2026-09-03) — THE VALUE WORDS: `Result`
+construction, `+` on text, `==` on unit enums, and the HUNGER
+PROTOCOL generalized. THE EPIC (2026_06_08_ERROR_HANDLING_EPIC,
+read at the owner's word): produce is `fail e` and the implicit
+Ok; an explicit Result value is spelled with the BARE variants
+`.Ok(x)` / `.Err(e)` — a want-driven literal. So (1) THE VARIANT
+LITERAL: `.name(args)` is a node of the enums feature
+(`Expr.VariantLit`, F2043): the WANT names the enum (a Result's
+sides through the bridge, a generic's through substitution), the
+variant must be its, the payloads seat exactly (`seated`), and
+the answer is the want itself; lowering is the tagged value. (2)
+`Result` IS A DECLARATION — the language's own: `DeclKind.Builtin`,
+minted once from the type rows that answer variants (a TypeRow's
+new `variants` column — `no_variants` for List and Map, the bridge
+for Result), bound in every file's namespace LAST and silently
+(F3008 already reserves the name), its parts read from the ROW
+(`tparams` by arity, `sig` from `variants` over its own Vars), so
+`Result.Ok(v)` rides the ordinary `Type.variant(args)` surface;
+`instantiated` reads a Var no payload pinned FROM THE WANT
+(`pinned_by_want`, the registry's `args_of` projection) and a
+builtin builds its type through its row (`Type.Res`, never a
+parallel App). (3) THE HUNGER PROTOCOL, generalized: a rule that
+needs a want it lacks goes hungry silently; the ONE agreement door
+FEEDS it (`heard` -> `cx.feed`: the want planted, the rule re-run,
+kids already typed) — so `.Ok(.Ok(1))`, `take(.Ok(5))` and `[.red,
+.blue]` under `List<C>` all type through `accepts` alone; at the
+walk's end every rule still hungry is re-run STARVING and speaks
+in ITS OWN words (the lambda's `unfed_lambda` moved home to
+closures/check.av — the driver no longer imports a feature's
+voice). (4) `+` on text (`avra_str_concat`, one row/body/host; the
+left side decides the seat) and `==`/`!=` on an enum whose
+variants carry nothing (by TAG — `compares_by_value` beside
+`comparable` in checks.av; `same_value` compares tags; a payload
+enum still refuses "match on it instead"); the compiler's own
+`Type`-value comparisons rewritten to predicates (`wears`,
+`types_disagree`) since the language refuses them. Rung 7's
+`Result.Ok` spelling stays valid; the corpus and new code use the
+epic's. CENSUS: 114 -> 69 files (F3000 x26 gone, F2000 x44 ->
+12). Suite 1503 (results +9, enums +4, spine +4).
+
 PARITY RUNG 8 LANDED (2026-09-03) — THE BUILT-IN VOCABULARY, as
 ROWS. Twenty method rows, each the owning feature's (the seam
 rule: a method is DATA — a row of `takes | check | lower` — and a

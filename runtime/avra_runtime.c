@@ -719,3 +719,13 @@ void* avra_str_split(const char* s, const char* sep) {
         r = p + sl;
     }
 }
+
+// `a + b` on text — one fresh string. Owned.
+const char* avra_str_concat(const char* a, const char* b) {
+    size_t n = strlen(a);
+    size_t m = strlen(b);
+    char* buf = (char*)malloc(n + m + 1);
+    memcpy(buf, a, n);
+    memcpy(buf + n, b, m + 1);
+    return (const char*)own(buf);
+}

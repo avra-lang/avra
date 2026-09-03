@@ -5,7 +5,7 @@
 //! chain of comparisons; any other match is a CHAIN of tests in arm
 //! order, each arm's binds read inside its own region.
 use core.{ExprId, Reg, Ins, TypeId, Type, BinOp, Arm, PatId}
-use features.{LowerCx, EnumSig, tag_of, payload_at, foreign_node, same_value}
+use features.{LowerCx, EnumSig, tag_of, payload_at, foreign_node, same_value, tagged_value, lower_defect}
 use features.enums.{arm_binds, all_irrefutable}
 
 fn enums_reg(cx: LowerCx, e: ExprId) -> Reg {
@@ -13,6 +13,7 @@ fn enums_reg(cx: LowerCx, e: ExprId) -> Reg {
     match cx.view.store.expr(e) {
         .Match(subject, arms) -> matched_reg(cx, e, subject, arms),
         .Is(subject, variant) -> asked_reg(cx, e, subject, variant),
+        .VariantLit(name, args) -> literal_reg(cx, e, name, args),
         _ -> foreign_node(cx, e),
     }
 }
@@ -221,4 +222,15 @@ fn payloads_reg(cx: LowerCx, carried: List<TypeId>, args: List<PatId>, v: Reg) -
         }
     }
     acc
+}
+
+/// `.name(args)` — the tagged value of the enum typing chose.
+fn literal_reg(cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -> Reg {
+    let sig: EnumSig? = cx.variants_at(e)
+    let which: int? = if sig == null { null } else { sig!.tag_of(name) }
+    if which == null { return lower_defect(cx, e, "a variant literal without its enum survived typing") }
+    let carried = [cx.reg_of(a) for a in args]
+    let dst = cx.result(e)
+    tagged_value(cx, dst, which!, carried)
+    dst
 }

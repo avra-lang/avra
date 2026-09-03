@@ -9,7 +9,6 @@
 use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, NodeStore, FileId, DeclId, FnParts, Binding, same_expr}
 use diagnostics.{Diag, loc_at, refusal}
 use features.{TypeCx, StmtTypeCx, FnSig, DeclSig, fn_sig_of, TypeRow, type_row, Decls, Decl, Cap, new_type_facts, decl_type_of, def_type_of, type_named, TypeFacts, NameFacts, FileView, nothing}
-use features.closures.{unfed_lambda}
 use features.structs.{fits_default}
 use features.specs.{fits_case}
 use @std.errors.{Loc}
@@ -63,7 +62,7 @@ export fn type_decl(t: Typer, x: Decl) -> TypeFacts {
         .Default -> default_body(t, x),
         .Case -> case_body(t, x),
         .Record or .Enum -> type_stmts(t, [], [x.stmt]),
-        .Trait or .Impl -> nothing(),
+        .Trait or .Impl or .Builtin -> nothing(),
     }
     t.speak_hungry()
     t.facts
@@ -159,6 +158,10 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         written: (e: ExprId, tr: TypeRef) -> t.full_type(t.view.loc_of(e), tr),
         written_at: (e: ExprId, tr: TypeRef) -> t.full_type(loc_at(t.view.source.file, t.view.store.expr_span(e)), tr),
         plant_want: (e: ExprId, ty: TypeId) -> t.plant_want(e, ty),
+        want_at: (e: ExprId) -> t.facts.want_at(e),
+        feed: (e: ExprId, want: TypeId) -> fed(t, param_types, e, want),
+        starving: () -> false,
+        starved_at: (e: ExprId) -> t.facts.starved_at(e),
         pair: (e: ExprId) -> t.pair(e),
         paired: (e: ExprId) -> t.paired.any(same_expr(it, e)),
     }
@@ -218,6 +221,17 @@ fn reseated(t: Typer, param_types: List<TypeId>, a: ExprId, seats: List<TypeId>)
     let ty = t.view.types.intern(Type.Fn(seats, ret))
     t.facts.set_type(a, ty)
     ty
+}
+
+/// THE FEED: a hungry expression re-typed under the want the door
+/// hands it — the want planted, its rule run once more (its kids
+/// were typed already), its type set.
+fn fed(t: Typer, param_types: List<TypeId>, e: ExprId, want: TypeId) -> TypeId? {
+    if !t.facts.hungry_at(e) { return null }
+    t.facts.absorb_hunger(e)
+    t.plant_want(e, want)
+    type_node(t, expr_cx(t, param_types), e)
+    t.facts.type_at(e)
 }
 
 /// A branch typed under a PROVEN-PRESENT binding: when the asked
@@ -375,10 +389,12 @@ impl Typer {
         bar != null && self.fn_ret.length <= bar!
     }
 
-    /// Every lambda still hungry when typing ends never met a seat
-    /// — the refusal fires once, here.
+    /// Every expression still hungry when typing ends never met the
+    /// want it needed — its rule runs once more, STARVING, and
+    /// speaks in its own words.
     fn speak_hungry(self) {
-        for e in self.facts.hungry_ones() { unfed_lambda(expr_cx(self, []), e, self.facts.starved_at(e)) }
+        let cx = expr_cx(self, []) with { starving: () -> true }
+        for e in self.facts.hungry_ones() { type_node(self, cx, e) }
     }
 
     /// The enclosing fn's answer — unless a LAMBDA BARRIER stands

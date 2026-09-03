@@ -21,6 +21,12 @@ export fn same_expr(a: ExprId, b: ExprId) -> bool {
 /// Typed index into the statement arena.
 export type StmtId = { index: int }
 
+/// The statement a declaration stands on when it has none — an
+/// empty file's main, a builtin: the first slot, never read.
+export fn no_stmt() -> StmtId {
+    StmtId { index: 0 }
+}
+
 /// A DECLARATION's identity across the workspace — a fn, type, enum,
 /// trait or method — minted once per declaration; every type shape
 /// that names a declaration carries it, never a file-local StmtId.
@@ -91,6 +97,9 @@ export enum Binding {
 /// contract is checked as one); Main is a file's run-time
 /// statements, one synthetic declaration per file.
 export enum DeclKind {
+    /// A type the LANGUAGE declares — a row, not a statement: its
+    /// parts come from the row, never from a store.
+    Builtin
     Fn
     Record
     Enum
@@ -215,6 +224,9 @@ export enum Expr {
     /// `subject is .variant` — the tag test; typing demands an enum
     /// subject that names the variant, and answers bool.
     Is(subject: ExprId, variant: string)
+    /// `.name(args)` — a variant of the enum the site EXPECTS; the
+    /// want names the enum, the literal names the variant.
+    VariantLit(name: string, args: List<ExprId>)
     /// `value?` — the absence answered by PASSING IT ON: a present
     /// value unwraps; an absent one makes the ENCLOSING fn answer
     /// `null` right here, so the fn must promise a nullable.
@@ -603,7 +615,7 @@ impl NodeStore {
             .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or
             .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
             .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _) or
-            .Lambda(_, _) or .Is(_, _) or .Comp(_, _, _, _, _) -> null,
+            .Lambda(_, _) or .Is(_, _) or .Comp(_, _, _, _, _) or .VariantLit(_, _) -> null,
         }
     }
 
@@ -653,6 +665,7 @@ impl NodeStore {
             .Not(v) -> self.pronoun_rides(v),
             .Force(v) -> self.pronoun_rides(v),
             .Is(v, _) -> self.pronoun_rides(v),
+            .VariantLit(_, args) -> self.any_rides(args),
             .Comp(elem, _, _, source, cond) -> self.pronoun_rides(elem) || self.pronoun_rides(source) || (cond != null && self.pronoun_rides(cond!)),
             .Propagate(v) -> self.pronoun_rides(v),
             .ListLit(elems) -> self.any_rides(elems),
@@ -732,6 +745,7 @@ impl NodeStore {
                 fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
             .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
             .Is(v, variant) -> fp(49, [self.expr_fingerprint(v), fp_str(variant)]),
+            .VariantLit(name, args) -> fp(58, [fp_str(name)].concat(self.expr_fps(args))),
             .Comp(elem, index, name, source, cond) ->
                 fp(55, [self.expr_fingerprint(elem), fp_str(index), fp_str(name), self.expr_fingerprint(source), self.expr_fingerprint(cond ?? elem)]),
             .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),

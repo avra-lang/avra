@@ -8,9 +8,10 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, same_decl, SpecParts, ImplParts}
+use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, same_decl, SpecParts, ImplParts, TypeId, no_stmt}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
+use features.{TypeRow, TypeArgs}
 
 /// A file's path facts — known at first mention, before its parse.
 export type FileInfo = { id: FileId, path: string, module_id: ModuleId }
@@ -44,14 +45,30 @@ export type Decls = {
     impls: List<List<DeclId>>,
     ensure: List<fn(DeclId)>,
     ensure_methods: List<fn(DeclId)>,
+    // the language's own type declarations, one per row that is an
+    // enum — and the rows they read their parts from
+    builtins: List<DeclId>,
+    rows: List<TypeRow>,
 }
 
 export fn new_decls() -> Decls {
     Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
         stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], children: [], methods: [], impls: [],
-        ensure: [no_ensure], ensure_methods: [no_ensure],
+        ensure: [no_ensure], ensure_methods: [no_ensure], builtins: [], rows: [],
     }
+}
+
+/// A row's type parameters — `T1`, `T2`, … by arity; the ordinal
+/// is the identity, the name only the wording.
+fn builtin_tparams(arity: int) -> List<string> {
+    mut out: List<string> = []
+    mut j = 0
+    while j < arity {
+        out.push("T${j + 1}")
+        j = j + 1
+    }
+    out
 }
 
 /// The table's own reads ask nothing more.
@@ -71,6 +88,7 @@ export fn kind_word(k: DeclKind) -> string {
         .Impl -> "impl",
         .Main -> "main",
         .Case -> "case",
+        .Builtin -> "builtin",
     }
 }
 
@@ -186,7 +204,7 @@ impl Decls {
                 }
             }
         }
-        let main = self.mint("${path}::main", f, stmts.first() ?? StmtId { index: 0 }, "main", DeclKind.Main, false, "", null, false, null)
+        let main = self.mint("${path}::main", f, stmts.first() ?? no_stmt(), "main", DeclKind.Main, false, "", null, false, null)
         made.push(main)
         mut mn = self.mains
         mn.set(f.index, main)
@@ -249,6 +267,7 @@ impl Decls {
     /// default's, the default expression's alone.
     fn decl_span(self, d: DeclId) -> Span? {
         let x = self.decl(d)
+        if x.kind is .Builtin { return null }
         if x.kind is .Default || x.kind is .Case { return self.store(d).expr_span(x.root!) }
         self.store(d).stmt_span(x.stmt)
     }
@@ -353,10 +372,12 @@ impl Decls {
     }
 
     fn tparams(self, d: DeclId) -> List<string> {
+        if self.decl(d).kind is .Builtin { return builtin_tparams(self.row_of(d)!.arity) }
         self.store(d).decl_tparams(self.decl(d).stmt)
     }
 
     fn tbounds(self, d: DeclId) -> List<Param> {
+        if self.decl(d).kind is .Builtin { return [] }
         self.store(d).decl_tbounds(self.decl(d).stmt)
     }
 
@@ -364,11 +385,37 @@ impl Decls {
 
     fn is_enum(self, d: DeclId) -> bool { self.decl(d).kind is .Enum }
 
+    /// The language's own type declarations, minted once from the
+    /// rows that are enums — `Result` — so their variants construct
+    /// through the one enum path. A row's parts come from the row.
+    fn admit_builtins(self, rows: List<TypeRow>) {
+        mut rs = self.rows
+        // LICENSED I3: `rs` ALIASES self.rows — concat would rebind the local
+        for r in rows { rs.push(r) }
+        let hole = self.types.intern(Type.Error)
+        for r in rows {
+            let holes = TypeArgs { parts: filled<TypeId>(r.arity, hole) }
+            if r.variants(holes) == null { continue }
+            let id = self.mint("builtin::${r.name}", FileId { index: 0 }, no_stmt(), r.name, DeclKind.Builtin, true, "", null, false, null)
+            mut bs = self.builtins
+            bs.push(id)
+        }
+    }
+
+    fn builtin_decls(self) -> List<DeclId> { self.builtins }
+
+    /// A builtin's row — the parts a store would hold for a statement.
+    fn row_of(self, d: DeclId) -> TypeRow? {
+        let name = self.decl(d).name
+        self.rows.find(it.name == name)
+    }
+
     /// A type's name — records and enums.
     fn type_name(self, d: DeclId) -> string? {
         let x = self.decl(d)
         match x.kind {
             .Record or .Enum -> x.name,
+            .Builtin -> x.name,
             .Fn or .Trait or .Method or .Default or .Impl or .Main or .Case -> null,
         }
     }
@@ -378,7 +425,7 @@ impl Decls {
         let x = self.decl(d)
         match x.kind {
             .Fn or .Method -> x.name,
-            .Record or .Enum or .Trait or .Default or .Impl or .Main or .Case -> null,
+            .Record or .Enum or .Trait or .Default or .Impl or .Main or .Case or .Builtin -> null,
         }
     }
 
@@ -410,7 +457,7 @@ impl Decls {
         let local_name = match x.kind {
             .Method or .Default -> "${x.owner}.${x.name}",
             .Case -> "spec$${x.id.index}",
-            .Fn or .Record or .Enum or .Trait or .Impl or .Main -> x.name,
+            .Fn or .Record or .Enum or .Trait or .Impl or .Main or .Builtin -> x.name,
         }
         module_symbol(self.module_of(d), local_name)
     }

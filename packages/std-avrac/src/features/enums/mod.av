@@ -25,6 +25,7 @@ export fn enums() -> LanguageFeature {
         "num_pat"     | build_num_pat
         "true_pat"    | build_true_pat
         "false_pat"   | build_false_pat
+        "variant_lit" | build_variant_lit
     }
     let codes = table<DiagCode> {
         kind                 | id      | summary
@@ -35,12 +36,14 @@ export fn enums() -> LanguageFeature {
         "type.pattern"       | "F2038" | "a pattern fits the shape it tests: a variant of the enum, with exactly its payloads, or a literal of the type"
         "type.or_binds"      | "F2039" | "an `or` arm binds nothing — wildcards only"
         "type.wildcard_hides" | "F2040" | "a hole hides more than two variants — handle them, or write `rest`"
+        "type.variant_lit"   | "F2043" | "a `.variant` literal builds the enum the site expects"
     }
     component LanguageFeature f {
         name = "enums"
         docs = "`enum Suit { clubs hearts }` declares a closed set; `Suit.clubs` constructs; `match` chooses by patterns — `.V(p, q)` nests, `a or b` alternates, a name binds, a literal equals, `_` is the hole, `rest` the deliberate remainder — and must cover the subject."
         gram = """
 stmt = "enum" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ">" )? "{" ( BREAK | "," | vs:NAME ( po:"(" ( pn:NAME ":" )? pt:type ( "," ( pn:NAME ":" )? pt:type )* ")" )? )* "}" END @recover(sync_to: "END") -> enum_decl(n, tp, vs, po, pn, pt)
+primary = "." vn:NAME ( "(" ( a:expression ( "," a:expression )* ","? )? ")" )? -> variant_lit(vn, a)
 primary = "match" subj:expression "{" ( BREAK | "," | a:arm )* "}" @expect("}", "expected `}` to close the `match`") -> match_expr(subj, a)
 arm = p:pattern ( "or" p:pattern )* "->" v:expression -> match_arm(p, v)
 pattern = "." vn:NAME ( "(" sub:pattern ( "," sub:pattern )* ")" )? -> variant_pat(vn, sub) | "_" -> wild_pat() | "true" -> true_pat() | "false" -> false_pat() | s:STRING -> str_pat(s) | v:NUMBER -> num_pat(v) | n:NAME -> bind_pat(n)

@@ -46,12 +46,23 @@ export fn push_slot(cx: LowerCx, box: Reg, v: Reg) {
 /// Equality of two values of one type as a bool register — the
 /// runtime's `avra_streq` for text, the Eq operator otherwise.
 export fn same_value(cx: LowerCx, a: Reg, b: Reg, ty: TypeId) -> Reg {
+    if cx.view.types.shape_of(ty) is .Enum { return same_tag(cx, a, b) }
     let dst = cx.mint_shape(Type.Bool)
     if cx.view.types.shape_of(ty) is .Str {
         cx.emit(Ins.CallRt(dst, "avra_streq", [a, b]))
     } else {
         cx.emit(Ins.Bin(dst, BinOp.Eq, a, b))
     }
+    dst
+}
+
+/// Two enum values of one type compare by TAG — what a unit enum's
+/// equality means.
+fn same_tag(cx: LowerCx, a: Reg, b: Reg) -> Reg {
+    let ta = tag_of(cx, a)
+    let tb = tag_of(cx, b)
+    let dst = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Bin(dst, BinOp.Eq, ta, tb))
     dst
 }
 

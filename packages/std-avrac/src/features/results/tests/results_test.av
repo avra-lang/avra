@@ -10,7 +10,46 @@ fn checked() -> string {
     "fn checked(n: int) -> Result<int, E> {\n    if n == 0 {\n        fail E.boom\n    }\n    if n < 10 {\n        fail E.small(n)\n    }\n    n\n}\n"
 }
 
+/// `Result.Ok` / `Result.Err`, constructed by name.
+fn by_name() -> string {
+    "fn half(n: int) -> Result<int, string> {\n    if n % 2 == 0 { return Result.Ok(n / 2) }\n    Result.Err(\"odd\")\n}\n"
+}
+
+/// `.Ok` / `.Err` — the epic's spelling: the want names the enum.
+fn by_dot() -> string {
+    "fn half(n: int) -> Result<int, string> {\n    if n % 2 == 0 { return .Ok(n / 2) }\n    .Err(\"odd\")\n}\n"
+}
+
 spec "features/results" {
+    given "construction by name — the language's own declaration" {
+        then "Ok and Err build at a Result fn's tail and return, the other side read from the want" {
+            shown("${by_name()}match half(8) {\n    .Ok(v) -> v\n    .Err(_) -> 0\n}") == "4"
+        }
+        then "the failure side too" {
+            shown("${by_name()}match half(7) {\n    .Ok(v) -> \"$" + "{v}\"\n    .Err(e) -> e\n}") == "odd"
+        }
+        then "an annotated binding pins the want" {
+            shown("let r: Result<int, string> = Result.Err(\"no\")\nmatch r {\n    .Ok(v) -> \"$" + "{v}\"\n    .Err(e) -> e\n}") == "no"
+        }
+        then "with nothing to pin the other side, it refuses" {
+            refused_with("let r = Result.Ok(1)\n2", "`T2` is not pinned by the payload")
+        }
+        then "the bare `.Ok`/`.Err` build the Result the fn declares — at a return, at the tail" {
+            shown("${by_dot()}match half(8) {\n    .Ok(v) -> v\n    .Err(_) -> 0\n}") == "4"
+        }
+        then "the bare failure side" {
+            shown("${by_dot()}match half(7) {\n    .Ok(v) -> \"$" + "{v}\"\n    .Err(e) -> e\n}") == "odd"
+        }
+        then "a bare variant with no expected type refuses" {
+            refused_with("let r = .Ok(1)\n2", "`.Ok` needs a known enum — nothing here says which")
+        }
+        then "a bare variant the expected enum lacks refuses" {
+            refused_with("fn f() -> Result<int, string> { .Nope(1) }\n2", "`Result<int, string>` has no variant `Nope`")
+        }
+        then "a bare variant's payload count is the variant's" {
+            refused_with("fn f() -> Result<int, string> { .Ok(1, 2) }\n2", "`.Ok` carries 1, given 2")
+        }
+    }
     given "the produce side — `fail` and the auto-Ok wrap" {
         then "a bare success wraps itself; match unwraps it" {
             shown("${checked()}match checked(42) {\n    .Ok(v) -> v\n    .Err(e) -> 0 - 1\n}") == "42"

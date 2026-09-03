@@ -1067,6 +1067,21 @@ then the body walk indexed an empty param list. One mistake, one
 message, no crash downstream — `declare_wreckage(f)` in typing is
 the one verb; `refused_impl` calls it for every method.
 
+## The hunger protocol: go hungry, be fed, speak when starving
+
+A typing rule that needs the EXPECTED type and has none does not
+guess and does not refuse: it goes hungry (`cx.go_hungry(e)`,
+answering the hole silently) and lets the one agreement door feed
+it — `accepts` hands every hungry expression the want it meets
+(`cx.feed`), and the rule runs again with it. At the walk's end
+the rules still hungry run once more STARVING (`cx.starving()`)
+and each speaks in its own words. Two rules ride it: the
+annotation-less lambda (fed its seats) and the bare variant
+literal `.name(args)` (fed its enum). The smell it replaces: a
+rule refusing "cannot infer" at a site the door was about to
+feed, or a driver speaking a feature's refusal. UNRATCHETED: a
+placement, read for at review.
+
 ## A bodied declaration: the driver brackets, the feature judges
 
 A declaration with a body that must answer a type — a fn, a field

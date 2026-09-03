@@ -48,6 +48,7 @@ export fn file_names(decls: Decls, file: FileId, module: ModuleNames, imports: L
     let b = binder(decls, shown)
     for d in module.bound { b.bind_decl(d) }
     for i in imports { b.import(i, file) }
+    for d in decls.builtin_decls() { b.bind_builtin(d) }
     let own = [c.diag for c in module.clashes if in_file(c, file)]
     b.names with { voices: Voices { list: own.concat(b.names.voices.list) } }
 }
@@ -89,6 +90,13 @@ impl Binder {
         self.bind(x.kind, x.name, d)
     }
 
+    /// The language's own declaration binds where nothing else
+    /// took the name — a program's `Result` wins silently.
+    fn bind_builtin(self, d: DeclId) {
+        let x = self.decls.decl(d)
+        if self.held(x.kind, x.name) == null { self.bind(x.kind, x.name, d) }
+    }
+
     /// An import binds in the file's namespace; a name already
     /// visible refuses — unless it is the very same declaration.
     fn import(self, i: Import, file: FileId) {
@@ -113,7 +121,7 @@ impl Binder {
         let as_type: DeclId? = self.names.types.get(name)
         match kind {
             .Fn -> as_fn,
-            .Record or .Enum or .Trait -> as_type,
+            .Record or .Enum or .Trait or .Builtin -> as_type,
             .Method or .Default or .Impl or .Main or .Case -> null,
         }
     }
@@ -121,7 +129,7 @@ impl Binder {
     fn bind(self, kind: DeclKind, name: string, d: DeclId) {
         match kind {
             .Fn -> self.bind_fn(name, d),
-            .Record or .Enum or .Trait -> self.bind_type(name, d),
+            .Record or .Enum or .Trait or .Builtin -> self.bind_type(name, d),
             .Method or .Default or .Impl or .Main or .Case -> not_bound(),
         }
     }
@@ -199,7 +207,7 @@ fn method_taken(at: Loc?, target: string, name: string) -> Diag {
 fn defined_twice(at: Loc?, kind: DeclKind, name: string) -> Diag {
     match kind {
         .Fn -> refusal("resolve.duplicate_fn", at, "`${name}` is defined more than once", "redefined here", "rename one of them"),
-        .Record or .Enum or .Trait or .Method or .Default or .Impl or .Main or .Case ->
+        .Record or .Enum or .Trait or .Method or .Default or .Impl or .Main or .Case or .Builtin ->
             refusal("resolve.duplicate_type", at, "`${name}` is declared more than once", "redeclared here", "rename one of them"),
     }
 }

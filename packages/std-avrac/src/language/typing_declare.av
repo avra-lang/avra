@@ -3,7 +3,7 @@
 //! annotations, and the laws of the types annotations WRITE — a
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
-use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts}
+use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, TypeRegistry}
 use diagnostics.{refusal}
 use features.{FnSig, StructSig, EnumSig, DeclSig, record_sig_of, variant_sig_of, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl}
 use @std.errors.{Loc}
@@ -79,6 +79,15 @@ impl Typer {
         let slot: int? = if rs == null { null } else { rs!.slot_of(x.name) }
         let ret: TypeId = if slot == null { self.error_type } else { rs!.types[slot!] }
         self.view.decls.declare(x.id, DeclSig.Fn(FnSig { params: [], ret: ret }))
+    }
+
+    /// A builtin's variants, from its row over its own Vars.
+    fn declare_builtin(self, x: Decl) {
+        let row: TypeRow? = self.view.decls.row_of(x.id)
+        if row == null { return }
+        let vars = TypeArgs { parts: builtin_vars(self.view.types, x.id, self.view.decls.tparams(x.id)) }
+        let sig: EnumSig? = row!.variants(vars)
+        if sig != null { self.view.decls.declare(x.id, DeclSig.Variants(sig!)) }
     }
 
     /// A test case's signature: no parameters, a bool answer.
@@ -386,6 +395,15 @@ export fn declare_one(t: Typer, x: Decl) {
         .Default -> t.declare_default(x),
         .Impl -> t.declare_impl_block(x.stmt),
         .Case -> t.declare_case(x),
+        .Builtin -> t.declare_builtin(x),
         .Trait or .Main -> nothing(),
     }
+}
+
+/// A builtin's type parameters as Vars — the ordinal is the identity.
+fn builtin_vars(types: TypeRegistry, d: DeclId, names: List<string>) -> List<TypeId> {
+    mut out: List<TypeId> = []
+    // LICENSED I3: the ordinal needs the index; comprehensions cannot destructure enumerate
+    for (j, n) in names.enumerate() { out.push(types.intern(Type.Var(d, j, n))) }
+    out
 }

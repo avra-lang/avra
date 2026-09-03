@@ -39,14 +39,34 @@ fn unit_variant(cx: TypeCx, e: ExprId, tname: string, variant: string, tp: List<
 }
 
 /// The answer: the plain enum, or the App the bindings close into.
+/// A Var no payload pinned is read from the WANT — the type the
+/// site is expected to be, when it is this declaration's — and a
+/// builtin declaration builds its type through its row.
 fn instantiated(cx: TypeCx, e: ExprId, tname: string, decl: DeclId,
                 tp: List<string>, bound: List<TypeId?>) -> TypeId {
     if tp.is_empty() { return cx.view.types.intern(Type.Enum(decl, tname)) }
-    let missing: string? = unpinned_of(tp, bound)
+    let pinned = pinned_by_want(cx, e, bound)
+    let missing: string? = unpinned_of(tp, pinned)
     if missing != null { return unpinned_by_payload(cx, e, missing!) }
-    let concrete = bound_closed(cx, bound)
+    let concrete = bound_closed(cx, pinned)
+    let row: TypeRow? = cx.view.decls.row_of(decl)
+    let args = TypeArgs { parts: concrete }
+    if row != null { return cx.view.types.intern(row!.builds(args)) }
     cx.record_subst(e, decl, concrete)
     cx.view.types.intern(Type.App(decl, tname, concrete))
+}
+
+/// The bindings with every empty slot filled from the want's type
+/// arguments, when the want has as many.
+fn pinned_by_want(cx: TypeCx, e: ExprId, bound: List<TypeId?>) -> List<TypeId?> {
+    let want: TypeId? = cx.want_at(e)
+    if want == null { return bound }
+    let args = cx.view.types.args_of(want!)
+    if args.length != bound.length { return bound }
+    mut out: List<TypeId?> = []
+    // LICENSED I3: slots and want args pair by index; comprehensions cannot destructure enumerate
+    for (j, b) in bound.enumerate() { out.push(b ?? args[j]) }
+    out
 }
 
 /// The raw declared table — Vars intact — or absence when the

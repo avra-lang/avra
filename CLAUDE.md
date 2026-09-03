@@ -328,6 +328,7 @@ against these before writing; probe in scratch when unsure.
 - Multi-line fn signatures parse fine (probed) — stacked params with
   a trailing comma, or aligned continuation lines. Wrap wide ones.
 - `ref`, `none`, `shape`, `dyn`, `table`, `is`, `bare`, `mod`, and `where` are reserved words
+  (`none` as a LOCAL too: "expected variable name" at the `let`)
   (`dyn` refuses as a FIELD name: "expected field name" at the decl) — including
   as variable and method names; `then`, `given` and `spec` refuse
   as struct/enum FIELD names ("expected field name" at the field)
@@ -654,7 +655,9 @@ against these before writing; probe in scratch when unsure.
   element) but keeps a leading one; `"".split(".")` is `[]`.
 - Struct literals refuse only in FREE-FN argument lists — method
   and enum-constructor arguments take them (probed landing the
-  TOML reader); the `let` pin is for free calls.
+  TOML reader); the `let` pin is for free calls — and for a CLOSURE-FIELD call
+  (`r.variants(TypeArgs { … })` refuses "expected `)` after
+  arguments").
 - An idiom-tool caveat with a house rule: the I25 payload-count
   check reads ONE VARIANT PER LINE — a one-line enum
   (`enum S { A(x: int), B }`) is invisible to it and every pattern
