@@ -602,6 +602,20 @@ against these before writing; probe in scratch when unsure.
   dies at codegen in some shards ("unknown struct
   `@std::errors::Suggestion`"), never in others. The product
   library projects it (`suggested(d)` -> strings); tests read that.
+- A CONSTRUCTION with the wrong payload count is not checked either:
+  a test building `Stmt.EnumDecl(name, tparams, [param])` after
+  the variant's payload became a `List<Variant>` compiled, corrupted
+  memory, and SIGSEGV'd a DIFFERENT spec in the shard (the blame
+  landed three specs away). When a node's payload changes shape,
+  grep the tests for every constructor of it before trusting a
+  crash's location.
+- THE IR's BOOL LAW (ours, enforced by the evaluator): `&&`/`||`
+  are never `Bin` over bool registers — they are lazy regions
+  (`IfStart … ArmEnd … RegionEnd`); a `Bin(Or)` on bools is the
+  defect "a non-equality op reached bool operands". And THE MINT
+  LAW: a register is DEFINED in the order it was minted — mint
+  operands first (`let tag = tag_of(cx, v)` before minting the
+  constant it compares to), the answer last.
 - A NESTED pattern with a sibling BINDING refuses to parse
   (`.Value(.Str(s), k) ->` fails at `k`; `.Value(.Str(s), _)` is
   fine) — bind the outer payload and match again. Enum variant

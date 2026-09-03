@@ -1,6 +1,6 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
-use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, want, Param}
+use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, want, Param, Pat, PatId, Arm}
 use grammar.{Captured, Token}
 
 /// One build call's world: the store, the captured arguments in
@@ -82,6 +82,16 @@ impl Builder {
         Result.Ok(out)
     }
 
+    /// A new pattern node, spanning the matched branch.
+    fn make_pat(self, p: Pat) -> Result<LangNode, string> {
+        Result.Ok(LangNode.NPat(self.store.alloc_pat(p, self.span)))
+    }
+
+    /// One match arm, as data.
+    fn make_arm(self, pats: List<PatId>, value: ExprId) -> Result<LangNode, string> {
+        Result.Ok(LangNode.NArm(Arm { pats: pats, value: value }))
+    }
+
     /// A new expression node, spanning the matched branch.
     fn make_expr(self, e: Expr) -> Result<LangNode, string> {
         Result.Ok(LangNode.NExpr(self.store.alloc_expr(e, self.span)))
@@ -144,6 +154,45 @@ export fn type_ref_at(args: List<Captured<LangNode>>, i: int) -> TypeRef? {
     }
 }
 
+/// The pattern at `args[i]`, when that capture is one.
+export fn pat_id_at(args: List<Captured<LangNode>>, i: int) -> PatId? {
+    match args[i] {
+        .Node(.NPat(id)) -> id,
+        _ -> null,
+    }
+}
+
+/// The repeated pattern capture at `args[i]`, as pattern ids.
+export fn pat_ids_at(args: List<Captured<LangNode>>, i: int) -> List<PatId> {
+    let items = list_at(args, i)
+    mut out: List<PatId> = []
+    // LICENSED I3: index-taking extractors: a bare Captured arg misreads
+    for j in 0..items.length {
+        let held: PatId? = pat_id_at(items, j)
+        if held != null { out.push(held!) }
+    }
+    out
+}
+
+/// The repeated arm capture at `args[i]`, as arms.
+export fn arms_at(args: List<Captured<LangNode>>, i: int) -> List<Arm> {
+    let items = list_at(args, i)
+    mut out: List<Arm> = []
+    // LICENSED I3: index-taking extractors: a bare Captured arg misreads
+    for j in 0..items.length {
+        let held: Arm? = arm_at(items, j)
+        if held != null { out.push(held!) }
+    }
+    out
+}
+
+fn arm_at(args: List<Captured<LangNode>>, i: int) -> Arm? {
+    match args[i] {
+        .Node(.NArm(a)) -> a,
+        _ -> null,
+    }
+}
+
 /// The token at `args[i]`, when that capture is one.
 export fn token_at(args: List<Captured<LangNode>>, i: int) -> Token? {
     match args[i] {
@@ -189,7 +238,7 @@ fn one_between(types: List<TypeRef>, after: int, before: int) -> TypeRef? {
     types.find(ref_within(it, after, before))
 }
 
-fn ref_within(t: TypeRef, after: int, before: int) -> bool {
+export fn ref_within(t: TypeRef, after: int, before: int) -> bool {
     let lo: int? = t.span?.lo
     if lo == null { return false }
     lo! > after && lo! < before

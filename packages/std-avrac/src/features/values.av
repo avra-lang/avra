@@ -32,16 +32,27 @@ export fn push_slot(cx: LowerCx, box: Reg, v: Reg) {
     cx.emit(Ins.CallRtVoid("avra_array_push", [box, v]))
 }
 
+/// Equality of two values of one type as a bool register — the
+/// runtime's `avra_streq` for text, the Eq operator otherwise.
+export fn same_value(cx: LowerCx, a: Reg, b: Reg, ty: TypeId) -> Reg {
+    let dst = cx.mint_shape(Type.Bool)
+    if cx.view.types.shape_of(ty) is .Str {
+        cx.emit(Ins.CallRt(dst, "avra_streq", [a, b]))
+    } else {
+        cx.emit(Ins.Bin(dst, BinOp.Eq, a, b))
+    }
+    dst
+}
+
 /// THE TAGGED VALUE: an enum's variant is a slot array holding its
-/// TAG at slot 0 and its payload, when it has one, at slot 1.
-/// `dst` is minted by the caller — the box verbs' shared contract.
-export fn tagged_value(cx: LowerCx, dst: Reg, tag: int, payload: Reg?) {
+/// TAG at slot 0 and its payloads, in order, at slots 1... `dst` is
+/// minted by the caller — the box verbs' shared contract.
+export fn tagged_value(cx: LowerCx, dst: Reg, tag: int, payloads: List<Reg>) {
     cx.emit(Ins.CallRt(dst, "avra_array_new", []))
     let slot = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(slot, tag))
     push_slot(cx, dst, slot)
-    if payload == null { return }
-    push_slot(cx, dst, payload!)
+    for p in payloads { push_slot(cx, dst, p) }
 }
 
 /// The TAG a tagged value carries. Slot 0, always an int — asking
@@ -53,7 +64,12 @@ export fn tag_of(cx: LowerCx, v: Reg) -> Reg {
 /// The PAYLOAD a tagged value carries, as the type it was written
 /// with. Slot 1 — the other half of `tagged_value`'s shape.
 export fn payload_of(cx: LowerCx, v: Reg, ty: TypeId) -> Reg {
-    slot_read(cx, v, 1, ty)
+    payload_at(cx, v, 0, ty)
+}
+
+/// The Kth payload a tagged value carries — slot K + 1.
+export fn payload_at(cx: LowerCx, v: Reg, k: int, ty: TypeId) -> Reg {
+    slot_read(cx, v, k + 1, ty)
 }
 
 /// One slot read: the index is a constant, so it is minted and
@@ -76,14 +92,14 @@ export fn slot_read(cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
 /// A success, wrapped — the auto-Ok lift's mint.
 export fn okayed(cx: LowerCx, into: TypeId, r: Reg) -> Reg {
     let dst = cx.mint_ty(into)
-    tagged_value(cx, dst, 0, r)
+    tagged_value(cx, dst, 0, [r])
     dst
 }
 
 /// A failure, wrapped — what `fail` exits with.
 export fn failed(cx: LowerCx, into: TypeId, r: Reg) -> Reg {
     let dst = cx.mint_ty(into)
-    tagged_value(cx, dst, 1, r)
+    tagged_value(cx, dst, 1, [r])
     dst
 }
 

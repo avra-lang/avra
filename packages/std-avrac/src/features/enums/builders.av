@@ -1,40 +1,88 @@
 //! Parse-time lowering: captures -> the EnumDecl statement, the
-//! Match node, and a carrying variant's construction. Arm names and
+//! Match node with its arms, and the pattern nodes. Arms and
 //! values ZIP (both are written every time); a declaration's
-//! payloads cannot, because they are optional — see below.
-use core.{Expr, Stmt, Param}
-use features.{LangNode, Builder, zip_defect, aligned_binds, aligned_param_types}
+//! payloads cannot, because they are optional — spans restore the
+//! truth: a payload belongs to the variant whose name precedes it
+//! and whose successor follows it, and a payload's NAME, when
+//! written, precedes its type inside that window.
+use core.{Expr, Stmt, Param, Pat, Variant, TypeRef, Token}
+use features.{LangNode, Builder, window_end, pat_ids_at, arms_at, ref_within}
 
-/// A variant's payload is POSITIONAL (the spec's style rule: the
-/// type IS the field for a single-value wrapper), so nothing the
-/// source wrote is dropped on the way into the node.
-///
-/// Names and their OPTIONAL payload arrive as parallel captures that
-/// do NOT align: a repetition accumulates only the payloads that
-/// were written, so index j means nothing. Spans restore the truth —
-/// a payload belongs to the variant whose name precedes it and whose
-/// successor follows it.
 fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
     let ends: int? = b.span_end()
     if ends == null { return Result.Err("an enum declaration without a span") }
     let vs = b.tokens(2)?
-    let tys = aligned_param_types(vs, b.type_refs(3)?, ends!)
-    mut variants: List<Param> = []
-    // LICENSED I3: a ZIP of parallel captures; comprehensions cannot destructure enumerate
-    for (j, v) in vs.enumerate() { variants.push(Param { name: v.text, ty: tys[j], default: null }) }
+    let names = b.tokens(4)?
+    let tys = b.type_refs(5)?
+    mut variants: List<Variant> = []
+    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
+    for (j, v) in vs.enumerate() {
+        let upto = window_end(vs, j, ends!)
+        variants.push(Variant { name: v.text, payloads: payloads_between(names, tys, v.span.lo, upto) })
+    }
     b.make_stmt(Stmt.EnumDecl(n.text, [t.text for t in tp], variants))
 }
 
-/// Arm names and values ZIP; a BIND is optional, so it aligns by
-/// span like a declaration's payload does.
+/// One variant's payloads: the types inside its window, each named
+/// by the field name written just before it, or "" when positional.
+fn payloads_between(names: List<Token>, tys: List<TypeRef>, after: int, before: int) -> List<Param> {
+    [Param { name: name_before(names, t, after), ty: t, default: null } for t in tys if ref_within(t, after, before)]
+}
+
+/// The field name written between the variant's name and this
+/// payload type, when one was.
+fn name_before(names: List<Token>, t: TypeRef, after: int) -> string {
+    let lo: int = t.span?.lo ?? after
+    mut best = ""
+    for n in names {
+        if n.span.lo > after && n.span.lo < lo { best = n.text }
+    }
+    best
+}
+
 fn build_match(b: Builder) -> Result<LangNode, string> {
     let subject = b.expr(0)?
-    let vn = b.tokens(1)?
-    let av = b.exprs(3)?
-    let ends: int? = b.span_end()
-    if vn.length != av.length { return Result.Err(zip_defect()) }
-    if ends == null { return Result.Err("a match without a span") }
-    b.make_expr(Expr.Match(subject, [v.text for v in vn], aligned_binds(vn, b.tokens(2)?, ends!), av))
+    b.make_expr(Expr.Match(subject, arms_at(b.args, 1)))
+}
+
+fn build_arm(b: Builder) -> Result<LangNode, string> {
+    let value = b.expr(1)?
+    b.make_arm(pat_ids_at(b.args, 0), value)
+}
+
+fn build_variant_pat(b: Builder) -> Result<LangNode, string> {
+    let name = b.token(0)?
+    b.make_pat(Pat.Variant(name.text, pat_ids_at(b.args, 1)))
+}
+
+fn build_wild_pat(b: Builder) -> Result<LangNode, string> {
+    b.make_pat(Pat.Wild)
+}
+
+/// A bare name binds — except `rest`, the spec's deliberate
+/// remainder, which binds nothing and answers the lint.
+fn build_bind_pat(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    if n.text == "rest" { return b.make_pat(Pat.Rest) }
+    b.make_pat(Pat.Bind(n.text))
+}
+
+fn build_str_pat(b: Builder) -> Result<LangNode, string> {
+    let t = b.token(0)?
+    b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.StrLit(t.text), b.span)))
+}
+
+fn build_num_pat(b: Builder) -> Result<LangNode, string> {
+    let t = b.token(0)?
+    b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.IntLit(t.int_value()), b.span)))
+}
+
+fn build_true_pat(b: Builder) -> Result<LangNode, string> {
+    b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.BoolLit(true), b.span)))
+}
+
+fn build_false_pat(b: Builder) -> Result<LangNode, string> {
+    b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.BoolLit(false), b.span)))
 }

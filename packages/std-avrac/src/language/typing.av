@@ -209,7 +209,7 @@ fn narrowed_subtree(t: Typer, param_types: List<TypeId>, subject: ExprId, branch
         .Def(s) -> narrowed_def_walk(t, param_types, s, branch),
         .Param(i) -> narrowed_param_walk(t, param_types, i, branch),
         // lambda params and captures never narrow — walk wide
-        .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> typed_subtree(t, param_types, branch),
+        .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> typed_subtree(t, param_types, branch),
     }
 }
 
@@ -279,7 +279,7 @@ impl Typer {
             .Def(s) -> self.narrowed_def(e, s) ?? self.def_type(s),
             // The arm's OWNER spoke this type before the arm was
             // walked; an absent one means the bind was refused.
-            .Pattern(v) -> self.facts.pattern_type(v) ?? self.error_type,
+            .Pattern(v, j) -> self.facts.pattern_type(v, j) ?? self.error_type,
             .LambdaParam(l, i) -> self.lambda_param_ty(l, i),
             // captures never narrow — the box holds the wide value
             .Capture(l, j) -> self.capture_ty(l, j, param_types),
@@ -381,7 +381,7 @@ impl Typer {
         match b {
             .Param(i) -> param_types[i],
             .Def(s) -> self.def_type(s),
-            .Pattern(v) -> self.facts.pattern_type(v) ?? self.error_type,
+            .Pattern(v, j) -> self.facts.pattern_type(v, j) ?? self.error_type,
             .LambdaParam(l, i) -> self.lambda_param_ty(l, i),
             .Capture(l, j) -> self.capture_ty(l, j, param_types),
             .Index(_) -> self.view.types.intern(Type.Int),

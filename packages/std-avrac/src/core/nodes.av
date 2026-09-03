@@ -56,11 +56,12 @@ export enum Binding {
     /// A binding statement (`let`, `mut`, `fn`) — the definition
     /// site is the identity.
     Def(stmt: StmtId)
-    /// A PATTERN's payload, bound for the ONE arm whose value this
+    /// A PATTERN's Nth bind, held for the ONE arm whose value this
     /// is — the first binding in the language that is not a
     /// statement. The arm's value IS the identity, so both later
-    /// passes key their fact by it like any other node fact.
-    Pattern(arm: ExprId)
+    /// passes key their facts by it like any other node fact; the
+    /// index is the bind's place in the pattern's pre-order.
+    Pattern(arm: ExprId, index: int)
     /// A LAMBDA's Nth parameter — in the LIFTED body, register N+1
     /// (the env box rides seat 0). Type fact: the lambda's own
     /// annotation table.
@@ -166,10 +167,10 @@ export enum Expr {
     /// `subject with { field: value, ... }` — a modified COPY; the
     /// unwritten fields carry over.
     With(subject: ExprId, fields: List<string>, values: List<ExprId>)
-    /// `match subject { .variant(bind) -> value, ... }` — total over
-    /// the subject enum's variants; no catch-all arm exists. `binds`
-    /// is per-arm and "" where an arm names no payload.
-    Match(subject: ExprId, variants: List<string>, binds: List<string>, values: List<ExprId>)
+    /// `match subject { pattern -> value, ... }` — the first arm
+    /// whose pattern accepts the subject answers; typing proves the
+    /// arms cover the subject (every variant, or a catch-all).
+    Match(subject: ExprId, arms: List<Arm>)
     /// The absent value. Its type inhabits every `T?` and nothing
     /// else, which is what makes `let x: int = null` refuse.
     NullLit
@@ -283,6 +284,29 @@ export fn spelled(t: TypeRef) -> string {
 /// enum variant's payload — with the DEFAULT a field may declare.
 export type Param = { name: string, ty: TypeRef?, default: ExprId? }
 
+/// A pattern's identity in the store's pattern table.
+export type PatId = { index: int }
+
+/// What an arm accepts. A pattern is a tree over the subject's
+/// shape: a variant test with one pattern per payload, a literal to
+/// equal, a name that binds the value at its path, or the hole —
+/// `_` (which the lint watches) and `rest` (the deliberate
+/// remainder, exempt).
+export enum Pat {
+    Wild
+    Rest
+    Bind(name: string)
+    Variant(name: string, args: List<PatId>)
+    Lit(value: ExprId)
+}
+
+/// One match arm: its alternatives (`a or b`) and its value.
+export type Arm = { pats: List<PatId>, value: ExprId }
+
+/// One declared variant: its name and what it carries, in order —
+/// a single positional payload, or named fields.
+export type Variant = { name: string, payloads: List<Param> }
+
 /// One step of a PLACE — where a mutation lands.
 export enum PlaceStep {
     Root(name: string)
@@ -357,7 +381,7 @@ export enum Stmt {
     /// `enum Name { A B(payload: int) }` — a nominal closed set
     /// sharing the TYPE namespace with records. A variant is a
     /// Param: an ABSENT `ty` IS a unit variant.
-    EnumDecl(name: string, tparams: List<string>, variants: List<Param>)
+    EnumDecl(name: string, tparams: List<string>, variants: List<Variant>)
     Error
 }
 
@@ -369,12 +393,16 @@ export type NodeStore = {
     stmts: Arena<Stmt>,
     stmt_fingerprints: List<int>,
     exported: List<bool>,
+    pats: List<Pat>,
+    pat_spans: List<Span?>,
+    pat_fingerprints: List<int>,
 }
 
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena<Expr>(), expr_fingerprints: [],
         stmts: new_arena<Stmt>(), stmt_fingerprints: [], exported: [],
+        pats: [], pat_spans: [], pat_fingerprints: [],
     }
 }
 
@@ -384,6 +412,57 @@ impl NodeStore {
         mut fingerprints = self.expr_fingerprints
         fingerprints.push(self.fingerprint_expr(e))
         ExprId { index: self.exprs.add(e, span) }
+    }
+
+    /// The one pattern-allocation seam.
+    fn alloc_pat(self, p: Pat, span: Span?) -> PatId {
+        mut fingerprints = self.pat_fingerprints
+        fingerprints.push(self.fingerprint_pat(p))
+        mut spans = self.pat_spans
+        spans.push(span)
+        mut ps = self.pats
+        ps.push(p)
+        PatId { index: ps.length - 1 }
+    }
+
+    fn pat(self, id: PatId) -> Pat { self.pats[id.index] }
+    fn pat_span(self, id: PatId) -> Span? { self.pat_spans[id.index] }
+    fn pat_fingerprint(self, id: PatId) -> int { self.pat_fingerprints[id.index] }
+
+    /// The names a pattern binds, in pre-order — the arm's bind
+    /// order, which every pass keys by index.
+    fn pattern_binds(self, id: PatId) -> List<string> {
+        match self.pat(id) {
+            .Bind(name) -> [name],
+            .Variant(_, args) -> flatten([self.pattern_binds(a) for a in args]),
+            .Wild or .Rest or .Lit(_) -> [],
+        }
+    }
+
+    /// A pattern nothing can refuse: a hole or a name.
+    fn irrefutable(self, id: PatId) -> bool {
+        match self.pat(id) {
+            .Wild or .Rest or .Bind(_) -> true,
+            .Variant(_, _) or .Lit(_) -> false,
+        }
+    }
+
+    /// The pattern's fingerprint parts: its own shape, then its
+    /// children's.
+    fn fingerprint_pat(self, p: Pat) -> int {
+        match p {
+            .Wild -> fp(50, []),
+            .Rest -> fp(51, []),
+            .Bind(name) -> fp(52, [fp_str(name)]),
+            .Variant(name, args) -> fp(53, [fp_str(name)].concat([self.pat_fingerprint(a) for a in args])),
+            .Lit(v) -> fp(54, [self.expr_fingerprint(v)]),
+        }
+    }
+
+    /// An arm list's fingerprint parts: each arm's patterns, then
+    /// its value.
+    fn arm_fps(self, arms: List<Arm>) -> List<int> {
+        flatten([[self.pat_fingerprint(p) for p in a.pats].concat([self.expr_fingerprint(a.value)]) for a in arms])
     }
 
     /// The one statement-allocation seam.
@@ -441,7 +520,7 @@ impl NodeStore {
             .IntLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or
             .Not(_) or .ListLit(_) or .MapLit(_, _) or .Interp(_, _) or .If(_, _, _) or .Call(_, _, _) or
             .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or
-            .With(_, _, _) or .Match(_, _, _, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
+            .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
             .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _) or
             .Lambda(_, _) or .Is(_, _) -> null,
         }
@@ -509,7 +588,7 @@ impl NodeStore {
             .Block(_, value) -> if value == null { false } else { self.pronoun_rides(value!) },
             .StructLit(_, _, values) -> self.any_rides(values),
             .With(subject, _, values) -> self.pronoun_rides(subject) || self.any_rides(values),
-            .Match(subject, _, _, values) -> self.pronoun_rides(subject) || self.any_rides(values),
+            .Match(subject, arms) -> self.pronoun_rides(subject) || self.any_rides([a.value for a in arms]),
             .Catch(subject, _, _, values) -> self.pronoun_rides(subject) || self.any_rides(values),
             .MatchOpt(subject, _, present, absent) ->
                 self.pronoun_rides(subject) || self.pronoun_rides(present) || self.pronoun_rides(absent),
@@ -564,10 +643,8 @@ impl NodeStore {
             .With(subject, fields, values) ->
                 fp(26, flatten([[self.expr_fingerprint(subject)],
                                 [fp_str(f) for f in fields], self.expr_fps(values)])),
-            .Match(subject, variants, binds, values) ->
-                fp(28, flatten([[self.expr_fingerprint(subject)],
-                                [fp_str(v) for v in variants], [fp_str(b) for b in binds],
-                                self.expr_fps(values)])),
+            .Match(subject, arms) ->
+                fp(28, [self.expr_fingerprint(subject)].concat(self.arm_fps(arms))),
             .NullLit -> fp(30, []),
             .Coalesce(l, r) ->
                 fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
@@ -649,9 +726,14 @@ impl NodeStore {
                                 self.expr_fps([f.default! for f in fields if f.default != null])])),
             .EnumDecl(name, tparams, variants) ->
                 fp(27, flatten([[fp_str(name)], [fp_str(t) for t in tparams],
-                                param_fps(variants)])),
+                                variant_fps(variants)])),
         }
     }
+}
+
+/// A variant list's fingerprint parts: each name, then its payloads.
+fn variant_fps(variants: List<Variant>) -> List<int> {
+    flatten([[fp_str(v.name)].concat(param_fps(v.payloads)) for v in variants])
 }
 
 /// A param list's fingerprint parts: name, type, in declaration order.

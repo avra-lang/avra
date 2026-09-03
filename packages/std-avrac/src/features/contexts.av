@@ -3,7 +3,7 @@
 //! asks the namespace) — and the CONTEXTS' vocabularies: every
 //! method a feature's rule calls on a TypeCx, LowerCx or statement
 //! context forwards from here to the one definition.
-use core.{FileId, DeclId, StmtId, ExprId, TypeId, Type, NodeStore, TypeRegistry, Binding, Param, filled, copy_into, Reg, Ins, dst_of, rt_sig_of}
+use core.{FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, NodeStore, TypeRegistry, Binding, Param, filled, copy_into, Reg, Ins, dst_of, rt_sig_of}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
 
@@ -38,7 +38,7 @@ export fn bound_decl_of(names: NameFacts, e: ExprId) -> DeclId? {
     match b! {
         .Decl(d) -> d,
         .Def(_) -> null,
-        .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+        .Param(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
     }
 }
 
@@ -55,7 +55,7 @@ export fn is_mut_at(names: NameFacts, store: NodeStore, e: ExprId) -> bool {
     if b == null { return false }
     match b! {
         .Def(s) -> store.stmt(s) is .MutLet,
-        .Decl(_) or .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+        .Decl(_) or .Param(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
     }
 }
 
@@ -174,7 +174,8 @@ impl TypeCx {
     fn implements(self, ty: TypeId, tname: string) -> bool { implements_of(self.view.types, self.view.decls, self.names, ty, tname) }
     fn is_mut(self, e: ExprId) -> bool { is_mut_at(self.names, self.view.store, e) }
     fn def_type(self, s: StmtId) -> TypeId { def_type_of(self.facts, self.view.store, self.view.types, self.error_type, s) }
-    fn bind_type(self, v: ExprId, ty: TypeId) { self.facts.bind_type(v, ty) }
+    fn bind_types(self, v: ExprId, tys: List<TypeId>) { self.facts.bind_types(v, tys) }
+    fn pat_loc(self, p: PatId) -> Loc? { self.view.pat_loc(p) }
     fn widen(self, v: ExprId, ty: TypeId) { self.facts.widen(v, ty) }
     fn record_ask(self, e: ExprId, subject: ExprId, on_present: bool) { self.facts.record_ask(e, subject, on_present) }
     fn ask_of(self, e: ExprId) -> Asked? { self.facts.ask_of(e) }
@@ -222,14 +223,14 @@ impl LowerCx {
     fn fields_of(self, ty: TypeId) -> StructSig? { fields_of_type(self.view.decls, ty) }
     fn variants_at(self, e: ExprId) -> EnumSig? { variants_of_type(self.view.decls, self.type_at(e)) }
     fn variants_of(self, ty: TypeId) -> EnumSig? { variants_of_type(self.view.decls, ty) }
-    fn bind_pattern(self, v: ExprId, r: Reg) { self.body.bind_pattern(v, r) }
+    fn bind_patterns(self, v: ExprId, regs: List<Reg>) { self.body.bind_patterns(v, regs) }
     /// A `mut` binding's cell, when the binding lives in one.
     fn cell_of(self, e: ExprId) -> Reg? {
         let b: Binding? = self.names.binding(e)
         if b == null { return null }
         match b! {
             .Def(s) -> if self.body.is_boxed(s) { self.body.slot_of(s) } else { null },
-            .Decl(_) or .Param(_) or .Pattern(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+            .Decl(_) or .Param(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
         }
     }
 }

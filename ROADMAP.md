@@ -3475,6 +3475,37 @@ T7, T8, `where`, `should_fail`, `skip`/`todo`, results caching and
 tests in parallel (seconds, against 55 today); warm run after a one-
 line change under a second.
 
+PARITY RUNG 3 LANDED (2026-09-03) — PATTERNS. THE MODEL: patterns
+are nodes in the store's own table (`Pat`: Wild, Rest, Bind,
+Variant(name, args), Lit(expr); `PatId`), an arm is `{ pats, value }`
+(alternatives are `or`), and `Expr.Match(subject, arms)`; an enum
+variant carries a LIST of payloads (`Variant { name, payloads }`,
+`EnumSig.payloads: List<List<TypeId>>` — a wrapper's one positional,
+several named, per spec 8.3), the value's slots 1.. in order. THE
+LAWS (spec 8.7 as written): a pattern fits the shape it tests — a
+variant of the enum with exactly its payloads (a bare `.V` accepts
+the variant whole, payloads unread), or a literal of the type; a
+name binds the value at its path, keyed by the arm value and the
+bind's pre-order index (`Binding.Pattern(arm, index)`, the fact
+tables lists); an `or` arm binds nothing; COVERAGE is judged column
+by column over pattern rows (specialize for the variants a column
+tests, hole rows cover the rest — so nested arms that split a
+variant cover it, and a recursive enum terminates), a literal match
+needs a catch-all, a variant accepted whole twice is a repeat, and a
+hole hiding more than two variants WARNS with them listed (F2040)
+unless it is `rest`, the contextual deliberate remainder. LOWERING:
+arms that each test one variant whole are the jump table as before;
+anything else is a CHAIN of lazy tests in arm order (`||`/`&&` as
+regions, so an untaken arm's payloads are never read), binds read
+inside the arm's region. corpus/patterns.av; 15 specs; the three
+old one-bind pins re-pinned. CENSUS: files with a parse failure
+178 -> 163; match-arm first failures 49 -> 2. NEXT by files: the
+LAYOUT tail (~57: trailing-operator and leading-dot continuation
+lines 25, statement-position block arms `-> {` ~14 (a block is not
+yet an expression primary — the map's `{` wins), bare `return` 10,
+multi-line struct literals 4, multi-line signatures and arguments),
+then comprehensions 38, then the test DSL 60.
+
 PARITY RUNG 2 LANDED (2026-09-03) — THE SMALL-GAPS SWEEP: empty
 record declarations (`type X = { }` — the field group optional);
 force and propagate join the POSTFIX chain as a fourth family

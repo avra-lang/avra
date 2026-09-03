@@ -18,17 +18,15 @@ export fn construct_variant(cx: TypeCx, e: ExprId, decl: DeclId, tname: string, 
     if sig.tag_of(variant) == null { return no_such_variant(cx, e, tname, variant, sig) }
     let tp = cx.view.decls.tparams(decl)
     if tparams_refused(tp) { return cx.error_type }
-    let held: TypeId? = sig.payload_of(variant)
-    if held == null { return unit_variant(cx, e, tname, variant, tp) }
-    let carried = held!
-    let first: ExprId? = args.first()
-    if first == null { return given_nothing(cx, e, tname, variant, carried) }
-    if args.length > 1 {
-        return spoken(cx, refusal("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries ONE value, given ${args.length}", "built here", "a variant's payload is a single value — wrap several in a record"))
+    let carried = sig.payloads_of(variant)
+    if carried.is_empty() { return unit_variant(cx, e, tname, variant, tp) }
+    if args.is_empty() { return given_nothing(cx, e, tname, variant, carried[0]) }
+    if args.length != carried.length {
+        return spoken(cx, refusal("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries ${count_word(carried.length)}, given ${args.length}", "built here", "a variant's payload is a single value — wrap several in a record"))
     }
     let bound: List<TypeId?> = filled<TypeId?>(tp.length, null)
-    if !unify(cx, carried, cx.type_at(first!), decl, bound) {
-        return wrong_payload(cx, first!, tname, variant, carried)
+    for (k, a) in args.enumerate() {
+        if !unify(cx, carried[k], cx.type_at(a), decl, bound) { return wrong_payload(cx, a, tname, variant, carried[k]) }
     }
     instantiated(cx, e, tname, decl, tp, bound)
 }
@@ -88,4 +86,9 @@ fn given_nothing(cx: TypeCx, e: ExprId, tname: string, variant: string, carried:
 
 fn unpinned_by_payload(cx: TypeCx, e: ExprId, tparam: string) -> TypeId {
     spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tparam}` is not pinned by the payload", "built here", "the pinned unit surface is recorded — carry `${tparam}` for now"))
+}
+
+/// "ONE value" or "N values" — the arity as the refusal spells it.
+fn count_word(n: int) -> string {
+    if n == 1 { "ONE value" } else { "${n} values" }
 }

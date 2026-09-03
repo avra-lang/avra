@@ -4,7 +4,7 @@
 //! the type namespace, so its own passes do nothing. A match is
 //! CONTROL-OWNING: its arms are hidden from `kids` and walked
 //! through the driver, each under its own bind.
-use core.{Expr, ExprId, StmtId, TypeId, Reg}
+use core.{Expr, ExprId, StmtId, TypeId, Reg, Arm, PatId, NodeStore}
 use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx,
               StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing, refuses_nested}
 
@@ -14,7 +14,7 @@ impl NodeSemantics for EnumsSemantics {
     fn kids(self, e: Expr) -> List<ExprId> {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match e {
-            .Match(subject, _, _, _) -> [subject],
+            .Match(subject, _) -> [subject],
             .Is(subject, _) -> [subject],
             _ -> [],
         }
@@ -23,7 +23,7 @@ impl NodeSemantics for EnumsSemantics {
     fn heirs(self, e: Expr) -> List<ExprId> {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match e {
-            .Match(_, _, _, values) -> values,
+            .Match(_, arms) -> [a.value for a in arms],
             _ -> [],
         }
     }
@@ -31,7 +31,7 @@ impl NodeSemantics for EnumsSemantics {
     fn resolve(self, cx: ResolveCx, e: ExprId) {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
-            .Match(_, _, binds, values) -> resolve_arms(cx, binds, values),
+            .Match(_, arms) -> resolve_arms(cx, arms),
             _ -> nothing(),
         }
     }
@@ -61,8 +61,34 @@ impl StmtSemantics for EnumDeclSemantics {
     }
 }
 
-/// Each arm walks under its OWN bind — a match is a CONTROL-OWNING
-/// node, so `kids` hides the arm values and this walks them instead.
-fn resolve_arms(cx: ResolveCx, binds: List<string>, values: List<ExprId>) {
-    for (j, v) in values.enumerate() { cx.arm_scope(binds[j], v) }
+/// Each arm walks under its OWN binds — those of its first pattern,
+/// in pre-order (an `or` arm's alternatives bind nothing, which
+/// typing enforces). A match is a CONTROL-OWNING node, so `kids`
+/// hides the arm values and this walks them instead.
+fn resolve_arms(cx: ResolveCx, arms: List<Arm>) {
+    for a in arms { cx.arm_scope(arm_binds(cx.view.store, a), a.value) }
+}
+
+/// Whether every pattern is irrefutable — spelled as a scan: a
+/// method call on a captured store inside `all` mistypes the pronoun.
+export fn all_irrefutable(store: NodeStore, ids: List<PatId>) -> bool {
+    for p in ids {
+        if !store.irrefutable(p) { return false }
+    }
+    true
+}
+
+/// The first irrefutable pattern among these, when one is.
+export fn hole_of(store: NodeStore, ids: List<PatId>) -> PatId? {
+    for p in ids {
+        if store.irrefutable(p) { return p }
+    }
+    null
+}
+
+/// The names an arm binds: its first pattern's, in pre-order.
+export fn arm_binds(store: NodeStore, a: Arm) -> List<string> {
+    let first: PatId? = a.pats.first()
+    if first == null { return [] }
+    store.pattern_binds(first!)
 }

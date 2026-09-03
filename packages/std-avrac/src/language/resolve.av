@@ -132,16 +132,16 @@ fn block_body(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value
     if value != null { resolve_walk(r, param_names, value!) }
 }
 
-/// One match arm's scope: its bind (when it names one) holds for
-/// the arm's value and dies with it — the first scope in the
+/// One match arm's scope: its binds (in pattern order) hold for
+/// the arm's value and die with it — the first scope in the
 /// language opened by an EXPRESSION rather than a statement.
-fn arm_scope(r: Resolver, param_names: List<string>, bind: string, value: ExprId) {
-    under_overlay(r, () -> arm_body(r, param_names, bind, value))
+fn arm_scope(r: Resolver, param_names: List<string>, binds: List<string>, value: ExprId) {
+    under_overlay(r, () -> arm_body(r, param_names, binds, value))
 }
 
-fn arm_body(r: Resolver, param_names: List<string>, bind: string, value: ExprId) {
-    if bind != "" && !r.refused_name(bind, r.loc_of(value)) {
-        r.bind(bind, Binding.Pattern(value))
+fn arm_body(r: Resolver, param_names: List<string>, binds: List<string>, value: ExprId) {
+    for (j, b) in binds.enumerate() {
+        if !r.refused_name(b, r.loc_of(value)) { r.bind(b, Binding.Pattern(value, j)) }
     }
     resolve_walk(r, param_names, value)
 }
@@ -234,7 +234,7 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
         use_name: (e: ExprId, name: string) -> r.resolve_name(e, name, param_names),
         use_call: (e: ExprId, name: string) -> r.resolve_call(e, name, param_names),
         use_type: (e: ExprId, name: string) -> r.resolve_type_use(e, name),
-        arm_scope: (bind: string, v: ExprId) -> arm_scope(r, param_names, bind, v),
+        arm_scope: (binds: List<string>, v: ExprId) -> arm_scope(r, param_names, binds, v),
         block_scope: (stmts: List<StmtId>, value: ExprId?) -> block_scope(r, param_names, stmts, value),
         lambda_scope: (lam: ExprId, ps: List<Param>, body: ExprId) -> lambda_scope(r, param_names, lam, ps, body),
     }

@@ -3,7 +3,7 @@
 //! (`FileView`), and the pass values that are pure data with the
 //! verbs that read and write their own columns. The reads that
 //! cross values, and the contexts' forwarders, live in contexts.av.
-use core.{FileId, DeclId, StmtId, ExprId, TypeId, Type, NodeStore, TypeRegistry, Binding, Param, filled, copy_into, Reg, Ins, dst_of, rt_sig_of}
+use core.{FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, NodeStore, TypeRegistry, Binding, Param, filled, copy_into, Reg, Ins, dst_of, rt_sig_of}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
 
@@ -19,6 +19,8 @@ impl FileView {
     /// Where an expression is — THE source position, every context
     /// forwards here.
     fn loc_of(self, e: ExprId) -> Loc? { loc_at(self.source.file, self.store.expr_span(e)) }
+
+    fn pat_loc(self, p: PatId) -> Loc? { loc_at(self.source.file, self.store.pat_span(p)) }
 
     fn stmt_loc(self, s: StmtId) -> Loc? { loc_at(self.source.file, self.store.stmt_span(s)) }
 
@@ -69,7 +71,7 @@ export type TypeFacts = {
     wants: List<TypeId?>,
     hungry: List<bool>,
     starved: List<TypeId?>,
-    pattern_types: List<TypeId?>,
+    pattern_types: List<List<TypeId>>,
     binding_types: List<TypeId?>,
     voices: Voices,
 }
@@ -88,7 +90,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         wants: filled<TypeId?>(exprs, null),
         hungry: filled(exprs, false),
         starved: filled<TypeId?>(exprs, null),
-        pattern_types: filled<TypeId?>(exprs, null),
+        pattern_types: empty_lists_ty(exprs),
         binding_types: filled<TypeId?>(stmts, null),
         voices: no_voices(),
     }
@@ -189,14 +191,17 @@ impl TypeFacts {
         true
     }
 
-    fn bind_type(self, v: ExprId, ty: TypeId) {
+    /// An arm's binds, typed in pattern order.
+    fn bind_types(self, v: ExprId, tys: List<TypeId>) {
         mut ps = self.pattern_types
-        ps.set(v.index - self.lo, ty)
+        ps.set(v.index - self.lo, tys)
     }
 
-    fn pattern_type(self, v: ExprId) -> TypeId? {
-        let held: TypeId? = self.pattern_types[v.index - self.lo]
-        held
+    /// The arm's Nth bind, when the arm's owner spoke it.
+    fn pattern_type(self, v: ExprId, j: int) -> TypeId? {
+        let tys = self.pattern_types[v.index - self.lo]
+        if j >= tys.length { return null }
+        tys[j]
     }
 
     fn record_binding(self, s: StmtId, ty: TypeId) {
@@ -322,12 +327,12 @@ impl Emitter {
 /// A body's per-node registers: each expression's, each binding's
 /// slot (a cell when boxed), each pattern bind's, each pairing
 /// loop's index.
-export type BodyRegs = { regs: List<Reg?>, slots: List<Reg?>, boxed: List<bool>, pattern_regs: List<Reg?>, index_regs: List<Reg?> }
+export type BodyRegs = { regs: List<Reg?>, slots: List<Reg?>, boxed: List<bool>, pattern_regs: List<List<Reg>>, index_regs: List<Reg?> }
 
 export fn new_body_regs(exprs: int, stmts: int) -> BodyRegs {
     BodyRegs {
         regs: filled<Reg?>(exprs, null), slots: filled<Reg?>(stmts, null), boxed: filled(stmts, false),
-        pattern_regs: filled<Reg?>(exprs, null), index_regs: filled<Reg?>(stmts, null),
+        pattern_regs: empty_lists_reg(exprs), index_regs: filled<Reg?>(stmts, null),
     }
 }
 
@@ -354,13 +359,14 @@ impl BodyRegs {
         self.set_slot(s, cell)
     }
     fn is_boxed(self, s: StmtId) -> bool { self.boxed[s.index] }
-    fn pattern_reg(self, v: ExprId) -> Reg? {
-        let held: Reg? = self.pattern_regs[v.index]
-        held
+    fn pattern_reg(self, v: ExprId, j: int) -> Reg? {
+        let regs = self.pattern_regs[v.index]
+        if j >= regs.length { return null }
+        regs[j]
     }
-    fn bind_pattern(self, v: ExprId, r: Reg) {
+    fn bind_patterns(self, v: ExprId, regs: List<Reg>) {
         mut ps = self.pattern_regs
-        ps.set(v.index, r)
+        ps.set(v.index, regs)
     }
     fn index_reg(self, s: StmtId) -> Reg? {
         let held: Reg? = self.index_regs[s.index]
@@ -370,4 +376,27 @@ impl BodyRegs {
         mut is_ = self.index_regs
         is_.set(s.index, r)
     }
+}
+
+/// `n` empty type lists — spelled without the generic fill: a test
+/// shard instantiating a list-writing generic at a list-of-lists
+/// type loses its writes (CLAUDE.md).
+fn empty_lists_ty(n: int) -> List<List<TypeId>> {
+    mut out: List<List<TypeId>> = []
+    mut i = 0
+    while i < n {
+        out.push([])
+        i = i + 1
+    }
+    out
+}
+
+fn empty_lists_reg(n: int) -> List<List<Reg>> {
+    mut out: List<List<Reg>> = []
+    mut i = 0
+    while i < n {
+        out.push([])
+        i = i + 1
+    }
+    out
 }

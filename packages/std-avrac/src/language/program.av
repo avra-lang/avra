@@ -1,7 +1,7 @@
 //! One parsed program: the tree, its source, and the owner map —
 //! which feature speaks for which node. Parsing and the statement
 //! spine live here; analysis stacks on top in analysis.av.
-use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, TypeRef, flatten, DeclKind}
+use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, Variant, TypeRef, flatten, DeclKind}
 use grammar.{Captured, RunOutcome, run_grammar, lex_source, lex_diagnostic}
 use features.{LangNode, NodeSemantics, StmtSemantics, dispatch, list_at, stmt_id_at}
 use features.expr_spine.{SpineSemantics}
@@ -139,7 +139,7 @@ export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
         .Block(_, _) -> d.blocks,
         .Call(_, _) -> d.calls,
         .StructLit(_, _, _) or .With(_, _, _) -> d.structs,
-        .Match(_, _, _, _) or .Is(_, _) -> d.enums,
+        .Match(_, _) or .Is(_, _) -> d.enums,
         .NullLit or .Coalesce(_, _) or .Force(_) or .Propagate(_) or
         .MatchOpt(_, _, _, _) or .Chain(_, _) -> d.nullables,
         .Catch(_, _, _, _) -> d.catches,
@@ -374,7 +374,7 @@ export type FnParts = { name: string, tparams: List<Param>, params: List<Param>,
 export type StructParts = { name: string, tparams: List<string>, fields: List<Param> }
 
 /// What an enum declaration carries, projected once.
-export type EnumParts = { name: string, tparams: List<string>, variants: List<Param> }
+export type EnumParts = { name: string, tparams: List<string>, variants: List<Variant> }
 
 export fn parse_program(lang: Language, src: SourceFile) -> Parsed {
     if lang.grammar == null {

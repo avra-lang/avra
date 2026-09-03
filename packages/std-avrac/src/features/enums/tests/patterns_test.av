@@ -1,0 +1,80 @@
+// Patterns: nested tests, alternatives, holes, literals, named
+// payloads — and the coverage law with its lint.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+fn shapes() -> string {
+    "enum Shape {\n    Dot\n    Line(int)\n    Rect(w: int, h: int)\n}\n"
+}
+
+fn tree() -> string {
+    "enum Leaf {\n    Num(int)\n    Word(string)\n}\nenum Node {\n    Empty\n    One(Leaf)\n}\n"
+}
+
+spec "features/enums (patterns)" {
+    given "payloads with names" {
+        then "a multi-field variant constructs and binds in order" {
+            shown("${shapes()}match Shape.Rect(3, 4) {\n    .Rect(w, h) -> w * h\n    _ -> 0\n}") == "12"
+        }
+        then "a wrong count refuses at construction, naming the arity" {
+            refused_with("${shapes()}Shape.Rect(3)", "`Shape.Rect` carries 2 values, given 1")
+        }
+    }
+    given "nested patterns" {
+        then "a pattern reaches into a payload's payload" {
+            shown("${tree()}match Node.One(Leaf.Num(7)) {\n    .One(.Num(n)) -> n\n    .One(.Word(_)) -> 0\n    .Empty -> -1\n}") == "7"
+        }
+        then "the untaken nested arm's payload is never read — the chain stays sound" {
+            shown("${tree()}match Node.One(Leaf.Word(\"x\")) {\n    .One(.Num(n)) -> n\n    .One(.Word(w)) -> w.length\n    .Empty -> -1\n}") == "1"
+        }
+        then "a literal nests inside a variant" {
+            shown("${tree()}fn pick(n: Node) -> int {\n    match n {\n        .One(.Num(3)) -> 1\n        .One(.Num(_)) -> 2\n        .One(.Word(_)) -> 3\n        .Empty -> 4\n    }\n}\npick(Node.One(Leaf.Num(3))) * 100 + pick(Node.One(Leaf.Num(5))) * 10 + pick(Node.Empty)") == "124"
+        }
+        then "a nested test on the wrong enum refuses" {
+            refused_with("${tree()}match Node.One(Leaf.Num(1)) {\n    .One(.Empty) -> 1\n    _ -> 0\n}", "`Leaf` has no variant `Empty`")
+        }
+    }
+    given "alternatives and holes" {
+        then "`or` joins arms that bind nothing" {
+            shown("${shapes()}match Shape.Line(2) {\n    .Dot or .Line(_) -> 1\n    .Rect(_, _) -> 2\n}") == "1"
+        }
+        then "an `or` arm may not bind" {
+            refused_with("${shapes()}match Shape.Line(2) {\n    .Dot or .Line(n) -> 1\n    _ -> 2\n}", "an `or` arm binds nothing")
+        }
+        then "`_` covers the remainder, and the first arm wins" {
+            shown("${shapes()}match Shape.Dot {\n    .Line(_) -> 1\n    _ -> 2\n}") == "2"
+        }
+        then "a name as the whole pattern binds the subject" {
+            shown("${shapes()}fn kind(s: Shape) -> int {\n    match s {\n        .Dot -> 0\n        other -> if other is .Line { 1 } else { 2 }\n    }\n}\nkind(Shape.Rect(1, 1))") == "2"
+        }
+    }
+    given "literals" {
+        then "a string match with a catch-all" {
+            shown("fn code(s: string) -> int {\n    match s {\n        \"NAME\" -> 1\n        \"NUM\" -> 2\n        _ -> 0\n    }\n}\ncode(\"NUM\") + code(\"x\")") == "2"
+        }
+        then "an int match" {
+            shown("match 3 {\n    1 -> 10\n    3 -> 30\n    _ -> 0\n}") == "30"
+        }
+        then "a literal match needs its catch-all" {
+            refused_with("match 3 {\n    1 -> 10\n}", "needs a catch-all arm")
+        }
+        then "a literal of the wrong type refuses" {
+            refused_with("match 3 {\n    \"x\" -> 1\n    _ -> 0\n}", "a `string` never matches `int`")
+        }
+    }
+    given "the coverage law and its lint" {
+        then "a hole hiding three variants warns, and the program still runs" {
+            let a = analyze_source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    _ -> 0\n}")
+            a.diagnostics.length == 1 && a.report().contains("warning") && a.report().contains("hides 3 variants: .B, .C, .D") && a.ran() == "0"
+        }
+        then "`rest` is the deliberate remainder — no lint" {
+            refusals("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    rest -> 0\n}") == 0
+        }
+        then "a hole after nested arms that already cover a variant does not count it" {
+            refusals("${tree()}match Node.One(Leaf.Num(1)) {\n    .One(.Num(_)) -> 1\n    .One(.Word(_)) -> 2\n    _ -> 3\n}") == 0
+        }
+        then "a hole hiding two is quiet" {
+            refusals("${shapes()}match Shape.Dot {\n    .Dot -> 1\n    _ -> 0\n}") == 0
+        }
+    }
+}

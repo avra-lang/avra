@@ -3,7 +3,7 @@
 //! annotations, and the laws of the types annotations WRITE — a
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
-use core.{StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId}
+use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId}
 use diagnostics.{refusal}
 use features.{FnSig, StructSig, EnumSig, DeclSig, record_sig_of, variant_sig_of, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, FnParts, type_named, nothing, StructParts, EnumParts}
 use @std.errors.{Loc}
@@ -28,21 +28,30 @@ impl Typer {
     }
 
     /// An enum's variant table — the index IS the runtime tag, and
-    /// a payload rides slot 1 of the value.
-    fn declare_enum_sig(self, s: StmtId, variants: List<Param>) {
+    /// the payloads ride slots 1.. of the value, in order.
+    fn declare_enum_sig(self, s: StmtId, variants: List<Variant>) {
         let sig = EnumSig {
             names: [v.name for v in variants],
-            payloads: [self.carried_type(s, v) for v in variants],
+            payloads: [self.payload_types(s, v) for v in variants],
         }
         self.declare(s, DeclSig.Variants(sig))
     }
 
-    /// What a variant carries — an ABSENT annotation IS a unit
-    /// variant, and carries nothing.
-    fn carried_type(self, s: StmtId, v: Param) -> TypeId? {
-        if v.ty == null { return null }
+    /// What a variant carries, in order — each payload judged by the
+    /// slot law; a payload the law refuses lands as the Error type.
+    fn payload_types(self, s: StmtId, v: Variant) -> List<TypeId> {
+        mut out: List<TypeId> = []
+        // LICENSED I3: an accumulator over a nullable answer
+        for p in v.payloads { out.push(self.carried_type(s, p) ?? self.error_type) }
+        out
+    }
+
+    /// One payload's type under the slot law — absent when it was
+    /// written without one.
+    fn carried_type(self, s: StmtId, p: Param) -> TypeId? {
+        if p.ty == null { return null }
         self.slot_law(s, "type.enum_payload", "an enum payload cannot hold this yet",
-                         "`${v.name}` carries a `${spelled(v.ty!)}`", v.ty!)
+                         "`${p.name}` carries a `${spelled(p.ty!)}`", p.ty!)
     }
 
     /// One declaration's table lands in the ONE dense record.
@@ -330,11 +339,7 @@ impl Typer {
         if rs != null { return rs!.types }
         let vs: EnumSig? = variant_sig_of(self.view.decls.sig(decl))
         if vs == null { return [] }
-        mut out: List<TypeId> = []
-        for pt in vs!.payloads {
-            if pt != null { out.push(pt!) }
-        }
-        out
+        flatten(vs!.payloads)
     }
 
     /// What a written NAME stands for: the enclosing fn's type
