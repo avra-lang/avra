@@ -40,6 +40,24 @@ spec "features/results" {
         then "the bare failure side" {
             shown("${by_dot()}match half(7) {\n    .Ok(v) -> \"$" + "{v}\"\n    .Err(e) -> e\n}") == "odd"
         }
+        then "the want feeds a call argument, a nested literal, and a list element" {
+            shown("fn take(r: Result<int, string>) -> int { match r {\n    .Ok(v) -> v\n    .Err(_) -> 0\n} }\nfn deep() -> Result<Result<int, string>, string> { .Ok(.Ok(1)) }\nlet rs: List<Result<int, string>> = [.Ok(2), .Err(\"x\")]\ntake(.Ok(5)) + take(rs[0]) + match deep() {\n    .Ok(r) -> take(r)\n    .Err(_) -> 0\n}") == "8"
+        }
+        then "the want feeds through an if's arms" {
+            shown("fn take(r: Result<int, string>) -> int { match r {\n    .Ok(v) -> v\n    .Err(_) -> 0\n} }\nfn f(b: bool) -> int { take(if b { .Ok(3) } else { .Err(\"x\") }) }\nf(true) + f(false)") == "3"
+        }
+        then "the guard rule: an Ok inside an Ok that is not a Result refuses" {
+            refused_with("fn f() -> Result<int, string> { .Ok(.Ok(1)) }\n2", "`.Ok` builds a variant, and `int` has none")
+        }
+        then "a want that is another generic pins nothing" {
+            refused_with("let m: Map<string, int> = Result.Ok(1)\n2", "`T2` is not pinned by the payload")
+        }
+        then "an annotated binding feeds the bare form" {
+            shown("let r: Result<int, string> = .Ok(4)\nmatch r {\n    .Ok(v) -> v\n    .Err(_) -> 0\n}") == "4"
+        }
+        then "a program's own enum named like the language's is refused, never a crash" {
+            refused_with("enum Result<T> {\n    Ok(v: T)\n}\n2", "is a built-in type")
+        }
         then "a bare variant with no expected type refuses" {
             refused_with("let r = .Ok(1)\n2", "`.Ok` needs a known enum — nothing here says which")
         }
@@ -47,7 +65,7 @@ spec "features/results" {
             refused_with("fn f() -> Result<int, string> { .Nope(1) }\n2", "`Result<int, string>` has no variant `Nope`")
         }
         then "a bare variant's payload count is the variant's" {
-            refused_with("fn f() -> Result<int, string> { .Ok(1, 2) }\n2", "`.Ok` carries 1, given 2")
+            refused_with("fn f() -> Result<int, string> { .Ok(1, 2) }\n2", "`.Ok` takes 1 arguments, found 2")
         }
     }
     given "the produce side — `fail` and the auto-Ok wrap" {

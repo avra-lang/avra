@@ -381,6 +381,9 @@ against these before writing; probe in scratch when unsure.
   fns) — restructure to `if k == null { } else { k! }`.
 - Matching `null`/`let x ->` directly on a nullable fn call's result
   can mistype — bind to an annotated `let v: T? =` first.
+- A comprehension cannot pair an index with the element (`[f(j, x)
+  for j, x in xs]` is OUR rung 14 sugar, not bs2's): spell the loop
+  with `enumerate()`, LICENSED I3 at the site.
 - A pattern's payload ARITY is NOT checked: `.A(_, _)` compiles
   against a three-payload variant and binds the wrong things,
   silently. Growing a node's payload therefore breaks NO site at

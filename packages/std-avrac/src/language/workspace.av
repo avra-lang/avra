@@ -160,8 +160,8 @@ export fn timed_workspace(host: Host, root: string, lang: Language, clock: fn() 
 
 /// The declaration table with the language's own declarations in it.
 fn language_decls(lang: Language) -> Decls {
-    let decls = new_decls()
-    decls.admit_builtins(lang.rows.types)
+    let decls = new_decls() with { rows: lang.rows.types }
+    decls.admit_builtins()
     decls
 }
 
@@ -349,12 +349,13 @@ export fn resolved(ws: Workspace, f: FileId) -> NameFacts {
 /// simply not there yet.
 export fn sig(ws: Workspace, d: DeclId) -> DeclSig? {
     let k = key(Family.Sig, d.index)
-    if !(ws.db.ask(k) is .Compute) {
+    let x = ws.decls.decl(d)
+    // the language's own declarations were signed at admission
+    if !(ws.db.ask(k) is .Compute) || x.kind is .Builtin {
         let held: DeclSig? = ws.decls.sigs[d.index]
         return held
     }
     ws.db.begin(k)
-    let x = ws.decls.decl(d)
     let t = typer_for(ws, x)
     declare_one(t, x)
     placed(ws.sig_voices, d.index, t.facts.voices)

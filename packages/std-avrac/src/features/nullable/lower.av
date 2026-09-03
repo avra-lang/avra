@@ -5,14 +5,14 @@
 //! side, the absent arm, and the chain's absence all run only when
 //! the value is not there.
 use core.{ExprId, StmtId, TypeId, Reg, Ins, Type}
-use features.{LowerCx, StmtLowerCx, StructSig, foreign_node, presence_of, carried_of, carried_type, adopted, absent_of, insisted, hollow_of, okness_of, payload_of, lower_defect, slot_read, length_word}
+use features.{LowerCx, StmtLowerCx, StructSig, foreign_node, presence_of, carried_of, carried_type, adopted, absent_of, insisted, hollow_of, okness_of, payload_of, lower_defect, slot_read, length_word, presence_region}
 
 fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .NullLit -> null_reg(cx, e),
         .Coalesce(l, r) -> coalesce_reg(cx, e, l, r),
-        .Force(v) -> insisted(cx, e, cx.reg_of(v), cx.type_at(v)),
+        .Force(v) -> forced_reg(cx, e, v),
         .Propagate(v) -> propagate_reg(cx, e, v),
         .MatchOpt(s, _, p, a) -> match_opt_reg(cx, e, s, p, a),
         .Chain(s, name) -> chain_reg(cx, e, s, name),
@@ -29,28 +29,25 @@ fn null_reg(cx: LowerCx, e: ExprId) -> Reg {
     dst
 }
 
-/// ONE region on PRESENCE — the shape every consumer of absence
-/// opens: the present arm's value, then the absent arm's, merged
-/// into the node's register. Thunks keep each arm's instructions
-/// INSIDE its brackets, which is what makes the absent side lazy.
-fn presence_region(cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
-                   present: fn() -> Reg, absent: fn() -> Reg) -> Reg {
-    cx.emit(Ins.IfStart(presence_of(cx, v, held)))
-    cx.emit(Ins.ArmEnd(present()))
-    let answer = absent()
-    let dst = cx.result(e)
-    cx.emit(Ins.RegionEnd(dst, answer))
-    dst
-}
-
 /// `l ?? r` — the present arm unwraps what `l` carries; the absent
 /// arm answers with `r`, evaluated only then.
 fn coalesce_reg(cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
     let v = cx.reg_of(l)
     let held = cx.type_at(l)
+    // a left side that is never absent IS the answer — typing said so
+    if cx.view.types.carried(held) == null { return v }
+    // a nullable answer (the chain's middle) keeps the value whole
+    let whole = cx.view.types.carried(cx.type_at(e)) != null
     presence_region(cx, e, v, held,
-        () -> carried_of(cx, v, held),
+        () -> if whole { v } else { carried_of(cx, v, held) },
         () -> cx.reg_of(r))
+}
+
+/// `v!` — the carried value, insisted on; a read a narrowing made
+/// present is that value already.
+fn forced_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
+    if cx.view.types.carried(cx.type_at(v)) == null { return cx.reg_of(v) }
+    insisted(cx, e, cx.reg_of(v), cx.type_at(v))
 }
 
 /// `match v { b? -> p, null -> a }` — the bind receives what the
@@ -136,30 +133,38 @@ fn chain_reg(cx: LowerCx, e: ExprId, subject: ExprId, name: string) -> Reg {
 }
 
 /// The present arm: read the member of what the subject carries,
-/// then lift it into the chain's answer.
+/// lifted into the chain's answer — unless the member is that
+/// nullable already (the flatten rule), when it IS the answer.
 fn lifted_member(cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
                  name: string, answer: TypeId) -> Reg {
-    let member = member_reg(cx, e, carried_of(cx, v, held), carried_type(cx, held),
-                            name, carried_type(cx, answer))
-    adopted(cx, answer, false, member)
+    member_reg(cx, e, carried_of(cx, v, held), carried_type(cx, held), name, answer)
 }
 
 /// The member read on the carried value: a field's slot, or the
-/// length word for the measurable shapes. `want` is what the CHAIN
-/// expects the member to wear — the sig is the truth, and a
-/// disagreement means the flatten rule changed without this
-/// lowering learning it, which must break loudly, not lift twice.
+/// length word for the measurable shapes, each lifted into
+/// `answer`. A field already wearing the answer's nullable reads
+/// straight; one wearing what it carries is adopted; anything else
+/// means the flatten rule changed without this lowering learning
+/// it, which must break loudly, not lift twice.
 fn member_reg(cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
-              name: string, want: TypeId) -> Reg {
+              name: string, answer: TypeId) -> Reg {
     let sig: StructSig? = cx.fields_of(held)
-    if sig == null { return length_reg(cx, e, carried, held) }
-    let slot: int? = sig!.slot_of(name)
+    if sig == null { return adopted(cx, answer, false, length_reg(cx, e, carried, held)) }
+    let fields = sig!
+    let slot: int? = fields.slot_of(name)
     if slot == null { return lower_defect(cx, e, "a memberless chain survived typing") }
-    // LICENSED I9: type identity — interned ids ARE the agreement
-    if sig!.types[slot!].index != want.index {
+    let at = slot!
+    let own = fields.types[at]
+    if !types_differ(own, answer) { return slot_read(cx, carried, at, own) }
+    if types_differ(own, carried_type(cx, answer)) {
         return lower_defect(cx, e, "a chain's member wears a type its lift does not expect")
     }
-    slot_read(cx, carried, slot!, want)
+    adopted(cx, answer, false, slot_read(cx, carried, at, own))
+}
+
+fn types_differ(a: TypeId, b: TypeId) -> bool {
+    // LICENSED I9: type identity — interned ids ARE the agreement
+    a.index != b.index
 }
 
 /// `length` on the carried value — the word the one measure table

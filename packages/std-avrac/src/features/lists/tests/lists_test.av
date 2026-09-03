@@ -159,6 +159,17 @@ spec "features/lists" {
             shown("mut g = [[1], [2]]\ng[1].push(3)\n\"" + "$" + "{g[1].length}" + " " + "$" + "{g[0].length}" + "\"") == "2 1"
         }
     }
+    given "the empty literal, adopted" {
+        then "`[]` beside its siblings takes their type" {
+            shown("let xs = [[1], [], [2]]\n\"" + "$" + "{xs.length} " + "$" + "{xs[1].length}\"") == "3 0"
+        }
+        then "`[]` fits a variant's list payload" {
+            shown("enum W {\n    Many(xs: List<int>)\n}\nmatch W.Many([]) {\n    .Many(xs) -> xs.length\n}") == "0"
+        }
+        then "an if joins a list with `[]`" {
+            shown("fn f(b: bool) -> List<int> { if b { [7] } else { [] } }\n\"" + "$" + "{f(true).length} " + "$" + "{f(false).length}\"") == "1 0"
+        }
+    }
     given "the vocabulary" {
         then "contains and index_of scan by value — strings by text, scalars by value" {
             shown("let xs = [\"a\", \"b\"]\nlet ns = [4, 5, 6]\n\"" + "$" + "{xs.contains(\"b\")} " + "$" + "{xs.index_of(\"b\")} " + "$" + "{ns.contains(7)} " + "$" + "{ns.index_of(7)}\"") == "true 1 false -1"
@@ -200,6 +211,9 @@ spec "features/lists" {
         }
         then "enumerate stands only under a paired head" {
             refused_with("let xs = [1]\nlet ys = xs.enumerate()\n2", "`enumerate` pairs only under a paired `for` head")
+        }
+        then "pop answers the LAST element" {
+            shown("mut ss = [\"p\", \"q\", \"r\"]\nss.pop()") == "r"
         }
         then "pop on an empty list is the trap" {
             refused_at_run("mut xs: List<int> = []\nxs.pop()", "pop on an empty list")

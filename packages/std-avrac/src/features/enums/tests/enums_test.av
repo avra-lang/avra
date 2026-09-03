@@ -25,6 +25,12 @@ spec "features/enums" {
         then "a payload rides the literal" {
             shown("${pair()}fn mk(n: int) -> E { .a(n) }\nmatch mk(7) {\n    .a(v) -> v\n    .b -> 0\n}") == "7"
         }
+        then "a list of unit variants scans by variant" {
+            shown("${colors()}let cs = [C.red, C.blue]\n\"" + "$" + "{cs.contains(C.blue)} " + "$" + "{cs.index_of(C.green)}\"") == "true -1"
+        }
+        then "a generic unit variant reads the want" {
+            shown("enum Maybe<T> {\n    some(v: T)\n    none\n}\nlet m: Maybe<int> = Maybe.none\nmatch m {\n    .some(v) -> v\n    .none -> 0\n}") == "0"
+        }
         then "a non-enum expectation refuses" {
             refused_with("fn f() -> int { .red }\n2", "`.red` builds a variant, and `int` has none")
         }
@@ -194,9 +200,9 @@ spec "features/enums" {
         then "recursion rides the box — a generic tree" {
             shown("enum Tree<T> {\n    leaf(T)\n    wrap(Tree<T>)\n}\nfn depth<T>(t: Tree<T>) -> int {\n    match t {\n        .leaf(v) -> 0\n        .wrap(inner) -> 1 + depth(inner)\n    }\n}\ndepth(Tree.wrap(Tree.leaf(false)))") == "1"
         }
-        then "a bare unit variant cannot pin — the pinned surface is recorded" {
+        then "a bare unit variant with no want cannot pin — nothing carries the type" {
             refused_with("enum Opt2<T> {\n    some(T)\n    nope\n}\nmatch Opt2.nope {\n    .some(x) -> x\n    .nope -> 0\n}",
-                         "`Opt2.nope` cannot pin `Opt2`'s type — nothing carries it")
+                         "`Opt2.nope` cannot pin `T` — nothing carries it")
         }
         then "a type parameter cannot take the language's names — types too" {
             refused_with("enum Bad<int> {\n    a(int)\n}\n1",

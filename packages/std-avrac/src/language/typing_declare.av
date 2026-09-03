@@ -81,15 +81,6 @@ impl Typer {
         self.view.decls.declare(x.id, DeclSig.Fn(FnSig { params: [], ret: ret }))
     }
 
-    /// A builtin's variants, from its row over its own Vars.
-    fn declare_builtin(self, x: Decl) {
-        let row: TypeRow? = self.view.decls.row_of(x.id)
-        if row == null { return }
-        let vars = TypeArgs { parts: builtin_vars(self.view.types, x.id, self.view.decls.tparams(x.id)) }
-        let sig: EnumSig? = row!.variants(vars)
-        if sig != null { self.view.decls.declare(x.id, DeclSig.Variants(sig!)) }
-    }
-
     /// A test case's signature: no parameters, a bool answer.
     fn declare_case(self, x: Decl) {
         self.view.decls.declare(x.id, DeclSig.Fn(FnSig { params: [], ret: self.view.decls.types.intern(Type.Bool) }))
@@ -103,22 +94,19 @@ impl Typer {
                          "field `${f.name}` is `${spelled(f.ty!)}`", f.ty!)
     }
 
-    /// THE declared-slot law: a slot inside an aggregate holds a
-    /// value the memory pass need not track — a WORD it may copy
-    /// freely. Scalars and the unmanaged pointer shapes qualify
-    /// (nothing releases an aggregate today); a MANAGED value (a
-    /// string) waits for ownership analysis, and a scalar nullable
-    /// is a register PAIR, not a word — nullable slots are their
-    /// own recorded want. A record's field and an enum's payload
-    /// are one law. An UNKNOWN name is not this law's business:
+    /// THE declared-slot law: a slot inside an aggregate holds ONE
+    /// WORD — a scalar, a pointer, or a nullable pointer (its own
+    /// nullable: the null pointer is absence); a scalar nullable is
+    /// a register PAIR, not a word, and waits. A record's field and
+    /// an enum's payload are one law. An UNKNOWN name is not this law's business:
     /// the NAME law speaks first, and a second refusal for one
     /// mistake is a cascade.
     fn slot_law(self, s: StmtId, kind: string, message: string,
                 label: string, ty: TypeRef) -> TypeId {
-        let named = self.written_type(self.stmt_loc(s), ty)
+        let named = self.full_type(self.stmt_loc(s), ty)
         let sh: Type = self.view.types.shape_of(named)
         if sh is .Error { return named }
-        if !ty.optional && slot_worthy(sh) { return named }
+        if slot_worthy(self.view.types, sh) { return named }
         self.speak(refusal(kind, self.stmt_loc(s), message, label, slots_await_ownership()))
         self.error_type
     }
@@ -297,7 +285,7 @@ impl Typer {
             // A constructor's SLOTS are judged by the slot law like
             // any payload. A Var passes here and every INSTANTIATION
             // re-judges.
-            if slots && !slot_worthy(self.view.types.shape_of(ty)) { return self.unslottable_slot(at, t.name, ty) }
+            if slots && !slot_worthy(self.view.types, self.view.types.shape_of(ty)) { return self.unslottable_slot(at, t.name, ty) }
             parts.push(ty)
         }
         if row == null { return self.applied_decl(at, t.name, parts) }
@@ -338,7 +326,7 @@ impl Typer {
     fn refused_app(self, at: Loc?, name: string, decl: DeclId, parts: List<TypeId>) -> bool {
         for ty in self.declared_slots(decl) {
             let landed = self.view.types.substituted(ty, decl, parts)
-            if !slot_worthy(self.view.types.shape_of(landed)) {
+            if !slot_worthy(self.view.types, self.view.types.shape_of(landed)) {
                 self.speak(refusal("type.applied", at, "`${name}<...>` makes a slot `${self.view.types.name_of(landed)}`, which a slot cannot hold yet", "applied here", slots_await_ownership()))
                 return true
             }
@@ -395,15 +383,7 @@ export fn declare_one(t: Typer, x: Decl) {
         .Default -> t.declare_default(x),
         .Impl -> t.declare_impl_block(x.stmt),
         .Case -> t.declare_case(x),
-        .Builtin -> t.declare_builtin(x),
-        .Trait or .Main -> nothing(),
+        // a builtin was signed at admission, from its row
+        .Trait or .Main or .Builtin -> nothing(),
     }
-}
-
-/// A builtin's type parameters as Vars — the ordinal is the identity.
-fn builtin_vars(types: TypeRegistry, d: DeclId, names: List<string>) -> List<TypeId> {
-    mut out: List<TypeId> = []
-    // LICENSED I3: the ordinal needs the index; comprehensions cannot destructure enumerate
-    for (j, n) in names.enumerate() { out.push(types.intern(Type.Var(d, j, n))) }
-    out
 }

@@ -3491,6 +3491,54 @@ END, `{ x }` parses as a statement list whose tail answers, so the
 keyword lexes as a NAME, so `-> { return x }` read `return` as an
 identifier and the @expect'd `}` hole-hit. One form, one law.
 
+PARITY RUNG 10 LANDED (2026-09-03) — SLOTS: a nullable POINTER is
+its own word. THE SLOT LAW sees through a nullable to what it
+carries (`slot_worthy(types, sh)`: `Opt(inner)` qualifies when
+`inner` rides a pointer — the field, the enum payload, the list
+element, the map value and the Result side all read one law; a
+scalar nullable is still a register pair and still waits): the
+slot holds the pointer, absence the null one, and every read
+through `?.`, `??`, `!` and `match` is the niche verbs unchanged;
+the memory pass retains and releases through NULL for free. The
+chain FLATTENS: `a?.b` where `b` is itself nullable IS the chain's
+answer (one absence, never two — the lowering reads a field
+already wearing the answer straight, adopts one wearing the
+carried type, and defects on anything else). THE EMPTIES: `[]`
+unifies into a `List<T>` seat and `{}` into a `Map` seat without
+pinning (a variant payload, a generic call), `join_of` adopts an
+empty beside a list (`if b { [7] } else { [] }`), and a list
+literal's leading NON-EMPTY element names the type so `[[1], [],
+[2]]` types. A `null` unifies into a concrete nullable seat and a
+PRESENT value widens into one. THE NARROWING IS INVISIBLE: `v!`
+and `v ?? x` on a read a narrowing proved present are the value
+itself, silently (the compiler's own `if x != null { … x! … }`
+idiom, everywhere); `??` on a value that was never nullable warns
+(`type.coalesce_never` F2044: "never fires") and answers it; a
+chain `a ?? b ?? c` stays nullable until the last. EQUALITY
+THROUGH PRESENCE: `T? == T` and `T? == T?` (`!=` too) compare the
+carried values when both are present, absent equals only absence
+— the lowering nests `presence_region` (now the shared verb in
+values.av). `with` on its own line continues the literal. THE
+RUNG 9 REVIEW, folded in: a builtin's row is found BY KIND (a
+program's enum named like a row reached the row — a crash);
+`pinned_by_want` pins only when the want IS this declaration's
+(`wants_decl`: the row rebuilt over the want's args, or an App of
+the decl) and looks through a nullable want; a builtin's signature
+is declared AT ADMISSION from its row (no typer, no file-0
+ritual); a generic unit variant (`Maybe.none`) reads the want;
+HUNGER BUBBLES — a node whose kid or HEIR is hungry is hungry, and
+the feed re-runs every hungry node beneath (kids and the arms a
+control node hides), so `take(if b { .Ok(3) } else { .Err("x") })`
+and `[[(x) -> x + 1]]` under a typed let both type; the seat law
+is ONE fn (`seats_fit`) under `seats_judged`, `seated` and the
+literal; the pop-flip was an UNVERIFIED expectation (the homes
+slice's gate stopped at idioms and never ran the corpus), now
+pinned. CENSUS: 69 -> 27 files — what remains is generic impls
+(`Arena<N>`, 10 files), `break`/`continue`, `extern fn`, and a
+handful of singles. Suite 1527, corpus/slots proves the niche in a
+field, a payload and a list, and equality through presence,
+native.
+
 PARITY RUNG 9 LANDED (2026-09-03) — THE VALUE WORDS: `Result`
 construction, `+` on text, `==` on unit enums, and the HUNGER
 PROTOCOL generalized. THE EPIC (2026_06_08_ERROR_HANDLING_EPIC,
