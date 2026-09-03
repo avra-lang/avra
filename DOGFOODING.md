@@ -1067,6 +1067,20 @@ then the body walk indexed an empty param list. One mistake, one
 message, no crash downstream — `declare_wreckage(f)` in typing is
 the one verb; `refused_impl` calls it for every method.
 
+## A bodied declaration: the driver brackets, the feature judges
+
+A declaration with a body that must answer a type — a fn, a field
+default, a test case — is typed in TWO halves that never trade
+places: the DRIVER brackets the walk (the declared answer in scope
+for exactly the walk, `answering(t, want, walk)` — one bracket for
+every kind, so `return` judges where it stands) and the FEATURE
+judges the answer (`fits_default`, `fits_case`: one `accepts`, one
+voice, in the feature's own check.av). The smell that names this
+idiom: a `// ── voices ──` section opening in a pass driver — the
+voice belongs to the feature whose code registers it. UNRATCHETED:
+the shape is a placement, not a greppable token; the review round
+reads for it.
+
 ## Proven but awaiting their first honest use
 
 - **Pipe `|>`** — first real pipeline, not two-arg call rewrites.

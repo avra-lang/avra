@@ -1,6 +1,6 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
-use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, want, Param, Pat, PatId, Arm}
+use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, want, Param, Pat, PatId, Arm, Case}
 use grammar.{Captured, Token}
 
 /// One build call's world: the store, the captured arguments in
@@ -184,6 +184,25 @@ export fn arms_at(args: List<Captured<LangNode>>, i: int) -> List<Arm> {
         if held != null { out.push(held!) }
     }
     out
+}
+
+/// The repeated case capture at `args[i]`, flattened — a `given`
+/// group's cases and a lone `then`'s alike.
+export fn cases_at(args: List<Captured<LangNode>>, i: int) -> List<Case> {
+    let items = list_at(args, i)
+    mut out: List<Case> = []
+    // LICENSED I3: index-taking extractors: a bare Captured arg misreads
+    for j in 0..items.length {
+        out = out.concat(cases_of(items, j))
+    }
+    out
+}
+
+fn cases_of(args: List<Captured<LangNode>>, i: int) -> List<Case> {
+    match args[i] {
+        .Node(.NCases(cs)) -> cs,
+        _ -> [],
+    }
 }
 
 fn arm_at(args: List<Captured<LangNode>>, i: int) -> Arm? {

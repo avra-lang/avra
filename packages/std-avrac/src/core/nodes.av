@@ -93,6 +93,8 @@ export enum DeclKind {
     Default
     Impl
     Main
+    /// One `then` of a spec — a bodied declaration answering a bool.
+    Case
 }
 
 /// A MODULE's identity — a directory under the root, interned.
@@ -312,6 +314,10 @@ export type Arm = { pats: List<PatId>, value: ExprId }
 /// a single positional payload, or named fields.
 export type Variant = { name: string, payloads: List<Param> }
 
+/// One test case: its `given` group's name, its own name (the
+/// `then`'s), and its body — a block answering a bool.
+export type Case = { group: string, name: string, body: ExprId }
+
 /// One step of a PLACE — where a mutation lands.
 export enum PlaceStep {
     Root(name: string)
@@ -388,6 +394,9 @@ export enum Stmt {
     /// sharing the TYPE namespace with records. A variant is a
     /// Param: an ABSENT `ty` IS a unit variant.
     EnumDecl(name: string, tparams: List<string>, variants: List<Variant>)
+    /// `spec "name" { given "…" { then "…" { … } } }` — a test
+    /// suite; each case is a declaration of its own.
+    Spec(name: string, cases: List<Case>)
     Error
 }
 
@@ -431,7 +440,7 @@ impl NodeStore {
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or
             .LetElse(_, _, _) or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or
-            .TraitDecl(_, _) or .Error -> null,
+            .TraitDecl(_, _) or .Spec(_, _) or .Error -> null,
         }
     }
 
@@ -793,7 +802,15 @@ impl NodeStore {
             .EnumDecl(name, tparams, variants) ->
                 fp(27, flatten([[fp_str(name)], [fp_str(t) for t in tparams],
                                 variant_fps(variants)])),
+            .Spec(name, cases) -> fp(56, [fp_str(name)].concat(self.case_fps(cases))),
         }
+    }
+}
+
+impl NodeStore {
+    /// A case list's fingerprint parts: each group, name and body.
+    fn case_fps(self, cases: List<Case>) -> List<int> {
+        flatten([[fp_str(c.group), fp_str(c.name), self.expr_fingerprint(c.body)] for c in cases])
     }
 }
 

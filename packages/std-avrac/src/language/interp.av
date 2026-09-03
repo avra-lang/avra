@@ -40,19 +40,61 @@ type Machine = {
     failures: List<string>,
 }
 
+/// A machine at rest over a program: no frames, no heap, nothing said.
+fn fresh_machine(l: Lowered) -> Machine {
+    Machine { l: l, frames: [], arrays: [], maps: [], cells: [], out: [], failures: [] }
+}
+
 /// Run a lowered program: its printed output, or the refusal.
 export fn run_lowered(l: Lowered) -> Result<string, string> {
-    let m = Machine { l: l, frames: [], arrays: [], maps: [], cells: [], out: [], failures: [] }
+    let m = fresh_machine(l)
     let _ = run_body(m, l.entry, [])
     if !m.failures.is_empty() { return Result.Err(m.failures.first()!) }
     if m.out.is_empty() { return Result.Err("the program is empty") }
     Result.Ok(joined(m.out, "\n"))
 }
 
+/// One fn run by its symbol under no arguments, its bool answer —
+/// how a test case runs. A failure inside answers as the refusal.
+export fn run_symbol(l: Lowered, symbol: string) -> Result<bool, string> {
+    let m = fresh_machine(l)
+    let target: Body? = body_named(l, symbol)
+    if target == null { return Result.Err("no body named `${symbol}`") }
+    let answer: Val? = run_body(m, target!, [])
+    if !m.failures.is_empty() { return Result.Err(m.failures.first()!) }
+    if answer == null { return Result.Err("`${symbol}` answered nothing") }
+    truth_of(symbol, answer!)
+}
+
+fn body_named(l: Lowered, name: string) -> Body? {
+    l.fns.find(it.name == name)
+}
+
+fn truth_of(symbol: string, v: Val) -> Result<bool, string> {
+    match v {
+        .B(b) -> Result.Ok(b),
+        _ -> Result.Err("`${symbol}` answered no bool"),
+    }
+}
+
+/// The deepest call the machine runs before it refuses: the machine
+/// recurses on the host's stack, and a runaway recursion must answer
+/// as a trap naming its case, never as a crash of the run. The bound
+/// is what a test worker's thread stack holds with margin (its
+/// ceiling measured between 600 and 700 nested calls); a machine
+/// with a frame stack of its own lifts it.
+fn call_limit() -> int {
+    400
+}
+
 /// One body under its argument values; params ARE registers 0..N-1.
 /// The answer is RetVal's register, when one fires.
 fn run_body(m: Machine, b: Body, args: List<Val>) -> Val? {
     mut frames = m.frames
+    if frames.length >= call_limit() {
+        trapped(m, "recursion too deep — ${call_limit()} nested calls")
+        return null
+    }
     frames.push(filled<Val?>(b.reg_types.length, null))
     for (j, a) in args.enumerate() { put(m, Reg { index: j }, a) }
     // LICENSED I4: the run loop's answer, not a scan
@@ -377,7 +419,7 @@ fn non_address(m: Machine) -> Val {
 }
 
 fn call_val(m: Machine, callee: string, args: List<Reg>) -> Val {
-    let target: Body? = m.l.fns.find(it.name == callee)
+    let target: Body? = body_named(m.l, callee)
     if target == null { return defect_val(m, "a call without a body survived lowering") }
     run_call(m, target!, args)
 }

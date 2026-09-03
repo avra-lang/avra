@@ -3,7 +3,7 @@
 //! every variant whole, or a catch-all — and its arms agree on one
 //! type. Coverage is the point: adding a variant breaks every match
 //! that spelled them, and a hole that hides several is warned.
-use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, joined}
+use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, joined, filled}
 use features.{TypeCx, StmtTypeCx, EnumSig, spoken, this_is, nothing, duplicate_names,
               arms_agree, variants_are, types_disagree}
 use features.enums.{all_irrefutable, hole_of}
@@ -236,20 +236,17 @@ fn variant_args(cx: TypeCx, p: PatId, name: string, arity: int) -> List<PatId?>?
     }
 }
 
-/// The written payload patterns, or holes for a bare `.V`.
+/// The written payload patterns, ONE PER PAYLOAD: a bare `.V` reads
+/// none, and a miscounted pattern (the arm law refused it) is padded
+/// with holes or cut — a row always has one pattern per column.
 fn padded(args: List<PatId>, arity: int) -> List<PatId?> {
-    if args.is_empty() { return blanks(arity) }
-    [held(a) for a in args]
+    let read = if args.length < arity { args.length } else { arity }
+    [held(a) for a in args.slice(0, read)].concat(blanks(arity - read))
 }
 
 fn blanks(n: int) -> List<PatId?> {
-    mut out: List<PatId?> = []
-    mut i = 0
-    while i < n {
-        out.push(null)
-        i = i + 1
-    }
-    out
+    let holes: List<PatId?> = filled<PatId?>(n, null)
+    holes
 }
 
 fn hole_first(cx: TypeCx, r: Row) -> bool {

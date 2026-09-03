@@ -1,0 +1,52 @@
+// The report: a header where a suite or a given begins, one line per
+// case, a failure's note and place under it, and the summary line a
+// gate reads.
+use @std.testing.{CaseRef, Verdict, Outcome, render, summary, all_passed, passed_count, words}
+
+fn ref_of(suite: string, group: string, name: string) -> CaseRef {
+    CaseRef { suite: suite, group: group, name: name, file: "t.av", line: 7 }
+}
+
+fn ok(suite: string, group: string, name: string) -> Outcome {
+    Outcome { at: ref_of(suite, group, name), verdict: Verdict.Passed }
+}
+
+fn bad(suite: string, group: string, name: string, note: string) -> Outcome {
+    Outcome { at: ref_of(suite, group, name), verdict: Verdict.Failed(note) }
+}
+
+spec "std/testing" {
+    given "the report" {
+        then "headers open where the suite and the given begin; a failure carries its note and place" {
+            render([ok("s", "g", "a"), bad("s", "g", "b", "boom"), ok("s", "h", "c")]) ==
+                "s\n  given g\n    ✓ a\n    ✗ b\n        boom\n        at t.av:7\n  given h\n    ✓ c\n2/3 tests passed (1 failed)"
+        }
+        then "a second suite reopens its given even under the same group name" {
+            render([ok("s", "g", "a"), ok("t", "g", "b")]) == "s\n  given g\n    ✓ a\nt\n  given g\n    ✓ b\n2/2 tests passed"
+        }
+        then "the same group name twice in a row is one header" {
+            render([ok("s", "g", "a"), ok("s", "g", "b")]) == "s\n  given g\n    ✓ a\n    ✓ b\n2/2 tests passed"
+        }
+        then "a case with no given has no given line" {
+            render([ok("s", "", "a"), ok("s", "g", "b")]) == "s\n    ✓ a\n  given g\n    ✓ b\n2/2 tests passed"
+        }
+        then "no outcomes is the summary alone" {
+            render([]) == "0/0 tests passed"
+        }
+        then "a case's words are its names and its place" {
+            words(ref_of("s", "g", "a")) == "s / g / a @ t.av:7"
+        }
+    }
+    given "the summary" {
+        then "all passed says so without a failure count" {
+            summary([ok("s", "g", "a"), ok("s", "g", "b")]) == "2/2 tests passed"
+        }
+        then "a failure is counted" {
+            summary([ok("s", "g", "a"), bad("s", "g", "b", "no")]) == "1/2 tests passed (1 failed)"
+        }
+        then "the verdict projections agree with it" {
+            let os = [ok("s", "g", "a"), bad("s", "g", "b", "no")]
+            !all_passed(os) && passed_count(os) == 1 && all_passed([ok("s", "g", "a")])
+        }
+    }
+}

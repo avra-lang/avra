@@ -1,0 +1,50 @@
+//! `avra test` — run every spec case of a package root or a file:
+//! one analysis, one lowering, each case run by its symbol, the
+//! report from @std.testing. Exit 0 when every case passed.
+use @std.cli.{Subcommand, CliResult, Runnable}
+use @std.avrac.language.{Program, TestCase, Lowered, run_symbol}
+use @std.testing.{Outcome, Verdict, render, all_passed}
+
+type TestCmd = { }
+
+impl Runnable for TestCmd {
+    fn run(self, args: CliResult) -> int {
+        on_program(args, (p: Program) -> {
+            let t0 = avra_now_ns()
+            warn(p)
+            let made = p.cases_checked()
+            if timed(args) { eprintln(timings(p, "lower", avra_now_ns() - t0)) }
+            match made {
+                .Ok(lo) -> report(p, lo),
+                .Err(text) -> {
+                    println(text)
+                    1
+                }
+            }
+        })
+    }
+}
+
+/// Every case run and reported; 0 when all passed.
+fn report(p: Program, lo: Lowered) -> int {
+    let outcomes = [outcome_of(lo, c) for c in p.cases()]
+    println(render(outcomes))
+    if all_passed(outcomes) { 0 } else { 1 }
+}
+
+fn outcome_of(lo: Lowered, c: TestCase) -> Outcome {
+    Outcome { at: c.at, verdict: verdict_of(run_symbol(lo, c.symbol)) }
+}
+
+/// A bool answer is the verdict; a refusal is the note.
+fn verdict_of(answer: Result<bool, string>) -> Verdict {
+    match answer {
+        .Ok(b) -> if b { Verdict.Passed } else { Verdict.Failed("the condition was false") },
+        .Err(why) -> Verdict.Failed(why),
+    }
+}
+
+export fn test_command() -> Subcommand {
+    let body: TestCmd = TestCmd { }
+    Subcommand { meta: file_command("test", "Run a package's or a file's spec cases"), body: body }
+}

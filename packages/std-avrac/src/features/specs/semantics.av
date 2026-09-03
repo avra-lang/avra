@@ -1,0 +1,37 @@
+//! The spec's statement semantics: its cases resolve as bodies under
+//! the file's floor, each group naming its cases once; typing and
+//! lowering reach the cases as declarations, so the statement itself
+//! does nothing there.
+use core.{StmtId, Reg, Case, distinct, flatten}
+use features.{StmtSemantics, StmtResolveCx, StmtTypeCx, StmtLowerCx, nothing, refuses_nested, duplicate_names}
+use diagnostics.{Diag}
+use @std.errors.{Loc}
+
+export type SpecSemantics = { }
+
+impl StmtSemantics for SpecSemantics {
+    fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
+        if refuses_nested(cx, s, "resolve.nested_spec", "spec blocks") { return }
+        match cx.view.store.stmt(s) {
+            .Spec(name, cases) -> {
+                for d in repeated_cases(name, cases, cx.loc_of(s)) { cx.emit(d) }
+                for c in cases { cx.walk_under([], c.body) }
+            }
+            _ -> nothing(),
+        }
+    }
+
+    fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
+        nothing()
+    }
+
+    fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
+        null
+    }
+}
+
+/// A case named twice within one group — the shared member voice,
+/// the group named as the owner.
+fn repeated_cases(suite: string, cases: List<Case>, at: Loc?) -> List<Diag> {
+    flatten([duplicate_names("resolve.duplicate_case", "${suite} / ${g}", [c.name for c in cases if c.group == g], at) for g in distinct([c.group for c in cases])])
+}

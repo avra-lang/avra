@@ -11,6 +11,7 @@ use diagnostics.{Diag, loc_at, refusal}
 use features.{TypeCx, StmtTypeCx, FnSig, DeclSig, fn_sig_of, TypeRow, type_row, Decls, Decl, FnParts, Cap, new_type_facts, decl_type_of, def_type_of, type_named, TypeFacts, NameFacts, FileView, nothing}
 use features.closures.{unfed_lambda}
 use features.structs.{fits_default}
+use features.specs.{fits_case}
 use @std.errors.{Loc}
 
 /// One narrow in force: the proven binding (a def's stmt index in
@@ -59,6 +60,7 @@ export fn type_decl(t: Typer, x: Decl) -> TypeFacts {
         .Main -> type_stmts(t, [], runtime_stmts(t.view)),
         .Fn or .Method -> if x.root == null { nothing() } else { type_stmts(t, [], [x.stmt]) },
         .Default -> default_body(t, x),
+        .Case -> case_body(t, x),
         .Record or .Enum -> type_stmts(t, [], [x.stmt]),
         .Trait or .Impl -> nothing(),
     }
@@ -83,6 +85,18 @@ fn default_body(t: Typer, x: Decl) {
     fits_default(expr_cx(t, []), root, x.name, want)
 }
 
+/// A test case's body walks under the bool it declared — a
+/// `return` inside answers it — and its feature judges the answer.
+fn case_body(t: Typer, x: Decl) {
+    let root: ExprId = x.root!
+    let want: TypeId = fn_sig_of(t.view.decls.sig(x.id))?.ret ?? t.error_type
+    answering(t, want, () -> {
+        t.plant_want(root, want)
+        type_walk(t, [], root)
+    })
+    fits_case(expr_cx(t, []), root, want)
+}
+
 /// Statements in order, each through its own StmtSemantics — the
 /// ONE statement loop, top level and blocks alike. The context is
 /// state verbs plus the whole expression vocabulary; the rules live
@@ -105,14 +119,21 @@ fn type_stmts(t: Typer, param_types: List<TypeId>, stmts: List<StmtId>) {
 /// stands, and a body-level `let x: T` resolves the fn's own Vars.
 fn walk_fn_body(t: Typer, s: StmtId, body: ExprId) {
     let sig: FnSig? = fn_sig_of(t.stmt_sig(s))
+    answering(t, sig?.ret ?? t.error_type, () -> {
+        t.enter_tscope(s)
+        let ret: TypeId? = sig?.ret
+        if ret != null { t.plant_want(body, ret!) }
+        type_walk(t, sig?.params ?? [], body)
+        t.leave_tscope()
+    })
+}
+
+/// The declared answer in scope for exactly the walk.
+fn answering(t: Typer, want: TypeId, walk: fn()) {
     // LICENSED I15: this IS the bracket
     mut rs = t.fn_ret
-    rs.push(sig?.ret ?? t.error_type)
-    t.enter_tscope(s)
-    let ret: TypeId? = sig?.ret
-    if ret != null { t.plant_want(body, ret!) }
-    type_walk(t, sig?.params ?? [], body)
-    t.leave_tscope()
+    rs.push(want)
+    walk()
     let _ = rs.pop()
 }
 

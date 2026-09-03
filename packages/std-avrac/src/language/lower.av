@@ -75,7 +75,7 @@ fn new_lower(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> Lower {
 
 /// A lone file's program, lowered without a memo — the tests' seam.
 export fn lower(a: Analysis) -> Lowered {
-    union(a.view.decls, [a], 0, (w: Wanted) -> lower_unit(a, w))
+    union(a.view.decls, [a], 0, false, (w: Wanted) -> lower_unit(a, w))
 }
 
 /// One unit LOWERED: its body with the lambdas it lifted and the
@@ -116,16 +116,17 @@ export fn lower_unit(a: Analysis, w: Wanted) -> Unit {
 /// The whole program as IR: the entry's main and every body it
 /// reaches, transitively — each unit through `unit_of`, which the
 /// workspace memoizes. A program only CHECKED has no entry: every
-/// declared body lowers instead, so each speaks its refusals. A
-/// unit is asked once per symbol; the guard is the
-/// polymorphic-recursion refusal.
-export fn union(decls: Decls, files: List<Analysis>, entry: int?, unit_of: fn(Wanted) -> Unit) -> Lowered {
+/// declared body lowers instead, so each speaks its refusals; a
+/// test run asks for `every` declared body under its entry, whose
+/// laws (a module file runs nothing) still hold. A unit is asked
+/// once per symbol; the guard is the polymorphic-recursion refusal.
+export fn union(decls: Decls, files: List<Analysis>, entry: int?, every: bool, unit_of: fn(Wanted) -> Unit) -> Lowered {
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
     mut wants: List<Wanted> = []
     let at: int = entry ?? 0
     for (i, a) in files.enumerate() {
-        if entry == null { wants = wants.concat(declared(a)) }
+        if entry == null || every { wants = wants.concat(declared(a)) }
         if entry != null && i != at { spoken = spoken.concat(entry_only(a, files[at])) }
     }
     let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: "main", sub: null }) }

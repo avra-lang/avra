@@ -321,10 +321,11 @@ against these before writing; probe in scratch when unsure.
   a trailing comma, or aligned continuation lines. Wrap wide ones.
 - `ref`, `none`, `shape`, `dyn`, `table`, `is`, `bare`, `mod`, and `where` are reserved words
   (`dyn` refuses as a FIELD name: "expected field name" at the decl) — including
-  as variable and method names; `then` refuses as a struct/enum
-  field name, and `given` and `spec` refuse as LOCALS (the spec
-  DSL's words are lexed even in ordinary code: "expected variable
-  name" at the `let` — `spec` bit during the mono worklist).
+  as variable and method names; `then`, `given` and `spec` refuse
+  as struct/enum FIELD names ("expected field name" at the field)
+  and as LOCALS (the spec DSL's words are lexed even in ordinary
+  code: "expected variable name" at the `let` — `spec` bit during
+  the mono worklist; all three bit the test-DSL rung as fields).
 - `.reverse()` mutates IN PLACE and returns the SAME aliased list
   (probed: the source list's order changes too) — never treat it as
   a copy; assume `.sort()` matches. A safe reversed copy stays
@@ -651,6 +652,16 @@ against these before writing; probe in scratch when unsure.
   (`enum S { A(x: int), B }`) is invisible to it and every pattern
   over it reports a wrong count. Enums are written one variant per
   line, always.
+- bs2's test runner runs a MULTI-UNIT shard on WORKER THREADS whose
+  stack holds 600–700 nested interpreter calls (each interpreted
+  call is two native frames), while a SINGLE-unit run rides the
+  main thread (1900+) — so a deep-recursion spec passes alone
+  (`bs2 test one_file.av`) and crashes its shard under `make test`,
+  "cause not classified", and the crash report
+  (~/Library/Logs/DiagnosticReports, `EXC_BAD_ACCESS … stack guard
+  region`) is the only witness. The interpreter's `call_limit`
+  (400) is what keeps a runaway a trap; measure, never guess, when
+  it moves.
 - Three concurrent `make test` runs (each spawns eight compiler
   shards) crashed the machine; builds are serial — never let two
   agents build at once.

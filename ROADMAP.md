@@ -3491,6 +3491,90 @@ END, `{ x }` parses as a statement list whose tail answers, so the
 keyword lexes as a NAME, so `-> { return x }` read `return` as an
 identifier and the @expect'd `}` hole-hit. One form, one law.
 
+PARITY RUNG 6 LANDED (2026-09-03) — THE TEST DSL, and `avra test`
+(T1 and T9 of the test system; the minimal in-process runner).
+THE MODEL: `spec "…" { given "…" { then "…" { body } } }` is ONE
+declaration statement (features/specs — gram, builders, statement
+semantics), and each `then` is a CASE: a declaration
+(`DeclKind.Case`) whose root is its body, minted under the spec's
+name with its group, declared as a zero-parameter fn answering
+`bool` (typing_declare), and typed by the one body law with one
+voice — `type.case` F2042, "a `then` answers a `bool`, this one
+answers `int`". A spec nests in nothing (`resolve.nested_spec`
+F3022, the shared nested-declaration voice). Cases are ordinary
+declarations everywhere else: the symbol table names them
+`spec$N`, lowering gives them bodies, the interpreter runs one by
+symbol (`run_symbol`), and the program LISTS them in written order
+(`Program.cases()` -> `TestCase { suite, group, name, file, line,
+symbol }`). THE ENTRY LAW learned one thing: a case is reached by
+nothing, so a test run lowers EVERY declared body
+(`Program.cases_checked()` = the union with no entry) where a run
+lowers the entry and what it reaches — one `checked_lowering`,
+two callers. `@std/testing` (packages/std-testing) is a LIBRARY
+with no compiler types and no CLI: `Outcome`, `render` (suite /
+given headers, ✓/✗ lines, the failing case's note and file:line,
+`N/M tests passed`), `all_passed`; `avra test <file|package>` is
+ONE CLI file that analyzes once, lowers once, runs each case by
+symbol and prints the library's report, exit 1 on any failure.
+FOUND ON THE WAY: bs2 reserves `spec`, `given` and `then` even as
+STRUCT FIELD names (CLAUDE.md); a miscounted variant pattern
+(`.A(x)` against two payloads — refused by the arm law, F-coded)
+still reached COVERAGE, whose rows were then ragged and
+`hole_first` read past an empty row — an UNNAMED out-of-bounds
+crash of the whole package check, found by lldb (`b
+avra_runtime_errorf`); `padded` is now total (pad with holes or
+cut to the arity), so a row always has one pattern per column.
+CENSUS after this rung: 8 files fail to PARSE (fn types without
+an answer `fn(A, B)` in fields and params, `impl Arena<N>`,
+`extern fn`, `let _ =`), and the first failure moved to RESOLVE
+for 177 files — most of them cascades of those eight (a file that
+does not parse exports nothing, so 83 importers say "`features`
+does not export `NodeSemantics`") plus 71 test files that `use
+@std.avrac.…`, the package's OWN name (the self-dependency law,
+next). THE ROUNDS (red team + review, same day): a runaway recursion
+SIGSEGV'd the whole run (bs2's stack guard, exit 139, no verdict
+printed) — the machine now bounds its own depth (`call_limit`,
+400: the interpreter recurses on the host stack, and a bs2 test
+WORKER thread holds 600–700 nested calls where the main thread
+holds 1900+; a single-unit run rides the main thread, so the same
+spec passed alone and crashed the shard — CLAUDE.md) and answers
+"recursion too deep — 400 nested calls" as the case's note; the
+module-file law (F0902) was skipped under `test` because the
+union lowered "every body" by dropping the entry — `union` now
+takes `every` beside `entry`, so a test run keeps the entry's laws
+(`Program.cases_checked` = `checked_from(entry, every: true)`);
+a `then` without its body cascaded from the `given` line —
+`then_case` and `given_group` now `@recover`/`@expect` at their
+own tails, so the mistake is blamed at its token and the next
+case still parses (two structural mistakes, a nested `given` or
+a `then` under a `then`, still cost one cascade "expected EOF" —
+the honest floor without a brace-aware sync); a `then` may stand
+directly under the spec (the old DSL's shape; its group is the
+empty word and gets no `given` line); a group names each case
+ONCE (`resolve.duplicate_case` F3023, the shared member voice:
+"`s / g` declares `t` more than once"); warnings render under
+`test` as under `run`. THE REVIEW moved the case law home
+(`features/specs/check.av`: `fits_case` judges, `case_answers`
+speaks; the driver only brackets — `answering(t, want, walk)` is
+the ONE fn-return bracket, shared by fn bodies and cases, and the
+case's want is read from the sig it declared), collapsed the
+runner's five copied fields into `@std/testing`'s `CaseRef`
+(avrac's `TestCase = { at: CaseRef, symbol }`; the library's
+`Outcome = { at, verdict: Verdict }` — `Passed`/`Failed(note)`, no
+sentinel pair; `words(at)` is the one-line listing form, which
+avrac projects as `case_words` because bs2 test shards die reading
+a foreign struct's fields — CLAUDE.md's standing trap), gave
+`@std/testing` its own spec file (the report's header, change and
+summary laws), pinned F2042/F3022/F3023 by code, pinned the
+ragged-row crash (`.Rect(w)` against two payloads: refused once,
+never crashes), and named `body_named`/`blanks`-as-`filled`/
+`case_fps`. KNOWN, NOT DONE: `?`/`fail` inside a `then` get the
+fn-shaped help ("declare the answer fallible"); `0/0` exits 0; a
+token class still speaks as its class name ("expected STRING").
+Suite 1454 (specs +19, testing +8, patterns +1), corpus/specs
+proves a spec block is a declaration the program around it runs
+past.
+
 PARITY RUNG 5 LANDED (2026-09-03) — COMPREHENSIONS. `[elem for
 name in source if cond]` and `[elem for (index, name) in source]`
 are one Expr (`Comp`) the lists feature owns, its branch tried

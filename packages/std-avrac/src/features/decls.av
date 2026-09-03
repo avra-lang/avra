@@ -70,6 +70,7 @@ export fn kind_word(k: DeclKind) -> string {
         .Default -> "default",
         .Impl -> "impl",
         .Main -> "main",
+        .Case -> "case",
     }
 }
 
@@ -161,6 +162,14 @@ impl Decls {
                     if fd.default != null { made.push(self.mint_default(key, f, s, fd, name, d)) }
                 }
             }
+            let sp: SpecParts? = store.spec_parts(s)
+            if sp != null {
+                let suite = sp!
+                // LICENSED I3: the case's INDEX names its key
+                for (k, c) in suite.cases.enumerate() {
+                    made.push(self.mint("${path}::case ${s.index}.${k}", f, s, c.name, DeclKind.Case, false, suite.name, null, false, c.body))
+                }
+            }
             let ip: ImplParts? = store.impl_parts(s)
             if ip != null {
                 let block = ip!
@@ -240,7 +249,7 @@ impl Decls {
     /// default's, the default expression's alone.
     fn decl_span(self, d: DeclId) -> Span? {
         let x = self.decl(d)
-        if x.kind is .Default { return self.store(d).expr_span(x.root!) }
+        if x.kind is .Default || x.kind is .Case { return self.store(d).expr_span(x.root!) }
         self.store(d).stmt_span(x.stmt)
     }
 
@@ -360,7 +369,7 @@ impl Decls {
         let x = self.decl(d)
         match x.kind {
             .Record or .Enum -> x.name,
-            .Fn or .Trait or .Method or .Default or .Impl or .Main -> null,
+            .Fn or .Trait or .Method or .Default or .Impl or .Main or .Case -> null,
         }
     }
 
@@ -369,7 +378,7 @@ impl Decls {
         let x = self.decl(d)
         match x.kind {
             .Fn or .Method -> x.name,
-            .Record or .Enum or .Trait or .Default or .Impl or .Main -> null,
+            .Record or .Enum or .Trait or .Default or .Impl or .Main or .Case -> null,
         }
     }
 
@@ -400,6 +409,7 @@ impl Decls {
         let x = self.decl(d)
         let local_name = match x.kind {
             .Method or .Default -> "${x.owner}.${x.name}",
+            .Case -> "spec$${x.id.index}",
             .Fn or .Record or .Enum or .Trait or .Impl or .Main -> x.name,
         }
         module_symbol(self.module_of(d), local_name)

@@ -1,0 +1,20 @@
+//! Parse-time lowering: a `then` is one case with no group yet, a
+//! `given` names every case under it, a spec gathers them all.
+use core.{Stmt, Case}
+use features.{LangNode, Builder, cases_at}
+
+fn build_then(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let body = b.expr(1)?
+    Result.Ok(LangNode.NCases([Case { group: "", name: n.text, body: body }]))
+}
+
+fn build_given(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    Result.Ok(LangNode.NCases([c with { group: n.text } for c in cases_at(b.args, 1)]))
+}
+
+fn build_spec(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    b.make_stmt(Stmt.Spec(n.text, cases_at(b.args, 1)))
+}

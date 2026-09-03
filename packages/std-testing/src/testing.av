@@ -1,0 +1,83 @@
+//! @std.testing — what a test run is made of, and how it reads. A
+//! LIBRARY: `avra test` calls in; nothing here parses arguments or
+//! owns a process. (The compiler's own `testing` module, inside
+//! @std/avrac, is another thing: the helpers its spec files share.)
+//! A CaseRef names one case and says where it is, a Verdict is what
+//! running it decided, an Outcome pairs them; a report renders many,
+//! grouped by spec and given in declaration order, and ends with the
+//! one summary line a gate reads.
+
+/// One case by its three names and its place — what a runner hands
+/// out and a report prints.
+export type CaseRef = { suite: string, group: string, name: string, file: string, line: int }
+
+/// What running a case decided.
+export enum Verdict {
+    Passed
+    /// Why it did not pass, in the runner's words.
+    Failed(note: string)
+}
+
+export type Outcome = { at: CaseRef, verdict: Verdict }
+
+/// A case in one line — `suite / group / name @ file:line` — how a
+/// listing names it.
+export fn words(at: CaseRef) -> string {
+    "${at.suite} / ${at.group} / ${at.name} @ ${at.file}:${at.line}"
+}
+
+export fn passed(o: Outcome) -> bool {
+    o.verdict is .Passed
+}
+
+export fn all_passed(outcomes: List<Outcome>) -> bool {
+    outcomes.all(passed(it))
+}
+
+export fn passed_count(outcomes: List<Outcome>) -> int {
+    outcomes.filter(passed(it)).length
+}
+
+/// The human report: a suite's name where one begins, a given's
+/// where one begins (a case with no given has no such line), one
+/// line per case, a failure's note and place under it, then the
+/// summary.
+export fn render(outcomes: List<Outcome>) -> string {
+    mut lines: List<string> = []
+    for (i, o) in outcomes.enumerate() {
+        if opens_suite(outcomes, i) { lines.push(o.at.suite) }
+        if opens_group(outcomes, i) && o.at.group.length > 0 { lines.push("  given ${o.at.group}") }
+        lines.push(case_line(o))
+    }
+    lines.push(summary(outcomes))
+    lines.join("\n")
+}
+
+/// Whether the case at `i` begins a suite: the first case does, and
+/// so does one under a different suite from its predecessor's.
+fn opens_suite(outcomes: List<Outcome>, i: int) -> bool {
+    i == 0 || outcomes[i].at.suite != outcomes[i - 1].at.suite
+}
+
+/// Whether the case at `i` begins a given: every suite's first case
+/// does, and so does one under a different group from its
+/// predecessor's.
+fn opens_group(outcomes: List<Outcome>, i: int) -> bool {
+    opens_suite(outcomes, i) || outcomes[i].at.group != outcomes[i - 1].at.group
+}
+
+fn case_line(o: Outcome) -> string {
+    match o.verdict {
+        .Passed -> "    ✓ ${o.at.name}",
+        .Failed(note) -> "    ✗ ${o.at.name}\n        ${note}\n        at ${o.at.file}:${o.at.line}",
+    }
+}
+
+/// `N/M tests passed` — the gate's line, with the failure count
+/// when there is one.
+export fn summary(outcomes: List<Outcome>) -> string {
+    let n = passed_count(outcomes)
+    let m = outcomes.length
+    if n == m { return "${n}/${m} tests passed" }
+    "${n}/${m} tests passed (${m - n} failed)"
+}

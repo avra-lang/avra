@@ -14,11 +14,12 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, fp, fp_str, joined, flatten, dir_of, sorted_texts, first_slash, under_dir, joined_path, normalized, relative_path, TypeId, Type, some_list, same_file, placed, placed_at, touch}
+use core.{NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, dir_of, sorted_texts, first_slash, under_dir, joined_path, normalized, relative_path, TypeId, Type, some_list, same_file, placed, placed_at, touch}
 use features.{Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, module_names, file_names, Clash, method_clashes, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
+use @std.testing.{CaseRef, words}
 
 /// The filesystem, as four questions.
 export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool }
@@ -473,7 +474,7 @@ fn sig_rank(decls: Decls, x: Decl) -> int {
         .Method -> if x.parent != null && decls.decl(x.parent!).kind is .Trait { 1 } else { 3 },
         .Fn -> 2,
         .Impl -> 3,
-        .Trait or .Default or .Main -> 4,
+        .Trait or .Default or .Main or .Case -> 4,
     }
 }
 
@@ -758,6 +759,48 @@ export fn program(ws: Workspace, entry: string?) -> Program {
     }
 }
 
+/// One test case as the runner sees it: the library's reference —
+/// its three names and its place — and the symbol that runs it.
+export type TestCase = { at: CaseRef, symbol: string }
+
+/// The case in one line — what a listing prints, and what a test
+/// of the listing reads.
+export fn case_words(c: TestCase) -> string {
+    words(c.at)
+}
+
+/// Every case of every file, in file and declaration order.
+export fn cases(ws: Workspace) -> List<TestCase> {
+    flatten([file_cases(ws, fi.id) for fi in ws.decls.files])
+}
+
+fn file_cases(ws: Workspace, f: FileId) -> List<TestCase> {
+    let src = source(ws, f)
+    let store = ws.decls.store_of(f)
+    [test_case(ws, src, store, decl_at(ws, d)) for d in ws.decls.decls_of_file(f) if is_case(ws, d)]
+}
+
+fn is_case(ws: Workspace, d: DeclId) -> bool {
+    decl_at(ws, d).kind is .Case
+}
+
+/// The case's group from its spec's own list — its body is the key
+/// — and its line from the source.
+fn test_case(ws: Workspace, src: SourceFile, store: NodeStore, x: Decl) -> TestCase {
+    let parts: SpecParts? = store.spec_parts(x.stmt)
+    let written: Case = parts!.cases.find(same_body(it, x.root!))!
+    let lo = ws.decls.decl_span(x.id)!.lo
+    TestCase {
+        at: CaseRef { suite: x.owner, group: written.group, name: x.name, file: src.file, line: src.linecol(lo).line },
+        symbol: ws.decls.symbol(x.id),
+    }
+}
+
+fn same_body(c: Case, body: ExprId) -> bool {
+    // LICENSED I9: node identity — ids compare by index
+    c.body.index == body.index
+}
+
 /// The root package's entry file: its `[bin]` path, else
 /// `src/main.av` when that exists, else absence.
 export fn entry_of(ws: Workspace) -> string? {
@@ -807,16 +850,28 @@ impl Program {
 
     /// The program as IR, memory strategy applied — every unit
     /// through the workspace's memo.
-    fn lowered(self) -> Lowered {
+    fn lowered(self) -> Lowered { self.lowered_from(self.entry, false) }
+
+    /// The program lowered from `entry`: its main and what it
+    /// reaches — or, with no entry, every declared body; `every`
+    /// asks for every declared body under an entry too.
+    fn lowered_from(self, entry: int?, every: bool) -> Lowered {
         let ws = self.ws
-        memory(union(self.ws.decls, self.files, self.entry, (w: Wanted) -> lowered(ws, spec_id(ws, w))))
+        memory(union(self.ws.decls, self.files, entry, every, (w: Wanted) -> lowered(ws, spec_id(ws, w))))
     }
 
     /// The lowered program, CHECKED — every file's analysis first,
     /// then lowering's own refusals.
-    fn lowered_checked(self) -> Result<Lowered, string> {
+    fn lowered_checked(self) -> Result<Lowered, string> { self.checked_from(self.entry, false) }
+
+    /// The program lowered for its cases, CHECKED: a case is a
+    /// declaration nothing reaches, so every declared body lowers —
+    /// under the entry's laws all the same.
+    fn cases_checked(self) -> Result<Lowered, string> { self.checked_from(self.entry, true) }
+
+    fn checked_from(self, entry: int?, every: bool) -> Result<Lowered, string> {
         if !self.clean() { return Result.Err(self.report()) }
-        let lo = self.lowered()
+        let lo = self.lowered_from(entry, every)
         if !lo.diagnostics.is_empty() { return Result.Err(self.rendered(lo.diagnostics)) }
         Result.Ok(lo)
     }
@@ -825,6 +880,9 @@ impl Program {
         if self.entry == null { return Result.Err(self.rendered([no_target(self.ws.root)])) }
         run_lowered(self.lowered_checked()?)
     }
+
+    /// Every test case the program declares.
+    fn cases(self) -> List<TestCase> { cases(self.ws) }
 
     /// Everything wrong, rendered, as the refusal; or what merely
     /// warned, rendered, as the answer — "" when nothing spoke.
