@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
 
 // ── The ownership registry ──────────────────────────────────────
 
@@ -728,4 +729,116 @@ const char* avra_str_concat(const char* a, const char* b) {
     memcpy(buf, a, n);
     memcpy(buf + n, b, m + 1);
     return (const char*)own(buf);
+}
+
+// ── The host: what a program declares `extern` and the CLI leans on ──
+// Each answers as the CLI reads it: files as text ("" when unreadable),
+// verdicts and statuses as words, listings as newline-joined names.
+
+#include <sys/stat.h>
+#include <dirent.h>
+#include <time.h>
+#include <unistd.h>
+
+void println(const char* s) {
+    fputs(s, stdout);
+    fputc('\n', stdout);
+}
+
+void eprintln(const char* s) {
+    fputs(s, stderr);
+    fputc('\n', stderr);
+}
+
+int64_t avra_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
+void avra_process_exit(int64_t code) {
+    exit((int)code);
+}
+
+int64_t avra_selfhost_file_exists(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+int64_t avra_host_is_dir(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+// The whole file as text; "" when it cannot be read. Owned.
+const char* avra_selfhost_read_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return str_owned("", 0);
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 0) { fclose(f); return str_owned("", 0); }
+    char* buf = (char*)malloc((size_t)size + 1);
+    size_t got = fread(buf, 1, (size_t)size, f);
+    buf[got] = '\0';
+    fclose(f);
+    return (const char*)own(buf);
+}
+
+// The text written whole, through a sibling temp file and a rename,
+// so a reader never sees a half-written file. 1 on success.
+int64_t avra_selfhost_write_file(const char* path, const char* content) {
+    size_t n = strlen(path);
+    char* tmp = (char*)malloc(n + 8);
+    memcpy(tmp, path, n);
+    memcpy(tmp + n, ".tmpav", 7);
+    FILE* f = fopen(tmp, "wb");
+    if (!f) { free(tmp); return 0; }
+    size_t len = strlen(content);
+    int64_t ok = fwrite(content, 1, len, f) == len;
+    fclose(f);
+    if (ok) ok = rename(tmp, path) == 0;
+    if (!ok) remove(tmp);
+    free(tmp);
+    return ok;
+}
+
+// The command's exit status — what a shell would report.
+int64_t avra_shell_exec_status(const char* cmd) {
+    int status = system(cmd);
+    if (status == -1) return 127;
+    return (int64_t)((status >> 8) & 0xff);
+}
+
+// Every directory along the path made, 1 when the whole path stands.
+int64_t avra_mkdir_p(const char* path) {
+    size_t n = strlen(path);
+    if (n == 0 || n >= 4096) return 0;
+    char buf[4096];
+    memcpy(buf, path, n + 1);
+    for (size_t i = 1; i < n; i++) {
+        if (buf[i] == '/') {
+            buf[i] = '\0';
+            if (mkdir(buf, 0755) != 0 && errno != EEXIST) return 0;
+            buf[i] = '/';
+        }
+    }
+    return mkdir(buf, 0755) == 0 || errno == EEXIST;
+}
+
+// The directory's entries, newline-joined, in the order the host
+// lists them; "" for a directory that cannot be read. Owned.
+const char* avra_host_list_dir(const char* path) {
+    DIR* d = opendir(path);
+    if (!d) return str_owned("", 0);
+    void* names = avra_array_new();
+    struct dirent* e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        push_fresh_text(names, e->d_name, strlen(e->d_name));
+    }
+    closedir(d);
+    const char* joined = avra_str_join(names, "\n");
+    avra_rc_release(names);
+    return joined;
 }

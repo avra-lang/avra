@@ -3,7 +3,7 @@
 //! annotations, and the laws of the types annotations WRITE — a
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
-use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, TypeRegistry}
+use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, TypeRegistry, ExternParts}
 use diagnostics.{refusal}
 use features.{FnSig, StructSig, EnumSig, DeclSig, record_sig_of, variant_sig_of, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl}
 use @std.errors.{Loc}
@@ -114,7 +114,9 @@ impl Typer {
     /// A fn's signature, from its annotations alone.
     fn declare_fn(self, s: StmtId) {
         let parts: FnParts? = self.view.store.fn_parts(s)
-        if parts != null { self.declare_sig(s, parts!.params, parts!.ret) }
+        if parts != null { return self.declare_sig(s, parts!.params, parts!.ret) }
+        let host: ExternParts? = self.view.store.extern_parts(s)
+        if host != null { self.declare_sig(s, host!.params, host!.ret) }
     }
 
     fn declare_sig(self, s: StmtId, fparams: List<Param>, fret: TypeRef) {

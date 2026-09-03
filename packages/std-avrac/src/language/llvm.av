@@ -23,6 +23,7 @@ type Emit = {
     vals: List<ptr>,
     frames: List<Region>,
     loops: List<LoopFrame>,
+    externs: List<RtSig>,
 }
 
 /// One open loop: where the back edge returns and where false exits.
@@ -53,17 +54,18 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
     let m = avra_llvm_module_create("avra", lc)
     let b = avra_llvm_create_builder(lc)
     declare_runtime(lc, m)
+    declare_externs(lc, m, l.externs)
     for bd in l.fns { declare_user(lc, m, l.types, bd) }
     for bd in l.fns {
         let f = avra_llvm_get_named_function(m, mangled(bd.name))
-        let failure: string? = emit_body(lc, m, b, l.types, bd, f)
+        let failure: string? = emit_body(lc, m, b, l.types, l.externs, bd, f)
         if failure != null { return wreck(m, path, failure!) }
     }
     let no_params = avra_llvm_type_array_new(0)
     let main_ty = avra_llvm_function_type(avra_llvm_int32_type(lc), no_params, 0, 0)
     avra_llvm_type_array_free(no_params)
     let main_fn = avra_llvm_add_function(m, "main", main_ty)
-    let failure: string? = emit_body(lc, m, b, l.types, l.entry, main_fn)
+    let failure: string? = emit_body(lc, m, b, l.types, l.externs, l.entry, main_fn)
     if failure != null { return wreck(m, path, failure!) }
     if avra_llvm_print_module_to_file(m, path) != 0 {
         return "cannot write `${path}`"
@@ -75,13 +77,13 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
 
 /// One body into one function: params seed the value table, every
 /// instruction emits, the verifier gates.
-fn emit_body(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, bd: Body, f: ptr) -> string? {
+fn emit_body(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, externs: List<RtSig>, bd: Body, f: ptr) -> string? {
     mut vals: List<ptr> = []
     // LICENSED I3: a RANGE walk — comprehensions iterate lists only
     for j in 0..bd.params.length { vals.push(avra_llvm_get_param(f, j)) }
     let em = Emit {
         lc: lc, m: m, b: b, fn_val: f, types: types,
-        tys: bd.reg_types, vals: vals, frames: [], loops: [],
+        tys: bd.reg_types, vals: vals, frames: [], loops: [], externs: externs,
     }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     for i in bd.ins { emit_ins(em, i) }
@@ -104,6 +106,13 @@ fn wreck(m: ptr, path: string, failure: string) -> string {
 /// its implementation twin.
 fn declare_runtime(lc: ptr, m: ptr) {
     for s in rt_sigs() {
+        declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
+    }
+}
+
+/// The program's own host fns, declared like the runtime's rows.
+fn declare_externs(lc: ptr, m: ptr, rows: List<RtSig>) {
+    for s in rows {
         declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
     }
 }
@@ -138,7 +147,7 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
         .Int or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
         .Opt(inner) -> opt_ll_type(lc, types, inner),
-        .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _) or
+        .Str or .Ptr or .List(_) or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _) or
         .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> avra_llvm_pointer_type(lc),
     }
 }
@@ -289,17 +298,23 @@ fn call_rt_value(em: Emit, dst: Reg, callee: string, args: List<Reg>) -> ptr {
     }
     // The result coercion, rt_arg's mirror: an I64 answer is a WORD,
     // and a pointer-shaped destination rides back out of it.
-    if em.types.rides_pointer(em.tys[dst.index]) && answers_word(callee) {
+    if em.types.rides_pointer(em.tys[dst.index]) && answers_word(em, callee) {
         return avra_llvm_build_int_to_ptr(em.b, raw, avra_llvm_pointer_type(em.lc), "boxed")
     }
     raw
 }
 
 /// Whether the registry declares an I64 answer for this callee.
-fn answers_word(callee: string) -> bool {
-    let sig: RtSig? = rt_sig_of(callee)
+fn answers_word(em: Emit, callee: string) -> bool {
+    let sig: RtSig? = callee_sig(em, callee)
     if sig == null { return false }
     sig!.ret is .I64
+}
+
+/// A callee's row: the runtime's, or one of the program's externs.
+fn callee_sig(em: Emit, callee: string) -> RtSig? {
+    // LICENSED I18: two registries asked in turn — the second answers when the first has no row
+    rt_sig_of(callee) ?? em.externs.find(it.name == callee)
 }
 
 fn void_rt_call(em: Emit, callee: string, args: List<Reg>) {
@@ -322,7 +337,7 @@ fn rt_args(em: Emit, callee: string, args: List<Reg>) -> List<ptr> {
 /// so pointer-riding registers cast down and bools widen in.
 fn rt_arg(em: Emit, callee: string, j: int, r: Reg) -> ptr {
     let v = em.vals[r.index]
-    let sig: RtSig? = rt_sig_of(callee)
+    let sig: RtSig? = callee_sig(em, callee)
     if sig == null { return v }
     if j >= sig!.params.length { return v }
     if !(sig!.params[j] is .I64) { return v }

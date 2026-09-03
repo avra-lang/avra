@@ -22,7 +22,7 @@ export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: DeclId, bound: Li
         .App(wd, _, wa) -> app_unifies(cx, wd, wa, got, target, bound),
         .Fn(wp, wr) -> fn_unifies(cx, wp, wr, got, target, bound),
         // LICENSED I9: type identity — interned ids ARE the agreement
-        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+        .Ptr or .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
         .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> want.index == got.index,
     }
 }
@@ -71,7 +71,7 @@ fn elem_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, bound: List<
         .List(g) -> unify(cx, w, g, target, bound),
         .EmptyList -> true,
         .Opt(_) or .Null or .Map(_, _) or .EmptyMap or
-        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+        .Ptr or .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
         .Dyn(_, _) or .Fn(_, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
     }
 }
@@ -82,7 +82,7 @@ fn value_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, bound: List
         .Map(_, g) -> unify(cx, w, g, target, bound),
         .EmptyMap -> true,
         .Opt(_) or .Null or .List(_) or .EmptyList or
-        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+        .Ptr or .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
         .Dyn(_, _) or .Fn(_, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
     }
 }
@@ -97,7 +97,7 @@ fn carried_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, bound: Li
         .Opt(g) -> unify(cx, w, g, target, bound),
         .Null -> !(cx.view.types.shape_of(w) is .Var),
         .List(_) or .EmptyList or .Map(_, _) or .EmptyMap or
-        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+        .Ptr or .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
         .Dyn(_, _) or .Fn(_, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> !(cx.view.types.shape_of(w) is .Var) && unify(cx, w, got, target, bound),
     }
 }
@@ -115,7 +115,7 @@ fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: DeclId, 
 /// (`instantiation_lawful`), so nothing smuggles past by wearing T.
 export fn slot_worthy(types: TypeRegistry, sh: Type) -> bool {
     match sh {
-        .Int or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
+        .Ptr or .Int or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
         .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) or .Fn(_, _) or
         .Map(_, _) -> true,
         // a nullable POINTER is its own nullable — the slot holds
@@ -138,7 +138,7 @@ export fn unlawful_side(cx: TypeCx, ty: TypeId) -> TypeId? {
         .Map(_, v) -> unlawful_side(cx, v),
         .EmptyMap -> null,
         .App(_, _, args) -> args.find(unlawful_side(cx, it) != null),
-        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+        .Ptr or .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
         .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Null or .EmptyList or .Error or
         .Void -> null,
     }
@@ -165,7 +165,7 @@ export fn fully_bound(cx: TypeCx, ty: TypeId, target: DeclId, bound: List<TypeId
         .Res(ok, err) -> fully_bound(cx, ok, target, bound) && fully_bound(cx, err, target, bound),
         .App(_, _, args) -> args.all(fully_bound(cx, it, target, bound)),
         .Fn(ps, ret) -> ps.all(fully_bound(cx, it, target, bound)) && fully_bound(cx, ret, target, bound),
-        .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+        .Ptr or .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
         .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void -> true,
     }
 }

@@ -18,7 +18,7 @@ impl NodeStore {
             .For(name, _, _, _, _, _) -> name,
             .ForEach(_, name, _, _) -> name,
             .LetElse(name, _, _) -> name,
-            .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .FnDecl(_, _, _, _, _)
+            .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _)
                 or .While(_, _) or .IfStmt(_, _, _) or .Return(_)
                 or .Fail(_) or .StructDecl(_, _, _) or .EnumDecl(_, _, _)
                 or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Error -> null,
@@ -31,7 +31,7 @@ impl NodeStore {
         match self.stmt(s) {
             .Let(_, t, _) -> t,
             .MutLet(_, t, _) -> t,
-            .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .FnDecl(_, _, _, _, _)
+            .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _)
                 or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _)
                 or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _)
                 or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _)
@@ -51,7 +51,7 @@ impl NodeStore {
             .Return(v) -> v,
             .Fail(v) -> v,
             .LetElse(_, v, _) -> v,
-            .FnDecl(_, _, _, _, _) or .While(_, _)
+            .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _)
                 or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Use(_, _)
                 or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Error -> null,
         }
@@ -67,7 +67,7 @@ impl NodeStore {
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or
             .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or
-            .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Error -> [],
+            .ExternFn(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Error -> [],
         }
     }
 
@@ -98,7 +98,7 @@ impl NodeStore {
             .Return(_) -> true,
             .Fail(_) -> true,
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or
-            .FnDecl(_, _, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
+            .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .LetElse(_, _, _) or
             .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Error -> false,
         }
@@ -145,7 +145,7 @@ impl NodeStore {
             .StructDecl(name, _, _) -> name,
             .EnumDecl(name, _, _) -> name,
             .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or
-            .FnDecl(_, _, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
+            .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or
             .LetElse(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Error -> null,
         }
@@ -170,7 +170,7 @@ impl NodeStore {
     /// What a top-level statement DECLARES, or absence — an impl's
     /// methods are minted by the impl walk, not here.
     fn declared_kind(self, s: StmtId) -> DeclKind? {
-        if self.fn_parts(s) != null { return DeclKind.Fn }
+        if self.fn_parts(s) != null || self.extern_parts(s) != null { return DeclKind.Fn }
         if self.enum_parts(s) != null { return DeclKind.Enum }
         if self.struct_parts(s) != null { return DeclKind.Record }
         if self.trait_parts(s) != null { return DeclKind.Trait }
@@ -179,13 +179,21 @@ impl NodeStore {
 
     /// A declaring statement's name.
     fn declared_name(self, s: StmtId) -> string? {
-        self.fn_parts(s)?.name ?? self.type_decl_name(s) ?? self.trait_parts(s)?.name
+        self.fn_parts(s)?.name ?? self.extern_parts(s)?.name ?? self.type_decl_name(s) ?? self.trait_parts(s)?.name
     }
 
     /// A statement that declares rather than runs: a declaration,
     /// an impl block, a `use` line, or a spec.
     fn is_declaration(self, s: StmtId) -> bool {
         self.declared_kind(s) != null || self.impl_parts(s) != null || self.use_parts(s) != null || self.spec_parts(s) != null
+    }
+
+    /// An extern fn's pieces, when the statement is one.
+    fn extern_parts(self, s: StmtId) -> ExternParts? {
+        match self.stmt(s) {
+            .ExternFn(name, params, ret) -> ExternParts { name: name, params: params, ret: ret },
+            _ -> null,
+        }
     }
 
     /// A spec's pieces, when the statement is one.
@@ -196,6 +204,9 @@ impl NodeStore {
         }
     }
 }
+
+/// What an extern fn declares, projected once.
+export type ExternParts = { name: string, params: List<Param>, ret: TypeRef }
 
 /// What a lambda carries, projected once.
 export type LambdaParts = { params: List<Param>, body: ExprId }

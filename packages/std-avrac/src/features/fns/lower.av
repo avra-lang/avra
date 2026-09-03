@@ -9,6 +9,8 @@ fn call_lower(cx: LowerCx, e: ExprId) -> Reg {
             let regs = [cx.reg_of(a) for a in args]
             let through: Reg? = cx.indirect_callee(e)
             if through != null { return valued_call_reg(cx, e, through!, regs) }
+            let host: string? = cx.extern_callee(e)
+            if host != null { return extern_call_reg(cx, e, host!, regs) }
             let dst = cx.result(e)
             cx.emit(Ins.Call(dst, cx.callee_of(e, callee), regs))
             dst
@@ -31,4 +33,18 @@ export fn lower_return(cx: StmtLowerCx, s: StmtId) -> Reg? {
     let v: Reg? = cx.lower_value(s)
     cx.expr.emit(Ins.FnExit(v ?? hollow_of(cx.expr, cx.expr.view.types.intern(Type.Void))))
     null
+}
+
+/// A call across the host seam: the extern's bare symbol as a
+/// runtime call — void ones answer nothing.
+fn extern_call_reg(cx: LowerCx, e: ExprId, symbol: string, regs: List<Reg>) -> Reg {
+    if cx.shape_at(e) is .Void {
+        cx.emit(Ins.CallRtVoid(symbol, regs))
+        let dst = cx.result(e)
+        cx.emit(Ins.ConstInt(dst, 0))
+        return dst
+    }
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, symbol, regs))
+    dst
 }

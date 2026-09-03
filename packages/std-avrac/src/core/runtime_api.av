@@ -5,7 +5,7 @@
 //! HOSTS every row by its host column. The twins: runtime/
 //! avra_runtime.c natively, the host arm in the interpreter — a new
 //! runtime fn is a row plus both bodies, nothing else.
-use core.{RtKind, RtSig, RtHost}
+use core.{RtKind, RtSig, RtHost, TypeRegistry, TypeId}
 
 export fn rt_sigs() -> List<RtSig> {
     let sigs: List<RtSig> = [
@@ -58,6 +58,20 @@ export fn rt_sigs() -> List<RtSig> {
         RtSig { name: "avra_str_concat", ret: RtKind.Ptr, params: [RtKind.Ptr, RtKind.Ptr], owns_result: true, has_owned_twin: false, host: RtHost.StrConcat },
     ]
     sigs
+}
+
+/// The runtime kind a type rides in a call across the host seam:
+/// scalars are words, every pointer shape a pointer, void nothing.
+export fn rt_kind_of(types: TypeRegistry, ty: TypeId) -> RtKind {
+    if types.shape_of(ty) is .Void { return RtKind.Void }
+    if types.rides_pointer(ty) { return RtKind.Ptr }
+    RtKind.I64
+}
+
+/// An extern fn's row — borrowed answers, no twin, hosted by the
+/// backend alone.
+export fn extern_row(name: string, ret: RtKind, params: List<RtKind>) -> RtSig {
+    RtSig { name: name, ret: ret, params: params, owns_result: false, has_owned_twin: false, host: RtHost.Unhosted }
 }
 
 /// The callee's contract, when the registry knows it.

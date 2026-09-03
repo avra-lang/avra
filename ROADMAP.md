@@ -3491,6 +3491,36 @@ END, `{ x }` parses as a statement list whose tail answers, so the
 keyword lexes as a NAME, so `-> { return x }` read `return` as an
 identifier and the @expect'd `}` hole-hit. One form, one law.
 
+PARITY RUNG 12 LANDED (2026-09-03) — THE HOST SEAM: `extern fn`.
+`extern fn name(p: T, …) -> R` is a statement of the fns feature
+(`Stmt.ExternFn`, `ExternParts`): a fn declaration (`DeclKind.Fn`)
+with no body — its sig from its annotations, its SYMBOL its bare
+name (`Decls.is_extern`, `symbol`), never lowered. A call to one
+lowers as a runtime call (`CallRt`/`CallRtVoid` by the answer's
+shape) — THE VOCABULARY SEAM RULE: an extern is DATA, a row: the
+program's externs are rows (`extern_rows`: name, `rt_kind_of` per
+seat — scalars are words, pointer shapes pointers, void nothing)
+carried on `Lowered.externs`; the emitter admits their names beside
+the registry's (`unknown_callee`), the backend DECLARES them like
+the runtime's rows (`declare_externs`) and coerces their seats by
+the same table (`callee_sig`), the memory pass owns nothing of
+theirs, and the evaluator REFUSES them by name ("`avra_now_ns` is
+extern — the evaluator cannot host it; build natively"). `ptr` is
+a word of the language (`Type.Ptr`): an opaque host pointer,
+slot-worthy, unmanaged, a pointer to the backend, comparable to
+nothing — twenty-five arms learned it. THE HOST RUNTIME
+(runtime/avra_runtime.c) grew the bodies the CLI leans on —
+`println`/`eprintln`, `avra_now_ns`, `avra_process_exit`,
+`avra_selfhost_file_exists`/`read_file`/`write_file` (through a
+temp file and a rename), `avra_shell_exec_status`, `avra_mkdir_p`,
+`avra_host_is_dir`/`list_dir` (newline-joined) — written to the
+CLI's reading of each, not copied. bs2 takes `extern fn println`
+too (probed), so the CLI declares its printing externs in both
+dialects. A NATIVE CORPUS LANE (`corpus/native/`, in the gate)
+proves programs the evaluator cannot run. CENSUS: std-avrac 4 -> 2
+files (the vendored spec_test alone), cli 15 -> 3 (bs2's `mod`
+stub and one line of std-cli). Suite 1542.
+
 PARITY RUNG 11 LANDED (2026-09-03) — GENERIC IMPLS, THE RECEIVER,
 AND THE PACKAGE SEAM. (1) `impl Arena<N> { … }` LANDS: an impl's
 type parameters parse (after either name) and are the TARGET's own
@@ -3589,6 +3619,14 @@ disagree and the tree spells bs2's side.
   trait default bodies — every entry of CLAUDE.md's "bs2 subset
   notes" is a borrowed constraint on the tree; each is lifted the
   day bs2 retires, and the notes section is deleted with it.
+- FIELD PUNNING (`T { name, value }`, two sites in std-cli): bs2 has
+  it; Avra's `NAME {` cannot without a lexical class for type names —
+  `null { v }` would be a literal and every `if … != null { v }`
+  would break. The two sites spell `name: name`. FIX: decide the
+  type-name class (Capitalized?) with the spec, then punning lands.
+- bs2's `mod x` stub (cli/src/main.av): a directory IS a module in
+  Avra; `mod x` parses as `use x.{}` (the module named, nothing
+  imported). FIX: delete the line at self-host.
 - The vendored `spec_test` feature and `std-cli`: bs2's test runner
   and CLI. FIX: `avra test` (landed) replaces the runner; delete
   both packages at self-host.

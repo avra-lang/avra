@@ -7,7 +7,7 @@
 //! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, NodeStore, DeclId, FileId, Arrow}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, NodeStore, DeclId, FileId, Arrow, RtSig, rt_kind_of, extern_row}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{FnSig, fn_sig_of, Sub, Emitter, BodyRegs, new_emitter, new_body_regs, viewed, Decl, Decls}
 
@@ -31,6 +31,25 @@ export type Lowered = {
     entry: Body,
     types: TypeRegistry,
     diagnostics: List<Diag>,
+    // the host fns the program declares `extern` — rows the backend
+    // declares and the evaluator refuses
+    externs: List<RtSig>,
+}
+
+/// The program's extern fns as registry rows.
+fn extern_rows(decls: Decls) -> List<RtSig> {
+    [extern_row_of(decls, d) for d in decls.decls if decls.is_extern(d.id)]
+}
+
+fn extern_row_of(decls: Decls, d: Decl) -> RtSig {
+    let sig: FnSig? = fn_sig_of(decls.sig(d.id))
+    let params: List<TypeId> = sig?.params ?? []
+    extern_row(decls.symbol(d.id), rt_kind_of(decls.types, sig?.ret ?? decls.types.intern(Type.Void)), [rt_kind_of(decls.types, p) for p in params])
+}
+
+/// The extern symbols an emitter may call.
+fn extern_names(decls: Decls) -> List<string> {
+    [decls.symbol(d.id) for d in decls.decls if decls.is_extern(d.id)]
 }
 
 type Lower = {
@@ -68,7 +87,7 @@ type Lift = { lam: ExprId, name: string, sub: Sub? }
 fn new_lower(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> Lower {
     Lower {
         a: a, fn_ret: fn_ret, sub: sub, jobs: jobs,
-        out: new_emitter(),
+        out: new_emitter(extern_names(a.view.decls)),
         body: new_body_regs(a.view.store.exprs.count(), a.view.store.stmts.count()),
     }
 }
@@ -90,7 +109,7 @@ export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices }
 export fn lower_unit(a: Analysis, w: Wanted) -> Unit {
     let jobs = Jobs { pending: [], seen: {}, lifts: [], wraps: [] }
     if w.decl != null && !a.view.decls.has_body(w.decl!) {
-        let out = new_emitter()
+        let out = new_emitter(extern_names(a.view.decls))
         out.defect("a unit without a body was asked for — `${w.name}`")
         return Unit { bodies: [], wants: [], voices: out.voices }
     }
@@ -154,7 +173,7 @@ export fn union(decls: Decls, files: List<Analysis>, entry: int?, every: bool, u
     if !wants.is_empty() {
         spoken.push(defect_at(null, "specializations exploded past 1000 — polymorphic recursion is not supported"))
     }
-    Lowered { fns: fns, entry: entry_body, types: decls.types, diagnostics: spoken }
+    Lowered { fns: fns, entry: entry_body, types: decls.types, diagnostics: spoken, externs: extern_rows(decls) }
 }
 
 /// A file's declared bodies to ask for, plain — a generic one waits

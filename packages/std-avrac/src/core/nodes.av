@@ -366,6 +366,9 @@ export enum Stmt {
     /// ordinal IS the Var identity; a tparam's `ty` names its
     /// BOUND (`<T: Show>`), absent when unconstrained.
     FnDecl(name: string, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId)
+    /// `extern fn name(params) -> ret` — a fn the host provides: a
+    /// signature with no body, called by its bare symbol.
+    ExternFn(name: string, params: List<Param>, ret: TypeRef)
     /// Condition re-evaluated each turn; the body is a scope.
     While(cond: ExprId, stmts: List<StmtId>)
     /// `if c { … }` (optionally `else { … }`) at STATEMENT
@@ -458,7 +461,7 @@ impl NodeStore {
             .ExprStmt(v) -> v,
             .Discard(_) -> null,
             .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
-            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or
+            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or
             .LetElse(_, _, _) or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or
             .TraitDecl(_, _) or .Spec(_, _) or .Error -> null,
@@ -809,6 +812,7 @@ impl NodeStore {
             .ForEach(index, name, subject, stmts) ->
                 fp(42, [fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
             .Error -> fp(7, []),
+            .ExternFn(name, params, ret) -> fp(59, flatten([[fp_str(name)], param_fps(params), [type_fp(ret)]])),
             .FnDecl(name, tparams, params, ret, body) ->
                 fp(12, flatten([[fp_str(name)], param_fps(tparams),
                                 param_fps(params),

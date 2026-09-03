@@ -9,6 +9,7 @@ export fn fns() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name          | build
         "fn_decl"     | build_fn
+        "extern_fn"   | build_extern
         "call"        | build_call
         "pinned_call" | build_pinned_call
         "return_stmt" | build_return
@@ -25,6 +26,7 @@ export fn fns() -> LanguageFeature {
         name = "fns"
         docs = "`fn name(params) -> type { expression }` — generic with `fn name<T>(…)`, one abstract check, one lowering per instantiation; calls `name(args)`, `name<int>(args)` pinning what arguments cannot; `return` answers early."
         gram = """
+stmt = "extern" "fn" n:NAME "(" ( ps:NAME ":" pt:type ( "," ps:NAME ":" pt:type )* )? ")" ( "->" r:type )? END @recover(sync_to: "END") -> extern_fn(n, ps, pt, r)
 stmt = "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ">" )? "(" ( ps:NAME ( ":" pt:type )? ( "," ps:NAME ( ":" pt:type )? )* )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> fn_decl(n, tp, tb, ps, pt, r, b)
 stmt = "return" ( v:expression )? END @recover(sync_to: "END") -> return_stmt(v)
 primary = c:NAME "<" pin:type ( "," pin:type )* ">" "(" ( as:expression ( "," as:expression )* ","? )? ")" -> pinned_call(c, pin, as)

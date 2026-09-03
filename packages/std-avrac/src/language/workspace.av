@@ -593,6 +593,12 @@ export fn module_files(ws: Workspace, m: ModulePath) -> List<string> {
     []
 }
 
+/// Whether a directory is one its package's manifest EXCLUDES.
+fn excluded_dir(ws: Workspace, dir: string) -> bool {
+    let pkg = ws.packages[holder_of_path(ws, dir)]
+    manifest(ws, pkg.ordinal).excludes.any(under_dir(dir, joined_path(pkg.root, it)) || dir == joined_path(pkg.root, it))
+}
+
 /// Whether a directory is a package root of its own.
 fn is_package_dir(ws: Workspace, dir: string) -> bool {
     ws.host.exists(joined_path(dir, "avra.toml"))
@@ -635,7 +641,7 @@ export fn all_files(ws: Workspace, dir: string) -> List<string> {
     for f in ws.host.list(dir) {
         let full = joined_path(dir, f)
         if ws.host.is_dir(full) {
-            if !is_package_dir(ws, full) { out = out.concat(all_files(ws, full)) }
+            if !is_package_dir(ws, full) && !excluded_dir(ws, full) { out = out.concat(all_files(ws, full)) }
         } else if is_source(f, dir) {
             out.push(full)
         }
@@ -927,7 +933,7 @@ export fn manifest(ws: Workspace, i: int) -> Manifest {
     if !has_manifest(ws, pkg) {
         ws.db.set_input(k, 0)
         ws.db.record_dep(k)
-        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, voices: [] }
+        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], voices: [] }
     }
     let text = ws.host.read(path)
     ws.db.set_input(k, fp_str(text))

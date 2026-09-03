@@ -273,10 +273,11 @@ fn decl_named(decls: Decls, f: DeclId, mname: string) -> bool {
 /// A body's instruction list under construction: registers mint in
 /// instruction order, `give` is the mint-order law, and a runtime
 /// callee must have its row in the registry.
-export type Emitter = { ins: List<Ins>, reg_types: List<TypeId>, defined: List<Reg>, voices: Voices }
+export type Emitter = { ins: List<Ins>, reg_types: List<TypeId>, defined: List<Reg>, voices: Voices, externs: List<string> }
 
-export fn new_emitter() -> Emitter {
-    Emitter { ins: [], reg_types: [], defined: [], voices: no_voices() }
+/// An emitter over a program whose externs it may call by name.
+export fn new_emitter(externs: List<string>) -> Emitter {
+    Emitter { ins: [], reg_types: [], defined: [], voices: no_voices(), externs: externs }
 }
 
 impl Emitter {
@@ -290,6 +291,11 @@ impl Emitter {
     }
 
     fn type_of_reg(self, r: Reg) -> TypeId { self.reg_types[r.index] }
+
+    /// A callee neither the registry nor the program's externs name.
+    fn unknown_callee(self, name: string) -> bool {
+        rt_sig_of(name) == null && !self.externs.contains(name)
+    }
 
     fn give(self, i: Ins) {
         // A new CALLING instruction must decide whether the runtime
@@ -308,7 +314,7 @@ impl Emitter {
             .Retain(_) or .Release(_) or .RetVal(_) or .FnExit(_) or
             .Ret(_) -> null,
         }
-        if callee != null && rt_sig_of(callee!) == null {
+        if callee != null && self.unknown_callee(callee!) {
             self.defect("unknown runtime callee `${callee!}` — add its row to runtime_api.av")
         }
         self.defined_in_order(i)

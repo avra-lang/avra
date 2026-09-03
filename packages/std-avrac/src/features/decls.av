@@ -432,6 +432,13 @@ impl Decls {
         self.rows.find(it.name == x.name)
     }
 
+    /// Whether a fn is the HOST's — declared `extern`, called by its
+    /// bare symbol, never lowered.
+    fn is_extern(self, d: DeclId) -> bool {
+        let x = self.decl(d)
+        x.kind is .Fn && self.store(d).extern_parts(x.stmt) != null
+    }
+
     /// A type's name — records and enums.
     fn type_name(self, d: DeclId) -> string? {
         let x = self.decl(d)
@@ -476,6 +483,7 @@ impl Decls {
     /// a body or a call site carries comes from here.
     fn symbol(self, d: DeclId) -> string {
         let x = self.decl(d)
+        if self.is_extern(d) { return x.name }
         let local_name = match x.kind {
             .Method or .Default -> "${x.owner}.${x.name}",
             .Case -> "spec$${x.id.index}",

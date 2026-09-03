@@ -16,6 +16,9 @@ export enum Type {
     /// Text — the first MANAGED value: a registered pointer the
     /// ownership registry reclaims at count zero.
     Str
+    /// An opaque host pointer — what an extern fn passes and answers;
+    /// nothing reads through it.
+    Ptr
 
     // ── The declared boxes — NOMINAL: the declaration site is the
     // identity, the name rides along for printing alone. ──
@@ -105,7 +108,7 @@ export fn new_type_registry() -> TypeRegistry {
 /// truth the machine projections ask.
 export fn ptr_shape(t: Type) -> bool {
     match t {
-        .Str or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
+        .Str or .Ptr or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
         .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Null or .EmptyList or
         .Map(_, _) or .EmptyMap -> true,
         .Int or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
@@ -118,6 +121,7 @@ impl TypeRegistry {
     fn canon(self, t: Type) -> string {
         match t {
             .Int -> "0",
+            .Ptr -> "ptr",
             .Error -> "1",
             .Str -> "2",
             .Bool -> "3",
@@ -217,7 +221,7 @@ impl TypeRegistry {
             .Fn(ps, ret) ->
                 self.intern(Type.Fn([self.substituted(a, target, args) for a in ps],
                                     self.substituted(ret, target, args))),
-            .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+            .Ptr or .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
             .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> ty,
         }
     }
@@ -226,6 +230,7 @@ impl TypeRegistry {
     fn name_of(self, id: TypeId) -> string {
         match self.shape_of(id) {
             .Int -> "int",
+            .Ptr -> "ptr",
             .Str -> "string",
             .Bool -> "bool",
             .List(elem) -> "List<${self.name_of(elem)}>",
@@ -256,7 +261,7 @@ impl TypeRegistry {
             .List(t) -> [t],
             .Map(k, v) -> [k, v],
             .Opt(t) -> [t],
-            .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+            .Ptr or .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
             .Dyn(_, _) or .Fn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> [],
         }
     }

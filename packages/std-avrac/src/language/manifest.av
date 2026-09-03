@@ -19,7 +19,7 @@ export type Dependency = { key: string, path: string?, dev: bool, at: Loc? }
 /// `deps_at` is where a new dependency line goes: after the last
 /// one, else after the `[dependencies]` header, else absent (the
 /// file has no such section yet).
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, voices: List<Diag> }
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, voices: List<Diag> }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
@@ -31,7 +31,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
     r.unknowns()
     if !r.doc.has_section("package") {
         r.speak(refusal("manifest.no_package", r.at(0, 0), "a manifest declares its package — `[package]` is missing", "this manifest", "add `[package]` with `name` and `version`"))
-        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, voices: r.voices }
+        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], voices: r.voices }
     }
     let name = r.word("name", "manifest.no_name", "a name — `name = \"@scope/name\"`")
     let version = r.word("version", "manifest.no_version", "a version — `version = \"0.1.0\"`")
@@ -40,7 +40,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
     r.profiles()
     Manifest {
         name: name, version: version,
-        bin: r.target("bin", "src/main.av"), lib: r.target("lib", "src/lib.av"),
+        bin: r.target("bin", "src/main.av"), lib: r.target("lib", "src/lib.av"), excludes: r.excludes(),
         deps: r.dependencies("dependencies", false, name).concat(r.dependencies("dev-dependencies", true, name)),
         deps_at: r.deps_at(),
         voices: r.voices,
@@ -79,7 +79,7 @@ fn known_section(name: string) -> bool {
 }
 
 fn known_key(section: string, key: string) -> bool {
-    if section == "package" { return ["name", "version", "edition", "authors", "license", "description", "repository"].contains(key) }
+    if section == "package" { return ["name", "version", "edition", "authors", "license", "description", "repository", "exclude"].contains(key) }
     if section == "bin" || section == "lib" { return key == "path" || key == "name" }
     if section.starts_with("profile.") { return ["opt_level", "debug", "overflow_checks", "incremental", "coverage"].contains(key) }
     true
@@ -187,6 +187,17 @@ impl Reader {
     fn spoken(self, d: Diag) -> Dependency? {
         self.speak(d)
         null
+    }
+
+    /// Source paths the package EXCLUDES — vendored code another
+    /// toolchain reads from inside `src/`; the compiler never sees it.
+    fn excludes(self) -> List<string> {
+        let e: TomlEntry? = self.doc.entry("package", "exclude")
+        if e == null { return [] }
+        match e!.value {
+            .Strs(items) -> items,
+            _ -> [],
+        }
     }
 
     /// Where the next dependency line goes.

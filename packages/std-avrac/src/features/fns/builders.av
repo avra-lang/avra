@@ -26,7 +26,7 @@ fn build_fn(b: Builder) -> Result<LangNode, string> {
     mut params: List<Param> = []
     // LICENSED I3: a ZIP of parallel captures; comprehensions cannot
     for (j, p) in ps.enumerate() {
-        params.push(Param { name: p.text, ty: tys[j], default: null })
+        params.push(seat(p.text, tys[j]))
     }
     b.make_stmt(Stmt.FnDecl(n.text, tparams, params, r, body))
 }
@@ -55,4 +55,21 @@ fn build_pinned_call(b: Builder) -> Result<LangNode, string> {
 
 fn build_return(b: Builder) -> Result<LangNode, string> {
     b.make_stmt(Stmt.Return(expr_id_at(b.args, 0)))
+}
+
+/// `extern fn name(p: T, …) -> R` — every seat typed by the grammar,
+/// so the names and types pair by index.
+fn build_extern(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let ps = b.tokens(1)?
+    let tys = b.type_refs(2)?
+    mut params: List<Param> = []
+    // LICENSED I3: a ZIP of parallel captures; comprehensions cannot
+    for (j, p) in ps.enumerate() { params.push(seat(p.text, tys[j])) }
+    b.make_stmt(Stmt.ExternFn(n.text, params, b.answer(3)))
+}
+
+/// A parameter seat with no default.
+fn seat(name: string, ty: TypeRef?) -> Param {
+    Param { name: name, ty: ty, default: null }
 }

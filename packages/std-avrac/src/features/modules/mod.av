@@ -10,6 +10,7 @@ export fn modules() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name          | build
         "use_stmt"    | build_use
+        "mod_stub" | build_mod
         "export_stmt" | build_export
     }
     let codes = table<DiagCode> {
@@ -47,6 +48,7 @@ export fn modules() -> LanguageFeature {
         name = "modules"
         docs = "`use a.b.{x, y}` imports a module's exported items; `use @scope.name.a.{x}` reaches a dependency's module; `export fn/type/…` marks a module's surface. Paths are absolute from a package's source root, `.`-separated."
         gram = """
+stmt = "mod" n:NAME END -> mod_stub(n)
 stmt = "use" ( h:PKG | h:NAME ) ( "." p:NAME )* "." "{" BREAK? i:NAME ( ( "," | BREAK ) BREAK? i:NAME )* ","? BREAK? "}" END @recover(sync_to: "END") -> use_stmt(h, p, i) | "export" d:stmt -> export_stmt(d)
 """
         builders = rows
