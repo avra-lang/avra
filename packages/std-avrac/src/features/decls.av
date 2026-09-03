@@ -106,9 +106,10 @@ impl Decls {
         let m = self.module_id(module)
         self.paths.set(path, id)
         self.files.push(FileInfo { id: id, path: path, module_id: m })
-        // LICENSED I3: the module's own file list, pushed in place
-        mut mf = self.module_files[m.index]
+        mut mfs = self.module_files
+        mut mf = mfs[m.index]
         mf.push(id)
+        mfs.set(m.index, mf)
         self.stores.push(null)
         mut ds = self.decl_ids
         ds.push([])
@@ -322,9 +323,10 @@ impl Decls {
             self.decls.set(id.index, d)
         }
         if parent != null {
-            // LICENSED I3: the parent's own member list, pushed in place
-            mut members = self.children[parent!.index]
+            mut kids = self.children
+            mut members = kids[parent!.index]
             members.push(id)
+            kids.set(parent!.index, members)
         }
         id
     }
@@ -553,16 +555,18 @@ impl Decls {
     fn declare_method(self, target: DeclId, m: DeclId) {
         let prior: DeclId? = self.held_method(target, self.decl(m).name)
         if prior != null && same_decl(prior!, m) { return }
-        // LICENSED I3: the type's own method list, pushed in place
-        mut ms = self.methods[target.index]
+        mut mss = self.methods
+        mut ms = mss[target.index]
         ms.push(m)
+        mss.set(target.index, ms)
     }
 
     fn record_impl(self, ty: DeclId, tr: DeclId) {
         if self.holds_impl(ty, tr) { return }
-        // LICENSED I3: the type's own trait list, pushed in place
-        mut ts = self.impls[ty.index]
+        mut tss = self.impls
+        mut ts = tss[ty.index]
         ts.push(tr)
+        tss.set(ty.index, ts)
     }
 
     /// Whether a type implements a trait — asked through the hook,

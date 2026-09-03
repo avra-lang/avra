@@ -120,8 +120,9 @@ fn chained_reg(cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, arms: List<Arm>, k: 
 /// region, so an untaken arm's payloads are never read), then its
 /// value.
 fn arm_reg(cx: LowerCx, v: Reg, vty: TypeId, a: Arm, want: TypeId) -> Reg {
-    let first: PatId? = a.pats.first()
-    let regs: List<Reg> = if first == null { [] } else { bind_regs(cx, first!, v, vty) }
+    // an OR-RUN binds nothing (the law), and its patterns name
+    // variants of different shapes — only a lone pattern binds
+    let regs: List<Reg> = if a.pats.length == 1 { bind_regs(cx, a.pats[0], v, vty) } else { [] }
     cx.bind_patterns(a.value, regs)
     arm_yield(cx, a.value, cx.reg_of(a.value), want)
 }
@@ -136,6 +137,17 @@ fn bind_regs(cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> {
     }
 }
 
+/// Whether a sub-pattern LOOKS at its payload: a name binds it, a
+/// nested variant tests inside it. A wildcard and a literal never
+/// look — and reading a payload nothing looks at is how an arm over
+/// a SHORTER variant read past its end.
+fn looks_inside(cx: LowerCx, p: PatId) -> bool {
+    match cx.view.store.pat(p) {
+        .Bind(_) or .Variant(_, _) -> true,
+        .Wild or .Rest or .Lit(_) -> false,
+    }
+}
+
 fn payload_binds(cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: TypeId) -> List<Reg> {
     let declared: EnumSig? = cx.variants_of(vty)
     if declared == null { return [] }
@@ -143,7 +155,9 @@ fn payload_binds(cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: Type
     mut out: List<Reg> = []
     // LICENSED I3: the payload reads must be EMITTED in pattern order — a fold, not a map
     for (k, a) in args.enumerate() {
-        if k < carried.length { out = out.concat(bind_regs(cx, a, payload_at(cx, v, k, carried[k]), carried[k])) }
+        if k < carried.length && looks_inside(cx, a) {
+            out = out.concat(bind_regs(cx, a, payload_at(cx, v, k, carried[k]), carried[k]))
+        }
     }
     out
 }

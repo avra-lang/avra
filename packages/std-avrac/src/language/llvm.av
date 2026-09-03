@@ -63,11 +63,7 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
         let failure: string? = emit_body(lc, m, b, l.types, l.externs, bd, f)
         if failure != null { return wreck(m, path, failure!) }
     }
-    let no_params = avra_llvm_type_array_new(0)
-    let main_ty = avra_llvm_function_type(avra_llvm_int32_type(lc), no_params, 0, 0)
-    avra_llvm_type_array_free(no_params)
-    let main_fn = avra_llvm_add_function(m, "main", main_ty)
-    let failure: string? = emit_body(lc, m, b, l.types, l.externs, l.entry, main_fn)
+    let failure: string? = emit_entry(lc, m, b, l)
     if failure != null { return wreck(m, path, failure!) }
     if avra_llvm_print_module_to_file(m, path) != 0 {
         return "cannot write `${path}`"
@@ -92,6 +88,41 @@ fn unheld_name(l: Lowered) -> string? {
             if host != null && !hosted.contains(host!) { return host }
         }
     }
+    null
+}
+
+/// THE ENTRY. The program's own statements become `av_entry`; C's
+/// `main` hands the runtime its arguments and answers what the
+/// entry answered. The argument pair crosses the seam exactly here
+/// — a program reads it through the host from then on.
+fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered) -> string? {
+    declare(m, "avra_args_init", avra_llvm_void_type(lc),
+            [avra_llvm_int64_type(lc), avra_llvm_pointer_type(lc)], false)
+    declare(m, "av_entry", avra_llvm_int32_type(lc), [], false)
+    let entry = avra_llvm_get_named_function(m, "av_entry")
+    let failure: string? = emit_body(lc, m, b, l.types, l.externs, l.entry, entry)
+    if failure != null { return failure }
+    open_main(lc, m, b, entry)
+}
+
+/// `int main(int argc, char** argv)`: the arguments handed over,
+/// then the entry.
+fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr) -> string? {
+    declare(m, "main", avra_llvm_int32_type(lc),
+            [avra_llvm_int32_type(lc), avra_llvm_pointer_type(lc)], false)
+    let f = avra_llvm_get_named_function(m, "main")
+    avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
+    let init = avra_llvm_get_named_function(m, "avra_args_init")
+    let args = avra_llvm_value_array_new(2)
+    avra_llvm_value_array_set(args, 0, avra_llvm_cast_to_type(b, avra_llvm_get_param(f, 0), avra_llvm_int64_type(lc)))
+    avra_llvm_value_array_set(args, 1, avra_llvm_get_param(f, 1))
+    avra_llvm_build_call(b, avra_llvm_fn_type_of(init), init, args, 2, "")
+    avra_llvm_value_array_free(args)
+    let seatless = avra_llvm_value_array_new(0)
+    let answer = avra_llvm_build_call(b, avra_llvm_fn_type_of(entry), entry, seatless, 0, "code")
+    avra_llvm_value_array_free(seatless)
+    let _ = avra_llvm_build_ret(b, answer)
+    if avra_llvm_verify_function(f) != 0 { return "internal compiler error: LLVM verification failed for main" }
     null
 }
 

@@ -23,29 +23,14 @@ export fn filled<T>(n: int, v: T) -> List<T> {
     out
 }
 
-/// `src` laid into `dst` from position `at` — lists alias, so the
-/// caller's table changes. Proven by the fold (typing_test's
-/// totality, the corpus), never by a unit spec: a test shard that
-/// instantiates a list-writing generic twice loses its writes
-/// (CLAUDE.md).
-export fn copy_into<T>(dst: List<T>, src: List<T>, at: int) {
-    mut d = dst
-    for (j, v) in src.enumerate() { d.set(at + j, v) }
-}
-
-/// A value placed in a sparse table by id — the table grows to
-/// hold it; lists alias, so the caller's table changes.
-export fn placed<T>(xs: List<T?>, i: int, v: T) {
-    mut d = xs
-    while d.length <= i { d.push(null) }
-    d.set(i, v)
-}
-
-/// A sparse table's value by id — absent past its end.
-export fn placed_at<T>(xs: List<T?>, i: int) -> T? {
-    if i >= xs.length { return null }
-    let held: T? = xs[i]
-    held
+/// `dst` with `src` laid over it from position `at` — the answer,
+/// never a write through the argument: a fn cannot change its
+/// caller's value, so the owner assigns what comes back.
+export fn copied<T>(dst: List<T>, src: List<T>, at: int) -> List<T> {
+    mut out = dst
+    // LICENSED I3: a write per element into the copy, not a build
+    for (j, v) in src.enumerate() { out.set(at + j, v) }
+    out
 }
 
 /// A value asked for its effect alone.

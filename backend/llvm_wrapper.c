@@ -1556,7 +1556,11 @@ static int name_order(const void* a, const void* b) {
 
 // The names in a directory, newline-joined, in BYTE order — the
 // same on every machine; "" when the path is not a directory.
-const char* avra_host_list_dir(const char* path) {
+// WEAK: the host seam belongs to runtime/avra_runtime.c, and an
+// avra-built program links BOTH this wrapper and that runtime. bs2
+// links this one alone, so the definition stays here for it and
+// yields to the runtime's whenever both are present.
+__attribute__((weak)) const char* avra_host_list_dir(const char* path) {
     DIR* d = opendir(path);
     if (!d) return "";
     size_t cap = 64, count = 0;
@@ -1586,14 +1590,22 @@ const char* avra_host_list_dir(const char* path) {
 }
 
 // 1 when the path is a directory.
-int64_t avra_host_is_dir(const char* path) {
+// WEAK: the host seam belongs to runtime/avra_runtime.c, and an
+// avra-built program links BOTH this wrapper and that runtime. bs2
+// links this one alone, so the definition stays here for it and
+// yields to the runtime's whenever both are present.
+__attribute__((weak)) int64_t avra_host_is_dir(const char* path) {
     struct stat st;
     if (stat(path, &st) != 0) return 0;
     return S_ISDIR(st.st_mode) ? 1 : 0;
 }
 
 /* A monotonic clock in nanoseconds — the phase profiler's ruler. */
-int64_t avra_now_ns(void) {
+// WEAK: the host seam belongs to runtime/avra_runtime.c, and an
+// avra-built program links BOTH this wrapper and that runtime. bs2
+// links this one alone, so the definition stays here for it and
+// yields to the runtime's whenever both are present.
+__attribute__((weak)) int64_t avra_now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;

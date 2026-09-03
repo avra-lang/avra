@@ -1,8 +1,8 @@
 //! The literal's typing law: the name resolved to a declaration
 //! (resolve spoke otherwise), and the written fields match it —
 //! each declared field exactly once, each value the field's type.
-use core.{ExprId, StmtId, Type, TypeId, filled, StructParts, DeclId}
-use features.{TypeCx, StructSig, spoken, this_is, fields_are, repeated_at, unify, fully_bound, bound_args, accepts, slot_worthy, tparams_refused, unpinned_of, bound_closed, slice_promise, StmtTypeCx, pinned_by_want, unfed_construction}
+use core.{ExprId, StmtId, Type, TypeId, StructParts, DeclId}
+use features.{no_pins, Pins, TypeCx, StructSig, spoken, this_is, fields_are, repeated_at, unify, fully_bound, bound_args, accepts, slot_worthy, tparams_refused, unpinned_of, bound_closed, slice_promise, StmtTypeCx, pinned_by_want, unfed_construction}
 use diagnostics.{refusal}
 
 fn structs_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -50,7 +50,7 @@ fn generic_lit(cx: TypeCx, e: ExprId, name: string, fields: List<string>,
                values: List<ExprId>, decl: DeclId, sig: StructSig) -> TypeId {
     let tp = cx.tparams(decl)
     if tparams_refused(tp) { return cx.error_type }
-    let bound: List<TypeId?> = filled<TypeId?>(tp.length, null)
+    let bound = no_pins(tp.length)
     mut spoke = false
     // LICENSED I3: a ZIP of parallel captures; comprehensions cannot destructure enumerate
     for (j, f) in fields.enumerate() {
@@ -84,7 +84,7 @@ fn generic_lit(cx: TypeCx, e: ExprId, name: string, fields: List<string>,
 /// and its declared type UNIFIES with the value — a fully-bound
 /// field falls back to the ordinary law, so widening still rides.
 fn generic_field(cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId,
-                 dup: bool, decl: DeclId, bound: List<TypeId?>) -> bool {
+                 dup: bool, decl: DeclId, bound: Pins) -> bool {
     let slot: int? = sig.slot_of(f)
     if slot == null {
         unknown_field(cx, v, name, f, sig)

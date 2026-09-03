@@ -71,6 +71,27 @@ export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub? }
 /// drains. `seen` keys by mangled name.
 type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap> }
 
+impl Jobs {
+    /// Whether anything is still waiting to be lowered — asked of
+    /// the STACK, never of a snapshot: a lambda lowered here can
+    /// mint another, and that one must be seen too.
+    fn waiting(self) -> bool {
+        !self.lifts.is_empty() || !self.wraps.is_empty()
+    }
+
+    /// The next lambda off the stack.
+    fn take_lift(self) -> Lift? {
+        if self.lifts.is_empty() { return null }
+        self.lifts.pop()
+    }
+
+    /// The next wrapper off the stack.
+    fn take_wrap(self) -> Wrap? {
+        if self.wraps.is_empty() { return null }
+        self.wraps.pop()
+    }
+}
+
 /// A NAMED fn boxed as a value calls through a generated WRAPPER
 /// that wears the uniform convention: env at seat 0, forwarded.
 type Wrap = { target: string, seats: List<TypeId>, ret: TypeId, name: string }
@@ -116,15 +137,13 @@ export fn lower_unit(a: Analysis, w: Wanted) -> Unit {
     let first = if w.decl == null { lower_main(a, jobs) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, jobs) }
     mut bodies: List<Body> = [first.body]
     mut spoken: List<Diag> = first.voices.list
-    mut lifts = jobs.lifts
-    mut wraps = jobs.wraps
-    while !lifts.is_empty() || !wraps.is_empty() {
-        if lifts.is_empty() {
-            let wj = wraps.pop()
-            bodies.push(wrapped_body(a, wj))
+    while jobs.waiting() {
+        let lj: Lift? = jobs.take_lift()
+        if lj == null {
+            let wj: Wrap? = jobs.take_wrap()
+            if wj != null { bodies.push(wrapped_body(a, wj!)) }
         } else {
-            let lj = lifts.pop()
-            let lf = lower_lambda(a, lj, jobs)
+            let lf = lower_lambda(a, lj!, jobs)
             bodies.push(lf.body)
             spoken = spoken.concat(lf.voices.list)
         }
@@ -216,10 +235,9 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, jobs: Jobs) -> Lower
     let rt: TypeId = viewed(a.view.decls.types, sub, sig?.ret ?? a.view.decls.types.intern(Type.Error))
     let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
     let lo = new_lower(a, rt, sub, jobs)
-    mut tys = lo.out.reg_types
-    // LICENSED I3: `tys` ALIASES lo.reg_types — `concat` would rebind
-    // the local and the registers would never reach the body
-    for pt in ptypes { tys.push(pt) }
+    // the params ARE registers 0..N-1: minted through the emitter's
+    // own verb, which is what writes into its table
+    for pt in ptypes { let _ = lo.out.mint_ty(pt) }
     lo.out.seeded()
     lo.out.give(Ins.ScopeEnter(Level.Application))
     let r = lower_subtree(lo, root)
@@ -242,10 +260,10 @@ fn lower_lambda(a: Analysis, lj: Lift, jobs: Jobs) -> LoweredBody {
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
     let lo = new_lower(a, rt, lj.sub, jobs)
-    mut tys = lo.out.reg_types
-    // LICENSED I3: `tys` ALIASES lo.reg_types — `concat` would rebind
-    tys.push(lam_ty)
-    for pt in seats { tys.push(pt) }
+    // register 0 is the env box, 1..N the seats — minted through the
+    // emitter's own verb, which is what writes into its table
+    let _ = lo.out.mint_ty(lam_ty)
+    for pt in seats { let _ = lo.out.mint_ty(pt) }
     lo.out.seeded()
     lo.out.give(Ins.ScopeEnter(Level.Application))
     if body == null {

@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, dir_of, sorted_texts, first_slash, under_dir, joined_path, normalized, relative_path, TypeId, Type, some_list, same_file, placed, placed_at, touch, SpecParts}
+use core.{Table, new_table, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, dir_of, sorted_texts, first_slash, under_dir, joined_path, normalized, relative_path, TypeId, Type, some_list, same_file, touch, SpecParts}
 use features.{Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, module_names, file_names, Clash, method_clashes, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key}
@@ -59,19 +59,19 @@ export type Workspace = {
     lang: Language,
     db: Db,
     decls: Decls,
-    programs: List<Parsed?>,
-    file_items: List<List<DeclId>?>,
-    module_names: List<ModuleNames?>,
-    visibles: List<Namespace?>,
-    name_facts: List<NameFacts?>,
-    sig_voices: List<Voices?>,
-    decl_facts: List<TypeFacts?>,
-    method_clashes: List<List<Clash>?>,
-    folds: List<TypeFacts?>,
-    analyses: List<Analysis?>,
+    programs: Table<Parsed>,
+    file_items: Table<List<DeclId>>,
+    module_names: Table<ModuleNames>,
+    visibles: Table<Namespace>,
+    name_facts: Table<NameFacts>,
+    sig_voices: Table<Voices>,
+    decl_facts: Table<TypeFacts>,
+    method_clashes: Table<List<Clash>>,
+    folds: Table<TypeFacts>,
+    analyses: Table<Analysis>,
     specs: Map<string, int>,
     asks: List<Wanted>,
-    units: List<Unit?>,
+    units: Table<Unit>,
     defects: List<Diag>,
     packages: List<Package>,
     package_voices: List<Diag>,
@@ -170,8 +170,10 @@ fn language_decls(lang: Language) -> Decls {
 fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool) -> Workspace {
     let ws = Workspace {
         host: host, root: root, lang: lang, db: new_db(), decls: language_decls(lang),
-        programs: [], file_items: [], module_names: [], visibles: [], name_facts: [],
-        sig_voices: [], decl_facts: [], method_clashes: [], folds: [], analyses: [], specs: {}, asks: [], units: [], defects: [],
+        programs: new_table<Parsed>(), file_items: new_table<List<DeclId>>(), module_names: new_table<ModuleNames>(),
+        visibles: new_table<Namespace>(), name_facts: new_table<NameFacts>(), sig_voices: new_table<Voices>(),
+        decl_facts: new_table<TypeFacts>(), method_clashes: new_table<List<Clash>>(), folds: new_table<TypeFacts>(),
+        analyses: new_table<Analysis>(), units: new_table<Unit>(), specs: {}, asks: [], defects: [],
         packages: [], package_voices: [], lone: lone,
         clock: clock, phases: [],
     }
@@ -251,11 +253,11 @@ export fn source(ws: Workspace, f: FileId) -> SourceFile {
 /// The file parsed — pure in its text.
 export fn parsed(ws: Workspace, f: FileId) -> Parsed {
     let k = key(Family.Parsed, f.index)
-    if ws.db.ask(k) is .Reuse { return placed_at(ws.programs, f.index)! }
+    if ws.db.ask(k) is .Reuse { return ws.programs.at(f.index)! }
     ws.db.begin(k)
     let p = parse_program(ws.lang, source(ws, f))
     ws.db.settle(k, program_hash(p))
-    placed(ws.programs, f.index, p)
+    ws.programs.keep(f.index, p)
     p
 }
 
@@ -269,14 +271,14 @@ fn program_hash(p: Parsed) -> int {
 export fn items(ws: Workspace, f: FileId) -> List<DeclId> {
     let k = key(Family.Items, f.index)
     if ws.db.ask(k) is .Reuse {
-        let held: List<DeclId> = placed_at(ws.file_items, f.index) ?? []
+        let held: List<DeclId> = ws.file_items.at(f.index) ?? []
         return held
     }
     ws.db.begin(k)
     let p = parsed(ws, f)
     let ids = ws.decls.admit(f, p.store, p.stmts)
     ws.db.settle(k, fp(7, [item_print(ws, d) for d in ids]))
-    placed(ws.file_items, f.index, ids)
+    ws.file_items.keep(f.index, ids)
     ids
 }
 
@@ -296,13 +298,13 @@ fn item_print(ws: Workspace, d: DeclId) -> int {
 /// then declaration order.
 export fn namespace(ws: Workspace, m: ModuleId) -> ModuleNames {
     let k = key(Family.Namespace, m.index)
-    if ws.db.ask(k) is .Reuse { return placed_at(ws.module_names, m.index)! }
+    if ws.db.ask(k) is .Reuse { return ws.module_names.at(m.index)! }
     ws.db.begin(k)
     let paths = module_files(ws, module_path(segments_of(ws.decls.module_name(m))))
     let ordered: List<DeclId> = flatten([items(ws, file_id(ws, path)) for path in paths])
     let names = module_names(ws.decls, ordered, (path: string) -> shown(ws, path))
     ws.db.settle(k, fp(3, [d.index for d in names.bound].concat([names.clashes.length])))
-    placed(ws.module_names, m.index, names)
+    ws.module_names.keep(m.index, names)
     names
 }
 
@@ -310,7 +312,7 @@ export fn namespace(ws: Workspace, m: ModuleId) -> ModuleNames {
 /// imports — with what the `use` lines earned.
 export fn visible(ws: Workspace, f: FileId) -> Namespace {
     let k = key(Family.Visible, f.index)
-    if ws.db.ask(k) is .Reuse { return placed_at(ws.visibles, f.index)! }
+    if ws.db.ask(k) is .Reuse { return ws.visibles.at(f.index)! }
     ws.db.begin(k)
     let p = parsed(ws, f)
     mut imports: List<Import> = []
@@ -323,20 +325,20 @@ export fn visible(ws: Workspace, f: FileId) -> Namespace {
     let names = file_names(ws.decls, f, namespace(ws, ws.decls.file(f).module_id), imports, (path: string) -> shown(ws, path))
     let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
     ws.db.settle(k, ws.db.revision())
-    placed(ws.visibles, f.index, out)
+    ws.visibles.keep(f.index, out)
     out
 }
 
 /// A file's names resolved.
 export fn resolved(ws: Workspace, f: FileId) -> NameFacts {
     let k = key(Family.Resolved, f.index)
-    if ws.db.ask(k) is .Reuse { return placed_at(ws.name_facts, f.index)! }
+    if ws.db.ask(k) is .Reuse { return ws.name_facts.at(f.index)! }
     ws.db.begin(k)
     touch(items(ws, f))
     let p = parsed(ws, f)
     let out = resolve(ws.lang, file_view(ws.lang, p, ws.decls, f), visible(ws, f))
     ws.db.settle(k, ws.db.revision())
-    placed(ws.name_facts, f.index, out)
+    ws.name_facts.keep(f.index, out)
     out
 }
 
@@ -356,7 +358,7 @@ export fn sig(ws: Workspace, d: DeclId) -> DeclSig? {
     ws.db.begin(k)
     let t = typer_for(ws, x)
     declare_one(t, x)
-    placed(ws.sig_voices, d.index, t.facts.voices)
+    ws.sig_voices.keep(d.index, t.facts.voices)
     let out: DeclSig? = ws.decls.sigs[d.index]
     ws.db.settle(k, sig_hash(out))
     out
@@ -390,7 +392,7 @@ export fn methods(ws: Workspace, target: DeclId) -> List<DeclId> {
     ws.db.begin(k)
     for b in blocks { touch(sig(ws, b)) }
     let out = ws.decls.methods_of(target)
-    placed(ws.method_clashes, target.index, method_clashes(ws.decls, target))
+    ws.method_clashes.keep(target.index, method_clashes(ws.decls, target))
     ws.db.settle(k, fp_str(joined([ws.decls.decl(m).name for m in out], ",")))
     out
 }
@@ -419,12 +421,12 @@ fn typer_for(ws: Workspace, x: Decl) -> Typer {
 /// range, the sigs it names asked as it reads them.
 export fn typed(ws: Workspace, d: DeclId) -> TypeFacts {
     let k = key(Family.Typed, d.index)
-    if ws.db.ask(k) is .Reuse { return placed_at(ws.decl_facts, d.index)! }
+    if ws.db.ask(k) is .Reuse { return ws.decl_facts.at(d.index)! }
     ws.db.begin(k)
     let x = ws.decls.decl(d)
     let out = type_decl(typer_for(ws, x), x)
     ws.db.settle(k, ws.db.revision())
-    placed(ws.decl_facts, d.index, out)
+    ws.decl_facts.keep(d.index, out)
     out
 }
 
@@ -434,7 +436,7 @@ export fn typed(ws: Workspace, d: DeclId) -> TypeFacts {
 /// read by expression.
 export fn folded(ws: Workspace, f: FileId) -> TypeFacts {
     let k = key(Family.Folded, f.index)
-    if ws.db.ask(k) is .Reuse { return placed_at(ws.folds, f.index)! }
+    if ws.db.ask(k) is .Reuse { return ws.folds.at(f.index)! }
     ws.db.begin(k)
     let p = parsed(ws, f)
     let hole = ws.decls.types.intern(Type.Error)
@@ -447,7 +449,7 @@ export fn folded(ws: Workspace, f: FileId) -> TypeFacts {
     }
     let folded_facts = out with { voices: Voices { list: by_position(spoken) } }
     ws.db.settle(k, ws.db.revision())
-    placed(ws.folds, f.index, folded_facts)
+    ws.folds.keep(f.index, folded_facts)
     folded_facts
 }
 
@@ -466,7 +468,7 @@ fn sig_diagnostics(ws: Workspace, f: FileId) -> List<Diag> {
         for d in own {
             if sig_rank(ws.decls, ws.decls.decl(d)) == rank {
                 touch(sig(ws, d))
-                let v: Voices? = placed_at(ws.sig_voices, d.index)
+                let v: Voices? = ws.sig_voices.at(d.index)
                 if v != null { out = out.concat(v!.list) }
             }
         }
@@ -490,7 +492,7 @@ fn method_diagnostics(ws: Workspace, f: FileId) -> List<Diag> {
     mut out: List<Diag> = []
     for t in typed_decls(ws) {
         touch(methods(ws, t))
-        let held: List<Clash> = placed_at(ws.method_clashes, t.index) ?? []
+        let held: List<Clash> = ws.method_clashes.at(t.index) ?? []
         out = out.concat([c.diag for c in held if same_file(c.file, f)])
     }
     out
@@ -508,7 +510,7 @@ fn is_type_decl(x: Decl) -> bool {
 /// One file's analysis: the snapshot every facade reads.
 export fn analysis(ws: Workspace, f: FileId) -> Analysis {
     let k = key(Family.Analysis, f.index)
-    if ws.db.ask(k) is .Reuse { return placed_at(ws.analyses, f.index)! }
+    if ws.db.ask(k) is .Reuse { return ws.analyses.at(f.index)! }
     ws.db.begin(k)
     let p = parsed(ws, f)
     let names = resolved(ws, f)
@@ -520,7 +522,7 @@ export fn analysis(ws: Workspace, f: FileId) -> Analysis {
         program: () -> program(ws, path),
     }
     ws.db.settle(k, ws.db.revision())
-    placed(ws.analyses, f.index, out)
+    ws.analyses.keep(f.index, out)
     out
 }
 
@@ -540,12 +542,12 @@ fn spec_id(ws: Workspace, w: Wanted) -> int {
 /// unit; the specializations it wants are other units.
 export fn lowered(ws: Workspace, id: int) -> Unit {
     let k = key(Family.Lowered, id)
-    if ws.db.ask(k) is .Reuse { return placed_at(ws.units, id)! }
+    if ws.db.ask(k) is .Reuse { return ws.units.at(id)! }
     ws.db.begin(k)
     let w = ws.asks[id]
     let out = lower_unit(analysis(ws, w.file), w)
     ws.db.settle(k, ws.db.revision())
-    placed(ws.units, id, out)
+    ws.units.keep(id, out)
     out
 }
 
@@ -823,6 +825,19 @@ fn same_body(c: Case, body: ExprId) -> bool {
     c.body.index == body.index
 }
 
+/// WHAT THE PROGRAM LINKS: every package's `[link]` promise, in
+/// package order — the objects it names (under its own root) and
+/// the flags it asks for. A package that declares `extern fn` says
+/// here who keeps the promise.
+export fn link_inputs(ws: Workspace) -> List<string> {
+    flatten([package_link(ws, pkg) for pkg in ws.packages])
+}
+
+fn package_link(ws: Workspace, pkg: Package) -> List<string> {
+    let m = manifest(ws, pkg.ordinal)
+    [joined_path(pkg.root, o) for o in m.objects].concat(m.flags)
+}
+
 /// The root package's entry file: its `[bin]` path, else
 /// `src/main.av` when that exists, else absence.
 export fn entry_of(ws: Workspace) -> string? {
@@ -939,7 +954,7 @@ export fn manifest(ws: Workspace, i: int) -> Manifest {
     if !has_manifest(ws, pkg) {
         ws.db.set_input(k, 0)
         ws.db.record_dep(k)
-        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], voices: [] }
+        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], flags: [], voices: [] }
     }
     let text = ws.host.read(path)
     ws.db.set_input(k, fp_str(text))
@@ -1051,7 +1066,7 @@ fn depends_on(ws: Workspace, from: Package, k: string) -> bool {
 /// The dependency line a manifest lacks, as a structured fix when
 /// the package is already in the workspace (reached through
 /// another package's manifest): the path relative to the asking
-/// package's root, placed after its last dependency.
+/// package's root after its last dependency.
 fn dependency_fix(ws: Workspace, from: Package, k: string) -> List<Suggestion> {
     let known: Package? = ws.packages.find(it.key == k)
     if known == null { return [] }

@@ -6,8 +6,8 @@
 //! generic call INSTANTIATES: pins pre-fill, arguments unify, a
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
-use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, filled, DeclId}
-use features.{TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unify, unlawful_side, fully_bound, bound_args, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise}
+use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId}
+use features.{no_pins, Pins, TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unify, unlawful_side, fully_bound, bound_args, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise}
 use diagnostics.{refusal}
 
 export fn check_fn(cx: StmtTypeCx, s: StmtId) {
@@ -72,9 +72,9 @@ fn generic_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
         wrong_arity(cx, e, callee, s.params.length, args.length)
         return cx.error_type
     }
-    let bound: List<TypeId?> = pinned_slots(cx, e, callee, pins, decl, tp)
+    let bound = pinned_slots(cx, e, callee, pins, decl, tp)
     // a pin that failed to name a type already spoke — absorb
-    for b in bound {
+    for b in bound.slots {
         if b != null && cx.view.types.shape_of(b!) is .Error { return cx.error_type }
     }
     mut spoke = false
@@ -110,8 +110,8 @@ fn refused_instantiation(cx: TypeCx, e: ExprId, raw: TypeId, decl: DeclId, concr
 
 /// Explicit pins fill the slots by position — all of them, or none.
 fn pinned_slots(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
-                decl: DeclId, tp: List<string>) -> List<TypeId?> {
-    mut bound: List<TypeId?> = filled<TypeId?>(tp.length, null)
+                decl: DeclId, tp: List<string>) -> Pins {
+    let bound = no_pins(tp.length)
     if pins.is_empty() { return bound }
     if pins.length != tp.length {
         wrong_pin_count(cx, e, callee, tp.length, pins.length)
@@ -119,7 +119,7 @@ fn pinned_slots(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
     }
     // LICENSED I3: positional fill; comprehensions cannot destructure enumerate
     for (j, tr) in pins.enumerate() {
-        bound.set(j, cx.written(e, tr))
+        bound.pin(j, cx.written(e, tr))
     }
     bound
 }
@@ -129,7 +129,7 @@ fn pinned_slots(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
 /// effectively concrete and the ordinary assignment law judges it —
 /// which is what lets `null` and widening ride a pinned `T?`.
 fn generic_argument(cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId,
-                    decl: DeclId, bound: List<TypeId?>) -> bool {
+                    decl: DeclId, bound: Pins) -> bool {
     if unify(cx, param, cx.type_at(a), decl, bound) { return true }
     if fully_bound(cx, param, decl, bound) {
         let landed = cx.view.types.substituted(param, decl, bound_args(cx, bound))

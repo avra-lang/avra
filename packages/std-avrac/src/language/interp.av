@@ -10,7 +10,7 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, filled, joined, rt_sig_of, code_at}
+use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, filled, joined, rt_sig_of, code_at}
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -178,11 +178,16 @@ fn extract_val(m: Machine, src: Reg, at: int) -> Val {
     arr[at]
 }
 
-// ── Registers (the innermost frame, through element aliases) ────
+// ── Registers (the innermost frame, rewritten in place) ─────────
 
+/// A register written in the TOP frame — the frame is a value, so
+/// the frame that holds the write is stored back over the old one.
 fn put(m: Machine, d: Reg, v: Val) {
-    mut regs = m.frames.last()!
+    mut frames = m.frames
+    let at = frames.length - 1
+    mut regs = frames[at]
     regs.set(d.index, v)
+    frames.set(at, regs)
 }
 
 fn put_at(m: Machine, d: Reg, v: Val, pc: int) -> int {
@@ -592,12 +597,15 @@ fn array_pop_val(m: Machine, vals: List<Val>) -> Val {
 }
 
 fn popped(m: Machine, id: int) -> Val {
-    mut arr = m.arrays[id]
+    mut arrays = m.arrays
+    mut arr = arrays[id]
     if arr.is_empty() {
         trapped(m, "pop on an empty list")
         return Val.I(0)
     }
-    arr.pop()
+    let last = arr.pop()
+    arrays.set(id, arr)
+    last
 }
 
 fn array_concat_val(m: Machine, vals: List<Val>) -> Val {
@@ -765,16 +773,11 @@ fn map_set_val(m: Machine, vals: List<Val>) -> Val {
 
 fn map_write(m: Machine, id: int, key: string, v: Val) -> Val {
     let s = map_slot(m, id, key)
-    let entry = m.maps[id]
-    if s >= 0 {
-        mut vs = entry.vals
-        vs.set(s, v)
-    } else {
-        mut ks = entry.keys
-        ks.push(key)
-        mut vs = entry.vals
-        vs.push(v)
-    }
+    mut maps = m.maps
+    let entry = maps[id]
+    let written = if s >= 0 { entry with { vals: copied(entry.vals, [v], s) } }
+                  else { entry with { keys: entry.keys.concat([key]), vals: entry.vals.concat([v]) } }
+    maps.set(id, written)
     Val.I(0)
 }
 
@@ -802,9 +805,11 @@ fn slot_set_val(m: Machine, vals: List<Val>) -> Val {
 }
 
 fn slot_written(m: Machine, id: int, at: int, v: Val) -> Val {
-    mut arr = m.arrays[id]
+    mut arrays = m.arrays
+    mut arr = arrays[id]
     if at < 0 || at >= arr.length { return out_of_bounds(m, at, arr.length) }
     arr.set(at, v)
+    arrays.set(id, arr)
     Val.I(0)
 }
 
@@ -820,8 +825,10 @@ fn array_push_val(m: Machine, vals: List<Val>) -> Val {
 }
 
 fn pushed(m: Machine, id: int, v: Val) -> Val {
-    mut arr = m.arrays[id]
+    mut arrays = m.arrays
+    mut arr = arrays[id]
     arr.push(v)
+    arrays.set(id, arr)
     Val.I(0)
 }
 

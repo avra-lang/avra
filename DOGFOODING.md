@@ -4,6 +4,25 @@ Patterns proven in this tree — reach for these before writing the
 C-style version. Probe unfamiliar features in scratch first; known
 gaps live in CLAUDE.md "bs2 subset notes".
 
+
+### A write reaches a PLACE, never a value
+
+A fn changes its caller's data only through a PARAMETER'S FIELD
+PATH (`mut rows = o.inner.rows; rows.push(v)`) or through its own
+RECEIVER (`self.rows.push(v)`). A list handed over as an argument
+is a VALUE — writing to it changes nothing the caller can see — and
+so is an ELEMENT read out of a container (`mut r = xs[i]`), which
+is why a mutated element must be written BACK (`xs.set(i, r)`).
+
+So a mutable out-parameter is a one-field STRUCT, never a bare
+list: `Pins { slots }` for the unifier's bindings, `Frames { stack }`
+for a narrowing bracket, `Table<T> { rows }` for every memo. The
+struct's field is the place; the bare list was only ever bs2's
+aliasing in disguise.
+
+Discovered by self-hosting: every one of these sites worked under
+bs2 and silently did nothing under Avra's own semantics.
+
 ## The idiom registry
 
 This file is the RULEBOOK of the future idiom engine (ROADMAP, Era

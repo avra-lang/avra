@@ -137,9 +137,11 @@ impl Db {
 
     fn record_dep(self, key: Key) {
         if self.frames.is_empty() { return }
-        // LICENSED I7: rebind-alias needs index syntax; last() may copy
-        mut top = self.frames.last()!
+        mut fs = self.frames
+        let at = fs.length - 1
+        mut top = fs[at]
         top.push(key)
+        fs.set(at, top)
     }
 
     fn cell(self, key: Key) -> Cell? {
@@ -150,21 +152,24 @@ impl Db {
     }
 
     fn write(self, key: Key, cell: Cell) {
-        // LICENSED I3: the family's own row, grown in place
-        mut row = self.cells[key.family]
+        mut rows = self.cells
+        mut row = rows[key.family]
         while row.length <= key.arg { row.push(null) }
         row.set(key.arg, cell)
+        rows.set(key.family, row)
     }
 
     /// Cells not verified this revision are dead: dropped, so a
     /// long-lived kernel holds only what the last full pass touched.
     fn sweep(self) {
-        for row in self.cells {
-            // LICENSED I3: the family's own row, rewritten in place
+        mut rows = self.cells
+        // LICENSED I3: each family's row rewritten by ordinal
+        for (f, row) in rows.enumerate() {
             mut cells = row
             for (i, held) in row.enumerate() {
                 if held != null && held!.verified_at != self.revision() { cells.set(i, null) }
             }
+            rows.set(f, cells)
         }
     }
 

@@ -19,6 +19,16 @@ use @std.errors.{Loc}
 /// and the OPT each read is recorded as wearing, for lowering.
 type NarrowFrame = { key: int, inner: TypeId, opt: TypeId }
 
+/// A narrow STACK as a place: a bracket pushes through the field,
+/// which every nested read sees. A bare list would be a value the
+/// bracket could only mutate a copy of.
+type Frames = { stack: List<NarrowFrame> }
+
+fn no_frames() -> Frames {
+    let empty: List<NarrowFrame> = []
+    Frames { stack: empty }
+}
+
 /// The pass's working state. `pattern_types` holds what each
 /// match arm's bind carries — spoken by the arm's OWNER before the
 /// arm is walked, and pass-internal: no later pass asks.
@@ -28,8 +38,8 @@ export type Typer = {
     view: FileView,
     names: NameFacts,
     facts: TypeFacts,
-    narrow_defs: List<NarrowFrame>,
-    narrow_params: List<NarrowFrame>,
+    narrow_defs: Frames,
+    narrow_params: Frames,
     fn_ret: List<TypeId>,
     lam_bar: List<int>,
     tscope: List<TypeId>,
@@ -46,7 +56,7 @@ export fn typer(lang: Language, view: FileView, names: NameFacts, lo: int, hi: i
         error_type: hole,
         lang: lang, view: view, names: names,
         facts: new_type_facts(lo, hi, view.store.stmts.count(), hole),
-        narrow_defs: [], narrow_params: [], fn_ret: [], lam_bar: [], tscope: [], paired: [],
+        narrow_defs: no_frames(), narrow_params: no_frames(), fn_ret: [], lam_bar: [], tscope: [], paired: [],
     }
 }
 
@@ -268,13 +278,13 @@ fn narrowed_param_walk(t: Typer, param_types: List<TypeId>, i: int, branch: Expr
 
 /// The narrow bracket: when `opt` really is a nullable, its frame
 /// lives on the given stack exactly as long as the thunk's walk;
-/// otherwise the walk runs bare. The stack ALIASES the Typer's own
-/// list, so the push is seen by every nested read.
-fn framed(t: Typer, frames: List<NarrowFrame>, key: int, opt: TypeId, walk: fn() -> TypeId) -> TypeId {
+/// otherwise the walk runs bare. The stack is a PLACE — a struct's
+/// field — so the push is seen by every nested read.
+fn framed(t: Typer, frames: Frames, key: int, opt: TypeId, walk: fn() -> TypeId) -> TypeId {
     let inner: TypeId? = t.view.types.carried(opt)
     if inner == null { return walk() }
     // LICENSED I15: this IS the bracket
-    mut fs = frames
+    mut fs = frames.stack
     fs.push(NarrowFrame { key: key, inner: inner!, opt: opt })
     let answer = walk()
     let _ = fs.pop()
@@ -370,8 +380,8 @@ impl Typer {
 
     /// One stack's answer: the frame whose key matches, its read
     /// recorded as wearing the frame's OPT.
-    fn narrow_hit(self, e: ExprId, frames: List<NarrowFrame>, key: int) -> TypeId? {
-        let hit: NarrowFrame? = frames.find(it.key == key)
+    fn narrow_hit(self, e: ExprId, frames: Frames, key: int) -> TypeId? {
+        let hit: NarrowFrame? = frames.stack.find(it.key == key)
         if hit == null { return null }
         self.facts.narrow(e, hit!.opt)
         hit!.inner

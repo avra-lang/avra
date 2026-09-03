@@ -3491,6 +3491,51 @@ END, `{ x }` parses as a statement list whose tail answers, so the
 keyword lexes as a NAME, so `-> { return x }` read `return` as an
 identifier and the @expect'd `}` hole-hit. One form, one law.
 
+SELF-HOSTED (2026-09-03). `avra1` (built by the bs2-hosted
+compiler) builds `avra2`, which builds `avra3`, and **avra2 and
+avra3 are byte-identical** — the fixed point. Each stage runs the
+whole corpus, 68/68, through BOTH engines (eval and native), and
+checks packages clean. The suite stayed at 1548 the whole way.
+
+What self-hosting cost, and what each gap taught:
+(1) THE ALIAS DEBT, collected. The tree was written against bs2's
+list ALIASING; Avra's law is value semantics, so every write
+through a handed-over list silently vanished in a self-hosted
+build. The honest forms, now everywhere: a value written BACK
+(`copied`, the scope stack's `taking`, the interpreter's frames
+and heap, the query kernel's rows, the declaration tables), a
+PLACE — a struct field a fn writes through (`Pins` for the
+unifier's slots, `Frames` for the narrow stacks, `Table<T>` for
+every memo), or a METHOD on the owner (`Jobs.take_lift`, which the
+lift queue needed: a snapshot dropped every lambda minted mid-drain).
+THE RULE the tree now obeys: a fn writes through a PARAMETER'S
+FIELD PATH or its RECEIVER — never through a list it was handed,
+and never through an ELEMENT it read (that is a copy).
+(2) `!` ANSWERS AN OWNED REFERENCE. `avra_insist` handed back the
+same box without a reference; the caller's scope released the
+subject, and a memoized value died under the table still holding
+it. The row says `owns_result: true` and the C retains.
+(3) A CELL SETTLES BY FORGETTING. `avra_cell_release` left the
+pointer in the cell, so a loop iteration that never stored released
+the previous one's value again.
+(4) A REGION ARM'S YIELD (see rung 13's laws) and the ESCAPES it
+implies: an arm that yields a BORROWED register retains it, or the
+merge and the original both release it.
+(5) THE ESCAPES: `\n`, `\t` and `\r` were never unescaped — the
+composed grammar carried a literal backslash-n per feature, and the
+lexer refused it. The escape table is the language's, not bs2's.
+(6) AN OR-RUN READS NOTHING. An arm over variants of different
+arity bound from its FIRST pattern, reading payloads off the end of
+a shorter value (`looks_inside`; corpus/or_arms).
+(7) A GENERIC METHOD's body cannot yet name its impl's type
+parameter in a local annotation (`let held: T? = …` inside
+`impl Table<T>`) — the signature scope does not reach the body.
+Recorded; the workaround is the un-annotated tail.
+THE GUARD that found half of these: `AVRA_RC_GUARD=1` keeps a
+released box registered and poisoned, traps the second release, and
+prints the box's whole retain/release history with the caller's
+address. It stays in the runtime, one getenv when off.
+
 RUNG 13 LANDED (2026-09-03) — THE WHOLE-PROGRAM LOWERING, proved
 by lowering the compiler itself. `./avra build packages/cli` walked
 1718 bodies and every step of it named a law the small corpus never
@@ -3671,6 +3716,12 @@ disagree and the tree spells bs2's side.
 - The vendored `spec_test` feature and `std-cli`: bs2's test runner
   and CLI. FIX: `avra test` (landed) replaces the runner; delete
   both packages at self-host.
+- THE ELEMENT WRITE (`mut x = xs[i]; x.push(v)`, ~12 sites, all
+  rewritten): bs2 aliases an element, so mutating the copy changed
+  the container. Avra copies. FIX: none needed — the tree now
+  writes the value BACK, or reaches the place through a field or a
+  receiver. The pattern is recorded in DOGFOODING; delete this
+  entry when bs2 goes.
 - THE STAMPED ENTRY (`packages/cli/src/main_stamped.av`, written by
   `./avra` and EXCLUDED from the cli package's own manifest): bs2
   keys a run's cache by the entry file's bytes alone, so the front

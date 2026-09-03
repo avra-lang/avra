@@ -37,6 +37,7 @@ typedef struct {
     void* ptr;
     int64_t rc;
     int64_t kind;
+    void* died_at;
 } OwnEntry;
 
 static OwnEntry* g_own = NULL;
@@ -66,8 +67,12 @@ static void own_grow(void) {
 }
 
 // Registers a fresh allocation as owned, refcount 1.
+static void rc_note(void* p, int delta, void* at, int64_t rc);
+static int rc_guarded(void);
+
 static void* own_kind(void* p, int64_t kind) {
     if (p == NULL) return p;
+    rc_note(p, 1, __builtin_return_address(0), 1);
     if (g_own_len * 10 >= g_own_cap * 7) own_grow();
     size_t i = own_slot(g_own, g_own_cap, p);
     g_own[i].ptr = p;
@@ -87,9 +92,47 @@ static OwnEntry* owned(void* p) {
     return g_own[i].ptr == p ? &g_own[i] : NULL;
 }
 
+// A registered allocation of `size` bytes, refcount 1 — what a C
+// caller (the compiler's LLVM binding) uses to hand a program memory
+// the registry will reclaim like any other.
+void* avra_rc_alloc(int64_t size) {
+    return own(malloc(size > 0 ? (size_t)size : 1));
+}
+
+// The guard's event log: every retain and release of every box,
+// with the caller's address, so a double release can show its own
+// history. Debug-only; the ring is bounded.
+typedef struct { void* ptr; int delta; void* at; int64_t rc; } RcEvent;
+static RcEvent* g_log = NULL;
+static size_t g_log_len = 0;
+static size_t g_log_cap = 0;
+
+static void rc_note(void* p, int delta, void* at, int64_t rc) {
+    if (!rc_guarded()) return;
+    if (g_log_len == g_log_cap) {
+        g_log_cap = g_log_cap ? g_log_cap * 2 : 1 << 16;
+        g_log = (RcEvent*)realloc(g_log, g_log_cap * sizeof(RcEvent));
+    }
+    g_log[g_log_len].ptr = p;
+    g_log[g_log_len].delta = delta;
+    g_log[g_log_len].at = at;
+    g_log[g_log_len].rc = rc;
+    g_log_len++;
+}
+
+static void rc_history(void* p) {
+    for (size_t i = 0; i < g_log_len; i++) {
+        if (g_log[i].ptr == p) {
+            fprintf(stderr, "    %s from %p -> rc %lld\n",
+                    g_log[i].delta > 0 ? "retain" : "release", g_log[i].at, (long long)g_log[i].rc);
+        }
+    }
+}
+
 void avra_rc_retain(void* p) {
     OwnEntry* e = owned(p);
     if (e) e->rc++;
+    if (e) rc_note(p, 1, __builtin_return_address(0), e->rc);
 }
 
 // Note: removal leaves the entry in place with ptr intact would
@@ -114,14 +157,63 @@ static void own_delete(size_t i) {
 }
 
 static void array_reclaim(void* p);
+static void array_poison(void* p);
 static void map_reclaim(void* p);
 static void* box_clone(void* p);
+
+// DEBUG GUARD (AVRA_RC_GUARD=1): a box that reaches rc 0 is KEPT,
+// marked dead, so the next read of it traps at the site that used
+// it rather than somewhere later.
+static int g_guard = -1;
+static void* g_chain[64];
+static int g_chain_len = 0;
+
+// An array box's cell count, for the guard's report; -1 when the
+// pointer is not an array this runtime owns.
+static int64_t guard_len(void* p);
+
+static int rc_guarded(void) {
+    if (g_guard < 0) g_guard = getenv("AVRA_RC_GUARD") != NULL;
+    return g_guard;
+}
+
+void avra_rc_dead_check(void* p, const char* what) {
+    if (!rc_guarded() || g_own_cap == 0 || p == NULL) return;
+    size_t i = own_slot(g_own, g_own_cap, p);
+    if (g_own[i].ptr == p && g_own[i].kind == -1) {
+        fprintf(stderr, "avra: %s read a RELEASED box %p\n", what, p);
+        abort();
+    }
+}
 
 void avra_rc_release(void* p) {
     if (g_own_cap == 0 || p == NULL) return;
     size_t i = own_slot(g_own, g_own_cap, p);
     if (g_own[i].ptr != p) return;
     g_own[i].rc--;
+    rc_note(p, -1, __builtin_return_address(0), g_own[i].rc);
+    if (rc_guarded() && g_own[i].kind == -1) {
+        fprintf(stderr, "avra: released an already-dead box %p (len %lld)\n", p, (long long)guard_len(p));
+        fprintf(stderr, "  first release from %p, this one from %p\n",
+                g_own[i].died_at, __builtin_return_address(0));
+        rc_history(p);
+        for (int k = g_chain_len - 1; k >= 0; k--) {
+            fprintf(stderr, "  reclaiming %p (len %lld)\n", g_chain[k], (long long)guard_len(g_chain[k]));
+        }
+        abort();
+    }
+    if (g_own[i].rc <= 0 && rc_guarded()) {
+        int64_t kind = g_own[i].kind;
+        g_own[i].kind = -1;
+        g_own[i].rc = 0;
+        g_own[i].died_at = __builtin_return_address(0);
+        if (kind == 1) {
+            if (g_chain_len < 64) { g_chain[g_chain_len] = p; g_chain_len++; }
+            array_poison(p);
+            if (g_chain_len > 0) g_chain_len--;
+        }
+        return;
+    }
     if (g_own[i].rc <= 0) {
         int64_t kind = g_own[i].kind;
         // The entry dies FIRST: slot releases below may reshape the
@@ -214,6 +306,24 @@ void* avra_array_new(void) {
 
 // Releases every owned slot, then the array itself. The registry
 // entry is already gone — see avra_rc_release.
+// The guard's reclaim: children released as usual, the box kept and
+// its cells poisoned, so a stale reader trips instead of finding a
+// plausible value.
+static void array_poison(void* p) {
+    AvraArray* a = (AvraArray*)p;
+    for (int64_t i = 0; i < a->len; i++) {
+        if (a->owned[i]) avra_rc_release((void*)(uintptr_t)a->data[i]);
+    }
+    memset(a->data, 0xDD, (size_t)a->len * sizeof(int64_t));
+}
+
+static int64_t guard_len(void* p) {
+    if (g_own_cap == 0 || p == NULL) return -1;
+    size_t i = own_slot(g_own, g_own_cap, p);
+    if (g_own[i].ptr != p) return -1;
+    return ((AvraArray*)p)->len;
+}
+
 static void array_reclaim(void* p) {
     AvraArray* a = (AvraArray*)p;
     for (int64_t i = 0; i < a->len; i++) {
@@ -259,8 +369,12 @@ int64_t avra_array_len(void* arr) {
 // the null pointer, so insisting is identity through the guard. The
 // wording matches avra_insist_scalar and the evaluator: the
 // divergence registry pins all three.
+// The answer is the SAME box, so it comes back OWNED: the caller's
+// scope releases both the subject and the answer, and a reference
+// that escapes through `!` must survive its subject's release.
 void* avra_insist(void* p) {
     if (!p) { avra_trap("unwrapped an absent value"); }
+    avra_rc_retain(p);
     return p;
 }
 
@@ -271,6 +385,7 @@ int64_t avra_insist_scalar(int64_t present, int64_t value) {
 }
 
 int64_t avra_array_get(void* arr, int64_t i) {
+    avra_rc_dead_check(arr, "array_get");
     AvraArray* a = (AvraArray*)arr;
     if (i < 0 || i >= a->len) {
         char msg[80];
@@ -291,8 +406,12 @@ void* avra_array_get_owned(void* arr, int64_t i) {
 
 // A mut CELL's own reference dies: releases whatever the cell
 // currently holds. Unregistered content no-ops by construction.
+// A cell settles by giving up its reference AND forgetting it: a
+// scope re-entered (a loop body) finds an empty cell, so an
+// iteration that never stores releases nothing.
 void avra_cell_release(void* slot) {
     avra_rc_release(*(void**)slot);
+    *(void**)slot = NULL;
 }
 
 // ── Places: copy-on-write ───────────────────────────────────────
@@ -652,6 +771,16 @@ int64_t avra_str_index_of(const char* s, const char* needle) {
 // The byte at `i` as a code — a trap past the text, worded like a
 // list's. The text is measured only as far as `i`, so a scan that
 // reads every byte stays linear; the trap alone measures it whole.
+// UTF-8 characters, not bytes: continuation bytes (10xxxxxx) belong
+// to the character before them. What alignment measures.
+int64_t avra_str_codepoint_count(const char* s) {
+    int64_t n = 0;
+    for (const unsigned char* p = (const unsigned char*)s; *p; p++) {
+        if ((*p & 0xC0) != 0x80) n++;
+    }
+    return n;
+}
+
 int64_t avra_str_char_code(const char* s, int64_t i) {
     if (i < 0 || strnlen(s, (size_t)i + 1) <= (size_t)i) {
         char msg[80];
@@ -748,6 +877,27 @@ void println(const char* s) {
 void eprintln(const char* s) {
     fputs(s, stderr);
     fputc('\n', stderr);
+}
+
+// THE PROGRAM'S ARGUMENTS. The emitted `main` hands the C pair over
+// once, before any statement runs; argv's own memory outlives the
+// program, so an argument is a foreign pointer the registry leaves
+// alone.
+static int64_t g_argc = 0;
+static char** g_argv = NULL;
+
+void avra_args_init(int64_t argc, char** argv) {
+    g_argc = argc;
+    g_argv = argv;
+}
+
+int64_t avra_selfhost_argc(void) {
+    return g_argc;
+}
+
+const char* avra_selfhost_get_arg_cstr(int64_t i) {
+    if (i < 0 || i >= g_argc || g_argv == NULL) return "";
+    return g_argv[i];
 }
 
 int64_t avra_now_ns(void) {

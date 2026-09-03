@@ -65,11 +65,8 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 // LICENSED I15: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(Scope { tier: tier, managed: [], cells: [] })
                 if open_scopes.length == 1 {
-                    mut top = open_scopes[0].managed
-                    // `top` ALIASES the scope's own list, so a rebind
-                    // would drop the seed on the floor
-                    // LICENSED I3: pushing through an alias, not building a list
-                    for r in seed { top.push(r) }
+                    let seeded = open_scopes[0]
+                    open_scopes.set(0, seeded with { managed: seeded.managed.concat(seed) })
                 }
                 out.push(i)
             }
@@ -82,9 +79,9 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 for s in settled(scope, gives) { out.push(s) }
                 if gives != null && !open_scopes.is_empty() {
                     if is_managed(types, reg_types[gives!.index]) {
-                        // LICENSED I7: rebind-alias needs index syntax; last() may copy
-                        mut top = open_scopes.last()!.managed
-                        top.push(gives!)
+                        // LICENSED I3: the pass's OUTPUT accumulates
+                for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
+                        open_scopes = taking(open_scopes, gives!, false)
                     }
                 }
                 out.push(i)
@@ -101,6 +98,8 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 let scope = open_scopes.pop()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
                 for s in settled(scope, gives) { out.push(s) }
+                // LICENSED I3: the pass's OUTPUT accumulates
+                for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
                 // LICENSED I15: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(nested_scope(open_scopes))
                 out.push(i)
@@ -109,7 +108,9 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 let scope = open_scopes.pop()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
                 for s in settled(scope, gives) { out.push(s) }
-                manage(types, reg_types, open_scopes, i)
+                // LICENSED I3: the pass's OUTPUT accumulates
+                for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
+                open_scopes = managing(types, reg_types, open_scopes, i)
                 out.push(i)
             }
             // The caller's half of callee-cleans: retain what the
@@ -119,13 +120,13 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .Call(_, _, args) -> {
                 // LICENSED I3: the pass's OUTPUT accumulates
                 for r in retained_args(types, reg_types, args) { out.push(r) }
-                manage(types, reg_types, open_scopes, i)
+                open_scopes = managing(types, reg_types, open_scopes, i)
                 out.push(i)
             }
             .CallPtr(_, _, args) -> {
                 // LICENSED I3: the pass's OUTPUT accumulates
                 for r in retained_args(types, reg_types, args) { out.push(r) }
-                manage(types, reg_types, open_scopes, i)
+                open_scopes = managing(types, reg_types, open_scopes, i)
                 out.push(i)
             }
             // An EARLY exit settles EVERY open scope's debts at the
@@ -143,9 +144,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             // The cell's own reference settles when its scope does.
             .Alloca(dst) -> {
                 if is_managed(types, reg_types[dst.index]) && !open_scopes.is_empty() {
-                    // LICENSED I7: rebind-alias needs index syntax; last() may copy
-                    mut top = open_scopes.last()!.cells
-                    top.push(dst)
+                    open_scopes = taking(open_scopes, dst, true)
                 }
                 out.push(i)
             }
@@ -162,7 +161,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .Load(dst, _) -> {
                 out.push(i)
                 if is_managed(types, reg_types[dst.index]) { out.push(Ins.Retain(dst)) }
-                manage(types, reg_types, open_scopes, i)
+                open_scopes = managing(types, reg_types, open_scopes, i)
             }
             .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
             .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or
@@ -170,7 +169,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .Pack(_, _) or .Extract(_, _, _) or
             .LoopStart or .LoopCond(_) or .LoopEnd or
             .Retain(_) or .RetVal(_) or .Ret(_) -> {
-                manage(types, reg_types, open_scopes, i)
+                open_scopes = managing(types, reg_types, open_scopes, i)
                 out.push(i)
             }
         }
@@ -203,6 +202,21 @@ fn enclosing_tier(open_scopes: List<Scope>) -> Level {
     open_scopes.last()!.tier
 }
 
+/// A YIELD THE SCOPE DOES NOT OWN is BORROWED — a parameter, an
+/// enclosing scope's binding, an arm that simply names one. What
+/// receives it (the merge's register, or the enclosing scope) will
+/// own it and release it, so it takes its own reference here. A
+/// yield the scope owns MOVES instead: its release is the one the
+/// receiver inherits.
+fn moved_out(types: TypeRegistry, reg_types: List<TypeId>, scope: Scope, gives: Reg?) -> List<Ins> {
+    if gives == null { return [] }
+    let r = gives!
+    if !is_managed(types, reg_types[r.index]) { return [] }
+    // LICENSED I9: register identity, not type agreement
+    if scope.managed.any(it.index == r.index) { return [] }
+    [Ins.Retain(r)]
+}
+
 /// The strategy: what a scope owes at its exit. `kept` is a value
 /// that escapes the scope and is owned elsewhere.
 fn releases_for(scope: Scope, kept: Reg?) -> List<Reg> {
@@ -223,15 +237,26 @@ fn stays(r: Reg, kept: Reg?) -> bool {
     kept == null || r.index != kept!.index
 }
 
+/// THE STACK'S TOP, REWRITTEN — a scope is a VALUE, so a scope that
+/// takes a register is a new scope stored back over the old. The
+/// stack is a list of values, never a list of handles.
+fn taking(open_scopes: List<Scope>, r: Reg, into_cells: bool) -> List<Scope> {
+    if open_scopes.is_empty() { return open_scopes }
+    mut stack = open_scopes
+    let at = stack.length - 1
+    let top = stack[at]
+    let grown = if into_cells { top with { cells: top.cells.concat([r]) } }
+                else { top with { managed: top.managed.concat([r]) } }
+    stack.set(at, grown)
+    stack
+}
+
 /// When `i` defines a managed value, the innermost open scope takes
 /// ownership of its destination.
-fn manage(types: TypeRegistry, reg_types: List<TypeId>, open_scopes: List<Scope>, i: Ins) {
+fn managing(types: TypeRegistry, reg_types: List<TypeId>, open_scopes: List<Scope>, i: Ins) -> List<Scope> {
     let dst: Reg? = managed_dst(types, reg_types, i)
-    if dst != null && !open_scopes.is_empty() {
-        // LICENSED I7: rebind-alias needs index syntax; last() may copy
-        mut top = open_scopes.last()!.managed
-        top.push(dst!)
-    }
+    if dst == null { return open_scopes }
+    taking(open_scopes, dst!, false)
 }
 
 /// A defining instruction's destination when the value is MANAGED

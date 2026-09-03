@@ -1,7 +1,8 @@
 //! `avra build` — compile a program to a native binary: the emitted
 //! `.ll` linked with Avra's runtime by clang.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.language.{Program}
+use @std.avrac.language.{Program, link_inputs}
+use @std.avrac.core.{joined}
 
 type BuildCmd = { }
 
@@ -13,7 +14,7 @@ impl Runnable for BuildCmd {
             let made = lowered_or_report(p)
             if timed(args) { eprintln(timings(p, "lower+emit", avra_now_ns() - t0)) }
             match made {
-                .Ok(path) -> link(path),
+                .Ok(path) -> link(path, joined(link_inputs(p.ws), " ")),
                 .Err(report) -> {
                     println(report)
                     1
@@ -28,10 +29,11 @@ export fn build_command() -> Subcommand {
     Subcommand { meta: file_command("build", "Compile a program to a native binary"), body: body }
 }
 
-/// clang links the `.ll` with Avra's runtime into a native binary.
-fn link(ll_path: string) -> int {
+/// clang links the `.ll` with Avra's runtime — and whatever the
+/// program's packages promised their externs — into a native binary.
+fn link(ll_path: string, promised: string) -> int {
     let out = binary_name(ll_path)
-    if avra_shell_exec_status("clang -w -O1 ${ll_path} build/avra_runtime.o -o ${out}") != 0 {
+    if avra_shell_exec_status("clang -w -O1 ${ll_path} build/avra_runtime.o ${promised} -o ${out}") != 0 {
         eprintln("avra: clang failed linking ${ll_path}")
         return 1
     }
