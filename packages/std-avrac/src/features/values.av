@@ -22,9 +22,20 @@ use core.{Reg, Ins, BinOp, Type, TypeId, ExprId, ptr_shape}
 /// A fresh box, its slots pushed in order. `dst` is minted by the
 /// caller, before the first instruction is emitted — registers are
 /// numbered in emission order.
+use features.{MethodCall}
+
 export fn grown_box(cx: LowerCx, dst: Reg, slots: List<Reg>) {
     cx.emit(Ins.CallRt(dst, "avra_array_new", []))
     for r in slots { push_slot(cx, dst, r) }
+}
+
+/// A method answered by ONE runtime call: the receiver, the
+/// arguments, then `extra` — the answer minted last.
+export fn rt_method(cx: LowerCx, mc: MethodCall, callee: string, extra: List<Reg>) -> Reg {
+    let args = [cx.reg_of(mc.subject)].concat([cx.reg_of(a) for a in mc.args]).concat(extra)
+    let dst = cx.result(mc.e)
+    cx.emit(Ins.CallRt(dst, callee, args))
+    dst
 }
 
 /// One more slot.

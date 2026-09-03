@@ -1,0 +1,210 @@
+//! THE STORE'S PROJECTIONS — what a statement declares or carries,
+//! read once and handed out as parts: a binding's name and written
+//! type, a statement's value, a declaration's kind, name, type
+//! parameters and bounds, and the parts a fn, trait, impl, struct,
+//! enum, spec or lambda is made of. Projections are DATA about
+//! variants — one arm per feature's node, no dispatch — and every
+//! pass reads them here, never by matching a node itself.
+
+impl NodeStore {
+    /// A statement's bound name, when it binds one. A PROJECTION
+    /// registry beside the semantics map: one arm per binding
+    /// feature, zero dispatch cost — projections are DATA about
+    /// variants; the trait carries behavior.
+    fn let_name(self, s: StmtId) -> string? {
+        match self.stmt(s) {
+            .Let(name, _, _) -> name,
+            .MutLet(name, _, _) -> name,
+            .For(name, _, _, _, _, _) -> name,
+            .ForEach(_, name, _, _) -> name,
+            .LetElse(name, _, _) -> name,
+            .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .FnDecl(_, _, _, _, _)
+                or .While(_, _) or .IfStmt(_, _, _) or .Return(_)
+                or .Fail(_) or .StructDecl(_, _, _) or .EnumDecl(_, _, _)
+                or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Error -> null,
+        }
+    }
+
+    /// A BINDING's written type, when one was declared — `let` and
+    /// `mut` alike.
+    fn binding_ty(self, s: StmtId) -> TypeRef? {
+        match self.stmt(s) {
+            .Let(_, t, _) -> t,
+            .MutLet(_, t, _) -> t,
+            .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or .FnDecl(_, _, _, _, _)
+                or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _)
+                or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _)
+                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _)
+                or .Spec(_, _) or .Error -> null,
+        }
+    }
+
+    /// A statement's value expression at its OWN position. A body
+    /// that runs later, under a frame, is NOT a value.
+    fn stmt_value(self, s: StmtId) -> ExprId? {
+        match self.stmt(s) {
+            .Let(_, _, v) -> v,
+            .MutLet(_, _, v) -> v,
+            .Assign(_, v) -> v,
+            .ExprStmt(v) -> v,
+            .Discard(v) -> v,
+            .Return(v) -> v,
+            .Fail(v) -> v,
+            .LetElse(_, v, _) -> v,
+            .FnDecl(_, _, _, _, _) or .While(_, _)
+                or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Use(_, _)
+                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Error -> null,
+        }
+    }
+
+    /// A declaration's type parameters — whichever kind declares;
+    /// empty when plain. The ordinal IS the Var identity.
+    fn decl_tparams(self, s: StmtId) -> List<string> {
+        match self.stmt(s) {
+            .FnDecl(_, tparams, _, _, _) -> [t.name for t in tparams],
+            .StructDecl(_, tparams, _) -> tparams,
+            .EnumDecl(_, tparams, _) -> tparams,
+            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or
+            .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or
+            .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or
+            .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Error -> [],
+        }
+    }
+
+    /// A fn's type parameters WITH their bounds — the constrained
+    /// twin of decl_tparams; empty for every other declaring kind.
+    fn decl_tbounds(self, s: StmtId) -> List<Param> {
+        match self.stmt(s) {
+            .FnDecl(_, tparams, _, _, _) -> tparams,
+            _ -> [],
+        }
+    }
+
+    /// Whether control LEAVES through this statement — the line
+    /// after it never runs. A REGISTRY spelling every arm: a new
+    /// statement kind must answer here, so a diverging one cannot
+    /// slip in as a silent `false`.
+    fn diverges(self, s: StmtId) -> bool {
+        match self.stmt(s) {
+            .Return(_) -> true,
+            .Fail(_) -> true,
+            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or
+            .FnDecl(_, _, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
+            .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .LetElse(_, _, _) or
+            .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Error -> false,
+        }
+    }
+
+    /// A lambda's pieces, when the expression is one.
+    fn lambda_parts(self, e: ExprId) -> LambdaParts? {
+        match self.expr(e) {
+            .Lambda(params, body) -> LambdaParts { params: params, body: body },
+            _ -> null,
+        }
+    }
+
+    /// A trait declaration's pieces, when the statement is one.
+    fn trait_parts(self, s: StmtId) -> TraitParts? {
+        match self.stmt(s) {
+            .TraitDecl(name, fns) -> TraitParts { name: name, fns: fns },
+            _ -> null,
+        }
+    }
+
+    /// An impl block's pieces, when the statement is one.
+    fn impl_parts(self, s: StmtId) -> ImplParts? {
+        match self.stmt(s) {
+            .ImplDecl(of, target, fns) -> ImplParts { of: of, target: target, fns: fns },
+            _ -> null,
+        }
+    }
+
+    /// A fn declaration's pieces, when the statement is one — ONE
+    /// projection for the whole variant; callers pick fields.
+    fn fn_parts(self, s: StmtId) -> FnParts? {
+        match self.stmt(s) {
+            .FnDecl(name, tparams, params, ret, body) ->
+                FnParts { name: name, tparams: tparams, params: params, ret: ret, body: body },
+            _ -> null,
+        }
+    }
+
+    /// A type declaration's NAME, when the statement declares one —
+    /// records and enums share the ONE type namespace.
+    fn type_decl_name(self, s: StmtId) -> string? {
+        match self.stmt(s) {
+            .StructDecl(name, _, _) -> name,
+            .EnumDecl(name, _, _) -> name,
+            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _) or
+            .FnDecl(_, _, _, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
+            .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or
+            .LetElse(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Error -> null,
+        }
+    }
+
+    /// An enum declaration's pieces, when the statement is one.
+    fn enum_parts(self, s: StmtId) -> EnumParts? {
+        match self.stmt(s) {
+            .EnumDecl(name, tparams, variants) -> EnumParts { name: name, tparams: tparams, variants: variants },
+            _ -> null,
+        }
+    }
+
+    /// A struct declaration's pieces, when the statement is one.
+    fn struct_parts(self, s: StmtId) -> StructParts? {
+        match self.stmt(s) {
+            .StructDecl(name, tparams, fields) -> StructParts { name: name, tparams: tparams, fields: fields },
+            _ -> null,
+        }
+    }
+
+    /// What a top-level statement DECLARES, or absence — an impl's
+    /// methods are minted by the impl walk, not here.
+    fn declared_kind(self, s: StmtId) -> DeclKind? {
+        if self.fn_parts(s) != null { return DeclKind.Fn }
+        if self.enum_parts(s) != null { return DeclKind.Enum }
+        if self.struct_parts(s) != null { return DeclKind.Record }
+        if self.trait_parts(s) != null { return DeclKind.Trait }
+        null
+    }
+
+    /// A declaring statement's name.
+    fn declared_name(self, s: StmtId) -> string? {
+        self.fn_parts(s)?.name ?? self.type_decl_name(s) ?? self.trait_parts(s)?.name
+    }
+
+    /// A statement that declares rather than runs: a declaration,
+    /// an impl block, a `use` line, or a spec.
+    fn is_declaration(self, s: StmtId) -> bool {
+        self.declared_kind(s) != null || self.impl_parts(s) != null || self.use_parts(s) != null || self.spec_parts(s) != null
+    }
+
+    /// A spec's pieces, when the statement is one.
+    fn spec_parts(self, s: StmtId) -> SpecParts? {
+        match self.stmt(s) {
+            .Spec(name, cases) -> SpecParts { name: name, cases: cases },
+            _ -> null,
+        }
+    }
+}
+
+/// What a lambda carries, projected once.
+export type LambdaParts = { params: List<Param>, body: ExprId }
+
+/// What a trait declaration carries, projected once.
+export type TraitParts = { name: string, fns: List<StmtId> }
+
+/// What an impl block carries, projected once.
+export type ImplParts = { of: string, target: string, fns: List<StmtId> }
+
+/// What a fn declaration carries, projected once.
+export type FnParts = { name: string, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId }
+
+/// What a struct declaration carries, projected once.
+export type StructParts = { name: string, tparams: List<string>, fields: List<Param> }
+
+/// What a spec carries, projected once.
+export type SpecParts = { name: string, cases: List<Case> }
+
+/// What an enum declaration carries, projected once.
+export type EnumParts = { name: string, tparams: List<string>, variants: List<Variant> }

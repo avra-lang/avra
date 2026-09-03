@@ -220,13 +220,7 @@ fn truth(m: Machine, r: Reg) -> bool {
 }
 
 fn int_val(m: Machine, r: Reg) -> int {
-    match value(m, r) {
-        .I(v) -> v,
-        _ -> {
-            defect(m, "a non-int reached arithmetic")
-            0
-        }
-    }
+    whole(m, value(m, r))
 }
 
 fn text_val(m: Machine, v: Val) -> string {
@@ -527,9 +521,9 @@ fn rt_dispatch(m: Machine, callee: string, vals: List<Val>) -> Val {
         .StrIndexOf -> Val.I(text_val(m, vals[0]).index_of(text_val(m, vals[1]))),
         .StrSubstring -> str_substring_val(m, vals),
         .StrSplit -> fresh_array(m, [Val.S(piece) for piece in pieces_of(text_val(m, vals[0]), text_val(m, vals[1]))]),
-        .StrReplace -> Val.S(text_val(m, vals[0]).replace(text_val(m, vals[1]), text_val(m, vals[2]))),
+        .StrReplace -> Val.S(replaced(text_val(m, vals[0]), text_val(m, vals[1]), text_val(m, vals[2]))),
         .StrCharCode -> str_char_code_val(m, vals),
-        .StrTrim -> Val.S(text_val(m, vals[0]).trim()),
+        .StrTrim -> Val.S(trimmed(text_val(m, vals[0]))),
         .Unhosted -> defect_val(m, "a runtime callee the interpreter does not host: `${callee}`"),
     }
 }
@@ -640,6 +634,43 @@ fn pieces_of(s: string, sep: string) -> List<string> {
     }
     if rest.length > 0 { out.push(rest) }
     out
+}
+
+/// Every occurrence of `from` as `to`, cut as the runtime cuts:
+/// an empty `from` changes nothing.
+fn replaced(s: string, from: string, to: string) -> string {
+    if from.length == 0 { return s }
+    pieces_of_all(s, from).join(to)
+}
+
+/// The pieces between EVERY separator — a trailing empty piece
+/// kept, unlike `split` — so a join with `to` is the replacement.
+fn pieces_of_all(s: string, sep: string) -> List<string> {
+    mut out: List<string> = []
+    mut rest = s
+    mut at = rest.index_of(sep)
+    while at >= 0 {
+        out.push(rest.substring(0, at))
+        rest = rest.substring(at + sep.length, rest.length)
+        at = rest.index_of(sep)
+    }
+    out.push(rest)
+    out
+}
+
+/// The text without its surrounding blanks — space, tab, newline
+/// and return, the runtime's set.
+fn trimmed(s: string) -> string {
+    let n = s.length
+    mut lo = 0
+    while lo < n && is_blank(code_at(s, lo)) { lo = lo + 1 }
+    mut hi = n
+    while hi > lo && is_blank(code_at(s, hi - 1)) { hi = hi - 1 }
+    s.substring(lo, hi)
+}
+
+fn is_blank(c: int) -> bool {
+    c == 32 || c == 9 || c == 10 || c == 13
 }
 
 /// The byte at `i` as a code; past the text, the runtime's trap.
@@ -757,19 +788,13 @@ fn slot_unique_val(m: Machine, vals: List<Val>) -> Val {
 }
 
 fn slot_set_val(m: Machine, vals: List<Val>) -> Val {
-    let id: int? = match vals[0] {
-        .A(x) -> x,
-        _ -> null,
-    }
-    let i: int? = match vals[1] {
-        .I(x) -> x,
-        _ -> null,
-    }
-    if id == null || i == null { return defect_val(m, "a non-array slot write") }
-    let at = i!
-    mut arr = m.arrays[id!]
+    with_array(m, vals[0], "a non-array slot write", (id: int) -> slot_written(m, id, whole(m, vals[1]), vals[2]))
+}
+
+fn slot_written(m: Machine, id: int, at: int, v: Val) -> Val {
+    mut arr = m.arrays[id]
     if at < 0 || at >= arr.length { return out_of_bounds(m, at, arr.length) }
-    arr.set(at, vals[2])
+    arr.set(at, v)
     Val.I(0)
 }
 
@@ -781,13 +806,12 @@ fn out_of_bounds(m: Machine, at: int, len: int) -> Val {
 }
 
 fn array_push_val(m: Machine, vals: List<Val>) -> Val {
-    match vals[0] {
-        .A(id) -> {
-            mut arr = m.arrays[id]
-            arr.push(vals[1])
-        }
-        _ -> defect(m, "a push into a non-array"),
-    }
+    with_array(m, vals[0], "a push into a non-array", (id: int) -> pushed(m, id, vals[1]))
+}
+
+fn pushed(m: Machine, id: int, v: Val) -> Val {
+    mut arr = m.arrays[id]
+    arr.push(v)
     Val.I(0)
 }
 
@@ -816,33 +840,21 @@ fn insist_scalar_val(m: Machine, vals: List<Val>) -> Val {
 }
 
 fn array_get_val(m: Machine, vals: List<Val>) -> Val {
-    let id: int? = match vals[0] {
-        .A(x) -> x,
-        _ -> null,
-    }
-    let i: int? = match vals[1] {
-        .I(x) -> x,
-        _ -> null,
-    }
-    if id == null || i == null { return defect_val(m, "a non-array index read") }
-    let at = i!
-    let arr = m.arrays[id!]
+    with_array(m, vals[0], "a read from a non-array", (id: int) -> slot_read_val(m, id, whole(m, vals[1])))
+}
+
+fn slot_read_val(m: Machine, id: int, at: int) -> Val {
+    let arr = m.arrays[id]
     if at < 0 || at >= arr.length { return out_of_bounds(m, at, arr.length) }
     arr[at]
 }
 
 fn array_len_val(m: Machine, vals: List<Val>) -> Val {
-    match vals[0] {
-        .A(id) -> Val.I(m.arrays[id].length),
-        _ -> defect_val(m, "a length of a non-array"),
-    }
+    with_array(m, vals[0], "a length of a non-array", (id: int) -> Val.I(m.arrays[id].length))
 }
 
 fn str_join_val(m: Machine, vals: List<Val>) -> Val {
-    match vals[0] {
-        .A(id) -> Val.S(joined([text_val(m, e) for e in m.arrays[id]], text_val(m, vals[1]))),
-        _ -> defect_val(m, "a join over a non-array"),
-    }
+    with_array(m, vals[0], "a join over a non-array", (id: int) -> Val.S(joined([text_val(m, e) for e in m.arrays[id]], text_val(m, vals[1]))))
 }
 
 /// One printed line lands in the machine's output.

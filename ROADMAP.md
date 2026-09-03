@@ -3492,7 +3492,7 @@ keyword lexes as a NAME, so `-> { return x }` read `return` as an
 identifier and the @expect'd `}` hole-hit. One form, one law.
 
 PARITY RUNG 8 LANDED (2026-09-03) — THE BUILT-IN VOCABULARY, as
-ROWS. Nineteen method rows, each the owning feature's (the seam
+ROWS. Twenty method rows, each the owning feature's (the seam
 rule: a method is DATA — a row of `takes | check | lower` — and a
 runtime fn is a row of `rt_sigs()` plus one C body plus one
 interpreter host arm; nothing dispatches on a name). LISTS

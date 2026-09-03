@@ -15,105 +15,105 @@ fn ir_text(source: string) -> string {
 }
 
 /// THE subject under attack: one carrying variant, one unit.
-fn ab() -> string {
+fn ab_enum() -> string {
     "enum E {\n    a(int)\n    b\n}\n"
 }
 
 spec "features/enums — pattern binds (adversarial)" {
     given "binds against every scope" {
         then "a bind beats a fn PARAM of the same name" {
-            shown("${ab()}fn f(n: int) -> int {\n    match E.a(7) {\n        .a(n) -> n\n        .b -> 0\n    }\n}\nf(35)") == "7"
+            shown("${ab_enum()}fn f(n: int) -> int {\n    match E.a(7) {\n        .a(n) -> n\n        .b -> 0\n    }\n}\nf(35)") == "7"
         }
         then "a bind beats an outer let, which survives the arm" {
-            shown("let n = 100\n${ab()}let r = match E.a(7) {\n    .a(n) -> n\n    .b -> 0\n}\nr + n") == "107"
+            shown("let n = 100\n${ab_enum()}let r = match E.a(7) {\n    .a(n) -> n\n    .b -> 0\n}\nr + n") == "107"
         }
         then "three nested binds of one name: the innermost wins" {
-            shown("${ab()}match E.a(1) {\n    .a(n) -> match E.a(2) {\n        .a(n) -> match E.a(39) { .a(n) -> n, .b -> 0 }\n        .b -> 0\n    }\n    .b -> 0\n}") == "39"
+            shown("${ab_enum()}match E.a(1) {\n    .a(n) -> match E.a(2) {\n        .a(n) -> match E.a(39) { .a(n) -> n, .b -> 0 }\n        .b -> 0\n    }\n    .b -> 0\n}") == "39"
         }
         then "an outer bind survives a nested match that rebinds" {
-            shown("${ab()}match E.a(40) {\n    .a(n) -> match E.a(2) { .a(m) -> m, .b -> 0 } + n\n    .b -> 0\n}") == "42"
+            shown("${ab_enum()}match E.a(40) {\n    .a(n) -> match E.a(2) { .a(m) -> m, .b -> 0 } + n\n    .b -> 0\n}") == "42"
         }
         then "sibling arms may reuse one bind name" {
             shown("enum E {\n    a(int)\n    b(int)\n}\nmatch E.b(41) {\n    .a(v) -> v\n    .b(v) -> v + 1\n}") == "42"
         }
         then "a bind may take its own variant's name" {
-            shown("${ab()}match E.a(7) {\n    .a(a) -> a\n    .b -> 0\n}") == "7"
+            shown("${ab_enum()}match E.a(7) {\n    .a(a) -> a\n    .b -> 0\n}") == "7"
         }
         then "a bind may take the enum's name — types are a separate namespace" {
-            shown("${ab()}match E.a(9) {\n    .a(E) -> E\n    .b -> 0\n}") == "9"
+            shown("${ab_enum()}match E.a(9) {\n    .a(E) -> E\n    .b -> 0\n}") == "9"
         }
         then "a bind beats a fn name for the arm, and the fn still calls" {
-            shown("fn n(v: int) -> int { v }\n${ab()}match E.a(7) {\n    .a(n) -> n + n(1)\n    .b -> 0\n}") == "8"
+            shown("fn n(v: int) -> int { v }\n${ab_enum()}match E.a(7) {\n    .a(n) -> n + n(1)\n    .b -> 0\n}") == "8"
         }
         then "a bind dies with its arm" {
-            refusals("${ab()}match E.a(1) {\n    .a(n) -> n\n    .b -> n\n}") == 1
+            refusals("${ab_enum()}match E.a(1) {\n    .a(n) -> n\n    .b -> n\n}") == 1
         }
     }
     given "binds in the bind slot" {
         then "a keyword refuses as a bind name" {
-            let a = analyze_source("${ab()}match E.a(1) {\n    .a(match) -> 1\n    .b -> 0\n}")
+            let a = analyze_source("${ab_enum()}match E.a(1) {\n    .a(match) -> 1\n    .b -> 0\n}")
             a.diagnostics.length == 1 && a.report().contains("`match` is a keyword")
         }
         then "`_` in the payload slot is the hole — the arm accepts the variant whole" {
-            shown("${ab()}match E.a(1) {\n    .a(_) -> 1\n    .b -> 0\n}") == "1"
+            shown("${ab_enum()}match E.a(1) {\n    .a(_) -> 1\n    .b -> 0\n}") == "1"
         }
         // today's truth: 2 each, for the eight malformed binds below — the
         // bind fails the match's `}`, then the stmt's BREAK cascades
         then "a literal in the payload slot is a test — the variant is not covered whole" {
-            refused_with("${ab()}match E.a(1) { .a(1) -> 1, .b -> 0 }", "`match` on `E` must handle `.a`")
+            refused_with("${ab_enum()}match E.a(1) { .a(1) -> 1, .b -> 0 }", "`match` on `E` must handle `.a`")
         }
         then "empty parens refuse — a bind slot binds something" {
-            refusals("${ab()}match E.a(1) { .a() -> 1, .b -> 0 }") == 2
+            refusals("${ab_enum()}match E.a(1) { .a() -> 1, .b -> 0 }") == 2
         }
         then "two patterns for one payload refuse — the arity is the variant's" {
-            refused_with("${ab()}match E.a(1) { .a(n, m) -> 1, .b -> 0 }", "`.a` carries 1, the pattern names 2")
+            refused_with("${ab_enum()}match E.a(1) { .a(n, m) -> 1, .b -> 0 }", "`.a` carries 1, the pattern names 2")
         }
         then "a trailing comma refuses" {
-            refusals("${ab()}match E.a(1) { .a(n,) -> 1, .b -> 0 }") == 2
+            refusals("${ab_enum()}match E.a(1) { .a(n,) -> 1, .b -> 0 }") == 2
         }
         then "parens around the bind refuse" {
-            refusals("${ab()}match E.a(1) { .a((n)) -> 1, .b -> 0 }") == 2
+            refusals("${ab_enum()}match E.a(1) { .a((n)) -> 1, .b -> 0 }") == 2
         }
         then "a bind with no arrow refuses" {
-            refusals("${ab()}match E.a(1) { .a(n) 1, .b -> 0 }") == 2
+            refusals("${ab_enum()}match E.a(1) { .a(n) 1, .b -> 0 }") == 2
         }
         then "an unclosed bind refuses" {
-            refusals("${ab()}match E.a(1) { .a(n -> 1, .b -> 0 }") == 2
+            refusals("${ab_enum()}match E.a(1) { .a(n -> 1, .b -> 0 }") == 2
         }
         then "a bind with no value refuses" {
-            refusals("${ab()}match E.a(1) { .a(n) ->, .b -> 0 }") == 2
+            refusals("${ab_enum()}match E.a(1) { .a(n) ->, .b -> 0 }") == 2
         }
         then "a unit variant carries nothing to bind — ONE refusal" {
-            refusals("${ab()}match E.a(1) {\n    .a(n) -> n\n    .b(x) -> 0\n}") == 1
+            refusals("${ab_enum()}match E.a(1) {\n    .a(n) -> n\n    .b(x) -> 0\n}") == 1
         }
         then "an unknown variant with a bind refuses ONCE" {
-            refusals("${ab()}match E.a(1) {\n    .a(n) -> n\n    .zz(m) -> 0\n    .b -> 0\n}") == 1
+            refusals("${ab_enum()}match E.a(1) {\n    .a(n) -> n\n    .zz(m) -> 0\n    .b -> 0\n}") == 1
         }
         then "a repeated arm refuses once, binds or not" {
-            refusals("${ab()}match E.a(1) {\n    .a(n) -> n\n    .a(m) -> m\n    .b -> 0\n}") == 1
+            refusals("${ab_enum()}match E.a(1) {\n    .a(n) -> n\n    .a(m) -> m\n    .b -> 0\n}") == 1
         }
         then "a missing arm still refuses when the others bind" {
-            refusals("${ab()}match E.a(1) {\n    .a(n) -> n\n}") == 1
+            refusals("${ab_enum()}match E.a(1) {\n    .a(n) -> n\n}") == 1
         }
         then "a bind is its PAYLOAD's type, not the enum's" {
-            refusals("${ab()}match E.a(1) {\n    .a(n) -> match n { .a(m) -> m, .b -> 0 }\n    .b -> 0\n}") == 1
+            refusals("${ab_enum()}match E.a(1) {\n    .a(n) -> match n { .a(m) -> m, .b -> 0 }\n    .b -> 0\n}") == 1
         }
     }
     given "binds crossing every other feature" {
         then "a bind fills an interpolation hole" {
-            shown("${ab()}match E.a(7) {\n    .a(n) -> \"got $" + "{n}\"\n    .b -> \"none\"\n}") == "got 7"
+            shown("${ab_enum()}match E.a(7) {\n    .a(n) -> \"got $" + "{n}\"\n    .b -> \"none\"\n}") == "got 7"
         }
         then "a bind steers an if" {
-            shown("${ab()}match E.a(7) {\n    .a(n) -> if n > 3 { 42 } else { 0 }\n    .b -> 0\n}") == "42"
+            shown("${ab_enum()}match E.a(7) {\n    .a(n) -> if n > 3 { 42 } else { 0 }\n    .b -> 0\n}") == "42"
         }
         then "a bind fills a struct field" {
-            shown("type P = { x: int }\n${ab()}let p = match E.a(42) {\n    .a(n) -> P { x: n }\n    .b -> P { x: 0 }\n}\np.x") == "42"
+            shown("type P = { x: int }\n${ab_enum()}let p = match E.a(42) {\n    .a(n) -> P { x: n }\n    .b -> P { x: 0 }\n}\np.x") == "42"
         }
         then "a bind feeds `with`" {
-            shown("type P = { x: int, y: int }\n${ab()}let base = P { x: 1, y: 2 }\nlet p = match E.a(42) {\n    .a(n) -> base with { x: n }\n    .b -> base\n}\np.x") == "42"
+            shown("type P = { x: int, y: int }\n${ab_enum()}let base = P { x: 1, y: 2 }\nlet p = match E.a(42) {\n    .a(n) -> base with { x: n }\n    .b -> base\n}\np.x") == "42"
         }
         then "a bind rebuilds its own enum" {
-            shown("${ab()}match E.a(20) {\n    .a(n) -> match E.a(n + 1) { .a(m) -> m + 21, .b -> 0 }\n    .b -> 0\n}") == "42"
+            shown("${ab_enum()}match E.a(20) {\n    .a(n) -> match E.a(n + 1) { .a(m) -> m + 21, .b -> 0 }\n    .b -> 0\n}") == "42"
         }
         then "a bind drives recursion" {
             shown("enum N {\n    more(int)\n    done\n}\nfn walk(n: N) -> int {\n    match n {\n        .more(k) -> if k == 0 { 0 } else { k + walk(N.more(k - 1)) }\n        .done -> 0\n    }\n}\nwalk(N.more(4))") == "10"
@@ -148,7 +148,7 @@ spec "features/enums — pattern binds (adversarial)" {
   release r1
 }
 ret 0"""
-            ir_text("${ab()}match E.a(21) {\n    .a(n) -> n * 2\n    .b -> 0\n}") == expected
+            ir_text("${ab_enum()}match E.a(21) {\n    .a(n) -> n * 2\n    .b -> 0\n}") == expected
         }
         then "a called subject is lowered ONCE — the arms read one value" {
             let expected = """fn mk() -> E
@@ -180,7 +180,7 @@ scope application {
   release r0
 }
 ret 0"""
-            ir_text("${ab()}fn mk() -> E { E.a(1) }\nmatch mk() {\n    .a(n) -> n\n    .b -> 0\n}") == expected
+            ir_text("${ab_enum()}fn mk() -> E { E.a(1) }\nmatch mk() {\n    .a(n) -> n\n    .b -> 0\n}") == expected
         }
     }
 }

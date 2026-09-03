@@ -2,10 +2,11 @@
 // file, siblings see each other, `use` reaches a module's exports,
 // and every failed `use` speaks in its own words.
 use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, visible, file_id, module_of, all_files, program}
+use language.{Workspace}
 
 /// A small package: a root file, a root sibling, a directory module
-/// with two files, and a lone-file module.
-fn files() -> Map<string, string> {
+/// with two ws_files, and a lone-file module.
+fn ws_files() -> Map<string, string> {
     {
         "/w/src/main.av": "use util.{twice, Pair}\nuse solo.{once}\nlet p = Pair { a: 1, b: 2 }\ntwice(21) + once(1) + helper(3)\n",
         "/w/src/helper.av": "fn helper(n: int) -> int {\n    n\n}\n",
@@ -20,12 +21,12 @@ fn names() -> List<string> {
 }
 
 fn workspace() -> Workspace {
-    new_workspace(memory_host(files(), names()), "/w", avra())
+    new_workspace(memory_host(ws_files(), names()), "/w", avra())
 }
 
 /// The package with its root file replaced.
 fn with_main(text: string) -> Workspace {
-    mut fs = files()
+    mut fs = ws_files()
     fs.set("/w/src/main.av", text)
     new_workspace(memory_host(fs, names()), "/w", avra())
 }
@@ -65,7 +66,7 @@ spec "language/workspace" {
             analyze_file(workspace(), "/w/src/main.av").report() == ""
         }
     }
-    given "typed across files — the table is one" {
+    given "typed across ws_files — the table is one" {
         then "a foreign fn's parameter judges the argument" {
             main_refuses("use util.{twice}\ntwice(\"x\")\n", "`int`")
         }
@@ -94,7 +95,7 @@ spec "language/workspace" {
             program(with_main("use util.{twice}\ntwice(2)\n"), "/w/src/main.av").lowered().fns.any(it.name == "util.ident") == false
         }
     }
-    given "the program runs across files — one worklist" {
+    given "the program runs across ws_files — one worklist" {
         then "a sibling, a directory module, a lone-file module, and a generic specialized in its home" {
             program(with_main("use util.{twice, ident}\nuse solo.{once}\ntwice(20) + ident(1) + once(1) + helper(1)\n"), "/w/src/main.av").run() == Result.Ok("43")
         }
@@ -108,7 +109,7 @@ spec "language/workspace" {
             program(with_main("use util.{Box}\nlet b = Box { v: 9 }\nb.v\n"), "/w/src/main.av").run() == Result.Ok("9")
         }
         then "a run-time statement outside the entry refuses, naming the entry" {
-            mut fs = files()
+            mut fs = ws_files()
             fs.set("/w/src/helper.av", "fn helper(n: int) -> int {\n    n\n}\nhelper(2)\n")
             let ws = new_workspace(memory_host(fs, names()), "/w", avra())
             let p = program(ws, "/w/src/main.av")

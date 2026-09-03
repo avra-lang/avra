@@ -3,7 +3,7 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, StructSig, DeclId}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId}
 use diagnostics.{Diag, refusal}
 
 /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -330,6 +330,20 @@ fn field_slot_lawful(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> bo
 export fn refuses_void_value(cx: TypeCx, e: ExprId) -> bool {
     if !(cx.shape_at(e) is .Void) { return false }
     spoken(cx, refusal("type.mismatch", cx.loc_of(e), "this answers nothing — there is nothing to bind", "answers nothing", "a mutation is a statement; drop the binding"))
+    true
+}
+
+/// THE SEATS every method row shares: exactly `wants.length`
+/// arguments, each accepted by its seat — a wrong argument speaks
+/// and the row still answers; a wrong count absorbs.
+export fn seated(cx: TypeCx, mc: MethodCall, name: string, wants: List<TypeId>) -> bool {
+    if mc.args.length != wants.length {
+        wrong_arity(cx, mc.e, name, wants.length, mc.args.length)
+        return false
+    }
+    for (j, w) in wants.enumerate() {
+        if !accepts(cx, mc.args[j], w) { wrong_argument(cx, name, j, w, mc.args[j]) }
+    }
     true
 }
 

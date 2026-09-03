@@ -10,7 +10,7 @@
 //! Early exit is the BREAK IDIOM: store the index past the length
 //! and the condition ends the loop.
 use core.{ExprId, Reg, Ins, Type, TypeId, BinOp, UnOp, Level}
-use features.{LowerCx, MethodCall, lower_defect, grown_box, push_slot, slot_read, absent_of, adopted, carried_type, same_value, void_arm, void_close, unique_box, length_word}
+use features.{LowerCx, MethodCall, lower_defect, grown_box, push_slot, slot_read, absent_of, adopted, carried_type, same_value, void_arm, void_close, unique_box, length_word, rt_method}
 
 // ── The rows' rules ──
 
@@ -93,9 +93,9 @@ export fn lower_is_empty(cx: LowerCx, mc: MethodCall) -> Reg {
 export fn lower_first(cx: LowerCx, mc: MethodCall) -> Reg { edge(cx, mc, false) }
 export fn lower_last(cx: LowerCx, mc: MethodCall) -> Reg { edge(cx, mc, true) }
 
-export fn lower_concat(cx: LowerCx, mc: MethodCall) -> Reg { copied(cx, mc, "avra_array_concat") }
-export fn lower_slice(cx: LowerCx, mc: MethodCall) -> Reg { copied(cx, mc, "avra_array_slice") }
-export fn lower_join(cx: LowerCx, mc: MethodCall) -> Reg { copied(cx, mc, "avra_str_join") }
+export fn lower_concat(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_array_concat", []) }
+export fn lower_slice(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_array_slice", []) }
+export fn lower_join(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_join", []) }
 
 /// `xs.enumerate()` is the list — the paired `for` head does the
 /// pairing.
@@ -148,7 +148,7 @@ fn mapped(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let f = boxed(cx, s.arg)
     let w = opened(cx, mc.subject, s.elem)
     turn_open(cx, w)
-    let v = turn_elem(cx, w)
+    let v = turn_elem(cx, w, turn_index(cx, w))
     push_slot(cx, out, turn_call(cx, f, v, mapped_to(cx, mc.e)))
     turn_close(cx, w)
     out
@@ -161,7 +161,7 @@ fn kept(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let f = boxed(cx, s.arg)
     let w = opened(cx, mc.subject, s.elem)
     turn_open(cx, w)
-    let v = turn_elem(cx, w)
+    let v = turn_elem(cx, w, turn_index(cx, w))
     cx.emit(Ins.IfStart(turn_call(cx, f, v, bool_ty(cx))))
     push_slot(cx, out, v)
     void_arm(cx)
@@ -178,7 +178,7 @@ fn found(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let f = boxed(cx, s.arg)
     let w = opened(cx, mc.subject, s.elem)
     turn_open(cx, w)
-    let v = turn_elem(cx, w)
+    let v = turn_elem(cx, w, turn_index(cx, w))
     cx.emit(Ins.IfStart(turn_call(cx, f, v, bool_ty(cx))))
     cx.emit(Ins.Store(cell, adopted(cx, opt, false, v)))
     early_exit(cx, w)
@@ -196,7 +196,7 @@ fn judged(cx: LowerCx, mc: MethodCall, s: Seat, all: bool) -> Reg {
     let f = boxed(cx, s.arg)
     let w = opened(cx, mc.subject, s.elem)
     turn_open(cx, w)
-    let v = turn_elem(cx, w)
+    let v = turn_elem(cx, w, turn_index(cx, w))
     let p = turn_call(cx, f, v, bool_ty(cx))
     cx.emit(Ins.IfStart(flipping(cx, p, all)))
     store_bool(cx, cell, !all)
@@ -214,7 +214,7 @@ fn held(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let needle = cx.reg_of(s.arg)
     let w = opened(cx, mc.subject, s.elem)
     turn_open(cx, w)
-    let v = turn_elem(cx, w)
+    let v = turn_elem(cx, w, turn_index(cx, w))
     cx.emit(Ins.IfStart(same_value(cx, v, needle, s.elem)))
     store_bool(cx, cell, true)
     early_exit(cx, w)
@@ -227,17 +227,13 @@ fn held(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
 /// `xs.index_of(v)` — an int cell seeded -1; the first equal
 /// element stores its index and ends the walk.
 fn position(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
-    let miss = const_int(cx, 0 - 1)
-    let cell = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Alloca(cell))
-    cx.emit(Ins.Store(cell, miss))
+    let cell = seeded_cell(cx, cx.view.types.intern(Type.Int), const_int(cx, -1))
     let needle = cx.reg_of(s.arg)
     let w = opened(cx, mc.subject, s.elem)
     turn_open(cx, w)
-    let v = turn_elem(cx, w)
+    let here = turn_index(cx, w)
+    let v = turn_elem(cx, w, here)
     cx.emit(Ins.IfStart(same_value(cx, v, needle, s.elem)))
-    let here = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Load(here, w.idx))
     cx.emit(Ins.Store(cell, here))
     early_exit(cx, w)
     void_arm(cx)
@@ -266,15 +262,6 @@ fn edge(cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
     loaded(cx, mc.e, cell)
 }
 
-/// A copy the runtime makes: the receiver and the arguments, one
-/// call, an owned answer.
-fn copied(cx: LowerCx, mc: MethodCall, callee: string) -> Reg {
-    let args = [cx.reg_of(mc.subject)].concat([cx.reg_of(a) for a in mc.args])
-    let dst = cx.result(mc.e)
-    cx.emit(Ins.CallRt(dst, callee, args))
-    dst
-}
-
 // ── The skeleton ────────────────────────────────────────────────
 
 /// The fn box and its code pointer, minted before the walk opens.
@@ -287,10 +274,7 @@ fn boxed(cx: LowerCx, f: ExprId) -> Box {
 fn opened(cx: LowerCx, subject: ExprId, elem: TypeId) -> Walk {
     let xs = cx.reg_of(subject)
     let len = measured(cx, subject)
-    let zero = const_int(cx, 0)
-    let idx = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Alloca(idx))
-    cx.emit(Ins.Store(idx, zero))
+    let idx = seeded_cell(cx, cx.view.types.intern(Type.Int), const_int(cx, 0))
     Walk { xs: xs, len: len, idx: idx, elem: elem }
 }
 
@@ -305,10 +289,15 @@ fn turn_open(cx: LowerCx, w: Walk) {
     cx.emit(Ins.ScopeEnter(Level.Application))
 }
 
-/// This turn's element — a RUNTIME index, so the read stays raw.
-fn turn_elem(cx: LowerCx, w: Walk) -> Reg {
+/// This turn's index, read out of the cell.
+fn turn_index(cx: LowerCx, w: Walk) -> Reg {
     let here = cx.mint_shape(Type.Int)
     cx.emit(Ins.Load(here, w.idx))
+    here
+}
+
+/// This turn's element — a RUNTIME index, so the read stays raw.
+fn turn_elem(cx: LowerCx, w: Walk, here: Reg) -> Reg {
     let v = cx.mint_ty(w.elem)
     cx.emit(Ins.CallRt(v, "avra_array_get", [w.xs, here]))
     v
@@ -380,29 +369,30 @@ fn decremented(cx: LowerCx, n: Reg) -> Reg {
     r
 }
 
-/// A bool cell seeded with `seed`.
-fn bool_cell(cx: LowerCx, seed: bool) -> Reg {
-    let v = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.ConstBool(v, seed))
-    let cell = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Alloca(cell))
-    cx.emit(Ins.Store(cell, v))
-    cell
+fn const_bool(cx: LowerCx, b: bool) -> Reg {
+    let r = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.ConstBool(r, b))
+    r
 }
 
-fn store_bool(cx: LowerCx, cell: Reg, b: bool) {
-    let v = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.ConstBool(v, b))
-    cx.emit(Ins.Store(cell, v))
-}
-
-/// An Opt cell seeded absent.
-fn absent_cell(cx: LowerCx, opt: TypeId) -> Reg {
-    let seed = absent_of(cx, opt)
-    let cell = cx.mint_ty(opt)
+/// A cell of `ty`, seeded — the seed minted before the cell.
+fn seeded_cell(cx: LowerCx, ty: TypeId, seed: Reg) -> Reg {
+    let cell = cx.mint_ty(ty)
     cx.emit(Ins.Alloca(cell))
     cx.emit(Ins.Store(cell, seed))
     cell
+}
+
+fn bool_cell(cx: LowerCx, seed: bool) -> Reg {
+    seeded_cell(cx, bool_ty(cx), const_bool(cx, seed))
+}
+
+fn store_bool(cx: LowerCx, cell: Reg, b: bool) {
+    cx.emit(Ins.Store(cell, const_bool(cx, b)))
+}
+
+fn absent_cell(cx: LowerCx, opt: TypeId) -> Reg {
+    seeded_cell(cx, opt, absent_of(cx, opt))
 }
 
 /// The node's answer, read out of its cell.

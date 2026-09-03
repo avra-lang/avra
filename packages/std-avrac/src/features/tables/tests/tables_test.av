@@ -4,38 +4,38 @@ use @std.avrac.language.{analyze_source}
 use @std.avrac.testing.{shown, refused_with, refusals}
 
 /// A three-column row type.
-fn row() -> string {
+fn row_decl() -> string {
     "type Row = { name: string, n: int, on: bool }\n"
 }
 
 spec "features/tables" {
     given "a table is a list of row literals" {
         then "two rows read back" {
-            shown("${row()}let rows = table<Row> {\n    name | n | on\n    \"a\"  | 1 | true\n    \"bb\" | 2 | false\n}\n\"" + "$" + "{rows.length} " + "$" + "{rows[1].name} " + "$" + "{rows[0].n} " + "$" + "{rows[1].on}\"") == "2 bb 1 false"
+            shown("${row_decl()}let rows = table<Row> {\n    name | n | on\n    \"a\"  | 1 | true\n    \"bb\" | 2 | false\n}\n\"" + "$" + "{rows.length} " + "$" + "{rows[1].name} " + "$" + "{rows[0].n} " + "$" + "{rows[1].on}\"") == "2 bb 1 false"
         }
         then "columns follow the header's order, not the declaration's" {
-            shown("${row()}let rows = table<Row> {\n    on    | name  | n\n    false | \"z\" | 9\n}\nrows[0].n") == "9"
+            shown("${row_decl()}let rows = table<Row> {\n    on    | name  | n\n    false | \"z\" | 9\n}\nrows[0].n") == "9"
         }
         then "cells are expressions — a fn name is a fn value" {
             shown("type R = { k: string, f: fn(int) -> int }\nfn dbl(x: int) -> int {\n    x * 2\n}\nlet rows = table<R> {\n    k     | f\n    \"d\" | dbl\n}\nrows[0].f(21)") == "42"
         }
         then "an empty table is `[]` — a declared binding adopts it" {
-            shown("${row()}let rows: List<Row> = table<Row> {\n    name | n | on\n}\nrows.length") == "0"
+            shown("${row_decl()}let rows: List<Row> = table<Row> {\n    name | n | on\n}\nrows.length") == "0"
         }
     }
     given "the refusals are the struct literal's" {
         then "a cell of the wrong type" {
-            refused_with("${row()}let rows = table<Row> {\n    name | n   | on\n    \"a\"  | \"x\" | true\n}\n2", "field `n` is `int`, this is `string`")
+            refused_with("${row_decl()}let rows = table<Row> {\n    name | n   | on\n    \"a\"  | \"x\" | true\n}\n2", "field `n` is `int`, this is `string`")
         }
         then "a header naming no field — and the field it displaced" {
-            let a = analyze_source("${row()}let rows = table<Row> {\n    name | size | on\n    \"a\"  | 1    | true\n}\n2")
+            let a = analyze_source("${row_decl()}let rows = table<Row> {\n    name | size | on\n    \"a\"  | 1    | true\n}\n2")
             a.diagnostics.length == 2 && a.report().contains("`Row` has no field `size`")
         }
         then "a row short a cell names its ordinal" {
-            refused_with("${row()}let rows = table<Row> {\n    name | n | on\n    \"a\"  | 1 | true\n    \"b\"  | 2\n}\n2", "row 2 has 2 cells, and the header names 3 columns")
+            refused_with("${row_decl()}let rows = table<Row> {\n    name | n | on\n    \"a\"  | 1 | true\n    \"b\"  | 2\n}\n2", "row 2 has 2 cells, and the header names 3 columns")
         }
         then "a header missing fields — one voice per field, the struct law's" {
-            let a = analyze_source("${row()}let rows = table<Row> {\n    name | n\n    \"a\"  | 1\n}\n2")
+            let a = analyze_source("${row_decl()}let rows = table<Row> {\n    name | n\n    \"a\"  | 1\n}\n2")
             a.diagnostics.length == 1 && a.report().contains("`Row` needs field `on`")
         }
         then "a row type that is not declared" {

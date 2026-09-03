@@ -554,12 +554,8 @@ int64_t avra_array_pop(void* arr) {
     AvraArray* a = (AvraArray*)arr;
     if (a->len == 0) avra_trap("pop on an empty list");
     a->len--;
-    int64_t v = a->data[a->len];
-    if (a->owned[a->len]) {
-        a->owned[a->len] = 0;
-        avra_rc_release((void*)(uintptr_t)v);
-    }
-    return v;
+    if (a->owned[a->len]) avra_trap("a managed slot popped as a scalar");
+    return a->data[a->len];
 }
 
 void* avra_array_pop_owned(void* arr) {
@@ -653,13 +649,13 @@ int64_t avra_str_index_of(const char* s, const char* needle) {
 }
 
 // The byte at `i` as a code — a trap past the text, worded like a
-// list's.
+// list's. The text is measured only as far as `i`, so a scan that
+// reads every byte stays linear; the trap alone measures it whole.
 int64_t avra_str_char_code(const char* s, int64_t i) {
-    int64_t n = (int64_t)strlen(s);
-    if (i < 0 || i >= n) {
+    if (i < 0 || strnlen(s, (size_t)i + 1) <= (size_t)i) {
         char msg[80];
         snprintf(msg, sizeof msg, "index %lld is out of bounds (length %lld)",
-                 (long long)i, (long long)n);
+                 (long long)i, (long long)strlen(s));
         avra_trap(msg);
     }
     return (unsigned char)s[i];
@@ -689,7 +685,7 @@ const char* avra_str_replace(const char* s, const char* from, const char* to) {
     char* buf = (char*)malloc(n + count * tl - count * fl + 1);
     char* w = buf;
     const char* r = s;
-    for (const char* p = strstr(r, from); p; p = strstr(r, from)) {
+    for (const char* p; (p = strstr(r, from)) != NULL;) {
         memcpy(w, r, (size_t)(p - r));
         w += p - r;
         memcpy(w, to, tl);

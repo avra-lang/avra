@@ -3,7 +3,7 @@
 //! scans, the growth words and the copies, each a row's rule; the
 //! receiver is always a list because the row's `takes` said so.
 use core.{ExprId, TypeId, Type, Arrow, LambdaParts}
-use features.{TypeCx, MethodCall, spoken, this_is, accepts, wrong_argument, wrong_arity, slot_worthy, slice_promise, not_a_place_call, not_mut_call, TypeArgs, unmeasurable_empty, comparable}
+use features.{TypeCx, MethodCall, spoken, this_is, accepts, slot_worthy, slice_promise, not_a_place_call, not_mut_call, TypeArgs, unmeasurable_empty, comparable, seated}
 use diagnostics.{refusal}
 
 /// The empty literal takes the rows too — each rule refuses it in
@@ -124,10 +124,12 @@ export fn check_slice(cx: TypeCx, mc: MethodCall) -> TypeId {
     cx.type_at(mc.subject)
 }
 
-/// `xs.enumerate()` — the list itself: a paired `for` head reads
-/// the index beside the element, and this word names that walk.
+/// `xs.enumerate()` — the list itself, under a paired `for` head
+/// that reads the index beside the element; anywhere else it would
+/// promise pairs the language has no values for, so it refuses.
 export fn check_enumerate(cx: TypeCx, mc: MethodCall) -> TypeId {
     if elem_held(cx, mc, "enumerate") == null || !seated(cx, mc, "enumerate", []) { return cx.error_type }
+    if !cx.paired(mc.e) { return unpaired_enumerate(cx, mc.e) }
     cx.type_at(mc.subject)
 }
 
@@ -160,24 +162,9 @@ fn opened_place(cx: TypeCx, mc: MethodCall, name: string) -> bool {
     false
 }
 
-/// The seats: exactly `wants.length` arguments, each accepted by
-/// its seat — a wrong argument speaks and the row still answers.
-fn seated(cx: TypeCx, mc: MethodCall, name: string, wants: List<TypeId>) -> bool {
-    if mc.args.length != wants.length {
-        wrong_arity(cx, mc.e, name, wants.length, mc.args.length)
-        return false
-    }
-    // LICENSED I3: seat pairs; comprehensions cannot destructure enumerate
-    for (j, w) in wants.enumerate() {
-        if !accepts(cx, mc.args[j], w) { wrong_argument(cx, name, j, w, mc.args[j]) }
-    }
-    true
-}
-
 fn int_type(cx: TypeCx) -> TypeId {
     cx.view.types.intern(Type.Int)
 }
-
 
 // ── The walk prelude ──
 
@@ -255,6 +242,10 @@ export fn check_length(cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
 }
 
 // ── The voices ──
+
+fn unpaired_enumerate(cx: TypeCx, e: ExprId) -> TypeId {
+    spoken(cx, refusal("type.list_element", cx.loc_of(e), "`enumerate` pairs only under a paired `for` head — pairs as values arrive with tuples", "enumerated here", "write `for (i, x) in xs.enumerate() { … }`"))
+}
 
 fn scans_by_value(cx: TypeCx, e: ExprId, name: string, elem: TypeId) -> TypeId {
     spoken(cx, refusal("type.list_element", cx.loc_of(e), "`${name}` scans by value — scalars and text for now, this list holds `${cx.view.types.name_of(elem)}`", "scanned here", "spell the scan — `xs.any(same(it))` with the fields you mean"))

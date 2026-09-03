@@ -2,11 +2,9 @@
 // rule with branches in first-appearance order — and the executor
 // refuses an unmerged grammar, so silent shadowing is unrepresentable.
 use @std.avrac.core.{Span}
-use @std.avrac.grammar.{
-    Grammar, Captured, RunOutcome, parse_grammar, lex_grammar, run_grammar,
-}
+use @std.avrac.grammar.{Grammar, Captured, RunOutcome, parse_grammar, lex_grammar, run_grammar}
 
-fn parsed(src: string) -> Grammar {
+fn composed(src: string) -> Grammar {
     parse_grammar(src).grammar!
 }
 
@@ -36,34 +34,34 @@ fn run_merged(g: Grammar, src: string) -> string {
 spec "grammar/compose" {
     given "same-name rules across fragments" {
         then "they merge into one rule, branches in first-appearance order" {
-            let g = parsed("s = x:NAME -> f(x)\ns = v:NUMBER -> g(v)").merged()
+            let g = composed("s = x:NAME -> f(x)\ns = v:NUMBER -> g(v)").merged()
             g.rules.length == 1 && g.rules[0].body.branches.length == 2
         }
         then "distinct rules pass through untouched" {
-            let g = parsed("a = NAME\nb = NUMBER").merged()
+            let g = composed("a = NAME\nb = NUMBER").merged()
             g.rules.length == 2 && g.rules[0].name == "a" && g.rules[1].name == "b"
         }
         then "interleaved declarations keep first-appearance rule order" {
-            let g = parsed("a = x:NAME -> f(x)\nb = STRING\na = v:NUMBER -> g(v)").merged()
+            let g = composed("a = x:NAME -> f(x)\nb = STRING\na = v:NUMBER -> g(v)").merged()
             g.rules.length == 2 && g.rules[0].name == "a" &&
                 g.rules[0].body.branches.length == 2 && g.start == "a"
         }
     }
     given "the executor over a merged alternation" {
         then "branches try in declaration order across fragments" {
-            let g = parsed("s = v:\"x\" BREAK -> first(v)\ns = n:NAME BREAK -> second(n)")
+            let g = composed("s = v:\"x\" BREAK -> first(v)\ns = n:NAME BREAK -> second(n)")
             run_merged(g, "x") == "first:x" && run_merged(g, "y") == "second:y"
         }
     }
     given "an unmerged grammar" {
         then "duplicate declarations are a defect naming the rule" {
-            let g = parsed("s = NAME\ns = NUMBER")
+            let g = composed("s = NAME\ns = NUMBER")
             let ds = g.defects()
             ds.length == 1 && ds[0].in_rule == "s" &&
                 ds[0].message == "declared more than once — merge same-name rules first"
         }
         then "the executor refuses to run it" {
-            let g = parsed("s = n:NAME BREAK -> only(n)\ns = NUMBER")
+            let g = composed("s = n:NAME BREAK -> only(n)\ns = NUMBER")
             let o = run_grammar<string>(g, lex_grammar("y").tokens, name_build)
             o.result == null && o.diagnostics.length == 1
         }

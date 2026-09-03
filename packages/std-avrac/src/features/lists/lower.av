@@ -1,7 +1,7 @@
 //! A list lowers as the runtime aggregate: one `avra_array_new`,
 //! then a push per element — the CallRt escape hatch carrying the
 //! whole feature, zero new instructions.
-use core.{BinOp, Level, Type, ExprId, Reg}
+use core.{ExprId, Reg, Ins, TypeId}
 use features.{void_arm, void_close, push_slot, LowerCx, grown_box}
 
 fn list_reg(cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
@@ -11,32 +11,17 @@ fn list_reg(cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
     dst
 }
 
-/// THE COMPREHENSION LOWERED: a fresh box, then one loop over the
-/// source — each turn binds the element (and its index) for the
-/// element expression and the filter, and pushes the element when
-/// the filter holds. Registers mint in emission order throughout.
+/// THE COMPREHENSION LOWERED: a fresh box, then the walks' loop
+/// over the source — each turn binds the element (and its index)
+/// for the element expression and the filter, and pushes the
+/// element when the filter holds.
 fn comp_reg(cx: LowerCx, e: ExprId, elem: ExprId, index: string, source: ExprId, cond: ExprId?) -> Reg {
     let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
-    let xs = cx.reg_of(source)
-    let len = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(len, "avra_array_len", [xs]))
-    let zero = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(zero, 0))
-    let idx = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Alloca(idx))
-    cx.emit(Ins.Store(idx, zero))
-    cx.emit(Ins.LoopStart)
-    let at = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Load(at, idx))
-    let more = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(more, BinOp.Lt, at, len))
-    cx.emit(Ins.LoopCond(more))
-    cx.emit(Ins.ScopeEnter(Level.Application))
-    let here = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Load(here, idx))
-    let v = cx.mint_ty(elem_type(cx, source))
-    cx.emit(Ins.CallRt(v, "avra_array_get", [xs, here]))
+    grown_box(cx, dst, [])
+    let w = opened(cx, source, elem_type(cx, source))
+    turn_open(cx, w)
+    let here = turn_index(cx, w)
+    let v = turn_elem(cx, w, here)
     let regs = if index == "" { [v] } else { [here, v] }
     cx.bind_patterns(elem, regs)
     if cond != null {
@@ -48,15 +33,7 @@ fn comp_reg(cx: LowerCx, e: ExprId, elem: ExprId, index: string, source: ExprId,
     } else {
         push_slot(cx, dst, cx.reg_of(elem))
     }
-    let again = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Load(again, idx))
-    let one = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(one, 1))
-    let next = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Bin(next, BinOp.Add, again, one))
-    cx.emit(Ins.Store(idx, next))
-    cx.emit(Ins.ScopeExit(null))
-    cx.emit(Ins.LoopEnd)
+    turn_close(cx, w)
     dst
 }
 

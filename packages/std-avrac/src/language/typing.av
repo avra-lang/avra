@@ -6,9 +6,9 @@
 //! Unknown — a hole or unresolved name types as the interned Error,
 //! which ABSORBS: the causing pass already spoke, so no diagnostic
 //! cascades from it.
-use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, NodeStore, FileId, DeclId}
+use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, NodeStore, FileId, DeclId, FnParts, Binding, same_expr}
 use diagnostics.{Diag, loc_at, refusal}
-use features.{TypeCx, StmtTypeCx, FnSig, DeclSig, fn_sig_of, TypeRow, type_row, Decls, Decl, FnParts, Cap, new_type_facts, decl_type_of, def_type_of, type_named, TypeFacts, NameFacts, FileView, nothing}
+use features.{TypeCx, StmtTypeCx, FnSig, DeclSig, fn_sig_of, TypeRow, type_row, Decls, Decl, Cap, new_type_facts, decl_type_of, def_type_of, type_named, TypeFacts, NameFacts, FileView, nothing}
 use features.closures.{unfed_lambda}
 use features.structs.{fits_default}
 use features.specs.{fits_case}
@@ -34,6 +34,7 @@ export type Typer = {
     fn_ret: List<TypeId>,
     lam_bar: List<int>,
     tscope: List<TypeId>,
+    paired: List<ExprId>,
 }
 
 /// A typer over one expression range of a file, reading the SHARED
@@ -46,7 +47,7 @@ export fn typer(lang: Language, view: FileView, names: NameFacts, lo: int, hi: i
         error_type: hole,
         lang: lang, view: view, names: names,
         facts: new_type_facts(lo, hi, view.store.stmts.count(), hole),
-        narrow_defs: [], narrow_params: [], fn_ret: [], lam_bar: [], tscope: [],
+        narrow_defs: [], narrow_params: [], fn_ret: [], lam_bar: [], tscope: [], paired: [],
     }
 }
 
@@ -158,6 +159,8 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         written: (e: ExprId, tr: TypeRef) -> t.full_type(t.view.loc_of(e), tr),
         written_at: (e: ExprId, tr: TypeRef) -> t.full_type(loc_at(t.view.source.file, t.view.store.expr_span(e)), tr),
         plant_want: (e: ExprId, ty: TypeId) -> t.plant_want(e, ty),
+        pair: (e: ExprId) -> t.pair(e),
+        paired: (e: ExprId) -> t.paired.any(same_expr(it, e)),
     }
 }
 
@@ -332,6 +335,12 @@ impl Typer {
     /// knows its slot plants the want BEFORE the value walks — and
     /// the want flows through every HEIR (branch arms, block
     /// values), so a lambda three arms deep still hears it.
+    /// A paired head's subject — where `enumerate` may stand.
+    fn pair(self, e: ExprId) {
+        mut ps = self.paired
+        ps.push(e)
+    }
+
     fn plant_want(self, e: ExprId, ty: TypeId) {
         self.facts.set_want(e, ty)
         let node = self.view.store.expr(e)
@@ -430,7 +439,6 @@ impl Typer {
 
     fn speak(self, d: Diag) { self.facts.speak(d) }
 }
-
 
 /// Whether an interned id is the Var wearing this name.
 fn var_named(types: TypeRegistry, id: TypeId, name: string) -> bool {
