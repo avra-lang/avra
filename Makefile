@@ -116,12 +116,12 @@ corpus: $(RUNTIME_OBJS)
 	  echo "$$f: eval == native == expected"; \
 	done
 	@for d in corpus/*/; do \
-	  d=$${d%/}; [ -f $$d/main.av ] || continue; \
-	  ./avra run $$d/main.av > /tmp/avra-corpus-eval.out 2>&1 \
+	  d=$${d%/}; [ -f $$d/src/main.av ] || continue; \
+	  ./avra run $$d/src/main.av > /tmp/avra-corpus-eval.out 2>&1 \
 	    || { echo "$$d: eval FAILED"; cat /tmp/avra-corpus-eval.out; exit 1; }; \
 	  diff $$d/expected /tmp/avra-corpus-eval.out \
 	    || { echo "$$d: eval != expected"; exit 1; }; \
-	  ./avra build $$d/main.av > /tmp/avra-bin.path 2>&1 \
+	  ./avra build $$d/src/main.av > /tmp/avra-bin.path 2>&1 \
 	    || { echo "$$d: build FAILED"; cat /tmp/avra-bin.path; exit 1; }; \
 	  $$(cat /tmp/avra-bin.path) > /tmp/avra-corpus-native.out; \
 	  diff $$d/expected /tmp/avra-corpus-native.out \
@@ -145,7 +145,7 @@ vocab:
 
 # The whole gate: the vocabulary's guarantee, idioms, unit specs,
 # then the corpus end to end.
-gate: vocab idioms test corpus
+gate: vocab idioms test corpus scaffold-check
 
 # The differential gate: the compiled binary must say exactly what
 # the evaluator says.

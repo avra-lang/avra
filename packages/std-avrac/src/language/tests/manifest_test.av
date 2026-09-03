@@ -1,0 +1,79 @@
+// The manifest read into facts, and every rule of the manifest spec
+// speaking in its own words — errors that refuse, warnings that do
+// not.
+use @std.avrac.language.{read_manifest, avra}
+use @std.avrac.diagnostics.{new_source_file, render}
+
+fn reference() -> string {
+    "[package]\nname    = \"@corpus/app\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/main.av\"\n\n[lib]\n\n[dependencies]\n\"@std/http\" = { path = \"../http\" }\n\"@std/toml\" = { path = \"../toml\" }\n\n[dev-dependencies]\n\"@std/test\" = { path = \"../test\" }\n\n[profile.dev]\nopt_level = 0\ndebug = true\n"
+}
+
+fn read(text: string) -> Manifest {
+    read_manifest(new_source_file("avra.toml", text))
+}
+
+/// A manifest whose [package] carries these lines.
+fn packaged(rest: string) -> string {
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n${rest}"
+}
+
+/// ONE voice of this kind.
+fn speaks(text: string, kind: string) -> bool {
+    let m = read(text)
+    m.voices.length == 1 && m.voices[0].kind == kind
+}
+
+spec "language/manifest" {
+    given "the reference manifest" {
+        then "its facts are read" {
+            let m = read(reference())
+            m.name == "@corpus/app" && m.version == "0.1.0" && m.bin == "src/main.av" && m.lib == "src/lib.av" && m.voices.is_empty()
+        }
+        then "its dependencies are keys with paths, tests' marked" {
+            let m = read(reference())
+            m.deps.length == 3 && m.deps[0].key == "@std/http" && m.deps[0].path == "../http" && !m.deps[0].dev && m.deps[2].dev
+        }
+        then "a new dependency line goes after the last one" {
+            let m = read(reference())
+            let at = m.deps_at!
+            reference().substring(at - 3, at) == "\" }" && read("[package]\nname = \"app\"\nversion = \"1.0.0\"\n").deps_at == null
+        }
+        then "an undeclared target is absent, a bare one is its default" {
+            read("[package]\nname = \"app\"\nversion = \"1.0.0\"\n").bin == null && read(packaged("[bin]\n")).bin == "src/main.av"
+        }
+    }
+    given "the rules refuse" {
+        then "no [package]" { speaks("[bin]\npath = \"x.av\"\n", "manifest.no_package") }
+        then "no name" { speaks("[package]\nversion = \"1.0.0\"\n", "manifest.no_name") }
+        then "no version" { speaks("[package]\nname = \"app\"\n", "manifest.no_version") }
+        then "a version that is not semver" { speaks("[package]\nname = \"app\"\nversion = \"1.2\"\n", "manifest.bad_version") }
+        then "a pre-release suffix is semver" { read("[package]\nname = \"app\"\nversion = \"1.2.3-beta.1\"\n").voices.is_empty() }
+        then "a name that is neither @scope/name nor a word" { speaks("[package]\nname = \"My App\"\nversion = \"1.0.0\"\n", "manifest.bad_name") }
+        then "a dependency on itself" { speaks(packaged("[dependencies]\napp = { path = \".\" }\n"), "manifest.self_dependency") }
+        then "an unscoped dependency" { speaks(packaged("[dependencies]\nhttp = { path = \"../http\" }\n"), "manifest.unscoped_dependency") }
+        then "a registry or git dependency" {
+            speaks(packaged("[dependencies]\n\"@std/http\" = \"1.2\"\n"), "manifest.unsupported_dependency") &&
+                speaks(packaged("[dependencies]\n\"@std/http\" = { git = \"https://x/y\", rev = \"abc\" }\n"), "manifest.unsupported_dependency")
+        }
+        then "an opt level outside the set" { speaks(packaged("[profile.release]\nopt_level = 7\n"), "manifest.bad_opt_level") }
+        then "a profile name outside its charset" { speaks(packaged("[profile.Fast]\nopt_level = 2\n"), "manifest.bad_profile") }
+        then "a line that is not TOML" { speaks(packaged("name\n"), "manifest.syntax") }
+    }
+    given "the unknown warns" {
+        then "an unknown section is a warning that names it" {
+            let m = read(packaged("[grants]\nnetwork = []\n"))
+            m.voices.length == 1 && m.voices[0].kind == "manifest.unknown_section" && m.voices[0].severity is .Warning
+        }
+        then "an unknown key is a warning that names it" {
+            let m = read("[package]\nname = \"app\"\nversion = \"1.0.0\"\ncolour = \"red\"\n")
+            m.voices.length == 1 && m.voices[0].kind == "manifest.unknown_key" && m.voices[0].message.contains("`colour`")
+        }
+    }
+    given "rendered" {
+        then "a refusal points at its line in the manifest" {
+            let text = "[package]\nname = \"app\"\nversion = \"1.2\"\n"
+            let m = read(text)
+            render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).starts_with("error[F4003]: a version is `MAJOR.MINOR.PATCH` — `1.2` is not\n  ╭─[avra.toml:3:1]")
+        }
+    }
+}

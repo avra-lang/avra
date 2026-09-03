@@ -1,7 +1,7 @@
 //! Paths as text: the directory part, the slashes, and whether a
 //! path lies under a directory. The host reads and lists; these
 //! only cut strings.
-use core.{code_at}
+use core.{code_at, joined}
 
 /// The directory part of a path; "" when it has none.
 export fn dir_of(path: string) -> string {
@@ -42,4 +42,41 @@ export fn under_dir(name: string, dir: string) -> bool {
 export fn joined_path(dir: string, name: string) -> string {
     if dir.length == 0 { return name }
     "${dir}/${name}"
+}
+
+/// A path with `.` dropped and `..` folded into the segment before
+/// it; a leading `/` survives, and a `..` past the top stays.
+export fn normalized(path: string) -> string {
+    mut kept: List<string> = []
+    for seg in path.split("/") {
+        if seg == ".." && !kept.is_empty() && kept.last()! != ".." && kept.last()!.length > 0 {
+            kept = kept.slice(0, kept.length - 1)
+        } else if seg != "." && (seg.length > 0 || kept.is_empty()) {
+            kept.push(seg)
+        }
+    }
+    joined(kept, "/")
+}
+
+/// `to` as a path relative to the directory `from` — `..` up to the
+/// shared prefix, then down.
+export fn relative_path(from: string, to: string) -> string {
+    let a = segments(from)
+    let b = segments(to)
+    let shared = shared_prefix(a, b)
+    let ups = [".." for j in a.slice(shared, a.length)]
+    joined(ups.concat(b.slice(shared, b.length)), "/")
+}
+
+/// A path's non-empty segments.
+fn segments(path: string) -> List<string> {
+    [s for s in path.split("/") if s.length > 0]
+}
+
+/// How many leading segments two paths share.
+fn shared_prefix(a: List<string>, b: List<string>) -> int {
+    let limit = if a.length < b.length { a.length } else { b.length }
+    mut n = 0
+    while n < limit && a[n] == b[n] { n = n + 1 }
+    n
 }

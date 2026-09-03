@@ -1,9 +1,12 @@
 //! MODULE PATHS — one type for every path a module system speaks:
-//! `a.b` (a directory `a/b/` or a file `a/b.av` under the package
-//! root) and `@pkg.a.b` (a package's module). `.` is the only
-//! separator, `@` the only sigil; the text form is the spelling in
-//! source, the file form is where the host looks.
-use core.{joined, joined_path}
+//! `a.b` (a directory `a/b/` or a file `a/b.av` under a package's
+//! source root) and `@scope.name.a.b` (module `a.b` of the package
+//! `@scope/name`). `.` is the only separator, `@` the only sigil; a
+//! package is ALWAYS its first two segments, so the path cuts
+//! without a lookup. The text form is the spelling in source, the
+//! key form (`@scope/name`) the manifest's, the file form where the
+//! host looks.
+use core.{joined, joined_path, code_at}
 
 export type ModulePath = { segments: List<string> }
 
@@ -13,17 +16,27 @@ impl ModulePath {
         joined(self.segments, ".")
     }
 
-    /// The `@pkg` head, when the path names another package.
-    fn package(self) -> string? {
+    /// Whether the path names another package — an `@scope` head.
+    fn packaged(self) -> bool {
         let head: string? = self.segments.first()
-        if head == null || head!.length == 0 || code_at(head!, 0) != 64 { return null }
-        head
+        head != null && head!.length > 0 && code_at(head!, 0) == 64
+    }
+
+    /// An `@scope` head with no package name after it.
+    fn malformed(self) -> bool {
+        self.packaged() && self.segments.length < 2
+    }
+
+    /// The package's key, `@scope/name`, when the path names one.
+    fn package(self) -> string? {
+        if !self.packaged() || self.malformed() { return null }
+        "${self.segments[0]}/${self.segments[1]}"
     }
 
     /// The segments under the package head (or all of them).
     fn local(self) -> List<string> {
         if self.package() == null { return self.segments }
-        self.segments.filter(code_at(it, 0) != 64)
+        self.segments.slice(2, self.segments.length)
     }
 
     /// The path as a directory under a root: `root/a/b` — the root
@@ -49,4 +62,34 @@ export fn module_symbol(module: string, name: string) -> string {
 
 export fn module_path(segments: List<string>) -> ModulePath {
     ModulePath { segments: segments }
+}
+
+/// A package key as source spells it: `@scope/name` -> `@scope.name`.
+export fn key_spelled(key: string) -> string {
+    key.replace("/", ".")
+}
+
+/// Whether a key is a package name: `@scope/name`, both words of
+/// `[a-z0-9_-]`.
+export fn is_package_key(key: string) -> bool {
+    let n = key.length
+    if n < 4 || code_at(key, 0) != 64 { return false }
+    let cut = key.index_of("/")
+    cut > 1 && cut < n - 1 && is_name_word(key.substring(1, cut)) && is_name_word(key.substring(cut + 1, n))
+}
+
+/// A manifest word: `[a-z0-9_-]+`.
+export fn is_name_word(s: string) -> bool {
+    let n = s.length
+    if n == 0 { return false }
+    mut i = 0
+    while i < n {
+        if !is_word_code(code_at(s, i)) { return false }
+        i = i + 1
+    }
+    true
+}
+
+fn is_word_code(c: int) -> bool {
+    (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 45
 }

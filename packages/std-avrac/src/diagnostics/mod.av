@@ -2,7 +2,7 @@
 //! marks, a severity, and remedies. Structured first (P11); rendering
 //! is a projection. A diagnostic names its KIND; the F-code is the
 //! registry's projection of that kind (codes.av).
-use core.{Span, inserted}
+use core.{flatten, Span, inserted}
 use @std.errors.{Loc, Frame, Suggestion, Error, ErrorInfo, info}
 
 export enum Severity { Error, Warning }
@@ -89,6 +89,27 @@ fn start_of(d: Diag) -> int {
 export fn refusal(kind: string, at: Loc?, message: string, label: string, help: string?) -> Diag {
     // LICENSED I28: the one site that spells the shape — every voice calls this
     pointed(error_at(kind, at, message), label) with { help: help }
+}
+
+/// A warning in the refusal's shape — rendered, never blocking.
+export fn warning(kind: string, at: Loc?, message: string, label: string, help: string?) -> Diag {
+    refusal(kind, at, message, label, help) with { severity: Severity.Warning }
+}
+
+/// Whether any diagnostic is an error — the one meaning of unclean;
+/// warnings render and never block.
+export fn has_errors(ds: List<Diag>) -> bool {
+    ds.any(is_error(it))
+}
+
+export fn is_error(d: Diag) -> bool {
+    d.severity is .Error
+}
+
+/// A diagnostic's structured fixes as text — one `file: replacement`
+/// per edit, in order. The one projection tests and `--json` read.
+export fn suggested(d: Diag) -> List<string> {
+    flatten([["${e.loc.file ?? ""}: ${e.replacement}" for e in sg.edits] for sg in d.suggestions])
 }
 
 /// The diagnostic's primary frame, labeled.

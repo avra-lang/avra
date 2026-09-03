@@ -307,7 +307,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       type before refusing its value). One mistake, one message —
       and every downstream pass stays total instead of crashing on
       the gap. rt19's index-out-of-bounds is why this is a rule.
-- THE INSTANTIATION RITUALS (checks.av): every generic surface
+- THE INSTANTIATION RITUALS (unify.av): every generic surface
       (calls, struct lits, variant lits) shares three verbs —
       `tparams_refused` (the declaration already spoke; absorb),
       `unpinned_of` (the first open Var, voiced by the caller in
@@ -1070,3 +1070,5 @@ the one verb; `refused_impl` calls it for every method.
 ## Proven but awaiting their first honest use
 
 - **Pipe `|>`** — first real pipeline, not two-arg call rewrites.
+
+- I20/I25 GREW 2026-09-03: a counted refusal also spells `voices.length == n` (a Program's package voices are diagnostics); the ratchet's roots now include packages/std-toml/src, so a standalone package is held to the same bar; I25 reads one variant per line (CLAUDE.md records the one-line-enum blind spot).

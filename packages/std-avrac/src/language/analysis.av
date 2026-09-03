@@ -3,7 +3,7 @@
 //! report, run, lower — as methods. Pass order lives in the query
 //! graph (workspace.av); this is its snapshot.
 use core.{StmtId, ExprId, TypeId, joined, DeclId, FileId}
-use diagnostics.{Diag, SourceFile, render}
+use diagnostics.{Diag, SourceFile, render, has_errors}
 use features.{Decls, NameFacts, TypeFacts, FileView}
 
 /// One source, fully analyzed: the tree, every pass's facts, every
@@ -19,8 +19,8 @@ export type Analysis = {
 }
 
 impl Analysis {
-    /// Nothing is wrong.
-    fn clean(self) -> bool { self.diagnostics.is_empty() }
+    /// No errors — warnings render and never block.
+    fn clean(self) -> bool { !has_errors(self.diagnostics) }
 
     /// Every diagnostic rendered for the terminal; "" means clean.
     fn report(self) -> string {
@@ -55,7 +55,14 @@ impl Analysis {
     }
 
     /// Everything wrong, rendered; "" means clean.
-    fn check(self) -> string { self.program().check() }
+    /// Everything spoken, rendered — refusals or, failing those, the
+    /// warnings; "" when nothing spoke.
+    fn check(self) -> string {
+        match self.program().check() {
+            .Ok(warned) -> warned,
+            .Err(report) -> report,
+        }
+    }
 
     /// The program as IR, memory strategy applied — what `avra
     /// build` compiles.

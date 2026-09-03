@@ -1,0 +1,266 @@
+// The manifest's reader: every shape an `avra.toml` uses, then one
+// refusal per mistake — counted, worded, and pointed at its line.
+use @std.toml.{parse_toml, toml_text, toml_field, TomlValue, TomlDoc, TomlEntry, TomlError}
+
+/// The reference manifest: every value shape, comments, blank
+/// lines, a quoted key, and an array spanning lines with a trailing
+/// comma.
+fn manifest() -> string {
+    """
+# The reference manifest.
+[package]
+name = "demo"
+version = "0.1.0"
+
+[sources]
+root = "src"
+
+[dependencies]
+"@std/http" = { path = "../http", rev = "abc" }
+
+[grants]
+net = [
+    "http",
+    "dns",
+]
+
+[profile.dev]
+opt = 0
+debug = true   # trailing comment
+"""
+}
+
+/// A value rendered for assertion — content and order together.
+fn shown(v: TomlValue) -> string {
+    match v {
+        .Str(s) -> "\"${s}\"",
+        .Int(n) -> string(n),
+        .Bool(b) -> if b { "true" } else { "false" },
+        .Strs(items) -> "[${items.join(",")}]",
+        .Table(pairs) -> "{${["${p.key}=${shown(p.value)}" for p in pairs].join(",")}}",
+    }
+}
+
+/// The value at `section.key` rendered, or a marker no rendering
+/// equals.
+fn value_shown(d: TomlDoc, section: string, key: string) -> string {
+    let v: TomlValue? = d.get(section, key)
+    if v == null { return "<absent>" }
+    shown(v!)
+}
+
+/// An inline table's field rendered, or the marker of what is
+/// missing.
+fn field_shown(d: TomlDoc, section: string, key: string, field: string) -> string {
+    let v: TomlValue? = d.get(section, key)
+    if v == null { return "<absent>" }
+    let f: TomlValue? = toml_field(v!, field)
+    if f == null { return "<no field>" }
+    shown(f!)
+}
+
+/// The text at `section.key`, or the marker of what is missing.
+fn text_at(d: TomlDoc, section: string, key: string) -> string {
+    let v: TomlValue? = d.get(section, key)
+    if v == null { return "<absent>" }
+    toml_text(v!) ?? "<not text>"
+}
+
+/// The text an error's span selects.
+fn line_of(text: string, e: TomlError) -> string {
+    text.substring(e.lo, e.hi)
+}
+
+/// The text an entry's span selects.
+fn entry_text(text: string, e: TomlEntry?) -> string {
+    if e == null { return "<absent>" }
+    text.substring(e!.lo, e!.hi)
+}
+
+/// Whether a document holds exactly one refusal, worded so, whose
+/// span selects `line`.
+fn refused_once(src: string, words: string, line: string) -> bool {
+    let d = parse_toml(src)
+    d.errors.length == 1 && d.errors[0].message.contains(words) && line_of(src, d.errors[0]) == line
+}
+
+spec "std.toml" {
+    given "the reference manifest" {
+        then "every line lands: seven entries under five headers, no refusal" {
+            let d = parse_toml(manifest())
+            d.errors.length == 0 && d.entries.length == 7 && d.headers.length == 5
+        }
+        then "a value reads by section and key" {
+            let d = parse_toml(manifest())
+            text_at(d, "package", "name") == "demo" && text_at(d, "sources", "root") == "src"
+        }
+        then "a quoted key is a key" {
+            let d = parse_toml(manifest())
+            d.get("dependencies", "@std/http") != null
+        }
+        then "an inline table's fields project, and a missing one is absent" {
+            let d = parse_toml(manifest())
+            field_shown(d, "dependencies", "@std/http", "path") == "\"../http\"" &&
+                field_shown(d, "dependencies", "@std/http", "rev") == "\"abc\"" &&
+                field_shown(d, "dependencies", "@std/http", "zz") == "<no field>"
+        }
+        then "a non-table has no fields" {
+            field_shown(parse_toml(manifest()), "package", "name", "path") == "<no field>"
+        }
+        then "the whole inline table renders in order" {
+            value_shown(parse_toml(manifest()), "dependencies", "@std/http") == "{path=\"../http\",rev=\"abc\"}"
+        }
+        then "a string array keeps its elements in order, trailing comma and all" {
+            value_shown(parse_toml(manifest()), "grants", "net") == "[http,dns]"
+        }
+        then "an integer and a boolean under a dotted header" {
+            let d = parse_toml(manifest())
+            value_shown(d, "profile.dev", "opt") == "0" && value_shown(d, "profile.dev", "debug") == "true"
+        }
+        then "an unknown key is absent, and so is an unknown section" {
+            let d = parse_toml(manifest())
+            value_shown(d, "package", "nope") == "<absent>" && text_at(d, "nope", "x") == "<absent>"
+        }
+        then "sections come in first-appearance order, each once" {
+            parse_toml(manifest()).sections().join(",") == "package,sources,dependencies,grants,profile.dev"
+        }
+        then "has_section knows the declared, not the imagined" {
+            let d = parse_toml(manifest())
+            d.has_section("grants") && d.has_section("profile.dev") && !d.has_section("nope") && !d.has_section("")
+        }
+        then "entries_of lists a section's entries in source order" {
+            let d = parse_toml(manifest())
+            d.entries_of("profile.dev").length == 2 && d.entries_of("package")[1].key == "version"
+        }
+        then "an entry's span is its line, from the key" {
+            let text = manifest()
+            entry_text(text, parse_toml(text).entry("package", "version")) == "version = \"0.1.0\""
+        }
+        then "a multi-line array's span runs from the key to its bracket" {
+            let text = manifest()
+            let span = entry_text(text, parse_toml(text).entry("grants", "net"))
+            span.starts_with("net = [") && span.ends_with("]") && span.contains("\"dns\",")
+        }
+        then "a trailing comment stays inside the entry's span" {
+            let text = manifest()
+            entry_text(text, parse_toml(text).entry("profile.dev", "debug")) == "debug = true   # trailing comment"
+        }
+        then "a header's span is its line" {
+            let text = manifest()
+            let h = parse_toml(text).headers[4]
+            h.name == "profile.dev" && text.substring(h.lo, h.hi) == "[profile.dev]"
+        }
+    }
+    given "sections" {
+        then "a repeated header reopens its section and is listed once" {
+            let d = parse_toml("[a]\nx = 1\n[b]\n[a]\ny = 2\n")
+            d.errors.length == 0 && d.sections().join(",") == "a,b" && d.entries_of("a").length == 2
+        }
+        then "a header with no entries is still declared" {
+            let d = parse_toml("[a]\n[b]\n")
+            d.has_section("b") && d.sections().join(",") == "a,b" && d.entries.length == 0
+        }
+        then "top-level entries live in the empty section, which leads" {
+            let d = parse_toml("x = 1\n[a]\ny = 2\n")
+            d.sections().join(",") == ",a" && d.has_section("") && value_shown(d, "", "x") == "1"
+        }
+    }
+    given "values" {
+        then "the four escapes unescape, and any other backslash stays" {
+            let d = parse_toml("[a]\ns = \"q\\\"b\\\\n\\n\\tt\\z\"\n")
+            d.errors.length == 0 && text_at(d, "a", "s") == "q\"b\\n\n\tt\\z"
+        }
+        then "a negative integer, and zero" {
+            let d = parse_toml("n = -5\nz = 0\n")
+            d.errors.length == 0 && value_shown(d, "", "n") == "-5" && value_shown(d, "", "z") == "0"
+        }
+        then "an inline table holds strings, integers, booleans, and arrays" {
+            let d = parse_toml("t = { a = 1, b = true, c = [\"x\"], d = \"s\" }\n")
+            d.errors.length == 0 && value_shown(d, "", "t") == "{a=1,b=true,c=[x],d=\"s\"}"
+        }
+        then "an empty table and an empty array" {
+            let d = parse_toml("t = {}\nxs = []\n")
+            d.errors.length == 0 && value_shown(d, "", "t") == "{}" && value_shown(d, "", "xs") == "[]"
+        }
+        then "indentation and a trailing comment are layout" {
+            let d = parse_toml("  [a]\n  x = 1 # c\n")
+            d.errors.length == 0 && value_shown(d, "a", "x") == "1"
+        }
+    }
+    given "layout" {
+        then "the empty document has nothing and refuses nothing" {
+            let d = parse_toml("")
+            d.errors.length == 0 && d.entries.length == 0 && d.sections().length == 0
+        }
+        then "comments and blank lines alone are nothing" {
+            let d = parse_toml("# just a comment\n\n   \n")
+            d.errors.length == 0 && d.entries.length == 0
+        }
+        then "the last line needs no newline" {
+            let d = parse_toml("[a]\nx = 1")
+            d.errors.length == 0 && value_shown(d, "a", "x") == "1"
+        }
+    }
+    given "refusals — one per mistake, pointed at its line" {
+        then "a missing `=`, and the next line still lands" {
+            let src = "[a]\nx 1\ny = 2\n"
+            refused_once(src, "`=`", "x 1") && parse_toml(src).entries.length == 1
+        }
+        then "an unterminated string, and the next line still lands" {
+            let src = "[a]\nx = \"oops\ny = 2\n"
+            refused_once(src, "unterminated string", "x = \"oops") && parse_toml(src).entries.length == 1
+        }
+        then "a duplicate key in one section — the first stays" {
+            let src = "[a]\nx = 1\nx = 2\n"
+            refused_once(src, "duplicate key `x`", "x = 2") && value_shown(parse_toml(src), "a", "x") == "1"
+        }
+        then "the same key in another section is fine" {
+            parse_toml("[a]\nx = 1\n[b]\nx = 2\n").errors.length == 0
+        }
+        then "a non-string element refuses the array, and reading resumes past its bracket" {
+            let src = "[a]\nxs = [\n  \"ok\",\n  7,\n]\ny = 1\n"
+            let d = parse_toml(src)
+            refused_once(src, "an array holds strings", "7,") && d.entries.length == 1 && value_shown(d, "a", "y") == "1"
+        }
+        then "an empty header, and the entries after it still land" {
+            let src = "[]\nx = 1\n"
+            let d = parse_toml(src)
+            refused_once(src, "names its section", "[]") && d.headers.length == 0 && d.entries.length == 1
+        }
+        then "text after a value" {
+            let src = "x = 1 2\n"
+            refused_once(src, "unexpected text after the value", "x = 1 2") && parse_toml(src).entries.length == 0
+        }
+        then "an unknown value form, named" {
+            refused_once("x = foo\n", "unknown value form `foo`", "x = foo")
+        }
+        then "a missing value" {
+            refused_once("x =\n", "expected a value", "x =")
+        }
+        then "a malformed header, six ways, six refusals" {
+            let d = parse_toml("[a.]\n[.a]\n[a..b]\n[a b]\n[a\n[a] x\n")
+            d.errors.length == 6 && d.headers.length == 0 &&
+                d.errors[0].message.contains("dotted name") && d.errors[4].message.contains("`]`") &&
+                d.errors[5].message.contains("after the header")
+        }
+        then "two bad lines, two refusals, in order, and the good line still lands" {
+            let src = "[a]\nx 1\ny = \"oops\nz = 3\n"
+            let d = parse_toml(src)
+            d.errors.length == 2 && line_of(src, d.errors[0]) == "x 1" && line_of(src, d.errors[1]) == "y = \"oops" &&
+                d.entries.length == 1
+        }
+        then "an unterminated inline table" {
+            let src = "t = { a = 1\nx = 2\n"
+            refused_once(src, "unterminated inline table", "t = { a = 1") && parse_toml(src).entries.length == 1
+        }
+        then "a missing comma in an array" {
+            refused_once("xs = [\"a\" \"b\"]\n", "expected `,` or `]`", "xs = [\"a\" \"b\"]")
+        }
+        then "an unterminated array" {
+            refused_once("xs = [\"a\",\n", "unterminated array", "xs = [\"a\",")
+        }
+        then "a line with no key" {
+            refused_once("= 1\n", "expected a key", "= 1")
+        }
+    }
+}

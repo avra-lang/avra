@@ -1,0 +1,497 @@
+//! @std.toml — a minimal TOML reader: the subset an `avra.toml`
+//! speaks. Comments, `[a.b]` headers, and `key = value` lines whose
+//! values are strings, integers, booleans, string arrays, and
+//! one-level inline tables. Reading never aborts: a bad line is one
+//! refusal, and the reader continues at the next line.
+
+/// A TOML value: the subset a manifest uses.
+export enum TomlValue {
+    Str(s: string)
+    Int(v: int)
+    Bool(b: bool)
+    Strs(items: List<string>)
+    Table(pairs: List<TomlPair>)
+}
+
+/// One `key = value` inside an inline table.
+export type TomlPair = { key: string, value: TomlValue }
+
+/// One `key = value` line under a section: the section's dotted
+/// name ("" at the top level), the key, the value, and the byte
+/// span [lo, hi) of the whole line.
+export type TomlEntry = { section: string, key: string, value: TomlValue, lo: int, hi: int }
+
+/// A section header `[a.b]`: its dotted name and the span of the
+/// header line.
+export type TomlHeader = { name: string, lo: int, hi: int }
+
+/// A refusal: what was wrong, and where.
+export type TomlError = { message: string, lo: int, hi: int }
+
+/// A parsed document: headers and entries in source order, and
+/// every refusal.
+export type TomlDoc = { headers: List<TomlHeader>, entries: List<TomlEntry>, errors: List<TomlError> }
+
+impl TomlDoc {
+    /// The value at `section.key`, or absence.
+    fn get(self, section: string, key: string) -> TomlValue? {
+        self.entry(section, key)?.value
+    }
+
+    /// The entry at `section.key`, or absence (for its span).
+    fn entry(self, section: string, key: string) -> TomlEntry? {
+        self.entries.find(it.section == section && it.key == key)
+    }
+
+    /// Every entry directly under a section, in source order.
+    fn entries_of(self, section: string) -> List<TomlEntry> {
+        [e for e in self.entries if e.section == section]
+    }
+
+    /// Every section a header declares or an entry sits under —
+    /// first appearance first, each once. Top-level entries precede
+    /// every header, so "" leads when they exist.
+    fn sections(self) -> List<string> {
+        let top: List<string> = if self.entries.any(it.section.length == 0) { [""] } else { [] }
+        distinct(top.concat([h.name for h in self.headers]))
+    }
+
+    /// Whether a section was declared or holds entries.
+    fn has_section(self, section: string) -> bool {
+        self.headers.any(it.name == section) || self.entries.any(it.section == section)
+    }
+}
+
+/// A Str value's text, or absence.
+export fn toml_text(v: TomlValue) -> string? {
+    match v {
+        .Str(s) -> s,
+        _ -> null,
+    }
+}
+
+/// An inline table's value at `key`, or absence (absence also for
+/// a non-table).
+export fn toml_field(v: TomlValue, key: string) -> TomlValue? {
+    match v {
+        .Table(pairs) -> pairs.find(it.key == key)?.value,
+        _ -> null,
+    }
+}
+
+/// The document a text describes.
+export fn parse_toml(text: string) -> TomlDoc {
+    let rd = Reader { text: text, n: text.length, doc: TomlDoc { headers: [], entries: [], errors: [] }, section: "" }
+    mut i = 0
+    while i < rd.n {
+        i = after_line(text, rd.n, read_line(rd, run_end(text, rd.n, i, is_space)))
+    }
+    rd.doc
+}
+
+/// The reader's state: the text, its length, the document being
+/// filled, and the section the next entry lands under.
+type Reader = { text: string, n: int, doc: TomlDoc, section: string }
+
+impl Reader {
+    /// A refusal, spanning the line that holds its byte.
+    fn refuse(self, r: Refusal) {
+        mut es = self.doc.errors
+        es.push(TomlError { message: r.message, lo: line_lo(self.text, r.at), hi: line_hi(self.text, self.n, r.at) })
+    }
+
+    /// An entry under the open section.
+    fn hold(self, p: TomlPair, lo: int, hi: int) {
+        mut es = self.doc.entries
+        es.push(TomlEntry { section: self.section, key: p.key, value: p.value, lo: lo, hi: hi })
+    }
+
+    /// A header: recorded, and open for the entries after it.
+    fn enter(self, h: TomlHeader) {
+        mut hs = self.doc.headers
+        hs.push(h)
+        self.section = h.name
+    }
+}
+
+/// A refusal: the message, the byte it points at, and the byte to
+/// resume reading from.
+type Refusal = { message: string, at: int, resume: int }
+
+/// A scan's outcome: the thing read and the byte after it, or the
+/// refusal it earned.
+enum TextScan {
+    Text(s: string, next: int)
+    Refused(r: Refusal)
+}
+
+enum ValueScan {
+    Value(v: TomlValue, next: int)
+    Refused(r: Refusal)
+}
+
+enum PairScan {
+    Pair(p: TomlPair, next: int)
+    Refused(r: Refusal)
+}
+
+/// One line from its first non-blank byte — nothing, a header, or
+/// an entry — and the byte its reading stopped at.
+fn read_line(rd: Reader, lo: int) -> int {
+    if lo >= rd.n { return lo }
+    let c = code_at(rd.text, lo)
+    when {
+        c == 10 || c == 35 -> lo
+        c == 91 -> read_header(rd, lo)
+        _ -> read_entry(rd, lo)
+    }
+}
+
+/// `[a.b]`: the header, or the refusal it earns.
+fn read_header(rd: Reader, lo: int) -> int {
+    let hi = line_hi(rd.text, rd.n, lo)
+    let line = rd.text.substring(lo, hi)
+    let close = line.index_of("]")
+    if close < 0 { return refused(rd, unclosed_header(lo)) }
+    let name = line.substring(1, close).trim()
+    let rest = run_end(rd.text, rd.n, lo + close + 1, is_space)
+    when {
+        name.length == 0 -> refused(rd, empty_header(lo))
+        !dotted_word(name) -> refused(rd, bad_header(name, lo))
+        !at_line_end(rd.text, rd.n, rest) -> refused(rd, junk_after(rest, "header"))
+        _ -> {
+            rd.enter(TomlHeader { name: name, lo: lo, hi: hi })
+            hi
+        }
+    }
+}
+
+/// `key = value`: the entry, or the refusal it earns.
+fn read_entry(rd: Reader, lo: int) -> int {
+    match scan_pair(rd.text, rd.n, lo) {
+        .Refused(r) -> refused(rd, r),
+        .Pair(p, next) -> placed(rd, lo, p, next),
+    }
+}
+
+/// An entry lands once its line ends cleanly and its key is new
+/// under the open section.
+fn placed(rd: Reader, lo: int, p: TomlPair, next: int) -> int {
+    let stop = run_end(rd.text, rd.n, next, is_space)
+    if !at_line_end(rd.text, rd.n, stop) { return refused(rd, junk_after(stop, "value")) }
+    if rd.doc.entry(rd.section, p.key) != null { return refused(rd, duplicate_key(p.key, lo)) }
+    rd.hold(p, lo, line_hi(rd.text, rd.n, stop))
+    stop
+}
+
+/// A refusal recorded; reading resumes where it says.
+fn refused(rd: Reader, r: Refusal) -> int {
+    rd.refuse(r)
+    r.resume
+}
+
+/// `key = value` — the entry line and the inline-table pair alike.
+fn scan_pair(text: string, n: int, i: int) -> PairScan {
+    match scan_key(text, n, i) {
+        .Refused(r) -> PairScan.Refused(r),
+        .Text(key, after) -> pair_value(text, n, key, run_end(text, n, after, is_space)),
+    }
+}
+
+/// The `= value` after a key, `eq` at the `=`.
+fn pair_value(text: string, n: int, key: string, eq: int) -> PairScan {
+    if !at(text, n, eq, 61) { return PairScan.Refused(missing_equals(eq)) }
+    match scan_value(text, n, run_end(text, n, eq + 1, is_space)) {
+        .Refused(r) -> PairScan.Refused(r),
+        .Value(v, next) -> PairScan.Pair(TomlPair { key: key, value: v }, next),
+    }
+}
+
+/// A bare key run or a quoted key.
+fn scan_key(text: string, n: int, i: int) -> TextScan {
+    if at(text, n, i, 34) { return scan_string(text, n, i) }
+    let end = run_end(text, n, i, is_key_code)
+    if end == i { return TextScan.Refused(expected_key(i)) }
+    TextScan.Text(text.substring(i, end), end)
+}
+
+/// A value at `i`: a string, an array, an inline table, an integer,
+/// or a word.
+fn scan_value(text: string, n: int, i: int) -> ValueScan {
+    if i >= n { return ValueScan.Refused(missing_value(i)) }
+    let c = code_at(text, i)
+    when {
+        c == 34 -> string_value(text, n, i)
+        c == 91 -> scan_array(text, n, i)
+        c == 123 -> scan_table(text, n, i)
+        c == 45 || is_digit(c) -> scan_int(text, n, i)
+        _ -> scan_word(text, n, i)
+    }
+}
+
+/// A string as a value.
+fn string_value(text: string, n: int, i: int) -> ValueScan {
+    match scan_string(text, n, i) {
+        .Text(s, next) -> ValueScan.Value(TomlValue.Str(s), next),
+        .Refused(r) -> ValueScan.Refused(r),
+    }
+}
+
+/// A basic string from its opening quote: the text unescaped and
+/// the byte after the closing quote; unterminated at a newline or
+/// the end.
+fn scan_string(text: string, n: int, i: int) -> TextScan {
+    mut j = i + 1
+    mut out = ""
+    while j < n {
+        let c = code_at(text, j)
+        if c == 34 { return TextScan.Text(out, j + 1) }
+        if c == 10 { break }
+        if c == 92 && j + 1 < n {
+            out = out + (unescaped(code_at(text, j + 1)) ?? text.substring(j, j + 2))
+            j = j + 2
+            continue
+        }
+        out = out + text.substring(j, j + 1)
+        j = j + 1
+    }
+    TextScan.Refused(unterminated(i, "string"))
+}
+
+/// The four escapes; anything else after `\` stays raw.
+fn unescaped(e: int) -> string? {
+    match e {
+        34 -> "\"",
+        92 -> "\\",
+        110 -> "\n",
+        116 -> "\t",
+        _ -> null,
+    }
+}
+
+/// An integer, `-` allowed in front; a `-` with no digits is a word.
+fn scan_int(text: string, n: int, i: int) -> ValueScan {
+    let start = if code_at(text, i) == 45 { i + 1 } else { i }
+    let end = run_end(text, n, start, is_digit)
+    if end == start { return scan_word(text, n, i) }
+    let v = int_of_digits(text, start, end)
+    ValueScan.Value(TomlValue.Int(if start > i { 0 - v } else { v }), end)
+}
+
+/// The integer the digits in [lo, hi) spell.
+fn int_of_digits(text: string, lo: int, hi: int) -> int {
+    mut v = 0
+    mut i = lo
+    while i < hi {
+        v = v * 10 + (code_at(text, i) - 48)
+        i = i + 1
+    }
+    v
+}
+
+/// `true` or `false`; an empty run is no value at all, any other
+/// word is one the reader does not know.
+fn scan_word(text: string, n: int, i: int) -> ValueScan {
+    let end = run_end(text, n, i, is_key_code)
+    let word = text.substring(i, end)
+    match word {
+        "true" -> ValueScan.Value(TomlValue.Bool(true), end),
+        "false" -> ValueScan.Value(TomlValue.Bool(false), end),
+        "" -> ValueScan.Refused(missing_value(i)),
+        _ -> ValueScan.Refused(unknown_value(word, i)),
+    }
+}
+
+/// `[ "a", "b", ]`: strings, commas between, a trailing comma
+/// allowed, lines and comments free inside. A non-string element
+/// refuses the array, but the scan still reads to its `]` so the
+/// reader resumes past it.
+fn scan_array(text: string, n: int, i: int) -> ValueScan {
+    mut items: List<string> = []
+    // LICENSED I4: the FIRST refused element's position, held while the array still reads to its close
+    mut bad: int? = null
+    mut j = skip_layout(text, n, i + 1)
+    while array_open(text, n, j) {
+        j = match scan_value(text, n, j) {
+            .Refused(r) -> return ValueScan.Refused(r),
+            .Value(v, next) -> {
+                let s: string? = toml_text(v)
+                if s == null { bad = bad ?? j } else { items.push(s!) }
+                skip_layout(text, n, next)
+            },
+        }
+        if at(text, n, j, 44) {
+            j = skip_layout(text, n, j + 1)
+        } else if array_open(text, n, j) {
+            return ValueScan.Refused(expected_separator(j, "]"))
+        }
+    }
+    if j >= n { return ValueScan.Refused(unterminated(i, "array")) }
+    closed_array(items, bad, j + 1)
+}
+
+/// Whether an array is still open at `j`: bytes left, and not `]`.
+fn array_open(text: string, n: int, j: int) -> bool {
+    j < n && !at(text, n, j, 93)
+}
+
+/// The array once its `]` is read: its strings, or the refusal of
+/// its first non-string element, resuming past the bracket.
+fn closed_array(items: List<string>, bad: int?, next: int) -> ValueScan {
+    if bad == null { return ValueScan.Value(TomlValue.Strs(items), next) }
+    ValueScan.Refused(not_strings(bad!, next))
+}
+
+/// `{ path = "../x", rev = "abc" }`: pairs on one line, commas
+/// between.
+fn scan_table(text: string, n: int, i: int) -> ValueScan {
+    mut pairs: List<TomlPair> = []
+    mut j = run_end(text, n, i + 1, is_space)
+    while table_open(text, n, j) {
+        j = match scan_pair(text, n, j) {
+            .Refused(r) -> return ValueScan.Refused(r),
+            .Pair(p, next) -> {
+                pairs.push(p)
+                run_end(text, n, next, is_space)
+            },
+        }
+        if at(text, n, j, 44) {
+            j = run_end(text, n, j + 1, is_space)
+        } else if table_open(text, n, j) {
+            return ValueScan.Refused(expected_separator(j, "}"))
+        }
+    }
+    if !at(text, n, j, 125) { return ValueScan.Refused(unterminated(i, "inline table")) }
+    ValueScan.Value(TomlValue.Table(pairs), j + 1)
+}
+
+/// Whether an inline table is still open at `j`: bytes left on the
+/// line, and not `}`.
+fn table_open(text: string, n: int, j: int) -> bool {
+    j < n && !at(text, n, j, 125) && !at(text, n, j, 10)
+}
+
+// Layout: bytes, runs, and lines.
+
+/// Codepoint at byte `i` — `char_code(i)` ignores its index.
+fn code_at(s: string, i: int) -> int {
+    s.substring(i, i + 1).char_code()
+}
+
+/// Whether byte `i` exists and is `code`.
+fn at(text: string, n: int, i: int, code: int) -> bool {
+    i < n && code_at(text, i) == code
+}
+
+/// The byte after the run of `keep` bytes starting at `i`.
+fn run_end(text: string, n: int, i: int, keep: fn(int) -> bool) -> int {
+    mut j = i
+    while j < n && keep(code_at(text, j)) { j = j + 1 }
+    j
+}
+
+/// The byte after the spaces, newlines, and comments from `i`.
+fn skip_layout(text: string, n: int, i: int) -> int {
+    mut j = i
+    while j < n {
+        let c = code_at(text, j)
+        if !(is_space(c) || c == 10 || c == 35) { return j }
+        j = if c == 35 { line_hi(text, n, j) } else { j + 1 }
+    }
+    j
+}
+
+/// The first non-blank byte of the line holding `at`.
+fn line_lo(text: string, at: int) -> int {
+    mut i = at
+    while i > 0 && code_at(text, i - 1) != 10 { i = i - 1 }
+    run_end(text, at, i, is_space)
+}
+
+/// The newline ending the line holding `at`, or the end.
+fn line_hi(text: string, n: int, at: int) -> int {
+    mut j = at
+    while j < n && code_at(text, j) != 10 { j = j + 1 }
+    j
+}
+
+/// The byte after the line holding `at`.
+fn after_line(text: string, n: int, at: int) -> int {
+    let hi = line_hi(text, n, at)
+    if hi < n { hi + 1 } else { n }
+}
+
+/// Whether a line is over at `i`: the end, a newline, or a comment.
+fn at_line_end(text: string, n: int, i: int) -> bool {
+    i >= n || at(text, n, i, 10) || at(text, n, i, 35)
+}
+
+/// Space, tab, or carriage return — never newline.
+fn is_space(c: int) -> bool { c == 32 || c == 9 || c == 13 }
+
+/// An ASCII digit.
+fn is_digit(c: int) -> bool { c >= 48 && c <= 57 }
+
+/// A bare key's letters: `[A-Za-z0-9_-]`.
+fn is_key_code(c: int) -> bool {
+    (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || is_digit(c) || c == 95 || c == 45
+}
+
+/// `[A-Za-z0-9_-]+`.
+fn key_word(s: string) -> bool {
+    let n = s.length
+    n > 0 && run_end(s, n, 0, is_key_code) == n
+}
+
+/// Key words joined by single dots. `split` drops a trailing empty
+/// segment, so the trailing dot is asked separately.
+fn dotted_word(s: string) -> bool {
+    !s.ends_with(".") && s.split(".").all(key_word(it))
+}
+
+/// Each string's first appearance, order kept.
+fn distinct(xs: List<string>) -> List<string> {
+    mut out: List<string> = []
+    for x in xs {
+        if !out.contains(x) { out.push(x) }
+    }
+    out
+}
+
+// Voices — every refusal's words, one fn each.
+
+/// A refusal resuming where it points.
+fn refusal(message: string, at: int) -> Refusal {
+    Refusal { message: message, at: at, resume: at }
+}
+
+fn expected_key(at: int) -> Refusal { refusal("expected a key", at) }
+
+fn missing_equals(at: int) -> Refusal { refusal("expected `=` after the key", at) }
+
+fn missing_value(at: int) -> Refusal { refusal("expected a value after `=`", at) }
+
+fn unknown_value(word: string, at: int) -> Refusal {
+    refusal("unknown value form `${word}`: a value is a string, an integer, `true`/`false`, an array, or an inline table", at)
+}
+
+fn unterminated(at: int, what: string) -> Refusal { refusal("unterminated ${what}", at) }
+
+fn expected_separator(at: int, close: string) -> Refusal { refusal("expected `,` or `${close}`", at) }
+
+fn junk_after(at: int, what: string) -> Refusal { refusal("unexpected text after the ${what}", at) }
+
+fn duplicate_key(key: string, at: int) -> Refusal { refusal("duplicate key `${key}`", at) }
+
+fn unclosed_header(at: int) -> Refusal { refusal("expected `]` to close the header", at) }
+
+fn empty_header(at: int) -> Refusal { refusal("a header names its section: `[name]`", at) }
+
+fn bad_header(name: string, at: int) -> Refusal {
+    refusal("a header is a dotted name of `[A-Za-z0-9_-]` words, not `${name}`", at)
+}
+
+/// The one refusal that resumes past what it refused.
+fn not_strings(at: int, resume: int) -> Refusal {
+    Refusal { message: "an array holds strings", at: at, resume: resume }
+}

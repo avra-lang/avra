@@ -3248,6 +3248,202 @@ THE SLICES:
   on-disk cache namespaced by (compiler, hash-version), the warm
   daemon that IS the LSP and the agent surface.
 
+15b DESIGNED FROM FIRST PRINCIPLES (2026-09-03; the owner ratified
+the shape in conversation; each decision below is one paradox
+collapsed, and the failure ledger is part of the design):
+
+THE THESIS. The package manager disappears into the compiler,
+because the compiler already knows what every package manager
+guesses at: what you use, each item's signature, what changed,
+what calls the OS. The design is not a better Cargo: nothing to
+install, no version to pick, a lock nobody reads, a manifest of
+ten lines, and a security policy that falls out of the build.
+
+THE DECISIONS:
+D1  IDENTITY IS CONTENT. A package content is a tree hash. An
+    item has TWO hashes: its signature hash (NOMINAL about the
+    types it mentions — structural hashing cascades one added
+    field into every contract, Elm's crudeness) and its body
+    hash. Hashes carry an algorithm prefix (`b3:`).
+D2  TWO FILES. `avra.toml`, written by people: name, where names
+    come from, which names at which label, what the program is
+    granted. `avra.lock`, written by the compiler, sorted and
+    mergeable: content hash, the items REACHED with signature
+    hash and USE KIND, the compiler hash.
+D3  THE COMPILER PROPOSES, NEVER APPLIES UNASKED. An unresolved
+    `use @x.y` is a structured fix that writes the dependency
+    line; `avra fix` or a flag applies it, a build never does
+    (Go removed build-time go.mod edits in 1.16 for this). A
+    build writes only the lock; `--locked` refuses drift; CI runs
+    locked.
+D4  SOURCES ARE AN ALLOWLIST. A name resolves only through a
+    source the manifest lists — nothing is pulled because a file
+    mentioned it. This is what keeps an autonomous agent (P2)
+    from being owned by a typo.
+D5  CONTRACTS BY USE KIND. Compatibility is judged per site:
+    call, value, construct, read, match, implement. A field with
+    a default keeps constructors compatible; an added variant
+    breaks only exhaustive matches; a trait method breaks
+    implementors, not callers. Contract = signature level; lock =
+    body level — that split IS the pin-versus-float answer (a
+    body-only fix moves the lock and touches no contract). Where
+    the compiler cannot see a use it says so: a body change in a
+    reached item is SHOWN, never called compatible.
+D6  LABELS STAY, VERDICTS ARE ADDED. Authors choose versions;
+    publishing refuses a label the surface diff refutes, naming
+    the items; both are shown. "We are on 2.3" survives and the
+    number stops lying. LLMs writing `http = "1.2"` from Cargo
+    habit are accepted and rewritten, never refused (P1).
+D7  ONE CONTENT PER NAME PER PROGRAM (Go's rule; Cargo's two-
+    serdes confusion refused). Conflicts name the item.
+    `[patch]` overrides a name for this program only — day one,
+    because every real project forks a dependency once.
+D8  NEEDS ARE COMPUTED, GRANTS ARE WRITTEN. A library never
+    declares capabilities: its needs are its extern closure,
+    computed and published as metadata (`avra why
+    network.outbound` prints the chain). Only a PROGRAM grants,
+    at the top, deny by default, over a small implicit base
+    (memory, stdout). C linkage is a TAINT: a package that links C
+    needs everything unless an audit statement narrows it.
+    `@comptime` and any build-time execution are doors too.
+D9  THE HONEST CLAIM. A dependency cannot perform an effect
+    outside its computed needs. It can still hand you bad data
+    (the confused deputy is not solved) — the docs say so.
+D10 UPGRADES REPORT AT YOUR CALL SITES. Moving the lock prints
+    only the reached items that changed; renames are detected by
+    body hash ("`get` became `fetch`, same body") and their
+    migrations write themselves; authored migrations apply under
+    `--fix` as a previewable diff (2to3's reputation refused).
+D11 EVERY BINARY EMBEDS ITS CLOSURE HASH. Provenance and
+    reproducibility are a rebuild and a compare; the SBOM is a
+    projection of the lock — packages stay the unit of
+    PROVENANCE (license, ownership, audit, advisory, takedown)
+    while items are the unit of BUILD; the lock names both.
+D12 POLICY FOR AGENTS: the spec's `[permissions]` table decides
+    whether adding a dependency or a grant is applied or held for
+    review.
+D13 WORKSPACES: a root manifest lists members; sibling path
+    dependencies are UNPINNED in the lock (siblings move
+    together; pinning them is noise). Own slice; the lock leaves
+    the seat.
+D14 TOOLCHAIN IN THE LOCK: the compiler hash; a different compiler
+    warns, `--locked` refuses. No separate toolchain file.
+D15 ANY GIT HOST, BY URL (https or ssh), plus `path` for a package
+    inside a monorepo and `rev` as tag, branch or commit; the
+    package's manifest at that path must call itself the keyed
+    name. URLs NEVER appear in code (Go's most regretted choice:
+    a moved repo edits every importer, and hostnames carry dots).
+D16 SCOPE PATTERNS: `"@acme/*" = { git = "https://gitlab.com/acme/" }`
+    resolves every package of an org in one allowlisted line.
+D17 THE LOCK PINS THE COMMIT AND OUR CONTENT HASH: rev is how to
+    fetch, content is what arrived; a force-pushed tag fails
+    verification (go.sum's protection). Branches are intent in
+    the manifest, a commit in the lock.
+D18 `avra add <url>`: fetch, read the package's own name, write
+    the source line and the dependency line — Go's paste-a-URL
+    feel without the URL in the code.
+D19 TRANSPORT IS THE SYSTEM `git`: shallow fetch of one commit
+    into the content-addressed store; ssh agents and credential
+    helpers work unchanged; submodules and LFS wait for a need.
+    Availability: the store is the cache, `avra vendor` writes a
+    READABLE tree (the Nix-store experience refused), `--offline`
+    refuses the network; a registry, when one exists, is an index
+    AND a mirror of git-sourced content. Nothing built stops
+    building.
+
+THE FILES:
+  avra.toml:  [package] name/version · [sources] "@std/*" =
+  "registry", "@acme/*" = { git = … }, "@me/x" = { git = …, path =
+  … } · [dependencies] "@std/http" = "2", "@me/x" = { branch =
+  "main" } · [patch] · [grants] network.outbound = [hosts] ·
+  [permissions].
+  avra.lock:  compiler = "b3:…" · per name: label, source { git,
+  rev } or { path }, content, items = [{ name, sig, use }] ·
+  per-target sections only where they differ.
+
+THE FAILURE LEDGER (what bites, and the answer):
+- same signature, different behavior: shown, `@breaking`, tests
+  travel with items; never claimed compatible when a reached body
+  changed.
+- transitive pins rot exactly as today when a dependency's
+  contract breaks in code you do not own — shrunk, not dissolved;
+  labels and computed compatibility are the float.
+- capability fatigue (Deno's `-A`): libraries declare nothing,
+  programs grant, the base is implicit.
+- manifest churn: the contract lives in the lock, sorted.
+- humans talk in versions: labels stay (D6).
+- unreadable stores and package-thinking compliance tools:
+  `avra vendor`, SBOM export, packages as provenance (D11).
+- cold builds compile dependencies from source: the signed shared
+  item cache, a trust decision made explicit.
+- per-target needs and signatures: deferred with conditional
+  compilation; the lock has the seat.
+- scope ownership without a registry is unenforced: only a
+  consumer who points at a claimant is affected; the transparency
+  log binds names globally later.
+- immutable content still gets taken down: identity is immutable,
+  availability is not; withdrawn names warn.
+
+WHAT IS BORROWED (said out loud): content addressing (Unison),
+surface diffing (Elm), hermeticity (Nix), no-install (Deno, Go),
+the content store (pnpm), go.sum and the sumdb (Go), reachable
+advisories (govulncheck). NEW is the combination under one
+compiler that owns semantics: computed needs for a native
+language, contracts by use kind replacing versions, the manifest
+as a compiler output.
+
+15b.1 LANDED (2026-09-03): `@std/toml` is its own package
+(packages/std-toml — the reader the manifest reads with, self-
+contained, in the idiom ratchet's roots); `language/manifest.av`
+reads `avra.toml` into facts and speaks every rule as
+`manifest.*` (F4000–F4031; unknown sections and keys WARN — the
+first Warning producer, and `clean()` now means no ERRORS);
+workspace.av holds PACKAGES (root plus every path dependency
+reachable from its manifest, admitted once by key, the
+`Manifest` family an INPUT keyed by package); `use
+@scope.name.a.{x}` cuts a package at two segments and resolves
+only when the asking package's manifest declares it (F3013 made
+real, with the STRUCTURED FIX when the package is already in the
+workspace — the dependency line, relative path, placed after the
+last one); cycles, name mismatches, missing directories and
+duplicate keys refuse in the manifest's words at the manifest's
+line; a directory holding its own avra.toml is never a module of
+the package above it (through-paths included); `src/` is THE
+source root (corpus/modules moved under it; a file outside `src/`
+is a lone file); `run`/`build <dir>` enter at `[bin]` or
+src/main.av, F4005 otherwise; warnings render on check (exit 0),
+run and build (stderr). MEASURED on the compiler's own tree:
+F3011 (no module) 58 -> 0, F3013 1 -> 0 — every `use` in 234
+files now finds its module; what remains is parse parity.
+DECISIONS TAKEN (from the four): Q1 (a) `src/` always; Q2 the
+target rule at entry time; Q3 warnings now; Q4 one edit-only
+agent wrote the TOML package. DIVERGENCES from the docs, recorded:
+`@scope.name` in source (law 2); unscoped dependency keys refuse
+(the manifest doc's `local = { path }`); rule 4 softened to entry
+time. Suite 1364 (toml +42, manifest +19, packages +13),
+corpus/packages proves a vendored path dependency eval == native.
+
+THE STAGES (nothing ships half-built):
+- 15b.1 manifest reading (F4000–F4099, `manifest.*`), path
+  dependencies, `@scope.name` = `@scope/name`, cross-package
+  cycle refusal, THE NESTED-PACKAGE LAW (a directory with its own
+  avra.toml is not a module of the package above), `src/` as the
+  one source root (spec 16.1; corpus/modules moves under src/),
+  warnings for unknown sections/keys (the first Warning; `clean()`
+  = no errors), the target rule enforced at entry time, `run`/
+  `build <dir>` entering at `[bin]`, and the structured fix that
+  writes a path dependency for a package found in the workspace.
+- 15b.2 the lock: reached items per dependency with signature
+  hash and use kind, the compiler hash, `--locked`, the change
+  report when a path dependency's reached items change — the
+  first holy-shit moment, no registry needed.
+- 15b.3 git sources: D15–D19, `avra add`, the content store,
+  `--offline`, `avra vendor`.
+- later rungs, each with a trigger: needs/grants once `extern`
+  exists in the language; sources, labels, publishing and the
+  transparency log with a registry or git transport; advisories,
+  migrations, contract search, the signed item cache.
+
 THE IMPORT SYSTEM, DREAMED (proposed 2026-09-02; each line a
 paradox collapsed, none built until ratified):
 - (REFUSED by the owner 2026-09-02 — explicit `use` in every file is
@@ -3671,6 +3867,23 @@ it stood when this was written). What the round REMOVED:
   contract (`cx.types`, no `heirs`) because `make scaffold-check` is
   outside `make gate`; fixed, and the gate should grow it (trigger:
   the next template change).
+  DRIED AFTER THE ROUND (2026-09-02): `checks.av` split at its
+  banners into checks.av (agreement, join, members, calls, places,
+  void, their voices), unify.av (unification, the slot law, the
+  instantiation rituals) and variants.av (variant construction and
+  its voices); `facts.av` into facts.av (the values and their own
+  column verbs) and contexts.av (the cross-value reads and every
+  context's forwarders). `make gate` now runs scaffold-check.
+  CONSIDERED AND REFUSED: nesting `ResolveCx` inside `StmtResolveCx`
+  for symmetry with the typing and lowering statement contexts. The
+  typing and lowering statement contexts nest because their rules
+  CALL the expression vocabulary (`cx.expr.type_at`); resolve's
+  statement rules call none of `ResolveCx`'s node verbs (`use_name`,
+  `use_call`, `use_type`, the three scopes) — nesting would add a
+  field nothing reads and re-spell 45 `cx.view` reads for a symmetry
+  the vocabularies do not have. `StmtResolveCx { view, facts, … }`
+  is the honest shape; its `binding_of` is the one verb the
+  mutation rule dispatches on.
 
 ## Interior mutation & maps — rung 14 (designed 2026-09-01)
 

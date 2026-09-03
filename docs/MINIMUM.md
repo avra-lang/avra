@@ -17,7 +17,7 @@ nothing else has state.
 (by position within a file's arena), `TypeId` (by shape), `Reg` (by
 position within a body). Everything references ids, never nodes.
 
-**Twelve query families.** Each is one function: key in, one value
+**Thirteen query families.** Each is one function: key in, one value
 out, dependencies discovered by execution. In ordinal order — the
 order `enum Family` registers them with the kernel
 (`language/workspace.av`):
@@ -459,7 +459,8 @@ type Phase = { name: string, ns: int }
 
 /// THE FAMILIES, in pipeline order; `ordinal` and `refetched` are
 /// exhaustive, so a family cannot ship half-registered.
-enum Family { Source Parsed Items Namespace Visible Resolved Sig Methods Typed Folded Analysis Lowered }
+enum Family { Source Parsed Items Namespace Visible Resolved Sig Methods Typed Folded Analysis Lowered Manifest }
+// Manifest is keyed by package: an INPUT (the toml's text hash) read into a Manifest value; packages are the root's manifest and every path dependency reachable from it, admitted once by key
 fn key(f: Family, arg: int) -> Key   fn ordinal(f) -> int   fn families() -> List<Family>
 fn refetched(ws, f: Family, arg: int) -> int        // the kernel's ONE verifier: re-ask the key through its own query
 fn placed<T>(xs: List<T?>, i, v)  fn placed_at<T>(xs, i) -> T?   // core: the sparse tables' two verbs
@@ -489,7 +490,7 @@ type Analysis = { view: FileView, names: NameFacts, facts: TypeFacts, lang: Lang
 impl Analysis { fn clean() fn report() fn rendered(ds) fn binding(e) fn type_at(e) fn type_name(e) fn run() fn check() fn lowered() fn ran() -> string? }
 type Program = { ws: Workspace, files: List<Analysis>, entry: int?, phases: List<Phase>, cache: string, defects: List<Diag> }
 fn program(ws, entry: string?) -> Program
-impl Program { fn entry_file() -> Analysis? fn clean() fn report() fn rendered(ds) fn lowered() -> Lowered fn lowered_checked() fn run() fn check() }
+impl Program { fn entry_file() -> Analysis? fn clean() fn report() fn rendered(ds) fn lowered() -> Lowered fn lowered_checked() fn run() fn check() }   // voices: the packages' (manifests, then the graph); clean() means no ERRORS — warnings render and never block
 fn analyze_source(text) -> Analysis   fn parse_source(text) -> Parsed
 
 // ── lowering: a unit at a time, the union the entry's closure ──

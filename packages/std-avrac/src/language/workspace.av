@@ -8,13 +8,17 @@
 //! order stops mattering, a cycle speaks, and a body depends on
 //! exactly what it read. `program` composes the files for lowering.
 //! The host is a record of fns, so tests hand in memory and the CLI
-//! hands in the disk; the empty root is a lone file's package of
-//! one.
-use core.{ModulePath, module_path, DeclId, FileId, ModuleId, UseParts, fp, fp_str, joined, flatten, dir_of, sorted_texts, first_slash, under_dir, joined_path, TypeId, Type, some_list, same_file, placed, placed_at, touch}
+//! hands in the disk. A workspace holds PACKAGES: the root's (its
+//! `avra.toml`, or none) and, transitively, every path dependency a
+//! manifest names; each is its own module tree under its `src/`,
+//! and a `use @scope.name.a` reaches a dependency's module only when
+//! the asking package's manifest declares it. A lone file is a
+//! package of one rooted at its directory.
+use core.{ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, fp, fp_str, joined, flatten, dir_of, sorted_texts, first_slash, under_dir, joined_path, normalized, relative_path, TypeId, Type, some_list, same_file, placed, placed_at, touch}
 use features.{Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, module_names, file_names, Clash, method_clashes, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig}
-use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position}
+use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key}
-use @std.errors.{Loc}
+use @std.errors.{Loc, Suggestion, Edit, Confidence}
 
 /// The filesystem, as four questions.
 export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool }
@@ -68,10 +72,18 @@ export type Workspace = {
     asks: List<Wanted>,
     units: List<Unit?>,
     defects: List<Diag>,
+    packages: List<Package>,
+    package_voices: List<Diag>,
     lone: bool,
     clock: fn() -> int,
     phases: List<Phase>,
 }
+
+/// One package of the workspace: its key (the manifest's name; ""
+/// for a root without one), its root and source directories, its
+/// ordinal (the manifest query's key), and where it was named —
+/// absent for the root.
+export type Package = { key: string, root: string, src: string, ordinal: int, at: Loc? }
 
 /// One timed phase, in nanoseconds of the workspace's clock.
 export type Phase = { name: string, ns: int }
@@ -95,6 +107,7 @@ enum Family {
     Folded
     Analysis
     Lowered
+    Manifest
 }
 
 fn key(f: Family, arg: int) -> Key {
@@ -115,13 +128,14 @@ fn ordinal(f: Family) -> int {
         .Folded -> 9,
         .Analysis -> 10,
         .Lowered -> 11,
+        .Manifest -> 12,
     }
 }
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
     let all: List<Family> = [Family.Source, Family.Parsed, Family.Items, Family.Namespace, Family.Visible, Family.Resolved,
-                             Family.Sig, Family.Methods, Family.Typed, Family.Folded, Family.Analysis, Family.Lowered]
+                             Family.Sig, Family.Methods, Family.Typed, Family.Folded, Family.Analysis, Family.Lowered, Family.Manifest]
     all
 }
 
@@ -130,20 +144,27 @@ export fn new_workspace(host: Host, root: string, lang: Language) -> Workspace {
 }
 
 /// A lone file as a package of one: a memory host holding just it,
-/// rooted at its directory, with no modules to import from.
+/// rooted at its directory — root and source root alike — with no
+/// modules to import from.
 export fn lone_workspace(path: string, text: string, lang: Language) -> Workspace {
     mut files: Map<string, string> = {}
     files.set(path, text)
-    let ws = new_workspace(memory_host(files, [path]), dir_of(path), lang)
-    ws with { lone: true }
+    built(memory_host(files, [path]), dir_of(path), dir_of(path), lang, () -> 0, true)
 }
 
 /// A workspace that times its phases by the given clock (nanoseconds).
 export fn timed_workspace(host: Host, root: string, lang: Language, clock: fn() -> int) -> Workspace {
+    built(host, root, joined_path(root, "src"), lang, clock, false)
+}
+
+/// The workspace with its families registered, its table armed,
+/// and its packages loaded from the root's manifest outward.
+fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool) -> Workspace {
     let ws = Workspace {
         host: host, root: root, lang: lang, db: new_db(), decls: new_decls(),
         programs: [], file_items: [], module_names: [], visibles: [], name_facts: [],
-        sig_voices: [], decl_facts: [], method_clashes: [], folds: [], analyses: [], specs: {}, asks: [], units: [], defects: [], lone: false,
+        sig_voices: [], decl_facts: [], method_clashes: [], folds: [], analyses: [], specs: {}, asks: [], units: [], defects: [],
+        packages: [], package_voices: [], lone: lone,
         clock: clock, phases: [],
     }
     for f in families() {
@@ -152,6 +173,7 @@ export fn timed_workspace(host: Host, root: string, lang: Language, clock: fn() 
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ensured(ws, d))
     ws.decls.arm_methods((d: DeclId) -> methods_ensured(ws, d))
+    load_packages(ws, src)
     ws
 }
 
@@ -184,6 +206,7 @@ fn refetched(ws: Workspace, f: Family, arg: int) -> int {
         .Folded -> touch(folded(ws, file_at(arg))),
         .Analysis -> touch(analysis(ws, file_at(arg))),
         .Lowered -> touch(lowered(ws, arg)),
+        .Manifest -> touch(manifest(ws, arg)),
     }
     ws.db.changed_at(key(f, arg))
 }
@@ -522,28 +545,61 @@ export fn lowered(ws: Workspace, id: int) -> Unit {
 // ── Modules ──
 
 /// A path as the user reads it: relative to the root.
+/// A path as a diagnostic shows it: under its package's source root.
 fn shown(ws: Workspace, path: string) -> string {
-    if ws.root.length == 0 { return path }
-    if under_dir(path, ws.root) { return path.substring(ws.root.length + 1, path.length) }
-    path
+    below(path, ws.packages[holder_of_path(ws, path)].src)
 }
 
-/// The module a file belongs to: its directory under the root,
-/// `.`-joined; "" for a file at the root.
+/// The module a file belongs to: its directory under its package's
+/// source root, `.`-joined — "" for a file at the root package's
+/// source root, `@scope.name.a` for a dependency's.
 export fn module_of(ws: Workspace, path: string) -> string {
-    dir_of(shown(ws, path)).replace("/", ".")
+    let pkg = ws.packages[holder_of_path(ws, path)]
+    let local = dir_of(below(path, pkg.src)).replace("/", ".")
+    if pkg.ordinal == 0 { return local }
+    if local.length == 0 { return key_spelled(pkg.key) }
+    "${key_spelled(pkg.key)}.${local}"
+}
+
+/// A path's tail under a directory — the path itself when it is
+/// not under it.
+fn below(path: string, dir: string) -> string {
+    if dir.length == 0 || !under_dir(path, dir) { return path }
+    path.substring(dir.length + 1, path.length)
 }
 
 /// The files a module path names: a directory's `.av` files, else
-/// the one file, else nothing (the module does not exist).
+/// the one file, else nothing (the module does not exist). A
+/// directory holding its own `avra.toml` is a package, never a
+/// module of the one above it.
 export fn module_files(ws: Workspace, m: ModulePath) -> List<string> {
-    let dir = m.dir_under(ws.root)
+    let pkg: Package? = holder(ws, m)
+    if pkg == null { return [] }
+    let src = pkg!.src
+    if crosses_package(ws, src, m.local()) { return [] }
+    let dir = m.dir_under(src)
     if ws.host.is_dir(dir) {
         return [ joined_path(dir, f) for f in ws.host.list(dir) if is_source(f, dir) ]
     }
-    let file = m.file_under(ws.root)
+    let file = m.file_under(src)
     if ws.host.exists(file) { return [file] }
     []
+}
+
+/// Whether a directory is a package root of its own.
+fn is_package_dir(ws: Workspace, dir: string) -> bool {
+    ws.host.exists(joined_path(dir, "avra.toml"))
+}
+
+/// Whether a module path passes through a nested package — any
+/// directory along it holding its own manifest.
+fn crosses_package(ws: Workspace, src: string, local: List<string>) -> bool {
+    mut j = 1
+    while j <= local.length {
+        if is_package_dir(ws, joined_path(src, joined(local.slice(0, j), "/"))) { return true }
+        j = j + 1
+    }
+    false
 }
 
 /// A source file: `.av`, or anything at all under the empty root —
@@ -563,20 +619,26 @@ fn is_top_level(ws: Workspace, d: DeclId) -> bool {
     !ws.decls.decl(d).nested
 }
 
-/// Every `.av` file under a directory, recursively — `check <root>`.
-/// The empty root is a lone file's package of one: every name it
-/// was given is a file of it, whatever the name.
+/// Every `.av` file under a directory, recursively, stopping at a
+/// nested package — `check <root>`. The empty root is a lone file's
+/// package of one: every name it was given is a file of it,
+/// whatever the name.
 export fn all_files(ws: Workspace, dir: string) -> List<string> {
     mut out: List<string> = []
     for f in ws.host.list(dir) {
         let full = joined_path(dir, f)
         if ws.host.is_dir(full) {
-            out = out.concat(all_files(ws, full))
+            if !is_package_dir(ws, full) { out = out.concat(all_files(ws, full)) }
         } else if is_source(f, dir) {
             out.push(full)
         }
     }
     out
+}
+
+/// The root package's source files — what `check <root>` analyzes.
+export fn root_files(ws: Workspace) -> List<string> {
+    all_files(ws, ws.packages[0].src)
 }
 
 /// A module's exported declarations, in file and declaration order.
@@ -607,14 +669,19 @@ fn use_lines(p: Parsed) -> List<UseParts> {
 /// What one `use` line brought in, and what it earned.
 type Imported = { imports: List<Import>, diagnostics: List<Diag> }
 
-/// One `use a.b.{x, y}`: a package root must exist, the module must
-/// exist and be one thing, each item must be exported by it and
-/// listed once.
+/// One `use a.b.{x, y}`: a package root must exist, a named package
+/// must be one the asking package's manifest declares, the module
+/// must exist and be one thing, each item must be exported by it
+/// and listed once.
 fn imported_line(ws: Workspace, p: Parsed, u: UseParts) -> Imported {
     let at = loc_at(p.source.file, p.store.stmt_span(u.stmt))
     let m = module_path(u.path)
     if ws.lone { return Imported { imports: [], diagnostics: [unpackaged_use(at)] } }
-    if m.package() != null { return Imported { imports: [], diagnostics: [package_later(at, m)] } }
+    if m.malformed() { return Imported { imports: [], diagnostics: [package_form(at, m)] } }
+    let from = ws.packages[holder_of_path(ws, p.source.file)]
+    if m.package() != null && !depends_on(ws, from, m.package()!) {
+        return Imported { imports: [], diagnostics: [not_a_dependency(ws, at, from, m.package()!)] }
+    }
     if ambiguous_module(ws, m) { return Imported { imports: [], diagnostics: [module_ambiguous(at, m)] } }
     if module_files(ws, m).is_empty() { return Imported { imports: [], diagnostics: [no_module(at, m)] } }
     let surf = surface(ws, m)
@@ -635,9 +702,10 @@ fn imported_line(ws: Workspace, p: Parsed, u: UseParts) -> Imported {
     Imported { imports: imports, diagnostics: diags }
 }
 
-/// A name that is both a directory and a file under the root.
+/// A name that is both a directory and a file under the source root.
 fn ambiguous_module(ws: Workspace, m: ModulePath) -> bool {
-    ws.host.is_dir(m.dir_under(ws.root)) && ws.host.exists(m.file_under(ws.root))
+    let pkg: Package? = holder(ws, m)
+    pkg != null && ws.host.is_dir(m.dir_under(pkg!.src)) && ws.host.exists(m.file_under(pkg!.src))
 }
 
 fn exported_names(ws: Workspace, m: ModulePath) -> List<string> {
@@ -655,7 +723,7 @@ fn segments_of(dotted_text: string) -> List<string> {
 /// asked for every file before the next, so the phases time apart.
 export fn analyze_all(ws: Workspace) -> List<Analysis> {
     let t0 = ws.clock()
-    for path in all_files(ws, ws.root) { let _ = items(ws, file_id(ws, path)) }
+    for path in root_files(ws) { let _ = items(ws, file_id(ws, path)) }
     ws.timed("parse", ws.clock() - t0)
     let t1 = ws.clock()
     for fi in ws.decls.files { let _ = resolved(ws, fi.id) }
@@ -678,13 +746,26 @@ export fn analyze_file(ws: Workspace, path: string) -> Analysis {
 /// among them (none when the program is only checked). It answers
 /// as a lone Analysis does — report, lowered, run — so every engine
 /// takes either.
-export type Program = { ws: Workspace, files: List<Analysis>, entry: int?, phases: List<Phase>, cache: string, defects: List<Diag> }
+export type Program = { ws: Workspace, files: List<Analysis>, entry: int?, phases: List<Phase>, cache: string, defects: List<Diag>, voices: List<Diag>, manifests: List<SourceFile> }
 
 /// The program rooted at `ws.root`, entered at one of its files.
 export fn program(ws: Workspace, entry: string?) -> Program {
     let files = analyze_all(ws)
     let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
-    Program { ws: ws, files: files, entry: at, phases: ws.phases, cache: ws.db.stats(), defects: ws.defects }
+    Program {
+        ws: ws, files: files, entry: at, phases: ws.phases, cache: ws.db.stats(), defects: ws.defects,
+        voices: package_voices(ws), manifests: [manifest_source(ws, pkg) for pkg in ws.packages if has_manifest(ws, pkg)],
+    }
+}
+
+/// The root package's entry file: its `[bin]` path, else
+/// `src/main.av` when that exists, else absence.
+export fn entry_of(ws: Workspace) -> string? {
+    let pkg = ws.packages[0]
+    let bin: string? = manifest(ws, 0).bin
+    let path = joined_path(pkg.root, bin ?? "src/main.av")
+    if bin == null && !ws.host.exists(path) { return null }
+    path
 }
 
 fn index_of_file(files: List<Analysis>, path: string) -> int? {
@@ -705,20 +786,22 @@ impl Program {
         self.files[self.entry!]
     }
 
-    fn clean(self) -> bool { self.defects.is_empty() && !self.files.any(unclean(it)) }
+    fn clean(self) -> bool { self.defects.is_empty() && !has_errors(self.voices) && !self.files.any(unclean(it)) }
 
-    /// Every file's diagnostics rendered, the workspace's defects
-    /// last; "" means clean.
+    /// The packages' voices first (a manifest's trouble explains
+    /// the rest), then every file's diagnostics, the workspace's
+    /// defects last; "" means clean.
     fn report(self) -> string {
         let files = [a.report() for a in self.files if unclean(a)]
-        let all: List<string> = if self.defects.is_empty() { files } else { files.concat([self.rendered(self.defects)]) }
-        joined(all, "\n\n")
+        let heads: List<string> = if self.voices.is_empty() { [] } else { [self.rendered(self.voices)] }
+        let tails: List<string> = if self.defects.is_empty() { [] } else { [self.rendered(self.defects)] }
+        joined(heads.concat(files).concat(tails), "\n\n")
     }
 
-    /// Diagnostics rendered over every file's source — a frame's
-    /// window comes from the file its Loc names.
+    /// Diagnostics rendered over every source — a frame's window
+    /// comes from the file its Loc names, manifests included.
     fn rendered(self, ds: List<Diag>) -> string {
-        let sources = [a.view.source for a in self.files]
+        let sources = self.manifests.concat([a.view.source for a in self.files])
         joined([render_among(d, self.ws.lang.rows.codes, sources) for d in ds], "\n\n")
     }
 
@@ -739,24 +822,163 @@ impl Program {
     }
 
     fn run(self) -> Result<string, string> {
+        if self.entry == null { return Result.Err(self.rendered([no_target(self.ws.root)])) }
         run_lowered(self.lowered_checked()?)
     }
 
-    /// Everything wrong, rendered; "" means clean.
-    fn check(self) -> string {
-        if !self.clean() { return self.report() }
-        self.rendered(self.lowered().diagnostics)
+    /// Everything wrong, rendered, as the refusal; or what merely
+    /// warned, rendered, as the answer — "" when nothing spoke.
+    fn check(self) -> Result<string, string> {
+        if !self.clean() { return Result.Err(self.report()) }
+        let lowered = self.lowered().diagnostics
+        if has_errors(lowered) { return Result.Err(self.rendered(lowered)) }
+        Result.Ok(self.warnings())
     }
+
+    /// The warnings alone, rendered — what a clean program still
+    /// says.
+    fn warnings(self) -> string {
+        let spoken = self.voices.concat(flatten([a.diagnostics for a in self.files]))
+        self.rendered([d for d in spoken if is_warning(d)])
+    }
+}
+
+fn is_warning(d: Diag) -> bool {
+    !is_error(d)
+}
+
+// ── The packages ──
+
+/// A package's manifest, read from its `avra.toml` — an INPUT: the
+/// revision moves only when the text did. A root without a manifest
+/// reads as an empty one, quietly.
+export fn manifest(ws: Workspace, i: int) -> Manifest {
+    let pkg = ws.packages[i]
+    let path = joined_path(pkg.root, "avra.toml")
+    let k = key(Family.Manifest, i)
+    if !has_manifest(ws, pkg) {
+        ws.db.set_input(k, 0)
+        ws.db.record_dep(k)
+        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, voices: [] }
+    }
+    let text = ws.host.read(path)
+    ws.db.set_input(k, fp_str(text))
+    ws.db.record_dep(k)
+    read_manifest(new_source_file(path, text))
+}
+
+fn has_manifest(ws: Workspace, pkg: Package) -> bool {
+    ws.host.exists(joined_path(pkg.root, "avra.toml"))
+}
+
+fn manifest_source(ws: Workspace, pkg: Package) -> SourceFile {
+    let path = joined_path(pkg.root, "avra.toml")
+    new_source_file(path, ws.host.read(path))
+}
+
+/// The root package, then every path dependency reachable from its
+/// manifest: each admitted once by key, each judged — the directory
+/// holds a manifest, the manifest calls itself the keyed name, one
+/// key is one directory, and no cycle closes.
+fn load_packages(ws: Workspace, src: string) {
+    mut ps = ws.packages
+    let unnamed = Package { key: "", root: ws.root, src: src, ordinal: 0, at: null }
+    ps.push(unnamed)
+    let m = manifest(ws, 0)
+    let named = unnamed with { key: m.name }
+    ps.set(0, named)
+    admit_dependencies(ws, 0, m, true, [m.name])
+}
+
+/// A package's dependencies admitted — tests' dependencies only for
+/// the root, since they never travel.
+fn admit_dependencies(ws: Workspace, i: int, m: Manifest, root: bool, chain: List<string>) {
+    for d in m.deps {
+        if !d.dev || root { admitted(ws, d.key, normalized(joined_path(ws.packages[i].root, d.path!)), d.at, chain) }
+    }
+}
+
+fn admitted(ws: Workspace, key: string, dir: string, at: Loc?, chain: List<string>) {
+    if chain.contains(key) { return speak_package(ws, dependency_cycle(at, chain.concat([key]))) }
+    let known: Package? = ws.packages.find(it.key == key)
+    if known != null {
+        if known!.root != dir { speak_package(ws, duplicate_package(at, key, known!.root, dir)) }
+        return
+    }
+    if !ws.host.exists(joined_path(dir, "avra.toml")) { return speak_package(ws, bad_dependency_path(at, key, dir)) }
+    mut ps = ws.packages
+    let i = ps.length
+    let pkg = Package { key: key, root: dir, src: joined_path(dir, "src"), ordinal: i, at: at }
+    ps.push(pkg)
+    let m = manifest(ws, i)
+    if m.name != key { speak_package(ws, name_mismatch(at, key, m.name, dir)) }
+    admit_dependencies(ws, i, m, false, chain.concat([key]))
+}
+
+fn speak_package(ws: Workspace, d: Diag) {
+    mut vs = ws.package_voices
+    vs.push(d)
+}
+
+/// Everything the packages said: each manifest's own voices, then
+/// the graph's.
+fn package_voices(ws: Workspace) -> List<Diag> {
+    flatten([manifest(ws, pkg.ordinal).voices for pkg in ws.packages]).concat(ws.package_voices)
+}
+
+/// The package a file belongs to — the one whose source root holds
+/// it, the deepest when nested; the root package otherwise.
+fn holder_of_path(ws: Workspace, path: string) -> int {
+    mut best = 0
+    for pkg in ws.packages {
+        if under_dir(path, pkg.src) && pkg.src.length >= ws.packages[best].src.length { best = pkg.ordinal }
+    }
+    best
+}
+
+/// The package a module path names: the root package for a local
+/// path, a dependency by key, absence when no package has the key.
+fn holder(ws: Workspace, m: ModulePath) -> Package? {
+    let k: string? = m.package()
+    if k == null { return ws.packages[0] }
+    let found: Package? = ws.packages.find(it.key == k!)
+    found
+}
+
+/// Whether a package's manifest declares the key.
+fn depends_on(ws: Workspace, from: Package, k: string) -> bool {
+    manifest(ws, from.ordinal).deps.any(it.key == k)
+}
+
+/// The dependency line a manifest lacks, as a structured fix when
+/// the package is already in the workspace (reached through
+/// another package's manifest): the path relative to the asking
+/// package's root, placed after its last dependency.
+fn dependency_fix(ws: Workspace, from: Package, k: string) -> List<Suggestion> {
+    let known: Package? = ws.packages.find(it.key == k)
+    if known == null { return [] }
+    let m = manifest(ws, from.ordinal)
+    let line = "\"${k}\" = { path = \"${relative_path(from.root, known!.root)}\" }"
+    let manifest_path = joined_path(from.root, "avra.toml")
+    let text = if m.deps_at == null { "\n[dependencies]\n${line}\n" } else { "\n${line}" }
+    let at = m.deps_at ?? ws.host.read(manifest_path).length
+    [Suggestion { confidence: Confidence.High, description: "add `${line}` under `[dependencies]` in `${manifest_path}`", edits: [Edit { loc: Loc { file: manifest_path, lo: at, hi: at }, replacement: text }] }]
 }
 
 // ── voices ──
 
-fn package_later(at: Loc?, m: ModulePath) -> Diag {
-    refusal("resolve.package_later", at, "`${m.text()}` names a package — packages arrive with a later slice", "in this use", null)
+fn not_a_dependency(ws: Workspace, at: Loc?, from: Package, k: string) -> Diag {
+    let fixes = dependency_fix(ws, from, k)
+    let at_file = joined_path(from.root, "avra.toml")
+    refusal("resolve.not_a_dependency", at, "`${k}` is not a dependency of this package", "in this use", "declare it under `[dependencies]` in `${at_file}` — `\"${k}\" = { path = \"…\" }`") with { suggestions: fixes }
+}
+
+fn package_form(at: Loc?, m: ModulePath) -> Diag {
+    refusal("resolve.package_form", at, "`${m.text()}` names no package — a package is `@scope.name`", "in this use", "write the scope and the name, then the module: `@scope.name.a.{x}`")
 }
 
 fn no_module(at: Loc?, m: ModulePath) -> Diag {
-    refusal("resolve.no_module", at, "no module `${m.text()}` under the package root", "in this use", "a module is a directory of `.av` files or one `.av` file, named from the root — `${m.dir_under("")}` was looked for")
+    refusal("resolve.no_module", at, "no module `${m.text()}` under the package's source root", "in this use", "a module is a directory of `.av` files or one `.av` file, named from `src/` — `${m.dir_under("")}` was looked for")
 }
 
 fn not_exported(at: Loc?, m: ModulePath, item: string, exports: List<string>) -> Diag {
@@ -773,5 +995,5 @@ fn listed_twice(at: Loc?, item: string) -> Diag {
 }
 
 fn unpackaged_use(at: Loc?) -> Diag {
-    refusal("resolve.unpackaged", at, "this file is not in a package — `use` needs a root", "this use", "put an `avra.toml` at the package root above this file; modules are named from there")
+    refusal("resolve.unpackaged", at, "this file is not in a package — `use` needs a root", "this use", "put an `avra.toml` at the package root, with this file under its `src/` — modules are named from there")
 }

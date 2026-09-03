@@ -597,6 +597,26 @@ against these before writing; probe in scratch when unsure.
   element types; typing_test's totality and the corpus prove it). A
   list-writing generic therefore has NO unit test — its proof is the
   product path, and that is written at the site.
+- TEST code that READS a struct from ANOTHER PACKAGE through a
+  field chain (`d.suggestions[0].edits[0]` — @std.errors' types)
+  dies at codegen in some shards ("unknown struct
+  `@std::errors::Suggestion`"), never in others. The product
+  library projects it (`suggested(d)` -> strings); tests read that.
+- A NESTED pattern with a sibling BINDING refuses to parse
+  (`.Value(.Str(s), k) ->` fails at `k`; `.Value(.Str(s), _)` is
+  fine) — bind the outer payload and match again. Enum variant
+  payloads must be NAMED in declarations (`Str(s: string)`);
+  construction and patterns stay positional.
+- `split` DROPS a trailing empty segment (`"a.".split(".")` is one
+  element) but keeps a leading one; `"".split(".")` is `[]`.
+- Struct literals refuse only in FREE-FN argument lists — method
+  and enum-constructor arguments take them (probed landing the
+  TOML reader); the `let` pin is for free calls.
+- An idiom-tool caveat with a house rule: the I25 payload-count
+  check reads ONE VARIANT PER LINE — a one-line enum
+  (`enum S { A(x: int), B }`) is invisible to it and every pattern
+  over it reports a wrong count. Enums are written one variant per
+  line, always.
 - Three concurrent `make test` runs (each spawns eight compiler
   shards) crashed the machine; builds are serial — never let two
   agents build at once.

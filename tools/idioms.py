@@ -26,7 +26,7 @@ with its reason. The registry can never again outrun the ratchet.
 import collections, os, re, sys, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = ["packages/std-avrac/src", "packages/cli/src"]
+SRC = ["packages/std-avrac/src", "packages/cli/src", "packages/std-toml/src"]
 BASELINE = os.path.join(ROOT, "tools", "idioms.baseline")
 SKIP = ("spec_test",)
 
@@ -115,7 +115,7 @@ def index_walk(lines):
 
 # A REAL count pins a number: `== n`, or the testing verbs that pin
 # it for you. `>= 1` is not a count — it is I30's smell.
-COUNTED = re.compile(r"diagnostics\.length ==|refusals\(.*\) ==|refused_with\(|refused_n\(")
+COUNTED = re.compile(r"diagnostics\.length ==|voices\.length ==|refusals\(.*\) ==|refused_with\(|refused_n\(")
 
 def uncounted_refusal(lines):
     """A refusal test asserting only `contains` — the shape that lets

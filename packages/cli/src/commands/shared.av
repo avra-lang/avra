@@ -1,8 +1,8 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef, result_get_arg, result_has_flag}
-use @std.avrac.language.{Host, Program, Analysis, program, lone_workspace, timed_workspace, avra, emit_ll}
-use @std.avrac.core.{joined, dir_of}
+use @std.avrac.language.{Host, Program, Analysis, program, lone_workspace, timed_workspace, entry_of, no_target, avra, emit_ll}
+use @std.avrac.core.{joined, dir_of, under_dir}
 
 extern fn avra_selfhost_read_file(path: string) -> string
 extern fn avra_selfhost_file_exists(path: string) -> int
@@ -34,9 +34,10 @@ fn path_arg(args: CliResult) -> string {
     result_get_arg(args, "file")
 }
 
-/// The argued file as a PROGRAM: inside a package — an `avra.toml`
-/// ancestor marks the root — every file of it, entered here; outside
-/// one, the lone file. Null when the file does not exist.
+/// The argued file as a PROGRAM: inside a package's sources — an
+/// `avra.toml` ancestor marks the root, `src/` under it holds the
+/// modules — every file of it, entered here; outside one, the lone
+/// file. Null when the file does not exist.
 fn program_arg(args: CliResult) -> Program? {
     let path = path_arg(args)
     if avra_selfhost_file_exists(path) == 0 {
@@ -44,7 +45,7 @@ fn program_arg(args: CliResult) -> Program? {
         return null
     }
     let root: string? = package_root(dir_of(path))
-    if root == null {
+    if root == null || !under_dir(path, "${root!}/src") {
         let lone: Program = program(lone_workspace(path, avra_selfhost_read_file(path), avra()), path)
         return lone
     }
@@ -52,13 +53,15 @@ fn program_arg(args: CliResult) -> Program? {
     whole
 }
 
-/// A package root as a program with no entry — every file, checked.
+/// A package root as a program entered at its `[bin]` when it has
+/// one — every file analyzed either way.
 fn root_program(root: string) -> Program {
-    program(timed_workspace(disk_host(), root, avra(), () -> avra_now_ns()), null)
+    let ws = timed_workspace(disk_host(), root, avra(), () -> avra_now_ns())
+    program(ws, entry_of(ws))
 }
 
-/// The argued path as a program: a directory is a root with no
-/// entry, a file is entered.
+/// The argued path as a program: a directory is a package root, a
+/// file is entered.
 fn program_at(args: CliResult) -> Program? {
     let path = path_arg(args)
     if avra_host_is_dir(path) != 0 {
@@ -82,13 +85,20 @@ fn on_program(args: CliResult, act: fn(Program) -> int) -> int {
 fn lowered_or_report(p: Program) -> Result<string, string> {
     if !p.clean() { return Result.Err(p.report()) }
     let entry: Analysis? = p.entry_file()
-    if entry == null { return Result.Err("the program has no entry") }
+    if entry == null { return Result.Err(p.rendered([no_target(p.ws.root)])) }
     if entry!.view.stmts.is_empty() { return Result.Err("the program is empty") }
     let lo = p.lowered_checked()?
     let path = "${entry!.view.source.file}.ll"
     let failure: string? = emit_ll(lo, path)
     if failure != null { return Result.Err(failure!) }
     Result.Ok(path)
+}
+
+/// A clean program's warnings, to stderr — never silent, never
+/// blocking.
+fn warn(p: Program) {
+    let text = p.warnings()
+    if text != "" { eprintln(text) }
 }
 
 /// The `--time` report: analysis by phase, then what the command
