@@ -94,10 +94,10 @@ export enum Type {
 /// form — deterministic structural content, children by interned id —
 /// which is exactly what content-addressing later hashes: the key
 /// derivation swaps, the map and its callers do not.
-export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId> }
+export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId>, flats: List<List<TypeId>> }
 
 export fn new_type_registry() -> TypeRegistry {
-    TypeRegistry { shapes: [], ids: {} }
+    TypeRegistry { shapes: [], ids: {}, flats: [] }
 }
 
 /// A heap-shaped value: it rides POINTERS, and it waits on
@@ -149,12 +149,32 @@ impl TypeRegistry {
         let hit: TypeId? = self.ids.get(key)
         if hit != null { return hit! }
         self.shapes.push(t)
+        // the flat table runs PARALLEL to the shapes: every type has
+        // a row, and only a declared record of scalars fills one
+        let unflat: List<TypeId> = []
+        self.flats.push(unflat)
         let id = TypeId { index: self.shapes.length - 1 }
         self.ids.set(key, id)
         id
     }
 
     fn shape_of(self, id: TypeId) -> Type { self.shapes[id.index] }
+
+    /// A FLAT record's fields, in slot order — a record of scalars
+    /// alone, which rides REGISTERS and is never a heap box. Empty
+    /// for every other type; the flat ones are marked at
+    /// declaration, where the fields are known.
+    fn flat_fields(self, id: TypeId) -> List<TypeId> { self.flats[id.index] }
+
+    fn is_flat(self, id: TypeId) -> bool { !self.flats[id.index].is_empty() }
+
+    /// Mark a declared record flat. Its fields hold no reference, so
+    /// nothing counts them and nothing frees them: the value IS its
+    /// fields.
+    fn mark_flat(self, id: TypeId, fields: List<TypeId>) {
+        mut fs = self.flats
+        fs.set(id.index, fields)
+    }
 
     /// What a nullable carries, or absent when the id is not one —
     /// THE projection (values.av's `carried_type` is its cx-space
