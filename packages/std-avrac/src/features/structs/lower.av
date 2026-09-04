@@ -4,7 +4,7 @@
 //! Reads are the spine's property ladder (a slot read at the
 //! field's compile-time index) — zero new instructions anywhere.
 use core.{ExprId, Reg, Ins, filled, DeclId}
-use features.{LowerCx, StructSig, lower_defect, foreign_node, push_slot, slot_read}
+use features.{LowerCx, StructSig, lower_defect, foreign_node, push_slot, slot_read, field_read}
 
 fn structs_reg(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -26,16 +26,15 @@ fn with_reg(cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, value
         cx.defect("a `with` on a non-struct survived typing")
         return cx.result(e)
     }
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    mut by_slot: List<Reg?> = []
     for (slot, n) in sig!.names.enumerate() {
         let j = fields.index_of(n)
-        if j >= 0 {
-            push_slot(cx, dst, regs[j])
-        } else {
-            push_slot(cx, dst, slot_read(cx, src, slot, sig!.types[slot]))
-        }
+        if j >= 0 { by_slot.push(regs[j]) } else { by_slot.push(field_read(cx, src, cx.viewed(cx.type_at(subject)), slot, sig!.types[slot])) }
     }
+    if cx.view.types.is_flat(cx.viewed(cx.type_at(e))) { return packed_lit(cx, e, sig!, by_slot) }
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    for r in by_slot { push_slot(cx, dst, r!) }
     dst
 }
 
@@ -44,8 +43,6 @@ fn lit_reg(cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -
     let held: StructSig? = cx.fields_at(e)
     if held == null { return lower_defect(cx, e, "a field-less literal survived typing") }
     let sig = held!
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
     mut by_slot: List<Reg?> = filled<Reg?>(sig.names.length, null)
     for (j, f) in fields.enumerate() {
         let slot: int? = sig.slot_of(f)
@@ -54,11 +51,22 @@ fn lit_reg(cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -
             by_slot.set(slot!, r)
         }
     }
+    if cx.view.types.is_flat(cx.viewed(cx.type_at(e))) { return packed_lit(cx, e, sig, by_slot) }
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
     // LICENSED I3: the slot's ORDINAL finds its default
     for (slot, r) in by_slot.enumerate() {
         if r != null { push_slot(cx, dst, r!) } else { push_slot(cx, dst, defaulted_reg(cx, e, sig, slot)) }
     }
     dst
+}
+
+/// A FLAT record's literal: NO instruction at all. The record is
+/// its one field, so the field's register IS the record's.
+fn packed_lit(cx: LowerCx, e: ExprId, sig: StructSig, by_slot: List<Reg?>) -> Reg {
+    let held: Reg? = by_slot[0]
+    if held != null { return held! }
+    defaulted_reg(cx, e, sig, 0)
 }
 
 /// The default an omitted slot lowers to — typing guaranteed one:

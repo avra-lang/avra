@@ -5,7 +5,7 @@
 //! desugar onto the region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
 use core.{ExprId, BinOp, UnOp, Reg, Ins, Type, TypeId}
-use features.{LowerCx, StructSig, EnumSig, presence_of, lower_defect, foreign_node, variant_defect, tagged_value, PropertyRow, property_row, same_value, presence_region, carried_of}
+use features.{LowerCx, StructSig, EnumSig, presence_of, lower_defect, foreign_node, variant_defect, tagged_value, PropertyRow, property_row, same_value, presence_region, carried_of, slot_read, field_read}
 
 fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -63,12 +63,9 @@ fn prop_reg(cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
     if slot == null {
         return lower_defect(cx, e, "a fieldless property on a struct survived typing")
     }
-    let subject = cx.reg_of(s)
-    let idx = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(idx, slot!))
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_get", [subject, idx]))
-    dst
+    // THE one slot read: a boxed record reads through its box, a
+    // flat one extracts from registers, and this site knows neither.
+    field_read(cx, cx.reg_of(s), cx.viewed(cx.type_at(s)), slot!, cx.viewed(cx.type_at(e)))
 }
 
 /// Constructing a variant: ONE array carrying the tag at slot 0.
