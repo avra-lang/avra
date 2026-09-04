@@ -8,6 +8,7 @@
 //! (assembly + dispatch), coherence.av (feature/grammar agreement).
 use core.{ExprId, StmtId, TypeRef, Type, TypeId, Reg, TypeRegistry, PatId, Case, Arm}
 use diagnostics.{DiagCode}
+use grammar.{Grammar, Rule}
 
 /// The language client's node wrapper: builders hand the engine typed
 /// ids, never nodes.
@@ -97,14 +98,16 @@ export fn no_law(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
     []
 }
 
-/// A language feature: its grammar fragment in DSL text, the
-/// builder table linking the fragment's build names to fns, its
-/// diagnostic codes, and its method, constructor and property rows.
+/// A language feature: its grammar fragment as a GRAMMAR VALUE —
+/// `grammar { … }` reads the notation when the compiler runs, so
+/// assembly merges and never parses — the builder table linking the
+/// fragment's build names to fns, its diagnostic codes, and its
+/// method, constructor and property rows.
 export component LanguageFeature {
     config {
         name: string,
         docs: string = "",
-        gram: string = "",
+        gram: Grammar = no_grammar(),
         builders: List<BuilderRow> = [],
         diags: List<DiagCode> = [],
         methods: List<MethodRow> = [],
@@ -113,9 +116,16 @@ export component LanguageFeature {
     }
 }
 
+/// A feature that contributes no rules — the config default, and
+/// what a metadata-compiled test starts from.
+export fn no_grammar() -> Grammar {
+    let none: List<Rule> = []
+    Grammar { name: "", start: "", rules: none }
+}
+
 /// A feature value for consumers that cannot instantiate the
 /// component (metadata-compiled tests); extend with `with`.
-export fn feature(fname: string, fgram: string) -> LanguageFeature {
+export fn feature(fname: string, fgram: Grammar) -> LanguageFeature {
     component LanguageFeature f {
         name = fname
         gram = fgram

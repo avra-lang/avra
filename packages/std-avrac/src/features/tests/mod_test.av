@@ -1,9 +1,10 @@
-// The feature contract: composition tracks ownership by offset,
-// dispatch walks builder tables through a Builder, and coherence
-// cross-checks the tables against the composed grammar's build calls.
+// The feature contract: composition gathers each feature's RULES and
+// remembers whose they are, dispatch walks builder tables through a
+// Builder, and coherence cross-checks the tables against the composed
+// grammar's build calls.
 use @std.avrac.core.{new_node_store, Expr}
-use @std.avrac.grammar.{parse_grammar}
-use @std.avrac.features.{LangNode, LanguageFeature, BuilderRow, Builder, compose_text, dispatch, builder_defects, feature}
+use @std.avrac.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use @std.avrac.features.{LangNode, LanguageFeature, BuilderRow, Builder, compose_grammar, dispatch, builder_defects, feature}
 
 fn build_a(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.IntLit(b.args.length))
@@ -15,8 +16,44 @@ fn build_b(b: Builder) -> Result<LangNode, string> {
     Result.Err("beta cannot build that")
 }
 
-fn with_rows(fname: string, fgram: string, rows: List<BuilderRow>) -> LanguageFeature {
+fn with_rows(fname: string, fgram: Grammar, rows: List<BuilderRow>) -> LanguageFeature {
     feature(fname, fgram) with { builders: rows }
+}
+
+fn alpha_gram() -> Grammar {
+    grammar {
+        a = x:NAME -> mk_a(x)
+    }
+}
+
+fn beta_gram() -> Grammar {
+    grammar {
+        b = x:NUMBER -> mk_b(x)
+    }
+}
+
+fn ghost_gram() -> Grammar {
+    grammar {
+        g = x:NAME -> ghost(x)
+    }
+}
+
+fn bare_gram() -> Grammar {
+    grammar {
+        b = NUMBER
+    }
+}
+
+fn uncalled_gram() -> Grammar {
+    grammar {
+        a = NAME
+    }
+}
+
+fn grouped_gram() -> Grammar {
+    grammar {
+        g = x:NAME ( y:NAME -> ghost(y) )? -> mk_a(x)
+    }
 }
 
 fn alpha_rows() -> List<BuilderRow> {
@@ -33,26 +70,26 @@ fn fixture() -> List<LanguageFeature> {
         "mk_b" | build_b
     }
     [
-        with_rows("alpha", "a = x:NAME -> mk_a(x)", alpha_rows()),
-        with_rows("beta", "b = x:NUMBER -> mk_b(x)", beta_rows),
+        with_rows("alpha", alpha_gram(), alpha_rows()),
+        with_rows("beta", beta_gram(), beta_rows),
     ]
 }
 
 fn defects_for(feats: List<LanguageFeature>) -> List<string> {
-    let gp = parse_grammar(compose_text(feats).text)
-    [d.message for d in builder_defects(feats, gp.built!)]
+    [d.message for d in builder_defects(feats, compose_grammar(feats).built)]
 }
 
 spec "features/mod" {
     given "composition" {
-        then "fragments concatenate in feature order" {
-            let c = compose_text(fixture())
-            c.text == "a = x:NAME -> mk_a(x)\nb = x:NUMBER -> mk_b(x)\n"
+        then "rules gather in feature order, the first naming the start" {
+            let c = compose_grammar(fixture())
+            let names = [r.name for r in c.built.rules]
+            names.length == 2 && names[0] == "a" && names[1] == "b" && c.built.start == "a"
         }
-        then "offsets map back to their owning feature" {
-            let c = compose_text(fixture())
-            c.feature_at(0) == "alpha" && c.feature_at(22) == "beta" &&
-                c.feature_at(999) == null
+        then "a rule names the feature that contributed it" {
+            let c = compose_grammar(fixture())
+            c.feature_of("a") == "alpha" && c.feature_of("b") == "beta" &&
+                c.feature_of("nowhere") == null
         }
     }
     given "builder dispatch" {
@@ -78,25 +115,25 @@ spec "features/mod" {
         }
         then "an unregistered build call names the gap and the search" {
             let no_rows: List<BuilderRow> = []
-            let ds = defects_for([with_rows("solo", "g = x:NAME -> ghost(x)", no_rows)])
+            let ds = defects_for([with_rows("solo", ghost_gram(), no_rows)])
             ds.length == 1 &&
                 ds[0] == "no feature registers builder `ghost` (searched solo)"
         }
         then "a name registered twice names the prior owner" {
             let ds = defects_for([
-                with_rows("alpha", "a = x:NAME -> mk_a(x)", alpha_rows()),
-                with_rows("alpha2", "b = NUMBER", alpha_rows()),
+                with_rows("alpha", alpha_gram(), alpha_rows()),
+                with_rows("alpha2", bare_gram(), alpha_rows()),
             ])
             ds.length == 1 &&
                 ds[0] == "builder `mk_a` is already registered by `alpha`"
         }
         then "a builder no rule calls is dead" {
-            let ds = defects_for([with_rows("alpha", "a = NAME", alpha_rows())])
+            let ds = defects_for([with_rows("alpha", uncalled_gram(), alpha_rows())])
             ds.length == 1 &&
                 ds[0] == "builder `mk_a` is never called by any grammar rule"
         }
         then "a build call inside a group is seen" {
-            let ds = defects_for([with_rows("alpha", "g = x:NAME ( y:NAME -> ghost(y) )? -> mk_a(x)", alpha_rows())])
+            let ds = defects_for([with_rows("alpha", grouped_gram(), alpha_rows())])
             ds.length == 1 &&
                 ds[0] == "no feature registers builder `ghost` (searched alpha)"
         }
@@ -106,7 +143,7 @@ spec "features/mod" {
                 "mk_a" | build_a
                 "mk_a" | build_b
             }
-            let ds = defects_for([with_rows("alpha", "a = x:NAME -> mk_a(x)", rows)])
+            let ds = defects_for([with_rows("alpha", alpha_gram(), rows)])
             ds.length == 1 &&
                 ds[0] == "builder `mk_a` is already registered by `alpha`"
         }

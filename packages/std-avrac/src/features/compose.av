@@ -1,31 +1,38 @@
-//! Assembly: features compose into one grammar text, and the engine's
-//! build calls dispatch back through the features' builder tables.
+//! Assembly: features compose into one grammar — their rules in
+//! feature order, the first feature's first rule the start — and the
+//! engine's build calls dispatch back through the features' builder
+//! tables. Nothing is parsed here: a feature's `grammar { … }` was
+//! read when the compiler ran.
 use core.{NodeStore, Span}
-use grammar.{Captured}
+use grammar.{Captured, Grammar, Rule}
 
-/// One feature's slice of the composed grammar text — diagnostics map
-/// back to the feature that owns their span.
-export type FragmentRange = { feature: string, lo: int, hi: int }
+/// The composed grammar, and which feature contributed each RULE —
+/// a defect names its feature by the rule it landed in, where the
+/// composed TEXT once named it by byte offset.
+export type Composed = { built: Grammar, owners: List<RuleOwner> }
 
-export type ComposedText = { text: string, ranges: List<FragmentRange> }
+/// One rule's home.
+export type RuleOwner = { feature: string, rule: string }
 
 /// Every fragment, in feature order — the first feature's first rule
 /// is the language's start rule.
-export fn compose_text(features: List<LanguageFeature>) -> ComposedText {
-    mut text = ""
-    mut ranges: List<FragmentRange> = []
+export fn compose_grammar(features: List<LanguageFeature>) -> Composed {
+    mut rules: List<Rule> = []
+    mut owners: List<RuleOwner> = []
     for f in features {
-        let lo = text.length
-        text = "${text}${f.gram}\n"
-        ranges.push(FragmentRange { feature: f.name, lo: lo, hi: text.length })
+        for r in f.gram.rules {
+            rules.push(r)
+            owners.push(RuleOwner { feature: f.name, rule: r.name })
+        }
     }
-    ComposedText { text: text, ranges: ranges }
+    let start = if rules.is_empty() { "" } else { rules[0].name }
+    Composed { built: Grammar { name: start, start: start, rules: rules }, owners: owners }
 }
 
-impl ComposedText {
-    /// The feature owning a byte offset, when one does.
-    fn feature_at(self, offset: int) -> string? {
-        self.ranges.find(offset >= it.lo && offset < it.hi)?.feature
+impl Composed {
+    /// The feature that first contributed a rule of this name.
+    fn feature_of(self, rule: string) -> string? {
+        self.owners.find(it.rule == rule)?.feature
     }
 }
 

@@ -5,6 +5,7 @@
 //! (`name + 1`) as real nodes, so every pass just walks them and
 //! the IR gains nothing.
 use features.{LanguageFeature, BuilderRow}
+use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 
 export fn loops() -> LanguageFeature {
     let rows = table<BuilderRow> {
@@ -16,9 +17,9 @@ export fn loops() -> LanguageFeature {
     component LanguageFeature f {
         name = "loops"
         docs = "`while <cond> { ... }` repeats while true; `for <name> in <lo>..<hi> { ... }` counts."
-        gram = """
-stmt = "while" c:expression "{" ( s:stmt | BREAK )* "}" END @recover(sync_to: "END") -> while_stmt(c, s) | "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" exs:expression "{" ( es:stmt | BREAK )* "}" END -> for_each(ix, en, exs, es) | "for" n:NAME "in" lo:expression ".." hi:expression "{" ( s:stmt | BREAK )* "}" END @recover(sync_to: "END") -> for_stmt(n, lo, hi, s)
-"""
+        gram = grammar {
+            stmt = "while" c:expression "{" ( s:stmt | BREAK )* "}" END @recover(sync_to: "END") -> while_stmt(c, s) | "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" exs:expression "{" ( es:stmt | BREAK )* "}" END -> for_each(ix, en, exs, es) | "for" n:NAME "in" lo:expression ".." hi:expression "{" ( s:stmt | BREAK )* "}" END @recover(sync_to: "END") -> for_stmt(n, lo, hi, s)
+        }
         builders = rows
     }
     f

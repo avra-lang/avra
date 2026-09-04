@@ -6,6 +6,7 @@
 //! spine's bare NAME; a non-literal brace falls through by
 //! backtracking, so conditions like `if x { ... }` stay whole.
 use features.{LanguageFeature, BuilderRow}
+use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn structs() -> LanguageFeature {
@@ -25,10 +26,10 @@ export fn structs() -> LanguageFeature {
     component LanguageFeature f {
         name = "structs"
         docs = "`type Name = { field: ty, ... }` declares; `Name { field: value, ... }` builds; `value.field` reads; `value with { field: v }` copies."
-        gram = """
-stmt = "type" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ">" )? "=" "{" BREAK? ( fs:NAME ":" ft:type ( "=" fd:expression )? ( "," BREAK? fs:NAME ":" ft:type ( "=" fd:expression )? )* ","? BREAK? )? "}" END @recover(sync_to: "END") -> struct_decl(n, tp, fs, ft, fd)
-primary = t:NAME "{" BREAK? ( vn:NAME ":" ve:expression ( "," BREAK? vn:NAME ":" ve:expression )* ","? BREAK? )? "}" -> struct_lit(t, vn, ve)
-"""
+        gram = grammar {
+            stmt = "type" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ">" )? "=" "{" BREAK? ( fs:NAME ":" ft:type ( "=" fd:expression )? ( "," BREAK? fs:NAME ":" ft:type ( "=" fd:expression )? )* ","? BREAK? )? "}" END @recover(sync_to: "END") -> struct_decl(n, tp, fs, ft, fd)
+            primary = t:NAME "{" BREAK? ( vn:NAME ":" ve:expression ( "," BREAK? vn:NAME ":" ve:expression )* ","? BREAK? )? "}" -> struct_lit(t, vn, ve)
+        }
         builders = rows
         diags = codes
     }

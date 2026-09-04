@@ -5407,12 +5407,22 @@ invisibility is why the round trip is proved by a spec INSIDE the
 package: `shown` analyses a lone source, which has no package to
 import from, so it can prove only the refusals.
 
-STILL TO DO — the half that collects the 83s: `LanguageFeature.gram`
-is still a `string`, so `assemble` still composes text and parses it.
-Next: `gram` becomes a `Grammar`, the 30 features write
-`gram = grammar { … }`, and assembly MERGES values (4ms) instead of
-parsing text (54ms). `compose_text`'s byte-range attribution goes
-with it — a defect will need its feature by rule name instead.
+COLLECTED, same day. `LanguageFeature.gram` is a `Grammar`; 27
+feature manifests write `gram = grammar { … }`; `compose_text` is
+`compose_grammar`, which gathers each feature's RULES in feature
+order and names the start from the first. Assembly PARSES NOTHING.
+
+  one assembly     58ms -> ~8ms
+  make test         218s -> 110s
+  make gate        ~320s -> 238s
+
+The byte-range attribution went with the text, as expected: a defect
+now names its feature by the RULE it landed in (`Composed.feature_of`)
+where it once named it by offset. That is the better key anyway — a
+rule has a name; an offset only had a position.
+
+`avra new feature` scaffolds the block, so a new feature is born
+speaking it.
 
 ## THE PIPELINE, MEASURED (2026-09-04) — where `make gate` actually goes
 
