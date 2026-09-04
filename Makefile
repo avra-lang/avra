@@ -18,7 +18,7 @@ RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-toml packages/std-testing packages/std-avrac packages/cli
 
-.PHONY: test clean fresh libfresh corpus gate idioms idioms-accept bench fuzz scaffold-check vocab sweep \
+.PHONY: test clean fresh libfresh corpus gate idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
         check run ir emit build-native native-check avra
 
 # A cold-tree bootstrap leaves bs2's freshness sidecars behind; the
@@ -34,6 +34,21 @@ libfresh: fresh
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
+# THE SEED: the compiler, emitted, so the chain cannot be lost.
+# `make bootstrap` builds a compiler from it and then rebuilds from
+# source; `make seed` refreshes it. bootstrap/README.md holds the rule.
+seed: $(RUNTIME_OBJS)
+	@./avra emit packages/cli > bootstrap/seed.ll
+	@echo "seed: bootstrap/seed.ll ($$(wc -l < bootstrap/seed.ll | tr -d ' ') lines)"
+
+bootstrap: $(RUNTIME_OBJS)
+	@mkdir -p build
+	@clang -w -O1 bootstrap/seed.ll build/avra_runtime.o build/llvm_wrapper.o \
+	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
+	@codesign -f -s - build/avra 2>/dev/null || true
+	@echo "bootstrap: build/avra from the seed — rebuilding from source"
+	@$(MAKE) -s avra
+
 avra: $(RUNTIME_OBJS)
 	@./avra build packages/cli > /dev/null
 	@mkdir -p build

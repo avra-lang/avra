@@ -13,16 +13,15 @@ if [ -x build/avra ]; then
     exec build/avra "$@"
 fi
 
-# COLD TREE: no compiler yet. Bootstrap once through bs2, then never
-# again — every later build uses the binary this produces.
-bs2="$root/../forge-crafting-intepreters/bootstrap/build/bs2"
-if [ ! -x "$bs2" ]; then
-    echo "avra: no build/avra and no bootstrap compiler at $bs2" >&2
-    echo "      run \`make avra\` where one exists, and keep the binary." >&2
-    exit 2
+# COLD TREE: no compiler yet. The SEED is the way back — the compiler
+# emitted, committed, and linkable by clang alone. bs2 cannot do this
+# any more: it has never heard of `grammar { … }`, which 30 feature
+# manifests use, and it cannot lex a raw block.
+if [ -f "$root/bootstrap/seed.ll" ]; then
+    echo "avra: no build/avra — bootstrapping from the seed" >&2
+    make -C "$root" -s bootstrap >&2 || exit 2
+    exec build/avra "$@"
 fi
-find packages -name '*.avra-sha256' -delete
-stamp=$(find packages -name '*.av' -not -path '*/build/*' -not -name 'main_stamped.av' -print0 | sort -z | xargs -0 cat | shasum -a 256 | cut -c1-16)
-gen="packages/cli/src/main_stamped.av"
-{ printf '// deps-stamp: %s\n' "$stamp"; cat packages/cli/src/main.av; } > "$gen"
-exec "$bs2" run "$gen" -- "$@"
+echo "avra: no build/avra and no bootstrap/seed.ll" >&2
+echo "      the seed is the only cold path; restore it from git." >&2
+exit 2

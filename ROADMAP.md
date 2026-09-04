@@ -5407,6 +5407,40 @@ design round when its time comes):
   this impossible". TRIGGER: at self-host, the list converts into
   a test suite — the language's negative space, pinned.
 
+## THE SEED — the chain cannot be lost (2026-09-04)
+
+`build/avra` is built by the `build/avra` that is already there, and
+NOTHING ELSE COULD BUILD IT. bs2 stopped being the cold path when the
+tree outgrew its dialect: it cannot lex a raw `"""` block, and since
+`grammar { … }` landed, 30 feature manifests use a construct it has
+never heard of. The `avra` shim still named it, which made the
+documented recovery a LIE — the real ladder was bs2 -> 551259c ->
+26c11fe -> today, one binary per language change, knowledge that
+lived in one head for one night.
+
+`bootstrap/seed.ll` is the compiler, EMITTED. `make bootstrap` links
+it with clang and then rebuilds from source; `make seed` refreshes
+it; the shim's cold path runs the first automatically. Proved by
+deleting `build/avra` and recovering in 45s — and the rebuilt
+compiler was BYTE-IDENTICAL to the one destroyed.
+
+Why the `.ll` and not the binary: it is portable to any host with
+clang and LLVM 21, it is inspectable, and it gzips smaller (0.6MB
+against 0.7MB). It carries a target triple, so a new platform makes
+its own seed from a working compiler.
+
+THE RULE, and it is the one bs2 broke: REFRESH THE SEED WHENEVER THE
+COMPILER'S OWN SOURCE STARTS USING A CONSTRUCT THE SEED DOES NOT
+UNDERSTAND. A seed that cannot compile HEAD is not a seed, it is a
+fossil. `make bootstrap` is how you find out, and the day to run it
+is the day a construct lands and gets dogfooded into `packages/`.
+
+STILL OWED: nothing checks the rule. A gate step that bootstraps and
+rebuilds costs ~45s and would catch a fossil the day it forms;
+without one, the seed rots exactly as the bs2 path did. FIRING
+CONDITION: the next construct dogfooded into the compiler's own
+source.
+
 ## THE SUBSET NOTES ARE STALE — an audit owed (2026-09-04)
 
 CLAUDE.md carries **76 "bs2 subset notes"**, and they govern how every
