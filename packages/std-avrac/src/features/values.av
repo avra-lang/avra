@@ -98,6 +98,9 @@ export fn payload_at(cx: LowerCx, v: Reg, k: int, ty: TypeId) -> Reg {
 /// emitted BEFORE the read that uses it — registers are numbered in
 /// emission order. An absent type reads as an int.
 export fn slot_read(cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
+    // A FLAT record IS its one field: reading that field is the
+    // record's own register, and costs nothing.
+    if cx.view.types.is_flat(cx.out.type_of_reg(v)) { return v }
     let at = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(at, n))
     let got = if ty == null { cx.mint_shape(Type.Int) } else { cx.mint_ty(ty!) }

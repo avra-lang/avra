@@ -300,10 +300,11 @@ fn match_alt<N>(cx: MatchContext<N>, rule_name: string, a: Alt,
 
 /// "expected A, B or C while parsing `rule`" from a farthest point.
 fn farthest_diagnostic<N>(cx: MatchContext<N>, f: FarthestFailure) -> Diagnostic {
+    let want = shown_expected(f.expected)
     Diagnostic {
         cause: Cause.Expected,
-        message: "expected ${join_expected(f.expected)} while parsing `${f.in_rule}`",
-        span: cx.tokens[f.cursor].span, expected: f.expected, in_rule: f.in_rule,
+        message: "expected ${join_expected(want)} while parsing `${f.in_rule}`",
+        span: cx.tokens[f.cursor].span, expected: want, in_rule: f.in_rule,
     }
 }
 
@@ -529,21 +530,33 @@ fn overall_failure<N>(cx: MatchContext<N>, r: MatchResult<N>) -> Diagnostic {
     }
 }
 
-/// Run `g` over `tokens`. A defective grammar refuses to run; a failed
-/// parse still reports every diagnostic gathered; a partial result
-/// (error holes inside) is a result.
-export fn run_grammar<N>(g: Grammar, tokens: List<Token>,
-                         build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>) -> RunOutcome<N> {
-    let defects = g.defects()
-    if !defects.is_empty() {
-        let refused: RunOutcome<N> = RunOutcome { result: null, diagnostics: defects }
-        return refused
-    }
+/// A grammar READY TO RUN: its defects found once and its rules
+/// indexed once. Neither belongs to a parse — a grammar's defects are
+/// a property of the GRAMMAR, and the index is the same map for every
+/// token stream. Paying them per FILE re-proved a fixed grammar
+/// well-formed once per source file in the workspace.
+export type Ready = { g: Grammar, rules: Map<string, Rule>, defects: List<Diagnostic> }
+
+/// A grammar prepared: validated, indexed, and answered ONCE.
+export fn ready(g: Grammar) -> Ready {
     mut rules: Map<string, Rule> = {}
     for r in g.rules { rules.set(r.name, r) }
+    Ready { g: g, rules: rules, defects: g.defects() }
+}
+
+/// Run `rd` over `tokens`. A defective grammar refuses to run; a failed
+/// parse still reports every diagnostic gathered; a partial result
+/// (error holes inside) is a result.
+export fn run_grammar<N>(rd: Ready, tokens: List<Token>,
+                         build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>) -> RunOutcome<N> {
+    if !rd.defects.is_empty() {
+        let refused: RunOutcome<N> = RunOutcome { result: null, diagnostics: rd.defects }
+        return refused
+    }
+    let g = rd.g
     let fresh: Map<string, MatchResult<N>> = {}
     let memo: Memo<N> = Memo { seen: fresh }
-    let cx: MatchContext<N> = MatchContext { g: g, tokens: tokens, rules: rules, build: build, memo: memo }
+    let cx: MatchContext<N> = MatchContext { g: g, tokens: tokens, rules: rd.rules, build: build, memo: memo }
     let r = match_rule<N>(cx, g.start, 0)
     mut diagnostics = [d for d in r.diagnostics]
     if r.status != MatchStatus.Hit {

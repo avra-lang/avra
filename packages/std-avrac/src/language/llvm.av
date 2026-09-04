@@ -199,9 +199,18 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
         .Int or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
         .Opt(inner) -> opt_ll_type(lc, types, inner),
-        .Str or .Ptr or .List(_) or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _) or
+        .Struct(_, _) -> flat_or_pointer(lc, types, ty),
+        .Str or .Ptr or .List(_) or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _) or
         .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> avra_llvm_pointer_type(lc),
     }
+}
+
+/// A record's machine type: a FLAT record IS its one field — a
+/// newtype over `int` is an `int`, so it rides every seat the field
+/// rides; every other record is the pointer to its box.
+fn flat_or_pointer(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
+    if !types.is_flat(ty) { return avra_llvm_pointer_type(lc) }
+    ll_type_of(lc, types, types.flat_fields(ty)[0])
 }
 
 /// A nullable's machine type: the niche IS its value's pointer; a

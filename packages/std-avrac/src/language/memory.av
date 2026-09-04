@@ -29,10 +29,12 @@ export fn memory(l: Lowered) -> Lowered {
 fn is_managed(types: TypeRegistry, ty: TypeId) -> bool {
     match types.shape_of(ty) {
         .Str -> true,
+        // A FLAT record holds no reference — nothing to count.
+        .Struct(_, _) -> !types.is_flat(ty),
         // EmptyList is the one identity widen whose pointer is a
         // REAL box: the callee's List param releases it, so the
         // caller must own it too, or the seam frees a live name.
-        .List(_) or .Struct(_, _) or .Enum(_, _) or .EmptyList or .Map(_, _) or .EmptyMap or
+        .List(_) or .Enum(_, _) or .EmptyList or .Map(_, _) or .EmptyMap or
         .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) -> true,
         .Opt(inner) -> is_managed(types, inner),
         .Ptr or .Int or .Bool or .TypeName(_, _) or .Var(_, _, _) or .Null or
