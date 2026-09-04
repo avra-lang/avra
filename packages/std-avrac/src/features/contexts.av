@@ -145,24 +145,35 @@ export fn decl_type_of(decls: Decls, voices: Voices, error_type: TypeId, d: Decl
 /// What a `let`/`mut` binding holds: its declared type, its value's
 /// type, or — for a loop's counter — int.
 export fn def_type_of(facts: TypeFacts, store: NodeStore, types: TypeRegistry, error_type: TypeId, s: StmtId) -> TypeId {
+    // A CONST FIRST: it is read from OTHER bodies, and a body's
+    // facts hold only its own — so a const's type is answered from
+    // the program, never from whoever happens to be asking.
+    let settled: TypeId? = settled_type(store, types, s)
+    if settled != null { return settled! }
     let declared: TypeId? = facts.declared_binding(s)
     if declared != null { return declared! }
     if store.stmt(s) is .For { return types.intern(Type.Int) }
     let v: ExprId? = store.stmt_value(s)
     if v == null { return error_type }
-    // A CONST is read from OTHER bodies, whose facts hold nothing
-    // about its value — the settled value's own shape answers.
-    let settled: Type? = settled_shape(store, s)
-    if settled != null { return types.intern(settled!) }
     facts.type_at(v!)
 }
 
-/// The shape a const's settled value wears, read from the value
-/// itself — no body's facts, because every body may read it.
-fn settled_shape(store: NodeStore, s: StmtId) -> Type? {
+/// The type a const wears: its settled value's own shape, wrapped
+/// when the annotation asks for absence. Read from the store alone
+/// — the value and the written type are all a const's type needs,
+/// and both are the program's, not a body's.
+fn settled_type(store: NodeStore, types: TypeRegistry, s: StmtId) -> TypeId? {
     let v: ExprId? = store.const_value(s)
     if v == null { return null }
-    let value: Expr = store.expr(v!)
+    let word: Type? = literal_shape(store.expr(v!))
+    if word == null { return null }
+    let held = types.intern(word!)
+    if store.binding_ty(s)?.optional ?? false { return types.intern(Type.Opt(held)) }
+    held
+}
+
+/// The shape a literal wears.
+fn literal_shape(value: Expr) -> Type? {
     if int_of(value) != null { return Type.Int }
     if text_of(value) != null { return Type.Str }
     if bool_of(value) != null { return Type.Bool }

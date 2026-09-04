@@ -1,0 +1,77 @@
+// The RED TEAM's permanent record for consts (see
+// .claude/skills/red-team): every program here was written to BREAK
+// the feature, not to use it. Grouped by attack class. A case that
+// once produced a wrong answer, a crash, an internal defect, or an
+// engine divergence keeps its place here forever.
+use @std.avrac.testing.{shown, refusals, refused_with}
+
+spec "features/consts (adversarial)" {
+    given "a lambda's env" {
+        // A const has no run-time value to capture. Reading one
+        // inside a lambda once answered the CAPTURE SLOT's contents
+        // — a value nothing had put there.
+        then "a const read inside a lambda is the settled value" {
+            shown("const N = 7\nlet f = () -> N\nf()") == "7"
+        }
+        then "a const beside a real capture keeps both straight" {
+            shown("const N = 7\nlet m = 1\nlet f = () -> N + m\nf()") == "8"
+        }
+        then "a const guards inside a lambda" {
+            shown("const READY = true\nlet f = () -> if READY { 1 } else { 0 }\nf()") == "1"
+        }
+    }
+    given "a name a `let` also claims" {
+        // The crossing law asked whether the name's FIRST definition
+        // was a const, then handed back the binding CURRENTLY
+        // visible — a different statement once a `let` shadowed it.
+        // The fn read a top-level slot it cannot see: index -1.
+        then "a `let` shadowing a const is refused inside a fn, not trapped" {
+            refused_with("const N = 1\nlet N = 2\nfn f() -> int {\n    N\n}\nf()", "run-time")
+        }
+        then "the const still crosses when the shadow comes after the body" {
+            shown("const N = 1\nfn f() -> int {\n    N\n}\nlet N = 2\nf()") == "1"
+        }
+        then "a shadow INSIDE the body wins over the const" {
+            shown("const N = 1\nfn f() -> int {\n    let N = 5\n    N\n}\nf()") == "5"
+        }
+        then "a parameter of the same name wins over the const" {
+            shown("const N = 1\nfn f(N: int) -> int {\n    N\n}\nf(9)") == "9"
+        }
+        then "a later const of the same name is the one that reads" {
+            shown("const N = 1\nconst N = 2\nN") == "2"
+        }
+    }
+    given "an annotation that changes the value's SHAPE" {
+        // A nullable annotation asks for a presence pair; the
+        // settled value is a bare scalar. The declaration emits
+        // nothing, so the lift had nowhere to happen and `!` once
+        // extracted from a non-pack.
+        then "a nullable int const unwraps" {
+            shown("const A: int? = 1\nA! + 1") == "2"
+        }
+        then "a nullable int const answers ??" {
+            shown("const A: int? = 1\nA ?? 9") == "1"
+        }
+        then "a nullable bool const answers ??" {
+            shown("const A: bool? = true\nA ?? false") == "true"
+        }
+        then "a nullable string const unwraps" {
+            shown("const A: string? = \"x\"\nA!") == "x"
+        }
+        then "a nullable const is present, not absent" {
+            shown("const A: int? = 1\nif A == null { \"absent\" } else { \"present\" }") == "present"
+        }
+        then "a nullable const crosses a fn floor still packed" {
+            shown("const A: int? = 4\nfn f() -> int {\n    A ?? 9\n}\nf()") == "4"
+        }
+        then "an annotation the value does not wear is still refused" {
+            refusals("const A: List<int> = 1\nA") == 1
+        }
+        then "a nullable annotation of the WRONG word is refused too" {
+            refusals("const A: int? = \"x\"\nA") == 1
+        }
+        then "a nullable const's type crosses whole, not stripped" {
+            shown("const A: int? = 4\nfn f() -> int {\n    A! + 1\n}\nf()") == "5"
+        }
+    }
+}

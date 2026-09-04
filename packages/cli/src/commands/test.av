@@ -3,7 +3,7 @@
 //! case by its symbol. Native, because a suite that interprets the
 //! compiler takes an hour where the machine takes seconds.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.language.{Program, TestCase, Lowered, CaseCall, cases_entry, exit_row, emit_ll, case_words}
+use @std.avrac.language.{Program, TestCase, Lowered, CaseCall, cases_entry, runner_rows, emit_ll, case_words}
 use @std.avrac.core.{joined_path}
 
 type TestCmd = { }
@@ -33,7 +33,7 @@ fn ran(p: Program, lo: Lowered, cases: List<TestCase>) -> int {
         return 0
     }
     let calls = [CaseCall { symbol: c.symbol, label: case_words(c) } for c in cases]
-    let staged = lo with { entry: cases_entry(lo.types, calls), externs: lo.externs.concat([exit_row()]) }
+    let staged = lo with { entry: cases_entry(lo.types, calls), externs: lo.externs.concat(runner_rows()) }
     let path = staged_path(p)
     let failure: string? = emit_ll(staged, path)
     if failure != null {
@@ -41,7 +41,7 @@ fn ran(p: Program, lo: Lowered, cases: List<TestCase>) -> int {
         return 1
     }
     if link(path, promises(p)) != 0 { return 1 }
-    tallied(cases.length, avra_shell_exec_status(binary_name(path)))
+    judged(avra_shell_exec_status(binary_name(path)))
 }
 
 /// Where the test binary is written — under the root's `build/`,
@@ -52,10 +52,14 @@ fn staged_path(p: Program) -> string {
     joined_path(dir, "cases.av.ll")
 }
 
-/// The tally, said once; the exit code is the binary's.
-fn tallied(total: int, failed: int) -> int {
-    println("${total - failed}/${total} tests passed")
-    if failed == 0 { 0 } else { 1 }
+/// THE SUITE'S VERDICT. The binary says the tally itself and
+/// answers 0 or 1; anything else means it DIED — a case trapped, or
+/// a signal killed it, and every case after that one never ran.
+fn judged(status: int) -> int {
+    if status == 0 { return 0 }
+    if status == 1 { return 1 }
+    println("the suite STOPPED — the case named above trapped, and every case after it never ran")
+    1
 }
 
 export fn test_command() -> Subcommand {

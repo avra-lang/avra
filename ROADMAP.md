@@ -3513,11 +3513,44 @@ accident).
 
 Slice 1's shape is what makes slice 2 small: `settled_reg` in
 lower_state.av is the ONE place a settled value becomes an
-instruction, and `settled_shape` in contexts.av is the ONE place its
+instruction, and `settled_type` in contexts.av is the ONE place its
 type is read — both from the VALUE, never from a body's facts,
 because every body may read a const and no body's fact table holds
 another's range. Core's value protocol grew `int_of` at its second
 reader, as the protocol's rule says.
+
+THE RED-TEAM ROUND (2026-09-03) — four wrong answers, all one
+species: A CONST IS A PROGRAM'S FACT, AND THREE PLACES ASKED A BODY.
+(1) A const read inside a LAMBDA answered its env's capture slot —
+a value nothing had put there. The crossing law now asks
+`settled_binding`, and a const is returned uncaptured. (2) A `let`
+shadowing a const TRAPPED inside a fn ("index -1"): the law asked
+whether the NAME's first definition was a const, then handed back
+the binding CURRENTLY visible — a different statement. Both the
+crossing law and the hiding law now ask ONE question of a
+STATEMENT (`settled_stmt`), never of a name. (3) A nullable
+annotation was DROPPED at every use: the declaration emits nothing,
+so the lift the annotation asked for had nowhere to happen and `A!`
+extracted from a non-pack. `settled_reg` now mints the constant in
+the LITERAL's shape and lifts it into what the use wears — the
+declaration's lift, re-emitted per use. (4) The same annotation was
+dropped across a fn floor, because the declared type lived in the
+DECLARING body's fact table and every other body has its own.
+`settled_type` reads the annotation's `optional` bit from the
+STORE, so every body agrees. Its regression is recorded too: the
+annotation law must compare the value against the DECLARED type it
+computed, not ask the const for its type — that compares the value
+against itself. 18 adversarial specs in
+`features/consts/tests/consts_adversarial_test.av`.
+
+THE RUNNER'S VERDICT (2026-09-03, same round) — the test binary
+exited with the FAILURE COUNT, and a status is eight bits: 256
+failing cases read as SUCCESS, and a case that TRAPPED killed the
+process so every case after it "passed". Three laws now: the binary
+prints its own tally and exits 0 or 1 (a VERDICT, never a count);
+`avra_trap` exits 2, because a wreck is not a verdict; and every
+case announces itself to `avra_case_begin`, so the wreck names the
+case it died in and the runner says the cases after it never ran.
 
 BS2 IS OUT OF THE LOOP (2026-09-03). The toolchain is the compiler
 itself: `make avra` builds `build/avra` with the `build/avra` that is

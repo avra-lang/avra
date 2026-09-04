@@ -140,6 +140,27 @@ registry is the idiom engine's spec, written by dogfooding.
   which deviations were once approved.
 - Node facts (spans included) live in side tables keyed by typed ids,
   never on nodes.
+- A fact EVERY BODY MAY READ is answered from the PROGRAM — the
+  store — never from a pass's fact tables. Fact tables are per
+  declaration, over that declaration's expression range alone, so an
+  answer computed from `facts` is right in the body that recorded it
+  and WRONG everywhere else (a const's declared `int?` read back as
+  `int` across a fn floor, and `??` warned it would never fire).
+  The store holds what the program wrote; that is what shared
+  answers are made of.
+- A law that HOLDS A BINDING TO ITS ANNOTATION compares the value to
+  the DECLARED type it computed, never to the binding's own type —
+  asking the binding for its type compares the value against itself,
+  and the law silently stops refusing anything.
+- Ask a BINDING, never a NAME, whether it is a const/a capture/a
+  seat. A name may be defined twice (a `let` shadowing a const), so
+  a name-keyed question and the binding in hand answer about
+  DIFFERENT statements — the mismatch reads a slot nobody wrote
+  ("index -1"). One question, asked of the statement.
+- A PROCESS STATUS IS A VERDICT, never a count: statuses are eight
+  bits, so 256 failures read as success. Exit 0 or 1 and print the
+  count. A TRAP is not a verdict either — `avra_trap` exits 2, so a
+  wreck can never be mistaken for a disagreement.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
 - Passes are pure queries with ONE standard signature:
   `pass(p: ParsedProgram, ...upstream Facts) -> Facts` — the program

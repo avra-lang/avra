@@ -2,7 +2,7 @@
 //! runs, so what may stand there is what the compiler can settle —
 //! today a literal, tomorrow anything the evaluator finishes. And
 //! an annotated const holds what it declares, like any binding.
-use core.{StmtId, ExprId, TypeRef}
+use core.{StmtId, ExprId, TypeId, TypeRef}
 use features.{StmtTypeCx, TypeCx, declared_binding, refuses_void_value, spoken, this_is}
 use diagnostics.{refusal}
 
@@ -13,12 +13,17 @@ export fn check_const(cx: StmtTypeCx, s: StmtId) {
     if held == null { return }
     let v = held!
     let ann: TypeRef? = cx.view.store.binding_ty(s)
-    if ann != null { cx.expr.plant_want(v, cx.bind_declared(s, ann!)) }
+    // THE DECLARED type, held here rather than asked back: a const's
+    // TYPE is its settled value's, so the annotation is the only
+    // thing that can disagree with the value — and asking the const
+    // for its type would compare the value against itself.
+    let declared: TypeId? = if ann == null { null } else { cx.bind_declared(s, ann!) }
+    if declared != null { cx.expr.plant_want(v, declared!) }
     cx.walk_value(s)
     if !settles(cx.expr, v) { return }
     if refuses_void_value(cx.expr, v) { return }
-    if ann == null { return }
-    declared_binding(cx.expr, v, cx.view.store.let_name(s) ?? "this const", cx.binding_type(s))
+    if declared == null { return }
+    declared_binding(cx.expr, v, cx.view.store.let_name(s) ?? "this const", declared!)
 }
 
 /// Whether the compiler can settle this value TODAY. A literal it

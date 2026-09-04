@@ -438,6 +438,10 @@ impl Resolver {
         if idx != null { return self.chained(0, name, Binding.Param(idx!)) }
         let outer: Binding? = self.outer_binding(name)
         if outer == null { return null }
+        // A CONST IS NEVER CAPTURED: a lambda's env holds run-time
+        // values, and a const has none to hold — its use emits the
+        // value the compiler settled, inside a lambda as anywhere.
+        if self.settled_binding(outer!) { return outer }
         self.chained(0, name, outer!)
     }
 
@@ -451,22 +455,30 @@ impl Resolver {
         let held: Binding? = self.visible.get(name)
         if self.floors.is_empty() { return held }
         if held == null { return null }
-        if self.settled_name(name) { return held }
+        if self.settled_binding(held!) { return held }
         null
     }
 
-    /// Whether the name's program-scope definition is a const.
-    fn settled_name(self, name: string) -> bool {
-        let held: StmtId? = self.later_def(name)
-        held != null && self.view.store.const_value(held!) != null
+    /// Whether a binding is a CONST's — asked of the BINDING IN
+    /// HAND, never of the name: a `let` may shadow a const, and then
+    /// the name's first definition and the binding in hand are
+    /// different statements. Every other binding kind is a run-time
+    /// value — a parameter, a pattern's bind, a capture — and any
+    /// kind added later will be one too.
+    fn settled_binding(self, b: Binding) -> bool {
+        match b {
+            .Def(s) -> settled_stmt(self.view.store, s),
+            _ -> false,
+        }
     }
 
-    /// A name a body cannot see: the top level's run-time binding —
-    /// declared before the body or after it, all the same.
+    /// A name a body cannot see: the top level's RUN-TIME binding —
+    /// declared before the body or after it, all the same. A const
+    /// is not one; the compiler settled it, so it crosses.
     fn hidden_def(self, name: string) -> bool {
         if self.floors.is_empty() { return false }
-        if self.settled_name(name) { return false }
-        self.all_defs.any(it.name == name)
+        let store = self.view.store
+        self.all_defs.any(it.name == name && !settled_stmt(store, it.stmt))
     }
 
     /// Wrap a binding in Capture links for every frame from
@@ -598,4 +610,10 @@ impl Resolver {
         }
         d with { help: "did you mean `${n.name}`?", suggestions: [s] }
     }
+}
+
+/// Whether a program-scope definition is a const's — the one
+/// question both the crossing law and the hiding law ask.
+fn settled_stmt(store: NodeStore, s: StmtId) -> bool {
+    store.const_value(s) != null
 }

@@ -232,11 +232,27 @@ void avra_rc_release(void* p) {
 
 // ── The trap contract ───────────────────────────────────────────
 
+// THE CASE IN FLIGHT. A suite runs in one process, so a trap kills
+// every case after it — this is how the wreck names which one it
+// was running when it died.
+static const char* g_case = NULL;
+
+void avra_case_begin(const char* label) {
+    g_case = label;
+}
+
+// A TRAP IS A WRECK, not a verdict: status 2 keeps it distinct from
+// the 1 a program leaves when it merely disagrees with its input.
 static void avra_trap(const char* msg) {
+    if (g_case) {
+        fputs("avra: while running ", stderr);
+        fputs(g_case, stderr);
+        fputc('\n', stderr);
+    }
     fputs("avra: ", stderr);
     fputs(msg, stderr);
     fputc('\n', stderr);
-    exit(1);
+    exit(2);
 }
 
 // ── Printing ────────────────────────────────────────────────────
@@ -866,6 +882,7 @@ const char* avra_str_concat(const char* a, const char* b) {
 // verdicts and statuses as words, listings as newline-joined names.
 
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <dirent.h>
 #include <time.h>
 #include <unistd.h>
@@ -962,10 +979,14 @@ int64_t avra_selfhost_write_file(const char* path, const char* content) {
 }
 
 // The command's exit status — what a shell would report.
+// A command's verdict: its exit code, or 128+signal when a signal
+// killed it — the shell's own convention, so a wreck never reads as
+// a small exit code (and never as SUCCESS).
 int64_t avra_shell_exec_status(const char* cmd) {
     int status = system(cmd);
     if (status == -1) return 127;
-    return (int64_t)((status >> 8) & 0xff);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return (int64_t)WEXITSTATUS(status);
 }
 
 // Every directory along the path made, 1 when the whole path stands.

@@ -1603,6 +1603,10 @@ __attribute__((weak)) const char* avra_host_env(const char* name) {
     return v ? v : "";
 }
 
+__attribute__((weak)) void avra_case_begin(const char* label) {
+    (void)label;
+}
+
 __attribute__((weak)) int64_t avra_now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);

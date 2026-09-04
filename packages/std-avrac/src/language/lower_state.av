@@ -4,7 +4,7 @@
 //! the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, int_of, text_of, bool_of}
 use diagnostics.{loc_at}
-use features.{fn_box, capture_lane, slot_read, Sub, Cap, viewed}
+use features.{fn_box, capture_lane, slot_read, adopted, Sub, Cap, viewed}
 use @std.errors.{Loc}
 
 impl Lower {
@@ -86,25 +86,49 @@ impl Lower {
 
     /// The settled value as an instruction. A const holds a literal
     /// today; the day the evaluator settles more, this is where the
-    /// folded value arrives.
+    /// folded value arrives. Minted in the LITERAL's own shape, then
+    /// lifted into what the use wears — the declaration emits
+    /// nothing, so an annotation's lift is re-emitted at every use.
     fn settled_reg(self, e: ExprId, value: Expr) -> Reg? {
+        let raw: Reg? = self.constant_reg(value)
+        if raw == null { return null }
+        self.lifted_constant(e, raw!)
+    }
+
+    /// A literal's register, minted at the literal's OWN shape.
+    fn constant_reg(self, value: Expr) -> Reg? {
         let n: int? = int_of(value)
         if n != null {
-            let dst = self.mint(e)
+            let dst = self.shaped(Type.Int)
             self.out.give(Ins.ConstInt(dst, n!))
             return dst
         }
         let t: string? = text_of(value)
         if t != null {
-            let dst = self.mint(e)
+            let dst = self.shaped(Type.Str)
             self.out.give(Ins.ConstStr(dst, t!))
             return dst
         }
         let b: bool? = bool_of(value)
         if b == null { return null }
-        let dst = self.mint(e)
+        let dst = self.shaped(Type.Bool)
         self.out.give(Ins.ConstBool(dst, b!))
         dst
+    }
+
+    fn shaped(self, t: Type) -> Reg {
+        self.out.mint_ty(self.a.view.decls.types.intern(t))
+    }
+
+    /// The settled constant AS THE USE WEARS IT: a nullable use
+    /// packs the value into its presence pair, everything else
+    /// already wears the literal's own shape.
+    fn lifted_constant(self, e: ExprId, r: Reg) -> Reg {
+        let want = self.concrete(self.a.type_at(e))
+        if self.a.view.decls.types.shape_of(want) is .Opt {
+            return adopted(expr_lower_cx(self), want, false, r)
+        }
+        r
     }
 
     /// A NAMED fn as a value: a captureless box holding a WRAPPER's

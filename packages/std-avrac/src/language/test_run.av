@@ -1,22 +1,28 @@
 //! THE TEST BINARY'S ENTRY, built in IR. No source declares it: the
 //! cases are declarations the program already holds, and this entry
-//! calls each one by its symbol, prints its verdict, and exits with
-//! the number that failed. Running the cases NATIVELY is what keeps
-//! a suite of a thousand cases in seconds instead of an hour.
+//! calls each one by its symbol, prints its verdict and its tally,
+//! and leaves a VERDICT in the exit status — 0 all passed, 1 some
+//! failed. Running the cases NATIVELY is what keeps a suite of a
+//! thousand cases in seconds instead of an hour.
 use core.{Ins, Reg, TypeId, Type, TypeRegistry, BinOp, Level, RtKind, RtSig, extern_row}
 
 /// One case as the entry needs it: the symbol that runs it and the
 /// line its verdict prints.
 export type CaseCall = { symbol: string, label: string }
 
-/// The host fn the test binary declares — the exit code IS the
-/// failure count, so a runner needs no other channel.
-export fn exit_row() -> RtSig {
-    extern_row("avra_process_exit", RtKind.Void, [RtKind.I64])
+/// The host fns the test binary declares: the status it leaves by,
+/// and the marker naming the case in flight — a suite runs in ONE
+/// process, so a trap kills every case after it, and the marker is
+/// how the wreck says which case it was running.
+export fn runner_rows() -> List<RtSig> {
+    [
+        extern_row("avra_process_exit", RtKind.Void, [RtKind.I64]),
+        extern_row("avra_case_begin", RtKind.Void, [RtKind.Ptr]),
+    ]
 }
 
 /// The entry: a cell counts failures, each case decides which line
-/// prints, and the tally leaves through the exit code.
+/// prints, and the verdict leaves through the exit status.
 export fn cases_entry(types: TypeRegistry, cases: List<CaseCall>) -> Body {
     let e = new_entry(types)
     let tally = e.mint(types.intern(Type.Int))
@@ -25,14 +31,40 @@ export fn cases_entry(types: TypeRegistry, cases: List<CaseCall>) -> Body {
     for c in cases { one_case(e, c, tally) }
     let failed = e.mint(types.intern(Type.Int))
     e.give(Ins.Load(failed, tally))
-    e.give(Ins.CallRtVoid("avra_process_exit", [failed]))
+    e.tally(cases.length, failed)
+    // THE STATUS IS A VERDICT, never a count: a status is eight bits,
+    // and 256 failures would read as success.
+    e.give(Ins.IfStart(e.zero_test(failed)))
+    e.give(Ins.CallRtVoid("avra_process_exit", [e.constant(0)]))
+    e.give(Ins.ArmEnd(e.constant(0)))
+    e.give(Ins.CallRtVoid("avra_process_exit", [e.constant(1)]))
+    let gives = e.constant(0)
+    let merged = e.mint(types.intern(Type.Int))
+    e.give(Ins.RegionEnd(merged, gives))
     e.give(Ins.ScopeExit(null))
     e.give(Ins.Ret(0))
     e.built()
 }
 
+/// The suite's own line: `N/M tests passed`, printed by the binary
+/// that ran them — the runner reads a VERDICT from the exit code,
+/// never a number it could truncate.
+fn tally_line(e: EntryBuild, total: int, failed: Reg) {
+    // THE MINT LAW: every operand minted before the answer that reads it
+    let count = e.constant(total)
+    let passed = e.mint(e.types.intern(Type.Int))
+    e.give(Ins.Bin(passed, BinOp.Sub, count, failed))
+    let text = e.mint(e.types.intern(Type.Str))
+    e.give(Ins.CallRt(text, "avra_int_text", [passed]))
+    let tail = e.text("/${total} tests passed")
+    let line = e.mint(e.types.intern(Type.Str))
+    e.give(Ins.CallRt(line, "avra_str_concat", [text, tail]))
+    e.give(Ins.CallRtVoid("avra_puts", [line]))
+}
+
 /// One case: called, judged, and counted when it fails.
 fn one_case(e: EntryBuild, c: CaseCall, tally: Reg) {
+    e.give(Ins.CallRtVoid("avra_case_begin", [e.text(c.label)]))
     let ok = e.mint(e.types.intern(Type.Bool))
     e.give(Ins.Call(ok, c.symbol, []))
     e.give(Ins.IfStart(ok))
@@ -88,6 +120,17 @@ impl EntryBuild {
     /// One line to standard output.
     fn say(self, s: string) {
         self.give(Ins.CallRtVoid("avra_puts", [self.text(s)]))
+    }
+
+    /// The suite's closing line.
+    fn tally(self, total: int, failed: Reg) { tally_line(self, total, failed) }
+
+    /// Whether the tally is zero — the suite's verdict.
+    fn zero_test(self, failed: Reg) -> Reg {
+        let zero = self.constant(0)
+        let same = self.mint(self.types.intern(Type.Bool))
+        self.give(Ins.Bin(same, BinOp.Eq, failed, zero))
+        same
     }
 
     fn built(self) -> Body {
