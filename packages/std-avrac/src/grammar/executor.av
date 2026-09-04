@@ -67,13 +67,21 @@ type MatchResult<N> = {
 }
 
 /// Everything a match needs to see. `rules` indexes the grammar's
-/// rules by name, built once per run.
+/// rules by name, built once per run; `memo` remembers what each
+/// rule answered at each cursor — a rule enters with a FRESH
+/// binding scope, so its answer depends on nothing else, and
+/// speculation that revisits it reads instead of re-matching.
 type MatchContext<N> = {
     g: Grammar,
     tokens: List<Token>,
     rules: Map<string, Rule>,
     build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>,
+    memo: Memo<N>,
 }
+
+/// The memo's table, a struct because a write reaches a place
+/// through its field.
+type Memo<N> = { seen: Map<string, MatchResult<N>> }
 
 /// Captured.Absent with its type parameter pinned.
 fn captured_absent<N>() -> Captured<N> { Captured.Absent }
@@ -239,6 +247,17 @@ fn expected_word(term: string) -> string {
 }
 
 fn match_rule<N>(cx: MatchContext<N>, name: string, cursor: int) -> MatchResult<N> {
+    let key = "${name}@${cursor}"
+    let known: MatchResult<N>? = cx.memo.seen.get(key)
+    if known != null { return known! }
+    let fresh = matched_rule<N>(cx, name, cursor)
+    mut seen = cx.memo.seen
+    seen.set(key, fresh)
+    fresh
+}
+
+/// One rule matched for real — the memo's miss.
+fn matched_rule<N>(cx: MatchContext<N>, name: string, cursor: int) -> MatchResult<N> {
     let entry_state: MatchState<N> = state_at<N>(cursor, [])
     let found: Rule? = cx.rules.get(name)
     if found == null {
@@ -522,7 +541,9 @@ export fn run_grammar<N>(g: Grammar, tokens: List<Token>,
     }
     mut rules: Map<string, Rule> = {}
     for r in g.rules { rules.set(r.name, r) }
-    let cx: MatchContext<N> = MatchContext { g: g, tokens: tokens, rules: rules, build: build }
+    let fresh: Map<string, MatchResult<N>> = {}
+    let memo: Memo<N> = Memo { seen: fresh }
+    let cx: MatchContext<N> = MatchContext { g: g, tokens: tokens, rules: rules, build: build, memo: memo }
     let r = match_rule<N>(cx, g.start, 0)
     mut diagnostics = [d for d in r.diagnostics]
     if r.status != MatchStatus.Hit {

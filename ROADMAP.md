@@ -3491,6 +3491,34 @@ END, `{ x }` parses as a statement list whose tail answers, so the
 keyword lexes as a NAME, so `-> { return x }` read `return` as an
 identifier and the @expect'd `}` hole-hit. One form, one law.
 
+THE SUITE'S COST, MEASURED (2026-09-03). `avra test` runs a
+package's cases as ONE native binary — `cases_entry` builds its
+entry in IR, calls each case by symbol, and leaves the failure count
+as the exit code. The compiler's own 1493 cases: 7.9s to analyze and
+lower, ~38s of clang, ~116s to run. Where that 116s goes, measured:
+
+  one language assembly  72ms   (of which the grammar DSL parse 66ms)
+  one analyze_source     78ms   — the assembly IS the cost
+  1493 cases            ~116s   = 1493 assemblies
+
+So the suite pays to rebuild the language once per case. Two ways
+out, both open:
+- ONCE PER PROCESS. `avra()` is a pure fn of nothing; a language
+  that could say "compute this once" would erase the whole 116s.
+  Avra has no static, no lazy const, and a module-level `let` does
+  not cross imports — SUGAR ASK, with this as the wanting site.
+- A FASTER ENGINE. 66ms to parse 8.5KB of DSL is ~120KB/s. The
+  matcher allocates a MatchResult (5 cells), a MatchState and a
+  bindings list PER STEP, and every allocation joins the ownership
+  registry's hash table. Packrat memoization landed (a rule at a
+  cursor answers once — 7% off the compiler's own parse and a bound
+  on pathological backtracking); the rest is allocation churn, and
+  the honest fix is fewer boxes per step or a cheaper allocation
+  path than the registry.
+For comparison: bs2 runs 1548 cases in ~70s of WALL time across
+eight shards — about 560s of CPU. Ours is ~124s of CPU, single
+threaded.
+
 SELF-HOSTED (2026-09-03). `avra1` (built by the bs2-hosted
 compiler) builds `avra2`, which builds `avra3`, and **avra2 and
 avra3 are byte-identical** — the fixed point. Each stage runs the
