@@ -5360,6 +5360,90 @@ design round when its time comes):
   this impossible". TRIGGER: at self-host, the list converts into
   a test suite — the language's negative space, pinned.
 
+## THE OPEN LEDGER — the red team's second round (2026-09-03)
+
+980 programs, 77 candidates, 45 confirmed; every wrong answer,
+divergence and crash it found in the LANGUAGE is closed (c6fe1ae,
+4e27411). What remains is recorded here, in the round's own order.
+Two items sit above the refusal tier and are SCHEDULED; the eight
+below it are refusal QUALITY, which is a first-class bar here (P1:
+correct on first generation) and each carries the round's own fix.
+
+### (1) SUPPLY-CHAIN EXECUTION during `avra build` — CRITICAL
+
+A DEPENDENCY's `[link] flags` row is spliced unquoted into the
+`system()` string that runs clang. `link_inputs` (workspace.av) walks
+EVERY package in the workspace, so a transitive manifest carrying
+`flags = ["; touch /tmp/PWNED ;"]` runs that command during a build of
+a program that never imports it — proved. The paths around it are
+`shell_word`ed; the flags are not, on the stated reasoning that "a
+`[link]` row is the project's own word". TRUE OF THE ROOT PACKAGE,
+FALSE OF EVERY DEPENDENCY — the premise is the bug.
+
+THE FIX IS STRUCTURAL, not a wider fence: replace
+`avra_shell_exec_status(cmd)` with an argv row —
+`avra_spawn_status(prog, argv)` over `posix_spawnp`/`execvp` — and
+build argv as a LIST. Shell metacharacters then mean nothing anywhere
+in the pipeline, and `shell_word` plus the `binary_name` quoting in
+test.av are DELETED rather than kept as fencing. `${NAME}` expansion
+in `expanded` stays: the environment is the invoker's own.
+
+### (2) `avra test` REPORTS GREEN OVER RED — a wrong answer
+
+`./avra test packages/.../tests/./lists_test.av` prints "no spec cases
+here" and exits 0 for a file holding 42 cases. `on_cases`
+(cli/commands/shared.av) selects with `c.at.file == path` — raw string
+equality against the path AS TYPED — while the workspace enumerates
+its files canonically through `joined_path`. Any spelling that still
+satisfies `under_dir` but differs as TEXT selects zero cases, and a
+`//` is what every `"$DIR/$f"` loop produces.
+
+Two changes, the second the important one: (a) canonicalize both sides
+with `normalized` (core/paths.av, already used by workspace.av for
+dependency paths); (b) ZERO CASES FOR AN ARGUED FILE IS NOT SUCCESS —
+a file the user named that yields no cases is a refusal, not "no spec
+cases here" and exit 0. The whole job of `test` is the verdict.
+
+### The refusal tier — eight, each with its fix
+
+- A source path not ending in `.av` is SILENTLY DROPPED: `avra check`
+  on a file full of type errors prints nothing and exits 0; the same
+  bytes named `.av` refuse. Workspace already carries `lone: bool` —
+  thread it instead of inferring source-hood from the extension.
+- `avra build`/`run` of a non-`.av` file blames a NONEXISTENT
+  `avra.toml` and prescribes editing it. `no_target` must not assert a
+  manifest's contents without one; the lone-file case needs its voice.
+- A module-file `const` is refused as a statement that "runs here",
+  and the help ("move it into the entry") does not work. A const emits
+  NOTHING — the reading here is that a module-scope const should be
+  ADMITTED (resolve binds it, typing checks it, a use lowers from the
+  value and not from any body's facts). Whichever way it lands, the
+  message cannot stay: it calls a declaration a statement that runs.
+- `const N = -1` is refused and NO spelling of a negative constant is
+  accepted. `-1` desugars to `Bin(Sub, IntLit(0), IntLit(1))`; slice 2's
+  evaluator dissolves this, which is why it was not special-cased —
+  but until then the help points at what the user already did.
+- F2045 speaks a SECOND time over a value the type law already refused
+  (`const N = zzz` earns F3000 and F2045). One guard, matching its
+  sibling at features/checks.av: an error-typed value has spoken.
+- F2001 `names no type` anchors at COLUMN 1 and labels a `const`/`let`
+  annotation "in this signature" — a const is not a signature, and on
+  a multi-line declaration the snippet shows the wrong line. Prefer
+  the type ref's own span; fall back to the statement's.
+- F2039's or-run refusal anchors on the arm's RESULT, not on the
+  binding that broke the law. `arm_checks` already holds the parallel
+  `typed` list; pass the offending PatId and emit at its span.
+- A non-ASCII character in name position emits ONE ERROR PER UTF-8
+  BYTE (four for an emoji), and three of the carets land on
+  continuation bytes the message then calls unexpected. Consume the
+  run in one step in the lexer.
+
+### The process note the round earned
+
+c6fe1ae's message reported a spec count measured on a tree that commit
+did not carry (the working tree held further edits). Measure the gate
+on the COMMITTED tree, or say which tree the number came from.
+
 ## Self-host endgames (recorded, not scheduled)
 
 - Typed builders: `-> int_lit(v)` binds a typed fn; tables and
