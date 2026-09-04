@@ -244,15 +244,28 @@ def dead_parameter(lines):
 # (directory), never per file. scan() fills this before each file.
 MODULE_BODY = {"text": ""}
 
+# A `grammar { … }` block EXPANDS into the grammar's own
+# constructors, so a module that writes one uses these names without
+# ever spelling them. A text scan cannot see an expansion.
+GRAMMAR_BLOCK_NAMES = {
+    "Grammar", "Rule", "Alt", "Seq", "Item", "Prim", "Rep", "Build",
+    "Expect", "Recover",
+}
+
 def unused_import(lines):
     """A name imported and never used ANYWHERE in its module. bs2
     checks neither direction, so imports are hand-kept truth."""
+    expands = "grammar {" in MODULE_BODY["text"]
     for i, l in enumerate(lines):
         m = re.match(r"^use [a-z@][\w.@]*\.\{(.+)\}$", l.strip())
         if not m:
             continue
         for name in (n.strip() for n in m.group(1).split(",")):
-            if name and not re.search(rf"\b{re.escape(name)}\b", MODULE_BODY["text"]):
+            if not name:
+                continue
+            if expands and name in GRAMMAR_BLOCK_NAMES:
+                continue
+            if not re.search(rf"\b{re.escape(name)}\b", MODULE_BODY["text"]):
                 yield i, f"{l.strip()[:50]} [{name}]"
 
 # bs2 does NOT check a pattern's payload ARITY: `.A(_, _)` compiles

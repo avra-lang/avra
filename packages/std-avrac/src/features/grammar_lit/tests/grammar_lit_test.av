@@ -1,0 +1,94 @@
+// `grammar { … }` — the DSL read when the COMPILER runs. This file
+// writes real blocks, because the expansion names the grammar types
+// (`Prim.Lit`, `Rep.One`) and only a file inside a package can import
+// them — which is also why `shown`, over a lone source, can prove
+// only the refusals.
+use @std.avrac.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use @std.avrac.testing.{refusals, refused_with}
+
+/// A grammar written the way a feature writes one.
+fn written() -> Grammar {
+    grammar {
+        stmt = "let" n:NAME "=" v:expression -> let_stmt(n, v)
+             | "{" body:stmt* "}" -> block(body)
+        expression = NAME -> ident()
+    }
+}
+
+fn prim_word(p: Prim) -> string {
+    match p {
+        .Lit(t) -> "lit:${t}"
+        .Named(t) -> "named:${t}"
+        .Ref(t) -> "ref:${t}"
+        .Group(_) -> "group"
+    }
+}
+
+fn rep_word(r: Rep) -> string {
+    match r {
+        .One -> "one"
+        .Star -> "star"
+        .Plus -> "plus"
+        .Opt -> "opt"
+    }
+}
+
+fn first_branch() -> Seq {
+    written().rules[0].body.branches[0]
+}
+
+spec "features/grammar_lit — the DSL, read at compile time" {
+    given "the grammar the block names" {
+        then "the start rule names it" {
+            written().name == "stmt"
+        }
+        then "every rule arrives, in order" {
+            let g = written()
+            g.rules.length == 2 && g.rules[0].name == "stmt" && g.rules[1].name == "expression"
+        }
+        then "each alternative is its own branch" {
+            written().rules[0].body.branches.length == 2
+        }
+    }
+    given "a rule's parts" {
+        then "a literal survives" {
+            prim_word(first_branch().items[0].prim) == "lit:let"
+        }
+        then "a capture keeps its label and its terminal" {
+            let it = first_branch().items[1]
+            it.label! == "n" && prim_word(it.prim) == "named:NAME"
+        }
+        then "an unrepeated item is One" {
+            rep_word(first_branch().items[0].rep) == "one"
+        }
+        then "a starred capture keeps its repetition" {
+            let starred = written().rules[0].body.branches[1].items[1]
+            rep_word(starred.rep) == "star" && starred.label! == "body"
+        }
+        then "a rule reference survives" {
+            prim_word(written().rules[0].body.branches[1].items[1].prim) == "ref:stmt"
+        }
+        then "the build keeps its name and its arguments" {
+            match first_branch().build! {
+                .Call(name, args) -> name == "let_stmt" && args.length == 2
+                .Var(_) -> false
+            }
+        }
+    }
+    given "braces the block must not end on" {
+        // `block`'s own grammar writes `"{"` as a literal; a counter
+        // blind to quotes would close the block there.
+        then "a brace inside a string literal is the grammar's, not the block's" {
+            let braced = written().rules[0].body.branches[1]
+            prim_word(braced.items[0].prim) == "lit:{" && prim_word(braced.items[2].prim) == "lit:}"
+        }
+    }
+    given "notation that does not parse" {
+        then "the grammar is refused where it is WRITTEN, not where it is used" {
+            refused_with("let g = grammar {\n= = =\n}\n1", "the grammar does not parse")
+        }
+        then "an unclosed block is named by the lexer" {
+            refusals("let g = grammar {\na = \"x\" -> f()\n1") == 2
+        }
+    }
+}

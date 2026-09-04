@@ -5374,6 +5374,46 @@ design round when its time comes):
   this impossible". TRIGGER: at self-host, the list converts into
   a test suite — the language's negative space, pinned.
 
+## `grammar { … }` — the DSL READ WHEN THE COMPILER RUNS (2026-09-04)
+
+The 89 seconds the pipeline measurement found were 1532 spec cases
+each re-parsing 8.5KB of grammar DSL: 54ms of the 58ms assembly is
+that one parse. The cure is to stop parsing at run time, and the
+first half of it lands here.
+
+`grammar { … }` is a CONSTRUCT, not a string field. Its body is not
+Avra — `n:NAME` and `->` are not our tokens — so the LEXER hands the
+block over whole (`scan_raw_block`), counting braces while skipping
+STRING LITERALS, because `block`'s own grammar writes `"{"` as a
+literal and a counter blind to quotes would end there. The builder
+then parses it AT PARSE TIME and expands it into the constructors
+`seed.av` writes by hand. Pure sugar, exactly as `table<Row>` is: no
+node, no semantics, no IR.
+
+WHY A BLOCK AND NOT A RAW STRING. The `"""` form needed no lexer
+work and was the first thing built; it was wrong. A grammar is
+syntax the compiler understands, not data a program passes, and it
+should read that way. The lexer mode is ~30 lines and is what any
+raw-bodied construct will want.
+
+WHAT IT COST, honestly: `grammar` became a keyword, so the field of
+that name was renamed at ~20 sites — `GrammarParse.built` and
+`Language.syntax`, both better names (the latter holds a PREPARED
+grammar, not a `Grammar`). And the expansion NAMES the grammar types
+(`Prim.Lit`, `Rep.One`), so a file writing a block must import ten
+names it never spells — invisible to a text scan, so `tools/idioms.py`
+learned that a module containing `grammar {` uses them. The same
+invisibility is why the round trip is proved by a spec INSIDE the
+package: `shown` analyses a lone source, which has no package to
+import from, so it can prove only the refusals.
+
+STILL TO DO — the half that collects the 83s: `LanguageFeature.gram`
+is still a `string`, so `assemble` still composes text and parses it.
+Next: `gram` becomes a `Grammar`, the 30 features write
+`gram = grammar { … }`, and assembly MERGES values (4ms) instead of
+parsing text (54ms). `compose_text`'s byte-range attribution goes
+with it — a defect will need its feature by rule name instead.
+
 ## THE PIPELINE, MEASURED (2026-09-04) — where `make gate` actually goes
 
 The gate is ~310s. It breaks down, measured end to end:

@@ -54,6 +54,7 @@ use features.expr_spine.{expr_spine}
 use features.lists.{lists}
 use features.maps.{maps}
 use features.tables.{tables}
+use features.grammar_lit.{grammar_lit}
 use features.components.{components}
 use features.modules.{modules}
 use features.specs.{specs}
@@ -66,7 +67,7 @@ use features.str_lit.{str_lit}
 /// keyword list.
 export type Language = {
     features: List<LanguageFeature>,
-    grammar: Ready?,
+    syntax: Ready?,
     keywords: List<string>,
     rows: LanguageRows,
     dispatch: Dispatch,
@@ -75,8 +76,8 @@ export type Language = {
 
 export fn assemble(features: List<LanguageFeature>) -> Language {
     let gp = parse_grammar(compose_text(features).text)
-    if gp.grammar == null { return unassembled(features, gp.diagnostics) }
-    let g = gp.grammar!.merged()
+    if gp.built == null { return unassembled(features, gp.diagnostics) }
+    let g = gp.built!.merged()
     // PREPARED ONCE: validated and indexed here, so a parse pays for
     // neither — and the defects the assembly gates on ARE that
     // validation, asked a single time.
@@ -84,7 +85,7 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     let codes = code_registry(features)
     let defects = flatten([rd.defects, builder_defects(features, g), code_defects(codes)])
     if !defects.is_empty() { return unassembled(features, defects) }
-    Language { features: features, grammar: rd, keywords: g.keywords(), rows: rows_of(features, codes), dispatch: new_dispatch(), diagnostics: [] }
+    Language { features: features, syntax: rd, keywords: g.keywords(), rows: rows_of(features, codes), dispatch: new_dispatch(), diagnostics: [] }
 }
 
 /// The language's registries, gathered once from its features.
@@ -98,7 +99,7 @@ fn rows_of(features: List<LanguageFeature>, codes: List<DiagCode>) -> LanguageRo
 /// Assembly refused: the defects, projected, are the language's
 /// diagnostics.
 fn unassembled(features: List<LanguageFeature>, defects: List<Diagnostic>) -> Language {
-    Language { features: features, grammar: null, keywords: [], rows: rows_of(features, []), dispatch: new_dispatch(), diagnostics: as_defects(defects) }
+    Language { features: features, syntax: null, keywords: [], rows: rows_of(features, []), dispatch: new_dispatch(), diagnostics: as_defects(defects) }
 }
 
 /// Built-in codes plus every feature's registered codes, in feature
@@ -143,6 +144,7 @@ export fn language_features() -> List<LanguageFeature> {
                         // every keyword anchor: `if (c)` would otherwise
                         // parse as a call to a fn named `if`
         tables(),       // table<Row> { … } — a keyword anchor, before NAME
+        grammar_lit(),  // grammar """ … """ — a keyword anchor, before NAME
         expr_spine(),   // literals, names, the operator ladder, postfix
         lists(),        // [e, e, e] — the first aggregate
         maps(),         // { "k": v } — string-keyed, insertion-ordered

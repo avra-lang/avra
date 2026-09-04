@@ -125,6 +125,46 @@ fn fits_int(text: string) -> bool {
     true
 }
 
+/// Whether the token just emitted opens a grammar block — the
+/// keyword, then the brace the block's own body may not be read
+/// through.
+fn opens_grammar(raw: List<Token>, just: Token?) -> bool {
+    if just == null { return false }
+    if just!.kind != TokenKind.Op || just!.text != "{" { return false }
+    if raw.length < 2 { return false }
+    let before = raw[raw.length - 2]
+    before.kind == TokenKind.Name && before.text == "grammar"
+}
+
+/// THE GRAMMAR BLOCK'S BODY, taken whole: every byte to the brace
+/// that closes the one already consumed. Braces inside the body's
+/// own STRING literals do not count — `block`'s grammar writes `"{"`
+/// as a literal, and a counter blind to quotes would end there.
+fn scan_raw_block(src: string, n: int, from: int) -> ScanStep {
+    mut depth = 1
+    mut i = from
+    mut quoted = false
+    while i < n {
+        let c = code_at(src, i)
+        if quoted {
+            if c == 92 { i = i + 1 }
+            else if c == 34 { quoted = false }
+        } else if c == 34 {
+            quoted = true
+        } else if c == 123 {
+            depth = depth + 1
+        } else if c == 125 {
+            depth = depth - 1
+            if depth == 0 {
+                // the closing brace is the block's, not the program's
+                return emit(token(TokenKind.Str, src.substring(from, i), from, i), i + 1)
+            }
+        }
+        i = i + 1
+    }
+    refused("a `grammar` block is never closed", from, n)
+}
+
 /// A step that produced only an error.
 fn refused(message: string, lo: int, hi: int) -> ScanStep {
     ScanStep {
@@ -420,6 +460,16 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
         if s.err != null { errors.push(s.err!) }
         if s.opens_hole { holes.push(0) }
         i = s.next
+        // THE GRAMMAR BLOCK is not Avra: its body is grammar
+        // notation, so the lexer hands it over whole. Nothing else
+        // could read it — `n:NAME` and `->` are not our tokens, and
+        // the braces it counts live inside its own string literals.
+        if opens_grammar(raw, s.token) {
+            let body = scan_raw_block(src, n, i)
+            if body.token != null { raw.push(body.token!) }
+            if body.err != null { errors.push(body.err!) }
+            i = body.next
+        }
     }
     if !holes.is_empty() { errors.push(hole_error(src.length)) }
     mut tokens = collapse_breaks(raw, boundary)
