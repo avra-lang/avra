@@ -92,14 +92,17 @@ export enum Type {
 /// The interner: shapes in, ids out — assigned once, compared as
 /// ints forever. The index map is keyed by each shape's CANONICAL
 /// form — deterministic structural content, children by interned id —
-/// which is exactly what content-addressing later hashes: the key
-/// derivation swaps, the map and its callers do not.
 /// A record's layout row: the fields it IS when flat, and whether an
 /// impl SEALED it boxed. A record's declaration and its impl block
 /// are ordered only by demand — two memoized queries, possibly in
 /// different files — so the conservative answer is STICKY.
 export type FlatRow = { fields: List<TypeId>, sealed: bool }
 
+/// The interner: shapes in, ids out — assigned once, compared as
+/// ints forever. The index map is keyed by each shape's CANONICAL
+/// form — deterministic structural content, children by interned id —
+/// which is exactly what content-addressing later hashes: the key
+/// derivation swaps, the map and its callers do not.
 export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId>, flats: List<FlatRow> }
 
 export fn new_type_registry() -> TypeRegistry {
@@ -182,9 +185,6 @@ impl TypeRegistry {
         self.rides_pointer(inner) || self.is_flat(inner)
     }
 
-    /// Mark a declared record flat. Its fields hold no reference, so
-    /// nothing counts them and nothing frees them: the value IS its
-    /// fields.
     /// A record KEEPS its box: an impl may write through `self`, and
     /// a value in a register has no identity to write through
     /// (ROADMAP: RECEIVER ALIASING). STICKY — a later `mark_flat`
@@ -195,6 +195,9 @@ impl TypeRegistry {
         fs.set(id.index, shut)
     }
 
+    /// Mark a declared record flat. Its fields hold no reference, so
+    /// nothing counts them and nothing frees them: the value IS its
+    /// fields. A SEALED record refuses.
     fn mark_flat(self, id: TypeId, fields: List<TypeId>) {
         if self.flats[id.index].sealed { return }
         mut fs = self.flats

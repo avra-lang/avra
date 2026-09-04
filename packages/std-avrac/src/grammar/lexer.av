@@ -38,12 +38,17 @@ impl Token {
     }
 
     /// The integer a Num token's digits denote.
-    fn int_value(self) -> int {
+    /// The digits as a number, or absence when no `int` holds them —
+    /// `v * 10 + d` past the ceiling wraps, and the wrapped number is
+    /// not the one on the page.
+    fn int_value(self) -> int? {
         mut v = 0
         mut i = 0
         let n = self.text.length
         while i < n {
-            v = v * 10 + (code_at(self.text, i) - 48)
+            let d = code_at(self.text, i) - 48
+            if v > (9223372036854775807 - d) / 10 { return null }
+            v = v * 10 + d
             i = i + 1
         }
         v
@@ -102,27 +107,12 @@ fn skip(next: int) -> ScanStep {
 /// value, which is not the number on the page.
 fn numbered(text: string, lo: int, hi: int) -> ScanStep {
     let t = token(TokenKind.Num, text, lo, hi)
-    if fits_int(text) { return emit(t, hi) }
+    if t.int_value() != null { return emit(t, hi) }
     ScanStep {
         token: t, opens_hole: false,
         err: LexError { message: "`${text}` does not fit an `int`", span: span_of(lo, hi) },
         next: hi,
     }
-}
-
-/// Whether the digits name a value an `int` holds. Asked BEFORE
-/// each multiply — `v * 10 + d` past the ceiling wraps in silence.
-fn fits_int(text: string) -> bool {
-    mut v = 0
-    mut i = 0
-    let n = text.length
-    while i < n {
-        let d = code_at(text, i) - 48
-        if v > (9223372036854775807 - d) / 10 { return false }
-        v = v * 10 + d
-        i = i + 1
-    }
-    true
 }
 
 /// Whether the token just emitted opens a grammar block — the

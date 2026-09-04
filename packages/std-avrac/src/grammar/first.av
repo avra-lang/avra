@@ -20,7 +20,7 @@
 //!
 //! Rules only: this guards what feature merging builds. Alternatives
 //! inside one branch's groups are written by one author in one place.
-use core.{code_at, is_name_start, is_digit}
+use core.{code_at, is_name_start, is_digit, distinct}
 
 /// What a branch can begin with, and whether it can begin with
 /// nothing at all.
@@ -67,8 +67,8 @@ impl FirstCx {
         for m in s.items {
             let f = self.prim_first(m.prim)
             out = FirstSet {
-                lits: union_expected(out.lits, f.lits),
-                terms: union_expected(out.terms, f.terms),
+                lits: first_lits(out.lits, f.lits),
+                terms: first_lits(out.terms, f.terms),
                 nullable: false,
             }
             let skippable = m.rep == Rep.Opt || m.rep == Rep.Star || f.nullable
@@ -126,10 +126,17 @@ impl FirstCx {
     }
 }
 
+/// A FIRST set is a SET. It is built ONCE per assembly, off every
+/// parse, and `overlap_defects` says one word per element — so a
+/// literal reaching a branch's head twice would be refused twice.
+fn first_lits(a: List<string>, b: List<string>) -> List<string> {
+    distinct(a.concat(b))
+}
+
 fn first_union(a: FirstSet, b: FirstSet) -> FirstSet {
     FirstSet {
-        lits: union_expected(a.lits, b.lits),
-        terms: union_expected(a.terms, b.terms),
+        lits: first_lits(a.lits, b.lits),
+        terms: first_lits(a.terms, b.terms),
         nullable: a.nullable || b.nullable,
     }
 }

@@ -3,37 +3,18 @@
 //! engine's build calls dispatch back through the features' builder
 //! tables. Nothing is parsed here: a feature's `grammar { … }` was
 //! read when the compiler ran.
-use core.{NodeStore, Span}
+use core.{NodeStore, Span, flatten}
 use grammar.{Captured, Grammar, Rule}
 
-/// The composed grammar, and which feature contributed each RULE —
-/// a defect names its feature by the rule it landed in, where the
-/// composed TEXT once named it by byte offset.
-export type Composed = { built: Grammar, owners: List<RuleOwner> }
-
-/// One rule's home.
-export type RuleOwner = { feature: string, rule: string }
+/// The composed grammar: every feature's rules, in feature order.
+export type Composed = { built: Grammar }
 
 /// Every fragment, in feature order — the first feature's first rule
 /// is the language's start rule.
 export fn compose_grammar(features: List<LanguageFeature>) -> Composed {
-    mut rules: List<Rule> = []
-    mut owners: List<RuleOwner> = []
-    for f in features {
-        for r in f.gram.rules {
-            rules.push(r)
-            owners.push(RuleOwner { feature: f.name, rule: r.name })
-        }
-    }
+    let rules = flatten([f.gram.rules for f in features])
     let start = if rules.is_empty() { "" } else { rules[0].name }
-    Composed { built: Grammar { name: start, start: start, rules: rules }, owners: owners }
-}
-
-impl Composed {
-    /// The feature that first contributed a rule of this name.
-    fn feature_of(self, rule: string) -> string? {
-        self.owners.find(it.rule == rule)?.feature
-    }
+    Composed { built: Grammar { name: start, start: start, rules: rules } }
 }
 
 /// The engine-facing dispatch: the first feature registering `name`

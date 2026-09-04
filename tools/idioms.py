@@ -451,6 +451,13 @@ RULES = {
 }
 
 UNRATCHETED = {
+    "I31": "a stolen doc and a legitimate multi-paragraph header are the SAME\n"
+           "           shape: a sentence ends, the next line opens with `A`/`The`. The\n"
+           "           difference is whether the second paragraph ELABORATES the one\n"
+           "           definition or DEFINES another — semantic, not syntactic. A first\n"
+           "           matcher printed 78 hits; the two inspected split one real\n"
+           "           (workspace's `shown`) and one legitimate (`full_type`). The\n"
+           "           review round hunts it, as it did the five that named the rule",
     "I1":  "the accumulator DECLARATION is a weak proxy: stacks, folds, range\n"
            "           fills and enumerate walks all declare one. I3 matches the real\n"
            "           smell — a loop whose whole body is one push — and catches every\n"

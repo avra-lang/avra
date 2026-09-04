@@ -1825,7 +1825,10 @@ THE SLICES (each vertical, each gated):
        `{i1, i1}`; the scalar repr flipped box→pair INSIDE
        values.av and nowhere else; the box path and `avra_unwrap`
        retired (`avra_insist_scalar` guards the pair `!`).
-       THE LAW IS ON: nullability never allocates — pinned by
+       THE LAW IS ON: nullability never allocates (ONE exception
+       since unboxed records: a FLAT record is a machine word with no
+       spare value and no room for a flag, so its nullable is a
+       one-slot box — `Repr.Boxed`, pinned by lower_test) — pinned by
        lower_test's law block (niche, pair, identity widening, and
        an aggregate-free every-consumer witness), plus the
        visible-magic pin: `avra ir` SHOWS `pack r7, r6` and `r1.0`.
@@ -2374,6 +2377,36 @@ additions get siblings, nothing changes shape:
 
 ## Sugar backlog — dogfooding asks
 
+- FIELD PUNNING: `T { name, value }` where a local of each name is
+  in scope. Refused today ("expected BREAK") and it is OURS, not
+  bs2's — the ledger entry that blamed bs2 was checked and moved
+  here. Wanting sites: every builder that binds locals and then
+  repeats their names into a literal.
+- TRAIT DEFAULT METHOD BODIES. A trait carries mandatory methods
+  only; a body in a trait refuses at parse. The self-host endgame
+  already names what it buys — `kind()`/`message()` as defaults over
+  `describe()`, and every `nothing()` / bare-`null` pass method in
+  the StmtSemantics impls collapsing so an impl states only what it
+  DOES.
+- A PRELUDE, or QUALIFIED EXPRESSION PATHS. `grammar { … }` expands
+  into constructors the source never spells, so 33 files import ten
+  type names to satisfy an expansion. Avra has neither
+  `grammar.Prim.Lit(…)` nor a per-package prelude, so there is no
+  honest way to write it once. FIRING CONDITION: the second construct
+  whose expansion names types its source does not.
+- A SPEC HELPER THAT IMPORTS. `shown(src)` analyses a LONE source, so
+  a spec cannot exercise anything whose program needs `use` — the
+  `grammar { }` round trip had to move into a file inside the package
+  to be tested at all. Wanting site:
+  features/grammar_lit/tests, and every future construct whose
+  expansion or surface names a package type.
+- A ONCE-PER-PROCESS BINDING for a PURE fn. `avra()` is pure and was
+  re-run 1532 times; the fix landed as "stop making the work
+  expensive" rather than "remember the answer", because Avra has no
+  lazy static and the epic forbids mutable globals — rightly, but a
+  memo of a pure fn breaks neither parallelism nor incrementality.
+  FIRING CONDITION: the second pure whole-program value that wants
+  computing once (the dispatch table is the likely next).
 - A PAIRED COMPREHENSION: `[f(i, x) for i, x in xs]`. The loop form
   landed (rung 14 M4) and 69 sites took it, but seven loops whose
   body is one push still carry a LICENSED I3 because the
@@ -5373,6 +5406,73 @@ design round when its time comes):
   CLAUDE.md is a sentence of the form "the real Avra must make
   this impossible". TRIGGER: at self-host, the list converts into
   a test suite — the language's negative space, pinned.
+
+## THE SUBSET NOTES ARE STALE — an audit owed (2026-09-04)
+
+CLAUDE.md carries **76 "bs2 subset notes"**, and they govern how every
+line here gets written: "probe before assuming", "fear of traps is how
+ugly-but-safe drafts happen". But bs2 no longer compiles this tree —
+it cannot even bootstrap it (raw blocks), and the toolchain dropped it
+at 556274d. So each note is now a claim about OUR compiler, and many
+are simply false.
+
+FIFTEEN TESTED, SIX STALE — the compiler accepts them today:
+  a struct literal in a FREE-FN argument list
+  a method call on a `const` string
+  `xs[i] = v` as an assignment target
+  a doc comment on a STRUCT FIELD
+  an INDIRECT call with four arguments
+  a nested pattern with a sibling binding (`.o(.s(v), k)`)
+
+NINE STILL HOLD, and every one of them is OURS now, not borrowed:
+field punning, trait default bodies, `m["k"]`, struct destructuring in
+`let`, `|` or-patterns, a bare `table` without its row type, `mut`
+parameters, a top-level `let` crossing a fn floor (that one is the
+CONST law working), a present-bind in an expression-position match.
+
+WHY IT MATTERS more than tidiness: a stale note is a constraint the
+writer obeys for nothing. Every "bind it to a `let` first" and
+"hoist it out of the argument list" in this tree may be ceremony
+paid to a dialect we no longer use — and the doctrine's own words
+are that fear of traps is what produces ugly-but-safe drafts.
+
+THE WORK: probe all 76, then SPLIT the section. What our compiler
+accepts is DELETED. What it still refuses moves to "the subset
+today", each entry a candidate for the sugar backlog rather than a
+trap to write around — six of the nine above already went there in
+this round. The section stops being a memorial to a bootstrap and
+becomes an honest list of what the language cannot do yet.
+
+## THE ROUND ON THE GRAMMAR AND UNBOXING SLICES (2026-09-04)
+
+WHAT IT FOUND, and what it refused to invent.
+
+A GRAMMAR DEFECT STILL CANNOT NAME ITS FEATURE, and the mechanism
+that pretended to was DELETED. `Composed` carried an `owners` table
+mapping rule name -> feature, with `feature_of` beside it. Nothing in
+the compiler called either: the byte-offset version it replaced was
+ALSO test-only, so the round removed a seam that existed to be
+tested. It would have been WRONG if used — `stmt`, `primary` and
+`type` are contributed by ten features each, and `feature_of` answers
+with the first. RECORDED TRIGGER: when a grammar defect is rendered
+to a feature author, attribution returns keyed per BRANCH (the unit a
+feature actually contributes), not per rule name.
+
+THE TEN-NAME IMPORT, LEFT ALONE. 33 files now write
+`use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build,
+Expect, Recover}` because `grammar { … }` expands into those
+constructors and a file must have them in scope. It is the rule of
+three violated thirty-three times, and there is no honest fix in the
+language today: Avra has no qualified expression path
+(`grammar.Prim.Lit`) and no prelude. RECORDED TRIGGER: the second
+construct whose expansion names types the source never spells — then
+the shape is a language question (a prelude, or qualified paths),
+not a formatting one.
+
+BATTERIES RUN, WELL DRY: bool-literal if-else (0 hits),
+`xs[xs.length - 1]` (0), `.length == 0` (17 hits, ALL on strings,
+which is the correct idiom — `is_empty` ICEs on text), flag scans
+(3 hits, 2 accumulators and 1 genuine fold, now licensed as I5).
 
 ## `grammar { … }` — the DSL READ WHEN THE COMPILER RUNS (2026-09-04)
 

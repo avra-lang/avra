@@ -60,6 +60,9 @@ the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
 Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I25 I26 I28 I30.
+Unratcheted, read by a human: I5 (a matcher cannot see whether a
+predicate has effects), I31 (a stolen doc and a legitimate
+multi-paragraph header are the same shape).
 I12 came BACK from unratcheted once its regex was repaired: it had
 been reading `if x is .Error { return ... }` as a struct literal,
 so it was retired for false positives that were the rule's fault,
@@ -373,6 +376,38 @@ reintroducing I3's blind spot names the two spellings it lost.
       and only the red-team ladder noticed): `give` records every
       defining instruction's register and refuses a mint-order
       break as a NAMED build defect — never a native crash.
+- I5 a FOLD written as a flag where a scan would short-circuit past
+      a needed SIDE EFFECT. `all`/`any` stop at the first answer, so
+      a loop whose body must run for every element — `paired_unify`
+      unifies each pair for its effect of BINDING the declaration's
+      Vars, including the pairs after the first miss — keeps its
+      `mut ok` and says why AT the site. The smell is a flag fold
+      with no annotation; the idiom is `all(...)` whenever the body
+      is a pure test. UNRATCHETED: a matcher cannot see whether a
+      predicate has effects, so this one is read by a human.
+- I31 a `///` RUN THAT HEADS TWO DECLARATIONS. An inserted
+      definition takes the doc of the one below it, and both lose:
+      the newcomer wears a contract it does not have, and the
+      original is left bare. Five sites the day the rule landed, all
+      from one arc — `unflatten` wearing `mark_flat`'s doc,
+      `flat_at` wearing three paragraphs about `field_read` and
+      `slot_read`, `unified_lift` wearing THE ASSIGNMENT LAW that
+      belongs to `accepts`, `flat_value` wearing `pack_value`'s, and
+      `FlatRow` wearing the interner's. The smell is greppable: two
+      or more `///` lines where an earlier line ENDS a sentence and a
+      later one OPENS a new definition ("A ", "The ", "One ",
+      "Whether ", "Mark "). NOT the smell: a multi-paragraph header
+      whose continuations ELABORATE one definition (`Repr`,
+      `rides_pointer`). The habit that causes it is inserting a
+      definition above an existing one without moving its doc —
+      which is exactly what a patch script does. UNRATCHETED: a
+      stolen doc and a legitimate multi-paragraph header are the SAME
+      shape — a sentence ends, the next line opens with `A`/`The`.
+      The difference is whether the second paragraph ELABORATES one
+      definition or DEFINES another, which is semantic. A first
+      matcher printed 78 hits and the two inspected split one real
+      (`workspace`'s `shown`) and one legitimate (`full_type`); a
+      rule must justify every hit it prints.
 - I26 one nullable LOCAL forced open with `!` three or more times
       in a fn. The value is already known to be there — CLAUDE.md's
       own style rule settles it ("a `let` earns its place when the

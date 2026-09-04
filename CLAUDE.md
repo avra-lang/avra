@@ -157,6 +157,22 @@ registry is the idiom engine's spec, written by dogfooding.
   a name-keyed question and the binding in hand answer about
   DIFFERENT statements — the mismatch reads a slot nobody wrote
   ("index -1"). One question, asked of the statement.
+- A READ WEARS THE TYPE OF WHAT IS READ, never the type of the node
+  doing the reading. This bit THREE times in one slice: a captured
+  callee took the CALL's type (a call's type is its answer, never its
+  callee's), a capture took the LAMBDA's type (a lambda is a managed
+  box, so an `int` capture looked managed and the memory pass
+  retained a number), and a field read took the field expression's
+  type where the SUBJECT's decides the layout. A register's recorded
+  type is the wrong witness under mono, where it may still name a
+  type parameter; the STATIC type of the thing being read is right.
+- UNIFY BINDS, `accepts` RECORDS. `unify` agrees two types and pins a
+  declaration's Vars; it does NOT record the lift that lowering
+  mints. A seat that unifies and returns without passing through the
+  agreement door silently drops the widen — invisible for as long as
+  the widen happens to be identity, and a wrong answer the day the
+  representation changes. Three seats had it: a struct field, a call
+  argument, an enum payload.
 - A PROCESS STATUS IS A VERDICT, never a count: statuses are eight
   bits, so 256 failures read as success. Exit 0 or 1 and print the
   count. A TRAP is not a verdict either — `avra_trap` exits 2, so a

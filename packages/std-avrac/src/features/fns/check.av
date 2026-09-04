@@ -7,7 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId}
-use features.{no_pins, Pins, TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unify, unlawful_side, fully_bound, bound_args, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, unified_lift}
+use features.{no_pins, Pins, TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unify, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, unified_lift}
 use diagnostics.{refusal}
 
 export fn check_fn(cx: StmtTypeCx, s: StmtId) {
@@ -129,14 +129,12 @@ fn pinned_slots(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
 /// which is what lets `null` and widening ride a pinned `T?`.
 fn generic_argument(cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId,
                     decl: DeclId, bound: Pins) -> bool {
-    if unify(cx, param, cx.type_at(a), decl, bound) {
-        unified_lift(cx, a, param, decl, bound)
-        return true
-    }
-    if fully_bound(cx, param, decl, bound) {
-        let landed = cx.view.types.substituted(param, decl, bound_args(cx, bound))
-        if accepts(cx, a, landed) { return true }
-    }
+    // BOTH, always: `unify` binds the declaration's Vars and
+    // `unified_lift` RECORDS the widen lowering mints. Short-circuit
+    // either way and a hit drops its lift, or a miss never binds.
+    let matched = unify(cx, param, cx.type_at(a), decl, bound)
+    let took = unified_lift(cx, a, param, decl, bound)
+    if matched || took { return true }
     if cx.shape_at(a) is .Null {
         null_cannot_pin(cx, callee, j, param, a)
         return false
