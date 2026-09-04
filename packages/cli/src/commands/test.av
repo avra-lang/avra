@@ -1,9 +1,10 @@
 //! `avra test` — run every spec case of a package root or a file:
-//! one analysis, one lowering, each case run by its symbol, the
-//! report from @std.testing. Exit 0 when every case passed.
+//! one analysis, one lowering, and a BINARY whose entry calls each
+//! case by its symbol. Native, because a suite that interprets the
+//! compiler takes an hour where the machine takes seconds.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.language.{Program, TestCase, Lowered, run_symbol}
-use @std.testing.{Outcome, Verdict, render, all_passed}
+use @std.avrac.language.{Program, TestCase, Lowered, CaseCall, cases_entry, exit_row, emit_ll, case_words}
+use @std.avrac.core.{joined_path}
 
 type TestCmd = { }
 
@@ -15,7 +16,7 @@ impl Runnable for TestCmd {
             let made = p.cases_checked()
             if timed(args) { eprintln(timings(p, "lower", avra_now_ns() - t0)) }
             match made {
-                .Ok(lo) -> report(lo, cases),
+                .Ok(lo) -> ran(p, lo, cases),
                 .Err(text) -> {
                     println(text)
                     1
@@ -25,23 +26,36 @@ impl Runnable for TestCmd {
     }
 }
 
-/// Every case run and reported; 0 when all passed.
-fn report(lo: Lowered, cases: List<TestCase>) -> int {
-    let outcomes = [outcome_of(lo, c) for c in cases]
-    println(render(outcomes))
-    if all_passed(outcomes) { 0 } else { 1 }
-}
-
-fn outcome_of(lo: Lowered, c: TestCase) -> Outcome {
-    Outcome { at: c.at, verdict: verdict_of(run_symbol(lo, c.symbol)) }
-}
-
-/// A bool answer is the verdict; a refusal is the note.
-fn verdict_of(answer: Result<bool, string>) -> Verdict {
-    match answer {
-        .Ok(b) -> if b { Verdict.Passed } else { Verdict.Failed("the condition was false") },
-        .Err(why) -> Verdict.Failed(why),
+/// The cases as a binary, run: its exit code is how many failed.
+fn ran(p: Program, lo: Lowered, cases: List<TestCase>) -> int {
+    if cases.is_empty() {
+        println("no spec cases here")
+        return 0
     }
+    let calls = [CaseCall { symbol: c.symbol, label: case_words(c) } for c in cases]
+    let staged = lo with { entry: cases_entry(lo.types, calls), externs: lo.externs.concat([exit_row()]) }
+    let path = staged_path(p)
+    let failure: string? = emit_ll(staged, path)
+    if failure != null {
+        println(failure!)
+        return 1
+    }
+    if link(path, promises(p)) != 0 { return 1 }
+    tallied(cases.length, avra_shell_exec_status(binary_name(path)))
+}
+
+/// Where the test binary is written — under the root's `build/`,
+/// never beside the source it tests.
+fn staged_path(p: Program) -> string {
+    let dir = joined_path(p.ws.root, "build")
+    let _ = avra_mkdir_p(dir)
+    joined_path(dir, "cases.av.ll")
+}
+
+/// The tally, said once; the exit code is the binary's.
+fn tallied(total: int, failed: int) -> int {
+    println("${total - failed}/${total} tests passed")
+    if failed == 0 { 0 } else { 1 }
 }
 
 export fn test_command() -> Subcommand {

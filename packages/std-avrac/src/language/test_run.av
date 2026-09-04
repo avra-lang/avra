@@ -1,0 +1,98 @@
+//! THE TEST BINARY'S ENTRY, built in IR. No source declares it: the
+//! cases are declarations the program already holds, and this entry
+//! calls each one by its symbol, prints its verdict, and exits with
+//! the number that failed. Running the cases NATIVELY is what keeps
+//! a suite of a thousand cases in seconds instead of an hour.
+use core.{Ins, Reg, TypeId, Type, TypeRegistry, BinOp, Level, RtKind, RtSig, extern_row}
+
+/// One case as the entry needs it: the symbol that runs it and the
+/// line its verdict prints.
+export type CaseCall = { symbol: string, label: string }
+
+/// The host fn the test binary declares — the exit code IS the
+/// failure count, so a runner needs no other channel.
+export fn exit_row() -> RtSig {
+    extern_row("avra_process_exit", RtKind.Void, [RtKind.I64])
+}
+
+/// The entry: a cell counts failures, each case decides which line
+/// prints, and the tally leaves through the exit code.
+export fn cases_entry(types: TypeRegistry, cases: List<CaseCall>) -> Body {
+    let e = new_entry(types)
+    let tally = e.mint(types.intern(Type.Int))
+    e.give(Ins.Alloca(tally))
+    e.give(Ins.Store(tally, e.constant(0)))
+    for c in cases { one_case(e, c, tally) }
+    e.give(Ins.CallRtVoid("avra_puts", [e.text("")]))
+    let failed = e.mint(types.intern(Type.Int))
+    e.give(Ins.Load(failed, tally))
+    e.give(Ins.CallRtVoid("avra_process_exit", [failed]))
+    e.give(Ins.ScopeExit(null))
+    e.give(Ins.Ret(0))
+    e.built()
+}
+
+/// One case: called, judged, and counted when it fails.
+fn one_case(e: EntryBuild, c: CaseCall, tally: Reg) {
+    let ok = e.mint(e.types.intern(Type.Bool))
+    e.give(Ins.Call(ok, c.symbol, []))
+    e.give(Ins.IfStart(ok))
+    e.say("    ✓ ${c.label}")
+    e.give(Ins.ArmEnd(e.constant(0)))
+    e.say("    ✗ ${c.label}")
+    let held = e.mint(e.types.intern(Type.Int))
+    e.give(Ins.Load(held, tally))
+    // THE MINT LAW: operands first, the answer last
+    let one = e.constant(1)
+    let more = e.mint(e.types.intern(Type.Int))
+    e.give(Ins.Bin(more, BinOp.Add, held, one))
+    e.give(Ins.Store(tally, more))
+    let gives = e.constant(0)
+    let merged = e.mint(e.types.intern(Type.Int))
+    e.give(Ins.RegionEnd(merged, gives))
+}
+
+/// A body under construction: registers minted in instruction order,
+/// which is the law every consumer reads back.
+type EntryBuild = { types: TypeRegistry, ins: List<Ins>, tys: List<TypeId> }
+
+fn new_entry(types: TypeRegistry) -> EntryBuild {
+    let empty_ins: List<Ins> = []
+    let empty_tys: List<TypeId> = []
+    let e = EntryBuild { types: types, ins: empty_ins, tys: empty_tys }
+    e.give(Ins.ScopeEnter(Level.Application))
+    e
+}
+
+impl EntryBuild {
+    fn give(self, i: Ins) { self.ins.push(i) }
+
+    fn mint(self, ty: TypeId) -> Reg {
+        self.tys.push(ty)
+        Reg { index: self.tys.length - 1 }
+    }
+
+    /// An int constant in a fresh register.
+    fn constant(self, v: int) -> Reg {
+        let r = self.mint(self.types.intern(Type.Int))
+        self.give(Ins.ConstInt(r, v))
+        r
+    }
+
+    /// A string literal in a fresh register.
+    fn text(self, s: string) -> Reg {
+        let r = self.mint(self.types.intern(Type.Str))
+        self.give(Ins.ConstStr(r, s))
+        r
+    }
+
+    /// One line to standard output.
+    fn say(self, s: string) {
+        self.give(Ins.CallRtVoid("avra_puts", [self.text(s)]))
+    }
+
+    fn built(self) -> Body {
+        Body { name: "main", params: [], ret: self.types.intern(Type.Int),
+               gives: null, ins: self.ins, reg_types: self.tys }
+    }
+}

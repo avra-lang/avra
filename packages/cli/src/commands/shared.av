@@ -1,8 +1,8 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef, result_get_arg, result_has_flag}
-use @std.avrac.language.{Host, Program, Analysis, TestCase, program, lone_workspace, timed_workspace, entry_of, no_target, avra, emit_ll}
-use @std.avrac.core.{joined, dir_of, under_dir}
+use @std.avrac.language.{Host, Program, Analysis, TestCase, link_inputs, program, lone_workspace, timed_workspace, entry_of, no_target, avra, emit_ll}
+use @std.avrac.core.{joined, code_at, dir_of, under_dir}
 
 extern fn avra_selfhost_read_file(path: string) -> string
 extern fn avra_selfhost_file_exists(path: string) -> int
@@ -12,6 +12,7 @@ extern fn avra_mkdir_p(path: string) -> int
 extern fn avra_process_exit(code: int)
 extern fn avra_host_list_dir(path: string) -> string
 extern fn avra_host_is_dir(path: string) -> int
+extern fn avra_host_env(name: string) -> string
 extern fn avra_now_ns() -> int
 extern fn println(s: string)
 extern fn eprintln(s: string)
@@ -171,6 +172,63 @@ fn package_root(dir: string) -> string? {
     null
 }
 
+
+/// clang links the `.ll` with Avra's runtime — and whatever the
+/// program's packages promised their externs — into a native binary.
+fn link(ll_path: string, promised: string) -> int {
+    let out = binary_name(ll_path)
+    if avra_shell_exec_status("clang -w -O1 ${ll_path} build/avra_runtime.o ${promised} -o ${out}") != 0 {
+        eprintln("avra: clang failed linking ${ll_path}")
+        return 1
+    }
+    0
+}
+
+/// The program's own promises, expanded — what its packages named
+/// in `[link]`, with the machine's paths filled from the
+/// environment.
+fn promises(p: Program) -> string {
+    joined([expanded(f) for f in link_inputs(p.ws)], " ")
+}
+
+/// Linked, and the binary's path said — what `build` answers.
+fn spoken_link(ll_path: string, p: Program) -> int {
+    let code = link(ll_path, promises(p))
+    if code == 0 { println(binary_name(ll_path)) }
+    code
+}
+
+/// A link input with its `${NAME}` holes filled from the
+/// environment: a machine's own paths belong to the machine, not to
+/// a checked-in manifest.
+fn expanded(flag: string) -> string {
+    let opens = flag.index_of("$" + "{")
+    if opens < 0 { return flag }
+    let closes = closing_brace(flag, opens)
+    if closes < opens { return flag }
+    let head = flag.substring(0, opens)
+    let name = flag.substring(opens + 2, closes)
+    let tail = flag.substring(closes + 1, flag.length)
+    expanded("${head}${avra_host_env(name)}${tail}")
+}
+
+/// Where the hole closes, or -1 — found by CODE, because a `}`
+/// spelled as a literal ends the fn that holds it (bs2's parse).
+fn closing_brace(s: string, from: int) -> int {
+    let n = s.length
+    mut i = from
+    while i < n {
+        if code_at(s, i) == 125 { return i }
+        i = i + 1
+    }
+    0 - 1
+}
+
+/// `x.av.ll` builds `x`.
+fn binary_name(ll_path: string) -> string {
+    let base = if ll_path.ends_with(".ll") { ll_path.substring(0, ll_path.length - 3) } else { ll_path }
+    if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
+}
 
 /// A subcommand over exactly one source-file argument.
 fn file_command(name: string, description: string) -> CommandSpec {

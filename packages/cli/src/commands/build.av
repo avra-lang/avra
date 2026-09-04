@@ -1,10 +1,7 @@
 //! `avra build` — compile a program to a native binary: the emitted
 //! `.ll` linked with Avra's runtime by clang.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.language.{Program, link_inputs}
-use @std.avrac.core.{joined, code_at}
-
-extern fn avra_host_env(name: string) -> string
+use @std.avrac.language.{Program}
 
 type BuildCmd = { }
 
@@ -16,7 +13,7 @@ impl Runnable for BuildCmd {
             let made = lowered_or_report(p)
             if timed(args) { eprintln(timings(p, "lower+emit", avra_now_ns() - t0)) }
             match made {
-                .Ok(path) -> link(path, joined([expanded(f) for f in link_inputs(p.ws)], " ")),
+                .Ok(path) -> spoken_link(path, p),
                 .Err(report) -> {
                     println(report)
                     1
@@ -31,46 +28,3 @@ export fn build_command() -> Subcommand {
     Subcommand { meta: file_command("build", "Compile a program to a native binary"), body: body }
 }
 
-/// clang links the `.ll` with Avra's runtime — and whatever the
-/// program's packages promised their externs — into a native binary.
-fn link(ll_path: string, promised: string) -> int {
-    let out = binary_name(ll_path)
-    if avra_shell_exec_status("clang -w -O1 ${ll_path} build/avra_runtime.o ${promised} -o ${out}") != 0 {
-        eprintln("avra: clang failed linking ${ll_path}")
-        return 1
-    }
-    println(out)
-    0
-}
-
-/// A link input with its `${NAME}` holes filled from the
-/// environment: a machine's own paths belong to the machine, not to
-/// a checked-in manifest.
-fn expanded(flag: string) -> string {
-    let opens = flag.index_of("$" + "{")
-    if opens < 0 { return flag }
-    let closes = closing_brace(flag, opens)
-    if closes < opens { return flag }
-    let head = flag.substring(0, opens)
-    let name = flag.substring(opens + 2, closes)
-    let tail = flag.substring(closes + 1, flag.length)
-    expanded("${head}${avra_host_env(name)}${tail}")
-}
-
-/// Where the hole closes, or -1 — found by CODE, because a `}`
-/// spelled as a literal ends the fn that holds it (bs2's parse).
-fn closing_brace(s: string, from: int) -> int {
-    let n = s.length
-    mut i = from
-    while i < n {
-        if code_at(s, i) == 125 { return i }
-        i = i + 1
-    }
-    0 - 1
-}
-
-/// `x.av.ll` builds `x`.
-fn binary_name(ll_path: string) -> string {
-    let base = if ll_path.ends_with(".ll") { ll_path.substring(0, ll_path.length - 3) } else { ll_path }
-    if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
-}
