@@ -48,7 +48,7 @@ impl Builder {
         for j in 0..items.length {
             out.push(want(type_ref_at(items, j), "a type in a repeated capture")?)
         }
-        Result.Ok(out)
+        .Ok(out)
     }
 
     /// The repeated capture at `i`, as plain tokens.
@@ -59,7 +59,7 @@ impl Builder {
         for j in 0..items.length {
             out.push(want(token_at(items, j), "a token in a repeated capture")?)
         }
-        Result.Ok(out)
+        .Ok(out)
     }
 
     /// The repeated capture at `i`, as expression ids.
@@ -70,7 +70,7 @@ impl Builder {
         for j in 0..items.length {
             out.push(want(expr_id_at(items, j), "an expression in a repeated capture")?)
         }
-        Result.Ok(out)
+        .Ok(out)
     }
 
     /// The repeated capture at `i`, as statement ids. A recovery hole
@@ -84,37 +84,37 @@ impl Builder {
             let sid: StmtId? = stmt_id_at(items, j)
             out.push(sid ?? self.store.alloc_stmt(Stmt.Error, null))
         }
-        Result.Ok(out)
+        .Ok(out)
     }
 
     /// A new pattern node, spanning the matched branch.
     fn make_pat(self, p: Pat) -> Result<LangNode, string> {
-        Result.Ok(LangNode.NPat(self.store.alloc_pat(p, self.span)))
+        .Ok(LangNode.NPat(self.store.alloc_pat(p, self.span)))
     }
 
     /// One match arm, as data.
     fn make_arm(self, pats: List<PatId>, value: ExprId) -> Result<LangNode, string> {
-        Result.Ok(LangNode.NArm(Arm { pats: pats, value: value }))
+        .Ok(LangNode.NArm(Arm { pats: pats, value: value }))
     }
 
     /// A new expression node, spanning the matched branch.
     fn make_expr(self, e: Expr) -> Result<LangNode, string> {
-        Result.Ok(LangNode.NExpr(self.store.alloc_expr(e, self.span)))
+        .Ok(LangNode.NExpr(self.store.alloc_expr(e, self.span)))
     }
 
     /// A new statement node, spanning the matched branch.
     fn make_stmt(self, s: Stmt) -> Result<LangNode, string> {
-        Result.Ok(LangNode.NStmt(self.store.alloc_stmt(s, self.span)))
+        .Ok(LangNode.NStmt(self.store.alloc_stmt(s, self.span)))
     }
 
     /// A written type as this build's result — no arena, no id.
     fn make_type(self, t: TypeRef) -> Result<LangNode, string> {
-        Result.Ok(LangNode.NType(t))
+        .Ok(LangNode.NType(t))
     }
 
     /// An already-allocated expression as this build's result.
     fn wrap_expr(self, id: ExprId) -> Result<LangNode, string> {
-        Result.Ok(LangNode.NExpr(id))
+        .Ok(LangNode.NExpr(id))
     }
 
     /// Where this build's branch ENDED — the bound a positional
@@ -256,8 +256,8 @@ export fn window_end(anchors: List<Token>, j: int, ends: int) -> int {
 /// lambdas).
 export fn aligned_param_types(anchors: List<Token>, optional: List<TypeRef>, ends: int) -> List<TypeRef?> {
     mut found: List<TypeRef?> = []
-    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
-    for (j, a) in anchors.enumerate() {
+    // LICENSED I3: a PAIRED comprehension is our own sugar backlog — `[f(i, x) for i, x in xs]` does not parse
+    for j, a in anchors {
         found.push(one_between(optional, a.span.lo, window_end(anchors, j, ends)))
     }
     found
@@ -275,8 +275,8 @@ export fn ref_within(t: TypeRef, after: int, before: int) -> bool {
 
 export fn aligned_binds(anchors: List<Token>, optional: List<Token>, ends: int) -> List<string> {
     mut found: List<string> = []
-    // LICENSED I3: the window needs the INDEX; comprehensions cannot destructure enumerate
-    for (j, a) in anchors.enumerate() {
+    // LICENSED I3: a PAIRED comprehension is our own sugar backlog — `[f(i, x) for i, x in xs]` does not parse
+    for j, a in anchors {
         found.push(token_between(optional, a.span.lo, window_end(anchors, j, ends)))
     }
     found
@@ -294,14 +294,14 @@ fn token_between(tokens: List<Token>, after: int, before: int) -> string {
 /// POSITION: the last name that starts before it.
 export fn fields_zipped(b: Builder, fs: List<Token>, ft: List<TypeRef>, fds: List<ExprId>) -> Result<List<Param>, string> {
     if fs.length != ft.length {
-        return Result.Err(zip_defect_of("field names and types"))
+        return .Err(zip_defect_of("field names and types"))
     }
     mut fields: List<Param> = []
-    // LICENSED I3: a ZIP of parallel captures; comprehensions cannot destructure enumerate
-    for (j, f) in fs.enumerate() {
+    // LICENSED I3: a PAIRED comprehension is our own sugar backlog — `[f(i, x) for i, x in xs]` does not parse
+    for j, f in fs {
         fields.push(Param { name: f.text, ty: ft[j], default: default_before(b, fs, fds, j) })
     }
-    Result.Ok(fields)
+    .Ok(fields)
 }
 
 /// The default whose position falls between field `j`'s name and

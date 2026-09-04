@@ -44,7 +44,7 @@ fn is_terminal_name(s: string) -> bool {
 }
 
 fn ok(g: GrammarNode) -> Result<Captured<GrammarNode>, string> {
-    Result.Ok(Captured.Node(g))
+    .Ok(Captured.Node(g))
 }
 
 // ── Per-kind extractors: one nested pattern each — the payload when
@@ -116,35 +116,35 @@ fn as_list(v: Captured<GrammarNode>) -> Result<List<Captured<GrammarNode>>, stri
         .Terminal(t) -> [Captured.Terminal(t)],
         .Node(g) -> [Captured.Node(g)],
     }
-    Result.Ok(items)
+    .Ok(items)
 }
 
 fn as_seqs(v: Captured<GrammarNode>) -> Result<List<Seq>, string> {
-    Result.Ok([want(seq_of(x), "a branch")? for x in as_list(v)?])
+    .Ok([want(seq_of(x), "a branch")? for x in as_list(v)?])
 }
 
 fn as_items(v: Captured<GrammarNode>) -> Result<List<Item>, string> {
-    Result.Ok([want(item_of(x), "an item")? for x in as_list(v)?])
+    .Ok([want(item_of(x), "an item")? for x in as_list(v)?])
 }
 
 fn as_rules(v: Captured<GrammarNode>) -> Result<List<Rule>, string> {
-    Result.Ok([want(rule_of(x), "a rule")? for x in as_list(v)?])
+    .Ok([want(rule_of(x), "a rule")? for x in as_list(v)?])
 }
 
 fn as_annots(v: Captured<GrammarNode>) -> Result<List<PendingAnnot>, string> {
-    Result.Ok([want(annot_of(x), "an annotation")? for x in as_list(v)?])
+    .Ok([want(annot_of(x), "an annotation")? for x in as_list(v)?])
 }
 
 /// The builder-call argument names from a repeated NAME capture.
 fn call_args(v: Captured<GrammarNode>) -> Result<List<string>, string> {
-    Result.Ok([arg_text(x)? for x in as_list(v)?])
+    .Ok([arg_text(x)? for x in as_list(v)?])
 }
 
 /// One captured argument's text. (Never `want(...)?.text` — the
 /// `?.`-after-`?` shape corrupts inside a comprehension.)
 fn arg_text(x: Captured<GrammarNode>) -> Result<string, string> {
     let t = want(tok_of(x), "an argument name")?
-    Result.Ok(t.text)
+    .Ok(t.text)
 }
 
 /// Attach each @expect to the first unclaimed matching item; land
@@ -159,14 +159,14 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
             .AExpect(token, message) -> {
                 // LICENSED I4: first-match INDEX; no find_index upstream (TECH_DEBT)
                 mut idx: int? = null
-                for (i, m) in out.enumerate() {
+                for i, m in out {
                     if idx == null && m.expect == null && m.prim.answers_to(token) { idx = i }
                 }
                 if idx == null {
-                    return Result.Err("@expect names `${token}` but the branch has no matching item")
+                    return .Err("@expect names `${token}` but the branch has no matching item")
                 }
                 mut next: List<Item> = []
-                for (i, m) in out.enumerate() {
+                for i, m in out {
                     if i == idx! {
                         next.push(m with { expect: Expect { message: message } })
                     } else {
@@ -176,12 +176,12 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
                 out = next
             }
             .ARecover(sync_to) -> {
-                if rec != null { return Result.Err("duplicate @recover on one branch") }
+                if rec != null { return .Err("duplicate @recover on one branch") }
                 rec = Recover { sync_to: sync_to }
             }
         }
     }
-    Result.Ok(Seq { items: out, build: null, recover: rec })
+    .Ok(Seq { items: out, build: null, recover: rec })
 }
 
 /// The parsed grammar inside a run outcome, when one was built.
@@ -202,7 +202,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
     match name {
         "build_grammar" -> {
             let rules = as_rules(args[0])?
-            if rules.is_empty() { return Result.Err("a grammar needs at least one rule") }
+            if rules.is_empty() { return .Err("a grammar needs at least one rule") }
             ok(GrammarNode.NGrammar(Grammar { name: "", start: rules[0].name, rules: rules }))
         }
         "build_rule" -> {
@@ -224,7 +224,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
                     let b = want(build_of(args[1]), "a build directive")?
                     ok(GrammarNode.NSeq(sq with { build: b }))
                 }
-                .Terminal(_) or .Many(_) -> Result.Err("expected a build directive"),
+                .Terminal(_) or .Many(_) -> .Err("expected a build directive"),
             }
         }
         "build_labeled" -> {
@@ -232,7 +232,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
             match args[0] {
                 .Absent -> ok(GrammarNode.NItem(inner)),
                 .Terminal(t) -> ok(GrammarNode.NItem(inner with { label: t.text })),
-                .Node(_) or .Many(_) -> Result.Err("expected a label"),
+                .Node(_) or .Many(_) -> .Err("expected a label"),
             }
         }
         "build_postfix" -> {
@@ -269,7 +269,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
                     let arg_names = call_args(args[2])?
                     ok(GrammarNode.NBuild(Build.Call(t.text, arg_names)))
                 }
-                .Node(_) or .Many(_) -> Result.Err("expected `(`"),
+                .Node(_) or .Many(_) -> .Err("expected `(`"),
             }
         }
         "build_expect" -> {
@@ -281,6 +281,6 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
             let target = want(tok_of(args[0]), "the sync target")?
             ok(GrammarNode.NAnnot(PendingAnnot.ARecover(target.text)))
         }
-        _ -> Result.Err("unknown builder `${name}`")
+        _ -> .Err("unknown builder `${name}`")
     }
 }

@@ -19,7 +19,7 @@ fn build_fold_binary(b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
     let ops = b.tokens(1)?
     let rights = b.exprs(2)?
-    for (i, t) in ops.enumerate() {
+    for i, t in ops {
         let op = want(binop_of(t.text), "a binary operator")?
         acc = b.store.alloc_expr(Expr.Binary(op, acc, rights[i]), b.cover(acc, rights[i]))
     }
@@ -59,7 +59,7 @@ fn build_fold_with(b: Builder) -> Result<LangNode, string> {
     let wn = b.tokens(1)?
     if wn.is_empty() { return b.wrap_expr(subject) }
     let wv = b.exprs(2)?
-    if wn.length != wv.length { return Result.Err(zip_defect()) }
+    if wn.length != wv.length { return .Err(zip_defect()) }
     let names = [k.text for k in wn]
     b.make_expr(Expr.With(subject, names, wv))
 }
@@ -102,9 +102,9 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
     let calls = b.tokens(6)?
     let cargs = b.exprs(7)?
     let forces = b.tokens(8)?
-    if links.length != names.length { return Result.Err(zip_defect()) }
+    if links.length != names.length { return .Err(zip_defect()) }
     let held: int? = b.span_end()
-    if held == null { return Result.Err("a postfix chain without a span") }
+    if held == null { return .Err("a postfix chain without a span") }
     let ends = held!
     // the four families' cursors — each turn folds the link whose
     // anchor comes first in the source
@@ -124,7 +124,7 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
             let upto = next_anchor(b, names, indexes, calls, jn + 1, ji, jc, ends)
             let called = opens.any(within(it.span.lo, np, upto))
             if called {
-                if links[jn].text == "?." { return Result.Err("`?.` cannot call a method yet — chain methods are recorded") }
+                if links[jn].text == "?." { return .Err("`?.` cannot call a method yet — chain methods are recorded") }
                 acc = b.store.alloc_expr(
                     Expr.MethodCall(acc, names[jn].text,
                         [pronouned(b, a) for a in args_between(b, margs, np, upto)]), b.span)
@@ -230,11 +230,11 @@ fn build_catch(b: Builder) -> Result<LangNode, string> {
         // with nothing in it; NO keyword means no catch at all.
         let ck = b.tokens(1)?
         if ck.is_empty() { return b.wrap_expr(l) }
-        return Result.Err("a `catch` needs at least one arm")
+        return .Err("a `catch` needs at least one arm")
     }
     let ca = b.exprs(4)?
     let ends: int? = b.span_end()
-    if cv.length != ca.length { return Result.Err(zip_defect()) }
-    if ends == null { return Result.Err("a catch without a span") }
+    if cv.length != ca.length { return .Err(zip_defect()) }
+    if ends == null { return .Err("a catch without a span") }
     b.make_expr(Expr.Catch(l, [v.text for v in cv], aligned_binds(cv, b.tokens(3)?, ends!), ca))
 }

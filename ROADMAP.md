@@ -2374,6 +2374,13 @@ additions get siblings, nothing changes shape:
 
 ## Sugar backlog — dogfooding asks
 
+- A PAIRED COMPREHENSION: `[f(i, x) for i, x in xs]`. The loop form
+  landed (rung 14 M4) and 69 sites took it, but seven loops whose
+  body is one push still carry a LICENSED I3 because the
+  comprehension cannot pair. Wanting sites: features/builder.av (x3),
+  features/decls.av, features/impls/builders.av, language/ir_text.av,
+  language/typing_declare.av.
+
 The compiler is Avra's first real program, and writing it is design
 evidence: whenever its own code WANTS a construct the language
 lacks, the ask lands here with the wanting site. Entries graduate
@@ -3787,12 +3794,17 @@ disagree and the tree spells bs2's side.
   trick to `self.field.push(v)`, which bs2 accepts). FIX: infer
   `mut self` (a method that writes through self), require a mut
   place at the call, open it unique before the call.
-- `Result.Ok(v)` / `Result.Err(e)` (89 sites): bs2's spelling; the
-  epic's is `.Ok(v)` / `.Err(e)`. FIX: rewrite the tree; keep the
-  type-receiver form as the ordinary enum surface.
-- `for (j, v) in xs.enumerate()` (77 sites) and the LICENSED I3
-  loops it forces: bs2 cannot pair an index in a comprehension.
-  FIX: `for j, v in xs` and `[f(j, v) for j, v in xs]` (rung 14 M4).
+- ~~`Result.Ok(v)` / `Result.Err(e)` (89 sites)~~ — PAID 2026-09-04:
+  92 sites rewritten to `.Ok(v)` / `.Err(e)`. The type-receiver form
+  stays the ordinary enum surface, and results_test still proves it
+  by NAME beside the dot — the two spellings are one feature's two
+  faces, not a migration.
+- ~~`for (j, v) in xs.enumerate()` (77 sites)~~ — PAID 2026-09-04: 69
+  loops now spell `for j, v in xs` (rung 14 M4), and 32 LICENSED I3
+  exceptions retired with them. What REMAINS licensed is the honest
+  half: a loop whose body is one push, where a PAIRED COMPREHENSION
+  (`[f(i, x) for i, x in xs]`) would say it and does not parse — our
+  own sugar backlog, not bs2's.
 - `code_at(s, i)` = `s.substring(i, i + 1).char_code()` (bs2's
   `char_code` drops its index): an allocation per byte in every
   scanner. FIX: `s.char_code(i)` (landed in rung 8) everywhere;
@@ -5359,6 +5371,51 @@ design round when its time comes):
   CLAUDE.md is a sentence of the form "the real Avra must make
   this impossible". TRIGGER: at self-host, the list converts into
   a test suite — the language's negative space, pinned.
+
+## THE PIPELINE, MEASURED (2026-09-04) — where `make gate` actually goes
+
+The gate is ~310s. It breaks down, measured end to end:
+
+  make test    225s   of which ONE package (std-avrac) is ~170s
+  make corpus   40s
+  the rest      45s   (vocab, idioms, scaffold)
+
+And the 170s of a std-avrac test run breaks down further:
+
+  the front end (parse/resolve/sigs/bodies/lower)   51s
+  emitting the LLVM module                          ~8s
+  clang -O1 over 234,571 lines of .ll                4s
+  RUNNING THE 1532 CASES                           127s
+
+CLANG IS NOT THE BOTTLENECK — 4s at -O1, 1s at -O0. Neither is emission.
+**The cases are.** And the cause is exact: every spec case calls
+`analyze_source`, which calls `avra()`, which ASSEMBLES THE WHOLE
+LANGUAGE from its features — composed grammar text parsed by the seed
+grammar, merged, validated. Measured at **58ms**, 1532 times: **89
+seconds**, 70% of the test run and ~29% of the whole gate.
+
+THE FIX IS ONE ASSEMBLY PER PROCESS, and it wants a language
+affordance rather than a hack. Three roads, in order of how much I
+like them:
+  (a) THE GRAMMAR STOPS BEING TEXT. Features contribute Grammar
+      VALUES, not `gram` strings, so assembly is a merge and not a
+      parse. Already booked as a self-host endgame ("`grammar { }`
+      blocks replace raw-string grams"); this measurement is its
+      justification.
+  (b) `avra()` MEMOIZED AS A QUERY. It is pure — same features, same
+      language — and the query kernel already exists. What it lacks
+      is a home: every `analyze_source` builds a fresh workspace, so
+      the memo would have to outlive one.
+  (c) A once-per-process cache in the runtime. Rejected: a `Language`
+      is an Avra value and the seam would need an unsafe cast Avra
+      does not have, and should not grow for this.
+NOT a mutable global: the epic forbids them, and rightly — but note
+that a memo of a PURE fn breaks neither parallelism nor incrementality,
+which is why (b) is the honest shape once a home exists.
+
+ALSO MEASURED AND FIXED: `avra_rc_dead_check` was a CALL on every
+array read to ask whether the debug guard is on. It is a branch now
+(50.5s -> 49.0s on the compiler checking itself).
 
 ## UNBOXED RECORDS — a newtype over `int` IS an `int` (2026-09-04)
 

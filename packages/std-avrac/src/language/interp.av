@@ -49,9 +49,9 @@ fn fresh_machine(l: Lowered) -> Machine {
 export fn run_lowered(l: Lowered) -> Result<string, string> {
     let m = fresh_machine(l)
     let _ = run_body(m, l.entry, [])
-    if !m.failures.is_empty() { return Result.Err(m.failures.first()!) }
-    if m.out.is_empty() { return Result.Err("the program is empty") }
-    Result.Ok(joined(m.out, "\n"))
+    if !m.failures.is_empty() { return .Err(m.failures.first()!) }
+    if m.out.is_empty() { return .Err("the program is empty") }
+    .Ok(joined(m.out, "\n"))
 }
 
 /// One fn run by its symbol under no arguments, its bool answer —
@@ -59,10 +59,10 @@ export fn run_lowered(l: Lowered) -> Result<string, string> {
 export fn run_symbol(l: Lowered, symbol: string) -> Result<bool, string> {
     let m = fresh_machine(l)
     let target: Body? = body_named(l, symbol)
-    if target == null { return Result.Err("no body named `${symbol}`") }
+    if target == null { return .Err("no body named `${symbol}`") }
     let answer: Val? = run_body(m, target!, [])
-    if !m.failures.is_empty() { return Result.Err(m.failures.first()!) }
-    if answer == null { return Result.Err("`${symbol}` answered nothing") }
+    if !m.failures.is_empty() { return .Err(m.failures.first()!) }
+    if answer == null { return .Err("`${symbol}` answered nothing") }
     truth_of(symbol, answer!)
 }
 
@@ -72,8 +72,8 @@ fn body_named(l: Lowered, name: string) -> Body? {
 
 fn truth_of(symbol: string, v: Val) -> Result<bool, string> {
     match v {
-        .B(b) -> Result.Ok(b),
-        _ -> Result.Err("`${symbol}` answered no bool"),
+        .B(b) -> .Ok(b),
+        _ -> .Err("`${symbol}` answered no bool"),
     }
 }
 
@@ -325,7 +325,7 @@ fn defect_val(m: Machine, what: string) -> Val {
 /// non-string elements by identity (subset note).
 fn chosen_arm(m: Machine, sel: Reg, cases: List<int>) -> int {
     let v = int_val(m, sel)
-    for (j, c) in cases.enumerate() {
+    for j, c in cases {
         if c == v { return j }
     }
     cases.length
@@ -401,8 +401,7 @@ fn loop_header(b: Body, from: int) -> int {
 /// A fn address in EVAL-land is the body's index — opaque, like
 /// the machine address it stands in for.
 fn fn_addr_val(m: Machine, sym: string) -> Val {
-    // LICENSED I3: the INDEX is the value; find answers the element
-    for (j, b) in m.l.fns.enumerate() {
+    for j, b in m.l.fns {
         if b.name == sym { return Val.I(j) }
     }
     defect_val(m, "a fn address without a body survived lowering")
