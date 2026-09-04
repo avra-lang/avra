@@ -28,7 +28,7 @@
 //!   ir_text.av   the IR's human projection (`avra ir`)
 //!   codes.av     the built-in diagnostic registry
 use core.{flatten}
-use grammar.{Diagnostic, Grammar, parse_grammar}
+use grammar.{Diagnostic, Ready, ready, parse_grammar}
 use features.{LanguageFeature, compose_text, builder_defects, code_defects, LanguageRows}
 use diagnostics.{Diag, DiagCode, new_source_file}
 use features.type_expr.{type_expr}
@@ -66,7 +66,7 @@ use features.str_lit.{str_lit}
 /// keyword list.
 export type Language = {
     features: List<LanguageFeature>,
-    grammar: Grammar?,
+    grammar: Ready?,
     keywords: List<string>,
     rows: LanguageRows,
     dispatch: Dispatch,
@@ -77,10 +77,14 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     let gp = parse_grammar(compose_text(features).text)
     if gp.grammar == null { return unassembled(features, gp.diagnostics) }
     let g = gp.grammar!.merged()
+    // PREPARED ONCE: validated and indexed here, so a parse pays for
+    // neither — and the defects the assembly gates on ARE that
+    // validation, asked a single time.
+    let rd = ready(g)
     let codes = code_registry(features)
-    let defects = flatten([g.defects(), builder_defects(features, g), code_defects(codes)])
+    let defects = flatten([rd.defects, builder_defects(features, g), code_defects(codes)])
     if !defects.is_empty() { return unassembled(features, defects) }
-    Language { features: features, grammar: g, keywords: g.keywords(), rows: rows_of(features, codes), dispatch: new_dispatch(), diagnostics: [] }
+    Language { features: features, grammar: rd, keywords: g.keywords(), rows: rows_of(features, codes), dispatch: new_dispatch(), diagnostics: [] }
 }
 
 /// The language's registries, gathered once from its features.

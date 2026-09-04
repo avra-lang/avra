@@ -16,9 +16,19 @@ export fn defect(in_rule: string, message: string) -> Diagnostic {
     Diagnostic { cause: Cause.Defect, message: message, span: null, expected: [], in_rule: in_rule }
 }
 
-/// Deduplicating union of two expected sets.
+/// The union of two expected sets — APPENDED, not deduplicated. A
+/// merge runs at every tie of every branch attempt, and a parse that
+/// SUCCEEDS never shows the set at all; deduplicating here made the
+/// error machinery the hot path. Duplicates die at `shown_expected`,
+/// the one place a reader ever sees them.
 export fn union_expected(a: List<string>, b: List<string>) -> List<string> {
-    distinct(a.concat(b))
+    a.concat(b)
+}
+
+/// The expected set as a READER sees it: each word once, in the
+/// order the parser first wanted it.
+export fn shown_expected(xs: List<string>) -> List<string> {
+    distinct(xs)
 }
 
 /// How a prim reads in an "expected ..." message.
