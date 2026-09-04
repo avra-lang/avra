@@ -117,7 +117,11 @@ impl Lower {
     }
 
     fn shaped(self, t: Type) -> Reg {
-        self.out.mint_ty(self.a.view.decls.types.intern(t))
+        self.out.mint_ty(self.shaped_ty(t))
+    }
+
+    fn shaped_ty(self, t: Type) -> TypeId {
+        self.a.view.decls.types.intern(t)
     }
 
     /// The settled constant AS THE USE WEARS IT: a nullable use
@@ -152,10 +156,16 @@ impl Lower {
         dst
     }
 
-    /// A capture read: its LANE of the env box at register 0 — the
-    /// lane law lives with the fn value's other verbs.
+    /// A capture read: its LANE of the env box — the lane law lives
+    /// with the fn value's other verbs.
     fn env_read(self, e: ExprId, j: int) -> Reg? {
-        slot_read(expr_lower_cx(self), Reg { index: 0 }, capture_lane(j), self.concrete(self.a.type_at(e)))
+        slot_read(expr_lower_cx(self), self.env_box(), capture_lane(j), self.concrete(self.a.type_at(e)))
+    }
+
+    /// THE ENV SEAT: a lifted body's register 0 is the box its
+    /// captures ride in.
+    fn env_box(self) -> Reg {
+        Reg { index: 0 }
     }
 
     /// The lift: names the lambda's body (mangled under the view
@@ -200,7 +210,21 @@ impl Lower {
             .Param(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
         }
         if direct { return null }
-        self.read_binding(e, b!)
+        self.callee_binding(e, b!)
+    }
+
+    /// The BOX a call goes THROUGH. Every binding reads as itself —
+    /// except a CAPTURE, whose lane holds a fn box while the node
+    /// doing the reading is the CALL, and a call's type is its
+    /// ANSWER, never its callee's. The lane holds a POINTER, and
+    /// says so: an absent type reads as an int, which is the wrong
+    /// word for a box.
+    fn callee_binding(self, e: ExprId, b: Binding) -> Reg? {
+        match b {
+            .Capture(_, j) -> slot_read(expr_lower_cx(self), self.env_box(), capture_lane(j), self.shaped_ty(Type.Ptr)),
+            // LICENSED I22: the rest delegate to read_binding, which is exhaustive
+            _ -> self.read_binding(e, b),
+        }
     }
 
     /// A definition's register: its slot — LOADED first when the

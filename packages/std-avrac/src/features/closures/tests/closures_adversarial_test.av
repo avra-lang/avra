@@ -211,4 +211,26 @@ spec "features/closures/adversarial" {
             refusals("let m: List<List<fn(int) -> int>> = [[(x) -> x + 1]]\n2") == 0
         }
     }
+
+    given "a lambda that calls a CAPTURED lambda" {
+        // The env lane holding a fn box was read with the CALL's
+        // type — a call's type is its ANSWER, never its callee's —
+        // so the box came back typed `int` and LLVM refused the
+        // module: an internal compiler error on a program `run`
+        // answered correctly. These pin the ANSWER; corpus/closures
+        // pins the two engines' agreement, which is what a
+        // build-only defect needs.
+        then "a sibling lambda answers" {
+            shown("let a = () -> 1\nlet b = () -> a() + 1\nb()") == "2"
+        }
+        then "a captured lambda takes arguments" {
+            shown("let a = (x: int) -> x * 2\nlet b = () -> a(5) + 1\nb()") == "11"
+        }
+        then "a captured lambda answering a string" {
+            shown("let a = () -> \"hi\"\nlet b = () -> \"\${a()} there\"\nb()") == "hi there"
+        }
+        then "three deep" {
+            shown("let a = () -> 1\nlet b = () -> a() + 1\nlet c = () -> b() + 1\nc()") == "3"
+        }
+    }
 }

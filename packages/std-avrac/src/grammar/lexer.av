@@ -96,6 +96,35 @@ fn skip(next: int) -> ScanStep {
     ScanStep { token: null, err: null, opens_hole: false, next: next }
 }
 
+/// A number token — and, when the digits name a value no `int` can
+/// hold, the refusal beside it. The token still stands so one bad
+/// literal does not cascade; what must never stand is the WRAPPED
+/// value, which is not the number on the page.
+fn numbered(text: string, lo: int, hi: int) -> ScanStep {
+    let t = token(TokenKind.Num, text, lo, hi)
+    if fits_int(text) { return emit(t, hi) }
+    ScanStep {
+        token: t, opens_hole: false,
+        err: LexError { message: "`${text}` does not fit an `int`", span: span_of(lo, hi) },
+        next: hi,
+    }
+}
+
+/// Whether the digits name a value an `int` holds. Asked BEFORE
+/// each multiply — `v * 10 + d` past the ceiling wraps in silence.
+fn fits_int(text: string) -> bool {
+    mut v = 0
+    mut i = 0
+    let n = text.length
+    while i < n {
+        let d = code_at(text, i) - 48
+        if v > (9223372036854775807 - d) / 10 { return false }
+        v = v * 10 + d
+        i = i + 1
+    }
+    true
+}
+
 /// A step that produced only an error.
 fn refused(message: string, lo: int, hi: int) -> ScanStep {
     ScanStep {
@@ -249,7 +278,7 @@ fn scan_step(src: string, n: int, i: int, interpolate: bool) -> ScanStep {
         // Number: a digit run; adjacent letters lex as their own Name.
         is_digit(c) -> {
             let j = scan_while(src, n, i + 1, is_digit)
-            emit(token(TokenKind.Num, src.substring(i, j), i, j), j)
+            numbered(src.substring(i, j), i, j)
         }
         // A RAW string: `"""` to `"""`, no escapes, no holes.
         c == 34 && triple_at(src, n, i) -> scan_triple(src, n, i)

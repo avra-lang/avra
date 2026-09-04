@@ -173,4 +173,27 @@ spec "grammar/lexer" {
             r.tokens[1].kind == TokenKind.Break && r.tokens[2].kind == TokenKind.Eof
         }
     }
+
+    given "an integer literal's ceiling" {
+        // `v * 10 + d` past the ceiling wraps in SILENCE, and the
+        // wrapped number is not the one on the page: 99999999999-
+        // 999999999 answered 7766279631452241919 with no message.
+        then "the largest int lexes clean" {
+            lex_source("9223372036854775807").errors.is_empty()
+        }
+        then "one past it is refused, once" {
+            let r = lex_source("9223372036854775808")
+            r.errors.length == 1 && r.errors[0].message.contains("does not fit an `int`")
+        }
+        then "far past it is refused, once" {
+            let r = lex_source("99999999999999999999")
+            r.errors.length == 1 && r.errors[0].message.contains("does not fit an `int`")
+        }
+        then "an ordinary number is untouched" {
+            lex_source("1234567890123").errors.is_empty()
+        }
+        then "the token still stands, so nothing cascades" {
+            lex_source("9223372036854775808").tokens.length == lex_source("1").tokens.length
+        }
+    }
 }

@@ -74,4 +74,22 @@ spec "features/consts (adversarial)" {
             shown("const A: int? = 4\nfn f() -> int {\n    A! + 1\n}\nf()") == "5"
         }
     }
+
+    given "a const that never settled" {
+        // A const whose value is not a literal is refused (F2045) —
+        // but a fn body READING it asked the const for its type,
+        // which fell through to the asker's fact table indexed by
+        // ANOTHER body's expression: `index -1 is out of bounds`,
+        // no diagnostic, no location. A const's type is the
+        // program's answer or the hole; it is never a body's.
+        then "an unsettled const read in a fn body is refused, not trapped" {
+            refused_with("fn g() -> int {\n    3\n}\nconst N = g()\nfn f() -> int {\n    N\n}\nf()", "known at compile time")
+        }
+        then "an unsettled const read in a lambda is refused, not trapped" {
+            refused_with("fn g() -> int {\n    3\n}\nconst N = g()\nlet f = () -> N\nf()", "known at compile time")
+        }
+        then "the refusal names the CONSTRUCT, not the value's type" {
+            refused_with("const N = g()\nfn g() -> int {\n    3\n}\nN", "computed here")
+        }
+    }
 }

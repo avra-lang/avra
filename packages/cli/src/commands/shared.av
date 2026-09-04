@@ -177,16 +177,34 @@ fn package_root(dir: string) -> string? {
 /// program's packages promised their externs — into a native binary.
 fn link(ll_path: string, promised: string) -> int {
     let out = binary_name(ll_path)
-    if avra_shell_exec_status("clang -w -O1 ${ll_path} build/avra_runtime.o ${promised} -o ${out}") != 0 {
+    if avra_shell_exec_status("clang -w -O1 ${shell_word(ll_path)} build/avra_runtime.o ${promised} -o ${shell_word(out)}") != 0 {
         eprintln("avra: clang failed linking ${ll_path}")
         return 1
     }
     0
 }
 
+/// A path as ONE shell word. Every path the compiler hands a shell
+/// passes through here: a space would split the command in two, and
+/// a `;` would run whatever followed it. Single quotes hold
+/// everything literally; a quote of the path's own closes the
+/// quoting, escapes itself, and opens it again.
+export fn shell_word(s: string) -> string {
+    mut parts: List<string> = []
+    mut i = 0
+    let n = s.length
+    while i < n {
+        let c = s.substring(i, i + 1)
+        parts.push(if c == "'" { "'\\''" } else { c })
+        i = i + 1
+    }
+    "'${joined(parts, "")}'"
+}
+
 /// The program's own promises, expanded — what its packages named
 /// in `[link]`, with the machine's paths filled from the
-/// environment.
+/// environment. Declared flags are NOT quoted: a `[link]` row is
+/// the project's own word, and may be a flag rather than a path.
 fn promises(p: Program) -> string {
     joined([expanded(f) for f in link_inputs(p.ws)], " ")
 }
