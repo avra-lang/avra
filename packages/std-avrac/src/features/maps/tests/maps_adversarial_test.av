@@ -11,13 +11,13 @@ spec "features/maps/adversarial" {
             shown("mut m: Map<string, int> = {}\nm.length") == "0"
         }
         then "a duplicate key in a literal — the last write wins, one pair" {
-            shown("let m = { \"a\": 1, \"a\": 2 }\nlet a = m.get(\"a\") ?? 0\n\"" + "$" + "{m.length} " + "$" + "{a}\"") == "1 2"
+            shown("let m = { \"a\": 1, \"a\": 2 }\nlet a = m.get(\"a\") ?? 0\n\"" + "\${m.length} " + "\${a}\"") == "1 2"
         }
         then "the empty string is a key" {
             shown("mut m: Map<string, int> = {}\nm.set(\"\", 7)\nm.get(\"\") ?? 0") == "7"
         }
         then "a thousand keys — the index grows and every key is found" {
-            shown("mut m: Map<string, int> = {}\nmut i = 0\nwhile i < 1000 {\n    m.set(\"k" + "$" + "{i}\", i)\n    i = i + 1\n}\nlet z = m.get(\"k999\") ?? 0 - 1\nlet none = m.get(\"k1000\") ?? 0 - 1\n\"" + "$" + "{m.length} " + "$" + "{z} " + "$" + "{none}\"") == "1000 999 -1"
+            shown("mut m: Map<string, int> = {}\nmut i = 0\nwhile i < 1000 {\n    m.set(\"k" + "\${i}\", i)\n    i = i + 1\n}\nlet z = m.get(\"k999\") ?? 0 - 1\nlet none = m.get(\"k1000\") ?? 0 - 1\n\"" + "\${m.length} " + "\${z} " + "\${none}\"") == "1000 999 -1"
         }
     }
     given "every wrong type at every seat — one refusal each" {
@@ -86,22 +86,22 @@ spec "features/maps/adversarial" {
             a.diagnostics.length == 2 && a.report().contains("`it` binds to the NEAREST method call")
         }
         then "`with` keeps the map, `?.` reaches a nullable map" {
-            shown("type S = { m: Map<string, int>, n: int }\nlet s = S { m: { \"a\": 1 }, n: 0 }\nlet t = s with { n: 5 }\nlet a = t.m.get(\"a\") ?? 0\n\"" + "$" + "{a} " + "$" + "{t.n}\"") == "1 5" &&
+            shown("type S = { m: Map<string, int>, n: int }\nlet s = S { m: { \"a\": 1 }, n: 0 }\nlet t = s with { n: 5 }\nlet a = t.m.get(\"a\") ?? 0\n\"" + "\${a} " + "\${t.n}\"") == "1 5" &&
                 shown("let mm: Map<string, int>? = null\nmm?.length ?? 0 - 1") == "-1"
         }
     }
     given "ownership through copy-on-write" {
         then "a string value overwritten a thousand times" {
-            shown("mut m: Map<string, string> = {}\nmut i = 0\nwhile i < 1000 {\n    m.set(\"k\", \"v" + "$" + "{i}\")\n    i = i + 1\n}\n\"" + "$" + "{m.length} " + "$" + "{m.get(\"k\") ?? \"-\"}\"") == "1 v999"
+            shown("mut m: Map<string, string> = {}\nmut i = 0\nwhile i < 1000 {\n    m.set(\"k\", \"v" + "\${i}\")\n    i = i + 1\n}\n\"" + "\${m.length} " + "\${m.get(\"k\") ?? \"-\"}\"") == "1 v999"
         }
         then "a value read from a map is not a place" {
             refused_with("mut m: Map<string, List<int>> = {}\nm.set(\"a\", [1])\n(m.get(\"a\") ?? []).push(2)\n2", "`push` mutates a place")
         }
         then "a snapshot survives five hundred sets" {
-            shown("mut m: Map<string, string> = {}\nm.set(\"a\", \"x\")\nlet snap = m\nmut i = 0\nwhile i < 500 {\n    m.set(\"k" + "$" + "{i}\", \"v\")\n    i = i + 1\n}\n\"" + "$" + "{m.length} " + "$" + "{snap.length}\"") == "501 1"
+            shown("mut m: Map<string, string> = {}\nm.set(\"a\", \"x\")\nlet snap = m\nmut i = 0\nwhile i < 500 {\n    m.set(\"k" + "\${i}\", \"v\")\n    i = i + 1\n}\n\"" + "\${m.length} " + "\${snap.length}\"") == "501 1"
         }
         then "a struct's map field replaced and grown three hundred times" {
-            shown("type S = { m: Map<string, string> }\nmut s = S { m: {} }\nmut i = 0\nwhile i < 300 {\n    s.m = { \"a\": \"v" + "$" + "{i}\" }\n    s.m.set(\"b\", \"w\")\n    i = i + 1\n}\n\"" + "$" + "{s.m.length} " + "$" + "{s.m.get(\"a\") ?? \"-\"}\"") == "2 v299"
+            shown("type S = { m: Map<string, string> }\nmut s = S { m: {} }\nmut i = 0\nwhile i < 300 {\n    s.m = { \"a\": \"v" + "\${i}\" }\n    s.m.set(\"b\", \"w\")\n    i = i + 1\n}\n\"" + "\${s.m.length} " + "\${s.m.get(\"a\") ?? \"-\"}\"") == "2 v299"
         }
     }
 }

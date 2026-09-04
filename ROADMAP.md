@@ -3845,9 +3845,11 @@ disagree and the tree spells bs2's side.
   generic impl's body cannot name its own `T` in an annotation.
   FIX: none needed — Avra types both; delete the extra binds when
   bs2 goes.
-- THE `"}"` LITERAL: a `}` inside a string in a fn body swallows the
-  statement (`build.av`'s `closing_brace` scans for byte 125
-  instead). FIX: none needed — ours lexes it; delete the helper.
+- ~~THE `"}"` LITERAL~~ — PAID 2026-09-04: ours lexes a `}` inside a
+  string, so `closing_brace` reads `index_of("}")` and says what it
+  means. Its companion paid with it: 206 sites across 31 files spelled
+  a literal `${` as `"$" + "{"` because bs2 has no `\$` escape. Ours
+  does, and they say `\${` now.
 - THE ELEMENT WRITE (`mut x = xs[i]; x.push(v)`, ~12 sites, all
   rewritten): bs2 aliases an element, so mutating the copy changed
   the container. Avra copies. FIX: none needed — the tree now

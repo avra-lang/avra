@@ -122,37 +122,37 @@ spec "grammar/lexer" {
     }
     given "interpolation pieces" {
         then "a holed string lexes as begin, hole tokens, end" {
-            let r = lex_source("\"a $" + "{x} b\"")
+            let r = lex_source("\"a \${x} b\"")
             r.errors.is_empty() && r.tokens[0].kind == TokenKind.IStrBegin &&
                 r.tokens[0].text == "a " && r.tokens[1].kind == TokenKind.Name &&
                 r.tokens[2].kind == TokenKind.IStrEnd && r.tokens[2].text == " b"
         }
         then "two holes meet at a mid piece; braces nest by depth" {
-            let r = lex_source("\"$" + "{if a { 1 } else { 2 }}-$" + "{y}\"")
+            let r = lex_source("\"\${if a { 1 } else { 2 }}-\${y}\"")
             let kinds = [t for t in r.tokens if t.kind == TokenKind.IStrBegin ||
                 t.kind == TokenKind.IStrMid || t.kind == TokenKind.IStrEnd]
             r.errors.is_empty() && kinds.length == 3 && kinds[1].text == "-"
         }
         then "an escaped dollar never opens a hole" {
-            let r = lex_source("\"a \\$" + "{x}\"")
-            r.tokens[0].kind == TokenKind.Str && r.tokens[0].text == "a $" + "{x}"
+            let r = lex_source("\"a \\\${x}\"")
+            r.tokens[0].kind == TokenKind.Str && r.tokens[0].text == "a \${x}"
         }
         then "the grammar DSL never interpolates" {
             let r = lex_grammar("x = \"$\"")
             r.errors.is_empty() && r.tokens[2].kind == TokenKind.Str
         }
         then "a string nested inside a hole opens its own holes" {
-            let r = lex_source("\"$" + "{f(\"$" + "{y}\")}\"")
+            let r = lex_source("\"\${f(\"\${y}\")}\"")
             r.errors.is_empty() &&
                 [t for t in r.tokens if t.kind == TokenKind.IStrBegin].length == 2
         }
         then "an unclosed hole says which brace is missing, once" {
-            let r = lex_source("\"a $" + "{x\n1")
+            let r = lex_source("\"a \${x\n1")
             r.errors.length == 1 &&
                 r.errors[0].message == "an interpolation hole is missing its `}`"
         }
         then "an unclosed hole at end of input is the same complaint" {
-            let r = lex_source("\"a $" + "{x")
+            let r = lex_source("\"a \${x")
             r.errors.length == 1 &&
                 r.errors[0].message == "an interpolation hole is missing its `}`"
         }

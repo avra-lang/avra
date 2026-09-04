@@ -8,16 +8,16 @@ use @std.avrac.testing.{shown, refused_with, refusals, refused_at_run, makers, f
 spec "features/nullable" {
     given "a nullable pointer in a slot — the niche" {
         then "a field holds a nullable string, absent or present" {
-            shown("type P = { name: string? }\nlet a = P { name: null }\nlet b = P { name: \"x\" }\n\"" + "$" + "{a.name ?? \"-\"} " + "$" + "{b.name ?? \"-\"}\"") == "- x"
+            shown("type P = { name: string? }\nlet a = P { name: null }\nlet b = P { name: \"x\" }\n\"" + "\${a.name ?? \"-\"} " + "\${b.name ?? \"-\"}\"") == "- x"
         }
         then "a list holds nullable strings" {
-            shown("let xs: List<string?> = [null, \"a\"]\n\"" + "$" + "{xs[0] ?? \"-\"} " + "$" + "{xs[1] ?? \"-\"}\"") == "- a"
+            shown("let xs: List<string?> = [null, \"a\"]\n\"" + "\${xs[0] ?? \"-\"} " + "\${xs[1] ?? \"-\"}\"") == "- a"
         }
         then "an enum payload holds one" {
             shown("enum W {\n    Named(n: string?)\n}\nmatch W.Named(null) {\n    .Named(n) -> n ?? \"none\"\n}") == "none"
         }
         then "`?.` into a field that is itself nullable flattens — one absence, never two" {
-            shown("type P = { name: string? }\ntype Q = { p: P? }\nfn f(q: Q) -> string { q.p?.name ?? \"-\" }\n\"" + "$" + "{f(Q { p: P { name: \"n\" } })} " + "$" + "{f(Q { p: P { name: null } })} " + "$" + "{f(Q { p: null })}\"") == "n - -"
+            shown("type P = { name: string? }\ntype Q = { p: P? }\nfn f(q: Q) -> string { q.p?.name ?? \"-\" }\n\"" + "\${f(Q { p: P { name: \"n\" } })} " + "\${f(Q { p: P { name: null } })} " + "\${f(Q { p: null })}\"") == "n - -"
         }
         then "a scalar nullable still waits for its slot" {
             refused_with("type Q = { n: int? }\n2", "a struct field cannot hold this yet")
@@ -25,10 +25,10 @@ spec "features/nullable" {
     }
     given "a redundant ask after narrowing, and the chained `??`" {
         then "`!` on a read a narrowing proved present is the value" {
-            shown("fn f(s: string?) -> string {\n    if s != null { s! } else { \"-\" }\n}\n\"" + "$" + "{f(\"a\")} " + "$" + "{f(null)}\"") == "a -"
+            shown("fn f(s: string?) -> string {\n    if s != null { s! } else { \"-\" }\n}\n\"" + "\${f(\"a\")} " + "\${f(null)}\"") == "a -"
         }
         then "`??` chains through nullables" {
-            shown("fn g(a: string?, b: string?) -> string { a ?? b ?? \"z\" }\n\"" + "$" + "{g(null, \"b\")} " + "$" + "{g(null, null)} " + "$" + "{g(\"a\", null)}\"") == "b z a"
+            shown("fn g(a: string?, b: string?) -> string { a ?? b ?? \"z\" }\n\"" + "\${g(null, \"b\")} " + "\${g(null, null)} " + "\${g(\"a\", null)}\"") == "b z a"
         }
         then "`??` on a value that is never absent warns and answers it" {
             refused_with("let n = 3\nn ?? 4", "`??` never fires — a `int` is never absent")
@@ -36,16 +36,16 @@ spec "features/nullable" {
     }
     given "equality through presence" {
         then "a nullable beside its value: equal when present and equal" {
-            shown("fn f(s: string?) -> bool { s == \"a\" }\n\"" + "$" + "{f(\"a\")} " + "$" + "{f(\"b\")} " + "$" + "{f(null)}\"") == "true false false"
+            shown("fn f(s: string?) -> bool { s == \"a\" }\n\"" + "\${f(\"a\")} " + "\${f(\"b\")} " + "\${f(null)}\"") == "true false false"
         }
         then "two nullables: both absent is equal, one absent is not" {
-            shown("fn f(a: int?, b: int?) -> bool { a == b }\n\"" + "$" + "{f(null, null)} " + "$" + "{f(1, null)} " + "$" + "{f(1, 1)} " + "$" + "{f(1, 2)}\"") == "true false true false"
+            shown("fn f(a: int?, b: int?) -> bool { a == b }\n\"" + "\${f(null, null)} " + "\${f(1, null)} " + "\${f(1, 1)} " + "\${f(1, 2)}\"") == "true false true false"
         }
         then "the plain value may lead — either side may be the nullable" {
             shown("fn f(s: string?) -> bool { \"a\" == s }\nfn g(n: int?) -> bool { 1 == n }\nif f(\"a\") && !f(null) && g(1) && !g(null) { \"led\" } else { \"lost\" }") == "led"
         }
         then "`!=` negates it" {
-            shown("fn f(s: string?) -> bool { s != \"a\" }\n\"" + "$" + "{f(\"a\")} " + "$" + "{f(null)}\"") == "false true"
+            shown("fn f(s: string?) -> bool { s != \"a\" }\n\"" + "\${f(\"a\")} " + "\${f(null)}\"") == "false true"
         }
     }
     given "the absence and the answer" {
@@ -166,7 +166,7 @@ spec "features/nullable" {
                 a.report().contains("`??` answers with a `int`, this is `string`")
         }
         then "a chain reads left to right, staying nullable until the last" {
-            shown("${makers()}\"" + "$" + "{none() ?? none() ?? 7} " + "$" + "{some(1) ?? none() ?? 7} " + "$" + "{none() ?? some(2) ?? 7}\"") == "7 1 2"
+            shown("${makers()}\"" + "\${none() ?? none() ?? 7} " + "\${some(1) ?? none() ?? 7} " + "\${none() ?? some(2) ?? 7}\"") == "7 1 2"
         }
     }
     given "`if let` — the bind-fresh form, sugar over the asking arms" {

@@ -2,7 +2,7 @@
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef, result_get_arg, result_has_flag}
 use @std.avrac.language.{Host, Program, Analysis, TestCase, link_inputs, program, lone_workspace, timed_workspace, entry_of, no_target, avra, emit_ll}
-use @std.avrac.core.{joined, code_at, dir_of, under_dir}
+use @std.avrac.core.{joined, dir_of, under_dir}
 
 extern fn avra_selfhost_read_file(path: string) -> string
 extern fn avra_selfhost_file_exists(path: string) -> int
@@ -220,7 +220,7 @@ fn spoken_link(ll_path: string, p: Program) -> int {
 /// environment: a machine's own paths belong to the machine, not to
 /// a checked-in manifest.
 fn expanded(flag: string) -> string {
-    let opens = flag.index_of("$" + "{")
+    let opens = flag.index_of("\${")
     if opens < 0 { return flag }
     let closes = closing_brace(flag, opens)
     if closes < opens { return flag }
@@ -230,16 +230,11 @@ fn expanded(flag: string) -> string {
     expanded("${head}${avra_host_env(name)}${tail}")
 }
 
-/// Where the hole closes, or -1 — found by CODE, because a `}`
-/// spelled as a literal ends the fn that holds it (bs2's parse).
+/// Where the hole closes, or -1.
 fn closing_brace(s: string, from: int) -> int {
-    let n = s.length
-    mut i = from
-    while i < n {
-        if code_at(s, i) == 125 { return i }
-        i = i + 1
-    }
-    0 - 1
+    let at = s.substring(from, s.length).index_of("}")
+    if at < 0 { return 0 - 1 }
+    from + at
 }
 
 /// `x.av.ll` builds `x`.

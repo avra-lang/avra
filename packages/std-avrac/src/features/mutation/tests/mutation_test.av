@@ -9,7 +9,7 @@ spec "features/mutation" {
             shown("type M = { xs: List<int> }\nfn grow(m: M, x: int) {\n    mut xs = m.xs\n    xs.push(x)\n}\nlet m = M { xs: [] }\ngrow(m, 1)\ngrow(m, 2)\nm.xs.length") == "2"
         }
         then "a mut bound to a local's field is a copy — value semantics" {
-            shown("type M = { xs: List<int> }\nlet m = M { xs: [1] }\nmut xs = m.xs\nxs.push(2)\n\"" + "$" + "{xs.length} " + "$" + "{m.xs.length}\"") == "2 1"
+            shown("type M = { xs: List<int> }\nlet m = M { xs: [1] }\nmut xs = m.xs\nxs.push(2)\n\"" + "\${xs.length} " + "\${m.xs.length}\"") == "2 1"
         }
     }
     given "mut and assignment" {
@@ -67,7 +67,7 @@ spec "features/mutation" {
                 a.report().contains("assignment changes `x`: `int` to `bool`")
         }
         then "a mut string rebinds through the cell — ownership landed" {
-            shown("mut s = \"hi\"\ns = \"re $" + "{2}\"\ns") == "re 2"
+            shown("mut s = \"hi\"\ns = \"re \${2}\"\ns") == "re 2"
         }
         then "a mut struct works — reassignment swaps the pointer" {
             shown("type P = { x: int }\nmut p = P { x: 1 }\np = P { x: 2 }\np.x") == "2"
@@ -82,10 +82,10 @@ spec "features/mutation" {
             shown("type P = { x: int }\nmut p = P { x: 1 }\np.x = 5\np.x") == "5"
         }
         then "a nested field assigns — copy-on-write along the path" {
-            shown("type A = { c: string }\ntype U = { a: A }\nmut u = U { a: A { c: \"SF\" } }\nlet s = u\nu.a.c = \"NYC\"\n\"" + "$" + "{u.a.c}" + " " + "$" + "{s.a.c}" + "\"") == "NYC SF"
+            shown("type A = { c: string }\ntype U = { a: A }\nmut u = U { a: A { c: \"SF\" } }\nlet s = u\nu.a.c = \"NYC\"\n\"" + "\${u.a.c}" + " " + "\${s.a.c}" + "\"") == "NYC SF"
         }
         then "an index assigns, and an alias keeps what it saw" {
-            shown("mut xs = [1, 2]\nlet ys = xs\nxs[0] = 9\n\"" + "$" + "{xs[0]}" + " " + "$" + "{ys[0]}" + "\"") == "9 1"
+            shown("mut xs = [1, 2]\nlet ys = xs\nxs[0] = 9\n\"" + "\${xs[0]}" + " " + "\${ys[0]}" + "\"") == "9 1"
         }
         then "a `let` is deeply immutable — the remedy names `mut` and `with`" {
             refused_with("type P = { x: int }\nlet p = P { x: 1 }\np.x = 5\n2", "`p` is not `mut`")

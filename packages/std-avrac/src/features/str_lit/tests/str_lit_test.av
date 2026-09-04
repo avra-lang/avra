@@ -43,19 +43,19 @@ spec "features/str_lit" {
     }
     given "interpolation" {
         then "an int hole computes and prints" {
-            shown("\"x $" + "{1 + 2} y\"") == "x 3 y"
+            shown("\"x \${1 + 2} y\"") == "x 3 y"
         }
         then "string and bool holes print as themselves" {
-            shown("let who = \"world\"\n\"hi $" + "{who}, $" + "{2 > 1}\"") == "hi world, true"
+            shown("let who = \"world\"\n\"hi \${who}, \${2 > 1}\"") == "hi world, true"
         }
         then "holes nest braces — an if inside a hole" {
-            shown("\"pick $" + "{if 1 < 2 { 10 } else { 20 }}\"") == "pick 10"
+            shown("\"pick \${if 1 < 2 { 10 } else { 20 }}\"") == "pick 10"
         }
         then "an escaped dollar stays text" {
-            shown("\"a \\$" + "{x} b\"") == "a $" + "{x} b"
+            shown("\"a \\\${x} b\"") == "a \${x} b"
         }
         then "a list hole refuses with the remedy" {
-            let a = analyze_source("let xs = [1]\n\"$" + "{xs}\"")
+            let a = analyze_source("let xs = [1]\n\"\${xs}\"")
             a.diagnostics.length == 1 &&
                 a.report().contains("an interpolation hole prints as a scalar or string, found `List<int>`")
         }
@@ -65,12 +65,12 @@ spec "features/str_lit" {
             shown("\"hello\".length") == "5"
         }
         then "length composes with interpolation" {
-            shown("let s = \"ab\"\n\"$" + "{s.length}$" + "{s}\"") == "2ab"
+            shown("let s = \"ab\"\n\"\${s.length}\${s}\"") == "2ab"
         }
     }
     given "raw strings — three quotes to three quotes" {
         then "quotes and holes inside stay raw" {
-            shown("let r = \"\"\"say \"hi\" and $" + "{not a hole}\"\"\"\nr.length") == "26"
+            shown("let r = \"\"\"say \"hi\" and \${not a hole}\"\"\"\nr.length") == "26"
         }
         then "newlines are kept" {
             shown("let r = \"\"\"a\nb\"\"\"\nr.length") == "3"
@@ -81,22 +81,22 @@ spec "features/str_lit" {
     }
     given "the vocabulary" {
         then "the scans" {
-            shown("let s = \"hello world\"\n\"" + "$" + "{s.contains(\"lo w\")} " + "$" + "{s.starts_with(\"hell\")} " + "$" + "{s.ends_with(\"d\")} " + "$" + "{s.index_of(\"o\")} " + "$" + "{s.index_of(\"z\")}\"") == "true true true 4 -1"
+            shown("let s = \"hello world\"\n\"" + "\${s.contains(\"lo w\")} " + "\${s.starts_with(\"hell\")} " + "\${s.ends_with(\"d\")} " + "\${s.index_of(\"o\")} " + "\${s.index_of(\"z\")}\"") == "true true true 4 -1"
         }
         then "substring clamps and answers empty past its bounds" {
-            shown("let s = \"hello\"\n\"" + "$" + "{s.substring(1, 3)}|" + "$" + "{s.substring(3, 99)}|" + "$" + "{s.substring(4, 2)}|\"") == "el|lo||"
+            shown("let s = \"hello\"\n\"" + "\${s.substring(1, 3)}|" + "\${s.substring(3, 99)}|" + "\${s.substring(4, 2)}|\"") == "el|lo||"
         }
         then "split keeps a leading empty piece, drops one trailing, and splits nothing from empty text" {
-            shown("let a = \"a.b\".split(\".\")\nlet b = \".a\".split(\".\")\nlet c = \"a.\".split(\".\")\n\"" + "$" + "{a.join(\"|\")} " + "$" + "{a.length} " + "$" + "{b.join(\"|\")} " + "$" + "{b.length} " + "$" + "{c.join(\"|\")} " + "$" + "{c.length} " + "$" + "{\"\".split(\".\").length}\"") == "a|b 2 |a 2 a 1 0"
+            shown("let a = \"a.b\".split(\".\")\nlet b = \".a\".split(\".\")\nlet c = \"a.\".split(\".\")\n\"" + "\${a.join(\"|\")} " + "\${a.length} " + "\${b.join(\"|\")} " + "\${b.length} " + "\${c.join(\"|\")} " + "\${c.length} " + "\${\"\".split(\".\").length}\"") == "a|b 2 |a 2 a 1 0"
         }
         then "replace changes every occurrence" {
             shown("\"a/b/c\".replace(\"/\", \".\")") == "a.b.c"
         }
         then "char_code reads a byte, at the start or at an index" {
-            shown("let s = \"hello\"\n\"" + "$" + "{s.char_code()} " + "$" + "{s.char_code(1)}\"") == "104 101"
+            shown("let s = \"hello\"\n\"" + "\${s.char_code()} " + "\${s.char_code(1)}\"") == "104 101"
         }
         then "trim strips surrounding blanks, and an empty `from` replaces nothing" {
-            shown("\"" + "$" + "{\"  x y \".trim()}|" + "$" + "{\"ab\".replace(\"\", \"-\")}|" + "$" + "{\"a..b\".replace(\".\", \"\")}\"") == "x y|ab|ab"
+            shown("\"" + "\${\"  x y \".trim()}|" + "\${\"ab\".replace(\"\", \"-\")}|" + "\${\"a..b\".replace(\".\", \"\")}\"") == "x y|ab|ab"
         }
     }
     given "the vocabulary's laws" {
