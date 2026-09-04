@@ -49,6 +49,15 @@ package root, and `avra check <dir>` checking every file under it)
 — every construct golden-tested from its parse tree to its
 diagnostics to its native output, on both engines.
 
+## Debugging ownership
+
+`AVRA_RC_GUARD=1 <program>` turns the runtime's reference counting
+into a tracer: a box that reaches zero is POISONED and kept, the
+second release of it aborts, and the report prints that box's whole
+retain/release history with each caller's address. Symbolize those
+with `lldb -b -o "image lookup -a <addr>" <binary>`. It found half
+the self-hosting bugs; off, it costs one `getenv` per program.
+
 ## The compiler, in pipeline order
 
 ```

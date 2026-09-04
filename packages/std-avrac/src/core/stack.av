@@ -1,0 +1,44 @@
+//! A LIFO whose top is a PLACE: pushed, popped, and rewritten where
+//! it stands. Every stack in the compiler is one of these — a scope
+//! stack, a frame stack, a narrowing bracket — because an element
+//! read out of a list is a COPY, and a stack's top must be written.
+
+/// Values in arrival order; the last is the top.
+export type Stack<T> = { items: List<T> }
+
+/// An empty stack.
+export fn new_stack<T>() -> Stack<T> {
+    let empty: List<T> = []
+    Stack { items: empty }
+}
+
+impl Stack<T> {
+    fn push(self, v: T) { self.items.push(v) }
+
+    /// The top, taken off — absent when there is none.
+    fn pop(self) -> T? {
+        if self.items.is_empty() { return null }
+        self.items.pop()
+    }
+
+    /// The top, left in place.
+    fn top(self) -> T? {
+        if self.items.is_empty() { return null }
+        self.items.last()
+    }
+
+    /// The top REPLACED by a value built from it — what a stack of
+    /// values needs where a stack of handles would be mutated.
+    fn rewrite_top(self, v: T) {
+        if self.items.is_empty() { return }
+        // LICENSED I7: the top is written BY POSITION — last() answers a copy
+        self.items.set(self.items.length - 1, v)
+    }
+
+    /// The value at `i` from the bottom.
+    fn at(self, i: int) -> T { self.items[i] }
+
+    fn depth(self) -> int { self.items.length }
+
+    fn is_empty(self) -> bool { self.items.is_empty() }
+}

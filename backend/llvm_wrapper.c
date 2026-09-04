@@ -1549,6 +1549,11 @@ int64_t avra_llvm_emit_object(LLVMModuleRef module, const char* output_path) {
 }
 
 // ── Host: the filesystem the compiler asks about ────────────────
+//
+// WEAK: the host seam belongs to runtime/avra_runtime.c, and an
+// avra-built program links BOTH this wrapper and that runtime. bs2
+// links this one alone, so the definition stays here for it and
+// yields to the runtime's whenever both are present.
 
 static int name_order(const void* a, const void* b) {
     return strcmp(*(const char* const*)a, *(const char* const*)b);
@@ -1556,10 +1561,6 @@ static int name_order(const void* a, const void* b) {
 
 // The names in a directory, newline-joined, in BYTE order — the
 // same on every machine; "" when the path is not a directory.
-// WEAK: the host seam belongs to runtime/avra_runtime.c, and an
-// avra-built program links BOTH this wrapper and that runtime. bs2
-// links this one alone, so the definition stays here for it and
-// yields to the runtime's whenever both are present.
 __attribute__((weak)) const char* avra_host_list_dir(const char* path) {
     DIR* d = opendir(path);
     if (!d) return "";
@@ -1590,10 +1591,6 @@ __attribute__((weak)) const char* avra_host_list_dir(const char* path) {
 }
 
 // 1 when the path is a directory.
-// WEAK: the host seam belongs to runtime/avra_runtime.c, and an
-// avra-built program links BOTH this wrapper and that runtime. bs2
-// links this one alone, so the definition stays here for it and
-// yields to the runtime's whenever both are present.
 __attribute__((weak)) int64_t avra_host_is_dir(const char* path) {
     struct stat st;
     if (stat(path, &st) != 0) return 0;
@@ -1601,10 +1598,11 @@ __attribute__((weak)) int64_t avra_host_is_dir(const char* path) {
 }
 
 /* A monotonic clock in nanoseconds — the phase profiler's ruler. */
-// WEAK: the host seam belongs to runtime/avra_runtime.c, and an
-// avra-built program links BOTH this wrapper and that runtime. bs2
-// links this one alone, so the definition stays here for it and
-// yields to the runtime's whenever both are present.
+__attribute__((weak)) const char* avra_host_env(const char* name) {
+    const char* v = getenv(name);
+    return v ? v : "";
+}
+
 __attribute__((weak)) int64_t avra_now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);

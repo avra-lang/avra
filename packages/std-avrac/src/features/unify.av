@@ -6,6 +6,25 @@
 use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, TypeRegistry}
 use diagnostics.{Diag, refusal}
 
+/// THE PINS a unification fills: a Var's slot per type parameter.
+/// A struct, not a bare list, because a fn writes through a
+/// PARAMETER'S FIELD — never through a list it was handed.
+export type Pins = { slots: List<TypeId?> }
+
+/// Pins with nothing bound yet, one slot per type parameter.
+export fn no_pins(n: int) -> Pins {
+    Pins { slots: filled<TypeId?>(n, null) }
+}
+
+impl Pins {
+    /// A slot bound — written through the receiver, which is what
+    /// makes the pins a place every unification shares.
+    fn pin(self, j: int, ty: TypeId) {
+        mut slots = self.slots
+        slots.set(j, ty)
+    }
+}
+
 /// UNIFICATION, exact: bind the callee's Vars from an argument's
 /// computed type, recursing through the composites. No widening
 /// rides through a generic param — a lift needs a visible concrete
@@ -111,25 +130,6 @@ fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: DeclId, 
 /// ownership analysis; Error absorbs (the name law already spoke).
 /// A Var passes ABSTRACTLY — each instantiation re-judges it
 /// (`instantiation_lawful`), so nothing smuggles past by wearing T.
-/// THE PINS a unification fills: a Var's slot per type parameter.
-/// A struct, not a bare list, because a fn writes through a
-/// PARAMETER'S FIELD — never through a list it was handed.
-export type Pins = { slots: List<TypeId?> }
-
-/// Pins with nothing bound yet, one slot per type parameter.
-export fn no_pins(n: int) -> Pins {
-    Pins { slots: filled<TypeId?>(n, null) }
-}
-
-impl Pins {
-    /// A slot bound — written through the receiver, which is what
-    /// makes the pins a place every unification shares.
-    fn pin(self, j: int, ty: TypeId) {
-        mut slots = self.slots
-        slots.set(j, ty)
-    }
-}
-
 export fn slot_worthy(types: TypeRegistry, sh: Type) -> bool {
     match sh {
         .Ptr or .Int or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or

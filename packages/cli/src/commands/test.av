@@ -9,13 +9,13 @@ type TestCmd = { }
 
 impl Runnable for TestCmd {
     fn run(self, args: CliResult) -> int {
-        on_program(args, (p: Program) -> {
+        on_cases(args, (p: Program, cases: List<TestCase>) -> {
             let t0 = avra_now_ns()
             warn(p)
             let made = p.cases_checked()
             if timed(args) { eprintln(timings(p, "lower", avra_now_ns() - t0)) }
             match made {
-                .Ok(lo) -> report(p, lo),
+                .Ok(lo) -> report(lo, cases),
                 .Err(text) -> {
                     println(text)
                     1
@@ -26,8 +26,8 @@ impl Runnable for TestCmd {
 }
 
 /// Every case run and reported; 0 when all passed.
-fn report(p: Program, lo: Lowered) -> int {
-    let outcomes = [outcome_of(lo, c) for c in p.cases()]
+fn report(lo: Lowered, cases: List<TestCase>) -> int {
+    let outcomes = [outcome_of(lo, c) for c in cases]
     println(render(outcomes))
     if all_passed(outcomes) { 0 } else { 1 }
 }

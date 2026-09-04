@@ -101,7 +101,7 @@ void* avra_rc_alloc(int64_t size) {
 
 // The guard's event log: every retain and release of every box,
 // with the caller's address, so a double release can show its own
-// history. Debug-only; the ring is bounded.
+// history. Debug-only; the log grows with the run.
 typedef struct { void* ptr; int delta; void* at; int64_t rc; } RcEvent;
 static RcEvent* g_log = NULL;
 static size_t g_log_len = 0;
@@ -208,9 +208,10 @@ void avra_rc_release(void* p) {
         g_own[i].rc = 0;
         g_own[i].died_at = __builtin_return_address(0);
         if (kind == 1) {
-            if (g_chain_len < 64) { g_chain[g_chain_len] = p; g_chain_len++; }
+            int pushed = g_chain_len < 64;
+            if (pushed) { g_chain[g_chain_len] = p; g_chain_len++; }
             array_poison(p);
-            if (g_chain_len > 0) g_chain_len--;
+            if (pushed) g_chain_len--;
         }
         return;
     }
@@ -304,8 +305,6 @@ void* avra_array_new(void) {
     return own_kind(a, 1);
 }
 
-// Releases every owned slot, then the array itself. The registry
-// entry is already gone — see avra_rc_release.
 // The guard's reclaim: children released as usual, the box kept and
 // its cells poisoned, so a stale reader trips instead of finding a
 // plausible value.
@@ -324,6 +323,8 @@ static int64_t guard_len(void* p) {
     return ((AvraArray*)p)->len;
 }
 
+// Releases every owned slot, then the array itself. The registry
+// entry is already gone — see avra_rc_release.
 static void array_reclaim(void* p) {
     AvraArray* a = (AvraArray*)p;
     for (int64_t i = 0; i < a->len; i++) {
@@ -768,9 +769,6 @@ int64_t avra_str_index_of(const char* s, const char* needle) {
     return at ? (int64_t)(at - s) : -1;
 }
 
-// The byte at `i` as a code — a trap past the text, worded like a
-// list's. The text is measured only as far as `i`, so a scan that
-// reads every byte stays linear; the trap alone measures it whole.
 // UTF-8 characters, not bytes: continuation bytes (10xxxxxx) belong
 // to the character before them. What alignment measures.
 int64_t avra_str_codepoint_count(const char* s) {
@@ -781,6 +779,9 @@ int64_t avra_str_codepoint_count(const char* s) {
     return n;
 }
 
+// The byte at `i` as a code — a trap past the text, worded like a
+// list's. The text is measured only as far as `i`, so a scan that
+// reads every byte stays linear; the trap alone measures it whole.
 int64_t avra_str_char_code(const char* s, int64_t i) {
     if (i < 0 || strnlen(s, (size_t)i + 1) <= (size_t)i) {
         char msg[80];
@@ -898,6 +899,13 @@ int64_t avra_selfhost_argc(void) {
 const char* avra_selfhost_get_arg_cstr(int64_t i) {
     if (i < 0 || i >= g_argc || g_argv == NULL) return "";
     return g_argv[i];
+}
+
+// An environment variable's value, or "" — what a manifest's link
+// flags expand so a machine's own paths stay out of the tree.
+const char* avra_host_env(const char* name) {
+    const char* v = getenv(name);
+    return v ? v : "";
 }
 
 int64_t avra_now_ns(void) {

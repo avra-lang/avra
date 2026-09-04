@@ -74,6 +74,7 @@ fn whole_test(cx: LowerCx, a: Arm) -> string? {
 /// The jump table: every arm but the last is a CASE on its tag; the
 /// last is the default.
 fn switched_reg(cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, sig: EnumSig, arms: List<Arm>) -> Reg {
+    let want = cx.type_at(e)
     let last_arm = arms.length - 1
     let cases = arm_cases(cx, sig, arms, last_arm)
     if cases.length != last_arm {
@@ -82,9 +83,9 @@ fn switched_reg(cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, sig: EnumSig, arms:
     }
     cx.emit(Ins.SwitchStart(tag_of(cx, v), cases))
     for (j, a) in arms.enumerate() {
-        if j < last_arm { cx.emit(Ins.ArmEnd(arm_reg(cx, v, vty, a, cx.type_at(e)))) }
+        if j < last_arm { cx.emit(Ins.ArmEnd(arm_reg(cx, v, vty, a, want))) }
     }
-    let last = arm_reg(cx, v, vty, arms[last_arm], cx.type_at(e))
+    let last = arm_reg(cx, v, vty, arms[last_arm], want)
     let dst = cx.result(e)
     cx.emit(Ins.RegionEnd(dst, last))
     dst
@@ -107,11 +108,12 @@ fn arm_cases(cx: LowerCx, sig: EnumSig, arms: List<Arm>, count: int) -> List<int
 /// answers unconditionally (coverage proved it).
 fn chained_reg(cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, arms: List<Arm>, k: int) -> Reg {
     let a = arms[k]
-    if k == arms.length - 1 { return arm_reg(cx, v, vty, a, cx.type_at(e)) }
+    let want = cx.type_at(e)
+    if k == arms.length - 1 { return arm_reg(cx, v, vty, a, want) }
     cx.emit(Ins.IfStart(accepts_reg(cx, v, vty, a)))
-    cx.emit(Ins.ArmEnd(arm_reg(cx, v, vty, a, cx.type_at(e))))
+    cx.emit(Ins.ArmEnd(arm_reg(cx, v, vty, a, want)))
     let rest = chained_reg(cx, e, v, vty, arms, k + 1)
-    let dst = cx.mint_ty(cx.type_at(e))
+    let dst = cx.mint_ty(want)
     cx.emit(Ins.RegionEnd(dst, rest))
     dst
 }

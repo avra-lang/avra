@@ -251,14 +251,15 @@ registry is the idiom engine's spec, written by dogfooding.
      consumer; it did NOT add SwitchArm/SwitchEnd. Prefer the
      variant that makes an existing concept more general over one
      that adds a parallel concept.
-  3. PAY THE SIX CONSUMERS, which the compiler lists for you
-     because each dispatch is exhaustive: `dst_of` (core/ir.av),
-     `step` (interp), `memory_ins`, `body_lines` (ir_text),
-     `emit_ins` (llvm), `give` (lower.av — does the runtime
-     registry validate it) — plus a corpus program proving
-     eval == native and the IR golden that shows the shape.
-  4. THE GUARANTEE: those six matches carry no `_ ->`, so a new
-     variant breaks all six at compile time. The vocabulary
+  3. PAY THE EIGHT CONSUMERS, which the compiler lists for you
+     because each dispatch is exhaustive: `dst_of`, `body_symbol`
+     and `hosted_symbol` (core/ir.av), `step` (interp),
+     `memory_ins`, `body_lines` (ir_text), `emit_ins` (llvm),
+     `give` (features/facts.av — does the runtime registry
+     validate it) — plus a corpus program proving eval == native
+     and the IR golden that shows the shape.
+  4. THE GUARANTEE: those eight matches carry no `_ ->`, so a new
+     variant breaks all eight at compile time. The vocabulary
      cannot grow half-way, and a variant nobody implements cannot
      ship. Keep them catch-all free.
   The backend and memory pass stay functions of the IR, dispatching
@@ -681,6 +682,22 @@ against these before writing; probe in scratch when unsure.
   region`) is the only witness. The interpreter's `call_limit`
   (400) is what keeps a runaway a trap; measure, never guess, when
   it moves.
+- A `"}"` STRING LITERAL inside a fn body swallows its statement:
+  the binding never lands and the next line reports the name as
+  undefined (`let closes = flag.index_of("}")` -> "undefined
+  variable `closes`"). Scan for the byte instead (`code_at(s, i) ==
+  125`), and build a `${` the same way (`"$" + "{"`).
+- A GENERIC method's answer loses its struct identity: a field read
+  or a `with` on it ICEs at codegen ("unknown struct `X`" /
+  "unknown struct `X` in with expression"). Bind it to an annotated
+  `let s: X = stack.at(j)` first, then project — and a generic
+  impl's method body cannot NAME its own type parameter in a local
+  annotation (`let held: T? = self.rows[i]` -> "`T` names no
+  type"); leave that one un-annotated.
+- A MUTATING METHOD on an immutable parameter or `let` is refused
+  (F3001) — `xs.set(..)`, `.push(..)`, `.pop()` need a `mut`
+  binding, even where the receiver is a struct whose field is the
+  place. Bind `mut` at the site.
 - Three concurrent `make test` runs (each spawns eight compiler
   shards) crashed the machine; builds are serial — never let two
   agents build at once.

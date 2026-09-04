@@ -78,14 +78,15 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
 /// or one of its own externs. The first that is not, named, instead
 /// of a null function at emission.
 fn unheld_name(l: Lowered) -> string? {
-    let bodies = [bd.name for bd in l.fns].concat([l.entry.name])
-    let hosted = [s.name for s in rt_sigs()].concat([s.name for s in l.externs])
+    mut declared: Map<string, bool> = {}
+    for bd in l.fns.concat([l.entry]) { declared.set(bd.name, true) }
+    for row in rt_sigs().concat(l.externs) { declared.set(row.name, true) }
     for bd in l.fns.concat([l.entry]) {
         for i in bd.ins {
             let body: string? = body_symbol(i)
-            if body != null && !bodies.contains(body!) { return body }
+            if body != null && declared.get(body!) == null { return body }
             let host: string? = hosted_symbol(i)
-            if host != null && !hosted.contains(host!) { return host }
+            if host != null && declared.get(host!) == null { return host }
         }
     }
     null

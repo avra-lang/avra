@@ -3,7 +3,7 @@
 //! (`FileView`), and the pass values that are pure data with the
 //! verbs that read and write their own columns. The reads that
 //! cross values, and the contexts' forwarders, live in contexts.av.
-use core.{FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, NodeStore, TypeRegistry, Binding, Param, filled, copied, Reg, Ins, dst_of, rt_sig_of}
+use core.{FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, NodeStore, TypeRegistry, Binding, Param, filled, Reg, Ins, dst_of, rt_sig_of}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
 
@@ -231,14 +231,25 @@ impl TypeFacts {
     /// fold at the workspace, in source order.
     fn absorb(self, other: TypeFacts) {
         let at = other.lo - self.lo
-        self.of_expr = copied(self.of_expr, other.of_expr, at)
-        self.widens = copied(self.widens, other.widens, at)
-        self.narrows = copied(self.narrows, other.narrows, at)
-        self.asks = copied(self.asks, other.asks, at)
-        self.substs = copied(self.substs, other.substs, at)
-        self.lambda_params = copied(self.lambda_params, other.lambda_params, at)
-        self.wants = copied(self.wants, other.wants, at)
-        self.pattern_types = copied(self.pattern_types, other.pattern_types, at)
+        // EACH COLUMN THROUGH ITS FIELD: a fn handed the list could
+        // only fill a copy, and the fold runs once per body
+        // LICENSED I3: eight named columns, one write each — the walk is the copy
+        mut of_expr = self.of_expr
+        for (j, v) in other.of_expr.enumerate() { of_expr.set(at + j, v) }
+        mut widens = self.widens
+        for (j, v) in other.widens.enumerate() { widens.set(at + j, v) }
+        mut narrows = self.narrows
+        for (j, v) in other.narrows.enumerate() { narrows.set(at + j, v) }
+        mut asks = self.asks
+        for (j, v) in other.asks.enumerate() { asks.set(at + j, v) }
+        mut substs = self.substs
+        for (j, v) in other.substs.enumerate() { substs.set(at + j, v) }
+        mut lambda_params = self.lambda_params
+        for (j, v) in other.lambda_params.enumerate() { lambda_params.set(at + j, v) }
+        mut wants = self.wants
+        for (j, v) in other.wants.enumerate() { wants.set(at + j, v) }
+        mut pattern_types = self.pattern_types
+        for (j, v) in other.pattern_types.enumerate() { pattern_types.set(at + j, v) }
         for (j, b) in other.borrows.enumerate() {
             if b { self.borrows.set(j, true) }
         }

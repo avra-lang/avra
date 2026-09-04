@@ -11,6 +11,8 @@
 #                         runtime avra-built programs link.
 
 LLVM_PREFIX ?= /opt/homebrew/opt/llvm
+# a manifest's link flags name it as ${LLVM_PREFIX}
+export LLVM_PREFIX
 
 BOOTSTRAP := ../forge-crafting-intepreters/bootstrap
 BS2       := $(abspath $(BOOTSTRAP))/build/bs2

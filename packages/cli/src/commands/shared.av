@@ -1,7 +1,7 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef, result_get_arg, result_has_flag}
-use @std.avrac.language.{Host, Program, Analysis, program, lone_workspace, timed_workspace, entry_of, no_target, avra, emit_ll}
+use @std.avrac.language.{Host, Program, Analysis, TestCase, program, lone_workspace, timed_workspace, entry_of, no_target, avra, emit_ll}
 use @std.avrac.core.{joined, dir_of, under_dir}
 
 extern fn avra_selfhost_read_file(path: string) -> string
@@ -31,6 +31,11 @@ fn named_lines(text: string) -> List<string> {
     [l for l in text.split("\n") if l.length > 0]
 }
 
+/// The one voice for a path that is not there.
+fn no_such_file(path: string) {
+    eprintln("avra: no such file: ${path}")
+}
+
 /// The argued path, whatever it is.
 fn path_arg(args: CliResult) -> string {
     result_get_arg(args, "file")
@@ -43,7 +48,7 @@ fn path_arg(args: CliResult) -> string {
 fn program_arg(args: CliResult) -> Program? {
     let path = path_arg(args)
     if avra_selfhost_file_exists(path) == 0 {
-        eprintln("avra: no such file: ${path}")
+        no_such_file(path)
         return null
     }
     let root: string? = package_root(dir_of(path))
@@ -71,6 +76,40 @@ fn program_at(args: CliResult) -> Program? {
         return whole
     }
     program_arg(args)
+}
+
+/// THE CASE RUN'S PROGRAM: the same workspace, entered NOWHERE.
+/// A spec file is not an entry — its cases are the roots, and the
+/// entry-only law (a module file runs nothing) would refuse every
+/// OTHER file's top level for the crime of not being the one named.
+fn caseless_program(args: CliResult) -> Program? {
+    let path = path_arg(args)
+    if avra_selfhost_file_exists(path) == 0 {
+        no_such_file(path)
+        return null
+    }
+    if avra_host_is_dir(path) != 0 {
+        let whole: Program = program(timed_workspace(disk_host(), path, avra(), () -> avra_now_ns()), null)
+        return whole
+    }
+    let root: string? = package_root(dir_of(path))
+    if root == null || !under_dir(path, "${root!}/src") {
+        let lone: Program = program(lone_workspace(path, avra_selfhost_read_file(path), avra()), null)
+        return lone
+    }
+    let held: Program = program(timed_workspace(disk_host(), root!, avra(), () -> avra_now_ns()), null)
+    held
+}
+
+/// A command over every case of the argued path — the whole package
+/// when a directory, the one FILE's cases when a file.
+fn on_cases(args: CliResult, act: fn(Program, List<TestCase>) -> int) -> int {
+    let held: Program? = caseless_program(args)
+    if held == null { return 2 }
+    let p = held!
+    let path = path_arg(args)
+    if avra_host_is_dir(path) != 0 { return act(p, p.cases()) }
+    act(p, [c for c in p.cases() if c.at.file == path])
 }
 
 /// A command over the argued program — every command's one prologue:

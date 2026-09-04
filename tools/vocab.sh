@@ -18,7 +18,9 @@ packages/std-avrac/src/language/interp.av	step	its MEANING, interpreted
 packages/std-avrac/src/language/memory.av	memory_ins	its ownership effect
 packages/std-avrac/src/language/ir_text.av	body_lines	its human projection
 packages/std-avrac/src/language/llvm.av	emit_ins	its machine projection
-packages/std-avrac/src/language/lower.av	give	whether the runtime registry validates it"
+packages/std-avrac/src/features/facts.av	give	whether the runtime registry validates it
+packages/std-avrac/src/core/ir.av	body_symbol	the program body it names
+packages/std-avrac/src/core/ir.av	hosted_symbol	the hosted fn it calls"
 
 # A here-doc, not a pipe: the loop runs in THIS shell, so `exit 1`
 # ends the script rather than a subshell the gate never sees.
@@ -28,9 +30,9 @@ while IFS='	' read -r file fn what; do
     exit 1
   fi
   hit=$(awk -v fn="$fn" '
-    $0 ~ "^(export )?fn " fn "\\(" { inside = 1 }
+    $0 ~ "^ *(export )?fn " fn "\\(" { inside = 1 }
     inside && /_ ->/ { print FNR ": " $0 }
-    inside && /^}/ { inside = 0 }
+    inside && /^ *}$/ && inside { inside = 0 }
   ' "$file")
   if [ -n "$hit" ]; then
     echo "vocab: ${file}:${fn} decides ${what} and grew a catch-all:"

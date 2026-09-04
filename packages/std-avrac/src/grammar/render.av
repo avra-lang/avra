@@ -2,8 +2,7 @@
 //! a grammar inspectable (P7) and comparable: two grammars are
 //! structurally equal exactly when their renders are equal. Renders
 //! the rules only; a grammar's name is packaging, not structure.
-use core.{code_at}
-use core.{joined}
+use core.{quoted_text, joined}
 
 /// The whole grammar, one rule per line, in rule order.
 export fn render_grammar(g: Grammar) -> string {
@@ -24,7 +23,7 @@ fn render_seq(s: Seq) -> string {
     mut parts = [render_item(m) for m in s.items]
     parts = parts.concat([render_expect(m) for m in s.items if m.expect != null])
     if s.recover != null {
-        parts.push("@recover(sync_to: ${quoted(s.recover!.sync_to)})")
+        parts.push("@recover(sync_to: ${quoted_text(s.recover!.sync_to)})")
     }
     if s.build != null {
         match s.build! {
@@ -48,7 +47,7 @@ impl Rep {
 }
 
 fn render_expect(m: Item) -> string {
-    "@expect(${quoted(m.prim.token_name() ?? "?")}, ${quoted(m.expect!.message)})"
+    "@expect(${quoted_text(m.prim.token_name() ?? "?")}, ${quoted_text(m.expect!.message)})"
 }
 
 fn render_item(m: Item) -> string {
@@ -60,25 +59,8 @@ fn render_prim(p: Prim) -> string {
     match p {
         .Ref(target) -> target,
         .Named(term) -> term,
-        .Lit(text) -> quoted(text),
+        .Lit(text) -> quoted_text(text),
         .Group(inner) -> "( ${render_alt(inner)} )",
     }
 }
 
-/// `s` as a DSL string literal, quotes and backslashes escaped.
-fn quoted(s: string) -> string {
-    mut out = "\""
-    mut i = 0
-    let n = s.length
-    while i < n {
-        let c = code_at(s, i)
-        let piece = when {
-            c == 34 -> "\\\""
-            c == 92 -> "\\\\"
-            _ -> s.substring(i, i + 1)
-        }
-        out = out + piece
-        i = i + 1
-    }
-    "${out}\""
-}

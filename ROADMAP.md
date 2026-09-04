@@ -3716,6 +3716,15 @@ disagree and the tree spells bs2's side.
 - The vendored `spec_test` feature and `std-cli`: bs2's test runner
   and CLI. FIX: `avra test` (landed) replaces the runner; delete
   both packages at self-host.
+- THE GENERIC ANSWER'S IDENTITY: a field read or `with` on a
+  generic method's answer ICEs bs2 ("unknown struct"), so the tree
+  binds an annotated let first (`memory.av`'s scope reads). And a
+  generic impl's body cannot name its own `T` in an annotation.
+  FIX: none needed — Avra types both; delete the extra binds when
+  bs2 goes.
+- THE `"}"` LITERAL: a `}` inside a string in a fn body swallows the
+  statement (`build.av`'s `closing_brace` scans for byte 125
+  instead). FIX: none needed — ours lexes it; delete the helper.
 - THE ELEMENT WRITE (`mut x = xs[i]; x.push(v)`, ~12 sites, all
   rewritten): bs2 aliases an element, so mutating the copy changed
   the container. Avra copies. FIX: none needed — the tree now
