@@ -1,0 +1,48 @@
+//! THE SETTLED LAW: a const's value is known when the COMPILER
+//! runs, so what may stand there is what the compiler can settle —
+//! today a literal, tomorrow anything the evaluator finishes. And
+//! an annotated const holds what it declares, like any binding.
+use core.{StmtId, ExprId, TypeRef}
+use features.{StmtTypeCx, TypeCx, declared_binding, refuses_void_value, spoken, this_is}
+use diagnostics.{refusal}
+
+/// The value walks under its declaration's want, then two laws: it
+/// SETTLES, and — when annotated — it holds what it declares.
+export fn check_const(cx: StmtTypeCx, s: StmtId) {
+    let held: ExprId? = cx.view.store.stmt_value(s)
+    if held == null { return }
+    let v = held!
+    let ann: TypeRef? = cx.view.store.binding_ty(s)
+    if ann != null { cx.expr.plant_want(v, cx.bind_declared(s, ann!)) }
+    cx.walk_value(s)
+    if !settles(cx.expr, v) { return }
+    if refuses_void_value(cx.expr, v) { return }
+    if ann == null { return }
+    declared_binding(cx.expr, v, cx.view.store.let_name(s) ?? "this const", cx.binding_type(s))
+}
+
+/// Whether the compiler can settle this value TODAY. A literal it
+/// can; everything else waits for the evaluator to run at compile
+/// time, and says so rather than pretending.
+fn settles(cx: TypeCx, v: ExprId) -> bool {
+    if literal(cx, v) { return true }
+    unsettled(cx, v)
+    false
+}
+
+/// A value the compiler reads straight off the page.
+fn literal(cx: TypeCx, v: ExprId) -> bool {
+    match cx.view.store.expr(v) {
+        .IntLit(_) or .StrLit(_) or .BoolLit(_) -> true,
+        _ -> false,
+    }
+}
+
+// ── The voices ──
+
+fn unsettled(cx: TypeCx, v: ExprId) {
+    let _ = spoken(cx, refusal("type.const", cx.loc_of(v),
+                       "a const's value must be known at compile time",
+                       this_is(cx.name_at(v)),
+                       "today that means a literal — `let` holds what the program computes"))
+}

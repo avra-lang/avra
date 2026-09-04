@@ -3491,6 +3491,34 @@ END, `{ x }` parses as a statement list whose tail answers, so the
 keyword lexes as a NAME, so `-> { return x }` read `return` as an
 identifier and the @expect'd `}` hole-hit. One form, one law.
 
+`const` LANDED, SLICE 1 (2026-09-03) — A VALUE THE COMPILER SETTLES.
+`const NAME = value`, optionally annotated: the declaration emits
+NOTHING and every use emits the value itself, so a const costs a
+constant and never a load (corpus/consts, and the spec asserts the
+IR carries no slot). A const also crosses a fn body's floor, where a
+top-level `let` is refused as a run-time binding — because the
+compiler settled it, and what the compiler settled is not the
+program's to compute.
+
+THE SETTLED LAW (F2045) is the whole point and the whole limit: what
+may stand in a const is what the compiler can settle. Today that is
+a LITERAL — a call, a name, an expression are all refused, and the
+refusal says so rather than pretending. Slice 2 replaces `settles`
+with the evaluator: the value lowers to a body, the IR interpreter
+runs it under a step budget, and the folded value materializes. Two
+laws wait there — TERMINATION (a step budget with its own voice) and
+PURITY (the evaluator already refuses `extern`, which is exactly the
+restriction a const wants; it becomes a stated law rather than an
+accident).
+
+Slice 1's shape is what makes slice 2 small: `settled_reg` in
+lower_state.av is the ONE place a settled value becomes an
+instruction, and `settled_shape` in contexts.av is the ONE place its
+type is read — both from the VALUE, never from a body's facts,
+because every body may read a const and no body's fact table holds
+another's range. Core's value protocol grew `int_of` at its second
+reader, as the protocol's rule says.
+
 BS2 IS OUT OF THE LOOP (2026-09-03). The toolchain is the compiler
 itself: `make avra` builds `build/avra` with the `build/avra` that is
 already there, `./avra` prefers that binary, and `make gate` — 1548

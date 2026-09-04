@@ -2,7 +2,7 @@
 //! order, slots and cells, bindings read, fn values and their
 //! wrappers, lambdas lifted, captures packed, callee symbols and
 //! the mono worklist's enqueue — the verbs the walk speaks.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, DeclId, Arrow, Binding}
+use core.{StmtId, ExprId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, int_of, text_of, bool_of}
 use diagnostics.{loc_at}
 use features.{fn_box, capture_lane, slot_read, Sub, Cap, viewed}
 use @std.errors.{Loc}
@@ -65,7 +65,7 @@ impl Lower {
     fn read_binding(self, e: ExprId, b: Binding) -> Reg? {
         match b {
             .Param(i) -> Reg { index: i },
-            .Def(s) -> self.slot_reg(e, s),
+            .Def(s) -> self.defined_reg(e, s),
             .Pattern(v, j) -> self.body.pattern_reg(v, j),
             // valid only inside the LIFTED body: env rides seat 0
             .LambdaParam(_, i) -> Reg { index: i + 1 },
@@ -73,6 +73,38 @@ impl Lower {
             .Index(s) -> self.body.index_reg(s),
             .Decl(d) -> if self.a.view.decls.fn_name(d) != null { self.fn_value_reg(e, self.wanted(d, null)) } else { null },
         }
+    }
+
+    /// A DEFINITION read: a const IS its value, so the READ emits
+    /// that value — a constant the compiler settled, minted in THIS
+    /// body. Every other binding reads the slot it was bound to.
+    fn defined_reg(self, e: ExprId, s: StmtId) -> Reg? {
+        let value: ExprId? = self.a.view.store.const_value(s)
+        if value == null { return self.slot_reg(e, s) }
+        self.settled_reg(e, self.a.view.store.expr(value!))
+    }
+
+    /// The settled value as an instruction. A const holds a literal
+    /// today; the day the evaluator settles more, this is where the
+    /// folded value arrives.
+    fn settled_reg(self, e: ExprId, value: Expr) -> Reg? {
+        let n: int? = int_of(value)
+        if n != null {
+            let dst = self.mint(e)
+            self.out.give(Ins.ConstInt(dst, n!))
+            return dst
+        }
+        let t: string? = text_of(value)
+        if t != null {
+            let dst = self.mint(e)
+            self.out.give(Ins.ConstStr(dst, t!))
+            return dst
+        }
+        let b: bool? = bool_of(value)
+        if b == null { return null }
+        let dst = self.mint(e)
+        self.out.give(Ins.ConstBool(dst, b!))
+        dst
     }
 
     /// A NAMED fn as a value: a captureless box holding a WRAPPER's

@@ -3,7 +3,7 @@
 //! asks the namespace) — and the CONTEXTS' vocabularies: every
 //! method a feature's rule calls on a TypeCx, LowerCx or statement
 //! context forwards from here to the one definition.
-use core.{FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, NodeStore, TypeRegistry, Binding, Param, filled, Reg, Ins, dst_of, rt_sig_of}
+use core.{Expr, int_of, text_of, bool_of, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, NodeStore, TypeRegistry, Binding, Param, filled, Reg, Ins, dst_of, rt_sig_of}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
 
@@ -150,7 +150,23 @@ export fn def_type_of(facts: TypeFacts, store: NodeStore, types: TypeRegistry, e
     if store.stmt(s) is .For { return types.intern(Type.Int) }
     let v: ExprId? = store.stmt_value(s)
     if v == null { return error_type }
+    // A CONST is read from OTHER bodies, whose facts hold nothing
+    // about its value — the settled value's own shape answers.
+    let settled: Type? = settled_shape(store, s)
+    if settled != null { return types.intern(settled!) }
     facts.type_at(v!)
+}
+
+/// The shape a const's settled value wears, read from the value
+/// itself — no body's facts, because every body may read it.
+fn settled_shape(store: NodeStore, s: StmtId) -> Type? {
+    let v: ExprId? = store.const_value(s)
+    if v == null { return null }
+    let value: Expr = store.expr(v!)
+    if int_of(value) != null { return Type.Int }
+    if text_of(value) != null { return Type.Str }
+    if bool_of(value) != null { return Type.Bool }
+    null
 }
 
 /// A type under a body's instantiation — IDENTITY for a plain body.

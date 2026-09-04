@@ -251,9 +251,19 @@ export enum Expr {
 /// The VALUE PROTOCOL: a literal node's payload, one projection per
 /// value category — what features read instead of matching a
 /// variant, their own included.
-export fn truth_of(e: Expr) -> bool? {
+export fn bool_of(e: Expr) -> bool? {
     match e {
         .BoolLit(v) -> v,
+        _ -> null,
+    }
+}
+
+/// An int literal's value. The second reader earns the projection:
+/// a const's use emits what the literal holds without dispatching
+/// on the node itself.
+export fn int_of(e: Expr) -> int? {
+    match e {
+        .IntLit(v) -> v,
         _ -> null,
     }
 }
@@ -356,6 +366,12 @@ export enum Stmt {
     /// ownership analysis; optionally annotated, holding what it
     /// declares exactly as `let` does.
     MutLet(name: string, ty: TypeRef?, value: ExprId)
+    /// `const name = v` — a value the COMPILER computes, so every
+    /// use is that value and the program never computes it. Its
+    /// initializer is evaluated at compile time, which is also the
+    /// law it must satisfy: nothing the host answers, nothing that
+    /// does not settle.
+    ConstDecl(name: string, ty: TypeRef?, value: ExprId)
     /// Reassignment of a `mut` binding, by name.
     Assign(target: ExprId, value: ExprId)
     /// An expression at statement position.
@@ -461,7 +477,7 @@ impl NodeStore {
             .ExprStmt(v) -> v,
             .Discard(_) -> null,
             .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
-            .Let(_, _, _) or .MutLet(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or
             .LetElse(_, _, _) or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or
             .TraitDecl(_, _) or .Spec(_, _) or .Error -> null,
@@ -787,6 +803,7 @@ impl NodeStore {
         match s {
             .Let(name, ty, value) -> fp(5, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
             .MutLet(name, ty, value) -> fp(15, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
+            .ConstDecl(name, ty, value) -> fp(60, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
             .Assign(target, value) -> fp(16, [self.expr_fingerprint(target), self.expr_fingerprint(value)]),
             .While(cond, stmts) ->
                 fp(17, [self.expr_fingerprint(cond)].concat(self.stmt_fps(stmts))),

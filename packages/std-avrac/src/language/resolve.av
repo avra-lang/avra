@@ -443,16 +443,30 @@ impl Resolver {
 
     /// The top level's binding for a name — unless a fn body is
     /// asking: its floor hides the run-time values around it.
+    /// The world OUTSIDE the innermost body: a fn sees no run-time
+    /// binding of the top level — but a CONST is not one. The
+    /// compiler settled it, so it crosses the floor like a
+    /// declaration does.
     fn outer_binding(self, name: string) -> Binding? {
-        if !self.floors.is_empty() { return null }
         let held: Binding? = self.visible.get(name)
-        held
+        if self.floors.is_empty() { return held }
+        if held == null { return null }
+        if self.settled_name(name) { return held }
+        null
+    }
+
+    /// Whether the name's program-scope definition is a const.
+    fn settled_name(self, name: string) -> bool {
+        let held: StmtId? = self.later_def(name)
+        held != null && self.view.store.const_value(held!) != null
     }
 
     /// A name a body cannot see: the top level's run-time binding —
     /// declared before the body or after it, all the same.
     fn hidden_def(self, name: string) -> bool {
-        !self.floors.is_empty() && self.all_defs.any(it.name == name)
+        if self.floors.is_empty() { return false }
+        if self.settled_name(name) { return false }
+        self.all_defs.any(it.name == name)
     }
 
     /// Wrap a binding in Capture links for every frame from

@@ -1,0 +1,49 @@
+// `const` — the value the compiler settles. What is proved here:
+// the use IS the value (no slot, no load), the settled law refuses
+// what the compiler cannot compute, an annotation is held to, and a
+// const crosses into a fn body where a top-level `let` cannot.
+use @std.avrac.testing.{shown, refused_with, refusals, ir_of}
+use @std.avrac.language.{render_ir}
+
+spec "features/consts — a value the compiler settles" {
+    given "the value at its uses" {
+        then "a const reads as its value" {
+            shown("const N = 7\nN + 1") == "8"
+        }
+        then "a string const interpolates" {
+            shown("const WHO = \"world\"\n\"hello \${WHO}\"") == "hello world"
+        }
+        then "a bool const guards" {
+            shown("const READY = true\nif READY { \"yes\" } else { \"no\" }") == "yes"
+        }
+        then "the DECLARATION emits nothing — the use emits a constant" {
+            let l = ir_of("const N = 7\nN + 1")
+            let text = render_ir(l)
+            !text.contains("slot") && text.contains("int 7")
+        }
+    }
+    given "a fn body" {
+        then "a const crosses the floor a run-time binding cannot" {
+            shown("const N = 7\nfn plus(x: int) -> int {\n    x + N\n}\nplus(1)") == "8"
+        }
+        then "a top-level `let` still cannot" {
+            refused_with("let n = 7\nfn plus(x: int) -> int {\n    x + n\n}\nplus(1)", "is a run-time binding of the top level")
+        }
+    }
+    given "the settled law" {
+        then "a call is not settled" {
+            refused_with("fn f() -> int {\n    3\n}\nconst N = f()\nN", "a const's value must be known at compile time")
+        }
+        then "a name is not settled either — not yet" {
+            refusals("const A = 1\nconst B = A\nB") == 1
+        }
+    }
+    given "an annotation" {
+        then "the const holds what it declares" {
+            shown("const N: int = 7\nN") == "7"
+        }
+        then "and is refused when it does not" {
+            refusals("const N: string = 7\nN") == 1
+        }
+    }
+}
