@@ -22,9 +22,17 @@ export fn opened_place(cx: LowerCx, e: ExprId) -> Place? {
     if step == null { return null }
     match step! {
         .Root(_) -> cell_place(cx, e),
-        .Field(subject, name) -> Place.Slot(unique_box(cx, subject), field_slot(cx, subject, name)),
+        .Field(subject, name) -> field_place(cx, subject, name),
         .At(subject, index) -> Place.Slot(unique_box(cx, subject), cx.reg_of(index)),
     }
+}
+
+/// A field's place. A FLAT record IS its one field, so writing that
+/// field writes the RECORD — the subject's own place, not a slot in
+/// a box the record does not have.
+fn field_place(cx: LowerCx, subject: ExprId, name: string) -> Place? {
+    if flat_at(cx, subject) { return opened_place(cx, subject) }
+    Place.Slot(unique_box(cx, subject), field_slot(cx, subject, name))
 }
 
 fn cell_place(cx: LowerCx, e: ExprId) -> Place? {

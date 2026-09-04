@@ -160,35 +160,42 @@ spec "language/lower" {
         }
     }
     given "the mut-cell protocol (ownership 11.5)" {
+        // TWO fields on purpose: a record of ONE scalar is FLAT — it
+        // rides a register and costs no box at all, so it cannot
+        // show the managed cell's protocol.
         then "seed retains; overwrite retains FIRST, releases old, stores; the scope settles the cell" {
             let expected = """scope application {
   r0 = int 1
-  r1 = call avra_array_new()
-  call avra_array_push(r1, r0)
-  r2 = slot
-  retain r1
-  call avra_cell_release(r2)
-  store r2 <- r1
-  r3 = int 2
-  r4 = call avra_array_new()
-  call avra_array_push(r4, r3)
-  retain r4
-  call avra_cell_release(r2)
-  store r2 <- r4
-  r5 = load r2
-  retain r5
-  r6 = int 0
-  r7 = call avra_array_get(r5, r6)
-  r8 = call avra_int_text(r7)
-  call avra_puts(r8)
-  call avra_cell_release(r2)
-  release r8
-  release r5
-  release r4
-  release r1
+  r1 = int 0
+  r2 = call avra_array_new()
+  call avra_array_push(r2, r0)
+  call avra_array_push(r2, r1)
+  r3 = slot
+  retain r2
+  call avra_cell_release(r3)
+  store r3 <- r2
+  r4 = int 2
+  r5 = int 0
+  r6 = call avra_array_new()
+  call avra_array_push(r6, r4)
+  call avra_array_push(r6, r5)
+  retain r6
+  call avra_cell_release(r3)
+  store r3 <- r6
+  r7 = load r3
+  retain r7
+  r8 = int 0
+  r9 = call avra_array_get(r7, r8)
+  r10 = call avra_int_text(r9)
+  call avra_puts(r10)
+  call avra_cell_release(r3)
+  release r10
+  release r7
+  release r6
+  release r2
 }
 ret 0"""
-            render_ir(ir_of("type P = { x: int }\nmut a = P { x: 1 }\na = P { x: 2 }\na.x")) == expected
+            render_ir(ir_of("type P = { x: int, y: int }\nmut a = P { x: 1, y: 0 }\na = P { x: 2, y: 0 }\na.x")) == expected
         }
     }
     given "the fn value's box (rung 13)" {

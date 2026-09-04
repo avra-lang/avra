@@ -199,16 +199,25 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
         .Int or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
         .Opt(inner) -> opt_ll_type(lc, types, inner),
-        .Str or .Ptr or .List(_) or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _) or
+        .Struct(_, _) -> flat_or_pointer(lc, types, ty),
+        .Str or .Ptr or .List(_) or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _) or
         .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> avra_llvm_pointer_type(lc),
     }
+}
+
+/// A record's machine type: a FLAT record IS its one field — a
+/// newtype over `int` is an `int`, so it rides every seat the field
+/// rides; every other record is the pointer to its box.
+fn flat_or_pointer(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
+    if !types.is_flat(ty) { return avra_llvm_pointer_type(lc) }
+    ll_type_of(lc, types, types.flat_fields(ty)[0])
 }
 
 /// A nullable's machine type: the niche IS its value's pointer; a
 /// scalar pair is a first-class {present: i1, value} aggregate that
 /// lives in registers and never touches memory.
 fn opt_ll_type(lc: ptr, types: TypeRegistry, inner: TypeId) -> ptr {
-    if types.rides_pointer(inner) { return avra_llvm_pointer_type(lc) }
+    if types.opt_rides_pointer(inner) { return avra_llvm_pointer_type(lc) }
     let arr = avra_llvm_type_array_new(2)
     avra_llvm_type_array_set(arr, 0, avra_llvm_int1_type(lc))
     avra_llvm_type_array_set(arr, 1, ll_type_of(lc, types, inner))
@@ -259,7 +268,7 @@ fn emit_ins(em: Emit, i: Ins) {
         .CallRtVoid(callee, args) -> void_rt_call(em, callee, args),
         .CallRt(dst, callee, args) -> define(em, call_rt_value(em, dst, callee, args)),
         .Pack(dst, elems) -> define(em, pack_value(em, dst, elems)),
-        .Extract(_, src, at) -> define(em, avra_llvm_build_extract_value(em.b, em.vals[src.index], at, "x")),
+        .Extract(_, src, at) -> define(em, extract_value(em, src, at)),
         .Call(_, callee, args) -> define(em, call(em, mangled(callee), [em.vals[a.index] for a in args])),
         .FnAddr(_, sym) -> define(em, avra_llvm_cast_to_type(em.b,
             avra_llvm_get_named_function(em.m, mangled(sym)), avra_llvm_int64_type(em.lc))),
@@ -296,7 +305,21 @@ fn const_int_value(em: Emit, dst: Reg, v: int) -> ptr {
 
 /// A packed value: element by element into an undef aggregate —
 /// registers all the way, which is what lets SROA see through it.
+/// Whether a register holds a FLAT record — one that IS its field.
+fn flat_value(em: Emit, r: Reg) -> bool {
+    em.types.is_flat(em.tys[r.index])
+}
+
+/// One element out of an aggregate — or the value itself, when the
+/// aggregate is a FLAT record and IS that element.
+fn extract_value(em: Emit, src: Reg, at: int) -> ptr {
+    if flat_value(em, src) { return em.vals[src.index] }
+    avra_llvm_build_extract_value(em.b, em.vals[src.index], at, "x")
+}
+
 fn pack_value(em: Emit, dst: Reg, elems: List<Reg>) -> ptr {
+    // A FLAT record IS its one field — the pack is the value itself.
+    if flat_value(em, dst) { return em.vals[elems[0].index] }
     mut agg = avra_llvm_get_undef(reg_type(em, dst))
     // LICENSED I4: the running aggregate, not a scan
     for (j, r) in elems.enumerate() {

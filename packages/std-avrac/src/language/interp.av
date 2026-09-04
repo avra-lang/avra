@@ -132,8 +132,8 @@ fn step(m: Machine, b: Body, pc: int) -> int {
         .Bin(d, op, a, x) -> put_at(m, d, bin_val(m, op, a, x), pc),
         .Un(d, op, src) -> put_at(m, d, un_val(m, op, src), pc),
         .CallRt(d, callee, args) -> put_at(m, d, rt_val(m, b, d, callee, args), pc),
-        .Pack(d, elems) -> put_at(m, d, pack_val(m, elems), pc),
-        .Extract(d, src, at) -> put_at(m, d, extract_val(m, src, at), pc),
+        .Pack(d, elems) -> put_at(m, d, pack_val(m, b, d, elems), pc),
+        .Extract(d, src, at) -> put_at(m, d, extract_val(m, b, src, at), pc),
         .CallRtVoid(callee, args) -> rt_void(m, callee, args, pc),
         .Call(d, callee, args) -> put_at(m, d, call_val(m, callee, args), pc),
         .FnAddr(d, sym) -> put_at(m, d, fn_addr_val(m, sym), pc),
@@ -163,11 +163,20 @@ fn const_int_val(m: Machine, b: Body, d: Reg, v: int) -> Val {
 
 /// A packed value rides the same table an aggregate does — the
 /// interpreter's bookkeeping, not the machine's layout.
-fn pack_val(m: Machine, elems: List<Reg>) -> Val {
+/// A FLAT record IS its one field — the pack is the value itself;
+/// every other aggregate is a fresh array. The backend renders the
+/// same instruction the same way.
+fn pack_val(m: Machine, b: Body, d: Reg, elems: List<Reg>) -> Val {
+    if flat_reg(m, b, d) { return value(m, elems[0]) }
     fresh_array(m, [value(m, r) for r in elems])
 }
 
-fn extract_val(m: Machine, src: Reg, at: int) -> Val {
+fn flat_reg(m: Machine, b: Body, r: Reg) -> bool {
+    m.l.types.is_flat(b.reg_types[r.index])
+}
+
+fn extract_val(m: Machine, b: Body, src: Reg, at: int) -> Val {
+    if flat_reg(m, b, src) { return value(m, src) }
     let id: int? = match value(m, src) {
         .A(x) -> x,
         _ -> null,

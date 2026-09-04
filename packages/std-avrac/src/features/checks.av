@@ -37,6 +37,16 @@ export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
 /// a valid `int?` — and the widening is RECORDED so lowering wraps
 /// it. Absence never widens back: `int?` into `int` refuses, which
 /// is the whole point of opting in. True means ACCEPTED.
+/// THE ONE AGREEMENT DOOR for a UNIFIED seat. `unify` binds the
+/// declaration's Vars; `accepts` is what RECORDS the lift lowering
+/// mints, and a seat whose Vars are all bound is concrete NOW. A
+/// seat still naming a free Var is re-judged at instantiation.
+export fn unified_lift(cx: TypeCx, e: ExprId, want: TypeId, decl: DeclId, bound: Pins) {
+    if !fully_bound(cx, want, decl, bound) { return }
+    let landed = cx.view.types.substituted(want, decl, bound_args(cx, bound))
+    let _ = accepts(cx, e, landed)
+}
+
 export fn accepts(cx: TypeCx, e: ExprId, want: TypeId) -> bool {
     heard(cx, e, want)
     // still hungry after the seat had its say: the seat can never

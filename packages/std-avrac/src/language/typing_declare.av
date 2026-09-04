@@ -69,6 +69,24 @@ impl Typer {
         let record = self.decl_of(s)
         let sig = StructSig { names: names, types: types, defaults: [self.view.decls.default_named(record, f.name) for f in fields] }
         self.declare(s, DeclSig.Record(sig))
+        self.flatten_record(s, record, types)
+    }
+
+    /// A RECORD OF SCALARS rides registers, never a heap box — an
+    /// id, a span, a register: the values a compiler makes millions
+    /// of. One pointer-riding field keeps the box, because that
+    /// reference must still be counted.
+    fn flatten_record(self, s: StmtId, record: DeclId, types: List<TypeId>) {
+        // ONE field, for now: a single-field record IS its field at
+        // the machine level, so it fits everywhere the field fits —
+        // a list slot, a call seat, a register. A wider record needs
+        // the slot law to carry aggregates first.
+        if types.length != 1 { return }
+        if !self.view.decls.tparams(record).is_empty() { return }
+        if !scalar_field(self.view.types.shape_of(types[0])) { return }
+        let named: string? = self.view.store.type_decl_name(s)
+        if named == null { return }
+        self.view.types.mark_flat(self.declared_type(record, named!), types)
     }
 
     /// A field default's signature: a body of no parameters
@@ -387,3 +405,17 @@ export fn declare_one(t: Typer, x: Decl) {
         .Trait or .Main or .Builtin -> nothing(),
     }
 }
+
+/// A field a FLAT record may hold: a machine WORD, carrying no
+/// reference and no layout of its own. A `bool` is not one yet —
+/// the runtime's i64 seams coerce by SHAPE, and a flat record's
+/// shape is its record's, so an `i1` would cross them unwidened.
+/// Anything else — text, a list, another record, a type parameter
+/// that could become any of them — keeps its record in a box.
+fn scalar_field(t: Type) -> bool {
+    match t {
+        .Int -> true,
+        _ -> false,
+    }
+}
+

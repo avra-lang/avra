@@ -2,7 +2,7 @@
 // rule with branches in first-appearance order — and the executor
 // refuses an unmerged grammar, so silent shadowing is unrepresentable.
 use @std.avrac.core.{Span}
-use @std.avrac.grammar.{Grammar, Captured, RunOutcome, parse_grammar, lex_grammar, run_grammar}
+use @std.avrac.grammar.{Grammar, Captured, RunOutcome, parse_grammar, lex_grammar, run_grammar, ready}
 
 fn composed(src: string) -> Grammar {
     parse_grammar(src).grammar!
@@ -22,7 +22,7 @@ fn name_build(name: string, args: List<Captured<string>>, span: Span?) -> Result
 }
 
 fn run_merged(g: Grammar, src: string) -> string {
-    let o = run_grammar<string>(g.merged(), lex_grammar(src).tokens, name_build)
+    let o = run_grammar<string>(ready(g.merged()), lex_grammar(src).tokens, name_build)
     if o.result == null { return "<none>" }
     match o.result! {
         .Node(n) -> n,
@@ -62,7 +62,7 @@ spec "grammar/compose" {
         }
         then "the executor refuses to run it" {
             let g = composed("s = n:NAME BREAK -> only(n)\ns = NUMBER")
-            let o = run_grammar<string>(g, lex_grammar("y").tokens, name_build)
+            let o = run_grammar<string>(ready(g), lex_grammar("y").tokens, name_build)
             o.result == null && o.diagnostics.length == 1
         }
     }

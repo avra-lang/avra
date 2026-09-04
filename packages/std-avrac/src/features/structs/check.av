@@ -2,7 +2,7 @@
 //! (resolve spoke otherwise), and the written fields match it —
 //! each declared field exactly once, each value the field's type.
 use core.{ExprId, StmtId, Type, TypeId, StructParts, DeclId}
-use features.{no_pins, Pins, TypeCx, StructSig, spoken, this_is, fields_are, repeated_at, unify, fully_bound, bound_args, accepts, slot_worthy, tparams_refused, unpinned_of, bound_closed, slice_promise, StmtTypeCx, pinned_by_want, unfed_construction}
+use features.{no_pins, Pins, TypeCx, StructSig, spoken, this_is, fields_are, repeated_at, unify, fully_bound, bound_args, accepts, slot_worthy, tparams_refused, unpinned_of, bound_closed, slice_promise, StmtTypeCx, pinned_by_want, unfed_construction, unified_lift}
 use diagnostics.{refusal}
 
 fn structs_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -95,7 +95,10 @@ fn generic_field(cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId,
         return false
     }
     let want = sig.types[slot!]
-    if unify(cx, want, cx.type_at(v), decl, bound) { return true }
+    if unify(cx, want, cx.type_at(v), decl, bound) {
+        unified_lift(cx, v, want, decl, bound)
+        return true
+    }
     if fully_bound(cx, want, decl, bound) {
         let landed = cx.view.types.substituted(want, decl, bound_args(cx, bound))
         if accepts(cx, v, landed) { return true }

@@ -5360,6 +5360,224 @@ design round when its time comes):
   this impossible". TRIGGER: at self-host, the list converts into
   a test suite — the language's negative space, pinned.
 
+## UNBOXED RECORDS — a newtype over `int` IS an `int` (2026-09-04)
+
+`ExprId { index: int }` cost THREE MALLOCS and a refcount. So did `Reg`,
+`StmtId`, `TypeId`, `DeclId`, `PatId` — the values a compiler makes
+millions of. Reading `.index` was a function call; passing one was a
+retain and a release. L1 of the AST epic asks for typed ids as
+"newtypes over int"; the box defeated that. Now the box is gone:
+`ExprId { index: e.index + 1 }` lowers to `r0 + 1`.
+
+NO NEW IR VOCABULARY. `Pack`/`Extract` already existed and already
+lowered to `insertvalue`/`extractvalue`; scalar nullables were already
+first-class aggregates. Both engines render Pack/Extract as IDENTITY
+for a flat record, so the eight consumers were untouched and the
+vocabulary protocol never fired.
+
+THE RULE: a record is FLAT when it has exactly ONE field, that field is
+a machine word (`Int`/`Bool`), and the record is not generic. Marked at
+declaration (`flatten_record`), held in a `flats` table on the type
+registry parallel to `shapes` — a side table keyed by a typed id, as
+node facts are.
+
+THE THREE LAWS IT TAUGHT:
+1. `rides_pointer` answers TWO questions and they are not the same.
+   "Does the VALUE ride a pointer?" — a flat record: NO. "Does its
+   NULLABLE?" — YES, because a machine word has no spare value for
+   absence, so `Opt(flat)` is a ONE-SLOT BOX (`Repr.Boxed`, the third
+   representation beside Niche and Pair). When the two answers
+   disagreed, LLVM refused the module; when they agreed but a consumer
+   asked the wrong one, it miscompiled silently.
+2. A READ WEARS THE TYPE OF WHAT IS READ. `slot_read` asked a
+   register's recorded type, which under mono may still name a type
+   parameter; `field_read` asks the subject's STATIC type. Same species
+   as the callee bug in 4e27411.
+3. THE AGREEMENT DOOR IS NOT OPTIONAL. `construct_variant` UNIFIED a
+   payload against its seat but never called `accepts` — the one place
+   a lift is RECORDED. Latent until now: widening into a payload used
+   to be identity. A payload seat is a slot like any other.
+
+A RECORD WITH AN IMPL KEEPS ITS BOX. A method may write through `self`,
+and a flat record is a value in a register with no identity to write
+through — behaviour must never turn on a field count. `unflatten` takes
+the marking back when an impl block is declared. This is the RECEIVER
+ALIASING debt showing its price: when receivers take value semantics
+(the ledger's fix), the exclusion goes and the win grows.
+
+MEASURED, honestly: 52.2s -> 50.5s on the compiler checking itself, and
+release sites in the emitted module 37,908 -> 33,035 (-13%). Modest,
+and the reason is exact: `array_new` went 4,104 -> 4,295 (+5%), because
+every `ExprId?` now allocates the box a niche used to give free. THE
+UNLOCK IS A NICHE FOR INT NEWTYPES — reserve one value (an index never
+takes `i64::MIN`) and both the value and its nullable cost nothing.
+That is a language decision, not a compiler one, and it is the next
+question to answer.
+
+## THE SPEED HUNT (2026-09-04) — measured, one landed, one WIP
+
+THE RULE THIS ROUND EARNED: PROFILE, DO NOT REASON. Four changes were
+argued from the code and measured afterwards; three did nothing or
+made it WORSE, and the one profile run found the winner immediately.
+
+  code_at, bs2's per-byte allocation      no change (noise)
+  g.defects() hoisted out of the parse    no change (noise)
+  array: three mallocs collapsed to one   2.7x WORSE (52s -> 139s)
+  a stronger pointer hash                 1.6x WORSE (52s -> 93s)
+  `distinct` off the parse's happy path   parse 29.4s -> 18.9s
+
+The two regressions are the finding, not a footnote: `g_own` is a
+global open-addressed table keyed by POINTER, and its cost is CACHE
+LOCALITY, not collisions. Uniform allocation sizes CLUSTER it; a
+strong hash SCATTERS it. It cannot be tuned, only removed.
+
+### LANDED: the expected-set leaves the happy path
+
+`far_merge` runs at every tie of every branch attempt, and it called
+`union_expected` -> `distinct` — an O(n^2) dedup — on a parse that
+SUCCEEDS and never shows the set. Dedup is a RENDERING concern: it
+now happens once, in `farthest_diagnostic`, the single place a reader
+meets the words (`shown_expected`). Parse 29.4s -> 18.9s.
+
+Also landed, both measured as noise but both right: `code_at` is
+`s.char_code(i)` (bs2's `char_code` dropped its index, so every
+scanner allocated a one-character string PER BYTE — the ledger entry
+is paid), and the assembled grammar is PREPARED once (`Ready`:
+validated and indexed at assembly, not re-validated per file — 257
+times per run for a fixed grammar).
+
+### WIP, NOT LANDED: the refcount in a header (wip/)
+
+The measured prize is real and large: replacing `g_own` with a
+sixteen-byte header before every payload took the compiler from
+52.6s to 27.3s user — 1.93x — with every phase moving together
+(parse 18.9 -> 12.8, bodies 15.2 -> 6.9), which is the signature of a
+uniform per-allocation cost. The gate ran in 125s against 302s. All
+1587 specs passed.
+
+It is NOT landed because it removes a SAFETY NET the compiler leans
+on. `owned(p)` answered "not mine" for any pointer the registry had
+never seen, so retaining or releasing a SCALAR, a code address or a
+foreign string was silently harmless. A header cannot say "not mine"
+by itself. The work in wip/ therefore also carries:
+  - every string constant emitted WITH a header
+    (avra_llvm_build_global_string_ptr), so the law "every pointer
+    Avra holds carries a header" is the backend's too;
+  - the runtime's own answers headered (`bool_text`, argv, getenv);
+  - a TAG in the kind's high half so a header can be RECOGNISED
+    rather than assumed, restoring the "not mine" answer.
+
+Even tagged, the COMPILER (not ordinary programs — those pass, suites
+included) overflows its stack inside `avra_rc_release`. Something in
+the compiler's own object graph reclaims without bottom once releases
+stop being silent no-ops. THE NEXT STEP IS TO FIND THAT, not to
+re-argue the design: instrument `avra_rc_release` with a depth
+counter that aborts and names the box, and read what it names.
+
+TWO REAL BUGS THE HUNT EXPOSED, both hidden today by the registry:
+  (1) A CAPTURE IS TYPED BY THE LAMBDA. `slot_reg` minted a boxed
+      slot's load with the READING node's type; a capture is read AT
+      the lambda expression, whose type is a managed box, so an `int`
+      capture looked managed — the memory pass RETAINED A NUMBER and
+      pushed it as an owned slot (`corpus/closures`, the loop
+      counter). Same species as the callee bug fixed in 4e27411: a
+      read must wear the type of WHAT IS READ. The obvious fix (mint
+      from the slot's own register type) is WRONG as written — a
+      capture's slot belongs to the ENCLOSING body, so the current
+      body's register table is the wrong table to ask. The fix needs
+      the captured BINDING's declared type, not a register's.
+  (2) THE COLD-BOOTSTRAP PATH IS DEAD. `./avra` falls back to bs2 for
+      a cold tree; bs2 cannot lex raw `"""` blocks, and every
+      feature's `gram` is one, so the grammar never assembles. The
+      tree can only be rebuilt from a working `build/avra` or from a
+      worktree at 551259c or earlier. Either restore a bs2-parseable
+      path, or state plainly that the binary IS the bootstrap and
+      keep one.
+
+## THE OPEN LEDGER — the red team's second round (2026-09-03)
+
+980 programs, 77 candidates, 45 confirmed; every wrong answer,
+divergence and crash it found in the LANGUAGE is closed (c6fe1ae,
+4e27411). What remains is recorded here, in the round's own order.
+Two items sit above the refusal tier and are SCHEDULED; the eight
+below it are refusal QUALITY, which is a first-class bar here (P1:
+correct on first generation) and each carries the round's own fix.
+
+### (1) SUPPLY-CHAIN EXECUTION during `avra build` — CRITICAL
+
+A DEPENDENCY's `[link] flags` row is spliced unquoted into the
+`system()` string that runs clang. `link_inputs` (workspace.av) walks
+EVERY package in the workspace, so a transitive manifest carrying
+`flags = ["; touch /tmp/PWNED ;"]` runs that command during a build of
+a program that never imports it — proved. The paths around it are
+`shell_word`ed; the flags are not, on the stated reasoning that "a
+`[link]` row is the project's own word". TRUE OF THE ROOT PACKAGE,
+FALSE OF EVERY DEPENDENCY — the premise is the bug.
+
+THE FIX IS STRUCTURAL, not a wider fence: replace
+`avra_shell_exec_status(cmd)` with an argv row —
+`avra_spawn_status(prog, argv)` over `posix_spawnp`/`execvp` — and
+build argv as a LIST. Shell metacharacters then mean nothing anywhere
+in the pipeline, and `shell_word` plus the `binary_name` quoting in
+test.av are DELETED rather than kept as fencing. `${NAME}` expansion
+in `expanded` stays: the environment is the invoker's own.
+
+### (2) `avra test` REPORTS GREEN OVER RED — a wrong answer
+
+`./avra test packages/.../tests/./lists_test.av` prints "no spec cases
+here" and exits 0 for a file holding 42 cases. `on_cases`
+(cli/commands/shared.av) selects with `c.at.file == path` — raw string
+equality against the path AS TYPED — while the workspace enumerates
+its files canonically through `joined_path`. Any spelling that still
+satisfies `under_dir` but differs as TEXT selects zero cases, and a
+`//` is what every `"$DIR/$f"` loop produces.
+
+Two changes, the second the important one: (a) canonicalize both sides
+with `normalized` (core/paths.av, already used by workspace.av for
+dependency paths); (b) ZERO CASES FOR AN ARGUED FILE IS NOT SUCCESS —
+a file the user named that yields no cases is a refusal, not "no spec
+cases here" and exit 0. The whole job of `test` is the verdict.
+
+### The refusal tier — eight, each with its fix
+
+- A source path not ending in `.av` is SILENTLY DROPPED: `avra check`
+  on a file full of type errors prints nothing and exits 0; the same
+  bytes named `.av` refuse. Workspace already carries `lone: bool` —
+  thread it instead of inferring source-hood from the extension.
+- `avra build`/`run` of a non-`.av` file blames a NONEXISTENT
+  `avra.toml` and prescribes editing it. `no_target` must not assert a
+  manifest's contents without one; the lone-file case needs its voice.
+- A module-file `const` is refused as a statement that "runs here",
+  and the help ("move it into the entry") does not work. A const emits
+  NOTHING — the reading here is that a module-scope const should be
+  ADMITTED (resolve binds it, typing checks it, a use lowers from the
+  value and not from any body's facts). Whichever way it lands, the
+  message cannot stay: it calls a declaration a statement that runs.
+- `const N = -1` is refused and NO spelling of a negative constant is
+  accepted. `-1` desugars to `Bin(Sub, IntLit(0), IntLit(1))`; slice 2's
+  evaluator dissolves this, which is why it was not special-cased —
+  but until then the help points at what the user already did.
+- F2045 speaks a SECOND time over a value the type law already refused
+  (`const N = zzz` earns F3000 and F2045). One guard, matching its
+  sibling at features/checks.av: an error-typed value has spoken.
+- F2001 `names no type` anchors at COLUMN 1 and labels a `const`/`let`
+  annotation "in this signature" — a const is not a signature, and on
+  a multi-line declaration the snippet shows the wrong line. Prefer
+  the type ref's own span; fall back to the statement's.
+- F2039's or-run refusal anchors on the arm's RESULT, not on the
+  binding that broke the law. `arm_checks` already holds the parallel
+  `typed` list; pass the offending PatId and emit at its span.
+- A non-ASCII character in name position emits ONE ERROR PER UTF-8
+  BYTE (four for an emoji), and three of the carets land on
+  continuation bytes the message then calls unexpected. Consume the
+  run in one step in the lexer.
+
+### The process note the round earned
+
+c6fe1ae's message reported a spec count measured on a tree that commit
+did not carry (the working tree held further edits). Measure the gate
+on the COMMITTED tree, or say which tree the number came from.
+
 ## Self-host endgames (recorded, not scheduled)
 
 - Typed builders: `-> int_lit(v)` binds a typed fn; tables and

@@ -402,7 +402,9 @@ int64_t avra_insist_scalar(int64_t present, int64_t value) {
 }
 
 int64_t avra_array_get(void* arr, int64_t i) {
-    avra_rc_dead_check(arr, "array_get");
+    // THE GUARD IS A BRANCH, not a call: every read asked, and the
+    // answer is no on every run that is not debugging.
+    if (rc_guarded()) { avra_rc_dead_check(arr, "array_get"); }
     AvraArray* a = (AvraArray*)arr;
     if (i < 0 || i >= a->len) {
         char msg[80];
