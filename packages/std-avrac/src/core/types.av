@@ -94,10 +94,10 @@ export enum Type {
 /// form — deterministic structural content, children by interned id —
 /// which is exactly what content-addressing later hashes: the key
 /// derivation swaps, the map and its callers do not.
-export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId> }
+export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId>, flats: List<List<TypeId>> }
 
 export fn new_type_registry() -> TypeRegistry {
-    TypeRegistry { shapes: [], ids: {} }
+    TypeRegistry { shapes: [], ids: {}, flats: [] }
 }
 
 /// A heap-shaped value: it rides POINTERS, and it waits on
@@ -149,12 +149,45 @@ impl TypeRegistry {
         let hit: TypeId? = self.ids.get(key)
         if hit != null { return hit! }
         self.shapes.push(t)
+        // the flat table runs PARALLEL to the shapes: every type has
+        // a row, and only a declared record of scalars fills one
+        let unflat: List<TypeId> = []
+        self.flats.push(unflat)
         let id = TypeId { index: self.shapes.length - 1 }
         self.ids.set(key, id)
         id
     }
 
     fn shape_of(self, id: TypeId) -> Type { self.shapes[id.index] }
+
+    /// A FLAT record's fields, in slot order — a record of scalars
+    /// alone, which rides REGISTERS and is never a heap box. Empty
+    /// for every other type; the flat ones are marked at
+    /// declaration, where the fields are known.
+    fn flat_fields(self, id: TypeId) -> List<TypeId> { self.flats[id.index] }
+
+    /// The flat table can LAG the shapes — a substituted type is
+    /// interned by a registry the marking never reached — so a row
+    /// past its end is simply "not flat", never a trap.
+    fn is_flat(self, id: TypeId) -> bool {
+        id.index < self.flats.length && !self.flats[id.index].is_empty()
+    }
+
+    /// Whether a NULLABLE of `inner` rides a pointer — the question
+    /// the slot law and the machine type ask. A flat record answers
+    /// YES though the bare record answers no: its nullable is a
+    /// one-slot box, because a word has no spare value for absence.
+    fn opt_rides_pointer(self, inner: TypeId) -> bool {
+        self.rides_pointer(inner) || self.is_flat(inner)
+    }
+
+    /// Mark a declared record flat. Its fields hold no reference, so
+    /// nothing counts them and nothing frees them: the value IS its
+    /// fields.
+    fn mark_flat(self, id: TypeId, fields: List<TypeId>) {
+        mut fs = self.flats
+        fs.set(id.index, fields)
+    }
 
     /// What a nullable carries, or absent when the id is not one —
     /// THE projection (values.av's `carried_type` is its cx-space
@@ -197,8 +230,13 @@ impl TypeRegistry {
     /// nullable IS its pointer, a scalar pair is registers and no
     /// pointer at all. The machine projections ask here.
     fn rides_pointer(self, id: TypeId) -> bool {
+        // a FLAT record is a machine word — its NULLABLE is the box,
+        // and `opt_rides_pointer` is the question that asks about it
+        if self.is_flat(id) { return false }
         match self.shape_of(id) {
-            .Opt(inner) -> self.rides_pointer(inner),
+            // a nullable answers as ITS OWN machine form: a flat
+            // record's nullable is the box, though the record is not
+            .Opt(inner) -> self.opt_rides_pointer(inner),
             _ -> ptr_shape(self.shape_of(id)),
         }
     }

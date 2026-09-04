@@ -97,7 +97,21 @@ export fn payload_at(cx: LowerCx, v: Reg, k: int, ty: TypeId) -> Reg {
 /// One slot read: the index is a constant, so it is minted and
 /// emitted BEFORE the read that uses it — registers are numbered in
 /// emission order. An absent type reads as an int.
+/// A RECORD's field. A flat record IS its one field, so the read is
+/// the record's own register and costs nothing; a boxed record reads
+/// its slot. The subject's STATIC type decides — a register's
+/// recorded type is the wrong witness under mono, where it may still
+/// name a type parameter.
+export fn field_read(cx: LowerCx, subject: Reg, subject_ty: TypeId, n: int, ty: TypeId?) -> Reg {
+    if cx.view.types.is_flat(subject_ty) { return subject }
+    slot_read(cx, subject, n, ty)
+}
+
 export fn slot_read(cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
+    // THE CATCH-ALL for callers that do not carry the subject's
+    // static type: a flat record IS its field, so the register is
+    // the answer. `field_read` is the same law asked statically.
+    if cx.view.types.is_flat(cx.out.type_of_reg(v)) { return v }
     let at = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(at, n))
     let got = if ty == null { cx.mint_shape(Type.Int) } else { cx.mint_ty(ty!) }
@@ -178,16 +192,27 @@ export fn called_through(cx: LowerCx, e: ExprId, box: Reg, args: List<Reg>) -> R
 /// unboxed {present, value} PAIR in registers — two values the
 /// optimizer sees straight through. NULLABILITY NEVER ALLOCATES:
 /// that is the law (ROADMAP), and lower_test pins it.
-enum Repr { Niche, Pair }
+enum Repr { Niche, Pair, Boxed }
 
 /// The representation of a nullable TYPE — a projection, and the
 /// catch-all is honest: a non-`Opt` shape is the absorbing error
 /// path, which lowers nothing, so the pair it names is never built.
 fn repr_of(cx: LowerCx, opt: TypeId) -> Repr {
     match cx.view.types.shape_of(opt) {
-        .Opt(inner) -> if ptr_shape(cx.view.types.shape_of(inner)) { Repr.Niche } else { Repr.Pair },
+        .Opt(inner) -> inner_repr(cx, inner),
         _ -> Repr.Pair,
     }
+}
+
+/// A FLAT record is a machine word with no spare value — index 0 is
+/// a real index — so its nullable cannot be a niche and a pair no
+/// slot holds. It takes a ONE-SLOT BOX, whose null pointer is the
+/// absence: slot-worthy, and sound for every value the field can
+/// take.
+fn inner_repr(cx: LowerCx, inner: TypeId) -> Repr {
+    if cx.view.types.is_flat(inner) { return Repr.Boxed }
+    if ptr_shape(cx.view.types.shape_of(inner)) { return Repr.Niche }
+    Repr.Pair
 }
 
 /// What a nullable type carries — the `Opt`'s inner, with the
@@ -203,7 +228,7 @@ export fn carried_type(cx: LowerCx, opt: TypeId) -> TypeId {
 /// the null constant, the pair already CARRIES its answer.
 export fn presence_of(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
     match repr_of(cx, opt) {
-        .Niche -> nonzero(cx, v, zeroed(cx, cx.mint_ty(opt))),
+        .Niche or .Boxed -> nonzero(cx, v, zeroed(cx, cx.mint_ty(opt))),
         .Pair -> extracted(cx, v, 0, cx.mint_shape(Type.Bool)),
     }
 }
@@ -234,8 +259,20 @@ fn nonzero(cx: LowerCx, a: Reg, z: Reg) -> Reg {
 export fn carried_of(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
     match repr_of(cx, opt) {
         .Niche -> v,
+        .Boxed -> boxed_carried(cx, v, carried_type(cx, opt)),
         .Pair -> extracted(cx, v, 1, cx.mint_ty(carried_type(cx, opt))),
     }
+}
+
+/// A BOXED nullable's value: slot 0 of its one-slot box, read
+/// straight — the flat-aware slot verb would answer the box itself.
+fn boxed_carried(cx: LowerCx, v: Reg, ty: TypeId) -> Reg {
+    // THE MINT LAW: the index before the answer that reads it
+    let at = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(at, 0))
+    let dst = cx.mint_ty(ty)
+    cx.emit(Ins.CallRt(dst, "avra_array_get", [v, at]))
+    dst
 }
 
 /// A value ADOPTED by a nullable — the widening edge's runtime
@@ -247,8 +284,19 @@ export fn carried_of(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
 export fn adopted(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
     match repr_of(cx, into) {
         .Niche -> r,
+        .Boxed -> boxed_adoption(cx, into, from_null, r),
         .Pair -> pair_adoption(cx, into, from_null, r),
     }
+}
+
+/// A flat value adopted: absence is the null pointer, presence a
+/// one-slot box holding it.
+fn boxed_adoption(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
+    if from_null { return absent_of(cx, into) }
+    let dst = cx.mint_ty(into)
+    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    push_slot(cx, dst, r)
+    dst
 }
 
 fn pair_adoption(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
@@ -274,7 +322,7 @@ export fn presence_region(cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
 /// null constant, or the pair whose flag says no.
 export fn absent_of(cx: LowerCx, opt: TypeId) -> Reg {
     match repr_of(cx, opt) {
-        .Niche -> zeroed(cx, cx.mint_ty(opt)),
+        .Niche or .Boxed -> zeroed(cx, cx.mint_ty(opt)),
         .Pair -> absent_pair(cx, opt),
     }
 }
@@ -321,6 +369,8 @@ export fn hollow_of(cx: LowerCx, inner: TypeId) -> Reg {
 export fn insisted(cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
     match repr_of(cx, opt) {
         .Niche -> insisted_niche(cx, e, v),
+        // the BOX is what must be present; its slot is read after
+        .Boxed -> boxed_carried(cx, insisted_niche(cx, e, v), carried_type(cx, opt)),
         .Pair -> insisted_pair(cx, e, v, opt),
     }
 }
