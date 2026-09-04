@@ -3491,6 +3491,28 @@ END, `{ x }` parses as a statement list whose tail answers, so the
 keyword lexes as a NAME, so `-> { return x }` read `return` as an
 identifier and the @expect'd `}` hole-hit. One form, one law.
 
+BS2 IS OUT OF THE LOOP (2026-09-03). The toolchain is the compiler
+itself: `make avra` builds `build/avra` with the `build/avra` that is
+already there, `./avra` prefers that binary, and `make gate` — 1548
+specs, the corpus through both engines, idioms, vocab, scaffold —
+runs with ZERO bs2 invocations (6m16 against bs2's ~3m, the trade the
+owner accepted). What the switch cost:
+- THE SUITE runs as five native binaries, one per package with cases
+  (std-errors 4, std-toml 42, std-testing 9, std-avrac 1493, cli
+  none — its only `spec` is inside a scaffold template). A green case
+  says nothing now; only failures speak, and the tally closes.
+- THE SCAFFOLDER met the first real divergence: our `"""` blocks are
+  RAW — no interpolation, no escapes — where bs2's interpolate. The
+  templates named their holes (`${name}`, `${ty}`) and filled them
+  through `filled_in`, and the delimiter itself became a hole
+  (`${raw}`) because a raw block cannot hold the thing that ends it.
+- WHAT REMAINS of the bootstrap: one path in `./avra`, taken only
+  when `build/avra` is missing. A tree with a compiler never reads
+  it. The bs2 runtime copy, the wrapper install, the sidecar sweeps
+  and the stamped entry are gone from the Makefile.
+NEXT, in the owner's order: comptime (`const`, evaluated at compile
+time — see the sugar ask below), then the suite's speed.
+
 THE SUITE'S COST, MEASURED (2026-09-03). `avra test` runs a
 package's cases as ONE native binary — `cases_entry` builds its
 entry in IR, calls each case by symbol, and leaves the failure count

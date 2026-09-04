@@ -119,8 +119,25 @@ fn write_or_die(path: string, content: string) {
     }
 }
 
+/// A template's holes filled. A raw block says exactly what it
+/// holds, so a scaffold NAMES its holes and this fills them — which
+/// is also why each template reads as the file it becomes.
+fn filled_in(template: string, name: string, ty: string) -> string {
+    template.replace(hole("name"), name).replace(hole("ty"), ty).replace(hole("raw"), triple())
+}
+
+/// The raw block's own delimiter. A raw block cannot hold it — that
+/// is what ENDS one — so a template that writes one names a hole.
+fn triple() -> string { "\"\"\"" }
+
+/// One hole as the templates spell it, built rather than written:
+/// a literal `${` inside a string would be a hole itself.
+fn hole(word: string) -> string {
+    "$" + "{" + word + "}"
+}
+
 fn mod_template(name: string) -> string {
-    """//! TODO: what `${name}` IS, in one breath.
+    filled_in("""//! TODO: what `${name}` IS, in one breath.
 use features.{LanguageFeature, BuilderRow}
 
 export fn ${name}() -> LanguageFeature {
@@ -131,29 +148,29 @@ export fn ${name}() -> LanguageFeature {
     component LanguageFeature f {
         name = "${name}"
         docs = "TODO: the one-line surface."
-        gram = \"\"\"
+        gram = ${raw}
 TODO = TODO -> ${name}()
-\"\"\"
+${raw}
         builders = rows
     }
     f
 }
-"""
+""", name, "")
 }
 
 fn builders_template(name: string) -> string {
-    """//! Parse-time lowering: captures -> the ${name} node.
+    filled_in("""//! Parse-time lowering: captures -> the ${name} node.
 use core.{Expr}
 use features.{LangNode, Builder}
 
 fn build_${name}(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Error)
 }
-"""
+""", name, "")
 }
 
 fn semantics_template(name: string, ty: string) -> string {
-    """//! The ${name} NodeSemantics: dispatch only. Typing lives in
+    filled_in("""//! The ${name} NodeSemantics: dispatch only. Typing lives in
 //! check.av; lowering — the MEANING — in lower.av.
 use core.{Expr, ExprId, TypeId, Reg}
 use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
@@ -181,33 +198,33 @@ impl NodeSemantics for ${ty} {
         ${name}_lower(cx, e)
     }
 }
-"""
+""", name, ty)
 }
 
 fn check_template(name: string) -> string {
-    """//! The typing rule: TODO.
+    filled_in("""//! The typing rule: TODO.
 use core.{ExprId, TypeId}
 use features.{TypeCx}
 
 fn ${name}_type(cx: TypeCx, e: ExprId) -> TypeId {
     cx.error_type
 }
-"""
+""", name, "")
 }
 
 fn lower_template(name: string) -> string {
-    """//! The lowering rule — the ONE meaning: TODO.
+    filled_in("""//! The lowering rule — the ONE meaning: TODO.
 use core.{ExprId, Reg}
 use features.{LowerCx}
 
 fn ${name}_lower(cx: LowerCx, e: ExprId) -> Reg {
     cx.result(e)
 }
-"""
+""", name, "")
 }
 
 fn test_template(name: string) -> string {
-    """// TODO: the vertical, tested — parse, type, run, and the IR.
+    filled_in("""// TODO: the vertical, tested — parse, type, run, and the IR.
 use @std.avrac.testing.{shown}
 
 spec "features/${name}" {
@@ -217,5 +234,5 @@ spec "features/${name}" {
         }
     }
 }
-"""
+""", name, "")
 }

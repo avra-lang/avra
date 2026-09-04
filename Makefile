@@ -1,8 +1,7 @@
-# bs2 must be invoked by absolute path: it re-invokes itself via argv[0]
-# from other working directories. What links what:
-#   build/runtime.o       bootstrap COPY — bs2's own runtime, linked
-#                         by bs2-compiled binaries; retires with
-#                         self-host alongside bs2 itself.
+# THE COMPILER BUILDS ITSELF. `build/avra` is the working binary and
+# `make avra` rebuilds it with the binary already there; a cold tree
+# bootstraps once through ./avra, which names bs2 in one place.
+# What links what:
 #   build/llvm_wrapper.o  OURS — backend/llvm_wrapper.c, the
 #                         compiler's LLVM binding; new builders are
 #                         added there, never hunted for upstream.
@@ -14,21 +13,16 @@ LLVM_PREFIX ?= /opt/homebrew/opt/llvm
 # a manifest's link flags name it as ${LLVM_PREFIX}
 export LLVM_PREFIX
 
-BOOTSTRAP := ../forge-crafting-intepreters/bootstrap
-BS2       := $(abspath $(BOOTSTRAP))/build/bs2
+RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 
-# bs2 resolves its runtime objects relative to ITS OWN tree, so the
-# wrapper we own must be installed there too: `bs2 run` (what ./avra
-# is) otherwise links a stale copy and any builder we ADD comes back
-# undefined at link time. Ours is a strict superset — symbol-diffed.
-BOOT_WRAPPER := $(BOOTSTRAP)/build/llvm_wrapper.o
-RUNTIME_OBJS := build/runtime.o build/llvm_wrapper.o build/avra_runtime.o $(BOOT_WRAPPER)
+# Every package that carries spec cases, in dependency order.
+SUITES := packages/std-errors packages/std-toml packages/std-testing packages/std-avrac packages/cli
 
 .PHONY: test clean fresh libfresh corpus gate idioms idioms-accept bench fuzz scaffold-check vocab sweep \
-        check run ir emit build-native native-check
+        check run ir emit build-native native-check avra
 
-# bs2's lib-mode freshness truth is the .avra-sha256 sidecars; they
-# go stale against edits. Every bs2-run target clears them first.
+# A cold-tree bootstrap leaves bs2's freshness sidecars behind; the
+# self-hosted compiler keeps none.
 fresh:
 	@find packages -name "*.avra-sha256" -delete
 
@@ -37,45 +31,34 @@ fresh:
 libfresh: fresh
 	@rm -rf packages/*/build
 
-# The bs2 compile caches grow without bound across edits — every
-# content change mints new entries. Swept past ~2GB; the next run
-# rebuilds warm. Shards are per-run scratch and always go — the
-# per-run objects `bs2 test` drops in build/ ROOT (`_test_*`, with
-# their sidecars) carry the run's PID in their name, so a run still
-# alive keeps its own; everything older than an hour, or whose run
-# is gone, is an orphan.
-sweep:
-	@rm -rf build/test_shards
-	@find build -maxdepth 1 -name '_test_*' -mmin +60 -delete 2>/dev/null; true
-	@ls build 2>/dev/null | grep '^_test_' | awk -F. '{ print $$2, $$0 }' \
-	  | while read -r pid f; do kill -0 $$pid 2>/dev/null || echo "build/$$f"; done \
-	  | xargs rm -f; true
-	@for d in packages/*/build/cache; do \
-	  if [ -d $$d ] && [ $$(du -sm $$d | cut -f1) -gt 2048 ]; then \
-	    rm -rf $$d && echo "swept $$d (past 2GB)"; \
-	  fi; \
-	done; true
+# THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
+# tree into the next one. `./avra` prefers it and bootstraps a cold
+# tree only.
+avra: $(RUNTIME_OBJS)
+	@./avra build packages/cli > /dev/null
+	@mkdir -p build
+	@cp packages/cli/src/main build/avra
+	@codesign -f -s - build/avra 2>/dev/null || true
+	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
+	@echo "avra: build/avra"
 
-test: sweep $(RUNTIME_OBJS)
-	$(BS2) test
+# Scratch a run leaves behind: the test binaries each package's
+# cases were linked into.
+sweep:
+	@rm -rf packages/*/build build/test_shards
+
+test: $(RUNTIME_OBJS)
+	@for p in $(SUITES); do \
+	  ./avra test $$p || exit 1; \
+	done
 
 build/avra_runtime.o: runtime/avra_runtime.c
 	@mkdir -p build
 	cc -O2 -Wall -Werror -c runtime/avra_runtime.c -o build/avra_runtime.o
 
-# Compared by CONTENT: the bootstrap's own `make build` plants its
-# older wrapper with a fresh mtime, which a timestamp rule believes.
-$(BOOT_WRAPPER): build/llvm_wrapper.o FORCE
-	@cmp -s $< $@ || cp $< $@
-FORCE:
-
 build/llvm_wrapper.o: backend/llvm_wrapper.c
 	@mkdir -p build
 	cc -c -O2 -I$(LLVM_PREFIX)/include -o build/llvm_wrapper.o backend/llvm_wrapper.c
-
-build/%.o: $(BOOTSTRAP)/build/%.o
-	@mkdir -p build
-	cp $< $@
 
 clean:
 	rm -rf build scratch
@@ -179,8 +162,7 @@ fuzz: $(RUNTIME_OBJS)
 scaffold-check: $(RUNTIME_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
 	@./avra new feature zz_probe > /dev/null
-	@$(BS2) test > /tmp/avra-scaffold.out 2>&1; s=$$?; \
+	@./avra test packages/std-avrac/src/features/zz_probe/tests/zz_probe_test.av > /tmp/avra-scaffold.out 2>&1; s=$$?; \
 	  rm -rf packages/std-avrac/src/features/zz_probe; \
-	  find packages -name "*.avra-sha256" -delete; \
 	  if [ $$s -ne 0 ]; then echo "scaffold-check FAILED"; tail -20 /tmp/avra-scaffold.out; exit 1; fi; \
 	  echo "scaffold-check: the templates compile and their test passes"

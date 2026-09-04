@@ -1,16 +1,28 @@
 #!/bin/sh
-# The avra command, hosted by bs2 until self-host (ROADMAP: the
-# endgame). bs2 keys `bs2 run`'s cache by the ENTRY FILE'S BYTES
-# ALONE — so the entry is generated with a content stamp of every
-# package source, making the cache key truthful: stale serves are
-# impossible, warm hits remain.
+# THE avra COMMAND — the compiler, hosted by itself. `build/avra` is
+# the working binary; it rebuilds from `make avra`, which uses the
+# binary that is already there. The bootstrap path exists for a cold
+# tree only, and names bs2 in exactly one place.
 root="$(cd "$(dirname "$0")" && pwd)"
 # the link flags a manifest writes as ${LLVM_PREFIX}
 LLVM_PREFIX="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}"
 export LLVM_PREFIX
 cd "$root" || exit 2
+
+if [ -x build/avra ]; then
+    exec build/avra "$@"
+fi
+
+# COLD TREE: no compiler yet. Bootstrap once through bs2, then never
+# again — every later build uses the binary this produces.
+bs2="$root/../forge-crafting-intepreters/bootstrap/build/bs2"
+if [ ! -x "$bs2" ]; then
+    echo "avra: no build/avra and no bootstrap compiler at $bs2" >&2
+    echo "      run \`make avra\` where one exists, and keep the binary." >&2
+    exit 2
+fi
 find packages -name '*.avra-sha256' -delete
 stamp=$(find packages -name '*.av' -not -path '*/build/*' -not -name 'main_stamped.av' -print0 | sort -z | xargs -0 cat | shasum -a 256 | cut -c1-16)
 gen="packages/cli/src/main_stamped.av"
 { printf '// deps-stamp: %s\n' "$stamp"; cat packages/cli/src/main.av; } > "$gen"
-exec "$root/../forge-crafting-intepreters/bootstrap/build/bs2" run "$gen" -- "$@"
+exec "$bs2" run "$gen" -- "$@"
