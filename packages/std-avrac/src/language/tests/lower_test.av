@@ -2,7 +2,7 @@
 // its definition's register), scopes are structure, and the memory
 // pass releases a scope's managed values at its exit — Application
 // strategy, reverse binding order.
-use @std.avrac.core.{Ins, RtSig, distinct}
+use @std.avrac.core.{Ins, RtSig, Reg, distinct}
 use @std.avrac.language.{Lowered, render_ir}
 use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns}
 use @std.avrac.testing.{ir_of, halver}
@@ -20,6 +20,13 @@ fn boxes_built(l: Lowered) -> int {
         n = n + b.ins.filter(is_box_call(it)).length
     }
     n
+}
+
+fn is_owned_get(i: Ins) -> bool {
+    match i {
+        .CallRt(_, callee, _) -> callee == "avra_array_get_owned",
+        _ -> false,
+    }
 }
 
 fn is_box_call(i: Ins) -> bool {
@@ -48,6 +55,46 @@ fn addr_syms(l: Lowered) -> List<string> {
 
 fn call_ptrs(l: Lowered) -> int {
     l.entry.ins.filter((i: Ins) -> i is .CallPtr).length
+}
+
+/// Does every load in the entry wear a POINTER — the mut fn cell's
+/// witness: a call through the cell must load the box, not the
+/// call's own answer.
+fn entry_loads_ride_pointers(l: Lowered) -> bool {
+    l.entry.ins.all(load_rides_pointer(l, it))
+}
+
+/// A non-load passes; a load passes when its register is a pointer.
+fn load_rides_pointer(l: Lowered, i: Ins) -> bool {
+    let d: Reg? = match i {
+        .Load(dst, _) -> dst,
+        _ -> null,
+    }
+    d == null || l.types.rides_pointer(l.entry.reg_types[d!.index])
+}
+
+/// Every call THROUGH a box in the lifted bodies takes a seat the
+/// caller retained first — callee-cleans' other half, which a lane
+/// read typed as a bare pointer once skipped.
+fn every_callptr_seat_retained(l: Lowered) -> bool {
+    mut ok = true
+    for b in l.fns {
+        mut retained: List<int> = []
+        for i in b.ins {
+            let held: Reg? = match i {
+                .Retain(r) -> r,
+                _ -> null,
+            }
+            if held != null { retained.push(held!.index) }
+            let seat: Reg? = match i {
+                .CallPtr(_, _, args) -> args[0],
+                _ -> null,
+            }
+            // LICENSED I9: register identity, not type agreement
+            if seat != null && !retained.any(it == seat!.index) { ok = false }
+        }
+    }
+    ok
 }
 
 /// A `string?` made and read through `??` — the niche subject.
@@ -86,6 +133,18 @@ fn plain_id_fn() -> string {
 }
 
 spec "language/lower" {
+    given "calls through boxes wear the callee's type" {
+        then "a call through a mut fn cell loads the box, never the answer" {
+            entry_loads_ride_pointers(ir_of("mut f = () -> 1\nf()"))
+        }
+        then "a captured fn's lane read is retained before the call that releases it" {
+            every_callptr_seat_retained(ir_of("let a = () -> 1\nlet b = () -> a() + 1\nb()"))
+        }
+        then "a captured fn's lane read is an OWNED read" {
+            let l = ir_of("let a = () -> 1\nlet b = () -> a() + 1\nb()")
+            l.fns.any(it.ins.any(is_owned_get(it)))
+        }
+    }
     given "arithmetic" {
         then "one scope, constants, one Bin, the answer's puts, exit 0" {
             let l = ir_of("1 + 2")

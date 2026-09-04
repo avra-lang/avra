@@ -42,8 +42,8 @@ binary included — as a projection. The layers, from zero:
   coercion replaced the hand-written bool widening, and the IR
   goldens now SHOW the provenance system working: an owned
   int_text result releases, a static bool_text answer does not.
-- L4 MEMORY AS KNOWLEDGE: the ownership registry in the runtime
-  is scaffolding; the destination is full static ownership from
+- L4 MEMORY AS KNOWLEDGE: the refcount header in the runtime is
+  scaffolding; the destination is full static ownership from
   the memory pass — the runtime knows allocate and free,
   refcounts only where escape analysis provably cannot decide.
 - L5 EVERYTHING IS A PROJECTION: text files render from the
@@ -1685,8 +1685,8 @@ WHY, each a paradox collapsed (P6):
   pointer is NOT a container: under the niche, `carried_of` is
   IDENTITY — the nullable is the very value the memory pass already
   manages — and absence is a null pointer the runtime already
-  no-ops BY CONSTRUCTION (avra_rc_release guards NULL and ignores
-  unregistered pointers). The representation IS the safety
+  no-ops BY CONSTRUCTION (avra_rc_release guards NULL and reads no
+  header on what is not a box). The representation IS the safety
   argument. `is_managed` learns one thing: see through `Opt`.
 - THE BOX WAS AN OPTIMIZATION BARRIER, not merely an allocation.
   LLVM cannot see through `avra_array_new`; it sees straight
@@ -5123,6 +5123,14 @@ makes it cheap: `avra_rc_retain/release` no-op on unregistered
 pointers BY CONSTRUCTION — so statics, literals, and the niche's
 null pointer need no guards anywhere.
 
+(REVERSED BY MEASUREMENT 2026-09-04 — THE SPEED HUNT below: the
+registry's probe was the compiler's single largest cost, and the
+header took the compiler checking itself from 59.8s to 28.8s. The
+law survived the reversal in a new form: every pointer Avra holds
+carries a header, statics as IMMORTAL ones, so the no-op on a
+literal is still by construction — read from the header, not
+looked up in a table.)
+
   (O1) THE RUNTIME LEARNS AGGREGATES: OwnEntry gains a KIND (str |
        array); `avra_array_new` registers rc 1; AvraArray carries
        a parallel owned-slot byte map; release at rc 0 first
@@ -5171,7 +5179,8 @@ null pointer need no guards anywhere.
        no_ attacks flipped to ok_ differentials.
   (O4) recorded, each with its trigger: Opt in AGGREGATE slots
        (slot_worthy needs the registry to see the carried shape —
-       niche strings in mut CELLS already work); errdefer; the
+       niche strings in mut CELLS already work; a CAPTURE LANE is
+       the third slot, refused since the header's round); errdefer; the
        Result register TRIPLE (P4 — after the corpus can measure
        it).
 
@@ -5689,53 +5698,116 @@ is paid), and the assembled grammar is PREPARED once (`Ready`:
 validated and indexed at assembly, not re-validated per file — 257
 times per run for a fixed grammar).
 
-### WIP, NOT LANDED: the refcount in a header (wip/)
+### LANDED: the refcount in a header (2026-09-04)
 
-The measured prize is real and large: replacing `g_own` with a
-sixteen-byte header before every payload took the compiler from
-52.6s to 27.3s user — 1.93x — with every phase moving together
-(parse 18.9 -> 12.8, bodies 15.2 -> 6.9), which is the signature of a
-uniform per-allocation cost. The gate ran in 125s against 302s. All
-1587 specs passed.
+`g_own` is gone. Every box carries sixteen bytes before its payload
+— `{ u32 tag "AVRA", i32 kind, i64 rc }` — and retain/release read
+the header the payload's own cache line holds. MEASURED, like for
+like, on the compiler checking itself (`./avra check
+packages/std-avrac`, user CPU):
 
-It is NOT landed because it removes a SAFETY NET the compiler leans
-on. `owned(p)` answered "not mine" for any pointer the registry had
-never seen, so retaining or releasing a SCALAR, a code address or a
-foreign string was silently harmless. A header cannot say "not mine"
-by itself. The work in wip/ therefore also carries:
-  - every string constant emitted WITH a header
-    (avra_llvm_build_global_string_ptr), so the law "every pointer
-    Avra holds carries a header" is the backend's too;
-  - the runtime's own answers headered (`bool_text`, argv, getenv);
-  - a TAG in the kind's high half so a header can be RECOGNISED
-    rather than assumed, restoring the "not mine" answer.
+  registry                                   59.8s
+  header                                     28.8s   (2.07x)
+  make gate, wall                           223s -> 152s
+  make avra (the compiler building itself)  37.6s -> 25.3s
+  peak RSS of a gate                         1.8 GB (measured, the watchdog)
 
-Even tagged, the COMPILER (not ordinary programs — those pass, suites
-included) overflows its stack inside `avra_rc_release`. Something in
-the compiler's own object graph reclaims without bottom once releases
-stop being silent no-ops. THE NEXT STEP IS TO FIND THAT, not to
-re-argue the design: instrument `avra_rc_release` with a depth
-counter that aborts and names the box, and read what it names.
+WHAT THE PRIOR ATTEMPT GOT WRONG, now known: it counted string
+CONSTANTS. A constant lives in read-only memory and is released at
+every scope exit, so a counted one either faults on the write or,
+made writable, reaches zero and hands `.rodata` to `free()` — the
+"bottomless" reclaim was the allocator walking a corrupted heap. A
+constant is IMMORTAL: `kind = STATIC`, its header read and never
+written. `avra_llvm_build_global_string_ptr` emits `{ i32 tag, i32
+-1, i64 0, [N x i8] }` at align 16 and answers a GEP sixteen bytes
+in. The same kind covers the runtime's own words, argv and the
+environment (`str_static`). The tag restores "not mine": `hdr()`
+refuses an unaligned or sub-image address before reading, then a
+header without the tag — which is exactly what carried the
+TRANSITION: the first rebuild runs a binary whose own literals are
+headerless (the old wrapper is baked into it) against the new
+runtime, and every literal reads as foreign; the second rebuild
+reaches the fixed point. The OLD seed bootstraps the same way and
+rebuilt a byte-identical compiler.
 
-TWO REAL BUGS THE HUNT EXPOSED, both hidden today by the registry:
-  (1) A CAPTURE IS TYPED BY THE LAMBDA. `slot_reg` minted a boxed
-      slot's load with the READING node's type; a capture is read AT
-      the lambda expression, whose type is a managed box, so an `int`
-      capture looked managed — the memory pass RETAINED A NUMBER and
-      pushed it as an owned slot (`corpus/closures`, the loop
-      counter). Same species as the callee bug fixed in 4e27411: a
-      read must wear the type of WHAT IS READ. The obvious fix (mint
-      from the slot's own register type) is WRONG as written — a
-      capture's slot belongs to the ENCLOSING body, so the current
-      body's register table is the wrong table to ask. The fix needs
-      the captured BINDING's declared type, not a register's.
-  (2) THE COLD-BOOTSTRAP PATH IS DEAD. `./avra` falls back to bs2 for
-      a cold tree; bs2 cannot lex raw `"""` blocks, and every
-      feature's `gram` is one, so the grammar never assembles. The
-      tree can only be rebuilt from a working `build/avra` or from a
-      worktree at 551259c or earlier. Either restore a bs2-parseable
-      path, or state plainly that the binary IS the bootstrap and
-      keep one.
+THE BUG THE REGISTRY HID, found by the guard the day the header
+landed: a lambda calling a CAPTURED fn value released the box it
+called and had never retained it. `callee_binding` read the lane
+as `Type.Ptr` — "the lane holds a pointer, and says so" — and `Ptr`
+is UNMANAGED, so the memory pass neither owned the read nor
+retained the seat, while the callee (callee-cleans) released it at
+exit. Net -1 per call; under the registry a released box was "not
+mine" on its second release, so the leak of nothing was silent;
+under the header the second release is a write into freed memory.
+`AVRA_RC_GUARD=1 corpus/closures` named it in one line. THE FIX IS
+A FACT: `TypeFacts.captures` — each lambda's captures typed in lane
+order, seated by `lambda_walked` through the driver's own
+`binding_ty` — and every capture read in lowering wears it: the
+ident (`read_binding`), the callee (`callee_binding`), the pack
+(`capture_regs`, which also closes the WIP's bug (1): a captured
+`int` no longer wears the lambda's box type, so the pass stops
+retaining a number). `read_wearing(e, b, ty)` is the one read with
+the type named by the caller who knows it; `slot_reg` mints a
+boxed slot's load at that type. 69/69 corpus binaries clean under
+the guard.
+
+THE RUNTIME ALSO LEARNED to wreck loudly: a freed box's tag is
+cleared before `free`, the guard's log is bounded (8M events), and
+a list or map past 2^31 cells traps as a corrupted box instead of
+asking the machine for the memory.
+
+WHAT THE HUNT COSTS TO RUN: a gate is one process at ~1.8 GB for
+two and a half minutes. It runs in the foreground, alone, under
+`tools/watch.sh` — the machine panicked (a WindowServer watchdog
+timeout) with a background gate and compiler runs beside it.
+
+THE WRAPPER, SWEPT. backend/llvm_wrapper.c was "adopted whole" from
+the bootstrap tree: 1643 lines, 135 fns, of which the tree named 62.
+The review round deleted 73 — a coverage subsystem, a JIT and its
+`@comptime` string copier, float and bit ops, `emit_object`, the
+`split_defines` IR splitter — and THREE WEAK SHIMS of runtime fns
+(`avra_host_env` among them, answering a RAW `getenv` pointer: a
+headerless source the law forbids, hidden behind `weak` "for bs2,
+which links this one alone"). 640 lines now, every fn named by
+llvm_api.av, compiled under -Wall -Werror. `avra_rc_alloc` in the
+runtime served the JIT alone and went with it. The bs2-era `.ll`
+files in packages/*/src — the only remaining spellings of its name —
+were swept; `make fresh` owns the sidecars.
+
+THE COLD-BOOTSTRAP note in the WIP is closed by THE SEED (above):
+the binary is not the bootstrap; `bootstrap/seed.ll` is, refreshed
+with this slice.
+
+THE RED TEAM'S YIELD (38 programs: every value category captured,
+every construct crossed, arities 0..3 managed in and out, 20k-deep
+reclaim, 20k-call churn, the constants of every shape, the host's
+words). Four LATENT crashes, every one reproduced on the pre-slice
+compiler built from HEAD's seed, so none was the header's — and
+every one a refusal in its own words now, pinned in
+closures_adversarial_test (26 specs):
+  (1) A PAIR NULLABLE CAPTURED segfaulted the compiler: the pack
+      pushed two words into one lane, the lifted body extracted a
+      pair from an i64, and LLVM's C API answered NULL. A capture
+      lane is a SLOT; it now asks the slot law the list and the
+      field ask (`slot_worthy`, through a `capture_seats` verb on
+      the typing context) and refuses: "a lambda cannot capture
+      `int?` yet". The lane joins O4's list below — pairs in
+      slots are one design, three sites.
+  (2) A CALL THROUGH A MUT FN CELL failed LLVM verification: the
+      cell's load was minted at the CALL's type (its answer, an
+      int), so the box loaded as `i64`. Same species as the capture
+      lane: `callee_binding` now wears the BINDING's type for the
+      two reads that mint (`def_type_of` for a cell, the captures
+      fact for a lane). lower_test pins both shapes.
+  (3) ASSIGNING TO A CAPTURE, a lambda's param, or a pattern's bind
+      showed the user a DEFECT ("an assignment to a non-place
+      survived a clean analysis"): resolve's law said "the walk
+      already spoke" and it had not. Four voices now — captured by
+      value, a parameter, a pattern's bind, a fn's name.
+  (4) A FN'S NAME walked through resolve as a place, because the
+      rule asked `binding_of(name)` — a LOCALS table — instead of
+      the binding the walk had just recorded. Ask the binding: the
+      name-keyed verb had no other reader and died with the bug.
 
 ## THE OPEN LEDGER — the red team's second round (2026-09-03)
 

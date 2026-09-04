@@ -212,6 +212,82 @@ spec "features/closures/adversarial" {
         }
     }
 
+    given "the captured world under attack (the refcount header's round)" {
+        // Every value category captured, every construct crossed,
+        // every arity, ownership churned — and the four latent
+        // crashes the round surfaced, each a refusal now. The
+        // engines' agreement rides corpus/closures.
+        then "a zero-capture lambda called through a capture" {
+            shown("let one = () -> 1\nlet two = () -> one() + 1\n\"\${two()} \${two()}\"") == "2 2"
+        }
+        then "a capture chain four deep" {
+            shown("let a = () -> 1\nlet b = () -> a() + 1\nlet c = () -> b() + 1\nlet d = () -> c() + 1\nd()") == "4"
+        }
+        then "arities 0..3 through a capture, managed in and out" {
+            shown("let z = () -> \"z\"\nlet o = (a: string) -> \"\${a}!\"\nlet t = (a: string, b: string) -> \"\${a}\${b}\"\nlet h = (a: string, b: string, c: string) -> \"\${a}\${b}\${c}\"\nlet run = () -> \"\${z()} \${o(\"a\")} \${t(\"b\", \"c\")} \${h(\"d\", \"e\", \"f\")}\"\n\"\${run()} \${run()}\"") == "z a! bc def z a! bc def"
+        }
+        then "a captured fn passed on as an argument" {
+            shown("fn apply(f: fn(int) -> int, v: int) -> int {\n    f(v)\n}\nlet inc = (x: int) -> x + 1\nlet g = () -> apply(inc, 41)\ng()") == "42"
+        }
+        then "a captured fn returned, then called outside" {
+            shown("let inc = (x: int) -> x + 1\nlet give = () -> inc\nlet got = give()\n\"\${got(1)} \${give()(2)}\"") == "2 3"
+        }
+        then "a captured fn stored in a field and a list inside the lambda" {
+            shown("type Ops = { f: fn(int) -> int }\nlet inc = (x: int) -> x + 1\nlet build = () -> {\n    let o = Ops { f: inc }\n    let fs = [inc, inc]\n    \"\${o.f(1)} \${fs[0](5)}\"\n}\nbuild()") == "2 6"
+        }
+        then "a capture of a mut fn cell is BY VALUE at creation" {
+            shown("mut f = () -> 1\nlet g = () -> f()\nf = () -> 2\n\"\${g()} \${f()}\"") == "1 2"
+        }
+        then "a self-recursive closure through a mut cell captures the OLD value" {
+            shown("mut fact = (n: int) -> 1\nfact = (n: int) -> if n <= 1 {\n    1\n} else {\n    n * fact(n - 1)\n}\nfact(5)") == "5"
+        }
+        then "a captured fn inside a generic body, at two instantiations" {
+            shown("fn twice<T>(x: T, f: fn(T) -> T) -> T {\n    let g = () -> f(f(x))\n    g()\n}\n\"\${twice(3, (v: int) -> v + 1)} \${twice(\"a\", (v: string) -> v + \"b\")}\"") == "5 abb"
+        }
+        then "a lambda in a method captures self and a fn param" {
+            shown("type C = { k: int }\nimpl C {\n    fn run(self, f: fn(int) -> int) -> int {\n        let g = () -> f(self.k) + self.k\n        g()\n    }\n}\nlet c = C { k: 5 }\nc.run((x: int) -> x * 10)") == "55"
+        }
+        then "a lambda param shadows a captured fn name" {
+            shown("let f = () -> 1\nlet g = (f: fn() -> int) -> f()\nlet h = () -> f() + g(() -> 2)\nh()") == "3"
+        }
+        then "mixed lanes — a fn beside an int beside a string" {
+            shown("let n = 5\nlet f = () -> n\nlet g = () -> f() + n\nlet s = \"w\"\nlet h = () -> \"\${g()}\${s}\${f()}\"\n\"\${g()} \${h()}\"") == "10 10w5"
+        }
+        then "a captured fn called three times in one expression" {
+            shown("let f = (x: int) -> x + 1\nlet g = () -> f(1) + f(2) + f(3)\ng()") == "9"
+        }
+        then "a pronoun lambda calling a captured fn" {
+            shown("let k = () -> 10\nlet f = (x: int) -> x + k()\n[1, 2, 3].map((x: int) -> f(x) + k())[2]") == "23"
+        }
+        then "a fn-typed field's lambda calling a captured fn" {
+            shown("type Ops = { run: fn(int) -> int }\nlet base = (x: int) -> x * 3\nlet ops = Ops { run: (v: int) -> base(v) + 1 }\n\"\${ops.run(2)} \${ops.run(3)}\"") == "7 10"
+        }
+        then "a captured fn through a named recursion" {
+            shown("fn fold(n: int, f: fn(int) -> int) -> int {\n    if n == 0 {\n        0\n    } else {\n        f(n) + fold(n - 1, f)\n    }\n}\nlet k = 2\nlet g = (x: int) -> x * k\nlet run = () -> fold(100, g)\nrun()") == "10100"
+        }
+        then "every slot-worthy category captured and read" {
+            shown("type Flat = { i: int }\ntype Box = { s: string, n: int }\nenum E {\n    A\n    B(v: int)\n}\nlet i = 7\nlet b = true\nlet s = \"str\"\nlet xs = [1, 2]\nlet fl = Flat { i: 3 }\nlet bx = Box { s: \"bs\", n: 9 }\nlet e = E.B(4)\nlet ns: string? = \"ns\"\nlet nf: Flat? = Flat { i: 8 }\nlet f = (x: int) -> x + 1\nlet all = () -> {\n    let ev = match e {\n        .A -> 0,\n        .B(v) -> v,\n    }\n    \"\${i} \${b} \${s} \${xs.length} \${fl.i} \${bx.s}\${bx.n} \${ev} \${ns ?? \"-\"} \${nf?.i ?? 0} \${f(1)}\"\n}\nall()") == "7 true str 2 3 bs9 4 ns 8 2"
+        }
+        then "a scalar nullable is not slot-worthy — a capture lane is a slot" {
+            refused_with("let ni: int? = 5\nlet g = () -> ni ?? 0\ng()", "a lambda cannot capture `int?` yet")
+        }
+        then "a captured let is not a place" {
+            refused_with("let n = 1\nlet g = () -> {\n    n = 2\n    n\n}\ng()", "`n` is captured by value — a lambda cannot assign to it")
+        }
+        then "a captured mut is not a place either — the capture is the copy" {
+            refused_with("mut count = 0\nlet bump = () -> {\n    count = count + 1\n    count\n}\nbump()", "`count` is captured by value — a lambda cannot assign to it")
+        }
+        then "a lambda's param is immutable" {
+            refused_with("let f = (x: int) -> {\n    x = 2\n    x\n}\nf(1)", "`x` is a parameter — parameters are immutable")
+        }
+        then "a pattern's bind is not a place" {
+            refused_with("enum E {\n    A(v: int)\n}\nlet r = match E.A(1) {\n    .A(v) -> {\n        v = 2\n        v\n    },\n}\nr", "`v` is a pattern's bind — it names the matched value, it is not assigned")
+        }
+        then "a fn's name is not a place" {
+            refused_with("fn f() -> int {\n    1\n}\nf = () -> 2\nf()", "`f` is a fn — it is not assigned")
+        }
+    }
+
     given "a lambda that calls a CAPTURED lambda" {
         // The env lane holding a fn box was read with the CALL's
         // type — a call's type is its ANSWER, never its callee's —

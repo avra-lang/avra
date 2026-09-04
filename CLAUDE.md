@@ -156,7 +156,11 @@ registry is the idiom engine's spec, written by dogfooding.
   seat. A name may be defined twice (a `let` shadowing a const), so
   a name-keyed question and the binding in hand answer about
   DIFFERENT statements — the mismatch reads a slot nobody wrote
-  ("index -1"). One question, asked of the statement.
+  ("index -1"). One question, asked of the statement. And a
+  name-keyed table holds what it holds: `resolve_assign` asked
+  `binding_of(name)`, a LOCALS table, so a fn's name walked
+  through as a place — the walk had already recorded the root's
+  binding; ask that.
 - A READ WEARS THE TYPE OF WHAT IS READ, never the type of the node
   doing the reading. This bit THREE times in one slice: a captured
   callee took the CALL's type (a call's type is its answer, never its
@@ -173,6 +177,32 @@ registry is the idiom engine's spec, written by dogfooding.
   the widen happens to be identity, and a wrong answer the day the
   representation changes. Three seats had it: a struct field, a call
   argument, an enum payload.
+- EVERY POINTER AVRA HOLDS CARRIES A HEADER. The runtime counts
+  references in sixteen bytes BEFORE each payload (tag, kind, rc),
+  and `avra_rc_retain/release` read that header — so a managed
+  value that came from anywhere else reads memory that is not ours.
+  The sources are all headered: the backend's string constants
+  (`avra_llvm_build_global_string_ptr`, kind STATIC, immortal),
+  the runtime's own words (`bool_text`, "null"), argv and the
+  environment (`str_static`). A new C fn that answers TEXT to a
+  program allocates it with `box_alloc`/`str_owned`, or
+  `str_static` when the program must never own it — never a bare
+  `malloc` or a C literal. The tag is the belt (`hdr` refuses a
+  header without it, and an unaligned or sub-image address before
+  reading anything); the law is the braces.
+- A RETAIN THE CALLEE RELEASES MUST BE EMITTED: callee-cleans means
+  every managed seat of a call is retained by the caller, and a
+  seat typed as unmanaged (`Ptr`, `Int`) is a release with no
+  retain — under the registry a silent leak of nothing, under the
+  header a write into freed memory. `AVRA_RC_GUARD=1` names it as
+  "released an already-dead box"; the capture lane read as `Ptr`
+  was one (`callee_binding`), and a mut fn CELL loaded at the
+  call's answer type was its twin (the box read as `i64`, LLVM
+  refused). The fourth and fifth instances of A READ WEARS THE
+  TYPE OF WHAT IS READ: a capture wears the CAPTURED binding's
+  type, seated by typing (`TypeFacts.captures`), a cell's load the
+  DEFINITION's (`def_type_of`) — at every read that MINTS, which
+  in `callee_binding` is exactly those two.
 - A PROCESS STATUS IS A VERDICT, never a count: statuses are eight
   bits, so 256 failures read as success. Exit 0 or 1 and print the
   count. A TRAP is not a verdict either — `avra_trap` exits 2, so a
@@ -735,6 +765,14 @@ against these before writing; probe in scratch when unsure.
   (F3001) — `xs.set(..)`, `.push(..)`, `.pop()` need a `mut`
   binding, even where the receiver is a struct whose field is the
   place. Bind `mut` at the site.
-- Three concurrent `make test` runs (each spawns eight compiler
-  shards) crashed the machine; builds are serial — never let two
-  agents build at once.
+- ONE HEAVY PROCESS AT A TIME, in the FOREGROUND, under the
+  watchdog: `sh tools/watch.sh 4000 make gate`. The machine is
+  shared with a loaded desktop and has panicked twice under this
+  tree — three concurrent `make test` runs once, and a background
+  gate with other compiler runs beside it (a WindowServer watchdog
+  panic, 2026-09-04). A gate is ~1.8 GB for minutes; nothing else
+  heavy runs beside it, no gate runs in the background, and every
+  suite, gate or whole-package check runs through the watchdog,
+  which kills the tree past its cap and prints the peak.
+  `AVRA_RC_GUARD=1` only on small programs: its log is bounded but
+  a guarded compiler run over a package is still a machine's worth.

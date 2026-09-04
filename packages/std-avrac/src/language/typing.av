@@ -160,6 +160,7 @@ fn expr_cx(t: Typer, param_types: List<TypeId>) -> TypeCx {
         block_type: (stmts: List<StmtId>, value: ExprId?) -> block_type(t, param_types, stmts, value),
         walk_narrowed: (subject: ExprId, branch: ExprId) -> narrowed_subtree(t, param_types, subject, branch),
         lambda_body: (lam: ExprId, ptys: List<TypeId>, body: ExprId) -> lambda_walked(t, param_types, lam, ptys, body),
+        capture_seats: (lam: ExprId) -> capture_types(t, param_types, lam),
         retype_seated: (a: ExprId, seats: List<TypeId>) -> reseated(t, param_types, a, seats),
         target_type: (e: ExprId) -> t.target_type(e, param_types),
         enclosing_ret: () -> t.reachable_ret(),
@@ -202,16 +203,25 @@ fn typed_subtree(t: Typer, param_types: List<TypeId>, root: ExprId) -> TypeId {
 }
 
 /// A lambda's body typed under its params, behind the BARRIER —
-/// `return`/`?`/`fail` inside see no enclosing fn. Params register
-/// FIRST so the body's reads answer.
+/// `return`/`?`/`fail` inside see no enclosing fn. Params and
+/// captures register FIRST so the body's reads answer.
 fn lambda_walked(t: Typer, param_types: List<TypeId>, lam: ExprId, ptys: List<TypeId>, body: ExprId) -> TypeId {
     t.facts.seat_lambda(lam, ptys)
+    t.facts.seat_captures(lam, capture_types(t, param_types, lam))
     mut bar = t.lam_bar
     // LICENSED I15: this IS the bracket fn
     bar.push(t.fn_ret.length)
     let ret = typed_subtree(t, param_types, body)
     let _ = bar.pop()
     ret
+}
+
+/// What the lambda captured, typed in lane order — each the
+/// captured binding's own type.
+fn capture_types(t: Typer, param_types: List<TypeId>, lam: ExprId) -> List<TypeId> {
+    let cap: Cap? = t.names.capture(lam)
+    if cap == null { return [] }
+    [t.binding_ty(b, param_types) for b in cap!.sources]
 }
 
 /// THE RESCUE: a hungry lambda re-types under the seats it lands

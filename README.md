@@ -56,7 +56,9 @@ into a tracer: a box that reaches zero is POISONED and kept, the
 second release of it aborts, and the report prints that box's whole
 retain/release history with each caller's address. Symbolize those
 with `lldb -b -o "image lookup -a <addr>" <binary>`. It found half
-the self-hosting bugs; off, it costs one `getenv` per program.
+the self-hosting bugs; off, it costs one branch per operation. The
+log is bounded (8M events, 256 MB) and says so when it truncates —
+guard small programs, not the compiler over a package.
 
 ## The compiler, in pipeline order
 

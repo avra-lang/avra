@@ -5,18 +5,26 @@
 // out of bounds does. Language semantics live in this tree, in this
 // file — never in a dependency.
 //
-// MEMORY MODEL (v2): an ownership REGISTRY, not headers and not
-// trust. Every allocation this runtime hands to a program is
-// registered with refcount 1. avra_rc_retain / avra_rc_release act
-// only on registered pointers — statics, literals, and foreign
-// pointers pass through as no-ops BY CONSTRUCTION, with no header
-// reads and no undefined behavior. Strings and ARRAYS both
-// register; an array's entry knows its kind, and releasing one at
-// rc 0 releases its OWNED slots first (the compiler marks them at
-// pack time via avra_array_push_owned), so nesting reclaims by
-// recursion. Reads of owned slots go through avra_array_get_owned,
-// which retains — every managed read is a +1 the reader's scope
-// releases, so aliasing shares the pointer while counts balance.
+// MEMORY MODEL (v3): a HEADER, not a registry. Every allocation
+// this runtime hands a program carries sixteen bytes before its
+// payload: a tag that says the header is ours, the box's kind, and
+// its refcount. avra_rc_retain / avra_rc_release read the header
+// the payload's own cache line holds — no table, no probe, no
+// rehash. The tag is what restores "not mine": a pointer whose
+// header does not carry it (a raw scalar, a foreign address) is
+// left alone. THE LAW THE TAG BACKS: every pointer Avra holds
+// carries a header — the backend's string constants (see
+// avra_llvm_build_global_string_ptr), the runtime's own literals,
+// argv and the environment included — so a retain never reads
+// before an address that is not ours. A STATIC box is immortal:
+// its header is read and never written, so a constant may live in
+// read-only memory. Strings and ARRAYS both carry headers; an
+// array's kind decides its reclaim, which releases its OWNED slots
+// first (the compiler marks them at pack time via
+// avra_array_push_owned), so nesting reclaims by recursion. Reads
+// of owned slots go through avra_array_get_owned, which retains —
+// every managed read is a +1 the reader's scope releases, so
+// aliasing shares the pointer while counts balance.
 //
 // TRAP CONTRACT: an impossible-at-runtime operation (index out of
 // bounds) prints one line to stderr — worded EXACTLY like the
@@ -29,86 +37,75 @@
 #include <stdint.h>
 #include <errno.h>
 
-// ── The ownership registry ──────────────────────────────────────
+// ── The box header ──────────────────────────────────────────────
 
 // A box's KIND decides how it reclaims and clones: 0 a plain
-// allocation, 1 an array, 2 a map.
+// allocation, 1 an array, 2 a map. Below zero it is not counted:
+// STATIC is immortal, DEAD is the guard's mark on a reclaimed box.
+enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MAP = 2 };
+
+// "AVRA" — the bytes that say a header is this runtime's.
+#define AVRA_TAG 0x41565241u
+
 typedef struct {
-    void* ptr;
+    uint32_t tag;
+    int32_t kind;
     int64_t rc;
-    int64_t kind;
-    void* died_at;
-} OwnEntry;
+} Header;
 
-static OwnEntry* g_own = NULL;
-static size_t g_own_cap = 0;
-static size_t g_own_len = 0;
-
-static size_t own_slot(OwnEntry* table, size_t cap, void* p) {
-    size_t h = ((uintptr_t)p >> 4) * 2654435761u;
-    size_t i = h & (cap - 1);
-    while (table[i].ptr != NULL && table[i].ptr != p) {
-        i = (i + 1) & (cap - 1);
-    }
-    return i;
+// The payload's header. NULL for a pointer that is not a box: the
+// null pointer, an unaligned or low address (a box is sixteen-
+// aligned and lives above the image base — a scalar mistaken for
+// one is refused before anything is read), or a header without the
+// tag.
+static Header* hdr(void* p) {
+    uintptr_t a = (uintptr_t)p;
+    if ((a & 15) != 0 || a < 0x100000000ull) return NULL;
+    Header* h = (Header*)p - 1;
+    return h->tag == AVRA_TAG ? h : NULL;
 }
 
-static void own_grow(void) {
-    size_t cap = g_own_cap ? g_own_cap * 2 : 1024;
-    OwnEntry* next = (OwnEntry*)calloc(cap, sizeof(OwnEntry));
-    for (size_t i = 0; i < g_own_cap; i++) {
-        if (g_own[i].ptr != NULL) {
-            next[own_slot(next, cap, g_own[i].ptr)] = g_own[i];
-        }
-    }
-    free(g_own);
-    g_own = next;
-    g_own_cap = cap;
+// A fresh box of `size` payload bytes, refcount 1.
+static void* box_alloc(size_t size, int32_t kind) {
+    Header* h = (Header*)malloc(sizeof(Header) + (size > 0 ? size : 1));
+    h->tag = AVRA_TAG;
+    h->kind = kind;
+    h->rc = 1;
+    return (void*)(h + 1);
 }
 
-// Registers a fresh allocation as owned, refcount 1.
-static void rc_note(void* p, int delta, void* at, int64_t rc);
-static int rc_guarded(void);
-
-static void* own_kind(void* p, int64_t kind) {
-    if (p == NULL) return p;
-    rc_note(p, 1, __builtin_return_address(0), 1);
-    if (g_own_len * 10 >= g_own_cap * 7) own_grow();
-    size_t i = own_slot(g_own, g_own_cap, p);
-    g_own[i].ptr = p;
-    g_own[i].rc = 1;
-    g_own[i].kind = kind;
-    g_own_len++;
-    return p;
+// The tag goes before the memory does: a stale release of a freed
+// box then reads "not mine" instead of a count that is no longer
+// anyone's.
+static void box_free(void* p) {
+    Header* h = (Header*)p - 1;
+    h->tag = 0;
+    free(h);
 }
 
-static void* own(void* p) {
-    return own_kind(p, 0);
-}
-
-static OwnEntry* owned(void* p) {
-    if (g_own_cap == 0 || p == NULL) return NULL;
-    size_t i = own_slot(g_own, g_own_cap, p);
-    return g_own[i].ptr == p ? &g_own[i] : NULL;
-}
-
-// A registered allocation of `size` bytes, refcount 1 — what a C
-// caller (the compiler's LLVM binding) uses to hand a program memory
-// the registry will reclaim like any other.
-void* avra_rc_alloc(int64_t size) {
-    return own(malloc(size > 0 ? (size_t)size : 1));
+// An IMMORTAL copy of `s`: retain and release leave it alone. What
+// every text the runtime answers without owning becomes — a
+// keyword, an argument, the environment's word.
+static const char* str_static(const char* s) {
+    size_t n = strlen(s);
+    char* buf = (char*)box_alloc(n + 1, KIND_STATIC);
+    memcpy(buf, s, n + 1);
+    return buf;
 }
 
 // The guard's event log: every retain and release of every box,
 // with the caller's address, so a double release can show its own
-// history. Debug-only; the log grows with the run.
+// history. Debug-only, and BOUNDED: past the budget the log stops
+// and the report says so — a guarded run of a large program must
+// not take the machine with it.
 typedef struct { void* ptr; int delta; void* at; int64_t rc; } RcEvent;
 static RcEvent* g_log = NULL;
 static size_t g_log_len = 0;
 static size_t g_log_cap = 0;
+#define RC_LOG_BUDGET ((size_t)1 << 23)
 
 static void rc_note(void* p, int delta, void* at, int64_t rc) {
-    if (!rc_guarded()) return;
+    if (g_log_len == RC_LOG_BUDGET) return;
     if (g_log_len == g_log_cap) {
         g_log_cap = g_log_cap ? g_log_cap * 2 : 1 << 16;
         g_log = (RcEvent*)realloc(g_log, g_log_cap * sizeof(RcEvent));
@@ -121,38 +118,12 @@ static void rc_note(void* p, int delta, void* at, int64_t rc) {
 }
 
 static void rc_history(void* p) {
+    if (g_log_len == RC_LOG_BUDGET) fputs("    (history truncated at the log's budget)\n", stderr);
     for (size_t i = 0; i < g_log_len; i++) {
         if (g_log[i].ptr == p) {
             fprintf(stderr, "    %s from %p -> rc %lld\n",
                     g_log[i].delta > 0 ? "retain" : "release", g_log[i].at, (long long)g_log[i].rc);
         }
-    }
-}
-
-void avra_rc_retain(void* p) {
-    OwnEntry* e = owned(p);
-    if (e) e->rc++;
-    if (e) rc_note(p, 1, __builtin_return_address(0), e->rc);
-}
-
-// Note: removal leaves the entry in place with ptr intact would
-// break probing — entries are cleared and the table tolerates the
-// resulting probe holes by re-inserting on grow. Deletion keeps a
-// tombstone via rc 0 and a NULLed ptr is never left mid-chain;
-// instead the slot is re-linked by rehashing the cluster.
-static void own_delete(size_t i) {
-    g_own[i].ptr = NULL;
-    g_own[i].rc = 0;
-    g_own_len--;
-    // Re-insert the cluster after the hole so probing stays sound.
-    size_t j = (i + 1) & (g_own_cap - 1);
-    while (g_own[j].ptr != NULL) {
-        OwnEntry moved = g_own[j];
-        g_own[j].ptr = NULL;
-        g_own_len--;
-        g_own[own_slot(g_own, g_own_cap, moved.ptr)] = moved;
-        g_own_len++;
-        j = (j + 1) & (g_own_cap - 1);
     }
 }
 
@@ -178,55 +149,64 @@ static int rc_guarded(void) {
 }
 
 void avra_rc_dead_check(void* p, const char* what) {
-    if (!rc_guarded() || g_own_cap == 0 || p == NULL) return;
-    size_t i = own_slot(g_own, g_own_cap, p);
-    if (g_own[i].ptr == p && g_own[i].kind == -1) {
+    if (!rc_guarded()) return;
+    Header* h = hdr(p);
+    if (h && h->kind == KIND_DEAD) {
         fprintf(stderr, "avra: %s read a RELEASED box %p\n", what, p);
         abort();
     }
 }
 
-void avra_rc_release(void* p) {
-    if (g_own_cap == 0 || p == NULL) return;
-    size_t i = own_slot(g_own, g_own_cap, p);
-    if (g_own[i].ptr != p) return;
-    g_own[i].rc--;
-    rc_note(p, -1, __builtin_return_address(0), g_own[i].rc);
-    if (rc_guarded() && g_own[i].kind == -1) {
+void avra_rc_retain(void* p) {
+    Header* h = hdr(p);
+    if (h == NULL || h->kind < 0) return;
+    h->rc++;
+    if (rc_guarded()) rc_note(p, 1, __builtin_return_address(0), h->rc);
+}
+
+// The guard's release: the box is kept and marked dead, its cells
+// poisoned; a second release of a dead box reports its history.
+static void release_guarded(void* p, Header* h) {
+    if (h->kind == KIND_DEAD) {
         fprintf(stderr, "avra: released an already-dead box %p (len %lld)\n", p, (long long)guard_len(p));
-        fprintf(stderr, "  first release from %p, this one from %p\n",
-                g_own[i].died_at, __builtin_return_address(0));
+        fprintf(stderr, "  this one from %p\n", __builtin_return_address(0));
         rc_history(p);
         for (int k = g_chain_len - 1; k >= 0; k--) {
             fprintf(stderr, "  reclaiming %p (len %lld)\n", g_chain[k], (long long)guard_len(g_chain[k]));
         }
         abort();
     }
-    if (g_own[i].rc <= 0 && rc_guarded()) {
-        int64_t kind = g_own[i].kind;
-        g_own[i].kind = -1;
-        g_own[i].rc = 0;
-        g_own[i].died_at = __builtin_return_address(0);
-        if (kind == 1) {
-            int pushed = g_chain_len < 64;
-            if (pushed) { g_chain[g_chain_len] = p; g_chain_len++; }
-            array_poison(p);
-            if (pushed) g_chain_len--;
-        }
-        return;
+    if (h->kind < 0) return;
+    h->rc--;
+    rc_note(p, -1, __builtin_return_address(0), h->rc);
+    if (h->rc > 0) return;
+    int32_t kind = h->kind;
+    h->kind = KIND_DEAD;
+    h->rc = 0;
+    if (kind == KIND_ARRAY) {
+        int pushed = g_chain_len < 64;
+        if (pushed) { g_chain[g_chain_len] = p; g_chain_len++; }
+        array_poison(p);
+        if (pushed) g_chain_len--;
     }
-    if (g_own[i].rc <= 0) {
-        int64_t kind = g_own[i].kind;
-        // The entry dies FIRST: slot releases below may reshape the
-        // table, and a dead entry must not be found mid-walk.
-        own_delete(i);
-        if (kind == 1) {
-            array_reclaim(p);
-        } else if (kind == 2) {
-            map_reclaim(p);
-        } else {
-            free(p);
-        }
+}
+
+void avra_rc_release(void* p) {
+    Header* h = hdr(p);
+    if (h == NULL) return;
+    if (rc_guarded()) { release_guarded(p, h); return; }
+    if (h->kind < 0) return;
+    h->rc--;
+    if (h->rc > 0) return;
+    // The kind is read FIRST: a slot's release below may reclaim
+    // this box's neighbours, and the header goes with the box.
+    int32_t kind = h->kind;
+    if (kind == KIND_ARRAY) {
+        array_reclaim(p);
+    } else if (kind == KIND_MAP) {
+        map_reclaim(p);
+    } else {
+        box_free(p);
     }
 }
 
@@ -288,20 +268,22 @@ int64_t avra_int_mod(int64_t a, int64_t b) {
 }
 
 const char* avra_int_text(int64_t v) {
-    char* buf = (char*)malloc(24);
+    char* buf = (char*)box_alloc(24, KIND_PLAIN);
     snprintf(buf, 24, "%lld", (long long)v);
-    return (const char*)own(buf);
+    return buf;
 }
 
-// A bool's keyword — static, unowned.
+// A bool's keyword — static, immortal.
 const char* avra_bool_text(int64_t b) {
-    return b != 0 ? "true" : "false";
+    static const char* words[2] = { NULL, NULL };
+    if (words[0] == NULL) { words[0] = str_static("false"); words[1] = str_static("true"); }
+    return words[b != 0];
 }
 
 // ── Aggregates: int64 slot arrays ───────────────────────────────
 // Slots carry every value category: ints and bools directly,
-// pointers cast down by the compiler (rt_arg). Arrays are
-// unregistered — see the memory model note.
+// pointers cast down by the compiler (rt_arg). An array is a box
+// of kind 1 — see the memory model note.
 
 typedef struct {
     int64_t cap;
@@ -313,12 +295,12 @@ typedef struct {
 } AvraArray;
 
 void* avra_array_new(void) {
-    AvraArray* a = (AvraArray*)malloc(sizeof(AvraArray));
+    AvraArray* a = (AvraArray*)box_alloc(sizeof(AvraArray), KIND_ARRAY);
     a->cap = 8;
     a->len = 0;
     a->data = (int64_t*)malloc((size_t)a->cap * sizeof(int64_t));
     a->owned = (uint8_t*)calloc((size_t)a->cap, 1);
-    return own_kind(a, 1);
+    return a;
 }
 
 // The guard's reclaim: children released as usual, the box kept and
@@ -333,14 +315,11 @@ static void array_poison(void* p) {
 }
 
 static int64_t guard_len(void* p) {
-    if (g_own_cap == 0 || p == NULL) return -1;
-    size_t i = own_slot(g_own, g_own_cap, p);
-    if (g_own[i].ptr != p) return -1;
-    return ((AvraArray*)p)->len;
+    Header* h = hdr(p);
+    return h == NULL ? -1 : ((AvraArray*)p)->len;
 }
 
-// Releases every owned slot, then the array itself. The registry
-// entry is already gone — see avra_rc_release.
+// Releases every owned slot, then the array itself.
 static void array_reclaim(void* p) {
     AvraArray* a = (AvraArray*)p;
     for (int64_t i = 0; i < a->len; i++) {
@@ -348,12 +327,18 @@ static void array_reclaim(void* p) {
     }
     free(a->data);
     free(a->owned);
-    free(a);
+    box_free(a);
 }
+
+// No list holds more cells than this: a capacity past it is a
+// corrupted box, and the program stops rather than asking the
+// machine for the memory.
+#define CELL_CEILING ((int64_t)1 << 31)
 
 void avra_array_push(void* arr, int64_t v) {
     AvraArray* a = (AvraArray*)arr;
     if (a->len == a->cap) {
+        if (a->cap >= CELL_CEILING || a->cap <= 0) avra_trap("a list grew past any possible size — a corrupted box");
         a->cap *= 2;
         a->data = (int64_t*)realloc(a->data, (size_t)a->cap * sizeof(int64_t));
         a->owned = (uint8_t*)realloc(a->owned, (size_t)a->cap);
@@ -424,7 +409,7 @@ void* avra_array_get_owned(void* arr, int64_t i) {
 }
 
 // A mut CELL's own reference dies: releases whatever the cell
-// currently holds. Unregistered content no-ops by construction.
+// currently holds. What is not a counted box no-ops by construction.
 // A cell settles by giving up its reference AND forgetting it: a
 // scope re-entered (a loop body) finds an empty cell, so an
 // iteration that never stores releases nothing.
@@ -436,7 +421,7 @@ void avra_cell_release(void* slot) {
 // ── Places: copy-on-write ───────────────────────────────────────
 
 // A shallow clone that takes its own reference to every owned
-// slot — exactly what reclaim would release. Registered, rc 1.
+// slot — exactly what reclaim would release. A fresh box, rc 1.
 static void* array_clone(AvraArray* a) {
     AvraArray* c = (AvraArray*)avra_array_new();
     for (int64_t i = 0; i < a->len; i++) {
@@ -450,10 +435,10 @@ static void* array_clone(AvraArray* a) {
 }
 
 // Shared means a count above one — the holder's own reference is
-// the one. Unregistered pointers are never boxes a place opens.
+// the one. What is not a counted box is never one a place opens.
 static int is_shared(void* p) {
-    OwnEntry* e = owned(p);
-    return e != NULL && e->rc > 1;
+    Header* h = hdr(p);
+    return h != NULL && h->kind >= 0 && h->rc > 1;
 }
 
 // Opens a mut cell's box for writing: itself when nothing else
@@ -517,6 +502,7 @@ static uint64_t str_hash(const char* s) {
 }
 
 static void map_index_rebuild(AvraMap* m, int64_t icap) {
+    if (icap >= CELL_CEILING || icap <= 0) avra_trap("a map grew past any possible size — a corrupted box");
     free(m->index);
     m->icap = icap;
     m->index = (int64_t*)calloc((size_t)icap, sizeof(int64_t));
@@ -529,13 +515,13 @@ static void map_index_rebuild(AvraMap* m, int64_t icap) {
 }
 
 void* avra_map_new(void) {
-    AvraMap* m = (AvraMap*)malloc(sizeof(AvraMap));
+    AvraMap* m = (AvraMap*)box_alloc(sizeof(AvraMap), KIND_MAP);
     m->keys = (AvraArray*)avra_array_new();
     m->vals = (AvraArray*)avra_array_new();
     m->index = NULL;
     m->icap = 0;
     map_index_rebuild(m, 16);
-    return own_kind(m, 2);
+    return m;
 }
 
 // Releases both arrays (their owned slots follow), then the map.
@@ -544,7 +530,7 @@ static void map_reclaim(void* p) {
     avra_rc_release(m->keys);
     avra_rc_release(m->vals);
     free(m->index);
-    free(m);
+    box_free(m);
 }
 
 // The slot a key names, or -1.
@@ -605,21 +591,21 @@ void avra_map_set_owned(void* map, const char* key, void* v) {
 }
 
 // A map's shallow clone: both arrays cloned (their owned slots
-// retained), the index rebuilt. Registered, rc 1.
+// retained), the index rebuilt. A fresh box, rc 1.
 static void* map_clone(AvraMap* m) {
-    AvraMap* c = (AvraMap*)malloc(sizeof(AvraMap));
+    AvraMap* c = (AvraMap*)box_alloc(sizeof(AvraMap), KIND_MAP);
     c->keys = (AvraArray*)array_clone(m->keys);
     c->vals = (AvraArray*)array_clone(m->vals);
     c->index = NULL;
     c->icap = 0;
     map_index_rebuild(c, m->icap);
-    return own_kind(c, 2);
+    return c;
 }
 
 // The clone a place opens — by the box's kind.
 static void* box_clone(void* p) {
-    OwnEntry* e = owned(p);
-    return (e && e->kind == 2) ? map_clone((AvraMap*)p) : array_clone((AvraArray*)p);
+    Header* h = hdr(p);
+    return (h && h->kind == KIND_MAP) ? map_clone((AvraMap*)p) : array_clone((AvraArray*)p);
 }
 
 // ── Text building ───────────────────────────────────────────────
@@ -635,7 +621,7 @@ const char* avra_str_join(void* arr, const char* sep) {
         total += s ? strlen(s) : 0;
         if (i > 0) total += sep_len;
     }
-    char* buf = (char*)malloc(total);
+    char* buf = (char*)box_alloc(total, KIND_PLAIN);
     char* p = buf;
     for (int64_t i = 0; i < a->len; i++) {
         if (i > 0) { memcpy(p, sep, sep_len); p += sep_len; }
@@ -643,7 +629,7 @@ const char* avra_str_join(void* arr, const char* sep) {
         if (s) { size_t l = strlen(s); memcpy(p, s, l); p += l; }
     }
     *p = '\0';
-    return (const char*)own(buf);
+    return buf;
 }
 
 // A bracketed element list — shared by the typed printers below.
@@ -655,12 +641,12 @@ static const char* list_text(void* arr, const char* (*text)(int64_t)) {
     }
     const char* body = avra_str_join(parts, ", ");
     size_t l = strlen(body);
-    char* buf = (char*)malloc(l + 3);
+    char* buf = (char*)box_alloc(l + 3, KIND_PLAIN);
     buf[0] = '[';
     memcpy(buf + 1, body, l);
     buf[l + 1] = ']';
     buf[l + 2] = '\0';
-    return (const char*)own(buf);
+    return buf;
 }
 
 // `[1, 2, 3]` — exactly how the evaluator prints an int list.
@@ -675,7 +661,9 @@ const char* avra_bools_text(void* arr) {
 
 // A string slot prints as itself, unquoted — the evaluator's way.
 static const char* str_slot_text(int64_t v) {
-    return v ? (const char*)(uintptr_t)v : "null";
+    static const char* absent = NULL;
+    if (absent == NULL) absent = str_static("null");
+    return v ? (const char*)(uintptr_t)v : absent;
 }
 
 // `[a, b]` — exactly how the evaluator prints a string list.
@@ -746,10 +734,10 @@ void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
 // that is new text is owned.
 
 static const char* str_owned(const char* s, size_t n) {
-    char* buf = (char*)malloc(n + 1);
+    char* buf = (char*)box_alloc(n + 1, KIND_PLAIN);
     memcpy(buf, s, n);
     buf[n] = '\0';
-    return (const char*)own(buf);
+    return buf;
 }
 
 // A list slot holding fresh text — the list owns the one reference.
@@ -831,7 +819,7 @@ const char* avra_str_replace(const char* s, const char* from, const char* to) {
     if (fl == 0) return str_owned(s, n);
     size_t count = 0;
     for (const char* p = strstr(s, from); p; p = strstr(p + fl, from)) count++;
-    char* buf = (char*)malloc(n + count * tl - count * fl + 1);
+    char* buf = (char*)box_alloc(n + count * tl - count * fl + 1, KIND_PLAIN);
     char* w = buf;
     const char* r = s;
     for (const char* p; (p = strstr(r, from)) != NULL;) {
@@ -842,7 +830,7 @@ const char* avra_str_replace(const char* s, const char* from, const char* to) {
         r = p + fl;
     }
     strcpy(w, r);
-    return (const char*)own(buf);
+    return buf;
 }
 
 // The pieces between separators: a leading empty piece stays, one
@@ -873,10 +861,10 @@ void* avra_str_split(const char* s, const char* sep) {
 const char* avra_str_concat(const char* a, const char* b) {
     size_t n = strlen(a);
     size_t m = strlen(b);
-    char* buf = (char*)malloc(n + m + 1);
+    char* buf = (char*)box_alloc(n + m + 1, KIND_PLAIN);
     memcpy(buf, a, n);
     memcpy(buf + n, b, m + 1);
-    return (const char*)own(buf);
+    return buf;
 }
 
 // ── The host: what a program declares `extern` and the CLI leans on ──
@@ -900,15 +888,16 @@ void eprintln(const char* s) {
 }
 
 // THE PROGRAM'S ARGUMENTS. The emitted `main` hands the C pair over
-// once, before any statement runs; argv's own memory outlives the
-// program, so an argument is a foreign pointer the registry leaves
-// alone.
+// once, before any statement runs; each argument is copied into an
+// immortal box, so a program reads text that carries a header and
+// never owns it.
 static int64_t g_argc = 0;
-static char** g_argv = NULL;
+static const char** g_argv = NULL;
 
 void avra_args_init(int64_t argc, char** argv) {
     g_argc = argc;
-    g_argv = argv;
+    g_argv = (const char**)malloc((size_t)(argc > 0 ? argc : 1) * sizeof(char*));
+    for (int64_t i = 0; i < argc; i++) g_argv[i] = str_static(argv[i]);
 }
 
 int64_t avra_selfhost_argc(void) {
@@ -916,15 +905,16 @@ int64_t avra_selfhost_argc(void) {
 }
 
 const char* avra_selfhost_get_arg_cstr(int64_t i) {
-    if (i < 0 || i >= g_argc || g_argv == NULL) return "";
+    if (i < 0 || i >= g_argc || g_argv == NULL) return str_static("");
     return g_argv[i];
 }
 
 // An environment variable's value, or "" — what a manifest's link
 // flags expand so a machine's own paths stay out of the tree.
+// Immortal: the environment is the invoker's, never the program's.
 const char* avra_host_env(const char* name) {
     const char* v = getenv(name);
-    return v ? v : "";
+    return str_static(v ? v : "");
 }
 
 int64_t avra_now_ns(void) {
@@ -955,11 +945,11 @@ const char* avra_selfhost_read_file(const char* path) {
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (size < 0) { fclose(f); return str_owned("", 0); }
-    char* buf = (char*)malloc((size_t)size + 1);
+    char* buf = (char*)box_alloc((size_t)size + 1, KIND_PLAIN);
     size_t got = fread(buf, 1, (size_t)size, f);
     buf[got] = '\0';
     fclose(f);
-    return (const char*)own(buf);
+    return buf;
 }
 
 // The text written whole, through a sibling temp file and a rename,

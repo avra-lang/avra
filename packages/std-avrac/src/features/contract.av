@@ -17,7 +17,7 @@
 //! values.av the runtime VALUE representation, builder.av the
 //! parse-time authoring surface. A feature-named fn has no place
 //! in any of them.
-use core.{Expr, ExprId, StmtId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at, Binding}
+use core.{Expr, ExprId, StmtId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 
@@ -164,6 +164,9 @@ export type TypeCx = {
     block_type: fn(List<StmtId>, ExprId?) -> TypeId,
     walk_narrowed: fn(ExprId, ExprId) -> TypeId,
     lambda_body: fn(ExprId, List<TypeId>, ExprId) -> TypeId,
+    // what a lambda CAPTURED, typed in lane order — the captured
+    // bindings' own types, which only the walk's scope can answer
+    capture_seats: fn(ExprId) -> List<TypeId>,
     retype_seated: fn(ExprId, List<TypeId>) -> TypeId?,
     target_type: fn(ExprId) -> TypeId,
     enclosing_ret: fn() -> TypeId?,
@@ -242,9 +245,6 @@ export type StmtResolveCx = {
     scope_stmts: fn(List<StmtId>),
     bound_scope: fn(StmtId, List<ExprId>, List<StmtId>),
     impl_stmts: fn(List<StmtId>),
-    // what a name is bound to where this statement stands — the ONE
-    // binding currency, so a rule dispatches on the kind
-    binding_of: fn(string) -> Binding?,
 }
 
 /// Statement typing capabilities: `expr` is the WHOLE expression

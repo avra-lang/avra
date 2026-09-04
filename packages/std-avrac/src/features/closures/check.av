@@ -3,7 +3,7 @@
 //! the params behind the return barrier, the whole wearing
 //! `fn(params) -> body`.
 use core.{ExprId, Type, TypeId, Arrow, Param, LambdaParts}
-use features.{TypeCx, spoken, seats_judged, this_is, settled_call}
+use features.{TypeCx, spoken, seats_judged, this_is, settled_call, slot_worthy, slice_promise, Cap}
 use diagnostics.{refusal}
 
 fn lambda_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -28,6 +28,11 @@ fn lambdaed(cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> TypeId 
     }
     let ptys = heard!
     if ptys.any(erred(cx, it)) { return cx.error_type }
+    // A CAPTURE LANE IS A SLOT: what no slot holds, no lambda
+    // carries — the list's and the field's law, asked once more.
+    let seats = cx.capture_seats(e)
+    let unheld: int? = first_unslottable(cx, seats)
+    if unheld != null { return uncapturable(cx, e, unheld!, seats[unheld!]) }
     let ret = cx.lambda_body(e, ptys, body)
     if cx.view.types.shape_of(ret) is .Error { return cx.error_type }
     cx.view.types.intern(Type.Fn(ptys, ret))
@@ -62,6 +67,14 @@ fn wanted_arrow(cx: TypeCx, e: ExprId, arity: int) -> Arrow? {
 
 fn erred(cx: TypeCx, ty: TypeId) -> bool {
     cx.view.types.shape_of(ty) is .Error
+}
+
+/// The first lane no slot can hold, when one exists.
+fn first_unslottable(cx: TypeCx, seats: List<TypeId>) -> int? {
+    for j, ty in seats {
+        if !slot_worthy(cx.view.types, cx.view.types.shape_of(ty)) { return j }
+    }
+    null
 }
 
 /// A call on an EXPRESSION: whatever fn value the subject holds,
@@ -111,6 +124,13 @@ fn misfit_lambda(cx: TypeCx, e: ExprId, seat: TypeId) {
 
 fn lambda_at_scalar(cx: TypeCx, e: ExprId, seat: TypeId) {
     cx.emit(refusal("type.lambda", cx.loc_of(e), "a lambda cannot sit here — this seat takes `${cx.view.types.name_of(seat)}`", "in this lambda", "hand it to a fn-typed slot, or call it"))
+}
+
+fn uncapturable(cx: TypeCx, e: ExprId, j: int, seat: TypeId) -> TypeId {
+    let cap: Cap? = cx.names.capture(e)
+    let name = if cap == null { "this name" } else { cap!.names[j] }
+    let ty = cx.view.types.name_of(seat)
+    spoken(cx, refusal("type.lambda", cx.loc_of(e), "a lambda cannot capture `${ty}` yet — `${name}` rides a register pair, and a capture lane holds one word", "captured here", "bind what it carries first — `let ${name}_v = ${name} ?? …` — and capture that; ${slice_promise("captures")}"))
 }
 
 fn uncallable(cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {

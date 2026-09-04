@@ -71,6 +71,9 @@ export type TypeFacts = {
     asks: List<Asked?>,
     substs: List<Sub?>,
     lambda_params: List<List<TypeId>?>,
+    // what each lambda CAPTURED, typed in lane order — the type a
+    // capture read wears, wherever the lane is read
+    captures: List<List<TypeId>?>,
     wants: List<TypeId?>,
     hungry: List<bool>,
     starved: List<TypeId?>,
@@ -96,6 +99,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         asks: filled<Asked?>(exprs, null),
         substs: filled<Sub?>(exprs, null),
         lambda_params: filled<List<TypeId>?>(exprs, null),
+        captures: filled<List<TypeId>?>(exprs, null),
         wants: filled<TypeId?>(exprs, null),
         hungry: filled(exprs, false),
         starved: filled<TypeId?>(exprs, null),
@@ -232,7 +236,7 @@ impl TypeFacts {
         let at = other.lo - self.lo
         // EACH COLUMN THROUGH ITS FIELD: a fn handed the list could
         // only fill a copy, and the fold runs once per body
-        // LICENSED I3: eight named columns, one write each — the walk is the copy
+        // LICENSED I3: nine named columns, one write each — the walk is the copy
         mut of_expr = self.of_expr
         for (j, v) in other.of_expr.enumerate() { of_expr.set(at + j, v) }
         mut widens = self.widens
@@ -245,6 +249,8 @@ impl TypeFacts {
         for (j, v) in other.substs.enumerate() { substs.set(at + j, v) }
         mut lambda_params = self.lambda_params
         for (j, v) in other.lambda_params.enumerate() { lambda_params.set(at + j, v) }
+        mut captures = self.captures
+        for (j, v) in other.captures.enumerate() { captures.set(at + j, v) }
         mut wants = self.wants
         for (j, v) in other.wants.enumerate() { wants.set(at + j, v) }
         mut pattern_types = self.pattern_types
@@ -269,6 +275,18 @@ impl TypeFacts {
     fn lambda_seats(self, lam: ExprId) -> List<TypeId>? {
         let held: List<TypeId>? = self.lambda_params[lam.index - self.lo]
         held
+    }
+
+    fn seat_captures(self, lam: ExprId, tys: List<TypeId>) {
+        self.captures.set(lam.index - self.lo, tys)
+    }
+
+    /// The type the lambda's Nth capture wears — the CAPTURED
+    /// binding's, never the lambda's or a reading node's.
+    fn capture_type(self, lam: ExprId, j: int) -> TypeId? {
+        let held: List<TypeId>? = self.captures[lam.index - self.lo]
+        if held == null || j >= held!.length { return null }
+        held![j]
     }
 
     fn speak(self, d: Diag) { self.voices.speak(d) }
