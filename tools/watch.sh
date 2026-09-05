@@ -26,7 +26,8 @@
 # measured; the cap is 4000 by default.
 # PROFILING runs under the lock too: AVRA_SAMPLE=<seconds> samples
 # the step (after AVRA_SAMPLE_AFTER seconds, default 0) into
-# AVRA_SAMPLE_FILE (default /tmp/avra-sample.txt).
+# AVRA_SAMPLE_FILE (default /tmp/avra-sample.txt). The window must
+# END before the step does, or `sample` writes nothing.
 # Exit status is the command's, or 137 when the cap fired.
 cap_mb="$1"; shift
 if [ -n "$AVRA_WATCH_HELD" ]; then
@@ -56,7 +57,7 @@ export AVRA_WATCH_HELD
 "$@" &
 pid=$!
 if [ -n "$AVRA_SAMPLE" ]; then
-    ( sleep "${AVRA_SAMPLE_AFTER:-0}"; sample "$pid" "$AVRA_SAMPLE" -file "${AVRA_SAMPLE_FILE:-/tmp/avra-sample.txt}" > /dev/null 2>&1 ) &
+    ( sleep "${AVRA_SAMPLE_AFTER:-0}"; sample "$pid" "$AVRA_SAMPLE" -file "${AVRA_SAMPLE_FILE:-/tmp/avra-sample.txt}" > "${AVRA_SAMPLE_FILE:-/tmp/avra-sample.txt}.log" 2>&1 ) &
     sampler=$!
 fi
 peak=0
