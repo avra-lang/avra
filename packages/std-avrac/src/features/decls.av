@@ -332,8 +332,10 @@ impl Decls {
     /// An id for a key: the existing one (its row refreshed), or the
     /// next; a member joins its parent's children.
     fn mint(key: string, f: FileId, s: StmtId, name: string, kind: DeclKind, exported: bool, owner: string, parent: DeclId?, nested: bool, root: ExprId?) -> DeclId {
-        // LICENSED I34: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
-        let known: DeclId? = self.keys.get(key)
+        // the read of `keys` ends with `known_id`'s scope, so the write
+        // below finds the map unshared — held to this scope's end, it
+        // cloned the map per declaration, a tenth of every compile
+        let known: DeclId? = self.known_id(key)
         let id: DeclId = if known == null { DeclId { index: self.decls.length } } else { known! }
         let d = Decl { id: id, file: f, stmt: s, name: name, kind: kind, exported: exported, owner: owner, parent: parent, nested: nested, root: root, lo: 0, hi: 0 }
         if known == null {
@@ -365,6 +367,13 @@ impl Decls {
             kids.set(parent!.index, members)
         }
         id
+    }
+
+    /// The id a key already names — asked in its own scope, so the
+    /// table's reference dies before the caller writes.
+    fn known_id(key: string) -> DeclId? {
+        let held: DeclId? = self.keys.get(key)
+        held
     }
 
     // ── declarations ──

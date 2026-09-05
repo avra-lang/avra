@@ -135,7 +135,7 @@ gate: vocab idioms tested corpus
 tested: $(RUNTIME_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
 	@./avra new feature zz_probe > /dev/null
-	@$(MAKE) -s test; s=$$?; rm -rf packages/std-avrac/src/features/zz_probe; exit $$s
+	@trap 'rm -rf packages/std-avrac/src/features/zz_probe' EXIT INT TERM; $(MAKE) -s test
 
 # The differential gate: the compiled binary must say exactly what
 # the evaluator says.
