@@ -5,19 +5,28 @@
 //! `corpus` reach it through `avra_exec_self`, never a person.
 use @std.cli.{Subcommand, CliResult, Runnable, CommandSpec, ArgDef}
 use @std.avrac.language.{verdict_of, plan_binary}
+use @std.process.{status_of}
+use @std.io.{println, eprintln, read_text}
 
 type StagedCmd = { }
 
 impl Runnable for StagedCmd {
     fn run(args: CliResult) -> int {
-        let words = avra_selfhost_read_file(path_arg(args)).split("\n")
+        let words = (read_text(path_arg(args)) catch "").split("\n")
         let binary: string? = plan_binary(words)
         if binary == null {
             eprintln("avra: ${path_arg(args)} is not a link plan — clang's words, the binary after `-o`")
             return 2
         }
-        if spoken_clang(avra_spawn_status("clang", words), binary!) != 0 { return 1 }
-        judged(avra_spawn_status(binary!, []))
+        let linked: int = match clang_ran(words) {
+            .Ok(x) -> judged_link(x, binary!),
+            .Err(e) -> refused_by_host(e),
+        }
+        if linked != 0 { return 1 }
+        match run_binary(binary!) {
+            .Ok(x) -> judged(status_of(x)),
+            .Err(e) -> refused_by_host(e),
+        }
     }
 }
 

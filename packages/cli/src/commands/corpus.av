@@ -4,22 +4,24 @@
 //! runs each under capture and compares again. One compiler, one
 //! clang, one signature check — where a loop over the files paid a
 //! compiler, a clang and a first execution per program.
-use @std.cli.{Subcommand, CliResult, Runnable, CommandSpec, FlagDef, ArgDef, result_has_flag}
+use @std.cli.{Subcommand, CliResult, Runnable, CommandSpec, FlagDef, ArgDef}
 use @std.avrac.language.{Program, Lowered, ProgramCall, corpus_entry, corpus_rows, emit_ll, run_program, program_symbol, programs_workspace, program, avra}
-use @std.avrac.core.{joined_path, stem_of, dir_of, sorted_texts, counted}
+use @std.avrac.core.{sorted_texts, counted}
+use @std.path.{joined_path, stem_of, dir_of}
+use @std.io.{println, eprintln, read_text, is_dir, make_dirs}
 
 type CorpusCmd = { }
 
 impl Runnable for CorpusCmd {
     fn run(args: CliResult) -> int {
         let dir = path_arg(args)
-        if avra_host_is_dir(dir) == 0 {
+        if !is_dir(dir) {
             eprintln("avra: ${dir} is not a directory — a corpus is a directory of programs")
             return 2
         }
         let t0 = avra_now_ns()
         let p: Program = program(programs_workspace(disk_host(), dir, avra(), () -> avra_now_ns()), null)
-        let status = proved(p, dir, result_has_flag(args, "native-only"))
+        let status = proved(p, dir, args.has_flag("native-only"))
         if timed(args) { eprintln(timings(p, "corpus", avra_now_ns() - t0)) }
         status
     }
@@ -61,7 +63,7 @@ fn lacks_expected(p: Program, path: string) -> bool {
 /// The `.expected` beside the program, its final newline dropped —
 /// the shape the capture answers.
 fn program_call(path: string) -> ProgramCall {
-    let text = avra_selfhost_read_file(joined_path(dir_of(path), "${stem_of(path)}.expected"))
+    let text = read_text(joined_path(dir_of(path), "${stem_of(path)}.expected")) catch ""
     let expected = if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text }
     ProgramCall { symbol: program_symbol(path), label: path, expected: expected }
 }
@@ -77,7 +79,7 @@ fn judged_programs(p: Program, lo: Lowered, programs: List<ProgramCall>, native_
     }
     let staged_lo = lo with { entry: corpus_entry(lo.types, programs), externs: lo.externs.concat(corpus_rows()) }
     let path = joined_path(joined_path(p.ws.root, "build"), "corpus.av.ll")
-    let _ = avra_mkdir_p(joined_path(p.ws.root, "build"))
+    let _ = make_dirs(joined_path(p.ws.root, "build"))
     let failure: string? = emit_ll(staged_lo, path)
     if failure != null {
         println(failure!)

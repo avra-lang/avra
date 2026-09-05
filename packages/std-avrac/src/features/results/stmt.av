@@ -49,8 +49,9 @@ fn check_fail(mut cx: TypeCx, s: StmtId) {
     cx.emit(refusal("type.fail", cx.stmt_loc(s), "`fail` raises a `${cx.view.types.name_of(sides!.err)}`, this is `${gn}`", this_is(gn), null))
 }
 
-/// The failure wrapped and exited — the memory pass settles every
-/// open scope at the site; other paths continue.
+/// The failure wrapped and exited — the open frames' `defer`s and
+/// `errdefer`s run first; the memory pass settles every open scope
+/// at the site; other paths continue.
 fn lower_fail(mut cx: LowerCx, s: StmtId) -> Reg? {
     let v: Reg? = cx.lower_value(s)
     if v == null { return null }
@@ -59,6 +60,8 @@ fn lower_fail(mut cx: LowerCx, s: StmtId) -> Reg? {
         cx.defect("a `fail` without an enclosing fn survived typing")
         return null
     }
-    cx.emit(Ins.FnExit(failed(cx, ret!, v!)))
+    let raised = failed(cx, ret!, v!)
+    cx.failing()
+    cx.emit(Ins.FnExit(raised))
     null
 }
