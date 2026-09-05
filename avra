@@ -9,6 +9,20 @@ LLVM_PREFIX="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}"
 export LLVM_PREFIX
 cd "$root" || exit 2
 
+# THE LOCK IS NOT OPTIONAL. A suite or a build is a whole-package
+# compile and a linked binary — a heavy step — and it runs under the
+# watchdog whether or not the caller remembered: a bare `./avra test`
+# QUEUES behind another lane's gate instead of running beside it.
+# watch.sh marks its children AVRA_WATCHED, so a step already under
+# the watchdog (the gate's own `./avra test`) never queues on itself.
+case "$1" in
+    test|build)
+        if [ -z "$AVRA_WATCHED" ] && [ -x build/avra ]; then
+            exec sh tools/watch.sh 4000 build/avra "$@"
+        fi
+        ;;
+esac
+
 if [ -x build/avra ]; then
     exec build/avra "$@"
 fi

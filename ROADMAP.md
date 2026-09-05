@@ -316,9 +316,184 @@ spec tests beside it, a corpus package under corpus/<name>/ proving
 eval == native; each a slice with red-team + review-round). The
 driver is what the compiler and its tools need — the spec has no
 std-lib chapter, so dogfooding decides the surface.
-  - [ ] `@std/process`: spawn with an argv LIST (the runtime row
-        lane 0 adds), args, exit statuses as verdicts. Coordinate
-        with lane 0: whichever lands first owns `avra_spawn_status`.
+  - [ ] `@std/process` — DESIGNED 2026-09-04, FIRST (the user's
+        word: the first real std lib dogfoods everything). The vision
+        is `docs/2026_09_04_STD_PROCESS_VISION.md` on lane/b, with
+        four research reports beside it (`…_RESEARCH_*.md`); it merges
+        with the first slice. THE SPLIT: a command is a PROGRAM (an
+        authority — `Program`, minted from `[process.tools]`, resolved
+        ONCE to an absolute path), its WORDS (data — a literal hole is
+        one argv word) and their POSITIONS (a word from data is fused
+        `--flag=v`, `./`-prefixed as a path, or after the tool's
+        declared terminator — argv-lists delete the shell, NOT
+        argument injection). An exit is `Exit { Clean, Code(n),
+        Signal(sig, core) }`; `run()` judges by `ok_exits` (default
+        `[0]`; grep spells `[0, 1]` once), `outcome()` reads. Env is a
+        named profile (`minimal`/`developer`; `inherit` counted; the
+        failing child's missing variable is NAMED, F4616). Two
+        deadlines (`timeout`, `drain_grace` — a grandchild holding the
+        pipe). `start(ready)` returns when READY. `Runner` is a trait:
+        `host`/`scripted`/`plan`. GRANTED (2026-09-04): (1) lane B
+        writes the TWELVE substrate rows in `runtime/avra_runtime.c`
+        over a handle table with a tagged status word (`0` RUNNING,
+        success never zero, spawn failure `-errno`) — `posix_spawn`
+        never `posix_spawnp`, PATH resolved from the CHILD's envp,
+        SETSIGDEF+SETSIGMASK, CLOEXEC_DEFAULT/close_range, one poll
+        set, drain then reap once; lane 0's `avra_spawn_status`
+        (posix_spawnp, `environ`) is the v0 bridge these REPLACE, and
+        `system()` dies with it; (2) each row gets an `rt_sigs()` row
+        and a thin `RtHost.Proc*` arm calling the same C, so `avra
+        run` spawns and eval == native holds by construction; (3)
+        `manifest.av` learns `[process]` (unknown keys ERROR;
+        `process.<name>` a decl) — the same door `@std.fs` needs.
+        OPEN, per lane: (4) the `cmd""`/`sh""` literals ride the
+        embedded-sublanguage contract — ONE grammar (the shell's word
+        and pipe spelling), lane B writes it in the package, the
+        grammar-lit owner wires the literal hook; (5) `defer` — WANTED
+        by process (a `Child`'s scope is its lifetime, F4609); lane
+        C's by the partition, on the user's word; (9) typed `[link]`
+        rows (`objects`/`search`/`libs`, no `-`-leading token a
+        dependency can spell; `[link.raw]` root-only, allow-listed) —
+        the build machine's steps two and three after lane 0's argv
+        row; (10) `caps.seal()` shared with fs — exec targets are
+        `FS_EXECUTE` rights and Landlock layers are conjunctive. v0
+        SCOPE (lane B alone, this week): the package over the twelve
+        rows with the constructor forms (`program(name)?`,
+        `cmd(p, words)`, the position verbs, `with`), `Pipeline` over
+        kernel pipes with per-stage stderr, `Child`, the `serving`
+        bracket, `parallel(limit)`, `race(stagger)`, `exit(Exit)`,
+        `@std/time`'s `Duration` stub; `shared.av:198` and `test.av:44`
+        move onto it. DONE WHEN the cli links through `@std/process`,
+        `corpus/process/` says eval == native, and `avra explain
+        process` prints the tool set.
+        SLICE A LANDED 2026-09-04 — THE SUBSTRATE AND THE CORE.
+        `runtime/avra_runtime.c` grew the process section: twelve
+        functions over a handle table (`avra_proc_spawn/run/poll/
+        write/stdin_close/take/signal/status/pid/close/which/
+        error_text`), one poll set, one reap, the tagged status word,
+        `posix_spawn` by absolute path with SETSIGDEF+SETSIGMASK,
+        CLOEXEC_DEFAULT on Darwin, the child's group id kept past the
+        reap so a truncated run stops its tree; the runtime ignores
+        SIGPIPE at `avra_args_init`. Fourteen `rt_sigs()` rows with
+        `RtHost.Proc*`/`NowNs`/`HostEnv` arms in interp.av — the
+        evaluator calls the same C, so eval == native by
+        construction (`corpus/process/` proves it; corpus/native/
+        process_seam.av pins the seam's refusals). `@std/time`
+        (`Duration`, `ms/secs/mins`, `now_ms`, `duration_text`) and
+        `@std/process` v0: `Tool` (RENAMED from the vision's
+        `Program` — the compiler's own `Program` type sits at every
+        dogfood site; the manifest says `[process.tools]` anyway),
+        `tool(name)?` (PATH resolved once, relative entries never
+        searched), `Command` with defaults and `with`, the position
+        verbs (`flag` fuses `--x=v` and attaches `-ov`; `path`
+        anchors `./`; `after_options` uses the tool's declared
+        terminator — a `table<Terminator>`, git's `--end-of-options`,
+        find/dd none; `word` refuses a leading dash), `Exit { Clean,
+        Code, Signal(sig, core) }`, `run()` judged by `ok_exits`,
+        `outcome()` read, `Env { Only, Inherit }` with `minimal()`/
+        `developer()`/`passing`/`with_var`, `Stdin`, `Output.
+        truncated`, `Outcome.took_ms`, `ProcessError` + `impl Error`,
+        `exit(Exit)`. 45 spec cases. THE RED TEAM (3 attack packages,
+        both engines, ~40 programs; the RC guard): FIVE WRONG ANSWERS
+        — a negative timeout DISABLED the deadline (now a deadline
+        already passed); a bad `cwd` was blamed on the tool (now
+        `NoCwd`, the runtime stats it first); an env name holding `=`
+        split silently (now `BadEnvName`, checked before the spawn);
+        `-o` fused as `-o=x` (a one-letter option attaches); `path("")`
+        became `./` (stays empty). ONE LEAK — a grandchild holding the
+        pipe survived a truncated run (the group is killed by its id,
+        which outlives the reap). TWO REFUSALS — `Failed` quoted a
+        capture's worth of stderr (first line); the compiler's F2023
+        help for `x()?.field` says "write `.field`", wrong advice for
+        propagate-then-read (`(x()?).field`) — LANE C's voice.
+        NO DIVERGENCE anywhere. Survived: handle misuse (EBADF/EINVAL/
+        ESRCH), double close, stale handles after slot reuse, 1 MiB
+        intact, NUL kept, EPIPE on a deaf child, zero timeout, cap 0
+        lifts, `ok_exits: []` accepts nothing, exit 255 / 256, 3000
+        words, hostile words literal, crossings with fields, lists,
+        closures, recursion and holes. v0 POLICY, honestly: the
+        child's PATH is the invoker's with relative entries stripped
+        (minting waits on the manifest mint); `max_capture: 0` lifts
+        the cap, spelled. SUGAR ASKS from the slice (wanting sites in
+        process.av and its tests): bitwise ops (`has_bit` divides);
+        `const` in a module file (fifteen flag fns); `is` with a
+        payload pattern; a method after `?` on a Result; a `Duration`
+        literal (`5s`). NEXT: slice B — `Pipeline`, `Child`
+        (`start(ready)`, `write`, `stop`, `wait`), the `serving`
+        bracket, `parallel(limit)`, `race(stagger)`, the `Runner`
+        trait with `host`/`scripted`/`plan`; the seam pin moves into
+        the `Child` tests.
+        SLICE B LANDED 2026-09-04 — THE REST OF v0. The seam grew two
+        arguments, not two functions: `avra_proc_spawn` takes the
+        capture cap and an UPSTREAM handle whose stdout becomes the
+        child's stdin through the kernel's own pipe (the read end
+        handed over with its non-blocking flag CLEARED — the red team's
+        first find: `sort` read EAGAIN and quit, and `printf` died of
+        SIGPIPE). `Stdin.Open`; `Ready { Started, Exit, Line, Exec }`;
+        `Child` riding a shared `Stage` (one pump `ticked`, one
+        `collected`, one `launched`, one `abandoned`, one `broken` — the
+        three drivers `Pipeline.outcome`, `parallel`, `race` and the
+        child all ride them), `start(ready, within)` that RETURNS WHEN
+        READY or stops the child and refuses `NotReady` with its words;
+        `write`/`close_stdin`/`read_line(within)`/`wait`/`stop`/
+        `is_alive`; a child REMEMBERS its ending (the red team: `stop`
+        twice said KILL for a child that met TERM; `wait` after `stop`
+        said timeout and would spin forever unbounded; `read_line`
+        after `wait` handed out delivered output again). `serving`
+        bracket. `Pipeline` with per-stage stderr, `StageFailed`, the
+        SIGPIPE law (a producer killed under a clean consumer
+        SUCCEEDED — `yes | head`, as the shell never managed to say),
+        `Empty` for nothing to run (the red team: an empty pipeline
+        TRAPPED on `.last()!`), a later stage's stdin IS the pipe.
+        `parallel(cs, limit)` (a limit below one is one; a sibling
+        past its bound stops every sibling), `race(cs, stagger)` (the
+        first to FINISH; losers stopped; an unstartable racer fails
+        the race, spelled). `Runner` trait + `run_through`, `host()`,
+        `scripted(table<Script>)` with `Unscripted`, `plan()` over the
+        hosted `avra_puts`. 82 spec cases (child_test, pipeline_test,
+        the adversarial set grown by 13); corpus/process pins a
+        pipeline, a child fed through an open stdin, a scripted run,
+        `parallel` and `race` — eval == native throughout; the RC
+        guard silent over the attack set. SUBSET FINDS: `fail` in a
+        catch arm's block is F2029 (not divergence) — a statement
+        match instead; `[null for …]` under `List<T?>` is F2006 — a
+        `T?` fn fills the slot. NEXT: slice C — the cli dogfoods
+        (`shared.av` links through `cmd(clang, …)`, `test.av` judges
+        through `exit(Exit)`), `avra_spawn_status` and `system()` die,
+        `manifest.av` learns `[process]`, `avra explain process`.
+        SLICE C LANDED 2026-09-05 — THE COMPILER DOGFOODS. `shared.av`
+        links through `cmd(clang, words)` — `clang` minted by
+        `tool_from_env("CC", "clang")`, the same row the cli's own
+        manifest now declares under `[process.tools]` (the mint reads
+        it the day the manifest mints) — and `test.av` judges the
+        suite's binary through `Exit` (`Clean`, code 1, else STOPPED
+        naming the code or the signal; a binary that cannot run names
+        the host's reason). Both run `at_the_terminal`: the developer's
+        environment, their terminal for the words, their Ctrl-C — the
+        two hatches the compiler's own tools spell. `avra_spawn_status`
+        DELETED from the runtime (the cli's extern too); corpus/native/
+        externs.av pins the seam's verdicts instead (`1:3`, `-2`,
+        `2:9`, the injection word intact, the flush before the child).
+        `Streams { Captured, Inherited }` on `Command`; `tool_from_env`.
+        `manifest.av` learns `[process]`, `[process.tools]` (inline
+        rows and `[process.tools.<name>]` tables), `[process.env]`:
+        `ToolRow { name, from: Provenance { Path, Env, Abs }, var,
+        default, at_path, terminator }`, `terminator = false` for a
+        tool with none, and an unknown key under `[process]` REFUSES
+        (`manifest.unknown_process_key`) — a bound on what may run is
+        never a degraded load; `env` without `var` and `abs` without
+        `at` refuse. `avra explain process [at]` prints the declared
+        tools minted as the library mints them, their provenance and
+        where their options end (the front door stands at the root, so
+        the package is an argument). THE MACHINE CRASHED (2026-09-05,
+        three lanes): lane B's bare `./avra test <pkg>` runs beside
+        watched gates, and a direct `build/avra` sample elsewhere —
+        the lock covered only what was wrapped. FIXED at the front
+        door: `./avra test|build` wrap themselves in the watchdog
+        (`AVRA_WATCHED` stops a gate's own runs queuing on its lock);
+        CLAUDE.md carries the rule. Gate green at 2.07 GB peak (the
+        cli now links std-process). NEXT: `defer` (lane B owns it —
+        the `Child`'s scope law), then `@std/io`.
   - [ ] `@std/io`: println/eprintln, read/write file, env, list
         dir — over the runtime's existing externs, so a program
         prints without declaring C. DONE WHEN `packages/cli` and

@@ -456,6 +456,28 @@ Syntax the grammar lacks:
 - `export let` / `export const`: F3014 "`export` marks a fn, type,
   enum or trait — not this statement" — a constant crosses modules
   as a fn.
+- `const` in a MODULE file (a library's `const PIPE_IN: int = 1`):
+  F0902 "a module file holds declarations — only the entry runs
+  statements" — a library's constant is a fn (`fn pipe_in() -> int
+  { 1 }`; @std/process's flag words).
+- `is` with a PAYLOAD pattern (`e is .TimedOut(_, _)`): "expected
+  `}` to close the `match`" at the `(` — `is` takes a bare variant;
+  a payload question is a two-arm `match` (`.TimedOut(_, _) ->
+  true`, `rest -> false`) hoisted into a named predicate.
+- A METHOD after `?` on a Result (`shell(line)?.run()`): F0102
+  "`?.` cannot call a method yet — chain methods are recorded" —
+  bind the `?` first (`let c = shell(line)?`), then call. The field
+  twin (`x()?.out`) is F2023 above; its help says "write `.out`",
+  which is wrong for the propagate-then-read case — `(x()?).out`.
+- `fail` inside a `catch` ARM's block (`x catch e -> { cleanup(); fail
+  e }`): F2029 "a `catch` arm answers the ok side: `T`, this is
+  `Result<…>`" — the arm's block is not read as diverging. Write the
+  statement `match` (`.Err(e) -> { cleanup(); fail e }, .Ok(v) -> …`),
+  which is (@std/process's three drivers).
+- A `null` LITERAL as a list element under `List<T?>` (`[null for c in
+  cs]`, `T` a struct): F2006 "a list element cannot hold this yet" —
+  lane C's PAIRS IN SLOTS. A `T?`-answering fn fills the slot
+  (`[nothing_yet() for c in cs]`).
 
 Wants the typer does not carry yet:
 - A no-argument generic call under a typed want (`let xs:
@@ -523,6 +545,15 @@ Runtime facts, ours to ratify:
 
 ## Working discipline
 
+- THE FRONT DOOR TAKES THE LOCK: `./avra test` and `./avra build` wrap
+  themselves in `tools/watch.sh` (the machine crashed a third time,
+  2026-09-05, under three lanes whose bare suite runs and a direct
+  `build/avra` sample ran beside watched gates — the lock covered
+  only what was wrapped). A bare `./avra test <pkg>` now QUEUES
+  behind another lane's gate; `AVRA_WATCHED` marks a step already
+  under the watchdog so a gate's own runs never queue on its lock.
+  Never run `build/avra` directly — it is the one door the lock
+  cannot see.
 - ONE HEAVY PROCESS AT A TIME, in the FOREGROUND, under the
   watchdog: `sh tools/watch.sh 4000 make gate`. The machine is
   shared with a loaded desktop and has panicked twice under this

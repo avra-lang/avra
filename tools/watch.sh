@@ -25,6 +25,9 @@ until mkdir "$lock" 2>/dev/null; do
 done
 echo $$ > "$lock/pid"
 trap 'rm -rf "$lock"' EXIT INT TERM
+# every step under this watchdog knows it, so `./avra test` inside a
+# gate does not queue on the gate's own lock
+export AVRA_WATCHED=1
 "$@" &
 pid=$!
 peak=0
