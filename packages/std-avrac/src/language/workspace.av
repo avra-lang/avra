@@ -21,6 +21,9 @@ use query.{Db, new_db, Key}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
 use @std.testing.{CaseRef, words}
 
+/// The host's environment — what a `${NAME}` hole in a link row fills from.
+extern fn avra_host_env(name: string) -> string
+
 /// The filesystem, as four questions.
 export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool }
 
@@ -59,6 +62,12 @@ export type Workspace = {
     lang: Language,
     db: Db,
     decls: Decls,
+    // ONE RUN'S VIEW of each file and each manifest: read,
+    // fingerprinted and indexed once. A host that changes under a
+    // running workspace (Era IV's live editing) invalidates these
+    // with the revision; today no host does.
+    sources: Table<SourceFile>,
+    manifests: Table<Manifest>,
     programs: Table<Parsed>,
     file_items: Table<List<DeclId>>,
     module_names: Table<ModuleNames>,
@@ -170,7 +179,7 @@ fn language_decls(lang: Language) -> Decls {
 fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool) -> Workspace {
     let ws = Workspace {
         host: host, root: root, lang: lang, db: new_db(), decls: language_decls(lang),
-        programs: new_table<Parsed>(), file_items: new_table<List<DeclId>>(), module_names: new_table<ModuleNames>(),
+        sources: new_table<SourceFile>(), manifests: new_table<Manifest>(), programs: new_table<Parsed>(), file_items: new_table<List<DeclId>>(), module_names: new_table<ModuleNames>(),
         visibles: new_table<Namespace>(), name_facts: new_table<NameFacts>(), sig_voices: new_table<Voices>(),
         decl_facts: new_table<TypeFacts>(), method_clashes: new_table<List<Clash>>(), folds: new_table<TypeFacts>(),
         analyses: new_table<Analysis>(), units: new_table<Unit>(), specs: {}, asks: [], defects: [],
@@ -242,12 +251,19 @@ export fn file_id(ws: Workspace, path: string) -> FileId {
 /// An INPUT: the file's text, hashed; the revision moves only when
 /// the text did.
 export fn source(ws: Workspace, f: FileId) -> SourceFile {
+    let k = key(Family.Source, f.index)
+    let held: SourceFile? = ws.sources.at(f.index)
+    if held != null {
+        ws.db.record_dep(k)
+        return held!
+    }
     let path = ws.decls.file(f).path
     let text = ws.host.read(path)
-    let k = key(Family.Source, f.index)
     ws.db.set_input(k, fp_str(text))
     ws.db.record_dep(k)
-    new_source_file(path, text)
+    let src = new_source_file(path, text)
+    ws.sources.keep(f.index, src)
+    src
 }
 
 /// The file parsed — pure in its text.
@@ -383,7 +399,7 @@ fn sig_hash(s: DeclSig?) -> int {
 /// again from inside one of those impls' own registration, it
 /// answers what stands.
 export fn methods(ws: Workspace, target: DeclId) -> List<DeclId> {
-    let blocks = ws.decls.children_of(target).concat(impls_named(ws, ws.decls.decl(target).name))
+    let blocks = ws.decls.children_of(target).concat(ws.decls.impls_named(ws.decls.decl(target).name))
     // asked while one of its impls registers: the table so far,
     // remembered by nobody
     if blocks.any(registering(ws, it)) { return ws.decls.methods_of(target) }
@@ -400,15 +416,6 @@ export fn methods(ws: Workspace, target: DeclId) -> List<DeclId> {
 /// Whether a declaration's signature is being computed right now.
 fn registering(ws: Workspace, d: DeclId) -> bool {
     ws.db.active(key(Family.Sig, d.index))
-}
-
-/// Every impl block of the program naming a type by this name.
-fn impls_named(ws: Workspace, name: string) -> List<DeclId> {
-    [x.id for x in ws.decls.decls if is_impl_of(x, name)]
-}
-
-fn is_impl_of(x: Decl, name: string) -> bool {
-    x.kind is .Impl && x.name == name
 }
 
 /// A typer over one declaration's expression range, in its file.
@@ -797,6 +804,14 @@ export fn cases(ws: Workspace) -> List<TestCase> {
     flatten([file_cases(ws, fi.id) for fi in ws.decls.files])
 }
 
+/// The cases of ONE file, named by the path it MEANS: both sides
+/// normalized, so `./` and a doubled slash select what the listing
+/// spelled cleanly.
+export fn cases_at(ws: Workspace, path: string) -> List<TestCase> {
+    let wanted = normalized(path)
+    [c for c in cases(ws) if normalized(c.at.file) == wanted]
+}
+
 fn file_cases(ws: Workspace, f: FileId) -> List<TestCase> {
     let src = source(ws, f)
     let store = ws.decls.store_of(f)
@@ -835,6 +850,37 @@ export fn link_inputs(ws: Workspace) -> List<string> {
 fn package_link(ws: Workspace, pkg: Package) -> List<string> {
     let m = manifest(ws, pkg.ordinal)
     [joined_path(pkg.root, o) for o in m.objects].concat(m.flags)
+}
+
+/// THE PROMISES AS WORDS: every package's `[link]` row with its
+/// `${NAME}` holes filled from the environment — one argv element
+/// each, so no character in any of them means anything to a shell,
+/// and a hole that names nothing leaves no empty word. The driver
+/// puts them on clang's line.
+export fn link_words(ws: Workspace) -> List<string> {
+    let promised = [expanded(f) for f in link_inputs(ws)]
+    [w for w in promised if w.length > 0]
+}
+
+/// A link input with its `${NAME}` holes filled from the
+/// environment: a machine's own paths belong to the machine, not to
+/// a checked-in manifest.
+fn expanded(flag: string) -> string {
+    let opens = flag.index_of("\${")
+    if opens < 0 { return flag }
+    let closes = closing_brace(flag, opens)
+    if closes < opens { return flag }
+    let head = flag.substring(0, opens)
+    let name = flag.substring(opens + 2, closes)
+    let tail = flag.substring(closes + 1, flag.length)
+    expanded("${head}${avra_host_env(name)}${tail}")
+}
+
+/// Where the hole closes, or -1.
+fn closing_brace(s: string, from: int) -> int {
+    let at = s.substring(from, s.length).index_of("}")
+    if at < 0 { return 0 - 1 }
+    from + at
 }
 
 /// The root package's entry file: its `[bin]` path, else
@@ -919,6 +965,7 @@ impl Program {
 
     /// Every test case the program declares.
     fn cases(self) -> List<TestCase> { cases(self.ws) }
+    fn cases_at(self, path: string) -> List<TestCase> { cases_at(self.ws, path) }
 
     /// Everything wrong, rendered, as the refusal; or what merely
     /// warned, rendered, as the answer — "" when nothing spoke.
@@ -955,10 +1002,17 @@ export fn manifest(ws: Workspace, i: int) -> Manifest {
         ws.db.record_dep(k)
         return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], flags: [], voices: [] }
     }
+    let held: Manifest? = ws.manifests.at(i)
+    if held != null {
+        ws.db.record_dep(k)
+        return held!
+    }
     let text = ws.host.read(path)
     ws.db.set_input(k, fp_str(text))
     ws.db.record_dep(k)
-    read_manifest(new_source_file(path, text))
+    let m = read_manifest(new_source_file(path, text))
+    ws.manifests.keep(i, m)
+    m
 }
 
 fn has_manifest(ws: Workspace, pkg: Package) -> bool {

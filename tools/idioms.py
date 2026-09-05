@@ -399,6 +399,10 @@ UNRATCHETED = {
     "I25": "RETIRED: the compiler refuses a wrong payload count (F2015) on\n"
            "           patterns and constructions, one-line enums included — a\n"
            "           law now, and a matcher would only repeat it",
+    "I32": "a whole-table scan for a keyed subset and a legitimate one-shot walk\n"
+           "           over the same table are the same text; what makes the scan a smell\n"
+           "           is being asked per query, which only a profile can see. `sample`\n"
+           "           hunts it — it found the two that named the rule",
     "I31": "a stolen doc and a legitimate multi-paragraph header are the SAME\n"
            "           shape: a sentence ends, the next line opens with `A`/`The`. The\n"
            "           difference is whether the second paragraph ELABORATES the one\n"

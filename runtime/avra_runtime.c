@@ -873,6 +873,8 @@ const char* avra_str_concat(const char* a, const char* b) {
 
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <spawn.h>
+extern char** environ;
 #include <dirent.h>
 #include <time.h>
 #include <unistd.h>
@@ -970,13 +972,27 @@ int64_t avra_selfhost_write_file(const char* path, const char* content) {
     return ok;
 }
 
-// The command's exit status — what a shell would report.
-// A command's verdict: its exit code, or 128+signal when a signal
-// killed it — the shell's own convention, so a wreck never reads as
-// a small exit code (and never as SUCCESS).
-int64_t avra_shell_exec_status(const char* cmd) {
-    int status = system(cmd);
-    if (status == -1) return 127;
+// A program run with its arguments AS A LIST — no shell, so no
+// character in any argument means anything but itself. `args` is
+// an Avra `List<string>`. The verdict is the shell's convention
+// without the shell: the exit code, 128+signal when a signal
+// killed it, 127 when it could not start — so a wreck never reads
+// as a small exit code, and never as SUCCESS.
+int64_t avra_spawn_status(const char* prog, void* args) {
+    AvraArray* a = (AvraArray*)args;
+    char** argv = (char**)malloc((size_t)(a->len + 2) * sizeof(char*));
+    argv[0] = (char*)prog;
+    for (int64_t i = 0; i < a->len; i++) argv[i + 1] = (char*)(uintptr_t)a->data[i];
+    argv[a->len + 1] = NULL;
+    // what this program printed comes out before the child's words:
+    // a buffered stdout is flushed at the seam, or a pipe reorders
+    fflush(NULL);
+    pid_t pid;
+    int started = posix_spawnp(&pid, prog, NULL, NULL, argv, environ);
+    free(argv);
+    if (started != 0) return 127;
+    int status;
+    if (waitpid(pid, &status, 0) < 0) return 127;
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return (int64_t)WEXITSTATUS(status);
 }

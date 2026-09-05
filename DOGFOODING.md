@@ -408,6 +408,20 @@ reintroducing I3's blind spot names the two spellings it lost.
       matcher printed 78 hits and the two inspected split one real
       (`workspace`'s `shown`) and one legitimate (`full_type`); a
       rule must justify every hit it prints.
+- I32 A WHOLE-TABLE SCAN FOR A KEYED SUBSET. A verb asked per
+      query that walks every row of a workspace-wide table to keep
+      the few with one key — `[x.id for x in ws.decls.decls if
+      is_impl_of(x, name)]`, asked per method dispatch — is a
+      quadratic hiding as a comprehension. The idiomatic form is an
+      INDEX filled where the rows are minted (`Decls.impls_by_name`,
+      one lookup), or a memo per key (`Workspace.sources`: one read
+      and one line index per file per run, where `source(ws, f)` had
+      re-read and re-indexed the file for every declaration typed).
+      Found by a `sample`, not by reading: the two frames were the
+      hottest in the compiler by self time and the ledger had
+      guessed elsewhere. NOT the smell: a one-shot walk that builds
+      the index itself, or a scan a program performs once.
+
 - I26 one nullable LOCAL forced open with `!` three or more times
       in a fn. The value is already known to be there — CLAUDE.md's
       own style rule settles it ("a `let` earns its place when the

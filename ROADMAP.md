@@ -95,27 +95,86 @@ HOW TO TAKE A LANE
 LANE 0 — CORRECTNESS FIRST (half a day; anyone; touches cli/ and
 the runtime's host seam). Two wrong answers from the red team's
 open ledger, above every other item:
-  - [ ] SUPPLY-CHAIN EXECUTION: a dependency's `[link] flags` are
+  - [x] SUPPLY-CHAIN EXECUTION (PAID 2026-09-04): a dependency's `[link] flags` are
         spliced unquoted into the `system()` string that runs clang
         (`shared.av:180`, `workspace.av:837`). FIX: an argv row —
         `avra_spawn_status(prog, argv)` over `posix_spawnp` in the
         runtime, argv built as a LIST; `shell_word` and
         `binary_name`'s quoting DELETED, not fenced. DONE WHEN a
         manifest with `flags = ["; touch /tmp/PWNED ;"]` builds
-        without running it, and the corpus is green.
-  - [ ] `avra test` GREEN OVER RED: `on_cases` selects `c.at.file ==
+        without running it, and the corpus is green. — DONE: the
+        runtime's `avra_spawn_status(prog, args)` over posix_spawnp,
+        `link_argv` in the library (one word per input, pinned by
+        workspace_test with a poisoned manifest), `shell_word` and
+        the shell row deleted; the live proof: clang refused the flag
+        as a nonexistent file and nothing ran. corpus/native pins the
+        verdicts (3, 127, 137, a literal word).
+  - [x] `avra test` GREEN OVER RED (PAID 2026-09-04): `on_cases` selects `c.at.file ==
         path` (`shared.av:113`) as raw text, so a path spelled with
         `//` or `./` selects zero cases and exits 0. FIX: normalize
         both sides (`core/paths.av`'s `normalized`), and ZERO CASES
         FOR AN ARGUED FILE IS A REFUSAL, not "no spec cases here".
         DONE WHEN `./avra test packages/std-avrac/src/./core/tests/
         lists_test.av` runs the cases and a file with none exits 1.
+        — DONE: `Program.cases_at(path)` normalizes both sides (six
+        spellings pinned); the caseless file refuses in its own
+        words and exits 1.
+  - [x] THE RED TEAM'S YIELD ON LANE 0 (2026-09-04; 14 programs and
+        9 live CLI attacks): ONE WRONG ANSWER — the child's output
+        came out BEFORE the parent's buffered stdout (the old
+        `system()` had it too); `avra_spawn_status` flushes at the
+        seam, and corpus/native pins the order. ONE MASKED REFUSAL —
+        a spec file that failed to analyze had no cases, and the new
+        "holds no spec cases" voice hid its diagnostics; an unclean
+        file now reports them. TWO POOR REFUSALS — `clang` missing
+        from PATH said "clang failed linking" and a test binary that
+        could not start said "the case named above trapped"; both
+        name 127 now. AND A CENTRALIZATION: `${NAME}` expansion moved
+        into the library beside `link_argv` (a hole naming nothing
+        leaves no empty word), where workspace_test pins it. Survived:
+        3000 arguments, an empty word, an empty program name, a path
+        with a space, 200 spawns under the guard, `..` past the root,
+        an absolute path, a lone spec file, a trailing slash, a
+        non-source file, a `./` directory; and impl blocks of two
+        packages sharing a bare name keep their own methods
+        (packages_test pins the by-name index's package law).
 
 LANE A — SPEED (owns runtime/, grammar/, core/ hot paths;
 measures with `./avra test packages/std-avrac --time` and `sample`,
 user CPU, never wall). Baseline 2026-09-04: parse 14.2s, resolve
 2.4s, sigs 0.3s, bodies 8.3s, lower 6.2s; the 1571 cases ~17s;
 the compiler checking itself 28.8s.
+  - [x] PROFILE FIRST (2026-09-04): one `sample` of the compiler
+        checking itself named two things the ledger had not: the
+        hottest frames by self time were `is_impl_of`/`impls_named`
+        — `methods(ws, target)` walked EVERY declaration in the
+        workspace per method dispatch to find impl blocks by name,
+        because `Decls.impls` is keyed by target and filled only at
+        registration — and `source(ws, f)`, asked per declaration
+        typed, re-read the file, re-fingerprinted it and rebuilt its
+        line index every time. FIXED: `Decls.impls_by_name` (filled
+        at mint, one lookup) and `Workspace.sources` (one read, one
+        index per file per run; a live host clears an entry when its
+        file changes). MEASURED: the compiler checking itself 28.8s
+        -> 22.3s; the suite's `bodies` 8.3s -> 1.0s, lower 6.2s ->
+        5.2s; the gate 152s -> 135s wall. Parse stayed at 13.8s —
+        the engine, next.
+  - [x] THE MANIFEST, PARSED PER FILE (2026-09-04): `manifest(ws, i)`
+        re-read and re-parsed `avra.toml` at every ask, and
+        `is_excluded` asked it per file. `Workspace.manifests` (one
+        parse per package per run): the suite's `resolve` 2.2s ->
+        0.67s; the check 22.3s -> 21.0s. The same profile blamed
+        `Decls.mint`; the frames were `innermost`/`decl_span` inlined
+        beside it — `range_bodies` read each owner's span from the
+        store once per (expression, owner) pair. Spans are read once
+        per file now; MEASURED AS NOISE on parse, kept for the shape.
+        THE ROUND'S TRIGGERS: `source` and `manifest` now share one
+        Table-memo shape (two copies wait; the third input family
+        memoized this way — 15b.2's lock file — names an `input_memo`
+        verb); packages_test's `answered(p)` twins testing's `shown`
+        for a Program (the third test rendering a Program's answer
+        names `Program.shown`); the empty `Manifest` literal is spelled
+        once in `manifest()` (a second site names `no_manifest()`).
   - [ ] THE ENGINE'S CAPTURE COPYING: repetition captures are
         copied per append, so an N-statement program parses in
         O(N^2) (the debt below the ledger). `Many` becomes a prefix snapshot
@@ -5971,7 +6030,9 @@ packages/std-avrac`, user CPU):
 
   registry                                   59.8s
   header                                     28.8s   (2.07x)
-  make gate, wall                           223s -> 152s
+  + the impl index and the source memo       22.3s   (2.69x)
+  + the manifest memo                        21.0s   (2.85x)
+  make gate, wall                           223s -> 152s -> 135s
   make avra (the compiler building itself)  37.6s -> 25.3s
   peak RSS of a gate                         1.8 GB (measured, the watchdog)
 
@@ -6081,7 +6142,7 @@ Two items sit above the refusal tier and are SCHEDULED; the eight
 below it are refusal QUALITY, which is a first-class bar here (P1:
 correct on first generation) and each carries the round's own fix.
 
-### (1) SUPPLY-CHAIN EXECUTION during `avra build` — CRITICAL
+### (1) SUPPLY-CHAIN EXECUTION during `avra build` — CRITICAL (PAID 2026-09-04, lane 0)
 
 A DEPENDENCY's `[link] flags` row is spliced unquoted into the
 `system()` string that runs clang. `link_inputs` (workspace.av) walks
@@ -6100,7 +6161,7 @@ in the pipeline, and `shell_word` plus the `binary_name` quoting in
 test.av are DELETED rather than kept as fencing. `${NAME}` expansion
 in `expanded` stays: the environment is the invoker's own.
 
-### (2) `avra test` REPORTS GREEN OVER RED — a wrong answer
+### (2) `avra test` REPORTS GREEN OVER RED — a wrong answer (PAID 2026-09-04, lane 0)
 
 `./avra test packages/.../tests/./lists_test.av` prints "no spec cases
 here" and exits 0 for a file holding 42 cases. `on_cases`
