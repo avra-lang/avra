@@ -168,12 +168,14 @@ static void acc_report(void) {
 #ifdef __APPLE__
     slide = _dyld_get_image_vmaddr_slide(0);
 #endif
-    for (int shown = 0; shown < 24; shown++) {
+    const char* wanted = getenv("AVRA_MEM_SITES");
+    int limit = wanted ? atoi(wanted) : 24;
+    for (int shown = 0; shown < limit; shown++) {
         Site* top = NULL;
         for (int i = 0; i < SITES; i++) {
             if (g_sites[i].site && g_sites[i].peak >= 0 && (top == NULL || g_sites[i].peak > top->peak)) top = &g_sites[i];
         }
-        if (top == NULL || top->peak < (1 << 20)) break;
+        if (top == NULL || top->peak < (wanted ? 1 : (1 << 20))) break;
         fprintf(stderr, "mem:   site 0x%llx peak %6lld MB, now %6lld MB, %lld live of %lld made\n",
                 (unsigned long long)((uintptr_t)top->site - (uintptr_t)slide), (long long)(top->peak >> 20),
                 (long long)(top->live >> 20), (long long)top->count, (long long)top->made);
@@ -182,12 +184,18 @@ static void acc_report(void) {
     // Under the guard nothing is freed, so a sample box still COUNTED
     // at exit is one whose references never balanced: its life, replayed,
     // names the retain nobody released.
+    // AVRA_MEM_SITE=<unslid hex> replays that one site's sample
+    // whatever its count; without it, every site whose sample never
+    // balanced
+    const char* asked = getenv("AVRA_MEM_SITE");
+    uintptr_t asked_at = asked ? (uintptr_t)strtoull(asked, NULL, 16) + (uintptr_t)slide : 0;
     if (getenv("AVRA_RC_GUARD")) {
         int replayed = 0;
         for (int i = 0; i < SITES && replayed < 6; i++) {
             Site* st = &g_sites[i];
             Header* sh = st->site && st->sample ? hdr(st->sample) : NULL;
-            if (sh == NULL || sh->rc <= 0) continue;
+            if (sh == NULL) continue;
+            if (asked_at ? (uintptr_t)st->site != asked_at : sh->rc <= 0) continue;
             fprintf(stderr, "mem:   LEAK at site 0x%llx (%lld made): its hundredth box ends at rc %d — its life (unslid):\n",
                     (unsigned long long)((uintptr_t)st->site - (uintptr_t)slide), (long long)st->made, sh->rc);
             rc_history(st->sample);
@@ -301,7 +309,9 @@ typedef struct { void* ptr; int delta; void* at; int64_t rc; } RcEvent;
 static RcEvent* g_log = NULL;
 static size_t g_log_len = 0;
 static size_t g_log_cap = 0;
-#define RC_LOG_BUDGET ((size_t)1 << 23)
+// the guard's log budget, in events; AVRA_RC_LOG_BUDGET overrides it
+static size_t g_log_budget = (size_t)1 << 23;
+#define RC_LOG_BUDGET g_log_budget
 
 static void rc_note(void* p, int delta, void* at, int64_t rc) {
     if (g_log_len == RC_LOG_BUDGET) return;
@@ -347,7 +357,11 @@ static int g_chain_len = 0;
 static int64_t guard_len(void* p);
 
 static int rc_guarded(void) {
-    if (g_guard < 0) g_guard = getenv("AVRA_RC_GUARD") != NULL;
+    if (g_guard < 0) {
+        g_guard = getenv("AVRA_RC_GUARD") != NULL;
+        const char* budget = getenv("AVRA_RC_LOG_BUDGET");
+        if (budget) g_log_budget = (size_t)strtoull(budget, NULL, 10);
+    }
     return g_guard;
 }
 

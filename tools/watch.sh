@@ -93,16 +93,36 @@ tree_kill() {
             for (i=0; i<n; i++) { print q[i]; for (p in pp) if (pp[p]==q[i]) q[n++]=p }
         }' | xargs kill -9 2>/dev/null
 }
+# THE TRIPWIRE IS RSS, read by ps in milliseconds; the footprint —
+# `footprint` walks the process's whole map, seconds on a big one —
+# is read every fourth poll for the honest peak. A process once grew
+# from 7 GB to 16 GB between two footprint polls.
+tree_rss() {
+    ps -eo pid=,ppid=,rss= | awk -v root="$1" '
+        { pp[$1]=$2; rss[$1]=$3 }
+        END {
+            n=0; q[n++]=root; s=0
+            for (i=0; i<n; i++) { s+=rss[q[i]]; for (p in pp) if (pp[p]==q[i]) q[n++]=p }
+            print int(s/1024)
+        }'
+}
+polls=0
 while kill -0 "$pid" 2>/dev/null; do
-    mem=$(tree_mem "$pid")
-    [ -z "$mem" ] && mem=0
+    rss=$(tree_rss "$pid")
+    [ -z "$rss" ] && rss=0
+    mem=$rss
+    if [ $((polls % 4)) -eq 0 ]; then
+        fp=$(tree_mem "$pid")
+        [ -n "$fp" ] && [ "$fp" -gt "$mem" ] && mem=$fp
+    fi
+    polls=$((polls + 1))
     [ "$mem" -gt "$peak" ] && peak=$mem
     if [ "$mem" -gt "$cap_mb" ]; then
         fired=1
         tree_kill "$pid"
         break
     fi
-    sleep 0.5
+    sleep 0.25
 done
 wait "$pid" 2>/dev/null
 status=$?

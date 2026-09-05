@@ -289,14 +289,26 @@ the compiler checking itself 28.8s.
         records are ARRAYS (structs pack as lists: a two-field struct
         is a 48-byte box and a 72-byte buffer), 5.3M small lists in a
         self-check, and the clone hoard above.
-  - [ ] THE FAR RECORDS RETAINED: after the prelude fix a self-check
+  - [x] THE FAR RECORDS RETAINED (FOUND and PAID 2026-09-05): after the prelude fix a self-check
         still holds 2.78M `FarthestFailure` records made at terminal
         misses (`match_prim`'s `.Lit`/`.Named` miss arms, 100% of
         those made) and 788k merged ones with their expected lists —
         ~600 MB, 60% of what is left. A lone 4000-statement file
         keeps 184k. The results that carried them die; something else
-        holds them. NEXT: the guard's replay aimed at that site
-        (AVRA_MEM_SITE) names the retain nobody releases.
+        holds them. The guard's replay, aimed at the site, named it:
+        the fold's `mut farthest: FarthestFailure? = null` CELL. A
+        cell wore its FIRST VALUE's type, and a `null` widened into a
+        boxed nullable keeps the null's own type (that widen is
+        identity), so the memory pass saw no managed cell to settle
+        at the scope's end — and `x = null` settled nothing, since a
+        store settled by the VALUE's type. Two laws: the cell wears
+        its binding's declared type; a store settles by the cell's
+        type. Bisected to a twelve-line witness (two merges through
+        the cell, no loop); six red-team shapes (list, string, a
+        cell in a loop body, a generic `T?`, a never-assigned cell, a
+        `mut` parameter's field) clean under the guard, eval ==
+        native. MEASURED: the self-check's footprint 955 -> 268 MB
+        (2372 at the day's start), the far sites 0 live of 2.47M.
   - [x] THE GATE'S SHAPE (LANDED 2026-09-05): the compiler holds its workspace (~2.4 GB)
         while it waits on clang and on the test or corpus binary, so
         a suite peaks at their SUM. The light phase — link and run —
