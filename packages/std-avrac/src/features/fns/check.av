@@ -7,7 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId}
-use features.{no_pins, Pins, TypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, mut_seats_law, agreed}
+use features.{no_pins, Pins, TypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, mut_seats_law, agreed, unify, hungry}
 use diagnostics.{refusal}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
@@ -84,13 +84,26 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
         if !generic_argument(cx, callee, j, s.params[j], a, decl, bound) { spoke = true }
     }
     if spoke { return cx.error_type }
+    if unpinned_of(tp, bound) != null { pinned_by_answer(cx, e, s.ret, decl, bound) }
     let missing: string? = unpinned_of(tp, bound)
-    if missing != null { return unpinned_by_arguments(cx, e, callee, missing!) }
+    if missing != null { return if cx.starving { unpinned_by_arguments(cx, e, callee, missing!) } else { hungry(cx, e) } }
     let concrete = bound_closed(cx, bound)
     if !bounds_hold(cx, e, decl, concrete) { return cx.error_type }
     if !lawful_instantiation(cx, e, s, decl, concrete) { return cx.error_type }
     cx.record_subst(e, decl, concrete)
     cx.view.types.substituted(s.ret, decl, concrete)
+}
+
+/// A Var the arguments leave free is pinned by the ANSWER's seat: the
+/// declared return unifies with the want the seat planted (`let xs:
+/// List<int> = empty()`, `Store { exprs: new_arena() }`, an argument
+/// seat, a fn's declared answer). With no want yet the call goes
+/// HUNGRY, like a generic literal, and speaks only when the walk ends
+/// starving.
+fn pinned_by_answer(mut cx: TypeCx, e: ExprId, ret: TypeId, decl: DeclId, mut bound: Pins) {
+    let wanted: TypeId? = cx.want_at(e)
+    if wanted == null { return }
+    let _ = unify(cx, ret, wanted!, decl, bound)
 }
 
 /// The representation laws re-judge every substituted slot — a

@@ -519,11 +519,15 @@ Syntax the grammar lacks:
   as a fn.
 
 Wants the typer does not carry yet:
-- A no-argument generic call under a typed want (`let xs:
-  List<int> = empty()`): F2000 "`T` is not pinned by the
-  arguments" — write `empty<int>()`. Evidence inside a struct
-  argument, from a fn-typed argument, and a generic call from a
-  generic body all pin.
+- A GENERIC struct literal's field seat UNIFIES instead of planting a
+  want, so a no-argument generic call written there still needs its
+  pin (`MatchContext { absent: captured_absent<N>(), … }` inside a
+  generic fn): F2000 "`N` is not pinned by the arguments". Every
+  other seat pins it.
+- A COMPREHENSION's element does not read the list's want: `let xs:
+  List<List<int>> = [empty() for i in 0..2]` is F2000 "`T` is not
+  pinned by the arguments" — the element types on its own, the list
+  adopts it afterwards.
 - A LAMBDA's body does not read its declared answer for bare
   variants: `(n) -> if … { .Err(e) } else { .Ok(v) }` under
   `fn(int) -> Result<int, E>` (a typed let or a fn-typed field):
