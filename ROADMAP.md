@@ -5039,10 +5039,12 @@ by meaning; each is a slice for lane D unless a lane is named.
   semantics_of dispatches; memory.av has no context struct;
   `method_diagnostics` rescans the whole declaration table per file
   (I32); `Entry { at }` earns nothing; llvm.av's 31 free fns on
-  `Emit`. THE CLI (lane D's): five commands are ONE body written
-  five times (build/check/emit/ir/run: on_program + clock + timed +
-  the identical `.Err` tail) -> `on_program_phase` + `spoken`, ~60
-  lines; the CommandSpec trio is one record with defaults; four
+  `Emit`. THE CLI (lane D's): ~~five commands are ONE body
+  written five times~~ — DONE 2026-09-05: `commands/phase.av`'s
+  `phased(args, phase, act)` holds the body once and each command is
+  a named act answering `Result<int, string>` (150 lines -> 121 over
+  six files; every command's stdout and exit code byte-identical to
+  main's binary on a clean and a refused program); the CommandSpec trio is one record with defaults; four
   program-locating fns are one `program_for(path, entered)`. FOUND
   2026-09-05 (lane D, by diffing the corpus IR across a pure
   refactor): a monomorphized fn's mangled name carries the

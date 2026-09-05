@@ -1,0 +1,21 @@
+//! THE PHASED COMMAND — what every program-taking subcommand is:
+//! the program found (or exit 2), one clocked phase, the `--time`
+//! line, and a report printed as exit 1. A command's act says only
+//! what its phase DOES and answers its exit code.
+use @std.cli.{CliResult}
+use @std.avrac.language.{Program}
+
+fn phased(args: CliResult, phase: string, act: fn(Program) -> Result<int, string>) -> int {
+    on_program(args, (p: Program) -> {
+        let t0 = avra_now_ns()
+        let out = act(p)
+        if timed(args) { eprintln(timings(p, phase, avra_now_ns() - t0)) }
+        match out {
+            .Ok(code) -> code,
+            .Err(report) -> {
+                println(report)
+                1
+            }
+        }
+    })
+}

@@ -5,16 +5,13 @@ use @std.avrac.language.{render_ir, Program}
 type IrCmd = { }
 
 impl Runnable for IrCmd {
-    fn run(args: CliResult) -> int {
-        on_program(args, (p: Program) -> {
-            let t0 = avra_now_ns()
-            let clean = p.clean()
-            let out = if clean { render_ir(p.lowered()) } else { p.report() }
-            if timed(args) { eprintln(timings(p, "lower+render", avra_now_ns() - t0)) }
-            println(out)
-            if clean { 0 } else { 1 }
-        })
-    }
+    fn run(args: CliResult) -> int { phased(args, "lower+render", rendered) }
+}
+
+fn rendered(p: Program) -> Result<int, string> {
+    if !p.clean() { fail p.report() }
+    println(render_ir(p.lowered()))
+    0
 }
 
 export fn ir_command() -> Subcommand {
