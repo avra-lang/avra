@@ -16,7 +16,7 @@ export LLVM_PREFIX
 RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 
 # Every package that carries spec cases, in dependency order.
-SUITES := packages/std-errors packages/std-toml packages/std-testing packages/std-avrac packages/cli
+SUITES := packages/std-errors packages/std-toml packages/std-testing packages/std-avrac packages/cli packages/std-time packages/std-process packages/std-io packages/std-cli packages/std-text packages/std-path
 
 .PHONY: test tested clean corpus gate idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
         check run ir emit build-native native-check avra

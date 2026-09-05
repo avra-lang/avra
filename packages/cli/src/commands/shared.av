@@ -1,35 +1,40 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
-use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef, result_get_arg, result_has_flag}
+use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef}
 use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, program, lone_workspace, timed_workspace, parsed_cases, parse_clean, entry_of, no_target, avra, emit_ll, link_words}
-use @std.avrac.core.{joined, dir_of, under_dir}
+use @std.avrac.core.{joined}
+use @std.path.{dir_of, under_dir}
+use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit_text}
+use @std.errors.{Error}
+use @std.io.{println, eprintln, read_text, write_text, exists, is_dir, list_dir}
 
-extern fn avra_selfhost_read_file(path: string) -> string
-extern fn avra_selfhost_file_exists(path: string) -> int
-extern fn avra_selfhost_write_file(path: string, content: string) -> int
-extern fn avra_spawn_status(prog: string, args: List<string>) -> int
 extern fn avra_exec_self(args: List<string>) -> int
-extern fn avra_mkdir_p(path: string) -> int
 extern fn avra_process_exit(code: int)
-extern fn avra_host_list_dir(path: string) -> string
-extern fn avra_host_is_dir(path: string) -> int
 extern fn avra_now_ns() -> int
-extern fn println(s: string)
-extern fn eprintln(s: string)
 
-/// The disk, as the workspace's four questions.
+/// The disk, as the workspace's four questions — a listing the host
+/// refuses reads as empty (the workspace asks `exists` first); a FILE
+/// it refuses is spoken and exits, never parsed as empty.
 fn disk_host() -> Host {
     Host {
-        exists: (p: string) -> avra_selfhost_file_exists(p) != 0,
-        read: (p: string) -> avra_selfhost_read_file(p),
-        list: (dir: string) -> named_lines(avra_host_list_dir(dir)),
-        is_dir: (dir: string) -> avra_host_is_dir(dir) != 0,
+        exists: (p: string) -> exists(p),
+        read: (p: string) -> read_or_die(p),
+        list: (dir: string) -> list_dir(dir) catch [],
+        is_dir: (dir: string) -> is_dir(dir),
     }
 }
 
-/// A newline-joined listing as names — the empty tail dropped.
-fn named_lines(text: string) -> List<string> {
-    [l for l in text.split("\n") if l.length > 0]
+/// A source the host gives up, or the refusal spoken and exit 2 — an
+/// unreadable file once parsed as an empty program and answered 0.
+fn read_or_die(path: string) -> string {
+    match read_text(path) {
+        .Ok(text) -> text,
+        .Err(e) -> {
+            let _ = host_refused(e.describe().message)
+            avra_process_exit(2)
+            ""
+        }
+    }
 }
 
 /// The one voice for a path that is not there.
@@ -39,7 +44,7 @@ fn no_such_file(path: string) {
 
 /// The argued path, whatever it is.
 fn path_arg(args: CliResult) -> string {
-    result_get_arg(args, "file")
+    args.arg("file")
 }
 
 /// The argued file as a PROGRAM: inside a package's sources — an
@@ -48,13 +53,13 @@ fn path_arg(args: CliResult) -> string {
 /// file. Null when the file does not exist.
 fn program_arg(args: CliResult) -> Program? {
     let path = path_arg(args)
-    if avra_selfhost_file_exists(path) == 0 {
+    if !exists(path) {
         no_such_file(path)
         return null
     }
     let root: string? = package_root(dir_of(path))
     if root == null || !under_dir(path, "${root!}/src") {
-        let lone: Program = program(lone_workspace(path, avra_selfhost_read_file(path), avra()), path)
+        let lone: Program = program(lone_workspace(path, read_or_die(path), avra()), path)
         return lone
     }
     let whole: Program = program(timed_workspace(disk_host(), root!, avra(), () -> avra_now_ns()), path)
@@ -72,7 +77,7 @@ fn root_program(root: string) -> Program {
 /// file is entered.
 fn program_at(args: CliResult) -> Program? {
     let path = path_arg(args)
-    if avra_host_is_dir(path) != 0 {
+    if is_dir(path) {
         let whole: Program = root_program(path)
         return whole
     }
@@ -85,17 +90,17 @@ fn program_at(args: CliResult) -> Program? {
 /// OTHER file's top level for the crime of not being the one named.
 fn caseless_program(args: CliResult) -> Program? {
     let path = path_arg(args)
-    if avra_selfhost_file_exists(path) == 0 {
+    if !exists(path) {
         no_such_file(path)
         return null
     }
-    if avra_host_is_dir(path) != 0 {
+    if is_dir(path) {
         let whole: Program = program(timed_workspace(disk_host(), path, avra(), () -> avra_now_ns()), null)
         return whole
     }
     let root: string? = package_root(dir_of(path))
     if root == null || !under_dir(path, "${root!}/src") {
-        let lone: Program = program(lone_workspace(path, avra_selfhost_read_file(path), avra()), null)
+        let lone: Program = program(lone_workspace(path, read_or_die(path), avra()), null)
         return lone
     }
     let held: Program = program(timed_workspace(disk_host(), root!, avra(), () -> avra_now_ns()), null)
@@ -108,7 +113,7 @@ fn caseless_program(args: CliResult) -> Program? {
 /// before a line of it, or of its dependencies, is analyzed.
 fn on_cases(args: CliResult, act: fn(Program, List<TestCase>) -> int) -> int {
     let path = path_arg(args)
-    if avra_host_is_dir(path) != 0 {
+    if is_dir(path) {
         let held: Workspace? = package_workspace(path)
         if held == null { return 2 }
         let ws = held!
@@ -199,7 +204,7 @@ fn ms(ns: int) -> string {
 }
 
 fn timed(args: CliResult) -> bool {
-    result_has_flag(args, "time")
+    args.has_flag("time")
 }
 
 
@@ -207,7 +212,7 @@ fn timed(args: CliResult) -> bool {
 fn package_root(dir: string) -> string? {
     mut d = dir
     while d.length > 0 {
-        if avra_selfhost_file_exists("${d}/avra.toml") != 0 { return d }
+        if exists("${d}/avra.toml") { return d }
         d = dir_of(d)
     }
     null
@@ -216,12 +221,13 @@ fn package_root(dir: string) -> string? {
 
 /// clang links the `.ll` with Avra's runtime — and whatever the
 /// program's packages promised their externs — into a native binary.
-/// The command is an ARGV, never a shell line: a `[link]` row from
-/// any package, the project's own or a dependency's, is one word
-/// that means only itself.
+/// The command is a `Command`, never a shell line: a `[link]` row from
+/// any package, the project's own or a dependency's, is one word that
+/// means only itself. It runs where the developer does — their
+/// environment, their terminal for its words, their Ctrl-C.
 /// A PRODUCT links optimized: what `build` answers is run many times.
 fn link(ll_path: string, p: Program) -> int {
-    spoken_clang(avra_spawn_status("clang", clang_words(ll_path, p, "-O1")), ll_path)
+    linked(ll_path, p, "-O1")
 }
 
 /// THE HAND-OFF: a binary run once is linked and run by a FRESH
@@ -236,32 +242,79 @@ fn link(ll_path: string, p: Program) -> int {
 /// exec failed.
 fn staged(ll_path: string, p: Program) -> int {
     let plan = "${ll_path}.link"
-    if avra_selfhost_write_file(plan, joined(clang_words(ll_path, p, "-O0"), "\n")) == 0 {
-        eprintln("avra: could not write ${plan}")
-        return 1
-    }
+    if !planned(plan, clang_words(ll_path, p, "-O0")) { return 1 }
     let _ = avra_exec_self(["staged", plan])
     eprintln("avra: could not run this program again for the link")
     1
 }
 
+/// The plan written, one word per line — or the host's refusal spoken.
+fn planned(plan: string, words: List<string>) -> bool {
+    match write_text(plan, joined(words, "\n")) {
+        .Ok(_) -> true,
+        .Err(e) -> {
+            eprintln("avra: could not write the link plan — ${e.describe().message}")
+            false
+        }
+    }
+}
+
 /// clang's words for a module: the level, the runtime, the package's
-/// own objects and flags, the binary's path.
+/// own objects and flags, the binary's path — the plan a hand-off
+/// writes and a product links by.
 fn clang_words(ll_path: string, p: Program, opt: string) -> List<string> {
     ["-w", opt, ll_path, "build/avra_runtime.o"].concat(link_words(p.ws)).concat(["-o", binary_name(ll_path)])
 }
 
-/// clang's status as a verdict, its two failures spoken.
-fn spoken_clang(status: int, module: string) -> int {
-    if status == 127 {
-        eprintln("avra: could not start `clang` — is it on PATH?")
-        return 1
+fn linked(ll_path: string, p: Program, opt: string) -> int {
+    match clang_ran(clang_words(ll_path, p, opt)) {
+        .Ok(x) -> judged_link(x, ll_path),
+        .Err(e) -> refused_by_host(e),
     }
-    if status != 0 {
-        eprintln("avra: clang failed linking ${module}")
-        return 1
-    }
-    0
+}
+
+/// clang over its words, at the terminal: its exit, or the host's
+/// refusal to run it at all.
+fn clang_ran(words: List<string>) -> Result<Exit, ProcessError> {
+    (at_the_terminal(cmd(linker()?, words)).outcome()?).exit
+}
+
+/// The one voice for a child the host would not run.
+fn refused_by_host(e: ProcessError) -> int {
+    host_refused(e.describe().message)
+}
+
+/// Anything the host refused, in the error's own words; answers 1.
+fn host_refused(message: string) -> int {
+    eprintln("avra: ${message}")
+    1
+}
+
+/// The C compiler that links: `CC`, else `clang` on the PATH — the
+/// row `[process.tools] clang` in this package's own manifest says the
+/// same, and mints it the day the manifest mints.
+fn linker() -> Result<Tool, ProcessError> {
+    tool_from_env("CC", "clang")
+}
+
+/// A command run where the developer sits: their environment, their
+/// terminal for its words, their Ctrl-C reaching it — the compiler's
+/// own tools are the developer's, not a service's.
+fn at_the_terminal(c: Command) -> Command {
+    c with { env: Env.Inherit, streams: Streams.Inherited, own_group: false }
+}
+
+/// A binary a link wrote, run at the terminal — its exit, or the
+/// host's refusal to run it at all. Spelled with a `/`, the path is
+/// the tool, taken as written.
+fn run_binary(binary: string) -> Result<Exit, ProcessError> {
+    (at_the_terminal(cmd(tool(binary)?, [])).outcome()?).exit
+}
+
+fn judged_link(x: Exit, ll_path: string) -> int {
+    if x is .Clean { return 0 }
+    eprintln("avra: clang failed linking ${ll_path} — exited ${exit_text(x)}")
+    1
 }
 
 /// Linked, and the binary's path said — what `build` answers.
