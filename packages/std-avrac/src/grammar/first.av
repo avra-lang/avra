@@ -26,7 +26,9 @@ use core.{code_at, is_name_start, is_digit, distinct}
 /// nothing at all.
 type FirstSet = { lits: List<string>, terms: List<string>, nullable: bool }
 
-type FirstCx = { g: Grammar, visiting: List<string>, defects: List<Diagnostic> }
+// `firsts`: each rule's set, derived once — a rule referenced from
+// forty places is walked once, not forty times
+type FirstCx = { g: Grammar, visiting: List<string>, firsts: Map<string, FirstSet>, defects: List<Diagnostic> }
 
 /// The empty first set — nothing matchable, nothing skippable.
 fn no_first() -> FirstSet {
@@ -39,6 +41,8 @@ impl FirstCx {
     }
 
     fn rule_first(name: string) -> FirstSet {
+        let known: FirstSet? = self.firsts.get(name)
+        if known != null { return known! }
         if self.visiting.contains(name) {
             self.note(defect(name, "rule is left-recursive — no first token can ever commit"))
             return no_first()
@@ -50,6 +54,7 @@ impl FirstCx {
         self.visiting.push(name)
         let f = self.alt_first(body!)
         let _ = self.visiting.pop()
+        self.firsts.set(name, f)
         f
     }
 
@@ -155,7 +160,7 @@ fn subsuming_term(text: string) -> string? {
 
 /// Every dead branch in the grammar, each defect saying why.
 export fn first_defects(g: Grammar) -> List<Diagnostic> {
-    mut cx = FirstCx { g: g, visiting: [], defects: [] }
+    mut cx = FirstCx { g: g, visiting: [], firsts: {}, defects: [] }
     for r in g.rules {
         let firsts = [cx.seq_first(s) for s in r.body.branches]
         let commit_flags = [cx.commits(s) for s in r.body.branches]
