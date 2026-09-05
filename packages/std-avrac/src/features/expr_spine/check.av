@@ -25,7 +25,7 @@ fn spine_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 fn index_type(mut cx: TypeCx, subject: ExprId, index: ExprId) -> TypeId {
     let elem: TypeId? = cx.view.types.element(cx.type_at(subject))
     if elem == null {
-        if cx.shape_at(subject) is .Error { return cx.error_type }
+        if cx.errored(subject) { return cx.error_type }
         return not_indexable(cx, subject)
     }
     let ish = cx.shape_at(index)
@@ -219,10 +219,6 @@ fn not_indexable(mut cx: TypeCx, subject: ExprId) -> TypeId {
 
 fn index_not_int(mut cx: TypeCx, index: ExprId) {
     cx.emit(refusal("type.mismatch", cx.loc_of(index), "an index is an `int`, found `${cx.name_at(index)}`", "this decides the position", null))
-}
-
-fn unpinned_read(mut cx: TypeCx, e: ExprId, tname: string, name: string) -> TypeId {
-    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}.${name}` cannot pin `${tname}`'s type — nothing carries it", "read here", "a payload pins the type; the pinned unit surface is recorded"))
 }
 
 fn record_read(mut cx: TypeCx, e: ExprId, tname: string) -> TypeId {

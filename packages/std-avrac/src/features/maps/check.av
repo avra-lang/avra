@@ -4,7 +4,7 @@
 //! a value must be slot-worthy. `{}` wears EmptyMap until a map
 //! adopts it.
 use core.{ExprId, Type, TypeId}
-use features.{TypeCx, spoken, this_is, accepts, types_disagree, slot_worthy, want_refused, slice_promise}
+use features.{TypeCx, spoken, this_is, accepts, types_disagree, slot_worthy, want_refused, unslottable, unslottable_want}
 use diagnostics.{refusal}
 
 fn map_type(mut cx: TypeCx, e: ExprId, keys: List<ExprId>, values: List<ExprId>) -> TypeId {
@@ -18,8 +18,8 @@ fn map_type(mut cx: TypeCx, e: ExprId, keys: List<ExprId>, values: List<ExprId>)
     if want != null { return heard_map(cx, e, values, want!) }
     let head = values[0]
     let v = cx.type_at(head)
-    if cx.shape_at(head) is .Error { return cx.error_type }
-    if !slot_worthy(cx.view.types, cx.shape_at(head)) { return unslottable_value(cx, head) }
+    if cx.errored(head) { return cx.error_type }
+    if !slot_worthy(cx.view.types, cx.shape_at(head)) { return unslottable(cx, head, "a map value") }
     for x in values {
         if types_disagree(cx, cx.type_at(x), v) { return disagreeing_value(cx, x, v) }
     }
@@ -38,7 +38,7 @@ fn wanted_value(cx: TypeCx, e: ExprId) -> TypeId? {
 
 /// Every value through `accepts` against the declared value type.
 fn heard_map(mut cx: TypeCx, e: ExprId, values: List<ExprId>, want: TypeId) -> TypeId {
-    if !slot_worthy(cx.view.types, cx.view.types.shape_of(want)) { return unslottable_want(cx, e, want) }
+    if !slot_worthy(cx.view.types, cx.view.types.shape_of(want)) { return unslottable_want(cx, e, want, "a map value") }
     for x in values {
         if !accepts(cx, x, want) { return unwanted_value(cx, x, want) }
     }
@@ -62,10 +62,4 @@ fn unwanted_value(mut cx: TypeCx, x: ExprId, want: TypeId) -> TypeId {
     spoken(cx, refusal("type.map_value", cx.loc_of(x), "this map holds `${cx.view.types.name_of(want)}`, this is `${n}`", this_is(n), null))
 }
 
-fn unslottable_value(mut cx: TypeCx, head: ExprId) -> TypeId {
-    spoken(cx, refusal("type.list_scalar", cx.loc_of(head), "a map value cannot hold this yet", this_is(cx.name_at(head)), slice_promise("values")))
-}
 
-fn unslottable_want(mut cx: TypeCx, e: ExprId, want: TypeId) -> TypeId {
-    spoken(cx, refusal("type.list_scalar", cx.loc_of(e), "a map value cannot hold `${cx.view.types.name_of(want)}` yet", "this map", slice_promise("values")))
-}

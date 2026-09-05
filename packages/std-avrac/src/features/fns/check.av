@@ -43,7 +43,7 @@ fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, a
     let bound = cx.target_type(e)
     let held: Arrow? = cx.view.types.arrow_parts(bound)
     if held != null { return seats_judged(cx, e, callee, held!.seats, held!.answer, args) }
-    if cx.view.types.shape_of(bound) is .Error { return cx.error_type }
+    if cx.errored_ty(bound) { return cx.error_type }
     not_callable(cx, e, callee, bound)
 }
 
@@ -77,7 +77,7 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
     let bound = pinned_slots(cx, e, callee, pins, decl, tp)
     // a pin that failed to name a type already spoke — absorb
     for b in bound.slots {
-        if b != null && cx.view.types.shape_of(b!) is .Error { return cx.error_type }
+        if b != null && cx.errored_ty(b!) { return cx.error_type }
     }
     mut spoke = false
     for j, a in args {
@@ -154,7 +154,7 @@ export fn check_return(mut cx: TypeCx, s: StmtId) {
         no_fn_to_answer(cx, s)
         return
     }
-    if cx.shape_at(v) is .Error { return }
+    if cx.errored(v) { return }
     if accepts(cx, v, want!) { return }
     wrong_return(cx, s, v, want!)
 }

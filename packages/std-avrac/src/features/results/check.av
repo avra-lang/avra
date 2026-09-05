@@ -18,7 +18,7 @@ fn catch_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 
 fn catched_type(mut cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>,
                 binds: List<string>, values: List<ExprId>) -> TypeId {
-    if cx.shape_at(subject) is .Error { return cx.error_type }
+    if cx.errored(subject) { return cx.error_type }
     let sides: ResSides? = cx.view.types.res_parts(cx.type_at(subject))
     if sides == null { return not_a_result(cx, subject) }
     let t = sides!.ok
@@ -30,7 +30,7 @@ fn catched_type(mut cx: TypeCx, e: ExprId, subject: ExprId, variants: List<strin
     // recover, and the unmatched have already LEFT through the same
     // exit `?` uses. Which is why the channel must exist (§5.6).
     let ret: TypeId? = cx.enclosing_ret()
-    if ret != null && cx.view.types.shape_of(ret!) is .Error { return cx.error_type }
+    if ret != null && cx.errored_ty(ret!) { return cx.error_type }
     let rsides: ResSides? = if ret == null { null } else { cx.view.types.res_parts(ret!) }
     // LICENSED I9: type identity — interned ids ARE the agreement
     if rsides == null || rsides!.err.index != err.index { return uncarried_rest(cx, e, err) }
@@ -67,7 +67,7 @@ fn arm_bind(mut cx: TypeCx, e: ExprId, err: TypeId, vn: string, bind: string, va
 /// (widening recorded, like every slot).
 fn arm_answer(mut cx: TypeCx, t: TypeId, value: ExprId) {
     let at = cx.walk_type(value)
-    if cx.view.types.shape_of(at) is .Error { return }
+    if cx.errored_ty(at) { return }
     if accepts(cx, value, t) { return }
     arm_not_ok(cx, value, t)
 }
@@ -77,7 +77,7 @@ fn covers(cx: TypeCx, err: TypeId, variants: List<string>) -> bool {
     if variants.any(it == "") { return true }
     let sig: EnumSig? = cx.variants_of(err)
     if sig == null { return false }
-    sig!.names.all(named_in(variants, it))
+    total(sig!, variants)
 }
 
 /// The pronoun cannot ride a nested method call — the wrapper can.
