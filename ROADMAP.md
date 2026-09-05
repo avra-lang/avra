@@ -5551,7 +5551,29 @@ by meaning; each is a slice for lane D unless a lane is named.
   contexts.av:264, core/parts.av:131 — `diverges` sits bare while
   `leaves` wears its doc — lexer.av x2, nodes.av x2, analysis.av:57).
 - F. GRAMMAR + CORE (lane A owns these files; SENT to lane A
-  2026-09-05 after adversarial verification, which KILLED six of the
+  2026-09-05, and lane A has since LANDED the lexer residue (where
+  verification found `|>` was UNLEXABLE, not merely unparsed, and
+  `continuing_ops()` minted a fresh 17-string list per source line),
+  the fallback flag as one nullable local with a corpus program
+  pinning the retired limit, the Rep suffix inverse, and the
+  Alt/Seq walk — where their verification found lane D's THIRD copy
+  was a FOURTH (features/coherence.av) and that the proposed
+  `prims_of` served none of them; it is `Alt.seqs`/`Alt.items`/
+  `Seq.deep_items`, four call sites, nine lines shorter. HANDED
+  BACK, and the hand-back is right: `grammar_build`'s string
+  dispatch is NOT a Rules violation — the Rules forbid a string
+  deciding BEHAVIOR, and this is the DSL's own builder-name currency
+  crossing a data seam, named as a string on both sides. What
+  survives is a narrower and better-evidenced point, offered to lane
+  A rather than re-filed: features/coherence.av cross-checks builder
+  names as DATA (it reports a builder no feature registers, and one
+  no rule calls), and the grammar side cannot have that check while
+  its builders are a match. Measured: the seed calls 12 and
+  builders.av implements 12, with no drift today and nothing
+  mechanical keeping it so. The cheap half is a
+  `grammar_builder_names()` list the validator compares against,
+  which buys the check without restructuring the dispatch.
+  Earlier, adversarial verification KILLED six of the
   thirteen — recorded here so nobody re-files them. STRUCK: the
   `ready(grammar_of_grammars())` perf claim (the DSL seed is 9 rules /
   12 branches, so it is microseconds; the count is 28 not 29; and a

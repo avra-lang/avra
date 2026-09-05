@@ -667,7 +667,17 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
 Runtime facts, ours to ratify:
 - A STRING's `.length` is a LOAD — the header carries the length
   (lane A), as a list's does; `while i < s.length` costs a load per
-  turn, and I27 retired with the strlen it ratcheted.
+  turn, and I27 retired with the strlen it ratcheted. WITH ONE
+  CAVEAT worth knowing before a new box type lands: `str_len` reads
+  `(h && h->len) ? h->len : strlen(s)`, so a ZERO length is not
+  trusted — it falls back to `strlen`. That is safe today only
+  because every text box is minted through `str_box(n)`, which
+  allocates n+1, and every caller writes the trailing NUL, so the
+  fallback reads a sentinel and answers 0 (lane B probed all eight
+  ways to make an empty string, both engines). The safety is a
+  CONVENTION OF THE CALLERS, not a property of the function: a box
+  allocated at exactly n, which is what a `Bytes` value would be,
+  makes it a live bug.
 - `split` DROPS a trailing empty segment and keeps a leading one:
   `"a.".split(".")` is one element, `".a".split(".")` two,
   `"".split(".")` is `[]`.
