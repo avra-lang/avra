@@ -309,6 +309,25 @@ the compiler checking itself 28.8s.
         `mut` parameter's field) clean under the guard, eval ==
         native. MEASURED: the self-check's footprint 955 -> 268 MB
         (2372 at the day's start), the far sites 0 live of 2.47M.
+  - [x] THE CYCLE (FOUND and ENDED 2026-09-05): the cases binary
+        held 922 MB at exit — 7.2M small lists, ~4300 per case: every
+        case's language, grammar and workspace tables. The workspace
+        stores closures that capture the workspace (13 query
+        verifiers, 3 declaration hooks, and the Analysis of each file
+        in its own table), and counting never frees a cycle; the
+        compiler never noticed with one workspace per process. A
+        one-shot workspace now ends its own cycles at
+        `Language.analyze` (`disarmed`: the verifiers refuse, the
+        hooks are no-ops, the analyses table is emptied and never
+        refilled; an Analysis asked after is remade over the memoized
+        parts). MEASURED: the cases binary 920 -> 60 MB peak, the
+        suite's peak 1083 -> 327 MB; the case run 4.8s -> 5.6s, the
+        price of freeing what it makes (7M lists per run). THE
+        LANGUAGE ASK, in the sugar backlog: WEAK CAPTURES — a capture
+        that holds no reference, read through the header (a
+        generation beside the count tells a dead box from its reused
+        memory), so a table's hooks can name their owner and the
+        owner still dies.
   - [x] THE GATE'S SHAPE (LANDED 2026-09-05): the compiler holds its workspace (~2.4 GB)
         while it waits on clang and on the test or corpus binary, so
         a suite peaks at their SUM. The light phase — link and run —
@@ -3158,6 +3177,18 @@ additions get siblings, nothing changes shape:
 
 ## Sugar backlog — dogfooding asks
 
+- WEAK CAPTURES. A closure stored in a value that captures the value's
+  owner is a cycle, and counting never frees one: the workspace's
+  query verifiers, its declaration hooks and its analyses all
+  capture the workspace, so a workspace lives forever unless its
+  last user ends the cycles by hand (`disarmed`, 2026-09-05). THE
+  ASK: a capture marked weak (`weak ws` at the lambda, or a core
+  `Weak<T>` with `get() -> T?`) holds no reference; a read checks
+  the box's header — a GENERATION beside the count, bumped when a
+  box is freed, so a dead box's reused memory never answers for it —
+  and traps or answers null on a dead owner. Lowering: an unowned
+  lane in the capture pack (no retain, no release); the runtime: the
+  generation in the header's spare bits and a `weak_get` row.
 - ONCE-PER-PROCESS PURE VALUES. `avra()` assembles the language —
   merges 34 grammars, prepares and validates the result, boxes the
   dispatch — and every spec case calls it: 7.6ms x 1578 cases = 12s

@@ -22,6 +22,7 @@ cap=4000
 cd "$worktree"
 if [ -n "$(git status --porcelain)" ]; then
     git add -A && git commit -q -F "$msg"
+    committed=1
     echo "integrate: committed $(git log -1 --format=%h) on lane/$lane"
 fi
 base="$(git -C "$main" rev-parse HEAD)"
@@ -35,7 +36,10 @@ fi
 
 cd "$main"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { git stash push -q -m "edits another session left on main's working tree"; stashed=1; }
-git merge --no-ff -q "lane/$lane" -m "merge: lane $lane — $(head -1 "$msg" | cut -c1-100)"
+# the merge is titled by what landed: the message when this run
+# committed, else the lane's last subject
+[ -n "$committed" ] && title="$(head -1 "$msg")" || title="$(git -C "$worktree" log -1 --format=%s)"
+git merge --no-ff -q "lane/$lane" -m "merge: lane $lane — $(echo "$title" | cut -c1-100)"
 [ -n "$stashed" ] && git stash pop -q && echo "integrate: main's uncommitted edits restored (they were never committed)"
 echo "integrate: merged as $(git log -1 --format=%h)"
 
