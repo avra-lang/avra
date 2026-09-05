@@ -5844,6 +5844,41 @@ by meaning; each is a slice for lane D unless a lane is named.
   that would is exactly the `seated_walk` verb lane C declined —
   which is a second reason to have declined it.
 
+- H2. A METHOD LAUNDERS AN IMMUTABLE RECEIVER — THE SIBLING OF H0
+  (found 2026-09-05 by lane D; lane C's, typing). A WRITING METHOD
+  called on a NON-`mut` receiver is only WARNED (F2047), the program
+  is ACCEPTED, and the mutation is OBSERVABLE — the same `1 2 2`
+  signature H0 wore, where deep immutability (spec 11.5) and the
+  memory doctrine's "aliasing NEVER observable" both demand `1 1 0`.
+  The comparison IS the finding: the DIRECT write through a non-`mut`
+  parameter is an ERROR (F3005 "parameters are immutable"), and the
+  IDENTICAL write moved behind a method is a warning that compiles.
+  A method call launders an immutable seat into a mutable one. Probed
+  at both depths (`c.keep(n)` and `w.cache.keep(n)`) and on both
+  layouts (a scalar field, a list field): eval == native == `1 2 2`
+  on all four.
+  THE SCALE, measured with main's compiler under the watchdog: F2047
+  fires 198 times tree-wide — workspace.av 124, features/contexts.av
+  22, test_run.av 12, lower.av 12, receivers.av 10, the rest single
+  digits. These are TRUE positives: the lint traces a method that
+  genuinely writes, and every one probed mutates observably. This is
+  not a lint that miscounts the wrong thing (that is F2040's, lane
+  C's slice) — it is a law that shipped as a warning and was never
+  paid. It arrived with `feat(impls,fns): the inout seats`.
+  THE ADVICE TERMINATES, so the conversion is mechanical: marking the
+  seat `mut` moves the refusal up to the call sites as F2048, and
+  marking the root binding `mut` clears it — probed clean end to end.
+  And `mut` on a record parameter is ADVISORY today, not a
+  representation: the mutation propagates either way, so the
+  conversion is annotation-only, with no semantic or layout change.
+  WHAT MAKES IT A DECISION rather than a patch: 124 of the 198 are the
+  MEMO KERNEL, where `parsed(ws, f)` and its siblings read as pure
+  queries while writing a cache through `ws.db`/`ws.decls`. Enforcing
+  the law spells that mutation out — every query fn takes `mut ws` —
+  which buys P7 (visible magic) at the cost of P3 (zero ceremony).
+  The other answer is rung 14's own 11.3 `Cell<T>`, which hides it
+  again and is the shape the spec already reserves for exactly this.
+  Lane C's call; lane D will do the mechanical conversion on request.
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure
   variant enumeration in core/parts.av and core/nodes.av; F2040
