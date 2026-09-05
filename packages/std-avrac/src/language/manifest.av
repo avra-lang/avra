@@ -14,12 +14,25 @@ use @std.errors.{Loc}
 /// only, and where its line is.
 export type Dependency = { key: string, path: string?, dev: bool, at: Loc? }
 
+/// Where a declared tool comes from: one PATH lookup at start; the
+/// environment's variable `var`, else `default`; or the file `at`.
+export enum Provenance {
+    Path
+    Env
+    Abs
+}
+
+/// A tool the package declares it may run — `[process.tools]`.
+/// `terminator` is the word after which the tool reads no options;
+/// absent when the tool has none (`terminator = false`).
+export type ToolRow = { name: string, from: Provenance, var: string?, default: string?, at_path: string?, terminator: string?, at: Loc? }
+
 /// A manifest's facts. `bin` and `lib` are entry files relative to
 /// the package root — the written path, or the section's default.
 /// `deps_at` is where a new dependency line goes: after the last
 /// one, else after the `[dependencies]` header, else absent (the
 /// file has no such section yet).
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, flags: List<string>, voices: List<Diag> }
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, flags: List<string>, tools: List<ToolRow> = [], voices: List<Diag> }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
@@ -44,6 +57,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
         objects: r.words_of("link", "objects"), flags: r.words_of("link", "flags"),
         deps: r.dependencies("dependencies", false, name).concat(r.dependencies("dev-dependencies", true, name)),
         deps_at: r.deps_at(),
+        tools: r.tools(),
         voices: r.voices,
     }
 }
@@ -76,7 +90,17 @@ fn is_number(s: string) -> bool {
 /// The sections a manifest may hold, and the keys each takes.
 fn known_section(name: string) -> bool {
     name == "package" || name == "bin" || name == "lib" || name == "dependencies" || name == "dev-dependencies" ||
-        name == "features" || name == "build" || name == "link" || name.starts_with("profile.")
+        name == "features" || name == "build" || name == "link" || name.starts_with("profile.") || is_process_section(name)
+}
+
+/// `[process]` and what hangs off it: the tools, each inline or as
+/// its own table, and the environment a child sees.
+fn is_process_section(name: string) -> bool {
+    name == "process" || name == "process.tools" || name == "process.env" || is_tool_table(name)
+}
+
+fn is_tool_table(name: string) -> bool {
+    name.starts_with("process.tools.")
 }
 
 fn known_key(section: string, key: string) -> bool {
@@ -84,7 +108,23 @@ fn known_key(section: string, key: string) -> bool {
     if section == "bin" || section == "lib" { return key == "path" || key == "name" }
     if section == "link" { return key == "objects" || key == "flags" }
     if section.starts_with("profile.") { return ["opt_level", "debug", "overflow_checks", "incremental", "coverage"].contains(key) }
+    if section == "process" { return key == "max_capture" || key == "enforce" }
+    if section == "process.env" { return key == "base" || key == "pass" || key == "set" }
+    if is_tool_table(section) { return is_tool_key(key) }
     true
+}
+
+fn is_tool_key(key: string) -> bool {
+    ["from", "var", "default", "at", "terminator", "min"].contains(key)
+}
+
+/// The provenance a row's `from` word names; absence for a word that
+/// names none.
+fn provenance_of(word: string) -> Provenance? {
+    if word == "path" { return Provenance.Path }
+    if word == "env" { return Provenance.Env }
+    if word == "abs" { return Provenance.Abs }
+    null
 }
 
 /// The opt levels the spec names.
@@ -127,17 +167,74 @@ impl Reader {
     }
 
     /// Unknown sections and keys warn — a newer manifest loads on
-    /// an older compiler, degraded and said so.
+    /// an older compiler, degraded and said so. Under `[process]` they
+    /// REFUSE: a typo in a block that bounds what a program may run is
+    /// never a degraded load.
     fn unknowns() {
         for s in self.doc.sections() {
             if !known_section(s) {
                 self.speak(warning("manifest.unknown_section", self.header_at(s), "`[${s}]` is not a section this compiler reads", "ignored", null))
             } else {
                 for e in self.doc.entries_of(s) {
-                    if !known_key(s, e.key) { self.speak(warning("manifest.unknown_key", self.entry_at(e), "`${e.key}` is not a key of `[${s}]`", "ignored", null)) }
+                    if !known_key(s, e.key) { self.speak(self.unknown_key(s, e)) }
                 }
             }
         }
+    }
+
+    fn unknown_key(s: string, e: TomlEntry) -> Diag {
+        if is_process_section(s) { return unknown_process_key(self.entry_at(e), e.key, "`[${s}]`") }
+        warning("manifest.unknown_key", self.entry_at(e), "`${e.key}` is not a key of `[${s}]`", "ignored", null)
+    }
+
+    /// `[process.tools]`: every tool the package may run, spelled inline
+    /// (`git = { from = "path" }`) or as its own table
+    /// (`[process.tools.clang]`), each checked for a lawful provenance.
+    fn tools() -> List<ToolRow> {
+        let inline = [self.tool_row(e.key, e.value, self.entry_at(e)) for e in self.doc.entries_of("process.tools")]
+        let tabled = [self.tool_table(s) for s in self.doc.sections() if is_tool_table(s)]
+        inline.concat(tabled)
+    }
+
+    fn tool_row(name: string, v: TomlValue, at: Loc?) -> ToolRow {
+        for key in inline_keys(v) {
+            if !is_tool_key(key) { self.speak(unknown_process_key(at, key, "a tool row")) }
+        }
+        let row = ToolRow { name: name, from: self.provenance(text_field(v, "from"), name, at), var: text_field(v, "var"), default: text_field(v, "default"), at_path: text_field(v, "at"), terminator: terminator_field(toml_field(v, "terminator")), at: at }
+        self.judged_tool(row)
+    }
+
+    fn tool_table(section: string) -> ToolRow {
+        let name = section.substring(14, section.length)
+        let at = self.header_at(section)
+        let row = ToolRow { name: name, from: self.provenance(self.table_text(section, "from"), name, at), var: self.table_text(section, "var"), default: self.table_text(section, "default"), at_path: self.table_text(section, "at"), terminator: terminator_field(self.doc.get(section, "terminator")), at: at }
+        self.judged_tool(row)
+    }
+
+    /// The row's provenance: the PATH when unsaid; a word naming none
+    /// is refused and read as the PATH.
+    fn provenance(word: string?, name: string, at: Loc?) -> Provenance {
+        if word == null { return Provenance.Path }
+        let p: Provenance? = provenance_of(word!)
+        if p == null {
+            self.speak(refusal("manifest.bad_tool_from", at, "`${name}` comes from `${word!}` — a tool comes from `path`, `env` or `abs`", "here", null))
+            return Provenance.Path
+        }
+        p!
+    }
+
+    fn table_text(section: string, key: string) -> string? {
+        let v: TomlValue? = self.doc.get(section, key)
+        if v == null { return null }
+        toml_text(v!)
+    }
+
+    /// The row spoken for: an `env` row with no `var`, an `abs` row
+    /// with no `at`.
+    fn judged_tool(row: ToolRow) -> ToolRow {
+        if row.from is .Env && row.var == null { self.speak(refusal("manifest.tool_env_var", row.at, "`${row.name}` comes from the environment and names no `var`", "here", "add `var = \"CC\"`")) }
+        if row.from is .Abs && row.at_path == null { self.speak(refusal("manifest.tool_abs_at", row.at, "`${row.name}` is an absolute tool and names no `at`", "here", "add `at = \"/usr/bin/…\"`")) }
+        row
     }
 
     /// A target's entry path: the written one, the section's
@@ -238,12 +335,41 @@ impl Reader {
     }
 }
 
+/// The one voice for a key `[process]` does not take: a bound on what
+/// may run is never a degraded load.
+fn unknown_process_key(at: Loc?, key: string, where: string) -> Diag {
+    refusal("manifest.unknown_process_key", at, "`${key}` is not a key of ${where} — and `[process]` bounds what this program may run", "here", "the keys are from, var, default, at, terminator, min")
+}
+
 /// The `path` of a `{ path = "…" }` value; absence for every other
 /// form.
 fn path_of(v: TomlValue) -> string? {
-    let p: TomlValue? = toml_field(v, "path")
-    if p == null { return null }
-    toml_text(p!)
+    text_field(v, "path")
+}
+
+/// An inline table's keys; none for any other value.
+fn inline_keys(v: TomlValue) -> List<string> {
+    match v {
+        .Table(pairs) -> [p.key for p in pairs],
+        rest -> [],
+    }
+}
+
+/// A text field of an inline table; absence when missing or not text.
+fn text_field(v: TomlValue, key: string) -> string? {
+    let f: TomlValue? = toml_field(v, key)
+    if f == null { return null }
+    toml_text(f!)
+}
+
+/// A tool's end-of-options word: `--` unless written; `false` is none.
+fn terminator_field(v: TomlValue?) -> string? {
+    if v == null { return "--" }
+    match v! {
+        .Str(s) -> s,
+        .Bool(b) -> if b { "--" } else { null },
+        rest -> "--",
+    }
 }
 
 // ── The workspace's voices, in the manifest's words ──
