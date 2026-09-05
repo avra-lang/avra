@@ -9,7 +9,8 @@
 //! equals, `_` is the hole and `rest` the deliberate remainder.
 //! Typing proves coverage — every variant, or a catch-all — and
 //! warns when a hole hides more than two variants.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature, BuilderRow, PropertyRow}
+use core.{Type}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
@@ -39,9 +40,13 @@ export fn enums() -> LanguageFeature {
         "type.wildcard_hides" | "F2040" | "a hole hides more than two variants — handle them, or write `rest`"
         "type.variant_lit"   | "F2043" | "a `.variant` literal builds the enum the site expects"
     }
+    let properties = table<PropertyRow> {
+        name      | takes   | check         | lower
+        "ordinal" | on_enum | check_ordinal | lower_ordinal
+    }
     component LanguageFeature f {
         name = "enums"
-        docs = "`enum Suit { clubs hearts }` declares a closed set; `Suit.clubs` constructs; `match` chooses by patterns — `.V(p, q)` nests, `a or b` alternates, a name binds, a literal equals, `_` is the hole, `rest` the deliberate remainder — and must cover the subject."
+        docs = "`enum Suit { clubs hearts }` declares a closed set; `Suit.clubs` constructs; `v.ordinal` is the variant's place in the declaration; `match` chooses by patterns — `.V(p, q)` nests, `a or b` alternates, a name binds, a literal equals, `_` is the hole, `rest` the deliberate remainder — and must cover the subject."
         gram = grammar {
             stmt = "enum" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "{" ( BREAK | "," | vs:NAME ( po:"(" ( pn:NAME ":" )? pt:type ( "," ( pn:NAME ":" )? pt:type )* ","? ")" )? )* "}" END @recover(sync_to: "END") -> enum_decl(n, tp, vs, po, pn, pt)
             primary = "." vn:NAME ( "(" ( a:expression ( "," a:expression )* ","? )? ")" )? -> variant_lit(vn, a)
@@ -51,6 +56,17 @@ export fn enums() -> LanguageFeature {
         }
         builders = rows
         diags = codes
+        properties = properties
     }
     f
+}
+
+/// The property row's receiver: an enum value, plain or instantiated.
+fn on_enum(sh: Type) -> bool {
+    match sh {
+        .Enum(_, _) or .App(_, _, _) -> true,
+        .Struct(_, _) or .Int or .Bool or .Str or .Ptr or .List(_) or .Map(_, _) or .Res(_, _) or
+        .Fn(_, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or
+        .Var(_, _, _) or .Dyn(_, _) or .Error or .Void -> false,
+    }
 }
