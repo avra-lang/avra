@@ -94,6 +94,19 @@ gate — there is no amnesty left to hide in.
       ir_text's `switched`), a dual-channel fold, or a filter that
       needs the INDEX (`arm_cases` — comprehensions cannot
       destructure an enumerate).
+- I2  RETIRED: the evaluated-payload chain. It died with the eval
+      collapse — no site can exist to catch, so the matcher is gone.
+      The number stays retired.
+- I3  (ratcheted) a for-loop whose whole body is one PUSH — that is
+      a comprehension, or a `concat`. The most-licensed rule in the
+      tree, and the licenses are the honest half: a walk whose OUTPUT
+      ACCUMULATES across several branches (one `made` filled by six
+      of them), a push through a FIELD ALIAS (a concat would rebind
+      the local), an INDEX SCAN where the position is the answer, and
+      a fold whose pushes must be EMITTED in order. What is no longer
+      licensed: "the paired form does not parse" and "a comprehension
+      over a RANGE is our own sugar backlog" — both landed, and the
+      loops that cited them are comprehensions now.
 - I4  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
       `index_of_name` is `names.index_of(name)` (returns -1 on a
       miss — wrap to `int?`). `overlay_hit` stays a loop: reverse
@@ -342,6 +355,12 @@ reintroducing I3's blind spot names the two spellings it lost.
       loop and the closing walk had each been hand-spelled three
       times before the extraction. A fourth generic surface joins
       by calling the verbs, never re-spelling the walks.
+- I27 RETIRED (2026-09-05): a STRING's `.length` re-measured in a
+      loop condition. It was `strlen`, so a re-measure was O(length)
+      per turn and the rule ratcheted the hoists. Lane A gave the
+      string box a length in its header, so the measure is a load and
+      the re-measure costs nothing; the hoists that stand are
+      harmless. The number stays retired.
 - I28 a LAW that assembles PROSE. RATCHETED since the second cruft
       round: every refusal is ONE call, `refusal(kind, at, message,
       label, help)` (diagnostics/mod.av) — 173 hand assemblies became
@@ -385,7 +404,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       subject, cx.result(e))` — is the answer minted early by
       another route; `reg_of` may lower lazily and mint, so the
       answer is minted after every `reg_of`, never handed in.
-- I5 a FOLD written as a flag where a scan would short-circuit past
+- I37 a FOLD written as a flag where a scan would short-circuit past
       a needed SIDE EFFECT. `all`/`any` stop at the first answer, so
       a loop whose body must run for every element — `paired_unify`
       unifies each pair for its effect of BINDING the declaration's
@@ -394,6 +413,11 @@ reintroducing I3's blind spot names the two spellings it lost.
       with no annotation; the idiom is `all(...)` whenever the body
       is a pure test. UNRATCHETED: a matcher cannot see whether a
       predicate has effects, so this one is read by a human.
+      (It took a TAKEN number until 2026-09-05 — it was filed as a
+      second I5, so seven `LICENSED I5` sites pointed at the dedupe
+      rule that is the real I5. Lane A found the collision; the tool
+      now refuses a repeated number in the registry as well as in
+      its own source.)
 - I31 a `///` RUN THAT HEADS TWO DECLARATIONS. An inserted
       definition takes the doc of the one below it, and both lose:
       the newcomer wears a contract it does not have, and the
