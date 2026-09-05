@@ -211,11 +211,15 @@ the compiler checking itself 28.8s.
         content; the vendored package still dies with lane B's
         `@std/cli`.
         FOUND ON THE WAY (manifests — lane B / 15b's owner takes it):
-        an ABSOLUTE `path` in `[dependencies]` is joined under the
+        an ABSOLUTE `path` in `[dependencies]` was joined under the
         manifest's directory (`/tmp/x/avra.toml` naming
-        `/Users/.../std-avrac` looks for `/tmp/x/Users/.../std-avrac`
-        and refuses F4007 with that mangled path). A path that starts
-        with `/` is already absolute; `joined_path` must leave it.
+        `/Users/.../std-avrac` looked for `/tmp/x/Users/.../std-avrac`
+        and refused F4007 with that mangled path). FIXED 2026-09-05 by
+        lane B where it belonged — in `joined_path` itself
+        (`@std/path`), which now answers an already-absolute name as
+        itself, so every caller is right at once and no call site
+        needs a guard. Lane D confirmed the mechanism: the leading `/`
+        became an empty segment that `normalized` then dropped.
   - [x] THE ENGINE'S CAPTURE COPYING (MEASURED and REFUSED 2026-09-05): repetition captures are
         copied per append, so an N-statement program parses in
         O(N^2) (the debt below the ledger). `Many` becomes a prefix snapshot
@@ -939,9 +943,9 @@ std-lib chapter, so dogfooding decides the surface.
         (`@std/avrac`), `@std/toml` and `@std/cli` depend on it: the
         lexer, the diagnostics renderer (`repeated` gone), the
         escaper, the toml string scan and the cli's padding read
-        through it. Idiom I34 ratchets the smell (`x = x + "…"`,
+        through it. Idiom I36 ratchets the smell (`x = x + "…"`,
         `x = x + y.substring(…)`); four sites converted, two
-        fixtures licensed. 17 spec cases, `corpus/text` eval ==
+        fixtures licensed. 20 spec cases + 15 adversarial, `corpus/text` eval ==
         native. The constructor is `builder()`, not `text()` — every
         scanner already calls its subject `text`.
   - [x] `@std/path`: promote `core/paths.av` (join, normalize,
@@ -972,8 +976,8 @@ std-lib chapter, so dogfooding decides the surface.
         writes compact, `pretty` two-space indents with empty
         containers kept `[]`/`{}`. Accessors: `get`/`at` answer `Json?`
         (absence exact), `member`/`item` answer `Null` for absence so
-        a walk CHAINS — `doc.member("tags").item(1).int()` — since
-        `?.` cannot call a method yet. Every `JsonError` names its
+        a walk CHAINS — `doc.member("tags").item(1).int()`, and answer
+        Null rather than making every step optional. Every `JsonError` names its
         byte: `Unexpected(at, found)` with what was wanted,
         `Unterminated`, `BadEscape`, `Fraction`, `Trailing`. The one
         new runtime row: `avra_str_from_codepoint` — `@std/text`'s
@@ -5324,9 +5328,12 @@ disagree and the tree spells bs2's side.
   directory module resolved with no stub). The grammar rule that
   parses `mod x` as `use x.{}` (features/modules) is dead weight now
   — its owner deletes it with the next touch of that feature.
-- The vendored ~~`spec_test` feature~~ (GONE — `avra test` is the
-  runner) and `std-cli` (a symlink into the old tree, still). ->
-  LANE B: `@std/cli`, then the package is deleted.
+- ~~The vendored `spec_test` feature~~ (GONE — `avra test` is the
+  runner) and ~~`std-cli`, a symlink into the old tree~~ — STRUCK
+  2026-09-05: lane B's `@std/cli` replaced it in place, so
+  `packages/std-cli` is ours (its own manifest, doc header and two
+  spec files) and `find packages -type l` returns nothing. The tree
+  vendors nothing from bs2 now.
 - ~~THE GENERIC ANSWER'S IDENTITY~~ — STRUCK 2026-09-04: probed, a
   field read and a `with` on a generic method's answer both type
   with no bind; the annotated lets in `memory.av` go with the next

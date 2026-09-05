@@ -550,15 +550,13 @@ Syntax the grammar lacks:
   F0902 "a module file holds declarations — only the entry runs
   statements" — a library's constant is a fn (`fn pipe_in() -> int
   { 1 }`; @std/process's flag words).
-- `is` with a PAYLOAD pattern (`e is .TimedOut(_, _)`): "expected
-  `}` to close the `match`" at the `(` — `is` takes a bare variant;
-  a payload question is a two-arm `match` (`.TimedOut(_, _) ->
-  true`, `rest -> false`) hoisted into a named predicate.
-- A METHOD after `?` on a Result (`shell(line)?.run()`): F0102
-  "`?.` cannot call a method yet — chain methods are recorded" —
-  bind the `?` first (`let c = shell(line)?`), then call. The field
-  twin (`x()?.out`) is F2023 above; its help says "write `.out`",
-  which is wrong for the propagate-then-read case — `(x()?).out`.
+- A METHOD after `?` on a Result (`shell(line)?.run()`): F2023
+  "`?.` reaches into a nullable, this is `Result<R, string>`". The
+  chain DOES call methods now (`a?.m(args)` on a nullable), which is
+  why a Result there reads as one `?.` and is refused for its type,
+  not its shape. Parenthesise the propagation — `(shell(line)?).run()`
+  — or bind it first. The field twin (`x()?.out`) is the same
+  refusal; its help says "write `.out`", wrong for propagate-then-read.
 - `fail` inside a `catch` ARM's block (`x catch e -> { cleanup(); fail
   e }`): F2029 "a `catch` arm answers the ok side: `T`, this is
   `Result<…>`" — the arm's block is not read as diverging. Write the
@@ -605,8 +603,11 @@ Wants the typer does not carry yet:
   fn" — `it` binds to the NEAREST call; write `(k) ->
   self.rides(k)`. `it is .A` binds fine.
 - `is` takes a BARE variant, never a payload pattern: `e is
-  .TimedOut(_, _)` is "expected EOF while parsing `program`" —
-  `e is .TimedOut` is the test, and a `match` arm reads the payload.
+  .TimedOut(_, _)` refuses at the `(`, and the wording follows the
+  context ("expected BREAK while parsing `stmt`", "expected `}` to
+  close the `match`", "expected EOF while parsing `program`").
+  `e is .TimedOut` is the test; a payload question is a two-arm
+  `match` hoisted into a named predicate.
 - `join` over a list that is not text: `[1, 2].join(",")` is F2005
   "`join` reads a list of text, this one holds `int`" — map to text
   first.

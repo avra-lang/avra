@@ -161,7 +161,7 @@ tree (`../forge-crafting-intepreters`):
 The layout is convention the compiler reads: a package is a
 directory with an `avra.toml`, its modules are the `.av` files and
 directories under `src/`, and `use @scope.name.…` reaches a path
-dependency's modules. `packages/std-cli/` is still a symlink into
-the old tree's bootstrap CLI (rent until `@std/cli` lands). Build
+dependency's modules. `packages/std-cli/` is `@std/cli`, the
+command-line library the compiler's own front end parses through. Build
 byproducts (`*.av.ll`, a binary beside its source, `build/`) are
 cleaned by `make clean`.

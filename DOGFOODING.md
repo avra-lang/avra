@@ -59,7 +59,7 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33 I34.
+Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33 I35 I36.
 Unratcheted, read by a human: I5 (a matcher cannot see whether a
 predicate has effects), I31 (a stolen doc and a legitimate
 multi-paragraph header are the same shape).
@@ -478,7 +478,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       changes every turn — there is no one value to bind. The first
       matcher over-counted by reading `s.token!` as a local; a rule
       must justify every hit it prints.
-- I34 (ratcheted) TEXT GROWN BY `s = s + piece` IN A LOOP. Every
+- I36 (ratcheted) TEXT GROWN BY `s = s + piece` IN A LOOP. Every
       step copies what came before, so a scanner over n bytes does
       n²/2 work — the lexer's string literal, the toml scanner and
       `quoted_text` all spelled it, and the cli's padding too. The
@@ -489,7 +489,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       The matcher reads `x = x + "…"`, `x = x + (…)` and `x = x +
       y.substring(…)` — an int's `n = n + 1` never matches. Four
       sites converted at discovery (2026-09-05), none licensed.
-- I33 (ratcheted) a RAW SCOPE BRACKET through a lowering context:
+- I35 (ratcheted) a RAW SCOPE BRACKET through a lowering context:
       `cx.emit(Ins.ScopeEnter(…))`, `cx.emit(Ins.ScopeExit(…))`,
       `lo.out.give(Ins.Scope…)`. A scope IS a `defer` frame, and the
       frames live in the walk's verbs — `scope_enter`/`scope_exit`

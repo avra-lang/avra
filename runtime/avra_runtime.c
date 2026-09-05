@@ -1990,7 +1990,6 @@ const char* avra_proc_which(const char* file, const char* path) {
     return s;
 }
 
-// An errno's words, immortal; the number stays the value.
 // A code point as the UTF-8 bytes that spell it; one that no
 // sequence can carry (past U+10FFFF, or a surrogate) is U+FFFD.
 const char* avra_str_from_codepoint(int64_t code) {

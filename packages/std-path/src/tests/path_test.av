@@ -1,7 +1,7 @@
 // Paths as text, vertically: every cut at its edges — no directory,
 // no extension, a dot that leads, a dot in the directory — joining,
 // containment, folding and relating.
-use @std.path.{dir_of, file_name, stem_of, extension_of, with_extension, first_slash, is_absolute, under_dir, joined_path, normalized, relative_path, segments}
+use @std.path.{dir_of, file_name, stem_of, extension_of, with_extension, head_segment, is_absolute, under_dir, joined_path, normalized, relative_path, segments}
 
 spec "std/path" {
     given "the cuts" {
@@ -26,13 +26,19 @@ spec "std/path" {
         then "with_extension replaces, or gives one" {
             with_extension("a/b.av", "ll") == "a/b.ll" && with_extension("b", "ll") == "b.ll" && with_extension("a.tar.gz", "zip") == "a.tar.zip"
         }
-        then "first_slash and is_absolute" {
-            first_slash("@std/io") == 4 && first_slash("io") < 0 && is_absolute("/x") && !is_absolute("x/")
+        then "head_segment takes the part before the first separator, or the whole" {
+            head_segment("@std/io") == "@std" && head_segment("io") == "io" && head_segment("/x") == "" && head_segment("") == ""
+        }
+        then "is_absolute reads the leading separator" {
+            is_absolute("/x") && !is_absolute("x/") && !is_absolute("")
         }
     }
     given "joining and containment" {
         then "joined_path puts a name under a directory; the empty directory adds nothing" {
             joined_path("a", "b") == "a/b" && joined_path("", "b") == "b"
+        }
+        then "an ALREADY ABSOLUTE name is itself — never buried under the directory" {
+            joined_path("/w/pkg", "/Users/x") == "/Users/x" && normalized(joined_path("/w/pkg", "/Users/x")) == "/Users/x"
         }
         then "under_dir is strictly below; the empty directory holds everything" {
             under_dir("a/b", "a") && !under_dir("a", "a") && !under_dir("ab/c", "a") && under_dir("x", "")

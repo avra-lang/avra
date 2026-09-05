@@ -62,9 +62,12 @@ fn last_slash(path: string) -> int {
     0 - 1
 }
 
-/// The index of a path's first `/`, or -1.
-export fn first_slash(path: string) -> int {
-    path.index_of("/")
+/// The first segment of a path — the whole of it when there is no
+/// separator. What a scope's head (`@std` of `@std/io`) is read with.
+export fn head_segment(path: string) -> string {
+    let cut = path.index_of("/")
+    if cut < 0 { return path }
+    path.substring(0, cut)
 }
 
 export fn is_absolute(path: string) -> bool {
@@ -78,9 +81,12 @@ export fn under_dir(name: string, dir: string) -> bool {
     name.length > dir.length + 1 && name.substring(0, dir.length + 1) == "${dir}/"
 }
 
-/// A name under a directory; the empty directory adds nothing.
+/// A name under a directory. The empty directory adds nothing, and a
+/// name that is ALREADY ABSOLUTE is itself — joining it under a root
+/// would bury the leading `/`, which `normalized` then drops, so a
+/// manifest naming `/Users/x` would be hunted at `<root>/Users/x`.
 export fn joined_path(dir: string, name: string) -> string {
-    if dir.is_empty() { return name }
+    if dir.is_empty() || is_absolute(name) { return name }
     "${dir}/${name}"
 }
 
