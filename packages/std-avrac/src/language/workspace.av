@@ -876,6 +876,24 @@ export fn cases(ws: Workspace) -> List<TestCase> {
     flatten([file_cases(ws, fi.id) for fi in ws.decls.files])
 }
 
+/// The cases a workspace holds, known from PARSING alone: every
+/// file's items minted, nothing typed — so a package without cases
+/// says so before its dependencies are analyzed.
+export fn parsed_cases(ws: Workspace) -> List<TestCase> {
+    // the file table fills as files are first asked for — the root's
+    // sources are entered here, each one's items minted
+    for path in root_files(ws) { let _ = items(ws, file_id(ws, path)) }
+    cases(ws)
+}
+
+/// Whether every root source PARSED clean. A package that parsed to
+/// no cases has none only when nothing refused to parse — a broken
+/// spec file parses to nothing, and saying "no cases" of it would
+/// be a green over a red.
+export fn parse_clean(ws: Workspace) -> bool {
+    root_files(ws).all(!has_errors(parsed(ws, file_id(ws, it)).voices.list))
+}
+
 /// The cases of ONE file, named by the path it MEANS: both sides
 /// normalized, so `./` and a doubled slash select what the listing
 /// spelled cleanly.

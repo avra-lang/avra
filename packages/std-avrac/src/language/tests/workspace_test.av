@@ -1,7 +1,7 @@
 // The workspace over an in-memory host: a module is a directory or a
 // file, siblings see each other, `use` reaches a module's exports,
 // and every failed `use` speaks in its own words.
-use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, visible, file_id, module_of, all_files, program, link_words}
+use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, visible, file_id, module_of, all_files, program, link_words, parsed_cases, lone_workspace, parse_clean}
 use language.{Workspace}
 
 /// A small package: a root file, a root sibling, a directory module
@@ -187,6 +187,21 @@ spec "language/workspace" {
         }
         then "another file selects nothing" {
             program(spec_package(poisoned_manifest()), null).cases_at("/w/src/helper.av").is_empty()
+        }
+    }
+}
+
+spec "cases known from parsing" {
+    given "a workspace nothing has analyzed" {
+        then "a source with a spec has its cases — a package with cases is never told it has none" {
+            parsed_cases(lone_workspace("with.av", "spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n    }\n}\n", avra())).length == 1
+        }
+        then "a source without has none" {
+            parsed_cases(lone_workspace("without.av", "let x = 1\nx\n", avra())).is_empty()
+        }
+        then "a spec that does not parse has none either — and did not parse clean, so nobody says so" {
+            let ws = lone_workspace("broken.av", "spec \"s\" {\n    given \"g\" {\n", avra())
+            parsed_cases(ws).is_empty() && !parse_clean(ws)
         }
     }
 }

@@ -18,7 +18,7 @@ RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-toml packages/std-testing packages/std-avrac packages/cli
 
-.PHONY: test clean corpus gate idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
+.PHONY: test tested clean corpus gate idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
         check run ir emit build-native native-check avra
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
@@ -126,7 +126,16 @@ vocab:
 
 # The whole gate: the vocabulary's guarantee, idioms, unit specs,
 # then the corpus end to end.
-gate: vocab idioms test corpus scaffold-check
+# THE GATE: the suites run with the scaffolder's template in place —
+# scaffolded into std-avrac before, removed after, however the suites
+# end — so the templates' own test is one case of that suite, not a
+# second compile of the whole compiler for one case.
+gate: vocab idioms tested corpus
+
+tested: $(RUNTIME_OBJS)
+	@rm -rf packages/std-avrac/src/features/zz_probe
+	@./avra new feature zz_probe > /dev/null
+	@$(MAKE) -s test; s=$$?; rm -rf packages/std-avrac/src/features/zz_probe; exit $$s
 
 # The differential gate: the compiled binary must say exactly what
 # the evaluator says.
