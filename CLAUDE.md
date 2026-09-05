@@ -192,6 +192,15 @@ registry is the idiom engine's spec, written by dogfooding.
   `malloc` or a C literal. The tag is the belt (`hdr` refuses a
   header without it, and an unaligned or sub-image address before
   reading anything); the law is the braces.
+- A CELL WEARS ITS BINDING'S DECLARED TYPE, never its first value's,
+  and A STORE SETTLES BY THE CELL'S TYPE, never the value's. `mut x:
+  T? = null` seeded a cell in the null's own type (the widen from
+  null into a boxed nullable is identity, so no register ever wore
+  `T?`), the memory pass saw no managed cell to settle, and whatever
+  the cell held at the scope's end leaked — every `farthest` fold in
+  the executor kept its last far record, 600 MB of a self-check —
+  while `x = null` released nothing. The runtime's accounting found
+  both; a flat struct's nullable hid them (that widen mints a box).
 - A RETAIN THE CALLEE RELEASES MUST BE EMITTED: callee-cleans means
   every managed seat of a call is retained by the caller, and a
   seat typed as unmanaged (`Ptr`, `Int`) is a release with no
@@ -566,7 +575,8 @@ Runtime facts, ours to ratify:
   runtime's accounting, `AVRA_MEM_STATS=1 ./avra check <pkg>`: live
   bytes by category, by list capacity, and by the allocation site
   that made them (`atos -o build/avra <addr>` names it; under
-  AVRA_RC_GUARD it replays a leaked box's life). PROFILE, DON'T
+  AVRA_RC_GUARD it replays a leaked box's life — AVRA_MEM_SITE aims
+  it at one site, AVRA_MEM_SITES widens the list). PROFILE, DON'T
   REASON holds for memory too: the first hoard it named was a
   refcount leak no reading had found. The second panic (2026-09-05) was exactly a
   bypass: `build/avra test` launched in the background to be

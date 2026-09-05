@@ -150,9 +150,11 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 }
                 out.push(i)
             }
+            // A STORE SETTLES BY THE CELL'S TYPE, never the value's:
+            // `x = null` into a managed cell releases what x held.
             .Store(slot, src) -> {
-                if is_managed(types, reg_types[src.index]) {
-                    out.push(Ins.Retain(src))
+                if is_managed(types, reg_types[slot.index]) {
+                    if is_managed(types, reg_types[src.index]) { out.push(Ins.Retain(src)) }
                     // EVERY store settles what the cell held: a fresh
                     // cell holds nothing (the alloca nulls it), and a
                     // store inside a loop runs many times where the
