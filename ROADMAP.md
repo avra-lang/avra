@@ -5675,13 +5675,23 @@ by meaning; each is a slice for lane D unless a lane is named.
   whole value, while `==`, `contains`, `index_of`, `split` and
   `replace` are C string calls that stop at the first NUL. The
   visible consequence is a silent wrong answer: a five-byte text
-  compares EQUAL to its own two-byte prefix. Three ways out, and the
-  owner picks: make the five length-aware (text is bytes, `==`
-  compares 5 against 2 and answers false); keep them and REFUSE a
-  NUL at the boundary where foreign text enters (text is text);
-  or add a `Bytes` value whose scope is exactly those five and leave
-  `string` meaning text. The @std/sqlite lane will meet this first,
-  since a blob is the common case.
+  compares EQUAL to its own two-byte prefix.
+  WHERE A NUL COMES FROM, corrected 2026-09-05 (lane B; lane D had
+  recorded it as foreign-only and verified the correction): it needs
+  no foreign input. `@std/text`'s `from_codepoint(0)` answers a
+  one-byte NUL and `from_codepoints` weaves one, so any package
+  depending on @std/text mints one in process — `"ab" + z + "cd"` is
+  five bytes long and compares EQUAL to `"ab"`, with no file, env
+  var or child anywhere. It also arrives from outside.
+  So TWO ways out decide it, not three: make the five length-aware
+  (text is bytes, `==` compares 5 against 2 and answers false), or
+  add a `Bytes` value whose scope is exactly those five and leave
+  `string` meaning text. A third — refuse a NUL where foreign text
+  ENTERS — does not close it, because the mint is inside; it only
+  becomes an option as "a NUL is unrepresentable in a `string`",
+  which means `from_codepoint(0)` refuses too. The @std/sqlite lane
+  will meet this first, since a blob is the common case, and it can
+  test the whole class with `from_codepoint(0)` and no fixture file.
 - H0. THE FN TYPE DROPS `mut` — A SOUNDNESS HOLE, found 2026-09-05
   while verifying H's `mut`-seat-in-a-fn-type ask and SENT to lane C.
   A `mut`-taking fn stored in a NON-`mut` fn type keeps writing
