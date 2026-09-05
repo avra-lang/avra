@@ -790,7 +790,7 @@ impl NodeStore {
             .Prop(subject, name) ->
                 fp(22, [self.expr_fingerprint(subject), fp_str(name)]),
             .Interp(parts, holes) ->
-                fp(23, [fp_str(p) for p in parts].concat(self.expr_fps(holes))),
+                fp(23, str_fps(parts).concat(self.expr_fps(holes))),
             .StrLit(value) -> fp(8, [fp_str(value)]),
             .BoolLit(value) -> fp(9, [if value { 1 } else { 0 }]),
             .If(cond, on_true, on_false) ->
@@ -805,11 +805,11 @@ impl NodeStore {
             .Block(stmts, value) ->
                 fp(14, self.stmt_fps(stmts).concat(self.tail_fp(value))),
             .StructLit(name, fields, values) ->
-                fp(24, flatten([[fp_str(name)], [fp_str(f) for f in fields],
+                fp(24, flatten([[fp_str(name)], str_fps(fields),
                                 self.expr_fps(values)])),
             .With(subject, fields, values) ->
                 fp(26, flatten([[self.expr_fingerprint(subject)],
-                                [fp_str(f) for f in fields], self.expr_fps(values)])),
+                                str_fps(fields), self.expr_fps(values)])),
             .Match(subject, arms) ->
                 fp(28, [self.expr_fingerprint(subject)].concat(self.arm_fps(arms))),
             .NullLit -> fp(30, []),
@@ -834,8 +834,8 @@ impl NodeStore {
                 fp(47, [self.expr_fingerprint(subject)].concat(self.expr_fps(cargs))),
             .Catch(subject, variants, binds, values) ->
                 fp(40, flatten([[self.expr_fingerprint(subject)],
-                                [fp_str(v) for v in variants],
-                                [fp_str(bn) for bn in binds],
+                                str_fps(variants),
+                                str_fps(binds),
                                 self.expr_fps(values)])),
             .MatchOpt(subject, bind, present, absent) ->
                 fp(33, [self.expr_fingerprint(subject), fp_str(bind),
@@ -889,7 +889,7 @@ impl NodeStore {
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
             .Discard(value) -> fp(57, [self.expr_fingerprint(value)]),
             .Defer(body, on_error) -> fp(if on_error { 62 } else { 61 }, [self.expr_fingerprint(body)]),
-            .Use(path, items) -> fp(50, [fp_str(p) for p in path].concat([fp_str(i) for i in items])),
+            .Use(path, items) -> fp(50, str_fps(path).concat(str_fps(items))),
             .ForEach(index, name, subject, stmts) ->
                 fp(42, [fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
             .Error -> fp(7, []),
@@ -899,11 +899,11 @@ impl NodeStore {
                                 param_fps(params),
                                 [type_fp(ret), self.expr_fingerprint(body)]])),
             .StructDecl(name, tparams, fields) ->
-                fp(25, flatten([[fp_str(name)], [fp_str(t) for t in tparams],
+                fp(25, flatten([[fp_str(name)], str_fps(tparams),
                                 param_fps(fields),
                                 self.expr_fps([f.default! for f in fields if f.default != null])])),
             .EnumDecl(name, tparams, variants) ->
-                fp(27, flatten([[fp_str(name)], [fp_str(t) for t in tparams],
+                fp(27, flatten([[fp_str(name)], str_fps(tparams),
                                 variant_fps(variants)])),
             .Spec(name, cases) -> fp(56, [fp_str(name)].concat(self.case_fps(cases))),
         }
@@ -923,6 +923,11 @@ fn variant_fps(variants: List<Variant>) -> List<int> {
 }
 
 /// A param list's fingerprint parts: name, type, in declaration order.
+/// A string list's fingerprint parts, in order.
+fn str_fps(texts: List<string>) -> List<int> {
+    [fp_str(t) for t in texts]
+}
+
 fn param_fps(params: List<Param>) -> List<int> {
     flatten([[fp_str(p.name), type_fp(p.ty)] for p in params])
 }

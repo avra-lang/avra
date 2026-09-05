@@ -5639,6 +5639,20 @@ by meaning; each is a slice for lane D unless a lane is named.
   BEHAVIOR, and this is the DSL's own builder-name currency crossing
   the grammar's data seam, which compose.av's table cannot replace
   without inventing a second registry for nine private fns.
+  THE SEAM DISTINCTION the hand-back turns on, worth keeping because
+  the same word names two different laws: features/coherence.av must
+  cross-check builder NAMES as data, because separate features
+  register separately and nothing sees both sides at once. The DSL's
+  own builders need no such check — one file holds both sides, and
+  `grammar_build`'s catch-all is an `.Err` that becomes a
+  `fatal_defect`, which passes every speculation boundary, so an
+  unimplemented builder fails the compiler's own build 28 times over
+  (one per feature grammar literal) with the name printed. A
+  `grammar_builder_names()` list would move an unmissable failure to
+  the same moment with the same information, and pay for it with a
+  hand-written list of twelve names beside a match of twelve arms
+  with nothing keeping THOSE in sync — the rule of three used against
+  itself. MEASURED and refused 2026-09-05.
   REFUSED ON MERIT though TRUE: the `LexFlavor`. CLAUDE.md's
   grammar-authoring rules PLACE the line law in the lexer by doctrine
   ("the LINE LAW lives in the lexer"), so the continuation words and
