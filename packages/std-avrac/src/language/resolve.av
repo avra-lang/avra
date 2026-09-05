@@ -531,15 +531,18 @@ impl ResolveCx {
     /// The capture's lane in the lambda's set — found, or minted at
     /// the tail. The set's order IS the box's slot order.
     fn captured(lam: ExprId, name: string, source: Binding) -> int {
+        // LICENSED I33: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
         let held: Cap? = self.facts.captures[lam.index]
         if held == null {
-            self.facts.captures.set(lam.index, Cap { names: [name], sources: [source] })
+            mut cs = self.facts.captures
+            cs.set(lam.index, Cap { names: [name], sources: [source] })
             return 0
         }
         let cap = held!
         let at = cap.names.index_of(name)
         if at >= 0 { return at }
-        self.facts.captures.set(lam.index, cap with { names: cap.names.concat([name]), sources: cap.sources.concat([source]) })
+        mut cs = self.facts.captures
+        cs.set(lam.index, cap with { names: cap.names.concat([name]), sources: cap.sources.concat([source]) })
         cap.names.length
     }
 
@@ -611,13 +614,15 @@ impl ResolveCx {
     /// Latest binding wins — Map.set IS shadowing. Inside a block,
     /// the binding lives in the innermost overlay and dies with it.
     fn bind(name: string, b: Binding) {
+        // LICENSED I33: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
         if self.overlays.is_empty() {
             self.visible.set(name, b)
         } else {
-            let at = self.overlays.length - 1
-            mut top = self.overlays[at]
+            mut ovs = self.overlays
+            let at = ovs.length - 1
+            mut top = ovs[at]
             top.set(name, b)
-            self.overlays.set(at, top)
+            ovs.set(at, top)
         }
     }
 

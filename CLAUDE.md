@@ -81,10 +81,10 @@ refuses a registry entry that has neither).
   pin seems needed, probe before assuming.
 - A state struct's impl is its VOCABULARY: the small verbs that
   read or write its tables (`speak`, `bind`, `mint`, `give`) live
-  as methods, so drivers read as prose. The free state fns in the
-  tree (`eval_node(ev, cx, e)`) are a bootstrap habit, not a rule —
-  ours has no #1377 (probed) and lane C folds them back into
-  methods; new code writes the method.
+  as methods, so drivers read as prose. The free state fns the
+  bootstrap habit left (`eval_node(ev, cx, e)`, the interpreter's
+  `put(m, …)`, the backend's `define(em, …)`) are methods now — ours
+  has no #1377 (probed); new code writes the method.
 - A long fn splits at its PHASE boundaries into named helpers, each
   with a one-line contract (`match_seq` matches, `built` builds;
   `printed_value` dispatches, `bool_word` branches). If a fn needs

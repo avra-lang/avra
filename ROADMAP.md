@@ -665,6 +665,36 @@ the order is the dependency.
         field in a loop condition — hence the new test); the
         bisection ran through the product checking its own package
         as the oracle. 1674 -> 1675 cases, corpus 73/73.
+        S4c-2 LANDED 2026-09-05 — THE INTERPRETER AND THE BACKEND ARE
+        VOCABULARIES: interp.av's 72 free fns over `m: Machine` (273
+        call sites) and llvm.av's 31 over `em: Emit` (88) are methods
+        on `self` — `impl Machine`, `impl Emit` — and the 11 lambdas
+        that captured the machine to reach a writing verb
+        (`with_array(v, what, (id) -> self.popped(id))`) are a
+        let-else guard each, no capture; the checklist's "38 free
+        state fns become methods" is paid. Of their 21 borrows, 18
+        are LICENSED I33 (new in DOGFOODING's registry): THE BORROW
+        UNDER A SAME-SCOPE READ. A path write after a same-scope read
+        of the field finds the list SHARED — the read's owned load
+        lives to the scope's end — and CLONES it: `slot_written`
+        cloned the interpreter's whole array table per store (the
+        pop probe 0.7 s -> 43 s), and 18 of S4c-1's conversions had
+        the shape too (`Decls.mint` cloning `children` per mint). The
+        license has two laws: the borrow is taken AFTER any callee
+        that path-writes the field (a borrow before `module_id` went
+        stale and `file_id` trapped), and liveness (S3) retires it.
+        The scan that finds the shape (a read of `self.X` before a
+        `self.X.push/set/pop` in one fn) is the landing's tool; the
+        registry entry is UNRATCHETED with that reason. Also found:
+        the compiler's self-check timings swing 6 s to 36 s on this
+        machine between two identical runs — measure twice before
+        naming a regression. F2047 96 -> 98: `Pins.pin` writes
+        visibly now, and the unify family threads `bound: Pins`
+        unseated (10 fns, every caller a `let`) — the next (A) seat
+        to pay. F2048 0. Red team: 137 programs through main's binary
+        and this one, check/run/IR/LLVM identical; the interpreter
+        probes at main's speed. 9 files, +1081/-936; 1675 cases,
+        corpus 73/73.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become

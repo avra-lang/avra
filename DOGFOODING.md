@@ -421,6 +421,23 @@ reintroducing I3's blind spot names the two spellings it lost.
       hottest in the compiler by self time and the ledger had
       guessed elsewhere. NOT the smell: a one-shot walk that builds
       the index itself, or a scan a program performs once.
+- I33 THE BORROW UNDER A SAME-SCOPE READ. `mut xs = self.field`
+      followed by `xs.push(v)` is the alias form of a write — the
+      smell is the alias where a path write (`self.field.push(v)`)
+      says the same thing without a second name. It is LICENSED, and
+      only there, where the SAME SCOPE has already READ the field
+      (`self.field.length`, `self.field[i]`, a loop over it): today's
+      memory pass holds that read's owned reference to the scope's
+      end, so a path write after it finds the list SHARED and CLONES
+      it (`slot_written` cloned the interpreter's whole array table
+      per store — 60x slower). Two laws bound the license: the
+      borrow is taken AFTER any callee that path-writes the field
+      (a path write behind a live alias copies, and the alias goes
+      stale — `file_id`'s borrow before `module_id` trapped), and it
+      dies with liveness (S3 releases a read at its last use, and
+      every such borrow becomes the path write). UNRATCHETED: the
+      matcher needs the enclosing fn's scope (a read BEFORE the
+      write); the read-then-write scan lives in lane C's landing.
 
 - I26 one nullable LOCAL forced open with `!` three or more times
       in a fn. The value is already known to be there — CLAUDE.md's

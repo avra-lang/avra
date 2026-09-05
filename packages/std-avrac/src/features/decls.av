@@ -116,19 +116,24 @@ impl Decls {
 
     /// A path's identity — minted at first mention.
     fn file_id(path: string, module: string) -> FileId {
+        // LICENSED I33: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
         let known: FileId? = self.paths.get(path)
         if known != null { return known! }
         let id = FileId { index: self.files.length }
         let m = self.module_id(module)
         self.paths.set(path, id)
         self.files.push(FileInfo { id: id, path: path, module_id: m })
-        mut mf = self.module_files[m.index]
+        mut mfs = self.module_files
+        mut mf = mfs[m.index]
         mf.push(id)
-        self.module_files.set(m.index, mf)
+        mfs.set(m.index, mf)
         self.stores.push(null)
-        self.decl_ids.push([])
-        self.file_decls.push([])
-        self.mains.push(null)
+        mut ds = self.decl_ids
+        ds.push([])
+        mut fd = self.file_decls
+        fd.push([])
+        mut mn = self.mains
+        mn.push(null)
         id
     }
 
@@ -327,6 +332,7 @@ impl Decls {
     /// An id for a key: the existing one (its row refreshed), or the
     /// next; a member joins its parent's children.
     fn mint(key: string, f: FileId, s: StmtId, name: string, kind: DeclKind, exported: bool, owner: string, parent: DeclId?, nested: bool, root: ExprId?) -> DeclId {
+        // LICENSED I33: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
         let known: DeclId? = self.keys.get(key)
         let id: DeclId = if known == null { DeclId { index: self.decls.length } } else { known! }
         let d = Decl { id: id, file: f, stmt: s, name: name, kind: kind, exported: exported, owner: owner, parent: parent, nested: nested, root: root, lo: 0, hi: 0 }
@@ -334,21 +340,29 @@ impl Decls {
             self.decls.push(d)
             self.keys.set(key, id)
             self.sigs.push(null)
-            self.targets.push(null)
-            self.seat_muts.push([])
-            self.declared_writes.push(false)
-            self.written_seats.push([])
-            self.children.push([])
-            self.methods.push([])
-            self.impls.push([])
+            mut tg = self.targets
+            tg.push(null)
+            mut sm = self.seat_muts
+            sm.push([])
+            mut dw = self.declared_writes
+            dw.push(false)
+            mut wr = self.written_seats
+            wr.push([])
+            mut cs = self.children
+            cs.push([])
+            mut ms = self.methods
+            ms.push([])
+            mut im = self.impls
+            im.push([])
             if kind is .Impl { self.note_impl(name, id) }
         } else {
             self.decls.set(id.index, d)
         }
         if parent != null {
-            mut members = self.children[parent!.index]
+            mut kids = self.children
+            mut members = kids[parent!.index]
             members.push(id)
-            self.children.set(parent!.index, members)
+            kids.set(parent!.index, members)
         }
         id
     }
@@ -678,18 +692,22 @@ impl Decls {
     /// A method registered under its type — the same declaration
     /// again (a recomputed sig) is the same entry.
     fn declare_method(target: DeclId, m: DeclId) {
+        // LICENSED I33: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
         let prior: DeclId? = self.held_method(target, self.decl(m).name)
         if prior != null && same_decl(prior!, m) { return }
-        mut ms = self.methods[target.index]
+        mut mss = self.methods
+        mut ms = mss[target.index]
         ms.push(m)
-        self.methods.set(target.index, ms)
+        mss.set(target.index, ms)
     }
 
     fn record_impl(ty: DeclId, tr: DeclId) {
+        // LICENSED I33: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
         if self.holds_impl(ty, tr) { return }
-        mut ts = self.impls[ty.index]
+        mut tss = self.impls
+        mut ts = tss[ty.index]
         ts.push(tr)
-        self.impls.set(ty.index, ts)
+        tss.set(ty.index, ts)
     }
 
     /// Whether a type implements a trait — asked through the hook,

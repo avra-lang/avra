@@ -430,6 +430,9 @@ UNRATCHETED = {
     "I29": "mint order is STRUCTURE, not a greppable string: whether a\n"
     "        verb's answer register mints before or after its scratch\n"
     "        registers needs the emission sequence, not a pattern",
+    "I33": "the matcher needs the enclosing fn's scope (a read of the\n"
+           "           field BEFORE the write) — the read-then-write scan lives\n"
+           "           in lane C's S4c-2 landing; liveness (S3) retires the idiom",
 }
 
 # A rule that cannot fire is worse than no rule: it reports success
