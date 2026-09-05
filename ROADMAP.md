@@ -359,13 +359,22 @@ the compiler checking itself 28.8s.
         not its terminal captures; it is the state and result records
         per hit and the bindings copied per label — the records
         item, still open.
-  - [ ] `Decls.mint` CLONES ITS KEY MAP per declaration — 12% of a
-        self-check's samples in `map_index_rebuild` under
-        `Decls.mint` through `avra_slot_unique`: the read
-        `self.keys.get(key)` two lines above the write holds the map
-        to the scope's end (lane C's LICENSED I34, "liveness, S3,
-        retires this"). ~0.7s of every compile of the compiler, three
-        per gate. Lane C's S3 pays it; the price is measured here.
+  - [x] `Decls.mint` CLONED ITS KEY MAP per declaration (2026-09-05):
+        10% of a self-check's samples in `map_index_rebuild` under
+        `Decls.mint` through `avra_slot_unique` — the read
+        `self.keys.get(key)` two lines above the write held the map
+        to the scope's end (lane C's I34). The read asks in its own
+        scope (`known_id`), and the write finds the map unshared.
+        Lane C's S3 (liveness) retires the whole class.
+  - [x] LTO ACROSS THE RUNTIME — tried, NEUTRAL (2026-09-05): 35% of
+        a self-check's samples are inside `avra_rc_retain` and
+        `avra_rc_release` themselves, 7% in `avra_array_get` (a
+        record's field read is a runtime call). The runtime compiled
+        to bitcode and the compiler linked `-flto -O1`: 9.34s against
+        9.36s. The cost is the bodies — the header's checks and its
+        cache line — not the call. Fewer retains is the lever: lane
+        C's S3 liveness, which this number prices at a third of every
+        compile.
   - [x] THE CYCLE (FOUND and ENDED 2026-09-05): the cases binary
         held 922 MB at exit — 7.2M small lists, ~4300 per case: every
         case's language, grammar and workspace tables. The workspace
