@@ -2,7 +2,7 @@
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef, result_get_arg, result_has_flag}
 use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, program, lone_workspace, timed_workspace, parsed_cases, parse_clean, entry_of, no_target, avra, emit_ll, link_words}
-use @std.avrac.core.{joined, dir_of, under_dir}
+use @std.avrac.core.{joined, dir_of, under_dir, distinct}
 
 extern fn avra_selfhost_read_file(path: string) -> string
 extern fn avra_selfhost_file_exists(path: string) -> int
@@ -111,7 +111,7 @@ fn on_cases(args: CliResult, act: fn(Program, List<TestCase>) -> int) -> int {
     if avra_host_is_dir(path) != 0 {
         let held: Workspace? = package_workspace(path)
         if held == null { return 2 }
-        let ws = held!
+        mut ws = held!
         let found = parsed_cases(ws)
         // no cases AND a clean parse: a broken spec file parses to no
         // cases, and its refusal is the answer, not a green
@@ -186,8 +186,11 @@ fn warn(p: Program) {
 
 /// The `--time` report: analysis by phase, then what the command
 /// itself did, then the memo's hits and misses.
+/// The phases, each name once with its times summed — a phase the
+/// workspace timed twice (a parse before discovery, its remainder
+/// under analysis) reads as one.
 fn timings(p: Program, own: string, own_ns: int) -> string {
-    let inner = joined(["${ph.name} ${ms(ph.ns)}" for ph in p.phases], ", ")
+    let inner = joined(["${name} ${ms(phase_ns(p, name))}" for name in distinct([ph.name for ph in p.phases])], ", ")
     let cache = if p.cache == "" { "" } else { " · memo ${p.cache}" }
     "time: ${inner} · ${own} ${ms(own_ns)}${cache}"
 }
@@ -196,6 +199,14 @@ fn timings(p: Program, own: string, own_ns: int) -> string {
 fn ms(ns: int) -> string {
     let tenths = ns / 100000
     "${tenths / 10}.${tenths % 10}ms"
+}
+
+/// Every nanosecond the workspace recorded under one phase name.
+fn phase_ns(p: Program, name: string) -> int {
+    // LICENSED I4: a sum fold, not a scan
+    mut total = 0
+    for ph in p.phases { if ph.name == name { total = total + ph.ns } }
+    total
 }
 
 fn timed(args: CliResult) -> bool {

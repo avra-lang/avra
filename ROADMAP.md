@@ -350,6 +350,15 @@ the compiler checking itself 28.8s.
         `plan_binary`) moved to the runner beside `cases_entry`, with
         its nine cases. MEASURED: the gate 39s -> 20.5s of user CPU,
         1726 cases.
+  - [x] CAPTURES ON DEMAND — tried, MEASURED NEUTRAL, reverted
+        (2026-09-05): boxing a terminal's capture only where an item
+        is labeled or its branch passes through, and no value list
+        for built branches, changed nothing measurable (the
+        self-check 9.47s against 9.4s, the suite 17.2s against 17.1s)
+        and added a flag through three fns. The executor's cost is
+        not its terminal captures; it is the state and result records
+        per hit and the bindings copied per label — the records
+        item, still open.
   - [ ] `Decls.mint` CLONES ITS KEY MAP per declaration — 12% of a
         self-check's samples in `map_index_rebuild` under
         `Decls.mint` through `avra_slot_unique`: the read
