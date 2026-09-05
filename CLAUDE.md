@@ -671,6 +671,21 @@ Runtime facts, ours to ratify:
 - `split` DROPS a trailing empty segment and keeps a leading one:
   `"a.".split(".")` is one element, `".a".split(".")` two,
   `"".split(".")` is `[]`.
+- A STRING HOLDS A NUL ONLY HALF-WAY, and the failing half is
+  SILENT. A NUL cannot be written as a literal (`\0` is not an
+  escape — `"ab\0cd"` is six characters), so it arrives from
+  OUTSIDE: a file, an env var, a process's output, a database blob.
+  Once it does, the primitives split. Reading the header's length,
+  and so NUL-safe: `.length`, `char_code`, `starts_with`,
+  `ends_with`, `trim`, `+`. Stopping at the first NUL, because they
+  are C string calls: `==`, `contains`, `index_of`, `split`,
+  `replace`. So a five-byte text READS EQUAL to its own two-byte
+  prefix — `read_text` of `ab\0cd` `== "ab"` answers true, while
+  `.length` answers 5 — and `contains("cd")` answers false about
+  text that ends with `cd`. Lane B found it and fixed the one write
+  that truncated; the five lossy primitives are a LANGUAGE decision,
+  not a package's, and they are exactly the scope a `Bytes` value
+  would carve out. Probed both engines.
 - `avra run` INTERPRETS, and recursion past 400 calls traps
   ("recursion too deep — 400 nested calls", exit 1); `avra test`
   and `avra build` are native and have no such floor (5000 deep

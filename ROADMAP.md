@@ -5618,6 +5618,21 @@ by meaning; each is a slice for lane D unless a lane is named.
   answers 9 for `cx.get(2)`, LLVM refuses the module. The plant is
   withheld at that seat (CLAUDE.md names it); a typed let's arrow
   reaches the body already. The probe is scratchpad/lam/m4.
+- H1. IS A `string` TEXT, OR BYTES? A decision, not a bug report,
+  raised 2026-09-05 (lane B found it, lane D verified both engines).
+  Text that arrives from outside can carry a NUL, and the primitives
+  disagree about it: `.length`, `char_code`, `starts_with`,
+  `ends_with`, `trim` and `+` read the header's length and keep the
+  whole value, while `==`, `contains`, `index_of`, `split` and
+  `replace` are C string calls that stop at the first NUL. The
+  visible consequence is a silent wrong answer: a five-byte text
+  compares EQUAL to its own two-byte prefix. Three ways out, and the
+  owner picks: make the five length-aware (text is bytes, `==`
+  compares 5 against 2 and answers false); keep them and REFUSE a
+  NUL at the boundary where foreign text enters (text is text);
+  or add a `Bytes` value whose scope is exactly those five and leave
+  `string` meaning text. The @std/sqlite lane will meet this first,
+  since a blob is the common case.
 - H0. THE FN TYPE DROPS `mut` — A SOUNDNESS HOLE, found 2026-09-05
   while verifying H's `mut`-seat-in-a-fn-type ask and SENT to lane C.
   A `mut`-taking fn stored in a NON-`mut` fn type keeps writing
