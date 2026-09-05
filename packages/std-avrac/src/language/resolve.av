@@ -1,8 +1,9 @@
 //! Name resolution — one file's names, a query value (`NameFacts`).
-//! The driver owns scopes, statement order, and the naming law;
-//! what a NODE means for names lives in its owning feature's
-//! NodeSemantics, and a feature's own rules speak their
-//! diagnostics through the context.
+//! The CONTEXT is the pass's state — scopes, statement order, the
+//! naming law — and the walk's verbs are its methods; what a NODE
+//! means for names lives in its owning feature's NodeSemantics, and
+//! a feature's own rules speak their diagnostics through the
+//! context.
 //! A symbol's identity is its definition site. Two namespaces, one
 //! pass: `let` visibility is sequential and a later `let` shadows an
 //! earlier one; `fn` names are program-wide, so recursion and mutual
@@ -10,7 +11,7 @@
 use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore}
 use diagnostics.{Diag, error_at, loc_at, pointed, refusal, Voices, no_voices}
 use features.modules.{module_laws}
-use features.{ResolveCx, StmtResolveCx, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats, nothing, semantics_of, stmt_semantics_of, post_order}
+use features.{ResolveCx, Def, LFrame, Dispatch, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats, nothing, semantics_of, stmt_semantics_of, post_order}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
 /// Words the spec reserves for future levels, memory, and
@@ -24,36 +25,10 @@ fn reserved() -> List<string> {
      "channel", "select"]
 }
 
-type Def = { name: string, stmt: StmtId }
-
-/// One OPEN lambda during the walk: its params, and the overlay
-/// depth at entry — an overlay at or above the floor is
-/// lambda-local; below it lies the outer world, reached by capture.
-type LFrame = { lam: ExprId, params: List<string>, floor: int }
-
-type Resolver = {
-    lang: Language,
-    view: FileView,
-    facts: NameFacts,
-    all_defs: List<Def>,
-    def_names: List<string>,
-    visible: Map<string, Binding>,
-    overlays: List<Map<string, Binding>>,
-    lframes: List<LFrame>,
-    floors: List<int>,
-    // one entry per open impl or trait body: inside, `self` names
-    // the receiver seat and the written params start at seat 1
-    receivers: List<bool>,
-    // the open fn body's `mut` seats, by written position
-    muts: List<List<bool>>,
-    walked: List<bool>,
-    scoped: List<bool>,
-}
-
-export fn resolve(lang: Language, view: FileView, scope: Namespace) -> NameFacts {
+export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, scope: Namespace) -> NameFacts {
     let defs = defs_of(view.store, view.stmts)
-    mut r = Resolver {
-        lang: lang, view: view, all_defs: defs,
+    mut r = ResolveCx {
+        view: view, dispatch: dispatch, keywords: keywords, all_defs: defs,
         facts: NameFacts {
             bindings: filled<Binding?>(view.store.exprs.count(), null),
             captures: filled<Cap?>(view.store.exprs.count(), null),
@@ -64,87 +39,133 @@ export fn resolve(lang: Language, view: FileView, scope: Namespace) -> NameFacts
         visible: {}, overlays: [], lframes: [], floors: [], receivers: [], muts: [],
         walked: filled(view.store.exprs.count(), false),
         scoped: filled(view.store.stmts.count(), false),
+        scope: [], in_block: false,
     }
     r.name_laws()
-    resolve_stmts(r, [], false, view.stmts)
+    r.resolve_stmts(false, view.stmts)
     r.facts with { voices: Voices { list: flatten([scope.voices.list, module_laws(view.store, view.source.file, view.stmts), r.facts.voices.list]) } }
 }
 
-/// Statements in order, each through its own StmtSemantics — the
-/// ONE statement loop, top level and blocks alike.
-fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: List<StmtId>) {
-    mut cx = StmtResolveCx {
-        view: r.view,
-        facts: r.facts,
-        in_block: in_block,
-        walk: (v: ExprId) -> resolve_walk(r, param_names, v),
-        walk_under: (ps: List<Param>, body: ExprId) -> resolve_body(r, written_seats(r.lang.keywords, ps), body),
-        bind_checked: (s: StmtId) -> r.bind_checked(s),
-        check_params: (ps: List<Param>, s: StmtId) -> r.check_params(ps, s),
-        scope_stmts: (body: List<StmtId>) -> scoped_stmts(r, param_names, body),
-        impl_stmts: (body: List<StmtId>) -> impl_stmts(r, param_names, body),
-        bound_scope: (s: StmtId, exprs: List<ExprId>, body: List<StmtId>) ->
-            bound_scope(r, param_names, s, exprs, body),
+/// THE WALK — the context's own verbs, which every feature's rule
+/// reaches through the contract: statements in order through their
+/// StmtSemantics (the ONE statement loop, top level and blocks
+/// alike), a subtree's nodes in post-order through their
+/// NodeSemantics, and the scopes a rule opens. `scope` is the open
+/// fn body's seat names; `in_block` says the statement in hand
+/// stands inside a block.
+impl ResolveCx {
+    /// Statements in order, each through its own StmtSemantics.
+    mut fn resolve_stmts(in_block: bool, stmts: List<StmtId>) {
+        let was = self.in_block
+        self.in_block = in_block
+        for s in stmts { stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).resolve_stmt(self, s) }
+        self.in_block = was
     }
-    for s in stmts { stmt_semantics_of(r.lang.dispatch, r.view.store.stmt(s)).resolve_stmt(cx, s) }
-}
 
-/// A statement list under its own overlay scope — a loop body.
-fn scoped_stmts(mut r: Resolver, param_names: List<string>, stmts: List<StmtId>) {
-    r.open_overlay()
-    resolve_stmts(r, param_names, true, stmts)
-    r.close_overlay()
-}
-
-/// A fresh scope where `s`'s own binding holds: the exprs walk and
-/// the statements resolve inside it, and the binding dies at exit —
-/// a loop variable's home. A scoped binder never counts as a
-/// later definition: its name outside the scope is plainly unknown.
-fn bound_scope(mut r: Resolver, param_names: List<string>, s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
-    r.scoped.set(s.index, true)
-    r.open_overlay()
-    bound_body(r, param_names, s, exprs, stmts)
-    r.close_overlay()
-}
-
-/// Inside the bound scope: the binder holds, the exprs walk, the
-/// statements resolve.
-fn bound_body(mut r: Resolver, param_names: List<string>, s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
-    r.bind_checked(s)
-    r.bind_index(s)
-    for e in exprs { resolve_walk(r, param_names, e) }
-    resolve_stmts(r, param_names, true, stmts)
-}
-
-/// A block's statements under a fresh overlay scope: binds are
-/// visible onward and restored at exit.
-fn block_scope(mut r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId?) {
-    r.open_overlay()
-    block_body(r, param_names, stmts, value)
-    r.close_overlay()
-}
-
-/// Inside a block's scope: the statements, then the value — absent
-/// when the block leaves instead of answering.
-fn block_body(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId?) {
-    resolve_stmts(r, param_names, true, stmts)
-    if value != null { resolve_walk(r, param_names, value!) }
-}
-
-/// One match arm's scope: its binds (in pattern order) hold for
-/// the arm's value and die with it — the first scope in the
-/// language opened by an EXPRESSION rather than a statement.
-fn arm_scope(mut r: Resolver, param_names: List<string>, binds: List<string>, value: ExprId) {
-    r.open_overlay()
-    arm_body(r, param_names, binds, value)
-    r.close_overlay()
-}
-
-fn arm_body(mut r: Resolver, param_names: List<string>, binds: List<string>, value: ExprId) {
-    for j, b in binds {
-        if !r.refused_name(b, r.loc_of(value)) { r.bind(b, Binding.Pattern(value, j)) }
+    /// A statement list under its own overlay scope — a loop body.
+    mut fn scope_stmts(stmts: List<StmtId>) {
+        self.open_overlay()
+        self.resolve_stmts(true, stmts)
+        self.close_overlay()
     }
-    resolve_walk(r, param_names, value)
+
+    /// A fresh scope where `s`'s own binding holds: the exprs walk
+    /// and the statements resolve inside it, and the binding dies at
+    /// exit — a loop variable's home. A scoped binder never counts
+    /// as a later definition: its name outside the scope is plainly
+    /// unknown.
+    mut fn bound_scope(s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
+        self.scoped.set(s.index, true)
+        self.open_overlay()
+        self.bound_body(s, exprs, stmts)
+        self.close_overlay()
+    }
+
+    /// Inside the bound scope: the binder holds, the exprs walk, the
+    /// statements resolve.
+    mut fn bound_body(s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
+        self.bind_checked(s)
+        self.bind_index(s)
+        for e in exprs { self.walk(e) }
+        self.resolve_stmts(true, stmts)
+    }
+
+    /// A block's statements under a fresh overlay scope: binds are
+    /// visible onward and restored at exit.
+    mut fn block_scope(stmts: List<StmtId>, value: ExprId?) {
+        self.open_overlay()
+        self.block_body(stmts, value)
+        self.close_overlay()
+    }
+
+    /// Inside a block's scope: the statements, then the value —
+    /// absent when the block leaves instead of answering.
+    mut fn block_body(stmts: List<StmtId>, value: ExprId?) {
+        self.resolve_stmts(true, stmts)
+        if value != null { self.walk(value!) }
+    }
+
+    /// One match arm's scope: its binds (in pattern order) hold for
+    /// the arm's value and die with it — the first scope in the
+    /// language opened by an EXPRESSION rather than a statement.
+    mut fn arm_scope(binds: List<string>, value: ExprId) {
+        self.open_overlay()
+        self.arm_body(binds, value)
+        self.close_overlay()
+    }
+
+    mut fn arm_body(binds: List<string>, value: ExprId) {
+        for j, b in binds {
+            if !self.refused_name(b, self.loc_of(value)) { self.bind(b, Binding.Pattern(value, j)) }
+        }
+        self.walk(value)
+    }
+
+    /// A lambda's body under its own frame: params bind, outer names
+    /// capture, and the frame dies with the walk.
+    mut fn lambda_scope(lam: ExprId, params: List<Param>, body: ExprId) {
+        // a refused param name still BINDS (declare the wreckage) — the
+        // body resolves quietly and the one refusal stands alone
+        for pp in params {
+            let _ = self.refused_name(pp.name, self.loc_of(lam))
+        }
+        // LICENSED I15: this IS the bracket
+        self.lframes.push(LFrame { lam: lam, params: [pp.name for pp in params], floor: self.overlays.length })
+        self.walk(body)
+        let _ = self.lframes.pop()
+    }
+
+    /// One subtree's resolution, children before owners.
+    mut fn walk(root: ExprId) {
+        for e in post_order(self.dispatch, self.view.store, root) { semantics_of(self.dispatch, self.view.store.expr(e)).resolve(self, e) }
+    }
+
+    /// An impl's or a trait's fns: every fn inside is a method, and
+    /// `self` names its receiver for exactly their resolution.
+    mut fn impl_stmts(body: List<StmtId>) {
+        self.receivers.push(true)
+        self.resolve_stmts(false, body)
+        let _ = self.receivers.pop()
+    }
+
+    /// A fn's body walks behind a FLOOR: the overlay depth at entry.
+    /// Bindings below it are the top level's run-time values, which
+    /// no body can see — a body sees declarations and its own
+    /// bindings. The seats' names and `mut` marks are in scope for
+    /// exactly the walk, so a read of a `mut` seat is recorded as
+    /// one.
+    mut fn walk_under(ps: List<Param>, body: ExprId) {
+        let seats = written_seats(self.keywords, ps)
+        let outer = self.scope
+        // LICENSED I15: this IS the bracket
+        self.floors.push(self.overlays.length)
+        self.muts.push([pp.mutable for pp in seats])
+        self.scope = [pp.name for pp in seats]
+        self.walk(body)
+        self.scope = outer
+        let _ = self.muts.pop()
+        let _ = self.floors.pop()
+    }
 }
 
 // ── The lambda frames ───────────────────────────────────────────
@@ -152,7 +173,7 @@ fn arm_body(mut r: Resolver, param_names: List<string>, binds: List<string>, val
 // entry. A name inside resolves innermost-out — frame params and
 // frame-local overlays first, then the outer world, and every
 // frame crossed on the way out records a CAPTURE. Nesting chains
-// Capture through Capture; the stack lives on the Resolver, so
+// Capture through Capture; the stack lives on the context, so
 // blocks and arms inside a body need no threading at all.
 
 /// The topmost overlay INDEX holding `name`, or null.
@@ -200,21 +221,6 @@ fn frame_param_hit(lframes: List<LFrame>, name: string) -> int? {
     null
 }
 
-/// A lambda's body under its own frame: params bind, outer names
-/// capture, and the frame dies with the walk.
-fn lambda_scope(mut r: Resolver, param_names: List<string>, lam: ExprId, params: List<Param>, body: ExprId) {
-    // a refused param name still BINDS (declare the wreckage) — the
-    // body resolves quietly and the one refusal stands alone
-    for pp in params {
-        let _ = r.refused_name(pp.name, r.loc_of(lam))
-    }
-    mut fs = r.lframes
-    // LICENSED I15: this IS the bracket fn
-    fs.push(LFrame { lam: lam, params: [pp.name for pp in params], floor: r.overlays.length })
-    resolve_walk(r, param_names, body)
-    let _ = fs.pop()
-}
-
 /// The innermost overlay holding `name`, or null — the scan stops
 /// at the first hit, which IS the shadowing rule: the nearest
 /// scope wins and the outer ones are never consulted.
@@ -228,45 +234,6 @@ fn overlay_hit(overlays: List<Map<string, Binding>>, name: string) -> Binding? {
     null
 }
 
-/// One subtree's resolution, under the given param names.
-fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
-    mut cx = ResolveCx {
-        view: r.view,
-        use_name: (e: ExprId, name: string) -> r.resolve_name(e, name, param_names),
-        use_call: (e: ExprId, name: string) -> r.resolve_call(e, name, param_names),
-        use_type: (e: ExprId, name: string) -> r.resolve_type_use(e, name),
-        use_receiver: (e: ExprId) -> r.resolve_receiver(e),
-        arm_scope: (binds: List<string>, v: ExprId) -> arm_scope(r, param_names, binds, v),
-        block_scope: (stmts: List<StmtId>, value: ExprId?) -> block_scope(r, param_names, stmts, value),
-        lambda_scope: (lam: ExprId, ps: List<Param>, body: ExprId) -> lambda_scope(r, param_names, lam, ps, body),
-    }
-    for e in post_order(r.lang.dispatch, r.view.store, root) { semantics_of(r.lang.dispatch, r.view.store.expr(e)).resolve(cx, e) }
-}
-
-/// An impl's or a trait's fns: every fn inside is a method, and
-/// `self` names its receiver for exactly their resolution.
-fn impl_stmts(mut r: Resolver, param_names: List<string>, body: List<StmtId>) {
-    r.receivers.push(true)
-    resolve_stmts(r, param_names, false, body)
-    let _ = r.receivers.pop()
-}
-
-/// A fn's body walks behind a FLOOR: the overlay depth at entry.
-/// Bindings below it are the top level's run-time values, which no
-/// body can see — a body sees declarations and its own bindings.
-/// The seats' `mut` marks are in scope for the walk, so a read of a
-/// `mut` seat is recorded as one.
-fn resolve_body(r: Resolver, seats: List<Param>, body: ExprId) {
-    mut fs = r.floors
-    mut ms = r.muts
-    // LICENSED I15: this IS the bracket
-    fs.push(r.overlays.length)
-    ms.push([pp.mutable for pp in seats])
-    resolve_walk(r, [pp.name for pp in seats], body)
-    let _ = ms.pop()
-    let _ = fs.pop()
-}
-
 /// Every let definition in the program, in order.
 fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
     // LICENSED I13: a comprehension's filter and element cannot share a
@@ -274,7 +241,7 @@ fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
     [Def { name: store.let_name(s)!, stmt: s } for s in stmts if store.let_name(s) != null]
 }
 
-impl Resolver {
+impl ResolveCx {
     /// A scoped name, whichever namespace holds it — a fn's before
     /// a type's.
     fn scope_named(name: string) -> DeclId? {
@@ -301,8 +268,8 @@ impl Resolver {
     fn type_name_law(name: string, s: StmtId) {
         let at = self.stmt_loc(s)
         if self.refused_name(name, at) { return }
-        if builtin_type_name(self.lang.rows.types, name) {
-            self.speak(refusal("resolve.builtin_type", at, "`${name}` is a built-in type", "declared here", "choose another name — `int`, `string` and `bool` are the language's"))
+        if builtin_type_name(self.view.lang.types, name) {
+            self.emit(refusal("resolve.builtin_type", at, "`${name}` is a built-in type", "declared here", "choose another name — `int`, `string` and `bool` are the language's"))
         }
     }
 
@@ -310,7 +277,7 @@ impl Resolver {
     /// refuse as names. True means refused — the site keeps its
     /// hands off the name.
     fn refused_name(name: string, at: Loc?) -> bool {
-        if self.lang.keywords.contains(name) {
+        if self.keywords.contains(name) {
             self.refuse_keyword(name, at, null)
             return true
         }
@@ -327,21 +294,21 @@ impl Resolver {
     fn check_params(fparams: List<Param>, s: StmtId) {
         let at = self.stmt_loc(s)
         for pp in fparams {
-            if self.lang.keywords.contains(pp.name) {
-                self.refuse_keyword(pp.name, at, remedy_for(self.lang.rows, pp.name))
+            if self.keywords.contains(pp.name) {
+                self.refuse_keyword(pp.name, at, remedy_for(self.view.lang, pp.name))
             } else {
                 let _ = self.refused_name(pp.name, at)
             }
         }
     }
 
-    fn resolve_name(e: ExprId, name: string, param_names: List<string>) {
+    mut fn use_name(e: ExprId, name: string) {
         if self.once(e) { return }
         // The SAME naming law every other site runs: a keyword can
         // never be a name, so "not defined" would send the reader
         // hunting for a definition that could not exist.
         if self.refused_name(name, self.loc_of(e)) { return }
-        let found: Binding? = self.value_binding(name, param_names)
+        let found: Binding? = self.value_binding(name)
         if found != null {
             self.bind_use(e, found!)
             self.note_mut_seat(e, found!)
@@ -355,13 +322,13 @@ impl Resolver {
             // A loc-less frame renders no window — absence stays quiet.
             let defined = [Frame { label: "defined here", loc: self.stmt_loc(later!) }]
             // LICENSED I28: the one voice with a SECOND frame — the definition's
-            self.speak(pointed(
+            self.emit(pointed(
                 error_at("resolve.use_before_def", at, "`${name}` is used before its definition"),
                 "used here")
                 with { secondary: defined, help: "move the definition above this use" })
             return
         }
-        self.speak(self.suggested(
+        self.emit(self.suggested(
             refusal("resolve.unresolved", at, "`${name}` is not defined", "not defined anywhere in this program", null),
             e, name, self.def_names))
     }
@@ -380,7 +347,7 @@ impl Resolver {
     /// `self` — the receiver of the innermost enclosing method,
     /// captured through every open lambda like any binding; outside
     /// a method there is no receiver to name.
-    fn resolve_receiver(e: ExprId) {
+    mut fn use_receiver(e: ExprId) {
         if self.once(e) { return }
         if self.receivers.is_empty() { return self.no_receiver(self.loc_of(e)) }
         self.bind_use(e, self.chained(0, receiver_key(), Binding.Receiver))
@@ -420,20 +387,20 @@ impl Resolver {
     }
 
     /// A literal's type name resolves in the type namespace alone.
-    fn resolve_type_use(e: ExprId, name: string) {
+    mut fn use_type(e: ExprId, name: string) {
         if self.once(e) { return }
         let found: DeclId? = self.facts.names.types.get(name)
         if found != null {
             self.bind_use(e, Binding.Decl(found!))
             return
         }
-        self.speak(self.suggested(
+        self.emit(self.suggested(
             refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared", "used here", null),
             e, name, self.facts.names.type_names))
     }
 
     /// A callee resolves in the fn namespace alone.
-    fn resolve_call(e: ExprId, name: string, param_names: List<string>) {
+    mut fn use_call(e: ExprId, name: string) {
         if self.once(e) { return }
         // A keyword can never NAME a fn, so "no `fn if` is defined"
         // would offer a remedy the naming law itself forbids.
@@ -447,13 +414,13 @@ impl Resolver {
         // fn-typed LOCAL value (typing judges its shape). Declared
         // fns stay first — a pattern bind shadows READS, never the
         // call (the pinned arm law).
-        let local: Binding? = self.local_binding(name, param_names)
+        let local: Binding? = self.local_binding(name)
         if local != null {
             self.bind_use(e, local!)
             return
         }
         if self.hidden_def(name) { return self.runtime_binding(name, self.loc_of(e)) }
-        self.speak(self.suggested(
+        self.emit(self.suggested(
             refusal("resolve.unresolved", self.loc_of(e), "no `fn ${name}` is defined", "called here", null),
             e, name, self.facts.names.fn_names))
     }
@@ -469,8 +436,8 @@ impl Resolver {
     /// params, then the program scope, then a TYPE used as a value
     /// (`Color` in `Color.red`, which typing gives the compile-only
     /// TypeName shape).
-    fn value_binding(name: string, param_names: List<string>) -> Binding? {
-        let local: Binding? = self.local_binding(name, param_names)
+    fn value_binding(name: string) -> Binding? {
+        let local: Binding? = self.local_binding(name)
         if local != null { return local }
         // a type's name, then a NAMED FN as a value — both global,
         // so no capture chains
@@ -486,7 +453,7 @@ impl Resolver {
     /// frame is frame-local; anything below the innermost floor is
     /// the outer world, and every frame between records a CAPTURE
     /// (nesting chains Capture through Capture).
-    fn local_binding(name: string, param_names: List<string>) -> Binding? {
+    fn local_binding(name: string) -> Binding? {
         let ohit: int? = overlay_index(self.overlays, name)
         let fhit: int? = frame_param_hit(self.lframes, name)
         let ohome = if ohit == null { no_frame() } else { overlay_home(self.lframes, ohit!) }
@@ -501,7 +468,7 @@ impl Resolver {
             return self.chained(fhit! + 1, name,
                 Binding.LambdaParam(f.lam, found_at(f.params, name)!))
         }
-        let idx: int? = found_at(param_names, name)
+        let idx: int? = found_at(self.scope, name)
         if idx != null { return self.chained(0, name, Binding.Param(idx! + self.seat_base())) }
         let outer: Binding? = self.outer_binding(name)
         if outer == null { return null }
@@ -590,26 +557,26 @@ impl Resolver {
     }
 
     fn unbound_pronoun(at: Loc?) {
-        self.speak(refusal("resolve.unresolved", at, "`it` rides a METHOD call's arguments — nothing binds it here", "the pronoun", "inside `xs.map(…)` and friends `it` is the element; elsewhere, name the value"))
+        self.emit(refusal("resolve.unresolved", at, "`it` rides a METHOD call's arguments — nothing binds it here", "the pronoun", "inside `xs.map(…)` and friends `it` is the element; elsewhere, name the value"))
     }
 
     fn runtime_binding(name: string, at: Loc?) {
-        self.speak(refusal("resolve.runtime_binding", at, "`${name}` is a run-time binding of the top level — a fn body sees declarations, not the values around it", "read here", "pass `${name}` in as a parameter, or make it a fn"))
+        self.emit(refusal("resolve.runtime_binding", at, "`${name}` is a run-time binding of the top level — a fn body sees declarations, not the values around it", "read here", "pass `${name}` in as a parameter, or make it a fn"))
     }
 
     fn refuse_reserved(name: string, at: Loc?) {
-        self.speak(refusal("resolve.reserved", at, "`${name}` is reserved for a future Avra feature", "cannot be a name", "pick another name — `${name}` becomes a keyword"))
+        self.emit(refusal("resolve.reserved", at, "`${name}` is reserved for a future Avra feature", "cannot be a name", "pick another name — `${name}` becomes a keyword"))
     }
 
     fn refuse_keyword(name: string, at: Loc?, remedy: string?) {
-        self.speak(refusal("resolve.reserved", at, "`${name}` is a keyword", "cannot be a name", remedy ?? "pick another name"))
+        self.emit(refusal("resolve.reserved", at, "`${name}` is a keyword", "cannot be a name", remedy ?? "pick another name"))
     }
 
     fn no_receiver(at: Loc?) {
-        self.speak(refusal("resolve.receiver", at, "`self` names a method's receiver — this is not a method", "no receiver here", "move this into `impl <Type> { … }`"))
+        self.emit(refusal("resolve.receiver", at, "`self` names a method's receiver — this is not a method", "no receiver here", "move this into `impl <Type> { … }`"))
     }
 
-    fn speak(d: Diag) { self.facts.voices.speak(d) }
+    fn emit(d: Diag) { self.facts.voices.speak(d) }
 
     /// The first PROGRAM-SCOPE definition of `name` anywhere — a
     /// scoped binder (a loop counter) is not one.
@@ -635,7 +602,7 @@ impl Resolver {
     /// A pairing loop names its index and its element apart — one
     /// name for both would shadow one of them silently.
     fn paired_alike(s: StmtId, name: string) {
-        self.speak(refusal("resolve.paired", self.stmt_loc(s), "`${name}` names both the index and the element", "bound here", "give the index its own name — `for i, ${name} in …`"))
+        self.emit(refusal("resolve.paired", self.stmt_loc(s), "`${name}` names both the index and the element", "bound here", "give the index its own name — `for i, ${name} in …`"))
     }
 
     fn bind_checked(s: StmtId) {

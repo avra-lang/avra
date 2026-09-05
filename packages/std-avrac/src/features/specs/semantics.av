@@ -3,18 +3,18 @@
 //! lowering reach the cases as declarations, so the statement itself
 //! does nothing there.
 use core.{StmtId, Reg, Case, distinct, flatten}
-use features.{StmtSemantics, StmtResolveCx, TypeCx, StmtLowerCx, nothing, refuses_nested, duplicate_names}
+use features.{StmtSemantics, ResolveCx, TypeCx, StmtLowerCx, nothing, refuses_nested, duplicate_names}
 use diagnostics.{Diag}
 use @std.errors.{Loc}
 
 export type SpecSemantics = { }
 
 impl StmtSemantics for SpecSemantics {
-    fn resolve_stmt(mut cx: StmtResolveCx, s: StmtId) {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
         if refuses_nested(cx, s, "resolve.nested_spec", "spec blocks") { return }
         match cx.view.store.stmt(s) {
             .Spec(name, cases) -> {
-                for d in repeated_cases(name, cases, cx.loc_of(s)) { cx.emit(d) }
+                for d in repeated_cases(name, cases, cx.stmt_loc(s)) { cx.emit(d) }
                 for c in cases { cx.walk_under([], c.body) }
             }
             _ -> nothing(),

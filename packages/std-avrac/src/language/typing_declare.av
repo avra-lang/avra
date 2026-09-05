@@ -63,7 +63,7 @@ impl TypeCx {
         let names = [f.name for f in fields]
         let owner: string = self.view.store.type_decl_name(s) ?? "this type"
         for d in duplicate_names("type.duplicate_field", owner, names, self.stmt_loc(s)) {
-            self.speak(d)
+            self.emit(d)
         }
         let types = [self.field_type(s, f) for f in fields]
         let record = self.decl_of(s)
@@ -125,7 +125,7 @@ impl TypeCx {
         let sh: Type = self.view.types.shape_of(named)
         if sh is .Error { return named }
         if slot_worthy(self.view.types, sh) { return named }
-        self.speak(refusal(kind, self.stmt_loc(s), message, label, slots_await_ownership()))
+        self.emit(refusal(kind, self.stmt_loc(s), message, label, slots_await_ownership()))
         self.error_type
     }
 
@@ -150,7 +150,7 @@ impl TypeCx {
         let owner: string = self.view.store.fn_parts(s)?.name ?? "this fn"
         let seats = written_seats(self.keywords, fparams)
         for d in duplicate_names("type.duplicate_param", owner, [pp.name for pp in seats], self.stmt_loc(s)) {
-            self.speak(d)
+            self.emit(d)
         }
         self.refuse_taken_tparams(s, owner)
         self.enter_tscope(s)
@@ -171,12 +171,12 @@ impl TypeCx {
     }
 
     fn typeless_param(s: StmtId, name: string) -> TypeId {
-        self.speak(refusal("type.mismatch", self.stmt_loc(s), "parameter `${name}` declares no type", "declared here", "write `${name}: <type>`"))
+        self.emit(refusal("type.mismatch", self.stmt_loc(s), "parameter `${name}` declares no type", "declared here", "write `${name}: <type>`"))
         self.error_type
     }
 
     fn stray_mut_fn(s: StmtId, name: string) {
-        self.speak(refusal("type.mut_fn", self.stmt_loc(s), "`mut fn` marks a method that writes its receiver — `${name}` has none", "declared here", "drop `mut`, or move `${name}` into `impl <Type> { … }`"))
+        self.emit(refusal("type.mut_fn", self.stmt_loc(s), "`mut fn` marks a method that writes its receiver — `${name}` has none", "declared here", "drop `mut`, or move `${name}` into `impl <Type> { … }`"))
     }
 
     /// A type parameter cannot take a name the LANGUAGE owns — the
@@ -185,7 +185,7 @@ impl TypeCx {
     fn refuse_taken_tparams(s: StmtId, owner: string) {
         let tp = self.view.store.decl_tparams(s)
         for d in duplicate_names("type.tparam", owner, tp, self.stmt_loc(s)) {
-            self.speak(d)
+            self.emit(d)
         }
         for n in tp {
             if builtin_type_name(self.view.lang.types, n) { self.owned_name(s, n) }
@@ -193,7 +193,7 @@ impl TypeCx {
     }
 
     fn owned_name(s: StmtId, n: string) {
-        self.speak(refusal("type.tparam", self.stmt_loc(s), "a type parameter cannot take `${n}`'s name — the language owns it", "declared here", "pick another name — `T`, `E`, `Elem`"))
+        self.emit(refusal("type.tparam", self.stmt_loc(s), "a type parameter cannot take `${n}`'s name — the language owns it", "declared here", "pick another name — `T`, `E`, `Elem`"))
     }
 
     /// A declaration's type parameters as interned Vars — fns and
@@ -272,17 +272,17 @@ impl TypeCx {
     }
 
     fn unappliable(at: Loc?, name: string) -> TypeId {
-        self.speak(refusal("type.applied", at, "`${name}` takes no type arguments", "applied here", "the applied types today are `List<T>` and `Result<T, E>`"))
+        self.emit(refusal("type.applied", at, "`${name}` takes no type arguments", "applied here", "the applied types today are `List<T>` and `Result<T, E>`"))
         self.error_type
     }
 
     fn arity_wrong(at: Loc?, name: string, found: int, takes: int) -> TypeId {
-        self.speak(refusal("type.applied", at, "`${name}` is applied to ${found} types; it takes ${takes}", "applied here", "`${name}` needs exactly ${takes}"))
+        self.emit(refusal("type.applied", at, "`${name}` is applied to ${found} types; it takes ${takes}", "applied here", "`${name}` needs exactly ${takes}"))
         self.error_type
     }
 
     fn undeclared_contract(at: Loc?, name: string) -> TypeId {
-        self.speak(refusal("type.trait", at, "`dyn ${name}` names no trait", "written here", "declare it — `trait ${name} { … }`"))
+        self.emit(refusal("type.trait", at, "`dyn ${name}` names no trait", "written here", "declare it — `trait ${name} { … }`"))
         self.error_type
     }
 
@@ -322,14 +322,14 @@ impl TypeCx {
     }
 
     fn unslottable_slot(at: Loc?, name: string, ty: TypeId) -> TypeId {
-        self.speak(refusal("type.applied", at, "a `${name}` slot cannot hold this yet", "this slot is `${self.view.types.name_of(ty)}`", slice_promise("slots")))
+        self.emit(refusal("type.applied", at, "a `${name}` slot cannot hold this yet", "this slot is `${self.view.types.name_of(ty)}`", slice_promise("slots")))
         self.error_type
     }
 
     /// A constructor's own law refused its arguments — in the row's
     /// words.
     fn applied_refused(at: Loc?, r: Refusal) -> TypeId {
-        self.speak(refusal("type.applied", at, r.message, "this type", r.help))
+        self.emit(refusal("type.applied", at, r.message, "this type", r.help))
         self.error_type
     }
     /// A USER generic instantiated: the declaration by name, its
@@ -351,7 +351,7 @@ impl TypeCx {
         for ty in self.declared_slots(decl) {
             let landed = self.view.types.substituted(ty, decl, parts)
             if !slot_worthy(self.view.types, self.view.types.shape_of(landed)) {
-                self.speak(refusal("type.applied", at, "`${name}<...>` makes a slot `${self.view.types.name_of(landed)}`, which a slot cannot hold yet", "applied here", slots_await_ownership()))
+                self.emit(refusal("type.applied", at, "`${name}<...>` makes a slot `${self.view.types.name_of(landed)}`, which a slot cannot hold yet", "applied here", slots_await_ownership()))
                 return true
             }
         }
@@ -377,7 +377,7 @@ impl TypeCx {
         if sh != null { return self.view.types.intern(sh!) }
         let decl: DeclId? = self.type_decl_named(name)
         if decl != null { return self.declared_type(decl!, name) }
-        self.speak(refusal("type.unknown", at, "`${name}` names no type", "in this signature", "the types today are `int`, `string`, `bool`, and your declared types"))
+        self.emit(refusal("type.unknown", at, "`${name}` names no type", "in this signature", "the types today are `int`, `string`, `bool`, and your declared types"))
         self.error_type
     }
 
@@ -386,7 +386,7 @@ impl TypeCx {
     fn declared_type(d: DeclId, name: string) -> TypeId {
         let arity = self.view.decls.tparams(d).length
         if arity > 0 {
-            self.speak(refusal("type.applied", self.view.decls.loc(d), "`${name}` is generic — it takes ${arity} type arguments", "written bare", "write `${name}<...>`"))
+            self.emit(refusal("type.applied", self.view.decls.loc(d), "`${name}` is generic — it takes ${arity} type arguments", "written bare", "write `${name}<...>`"))
             return self.error_type
         }
         if self.view.decls.is_enum(d) { return self.view.types.intern(Type.Enum(d, name)) }

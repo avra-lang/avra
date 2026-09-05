@@ -3,15 +3,15 @@
 //! params and plain lets refuse with the remedy. The path itself
 //! resolves like any expression.
 use core.{StmtId, ExprId, Binding, same_expr}
-use features.{StmtResolveCx, nothing}
+use features.{ResolveCx, nothing}
 use diagnostics.{refusal}
 use @std.errors.{Loc}
 
-export fn resolve_assign(mut cx: StmtResolveCx, s: StmtId) {
+export fn resolve_assign(mut cx: ResolveCx, s: StmtId) {
     let target: ExprId? = cx.view.store.assign_target(s)
     if target == null { return }
     let t = target!
-    let at: Loc? = cx.loc_of(s)
+    let at: Loc? = cx.stmt_loc(s)
     let root: ExprId? = cx.view.store.place_root(t)
     if root == null { return not_a_place(cx, at) }
     let r = root!
@@ -47,7 +47,7 @@ fn through_receiver(target: ExprId, root: ExprId, name: string) -> bool {
 }
 
 /// A definition is a place only when it was declared `mut`.
-fn mut_or_refused(mut cx: StmtResolveCx, s: StmtId, n: string, at: Loc?) {
+fn mut_or_refused(mut cx: ResolveCx, s: StmtId, n: string, at: Loc?) {
     if !(cx.view.store.stmt(s) is .MutLet) { not_mut(cx, n, at) }
 }
 
@@ -63,41 +63,41 @@ fn mut_copy_help(n: string) -> string {
     "bind a `mut` copy to change — `mut k = ${n}`"
 }
 
-fn not_a_place(mut cx: StmtResolveCx, at: Loc?) {
+fn not_a_place(mut cx: ResolveCx, at: Loc?) {
     cx.emit(refusal("resolve.place", at, "a mutation lands on a place — a name, a field, or an index", assigned_here(), "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding"))
 }
 
 /// RECORDED TRIGGER: a `mut` seat assigned WHOLE lands with the
 /// inout ABI, where the seat is the caller's cell (ROADMAP: the
 /// inout receiver, S2); until then a seat is written along a path.
-fn seat_whole(mut cx: StmtResolveCx, n: string, at: Loc?) {
+fn seat_whole(mut cx: ResolveCx, n: string, at: Loc?) {
     cx.emit(refusal("resolve.immutable", at, "`${n}` is a `mut` seat — assigning it whole arrives with the inout ABI", assigned_here(), "write a path under it (`${n}.field = …`), or answer the new value"))
 }
 
-fn immutable_receiver(mut cx: StmtResolveCx, at: Loc?) {
+fn immutable_receiver(mut cx: ResolveCx, at: Loc?) {
     cx.emit(refusal("resolve.immutable", at, "`self` is the receiver — it is not assigned", assigned_here(), "assign a field of it — `self.<field> = …`"))
 }
 
-fn immutable_param(mut cx: StmtResolveCx, n: string, at: Loc?) {
+fn immutable_param(mut cx: ResolveCx, n: string, at: Loc?) {
     cx.emit(refusal("resolve.immutable", at, "`${n}` is a parameter — parameters are immutable", assigned_here(), "declare the seat `mut ${n}: …` to write through it; the caller then hands a `mut` place"))
 }
 
-fn immutable_bind(mut cx: StmtResolveCx, n: string, at: Loc?) {
+fn immutable_bind(mut cx: ResolveCx, n: string, at: Loc?) {
     cx.emit(refusal("resolve.immutable", at, "`${n}` is a pattern's bind — it names the matched value, it is not assigned", assigned_here(), mut_copy_help(n)))
 }
 
-fn captured_copy(mut cx: StmtResolveCx, n: string, at: Loc?) {
+fn captured_copy(mut cx: ResolveCx, n: string, at: Loc?) {
     cx.emit(refusal("resolve.immutable", at, "`${n}` is captured by value — a lambda cannot assign to it", assigned_here(), "a capture is a copy: bind a `mut` inside the lambda, or answer the new value and let the caller keep it"))
 }
 
-fn not_a_fn_place(mut cx: StmtResolveCx, n: string, at: Loc?) {
+fn not_a_fn_place(mut cx: ResolveCx, n: string, at: Loc?) {
     cx.emit(refusal("resolve.immutable", at, "`${n}` is a fn — it is not assigned", assigned_here(), "bind a fn value to change it — `mut g = ${n}`"))
 }
 
-fn immutable_index(mut cx: StmtResolveCx, n: string, at: Loc?) {
+fn immutable_index(mut cx: ResolveCx, n: string, at: Loc?) {
     cx.emit(refusal("resolve.immutable", at, "`${n}` is a loop index — it counts, it is not assigned", assigned_here(), mut_copy_help(n)))
 }
 
-fn not_mut(mut cx: StmtResolveCx, n: string, at: Loc?) {
+fn not_mut(mut cx: ResolveCx, n: string, at: Loc?) {
     cx.emit(refusal("resolve.immutable", at, "`${n}` is not `mut`", assigned_here(), "declare it `mut ${n} = ...` to mutate it — or build a changed copy with `with`"))
 }

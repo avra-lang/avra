@@ -868,7 +868,7 @@ at compile time; `or`-runs keep the enumeration one line:
 
 ```avra
 match self.store.expr(e) {
-    .Ident(name) -> self.resolve_name(e, name),
+    .Ident(name) -> self.use_name(e, name),
     .Binary(_, l, right) -> { ... recurse ... }
     .IntLit(_) or .Error -> self.nothing(),   // a new Expr must land HERE, visibly
 }

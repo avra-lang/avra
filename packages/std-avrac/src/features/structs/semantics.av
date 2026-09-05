@@ -5,7 +5,7 @@
 //! names through the naming law and walks each field default as a
 //! body of its own.
 use core.{Expr, ExprId, StmtId, TypeId, Reg, NodeStore, StructParts}
-use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, StmtResolveCx, StmtLowerCx, nothing, refuses_nested}
+use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, StmtLowerCx, nothing, refuses_nested}
 
 export type StructsSemantics = { }
 
@@ -44,7 +44,7 @@ export type StructDeclSemantics = { }
 impl StmtSemantics for StructDeclSemantics {
     // a default is a body of its own: it sees declarations, never
     // the top level's run-time bindings
-    fn resolve_stmt(mut cx: StmtResolveCx, s: StmtId) {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
         decl_resolve(cx, s)
         for d in default_exprs(cx.view.store, s) { cx.walk_under([], d) }
     }
@@ -61,7 +61,7 @@ impl StmtSemantics for StructDeclSemantics {
 
 /// The declaration's field names run the naming law; the driver
 /// owns the namespace and the field table.
-fn decl_resolve(mut cx: StmtResolveCx, s: StmtId) {
+fn decl_resolve(mut cx: ResolveCx, s: StmtId) {
     if refuses_nested(cx, s, "resolve.nested_type", "type declarations") { return }
     match cx.view.store.stmt(s) {
         .StructDecl(_, _, fields) -> cx.check_params(fields, s),

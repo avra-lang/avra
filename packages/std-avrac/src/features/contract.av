@@ -17,25 +17,57 @@
 //! values.av the runtime VALUE representation, builder.av the
 //! parse-time authoring surface. A feature-named fn has no place
 //! in any of them.
-use core.{Expr, ExprId, StmtId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at}
+use core.{Expr, ExprId, StmtId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at, Binding}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 
 /// Resolve capabilities: an impl reports a name use — as a value
-/// (`use_name`) or as a callee (`use_call`); the driver owns scopes,
-/// namespaces, suggestions, and diagnostics. `arm_scope` walks one
-/// match arm's value under its own bind ("" when the arm names
-/// none) — the first scope an EXPRESSION opens.
+/// (`use_name`), a callee (`use_call`), a type (`use_type`) or the
+/// receiver (`use_receiver`) — and opens the scopes it owns
+/// (`arm_scope` walks one match arm's value under its own binds, the
+/// first scope an EXPRESSION opens; `block_scope`; `lambda_scope`).
+/// The statement spine walks (`walk`, `walk_under`), applies the
+/// binding law (`bind_checked`, `check_params`), opens its scopes
+/// (`scope_stmts`, `bound_scope`, `impl_stmts`) and speaks. The
+/// context IS the pass's state — the verbs are its methods, written
+/// where the walk lives — and the driver owns scopes, namespaces,
+/// suggestions, and diagnostics.
 export type ResolveCx = {
     view: FileView,
-    use_name: fn(ExprId, string),
-    use_call: fn(ExprId, string),
-    use_type: fn(ExprId, string),
-    use_receiver: fn(ExprId),
-    block_scope: fn(List<StmtId>, ExprId?),
-    arm_scope: fn(List<string>, ExprId),
-    lambda_scope: fn(ExprId, List<Param>, ExprId),
+    facts: NameFacts,
+    dispatch: Dispatch,
+    keywords: List<string>,
+    // the file's `let` definitions and their names (the typo
+    // candidates), the program scope's bindings, the open overlays
+    all_defs: List<Def>,
+    def_names: List<string>,
+    visible: Map<string, Binding>,
+    overlays: List<Map<string, Binding>>,
+    // the open lambda frames; the open fn bodies' floors; one entry
+    // per open impl or trait body (inside, `self` names the receiver
+    // seat and the written params start at seat 1); the open fn
+    // body's `mut` seats, by written position
+    lframes: List<LFrame>,
+    floors: List<int>,
+    receivers: List<bool>,
+    muts: List<List<bool>>,
+    // a name resolves ONCE; a scoped binder never counts as a later
+    // definition
+    walked: List<bool>,
+    scoped: List<bool>,
+    // THE WALK'S STATE: the open fn body's seat names, and whether
+    // the statement in hand stands inside a block
+    scope: List<string>,
+    in_block: bool,
 }
+
+/// One `let` definition of the program, in order.
+export type Def = { name: string, stmt: StmtId }
+
+/// One OPEN lambda during the walk: its params, and the overlay
+/// depth at entry — an overlay at or above the floor is
+/// lambda-local; below it lies the outer world, reached by capture.
+export type LFrame = { lam: ExprId, params: List<string>, floor: int }
 
 /// A fn's typed signature, as the type pass computed it.
 export type FnSig = { params: List<TypeId>, ret: TypeId }
@@ -234,25 +266,6 @@ export trait NodeSemantics {
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg
 }
 
-/// Statement resolve capabilities — the pass's STATE verbs, never a
-/// feature's rule: walk expressions, apply the binding law, look a
-/// name up, record an assignment's target, and speak. Rule bodies
-/// live in the feature's own directory. `bound_scope` is a fresh
-/// scope where the statement's own binding holds: the exprs walk
-/// and the statements resolve inside it — a loop variable's home.
-export type StmtResolveCx = {
-    view: FileView,
-    facts: NameFacts,
-    in_block: bool,
-    walk: fn(ExprId),
-    walk_under: fn(List<Param>, ExprId),
-    bind_checked: fn(StmtId),
-    check_params: fn(List<Param>, StmtId),
-    scope_stmts: fn(List<StmtId>),
-    bound_scope: fn(StmtId, List<ExprId>, List<StmtId>),
-    impl_stmts: fn(List<StmtId>),
-}
-
 /// Statement lowering capabilities: `expr` is the WHOLE expression
 /// lowering vocabulary (registers, types, minting, the emit seam) —
 /// the typing cx's twin; the rest are the statement-level verbs:
@@ -272,7 +285,7 @@ export type StmtLowerCx = {
 /// DRIVER records as the statement's slot; what a program SHOWS is
 /// its final expression statement's, read through the store.
 export trait StmtSemantics {
-    fn resolve_stmt(mut cx: StmtResolveCx, s: StmtId)
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId)
     fn type_stmt(mut cx: TypeCx, s: StmtId)
     fn lower_stmt(mut cx: StmtLowerCx, s: StmtId) -> Reg?
 }
@@ -335,9 +348,9 @@ export fn nested_decl(kind: string, what: string, at: Loc?) -> Diag {
 /// THE nested-declaration guard every declaring statement opens
 /// with: inside a block it refuses and answers true, so the rule
 /// returns; at the top level it answers false.
-export fn refuses_nested(mut cx: StmtResolveCx, s: StmtId, kind: string, what: string) -> bool {
+export fn refuses_nested(mut cx: ResolveCx, s: StmtId, kind: string, what: string) -> bool {
     if !cx.in_block { return false }
-    cx.emit(nested_decl(kind, what, cx.loc_of(s)))
+    cx.emit(nested_decl(kind, what, cx.stmt_loc(s)))
     true
 }
 
@@ -381,9 +394,9 @@ export fn variant_defect() -> string {
 // ── The statement-value rituals: one verb per shape, so no rule
 // ever spells the stmt_value-guard two-step. ──
 
-impl StmtResolveCx {
+impl ResolveCx {
     /// Walk the statement's value expression, when it carries one.
-    fn walk_value(s: StmtId) {
+    mut fn walk_value(s: StmtId) {
         let v: ExprId? = self.view.store.stmt_value(s)
         if v != null { self.walk(v!) }
     }

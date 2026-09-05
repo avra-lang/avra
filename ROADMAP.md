@@ -497,6 +497,30 @@ the order is the dependency.
         (HEAD + the law) built the tree. 1674 cases, corpus 73/73.
         docs/MINIMUM.md's `Typer`/`StmtTypeCx` shapes are the ratified
         2026-09-02 snapshot, superseded here.
+        S4b-3b LANDED 2026-09-05 — THE CONTEXT IS THE RESOLVER:
+        `ResolveCx` carries the pass's state (the definitions, the
+        program scope, the overlays, the lambda frames, the floors,
+        the receivers, the open body's `mut` seats, the walked and
+        scoped bits, the seat names in scope, `in_block`) and the
+        walk's verbs are its methods in language/resolve.av —
+        `resolve_stmts`, `walk`, `walk_under`, `scope_stmts`,
+        `bound_scope`, `block_scope`, `arm_scope`, `lambda_scope`,
+        `impl_stmts`; the four name-use verbs wear the contract's
+        names (`use_name`, `use_call`, `use_type`, `use_receiver`);
+        `StmtResolveCx` is gone (33 sites), `Def` and `LFrame` live
+        with the context, and `speak` is `emit` in every pass context
+        (one diagnostic verb; typing's 26 sites swept too). Captured
+        seats F2048 9 -> 3 (lowering's closure fields, S4b-3c);
+        receiver-law F2047 97 -> 94, no new site in features. Red
+        team: 25 resolver probes (shadowing at every scope, capture
+        chains, the floor and the const crossing, keywords and
+        reserved words, `self` outside a method, `mut` seats, paired
+        loops, arm binds over params) byte-identical through the
+        S4b-3a binary and this one on check and run; no finding, so
+        no new test — the existing resolve suite already pins each
+        shape. 24 files, +284/-310; 1674 cases, corpus 73/73. The
+        gate's peak is 2.3 GB now (lane A's parallel suite), up from
+        1.4 GB — relevant to the machine's load budget.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become
