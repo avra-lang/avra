@@ -67,7 +67,7 @@ text-as-projection after self-host, the service store at Era V.
 
 Four streams, cut so that no two lanes edit the same files, and one
 rule that makes them safe on one machine: EVERY heavy step goes
-through `sh tools/watch.sh 6000 <cmd>`, which holds a machine-wide
+through `sh tools/watch.sh 4000 <cmd>`, which holds a machine-wide
 lock (`/tmp/avra-build.lock`) and a memory cap. A second session's
 gate QUEUES; it never runs beside another. The machine has panicked
 twice under concurrent load; the lock is the mechanism, the rule is
@@ -80,7 +80,7 @@ HOW TO TAKE A LANE
   2. Work the lane's checklist top to bottom — the order IS the
      dependency order. Tick items here as they land.
   3. Every gate, suite or whole-package check: `sh tools/watch.sh
-     6000 make gate` (or `./avra test …`). Never a bare `make gate`,
+     4000 make gate` (or `./avra test …`). Never a bare `make gate`,
      never a background one.
   4. Every slice: red-team, then review-round, ledgers fed (this
      file, CLAUDE.md, DOGFOODING.md), commit message handed over.
@@ -253,7 +253,7 @@ the compiler checking itself 28.8s.
         runs (the binary peaks at 1065 MB with main's runtime, 1089
         with this one: no leak). The cap is 6000 by default, a
         wreck-catcher; the shape is the next item.
-  - [ ] THE GATE'S SHAPE: the compiler holds its workspace (~2.4 GB)
+  - [x] THE GATE'S SHAPE (LANDED 2026-09-05): the compiler holds its workspace (~2.4 GB)
         while it waits on clang and on the test or corpus binary, so
         a suite peaks at their SUM. The light phase — link and run —
         belongs to a fresh process: after `emit_ll` the command
@@ -263,6 +263,12 @@ the compiler checking itself 28.8s.
         heavy phase computed and runs the binary; the image is
         replaced, the workspace gone. DONE WHEN the suite's peak is
         max(compiler, binary) ≈ 2.4 GB, measured with the trace.
+        LANDED: `avra staged <plan>` (hidden; the plan is clang's
+        words beside the module, the binary the word after `-o`),
+        reached through `avra_exec_self`. MEASURED with the trace:
+        the suite 3551 -> 2399 MB, the gate 2405 MB; while clang
+        (61 MB) and the cases binary (821 MB) run, the compiler's
+        image is 2.4 MB. The cap is back at 4000.
         THROWAWAY BINARIES LINK AT -O0 (2026-09-04): the suite module
         (13.9 MB) links in 1.1s instead of 6.6s and runs the cases in
         the same time, since the hot code is the runtime's, compiled

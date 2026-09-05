@@ -26,7 +26,7 @@ impl Runnable for TestCmd {
     }
 }
 
-/// The cases as a binary, run: its exit code is how many failed.
+/// The cases as a binary, run by a fresh image of this program.
 fn ran(p: Program, lo: Lowered, cases: List<TestCase>) -> int {
     if cases.is_empty() {
         println("no spec cases here")
@@ -40,8 +40,7 @@ fn ran(p: Program, lo: Lowered, cases: List<TestCase>) -> int {
         println(failure!)
         return 1
     }
-    if link_throwaway(path, p) != 0 { return 1 }
-    judged(avra_spawn_status(binary_name(path), []))
+    staged(path, p)
 }
 
 /// Where the test binary is written — under the root's `build/`,
@@ -50,20 +49,6 @@ fn staged_path(p: Program) -> string {
     let dir = joined_path(p.ws.root, "build")
     let _ = avra_mkdir_p(dir)
     joined_path(dir, "cases.av.ll")
-}
-
-/// THE SUITE'S VERDICT. The binary says the tally itself and
-/// answers 0 or 1; anything else means it DIED — a case trapped, or
-/// a signal killed it, and every case after that one never ran.
-fn judged(status: int) -> int {
-    if status == 0 { return 0 }
-    if status == 1 { return 1 }
-    if status == 127 {
-        println("the test binary could not start — the link answered a path that does not run")
-        return 1
-    }
-    println("the suite STOPPED — the case named above trapped, and every case after it never ran")
-    1
 }
 
 export fn test_command() -> Subcommand {

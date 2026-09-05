@@ -1,0 +1,57 @@
+//! `avra staged <plan>` — the LIGHT phase of a test or corpus run, in a
+//! fresh image: link the module the heavy phase emitted, run the
+//! binary, judge its status. The plan is clang's words, one per
+//! line; the binary is the word after `-o`. Hidden: `test` and
+//! `corpus` reach it through `avra_exec_self`, never a person.
+use @std.cli.{Subcommand, CliResult, Runnable, CommandSpec, ArgDef}
+
+type StagedCmd = { }
+
+impl Runnable for StagedCmd {
+    fn run(args: CliResult) -> int {
+        let words = avra_selfhost_read_file(path_arg(args)).split("\n")
+        let at = words.index_of("-o")
+        if at < 0 || at + 1 >= words.length {
+            eprintln("avra: ${path_arg(args)} is not a link plan — clang's words, the binary after `-o`")
+            return 2
+        }
+        let binary = words[at + 1]
+        let link = avra_spawn_status("clang", words)
+        if link == 127 {
+            eprintln("avra: could not start `clang` — is it on PATH?")
+            return 1
+        }
+        if link != 0 {
+            eprintln("avra: clang failed linking ${binary}")
+            return 1
+        }
+        judged(avra_spawn_status(binary, []))
+    }
+}
+
+/// THE VERDICT. The binary says its tally itself and answers 0 or 1;
+/// anything else means it DIED — a case or program trapped, or a
+/// signal killed it, and everything after it never ran.
+fn judged(status: int) -> int {
+    if status == 0 { return 0 }
+    if status == 1 { return 1 }
+    if status == 127 {
+        println("the binary could not start — the link answered a path that does not run")
+        return 1
+    }
+    println("STOPPED — the case or program named above trapped, and everything after it never ran")
+    1
+}
+
+export fn staged_command() -> Subcommand {
+    let body: StagedCmd = StagedCmd { }
+    let meta = CommandSpec {
+        name: "staged",
+        description: "Link and run a module the heavy phase emitted (internal)",
+        hidden: true,
+        flags: [],
+        args: [ArgDef { name: "file", description: "the link plan", required: true, variadic: false }],
+        options: [],
+    }
+    Subcommand { meta: meta, body: body }
+}

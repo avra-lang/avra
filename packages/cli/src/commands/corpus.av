@@ -66,27 +66,29 @@ fn program_call(path: string) -> ProgramCall {
     ProgramCall { symbol: program_symbol(path), label: path, expected: expected }
 }
 
+/// The evaluator's verdict here, then the binary's from a fresh
+/// image of this program; a disagreement in the evaluator stops
+/// before the binary, so a green status is never the binary's alone.
 fn judged_programs(p: Program, lo: Lowered, programs: List<ProgramCall>, native_only: bool) -> int {
-    mut failed = 0
     if !native_only {
-        for pr in programs {
-            if !eval_agrees(lo, pr) { failed = failed + 1 }
-        }
+        let disagreed = [pr for pr in programs if !eval_agrees(lo, pr)]
+        if !disagreed.is_empty() { return 1 }
+        println("${counted(programs.length)}: eval == expected")
     }
-    let staged = lo with { entry: corpus_entry(lo.types, programs), externs: lo.externs.concat(corpus_rows()) }
+    let staged_lo = lo with { entry: corpus_entry(lo.types, programs), externs: lo.externs.concat(corpus_rows()) }
     let path = joined_path(joined_path(p.ws.root, "build"), "corpus.av.ll")
     let _ = avra_mkdir_p(joined_path(p.ws.root, "build"))
-    let failure: string? = emit_ll(staged, path)
+    let failure: string? = emit_ll(staged_lo, path)
     if failure != null {
         println(failure!)
         return 1
     }
-    if link_throwaway(path, p) != 0 { return 1 }
-    let native = avra_spawn_status(binary_name(path), [])
-    if native != 0 || failed != 0 { return 1 }
-    let word = if programs.length == 1 { "program" } else { "programs" }
-    println("${programs.length} ${word}: ${if native_only { "native == expected" } else { "eval == native == expected" }}")
-    0
+    staged(path, p)
+}
+
+/// "72 programs", "1 program".
+export fn counted(n: int) -> string {
+    "${n} ${if n == 1 { "program" } else { "programs" }}"
 }
 
 /// One program through the evaluator against its expected text.
