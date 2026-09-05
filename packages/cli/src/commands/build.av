@@ -6,25 +6,15 @@ use @std.avrac.language.{Program}
 type BuildCmd = { }
 
 impl Runnable for BuildCmd {
-    fn run(args: CliResult) -> int {
-        on_program(args, (p: Program) -> {
-            let t0 = avra_now_ns()
-            warn(p)
-            let made = lowered_or_report(p)
-            if timed(args) { eprintln(timings(p, "lower+emit", avra_now_ns() - t0)) }
-            match made {
-                .Ok(path) -> spoken_link(path, p),
-                .Err(report) -> {
-                    println(report)
-                    1
-                }
-            }
-        })
-    }
+    fn run(args: CliResult) -> int { phased(args, "lower+emit", built) }
+}
+
+fn built(p: Program) -> Result<int, string> {
+    warn(p)
+    spoken_link(lowered_or_report(p)?, p)
 }
 
 export fn build_command() -> Subcommand {
     let body: BuildCmd = BuildCmd { }
     Subcommand { meta: file_command("build", "Compile a program to a native binary"), body: body }
 }
-

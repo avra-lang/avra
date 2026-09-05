@@ -426,7 +426,11 @@ registry is the idiom engine's spec, written by dogfooding.
 - The CLI: each subcommand is ONE file in
   `packages/cli/src/commands/`, exporting
   `<name>_command() -> Subcommand`; `cli/src/main.av` only composes
-  the list. A new command is a new file plus one line.
+  the list. A new command is a new file plus one line. A command
+  that takes a program is `phased(args, "<phase>", act)`
+  (commands/phase.av): the act is a NAMED fn answering
+  `Result<int, string>` — its exit code, or the report `phased`
+  prints as exit 1 — and says only what its phase does.
 - A BORROW ALIASES, A PATH WRITE THROUGH A SHARED INTERMEDIATE
   COPIES. `mut xs = a.b.list; xs.push(v)` writes through every
   holder of `a.b`; `a.b.list.push(v)` opens `a.b` unique and COPIES
