@@ -350,6 +350,16 @@ the compiler checking itself 28.8s.
         `plan_binary`) moved to the runner beside `cases_entry`, with
         its nine cases. MEASURED: the gate 39s -> 20.5s of user CPU,
         1726 cases.
+  - [x] THE STATE BOX DISSOLVED (2026-09-05): a `MatchState` was
+        boxed per hit and per call — cursor and bindings — and a
+        result carried one. The cursor and the bindings are the
+        result's own fields and the walk's locals now; `state_at` is
+        gone. MEASURED: the suite's parse 6.67s -> 5.72s, the suite
+        17.1s -> 16.1s, the gate 20.6s -> 19.5s; the self-check level
+        (8.39s -> 8.47s, its parse 5.9s -> 5.66s). What remains of the
+        records per hit: a MatchResult per attempt and a bindings
+        list copied per label — worth a look after lane C's S3 makes
+        the retains cheaper, when the profile is re-read.
   - [x] CAPTURES ON DEMAND — tried, MEASURED NEUTRAL, reverted
         (2026-09-05): boxing a terminal's capture only where an item
         is labeled or its branch passes through, and no value list
