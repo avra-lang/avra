@@ -562,7 +562,13 @@ Runtime facts, ours to ratify:
   under a 20% memory floor — so NOTHING runs `build/avra` directly,
   and a PROFILE runs under the lock too: `AVRA_SAMPLE=12 sh
   tools/watch.sh 4000 ./avra test packages/std-avrac` (the file at
-  AVRA_SAMPLE_FILE). The second panic (2026-09-05) was exactly a
+  AVRA_SAMPLE_FILE), and a MEMORY question is answered by the
+  runtime's accounting, `AVRA_MEM_STATS=1 ./avra check <pkg>`: live
+  bytes by category, by list capacity, and by the allocation site
+  that made them (`atos -o build/avra <addr>` names it; under
+  AVRA_RC_GUARD it replays a leaked box's life). PROFILE, DON'T
+  REASON holds for memory too: the first hoard it named was a
+  refcount leak no reading had found. The second panic (2026-09-05) was exactly a
   bypass: `build/avra test` launched in the background to be
   sampled, beside two lanes' gated steps. `AVRA_RC_GUARD=1` only on
   small programs: its log is bounded but a guarded compiler run

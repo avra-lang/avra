@@ -36,6 +36,9 @@
 #include <string.h>
 #include <stdint.h>
 #include <errno.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 // ── The box header ──────────────────────────────────────────────
 
@@ -72,9 +75,10 @@ static Header* hdr(void* p) {
 // SIZE CLASSES: a box of up to CLASS_MAX payload bytes is recycled
 // through a per-class free list instead of handed back to malloc —
 // a parse mints and drops a record per match, and malloc and free
-// were a third of it. A record's header `len` holds its class; a
-// string's holds its text length, and its class follows from that.
-// A box past the classes is malloc's, class 0.
+// were a third of it. A record's header `len` holds its payload
+// bytes; a string's holds its text length, one less than its
+// payload. The class follows from either; past the classes a box is
+// malloc's.
 // A list is BOUNDED: it holds the churn (a parse mints and drops
 // the same records by the million) and no more — past LIST_LIMIT a
 // freed box goes back to malloc, whose pools any size can reuse.
@@ -86,6 +90,136 @@ static Header* hdr(void* p) {
 #define LIST_LIMIT 16384
 static Header* g_free[CLASSES];
 static int64_t g_free_len[CLASSES];
+
+// THE ACCOUNTING (AVRA_MEM_STATS=1): live bytes by what they hold —
+// records, strings, list boxes and their buffers, map boxes and their
+// indexes — with each one's high-water mark, printed at exit. What a
+// 2.4 GB compiler run is MADE OF, category by category.
+enum { ACC_RECORD, ACC_STR, ACC_LIST, ACC_BUF, ACC_MAP, ACC_INDEX, ACC_KINDS };
+static const char* g_acc_name[ACC_KINDS] = { "records", "strings", "list boxes", "list buffers", "map boxes", "map indexes" };
+static int64_t g_acc_live[ACC_KINDS];
+static int64_t g_acc_peak[ACC_KINDS];
+static int64_t g_acc_total_live = 0;
+static int64_t g_acc_total_peak = 0;
+static int g_acc_on = -1;
+// list buffers by capacity (log2), live bytes and count, with peaks
+#define CAP_BUCKETS 40
+static int64_t g_cap_live[CAP_BUCKETS];
+static int64_t g_cap_peak[CAP_BUCKETS];
+static int64_t g_cap_count[CAP_BUCKETS];
+
+static int cap_bucket(int64_t cap) {
+    int b = 0;
+    while ((cap >> b) > 1 && b < CAP_BUCKETS - 1) b++;
+    return b;
+}
+
+// LIVE LIST BYTES BY THE SITE THAT MADE THEM — the return address of
+// the constructor, which is inside the Avra fn that called it; the
+// report prints it unslid, so `atos -o build/avra <addr>` names it.
+#define SITES 8192
+typedef struct { void* site; int64_t live; int64_t peak; int64_t count; int64_t made; void* sample; } Site;
+static Site g_sites[SITES];
+static int64_t g_site_slots = 0;
+
+static Site* site_of(void* site) {
+    uint64_t i = ((uint64_t)(uintptr_t)site >> 2) & (SITES - 1);
+    while (g_sites[i].site != NULL && g_sites[i].site != site) i = (i + 1) & (SITES - 1);
+    if (g_sites[i].site == NULL) {
+        if (g_site_slots >= SITES - 1) return NULL;
+        g_sites[i].site = site;
+        g_site_slots++;
+    }
+    return &g_sites[i];
+}
+
+// a clone's site is the Avra fn that wrote to a shared value, not
+// the runtime's own clone path
+static void* g_clone_site = NULL;
+// the hundredth box a site made, whose life the guard can replay
+static void* g_sample_next = NULL;
+static void rc_history(void* p);
+
+static void acc_site(void* site, int64_t bytes, int64_t count) {
+    if (site == NULL) return;
+    Site* s = site_of(site);
+    if (s == NULL) return;
+    s->live += bytes;
+    s->count += count;
+    if (count > 0) s->made += count;
+    if (count > 0 && s->made == 100) s->sample = g_sample_next;
+    if (s->live > s->peak) s->peak = s->live;
+}
+
+static void acc_buf(int64_t cap, int64_t bytes, int64_t count) {
+    int b = cap_bucket(cap);
+    g_cap_live[b] += bytes;
+    g_cap_count[b] += count;
+    if (g_cap_live[b] > g_cap_peak[b]) g_cap_peak[b] = g_cap_live[b];
+}
+
+static void acc_report(void) {
+    fprintf(stderr, "mem: peak %lld MB in all\n", (long long)(g_acc_total_peak >> 20));
+    for (int k = 0; k < ACC_KINDS; k++) {
+        fprintf(stderr, "mem:   %-13s peak %6lld MB, now %6lld MB\n", g_acc_name[k],
+                (long long)(g_acc_peak[k] >> 20), (long long)(g_acc_live[k] >> 20));
+    }
+    intptr_t slide = 0;
+#ifdef __APPLE__
+    slide = _dyld_get_image_vmaddr_slide(0);
+#endif
+    for (int shown = 0; shown < 24; shown++) {
+        Site* top = NULL;
+        for (int i = 0; i < SITES; i++) {
+            if (g_sites[i].site && g_sites[i].peak >= 0 && (top == NULL || g_sites[i].peak > top->peak)) top = &g_sites[i];
+        }
+        if (top == NULL || top->peak < (1 << 20)) break;
+        fprintf(stderr, "mem:   site 0x%llx peak %6lld MB, now %6lld MB, %lld live of %lld made\n",
+                (unsigned long long)((uintptr_t)top->site - (uintptr_t)slide), (long long)(top->peak >> 20),
+                (long long)(top->live >> 20), (long long)top->count, (long long)top->made);
+        top->peak = -1;
+    }
+    // Under the guard nothing is freed, so a sample box still COUNTED
+    // at exit is one whose references never balanced: its life, replayed,
+    // names the retain nobody released.
+    if (getenv("AVRA_RC_GUARD")) {
+        int replayed = 0;
+        for (int i = 0; i < SITES && replayed < 6; i++) {
+            Site* st = &g_sites[i];
+            Header* sh = st->site && st->sample ? hdr(st->sample) : NULL;
+            if (sh == NULL || sh->rc <= 0) continue;
+            fprintf(stderr, "mem:   LEAK at site 0x%llx (%lld made): its hundredth box ends at rc %d — its life (unslid):\n",
+                    (unsigned long long)((uintptr_t)st->site - (uintptr_t)slide), (long long)st->made, sh->rc);
+            rc_history(st->sample);
+            replayed++;
+        }
+    }
+    for (int b = 0; b < CAP_BUCKETS; b++) {
+        if (g_cap_peak[b] == 0) continue;
+        fprintf(stderr, "mem:     cap %-9lld peak %6lld MB, now %6lld MB in %lld buffers\n",
+                (long long)1 << b, (long long)(g_cap_peak[b] >> 20), (long long)(g_cap_live[b] >> 20), (long long)g_cap_count[b]);
+    }
+}
+
+static int accounting(void) {
+    if (g_acc_on < 0) {
+        g_acc_on = getenv("AVRA_MEM_STATS") != NULL;
+        if (g_acc_on) atexit(acc_report);
+    }
+    return g_acc_on;
+}
+
+static void acc_add(int k, int64_t bytes) {
+    if (!accounting()) return;
+    g_acc_live[k] += bytes;
+    g_acc_total_live += bytes;
+    if (g_acc_live[k] > g_acc_peak[k]) g_acc_peak[k] = g_acc_live[k];
+    if (g_acc_total_live > g_acc_total_peak) g_acc_total_peak = g_acc_total_live;
+}
+
+static int acc_kind_of(int32_t kind) {
+    return kind == KIND_ARRAY ? ACC_LIST : kind == KIND_MAP ? ACC_MAP : kind == KIND_STR ? ACC_STR : ACC_RECORD;
+}
 
 static size_t class_of(size_t bytes) {
     size_t cls = (bytes + CLASS_BYTES - 1) / CLASS_BYTES;
@@ -106,7 +240,8 @@ static void* box_alloc(size_t size, int32_t kind) {
     h->tag = AVRA_TAG;
     h->kind = kind;
     h->rc = 1;
-    h->len = (uint32_t)cls;
+    h->len = (uint32_t)bytes;
+    acc_add(acc_kind_of(kind), (int64_t)(sizeof(Header) + bytes));
     return (void*)(h + 1);
 }
 
@@ -128,9 +263,15 @@ static size_t str_len(const char* s) {
 // The tag goes before the memory does: a stale release of a freed
 // box then reads "not mine" instead of a count that is no longer
 // anyone's.
+static size_t box_bytes(Header* h) {
+    return h->kind == KIND_STR ? (size_t)h->len + 1 : (size_t)h->len;
+}
+
 static void box_free(void* p) {
     Header* h = (Header*)p - 1;
-    size_t cls = h->kind == KIND_STR ? class_of((size_t)h->len + 1) : (size_t)h->len;
+    size_t bytes = box_bytes(h);
+    size_t cls = class_of(bytes);
+    acc_add(acc_kind_of(h->kind), -(int64_t)(sizeof(Header) + bytes));
     h->tag = 0;
     if (cls && g_free_len[cls] < LIST_LIMIT) {
         *(Header**)(h + 1) = g_free[cls];
@@ -179,8 +320,12 @@ static void rc_history(void* p) {
     if (g_log_len == RC_LOG_BUDGET) fputs("    (history truncated at the log's budget)\n", stderr);
     for (size_t i = 0; i < g_log_len; i++) {
         if (g_log[i].ptr == p) {
-            fprintf(stderr, "    %s from %p -> rc %lld\n",
-                    g_log[i].delta > 0 ? "retain" : "release", g_log[i].at, (long long)g_log[i].rc);
+            intptr_t sl = 0;
+#ifdef __APPLE__
+            sl = _dyld_get_image_vmaddr_slide(0);
+#endif
+            fprintf(stderr, "    %s from 0x%llx -> rc %lld\n",
+                    g_log[i].delta > 0 ? "retain" : "release", (unsigned long long)((uintptr_t)g_log[i].at - (uintptr_t)sl), (long long)g_log[i].rc);
         }
     }
 }
@@ -353,6 +498,8 @@ typedef struct {
     // Which slots hold OWNED managed values — marked at pack time
     // by the compiler, walked at reclaim. Parallel to data.
     uint8_t* owned;
+    // where it was made — the accounting's return address, else NULL
+    void* site;
 } AvraArray;
 
 // ONE BUFFER holds a list's cells and, after them, its owned marks:
@@ -378,6 +525,8 @@ static int buf_class(int64_t cap) {
 }
 
 static int64_t* buf_alloc(int64_t cap) {
+    acc_add(ACC_BUF, (int64_t)buf_bytes(cap));
+    if (g_acc_on > 0) acc_buf(cap, (int64_t)buf_bytes(cap), 1);
     int cls = buf_class(cap);
     if (cls >= 0 && g_buf_free[cls]) {
         int64_t* buf = (int64_t*)g_buf_free[cls];
@@ -389,6 +538,8 @@ static int64_t* buf_alloc(int64_t cap) {
 }
 
 static void buf_free(int64_t* buf, int64_t cap) {
+    acc_add(ACC_BUF, -(int64_t)buf_bytes(cap));
+    if (g_acc_on > 0) acc_buf(cap, -(int64_t)buf_bytes(cap), -1);
     int cls = buf_class(cap);
     if (cls >= 0 && g_buf_free_len[cls] < LIST_LIMIT) {
         *(void**)buf = g_buf_free[cls];
@@ -411,6 +562,12 @@ void* avra_array_new(void) {
     a->data = buf_alloc(a->cap);
     array_marks(a);
     memset(a->owned, 0, (size_t)a->cap);
+    a->site = NULL;
+    if (g_acc_on > 0) {
+        a->site = g_clone_site ? g_clone_site : __builtin_return_address(0);
+        g_sample_next = a;
+        acc_site(a->site, (int64_t)(sizeof(Header) + sizeof(AvraArray) + buf_bytes(a->cap)), 1);
+    }
     return a;
 }
 
@@ -436,6 +593,7 @@ static void array_reclaim(void* p) {
     for (int64_t i = 0; i < a->len; i++) {
         if (a->owned[i]) avra_rc_release((void*)(uintptr_t)a->data[i]);
     }
+    if (a->site) acc_site(a->site, -(int64_t)(sizeof(Header) + sizeof(AvraArray) + buf_bytes(a->cap)), -1);
     buf_free(a->data, a->cap);
     box_free(a);
 }
@@ -459,12 +617,15 @@ static void array_grow(AvraArray* a) {
         buf_free(a->data, old_cap);
     } else {
         buf = (int64_t*)realloc(a->data, buf_bytes(cap));
+        acc_add(ACC_BUF, (int64_t)(buf_bytes(cap) - buf_bytes(old_cap)));
+        if (g_acc_on > 0) { acc_buf(old_cap, -(int64_t)buf_bytes(old_cap), -1); acc_buf(cap, (int64_t)buf_bytes(cap), 1); }
         memmove((uint8_t*)(buf + cap), (uint8_t*)(buf + old_cap), (size_t)old_cap);
     }
     a->data = buf;
     a->cap = cap;
     array_marks(a);
     memset(a->owned + a->len, 0, (size_t)(cap - a->len));
+    if (a->site) acc_site(a->site, (int64_t)(buf_bytes(cap) - buf_bytes(old_cap)), 0);
 }
 
 void avra_array_push(void* arr, int64_t v) {
@@ -576,7 +737,9 @@ static int is_shared(void* p) {
 void* avra_cell_unique(void* slot) {
     void* p = *(void**)slot;
     if (!is_shared(p)) return p;
+    g_clone_site = __builtin_return_address(0);
     void* c = box_clone(p);
+    g_clone_site = NULL;
     *(void**)slot = c;
     avra_rc_release(p);
     return c;
@@ -587,7 +750,9 @@ void* avra_slot_unique(void* arr, int64_t i) {
     void* p = (void*)(uintptr_t)avra_array_get(arr, i);
     if (!is_shared(p)) return p;
     AvraArray* a = (AvraArray*)arr;
+    g_clone_site = __builtin_return_address(0);
     void* c = box_clone(p);
+    g_clone_site = NULL;
     a->data[i] = (int64_t)(uintptr_t)c;
     a->owned[i] = 1;
     avra_rc_release(p);
@@ -632,6 +797,7 @@ static uint64_t str_hash(const char* s) {
 
 static void map_index_rebuild(AvraMap* m, int64_t icap) {
     if (icap >= CELL_CEILING || icap <= 0) avra_trap("a map grew past any possible size — a corrupted box");
+    acc_add(ACC_INDEX, (int64_t)((icap - m->icap) * (int64_t)sizeof(int64_t)));
     free(m->index);
     m->icap = icap;
     m->index = (int64_t*)calloc((size_t)icap, sizeof(int64_t));
@@ -658,6 +824,7 @@ static void map_reclaim(void* p) {
     AvraMap* m = (AvraMap*)p;
     avra_rc_release(m->keys);
     avra_rc_release(m->vals);
+    acc_add(ACC_INDEX, -(int64_t)(m->icap * (int64_t)sizeof(int64_t)));
     free(m->index);
     box_free(m);
 }
@@ -841,7 +1008,9 @@ static void array_append(void* out, AvraArray* src, int64_t lo, int64_t hi) {
 
 // A fresh list: `a`'s slots, then `b`'s. Owned.
 void* avra_array_concat(void* a, void* b) {
+    g_clone_site = __builtin_return_address(0);
     void* out = avra_array_new();
+    g_clone_site = NULL;
     array_append(out, (AvraArray*)a, 0, ((AvraArray*)a)->len);
     array_append(out, (AvraArray*)b, 0, ((AvraArray*)b)->len);
     return out;
@@ -850,10 +1019,12 @@ void* avra_array_concat(void* a, void* b) {
 // A fresh list of the slots from lo up to hi, clamped to the list;
 // nothing when lo is not below hi. Owned.
 void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
+    g_clone_site = __builtin_return_address(0);
     AvraArray* a = (AvraArray*)arr;
     if (lo < 0) lo = 0;
     if (hi > a->len) hi = a->len;
     void* out = avra_array_new();
+    g_clone_site = NULL;
     if (lo < hi) array_append(out, a, lo, hi);
     return out;
 }
@@ -1135,9 +1306,6 @@ int64_t avra_spawn_status(const char* prog, void* args) {
 // THIS PROGRAM AGAIN, with new words: the image is replaced, so the
 // memory the program held is gone — how a heavy phase hands the
 // light one a fresh process. Answers only when it cannot: 127.
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
 static int self_path(char* buf, size_t cap) {
 #ifdef __APPLE__
     uint32_t n = (uint32_t)cap;
@@ -1158,6 +1326,7 @@ int64_t avra_exec_self(void* args) {
     argv[0] = self;
     for (int64_t i = 0; i < a->len; i++) argv[i + 1] = (char*)(uintptr_t)a->data[i];
     argv[a->len + 1] = NULL;
+    if (accounting()) acc_report();
     fflush(NULL);
     execv(self, argv);
     free(argv);
