@@ -5081,6 +5081,15 @@ by meaning; each is a slice for lane D unless a lane is named.
   the seed churn for no semantic reason, and a stable diff of two
   compilers is impossible. A mangling by the type's canonical NAME
   (`twice$G`, `both$P_G`) is reproducible; lane C's (lower).
+- FOUND 2026-09-05 (lane D, for lane C's typing): THE RESCUE
+  re-walks a hungry lambda's body without re-recording the lambda's
+  own facts. With the seat's answer planted on the body (so a bare
+  variant in a FIELD-seat lambda types), `Cx { get: (n: int) ->
+  .Ok(n * 3) }` LOWERS as `fn $l4(r0: <error>) -> <error>` with the
+  body reading a constant where `n` should be — the interpreter
+  answers 9 for `cx.get(2)`, LLVM refuses the module. The plant is
+  withheld at that seat (CLAUDE.md names it); a typed let's arrow
+  reaches the body already. The probe is scratchpad/lam/m4.
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure
   variant enumeration in core/parts.av and core/nodes.av; F2040

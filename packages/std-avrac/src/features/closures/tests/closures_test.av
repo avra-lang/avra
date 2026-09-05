@@ -69,4 +69,15 @@ spec "features/closures" {
             shown("let f: fn(int, int,) -> int = (a: int, b: int,) -> a + b\nf(3, 4)") == "7"
         }
     }
+    given "the body hears the answer — a typed let's arrow reaches into the lambda" {
+        then "a bare variant reads the declared Result" {
+            shown("enum E {\n    bad\n}\nlet f: fn(int) -> Result<int, E> = (n: int) -> if n > 0 { .Ok(n * 4) } else { .Err(E.bad) }\n\"\${f(5) catch 0 - 1} \${f(0 - 5) catch 0 - 1}\"") == "20 -1"
+        }
+        then "a free Var in the body is pinned by the declared answer" {
+            shown("fn empty<T>() -> List<T> {\n    []\n}\nlet f: fn() -> List<int> = () -> empty()\nf().length") == "0"
+        }
+        then "a struct in the body boxes into a declared dyn answer, and the lambda wears the answer" {
+            shown("trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int { self.x }\n}\nlet mk: fn(int) -> dyn Show = (n: int) -> P { x: n }\nmk(4).show()") == "4"
+        }
+    }
 }

@@ -69,4 +69,15 @@ spec "features/lists (comprehensions)" {
                 refused_with("[i for i in 0..true]", "a range's high bound is a `int`, found `bool`")
         }
     }
+    given "the element hears the list's want" {
+        then "a free Var in the element is pinned by the declared list" {
+            shown("fn empty<T>() -> List<T> {\n    []\n}\nlet xs: List<List<int>> = [empty() for i in 0..2]\nxs.length * 10 + xs[1].length") == "20"
+        }
+        then "an element that disagrees with the declared list keeps its own — the seat speaks" {
+            refused_with("let xs: List<string> = [i for i in 0..3]\nxs.length", "`xs` declares `List<string>`, this is `List<int>`")
+        }
+        then "a struct element boxes into a declared dyn list" {
+            shown("trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int { self.x }\n}\nlet boxes: List<dyn Show> = [P { x: i } for i in 0..3]\nboxes[2].show()") == "2"
+        }
+    }
 }

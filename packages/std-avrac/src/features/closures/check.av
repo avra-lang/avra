@@ -3,7 +3,7 @@
 //! the params behind the return barrier, the whole wearing
 //! `fn(params) -> body`.
 use core.{ExprId, Type, TypeId, Arrow, Param, LambdaParts}
-use features.{TypeCx, spoken, seats_judged, this_is, settled_call, slot_worthy, slice_promise, Cap}
+use features.{TypeCx, spoken, seats_judged, this_is, settled_call, slot_worthy, slice_promise, Cap, accepts}
 use diagnostics.{refusal}
 
 fn lambda_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -33,9 +33,33 @@ fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> Typ
     let seats = cx.capture_seats(e)
     let unheld: int? = first_unslottable(cx, seats)
     if unheld != null { return uncapturable(cx, e, unheld!, seats[unheld!]) }
+    // THE BODY HEARS THE ANSWER: a seat's arrow says what the body
+    // answers, so a bare variant, a free Var or a boxable value in
+    // the body reads it — and the lambda wears the declared answer,
+    // the body's lift recorded like any seat's
+    let answer: TypeId? = wanted_answer(cx, e, params.length)
+    if answer != null { cx.plant_want(body, answer!) }
     let ret = cx.lambda_body(e, ptys, body)
     if cx.errored_ty(ret) { return cx.error_type }
-    cx.view.types.intern(Type.Fn(ptys, ret))
+    match answer {
+        null -> cx.view.types.intern(Type.Fn(ptys, ret))
+        a? -> answered(cx, body, ptys, ret, a)
+    }
+}
+
+/// The lambda wears the seat's answer once the body is accepted by
+/// it — the body's lift recorded like any seat's. A body that
+/// disagrees keeps the lambda's own type, and the SEAT speaks: an
+/// `accepts` miss is silent by contract.
+fn answered(mut cx: TypeCx, body: ExprId, ptys: List<TypeId>, ret: TypeId, a: TypeId) -> TypeId {
+    cx.view.types.intern(Type.Fn(ptys, if accepts(cx, body, a) { a } else { ret }))
+}
+
+/// What the seat's arrow says the body answers, when a seat spoke.
+fn wanted_answer(cx: TypeCx, e: ExprId, arity: int) -> TypeId? {
+    let arrow: Arrow? = wanted_arrow(cx, e, arity)
+    if arrow == null { return null }
+    arrow!.answer
 }
 
 /// The seats a lambda's params wear: each annotation speaks for

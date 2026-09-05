@@ -75,8 +75,30 @@ fn comp_type(mut cx: TypeCx, e: ExprId, elem: ExprId, index: string, source: Exp
     let tys = if hi == null { walked_types(cx, index, source) } else { counted_types(cx, index, source, hi!) }
     cx.bind_types(elem, tys)
     if cond != null { filter_checks(cx, cond!, tys) }
+    // THE ELEMENT HEARS THE LIST'S WANT: under `List<E>` the element
+    // reads `E` — a free Var pins, a value boxes — and the list wears
+    // `E`, the element's lift recorded like a literal's
+    let ew: TypeId? = wanted_elem(cx, e)
+    if ew != null { cx.plant_want(elem, ew!) }
     let ety = cx.walk_type(elem)
     if cx.errored(elem) || want_refused(cx, e) { return cx.error_type }
+    match ew {
+        null -> collected(cx, elem, ety)
+        w? -> heard_elem(cx, elem, ety, w)
+    }
+}
+
+/// The list wears the wanted element once the element is accepted by
+/// it — the element's lift recorded like a literal's. An element that
+/// disagrees keeps its own list, and the SEAT speaks: an `accepts`
+/// miss is silent by contract.
+fn heard_elem(mut cx: TypeCx, elem: ExprId, ety: TypeId, w: TypeId) -> TypeId {
+    cx.view.types.intern(Type.List(if accepts(cx, elem, w) { w } else { ety }))
+}
+
+/// The list an element of its own type makes — the element rides a
+/// slot.
+fn collected(mut cx: TypeCx, elem: ExprId, ety: TypeId) -> TypeId {
     if !slot_worthy(cx.view.types, cx.shape_at(elem)) { return unslottable(cx, elem, "a list element") }
     cx.view.types.intern(Type.List(ety))
 }
