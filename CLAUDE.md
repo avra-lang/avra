@@ -461,6 +461,10 @@ Syntax the grammar lacks:
 - `export let` / `export const`: F3014 "`export` marks a fn, type,
   enum or trait — not this statement" — a constant crosses modules
   as a fn.
+- `mut fn` (the declared form of a mutating method, lane C's `mut
+  self` design): "expected `=` while parsing `stmt`" at the `fn`,
+  then a cascade "no `fn f` is defined" — the mutation statement's
+  recovery swallows the line. S0 of the design gives it one voice.
 
 Wants the typer does not carry yet:
 - A no-argument generic call under a typed want (`let xs:
