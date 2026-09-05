@@ -3,7 +3,7 @@
 //! every variant whole, or a catch-all — and its arms agree on one
 //! type. Coverage is the point: adding a variant breaks every match
 //! that spelled them, and a hole that hides several is warned.
-use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, joined, filled}
+use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, joined, filled, flatten}
 use features.{TypeCx, EnumSig, spoken, this_is, nothing, duplicate_names, arms_agree, variants_are, types_disagree, seats_fit, stays}
 use features.enums.{all_irrefutable, hole_of}
 use diagnostics.{refusal, warning}
@@ -123,10 +123,7 @@ fn variant_types(mut cx: TypeCx, p: PatId, name: string, args: List<PatId>, expe
     // a bare `.V` accepts the variant whole, payloads unread
     if args.is_empty() { return [] }
     if carried.length != args.length { return pattern_arity(cx, p, name, carried.length, args.length) }
-    mut out: List<TypeId> = []
-    // LICENSED I3: the binds must be SPOKEN in pattern order — a fold, not a map
-    for (k, a) in args.enumerate() { out = out.concat(pat_types(cx, a, carried[k])) }
-    out
+    flatten([pat_types(cx, a, carried[k]) for k, a in args])
 }
 
 /// A literal in a pattern is typed like any literal, then judged
