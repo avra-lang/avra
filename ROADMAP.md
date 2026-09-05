@@ -232,9 +232,20 @@ the compiler checking itself 28.8s.
         reads from the text length). MEASURED: the suite's parse
         10.4s -> 8.7s, lower 3.6s -> 2.9s, the suite 30s -> 25.7s,
         the cases binary 8.6s -> 7.2s, the compiler's self-check
-        ~15s -> 13.0s. NEXT along this line: a list's `data` and
-        `owned` buffers are two more mallocs per list (three per
-        list, seven per map) — merge them into one, then class them.
+        ~15s -> 13.0s. ONE CLASSED BUFFER PER LIST
+        (2026-09-05): a list's cells and owned marks share one
+        allocation, and a buffer of capacity 8, 16 or 32 is recycled
+        through a per-capacity list (a bigger one is malloc's and
+        grows in place). MEASURED: the suite 21.6s -> 14.7s (parse
+        8.6s -> 5.7s, lower 2.9s -> 1.7s), the cases binary 7.2s ->
+        4.8s, the compiler's self-check 13.0s -> 8.7s; the gate
+        48.7s -> 33s user. The lists are BOUNDED (16384 per class):
+        unbounded, they hoard a phase's freed memory by class. THE
+        PEAK, HONESTLY: a compiler run's footprint is ~2.1-2.4 GB
+        either way (main's runtime 2083 MB twice; this one 1898 and
+        2319 MB — the poller's noise). The 1.4 GB the watchdog
+        reported before 2026-09-05 was RSS under compression, an
+        under-report; the watchdog reads the physical footprint now.
         THROWAWAY BINARIES LINK AT -O0 (2026-09-04): the suite module
         (13.9 MB) links in 1.1s instead of 6.6s and runs the cases in
         the same time, since the hot code is the runtime's, compiled
