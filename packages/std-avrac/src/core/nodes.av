@@ -818,8 +818,12 @@ impl NodeStore {
             .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
             .Is(v, variant) -> fp(49, [self.expr_fingerprint(v), fp_str(variant)]),
             .VariantLit(name, args) -> fp(58, [fp_str(name)].concat(self.expr_fps(args))),
+            // an ABSENT guard contributes NOTHING: fingerprinting it as
+            // the element gave `[x for x in xs]` and `[x for x in xs if x]`
+            // ONE identity. The 55/61 tag already tells an absent range
+            // end from a present one, so `hi` needs no such care.
             .Comp(elem, index, name, source, hi, cond) ->
-                fp(if hi == null { 55 } else { 61 }, [self.expr_fingerprint(elem), fp_str(index), fp_str(name), self.expr_fingerprint(source), self.expr_fingerprint(hi ?? source), self.expr_fingerprint(cond ?? elem)]),
+                fp(if hi == null { 55 } else { 61 }, [self.expr_fingerprint(elem), fp_str(index), fp_str(name), self.expr_fingerprint(source), self.expr_fingerprint(hi ?? source)].concat(self.expr_fps(some_list(cond)))),
             .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),
             .MethodCall(subject, name, margs) ->
                 fp(43, flatten([[self.expr_fingerprint(subject)], [fp_str(name)],

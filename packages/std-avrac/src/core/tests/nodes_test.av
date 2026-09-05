@@ -61,6 +61,22 @@ spec "core/nodes" {
             s.expr_fingerprint(a) != s.expr_fingerprint(b) &&
                 s.expr_fingerprint(a) != s.expr_fingerprint(c)
         }
+        then "a comprehension's ABSENT guard is not its element — two programs, two identities" {
+            mut s = new_node_store()
+            let x = s.alloc_expr(Expr.Ident("x"), null)
+            let xs = s.alloc_expr(Expr.Ident("xs"), null)
+            let plain = s.alloc_expr(Expr.Comp(x, "", "x", xs, null, null), null)
+            let guarded = s.alloc_expr(Expr.Comp(x, "", "x", xs, null, x), null)
+            s.expr_fingerprint(plain) != s.expr_fingerprint(guarded)
+        }
+        then "an absent RANGE END is not its source either" {
+            mut s = new_node_store()
+            let x = s.alloc_expr(Expr.Ident("x"), null)
+            let xs = s.alloc_expr(Expr.Ident("xs"), null)
+            let plain = s.alloc_expr(Expr.Comp(x, "", "x", xs, null, null), null)
+            let ranged = s.alloc_expr(Expr.Comp(x, "", "x", xs, xs, null), null)
+            s.expr_fingerprint(plain) != s.expr_fingerprint(ranged)
+        }
         then "the LINK is part of identity: `a?.b` and `a.b` differ" {
             mut s = new_node_store()
             let subject = s.alloc_expr(Expr.Ident("a"), null)
