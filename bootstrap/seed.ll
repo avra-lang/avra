@@ -145131,7 +145131,7 @@ entry:
 then:                                             ; preds = %entry
   store i1 true, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l1042" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l1035" to i64))
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_str_split(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.4901, i64 16))
   %5 = call i64 @avra_array_len(ptr %4)
@@ -145186,7 +145186,7 @@ endif6:                                           ; preds = %else5, %then4
   br label %lhead
 }
 
-define i1 @"av_$40std$2Etoml$2Etoml$24l1042"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Etoml$2Etoml$24l1035"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_$40std$2Etoml$2Ekey_word"(ptr %1)
