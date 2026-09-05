@@ -39,10 +39,21 @@ git merge --no-ff -q "lane/$lane" -m "merge: lane $lane — $(head -1 "$msg" | c
 [ -n "$stashed" ] && git stash pop -q && echo "integrate: main's uncommitted edits restored (they were never committed)"
 echo "integrate: merged as $(git log -1 --format=%h)"
 
+# THE FIXED POINT: the compiler builds itself until two consecutive
+# products agree. Main's standing binary may predate a CODEGEN change
+# the lane carries — its first product then has the new source under
+# the old codegen, and only the second product's own body wears the
+# change — so up to three builds are allowed before the point is
+# called missing.
 sh tools/watch.sh $cap make -s avra > /tmp/integrate-avra1.out 2>&1 || { echo "integrate: main does not build after the merge"; tail -20 /tmp/integrate-avra1.out; exit 1; }
 cp build/avra /tmp/integrate-avra1
-sh tools/watch.sh $cap make -s avra > /tmp/integrate-avra2.out 2>&1
-cmp -s build/avra /tmp/integrate-avra1 || { echo "integrate: NO FIXED POINT on main (build 2 differs from build 1)"; exit 1; }
+builds=1
+until sh tools/watch.sh $cap make -s avra > /tmp/integrate-avra2.out 2>&1 && cmp -s build/avra /tmp/integrate-avra1; do
+    builds=$((builds + 1))
+    [ "$builds" -lt 4 ] || { echo "integrate: NO FIXED POINT on main (three builds, no two agree)"; exit 1; }
+    cp build/avra /tmp/integrate-avra1
+done
+echo "integrate: the fixed point after $((builds + 1)) builds"
 sh tools/watch.sh $cap make -s seed > /tmp/integrate-seed.out 2>&1
 cp build/avra /tmp/integrate-preboot
 sh tools/watch.sh $cap make -s bootstrap > /tmp/integrate-boot.out 2>&1 || { echo "integrate: the refreshed seed does not bootstrap"; tail -20 /tmp/integrate-boot.out; exit 1; }
