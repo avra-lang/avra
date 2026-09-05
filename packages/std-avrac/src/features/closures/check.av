@@ -34,7 +34,7 @@ fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> Typ
     let unheld: int? = first_unslottable(cx, seats)
     if unheld != null { return uncapturable(cx, e, unheld!, seats[unheld!]) }
     let ret = cx.lambda_body(e, ptys, body)
-    if cx.view.types.shape_of(ret) is .Error { return cx.error_type }
+    if cx.errored_ty(ret) { return cx.error_type }
     cx.view.types.intern(Type.Fn(ptys, ret))
 }
 
@@ -66,7 +66,7 @@ fn wanted_arrow(cx: TypeCx, e: ExprId, arity: int) -> Arrow? {
 }
 
 fn erred(cx: TypeCx, ty: TypeId) -> bool {
-    cx.view.types.shape_of(ty) is .Error
+    cx.errored_ty(ty)
 }
 
 /// The first lane no slot can hold, when one exists.
@@ -86,7 +86,7 @@ fn call_value_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId
 fn valued(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> TypeId {
     let held: Arrow? = cx.view.types.arrow_parts(cx.type_at(subject))
     if held != null { return seats_judged(cx, e, cx.name_at(subject), held!.seats, held!.answer, args) }
-    if cx.shape_at(subject) is .Error { return cx.error_type }
+    if cx.errored(subject) { return cx.error_type }
     uncallable(cx, e, subject)
 }
 

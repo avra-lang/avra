@@ -24,11 +24,11 @@ fn nullable_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 /// as the carried type; the answer FLATTENS — a chain over a
 /// nullable member is still ONE absence.
 fn chain_type(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
-    if cx.shape_at(subject) is .Error { return cx.error_type }
+    if cx.errored(subject) { return cx.error_type }
     let held: TypeId? = cx.view.types.carried(cx.type_at(subject))
     if held == null { return not_chainable(cx, subject, name) }
     let member = member_type_of(cx, e, cx.view.types.name_of(held!), held!, name)
-    if cx.view.types.shape_of(member) is .Error { return cx.error_type }
+    if cx.errored_ty(member) { return cx.error_type }
     // a member that is itself nullable IS the chain's answer — the
     // flatten rule: `a?.b` never nests absence
     if cx.view.types.shape_of(member) is .Opt { return member }
@@ -41,7 +41,7 @@ fn chain_type(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeI
 /// when a narrowing made it so, with a warning when it was never
 /// nullable at all.
 fn coalesce_type(mut cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {
-    if cx.shape_at(l) is .Error { return cx.error_type }
+    if cx.errored(l) { return cx.error_type }
     let held: TypeId? = cx.view.types.carried(cx.type_at(l))
     if cx.shape_at(l) is .Null {
         return not_absent_able(cx, l, "type.coalesce", "`??` answers",
@@ -70,7 +70,7 @@ fn never_absent(mut cx: TypeCx, v: ExprId) -> TypeId {
 /// both surfaces read their own words.
 fn match_opt_type(mut cx: TypeCx, subject: ExprId, bind: string,
                   present: ExprId, absent: ExprId) -> TypeId {
-    if cx.shape_at(subject) is .Error { return cx.error_type }
+    if cx.errored(subject) { return cx.error_type }
     let held: TypeId? = cx.view.types.carried(cx.type_at(subject))
     if held == null {
         return not_absent_able(cx, subject, "type.match_opt", "`${bind}?` asks",
@@ -89,13 +89,11 @@ fn match_opt_type(mut cx: TypeCx, subject: ExprId, bind: string,
     answer
 }
 
-/// `v!` INSISTS: the answer is what the nullable carries, and a
-/// guarantee has nothing to insist about.
 /// `v!`: `v` is nullable and the answer is what it carries. A read
 /// a narrowing already proved present is the carried value itself
 /// — the force is redundant, and silent.
 fn forced_type(mut cx: TypeCx, v: ExprId) -> TypeId {
-    if cx.shape_at(v) is .Error { return cx.error_type }
+    if cx.errored(v) { return cx.error_type }
     let held: TypeId? = cx.view.types.carried(cx.type_at(v))
     if held != null { return held! }
     if cx.narrowed_at(v) != null { return cx.type_at(v) }
@@ -114,7 +112,7 @@ fn check_let_else(mut cx: TypeCx, s: StmtId) {
     let v = subject!
     let bind = cx.view.store.let_name(s) ?? "this binding"
     let held: TypeId? = cx.view.types.carried(cx.type_at(v))
-    if held == null && !(cx.shape_at(v) is .Error) {
+    if held == null && !(cx.errored(v)) {
         let _ = not_absent_able(cx, v, "type.let_else", "`${bind}?` asks",
             "`${bind}?` can never bind", "the else always runs — write its statements alone")
     }
@@ -130,7 +128,7 @@ fn check_let_else(mut cx: TypeCx, s: StmtId) {
 /// right where it stands — so there must BE an enclosing fn, and
 /// its promise must itself be nullable.
 fn propagate_type(mut cx: TypeCx, v: ExprId) -> TypeId {
-    if cx.shape_at(v) is .Error { return cx.error_type }
+    if cx.errored(v) { return cx.error_type }
     let sides: ResSides? = cx.view.types.res_parts(cx.type_at(v))
     if sides != null { return propagate_res_type(cx, v, sides!) }
     let held: TypeId? = cx.view.types.carried(cx.type_at(v))
@@ -143,7 +141,7 @@ fn propagate_type(mut cx: TypeCx, v: ExprId) -> TypeId {
         return no_caller(cx, v, "absence", "answer the absence here — `?? value`, or ask with `== null`")
     }
     let promised = ret!
-    if cx.view.types.shape_of(promised) is .Error { return cx.error_type }
+    if cx.errored_ty(promised) { return cx.error_type }
     if cx.view.types.carried(promised) != null { return held! }
     absence_unpromised(cx, v, promised)
 }
@@ -157,7 +155,7 @@ fn propagate_res_type(mut cx: TypeCx, v: ExprId, sides: ResSides) -> TypeId {
         return no_caller(cx, v, "the failure", "handle it here — `match` the `.Ok`/`.Err`")
     }
     let promised = ret!
-    if cx.view.types.shape_of(promised) is .Error { return cx.error_type }
+    if cx.errored_ty(promised) { return cx.error_type }
     let rsides: ResSides? = cx.view.types.res_parts(promised)
     if rsides == null { return failure_unpromised(cx, v, promised, sides) }
     // LICENSED I9: type identity — interned ids ARE the agreement

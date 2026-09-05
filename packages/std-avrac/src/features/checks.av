@@ -27,7 +27,7 @@ export fn require_int(mut cx: TypeCx, e: ExprId, subject: string, label: string)
 }
 
 fn require_spoken(mut cx: TypeCx, e: ExprId, subject: string, wanted: string, label: string) {
-    if cx.shape_at(e) is .Error { return }
+    if cx.errored(e) { return }
     cx.emit(refusal("type.mismatch", cx.loc_of(e), "${subject} is a `${wanted}`, found `${cx.name_at(e)}`", label, null))
 }
 
@@ -35,15 +35,11 @@ fn require_spoken(mut cx: TypeCx, e: ExprId, subject: string, wanted: string, la
 /// already spoke); otherwise interned ids must match. True means
 /// the site speaks, in its own words.
 export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
-    if cx.view.types.shape_of(got) is .Error || cx.view.types.shape_of(want) is .Error { return false }
+    if cx.errored_ty(got) || cx.errored_ty(want) { return false }
     // LICENSED I9: this IS the agreement law's body
     got.index != want.index
 }
 
-/// THE ASSIGNMENT LAW: what a slot of type `want` accepts from the
-/// expression `e`. A guarantee widens INTO a nullable — an `int` IS
-/// a valid `int?` — and the widening is RECORDED so lowering wraps
-/// it. Absence never widens back: `int?` into `int` refuses, which
 /// THE ONE AGREEMENT DOOR for a UNIFIED seat. `unify` binds the
 /// declaration's Vars; `accepts` is what RECORDS the lift lowering
 /// mints, and a seat whose Vars are all bound is concrete NOW. A
@@ -51,6 +47,19 @@ export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
 export fn unified_lift(mut cx: TypeCx, e: ExprId, want: TypeId, decl: DeclId, bound: Pins) -> bool {
     if !fully_bound(cx, want, decl, bound) { return false }
     accepts(cx, e, cx.view.types.substituted(want, decl, bound_args(cx, bound)))
+}
+
+/// THE SLOT VOICES, shared by every aggregate seat: `what` names the
+/// seat ("a list element", "a map value").
+export fn unslottable(mut cx: TypeCx, head: ExprId, what: string) -> TypeId {
+    if cx.shape_at(head) is .Void {
+        return spoken(cx, refusal("type.list_scalar", cx.loc_of(head), "${what} cannot hold nothing — this answers no value", "answers nothing", null))
+    }
+    spoken(cx, refusal("type.list_scalar", cx.loc_of(head), "${what} cannot hold this yet", this_is(cx.name_at(head)), slice_promise("elements")))
+}
+
+export fn unslottable_want(mut cx: TypeCx, e: ExprId, want: TypeId, what: string) -> TypeId {
+    spoken(cx, refusal("type.list_scalar", cx.loc_of(e), "${what} cannot hold `${cx.view.types.name_of(want)}` yet", "this slot", slice_promise("elements")))
 }
 
 /// A UNIFIED SEAT AGREES, or not — BOTH halves, always: `unify` binds
@@ -99,17 +108,10 @@ fn res_accepts(mut cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
     let sides: ResSides? = cx.view.types.res_parts(want)
     if sides == null { return false }
     let ok = sides!.ok
-    if types_disagree(cx, got, ok) && !empty_into(cx, got, ok) { return false }
+    // the ONE compound lift whose inner step is identity: `[]` Ok-wraps raw
+    if types_disagree(cx, got, ok) && !empty_adopted(cx, got, ok) { return false }
     cx.widen(e, want)
     true
-}
-
-/// The ONE compound lift whose inner step is IDENTITY: an empty
-/// array IS a valid list of anything, so `[]` Ok-wraps raw. Every
-/// other compound lift (null -> T? -> Ok) stays explicit — its
-/// value would need staged minting (recorded).
-fn empty_into(cx: TypeCx, got: TypeId, ok: TypeId) -> bool {
-    empty_adopted(cx, got, ok)
 }
 
 /// `[]` is adopted by any list, `{}` by any map — the two identity
@@ -181,7 +183,7 @@ fn heard(mut cx: TypeCx, e: ExprId, want: TypeId) {
 /// before judging its own parts.
 export fn want_refused(cx: TypeCx, e: ExprId) -> bool {
     let w: TypeId? = cx.want_at(e)
-    w != null && cx.view.types.shape_of(w!) is .Error
+    w != null && cx.errored_ty(w!)
 }
 
 /// Whether an arm's value stays to answer — every value but a
@@ -268,10 +270,10 @@ fn field_member(mut cx: TypeCx, e: ExprId, shown: string, sig: StructSig, name: 
 /// widening recorded like any other slot's. Every annotated
 /// binding form asks here, so the wording never drifts.
 export fn declared_binding(mut cx: TypeCx, v: ExprId, name: string, declared: TypeId) {
-    if cx.view.types.shape_of(declared) is .Error { return }
+    if cx.errored_ty(declared) { return }
     // a hungry lambda is not yet an error — the seat records itself
     if cx.starve(v, declared) { return }
-    if cx.shape_at(v) is .Error { return }
+    if cx.errored(v) { return }
     // A TYPE standing where the value belongs already spoke through
     // the value law — a second refusal would be a cascade.
     if cx.shape_at(v) is .TypeName { return }
@@ -379,7 +381,7 @@ export fn place_lawful(mut cx: TypeCx, e: ExprId) -> bool {
 fn field_slot_lawful(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> bool {
     let sig: StructSig? = cx.fields_of(cx.type_at(subject))
     if sig != null && sig!.slot_of(name) != null { return true }
-    if cx.shape_at(subject) is .Error { return false }
+    if cx.errored(subject) { return false }
     measured_not_stored(cx, e, name, cx.name_at(subject))
 }
 
@@ -562,7 +564,7 @@ export fn slice_promise(what: string) -> string {
 /// voice would be a second one for the same mistake. Every call
 /// shape (named, valued, method) settles here.
 export fn settled_call(mut cx: TypeCx, args: List<ExprId>, answer: TypeId) -> TypeId {
-    if cx.view.types.shape_of(answer) is .Error {
+    if cx.errored_ty(answer) {
         for a in args { cx.absorb_hunger(a) }
     }
     answer
