@@ -43,8 +43,6 @@ export type RunOutcome<N> = { result: Captured<N>?, diagnostics: List<Diagnostic
 /// One capture binding in a branch's scope.
 type Binding<N> = { label: string, value: Captured<N> }
 
-/// Cursor plus capture scope; passed and returned, never mutated.
-type MatchState<N> = { cursor: int, bindings: List<Binding<N>> }
 
 /// The farthest point speculation reached: what would have matched
 /// there, inside which rule.
@@ -60,7 +58,10 @@ enum MatchStatus { Hit, Miss, Broke, Fatal }
 /// One match attempt's outcome.
 type MatchResult<N> = {
     status: MatchStatus,
-    state: MatchState<N>,
+    // where the attempt ended, with the captures in scope there —
+    // once a boxed state per hit and per call, now the result's own
+    cursor: int,
+    bindings: List<Binding<N>>,
     value: Captured<N>,
     diagnostics: List<Diagnostic>,
     farthest: FarthestFailure?,
@@ -105,15 +106,10 @@ fn captured_terminal<N>(t: Token) -> Captured<N> { Captured.Terminal(t) }
 /// Captured.Many with its type parameter pinned.
 fn captured_many<N>(items: List<Captured<N>>) -> Captured<N> { Captured.Many(items) }
 
-/// A state at `cursor` with `bindings` in scope.
-fn state_at<N>(cursor: int, bindings: List<Binding<N>>) -> MatchState<N> {
-    MatchState { cursor: cursor, bindings: bindings }
-}
-
-fn matched<N>(state: MatchState<N>, v: Captured<N>, diagnostics: List<Diagnostic>,
+fn matched<N>(cursor: int, bindings: List<Binding<N>>, v: Captured<N>, diagnostics: List<Diagnostic>,
               farthest: FarthestFailure?) -> MatchResult<N> {
     MatchResult {
-        status: MatchStatus.Hit, state: state, value: v,
+        status: MatchStatus.Hit, cursor: cursor, bindings: bindings, value: v,
         diagnostics: diagnostics, farthest: farthest,
     }
 }
@@ -122,25 +118,25 @@ fn matched<N>(state: MatchState<N>, v: Captured<N>, diagnostics: List<Diagnostic
 /// differs. The three verbs below are the vocabulary; this is the
 /// one shape behind them, and a site holding a status in hand
 /// (a sub-match's, passed straight through) calls it directly.
-fn ended<N>(cx: MatchContext<N>, status: MatchStatus, state: MatchState<N>,
+fn ended<N>(cx: MatchContext<N>, status: MatchStatus, cursor: int, bindings: List<Binding<N>>,
             diagnostics: List<Diagnostic>, farthest: FarthestFailure?) -> MatchResult<N> {
     MatchResult {
-        status: status, state: state, value: cx.absent,
+        status: status, cursor: cursor, bindings: bindings, value: cx.absent,
         diagnostics: diagnostics, farthest: farthest,
     }
 }
 
-fn missed<N>(cx: MatchContext<N>, state: MatchState<N>, diagnostics: List<Diagnostic>, farthest: FarthestFailure?) -> MatchResult<N> {
-    ended<N>(cx, MatchStatus.Miss, state, diagnostics, farthest)
+fn missed<N>(cx: MatchContext<N>, cursor: int, bindings: List<Binding<N>>, diagnostics: List<Diagnostic>, farthest: FarthestFailure?) -> MatchResult<N> {
+    ended<N>(cx, MatchStatus.Miss, cursor, bindings, diagnostics, farthest)
 }
 
-fn broke<N>(cx: MatchContext<N>, state: MatchState<N>, diagnostics: List<Diagnostic>, farthest: FarthestFailure?) -> MatchResult<N> {
-    ended<N>(cx, MatchStatus.Broke, state, diagnostics, farthest)
+fn broke<N>(cx: MatchContext<N>, cursor: int, bindings: List<Binding<N>>, diagnostics: List<Diagnostic>, farthest: FarthestFailure?) -> MatchResult<N> {
+    ended<N>(cx, MatchStatus.Broke, cursor, bindings, diagnostics, farthest)
 }
 
-fn fatal_defect<N>(cx: MatchContext<N>, state: MatchState<N>, diagnostics: List<Diagnostic>,
+fn fatal_defect<N>(cx: MatchContext<N>, cursor: int, bindings: List<Binding<N>>, diagnostics: List<Diagnostic>,
                    farthest: FarthestFailure?) -> MatchResult<N> {
-    ended<N>(cx, MatchStatus.Fatal, state, diagnostics, farthest)
+    ended<N>(cx, MatchStatus.Fatal, cursor, bindings, diagnostics, farthest)
 }
 
 /// The deeper of two farthest points; a tie unions the expected sets.
@@ -260,13 +256,12 @@ fn expected_word(term: string) -> string {
 }
 
 fn match_rule<N>(cx: MatchContext<N>, name: string, cursor: int) -> MatchResult<N> {
-    let entry_state: MatchState<N> = state_at<N>(cursor, [])
     let ordinal: int? = cx.ordinals.get(name)
-    if ordinal == null { return undefined_rule<N>(cx, name, entry_state) }
+    if ordinal == null { return undefined_rule<N>(cx, name, cursor) }
     let at = ordinal! * cx.memo.stride + cursor
     let known = cx.memo.slots[at]
     if known > 0 { return cx.memo.results[known - 1] }
-    let fresh = match_alt<N>(cx, name, cx.g.rules[ordinal!].body, entry_state, false)
+    let fresh = match_alt<N>(cx, name, cx.g.rules[ordinal!].body, cursor, [], false)
     mut results = cx.memo.results
     results.push(fresh)
     mut slots = cx.memo.slots
@@ -275,12 +270,12 @@ fn match_rule<N>(cx: MatchContext<N>, name: string, cursor: int) -> MatchResult<
 }
 
 /// A reference to no rule — a grammar-authoring defect, final.
-fn undefined_rule<N>(cx: MatchContext<N>, name: string, entry_state: MatchState<N>) -> MatchResult<N> {
+fn undefined_rule<N>(cx: MatchContext<N>, name: string, cursor: int) -> MatchResult<N> {
     let undefined = Diagnostic {
         cause: Cause.Defect, message: "undefined rule `${name}`",
         span: null, expected: [], in_rule: name,
     }
-    broke<N>(cx, entry_state, [undefined], null)
+    broke<N>(cx, cursor, [], [undefined], null)
 }
 
 /// Branches tried top to bottom; the first success wins. A committed
@@ -288,7 +283,7 @@ fn undefined_rule<N>(cx: MatchContext<N>, name: string, entry_state: MatchState<
 /// stands only when nothing hits. A wholly-uncommitted failure
 /// carries the merged farthest point of every branch.
 fn match_alt<N>(cx: MatchContext<N>, rule_name: string, a: Alt,
-                state: MatchState<N>, acc: bool) -> MatchResult<N> {
+                cursor: int, bindings: List<Binding<N>>, acc: bool) -> MatchResult<N> {
     // LICENSED I4: a merge fold (far_merge), not a scan
     mut farthest: FarthestFailure? = null
     // GENERIC locals cannot carry loop state through mono (subset
@@ -297,7 +292,7 @@ fn match_alt<N>(cx: MatchContext<N>, rule_name: string, a: Alt,
     mut have_fallback = false
     mut fb_diags: List<Diagnostic> = []
     for br in a.branches {
-        let r = match_seq<N>(cx, rule_name, br, state, acc)
+        let r = match_seq<N>(cx, rule_name, br, cursor, bindings, acc)
         farthest = far_merge(farthest, r.farthest)
         if r.status == MatchStatus.Hit || r.status == MatchStatus.Fatal {
             return r with { farthest: farthest }
@@ -307,8 +302,8 @@ fn match_alt<N>(cx: MatchContext<N>, rule_name: string, a: Alt,
             have_fallback = true
         }
     }
-    if !have_fallback { return missed<N>(cx, state, cx.silence, farthest) }
-    broke<N>(cx, state, fb_diags, farthest)
+    if !have_fallback { return missed<N>(cx, cursor, bindings, cx.silence, farthest) }
+    broke<N>(cx, cursor, bindings, fb_diags, farthest)
 }
 
 /// "expected A, B or C while parsing `rule`" from a farthest point.
@@ -324,9 +319,9 @@ fn farthest_diagnostic<N>(cx: MatchContext<N>, f: FarthestFailure) -> Diagnostic
 /// The diagnostic for a failure inside a committed branch, preferring
 /// the failed sub-match's own farthest point.
 fn committed_failure<N>(cx: MatchContext<N>, rule_name: string, member: Item,
-                        r: MatchResult<N>, state: MatchState<N>) -> Diagnostic {
+                        r: MatchResult<N>, cursor: int) -> Diagnostic {
     let f = r.farthest ?? FarthestFailure {
-        cursor: state.cursor,
+        cursor: cursor,
         expected: [describe_prim(member.prim)],
         in_rule: rule_name,
     }
@@ -334,64 +329,63 @@ fn committed_failure<N>(cx: MatchContext<N>, rule_name: string, member: Item,
 }
 
 fn match_seq<N>(cx: MatchContext<N>, rule_name: string, s: Seq,
-                entry_state: MatchState<N>, acc: bool) -> MatchResult<N> {
-    mut state = entry_state
+                entry: int, entry_bindings: List<Binding<N>>, acc: bool) -> MatchResult<N> {
+    mut cursor = entry
+    mut bindings = entry_bindings
     mut vals: List<Captured<N>> = []
     mut diagnostics: List<Diagnostic> = []
     // LICENSED I4: a merge fold (far_merge), not a scan
     mut farthest: FarthestFailure? = null
     mut anchored = false
     for member in s.items {
-        let r = match_item<N>(cx, rule_name, member, state, acc)
+        let r = match_item<N>(cx, rule_name, member, cursor, bindings, acc)
         farthest = far_merge(farthest, r.farthest)
         if r.status == MatchStatus.Hit {
             diagnostics = diagnostics.concat(r.diagnostics)
-            if r.state.cursor > state.cursor { anchored = true }
-            state = r.state
+            if r.cursor > cursor { anchored = true }
+            cursor = r.cursor
+            bindings = r.bindings
             vals.push(r.value)
         } else if r.status == MatchStatus.Broke || r.status == MatchStatus.Fatal {
             diagnostics = diagnostics.concat(r.diagnostics)
-            return ended<N>(cx, r.status, state, diagnostics, farthest)
+            return ended<N>(cx, r.status, cursor, bindings, diagnostics, farthest)
         } else if !anchored {
-            return missed<N>(cx, entry_state, diagnostics, farthest)
+            return missed<N>(cx, entry, entry_bindings, diagnostics, farthest)
         } else if member.expect != null {
             // Committed territory: this failure is real — a hole.
             diagnostics.push(Diagnostic {
                 cause: Cause.Expected,
                 message: member.expect!.message,
-                span: cx.tokens[state.cursor].span,
+                span: cx.tokens[cursor].span,
                 expected: [describe_prim(member.prim)], in_rule: rule_name,
             })
-            if member.label != null {
-                let holed = bind_label<N>(state.bindings, member.label!, cx.absent, acc)
-                state = state_at<N>(state.cursor, holed)
-            }
+            if member.label != null { bindings = bind_label<N>(bindings, member.label!, cx.absent, acc) }
             vals.push(cx.absent)
         } else {
-            diagnostics.push(committed_failure<N>(cx, rule_name, member, r, state))
-            if s.recover == null { return broke<N>(cx, state, diagnostics, farthest) }
-            let c = sync_past<N>(cx, s.recover!.sync_to, entry_state.cursor, state.cursor)
-            return matched<N>(state_at<N>(c, state.bindings), cx.absent, diagnostics, farthest)
+            diagnostics.push(committed_failure<N>(cx, rule_name, member, r, cursor))
+            if s.recover == null { return broke<N>(cx, cursor, bindings, diagnostics, farthest) }
+            let c = sync_past<N>(cx, s.recover!.sync_to, entry, cursor)
+            return matched<N>(c, bindings, cx.absent, diagnostics, farthest)
         }
     }
     // Build phase. The branch's consumed range is the builder's span.
-    let branch = consumed_span(cx.tokens, entry_state.cursor, state.cursor)
-    match built<N>(cx, s, state, vals, branch) {
-        .Ok(v) -> matched<N>(state, v, diagnostics, farthest),
+    let branch = consumed_span(cx.tokens, entry, cursor)
+    match built<N>(cx, s, bindings, vals, branch) {
+        .Ok(v) -> matched<N>(cursor, bindings, v, diagnostics, farthest),
         .Err(m) -> {
             diagnostics.push(Diagnostic {
                 cause: Cause.Builder, message: "builder failed: ${m}",
-                span: branch ?? cx.tokens[state.cursor].span,
+                span: branch ?? cx.tokens[cursor].span,
                 expected: [], in_rule: rule_name,
             })
-            fatal_defect<N>(cx, state, diagnostics, farthest)
+            fatal_defect<N>(cx, cursor, bindings, diagnostics, farthest)
         }
     }
 }
 
 /// The branch's value: its sole capture, a named binding, or the
 /// builder called over its named captures.
-fn built<N>(cx: MatchContext<N>, s: Seq, state: MatchState<N>,
+fn built<N>(cx: MatchContext<N>, s: Seq, bindings: List<Binding<N>>,
             vals: List<Captured<N>>, branch: Span?) -> Result<Captured<N>, string> {
     // A pass-through branch carries exactly one item — the validator
     // says so where a value is needed, and an empty one would index
@@ -402,9 +396,9 @@ fn built<N>(cx: MatchContext<N>, s: Seq, state: MatchState<N>,
         return .Ok(only!)
     }
     match s.build! {
-        .Var(name) -> .Ok(binding_for<N>(state.bindings, name) ?? cx.absent),
+        .Var(name) -> .Ok(binding_for<N>(bindings, name) ?? cx.absent),
         .Call(name, args) -> {
-            let argv: List<Captured<N>> = [binding_for<N>(state.bindings, a) ?? cx.absent for a in args]
+            let argv: List<Captured<N>> = [binding_for<N>(bindings, a) ?? cx.absent for a in args]
             cx.build(name, argv, branch)
         }
     }
@@ -419,27 +413,27 @@ fn consumed_span(tokens: List<Token>, from: int, until: int) -> Span? {
 /// The result with this item's label bound, when it carries one.
 fn with_label<N>(member: Item, r: MatchResult<N>, acc: bool) -> MatchResult<N> {
     if member.label == null { return r }
-    r with { state: state_at<N>(r.state.cursor, bind_label<N>(r.state.bindings, member.label!, r.value, acc)) }
+    r with { bindings: bind_label<N>(r.bindings, member.label!, r.value, acc) }
 }
 
 fn match_item<N>(cx: MatchContext<N>, rule_name: string, member: Item,
-                 state: MatchState<N>, acc: bool) -> MatchResult<N> {
+                 cursor: int, bindings: List<Binding<N>>, acc: bool) -> MatchResult<N> {
     match member.rep {
         .One -> {
-            let r = match_prim<N>(cx, rule_name, member, state, acc)
+            let r = match_prim<N>(cx, rule_name, member, cursor, bindings, acc)
             if r.status != MatchStatus.Hit { return r }
             with_label<N>(member, r, acc)
         }
         .Opt -> {
             // An option is a speculation boundary: even a committed
             // sub-failure means not-taken, surviving only in `farthest`.
-            let r = match_prim<N>(cx, rule_name, member, state, acc)
+            let r = match_prim<N>(cx, rule_name, member, cursor, bindings, acc)
             if r.status == MatchStatus.Hit { return with_label<N>(member, r, acc) }
             if r.status == MatchStatus.Fatal { return r }
-            matched<N>(state, cx.absent, cx.silence, r.farthest)
+            matched<N>(cursor, bindings, cx.absent, cx.silence, r.farthest)
         }
-        .Star -> match_repetition<N>(cx, rule_name, member, state, 0),
-        .Plus -> match_repetition<N>(cx, rule_name, member, state, 1),
+        .Star -> match_repetition<N>(cx, rule_name, member, cursor, bindings, 0),
+        .Plus -> match_repetition<N>(cx, rule_name, member, cursor, bindings, 1),
     }
 }
 
@@ -447,8 +441,9 @@ fn match_item<N>(cx: MatchContext<N>, rule_name: string, member: Item,
 /// iteration failure ends the loop cleanly), committed failures
 /// propagate, and every iteration must consume input.
 fn match_repetition<N>(cx: MatchContext<N>, rule_name: string, member: Item,
-                       entry_state: MatchState<N>, min: int) -> MatchResult<N> {
-    mut state = entry_state
+                       entry: int, entry_bindings: List<Binding<N>>, min: int) -> MatchResult<N> {
+    mut cursor = entry
+    mut bindings = entry_bindings
     mut collected: List<Captured<N>> = []
     mut diagnostics: List<Diagnostic> = []
     // LICENSED I4: a merge fold (far_merge), not a scan
@@ -456,17 +451,17 @@ fn match_repetition<N>(cx: MatchContext<N>, rule_name: string, member: Item,
     mut count = 0
     mut going = true
     while going {
-        let r = match_prim<N>(cx, rule_name, member, state, true)
+        let r = match_prim<N>(cx, rule_name, member, cursor, bindings, true)
         farthest = far_merge(farthest, r.farthest)
         // A repetition is a speculation boundary: a failed iteration
         // (committed included) ends the loop; its story lives in `farthest`.
         if r.status == MatchStatus.Fatal {
             diagnostics = diagnostics.concat(r.diagnostics)
-            return fatal_defect<N>(cx, state, diagnostics, farthest)
+            return fatal_defect<N>(cx, cursor, bindings, diagnostics, farthest)
         }
         if r.status != MatchStatus.Hit {
             going = false
-        } else if r.state.cursor == state.cursor {
+        } else if r.cursor == cursor {
             diagnostics.push(Diagnostic {
                 cause: Cause.Defect,
                 message: "repetition matched without consuming input; stopped",
@@ -476,56 +471,55 @@ fn match_repetition<N>(cx: MatchContext<N>, rule_name: string, member: Item,
         } else {
             diagnostics = diagnostics.concat(r.diagnostics)
             collected.push(r.value)
-            mut nb = r.state.bindings
-            if member.label != null { nb = bind_label<N>(nb, member.label!, r.value, true) }
-            state = state_at<N>(r.state.cursor, nb)
+            bindings = if member.label != null { bind_label<N>(r.bindings, member.label!, r.value, true) } else { r.bindings }
+            cursor = r.cursor
             count = count + 1
         }
     }
-    if count < min { return missed<N>(cx, entry_state, diagnostics, farthest) }
-    matched<N>(state, captured_many<N>(collected), diagnostics, farthest)
+    if count < min { return missed<N>(cx, entry, entry_bindings, diagnostics, farthest) }
+    matched<N>(cursor, bindings, captured_many<N>(collected), diagnostics, farthest)
 }
 
 fn match_prim<N>(cx: MatchContext<N>, rule_name: string, member: Item,
-                 state: MatchState<N>, acc: bool) -> MatchResult<N> {
+                 cursor: int, bindings: List<Binding<N>>, acc: bool) -> MatchResult<N> {
     match member.prim {
         .Lit(text) -> {
-            let t = cx.tokens[state.cursor]
+            let t = cx.tokens[cursor]
             if t.lit_matches(text) {
-                matched<N>(state_at<N>(state.cursor + 1, state.bindings), captured_terminal<N>(t), cx.silence, null)
+                matched<N>(cursor + 1, bindings, captured_terminal<N>(t), cx.silence, null)
             } else {
-                let far = FarthestFailure { cursor: state.cursor, expected: cx.lit_expects.get(text) ?? lit_expected(text), in_rule: rule_name }
-                missed<N>(cx, state, cx.silence, far)
+                let far = FarthestFailure { cursor: cursor, expected: cx.lit_expects.get(text) ?? lit_expected(text), in_rule: rule_name }
+                missed<N>(cx, cursor, bindings, cx.silence, far)
             }
         }
         .Named(term) -> {
-            let t = cx.tokens[state.cursor]
+            let t = cx.tokens[cursor]
             let k = term_kind(term)
             if k != null && t.kind == k! {
                 // Eof is a position, not a token: match without consuming.
                 let step = if t.kind == TokenKind.Eof { 0 } else { 1 }
-                matched<N>(state_at<N>(state.cursor + step, state.bindings), captured_terminal<N>(t), cx.silence, null)
+                matched<N>(cursor + step, bindings, captured_terminal<N>(t), cx.silence, null)
             } else if is_end(term) && closes_body(t) {
                 // A statement ends where its body closes: the `}` is
                 // the body's to consume.
-                matched<N>(state, captured_terminal<N>(t), cx.silence, null)
+                matched<N>(cursor, bindings, captured_terminal<N>(t), cx.silence, null)
             } else {
-                let far = FarthestFailure { cursor: state.cursor, expected: cx.kind_expects.get(term) ?? [expected_word(term)], in_rule: rule_name }
-                missed<N>(cx, state, cx.silence, far)
+                let far = FarthestFailure { cursor: cursor, expected: cx.kind_expects.get(term) ?? [expected_word(term)], in_rule: rule_name }
+                missed<N>(cx, cursor, bindings, cx.silence, far)
             }
         }
         .Ref(target) -> {
-            let r = match_rule<N>(cx, target, state.cursor)
+            let r = match_rule<N>(cx, target, cursor)
             if r.status == MatchStatus.Hit {
-                matched<N>(state_at<N>(r.state.cursor, state.bindings), r.value, r.diagnostics, r.farthest)
+                matched<N>(r.cursor, bindings, r.value, r.diagnostics, r.farthest)
             } else {
-                ended<N>(cx, r.status, state, r.diagnostics, r.farthest)
+                ended<N>(cx, r.status, cursor, bindings, r.diagnostics, r.farthest)
             }
         }
         .Group(inner) -> {
             // Captures inside a group escape to the branch's scope; the
             // group's own value exists only when the item is labeled.
-            let r = match_alt<N>(cx, rule_name, inner, state, acc)
+            let r = match_alt<N>(cx, rule_name, inner, cursor, bindings, acc)
             if r.status != MatchStatus.Hit { return r }
             let v = if member.label != null { r.value } else { cx.absent }
             r with { value: v }
@@ -611,10 +605,10 @@ export fn run_grammar<N>(rd: Ready, tokens: List<Token>,
         if diagnostics.is_empty() { diagnostics.push(overall_failure<N>(cx, r)) }
         return RunOutcome { result: null, diagnostics: diagnostics }
     }
-    if cx.tokens[r.state.cursor].kind != TokenKind.Eof {
+    if cx.tokens[r.cursor].kind != TokenKind.Eof {
         diagnostics.push(Diagnostic {
             cause: Cause.Trailing, message: "unexpected input after `${g.start}`",
-            span: cx.tokens[r.state.cursor].span, expected: [], in_rule: g.start,
+            span: cx.tokens[r.cursor].span, expected: [], in_rule: g.start,
         })
     }
     RunOutcome { result: r.value, diagnostics: diagnostics }
