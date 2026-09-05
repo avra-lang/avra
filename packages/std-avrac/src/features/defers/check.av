@@ -1,0 +1,52 @@
+//! The typing laws. The body is a lambda, typed as any; its answer
+//! is DROPPED, so a `Result` there is refused — a failure nobody
+//! would hear. An `errdefer` waits on a failure channel: an
+//! enclosing fn that answers a `Result`.
+use core.{StmtId, ExprId, TypeId}
+use features.{TypeCx}
+use diagnostics.{Diag, refusal}
+
+fn check_defer(mut cx: TypeCx, s: StmtId) {
+    cx.walk_value(s)
+    let body: ExprId? = cx.view.store.stmt_value(s)
+    if body == null { return }
+    let answer: TypeId? = cx.view.types.arrow_parts(cx.type_at(body!))?.answer
+    if answer != null && cx.view.types.res_parts(answer!) != null {
+        cx.emit(unheard_failure(cx, s, cx.view.types.name_of(answer!)))
+    }
+    if runs_on_error(cx.view.store, s) { check_channel(cx, s) }
+}
+
+/// The channel an `errdefer` waits on: the enclosing fn's, and it
+/// must be able to fail.
+fn check_channel(mut cx: TypeCx, s: StmtId) {
+    if cx.behind_lambda() {
+        cx.emit(lambda_channel(cx, s))
+        return
+    }
+    let ret: TypeId? = cx.enclosing_ret()
+    if ret == null {
+        cx.emit(no_channel(cx, s))
+        return
+    }
+    if cx.view.types.shape_of(ret!) is .Error { return }
+    if cx.view.types.res_parts(ret!) == null { cx.emit(never_fails(cx, s, cx.view.types.name_of(ret!))) }
+}
+
+// ── voices ──
+
+fn unheard_failure(cx: TypeCx, s: StmtId, answer: string) -> Diag {
+    refusal("type.defer", cx.stmt_loc(s), "`defer` drops what its body answers, and this one answers `${answer}` — a failure nobody would hear", "deferred here", "recover it with `catch`, or discard it on purpose: `defer { let _ = … }`")
+}
+
+fn no_channel(cx: TypeCx, s: StmtId) -> Diag {
+    refusal("type.errdefer", cx.stmt_loc(s), "an `errdefer` runs when the enclosing fn fails, and there is none enclosing", "deferred here", "at the top level there is no failure channel — `defer` runs regardless")
+}
+
+fn lambda_channel(cx: TypeCx, s: StmtId) -> Diag {
+    refusal("type.errdefer", cx.stmt_loc(s), "an `errdefer` runs when the enclosing fn fails, and a lambda promises no failure — its answer is inferred", "deferred here", "handle failures inside the lambda, or write `defer`")
+}
+
+fn never_fails(cx: TypeCx, s: StmtId, promise: string) -> Diag {
+    refusal("type.errdefer", cx.stmt_loc(s), "an `errdefer` runs when this fn fails, and it promises a `${promise}` — it never does", "deferred here", "declare the answer fallible — `-> Result<${promise}, E>` — or write `defer`")
+}

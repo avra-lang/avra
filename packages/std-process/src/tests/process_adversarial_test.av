@@ -1,0 +1,359 @@
+// The red team's set, kept apart from the feature's own story so it
+// can grow: degenerate shapes, every wrong value in every slot, the
+// two engines, ownership, and refusal quality. Each case names the
+// attack; the fixtures are the shell and a hand-built tool.
+use @std.process.{Tool, tool, cmd, Command, Child, Pipeline, Exit, Stdin, Ready, Env, Output, Outcome, ProcessError, minimal, exit_text, parallel, race}
+use @std.time.{ms, secs, now_ms}
+
+fn posix_sh() -> Result<Tool, ProcessError> {
+    tool("sh")
+}
+
+/// A tool that ends its options at `--`, standing on echo.
+fn dashed() -> Tool {
+    Tool { name: "t", path: "/bin/echo", terminator: "--" }
+}
+
+fn kind(e: ProcessError) -> string {
+    match e {
+        .NotFound(p, _) -> "not_found:${p}",
+        .Denied(p, _) -> "denied:${p}",
+        .NoCwd(d) -> "no_cwd:${d}",
+        .BadEnvName(n) -> "bad_env_name:${n}",
+        .Failed(x, o) -> "failed:${exit_text(x)}:${o.stdout.trim()}",
+        .TimedOut(after, o) -> "timeout:${after}:${o.stdout.trim()}",
+        .TooMuch(_, cap, _) -> "toomuch:${cap}",
+        .Unplaceable(w, _) -> "unplaceable:${w}",
+        .NotReady(waited, _) -> "not_ready:${waited >= 0}",
+        .StageFailed(i, x, _) -> "stage_failed:${i}:${exit_text(x)}",
+        .Unscripted(p, a) -> "unscripted:${p} ${a}",
+        .Empty(what) -> "empty:${what}",
+        .Host(e, call) -> "host:${e}:${call}",
+    }
+}
+
+fn shown(r: Result<string, ProcessError>) -> string {
+    match r {
+        .Ok(s) -> s,
+        .Err(e) -> kind(e),
+    }
+}
+
+fn text(c: Command) -> Result<string, ProcessError> {
+    (c.run()?).stdout
+}
+
+fn shell(line: string) -> Result<Command, ProcessError> {
+    let s = posix_sh()?
+    cmd(s, ["-c", line])
+}
+
+fn negative_timeout() -> Result<string, ProcessError> {
+    text(shell("echo neg")? with { timeout: ms(0 - 5) })
+}
+
+fn zero_timeout() -> Result<string, ProcessError> {
+    text(shell("echo x")? with { timeout: ms(0) })
+}
+
+fn bad_cwd() -> Result<string, ProcessError> {
+    text(shell("pwd")? with { cwd: "/no/such/dir/anywhere" })
+}
+
+fn file_as_cwd() -> Result<string, ProcessError> {
+    text(shell("pwd")? with { cwd: "/etc/hosts" })
+}
+
+fn split_env_name() -> Result<string, ProcessError> {
+    text(shell("echo $A")? with { env: minimal().with_var("A=B", "x") })
+}
+
+fn empty_env_name() -> Result<string, ProcessError> {
+    text(shell("echo x")? with { env: minimal().with_var("", "x") })
+}
+
+fn grandchild_is_stopped() -> Result<string, ProcessError> {
+    // the child prints its grandchild's pid and exits; the grandchild
+    // holds our pipe past the grace, so the run is truncated — and the
+    // grandchild is stopped with the group, never left behind
+    let o = shell("sleep 5 & echo $!")? with { drain_grace: ms(200) }
+    let out = o.run()?
+    let pid = out.stdout.trim()
+    let probe = text(shell("kill -0 ${pid} 2>/dev/null && echo alive || echo dead")?)?
+    "${out.truncated}/${probe.trim()}"
+}
+
+fn mib_intact() -> Result<string, ProcessError> {
+    let c = shell("head -c 1048576 /dev/zero | tr '\\0' x")?
+    "${(c.run()?).stdout.length}"
+}
+
+fn nul_kept() -> Result<string, ProcessError> {
+    let c = shell("printf 'a\\0b'")?
+    "${(c.run()?).stdout.length}"
+}
+
+fn huge_stdin_to_a_deaf_child() -> Result<string, ProcessError> {
+    let t = tool("true")?
+    mut big = "x"
+    while big.length < 300000 { big = big + big }
+    let o = (cmd(t, []) with { stdin: Stdin.Text(big) }).run()?
+    "ok:${o.stdout.length}"
+}
+
+fn partial_rides_the_timeout() -> Result<string, ProcessError> {
+    text(shell("echo partial; sleep 5")? with { timeout: ms(200) })
+}
+
+fn codes() -> Result<string, ProcessError> {
+    let big_c = shell("exit 255")?
+    let wrapped_c = shell("exit 256")?
+    let big = (big_c.outcome()?).exit
+    let wrapped = (wrapped_c.outcome()?).exit
+    "${exit_text(big)}/${exit_text(wrapped)}"
+}
+
+fn hand_built(path: string) -> Result<string, ProcessError> {
+    text(cmd(Tool { name: "hand", path: path, terminator: "--" }, []))
+}
+
+fn many() -> Result<string, ProcessError> {
+    let t = tool("true")?
+    mut clean = 0
+    for i in 0..120 {
+        if (cmd(t, []).outcome()?).exit is .Clean { clean = clean + 1 }
+    }
+    "${clean}"
+}
+
+fn hostile_words() -> Result<string, ProcessError> {
+    let echo = tool("echo")?
+    (cmd(echo, ["b c", "d\"e", "$HOME", "; rm -rf /", "--flag", "`id`"]).run()?).stdout.trim()
+}
+
+fn inherited_home() -> Result<string, ProcessError> {
+    let c = shell("echo $HOME")? with { env: Env.Inherit }
+    (c.run()?).stdout.trim()
+}
+
+fn three_thousand_words() -> Result<string, ProcessError> {
+    let echo = tool("echo")?
+    let words = ["w${i}" for i in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]]
+    mut all: List<string> = []
+    for round in 0..300 { all = all.concat(words) }
+    "${(cmd(echo, all).run()?).stdout.split(" ").length}"
+}
+
+fn failed_message() -> string {
+    match shell("echo one >&2; echo two >&2; exit 4") {
+        .Ok(c) -> match c.run() {
+            .Ok(_) -> "ran",
+            .Err(e) -> e.describe().message,
+        },
+        .Err(_) -> "no shell",
+    }
+}
+
+fn empty_pipeline() -> Result<string, ProcessError> {
+    let o = Pipeline { stages: [] }.run()?
+    "ran:${o.stdout.length}"
+}
+
+fn single_stage() -> Result<string, ProcessError> {
+    let c = shell("echo solo")?
+    (Pipeline { stages: [c] }.run()?).stdout.trim()
+}
+
+fn stopped_twice() -> Result<string, ProcessError> {
+    let c = shell("sleep 5")?
+    mut child = c.start(Ready.Started, secs(1))?
+    let a = child.stop()
+    let b = child.stop()
+    "${exit_text(a)}/${exit_text(b)}"
+}
+
+fn waited_after_stop() -> Result<string, ProcessError> {
+    let c = shell("echo said; sleep 5")?
+    mut child = c.start(Ready.Line("said"), secs(2))?
+    let a = child.stop()
+    let began = now_ms()
+    let o = child.wait(null)?
+    "${exit_text(a)}/${exit_text(o.exit)}/${o.out.stdout.trim()}/${now_ms() - began < 500}"
+}
+
+fn read_after_wait() -> Result<string, ProcessError> {
+    let c = shell("echo x")?
+    mut child = c.start(Ready.Started, secs(1))?
+    let o = child.wait(secs(1))?
+    let l = child.read_line(secs(2)) ?? "-"
+    "${o.out.stdout.trim()}/${l}/${child.is_alive()}"
+}
+
+fn consumer_quits_early() -> Result<string, ProcessError> {
+    let head = tool("head")?
+    let producer = shell("yes")? with { timeout: secs(5) }
+    let o = producer.pipe(cmd(head, ["-n", "2"])).run()?
+    o.stdout.replace("\n", ",")
+}
+
+fn unstartable_sibling() -> Result<string, ProcessError> {
+    let ok = shell("sleep 5")?
+    let ghost = cmd(Tool { name: "ghost", path: "/no/such", terminator: null }, [])
+    "${(parallel([ok, ghost], 2)?).length}"
+}
+
+fn odd_limits() -> Result<string, ProcessError> {
+    let a = shell("echo a")?
+    "${(parallel([a, a], 0)?).length}/${(parallel([a], 0 - 3)?).length}/${(parallel([], 4)?).length}"
+}
+
+fn race_of_none() -> Result<string, ProcessError> {
+    "${(race([], ms(10))?).took_ms}"
+}
+
+fn race_with_a_ghost_first() -> Result<string, ProcessError> {
+    let ghost = cmd(Tool { name: "ghost", path: "/no/such", terminator: null }, [])
+    let second = shell("echo second")?
+    (race([ghost, second], ms(10))?).out.stdout.trim()
+}
+
+fn started_in_no_dir() -> Result<string, ProcessError> {
+    let c = shell("pwd")? with { cwd: "/no/such/dir" }
+    "${(c.start(Ready.Started, secs(1))?).pid()}"
+}
+
+fn alive_after_exit() -> Result<string, ProcessError> {
+    let c = shell("exit 0")?
+    mut child = c.start(Ready.Exit, secs(2))?
+    let before = child.is_alive()
+    let o = child.wait(secs(1))?
+    "${before}/${exit_text(o.exit)}/${child.is_alive()}"
+}
+
+fn middle_stdin_ignored() -> Result<string, ProcessError> {
+    let cat = tool("cat")?
+    let head = shell("echo up")?
+    (head.pipe(cmd(cat, []) with { stdin: Stdin.Text("mine") }).run()?).stdout.trim()
+}
+
+spec "std/process adversarial" {
+    given "children and pipelines at their edges" {
+        then "an empty pipeline is refused, never a trap on its last stage" {
+            shown(empty_pipeline()) == "empty:the pipeline"
+        }
+        then "a pipeline of one stage is that stage" {
+            shown(single_stage()) == "solo"
+        }
+        then "a child stopped twice remembers the exit it met" {
+            shown(stopped_twice()) == "by signal 15/by signal 15"
+        }
+        then "a wait after a stop answers the stop's outcome at once, words included" {
+            shown(waited_after_stop()) == "by signal 15/by signal 15/said/true"
+        }
+        then "output delivered by wait is not read again" {
+            shown(read_after_wait()) == "x/-/false"
+        }
+        then "a producer killed by SIGPIPE under a clean consumer succeeded" {
+            shown(consumer_quits_early()) == "y,y,"
+        }
+        then "a sibling that cannot start fails the whole and the rest are stopped" {
+            shown(unstartable_sibling()) == "not_found:ghost"
+        }
+        then "a limit below one is one; nothing at all is nothing" {
+            shown(odd_limits()) == "2/1/0"
+        }
+        then "a race of nothing is refused" {
+            shown(race_of_none()) == "empty:the race"
+        }
+        then "a later stage's stdin is the pipe, whatever its command says" {
+            shown(middle_stdin_ignored()) == "up"
+        }
+        then "a racer that cannot start fails the race, spelled as the missing tool" {
+            shown(race_with_a_ghost_first()) == "not_found:ghost"
+        }
+        then "a child cannot start in a directory that is not there" {
+            shown(started_in_no_dir()) == "no_cwd:/no/such/dir"
+        }
+        then "a child ready by exit is not alive, and stays not alive after wait" {
+            shown(alive_after_exit()) == "false/clean/false"
+        }
+    }
+    given "refusal quality" {
+        then "a failure's message quotes stderr's first line and no more" {
+            failed_message() == "the child exited with code 4: one …"
+        }
+    }
+    given "the hatch and the wide" {
+        then "inheriting the world hands the child the invoker's HOME" {
+            shown(inherited_home()).length > 0 && shown(inherited_home()) != "not_found:sh"
+        }
+        then "three thousand words arrive as three thousand words" {
+            shown(three_thousand_words()) == "3000"
+        }
+    }
+    given "degenerate shapes and bounds" {
+        then "a negative timeout is a deadline already passed, never no deadline" {
+            shown(negative_timeout()) == "timeout:0:"
+        }
+        then "a zero timeout times out before the child speaks" {
+            shown(zero_timeout()) == "timeout:0:"
+        }
+        then "no ok_exits accepts nothing, and says so" {
+            shown(text(cmd(dashed(), ["x"]) with { ok_exits: [] })) == "failed:clean:x"
+        }
+        then "a cap of zero lifts the cap" {
+            shown(text(cmd(dashed(), ["five"]) with { max_capture: 0 })) == "five\n"
+        }
+        then "a mebibyte comes back whole under the default cap" {
+            shown(mib_intact()) == "1048576"
+        }
+        then "a NUL byte in the output is kept and counted" {
+            shown(nul_kept()) == "3"
+        }
+        then "stdin the child never reads is an EPIPE we survive" {
+            shown(huge_stdin_to_a_deaf_child()) == "ok:0"
+        }
+        then "what the child said before the deadline rides the timeout" {
+            shown(partial_rides_the_timeout()) == "timeout:200:partial"
+        }
+        then "exit 255 is a code; a shell's 256 wraps to clean, as the kernel says" {
+            shown(codes()) == "with code 255/clean"
+        }
+        then "a hundred and twenty children reuse the handle table" {
+            shown(many()) == "120"
+        }
+    }
+    given "every wrong value in a slot" {
+        then "a directory that is not there is named, not the tool" {
+            shown(bad_cwd()) == "no_cwd:/no/such/dir/anywhere"
+        }
+        then "a file as a directory is refused the same way" {
+            shown(file_as_cwd()) == "no_cwd:/etc/hosts"
+        }
+        then "an environment name holding `=` is refused, never split" {
+            shown(split_env_name()) == "bad_env_name:A=B"
+        }
+        then "an empty environment name is refused" {
+            shown(empty_env_name()) == "bad_env_name:"
+        }
+        then "a tool path that is nothing, a text file, a directory" {
+            "${shown(hand_built("/no/such"))} ${shown(hand_built("/etc/hosts"))} ${shown(hand_built("/"))} ${shown(hand_built(""))}" == "not_found:hand denied:hand denied:hand not_found:hand"
+        }
+        then "a short flag attaches its value; a long one fuses with `=`" {
+            cmd(dashed(), []).flag("-o", "x").flag("--depth", "1").flag("-fplugin", "p").args.join(" ") == "-ox --depth=1 -fplugin=p"
+        }
+        then "an empty path stays empty instead of naming the directory" {
+            cmd(dashed(), []).path("").args.join("|") == ""
+        }
+    }
+    given "the tree, not the child" {
+        then "a grandchild holding the pipe is truncated and stopped with the group" {
+            shown(grandchild_is_stopped()) == "true/dead"
+        }
+    }
+    given "the words are data" {
+        then "shell metacharacters in words reach the child as themselves" {
+            shown(hostile_words()) == "b c d\"e $HOME ; rm -rf / --flag `id`"
+        }
+    }
+}

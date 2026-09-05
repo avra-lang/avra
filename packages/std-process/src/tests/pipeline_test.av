@@ -1,0 +1,211 @@
+// Pipelines and the runner seam: kernel pipes between stages, every
+// stage's own stderr kept, the first failing stage named with every
+// outcome riding along; and the three runners that share every law
+// above the syscall.
+use @std.process.{Tool, tool, cmd, Command, Pipeline, PipeOutcome, Exit, Stdin, Output, Outcome, ProcessError, Runner, Script, host, scripted, plan, run_through, parallel, race, exit_text}
+use @std.time.{ms, secs, now_ms}
+
+fn p_sh() -> Result<Tool, ProcessError> {
+    tool("sh")
+}
+
+fn p_line(line: string) -> Result<Command, ProcessError> {
+    let s = p_sh()?
+    cmd(s, ["-c", line])
+}
+
+fn p_kind(e: ProcessError) -> string {
+    match e {
+        .StageFailed(i, x, outs) -> "stage_failed:${i}:${exit_text(x)}:${outs.length}",
+        .TimedOut(after, _) -> "timeout:${after}",
+        .Unscripted(p, a) -> "unscripted:${p} ${a}",
+        .Failed(x, _) -> "failed:${exit_text(x)}",
+        rest -> "other",
+    }
+}
+
+fn p_shown(r: Result<string, ProcessError>) -> string {
+    match r {
+        .Ok(s) -> s,
+        .Err(e) -> p_kind(e),
+    }
+}
+
+fn sorted_lines() -> Result<string, ProcessError> {
+    let sort = tool("sort")?
+    let head = p_line("printf 'b\\na\\nc\\n'")?
+    let o = head.pipe(cmd(sort, [])).run()?
+    o.stdout.replace("\n", " ").trim()
+}
+
+fn three_stages() -> Result<string, ProcessError> {
+    let grep = tool("grep")?
+    let wc = tool("wc")?
+    let head = p_line("printf 'ant\\nbee\\nape\\n'")?
+    let o = head.pipe(cmd(grep, ["^a"])).pipe(cmd(wc, ["-l"])).run()?
+    o.stdout.trim()
+}
+
+fn first_stage_fails() -> Result<string, ProcessError> {
+    let cat = tool("cat")?
+    let head = p_line("echo x; exit 3")?
+    let o = head.pipe(cmd(cat, [])).run()?
+    o.stdout
+}
+
+fn stderr_per_stage() -> Result<string, ProcessError> {
+    let head = p_line("echo e1 >&2; echo data")?
+    let tail = p_line("cat; echo e2 >&2")?
+    let po = head.pipe(tail).outcome()?
+    "${po.stages[0].out.stderr.trim()}|${po.stages[1].out.stderr.trim()}|${po.stages[1].out.stdout.trim()}|${po.stages[0].out.stdout.length}"
+}
+
+fn lenient_stage() -> Result<string, ProcessError> {
+    let grep = tool("grep")?
+    let head = p_line("printf 'x\\n'")?
+    let o = head.pipe(cmd(grep, ["nothing-matches"]) with { ok_exits: [0, 1] }).run()?
+    "ok:${o.stdout.length}"
+}
+
+fn slow_stage() -> Result<string, ProcessError> {
+    let cat = tool("cat")?
+    let o = (p_line("sleep 5")? with { timeout: ms(200) }).pipe(cmd(cat, [])).run()?
+    o.stdout
+}
+
+fn fed_pipeline() -> Result<string, ProcessError> {
+    let cat = tool("cat")?
+    let tr = tool("tr")?
+    let o = (cmd(cat, []) with { stdin: Stdin.Text("abc") }).pipe(cmd(tr, ["a-z", "A-Z"])).run()?
+    o.stdout
+}
+
+fn through_host() -> Result<string, ProcessError> {
+    let echo = tool("echo")?
+    (run_through(host(), cmd(echo, ["real"]))?).stdout.trim()
+}
+
+fn fake_git() -> Tool {
+    Tool { name: "git", path: "/nowhere/git", terminator: "--end-of-options" }
+}
+
+fn scripts() -> List<Script> {
+    table<Script> {
+        program | args              | exit         | stdout      | stderr
+        "git"   | "describe --tags" | Exit.Clean   | "v1.4.0\n"  | ""
+        "git"   | "status"          | Exit.Code(1) | ""          | "not a repo\n"
+    }
+}
+
+fn through_script() -> Result<string, ProcessError> {
+    let r = scripted(scripts())
+    let v = (run_through(r, cmd(fake_git(), ["describe", "--tags"]))?).stdout.trim()
+    let judged = match run_through(r, cmd(fake_git(), ["status"])) {
+        .Ok(_) -> "ran",
+        .Err(e) -> p_kind(e),
+    }
+    let miss = match run_through(r, cmd(fake_git(), ["log"])) {
+        .Ok(_) -> "ran",
+        .Err(e) -> p_kind(e),
+    }
+    "${v}|${judged}|${miss}"
+}
+
+fn through_plan() -> Result<string, ProcessError> {
+    let o = run_through(plan(), cmd(fake_git(), ["push", "--force"]))?
+    "planned:${o.stdout.length}"
+}
+
+fn many_at_once() -> Result<string, ProcessError> {
+    let s = p_sh()?
+    let cs = [cmd(s, ["-c", "sleep 0.2; echo a"]), cmd(s, ["-c", "echo b"]), cmd(s, ["-c", "sleep 0.1; echo c"]), cmd(s, ["-c", "exit 4"])]
+    let began = now_ms()
+    let outs = parallel(cs, 4)?
+    let took = now_ms() - began
+    "${[o.out.stdout.trim() for o in outs].join(",")}|${exit_text(outs[3].exit)}|${took < 1500}"
+}
+
+fn narrow_lane() -> Result<string, ProcessError> {
+    let s = p_sh()?
+    let cs = [cmd(s, ["-c", "echo 1"]), cmd(s, ["-c", "echo 2"]), cmd(s, ["-c", "echo 3"])]
+    let outs = parallel(cs, 1)?
+    [o.out.stdout.trim() for o in outs].join("")
+}
+
+fn one_sibling_too_slow() -> Result<string, ProcessError> {
+    let s = p_sh()?
+    let cs = [cmd(s, ["-c", "sleep 5"]) with { timeout: ms(200) }, cmd(s, ["-c", "sleep 5"])]
+    let outs = parallel(cs, 2)?
+    "${outs.length}"
+}
+
+fn the_fast_one_wins() -> Result<string, ProcessError> {
+    let s = p_sh()?
+    let slow = cmd(s, ["-c", "sleep 5; echo slow"])
+    let fast = cmd(s, ["-c", "echo fast"])
+    let began = now_ms()
+    let w = race([slow, fast], ms(50))?
+    "${w.out.stdout.trim()}|${now_ms() - began < 2000}"
+}
+
+fn a_failing_finisher_wins_too() -> Result<string, ProcessError> {
+    let s = p_sh()?
+    let w = race([cmd(s, ["-c", "sleep 5"]), cmd(s, ["-c", "exit 2"])], ms(10))?
+    exit_text(w.exit)
+}
+
+spec "std/process pipelines" {
+    given "many at once" {
+        then "outcomes come back in the list's order, judged by nobody" {
+            p_shown(many_at_once()) == "a,b,c,|with code 4|true"
+        }
+        then "a lane of one is still every command" {
+            p_shown(narrow_lane()) == "123"
+        }
+        then "one sibling past its deadline stops every sibling and fails the whole" {
+            p_shown(one_sibling_too_slow()) == "timeout:200"
+        }
+        then "the first to finish wins the race and the rest are stopped" {
+            p_shown(the_fast_one_wins()) == "fast|true"
+        }
+        then "finishing with a failure still wins" {
+            p_shown(a_failing_finisher_wins_too()) == "with code 2"
+        }
+    }
+    given "kernel pipes between stages" {
+        then "two stages: the last one's stdout is the answer" {
+            p_shown(sorted_lines()) == "a b c"
+        }
+        then "three stages" {
+            p_shown(three_stages()) == "2"
+        }
+        then "a stage's stdin comes from the first command's wiring" {
+            p_shown(fed_pipeline()) == "ABC"
+        }
+    }
+    given "verdicts per stage" {
+        then "the first stage outside its ok_exits fails the whole, every outcome riding along" {
+            p_shown(first_stage_fails()) == "stage_failed:0:with code 3:2"
+        }
+        then "every stage keeps its own stderr; only the last keeps stdout" {
+            p_shown(stderr_per_stage()) == "e1|e2|data|0"
+        }
+        then "a stage's ok_exits are its own" {
+            p_shown(lenient_stage()) == "ok:0"
+        }
+        then "a stage past its deadline is stopped and fails the whole" {
+            p_shown(slow_stage()) == "timeout:200"
+        }
+    }
+    given "the runner seam" {
+        then "the host really runs" {
+            p_shown(through_host()) == "real"
+        }
+        then "a script answers by program and words; a judged code fails; a miss is unscripted" {
+            p_shown(through_script()) == "v1.4.0|failed:with code 1|unscripted:git log"
+        }
+        then "the plan runs nothing and answers clean" {
+            p_shown(through_plan()) == "planned:0"
+        }
+    }
+}

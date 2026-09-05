@@ -1,0 +1,34 @@
+//! `defer e` — `e` runs when the enclosing scope ends or the fn
+//! exits early, last-registered first: cleanup written beside the
+//! thing it cleans. `errdefer e` runs only when the fn exits through
+//! its failure channel (`fail`, or `?` passing a failure on). The
+//! body takes a lambda's law — captures are copies at the statement
+//! — and its answer is dropped, so a body answering a `Result` is
+//! refused: nobody would hear it fail.
+use features.{LanguageFeature, BuilderRow}
+use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn defers() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name            | build
+        "defer_stmt"    | build_defer
+        "errdefer_stmt" | build_errdefer
+    }
+    let codes = table<DiagCode> {
+        kind            | id      | summary
+        "type.defer"    | "F2052" | "`defer` drops its body's answer — a `Result` there would fail unheard"
+        "type.errdefer" | "F2053" | "`errdefer` runs when the enclosing fn fails, so it needs one that can"
+    }
+    component LanguageFeature f {
+        name = "defers"
+        docs = "`defer e` runs `e` when the scope ends or the fn exits, last first; `errdefer e` only when the fn fails."
+        gram = grammar {
+            stmt = "defer" v:expression END @recover(sync_to: "END") -> defer_stmt(v)
+            stmt = "errdefer" v:expression END @recover(sync_to: "END") -> errdefer_stmt(v)
+        }
+        diags = codes
+        builders = rows
+    }
+    f
+}
