@@ -1,0 +1,50 @@
+// The red team's record for @std/text: the empty and the negative in
+// every slot, rows at their edges, and the walk over sequences cut in
+// half — a lone lead byte or a stray tail stands for itself.
+use @std.text.{builder, repeat, pad_left, pad_right, lines, indent, is_blank, codepoints, chars, codepoint_count}
+
+fn a_codes(s: string) -> string {
+    ["${c}" for c in codepoints(s)].join(",")
+}
+
+spec "std/text — adversarial" {
+    given "the empty and the negative" {
+        then "repeating nothing is nothing, however many times" { repeat("", 1000) == "" }
+        then "padding to a zero or negative width changes nothing" {
+            pad_right("ab", 0) == "ab" && pad_left("ab", 0 - 3) == "ab" && pad_right("", 0) == ""
+        }
+        then "padding the empty text is spaces alone" { pad_left("", 3) == "   " }
+        then "indent by nothing, or by less, sets nothing in" { indent("a\nb", 0) == "a\nb" && indent("a", 0 - 1) == "a" }
+        then "indenting nothing is nothing" { indent("", 4) == "" }
+        then "a builder built twice answers the same text" {
+            mut t = builder()
+            t.push("ab")
+            t.built() == "ab" && t.built() == "ab"
+        }
+        then "ten thousand pushes" {
+            mut t = builder()
+            mut i = 0
+            while i < 10000 {
+                t.push("ab")
+                i = i + 1
+            }
+            t.built().length == 20000
+        }
+    }
+    given "rows at their edges" {
+        then "one newline is one empty row" { lines("\n").length == 1 && lines("\n")[0] == "" }
+        then "two newlines are two empty rows" { lines("\n\n").length == 2 }
+        then "a row of spaces is blank; a row with a tab and a letter is not" { is_blank("   ") && !is_blank("\tx") }
+    }
+    given "the walk over sequences cut in half" {
+        then "a lone lead byte stands for itself" { a_codes("é".substring(0, 1)) == "195" }
+        then "stray continuation bytes each stand for themselves" { a_codes("日".substring(1, 3)) == "151,165" }
+        then "a four-byte sequence missing its last byte is four lone bytes" {
+            a_codes("😀".substring(0, 3)) == "240,159,152"
+        }
+        then "chars over a cut sequence answers one text per byte" { chars("é".substring(0, 1)).length == 1 }
+        then "codepoint_count never exceeds the byte length" {
+            codepoint_count("😀é日a") == 4 && "😀é日a".length == 10
+        }
+    }
+}

@@ -1,0 +1,176 @@
+//! @std.io — the host's streams, files and environment, as values.
+//!
+//! A line is printed with `println`/`eprintln`. A file is read whole
+//! (`read_text`) or written whole (`write_text` — through a sibling
+//! temp file and a rename, so a reader never sees half of it). A
+//! directory is listed in byte order (`list_dir`), made along its
+//! whole path (`make_dirs`), and a path is asked what stands there
+//! (`kind_of`, `exists`, `is_file`, `is_dir`) or removed (`remove`).
+//! The environment answers absence honestly: `env` is a `string?`.
+//! Every refusal is an `IoError` naming the path; a writing verb
+//! answers the path it wrote, so calls chain.
+use @std.errors.{Error, ErrorInfo, info}
+
+extern fn avra_puts(line: string)
+extern fn avra_eputs(line: string)
+extern fn avra_io_kind(path: string) -> int
+extern fn avra_io_read(path: string) -> int
+extern fn avra_io_write(path: string, text: string) -> int
+extern fn avra_io_list(path: string) -> int
+extern fn avra_io_mkdir(path: string) -> int
+extern fn avra_io_remove(path: string) -> int
+extern fn avra_io_env(name: string) -> int
+extern fn avra_io_taken() -> string
+extern fn avra_errno_text(err: int) -> string
+
+// ── Streams ─────────────────────────────────────────────────────
+
+/// One line to stdout.
+export fn println(line: string) {
+    avra_puts(line)
+}
+
+/// One line to stderr.
+export fn eprintln(line: string) {
+    avra_eputs(line)
+}
+
+// ── Refusals ────────────────────────────────────────────────────
+
+/// Why the host refused, with the path it refused.
+export enum IoError {
+    NotFound(path: string)
+    Denied(path: string)
+    IsDirectory(path: string)
+    NotDirectory(path: string)
+    Failed(path: string, errno: int)
+}
+
+impl Error for IoError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .NotFound(p) -> info("io.not_found", "`${p}` does not exist"),
+            .Denied(p) -> info("io.denied", "`${p}` may not be accessed"),
+            .IsDirectory(p) -> info("io.is_directory", "`${p}` is a directory"),
+            .NotDirectory(p) -> info("io.not_directory", "`${p}` is not a directory"),
+            .Failed(p, e) -> info("io.failed", "`${p}`: ${avra_errno_text(e)}"),
+        }
+    }
+}
+
+/// The host's status judged: a refusal raises, naming the path.
+fn done(path: string, status: int) -> Result<int, IoError> {
+    if status < 0 { fail refused(path, 0 - status) }
+    status
+}
+
+/// An errno as the refusal it means.
+fn refused(path: string, errno: int) -> IoError {
+    if errno == enoent() { return IoError.NotFound(path) }
+    if errno == eacces() || errno == eperm() { return IoError.Denied(path) }
+    if errno == eisdir() { return IoError.IsDirectory(path) }
+    if errno == enotdir() { return IoError.NotDirectory(path) }
+    IoError.Failed(path, errno)
+}
+
+fn eperm() -> int { 1 }
+fn enoent() -> int { 2 }
+fn eacces() -> int { 13 }
+fn enotdir() -> int { 20 }
+fn eisdir() -> int { 21 }
+
+// ── Paths ───────────────────────────────────────────────────────
+
+/// What stands at a path.
+export enum Entry {
+    Missing
+    File
+    Dir
+    Other
+}
+
+export fn kind_of(path: string) -> Result<Entry, IoError> {
+    entry_of(done(path, avra_io_kind(path))?)
+}
+
+fn entry_of(kind: int) -> Entry {
+    match kind {
+        0 -> Entry.Missing,
+        1 -> Entry.File,
+        2 -> Entry.Dir,
+        _ -> Entry.Other,
+    }
+}
+
+/// Whether anything stands at the path — one the host will not
+/// describe counts as absent.
+export fn exists(path: string) -> bool {
+    !(standing(path) is .Missing)
+}
+
+export fn is_file(path: string) -> bool {
+    standing(path) is .File
+}
+
+export fn is_dir(path: string) -> bool {
+    standing(path) is .Dir
+}
+
+fn standing(path: string) -> Entry {
+    kind_of(path) catch Entry.Missing
+}
+
+// ── Files ───────────────────────────────────────────────────────
+
+/// The whole file as text.
+export fn read_text(path: string) -> Result<string, IoError> {
+    done(path, avra_io_read(path))?
+    avra_io_taken()
+}
+
+/// The text written whole — a reader sees the old file or the new,
+/// never half. Answers the path.
+export fn write_text(path: string, text: string) -> Result<string, IoError> {
+    done(path, avra_io_write(path, text))?
+    path
+}
+
+/// The directory's entries in byte order, `.` and `..` left out.
+export fn list_dir(path: string) -> Result<List<string>, IoError> {
+    done(path, avra_io_list(path))?
+    names_of(avra_io_taken())
+}
+
+/// The stash's names, joined on `/` — the one byte a name cannot
+/// hold; an empty directory is `[]`.
+fn names_of(joined: string) -> List<string> {
+    if joined.length == 0 { return [] }
+    joined.split("/")
+}
+
+/// Every directory along the path made; one already standing is
+/// fine. Answers the path.
+export fn make_dirs(path: string) -> Result<string, IoError> {
+    done(path, avra_io_mkdir(path))?
+    path
+}
+
+/// A file, or an empty directory, gone. Answers the path.
+export fn remove(path: string) -> Result<string, IoError> {
+    done(path, avra_io_remove(path))?
+    path
+}
+
+// ── The environment ─────────────────────────────────────────────
+
+/// The variable's value, or null when it is not set — an empty
+/// value is set. A name holding `=` names nothing: the host would
+/// read it up to the `=` and answer another variable's value.
+export fn env(name: string) -> string? {
+    if name.contains("=") || avra_io_env(name) < 0 { return null }
+    avra_io_taken()
+}
+
+export fn env_or(name: string, default: string) -> string {
+    env(name) ?? default
+}

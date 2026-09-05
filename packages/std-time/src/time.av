@@ -1,0 +1,49 @@
+//! @std.time — a duration is a VALUE, never a bare count, so a seat
+//! that wants one cannot be handed a number that meant something
+//! else; the clock is monotonic milliseconds, what a deadline is
+//! made of. Two readings differ by the time between them and mean
+//! nothing alone.
+extern fn avra_now_ns() -> int
+
+/// A span of time, in whole milliseconds.
+export type Duration = { ms: int }
+
+export fn ms(n: int) -> Duration {
+    Duration { ms: n }
+}
+
+export fn secs(n: int) -> Duration {
+    Duration { ms: n * 1000 }
+}
+
+export fn mins(n: int) -> Duration {
+    Duration { ms: n * 60000 }
+}
+
+/// The monotonic clock, in milliseconds since an origin nobody is
+/// told.
+export fn now_ms() -> int {
+    avra_now_ns() / 1000000
+}
+
+impl Duration {
+    fn plus(other: Duration) -> Duration {
+        Duration { ms: self.ms + other.ms }
+    }
+    fn is_zero() -> bool {
+        self.ms == 0
+    }
+    /// The span as a human reads it: `340ms`, `1.2s`, `2m05s`.
+    fn text() -> string {
+        duration_text(self.ms)
+    }
+}
+
+/// Milliseconds as text, at the unit a human would pick.
+export fn duration_text(total: int) -> string {
+    if total < 1000 { return "${total}ms" }
+    if total < 60000 { return "${total / 1000}.${(total % 1000) / 100}s" }
+    let s = (total % 60000) / 1000
+    let pad = if s < 10 { "0" } else { "" }
+    "${total / 60000}m${pad}${s}s"
+}

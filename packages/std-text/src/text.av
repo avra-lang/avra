@@ -1,0 +1,153 @@
+//! @std.text — text built and shaped.
+//!
+//! A `Text` grows in linear time: pieces are kept apart and joined
+//! once, so a scanner copies runs instead of growing a string by one
+//! character (which is quadratic). `repeat`, `pad_left` and
+//! `pad_right` shape a column — width measured in code points, so a
+//! name with an `é` aligns. `lines` and `indent` treat text as rows.
+//! The code-point walk (`codepoints`, `chars`, `codepoint_count`)
+//! reads UTF-8 by its lead bytes, so a byte scanner and a character
+//! count never disagree.
+
+// ── The builder ─────────────────────────────────────────────────
+
+/// Text under construction: pieces apart until `built` joins them.
+export type Text = { parts: List<string> }
+
+export fn builder() -> Text {
+    Text { parts: [] }
+}
+
+impl Text {
+    mut fn push(piece: string) {
+        self.parts.push(piece)
+    }
+
+    fn built() -> string {
+        self.parts.join("")
+    }
+}
+
+// ── Shaping ─────────────────────────────────────────────────────
+
+/// `s` written `n` times; nothing for `n` at or below zero.
+export fn repeat(s: string, n: int) -> string {
+    mut out = builder()
+    mut i = 0
+    while i < n {
+        out.push(s)
+        i = i + 1
+    }
+    out.built()
+}
+
+/// `s` followed by spaces up to `width` code points — as it is when
+/// already that wide.
+export fn pad_right(s: string, width: int) -> string {
+    s + repeat(" ", width - codepoint_count(s))
+}
+
+/// Spaces then `s`, `width` code points in all.
+export fn pad_left(s: string, width: int) -> string {
+    repeat(" ", width - codepoint_count(s)) + s
+}
+
+/// The rows of a text: split at newlines, a final newline closing
+/// the last row rather than opening an empty one; "" has none.
+export fn lines(s: string) -> List<string> {
+    if s.length == 0 { return [] }
+    s.split("\n")
+}
+
+/// Every row set in by `n` spaces.
+export fn indent(s: string, n: int) -> string {
+    [repeat(" ", n) + l for l in lines(s)].join("\n")
+}
+
+/// Nothing but spaces, tabs, carriage returns and newlines — or
+/// nothing at all.
+export fn is_blank(s: string) -> bool {
+    codepoints(s).all(is_blank_code(it))
+}
+
+fn is_blank_code(c: int) -> bool {
+    c == 32 || c == 9 || c == 13 || c == 10
+}
+
+// ── The code-point walk ─────────────────────────────────────────
+
+/// One code point as UTF-8 spells it: where it starts, how many
+/// bytes it takes, and its value.
+type Step = { at: int, width: int, code: int }
+
+/// The code points of a text, in order. A byte that begins no valid
+/// sequence — a stray continuation byte, a sequence cut short by the
+/// end — stands for itself.
+export fn codepoints(s: string) -> List<int> {
+    [st.code for st in steps(s)]
+}
+
+/// Each code point as its own text.
+export fn chars(s: string) -> List<string> {
+    [s.substring(st.at, st.at + st.width) for st in steps(s)]
+}
+
+export fn codepoint_count(s: string) -> int {
+    steps(s).length
+}
+
+fn steps(s: string) -> List<Step> {
+    mut out: List<Step> = []
+    let n = s.length
+    mut i = 0
+    while i < n {
+        let st = step_at(s, i, n)
+        out.push(st)
+        i = i + st.width
+    }
+    out
+}
+
+/// The sequence beginning at `i`: its length by the lead byte, its
+/// value from the six-bit tails — arithmetic, since the bytes are
+/// plain numbers here.
+fn step_at(s: string, i: int, n: int) -> Step {
+    let b = s.char_code(i)
+    let width = lead_width(b)
+    if width == 1 || i + width > n { return lone_byte(i, b) }
+    mut code = b - lead_mark(width)
+    mut k = 1
+    while k < width {
+        let tail = s.char_code(i + k)
+        if tail < 128 || tail >= 192 { return lone_byte(i, b) }
+        code = code * 64 + (tail - 128)
+        k = k + 1
+    }
+    Step { at: i, width: width, code: code }
+}
+
+/// A byte standing for itself — ASCII, or one that leads nothing.
+fn lone_byte(i: int, b: int) -> Step {
+    Step { at: i, width: 1, code: b }
+}
+
+/// How many bytes a lead byte announces: 1 for ASCII and for a byte
+/// that leads nothing.
+fn lead_width(b: int) -> int {
+    when {
+        b < 128 -> 1
+        b >= 240 && b < 248 -> 4
+        b >= 224 && b < 240 -> 3
+        b >= 192 && b < 224 -> 2
+        _ -> 1
+    }
+}
+
+/// The marker bits a lead byte carries, as the number to take away.
+fn lead_mark(width: int) -> int {
+    when {
+        width == 4 -> 240
+        width == 3 -> 224
+        _ -> 192
+    }
+}
