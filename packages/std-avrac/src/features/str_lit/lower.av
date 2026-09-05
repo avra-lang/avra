@@ -3,7 +3,7 @@
 //! str_join answers — zero new instructions, the escape hatch
 //! carrying the feature again.
 use core.{ExprId, Reg, Ins, Type, BinOp}
-use features.{LowerCx, MethodCall, grown_box, lower_defect, length_word, rt_method}
+use features.{LowerCx, MethodCall, grown_box, lower_defect, length_word, rt_method, const_int}
 
 fn interp_reg(mut cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) -> Reg {
     mut pieces = [part_reg(cx, e, parts[0])]
@@ -61,8 +61,7 @@ export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
     if word == null { return lower_defect(cx, mc.e, "an emptiness test on an unmeasurable shape survived typing") }
     let len = cx.mint_shape(Type.Int)
     cx.emit(Ins.CallRt(len, word!, [s]))
-    let zero = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(zero, 0))
+    let zero = const_int(cx, 0)
     let dst = cx.result(mc.e)
     cx.emit(Ins.Bin(dst, BinOp.Eq, len, zero))
     dst
@@ -71,8 +70,7 @@ export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
 /// `s.char_code()` reads the start; `s.char_code(i)` the byte at `i`.
 export fn lower_char_code(mut cx: LowerCx, mc: MethodCall) -> Reg {
     if !mc.args.is_empty() { return rt_method(cx, mc, "avra_str_char_code", []) }
-    let start = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(start, 0))
+    let start = const_int(cx, 0)
     rt_method(cx, mc, "avra_str_char_code", [start])
 }
 
@@ -82,13 +80,3 @@ fn rt1(mut cx: LowerCx, e: ExprId, callee: string, v: Reg) -> Reg {
     dst
 }
 
-/// `s.length` — the word the one measure table gives the string's
-/// shape; measured, every time it is asked.
-export fn lower_str_length(mut cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
-    let s = cx.reg_of(subject)
-    let word: string? = length_word(cx.view.types.shape_of(cx.type_at(subject)))
-    if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, word!, [s]))
-    dst
-}

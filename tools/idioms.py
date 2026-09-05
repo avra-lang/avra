@@ -249,6 +249,10 @@ def dead_parameter(lines):
 # by design. scan() fills this before each file.
 MODULE_BODY = {"text": ""}
 
+# The file under scan, for the one rule whose exemption is a FILE: the
+# emission vocabulary's own body may emit what everyone else speaks.
+CURRENT = {"path": ""}
+
 # A `grammar { … }` block EXPANDS into the grammar's own
 # constructors, so a module that writes one uses these names without
 # ever spelling them. A text scan cannot see an expansion.
@@ -312,6 +316,19 @@ def repeated_unwrap(lines):
 # are the smell; the rule looks for the names our scanners use.
 STRING_LEN_LOOP = re.compile(
     r"while [^{]*\b(s|src|a|b|text|name|source)\.length\b")
+
+REGION_EMIT = re.compile(r"cx\.emit\(Ins\.(IfStart|ArmEnd|RegionEnd)\(")
+
+def raw_region(lines):
+    """A region instruction emitted raw by a feature. The emission
+    vocabulary (features/emit.av) speaks it: `open_region`, `arm_end`,
+    `close_region`/`close_region_as` — one instruction stream for both
+    engines by construction. The vocabulary's own body is exempt."""
+    if CURRENT["path"].endswith("features/emit.av"):
+        return
+    for i, l in enumerate(lines):
+        if REGION_EMIT.search(l):
+            yield i, l.strip()
 
 def restrlen(lines):
     """A loop condition that re-measures a STRING's length. Hoist it:
@@ -387,6 +404,9 @@ RULES = {
             "count (`refused_with`, or `== n`)"),
     "I21": (unmutated_mut,
             "a `mut` nothing mutates — say `let`"),
+    "I33": (raw_region,
+            "a region instruction emitted raw in a feature — speak emit.av's verb "
+            "(open_region / arm_end / close_region)"),
     "I28": (line_rx(r"pointed\(error_at\("),
             "a refusal assembled by hand — the one shape is "
             "`refusal(kind, at, message, label, help)`"),
@@ -475,6 +495,7 @@ SPECIMENS = {
             ["    fn m(self, a: int, b: int) -> int {", "        a + a", "    }"],
             ["    fn m(self, a: int) -> int { 1 }"]],
     "I24": [["use core.{Span}"]],
+    "I33": [["    cx.emit(Ins.IfStart(c))"], ["        cx.emit(Ins.ArmEnd(v))"], ["    cx.emit(Ins.RegionEnd(dst, last))"]],
     "I28": [['    cx.emit(pointed(error_at("k", at, "m"), "l"))']],
     "I26": [["fn f(x: int?) -> int {", "    if x == null { return 0 }",
              "    x! + x! + x!", "}"],
@@ -531,6 +552,7 @@ def scan():
     for path in sources():
         rel = os.path.relpath(path, ROOT)
         MODULE_BODY["text"] = bodies[os.path.dirname(path)]
+        CURRENT["path"] = rel
         lines = open(path).read().split("\n")
         for code, (matcher, _) in RULES.items():
             if code in PRODUCT_ONLY and "/tests/" in rel:

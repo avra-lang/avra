@@ -4,7 +4,7 @@
 //! and its step store after the body — nothing the IR does not
 //! already say.
 use core.{StmtId, ExprId, Ins, Level, TypeId, BinOp, Type}
-use features.{LowerCx}
+use features.{LowerCx, const_int}
 
 export fn lower_while(mut cx: LowerCx, cond: ExprId, stmts: List<StmtId>) {
     cx.emit(Ins.LoopStart)
@@ -41,8 +41,7 @@ export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: Lis
     let xs = cx.reg_of(subject)
     let len = cx.mint_shape(Type.Int)
     cx.emit(Ins.CallRt(len, "avra_array_len", [xs]))
-    let zero = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(zero, 0))
+    let zero = const_int(cx, 0)
     let idx = cx.mint_shape(Type.Int)
     cx.emit(Ins.Alloca(idx))
     cx.emit(Ins.Store(idx, zero))
@@ -65,8 +64,7 @@ export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: Lis
     cx.lower_stmts(stmts)
     let again = cx.mint_shape(Type.Int)
     cx.emit(Ins.Load(again, idx))
-    let one = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(one, 1))
+    let one = const_int(cx, 1)
     let next = cx.mint_shape(Type.Int)
     cx.emit(Ins.Bin(next, BinOp.Add, again, one))
     cx.emit(Ins.Store(idx, next))

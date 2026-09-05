@@ -2,8 +2,8 @@
 //! onto the region brackets `if` built, one nested region per arm,
 //! each later condition lowering INSIDE the previous arm's else.
 //! Native short-circuits exactly as eval does.
-use core.{ExprId, Reg, Ins}
-use features.{LowerCx, foreign_node}
+use core.{ExprId, Reg}
+use features.{LowerCx, foreign_node, arm_end, open_region, close_region}
 
 fn when_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     match cx.view.store.expr(e) {
@@ -19,11 +19,9 @@ fn when_lower(mut cx: LowerCx, e: ExprId) -> Reg {
 fn arm_reg(mut cx: LowerCx, e: ExprId, conds: List<ExprId>, values: List<ExprId>, fallback: ExprId, i: int) -> Reg {
     if i == conds.length { return cx.reg_of(fallback) }
     let c = cx.reg_of(conds[i])
-    cx.emit(Ins.IfStart(c))
+    open_region(cx, c)
     let t = cx.reg_of(values[i])
-    cx.emit(Ins.ArmEnd(t))
+    arm_end(cx, t)
     let rest = arm_reg(cx, e, conds, values, fallback, i + 1)
-    let dst = cx.result(e)
-    cx.emit(Ins.RegionEnd(dst, rest))
-    dst
+    close_region(cx, e, rest)
 }
