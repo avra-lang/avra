@@ -76,7 +76,7 @@ build/llvm_wrapper.o: backend/llvm_wrapper.c
 	cc -c -O2 -I$(LLVM_PREFIX)/include -o build/llvm_wrapper.o backend/llvm_wrapper.c
 
 clean:
-	rm -rf build scratch
+	rm -rf build scratch packages/cli/src/main_stamped.av
 	find packages corpus -name "*.avra-sha256" -delete
 	find packages corpus -name "*.av.ll" -delete
 	find corpus -type f ! -name "*.av" ! -name "*.expected" ! -name "expected" ! -name "avra.toml" -delete

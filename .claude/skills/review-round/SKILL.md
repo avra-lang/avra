@@ -134,8 +134,9 @@ future idiom engine's rulebook, written by dogfooding. Every round:
 
 ## Feed the ledgers (every discovery has a home)
 
-- bs2 gap or trap discovered -> CLAUDE.md "bs2 subset notes", with
-  the symptom signature so it is never re-diagnosed.
+- A form our compiler REFUSES that the language will want ->
+  CLAUDE.md "The subset today", with the refusal's words so it is
+  never re-diagnosed, and the ask in the ROADMAP's sugar backlog.
 - Pattern proven in tree -> DOGFOODING.md, with a real example —
   and an I-code entry in its registry when it is a RULE (smell +
   idiomatic form + licensed exceptions).
@@ -152,8 +153,9 @@ future idiom engine's rulebook, written by dogfooding. Every round:
 `make gate` — suite plus corpus, eval == native == expected — before
 any round is called done. Goldens that change must change because
 the TRUTH changed, and the diff is inspected, not accepted. If a
-fix touches lib-mode behavior, remember the front door is `./avra`
-(never raw bs2 run) and `[dependencies]` staleness is a known class.
+fix touches a package's build, remember the front door is `./avra`
+(`build/avra`, else the seed) and a whole-package check runs under
+`sh tools/watch.sh 4000`.
 
 ## Report (the shape that lands)
 

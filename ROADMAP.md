@@ -118,7 +118,7 @@ user CPU, never wall). Baseline 2026-09-04: parse 14.2s, resolve
 the compiler checking itself 28.8s.
   - [ ] THE ENGINE'S CAPTURE COPYING: repetition captures are
         copied per append, so an N-statement program parses in
-        O(N^2) (TECH_DEBT). `Many` becomes a prefix snapshot
+        O(N^2) (the debt below the ledger). `Many` becomes a prefix snapshot
         ({shared list, count}): push at the tip, copy only after a
         real rollback. DONE WHEN parse drops measurably on the
         suite and the corpus is green; record the number here.
@@ -194,27 +194,63 @@ the order is the dependency.
         import ten names for a `grammar { }` expansion).
 
 LANE D — THE SWEEP (cheap items for the gaps between builds; owns
-CLAUDE.md, TECH_DEBT.md, the cli entry, this ledger's bs2 section).
-  - [ ] THE 76 SUBSET NOTES audited: probe each (a sub-second
-        `./avra check` of a scratch file); ACCEPTED -> the note is
-        deleted; REFUSED -> it moves to a new "the subset today"
-        list, each entry a sugar-backlog candidate, not a trap to
-        write around. The section stops being a memorial to bs2.
-  - [ ] `packages/cli/src/main_stamped.av` and its `exclude` line
-        deleted (the generator is already gone).
-  - [ ] The `mod commands` stub in `cli/src/main.av` deleted once
-        the resolver treats a directory as a module (verify; it is
-        a one-line probe).
+CLAUDE.md, the cli entry, this ledger's bs2 section).
+  - [x] THE 76 SUBSET NOTES audited (2026-09-04): every note probed
+        with `./avra check` (and `run`/`build`, plus a scratch
+        package for the module, dependency and `avra test` notes).
+        TALLY: 37 ACCEPTED -> deleted; 28 REFUSED -> CLAUDE.md "The
+        subset today" with the refusal's exact words (23 gaps, 5
+        laws that speak — named in its preface, not listed); 11
+        REWORDED -> 2 bs2-toolchain notes deleted, 4 house rules to
+        a new "Working discipline" section, the IR bool law to
+        Rules, 3 runtime facts kept as ours (`.length` is strlen —
+        measured native, 0.91s against 0.44s hoisted at 150k;
+        `split` drops a trailing empty; `avra run`'s 400-call
+        floor), and the #1377 Style exception retired (ours has no
+        #1377: probed with the exact shape). Every accepted probe
+        also agrees eval == native (52 programs built; the one
+        divergence is the interpreter's documented floor), and
+        `corpus/sweep.av` pins the accepted shapes no other corpus
+        program witnesses, so a deleted note stays deleted. SUGAR
+        CANDIDATES the
+        sweep surfaced, for the backlog: a trailing comma in a
+        parameter list; struct destructuring in `let`; bindings
+        across `or` alternatives; range comprehensions; `type Id =
+        int`; `table` under a typed let's row; an empty-block match
+        arm; `?` before `.` on a Result; `export const`; a no-arg
+        generic call pinned by its want; a lambda's body reading its
+        declared answer for bare variants; a `dyn` want reaching
+        into arms; variant arms through a nullable; `T` in a generic
+        impl's local annotation; the bare component form and
+        instantiation as an expression; value `==`/`contains` over
+        lists, structs and enums; `List.reverse/sort/find_index`,
+        `string.is_empty`, map indexing. FOUND ON THE WAY, not lane
+        D's to fix: an ABSOLUTE `path =` in `[dependencies]` is
+        joined under the package root (F4007 names `<root>/Users/…`);
+        the `mod x` grammar rule (features/modules) is dead weight
+        now; ten unit-only one-line enums stand in the tree
+        (`Confidence`, `Rep`, `TokenKind`, …) — the house rule
+        licenses unit-only enums on one line, payload-carrying ones
+        never; `core/tests/lists_test.av`'s `LICENSED I3` ("a bs2
+        test unit miscompiles an interpolated comprehension
+        element") is stale — ours takes `["${x}" for x in xs]`.
+  - [x] `packages/cli/src/main_stamped.av` and its `exclude` line
+        deleted; `.gitignore` forgets it; `make clean` sweeps a
+        dropping (the main worktree carries one — `make clean`
+        there, or `rm -f`, after the merge).
+  - [x] The `mod commands` stub deleted from `cli/src/main.av`: a
+        directory IS a module (a scratch package's `use commands.{…}`
+        resolved with no stub; the cli checks clean without it).
   - [ ] `extern fn println` / `eprintln` in the cli and the corpus
         replaced by `@std/io` (after lane B lands it).
-  - [ ] CLAUDE.md's "Vendored code" paragraph: `spec_test` is
-        already gone from the tree; `std-cli` goes with lane B.
-        Rewrite when each falls.
-  - [ ] TECH_DEBT.md: the "Toolchain rent" and "bs2 defects"
-        sections retire item by item — each dies, or moves here as
-        OUR debt with its trigger.
-  - [ ] THE bs2 DEBT LEDGER (below, under rung 15): every entry
-        struck or moved; the ledger closes.
+  - [x] CLAUDE.md's "Vendored code" paragraph: `spec_test` is gone;
+        `std-cli` alone remains, until lane B. README's Toolchain
+        section rewritten with it (nobody's file; stale since the
+        seed).
+  - [x] TECH_DEBT.md DELETED: every bs2 item died on the probes or
+        moved below the ledger as OUR debt with its trigger.
+  - [x] THE bs2 DEBT LEDGER closed (below): every entry struck or
+        handed to its lane; what remains is ours.
 
 THE CLOUD (probed 2026-09-04): an agent asked for "remote" isolation
 from a session on the Mac mini lands on the SAME Mac mini, in a
@@ -4002,68 +4038,116 @@ disagree and the tree spells bs2's side.
   half: a loop whose body is one push, where a PAIRED COMPREHENSION
   (`[f(i, x) for i, x in xs]`) would say it and does not parse — our
   own sugar backlog, not bs2's.
-- `code_at(s, i)` = `s.substring(i, i + 1).char_code()` (bs2's
-  `char_code` drops its index): an allocation per byte in every
-  scanner. FIX: `s.char_code(i)` (landed in rung 8) everywhere;
-  `code_at` becomes it.
-- `s.length` is `strlen` (hoisted at 8+ sites, I27). FIX:
-  length-carrying strings in the runtime; the ratchet retires.
-- Typed ids interchangeable, pattern and construction arity
-  unchecked (the `.Call(_, _)` in program.av survived bs2; Avra
-  refused it). FIX: none needed — Avra checks; the I25 ratchet
-  retires at self-host.
-- The reserved words bs2 lexes even as fields/locals (`spec`,
-  `given`, `then`, `none`, `level`, `owned`): renames across the
-  tree (`suite`, `group`, `tier`, `runs`, `moved`). FIX: none
-  needed; the renames stand.
-- Test-string `${`, struct literals pinned under `let` in free-fn
-  argument lists and closure-field calls, `dyn` boxing only under
-  typed lets, explicit `<N>` pins, the `it` pronoun's limits, the
-  closure-field-call discipline, comprehension limits, one-line
-  enums, multi-line `use`, `.reverse()` in place, `contains` by
-  identity, `is_empty` on strings, module-level `let` across files,
-  trait default bodies — every entry of CLAUDE.md's "bs2 subset
-  notes" is a borrowed constraint on the tree; each is lifted the
-  day bs2 retires, and the notes section is deleted with it.
-- FIELD PUNNING (`T { name, value }`, two sites in std-cli): bs2 has
-  it; Avra's `NAME {` cannot without a lexical class for type names —
-  `null { v }` would be a literal and every `if … != null { v }`
-  would break. The two sites spell `name: name`. FIX: decide the
-  type-name class (Capitalized?) with the spec, then punning lands.
-- bs2's `mod x` stub (cli/src/main.av): a directory IS a module in
-  Avra; `mod x` parses as `use x.{}` (the module named, nothing
-  imported). FIX: delete the line at self-host.
-- The vendored `spec_test` feature and `std-cli`: bs2's test runner
-  and CLI. FIX: `avra test` (landed) replaces the runner; delete
-  both packages at self-host.
-- THE GENERIC ANSWER'S IDENTITY: a field read or `with` on a
-  generic method's answer ICEs bs2 ("unknown struct"), so the tree
-  binds an annotated let first (`memory.av`'s scope reads). And a
-  generic impl's body cannot name its own `T` in an annotation.
-  FIX: none needed — Avra types both; delete the extra binds when
-  bs2 goes.
+- ~~`code_at(s, i)` = `s.substring(i, i + 1).char_code()`~~ — PAID:
+  `code_at` IS `s.char_code(i)` (core/chars.av), and ours answers the
+  index (`"hello".char_code(1)` is 101, probed 2026-09-04).
+- `s.length` is `strlen` (hoisted at 8+ sites, I27) — OURS, measured
+  2026-09-04 (a 150k re-asking loop: 0.91s user against 0.44s
+  hoisted, native). -> LANE A: length-carrying strings; the ratchet
+  retires with them.
+- ~~Typed ids interchangeable, pattern and construction arity
+  unchecked~~ — STRUCK 2026-09-04: probed, Avra refuses all three
+  (F2000 "wants `StmtId`, found `DeclId`"; F2015 "`.A` carries 3, the
+  pattern names 2" / "`S.A` carries 2 values, given 1"). The I25
+  ratchet is now belt over braces; retire it when its baseline is
+  empty.
+- ~~The reserved words bs2 lexes even as fields/locals~~ — STRUCK
+  2026-09-04: ours has its own law with a voice (F3002 names the
+  word as a keyword or "reserved for a future Avra feature"); `none`,
+  `ref`, `shape` and `where` are free. The renames stand.
+- ~~Every entry of CLAUDE.md's "bs2 subset notes"~~ — STRUCK
+  2026-09-04: the section is deleted. Of its 76 notes, 37 were
+  probed ACCEPTED (struct literals in every argument seat, `<N>`
+  pins from struct arguments and fn-typed arguments, the
+  closure-field-call discipline — exhaustiveness IS checked there —
+  multi-line `use`, present-bind arms under mono, `.last()!` and
+  `xs[i]` as copies, `xs[i] = v`, `\${`, `"}"`, …); the 28 it still
+  refuses are OUR gaps in "The subset today", each with the
+  refusal's words (lane D's block has the tally and the candidates).
+- ~~FIELD PUNNING (`T { name, value }`)~~ — MOVED: it is ours, not
+  bs2's; the sugar backlog holds it and lane C lands it.
+- ~~bs2's `mod x` stub (cli/src/main.av)~~ — PAID 2026-09-04: the
+  line is deleted and the cli checks clean (a scratch package's
+  directory module resolved with no stub). The grammar rule that
+  parses `mod x` as `use x.{}` (features/modules) is dead weight now
+  — its owner deletes it with the next touch of that feature.
+- The vendored ~~`spec_test` feature~~ (GONE — `avra test` is the
+  runner) and `std-cli` (a symlink into the old tree, still). ->
+  LANE B: `@std/cli`, then the package is deleted.
+- ~~THE GENERIC ANSWER'S IDENTITY~~ — STRUCK 2026-09-04: probed, a
+  field read and a `with` on a generic method's answer both type
+  with no bind; the annotated lets in `memory.av` go with the next
+  touch (lane C's file). What bs2 shared with us: a generic impl's
+  body still cannot name its own `T` in a local annotation (F2001
+  "`T` names no type") — in "The subset today", a candidate.
 - ~~THE `"}"` LITERAL~~ — PAID 2026-09-04: ours lexes a `}` inside a
   string, so `closing_brace` reads `index_of("}")` and says what it
   means. Its companion paid with it: 206 sites across 31 files spelled
   a literal `${` as `"$" + "{"` because bs2 has no `\$` escape. Ours
   does, and they say `\${` now.
-- THE ELEMENT WRITE (`mut x = xs[i]; x.push(v)`, ~12 sites, all
-  rewritten): bs2 aliases an element, so mutating the copy changed
-  the container. Avra copies. FIX: none needed — the tree now
-  writes the value BACK, or reaches the place through a field or a
-  receiver. The pattern is recorded in DOGFOODING; delete this
-  entry when bs2 goes.
-- THE STAMPED ENTRY (`packages/cli/src/main_stamped.av`, written by
-  `./avra` and EXCLUDED from the cli package's own manifest): bs2
-  keys a run's cache by the entry file's bytes alone, so the front
-  door regenerates an entry carrying a hash of every package source.
-  Our compiler needs no such stamp — it keys each file. FIX: delete
-  the generator, the `exclude`, and the `./avra` shim at self-host;
-  `avra` is then the built binary.
+- ~~THE ELEMENT WRITE (`mut x = xs[i]; x.push(v)`)~~ — STRUCK
+  2026-09-04: probed, `xs[i]`, `.last()!` and a handed list are all
+  copies under ours; the tree writes the value back. DOGFOODING
+  holds the pattern.
+- ~~THE STAMPED ENTRY (`packages/cli/src/main_stamped.av`)~~ — PAID
+  2026-09-04: the generator was already gone; the `exclude` line, the
+  manifest's cache-key prose and both `.gitignore` lines are deleted,
+  and `make clean` sweeps a dropping. The `./avra` shim STAYS: it is
+  the cold-tree door (`build/avra`, else the seed), not a stamp.
 - `extern fn println` / `eprintln` in the compiler's own entry and
-  commands: bs2 has no host surface of its own, so the tree declares
-  the C prototypes it links against. FIX: a `@std/io` package over
-  the same externs, so a program prints without declaring C.
+  commands: the tree declares the C prototypes it links against. ->
+  LANE B: `@std/io` over the same externs; then lane D replaces the
+  externs in the cli and the corpus.
+
+THE LEDGER CLOSES HERE (2026-09-04): every bs2 entry above is struck
+or handed to its lane. What follows is OURS — the debt TECH_DEBT.md
+carried that outlived the bootstrap, each with the trigger that pays
+it:
+- NODE CEREMONY is hand-written derive: a new node variant costs a
+  fingerprint arm (nodes.av), canon and printing arms (types.av), a
+  Dispatch field + boxed let + dispatch arm (program.av) and backend
+  type arms (llvm.av) — ~45 lines across 4 files, every one a
+  mechanical consequence of the declaration, SAFE because the
+  exhaustive matches break every owed site. TRIGGER: the compiler
+  deriving from declarations (P6: generated AND checked).
+- BUILDER REGISTRATION is a value-level table, and builders take
+  positional args off a `Builder` context: a grammar's `-> int_lit(v)`
+  cannot bind a typed `fn int_lit(v: Token) -> Expr`. TRIGGER: build
+  calls bound to typed fns at composition (arity and types checked;
+  the engine allocates, spans and wraps) — the tables, accessors and
+  `Result<LangNode, string>` spelling then leave feature code.
+- THE LANGUAGE SHARES THE GRAMMAR DSL's SCANNER (`lex_source` owns
+  only the line policy): the token shapes and operator set happen to
+  cover the language. TRIGGER: the first token shape the DSL's
+  scanner cannot carry; a feature-extensible lexer replaces the rent
+  (lane B's `@std/text` code-point walk is a piece of it).
+- THE INTERN PATH materializes a string key per probe (a string-keyed
+  `Map`; FNV walks bytes). TRIGGER: the first composite shape, when
+  `canon` starts concatenating — an int-keyed table (fp_mix over the
+  variant ordinal and child ids, verify on collision), zero
+  allocation; the hot path already never interns.
+- A RECOVERY HOLE (`Stmt.Error`) is not linked to the diagnostic that
+  produced it. TRIGGER: the first tool that reads partial trees
+  (`avra explain` over a hole, the lsp) — a sparse side table, hole
+  -> diagnostic.
+- BUILD DROPPINGS: `avra build` writes `<file>.av.ll` and the binary
+  beside the source (`packages/*/src/main`, `corpus/*/src/main`), and
+  `make clean` sweeps them. TRIGGER: `avra build` growing an output
+  directory, as `avra test` already has (`build/` under the root).
+- THE FREE STATE FNS (the ALIAS BORROW and RECEIVER ALIASING entries
+  above) -> LANE C, with `mut self`.
+- Everything else TECH_DEBT.md carried was bs2's and died on the
+  probes: import closures (F3000/F3012 refuse both directions but the
+  unused one — I24), the vendored runner, the `src/` layer (ours by
+  convention now), runtime linking, freshness, the closure-field
+  exhaustiveness hole, `f(x)?.field`'s silent corruption (F2023 now),
+  the nullable-generic-local corruption, #1377, `f() == s`, the F1000
+  tail class, present-bind arms, newtype corruption (no newtypes),
+  the `dyn` vtable mix (F2013 now), `Result` through `dyn`, the
+  component silent null (F2000 now), fn-typed-arg evidence,
+  `grammar { }` blocks (landed), component instantiation in test
+  files (works). A `find_index` list method is still wanted ("The
+  subset today").
 
 PARITY RUNG 10 LANDED (2026-09-03) — SLOTS: a nullable POINTER is
 its own word. THE SLOT LAW sees through a nullable to what it

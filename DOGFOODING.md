@@ -2,7 +2,7 @@
 
 Patterns proven in this tree — reach for these before writing the
 C-style version. Probe unfamiliar features in scratch first; known
-gaps live in CLAUDE.md "bs2 subset notes".
+gaps live in CLAUDE.md "The subset today".
 
 
 ### A write reaches a PLACE, never a value
@@ -161,9 +161,10 @@ gate — there is no amnesty left to hide in.
 - I15 a PUSH/RUN/POP ritual around varying bodies is ONE bracket
       fn taking a thunk (`under_overlay(r, () -> ...)` — the
       overlay push/pop lived three times in resolve; the bracket
-      now guarantees the pop). Zero-arg closures work in bs2 and
-      mutate captured locals, so the body just closes over what it
-      needs.
+      now guarantees the pop). A zero-arg closure closes over what
+      the body reads; a capture is a COPY (F3005 refuses a write to
+      it), so state the body changes travels as the thunk's answer
+      or through a receiver.
 - I16 dup detection is a POSITION law, not a seen-accumulator:
       inside `for (j, x) in xs.enumerate()`, a duplicate is
       `xs.index_of(x) < j` — first occurrence earlier than here.
@@ -261,9 +262,10 @@ gate — there is no amnesty left to hide in.
       `mod.av`. Per-FILE unused-import analysis is wrong and will
       delete imports that siblings depend on — it did, and the suite
       caught it.
-- I24 an IMPORT nothing in the module uses. bs2 checks neither
-      direction (TECH_DEBT: no import closures), so imports are
-      hand-kept truth and rot silently — 54 had accumulated, several
+- I24 an IMPORT nothing in the module uses. The resolver refuses
+      a MISSING import (F3000) and an import of a name a module does
+      not export (F3012), but an unused one is silent, so imports
+      rot in that one direction — 54 had accumulated, several
       created by the same day's refactors.
 
 - I25 a variant pattern writing the WRONG payload count. bs2 does
@@ -799,8 +801,8 @@ fn alloc_expr(self, e: Expr, span: Span?) -> ExprId {
 }
 ```
 
-(Do NOT capture a `mut` struct in a closure — bs2 emits invalid IR;
-capture the `let` struct and go through a fn like this instead.)
+(A closure captures by VALUE: capture the `let` struct and go
+through a fn like this; a write to a captured `mut` is refused.)
 
 ## Comprehension as list copy
 
@@ -988,7 +990,8 @@ match self {
 
 A trait names a contract; types join by `impl Trait for` — across
 package boundaries too. Keep mandatory methods to the one thing every
-implementor must say (bs2 cannot materialize default bodies):
+implementor must say (default bodies are not in the language yet —
+CLAUDE.md, "The subset today"):
 
 ```avra
 // @std.errors

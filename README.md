@@ -147,16 +147,19 @@ imported by everything above them.
 
 ## Toolchain
 
-Built and tested with the bootstrap compiler `bs2`
-(`../forge-crafting-intepreters/bootstrap/build/bs2`) until Avra can
-express its own compiler — the self-host endgame recorded in
-ROADMAP.md. Design sources of truth live in the same tree:
+The compiler builds itself: `./avra` runs `build/avra`, `make avra`
+rebuilds it with the binary already there, and a cold tree
+bootstraps from `bootstrap/seed.ll` (`make bootstrap`; the rule is
+in bootstrap/README.md). Design sources of truth live in the old
+tree (`../forge-crafting-intepreters`):
 `docs/2026_04_18_FULL_SPEC.md` (the language),
 `docs/2026_06_14_AST_SOURCE_OF_TRUTH_EPIC.md` (the node model),
 `bootstrap/docs/2026_08_19_STANDARDIZATION.md` (front-end shape).
 
-bs2 fixes parts of the layout: package entries resolve at
-`packages/<scope>-<name>/src/<name>.av`, the test runner loads
-vendored `spec_test/` and `std-cli/` (see their VENDORED notes), and
-build byproducts (`*.avra-sha256`, `*.av.ll`, `build/`) are cleaned
-by `make clean`.
+The layout is convention the compiler reads: a package is a
+directory with an `avra.toml`, its modules are the `.av` files and
+directories under `src/`, and `use @scope.name.…` reaches a path
+dependency's modules. `packages/std-cli/` is still a symlink into
+the old tree's bootstrap CLI (rent until `@std/cli` lands). Build
+byproducts (`*.av.ll`, a binary beside its source, `build/`) are
+cleaned by `make clean`.

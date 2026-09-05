@@ -1,0 +1,87 @@
+// proves: shapes the bootstrap dialect refused or miscompiled and
+// ours accepts — a local captured by a lambda and called as a method
+// receiver inside an early-returning loop, doc comments on fields
+// and between trait sigs, `(f(x)?).field` as a comprehension
+// element, `v!.field` in a match arm, a four-argument indirect call,
+// stacked parameters, a present-bind arm under two instantiations,
+// a nullable call compared to text, a struct literal in a free fn's
+// argument list, an interpolated comprehension element, `split`'s
+// empty segments, and a trait method answering Result through `dyn`.
+type Reg = { ids: List<int> }
+impl Reg {
+    fn has(self, i: int) -> bool { self.ids.contains(i) }
+}
+fn first_known(r: Reg, xs: List<int>) -> int {
+    let probe = () -> r.has(99)
+    for x in xs {
+        if r.has(x) { return x }
+    }
+    if probe() { 99 } else { 0 - 1 }
+}
+type Span = {
+    /// the low end
+    lo: int,
+    /// the high end
+    hi: int,
+}
+trait Show {
+    /// the value
+    fn show(self) -> int
+    /// the value, checked
+    fn checked(self) -> Result<int, Bad>
+}
+enum Bad {
+    boom
+}
+impl Show for Span {
+    fn show(self) -> int { self.hi - self.lo }
+    fn checked(self) -> Result<int, Bad> { if self.lo > self.hi { fail Bad.boom } else { self.show() } }
+}
+type Named = { name: string }
+fn get(i: int) -> Result<Named, Bad> {
+    if i < 0 { fail Bad.boom }
+    Named { name: "n${i}" }
+}
+fn names(xs: List<int>) -> Result<List<string>, Bad> {
+    [(get(x)?).name for x in xs]
+}
+enum Has {
+    Sig
+    Nothing
+}
+fn arity(h: Has, sig: Reg?) -> int {
+    match h {
+        .Sig -> sig!.ids.length
+        .Nothing -> 0
+    }
+}
+type Ops = { sum4: fn(int, int, int, int) -> int }
+fn add4(
+    a: int,
+    b: int,
+    c: int,
+    d: int
+) -> int {
+    a + b + c + d
+}
+fn pick<T>(v: T?, d: T) -> T {
+    match v {
+        null -> d
+        k? -> k
+    }
+}
+fn word(on: bool) -> string? { if on { "a" } else { null } }
+fn width(s: Span) -> int { s.hi - s.lo }
+let reg = Reg { ids: [3, 4] }
+let found = first_known(reg, [1, 4, 3])
+let missed = first_known(Reg { ids: [99] }, [1])
+let sp = Span { lo: 2, hi: 9 }
+let shown: dyn Show = sp
+let bad: dyn Show = Span { lo: 5, hi: 1 }
+let got = names([1, 2]) catch []
+let none = names([1, 0 - 1]) catch ["failed"]
+let ops = Ops { sum4: add4 }
+let some: int? = 5
+let no: string? = null
+let words = ["${x}" for x in [7, 8]]
+"${found} ${missed} ${sp.show()} ${shown.checked() catch 0 - 1} ${bad.checked() catch 0 - 1} ${got.length} ${got[1]} ${none[0]} ${arity(Has.Sig, reg)} ${arity(Has.Nothing, null)} ${ops.sum4(1, 2, 3, 4)} ${pick(some, 0)} ${pick(no, "d")} ${word(true) == "a"} ${word(false) == "a"} ${width(Span { lo: 1, hi: 4 })} ${words[1]} ${"a.".split(".").length} ${".a".split(".").length} ${"".split(".").length}"

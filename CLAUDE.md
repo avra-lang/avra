@@ -26,7 +26,9 @@ feels forced, the model is wrong, not the requirements.
 Clean restart of the Avra compiler, built slowly, one reviewed file at a
 time. Front end first: an extensible grammar assembled from
 LanguageFeature components, producing an AST for later passes.
-Toolchain: the bootstrap `bs2` binary (see README.md).
+Toolchain: the compiler builds itself — `./avra` runs `build/avra`,
+and a cold tree bootstraps from `bootstrap/seed.ll` (`make bootstrap`;
+README.md).
 
 Design sources of truth (in `../forge-crafting-intepreters`):
 - `docs/2026_04_18_FULL_SPEC.md` — the language
@@ -72,18 +74,17 @@ refuses a registry entry that has neither).
 
 - Inline single-use values. A `let` earns its place only when the
   name carries meaning the expression lacks, the value is read more
-  than once, or the subset REQUIRES a pin (early-return generic
-  constructions, sibling-field-only N-evidence, struct literals in
-  argument lists). Empty literals (`[]`, `{}`) infer inline in
+  than once, or the subset REQUIRES a pin (a `dyn` value selected
+  among arms, a Result-answering lambda — "The subset today" names
+  each). Empty literals (`[]`, `{}`) infer inline in
   constructor fields — never bind them to a throwaway name. When a
   pin seems needed, probe before assuming.
 - A state struct's impl is its VOCABULARY: the small verbs that
   read or write its tables (`speak`, `bind`, `mint`, `give`) live
-  as methods, so drivers read as prose. EXCEPTION (generic — any
-  struct, any loop): a method call on a closure-captured local in a
-  loop that also early-returns ICEs (#1377); there, use a free fn
-  taking the state first (`eval_node(ev, cx, e)`). The pass
-  visitors keep that shape uniformly.
+  as methods, so drivers read as prose. The free state fns in the
+  tree (`eval_node(ev, cx, e)`) are a bootstrap habit, not a rule —
+  ours has no #1377 (probed) and lane C folds them back into
+  methods; new code writes the method.
 - A long fn splits at its PHASE boundaries into named helpers, each
   with a one-line contract (`match_seq` matches, `built` builds;
   `printed_value` dispatches, `bool_word` branches). If a fn needs
@@ -344,6 +345,13 @@ registry is the idiom engine's spec, written by dogfooding.
   site), a scaffold (`avra new ins`), and a keeper (`make vocab`).
   Per-instruction spec files were measured and REFUSED (ROADMAP);
   re-measure at ~40 instructions, do not re-argue.
+- THE IR's BOOL LAW (ours, enforced by the evaluator): `&&`/`||`
+  are never `Bin` over bool registers — they are lazy regions
+  (`IfStart … ArmEnd … RegionEnd`); a `Bin(Or)` on bools is the
+  defect "a non-equality op reached bool operands". And THE MINT
+  LAW: a register is DEFINED in the order it was minted — mint
+  operands first (`let tag = tag_of(cx, v)` before minting the
+  constant it compares to), the answer last.
 - A feature is a directory: `mod.av` is the declarative manifest
   (component + tables), `builders.av` holds parse lowering,
   `semantics.av` holds its NodeSemantics impl (dispatch one-liners),
@@ -379,400 +387,162 @@ registry is the idiom engine's spec, written by dogfooding.
 
 ## Vendored code — do not imitate
 
-`packages/std-avrac/src/features/spec_test/` and `packages/std-cli/`
-exist only because the bs2 toolchain requires them. They are NOT
-reference code for anything — see spec_test's VENDORED.md.
+`packages/std-cli/` is a symlink into the old tree's bootstrap CLI,
+rent paid until lane B's `@std/cli` lands and the package is
+deleted. It is NOT reference code for anything. (`spec_test` is
+gone: `avra test` is the runner.)
 
-## bs2 subset notes
+## The subset today
 
-Every note here is BORROWED DEBT: a place the bootstrap dialect
-forces bs2's side of a disagreement. Each is listed in ROADMAP's
-"THE bs2 DEBT LEDGER" with its fix, and all of them are lifted once
-the compiler compiles itself. Add to the ledger at discovery.
+What our compiler REFUSES that the language will want. Each entry
+is a sugar-backlog candidate, not a trap to write around: write the
+form the compiler's help names, and when a site wants the missing
+form, add the ask to the ROADMAP's sugar backlog naming the site.
+Every entry was probed with `./avra check` on a scratch file and
+quotes the refusal, so a re-probe is cheap; an entry the compiler
+starts accepting is deleted. Laws that SPEAK are not listed —
+reserved words (F3002 names the word and its status), a mutating
+method on a non-`mut` binding (F2034), a lambda assigning to a
+capture (F3005: captures are copies), a fn body reading a top-level
+`let` (F3020: the const law), an extra method inside an `impl Trait
+for` (F2032), a duplicate name across a module's files (F3017 names
+both files), a pattern or construction with the wrong payload count
+(F2015), a `DeclId` handed to a `StmtId` seat (F2000) — the
+compiler's help is the note.
 
-Discovered gaps between the spec and the bootstrap compiler. Verify
-against these before writing; probe in scratch when unsure.
+Syntax the grammar lacks:
+- A trailing comma in a PARAMETER list (`fn f(a: int, b: int,)`):
+  "expected `)` while parsing `stmt`". Stacked params parse;
+  struct literals and `use` lists take the trailing comma already.
+- `mut` parameters (`fn f(mut xs: List<int>)`): "expected `)`
+  while parsing `stmt`". A fn changes its caller's data only
+  through a receiver or a parameter's field path (DOGFOODING: a
+  write reaches a place); a handed list is a VALUE. Lane C's `mut
+  self` is the design.
+- Struct destructuring in `let` (`let Sp { lo, hi } = s`):
+  "expected `=` while parsing `stmt`".
+- `|` between or-pattern alternatives: "expected `}` to close the
+  `match`" — the spelling is `or`. A BINDING across alternatives
+  (`.A(n) or .B(n) -> n`): F2039 "an `or` arm binds nothing — its
+  alternatives take wildcards only".
+- A comprehension over a RANGE (`[x for x in 0..4]`): "expected
+  `]` to close the comprehension". A PAIRED comprehension (`[f(i,
+  x) for i, x in xs]`): "expected `]` to close the list" (in the
+  sugar backlog). Destructuring `enumerate()` in one (`for (i, m)
+  in xs.enumerate()`): F2005 "`enumerate` pairs only under a paired
+  `for` head — pairs as values arrive with tuples". The loop form
+  `for i, x in xs` is the answer today.
+- Type aliases and newtypes (`type Id = int`): "expected `{` while
+  parsing `stmt`". Typed ids are single-field structs (`{ index:
+  int }`), which the checker keeps apart.
+- A `table` literal without its row type (`table { … }` under a
+  typed let): "expected BREAK while parsing `stmt`" — `table<Row>
+  { … }` is the form.
+- The pipe `|>`: "expected BREAK while parsing `stmt`".
+- `@comptime`: refuses at the `@` ("expected `mod`, `use`, … while
+  parsing `stmt`").
+- Trait DEFAULT method bodies: "expected `}` while parsing `stmt`"
+  at the body (sugar backlog; lane C).
+- The bare component form (`Cfg d { depth = 8 }`): "expected BREAK
+  while parsing `stmt`" — `component Cfg d { … }` is the form.
+  Instantiation is a STATEMENT: as a fn's tail it answers `void`
+  ("the body answers `void` but `made` declares `Cfg`") — bind,
+  then return the name.
+- A match arm whose body is an EMPTY BLOCK (`1 -> {}` in statement
+  position): `{}` is an empty map — F2013 "a `match`'s arms
+  disagree: `void` vs the first arm's `{}`".
+- `?` then a field on a Result (`get(i)?.name`): lexes as `?.` —
+  F2023 "`?.` reaches into a nullable, this is `Result<P, E>`".
+  `(get(i)?).name` says it, in a comprehension element too.
+- `export let` / `export const`: F3014 "`export` marks a fn, type,
+  enum or trait — not this statement" — a constant crosses modules
+  as a fn.
 
-- Function types are spelled `fn(int) -> bool`, not `(int) -> bool`.
-  In a STRUCT FIELD's fn type, a GENERIC parameter (`fn(List<T>)
-  -> …`) and a NULLABLE answer (`-> T?`) both refuse ("expected
-  field name" at the `>`/`?`); a generic ANSWER (`-> Result<A, B>`)
-  is fine. Wrap the parameter in a struct, answer a list.
-- Multi-line fn signatures parse fine (probed) — stacked params with
-  a trailing comma, or aligned continuation lines. Wrap wide ones.
-- `ref`, `none`, `shape`, `dyn`, `table`, `is`, `bare`, `mod`, and `where` are reserved words
-  (`none` as a LOCAL too: "expected variable name" at the `let`)
-  (`dyn` refuses as a FIELD name: "expected field name" at the decl) — including
-  as variable and method names; `then`, `given` and `spec` refuse
-  as struct/enum FIELD names ("expected field name" at the field)
-  and as LOCALS (the spec DSL's words are lexed even in ordinary
-  code: "expected variable name" at the `let` — `spec` bit during
-  the mono worklist; all three bit the test-DSL rung as fields).
-- `.reverse()` mutates IN PLACE and returns the SAME aliased list
-  (probed: the source list's order changes too) — never treat it as
-  a copy; assume `.sort()` matches. A safe reversed copy stays
-  hand-rolled.
-- `contains`/`index_of` compare non-string elements by IDENTITY —
-  enum/struct values in lists need a semantic `==` scan (enumerate +
-  compare); only string elements get value equality. `==` between two
-  LISTS is not value equality either — assert length + per-element.
-- No `mut` parameters — but in-place-mutating helpers ARE
-  expressible, because LISTS ALIAS: a helper takes `out: List<T>`,
-  rebinds `mut inner = out`, and pushes; the caller sees it (probed —
-  the non-mutating control traps on `xs[0]`, the mutating one does
-  not). We do NOT use this: mutation invisible at the call site is
-  worse than `out = concat(out, made())`, which the mut-local sites
-  in memory.av and lower.av now spell. The shape is recorded because
-  it also explains the TRAP: `mut x = thing.list` then `x.push(..)`
-  mutates `thing`, so rewriting such a loop as `concat` silently
-  drops the writes (two sites, LICENSED I3 at the code).
-- An INDIRECT call (a fn-typed struct field or closure) takes at
-  most THREE arguments: four ICEs at codegen ("indirect calls with
-  4 args not yet supported"). A capability wanting more takes ONE
-  struct instead — which reads better anyway.
-- Generics infer ONLY from direct call arguments: not sibling fields,
-  not return types. Pin with typed constructor fns
-  (`captured_absent<N>()`) or explicit `f<N>(...)`. Constructions under
-  a typed let now infer (mono threads expected types through match
-  arms, list elements, if-branches — fixed upstream), but a call whose
-  N-evidence rides inside a struct argument still needs explicit `<N>`,
-  as does any generic call made from inside a generic fn's body.
-- Table literals carry their row type explicitly: `table<Row> { ... }`
-  — the only form ALL compile modes accept (lib-mode never threads a
-  typed let's row type, F1042).
-- `it` binds at the nearest enclosing METHOD call and survives call
-  wrappers and bare-argument use (`cases.all(count(it.src) == it.n)`,
-  `ns.any(is_even(it))`); a nested method call in the body starts its
-  own `it` scope. A top-level plain call never binds `it` (pipe RHS
-  excepted: `x |> f(it + 1)` hands `f` a closure). The pronoun
-  detector misses `is`-expressions — `xs.filter(it is .A)` fails to
-  bind; use an explicit param there — and SELF-METHOD wrappers:
-  `ids.any(self.rides(it))` ICEs at codegen (F1007 "cannot
-  determine the type of lambda parameter `it`"); spell the scan.
-- Present-bind (`let x ->`) in expression-position match loses its
-  binding at codegen inside mono-SPECIALIZED bodies (fine in plain
-  fns) — restructure to `if k == null { } else { k! }`.
-- Matching `null`/`let x ->` directly on a nullable fn call's result
-  can mistype — bind to an annotated `let v: T? =` first.
-- A comprehension cannot pair an index with the element (`[f(j, x)
-  for j, x in xs]` is OUR rung 14 sugar, not bs2's): spell the loop
-  with `enumerate()`, LICENSED I3 at the site.
-- A pattern's payload ARITY is NOT checked: `.A(_, _)` compiles
-  against a three-payload variant and binds the wrong things,
-  silently. Growing a node's payload therefore breaks NO site at
-  compile time — `make idioms` (I25) is what enforces it.
-- Or-patterns spell `or`, never `|`: `.A(_) or .B or .C(_) -> x` works
-  (payload wildcards and unit variants alike; string literals too —
-  probed); `.A | .B ->` does not parse. Bindings cannot ride an `or`
-  arm — wildcards only.
-- Struct destructuring in `let` (`let Sp { lo, hi } = s`) does not parse.
-- A doc comment on a STRUCT FIELD does not parse ("expected field
-  name") — enum VARIANTS take them fine. A doc comment BETWEEN a
-  TRAIT's method sigs refuses too ("expected `type` or `fn` in
-  trait body") — trait prose lives in the trait's own header. Field prose goes in the
-  struct's own doc header.
-- Comprehensions iterate lists only, not ranges (struct literals inside
-  them are fine), and cannot destructure — `[.. for (i, m) in
-  xs.enumerate()]` fails to parse; use a loop. The `if` FILTER takes
-  a simple predicate only — `||` or `!` inside it fails to parse
-  ("expected `]` after list"); use a loop there too.
-- In a value match producing a list, put a populated arm FIRST — a
-  leading `[] `arm pins `List<>` and the sibling arms then clash.
-- A `map.get(k)` as a fn's TAIL (or `return`ed) never adopts a
-  nullable STRUCT return (F1000 "returns `@pkg::T?`, but body
-  produces `T?`" — qualified vs unqualified) — bind it under a
-  typed let and return the name. Hit twice landing the DeclTable.
-- A Python patch script that inserts before an anchor MUST NOT be
-  re-run after a partial failure: the anchor is still there, and
-  the insertion lands twice ("duplicate function" from bs2, with
-  the fn defined ONCE per grep — grep -c, not -l, tells the truth).
-- A list-typed fn TAIL from a bare enum-list literal or a `?? []`
-  fallback never adopts the declared return (F1000 "body produces
-  `List<>`") — bind it under a typed let and return the name.
-- bs2 has NO `\$` escape (`"\$"` stays a backslash-dollar): a bs2
-  test string that must CONTAIN `${` builds it by concatenation
-  (`"a $" + "{x} b"`) — on BOTH sides of an assertion. (Avra
-  itself escapes holes with `\$` — our lexer's rule, not bs2's.)
-- `v!.field` inside a match ARM's expression fails to parse
-  ("expected `}` after match arms") — the same read is fine in a
-  plain fn body (`sig!.params` is everywhere). Hoist the projection
-  into a named predicate and call it from the arm.
-- `f(x)?.field` (Result-`?` then a field) is POISON: in plain code
-  it refuses to parse ("expected `)` after arguments"), but inside
-  a comprehension ELEMENT it parses and SILENTLY CORRUPTS the
-  payload (garbage strings, null ids downstream — no error at all).
-  Split it through a helper fn that `?`s first and projects second.
-- Comprehensions DO carry `?` propagation — in the element AND the
-  iterable (`[want(f(x), "…")? for x in as_list(v)?]` works,
-  short-circuit included). The filter takes fn-call predicates,
-  field access, `!= null`, and captured comparisons — hoist a
-  complex predicate into a named fn instead of writing a loop.
-- An early `return` of a GENERIC call's result (`return concat<T>(…)`)
-  poisons the fn's TAIL type (F1000 qualified-vs-unqualified) —
-  bind the call under a typed let and return the name.
-- Method calls on a `const` string fail at codegen.
-- Rebuild bs2 with `make build`, never `build-quick` — its freshness
-  check can silently skip rebuilds and leave a stale binary.
-  A bootstrap `make build` also plants ITS older `llvm_wrapper.o`
-  with a fresh mtime — our Makefile reinstalls ours by content
-  comparison, so run any `make` target here afterwards (a raw
-  `./avra` right after a bootstrap rebuild links the stale wrapper:
-  "Undefined symbols … _avra_llvm_add_case").
-- Int-backed newtypes corrupt through generic/mono flows: a fn
-  returning `Newtype?` comes back null once instances crossed mono'd
-  code. Use single-field STRUCTS for typed ids (`{ index: int }`).
-- A nullable GENERIC struct local (`mut x: Thing<N>? = null`)
-  corrupts through lib-mode mono — carry presence in a bool flag
-  beside non-generic pieces and reconstruct after the loop.
-- `bs2 run` can serve stale library builds silently — the
-  `.avra-sha256` sidecars are its freshness truth, and they go stale
-  against edited sources. `make test` is immune (metadata mode);
-  `bs2 run` of the CLI is not. `./avra <cmd>` is the front door — it
-  clears the sidecars itself; never invoke the CLI through raw
-  `bs2 run`. When lib-mode still lags, `make clean`.
-- `==` between a nullable string and a string is safe (null compares
-  false) — for a VARIABLE operand only: a call result compared
-  directly (`f() == s`) misses the null guard and SIGSEGVs (#1376).
-  Bind to a `let tn: string? =` first.
-- `s.char_code(i)` SILENTLY IGNORES its index and answers index 0's
-  code (`"hello".char_code(1)` is 104, `'h'`, not 101, `'e'`) — no
-  error, just the wrong character. The runtime primitive takes the
-  index (`avra_str_char_code(ptr, i64)`); the Avra method drops it.
-  So indexed reads go through `s.substring(i, i + 1).char_code()`,
-  which allocates a one-character string PER BYTE — what `code_at`
-  spells, and why a scanner cannot read a character for free.
-- A STRING's `.length` is `strlen` — O(length), EVERY time it is
-  asked, so `while i < s.length` re-measures the whole string per
-  iteration and the loop is quadratic. Hoist it (`let n = s.length`).
-  A LIST's `.length` is a cheap field read; only strings bite.
-  Ratcheted as I27; eight sites were found the day it was written,
-  and fixing them took the front end from 6.8s to 1.6s at 8k lines.
-- `is_empty()` is a LIST method only — on a string it ICEs at
-  codegen ("string method `is_empty` not implemented"), so
-  `s.length == 0` is the idiomatic emptiness test for text.
-- Maps reject `m["k"]` indexing — use `.get(key)`, which returns `T?`.
-- `xs[i] = v` is an invalid assignment target; `xs.set(i, v)` works.
-- A struct literal directly in a call's argument list fails to parse —
-  bind it to a `let` first.
-- Components work: `component Name { config { field: T = default } }`;
-  instantiate with `component Name inst { key = expr }` — bs2's
-  "keyword-prefixed instantiation", an instance NOT a definition.
-  The bare form (`Name inst {}`) needs the definition registered in
-  the SAME parse, which never holds across sibling module files
-  (probed: parse order does not save it) — so the keyword prefix is
-  rent, not choice. Pairs NEWLINE-separated. Instantiation is a
-  STATEMENT binding `inst`; in expression position it compiles to a
-  SILENT NULL. Bind, then return the name. Instantiation in
-  metadata-compiled TEST files fails resolve entirely — tests build
-  feature values through an in-package factory plus `with`.
-- Fn-typed arguments carry no `T`-evidence (F1002), and an explicit
-  `<T>` pin over one corrupts scalar payloads through mono — never
-  thread fn args through generics.
-- Statement-position match arms with `{}` bodies parse as empty MAP
-  literals and the arms then type-clash — restructure to a
-  value-producing match under a typed let, plus an `if`.
-- `@comptime` folds only scalar int/bool bodies; struct/list-heavy code
-  fails to fold. (Compile-time seed validation waits on our own
-  compiler.)
-- Trait DEFAULT method bodies typecheck but ICE at codegen
-  ("undefined method") — traits carry mandatory methods only.
-- Module-level `let` values work within their file but do NOT resolve
-  through imports — constants cross modules only as fns. And a
-  module-level `let` read from an `impl` METHOD crashes at runtime
-  (23 specs crashed at once, no diagnostic) — the constant must stay
-  a fn there, even for a hot per-name check.
-- TYPES share one namespace per module across sibling files too: a
-  `type Scope` in memory.av refused a second `Scope` in a new
-  sibling file ("no field `fns` on type Scope" — the OTHER struct's
-  fields). Grep the module for the name before declaring a type.
-- A multi-line `use a.{x,\n  y}` statement: any tool that reads
-  imports line by line sees `use a.{x,` — a truncated statement —
-  and a consumer that scans "to the closing brace" then EATS the
-  code after it (the split's headers lost fn heads this way).
-  Join continuation lines first, or write imports on one line.
-- An idempotent patch script checks `new in s` BEFORE `old in s`:
-  when the new text CONTAINS the old (an `export` prefix, a doc
-  comment), a re-run applies it twice (the doubled `export ///`
-  parse error) — the same double-insert trap in a second costume.
-- Fns share ONE namespace per module across sibling files: a private
-  fn in one file shadows a same-name import for the WHOLE module
-  (arity clashes, F1001, at unrelated call sites). Check for the
-  name before writing a helper.
-- Package resolution is convention, not manifest: `use @scope.name`
-  resolves to `packages/scope-name/src/name.av` (else `mod.av`).
-  And THE staleness trap, root-caused: `bs2 run`'s cache keys the
-  unit by the ENTRY FILE'S BYTES ALONE — `[dependencies]` entries,
-  sidecar deletion, and package-cache purges all fail to reach that
-  key, so edits to dependency packages serve a STALE binary
-  silently: phantom bugs, vanishing grammar branches, segfaults.
-  The cure is `./avra`, which generates a stamped entry
-  (main_stamped.av — a content hash of every package source in the
-  first line) so the key is truthful and caches stay warm. Debug
-  probes get fresh bytes by being new files, which is why a probe
-  can pass while the CLI fails — NEVER trust that split as
-  evidence of a compiler bug before touching the entry's bytes. A
-  runnable ENTRY file gets a local module tree only through `mod x`
-  declarations: `mod commands` loads sibling `commands.av` or
-  `commands/mod.av`, and the directory's other files join the
-  module. A bare `use commands.{..}` without the `mod` stub is
-  F3101.
-- `dyn` boxing happens ONLY under a typed let. A config-list
-  assignment does not box, and a match ARM tail boxes with the WRONG
-  vtable (silent mis-dispatch!) — box every impl under
-  `let x: dyn T = Impl { }` first, then select among the lets.
-- A trait method must not return a GENERIC enum (`Result<...>`)
-  through `dyn` dispatch — mono never instantiates trait-meta return
-  types ("unknown enum `Result`"). Return the value and record errors
-  through a capability fn on the context instead.
-- An `impl Trait for X` block holds ONLY the trait's methods — extra
-  methods live in a separate `impl X` block or free fns.
-- Working and dogfooded: traits + `impl Trait for`, subjectless `when`
-  (with `_` arm), list comprehensions `[x for x in xs if p]` —
-  including method-call elements (`self.expr_fingerprint(k)`),
-  closure-field-call elements (`cx.value_at(k)`), and nested list
-  literals as elements (`flatten([[a, b] for p in ps])`), pipe
-  `|>`, typed table literals, `with` on generics, cross-file `impl`,
-  the native list scans (`find`/`any`/`all`/`first`/`last`/`is_empty`,
-  in `<N>`-generic bodies too), `?.` field projection with `??`
-  (fields only — mapping a present value through a fn stays a match),
-  NESTED match patterns (`.Node(.NExpr(id)) -> id` — generic-payload
-  enums included), and if-else as a comprehension ELEMENT — in plain
-  fns only: inside a generic body it types as `List<void>` (F1000);
-  loop there instead.
-- A match on a NULLABLE enum takes only `null` and `let x ->` arms —
-  variant arms on `T?` refuse as non-exhaustive (F9001); unwrap
-  first, then match variants.
-- A RECURSIVE struct works (`type T = { args: List<T>, ... }`),
-  built and walked by a recursive fn (probed).
-- `.last()!` ALIASES the element, like indexing does: mutating
-  through it changes the list (proved by converting the
-  interpreter's frame reads — every register write still lands, and
-  the corpus agrees eval == native).
-- An early `return` inside a `while` scan works, including a method
-  call on an indexed element (`maps[k].get(name)`) — probed; the
-  #1377 ICE needs a CLOSURE-CAPTURED receiver, not any receiver. A
-  reverse scan therefore stops at its hit instead of folding a flag.
-- Zero-arg closures (`() -> expr`) work, as params and calls, and
-  MUTATE captured locals correctly — bracket fns taking a `fn()`
-  thunk (push/run/pop) are expressible (probed). BLOCK-bodied
-  thunk arguments (`() -> { ... }`) capturing locals and returning
-  single-field structs also work (probed — presence_region's shape).
-- A match arm producing a bare struct literal unifies fine with a
-  nullable sibling arm (probed: `.P(i) -> Reg { index: i }` beside
-  `.D(s) -> maybe_reg(s)` under a `Reg?` return) — no typed-let
-  pin needed. Pin ONLY where a documented trap requires it; when
-  tempted to pin defensively, probe first.
-- THE CLOSURE-FIELD-CALL DISCIPLINE (one rule, three traps): a
-  fn-typed struct field's call result is consumed ONLY through an
-  ANNOTATED let. (1) A match directly on it SKIPS exhaustiveness
-  checking and ABORTS at runtime on an unlisted variant
-  ("unmatched tag N — probable use-after-free"); the annotated
-  bind restores the check (an untyped let does NOT). (2) `?`
-  directly on it can corrupt. (3) A LAMBDA (capturing or not)
-  returning a generic enum with a SCALAR payload through a fn
-  field corrupts its answers at the call site (same unmatched-tag
-  symptom) — register NAMED fns for Result-returning fields;
-  pointer payloads (Captured) survive, pinned by the suite.
-  Method calls, free-fn calls, and index subjects are all checked
-  and `?` correctly (probed) — `?` works on method results, in
-  argument position, and after the annotated bind.
-- A METHOD call on a closure-captured local inside a loop that also
-  contains an early `return` ICEs at codegen ("Referring to an
-  instruction in another function", #1377) — any struct, any loop.
-  Use a free fn taking the struct first.
-- A GENERIC fn IMPORTED into a metadata-compiled TEST unit that
-  WRITES through a list it was handed (`copy_into<T>`: `mut d = dst;
-  d.set(i, v)`) loses its writes for EVERY instantiation as soon as
-  that unit instantiates it at TWO element types (probed: strings
-  alone alias; add an `int` instantiation to the same spec file and
-  the string cases fail too; a standalone `bs2 run` aliases in all
-  shapes) — and the UNIT is a hashed SHARD of several test files,
-  not one file, so which specs share it is nobody's choice: the same
-  spec passed in one file name and failed in another. Product code
-  is unaffected (the fold's `absorb` runs `copy_into` at seven
-  element types; typing_test's totality and the corpus prove it). A
-  list-writing generic therefore has NO unit test — its proof is the
-  product path, and that is written at the site.
-- TEST code that READS a struct from ANOTHER PACKAGE through a
-  field chain (`d.suggestions[0].edits[0]` — @std.errors' types)
-  dies at codegen in some shards ("unknown struct
-  `@std::errors::Suggestion`"), never in others. The product
-  library projects it (`suggested(d)` -> strings); tests read that.
-- TYPED IDS ARE INTERCHANGEABLE TO bs2: `DeclId`, `StmtId`, `ExprId`
-  and `PatId` are all `{ index: int }`, and a call passing one where
-  another is declared COMPILES. It surfaced as "index 1290 out of
-  bounds (length 265)" deep in a whole-package check (a DeclId
-  handed to a StmtId verb — fine in a lone file whose decl count is
-  small, a crash once the package's table grew). Two rules: a verb
-  that only needs a LOCATION takes the ExprId of the site that
-  asked, never a declaration's stmt; and when a trap names an index
-  far past the table, suspect a different id family before a
-  missing bound.
-- A CONSTRUCTION with the wrong payload count is not checked either:
-  a test building `Stmt.EnumDecl(name, tparams, [param])` after
-  the variant's payload became a `List<Variant>` compiled, corrupted
-  memory, and SIGSEGV'd a DIFFERENT spec in the shard (the blame
-  landed three specs away). When a node's payload changes shape,
-  grep the tests for every constructor of it before trusting a
-  crash's location.
-- THE IR's BOOL LAW (ours, enforced by the evaluator): `&&`/`||`
-  are never `Bin` over bool registers — they are lazy regions
-  (`IfStart … ArmEnd … RegionEnd`); a `Bin(Or)` on bools is the
-  defect "a non-equality op reached bool operands". And THE MINT
-  LAW: a register is DEFINED in the order it was minted — mint
-  operands first (`let tag = tag_of(cx, v)` before minting the
-  constant it compares to), the answer last.
-- A NESTED pattern with a sibling BINDING refuses to parse
-  (`.Value(.Str(s), k) ->` fails at `k`; `.Value(.Str(s), _)` is
-  fine) — bind the outer payload and match again. Enum variant
-  payloads must be NAMED in declarations (`Str(s: string)`);
-  construction and patterns stay positional.
-- `split` DROPS a trailing empty segment (`"a.".split(".")` is one
-  element) but keeps a leading one; `"".split(".")` is `[]`.
-- Struct literals refuse only in FREE-FN argument lists — method
-  and enum-constructor arguments take them (probed landing the
-  TOML reader); the `let` pin is for free calls — and for a CLOSURE-FIELD call
-  (`r.variants(TypeArgs { … })` refuses "expected `)` after
-  arguments").
-- An idiom-tool caveat with a house rule: the I25 payload-count
-  check reads ONE VARIANT PER LINE — a one-line enum
-  (`enum S { A(x: int), B }`) is invisible to it and every pattern
-  over it reports a wrong count. Enums are written one variant per
-  line, always.
-- bs2's test runner runs a MULTI-UNIT shard on WORKER THREADS whose
-  stack holds 600–700 nested interpreter calls (each interpreted
-  call is two native frames), while a SINGLE-unit run rides the
-  main thread (1900+) — so a deep-recursion spec passes alone
-  (`bs2 test one_file.av`) and crashes its shard under `make test`,
-  "cause not classified", and the crash report
-  (~/Library/Logs/DiagnosticReports, `EXC_BAD_ACCESS … stack guard
-  region`) is the only witness. The interpreter's `call_limit`
-  (400) is what keeps a runaway a trap; measure, never guess, when
-  it moves.
-- A `"}"` STRING LITERAL inside a fn body swallows its statement:
-  the binding never lands and the next line reports the name as
-  undefined (`let closes = flag.index_of("}")` -> "undefined
-  variable `closes`"). Scan for the byte instead (`code_at(s, i) ==
-  125`), and build a `${` the same way (`"$" + "{"`).
-- A GENERIC method's answer loses its struct identity: a field read
-  or a `with` on it ICEs at codegen ("unknown struct `X`" /
-  "unknown struct `X` in with expression"). Bind it to an annotated
-  `let s: X = stack.at(j)` first, then project — and a generic
-  impl's method body cannot NAME its own type parameter in a local
-  annotation (`let held: T? = self.rows[i]` -> "`T` names no
-  type"); leave that one un-annotated.
-- A MUTATING METHOD on an immutable parameter or `let` is refused
-  (F3001) — `xs.set(..)`, `.push(..)`, `.pop()` need a `mut`
-  binding, even where the receiver is a struct whose field is the
-  place. Bind `mut` at the site.
+Wants the typer does not carry yet:
+- A no-argument generic call under a typed want (`let xs:
+  List<int> = empty()`): F2000 "`T` is not pinned by the
+  arguments" — write `empty<int>()`. Evidence inside a struct
+  argument, from a fn-typed argument, and a generic call from a
+  generic body all pin.
+- A LAMBDA's body does not read its declared answer for bare
+  variants: `(n) -> if … { .Err(e) } else { .Ok(v) }` under
+  `fn(int) -> Result<int, E>` (a typed let or a fn-typed field):
+  F2043 "`.Ok` needs a known enum — nothing here says which";
+  `Result.Ok(v)` there: F2003 "`T1` is not pinned by the payload".
+  A NAMED fn in the seat works, `?` on the field's call included.
+- A `dyn` want does not reach into arms or branches: `match k { 0
+  -> P { … }, _ -> Q { … } }` under `-> dyn Show`: F2013 "a
+  `match`'s arms disagree: `Q` vs the first arm's `P`"; the `if`
+  twin: F2000 "an `if`'s branches disagree: `P` vs `Q`". Box each
+  under `let x: dyn Show = …` and select among the lets.
+- Variant arms on a NULLABLE enum (`match k { .A -> …, null -> …
+  }` over `K?`): F2013 "`match` chooses over an enum, found `K?`"
+  — unwrap first (a `k?` arm), then match variants.
+- A generic impl's body naming its own `T` in a local annotation
+  (`let held: T? = self.rows[i]`): F2001 "`T` names no type".
+  Leave that local un-annotated; a field read or `with` on a
+  generic method's answer needs no bind at all.
+- `it` through a self-method wrapper (`xs.any(self.rides(it))`):
+  F2033 "`it` has no element here — this seat takes `int`, not a
+  fn" — `it` binds to the NEAREST call; write `(k) ->
+  self.rides(k)`. `it is .A` binds fine.
+- `==` between lists, `contains`/`index_of` over structs or enums:
+  F2000 "`==` compares scalars for now"; F2005 "`contains` scans by
+  value — scalars and text for now, this list holds `K`" — spell
+  the scan (`xs.any(same(it))`).
+
+Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
+`List<int>` has none" — the others read alike — or the map's F2000):
+- `List.reverse()` / `sort()` — core's `reversed` is the helper
+  (and a copy: nothing here mutates in place).
+- `List.find_index(pred)` — builders.av's `attach` is LICENSED I4
+  for it.
+- `string.is_empty()` — `s.length == 0` is the emptiness test.
+- `m["k"]` on a map: F2000 "`[...]` indexes a `List`, found
+  `Map<string, int>`" — `.get(k)`, which answers `T?`.
+
+Runtime facts, ours to ratify:
+- A STRING's `.length` is `strlen` — O(length) EVERY time it is
+  asked, so `while i < s.length` is quadratic (measured native: a
+  150k loop re-asking it, 0.91s user against 0.44s hoisted). Hoist
+  it (`let n = s.length`); I27 ratchets it; lane A's
+  length-carrying strings retire both. A LIST's `.length` is a
+  field read.
+- `split` DROPS a trailing empty segment and keeps a leading one:
+  `"a.".split(".")` is one element, `".a".split(".")` two,
+  `"".split(".")` is `[]`.
+- `avra run` INTERPRETS, and recursion past 400 calls traps
+  ("recursion too deep — 400 nested calls", exit 1); `avra test`
+  and `avra build` are native and have no such floor (5000 deep
+  runs). The limit is what keeps a runaway a trap; measure, never
+  guess, when it moves.
+
+## Working discipline
+
 - ONE HEAVY PROCESS AT A TIME, in the FOREGROUND, under the
   watchdog: `sh tools/watch.sh 4000 make gate`. The machine is
   shared with a loaded desktop and has panicked twice under this
   tree — three concurrent `make test` runs once, and a background
   gate with other compiler runs beside it (a WindowServer watchdog
-  panic, 2026-09-04). A gate is ~1.8 GB for minutes; nothing else
-  heavy runs beside it, no gate runs in the background, and every
-  suite, gate or whole-package check runs through the watchdog,
-  which kills the tree past its cap and prints the peak.
-  `AVRA_RC_GUARD=1` only on small programs: its log is bounded but
-  a guarded compiler run over a package is still a machine's worth.
+  panic). A gate is ~1.8 GB for minutes; nothing else heavy runs
+  beside it, no gate runs in the background, and every suite, gate
+  or whole-package check runs through the watchdog, which holds the
+  machine-wide lock, kills the tree past its cap and prints the
+  peak. `AVRA_RC_GUARD=1` only on small programs: its log is
+  bounded but a guarded compiler run over a package is still a
+  machine's worth. Scratch probes (`./avra check` of one file) are
+  sub-second and need no lock.
+- A PATCH SCRIPT that inserts before an anchor, or replaces `old`
+  with `new` where `new` CONTAINS `old` (an `export` prefix, a doc
+  comment), applies TWICE when re-run after a partial failure: the
+  anchor is still there. Check for the new text FIRST, and let
+  `grep -c` (never `-l`) say how many times a fn is defined.
+- A TOOL that reads source line by line sees a multi-line `use
+  a.{x,\n  y}` as a truncated statement, and one that scans "to the
+  closing brace" then eats the code after it. Join continuation
+  lines first; write an import on one line where it fits.
+- PAYLOAD-CARRYING ENUMS are written one variant per line: the I25
+  payload-count check reads one variant per line, and a one-line
+  `enum S { A(x: int), B }` is invisible to it, so every pattern
+  over it reports a wrong count. Unit-only enums may stay on one
+  line.
