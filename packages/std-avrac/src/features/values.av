@@ -24,8 +24,15 @@ use core.{Reg, Ins, BinOp, Type, TypeId, ExprId}
 /// numbered in emission order.
 use features.{MethodCall, arm_end, open_region, const_int, const_bool, close_region_as}
 
-export fn grown_box(mut cx: LowerCx, dst: Reg, slots: List<Reg>) {
-    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+/// The slots a box will hold, as a register — minted BEFORE the box
+/// it sizes, so the box's register is minted last. Zero is a
+/// builder's box: it grows.
+export fn box_size(mut cx: LowerCx, n: int) -> Reg {
+    const_int(cx, n)
+}
+
+export fn grown_box(mut cx: LowerCx, dst: Reg, size: Reg, slots: List<Reg>) {
+    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
     for r in slots { push_slot(cx, dst, r) }
 }
 
@@ -69,8 +76,8 @@ fn same_tag(mut cx: LowerCx, a: Reg, b: Reg) -> Reg {
 /// THE TAGGED VALUE: an enum's variant is a slot array holding its
 /// TAG at slot 0 and its payloads, in order, at slots 1... `dst` is
 /// minted by the caller — the box verbs' shared contract.
-export fn tagged_value(mut cx: LowerCx, dst: Reg, tag: int, payloads: List<Reg>) {
-    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+export fn tagged_value(mut cx: LowerCx, dst: Reg, size: Reg, tag: int, payloads: List<Reg>) {
+    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
     let slot = const_int(cx, tag)
     push_slot(cx, dst, slot)
     for p in payloads { push_slot(cx, dst, p) }
@@ -128,15 +135,17 @@ export fn slot_read(mut cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
 
 /// A success, wrapped — the auto-Ok lift's mint.
 export fn okayed(mut cx: LowerCx, into: TypeId, r: Reg) -> Reg {
+    let size = box_size(cx, 2)
     let dst = cx.mint_ty(into)
-    tagged_value(cx, dst, 0, [r])
+    tagged_value(cx, dst, size, 0, [r])
     dst
 }
 
 /// A failure, wrapped — what `fail` exits with.
 export fn failed(mut cx: LowerCx, into: TypeId, r: Reg) -> Reg {
+    let size = box_size(cx, 2)
     let dst = cx.mint_ty(into)
-    tagged_value(cx, dst, 1, [r])
+    tagged_value(cx, dst, size, 1, [r])
     dst
 }
 
@@ -157,8 +166,8 @@ export fn okness_of(mut cx: LowerCx, v: Reg) -> Reg {
 
 /// The box, minted: the code address first, the captures in lane
 /// order — the lifted body reads them back by `capture_lane`.
-export fn fn_box(mut cx: LowerCx, dst: Reg, sym: string, caps: List<Reg>) {
-    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+export fn fn_box(mut cx: LowerCx, dst: Reg, size: Reg, sym: string, caps: List<Reg>) {
+    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
     let ad = cx.mint_shape(Type.Int)
     cx.emit(Ins.FnAddr(ad, sym))
     push_slot(cx, dst, ad)
@@ -303,8 +312,9 @@ export fn adopted(mut cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg
 /// one-slot box holding it.
 fn boxed_adoption(mut cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
     if from_null { return absent_of(cx, into) }
+    let size = box_size(cx, 1)
     let dst = cx.mint_ty(into)
-    grown_box(cx, dst, [r])
+    grown_box(cx, dst, size, [r])
     dst
 }
 

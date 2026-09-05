@@ -10,7 +10,7 @@
 //! Early exit is the BREAK IDIOM: store the index past the length
 //! and the condition ends the loop.
 use core.{ExprId, Reg, Ins, Type, TypeId, BinOp, UnOp}
-use features.{LowerCx, MethodCall, lower_defect, grown_box, push_slot, slot_read, absent_of, adopted, carried_type, same_value, void_arm, void_close, unique_box, rt_method, open_region, const_int, const_bool, opened, turn_open, turn_index, turn_elem, turn_close, early_exit, seeded_cell, loaded, measure_of}
+use features.{LowerCx, MethodCall, lower_defect, grown_box, push_slot, slot_read, absent_of, adopted, carried_type, same_value, void_arm, void_close, unique_box, rt_method, open_region, const_int, const_bool, opened, turn_open, turn_index, turn_elem, turn_close, early_exit, seeded_cell, loaded, measure_of, box_size}
 
 // ── The rows' rules ──
 
@@ -129,8 +129,9 @@ type Box = { f: Reg, fp: Reg }
 
 /// `xs.map(f)` — a fresh box, one pushed answer per element.
 fn mapped(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+    let size = box_size(cx, 0)
     let out = cx.result(mc.e)
-    grown_box(cx, out, [])
+    grown_box(cx, out, size, [])
     let f = boxed(cx, s.arg)
     let w = opened(cx, mc.subject, s.elem)
     turn_open(cx, w)
@@ -142,8 +143,9 @@ fn mapped(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
 
 /// `xs.filter(p)` — the same box, the elements the predicate keeps.
 fn kept(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+    let size = box_size(cx, 0)
     let out = cx.result(mc.e)
-    grown_box(cx, out, [])
+    grown_box(cx, out, size, [])
     let f = boxed(cx, s.arg)
     let w = opened(cx, mc.subject, s.elem)
     turn_open(cx, w)

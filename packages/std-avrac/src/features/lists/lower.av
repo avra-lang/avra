@@ -2,12 +2,13 @@
 //! then a push per element — the CallRt escape hatch carrying the
 //! whole feature, zero new instructions.
 use core.{ExprId, Reg, TypeId}
-use features.{void_arm, void_close, push_slot, LowerCx, grown_box, open_region, opened, counted, turn_open, turn_index, turn_elem, turn_close}
+use features.{void_arm, void_close, push_slot, LowerCx, grown_box, open_region, opened, counted, turn_open, turn_index, turn_elem, turn_close, box_size}
 
 fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
     let regs = [cx.reg_of(k) for k in elems]
+    let size = box_size(cx, regs.length)
     let dst = cx.result(e)
-    grown_box(cx, dst, regs)
+    grown_box(cx, dst, size, regs)
     dst
 }
 
@@ -16,8 +17,9 @@ fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
 /// the element (and its index) for the element expression and the
 /// filter, and pushes the element when the filter holds.
 fn comp_reg(mut cx: LowerCx, e: ExprId, elem: ExprId, index: string, source: ExprId, hi: ExprId?, cond: ExprId?) -> Reg {
+    let size = box_size(cx, 0)
     let dst = cx.result(e)
-    grown_box(cx, dst, [])
+    grown_box(cx, dst, size, [])
     let w = if hi == null { opened(cx, source, elem_type(cx, source)) } else { counted(cx, source, hi!) }
     turn_open(cx, w)
     let here = turn_index(cx, w)

@@ -309,6 +309,37 @@ the compiler checking itself 28.8s.
         `mut` parameter's field) clean under the guard, eval ==
         native. MEASURED: the self-check's footprint 955 -> 268 MB
         (2372 at the day's start), the far sites 0 live of 2.47M.
+  - [x] SIZED BOXES (2026-09-05): a record, a variant, a closure and
+        a list literal took a cap-8 buffer — 72 bytes for a two-slot
+        struct, 5.3M small lists in a self-check — because every box
+        was born by `avra_array_new`. `avra_array_sized(n)` (a row,
+        sharing the evaluator's array-new behavior) gives a box a
+        buffer of exactly its slots; the size register is minted
+        before the box, the answer last; a clone takes its source's
+        length; buffers of one to eight slots have their own free
+        lists, and a small box that grows goes to eight. MEASURED:
+        the self-check's footprint 268 -> 230 MB (accounted 215 ->
+        170), the suite's peak 328 -> 282 MB; time unchanged (9.4s
+        against main's 9.45s on the same check). Two IR goldens and
+        one lowering golden regenerated from the new truth.
+  - [x] THE FARTHEST POINT AS ONE SLOT — tried and REFUSED
+        (2026-09-05): a miss made a `FarthestFailure` record and every
+        result merged its children's, 2.47M records per check. One
+        slot in the context (written by a miss at least as deep,
+        `mut cx` threaded through the match fns — a generic mut
+        parameter writes through under mono, probed) took parse 6.6s
+        -> 6.2s and deleted three folds — and changed the messages:
+        the failed sub-match's OWN expectations became the union of
+        every attempt at the deepest cursor ("expected `<`, `?`, `,`
+        or `)`" for "expected `)`"), five goldens red, six broken
+        programs reading differently against main. The per-result
+        farthest is user-facing semantics, not an optimization.
+        Reverted; the records stay.
+  - [ ] `Decls.mint` REBUILDS A MAP INDEX: the self-check's profile
+        puts 12% of its samples in `map_index_rebuild` under
+        `Decls.mint`, with no map cloned — growth doubles, so ten
+        rebuilds cannot cost that; the chain above the leaf names the
+        call. NEXT.
   - [x] THE CYCLE (FOUND and ENDED 2026-09-05): the cases binary
         held 922 MB at exit — 7.2M small lists, ~4300 per case: every
         case's language, grammar and workspace tables. The workspace

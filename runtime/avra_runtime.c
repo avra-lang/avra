@@ -523,12 +523,12 @@ typedef struct {
 } AvraArray;
 
 // ONE BUFFER holds a list's cells and, after them, its owned marks:
-// one allocation per list, not two. A buffer of a small capacity
-// (up to BUF_CLASSES doublings from ARRAY_FIRST) is recycled through
-// a per-capacity free list; a bigger one is malloc's and grows in
-// place.
+// one allocation per list, not two. A buffer of a small capacity —
+// one to eight exactly (a record's slots, a literal's elements),
+// then sixteen and thirty-two — is recycled through a per-capacity
+// free list; a bigger one is malloc's and grows in place.
 #define ARRAY_FIRST 8
-#define BUF_CLASSES 3
+#define BUF_CLASSES 10
 static void* g_buf_free[BUF_CLASSES];
 static int64_t g_buf_free_len[BUF_CLASSES];
 
@@ -536,12 +536,13 @@ static size_t buf_bytes(int64_t cap) {
     return (size_t)cap * (sizeof(int64_t) + 1);
 }
 
-// The class of a capacity: 0 for ARRAY_FIRST, 1 for its double, …;
-// -1 past the classes.
+// The class of a capacity: 0..7 for one to eight, 8 for sixteen, 9
+// for thirty-two; -1 past the classes.
 static int buf_class(int64_t cap) {
-    int cls = 0;
-    for (int64_t c = ARRAY_FIRST; c < cap; c *= 2) cls++;
-    return cls < BUF_CLASSES ? cls : -1;
+    if (cap >= 1 && cap <= 8) return (int)cap - 1;
+    if (cap == 16) return 8;
+    if (cap == 32) return 9;
+    return -1;
 }
 
 static int64_t* buf_alloc(int64_t cap) {
@@ -573,6 +574,24 @@ static void buf_free(int64_t* buf, int64_t cap) {
 // The marks live after the cells; a fresh mark region is all zero.
 static void array_marks(AvraArray* a) {
     a->owned = (uint8_t*)(a->data + a->cap);
+}
+
+// A box that will hold `n` slots — a record's, a literal's — takes
+// a buffer of exactly `n`; `n` of 0 is a builder's box, which grows.
+void* avra_array_sized(int64_t n) {
+    AvraArray* a = (AvraArray*)box_alloc(sizeof(AvraArray), KIND_ARRAY);
+    a->cap = n > 0 ? n : ARRAY_FIRST;
+    a->len = 0;
+    a->data = buf_alloc(a->cap);
+    array_marks(a);
+    memset(a->owned, 0, (size_t)a->cap);
+    a->site = NULL;
+    if (g_acc_on > 0) {
+        a->site = g_clone_site ? g_clone_site : __builtin_return_address(0);
+        g_sample_next = a;
+        acc_site(a->site, (int64_t)(sizeof(Header) + sizeof(AvraArray) + buf_bytes(a->cap)), 1);
+    }
+    return a;
 }
 
 void* avra_array_new(void) {
@@ -628,7 +647,7 @@ static void array_reclaim(void* p) {
 // place, the new marks zero.
 static void array_grow(AvraArray* a) {
     int64_t old_cap = a->cap;
-    int64_t cap = old_cap * 2;
+    int64_t cap = old_cap < ARRAY_FIRST ? ARRAY_FIRST : old_cap * 2;
     int64_t* buf;
     if (buf_class(old_cap) >= 0) {
         buf = buf_alloc(cap);
@@ -733,7 +752,7 @@ void avra_cell_release(void* slot) {
 // A shallow clone that takes its own reference to every owned
 // slot — exactly what reclaim would release. A fresh box, rc 1.
 static void* array_clone(AvraArray* a) {
-    AvraArray* c = (AvraArray*)avra_array_new();
+    AvraArray* c = (AvraArray*)avra_array_sized(a->len);
     for (int64_t i = 0; i < a->len; i++) {
         avra_array_push(c, a->data[i]);
         if (a->owned[i]) {

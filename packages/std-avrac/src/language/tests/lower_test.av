@@ -36,7 +36,7 @@ fn is_owned_get(i: Ins) -> bool {
 
 fn is_box_call(i: Ins) -> bool {
     match i {
-        .CallRt(_, callee, _) -> callee == "avra_array_new",
+        .CallRt(_, callee, _) -> callee == "avra_array_new" || callee == "avra_array_sized",
         _ -> false,
     }
 }
@@ -251,32 +251,34 @@ spec "language/lower" {
             let expected = """scope application {
   r0 = int 1
   r1 = int 0
-  r2 = call avra_array_new()
-  call avra_array_push(r2, r0)
-  call avra_array_push(r2, r1)
-  r3 = slot
-  retain r2
-  call avra_cell_release(r3)
-  store r3 <- r2
-  r4 = int 2
-  r5 = int 0
-  r6 = call avra_array_new()
-  call avra_array_push(r6, r4)
-  call avra_array_push(r6, r5)
-  retain r6
-  call avra_cell_release(r3)
-  store r3 <- r6
-  r7 = load r3
-  retain r7
-  r8 = int 0
-  r9 = call avra_array_get(r7, r8)
-  r10 = call avra_int_text(r9)
-  call avra_puts(r10)
-  call avra_cell_release(r3)
-  release r10
-  release r7
-  release r6
-  release r2
+  r2 = int 2
+  r3 = call avra_array_sized(r2)
+  call avra_array_push(r3, r0)
+  call avra_array_push(r3, r1)
+  r4 = slot
+  retain r3
+  call avra_cell_release(r4)
+  store r4 <- r3
+  r5 = int 2
+  r6 = int 0
+  r7 = int 2
+  r8 = call avra_array_sized(r7)
+  call avra_array_push(r8, r5)
+  call avra_array_push(r8, r6)
+  retain r8
+  call avra_cell_release(r4)
+  store r4 <- r8
+  r9 = load r4
+  retain r9
+  r10 = int 0
+  r11 = call avra_array_get(r9, r10)
+  r12 = call avra_int_text(r11)
+  call avra_puts(r12)
+  call avra_cell_release(r4)
+  release r12
+  release r9
+  release r8
+  release r3
 }
 ret 0"""
             render_ir(ir_of("type P = { x: int, y: int }\nmut a = P { x: 1, y: 0 }\na = P { x: 2, y: 0 }\na.x")) == expected

@@ -4,7 +4,7 @@
 //! Reads are the spine's property ladder (a slot read at the
 //! field's compile-time index) — zero new instructions anywhere.
 use core.{ExprId, Reg, Ins, filled, DeclId}
-use features.{LowerCx, StructSig, lower_defect, foreign_node, push_slot, field_read, flat_at}
+use features.{LowerCx, StructSig, lower_defect, foreign_node, push_slot, field_read, flat_at, box_size}
 
 fn structs_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -35,8 +35,9 @@ fn with_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, v
         else { by_slot.push(field_read(cx, src, subject_ty, slot, sig.types[slot])) }
     }
     if flat_at(cx, e) { return packed_lit(cx, e, sig, by_slot) }
+    let size = box_size(cx, by_slot.length)
     let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
     for r in by_slot { push_slot(cx, dst, r!) }
     dst
 }
@@ -55,8 +56,9 @@ fn lit_reg(mut cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId
         }
     }
     if flat_at(cx, e) { return packed_lit(cx, e, sig, by_slot) }
+    let size = box_size(cx, by_slot.length)
     let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_new", []))
+    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
     for slot, r in by_slot {
         if r != null { push_slot(cx, dst, r!) } else { push_slot(cx, dst, defaulted_reg(cx, e, sig, slot)) }
     }

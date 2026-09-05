@@ -3,7 +3,7 @@
 //! str_join answers — zero new instructions, the escape hatch
 //! carrying the feature again.
 use core.{ExprId, Reg, Ins, Type, BinOp}
-use features.{LowerCx, MethodCall, grown_box, lower_defect, length_word, rt_method, const_int}
+use features.{LowerCx, MethodCall, grown_box, lower_defect, length_word, rt_method, const_int, box_size}
 
 fn interp_reg(mut cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) -> Reg {
     mut pieces = [part_reg(cx, e, parts[0])]
@@ -11,8 +11,9 @@ fn interp_reg(mut cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprI
         pieces.push(hole_reg(cx, e, h))
         pieces.push(part_reg(cx, e, parts[j + 1]))
     }
+    let size = box_size(cx, pieces.length)
     let arr = cx.mint_ty(cx.type_at(e))
-    grown_box(cx, arr, pieces)
+    grown_box(cx, arr, size, pieces)
     let sep = part_reg(cx, e, "")
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, "avra_str_join", [arr, sep]))
