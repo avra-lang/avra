@@ -1,12 +1,6 @@
 //! Byte-level (ASCII) character classification — shared by every
 //! scanner in the compiler.
 
-/// The byte at index `i` — `s.char_code(i)`, which every scanner now
-/// asks directly; the name stays for the readers not yet rewritten.
-export fn code_at(s: string, i: int) -> int {
-    s.char_code(i)
-}
-
 /// Space, tab, or carriage return — never newline (that is layout).
 export fn is_space(c: int) -> bool { c == 32 || c == 9 || c == 13 }
 
@@ -26,6 +20,17 @@ export fn is_digit(c: int) -> bool { c >= 48 && c <= 57 }
 /// An uppercase letter, digit, or `_`.
 export fn is_upper_name_cont(c: int) -> bool {
     (c >= 65 && c <= 90) || c == 95 || is_digit(c)
+}
+
+/// Whether EVERY byte of `s` satisfies `pred` — vacuously true for
+/// the empty string, as `List.all` is. Emptiness is the caller's law.
+/// An early-return loop, not a comprehension: a comprehension would
+/// allocate a `List<bool>` and could not stop at the first miss.
+export fn all_codes(s: string, pred: fn(int) -> bool) -> bool {
+    for i in 0..s.length {
+        if !pred(s.char_code(i)) { return false }
+    }
+    true
 }
 
 /// A string as SOURCE spells it, quotes included — the inverse of

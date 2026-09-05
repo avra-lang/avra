@@ -1499,8 +1499,12 @@ CLAUDE.md, the cli entry, this ledger's bs2 section).
         rewritten); the `mod x` rule deleted; the bootstrap's pins
         un-pinned (18 typed lets that existed for a dead dialect);
         five counting `while` loops now `for i in 0..n`; `code_at`
-        calls read `s.char_code(i)` at 39 sites (the shim stays only
-        for lane A's held `core/text.av`). Spec cases in seven
+        calls read `s.char_code(i)` at 39 sites. THE LEDGER LINE WAS
+        FALSE and is corrected 2026-09-05: the shim did not stay for
+        `core/text.av` alone — `language/manifest.av` and
+        `language/interp.av` were never swept and their `code_at`
+        predates the sweep by two days. Six readers, retired together
+        with the shim. Spec cases in seven
         feature test files; corpus/comprehensions.av proves the new
         heads native. THREE REVIEWS of the tree (features; grammar +
         core; language + cli) are filed under THE SWEEP'S FINDINGS
