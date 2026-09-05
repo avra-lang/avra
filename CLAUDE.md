@@ -508,6 +508,10 @@ Syntax the grammar lacks:
   Instantiation is a STATEMENT: as a fn's tail it answers `void`
   ("the body answers `void` but `made` declares `Cfg`") — bind,
   then return the name.
+- A PRESENT-BIND arm after a COMMA-ended arm (`null -> a,` then `v?
+  -> b`): "expected `}` to close the `match`" — the comma continues
+  the line and `v?` is read into it. Separate such arms by line, as
+  the corpus does; variant and literal arms take the comma.
 - A match arm whose body is an EMPTY BLOCK (`1 -> {}` in statement
   position): `{}` is an empty map — F2013 "a `match`'s arms
   disagree: `void` vs the first arm's `{}`".
@@ -524,16 +528,12 @@ Wants the typer does not carry yet:
   pin (`MatchContext { absent: captured_absent<N>(), … }` inside a
   generic fn): F2000 "`N` is not pinned by the arguments". Every
   other seat pins it.
-- A COMPREHENSION's element does not read the list's want: `let xs:
-  List<List<int>> = [empty() for i in 0..2]` is F2000 "`T` is not
-  pinned by the arguments" — the element types on its own, the list
-  adopts it afterwards.
-- A LAMBDA's body does not read its declared answer for bare
-  variants: `(n) -> if … { .Err(e) } else { .Ok(v) }` under
-  `fn(int) -> Result<int, E>` (a typed let or a fn-typed field):
-  F2043 "`.Ok` needs a known enum — nothing here says which";
-  `Result.Ok(v)` there: F2003 "`T1` is not pinned by the payload".
-  A NAMED fn in the seat works, `?` on the field's call included.
+- A LAMBDA in a FIELD or ARGUMENT seat does not read the seat's
+  answer: `Cx { get: (n: int) -> .Ok(n) }` under `fn(int) ->
+  Result<int, E>` is F2043 "`.Ok` needs a known enum — nothing here
+  says which". Under a TYPED LET the body hears the answer (bare
+  variants, a free Var, a `dyn` box all read it); a NAMED fn in the
+  seat works everywhere, `?` on the field's call included.
 - A `dyn` want does not reach into arms or branches: `match k { 0
   -> P { … }, _ -> Q { … } }` under `-> dyn Show`: F2013 "a
   `match`'s arms disagree: `Q` vs the first arm's `P`"; the `if`
