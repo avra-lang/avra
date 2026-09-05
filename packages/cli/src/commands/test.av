@@ -3,6 +3,8 @@
 //! case by its symbol. Native, because a suite that interprets the
 //! compiler takes an hour where the machine takes seconds.
 use @std.cli.{Subcommand, CliResult, Runnable}
+use @std.process.{Tool, cmd, Exit}
+use @std.errors.{Error}
 use @std.avrac.language.{Program, TestCase, Lowered, CaseCall, cases_entry, runner_rows, emit_ll, case_words}
 use @std.avrac.core.{joined_path}
 
@@ -41,7 +43,14 @@ fn ran(p: Program, lo: Lowered, cases: List<TestCase>) -> int {
         return 1
     }
     if link_throwaway(path, p) != 0 { return 1 }
-    judged(avra_spawn_status(binary_name(path), []))
+    let binary = Tool { name: "the test binary", path: binary_name(path), terminator: null }
+    match at_the_terminal(cmd(binary, [])).outcome() {
+        .Ok(o) -> judged(o.exit),
+        .Err(e) -> {
+            println("the test binary could not run — ${e.describe().message}")
+            1
+        },
+    }
 }
 
 /// Where the test binary is written — under the root's `build/`,
@@ -53,16 +62,18 @@ fn staged_path(p: Program) -> string {
 }
 
 /// THE SUITE'S VERDICT. The binary says the tally itself and
-/// answers 0 or 1; anything else means it DIED — a case trapped, or
-/// a signal killed it, and every case after that one never ran.
-fn judged(status: int) -> int {
-    if status == 0 { return 0 }
-    if status == 1 { return 1 }
-    if status == 127 {
-        println("the test binary could not start — the link answered a path that does not run")
-        return 1
+/// answers clean or 1; anything else means it DIED — a case trapped,
+/// or a signal killed it, and every case after that one never ran.
+fn judged(x: Exit) -> int {
+    match x {
+        .Clean -> 0,
+        .Code(n) -> if n == 1 { 1 } else { stopped("exited with code ${n}") },
+        .Signal(s, _) -> stopped("a signal (${s}) killed it"),
     }
-    println("the suite STOPPED — the case named above trapped, and every case after it never ran")
+}
+
+fn stopped(how: string) -> int {
+    println("the suite STOPPED — ${how}: the case named above trapped, and every case after it never ran")
     1
 }
 
