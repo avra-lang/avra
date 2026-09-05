@@ -10,7 +10,7 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, filled, joined, rt_sig_of, code_at}
+use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, filled, joined, rt_index, code_at}
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -32,6 +32,9 @@ enum Val {
 /// and its refusal.
 type Machine = {
     l: Lowered,
+    // the runtime's rows by name, built once per machine — the
+    // evaluator asks per runtime call executed
+    rt: Map<string, RtSig>,
     frames: List<List<Val?>>,
     arrays: List<List<Val>>,
     maps: List<MapVal>,
@@ -42,7 +45,7 @@ type Machine = {
 
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, frames: [], arrays: [], maps: [], cells: [], out: [], failures: [] }
+    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], out: [], failures: [] }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -501,7 +504,7 @@ fn rt_val(m: Machine, b: Body, d: Reg, callee: string, args: List<Reg>) -> Val {
 /// The registry's host column, hosted — exhaustive over RtHost, so
 /// a row with a new host demands its arm here.
 fn rt_dispatch(m: Machine, callee: string, vals: List<Val>) -> Val {
-    let sig: RtSig? = rt_sig_of(callee)
+    let sig: RtSig? = m.rt.get(callee)
     if sig == null {
         if m.l.externs.any(it.name == callee) { return unhosted_extern(m, callee) }
         return defect_val(m, "an unknown runtime callee `${callee}` survived lowering")
