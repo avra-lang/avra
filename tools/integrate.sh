@@ -6,7 +6,9 @@
 # when main has moved, merges with a merge commit, rebuilds main's
 # compiler twice (the fixed point), refreshes the seed, bootstraps
 # from it (byte-identical, or it is not a seed), commits the seed, and
-# rebases the lane onto the new main. Before the merge it PRE-FLIGHTS main's
+# rebases the lane onto the new main, rebuilding its compiler from
+# whichever of its own product or the seed can read the rebased tree.
+# Before the merge it PRE-FLIGHTS main's
 # compiler against the lane's tree, so a lane that lands a language change never
 # leaves main merged and unbuildable. Every heavy step runs through
 # the watchdog and its lock. Edits another session left on main's
@@ -22,6 +24,37 @@ worktree="$(dirname "$root")/avra-lane-$lane"
 cap=4000
 
 cd "$worktree"
+
+# A COMPILER THAT READS THE REBASED TREE. `make bootstrap` alone assumes
+# main's SEED can read the lane — false for a lane that ADDS a construct
+# and USES it in the same slice, which is the normal shape of a language
+# change. The lane's own product knows its constructs; the seed knows
+# main's. Try the product first, the seed second: each single-sided case
+# is covered, and only a lane that adds syntax WHILE main added syntax
+# defeats both.
+rebuilt_lane() {
+    if [ -x /tmp/integrate-lane-product ]; then
+        cp /tmp/integrate-lane-product build/avra
+        codesign -f -s - build/avra 2>/dev/null || true
+        if sh tools/watch.sh $cap make -s avra > /tmp/integrate-lane-rebuild.out 2>&1; then
+            echo "integrate: lane/$lane rebuilt with its own product"
+            return 0
+        fi
+    fi
+    if sh tools/watch.sh $cap make bootstrap > /tmp/integrate-bootstrap.out 2>&1; then
+        echo "integrate: lane/$lane bootstrapped from the seed"
+        return 0
+    fi
+    echo "integrate: no compiler reads the rebased lane — its product cannot read main's tree"
+    echo "integrate:   and the seed cannot read the lane's. Land the construct and its USES as"
+    echo "integrate:   two slices: drop the uses, \`make bootstrap\`, restore them, \`make avra\`"
+    echo "integrate:   with that product, then gate. (CLAUDE.md, A SYNTAX CHANGE TO THE COMPILER'S"
+    echo "integrate:   OWN SOURCE.) Main is untouched."
+    tail -12 /tmp/integrate-bootstrap.out
+    return 1
+}
+
+[ -x build/avra ] && cp build/avra /tmp/integrate-lane-product
 if [ -n "$(git status --porcelain)" ]; then
     git add -A && git commit -q -F "$msg"
     committed=1
@@ -31,7 +64,7 @@ base="$(git -C "$main" rev-parse HEAD)"
 if ! git merge-base --is-ancestor "$base" HEAD; then
     echo "integrate: main moved to $(git -C "$main" log -1 --format=%h) — rebasing lane/$lane and gating"
     git rebase main
-    sh tools/watch.sh $cap make bootstrap > /tmp/integrate-bootstrap.out 2>&1 || { echo "integrate: the rebased lane does not bootstrap"; tail -20 /tmp/integrate-bootstrap.out; exit 1; }
+    rebuilt_lane || exit 1
     sh tools/watch.sh $cap make gate > /tmp/integrate-gate.out 2>&1 || { echo "integrate: the gate is RED on the rebased lane"; grep -n "✗\|FAILED\|error" /tmp/integrate-gate.out | head -12; exit 1; }
     echo "integrate: gate green on the rebased lane ($(grep -c 'tests passed' /tmp/integrate-gate.out) suites)"
 fi
@@ -110,5 +143,5 @@ echo "integrate: main at $(git log -1 --format=%h), fixed point and seed cycle h
 cd "$worktree" && git rebase -q main && echo "integrate: lane/$lane rebased onto main"
 # the lane's binary must read the tree it now sits on: a rebase past
 # another lane's language change leaves a compiler that traps on the
-# new spelling, and the seed is the way back
-sh tools/watch.sh $cap make -s bootstrap > /tmp/integrate-lane-boot.out 2>&1 && echo "integrate: lane/$lane bootstrapped from the seed" || { echo "integrate: the rebased lane does not bootstrap"; tail -20 /tmp/integrate-lane-boot.out; exit 1; }
+# new spelling
+rebuilt_lane || exit 1

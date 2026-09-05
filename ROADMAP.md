@@ -381,6 +381,19 @@ the compiler checking itself 28.8s.
         refuses today's tree and refuses a trait-default program
         ("expected `}` while parsing `stmt`") where today's binary
         accepts it.
+  - [x] THE REBASED LANE IS REBUILT BY WHICHEVER COMPILER READS IT
+        (2026-09-05, lane C's find, relayed by lane D): the pre-flight
+        fixed the MERGE side; the REBASE side had the mirror gap. The
+        integrator ran `make bootstrap` in the lane worktree after a
+        rebase, which assumes main's SEED can read the lane — false for
+        a lane that ADDS a construct and USES it in the same slice,
+        which is the normal shape of a language change. Lane C hit it
+        landing `once fn` and finished by hand. `rebuilt_lane` now
+        tries the lane's OWN product first (it knows the lane's
+        constructs) and the seed second (it knows main's), so each
+        single-sided case is automatic. Only a lane that adds syntax
+        WHILE main added syntax defeats both, and that message names
+        CLAUDE.md's two-slice procedure instead of a bare failure.
   - [x] THE STATE BOX DISSOLVED (2026-09-05): a `MatchState` was
         boxed per hit and per call — cursor and bindings — and a
         result carried one. The cursor and the bindings are the
