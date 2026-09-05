@@ -258,6 +258,45 @@ the compiler checking itself 28.8s.
         runs (the binary peaks at 1065 MB with main's runtime, 1089
         with this one: no leak). The cap is 6000 by default, a
         wreck-catcher; the shape is the next item.
+  - [x] THE LOOP'S PRELUDE LEAKED (FOUND by the accounting 2026-09-05;
+        lane C's S4c-1 landed the same fix first, line for line): the
+        memory pass settled a loop condition's managed reads at the
+        ENCLOSING scope's end — once — while the condition ran every
+        iteration, so `while self.rows.length <= i { self.rows.push(…) }`
+        leaked one reference per extra iteration, the next write saw
+        the list as SHARED and cloned it, and the old version could
+        never die. Every table write in the compiler has that shape
+        (`Table.keep`, `Decls` columns, `union`'s accumulators): 1.27
+        GB of live clones in a self-check, 244k clones made, found by
+        THE ACCOUNTING (below). The prelude is a scope of its own now,
+        settled before the test. MEASURED: the self-check's footprint
+        2372 -> 955 MB, the suite's peak 2399 -> 1189 MB, the gate's
+        2405 -> 1249 MB; the suite's bodies 0.99s -> 0.47s, sigs 0.16
+        -> 0.05, lower 1.87 -> 1.60, parse 6.0 -> 6.5s (the executor's
+        loops now settle per iteration) — net 9.5s -> 9.1s of compile.
+        Eleven-line witnesses, all clean under AVRA_RC_GUARD; S4c-1's
+        golden in lower_test.av pins the release before `while`.
+  - [x] THE ACCOUNTING (2026-09-05): `AVRA_MEM_STATS=1` makes the
+        runtime say what a process's memory is MADE OF — live bytes
+        and peaks by category (records, strings, list boxes, list
+        buffers, map boxes, map indexes), list buffers by capacity,
+        and live list bytes by the ALLOCATION SITE that made them
+        (the constructor's return address, unslid, so `atos -o
+        build/avra <addr>` names the Avra fn; a clone, concat or
+        slice names its Avra caller). Printed at exit and before an
+        exec. Under AVRA_RC_GUARD it replays the life of a sample box
+        per site whose count never balanced. What it showed first:
+        records are ARRAYS (structs pack as lists: a two-field struct
+        is a 48-byte box and a 72-byte buffer), 5.3M small lists in a
+        self-check, and the clone hoard above.
+  - [ ] THE FAR RECORDS RETAINED: after the prelude fix a self-check
+        still holds 2.78M `FarthestFailure` records made at terminal
+        misses (`match_prim`'s `.Lit`/`.Named` miss arms, 100% of
+        those made) and 788k merged ones with their expected lists —
+        ~600 MB, 60% of what is left. A lone 4000-statement file
+        keeps 184k. The results that carried them die; something else
+        holds them. NEXT: the guard's replay aimed at that site
+        (AVRA_MEM_SITE) names the retain nobody releases.
   - [x] THE GATE'S SHAPE (LANDED 2026-09-05): the compiler holds its workspace (~2.4 GB)
         while it waits on clang and on the test or corpus binary, so
         a suite peaks at their SUM. The light phase — link and run —
@@ -315,6 +354,16 @@ the compiler checking itself 28.8s.
         suite 46s -> 30s, one assembly 30ms -> 20ms. What `once`
         would still buy is the remaining per-case assembly —
         re-profile before building it.
+        MEASURED AGAIN (2026-09-05, after the free lists): 300 cases
+        that only assemble run in 0.65s — 2.2 ms per assembly — and
+        the suite's 1674 cases run in 4.8s, 2.9 ms each: assembly is
+        THREE QUARTERS of the case run, ~3.6s of the gate. The
+        construct is worth building; the design that needs no IR
+        variant: `once fn f() -> T` lowers to a body guarded by two
+        runtime ROWS (`avra_once_get(id) -> ptr?`, `avra_once_set(id,
+        v)`), the cache holding one immortal reference, each call
+        answering it retained; scalars refused at first (a once
+        value is one the runtime owns). Lane C's files.
   - [x] PROFILE THE CASE RUN (2026-09-04): its top frame was
         `distinct`, the O(n^2) dedup behind `Grammar.keywords()`,
         recomputed by every case's `avra()` over ~1000 literals —
