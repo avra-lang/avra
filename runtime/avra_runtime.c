@@ -1338,7 +1338,9 @@ static int64_t write_whole(const char* path, const char* content) {
     snprintf(tmp + n, 32, ".tmpav%ld", (long)getpid());
     FILE* f = fopen(tmp, "wb");
     if (!f) { int64_t e = -errno; free(tmp); return e; }
-    size_t len = strlen(content);
+    // the HEADER's length, never strlen: a text may hold NUL bytes, and
+    // a write that stopped at the first one would truncate in silence
+    size_t len = str_len(content);
     int64_t status = fwrite(content, 1, len, f) == len ? 0 : -EIO;
     if (fclose(f) != 0 && status == 0) status = -errno;
     if (status == 0 && rename(tmp, path) != 0) status = -errno;

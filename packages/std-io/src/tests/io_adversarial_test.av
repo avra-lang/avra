@@ -3,6 +3,7 @@
 // as two names (the stash joined on `\n`), `make_dirs("")` spoke of a
 // name too long, and `env("PATH=")` answered PATH's value because the
 // C library reads a name up to its `=`.
+use @std.text.{from_codepoint}
 use @std.io.{IoError, kind_of, exists, is_dir, read_text, write_text, list_dir, make_dirs, remove, env, env_or}
 
 /// The scratch directory for the adversarial set, made.
@@ -112,6 +113,20 @@ spec "std/io — adversarial" {
             let r = read_text("${d}/one")
             let l = list_dir(d)
             said(r) == "ok:1" && names(l) == "one"
+        }
+    }
+    given "bytes that are not letters" {
+        then "a text holding a NUL round-trips whole — the write reads the header's length, not strlen" {
+            let p = cleared("nul.bin")
+            let payload = "ab${from_codepoint(0)}cd"
+            let _ = write_text(p, payload)
+            (read_text(p) catch "").length == 5 && payload.length == 5
+        }
+        then "the byte survives in the middle, not just the count" {
+            let p = cleared("nul2.bin")
+            let _ = write_text(p, "x${from_codepoint(0)}y")
+            let back = read_text(p) catch ""
+            back.length == 3 && back.char_code(0) == 120 && back.char_code(1) == 0 && back.char_code(2) == 121
         }
     }
     given "the environment's names" {
