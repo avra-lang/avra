@@ -261,6 +261,17 @@ the compiler checking itself 28.8s.
         extern declared with a runtime row's name is the runtime's row
         on both engines (`shown` answers the whole OUTPUT, `x\n2`, not
         the value — a pin taught me that).
+  - [x] LOWERING'S OWN WHOLE-TABLE SCAN (2026-09-04): every body's
+        emitter gathered the program's extern symbols by walking EVERY
+        declaration (`extern_names`, asked from `new_lower` per body
+        and per lift) — I32 in the lowering. Gathered once per run
+        (`Workspace.externs`, complete because every file is admitted
+        before the first unit lowers) and once per lone lowering, and
+        handed to each unit through `Jobs`; `union`'s per-file
+        `concat` of wanted units is one `flatten`. MEASURED: the
+        suite's lower 6.1s -> 3.7s. What remains in lowering is the
+        memory pass asking `rt_sig_of` per instruction (15% of the
+        phase; memory.av is lane C's, and the once-value covers it).
 
 LANE B — STD LIBS (owns NEW packages only; each package: `avra.toml`,
 spec tests beside it, a corpus package under corpus/<name>/ proving

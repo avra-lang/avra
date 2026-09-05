@@ -68,6 +68,9 @@ export type Workspace = {
     // with the revision; today no host does.
     sources: Table<SourceFile>,
     manifests: Table<Manifest>,
+    // the program's extern symbols, gathered once at the first
+    // lowering (index 0)
+    externs: Table<List<string>>,
     programs: Table<Parsed>,
     file_items: Table<List<DeclId>>,
     module_names: Table<ModuleNames>,
@@ -179,7 +182,7 @@ fn language_decls(lang: Language) -> Decls {
 fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool) -> Workspace {
     let ws = Workspace {
         host: host, root: root, lang: lang, db: new_db(), decls: language_decls(lang),
-        sources: new_table<SourceFile>(), manifests: new_table<Manifest>(), programs: new_table<Parsed>(), file_items: new_table<List<DeclId>>(), module_names: new_table<ModuleNames>(),
+        sources: new_table<SourceFile>(), manifests: new_table<Manifest>(), externs: new_table<List<string>>(), programs: new_table<Parsed>(), file_items: new_table<List<DeclId>>(), module_names: new_table<ModuleNames>(),
         visibles: new_table<Namespace>(), name_facts: new_table<NameFacts>(), sig_voices: new_table<Voices>(),
         decl_facts: new_table<TypeFacts>(), method_clashes: new_table<List<Clash>>(), folds: new_table<TypeFacts>(),
         analyses: new_table<Analysis>(), units: new_table<Unit>(), specs: {}, asks: [], defects: [],
@@ -545,6 +548,17 @@ fn spec_id(ws: Workspace, w: Wanted) -> int {
     id
 }
 
+/// The program's extern fns by symbol, gathered ONCE per run — every
+/// file is admitted before the first unit lowers, and the emitters
+/// asked per body where each walked every declaration.
+fn extern_symbols(ws: Workspace) -> List<string> {
+    let held: List<string>? = ws.externs.at(0)
+    if held != null { return held! }
+    let names = extern_names(ws.decls)
+    ws.externs.keep(0, names)
+    names
+}
+
 /// One unit lowered and remembered: a body edit re-lowers its own
 /// unit; the specializations it wants are other units.
 export fn lowered(ws: Workspace, id: int) -> Unit {
@@ -552,7 +566,7 @@ export fn lowered(ws: Workspace, id: int) -> Unit {
     if ws.db.ask(k) is .Reuse { return ws.units.at(id)! }
     ws.db.begin(k)
     let w = ws.asks[id]
-    let out = lower_unit(analysis(ws, w.file), w)
+    let out = lower_unit(analysis(ws, w.file), extern_symbols(ws), w)
     ws.db.settle(k, ws.db.revision())
     ws.units.keep(id, out)
     out
