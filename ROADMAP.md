@@ -4776,19 +4776,22 @@ by meaning; each is a slice for lane D unless a lane is named.
   two offsets" x7 -> one `within`. THE RULE TO ADOPT: a feature's
   lower.av never writes `cx.emit(Ins.…)` for a CONTROL or ITERATION
   instruction — only its own value shape.
-- B. TWO LATENT INCONSISTENCIES (semantic; probe, test, fix): (1)
-  the receiver projection is spelled three times and the copies
-  DISAGREE — `contexts.av`'s `declared_decl` drops `.App`, so a
-  generic instantiation implements nothing (`dyn` boxing of
-  `Box<int>` and a `T: Show` bound by a generic struct refuse while
-  the method call on the same value resolves) -> ONE `declared_decl`
-  carrying `.App`; (2) the enum payload seat (`variants.av:27`)
-  SHORT-CIRCUITS unify where the call argument (`fns/check.av:134`)
-  and the struct field (`structs/check.av:96`) record the lift —
-  CLAUDE.md's own "UNIFY BINDS, accepts RECORDS" — so a payload
-  refuses a widen its siblings accept -> `agreed()` in checks.av,
-  three callers. Also `receivers.av:198` `writable`'s `_ -> true`
-  over `Type` with two answering arms (an I22 hole).
+- ~~B. TWO LATENT INCONSISTENCIES~~ — DONE 2026-09-05 (lane D). (2)
+  WAS REAL: the enum payload seat short-circuited unify and refused a
+  `dyn` box (`Holder.Holds(P { x: 3 })`, F2015) and an auto-Ok
+  (`Wrap.Res(4)`, F2015) that a call argument and a struct field
+  took — `agreed()` in checks.av is the one door, three callers, the
+  failing tests written first (enums_adversarial), corpus/seats.av
+  proves the three seats agree native. (1) WAS NOT a bug: `App` is
+  absent from `declared_decl` ON PURPOSE — a trait impl over a
+  generic type is recorded, not landed (F2031), so a generic
+  instantiation must not box into a `dyn` it cannot dispatch; the
+  stale doc ("wait for T2") now says so, and the two identical
+  RECEIVER projections folded into `receiver_decl` beside it, the
+  difference named. `writable` spells every arm. FOUND: a generic
+  enum under a `dyn`-carrying want pins `T` from the argument, not
+  the want (`let c: Cap<dyn Show> = Cap.Some(P {…})` is F2024) — the
+  want-into-generic class, filed under H.
 - C. THE DOT-CALL DECIDED ONCE: `impls/check.av:21-60` and
   `impls/lower.av:13-41` each hand-order a ladder over five receiver
   kinds, and they already differ (`bounded_call` has no lowering

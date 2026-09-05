@@ -176,8 +176,11 @@ registry is the idiom engine's spec, written by dogfooding.
   mints. A seat that unifies and returns without passing through the
   agreement door silently drops the widen — invisible for as long as
   the widen happens to be identity, and a wrong answer the day the
-  representation changes. Three seats had it: a struct field, a call
-  argument, an enum payload.
+  representation changes. The door is ONE verb, `agreed` (checks.av),
+  and the three unified seats — a call argument, a struct field, an
+  enum payload — call it; the payload once short-circuited and
+  refused a `dyn` box and an auto-Ok its siblings took
+  (corpus/seats.av holds the proof).
 - EVERY POINTER AVRA HOLDS CARRIES A HEADER. The runtime counts
   references in sixteen bytes BEFORE each payload (tag, kind, rc,
   and a record's size class or a string's length),
