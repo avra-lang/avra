@@ -29,19 +29,7 @@ impl Seq {
     /// groups — capture accumulation makes them all visible to the
     /// build.
     fn labels() -> List<string> {
-        flatten([item_labels(m) for m in self.items])
-    }
-}
-
-/// One item's labels: its own, then any inside its prim's groups.
-fn item_labels(m: Item) -> List<string> {
-    some_list(m.label).concat(prim_labels(m.prim))
-}
-
-fn prim_labels(p: Prim) -> List<string> {
-    match p {
-        .Group(inner) -> flatten([s.labels() for s in inner.branches]),
-        .Ref(_) or .Lit(_) or .Named(_) -> [],
+        flatten([some_list(m.label) for m in self.deep_items()])
     }
 }
 
@@ -61,40 +49,29 @@ fn prim_defects(rule_name: string, p: Prim, names: List<string>, labeled: bool) 
 }
 
 fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<Diagnostic> {
-    mut out: List<Diagnostic> = []
-    let labels = s.labels()
     if s.build == null {
-        if value_needed && s.items.length != 1 {
-            out.push(defect(rule_name, "a branch without a build must have exactly one item to pass through"))
-        }
-    } else {
-        match s.build! {
-            .Var(name) -> {
-                if !labels.contains(name) {
-                    out.push(defect(rule_name, "build returns uncaptured label `${name}`"))
-                }
-            }
-            .Call(_, args) -> {
-                for a in args {
-                    if !labels.contains(a) {
-                        out.push(defect(rule_name, "build argument `${a}` is not captured in its branch"))
-                    }
-                }
-            }
-        }
+        if !value_needed || s.items.length == 1 { return [] }
+        return [defect(rule_name, "a branch without a build must have exactly one item to pass through")]
     }
-    out
+    let labels = s.labels()
+    match s.build! {
+        .Var(name) ->
+            if labels.contains(name) { [] }
+            else { [defect(rule_name, "build returns uncaptured label `${name}`")] },
+        .Call(_, args) ->
+            [defect(rule_name, "build argument `${a}` is not captured in its branch")
+                for a in args if !labels.contains(a)],
+    }
 }
 
 fn alt_defects(rule_name: string, a: Alt, names: List<string>, value_needed: bool) -> List<Diagnostic> {
-    mut out: List<Diagnostic> = []
-    for s in a.branches {
-        for member in s.items {
-            out = out.concat(prim_defects(rule_name, member.prim, names, member.label != null))
-        }
-        out = out.concat(build_defects(rule_name, s, value_needed))
-    }
-    out
+    flatten([seq_defects(rule_name, s, names, value_needed) for s in a.branches])
+}
+
+/// One branch's defects: its items', then its build's.
+fn seq_defects(rule_name: string, s: Seq, names: List<string>, value_needed: bool) -> List<Diagnostic> {
+    flatten([prim_defects(rule_name, m.prim, names, m.label != null) for m in s.items])
+        .concat(build_defects(rule_name, s, value_needed))
 }
 
 impl Grammar {
@@ -117,7 +94,7 @@ impl Grammar {
                 seen.push(r.name)
             }
         }
-        for r in self.rules { out = out.concat(alt_defects(r.name, r.body, names, true)) }
-        out.concat(first_defects(self))
+        out.concat(flatten([alt_defects(r.name, r.body, names, true) for r in self.rules]))
+            .concat(first_defects(self))
     }
 }

@@ -38,18 +38,13 @@ impl Grammar {
 }
 
 fn alt_words(a: Alt) -> List<string> {
-    flatten([seq_words(s) for s in a.branches])
-}
-
-fn seq_words(s: Seq) -> List<string> {
-    flatten([item_words(x) for x in s.items])
+    flatten([item_words(x) for x in a.items()])
 }
 
 fn item_words(x: Item) -> List<string> {
     match x.prim {
         .Lit(text) -> if !text.is_empty() && is_name_start(text.char_code(0)) { [text] } else { [] },
-        .Group(inner) -> alt_words(inner),
-        .Ref(_) or .Named(_) -> [],
+        .Ref(_) or .Named(_) or .Group(_) -> [],
     }
 }
 
@@ -103,6 +98,38 @@ impl Prim {
         let tn = self.token_name()
         if tn == null { return false }
         tn! == token
+    }
+}
+
+impl Seq {
+    /// This branch, then every branch nested in its groups.
+    fn seqs() -> List<Seq> {
+        [self].concat(flatten([group_seqs(m.prim) for m in self.items]))
+    }
+
+    /// This branch's items, nested groups opened.
+    fn deep_items() -> List<Item> {
+        flatten([s.items for s in self.seqs()])
+    }
+}
+
+impl Alt {
+    /// Every branch under this alternation, nested groups opened.
+    fn seqs() -> List<Seq> {
+        flatten([s.seqs() for s in self.branches])
+    }
+
+    /// Every item under this alternation, nested groups opened.
+    fn items() -> List<Item> {
+        flatten([s.deep_items() for s in self.branches])
+    }
+}
+
+/// The branches a prim opens — a group's, nothing else's.
+fn group_seqs(p: Prim) -> List<Seq> {
+    match p {
+        .Group(inner) -> inner.seqs(),
+        .Ref(_) or .Lit(_) or .Named(_) -> [],
     }
 }
 
