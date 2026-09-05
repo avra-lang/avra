@@ -76,7 +76,7 @@ spec "language/workspace (adversarial)" {
                          ["/w/src/main.av", "/w/src/x/a.av", "/w/src/y/b.av"], "`f` is imported, but `x` already has it")
         }
         then "importing a declaration already visible as a sibling is redundant, not a clash" {
-            runs({ "/w/src/main.av": "use solo.{once}\nonce(4)\n", "/w/src/solo.av": "export fn once(n: int) -> int {\n    n\n}\n" }, ["/w/src/main.av", "/w/src/solo.av"]) == "4"
+            runs({ "/w/src/main.av": "use solo.{only}\nonly(4)\n", "/w/src/solo.av": "export fn only(n: int) -> int {\n    n\n}\n" }, ["/w/src/main.av", "/w/src/solo.av"]) == "4"
         }
         then "a directory and a file of one name refuse together" {
             refuses_once({ "/w/src/main.av": "use util.{twice}\ntwice(1)\n", "/w/src/util.av": twice(), "/w/src/util/m.av": twice() },
@@ -184,7 +184,7 @@ spec "language/workspace (adversarial)" {
         }
     }
     given "a type's methods are one namespace across its module's files" {
-        then "the same method in two files of one module clashes at the LATER file, once" {
+        then "the same method in two files of one module clashes at the LATER file, only" {
             let ws = package({ "/w/src/main.av": "use util.{P}\nP { x: 1 }.show()\n", "/w/src/util/a.av": "export type P = { x: int }\nimpl P {\n    fn show() -> int {\n        self.x\n    }\n}\n", "/w/src/util/b.av": "impl P {\n    fn show() -> int {\n        self.x + 1\n    }\n}\n" }, ["/w/src/main.av", "/w/src/util/a.av", "/w/src/util/b.av"])
             let later = analyze_file(ws, "/w/src/util/b.av")
             analyze_file(ws, "/w/src/util/a.av").clean() &&

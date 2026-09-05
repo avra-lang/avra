@@ -22,6 +22,21 @@ fn build_fn(mut b: Builder) -> Result<LangNode, string> {
     b.make_stmt(Stmt.FnDecl(n.text, tparams, marked_seats(ps, aligned_param_types(ps, b.type_refs(5)?, ends!), marks, n.span.lo), r, body))
 }
 
+/// `once fn` — a fn plus the mark. Its laws (no arguments, an
+/// answer the runtime can keep) are the declare phase's; its
+/// guarded body is lowering's.
+fn build_once_fn(mut b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let ps = b.tokens(1)?
+    let r = b.answer(3)
+    let body = b.expr(4)?
+    let ends: int? = b.span_end()
+    if ends == null { return .Err("a once declaration without a span") }
+    let s = b.store.alloc_stmt(Stmt.FnDecl(n.text, [], seats(ps, aligned_param_types(ps, b.type_refs(2)?, ends!)), r, body), b.span)
+    b.store.mark_once(s)
+    .Ok(LangNode.NStmt(s))
+}
+
 /// A bound as a written type — the trait's bare name.
 fn bound_ref(bound: string, at: Token) -> TypeRef? {
     if bound == "" { return null }

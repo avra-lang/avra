@@ -39,13 +39,15 @@ type Machine = {
     arrays: List<List<Val>>,
     maps: List<MapVal>,
     cells: List<Val>,
+    // a `once fn`'s answer, settled for this run under its symbol
+    onces: Map<string, Val>,
     out: List<string>,
     failures: List<string>,
 }
 
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], out: [], failures: [] }
+    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, out: [], failures: [] }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -519,6 +521,8 @@ impl Machine {
             .MapGet -> self.map_get_val(vals),
             .MapSet -> self.map_set_val(vals),
             .StrJoin -> self.str_join_val(vals),
+            .OnceGet -> self.once_get_val(vals),
+            .OnceSet -> self.once_set_val(vals),
             .Insist -> self.insist_val(vals),
             .InsistScalar -> self.insist_scalar_val(vals),
             .Text -> Val.S(self.val_text(vals[0])),
@@ -799,6 +803,19 @@ impl Machine {
 
 
     /// `v!` on a NICHE nullable — identity through the presence guard.
+    /// The once cache asked: this run's answer for the symbol, or
+    /// the null pointer when the fn has not run yet.
+    fn once_get_val(vals: List<Val>) -> Val {
+        let held: Val? = self.onces.get(self.text_val(vals[0]))
+        held ?? Val.N
+    }
+
+    /// The once cache kept: the first answer wins for the run.
+    fn once_set_val(vals: List<Val>) -> Val {
+        self.onces.set(self.text_val(vals[0]), vals[1])
+        Val.I(0)
+    }
+
     fn insist_val(vals: List<Val>) -> Val {
         if vals[0] is .N { return self.absent_refused() }
         vals[0]

@@ -119,4 +119,21 @@ ret 0"""
             shown("fn add(a: int, b: int,) -> int { a + b }\nfn same<T,>(v: T,) -> T { v }\nextern fn avra_now_ns() -> int\nadd(1, 2,) + same<int,>(4)") == "7"
         }
     }
+    given "`once` — a pure fn whose answer settles for the process" {
+        then "every call answers the settled value" {
+            shown("once fn tag() -> string {\n    \"avra\"\n}\n\"\${tag()}-\${tag()}\"") == "avra-avra"
+        }
+        then "a list, a map and an enum each settle" {
+            shown("enum M {\n    hot\n}\nonce fn xs() -> List<int> {\n    [1, 2, 3]\n}\nonce fn rows() -> Map<string, int> {\n    { \"a\": 4 }\n}\nonce fn m() -> M {\n    M.hot\n}\nxs().length + (rows().get(\"a\") ?? 0)") == "7"
+        }
+        then "a once fn may answer through another" {
+            shown("once fn a() -> string {\n    \"a\"\n}\nonce fn b() -> string {\n    \"\${a()}b\"\n}\n\"\${b()}\${b()}\${a()}\"") == "ababa"
+        }
+        then "the answer is one value however many calls ask" {
+            shown("once fn xs() -> List<int> {\n    [1, 2]\n}\nmut n = 0\nmut i = 0\nwhile i < 20 {\n    n = n + xs().length\n    i = i + 1\n}\nn") == "40"
+        }
+        then "a `once` fn is a fn: a plain fn calls it like any other" {
+            shown("once fn tag() -> string {\n    \"x\"\n}\nfn twice() -> string {\n    \"\${tag()}\${tag()}\"\n}\ntwice()") == "xx"
+        }
+    }
 }

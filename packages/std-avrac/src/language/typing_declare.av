@@ -5,7 +5,7 @@
 //! Bodies never walk here; a sig may name any file's declaration.
 use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, TypeRegistry, ExternParts}
 use diagnostics.{refusal}
-use features.{TypeCx, FnSig, StructSig, EnumSig, DeclSig, record_sig_of, variant_sig_of, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats}
+use features.{TypeCx, FnSig, StructSig, EnumSig, DeclSig, record_sig_of, variant_sig_of, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats, declared_decl}
 use @std.errors.{Loc}
 
 impl TypeCx {
@@ -137,6 +137,7 @@ impl TypeCx {
         if parts != null {
             let fp = parts!
             if self.view.store.is_mutating(s) { self.stray_mut_fn(s, fp.name) }
+            if self.view.store.is_once(s) { self.once_laws(s, fp) }
             return self.declare_sig(s, fp.params, fp.ret)
         }
         let host: ExternParts? = self.view.store.extern_parts(s)
@@ -173,6 +174,33 @@ impl TypeCx {
     fn typeless_param(s: StmtId, name: string) -> TypeId {
         self.emit(refusal("type.mismatch", self.stmt_loc(s), "parameter `${name}` declares no type", "declared here", "write `${name}: <type>`"))
         self.error_type
+    }
+
+    /// A `once` FN'S CONTRACT: no arguments — its answer is one
+    /// value for the whole process — and an answer the runtime can
+    /// KEEP, which a copied scalar is not.
+    fn once_laws(s: StmtId, fp: FnParts) {
+        if !fp.params.is_empty() { return self.once_takes_arguments(s, fp.name) }
+        let answer = self.annotated(s, fp.ret)
+        // WHETHER A VALUE RIDES A POINTER IS ITS DECLARATION'S
+        // ANSWER: a record of one scalar field is flattened when its
+        // own signature is asked, so ask before judging — a law that
+        // reads the registry mid-flight answers by declaration order.
+        let named: DeclId? = declared_decl(self.view.types.shape_of(answer))
+        if named != null { let _ = self.view.decls.sig(named!) }
+        if !self.view.types.rides_pointer(answer) { self.once_answers_a_copy(s, fp.name, answer) }
+    }
+
+    fn once_takes_arguments(s: StmtId, name: string) {
+        self.emit(refusal("type.once_fn", self.stmt_loc(s), "`once fn ${name}` takes arguments — a `once` answer is one value for the whole process", "declared here", "drop the parameters, or drop `once`"))
+    }
+
+    fn once_answers_a_copy(s: StmtId, name: string, answer: TypeId) {
+        self.emit(refusal("type.once_fn", self.stmt_loc(s), "`once fn ${name}` answers `${self.view.types.name_of(answer)}`, which the runtime cannot keep", "declared here", "a `once` value is one the runtime owns — a string, a list, a map, an enum, or a record wider than one scalar field"))
+    }
+
+    fn once_is_a_method(s: StmtId, name: string) {
+        self.emit(refusal("type.once_fn", self.stmt_loc(s), "`once fn ${name}` is a method — its answer would depend on a receiver", "declared here", "move it to the top level, or drop `once`"))
     }
 
     fn stray_mut_fn(s: StmtId, name: string) {

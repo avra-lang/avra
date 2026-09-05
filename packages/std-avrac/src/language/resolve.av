@@ -307,7 +307,7 @@ impl ResolveCx {
     }
 
     mut fn use_name(e: ExprId, name: string) {
-        if self.once(e) { return }
+        if self.met(e) { return }
         // The SAME naming law every other site runs: a keyword can
         // never be a name, so "not defined" would send the reader
         // hunting for a definition that could not exist.
@@ -352,7 +352,7 @@ impl ResolveCx {
     /// captured through every open lambda like any binding; outside
     /// a method there is no receiver to name.
     mut fn use_receiver(e: ExprId) {
-        if self.once(e) { return }
+        if self.met(e) { return }
         if self.receivers.is_empty() { return self.no_receiver(self.loc_of(e)) }
         self.bind_use(e, self.chained(0, receiver_key(), Binding.Receiver))
     }
@@ -383,8 +383,9 @@ impl ResolveCx {
 
     /// A name resolves ONCE — the first walk wins, diagnostics
     /// included. A bound scope re-walking a bound's subtree can
-    /// neither re-scope nor re-diagnose it.
-    fn once(e: ExprId) -> bool {
+    /// neither re-scope nor re-diagnose it. True when this node has
+    /// been met before; a first sighting marks it and answers false.
+    fn met(e: ExprId) -> bool {
         if self.walked[e.index] { return true }
         self.walked.set(e.index, true)
         false
@@ -392,7 +393,7 @@ impl ResolveCx {
 
     /// A literal's type name resolves in the type namespace alone.
     mut fn use_type(e: ExprId, name: string) {
-        if self.once(e) { return }
+        if self.met(e) { return }
         let found: DeclId? = self.facts.names.types.get(name)
         if found != null {
             self.bind_use(e, Binding.Decl(found!))
@@ -405,7 +406,7 @@ impl ResolveCx {
 
     /// A callee resolves in the fn namespace alone.
     mut fn use_call(e: ExprId, name: string) {
-        if self.once(e) { return }
+        if self.met(e) { return }
         // A keyword can never NAME a fn, so "no `fn if` is defined"
         // would offer a remedy the naming law itself forbids.
         if self.refused_name(name, self.loc_of(e)) { return }

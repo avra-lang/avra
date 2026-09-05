@@ -8,11 +8,11 @@ use language.{Workspace}
 /// with two ws_files, and a lone-file module.
 fn ws_files() -> Map<string, string> {
     {
-        "/w/src/main.av": "use util.{twice, Pair}\nuse solo.{once}\nlet p = Pair { a: 1, b: 2 }\ntwice(21) + once(1) + helper(3)\n",
+        "/w/src/main.av": "use util.{twice, Pair}\nuse solo.{only}\nlet p = Pair { a: 1, b: 2 }\ntwice(21) + only(1) + helper(3)\n",
         "/w/src/helper.av": "fn helper(n: int) -> int {\n    n\n}\n",
         "/w/src/util/mathx.av": "export fn twice(n: int) -> int {\n    n * 2\n}\nfn hidden() -> int {\n    0\n}\nexport fn ident<T>(x: T) -> T {\n    x\n}\n",
         "/w/src/util/pair.av": "export type Pair = { a: int, b: int }\nexport type Box<T> = { v: T }\nexport enum Shape {\n    Dot\n    Line(int)\n}\n",
-        "/w/src/solo.av": "export fn once(n: int) -> int {\n    n\n}\n",
+        "/w/src/solo.av": "export fn only(n: int) -> int {\n    n\n}\n",
     }
 }
 
@@ -85,7 +85,7 @@ spec "language/workspace" {
             let ws = ws_of()
             let f = visible(ws, file_id(ws, "/w/src/main.av"))
             f.fns.get("helper") != null && f.fns.get("twice") != null && f.types.get("Pair") != null &&
-                f.fns.get("once") != null && f.voices.list.is_empty()
+                f.fns.get("only") != null && f.voices.list.is_empty()
         }
         then "a module's private fn is not on its surface" {
             let ws = ws_of()
@@ -126,7 +126,7 @@ spec "language/workspace" {
     }
     given "the program runs across ws_files — one worklist" {
         then "a sibling, a directory module, a lone-file module, and a generic specialized in its home" {
-            ran_as(program(with_main("use util.{twice, ident}\nuse solo.{once}\ntwice(20) + ident(1) + once(1) + helper(1)\n"), "/w/src/main.av").run(), "43")
+            ran_as(program(with_main("use util.{twice, ident}\nuse solo.{only}\ntwice(20) + ident(1) + only(1) + helper(1)\n"), "/w/src/main.av").run(), "43")
         }
         then "a foreign fn worn as a value calls through its wrapper" {
             ran_as(program(with_main("use util.{twice}\nlet f = twice\nf(21)\n"), "/w/src/main.av").run(), "42")

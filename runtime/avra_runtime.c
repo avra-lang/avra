@@ -709,6 +709,53 @@ void* avra_insist(void* p) {
     return p;
 }
 
+// ── THE ONCE CACHE ───────────────────────────────────────────────
+// A `once fn`'s answer, settled for the process and asked by the
+// fn's own SYMBOL — unique in a binary by the linker's own law.
+// The cache keeps ONE reference to the key and ONE to the value,
+// forever: both are the caller's, consumed here (callee-cleans).
+// Every ask answers the value OWNED, so the caller's scope releases
+// its own reference and the cache's survives.
+#define AVRA_ONCE_MAX 256
+
+typedef struct {
+    void* key;
+    void* value;
+} OnceSlot;
+
+static OnceSlot g_once[AVRA_ONCE_MAX];
+static int g_once_count = 0;
+
+static int once_at(const char* key) {
+    for (int i = 0; i < g_once_count; i++) {
+        if (g_once[i].key == (void*)key) return i;
+        if (strcmp((const char*)g_once[i].key, key) == 0) return i;
+    }
+    return -1;
+}
+
+// A runtime row BORROWS its arguments — only an Avra call retains
+// for its callee — so the cache takes its OWN reference to each
+// thing it keeps, and gives one away with every answer.
+void* avra_once_get(void* key) {
+    int at = once_at((const char*)key);
+    void* held = at < 0 ? NULL : g_once[at].value;
+    avra_rc_retain(held);
+    return held;
+}
+
+void avra_once_set(void* key, void* value) {
+    // the guard answered absent, so a second setter cannot happen;
+    // if it did, the FIRST answer stands
+    if (once_at((const char*)key) >= 0) { return; }
+    if (g_once_count == AVRA_ONCE_MAX) { avra_trap("more `once` values than the cache holds"); }
+    avra_rc_retain(key);
+    avra_rc_retain(value);
+    g_once[g_once_count].key = key;
+    g_once[g_once_count].value = value;
+    g_once_count++;
+}
+
 // `v!` on a PAIR nullable — the flag guards, the value passes.
 int64_t avra_insist_scalar(int64_t present, int64_t value) {
     if (!present) { avra_trap("unwrapped an absent value"); }

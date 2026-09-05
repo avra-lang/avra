@@ -102,4 +102,32 @@ spec "features/fns (adversarial)" {
                          "`k` is a run-time binding of the top level")
         }
     }
+    given "`once` under attack — what a settled answer may be" {
+        then "arguments refuse: a once answer is one value for the process" {
+            refused_with("once fn f(a: int) -> string {\n    \"x\"\n}\nf(1)",
+                         "`once fn f` takes arguments — a `once` answer is one value for the whole process")
+        }
+        then "a scalar answer refuses — the runtime keeps no copies" {
+            refused_with("once fn n() -> int {\n    1\n}\nn()", "`once fn n` answers `int`, which the runtime cannot keep")
+        }
+        then "a void answer refuses in the same words" {
+            refused_with("once fn f() {\n}\n1", "`once fn f` answers `void`, which the runtime cannot keep")
+        }
+        then "a record of one scalar field travels as the field, and refuses" {
+            refused_with("type P = { x: int }\nonce fn p() -> P {\n    P { x: 1 }\n}\np().x", "`once fn p` answers `P`, which the runtime cannot keep")
+        }
+        then "a wider record is the runtime's, and settles" {
+            shown("type P = { x: int, y: int }\nonce fn p() -> P {\n    P { x: 5, y: 2 }\n}\np().x + p().y") == "7"
+        }
+        then "a method cannot be `once` — its answer would depend on a receiver" {
+            refused_with("type P = { x: int }\nimpl P {\n    once fn tag() -> string {\n        \"p\"\n    }\n}\nP { x: 1 }.tag()",
+                         "`once fn tag` is a method — its answer would depend on a receiver")
+        }
+        then "each refusal speaks once" {
+            refusals("once fn f(a: int) -> int {\n    a\n}\nf(1)") == 1
+        }
+        then "an absent answer is honest — it settles nothing and stays absent" {
+            shown("once fn t() -> string? {\n    null\n}\nt() ?? \"absent\"") == "absent"
+        }
+    }
 }

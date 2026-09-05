@@ -5,7 +5,7 @@
 //! printed answer.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, Deferred, push_slot, slot_read, adopted, carried_of, okayed, hollow_of, okness_of, void_arm, void_close, semantics_of, stmt_semantics_of}
+use features.{LowerCx, Deferred, push_slot, slot_read, adopted, carried_of, okayed, hollow_of, okness_of, void_arm, void_close, semantics_of, stmt_semantics_of, presence_of, open_region, arm_end, close_region_as}
 
 impl LowerCx {
     /// One subtree's register, lowered at first request and
@@ -92,6 +92,27 @@ impl LowerCx {
             .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _) or
             .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
+    }
+
+    /// A `once` FN'S BODY, GUARDED: the cache answers when it holds
+    /// this fn's value, and otherwise the body runs and the cache
+    /// keeps it. The key is the fn's own SYMBOL — unique in a
+    /// binary by the linker's own law, and in a run by the
+    /// evaluator's table.
+    mut fn once_body(symbol: string, root: ExprId, answer: TypeId) -> Reg {
+        let key = self.mint_shape(Type.Str)
+        self.emit(Ins.ConstStr(key, symbol))
+        // the cache answers `T?` — under the niche the nullable IS
+        // the pointer, so the guard is the presence protocol and the
+        // present arm's carry is identity
+        let maybe = self.view.decls.types.intern(Type.Opt(answer))
+        let held = self.mint_ty(maybe)
+        self.emit(Ins.CallRt(held, "avra_once_get", [key]))
+        open_region(self, presence_of(self, held, maybe))
+        arm_end(self, carried_of(self, held, maybe))
+        let made = self.reg_of(root)
+        self.emit(Ins.CallRtVoid("avra_once_set", [key, made]))
+        close_region_as(self, answer, made)
     }
 
     /// Statements in order, each through its own StmtSemantics — the

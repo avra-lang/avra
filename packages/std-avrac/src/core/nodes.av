@@ -473,6 +473,7 @@ export type NodeStore = {
     exported: List<bool>,
     // `mut fn` — a method declaring that it writes its receiver
     mutating: List<bool>,
+    onces: List<bool>,
     pats: List<Pat>,
     pat_spans: List<Span?>,
     pat_fingerprints: List<int>,
@@ -481,7 +482,7 @@ export type NodeStore = {
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
-        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [],
+        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [],
         pats: [], pat_spans: [], pat_fingerprints: [],
     }
 }
@@ -604,6 +605,7 @@ impl NodeStore {
         self.stmt_fingerprints.push(self.fingerprint_stmt(s))
         self.exported.push(false)
         self.mutating.push(false)
+        self.onces.push(false)
         StmtId { index: self.stmts.add(s, span) }
     }
 
@@ -611,10 +613,29 @@ impl NodeStore {
     /// written; a trait sig's word is the contract.
     fn mark_mutating(s: StmtId) {
         self.mutating.set(s.index, true)
+        self.restamp(s, 61)
     }
 
     fn is_mutating(s: StmtId) -> bool {
         self.mutating[s.index]
+    }
+
+    /// `once fn` crossed this declaration — its answer settles for
+    /// the process.
+    fn mark_once(s: StmtId) {
+        self.onces.set(s.index, true)
+        self.restamp(s, 62)
+    }
+
+    fn is_once(s: StmtId) -> bool {
+        self.onces[s.index]
+    }
+
+    /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()` and
+    /// `once fn f()` declare different things, so no two of them
+    /// may wear one fingerprint.
+    fn restamp(s: StmtId, tag: int) {
+        self.stmt_fingerprints.set(s.index, fp(tag, [self.stmt_fingerprints[s.index]]))
     }
 
     /// `export` crossed this declaration — the module's surface

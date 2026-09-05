@@ -471,7 +471,7 @@ the compiler checking itself 28.8s.
         retires; the ledger's `s.length` entry is struck. CLAUDE.md's
         "A STRING's `.length` is `strlen`" note is now false — lane
         D's file; it goes with their next sweep.
-  - [ ] ONE `avra()` PER PROCESS: every spec case assembles the
+  - [x] ONE `avra()` PER PROCESS: every spec case assembles the
         language (dispatch boxes, rows_of), ~12s of the suite's
         case run. PROBED 2026-09-04, BLOCKED ON A CONSTRUCT: a
         module-level value cannot be shared — `export let` is
@@ -502,6 +502,42 @@ the compiler checking itself 28.8s.
         v)`), the cache holding one immortal reference, each call
         answering it retained; scalars refused at first (a once
         value is one the runtime owns). Lane C's files.
+        LANDED 2026-09-05 (lane C) — `once fn` is a construct: a
+        zero-argument fn whose answer settles for the process, kept
+        by the runtime under the fn's OWN SYMBOL (unique in a binary
+        by the linker's law, and per Machine in the evaluator, so
+        both engines agree). Two rows and no IR variant, exactly as
+        designed: `avra_once_get(key) -> ptr` (owns_result, so every
+        ask answers retained) and `avra_once_set(key, v)` (the cache
+        takes its own reference to both, forever); the lowering is
+        the niche guard the nullable protocol already uses —
+        `ConstStr`, `CallRt`, `Bin(Ne, got, 0)`, `IfStart` /
+        `ArmEnd(got)` / body / `CallRtVoid` / `RegionEnd`. The laws
+        refuse what cannot settle: arguments, a scalar or void
+        answer, a record of one scalar field (it travels as the
+        field), and a method (its answer would depend on a
+        receiver). MEASURED, the ledger's own bar: `avra test
+        packages/std-avrac` 16.5s -> 12.1s with `avra()` alone, and
+        -> 11.3s with `rt_sigs`/`rt_index` once as well (the memory
+        pass, the backend and the evaluator all asked the 48-row
+        table per instruction; `rt_sig_of` is a lookup now, not a
+        rebuild). A 32% drop, 1744 cases unchanged. FOUND on the
+        way, both now laws in CLAUDE.md: (1) A RUNTIME ROW BORROWS
+        ITS ARGUMENTS — the first C bodies followed the Avra
+        callee-cleans convention, released what they were handed and
+        kept what they never retained, and the cases binary
+        segfaulted on its second ask; (2) WHETHER A VALUE RIDES A
+        POINTER IS ITS DECLARATION'S ANSWER — flatness is set when a
+        record's signature is asked, so the answer law refused a
+        flat record under the CLI and accepted it under
+        `analyze_source` until it asked the declaration first. Red
+        team: 15 probes (every value category, chaining, a nullable
+        answer that settles nothing and stays honest, recursion,
+        generics, a method, a flat record) and a differential over
+        157 programs — check, run and IR identical to main's binary
+        everywhere, the only diff two `declare` lines every module
+        now carries. 13 new cases + corpus/once (eval == native);
+        1758/1758.
   - [x] PROFILE THE CASE RUN (2026-09-04): its top frame was
         `distinct`, the O(n^2) dedup behind `Grammar.keywords()`,
         recomputed by every case's `avra()` over ~1000 literals —
@@ -3826,6 +3862,10 @@ additions get siblings, nothing changes shape:
   bs2's — the ledger entry that blamed bs2 was checked and moved
   here. Wanting sites: every builder that binds locals and then
   repeats their names into a literal.
+- ONCE-PER-PROCESS PURE VALUES — LANDED 2026-09-05 (lane C) as
+  `once fn`. The SKETCH below (a hidden static cell, a `Global` IR
+  variant, the eight consumers) was REFUSED in favour of the design
+  the ledger item records: two runtime rows and no IR variant.
 - TRAIT DEFAULT METHOD BODIES — LANDED 2026-09-05 (lane C: a
   default is a generic method over the trait's `Self`, lowered per
   signatory; LANE C's block records the design). What it buys —
@@ -3845,7 +3885,9 @@ additions get siblings, nothing changes shape:
   to be tested at all. Wanting site:
   features/grammar_lit/tests, and every future construct whose
   expansion or surface names a package type.
-- A ONCE-PER-PROCESS BINDING for a PURE fn. `avra()` is pure and was
+- A ONCE-PER-PROCESS BINDING for a PURE fn — LANDED as `once fn`
+  2026-09-05 (lane C); the entry below is the sketch it superseded.
+  ORIGINAL. `avra()` is pure and was
   re-run 1532 times; the fix landed as "stop making the work
   expensive" rather than "remember the answer", because Avra has no
   lazy static and the epic forbids mutable globals — rightly, but a

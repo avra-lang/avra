@@ -7,7 +7,7 @@
 //! runtime fn is a row plus both bodies, nothing else.
 use core.{RtKind, RtSig, RtHost, TypeRegistry, TypeId}
 
-export fn rt_sigs() -> List<RtSig> {
+export once fn rt_sigs() -> List<RtSig> {
     let sigs: List<RtSig> = [
         RtSig { name: "avra_puts", ret: RtKind.Void, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.Puts },
         RtSig { name: "avra_streq", ret: RtKind.I64, params: [RtKind.Ptr, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.Streq },
@@ -32,6 +32,11 @@ export fn rt_sigs() -> List<RtSig> {
         RtSig { name: "avra_slot_set", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.SlotSet },
         RtSig { name: "avra_slot_set_owned", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.SlotSet },
         RtSig { name: "avra_array_len", ret: RtKind.I64, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.ArrayLen },
+        // THE ONCE CACHE: a `once fn`'s answer, asked by the fn's own
+        // symbol. The get ANSWERS OWNED (the cache keeps its own
+        // reference forever); the set CONSUMES the caller's.
+        RtSig { name: "avra_once_get", ret: RtKind.Ptr, params: [RtKind.Ptr], owns_result: true, has_owned_twin: false, host: RtHost.OnceGet },
+        RtSig { name: "avra_once_set", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.OnceSet },
         RtSig { name: "avra_str_join", ret: RtKind.Ptr, params: [RtKind.Ptr, RtKind.Ptr], owns_result: true, has_owned_twin: false, host: RtHost.StrJoin },
         RtSig { name: "avra_insist", ret: RtKind.Ptr, params: [RtKind.Ptr], owns_result: true, has_owned_twin: false, host: RtHost.Insist },
         RtSig { name: "avra_insist_scalar", ret: RtKind.I64, params: [RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.InsistScalar },
@@ -99,15 +104,16 @@ export fn extern_row(name: string, ret: RtKind, params: List<RtKind>) -> RtSig {
     RtSig { name: name, ret: ret, params: params, owns_result: false, has_owned_twin: false, host: RtHost.Unhosted }
 }
 
-/// The callee's contract, when the registry knows it.
+/// The callee's contract, when the registry knows it — through the
+/// index, so an ask is a lookup and never a rebuild.
 export fn rt_sig_of(name: string) -> RtSig? {
-    rt_sigs().find(it.name == name)
+    rt_index().get(name)
 }
 
-/// The registry keyed by name — built ONCE by a consumer that asks
-/// per call (the backend per module, the evaluator per machine),
-/// where `rt_sig_of` rebuilds every row per ask.
-export fn rt_index() -> Map<string, RtSig> {
+/// The registry keyed by name — ONCE per process: the rows are the
+/// same rows every time, and the memory pass, the backend and the
+/// evaluator all ask per instruction.
+export once fn rt_index() -> Map<string, RtSig> {
     mut index: Map<string, RtSig> = {}
     for s in rt_sigs() { index.set(s.name, s) }
     index

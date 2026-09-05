@@ -231,6 +231,27 @@ registry is the idiom engine's spec, written by dogfooding.
   type, seated by typing (`TypeFacts.captures`), a cell's load the
   DEFINITION's (`def_type_of`) — at every read that MINTS, which
   in `callee_binding` is exactly those two.
+- A RUNTIME ROW BORROWS ITS ARGUMENTS — callee-cleans is the AVRA
+  call's convention, not the registry's. `retained_args` retains for
+  `.Call` and `.CallPtr` alone; a `CallRt`/`CallRtVoid` argument
+  arrives borrowed, which is why `avra_array_push_owned` exists as a
+  TWIN and why `avra_slot_set_owned` retains at the pack. A C body
+  that KEEPS what it was handed takes its OWN reference
+  (`avra_rc_retain`), and one that answers a value it keeps answers
+  it retained (`owns_result: true`, as `avra_insist` does). A body
+  written to the Avra convention instead — releasing what it was
+  handed, storing what it never retained — leaves the cache holding
+  freed memory, and the next reader segfaults (the once cache, first
+  draft).
+- WHETHER A VALUE RIDES A POINTER IS ITS DECLARATION'S ANSWER, so a
+  law that asks the type registry must ask the DECLARATION first.
+  A record of one scalar field is FLATTENED — it travels as the
+  field — but only once its own signature has been asked
+  (`declare_record` marks it), so a law reading `rides_pointer`
+  mid-flight answers by declaration ORDER: the `once` answer law
+  refused a flat record under the CLI and accepted it under
+  `analyze_source`, in the same tree. Ask `decls.sig(d)` for the
+  answer's declaration, then judge.
 - A PROCESS STATUS IS A VERDICT, never a count: statuses are eight
   bits, so 256 failures read as success. Exit 0 or 1 and print the
   count. A TRAP is not a verdict either — `avra_trap` exits 2, so a
@@ -508,6 +529,10 @@ Syntax the grammar lacks:
   typed let): "expected BREAK while parsing `stmt`" — `table<Row>
   { … }` is the form.
 - The pipe `|>`: "expected BREAK while parsing `stmt`".
+- A `once fn` with TYPE PARAMETERS (`once fn f<T>() -> List<T>`):
+  "expected `(` while parsing `stmt`" — the once grammar takes a
+  name and a parameter list only, and a `T` no argument can pin has
+  nothing to answer anyway.
 - `@comptime`: refuses at the `@` ("expected `mod`, `use`, … while
   parsing `stmt`").
 - A `mut` seat in a fn TYPE (`fn(mut Cx, Seat) -> int`): "expected
