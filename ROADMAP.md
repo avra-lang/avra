@@ -248,8 +248,16 @@ CLAUDE.md, the cli entry, this ledger's bs2 section).
   - [x] The `mod commands` stub deleted from `cli/src/main.av`: a
         directory IS a module (a scratch package's `use commands.{…}`
         resolved with no stub; the cli checks clean without it).
-  - [ ] `extern fn println` / `eprintln` in the cli and the corpus
-        replaced by `@std/io` (after lane B lands it).
+  - [ ] `extern fn println` / `eprintln` replaced by `@std/io` (after
+        lane B lands it). THE SITES: `cli/src/commands/shared.av`
+        declares both (its extern wall, lines 7-18) and nothing else
+        in the cli does; `corpus/native/externs.av` declares
+        `println` as the PROOF of the host seam, so it keeps an
+        extern when the cli stops declaring one. THE CENSUS, for
+        lane B's surface (what the cli declares today, every one a
+        `@std` row): read_file, file_exists, write_file, mkdir_p,
+        list_dir, is_dir, env (`@std/io`); shell_exec_status
+        (`@std/process`); now_ns (`@std/time`); process_exit.
   - [x] CLAUDE.md's "Vendored code" paragraph: `spec_test` is gone;
         `std-cli` alone remains, until lane B. README's Toolchain
         section rewritten with it (nobody's file; stale since the
