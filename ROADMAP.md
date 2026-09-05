@@ -195,6 +195,13 @@ the compiler checking itself 28.8s.
         is spelled twice (`builder_index`, coherence's `registrar_of`,
         which answers the FEATURE's name); a third reader of the
         registration order names it.
+        FOUND ON THE WAY, AND FIXED HERE: `packages/std-cli/src/cli.av`
+        was a SYMLINK into the old bootstrap tree, so every worktree
+        read one mutable file outside git — and while lane C edited
+        it, `./avra test packages/cli` flickered red on main and in
+        every lane. It is a real file now, the forge's committed
+        content; the vendored package still dies with lane B's
+        `@std/cli`.
         FOUND ON THE WAY (manifests — lane B / 15b's owner takes it):
         an ABSOLUTE `path` in `[dependencies]` is joined under the
         manifest's directory (`/tmp/x/avra.toml` naming
