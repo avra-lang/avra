@@ -5097,7 +5097,10 @@ by meaning; each is a slice for lane D unless a lane is named.
   arguments through generics, mono-safe (`as_each<T>` for
   grammar/builders.av's four `.Ok([want(f(x), …)? …])` copies, and
   the memo bracket); a BINDING across `or` alternatives (memory.av's
-  `.Call`/`.CallPtr` spelled twice, F2039); an enum's ORDINAL; ~~a
+  `.Call`/`.CallPtr` spelled twice, F2039); ~~an enum's ORDINAL~~ — LANDED 2026-09-05 (lane D): `v.ordinal` is
+  a property row on enum shapes, the tag read; workspace.av's
+  `Family.ordinal()` and its runtime agreement guard can now go (lane
+  C's file); ~~a
   no-argument generic call pinned by its WANT~~ — LANDED 2026-09-05
   (lane D): a Var the arguments leave free unifies the declared
   answer with the seat's want, and with no want yet the call goes
