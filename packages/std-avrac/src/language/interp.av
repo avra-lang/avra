@@ -50,7 +50,7 @@ fn fresh_machine(l: Lowered) -> Machine {
 
 /// Run a lowered program: its printed output, or the refusal.
 export fn run_lowered(l: Lowered) -> Result<string, string> {
-    let m = fresh_machine(l)
+    mut m = fresh_machine(l)
     let _ = run_body(m, l.entry, [])
     if !m.failures.is_empty() { return .Err(m.failures.first()!) }
     if m.out.is_empty() { return .Err("the program is empty") }
@@ -60,7 +60,7 @@ export fn run_lowered(l: Lowered) -> Result<string, string> {
 /// One fn run by its symbol under no arguments, its bool answer —
 /// how a test case runs. A failure inside answers as the refusal.
 export fn run_symbol(l: Lowered, symbol: string) -> Result<bool, string> {
-    let m = fresh_machine(l)
+    mut m = fresh_machine(l)
     let target: Body? = body_named(l, symbol)
     if target == null { return .Err("no body named `${symbol}`") }
     let answer: Val? = run_body(m, target!, [])
@@ -92,7 +92,7 @@ fn call_limit() -> int {
 
 /// One body under its argument values; params ARE registers 0..N-1.
 /// The answer is RetVal's register, when one fires.
-fn run_body(m: Machine, b: Body, args: List<Val>) -> Val? {
+fn run_body(mut m: Machine, b: Body, args: List<Val>) -> Val? {
     mut frames = m.frames
     if frames.length >= call_limit() {
         trapped(m, "recursion too deep — ${call_limit()} nested calls")
@@ -127,7 +127,7 @@ fn run_body(m: Machine, b: Body, args: List<Val>) -> Val? {
 }
 
 /// One instruction: mutate the machine, answer the next pc.
-fn step(m: Machine, b: Body, pc: int) -> int {
+fn step(mut m: Machine, b: Body, pc: int) -> int {
     match b.ins[pc] {
         .ConstInt(d, v) -> put_at(m, d, const_int_val(m, b, d, v), pc),
         .ConstBool(d, v) -> put_at(m, d, Val.B(v), pc),
@@ -159,7 +159,7 @@ fn step(m: Machine, b: Body, pc: int) -> int {
 /// The backend's twin rule: a POINTER-RIDING destination makes the
 /// constant the null pointer — the absence value. The two engines
 /// must read one instruction alike.
-fn const_int_val(m: Machine, b: Body, d: Reg, v: int) -> Val {
+fn const_int_val(mut m: Machine, b: Body, d: Reg, v: int) -> Val {
     if m.l.types.rides_pointer(b.reg_types[d.index]) { return Val.N }
     Val.I(v)
 }
@@ -169,16 +169,16 @@ fn const_int_val(m: Machine, b: Body, d: Reg, v: int) -> Val {
 /// A FLAT record IS its one field — the pack is the value itself;
 /// every other aggregate is a fresh array. The backend renders the
 /// same instruction the same way.
-fn pack_val(m: Machine, b: Body, d: Reg, elems: List<Reg>) -> Val {
+fn pack_val(mut m: Machine, b: Body, d: Reg, elems: List<Reg>) -> Val {
     if flat_reg(m, b, d) { return value(m, elems[0]) }
     fresh_array(m, [value(m, r) for r in elems])
 }
 
-fn flat_reg(m: Machine, b: Body, r: Reg) -> bool {
+fn flat_reg(mut m: Machine, b: Body, r: Reg) -> bool {
     m.l.types.is_flat(b.reg_types[r.index])
 }
 
-fn extract_val(m: Machine, b: Body, src: Reg, at: int) -> Val {
+fn extract_val(mut m: Machine, b: Body, src: Reg, at: int) -> Val {
     if flat_reg(m, b, src) { return value(m, src) }
     let id: int? = match value(m, src) {
         .A(x) -> x,
@@ -194,7 +194,7 @@ fn extract_val(m: Machine, b: Body, src: Reg, at: int) -> Val {
 
 /// A register written in the TOP frame — the frame is a value, so
 /// the frame that holds the write is stored back over the old one.
-fn put(m: Machine, d: Reg, v: Val) {
+fn put(mut m: Machine, d: Reg, v: Val) {
     mut frames = m.frames
     let at = frames.length - 1
     mut regs = frames[at]
@@ -202,22 +202,22 @@ fn put(m: Machine, d: Reg, v: Val) {
     frames.set(at, regs)
 }
 
-fn put_at(m: Machine, d: Reg, v: Val, pc: int) -> int {
+fn put_at(mut m: Machine, d: Reg, v: Val, pc: int) -> int {
     put(m, d, v)
     pc + 1
 }
 
-fn at(m: Machine, r: Reg) -> Val? {
+fn at(mut m: Machine, r: Reg) -> Val? {
     m.frames.last()![r.index]
 }
 
-fn trapped(m: Machine, msg: string) {
+fn trapped(mut m: Machine, msg: string) {
     mut fs = m.failures
     fs.push(msg)
 }
 
 /// A register's value, which a clean program guarantees present.
-fn value(m: Machine, r: Reg) -> Val {
+fn value(mut m: Machine, r: Reg) -> Val {
     let v: Val? = at(m, r)
     if v == null {
         defect(m, "an undefined register was read")
@@ -226,7 +226,7 @@ fn value(m: Machine, r: Reg) -> Val {
     v!
 }
 
-fn truth(m: Machine, r: Reg) -> bool {
+fn truth(mut m: Machine, r: Reg) -> bool {
     match value(m, r) {
         .B(v) -> v,
         _ -> {
@@ -236,11 +236,11 @@ fn truth(m: Machine, r: Reg) -> bool {
     }
 }
 
-fn int_val(m: Machine, r: Reg) -> int {
+fn int_val(mut m: Machine, r: Reg) -> int {
     whole(m, value(m, r))
 }
 
-fn text_val(m: Machine, v: Val) -> string {
+fn text_val(mut m: Machine, v: Val) -> string {
     match v {
         .S(s) -> s,
         _ -> {
@@ -252,7 +252,7 @@ fn text_val(m: Machine, v: Val) -> string {
 
 // ── Operations ──────────────────────────────────────────────────
 
-fn bin_val(m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
+fn bin_val(mut m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
     let nulls: bool = value(m, a) is .N || value(m, x) is .N
     if nulls { return null_eq_val(m, op, a, x) }
     let bools: bool = value(m, a) is .B && value(m, x) is .B
@@ -282,7 +282,7 @@ fn bin_val(m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
 /// `==`/`!=` where an operand is the ABSENCE — the presence test a
 /// niche nullable lowers to. Two absences agree; an absence and a
 /// present value never do.
-fn null_eq_val(m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
+fn null_eq_val(mut m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
     let same: bool = value(m, a) is .N && value(m, x) is .N
     match op {
         .Eq -> Val.B(same),
@@ -293,7 +293,7 @@ fn null_eq_val(m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
 }
 
 /// `==`/`!=` over two bool registers — the one non-int Bin.
-fn bool_eq_val(m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
+fn bool_eq_val(mut m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
     let l = truth(m, a)
     let r = truth(m, x)
     match op {
@@ -304,7 +304,7 @@ fn bool_eq_val(m: Machine, op: BinOp, a: Reg, x: Reg) -> Val {
     }
 }
 
-fn un_val(m: Machine, op: UnOp, src: Reg) -> Val {
+fn un_val(mut m: Machine, op: UnOp, src: Reg) -> Val {
     match op {
         .Not -> Val.B(!truth(m, src)),
     }
@@ -312,11 +312,11 @@ fn un_val(m: Machine, op: UnOp, src: Reg) -> Val {
 
 /// THE defect phrase, worded once: everything here is impossible
 /// past the gate, so each site says only what it saw.
-fn defect(m: Machine, what: string) {
+fn defect(mut m: Machine, what: string) {
     trapped(m, "defect: ${what} in a clean program")
 }
 
-fn defect_val(m: Machine, what: string) -> Val {
+fn defect_val(mut m: Machine, what: string) -> Val {
     defect(m, what)
     Val.I(0)
 }
@@ -326,7 +326,7 @@ fn defect_val(m: Machine, what: string) -> Val {
 /// Which arm the selector chooses: the case that matches, else the
 /// LAST arm (the default). A semantic scan — `index_of` compares
 /// non-string elements by identity (subset note).
-fn chosen_arm(m: Machine, sel: Reg, cases: List<int>) -> int {
+fn chosen_arm(mut m: Machine, sel: Reg, cases: List<int>) -> int {
     let v = int_val(m, sel)
     for j, c in cases {
         if c == v { return j }
@@ -365,7 +365,7 @@ fn past_else(b: Body, from: int) -> int {
 
 /// At an ArmEnd after the then-branch ran: seal the merge at the
 /// matching RegionEnd with the then-value and continue past it.
-fn merge_then(m: Machine, b: Body, gives: Reg, pc: int) -> int {
+fn merge_then(mut m: Machine, b: Body, gives: Reg, pc: int) -> int {
     let v: Val? = at(m, gives)
     let end = ahead(b, pc, opens_region, closes_region, closes_region)
     if end < b.ins.length {
@@ -403,14 +403,14 @@ fn loop_header(b: Body, from: int) -> int {
 
 /// A fn address in EVAL-land is the body's index — opaque, like
 /// the machine address it stands in for.
-fn fn_addr_val(m: Machine, sym: string) -> Val {
+fn fn_addr_val(mut m: Machine, sym: string) -> Val {
     for j, b in m.l.fns {
         if b.name == sym { return Val.I(j) }
     }
     defect_val(m, "a fn address without a body survived lowering")
 }
 
-fn call_ptr_val(m: Machine, f: Reg, args: List<Reg>) -> Val {
+fn call_ptr_val(mut m: Machine, f: Reg, args: List<Reg>) -> Val {
     let held: Val = value(m, f)
     let idx: int? = match held {
         .I(j) -> j,
@@ -422,11 +422,11 @@ fn call_ptr_val(m: Machine, f: Reg, args: List<Reg>) -> Val {
     run_call(m, m.l.fns[at], args)
 }
 
-fn non_address(m: Machine) -> Val {
+fn non_address(mut m: Machine) -> Val {
     defect_val(m, "an indirect call through a non-address")
 }
 
-fn call_val(m: Machine, callee: string, args: List<Reg>) -> Val {
+fn call_val(mut m: Machine, callee: string, args: List<Reg>) -> Val {
     let target: Body? = body_named(m.l, callee)
     if target == null { return defect_val(m, "a call without a body survived lowering") }
     run_call(m, target!, args)
@@ -434,27 +434,27 @@ fn call_val(m: Machine, callee: string, args: List<Reg>) -> Val {
 
 /// Both call shapes land here: arguments read, the body run, an
 /// answerless body a defect.
-fn run_call(m: Machine, target: Body, args: List<Reg>) -> Val {
+fn run_call(mut m: Machine, target: Body, args: List<Reg>) -> Val {
     let answer: Val? = run_body(m, target, [value(m, r) for r in args])
     answer ?? defect_val(m, "a fn body answered nothing")
 }
 
 // ── Mut cells ───────────────────────────────────────────────────
 
-fn fresh_cell(m: Machine) -> Val {
+fn fresh_cell(mut m: Machine) -> Val {
     mut cs = m.cells
     cs.push(Val.I(0))
     Val.C(cs.length - 1)
 }
 
-fn cell_read(m: Machine, slot: Reg) -> Val {
+fn cell_read(mut m: Machine, slot: Reg) -> Val {
     match value(m, slot) {
         .C(id) -> m.cells[id],
         _ -> defect_val(m, "a load through a non-cell"),
     }
 }
 
-fn store_step(m: Machine, slot: Reg, src: Reg, pc: int) -> int {
+fn store_step(mut m: Machine, slot: Reg, src: Reg, pc: int) -> int {
     let v = value(m, src)
     match value(m, slot) {
         .C(id) -> {
@@ -469,7 +469,7 @@ fn store_step(m: Machine, slot: Reg, src: Reg, pc: int) -> int {
 // ── Text projections ────────────────────────────────────────────
 
 /// A value's printed text — the twin of the runtime's projections.
-fn val_text(m: Machine, v: Val) -> string {
+fn val_text(mut m: Machine, v: Val) -> string {
     match v {
         .I(n) -> "${n}",
         .B(t) -> if t { "true" } else { "false" },
@@ -483,14 +483,14 @@ fn val_text(m: Machine, v: Val) -> string {
 
 // ── The runtime surface, hosted — runtime_api.av's fifth consumer ─
 
-fn rt_void(m: Machine, callee: string, args: List<Reg>, pc: int) -> int {
+fn rt_void(mut m: Machine, callee: string, args: List<Reg>, pc: int) -> int {
     let _ = rt_dispatch(m, callee, [value(m, r) for r in args])
     pc + 1
 }
 
 /// A value-producing runtime call; a Bool-typed destination narrows
 /// the runtime's i64 answer, exactly as the backend does.
-fn rt_val(m: Machine, b: Body, d: Reg, callee: string, args: List<Reg>) -> Val {
+fn rt_val(mut m: Machine, b: Body, d: Reg, callee: string, args: List<Reg>) -> Val {
     let raw = rt_dispatch(m, callee, [value(m, r) for r in args])
     if m.l.types.shape_of(b.reg_types[d.index]) is .Bool {
         return match raw {
@@ -503,7 +503,7 @@ fn rt_val(m: Machine, b: Body, d: Reg, callee: string, args: List<Reg>) -> Val {
 
 /// The registry's host column, hosted — exhaustive over RtHost, so
 /// a row with a new host demands its arm here.
-fn rt_dispatch(m: Machine, callee: string, vals: List<Val>) -> Val {
+fn rt_dispatch(mut m: Machine, callee: string, vals: List<Val>) -> Val {
     let sig: RtSig? = m.rt.get(callee)
     if sig == null {
         if m.l.externs.any(it.name == callee) { return unhosted_extern(m, callee) }
@@ -549,17 +549,17 @@ fn rt_dispatch(m: Machine, callee: string, vals: List<Val>) -> Val {
 }
 
 /// An extern fn is the host's — the evaluator has no body for it.
-fn unhosted_extern(m: Machine, callee: string) -> Val {
+fn unhosted_extern(mut m: Machine, callee: string) -> Val {
     trapped(m, "`${callee}` is extern — the evaluator cannot host it; build natively")
     Val.I(0)
 }
 
-fn array_new_val(m: Machine) -> Val {
+fn array_new_val(mut m: Machine) -> Val {
     fresh_array(m, [])
 }
 
 /// A new array in the table, holding these values.
-fn fresh_array(m: Machine, elems: List<Val>) -> Val {
+fn fresh_array(mut m: Machine, elems: List<Val>) -> Val {
     mut arrs = m.arrays
     arrs.push(elems)
     Val.A(arrs.length - 1)
@@ -573,14 +573,14 @@ fn array_id(v: Val) -> int? {
 }
 
 /// The array a value names, handed to `f` — or the defect.
-fn with_array(m: Machine, v: Val, what: string, f: fn(int) -> Val) -> Val {
+fn with_array(mut m: Machine, v: Val, what: string, f: fn(int) -> Val) -> Val {
     let id: int? = array_id(v)
     if id == null { return defect_val(m, what) }
     f(id!)
 }
 
 /// An int argument's value — a defect answers zero.
-fn whole(m: Machine, v: Val) -> int {
+fn whole(mut m: Machine, v: Val) -> int {
     match v {
         .I(n) -> n,
         _ -> {
@@ -603,11 +603,11 @@ fn clamped(n: int, lo: int, hi: int) -> int {
     n
 }
 
-fn array_pop_val(m: Machine, vals: List<Val>) -> Val {
+fn array_pop_val(mut m: Machine, vals: List<Val>) -> Val {
     with_array(m, vals[0], "a pop from a non-array", (id: int) -> popped(m, id))
 }
 
-fn popped(m: Machine, id: int) -> Val {
+fn popped(mut m: Machine, id: int) -> Val {
     mut arrays = m.arrays
     mut arr = arrays[id]
     if arr.is_empty() {
@@ -619,7 +619,7 @@ fn popped(m: Machine, id: int) -> Val {
     last
 }
 
-fn array_concat_val(m: Machine, vals: List<Val>) -> Val {
+fn array_concat_val(mut m: Machine, vals: List<Val>) -> Val {
     let a: int? = array_id(vals[0])
     let b: int? = array_id(vals[1])
     if a == null || b == null { return defect_val(m, "a concat over a non-array") }
@@ -627,11 +627,11 @@ fn array_concat_val(m: Machine, vals: List<Val>) -> Val {
 }
 
 /// The slots from lo up to hi, clamped — worded like the runtime's.
-fn array_slice_val(m: Machine, vals: List<Val>) -> Val {
+fn array_slice_val(mut m: Machine, vals: List<Val>) -> Val {
     with_array(m, vals[0], "a slice of a non-array", (id: int) -> sliced(m, id, whole(m, vals[1]), whole(m, vals[2])))
 }
 
-fn sliced(m: Machine, id: int, from: int, to: int) -> Val {
+fn sliced(mut m: Machine, id: int, from: int, to: int) -> Val {
     let xs = m.arrays[id]
     let lo = clamped(from, 0, xs.length)
     let hi = clamped(to, 0, xs.length)
@@ -639,7 +639,7 @@ fn sliced(m: Machine, id: int, from: int, to: int) -> Val {
 }
 
 /// The bytes from lo up to hi, clamped — worded like the runtime's.
-fn str_substring_val(m: Machine, vals: List<Val>) -> Val {
+fn str_substring_val(mut m: Machine, vals: List<Val>) -> Val {
     let s = text_val(m, vals[0])
     let n = s.length
     let lo = clamped(whole(m, vals[1]), 0, n)
@@ -703,7 +703,7 @@ fn is_blank(c: int) -> bool {
 }
 
 /// The byte at `i` as a code; past the text, the runtime's trap.
-fn str_char_code_val(m: Machine, vals: List<Val>) -> Val {
+fn str_char_code_val(mut m: Machine, vals: List<Val>) -> Val {
     let s = text_val(m, vals[0])
     let i = whole(m, vals[1])
     let n = s.length
@@ -715,7 +715,7 @@ fn str_char_code_val(m: Machine, vals: List<Val>) -> Val {
 /// counts, so opening a place for writing ALWAYS copies the box —
 /// native copies only when shared, and the differential proves
 /// the two agree.
-fn cloned_val(m: Machine, v: Val) -> Val {
+fn cloned_val(mut m: Machine, v: Val) -> Val {
     match v {
         .A(id) -> {
             mut arrs = m.arrays
@@ -735,7 +735,7 @@ fn cloned_val(m: Machine, v: Val) -> Val {
 /// found by a scan.
 type MapVal = { keys: List<string>, vals: List<Val> }
 
-fn map_new_val(m: Machine) -> Val {
+fn map_new_val(mut m: Machine) -> Val {
     mut ms = m.maps
     ms.push(MapVal { keys: [], vals: [] })
     Val.M(ms.length - 1)
@@ -748,41 +748,41 @@ fn map_id(v: Val) -> int? {
     }
 }
 
-fn map_slot(m: Machine, id: int, key: string) -> int {
+fn map_slot(mut m: Machine, id: int, key: string) -> int {
     m.maps[id].keys.index_of(key)
 }
 
 /// The map a handle names, or the defect for a value that is none —
 /// the guard every map primitive opens with.
-fn with_map(m: Machine, v: Val, what: string, f: fn(int) -> Val) -> Val {
+fn with_map(mut m: Machine, v: Val, what: string, f: fn(int) -> Val) -> Val {
     let id: int? = map_id(v)
     if id == null { return defect_val(m, what) }
     f(id!)
 }
 
-fn map_len_val(m: Machine, vals: List<Val>) -> Val {
+fn map_len_val(mut m: Machine, vals: List<Val>) -> Val {
     with_map(m, vals[0], "a length of a non-map", (id: int) -> Val.I(m.maps[id].keys.length))
 }
 
-fn map_has_val(m: Machine, vals: List<Val>) -> Val {
+fn map_has_val(mut m: Machine, vals: List<Val>) -> Val {
     with_map(m, vals[0], "a lookup in a non-map", (id: int) -> Val.B(map_slot(m, id, text_val(m, vals[1])) >= 0))
 }
 
-fn map_get_val(m: Machine, vals: List<Val>) -> Val {
+fn map_get_val(mut m: Machine, vals: List<Val>) -> Val {
     with_map(m, vals[0], "a read from a non-map", (id: int) -> map_read(m, id, text_val(m, vals[1])))
 }
 
-fn map_read(m: Machine, id: int, key: string) -> Val {
+fn map_read(mut m: Machine, id: int, key: string) -> Val {
     let s = map_slot(m, id, key)
     if s < 0 { return Val.N }
     m.maps[id].vals[s]
 }
 
-fn map_set_val(m: Machine, vals: List<Val>) -> Val {
+fn map_set_val(mut m: Machine, vals: List<Val>) -> Val {
     with_map(m, vals[0], "a write into a non-map", (id: int) -> map_write(m, id, text_val(m, vals[1]), vals[2]))
 }
 
-fn map_write(m: Machine, id: int, key: string, v: Val) -> Val {
+fn map_write(mut m: Machine, id: int, key: string, v: Val) -> Val {
     let s = map_slot(m, id, key)
     mut maps = m.maps
     let entry = maps[id]
@@ -792,7 +792,7 @@ fn map_write(m: Machine, id: int, key: string, v: Val) -> Val {
     Val.I(0)
 }
 
-fn cell_unique_val(m: Machine, vals: List<Val>) -> Val {
+fn cell_unique_val(mut m: Machine, vals: List<Val>) -> Val {
     match vals[0] {
         .C(id) -> {
             let fresh = cloned_val(m, m.cells[id])
@@ -804,18 +804,18 @@ fn cell_unique_val(m: Machine, vals: List<Val>) -> Val {
     }
 }
 
-fn slot_unique_val(m: Machine, vals: List<Val>) -> Val {
+fn slot_unique_val(mut m: Machine, vals: List<Val>) -> Val {
     let held = array_get_val(m, vals)
     let fresh = cloned_val(m, held)
     let _ = slot_set_val(m, [vals[0], vals[1], fresh])
     fresh
 }
 
-fn slot_set_val(m: Machine, vals: List<Val>) -> Val {
+fn slot_set_val(mut m: Machine, vals: List<Val>) -> Val {
     with_array(m, vals[0], "a non-array slot write", (id: int) -> slot_written(m, id, whole(m, vals[1]), vals[2]))
 }
 
-fn slot_written(m: Machine, id: int, at: int, v: Val) -> Val {
+fn slot_written(mut m: Machine, id: int, at: int, v: Val) -> Val {
     mut arrays = m.arrays
     mut arr = arrays[id]
     if at < 0 || at >= arr.length { return out_of_bounds(m, at, arr.length) }
@@ -826,16 +826,16 @@ fn slot_written(m: Machine, id: int, at: int, v: Val) -> Val {
 
 /// The bounds refusal, worded exactly like the runtime's — the
 /// divergence registry pins both.
-fn out_of_bounds(m: Machine, at: int, len: int) -> Val {
+fn out_of_bounds(mut m: Machine, at: int, len: int) -> Val {
     trapped(m, "index ${at} is out of bounds (length ${len})")
     Val.I(0)
 }
 
-fn array_push_val(m: Machine, vals: List<Val>) -> Val {
+fn array_push_val(mut m: Machine, vals: List<Val>) -> Val {
     with_array(m, vals[0], "a push into a non-array", (id: int) -> pushed(m, id, vals[1]))
 }
 
-fn pushed(m: Machine, id: int, v: Val) -> Val {
+fn pushed(mut m: Machine, id: int, v: Val) -> Val {
     mut arrays = m.arrays
     mut arr = arrays[id]
     arr.push(v)
@@ -846,19 +846,19 @@ fn pushed(m: Machine, id: int, v: Val) -> Val {
 /// `!` met an absence — the ONE refusal both repr paths give, its
 /// wording matched to the runtime's: the two engines must refuse
 /// alike, and the divergence registry pins all of them.
-fn absent_refused(m: Machine) -> Val {
+fn absent_refused(mut m: Machine) -> Val {
     trapped(m, "unwrapped an absent value")
     Val.I(0)
 }
 
 /// `v!` on a NICHE nullable — identity through the presence guard.
-fn insist_val(m: Machine, vals: List<Val>) -> Val {
+fn insist_val(mut m: Machine, vals: List<Val>) -> Val {
     if vals[0] is .N { return absent_refused(m) }
     vals[0]
 }
 
 /// `v!` on a PAIR nullable — the flag guards, the value passes.
-fn insist_scalar_val(m: Machine, vals: List<Val>) -> Val {
+fn insist_scalar_val(mut m: Machine, vals: List<Val>) -> Val {
     let present: bool = match vals[0] {
         .B(t) -> t,
         _ -> false,
@@ -867,32 +867,32 @@ fn insist_scalar_val(m: Machine, vals: List<Val>) -> Val {
     vals[1]
 }
 
-fn array_get_val(m: Machine, vals: List<Val>) -> Val {
+fn array_get_val(mut m: Machine, vals: List<Val>) -> Val {
     with_array(m, vals[0], "a read from a non-array", (id: int) -> slot_read_val(m, id, whole(m, vals[1])))
 }
 
-fn slot_read_val(m: Machine, id: int, at: int) -> Val {
+fn slot_read_val(mut m: Machine, id: int, at: int) -> Val {
     let arr = m.arrays[id]
     if at < 0 || at >= arr.length { return out_of_bounds(m, at, arr.length) }
     arr[at]
 }
 
-fn array_len_val(m: Machine, vals: List<Val>) -> Val {
+fn array_len_val(mut m: Machine, vals: List<Val>) -> Val {
     with_array(m, vals[0], "a length of a non-array", (id: int) -> Val.I(m.arrays[id].length))
 }
 
-fn str_join_val(m: Machine, vals: List<Val>) -> Val {
+fn str_join_val(mut m: Machine, vals: List<Val>) -> Val {
     with_array(m, vals[0], "a join over a non-array", (id: int) -> Val.S(joined([text_val(m, e) for e in m.arrays[id]], text_val(m, vals[1]))))
 }
 
 /// One printed line lands in the machine's output.
-fn puts_val(m: Machine, vals: List<Val>) -> Val {
+fn puts_val(mut m: Machine, vals: List<Val>) -> Val {
     let line = text_val(m, vals[0])
     mut o = m.out
     o.push(line)
     Val.I(0)
 }
 
-fn streq_val(m: Machine, vals: List<Val>) -> Val {
+fn streq_val(mut m: Machine, vals: List<Val>) -> Val {
     verdict(text_val(m, vals[0]) == text_val(m, vals[1]))
 }

@@ -3,21 +3,21 @@ use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, Span, Param}
 use features.{LangNode, Builder, token_at, zip_defect, aligned_binds}
 use grammar.{Token}
 
-fn build_int_lit(b: Builder) -> Result<LangNode, string> {
+fn build_int_lit(mut b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     // the lexer already refused a literal no `int` holds, so absence
     // here is a defect, not a program's mistake
     b.make_expr(Expr.IntLit(t.int_value() ?? 0))
 }
 
-fn build_ident(b: Builder) -> Result<LangNode, string> {
+fn build_ident(mut b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     b.make_expr(Expr.Ident(t.text))
 }
 
 /// `l (op r)*` folds left: each pair wraps the accumulator, so
 /// `1 + 2 - x` is `(1 + 2) - x`.
-fn build_fold_binary(b: Builder) -> Result<LangNode, string> {
+fn build_fold_binary(mut b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
     let ops = b.tokens(1)?
     let rights = b.exprs(2)?
@@ -30,7 +30,7 @@ fn build_fold_binary(b: Builder) -> Result<LangNode, string> {
 
 /// `l (op r)?` — at most one comparison, never a chain; or `l is
 /// .variant`, the tag test, which enums give meaning.
-fn build_fold_cmp(b: Builder) -> Result<LangNode, string> {
+fn build_fold_cmp(mut b: Builder) -> Result<LangNode, string> {
     let l = b.expr(0)?
     let asked: Token? = token_at(b.args, 3)
     if asked != null { return b.make_expr(Expr.Is(l, asked!.text)) }
@@ -41,13 +41,13 @@ fn build_fold_cmp(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Binary(op, l, r))
 }
 
-fn build_not(b: Builder) -> Result<LangNode, string> {
+fn build_not(mut b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
     b.make_expr(Expr.Not(v))
 }
 
 /// `-v` is `0 - v`: the parse desugars, so no pass learns a node.
-fn build_neg(b: Builder) -> Result<LangNode, string> {
+fn build_neg(mut b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
     let zero = b.store.alloc_expr(Expr.IntLit(0), b.span)
     let minus = want(binop_of("-"), "the minus operator")?
@@ -56,7 +56,7 @@ fn build_neg(b: Builder) -> Result<LangNode, string> {
 
 /// `v (with { f: e, ... })?` — the absent tail is v itself. The
 /// ladder owns the PARSE; the node's meaning lives with structs.
-fn build_fold_with(b: Builder) -> Result<LangNode, string> {
+fn build_fold_with(mut b: Builder) -> Result<LangNode, string> {
     let subject = b.expr(0)?
     let wn = b.tokens(1)?
     if wn.is_empty() { return b.wrap_expr(subject) }
@@ -78,7 +78,7 @@ fn force_link(link: string, value: ExprId) -> Expr {
 
 /// `l ( ?? r )*` folds left: `a ?? b ?? c` is `(a ?? b) ?? c`. The
 /// LADDER owns this parse; the node's meaning lives in `nullable`.
-fn build_fold_coalesce(b: Builder) -> Result<LangNode, string> {
+fn build_fold_coalesce(mut b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
     let rights = b.exprs(1)?
     for r in rights {
@@ -94,7 +94,7 @@ fn build_fold_coalesce(b: Builder) -> Result<LangNode, string> {
 /// The paren WITNESS in a link's window makes a dot a METHOD call;
 /// a bare paren group applies the value built so far. The ladder
 /// owns the parse; each node's meaning lives with its feature.
-fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
+fn build_fold_postfix(mut b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
     let links = b.tokens(1)?
     let names = b.tokens(2)?
@@ -151,7 +151,7 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
 
 /// The nearest UNCONSUMED anchor past the cursors — the window's
 /// end for the link being folded.
-fn next_anchor(b: Builder, names: List<Token>, indexes: List<ExprId>, calls: List<Token>,
+fn next_anchor(mut b: Builder, names: List<Token>, indexes: List<ExprId>, calls: List<Token>,
                jn: int, ji: int, jc: int, ends: int) -> int {
     mut best = ends
     if jn < names.length && names[jn].span.lo < best { best = names[jn].span.lo }
@@ -168,7 +168,7 @@ fn within(at: int, after: int, before: int) -> bool {
 }
 
 /// The argument exprs written inside one link's window.
-fn args_between(b: Builder, margs: List<ExprId>, after: int, before: int) -> List<ExprId> {
+fn args_between(mut b: Builder, margs: List<ExprId>, after: int, before: int) -> List<ExprId> {
     mut out: List<ExprId> = []
     for a in margs {
         let lo: int? = span_lo(b, a)
@@ -177,7 +177,7 @@ fn args_between(b: Builder, margs: List<ExprId>, after: int, before: int) -> Lis
     out
 }
 
-fn span_lo(b: Builder, e: ExprId) -> int? {
+fn span_lo(mut b: Builder, e: ExprId) -> int? {
     let sp: Span? = b.store.expr_span(e)
     if sp == null { return null }
     sp!.lo
@@ -187,7 +187,7 @@ fn span_lo(b: Builder, e: ExprId) -> int? {
 /// lambda — `xs.map(it * 2)` is `xs.map((it) -> it * 2)`, and the
 /// expected-type channel seats it like any other. The wrap is the
 /// pronoun's WHOLE mechanism: nothing downstream knows it exists.
-fn pronouned(b: Builder, a: ExprId) -> ExprId {
+fn pronouned(mut b: Builder, a: ExprId) -> ExprId {
     if !b.store.pronoun_rides(a) { return a }
     b.store.alloc_expr(
         Expr.Lambda([Param { name: "it", ty: null, default: null, mutable: false }], a), b.store.expr_span(a))
@@ -210,7 +210,7 @@ fn binop_of(text: string) -> BinOp? {
 /// read off which captures arrived: braces arms (cv/cb/ca), one
 /// selective arm (sv/sb/sa), a catch-all bind (eb/ea), or a value
 /// (rv). No captures at all means no `catch` was written.
-fn build_catch(b: Builder) -> Result<LangNode, string> {
+fn build_catch(mut b: Builder) -> Result<LangNode, string> {
     let l = b.expr(0)?
     let rv = b.exprs(10)?
     if !rv.is_empty() { return b.make_expr(Expr.Catch(l, [""], [""], [rv[0]])) }

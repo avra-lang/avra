@@ -6,25 +6,25 @@ use @std.avrac.query.{Db, new_db, Key}
 type Toy = { db: Db, input: int, double_family: int, runs: List<int>, values: List<int> }
 
 fn toy() -> Toy {
-    let db = new_db()
+    mut db = new_db()
     let input = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
     let t = Toy { db: db, input: input, double_family: 0, runs: [0], values: [0, 0, 0, 0] }
     let double_family = db.family((arg: int) -> verified_double(t, arg))
     t with { double_family: double_family }
 }
 
-fn verified_double(t: Toy, arg: int) -> int {
+fn verified_double(mut t: Toy, arg: int) -> int {
     let _ = double_of(t, arg)
     t.db.changed_at(Key { family: t.double_family, arg: arg })
 }
 
-fn set(t: Toy, arg: int, v: int) {
+fn set(mut t: Toy, arg: int, v: int) {
     t.db.set_input(Key { family: t.input, arg: arg }, v)
 }
 
 /// The derived query: reads the input, answers 2n; the hash IS the
 /// value, so an unchanged answer cuts the wave.
-fn double_of(t: Toy, arg: int) -> int {
+fn double_of(mut t: Toy, arg: int) -> int {
     let key = Key { family: t.double_family, arg: arg }
     match t.db.ask(key) {
         .Reuse -> t.values[arg],
@@ -45,11 +45,11 @@ fn double_of(t: Toy, arg: int) -> int {
 }
 
 /// The input's value rides beside the kernel — its hash is the value.
-fn read_input(t: Toy, arg: int) -> int {
+fn read_input(mut t: Toy, arg: int) -> int {
     t.values[arg + 2]
 }
 
-fn put(t: Toy, arg: int, v: int) {
+fn put(mut t: Toy, arg: int, v: int) {
     mut vs = t.values
     vs.set(arg + 2, v)
     set(t, arg, v)
@@ -58,7 +58,7 @@ fn put(t: Toy, arg: int, v: int) {
 spec "query/db" {
     given "reuse" {
         then "an unchanged input reuses the derived answer without running" {
-            let t = toy()
+            mut t = toy()
             put(t, 0, 21)
             let a = double_of(t, 0)
             put(t, 0, 21)
@@ -66,14 +66,14 @@ spec "query/db" {
             a == 42 && b == 42 && t.runs[0] == 1
         }
         then "a changed input recomputes" {
-            let t = toy()
+            mut t = toy()
             put(t, 0, 1)
             let _ = double_of(t, 0)
             put(t, 0, 5)
             double_of(t, 0) == 10 && t.runs[0] == 2
         }
         then "the counters tell the story" {
-            let t = toy()
+            mut t = toy()
             put(t, 0, 1)
             let _ = double_of(t, 0)
             let _ = double_of(t, 0)
@@ -82,7 +82,7 @@ spec "query/db" {
     }
     given "early cutoff" {
         then "a recomputed answer with the same hash keeps its changed_at" {
-            let t = toy()
+            mut t = toy()
             put(t, 0, 4)
             let _ = double_of(t, 0)
             let before = t.db.changed_at(Key { family: t.double_family, arg: 0 })
@@ -93,7 +93,7 @@ spec "query/db" {
     }
     given "cycles and sweeps" {
         then "a query that reaches itself is answered Cycle, not recursed" {
-            let db = new_db()
+            mut db = new_db()
             let fam = db.family((arg: int) -> 0)
             let key = Key { family: fam, arg: 0 }
             db.begin(key)
@@ -102,7 +102,7 @@ spec "query/db" {
             v is .Cycle
         }
         then "a sweep drops what the last revision never verified" {
-            let t = toy()
+            mut t = toy()
             put(t, 0, 1)
             put(t, 1, 2)
             let _ = double_of(t, 0)
@@ -116,12 +116,12 @@ spec "query/db" {
     }
     given "the open stack — `active` is the bracket, seen from outside" {
         then "an unopened key is not active" {
-            let db = new_db()
+            mut db = new_db()
             let fam = db.family((arg: int) -> 0)
             !db.active(Key { family: fam, arg: 0 })
         }
         then "a key is active between begin and settle, and not after" {
-            let db = new_db()
+            mut db = new_db()
             let fam = db.family((arg: int) -> 0)
             let key = Key { family: fam, arg: 0 }
             db.begin(key)
@@ -130,7 +130,7 @@ spec "query/db" {
             during && !db.active(key)
         }
         then "the OUTER key stays active while an inner one is open" {
-            let db = new_db()
+            mut db = new_db()
             let fam = db.family((arg: int) -> 0)
             let outer = Key { family: fam, arg: 0 }
             let inner = Key { family: fam, arg: 1 }
@@ -145,13 +145,13 @@ spec "query/db" {
     }
     given "the flat layout — arg-major, grown by appending" {
         then "a cell far past every earlier arg is written, and the earlier ones stand" {
-            let t = toy()
+            mut t = toy()
             put(t, 0, 4)
             t.db.set_input(Key { family: t.input, arg: 300 }, 7)
             t.db.changed_at(Key { family: t.input, arg: 0 }) == 1 && t.db.changed_at(Key { family: t.input, arg: 300 }) == 1
         }
         then "two families at one arg keep apart" {
-            let t = toy()
+            mut t = toy()
             t.db.set_input(Key { family: t.input, arg: 5 }, 1)
             t.db.set_input(Key { family: t.input, arg: 5 }, 2)
             t.db.set_input(Key { family: t.double_family, arg: 5 }, 9)

@@ -6,11 +6,11 @@ use core.{ExprId, Reg, Ins, Type, DeclId}
 use features.{LowerCx, lower_defect, foreign_node, EnumSig, tagged_value, called_through, slot_read, MethodRow, MethodCall, method_row, StructSig}
 
 /// The receiver's value: seat 0 of the body, as its binding says.
-fn receiver_reg(cx: LowerCx, e: ExprId) -> Reg {
+fn receiver_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     cx.def_reg(e) ?? lower_defect(cx, e, "a receiver outside a method survived resolve")
 }
 
-fn method_call_reg(cx: LowerCx, e: ExprId) -> Reg {
+fn method_call_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .MethodCall(subject, name, args) -> {
@@ -44,7 +44,7 @@ fn method_call_reg(cx: LowerCx, e: ExprId) -> Reg {
 /// trait-declaration order — slot 0 rides the self seat, slot
 /// 1+ordinal holds the code pointer. Absent for every non-dyn
 /// receiver.
-fn dyn_dispatch(cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> Reg? {
+fn dyn_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> Reg? {
     let sh: Type = cx.shape_at(subject)
     let tdecl: DeclId? = match sh {
         .Dyn(d, _) -> d,
@@ -66,7 +66,7 @@ fn dyn_dispatch(cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: Lis
 /// box's slot 0 — the code address — and go through the pointer,
 /// the box riding seat 0. Absent when the receiver's type has no
 /// fn-typed field of the name.
-fn fn_field_dispatch(cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> Reg? {
+fn fn_field_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> Reg? {
     let sig: StructSig? = cx.fields_of(cx.type_at(subject))
     if sig == null { return null }
     let slot: int? = sig!.slot_of(name)
@@ -78,7 +78,7 @@ fn fn_field_dispatch(cx: LowerCx, e: ExprId, subject: ExprId, name: string, args
 }
 
 /// The receiver's declared type, under the body's view.
-fn lowered_receiver(cx: LowerCx, subject: ExprId) -> DeclId? {
+fn lowered_receiver(mut cx: LowerCx, subject: ExprId) -> DeclId? {
     match cx.view.types.shape_of(cx.type_at(subject)) {
         .Struct(d, _) -> d,
         .Enum(d, _) -> d,
@@ -91,7 +91,7 @@ fn lowered_receiver(cx: LowerCx, subject: ExprId) -> DeclId? {
 
 /// The type-receiver half lowered: the variant's tagged box — the
 /// same shape enums' own lowering mints, through the same verbs.
-fn built_variant(cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -> Reg {
+fn built_variant(mut cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -> Reg {
     let sig: EnumSig? = cx.variants_at(e)
     if sig == null { return lower_defect(cx, e, "a variant built without an enum type") }
     let which: int? = sig!.tag_of(name)

@@ -175,7 +175,7 @@ export fn timed_workspace(host: Host, root: string, lang: Language, clock: fn() 
 
 /// The declaration table with the language's own declarations in it.
 fn language_decls(lang: Language) -> Decls {
-    let decls = new_decls() with { rows: lang.rows.types }
+    mut decls = new_decls() with { rows: lang.rows.types }
     decls.admit_builtins()
     decls
 }
@@ -183,7 +183,7 @@ fn language_decls(lang: Language) -> Decls {
 /// The workspace with its families registered, its table armed,
 /// and its packages loaded from the root's manifest outward.
 fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool) -> Workspace {
-    let ws = Workspace {
+    mut ws = Workspace {
         host: host, root: root, lang: lang, db: new_db(), decls: language_decls(lang),
         sources: new_table<SourceFile>(), manifests: new_table<Manifest>(), externs: new_table<List<string>>(), programs: new_table<Parsed>(), file_items: new_table<List<DeclId>>(), module_names: new_table<ModuleNames>(),
         visibles: new_table<Namespace>(), name_facts: new_table<NameFacts>(), sig_voices: new_table<Voices>(),
@@ -384,7 +384,7 @@ export fn sig(ws: Workspace, d: DeclId) -> DeclSig? {
         return held
     }
     ws.db.begin(k)
-    let t = typer_for(ws, x)
+    mut t = typer_for(ws, x)
     declare_one(t, x)
     ws.sig_voices.keep(d.index, t.facts.voices)
     let out: DeclSig? = ws.decls.sigs[d.index]
@@ -443,7 +443,8 @@ export fn typed(ws: Workspace, d: DeclId) -> TypeFacts {
     if ws.db.ask(k) is .Reuse { return ws.decl_facts.at(d.index)! }
     ws.db.begin(k)
     let x = ws.decls.decl(d)
-    let out = type_decl(typer_for(ws, x), x)
+    mut t = typer_for(ws, x)
+    let out = type_decl(t, x)
     ws.db.settle(k, ws.db.revision())
     ws.decl_facts.keep(d.index, out)
     out
@@ -459,7 +460,7 @@ export fn folded(ws: Workspace, f: FileId) -> TypeFacts {
     ws.db.begin(k)
     let p = parsed(ws, f)
     let hole = ws.decls.types.intern(Type.Error)
-    let out = new_type_facts(0, p.store.exprs.count(), p.store.stmts.count(), hole)
+    mut out = new_type_facts(0, p.store.exprs.count(), p.store.stmts.count(), hole)
     mut spoken: List<Diag> = []
     for d in bodies_of(ws, f) {
         let facts = typed(ws, d)

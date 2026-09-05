@@ -7,7 +7,7 @@
 use core.{ExprId, BinOp, UnOp, Reg, Ins, Type, TypeId}
 use features.{LowerCx, StructSig, EnumSig, presence_of, lower_defect, foreign_node, variant_defect, tagged_value, PropertyRow, property_row, same_value, presence_region, carried_of, field_read}
 
-fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
+fn spine_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .IntLit(v) -> {
@@ -26,7 +26,7 @@ fn spine_lower(cx: LowerCx, e: ExprId) -> Reg {
 
 /// The presence test's subject — the typing projection's shape
 /// twin: exactly one nullable beside the absence, for `==`/`!=`.
-fn asked_subject(cx: LowerCx, op: BinOp, l: ExprId, r: ExprId) -> ExprId? {
+fn asked_subject(mut cx: LowerCx, op: BinOp, l: ExprId, r: ExprId) -> ExprId? {
     if op != BinOp.Eq && op != BinOp.Ne { return null }
     if cx.shape_at(l) is .Opt && cx.shape_at(r) is .Null { return l }
     if cx.shape_at(r) is .Opt && cx.shape_at(l) is .Null { return r }
@@ -35,7 +35,7 @@ fn asked_subject(cx: LowerCx, op: BinOp, l: ExprId, r: ExprId) -> ExprId? {
 
 /// `x != null` IS the presence bit; `x == null` is its negation.
 /// The null side lowers to nothing at all.
-fn presence_reg(cx: LowerCx, e: ExprId, op: BinOp, subject: ExprId) -> Reg {
+fn presence_reg(mut cx: LowerCx, e: ExprId, op: BinOp, subject: ExprId) -> Reg {
     let p = presence_of(cx, cx.reg_of(subject), cx.type_at(subject))
     if op == BinOp.Ne { return p }
     let dst = cx.result(e)
@@ -43,7 +43,7 @@ fn presence_reg(cx: LowerCx, e: ExprId, op: BinOp, subject: ExprId) -> Reg {
     dst
 }
 
-fn index_reg(cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
+fn index_reg(mut cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
     let arr = cx.reg_of(s)
     let idx = cx.reg_of(i)
     let dst = cx.result(e)
@@ -54,7 +54,7 @@ fn index_reg(cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
 /// A property read, by the subject's shape: a TYPE NAME builds a
 /// variant, a struct reads a slot at its declaration index, and
 /// only `length` otherwise survives typing.
-fn prop_reg(cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
+fn prop_reg(mut cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
     let sh: Type = cx.shape_at(s)
     if sh is .TypeName { return variant_reg(cx, e, name) }
     let sig: StructSig? = cx.fields_at(s)
@@ -70,7 +70,7 @@ fn prop_reg(cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
 
 /// Constructing a variant: ONE array carrying the tag at slot 0.
 /// The type name itself lowers to nothing — it never was a value.
-fn variant_reg(cx: LowerCx, e: ExprId, name: string) -> Reg {
+fn variant_reg(mut cx: LowerCx, e: ExprId, name: string) -> Reg {
     let sig: EnumSig? = cx.variants_at(e)
     if sig == null {
         return lower_defect(cx, e, "a variant construction without an enum type")
@@ -83,12 +83,12 @@ fn variant_reg(cx: LowerCx, e: ExprId, name: string) -> Reg {
     tagged_value(cx, dst, which!, [])
     dst
 }
-fn ident_reg(cx: LowerCx, e: ExprId) -> Reg {
+fn ident_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     let def: Reg? = cx.def_reg(e)
     def ?? lower_defect(cx, e, "an unresolved name survived a clean analysis")
 }
 
-fn binary_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
+fn binary_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
     if op == BinOp.And || op == BinOp.Or { return lazy_reg(cx, e, op, l, r) }
     let asked: ExprId? = asked_subject(cx, op, l, r)
     if asked != null { return presence_reg(cx, e, op, asked!) }
@@ -121,7 +121,7 @@ fn binary_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
 /// their values are, or when both are absent — a value beside a
 /// nullable counts as present. Both sides lower in source order;
 /// the NULLABLE one leads the test, whichever side wrote it.
-fn nullable_eq_reg(cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
+fn nullable_eq_reg(mut cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
     let a = cx.reg_of(l)
     let b = cx.reg_of(r)
     let lt = cx.type_at(l)
@@ -131,7 +131,7 @@ fn nullable_eq_reg(cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
 }
 
 /// The nullable side tested, the other beside it.
-fn led_by(cx: LowerCx, e: ExprId, v: Reg, vt: TypeId, w: Reg, wt: TypeId) -> Reg {
+fn led_by(mut cx: LowerCx, e: ExprId, v: Reg, vt: TypeId, w: Reg, wt: TypeId) -> Reg {
     let inner: TypeId = cx.view.types.carried(vt) ?? vt
     presence_region(cx, e, v, vt,
         () -> present_beside(cx, e, carried_of(cx, v, vt), w, wt, inner),
@@ -140,7 +140,7 @@ fn led_by(cx: LowerCx, e: ExprId, v: Reg, vt: TypeId, w: Reg, wt: TypeId) -> Reg
 
 /// The present side's value against the other: equal values when
 /// the other is present too, false when it is absent.
-fn present_beside(cx: LowerCx, e: ExprId, av: Reg, b: Reg, rt: TypeId, inner: TypeId) -> Reg {
+fn present_beside(mut cx: LowerCx, e: ExprId, av: Reg, b: Reg, rt: TypeId, inner: TypeId) -> Reg {
     if cx.view.types.carried(rt) == null { return same_value(cx, av, b, inner) }
     presence_region(cx, e, b, rt,
         () -> same_value(cx, av, carried_of(cx, b, rt), inner),
@@ -148,7 +148,7 @@ fn present_beside(cx: LowerCx, e: ExprId, av: Reg, b: Reg, rt: TypeId, inner: Ty
 }
 
 /// The absent side against the other: equal only to absence.
-fn absent_beside(cx: LowerCx, b: Reg, rt: TypeId) -> Reg {
+fn absent_beside(mut cx: LowerCx, b: Reg, rt: TypeId) -> Reg {
     if cx.view.types.carried(rt) == null { return const_bool(cx, false) }
     let present = presence_of(cx, b, rt)
     let dst = cx.mint_shape(Type.Bool)
@@ -156,14 +156,14 @@ fn absent_beside(cx: LowerCx, b: Reg, rt: TypeId) -> Reg {
     dst
 }
 
-fn negated_when(cx: LowerCx, e: ExprId, negate: bool, v: Reg) -> Reg {
+fn negated_when(mut cx: LowerCx, e: ExprId, negate: bool, v: Reg) -> Reg {
     if !negate { return v }
     let dst = cx.result(e)
     cx.emit(Ins.Un(dst, UnOp.Not, v))
     dst
 }
 
-fn const_bool(cx: LowerCx, b: bool) -> Reg {
+fn const_bool(mut cx: LowerCx, b: bool) -> Reg {
     let r = cx.mint_shape(Type.Bool)
     cx.emit(Ins.ConstBool(r, b))
     r
@@ -172,7 +172,7 @@ fn const_bool(cx: LowerCx, b: bool) -> Reg {
 /// `a && b` is `if a { b } else { false }`; `a || b` is
 /// `if a { true } else { b }` — regions, so the taken side alone
 /// runs. Registers mint in instruction order at every step.
-fn lazy_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
+fn lazy_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
     let a = cx.reg_of(l)
     cx.emit(Ins.IfStart(a))
     if op == BinOp.And {
@@ -193,7 +193,7 @@ fn lazy_reg(cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
     dst
 }
 
-fn not_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
+fn not_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
     let rv = cx.reg_of(v)
     let dst = cx.result(e)
     cx.emit(Ins.Un(dst, UnOp.Not, rv))
@@ -201,7 +201,7 @@ fn not_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
 }
 
 /// A property the receiver's shape answers — its row's lowering.
-fn property_reg(cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
+fn property_reg(mut cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
     let row: PropertyRow? = property_row(cx.view.lang.properties, name, cx.shape_at(s))
     if row == null { return lower_defect(cx, e, "a property without a row survived typing") }
     let r = row!

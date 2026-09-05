@@ -3,7 +3,7 @@
 use core.{Type, ExprId, Reg, Ins, StmtId}
 use features.{hollow_of, LowerCx, called_through, foreign_node, StmtLowerCx}
 
-fn call_lower(cx: LowerCx, e: ExprId) -> Reg {
+fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     match cx.view.store.expr(e) {
         .Call(callee, _, args) -> {
             let regs = [cx.reg_of(a) for a in args]
@@ -21,7 +21,7 @@ fn call_lower(cx: LowerCx, e: ExprId) -> Reg {
 
 /// The indirect path: through the box, which rides seat 0 —
 /// exactly as `self` does.
-fn valued_call_reg(cx: LowerCx, e: ExprId, box: Reg, regs: List<Reg>) -> Reg {
+fn valued_call_reg(mut cx: LowerCx, e: ExprId, box: Reg, regs: List<Reg>) -> Reg {
     called_through(cx, e, box, regs)
 }
 
@@ -29,7 +29,7 @@ fn valued_call_reg(cx: LowerCx, e: ExprId, box: Reg, regs: List<Reg>) -> Reg {
 /// pass settles every open scope's debts before the exit. Answers
 /// no statement value: the driver's last-value tracking never sees
 /// a return.
-export fn lower_return(cx: StmtLowerCx, s: StmtId) -> Reg? {
+export fn lower_return(mut cx: StmtLowerCx, s: StmtId) -> Reg? {
     let v: Reg? = cx.lower_value(s)
     cx.expr.emit(Ins.FnExit(v ?? hollow_of(cx.expr, cx.expr.view.types.intern(Type.Void))))
     null
@@ -37,7 +37,7 @@ export fn lower_return(cx: StmtLowerCx, s: StmtId) -> Reg? {
 
 /// A call across the host seam: the extern's bare symbol as a
 /// runtime call — void ones answer nothing.
-fn extern_call_reg(cx: LowerCx, e: ExprId, symbol: string, regs: List<Reg>) -> Reg {
+fn extern_call_reg(mut cx: LowerCx, e: ExprId, symbol: string, regs: List<Reg>) -> Reg {
     if cx.shape_at(e) is .Void {
         cx.emit(Ins.CallRtVoid(symbol, regs))
         let dst = cx.result(e)

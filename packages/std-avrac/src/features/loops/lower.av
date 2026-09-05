@@ -6,8 +6,8 @@
 use core.{StmtId, ExprId, Ins, Level, TypeId, BinOp, Type}
 use features.{StmtLowerCx, LowerCx}
 
-export fn lower_while(cx: StmtLowerCx, cond: ExprId, stmts: List<StmtId>) {
-    let ex = cx.expr
+export fn lower_while(mut cx: StmtLowerCx, cond: ExprId, stmts: List<StmtId>) {
+    mut ex = cx.expr
     ex.emit(Ins.LoopStart)
     ex.emit(Ins.LoopCond(ex.reg_of(cond)))
     ex.emit(Ins.ScopeEnter(Level.Application))
@@ -19,8 +19,8 @@ export fn lower_while(cx: StmtLowerCx, cond: ExprId, stmts: List<StmtId>) {
 /// The counter is born before the loop, read through its cell each
 /// turn, and stepped after the body — bind_slot BEFORE the cond
 /// lowers, so the counter's ident loads through the cell.
-export fn lower_for(cx: StmtLowerCx, s: StmtId, from: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>) {
-    let ex = cx.expr
+export fn lower_for(mut cx: StmtLowerCx, s: StmtId, from: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>) {
+    mut ex = cx.expr
     let start = ex.reg_of(from)
     let slot = ex.mint_ty(ex.type_at(from))
     ex.emit(Ins.Alloca(slot))
@@ -39,8 +39,8 @@ export fn lower_for(cx: StmtLowerCx, s: StmtId, from: ExprId, cond: ExprId, step
 /// the name binds through — stored fresh each turn, read wherever
 /// the body says the name. The body is a scope per turn, like every
 /// loop's.
-export fn lower_for_each(cx: StmtLowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
-    let ex = cx.expr
+export fn lower_for_each(mut cx: StmtLowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
+    mut ex = cx.expr
     let xs = ex.reg_of(subject)
     let len = ex.mint_shape(Type.Int)
     ex.emit(Ins.CallRt(len, "avra_array_len", [xs]))
@@ -79,7 +79,7 @@ export fn lower_for_each(cx: StmtLowerCx, s: StmtId, subject: ExprId, stmts: Lis
 
 /// The subject's element type — typing proved it a List, and the
 /// miss answers the subject's own type.
-fn elem_of(ex: LowerCx, subject: ExprId) -> TypeId {
+fn elem_of(mut ex: LowerCx, subject: ExprId) -> TypeId {
     let elem: TypeId? = ex.view.types.element(ex.type_at(subject))
     elem ?? ex.type_at(subject)
 }

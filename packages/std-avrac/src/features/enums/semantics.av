@@ -28,7 +28,7 @@ impl NodeSemantics for EnumsSemantics {
         }
     }
 
-    fn resolve(cx: ResolveCx, e: ExprId) {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
             .Match(_, arms) -> resolve_arms(cx, arms),
@@ -36,11 +36,11 @@ impl NodeSemantics for EnumsSemantics {
         }
     }
 
-    fn type_of(cx: TypeCx, e: ExprId) -> TypeId {
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         enums_type(cx, e)
     }
 
-    fn lower(cx: LowerCx, e: ExprId) -> Reg {
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
         enums_reg(cx, e)
     }
 }
@@ -48,15 +48,15 @@ impl NodeSemantics for EnumsSemantics {
 export type EnumDeclSemantics = { }
 
 impl StmtSemantics for EnumDeclSemantics {
-    fn resolve_stmt(cx: StmtResolveCx, s: StmtId) {
+    fn resolve_stmt(mut cx: StmtResolveCx, s: StmtId) {
         let _ = refuses_nested(cx, s, "resolve.nested_type", "type declarations")
     }
 
-    fn type_stmt(cx: StmtTypeCx, s: StmtId) {
+    fn type_stmt(mut cx: StmtTypeCx, s: StmtId) {
         check_enum_decl(cx, s)
     }
 
-    fn lower_stmt(cx: StmtLowerCx, s: StmtId) -> Reg? {
+    fn lower_stmt(mut cx: StmtLowerCx, s: StmtId) -> Reg? {
         null
     }
 }
@@ -65,7 +65,7 @@ impl StmtSemantics for EnumDeclSemantics {
 /// in pre-order (an `or` arm's alternatives bind nothing, which
 /// typing enforces). A match is a CONTROL-OWNING node, so `kids`
 /// hides the arm values and this walks them instead.
-fn resolve_arms(cx: ResolveCx, arms: List<Arm>) {
+fn resolve_arms(mut cx: ResolveCx, arms: List<Arm>) {
     for a in arms { cx.arm_scope(arm_binds(cx.view.store, a), a.value) }
 }
 

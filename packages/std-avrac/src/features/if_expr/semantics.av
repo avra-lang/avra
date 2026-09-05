@@ -23,7 +23,7 @@ impl NodeSemantics for IfSemantics {
         }
     }
 
-    fn resolve(cx: ResolveCx, e: ExprId) {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
         match cx.view.store.expr(e) {
             .If(_, t, f) -> {
                 cx.arm_scope([], t)
@@ -33,11 +33,11 @@ impl NodeSemantics for IfSemantics {
         }
     }
 
-    fn type_of(cx: TypeCx, e: ExprId) -> TypeId {
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         if_type(cx, e)
     }
 
-    fn lower(cx: LowerCx, e: ExprId) -> Reg {
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
         if_lower(cx, e)
     }
 
@@ -48,7 +48,7 @@ impl NodeSemantics for IfSemantics {
 export type IfStmtSemantics = { }
 
 impl StmtSemantics for IfStmtSemantics {
-    fn resolve_stmt(cx: StmtResolveCx, s: StmtId) {
+    fn resolve_stmt(mut cx: StmtResolveCx, s: StmtId) {
         match cx.view.store.stmt(s) {
             .IfStmt(c, t, e) -> {
                 cx.walk(c)
@@ -59,7 +59,7 @@ impl StmtSemantics for IfStmtSemantics {
         }
     }
 
-    fn type_stmt(cx: StmtTypeCx, s: StmtId) {
+    fn type_stmt(mut cx: StmtTypeCx, s: StmtId) {
         match cx.view.store.stmt(s) {
             .IfStmt(c, t, e) -> {
                 cx.walk(c)
@@ -71,7 +71,7 @@ impl StmtSemantics for IfStmtSemantics {
         }
     }
 
-    fn lower_stmt(cx: StmtLowerCx, s: StmtId) -> Reg? {
+    fn lower_stmt(mut cx: StmtLowerCx, s: StmtId) -> Reg? {
         match cx.view.store.stmt(s) {
             .IfStmt(c, t, e) -> {
                 lower_if_stmt(cx, c, t, e)
@@ -85,8 +85,8 @@ impl StmtSemantics for IfStmtSemantics {
 /// The valueless region: both arms yield a THROWAWAY zero — the
 /// merge register exists because every region merges, and nothing
 /// reads it. A branch that RETURNS never reaches its yield.
-fn lower_if_stmt(cx: StmtLowerCx, c: ExprId, t: List<StmtId>, e: List<StmtId>) {
-    let ex = cx.expr
+fn lower_if_stmt(mut cx: StmtLowerCx, c: ExprId, t: List<StmtId>, e: List<StmtId>) {
+    mut ex = cx.expr
     ex.emit(Ins.IfStart(ex.reg_of(c)))
     cx.lower_stmts(t)
     void_arm(ex)

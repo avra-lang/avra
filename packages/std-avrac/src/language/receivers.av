@@ -61,7 +61,7 @@ fn summary(ws: Workspace, m: DeclId) -> Summary {
     let receiver: TypeId? = receiver_type(ws, x)
     // a trait sig, or a method whose impl was refused: no body to read
     if receiver == null { return Summary { own: false, edges: [] } }
-    let cx = Survey { ws: ws, decls: ws.decls, store: store, names: names, receiver: receiver!, lo: x.lo, hi: x.hi }
+    mut cx = Survey { ws: ws, decls: ws.decls, store: store, names: names, receiver: receiver!, lo: x.lo, hi: x.hi }
     let assigned = assigns_receiver(cx)
     mut sites: List<Evidence> = []
     // LICENSED I3: a comprehension over a RANGE is our own sugar backlog
@@ -87,7 +87,7 @@ fn no_evidence() -> Evidence {
 }
 
 /// Any assignment in the range whose target is rooted in `self`.
-fn assigns_receiver(cx: Survey) -> bool {
+fn assigns_receiver(mut cx: Survey) -> bool {
     mut i = 0
     let n = cx.store.stmts.count()
     while i < n {
@@ -98,12 +98,12 @@ fn assigns_receiver(cx: Survey) -> bool {
     false
 }
 
-fn in_range(cx: Survey, e: ExprId) -> bool {
+fn in_range(mut cx: Survey, e: ExprId) -> bool {
     e.index >= cx.lo && e.index < cx.hi
 }
 
 /// Whether a place's root is the receiver — asked of the BINDING.
-fn rooted_in_receiver(cx: Survey, e: ExprId) -> bool {
+fn rooted_in_receiver(mut cx: Survey, e: ExprId) -> bool {
     let root: ExprId? = cx.store.place_root(e)
     if root == null { return false }
     let b: Binding? = cx.names.binding(root!)
@@ -113,7 +113,7 @@ fn rooted_in_receiver(cx: Survey, e: ExprId) -> bool {
 /// One expression's evidence: a method call on a self-rooted place
 /// (a mutating row, a declared method's edge, a contract's word), or
 /// any call handing a self-rooted place to a `mut` seat.
-fn site_evidence(cx: Survey, e: ExprId) -> Evidence {
+fn site_evidence(mut cx: Survey, e: ExprId) -> Evidence {
     let mp: MethodParts? = cx.store.method_parts(e)
     if mp != null { return method_evidence(cx, mp!) }
     let callee: DeclId? = bound_decl_of(cx.names, e)
@@ -122,7 +122,7 @@ fn site_evidence(cx: Survey, e: ExprId) -> Evidence {
 }
 
 /// A named call's arguments; empty for every other node.
-fn call_args(cx: Survey, e: ExprId) -> List<ExprId> {
+fn call_args(mut cx: Survey, e: ExprId) -> List<ExprId> {
     // LICENSED I22: one arm answers — a projection over the core node
     match cx.store.expr(e) {
         .Call(_, _, args) -> args,
@@ -130,7 +130,7 @@ fn call_args(cx: Survey, e: ExprId) -> List<ExprId> {
     }
 }
 
-fn method_evidence(cx: Survey, mp: MethodParts) -> Evidence {
+fn method_evidence(mut cx: Survey, mp: MethodParts) -> Evidence {
     let ty: TypeId? = if rooted_in_receiver(cx, mp.subject) { place_type(cx, mp.subject) } else { null }
     let callee: Callee = if ty == null { Callee.None } else { callee_of(cx, ty!, mp.name) }
     match callee {
@@ -143,7 +143,7 @@ fn method_evidence(cx: Survey, mp: MethodParts) -> Evidence {
 
 /// A call whose receiver is NOT self-rooted may still hand a
 /// self-rooted place to a `mut` seat of a declared method.
-fn fed_callee(cx: Survey, mp: MethodParts) -> bool {
+fn fed_callee(mut cx: Survey, mp: MethodParts) -> bool {
     let ty: TypeId? = place_type(cx, mp.subject)
     if ty == null { return false }
     match callee_of(cx, ty!, mp.name) {
@@ -156,7 +156,7 @@ fn fed_callee(cx: Survey, mp: MethodParts) -> bool {
 /// Whether any argument rooted in `self` fills a `mut` seat of the
 /// callee, the seats numbered from `base` (1 past a method's own
 /// receiver seat).
-fn feeds_mut_seat(cx: Survey, callee: DeclId, args: List<ExprId>, base: int) -> bool {
+fn feeds_mut_seat(mut cx: Survey, callee: DeclId, args: List<ExprId>, base: int) -> bool {
     mut j = 0
     while j < args.length {
         if cx.decls.mut_seat(callee, base + j) && rooted_in_receiver(cx, args[j]) { return true }
@@ -174,7 +174,7 @@ enum Callee {
     None
 }
 
-fn callee_of(cx: Survey, ty: TypeId, name: string) -> Callee {
+fn callee_of(mut cx: Survey, ty: TypeId, name: string) -> Callee {
     let sh: Type = cx.decls.types.shape_of(ty)
     match sh {
         .List(_) or .Map(_, _) or .Str -> Callee.Row(row_writes(cx.ws.lang.rows.methods, name, sh)),
@@ -188,14 +188,14 @@ fn callee_of(cx: Survey, ty: TypeId, name: string) -> Callee {
     }
 }
 
-fn declared_method(cx: Survey, d: DeclId, name: string) -> Callee {
+fn declared_method(mut cx: Survey, d: DeclId, name: string) -> Callee {
     let m: DeclId? = cx.decls.method(d, name)
     if m == null { return Callee.None }
     Callee.Method(m!)
 }
 
 /// A method on a BOUNDED type parameter: the bound's trait's member.
-fn bounded_member(cx: Survey, d: DeclId, j: int, name: string) -> Callee {
+fn bounded_member(mut cx: Survey, d: DeclId, j: int, name: string) -> Callee {
     let tb = cx.decls.tbounds(d)
     if j >= tb.length || tb[j].ty == null { return Callee.None }
     let tdecl: DeclId? = trait_named(cx.decls, cx.names, tb[j].ty!.name)
@@ -203,7 +203,7 @@ fn bounded_member(cx: Survey, d: DeclId, j: int, name: string) -> Callee {
     contract_member(cx, tdecl!, name)
 }
 
-fn contract_member(cx: Survey, tdecl: DeclId, name: string) -> Callee {
+fn contract_member(mut cx: Survey, tdecl: DeclId, name: string) -> Callee {
     let member: DeclId? = trait_member(cx.decls, tdecl, name)
     if member == null { return Callee.None }
     Callee.Contract(member!)
@@ -212,7 +212,7 @@ fn contract_member(cx: Survey, tdecl: DeclId, name: string) -> Callee {
 /// The declared type along a self-rooted place: the receiver at the
 /// root, a field's declared type per field step, the element per
 /// index step — null when a step names nothing declared.
-fn place_type(cx: Survey, e: ExprId) -> TypeId? {
+fn place_type(mut cx: Survey, e: ExprId) -> TypeId? {
     let step: PlaceStep? = cx.store.place_step(e)
     if step == null { return null }
     match step! {
@@ -222,7 +222,7 @@ fn place_type(cx: Survey, e: ExprId) -> TypeId? {
     }
 }
 
-fn field_type(cx: Survey, holder: TypeId?, name: string) -> TypeId? {
+fn field_type(mut cx: Survey, holder: TypeId?, name: string) -> TypeId? {
     if holder == null { return null }
     let sig: StructSig? = fields_of_type(cx.decls, holder!)
     if sig == null { return null }
@@ -231,7 +231,7 @@ fn field_type(cx: Survey, holder: TypeId?, name: string) -> TypeId? {
     sig!.types[slot!]
 }
 
-fn element_type(cx: Survey, holder: TypeId?) -> TypeId? {
+fn element_type(mut cx: Survey, holder: TypeId?) -> TypeId? {
     if holder == null { return null }
     match cx.decls.types.shape_of(holder!) {
         .List(elem) -> elem,

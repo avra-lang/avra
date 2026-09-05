@@ -14,26 +14,26 @@ export fn on_map(t: Type) -> bool {
 
 // ── The rows' rules ──
 
-export fn check_get(cx: TypeCx, mc: MethodCall) -> TypeId {
+export fn check_get(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let value: TypeId? = value_held(cx, mc, "get")
     if value == null { return cx.error_type }
     got_type(cx, mc.e, mc.args, value!)
 }
-export fn check_set(cx: TypeCx, mc: MethodCall) -> TypeId {
+export fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let value: TypeId? = value_held(cx, mc, "set")
     if value == null { return cx.error_type }
     set_type(cx, mc.e, mc.subject, mc.args, value!)
 }
-export fn lower_get(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_get(mut cx: LowerCx, mc: MethodCall) -> Reg {
     got_reg(cx, mc.e, mc.subject, mc.args[0])
 }
-export fn lower_set(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
     set_reg(cx, mc.e, mc.subject, mc.args[0], mc.args[1])
 }
 
 /// THE PRELUDE both rows share: the value type the receiver holds.
 /// The empty literal refuses in the row's words and absorbs.
-fn value_held(cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
+fn value_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
     if cx.shape_at(mc.subject) is .EmptyMap {
         let _ = unknowable_map(cx, mc.e, name)
         return null
@@ -45,7 +45,7 @@ fn value_held(cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
     held
 }
 
-fn got_type(cx: TypeCx, e: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
+fn got_type(mut cx: TypeCx, e: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
     if args.length != 1 {
         wrong_arity(cx, e, "get", 1, args.length)
         return cx.error_type
@@ -54,7 +54,7 @@ fn got_type(cx: TypeCx, e: ExprId, args: List<ExprId>, value: TypeId) -> TypeId 
     cx.view.types.intern(Type.Opt(value))
 }
 
-fn set_type(cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
+fn set_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
     if args.length != 2 {
         wrong_arity(cx, e, "set", 2, args.length)
         return cx.error_type
@@ -69,7 +69,7 @@ fn set_type(cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, value: T
 
 /// `m.get(k)`: presence asked first, the value adopted into the
 /// nullable only when there — a cell seeded absent, like `find`.
-fn got_reg(cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
+fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
     let opt = cx.type_at(e)
     let m = cx.reg_of(subject)
     let k = cx.reg_of(key)
@@ -91,7 +91,7 @@ fn got_reg(cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
 
 /// `m.set(k, v)`: the place opens unique, the runtime stores, and
 /// the answer is nothing.
-fn set_reg(cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId, value: ExprId) -> Reg {
+fn set_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId, value: ExprId) -> Reg {
     let box = unique_box(cx, subject)
     cx.emit(Ins.CallRtVoid("avra_map_set", [box, cx.reg_of(key), cx.reg_of(value)]))
     let dst = cx.result(e)
@@ -101,7 +101,7 @@ fn set_reg(cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId, value: ExprId) 
 
 // ── The voices ──
 
-fn unknowable_map(cx: TypeCx, e: ExprId, name: string) -> TypeId {
+fn unknowable_map(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
     spoken(cx, refusal("type.map_value", cx.loc_of(e), "`{}.${name}` cannot know its values", "asked here", "bind the map under a declared type first — `let m: Map<string, int> = {}`"))
 }
 
@@ -121,14 +121,14 @@ export fn string_keys(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
     }]
 }
 
-export fn check_map_length(cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
+export fn check_map_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
     if cx.view.types.shape_of(ty) is .EmptyMap { return unmeasurable_empty(cx, e, "{}", "Map<string, int>") }
     cx.view.types.intern(Type.Int)
 }
 
 /// `m.length` — the word the one measure table gives the map's
 /// shape.
-export fn lower_map_length(cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
+export fn lower_map_length(mut cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
     let m = cx.reg_of(subject)
     let word: string? = length_word(cx.view.types.shape_of(cx.type_at(subject)))
     if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }

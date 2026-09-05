@@ -369,6 +369,14 @@ the order is the dependency.
         cell ABI has no legacy path, so every writing call site must
         be a place first; the receiver law's warning becomes the
         refusal the day S4 closes.
+        S4a LANDED 2026-09-04: every owned-state parameter is a `mut`
+        seat by script (1004 seats in 18 types; 71 let-bound
+        contexts became `mut`; 9 inline contexts bound first); the
+        receiver-law census fell 981 -> 108, every survivor a
+        shared-state root (`ws`, `types`, `decls`, `store`); the
+        captured-seat law warns at 91 sites — the closure fields,
+        S4b's list. The ratchet reads through the `mut` mark (I21,
+        I23). 1661 cases, corpus 73/73.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become
@@ -6800,6 +6808,46 @@ and receiver laws say so in their own words instead of "not
 counterexample cycle answers right, mutual recursion without a
 write is silent, a generic seat instantiates twice, a trait's
 `mut` seat dispatches through `dyn`.
+
+S4 DESIGNED (2026-09-04, from the census): THE STATE THE COMPILER
+MUTATES IS TWO KINDS, and the inout seat pays for exactly one.
+(A) OWNED PASS STATE — a pass's own tables and the drivers' frames
+(`TypeFacts`, `NameFacts`, the `Emitter`, the `Typer`'s and
+`Resolver`'s stacks, the `Machine`, a `Builder`'s captures): ONE
+owner, the driver; rules borrow it for a call. That is an inout
+seat: every rule takes `mut cx`, the contexts hold the driver's
+state as FIELDS instead of closure fields capturing it, and each
+closure field (`walk_type`, `block_type`, `lower_block`, …) becomes
+a METHOD that recurses with `self` — 23 of the 981 warnings are
+captured roots today, and those are exactly the closure fields.
+Fourteen types carry (A): the six contexts, `Typer`, `Resolver`,
+`Lower`, `Machine`, `Emit`, `Builder`, `MatchContext`, `Survey`.
+(B) SHARED PROGRAM STATE — the type registry (an INTERNER: two
+holders interning one shape must get one id), the declaration
+table, the node store, the query kernel, the workspace's tables.
+These are reached from MANY places at once (`cx.view.types`,
+`decls.types`, `ws.decls.types` name one box) and written from
+many; a mut seat cannot hold them, because a seat is one place
+with one root and the exclusivity law refuses two roots to one
+box — and under the cell ABI a write through one path would clone
+the registry away from every other. 95 of the 981 warnings are
+`intern` alone. Spec 11.3 names this case by name — caches, lazy
+initialization, pooled resources — and gives it INTERIOR
+MUTABILITY BY TYPE: `Cell<T>`, the documented exception to deep
+immutability, visible in every signature that carries it. So (B)
+becomes `Cell<TypeRegistry>`, `Cell<Decls>`, `Cell<NodeStore>`,
+`Cell<Db>`: a shared box whose writes are visible through every
+alias BY DECLARATION, with methods forwarding in place (the spec's
+`get`/`set` surface plus in-place calls — the design owed to the
+owner: a `Cell<T>` is a core type with a runtime box, and its
+cycle law is the doctrine's own exception). THE SLICES: S4a the
+(A) seats by script (`mut` before every (A)-typed parameter and
+trait seat; the seat law then names every site that must change
+shape), S4b the closure fields into methods, S4c the 79 `mut x =
+y.field` borrows into path writes; S2 (the cell ABI) is BLOCKED
+on (B)'s ratification — until `Cell` lands, a (B) seat marked
+`mut` writes through as today and the receiver law stays a warning
+at (B)'s roots (`ws`, `types`, `decls`, `db`: 145 sites).
 
 THE CONVERSION'S TRUE SIZE — measured 2026-09-04 so S4 is not
 underestimated: methods are HALF of the borrow's users. The census

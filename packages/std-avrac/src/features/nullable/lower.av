@@ -7,7 +7,7 @@
 use core.{ExprId, StmtId, TypeId, Reg, Ins, Type}
 use features.{LowerCx, StmtLowerCx, StructSig, foreign_node, presence_of, carried_of, carried_type, adopted, absent_of, insisted, hollow_of, okness_of, payload_of, lower_defect, length_word, presence_region, field_read}
 
-fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
+fn nullable_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .NullLit -> null_reg(cx, e),
@@ -23,7 +23,7 @@ fn nullable_reg(cx: LowerCx, e: ExprId) -> Reg {
 /// The absence itself: a null constant, typed as absence. It has no
 /// carried layout — the ADOPTING edge gives it one (values.av,
 /// `adopted`), and for a niche this very value already is it.
-fn null_reg(cx: LowerCx, e: ExprId) -> Reg {
+fn null_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     let dst = cx.result(e)
     cx.emit(Ins.ConstInt(dst, 0))
     dst
@@ -31,7 +31,7 @@ fn null_reg(cx: LowerCx, e: ExprId) -> Reg {
 
 /// `l ?? r` — the present arm unwraps what `l` carries; the absent
 /// arm answers with `r`, evaluated only then.
-fn coalesce_reg(cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
+fn coalesce_reg(mut cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
     let v = cx.reg_of(l)
     let held = cx.type_at(l)
     // a left side that is never absent IS the answer — typing said so
@@ -45,7 +45,7 @@ fn coalesce_reg(cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
 
 /// `v!` — the carried value, insisted on; a read a narrowing made
 /// present is that value already.
-fn forced_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
+fn forced_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
     if cx.view.types.carried(cx.type_at(v)) == null { return cx.reg_of(v) }
     insisted(cx, e, cx.reg_of(v), cx.type_at(v))
 }
@@ -53,7 +53,7 @@ fn forced_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
 /// `match v { b? -> p, null -> a }` — the bind receives what the
 /// nullable carries before the present arm lowers inside its
 /// bracket; the absent arm is the other bracket.
-fn match_opt_reg(cx: LowerCx, e: ExprId, subject: ExprId,
+fn match_opt_reg(mut cx: LowerCx, e: ExprId, subject: ExprId,
                  present: ExprId, absent: ExprId) -> Reg {
     let v = cx.reg_of(subject)
     let held = cx.type_at(subject)
@@ -70,7 +70,7 @@ fn match_opt_reg(cx: LowerCx, e: ExprId, subject: ExprId,
 /// the memory pass settles every open scope at the site) and
 /// yields a hollow the merge never reads, since the backend parks
 /// everything after the exit in a dead continuation.
-fn propagate_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
+fn propagate_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
     let r = cx.reg_of(v)
     let held = cx.type_at(v)
     if cx.view.types.shape_of(held) is .Res { return propagate_res_reg(cx, e, r) }
@@ -83,7 +83,7 @@ fn propagate_reg(cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
 /// payload; the failure arm exits with THE SUBJECT'S OWN BOX — an
 /// `.Err` of `Result<_, E>` is a valid `.Err` of every `Result<_,
 /// E>`, so propagation moves the pointer and repacks nothing.
-fn propagate_res_reg(cx: LowerCx, e: ExprId, r: Reg) -> Reg {
+fn propagate_res_reg(mut cx: LowerCx, e: ExprId, r: Reg) -> Reg {
     cx.emit(Ins.IfStart(okness_of(cx, r)))
     cx.emit(Ins.ArmEnd(payload_of(cx, r, cx.type_at(e))))
     cx.emit(Ins.FnExit(r))
@@ -94,7 +94,7 @@ fn propagate_res_reg(cx: LowerCx, e: ExprId, r: Reg) -> Reg {
 }
 
 /// The absent arm's whole story: the enclosing fn answers absence.
-fn departed(cx: LowerCx, e: ExprId) -> Reg {
+fn departed(mut cx: LowerCx, e: ExprId) -> Reg {
     let ret: TypeId? = cx.enclosing_ret()
     if ret == null { return lower_defect(cx, e, "a propagation without an enclosing fn survived typing") }
     cx.emit(Ins.FnExit(absent_of(cx, ret!)))
@@ -106,10 +106,10 @@ fn departed(cx: LowerCx, e: ExprId) -> Reg {
 /// carried value; the absent arm runs the else, which LEAVES
 /// (typing enforced it), and yields a hollow the merge never
 /// reads. The driver binds the answered register like any let's.
-fn let_else_reg(cx: StmtLowerCx, s: StmtId) -> Reg? {
+fn let_else_reg(mut cx: StmtLowerCx, s: StmtId) -> Reg? {
     let subject: ExprId? = cx.view.store.stmt_value(s)
     if subject == null { return null }
-    let ex = cx.expr
+    mut ex = cx.expr
     let v = ex.reg_of(subject!)
     let held = ex.type_at(subject!)
     ex.emit(Ins.IfStart(presence_of(ex, v, held)))
@@ -123,7 +123,7 @@ fn let_else_reg(cx: StmtLowerCx, s: StmtId) -> Reg? {
 
 /// `a?.b` — the member of the CARRIED value on the present arm,
 /// lifted into the chain's nullable answer; absence on the other.
-fn chain_reg(cx: LowerCx, e: ExprId, subject: ExprId, name: string) -> Reg {
+fn chain_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string) -> Reg {
     let v = cx.reg_of(subject)
     let held = cx.type_at(subject)
     let answer = cx.type_at(e)
@@ -135,7 +135,7 @@ fn chain_reg(cx: LowerCx, e: ExprId, subject: ExprId, name: string) -> Reg {
 /// The present arm: read the member of what the subject carries,
 /// lifted into the chain's answer — unless the member is that
 /// nullable already (the flatten rule), when it IS the answer.
-fn lifted_member(cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
+fn lifted_member(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
                  name: string, answer: TypeId) -> Reg {
     member_reg(cx, e, carried_of(cx, v, held), carried_type(cx, held), name, answer)
 }
@@ -146,7 +146,7 @@ fn lifted_member(cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
 /// straight; one wearing what it carries is adopted; anything else
 /// means the flatten rule changed without this lowering learning
 /// it, which must break loudly, not lift twice.
-fn member_reg(cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
+fn member_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
               name: string, answer: TypeId) -> Reg {
     let sig: StructSig? = cx.fields_of(held)
     if sig == null { return adopted(cx, answer, false, length_reg(cx, e, carried, held)) }
@@ -169,7 +169,7 @@ fn types_differ(a: TypeId, b: TypeId) -> bool {
 
 /// `length` on the carried value — the word the one measure table
 /// gives its shape; a shape nothing measures is a defect.
-fn length_reg(cx: LowerCx, e: ExprId, carried: Reg, held: TypeId) -> Reg {
+fn length_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId) -> Reg {
     let word: string? = length_word(cx.view.types.shape_of(held))
     if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }
     let dst = cx.mint_shape(Type.Int)

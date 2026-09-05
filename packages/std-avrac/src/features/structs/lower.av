@@ -6,7 +6,7 @@
 use core.{ExprId, Reg, Ins, filled, DeclId}
 use features.{LowerCx, StructSig, lower_defect, foreign_node, push_slot, field_read, flat_at}
 
-fn structs_reg(cx: LowerCx, e: ExprId) -> Reg {
+fn structs_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .StructLit(_, fields, values) -> lit_reg(cx, e, fields, values),
@@ -18,7 +18,7 @@ fn structs_reg(cx: LowerCx, e: ExprId) -> Reg {
 /// The copy: values evaluate in written order, then one push per
 /// declaration slot — the written register, or the subject's own
 /// field read back. The subject is untouched.
-fn with_reg(cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
+fn with_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
     let src = cx.reg_of(subject)
     let regs = [cx.reg_of(v) for v in values]
     let held: StructSig? = cx.fields_at(e)
@@ -41,7 +41,7 @@ fn with_reg(cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, value
     dst
 }
 
-fn lit_reg(cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
+fn lit_reg(mut cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
     let regs = [cx.reg_of(v) for v in values]
     let held: StructSig? = cx.fields_at(e)
     if held == null { return lower_defect(cx, e, "a field-less literal survived typing") }
@@ -67,7 +67,7 @@ fn lit_reg(cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -
 /// engine renders as identity. The instruction earns its place by
 /// giving the register the RECORD's type — a reader that asks a
 /// register what it holds must not be told the field.
-fn packed_lit(cx: LowerCx, e: ExprId, sig: StructSig, by_slot: List<Reg?>) -> Reg {
+fn packed_lit(mut cx: LowerCx, e: ExprId, sig: StructSig, by_slot: List<Reg?>) -> Reg {
     let held: Reg? = by_slot[0]
     let one = if held != null { held! } else { defaulted_reg(cx, e, sig, 0) }
     // THE MINT LAW, and the record's own TYPE: the Pack says "this
@@ -81,7 +81,7 @@ fn packed_lit(cx: LowerCx, e: ExprId, sig: StructSig, by_slot: List<Reg?>) -> Re
 
 /// The default an omitted slot lowers to — typing guaranteed one:
 /// a call to the field's own body, as instantiated at this literal.
-fn defaulted_reg(cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
+fn defaulted_reg(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
     let d: DeclId? = sig.defaults[slot]
     if d == null { return lower_defect(cx, e, "a literal missing a field without a default survived typing") }
     let dst = cx.mint_ty(cx.viewed(sig.types[slot]))

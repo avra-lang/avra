@@ -24,14 +24,14 @@ use core.{Reg, Ins, BinOp, Type, TypeId, ExprId}
 /// numbered in emission order.
 use features.{MethodCall}
 
-export fn grown_box(cx: LowerCx, dst: Reg, slots: List<Reg>) {
+export fn grown_box(mut cx: LowerCx, dst: Reg, slots: List<Reg>) {
     cx.emit(Ins.CallRt(dst, "avra_array_new", []))
     for r in slots { push_slot(cx, dst, r) }
 }
 
 /// A method answered by ONE runtime call: the receiver, the
 /// arguments, then `extra` — the answer minted last.
-export fn rt_method(cx: LowerCx, mc: MethodCall, callee: string, extra: List<Reg>) -> Reg {
+export fn rt_method(mut cx: LowerCx, mc: MethodCall, callee: string, extra: List<Reg>) -> Reg {
     let args = [cx.reg_of(mc.subject)].concat([cx.reg_of(a) for a in mc.args]).concat(extra)
     let dst = cx.result(mc.e)
     cx.emit(Ins.CallRt(dst, callee, args))
@@ -39,13 +39,13 @@ export fn rt_method(cx: LowerCx, mc: MethodCall, callee: string, extra: List<Reg
 }
 
 /// One more slot.
-export fn push_slot(cx: LowerCx, box: Reg, v: Reg) {
+export fn push_slot(mut cx: LowerCx, box: Reg, v: Reg) {
     cx.emit(Ins.CallRtVoid("avra_array_push", [box, v]))
 }
 
 /// Equality of two values of one type as a bool register — the
 /// runtime's `avra_streq` for text, the Eq operator otherwise.
-export fn same_value(cx: LowerCx, a: Reg, b: Reg, ty: TypeId) -> Reg {
+export fn same_value(mut cx: LowerCx, a: Reg, b: Reg, ty: TypeId) -> Reg {
     if cx.view.types.shape_of(ty) is .Enum { return same_tag(cx, a, b) }
     let dst = cx.mint_shape(Type.Bool)
     if cx.view.types.shape_of(ty) is .Str {
@@ -58,7 +58,7 @@ export fn same_value(cx: LowerCx, a: Reg, b: Reg, ty: TypeId) -> Reg {
 
 /// Two enum values of one type compare by TAG — what a unit enum's
 /// equality means.
-fn same_tag(cx: LowerCx, a: Reg, b: Reg) -> Reg {
+fn same_tag(mut cx: LowerCx, a: Reg, b: Reg) -> Reg {
     let ta = tag_of(cx, a)
     let tb = tag_of(cx, b)
     let dst = cx.mint_shape(Type.Bool)
@@ -69,7 +69,7 @@ fn same_tag(cx: LowerCx, a: Reg, b: Reg) -> Reg {
 /// THE TAGGED VALUE: an enum's variant is a slot array holding its
 /// TAG at slot 0 and its payloads, in order, at slots 1... `dst` is
 /// minted by the caller — the box verbs' shared contract.
-export fn tagged_value(cx: LowerCx, dst: Reg, tag: int, payloads: List<Reg>) {
+export fn tagged_value(mut cx: LowerCx, dst: Reg, tag: int, payloads: List<Reg>) {
     cx.emit(Ins.CallRt(dst, "avra_array_new", []))
     let slot = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(slot, tag))
@@ -79,23 +79,23 @@ export fn tagged_value(cx: LowerCx, dst: Reg, tag: int, payloads: List<Reg>) {
 
 /// The TAG a tagged value carries. Slot 0, always an int — asking
 /// here is how a consumer avoids knowing the number.
-export fn tag_of(cx: LowerCx, v: Reg) -> Reg {
+export fn tag_of(mut cx: LowerCx, v: Reg) -> Reg {
     slot_read(cx, v, 0, null)
 }
 
 /// The PAYLOAD a tagged value carries, as the type it was written
 /// with. Slot 1 — the other half of `tagged_value`'s shape.
-export fn payload_of(cx: LowerCx, v: Reg, ty: TypeId) -> Reg {
+export fn payload_of(mut cx: LowerCx, v: Reg, ty: TypeId) -> Reg {
     payload_at(cx, v, 0, ty)
 }
 
 /// The Kth payload a tagged value carries — slot K + 1.
-export fn payload_at(cx: LowerCx, v: Reg, k: int, ty: TypeId) -> Reg {
+export fn payload_at(mut cx: LowerCx, v: Reg, k: int, ty: TypeId) -> Reg {
     slot_read(cx, v, k + 1, ty)
 }
 
 /// Whether the value an expression names IS its one field.
-export fn flat_at(cx: LowerCx, e: ExprId) -> bool {
+export fn flat_at(mut cx: LowerCx, e: ExprId) -> bool {
     cx.view.types.is_flat(cx.type_at(e))
 }
 
@@ -104,7 +104,7 @@ export fn flat_at(cx: LowerCx, e: ExprId) -> bool {
 /// its slot. The subject's STATIC type decides — a register's
 /// recorded type is the wrong witness under mono, where it may still
 /// name a type parameter.
-export fn field_read(cx: LowerCx, subject: Reg, subject_ty: TypeId, n: int, ty: TypeId?) -> Reg {
+export fn field_read(mut cx: LowerCx, subject: Reg, subject_ty: TypeId, n: int, ty: TypeId?) -> Reg {
     if !cx.view.types.is_flat(subject_ty) { return slot_read(cx, subject, n, ty) }
     let dst = if ty == null { cx.mint_shape(Type.Int) } else { cx.mint_ty(ty!) }
     cx.emit(Ins.Extract(dst, subject, n))
@@ -114,7 +114,7 @@ export fn field_read(cx: LowerCx, subject: Reg, subject_ty: TypeId, n: int, ty: 
 /// One slot read: the index is a constant, so it is minted and
 /// emitted BEFORE the read that uses it — registers are numbered in
 /// emission order. An absent type reads as an int.
-export fn slot_read(cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
+export fn slot_read(mut cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
     let at = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(at, n))
     let got = if ty == null { cx.mint_shape(Type.Int) } else { cx.mint_ty(ty!) }
@@ -129,21 +129,21 @@ export fn slot_read(cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
 // pointer and repacks nothing. (ROADMAP: the error spine.)
 
 /// A success, wrapped — the auto-Ok lift's mint.
-export fn okayed(cx: LowerCx, into: TypeId, r: Reg) -> Reg {
+export fn okayed(mut cx: LowerCx, into: TypeId, r: Reg) -> Reg {
     let dst = cx.mint_ty(into)
     tagged_value(cx, dst, 0, [r])
     dst
 }
 
 /// A failure, wrapped — what `fail` exits with.
-export fn failed(cx: LowerCx, into: TypeId, r: Reg) -> Reg {
+export fn failed(mut cx: LowerCx, into: TypeId, r: Reg) -> Reg {
     let dst = cx.mint_ty(into)
     tagged_value(cx, dst, 1, [r])
     dst
 }
 
 /// Is the result an ANSWER — its tag read against Ok's, as an i1.
-export fn okness_of(cx: LowerCx, v: Reg) -> Reg {
+export fn okness_of(mut cx: LowerCx, v: Reg) -> Reg {
     let tag = tag_of(cx, v)
     let zero = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(zero, 0))
@@ -160,7 +160,7 @@ export fn okness_of(cx: LowerCx, v: Reg) -> Reg {
 
 /// The box, minted: the code address first, the captures in lane
 /// order — the lifted body reads them back by `capture_lane`.
-export fn fn_box(cx: LowerCx, dst: Reg, sym: string, caps: List<Reg>) {
+export fn fn_box(mut cx: LowerCx, dst: Reg, sym: string, caps: List<Reg>) {
     cx.emit(Ins.CallRt(dst, "avra_array_new", []))
     let ad = cx.mint_shape(Type.Int)
     cx.emit(Ins.FnAddr(ad, sym))
@@ -176,7 +176,7 @@ export fn capture_lane(j: int) -> int {
 /// The call THROUGH a box: slot 0 is the code, the box rides seat
 /// 0, and the arguments follow. The answer register mints LAST —
 /// registers are numbered in emission order.
-export fn called_through(cx: LowerCx, e: ExprId, box: Reg, args: List<Reg>) -> Reg {
+export fn called_through(mut cx: LowerCx, e: ExprId, box: Reg, args: List<Reg>) -> Reg {
     let fp = slot_read(cx, box, 0, null)
     let dst = cx.result(e)
     cx.emit(Ins.CallPtr(dst, fp, [box].concat(args)))
@@ -213,7 +213,7 @@ enum Repr {
 /// The representation of a nullable TYPE — a projection, and the
 /// catch-all is honest: a non-`Opt` shape is the absorbing error
 /// path, which lowers nothing, so the pair it names is never built.
-fn repr_of(cx: LowerCx, opt: TypeId) -> Repr {
+fn repr_of(mut cx: LowerCx, opt: TypeId) -> Repr {
     match cx.view.types.shape_of(opt) {
         .Opt(inner) -> inner_repr(cx, inner),
         _ -> Repr.Pair,
@@ -228,7 +228,7 @@ fn repr_of(cx: LowerCx, opt: TypeId) -> Repr {
 /// sees through an `Opt` to what it carries where `ptr_shape` cannot,
 /// and the machine type asks the same question (`opt_rides_pointer`).
 /// The two answers must never disagree — they are the same layout.
-fn inner_repr(cx: LowerCx, inner: TypeId) -> Repr {
+fn inner_repr(mut cx: LowerCx, inner: TypeId) -> Repr {
     if cx.view.types.is_flat(inner) { return Repr.Boxed }
     if cx.view.types.rides_pointer(inner) { return Repr.Niche }
     Repr.Pair
@@ -236,7 +236,7 @@ fn inner_repr(cx: LowerCx, inner: TypeId) -> Repr {
 
 /// What a nullable type carries — the `Opt`'s inner, with the
 /// catch-all pinned to the asker's own type on the error path.
-export fn carried_type(cx: LowerCx, opt: TypeId) -> TypeId {
+export fn carried_type(mut cx: LowerCx, opt: TypeId) -> TypeId {
     match cx.view.types.shape_of(opt) {
         .Opt(inner) -> inner,
         _ -> opt,
@@ -245,7 +245,7 @@ export fn carried_type(cx: LowerCx, opt: TypeId) -> TypeId {
 
 /// Is the value THERE — an i1: the niche compares itself against
 /// the null constant, the pair already CARRIES its answer.
-export fn presence_of(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
+export fn presence_of(mut cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
     match repr_of(cx, opt) {
         .Niche or .Boxed -> nonzero(cx, v, zeroed(cx, cx.mint_ty(opt))),
         .Pair -> extracted(cx, v, 0, cx.mint_shape(Type.Bool)),
@@ -253,20 +253,20 @@ export fn presence_of(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
 }
 
 /// One element of a packed value, into a caller-typed register.
-fn extracted(cx: LowerCx, v: Reg, at: int, dst: Reg) -> Reg {
+fn extracted(mut cx: LowerCx, v: Reg, at: int, dst: Reg) -> Reg {
     cx.emit(Ins.Extract(dst, v, at))
     dst
 }
 
 /// The zero of the register's own type, emitted — the null pointer
 /// for pointer shapes, the absent tag for ints.
-fn zeroed(cx: LowerCx, z: Reg) -> Reg {
+fn zeroed(mut cx: LowerCx, z: Reg) -> Reg {
     cx.emit(Ins.ConstInt(z, 0))
     z
 }
 
 /// `a != z`, as an i1.
-fn nonzero(cx: LowerCx, a: Reg, z: Reg) -> Reg {
+fn nonzero(mut cx: LowerCx, a: Reg, z: Reg) -> Reg {
     let p = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(p, BinOp.Ne, a, z))
     p
@@ -275,7 +275,7 @@ fn nonzero(cx: LowerCx, a: Reg, z: Reg) -> Reg {
 /// What the nullable CARRIES, once presence is settled: a niche
 /// nullable IS its value — identity, no instruction — and a pair
 /// holds it beside the flag.
-export fn carried_of(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
+export fn carried_of(mut cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
     match repr_of(cx, opt) {
         .Niche -> v,
         .Boxed -> boxed_carried(cx, v, carried_type(cx, opt)),
@@ -284,7 +284,7 @@ export fn carried_of(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
 }
 
 /// A BOXED nullable's value: the one slot of its one-slot box.
-fn boxed_carried(cx: LowerCx, v: Reg, ty: TypeId) -> Reg {
+fn boxed_carried(mut cx: LowerCx, v: Reg, ty: TypeId) -> Reg {
     slot_read(cx, v, 0, ty)
 }
 
@@ -294,7 +294,7 @@ fn boxed_carried(cx: LowerCx, v: Reg, ty: TypeId) -> Reg {
 /// constant). A niche adoption is IDENTITY both ways — the pointer
 /// is the nullable, the null constant is the absence — so widening
 /// a pointer costs nothing.
-export fn adopted(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
+export fn adopted(mut cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
     match repr_of(cx, into) {
         .Niche -> r,
         .Boxed -> boxed_adoption(cx, into, from_null, r),
@@ -304,14 +304,14 @@ export fn adopted(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
 
 /// A flat value adopted: absence is the null pointer, presence a
 /// one-slot box holding it.
-fn boxed_adoption(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
+fn boxed_adoption(mut cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
     if from_null { return absent_of(cx, into) }
     let dst = cx.mint_ty(into)
     grown_box(cx, dst, [r])
     dst
 }
 
-fn pair_adoption(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
+fn pair_adoption(mut cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
     if from_null { return absent_of(cx, into) }
     flagged_pair(cx, into, true, r)
 }
@@ -320,7 +320,7 @@ fn pair_adoption(cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
 /// opens: the present arm's value, then the absent arm's, merged
 /// into the node's register. Thunks keep each arm's instructions
 /// INSIDE its brackets, which is what makes the absent side lazy.
-export fn presence_region(cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
+export fn presence_region(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
                           present: fn() -> Reg, absent: fn() -> Reg) -> Reg {
     cx.emit(Ins.IfStart(presence_of(cx, v, held)))
     cx.emit(Ins.ArmEnd(present()))
@@ -332,20 +332,20 @@ export fn presence_region(cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
 
 /// The ABSENT value of a nullable type, minted fresh — the niche's
 /// null constant, or the pair whose flag says no.
-export fn absent_of(cx: LowerCx, opt: TypeId) -> Reg {
+export fn absent_of(mut cx: LowerCx, opt: TypeId) -> Reg {
     match repr_of(cx, opt) {
         .Niche or .Boxed -> zeroed(cx, cx.mint_ty(opt)),
         .Pair -> absent_pair(cx, opt),
     }
 }
 
-fn absent_pair(cx: LowerCx, opt: TypeId) -> Reg {
+fn absent_pair(mut cx: LowerCx, opt: TypeId) -> Reg {
     flagged_pair(cx, opt, false, hollow_of(cx, carried_type(cx, opt)))
 }
 
 /// A pair packed under its flag — the ONE builder the present and
 /// absent forms share.
-fn flagged_pair(cx: LowerCx, opt: TypeId, present: bool, payload: Reg) -> Reg {
+fn flagged_pair(mut cx: LowerCx, opt: TypeId, present: bool, payload: Reg) -> Reg {
     let flag = cx.mint_shape(Type.Bool)
     cx.emit(Ins.ConstBool(flag, present))
     let dst = cx.mint_ty(opt)
@@ -357,7 +357,7 @@ fn flagged_pair(cx: LowerCx, opt: TypeId, present: bool, payload: Reg) -> Reg {
 /// LEFT the fn, a hollow of the region's own type. Nothing reads a
 /// departed arm's value (the exit already happened), and the merge
 /// stays one type across every arm.
-export fn arm_yield(cx: LowerCx, value: ExprId, r: Reg, want: TypeId) -> Reg {
+export fn arm_yield(mut cx: LowerCx, value: ExprId, r: Reg, want: TypeId) -> Reg {
     if cx.view.store.leaves(value) { return hollow_of(cx, want) }
     r
 }
@@ -365,7 +365,7 @@ export fn arm_yield(cx: LowerCx, value: ExprId, r: Reg, want: TypeId) -> Reg {
 /// A slot of a type that will NEVER be read, but must be total:
 /// the type's zero. An absent pair's payload rides one, and so
 /// does the yield of an arm that already EXITED the fn.
-export fn hollow_of(cx: LowerCx, inner: TypeId) -> Reg {
+export fn hollow_of(mut cx: LowerCx, inner: TypeId) -> Reg {
     if cx.view.types.shape_of(inner) is .Bool {
         let z = cx.mint_ty(inner)
         cx.emit(Ins.ConstBool(z, false))
@@ -378,7 +378,7 @@ export fn hollow_of(cx: LowerCx, inner: TypeId) -> Reg {
 /// is PRESENT. Each repr asks its own runtime word; both refuse in
 /// the same words, and the check cannot be elided — absence is
 /// exactly what the writer claimed would not happen.
-export fn insisted(cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
+export fn insisted(mut cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
     match repr_of(cx, opt) {
         .Niche -> insisted_niche(cx, e, v),
         // the BOX is what must be present; its slot is read after
@@ -392,19 +392,19 @@ export fn insisted(cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
 /// releases what `avra_insist` hands back — and the one slot is read
 /// after. A register that wore the CARRIED type would be unmanaged,
 /// and the box would never be released.
-fn insisted_boxed(cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
+fn insisted_boxed(mut cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
     let box = cx.mint_ty(opt)
     cx.emit(Ins.CallRt(box, "avra_insist", [v]))
     boxed_carried(cx, box, carried_type(cx, opt))
 }
 
-fn insisted_niche(cx: LowerCx, e: ExprId, v: Reg) -> Reg {
+fn insisted_niche(mut cx: LowerCx, e: ExprId, v: Reg) -> Reg {
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, "avra_insist", [v]))
     dst
 }
 
-fn insisted_pair(cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
+fn insisted_pair(mut cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
     let flag = extracted(cx, v, 0, cx.mint_shape(Type.Bool))
     let payload = extracted(cx, v, 1, cx.mint_ty(carried_type(cx, opt)))
     let dst = cx.result(e)
@@ -415,14 +415,14 @@ fn insisted_pair(cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
 /// An effects-only ARM closes on a throwaway zero — shared with
 /// the statement-if's lowering; every valueless region speaks
 /// these two verbs.
-export fn void_arm(cx: LowerCx) {
+export fn void_arm(mut cx: LowerCx) {
     let td = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(td, 0))
     cx.emit(Ins.ArmEnd(td))
 }
 
 /// The valueless region's LAST arm and merge — nothing reads dst.
-export fn void_close(cx: LowerCx) {
+export fn void_close(mut cx: LowerCx) {
     let ed = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(ed, 0))
     let dst = cx.mint_shape(Type.Int)

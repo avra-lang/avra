@@ -184,7 +184,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
 
 /// Everything EVERY open scope owes at an early exit, innermost
 /// first — the returned value excluded in every open scope.
-fn exit_releases(open_scopes: Stack<Scope>, kept: Reg) -> List<Reg> {
+fn exit_releases(mut open_scopes: Stack<Scope>, kept: Reg) -> List<Reg> {
     mut out: List<Reg> = []
     // LICENSED I19: a REVERSE walk — innermost debts settle first
     mut j = open_scopes.depth() - 1
@@ -198,12 +198,12 @@ fn exit_releases(open_scopes: Stack<Scope>, kept: Reg) -> List<Reg> {
 
 /// A scope opened INSIDE another: it inherits the enclosing tier
 /// and owns nothing yet.
-fn nested_scope(open_scopes: Stack<Scope>) -> Scope {
+fn nested_scope(mut open_scopes: Stack<Scope>) -> Scope {
     Scope { tier: enclosing_tier(open_scopes), managed: [], cells: [] }
 }
 
 /// The tier a new scope inherits — its innermost open enclosure.
-fn enclosing_tier(open_scopes: Stack<Scope>) -> Level {
+fn enclosing_tier(mut open_scopes: Stack<Scope>) -> Level {
     let top: Scope? = open_scopes.top()
     if top == null { return Level.Application }
     top!.tier
@@ -255,7 +255,7 @@ fn stays(r: Reg, kept: Reg?) -> bool {
 
 /// The innermost scope TAKES a register: a scope is a value, so the
 /// scope that owns one more is written back over the old top.
-fn takes(open_scopes: Stack<Scope>, r: Reg) {
+fn takes(mut open_scopes: Stack<Scope>, r: Reg) {
     let held: Scope? = open_scopes.top()
     if held == null { return }
     let top = held!
@@ -265,7 +265,7 @@ fn takes(open_scopes: Stack<Scope>, r: Reg) {
 
 /// The innermost scope HOLDS a cell — the same rewrite, the other
 /// column.
-fn holds_cell(open_scopes: Stack<Scope>, r: Reg) {
+fn holds_cell(mut open_scopes: Stack<Scope>, r: Reg) {
     let held: Scope? = open_scopes.top()
     if held == null { return }
     let top = held!
@@ -281,14 +281,14 @@ fn empty_scope() -> Scope {
 
 /// A closing scope's yield, adopted by the one outside it: at the
 /// OUTERMOST there is none, and the value escapes to the caller.
-fn adopts(types: TypeRegistry, reg_types: List<TypeId>, open_scopes: Stack<Scope>, gives: Reg?) {
+fn adopts(types: TypeRegistry, reg_types: List<TypeId>, mut open_scopes: Stack<Scope>, gives: Reg?) {
     if gives == null || open_scopes.is_empty() { return }
     if is_managed(types, reg_types[gives!.index]) { takes(open_scopes, gives!) }
 }
 
 /// When `i` defines a managed value, the innermost open scope takes
 /// ownership of its destination.
-fn manages(types: TypeRegistry, reg_types: List<TypeId>, open_scopes: Stack<Scope>, i: Ins) {
+fn manages(types: TypeRegistry, reg_types: List<TypeId>, mut open_scopes: Stack<Scope>, i: Ins) {
     let dst: Reg? = managed_dst(types, reg_types, i)
     if dst != null { takes(open_scopes, dst!) }
 }
@@ -343,7 +343,7 @@ fn cell_settle(slot: Reg) -> Ins {
 }
 
 /// Every open scope's cells at an early exit, innermost first.
-fn exit_cells(open_scopes: Stack<Scope>) -> List<Reg> {
+fn exit_cells(mut open_scopes: Stack<Scope>) -> List<Reg> {
     mut out: List<Reg> = []
     // LICENSED I19: a REVERSE walk — innermost debts settle first
     mut j = open_scopes.depth() - 1

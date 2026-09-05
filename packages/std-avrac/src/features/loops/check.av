@@ -6,7 +6,7 @@ use core.{StmtId, ExprId, TypeId, Type}
 use features.{StmtTypeCx, require_bool, nothing, this_is, spoken, TypeCx}
 use diagnostics.{refusal}
 
-export fn check_while(cx: StmtTypeCx, s: StmtId) {
+export fn check_while(mut cx: StmtTypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .While(cond, stmts) -> {
             cx.walk(cond)
@@ -17,7 +17,7 @@ export fn check_while(cx: StmtTypeCx, s: StmtId) {
     }
 }
 
-export fn check_for(cx: StmtTypeCx, s: StmtId) {
+export fn check_for(mut cx: StmtTypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .For(_, from, to, cond, step, stmts) -> {
             cx.walk(from)
@@ -34,7 +34,7 @@ export fn check_for(cx: StmtTypeCx, s: StmtId) {
 }
 
 /// A range bound is an `int`; Error absorbs.
-fn range_bound(cx: StmtTypeCx, e: ExprId, verb: string) -> bool {
+fn range_bound(mut cx: StmtTypeCx, e: ExprId, verb: string) -> bool {
     let sh = cx.expr.shape_at(e)
     if sh is .Int { return true }
     if sh is .Error { return false }
@@ -45,7 +45,7 @@ fn range_bound(cx: StmtTypeCx, e: ExprId, verb: string) -> bool {
 
 /// `for x in xs` — the subject is a LIST; the name binds its
 /// element type for every read in the body.
-export fn check_for_each(cx: StmtTypeCx, s: StmtId) {
+export fn check_for_each(mut cx: StmtTypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .ForEach(index, _, subject, stmts) -> {
             if index != null { cx.expr.pair(subject) }
@@ -58,14 +58,14 @@ export fn check_for_each(cx: StmtTypeCx, s: StmtId) {
 }
 
 /// The element type the walk hands out — or the refusal.
-fn walked_elem(cx: StmtTypeCx, subject: ExprId) -> TypeId {
+fn walked_elem(mut cx: StmtTypeCx, subject: ExprId) -> TypeId {
     let elem: TypeId? = cx.expr.view.types.element(cx.expr.type_at(subject))
     elem ?? not_a_walk(cx.expr, subject)
 }
 
 /// Not a list: Error absorbs; the empty literal and every other
 /// shape refuse, each in its own words.
-fn not_a_walk(cx: TypeCx, subject: ExprId) -> TypeId {
+fn not_a_walk(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let sh: Type = cx.shape_at(subject)
     if sh is .Error { return cx.error_type }
     if sh is .EmptyList { return nothing_to_walk(cx, subject) }
@@ -74,11 +74,11 @@ fn not_a_walk(cx: TypeCx, subject: ExprId) -> TypeId {
 
 // ── The voices ──
 
-fn nothing_to_walk(cx: TypeCx, subject: ExprId) -> TypeId {
+fn nothing_to_walk(mut cx: TypeCx, subject: ExprId) -> TypeId {
     spoken(cx, refusal("type.mismatch", cx.loc_of(subject), "`for` walks an empty literal — nothing to bind", "always empty", "the loop would never run; drop it, or walk a named list"))
 }
 
-fn not_walkable(cx: TypeCx, subject: ExprId) -> TypeId {
+fn not_walkable(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
     spoken(cx, refusal("type.mismatch", cx.loc_of(subject), "`for … in` walks a `List`, this is `${n}`", this_is(n), "ranges spell `for i in lo..hi`"))
 }

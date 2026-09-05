@@ -134,9 +134,9 @@ export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices }
 /// once per program by the workspace: every body's emitter refuses
 /// a callee it does not know against it.
 export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted) -> Unit {
-    let jobs = Jobs { pending: [], seen: {}, lifts: [], wraps: [], externs: externs }
+    mut jobs = Jobs { pending: [], seen: {}, lifts: [], wraps: [], externs: externs }
     if w.decl != null && !a.view.decls.has_body(w.decl!) {
-        let out = new_emitter(externs)
+        mut out = new_emitter(externs)
         out.defect("a unit without a body was asked for — `${w.name}`")
         return Unit { bodies: [], wants: [], voices: out.voices }
     }
@@ -239,7 +239,7 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, jobs: Jobs) -> Lower
     let raw: List<TypeId> = sig?.params ?? []
     let rt: TypeId = viewed(a.view.decls.types, sub, sig?.ret ?? a.view.decls.types.intern(Type.Error))
     let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
-    let lo = new_lower(a, rt, sub, jobs)
+    mut lo = new_lower(a, rt, sub, jobs)
     // the params ARE registers 0..N-1, minted in order
     for pt in ptypes { let _ = lo.out.mint_ty(pt) }
     lo.out.seeded()
@@ -263,7 +263,7 @@ fn lower_lambda(a: Analysis, lj: Lift, jobs: Jobs) -> LoweredBody {
     let seats: List<TypeId> = held?.seats ?? []
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
-    let lo = new_lower(a, rt, lj.sub, jobs)
+    mut lo = new_lower(a, rt, lj.sub, jobs)
     // register 0 is the env box, 1..N the seats
     let _ = lo.out.mint_ty(lam_ty)
     for pt in seats { let _ = lo.out.mint_ty(pt) }
@@ -303,7 +303,7 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
 }
 
 fn lower_main(a: Analysis, jobs: Jobs) -> LoweredBody {
-    let lo = new_lower(a, null, null, jobs)
+    mut lo = new_lower(a, null, null, jobs)
     lo.out.give(Ins.ScopeEnter(Level.Application))
     let last: Reg? = lower_stmts(lo, a.view.stmts)
     let refusal: Diag? = if last == null { null } else { print_lowering(lo, last!) }

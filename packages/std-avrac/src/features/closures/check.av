@@ -6,7 +6,7 @@ use core.{ExprId, Type, TypeId, Arrow, Param, LambdaParts}
 use features.{TypeCx, spoken, seats_judged, this_is, settled_call, slot_worthy, slice_promise, Cap}
 use diagnostics.{refusal}
 
-fn lambda_type(cx: TypeCx, e: ExprId) -> TypeId {
+fn lambda_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .Lambda(params, body) -> lambdaed(cx, e, params, body),
@@ -14,7 +14,7 @@ fn lambda_type(cx: TypeCx, e: ExprId) -> TypeId {
     }
 }
 
-fn lambdaed(cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> TypeId {
+fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> TypeId {
     let heard: List<TypeId>? = heard_seats(cx, e, params)
     if heard == null {
         // no annotations, no want: DEFER — the first judging seat
@@ -41,7 +41,7 @@ fn lambdaed(cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> TypeId 
 /// The seats a lambda's params wear: each annotation speaks for
 /// itself; an unannotated param hears the WANT's matching seat.
 /// Null when a seat stays silent.
-fn heard_seats(cx: TypeCx, e: ExprId, params: List<Param>) -> List<TypeId>? {
+fn heard_seats(mut cx: TypeCx, e: ExprId, params: List<Param>) -> List<TypeId>? {
     let arrow: Arrow? = wanted_arrow(cx, e, params.length)
     mut ptys: List<TypeId> = []
     for j, pp in params {
@@ -56,7 +56,7 @@ fn heard_seats(cx: TypeCx, e: ExprId, params: List<Param>) -> List<TypeId>? {
 }
 
 /// The want's arrow, when one was planted and its arity fits.
-fn wanted_arrow(cx: TypeCx, e: ExprId, arity: int) -> Arrow? {
+fn wanted_arrow(mut cx: TypeCx, e: ExprId, arity: int) -> Arrow? {
     let w: TypeId? = cx.want_at(e)
     if w == null { return null }
     let arrow: Arrow? = cx.view.types.arrow_parts(w!)
@@ -65,12 +65,12 @@ fn wanted_arrow(cx: TypeCx, e: ExprId, arity: int) -> Arrow? {
     arrow
 }
 
-fn erred(cx: TypeCx, ty: TypeId) -> bool {
+fn erred(mut cx: TypeCx, ty: TypeId) -> bool {
     cx.view.types.shape_of(ty) is .Error
 }
 
 /// The first lane no slot can hold, when one exists.
-fn first_unslottable(cx: TypeCx, seats: List<TypeId>) -> int? {
+fn first_unslottable(mut cx: TypeCx, seats: List<TypeId>) -> int? {
     for j, ty in seats {
         if !slot_worthy(cx.view.types, cx.view.types.shape_of(ty)) { return j }
     }
@@ -79,11 +79,11 @@ fn first_unslottable(cx: TypeCx, seats: List<TypeId>) -> int? {
 
 /// A call on an EXPRESSION: whatever fn value the subject holds,
 /// its seats judge — the same one law every call shape shares.
-fn call_value_type(cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> TypeId {
+fn call_value_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> TypeId {
     settled_call(cx, args, valued(cx, e, subject, args))
 }
 
-fn valued(cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> TypeId {
+fn valued(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> TypeId {
     let held: Arrow? = cx.view.types.arrow_parts(cx.type_at(subject))
     if held != null { return seats_judged(cx, e, cx.name_at(subject), held!.seats, held!.answer, args) }
     if cx.shape_at(subject) is .Error { return cx.error_type }
@@ -93,7 +93,7 @@ fn valued(cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> TypeId 
 /// THE WALK-END VOICE: a lambda no seat ever fed speaks once —
 /// the driver brings each hungry lambda here with the seat that
 /// starved it, if one did.
-export fn unfed_lambda(cx: TypeCx, e: ExprId, seat: TypeId?) {
+export fn unfed_lambda(mut cx: TypeCx, e: ExprId, seat: TypeId?) {
     let name = first_param_name(cx, e)
     if seat == null { return never_heard(cx, e, name) }
     let at = seat!
@@ -102,7 +102,7 @@ export fn unfed_lambda(cx: TypeCx, e: ExprId, seat: TypeId?) {
     lambda_at_scalar(cx, e, at)
 }
 
-fn first_param_name(cx: TypeCx, e: ExprId) -> string {
+fn first_param_name(mut cx: TypeCx, e: ExprId) -> string {
     let parts: LambdaParts? = cx.view.store.lambda_parts(e)
     if parts == null { return "the parameter" }
     parts!.params.first()?.name ?? "the parameter"
@@ -110,30 +110,30 @@ fn first_param_name(cx: TypeCx, e: ExprId) -> string {
 
 // ── The voices ──
 
-fn never_heard(cx: TypeCx, e: ExprId, name: string) {
+fn never_heard(mut cx: TypeCx, e: ExprId, name: string) {
     cx.emit(refusal("type.lambda", cx.loc_of(e), "`${name}` needs a type — this lambda's slot tells it nothing", "in this lambda", "annotate — `(${name}: int) -> …` — or hand the lambda to a slot that knows its seats"))
 }
 
-fn pronoun_starved(cx: TypeCx, e: ExprId, seat: TypeId) {
+fn pronoun_starved(mut cx: TypeCx, e: ExprId, seat: TypeId) {
     cx.emit(refusal("type.lambda", cx.loc_of(e), "`it` has no element here — this seat takes `${cx.view.types.name_of(seat)}`, not a fn", "the pronoun", "`it` binds to the NEAREST method call — inside another call's argument, write the outer lambda out: `(k) -> …`"))
 }
 
-fn misfit_lambda(cx: TypeCx, e: ExprId, seat: TypeId) {
+fn misfit_lambda(mut cx: TypeCx, e: ExprId, seat: TypeId) {
     cx.emit(refusal("type.lambda", cx.loc_of(e), "this lambda does not fit its seat, `${cx.view.types.name_of(seat)}`", "in this lambda", "match the seat's params, or annotate them"))
 }
 
-fn lambda_at_scalar(cx: TypeCx, e: ExprId, seat: TypeId) {
+fn lambda_at_scalar(mut cx: TypeCx, e: ExprId, seat: TypeId) {
     cx.emit(refusal("type.lambda", cx.loc_of(e), "a lambda cannot sit here — this seat takes `${cx.view.types.name_of(seat)}`", "in this lambda", "hand it to a fn-typed slot, or call it"))
 }
 
-fn uncapturable(cx: TypeCx, e: ExprId, j: int, seat: TypeId) -> TypeId {
+fn uncapturable(mut cx: TypeCx, e: ExprId, j: int, seat: TypeId) -> TypeId {
     let cap: Cap? = cx.names.capture(e)
     let name = if cap == null { "this name" } else { cap!.names[j] }
     let ty = cx.view.types.name_of(seat)
     spoken(cx, refusal("type.lambda", cx.loc_of(e), "a lambda cannot capture `${ty}` yet — `${name}` rides a register pair, and a capture lane holds one word", "captured here", "bind what it carries first — `let ${name}_v = ${name} ?? …` — and capture that; ${slice_promise("captures")}"))
 }
 
-fn uncallable(cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {
+fn uncallable(mut cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
     spoken(cx, refusal("type.lambda", cx.loc_of(e), "this is not callable — it holds a `${n}`", this_is(n), "only fns and fn-typed values take arguments"))
 }

@@ -8,7 +8,7 @@ use core.{ExprId, Reg, Ins, TypeId, Type, BinOp, Arm, PatId}
 use features.{LowerCx, EnumSig, arm_yield, tag_of, payload_at, foreign_node, same_value, tagged_value, lower_defect}
 use features.enums.{arm_binds, all_irrefutable}
 
-fn enums_reg(cx: LowerCx, e: ExprId) -> Reg {
+fn enums_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .Match(subject, arms) -> matched_reg(cx, e, subject, arms),
@@ -20,7 +20,7 @@ fn enums_reg(cx: LowerCx, e: ExprId) -> Reg {
 
 /// `subject is .variant`: the tag read once, compared to the
 /// variant's ordinal — one instruction, no region.
-fn asked_reg(cx: LowerCx, e: ExprId, subject: ExprId, variant: string) -> Reg {
+fn asked_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, variant: string) -> Reg {
     let declared: EnumSig? = cx.variants_at(subject)
     let which: int? = if declared == null { null } else { declared!.tag_of(variant) }
     if which == null {
@@ -37,7 +37,7 @@ fn asked_reg(cx: LowerCx, e: ExprId, subject: ExprId, variant: string) -> Reg {
 
 /// The subject is evaluated either way; its TAG is only read when
 /// something chooses on it.
-fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, arms: List<Arm>) -> Reg {
+fn matched_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, arms: List<Arm>) -> Reg {
     if arms.is_empty() {
         cx.defect("a `match` without arms survived typing")
         return cx.result(e)
@@ -53,7 +53,7 @@ fn matched_reg(cx: LowerCx, e: ExprId, subject: ExprId, arms: List<Arm>) -> Reg 
 }
 
 /// Every arm but the last tests ONE variant whole: the jump table.
-fn switchable(cx: LowerCx, arms: List<Arm>, count: int) -> bool {
+fn switchable(mut cx: LowerCx, arms: List<Arm>, count: int) -> bool {
     mut j = 0
     while j < count {
         if whole_test(cx, arms[j]) == null { return false }
@@ -63,7 +63,7 @@ fn switchable(cx: LowerCx, arms: List<Arm>, count: int) -> bool {
 }
 
 /// The one variant an arm tests whole, when that is all it does.
-fn whole_test(cx: LowerCx, a: Arm) -> string? {
+fn whole_test(mut cx: LowerCx, a: Arm) -> string? {
     if a.pats.length != 1 { return null }
     match cx.view.store.pat(a.pats[0]) {
         .Variant(name, args) -> if all_irrefutable(cx.view.store, args) { name } else { null },
@@ -73,7 +73,7 @@ fn whole_test(cx: LowerCx, a: Arm) -> string? {
 
 /// The jump table: every arm but the last is a CASE on its tag; the
 /// last is the default.
-fn switched_reg(cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, sig: EnumSig, arms: List<Arm>) -> Reg {
+fn switched_reg(mut cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, sig: EnumSig, arms: List<Arm>) -> Reg {
     let want = cx.type_at(e)
     let last_arm = arms.length - 1
     let cases = arm_cases(cx, sig, arms, last_arm)
@@ -93,7 +93,7 @@ fn switched_reg(cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, sig: EnumSig, arms:
 
 /// The first `count` arms' selector values, in arm order. A SHORT
 /// answer means an arm named no variant, which typing refused.
-fn arm_cases(cx: LowerCx, sig: EnumSig, arms: List<Arm>, count: int) -> List<int> {
+fn arm_cases(mut cx: LowerCx, sig: EnumSig, arms: List<Arm>, count: int) -> List<int> {
     mut cases: List<int> = []
     for j, a in arms {
         let name: string? = whole_test(cx, a)
@@ -106,7 +106,7 @@ fn arm_cases(cx: LowerCx, sig: EnumSig, arms: List<Arm>, count: int) -> List<int
 /// THE CHAIN: arm k tests, answers inside its region when it
 /// accepts, and the rest of the arms are its else — the last arm
 /// answers unconditionally (coverage proved it).
-fn chained_reg(cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, arms: List<Arm>, k: int) -> Reg {
+fn chained_reg(mut cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, arms: List<Arm>, k: int) -> Reg {
     let a = arms[k]
     let want = cx.type_at(e)
     if k == arms.length - 1 { return arm_reg(cx, v, vty, a, want) }
@@ -121,7 +121,7 @@ fn chained_reg(cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, arms: List<Arm>, k: 
 /// One arm taken: its binds read from the subject (inside the arm's
 /// region, so an untaken arm's payloads are never read), then its
 /// value.
-fn arm_reg(cx: LowerCx, v: Reg, vty: TypeId, a: Arm, want: TypeId) -> Reg {
+fn arm_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm, want: TypeId) -> Reg {
     // an OR-RUN binds nothing (the law), and its patterns name
     // variants of different shapes — only a lone pattern binds
     let regs: List<Reg> = if a.pats.length == 1 { bind_regs(cx, a.pats[0], v, vty) } else { [] }
@@ -131,7 +131,7 @@ fn arm_reg(cx: LowerCx, v: Reg, vty: TypeId, a: Arm, want: TypeId) -> Reg {
 
 /// The registers an arm's binds read, in pattern order — each
 /// payload read at its path.
-fn bind_regs(cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> {
+fn bind_regs(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> {
     match cx.view.store.pat(p) {
         .Bind(_) -> [v],
         .Variant(name, args) -> payload_binds(cx, name, args, v, vty),
@@ -143,14 +143,14 @@ fn bind_regs(cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> {
 /// nested variant tests inside it. A wildcard and a literal never
 /// look — and reading a payload nothing looks at is how an arm over
 /// a SHORTER variant read past its end.
-fn looks_inside(cx: LowerCx, p: PatId) -> bool {
+fn looks_inside(mut cx: LowerCx, p: PatId) -> bool {
     match cx.view.store.pat(p) {
         .Bind(_) or .Variant(_, _) -> true,
         .Wild or .Rest or .Lit(_) -> false,
     }
 }
 
-fn payload_binds(cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: TypeId) -> List<Reg> {
+fn payload_binds(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: TypeId) -> List<Reg> {
     let declared: EnumSig? = cx.variants_of(vty)
     if declared == null { return [] }
     let carried = declared!.payloads_of(name)
@@ -167,7 +167,7 @@ fn payload_binds(cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: Type
 /// Whether the arm accepts the subject: any alternative does —
 /// `a || b` as the lazy region, so a later alternative is tested
 /// only when the earlier ones refused.
-fn accepts_reg(cx: LowerCx, v: Reg, vty: TypeId, a: Arm) -> Reg {
+fn accepts_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm) -> Reg {
     mut acc = pat_reg(cx, a.pats[0], v, vty)
     mut j = 1
     while j < a.pats.length {
@@ -186,7 +186,7 @@ fn accepts_reg(cx: LowerCx, v: Reg, vty: TypeId, a: Arm) -> Reg {
 /// a literal when equal; a variant when the tag agrees AND its
 /// payload patterns accept — read only under the tag test, so a
 /// missing payload is never touched.
-fn pat_reg(cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
+fn pat_reg(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
     match cx.view.store.pat(p) {
         .Wild or .Rest or .Bind(_) -> truth(cx, true),
         .Lit(lit) -> same_value(cx, v, cx.reg_of(lit), vty),
@@ -194,13 +194,13 @@ fn pat_reg(cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
     }
 }
 
-fn truth(cx: LowerCx, b: bool) -> Reg {
+fn truth(mut cx: LowerCx, b: bool) -> Reg {
     let r = cx.mint_shape(Type.Bool)
     cx.emit(Ins.ConstBool(r, b))
     r
 }
 
-fn variant_reg(cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: TypeId) -> Reg {
+fn variant_reg(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: TypeId) -> Reg {
     let declared: EnumSig? = cx.variants_of(vty)
     let which: int? = if declared == null { null } else { declared!.tag_of(name) }
     if which == null {
@@ -224,7 +224,7 @@ fn variant_reg(cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: TypeId
 /// Every payload pattern accepts its payload — `a && b` as the lazy
 /// region, so a later payload is read only when the earlier ones
 /// accepted.
-fn payloads_reg(cx: LowerCx, carried: List<TypeId>, args: List<PatId>, v: Reg) -> Reg {
+fn payloads_reg(mut cx: LowerCx, carried: List<TypeId>, args: List<PatId>, v: Reg) -> Reg {
     mut acc = truth(cx, true)
     for k, a in args {
         if k < carried.length {
@@ -241,7 +241,7 @@ fn payloads_reg(cx: LowerCx, carried: List<TypeId>, args: List<PatId>, v: Reg) -
 }
 
 /// `.name(args)` — the tagged value of the enum typing chose.
-fn literal_reg(cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -> Reg {
+fn literal_reg(mut cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -> Reg {
     let sig: EnumSig? = cx.variants_at(e)
     let which: int? = if sig == null { null } else { sig!.tag_of(name) }
     if which == null { return lower_defect(cx, e, "a variant literal without its enum survived typing") }

@@ -14,49 +14,49 @@ use features.{LowerCx, MethodCall, lower_defect, grown_box, push_slot, slot_read
 
 // ── The rows' rules ──
 
-export fn lower_map(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_map(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat: Seat? = seat_of(cx, mc)
     if seat == null { return seatless(cx, mc) }
     mapped(cx, mc, seat!)
 }
 
-export fn lower_filter(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_filter(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat: Seat? = seat_of(cx, mc)
     if seat == null { return seatless(cx, mc) }
     kept(cx, mc, seat!)
 }
 
-export fn lower_find(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_find(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat: Seat? = seat_of(cx, mc)
     if seat == null { return seatless(cx, mc) }
     found(cx, mc, seat!)
 }
 
-export fn lower_any(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_any(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat: Seat? = seat_of(cx, mc)
     if seat == null { return seatless(cx, mc) }
     judged(cx, mc, seat!, false)
 }
 
-export fn lower_all(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_all(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat: Seat? = seat_of(cx, mc)
     if seat == null { return seatless(cx, mc) }
     judged(cx, mc, seat!, true)
 }
 
-export fn lower_contains(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_contains(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat: Seat? = seat_of(cx, mc)
     if seat == null { return seatless(cx, mc) }
     held(cx, mc, seat!)
 }
 
-export fn lower_index_of(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_index_of(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat: Seat? = seat_of(cx, mc)
     if seat == null { return seatless(cx, mc) }
     position(cx, mc, seat!)
 }
 
-export fn lower_push(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let first: ExprId? = mc.args.first()
     if first == null { return lower_defect(cx, mc.e, "a push without its value survived typing") }
     let box = unique_box(cx, mc.subject)
@@ -66,7 +66,7 @@ export fn lower_push(cx: LowerCx, mc: MethodCall) -> Reg {
 
 /// `xs.pop()` — the place opens unique, the runtime removes the
 /// last slot (the memory pass hands a managed one over as owned).
-export fn lower_pop(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_pop(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let box = unique_box(cx, mc.subject)
     let dst = cx.result(mc.e)
     cx.emit(Ins.CallRt(dst, "avra_array_pop", [box]))
@@ -75,14 +75,14 @@ export fn lower_pop(cx: LowerCx, mc: MethodCall) -> Reg {
 
 /// `xs.set(i, v)` — the place opens unique, the runtime rewrites
 /// the slot (retain-at-pack is the memory pass's).
-export fn lower_set(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let box = unique_box(cx, mc.subject)
     cx.emit(Ins.CallRtVoid("avra_slot_set", [box, cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1])]))
     nothing_reg(cx, mc.e)
 }
 
 /// `xs.is_empty()` — the length against zero.
-export fn lower_is_empty(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let len = measured(cx, mc.subject)
     let zero = const_int(cx, 0)
     let dst = cx.result(mc.e)
@@ -90,22 +90,22 @@ export fn lower_is_empty(cx: LowerCx, mc: MethodCall) -> Reg {
     dst
 }
 
-export fn lower_first(cx: LowerCx, mc: MethodCall) -> Reg { edge(cx, mc, false) }
-export fn lower_last(cx: LowerCx, mc: MethodCall) -> Reg { edge(cx, mc, true) }
+export fn lower_first(mut cx: LowerCx, mc: MethodCall) -> Reg { edge(cx, mc, false) }
+export fn lower_last(mut cx: LowerCx, mc: MethodCall) -> Reg { edge(cx, mc, true) }
 
-export fn lower_concat(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_array_concat", []) }
-export fn lower_slice(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_array_slice", []) }
-export fn lower_join(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_join", []) }
+export fn lower_concat(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_array_concat", []) }
+export fn lower_slice(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_array_slice", []) }
+export fn lower_join(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_join", []) }
 
 /// `xs.enumerate()` is the list — the paired `for` head does the
 /// pairing.
-export fn lower_enumerate(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_enumerate(mut cx: LowerCx, mc: MethodCall) -> Reg {
     cx.reg_of(mc.subject)
 }
 
 /// `xs.length` — the word the one measure table gives the list's
 /// shape.
-export fn lower_length(cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
+export fn lower_length(mut cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
     let xs = cx.reg_of(subject)
     let word: string? = length_word(cx.view.types.shape_of(cx.type_at(subject)))
     if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }
@@ -119,7 +119,7 @@ export fn lower_length(cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
 /// only when a seatless row survived typing — a defect.
 type Seat = { elem: TypeId, arg: ExprId }
 
-fn seat_of(cx: LowerCx, mc: MethodCall) -> Seat? {
+fn seat_of(mut cx: LowerCx, mc: MethodCall) -> Seat? {
     let elem: TypeId? = cx.view.types.element(cx.type_at(mc.subject))
     let first: ExprId? = mc.args.first()
     if elem == null || first == null { return null }
@@ -127,7 +127,7 @@ fn seat_of(cx: LowerCx, mc: MethodCall) -> Seat? {
     seat
 }
 
-fn seatless(cx: LowerCx, mc: MethodCall) -> Reg {
+fn seatless(mut cx: LowerCx, mc: MethodCall) -> Reg {
     lower_defect(cx, mc.e, "a row without its seat survived typing")
 }
 
@@ -142,7 +142,7 @@ type Walk = { xs: Reg, len: Reg, idx: Reg, elem: TypeId }
 type Box = { f: Reg, fp: Reg }
 
 /// `xs.map(f)` — a fresh box, one pushed answer per element.
-fn mapped(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+fn mapped(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let out = cx.result(mc.e)
     grown_box(cx, out, [])
     let f = boxed(cx, s.arg)
@@ -155,7 +155,7 @@ fn mapped(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
 }
 
 /// `xs.filter(p)` — the same box, the elements the predicate keeps.
-fn kept(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+fn kept(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let out = cx.result(mc.e)
     grown_box(cx, out, [])
     let f = boxed(cx, s.arg)
@@ -172,7 +172,7 @@ fn kept(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
 
 /// `xs.find(p)` — an Opt cell, absent until the first hit, which
 /// also ends the walk.
-fn found(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+fn found(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let opt = cx.type_at(mc.e)
     let cell = absent_cell(cx, opt)
     let f = boxed(cx, s.arg)
@@ -191,7 +191,7 @@ fn found(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
 /// `xs.any(p)` / `xs.all(p)` — a bool cell seeded with the verdict
 /// an EMPTY walk gives; the first counterexample flips it and ends
 /// the walk.
-fn judged(cx: LowerCx, mc: MethodCall, s: Seat, all: bool) -> Reg {
+fn judged(mut cx: LowerCx, mc: MethodCall, s: Seat, all: bool) -> Reg {
     let cell = bool_cell(cx, all)
     let f = boxed(cx, s.arg)
     let w = opened(cx, mc.subject, s.elem)
@@ -209,7 +209,7 @@ fn judged(cx: LowerCx, mc: MethodCall, s: Seat, all: bool) -> Reg {
 
 /// `xs.contains(v)` — a bool cell seeded false; the first equal
 /// element flips it and ends the walk.
-fn held(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+fn held(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let cell = bool_cell(cx, false)
     let needle = cx.reg_of(s.arg)
     let w = opened(cx, mc.subject, s.elem)
@@ -226,7 +226,7 @@ fn held(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
 
 /// `xs.index_of(v)` — an int cell seeded -1; the first equal
 /// element stores its index and ends the walk.
-fn position(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+fn position(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let cell = seeded_cell(cx, cx.view.types.intern(Type.Int), const_int(cx, -1))
     let needle = cx.reg_of(s.arg)
     let w = opened(cx, mc.subject, s.elem)
@@ -244,7 +244,7 @@ fn position(cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
 
 /// `xs.first()` / `xs.last()` — an Opt cell seeded absent, the edge
 /// slot adopted when the list has one.
-fn edge(cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
+fn edge(mut cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
     let opt = cx.type_at(mc.e)
     let xs = cx.reg_of(mc.subject)
     let cell = absent_cell(cx, opt)
@@ -265,13 +265,13 @@ fn edge(cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
 // ── The skeleton ────────────────────────────────────────────────
 
 /// The fn box and its code pointer, minted before the walk opens.
-fn boxed(cx: LowerCx, f: ExprId) -> Box {
+fn boxed(mut cx: LowerCx, f: ExprId) -> Box {
     let box = cx.reg_of(f)
     Box { f: box, fp: slot_read(cx, box, 0, null) }
 }
 
 /// The fixtures, minted before the brackets open.
-fn opened(cx: LowerCx, subject: ExprId, elem: TypeId) -> Walk {
+fn opened(mut cx: LowerCx, subject: ExprId, elem: TypeId) -> Walk {
     let xs = cx.reg_of(subject)
     let len = measured(cx, subject)
     let idx = seeded_cell(cx, cx.view.types.intern(Type.Int), const_int(cx, 0))
@@ -279,7 +279,7 @@ fn opened(cx: LowerCx, subject: ExprId, elem: TypeId) -> Walk {
 }
 
 /// LoopStart, the condition, and the turn's scope.
-fn turn_open(cx: LowerCx, w: Walk) {
+fn turn_open(mut cx: LowerCx, w: Walk) {
     cx.emit(Ins.LoopStart)
     let at = cx.mint_shape(Type.Int)
     cx.emit(Ins.Load(at, w.idx))
@@ -290,28 +290,28 @@ fn turn_open(cx: LowerCx, w: Walk) {
 }
 
 /// This turn's index, read out of the cell.
-fn turn_index(cx: LowerCx, w: Walk) -> Reg {
+fn turn_index(mut cx: LowerCx, w: Walk) -> Reg {
     let here = cx.mint_shape(Type.Int)
     cx.emit(Ins.Load(here, w.idx))
     here
 }
 
 /// This turn's element — a RUNTIME index, so the read stays raw.
-fn turn_elem(cx: LowerCx, w: Walk, here: Reg) -> Reg {
+fn turn_elem(mut cx: LowerCx, w: Walk, here: Reg) -> Reg {
     let v = cx.mint_ty(w.elem)
     cx.emit(Ins.CallRt(v, "avra_array_get", [w.xs, here]))
     v
 }
 
 /// The fn box asked about this element.
-fn turn_call(cx: LowerCx, f: Box, v: Reg, ret: TypeId) -> Reg {
+fn turn_call(mut cx: LowerCx, f: Box, v: Reg, ret: TypeId) -> Reg {
     let r = cx.mint_ty(ret)
     cx.emit(Ins.CallPtr(r, f.fp, [f.f, v]))
     r
 }
 
 /// Step, settle the turn's scope, close the back edge.
-fn turn_close(cx: LowerCx, w: Walk) {
+fn turn_close(mut cx: LowerCx, w: Walk) {
     let again = cx.mint_shape(Type.Int)
     cx.emit(Ins.Load(again, w.idx))
     let one = const_int(cx, 1)
@@ -323,12 +323,12 @@ fn turn_close(cx: LowerCx, w: Walk) {
 }
 
 /// The BREAK idiom: an index past the length ends the walk.
-fn early_exit(cx: LowerCx, w: Walk) {
+fn early_exit(mut cx: LowerCx, w: Walk) {
     cx.emit(Ins.Store(w.idx, w.len))
 }
 
 /// `any` fires ON the predicate; `all` fires on its failure.
-fn flipping(cx: LowerCx, p: Reg, all: bool) -> Reg {
+fn flipping(mut cx: LowerCx, p: Reg, all: bool) -> Reg {
     if !all { return p }
     let np = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Un(np, UnOp.Not, p))
@@ -337,73 +337,73 @@ fn flipping(cx: LowerCx, p: Reg, all: bool) -> Reg {
 
 /// What `map` answers per element — the result list's own element,
 /// or the node's own type on the absorbing path.
-fn mapped_to(cx: LowerCx, e: ExprId) -> TypeId {
+fn mapped_to(mut cx: LowerCx, e: ExprId) -> TypeId {
     let elem: TypeId? = cx.view.types.element(cx.type_at(e))
     elem ?? cx.type_at(e)
 }
 
-fn bool_ty(cx: LowerCx) -> TypeId {
+fn bool_ty(mut cx: LowerCx) -> TypeId {
     cx.view.types.intern(Type.Bool)
 }
 
 // ── The small mints ─────────────────────────────────────────────
 
 /// The receiver's length, asked of the runtime.
-fn measured(cx: LowerCx, subject: ExprId) -> Reg {
+fn measured(mut cx: LowerCx, subject: ExprId) -> Reg {
     let xs = cx.reg_of(subject)
     let len = cx.mint_shape(Type.Int)
     cx.emit(Ins.CallRt(len, "avra_array_len", [xs]))
     len
 }
 
-fn const_int(cx: LowerCx, n: int) -> Reg {
+fn const_int(mut cx: LowerCx, n: int) -> Reg {
     let r = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(r, n))
     r
 }
 
-fn decremented(cx: LowerCx, n: Reg) -> Reg {
+fn decremented(mut cx: LowerCx, n: Reg) -> Reg {
     let one = const_int(cx, 1)
     let r = cx.mint_shape(Type.Int)
     cx.emit(Ins.Bin(r, BinOp.Sub, n, one))
     r
 }
 
-fn const_bool(cx: LowerCx, b: bool) -> Reg {
+fn const_bool(mut cx: LowerCx, b: bool) -> Reg {
     let r = cx.mint_shape(Type.Bool)
     cx.emit(Ins.ConstBool(r, b))
     r
 }
 
 /// A cell of `ty`, seeded — the seed minted before the cell.
-fn seeded_cell(cx: LowerCx, ty: TypeId, seed: Reg) -> Reg {
+fn seeded_cell(mut cx: LowerCx, ty: TypeId, seed: Reg) -> Reg {
     let cell = cx.mint_ty(ty)
     cx.emit(Ins.Alloca(cell))
     cx.emit(Ins.Store(cell, seed))
     cell
 }
 
-fn bool_cell(cx: LowerCx, seed: bool) -> Reg {
+fn bool_cell(mut cx: LowerCx, seed: bool) -> Reg {
     seeded_cell(cx, bool_ty(cx), const_bool(cx, seed))
 }
 
-fn store_bool(cx: LowerCx, cell: Reg, b: bool) {
+fn store_bool(mut cx: LowerCx, cell: Reg, b: bool) {
     cx.emit(Ins.Store(cell, const_bool(cx, b)))
 }
 
-fn absent_cell(cx: LowerCx, opt: TypeId) -> Reg {
+fn absent_cell(mut cx: LowerCx, opt: TypeId) -> Reg {
     seeded_cell(cx, opt, absent_of(cx, opt))
 }
 
 /// The node's answer, read out of its cell.
-fn loaded(cx: LowerCx, e: ExprId, cell: Reg) -> Reg {
+fn loaded(mut cx: LowerCx, e: ExprId, cell: Reg) -> Reg {
     let dst = cx.result(e)
     cx.emit(Ins.Load(dst, cell))
     dst
 }
 
 /// The answer of a word that answers nothing.
-fn nothing_reg(cx: LowerCx, e: ExprId) -> Reg {
+fn nothing_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     let dst = cx.result(e)
     cx.emit(Ins.ConstInt(dst, 0))
     dst

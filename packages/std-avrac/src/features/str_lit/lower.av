@@ -5,7 +5,7 @@
 use core.{ExprId, Reg, Ins, Type}
 use features.{LowerCx, MethodCall, grown_box, lower_defect, length_word, rt_method}
 
-fn interp_reg(cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) -> Reg {
+fn interp_reg(mut cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) -> Reg {
     mut pieces = [part_reg(cx, e, parts[0])]
     for j, h in holes {
         pieces.push(hole_reg(cx, e, h))
@@ -20,7 +20,7 @@ fn interp_reg(cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) 
 }
 
 /// A literal piece as a fresh Str register.
-fn part_reg(cx: LowerCx, e: ExprId, text: string) -> Reg {
+fn part_reg(mut cx: LowerCx, e: ExprId, text: string) -> Reg {
     let r = cx.mint_ty(cx.type_at(e))
     cx.emit(Ins.ConstStr(r, text))
     r
@@ -32,7 +32,7 @@ fn part_reg(cx: LowerCx, e: ExprId, text: string) -> Reg {
 /// cx-verb call skips the exhaustiveness check (subset note), and
 /// this very site proved it: the check caught the enum shapes the
 /// moment the bind restored it.
-fn hole_reg(cx: LowerCx, e: ExprId, h: ExprId) -> Reg {
+fn hole_reg(mut cx: LowerCx, e: ExprId, h: ExprId) -> Reg {
     let v = cx.reg_of(h)
     let sh: Type = cx.shape_at(h)
     match sh {
@@ -47,24 +47,24 @@ fn hole_reg(cx: LowerCx, e: ExprId, h: ExprId) -> Reg {
 
 // ── The method rows' rules: one runtime call each ──
 
-export fn lower_contains(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_contains", []) }
-export fn lower_starts_with(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_starts_with", []) }
-export fn lower_ends_with(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_ends_with", []) }
-export fn lower_index_of(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_index_of", []) }
-export fn lower_substring(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_substring", []) }
-export fn lower_split(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_split", []) }
-export fn lower_replace(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_replace", []) }
-export fn lower_trim(cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_trim", []) }
+export fn lower_contains(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_contains", []) }
+export fn lower_starts_with(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_starts_with", []) }
+export fn lower_ends_with(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_ends_with", []) }
+export fn lower_index_of(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_index_of", []) }
+export fn lower_substring(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_substring", []) }
+export fn lower_split(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_split", []) }
+export fn lower_replace(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_replace", []) }
+export fn lower_trim(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_trim", []) }
 
 /// `s.char_code()` reads the start; `s.char_code(i)` the byte at `i`.
-export fn lower_char_code(cx: LowerCx, mc: MethodCall) -> Reg {
+export fn lower_char_code(mut cx: LowerCx, mc: MethodCall) -> Reg {
     if !mc.args.is_empty() { return rt_method(cx, mc, "avra_str_char_code", []) }
     let start = cx.mint_shape(Type.Int)
     cx.emit(Ins.ConstInt(start, 0))
     rt_method(cx, mc, "avra_str_char_code", [start])
 }
 
-fn rt1(cx: LowerCx, e: ExprId, callee: string, v: Reg) -> Reg {
+fn rt1(mut cx: LowerCx, e: ExprId, callee: string, v: Reg) -> Reg {
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, callee, [v]))
     dst
@@ -72,7 +72,7 @@ fn rt1(cx: LowerCx, e: ExprId, callee: string, v: Reg) -> Reg {
 
 /// `s.length` — the word the one measure table gives the string's
 /// shape; measured, every time it is asked.
-export fn lower_str_length(cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
+export fn lower_str_length(mut cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
     let s = cx.reg_of(subject)
     let word: string? = length_word(cx.view.types.shape_of(cx.type_at(subject)))
     if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }

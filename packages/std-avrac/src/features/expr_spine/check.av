@@ -7,7 +7,7 @@ use core.{ExprId, BinOp, Type, TypeId, op_symbol, DeclId}
 use features.{TypeCx, EnumSig, spoken, this_is, variants_are, build_a_record, member_type_of, compares_by_value, types_disagree, unit_instantiated}
 use diagnostics.{refusal}
 
-fn spine_type(cx: TypeCx, e: ExprId) -> TypeId {
+fn spine_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .IntLit(_) -> cx.view.types.intern(Type.Int),
@@ -22,7 +22,7 @@ fn spine_type(cx: TypeCx, e: ExprId) -> TypeId {
 
 /// `subject[index]`: the subject is a List, the index an int, the
 /// answer the element type.
-fn index_type(cx: TypeCx, subject: ExprId, index: ExprId) -> TypeId {
+fn index_type(mut cx: TypeCx, subject: ExprId, index: ExprId) -> TypeId {
     let elem: TypeId? = cx.view.types.element(cx.type_at(subject))
     if elem == null {
         if cx.shape_at(subject) is .Error { return cx.error_type }
@@ -37,7 +37,7 @@ fn index_type(cx: TypeCx, subject: ExprId, index: ExprId) -> TypeId {
 /// subject constructs a variant, a struct answers its field's type,
 /// and `.length` measures. (At self-host this becomes one
 /// member-resolution query; today the chain lives with the node.)
-fn prop_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
+fn prop_type(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
     let sh: Type = cx.shape_at(subject)
     if sh is .Error { return cx.error_type }
     match sh {
@@ -48,7 +48,7 @@ fn prop_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
 
 /// A property on a TYPE NAME constructs one of its variants — the
 /// answer is the enum's own type.
-fn variant_type(cx: TypeCx, e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
+fn variant_type(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
     let tp = cx.tparams(decl)
     if !tp.is_empty() { return unit_instantiated(cx, e, tname, name, decl, tp) }
     let ty = cx.view.types.intern(Type.Enum(decl, tname))
@@ -66,7 +66,7 @@ fn variant_type(cx: TypeCx, e: ExprId, decl: DeclId, tname: string, name: string
 /// The nullable side of `x == null` / `null != x` — exactly one
 /// nullable beside the absence; null otherwise. The lowering keeps
 /// a shape-twin of this projection.
-fn presence_subject(cx: TypeCx, l: ExprId, r: ExprId) -> ExprId? {
+fn presence_subject(mut cx: TypeCx, l: ExprId, r: ExprId) -> ExprId? {
     if cx.shape_at(l) is .Opt && cx.shape_at(r) is .Null { return l }
     if cx.shape_at(r) is .Opt && cx.shape_at(l) is .Null { return r }
     null
@@ -74,11 +74,11 @@ fn presence_subject(cx: TypeCx, l: ExprId, r: ExprId) -> ExprId? {
 
 /// A property on a VALUE — the shared member law (checks.av), the
 /// subject shown by its expression's name.
-fn member_type(cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
+fn member_type(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
     member_type_of(cx, e, cx.name_at(subject), cx.type_at(subject), name)
 }
 
-fn binary_type(cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+fn binary_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     match op {
         .Add -> added_type(cx, op, l, r),
         .Sub or .Mul or .Div or .Mod -> op_over(cx, op, l, r, Type.Int, Type.Int),
@@ -90,14 +90,14 @@ fn binary_type(cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId
 
 /// `+` joins two texts or adds two ints — the left side decides
 /// which law the right must meet.
-fn added_type(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+fn added_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     if cx.shape_at(l) is .Str { return op_over(cx, op, l, r, Type.Str, Type.Str) }
     op_over(cx, op, l, r, Type.Int, Type.Int)
 }
 
 /// The homogeneous-operand law: both sides `want`, or each PRESENT
 /// wrong side speaks for itself.
-fn op_over(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId, want: Type, answer: Type) -> TypeId {
+fn op_over(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId, want: Type, answer: Type) -> TypeId {
     if wears(cx.shape_at(l), want) && wears(cx.shape_at(r), want) {
         return cx.view.types.intern(answer)
     }
@@ -106,7 +106,7 @@ fn op_over(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId, want: Type, answer: Type
     cx.error_type
 }
 
-fn needs(cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
+fn needs(mut cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
     let sh = cx.shape_at(e)
     if wears(sh, want) || sh is .Error { return }
     wrong_operand(cx, op, e, want)
@@ -126,7 +126,7 @@ fn wears(sh: Type, want: Type) -> bool {
 }
 
 /// `!` negates a bool; Error absorbs to the answer.
-fn not_type(cx: TypeCx, v: ExprId) -> TypeId {
+fn not_type(mut cx: TypeCx, v: ExprId) -> TypeId {
     let sh = cx.shape_at(v)
     if sh is .Bool || sh is .Error { return cx.view.types.intern(Type.Bool) }
     not_negatable(cx, v)
@@ -135,7 +135,7 @@ fn not_type(cx: TypeCx, v: ExprId) -> TypeId {
 /// What a nullable comparison compares — the carried type — when
 /// one side is a nullable and the other is what it carries, or the
 /// same nullable; absence otherwise.
-fn nullable_compared(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId? {
+fn nullable_compared(mut cx: TypeCx, l: ExprId, r: ExprId) -> TypeId? {
     let lc: TypeId? = cx.view.types.carried(cx.type_at(l))
     let rc: TypeId? = cx.view.types.carried(cx.type_at(r))
     if lc == null && rc == null { return null }
@@ -148,7 +148,7 @@ fn nullable_compared(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId? {
 
 /// The side that cannot be compared, LEFT first — the one the
 /// refusal should point at.
-fn uncomparable(cx: TypeCx, l: ExprId, r: ExprId) -> ExprId? {
+fn uncomparable(mut cx: TypeCx, l: ExprId, r: ExprId) -> ExprId? {
     if !compares_by_value(cx, cx.type_at(l)) { return l }
     if !compares_by_value(cx, cx.type_at(r)) { return r }
     null
@@ -172,7 +172,7 @@ fn compare_help(sh: Type) -> string {
     }
 }
 
-fn eq_type(cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     let ls = cx.shape_at(l)
     let rs = cx.shape_at(r)
     if ls is .Error || rs is .Error { return cx.error_type }
@@ -212,56 +212,56 @@ fn eq_type(cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
 
 // ── The voices ──
 
-fn not_indexable(cx: TypeCx, subject: ExprId) -> TypeId {
+fn not_indexable(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
     spoken(cx, refusal("type.mismatch", cx.loc_of(subject), "`[...]` indexes a `List`, found `${n}`", this_is(n), null))
 }
 
-fn index_not_int(cx: TypeCx, index: ExprId) {
+fn index_not_int(mut cx: TypeCx, index: ExprId) {
     cx.emit(refusal("type.mismatch", cx.loc_of(index), "an index is an `int`, found `${cx.name_at(index)}`", "this decides the position", null))
 }
 
-fn unpinned_read(cx: TypeCx, e: ExprId, tname: string, name: string) -> TypeId {
+fn unpinned_read(mut cx: TypeCx, e: ExprId, tname: string, name: string) -> TypeId {
     spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}.${name}` cannot pin `${tname}`'s type — nothing carries it", "read here", "a payload pins the type; the pinned unit surface is recorded"))
 }
 
-fn record_read(cx: TypeCx, e: ExprId, tname: string) -> TypeId {
+fn record_read(mut cx: TypeCx, e: ExprId, tname: string) -> TypeId {
     spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` is a record, not an enum", "read here", build_a_record(tname)))
 }
 
-fn no_variant_read(cx: TypeCx, e: ExprId, tname: string, name: string, sig: EnumSig) -> TypeId {
+fn no_variant_read(mut cx: TypeCx, e: ExprId, tname: string, name: string, sig: EnumSig) -> TypeId {
     spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` has no variant `${name}`", "read here", variants_are(sig)))
 }
 
-fn named_without_payload(cx: TypeCx, e: ExprId, tname: string, name: string, carried: TypeId) -> TypeId {
+fn named_without_payload(mut cx: TypeCx, e: ExprId, tname: string, name: string, carried: TypeId) -> TypeId {
     spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${tname}.${name}` carries a `${cx.view.types.name_of(carried)}`", "named without it here", "write `${tname}.${name}(<value>)`"))
 }
 
-fn wrong_operand(cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
+fn wrong_operand(mut cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
     let n = cx.name_at(e)
     cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${op_symbol(op)}` needs `${cx.view.types.name_of(cx.view.types.intern(want))}` operands, found `${n}`", this_is(n), null))
 }
 
-fn not_negatable(cx: TypeCx, v: ExprId) -> TypeId {
+fn not_negatable(mut cx: TypeCx, v: ExprId) -> TypeId {
     let n = cx.name_at(v)
     spoken(cx, refusal("type.mismatch", cx.loc_of(v), "`!` negates a `bool`, found `${n}`", this_is(n), null))
 }
 
-fn both_absent(cx: TypeCx, op: BinOp, l: ExprId) -> TypeId {
+fn both_absent(mut cx: TypeCx, op: BinOp, l: ExprId) -> TypeId {
     spoken(cx, refusal("type.mismatch", cx.loc_of(l), "both sides are always absent, so `${op_symbol(op)}` always answers", "always absent", "write the answer alone"))
 }
 
-fn not_askable(cx: TypeCx, op: BinOp, solid: ExprId) -> TypeId {
+fn not_askable(mut cx: TypeCx, op: BinOp, solid: ExprId) -> TypeId {
     let n = cx.name_at(solid)
     spoken(cx, refusal("type.mismatch", cx.loc_of(solid), "`${op_symbol(op)} null` asks a nullable, this is `${n}`", this_is(n), "`${n}` is a guarantee — it is never absent"))
 }
 
-fn not_comparable(cx: TypeCx, op: BinOp, offender: ExprId) -> TypeId {
+fn not_comparable(mut cx: TypeCx, op: BinOp, offender: ExprId) -> TypeId {
     let n = cx.name_at(offender)
     spoken(cx, refusal("type.mismatch", cx.loc_of(offender), "`${op_symbol(op)}` compares scalars for now", this_is(n), compare_help(cx.shape_at(offender))))
 }
 
-fn mismatched_sides(cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+fn mismatched_sides(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     let rn = cx.name_at(r)
     spoken(cx, refusal("type.mismatch", cx.loc_of(r), "`${op_symbol(op)}` compares matching types, found `${cx.name_at(l)}` and `${rn}`", this_is(rn), null))
 }

@@ -147,8 +147,12 @@ def unmutated_mut(lines):
                 break
             rest.append(lines[j])
         body = "\n".join(rest)
+        # a `mut` handed to a call may fill a `mut` seat, and one
+        # receiving a method may be a writing method's place — the
+        # compiler refuses a `let` at both, which a grep cannot see
         if not (re.search(rf"\b{name} *=[^=]", body)
-                or re.search(rf"\b{name}\.(push|pop|set|insert|clear|sort|reverse)\(", body)):
+                or re.search(rf"\b{name}\.[a-z_][a-z_0-9]*\(", body)
+                or re.search(rf"[(,] *{name} *[,)]", body)):
             yield i, l.strip()
 
 def registry_catchall(lines):
@@ -227,10 +231,11 @@ def dead_parameter(lines):
         # A head with no `{` is a trait's signature: nothing reads
         # its params by design. String contents are not a head.
         bare = re.sub(r'"(\\.|[^"\\])*"', '""', l)
-        m = re.match(r"\s*(?:export )?fn ([a-z_]+)\((.*)\)", bare)
+        m = re.match(r"\s*(?:export )?(?:mut )?fn ([a-z_]+)\((.*)\)", bare)
         if not m or "{" not in bare:
             continue
-        params = [p.strip().split(":")[0].strip()
+        # a `mut` seat is still a parameter: the mark is not its name
+        params = [p.strip().split(":")[0].strip().removeprefix("mut ")
                   for p in m.group(2).split(",") if ":" in p]
         body = "\n".join(fn_body(lines, i)[1:]) or l[l.index(")") + 1:]
         for p in params:
@@ -461,7 +466,7 @@ SPECIMENS = {
             ['            a.diagnostics.length >= 1 && a.report().contains("nope")'],
             ["            p.diagnostics >= 1"],
             ["            p.voices.list.length >= 1 && lets.length == 2"]],
-    "I21": [["    mut registry = new_type_registry()", "    registry.intern(t)"]],
+    "I21": [["    mut registry = new_type_registry()", "    let n = registry.shapes.length"]],
     "I22": [["    match s {", "        .A(x) -> x,", "        .B(y) -> y,", "        _ -> null,", "    }"]],
     "I23": [["fn f(a: int, b: int) -> int {", "    a + a", "}"],
             ["    fn m(self, a: int, b: int) -> int {", "        a + a", "    }"],

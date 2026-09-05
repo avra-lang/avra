@@ -9,10 +9,10 @@ use features.{LowerCx, StmtLowerCx, push_slot, adopted, carried_of, okayed, holl
 /// One subtree's register, lowered at first request and memoized.
 /// The recursion IS the walk: an impl asking for a child's register
 /// lands back here — so a region's branches lower INSIDE it.
-fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
+fn lower_subtree(mut lo: Lower, e: ExprId) -> Reg {
     let seen: Reg? = lo.body.reg_at(e)
     if seen != null { return seen! }
-    let cx = expr_lower_cx(lo)
+    mut cx = expr_lower_cx(lo)
     let born = semantics_of(lo.a.lang.dispatch, lo.a.view.store.expr(e)).lower(cx, e)
     let r = widened(cx, lo, e, narrowed(cx, lo, e, born))
     lo.body.set_reg(e, r)
@@ -21,7 +21,7 @@ fn lower_subtree(lo: Lower, e: ExprId) -> Reg {
 
 /// The expression capabilities, wired once per request — what
 /// lower_subtree runs and StmtLowerCx nests as `expr`.
-fn expr_lower_cx(lo: Lower) -> LowerCx {
+fn expr_lower_cx(mut lo: Lower) -> LowerCx {
     LowerCx {
         view: lo.a.view, names: lo.a.names, facts: lo.a.facts, out: lo.out, body: lo.body, sub: lo.sub, fn_ret: lo.fn_ret,
         reg_of: (k: ExprId) -> lower_subtree(lo, k),
@@ -38,7 +38,7 @@ fn expr_lower_cx(lo: Lower) -> LowerCx {
 /// wears; the read unwraps here, at the same one edge widening
 /// lifts. Narrow first, widen after: a proven read may itself be
 /// lifted into a fresh nullable.
-fn narrowed(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
+fn narrowed(mut cx: LowerCx, mut lo: Lower, e: ExprId, r: Reg) -> Reg {
     let worn: TypeId? = lo.a.facts.narrowed_at(e)
     if worn == null { return r }
     carried_of(cx, r, lo.concrete(worn!))
@@ -50,7 +50,7 @@ fn narrowed(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
 /// its layout at exactly one edge; the target's shape decides
 /// which: the null literal arrives already absent and `adopted`
 /// knows; anything else lifting into a Res is a success.
-fn widened(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
+fn widened(mut cx: LowerCx, mut lo: Lower, e: ExprId, r: Reg) -> Reg {
     let worn: TypeId? = lo.a.facts.widened_at(e)
     if worn == null { return r }
     let into = lo.concrete(worn!)
@@ -67,7 +67,7 @@ fn widened(cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
 /// ordinary slot array, minted here at the one widening edge. The
 /// value's own declared name picks whose methods ride along;
 /// dispatch reads the same lanes by the same list.
-fn boxed_into(cx: LowerCx, lo: Lower, into: TypeId, r: Reg) -> Reg {
+fn boxed_into(mut cx: LowerCx, mut lo: Lower, into: TypeId, r: Reg) -> Reg {
     let tdecl: DeclId? = match lo.a.view.decls.types.shape_of(into) {
         .Dyn(d, _) -> d,
         _ -> null,
@@ -96,7 +96,7 @@ fn boxed_into(cx: LowerCx, lo: Lower, into: TypeId, r: Reg) -> Reg {
 }
 
 /// The lifted value's declared name — whose impl the box carries.
-fn boxed_decl(lo: Lower, r: Reg) -> DeclId? {
+fn boxed_decl(mut lo: Lower, r: Reg) -> DeclId? {
     match lo.a.view.decls.types.shape_of(lo.out.reg_types[r.index]) {
         .Struct(d, _) -> d,
         .Enum(d, _) -> d,
@@ -109,8 +109,8 @@ fn boxed_decl(lo: Lower, r: Reg) -> DeclId? {
 /// Statements in order, each through its own StmtSemantics — the
 /// ONE statement loop, top level and blocks alike. The driver owns
 /// slots and the running last register.
-fn lower_stmts(lo: Lower, stmts: List<StmtId>) -> Reg? {
-    let cx = StmtLowerCx {
+fn lower_stmts(mut lo: Lower, stmts: List<StmtId>) -> Reg? {
+    mut cx = StmtLowerCx {
         view: lo.a.view,
         expr: expr_lower_cx(lo),
         lower_stmts: (body: List<StmtId>) -> lower_stmt_list(lo, body),
@@ -129,7 +129,7 @@ fn lower_stmts(lo: Lower, stmts: List<StmtId>) -> Reg? {
 
 /// A statement list lowered for its instructions alone — a loop
 /// body's turn.
-fn lower_stmt_list(lo: Lower, stmts: List<StmtId>) {
+fn lower_stmt_list(mut lo: Lower, stmts: List<StmtId>) {
     let _ = lower_stmts(lo, stmts)
 }
 
@@ -138,7 +138,7 @@ fn lower_stmt_list(lo: Lower, stmts: List<StmtId>) {
 /// instruction exists; both engines just run these calls. An
 /// answer with NO projection refuses HERE, before either engine —
 /// so eval and native cannot diverge on it.
-fn print_lowering(lo: Lower, last: Reg) -> Diag? {
+fn print_lowering(mut lo: Lower, last: Reg) -> Diag? {
     let sh = lo.a.view.decls.types.shape_of(lo.out.reg_types[last.index])
     let unprintable: string? = match sh {
         .Struct(_, n) -> n,
@@ -168,18 +168,18 @@ fn print_lowering(lo: Lower, last: Reg) -> Diag? {
 
 /// The refusal: an answer without a text projection names its type
 /// and the remedy.
-fn no_projection(lo: Lower, tname: string) -> Diag {
+fn no_projection(mut lo: Lower, tname: string) -> Diag {
     refusal("lower.no_projection", lo.answer_loc(), "the program's answer is a `${tname}`, which has no text projection yet", "this is the answer", "project a field instead — `p.x` prints")
 }
 
-fn text_call(lo: Lower, callee: string, v: Reg) -> Reg {
+fn text_call(mut lo: Lower, callee: string, v: Reg) -> Reg {
     let t = lo.out.mint_ty(lo.a.view.decls.types.intern(Type.Str))
     lo.out.give(Ins.CallRt(t, callee, [v]))
     t
 }
 
 /// The runtime printer for a list, by its element shape.
-fn list_text_callee(lo: Lower, elem: TypeId) -> string {
+fn list_text_callee(mut lo: Lower, elem: TypeId) -> string {
     if lo.a.view.decls.types.shape_of(elem) is .Bool { return "avra_bools_text" }
     if lo.a.view.decls.types.shape_of(elem) is .Str { return "avra_strs_text" }
     "avra_ints_text"
@@ -191,10 +191,11 @@ fn list_text_callee(lo: Lower, elem: TypeId) -> string {
 /// block's OWN type, which typing already settled: the fn's promise
 /// for a block that departed, void for one that merely ended. Every
 /// merge it feeds is typed by that same answer.
-fn block_reg(lo: Lower, stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> Reg {
+fn block_reg(mut lo: Lower, stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> Reg {
     lo.out.give(Ins.ScopeEnter(Level.Application))
     let _ = lower_stmts(lo, stmts)
-    let r = if value == null { hollow_of(expr_lower_cx(lo), ty) } else { lower_subtree(lo, value!) }
+    mut cx = expr_lower_cx(lo)
+    let r = if value == null { hollow_of(cx, ty) } else { lower_subtree(lo, value!) }
     lo.out.give(Ins.ScopeExit(r))
     r
 }

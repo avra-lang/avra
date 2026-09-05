@@ -232,7 +232,7 @@ gate — there is no amnesty left to hide in.
 - I21 a `mut` nothing mutates is a `let`. The reader is told to
       expect a change that never comes; two survived (a type
       registry threaded through a pass, and its test twin).
-
+ GREW 2026-09-04 with the inout seats: a `mut` handed to a call may fill a `mut` seat, and one receiving a method may be a writing method's place — the compiler refuses a `let` at both — so the ratchet counts an argument or a receiver as mutated; the compiler's own laws now judge `mut` more exactly than the grep.
 - I22 a match where TWO OR MORE variants answer is a REGISTRY, and
       a registry ending in `_ ->` silently forgets the NEXT variant.
       One answering arm is a PROJECTION and its catch-all is honest:
@@ -266,7 +266,7 @@ gate — there is no amnesty left to hide in.
       a MISSING import (F3000) and an import of a name a module does
       not export (F3012), but an unused one is silent, so imports
       rot in that one direction — 54 had accumulated, several
-      created by the same day's refactors.
+      created by the same day's refactors. The matcher reads through the `mut` mark on a seat (2026-09-04): `mut cx: TypeCx` is a parameter named `cx`.
 
 - I25 RETIRED (2026-09-04): a variant pattern writing the WRONG
       payload count. The bootstrap accepted `.A(_, _)` against a

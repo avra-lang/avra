@@ -136,7 +136,7 @@ fn emit_body(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, externs: List<RtSig>,
     mut vals: List<ptr> = []
     // LICENSED I3: a RANGE walk — comprehensions iterate lists only
     for j in 0..bd.params.length { vals.push(avra_llvm_get_param(f, j)) }
-    let em = Emit {
+    mut em = Emit {
         lc: lc, m: m, b: b, fn_val: f, types: types,
         tys: bd.reg_types, vals: vals, frames: [], loops: [], externs: externs, rt: rt,
     }
@@ -230,7 +230,7 @@ fn opt_ll_type(lc: ptr, types: TypeRegistry, inner: TypeId) -> ptr {
 }
 
 /// A register's LLVM type.
-fn reg_type(em: Emit, r: Reg) -> ptr {
+fn reg_type(mut em: Emit, r: Reg) -> ptr {
     ll_type_of(em.lc, em.types, em.tys[r.index])
 }
 
@@ -238,7 +238,7 @@ fn reg_type(em: Emit, r: Reg) -> ptr {
 /// registers (ret from dst, params from args), so the built type
 /// matches the callee that boxing named — every seat is cast to
 /// its register's declared shape on the way in.
-fn call_ptr_value(em: Emit, d: Reg, f: Reg, args: List<Reg>) -> ptr {
+fn call_ptr_value(mut em: Emit, d: Reg, f: Reg, args: List<Reg>) -> ptr {
     let ptys = avra_llvm_type_array_new(args.length)
     for j, a in args {
         avra_llvm_type_array_set(ptys, j, ll_type_of(em.lc, em.types, em.tys[a.index]))
@@ -254,14 +254,14 @@ fn call_ptr_value(em: Emit, d: Reg, f: Reg, args: List<Reg>) -> ptr {
     avra_llvm_build_call(em.b, fty, fp, vargs, args.length, "")
 }
 
-fn call(em: Emit, name: string, args: List<ptr>) -> ptr {
+fn call(mut em: Emit, name: string, args: List<ptr>) -> ptr {
     let f = avra_llvm_get_named_function(em.m, name)
     let arr = avra_llvm_value_array_new(args.length)
     for (i, a) in args.enumerate() { avra_llvm_value_array_set(arr, i, a) }
     avra_llvm_build_call(em.b, avra_llvm_fn_type_of(f), f, arr, args.length, "")
 }
 
-fn emit_ins(em: Emit, i: Ins) {
+fn emit_ins(mut em: Emit, i: Ins) {
     match i {
         .ConstInt(dst, v) -> define(em, const_int_value(em, dst, v)),
         .ConstBool(_, v) -> define(em, avra_llvm_const_int(avra_llvm_int1_type(em.lc), if v { 1 } else { 0 }, 0)),
@@ -299,7 +299,7 @@ fn emit_ins(em: Emit, i: Ins) {
 /// rides one: absence is the zero of its type, and the only
 /// ConstInt lowering ever aims at a pointer register is 0. The
 /// interpreter's const_int_val is this rule's twin.
-fn const_int_value(em: Emit, dst: Reg, v: int) -> ptr {
+fn const_int_value(mut em: Emit, dst: Reg, v: int) -> ptr {
     if em.types.rides_pointer(em.tys[dst.index]) {
         return avra_llvm_const_pointer_null(avra_llvm_pointer_type(em.lc))
     }
@@ -307,20 +307,20 @@ fn const_int_value(em: Emit, dst: Reg, v: int) -> ptr {
 }
 
 /// Whether a register holds a FLAT record — one that IS its field.
-fn flat_value(em: Emit, r: Reg) -> bool {
+fn flat_value(mut em: Emit, r: Reg) -> bool {
     em.types.is_flat(em.tys[r.index])
 }
 
 /// One element out of an aggregate — or the value itself, when the
 /// aggregate is a FLAT record and IS that element.
-fn extract_value(em: Emit, src: Reg, at: int) -> ptr {
+fn extract_value(mut em: Emit, src: Reg, at: int) -> ptr {
     if flat_value(em, src) { return em.vals[src.index] }
     avra_llvm_build_extract_value(em.b, em.vals[src.index], at, "x")
 }
 
 /// A packed value: element by element into an undef aggregate —
 /// registers all the way, which is what lets SROA see through it.
-fn pack_value(em: Emit, dst: Reg, elems: List<Reg>) -> ptr {
+fn pack_value(mut em: Emit, dst: Reg, elems: List<Reg>) -> ptr {
     // A FLAT record IS its one field — the pack is the value itself.
     if flat_value(em, dst) { return em.vals[elems[0].index] }
     mut agg = avra_llvm_get_undef(reg_type(em, dst))
@@ -332,7 +332,7 @@ fn pack_value(em: Emit, dst: Reg, elems: List<Reg>) -> ptr {
 }
 
 /// The next register's value — registers mint in instruction order.
-fn define(em: Emit, v: ptr) {
+fn define(mut em: Emit, v: ptr) {
     mut vs = em.vals
     vs.push(v)
 }
@@ -340,7 +340,7 @@ fn define(em: Emit, v: ptr) {
 /// icmp predicates by number: 32 eq, 33 ne, 38 sgt, 39 sge, 40 slt,
 /// 41 sle. The lazy ops lower as regions and never reach a Bin; the
 /// arms stay honest (eager i1 and/or) for exhaustiveness.
-fn bin_value(em: Emit, op: BinOp, a: ptr, b: ptr) -> ptr {
+fn bin_value(mut em: Emit, op: BinOp, a: ptr, b: ptr) -> ptr {
     match op {
         .Add -> avra_llvm_build_add(em.b, a, b, "add"),
         .Sub -> avra_llvm_build_sub(em.b, a, b, "sub"),
@@ -360,7 +360,7 @@ fn bin_value(em: Emit, op: BinOp, a: ptr, b: ptr) -> ptr {
     }
 }
 
-fn un_value(em: Emit, op: UnOp, v: ptr) -> ptr {
+fn un_value(mut em: Emit, op: UnOp, v: ptr) -> ptr {
     match op {
         .Not -> avra_llvm_build_not(em.b, v, "not"),
     }
@@ -369,7 +369,7 @@ fn un_value(em: Emit, op: UnOp, v: ptr) -> ptr {
 /// A runtime call, generic over every callee declare_runtime names.
 /// The runtime speaks i64 for truth; a bool-shaped register narrows
 /// to i1 (icmp 33, ne 0).
-fn call_rt_value(em: Emit, dst: Reg, callee: string, args: List<Reg>) -> ptr {
+fn call_rt_value(mut em: Emit, dst: Reg, callee: string, args: List<Reg>) -> ptr {
     let raw = call(em, callee, rt_args(em, callee, args))
     if em.types.shape_of(em.tys[dst.index]) is .Bool {
         return avra_llvm_build_icmp(em.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(em.lc), 0, 0), "b")
@@ -383,19 +383,19 @@ fn call_rt_value(em: Emit, dst: Reg, callee: string, args: List<Reg>) -> ptr {
 }
 
 /// Whether the registry declares an I64 answer for this callee.
-fn answers_word(em: Emit, callee: string) -> bool {
+fn answers_word(mut em: Emit, callee: string) -> bool {
     let sig: RtSig? = callee_sig(em, callee)
     if sig == null { return false }
     sig!.ret is .I64
 }
 
 /// A callee's row: the runtime's, or one of the program's externs.
-fn callee_sig(em: Emit, callee: string) -> RtSig? {
+fn callee_sig(mut em: Emit, callee: string) -> RtSig? {
     // LICENSED I18: two registries asked in turn — the second answers when the first has no row
     em.rt.get(callee) ?? em.externs.find(it.name == callee)
 }
 
-fn void_rt_call(em: Emit, callee: string, args: List<Reg>) {
+fn void_rt_call(mut em: Emit, callee: string, args: List<Reg>) {
     let _ = call(em, callee, rt_args(em, callee, args))
 }
 
@@ -403,7 +403,7 @@ fn void_rt_call(em: Emit, callee: string, args: List<Reg>) {
 /// the runtime's int64 slots carry pointers too, so a
 /// pointer-shaped register entering `avra_array_push`'s element
 /// slot casts down.
-fn rt_args(em: Emit, callee: string, args: List<Reg>) -> List<ptr> {
+fn rt_args(mut em: Emit, callee: string, args: List<Reg>) -> List<ptr> {
     mut out: List<ptr> = []
     // LICENSED I3: the coercion needs the param INDEX; comprehensions
     // cannot destructure enumerate
@@ -413,7 +413,7 @@ fn rt_args(em: Emit, callee: string, args: List<Reg>) -> List<ptr> {
 
 /// A registry I64 param is a SLOT — every value category rides it,
 /// so pointer-riding registers cast down and bools widen in.
-fn rt_arg(em: Emit, callee: string, j: int, r: Reg) -> ptr {
+fn rt_arg(mut em: Emit, callee: string, j: int, r: Reg) -> ptr {
     let v = em.vals[r.index]
     let sig: RtSig? = callee_sig(em, callee)
     if sig == null { return v }
@@ -429,38 +429,38 @@ fn rt_arg(em: Emit, callee: string, j: int, r: Reg) -> ptr {
     v
 }
 
-fn released(em: Emit, r: Reg) {
+fn released(mut em: Emit, r: Reg) {
     let _ = call(em, "avra_rc_release", [em.vals[r.index]])
 }
 
-fn retained(em: Emit, r: Reg) {
+fn retained(mut em: Emit, r: Reg) {
     let _ = call(em, "avra_rc_retain", [em.vals[r.index]])
 }
 
-fn ret_value(em: Emit, r: Reg) {
+fn ret_value(mut em: Emit, r: Reg) {
     let _ = avra_llvm_build_ret(em.b, em.vals[r.index])
 }
 
 /// An early return: ret RIGHT HERE, then open a dead block so the
 /// arm's unreachable tail (its yield, the region's br) lands
 /// somewhere harmless.
-fn fn_exit(em: Emit, r: Reg) {
+fn fn_exit(mut em: Emit, r: Reg) {
     let _ = avra_llvm_build_ret(em.b, em.vals[r.index])
     let dead = avra_llvm_append_basic_block(em.lc, em.fn_val, "postret")
     avra_llvm_position_at_end(em.b, dead)
 }
 
-fn ret_code(em: Emit, code: int) {
+fn ret_code(mut em: Emit, code: int) {
     let _ = avra_llvm_build_ret(em.b, avra_llvm_const_int(avra_llvm_int32_type(em.lc), code, 0))
 }
 
-fn stored(em: Emit, slot: Reg, src: Reg) {
+fn stored(mut em: Emit, slot: Reg, src: Reg) {
     let _ = avra_llvm_build_store(em.b, em.vals[src.index], em.vals[slot.index])
 }
 
 /// Open the loop: fall into the header, where the condition's
 /// instructions re-run each turn.
-fn loop_start(em: Emit) {
+fn loop_start(mut em: Emit) {
     let header = avra_llvm_append_basic_block(em.lc, em.fn_val, "lhead")
     let exit = avra_llvm_append_basic_block(em.lc, em.fn_val, "lexit")
     let _ = avra_llvm_build_br(em.b, header)
@@ -470,7 +470,7 @@ fn loop_start(em: Emit) {
 }
 
 /// The condition decides: true falls into the body, false exits.
-fn loop_cond(em: Emit, c: Reg) {
+fn loop_cond(mut em: Emit, c: Reg) {
     let f = em.loops.last()!
     let body = avra_llvm_append_basic_block(em.lc, em.fn_val, "lbody")
     let _ = avra_llvm_build_cond_br(em.b, em.vals[c.index], body, f.exit)
@@ -478,7 +478,7 @@ fn loop_cond(em: Emit, c: Reg) {
 }
 
 /// Close the back edge and stand at the exit.
-fn loop_end(em: Emit) {
+fn loop_end(mut em: Emit) {
     mut ls = em.loops
     let f = ls.pop()
     let _ = avra_llvm_build_br(em.b, f.header)
@@ -487,7 +487,7 @@ fn loop_end(em: Emit) {
 
 /// Open a two-arm region: branch on the condition, build into the
 /// first arm.
-fn if_start(em: Emit, c: Reg) {
+fn if_start(mut em: Emit, c: Reg) {
     let then_bb = avra_llvm_append_basic_block(em.lc, em.fn_val, "then")
     let else_bb = avra_llvm_append_basic_block(em.lc, em.fn_val, "else")
     let merge_bb = avra_llvm_append_basic_block(em.lc, em.fn_val, "endif")
@@ -500,7 +500,7 @@ fn if_start(em: Emit, c: Reg) {
 /// arm its default — which is why a total match needs no
 /// fallthrough. This is the whole point of the instruction: the
 /// machine indexes, it does not walk.
-fn switch_start(em: Emit, sel: Reg, cases: List<int>) {
+fn switch_start(mut em: Emit, sel: Reg, cases: List<int>) {
     // One block per case, plus the default's — the last arm.
     let arms = [avra_llvm_append_basic_block(em.lc, em.fn_val, "arm") for c in cases].concat([avra_llvm_append_basic_block(em.lc, em.fn_val, "arm")])
     let merge_bb = avra_llvm_append_basic_block(em.lc, em.fn_val, "endswitch")
@@ -514,7 +514,7 @@ fn switch_start(em: Emit, sel: Reg, cases: List<int>) {
 }
 
 /// The region stack's push — arm 0 is already being built.
-fn open_region(em: Emit, arms: List<ptr>, merge_bb: ptr) {
+fn open_region(mut em: Emit, arms: List<ptr>, merge_bb: ptr) {
     mut fs = em.frames
     let r = Region { arms: arms, next: 1, merge_bb: merge_bb, ended: [], gives: [] }
     // LICENSED I15: a region STACK across fns, not a bracket body
@@ -524,7 +524,7 @@ fn open_region(em: Emit, arms: List<ptr>, merge_bb: ptr) {
 /// End this arm — where it ended, what it yields — and build into
 /// the next. Nested regions moved the insert block; ask, never
 /// assume.
-fn arm_end(em: Emit, gives: Reg) {
+fn arm_end(mut em: Emit, gives: Reg) {
     mut fs = em.frames
     let f = fs.pop()
     let here = avra_llvm_get_insert_block(em.b)
@@ -539,7 +539,7 @@ fn arm_end(em: Emit, gives: Reg) {
 
 /// End the LAST arm and merge: one phi over every arm's yield is
 /// the region's register.
-fn region_end(em: Emit, dst: Reg, gives: Reg) {
+fn region_end(mut em: Emit, dst: Reg, gives: Reg) {
     mut fs = em.frames
     let f = fs.pop()
     let ended = f.ended.concat([avra_llvm_get_insert_block(em.b)])

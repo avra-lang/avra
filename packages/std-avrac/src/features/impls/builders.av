@@ -8,7 +8,7 @@ use features.{LangNode, Builder, window_end, aligned_param_types, void_ref, mark
 use grammar.{Token}
 
 /// `self` — the receiver, a keyword: no name rides the node.
-fn build_receiver(b: Builder) -> Result<LangNode, string> {
+fn build_receiver(mut b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Receiver)
 }
 
@@ -18,7 +18,7 @@ fn build_receiver(b: Builder) -> Result<LangNode, string> {
 /// Type parameters parse so a generic `mut fn` meets the generic-
 /// method law, not a parse hole; their bounds are dropped — the
 /// law refuses the method before a bound could matter.
-fn build_mut_fn(b: Builder) -> Result<LangNode, string> {
+fn build_mut_fn(mut b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tparams = [Param { name: t.text, ty: null, default: null, mutable: false } for t in b.tokens(1)?]
     let marks = b.tokens(2)?
@@ -36,7 +36,7 @@ fn build_mut_fn(b: Builder) -> Result<LangNode, string> {
 /// The target's type parameters (`impl Arena<N>`, `impl Show for
 /// Box<T>`) parse and are dropped here: an impl spells them as the
 /// type declared them, and typing reads the type's own.
-fn build_impl(b: Builder) -> Result<LangNode, string> {
+fn build_impl(mut b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     let ib = b.tokens(2)?
     let fns = b.stmts(4)?
@@ -50,13 +50,13 @@ fn build_impl(b: Builder) -> Result<LangNode, string> {
     b.make_stmt(Stmt.ImplDecl(t.text, forred!.text, fns))
 }
 
-fn is_fn(b: Builder, s: StmtId) -> bool {
+fn is_fn(mut b: Builder, s: StmtId) -> bool {
     b.store.stmt(s) is .FnDecl
 }
 
 /// The trait's sig lines, each minted as a bodyless FnDecl — the
 /// method anchors window their own params, the rets zip.
-fn build_trait(b: Builder) -> Result<LangNode, string> {
+fn build_trait(mut b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let muts = b.tokens(1)?
     let mn = b.tokens(2)?
@@ -91,7 +91,7 @@ fn token_within(t: Token, after: int, before: int) -> bool {
 
 /// A bodyless fn: the body is a HOLE no pass walks. The sig wears
 /// its name's span, so a refusal at it lands on the line.
-fn sig_stmt(b: Builder, name: Token, params: List<Param>, ret: TypeRef) -> StmtId {
+fn sig_stmt(mut b: Builder, name: Token, params: List<Param>, ret: TypeRef) -> StmtId {
     let hollow = b.store.alloc_expr(Expr.Error, null)
     b.store.alloc_stmt(Stmt.FnDecl(name.text, [], params, ret, hollow), name.span)
 }

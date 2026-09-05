@@ -10,23 +10,23 @@ use diagnostics.{refusal}
 export type FailSemantics = { }
 
 impl StmtSemantics for FailSemantics {
-    fn resolve_stmt(cx: StmtResolveCx, s: StmtId) {
+    fn resolve_stmt(mut cx: StmtResolveCx, s: StmtId) {
         cx.walk_value(s)
     }
 
-    fn type_stmt(cx: StmtTypeCx, s: StmtId) {
+    fn type_stmt(mut cx: StmtTypeCx, s: StmtId) {
         cx.walk_value(s)
         check_fail(cx, s)
     }
 
-    fn lower_stmt(cx: StmtLowerCx, s: StmtId) -> Reg? {
+    fn lower_stmt(mut cx: StmtLowerCx, s: StmtId) -> Reg? {
         lower_fail(cx, s)
     }
 }
 
 /// `fail v` — legal only inside a fn promising a `Result`, with `v`
 /// ACCEPTED by the err side (widening recorded, like every slot).
-fn check_fail(cx: StmtTypeCx, s: StmtId) {
+fn check_fail(mut cx: StmtTypeCx, s: StmtId) {
     let held: ExprId? = cx.view.store.stmt_value(s)
     if held == null { return }
     let v = held!
@@ -51,7 +51,7 @@ fn check_fail(cx: StmtTypeCx, s: StmtId) {
 
 /// The failure wrapped and exited — the memory pass settles every
 /// open scope at the site; other paths continue.
-fn lower_fail(cx: StmtLowerCx, s: StmtId) -> Reg? {
+fn lower_fail(mut cx: StmtLowerCx, s: StmtId) -> Reg? {
     let v: Reg? = cx.lower_value(s)
     if v == null { return null }
     let ret: TypeId? = cx.expr.enclosing_ret()

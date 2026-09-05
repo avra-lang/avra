@@ -4,7 +4,7 @@ use core.{ExprId, Type, TypeId}
 use features.{TypeCx, MethodCall, spoken, this_is, seated}
 use diagnostics.{refusal}
 
-fn interp_type(cx: TypeCx, holes: List<ExprId>) -> TypeId {
+fn interp_type(mut cx: TypeCx, holes: List<ExprId>) -> TypeId {
     for h in holes {
         let sh = cx.shape_at(h)
         let ok = sh is .Int || sh is .Bool || sh is .Str || sh is .Error
@@ -19,36 +19,36 @@ fn interp_type(cx: TypeCx, holes: List<ExprId>) -> TypeId {
 // ── The method rows' rules: the seats, then the answer ──
 
 /// `s.contains(t)`, `s.starts_with(t)`, `s.ends_with(t)` — verdicts.
-export fn check_contains(cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "contains", [Type.Str], Type.Bool) }
-export fn check_starts_with(cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "starts_with", [Type.Str], Type.Bool) }
-export fn check_ends_with(cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "ends_with", [Type.Str], Type.Bool) }
+export fn check_contains(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "contains", [Type.Str], Type.Bool) }
+export fn check_starts_with(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "starts_with", [Type.Str], Type.Bool) }
+export fn check_ends_with(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "ends_with", [Type.Str], Type.Bool) }
 
 /// `s.index_of(t)` — the first position, or -1.
-export fn check_index_of(cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "index_of", [Type.Str], Type.Int) }
+export fn check_index_of(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "index_of", [Type.Str], Type.Int) }
 
 /// `s.substring(lo, hi)` — the bytes from lo up to hi.
-export fn check_substring(cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "substring", [Type.Int, Type.Int], Type.Str) }
+export fn check_substring(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "substring", [Type.Int, Type.Int], Type.Str) }
 
 /// `s.split(sep)` — the pieces between separators.
-export fn check_split(cx: TypeCx, mc: MethodCall) -> TypeId {
+export fn check_split(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     worded(cx, mc, "split", [Type.Str], Type.List(cx.view.types.intern(Type.Str)))
 }
 
 /// `s.replace(from, to)` — every occurrence.
-export fn check_replace(cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "replace", [Type.Str, Type.Str], Type.Str) }
+export fn check_replace(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "replace", [Type.Str, Type.Str], Type.Str) }
 
 /// `s.char_code()` / `s.char_code(i)` — the byte at the start, or
 /// at `i`, as a code.
-export fn check_char_code(cx: TypeCx, mc: MethodCall) -> TypeId {
+export fn check_char_code(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     if mc.args.is_empty() { return cx.view.types.intern(Type.Int) }
     worded(cx, mc, "char_code", [Type.Int], Type.Int)
 }
 
 /// `s.trim()` — the text without its surrounding blanks.
-export fn check_trim(cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "trim", [], Type.Str) }
+export fn check_trim(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "trim", [], Type.Str) }
 
 /// A row's seats, then its answer.
-fn worded(cx: TypeCx, mc: MethodCall, name: string, wants: List<Type>, answers: Type) -> TypeId {
+fn worded(mut cx: TypeCx, mc: MethodCall, name: string, wants: List<Type>, answers: Type) -> TypeId {
     if !seated(cx, mc, name, [cx.view.types.intern(w) for w in wants]) { return cx.error_type }
     cx.view.types.intern(answers)
 }
@@ -60,6 +60,6 @@ export fn on_str(t: Type) -> bool {
 }
 
 // LICENSED I23: a row's rule wears the row's signature
-export fn check_str_length(cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
+export fn check_str_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
     cx.view.types.intern(Type.Int)
 }

@@ -52,7 +52,7 @@ type Resolver = {
 
 export fn resolve(lang: Language, view: FileView, scope: Namespace) -> NameFacts {
     let defs = defs_of(view.store, view.stmts)
-    let r = Resolver {
+    mut r = Resolver {
         lang: lang, view: view, all_defs: defs,
         facts: NameFacts {
             bindings: filled<Binding?>(view.store.exprs.count(), null),
@@ -72,8 +72,8 @@ export fn resolve(lang: Language, view: FileView, scope: Namespace) -> NameFacts
 
 /// Statements in order, each through its own StmtSemantics — the
 /// ONE statement loop, top level and blocks alike.
-fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: List<StmtId>) {
-    let cx = StmtResolveCx {
+fn resolve_stmts(mut r: Resolver, param_names: List<string>, in_block: bool, stmts: List<StmtId>) {
+    mut cx = StmtResolveCx {
         view: r.view,
         facts: r.facts,
         in_block: in_block,
@@ -91,7 +91,7 @@ fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: 
 
 /// An impl's or a trait's fns around `run`: every fn inside is a
 /// method, and `self` names its receiver.
-fn under_receiver(r: Resolver, run: fn()) {
+fn under_receiver(mut r: Resolver, run: fn()) {
     mut rs = r.receivers
     // LICENSED I15: this IS the bracket fn
     rs.push(true)
@@ -101,7 +101,7 @@ fn under_receiver(r: Resolver, run: fn()) {
 
 /// A fresh overlay scope around `run`: binds made inside are
 /// visible onward and die at exit — the ONE scope ritual.
-fn under_overlay(r: Resolver, run: fn()) {
+fn under_overlay(mut r: Resolver, run: fn()) {
     mut ov = r.overlays
     let fresh: Map<string, Binding> = {}
     // LICENSED I15: this IS the bracket fn
@@ -111,7 +111,7 @@ fn under_overlay(r: Resolver, run: fn()) {
 }
 
 /// A statement list under its own overlay scope — a loop body.
-fn scoped_stmts(r: Resolver, param_names: List<string>, stmts: List<StmtId>) {
+fn scoped_stmts(mut r: Resolver, param_names: List<string>, stmts: List<StmtId>) {
     under_overlay(r, () -> resolve_stmts(r, param_names, true, stmts))
 }
 
@@ -119,7 +119,7 @@ fn scoped_stmts(r: Resolver, param_names: List<string>, stmts: List<StmtId>) {
 /// the statements resolve inside it, and the binding dies at exit —
 /// a loop variable's home. A scoped binder never counts as a
 /// later definition: its name outside the scope is plainly unknown.
-fn bound_scope(r: Resolver, param_names: List<string>, s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
+fn bound_scope(mut r: Resolver, param_names: List<string>, s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
     mut sc = r.scoped
     sc.set(s.index, true)
     under_overlay(r, () -> bound_body(r, param_names, s, exprs, stmts))
@@ -127,7 +127,7 @@ fn bound_scope(r: Resolver, param_names: List<string>, s: StmtId, exprs: List<Ex
 
 /// Inside the bound scope: the binder holds, the exprs walk, the
 /// statements resolve.
-fn bound_body(r: Resolver, param_names: List<string>, s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
+fn bound_body(mut r: Resolver, param_names: List<string>, s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
     r.bind_checked(s)
     r.bind_index(s)
     for e in exprs { resolve_walk(r, param_names, e) }
@@ -136,13 +136,13 @@ fn bound_body(r: Resolver, param_names: List<string>, s: StmtId, exprs: List<Exp
 
 /// A block's statements under a fresh overlay scope: binds are
 /// visible onward and restored at exit.
-fn block_scope(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId?) {
+fn block_scope(mut r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId?) {
     under_overlay(r, () -> block_body(r, param_names, stmts, value))
 }
 
 /// Inside a block's scope: the statements, then the value — absent
 /// when the block leaves instead of answering.
-fn block_body(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId?) {
+fn block_body(mut r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId?) {
     resolve_stmts(r, param_names, true, stmts)
     if value != null { resolve_walk(r, param_names, value!) }
 }
@@ -150,11 +150,11 @@ fn block_body(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value
 /// One match arm's scope: its binds (in pattern order) hold for
 /// the arm's value and die with it — the first scope in the
 /// language opened by an EXPRESSION rather than a statement.
-fn arm_scope(r: Resolver, param_names: List<string>, binds: List<string>, value: ExprId) {
+fn arm_scope(mut r: Resolver, param_names: List<string>, binds: List<string>, value: ExprId) {
     under_overlay(r, () -> arm_body(r, param_names, binds, value))
 }
 
-fn arm_body(r: Resolver, param_names: List<string>, binds: List<string>, value: ExprId) {
+fn arm_body(mut r: Resolver, param_names: List<string>, binds: List<string>, value: ExprId) {
     for j, b in binds {
         if !r.refused_name(b, r.loc_of(value)) { r.bind(b, Binding.Pattern(value, j)) }
     }
@@ -216,7 +216,7 @@ fn frame_param_hit(lframes: List<LFrame>, name: string) -> int? {
 
 /// A lambda's body under its own frame: params bind, outer names
 /// capture, and the frame dies with the walk.
-fn lambda_scope(r: Resolver, param_names: List<string>, lam: ExprId, params: List<Param>, body: ExprId) {
+fn lambda_scope(mut r: Resolver, param_names: List<string>, lam: ExprId, params: List<Param>, body: ExprId) {
     // a refused param name still BINDS (declare the wreckage) — the
     // body resolves quietly and the one refusal stands alone
     for pp in params {
@@ -243,8 +243,8 @@ fn overlay_hit(overlays: List<Map<string, Binding>>, name: string) -> Binding? {
 }
 
 /// One subtree's resolution, under the given param names.
-fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
-    let cx = ResolveCx {
+fn resolve_walk(mut r: Resolver, param_names: List<string>, root: ExprId) {
+    mut cx = ResolveCx {
         view: r.view,
         use_name: (e: ExprId, name: string) -> r.resolve_name(e, name, param_names),
         use_call: (e: ExprId, name: string) -> r.resolve_call(e, name, param_names),
@@ -262,7 +262,7 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
 /// body can see — a body sees declarations and its own bindings.
 /// The seats' `mut` marks are in scope for the walk, so a read of a
 /// `mut` seat is recorded as one.
-fn resolve_body(r: Resolver, seats: List<Param>, body: ExprId) {
+fn resolve_body(mut r: Resolver, seats: List<Param>, body: ExprId) {
     mut fs = r.floors
     mut ms = r.muts
     // LICENSED I15: this IS the bracket

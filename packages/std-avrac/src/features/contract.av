@@ -224,9 +224,9 @@ export type LowerCx = {
 export trait NodeSemantics {
     fn kids(e: Expr) -> List<ExprId>
     fn heirs(e: Expr) -> List<ExprId>
-    fn resolve(cx: ResolveCx, e: ExprId)
-    fn type_of(cx: TypeCx, e: ExprId) -> TypeId
-    fn lower(cx: LowerCx, e: ExprId) -> Reg
+    fn resolve(mut cx: ResolveCx, e: ExprId)
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg
 }
 
 /// Statement resolve capabilities — the pass's STATE verbs, never a
@@ -279,9 +279,9 @@ export type StmtLowerCx = {
 /// value-producing statement answers its register (lower) and the
 /// DRIVER owns slots and last-value tracking.
 export trait StmtSemantics {
-    fn resolve_stmt(cx: StmtResolveCx, s: StmtId)
-    fn type_stmt(cx: StmtTypeCx, s: StmtId)
-    fn lower_stmt(cx: StmtLowerCx, s: StmtId) -> Reg?
+    fn resolve_stmt(mut cx: StmtResolveCx, s: StmtId)
+    fn type_stmt(mut cx: StmtTypeCx, s: StmtId)
+    fn lower_stmt(mut cx: StmtLowerCx, s: StmtId) -> Reg?
 }
 
 /// The written-out nothing — a pass method that deliberately does no
@@ -319,7 +319,7 @@ export fn duplicate_member(kind: string, owner: string, member: string, at: Loc?
 /// driver refuses the whole build afterward. THE answer when a
 /// payload the dispatch GUARANTEES comes back absent; never a
 /// plausible default, which would compile a wrong program silently.
-export fn lower_defect(cx: LowerCx, e: ExprId, what: string) -> Reg {
+export fn lower_defect(mut cx: LowerCx, e: ExprId, what: string) -> Reg {
     cx.defect(what)
     cx.result(e)
 }
@@ -327,7 +327,7 @@ export fn lower_defect(cx: LowerCx, e: ExprId, what: string) -> Reg {
 /// A node another feature owns reached this one's lowering: the
 /// dispatch map is wrong, and the answer is a recorded defect on a
 /// fresh register — never a silent register with nothing behind it.
-export fn foreign_node(cx: LowerCx, e: ExprId) -> Reg {
+export fn foreign_node(mut cx: LowerCx, e: ExprId) -> Reg {
     lower_defect(cx, e, hole_defect())
 }
 
@@ -342,7 +342,7 @@ export fn nested_decl(kind: string, what: string, at: Loc?) -> Diag {
 /// THE nested-declaration guard every declaring statement opens
 /// with: inside a block it refuses and answers true, so the rule
 /// returns; at the top level it answers false.
-export fn refuses_nested(cx: StmtResolveCx, s: StmtId, kind: string, what: string) -> bool {
+export fn refuses_nested(mut cx: StmtResolveCx, s: StmtId, kind: string, what: string) -> bool {
     if !cx.in_block { return false }
     cx.emit(nested_decl(kind, what, cx.loc_of(s)))
     true

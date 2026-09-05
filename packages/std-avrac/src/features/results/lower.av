@@ -7,7 +7,7 @@
 use core.{ExprId, TypeId, Reg, Ins, ResSides}
 use features.{LowerCx, foreign_node, EnumSig, okness_of, payload_of, tag_of, hollow_of, lower_defect}
 
-fn catch_reg(cx: LowerCx, e: ExprId) -> Reg {
+fn catch_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .Catch(s, vs, bs, arms) -> catched_reg(cx, e, s, vs, bs, arms),
@@ -15,7 +15,7 @@ fn catch_reg(cx: LowerCx, e: ExprId) -> Reg {
     }
 }
 
-fn catched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
+fn catched_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
                binds: List<string>, values: List<ExprId>) -> Reg {
     let r = cx.reg_of(subject)
     let sides: ResSides? = cx.view.types.res_parts(cx.type_at(subject))
@@ -30,7 +30,7 @@ fn catched_reg(cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
 
 /// The failure arm's whole story. A single catch-all arm answers
 /// directly; variant arms switch on the error's tag.
-fn failure_reg(cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
+fn failure_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
                variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
     if variants.length == 1 && variants[0] == "" {
         return all_arm_reg(cx, r, sides, binds[0], values[0])
@@ -40,7 +40,7 @@ fn failure_reg(cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
 
 /// The catch-all arm: the whole error binds (when named), the value
 /// answers.
-fn all_arm_reg(cx: LowerCx, r: Reg, sides: ResSides, bind: string, value: ExprId) -> Reg {
+fn all_arm_reg(mut cx: LowerCx, r: Reg, sides: ResSides, bind: string, value: ExprId) -> Reg {
     if bind != "" { cx.bind_patterns(value, [payload_of(cx, r, sides.err)]) }
     cx.reg_of(value)
 }
@@ -49,7 +49,7 @@ fn all_arm_reg(cx: LowerCx, r: Reg, sides: ResSides, bind: string, value: ExprId
 /// like any enum match. A TOTAL catch's last written arm is the
 /// switch's default; a SELECTIVE one gains a default arm that
 /// exits with the subject's own box, propagating the unmatched.
-fn switched_reg(cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
+fn switched_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
                 variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
     let held: EnumSig? = cx.variants_of(sides.err)
     if held == null { return lower_defect(cx, e, "catch arms without variants survived typing") }
@@ -76,7 +76,7 @@ fn switched_reg(cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
 }
 
 /// One arm's bind: the payload read INSIDE the arm's bracket.
-fn bind_payload(cx: LowerCx, err: Reg, sig: EnumSig, vn: string, value: ExprId) {
+fn bind_payload(mut cx: LowerCx, err: Reg, sig: EnumSig, vn: string, value: ExprId) {
     let carried: TypeId? = sig.payload_of(vn)
     if carried == null { return }
     cx.bind_patterns(value, [payload_of(cx, err, carried!)])

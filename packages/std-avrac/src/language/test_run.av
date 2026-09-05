@@ -24,7 +24,7 @@ export fn runner_rows() -> List<RtSig> {
 /// The entry: a cell counts failures, each case decides which line
 /// prints, and the verdict leaves through the exit status.
 export fn cases_entry(types: TypeRegistry, cases: List<CaseCall>) -> Body {
-    let e = new_entry(types)
+    mut e = new_entry(types)
     let tally = e.mint(types.intern(Type.Int))
     e.give(Ins.Alloca(tally))
     e.give(Ins.Store(tally, e.constant(0)))
@@ -49,7 +49,7 @@ export fn cases_entry(types: TypeRegistry, cases: List<CaseCall>) -> Body {
 /// The suite's own line: `N/M tests passed`, printed by the binary
 /// that ran them — the runner reads a VERDICT from the exit code,
 /// never a number it could truncate.
-fn tally_line(e: EntryBuild, total: int, failed: Reg) {
+fn tally_line(mut e: EntryBuild, total: int, failed: Reg) {
     // THE MINT LAW: every operand minted before the answer that reads it
     let count = e.constant(total)
     let passed = e.mint(e.types.intern(Type.Int))
@@ -63,7 +63,7 @@ fn tally_line(e: EntryBuild, total: int, failed: Reg) {
 }
 
 /// One case: called, judged, and counted when it fails.
-fn one_case(e: EntryBuild, c: CaseCall, tally: Reg) {
+fn one_case(mut e: EntryBuild, c: CaseCall, tally: Reg) {
     e.give(Ins.CallRtVoid("avra_case_begin", [e.text(c.label)]))
     let ok = e.mint(e.types.intern(Type.Bool))
     e.give(Ins.Call(ok, c.symbol, []))
@@ -90,7 +90,7 @@ type EntryBuild = { types: TypeRegistry, ins: List<Ins>, tys: List<TypeId> }
 fn new_entry(types: TypeRegistry) -> EntryBuild {
     let empty_ins: List<Ins> = []
     let empty_tys: List<TypeId> = []
-    let e = EntryBuild { types: types, ins: empty_ins, tys: empty_tys }
+    mut e = EntryBuild { types: types, ins: empty_ins, tys: empty_tys }
     e.give(Ins.ScopeEnter(Level.Application))
     e
 }

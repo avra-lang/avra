@@ -23,7 +23,7 @@ fn variant(name: string, t: TypeRef?) -> Variant {
 spec "core/nodes" {
     given "an empty store" {
         then "allocation returns sequential ids and round-trips" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let a = s.alloc_expr(Expr.IntLit(1), at(0, 1))
             let b = s.alloc_expr(Expr.Ident("x"), at(2, 3))
             let same = match s.expr(b) { .Ident(n) -> n == "x", _ -> false }
@@ -31,7 +31,7 @@ spec "core/nodes" {
             a.index == 0 && b.index == 1 && s.exprs.count() == 2 && same
         }
         then "spans live in the side table; synthesized nodes have none" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let a = s.alloc_expr(Expr.IntLit(1), at(4, 5))
             let ghost = s.alloc_expr(Expr.Error, null)
             s.expr_span(a)?.lo == 4 && s.expr_span(ghost) == null
@@ -39,14 +39,14 @@ spec "core/nodes" {
     }
     given "content fingerprints" {
         then "same content means same fingerprint, despite distinct ids and spans" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let a = s.alloc_expr(Expr.IntLit(42), at(0, 2))
             let b = s.alloc_expr(Expr.IntLit(42), at(9, 11))
             // LICENSED I9: arena identity is what this test asserts
             a.index != b.index && s.expr_fingerprint(a) == s.expr_fingerprint(b)
         }
         then "negative payloads fingerprint deterministically" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let a = s.alloc_expr(Expr.IntLit(0 - 42), null)
             let b = s.alloc_expr(Expr.IntLit(0 - 42), null)
             let c = s.alloc_expr(Expr.IntLit(42), null)
@@ -54,7 +54,7 @@ spec "core/nodes" {
                 s.expr_fingerprint(a) != s.expr_fingerprint(c)
         }
         then "different content means different fingerprints" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let a = s.alloc_expr(Expr.IntLit(1), null)
             let b = s.alloc_expr(Expr.IntLit(2), null)
             let c = s.alloc_expr(Expr.Ident("1"), null)
@@ -62,21 +62,21 @@ spec "core/nodes" {
                 s.expr_fingerprint(a) != s.expr_fingerprint(c)
         }
         then "the LINK is part of identity: `a?.b` and `a.b` differ" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let subject = s.alloc_expr(Expr.Ident("a"), null)
             let read = s.alloc_expr(Expr.Prop(subject, "b"), null)
             let chain = s.alloc_expr(Expr.Chain(subject, "b"), null)
             s.expr_fingerprint(read) != s.expr_fingerprint(chain)
         }
         then "the chain's MEMBER is part of identity" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let subject = s.alloc_expr(Expr.Ident("a"), null)
             let b = s.alloc_expr(Expr.Chain(subject, "b"), null)
             let c = s.alloc_expr(Expr.Chain(subject, "c"), null)
             s.expr_fingerprint(b) != s.expr_fingerprint(c)
         }
         then "a nullable match records MEANING — the written arm order never counts" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let subject = s.alloc_expr(Expr.Ident("v"), null)
             let present = s.alloc_expr(Expr.IntLit(1), null)
             let absent = s.alloc_expr(Expr.IntLit(2), null)
@@ -87,7 +87,7 @@ spec "core/nodes" {
             s.expr_fingerprint(a) == s.expr_fingerprint(b)
         }
         then "a WRITTEN TYPE is part of identity: `int` and `int?` differ" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1), null)
             let plain = param("x", ty("int", false))
             let opt = param("x", ty("int", true))
@@ -96,7 +96,7 @@ spec "core/nodes" {
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "a nullable RETURN differs from its guarantee" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1), null)
             let p = param("x", ty("int", false))
             let a = s.alloc_stmt(Stmt.FnDecl("f", [], [p], ty("int", false), body), null)
@@ -104,7 +104,7 @@ spec "core/nodes" {
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "an ABSENT type differs from every written one" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let unit = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", null)]), null)
             let carrying = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", ty("int", false))]), null)
             let nullable = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", ty("int", true))]), null)
@@ -113,7 +113,7 @@ spec "core/nodes" {
                 s.stmt_fingerprint(carrying) != s.stmt_fingerprint(nullable)
         }
         then "a field's written type is part of the record's identity" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("int", false))]), null)
             let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("int", true))]), null)
             let c = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("bool", false))]), null)
@@ -121,7 +121,7 @@ spec "core/nodes" {
                 s.stmt_fingerprint(a) != s.stmt_fingerprint(c)
         }
         then "an APPLICATION is part of identity: `List<int>` vs `int`" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1), null)
             let plain = param("x", ty("int", false))
             let applied = TypeRef { name: "List", args: [ty("int", false)], optional: false, dynamic: false, arrow: false, span: null }
@@ -130,7 +130,7 @@ spec "core/nodes" {
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "the ELEMENT is part of identity: `List<int>` vs `List<bool>`" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1), null)
             let li = TypeRef { name: "List", args: [ty("int", false)], optional: false, dynamic: false, arrow: false, span: null }
             let lb = TypeRef { name: "List", args: [ty("bool", false)], optional: false, dynamic: false, arrow: false, span: null }
@@ -139,7 +139,7 @@ spec "core/nodes" {
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "NESTING is part of identity: `List<int>` vs `List<List<int>>`" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1), null)
             let li = TypeRef { name: "List", args: [ty("int", false)], optional: false, dynamic: false, arrow: false, span: null }
             let ll = TypeRef { name: "List", args: [li], optional: false, dynamic: false, arrow: false, span: null }
@@ -148,7 +148,7 @@ spec "core/nodes" {
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "two spellings of one type still agree — spans never count" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let here = TypeRef { name: "int", args: [], optional: true, dynamic: false, arrow: false, span: at(0, 4) }
             let there = TypeRef { name: "int", args: [], optional: true, dynamic: false, arrow: false, span: at(90, 94) }
             let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", here)]), null)
@@ -156,7 +156,7 @@ spec "core/nodes" {
             s.stmt_fingerprint(a) == s.stmt_fingerprint(b)
         }
         then "a parent's fingerprint sees its children's" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let one = s.alloc_expr(Expr.IntLit(1), null)
             let two = s.alloc_expr(Expr.IntLit(2), null)
             let x = s.alloc_expr(Expr.Ident("x"), null)
@@ -167,7 +167,7 @@ spec "core/nodes" {
                 s.expr_fingerprint(p) != s.expr_fingerprint(r)
         }
         then "statements fingerprint through their expressions" {
-            let s = new_node_store()
+            mut s = new_node_store()
             let one = s.alloc_expr(Expr.IntLit(1), null)
             let a = s.alloc_stmt(Stmt.Let("x", null, one), at(0, 9))
             let b = s.alloc_stmt(Stmt.Let("x", null, one), null)
