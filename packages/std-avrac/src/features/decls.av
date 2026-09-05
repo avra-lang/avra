@@ -198,7 +198,7 @@ impl Decls {
             let sp: SpecParts? = store.spec_parts(s)
             if sp != null {
                 let suite = sp!
-                // LICENSED I3: a PAIRED comprehension is our own sugar backlog — `[f(i, x) for i, x in xs]` does not parse
+                // LICENSED I3: the pass's OUTPUT accumulates — every branch of this walk pushes into the same list
                 for k, c in suite.cases {
                     made.push(self.mint("${path}::case ${s.index}.${k}", f, s, c.name, DeclKind.Case, false, suite.name, null, false, c.body))
                 }
@@ -573,10 +573,7 @@ impl Decls {
     /// A builtin's signature: its variants over its own Vars — the
     /// ordinal is the identity, `T1`, `T2`, … the wording.
     fn declare_builtin(d: DeclId, r: TypeRow) {
-        mut parts: List<TypeId> = []
-        // LICENSED I3: the ordinal needs the index; comprehensions cannot destructure enumerate
-        for (j, n) in builtin_tparams(r.arity).enumerate() { parts.push(self.types.intern(Type.Var(d, j, n))) }
-        let vars = TypeArgs { parts: parts }
+        let vars = TypeArgs { parts: [self.types.intern(Type.Var(d, j, n)) for j, n in builtin_tparams(r.arity)] }
         let sig: EnumSig? = r.variants(vars)
         if sig != null { self.declare(d, DeclSig.Variants(sig!)) }
     }

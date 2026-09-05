@@ -4,13 +4,13 @@ use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef}
 use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, program, lone_workspace, timed_workspace, parsed_cases, parse_clean, entry_of, no_target, avra, emit_ll, link_words}
 use @std.avrac.core.{joined, distinct}
 use @std.path.{dir_of, under_dir}
-use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit_text}
+use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit_text, exit}
+use @std.time.{now_ns}
 use @std.errors.{Error}
 use @std.io.{println, eprintln, read_text, write_text, exists, is_dir, list_dir}
 
+// THE ONE TRUE EXTERN: no std package owns "re-exec this image".
 extern fn avra_exec_self(args: List<string>) -> int
-extern fn avra_process_exit(code: int)
-extern fn avra_now_ns() -> int
 
 /// The disk, as the workspace's four questions — a listing the host
 /// refuses reads as empty (the workspace asks `exists` first); a FILE
@@ -31,7 +31,7 @@ fn read_or_die(path: string) -> string {
         .Ok(text) -> text,
         .Err(e) -> {
             let _ = host_refused(e.describe().message)
-            avra_process_exit(2)
+            exit(Exit.Code(2))
             ""
         }
     }
@@ -62,14 +62,14 @@ fn program_arg(args: CliResult) -> Program? {
         let lone: Program = program(lone_workspace(path, read_or_die(path), avra()), path)
         return lone
     }
-    let whole: Program = program(timed_workspace(disk_host(), root!, avra(), () -> avra_now_ns()), path)
+    let whole: Program = program(timed_workspace(disk_host(), root!, avra(), () -> now_ns()), path)
     whole
 }
 
 /// A package root as a program entered at its `[bin]` when it has
 /// one — every file analyzed either way.
 fn root_program(root: string) -> Program {
-    let ws = timed_workspace(disk_host(), root, avra(), () -> avra_now_ns())
+    let ws = timed_workspace(disk_host(), root, avra(), () -> now_ns())
     program(ws, entry_of(ws))
 }
 
@@ -95,7 +95,7 @@ fn caseless_program(args: CliResult) -> Program? {
         return null
     }
     if is_dir(path) {
-        let whole: Program = program(timed_workspace(disk_host(), path, avra(), () -> avra_now_ns()), null)
+        let whole: Program = program(timed_workspace(disk_host(), path, avra(), () -> now_ns()), null)
         return whole
     }
     let root: string? = package_root(dir_of(path))
@@ -103,7 +103,7 @@ fn caseless_program(args: CliResult) -> Program? {
         let lone: Program = program(lone_workspace(path, read_or_die(path), avra()), null)
         return lone
     }
-    let held: Program = program(timed_workspace(disk_host(), root!, avra(), () -> avra_now_ns()), null)
+    let held: Program = program(timed_workspace(disk_host(), root!, avra(), () -> now_ns()), null)
     held
 }
 
@@ -142,7 +142,7 @@ fn package_workspace(path: string) -> Workspace? {
         no_target(path)
         return null
     }
-    timed_workspace(disk_host(), root!, avra(), () -> avra_now_ns())
+    timed_workspace(disk_host(), root!, avra(), () -> now_ns())
 }
 
 /// ZERO CASES FOR A NAMED FILE IS A REFUSAL, not a green run: the
