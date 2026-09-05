@@ -1,0 +1,57 @@
+#!/bin/sh
+# THE INTEGRATOR: `sh tools/integrate.sh <lane> <message-file>` lands
+# one lane on main, the lanes' rule 5 as a mechanism. From the lane's
+# worktree (../avra-lane-<lane>) it commits the working tree with the
+# message, rebases the lane onto main and runs the FULL gate there
+# when main has moved, merges with a merge commit, rebuilds main's
+# compiler twice (the fixed point), refreshes the seed, bootstraps
+# from it (byte-identical, or it is not a seed), commits the seed, and
+# rebases the lane onto the new main. Every heavy step runs through
+# the watchdog and its lock. Edits another session left on main's
+# working tree are stashed around the merge and restored, uncommitted.
+# The first red stops everything, with main untouched past that point.
+set -e
+lane="$1"; msg="$2"
+[ -n "$lane" ] && [ -f "$msg" ] || { echo "usage: integrate.sh <lane> <message-file>" >&2; exit 2; }
+root="$(cd "$(dirname "$0")/.." && pwd)"
+main="$(dirname "$root")/avra"
+worktree="$(dirname "$root")/avra-lane-$lane"
+[ -d "$main/.git" ] && [ -d "$worktree" ] || { echo "integrate: no main at $main or no worktree at $worktree" >&2; exit 2; }
+cap=4000
+
+cd "$worktree"
+if [ -n "$(git status --porcelain)" ]; then
+    git add -A && git commit -q -F "$msg"
+    echo "integrate: committed $(git log -1 --format=%h) on lane/$lane"
+fi
+base="$(git -C "$main" rev-parse HEAD)"
+if ! git merge-base --is-ancestor "$base" HEAD; then
+    echo "integrate: main moved to $(git -C "$main" log -1 --format=%h) — rebasing lane/$lane and gating"
+    git rebase main
+    sh tools/watch.sh $cap make bootstrap > /tmp/integrate-bootstrap.out 2>&1 || { echo "integrate: the rebased lane does not bootstrap"; tail -20 /tmp/integrate-bootstrap.out; exit 1; }
+    sh tools/watch.sh $cap make gate > /tmp/integrate-gate.out 2>&1 || { echo "integrate: the gate is RED on the rebased lane"; grep -n "✗\|FAILED\|error" /tmp/integrate-gate.out | head -12; exit 1; }
+    echo "integrate: gate green on the rebased lane ($(grep -c 'tests passed' /tmp/integrate-gate.out) suites)"
+fi
+
+cd "$main"
+[ -z "$(git status --porcelain --untracked-files=no)" ] || { git stash push -q -m "edits another session left on main's working tree"; stashed=1; }
+git merge --no-ff -q "lane/$lane" -m "merge: lane $lane — $(head -1 "$msg" | cut -c1-100)"
+[ -n "$stashed" ] && git stash pop -q && echo "integrate: main's uncommitted edits restored (they were never committed)"
+echo "integrate: merged as $(git log -1 --format=%h)"
+
+sh tools/watch.sh $cap make -s avra > /tmp/integrate-avra1.out 2>&1 || { echo "integrate: main does not build after the merge"; tail -20 /tmp/integrate-avra1.out; exit 1; }
+cp build/avra /tmp/integrate-avra1
+sh tools/watch.sh $cap make -s avra > /tmp/integrate-avra2.out 2>&1
+cmp -s build/avra /tmp/integrate-avra1 || { echo "integrate: NO FIXED POINT on main (build 2 differs from build 1)"; exit 1; }
+sh tools/watch.sh $cap make -s seed > /tmp/integrate-seed.out 2>&1
+cp build/avra /tmp/integrate-preboot
+sh tools/watch.sh $cap make -s bootstrap > /tmp/integrate-boot.out 2>&1 || { echo "integrate: the refreshed seed does not bootstrap"; tail -20 /tmp/integrate-boot.out; exit 1; }
+cmp -s build/avra /tmp/integrate-preboot || { echo "integrate: the seed does not CYCLE (bootstrap differs)"; exit 1; }
+git add bootstrap/seed.ll
+git commit -q -m "chore(seed): refreshed after lane $lane merged
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XXBDccuDA8Ntk55RXKedD2"
+echo "integrate: main at $(git log -1 --format=%h), fixed point and seed cycle hold"
+
+cd "$worktree" && git rebase -q main && echo "integrate: lane/$lane rebased onto main"
