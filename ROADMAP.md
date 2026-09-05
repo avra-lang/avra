@@ -241,6 +241,15 @@ the compiler checking itself 28.8s.
         sugar backlog, below); lane C owns the files. DONE WHEN
         `avra()` is `once` and the case run drops by the measured
         share (7.6ms x 1578 cases).
+        RE-MEASURED 2026-09-04: the profile of the cases binary put
+        HALF the run inside `distinct` — `rule_first` re-walked a
+        referenced rule's whole body at every reference and every
+        union allocated a map, so the "cost of `avra()`" was mostly
+        first sets re-derived forty times. `FirstCx.firsts` (each
+        rule's set once) took the cases binary 24.9s -> 8.6s and the
+        suite 46s -> 30s, one assembly 30ms -> 20ms. What `once`
+        would still buy is the remaining per-case assembly —
+        re-profile before building it.
   - [x] PROFILE THE CASE RUN (2026-09-04): its top frame was
         `distinct`, the O(n^2) dedup behind `Grammar.keywords()`,
         recomputed by every case's `avra()` over ~1000 literals —
