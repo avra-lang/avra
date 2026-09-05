@@ -24,17 +24,11 @@ export fn lower_ordinal(mut cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
     tag_of(cx, cx.reg_of(subject))
 }
 
-/// A variant's ordinal under a signature that may be absent.
-fn variant_tag(declared: EnumSig?, name: string) -> int? {
-    if declared == null { return null }
-    declared!.tag_of(name)
-}
-
 /// `subject is .variant`: the tag read once, compared to the
 /// variant's ordinal — one instruction, no region.
 fn asked_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, variant: string) -> Reg {
     let declared: EnumSig? = cx.variants_at(subject)
-    let which: int? = variant_tag(declared, variant)
+    let which: int? = declared?.tag_of(variant)
     if which == null {
         cx.defect("an `is` without an enum variant survived typing")
         return cx.result(e)
@@ -200,7 +194,7 @@ fn pat_reg(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
 
 fn variant_reg(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: TypeId) -> Reg {
     let declared: EnumSig? = cx.variants_of(vty)
-    let which: int? = variant_tag(declared, name)
+    let which: int? = declared?.tag_of(name)
     if which == null {
         cx.defect("a variant pattern without its enum survived typing")
         return const_bool(cx, false)
@@ -236,7 +230,7 @@ fn payloads_reg(mut cx: LowerCx, carried: List<TypeId>, args: List<PatId>, v: Re
 /// `.name(args)` — the tagged value of the enum typing chose.
 fn literal_reg(mut cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -> Reg {
     let sig: EnumSig? = cx.variants_at(e)
-    let which: int? = variant_tag(sig, name)
+    let which: int? = sig?.tag_of(name)
     if which == null { return lower_defect(cx, e, "a variant literal without its enum survived typing") }
     let carried = [cx.reg_of(a) for a in args]
     let size = box_size(cx, 1 + carried.length)
