@@ -82,47 +82,29 @@ fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: 
         bind_checked: (s: StmtId) -> r.bind_checked(s),
         check_params: (ps: List<Param>, s: StmtId) -> r.check_params(ps, s),
         scope_stmts: (body: List<StmtId>) -> scoped_stmts(r, param_names, body),
-        impl_stmts: (body: List<StmtId>) -> under_receiver(r, () -> resolve_stmts(r, param_names, false, body)),
+        impl_stmts: (body: List<StmtId>) -> impl_stmts(r, param_names, body),
         bound_scope: (s: StmtId, exprs: List<ExprId>, body: List<StmtId>) ->
             bound_scope(r, param_names, s, exprs, body),
     }
     for s in stmts { stmt_semantics_of(r.lang.dispatch, r.view.store.stmt(s)).resolve_stmt(cx, s) }
 }
 
-/// An impl's or a trait's fns around `run`: every fn inside is a
-/// method, and `self` names its receiver.
-fn under_receiver(r: Resolver, run: fn()) {
-    mut rs = r.receivers
-    // LICENSED I15: this IS the bracket fn
-    rs.push(true)
-    run()
-    let _ = rs.pop()
-}
-
-/// A fresh overlay scope around `run`: binds made inside are
-/// visible onward and die at exit — the ONE scope ritual.
-fn under_overlay(r: Resolver, run: fn()) {
-    mut ov = r.overlays
-    let fresh: Map<string, Binding> = {}
-    // LICENSED I15: this IS the bracket fn
-    ov.push(fresh)
-    run()
-    let _ = ov.pop()
-}
-
 /// A statement list under its own overlay scope — a loop body.
-fn scoped_stmts(r: Resolver, param_names: List<string>, stmts: List<StmtId>) {
-    under_overlay(r, () -> resolve_stmts(r, param_names, true, stmts))
+fn scoped_stmts(mut r: Resolver, param_names: List<string>, stmts: List<StmtId>) {
+    r.open_overlay()
+    resolve_stmts(r, param_names, true, stmts)
+    r.close_overlay()
 }
 
 /// A fresh scope where `s`'s own binding holds: the exprs walk and
 /// the statements resolve inside it, and the binding dies at exit —
 /// a loop variable's home. A scoped binder never counts as a
 /// later definition: its name outside the scope is plainly unknown.
-fn bound_scope(r: Resolver, param_names: List<string>, s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
-    mut sc = r.scoped
-    sc.set(s.index, true)
-    under_overlay(r, () -> bound_body(r, param_names, s, exprs, stmts))
+fn bound_scope(mut r: Resolver, param_names: List<string>, s: StmtId, exprs: List<ExprId>, stmts: List<StmtId>) {
+    r.scoped.set(s.index, true)
+    r.open_overlay()
+    bound_body(r, param_names, s, exprs, stmts)
+    r.close_overlay()
 }
 
 /// Inside the bound scope: the binder holds, the exprs walk, the
@@ -136,8 +118,10 @@ fn bound_body(mut r: Resolver, param_names: List<string>, s: StmtId, exprs: List
 
 /// A block's statements under a fresh overlay scope: binds are
 /// visible onward and restored at exit.
-fn block_scope(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId?) {
-    under_overlay(r, () -> block_body(r, param_names, stmts, value))
+fn block_scope(mut r: Resolver, param_names: List<string>, stmts: List<StmtId>, value: ExprId?) {
+    r.open_overlay()
+    block_body(r, param_names, stmts, value)
+    r.close_overlay()
 }
 
 /// Inside a block's scope: the statements, then the value — absent
@@ -150,8 +134,10 @@ fn block_body(r: Resolver, param_names: List<string>, stmts: List<StmtId>, value
 /// One match arm's scope: its binds (in pattern order) hold for
 /// the arm's value and die with it — the first scope in the
 /// language opened by an EXPRESSION rather than a statement.
-fn arm_scope(r: Resolver, param_names: List<string>, binds: List<string>, value: ExprId) {
-    under_overlay(r, () -> arm_body(r, param_names, binds, value))
+fn arm_scope(mut r: Resolver, param_names: List<string>, binds: List<string>, value: ExprId) {
+    r.open_overlay()
+    arm_body(r, param_names, binds, value)
+    r.close_overlay()
 }
 
 fn arm_body(mut r: Resolver, param_names: List<string>, binds: List<string>, value: ExprId) {
@@ -255,6 +241,14 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
         lambda_scope: (lam: ExprId, ps: List<Param>, body: ExprId) -> lambda_scope(r, param_names, lam, ps, body),
     }
     for e in r.lang.post_order(r.view.store, root) { semantics_of(r.lang.dispatch, r.view.store.expr(e)).resolve(cx, e) }
+}
+
+/// An impl's or a trait's fns: every fn inside is a method, and
+/// `self` names its receiver for exactly their resolution.
+fn impl_stmts(mut r: Resolver, param_names: List<string>, body: List<StmtId>) {
+    r.receivers.push(true)
+    resolve_stmts(r, param_names, false, body)
+    let _ = r.receivers.pop()
 }
 
 /// A fn's body walks behind a FLOOR: the overlay depth at entry.
@@ -370,6 +364,17 @@ impl Resolver {
         self.speak(self.suggested(
             refusal("resolve.unresolved", at, "`${name}` is not defined", "not defined anywhere in this program", null),
             e, name, self.def_names))
+    }
+
+    /// THE ONE SCOPE RITUAL: a fresh overlay opens, binds made inside
+    /// are visible onward, and it closes with them.
+    fn open_overlay() {
+        let fresh: Map<string, Binding> = {}
+        self.overlays.push(fresh)
+    }
+
+    fn close_overlay() {
+        let _ = self.overlays.pop()
     }
 
     /// `self` — the receiver of the innermost enclosing method,

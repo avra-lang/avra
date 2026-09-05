@@ -388,6 +388,14 @@ the order is the dependency.
         `mut` now tells the truth (0 unused seats, 108 receiver-law
         sites at shared-state roots, 54 captured seats). 1661 cases,
         corpus 73/73.
+        S4b-2 LANDED 2026-09-04 — THE BRACKETS: every bracket whose
+        thunk captured the driver is spelled at its site — the
+        resolver's overlay and receiver scopes open and close as two
+        verbs, the typer's narrow frame takes a SELECTOR and the walk's
+        inputs, the hunger door is `hungry(cx, e)` behind an `if`, and
+        the presence region is `open_presence` / `present_arm` /
+        `close_presence` at its seven sites. Captured seats 54 -> 39,
+        all closure fields now (S4b-3). 1669 cases, corpus 73/73.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become

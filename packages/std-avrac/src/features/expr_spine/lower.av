@@ -5,7 +5,7 @@
 //! desugar onto the region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
 use core.{ExprId, BinOp, UnOp, Reg, Ins, Type, TypeId}
-use features.{LowerCx, StructSig, EnumSig, presence_of, lower_defect, foreign_node, variant_defect, tagged_value, PropertyRow, property_row, same_value, presence_region, carried_of, field_read}
+use features.{LowerCx, StructSig, EnumSig, presence_of, lower_defect, foreign_node, variant_defect, tagged_value, PropertyRow, property_row, same_value, open_presence, present_arm, close_presence, carried_of, field_read}
 
 fn spine_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -133,18 +133,18 @@ fn nullable_eq_reg(mut cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
 /// The nullable side tested, the other beside it.
 fn led_by(mut cx: LowerCx, e: ExprId, v: Reg, vt: TypeId, w: Reg, wt: TypeId) -> Reg {
     let inner: TypeId = cx.view.types.carried(vt) ?? vt
-    presence_region(cx, e, v, vt,
-        () -> present_beside(cx, e, carried_of(cx, v, vt), w, wt, inner),
-        () -> absent_beside(cx, w, wt))
+    open_presence(cx, v, vt)
+    present_arm(cx, present_beside(cx, e, carried_of(cx, v, vt), w, wt, inner))
+    close_presence(cx, e, absent_beside(cx, w, wt))
 }
 
 /// The present side's value against the other: equal values when
 /// the other is present too, false when it is absent.
 fn present_beside(mut cx: LowerCx, e: ExprId, av: Reg, b: Reg, rt: TypeId, inner: TypeId) -> Reg {
     if cx.view.types.carried(rt) == null { return same_value(cx, av, b, inner) }
-    presence_region(cx, e, b, rt,
-        () -> same_value(cx, av, carried_of(cx, b, rt), inner),
-        () -> const_bool(cx, false))
+    open_presence(cx, b, rt)
+    present_arm(cx, same_value(cx, av, carried_of(cx, b, rt), inner))
+    close_presence(cx, e, const_bool(cx, false))
 }
 
 /// The absent side against the other: equal only to absence.

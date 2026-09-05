@@ -44,7 +44,7 @@ fn unit_variant(mut cx: TypeCx, e: ExprId, tname: string, variant: string, tp: L
 export fn unit_instantiated(mut cx: TypeCx, e: ExprId, tname: string, variant: string, decl: DeclId, tp: List<string>) -> TypeId {
     let pinned = pinned_by_want(cx, e, decl, no_pins(tp.length))
     let missing: string? = unpinned_of(tp, pinned)
-    if missing != null { return unfed_construction(cx, e, () -> cannot_pin(cx, e, tname, variant, missing!)) }
+    if missing != null { return if cx.starving { cannot_pin(cx, e, tname, variant, missing!) } else { hungry(cx, e) } }
     instantiated(cx, e, tname, decl, tp, pinned)
 }
 
@@ -57,7 +57,7 @@ fn instantiated(mut cx: TypeCx, e: ExprId, tname: string, decl: DeclId,
     if tp.is_empty() { return cx.view.types.intern(Type.Enum(decl, tname)) }
     let pinned = pinned_by_want(cx, e, decl, bound)
     let missing: string? = unpinned_of(tp, pinned)
-    if missing != null { return unfed_construction(cx, e, () -> unpinned_by_payload(cx, e, missing!)) }
+    if missing != null { return if cx.starving { unpinned_by_payload(cx, e, missing!) } else { hungry(cx, e) } }
     let concrete = bound_closed(cx, pinned)
     let row: TypeRow? = cx.view.decls.row_of(decl)
     let args = TypeArgs { parts: concrete }
@@ -83,8 +83,10 @@ fn wants_decl(mut cx: TypeCx, want: TypeId, decl: DeclId) -> bool {
 
 /// A construction whose Vars nothing pinned goes HUNGRY for a want;
 /// only when the walk ends starving does it speak.
-export fn unfed_construction(mut cx: TypeCx, e: ExprId, voice: fn() -> TypeId) -> TypeId {
-    if cx.starving { return voice() }
+/// A construction nothing pinned goes HUNGRY — silently, the hole —
+/// unless the walk is already starving, when the site speaks for
+/// itself.
+export fn hungry(mut cx: TypeCx, e: ExprId) -> TypeId {
     cx.go_hungry(e)
     cx.error_type
 }

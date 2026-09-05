@@ -320,13 +320,21 @@ fn pair_adoption(mut cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg 
 /// opens: the present arm's value, then the absent arm's, merged
 /// into the node's register. Thunks keep each arm's instructions
 /// INSIDE its brackets, which is what makes the absent side lazy.
-export fn presence_region(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
-                          present: fn() -> Reg, absent: fn() -> Reg) -> Reg {
+/// A region on PRESENCE opens here; the present arm's register is
+/// given by `present_arm`, the absent arm's by `close_presence`,
+/// which mints the region's answer. Spelled at the site so each
+/// arm's instructions land between the brackets.
+export fn open_presence(mut cx: LowerCx, v: Reg, held: TypeId) {
     cx.emit(Ins.IfStart(presence_of(cx, v, held)))
-    cx.emit(Ins.ArmEnd(present()))
-    let answer = absent()
+}
+
+export fn present_arm(mut cx: LowerCx, present: Reg) {
+    cx.emit(Ins.ArmEnd(present))
+}
+
+export fn close_presence(mut cx: LowerCx, e: ExprId, absent: Reg) -> Reg {
     let dst = cx.result(e)
-    cx.emit(Ins.RegionEnd(dst, answer))
+    cx.emit(Ins.RegionEnd(dst, absent))
     dst
 }
 

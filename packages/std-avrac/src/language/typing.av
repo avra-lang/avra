@@ -294,27 +294,30 @@ fn narrowed_subtree(mut t: Typer, param_types: List<TypeId>, subject: ExprId, br
 fn narrowed_def_walk(mut t: Typer, param_types: List<TypeId>, s: StmtId, branch: ExprId) -> TypeId {
     // A `mut` can be reassigned mid-branch — never narrowed.
     if !(t.view.store.stmt(s) is .Let) { return typed_subtree(t, param_types, branch) }
-    framed(t, t.narrow_defs, s.index, t.def_type(s),
-           () -> typed_subtree(t, param_types, branch))
+    framed(t, Narrowing.Defs, s.index, t.def_type(s), param_types, branch)
 }
 
-fn narrowed_param_walk(t: Typer, param_types: List<TypeId>, i: int, branch: ExprId) -> TypeId {
-    framed(t, t.narrow_params, i, param_types[i],
-           () -> typed_subtree(t, param_types, branch))
+fn narrowed_param_walk(mut t: Typer, param_types: List<TypeId>, i: int, branch: ExprId) -> TypeId {
+    framed(t, Narrowing.Params, i, param_types[i], param_types, branch)
+}
+
+/// Which narrowing stack a frame lives on — the defs' or the
+/// params'; a selector, so the bracket writes the typer's own field
+/// and never a copy of it.
+enum Narrowing {
+    Defs
+    Params
 }
 
 /// The narrow bracket: when `opt` really is a nullable, its frame
-/// lives on the given stack exactly as long as the thunk's walk;
-/// otherwise the walk runs bare. The stack is a PLACE — a struct's
-/// field — so the push is seen by every nested read.
-fn framed(t: Typer, frames: Frames, key: int, opt: TypeId, walk: fn() -> TypeId) -> TypeId {
+/// lives on the selected stack exactly as long as the branch's
+/// walk; otherwise the walk runs bare.
+fn framed(mut t: Typer, which: Narrowing, key: int, opt: TypeId, param_types: List<TypeId>, branch: ExprId) -> TypeId {
     let inner: TypeId? = t.view.types.carried(opt)
-    if inner == null { return walk() }
-    // LICENSED I15: this IS the bracket
-    mut fs = frames.stack
-    fs.push(NarrowFrame { key: key, inner: inner!, opt: opt })
-    let answer = walk()
-    let _ = fs.pop()
+    if inner == null { return typed_subtree(t, param_types, branch) }
+    t.push_frame(which, NarrowFrame { key: key, inner: inner!, opt: opt })
+    let answer = typed_subtree(t, param_types, branch)
+    t.pop_frame(which)
     answer
 }
 
@@ -399,6 +402,20 @@ impl Typer {
 
     /// The narrowed INNER for a def-bound read, when a frame proves
     /// it — recorded so lowering unwraps this very read.
+    fn push_frame(which: Narrowing, frame: NarrowFrame) {
+        match which {
+            .Defs -> self.narrow_defs.stack.push(frame),
+            .Params -> self.narrow_params.stack.push(frame),
+        }
+    }
+
+    fn pop_frame(which: Narrowing) {
+        match which {
+            .Defs -> { let _ = self.narrow_defs.stack.pop() }
+            .Params -> { let _ = self.narrow_params.stack.pop() }
+        }
+    }
+
     fn narrowed_def(e: ExprId, s: StmtId) -> TypeId? {
         self.narrow_hit(e, self.narrow_defs, s.index)
     }

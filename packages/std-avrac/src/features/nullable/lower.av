@@ -5,7 +5,7 @@
 //! side, the absent arm, and the chain's absence all run only when
 //! the value is not there.
 use core.{ExprId, StmtId, TypeId, Reg, Ins, Type}
-use features.{LowerCx, StmtLowerCx, StructSig, foreign_node, presence_of, carried_of, carried_type, adopted, absent_of, insisted, hollow_of, okness_of, payload_of, lower_defect, length_word, presence_region, field_read}
+use features.{LowerCx, StmtLowerCx, StructSig, foreign_node, presence_of, carried_of, carried_type, adopted, absent_of, insisted, hollow_of, okness_of, payload_of, lower_defect, length_word, open_presence, present_arm, close_presence, field_read}
 
 fn nullable_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -38,9 +38,9 @@ fn coalesce_reg(mut cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
     if cx.view.types.carried(held) == null { return v }
     // a nullable answer (the chain's middle) keeps the value whole
     let whole = cx.view.types.carried(cx.type_at(e)) != null
-    presence_region(cx, e, v, held,
-        () -> if whole { v } else { carried_of(cx, v, held) },
-        () -> cx.reg_of(r))
+    open_presence(cx, v, held)
+    present_arm(cx, if whole { v } else { carried_of(cx, v, held) })
+    close_presence(cx, e, cx.reg_of(r))
 }
 
 /// `v!` — the carried value, insisted on; a read a narrowing made
@@ -57,12 +57,10 @@ fn match_opt_reg(mut cx: LowerCx, e: ExprId, subject: ExprId,
                  present: ExprId, absent: ExprId) -> Reg {
     let v = cx.reg_of(subject)
     let held = cx.type_at(subject)
-    presence_region(cx, e, v, held,
-        () -> {
-            cx.bind_patterns(present, [carried_of(cx, v, held)])
-            cx.reg_of(present)
-        },
-        () -> cx.reg_of(absent))
+    open_presence(cx, v, held)
+    cx.bind_patterns(present, [carried_of(cx, v, held)])
+    present_arm(cx, cx.reg_of(present))
+    close_presence(cx, e, cx.reg_of(absent))
 }
 
 /// `v?` — the present arm unwraps what the nullable carries; the
@@ -74,9 +72,9 @@ fn propagate_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
     let r = cx.reg_of(v)
     let held = cx.type_at(v)
     if cx.view.types.shape_of(held) is .Res { return propagate_res_reg(cx, e, r) }
-    presence_region(cx, e, r, held,
-        () -> carried_of(cx, r, held),
-        () -> departed(cx, e))
+    open_presence(cx, r, held)
+    present_arm(cx, carried_of(cx, r, held))
+    close_presence(cx, e, departed(cx, e))
 }
 
 /// `v?` on a RESULT: one region on OKNESS. The ok arm unwraps the
@@ -127,9 +125,9 @@ fn chain_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string) -> Reg {
     let v = cx.reg_of(subject)
     let held = cx.type_at(subject)
     let answer = cx.type_at(e)
-    presence_region(cx, e, v, held,
-        () -> lifted_member(cx, e, v, held, name, answer),
-        () -> absent_of(cx, answer))
+    open_presence(cx, v, held)
+    present_arm(cx, lifted_member(cx, e, v, held, name, answer))
+    close_presence(cx, e, absent_of(cx, answer))
 }
 
 /// The present arm: read the member of what the subject carries,
