@@ -241,8 +241,14 @@ the compiler checking itself 28.8s.
         sugar backlog, below); lane C owns the files. DONE WHEN
         `avra()` is `once` and the case run drops by the measured
         share (7.6ms x 1578 cases).
-  - [ ] PROFILE THE CASE RUN AGAIN (`sample`, 30s) and land what it
-        names; then re-measure and rewrite THE PIPELINE table.
+  - [x] PROFILE THE CASE RUN (2026-09-04): its top frame was
+        `distinct`, the O(n^2) dedup behind `Grammar.keywords()`,
+        recomputed by every case's `avra()` over ~1000 literals —
+        linear now (a seen-map; order kept). Beside it: `rt_sig_of`
+        rebuilding the runtime table per evaluator call and
+        `FirstCx.alt_first` computing FIRST sets per `ready()` — both
+        the once-per-process family, recorded under the ask. Lowering's
+        window is clang: the parent sits in `link` waiting.
 
 LANE B — STD LIBS (owns NEW packages only; each package: `avra.toml`,
 spec tests beside it, a corpus package under corpus/<name>/ proving
@@ -2726,7 +2732,12 @@ additions get siblings, nothing changes shape:
   reference. Typing refuses `once` on a fn with parameters or one
   that reads a `mut`. Wanting sites: `avra()` (language/mod.av),
   every `shown(src)` in 1578 cases through `analyze_source`, and the
-  CLI's own `avra()` per command. Rejected on the way: a runtime
+  CLI's own `avra()` per command; `rt_sig_of(name)`, which rebuilds
+  the whole 48-row runtime table on EVERY call — the memory pass per
+  runtime call lowered, the backend per call emitted, the evaluator
+  per runtime call EXECUTED (~8% of the case run and of lowering,
+  sampled 2026-09-04; a second spelling of the table was refused —
+  `once fn rt_index()` is the fix). Rejected on the way: a runtime
   cache (a `Language` is an Avra value; the seam would need a cast
   Avra does not have) and threading a language through every test
   helper (1500 call sites).
