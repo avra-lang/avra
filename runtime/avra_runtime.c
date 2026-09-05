@@ -42,7 +42,7 @@
 // A box's KIND decides how it reclaims and clones: 0 a plain
 // allocation, 1 an array, 2 a map. Below zero it is not counted:
 // STATIC is immortal, DEAD is the guard's mark on a reclaimed box.
-enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MAP = 2 };
+enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MAP = 2, KIND_STR = 3 };
 
 // "AVRA" — the bytes that say a header is this runtime's.
 #define AVRA_TAG 0x41565241u
@@ -69,19 +69,43 @@ static Header* hdr(void* p) {
     return h->tag == AVRA_TAG ? h : NULL;
 }
 
+// SIZE CLASSES: a box of up to CLASS_MAX payload bytes is recycled
+// through a per-class free list instead of handed back to malloc —
+// a parse mints and drops a record per match, and malloc and free
+// were a third of it. A record's header `len` holds its class; a
+// string's holds its text length, and its class follows from that.
+// A box past the classes is malloc's, class 0.
+#define CLASS_BYTES 16
+#define CLASS_MAX 256
+#define CLASSES (CLASS_MAX / CLASS_BYTES + 1)
+static Header* g_free[CLASSES];
+
+static size_t class_of(size_t bytes) {
+    size_t cls = (bytes + CLASS_BYTES - 1) / CLASS_BYTES;
+    return cls < CLASSES ? cls : 0;
+}
+
 // A fresh box of `size` payload bytes, refcount 1.
 static void* box_alloc(size_t size, int32_t kind) {
-    Header* h = (Header*)malloc(sizeof(Header) + (size > 0 ? size : 1));
+    size_t bytes = size > 0 ? size : 1;
+    size_t cls = class_of(bytes);
+    Header* h = cls ? g_free[cls] : NULL;
+    if (h) {
+        g_free[cls] = *(Header**)(h + 1);
+    } else {
+        h = (Header*)malloc(sizeof(Header) + (cls ? cls * CLASS_BYTES : bytes));
+    }
     h->tag = AVRA_TAG;
     h->kind = kind;
     h->rc = 1;
-    h->len = 0;
+    h->len = (uint32_t)cls;
     return (void*)(h + 1);
 }
 
 // A string box of `n` bytes plus its terminator, its length known.
+// An owned string wears KIND_STR so its class can be read back.
 static char* str_box(size_t n, int32_t kind) {
-    char* buf = (char*)box_alloc(n + 1, kind);
+    char* buf = (char*)box_alloc(n + 1, kind == KIND_PLAIN ? KIND_STR : kind);
     ((Header*)buf - 1)->len = (uint32_t)n;
     return buf;
 }
@@ -98,8 +122,14 @@ static size_t str_len(const char* s) {
 // anyone's.
 static void box_free(void* p) {
     Header* h = (Header*)p - 1;
+    size_t cls = h->kind == KIND_STR ? class_of((size_t)h->len + 1) : (size_t)h->len;
     h->tag = 0;
-    free(h);
+    if (cls) {
+        *(Header**)(h + 1) = g_free[cls];
+        g_free[cls] = h;
+    } else {
+        free(h);
+    }
 }
 
 // An IMMORTAL copy of `s`: retain and release leave it alone. What
