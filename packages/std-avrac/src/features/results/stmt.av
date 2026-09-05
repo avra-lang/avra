@@ -4,7 +4,7 @@
 //! enum's `.Err` and exits — `FnExit` settles every open scope's
 //! debts at the site, exactly as `return` does.
 use core.{StmtId, ExprId, TypeId, Reg, Ins, ResSides}
-use features.{StmtSemantics, ResolveCx, TypeCx, StmtLowerCx, accepts, this_is, failed}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, accepts, this_is, failed}
 use diagnostics.{refusal}
 
 export type FailSemantics = { }
@@ -19,7 +19,7 @@ impl StmtSemantics for FailSemantics {
         check_fail(cx, s)
     }
 
-    fn lower_stmt(mut cx: StmtLowerCx, s: StmtId) -> Reg? {
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
         lower_fail(cx, s)
     }
 }
@@ -51,14 +51,14 @@ fn check_fail(mut cx: TypeCx, s: StmtId) {
 
 /// The failure wrapped and exited — the memory pass settles every
 /// open scope at the site; other paths continue.
-fn lower_fail(mut cx: StmtLowerCx, s: StmtId) -> Reg? {
+fn lower_fail(mut cx: LowerCx, s: StmtId) -> Reg? {
     let v: Reg? = cx.lower_value(s)
     if v == null { return null }
-    let ret: TypeId? = cx.expr.enclosing_ret()
+    let ret: TypeId? = cx.enclosing_ret()
     if ret == null {
-        cx.expr.defect("a `fail` without an enclosing fn survived typing")
+        cx.defect("a `fail` without an enclosing fn survived typing")
         return null
     }
-    cx.expr.emit(Ins.FnExit(failed(cx.expr, ret!, v!)))
+    cx.emit(Ins.FnExit(failed(cx, ret!, v!)))
     null
 }

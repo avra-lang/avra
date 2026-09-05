@@ -549,6 +549,31 @@ the order is the dependency.
         shape. 24 files, +284/-310; 1674 cases, corpus 73/73. The
         gate's peak is 2.3 GB now (lane A's parallel suite), up from
         1.4 GB — relevant to the machine's load budget.
+        S4b-3c LANDED 2026-09-05 — THE CONTEXT IS THE LOWERING, AND
+        S4b IS DONE: `LowerCx` carries the body's state (the
+        emitter, the registers and slots, the instantiation and the
+        declared answer, the dispatch, the mono worklist) and the
+        walk's verbs are its methods in language/lower_walk.av —
+        `reg_of`, `lower_block`, `lower_stmts`, the narrow/widen
+        edge, the dyn lift, the printed answer — with the state's
+        vocabulary in lower_state.av; `StmtLowerCx` is gone (29
+        sites) and with it the `mut ex = cx.expr` borrow (5 sites);
+        `Jobs`/`Wanted`/`Lift`/`Wrap` live in features/worklist.av.
+        Captured seats F2048 3 -> 0 — EVERY closure field in the
+        three passes is a method now — and THE SEAT LAW'S CAPTURED
+        CASE IS A REFUSAL. It caught one site: the memo kernel's toy
+        test handed a captured tally to `mut` seats and counted runs
+        through list aliasing — (B)'s shape in a test; its seats
+        read until `Cell`. Receiver-law F2047 94 -> 92 (one lowering
+        helper took the context by value and called `reg_of`; a
+        `mut` seat now). Red team: 28 lowering probes (every loop,
+        let-else, cells, fn values and wrappers, nested lifts, dyn
+        boxes, two instantiations of a generic, `fail` and `?`,
+        every printable answer and the unprintable one) through the
+        S4b-3b binary and this one — check, run, the IR text and the
+        LLVM module all byte-identical, zero diffs in 112
+        comparisons; no finding, no new test. 26 files, +334/-426;
+        1674 cases, corpus 73/73.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become
@@ -7023,7 +7048,12 @@ shape), S4b the closure fields into methods, S4c the 79 `mut x =
 y.field` borrows into path writes; S2 (the cell ABI) is BLOCKED
 on (B)'s ratification — until `Cell` lands, a (B) seat marked
 `mut` writes through as today and the receiver law stays a warning
-at (B)'s roots (`ws`, `types`, `decls`, `db`: 145 sites).
+at (B)'s roots (`ws`, `types`, `decls`, `db`: 145 sites). S4b DONE
+2026-09-05: every closure field is a method (captured seats 0), and
+the seat law's captured case REFUSES — the first site it caught was
+the memo kernel's toy test, a tally shared with a family's closure
+through list aliasing, which is (B)'s shape in a test (its seats
+read until `Cell`). The receiver law's warning stays until `Cell`.
 
 THE CONVERSION'S TRUE SIZE — measured 2026-09-04 so S4 is not
 underestimated: methods are HALF of the borrow's users. The census

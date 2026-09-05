@@ -9,7 +9,7 @@
 //! the statement list.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, stem_of, NodeStore, DeclId, FileId, Arrow, RtSig, rt_kind_of, extern_row}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
-use features.{FnSig, fn_sig_of, Sub, Emitter, BodyRegs, new_emitter, new_body_regs, viewed, Decl, Decls}
+use features.{LowerCx, FnSig, fn_sig_of, Sub, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap}
 
 /// One lowered body: instructions in order and each register's type
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
@@ -54,65 +54,16 @@ fn extern_row_of(decls: Decls, d: Decl) -> RtSig {
     extern_row(decls.symbol(d.id), rt_kind_of(decls.types, sig?.ret ?? decls.types.intern(Type.Void)), [rt_kind_of(decls.types, p) for p in params])
 }
 
-/// The extern symbols an emitter may call.
-type Lower = {
-    a: Analysis,
-    fn_ret: TypeId?,
-    sub: Sub?,
-    jobs: Jobs,
-    out: Emitter,
-    body: BodyRegs,
-}
-
-/// One body WANTED — the unit of lowering: a declaration's body (or
-/// a file's main, when `decl` is absent), under concrete Vars when
-/// it is generic, named by its symbol or mangling, in its file.
-export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub? }
-
-/// The mono worklist, ONE instance threaded through every body's
-/// lowering (lists and maps alias): call sites enqueue, the driver
-/// drains. `seen` keys by mangled name.
-type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, externs: List<string> }
-
-impl Jobs {
-    /// Whether anything is still waiting to be lowered — asked of
-    /// the STACK, never of a snapshot: a lambda lowered here can
-    /// mint another, and that one must be seen too.
-    fn waiting() -> bool {
-        !self.lifts.is_empty() || !self.wraps.is_empty()
-    }
-
-    /// The next lambda off the stack.
-    fn take_lift() -> Lift? {
-        if self.lifts.is_empty() { return null }
-        self.lifts.pop()
-    }
-
-    /// The next wrapper off the stack.
-    fn take_wrap() -> Wrap? {
-        if self.wraps.is_empty() { return null }
-        self.wraps.pop()
-    }
-}
-
-/// A NAMED fn boxed as a value calls through a generated WRAPPER
-/// that wears the uniform convention: env at seat 0, forwarded.
-type Wrap = { target: string, seats: List<TypeId>, ret: TypeId, name: string }
-
-/// One lambda awaiting its LIFT: the body lowers as a top-level fn
-/// taking (env, params…) under the enclosing body's view — in the
-/// enclosing body's own file, like every job a unit mints.
-type Lift = { lam: ExprId, name: string, sub: Sub? }
-
 /// One lowering per BODY — `fn_ret` is that body's declared answer
 /// (null for main) and `sub` its instantiation (null when the body
 /// is not a specialization), which is why they are fields, not
 /// stacks.
-fn new_lower(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> Lower {
-    Lower {
-        a: a, fn_ret: fn_ret, sub: sub, jobs: jobs,
+fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> LowerCx {
+    LowerCx {
+        view: a.view, names: a.names, facts: a.facts, dispatch: a.lang.dispatch,
         out: new_emitter(jobs.externs),
         body: new_body_regs(a.view.store.exprs.count(), a.view.store.stmts.count()),
+        sub: sub, fn_ret: fn_ret, jobs: jobs,
     }
 }
 
@@ -134,7 +85,7 @@ export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices }
 /// once per program by the workspace: every body's emitter refuses
 /// a callee it does not know against it.
 export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted) -> Unit {
-    mut jobs = Jobs { pending: [], seen: {}, lifts: [], wraps: [], externs: externs }
+    mut jobs = new_jobs(externs)
     if w.decl != null && !a.view.decls.has_body(w.decl!) {
         mut out = new_emitter(externs)
         out.defect("a unit without a body was asked for — `${w.name}`")
@@ -254,12 +205,12 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, jobs: Jobs) -> Lower
     let raw: List<TypeId> = sig?.params ?? []
     let rt: TypeId = viewed(a.view.decls.types, sub, sig?.ret ?? a.view.decls.types.intern(Type.Error))
     let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
-    mut lo = new_lower(a, rt, sub, jobs)
+    mut lo = new_lower_cx(a, rt, sub, jobs)
     // the params ARE registers 0..N-1, minted in order
     for pt in ptypes { let _ = lo.out.mint_ty(pt) }
     lo.out.seeded()
     lo.out.give(Ins.ScopeEnter(Level.Application))
-    let r = lower_subtree(lo, root)
+    let r = lo.reg_of(root)
     lo.out.give(Ins.ScopeExit(r))
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
@@ -278,7 +229,7 @@ fn lower_lambda(a: Analysis, lj: Lift, jobs: Jobs) -> LoweredBody {
     let seats: List<TypeId> = held?.seats ?? []
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
-    mut lo = new_lower(a, rt, lj.sub, jobs)
+    mut lo = new_lower_cx(a, rt, lj.sub, jobs)
     // register 0 is the env box, 1..N the seats
     let _ = lo.out.mint_ty(lam_ty)
     for pt in seats { let _ = lo.out.mint_ty(pt) }
@@ -287,7 +238,7 @@ fn lower_lambda(a: Analysis, lj: Lift, jobs: Jobs) -> LoweredBody {
     if body == null {
         lo.out.defect("a lift without a lambda survived typing")
     }
-    let r = lower_subtree(lo, body ?? lj.lam)
+    let r = lo.reg_of(body ?? lj.lam)
     lo.out.give(Ins.ScopeExit(r))
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
@@ -320,11 +271,11 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
 /// A file's run-time statements as a body under `name` — `main` for
 /// the entry, a program's own symbol when every file is a program.
 fn lower_main(a: Analysis, name: string, jobs: Jobs) -> LoweredBody {
-    mut lo = new_lower(a, null, null, jobs)
+    mut lo = new_lower_cx(a, null, null, jobs)
     lo.out.give(Ins.ScopeEnter(Level.Application))
-    lower_stmts(lo, a.view.stmts)
+    lo.lower_stmts(a.view.stmts)
     let shown: ExprId? = program_answer(a)
-    let refusal: Diag? = if shown == null { null } else { print_lowering(lo, lower_subtree(lo, shown!)) }
+    let refusal: Diag? = if shown == null { null } else { lo.print_lowering(lo.reg_of(shown!)) }
     if refusal != null { lo.out.voices.speak(refusal!) }
     lo.out.give(Ins.ScopeExit(null))
     lo.out.give(Ins.Ret(0))

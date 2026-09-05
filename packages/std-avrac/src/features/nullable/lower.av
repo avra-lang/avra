@@ -5,7 +5,7 @@
 //! side, the absent arm, and the chain's absence all run only when
 //! the value is not there.
 use core.{ExprId, StmtId, TypeId, Reg, Ins, Type}
-use features.{LowerCx, StmtLowerCx, StructSig, foreign_node, presence_of, carried_of, carried_type, adopted, absent_of, insisted, hollow_of, okness_of, payload_of, lower_defect, length_word, open_presence, present_arm, close_presence, field_read}
+use features.{LowerCx, StructSig, foreign_node, presence_of, carried_of, carried_type, adopted, absent_of, insisted, hollow_of, okness_of, payload_of, lower_defect, length_word, open_presence, present_arm, close_presence, field_read}
 
 fn nullable_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -104,18 +104,17 @@ fn departed(mut cx: LowerCx, e: ExprId) -> Reg {
 /// carried value; the absent arm runs the else, which LEAVES
 /// (typing enforced it), and yields a hollow the merge never
 /// reads. The driver binds the answered register like any let's.
-fn let_else_reg(cx: StmtLowerCx, s: StmtId) -> Reg? {
+fn let_else_reg(mut cx: LowerCx, s: StmtId) -> Reg? {
     let subject: ExprId? = cx.view.store.stmt_value(s)
     if subject == null { return null }
-    mut ex = cx.expr
-    let v = ex.reg_of(subject!)
-    let held = ex.type_at(subject!)
-    ex.emit(Ins.IfStart(presence_of(ex, v, held)))
-    ex.emit(Ins.ArmEnd(carried_of(ex, v, held)))
+    let v = cx.reg_of(subject!)
+    let held = cx.type_at(subject!)
+    cx.emit(Ins.IfStart(presence_of(cx, v, held)))
+    cx.emit(Ins.ArmEnd(carried_of(cx, v, held)))
     cx.lower_stmts(else_stmts_of(cx.view.store.stmt(s)))
-    let hollow = hollow_of(ex, carried_type(ex, held))
-    let dst = ex.mint_ty(carried_type(ex, held))
-    ex.emit(Ins.RegionEnd(dst, hollow))
+    let hollow = hollow_of(cx, carried_type(cx, held))
+    let dst = cx.mint_ty(carried_type(cx, held))
+    cx.emit(Ins.RegionEnd(dst, hollow))
     dst
 }
 

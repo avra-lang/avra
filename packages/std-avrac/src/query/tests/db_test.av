@@ -3,6 +3,9 @@
 use @std.avrac.query.{Db, new_db, Key}
 
 /// A derived family over the kernel: computes 2n, counting runs.
+/// The tally is SHARED with the family's closure, which writes it
+/// through the lists' aliasing — the shape `Cell<T>` (spec 11.3)
+/// names; a capture cannot fill a `mut` seat, so the seats read.
 type Toy = { db: Db, input: int, double_family: int, runs: List<int>, values: List<int> }
 
 fn toy() -> Toy {
@@ -13,18 +16,18 @@ fn toy() -> Toy {
     t with { double_family: double_family }
 }
 
-fn verified_double(mut t: Toy, arg: int) -> int {
+fn verified_double(t: Toy, arg: int) -> int {
     let _ = double_of(t, arg)
     t.db.changed_at(Key { family: t.double_family, arg: arg })
 }
 
-fn set(mut t: Toy, arg: int, v: int) {
+fn set(t: Toy, arg: int, v: int) {
     t.db.set_input(Key { family: t.input, arg: arg }, v)
 }
 
 /// The derived query: reads the input, answers 2n; the hash IS the
 /// value, so an unchanged answer cuts the wave.
-fn double_of(mut t: Toy, arg: int) -> int {
+fn double_of(t: Toy, arg: int) -> int {
     let key = Key { family: t.double_family, arg: arg }
     match t.db.ask(key) {
         .Reuse -> t.values[arg],
@@ -49,7 +52,7 @@ fn read_input(t: Toy, arg: int) -> int {
     t.values[arg + 2]
 }
 
-fn put(mut t: Toy, arg: int, v: int) {
+fn put(t: Toy, arg: int, v: int) {
     mut vs = t.values
     vs.set(arg + 2, v)
     set(t, arg, v)

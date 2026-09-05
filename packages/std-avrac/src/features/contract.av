@@ -231,26 +231,25 @@ export type NarrowFrame = { key: int, inner: TypeId, opt: TypeId }
 /// then `emit` the instruction that defines it. A desugar's SCRATCH
 /// register is `mint_ty(cx.type_at(e))` — spelled as what it is,
 /// never a second name for the answer.
+///
+/// The context IS the pass's state — one per BODY: the emitter, the
+/// body's registers and slots, the body's instantiation and declared
+/// answer (fields, not stacks: a body is lowered whole), the mono
+/// worklist every named body enqueues through. The walk's verbs — a
+/// child lowered on request, a block, the statement loop, a
+/// binding's register (a fn value mints a wrapper), a lambda lifted,
+/// captures packed, a declaration's body named as instantiated at a
+/// site — are its methods, written where the walk lives.
 export type LowerCx = {
     view: FileView,
     names: NameFacts,
     facts: TypeFacts,
+    dispatch: Dispatch,
     out: Emitter,
     body: BodyRegs,
     sub: Sub?,
     fn_ret: TypeId?,
-    // the verbs that need the walk: a child lowered on request, a
-    // block, a binding's register (a fn value mints a wrapper), a
-    // lambda lifted, captures packed, a declaration's body named
-    // as instantiated at a site (and wanted — the program lowers
-    // what it reaches)
-    reg_of: fn(ExprId) -> Reg,
-    lower_block: fn(List<StmtId>, ExprId?, TypeId) -> Reg,
-    def_reg: fn(ExprId) -> Reg?,
-    lift: fn(ExprId) -> string,
-    capture_regs: fn(ExprId) -> List<Reg>,
-    symbol_at: fn(DeclId, ExprId) -> string,
-    indirect_callee: fn(ExprId) -> Reg?,
+    jobs: Jobs,
 }
 
 /// The per-pass behavior of one feature's expression nodes.
@@ -266,18 +265,6 @@ export trait NodeSemantics {
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg
 }
 
-/// Statement lowering capabilities: `expr` is the WHOLE expression
-/// lowering vocabulary (registers, types, minting, the emit seam) —
-/// the typing cx's twin; the rest are the statement-level verbs:
-/// statement lists, and the slot a `mut` binding owns — a slot
-/// bound through `bind_slot` is a memory CELL: idents load through
-/// it, and the driver's value write defers to it.
-export type StmtLowerCx = {
-    view: FileView,
-    expr: LowerCx,
-    lower_stmts: fn(List<StmtId>),
-}
-
 /// The per-pass behavior of one feature's STATEMENT kinds — the
 /// stmt-spine's twin of NodeSemantics. Drivers loop statements
 /// through `stmt_semantics_of` and never match Stmt kinds; a
@@ -287,7 +274,7 @@ export type StmtLowerCx = {
 export trait StmtSemantics {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId)
     fn type_stmt(mut cx: TypeCx, s: StmtId)
-    fn lower_stmt(mut cx: StmtLowerCx, s: StmtId) -> Reg?
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg?
 }
 
 /// The written-out nothing — a pass method that deliberately does no
@@ -414,12 +401,12 @@ impl TypeCx {
     }
 }
 
-impl StmtLowerCx {
+impl LowerCx {
     /// The statement's value, lowered — null when it carries none.
-    fn lower_value(s: StmtId) -> Reg? {
+    mut fn lower_value(s: StmtId) -> Reg? {
         let v: ExprId? = self.view.store.stmt_value(s)
         if v == null { return null }
-        self.expr.reg_of(v!)
+        self.reg_of(v!)
     }
 }
 

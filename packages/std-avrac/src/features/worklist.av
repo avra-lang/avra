@@ -1,0 +1,51 @@
+//! The mono worklist: one body's lowering enqueues the bodies it
+//! reaches — a declaration under an instantiation, a lambda lifted,
+//! a fn value's wrapper — and the driver drains. The context carries
+//! it, so every verb that names a body enqueues through one seam.
+use core.{ExprId, TypeId, DeclId, FileId}
+
+/// One body WANTED — the unit of lowering: a declaration's body (or
+/// a file's main, when `decl` is absent), under concrete Vars when
+/// it is generic, named by its symbol or mangling, in its file.
+export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub? }
+
+/// The mono worklist, ONE instance threaded through every body's
+/// lowering (lists and maps alias): call sites enqueue, the driver
+/// drains. `seen` keys by mangled name.
+export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, externs: List<string> }
+
+/// A fresh worklist over the program's extern symbols — what every
+/// body's emitter refuses an unknown callee against.
+export fn new_jobs(externs: List<string>) -> Jobs {
+    Jobs { pending: [], seen: {}, lifts: [], wraps: [], externs: externs }
+}
+
+impl Jobs {
+    /// Whether anything is still waiting to be lowered — asked of
+    /// the STACK, never of a snapshot: a lambda lowered here can
+    /// mint another, and that one must be seen too.
+    fn waiting() -> bool {
+        !self.lifts.is_empty() || !self.wraps.is_empty()
+    }
+
+    /// The next lambda off the stack.
+    fn take_lift() -> Lift? {
+        if self.lifts.is_empty() { return null }
+        self.lifts.pop()
+    }
+
+    /// The next wrapper off the stack.
+    fn take_wrap() -> Wrap? {
+        if self.wraps.is_empty() { return null }
+        self.wraps.pop()
+    }
+}
+
+/// A NAMED fn boxed as a value calls through a generated WRAPPER
+/// that wears the uniform convention: env at seat 0, forwarded.
+export type Wrap = { target: string, seats: List<TypeId>, ret: TypeId, name: string }
+
+/// One lambda awaiting its LIFT: the body lowers as a top-level fn
+/// taking (env, params…) under the enclosing body's view — in the
+/// enclosing body's own file, like every job a unit mints.
+export type Lift = { lam: ExprId, name: string, sub: Sub? }

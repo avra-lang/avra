@@ -4,77 +4,74 @@
 //! and its step store after the body — nothing the IR does not
 //! already say.
 use core.{StmtId, ExprId, Ins, Level, TypeId, BinOp, Type}
-use features.{StmtLowerCx, LowerCx}
+use features.{LowerCx}
 
-export fn lower_while(cx: StmtLowerCx, cond: ExprId, stmts: List<StmtId>) {
-    mut ex = cx.expr
-    ex.emit(Ins.LoopStart)
-    ex.emit(Ins.LoopCond(ex.reg_of(cond)))
-    ex.emit(Ins.ScopeEnter(Level.Application))
+export fn lower_while(mut cx: LowerCx, cond: ExprId, stmts: List<StmtId>) {
+    cx.emit(Ins.LoopStart)
+    cx.emit(Ins.LoopCond(cx.reg_of(cond)))
+    cx.emit(Ins.ScopeEnter(Level.Application))
     cx.lower_stmts(stmts)
-    ex.emit(Ins.ScopeExit(null))
-    ex.emit(Ins.LoopEnd)
+    cx.emit(Ins.ScopeExit(null))
+    cx.emit(Ins.LoopEnd)
 }
 
 /// The counter is born before the loop, read through its cell each
 /// turn, and stepped after the body — bind_slot BEFORE the cond
 /// lowers, so the counter's ident loads through the cell.
-export fn lower_for(mut cx: StmtLowerCx, s: StmtId, from: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>) {
-    mut ex = cx.expr
-    let start = ex.reg_of(from)
-    let slot = ex.mint_ty(ex.type_at(from))
-    ex.emit(Ins.Alloca(slot))
-    ex.emit(Ins.Store(slot, start))
+export fn lower_for(mut cx: LowerCx, s: StmtId, from: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>) {
+    let start = cx.reg_of(from)
+    let slot = cx.mint_ty(cx.type_at(from))
+    cx.emit(Ins.Alloca(slot))
+    cx.emit(Ins.Store(slot, start))
     cx.bind_slot(s, slot)
-    ex.emit(Ins.LoopStart)
-    ex.emit(Ins.LoopCond(ex.reg_of(cond)))
-    ex.emit(Ins.ScopeEnter(Level.Application))
+    cx.emit(Ins.LoopStart)
+    cx.emit(Ins.LoopCond(cx.reg_of(cond)))
+    cx.emit(Ins.ScopeEnter(Level.Application))
     cx.lower_stmts(stmts)
-    ex.emit(Ins.Store(slot, ex.reg_of(step)))
-    ex.emit(Ins.ScopeExit(null))
-    ex.emit(Ins.LoopEnd)
+    cx.emit(Ins.Store(slot, cx.reg_of(step)))
+    cx.emit(Ins.ScopeExit(null))
+    cx.emit(Ins.LoopEnd)
 }
 
 /// `for x in xs`: length once, an index CELL, and the ELEMENT cell
 /// the name binds through — stored fresh each turn, read wherever
 /// the body says the name. The body is a scope per turn, like every
 /// loop's.
-export fn lower_for_each(mut cx: StmtLowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
-    mut ex = cx.expr
-    let xs = ex.reg_of(subject)
-    let len = ex.mint_shape(Type.Int)
-    ex.emit(Ins.CallRt(len, "avra_array_len", [xs]))
-    let zero = ex.mint_shape(Type.Int)
-    ex.emit(Ins.ConstInt(zero, 0))
-    let idx = ex.mint_shape(Type.Int)
-    ex.emit(Ins.Alloca(idx))
-    ex.emit(Ins.Store(idx, zero))
-    let cell = ex.mint_ty(elem_of(ex, subject))
-    ex.emit(Ins.Alloca(cell))
+export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
+    let xs = cx.reg_of(subject)
+    let len = cx.mint_shape(Type.Int)
+    cx.emit(Ins.CallRt(len, "avra_array_len", [xs]))
+    let zero = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(zero, 0))
+    let idx = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Alloca(idx))
+    cx.emit(Ins.Store(idx, zero))
+    let cell = cx.mint_ty(elem_of(cx, subject))
+    cx.emit(Ins.Alloca(cell))
     cx.bind_slot(s, cell)
-    ex.emit(Ins.LoopStart)
-    let at = ex.mint_shape(Type.Int)
-    ex.emit(Ins.Load(at, idx))
-    let more = ex.mint_shape(Type.Bool)
-    ex.emit(Ins.Bin(more, BinOp.Lt, at, len))
-    ex.emit(Ins.LoopCond(more))
-    ex.emit(Ins.ScopeEnter(Level.Application))
-    let here = ex.mint_shape(Type.Int)
-    ex.emit(Ins.Load(here, idx))
+    cx.emit(Ins.LoopStart)
+    let at = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Load(at, idx))
+    let more = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Bin(more, BinOp.Lt, at, len))
+    cx.emit(Ins.LoopCond(more))
+    cx.emit(Ins.ScopeEnter(Level.Application))
+    let here = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Load(here, idx))
     cx.bind_index(s, here)
-    let v = ex.mint_ty(elem_of(ex, subject))
-    ex.emit(Ins.CallRt(v, "avra_array_get", [xs, here]))
-    ex.emit(Ins.Store(cell, v))
+    let v = cx.mint_ty(elem_of(cx, subject))
+    cx.emit(Ins.CallRt(v, "avra_array_get", [xs, here]))
+    cx.emit(Ins.Store(cell, v))
     cx.lower_stmts(stmts)
-    let again = ex.mint_shape(Type.Int)
-    ex.emit(Ins.Load(again, idx))
-    let one = ex.mint_shape(Type.Int)
-    ex.emit(Ins.ConstInt(one, 1))
-    let next = ex.mint_shape(Type.Int)
-    ex.emit(Ins.Bin(next, BinOp.Add, again, one))
-    ex.emit(Ins.Store(idx, next))
-    ex.emit(Ins.ScopeExit(null))
-    ex.emit(Ins.LoopEnd)
+    let again = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Load(again, idx))
+    let one = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(one, 1))
+    let next = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Bin(next, BinOp.Add, again, one))
+    cx.emit(Ins.Store(idx, next))
+    cx.emit(Ins.ScopeExit(null))
+    cx.emit(Ins.LoopEnd)
 }
 
 /// The subject's element type — typing proved it a List, and the

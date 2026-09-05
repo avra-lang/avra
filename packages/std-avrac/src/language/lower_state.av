@@ -1,21 +1,21 @@
-//! The lowering STATE's vocabulary: registers minted in instruction
-//! order, slots and cells, bindings read, fn values and their
-//! wrappers, lambdas lifted, captures packed, callee symbols and
-//! the mono worklist's enqueue — the verbs the walk speaks.
+//! The lowering context's STATE vocabulary: registers minted in
+//! instruction order, slots and cells, bindings read, fn values and
+//! their wrappers, lambdas lifted, captures packed, callee symbols
+//! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, int_of, text_of, bool_of}
 use diagnostics.{loc_at}
-use features.{fn_box, capture_lane, slot_read, adopted, Sub, Cap, viewed, def_type_of}
+use features.{LowerCx, fn_box, capture_lane, slot_read, adopted, Sub, Cap, viewed, def_type_of, Wanted, Lift, Wrap}
 use @std.errors.{Loc}
 
-impl Lower {
+impl LowerCx {
     /// The fresh register for a node, typed by the type pass.
     fn mint(e: ExprId) -> Reg {
-        self.out.mint_ty(self.concrete(self.a.type_at(e)))
+        self.out.mint_ty(self.concrete(self.facts.type_at(e)))
     }
 
     /// The body's substitution view — identity for plain bodies.
     fn concrete(ty: TypeId) -> TypeId {
-        viewed(self.a.view.decls.types, self.sub, ty)
+        viewed(self.view.decls.types, self.sub, ty)
     }
 
     /// A declaration's body as instantiated at a site: its plain
@@ -23,7 +23,7 @@ impl Lower {
     /// the mangling of that instantiation COMPOSED with this body's
     /// own view. Wanted either way.
     fn symbol_at(d: DeclId, e: ExprId) -> string {
-        let held: Sub? = self.a.facts.subst_at(e)
+        let held: Sub? = self.facts.subst_at(e)
         if held == null { return self.wanted(d, null) }
         self.wanted(d, Sub { target: held!.target, args: [self.concrete(t) for t in held!.args] })
     }
@@ -32,11 +32,11 @@ impl Lower {
     /// call or an address names — enqueued on first sight, so the
     /// program lowers exactly what it reaches.
     fn wanted(d: DeclId, sub: Sub?) -> string {
-        let sym = self.a.view.decls.symbol(d)
+        let sym = self.view.decls.symbol(d)
         let name = if sub == null { sym } else { mangle(sym, sub!) }
         if self.unseen(name) {
             mut pending = self.jobs.pending
-            pending.push(Wanted { file: self.a.view.decls.decl(d).file, decl: d, name: name, sub: sub })
+            pending.push(Wanted { file: self.view.decls.decl(d).file, decl: d, name: name, sub: sub })
         }
         name
     }
@@ -55,7 +55,7 @@ impl Lower {
     /// 0..N-1), or its definition's slot — LOADED first when the
     /// slot is a memory cell, so the ident rule stays dumb.
     fn def_reg(e: ExprId) -> Reg? {
-        let b: Binding? = self.a.binding(e)
+        let b: Binding? = self.names.binding(e)
         if b == null { return null }
         self.read_binding(e, b!)
     }
@@ -66,7 +66,7 @@ impl Lower {
     /// answers here; the capture pack, whose node is the lambda,
     /// names the type itself.
     fn read_binding(e: ExprId, b: Binding) -> Reg? {
-        self.read_wearing(e, b, self.concrete(self.a.type_at(e)))
+        self.read_wearing(e, b, self.concrete(self.facts.type_at(e)))
     }
 
     /// A binding's VALUE in the current body, minted at `ty` where
@@ -81,7 +81,7 @@ impl Lower {
             .LambdaParam(_, i) -> Reg { index: i + 1 },
             .Capture(_, j) -> self.env_read(j, ty),
             .Index(s) -> self.body.index_reg(s),
-            .Decl(d) -> if self.a.view.decls.fn_name(d) != null { self.fn_value_reg(e, self.wanted(d, null)) } else { null },
+            .Decl(d) -> if self.view.decls.fn_name(d) != null { self.fn_value_reg(e, self.wanted(d, null)) } else { null },
         }
     }
 
@@ -89,9 +89,9 @@ impl Lower {
     /// that value — a constant the compiler settled, minted in THIS
     /// body. Every other binding reads the slot it was bound to.
     fn defined_reg(e: ExprId, s: StmtId, ty: TypeId) -> Reg? {
-        let value: ExprId? = self.a.view.store.const_value(s)
+        let value: ExprId? = self.view.store.const_value(s)
         if value == null { return self.slot_reg(s, ty) }
-        self.settled_reg(e, self.a.view.store.expr(value!))
+        self.settled_reg(e, self.view.store.expr(value!))
     }
 
     /// The settled value as an instruction. A const holds a literal
@@ -131,17 +131,16 @@ impl Lower {
     }
 
     fn shaped_ty(t: Type) -> TypeId {
-        self.a.view.decls.types.intern(t)
+        self.view.decls.types.intern(t)
     }
 
     /// The settled constant AS THE USE WEARS IT: a nullable use
     /// packs the value into its presence pair, everything else
     /// already wears the literal's own shape.
     fn lifted_constant(e: ExprId, r: Reg) -> Reg {
-        let want = self.concrete(self.a.type_at(e))
-        if self.a.view.decls.types.shape_of(want) is .Opt {
-            mut cx = expr_lower_cx(self)
-            return adopted(cx, want, false, r)
+        let want = self.concrete(self.facts.type_at(e))
+        if self.view.decls.types.shape_of(want) is .Opt {
+            return adopted(self, want, false, r)
         }
         r
     }
@@ -152,33 +151,31 @@ impl Lower {
     fn fn_value_reg(e: ExprId, symbol: string) -> Reg? {
         let wname = "${symbol}$w"
         if self.unseen(wname) {
-            let fnty = self.concrete(self.a.facts.type_at(e))
-            let held: Arrow? = self.a.view.decls.types.arrow_parts(fnty)
+            let fnty = self.concrete(self.facts.type_at(e))
+            let held: Arrow? = self.view.decls.types.arrow_parts(fnty)
             mut wraps = self.jobs.wraps
             wraps.push(Wrap {
                 target: symbol,
                 seats: held?.seats ?? [],
-                ret: held?.answer ?? self.a.view.decls.types.intern(Type.Error),
+                ret: held?.answer ?? self.view.decls.types.intern(Type.Error),
                 name: wname,
             })
         }
         let dst = self.mint(e)
-        mut cx = expr_lower_cx(self)
-        fn_box(cx, dst, wname, [])
+        fn_box(self, dst, wname, [])
         dst
     }
 
     /// A capture read: its LANE of the env box, worn at `ty` — the
     /// lane law lives with the fn value's other verbs.
     fn env_read(j: int, ty: TypeId) -> Reg? {
-        mut cx = expr_lower_cx(self)
-        slot_read(cx, self.env_box(), capture_lane(j), ty)
+        slot_read(self, self.env_box(), capture_lane(j), ty)
     }
 
     /// The type a lambda's Nth capture wears — typing seated it
     /// from the captured binding; an unseated lane is a defect.
     fn capture_ty(lam: ExprId, j: int) -> TypeId {
-        let held: TypeId? = self.a.facts.capture_type(lam, j)
+        let held: TypeId? = self.facts.capture_type(lam, j)
         if held == null {
             self.out.defect("a capture lane typing never seated")
             return self.shaped_ty(Type.Error)
@@ -196,7 +193,7 @@ impl Lower {
     /// when the enclosing body is a specialization) and enqueues it
     /// once.
     fn lift(e: ExprId) -> string {
-        let sym = self.a.view.decls.lifted_symbol(self.a.view.file, e)
+        let sym = self.view.decls.lifted_symbol(self.view.file, e)
         let name = if self.sub == null { sym } else { mangle(sym, self.sub!) }
         if self.unseen(name) {
             mut lifts = self.jobs.lifts
@@ -210,7 +207,7 @@ impl Lower {
     /// env), worn at the CAPTURE's type: the node here is the
     /// lambda, whose type is a box, and a captured `int` is not.
     fn capture_regs(e: ExprId) -> List<Reg> {
-        let cap: Cap? = self.a.names.capture(e)
+        let cap: Cap? = self.names.capture(e)
         if cap == null { return [] }
         mut out: List<Reg> = []
         for j, b in cap!.sources {
@@ -227,10 +224,10 @@ impl Lower {
     /// The box a call goes THROUGH, when the callee is a fn-typed
     /// VALUE — null for a declared fn (the direct path).
     fn indirect_callee(e: ExprId) -> Reg? {
-        let b: Binding? = self.a.binding(e)
+        let b: Binding? = self.names.binding(e)
         if b == null { return null }
         let direct: bool = match b! {
-            .Decl(d) -> self.a.view.decls.fn_name(d) != null,
+            .Decl(d) -> self.view.decls.fn_name(d) != null,
             .Def(_) -> false,
             .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
         }
@@ -257,7 +254,7 @@ impl Lower {
     /// A definition's type as typing settled it — the declared
     /// annotation, or its value's.
     fn def_ty(s: StmtId) -> TypeId {
-        def_type_of(self.a.facts, self.a.view.store, self.a.view.decls.types, self.shaped_ty(Type.Error), s)
+        def_type_of(self.facts, self.view.store, self.view.decls.types, self.shaped_ty(Type.Error), s)
     }
 
     /// A definition's register: its slot — LOADED first when the
@@ -277,10 +274,10 @@ impl Lower {
     /// Where the program's answer lives: the last value-bearing
     /// statement's location.
     fn answer_loc() -> Loc? {
-        let valued = self.a.view.stmts.filter((s: StmtId) -> self.a.view.store.stmt_value(s) != null)
+        let valued = self.view.stmts.filter((s: StmtId) -> self.view.store.stmt_value(s) != null)
         let speaker: StmtId? = valued.last()
         if speaker == null { return null }
-        loc_at(self.a.view.source.file, self.a.view.store.stmt_span(speaker!))
+        loc_at(self.view.source.file, self.view.store.stmt_span(speaker!))
     }
 
 }
