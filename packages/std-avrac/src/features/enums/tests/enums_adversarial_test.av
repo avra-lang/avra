@@ -241,4 +241,12 @@ spec "features/enums — an or-run's shape" {
             shown("enum S {\n    A(x: string, y: string)\n    B(v: string)\n}\nfn w(s: S) -> string {\n    match s {\n        .A(_, _) -> \"pair\"\n        .B(v) -> v\n    }\n}\nw(S.B(\"one\"))") == "one"
         }
     }
+    given "a payload is a seat like any other — it widens as a fn argument and a struct field do" {
+        then "a struct boxes into a `dyn` payload" {
+            shown("trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int { self.x }\n}\nenum Holder {\n    Holds(s: dyn Show)\n    Empty\n}\nlet h = Holder.Holds(P { x: 3 })\nmatch h {\n    .Holds(s) -> s.show()\n    .Empty -> 0\n}") == "3"
+        }
+        then "a plain value auto-Oks into a Result payload" {
+            shown("enum E {\n    bad\n}\nenum Wrap {\n    Res(r: Result<int, E>)\n}\nlet w = Wrap.Res(4)\nmatch w {\n    .Res(r) -> r catch 0 - 1\n}") == "4"
+        }
+    }
 }

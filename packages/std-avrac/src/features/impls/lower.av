@@ -3,7 +3,7 @@
 //! derives from the receiver's type both here and at the fn loop,
 //! so no fact table carries it.
 use core.{ExprId, Reg, Ins, Type, DeclId}
-use features.{LowerCx, lower_defect, foreign_node, EnumSig, tagged_value, called_through, slot_read, MethodRow, MethodCall, method_row, StructSig}
+use features.{LowerCx, lower_defect, foreign_node, EnumSig, tagged_value, called_through, slot_read, MethodRow, MethodCall, method_row, StructSig, receiver_decl}
 
 /// The receiver's value: seat 0 of the body, as its binding says.
 fn receiver_reg(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -26,7 +26,7 @@ fn method_call_reg(mut cx: LowerCx, e: ExprId) -> Reg {
             }
             let recv = cx.reg_of(subject)
             let regs = [cx.reg_of(a) for a in args]
-            let target: DeclId? = lowered_receiver(cx, subject)
+            let target: DeclId? = receiver_decl(cx.view.types.shape_of(cx.type_at(subject)))
             if target == null { return lower_defect(cx, e, "a method on a nameless receiver survived typing") }
             let m: DeclId? = cx.view.decls.method(target!, name)
             if m == null { return lower_defect(cx, e, "a method with no symbol survived typing") }
@@ -73,18 +73,6 @@ fn fn_field_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string, 
     if !(cx.view.types.shape_of(fty) is .Fn) { return null }
     let box = slot_read(cx, cx.reg_of(subject), slot!, fty)
     called_through(cx, e, box, [cx.reg_of(a) for a in args])
-}
-
-/// The receiver's declared type, under the body's view.
-fn lowered_receiver(cx: LowerCx, subject: ExprId) -> DeclId? {
-    match cx.view.types.shape_of(cx.type_at(subject)) {
-        .Struct(d, _) -> d,
-        .Enum(d, _) -> d,
-        .App(d, _, _) -> d,
-        .Ptr or .Int or .Str or .Bool or .List(_) or .Res(_, _) or
-        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or
-        .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
-    }
 }
 
 /// The type-receiver half lowered: the variant's tagged box — the

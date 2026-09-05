@@ -53,6 +53,17 @@ export fn unified_lift(mut cx: TypeCx, e: ExprId, want: TypeId, decl: DeclId, bo
     accepts(cx, e, cx.view.types.substituted(want, decl, bound_args(cx, bound)))
 }
 
+/// A UNIFIED SEAT AGREES, or not — BOTH halves, always: `unify` binds
+/// the declaration's Vars and `unified_lift` RECORDS the widen
+/// lowering mints. Short-circuit either way and a hit drops its lift,
+/// or a miss never binds. The one door for a call argument, a struct
+/// field and an enum payload alike.
+export fn agreed(mut cx: TypeCx, e: ExprId, want: TypeId, decl: DeclId, bound: Pins) -> bool {
+    let matched = unify(cx, want, cx.type_at(e), decl, bound)
+    let took = unified_lift(cx, e, want, decl, bound)
+    matched || took
+}
+
 /// THE ASSIGNMENT LAW: what a slot of type `want` accepts from the
 /// expression `e`. A guarantee widens INTO a nullable — an `int` IS
 /// a valid `int?` — and the widening is RECORDED so lowering wraps
