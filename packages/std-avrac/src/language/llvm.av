@@ -6,7 +6,7 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
-use core.{Ins, Reg, body_symbol, hosted_symbol, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_sig_of}
+use core.{Ins, Reg, body_symbol, hosted_symbol, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_index}
 use features.{nothing}
 
 /// One body's emission world: the LLVM handles, this body's register
@@ -24,6 +24,8 @@ type Emit = {
     frames: List<Region>,
     loops: List<LoopFrame>,
     externs: List<RtSig>,
+    // the runtime's rows by name, built once per module
+    rt: Map<string, RtSig>,
 }
 
 /// One open loop: where the back edge returns and where false exits.
@@ -58,12 +60,13 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
     declare_runtime(lc, m)
     declare_externs(lc, m, l.externs)
     for bd in l.fns { declare_user(lc, m, l.types, bd) }
+    let rt = rt_index()
     for bd in l.fns {
         let f = avra_llvm_get_named_function(m, mangled(bd.name))
-        let failure: string? = emit_body(lc, m, b, l.types, l.externs, bd, f)
+        let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f)
         if failure != null { return wreck(m, path, failure!) }
     }
-    let failure: string? = emit_entry(lc, m, b, l)
+    let failure: string? = emit_entry(lc, m, b, l, rt)
     if failure != null { return wreck(m, path, failure!) }
     if avra_llvm_print_module_to_file(m, path) != 0 {
         return "cannot write `${path}`"
@@ -96,12 +99,12 @@ fn unheld_name(l: Lowered) -> string? {
 /// `main` hands the runtime its arguments and answers what the
 /// entry answered. The argument pair crosses the seam exactly here
 /// — a program reads it through the host from then on.
-fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered) -> string? {
+fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>) -> string? {
     declare(m, "avra_args_init", avra_llvm_void_type(lc),
             [avra_llvm_int64_type(lc), avra_llvm_pointer_type(lc)], false)
     declare(m, "av_entry", avra_llvm_int32_type(lc), [], false)
     let entry = avra_llvm_get_named_function(m, "av_entry")
-    let failure: string? = emit_body(lc, m, b, l.types, l.externs, l.entry, entry)
+    let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, l.entry, entry)
     if failure != null { return failure }
     open_main(lc, m, b, entry)
 }
@@ -129,13 +132,13 @@ fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr) -> string? {
 
 /// One body into one function: params seed the value table, every
 /// instruction emits, the verifier gates.
-fn emit_body(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, externs: List<RtSig>, bd: Body, f: ptr) -> string? {
+fn emit_body(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, externs: List<RtSig>, rt: Map<string, RtSig>, bd: Body, f: ptr) -> string? {
     mut vals: List<ptr> = []
     // LICENSED I3: a RANGE walk — comprehensions iterate lists only
     for j in 0..bd.params.length { vals.push(avra_llvm_get_param(f, j)) }
     let em = Emit {
         lc: lc, m: m, b: b, fn_val: f, types: types,
-        tys: bd.reg_types, vals: vals, frames: [], loops: [], externs: externs,
+        tys: bd.reg_types, vals: vals, frames: [], loops: [], externs: externs, rt: rt,
     }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     for i in bd.ins { emit_ins(em, i) }
@@ -389,7 +392,7 @@ fn answers_word(em: Emit, callee: string) -> bool {
 /// A callee's row: the runtime's, or one of the program's externs.
 fn callee_sig(em: Emit, callee: string) -> RtSig? {
     // LICENSED I18: two registries asked in turn — the second answers when the first has no row
-    rt_sig_of(callee) ?? em.externs.find(it.name == callee)
+    em.rt.get(callee) ?? em.externs.find(it.name == callee)
 }
 
 fn void_rt_call(em: Emit, callee: string, args: List<Reg>) {

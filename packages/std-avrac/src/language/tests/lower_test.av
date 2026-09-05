@@ -4,8 +4,13 @@
 // strategy, reverse binding order.
 use @std.avrac.core.{Ins, RtSig, Reg, distinct}
 use @std.avrac.language.{Lowered, render_ir}
-use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns}
-use @std.avrac.testing.{ir_of, halver}
+use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns, rt_index}
+use @std.avrac.testing.{ir_of, halver, shown}
+
+/// A row is indexed under its own name.
+fn indexed(index: Map<string, RtSig>, s: RtSig) -> bool {
+    index.get(s.name) != null
+}
 
 fn count_releases(l: Lowered) -> int {
     l.entry.ins.filter((i: Ins) -> i is .Release).length
@@ -196,6 +201,20 @@ spec "language/lower" {
         then "`avra ir` SHOWS the pair — the pack and its element reads" {
             let text = render_ir(ir_of(pair_read()))
             text.contains("= pack ") && text.contains(".0") && text.contains(".1")
+        }
+    }
+    given "the runtime registry, indexed by name" {
+        then "every row is in the index under its name, and nothing else is" {
+            let index = rt_index()
+            rt_sigs().all(indexed(index, it)) && index.length == rt_sigs().length
+        }
+        then "an extern declared with a runtime row's name is the runtime's row — the evaluator hosts it" {
+            shown("extern fn avra_puts(s: string)\navra_puts(\"x\")\n2") == "x\n2"
+        }
+        then "the index answers the same row the scan does" {
+            let scanned: RtSig? = rt_sig_of("avra_array_push")
+            let indexed: RtSig? = rt_index().get("avra_array_push")
+            scanned != null && indexed != null && scanned!.host == indexed!.host && scanned!.has_owned_twin == indexed!.has_owned_twin
         }
     }
     given "the runtime registry" {

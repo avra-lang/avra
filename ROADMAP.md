@@ -249,6 +249,18 @@ the compiler checking itself 28.8s.
         `FirstCx.alt_first` computing FIRST sets per `ready()` — both
         the once-per-process family, recorded under the ask. Lowering's
         window is clang: the parent sits in `link` waiting.
+  - [x] THE RUNTIME TABLE, INDEXED WHERE IT IS ASKED PER CALL
+        (2026-09-04): `rt_index()` in core — the rows by name, built
+        once by a consumer — held by the backend's `Emit` (once per
+        module) and the evaluator's `Machine` (once per run), where
+        `callee_sig` and `rt_dispatch` rebuilt the 48-row table on
+        every call. The std-avrac suite 48.2s -> 44.4s user. The memory
+        pass's `rt_owns`/`rt_owned_twin` per instruction lowered still
+        rebuild it — memory.av is lane C's; the once-value covers it.
+        Pinned: every row indexed under its name and nothing else; an
+        extern declared with a runtime row's name is the runtime's row
+        on both engines (`shown` answers the whole OUTPUT, `x\n2`, not
+        the value — a pin taught me that).
 
 LANE B — STD LIBS (owns NEW packages only; each package: `avra.toml`,
 spec tests beside it, a corpus package under corpus/<name>/ proving
