@@ -4,6 +4,7 @@
 //! line; the binary is the word after `-o`. Hidden: `test` and
 //! `corpus` reach it through `avra_exec_self`, never a person.
 use @std.cli.{Subcommand, CliResult, Runnable, CommandSpec, ArgDef}
+use @std.avrac.language.{verdict_of, plan_binary}
 
 type StagedCmd = { }
 
@@ -20,37 +21,9 @@ impl Runnable for StagedCmd {
     }
 }
 
-/// The binary a plan links: the word after `-o`, null when the plan
-/// has none.
-export fn plan_binary(words: List<string>) -> string? {
-    let at = words.index_of("-o")
-    if at < 0 || at + 1 >= words.length { return null }
-    words[at + 1]
-}
-
-/// What a binary's status MEANS. It says its tally itself and
-/// answers 0 or 1; 127 is a binary that could not start; anything
-/// else is a death — a case or program trapped, or a signal killed
-/// it, and everything after it never ran.
-export enum Verdict {
-    Green
-    Red
-    CouldNotStart
-    Died
-}
-
-export fn verdict(status: int) -> Verdict {
-    match status {
-        0 -> Verdict.Green,
-        1 -> Verdict.Red,
-        127 -> Verdict.CouldNotStart,
-        _ -> Verdict.Died,
-    }
-}
-
 /// The verdict as an exit code, its two wrecks spoken.
 fn judged(status: int) -> int {
-    match verdict(status) {
+    match verdict_of(status) {
         .Green -> 0,
         .Red -> 1,
         .CouldNotStart -> {

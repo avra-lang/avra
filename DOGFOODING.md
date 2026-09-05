@@ -445,7 +445,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       comprehension, a `for x in xs` and an `xs.map(f)` emit one
       stream by construction. RATCHETED over regions and loop brackets
       (the matcher exempts emit.av's own body).
-- I33 THE BORROW UNDER A SAME-SCOPE READ. `mut xs = self.field`
+- I34 THE BORROW UNDER A SAME-SCOPE READ. `mut xs = self.field`
       followed by `xs.push(v)` is the alias form of a write — the
       smell is the alias where a path write (`self.field.push(v)`)
       says the same thing without a second name. It is LICENSED, and

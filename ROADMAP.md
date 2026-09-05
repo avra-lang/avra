@@ -335,11 +335,28 @@ the compiler checking itself 28.8s.
         programs reading differently against main. The per-result
         farthest is user-facing semantics, not an optimization.
         Reverted; the records stay.
-  - [ ] `Decls.mint` REBUILDS A MAP INDEX: the self-check's profile
-        puts 12% of its samples in `map_index_rebuild` under
-        `Decls.mint`, with no map cloned — growth doubles, so ten
-        rebuilds cannot cost that; the chain above the leaf names the
-        call. NEXT.
+  - [x] THE GATE'S TWO SPARE COMPILES (2026-09-05): the scaffold check
+        and the cli suite each compiled the whole compiler again for
+        one case and for nine — 19s of a 39s gate. The scaffolder's
+        template is now scaffolded into std-avrac BEFORE the suites
+        run and removed after, however they end (`make tested`), so
+        its test is one case of that suite; and `avra test <package>`
+        knows a package's cases from PARSING alone — the root's files
+        entered, their items minted, nothing typed — so a package
+        without cases says so in 0.2s instead of analyzing its
+        dependencies. The fast exit needs a CLEAN parse: a broken
+        spec file parses to no cases, and its refusal is the answer
+        (pinned). The verdict vocabulary (`Verdict`, `verdict_of`,
+        `plan_binary`) moved to the runner beside `cases_entry`, with
+        its nine cases. MEASURED: the gate 39s -> 20.5s of user CPU,
+        1726 cases.
+  - [ ] `Decls.mint` CLONES ITS KEY MAP per declaration — 12% of a
+        self-check's samples in `map_index_rebuild` under
+        `Decls.mint` through `avra_slot_unique`: the read
+        `self.keys.get(key)` two lines above the write holds the map
+        to the scope's end (lane C's LICENSED I34, "liveness, S3,
+        retires this"). ~0.7s of every compile of the compiler, three
+        per gate. Lane C's S3 pays it; the price is measured here.
   - [x] THE CYCLE (FOUND and ENDED 2026-09-05): the cases binary
         held 922 MB at exit — 7.2M small lists, ~4300 per case: every
         case's language, grammar and workspace tables. The workspace

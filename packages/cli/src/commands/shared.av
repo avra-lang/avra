@@ -1,7 +1,7 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef, result_get_arg, result_has_flag}
-use @std.avrac.language.{Host, Program, Analysis, TestCase, program, lone_workspace, timed_workspace, entry_of, no_target, avra, emit_ll, link_words}
+use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, program, lone_workspace, timed_workspace, parsed_cases, parse_clean, entry_of, no_target, avra, emit_ll, link_words}
 use @std.avrac.core.{joined, dir_of, under_dir}
 
 extern fn avra_selfhost_read_file(path: string) -> string
@@ -103,16 +103,41 @@ fn caseless_program(args: CliResult) -> Program? {
 }
 
 /// A command over every case of the argued path — the whole package
-/// when a directory, the one FILE's cases when a file.
+/// when a directory, the one FILE's cases when a file. A PACKAGE'S
+/// CASES ARE KNOWN FROM PARSING: a package without any says so
+/// before a line of it, or of its dependencies, is analyzed.
 fn on_cases(args: CliResult, act: fn(Program, List<TestCase>) -> int) -> int {
+    let path = path_arg(args)
+    if avra_host_is_dir(path) != 0 {
+        let held: Workspace? = package_workspace(path)
+        if held == null { return 2 }
+        let ws = held!
+        let found = parsed_cases(ws)
+        // no cases AND a clean parse: a broken spec file parses to no
+        // cases, and its refusal is the answer, not a green
+        if found.is_empty() && parse_clean(ws) {
+            println("no spec cases here")
+            return 0
+        }
+        return act(program(ws, null), found)
+    }
     let held: Program? = caseless_program(args)
     if held == null { return 2 }
     let p = held!
-    let path = path_arg(args)
-    if avra_host_is_dir(path) != 0 { return act(p, p.cases()) }
     let mine = p.cases_at(path)
     if mine.is_empty() { return no_cases_in(p, path) }
     act(p, mine)
+}
+
+/// The package a directory names, as a workspace; null, said, when
+/// the directory is no package.
+fn package_workspace(path: string) -> Workspace? {
+    let root: string? = package_root(path)
+    if root == null {
+        no_target(path)
+        return null
+    }
+    timed_workspace(disk_host(), root!, avra(), () -> avra_now_ns())
 }
 
 /// ZERO CASES FOR A NAMED FILE IS A REFUSAL, not a green run: the

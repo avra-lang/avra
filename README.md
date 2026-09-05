@@ -101,6 +101,7 @@ make gate     # the bar for every change: vocab + idioms + test + corpus
 make vocab    # the IR seam: every Ins consumer stays exhaustive
 make idioms   # the ratchet: mechanical smells may never RISE
 make test     # every module's spec/given/then suite
+make tested   # the suites with the scaffolder's template among them
 make corpus   # every corpus/*.av: eval == native == .expected
 make bench    # the measured curve: suite + corpus wall times
 make fuzz     # corpus mutants through `avra check`: diagnose, never crash
