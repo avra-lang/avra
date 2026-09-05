@@ -26,7 +26,8 @@ with its reason. The registry can never again outrun the ratchet.
 import collections, os, re, sys, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = ["packages/std-avrac/src", "packages/cli/src", "packages/std-toml/src"]
+SRC = ["packages/std-avrac/src", "packages/cli/src", "packages/std-toml/src",
+       "packages/std-time/src", "packages/std-process/src", "packages/std-io/src", "packages/std-cli/src"]
 BASELINE = os.path.join(ROOT, "tools", "idioms.baseline")
 SKIP = ("spec_test",)
 
@@ -395,6 +396,10 @@ RULES = {
             "and read the name"),
     "I16": (seen_accumulator,
             "a seen-accumulator — a dup is `xs.index_of(x) < j` over enumerate"),
+    "I33": (line_rx(r"cx\.emit\(Ins\.Scope(Enter|Exit)\(|\.out\.give\(Ins\.Scope(Enter|Exit)\("),
+            "a raw scope bracket through a lowering context — the frame verbs "
+            "(`scope_enter`/`scope_exit`, `seats_enter`/`seats_exit`, `arm_stmts`) "
+            "are the spelling; a raw bracket is invisible to the `defer` frames"),
 }
 
 UNRATCHETED = {
@@ -480,6 +485,9 @@ SPECIMENS = {
              "    x! + x! + x!", "}"],
             ["    mut fn m(x: int?) -> int {", "        if x == null { return 0 }",
              "        x! + x! + x!", "    }"]],
+    "I33": [["    cx.emit(Ins.ScopeEnter(Level.Application))"],
+            ["    cx.emit(Ins.ScopeExit(null))"],
+            ["    lo.out.give(Ins.ScopeExit(r))"]],
 }
 
 def selftest():
