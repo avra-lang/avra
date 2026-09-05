@@ -382,9 +382,6 @@ RULES = {
             "count (`refused_with`, or `== n`)"),
     "I21": (unmutated_mut,
             "a `mut` nothing mutates — say `let`"),
-    "I27": (restrlen,
-            "a STRING's `.length` re-measured in a loop condition — "
-            "that is `strlen` per iteration; hoist it"),
     "I28": (line_rx(r"pointed\(error_at\("),
             "a refusal assembled by hand — the one shape is "
             "`refusal(kind, at, message, label, help)`"),
@@ -396,6 +393,9 @@ RULES = {
 }
 
 UNRATCHETED = {
+    "I27": "RETIRED: a string's `.length` is a load — the header carries the\n"
+           "           length — so a re-measure in a loop condition costs nothing and\n"
+           "           the hoists that stand are harmless",
     "I25": "RETIRED: the compiler refuses a wrong payload count (F2015) on\n"
            "           patterns and constructions, one-line enums included — a\n"
            "           law now, and a matcher would only repeat it",
@@ -467,8 +467,6 @@ SPECIMENS = {
             ["    fn m(self, a: int, b: int) -> int {", "        a + a", "    }"],
             ["    fn m(self, a: int) -> int { 1 }"]],
     "I24": [["use core.{Span}"]],
-    "I27": [["    while i < s.length {"], ["    while j <= b.length {"],
-            ["    while i < src.length && p(i) {"]],
     "I28": [['    cx.emit(pointed(error_at("k", at, "m"), "l"))']],
     "I26": [["fn f(x: int?) -> int {", "    if x == null { return 0 }",
              "    x! + x! + x!", "}"]],

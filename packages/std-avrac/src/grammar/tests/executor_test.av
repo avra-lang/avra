@@ -182,4 +182,20 @@ spec "grammar/executor" {
             o.result == null && o.diagnostics.length == 1
         }
     }
+    given "the memo's edges — one table of rules by cursors" {
+        then "an empty input: one cursor, the start rule answers at it — a star that never turned is ABSENT" {
+            let g = g1([rule("e", [seq_to([cap("xs", named("NAME")) with { rep: Rep.Star }, item(named("BREAK")) with { rep: Rep.Opt }], Build.Call("mk", ["xs"]))])])
+            let o = run_sx(g, "")
+            result_str(o) == "(mk _)" && o.diagnostics.is_empty()
+        }
+        then "a one-rule grammar revisited at every cursor reads its answers" {
+            let g = g1([rule("e", [seq_to([cap("xs", named("NAME")) with { rep: Rep.Star }, item(named("BREAK")) with { rep: Rep.Opt }], Build.Call("mk", ["xs"]))])])
+            result_str(run_sx(g, "a b c d")) == "(mk [a b c d])"
+        }
+        then "a reference to no rule never reaches the table — the prepared grammar refuses to run" {
+            let g = g1([rule("s", [seq_to([item(rule_ref("ghost"))], Build.Call("mk", []))])])
+            let o = run_sx(g, "a")
+            o.result == null && o.diagnostics.any(it.message == "references undefined rule `ghost`")
+        }
+    }
 }

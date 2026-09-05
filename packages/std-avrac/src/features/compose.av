@@ -17,19 +17,36 @@ export fn compose_grammar(features: List<LanguageFeature>) -> Composed {
     Composed { built: Grammar { name: start, start: start, rules: rules } }
 }
 
-/// The engine-facing dispatch: the first feature registering `name`
-/// builds, through a Builder holding this call's world.
-export fn dispatch(features: List<LanguageFeature>, store: NodeStore, name: string,
-                   args: List<Captured<LangNode>>, span: Span?) -> Result<Captured<LangNode>, string> {
+/// Every builder under its name, the first feature registering a
+/// name winning — dispatch's search order, indexed once so a parse
+/// finds a node's builder in one lookup instead of a walk over every
+/// feature's rows.
+export fn builder_index(features: List<LanguageFeature>) -> Map<string, BuilderRow> {
+    mut index: Map<string, BuilderRow> = {}
     for f in features {
-        let hit: BuilderRow? = f.builders.find(it.name == name)
-        if hit != null {
-            let b = Builder { store: store, args: args, span: span }
-            let got: Result<LangNode, string> = hit!.build(b)
-            let built: LangNode = got?
-            let out: Result<Captured<LangNode>, string> = .Ok(Captured.Node(built))
-            return out
+        for row in f.builders {
+            if index.get(row.name) == null { index.set(row.name, row) }
         }
     }
-    .Err("no feature owns builder `${name}`")
+    index
+}
+
+/// The engine-facing dispatch: the builder registered under `name`
+/// builds, through a Builder holding this call's world.
+export fn build_named(builders: Map<string, BuilderRow>, store: NodeStore, name: string,
+                      args: List<Captured<LangNode>>, span: Span?) -> Result<Captured<LangNode>, string> {
+    let hit: BuilderRow? = builders.get(name)
+    if hit == null { return .Err("no feature owns builder `${name}`") }
+    let b = Builder { store: store, args: args, span: span }
+    let got: Result<LangNode, string> = hit!.build(b)
+    let built: LangNode = got?
+    let out: Result<Captured<LangNode>, string> = .Ok(Captured.Node(built))
+    out
+}
+
+/// The same dispatch from the features themselves — what a test of
+/// the registration asks.
+export fn dispatch(features: List<LanguageFeature>, store: NodeStore, name: string,
+                   args: List<Captured<LangNode>>, span: Span?) -> Result<Captured<LangNode>, string> {
+    build_named(builder_index(features), store, name, args, span)
 }
