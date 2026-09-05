@@ -231,6 +231,21 @@ registry is the idiom engine's spec, written by dogfooding.
   type, seated by typing (`TypeFacts.captures`), a cell's load the
   DEFINITION's (`def_type_of`) — at every read that MINTS, which
   in `callee_binding` is exactly those two.
+- A FN TYPE CARRIES ITS SEATS' CONTRACT: `fn(mut Cx, int) -> int`
+  is a DIFFERENT TYPE from `fn(Cx, int) -> int`, and the interner
+  keeps them apart (the marks ride the key). That is the missing
+  half of the seat law: without it a `mut`-taking fn stored in a
+  plain fn seat wrote through an immutable `let` with no diagnostic,
+  in both engines. The law has ONE asymmetry, and it is the sound
+  direction — a seat that PERMITS writing accepts a callee that does
+  not write (`fn_fits`), a seat that promised not to write refuses
+  one that does. A fn type's marks are NORMALIZED at `intern` (the
+  trailing unwritten ones dropped), so `fn(T)` built with no marks
+  and with two false ones are one type; skip that and two spellings
+  of one type refuse each other with identical words on both sides.
+  The seat law then reads MARKS, never a DeclId, so a declared
+  callee and a fn-typed value are one rule: `declared_marks`
+  projects a declaration into the same currency.
 - A RUNTIME ROW BORROWS ITS ARGUMENTS — callee-cleans is the AVRA
   call's convention, not the registry's. `retained_args` retains for
   `.Call` and `.CallPtr` alone; a `CallRt`/`CallRtVoid` argument
@@ -554,17 +569,12 @@ Syntax the grammar lacks:
   "expected `(` while parsing `stmt`" — the once grammar takes a
   name and a parameter list only, and a `T` no argument can pin has
   nothing to answer anyway.
+- A GENERIC FN AS A VALUE (`let f: fn(int) -> int = ident<int>`, the
+  pinned call unapplied): "expected BREAK while parsing `stmt`" — a
+  pinned call is a CALL in the grammar, so a generic fn cannot be
+  stored, and a generic `mut`-seat fn cannot fill a fn-typed seat.
 - `@comptime`: refuses at the `@` ("expected `mod`, `use`, … while
   parsing `stmt`").
-- A `mut` seat in a fn TYPE (`fn(mut Cx, Seat) -> int`): "expected
-  `)` while parsing `stmt`". This is not only a syntax gap: because a
-  fn type cannot SAY `mut`, a `mut`-taking fn stored in one keeps
-  writing through, so a call through the seat mutates an immutable
-  `let` with no diagnostic (probed both engines; the direct call and
-  the parameter hand-off both refuse correctly with F2048). The row
-  tables ride it — `MethodRow.check`/`lower` hold `mut`-taking fns in
-  non-`mut` fn types — so the spelling is the fix, not a nicety.
-  Filed for lane C with the probe.
 - The bare component form (`Cfg d { depth = 8 }`): "expected BREAK
   while parsing `stmt`" — `component Cfg d { … }` is the form.
   Instantiation is a STATEMENT: as a fn's tail it answers `void`

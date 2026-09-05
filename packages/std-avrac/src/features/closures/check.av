@@ -2,7 +2,7 @@
 //! rides the recorded expected-type channel), the body typed under
 //! the params behind the return barrier, the whole wearing
 //! `fn(params) -> body`.
-use core.{ExprId, Type, TypeId, Arrow, Param, LambdaParts}
+use core.{ExprId, Type, TypeId, Arrow, Param, LambdaParts, no_marks}
 use features.{TypeCx, spoken, seats_judged, this_is, settled_call, slot_worthy, slice_promise, Cap, accepts}
 use diagnostics.{refusal}
 
@@ -42,7 +42,7 @@ fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> Typ
     let ret = cx.lambda_body(e, ptys, body)
     if cx.errored_ty(ret) { return cx.error_type }
     match answer {
-        null -> cx.view.types.intern(Type.Fn(ptys, ret))
+        null -> cx.view.types.intern(Type.Fn(ptys, no_marks(ptys.length), ret))
         a? -> answered(cx, body, ptys, ret, a)
     }
 }
@@ -52,7 +52,7 @@ fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> Typ
 /// disagrees keeps the lambda's own type, and the SEAT speaks: an
 /// `accepts` miss is silent by contract.
 fn answered(mut cx: TypeCx, body: ExprId, ptys: List<TypeId>, ret: TypeId, a: TypeId) -> TypeId {
-    cx.view.types.intern(Type.Fn(ptys, if accepts(cx, body, a) { a } else { ret }))
+    cx.view.types.intern(Type.Fn(ptys, no_marks(ptys.length), if accepts(cx, body, a) { a } else { ret }))
 }
 
 /// What the seat's arrow says the body answers, when a seat spoke.
@@ -109,7 +109,10 @@ fn call_value_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId
 
 fn valued(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> TypeId {
     let held: Arrow? = cx.view.types.arrow_parts(cx.type_at(subject))
-    if held != null { return seats_judged(cx, e, cx.name_at(subject), held!.seats, held!.answer, args) }
+    if held != null {
+        let arrow = held!
+        return seats_judged(cx, e, cx.name_at(subject), arrow.seats, arrow.muts, arrow.answer, args)
+    }
     if cx.errored(subject) { return cx.error_type }
     uncallable(cx, e, subject)
 }

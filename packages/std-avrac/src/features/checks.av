@@ -3,7 +3,7 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, marked}
 use diagnostics.{Diag, refusal, warning}
 
 /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -37,7 +37,30 @@ fn require_spoken(mut cx: TypeCx, e: ExprId, subject: string, wanted: string, la
 export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
     if cx.errored_ty(got) || cx.errored_ty(want) { return false }
     // LICENSED I9: this IS the agreement law's body
-    got.index != want.index
+    if got.index == want.index { return false }
+    !fn_fits(cx, got, want)
+}
+
+/// A FN VALUE FITS A FN SEAT when its seats and its answer are the
+/// seat's and it writes through NO seat the seat withheld. The
+/// asymmetry IS the law: a seat that permits writing accepts a
+/// callee that does not write, and a seat that promised not to
+/// write refuses one that does. Nothing else about a type widens.
+fn fn_fits(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
+    let seat: Arrow? = cx.view.types.arrow_parts(want)
+    let value: Arrow? = cx.view.types.arrow_parts(got)
+    if seat == null || value == null { return false }
+    let w = seat!
+    let g = value!
+    // LICENSED I9: type identity — interned ids ARE the agreement
+    if w.answer.index != g.answer.index || w.seats.length != g.seats.length { return false }
+    mut fits = true
+    for j, ws in w.seats {
+        // LICENSED I9: type identity — interned ids ARE the agreement
+        if ws.index != g.seats[j].index { fits = false }
+        if marked(g.muts, j) && !marked(w.muts, j) { fits = false }
+    }
+    fits
 }
 
 /// THE ONE AGREEMENT DOOR for a UNIFIED seat. `unify` binds the
@@ -364,8 +387,12 @@ export fn this_is(n: string) -> string {
 /// A FN VALUE's seats judge a call — the one law the indirect
 /// call, the fn-field call, and the lambda share, refusing in the
 /// same words every call does.
-export fn seats_judged(mut cx: TypeCx, e: ExprId, callee: string, ps: List<TypeId>, ret: TypeId, args: List<ExprId>) -> TypeId {
+export fn seats_judged(mut cx: TypeCx, e: ExprId, callee: string, ps: List<TypeId>, muts: List<bool>, ret: TypeId, args: List<ExprId>) -> TypeId {
     if !seats_fit(cx, e, callee, args, ps) { return cx.error_type }
+    // A FN TYPE CARRIES ITS SEATS' CONTRACT, so an INDIRECT call is
+    // judged by the same law a direct one is: a marked seat is
+    // filled by a `mut` place, and no two seats share a root.
+    mut_seats_law(cx, e, callee, muts, args, null)
     ret
 }
 
@@ -520,11 +547,25 @@ fn captured(cx: TypeCx, root: ExprId) -> bool {
 /// place, and no two `mut` seats (the receiver counted) share a
 /// root — the exclusivity law. Seats are numbered from `base` (1
 /// past a method's receiver seat).
-export fn mut_seats_law(mut cx: TypeCx, e: ExprId, callee: string, decl: DeclId, args: List<ExprId>, base: int, receiver: ExprId?) {
+export fn mut_seats_law(mut cx: TypeCx, e: ExprId, callee: string, muts: List<bool>, args: List<ExprId>, receiver: ExprId?) {
     mut roots: List<ExprId> = if receiver == null { [] } else { [receiver!] }
     for j, a in args {
-        if cx.view.decls.mut_seat(decl, base + j) { roots = judged_seat(cx, e, callee, a, j, roots) }
+        if marked(muts, j) { roots = judged_seat(cx, e, callee, a, j, roots) }
     }
+}
+
+/// A DECLARATION'S marks for the seats its ARGUMENTS fill — from
+/// `base`, which is 1 past a method's own receiver. The law itself
+/// reads MARKS, so a declared callee and a fn-typed value are one
+/// rule and not two.
+export fn declared_marks(cx: TypeCx, decl: DeclId, base: int, n: int) -> List<bool> {
+    mut out: List<bool> = []
+    mut j = 0
+    while j < n {
+        out.push(cx.view.decls.mut_seat(decl, base + j))
+        j = j + 1
+    }
+    out
 }
 
 /// One `mut` seat judged; the roots handed so far, grown by this

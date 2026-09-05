@@ -1372,6 +1372,54 @@ the order is the dependency.
         marked without a write, and the honest marking is what
         remains. F2047 97 -> 96, F2051 0. 5 files, +17/-17;
         1714/1714.
+        `mut` IN A FN TYPE — THE SEAT LAW'S MISSING HALF, LANDED
+        2026-09-05. A SOUNDNESS HOLE, found by lane D and re-verified
+        here: a `mut`-taking fn stored in a plain `fn(T) -> V` seat
+        wrote through an immutable `let` with ZERO diagnostics, both
+        engines (`1 2 2` where the V1 law demands `1 1 0`). The law
+        held at the direct call and evaporated at the indirect one.
+        THE FIX, in the type: `Type.Fn` carries a parallel `muts`,
+        the interner's key carries them, and `fn(mut Cx, int) -> int`
+        is a DIFFERENT TYPE from `fn(Cx, int) -> int` — so the
+        agreement door refuses the store with no new law written. The
+        spelling is `fn(mut T, U) -> V` (the closures grammar, marks
+        windowed by span like a fn's own parameters), and the seat
+        law now reads MARKS rather than a DeclId, so a declared
+        callee and a fn-typed value are ONE rule (`declared_marks`
+        projects a declaration into that currency; `seats_judged`
+        applies it at every indirect call). ONE ASYMMETRY, the sound
+        direction: a seat that PERMITS writing accepts a callee that
+        does not write (`fn_fits`), a seat that promised not to write
+        refuses one that does — that is what lets 14 plain builders
+        keep their honest spelling in a `fn(mut Builder)` seat.
+        FOUND on the way: (1) marks must be NORMALIZED at `intern`
+        (trailing unwritten ones dropped), else `fn(T)` built two
+        ways refuses itself with identical words on both sides — the
+        mapping agent flagged the same hazard independently; (2) the
+        law immediately found two REAL defects in the tree — the
+        `defer` builders write through their Builder without saying
+        so, and `build_named` handed a freshly built Builder to a
+        `mut` seat (a value, not a place); (3) `pinned_by_answer`
+        carried a `mut` seat it never wrote. F2051 is now ZERO and
+        F2047 is unchanged at 96. THE SEAM IS SPELLED: `BuilderRow.build`,
+        `MethodRow.check`/`lower` and `PropertyRow.check`/`lower` say
+        `fn(mut …)`, which retired the three F2051 warnings lane D
+        reported in lists/walks.av. The seven `seated` preambles
+        there COULD now collapse through a higher-order verb; judged
+        CHURN and left — it would put an indirect call in the
+        compiler's own lowering path to save eleven lines, and the
+        guard reads plainly as it stands. THE BUILD took four stages,
+        because a language change the tree uses cannot bootstrap:
+        marks ignored -> seams spelled -> marks live -> the widening
+        (each stage's product compiling the next). Red team: 14
+        probes (the hole, the indirect call both ways, the widening,
+        a lambda into a marked seat, a field, a parameter, an answer,
+        two marks, one root twice, a capture, a trailing comma) —
+        every accepted program eval == native; 15 new cases and
+        corpus/fn_seats. 1856/1856, corpus 75/75. NOT MINE, recorded:
+        a generic fn as a VALUE (`ident<int>` unapplied) does not
+        parse — "expected BREAK while parsing `stmt`" — which is why
+        a generic `mut`-seat fn cannot be stored yet.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become

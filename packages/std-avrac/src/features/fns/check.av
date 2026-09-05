@@ -7,7 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId}
-use features.{no_pins, Pins, TypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, mut_seats_law, agreed, unify, hungry}
+use features.{no_pins, Pins, TypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, mut_seats_law, agreed, unify, hungry, declared_marks}
 use diagnostics.{refusal}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
@@ -42,7 +42,10 @@ fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, a
     if !pins.is_empty() { return value_takes_no_pins(cx, e, callee) }
     let bound = cx.target_type(e)
     let held: Arrow? = cx.view.types.arrow_parts(bound)
-    if held != null { return seats_judged(cx, e, callee, held!.seats, held!.answer, args) }
+    if held != null {
+        let arrow = held!
+        return seats_judged(cx, e, callee, arrow.seats, arrow.muts, arrow.answer, args)
+    }
     if cx.errored_ty(bound) { return cx.error_type }
     not_callable(cx, e, callee, bound)
 }
@@ -53,13 +56,13 @@ fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, a
 fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                    args: List<ExprId>, s: FnSig) -> TypeId {
     let decl: DeclId? = cx.bound_decl(e)
-    if decl == null { return seats_judged(cx, e, callee, s.params, s.ret, args) }
+    if decl == null { return seats_judged(cx, e, callee, s.params, [], s.ret, args) }
     let d = decl!
-    mut_seats_law(cx, e, callee, d, args, 0, null)
+    mut_seats_law(cx, e, callee, declared_marks(cx, d, 0, args.length), args, null)
     let tp: List<string> = cx.tparams(d)
     if tp.is_empty() {
         if !pins.is_empty() { takes_no_pins(cx, e, callee) }
-        return seats_judged(cx, e, callee, s.params, s.ret, args)
+        return seats_judged(cx, e, callee, s.params, [], s.ret, args)
     }
     generic_call(cx, e, callee, pins, args, s, d, tp)
 }
@@ -100,7 +103,7 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
 /// seat, a fn's declared answer). With no want yet the call goes
 /// HUNGRY, like a generic literal, and speaks only when the walk ends
 /// starving.
-fn pinned_by_answer(mut cx: TypeCx, e: ExprId, ret: TypeId, decl: DeclId, mut bound: Pins) {
+fn pinned_by_answer(cx: TypeCx, e: ExprId, ret: TypeId, decl: DeclId, mut bound: Pins) {
     let wanted: TypeId? = cx.want_at(e)
     if wanted == null { return }
     let _ = unify(cx, ret, wanted!, decl, bound)
