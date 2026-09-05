@@ -4955,11 +4955,18 @@ by meaning; each is a slice for lane D unless a lane is named.
   enum under a `dyn`-carrying want pins `T` from the argument, not
   the want (`let c: Cap<dyn Show> = Cap.Some(P {…})` is F2024) — the
   want-into-generic class, filed under H.
-- C. THE DOT-CALL DECIDED ONCE: `impls/check.av:21-60` and
-  `impls/lower.av:13-41` each hand-order a ladder over five receiver
-  kinds, and they already differ (`bounded_call` has no lowering
-  twin) -> `enum Receiverhood` projected once, matched exhaustively
-  in both passes.
+- ~~C. THE DOT-CALL DECIDED ONCE~~ — DONE 2026-09-05 (lane D):
+  `impls/callee.av` decides WHO ANSWERS (`Callee`: Variant, Bounded,
+  Contract, FnField, Row, Declared, Nameless — every arm spelled) in
+  the surface's precedence, and typing and lowering each match it
+  exhaustively; the two hand-ordered ladders, the `Receiver` record,
+  `var_bound`/`BoundSeat`, `type_receiver` and the helpers' null
+  answers are gone (a `Bounded` receiver at lowering is a mono
+  defect, named). The IR of all 74 corpus programs is byte-identical;
+  eleven attacks agree eval == native; the field-over-method
+  precedence is pinned by a test. language/receivers.av's own
+  `Callee` (Row/Method/Contract/None) is the third copy of this
+  decision — lane C's to fold onto impls' when it next touches it.
 - D. THE ERROR-ABSORB VERB: 28 sites in three spellings ->
   `cx.errored(e)` / `cx.errored_ty(ty)` on TypeCx.
 - E. VOICES, SCANS, DEAD CODE, STOLEN DOCS: twinned voices

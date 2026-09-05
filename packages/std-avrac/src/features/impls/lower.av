@@ -2,8 +2,8 @@
 //! the QUALIFIED name, the subject riding the self seat. The name
 //! derives from the receiver's type both here and at the fn loop,
 //! so no fact table carries it.
-use core.{ExprId, Reg, Ins, Type, DeclId}
-use features.{LowerCx, lower_defect, foreign_node, EnumSig, tagged_value, called_through, slot_read, MethodRow, MethodCall, method_row, StructSig, receiver_decl, box_size}
+use core.{ExprId, Reg, Ins, DeclId, TypeId}
+use features.{LowerCx, lower_defect, foreign_node, EnumSig, tagged_value, called_through, slot_read, MethodCall, box_size}
 
 /// The receiver's value: seat 0 of the body, as its binding says.
 fn receiver_reg(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -13,43 +13,24 @@ fn receiver_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 fn method_call_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
-        .MethodCall(subject, name, args) -> {
-            if cx.shape_at(subject) is .TypeName { return built_variant(cx, e, name, args) }
-            let dispatched: Reg? = dyn_dispatch(cx, e, subject, name, args)
-            if dispatched != null { return dispatched! }
-            let fielded: Reg? = fn_field_dispatch(cx, e, subject, name, args)
-            if fielded != null { return fielded! }
-            let row: MethodRow? = method_row(cx.view.lang.methods, name, cx.shape_at(subject))
-            if row != null {
-                let r = row!
-                return r.lower(cx, MethodCall { e: e, subject: subject, args: args })
-            }
-            let recv = cx.reg_of(subject)
-            let regs = [cx.reg_of(a) for a in args]
-            let target: DeclId? = receiver_decl(cx.view.types.shape_of(cx.type_at(subject)))
-            if target == null { return lower_defect(cx, e, "a method on a nameless receiver survived typing") }
-            let m: DeclId? = cx.view.decls.method(target!, name)
-            if m == null { return lower_defect(cx, e, "a method with no symbol survived typing") }
-            let dst = cx.result(e)
-            cx.emit(Ins.Call(dst, cx.method_symbol(m!, e, cx.type_at(subject)), [recv].concat(regs)))
-            dst
-        }
+        .MethodCall(subject, name, args) -> match callee_of(cx.view, cx.type_at(subject), name) {
+            .Variant(_, _) -> built_variant(cx, e, name, args),
+            .Bounded(_, _, _) -> lower_defect(cx, e, "a bounded receiver survived mono"),
+            .Contract(tdecl, _) -> dyn_dispatch(cx, e, subject, tdecl, name, args),
+            .FnField(slot, fty) -> fielded_dispatch(cx, e, subject, slot, fty, args),
+            .Row(r) -> r.lower(cx, MethodCall { e: e, subject: subject, args: args }),
+            .Declared(decl, _) -> declared_dispatch(cx, e, subject, decl, name, args),
+            .Nameless -> lower_defect(cx, e, "a method on a nameless receiver survived typing"),
+        },
         _ -> foreign_node(cx, e),
     }
 }
 
 /// The contract's dispatch: the box carries [value, methods…] in
 /// trait-declaration order — slot 0 rides the self seat, slot
-/// 1+ordinal holds the code pointer. Absent for every non-dyn
-/// receiver.
-fn dyn_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> Reg? {
-    let sh: Type = cx.shape_at(subject)
-    let tdecl: DeclId? = match sh {
-        .Dyn(d, _) -> d,
-        _ -> null,
-    }
-    if tdecl == null { return null }
-    let ordinal = cx.view.decls.trait_method_names(tdecl!).index_of(name)
+/// 1+ordinal holds the code pointer.
+fn dyn_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, tdecl: DeclId, name: string, args: List<ExprId>) -> Reg {
+    let ordinal = cx.view.decls.trait_method_names(tdecl).index_of(name)
     if ordinal < 0 { return lower_defect(cx, e, "a dyn method outside its trait survived typing") }
     let box = cx.reg_of(subject)
     let regs = [cx.reg_of(a) for a in args]
@@ -62,17 +43,22 @@ fn dyn_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string, args:
 
 /// The fn-FIELD call's lowering: read the field's box, then the
 /// box's slot 0 — the code address — and go through the pointer,
-/// the box riding seat 0. Absent when the receiver's type has no
-/// fn-typed field of the name.
-fn fn_field_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> Reg? {
-    let sig: StructSig? = cx.fields_of(cx.type_at(subject))
-    if sig == null { return null }
-    let slot: int? = sig!.slot_of(name)
-    if slot == null { return null }
-    let fty = sig!.types[slot!]
-    if !(cx.view.types.shape_of(fty) is .Fn) { return null }
-    let box = slot_read(cx, cx.reg_of(subject), slot!, fty)
+/// the box riding seat 0.
+fn fielded_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, slot: int, fty: TypeId, args: List<ExprId>) -> Reg {
+    let box = slot_read(cx, cx.reg_of(subject), slot, fty)
     called_through(cx, e, box, [cx.reg_of(a) for a in args])
+}
+
+/// The impl table's dispatch: a direct Call to the method's
+/// qualified symbol, the subject riding the self seat.
+fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, name: string, args: List<ExprId>) -> Reg {
+    let recv = cx.reg_of(subject)
+    let regs = [cx.reg_of(a) for a in args]
+    let m: DeclId? = cx.view.decls.method(decl, name)
+    if m == null { return lower_defect(cx, e, "a method with no symbol survived typing") }
+    let dst = cx.result(e)
+    cx.emit(Ins.Call(dst, cx.method_symbol(m!, e, cx.type_at(subject)), [recv].concat(regs)))
+    dst
 }
 
 /// The type-receiver half lowered: the variant's tagged box — the

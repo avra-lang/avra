@@ -2,8 +2,8 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, Type, TypeId, Arrow, DeclId}
-use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant, bound_name, seats_judged, settled_call, trait_member, trait_named, MethodRow, MethodCall, method_row, StructSig, receiver_law, mut_seats_law, fn_sig_of}
+use core.{ExprId, TypeId, Arrow, DeclId}
+use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant, bound_name, seats_judged, settled_call, trait_member, trait_named, MethodCall, receiver_law, mut_seats_law, fn_sig_of}
 use diagnostics.{refusal}
 
 fn method_call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -18,34 +18,28 @@ fn methoded(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List
     settled_call(cx, args, method_answer(cx, e, subject, name, args))
 }
 
+/// THE ONE DOT-CALL SURFACE: who answers is decided once (callee.av)
+/// and every kind judges the call in its own law.
 fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId {
-    let sh: Type = cx.shape_at(subject)
-    if sh is .Error { return cx.error_type }
-    // the TYPE-receiver half of the one dot-call surface: a call
-    // on a type NAME constructs its variant
-    let built: TypeId? = type_receiver(cx, e, subject, name, args)
-    if built != null { return built! }
-    let bound: TypeId? = bounded_call(cx, e, subject, name, args)
-    if bound != null { return bound! }
-    let contracted: TypeId? = dyn_call(cx, e, subject, name, args)
-    if contracted != null { return contracted! }
-    let fielded: TypeId? = fn_field_call(cx, e, subject, name, args)
-    if fielded != null { return fielded! }
-    // THE METHOD VOCABULARY: the rows the features declared, one
-    // lookup by receiver shape and name
-    let row: MethodRow? = method_row(cx.view.lang.methods, name, sh)
-    if row != null {
-        let r = row!
-        return r.check(cx, MethodCall { e: e, subject: subject, args: args })
+    if cx.errored(subject) { return cx.error_type }
+    match callee_of(cx.view, cx.type_at(subject), name) {
+        .Variant(decl, tname) -> construct_variant(cx, e, decl, tname, name, args),
+        .Bounded(decl, j, tname) -> bounded_call(cx, e, subject, tname, bound_name(cx, decl, j), name, args),
+        .Contract(tdecl, tname) -> dyn_call(cx, e, subject, tdecl, tname, name, args),
+        .FnField(_, fty) -> fielded_call(cx, e, name, fty, args),
+        .Row(r) -> r.check(cx, MethodCall { e: e, subject: subject, args: args }),
+        .Declared(decl, tname) -> declared_call(cx, e, subject, decl, tname, name, args),
+        .Nameless -> no_methods_here(cx, subject, name),
     }
-    let recv: Receiver? = receiver_of(cx, subject)
-    if recv == null { return no_methods_here(cx, subject, name) }
-    let held = recv!
-    let target = held.name
-    let found: FnSig? = cx.method_sig(held.decl, name)
+}
+
+/// The impl table's judgment: the found sig, instantiated for the
+/// receiver, judges arity and every seat; the inout laws follow.
+fn declared_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, target: string, name: string, args: List<ExprId>) -> TypeId {
+    let found: FnSig? = cx.method_sig(decl, name)
     if found == null { return no_such_method(cx, e, target, name) }
-    let m: DeclId? = cx.view.decls.method(held.decl, name)
-    let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, held.decl, found!))
+    let m: DeclId? = cx.view.decls.method(decl, name)
+    let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, decl, found!))
     let wants = sig.params.length - 1
     if args.length != wants {
         return wrong_method_arity(cx, e, target, name, wants, args.length)
@@ -82,14 +76,6 @@ fn seat_laws(mut cx: TypeCx, e: ExprId, subject: ExprId, callee: string, name: s
     mut_seats_law(cx, e, callee, m, args, base, if writes { subject } else { null })
 }
 
-/// A receiver's declared type: the impl table's key, and the name
-/// the voices use.
-type Receiver = { decl: DeclId, name: string }
-
-fn receiver(d: DeclId, n: string) -> Receiver {
-    Receiver { decl: d, name: n }
-}
-
 /// The declared type a receiver answers to, or absence. Generic
 /// receivers wait for T2 (the impl's own tparams).
 /// A method's sig on THIS receiver: a generic type's Vars replaced
@@ -102,17 +88,6 @@ fn instantiated_sig(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, si
     FnSig {
         params: [cx.view.types.substituted(p, decl, args) for p in sig.params],
         ret: cx.view.types.substituted(sig.ret, decl, args),
-    }
-}
-
-fn receiver_of(cx: TypeCx, subject: ExprId) -> Receiver? {
-    match cx.shape_at(subject) {
-        .Struct(d, n) -> receiver(d, n),
-        .Enum(d, n) -> receiver(d, n),
-        .App(d, n, _) -> receiver(d, n),
-        .Ptr or .Int or .Str or .Bool or .List(_) or .Res(_, _) or
-        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _) or .Opt(_) or .Null or
-        .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
     }
 }
 
@@ -145,38 +120,19 @@ fn wrong_method_argument(mut cx: TypeCx, target: string, name: string, j: int, w
 }
 
 /// A dot-call on a FN-TYPED FIELD — the capability-record pattern:
-/// `cx.walk(v)` calls the value the field holds. Absent when the
-/// receiver has no such field or it is not fn-typed; the impl
-/// table then gets its turn.
-fn fn_field_call(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
-    let sig: StructSig? = cx.fields_of(cx.type_at(subject))
-    if sig == null { return null }
-    let slot: int? = sig!.slot_of(name)
-    if slot == null { return null }
-    let held: Arrow? = cx.view.types.arrow_parts(sig!.types[slot!])
-    if held == null { return null }
+/// `cx.walk(v)` calls the value the field holds; the field's arrow
+/// judges the seats.
+fn fielded_call(mut cx: TypeCx, e: ExprId, name: string, fty: TypeId, args: List<ExprId>) -> TypeId {
+    let held: Arrow? = cx.view.types.arrow_parts(fty)
+    if held == null { return cx.error_type }
     seats_judged(cx, e, name, held!.seats, held!.answer, args)
-}
-
-/// A dot-call whose receiver is a TYPE NAME — variant construction
-/// through the shared law; absent for every value receiver.
-fn type_receiver(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
-    match cx.shape_at(subject) {
-        .TypeName(decl, tname) -> construct_variant(cx, e, decl, tname, name, args),
-        _ -> null,
-    }
 }
 
 /// A method on a BOUNDED type parameter: the bound's trait supplies
 /// the sig (no receiver seat — the receiver fills it trivially);
-/// mono resolves the concrete impl per specialization. Absent for
-/// every non-Var receiver; an UNBOUNDED T refuses with the spec's
-/// own remedy.
-fn bounded_call(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
-    let seat: BoundSeat? = var_bound(cx, subject)
-    if seat == null { return null }
-    let tname = seat!.tparam
-    let trait_name = seat!.bound
+/// mono resolves the concrete impl per specialization. An UNBOUNDED
+/// T refuses with the spec's own remedy.
+fn bounded_call(mut cx: TypeCx, e: ExprId, subject: ExprId, tname: string, trait_name: string, name: string, args: List<ExprId>) -> TypeId {
     if trait_name == "" {
         return spoken(cx, refusal("type.method", cx.loc_of(e), "`${tname}` has no known methods", "called here", "add a bound — `<${tname}: SomeTrait>`"))
     }
@@ -185,19 +141,11 @@ fn bounded_call(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: 
 
 /// A method on a CONTRACT value: the trait's sig judges (self
 /// omitted — the boxed value fills that seat at dispatch); the
-/// runtime answers through the box. Absent for every non-dyn
-/// receiver.
-fn dyn_call(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId? {
-    let sh: Type = cx.shape_at(subject)
-    let worn: Receiver? = match sh {
-        .Dyn(d, n) -> receiver(d, n),
-        _ -> null,
-    }
-    if worn == null { return null }
-    let contract = worn!
-    let member: DeclId? = trait_member(cx.view.decls, contract.decl, name)
-    if member == null { return no_dyn_method(cx, e, contract.name, name) }
-    contract_judged(cx, e, subject, contract.name, name, args, member!)
+/// runtime answers through the box.
+fn dyn_call(mut cx: TypeCx, e: ExprId, subject: ExprId, tdecl: DeclId, tname: string, name: string, args: List<ExprId>) -> TypeId {
+    let member: DeclId? = trait_member(cx.view.decls, tdecl, name)
+    if member == null { return no_dyn_method(cx, e, tname, name) }
+    contract_judged(cx, e, subject, tname, name, args, member!)
 }
 
 /// The contract's own laws, then its judgment: the member's word
@@ -241,12 +189,4 @@ fn sig_judged(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, args:
 
 /// The subject's tparam name and its bound ("" unbounded), when the
 /// subject is a Var.
-type BoundSeat = { tparam: string, bound: string }
-
-fn var_bound(cx: TypeCx, subject: ExprId) -> BoundSeat? {
-    match cx.shape_at(subject) {
-        .Var(decl, j, tname) -> BoundSeat { tparam: tname, bound: bound_name(cx, decl, j) },
-        _ -> null,
-    }
-}
 
