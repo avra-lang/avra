@@ -456,6 +456,9 @@ UNRATCHETED = {
            "           textually identical — every hit was the verb's own body or a\n"
            "           site needing the id afterward. The review round hunts it",
     "I5":  "the remaining folds are duplicate DETECTION (they emit on the dup)",
+    "I37": "a matcher cannot see whether a predicate has EFFECTS — `all` would\n"
+           "           short-circuit past a binding the fold must perform, and only a\n"
+           "           human can tell that from a pure test",
     "I6":  "head-plus-tail builds are subsumed by I1 and I3",
     "I10": "name->value if-ladders are too varied to grep — the review round hunts them",
     "I17": "a name serving two masters is semantic — no text pattern can see it",
@@ -535,6 +538,13 @@ def duplicate_numbers():
         for code in sorted(set(claimed)):
             if claimed.count(code) > 1:
                 out.append(code + " is claimed " + str(claimed.count(code)) + " times in " + table + " — the later one silently wins")
+    # and the REGISTRY, which is the spec this tool implements: a
+    # number claimed twice there sends every `LICENSED I<n>` at those
+    # sites to whichever rule the reader happens to scroll to first.
+    entries = registry_entries()
+    for code in sorted(set(entries)):
+        if entries.count(code) > 1:
+            out.append(code + " is claimed " + str(entries.count(code)) + " times in DOGFOODING.md's registry — a license naming it is ambiguous")
     return out
 
 def selftest():
@@ -626,9 +636,15 @@ def save(fps):
         for fp in sorted(fps):
             f.write(fp + "\n")
 
-def registry_codes():
+def registry_entries():
+    """Every number the registry CLAIMS, in order, duplicates kept. The
+    number must be followed by space or `(` — prose about a rule
+    ("- I7's matcher was BLIND to…") is commentary, not an entry."""
     doc = os.path.join(ROOT, "DOGFOODING.md")
-    return {m for m in re.findall(r"^- (I\d+)", open(doc).read(), re.M)}
+    return re.findall(r"^- (I\d+)(?=[\s(])", open(doc).read(), re.M)
+
+def registry_codes():
+    return set(registry_entries())
 
 def main():
     accept = "--accept" in sys.argv
@@ -637,6 +653,16 @@ def main():
     if missing:
         print(f"idioms: {', '.join(sorted(missing))} in DOGFOODING.md have no matcher")
         print("  add one to tools/idioms.py, or list it in UNRATCHETED with its reason.")
+        return 1
+
+    # LAW 4, THE OTHER DIRECTION: a rule the tool enforces but the
+    # rulebook never states. I3 was ratcheted and licensed at 53 sites
+    # with no registry entry at all, so every one of those licenses
+    # pointed at nothing.
+    unstated = (set(RULES) | set(UNRATCHETED)) - registry_codes()
+    if unstated:
+        print(f"idioms: {', '.join(sorted(unstated))} enforced with no entry in DOGFOODING.md")
+        print("  the registry IS the spec — write the rule where a reader will look for it.")
         return 1
 
     dead = selftest()
