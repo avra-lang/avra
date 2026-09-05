@@ -105,7 +105,7 @@ impl TypeCx {
             let _ = self.view.decls.sig(m)
             if self.registrable(f) { self.view.decls.declare_method(d, m) }
         }
-        if parts.of != "" { self.check_trait_impl(s, parts.of, d, parts.target, parts.fns) }
+        if parts.of != null { self.check_trait_impl(s, parts.of!, d, parts.target, parts.fns) }
     }
 
     /// A method the table can serve: plain — generic methods wait.
@@ -126,7 +126,7 @@ impl TypeCx {
         let d = decl!
         // a generic target lands for an INHERENT impl; a trait impl
         // over one is recorded
-        if parts.of != "" && !self.view.decls.tparams(d).is_empty() {
+        if parts.of != null && !self.view.decls.tparams(d).is_empty() {
             if loud { self.generic_target(s, target) }
             return null
         }
@@ -155,11 +155,11 @@ impl TypeCx {
     /// The refusal stands ALONE: the impl still serves its target for
     /// the rest of the walk, so a call of an orphan's method speaks
     /// nothing more.
-    fn orphan_law(s: StmtId, d: DeclId, of: string, target: string, loud: bool) {
+    fn orphan_law(s: StmtId, d: DeclId, of: string?, target: string, loud: bool) {
         if !loud { return }
         let owner = self.view.decls.package_of(d)
         if owner == self.view.package() { return }
-        let tr: DeclId? = if of == "" { null } else { self.trait_decl_named(of) }
+        let tr: DeclId? = if of == null { null } else { self.trait_decl_named(of!) }
         if tr != null && self.view.decls.package_of(tr!) == self.view.package() { return }
         self.orphan_impl(s, impl_heading(of, target), target, owner)
     }
@@ -217,18 +217,20 @@ impl TypeCx {
         if !(parent.kind is .Impl) { return }
         // a generic method was refused whole; its receiver has no say
         if !(self.view.store.fn_parts(x.stmt)?.tparams ?? []).is_empty() { return }
-        let of = self.view.store.impl_parts(parent.stmt)?.of ?? ""
+        // the receiver's kind was checked above, so the absence here is
+        // the INHERENT impl's, not a missing parts record
+        let of: string? = self.view.store.impl_parts(parent.stmt)?.of
         let writes = self.view.decls.writes_receiver(x.id)
-        if of == "" {
+        if of == null {
             if self.view.store.is_mutating(x.stmt) && !self.view.decls.written_so_far(x.id) { self.never_writes(x) }
             self.seat_contract(x, 1)
             return
         }
-        let tdecl: DeclId? = self.trait_decl_named(of)
+        let tdecl: DeclId? = self.trait_decl_named(of!)
         if tdecl == null { return }
         let member: DeclId? = trait_member(self.view.decls, tdecl!, x.name)
         if member == null { return }
-        if writes && !self.view.decls.declares_writing(member!) { self.writes_under_plain_sig(x, of) }
+        if writes && !self.view.decls.declares_writing(member!) { self.writes_under_plain_sig(x, of!) }
     }
 
     // ── The declare voices — each refusal worded once, at its name ──
@@ -296,7 +298,7 @@ impl TypeCx {
 }
 
 /// An impl block's heading as written — `T`, or `Tr for T`.
-fn impl_heading(of: string, target: string) -> string {
-    if of == "" { return target }
-    "${of} for ${target}"
+fn impl_heading(of: string?, target: string) -> string {
+    if of == null { return target }
+    "${of!} for ${target}"
 }

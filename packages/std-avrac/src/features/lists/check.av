@@ -71,7 +71,7 @@ fn unwanted_element(mut cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {
 /// over a range `lo..hi`, both bounds are ints, the name counts,
 /// and there is no index. The filter is a bool; the answer is a
 /// list of the element expression's type.
-fn comp_type(mut cx: TypeCx, e: ExprId, elem: ExprId, index: string, source: ExprId, hi: ExprId?, cond: ExprId?) -> TypeId {
+fn comp_type(mut cx: TypeCx, e: ExprId, elem: ExprId, index: string?, source: ExprId, hi: ExprId?, cond: ExprId?) -> TypeId {
     let tys = if hi == null { walked_types(cx, index, source) } else { counted_types(cx, index, source, hi!) }
     cx.bind_types(elem, tys)
     if cond != null { filter_checks(cx, cond!, tys) }
@@ -114,7 +114,7 @@ fn filter_checks(mut cx: TypeCx, cond: ExprId, tys: List<TypeId>) {
 /// int when one is named. A source that is not a list speaks, and
 /// the element binder wears the refusal's type — every downstream
 /// read stays total.
-fn walked_types(mut cx: TypeCx, index: string, source: ExprId) -> List<TypeId> {
+fn walked_types(mut cx: TypeCx, index: string?, source: ExprId) -> List<TypeId> {
     let st = cx.walk_type(source)
     if cx.errored(source) { return binders(cx, index, cx.error_type) }
     let held: TypeId? = cx.view.types.element(st)
@@ -125,17 +125,17 @@ fn walked_types(mut cx: TypeCx, index: string, source: ExprId) -> List<TypeId> {
 /// The binders' types over a range: the counter is an int, both
 /// bounds are ints, and an index has nothing to name — it wears the
 /// refusal's type while the count still types.
-fn counted_types(mut cx: TypeCx, index: string, lo: ExprId, hi: ExprId) -> List<TypeId> {
+fn counted_types(mut cx: TypeCx, index: string?, lo: ExprId, hi: ExprId) -> List<TypeId> {
     require_int(cx, lo, "a range's low bound", "this is where counting starts")
     require_int(cx, hi, "a range's high bound", "this is where counting stops")
     let int = cx.view.types.intern(Type.Int)
-    if index == "" { return [int] }
+    if index == null { return [int] }
     [range_has_no_index(cx, lo), int]
 }
 
 /// The binders in pre-order: the index's int first when named.
-fn binders(mut cx: TypeCx, index: string, elem: TypeId) -> List<TypeId> {
-    if index == "" { return [elem] }
+fn binders(mut cx: TypeCx, index: string?, elem: TypeId) -> List<TypeId> {
+    if index == null { return [elem] }
     [cx.view.types.intern(Type.Int), elem]
 }
 
