@@ -3,15 +3,15 @@
 //! scope per turn. A for adds its counter CELL before the brackets
 //! and its step store after the body — nothing the IR does not
 //! already say.
-use core.{StmtId, ExprId, Ins, Level, TypeId, BinOp, Type}
+use core.{StmtId, ExprId, Ins, TypeId, BinOp, Type}
 use features.{LowerCx}
 
 export fn lower_while(mut cx: LowerCx, cond: ExprId, stmts: List<StmtId>) {
     cx.emit(Ins.LoopStart)
     cx.emit(Ins.LoopCond(cx.reg_of(cond)))
-    cx.emit(Ins.ScopeEnter(Level.Application))
+    cx.scope_enter()
     cx.lower_stmts(stmts)
-    cx.emit(Ins.ScopeExit(null))
+    cx.scope_exit(null)
     cx.emit(Ins.LoopEnd)
 }
 
@@ -26,10 +26,10 @@ export fn lower_for(mut cx: LowerCx, s: StmtId, from: ExprId, cond: ExprId, step
     cx.bind_slot(s, slot)
     cx.emit(Ins.LoopStart)
     cx.emit(Ins.LoopCond(cx.reg_of(cond)))
-    cx.emit(Ins.ScopeEnter(Level.Application))
+    cx.scope_enter()
     cx.lower_stmts(stmts)
     cx.emit(Ins.Store(slot, cx.reg_of(step)))
-    cx.emit(Ins.ScopeExit(null))
+    cx.scope_exit(null)
     cx.emit(Ins.LoopEnd)
 }
 
@@ -55,7 +55,7 @@ export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: Lis
     let more = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(more, BinOp.Lt, at, len))
     cx.emit(Ins.LoopCond(more))
-    cx.emit(Ins.ScopeEnter(Level.Application))
+    cx.scope_enter()
     let here = cx.mint_shape(Type.Int)
     cx.emit(Ins.Load(here, idx))
     cx.bind_index(s, here)
@@ -70,7 +70,7 @@ export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: Lis
     let next = cx.mint_shape(Type.Int)
     cx.emit(Ins.Bin(next, BinOp.Add, again, one))
     cx.emit(Ins.Store(idx, next))
-    cx.emit(Ins.ScopeExit(null))
+    cx.scope_exit(null)
     cx.emit(Ins.LoopEnd)
 }
 

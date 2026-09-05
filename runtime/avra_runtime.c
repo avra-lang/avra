@@ -1009,6 +1009,25 @@ const char* avra_str_concat(const char* a, const char* b) {
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <spawn.h>
+#include <poll.h>
+#include <signal.h>
+#include <fcntl.h>
+
+// A child's cwd bound through a file action: POSIX-2024's name where
+// the SDK has it (macOS 26), the `_np` spelling before (Darwin
+// 10.15, glibc 2.29); elsewhere a cwd is refused as unsupported.
+#if defined(__APPLE__)
+#include <Availability.h>
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+#define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir
+#else
+#define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir_np
+#endif
+#elif defined(__GLIBC__)
+#if __GLIBC_PREREQ(2, 29)
+#define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir_np
+#endif
+#endif
 extern char** environ;
 #include <dirent.h>
 #include <time.h>
@@ -1034,6 +1053,10 @@ void avra_args_init(int64_t argc, char** argv) {
     g_argc = argc;
     g_argv = (const char**)malloc((size_t)(argc > 0 ? argc : 1) * sizeof(char*));
     for (int64_t i = 0; i < argc; i++) g_argv[i] = str_static(argv[i]);
+    // A write to a closed pipe is an EPIPE the writer sees, never a
+    // signal that kills the program mid-sentence; every child spawned
+    // here gets the default back (posix_spawn's SETSIGDEF).
+    signal(SIGPIPE, SIG_IGN);
 }
 
 int64_t avra_selfhost_argc(void) {
@@ -1107,29 +1130,532 @@ int64_t avra_selfhost_write_file(const char* path, const char* content) {
     return ok;
 }
 
-// A program run with its arguments AS A LIST — no shell, so no
-// character in any argument means anything but itself. `args` is
-// an Avra `List<string>`. The verdict is the shell's convention
-// without the shell: the exit code, 128+signal when a signal
-// killed it, 127 when it could not start — so a wreck never reads
-// as a small exit code, and never as SUCCESS.
-int64_t avra_spawn_status(const char* prog, void* args) {
-    AvraArray* a = (AvraArray*)args;
-    char** argv = (char**)malloc((size_t)(a->len + 2) * sizeof(char*));
-    argv[0] = (char*)prog;
-    for (int64_t i = 0; i < a->len; i++) argv[i + 1] = (char*)(uintptr_t)a->data[i];
-    argv[a->len + 1] = NULL;
-    // what this program printed comes out before the child's words:
-    // a buffered stdout is flushed at the seam, or a pipe reorders
+// ── Processes ───────────────────────────────────────────────────
+//
+// THE SUBSTRATE @std.process stands on: twelve functions over a
+// handle table. The host seam carries words and pointers only, so a
+// spawn answers ONE integer and C keeps the pid, the pipes and the
+// buffers behind it. ONE PUMP drains stdout, stderr and a pending
+// stdin in one poll set — the only shape that cannot deadlock at a
+// full pipe — and reaps exactly once, after which the pid is -1 and
+// a signal answers -ESRCH: the pid-reuse race cannot be written.
+// A STATUS IS A TAGGED WORD: the tag in the high half (0 running,
+// 1 exited, 2 signalled), the payload below, so success is never
+// zero and a signal death can never read as a small exit code; a
+// spawn that fails answers -errno and mints no handle. Every text
+// answered is a box (str_owned / str_static), never a bare malloc.
+// The program is spawned by ABSOLUTE PATH through posix_spawn —
+// never posix_spawnp, which searches the parent's PATH and, on
+// Darwin, resolves against the parent's cwd.
+
+enum {
+    PROC_PIPE_IN = 0x1, PROC_PIPE_OUT = 0x2, PROC_PIPE_ERR = 0x4, PROC_MERGE_ERR = 0x8,
+    PROC_NULL_IN = 0x10, PROC_NULL_OUT = 0x20, PROC_NULL_ERR = 0x40,
+    PROC_INHERIT_IN = 0x80, PROC_INHERIT_OUT = 0x100, PROC_INHERIT_ERR = 0x200,
+    PROC_NEW_PGROUP = 0x400, PROC_NEW_SESSION = 0x800, PROC_SEARCH_PATH = 0x1000, PROC_INHERIT_ENV = 0x2000
+};
+enum {
+    EV_OUT = 0x1, EV_ERR = 0x2, EV_OUT_EOF = 0x4, EV_ERR_EOF = 0x8, EV_IN_WROTE = 0x10, EV_IN_CLOSED = 0x20,
+    EV_EXITED = 0x40, EV_TIMEOUT = 0x80, EV_CAPPED_OUT = 0x100, EV_CAPPED_ERR = 0x200,
+    EV_TERMED = 0x400, EV_KILLED = 0x800, EV_TRUNCATED = 0x1000
+};
+enum { EXIT_CODE = 1, EXIT_SIGNAL = 2 };
+
+// A captured stream's bytes so far.
+typedef struct { char* buf; size_t len; size_t cap; } Grow;
+
+typedef struct {
+    int live;
+    int64_t gen;
+    pid_t pid;              // -1 once reaped
+    pid_t pgid;             // the group the child leads, outliving its reap
+    int group;              // the child leads its own process group
+    int in_fd, out_fd, err_fd;
+    Grow out, err;
+    char* in_text;          // pending stdin, ours
+    size_t in_len, in_off;
+    int in_close;           // close stdin once the pending text has drained
+    int64_t status;         // the tagged word; 0 while running
+    int64_t sticky;         // events that stay: timeout, capped, termed, killed, truncated
+    size_t max_bytes;
+} Proc;
+
+static Proc* g_procs = NULL;
+static int64_t g_nprocs = 0;
+
+static int64_t mono_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
+}
+
+// A handle is the slot's generation over its index, so a closed
+// slot's handle never names the slot's next tenant.
+static Proc* proc_at(int64_t h) {
+    if (h < 0) return NULL;
+    int64_t idx = h & 0xffffffffLL, gen = h >> 32;
+    if (idx >= g_nprocs || !g_procs[idx].live || g_procs[idx].gen != gen) return NULL;
+    return &g_procs[idx];
+}
+
+static int64_t proc_slot(void) {
+    for (int64_t i = 0; i < g_nprocs; i++) if (!g_procs[i].live) return i;
+    int64_t n = g_nprocs ? g_nprocs * 2 : 16;
+    g_procs = (Proc*)realloc(g_procs, (size_t)n * sizeof(Proc));
+    for (int64_t i = g_nprocs; i < n; i++) { memset(&g_procs[i], 0, sizeof(Proc)); g_procs[i].gen = 1; }
+    int64_t at = g_nprocs;
+    g_nprocs = n;
+    return at;
+}
+
+static void grow_append(Grow* g, const char* s, size_t n) {
+    if (g->len + n + 1 > g->cap) {
+        size_t cap = g->cap ? g->cap : 4096;
+        while (cap < g->len + n + 1) cap *= 2;
+        g->buf = (char*)realloc(g->buf, cap);
+        g->cap = cap;
+    }
+    memcpy(g->buf + g->len, s, n);
+    g->len += n;
+    g->buf[g->len] = '\0';
+}
+
+static void close_fd(int* fd) {
+    if (*fd >= 0) close(*fd);
+    *fd = -1;
+}
+
+// A pipe end above the standard three (a dup2 target must never be
+// one we hold), CLOEXEC so it never leaks into a child.
+static int raised(int fd) {
+    while (fd >= 0 && fd <= 2) {
+        int d = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+        close(fd);
+        fd = d;
+    }
+    if (fd >= 0) fcntl(fd, F_SETFD, FD_CLOEXEC);
+    return fd;
+}
+
+static int make_pipe(int p[2]) {
+    if (pipe(p) != 0) return -errno;
+    p[0] = raised(p[0]);
+    p[1] = raised(p[1]);
+    return (p[0] < 0 || p[1] < 0) ? -EMFILE : 0;
+}
+
+static int executable(const char* path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode) && access(path, X_OK) == 0;
+}
+
+// The program's absolute path: as written when it names a directory,
+// else the first PATH entry holding it — relative and empty entries
+// are skipped, so the current directory is never searched. Ours.
+static char* resolved(const char* file, const char* path) {
+    if (strchr(file, '/')) return executable(file) ? strdup(file) : NULL;
+    if (!path) return NULL;
+    const char* p = path;
+    size_t flen = strlen(file);
+    while (1) {
+        const char* colon = strchr(p, ':');
+        size_t n = colon ? (size_t)(colon - p) : strlen(p);
+        if (n > 0 && p[0] == '/') {
+            char* cand = (char*)malloc(n + flen + 2);
+            memcpy(cand, p, n);
+            cand[n] = '/';
+            memcpy(cand + n + 1, file, flen + 1);
+            if (executable(cand)) return cand;
+            free(cand);
+        }
+        if (!colon) return NULL;
+        p = colon + 1;
+    }
+}
+
+// A NULL-terminated vector over an Avra `List<string>`, the strings
+// borrowed for one call; `head` leads it when given.
+static char** words_of(void* arr, const char* head) {
+    AvraArray* a = (AvraArray*)arr;
+    int64_t n = a ? a->len : 0;
+    char** v = (char**)malloc((size_t)(n + 2) * sizeof(char*));
+    int64_t k = 0;
+    if (head) v[k++] = (char*)head;
+    for (int64_t i = 0; i < n; i++) v[k++] = (char*)(uintptr_t)a->data[i];
+    v[k] = NULL;
+    return v;
+}
+
+static int one_of(int64_t flags, int64_t a, int64_t b, int64_t c, int64_t d) {
+    return !!(flags & a) + !!(flags & b) + !!(flags & c) + !!(flags & d) == 1;
+}
+
+// A child spawned. `max_bytes` caps each captured stream (0 lifts the
+// cap); `from_h` names an upstream child whose stdout becomes this
+// child's stdin through the kernel's own pipe — no bytes through us —
+// or -1 for the stdin the flags say.
+int64_t avra_proc_spawn(const char* file, void* argv, void* envp, const char* cwd, int64_t flags, int64_t max_bytes, int64_t from_h) {
+    Proc* from = from_h >= 0 ? proc_at(from_h) : NULL;
+    if (from_h >= 0 && (!from || from->out_fd < 0)) return -EBADF;
+    if (from) flags = (flags & ~(int64_t)(PROC_NULL_IN | PROC_INHERIT_IN)) | PROC_PIPE_IN;
+    if (!one_of(flags, PROC_PIPE_IN, PROC_NULL_IN, PROC_INHERIT_IN, 0)) return -EINVAL;
+    if (!one_of(flags, PROC_PIPE_OUT, PROC_NULL_OUT, PROC_INHERIT_OUT, 0)) return -EINVAL;
+    if (!one_of(flags, PROC_PIPE_ERR, PROC_NULL_ERR, PROC_INHERIT_ERR, PROC_MERGE_ERR)) return -EINVAL;
+    if ((flags & PROC_MERGE_ERR) && !(flags & PROC_PIPE_OUT)) return -EINVAL;
+    AvraArray* env = (AvraArray*)envp;
+    for (int64_t i = 0; env && i < env->len; i++) {
+        if (!strchr((const char*)(uintptr_t)env->data[i], '=')) return -EINVAL;
+    }
+    if (cwd && cwd[0]) {
+        struct stat st;
+        if (stat(cwd, &st) != 0 || !S_ISDIR(st.st_mode)) return -ENOTDIR;
+    }
+    char* path = ((flags & PROC_SEARCH_PATH) && !strchr(file, '/')) ? resolved(file, getenv("PATH")) : strdup(file);
+    if (!path) return -ENOENT;
+    int in[2] = { -1, -1 }, out[2] = { -1, -1 }, err[2] = { -1, -1 };
+    int rc = 0;
+    if (from) {
+        // the upstream's read end was ours to poll — non-blocking; the
+        // child that inherits it reads as a child does
+        in[0] = from->out_fd;
+        fcntl(in[0], F_SETFL, 0);
+    } else if ((flags & PROC_PIPE_IN) && (rc = make_pipe(in)) != 0) goto fail;
+    if ((flags & PROC_PIPE_OUT) && (rc = make_pipe(out)) != 0) goto fail;
+    if ((flags & PROC_PIPE_ERR) && (rc = make_pipe(err)) != 0) goto fail;
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (flags & PROC_PIPE_IN) posix_spawn_file_actions_adddup2(&fa, in[0], 0);
+    if (flags & PROC_NULL_IN) posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    if (flags & PROC_PIPE_OUT) posix_spawn_file_actions_adddup2(&fa, out[1], 1);
+    if (flags & PROC_NULL_OUT) posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    if (flags & PROC_PIPE_ERR) posix_spawn_file_actions_adddup2(&fa, err[1], 2);
+    if (flags & PROC_MERGE_ERR) posix_spawn_file_actions_adddup2(&fa, out[1], 2);
+    if (flags & PROC_NULL_ERR) posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
+    // Darwin closes every fd the actions do not name — so the three
+    // a child inherits are named.
+    if (flags & PROC_INHERIT_IN) posix_spawn_file_actions_addinherit_np(&fa, 0);
+    if (flags & PROC_INHERIT_OUT) posix_spawn_file_actions_addinherit_np(&fa, 1);
+    if (flags & PROC_INHERIT_ERR) posix_spawn_file_actions_addinherit_np(&fa, 2);
+#endif
+    if (cwd && cwd[0]) {
+#ifdef AVRA_ADDCHDIR
+        AVRA_ADDCHDIR(&fa, cwd);
+#else
+        posix_spawn_file_actions_destroy(&fa);
+        rc = -ENOTSUP;
+        goto fail;
+#endif
+    }
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+    short af = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF;
+    sigset_t none, all;
+    sigemptyset(&none);
+    sigfillset(&all);
+    sigdelset(&all, SIGKILL);
+    sigdelset(&all, SIGSTOP);
+    posix_spawnattr_setsigmask(&at, &none);
+    posix_spawnattr_setsigdefault(&at, &all);
+    if (flags & PROC_NEW_PGROUP) { af |= POSIX_SPAWN_SETPGROUP; posix_spawnattr_setpgroup(&at, 0); }
+#ifdef POSIX_SPAWN_SETSID
+    if (flags & PROC_NEW_SESSION) af |= POSIX_SPAWN_SETSID;
+#endif
+#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
+    af |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+#endif
+    posix_spawnattr_setflags(&at, af);
+
+    char** cargv = words_of(argv, file);
+    char** cenvp = (flags & PROC_INHERIT_ENV) ? environ : words_of(envp, NULL);
+    // what this program printed comes out before the child's words
     fflush(NULL);
-    pid_t pid;
-    int started = posix_spawnp(&pid, prog, NULL, NULL, argv, environ);
-    free(argv);
-    if (started != 0) return 127;
-    int status;
-    if (waitpid(pid, &status, 0) < 0) return 127;
-    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
-    return (int64_t)WEXITSTATUS(status);
+    pid_t pid = -1;
+    int started = posix_spawn(&pid, path, &fa, &at, cargv, cenvp);
+    posix_spawn_file_actions_destroy(&fa);
+    posix_spawnattr_destroy(&at);
+    free(cargv);
+    if (cenvp != environ) free(cenvp);
+    // the upstream's read end is the child's now; we stop reading it
+    if (from) { in[0] = -1; close_fd(&from->out_fd); }
+    close_fd(&in[0]);
+    close_fd(&out[1]);
+    close_fd(&err[1]);
+    if (started != 0) { rc = -started; goto fail; }
+    if (in[1] >= 0) fcntl(in[1], F_SETFL, O_NONBLOCK);
+    if (out[0] >= 0) fcntl(out[0], F_SETFL, O_NONBLOCK);
+    if (err[0] >= 0) fcntl(err[0], F_SETFL, O_NONBLOCK);
+    free(path);
+
+    int64_t idx = proc_slot();
+    Proc* p = &g_procs[idx];
+    int64_t gen = p->gen;
+    memset(p, 0, sizeof(Proc));
+    p->gen = gen;
+    p->live = 1;
+    p->pid = pid;
+    p->pgid = pid;
+    p->group = (flags & (PROC_NEW_PGROUP | PROC_NEW_SESSION)) != 0;
+    p->in_fd = in[1];
+    p->out_fd = out[0];
+    p->err_fd = err[0];
+    p->max_bytes = max_bytes > 0 ? (size_t)max_bytes : (size_t)-1;
+    return (gen << 32) | idx;
+
+fail:
+    free(path);
+    if (from) in[0] = -1;
+    close_fd(&in[0]); close_fd(&in[1]);
+    close_fd(&out[0]); close_fd(&out[1]);
+    close_fd(&err[0]); close_fd(&err[1]);
+    return rc;
+}
+
+static int64_t encoded(int st) {
+    if (WIFEXITED(st)) return ((int64_t)EXIT_CODE << 32) | (int64_t)WEXITSTATUS(st);
+    int64_t payload = WTERMSIG(st);
+#ifdef WCOREDUMP
+    if (WCOREDUMP(st)) payload |= 0x100;
+#endif
+    return ((int64_t)EXIT_SIGNAL << 32) | payload;
+}
+
+// One stream's readable bytes into its buffer; EOF and the cap both
+// close our end.
+static int64_t drained(Proc* p, int* fd, Grow* g, int64_t got, int64_t eof, int64_t capped) {
+    char chunk[65536];
+    ssize_t n = read(*fd, chunk, sizeof chunk);
+    if (n > 0) {
+        grow_append(g, chunk, (size_t)n);
+        if (g->len > p->max_bytes) { close_fd(fd); p->sticky |= capped; return capped; }
+        return got;
+    }
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
+    close_fd(fd);
+    return eof;
+}
+
+// Pending stdin fed as far as the pipe takes it; the child closing
+// its end is a normal close, never an error.
+static int64_t fed(Proc* p) {
+    int64_t ev = 0;
+    if (p->in_off < p->in_len) {
+        ssize_t n = write(p->in_fd, p->in_text + p->in_off, p->in_len - p->in_off);
+        if (n > 0) { p->in_off += (size_t)n; ev |= EV_IN_WROTE; }
+        else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) { close_fd(&p->in_fd); return EV_IN_CLOSED; }
+    }
+    if (p->in_off >= p->in_len && p->in_close) { close_fd(&p->in_fd); ev |= EV_IN_CLOSED; }
+    return ev;
+}
+
+static int proc_done(Proc* p) {
+    return p->pid < 0 && p->out_fd < 0 && p->err_fd < 0;
+}
+
+// One tick of the pump: poll every open end at once, move what
+// moves, reap once. Answers the tick's events over the standing
+// state — exited, ends at EOF, the sticky verdicts.
+static int64_t pump_tick(Proc* p, int64_t timeout_ms) {
+    int64_t ev = 0;
+    if (p->in_fd >= 0 && p->in_off >= p->in_len && p->in_close) { close_fd(&p->in_fd); ev |= EV_IN_CLOSED; }
+    struct pollfd fds[3];
+    int n = 0, io = -1, ie = -1, ii = -1;
+    if (p->out_fd >= 0) { fds[n].fd = p->out_fd; fds[n].events = POLLIN; fds[n].revents = 0; io = n++; }
+    if (p->err_fd >= 0) { fds[n].fd = p->err_fd; fds[n].events = POLLIN; fds[n].revents = 0; ie = n++; }
+    if (p->in_fd >= 0 && p->in_off < p->in_len) { fds[n].fd = p->in_fd; fds[n].events = POLLOUT; fds[n].revents = 0; ii = n++; }
+    // a live child is re-checked at least every 100ms, so an exit is
+    // seen while its output is still open
+    int wait = timeout_ms < 0 ? -1 : (int)timeout_ms;
+    if (p->pid > 0 && (wait < 0 || wait > 100)) wait = 100;
+    int r = poll(n ? fds : NULL, (nfds_t)n, wait);
+    if (r < 0 && errno != EINTR) return -errno;
+    if (r > 0) {
+        if (io >= 0 && fds[io].revents) ev |= drained(p, &p->out_fd, &p->out, EV_OUT, EV_OUT_EOF, EV_CAPPED_OUT);
+        if (ie >= 0 && fds[ie].revents) ev |= drained(p, &p->err_fd, &p->err, EV_ERR, EV_ERR_EOF, EV_CAPPED_ERR);
+        if (ii >= 0 && fds[ii].revents) ev |= fed(p);
+    }
+    if (p->pid > 0) {
+        int st;
+        pid_t w = waitpid(p->pid, &st, WNOHANG);
+        if (w == p->pid) { p->status = encoded(st); p->pid = -1; ev |= EV_EXITED; }
+    }
+    if (p->pid < 0) ev |= EV_EXITED;
+    if (p->out_fd < 0) ev |= EV_OUT_EOF;
+    if (p->err_fd < 0) ev |= EV_ERR_EOF;
+    if (p->in_fd < 0) ev |= EV_IN_CLOSED;
+    return ev | p->sticky;
+}
+
+// A signal to the child — its whole group when it leads one. The
+// group id outlives the reap: a pid is never reused while it names a
+// living group, so the tree a finished child left behind is still ours.
+static void signalled(Proc* p, int sig) {
+    if (p->group) { if (p->pgid > 0) killpg(p->pgid, sig); return; }
+    if (p->pid > 0) kill(p->pid, sig);
+}
+
+// Ticks until `until` says stop or `ms` have passed.
+static void pumped_until(Proc* p, int64_t ms, int (*until)(Proc*)) {
+    int64_t deadline = mono_ms() + ms;
+    while (!until(p)) {
+        int64_t remain = deadline - mono_ms();
+        if (remain <= 0) return;
+        if (pump_tick(p, remain) < 0) return;
+    }
+}
+
+static int reaped(Proc* p) { return p->pid < 0; }
+
+// TERM to the tree, a grace, then KILL — which cannot be caught, so
+// the reap follows.
+static void escalated(Proc* p, int64_t grace_ms) {
+    signalled(p, SIGTERM);
+    p->sticky |= EV_TERMED;
+    pumped_until(p, grace_ms, reaped);
+    if (p->pid > 0) {
+        signalled(p, SIGKILL);
+        p->sticky |= EV_KILLED;
+        pumped_until(p, grace_ms > 1000 ? grace_ms : 1000, reaped);
+    }
+}
+
+// THE ONE-SHOT: spawn, pump to the end, escalate past the deadline
+// or the cap, and bound the drain after the exit — a grandchild that
+// keeps the pipe open is a TRUNCATED capture, never a hang. Answers
+// a finished handle, or the spawn's -errno.
+int64_t avra_proc_run(const char* file, void* argv, void* envp, const char* cwd, int64_t flags,
+                      const char* stdin_text, int64_t timeout_ms, int64_t grace_ms, int64_t max_bytes) {
+    int64_t h = avra_proc_spawn(file, argv, envp, cwd, flags, max_bytes, -1);
+    if (h < 0) return h;
+    Proc* p = proc_at(h);
+    if (p->in_fd >= 0) {
+        size_t n = stdin_text ? strlen(stdin_text) : 0;
+        if (n > 0) { p->in_text = (char*)malloc(n); memcpy(p->in_text, stdin_text, n); p->in_len = n; }
+        p->in_close = 1;
+    }
+    int64_t deadline = timeout_ms >= 0 ? mono_ms() + timeout_ms : -1;
+    int64_t exited_at = -1;
+    while (!proc_done(p)) {
+        int64_t now = mono_ms();
+        if (deadline >= 0 && now >= deadline) { p->sticky |= EV_TIMEOUT; break; }
+        if (exited_at >= 0 && now - exited_at >= grace_ms) break;
+        int64_t ev = pump_tick(p, 100);
+        if (ev < 0) break;
+        if ((ev & EV_EXITED) && exited_at < 0) exited_at = mono_ms();
+        if (ev & (EV_CAPPED_OUT | EV_CAPPED_ERR)) break;
+    }
+    if (!proc_done(p)) {
+        if (p->pid > 0) escalated(p, grace_ms);
+        pumped_until(p, grace_ms, proc_done);
+        if (!proc_done(p)) {
+            // whoever still holds the pipe is the child's own tree; a
+            // one-shot leaves nothing behind
+            signalled(p, SIGKILL);
+            close_fd(&p->out_fd);
+            close_fd(&p->err_fd);
+            p->sticky |= EV_TRUNCATED;
+        }
+    }
+    close_fd(&p->in_fd);
+    return h;
+}
+
+int64_t avra_proc_poll(int64_t h, int64_t timeout_ms) {
+    Proc* p = proc_at(h);
+    return p ? pump_tick(p, timeout_ms) : -EBADF;
+}
+
+// Text queued for the child's stdin; the pump writes it as the pipe
+// takes it. Answers the bytes queued.
+int64_t avra_proc_write(int64_t h, const char* text) {
+    Proc* p = proc_at(h);
+    if (!p) return -EBADF;
+    if (p->in_fd < 0) return -EPIPE;
+    size_t n = str_len(text);
+    p->in_text = (char*)realloc(p->in_text, p->in_len + n + 1);
+    memcpy(p->in_text + p->in_len, text, n);
+    p->in_len += n;
+    return (int64_t)n;
+}
+
+int64_t avra_proc_stdin_close(int64_t h) {
+    Proc* p = proc_at(h);
+    if (!p) return -EBADF;
+    p->in_close = 1;
+    if (p->in_fd >= 0 && p->in_off >= p->in_len) close_fd(&p->in_fd);
+    return 0;
+}
+
+// Everything a stream buffered since the last take — 1 stdout, 2
+// stderr — as fresh owned text; "" when nothing.
+const char* avra_proc_take(int64_t h, int64_t stream) {
+    Proc* p = proc_at(h);
+    Grow* g = !p ? NULL : stream == 1 ? &p->out : stream == 2 ? &p->err : NULL;
+    if (!g || g->len == 0) return str_owned("", 0);
+    const char* s = str_owned(g->buf, g->len);
+    g->len = 0;
+    return s;
+}
+
+// A signal to the child — the whole group when it leads one and
+// `to_group` asks. -ESRCH once reaped: a recycled pid is never hit.
+int64_t avra_proc_signal(int64_t h, int64_t sig, int64_t to_group) {
+    Proc* p = proc_at(h);
+    if (!p) return -EBADF;
+    if (p->pid <= 0) return -ESRCH;
+    int r = (to_group && p->group) ? killpg(p->pgid, (int)sig) : kill(p->pid, (int)sig);
+    return r == 0 ? 0 : -errno;
+}
+
+// The tagged word — 0 while the child runs.
+int64_t avra_proc_status(int64_t h) {
+    Proc* p = proc_at(h);
+    return p ? p->status : -EBADF;
+}
+
+int64_t avra_proc_pid(int64_t h) {
+    Proc* p = proc_at(h);
+    return p ? (int64_t)p->pid : -1;
+}
+
+// The handle released: a live child is killed with its tree and
+// reaped, every end closed, the slot's generation bumped. Idempotent.
+void avra_proc_close(int64_t h) {
+    Proc* p = proc_at(h);
+    if (!p) return;
+    if (p->pid > 0) {
+        int st;
+        signalled(p, SIGKILL);
+        while (waitpid(p->pid, &st, 0) < 0 && errno == EINTR) {}
+        p->pid = -1;
+    } else if (p->group) {
+        signalled(p, SIGKILL);
+    }
+    close_fd(&p->in_fd);
+    close_fd(&p->out_fd);
+    close_fd(&p->err_fd);
+    free(p->out.buf);
+    free(p->err.buf);
+    free(p->in_text);
+    int64_t gen = p->gen + 1;
+    memset(p, 0, sizeof(Proc));
+    p->gen = gen;
+}
+
+// Where `file` resolves on `path` — the absolute path as owned text,
+// "" when nothing resolves.
+const char* avra_proc_which(const char* file, const char* path) {
+    char* found = resolved(file, path);
+    if (!found) return str_owned("", 0);
+    const char* s = str_owned(found, strlen(found));
+    free(found);
+    return s;
+}
+
+// An errno's words, immortal; the number stays the value.
+const char* avra_proc_error_text(int64_t err) {
+    return str_static(strerror((int)(err < 0 ? -err : err)));
 }
 
 // THIS PROGRAM AGAIN, with new words: the image is replaced, so the
