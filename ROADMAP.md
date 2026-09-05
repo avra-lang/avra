@@ -362,6 +362,25 @@ the compiler checking itself 28.8s.
         `plan_binary`) moved to the runner beside `cases_entry`, with
         its nine cases. MEASURED: the gate 39s -> 20.5s of user CPU,
         1726 cases.
+  - [x] THE INTEGRATOR PRE-FLIGHTS MAIN'S COMPILER (2026-09-05, lane D's
+        find, two broken merges): the integrator merged BEFORE its
+        fixed-point rebuild, so a lane whose TREE uses a feature
+        main's STANDING binary lacks left main merged with a compiler
+        that cannot parse it and a stale seed — recoverable only by
+        hand. It now asks, from the lane's worktree and before the
+        merge, whether main's binary can check the lane's
+        packages/cli. The binary is NAMED, never main's shim (which
+        cds to main's root and would check MAIN's tree), and the path
+        is absolute for the same reason. A red does not refuse: the
+        lane's OWN product is asked the same question, and since it
+        built and gated this very tree, main is seeded from it after
+        the merge and the fixed point re-derives main's own. Only
+        when NEITHER compiler reads the tree — broken, not ahead — is
+        the merge refused, with main untouched. PROVED both ways: the
+        seed from the commit before trait default bodies landed
+        refuses today's tree and refuses a trait-default program
+        ("expected `}` while parsing `stmt`") where today's binary
+        accepts it.
   - [x] THE STATE BOX DISSOLVED (2026-09-05): a `MatchState` was
         boxed per hit and per call — cursor and bindings — and a
         result carried one. The cursor and the bindings are the
