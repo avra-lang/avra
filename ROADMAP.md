@@ -214,6 +214,32 @@ the compiler checking itself 28.8s.
         ({shared list, count}): push at the tip, copy only after a
         real rollback. DONE WHEN parse drops measurably on the
         suite and the corpus is green; record the number here.
+        PROFILED 2026-09-04 (the suite's parse, 10.4s): ~60% is
+        allocation and refcount traffic under `match_seq`/`match_alt`
+        (a result record, a state, a captured value per hit); 13% is
+        `run_grammar` RELEASING the memo at the end of each file; 6%
+        is `Decls.mint` CLONING `keys` per declaration (the field read
+        retains the map, so `set` sees it shared — lane C's alias
+        borrow, S4, pays it; `range_bodies` clones the same way);
+        `bind_label`'s list copy is 2%. The capture copying is not
+        the parse's weight — the records per hit and the memo's
+        teardown are.
+        THE MEMO ITSELF was tried WITHOUT (2026-09-04): parse 10.4s ->
+        11.4s, so packrat pays for itself here; REFUSED as a lever.
+        SIZE-CLASS FREE LISTS in the runtime (2026-09-04): a box of up
+        to 256 bytes is recycled through a per-class list, the class
+        in the header's `len` (owned strings wear KIND_STR so theirs
+        reads from the text length). MEASURED: the suite's parse
+        10.4s -> 8.7s, lower 3.6s -> 2.9s, the suite 30s -> 25.7s,
+        the cases binary 8.6s -> 7.2s, the compiler's self-check
+        ~15s -> 13.0s. NEXT along this line: a list's `data` and
+        `owned` buffers are two more mallocs per list (three per
+        list, seven per map) — merge them into one, then class them.
+        THROWAWAY BINARIES LINK AT -O0 (2026-09-04): the suite module
+        (13.9 MB) links in 1.1s instead of 6.6s and runs the cases in
+        the same time, since the hot code is the runtime's, compiled
+        on its own. `avra test` and `avra corpus` link so; `build`
+        stays -O1 (a product).
   - [x] LENGTH-CARRYING STRINGS (2026-09-04): the profile's real
         find behind a phantom `Decls.mint` frame — `avra_str_char_code`
         bounded its index with `strnlen(s, i + 1)`, O(i) per byte, so

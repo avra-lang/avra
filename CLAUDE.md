@@ -179,7 +179,8 @@ registry is the idiom engine's spec, written by dogfooding.
   representation changes. Three seats had it: a struct field, a call
   argument, an enum payload.
 - EVERY POINTER AVRA HOLDS CARRIES A HEADER. The runtime counts
-  references in sixteen bytes BEFORE each payload (tag, kind, rc),
+  references in sixteen bytes BEFORE each payload (tag, kind, rc,
+  and a record's size class or a string's length),
   and `avra_rc_retain/release` read that header — so a managed
   value that came from anywhere else reads memory that is not ours.
   The sources are all headered: the backend's string constants
