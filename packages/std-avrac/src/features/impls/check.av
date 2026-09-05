@@ -3,7 +3,7 @@
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
 use core.{ExprId, TypeId, Arrow, DeclId}
-use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant, bound_name, seats_judged, settled_call, trait_member, trait_named, MethodCall, receiver_law, mut_seats_law, fn_sig_of}
+use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant, bound_name, seats_judged, settled_call, trait_member, trait_named, MethodCall, receiver_law, mut_seats_law, fn_sig_of, declared_marks}
 use diagnostics.{refusal}
 
 fn method_call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -73,7 +73,7 @@ fn selfed_sig(mut cx: TypeCx, subject: ExprId, m: DeclId?, sig: FnSig) -> FnSig 
 fn seat_laws(mut cx: TypeCx, e: ExprId, subject: ExprId, callee: string, name: string, m: DeclId, args: List<ExprId>, base: int) {
     let writes = cx.view.decls.writes_receiver(m)
     receiver_law(cx, e, subject, name, writes)
-    mut_seats_law(cx, e, callee, m, args, base, if writes { subject } else { null })
+    mut_seats_law(cx, e, callee, declared_marks(cx, m, base, args.length), args, if writes { subject } else { null })
 }
 
 /// The declared type a receiver answers to, or absence. Generic
@@ -125,7 +125,8 @@ fn wrong_method_argument(mut cx: TypeCx, target: string, name: string, j: int, w
 fn fielded_call(mut cx: TypeCx, e: ExprId, name: string, fty: TypeId, args: List<ExprId>) -> TypeId {
     let held: Arrow? = cx.view.types.arrow_parts(fty)
     if held == null { return cx.error_type }
-    seats_judged(cx, e, name, held!.seats, held!.answer, args)
+    let arrow = held!
+    seats_judged(cx, e, name, arrow.seats, arrow.muts, arrow.answer, args)
 }
 
 /// A method on a BOUNDED type parameter: the bound's trait supplies
@@ -155,7 +156,7 @@ fn contract_judged(mut cx: TypeCx, e: ExprId, subject: ExprId, trait_name: strin
     if found == null { return cx.error_type }
     let writes = cx.view.decls.declares_writing(member)
     receiver_law(cx, e, subject, name, writes)
-    mut_seats_law(cx, e, "${trait_name}.${name}", member, args, 1, if writes { subject } else { null })
+    mut_seats_law(cx, e, "${trait_name}.${name}", declared_marks(cx, member, 1, args.length), args, if writes { subject } else { null })
     sig_judged(cx, e, trait_name, name, args, seats_of(selfed_sig(cx, subject, member, found!)))
 }
 

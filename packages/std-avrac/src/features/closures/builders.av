@@ -3,7 +3,8 @@
 //! law demands it until the expected-type channel lands); spans
 //! re-align them, the same window law fns use.
 use core.{Expr, TypeRef, Param}
-use features.{LangNode, Builder, aligned_param_types}
+use grammar.{Token}
+use features.{LangNode, Builder, aligned_param_types, within}
 
 fn build_lambda(mut b: Builder) -> Result<LangNode, string> {
     let ps = b.tokens(0)?
@@ -15,10 +16,26 @@ fn build_lambda(mut b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Lambda(params, body))
 }
 
-/// `fn(int) -> bool` — the LAST arg is the return; `arrow` is the
-/// pinned witness of that contract.
+/// `fn(mut int, bool) -> bool` — the LAST arg is the return
+/// (`arrow` is the pinned witness of that contract), and a seat's
+/// `mut` says the callee WRITES THROUGH it. A mark between the
+/// previous seat and this one is this seat's, the same window law
+/// a fn's own parameters obey.
 fn build_fn_type(b: Builder) -> Result<LangNode, string> {
-    let ps = b.type_refs(0)?
-    let r = b.answer(1)
-    b.make_type(TypeRef { name: "fn", args: ps.concat([r]), optional: false, dynamic: false, arrow: true, span: b.span })
+    let marks = b.tokens(0)?
+    let ps = b.type_refs(1)?
+    let r = b.answer(2)
+    let from: int = b.span?.lo ?? 0
+    b.make_type(TypeRef { name: "fn", args: ps.concat([r]), optional: false, dynamic: false, arrow: true, span: b.span, muts: seat_marks(marks, ps, from) })
+}
+
+/// Each written seat's mark: a `mut` between the seat before it (or
+/// the `fn` word, for the first) and the seat's own start.
+fn seat_marks(marks: List<Token>, ps: List<TypeRef>, from: int) -> List<bool> {
+    mut out: List<bool> = []
+    for j, p in ps {
+        let after = if j == 0 { from } else { ps[j - 1].span?.lo ?? from }
+        out.push(marks.any(within(it.span.lo, after, p.span?.lo ?? after)))
+    }
+    out
 }

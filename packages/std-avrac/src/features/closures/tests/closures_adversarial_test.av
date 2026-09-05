@@ -309,4 +309,33 @@ spec "features/closures/adversarial" {
             shown("let a = () -> 1\nlet b = () -> a() + 1\nlet c = () -> b() + 1\nc()") == "3"
         }
     }
+    given "the fn seat's contract under attack" {
+        then "a writing fn refuses a seat that promised not to write" {
+            refused_with("type Rows = { grow: fn(List<int>, int) -> int }\nfn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet r = Rows { grow: writes }\n1",
+                         "field `grow` is `fn(List<int>, int) -> int`, this is `fn(mut List<int>, int) -> int`")
+        }
+        then "a `let` refuses it in the same words" {
+            refused_with("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(List<int>, int) -> int = writes\n1",
+                         "`g` declares `fn(List<int>, int) -> int`, this is `fn(mut List<int>, int) -> int`")
+        }
+        then "a call THROUGH the value needs a `mut` place, like a direct one" {
+            refused_with("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nlet ys = [1]\ng(ys, 2)",
+                         "`ys` is not `mut` — seat 1 of `g` writes through it")
+        }
+        then "two marked seats cannot share one root" {
+            refused_with("fn both(mut a: List<int>, mut b: List<int>) -> int {\n    a.push(1)\n    b.push(2)\n    a.length\n}\nlet g: fn(mut List<int>, mut List<int>) -> int = both\nmut x = [0]\ng(x, x)",
+                         "`x` is handed `mut` twice in one call to `g`")
+        }
+        then "a captured place is a copy here too" {
+            refused_with("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nmut ys = [1]\nlet f = () -> g(ys, 2)\nf()",
+                         "is captured by value")
+        }
+        then "a fn built into a `mut` seat must be a place, not a value" {
+            refused_with("type Cx = { n: int }\nfn writes(mut cx: Cx) -> int {\n    cx.n = cx.n + 1\n    cx.n\n}\nlet g: fn(mut Cx) -> int = writes\ng(Cx { n: 1 })",
+                         "seat 1 of `g` is `mut`, and this is a value")
+        }
+        then "each refusal speaks once" {
+            refusals("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(List<int>, int) -> int = writes\n1") == 1
+        }
+    }
 }

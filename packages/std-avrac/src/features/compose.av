@@ -37,7 +37,10 @@ export fn build_named(builders: Map<string, BuilderRow>, store: NodeStore, name:
                       args: List<Captured<LangNode>>, span: Span?) -> Result<Captured<LangNode>, string> {
     let hit: BuilderRow? = builders.get(name)
     if hit == null { return .Err("no feature owns builder `${name}`") }
-    .Ok(Captured.Node(hit!.build(Builder { store: store, args: args, span: span })?))
+    // the builder is a `mut` seat — the world it writes through is
+    // a place, never a temporary
+    mut world = Builder { store: store, args: args, span: span }
+    .Ok(Captured.Node(hit!.build(world)?))
 }
 
 /// The same dispatch from the features themselves — what a test of

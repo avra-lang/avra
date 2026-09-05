@@ -80,4 +80,30 @@ spec "features/closures" {
             shown("trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int { self.x }\n}\nlet mk: fn(int) -> dyn Show = (n: int) -> P { x: n }\nmk(4).show()") == "4"
         }
     }
+    given "`mut` in a fn TYPE — a seat's contract travels with it" {
+        then "a writing fn fills a seat that permits writing, and writes" {
+            shown("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nmut ys = [1]\n\"\${g(ys, 2)} \${ys.length}\"") == "2 2"
+        }
+        then "a field seat carries the contract" {
+            shown("type Rows = { grow: fn(mut List<int>, int) -> int }\nfn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nmut ys = [1]\nlet r = Rows { grow: writes }\n\"\${r.grow(ys, 9)} \${ys.length}\"") == "2 2"
+        }
+        then "a parameter seat carries it too" {
+            shown("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nfn through(g: fn(mut List<int>, int) -> int, mut xs: List<int>) -> int {\n    g(xs, 9)\n}\nmut ys = [1]\n\"\${through(writes, ys)} \${ys.length}\"") == "2 2"
+        }
+        then "a fn type is an answer like any other" {
+            shown("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nfn picked() -> fn(mut List<int>, int) -> int {\n    writes\n}\nmut ys = [1]\n\"\${picked()(ys, 5)} \${ys.length}\"") == "2 2"
+        }
+        then "a seat that PERMITS writing accepts a fn that does not write" {
+            shown("fn reads(xs: List<int>) -> int {\n    xs.length\n}\nlet g: fn(mut List<int>) -> int = reads\nmut ys = [1, 2]\ng(ys)") == "2"
+        }
+        then "a lambda fills a writing seat — a lambda writes through nothing" {
+            shown("let g: fn(mut List<int>) -> int = (xs: List<int>) -> xs.length\nmut ys = [1, 2, 3]\ng(ys)") == "3"
+        }
+        then "two marked seats, two roots" {
+            shown("fn both(mut a: List<int>, mut b: List<int>) -> int {\n    a.push(1)\n    b.push(2)\n    a.length + b.length\n}\nlet g: fn(mut List<int>, mut List<int>) -> int = both\nmut x = [0]\nmut y = [0]\n\"\${g(x, y)} \${x.length} \${y.length}\"") == "4 2 2"
+        }
+        then "the mark rides a trailing comma like every other list" {
+            shown("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int,) -> int = writes\nmut ys = [1]\ng(ys, 2)") == "2"
+        }
+    }
 }
