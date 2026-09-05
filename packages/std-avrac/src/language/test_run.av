@@ -21,6 +21,72 @@ export fn runner_rows() -> List<RtSig> {
     ]
 }
 
+/// One corpus program as the entry needs it: the symbol that runs it,
+/// the line its verdict prints, and the text it must print.
+export type ProgramCall = { symbol: string, label: string, expected: string }
+
+/// The host fns a corpus binary declares beyond the runner's: the
+/// capture of everything a program prints, so the entry can compare
+/// it in-process.
+export fn corpus_rows() -> List<RtSig> {
+    runner_rows().concat([
+        extern_row("avra_capture_begin", RtKind.Void, []),
+        extern_row("avra_capture_end", RtKind.Ptr, []),
+    ])
+}
+
+/// THE CORPUS BINARY'S ENTRY: every program run in turn with its
+/// output captured and compared to what it must print; a mismatch
+/// speaks and counts; the verdict leaves through the exit status.
+/// One compiler, one clang, one process for the whole corpus.
+export fn corpus_entry(types: TypeRegistry, programs: List<ProgramCall>) -> Body {
+    mut e = new_entry(types)
+    let tally = e.mint(types.intern(Type.Int))
+    e.give(Ins.Alloca(tally))
+    e.give(Ins.Store(tally, e.constant(0)))
+    for pr in programs { one_program(e, pr, tally) }
+    let failed = e.mint(types.intern(Type.Int))
+    e.give(Ins.Load(failed, tally))
+    e.give(Ins.IfStart(e.zero_test(failed)))
+    e.give(Ins.CallRtVoid("avra_process_exit", [e.constant(0)]))
+    e.give(Ins.ArmEnd(e.constant(0)))
+    e.give(Ins.CallRtVoid("avra_process_exit", [e.constant(1)]))
+    let gives = e.constant(0)
+    let merged = e.mint(types.intern(Type.Int))
+    e.give(Ins.RegionEnd(merged, gives))
+    e.give(Ins.ScopeExit(null))
+    e.give(Ins.Ret(0))
+    e.built()
+}
+
+/// One program: named for the wreck, run under capture, compared,
+/// and counted when it disagrees.
+fn one_program(mut e: EntryBuild, pr: ProgramCall, tally: Reg) {
+    e.give(Ins.CallRtVoid("avra_case_begin", [e.text(pr.label)]))
+    e.give(Ins.CallRtVoid("avra_capture_begin", []))
+    let answered = e.mint(e.types.intern(Type.Int))
+    e.give(Ins.Call(answered, pr.symbol, []))
+    let got = e.mint(e.types.intern(Type.Str))
+    e.give(Ins.CallRt(got, "avra_capture_end", []))
+    // THE MINT LAW: operands first, the answer last
+    let wanted = e.text(pr.expected)
+    let same = e.mint(e.types.intern(Type.Bool))
+    e.give(Ins.CallRt(same, "avra_streq", [got, wanted]))
+    e.give(Ins.IfStart(same))
+    e.give(Ins.ArmEnd(e.constant(0)))
+    e.say("${pr.label}: native != expected")
+    e.give(Ins.CallRtVoid("avra_puts", [got]))
+    let held = e.mint(e.types.intern(Type.Int))
+    e.give(Ins.Load(held, tally))
+    let one = e.constant(1)
+    let more = e.mint(e.types.intern(Type.Int))
+    e.give(Ins.Bin(more, BinOp.Add, held, one))
+    e.give(Ins.Store(tally, more))
+    let gives = e.constant(0)
+    let merged = e.mint(e.types.intern(Type.Int))
+    e.give(Ins.RegionEnd(merged, gives))
+}
+
 /// The entry: a cell counts failures, each case decides which line
 /// prints, and the verdict leaves through the exit status.
 export fn cases_entry(types: TypeRegistry, cases: List<CaseCall>) -> Body {

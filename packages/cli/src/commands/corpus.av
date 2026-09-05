@@ -1,0 +1,123 @@
+//! `avra corpus <dir>` — every program under a directory proved in
+//! ONE process each way: evaluated in turn and compared with its
+//! `.expected`, then all of them compiled into ONE binary whose entry
+//! runs each under capture and compares again. One compiler, one
+//! clang, one signature check — where a loop over the files paid a
+//! compiler, a clang and a first execution per program.
+use @std.cli.{Subcommand, CliResult, Runnable, CommandSpec, FlagDef, ArgDef, result_has_flag}
+use @std.avrac.language.{Program, Lowered, ProgramCall, corpus_entry, corpus_rows, emit_ll, run_program, program_symbol, programs_workspace, program, avra}
+use @std.avrac.core.{joined_path, stem_of, dir_of, sorted_texts}
+
+type CorpusCmd = { }
+
+impl Runnable for CorpusCmd {
+    fn run(args: CliResult) -> int {
+        let dir = path_arg(args)
+        if avra_host_is_dir(dir) == 0 {
+            eprintln("avra: ${dir} is not a directory — a corpus is a directory of programs")
+            return 2
+        }
+        let t0 = avra_now_ns()
+        let p: Program = program(programs_workspace(disk_host(), dir, avra(), () -> avra_now_ns()), null)
+        let status = proved(p, dir, result_has_flag(args, "native-only"))
+        if timed(args) { eprintln(timings(p, "corpus", avra_now_ns() - t0)) }
+        status
+    }
+}
+
+/// Every program judged: eval first (unless the programs are the
+/// host's — externs the evaluator cannot run), then the corpus
+/// binary. Success is one summary line; every disagreement speaks.
+fn proved(p: Program, dir: string, native_only: bool) -> int {
+    let paths = program_paths(p, dir)
+    if paths.is_empty() {
+        eprintln("avra: ${dir} holds no programs — a corpus is `.av` files beside their `.expected`")
+        return 1
+    }
+    let unproved = [path for path in paths if lacks_expected(p, path)]
+    for path in unproved { eprintln("avra: ${path} has no ${stem_of(path)}.expected beside it — a corpus program is proved by the text it must print") }
+    if !unproved.is_empty() { return 1 }
+    let files = [program_call(path) for path in paths]
+    let made = p.programs_checked()
+    match made {
+        .Ok(lo) -> judged_programs(p, lo, files, native_only),
+        .Err(text) -> {
+            println(text)
+            1
+        }
+    }
+}
+
+/// The corpus's programs, in name order.
+fn program_paths(p: Program, dir: string) -> List<string> {
+    sorted_texts([f.path for f in p.ws.decls.files if dir_of(f.path) == dir && f.path.ends_with(".av")])
+}
+
+fn lacks_expected(p: Program, path: string) -> bool {
+    let names: List<string> = p.ws.host.list(dir_of(path))
+    !names.contains("${stem_of(path)}.expected")
+}
+
+/// The `.expected` beside the program, its final newline dropped —
+/// the shape the capture answers.
+fn program_call(path: string) -> ProgramCall {
+    let text = avra_selfhost_read_file(joined_path(dir_of(path), "${stem_of(path)}.expected"))
+    let expected = if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text }
+    ProgramCall { symbol: program_symbol(path), label: path, expected: expected }
+}
+
+fn judged_programs(p: Program, lo: Lowered, programs: List<ProgramCall>, native_only: bool) -> int {
+    mut failed = 0
+    if !native_only {
+        for pr in programs {
+            if !eval_agrees(lo, pr) { failed = failed + 1 }
+        }
+    }
+    let staged = lo with { entry: corpus_entry(lo.types, programs), externs: lo.externs.concat(corpus_rows()) }
+    let path = joined_path(joined_path(p.ws.root, "build"), "corpus.av.ll")
+    let _ = avra_mkdir_p(joined_path(p.ws.root, "build"))
+    let failure: string? = emit_ll(staged, path)
+    if failure != null {
+        println(failure!)
+        return 1
+    }
+    if link(path, p) != 0 { return 1 }
+    let native = avra_spawn_status(binary_name(path), [])
+    if native != 0 || failed != 0 { return 1 }
+    let word = if programs.length == 1 { "program" } else { "programs" }
+    println("${programs.length} ${word}: ${if native_only { "native == expected" } else { "eval == native == expected" }}")
+    0
+}
+
+/// One program through the evaluator against its expected text.
+fn eval_agrees(lo: Lowered, pr: ProgramCall) -> bool {
+    match run_program(lo, pr.symbol) {
+        .Ok(out) -> {
+            if out == pr.expected { return true }
+            println("${pr.label}: eval != expected")
+            println(out)
+            false
+        }
+        .Err(why) -> {
+            println("${pr.label}: eval FAILED")
+            println(why)
+            false
+        }
+    }
+}
+
+export fn corpus_command() -> Subcommand {
+    let body: CorpusCmd = CorpusCmd { }
+    let meta = CommandSpec {
+        name: "corpus",
+        description: "Prove every program under a directory, each way, in one process",
+        hidden: false,
+        flags: [
+            FlagDef { name: "--time", short: "", description: "print phase timings and memo hits", aliases: [] },
+            FlagDef { name: "--native-only", short: "", description: "the programs are the host's: skip the evaluator", aliases: [] },
+        ],
+        args: [ArgDef { name: "file", description: "the directory of programs", required: true, variadic: false }],
+        options: [],
+    }
+    Subcommand { meta: meta, body: body }
+}

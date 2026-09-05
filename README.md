@@ -86,6 +86,7 @@ The compiler answers to its own name:
 ./avra run corpus/fns.av      # the interpreter says BIG!
 ./avra build corpus/fns.av    # a native binary that agrees
 ./avra ir corpus/branch.av    # the memory-annotated IR
+./avra corpus corpus          # every program, both engines, one process
 ./avra grammar                # the assembled language
 ./avra explain F2000          # any diagnostic code
 ```

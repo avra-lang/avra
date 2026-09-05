@@ -380,7 +380,8 @@ registry is the idiom engine's spec, written by dogfooding.
   drivers' one statement loop reaches it there.
   Start a feature with `avra new feature <name>`; prove it with a
   corpus pair (`corpus/<name>.av` + `.expected`). `make gate` is
-  the bar. A corpus program prints its LAST expression only, and
+  the bar. A corpus program shows its FINAL statement's expression
+  only, and only when that statement IS an expression, and
   an interpolation hole prints scalars and strings only — a list
   is shown through `join`, an index or `length`.
 

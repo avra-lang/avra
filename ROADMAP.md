@@ -284,7 +284,7 @@ the compiler checking itself 28.8s.
         would copy. Two allocations per miss now. MEASURED: the
         suite's parse 11.2s -> 10.2s; with the externs slice, the
         check 17.6s -> 15.6s.
-  - [ ] THE CORPUS AS ONE PROCESS (measured 2026-09-04, not built):
+  - [x] THE CORPUS AS ONE PROCESS (measured and LANDED 2026-09-04):
         `make corpus` is 67s of wall for 10.8s of CPU. A freshly
         linked binary's FIRST execution costs ~150ms of kernel
         signature assessment (3ms on the second run; a copy of the
@@ -296,6 +296,22 @@ the compiler checking itself 28.8s.
         clang, one assessment. Era IV's "one process" for the corpus;
         the gate would lose ~45s of its ~125s. A runner slice, its own
         red team; not a constant to shave.
+        LANDED as `avra corpus <dir>`: `make corpus` 67s -> 3.7s wall
+        (1.8s CPU), the gate ~118s -> 87s. A directory of programs is
+        a workspace where EVERY FILE IS ITS OWN MODULE
+        (`programs_workspace`, `Workspace.per_file`) holding only its
+        own files; capture sits at the DESCRIPTOR (fd 1 behind a temp
+        file) because the externs corpus spawns a child whose output
+        an in-memory hook never saw; a `Ret` constant wears the fn's
+        declared answer type. THE RED TEAM'S FIND, on main since the
+        start: a program showed the running last register ANY
+        statement answered — a trailing `let` printed its value, a
+        trailing assignment the `mut`'s initial value, a trailing
+        `for` after an expression TRAPPED the evaluator, and
+        corpus/mut.av had pinned the wrong answer. The answer is the
+        final RUNNING statement's expression when it is one
+        (`shown_value`, `program_answer`); corpus/unshown proves it
+        with an empty expectation, and silence is an answer.
   - [x] THE QUERY KERNEL'S NESTED WRITES (2026-09-04): `Db.cells` was
         a list of rows, so every `write` copied its family's whole
         row (thousands of cells, each retained and released — the rc
@@ -310,6 +326,14 @@ the compiler checking itself 28.8s.
         suite's peak RSS ~300 MB lower. db_test pins the layout: a far
         arg grows the table and the earlier cells stand; two families
         at one arg keep apart; an unseen key is as new as now.
+        TRIGGER, for the borrow's deletion (lane C, after the inout
+        seats): every in-place write lane A landed is borrow-shaped —
+        `mut cs = self.cells; cs.set(…)` in the kernel, `mut results
+        = cx.memo.results` in the executor, `Table.keep` under the
+        workspace memos — and each becomes a `mut` seat or a `mut fn`
+        writing `self.field.set(…)` in ONE sweep when the borrow goes,
+        never by breakage. Lane C's S4a rewrote the owned-state
+        parameters; these receivers are the remainder.
 
 LANE B — STD LIBS (owns NEW packages only; each package: `avra.toml`,
 spec tests beside it, a corpus package under corpus/<name>/ proving

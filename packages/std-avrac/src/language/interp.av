@@ -50,23 +50,47 @@ fn fresh_machine(l: Lowered) -> Machine {
 
 /// Run a lowered program: its printed output, or the refusal.
 export fn run_lowered(l: Lowered) -> Result<string, string> {
-    mut m = fresh_machine(l)
-    let _ = run_body(m, l.entry, [])
-    if !m.failures.is_empty() { return .Err(m.failures.first()!) }
-    if m.out.is_empty() { return .Err("the program is empty") }
-    .Ok(joined(m.out, "\n"))
+    .Ok(printed(ran(l, l.entry)?))
+}
+
+/// One PROGRAM of a corpus binary, run in the evaluator: its body by
+/// symbol, its printed lines as the answer — what `run_lowered` does
+/// for the entry.
+export fn run_program(l: Lowered, symbol: string) -> Result<string, string> {
+    let body = named_body(l, symbol)?
+    .Ok(printed(ran(l, body)?))
 }
 
 /// One fn run by its symbol under no arguments, its bool answer —
 /// how a test case runs. A failure inside answers as the refusal.
 export fn run_symbol(l: Lowered, symbol: string) -> Result<bool, string> {
+    let body = named_body(l, symbol)?
+    let r = ran(l, body)?
+    if r.answer == null { return .Err("`${symbol}` answered nothing") }
+    truth_of(symbol, r.answer!)
+}
+
+/// A body run to its end under no arguments: the machine after, with
+/// what the body answered — or the first failure inside.
+type Ran = { m: Machine, answer: Val? }
+
+fn ran(l: Lowered, target: Body) -> Result<Ran, string> {
     mut m = fresh_machine(l)
+    let answer: Val? = run_body(m, target, [])
+    if !m.failures.is_empty() { return .Err(m.failures.first()!) }
+    .Ok(Ran { m: m, answer: answer })
+}
+
+/// The body a symbol names, or the refusal.
+fn named_body(l: Lowered, symbol: string) -> Result<Body, string> {
     let target: Body? = body_named(l, symbol)
     if target == null { return .Err("no body named `${symbol}`") }
-    let answer: Val? = run_body(m, target!, [])
-    if !m.failures.is_empty() { return .Err(m.failures.first()!) }
-    if answer == null { return .Err("`${symbol}` answered nothing") }
-    truth_of(symbol, answer!)
+    .Ok(target!)
+}
+
+/// What a run printed, one line per puts.
+fn printed(r: Ran) -> string {
+    joined(r.m.out, "\n")
 }
 
 fn body_named(l: Lowered, name: string) -> Body? {

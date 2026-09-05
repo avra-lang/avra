@@ -88,6 +88,8 @@ export type Workspace = {
     packages: List<Package>,
     package_voices: List<Diag>,
     lone: bool,
+    // a directory of programs: every file its own module
+    per_file: bool,
     clock: fn() -> int,
     phases: List<Phase>,
 }
@@ -165,12 +167,19 @@ export fn new_workspace(host: Host, root: string, lang: Language) -> Workspace {
 export fn lone_workspace(path: string, text: string, lang: Language) -> Workspace {
     mut files: Map<string, string> = {}
     files.set(path, text)
-    built(memory_host(files, [path]), dir_of(path), dir_of(path), lang, () -> 0, true)
+    built(memory_host(files, [path]), dir_of(path), dir_of(path), lang, () -> 0, true, false)
 }
 
 /// A workspace that times its phases by the given clock (nanoseconds).
 export fn timed_workspace(host: Host, root: string, lang: Language, clock: fn() -> int) -> Workspace {
-    built(host, root, joined_path(root, "src"), lang, clock, false)
+    built(host, root, joined_path(root, "src"), lang, clock, false, false)
+}
+
+/// A DIRECTORY OF PROGRAMS as one workspace: root and source root
+/// alike, every `.av` under it a module — the corpus, where a
+/// package's sources would sit under `src/`.
+export fn programs_workspace(host: Host, dir: string, lang: Language, clock: fn() -> int) -> Workspace {
+    built(host, dir, dir, lang, clock, false, true)
 }
 
 /// The declaration table with the language's own declarations in it.
@@ -182,14 +191,14 @@ fn language_decls(lang: Language) -> Decls {
 
 /// The workspace with its families registered, its table armed,
 /// and its packages loaded from the root's manifest outward.
-fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool) -> Workspace {
+fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool, per_file: bool) -> Workspace {
     mut ws = Workspace {
         host: host, root: root, lang: lang, db: new_db(), decls: language_decls(lang),
         sources: new_table<SourceFile>(), manifests: new_table<Manifest>(), externs: new_table<List<string>>(), programs: new_table<Parsed>(), file_items: new_table<List<DeclId>>(), module_names: new_table<ModuleNames>(),
         visibles: new_table<Namespace>(), name_facts: new_table<NameFacts>(), sig_voices: new_table<Voices>(),
         decl_facts: new_table<TypeFacts>(), method_clashes: new_table<List<Clash>>(), folds: new_table<TypeFacts>(),
         analyses: new_table<Analysis>(), units: new_table<Unit>(), specs: {}, asks: [], defects: [],
-        packages: [], package_voices: [], lone: lone,
+        packages: [], package_voices: [], lone: lone, per_file: per_file,
         clock: clock, phases: [],
     }
     for f in families() {
@@ -594,10 +603,21 @@ fn shown(ws: Workspace, path: string) -> string {
 /// source root, `@scope.name.a` for a dependency's.
 export fn module_of(ws: Workspace, path: string) -> string {
     let pkg = ws.packages[holder_of_path(ws, path)]
-    let local = dir_of(below(path, pkg.src)).replace("/", ".")
+    // EVERY FILE ITS OWN MODULE in a directory of programs: the
+    // module is the file's path under the root, stem included, so
+    // seventy programs' `P`s never share a namespace
+    let rel = below(path, pkg.src)
+    let local = if ws.per_file { own_module(rel) } else { dir_of(rel).replace("/", ".") }
     if pkg.ordinal == 0 { return local }
     if local.length == 0 { return key_spelled(pkg.key) }
     "${key_spelled(pkg.key)}.${local}"
+}
+
+/// A file's own module name: its path with `.av` dropped and `/`
+/// as `.`.
+fn own_module(rel: string) -> string {
+    let stemmed = if rel.ends_with(".av") { rel.substring(0, rel.length - 3) } else { rel }
+    stemmed.replace("/", ".")
 }
 
 /// A path's tail under a directory — the path itself when it is
@@ -679,7 +699,8 @@ export fn all_files(ws: Workspace, dir: string) -> List<string> {
     for f in ws.host.list(dir) {
         let full = joined_path(dir, f)
         if ws.host.is_dir(full) {
-            if !is_package_dir(ws, full) && !excluded(ws, full) { out = out.concat(all_files(ws, full)) }
+            // a directory of programs holds only its own files
+            if !ws.per_file && !is_package_dir(ws, full) && !excluded(ws, full) { out = out.concat(all_files(ws, full)) }
         } else if listed_source(ws, dir, f) {
             out.push(full)
         }
@@ -962,8 +983,22 @@ impl Program {
     /// reaches — or, with no entry, every declared body; `every`
     /// asks for every declared body under an entry too.
     fn lowered_from(entry: int?, every: bool) -> Lowered {
+        self.lowered_as(entry, every, false)
+    }
+
+    /// The program lowered with EVERY FILE A PROGRAM: each file's main
+    /// under its program symbol, beside every declared body — what a
+    /// corpus binary's entry calls in turn.
+    fn programs_checked() -> Result<Lowered, string> {
+        if !self.clean() { return .Err(self.report()) }
+        let lo = self.lowered_as(null, true, true)
+        if !lo.diagnostics.is_empty() { return .Err(self.rendered(lo.diagnostics)) }
+        .Ok(lo)
+    }
+
+    fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
         let ws = self.ws
-        memory(union(self.ws.decls, self.files, entry, every, (w: Wanted) -> lowered(ws, spec_id(ws, w))))
+        memory(union(self.ws.decls, self.files, entry, every, programs, (w: Wanted) -> lowered(ws, spec_id(ws, w))))
     }
 
     /// The lowered program, CHECKED — every file's analysis first,

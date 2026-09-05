@@ -55,3 +55,7 @@ Claude-Session: https://claude.ai/code/session_01XXBDccuDA8Ntk55RXKedD2"
 echo "integrate: main at $(git log -1 --format=%h), fixed point and seed cycle hold"
 
 cd "$worktree" && git rebase -q main && echo "integrate: lane/$lane rebased onto main"
+# the lane's binary must read the tree it now sits on: a rebase past
+# another lane's language change leaves a compiler that traps on the
+# new spelling, and the seed is the way back
+sh tools/watch.sh $cap make -s bootstrap > /tmp/integrate-lane-boot.out 2>&1 && echo "integrate: lane/$lane bootstrapped from the seed" || { echo "integrate: the rebased lane does not bootstrap"; tail -20 /tmp/integrate-lane-boot.out; exit 1; }
