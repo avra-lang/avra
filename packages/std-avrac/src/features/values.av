@@ -22,7 +22,7 @@ use core.{Reg, Ins, BinOp, Type, TypeId, ExprId}
 /// A fresh box, its slots pushed in order. `dst` is minted by the
 /// caller, before the first instruction is emitted — registers are
 /// numbered in emission order.
-use features.{MethodCall}
+use features.{MethodCall, arm_end, open_region, const_int, const_bool, close_region_as}
 
 export fn grown_box(mut cx: LowerCx, dst: Reg, slots: List<Reg>) {
     cx.emit(Ins.CallRt(dst, "avra_array_new", []))
@@ -71,8 +71,7 @@ fn same_tag(mut cx: LowerCx, a: Reg, b: Reg) -> Reg {
 /// minted by the caller — the box verbs' shared contract.
 export fn tagged_value(mut cx: LowerCx, dst: Reg, tag: int, payloads: List<Reg>) {
     cx.emit(Ins.CallRt(dst, "avra_array_new", []))
-    let slot = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(slot, tag))
+    let slot = const_int(cx, tag)
     push_slot(cx, dst, slot)
     for p in payloads { push_slot(cx, dst, p) }
 }
@@ -115,8 +114,7 @@ export fn field_read(mut cx: LowerCx, subject: Reg, subject_ty: TypeId, n: int, 
 /// emitted BEFORE the read that uses it — registers are numbered in
 /// emission order. An absent type reads as an int.
 export fn slot_read(mut cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
-    let at = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(at, n))
+    let at = const_int(cx, n)
     let got = if ty == null { cx.mint_shape(Type.Int) } else { cx.mint_ty(ty!) }
     cx.emit(Ins.CallRt(got, "avra_array_get", [v, at]))
     got
@@ -145,8 +143,7 @@ export fn failed(mut cx: LowerCx, into: TypeId, r: Reg) -> Reg {
 /// Is the result an ANSWER — its tag read against Ok's, as an i1.
 export fn okness_of(mut cx: LowerCx, v: Reg) -> Reg {
     let tag = tag_of(cx, v)
-    let zero = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(zero, 0))
+    let zero = const_int(cx, 0)
     let ok = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(ok, BinOp.Eq, tag, zero))
     ok
@@ -324,18 +321,10 @@ fn pair_adoption(mut cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg 
 /// given by `present_arm`, the absent arm's by `close_presence`,
 /// which mints the region's answer. Spelled at the site so each
 /// arm's instructions land between the brackets.
+/// A presence region: the arm taken when `v` is present, then the
+/// absent arm — `arm_end` and `close_region` finish it.
 export fn open_presence(mut cx: LowerCx, v: Reg, held: TypeId) {
-    cx.emit(Ins.IfStart(presence_of(cx, v, held)))
-}
-
-export fn present_arm(mut cx: LowerCx, present: Reg) {
-    cx.emit(Ins.ArmEnd(present))
-}
-
-export fn close_presence(mut cx: LowerCx, e: ExprId, absent: Reg) -> Reg {
-    let dst = cx.result(e)
-    cx.emit(Ins.RegionEnd(dst, absent))
-    dst
+    open_region(cx, presence_of(cx, v, held))
 }
 
 /// The ABSENT value of a nullable type, minted fresh — the niche's
@@ -354,8 +343,7 @@ fn absent_pair(mut cx: LowerCx, opt: TypeId) -> Reg {
 /// A pair packed under its flag — the ONE builder the present and
 /// absent forms share.
 fn flagged_pair(mut cx: LowerCx, opt: TypeId, present: bool, payload: Reg) -> Reg {
-    let flag = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.ConstBool(flag, present))
+    let flag = const_bool(cx, present)
     let dst = cx.mint_ty(opt)
     cx.emit(Ins.Pack(dst, [flag, payload]))
     dst
@@ -424,17 +412,13 @@ fn insisted_pair(mut cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
 /// the statement-if's lowering; every valueless region speaks
 /// these two verbs.
 export fn void_arm(mut cx: LowerCx) {
-    let td = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(td, 0))
-    cx.emit(Ins.ArmEnd(td))
+    let td = const_int(cx, 0)
+    arm_end(cx, td)
 }
 
 /// The valueless region's LAST arm and merge — nothing reads dst.
 export fn void_close(mut cx: LowerCx) {
-    let ed = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(ed, 0))
-    let dst = cx.mint_shape(Type.Int)
-    cx.emit(Ins.RegionEnd(dst, ed))
+    let _ = close_region_as(cx, cx.view.types.intern(Type.Int), const_int(cx, 0))
 }
 
 /// THE `length` table: the runtime word that measures a shape, or

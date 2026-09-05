@@ -59,7 +59,7 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30.
+Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33.
 Unratcheted, read by a human: I5 (a matcher cannot see whether a
 predicate has effects), I31 (a stolen doc and a legitimate
 multi-paragraph header are the same shape).
@@ -426,6 +426,20 @@ reintroducing I3's blind spot names the two spellings it lost.
       hottest in the compiler by self time and the ledger had
       guessed elsewhere. NOT the smell: a one-shot walk that builds
       the index itself, or a scan a program performs once.
+- I33 A REGION INSTRUCTION EMITTED RAW IN A FEATURE. `IfStart`,
+      `ArmEnd` and `RegionEnd` were spelled by hand at 13 sites across
+      seven features, each a `let dst = cx.result(e)` + emit + `dst`
+      triple, while values.av held the verb under a presence-specific
+      name (`close_presence`). The emission vocabulary
+      (features/emit.av) speaks them — `open_region`, `arm_end`,
+      `close_region`, `close_region_as` — beside `const_int`,
+      `const_bool` (three copies became one) and `measured_reg` (the
+      `length` lowering, three verbatim copies became one row fn).
+      THE RULE: a feature's lowering emits its own VALUE shape and
+      speaks every CONTROL shape; the IR of all 73 corpus programs
+      was byte-identical before and after. RATCHETED (the matcher
+      exempts emit.av's own body); it grows to the loop instructions
+      when the walk skeleton moves out of lists/ and loops/.
 - I33 THE BORROW UNDER A SAME-SCOPE READ. `mut xs = self.field`
       followed by `xs.push(v)` is the alias form of a write — the
       smell is the alias where a path write (`self.field.push(v)`)

@@ -1,0 +1,64 @@
+//! THE EMISSION VOCABULARY — the IR's control, constant and measure
+//! shapes, spoken once. A feature's lowering says what its VALUES
+//! are (values.av) and emits its own value shape; a region, an arm,
+//! a constant or a measure it speaks through these verbs, so the two
+//! engines read one instruction stream by construction, never by
+//! two features happening to emit matching brackets.
+use core.{Reg, Ins, Type, TypeId, ExprId}
+
+// ── Constants ───────────────────────────────────────────────────
+
+export fn const_int(mut cx: LowerCx, n: int) -> Reg {
+    let r = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(r, n))
+    r
+}
+
+export fn const_bool(mut cx: LowerCx, b: bool) -> Reg {
+    let r = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.ConstBool(r, b))
+    r
+}
+
+// ── Regions ─────────────────────────────────────────────────────
+// `open_region(cond)`, one `arm_end(value)` per arm but the last,
+// then `close_region(last)` — the region's value is the arm taken.
+// The answer register is minted LAST, after every arm's (I29).
+
+export fn open_region(mut cx: LowerCx, cond: Reg) {
+    cx.emit(Ins.IfStart(cond))
+}
+
+export fn arm_end(mut cx: LowerCx, value: Reg) {
+    cx.emit(Ins.ArmEnd(value))
+}
+
+/// The region closed as the node's own value.
+export fn close_region(mut cx: LowerCx, e: ExprId, last: Reg) -> Reg {
+    let dst = cx.result(e)
+    cx.emit(Ins.RegionEnd(dst, last))
+    dst
+}
+
+/// The region closed as a value of `ty` — a scratch region inside a
+/// node's lowering, not the node's own answer.
+export fn close_region_as(mut cx: LowerCx, ty: TypeId, last: Reg) -> Reg {
+    let dst = cx.mint_ty(ty)
+    cx.emit(Ins.RegionEnd(dst, last))
+    dst
+}
+
+// ── Measures ────────────────────────────────────────────────────
+
+/// `x.length` on a list, a map or a string — the word the one
+/// measure table gives the shape; the subject lowers FIRST, the
+/// answer mints last. A shape nothing measures is a defect typing
+/// let through.
+export fn measured_reg(mut cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
+    let s = cx.reg_of(subject)
+    let word: string? = length_word(cx.view.types.shape_of(cx.type_at(subject)))
+    if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }
+    let dst = cx.result(e)
+    cx.emit(Ins.CallRt(dst, word!, [s]))
+    dst
+}

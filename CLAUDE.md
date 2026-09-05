@@ -377,6 +377,13 @@ registry is the idiom engine's spec, written by dogfooding.
   site), a scaffold (`avra new ins`), and a keeper (`make vocab`).
   Per-instruction spec files were measured and REFUSED (ROADMAP);
   re-measure at ~40 instructions, do not re-argue.
+- THE EMISSION VOCABULARY (features/emit.av): a feature's lowering
+  emits its own VALUE shape and SPEAKS every control shape —
+  `open_region`/`arm_end`/`close_region`, `const_int`/`const_bool`,
+  `measured_reg` — never a raw `cx.emit(Ins.IfStart…)`. Two
+  engines read one instruction stream by construction; I33
+  ratchets it, and the vocabulary grows with the next shared shape
+  (the walk is next).
 - THE IR's BOOL LAW (ours, enforced by the evaluator): `&&`/`||`
   are never `Bin` over bool registers — they are lazy regions
   (`IfStart … ArmEnd … RegionEnd`); a `Bin(Or)` on bools is the
@@ -555,12 +562,9 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   directly.
 
 Runtime facts, ours to ratify:
-- A STRING's `.length` is `strlen` — O(length) EVERY time it is
-  asked, so `while i < s.length` is quadratic (measured native: a
-  150k loop re-asking it, 0.91s user against 0.44s hoisted). Hoist
-  it (`let n = s.length`); I27 ratchets it; lane A's
-  length-carrying strings retire both. A LIST's `.length` is a
-  field read.
+- A STRING's `.length` is a LOAD — the header carries the length
+  (lane A), as a list's does; `while i < s.length` costs a load per
+  turn, and I27 retired with the strlen it ratcheted.
 - `split` DROPS a trailing empty segment and keeps a leading one:
   `"a.".split(".")` is one element, `".a".split(".")` two,
   `"".split(".")` is `[]`.

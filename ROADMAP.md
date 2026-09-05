@@ -4793,20 +4793,22 @@ THE SWEEP'S FINDINGS (2026-09-05, three read-only reviews of every
 product file no lane held — features; grammar + core + query +
 diagnostics; language + cli + the std packages). Ranked by lines and
 by meaning; each is a slice for lane D unless a lane is named.
-- A. THE EMISSION VOCABULARY (features, ~100 lines): the region
-  close ritual is spelled 13 times (`values.av`'s `close_presence`
-  IS the verb, wearing a presence name — rename `close_region`,
-  add `close_region_ty`, `present_arm` -> `arm_end`); the array
-  walk skeleton lives twice (`lists/walks.av`'s opened/turn_* and
-  `loops/lower.av`'s hand copy) -> one walk in the features root;
-  `const_bool` x3 and `const_int` beside 8 raw ConstInt pairs; the
-  `length` lowering x3 verbatim (+ nullable's fourth) ->
-  `measured_reg` beside `length_word`; the enum tag ladder x4
+- A. THE EMISSION VOCABULARY — PART ONE LANDED 2026-09-05 (lane
+  D): features/emit.av speaks the region (`open_region`, `arm_end`,
+  `close_region`, `close_region_as` — 13 raw triples and 20 renamed
+  callers), the constants (`const_int`/`const_bool`; three copies
+  and 12 raw pairs gone) and the measure (`measured_reg`; the three
+  verbatim `length` lowerings are one row fn). The IR of all 73
+  corpus programs was byte-identical before and after; I33 ratchets
+  the rule. PART TWO, still open: the array walk skeleton lives
+  twice (`lists/walks.av`'s opened/counted/turn_* and
+  `loops/lower.av`'s hand copy) -> the walk moves to emit.av and I33
+  grows to the loop instructions; the enum tag ladder x4
   (`enums/lower.av`) -> `tag_index`/`tag_equals`; seven `lower_*`
   preambles in `lists/walks.av` -> `seated_walk`; "a span between
-  two offsets" x7 -> one `within`. THE RULE TO ADOPT: a feature's
-  lower.av never writes `cx.emit(Ins.…)` for a CONTROL or ITERATION
-  instruction — only its own value shape.
+  two offsets" x7 -> one `within`; nullable's fourth `length`
+  lowering (`length_reg`, over a carried register) -> a
+  `measure_of(cx, e, r, ty)` beside `measured_reg`.
 - ~~B. TWO LATENT INCONSISTENCIES~~ — DONE 2026-09-05 (lane D). (2)
   WAS REAL: the enum payload seat short-circuited unify and refused a
   `dyn` box (`Holder.Holds(P { x: 3 })`, F2015) and an auto-Ok

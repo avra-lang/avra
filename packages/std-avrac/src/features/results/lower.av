@@ -5,7 +5,7 @@
 //! catch's default arm exits with the SUBJECT'S OWN BOX, exactly
 //! as `?` does: the unmatched failure propagates by pointer move.
 use core.{ExprId, TypeId, Reg, Ins, ResSides}
-use features.{LowerCx, foreign_node, EnumSig, okness_of, payload_of, tag_of, hollow_of, lower_defect}
+use features.{LowerCx, foreign_node, EnumSig, okness_of, payload_of, tag_of, hollow_of, lower_defect, arm_end, open_region, close_region}
 
 fn catch_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -20,12 +20,10 @@ fn catched_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, variants: List<strin
     let r = cx.reg_of(subject)
     let sides: ResSides? = cx.view.types.res_parts(cx.type_at(subject))
     if sides == null { return lower_defect(cx, e, "a catch without a Result survived typing") }
-    cx.emit(Ins.IfStart(okness_of(cx, r)))
-    cx.emit(Ins.ArmEnd(payload_of(cx, r, sides!.ok)))
+    open_region(cx, okness_of(cx, r))
+    arm_end(cx, payload_of(cx, r, sides!.ok))
     let recovered = failure_reg(cx, e, r, sides!, variants, binds, values)
-    let dst = cx.result(e)
-    cx.emit(Ins.RegionEnd(dst, recovered))
-    dst
+    close_region(cx, e, recovered)
 }
 
 /// The failure arm's whole story. A single catch-all arm answers
@@ -61,18 +59,16 @@ fn switched_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
     // LICENSED I4: the running yield closes each PRIOR arm's bracket — an emit fold, not a scan
     mut answer: Reg? = null
     for j, v in values {
-        if answer != null { cx.emit(Ins.ArmEnd(answer!)) }
+        if answer != null { arm_end(cx, answer!) }
         if binds[j] != "" { bind_payload(cx, err, sig, variants[j], v) }
         answer = cx.reg_of(v)
     }
     if selective {
-        cx.emit(Ins.ArmEnd(answer!))
+        arm_end(cx, answer!)
         cx.emit(Ins.FnExit(r))
         answer = hollow_of(cx, cx.type_at(e))
     }
-    let dst = cx.result(e)
-    cx.emit(Ins.RegionEnd(dst, answer!))
-    dst
+    close_region(cx, e, answer!)
 }
 
 /// One arm's bind: the payload read INSIDE the arm's bracket.

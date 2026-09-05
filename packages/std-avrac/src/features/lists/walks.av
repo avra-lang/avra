@@ -10,7 +10,7 @@
 //! Early exit is the BREAK IDIOM: store the index past the length
 //! and the condition ends the loop.
 use core.{ExprId, Reg, Ins, Type, TypeId, BinOp, UnOp, Level}
-use features.{LowerCx, MethodCall, lower_defect, grown_box, push_slot, slot_read, absent_of, adopted, carried_type, same_value, void_arm, void_close, unique_box, length_word, rt_method}
+use features.{LowerCx, MethodCall, lower_defect, grown_box, push_slot, slot_read, absent_of, adopted, carried_type, same_value, void_arm, void_close, unique_box, rt_method, open_region, const_int, const_bool}
 
 // ── The rows' rules ──
 
@@ -103,16 +103,6 @@ export fn lower_enumerate(mut cx: LowerCx, mc: MethodCall) -> Reg {
     cx.reg_of(mc.subject)
 }
 
-/// `xs.length` — the word the one measure table gives the list's
-/// shape.
-export fn lower_length(mut cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
-    let xs = cx.reg_of(subject)
-    let word: string? = length_word(cx.view.types.shape_of(cx.type_at(subject)))
-    if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, word!, [xs]))
-    dst
-}
 
 /// What typing seated a row with: the element the receiver holds
 /// and the first argument — a walk's fn, a scan's needle. Absent
@@ -164,7 +154,7 @@ fn kept(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let w = opened(cx, mc.subject, s.elem)
     turn_open(cx, w)
     let v = turn_elem(cx, w, turn_index(cx, w))
-    cx.emit(Ins.IfStart(turn_call(cx, f, v, bool_ty(cx))))
+    open_region(cx, turn_call(cx, f, v, bool_ty(cx)))
     push_slot(cx, out, v)
     void_arm(cx)
     void_close(cx)
@@ -181,7 +171,7 @@ fn found(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let w = opened(cx, mc.subject, s.elem)
     turn_open(cx, w)
     let v = turn_elem(cx, w, turn_index(cx, w))
-    cx.emit(Ins.IfStart(turn_call(cx, f, v, bool_ty(cx))))
+    open_region(cx, turn_call(cx, f, v, bool_ty(cx)))
     cx.emit(Ins.Store(cell, adopted(cx, opt, false, v)))
     early_exit(cx, w)
     void_arm(cx)
@@ -200,7 +190,7 @@ fn judged(mut cx: LowerCx, mc: MethodCall, s: Seat, all: bool) -> Reg {
     turn_open(cx, w)
     let v = turn_elem(cx, w, turn_index(cx, w))
     let p = turn_call(cx, f, v, bool_ty(cx))
-    cx.emit(Ins.IfStart(flipping(cx, p, all)))
+    open_region(cx, flipping(cx, p, all))
     store_bool(cx, cell, !all)
     early_exit(cx, w)
     void_arm(cx)
@@ -217,7 +207,7 @@ fn held(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let w = opened(cx, mc.subject, s.elem)
     turn_open(cx, w)
     let v = turn_elem(cx, w, turn_index(cx, w))
-    cx.emit(Ins.IfStart(same_value(cx, v, needle, s.elem)))
+    open_region(cx, same_value(cx, v, needle, s.elem))
     store_bool(cx, cell, true)
     early_exit(cx, w)
     void_arm(cx)
@@ -235,7 +225,7 @@ fn position(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     turn_open(cx, w)
     let here = turn_index(cx, w)
     let v = turn_elem(cx, w, here)
-    cx.emit(Ins.IfStart(same_value(cx, v, needle, s.elem)))
+    open_region(cx, same_value(cx, v, needle, s.elem))
     cx.emit(Ins.Store(cell, here))
     early_exit(cx, w)
     void_arm(cx)
@@ -254,7 +244,7 @@ fn edge(mut cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
     let zero = const_int(cx, 0)
     let some = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(some, BinOp.Lt, zero, len))
-    cx.emit(Ins.IfStart(some))
+    open_region(cx, some)
     let at = if last { decremented(cx, len) } else { zero }
     let raw = cx.mint_ty(carried_type(cx, opt))
     cx.emit(Ins.CallRt(raw, "avra_array_get", [xs, at]))
@@ -365,22 +355,10 @@ fn measured(mut cx: LowerCx, subject: ExprId) -> Reg {
     len
 }
 
-fn const_int(mut cx: LowerCx, n: int) -> Reg {
-    let r = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(r, n))
-    r
-}
-
 fn decremented(mut cx: LowerCx, n: Reg) -> Reg {
     let one = const_int(cx, 1)
     let r = cx.mint_shape(Type.Int)
     cx.emit(Ins.Bin(r, BinOp.Sub, n, one))
-    r
-}
-
-fn const_bool(mut cx: LowerCx, b: bool) -> Reg {
-    let r = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.ConstBool(r, b))
     r
 }
 

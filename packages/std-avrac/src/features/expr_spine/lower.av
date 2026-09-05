@@ -5,7 +5,7 @@
 //! desugar onto the region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
 use core.{ExprId, BinOp, UnOp, Reg, Ins, Type, TypeId}
-use features.{LowerCx, StructSig, EnumSig, presence_of, lower_defect, foreign_node, variant_defect, tagged_value, PropertyRow, property_row, same_value, open_presence, present_arm, close_presence, carried_of, field_read}
+use features.{LowerCx, StructSig, EnumSig, presence_of, lower_defect, foreign_node, variant_defect, tagged_value, PropertyRow, property_row, same_value, open_presence, carried_of, field_read, arm_end, open_region, close_region, const_bool}
 
 fn spine_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -134,8 +134,8 @@ fn nullable_eq_reg(mut cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
 fn led_by(mut cx: LowerCx, e: ExprId, v: Reg, vt: TypeId, w: Reg, wt: TypeId) -> Reg {
     let inner: TypeId = cx.view.types.carried(vt) ?? vt
     open_presence(cx, v, vt)
-    present_arm(cx, present_beside(cx, e, carried_of(cx, v, vt), w, wt, inner))
-    close_presence(cx, e, absent_beside(cx, w, wt))
+    arm_end(cx, present_beside(cx, e, carried_of(cx, v, vt), w, wt, inner))
+    close_region(cx, e, absent_beside(cx, w, wt))
 }
 
 /// The present side's value against the other: equal values when
@@ -143,8 +143,8 @@ fn led_by(mut cx: LowerCx, e: ExprId, v: Reg, vt: TypeId, w: Reg, wt: TypeId) ->
 fn present_beside(mut cx: LowerCx, e: ExprId, av: Reg, b: Reg, rt: TypeId, inner: TypeId) -> Reg {
     if cx.view.types.carried(rt) == null { return same_value(cx, av, b, inner) }
     open_presence(cx, b, rt)
-    present_arm(cx, same_value(cx, av, carried_of(cx, b, rt), inner))
-    close_presence(cx, e, const_bool(cx, false))
+    arm_end(cx, same_value(cx, av, carried_of(cx, b, rt), inner))
+    close_region(cx, e, const_bool(cx, false))
 }
 
 /// The absent side against the other: equal only to absence.
@@ -163,34 +163,25 @@ fn negated_when(mut cx: LowerCx, e: ExprId, negate: bool, v: Reg) -> Reg {
     dst
 }
 
-fn const_bool(mut cx: LowerCx, b: bool) -> Reg {
-    let r = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.ConstBool(r, b))
-    r
-}
 
 /// `a && b` is `if a { b } else { false }`; `a || b` is
 /// `if a { true } else { b }` — regions, so the taken side alone
 /// runs. Registers mint in instruction order at every step.
 fn lazy_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg {
     let a = cx.reg_of(l)
-    cx.emit(Ins.IfStart(a))
+    open_region(cx, a)
     if op == BinOp.And {
         let rb = cx.reg_of(r)
-        cx.emit(Ins.ArmEnd(rb))
+        arm_end(cx, rb)
         let short = cx.mint_ty(cx.type_at(e))
         cx.emit(Ins.ConstBool(short, false))
-        let dst = cx.result(e)
-        cx.emit(Ins.RegionEnd(dst, short))
-        return dst
+        return close_region(cx, e, short)
     }
     let short = cx.mint_ty(cx.type_at(e))
     cx.emit(Ins.ConstBool(short, true))
-    cx.emit(Ins.ArmEnd(short))
+    arm_end(cx, short)
     let rb = cx.reg_of(r)
-    let dst = cx.result(e)
-    cx.emit(Ins.RegionEnd(dst, rb))
-    dst
+    close_region(cx, e, rb)
 }
 
 fn not_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
