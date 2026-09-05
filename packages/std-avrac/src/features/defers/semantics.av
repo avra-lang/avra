@@ -1,0 +1,31 @@
+//! The deferred statement's StmtSemantics: dispatch only. The lambda
+//! is the statement's value — the closure feature walks and types
+//! it; the laws live in check.av, the registration in lower.av.
+use core.{StmtId, Reg, NodeStore}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx}
+
+export type DeferSemantics = { }
+
+impl StmtSemantics for DeferSemantics {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        cx.walk_value(s)
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_defer(cx, s)
+    }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
+        lower_defer(cx, s)
+    }
+}
+
+/// Whether the statement is an `errdefer` — run only by a failing
+/// exit.
+fn runs_on_error(store: NodeStore, s: StmtId) -> bool {
+    // LICENSED I22: a feature matching its own variants
+    match store.stmt(s) {
+        .Defer(_, on_error) -> on_error,
+        _ -> false,
+    }
+}

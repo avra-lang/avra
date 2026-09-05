@@ -1,0 +1,174 @@
+// The host's files and environment, round-tripped on a scratch
+// directory under TMPDIR: what stands at a path, a file written and
+// read whole, a directory listed in byte order, and every refusal in
+// its own words with its path.
+use @std.io.{IoError, Entry, kind_of, exists, is_file, is_dir, read_text, write_text, list_dir, make_dirs, remove, env, env_or}
+use @std.errors.{Error}
+
+/// The scratch directory, made.
+fn scratch() -> string {
+    let dir = "${env_or("TMPDIR", "/tmp")}/avra-io-spec"
+    let _ = make_dirs(dir)
+    dir
+}
+
+/// A path under the scratch directory with nothing standing at it —
+/// a directory left by an earlier run is emptied first.
+fn fresh(name: string) -> string {
+    let p = "${scratch()}/${name}"
+    for n in list_dir(p) catch [] { let _ = remove("${p}/${n}") }
+    let _ = remove(p)
+    p
+}
+
+fn message(r: Result<string, IoError>) -> string {
+    match r {
+        .Ok(t) -> "ok: ${t}",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn kind(r: Result<Entry, IoError>) -> string {
+    match r {
+        .Ok(k) -> match k {
+            .Missing -> "missing",
+            .File -> "file",
+            .Dir -> "dir",
+            .Other -> "other",
+        },
+        .Err(e) -> e.describe().message,
+    }
+}
+
+spec "std/io" {
+    given "what stands at a path" {
+        then "the root is a directory" { kind(kind_of("/")) == "dir" }
+        then "a path with nothing at it is missing, not an error" { kind(kind_of(fresh("nothing"))) == "missing" }
+        then "a written file is a file" {
+            let p = fresh("k.txt")
+            let _ = write_text(p, "x")
+            kind(kind_of(p)) == "file"
+        }
+        then "exists / is_file / is_dir agree with kind_of" {
+            let p = fresh("e.txt")
+            let _ = write_text(p, "")
+            exists(p) && is_file(p) && !is_dir(p) && is_dir(scratch()) && !exists(fresh("gone"))
+        }
+    }
+    given "a file written and read whole" {
+        then "the text round-trips, newlines and all" {
+            let p = fresh("rt.txt")
+            let _ = write_text(p, "one\ntwo\n")
+            message(read_text(p)) == "ok: one\ntwo\n"
+        }
+        then "an empty file reads as empty text — not as a refusal" {
+            let p = fresh("empty.txt")
+            let _ = write_text(p, "")
+            message(read_text(p)) == "ok: "
+        }
+        then "write_text answers the path it wrote" {
+            let p = fresh("w.txt")
+            message(write_text(p, "v")) == "ok: ${p}"
+        }
+        then "a second write replaces the first whole" {
+            let p = fresh("twice.txt")
+            let _ = write_text(p, "long first text")
+            let _ = write_text(p, "short")
+            message(read_text(p)) == "ok: short"
+        }
+        then "text beyond ASCII survives" {
+            let p = fresh("u.txt")
+            let _ = write_text(p, "héllo — 日本")
+            message(read_text(p)) == "ok: héllo — 日本"
+        }
+    }
+    given "the refusals, each naming its path" {
+        then "reading what is not there" {
+            let p = fresh("nope.txt")
+            message(read_text(p)) == "`${p}` does not exist"
+        }
+        then "reading a directory" {
+            message(read_text(scratch())) == "`${scratch()}` is a directory"
+        }
+        then "writing under a directory that is not there" {
+            let p = "${fresh("no-such-dir")}/f.txt"
+            message(write_text(p, "x")) == "`${p}` does not exist"
+        }
+        then "writing where a directory stands" {
+            let d = fresh("dir-in-the-way")
+            let _ = make_dirs(d)
+            message(write_text(d, "x")) == "`${d}` is a directory"
+        }
+        then "removing what is not there" {
+            let p = fresh("never")
+            message(remove(p)) == "`${p}` does not exist"
+        }
+        then "the refusal is a value: a match reads the variant" {
+            let p = fresh("v.txt")
+            match read_text(p) {
+                .Ok(_) -> false,
+                .Err(e) -> e is .NotFound,
+            }
+        }
+    }
+    given "directories" {
+        then "list_dir answers names in byte order, `.` and `..` left out" {
+            let d = fresh("listed")
+            let _ = make_dirs(d)
+            let _ = write_text("${d}/b", "")
+            let _ = write_text("${d}/a9", "")
+            let _ = write_text("${d}/a10", "")
+            (list_dir(d) catch []).join(",") == "a10,a9,b"
+        }
+        then "an empty directory lists as nothing" {
+            let d = fresh("hollow")
+            let _ = make_dirs(d)
+            (list_dir(d) catch ["refused"]).length == 0
+        }
+        then "listing a file is not a directory" {
+            let p = fresh("plain.txt")
+            let _ = write_text(p, "")
+            match list_dir(p) {
+                .Ok(_) -> false,
+                .Err(e) -> e.describe().message == "`${p}` is not a directory",
+            }
+        }
+        then "listing what is not there" {
+            let p = fresh("no-dir")
+            match list_dir(p) {
+                .Ok(_) -> false,
+                .Err(e) -> e is .NotFound,
+            }
+        }
+        then "make_dirs makes the whole path, and again is fine" {
+            let d = "${fresh("deep")}/a/b/c"
+            message(make_dirs(d)) == "ok: ${d}" && message(make_dirs(d)) == "ok: ${d}" && is_dir(d)
+        }
+        then "make_dirs where a file stands is not a directory" {
+            let p = fresh("file-not-dir")
+            let _ = write_text(p, "")
+            message(make_dirs("${p}/sub")) == "`${p}/sub` is not a directory"
+        }
+        then "remove takes a file, and an empty directory" {
+            let p = fresh("rm.txt")
+            let _ = write_text(p, "")
+            let d = fresh("rm-dir")
+            let _ = make_dirs(d)
+            message(remove(p)) == "ok: ${p}" && message(remove(d)) == "ok: ${d}" && !exists(p) && !exists(d)
+        }
+        then "remove refuses a directory with contents, in the host's words" {
+            let d = fresh("full")
+            let _ = make_dirs(d)
+            let _ = write_text("${d}/x", "")
+            match remove(d) {
+                .Ok(_) -> false,
+                .Err(e) -> e is .Failed,
+            }
+        }
+    }
+    given "the environment" {
+        then "a set variable answers" { (env("PATH") ?? "").length > 0 }
+        then "an unset variable is null — not empty text" { env("AVRA_IO_NO_SUCH_VARIABLE") == null }
+        then "env_or falls back" { env_or("AVRA_IO_NO_SUCH_VARIABLE", "d") == "d" }
+    }
+}

@@ -1,0 +1,32 @@
+// proves: @std/io end to end, evaluated and native alike — lines
+// printed (stderr is not the answer, so none here), a file written whole and read back, a directory made and
+// listed in byte order, a refusal read as a value and as words, the
+// environment asked for what is and is not set, and the scratch
+// removed behind it.
+use @std.io.{IoError, println, read_text, write_text, list_dir, make_dirs, remove, exists, env, env_or}
+use @std.errors.{Error}
+
+fn words(r: Result<string, IoError>) -> string {
+    match r {
+        .Ok(t) -> t,
+        .Err(e) -> e.describe().message,
+    }
+}
+
+let dir = "${env_or("TMPDIR", "/tmp")}/avra-io-corpus"
+let _ = make_dirs(dir)
+let _ = remove("${dir}/b.txt")
+let _ = remove("${dir}/a.txt")
+println("hello from io")
+let a = write_text("${dir}/a.txt", "alpha\nbeta") catch "refused"
+println("wrote ${a.ends_with("/a.txt")}")
+let _ = write_text("${dir}/b.txt", "")
+println(words(read_text("${dir}/a.txt")))
+println((list_dir(dir) catch []).join(" "))
+println(words(read_text("nope.txt")))
+println("${exists("${dir}/a.txt")} ${exists("${dir}/zzz")}")
+println("${env("AVRA_IO_CORPUS_UNSET") == null} ${env_or("AVRA_IO_CORPUS_UNSET", "fallback")}")
+let _ = remove("${dir}/a.txt")
+let _ = remove("${dir}/b.txt")
+let _ = remove(dir)
+"${exists(dir)}"

@@ -1,0 +1,279 @@
+// The process library against real children: a tool is minted once
+// and refused when absent; words land where a dash is inert; `run`
+// judges and `outcome` reads; both streams come back whole and apart;
+// stdin is fed; the deadline and the cap stop a child; the minimal
+// environment is what crosses. Every case here runs natively.
+use @std.process.{Tool, tool, cmd, Command, Exit, Stdin, Env, Streams, Output, Outcome, ProcessError, minimal, developer, exit_text, tool_from_env}
+use @std.time.{ms, secs}
+
+fn sh() -> Result<Tool, ProcessError> {
+    tool("sh")
+}
+
+/// A shell line's captured output, judged.
+fn shell_out(line: string) -> Result<Output, ProcessError> {
+    let s = sh()?
+    cmd(s, ["-c", line]).run()
+}
+
+/// A shell line's exit, read.
+fn shell_exit(line: string) -> Result<Exit, ProcessError> {
+    let s = sh()?
+    (cmd(s, ["-c", line]).outcome()?).exit
+}
+
+fn echo_hi() -> Result<string, ProcessError> {
+    let echo = tool("echo")?
+    (cmd(echo, ["hi", "there"]).run()?).stdout
+}
+
+fn both_streams() -> Result<string, ProcessError> {
+    let o = shell_out("echo out; echo err >&2")?
+    "${o.stdout.trim()}/${o.stderr.trim()}"
+}
+
+/// What `run` says about a failing child, as a code.
+fn judged_code(line: string) -> int {
+    match shell_out(line) {
+        .Ok(_) -> 0,
+        .Err(e) -> match e {
+            .Failed(x, _) -> code_of(x),
+            rest -> 0 - 1,
+        },
+    }
+}
+
+fn code_of(x: Exit) -> int {
+    match x {
+        .Clean -> 0,
+        .Code(n) -> n,
+        .Signal(s, _) -> 1000 + s,
+    }
+}
+
+fn read_code(line: string) -> int {
+    match shell_exit(line) {
+        .Ok(x) -> code_of(x),
+        .Err(_) -> 0 - 1,
+    }
+}
+
+fn lenient_exit_one() -> Result<Output, ProcessError> {
+    let s = sh()?
+    (cmd(s, ["-c", "echo fine; exit 1"]) with { ok_exits: [0, 1] }).run()
+}
+
+fn fed_text() -> Result<string, ProcessError> {
+    let cat = tool("cat")?
+    ((cmd(cat, []) with { stdin: Stdin.Text("abc") }).run()?).stdout
+}
+
+fn fed_lines() -> Result<string, ProcessError> {
+    let cat = tool("cat")?
+    ((cmd(cat, []) with { stdin: Stdin.Lines(["a", "b"]) }).run()?).stdout
+}
+
+fn slow_child() -> Result<Output, ProcessError> {
+    let s = sh()?
+    (cmd(s, ["-c", "sleep 5"]) with { timeout: ms(100) }).run()
+}
+
+fn timed_out(r: Result<Output, ProcessError>) -> bool {
+    match r {
+        .Ok(_) -> false,
+        .Err(e) -> is_timeout(e),
+    }
+}
+
+fn is_timeout(e: ProcessError) -> bool {
+    match e {
+        .TimedOut(_, _) -> true,
+        rest -> false,
+    }
+}
+
+fn is_not_found(e: ProcessError) -> bool {
+    match e {
+        .NotFound(_, _) -> true,
+        rest -> false,
+    }
+}
+
+fn chatty_child() -> Result<Output, ProcessError> {
+    let yes = tool("yes")?
+    (cmd(yes, []) with { max_capture: 1000, timeout: secs(5) }).run()
+}
+
+fn capped_stdout(r: Result<Output, ProcessError>) -> bool {
+    match r {
+        .Ok(_) -> false,
+        .Err(e) -> match e {
+            .TooMuch(s, cap, _) -> s is .Stdout && cap == 1000,
+            rest -> false,
+        },
+    }
+}
+
+fn child_env(var: string) -> Result<string, ProcessError> {
+    let o = shell_out("echo \"$${var}\"")?
+    o.stdout.trim()
+}
+
+fn set_var() -> Result<string, ProcessError> {
+    let s = sh()?
+    let c = cmd(s, ["-c", "echo \"$AVRA_PROBE\""]) with { env: minimal().with_var("AVRA_PROBE", "seen") }
+    (c.run()?).stdout.trim()
+}
+
+fn in_root() -> Result<string, ProcessError> {
+    let s = sh()?
+    ((cmd(s, ["-c", "pwd"]) with { cwd: "/" }).run()?).stdout.trim()
+}
+
+fn missing_tool() -> bool {
+    match tool("definitely-not-a-program-avra-xyz") {
+        .Ok(_) -> false,
+        .Err(e) -> is_not_found(e),
+    }
+}
+
+fn echo_tool() -> Tool {
+    Tool { name: "echo", path: "/bin/echo", terminator: "--" }
+}
+
+fn dashless_tool() -> Tool {
+    Tool { name: "plain", path: "/bin/echo", terminator: null }
+}
+
+/// A tool nowhere: what a failed mint falls back to, so the assertion
+/// fails with it.
+fn nowhere() -> Tool {
+    Tool { name: "nowhere", path: "", terminator: null }
+}
+
+fn placed(r: Result<Command, ProcessError>) -> string {
+    match r {
+        .Ok(c) -> c.args.join(" "),
+        .Err(e) -> match e {
+            .Unplaceable(w, _) -> "refused ${w}",
+            rest -> "other",
+        },
+    }
+}
+
+fn passed_through() -> Result<string, ProcessError> {
+    let t = tool("true")?
+    let o = (cmd(t, []) with { streams: Streams.Inherited }).run()?
+    "${o.stdout.length}/${o.stderr.length}"
+}
+
+fn env_names_nothing() -> string {
+    match tool_from_env("PATH", "sh") {
+        .Ok(_) -> "found",
+        .Err(_) -> "refused",
+    }
+}
+
+fn from_env() -> Result<string, ProcessError> {
+    let a = tool_from_env("AVRA_NO_SUCH_TOOL_VAR", "sh")?
+    "${a.name}/${env_names_nothing()}"
+}
+
+fn shown_run(r: Result<string, ProcessError>) -> string {
+    match r {
+        .Ok(s) -> s,
+        .Err(_) -> "error",
+    }
+}
+
+spec "std/process" {
+    given "the wiring" {
+        then "inherited streams leave the capture empty" {
+            shown_run(passed_through()) == "0/0"
+        }
+        then "a tool from the environment falls back to its name, and a value that names nothing is refused" {
+            shown_run(from_env()) == "sh/refused"
+        }
+    }
+    given "minting a tool" {
+        then "a name on the PATH becomes an absolute path" {
+            (sh() catch nowhere()).path.starts_with("/")
+        }
+        then "a name nowhere on the PATH is refused as not found" {
+            missing_tool()
+        }
+        then "a getopt tool ends its options at `--`; git at its own word; find has none" {
+            (tool("echo") catch dashless_tool()).terminator == "--" && (tool("find") catch echo_tool()).terminator == null
+        }
+    }
+    given "words in positions" {
+        then "a flag fuses with its value into one word" {
+            cmd(echo_tool(), ["a"]).flag("--depth", "1").args.join(" ") == "a --depth=1"
+        }
+        then "a path is anchored under ./ unless it names its root" {
+            cmd(echo_tool(), []).path("-rf").path("/abs").path("./x").args.join(" ") == "./-rf /abs ./x"
+        }
+        then "words after the options follow the tool's marker" {
+            placed(cmd(echo_tool(), ["clone"]).after_options(["--evil", "x"])) == "clone -- --evil x"
+        }
+        then "a dashed word is refused for a tool without a marker" {
+            placed(cmd(dashless_tool(), []).after_options(["--evil"])) == "refused --evil"
+        }
+        then "a bare positional refuses a leading dash" {
+            placed(cmd(echo_tool(), []).word("-x")) == "refused -x" && placed(cmd(echo_tool(), []).word("x")) == "x"
+        }
+    }
+    given "running a child" {
+        then "stdout comes back whole" {
+            (echo_hi() catch "") == "hi there\n"
+        }
+        then "stdout and stderr come back apart" {
+            (both_streams() catch "") == "out/err"
+        }
+        then "run judges a non-zero exit and the code rides along" {
+            judged_code("exit 3") == 3
+        }
+        then "outcome reads the exit instead" {
+            read_code("exit 3") == 3 && read_code("true") == 0
+        }
+        then "a signal death is a signal, never a small code" {
+            read_code("kill -9 $$") == 1009
+        }
+        then "ok_exits accepts what the tool means by it" {
+            (lenient_exit_one() catch Output { stdout: "", stderr: "", truncated: true }).stdout == "fine\n"
+        }
+        then "the exit reads as a sentence's tail" {
+            exit_text(Exit.Clean) == "clean" && exit_text(Exit.Code(3)) == "with code 3" && exit_text(Exit.Signal(9, false)) == "by signal 9"
+        }
+    }
+    given "stdin" {
+        then "text is fed whole" {
+            (fed_text() catch "") == "abc"
+        }
+        then "lines are fed one per line" {
+            (fed_lines() catch "") == "a\nb\n"
+        }
+    }
+    given "bounds" {
+        then "a deadline stops a slow child" {
+            timed_out(slow_child())
+        }
+        then "a cap stops a chatty child and names the stream" {
+            capped_stdout(chatty_child())
+        }
+    }
+    given "the environment and the directory" {
+        then "the minimal base crosses and the invoker's world does not" {
+            (child_env("NO_COLOR") catch "") == "1" && (child_env("LC_ALL") catch "") == "C"
+        }
+        then "a variable of ours reaches the child" {
+            (set_var() catch "") == "seen"
+        }
+        then "the developer base carries the minimal one" {
+            developer().get("NO_COLOR") == "1"
+        }
+        then "cwd is where the child stands" {
+            (in_root() catch "") == "/"
+        }
+    }
+}
