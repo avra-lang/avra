@@ -5088,10 +5088,16 @@ by meaning; each is a slice for lane D unless a lane is named.
   arguments through generics, mono-safe (`as_each<T>` for
   grammar/builders.av's four `.Ok([want(f(x), …)? …])` copies, and
   the memo bracket); a BINDING across `or` alternatives (memory.av's
-  `.Call`/`.CallPtr` spelled twice, F2039); an enum's ORDINAL; a
-  no-argument generic call pinned by its WANT (12 sites:
-  `new_table<Held>()` x6, …); a `dyn` want in a struct-literal
-  FIELD (45 sites); reverse iteration (`last_slash`, `reversed`).
+  `.Call`/`.CallPtr` spelled twice, F2039); an enum's ORDINAL; ~~a
+  no-argument generic call pinned by its WANT~~ — LANDED 2026-09-05
+  (lane D): a Var the arguments leave free unifies the declared
+  answer with the seat's want, and with no want yet the call goes
+  HUNGRY like a generic literal (fns/check.av `pinned_by_answer`);
+  the tree's explicit no-argument pins go in the commit after the seed carries the feature. ~~A `dyn` want in a
+  struct-literal FIELD~~ — it already reached one (probed both
+  engines); the 34 pins in program.av and 7 in the cli were
+  bootstrap ceremony and are inlined (4 more sit in lane B's held
+  cli files); reverse iteration (`last_slash`, `reversed`).
 
 PARITY RUNG 10 LANDED (2026-09-03) — SLOTS: a nullable POINTER is
 its own word. THE SLOT LAW sees through a nullable to what it

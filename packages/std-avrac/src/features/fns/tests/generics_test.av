@@ -93,4 +93,18 @@ spec "features/fns/generics" {
             shown("fn head<T>(xs: List<T>, alt: T) -> T {\n    if !xs.is_empty() { xs[0] } else { alt }\n}\nhead<int>([], 9)") == "9"
         }
     }
+    given "a Var the arguments leave free is pinned by the answer's seat" {
+        then "a typed let, a struct field, an argument seat and a declared answer each pin it" {
+            shown("fn empty<T>() -> List<T> {\n    []\n}\ntype Arena<N> = { nodes: List<N> }\nfn new_arena<N>() -> Arena<N> {\n    Arena { nodes: [] }\n}\ntype Store = { exprs: Arena<int>, names: Arena<string> }\nfn take(xs: List<int>) -> int {\n    xs.length\n}\nfn give() -> List<string> {\n    empty()\n}\nlet xs: List<int> = empty()\nlet st = Store { exprs: new_arena(), names: new_arena() }\nxs.length + st.exprs.nodes.length + take(empty()) + give().length") == "0"
+        }
+        then "a branch under a typed let pins it too — the call goes hungry until the seat speaks" {
+            shown("fn empty<T>() -> List<T> {\n    []\n}\nlet xs: List<int> = if true { empty() } else { [1] }\nxs.length") == "0"
+        }
+        then "with no seat it still says how to pin it" {
+            refused_with("fn empty<T>() -> List<T> {\n    []\n}\nlet xs = empty()\nxs.length", "`T` is not pinned by the arguments")
+        }
+        then "a seat that disagrees with the pinned answer refuses as a binding does" {
+            refused_with("fn wrap<T>(v: T) -> List<T> {\n    [v]\n}\nlet xs: List<int> = wrap(\"s\")\nxs.length", "`xs` declares `List<int>`, this is `List<string>`")
+        }
+    }
 }
