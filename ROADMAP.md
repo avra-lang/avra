@@ -1018,6 +1018,16 @@ CLAUDE.md, the cli entry, this ledger's bs2 section).
         moved below the ledger as OUR debt with its trigger.
   - [x] THE bs2 DEBT LEDGER closed (below): every entry struck or
         handed to its lane; what remains is ours.
+  - [x] THE WIDENED SWEEP (2026-09-05, the owner's word: code,
+        sugar, architecture): fourteen slices landed through the
+        integrator — see THE SWEEP'S FINDINGS below the ledger for
+        each (A-E done; of H, the want-pinning, the answer into a
+        lambda's body and a comprehension's element, `v.ordinal` and
+        `a?.m(args)` landed; or-arm bindings, a `mut` seat in a fn
+        type, `rest ->` over the enumerations in core, and the third
+        `Callee` copy name lane C or lane A). What waits: `extern fn
+        println` on lane B's `@std/io`; the FIELD-seat lambda's
+        answer on lane C's rescue path.
   - [x] THE LANGUAGE SLICE (2026-09-05): a comprehension's head is
         the `for` statement's (bare pairs, ranges — `Comp.hi`, a
         counting walk, F2000/F2041 voices for the bounds and the
