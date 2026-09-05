@@ -81,31 +81,42 @@ export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices }
 
 /// A unit lowered in its file's analysis: the body, then its own
 /// lifts and wrappers drained locally — a lambda's body may mint
-/// more of each. `externs` is the program's extern symbols, gathered
-/// once per program by the workspace: every body's emitter refuses
-/// a callee it does not know against it.
+/// more of each. Every body OWNS its worklist and hands it back, so
+/// the drain reads values, never a shared box. `externs` is the
+/// program's extern symbols, gathered once per program by the
+/// workspace: every body's emitter refuses a callee it does not
+/// know against it.
 export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted) -> Unit {
-    mut jobs = new_jobs(externs)
     if w.decl != null && !a.view.decls.has_body(w.decl!) {
         mut out = new_emitter(externs)
         out.defect("a unit without a body was asked for — `${w.name}`")
         return Unit { bodies: [], wants: [], voices: out.voices }
     }
-    let first = if w.decl == null { lower_main(a, w.name, jobs) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, jobs) }
+    let first = if w.decl == null { lower_main(a, w.name, externs) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, externs) }
     mut bodies: List<Body> = [first.body]
     mut spoken: List<Diag> = first.voices.list
-    while jobs.waiting() {
-        let lj: Lift? = jobs.take_lift()
-        if lj == null {
-            let wj: Wrap? = jobs.take_wrap()
-            if wj != null { bodies.push(wrapped_body(a, wj!)) }
+    mut wants: List<Wanted> = first.jobs.pending
+    mut lifts: List<Lift> = first.jobs.lifts
+    mut wraps: List<Wrap> = first.jobs.wraps
+    // a wrapper may be wanted by several of the unit's bodies — once
+    mut wrapped: Map<string, bool> = {}
+    while !lifts.is_empty() || !wraps.is_empty() {
+        if lifts.is_empty() {
+            let wj = wraps.pop()
+            if wrapped.get(wj.name) == null {
+                wrapped.set(wj.name, true)
+                bodies.push(wrapped_body(a, wj))
+            }
         } else {
-            let lf = lower_lambda(a, lj!, jobs)
+            let lf = lower_lambda(a, lifts.pop(), externs)
             bodies.push(lf.body)
             spoken = spoken.concat(lf.voices.list)
+            wants = wants.concat(lf.jobs.pending)
+            lifts = lifts.concat(lf.jobs.lifts)
+            wraps = wraps.concat(lf.jobs.wraps)
         }
     }
-    Unit { bodies: bodies, wants: jobs.pending, voices: Voices { list: spoken } }
+    Unit { bodies: bodies, wants: wants, voices: Voices { list: spoken } }
 }
 
 /// The whole program as IR: the entry's main and every body it
@@ -194,18 +205,18 @@ fn runs_at_top(store: NodeStore, s: StmtId) -> bool {
     !store.is_declaration(s)
 }
 
-type LoweredBody = { body: Body, voices: Voices }
+type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }
 
 /// One body — a fn's, a method's, a default's: params pre-minted as
 /// registers 0..N-1, the body inside one scope, the answer after
 /// the scope settles.
-fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, jobs: Jobs) -> LoweredBody {
+fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, externs: List<string>) -> LoweredBody {
     let root: ExprId = x.root!
     let sig: FnSig? = fn_sig_of(a.view.decls.sig(x.id))
     let raw: List<TypeId> = sig?.params ?? []
     let rt: TypeId = viewed(a.view.decls.types, sub, sig?.ret ?? a.view.decls.types.intern(Type.Error))
     let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
-    mut lo = new_lower_cx(a, rt, sub, jobs)
+    mut lo = new_lower_cx(a, rt, sub, new_jobs(externs))
     // the params ARE registers 0..N-1, minted in order
     for pt in ptypes { let _ = lo.out.mint_ty(pt) }
     lo.out.seeded()
@@ -215,7 +226,7 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, jobs: Jobs) -> Lower
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
         body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types },
-        voices: lo.out.voices,
+        voices: lo.out.voices, jobs: lo.jobs,
     }
 }
 
@@ -223,13 +234,13 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, jobs: Jobs) -> Lower
 /// lambda's own fn type — a pointer, managed, released by the
 /// callee per the ABI), registers 1..N its params; the body reads
 /// captures through slot 1+j of the env.
-fn lower_lambda(a: Analysis, lj: Lift, jobs: Jobs) -> LoweredBody {
+fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>) -> LoweredBody {
     let lam_ty = viewed(a.view.decls.types, lj.sub, a.facts.type_at(lj.lam))
     let held: Arrow? = a.view.decls.types.arrow_parts(lam_ty)
     let seats: List<TypeId> = held?.seats ?? []
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
-    mut lo = new_lower_cx(a, rt, lj.sub, jobs)
+    mut lo = new_lower_cx(a, rt, lj.sub, new_jobs(externs))
     // register 0 is the env box, 1..N the seats
     let _ = lo.out.mint_ty(lam_ty)
     for pt in seats { let _ = lo.out.mint_ty(pt) }
@@ -243,7 +254,7 @@ fn lower_lambda(a: Analysis, lj: Lift, jobs: Jobs) -> LoweredBody {
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
         body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types },
-        voices: lo.out.voices,
+        voices: lo.out.voices, jobs: lo.jobs,
     }
 }
 
@@ -270,8 +281,8 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
 
 /// A file's run-time statements as a body under `name` — `main` for
 /// the entry, a program's own symbol when every file is a program.
-fn lower_main(a: Analysis, name: string, jobs: Jobs) -> LoweredBody {
-    mut lo = new_lower_cx(a, null, null, jobs)
+fn lower_main(a: Analysis, name: string, externs: List<string>) -> LoweredBody {
+    mut lo = new_lower_cx(a, null, null, new_jobs(externs))
     lo.out.give(Ins.ScopeEnter(Level.Application))
     lo.lower_stmts(a.view.stmts)
     let shown: ExprId? = program_answer(a)
@@ -284,7 +295,7 @@ fn lower_main(a: Analysis, name: string, jobs: Jobs) -> LoweredBody {
             name: name, params: [], ret: a.view.decls.types.intern(Type.Int),
             gives: null, ins: lo.out.ins, reg_types: lo.out.reg_types,
         },
-        voices: lo.out.voices,
+        voices: lo.out.voices, jobs: lo.jobs,
     }
 }
 
@@ -303,7 +314,7 @@ fn empty_main(types: TypeRegistry) -> LoweredBody {
     let ins: List<Ins> = [Ins.ScopeEnter(Level.Application), Ins.ScopeExit(null), Ins.Ret(0)]
     LoweredBody {
         body: Body { name: "main", params: [], ret: types.intern(Type.Int), gives: null, ins: ins, reg_types: [] },
-        voices: no_voices(),
+        voices: no_voices(), jobs: new_jobs([]),
     }
 }
 

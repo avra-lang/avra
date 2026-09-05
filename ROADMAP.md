@@ -585,6 +585,37 @@ the order is the dependency.
         LLVM module all byte-identical, zero diffs in 112
         comparisons; no finding, no new test. 26 files, +334/-426;
         1674 cases, corpus 73/73.
+        S4c-1 LANDED 2026-09-05 — THE PASS-OWNED BORROWS PAID, AND
+        TWO LAWS FOUND: 43 of the 78 `mut x = self.field` borrows are
+        direct path writes (decls 16, facts 9, the memo kernel 4,
+        namespace 4, resolve 4, lower_state 4, types 2, unify 1); the
+        35 left are the (B) roots' (workspace `ws.` 5, the toy test
+        3, interp `m.` 14 and llvm `em.` 6 — free fns whose seats
+        become methods on `mut self`, S4c-2 — and lane A's grammar
+        3). (1) A BORROW ALIASES, A PATH WRITE THROUGH A SHARED
+        INTERMEDIATE COPIES (CLAUDE.md): the lowering's worklist,
+        ONE box shared by design, lost every lift the moment its
+        pushes became path writes — the toml suite's `toml$l1040`
+        undeclared; every body now OWNS its worklist and hands it
+        back (features/worklist.av), the unit drains values. (2) THE
+        CONDITION RUNS EVERY TURN (CLAUDE.md): the memory pass had
+        released a `while` condition's owned load ONCE, after the
+        loop — a leak per turn since the loop rung landed, invisible
+        until a path write in the body met the leaked reference and
+        copied the list each turn (the kernel's `cells` grow: 9 s and
+        17.5 GB for 60k pushes; the compiler checking itself 6.9 GB,
+        killed). A loop region opens a scope for its condition,
+        settled at each `LoopCond`: 0.26 s and 1.6 MB; the compiler's
+        self-check 1.1 GB -> 0.68 GB, the gate's peak 3.4 -> 1.9 GB;
+        lower_test pins the placement (fails on the old binary). The
+        fix needed a two-stage build — a binary compiled by the old
+        pass leaks in its own kernel loop. Receiver-law F2047 92 ->
+        96: the kernel's methods now visibly write at `ws.db` (the
+        borrow hid it). Red team: 125 programs through main's binary
+        and this one, check/run/IR identical (none reads a managed
+        field in a loop condition — hence the new test); the
+        bisection ran through the product checking its own package
+        as the oracle. 1674 -> 1675 cases, corpus 73/73.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become

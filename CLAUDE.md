@@ -392,6 +392,27 @@ registry is the idiom engine's spec, written by dogfooding.
   `packages/cli/src/commands/`, exporting
   `<name>_command() -> Subcommand`; `cli/src/main.av` only composes
   the list. A new command is a new file plus one line.
+- A BORROW ALIASES, A PATH WRITE THROUGH A SHARED INTERMEDIATE
+  COPIES. `mut xs = a.b.list; xs.push(v)` writes through every
+  holder of `a.b`; `a.b.list.push(v)` opens `a.b` unique and COPIES
+  it when another reference holds it, so the push lands in a copy
+  the other holder never sees (the lowering's worklist lost every
+  lift so, `toml$l1040` undeclared). A receiver's direct field and a
+  method call on a nested path write through; only a VOCABULARY
+  write (`push`, `set`, `pop`) on a nested struct copies. Converting
+  a borrow to a path write is a change of meaning exactly where the
+  intermediate is shared: make it unique (a value built in place and
+  handed back — the worklist per body) or keep the borrow and name
+  the sharing. Probed 2026-09-05, both engines agree.
+- THE CONDITION RUNS EVERY TURN: the memory pass settles what a
+  `while` condition mints at each `LoopCond`, inside the loop. A
+  release placed after the loop settles one turn's debts for all of
+  them: every other turn's owned load leaked, and holding a
+  reference it turned every write in the body into a copy — `while
+  self.cells.length <= at { self.cells.push(v) }` cost 9 s and 17.5
+  GB for 60k pushes, 0.26 s and 1.6 MB fixed; the gate's peak fell
+  3.4 GB -> 1.9 GB. A loop region opens a scope for its condition;
+  lower_test pins the placement.
 
 ## Vendored code — do not imitate
 

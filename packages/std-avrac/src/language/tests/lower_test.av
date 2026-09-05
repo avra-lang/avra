@@ -3,7 +3,7 @@
 // pass releases a scope's managed values at its exit — Application
 // strategy, reverse binding order.
 use @std.avrac.core.{Ins, RtSig, Reg, distinct}
-use @std.avrac.language.{Lowered, render_ir}
+use @std.avrac.language.{Lowered, Body, render_ir}
 use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns, rt_index}
 use @std.avrac.testing.{ir_of, halver, shown}
 
@@ -315,4 +315,66 @@ ret 0"""
             [b.name for b in l.fns].contains("inc")
         }
     }
+    given "the loop's condition settles every turn" {
+        then "a managed read in a while condition is released before the test, inside the loop — never after it" {
+            let l = ir_of("type Db = { cells: List<int> }\nimpl Db {\n    fn keep(at: int) {\n        while self.cells.length <= at { self.cells.push(1) }\n    }\n}\nmut db = Db { cells: [] }\ndb.keep(4)\ndb.cells.length")
+            let keep: Body? = l.fns.find(it.name == "Db.keep")
+            keep != null && cond_load_settled(keep!.ins)
+        }
+    }
+}
+
+/// The condition's owned load is released ONCE inside the loop,
+/// before the test, and never after the loop.
+fn cond_load_settled(ins: List<Ins>) -> bool {
+    let start = marker_index(ins, Ins.LoopStart)
+    let cond = cond_index(ins)
+    let end = marker_index(ins, Ins.LoopEnd)
+    let loaded: Reg? = owned_load_in(ins.slice(start, cond))
+    loaded != null && releases_of(ins.slice(start, cond), loaded!) == 1 && releases_of(ins.slice(end, ins.length), loaded!) == 0
+}
+
+/// The register an `avra_array_get_owned` call defines in the slice.
+fn owned_load_in(ins: List<Ins>) -> Reg? {
+    for i in ins {
+        let dst: Reg? = match i {
+            .CallRt(d, callee, _) -> if callee == "avra_array_get_owned" { d } else { null },
+            _ -> null,
+        }
+        if dst != null { return dst }
+    }
+    null
+}
+
+fn releases_of(ins: List<Ins>, r: Reg) -> int {
+    ins.filter((i: Ins) -> releases(i, r)).length
+}
+
+fn releases(i: Ins, r: Reg) -> bool {
+    match i {
+        // LICENSED I9: register identity, not type agreement
+        .Release(x) -> x.index == r.index,
+        _ -> false,
+    }
+}
+
+fn cond_index(ins: List<Ins>) -> int {
+    // LICENSED I3: an index scan — the position is the answer
+    for j, i in ins {
+        if i is .LoopCond { return j }
+    }
+    0 - 1
+}
+
+/// The position of a unit marker (`LoopStart`, `LoopEnd`).
+fn marker_index(ins: List<Ins>, marker: Ins) -> int {
+    // LICENSED I3: an index scan — the position is the answer
+    for j, i in ins {
+        if same_marker(i, marker) { return j }
+    }
+    0 - 1
+}
+
+fn same_marker(i: Ins, marker: Ins) -> bool {
+    (i is .LoopStart && marker is .LoopStart) || (i is .LoopEnd && marker is .LoopEnd)
 }

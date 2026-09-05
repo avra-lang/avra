@@ -1,7 +1,9 @@
 //! The mono worklist: one body's lowering enqueues the bodies it
 //! reaches — a declaration under an instantiation, a lambda lifted,
-//! a fn value's wrapper — and the driver drains. The context carries
-//! it, so every verb that names a body enqueues through one seam.
+//! a fn value's wrapper — and the unit drains. Every body OWNS its
+//! worklist (a fresh value in its context, handed back with the
+//! body), so an enqueue is a write in place, never through a shared
+//! box; `seen` keys by mangled name, once per body.
 use core.{ExprId, TypeId, DeclId, FileId}
 
 /// One body WANTED — the unit of lowering: a declaration's body (or
@@ -9,36 +11,14 @@ use core.{ExprId, TypeId, DeclId, FileId}
 /// it is generic, named by its symbol or mangling, in its file.
 export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub? }
 
-/// The mono worklist, ONE instance threaded through every body's
-/// lowering (lists and maps alias): call sites enqueue, the driver
-/// drains. `seen` keys by mangled name.
+/// One body's worklist: the bodies it wants, the lambdas it lifted,
+/// the wrappers it minted, and the names it has already asked for.
 export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, externs: List<string> }
 
 /// A fresh worklist over the program's extern symbols — what every
 /// body's emitter refuses an unknown callee against.
 export fn new_jobs(externs: List<string>) -> Jobs {
     Jobs { pending: [], seen: {}, lifts: [], wraps: [], externs: externs }
-}
-
-impl Jobs {
-    /// Whether anything is still waiting to be lowered — asked of
-    /// the STACK, never of a snapshot: a lambda lowered here can
-    /// mint another, and that one must be seen too.
-    fn waiting() -> bool {
-        !self.lifts.is_empty() || !self.wraps.is_empty()
-    }
-
-    /// The next lambda off the stack.
-    fn take_lift() -> Lift? {
-        if self.lifts.is_empty() { return null }
-        self.lifts.pop()
-    }
-
-    /// The next wrapper off the stack.
-    fn take_wrap() -> Wrap? {
-        if self.wraps.is_empty() { return null }
-        self.wraps.pop()
-    }
 }
 
 /// A NAMED fn boxed as a value calls through a generated WRAPPER

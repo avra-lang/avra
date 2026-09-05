@@ -168,11 +168,27 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 if is_managed(types, reg_types[dst.index]) { out.push(Ins.Retain(dst)) }
                 manages(types, reg_types, open_scopes, i)
             }
+            // THE CONDITION RUNS EVERY TURN: what it mints is settled
+            // at each LoopCond, never at the enclosing scope's exit —
+            // a release placed after the loop settles one turn's
+            // debts for all of them, and every other turn's owned
+            // load leaks (and, holding a reference, turns each write
+            // in the body into a copy).
+            .LoopStart -> {
+                // LICENSED I15: a scope STACK walked by the pass, not a bracket body
+                open_scopes.push(nested_scope(open_scopes))
+                out.push(i)
+            }
+            .LoopCond(_) -> {
+                let scope = open_scopes.pop() ?? empty_scope()
+                // LICENSED I3: the pass's OUTPUT accumulates
+                for s in settled(scope, null) { out.push(s) }
+                out.push(i)
+            }
             .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
             .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or
             .CallRt(_, _, _) or .CallRtVoid(_, _) or .Release(_) or
-            .Pack(_, _) or .Extract(_, _, _) or
-            .LoopStart or .LoopCond(_) or .LoopEnd or
+            .Pack(_, _) or .Extract(_, _, _) or .LoopEnd or
             .Retain(_) or .RetVal(_) or .Ret(_) -> {
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)

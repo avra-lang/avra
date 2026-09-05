@@ -122,17 +122,13 @@ impl Decls {
         let m = self.module_id(module)
         self.paths.set(path, id)
         self.files.push(FileInfo { id: id, path: path, module_id: m })
-        mut mfs = self.module_files
-        mut mf = mfs[m.index]
+        mut mf = self.module_files[m.index]
         mf.push(id)
-        mfs.set(m.index, mf)
+        self.module_files.set(m.index, mf)
         self.stores.push(null)
-        mut ds = self.decl_ids
-        ds.push([])
-        mut fd = self.file_decls
-        fd.push([])
-        mut mn = self.mains
-        mn.push(null)
+        self.decl_ids.push([])
+        self.file_decls.push([])
+        self.mains.push(null)
         id
     }
 
@@ -234,8 +230,7 @@ impl Decls {
             }
         }
         self.decl_ids.set(f.index, by_stmt)
-        mut fd = self.file_decls
-        fd.set(f.index, made)
+        self.file_decls.set(f.index, made)
         self.range_bodies(f, store, main)
         out
     }
@@ -339,29 +334,21 @@ impl Decls {
             self.decls.push(d)
             self.keys.set(key, id)
             self.sigs.push(null)
-            mut tg = self.targets
-            tg.push(null)
-            mut sm = self.seat_muts
-            sm.push([])
-            mut dw = self.declared_writes
-            dw.push(false)
-            mut wr = self.written_seats
-            wr.push([])
-            mut cs = self.children
-            cs.push([])
-            mut ms = self.methods
-            ms.push([])
-            mut im = self.impls
-            im.push([])
+            self.targets.push(null)
+            self.seat_muts.push([])
+            self.declared_writes.push(false)
+            self.written_seats.push([])
+            self.children.push([])
+            self.methods.push([])
+            self.impls.push([])
             if kind is .Impl { self.note_impl(name, id) }
         } else {
             self.decls.set(id.index, d)
         }
         if parent != null {
-            mut kids = self.children
-            mut members = kids[parent!.index]
+            mut members = self.children[parent!.index]
             members.push(id)
-            kids.set(parent!.index, members)
+            self.children.set(parent!.index, members)
         }
         id
     }
@@ -693,18 +680,16 @@ impl Decls {
     fn declare_method(target: DeclId, m: DeclId) {
         let prior: DeclId? = self.held_method(target, self.decl(m).name)
         if prior != null && same_decl(prior!, m) { return }
-        mut mss = self.methods
-        mut ms = mss[target.index]
+        mut ms = self.methods[target.index]
         ms.push(m)
-        mss.set(target.index, ms)
+        self.methods.set(target.index, ms)
     }
 
     fn record_impl(ty: DeclId, tr: DeclId) {
         if self.holds_impl(ty, tr) { return }
-        mut tss = self.impls
-        mut ts = tss[ty.index]
+        mut ts = self.impls[ty.index]
         ts.push(tr)
-        tss.set(ty.index, ts)
+        self.impls.set(ty.index, ts)
     }
 
     /// Whether a type implements a trait — asked through the hook,
