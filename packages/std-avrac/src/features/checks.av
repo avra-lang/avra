@@ -244,16 +244,19 @@ export fn nullable_over(mut cx: TypeCx, ty: TypeId) -> TypeId {
 export fn member_type_of(mut cx: TypeCx, e: ExprId, shown: string, ty: TypeId, name: string) -> TypeId {
     // Members live on GUARANTEES: a nullable subject's remedy is
     // the chain, never a property list it does not have.
-    if cx.view.types.shape_of(ty) is .Opt {
-        return spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`.${name}` reads a guarantee, this is `${shown}`", this_is(shown), "`?.${name}` reaches through the absence — or answer it first with `??`"))
-    }
+    if cx.view.types.shape_of(ty) is .Opt { return reads_a_guarantee(cx, e, shown, name) }
     let sig: StructSig? = cx.fields_of(ty)
     if sig != null { return field_member(cx, e, shown, sig!, name) }
     let row: PropertyRow? = property_row(cx.view.lang.properties, name, cx.view.types.shape_of(ty))
-    if row != null {
-        let r = row!
-        return r.check(cx, e, ty)
-    }
+    if row != null { return row!.check(cx, e, ty) }
+    no_such_property(cx, e, shown, name)
+}
+
+fn reads_a_guarantee(mut cx: TypeCx, e: ExprId, shown: string, name: string) -> TypeId {
+    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`.${name}` reads a guarantee, this is `${shown}`", this_is(shown), "`?.${name}` reaches through the absence — or answer it first with `??`"))
+}
+
+fn no_such_property(mut cx: TypeCx, e: ExprId, shown: string, name: string) -> TypeId {
     spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "no property `${name}` on `${shown}`", "read here", "a property is a record's field, or a measure like `length` on the shapes that have one"))
 }
 
@@ -262,6 +265,10 @@ export fn member_type_of(mut cx: TypeCx, e: ExprId, shown: string, ty: TypeId, n
 fn field_member(mut cx: TypeCx, e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
     let i: int? = sig.slot_of(name)
     if i != null { return sig.types[i!] }
+    no_such_field(cx, e, shown, sig, name)
+}
+
+fn no_such_field(mut cx: TypeCx, e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
     spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "no field `${name}` on `${shown}`", "read here", fields_are(sig)))
 }
 
@@ -312,8 +319,7 @@ export fn arms_agree(mut cx: TypeCx, kind: string, subject: string, anchor_name:
     mut agreed = true
     for v in answering {
         if !accepts(cx, v, want) {
-            let n = cx.name_at(v)
-            cx.emit(refusal(kind, cx.loc_of(v), "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${cx.view.types.name_of(want)}`", this_is(n), null))
+            arms_disagree(cx, kind, subject, anchor_name, v, want)
             agreed = false
         }
     }
@@ -322,6 +328,11 @@ export fn arms_agree(mut cx: TypeCx, kind: string, subject: string, anchor_name:
     // lifts when another arm is an absence.
     let _ = accepts(cx, anchor, want)
     want
+}
+
+fn arms_disagree(mut cx: TypeCx, kind: string, subject: string, anchor_name: string, v: ExprId, want: TypeId) {
+    let n = cx.name_at(v)
+    cx.emit(refusal(kind, cx.loc_of(v), "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${cx.view.types.name_of(want)}`", this_is(n), null))
 }
 
 /// The type every arm can answer with: the anchor's, JOINED with

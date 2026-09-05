@@ -4995,7 +4995,7 @@ by meaning; each is a slice for lane D unless a lane is named.
   decision — lane C's to fold onto impls' when it next touches it.
 - D. THE ERROR-ABSORB VERB: 28 sites in three spellings ->
   `cx.errored(e)` / `cx.errored_ty(ty)` on TypeCx.
-- E. VOICES, SCANS, DEAD CODE, STOLEN DOCS: twinned voices
+- ~~E~~ — DONE 2026-09-05 over two slices (lane D), except lists/methods.av's prelude, whose ten sites vary in their wants and read as one honest line each. VOICES, SCANS, DEAD CODE, STOLEN DOCS: twinned voices
   (lists/maps `unslottable_want`, lists/loops `not_walkable`,
   results `covers`/`total`); the struct field law twice
   (`structs/check.av` generic_field/field_check, same refusal text

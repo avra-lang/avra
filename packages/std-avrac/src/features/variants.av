@@ -17,14 +17,16 @@ export fn construct_variant(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: stri
     let carried = sig.payloads_of(variant)
     if carried.is_empty() { return unit_variant(cx, e, tname, variant, tp) }
     if args.is_empty() { return given_nothing(cx, e, tname, variant, carried[0]) }
-    if args.length != carried.length {
-        return spoken(cx, refusal("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries ${count_word(carried.length)}, given ${args.length}", "built here", "a variant's payload is a single value — wrap several in a record"))
-    }
+    if args.length != carried.length { return wrong_payload_count(cx, e, tname, variant, carried.length, args.length) }
     mut bound = no_pins(tp.length)
     for k, a in args {
         if !agreed(cx, a, carried[k], decl, bound) { return wrong_payload(cx, a, tname, variant, carried[k]) }
     }
     instantiated(cx, e, tname, decl, tp, bound)
+}
+
+fn wrong_payload_count(mut cx: TypeCx, e: ExprId, tname: string, variant: string, carries: int, found: int) -> TypeId {
+    spoken(cx, refusal("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries ${count_word(carries)}, given ${found}", "built here", "a variant's payload is a single value — wrap several in a record"))
 }
 
 /// A unit variant given an argument list: the plain one carries
