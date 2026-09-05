@@ -3901,6 +3901,24 @@ additions get siblings, nothing changes shape:
 
 ## Sugar backlog — dogfooding asks
 
+- `pop` ANSWERS `T?`, SO THE TRAP IS SPELLED (filed 2026-09-05, lane
+  D; the change is lane C's files and lane A's db.av). `xs.pop()`
+  answers the ELEMENT today and traps on an empty list ("pop on an
+  empty list", exit 2, both engines — probed). So each of the 36
+  `.pop()` sites hides a trap the source does not show, and a reader
+  cannot tell a pop that CANNOT fail from one that can. The dead `??`
+  proves the confusion is live: query/db.av's `self.marks.pop() ?? 0`
+  and language/lower.av's `?? "the entry"` are both F2044 "`??` never
+  fires" — each an author reaching for a fallback the API refuses,
+  and db.av's would TRAP where its author wrote 0.
+  THE ASK: `pop` answers `T?`, joining `find`'s settled `T?`. Absence
+  then reads straight (`?? 0` works as written), and the
+  known-non-empty case spells its claim as `xs.pop()!` — which traps
+  exactly as today, but VISIBLY. The cost is mechanical: 36 sites
+  gain a `!` or a null test (typing.av 5, resolve.av 5, memory.av 4,
+  db.av 3, the rest scattered). The trade is P3's ceremony against
+  P7's visible magic, and the `!` is one character bought for a trap
+  that is invisible in every one of those 36 lines today.
 - WEAK CAPTURES. A closure stored in a value that captures the value's
   owner is a cycle, and counting never frees one: the workspace's
   query verifiers, its declaration hooks and its analyses all
