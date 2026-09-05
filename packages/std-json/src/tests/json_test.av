@@ -1,0 +1,89 @@
+// JSON as a value, vertically: every kind read and written back the
+// same, objects in order, escapes decoded and re-encoded, the pretty
+// form, the accessors, and every refusal in its own words.
+use @std.json.{Json, field, parse, to_text, pretty}
+use @std.errors.{Error}
+use @std.text.{from_codepoint}
+
+/// The text read and written back — what a round trip leaves.
+fn round(text: string) -> string {
+    match parse(text) {
+        .Ok(j) -> to_text(j),
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn refused(text: string) -> string {
+    match parse(text) {
+        .Ok(j) -> "accepted: ${to_text(j)}",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn sample() -> Json {
+    Json.Obj([field("name", Json.Str("avra")), field("tags", Json.Arr([Json.Str("a"), Json.Int(2), Json.Null])), field("ok", Json.Bool(true)), field("empty", Json.Obj([]))])
+}
+
+spec "std/json" {
+    given "every kind reads and writes back the same" {
+        then "the scalars" {
+            round("null") == "null" && round("true") == "true" && round("false") == "false" && round("42") == "42" && round("-7") == "-7" && round("\"hi\"") == "\"hi\""
+        }
+        then "arrays and objects, whitespace dropped, order kept" {
+            round(" [ 1 , [ ] , { } , \"x\" ] ") == "[1,[],{},\"x\"]" && round("{ \"b\" : 1 , \"a\" : 2 }") == "{\"b\":1,\"a\":2}"
+        }
+        then "nesting" { round("{\"a\":{\"b\":[{\"c\":null}]}}") == "{\"a\":{\"b\":[{\"c\":null}]}}" }
+        then "the sample writes compact" {
+            to_text(sample()) == "{\"name\":\"avra\",\"tags\":[\"a\",2,null],\"ok\":true,\"empty\":{}}"
+        }
+    }
+    given "strings and their escapes" {
+        then "the named escapes decode and re-encode" {
+            round("\"a\\nb\\tc\\\"d\\\\e\"") == "\"a\\nb\\tc\\\"d\\\\e\"" && round("\"\\/\"") == "\"/\""
+        }
+        then "a unicode escape decodes to its character, written back raw" {
+            round("\"\\u00e9\"") == "\"é\"" && round("\"\\u65e5\"") == "\"日\""
+        }
+        then "a surrogate pair is one code point" { round("\"\\ud83d\\ude00\"") == "\"😀\"" }
+        then "a control character writes as \\u00XX" { to_text(Json.Str("a${from_codepoint(1)}b")) == "\"a\\u0001b\"" }
+        then "text beyond ASCII passes through as itself" { round("\"héllo 日本\"") == "\"héllo 日本\"" }
+    }
+    given "the pretty form" {
+        then "two-space indents, one field per line, empty containers compact" {
+            pretty(sample()) == "{\n  \"name\": \"avra\",\n  \"tags\": [\n    \"a\",\n    2,\n    null\n  ],\n  \"ok\": true,\n  \"empty\": {}\n}"
+        }
+        then "a scalar pretty is itself" { pretty(Json.Int(3)) == "3" && pretty(Json.Arr([])) == "[]" }
+        then "pretty text reads back" { round(pretty(sample())) == to_text(sample()) }
+    }
+    given "the accessors" {
+        then "member and item chain; text, int, truth, keys read" {
+            let s = sample()
+            (s.member("name").text() ?? "") == "avra" && (s.member("tags").item(1).int() ?? 0) == 2 && (s.member("ok").truth() ?? false) &&
+                s.keys().join(",") == "name,tags,ok,empty" && s.member("tags").item(2).is_null()
+        }
+        then "get and at say absence exactly; a kind mismatch answers null" {
+            let s = sample()
+            s.get("zzz") == null && s.member("tags").at(9) == null && s.member("name").int() == null && s.at(0) == null && s.member("zzz").is_null()
+        }
+    }
+    given "the refusals, each saying where" {
+        then "an unexpected byte" { refused("@") == "unexpected \"@\" at byte 0" }
+        then "a word that is not a value" { refused("nope") == "unexpected `nope` at byte 0" }
+        then "text past the value" { refused("1 2") == "text goes on past the value, at byte 2" }
+        then "an unterminated string" { refused("\"abc") == "the string opened at byte 0 never closes" }
+        then "an unknown escape" { refused("\"\\q\"") == "the escape at byte 1 names nothing" }
+        then "a fraction or exponent is refused by name" {
+            refused("1.5") == "the number at byte 0 has a fraction or exponent — numbers are integers here" && refused("1e3") == "the number at byte 0 has a fraction or exponent — numbers are integers here"
+        }
+        then "a trailing comma names what was wanted" { refused("[1,]") == "unexpected \"]\" at byte 3" }
+        then "a missing colon" { refused("{\"a\" 1}") == "unexpected \"1\", wanting `:` after the field's name at byte 5" }
+        then "an unquoted key" { refused("{a:1}") == "unexpected \"a\", wanting a field's name in quotes at byte 1" }
+        then "an empty text" { refused("") == "unexpected the end of the text at byte 0" }
+        then "the refusal is a value" {
+            match parse("[") {
+                .Ok(_) -> false,
+                .Err(e) -> e is .Unexpected,
+            }
+        }
+    }
+}

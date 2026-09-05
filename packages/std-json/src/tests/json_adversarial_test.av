@@ -1,0 +1,68 @@
+// The red team's record for @std/json: the degenerate texts, every odd
+// token, deep nesting, and the escapes at their edges.
+use @std.json.{Json, JsonError, field, parse, to_text, pretty}
+use @std.errors.{Error}
+use @std.text.{from_codepoint}
+
+fn a_round(text: string) -> string {
+    match parse(text) {
+        .Ok(j) -> to_text(j),
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn deep(n: int) -> string {
+    mut open = ""
+    mut close = ""
+    mut i = 0
+    while i < n {
+        // LICENSED I34: a fixture of n brackets built once
+        open = open + "["
+        close = close + "]"
+        i = i + 1
+    }
+    "${open}1${close}"
+}
+
+spec "std/json — adversarial" {
+    given "degenerate texts" {
+        then "whitespace alone is the end of the text" { a_round("  \n\t ") == "unexpected the end of the text at byte 5" }
+        then "a lone minus wants a digit" { a_round("-") == "unexpected the end of the text, wanting a digit at byte 1" }
+        then "a minus before a word wants a digit" { a_round("-x") == "unexpected \"x\", wanting a digit at byte 1" }
+        then "zero, negative zero and leading zeros are integers" { a_round("0") == "0" && a_round("-0") == "0" && a_round("007") == "7" }
+        then "an empty key is a key" { a_round("{\"\":1}") == "{\"\":1}" }
+        then "a duplicate key is kept twice, in order — the reader does not judge" { a_round("{\"a\":1,\"a\":2}") == "{\"a\":1,\"a\":2}" }
+        then "the empty string value" { a_round("\"\"") == "\"\"" }
+    }
+    given "every odd token" {
+        then "capitalized words are not values" { a_round("True") == "unexpected \"T\" at byte 0" && a_round("NULL") == "unexpected \"N\" at byte 0" }
+        then "single quotes are not strings" { a_round("'a'") == "unexpected \"'\" at byte 0" }
+        then "a bare comma, colon or closer" {
+            a_round(",") == "unexpected \",\" at byte 0" && a_round(":") == "unexpected \":\" at byte 0" && a_round("]") == "unexpected \"]\" at byte 0" && a_round("}") == "unexpected \"}\" at byte 0"
+        }
+        then "an unclosed object at the end" { a_round("{\"a\":1") == "unexpected the end of the text, wanting `,` or `}` at byte 6" }
+        then "an unclosed array at the end" { a_round("[1,2") == "unexpected the end of the text, wanting `,` or `]` at byte 4" }
+        then "two values with no comma" { a_round("[1 2]") == "unexpected \"2\", wanting `,` or `]` at byte 3" }
+        then "a control character inside a string is refused" { a_round("\"a\nb\"") == "unexpected a control character inside a string at byte 2" }
+        then "a raw tab inside a string is refused too" { a_round("\"a\tb\"") == "unexpected a control character inside a string at byte 2" }
+    }
+    given "nesting" {
+        then "sixty levels deep reads and writes back" { a_round(deep(60)) == deep(60) }
+        then "an object in an array in an object" { a_round("{\"a\":[{\"b\":[]}]}") == "{\"a\":[{\"b\":[]}]}" }
+    }
+    given "escapes at their edges" {
+        then "a backslash at the very end" { a_round("\"\\") == "the escape at byte 1 names nothing" }
+        then "\\u with too few digits" { a_round("\"\\u12\"") == "the escape at byte 1 names nothing" }
+        then "\\u with a non-hex digit" { a_round("\"\\u12g4\"") == "the escape at byte 1 names nothing" }
+        then "upper-case hex is hex" { a_round("\"\\u00E9\"") == "\"é\"" }
+        then "a lone high surrogate becomes the replacement character" { a_round("\"\\ud83d\"") == "\"${from_codepoint(65533)}\"" }
+        then "a high surrogate followed by a non-low escape stands alone" { a_round("\"\\ud83d\\u0041\"") == "\"${from_codepoint(65533)}A\"" }
+        then "the null byte escape writes back as \\u0000" { a_round("\"\\u0000\"") == "\"\\u0000\"" }
+    }
+    given "writing what was never parsed" {
+        then "a key needing escapes is escaped" { to_text(Json.Obj([field("a\"b", Json.Int(1))])) == "{\"a\\\"b\":1}" }
+        then "deep pretty nesting closes at each level" {
+            pretty(Json.Arr([Json.Arr([Json.Int(1)])])) == "[\n  [\n    1\n  ]\n]"
+        }
+    }
+}

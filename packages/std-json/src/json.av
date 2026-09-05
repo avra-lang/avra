@@ -1,0 +1,438 @@
+//! @std.json — JSON as a value. `parse` reads text into a `Json`;
+//! `to_text` writes one back compact, `pretty` with two-space
+//! indents. An object keeps its fields in order — a list of `Field`,
+//! never a map, so what is written reads back the same. Numbers are
+//! integers: the language has no float yet, so a fraction or an
+//! exponent is refused by name rather than rounded. Strings decode
+//! every escape, `\uXXXX` and surrogate pairs included. Every
+//! refusal is a `JsonError` that says where.
+use @std.text.{Text, builder, repeat, from_codepoint, codepoints}
+use @std.errors.{Error, ErrorInfo, info}
+
+// ── The value ───────────────────────────────────────────────────
+
+export type Field = { key: string, value: Json }
+
+export enum Json {
+    Null
+    Bool(truth: bool)
+    Int(n: int)
+    Str(s: string)
+    Arr(items: List<Json>)
+    Obj(fields: List<Field>)
+}
+
+/// One field of an object.
+export fn field(key: string, value: Json) -> Field {
+    Field { key: key, value: value }
+}
+
+impl Json {
+    /// The field's value, when this is an object that has it.
+    fn get(key: string) -> Json? {
+        self.fields().find(it.key == key)?.value
+    }
+
+    /// The item at `i`, when this is an array long enough.
+    fn at(i: int) -> Json? {
+        let items = self.items()
+        if i < 0 || i >= items.length { return null }
+        items[i]
+    }
+
+    /// The field's value, `Null` when absent — so a walk chains:
+    /// `doc.member("tags").item(1).int()`.
+    fn member(key: string) -> Json {
+        self.get(key) ?? Json.Null
+    }
+
+    /// The item at `i`, `Null` when there is none — the chaining twin
+    /// of `at`.
+    fn item(i: int) -> Json {
+        self.at(i) ?? Json.Null
+    }
+
+    fn text() -> string? {
+        match self {
+            .Str(s) -> s,
+            rest -> null,
+        }
+    }
+
+    fn int() -> int? {
+        match self {
+            .Int(n) -> n,
+            rest -> null,
+        }
+    }
+
+    fn truth() -> bool? {
+        match self {
+            .Bool(b) -> b,
+            rest -> null,
+        }
+    }
+
+    fn is_null() -> bool {
+        self is .Null
+    }
+
+    /// An array's items; nothing for any other value.
+    fn items() -> List<Json> {
+        match self {
+            .Arr(items) -> items,
+            rest -> [],
+        }
+    }
+
+    /// An object's fields in order; nothing for any other value.
+    fn fields() -> List<Field> {
+        match self {
+            .Obj(fields) -> fields,
+            rest -> [],
+        }
+    }
+
+    fn keys() -> List<string> {
+        [f.key for f in self.fields()]
+    }
+}
+
+// ── Writing ─────────────────────────────────────────────────────
+
+/// The value as compact JSON text.
+export fn to_text(j: Json) -> string {
+    match j {
+        .Null -> "null",
+        .Bool(b) -> if b { "true" } else { "false" },
+        .Int(n) -> "${n}",
+        .Str(s) -> quoted(s),
+        .Arr(items) -> "[${[to_text(x) for x in items].join(",")}]",
+        .Obj(fields) -> "{${[compact_field(f) for f in fields].join(",")}}",
+    }
+}
+
+fn compact_field(f: Field) -> string {
+    "${quoted(f.key)}:${to_text(f.value)}"
+}
+
+/// The value as JSON text a person reads: two-space indents, one
+/// item or field per line; an empty array or object stays `[]`/`{}`.
+export fn pretty(j: Json) -> string {
+    indented(j, 0)
+}
+
+fn indented(j: Json, depth: int) -> string {
+    match j {
+        .Arr(items) -> block("[", "]", [indented(x, depth + 1) for x in items], depth),
+        .Obj(fields) -> block("{", "}", [pretty_field(f, depth + 1) for f in fields], depth),
+        rest -> to_text(j),
+    }
+}
+
+fn pretty_field(f: Field, depth: int) -> string {
+    "${quoted(f.key)}: ${indented(f.value, depth)}"
+}
+
+/// A bracketed block: each row on its own line one level in, the
+/// closer back at this level — or the bare brackets for no rows.
+fn block(open: string, close: string, rows: List<string>, depth: int) -> string {
+    if rows.is_empty() { return open + close }
+    let inner = repeat("  ", depth + 1)
+    "${open}\n${[inner + r for r in rows].join(",\n")}\n${repeat("  ", depth)}${close}"
+}
+
+/// A string as JSON spells it: quoted, the two that must be escaped
+/// and the named controls as their letters, other controls as
+/// `\u00XX`, everything else as itself.
+fn quoted(s: string) -> string {
+    mut out = builder()
+    out.push("\"")
+    // LICENSED I3: a builder fed over a byte RANGE — a range comprehension does not parse
+    for i in 0..s.length {
+        out.push(escaped(s.char_code(i), s.substring(i, i + 1)))
+    }
+    out.push("\"")
+    out.built()
+}
+
+fn escaped(c: int, raw: string) -> string {
+    when {
+        c == 34 -> "\\\""
+        c == 92 -> "\\\\"
+        c == 10 -> "\\n"
+        c == 13 -> "\\r"
+        c == 9 -> "\\t"
+        c == 8 -> "\\b"
+        c == 12 -> "\\f"
+        c < 32 -> "\\u00${hex_byte(c)}"
+        _ -> raw
+    }
+}
+
+fn hex_byte(c: int) -> string {
+    "${hex_digit(c / 16)}${hex_digit(c % 16)}"
+}
+
+fn hex_digit(d: int) -> string {
+    "0123456789abcdef".substring(d, d + 1)
+}
+
+// ── Refusals ────────────────────────────────────────────────────
+
+/// Why text is not JSON, and where — a byte offset.
+export enum JsonError {
+    Unexpected(at: int, found: string)
+    Unterminated(at: int)
+    BadEscape(at: int)
+    Fraction(at: int)
+    Trailing(at: int)
+}
+
+impl Error for JsonError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Unexpected(at, found) -> info("json.unexpected", "unexpected ${found} at byte ${at}"),
+            .Unterminated(at) -> info("json.unterminated", "the string opened at byte ${at} never closes"),
+            .BadEscape(at) -> info("json.bad_escape", "the escape at byte ${at} names nothing"),
+            .Fraction(at) -> info("json.fraction", "the number at byte ${at} has a fraction or exponent — numbers are integers here"),
+            .Trailing(at) -> info("json.trailing", "text goes on past the value, at byte ${at}"),
+        }
+    }
+}
+
+// ── Reading ─────────────────────────────────────────────────────
+
+/// One scan's answer: the value and where the text goes on, or the
+/// refusal.
+enum Scan {
+    Value(j: Json, next: int)
+    Refused(e: JsonError)
+}
+
+/// The text as one JSON value, whitespace around it allowed.
+export fn parse(text: string) -> Result<Json, JsonError> {
+    let n = text.length
+    match scan_value(text, n, skip_space(text, n, 0)) {
+        .Refused(e) -> { fail e },
+        .Value(j, next) -> {
+            let end = skip_space(text, n, next)
+            if end < n { fail JsonError.Trailing(end) }
+            j
+        },
+    }
+}
+
+fn scan_value(text: string, n: int, i: int) -> Scan {
+    if i >= n { return Scan.Refused(JsonError.Unexpected(i, "the end of the text")) }
+    let c = text.char_code(i)
+    when {
+        c == 123 -> scan_object(text, n, i)
+        c == 91 -> scan_array(text, n, i)
+        c == 34 -> scan_string(text, n, i)
+        c == 45 || is_digit(c) -> scan_number(text, n, i)
+        is_letter(c) -> scan_word(text, n, i)
+        _ -> Scan.Refused(JsonError.Unexpected(i, quoted(text.substring(i, i + 1))))
+    }
+}
+
+/// `{` fields `}` — each a string key, `:`, a value; `,` between.
+fn scan_object(text: string, n: int, i: int) -> Scan {
+    mut fields: List<Field> = []
+    mut j = skip_space(text, n, i + 1)
+    if at(text, n, j, 125) { return Scan.Value(Json.Obj([]), j + 1) }
+    while true {
+        if !at(text, n, j, 34) { return Scan.Refused(unexpected(text, n, j, "a field's name in quotes")) }
+        let key = match scan_string(text, n, j) {
+            .Refused(e) -> { return Scan.Refused(e) },
+            .Value(k, next) -> {
+                j = skip_space(text, n, next)
+                k.text() ?? ""
+            },
+        }
+        if !at(text, n, j, 58) { return Scan.Refused(unexpected(text, n, j, "`:` after the field's name")) }
+        match scan_value(text, n, skip_space(text, n, j + 1)) {
+            .Refused(e) -> { return Scan.Refused(e) },
+            .Value(v, next) -> {
+                fields.push(field(key, v))
+                j = skip_space(text, n, next)
+            },
+        }
+        if at(text, n, j, 125) { return Scan.Value(Json.Obj(fields), j + 1) }
+        if !at(text, n, j, 44) { return Scan.Refused(unexpected(text, n, j, "`,` or `}`")) }
+        j = skip_space(text, n, j + 1)
+    }
+    Scan.Refused(JsonError.Unterminated(i))
+}
+
+/// `[` values `]` — `,` between.
+fn scan_array(text: string, n: int, i: int) -> Scan {
+    mut items: List<Json> = []
+    mut j = skip_space(text, n, i + 1)
+    if at(text, n, j, 93) { return Scan.Value(Json.Arr([]), j + 1) }
+    while true {
+        match scan_value(text, n, j) {
+            .Refused(e) -> { return Scan.Refused(e) },
+            .Value(v, next) -> {
+                items.push(v)
+                j = skip_space(text, n, next)
+            },
+        }
+        if at(text, n, j, 93) { return Scan.Value(Json.Arr(items), j + 1) }
+        if !at(text, n, j, 44) { return Scan.Refused(unexpected(text, n, j, "`,` or `]`")) }
+        j = skip_space(text, n, j + 1)
+    }
+    Scan.Refused(JsonError.Unterminated(i))
+}
+
+/// A quoted string: runs copied whole, escapes decoded — `\uXXXX`
+/// as its code point, a surrogate pair as one.
+fn scan_string(text: string, n: int, i: int) -> Scan {
+    mut out = builder()
+    mut run = i + 1
+    mut j = i + 1
+    while j < n {
+        let c = text.char_code(j)
+        if c == 34 {
+            out.push(text.substring(run, j))
+            return Scan.Value(Json.Str(out.built()), j + 1)
+        }
+        if c < 32 { return Scan.Refused(JsonError.Unexpected(j, "a control character inside a string")) }
+        if c == 92 {
+            out.push(text.substring(run, j))
+            match scan_escape(text, n, j) {
+                .Refused(e) -> { return Scan.Refused(e) },
+                .Value(piece, next) -> {
+                    out.push(piece.text() ?? "")
+                    j = next
+                    run = next
+                },
+            }
+        } else {
+            j = j + 1
+        }
+    }
+    Scan.Refused(JsonError.Unterminated(i))
+}
+
+/// The escape at `j` (the backslash): its text and where it ends.
+fn scan_escape(text: string, n: int, j: int) -> Scan {
+    if j + 1 >= n { return Scan.Refused(JsonError.BadEscape(j)) }
+    let e = text.char_code(j + 1)
+    if e == 117 { return scan_unicode(text, n, j) }
+    let piece: string? = simple_escape(e)
+    if piece == null { return Scan.Refused(JsonError.BadEscape(j)) }
+    Scan.Value(Json.Str(piece!), j + 2)
+}
+
+fn simple_escape(e: int) -> string? {
+    when {
+        e == 34 -> "\""
+        e == 92 -> "\\"
+        e == 47 -> "/"
+        e == 98 -> "\b"
+        e == 102 -> "\f"
+        e == 110 -> "\n"
+        e == 114 -> "\r"
+        e == 116 -> "\t"
+        _ -> null
+    }
+}
+
+/// `\uXXXX`, and a high surrogate followed by `\uXXXX` low as one
+/// code point.
+fn scan_unicode(text: string, n: int, j: int) -> Scan {
+    let high: int? = hex4(text, n, j + 2)
+    if high == null { return Scan.Refused(JsonError.BadEscape(j)) }
+    let code = high!
+    if code >= 55296 && code < 56320 && at(text, n, j + 6, 92) && at(text, n, j + 7, 117) {
+        let low: int? = hex4(text, n, j + 8)
+        if low != null {
+            let tail = low!
+            if tail >= 56320 && tail < 57344 {
+                return Scan.Value(Json.Str(from_codepoint(65536 + (code - 55296) * 1024 + (tail - 56320))), j + 12)
+            }
+        }
+    }
+    Scan.Value(Json.Str(from_codepoint(code)), j + 6)
+}
+
+/// Four hex digits at `i`, as a number; null when they are not there.
+fn hex4(text: string, n: int, i: int) -> int? {
+    if i + 4 > n { return null }
+    mut v = 0
+    mut k = 0
+    while k < 4 {
+        let d: int? = hex_value(text.char_code(i + k))
+        if d == null { return null }
+        v = v * 16 + d!
+        k = k + 1
+    }
+    v
+}
+
+fn hex_value(c: int) -> int? {
+    when {
+        is_digit(c) -> c - 48
+        c >= 97 && c <= 102 -> c - 87
+        c >= 65 && c <= 70 -> c - 55
+        _ -> null
+    }
+}
+
+/// `-`? digits — an integer. A `.`, `e` or `E` after them is the
+/// fraction this reader refuses by name.
+fn scan_number(text: string, n: int, i: int) -> Scan {
+    mut j = i
+    if at(text, n, j, 45) { j = j + 1 }
+    let digits_from = j
+    while j < n && is_digit(text.char_code(j)) { j = j + 1 }
+    if j == digits_from { return Scan.Refused(unexpected(text, n, j, "a digit")) }
+    if at(text, n, j, 46) || at(text, n, j, 101) || at(text, n, j, 69) { return Scan.Refused(JsonError.Fraction(i)) }
+    Scan.Value(Json.Int(int_of(text, i, j)), j)
+}
+
+fn int_of(text: string, lo: int, hi: int) -> int {
+    let negative = text.char_code(lo) == 45
+    mut v = 0
+    mut k = if negative { lo + 1 } else { lo }
+    while k < hi {
+        v = v * 10 + (text.char_code(k) - 48)
+        k = k + 1
+    }
+    if negative { return 0 - v }
+    v
+}
+
+/// `true`, `false` or `null` — any other word is unexpected.
+fn scan_word(text: string, n: int, i: int) -> Scan {
+    mut j = i
+    while j < n && is_letter(text.char_code(j)) { j = j + 1 }
+    let word = text.substring(i, j)
+    when {
+        word == "true" -> Scan.Value(Json.Bool(true), j)
+        word == "false" -> Scan.Value(Json.Bool(false), j)
+        word == "null" -> Scan.Value(Json.Null, j)
+        _ -> Scan.Refused(JsonError.Unexpected(i, "`${word}`"))
+    }
+}
+
+/// The unexpected byte at `i` named — or the end of the text.
+fn unexpected(text: string, n: int, i: int, wanted: string) -> JsonError {
+    if i >= n { return JsonError.Unexpected(i, "the end of the text, wanting ${wanted}") }
+    JsonError.Unexpected(i, "${quoted(text.substring(i, i + 1))}, wanting ${wanted}")
+}
+
+fn skip_space(text: string, n: int, i: int) -> int {
+    mut j = i
+    while j < n && is_space(text.char_code(j)) { j = j + 1 }
+    j
+}
+
+fn at(text: string, n: int, i: int, code: int) -> bool {
+    i < n && text.char_code(i) == code
+}
+
+fn is_space(c: int) -> bool { c == 32 || c == 9 || c == 10 || c == 13 }
+fn is_digit(c: int) -> bool { c >= 48 && c <= 57 }
+fn is_letter(c: int) -> bool { c >= 97 && c <= 122 }
