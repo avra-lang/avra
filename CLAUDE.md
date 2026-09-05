@@ -528,7 +528,7 @@ Runtime facts, ours to ratify:
 ## Working discipline
 
 - ONE HEAVY PROCESS AT A TIME, in the FOREGROUND, under the
-  watchdog: `sh tools/watch.sh 4000 make gate`. The machine is
+  watchdog: `sh tools/watch.sh 6000 make gate`. The machine is
   shared with a loaded desktop and has panicked twice under this
   tree — three concurrent `make test` runs once, and a background
   gate with other compiler runs beside it (a WindowServer watchdog
@@ -536,10 +536,17 @@ Runtime facts, ours to ratify:
   beside it, no gate runs in the background, and every suite, gate
   or whole-package check runs through the watchdog, which holds the
   machine-wide lock, kills the tree past its cap and prints the
-  peak. `AVRA_RC_GUARD=1` only on small programs: its log is
-  bounded but a guarded compiler run over a package is still a
-  machine's worth. Scratch probes (`./avra check` of one file) are
-  sub-second and need no lock.
+  peak. `./avra` takes that lock ITSELF for any package-scale run
+  (an argument that is a directory), and a step does not start
+  under a 20% memory floor — so NOTHING runs `build/avra` directly,
+  and a PROFILE runs under the lock too: `AVRA_SAMPLE=12 sh
+  tools/watch.sh 6000 ./avra test packages/std-avrac` (the file at
+  AVRA_SAMPLE_FILE). The second panic (2026-09-05) was exactly a
+  bypass: `build/avra test` launched in the background to be
+  sampled, beside two lanes' gated steps. `AVRA_RC_GUARD=1` only on
+  small programs: its log is bounded but a guarded compiler run
+  over a package is still a machine's worth. Scratch probes
+  (`./avra check` of one file) are sub-second and need no lock.
 - A PATCH SCRIPT that inserts before an anchor, or replaces `old`
   with `new` where `new` CONTAINS `old` (an `export` prefix, a doc
   comment), applies TWICE when re-run after a partial failure: the
