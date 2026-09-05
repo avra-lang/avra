@@ -8,6 +8,7 @@ extern fn avra_selfhost_read_file(path: string) -> string
 extern fn avra_selfhost_file_exists(path: string) -> int
 extern fn avra_selfhost_write_file(path: string, content: string) -> int
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
+extern fn avra_exec_self(args: List<string>) -> int
 extern fn avra_mkdir_p(path: string) -> int
 extern fn avra_process_exit(code: int)
 extern fn avra_host_list_dir(path: string) -> string
@@ -198,17 +199,35 @@ fn link(ll_path: string, p: Program) -> int {
     linked(ll_path, p, "-O1")
 }
 
-/// A binary run ONCE links unoptimized: the hot code of a test or
-/// corpus binary is the runtime's, compiled on its own, so the
-/// optimizer's seconds buy nothing (measured: 6.6s -> 1.1s to link
-/// the suite, the same run time).
-fn link_throwaway(ll_path: string, p: Program) -> int {
-    linked(ll_path, p, "-O0")
+/// THE HAND-OFF: a binary run once is linked and run by a FRESH
+/// image of this program — `avra staged <plan>` — so the workspace
+/// this process holds (a suite's is ~2.4 GB) is gone while clang
+/// and the binary run, and a suite peaks at the larger of the two,
+/// not their sum. It links at -O0: its hot code is the runtime's,
+/// compiled on its own, so the optimizer's seconds buy nothing
+/// (measured: 6.6s -> 1.1s to link the suite, the same run time).
+/// The plan is a file beside the module: clang's words, one per
+/// line; the binary is the word after `-o`. Answers only when the
+/// exec failed.
+fn staged(ll_path: string, p: Program) -> int {
+    let plan = "${ll_path}.link"
+    if avra_selfhost_write_file(plan, joined(clang_words(ll_path, p, "-O0"), "\n")) == 0 {
+        eprintln("avra: could not write ${plan}")
+        return 1
+    }
+    let _ = avra_exec_self(["staged", plan])
+    eprintln("avra: could not run this program again for the link")
+    1
+}
+
+/// clang's words for a module: the level, the runtime, the package's
+/// own objects and flags, the binary's path.
+fn clang_words(ll_path: string, p: Program, opt: string) -> List<string> {
+    ["-w", opt, ll_path, "build/avra_runtime.o"].concat(link_words(p.ws)).concat(["-o", binary_name(ll_path)])
 }
 
 fn linked(ll_path: string, p: Program, opt: string) -> int {
-    let out = binary_name(ll_path)
-    let status = avra_spawn_status("clang", ["-w", opt, ll_path, "build/avra_runtime.o"].concat(link_words(p.ws)).concat(["-o", out]))
+    let status = avra_spawn_status("clang", clang_words(ll_path, p, opt))
     if status == 127 {
         eprintln("avra: could not start `clang` — is it on PATH?")
         return 1

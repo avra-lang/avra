@@ -17,7 +17,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 main="$(dirname "$root")/avra"
 worktree="$(dirname "$root")/avra-lane-$lane"
 [ -d "$main/.git" ] && [ -d "$worktree" ] || { echo "integrate: no main at $main or no worktree at $worktree" >&2; exit 2; }
-cap=6000
+cap=4000
 
 cd "$worktree"
 if [ -n "$(git status --porcelain)" ]; then
@@ -47,8 +47,9 @@ sh tools/watch.sh $cap make -s seed > /tmp/integrate-seed.out 2>&1
 cp build/avra /tmp/integrate-preboot
 sh tools/watch.sh $cap make -s bootstrap > /tmp/integrate-boot.out 2>&1 || { echo "integrate: the refreshed seed does not bootstrap"; tail -20 /tmp/integrate-boot.out; exit 1; }
 cmp -s build/avra /tmp/integrate-preboot || { echo "integrate: the seed does not CYCLE (bootstrap differs)"; exit 1; }
+# a merge that touched no compiler source leaves the seed as it was
 git add bootstrap/seed.ll
-git commit -q -m "chore(seed): refreshed after lane $lane merged
+git diff --quiet --cached -- bootstrap/seed.ll && echo "integrate: the seed is unchanged" || git commit -q -m "chore(seed): refreshed after lane $lane merged
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01XXBDccuDA8Ntk55RXKedD2"

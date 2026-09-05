@@ -1132,6 +1132,38 @@ int64_t avra_spawn_status(const char* prog, void* args) {
     return (int64_t)WEXITSTATUS(status);
 }
 
+// THIS PROGRAM AGAIN, with new words: the image is replaced, so the
+// memory the program held is gone — how a heavy phase hands the
+// light one a fresh process. Answers only when it cannot: 127.
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+static int self_path(char* buf, size_t cap) {
+#ifdef __APPLE__
+    uint32_t n = (uint32_t)cap;
+    return _NSGetExecutablePath(buf, &n) == 0;
+#else
+    ssize_t n = readlink("/proc/self/exe", buf, cap - 1);
+    if (n < 0) return 0;
+    buf[n] = 0;
+    return 1;
+#endif
+}
+
+int64_t avra_exec_self(void* args) {
+    AvraArray* a = (AvraArray*)args;
+    char self[4096];
+    if (!self_path(self, sizeof self)) return 127;
+    char** argv = (char**)malloc((size_t)(a->len + 2) * sizeof(char*));
+    argv[0] = self;
+    for (int64_t i = 0; i < a->len; i++) argv[i + 1] = (char*)(uintptr_t)a->data[i];
+    argv[a->len + 1] = NULL;
+    fflush(NULL);
+    execv(self, argv);
+    free(argv);
+    return 127;
+}
+
 // Every directory along the path made, 1 when the whole path stands.
 int64_t avra_mkdir_p(const char* path) {
     size_t n = strlen(path);
