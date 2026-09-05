@@ -63,6 +63,170 @@ eval-collapse next (queued), store/kernel at Era IV (contract
 recorded), static ownership with the ownership arc,
 text-as-projection after self-host, the service store at Era V.
 
+## THE LANES (opened 2026-09-04) — the work, dished out
+
+Four streams, cut so that no two lanes edit the same files, and one
+rule that makes them safe on one machine: EVERY heavy step goes
+through `sh tools/watch.sh 4000 <cmd>`, which holds a machine-wide
+lock (`/tmp/avra-build.lock`) and a memory cap. A second session's
+gate QUEUES; it never runs beside another. The machine has panicked
+twice under concurrent load; the lock is the mechanism, the rule is
+the memory.
+
+HOW TO TAKE A LANE
+  1. Branch a worktree from main: `git worktree add ../avra-<lane>
+     -b lane/<lane>`; `cd` there; `make bootstrap` (a cold worktree
+     builds from the seed, ~45s).
+  2. Work the lane's checklist top to bottom — the order IS the
+     dependency order. Tick items here as they land.
+  3. Every gate, suite or whole-package check: `sh tools/watch.sh
+     4000 make gate` (or `./avra test …`). Never a bare `make gate`,
+     never a background one.
+  4. Every slice: red-team, then review-round, ledgers fed (this
+     file, CLAUDE.md, DOGFOODING.md), commit message handed over.
+     Nothing commits without the owner's word.
+  5. To land: rebase on main, full gate through the lock, merge.
+     THE MERGER runs `make seed` and commits the refreshed
+     `bootstrap/seed.ll`; that file is DERIVED and is never merged
+     by hand.
+  6. A lane may run IN THE CLOUD (its own machine: no queue) once
+     the probe below says the toolchain is there.
+
+LANE 0 — CORRECTNESS FIRST (half a day; anyone; touches cli/ and
+the runtime's host seam). Two wrong answers from the red team's
+open ledger, above every other item:
+  - [ ] SUPPLY-CHAIN EXECUTION: a dependency's `[link] flags` are
+        spliced unquoted into the `system()` string that runs clang
+        (`shared.av:180`, `workspace.av:837`). FIX: an argv row —
+        `avra_spawn_status(prog, argv)` over `posix_spawnp` in the
+        runtime, argv built as a LIST; `shell_word` and
+        `binary_name`'s quoting DELETED, not fenced. DONE WHEN a
+        manifest with `flags = ["; touch /tmp/PWNED ;"]` builds
+        without running it, and the corpus is green.
+  - [ ] `avra test` GREEN OVER RED: `on_cases` selects `c.at.file ==
+        path` (`shared.av:113`) as raw text, so a path spelled with
+        `//` or `./` selects zero cases and exits 0. FIX: normalize
+        both sides (`core/paths.av`'s `normalized`), and ZERO CASES
+        FOR AN ARGUED FILE IS A REFUSAL, not "no spec cases here".
+        DONE WHEN `./avra test packages/std-avrac/src/./core/tests/
+        lists_test.av` runs the cases and a file with none exits 1.
+
+LANE A — SPEED (owns runtime/, grammar/, core/ hot paths;
+measures with `./avra test packages/std-avrac --time` and `sample`,
+user CPU, never wall). Baseline 2026-09-04: parse 14.2s, resolve
+2.4s, sigs 0.3s, bodies 8.3s, lower 6.2s; the 1571 cases ~17s;
+the compiler checking itself 28.8s.
+  - [ ] THE ENGINE'S CAPTURE COPYING: repetition captures are
+        copied per append, so an N-statement program parses in
+        O(N^2) (TECH_DEBT). `Many` becomes a prefix snapshot
+        ({shared list, count}): push at the tip, copy only after a
+        real rollback. DONE WHEN parse drops measurably on the
+        suite and the corpus is green; record the number here.
+  - [ ] LENGTH-CARRYING STRINGS: `s.length` is `strlen`, hoisted at
+        8+ sites (I27). The header has room — a string box carries
+        its length beside its count. DONE WHEN `.length` is a load,
+        the I27 ratchet retires, and the ledger's `s.length` entry
+        is struck.
+  - [ ] ONE `avra()` PER PROCESS: every spec case assembles the
+        language (dispatch boxes, rows_of), ~12s of the suite's
+        case run. PROBE FIRST: a module-level `let LANG = avra()`
+        evaluated once per process (a bs2 note says module-level
+        lets do not cross imports — test whether OURS does). Else
+        the memo-as-query road in THE PIPELINE, MEASURED. DONE WHEN
+        the case run drops by the measured share.
+  - [ ] PROFILE THE CASE RUN AGAIN (`sample`, 30s) and land what it
+        names; then re-measure and rewrite THE PIPELINE table.
+
+LANE B — STD LIBS (owns NEW packages only; each package: `avra.toml`,
+spec tests beside it, a corpus package under corpus/<name>/ proving
+eval == native; each a slice with red-team + review-round). The
+driver is what the compiler and its tools need — the spec has no
+std-lib chapter, so dogfooding decides the surface.
+  - [ ] `@std/process`: spawn with an argv LIST (the runtime row
+        lane 0 adds), args, exit statuses as verdicts. Coordinate
+        with lane 0: whichever lands first owns `avra_spawn_status`.
+  - [ ] `@std/io`: println/eprintln, read/write file, env, list
+        dir — over the runtime's existing externs, so a program
+        prints without declaring C. DONE WHEN `packages/cli` and
+        the corpus import it and declare no `extern fn println`.
+  - [ ] `@std/cli`, OURS: subcommands, flags, the `Runnable` seam
+        — what `packages/cli` uses of the vendored one (12 sites).
+        DONE WHEN `packages/std-cli/` is DELETED and the cli builds.
+  - [ ] `@std/text`: a string builder (per-char concat is
+        O(len^2) in the scanners), pad/align/repeat, the code-point
+        walk. DONE WHEN the lexer and the renderer use it.
+  - [ ] `@std/path`: promote `core/paths.av` (join, normalize,
+        dir_of, extension) out of the compiler.
+  - [ ] `@std/json`: read and write, over maps and lists — the
+        projection format `avra explain`/`lsp`/`doc` will speak.
+  - [ ] `@std/time`: now_ns, a duration's text — what `--time` and
+        the bench print by hand today.
+
+LANE C — ROADMAP INTO RENT (owns language/ and features/ typing and
+lowering). The first item unblocks the two biggest ledger entries;
+the order is the dependency.
+  - [ ] `mut self` — RATIFY the design (rung 14's mutating methods:
+        a method that writes through self is inferred `mut self`,
+        the call site needs a mut place, the receiver is opened
+        unique before the call — the V1 law "aliasing never
+        observable" kept). Then land it: typing + lowering + the
+        corpus pair. DONE WHEN `let d = c; d.set(5)` leaves `c`
+        unchanged, natively and in eval.
+  - [ ] THE ALIAS BORROW paid: the 38 free state fns
+        (interp.av `m.frames`, resolve.av `r.overlays`,
+        workspace.av `ws.specs`, llvm.av `em.vals`, …) become
+        METHODS writing `self.field.push(v)`; `borrows_field`,
+        `mark_borrow` and `unique_box`'s borrow load DELETED; a
+        `mut` bound to a parameter's field path REFUSED. (bs2's
+        #1377 ICE — a method call on a captured local in an early-
+        returning loop — is why they were free fns; prove ours does
+        not have it first, with one probe.)
+  - [ ] RECEIVER ALIASING closed: the ledger entry struck, the
+        memory doctrine's V1 line updated to "by law, enforced".
+  - [ ] PAIRS IN SLOTS (O4): a scalar nullable in a list slot, a
+        struct field and a capture lane — ONE design, three sites,
+        the three "cannot hold this yet" voices retired together.
+  - [ ] FIELD PUNNING `T { name, value }` (needs the type-name
+        lexical class decided with the spec — Capitalized?).
+  - [ ] TRAIT DEFAULT METHOD BODIES (every `nothing()` pass method
+        collapses; `kind()`/`message()` as defaults).
+  - [ ] A PRELUDE or qualified expression paths (the 33 files that
+        import ten names for a `grammar { }` expansion).
+
+LANE D — THE SWEEP (cheap items for the gaps between builds; owns
+CLAUDE.md, TECH_DEBT.md, the cli entry, this ledger's bs2 section).
+  - [ ] THE 76 SUBSET NOTES audited: probe each (a sub-second
+        `./avra check` of a scratch file); ACCEPTED -> the note is
+        deleted; REFUSED -> it moves to a new "the subset today"
+        list, each entry a sugar-backlog candidate, not a trap to
+        write around. The section stops being a memorial to bs2.
+  - [ ] `packages/cli/src/main_stamped.av` and its `exclude` line
+        deleted (the generator is already gone).
+  - [ ] The `mod commands` stub in `cli/src/main.av` deleted once
+        the resolver treats a directory as a module (verify; it is
+        a one-line probe).
+  - [ ] `extern fn println` / `eprintln` in the cli and the corpus
+        replaced by `@std/io` (after lane B lands it).
+  - [ ] CLAUDE.md's "Vendored code" paragraph: `spec_test` is
+        already gone from the tree; `std-cli` goes with lane B.
+        Rewrite when each falls.
+  - [ ] TECH_DEBT.md: the "Toolchain rent" and "bs2 defects"
+        sections retire item by item — each dies, or moves here as
+        OUR debt with its trigger.
+  - [ ] THE bs2 DEBT LEDGER (below, under rung 15): every entry
+        struck or moved; the ledger closes.
+
+THE CLOUD (probed 2026-09-04): an agent asked for "remote" isolation
+from a session on the Mac mini lands on the SAME Mac mini, in a
+worktree under `.claude/worktrees/` — same machine, same lock, no
+extra compute. A claude.ai cloud session is a Linux container and
+IS extra compute: install LLVM 21 and clang there (`apt install
+llvm-21 clang-21`), run with `LLVM_PREFIX=/usr/lib/llvm-21`, then
+`make bootstrap`; the runtime's address screen (`hdr` refuses
+addresses below 0x100000000) holds under PIE, which is what clang
+emits by default. First thing in a cloud lane: `make corpus` green,
+recorded here with the container's `uname -a`.
+
 ## The eras (the long path, each with its gate)
 
 - ERA I — THE VERTICAL (done): one thin language, source to native,
