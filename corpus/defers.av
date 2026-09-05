@@ -1,0 +1,51 @@
+// proves: `defer` and `errdefer` — a deferred body runs when its
+// statement list's frame closes (a block, a loop's turn, an `if`
+// statement's branch, a fn body), last-registered first, after the
+// value the frame answers; `return`, `fail` and `?` run every open
+// frame on the way out, innermost first; `errdefer` runs only on
+// the failure channel. Captures are copies at the statement, so a
+// counter stepped after its defer is read as it was.
+extern fn avra_puts(s: string)
+
+type Child = { name: string }
+
+fn stop(c: Child) {
+    avra_puts("stop ${c.name}")
+}
+
+fn serve(name: string, fails: bool) -> Result<int, string> {
+    let c = Child { name: name }
+    defer stop(c)
+    errdefer avra_puts("undo ${name}")
+    if fails {
+        fail "${name} failed"
+    }
+    avra_puts("serve ${name}")
+    1
+}
+
+fn told(r: Result<int, string>) -> string {
+    match r {
+        .Ok(v) -> "${v}"
+        .Err(e) -> e
+    }
+}
+
+fn early(n: int) -> int {
+    defer avra_puts("early ${n} done")
+    if n > 2 {
+        defer avra_puts("branch ${n}")
+        return n * 10
+    }
+    n
+}
+
+mut i = 0
+while i < 2 {
+    defer avra_puts("turn ${i} ends")
+    avra_puts("turn ${i}")
+    i = i + 1
+}
+defer avra_puts("last")
+defer avra_puts("second to last")
+"${told(serve("a", false))} ${told(serve("b", true))} ${early(1)} ${early(3)}"
