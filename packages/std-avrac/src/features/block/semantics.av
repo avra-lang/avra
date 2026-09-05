@@ -8,11 +8,11 @@ use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, foreign_node}
 export type BlockSemantics = { }
 
 impl NodeSemantics for BlockSemantics {
-    fn kids(self, e: Expr) -> List<ExprId> {
+    fn kids(e: Expr) -> List<ExprId> {
         []
     }
 
-    fn heirs(self, e: Expr) -> List<ExprId> {
+    fn heirs(e: Expr) -> List<ExprId> {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match e {
             .Block(_, value) -> some_list(value),
@@ -20,21 +20,21 @@ impl NodeSemantics for BlockSemantics {
         }
     }
 
-    fn resolve(self, cx: ResolveCx, e: ExprId) {
+    fn resolve(cx: ResolveCx, e: ExprId) {
         match cx.view.store.expr(e) {
             .Block(stmts, value) -> cx.block_scope(stmts, value),
             _ -> nothing(),
         }
     }
 
-    fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
+    fn type_of(cx: TypeCx, e: ExprId) -> TypeId {
         match cx.view.store.expr(e) {
             .Block(stmts, value) -> cx.block_type(stmts, value),
             _ -> cx.error_type,
         }
     }
 
-    fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
+    fn lower(cx: LowerCx, e: ExprId) -> Reg {
         match cx.view.store.expr(e) {
             .Block(stmts, value) -> cx.lower_block(stmts, value, cx.type_at(e)),
             _ -> foreign_node(cx, e),

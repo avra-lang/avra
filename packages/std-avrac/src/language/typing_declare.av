@@ -5,12 +5,12 @@
 //! Bodies never walk here; a sig may name any file's declaration.
 use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, TypeRegistry, ExternParts}
 use diagnostics.{refusal}
-use features.{FnSig, StructSig, EnumSig, DeclSig, record_sig_of, variant_sig_of, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl}
+use features.{FnSig, StructSig, EnumSig, DeclSig, record_sig_of, variant_sig_of, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats}
 use @std.errors.{Loc}
 
 impl Typer {
     /// A record's table, from its declaration alone.
-    fn declare_record(self, s: StmtId) {
+    fn declare_record(s: StmtId) {
         self.refuse_taken_tparams(s, self.view.store.type_decl_name(s) ?? "this type")
         self.enter_tscope(s)
         let sp: StructParts? = self.view.store.struct_parts(s)
@@ -19,7 +19,7 @@ impl Typer {
     }
 
     /// An enum's table, from its declaration alone.
-    fn declare_enum(self, s: StmtId) {
+    fn declare_enum(s: StmtId) {
         self.refuse_taken_tparams(s, self.view.store.type_decl_name(s) ?? "this type")
         self.enter_tscope(s)
         let ep: EnumParts? = self.view.store.enum_parts(s)
@@ -29,7 +29,7 @@ impl Typer {
 
     /// An enum's variant table — the index IS the runtime tag, and
     /// the payloads ride slots 1.. of the value, in order.
-    fn declare_enum_sig(self, s: StmtId, variants: List<Variant>) {
+    fn declare_enum_sig(s: StmtId, variants: List<Variant>) {
         let sig = EnumSig {
             names: [v.name for v in variants],
             payloads: [self.payload_types(s, v) for v in variants],
@@ -39,7 +39,7 @@ impl Typer {
 
     /// What a variant carries, in order — each payload judged by the
     /// slot law; a payload the law refuses lands as the Error type.
-    fn payload_types(self, s: StmtId, v: Variant) -> List<TypeId> {
+    fn payload_types(s: StmtId, v: Variant) -> List<TypeId> {
         mut out: List<TypeId> = []
         // LICENSED I3: an accumulator over a nullable answer
         for p in v.payloads { out.push(self.carried_type(s, p) ?? self.error_type) }
@@ -48,18 +48,18 @@ impl Typer {
 
     /// One payload's type under the slot law — absent when it was
     /// written without one.
-    fn carried_type(self, s: StmtId, p: Param) -> TypeId? {
+    fn carried_type(s: StmtId, p: Param) -> TypeId? {
         if p.ty == null { return null }
         self.slot_law(s, "type.enum_payload", "an enum payload cannot hold this yet",
                          "`${p.name}` carries a `${spelled(p.ty!)}`", p.ty!)
     }
 
     /// One declaration's table lands in the ONE dense record.
-    fn declare(self, s: StmtId, d: DeclSig) {
+    fn declare(s: StmtId, d: DeclSig) {
         self.view.decls.declare(self.decl_of(s), d)
     }
 
-    fn declare_struct_sig(self, s: StmtId, fields: List<Param>) {
+    fn declare_struct_sig(s: StmtId, fields: List<Param>) {
         let names = [f.name for f in fields]
         let owner: string = self.view.store.type_decl_name(s) ?? "this type"
         for d in duplicate_names("type.duplicate_field", owner, names, self.stmt_loc(s)) {
@@ -76,7 +76,7 @@ impl Typer {
     /// id, a span, a register: the values a compiler makes millions
     /// of. One pointer-riding field keeps the box, because that
     /// reference must still be counted.
-    fn flatten_record(self, s: StmtId, record: DeclId, types: List<TypeId>) {
+    fn flatten_record(s: StmtId, record: DeclId, types: List<TypeId>) {
         // ONE field, for now: a single-field record IS its field at
         // the machine level, so it fits everywhere the field fits —
         // a list slot, a call seat, a register. A wider record needs
@@ -92,7 +92,7 @@ impl Typer {
     /// A field default's signature: a body of no parameters
     /// answering the field's declared type — every literal that
     /// omits the field calls it.
-    fn declare_default(self, x: Decl) {
+    fn declare_default(x: Decl) {
         let rs: StructSig? = record_sig_of(self.view.decls.sig(x.parent!))
         let slot: int? = if rs == null { null } else { rs!.slot_of(x.name) }
         let ret: TypeId = if slot == null { self.error_type } else { rs!.types[slot!] }
@@ -100,13 +100,13 @@ impl Typer {
     }
 
     /// A test case's signature: no parameters, a bool answer.
-    fn declare_case(self, x: Decl) {
+    fn declare_case(x: Decl) {
         self.view.decls.declare(x.id, DeclSig.Fn(FnSig { params: [], ret: self.view.decls.types.intern(Type.Bool) }))
     }
 
     /// A field's type — scalars only, until ownership analysis. The
     /// grammar always writes one, so absence is unreachable.
-    fn field_type(self, s: StmtId, f: Param) -> TypeId {
+    fn field_type(s: StmtId, f: Param) -> TypeId {
         if f.ty == null { return self.error_type }
         self.slot_law(s, "type.struct_scalar", "a struct field cannot hold this yet",
                          "field `${f.name}` is `${spelled(f.ty!)}`", f.ty!)
@@ -119,7 +119,7 @@ impl Typer {
     /// an enum's payload are one law. An UNKNOWN name is not this law's business:
     /// the NAME law speaks first, and a second refusal for one
     /// mistake is a cascade.
-    fn slot_law(self, s: StmtId, kind: string, message: string,
+    fn slot_law(s: StmtId, kind: string, message: string,
                 label: string, ty: TypeRef) -> TypeId {
         let named = self.full_type(self.stmt_loc(s), ty)
         let sh: Type = self.view.types.shape_of(named)
@@ -129,54 +129,59 @@ impl Typer {
         self.error_type
     }
 
-    /// A fn's signature, from its annotations alone.
-    fn declare_fn(self, s: StmtId) {
+    /// A fn's signature, from its annotations alone. A `mut fn` at
+    /// the top level declared a receiver it does not have — spoken
+    /// once, and the fn still declares, so its calls resolve.
+    fn declare_fn(s: StmtId) {
         let parts: FnParts? = self.view.store.fn_parts(s)
-        if parts != null { return self.declare_sig(s, parts!.params, parts!.ret) }
+        if parts != null {
+            let fp = parts!
+            if self.view.store.is_mutating(s) { self.stray_mut_fn(s, fp.name) }
+            return self.declare_sig(s, fp.params, fp.ret)
+        }
         let host: ExternParts? = self.view.store.extern_parts(s)
         if host != null { self.declare_sig(s, host!.params, host!.ret) }
     }
 
-    fn declare_sig(self, s: StmtId, fparams: List<Param>, fret: TypeRef) {
+    fn declare_sig(s: StmtId, fparams: List<Param>, fret: TypeRef) {
         // A parameter declared twice makes the second unreachable —
         // the body sees the first, silently. The same law a record's
         // fields and an enum's variants obey, through the same scan.
         let owner: string = self.view.store.fn_parts(s)?.name ?? "this fn"
-        for d in duplicate_names("type.duplicate_param", owner, [pp.name for pp in fparams], self.stmt_loc(s)) {
+        let seats = written_seats(self.lang.keywords, fparams)
+        for d in duplicate_names("type.duplicate_param", owner, [pp.name for pp in seats], self.stmt_loc(s)) {
             self.speak(d)
         }
         self.refuse_taken_tparams(s, owner)
         self.enter_tscope(s)
-        let ptypes = [self.param_type(s, pp) for pp in fparams]
+        let ptypes = [self.param_type(s, pp) for pp in seats]
         let rt = self.annotated(s, fret)
         self.leave_tscope()
         let sig = FnSig { params: ptypes, ret: rt }
         self.declare(s, DeclSig.Fn(sig))
     }
 
-    /// Parameters declare their types — only `self` goes bare, and
-    /// `self` lives in impl blocks (declare_impls re-declares those
-    /// sigs with the target riding the seat).
-    fn param_type(self, s: StmtId, pp: Param) -> TypeId {
+    /// Parameters declare their types; the receiver is never among
+    /// them (`self` is a keyword, and the impl gives seat 0 its
+    /// type — a bare keyword written as a parameter has no seat).
+    fn param_type(s: StmtId, pp: Param) -> TypeId {
         if pp.ty != null { return self.annotated(s, pp.ty) }
-        if pp.name == "self" { return self.homeless_self(s) }
         self.typeless_param(s, pp.name)
     }
 
-    fn homeless_self(self, s: StmtId) -> TypeId {
-        self.speak(refusal("type.impl", self.stmt_loc(s), "`self` lives in an `impl` block", "declared here", "move this fn into `impl <Type> { … }`"))
+    fn typeless_param(s: StmtId, name: string) -> TypeId {
+        self.speak(refusal("type.mismatch", self.stmt_loc(s), "parameter `${name}` declares no type", "declared here", "write `${name}: <type>`"))
         self.error_type
     }
 
-    fn typeless_param(self, s: StmtId, name: string) -> TypeId {
-        self.speak(refusal("type.mismatch", self.stmt_loc(s), "parameter `${name}` declares no type", "declared here", "write `${name}: <type>` — only `self` goes bare"))
-        self.error_type
+    fn stray_mut_fn(s: StmtId, name: string) {
+        self.speak(refusal("type.mut_fn", self.stmt_loc(s), "`mut fn` marks a method that writes its receiver — `${name}` has none", "declared here", "drop `mut`, or move `${name}` into `impl <Type> { … }`"))
     }
 
     /// A type parameter cannot take a name the LANGUAGE owns — the
     /// shadow would be unreadable; declared-type shadowing is the
     /// ordinary lexical kind and stands.
-    fn refuse_taken_tparams(self, s: StmtId, owner: string) {
+    fn refuse_taken_tparams(s: StmtId, owner: string) {
         let tp = self.view.store.decl_tparams(s)
         for d in duplicate_names("type.tparam", owner, tp, self.stmt_loc(s)) {
             self.speak(d)
@@ -186,14 +191,14 @@ impl Typer {
         }
     }
 
-    fn owned_name(self, s: StmtId, n: string) {
+    fn owned_name(s: StmtId, n: string) {
         self.speak(refusal("type.tparam", self.stmt_loc(s), "a type parameter cannot take `${n}`'s name — the language owns it", "declared here", "pick another name — `T`, `E`, `Elem`"))
     }
 
     /// A declaration's type parameters as interned Vars — fns and
     /// type declarations alike; the ordinal IS the identity, so
     /// every ask agrees by construction.
-    fn tvars_of(self, s: StmtId) -> List<TypeId> {
+    fn tvars_of(s: StmtId) -> List<TypeId> {
         mut out: List<TypeId> = []
         // LICENSED I3: a PAIRED comprehension is our own sugar backlog — `[f(i, x) for i, x in xs]` does not parse
         for j, n in self.view.store.decl_tparams(s) {
@@ -204,12 +209,12 @@ impl Typer {
 
     /// The type-parameter scope brackets — one fn at a time, no
     /// nesting (the language has no nested fns).
-    fn enter_tscope(self, s: StmtId) {
+    fn enter_tscope(s: StmtId) {
         // LICENSED I3: pushing through the field alias — concat would rebind the local
         for v in self.tvars_of(s) { self.tscope.push(v) }
     }
 
-    fn leave_tscope(self) {
+    fn leave_tscope() {
         while !self.tscope.is_empty() {
             let _ = self.tscope.pop()
         }
@@ -218,7 +223,7 @@ impl Typer {
     /// An annotation's TypeId: what its NAME stands for, wrapped
     /// once when `?` was written. An absent annotation cannot reach
     /// here from any grammar the language assembles.
-    fn annotated(self, s: StmtId, ann: TypeRef?) -> TypeId {
+    fn annotated(s: StmtId, ann: TypeRef?) -> TypeId {
         if ann == null { return self.error_type }
         self.full_type(self.stmt_loc(s), ann!)
     }
@@ -228,7 +233,7 @@ impl Typer {
     /// `List<int?>` and `List<List<int>>` need no rule of their own.
     /// The `?` wraps ANY well-named type: which layout a nullable
     /// takes is values.av's per-shape choice, not a law's business.
-    fn full_type(self, at: Loc?, t: TypeRef) -> TypeId {
+    fn full_type(at: Loc?, t: TypeRef) -> TypeId {
         if !t.optional { return self.written_type(at, t) }
         let inner = self.written_type(at, plain(t))
         if self.view.types.shape_of(inner) is .Error { return inner }
@@ -237,7 +242,7 @@ impl Typer {
 
     /// What a written type stands for, arguments included: a bare
     /// name, or an application like `List<int>`.
-    fn written_type(self, at: Loc?, t: TypeRef) -> TypeId {
+    fn written_type(at: Loc?, t: TypeRef) -> TypeId {
         if t.arrow { return self.fn_written(at, t) }
         if t.dynamic { return self.dyn_type(at, t.name) }
         if t.args.is_empty() { return self.named_type(at, t.name) }
@@ -246,7 +251,7 @@ impl Typer {
 
     /// `fn(a, b) -> r` — the args carry the seats, the LAST is the
     /// return (the builder's pinned contract).
-    fn fn_written(self, at: Loc?, t: TypeRef) -> TypeId {
+    fn fn_written(at: Loc?, t: TypeRef) -> TypeId {
         mut seats: List<TypeId> = []
         mut answer = self.error_type
         // LICENSED I3: the tail is the answer; comprehensions cannot split it off
@@ -259,23 +264,23 @@ impl Typer {
     }
 
     /// `dyn Name` wears a declared trait — the contract is the type.
-    fn dyn_type(self, at: Loc?, name: string) -> TypeId {
+    fn dyn_type(at: Loc?, name: string) -> TypeId {
         let tdecl: DeclId? = self.trait_decl_named(name)
         if tdecl == null { return self.undeclared_contract(at, name) }
         self.view.types.intern(Type.Dyn(tdecl!, name))
     }
 
-    fn unappliable(self, at: Loc?, name: string) -> TypeId {
+    fn unappliable(at: Loc?, name: string) -> TypeId {
         self.speak(refusal("type.applied", at, "`${name}` takes no type arguments", "applied here", "the applied types today are `List<T>` and `Result<T, E>`"))
         self.error_type
     }
 
-    fn arity_wrong(self, at: Loc?, name: string, found: int, takes: int) -> TypeId {
+    fn arity_wrong(at: Loc?, name: string, found: int, takes: int) -> TypeId {
         self.speak(refusal("type.applied", at, "`${name}` is applied to ${found} types; it takes ${takes}", "applied here", "`${name}` needs exactly ${takes}"))
         self.error_type
     }
 
-    fn undeclared_contract(self, at: Loc?, name: string) -> TypeId {
+    fn undeclared_contract(at: Loc?, name: string) -> TypeId {
         self.speak(refusal("type.trait", at, "`dyn ${name}` names no trait", "written here", "declare it — `trait ${name} { … }`"))
         self.error_type
     }
@@ -283,7 +288,7 @@ impl Typer {
     /// A type APPLIED to arguments. `List<T>` is the only one today —
     /// the registry has no shape for another, and inventing one here
     /// would be a type nothing can lower.
-    fn applied(self, at: Loc?, t: TypeRef) -> TypeId {
+    fn applied(at: Loc?, t: TypeRef) -> TypeId {
         let row: TypeRow? = type_row(self.lang.rows.types, t.name)
         let takes: int? = row?.arity ?? declared_arity(self, t.name)
         if takes == null {
@@ -315,21 +320,21 @@ impl Typer {
         self.view.types.intern(sh)
     }
 
-    fn unslottable_slot(self, at: Loc?, name: string, ty: TypeId) -> TypeId {
+    fn unslottable_slot(at: Loc?, name: string, ty: TypeId) -> TypeId {
         self.speak(refusal("type.applied", at, "a `${name}` slot cannot hold this yet", "this slot is `${self.view.types.name_of(ty)}`", slice_promise("slots")))
         self.error_type
     }
 
     /// A constructor's own law refused its arguments — in the row's
     /// words.
-    fn applied_refused(self, at: Loc?, r: Refusal) -> TypeId {
+    fn applied_refused(at: Loc?, r: Refusal) -> TypeId {
         self.speak(refusal("type.applied", at, r.message, "this type", r.help))
         self.error_type
     }
     /// A USER generic instantiated: the declaration by name, its
     /// slots RE-JUDGED under the arguments when the sig is already
     /// declared (source order — a construction judges again anyway).
-    fn applied_decl(self, at: Loc?, name: string, parts: List<TypeId>) -> TypeId {
+    fn applied_decl(at: Loc?, name: string, parts: List<TypeId>) -> TypeId {
         let target: DeclId? = self.type_decl_named(name)
         if target == null { return self.error_type }
         if self.refused_app(at, name, target!, parts) { return self.error_type }
@@ -337,11 +342,11 @@ impl Typer {
     }
 
     /// The declaration a type name stands for, in this file's scope.
-    fn type_decl_named(self, name: string) -> DeclId? { type_named(self.names, name) }
+    fn type_decl_named(name: string) -> DeclId? { type_named(self.names, name) }
 
     /// Every declared slot of the instantiation, substituted and
     /// judged — a `Pair<string, int>` refuses like the field law.
-    fn refused_app(self, at: Loc?, name: string, decl: DeclId, parts: List<TypeId>) -> bool {
+    fn refused_app(at: Loc?, name: string, decl: DeclId, parts: List<TypeId>) -> bool {
         for ty in self.declared_slots(decl) {
             let landed = self.view.types.substituted(ty, decl, parts)
             if !slot_worthy(self.view.types, self.view.types.shape_of(landed)) {
@@ -353,7 +358,7 @@ impl Typer {
     }
 
     /// A declaration's slot types, whichever kind declares.
-    fn declared_slots(self, decl: DeclId) -> List<TypeId> {
+    fn declared_slots(decl: DeclId) -> List<TypeId> {
         let rs: StructSig? = record_sig_of(self.view.decls.sig(decl))
         if rs != null { return rs!.types }
         let vs: EnumSig? = variant_sig_of(self.view.decls.sig(decl))
@@ -364,7 +369,7 @@ impl Typer {
     /// What a written NAME stands for: the enclosing fn's type
     /// parameter first, then a builtin shape, a declared type, or a
     /// spoken absence.
-    fn named_type(self, at: Loc?, name: string) -> TypeId {
+    fn named_type(at: Loc?, name: string) -> TypeId {
         let tv: TypeId? = self.tscope.find(var_named(self.view.types, it, name))
         if tv != null { return tv! }
         let sh: Type? = shape_named(name)
@@ -377,7 +382,7 @@ impl Typer {
 
     /// A declared name's type: an enum's value shape or a record's —
     /// and a GENERIC declaration needs its arguments.
-    fn declared_type(self, d: DeclId, name: string) -> TypeId {
+    fn declared_type(d: DeclId, name: string) -> TypeId {
         let arity = self.view.decls.tparams(d).length
         if arity > 0 {
             self.speak(refusal("type.applied", self.view.decls.loc(d), "`${name}` is generic — it takes ${arity} type arguments", "written bare", "write `${name}<...>`"))

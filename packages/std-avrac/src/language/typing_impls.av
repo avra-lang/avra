@@ -1,41 +1,36 @@
-//! Traits, impls and methods: a trait's method sigs (self omitted),
-//! an impl's methods under their target (self typed as the target),
-//! the impl-for contract (every trait method, exactly, nothing
-//! beyond), the orphan rule, and the voices these laws speak.
+//! Traits, impls and methods: a trait's method sigs (no receiver
+//! seat — the signatory supplies it), an impl's methods under their
+//! target (the receiver typed as the target at seat 0), the impl-for
+//! contract (every trait method, exactly, nothing beyond), the orphan
+//! rule, and the voices these laws speak.
 use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type}
 use diagnostics.{refusal}
-use features.{FnSig, DeclSig, fn_sig_of, trait_named, method_sig_of, Decl}
+use features.{FnSig, DeclSig, fn_sig_of, trait_named, method_sig_of, Decl, written_seats}
 
 impl Typer {
-    fn declare_trait_sig(self, f: StmtId) {
+    fn declare_trait_sig(f: StmtId) {
         let parts: FnParts? = self.view.store.fn_parts(f)
         if parts == null { return }
         let fp = parts!
-        if !selfed(fp.params) { return self.selfless_sig(f, fp.name) }
         self.declare(f, DeclSig.Fn(FnSig {
-            params: self.seatless_params(f, fp),
+            params: self.annotated_params(f, fp),
             ret: self.annotated(f, fp.ret),
         }))
     }
 
-    /// The params BEYOND the self seat, annotated — what a trait
-    /// sig declares, and what a method's sig appends to its target.
-    fn seatless_params(self, f: StmtId, fp: FnParts) -> List<TypeId> {
-        mut ptypes: List<TypeId> = []
-        // LICENSED I3: the self seat is skipped; comprehensions cannot skip the head
-        for j, pp in fp.params {
-            if j > 0 { ptypes.push(self.annotated(f, pp.ty)) }
-        }
-        ptypes
+    /// The written params, annotated — a trait sig's whole seat
+    /// list, and what a method's sig appends to its receiver.
+    fn annotated_params(f: StmtId, fp: FnParts) -> List<TypeId> {
+        [self.annotated(f, pp.ty) for pp in written_seats(self.lang.keywords, fp.params)]
     }
 
     /// The trait a name stands for, in this file's scope.
-    fn trait_decl_named(self, name: string) -> DeclId? { trait_named(self.view.decls, self.names, name) }
+    fn trait_decl_named(name: string) -> DeclId? { trait_named(self.view.decls, self.names, name) }
 
     /// A member's sig under its parent: a trait's method declares
     /// its contract; an impl's method declares under the impl's
     /// verdict — real when the block is lawful, wreckage otherwise.
-    fn declare_member(self, x: Decl) {
+    fn declare_member(x: Decl) {
         if x.parent == null { return self.declare_wreckage(x.stmt) }
         let parent = self.view.decls.decl(x.parent!)
         match parent.kind {
@@ -45,7 +40,7 @@ impl Typer {
         }
     }
 
-    fn declare_under_impl(self, block: StmtId, f: StmtId) {
+    fn declare_under_impl(block: StmtId, f: StmtId) {
         let ip: ImplParts? = self.view.store.impl_parts(block)
         if ip == null { return self.declare_wreckage(f) }
         let parts = ip!
@@ -60,7 +55,7 @@ impl Typer {
 
     /// The type an impl's `self` wears: the declared type, or — for
     /// a generic target — its application to its own Vars.
-    fn impl_self_type(self, d: DeclId, name: string) -> TypeId {
+    fn impl_self_type(d: DeclId, name: string) -> TypeId {
         if self.view.decls.tparams(d).is_empty() { return self.declared_type(d, name) }
         self.view.types.intern(Type.App(d, name, self.target_vars(d)))
     }
@@ -68,14 +63,14 @@ impl Typer {
     /// A generic target's Vars, in scope for its impl's signatures
     /// under the names the TYPE declared — `impl Arena<N>` spells
     /// them as `type Arena<N>` did.
-    fn target_vars(self, d: DeclId) -> List<TypeId> {
+    fn target_vars(d: DeclId) -> List<TypeId> {
         mut out: List<TypeId> = []
         // LICENSED I3: the ordinal needs the index; comprehensions cannot destructure enumerate
         for (j, n) in self.view.decls.tparams(d).enumerate() { out.push(self.view.types.intern(Type.Var(d, j, n))) }
         out
     }
 
-    fn enter_target_scope(self, d: DeclId) {
+    fn enter_target_scope(d: DeclId) {
         // LICENSED I3: pushing through the field alias — concat would rebind the local
         for v in self.target_vars(d) { self.tscope.push(v) }
     }
@@ -85,7 +80,7 @@ impl Typer {
     /// and REGISTERED under the target (a name taken twice is the
     /// method table's clash, spoken once per type); then the
     /// contract.
-    fn declare_impl_block(self, s: StmtId) {
+    fn declare_impl_block(s: StmtId) {
         let ip: ImplParts? = self.view.store.impl_parts(s)
         if ip == null { return }
         let parts = ip!
@@ -106,15 +101,15 @@ impl Typer {
         if parts.of != "" { self.check_trait_impl(s, parts.of, d, parts.target, parts.fns) }
     }
 
-    /// A method the table can serve: plain, and riding `self`.
-    fn registrable(self, f: StmtId) -> bool {
+    /// A method the table can serve: plain — generic methods wait.
+    fn registrable(f: StmtId) -> bool {
         let parts: FnParts? = self.view.store.fn_parts(f)
-        parts != null && parts!.tparams.is_empty() && selfed(parts!.params)
+        parts != null && parts!.tparams.is_empty()
     }
 
     /// The impl's verdict: the target's declaration when the block
     /// is lawful, else absence — spoken only when `loud`.
-    fn impl_target(self, s: StmtId, parts: ImplParts, loud: bool) -> DeclId? {
+    fn impl_target(s: StmtId, parts: ImplParts, loud: bool) -> DeclId? {
         let target = parts.target
         let decl: DeclId? = self.type_decl_named(target)
         if decl == null {
@@ -132,7 +127,7 @@ impl Typer {
         d
     }
 
-    fn declare_wreckage(self, f: StmtId) {
+    fn declare_wreckage(f: StmtId) {
         let parts: FnParts? = self.view.store.fn_parts(f)
         if parts == null { return }
         self.declare(f, DeclSig.Fn(FnSig {
@@ -143,7 +138,7 @@ impl Typer {
 
     /// THE ORPHAN RULE: an impl lives in its type's module — or in
     /// its trait's, when the trait is this module's.
-    fn orphaned(self, s: StmtId, d: DeclId, of: string, target: string, loud: bool) -> bool {
+    fn orphaned(s: StmtId, d: DeclId, of: string, target: string, loud: bool) -> bool {
         let owner = self.view.decls.module_of(d)
         if owner == self.view.module() { return false }
         let tr: DeclId? = if of == "" { null } else { self.trait_decl_named(of) }
@@ -155,7 +150,7 @@ impl Typer {
     /// An impl-for answers EVERY trait method, exactly — name,
     /// arity, param types, and return — and nothing beyond them
     /// (the recorded bs2 law, now ours).
-    fn check_trait_impl(self, s: StmtId, of: string, target: DeclId, tname: string, fns: List<StmtId>) {
+    fn check_trait_impl(s: StmtId, of: string, target: DeclId, tname: string, fns: List<StmtId>) {
         let tdecl: DeclId? = self.trait_decl_named(of)
         if tdecl == null { return self.no_such_trait(s, of) }
         let members = self.view.decls.trait_fns(tdecl!)
@@ -168,7 +163,7 @@ impl Typer {
         self.view.decls.record_impl(target, tdecl!)
     }
 
-    fn check_trait_member(self, s: StmtId, of: string, target: DeclId, tname: string, m: DeclId) {
+    fn check_trait_member(s: StmtId, of: string, target: DeclId, tname: string, m: DeclId) {
         let mn = self.view.decls.fn_name(m) ?? ""
         let want: FnSig? = fn_sig_of(self.view.decls.sig(m))
         let got: FnSig? = self.method_sig(target, mn)
@@ -176,70 +171,57 @@ impl Typer {
         if want != null && !sigs_agree(want!, got!) { self.sig_unworn(s, of, tname, mn) }
     }
 
-    fn declare_method(self, ty: TypeId, f: StmtId) {
+    fn declare_method(ty: TypeId, f: StmtId) {
         let parts: FnParts? = self.view.store.fn_parts(f)
         if parts == null { return }
         let fp = parts!
         if !fp.tparams.is_empty() { return self.generic_method(f, fp.name) }
-        if !selfed(fp.params) {
-            self.selfless_method(f, fp.name)
-            self.declare_wreckage(f)
-            return
-        }
         self.declare(f, DeclSig.Fn(FnSig {
-            params: [ty].concat(self.seatless_params(f, fp)),
+            params: [ty].concat(self.annotated_params(f, fp)),
             ret: self.annotated(f, fp.ret),
         }))
     }
 
     // ── The declare voices — each refusal worded once, at its name ──
 
-    fn selfless_sig(self, f: StmtId, name: string) {
-        self.speak(refusal("type.trait", self.stmt_loc(f), "a trait method's first parameter is `self`", "declared here", self_first(name)))
-    }
-
     /// A declared fn's name, or the empty word — the totality laws
     /// compare names, and a nameless decl matches nothing.
-    fn fn_named(self, f: StmtId) -> string {
+    fn fn_named(f: StmtId) -> string {
         self.view.store.fn_parts(f)?.name ?? ""
     }
 
-    fn no_such_target(self, s: StmtId, target: string) {
+    fn no_such_target(s: StmtId, target: string) {
         self.speak(refusal("type.impl", self.stmt_loc(s), "`impl ${target}` serves no declared type", "this impl", "declare `${target}` first — `type` or `enum`"))
     }
 
-    fn generic_target(self, s: StmtId, target: string) {
+    fn generic_target(s: StmtId, target: string) {
         self.speak(refusal("type.impl", self.stmt_loc(s), "`${target}` is generic — a trait impl over a generic type is recorded, not landed", "this impl", null))
     }
 
-    fn no_such_trait(self, s: StmtId, of: string) {
+    fn no_such_trait(s: StmtId, of: string) {
         self.speak(refusal("type.trait", self.stmt_loc(s), "`impl ${of} for` names no trait", "this impl", "declare it — `trait ${of} { … }`"))
     }
 
-    fn beyond_the_trait(self, f: StmtId, of: string, target: string, mn: string) {
+    fn beyond_the_trait(f: StmtId, of: string, target: string, mn: string) {
         self.speak(refusal("type.trait", self.stmt_loc(f), "`${mn}` is not part of `${of}` — an impl-for holds only the trait's methods", "declared here", "move it to a separate `impl ${target} { … }` block"))
     }
 
-    fn unanswered(self, s: StmtId, of: string, target: string, mn: string) {
+    fn unanswered(s: StmtId, of: string, target: string, mn: string) {
         self.speak(refusal("type.trait", self.stmt_loc(s), "`impl ${of} for ${target}` must answer `${mn}`", "this impl", "add `fn ${mn}(self, …)`"))
     }
 
-    fn sig_unworn(self, s: StmtId, of: string, target: string, mn: string) {
+    fn sig_unworn(s: StmtId, of: string, target: string, mn: string) {
         self.speak(refusal("type.trait", self.stmt_loc(s), "`${target}.${mn}` does not wear `${of}.${mn}`'s signature", "this impl", "match the trait's parameters and return exactly"))
     }
 
-    fn generic_method(self, f: StmtId, name: string) {
+    fn generic_method(f: StmtId, name: string) {
         self.speak(refusal("type.impl", self.stmt_loc(f), "`${name}` is generic — generic methods are recorded, not landed", "this method", null))
     }
 
-    fn selfless_method(self, f: StmtId, name: string) {
-        self.speak(refusal("type.impl", self.stmt_loc(f), "a method's first parameter is `self`", "declared here", self_first(name)))
-    }
-
-    fn orphan_impl(self, s: StmtId, target: string, owner: string) {
+    fn orphan_impl(s: StmtId, target: string, owner: string) {
         self.speak(refusal("type.orphan", self.stmt_loc(s), "`impl ${target}` belongs in ${module_word(owner)}, where `${target}` is declared", "this impl", "an impl lives with its type — or with its trait, when the trait is this module's"))
     }
 
     /// The impl table's answer — a sig whose params[0] is `self`.
-    fn method_sig(self, target: DeclId, mname: string) -> FnSig? { method_sig_of(self.view.decls, target, mname) }
+    fn method_sig(target: DeclId, mname: string) -> FnSig? { method_sig_of(self.view.decls, target, mname) }
 }

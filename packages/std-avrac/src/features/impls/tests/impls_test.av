@@ -6,49 +6,49 @@ use @std.avrac.testing.{shown, refused_with}
 
 /// The standard contract and its signatory-to-be.
 fn showp() -> string {
-    "trait Show {\n    fn show(self) -> int\n}\ntype P = { x: int }\n"
+    "trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\n"
 }
 
 /// The standard signed impl.
 fn showed() -> string {
-    "${showp()}impl Show for P {\n    fn show(self) -> int {\n        self.x\n    }\n}\n"
+    "${showp()}impl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\n"
 }
 
 /// The standard receiver.
 fn boxy() -> string {
-    "type P = { x: int, y: int }\nimpl P {\n    fn area(self) -> int {\n        self.x * self.y\n    }\n    fn scaled(self, k: int) -> P {\n        P { x: self.x * k, y: self.y * k }\n    }\n}\n"
+    "type P = { x: int, y: int }\nimpl P {\n    fn area() -> int {\n        self.x * self.y\n    }\n    fn scaled(k: int) -> P {\n        P { x: self.x * k, y: self.y * k }\n    }\n}\n"
 }
 
 spec "features/impls" {
     given "a method writes through its receiver" {
         then "a field assigned through `self` is the caller's box" {
-            shown("type C = { n: int }\nimpl C {\n    fn bump(self) { self.n = self.n + 1 }\n}\nlet c = C { n: 1 }\nc.bump()\nc.bump()\nc.n") == "3"
+            shown("type C = { n: int }\nimpl C {\n    fn bump() { self.n = self.n + 1 }\n}\nlet c = C { n: 1 }\nc.bump()\nc.bump()\nc.n") == "3"
         }
         then "a list grown through `self`" {
-            shown("type Bag = { xs: List<int> }\nimpl Bag {\n    fn put(self, x: int) { self.xs.push(x) }\n}\nlet b = Bag { xs: [] }\nb.put(4)\nb.put(5)\nb.xs.length") == "2"
+            shown("type Bag = { xs: List<int> }\nimpl Bag {\n    fn put(x: int) { self.xs.push(x) }\n}\nlet b = Bag { xs: [] }\nb.put(4)\nb.put(5)\nb.xs.length") == "2"
         }
         then "`self` itself is no place" {
-            refused_with("type C = { n: int }\nimpl C {\n    fn swap(self) { self = C { n: 2 } }\n}\n2", "`self` is a parameter — parameters are immutable")
+            refused_with("type C = { n: int }\nimpl C {\n    fn swap() { self = C { n: 2 } }\n}\n2", "`self` is the receiver — it is not assigned")
         }
     }
     given "a generic type's impl — methods over the type's own Vars" {
         then "a method reads the payload as the receiver's argument" {
-            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get(self) -> T { self.v }\n}\nBox { v: 4 }.get() + 1") == "5"
+            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> T { self.v }\n}\nBox { v: 4 }.get() + 1") == "5"
         }
         then "two instantiations lower two bodies" {
-            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get(self) -> T { self.v }\n}\nlet a = Box { v: 4 }\nlet b = Box { v: \"s\" }\n\"" + "\${a.get()} " + "\${b.get()}\"") == "4 s"
+            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> T { self.v }\n}\nlet a = Box { v: 4 }\nlet b = Box { v: \"s\" }\n\"" + "\${a.get()} " + "\${b.get()}\"") == "4 s"
         }
         then "a method takes and answers the type's argument, and calls a sibling" {
-            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get(self) -> T { self.v }\n    fn with(self, x: T) -> Box<T> { Box { v: x } }\n    fn twice(self) -> T { self.with(self.get()).get() }\n}\nBox { v: \"q\" }.with(\"r\").twice()") == "r"
+            shown("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> T { self.v }\n    fn with(x: T) -> Box<T> { Box { v: x } }\n    fn twice() -> T { self.with(self.get()).get() }\n}\nBox { v: \"q\" }.with(\"r\").twice()") == "r"
         }
         then "a wrong argument is judged against the instantiated seat" {
-            refused_with("type Box<T> = { v: T }\nimpl Box<T> {\n    fn with(self, x: T) -> Box<T> { Box { v: x } }\n}\nBox { v: 4 }.with(\"s\")\n2", "argument 1 of `Box.with` wants `int`, found `string`")
+            refused_with("type Box<T> = { v: T }\nimpl Box<T> {\n    fn with(x: T) -> Box<T> { Box { v: x } }\n}\nBox { v: 4 }.with(\"s\")\n2", "argument 1 of `Box.with` wants `int`, found `string`")
         }
         then "a name the type did not declare names no type" {
-            refused_with("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get(self) -> Q { self.v }\n}\n2", "`Q` names no type")
+            refused_with("type Box<T> = { v: T }\nimpl Box<T> {\n    fn get() -> Q { self.v }\n}\n2", "`Q` names no type")
         }
         then "a trait impl over a generic type is still recorded" {
-            refused_with("trait Show {\n    fn show(self) -> int\n}\ntype Box<T> = { v: T }\nimpl Show for Box<T> {\n    fn show(self) -> int { 1 }\n}\n2", "a trait impl over a generic type is recorded, not landed")
+            refused_with("trait Show {\n    fn show() -> int\n}\ntype Box<T> = { v: T }\nimpl Show for Box<T> {\n    fn show() -> int { 1 }\n}\n2", "a trait impl over a generic type is recorded, not landed")
         }
     }
     given "the method surface" {
@@ -59,10 +59,10 @@ spec "features/impls" {
             shown("${boxy()}P { x: 1, y: 2 }.scaled(3).scaled(2).area()") == "72"
         }
         then "methods call methods, and free fns, from self" {
-            shown("fn bump(n: int) -> int {\n    n + 1\n}\ntype P = { x: int }\nimpl P {\n    fn next(self) -> int {\n        bump(self.x)\n    }\n    fn two(self) -> int {\n        self.next() + 1\n    }\n}\nP { x: 40 }.two()") == "42"
+            shown("fn bump(n: int) -> int {\n    n + 1\n}\ntype P = { x: int }\nimpl P {\n    fn next() -> int {\n        bump(self.x)\n    }\n    fn two() -> int {\n        self.next() + 1\n    }\n}\nP { x: 40 }.two()") == "42"
         }
         then "enums take methods too — match on self inside" {
-            shown("enum G {\n    pass(int)\n    tiny\n}\nimpl G {\n    fn score(self) -> int {\n        match self {\n            .pass(n) -> n\n            .tiny -> 0\n        }\n    }\n}\nG.pass(7).score()") == "7"
+            shown("enum G {\n    pass(int)\n    tiny\n}\nimpl G {\n    fn score() -> int {\n        match self {\n            .pass(n) -> n\n            .tiny -> 0\n        }\n    }\n}\nG.pass(7).score()") == "7"
         }
         then "the paren witness tells a call from a property" {
             shown("${boxy()}let p = P { x: 5, y: 6 }\np.x + p.area()") == "35"
@@ -82,16 +82,19 @@ spec "features/impls" {
                          "`P.scaled` takes 1 arguments beside `self`, found 2")
         }
         then "an impl on nothing refuses" {
-            refused_with("impl Ghost {\n    fn boo(self) -> int {\n        1\n    }\n}\n2",
+            refused_with("impl Ghost {\n    fn boo() -> int {\n        1\n    }\n}\n2",
                          "`impl Ghost` serves no declared type")
         }
-        then "a selfless method refuses ONCE and stays total" {
-            refused_with("type P = { x: int }\nimpl P {\n    fn area(k: int) -> int {\n        k\n    }\n}\n2",
-                         "a method's first parameter is `self`")
+        then "a method with no receiver in its list still rides the receiver" {
+            shown("type P = { x: int }\nimpl P {\n    fn plus(k: int) -> int {\n        self.x + k\n    }\n}\nP { x: 40 }.plus(2)") == "42"
         }
-        then "`self` outside an impl refuses" {
-            refused_with("fn f(self) -> int {\n    1\n}\n2",
-                         "`self` lives in an `impl` block")
+        then "`self` written in the list refuses ONCE, with the receiver's own remedy" {
+            refused_with("type P = { x: int }\nimpl P {\n    fn get(self) -> int {\n        self.x\n    }\n}\nP { x: 1 }.get()",
+                         "`self` is implicit in a method — drop it from the parameter list")
+        }
+        then "`self` outside a method names no receiver" {
+            refused_with("fn f() -> int {\n    self.x\n}\n2",
+                         "`self` names a method's receiver — this is not a method")
         }
     }
     given "traits — the behavior contracts (T2)" {
@@ -111,11 +114,11 @@ spec "features/impls" {
                          "`impl Show for P` must answer `show`")
         }
         then "an impl-for holds ONLY the trait's methods" {
-            refused_with("${showp()}impl Show for P {\n    fn show(self) -> int {\n        self.x\n    }\n    fn extra(self) -> int {\n        1\n    }\n}\n2",
+            refused_with("${showp()}impl Show for P {\n    fn show() -> int {\n        self.x\n    }\n    fn extra() -> int {\n        1\n    }\n}\n2",
                          "`extra` is not part of `Show`")
         }
         then "a wrong signature refuses naming both sides" {
-            refused_with("${showp()}impl Show for P {\n    fn show(self) -> bool {\n        true\n    }\n}\n2",
+            refused_with("${showp()}impl Show for P {\n    fn show() -> bool {\n        true\n    }\n}\n2",
                          "`P.show` does not wear `Show.show`'s signature")
         }
     }
@@ -124,7 +127,7 @@ spec "features/impls" {
             shown("${showed()}let d: dyn Show = P { x: 42 }\nd.show()") == "42"
         }
         then "two signatories ride one dyn slot" {
-            shown("${showed()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show(self) -> int {\n        100\n    }\n}\nmut d: dyn Show = P { x: 7 }\nlet a = d.show()\nd = G.hot\na + d.show()") == "107"
+            shown("${showed()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n}\nmut d: dyn Show = P { x: 7 }\nlet a = d.show()\nd = G.hot\na + d.show()") == "107"
         }
         then "a non-signatory refuses at the binding" {
             refused_with("${showp()}type Q = { y: int }\nlet d: dyn Show = Q { y: 1 }\n2",
@@ -142,7 +145,7 @@ spec "features/impls" {
             shown("${showed()}fn speak(v: dyn Show) -> int {\n    v.show()\n}\nfn relay<T: Show>(v: T) -> int {\n    speak(v)\n}\nlet pre: dyn Show = P { x: 20 }\nrelay(P { x: 13 }) + relay(pre)") == "33"
         }
         then "a second declaration of one method name refuses" {
-            refused_with("${showed()}impl P {\n    fn show(self) -> int {\n        999\n    }\n}\n2",
+            refused_with("${showed()}impl P {\n    fn show() -> int {\n        999\n    }\n}\n2",
                          "`P.show` is declared twice")
         }
     }

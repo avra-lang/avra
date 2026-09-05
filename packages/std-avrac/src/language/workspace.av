@@ -231,11 +231,11 @@ fn refetched(ws: Workspace, f: Family, arg: int) -> int {
 }
 
 impl Workspace {
-    fn timed(self, name: string, ns: int) {
+    fn timed(name: string, ns: int) {
         self.phases.push(Phase { name: name, ns: ns })
     }
 
-    fn defect(self, message: string) {
+    fn defect(message: string) {
         self.defects.push(error_at("language.defect", null, message))
     }
 
@@ -906,17 +906,17 @@ fn unclean(a: Analysis) -> bool {
 
 impl Program {
     /// The entry file's analysis — absent for a program only checked.
-    fn entry_file(self) -> Analysis? {
+    fn entry_file() -> Analysis? {
         if self.entry == null { return null }
         self.files[self.entry!.at]
     }
 
-    fn clean(self) -> bool { self.defects.is_empty() && !has_errors(self.voices) && !self.files.any(unclean(it)) }
+    fn clean() -> bool { self.defects.is_empty() && !has_errors(self.voices) && !self.files.any(unclean(it)) }
 
     /// The packages' voices first (a manifest's trouble explains
     /// the rest), then every file's diagnostics, the workspace's
     /// defects last; "" means clean.
-    fn report(self) -> string {
+    fn report() -> string {
         let files = [a.report() for a in self.files if unclean(a)]
         let heads: List<string> = if self.voices.is_empty() { [] } else { [self.rendered(self.voices)] }
         let tails: List<string> = if self.defects.is_empty() { [] } else { [self.rendered(self.defects)] }
@@ -925,51 +925,51 @@ impl Program {
 
     /// Diagnostics rendered over every source — a frame's window
     /// comes from the file its Loc names, manifests included.
-    fn rendered(self, ds: List<Diag>) -> string {
+    fn rendered(ds: List<Diag>) -> string {
         let sources = self.manifests.concat([a.view.source for a in self.files])
         joined([render_among(d, self.ws.lang.rows.codes, sources) for d in ds], "\n\n")
     }
 
     /// The program as IR, memory strategy applied — every unit
     /// through the workspace's memo.
-    fn lowered(self) -> Lowered { self.lowered_from(self.entry?.at, false) }
+    fn lowered() -> Lowered { self.lowered_from(self.entry?.at, false) }
 
     /// The program lowered from `entry`: its main and what it
     /// reaches — or, with no entry, every declared body; `every`
     /// asks for every declared body under an entry too.
-    fn lowered_from(self, entry: int?, every: bool) -> Lowered {
+    fn lowered_from(entry: int?, every: bool) -> Lowered {
         let ws = self.ws
         memory(union(self.ws.decls, self.files, entry, every, (w: Wanted) -> lowered(ws, spec_id(ws, w))))
     }
 
     /// The lowered program, CHECKED — every file's analysis first,
     /// then lowering's own refusals.
-    fn lowered_checked(self) -> Result<Lowered, string> { self.checked_from(self.entry?.at, false) }
+    fn lowered_checked() -> Result<Lowered, string> { self.checked_from(self.entry?.at, false) }
 
     /// The program lowered for its cases, CHECKED: a case is a
     /// declaration nothing reaches, so every declared body lowers —
     /// under the entry's laws all the same.
-    fn cases_checked(self) -> Result<Lowered, string> { self.checked_from(self.entry?.at, true) }
+    fn cases_checked() -> Result<Lowered, string> { self.checked_from(self.entry?.at, true) }
 
-    fn checked_from(self, entry: int?, every: bool) -> Result<Lowered, string> {
+    fn checked_from(entry: int?, every: bool) -> Result<Lowered, string> {
         if !self.clean() { return .Err(self.report()) }
         let lo = self.lowered_from(entry, every)
         if !lo.diagnostics.is_empty() { return .Err(self.rendered(lo.diagnostics)) }
         .Ok(lo)
     }
 
-    fn run(self) -> Result<string, string> {
+    fn run() -> Result<string, string> {
         if self.entry == null { return .Err(self.rendered([no_target(self.ws.root)])) }
         run_lowered(self.lowered_checked()?)
     }
 
     /// Every test case the program declares.
-    fn cases(self) -> List<TestCase> { cases(self.ws) }
-    fn cases_at(self, path: string) -> List<TestCase> { cases_at(self.ws, path) }
+    fn cases() -> List<TestCase> { cases(self.ws) }
+    fn cases_at(path: string) -> List<TestCase> { cases_at(self.ws, path) }
 
     /// Everything wrong, rendered, as the refusal; or what merely
     /// warned, rendered, as the answer — "" when nothing spoke.
-    fn check(self) -> Result<string, string> {
+    fn check() -> Result<string, string> {
         if !self.clean() { return .Err(self.report()) }
         let lowered = self.lowered().diagnostics
         if has_errors(lowered) { return .Err(self.rendered(lowered)) }
@@ -978,7 +978,7 @@ impl Program {
 
     /// The warnings alone, rendered — what a clean program still
     /// says.
-    fn warnings(self) -> string {
+    fn warnings() -> string {
         let spoken = self.voices.concat(flatten([a.diagnostics for a in self.files]))
         self.rendered([d for d in spoken if is_warning(d)])
     }

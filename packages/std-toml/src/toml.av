@@ -34,30 +34,30 @@ export type TomlDoc = { headers: List<TomlHeader>, entries: List<TomlEntry>, err
 
 impl TomlDoc {
     /// The value at `section.key`, or absence.
-    fn get(self, section: string, key: string) -> TomlValue? {
+    fn get(section: string, key: string) -> TomlValue? {
         self.entry(section, key)?.value
     }
 
     /// The entry at `section.key`, or absence (for its span).
-    fn entry(self, section: string, key: string) -> TomlEntry? {
+    fn entry(section: string, key: string) -> TomlEntry? {
         self.entries.find(it.section == section && it.key == key)
     }
 
     /// Every entry directly under a section, in source order.
-    fn entries_of(self, section: string) -> List<TomlEntry> {
+    fn entries_of(section: string) -> List<TomlEntry> {
         [e for e in self.entries if e.section == section]
     }
 
     /// Every section a header declares or an entry sits under —
     /// first appearance first, each once. Top-level entries precede
     /// every header, so "" leads when they exist.
-    fn sections(self) -> List<string> {
+    fn sections() -> List<string> {
         let top: List<string> = if self.entries.any(it.section.length == 0) { [""] } else { [] }
         distinct(top.concat([h.name for h in self.headers]))
     }
 
     /// Whether a section was declared or holds entries.
-    fn has_section(self, section: string) -> bool {
+    fn has_section(section: string) -> bool {
         self.headers.any(it.name == section) || self.entries.any(it.section == section)
     }
 }
@@ -95,19 +95,19 @@ type Reader = { text: string, n: int, doc: TomlDoc, section: string }
 
 impl Reader {
     /// A refusal, spanning the line that holds its byte.
-    fn refuse(self, r: Refusal) {
+    fn refuse(r: Refusal) {
         mut es = self.doc.errors
         es.push(TomlError { message: r.message, lo: line_lo(self.text, r.at), hi: line_hi(self.text, self.n, r.at) })
     }
 
     /// An entry under the open section.
-    fn hold(self, p: TomlPair, lo: int, hi: int) {
+    fn hold(p: TomlPair, lo: int, hi: int) {
         mut es = self.doc.entries
         es.push(TomlEntry { section: self.section, key: p.key, value: p.value, lo: lo, hi: hi })
     }
 
     /// A header: recorded, and open for the entries after it.
-    fn enter(self, h: TomlHeader) {
+    fn enter(h: TomlHeader) {
         mut hs = self.doc.headers
         hs.push(h)
         self.section = h.name

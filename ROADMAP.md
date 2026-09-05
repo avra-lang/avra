@@ -291,8 +291,12 @@ the order is the dependency.
         of a writing method is the caller's CELL; a `mut` parameter
         is the same seat; the fact is a whole-program fixpoint; one
         runtime row asked (`avra_slot_addr`); liveness lands in the
-        memory pass. Slices S0-S4 there; none landed yet. #1377
-        probed: not ours.
+        memory pass. Slices S0-S4 there. #1377 probed: not ours.
+        S0 LANDED 2026-09-04: `self` is a keyword (`Expr.Receiver`,
+        `Binding.Receiver`), implicit in every method, never in a
+        list; `mut fn` parses and is recorded; 746 declarations and
+        51 test strings rewritten by script; the compiler compiles
+        itself in the new spelling (1618 cases, corpus 72/72).
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become
@@ -6633,7 +6637,8 @@ Rendering goldens for each new diagnostic kind.
 THE SLICES, in order, each red-teamed then reviewed, each a gate
 (the red team's twelve programs are the first adversarial file,
 `impls_adversarial_test.av`, written before S0's code):
-- S0 THE KEYWORD: `self` a keyword, `Expr.Receiver`,
+- S0 THE KEYWORD — LANDED 2026-09-04 (what it taught, below the
+  slice list): `self` a keyword, `Expr.Receiver`,
   `Binding.Receiver`, the lists emptied by script, `mut fn` parsed
   and flagged. FOUR VOICES, each exactly one message: `self`
   outside a method ("`self` names a method's receiver — this is not
@@ -6661,6 +6666,36 @@ THE SLICES, in order, each red-teamed then reviewed, each a gate
 - S3 LIVENESS, measured on the probe and on the compiler checking
   itself (before/after user CPU recorded here).
 - S4 THE CONVERSION: the contexts refactor and the state fns.
+
+S0 LANDED (2026-09-04), what it taught: (1) THE TRANSITION ORDER
+HELD — the grammar written in the old spelling, built by the
+standing binary (saved aside first: the product refuses the old
+form, and a broken product leaves no compiler), the tree rewritten
+by script (91 files, 809 sites), built by the product, gated
+(1618 cases, 72 corpus programs); no cycle accepted both forms.
+(2) THE BORROW MUST HONOR THE RECEIVER UNTIL S2 DELETES IT: with
+`self` a `Receiver` binding, `borrows_field`'s `is .Param` test
+turned every `mut xs = self.field` in the compiler's own methods
+into a COPY, and the compiler compiled itself into a binary whose
+declaration tables stayed empty ("index 0 is out of bounds" in
+`Decls.admit`, found with lldb on `avra_trap`). The lesson is the
+design's own: aliasing is a property of the BINDING, and a change
+to the binding vocabulary must visit every law that asks it. (3)
+A REWRITE SCRIPT MUST NOT CROSS A SYMLINK: `packages/std-cli/src/
+cli.av` was a symlink into the old tree, and the script rewrote
+bs2's file; it is a real file now, and the discipline is in
+CLAUDE.md. (4) A BARE KEYWORD PARAMETER DECLARES NO SEAT
+(`written_seats`): `fn get(self)` refuses once with the receiver's
+remedy instead of cascading into an arity error. (5) THE REMEDIES
+TABLE: a feature that claims a keyword may write what to write
+instead (`KeywordRemedy` on the manifest; `refuse_keyword` reads
+it) — the first registry the naming law consults. (6) The red
+team's fourteen further attacks found two gaps, closed: a generic
+`mut fn` cascaded through the mutation statement's recovery, and
+an `impl` inside a fn body was silently accepted (F3025 now).
+Recorded from it: `fn bump(mut self)` — the OLD design's spelling
+— parses as a hole today; S1's `mut` parameters give it the
+receiver's remedy.
 
 THE CONVERSION'S TRUE SIZE — measured 2026-09-04 so S4 is not
 underestimated: methods are HALF of the borrow's users. The census

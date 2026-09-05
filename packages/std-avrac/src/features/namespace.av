@@ -67,7 +67,7 @@ fn binder(decls: Decls, shown: fn(string) -> string) -> Binder {
 impl Binder {
     /// A module declaration binds; a taken name is a clash at the
     /// LATER declaration, filed under its file.
-    fn declare(self, d: DeclId) {
+    fn declare(d: DeclId) {
         let x = self.decls.decl(d)
         let prior: DeclId? = self.held(x.kind, x.name)
         if prior == null {
@@ -83,21 +83,21 @@ impl Binder {
     }
 
     /// A winner bound without a law: the module already applied it.
-    fn bind_decl(self, d: DeclId) {
+    fn bind_decl(d: DeclId) {
         let x = self.decls.decl(d)
         self.bind(x.kind, x.name, d)
     }
 
     /// The language's own declaration binds where nothing else
     /// took the name — a program's `Result` wins silently.
-    fn bind_builtin(self, d: DeclId) {
+    fn bind_builtin(d: DeclId) {
         let x = self.decls.decl(d)
         if self.held(x.kind, x.name) == null { self.bind(x.kind, x.name, d) }
     }
 
     /// An import binds in the file's namespace; a name already
     /// visible refuses — unless it is the very same declaration.
-    fn import(self, i: Import, file: FileId) {
+    fn import(i: Import, file: FileId) {
         let x = self.decls.decl(i.decl)
         let prior: DeclId? = self.held(x.kind, x.name)
         if prior == null { return self.bind(x.kind, x.name, i.decl) }
@@ -106,7 +106,7 @@ impl Binder {
     }
 
     /// Who holds a name already: this module (by file), or a module.
-    fn holder(self, prior: DeclId, file: FileId) -> string {
+    fn holder(prior: DeclId, file: FileId) -> string {
         let p = self.decls.decl(prior)
         if self.decls.module_of(prior) == self.decls.module_name(self.decls.file(file).module_id) {
             return "this module (`${self.shown(self.decls.file(p.file).path)}`)"
@@ -114,7 +114,7 @@ impl Binder {
         "`${self.decls.module_of(prior)}`"
     }
 
-    fn held(self, kind: DeclKind, name: string) -> DeclId? {
+    fn held(kind: DeclKind, name: string) -> DeclId? {
         let as_fn: DeclId? = self.names.fns.get(name)
         let as_type: DeclId? = self.names.types.get(name)
         match kind {
@@ -124,7 +124,7 @@ impl Binder {
         }
     }
 
-    fn bind(self, kind: DeclKind, name: string, d: DeclId) {
+    fn bind(kind: DeclKind, name: string, d: DeclId) {
         match kind {
             .Fn -> self.bind_fn(name, d),
             .Record or .Enum or .Trait or .Builtin -> self.bind_type(name, d),
@@ -132,21 +132,21 @@ impl Binder {
         }
     }
 
-    fn bind_fn(self, name: string, d: DeclId) {
+    fn bind_fn(name: string, d: DeclId) {
         mut m = self.names.fns
         m.set(name, d)
         mut ns = self.names.fn_names
         ns.push(name)
     }
 
-    fn bind_type(self, name: string, d: DeclId) {
+    fn bind_type(name: string, d: DeclId) {
         mut m = self.names.types
         m.set(name, d)
         mut ns = self.names.type_names
         ns.push(name)
     }
 
-    fn speak(self, d: Diag) { self.names.voices.speak(d) }
+    fn speak(d: Diag) { self.names.voices.speak(d) }
 }
 
 /// A member, an impl and a Main never enter a namespace.

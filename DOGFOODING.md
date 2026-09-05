@@ -629,7 +629,7 @@ ds.push(pointed(error_at(kind, at, msg), "used here")
 
 ```avra
 impl Grammar {
-    fn defects(self) -> List<Diagnostic> { ... }
+    fn defects() -> List<Diagnostic> { ... }
 }
 // callers: g.defects()
 ```
@@ -639,7 +639,7 @@ A method is also the place a CONTRACT gets its name:
 ```avra
 impl Token {
     /// Text equality, never against quoted input — data, not syntax.
-    fn lit_matches(self, text: string) -> bool { ... }
+    fn lit_matches(text: string) -> bool { ... }
 }
 ```
 
@@ -647,11 +647,11 @@ impl Token {
 
 ```avra
 impl Rep {
-    fn suffix(self) -> string { match self { .One -> "", .Star -> "*", ... } }
+    fn suffix() -> string { match self { .One -> "", .Star -> "*", ... } }
 }
 impl Prim {
-    fn token_name(self) -> string? { ... }
-    fn answers_to(self, token: string) -> bool { ... }  // null-guarded ==
+    fn token_name() -> string? { ... }
+    fn answers_to(token: string) -> bool { ... }  // null-guarded ==
 }
 ```
 
@@ -670,7 +670,7 @@ whole "if null, default, else unwrap and read" ladder — including
 directly on a nullable call's result:
 
 ```avra
-fn later_def(self, name: string) -> StmtId? {
+fn later_def(name: string) -> StmtId? {
     self.all_defs.find(it.name == name)?.stmt
 }
 engine_codes().find(it.cause == c)?.kind ?? "language.defect"
@@ -806,7 +806,7 @@ Params and captured structs are immutable, but rebinding a ptr-backed
 list to a `mut` local aliases the same storage — the arena idiom:
 
 ```avra
-fn alloc_expr(self, e: Expr, span: Span?) -> ExprId {
+fn alloc_expr(e: Expr, span: Span?) -> ExprId {
     mut nodes = self.exprs
     nodes.push(e)
     ExprId { index: nodes.length - 1 }
@@ -1008,12 +1008,12 @@ CLAUDE.md, "The subset today"):
 ```avra
 // @std.errors
 export trait Error {
-    fn describe(self) -> ErrorInfo
+    fn describe() -> ErrorInfo
 }
 
 // any package
 impl Error for Diag {
-    fn describe(self) -> ErrorInfo { info(self.kind, self.message) }
+    fn describe() -> ErrorInfo { info(self.kind, self.message) }
 }
 ```
 

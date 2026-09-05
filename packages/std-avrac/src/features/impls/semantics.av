@@ -1,13 +1,14 @@
-//! The method call's semantics: dispatch only. Typing lives in
-//! check.av, lowering in lower.av. The subject and arguments are
-//! ordinary children — nothing is scoped or hidden.
+//! The method call's and the receiver's semantics: dispatch only.
+//! Typing lives in check.av, lowering in lower.av. The subject and
+//! arguments are ordinary children — nothing is scoped or hidden;
+//! `self` binds to the enclosing method's receiver seat.
 use core.{Expr, ExprId, TypeId, Reg}
 use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
 
 export type MethodSemantics = { }
 
 impl NodeSemantics for MethodSemantics {
-    fn kids(self, e: Expr) -> List<ExprId> {
+    fn kids(e: Expr) -> List<ExprId> {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match e {
             .MethodCall(subject, _, args) -> [subject].concat(args),
@@ -15,19 +16,25 @@ impl NodeSemantics for MethodSemantics {
         }
     }
 
-    fn heirs(self, e: Expr) -> List<ExprId> {
+    fn heirs(e: Expr) -> List<ExprId> {
         []
     }
 
-    fn resolve(self, cx: ResolveCx, e: ExprId) {
-        nothing()
+    fn resolve(cx: ResolveCx, e: ExprId) {
+        // LICENSED I22: a feature matching its own variants
+        match cx.view.store.expr(e) {
+            .Receiver -> cx.use_receiver(e),
+            _ -> nothing(),
+        }
     }
 
-    fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
+    fn type_of(cx: TypeCx, e: ExprId) -> TypeId {
+        if cx.view.store.expr(e) is .Receiver { return cx.target_type(e) }
         method_call_type(cx, e)
     }
 
-    fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
+    fn lower(cx: LowerCx, e: ExprId) -> Reg {
+        if cx.view.store.expr(e) is .Receiver { return receiver_reg(cx, e) }
         method_call_reg(cx, e)
     }
 }

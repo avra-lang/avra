@@ -3,7 +3,7 @@
 //! types arrive as two parallel captures and zip into Params.
 use core.{Expr, Stmt, Param, TypeRef}
 use grammar.{Token}
-use features.{LangNode, Builder, aligned_binds, aligned_param_types, expr_id_at}
+use features.{LangNode, Builder, aligned_binds, aligned_param_types, expr_id_at, seats}
 
 fn build_fn(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
@@ -22,13 +22,7 @@ fn build_fn(b: Builder) -> Result<LangNode, string> {
     for j, t in tp {
         tparams.push(Param { name: t.text, ty: bound_ref(bounds[j], t), default: null })
     }
-    let tys = aligned_param_types(ps, b.type_refs(4)?, ends!)
-    mut params: List<Param> = []
-    // LICENSED I3: a ZIP of parallel captures; comprehensions cannot
-    for j, p in ps {
-        params.push(seat(p.text, tys[j]))
-    }
-    b.make_stmt(Stmt.FnDecl(n.text, tparams, params, r, body))
+    b.make_stmt(Stmt.FnDecl(n.text, tparams, seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends!)), r, body))
 }
 
 /// A bound as a written type — the trait's bare name.
@@ -62,14 +56,7 @@ fn build_return(b: Builder) -> Result<LangNode, string> {
 fn build_extern(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let ps = b.tokens(1)?
-    let tys = b.type_refs(2)?
-    mut params: List<Param> = []
-    // LICENSED I3: a ZIP of parallel captures; comprehensions cannot
-    for (j, p) in ps.enumerate() { params.push(seat(p.text, tys[j])) }
-    b.make_stmt(Stmt.ExternFn(n.text, params, b.answer(3)))
-}
-
-/// A parameter seat with no default.
-fn seat(name: string, ty: TypeRef?) -> Param {
-    Param { name: name, ty: ty, default: null }
+    let ends: int? = b.span_end()
+    if ends == null { return .Err("an extern declaration without a span") }
+    b.make_stmt(Stmt.ExternFn(n.text, seats(ps, aligned_param_types(ps, b.type_refs(2)?, ends!)), b.answer(3)))
 }

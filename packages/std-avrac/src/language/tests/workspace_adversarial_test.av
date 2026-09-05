@@ -63,7 +63,7 @@ spec "language/workspace (adversarial)" {
             refuses_once({ "/w/src/main.av": "export let x = 1\nx\n" }, ["/w/src/main.av"], "`export` marks a fn, type, enum or trait — not this statement")
         }
         then "on an impl — its methods travel with the type" {
-            refuses_once({ "/w/src/main.av": "type P = { x: int }\nexport impl P {\n    fn get(self) -> int {\n        self.x\n    }\n}\nP { x: 3 }.get()\n" }, ["/w/src/main.av"],
+            refuses_once({ "/w/src/main.av": "type P = { x: int }\nexport impl P {\n    fn get() -> int {\n        self.x\n    }\n}\nP { x: 3 }.get()\n" }, ["/w/src/main.av"],
                          "an impl is not exported — its methods travel with their type")
         }
         then "on a use — the re-export waits for 15c" {
@@ -84,25 +84,25 @@ spec "language/workspace (adversarial)" {
     }
     given "impls across the line" {
         then "an impl of another module's type is an orphan — and its body does not crash the walk" {
-            refuses_once({ "/w/src/main.av": "use util.{Pair}\nimpl Pair {\n    fn sum(self) -> int {\n        self.a + self.b\n    }\n}\n1\n", "/w/src/util/p.av": pair() },
+            refuses_once({ "/w/src/main.av": "use util.{Pair}\nimpl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\n1\n", "/w/src/util/p.av": pair() },
                          ["/w/src/main.av", "/w/src/util/p.av"], "`impl Pair` belongs in module `util`, where `Pair` is declared")
         }
         then "a local trait may be implemented for a foreign type" {
-            runs({ "/w/src/main.av": "use util.{Pair}\ntrait Show {\n    fn show(self) -> string\n}\nimpl Show for Pair {\n    fn show(self) -> string {\n        \"pair\"\n    }\n}\nPair { a: 1, b: 2 }.show()\n", "/w/src/util/p.av": pair() },
+            runs({ "/w/src/main.av": "use util.{Pair}\ntrait Show {\n    fn show() -> string\n}\nimpl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\nPair { a: 1, b: 2 }.show()\n", "/w/src/util/p.av": pair() },
                  ["/w/src/main.av", "/w/src/util/p.av"]) == "pair"
         }
         then "a method declared beside its type in another file dispatches" {
-            runs({ "/w/src/main.av": "use util.{Pair}\nPair { a: 1, b: 2 }.sum()\n", "/w/src/util/p.av": "${pair()}impl Pair {\n    fn sum(self) -> int {\n        self.a + self.b\n    }\n}\n" },
+            runs({ "/w/src/main.av": "use util.{Pair}\nPair { a: 1, b: 2 }.sum()\n", "/w/src/util/p.av": "${pair()}impl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\n" },
                  ["/w/src/main.av", "/w/src/util/p.av"]) == "3"
         }
         then "a foreign trait, implemented locally, reaches through dyn" {
-            runs({ "/w/src/main.av": "use util.{Show}\ntype P = { x: int }\nimpl Show for P {\n    fn show(self) -> string {\n        \"p\"\n    }\n}\nlet d: dyn Show = P { x: 1 }\nd.show()\n", "/w/src/util/t.av": "export trait Show {\n    fn show(self) -> string\n}\n" },
+            runs({ "/w/src/main.av": "use util.{Show}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> string {\n        \"p\"\n    }\n}\nlet d: dyn Show = P { x: 1 }\nd.show()\n", "/w/src/util/t.av": "export trait Show {\n    fn show() -> string\n}\n" },
                  ["/w/src/main.av", "/w/src/util/t.av"]) == "p"
         }
         then "two modules may each declare a type of one name with one method — the symbols differ" {
             runs({ "/w/src/main.av": "use x.{make_a}\nuse y.{make_b}\nmake_a().v() + make_b().v()\n",
-                   "/w/src/x/a.av": "export type P = { n: int }\nimpl P {\n    fn v(self) -> int {\n        self.n\n    }\n}\nexport fn make_a() -> P {\n    P { n: 1 }\n}\n",
-                   "/w/src/y/b.av": "export type P = { n: int }\nimpl P {\n    fn v(self) -> int {\n        self.n * 10\n    }\n}\nexport fn make_b() -> P {\n    P { n: 2 }\n}\n" },
+                   "/w/src/x/a.av": "export type P = { n: int }\nimpl P {\n    fn v() -> int {\n        self.n\n    }\n}\nexport fn make_a() -> P {\n    P { n: 1 }\n}\n",
+                   "/w/src/y/b.av": "export type P = { n: int }\nimpl P {\n    fn v() -> int {\n        self.n * 10\n    }\n}\nexport fn make_b() -> P {\n    P { n: 2 }\n}\n" },
                  ["/w/src/main.av", "/w/src/x/a.av", "/w/src/y/b.av"]) == "21"
         }
     }
@@ -141,7 +141,7 @@ spec "language/workspace (adversarial)" {
     }
     given "a type's methods are one namespace across its module's files" {
         then "the same method in two files of one module clashes at the LATER file, once" {
-            let ws = package({ "/w/src/main.av": "use util.{P}\nP { x: 1 }.show()\n", "/w/src/util/a.av": "export type P = { x: int }\nimpl P {\n    fn show(self) -> int {\n        self.x\n    }\n}\n", "/w/src/util/b.av": "impl P {\n    fn show(self) -> int {\n        self.x + 1\n    }\n}\n" }, ["/w/src/main.av", "/w/src/util/a.av", "/w/src/util/b.av"])
+            let ws = package({ "/w/src/main.av": "use util.{P}\nP { x: 1 }.show()\n", "/w/src/util/a.av": "export type P = { x: int }\nimpl P {\n    fn show() -> int {\n        self.x\n    }\n}\n", "/w/src/util/b.av": "impl P {\n    fn show() -> int {\n        self.x + 1\n    }\n}\n" }, ["/w/src/main.av", "/w/src/util/a.av", "/w/src/util/b.av"])
             let later = analyze_file(ws, "/w/src/util/b.av")
             analyze_file(ws, "/w/src/util/a.av").clean() &&
                 later.diagnostics.length == 1 && later.report().contains("`P.show` is declared twice")

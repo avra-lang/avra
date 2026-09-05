@@ -26,7 +26,10 @@ export fn resolve_assign(cx: StmtResolveCx, s: StmtId) {
     let b: Binding? = cx.facts.binding(r)
     if b == null { return }
     match b! {
-        .Param(_) -> if through_receiver(t, r, n) { nothing() } else { immutable_param(cx, n, at) },
+        // a method writes through its receiver: a PATH under `self`,
+        // never `self` itself
+        .Receiver -> if same_expr(t, r) { immutable_receiver(cx, at) } else { nothing() },
+        .Param(_) -> immutable_param(cx, n, at),
         .Index(_) -> immutable_index(cx, n, at),
         .Def(s) -> mut_or_refused(cx, s, n, at),
         .LambdaParam(_, _) -> immutable_param(cx, n, at),
@@ -63,6 +66,10 @@ fn mut_copy_help(n: string) -> string {
 
 fn not_a_place(cx: StmtResolveCx, at: Loc?) {
     cx.emit(refusal("resolve.place", at, "a mutation lands on a place — a name, a field, or an index", assigned_here(), "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding"))
+}
+
+fn immutable_receiver(cx: StmtResolveCx, at: Loc?) {
+    cx.emit(refusal("resolve.immutable", at, "`self` is the receiver — it is not assigned", assigned_here(), "assign a field of it — `self.<field> = …`"))
 }
 
 fn immutable_param(cx: StmtResolveCx, n: string, at: Loc?) {

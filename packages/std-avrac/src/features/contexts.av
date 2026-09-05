@@ -38,7 +38,7 @@ export fn bound_decl_of(names: NameFacts, e: ExprId) -> DeclId? {
     match b! {
         .Decl(d) -> d,
         .Def(_) -> null,
-        .Param(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+        .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
     }
 }
 
@@ -49,16 +49,28 @@ export fn sig_of_at(names: NameFacts, decls: Decls, e: ExprId) -> FnSig? {
     fn_sig_of(decls.sig(d!))
 }
 
+/// The seats a fn declares: its written params minus a BARE
+/// keyword — the old receiver habit (`fn get()`), refused by
+/// the naming law and given no seat, so the one refusal stands
+/// alone and the call's arity still counts.
+export fn written_seats(keywords: List<string>, params: List<Param>) -> List<Param> {
+    [pp for pp in params if takes_a_seat(keywords, pp)]
+}
+
+fn takes_a_seat(keywords: List<string>, pp: Param) -> bool {
+    pp.ty != null || !keywords.contains(pp.name)
+}
+
 /// Whether a name reads a `mut` binding.
 export fn is_mut_at(names: NameFacts, store: NodeStore, e: ExprId) -> bool {
     let b: Binding? = names.binding(e)
     if b == null { return false }
     match b! {
         .Def(s) -> store.stmt(s) is .MutLet,
-        // a method's receiver is a place: what it holds is the
-        // caller's box, and the method writes it by design
-        .Param(_) -> store.ident_name(e) == "self",
-        .Decl(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+        // a method's receiver is a place: a write through it is what
+        // makes the method a writing one (ROADMAP: the inout receiver)
+        .Receiver -> true,
+        .Param(_) or .Decl(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
     }
 }
 
@@ -189,101 +201,101 @@ export fn viewed(types: TypeRegistry, sub: Sub?, ty: TypeId) -> TypeId {
 // ── The contexts' reads: forwards to the one definition ──
 
 impl TypeCx {
-    fn type_at(self, e: ExprId) -> TypeId { self.facts.type_at(e) }
-    fn shape_at(self, e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
-    fn name_at(self, e: ExprId) -> string { self.view.types.name_of(self.type_at(e)) }
-    fn loc_of(self, e: ExprId) -> Loc? { self.view.loc_of(e) }
-    fn stmt_loc(self, s: StmtId) -> Loc? { self.view.stmt_loc(s) }
-    fn emit(self, d: Diag) { self.facts.speak(d) }
-    fn stmt_sig(self, s: StmtId) -> FnSig? {
+    fn type_at(e: ExprId) -> TypeId { self.facts.type_at(e) }
+    fn shape_at(e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
+    fn name_at(e: ExprId) -> string { self.view.types.name_of(self.type_at(e)) }
+    fn loc_of(e: ExprId) -> Loc? { self.view.loc_of(e) }
+    fn stmt_loc(s: StmtId) -> Loc? { self.view.stmt_loc(s) }
+    fn emit(d: Diag) { self.facts.speak(d) }
+    fn stmt_sig(s: StmtId) -> FnSig? {
         let d: DeclId? = self.view.decls.decl_of(self.view.file, s)
         if d == null { return null }
         fn_sig_of(self.view.decls.sig(d!))
     }
-    fn bound_decl(self, e: ExprId) -> DeclId? { bound_decl_of(self.names, e) }
-    fn tparams(self, d: DeclId) -> List<string> { self.view.decls.tparams(d) }
-    fn tbounds(self, d: DeclId) -> List<Param> { self.view.decls.tbounds(d) }
-    fn sig_of(self, e: ExprId) -> FnSig? { sig_of_at(self.names, self.view.decls, e) }
-    fn fields_of(self, ty: TypeId) -> StructSig? { fields_of_type(self.view.decls, ty) }
-    fn variants_of(self, ty: TypeId) -> EnumSig? { variants_of_type(self.view.decls, ty) }
-    fn method_sig(self, target: DeclId, mname: string) -> FnSig? { method_sig_of(self.view.decls, target, mname) }
-    fn trait_sig(self, tname: string, mname: string) -> FnSig? { trait_sig_of(self.view.decls, self.names, tname, mname) }
-    fn implements(self, ty: TypeId, tname: string) -> bool { implements_of(self.view.types, self.view.decls, self.names, ty, tname) }
-    fn is_mut(self, e: ExprId) -> bool { is_mut_at(self.names, self.view.store, e) }
-    fn def_type(self, s: StmtId) -> TypeId { def_type_of(self.facts, self.view.store, self.view.types, self.error_type, s) }
-    fn bind_types(self, v: ExprId, tys: List<TypeId>) { self.facts.bind_types(v, tys) }
-    fn pat_loc(self, p: PatId) -> Loc? { self.view.pat_loc(p) }
-    fn widen(self, v: ExprId, ty: TypeId) { self.facts.widen(v, ty) }
-    fn record_ask(self, e: ExprId, subject: ExprId, on_present: bool) { self.facts.record_ask(e, subject, on_present) }
-    fn ask_of(self, e: ExprId) -> Asked? { self.facts.ask_of(e) }
-    fn record_subst(self, e: ExprId, target: DeclId, targs: List<TypeId>) { self.facts.record_subst(e, target, targs) }
-    fn record_binding(self, s: StmtId, ty: TypeId) { self.facts.record_binding(s, ty) }
-    fn mark_borrow(self, s: StmtId) { self.facts.mark_borrow(s) }
-    fn want_at(self, e: ExprId) -> TypeId? { self.facts.want_at(e) }
-    fn narrowed_at(self, e: ExprId) -> TypeId? { self.facts.narrowed_at(e) }
-    fn starved_at(self, e: ExprId) -> TypeId? { self.facts.starved_at(e) }
-    fn go_hungry(self, e: ExprId) { self.facts.go_hungry(e) }
-    fn absorb_hunger(self, e: ExprId) { self.facts.absorb_hunger(e) }
-    fn starve(self, e: ExprId, want: TypeId) -> bool { self.facts.starve(e, want) }
+    fn bound_decl(e: ExprId) -> DeclId? { bound_decl_of(self.names, e) }
+    fn tparams(d: DeclId) -> List<string> { self.view.decls.tparams(d) }
+    fn tbounds(d: DeclId) -> List<Param> { self.view.decls.tbounds(d) }
+    fn sig_of(e: ExprId) -> FnSig? { sig_of_at(self.names, self.view.decls, e) }
+    fn fields_of(ty: TypeId) -> StructSig? { fields_of_type(self.view.decls, ty) }
+    fn variants_of(ty: TypeId) -> EnumSig? { variants_of_type(self.view.decls, ty) }
+    fn method_sig(target: DeclId, mname: string) -> FnSig? { method_sig_of(self.view.decls, target, mname) }
+    fn trait_sig(tname: string, mname: string) -> FnSig? { trait_sig_of(self.view.decls, self.names, tname, mname) }
+    fn implements(ty: TypeId, tname: string) -> bool { implements_of(self.view.types, self.view.decls, self.names, ty, tname) }
+    fn is_mut(e: ExprId) -> bool { is_mut_at(self.names, self.view.store, e) }
+    fn def_type(s: StmtId) -> TypeId { def_type_of(self.facts, self.view.store, self.view.types, self.error_type, s) }
+    fn bind_types(v: ExprId, tys: List<TypeId>) { self.facts.bind_types(v, tys) }
+    fn pat_loc(p: PatId) -> Loc? { self.view.pat_loc(p) }
+    fn widen(v: ExprId, ty: TypeId) { self.facts.widen(v, ty) }
+    fn record_ask(e: ExprId, subject: ExprId, on_present: bool) { self.facts.record_ask(e, subject, on_present) }
+    fn ask_of(e: ExprId) -> Asked? { self.facts.ask_of(e) }
+    fn record_subst(e: ExprId, target: DeclId, targs: List<TypeId>) { self.facts.record_subst(e, target, targs) }
+    fn record_binding(s: StmtId, ty: TypeId) { self.facts.record_binding(s, ty) }
+    fn mark_borrow(s: StmtId) { self.facts.mark_borrow(s) }
+    fn want_at(e: ExprId) -> TypeId? { self.facts.want_at(e) }
+    fn narrowed_at(e: ExprId) -> TypeId? { self.facts.narrowed_at(e) }
+    fn starved_at(e: ExprId) -> TypeId? { self.facts.starved_at(e) }
+    fn go_hungry(e: ExprId) { self.facts.go_hungry(e) }
+    fn absorb_hunger(e: ExprId) { self.facts.absorb_hunger(e) }
+    fn starve(e: ExprId, want: TypeId) -> bool { self.facts.starve(e, want) }
 }
 
 impl StmtTypeCx {
-    fn loc_of(self, s: StmtId) -> Loc? { self.expr.stmt_loc(s) }
-    fn sig_of(self, s: StmtId) -> FnSig? { self.expr.stmt_sig(s) }
-    fn binding_type(self, s: StmtId) -> TypeId { self.expr.def_type(s) }
-    fn record_binding(self, s: StmtId, ty: TypeId) { self.expr.record_binding(s, ty) }
+    fn loc_of(s: StmtId) -> Loc? { self.expr.stmt_loc(s) }
+    fn sig_of(s: StmtId) -> FnSig? { self.expr.stmt_sig(s) }
+    fn binding_type(s: StmtId) -> TypeId { self.expr.def_type(s) }
+    fn record_binding(s: StmtId, ty: TypeId) { self.expr.record_binding(s, ty) }
 }
 
 impl StmtResolveCx {
-    fn loc_of(self, s: StmtId) -> Loc? { self.view.stmt_loc(s) }
-    fn emit(self, d: Diag) { self.facts.voices.speak(d) }
+    fn loc_of(s: StmtId) -> Loc? { self.view.stmt_loc(s) }
+    fn emit(d: Diag) { self.facts.voices.speak(d) }
 }
 
 impl LowerCx {
-    fn viewed(self, ty: TypeId) -> TypeId { viewed(self.view.types, self.sub, ty) }
-    fn type_at(self, e: ExprId) -> TypeId { self.viewed(self.facts.type_at(e)) }
-    fn shape_at(self, e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
-    fn result(self, e: ExprId) -> Reg { self.out.mint_ty(self.type_at(e)) }
-    fn mint_like(self, r: Reg) -> Reg { self.out.mint_ty(self.out.type_of_reg(r)) }
-    fn mint_shape(self, sh: Type) -> Reg { self.out.mint_ty(self.view.types.intern(sh)) }
-    fn mint_ty(self, ty: TypeId) -> Reg { self.out.mint_ty(ty) }
-    fn emit(self, i: Ins) { self.out.give(i) }
-    fn fail(self, msg: string) { self.out.record(msg) }
-    fn defect(self, what: string) { self.out.defect(what) }
-    fn enclosing_ret(self) -> TypeId? { self.fn_ret }
+    fn viewed(ty: TypeId) -> TypeId { viewed(self.view.types, self.sub, ty) }
+    fn type_at(e: ExprId) -> TypeId { self.viewed(self.facts.type_at(e)) }
+    fn shape_at(e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
+    fn result(e: ExprId) -> Reg { self.out.mint_ty(self.type_at(e)) }
+    fn mint_like(r: Reg) -> Reg { self.out.mint_ty(self.out.type_of_reg(r)) }
+    fn mint_shape(sh: Type) -> Reg { self.out.mint_ty(self.view.types.intern(sh)) }
+    fn mint_ty(ty: TypeId) -> Reg { self.out.mint_ty(ty) }
+    fn emit(i: Ins) { self.out.give(i) }
+    fn fail(msg: string) { self.out.record(msg) }
+    fn defect(what: string) { self.out.defect(what) }
+    fn enclosing_ret() -> TypeId? { self.fn_ret }
 
     /// A call's target: the bound declaration's body as instantiated
     /// here — or the name itself, a run-time fn's.
     /// The host symbol a call names, when its callee is extern.
-    fn extern_callee(self, e: ExprId) -> string? {
+    fn extern_callee(e: ExprId) -> string? {
         let d: DeclId? = bound_decl_of(self.names, e)
         if d == null || !self.view.decls.is_extern(d!) { return null }
         self.view.decls.symbol(d!)
     }
-    fn callee_of(self, e: ExprId, name: string) -> string {
+    fn callee_of(e: ExprId, name: string) -> string {
         let d: DeclId? = bound_decl_of(self.names, e)
         if d == null { return name }
         self.symbol_at(d!, e)
     }
-    fn fields_at(self, e: ExprId) -> StructSig? { fields_of_type(self.view.decls, self.type_at(e)) }
-    fn fields_of(self, ty: TypeId) -> StructSig? { fields_of_type(self.view.decls, ty) }
-    fn variants_at(self, e: ExprId) -> EnumSig? { variants_of_type(self.view.decls, self.type_at(e)) }
-    fn variants_of(self, ty: TypeId) -> EnumSig? { variants_of_type(self.view.decls, ty) }
-    fn bind_patterns(self, v: ExprId, regs: List<Reg>) { self.body.bind_patterns(v, regs) }
+    fn fields_at(e: ExprId) -> StructSig? { fields_of_type(self.view.decls, self.type_at(e)) }
+    fn fields_of(ty: TypeId) -> StructSig? { fields_of_type(self.view.decls, ty) }
+    fn variants_at(e: ExprId) -> EnumSig? { variants_of_type(self.view.decls, self.type_at(e)) }
+    fn variants_of(ty: TypeId) -> EnumSig? { variants_of_type(self.view.decls, ty) }
+    fn bind_patterns(v: ExprId, regs: List<Reg>) { self.body.bind_patterns(v, regs) }
     /// A `mut` binding's cell, when the binding lives in one.
-    fn cell_of(self, e: ExprId) -> Reg? {
+    fn cell_of(e: ExprId) -> Reg? {
         let b: Binding? = self.names.binding(e)
         if b == null { return null }
         match b! {
             .Def(s) -> if self.body.is_boxed(s) { self.body.slot_of(s) } else { null },
-            .Decl(_) or .Param(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+            .Decl(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
         }
     }
 }
 
 impl StmtLowerCx {
-    fn bind_slot(self, s: StmtId, cell: Reg) { self.expr.body.bind_slot(s, cell) }
-    fn bind_index(self, s: StmtId, r: Reg) { self.expr.body.bind_index(s, r) }
+    fn bind_slot(s: StmtId, cell: Reg) { self.expr.body.bind_slot(s, cell) }
+    fn bind_index(s: StmtId, r: Reg) { self.expr.body.bind_index(s, r) }
 }
 
 // ── voices ──

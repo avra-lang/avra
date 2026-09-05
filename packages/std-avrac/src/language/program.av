@@ -149,7 +149,7 @@ export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
         .NullLit or .Coalesce(_, _) or .Force(_) or .Propagate(_) or
         .MatchOpt(_, _, _, _) or .Chain(_, _) -> d.nullables,
         .Catch(_, _, _, _) -> d.catches,
-        .MethodCall(_, _, _) -> d.methods,
+        .MethodCall(_, _, _) or .Receiver -> d.methods,
         .Lambda(_, _) or .CallValue(_, _) -> d.lambdas,
     }
 }
@@ -187,7 +187,7 @@ impl Language {
     /// Every node at and under `root`, children before owners — THE
     /// order every pass visits: facts a node reads exist before it
     /// speaks.
-    fn post_order(self, store: NodeStore, root: ExprId) -> List<ExprId> {
+    fn post_order(store: NodeStore, root: ExprId) -> List<ExprId> {
         let node = store.expr(root)
         flatten([self.post_order(store, k) for k in semantics_of(self.dispatch, node).kids(node)]).concat([root])
     }

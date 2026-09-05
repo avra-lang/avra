@@ -34,11 +34,11 @@ fn no_first() -> FirstSet {
 }
 
 impl FirstCx {
-    fn note(self, d: Diagnostic) {
+    fn note(d: Diagnostic) {
         self.defects.push(d)
     }
 
-    fn rule_first(self, name: string) -> FirstSet {
+    fn rule_first(name: string) -> FirstSet {
         if self.visiting.contains(name) {
             self.note(defect(name, "rule is left-recursive — no first token can ever commit"))
             return no_first()
@@ -53,7 +53,7 @@ impl FirstCx {
         f
     }
 
-    fn alt_first(self, a: Alt) -> FirstSet {
+    fn alt_first(a: Alt) -> FirstSet {
         mut out = no_first()
         for s in a.branches { out = first_union(out, self.seq_first(s)) }
         out
@@ -62,7 +62,7 @@ impl FirstCx {
     /// Walk items left to right: a skippable item's tokens join the
     /// set and the walk continues; the first required item ends it.
     /// All items skippable means the branch can match nothing.
-    fn seq_first(self, s: Seq) -> FirstSet {
+    fn seq_first(s: Seq) -> FirstSet {
         mut out = no_first()
         for m in s.items {
             let f = self.prim_first(m.prim)
@@ -77,7 +77,7 @@ impl FirstCx {
         out with { nullable: true }
     }
 
-    fn prim_first(self, p: Prim) -> FirstSet {
+    fn prim_first(p: Prim) -> FirstSet {
         match p {
             .Lit(text) -> FirstSet { lits: [text], terms: [], nullable: false },
             .Named(term) -> FirstSet { lits: [], terms: [term], nullable: false },
@@ -89,7 +89,7 @@ impl FirstCx {
     /// True when the branch's head alone decides it: after its first
     /// required item, every item is skippable — nothing left can
     /// refuse, so the executor never backtracks out.
-    fn commits(self, s: Seq) -> bool {
+    fn commits(s: Seq) -> bool {
         mut seen_head = false
         for m in s.items {
             let f = self.prim_first(m.prim)
@@ -105,7 +105,7 @@ impl FirstCx {
     /// keyword it also matches — makes the later branch dead. A
     /// non-committing earlier branch backtracks, so its overlaps are
     /// harmless.
-    fn overlap_defects(self, rule_name: string, i: int, fi: FirstSet, j: int, fj: FirstSet) {
+    fn overlap_defects(rule_name: string, i: int, fi: FirstSet, j: int, fj: FirstSet) {
         for l in fj.lits {
             if fi.lits.contains(l) {
                 self.note(defect(rule_name,

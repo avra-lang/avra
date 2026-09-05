@@ -11,7 +11,7 @@ impl NodeStore {
     /// registry beside the semantics map: one arm per binding
     /// feature, zero dispatch cost — projections are DATA about
     /// variants; the trait carries behavior.
-    fn let_name(self, s: StmtId) -> string? {
+    fn let_name(s: StmtId) -> string? {
         match self.stmt(s) {
             .Let(name, _, _) -> name,
             .MutLet(name, _, _) -> name,
@@ -29,7 +29,7 @@ impl NodeStore {
     /// A CONST's value, when the statement is one. A const has no
     /// slot: the compiler settled the value, so every read of the
     /// name lowers the value itself.
-    fn const_value(self, s: StmtId) -> ExprId? {
+    fn const_value(s: StmtId) -> ExprId? {
         match self.stmt(s) {
             .ConstDecl(_, _, v) -> v,
             _ -> null,
@@ -38,7 +38,7 @@ impl NodeStore {
 
     /// A BINDING's written type, when one was declared — `let` and
     /// `mut` alike.
-    fn binding_ty(self, s: StmtId) -> TypeRef? {
+    fn binding_ty(s: StmtId) -> TypeRef? {
         match self.stmt(s) {
             .Let(_, t, _) -> t,
             .MutLet(_, t, _) -> t,
@@ -53,7 +53,7 @@ impl NodeStore {
 
     /// A statement's value expression at its OWN position. A body
     /// that runs later, under a frame, is NOT a value.
-    fn stmt_value(self, s: StmtId) -> ExprId? {
+    fn stmt_value(s: StmtId) -> ExprId? {
         match self.stmt(s) {
             .Let(_, _, v) -> v,
             .MutLet(_, _, v) -> v,
@@ -72,7 +72,7 @@ impl NodeStore {
 
     /// A declaration's type parameters — whichever kind declares;
     /// empty when plain. The ordinal IS the Var identity.
-    fn decl_tparams(self, s: StmtId) -> List<string> {
+    fn decl_tparams(s: StmtId) -> List<string> {
         match self.stmt(s) {
             .FnDecl(_, tparams, _, _, _) -> [t.name for t in tparams],
             .StructDecl(_, tparams, _) -> tparams,
@@ -86,7 +86,7 @@ impl NodeStore {
 
     /// A fn's type parameters WITH their bounds — the constrained
     /// twin of decl_tparams; empty for every other declaring kind.
-    fn decl_tbounds(self, s: StmtId) -> List<Param> {
+    fn decl_tbounds(s: StmtId) -> List<Param> {
         match self.stmt(s) {
             .FnDecl(_, tparams, _, _, _) -> tparams,
             _ -> [],
@@ -99,14 +99,14 @@ impl NodeStore {
     /// slip in as a silent `false`.
     /// A block that LEAVES: no value, and a last statement that
     /// diverges — it answers nothing, so it joins with anything.
-    fn leaves(self, e: ExprId) -> bool {
+    fn leaves(e: ExprId) -> bool {
         match self.expr(e) {
             .Block(stmts, value) -> value == null && stmts.last() != null && self.diverges(stmts.last()!),
             _ -> false,
         }
     }
 
-    fn diverges(self, s: StmtId) -> bool {
+    fn diverges(s: StmtId) -> bool {
         match self.stmt(s) {
             .Return(_) -> true,
             .Fail(_) -> true,
@@ -118,7 +118,7 @@ impl NodeStore {
     }
 
     /// A lambda's pieces, when the expression is one.
-    fn lambda_parts(self, e: ExprId) -> LambdaParts? {
+    fn lambda_parts(e: ExprId) -> LambdaParts? {
         match self.expr(e) {
             .Lambda(params, body) -> LambdaParts { params: params, body: body },
             _ -> null,
@@ -126,7 +126,7 @@ impl NodeStore {
     }
 
     /// A trait declaration's pieces, when the statement is one.
-    fn trait_parts(self, s: StmtId) -> TraitParts? {
+    fn trait_parts(s: StmtId) -> TraitParts? {
         match self.stmt(s) {
             .TraitDecl(name, fns) -> TraitParts { name: name, fns: fns },
             _ -> null,
@@ -134,7 +134,7 @@ impl NodeStore {
     }
 
     /// An impl block's pieces, when the statement is one.
-    fn impl_parts(self, s: StmtId) -> ImplParts? {
+    fn impl_parts(s: StmtId) -> ImplParts? {
         match self.stmt(s) {
             .ImplDecl(of, target, fns) -> ImplParts { of: of, target: target, fns: fns },
             _ -> null,
@@ -143,7 +143,7 @@ impl NodeStore {
 
     /// A fn declaration's pieces, when the statement is one — ONE
     /// projection for the whole variant; callers pick fields.
-    fn fn_parts(self, s: StmtId) -> FnParts? {
+    fn fn_parts(s: StmtId) -> FnParts? {
         match self.stmt(s) {
             .FnDecl(name, tparams, params, ret, body) ->
                 FnParts { name: name, tparams: tparams, params: params, ret: ret, body: body },
@@ -153,7 +153,7 @@ impl NodeStore {
 
     /// A type declaration's NAME, when the statement declares one —
     /// records and enums share the ONE type namespace.
-    fn type_decl_name(self, s: StmtId) -> string? {
+    fn type_decl_name(s: StmtId) -> string? {
         match self.stmt(s) {
             .StructDecl(name, _, _) -> name,
             .EnumDecl(name, _, _) -> name,
@@ -165,7 +165,7 @@ impl NodeStore {
     }
 
     /// An enum declaration's pieces, when the statement is one.
-    fn enum_parts(self, s: StmtId) -> EnumParts? {
+    fn enum_parts(s: StmtId) -> EnumParts? {
         match self.stmt(s) {
             .EnumDecl(name, tparams, variants) -> EnumParts { name: name, tparams: tparams, variants: variants },
             _ -> null,
@@ -173,7 +173,7 @@ impl NodeStore {
     }
 
     /// A struct declaration's pieces, when the statement is one.
-    fn struct_parts(self, s: StmtId) -> StructParts? {
+    fn struct_parts(s: StmtId) -> StructParts? {
         match self.stmt(s) {
             .StructDecl(name, tparams, fields) -> StructParts { name: name, tparams: tparams, fields: fields },
             _ -> null,
@@ -182,7 +182,7 @@ impl NodeStore {
 
     /// What a top-level statement DECLARES, or absence — an impl's
     /// methods are minted by the impl walk, not here.
-    fn declared_kind(self, s: StmtId) -> DeclKind? {
+    fn declared_kind(s: StmtId) -> DeclKind? {
         if self.fn_parts(s) != null || self.extern_parts(s) != null { return DeclKind.Fn }
         if self.enum_parts(s) != null { return DeclKind.Enum }
         if self.struct_parts(s) != null { return DeclKind.Record }
@@ -191,18 +191,18 @@ impl NodeStore {
     }
 
     /// A declaring statement's name.
-    fn declared_name(self, s: StmtId) -> string? {
+    fn declared_name(s: StmtId) -> string? {
         self.fn_parts(s)?.name ?? self.extern_parts(s)?.name ?? self.type_decl_name(s) ?? self.trait_parts(s)?.name
     }
 
     /// A statement that declares rather than runs: a declaration,
     /// an impl block, a `use` line, or a spec.
-    fn is_declaration(self, s: StmtId) -> bool {
+    fn is_declaration(s: StmtId) -> bool {
         self.declared_kind(s) != null || self.impl_parts(s) != null || self.use_parts(s) != null || self.spec_parts(s) != null
     }
 
     /// An extern fn's pieces, when the statement is one.
-    fn extern_parts(self, s: StmtId) -> ExternParts? {
+    fn extern_parts(s: StmtId) -> ExternParts? {
         match self.stmt(s) {
             .ExternFn(name, params, ret) -> ExternParts { name: name, params: params, ret: ret },
             _ -> null,
@@ -210,7 +210,7 @@ impl NodeStore {
     }
 
     /// A spec's pieces, when the statement is one.
-    fn spec_parts(self, s: StmtId) -> SpecParts? {
+    fn spec_parts(s: StmtId) -> SpecParts? {
         match self.stmt(s) {
             .Spec(name, cases) -> SpecParts { name: name, cases: cases },
             _ -> null,

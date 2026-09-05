@@ -96,6 +96,7 @@ fn rows_of(features: List<LanguageFeature>, codes: List<DiagCode>) -> LanguageRo
     LanguageRows {
         methods: flatten([f.methods for f in features]), types: flatten([f.types for f in features]),
         properties: flatten([f.properties for f in features]), codes: codes,
+        remedies: flatten([f.remedies for f in features]),
     }
 }
 
@@ -127,6 +128,10 @@ export fn language_features() -> List<LanguageFeature> {
         let_stmt(),
         consts(),      // `const NAME = v` — settled by the compiler,
                        // so a use is the value and never a load     // `let` names a value
+        impls(),        // `impl Target { … }`, `trait`, `mut fn`, and the
+                        // `self` primary — keyword-anchored; BEFORE
+                        // mutation, whose recovering `mut` statement
+                        // would otherwise swallow `mut fn`
         mutation(),     // `mut` declares; `name = e` reassigns
         loops(),        // `while c { statements }`
         bool_lit(),     // `true` and `false`
@@ -139,7 +144,6 @@ export fn language_features() -> List<LanguageFeature> {
                         // enum's, and enums' branch @expects its `}`, so
                         // this one must be tried first
         enums(),        // `enum N { A B }`; `match v { .A -> x }`, total
-        impls(),        // `impl Target { … }` — methods, keyword-anchored
         results(),      // `fail` raises on the Result channel; keyword-
                         // anchored, so it merges with the statements
         fns(),          // `fn` declares a body; a call applies it — the

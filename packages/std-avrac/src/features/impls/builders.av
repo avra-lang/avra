@@ -4,8 +4,33 @@
 //! is a hole no pass walks), so declare and totality reuse the fn
 //! machinery whole.
 use core.{Expr, Stmt, StmtId, Param, TypeRef, Span}
-use features.{LangNode, Builder, window_end, aligned_param_types, void_ref}
+use features.{LangNode, Builder, window_end, aligned_param_types, void_ref, seats}
 use grammar.{Token}
+
+/// `self` — the receiver, a keyword: no name rides the node.
+fn build_receiver(b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.Receiver)
+}
+
+/// `mut fn name(params) -> ret { body }` — a fn declaration that
+/// DECLARES its receiver written: the store flag carries the word,
+/// and the declare pass judges its placement (a method, or a stray).
+/// Type parameters parse so a generic `mut fn` meets the generic-
+/// method law, not a parse hole; their bounds are dropped — the
+/// law refuses the method before a bound could matter.
+fn build_mut_fn(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let tparams = [Param { name: t.text, ty: null, default: null } for t in b.tokens(1)?]
+    let ps = b.tokens(2)?
+    let r = b.answer(4)
+    let body = b.expr(5)?
+    let ends: int? = b.span_end()
+    if ends == null { return .Err("a fn declaration without a span") }
+    let params = seats(ps, aligned_param_types(ps, b.type_refs(3)?, ends!))
+    let s = b.store.alloc_stmt(Stmt.FnDecl(n.text, tparams, params, r, body), b.span)
+    b.store.mark_mutating(s)
+    .Ok(LangNode.NStmt(s))
+}
 
 /// The target's type parameters (`impl Arena<N>`, `impl Show for
 /// Box<T>`) parse and are dropped here: an impl spells them as the
@@ -32,41 +57,41 @@ fn is_fn(b: Builder, s: StmtId) -> bool {
 /// method anchors window their own params, the rets zip.
 fn build_trait(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    let mn = b.tokens(1)?
-    let ps = b.tokens(2)?
-    let tys = b.type_refs(3)?
-    let rets = b.type_refs(4)?
+    let muts = b.tokens(1)?
+    let mn = b.tokens(2)?
+    let ps = b.tokens(3)?
+    let tys = b.type_refs(4)?
+    let rets = b.type_refs(5)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("a trait declaration without a span") }
     mut fns: List<StmtId> = []
     for j, m in mn {
         let upto = window_end(mn, j, ends!)
-        fns.push(sig_stmt(b, m.text, params_between(ps, tys, m.span.lo, upto), ret_between(rets, m.span.lo, upto)))
+        let sig = sig_stmt(b, m, params_between(ps, tys, m.span.lo, upto), ret_between(rets, m.span.lo, upto))
+        // a `mut` between the previous sig and this name is this sig's
+        let since = if j == 0 { n.span.lo } else { mn[j - 1].span.lo }
+        if muts.any(token_within(it, since, m.span.lo)) { b.store.mark_mutating(sig) }
+        fns.push(sig)
     }
     b.make_stmt(Stmt.TraitDecl(n.text, fns))
 }
 
 /// One sig's params — the names inside the window, each typed by
-/// its own inner window (bare `self` has none).
+/// its own inner window.
 fn params_between(ps: List<Token>, tys: List<TypeRef>, after: int, before: int) -> List<Param> {
     let mine = [p for p in ps if token_within(p, after, before)]
-    let held = aligned_param_types(mine, tys, before)
-    mut out: List<Param> = []
-    // LICENSED I3: a PAIRED comprehension is our own sugar backlog — `[f(i, x) for i, x in xs]` does not parse
-    for j, p in mine {
-        out.push(Param { name: p.text, ty: held[j], default: null })
-    }
-    out
+    seats(mine, aligned_param_types(mine, tys, before))
 }
 
 fn token_within(t: Token, after: int, before: int) -> bool {
     t.span.lo > after && t.span.lo < before
 }
 
-/// A bodyless fn: the body is a HOLE no pass walks.
-fn sig_stmt(b: Builder, name: string, params: List<Param>, ret: TypeRef) -> StmtId {
+/// A bodyless fn: the body is a HOLE no pass walks. The sig wears
+/// its name's span, so a refusal at it lands on the line.
+fn sig_stmt(b: Builder, name: Token, params: List<Param>, ret: TypeRef) -> StmtId {
     let hollow = b.store.alloc_expr(Expr.Error, null)
-    b.store.alloc_stmt(Stmt.FnDecl(name, [], params, ret, hollow), null)
+    b.store.alloc_stmt(Stmt.FnDecl(name.text, [], params, ret, hollow), name.span)
 }
 
 /// The return written inside one sig's window — `void` when none.

@@ -1,19 +1,24 @@
 //! Methods and behavior contracts. An `impl Target { fns… }` block
-//! gives a declared type its methods: each fn's bare `self` first
-//! param types as the target, the fn LOWERS under a qualified name
-//! (`Target.method`), and a call `v.name(args)` — parsed in the
-//! ladder, the paren witness telling it from a property — resolves
-//! PROVABLY at typing through the receiver's type. Never a runtime
-//! lookup (spec 4.5).
-use features.{LanguageFeature, BuilderRow}
+//! gives a declared type its methods: every fn under it is a method,
+//! `self` — a keyword, never written in the parameter list — is its
+//! receiver, typed as the target and riding seat 0; the fn LOWERS
+//! under a qualified name (`Target.method`), and a call `v.name(args)`
+//! — parsed in the ladder, the paren witness telling it from a
+//! property — resolves PROVABLY at typing through the receiver's
+//! type. Never a runtime lookup (spec 4.5). `mut fn` DECLARES that a
+//! method writes its receiver: a trait sig's contract, an inherent
+//! method's documentation (ROADMAP: the inout receiver).
+use features.{LanguageFeature, BuilderRow, KeywordRemedy}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn impls() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name         | build
-        "impl_decl"  | build_impl
-        "trait_decl" | build_trait
+        name          | build
+        "impl_decl"   | build_impl
+        "trait_decl"  | build_trait
+        "mut_fn_decl" | build_mut_fn
+        "receiver"    | build_receiver
     }
     let codes = table<DiagCode> {
         kind          | id      | summary
@@ -21,16 +26,26 @@ export fn impls() -> LanguageFeature {
         "type.impl"   | "F2031" | "an impl block serves one declared type"
         "type.orphan" | "F2037" | "an impl lives in its type's module, or its trait's"
         "type.trait"  | "F2032" | "an impl-for answers every trait method, exactly"
+        "type.mut_fn" | "F2046" | "`mut fn` marks a method — it lives in an impl or a trait"
+        "resolve.receiver" | "F3024" | "`self` names a method's receiver"
+        "resolve.nested_impl" | "F3025" | "impl and trait blocks live at the top level"
+    }
+    let words = table<KeywordRemedy> {
+        word   | help
+        "self" | "`self` is implicit in a method — drop it from the parameter list"
     }
     component LanguageFeature f {
         name = "impls"
-        docs = "`impl Target { … }`, `trait Show { fn sigs }`, `impl Show for Target { … }`, and `value.m(…)` — methods and behavior contracts, statically dispatched."
+        docs = "`impl Target { … }`, `trait Show { fn sigs }`, `impl Show for Target { … }`, and `value.m(…)` — methods and behavior contracts, statically dispatched; `self` is the receiver, implicit; `mut fn` declares a method that writes it."
         gram = grammar {
             stmt = "impl" it:NAME ( "<" tp:NAME ( "," tp:NAME )* ">" )? ( "for" ib:NAME ( "<" tp2:NAME ( "," tp2:NAME )* ">" )? )? "{" ( fs:stmt | BREAK )* "}" END @recover(sync_to: "END") -> impl_decl(it, tp, ib, tp2, fs)
-            stmt = "trait" tn:NAME "{" ( BREAK | "fn" mn:NAME "(" ( tps:NAME ( ":" tpt:type )? ( "," tps:NAME ( ":" tpt:type )? )* )? ")" ( "->" mr:type )? )* "}" END @recover(sync_to: "END") -> trait_decl(tn, mn, tps, tpt, mr)
+            stmt = "trait" tn:NAME "{" ( BREAK | ( mk:"mut" )? "fn" mn:NAME "(" ( tps:NAME ( ":" tpt:type )? ( "," tps:NAME ( ":" tpt:type )? )* )? ")" ( "->" mr:type )? )* "}" END @recover(sync_to: "END") -> trait_decl(tn, mk, mn, tps, tpt, mr)
+            stmt = "mut" "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ">" )? "(" ( ps:NAME ( ":" pt:type )? ( "," ps:NAME ( ":" pt:type )? )* )? ")" ( "->" r:type )? b:block END -> mut_fn_decl(n, tp, ps, pt, r, b)
+            primary = "self" -> receiver()
         }
         diags = codes
         builders = rows
+        remedies = words
     }
     f
 }

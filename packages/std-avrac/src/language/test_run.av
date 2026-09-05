@@ -96,44 +96,44 @@ fn new_entry(types: TypeRegistry) -> EntryBuild {
 }
 
 impl EntryBuild {
-    fn give(self, i: Ins) { self.ins.push(i) }
+    fn give(i: Ins) { self.ins.push(i) }
 
-    fn mint(self, ty: TypeId) -> Reg {
+    fn mint(ty: TypeId) -> Reg {
         self.tys.push(ty)
         Reg { index: self.tys.length - 1 }
     }
 
     /// An int constant in a fresh register.
-    fn constant(self, v: int) -> Reg {
+    fn constant(v: int) -> Reg {
         let r = self.mint(self.types.intern(Type.Int))
         self.give(Ins.ConstInt(r, v))
         r
     }
 
     /// A string literal in a fresh register.
-    fn text(self, s: string) -> Reg {
+    fn text(s: string) -> Reg {
         let r = self.mint(self.types.intern(Type.Str))
         self.give(Ins.ConstStr(r, s))
         r
     }
 
     /// One line to standard output.
-    fn say(self, s: string) {
+    fn say(s: string) {
         self.give(Ins.CallRtVoid("avra_puts", [self.text(s)]))
     }
 
     /// The suite's closing line.
-    fn tally(self, total: int, failed: Reg) { tally_line(self, total, failed) }
+    fn tally(total: int, failed: Reg) { tally_line(self, total, failed) }
 
     /// Whether the tally is zero — the suite's verdict.
-    fn zero_test(self, failed: Reg) -> Reg {
+    fn zero_test(failed: Reg) -> Reg {
         let zero = self.constant(0)
         let same = self.mint(self.types.intern(Type.Bool))
         self.give(Ins.Bin(same, BinOp.Eq, failed, zero))
         same
     }
 
-    fn built(self) -> Body {
+    fn built() -> Body {
         Body { name: "main", params: [], ret: self.types.intern(Type.Int),
                gives: null, ins: self.ins, reg_types: self.tys }
     }

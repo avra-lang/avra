@@ -13,7 +13,7 @@ fn users() -> string {
 
 /// A struct with an int-seated method — the seat no pronoun fits.
 fn scaled() -> string {
-    "type P = { x: int }\nimpl P {\n    fn scaled(self, k: int) -> int {\n        self.x * k\n    }\n}\n"
+    "type P = { x: int }\nimpl P {\n    fn scaled(k: int) -> int {\n        self.x * k\n    }\n}\n"
 }
 
 spec "features/closures/adversarial" {
@@ -31,7 +31,7 @@ spec "features/closures/adversarial" {
             refusals("[].map(it)\n2") == 1
         }
         then "two pronoun arguments at int seats — two seats, two voices" {
-            refusals("type P = { x: int }\nimpl P {\n    fn two(self, a: int, b: int) -> int {\n        self.x + a + b\n    }\n}\nP { x: 1 }.two(it, it)\n2") == 2
+            refusals("type P = { x: int }\nimpl P {\n    fn two(a: int, b: int) -> int {\n        self.x + a + b\n    }\n}\nP { x: 1 }.two(it, it)\n2") == 2
         }
     }
     given "every wrong type at the seat — one refusal each" {
@@ -204,7 +204,7 @@ spec "features/closures/adversarial" {
             refused_with("let f = (x) -> x + 1\n2", "needs a type")
         }
         then "a heterogeneous literal under a dyn want boxes; a non-implementor is named" {
-            refused_with("trait Show {\n    fn show(self) -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show(self) -> int {\n        self.x\n    }\n}\nlet xs: List<dyn Show> = [P { x: 1 }, 5]\n2",
+            refused_with("trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nlet xs: List<dyn Show> = [P { x: 1 }, 5]\n2",
                          "this list holds `dyn Show`, this is `int`")
         }
         then "a nested literal's want reaches the lambda inside — fed, not starved" {
@@ -245,7 +245,7 @@ spec "features/closures/adversarial" {
             shown("fn twice<T>(x: T, f: fn(T) -> T) -> T {\n    let g = () -> f(f(x))\n    g()\n}\n\"\${twice(3, (v: int) -> v + 1)} \${twice(\"a\", (v: string) -> v + \"b\")}\"") == "5 abb"
         }
         then "a lambda in a method captures self and a fn param" {
-            shown("type C = { k: int }\nimpl C {\n    fn run(self, f: fn(int) -> int) -> int {\n        let g = () -> f(self.k) + self.k\n        g()\n    }\n}\nlet c = C { k: 5 }\nc.run((x: int) -> x * 10)") == "55"
+            shown("type C = { k: int }\nimpl C {\n    fn run(f: fn(int) -> int) -> int {\n        let g = () -> f(self.k) + self.k\n        g()\n    }\n}\nlet c = C { k: 5 }\nc.run((x: int) -> x * 10)") == "55"
         }
         then "a lambda param shadows a captured fn name" {
             shown("let f = () -> 1\nlet g = (f: fn() -> int) -> f()\nlet h = () -> f() + g(() -> 2)\nh()") == "3"

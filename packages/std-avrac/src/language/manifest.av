@@ -97,21 +97,21 @@ fn lawful_opt_level(v: TomlValue) -> bool {
 }
 
 impl Reader {
-    fn speak(self, d: Diag) {
+    fn speak(d: Diag) {
         self.voices.push(d)
     }
 
-    fn at(self, lo: int, hi: int) -> Loc? {
+    fn at(lo: int, hi: int) -> Loc? {
         loc_at(self.src.file, span_of(lo, hi))
     }
 
-    fn entry_at(self, e: TomlEntry) -> Loc? {
+    fn entry_at(e: TomlEntry) -> Loc? {
         self.at(e.lo, e.hi)
     }
 
     /// A required `[package]` word; "" when missing or empty — the
     /// voice speaks, the caller judges nothing further.
-    fn word(self, key: string, kind: string, wanted: string) -> string {
+    fn word(key: string, kind: string, wanted: string) -> string {
         let e: TomlEntry? = self.doc.entry("package", key)
         let text: string? = if e == null { null } else { toml_text(e!.value) }
         if text != null && text!.length > 0 { return text! }
@@ -120,7 +120,7 @@ impl Reader {
         ""
     }
 
-    fn header_at(self, section: string) -> Loc? {
+    fn header_at(section: string) -> Loc? {
         let h: TomlHeader? = self.doc.headers.find(it.name == section)
         if h == null { return self.at(0, 0) }
         self.at(h!.lo, h!.hi)
@@ -128,7 +128,7 @@ impl Reader {
 
     /// Unknown sections and keys warn — a newer manifest loads on
     /// an older compiler, degraded and said so.
-    fn unknowns(self) {
+    fn unknowns() {
         for s in self.doc.sections() {
             if !known_section(s) {
                 self.speak(warning("manifest.unknown_section", self.header_at(s), "`[${s}]` is not a section this compiler reads", "ignored", null))
@@ -143,7 +143,7 @@ impl Reader {
     /// A target's entry path: the written one, the section's
     /// default when the section is declared bare, absence when it
     /// is not declared.
-    fn target(self, section: string, default_path: string) -> string? {
+    fn target(section: string, default_path: string) -> string? {
         if !self.doc.has_section(section) { return null }
         let v: TomlValue? = self.doc.get(section, "path")
         if v == null { return default_path }
@@ -152,7 +152,7 @@ impl Reader {
 
     /// Every profile's name is a word, and its opt level is one the
     /// spec names.
-    fn profiles(self) {
+    fn profiles() {
         for s in self.doc.sections() {
             if s.starts_with("profile.") {
                 let pname = s.substring(8, s.length)
@@ -167,7 +167,7 @@ impl Reader {
 
     /// The path dependencies of a section; every other form speaks
     /// and is not a dependency.
-    fn dependencies(self, section: string, dev: bool, own: string) -> List<Dependency> {
+    fn dependencies(section: string, dev: bool, own: string) -> List<Dependency> {
         mut out: List<Dependency> = []
         for e in self.doc.entries_of(section) {
             let d: Dependency? = self.dependency(e, dev, own)
@@ -176,7 +176,7 @@ impl Reader {
         out
     }
 
-    fn dependency(self, e: TomlEntry, dev: bool, own: string) -> Dependency? {
+    fn dependency(e: TomlEntry, dev: bool, own: string) -> Dependency? {
         let at = self.entry_at(e)
         if e.key == own { return self.spoken(self.self_dependency(at, e.key)) }
         if !is_package_key(e.key) { return self.spoken(self.unscoped(at, e.key)) }
@@ -186,18 +186,18 @@ impl Reader {
     }
 
     /// Speak, and answer no dependency.
-    fn spoken(self, d: Diag) -> Dependency? {
+    fn spoken(d: Diag) -> Dependency? {
         self.speak(d)
         null
     }
 
     /// Source paths the package EXCLUDES — vendored code another
     /// toolchain reads from inside `src/`; the compiler never sees it.
-    fn excludes(self) -> List<string> { self.words_of("package", "exclude") }
+    fn excludes() -> List<string> { self.words_of("package", "exclude") }
 
     /// A key's list of words — absent, or written as something else,
     /// is no words at all.
-    fn words_of(self, section: string, key: string) -> List<string> {
+    fn words_of(section: string, key: string) -> List<string> {
         let e: TomlEntry? = self.doc.entry(section, key)
         if e == null { return [] }
         match e!.value {
@@ -207,7 +207,7 @@ impl Reader {
     }
 
     /// Where the next dependency line goes.
-    fn deps_at(self) -> Span? {
+    fn deps_at() -> Span? {
         let last: TomlEntry? = self.doc.entries_of("dependencies").last()
         if last != null { return after(last!.hi) }
         let h: TomlHeader? = self.doc.headers.find(it.name == "dependencies")
@@ -217,23 +217,23 @@ impl Reader {
 
     // ── voices ──
 
-    fn bad_name(self, name: string) -> Diag {
+    fn bad_name(name: string) -> Diag {
         refusal("manifest.bad_name", self.entry_at(self.doc.entry("package", "name")!), "a package is named `@scope/name` — `${name}` is not", "here", "scope and name are words of `[a-z0-9_-]`")
     }
 
-    fn bad_version(self, version: string) -> Diag {
+    fn bad_version(version: string) -> Diag {
         refusal("manifest.bad_version", self.entry_at(self.doc.entry("package", "version")!), "a version is `MAJOR.MINOR.PATCH` — `${version}` is not", "here", null)
     }
 
-    fn self_dependency(self, at: Loc?, key: string) -> Diag {
+    fn self_dependency(at: Loc?, key: string) -> Diag {
         refusal("manifest.self_dependency", at, "`${key}` is this package — a package does not depend on itself", "here", null)
     }
 
-    fn unscoped(self, at: Loc?, key: string) -> Diag {
+    fn unscoped(at: Loc?, key: string) -> Diag {
         refusal("manifest.unscoped_dependency", at, "a dependency is named `@scope/name` — `${key}` has no scope", "here", "name it as its own manifest does, `\"@scope/${key}\"`")
     }
 
-    fn unsupported(self, at: Loc?, key: string) -> Diag {
+    fn unsupported(at: Loc?, key: string) -> Diag {
         refusal("manifest.unsupported_dependency", at, "`${key}` is not a path dependency — only `{ path = \"…\" }` resolves; registry and git forms arrive with their transports", "here", null)
     }
 }

@@ -127,7 +127,7 @@ export fn ptr_shape(t: Type) -> bool {
 impl TypeRegistry {
     /// A shape's canonical key: variant ordinal, then child ids as
     /// payload shapes arrive. Structural — never the printed name.
-    fn canon(self, t: Type) -> string {
+    fn canon(t: Type) -> string {
         match t {
             .Int -> "0",
             .Ptr -> "ptr",
@@ -153,7 +153,7 @@ impl TypeRegistry {
     }
 
     /// The id for a shape, minted on first sight — one map probe.
-    fn intern(self, t: Type) -> TypeId {
+    fn intern(t: Type) -> TypeId {
         let key = self.canon(t)
         let hit: TypeId? = self.ids.get(key)
         if hit != null { return hit! }
@@ -167,21 +167,21 @@ impl TypeRegistry {
         id
     }
 
-    fn shape_of(self, id: TypeId) -> Type { self.shapes[id.index] }
+    fn shape_of(id: TypeId) -> Type { self.shapes[id.index] }
 
     /// A FLAT record's fields, in slot order — a record of scalars
     /// alone, which rides REGISTERS and is never a heap box. Empty
     /// for every other type; the flat ones are marked at
     /// declaration, where the fields are known.
-    fn flat_fields(self, id: TypeId) -> List<TypeId> { self.flats[id.index].fields }
+    fn flat_fields(id: TypeId) -> List<TypeId> { self.flats[id.index].fields }
 
-    fn is_flat(self, id: TypeId) -> bool { !self.flats[id.index].fields.is_empty() }
+    fn is_flat(id: TypeId) -> bool { !self.flats[id.index].fields.is_empty() }
 
     /// Whether a NULLABLE of `inner` rides a pointer — the question
     /// the slot law and the machine type ask. A flat record answers
     /// YES though the bare record answers no: its nullable is a
     /// one-slot box, because a word has no spare value for absence.
-    fn opt_rides_pointer(self, inner: TypeId) -> bool {
+    fn opt_rides_pointer(inner: TypeId) -> bool {
         self.rides_pointer(inner) || self.is_flat(inner)
     }
 
@@ -189,7 +189,7 @@ impl TypeRegistry {
     /// a value in a register has no identity to write through
     /// (ROADMAP: RECEIVER ALIASING). STICKY — a later `mark_flat`
     /// must not undo it, because the two run in demand order.
-    fn unflatten(self, id: TypeId) {
+    fn unflatten(id: TypeId) {
         mut fs = self.flats
         let shut = FlatRow { fields: [], sealed: true }
         fs.set(id.index, shut)
@@ -198,7 +198,7 @@ impl TypeRegistry {
     /// Mark a declared record flat. Its fields hold no reference, so
     /// nothing counts them and nothing frees them: the value IS its
     /// fields. A SEALED record refuses.
-    fn mark_flat(self, id: TypeId, fields: List<TypeId>) {
+    fn mark_flat(id: TypeId, fields: List<TypeId>) {
         if self.flats[id.index].sealed { return }
         mut fs = self.flats
         let row = FlatRow { fields: fields, sealed: false }
@@ -208,7 +208,7 @@ impl TypeRegistry {
     /// What a nullable carries, or absent when the id is not one —
     /// THE projection (values.av's `carried_type` is its cx-space
     /// mirror).
-    fn carried(self, id: TypeId) -> TypeId? {
+    fn carried(id: TypeId) -> TypeId? {
         match self.shape_of(id) {
             .Opt(inner) -> inner,
             _ -> null,
@@ -217,7 +217,7 @@ impl TypeRegistry {
 
     /// A list's element, or absent when the id is not one — the
     /// projection every walk and index reads.
-    fn element(self, id: TypeId) -> TypeId? {
+    fn element(id: TypeId) -> TypeId? {
         match self.shape_of(id) {
             .List(t) -> t,
             _ -> null,
@@ -226,7 +226,7 @@ impl TypeRegistry {
 
     /// A Result's two sides, or absent when the id is not one —
     /// `carried`'s twin for the failure channel.
-    fn res_parts(self, id: TypeId) -> ResSides? {
+    fn res_parts(id: TypeId) -> ResSides? {
         match self.shape_of(id) {
             .Res(ok, err) -> ResSides { ok: ok, err: err },
             _ -> null,
@@ -234,7 +234,7 @@ impl TypeRegistry {
     }
 
     /// A fn type's seats and answer — res_parts' twin.
-    fn arrow_parts(self, id: TypeId) -> Arrow? {
+    fn arrow_parts(id: TypeId) -> Arrow? {
         match self.shape_of(id) {
             .Fn(params, ret) -> Arrow { seats: params, answer: ret },
             _ -> null,
@@ -245,7 +245,7 @@ impl TypeRegistry {
     /// `ptr_shape` with `Opt` answering as what it CARRIES: a niche
     /// nullable IS its pointer, a scalar pair is registers and no
     /// pointer at all. The machine projections ask here.
-    fn rides_pointer(self, id: TypeId) -> bool {
+    fn rides_pointer(id: TypeId) -> bool {
         // a FLAT record is a machine word — its NULLABLE is the box,
         // and `opt_rides_pointer` is the question that asks about it
         if self.is_flat(id) { return false }
@@ -260,7 +260,7 @@ impl TypeRegistry {
     /// `ty` with the TARGET fn's Vars replaced by `args`, by
     /// ordinal — THE substitution, recursive through every
     /// composite. Another fn's Vars pass through untouched.
-    fn substituted(self, ty: TypeId, target: DeclId, args: List<TypeId>) -> TypeId {
+    fn substituted(ty: TypeId, target: DeclId, args: List<TypeId>) -> TypeId {
         match self.shape_of(ty) {
             // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
             .Var(decl, j, _) ->
@@ -281,7 +281,7 @@ impl TypeRegistry {
     }
 
     /// The printing projection — the ONLY place a type becomes text.
-    fn name_of(self, id: TypeId) -> string {
+    fn name_of(id: TypeId) -> string {
         match self.shape_of(id) {
             .Int -> "int",
             .Ptr -> "ptr",
@@ -308,7 +308,7 @@ impl TypeRegistry {
 
     /// A type's arguments, positionally — what its declaration's
     /// parameters were bound to; nothing for a type without any.
-    fn args_of(self, id: TypeId) -> List<TypeId> {
+    fn args_of(id: TypeId) -> List<TypeId> {
         match self.shape_of(id) {
             .App(_, _, args) -> args,
             .Res(ok, err) -> [ok, err],
@@ -321,7 +321,7 @@ impl TypeRegistry {
     }
 
     /// A fn type's written answer — nothing when it answers `void`.
-    fn answer_word(self, ret: TypeId) -> string {
+    fn answer_word(ret: TypeId) -> string {
         if self.shape_of(ret) is .Void { return "" }
         " -> ${self.name_of(ret)}"
     }

@@ -10,7 +10,7 @@
 use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore}
 use diagnostics.{Diag, error_at, loc_at, pointed, refusal, Voices, no_voices}
 use features.modules.{module_laws}
-use features.{ResolveCx, StmtResolveCx, Cap, Namespace, NameFacts, FileView}
+use features.{ResolveCx, StmtResolveCx, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
 /// Words the spec reserves for future levels, memory, and
@@ -41,6 +41,9 @@ type Resolver = {
     overlays: List<Map<string, Binding>>,
     lframes: List<LFrame>,
     floors: List<int>,
+    // one entry per open impl or trait body: inside, `self` names
+    // the receiver seat and the written params start at seat 1
+    receivers: List<bool>,
     walked: List<bool>,
     scoped: List<bool>,
 }
@@ -55,7 +58,7 @@ export fn resolve(lang: Language, view: FileView, scope: Namespace) -> NameFacts
             names: scope, voices: no_voices(),
         },
         def_names: [d.name for d in defs],
-        visible: {}, overlays: [], lframes: [], floors: [],
+        visible: {}, overlays: [], lframes: [], floors: [], receivers: [],
         walked: filled(view.store.exprs.count(), false),
         scoped: filled(view.store.stmts.count(), false),
     }
@@ -72,15 +75,25 @@ fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: 
         facts: r.facts,
         in_block: in_block,
         walk: (v: ExprId) -> resolve_walk(r, param_names, v),
-        walk_under: (ps: List<Param>, body: ExprId) -> resolve_body(r, [pp.name for pp in ps], body),
+        walk_under: (ps: List<Param>, body: ExprId) -> resolve_body(r, [pp.name for pp in written_seats(r.lang.keywords, ps)], body),
         bind_checked: (s: StmtId) -> r.bind_checked(s),
         check_params: (ps: List<Param>, s: StmtId) -> r.check_params(ps, s),
         scope_stmts: (body: List<StmtId>) -> scoped_stmts(r, param_names, body),
-        impl_stmts: (body: List<StmtId>) -> resolve_stmts(r, param_names, false, body),
+        impl_stmts: (body: List<StmtId>) -> under_receiver(r, () -> resolve_stmts(r, param_names, false, body)),
         bound_scope: (s: StmtId, exprs: List<ExprId>, body: List<StmtId>) ->
             bound_scope(r, param_names, s, exprs, body),
     }
     for s in stmts { stmt_semantics_of(r.lang.dispatch, r.view.store.stmt(s)).resolve_stmt(cx, s) }
+}
+
+/// An impl's or a trait's fns around `run`: every fn inside is a
+/// method, and `self` names its receiver.
+fn under_receiver(r: Resolver, run: fn()) {
+    mut rs = r.receivers
+    // LICENSED I15: this IS the bracket fn
+    rs.push(true)
+    run()
+    let _ = rs.pop()
 }
 
 /// A fresh overlay scope around `run`: binds made inside are
@@ -233,6 +246,7 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
         use_name: (e: ExprId, name: string) -> r.resolve_name(e, name, param_names),
         use_call: (e: ExprId, name: string) -> r.resolve_call(e, name, param_names),
         use_type: (e: ExprId, name: string) -> r.resolve_type_use(e, name),
+        use_receiver: (e: ExprId) -> r.resolve_receiver(e),
         arm_scope: (binds: List<string>, v: ExprId) -> arm_scope(r, param_names, binds, v),
         block_scope: (stmts: List<StmtId>, value: ExprId?) -> block_scope(r, param_names, stmts, value),
         lambda_scope: (lam: ExprId, ps: List<Param>, body: ExprId) -> lambda_scope(r, param_names, lam, ps, body),
@@ -261,7 +275,7 @@ fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
 impl Resolver {
     /// A scoped name, whichever namespace holds it — a fn's before
     /// a type's.
-    fn scope_named(self, name: string) -> DeclId? {
+    fn scope_named(name: string) -> DeclId? {
         let as_fn: DeclId? = self.facts.names.fns.get(name)
         if as_fn != null { return as_fn }
         let as_type: DeclId? = self.facts.names.types.get(name)
@@ -273,7 +287,7 @@ impl Resolver {
     /// refuses at its declaration — it resolves to its SHAPE in
     /// annotations and to the declaration everywhere else, one name
     /// with two meanings. The scope already bound the names.
-    fn name_laws(self) {
+    fn name_laws() {
         for s in self.view.stmts {
             let fname: string? = self.view.store.fn_parts(s)?.name
             if fname != null { let _ = self.refused_name(fname!, self.stmt_loc(s)) }
@@ -282,7 +296,7 @@ impl Resolver {
         }
     }
 
-    fn type_name_law(self, name: string, s: StmtId) {
+    fn type_name_law(name: string, s: StmtId) {
         let at = self.stmt_loc(s)
         if self.refused_name(name, at) { return }
         if builtin_type_name(self.lang.rows.types, name) {
@@ -293,9 +307,9 @@ impl Resolver {
     /// The naming law, in one place: keywords and reserved words
     /// refuse as names. True means refused — the site keeps its
     /// hands off the name.
-    fn refused_name(self, name: string, at: Loc?) -> bool {
+    fn refused_name(name: string, at: Loc?) -> bool {
         if self.lang.keywords.contains(name) {
-            self.refuse_keyword(name, at)
+            self.refuse_keyword(name, at, null)
             return true
         }
         if reserved().contains(name) {
@@ -305,14 +319,21 @@ impl Resolver {
         false
     }
 
-    fn check_params(self, fparams: List<Param>, s: StmtId) {
+    /// Parameters obey the naming law, and a keyword written as one
+    /// gets the word's own remedy (`self` in a list — the receiver
+    /// habit — says to drop it).
+    fn check_params(fparams: List<Param>, s: StmtId) {
         let at = self.stmt_loc(s)
         for pp in fparams {
-            let _ = self.refused_name(pp.name, at)
+            if self.lang.keywords.contains(pp.name) {
+                self.refuse_keyword(pp.name, at, remedy_for(self.lang.rows, pp.name))
+            } else {
+                let _ = self.refused_name(pp.name, at)
+            }
         }
     }
 
-    fn resolve_name(self, e: ExprId, name: string, param_names: List<string>) {
+    fn resolve_name(e: ExprId, name: string, param_names: List<string>) {
         if self.once(e) { return }
         // The SAME naming law every other site runs: a keyword can
         // never be a name, so "not defined" would send the reader
@@ -342,17 +363,32 @@ impl Resolver {
             e, name, self.def_names))
     }
 
+    /// `self` — the receiver of the innermost enclosing method,
+    /// captured through every open lambda like any binding; outside
+    /// a method there is no receiver to name.
+    fn resolve_receiver(e: ExprId) {
+        if self.once(e) { return }
+        if self.receivers.is_empty() { return self.no_receiver(self.loc_of(e)) }
+        self.bind_use(e, self.chained(0, receiver_key(), Binding.Receiver))
+    }
+
+    /// The seat the written parameters start at: after the
+    /// receiver's, inside a method.
+    fn seat_base() -> int {
+        if self.receivers.is_empty() { 0 } else { 1 }
+    }
+
     /// A name resolves ONCE — the first walk wins, diagnostics
     /// included. A bound scope re-walking a bound's subtree can
     /// neither re-scope nor re-diagnose it.
-    fn once(self, e: ExprId) -> bool {
+    fn once(e: ExprId) -> bool {
         if self.walked[e.index] { return true }
         self.walked.set(e.index, true)
         false
     }
 
     /// A literal's type name resolves in the type namespace alone.
-    fn resolve_type_use(self, e: ExprId, name: string) {
+    fn resolve_type_use(e: ExprId, name: string) {
         if self.once(e) { return }
         let found: DeclId? = self.facts.names.types.get(name)
         if found != null {
@@ -365,7 +401,7 @@ impl Resolver {
     }
 
     /// A callee resolves in the fn namespace alone.
-    fn resolve_call(self, e: ExprId, name: string, param_names: List<string>) {
+    fn resolve_call(e: ExprId, name: string, param_names: List<string>) {
         if self.once(e) { return }
         // A keyword can never NAME a fn, so "no `fn if` is defined"
         // would offer a remedy the naming law itself forbids.
@@ -391,7 +427,7 @@ impl Resolver {
     }
 
     /// One use's resolved binding lands in the fact table.
-    fn bind_use(self, e: ExprId, b: Binding) {
+    fn bind_use(e: ExprId, b: Binding) {
         mut bs = self.facts.bindings
         bs.set(e.index, b)
     }
@@ -401,7 +437,7 @@ impl Resolver {
     /// params, then the program scope, then a TYPE used as a value
     /// (`Color` in `Color.red`, which typing gives the compile-only
     /// TypeName shape).
-    fn value_binding(self, name: string, param_names: List<string>) -> Binding? {
+    fn value_binding(name: string, param_names: List<string>) -> Binding? {
         let local: Binding? = self.local_binding(name, param_names)
         if local != null { return local }
         // a type's name, then a NAMED FN as a value — both global,
@@ -418,7 +454,7 @@ impl Resolver {
     /// frame is frame-local; anything below the innermost floor is
     /// the outer world, and every frame between records a CAPTURE
     /// (nesting chains Capture through Capture).
-    fn local_binding(self, name: string, param_names: List<string>) -> Binding? {
+    fn local_binding(name: string, param_names: List<string>) -> Binding? {
         let ohit: int? = overlay_index(self.overlays, name)
         let fhit: int? = frame_param_hit(self.lframes, name)
         let ohome = if ohit == null { no_frame() } else { overlay_home(self.lframes, ohit!) }
@@ -434,7 +470,7 @@ impl Resolver {
                 Binding.LambdaParam(f.lam, found_at(f.params, name)!))
         }
         let idx: int? = found_at(param_names, name)
-        if idx != null { return self.chained(0, name, Binding.Param(idx!)) }
+        if idx != null { return self.chained(0, name, Binding.Param(idx! + self.seat_base())) }
         let outer: Binding? = self.outer_binding(name)
         if outer == null { return null }
         // A CONST IS NEVER CAPTURED: a lambda's env holds run-time
@@ -450,7 +486,7 @@ impl Resolver {
     /// binding of the top level — but a CONST is not one. The
     /// compiler settled it, so it crosses the floor like a
     /// declaration does.
-    fn outer_binding(self, name: string) -> Binding? {
+    fn outer_binding(name: string) -> Binding? {
         let held: Binding? = self.visible.get(name)
         if self.floors.is_empty() { return held }
         if held == null { return null }
@@ -464,7 +500,7 @@ impl Resolver {
     /// different statements. Every other binding kind is a run-time
     /// value — a parameter, a pattern's bind, a capture — and any
     /// kind added later will be one too.
-    fn settled_binding(self, b: Binding) -> bool {
+    fn settled_binding(b: Binding) -> bool {
         match b {
             .Def(s) -> settled_stmt(self.view.store, s),
             _ -> false,
@@ -474,7 +510,7 @@ impl Resolver {
     /// A name a body cannot see: the top level's RUN-TIME binding —
     /// declared before the body or after it, all the same. A const
     /// is not one; the compiler settled it, so it crosses.
-    fn hidden_def(self, name: string) -> bool {
+    fn hidden_def(name: string) -> bool {
         if self.floors.is_empty() { return false }
         let store = self.view.store
         self.all_defs.any(it.name == name && !settled_stmt(store, it.stmt))
@@ -483,7 +519,7 @@ impl Resolver {
     /// Wrap a binding in Capture links for every frame from
     /// `from_k` inward — each lambda between the name's home and
     /// the use captures it (or finds it already captured).
-    fn chained(self, from_k: int, name: string, b: Binding) -> Binding {
+    fn chained(from_k: int, name: string, b: Binding) -> Binding {
         mut wrapped = b
         mut k = from_k
         while k < self.lframes.length {
@@ -496,7 +532,7 @@ impl Resolver {
 
     /// The capture's lane in the lambda's set — found, or minted at
     /// the tail. The set's order IS the box's slot order.
-    fn captured(self, lam: ExprId, name: string, source: Binding) -> int {
+    fn captured(lam: ExprId, name: string, source: Binding) -> int {
         let held: Cap? = self.facts.captures[lam.index]
         if held == null {
             mut cs = self.facts.captures
@@ -514,34 +550,38 @@ impl Resolver {
     /// The chain's STATEMENT-shaped half — overlays, then the
     /// program scope. Params are not definitions, so assignment
     /// refuses them through `is_param` instead.
-    fn binding_of(self, name: string) -> Binding? {
+    fn binding_of(name: string) -> Binding? {
         let inner: Binding? = overlay_hit(self.overlays, name)
         if inner != null { return inner }
         let outer: Binding? = self.outer_binding(name)
         outer
     }
 
-    fn unbound_pronoun(self, at: Loc?) {
+    fn unbound_pronoun(at: Loc?) {
         self.speak(refusal("resolve.unresolved", at, "`it` rides a METHOD call's arguments — nothing binds it here", "the pronoun", "inside `xs.map(…)` and friends `it` is the element; elsewhere, name the value"))
     }
 
-    fn runtime_binding(self, name: string, at: Loc?) {
+    fn runtime_binding(name: string, at: Loc?) {
         self.speak(refusal("resolve.runtime_binding", at, "`${name}` is a run-time binding of the top level — a fn body sees declarations, not the values around it", "read here", "pass `${name}` in as a parameter, or make it a fn"))
     }
 
-    fn refuse_reserved(self, name: string, at: Loc?) {
+    fn refuse_reserved(name: string, at: Loc?) {
         self.speak(refusal("resolve.reserved", at, "`${name}` is reserved for a future Avra feature", "cannot be a name", "pick another name — `${name}` becomes a keyword"))
     }
 
-    fn refuse_keyword(self, name: string, at: Loc?) {
-        self.speak(refusal("resolve.reserved", at, "`${name}` is a keyword", "cannot be a name", "pick another name"))
+    fn refuse_keyword(name: string, at: Loc?, remedy: string?) {
+        self.speak(refusal("resolve.reserved", at, "`${name}` is a keyword", "cannot be a name", remedy ?? "pick another name"))
     }
 
-    fn speak(self, d: Diag) { self.facts.voices.speak(d) }
+    fn no_receiver(at: Loc?) {
+        self.speak(refusal("resolve.receiver", at, "`self` names a method's receiver — this is not a method", "no receiver here", "move this into `impl <Type> { … }`"))
+    }
+
+    fn speak(d: Diag) { self.facts.voices.speak(d) }
 
     /// The first PROGRAM-SCOPE definition of `name` anywhere — a
     /// scoped binder (a loop counter) is not one.
-    fn later_def(self, name: string) -> StmtId? {
+    fn later_def(name: string) -> StmtId? {
         self.all_defs.find(it.name == name && !self.scoped[it.stmt.index])?.stmt
     }
 
@@ -551,7 +591,7 @@ impl Resolver {
     /// assignment may touch.
     /// The index a pairing loop names, bound beside its element
     /// under the same naming law.
-    fn bind_index(self, s: StmtId) {
+    fn bind_index(s: StmtId) {
         let ix: string? = self.view.store.loop_index(s)
         if ix == null { return }
         let name = ix!
@@ -562,11 +602,11 @@ impl Resolver {
 
     /// A pairing loop names its index and its element apart — one
     /// name for both would shadow one of them silently.
-    fn paired_alike(self, s: StmtId, name: string) {
+    fn paired_alike(s: StmtId, name: string) {
         self.speak(refusal("resolve.paired", self.stmt_loc(s), "`${name}` names both the index and the element", "bound here", "give the index its own name — `for i, ${name} in …`"))
     }
 
-    fn bind_checked(self, s: StmtId) {
+    fn bind_checked(s: StmtId) {
         let binds: string? = self.view.store.let_name(s)
         if binds == null { return }
         if !self.refused_name(binds!, self.stmt_loc(s)) { self.bind(binds!, Binding.Def(s)) }
@@ -574,7 +614,7 @@ impl Resolver {
 
     /// Latest binding wins — Map.set IS shadowing. Inside a block,
     /// the binding lives in the innermost overlay and dies with it.
-    fn bind(self, name: string, b: Binding) {
+    fn bind(name: string, b: Binding) {
         if self.overlays.is_empty() {
             self.visible.set(name, b)
         } else {
@@ -586,17 +626,17 @@ impl Resolver {
         }
     }
 
-    fn loc_of(self, e: ExprId) -> Loc? {
+    fn loc_of(e: ExprId) -> Loc? {
         loc_at(self.view.source.file, self.view.store.expr_span(e))
     }
 
-    fn stmt_loc(self, s: StmtId) -> Loc? {
+    fn stmt_loc(s: StmtId) -> Loc? {
         loc_at(self.view.source.file, self.view.store.stmt_span(s))
     }
 
     /// A "did you mean" from the given candidates — later and
     /// shadowed names are honest candidates for a typo.
-    fn suggested(self, d: Diag, e: ExprId, name: string, candidates: List<string>) -> Diag {
+    fn suggested(d: Diag, e: ExprId, name: string, candidates: List<string>) -> Diag {
         let near: Closest? = closest(name, candidates)
         if near == null { return d }
         let n = near!
@@ -613,6 +653,12 @@ impl Resolver {
 
 /// Whether a program-scope definition is a const's — the one
 /// question both the crossing law and the hiding law ask.
+/// The capture table's key for the receiver — a word no NAME can
+/// spell, `self` being a keyword, so it collides with nothing.
+fn receiver_key() -> string {
+    "self"
+}
+
 fn settled_stmt(store: NodeStore, s: StmtId) -> bool {
     store.const_value(s) != null
 }

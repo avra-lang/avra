@@ -10,7 +10,7 @@ use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, StmtReso
 export type EnumsSemantics = { }
 
 impl NodeSemantics for EnumsSemantics {
-    fn kids(self, e: Expr) -> List<ExprId> {
+    fn kids(e: Expr) -> List<ExprId> {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match e {
             .Match(subject, _) -> [subject],
@@ -20,7 +20,7 @@ impl NodeSemantics for EnumsSemantics {
         }
     }
 
-    fn heirs(self, e: Expr) -> List<ExprId> {
+    fn heirs(e: Expr) -> List<ExprId> {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match e {
             .Match(_, arms) -> [a.value for a in arms],
@@ -28,7 +28,7 @@ impl NodeSemantics for EnumsSemantics {
         }
     }
 
-    fn resolve(self, cx: ResolveCx, e: ExprId) {
+    fn resolve(cx: ResolveCx, e: ExprId) {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
             .Match(_, arms) -> resolve_arms(cx, arms),
@@ -36,11 +36,11 @@ impl NodeSemantics for EnumsSemantics {
         }
     }
 
-    fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId {
+    fn type_of(cx: TypeCx, e: ExprId) -> TypeId {
         enums_type(cx, e)
     }
 
-    fn lower(self, cx: LowerCx, e: ExprId) -> Reg {
+    fn lower(cx: LowerCx, e: ExprId) -> Reg {
         enums_reg(cx, e)
     }
 }
@@ -48,15 +48,15 @@ impl NodeSemantics for EnumsSemantics {
 export type EnumDeclSemantics = { }
 
 impl StmtSemantics for EnumDeclSemantics {
-    fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId) {
+    fn resolve_stmt(cx: StmtResolveCx, s: StmtId) {
         let _ = refuses_nested(cx, s, "resolve.nested_type", "type declarations")
     }
 
-    fn type_stmt(self, cx: StmtTypeCx, s: StmtId) {
+    fn type_stmt(cx: StmtTypeCx, s: StmtId) {
         check_enum_decl(cx, s)
     }
 
-    fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg? {
+    fn lower_stmt(cx: StmtLowerCx, s: StmtId) -> Reg? {
         null
     }
 }

@@ -51,15 +51,15 @@ export fn new_db() -> Db {
 }
 
 impl Db {
-    fn revision(self) -> int { self.rev[0] }
+    fn revision() -> int { self.rev[0] }
 
     /// An input changed (or arrived): the revision advances.
-    fn bump(self) {
+    fn bump() {
             self.rev.set(0, self.rev[0] + 1)
     }
 
     /// A family registered with its verifier; its number answers.
-    fn family(self, verify: fn(int) -> int) -> int {
+    fn family(verify: fn(int) -> int) -> int {
         self.verifiers.push(verify)
         self.cells.push([])
         self.cells.length - 1
@@ -67,7 +67,7 @@ impl Db {
 
     /// The driver sets an INPUT: a cell with no deps whose changed_at
     /// advances only when the hash moved.
-    fn set_input(self, key: Key, value_hash: int) {
+    fn set_input(key: Key, value_hash: int) {
         let prior: Cell? = self.cell(key)
         if prior != null && prior!.value_hash == value_hash {
             self.write(key, Cell { deps: [], changed_at: prior!.changed_at, verified_at: self.revision(), value_hash: value_hash })
@@ -79,7 +79,7 @@ impl Db {
 
     /// The red-green decision for a derived query, recording the
     /// read in the open frame.
-    fn ask(self, key: Key) -> Verdict {
+    fn ask(key: Key) -> Verdict {
         self.record_dep(key)
         if self.open.any(same_key(it, key)) { return Verdict.Cycle }
         let held: Cell? = self.cell(key)
@@ -93,32 +93,32 @@ impl Db {
 
     /// Re-verify each dep through its family; true when one changed
     /// after this cell was last verified.
-    fn any_dep_changed(self, cell: Cell) -> bool {
+    fn any_dep_changed(cell: Cell) -> bool {
         for d in cell.deps {
             if self.changed_after(d, cell.verified_at) { return true }
         }
         false
     }
 
-    fn changed_after(self, dep: Key, since: int) -> bool {
+    fn changed_after(dep: Key, since: int) -> bool {
         let verify = self.verifiers[dep.family]
         verify(dep.arg) > since
     }
 
     /// Whether a computation of this key is open right now.
-    fn active(self, key: Key) -> bool {
+    fn active(key: Key) -> bool {
         self.open.any(same_key(it, key))
     }
 
     /// The cell's changed_at, or the current revision for a key the
     /// kernel has never seen (an unknown is always new).
-    fn changed_at(self, key: Key) -> int {
+    fn changed_at(key: Key) -> int {
         self.cell(key)?.changed_at ?? self.revision()
     }
 
     /// A computation begins: its reads land in a fresh frame, and it
     /// is open until it settles.
-    fn begin(self, key: Key) {
+    fn begin(key: Key) {
         // LICENSED I15: the bracketed VALUE is the caller's — a thunk cannot carry a generic answer (F1002)
         self.frames.push([])
         // LICENSED I15: the open stack brackets the same computation
@@ -127,7 +127,7 @@ impl Db {
 
     /// A computation ends: its frame becomes the cell's deps; an
     /// unchanged hash keeps changed_at (early cutoff).
-    fn settle(self, key: Key, value_hash: int) {
+    fn settle(key: Key, value_hash: int) {
         let deps: List<Key> = self.frames.pop() ?? []
         let _ = self.open.pop()
         let prior: Cell? = self.cell(key)
@@ -135,7 +135,7 @@ impl Db {
         self.write(key, Cell { deps: deps, changed_at: changed, verified_at: self.revision(), value_hash: value_hash })
     }
 
-    fn record_dep(self, key: Key) {
+    fn record_dep(key: Key) {
         if self.frames.is_empty() { return }
         mut fs = self.frames
         let at = fs.length - 1
@@ -144,14 +144,14 @@ impl Db {
         fs.set(at, top)
     }
 
-    fn cell(self, key: Key) -> Cell? {
+    fn cell(key: Key) -> Cell? {
         let row = self.cells[key.family]
         if key.arg >= row.length { return null }
         let held: Cell? = row[key.arg]
         held
     }
 
-    fn write(self, key: Key, cell: Cell) {
+    fn write(key: Key, cell: Cell) {
         mut rows = self.cells
         mut row = rows[key.family]
         while row.length <= key.arg { row.push(null) }
@@ -161,7 +161,7 @@ impl Db {
 
     /// Cells not verified this revision are dead: dropped, so a
     /// long-lived kernel holds only what the last full pass touched.
-    fn sweep(self) {
+    fn sweep() {
         mut rows = self.cells
         for f, row in rows {
             mut cells = row
@@ -172,18 +172,18 @@ impl Db {
         }
     }
 
-    fn hit(self) -> Verdict {
+    fn hit() -> Verdict {
             self.hits.set(0, self.hits[0] + 1)
         Verdict.Reuse
     }
 
-    fn miss(self) -> Verdict {
+    fn miss() -> Verdict {
             self.misses.set(0, self.misses[0] + 1)
         Verdict.Compute
     }
 
     /// The counters, rendered — `--time`'s cache line.
-    fn stats(self) -> string {
+    fn stats() -> string {
         "rev ${self.revision()}: ${self.hits[0]} hits, ${self.misses[0]} misses"
     }
 }

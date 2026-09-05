@@ -97,7 +97,7 @@ export type CliResult = {
 //
 // Shape mirrors `docs/2026_05_08_COMPONENTS_V2_DESIGN.md §4.2`, with the
 // data/behaviour split below:
-//   trait Runnable { fn run(self, args: CliResult) -> int }   // behaviour only
+//   trait Runnable { fn run(args: CliResult) -> int }   // behaviour only
 //   type CommandSpec = { name, description, hidden, flags, args, options }   // data
 //   type Subcommand  = { meta: CommandSpec, body: dyn Runnable }
 //   @expand(expand_command) component command implements Runnable { ... }
@@ -116,7 +116,7 @@ export type CliResult = {
 /// smuggled through the vtable as accessor methods — the honest split of
 /// homogeneous data from heterogeneous behaviour.
 export trait Runnable {
-    fn run(self, args: CliResult) -> int
+    fn run(args: CliResult) -> int
 }
 
 /// One subcommand of an `App`: its `meta` (name + parse schema — DATA, read
@@ -147,7 +147,7 @@ impl App {
     /// off the command's `CommandSpec` (data); dispatch is then a vtable
     /// call through the `dyn Runnable` `body` (behaviour) — each command's
     /// generated `run` body executes with its flag/arg accessors bound.
-    fn dispatch(self, parsed: CliResult) -> int {
+    fn dispatch(parsed: CliResult) -> int {
         for c in self.commands {
             if c.meta.name == parsed.command {
                 return c.body.run(parsed)
@@ -163,7 +163,7 @@ impl App {
     /// exit code, or 1 when the slot is empty or no command matches
     /// (after printing help). Split out from `run` so the whole
     /// parse+dispatch path is testable with a synthetic argv list.
-    fn run_argv(self, argv: List<string>) -> int {
+    fn run_argv(argv: List<string>) -> int {
         if argv.length == 0 {
             app_print_help(self)
             return 1
@@ -197,7 +197,7 @@ impl App {
     /// CLI doesn't silently run a mis-parsed invocation. The command's `meta`
     /// IS the parse schema (FlagDef/OptionDef/ArgDef lists), read DIRECTLY —
     /// no accessor round-trip, no name→def rebuild.
-    fn run_matched(self, c: Subcommand, argv: List<string>) -> int {
+    fn run_matched(c: Subcommand, argv: List<string>) -> int {
         mut tokens: List<string> = []
         mut i = 1
         while i < argv.length {
@@ -220,7 +220,7 @@ impl App {
     /// Read the real process argv (dropping the program name at index 0)
     /// and run. Thin glue over `run_argv` — all the parse/dispatch logic
     /// lives there so it can be tested without a live process.
-    fn run(self) -> int {
+    fn run() -> int {
         let argc = avra_selfhost_argc()
         mut argv: List<string> = []
         mut i = 1

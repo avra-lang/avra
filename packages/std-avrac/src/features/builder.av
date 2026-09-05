@@ -10,22 +10,22 @@ export type Builder = { store: NodeStore, args: List<Captured<LangNode>>, span: 
 
 impl Builder {
     /// The token argument at `i`.
-    fn token(self, i: int) -> Result<Token, string> {
+    fn token(i: int) -> Result<Token, string> {
         want(token_at(self.args, i), "a token argument")
     }
 
     /// The expression argument at `i`.
-    fn expr(self, i: int) -> Result<ExprId, string> {
+    fn expr(i: int) -> Result<ExprId, string> {
         want(expr_id_at(self.args, i), "an expression argument")
     }
 
     /// The statement argument at `i`.
-    fn stmt(self, i: int) -> Result<StmtId, string> {
+    fn stmt(i: int) -> Result<StmtId, string> {
         want(stmt_id_at(self.args, i), "a statement argument")
     }
 
     /// The written-type argument at `i`.
-    fn type_ref(self, i: int) -> Result<TypeRef, string> {
+    fn type_ref(i: int) -> Result<TypeRef, string> {
         want(type_ref_at(self.args, i), "a type argument")
     }
 
@@ -36,12 +36,12 @@ impl Builder {
     // payloads through mono. Four copies, deliberately.
 
     /// The answer written at `i` — `void` when none.
-    fn answer(self, i: int) -> TypeRef {
+    fn answer(i: int) -> TypeRef {
         type_ref_at(self.args, i) ?? void_ref()
     }
 
     /// The repeated capture at `i`, as written types.
-    fn type_refs(self, i: int) -> Result<List<TypeRef>, string> {
+    fn type_refs(i: int) -> Result<List<TypeRef>, string> {
         let items = list_at(self.args, i)
         mut out: List<TypeRef> = []
         // LICENSED I3: index-taking extractors: a bare Captured arg misreads
@@ -52,7 +52,7 @@ impl Builder {
     }
 
     /// The repeated capture at `i`, as plain tokens.
-    fn tokens(self, i: int) -> Result<List<Token>, string> {
+    fn tokens(i: int) -> Result<List<Token>, string> {
         let items = list_at(self.args, i)
         mut out: List<Token> = []
         // LICENSED I3: index-taking extractors: a bare Captured arg misreads
@@ -63,7 +63,7 @@ impl Builder {
     }
 
     /// The repeated capture at `i`, as expression ids.
-    fn exprs(self, i: int) -> Result<List<ExprId>, string> {
+    fn exprs(i: int) -> Result<List<ExprId>, string> {
         let items = list_at(self.args, i)
         mut out: List<ExprId> = []
         // LICENSED I3: index-taking extractors: a bare Captured arg misreads
@@ -76,7 +76,7 @@ impl Builder {
     /// The repeated capture at `i`, as statement ids. A recovery hole
     /// becomes an explicit Stmt.Error node, as at the program's top
     /// level — every body survives bad input visibly.
-    fn stmts(self, i: int) -> Result<List<StmtId>, string> {
+    fn stmts(i: int) -> Result<List<StmtId>, string> {
         let items = list_at(self.args, i)
         mut out: List<StmtId> = []
         // LICENSED I3: index-taking extractors: a bare Captured arg misreads
@@ -88,44 +88,44 @@ impl Builder {
     }
 
     /// A new pattern node, spanning the matched branch.
-    fn make_pat(self, p: Pat) -> Result<LangNode, string> {
+    fn make_pat(p: Pat) -> Result<LangNode, string> {
         .Ok(LangNode.NPat(self.store.alloc_pat(p, self.span)))
     }
 
     /// One match arm, as data.
-    fn make_arm(self, pats: List<PatId>, value: ExprId) -> Result<LangNode, string> {
+    fn make_arm(pats: List<PatId>, value: ExprId) -> Result<LangNode, string> {
         .Ok(LangNode.NArm(Arm { pats: pats, value: value }))
     }
 
     /// A new expression node, spanning the matched branch.
-    fn make_expr(self, e: Expr) -> Result<LangNode, string> {
+    fn make_expr(e: Expr) -> Result<LangNode, string> {
         .Ok(LangNode.NExpr(self.store.alloc_expr(e, self.span)))
     }
 
     /// A new statement node, spanning the matched branch.
-    fn make_stmt(self, s: Stmt) -> Result<LangNode, string> {
+    fn make_stmt(s: Stmt) -> Result<LangNode, string> {
         .Ok(LangNode.NStmt(self.store.alloc_stmt(s, self.span)))
     }
 
     /// A written type as this build's result — no arena, no id.
-    fn make_type(self, t: TypeRef) -> Result<LangNode, string> {
+    fn make_type(t: TypeRef) -> Result<LangNode, string> {
         .Ok(LangNode.NType(t))
     }
 
     /// An already-allocated expression as this build's result.
-    fn wrap_expr(self, id: ExprId) -> Result<LangNode, string> {
+    fn wrap_expr(id: ExprId) -> Result<LangNode, string> {
         .Ok(LangNode.NExpr(id))
     }
 
     /// Where this build's branch ENDED — the bound a positional
     /// reconstruction measures against. Absent for a synthesized
     /// branch, and a caller that needs it must say so.
-    fn span_end(self) -> int? {
+    fn span_end() -> int? {
         self.span?.hi
     }
 
     /// The span containing both expressions, when both are known.
-    fn cover(self, a: ExprId, b: ExprId) -> Span? {
+    fn cover(a: ExprId, b: ExprId) -> Span? {
         self.store.cover(a, b)
     }
 }
@@ -315,4 +315,16 @@ fn default_before(b: Builder, fs: List<Token>, fds: List<ExprId>, j: int) -> Exp
 fn starts_between(b: Builder, e: ExprId, lo: int, hi: int) -> bool {
     let sp: Span? = b.store.expr_span(e)
     sp != null && sp!.lo > lo && sp!.lo < hi
+}
+
+/// Parameter seats from two parallel captures — the names and the
+/// types they aligned to — with no defaults: what every fn-shaped
+/// declaration zips.
+export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
+    mut out: List<Param> = []
+    // LICENSED I3: a ZIP of parallel captures; comprehensions cannot
+    for j, p in ps {
+        out.push(Param { name: p.text, ty: tys[j], default: null })
+    }
+    out
 }

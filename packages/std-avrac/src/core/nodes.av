@@ -64,8 +64,12 @@ export fn same_file(a: FileId, b: FileId) -> bool {
 ///
 /// A new variant answers both columns or the build refuses.
 export enum Binding {
-    /// The enclosing fn's Nth parameter — params ARE registers.
+    /// The enclosing fn's Nth parameter — params ARE registers. In
+    /// a method the written parameters start at seat 1.
     Param(index: int)
+    /// The enclosing method's receiver — seat 0, never written in
+    /// the parameter list: `self` binds here.
+    Receiver
     /// A binding statement (`let`, `mut`, `fn`) — the definition
     /// site is the identity.
     Def(stmt: StmtId)
@@ -154,6 +158,9 @@ export enum Expr {
     StrLit(value: string)
     BoolLit(value: bool)
     Ident(name: string)
+    /// `self` — the enclosing method's receiver. A keyword, so it
+    /// carries no name: the binding says what it is.
+    Receiver
     Binary(op: BinOp, left: ExprId, right: ExprId)
     /// Boolean negation — the one unary, until minus.
     Not(value: ExprId)
@@ -401,7 +408,7 @@ export enum Stmt {
     /// channel of its Result right here. Diverges, like `return`.
     Fail(value: ExprId)
     /// `impl Target { fns… }` — methods for a declared type: each
-    /// fn's bare `self` first param types as the target, and the
+    /// fn is a method: `self` types as the target, and the
     /// fn lowers under a QUALIFIED name (`Target.method`). `of`
     /// names the TRAIT being implemented — "" for an inherent impl
     /// — and an impl-for must answer every trait method.
@@ -448,6 +455,8 @@ export type NodeStore = {
     stmts: Arena<Stmt>,
     stmt_fingerprints: List<int>,
     exported: List<bool>,
+    // `mut fn` — a method declaring that it writes its receiver
+    mutating: List<bool>,
     pats: List<Pat>,
     pat_spans: List<Span?>,
     pat_fingerprints: List<int>,
@@ -456,14 +465,14 @@ export type NodeStore = {
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena<Expr>(), expr_fingerprints: [],
-        stmts: new_arena<Stmt>(), stmt_fingerprints: [], exported: [],
+        stmts: new_arena<Stmt>(), stmt_fingerprints: [], exported: [], mutating: [],
         pats: [], pat_spans: [], pat_fingerprints: [],
     }
 }
 
 impl NodeStore {
     /// The one expression-allocation seam.
-    fn alloc_expr(self, e: Expr, span: Span?) -> ExprId {
+    fn alloc_expr(e: Expr, span: Span?) -> ExprId {
         self.expr_fingerprints.push(self.fingerprint_expr(e))
         ExprId { index: self.exprs.add(e, span) }
     }
@@ -472,7 +481,7 @@ impl NodeStore {
     /// statement's expression, or an if-chain every branch of which
     /// answers — rebuilt as the if-expression over branch blocks, so
     /// a chain in tail position is a value wherever a block is.
-    fn answer_of(self, s: StmtId) -> ExprId? {
+    fn answer_of(s: StmtId) -> ExprId? {
         match self.stmt(s) {
             .ExprStmt(v) -> v,
             .Discard(_) -> null,
@@ -485,7 +494,7 @@ impl NodeStore {
     }
 
     /// A chain answers when it has an else and both sides answer.
-    fn chain_value(self, s: StmtId, c: ExprId, t: List<StmtId>, e: List<StmtId>) -> ExprId? {
+    fn chain_value(s: StmtId, c: ExprId, t: List<StmtId>, e: List<StmtId>) -> ExprId? {
         if e.is_empty() { return null }
         let tv: ExprId? = self.branch_value(t)
         let ev: ExprId? = self.branch_value(e)
@@ -496,7 +505,7 @@ impl NodeStore {
     /// A branch's statements as its answer: the one expression when
     /// that is all the branch holds, else a block answering with its
     /// tail.
-    fn branch_value(self, stmts: List<StmtId>) -> ExprId? {
+    fn branch_value(stmts: List<StmtId>) -> ExprId? {
         let held: StmtId? = stmts.last()
         if held == null { return null }
         let last = held!
@@ -512,7 +521,7 @@ impl NodeStore {
     /// The statements with a trailing if-chain that answers turned
     /// into the expression statement it is — the top level's tail
     /// law, the same as a block's.
-    fn answered(self, stmts: List<StmtId>) -> List<StmtId> {
+    fn answered(stmts: List<StmtId>) -> List<StmtId> {
         let held: StmtId? = stmts.last()
         if held == null { return stmts }
         let last = held!
@@ -527,20 +536,20 @@ impl NodeStore {
     }
 
     /// The one pattern-allocation seam.
-    fn alloc_pat(self, p: Pat, span: Span?) -> PatId {
+    fn alloc_pat(p: Pat, span: Span?) -> PatId {
         self.pat_fingerprints.push(self.fingerprint_pat(p))
         self.pat_spans.push(span)
         self.pats.push(p)
         PatId { index: self.pats.length - 1 }
     }
 
-    fn pat(self, id: PatId) -> Pat { self.pats[id.index] }
-    fn pat_span(self, id: PatId) -> Span? { self.pat_spans[id.index] }
-    fn pat_fingerprint(self, id: PatId) -> int { self.pat_fingerprints[id.index] }
+    fn pat(id: PatId) -> Pat { self.pats[id.index] }
+    fn pat_span(id: PatId) -> Span? { self.pat_spans[id.index] }
+    fn pat_fingerprint(id: PatId) -> int { self.pat_fingerprints[id.index] }
 
     /// The names a pattern binds, in pre-order — the arm's bind
     /// order, which every pass keys by index.
-    fn pattern_binds(self, id: PatId) -> List<string> {
+    fn pattern_binds(id: PatId) -> List<string> {
         match self.pat(id) {
             .Bind(name) -> [name],
             .Variant(_, args) -> flatten([self.pattern_binds(a) for a in args]),
@@ -549,7 +558,7 @@ impl NodeStore {
     }
 
     /// A pattern nothing can refuse: a hole or a name.
-    fn irrefutable(self, id: PatId) -> bool {
+    fn irrefutable(id: PatId) -> bool {
         match self.pat(id) {
             .Wild or .Rest or .Bind(_) -> true,
             .Variant(_, _) or .Lit(_) -> false,
@@ -558,7 +567,7 @@ impl NodeStore {
 
     /// The pattern's fingerprint parts: its own shape, then its
     /// children's.
-    fn fingerprint_pat(self, p: Pat) -> int {
+    fn fingerprint_pat(p: Pat) -> int {
         match p {
             .Wild -> fp(50, []),
             .Rest -> fp(51, []),
@@ -570,44 +579,55 @@ impl NodeStore {
 
     /// An arm list's fingerprint parts: each arm's patterns, then
     /// its value.
-    fn arm_fps(self, arms: List<Arm>) -> List<int> {
+    fn arm_fps(arms: List<Arm>) -> List<int> {
         flatten([[self.pat_fingerprint(p) for p in a.pats].concat([self.expr_fingerprint(a.value)]) for a in arms])
     }
 
     /// The one statement-allocation seam.
-    fn alloc_stmt(self, s: Stmt, span: Span?) -> StmtId {
+    fn alloc_stmt(s: Stmt, span: Span?) -> StmtId {
         self.stmt_fingerprints.push(self.fingerprint_stmt(s))
         self.exported.push(false)
+        self.mutating.push(false)
         StmtId { index: self.stmts.add(s, span) }
+    }
+
+    /// `mut fn` crossed this declaration — it says its receiver is
+    /// written; a trait sig's word is the contract.
+    fn mark_mutating(s: StmtId) {
+        self.mutating.set(s.index, true)
+    }
+
+    fn is_mutating(s: StmtId) -> bool {
+        self.mutating[s.index]
     }
 
     /// `export` crossed this declaration — the module's surface
     /// carries it.
-    fn mark_exported(self, s: StmtId) {
+    fn mark_exported(s: StmtId) {
         self.exported.set(s.index, true)
     }
 
-    fn is_exported(self, s: StmtId) -> bool {
+    fn is_exported(s: StmtId) -> bool {
         self.exported[s.index]
     }
 
     /// A `use` statement's parts, when the statement is one.
-    fn use_parts(self, s: StmtId) -> UseParts? {
+    fn use_parts(s: StmtId) -> UseParts? {
         match self.stmt(s) {
             .Use(path, items) -> UseParts { path: path, items: items, stmt: s },
             _ -> null,
         }
     }
 
-    fn expr(self, id: ExprId) -> Expr { self.exprs.node_at(id.index) }
-    fn stmt(self, id: StmtId) -> Stmt { self.stmts.node_at(id.index) }
-    fn expr_span(self, id: ExprId) -> Span? { self.exprs.span_at(id.index) }
-    fn stmt_span(self, id: StmtId) -> Span? { self.stmts.span_at(id.index) }
-    fn expr_fingerprint(self, id: ExprId) -> int { self.expr_fingerprints[id.index] }
-    fn stmt_fingerprint(self, id: StmtId) -> int { self.stmt_fingerprints[id.index] }
+    fn expr(id: ExprId) -> Expr { self.exprs.node_at(id.index) }
+    fn stmt(id: StmtId) -> Stmt { self.stmts.node_at(id.index) }
+    fn expr_span(id: ExprId) -> Span? { self.exprs.span_at(id.index) }
+    fn stmt_span(id: StmtId) -> Span? { self.stmts.span_at(id.index) }
+    fn expr_fingerprint(id: ExprId) -> int { self.expr_fingerprints[id.index] }
+    fn stmt_fingerprint(id: StmtId) -> int { self.stmt_fingerprints[id.index] }
 
     /// The span containing both expressions, when both are known.
-    fn cover(self, a: ExprId, b: ExprId) -> Span? {
+    fn cover(a: ExprId, b: ExprId) -> Span? {
         let sa = self.expr_span(a)
         let sb = self.expr_span(b)
         if sa == null || sb == null { return null }
@@ -618,9 +638,10 @@ impl NodeStore {
     /// a field of a subject, or an index into one. The one
     /// projection for the place category — every other shape is a
     /// value, not a place.
-    fn place_step(self, e: ExprId) -> PlaceStep? {
+    fn place_step(e: ExprId) -> PlaceStep? {
         match self.expr(e) {
             .Ident(name) -> PlaceStep.Root(name),
+            .Receiver -> PlaceStep.Root("self"),
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
             .IntLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or
@@ -634,7 +655,7 @@ impl NodeStore {
 
     /// The binding a place is rooted in — the name at the bottom of
     /// its path; null when the expression is not a place.
-    fn place_root(self, e: ExprId) -> ExprId? {
+    fn place_root(e: ExprId) -> ExprId? {
         let step: PlaceStep? = self.place_step(e)
         if step == null { return null }
         match step! {
@@ -646,7 +667,7 @@ impl NodeStore {
 
     /// The INDEX name a pairing loop binds — null for every other
     /// statement, and for a loop that names only its element.
-    fn loop_index(self, s: StmtId) -> string? {
+    fn loop_index(s: StmtId) -> string? {
         match self.stmt(s) {
             .ForEach(index, _, _, _) -> index,
             _ -> null,
@@ -654,7 +675,7 @@ impl NodeStore {
     }
 
     /// A bare name's text; null for every other expression.
-    fn ident_name(self, e: ExprId) -> string? {
+    fn ident_name(e: ExprId) -> string? {
         match self.expr(e) {
             .Ident(name) -> name,
             _ -> null,
@@ -668,12 +689,12 @@ impl NodeStore {
     /// other node asks its children. A block's STATEMENTS do not
     /// carry the pronoun (recorded) — only its answering value.
     /// Exhaustive: a new expression must answer.
-    fn pronoun_rides(self, id: ExprId) -> bool {
+    fn pronoun_rides(id: ExprId) -> bool {
         match self.expr(id) {
             .Ident(name) -> name == "it",
             .Lambda(_, _) -> false,
             .MethodCall(subject, _, _) -> self.pronoun_rides(subject),
-            .IntLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error -> false,
+            .IntLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Receiver -> false,
             .Binary(_, left, right) -> self.pronoun_rides(left) || self.pronoun_rides(right),
             .Not(v) -> self.pronoun_rides(v),
             .Force(v) -> self.pronoun_rides(v),
@@ -704,7 +725,7 @@ impl NodeStore {
         }
     }
 
-    fn any_rides(self, ids: List<ExprId>) -> bool {
+    fn any_rides(ids: List<ExprId>) -> bool {
         // LICENSED I5: bs2's pronoun detector misses self-method
         // wrappers — the scan is spelled
         for k in ids {
@@ -715,11 +736,12 @@ impl NodeStore {
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 51.
-    fn fingerprint_expr(self, e: Expr) -> int {
+    /// Tags are never reused; the next free tag is 52.
+    fn fingerprint_expr(e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
             .Ident(name) -> fp(2, [fp_str(name)]),
+            .Receiver -> fp(51, []),
             .Binary(op, left, right) ->
                 fp(3, [fp_binop(op), self.expr_fingerprint(left), self.expr_fingerprint(right)]),
             .Error -> fp(4, []),
@@ -784,22 +806,22 @@ impl NodeStore {
 
     /// A block tail's fingerprint contribution — nothing when the
     /// block leaves instead of answering.
-    fn tail_fp(self, value: ExprId?) -> List<int> {
+    fn tail_fp(value: ExprId?) -> List<int> {
         if value == null { return [] }
         [self.expr_fingerprint(value!)]
     }
 
     /// The fingerprints of expression children, in order.
-    fn expr_fps(self, ids: List<ExprId>) -> List<int> {
+    fn expr_fps(ids: List<ExprId>) -> List<int> {
         [self.expr_fingerprint(k) for k in ids]
     }
 
     /// The fingerprints of statement children, in order.
-    fn stmt_fps(self, ids: List<StmtId>) -> List<int> {
+    fn stmt_fps(ids: List<StmtId>) -> List<int> {
         [self.stmt_fingerprint(k) for k in ids]
     }
 
-    fn fingerprint_stmt(self, s: Stmt) -> int {
+    fn fingerprint_stmt(s: Stmt) -> int {
         match s {
             .Let(name, ty, value) -> fp(5, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
             .MutLet(name, ty, value) -> fp(15, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
@@ -848,7 +870,7 @@ impl NodeStore {
 
 impl NodeStore {
     /// A case list's fingerprint parts: each group, name and body.
-    fn case_fps(self, cases: List<Case>) -> List<int> {
+    fn case_fps(cases: List<Case>) -> List<int> {
         flatten([[fp_str(c.group), fp_str(c.name), self.expr_fingerprint(c.body)] for c in cases])
     }
 }

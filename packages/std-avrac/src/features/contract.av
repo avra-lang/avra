@@ -31,6 +31,7 @@ export type ResolveCx = {
     use_name: fn(ExprId, string),
     use_call: fn(ExprId, string),
     use_type: fn(ExprId, string),
+    use_receiver: fn(ExprId),
     block_scope: fn(List<StmtId>, ExprId?),
     arm_scope: fn(List<string>, ExprId),
     lambda_scope: fn(ExprId, List<Param>, ExprId),
@@ -62,24 +63,24 @@ fn named_list(names: List<string>) -> string {
 impl StructSig {
     /// A named field's slot, when declared — THE lookup every
     /// consumer shares.
-    fn slot_of(self, name: string) -> int? {
+    fn slot_of(name: string) -> int? {
         found_at(self.names, name)
     }
 
     /// The fields, listed for help text.
-    fn listed(self) -> string {
+    fn listed() -> string {
         named_list(self.names)
     }
 }
 
 impl EnumSig {
     /// A named variant's TAG, when declared.
-    fn tag_of(self, name: string) -> int? {
+    fn tag_of(name: string) -> int? {
         found_at(self.names, name)
     }
 
     /// What the variant CARRIES, in order — empty for a unit variant.
-    fn payloads_of(self, name: string) -> List<TypeId> {
+    fn payloads_of(name: string) -> List<TypeId> {
         let tag: int? = self.tag_of(name)
         if tag == null { return [] }
         self.payloads[tag!]
@@ -87,14 +88,14 @@ impl EnumSig {
 
     /// The ONE payload of a single-value wrapper — absent for a
     /// unit variant and for a variant carrying several.
-    fn payload_of(self, name: string) -> TypeId? {
+    fn payload_of(name: string) -> TypeId? {
         let carried = self.payloads_of(name)
         if carried.length != 1 { return null }
         carried[0]
     }
 
     /// The variants, listed for help text.
-    fn listed(self) -> string {
+    fn listed() -> string {
         named_list(self.names)
     }
 }
@@ -221,11 +222,11 @@ export type LowerCx = {
 /// answers nothing; the expected-type channel recurses through
 /// them before the bottom-up walk begins.
 export trait NodeSemantics {
-    fn kids(self, e: Expr) -> List<ExprId>
-    fn heirs(self, e: Expr) -> List<ExprId>
-    fn resolve(self, cx: ResolveCx, e: ExprId)
-    fn type_of(self, cx: TypeCx, e: ExprId) -> TypeId
-    fn lower(self, cx: LowerCx, e: ExprId) -> Reg
+    fn kids(e: Expr) -> List<ExprId>
+    fn heirs(e: Expr) -> List<ExprId>
+    fn resolve(cx: ResolveCx, e: ExprId)
+    fn type_of(cx: TypeCx, e: ExprId) -> TypeId
+    fn lower(cx: LowerCx, e: ExprId) -> Reg
 }
 
 /// Statement resolve capabilities — the pass's STATE verbs, never a
@@ -278,9 +279,9 @@ export type StmtLowerCx = {
 /// value-producing statement answers its register (lower) and the
 /// DRIVER owns slots and last-value tracking.
 export trait StmtSemantics {
-    fn resolve_stmt(self, cx: StmtResolveCx, s: StmtId)
-    fn type_stmt(self, cx: StmtTypeCx, s: StmtId)
-    fn lower_stmt(self, cx: StmtLowerCx, s: StmtId) -> Reg?
+    fn resolve_stmt(cx: StmtResolveCx, s: StmtId)
+    fn type_stmt(cx: StmtTypeCx, s: StmtId)
+    fn lower_stmt(cx: StmtLowerCx, s: StmtId) -> Reg?
 }
 
 /// The written-out nothing — a pass method that deliberately does no
@@ -389,7 +390,7 @@ export fn variant_defect() -> string {
 
 impl StmtResolveCx {
     /// Walk the statement's value expression, when it carries one.
-    fn walk_value(self, s: StmtId) {
+    fn walk_value(s: StmtId) {
         let v: ExprId? = self.view.store.stmt_value(s)
         if v != null { self.walk(v!) }
     }
@@ -399,7 +400,7 @@ impl StmtTypeCx {
     /// Walk the statement's value expression, when it carries one —
     /// and refuse a TYPE standing where a value belongs, since
     /// "the statement's value" says it must be one.
-    fn walk_value(self, s: StmtId) {
+    fn walk_value(s: StmtId) {
         let v: ExprId? = self.view.store.stmt_value(s)
         if v == null { return }
         self.walk(v!)
@@ -409,7 +410,7 @@ impl StmtTypeCx {
 
 impl StmtLowerCx {
     /// The statement's value, lowered — null when it carries none.
-    fn lower_value(self, s: StmtId) -> Reg? {
+    fn lower_value(s: StmtId) -> Reg? {
         let v: ExprId? = self.view.store.stmt_value(s)
         if v == null { return null }
         self.expr.reg_of(v!)

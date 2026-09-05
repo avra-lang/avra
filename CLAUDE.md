@@ -461,10 +461,6 @@ Syntax the grammar lacks:
 - `export let` / `export const`: F3014 "`export` marks a fn, type,
   enum or trait — not this statement" — a constant crosses modules
   as a fn.
-- `mut fn` (the declared form of a mutating method, lane C's `mut
-  self` design): "expected `=` while parsing `stmt`" at the `fn`,
-  then a cascade "no `fn f` is defined" — the mutation statement's
-  recovery swallows the line. S0 of the design gives it one voice.
 
 Wants the typer does not carry yet:
 - A no-argument generic call under a typed want (`let xs:
@@ -508,6 +504,11 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
 - `string.is_empty()` — `s.length == 0` is the emptiness test.
 - `m["k"]` on a map: F2000 "`[...]` indexes a `List`, found
   `Map<string, int>`" — `.get(k)`, which answers `T?`.
+- A `List<T>` never adopts a `List<T?>` want: `let tys: List<TypeRef?>
+  = [t for t in refs]` is F2024 "`tys` declares `List<TypeRef?>`,
+  this is `List<TypeRef>`" — the element's nullable is not widened
+  through the list. Align by span, or build the nullable list
+  directly.
 
 Runtime facts, ours to ratify:
 - A STRING's `.length` is `strlen` — O(length) EVERY time it is
@@ -549,3 +550,12 @@ Runtime facts, ours to ratify:
   a.{x,\n  y}` as a truncated statement, and one that scans "to the
   closing brace" then eats the code after it. Join continuation
   lines first; write an import on one line where it fits.
+- A SYNTAX CHANGE TO THE COMPILER'S OWN SOURCE runs in one order:
+  write the new grammar in the OLD spelling, SAVE the standing
+  binary aside (`cp build/avra build/avra.pre`), build the product
+  with it, rewrite the tree by script, build again with the
+  product, gate. The product refuses the old form, so a broken
+  product leaves no compiler — the saved copy is the way back. And
+  the script must never cross a SYMLINK into another tree
+  (`packages/std-cli` was one, into bs2's source, and the rewrite
+  changed bs2's file; it is a real file now).
