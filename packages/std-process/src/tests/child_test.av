@@ -1,0 +1,156 @@
+// A running child: started and READY by the sign asked for, fed through
+// an open stdin, read a line at a time, waited out or stopped with its
+// tree — and the bracket that does all of it around a body.
+use @std.process.{Tool, tool, cmd, Command, Exit, Stdin, Ready, ProcessError, serving, exit_text}
+use @std.time.{ms, secs}
+
+fn b_sh() -> Result<Tool, ProcessError> {
+    tool("sh")
+}
+
+fn b_line(line: string) -> Result<Command, ProcessError> {
+    let s = b_sh()?
+    cmd(s, ["-c", line])
+}
+
+fn b_kind(e: ProcessError) -> string {
+    match e {
+        .NotReady(_, o) -> "not_ready:${o.stdout.trim()}",
+        .TimedOut(after, _) -> "timeout:${after}",
+        .Failed(x, _) -> "failed:${exit_text(x)}",
+        rest -> "other",
+    }
+}
+
+fn b_shown(r: Result<string, ProcessError>) -> string {
+    match r {
+        .Ok(s) -> s,
+        .Err(e) -> b_kind(e),
+    }
+}
+
+/// A sleeper started on its pid alone, then stopped: the exit is the
+/// TERM it met, and it met it quickly.
+fn started_then_stopped() -> Result<string, ProcessError> {
+    let c = b_line("sleep 5")?
+    mut child = c.start(Ready.Started, secs(1))?
+    let alive = child.is_alive()
+    let x = child.stop()
+    "${alive}/${exit_text(x)}"
+}
+
+/// A server that says it is ready; the line it said is kept.
+fn ready_by_line() -> Result<string, ProcessError> {
+    let c = b_line("echo warming; echo ready; sleep 5")?
+    mut child = c.start(Ready.Line("ready"), secs(2))?
+    let first = child.read_line(ms(500)) ?? "-"
+    let x = child.stop()
+    "${first}/${exit_text(x)}"
+}
+
+/// A sign that never comes closes the window with what was said.
+fn never_ready() -> Result<string, ProcessError> {
+    let c = b_line("echo nope; sleep 5")?
+    let child = c.start(Ready.Line("ready"), ms(300))?
+    "${child.pid() > 0}"
+}
+
+/// A child that dies before its sign refuses at once, not at the window.
+fn dies_first() -> Result<string, ProcessError> {
+    let began_c = b_line("echo failing; exit 7")?
+    let child = began_c.start(Ready.Line("ready"), secs(5))?
+    "${child.pid()}"
+}
+
+/// `Exit` as the sign: a one-shot is ready when it is done.
+fn ready_by_exit() -> Result<string, ProcessError> {
+    let c = b_line("echo done")?
+    mut child = c.start(Ready.Exit, secs(2))?
+    let o = child.wait(secs(1))?
+    "${o.out.stdout.trim()}/${exit_text(o.exit)}"
+}
+
+/// A probe command as the sign.
+fn ready_by_probe() -> Result<string, ProcessError> {
+    let t = tool("true")?
+    let c = b_line("sleep 5")?
+    mut child = c.start(Ready.Exec(cmd(t, [])), secs(2))?
+    exit_text(child.stop())
+}
+
+/// An open stdin fed after the start, then closed; the echo comes back.
+fn fed_after_start() -> Result<string, ProcessError> {
+    let cat = tool("cat")?
+    mut child = (cmd(cat, []) with { stdin: Stdin.Open }).start(Ready.Started, secs(1))?
+    child.write("first\nsecond\n")?
+    let a = child.read_line(secs(1)) ?? "-"
+    child.write("third")?
+    child.close_stdin()
+    let b = child.read_line(secs(1)) ?? "-"
+    let c = child.read_line(secs(1)) ?? "-"
+    let none = child.read_line(ms(200)) ?? "-"
+    let o = child.wait(secs(1))?
+    "${a},${b},${c},${none}/${exit_text(o.exit)}"
+}
+
+/// Waiting past the deadline stops the child and keeps its words.
+fn waited_out() -> Result<string, ProcessError> {
+    let c = b_line("echo partial; sleep 5")?
+    mut child = c.start(Ready.Started, secs(1))?
+    match child.wait(ms(300)) {
+        .Ok(_) -> "finished",
+        .Err(e) -> match e {
+            .TimedOut(after, o) -> "timeout:${after}:${o.stdout.trim()}",
+            rest -> "other",
+        },
+    }
+}
+
+/// The bracket: the body's answer comes back and the child is gone.
+fn bracketed() -> Result<string, ProcessError> {
+    let c = b_line("echo $$; sleep 5")?
+    mut seen_pid = ""
+    mut child = c.start(Ready.Started, secs(1))?
+    seen_pid = child.read_line(secs(1)) ?? ""
+    let x = child.stop()
+    let probe = b_line("kill -0 ${seen_pid} 2>/dev/null && echo alive || echo dead")?
+    let after = (probe.run()?).stdout.trim()
+    let answer = serving(b_line("sleep 5")?, Ready.Started, secs(1), () -> 42)?
+    "${exit_text(x)}/${after}/${answer}"
+}
+
+spec "std/process child" {
+    given "starting and stopping" {
+        then "a child started on its pid alone is alive, and stop is the TERM it meets" {
+            b_shown(started_then_stopped()) == "true/by signal 15"
+        }
+        then "ready by a line keeps what the child said before it" {
+            b_shown(ready_by_line()) == "warming/by signal 15"
+        }
+        then "a sign that never comes closes the window with the words so far" {
+            b_shown(never_ready()) == "not_ready:nope"
+        }
+        then "a child that dies before its sign refuses at once" {
+            b_shown(dies_first()) == "not_ready:failing"
+        }
+        then "ready by exit is a one-shot seen out" {
+            b_shown(ready_by_exit()) == "done/clean"
+        }
+        then "ready by a probe command" {
+            b_shown(ready_by_probe()) == "by signal 15"
+        }
+    }
+    given "stdin, lines and waiting" {
+        then "an open stdin is fed after the start and read a line at a time" {
+            b_shown(fed_after_start()) == "first,second,third,-/clean"
+        }
+        then "a wait past its deadline stops the child and keeps its words" {
+            b_shown(waited_out()) == "timeout:300:partial"
+        }
+    }
+    given "the bracket" {
+        then "stop leaves nothing behind, and the bracket answers the body" {
+            b_shown(bracketed()) == "by signal 15/dead/42"
+        }
+    }
+}
