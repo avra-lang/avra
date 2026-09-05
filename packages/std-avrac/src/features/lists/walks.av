@@ -135,7 +135,9 @@ fn seatless(mut cx: LowerCx, mc: MethodCall) -> Reg {
 
 /// One walk's fixtures: subject, bounds, the index cell the loop
 /// steps, and the element type each turn reads.
-type Walk = { xs: Reg, len: Reg, idx: Reg, elem: TypeId }
+/// A walk counts `idx` up to `len`; over a list, `xs` is the box each
+/// turn reads at the count, and a range has no box to read.
+type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId }
 
 /// A walk's fn: the box and its code pointer (read once —
 /// loop-invariant).
@@ -278,6 +280,12 @@ fn opened(mut cx: LowerCx, subject: ExprId, elem: TypeId) -> Walk {
     Walk { xs: xs, len: len, idx: idx, elem: elem }
 }
 
+/// `lo..hi` — the count starts at `lo` and stops before `hi`.
+fn counted(mut cx: LowerCx, lo: ExprId, hi: ExprId) -> Walk {
+    let int = cx.view.types.intern(Type.Int)
+    Walk { xs: null, len: cx.reg_of(hi), idx: seeded_cell(cx, int, cx.reg_of(lo)), elem: int }
+}
+
 /// LoopStart, the condition, and the turn's scope.
 fn turn_open(mut cx: LowerCx, w: Walk) {
     cx.emit(Ins.LoopStart)
@@ -297,9 +305,10 @@ fn turn_index(mut cx: LowerCx, w: Walk) -> Reg {
 }
 
 /// This turn's element — a RUNTIME index, so the read stays raw.
+/// Asked of a list's walk only; a range's has no box.
 fn turn_elem(mut cx: LowerCx, w: Walk, here: Reg) -> Reg {
     let v = cx.mint_ty(w.elem)
-    cx.emit(Ins.CallRt(v, "avra_array_get", [w.xs, here]))
+    cx.emit(Ins.CallRt(v, "avra_array_get", [w.xs!, here]))
     v
 }
 

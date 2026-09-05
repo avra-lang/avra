@@ -36,9 +36,7 @@ fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args:
     let row: MethodRow? = method_row(cx.view.lang.methods, name, sh)
     if row != null {
         let r = row!
-        let mc = MethodCall { e: e, subject: subject, args: args }
-        let answered: TypeId = r.check(cx, mc)
-        return answered
+        return r.check(cx, MethodCall { e: e, subject: subject, args: args })
     }
     let recv: Receiver? = receiver_of(cx, subject)
     if recv == null { return no_methods_here(cx, subject, name) }
@@ -92,11 +90,7 @@ fn instantiated_sig(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, si
 }
 
 fn receiver_of(cx: TypeCx, subject: ExprId) -> Receiver? {
-    // the annotated bind RESTORES exhaustiveness checking (the
-    // closure-field-call discipline) — matched directly, a new
-    // Type variant would abort at runtime instead of failing here
-    let sh: Type = cx.shape_at(subject)
-    match sh {
+    match cx.shape_at(subject) {
         .Struct(d, n) -> receiver(d, n),
         .Enum(d, n) -> receiver(d, n),
         .App(d, n, _) -> receiver(d, n),

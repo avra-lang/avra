@@ -2,7 +2,7 @@
 //! (part or stringified hole) pushes into an array, and ONE
 //! str_join answers — zero new instructions, the escape hatch
 //! carrying the feature again.
-use core.{ExprId, Reg, Ins, Type}
+use core.{ExprId, Reg, Ins, Type, BinOp}
 use features.{LowerCx, MethodCall, grown_box, lower_defect, length_word, rt_method}
 
 fn interp_reg(mut cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) -> Reg {
@@ -28,14 +28,10 @@ fn part_reg(mut cx: LowerCx, e: ExprId, text: string) -> Reg {
 
 /// A hole's value as a string register, by its shape. Only the
 /// scalars and strings pass typing; every other arm stands on the
-/// raw register. The shape binds under a TYPED let — a match on a
-/// cx-verb call skips the exhaustiveness check (subset note), and
-/// this very site proved it: the check caught the enum shapes the
-/// moment the bind restored it.
+/// raw register.
 fn hole_reg(mut cx: LowerCx, e: ExprId, h: ExprId) -> Reg {
     let v = cx.reg_of(h)
-    let sh: Type = cx.shape_at(h)
-    match sh {
+    match cx.shape_at(h) {
         .Str -> v,
         .Int -> rt1(cx, e, "avra_int_text", v),
         .Bool -> rt1(cx, e, "avra_bool_text", v),
@@ -55,6 +51,22 @@ export fn lower_substring(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx
 export fn lower_split(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_split", []) }
 export fn lower_replace(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_replace", []) }
 export fn lower_trim(mut cx: LowerCx, mc: MethodCall) -> Reg { rt_method(cx, mc, "avra_str_trim", []) }
+
+/// `s.is_empty()` — its length, by the shape's measure word, is zero.
+/// The subject lowers FIRST: `reg_of` may mint, and the answer is
+/// minted last (I29).
+export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let s = cx.reg_of(mc.subject)
+    let word: string? = length_word(cx.view.types.shape_of(cx.type_at(mc.subject)))
+    if word == null { return lower_defect(cx, mc.e, "an emptiness test on an unmeasurable shape survived typing") }
+    let len = cx.mint_shape(Type.Int)
+    cx.emit(Ins.CallRt(len, word!, [s]))
+    let zero = cx.mint_shape(Type.Int)
+    cx.emit(Ins.ConstInt(zero, 0))
+    let dst = cx.result(mc.e)
+    cx.emit(Ins.Bin(dst, BinOp.Eq, len, zero))
+    dst
+}
 
 /// `s.char_code()` reads the start; `s.char_code(i)` the byte at `i`.
 export fn lower_char_code(mut cx: LowerCx, mc: MethodCall) -> Reg {

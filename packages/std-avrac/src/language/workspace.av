@@ -44,10 +44,10 @@ fn children_of(names: List<string>, dir: string) -> List<string> {
     mut out: List<string> = []
     for n in names {
         if under_dir(n, dir) {
-            let rest = if dir.length == 0 { n } else { n.substring(dir.length + 1, n.length) }
+            let rest = if dir.is_empty() { n } else { n.substring(dir.length + 1, n.length) }
             let cut: int = first_slash(rest)
             let child = if cut < 0 { rest } else { rest.substring(0, cut) }
-            if child.length > 0 && !out.contains(child) { out.push(child) }
+            if !child.is_empty() && !out.contains(child) { out.push(child) }
         }
     }
     sorted_texts(out)
@@ -308,8 +308,7 @@ fn program_hash(p: Parsed) -> int {
 export fn items(ws: Workspace, f: FileId) -> List<DeclId> {
     let k = key(Family.Items, f.index)
     if ws.db.ask(k) is .Reuse {
-        let held: List<DeclId> = ws.file_items.at(f.index) ?? []
-        return held
+        return ws.file_items.at(f.index) ?? []
     }
     ws.db.begin(k)
     let p = parsed(ws, f)
@@ -389,8 +388,7 @@ export fn sig(ws: Workspace, d: DeclId) -> DeclSig? {
     let x = ws.decls.decl(d)
     // the language's own declarations were signed at admission
     if !(ws.db.ask(k) is .Compute) || x.kind is .Builtin {
-        let held: DeclSig? = ws.decls.sigs[d.index]
-        return held
+        return ws.decls.sigs[d.index]
     }
     ws.db.begin(k)
     mut t = type_cx_for(ws, x)
@@ -610,7 +608,7 @@ export fn module_of(ws: Workspace, path: string) -> string {
     let rel = below(path, pkg.src)
     let local = if ws.per_file { own_module(rel) } else { dir_of(rel).replace("/", ".") }
     if pkg.ordinal == 0 { return local }
-    if local.length == 0 { return key_spelled(pkg.key) }
+    if local.is_empty() { return key_spelled(pkg.key) }
     "${key_spelled(pkg.key)}.${local}"
 }
 
@@ -624,7 +622,7 @@ fn own_module(rel: string) -> string {
 /// A path's tail under a directory — the path itself when it is
 /// not under it.
 fn below(path: string, dir: string) -> string {
-    if dir.length == 0 || !under_dir(path, dir) { return path }
+    if dir.is_empty() || !under_dir(path, dir) { return path }
     path.substring(dir.length + 1, path.length)
 }
 
@@ -677,7 +675,7 @@ fn crosses_package(ws: Workspace, src: string, local: List<string>) -> bool {
 /// A source file: `.av`, or anything at all under the empty root —
 /// a lone file's package of one holds exactly what it was given.
 fn is_source(name: string, dir: string) -> bool {
-    name.ends_with(".av") || dir.length == 0
+    name.ends_with(".av") || dir.is_empty()
 }
 
 /// A file's declarations that speak for themselves — a NESTED one
@@ -786,7 +784,7 @@ fn exported_names(ws: Workspace, m: ModulePath) -> List<string> {
 }
 
 fn segments_of(dotted_text: string) -> List<string> {
-    if dotted_text.length == 0 { return [] }
+    if dotted_text.is_empty() { return [] }
     dotted_text.split(".")
 }
 
@@ -905,7 +903,7 @@ fn package_link(ws: Workspace, pkg: Package) -> List<string> {
 /// puts them on clang's line.
 export fn link_words(ws: Workspace) -> List<string> {
     let promised = [expanded(f) for f in link_inputs(ws)]
-    [w for w in promised if w.length > 0]
+    [w for w in promised if !w.is_empty()]
 }
 
 /// A link input with its `${NAME}` holes filled from the
@@ -1153,8 +1151,7 @@ fn holder_of_path(ws: Workspace, path: string) -> int {
 fn holder(ws: Workspace, m: ModulePath) -> Package? {
     let k: string? = m.package()
     if k == null { return ws.packages[0] }
-    let found: Package? = ws.packages.find(it.key == k!)
-    found
+    ws.packages.find(it.key == k!)
 }
 
 /// A package reaches itself — its own files `use` it by name — and

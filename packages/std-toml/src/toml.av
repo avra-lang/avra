@@ -52,7 +52,7 @@ impl TomlDoc {
     /// first appearance first, each once. Top-level entries precede
     /// every header, so "" leads when they exist.
     fn sections() -> List<string> {
-        let top: List<string> = if self.entries.any(it.section.length == 0) { [""] } else { [] }
+        let top: List<string> = if self.entries.any(it.section.is_empty()) { [""] } else { [] }
         distinct(top.concat([h.name for h in self.headers]))
     }
 
@@ -139,7 +139,7 @@ enum PairScan {
 /// an entry — and the byte its reading stopped at.
 fn read_line(rd: Reader, lo: int) -> int {
     if lo >= rd.n { return lo }
-    let c = code_at(rd.text, lo)
+    let c = rd.text.char_code(lo)
     when {
         c == 10 || c == 35 -> lo
         c == 91 -> read_header(rd, lo)
@@ -156,7 +156,7 @@ fn read_header(rd: Reader, lo: int) -> int {
     let name = line.substring(1, close).trim()
     let rest = run_end(rd.text, rd.n, lo + close + 1, is_space)
     when {
-        name.length == 0 -> refused(rd, empty_header(lo))
+        name.is_empty() -> refused(rd, empty_header(lo))
         !dotted_word(name) -> refused(rd, bad_header(name, lo))
         !at_line_end(rd.text, rd.n, rest) -> refused(rd, junk_after(rest, "header"))
         _ -> {
@@ -219,7 +219,7 @@ fn scan_key(text: string, n: int, i: int) -> TextScan {
 /// or a word.
 fn scan_value(text: string, n: int, i: int) -> ValueScan {
     if i >= n { return ValueScan.Refused(missing_value(i)) }
-    let c = code_at(text, i)
+    let c = text.char_code(i)
     when {
         c == 34 -> string_value(text, n, i)
         c == 91 -> scan_array(text, n, i)
@@ -244,11 +244,11 @@ fn scan_string(text: string, n: int, i: int) -> TextScan {
     mut j = i + 1
     mut out = ""
     while j < n {
-        let c = code_at(text, j)
+        let c = text.char_code(j)
         if c == 34 { return TextScan.Text(out, j + 1) }
         if c == 10 { return TextScan.Refused(unterminated(i, "string")) }
         if c == 92 && j + 1 < n {
-            out = out + (unescaped(code_at(text, j + 1)) ?? text.substring(j, j + 2))
+            out = out + (unescaped(text.char_code(j + 1)) ?? text.substring(j, j + 2))
             j = j + 2
         } else {
             out = out + text.substring(j, j + 1)
@@ -271,7 +271,7 @@ fn unescaped(e: int) -> string? {
 
 /// An integer, `-` allowed in front; a `-` with no digits is a word.
 fn scan_int(text: string, n: int, i: int) -> ValueScan {
-    let start = if code_at(text, i) == 45 { i + 1 } else { i }
+    let start = if text.char_code(i) == 45 { i + 1 } else { i }
     let end = run_end(text, n, start, is_digit)
     if end == start { return scan_word(text, n, i) }
     let v = int_of_digits(text, start, end)
@@ -283,7 +283,7 @@ fn int_of_digits(text: string, lo: int, hi: int) -> int {
     mut v = 0
     mut i = lo
     while i < hi {
-        v = v * 10 + (code_at(text, i) - 48)
+        v = v * 10 + (text.char_code(i) - 48)
         i = i + 1
     }
     v
@@ -380,13 +380,13 @@ fn code_at(s: string, i: int) -> int {
 
 /// Whether byte `i` exists and is `code`.
 fn at(text: string, n: int, i: int, code: int) -> bool {
-    i < n && code_at(text, i) == code
+    i < n && text.char_code(i) == code
 }
 
 /// The byte after the run of `keep` bytes starting at `i`.
 fn run_end(text: string, n: int, i: int, keep: fn(int) -> bool) -> int {
     mut j = i
-    while j < n && keep(code_at(text, j)) { j = j + 1 }
+    while j < n && keep(text.char_code(j)) { j = j + 1 }
     j
 }
 
@@ -394,7 +394,7 @@ fn run_end(text: string, n: int, i: int, keep: fn(int) -> bool) -> int {
 fn skip_layout(text: string, n: int, i: int) -> int {
     mut j = i
     while j < n {
-        let c = code_at(text, j)
+        let c = text.char_code(j)
         if !(is_space(c) || c == 10 || c == 35) { return j }
         j = if c == 35 { line_hi(text, n, j) } else { j + 1 }
     }
@@ -404,14 +404,14 @@ fn skip_layout(text: string, n: int, i: int) -> int {
 /// The first non-blank byte of the line holding `at`.
 fn line_lo(text: string, at: int) -> int {
     mut i = at
-    while i > 0 && code_at(text, i - 1) != 10 { i = i - 1 }
+    while i > 0 && text.char_code(i - 1) != 10 { i = i - 1 }
     run_end(text, at, i, is_space)
 }
 
 /// The newline ending the line holding `at`, or the end.
 fn line_hi(text: string, n: int, at: int) -> int {
     mut j = at
-    while j < n && code_at(text, j) != 10 { j = j + 1 }
+    while j < n && text.char_code(j) != 10 { j = j + 1 }
     j
 }
 

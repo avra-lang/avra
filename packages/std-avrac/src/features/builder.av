@@ -1,6 +1,6 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
-use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, want, Param, Pat, PatId, Arm, Case}
+use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, want, Param, Pat, PatId, Arm, Case, flatten, some_list}
 use grammar.{Captured, Token}
 
 /// One build call's world: the store, the captured arguments in
@@ -43,34 +43,19 @@ impl Builder {
     /// The repeated capture at `i`, as written types.
     fn type_refs(i: int) -> Result<List<TypeRef>, string> {
         let items = list_at(self.args, i)
-        mut out: List<TypeRef> = []
-        // LICENSED I3: index-taking extractors: a bare Captured arg misreads
-        for j in 0..items.length {
-            out.push(want(type_ref_at(items, j), "a type in a repeated capture")?)
-        }
-        .Ok(out)
+        .Ok([want(type_ref_at(items, j), "a type in a repeated capture")? for j in 0..items.length])
     }
 
     /// The repeated capture at `i`, as plain tokens.
     fn tokens(i: int) -> Result<List<Token>, string> {
         let items = list_at(self.args, i)
-        mut out: List<Token> = []
-        // LICENSED I3: index-taking extractors: a bare Captured arg misreads
-        for j in 0..items.length {
-            out.push(want(token_at(items, j), "a token in a repeated capture")?)
-        }
-        .Ok(out)
+        .Ok([want(token_at(items, j), "a token in a repeated capture")? for j in 0..items.length])
     }
 
     /// The repeated capture at `i`, as expression ids.
     fn exprs(i: int) -> Result<List<ExprId>, string> {
         let items = list_at(self.args, i)
-        mut out: List<ExprId> = []
-        // LICENSED I3: index-taking extractors: a bare Captured arg misreads
-        for j in 0..items.length {
-            out.push(want(expr_id_at(items, j), "an expression in a repeated capture")?)
-        }
-        .Ok(out)
+        .Ok([want(expr_id_at(items, j), "an expression in a repeated capture")? for j in 0..items.length])
     }
 
     /// The repeated capture at `i`, as statement ids. A recovery hole
@@ -79,7 +64,7 @@ impl Builder {
     fn stmts(i: int) -> Result<List<StmtId>, string> {
         let items = list_at(self.args, i)
         mut out: List<StmtId> = []
-        // LICENSED I3: index-taking extractors: a bare Captured arg misreads
+        // LICENSED I3: the body allocates through `self.store`, which a comprehension element does not
         for j in 0..items.length {
             let sid: StmtId? = stmt_id_at(items, j)
             out.push(sid ?? self.store.alloc_stmt(Stmt.Error, null))
@@ -175,37 +160,20 @@ export fn pat_id_at(args: List<Captured<LangNode>>, i: int) -> PatId? {
 /// The repeated pattern capture at `args[i]`, as pattern ids.
 export fn pat_ids_at(args: List<Captured<LangNode>>, i: int) -> List<PatId> {
     let items = list_at(args, i)
-    mut out: List<PatId> = []
-    // LICENSED I3: index-taking extractors: a bare Captured arg misreads
-    for j in 0..items.length {
-        let held: PatId? = pat_id_at(items, j)
-        if held != null { out.push(held!) }
-    }
-    out
+    flatten([some_list(pat_id_at(items, j)) for j in 0..items.length])
 }
 
 /// The repeated arm capture at `args[i]`, as arms.
 export fn arms_at(args: List<Captured<LangNode>>, i: int) -> List<Arm> {
     let items = list_at(args, i)
-    mut out: List<Arm> = []
-    // LICENSED I3: index-taking extractors: a bare Captured arg misreads
-    for j in 0..items.length {
-        let held: Arm? = arm_at(items, j)
-        if held != null { out.push(held!) }
-    }
-    out
+    flatten([some_list(arm_at(items, j)) for j in 0..items.length])
 }
 
 /// The repeated case capture at `args[i]`, flattened — a `given`
 /// group's cases and a lone `then`'s alike.
 export fn cases_at(args: List<Captured<LangNode>>, i: int) -> List<Case> {
     let items = list_at(args, i)
-    mut out: List<Case> = []
-    // LICENSED I3: index-taking extractors: a bare Captured arg misreads
-    for j in 0..items.length {
-        out = out.concat(cases_of(items, j))
-    }
-    out
+    flatten([cases_of(items, j) for j in 0..items.length])
 }
 
 fn cases_of(args: List<Captured<LangNode>>, i: int) -> List<Case> {
@@ -255,12 +223,7 @@ export fn window_end(anchors: List<Token>, j: int, ends: int) -> int {
 /// the third user made this the shared law (fns, trait sigs,
 /// lambdas).
 export fn aligned_param_types(anchors: List<Token>, optional: List<TypeRef>, ends: int) -> List<TypeRef?> {
-    mut found: List<TypeRef?> = []
-    // LICENSED I3: a PAIRED comprehension is our own sugar backlog — `[f(i, x) for i, x in xs]` does not parse
-    for j, a in anchors {
-        found.push(one_between(optional, a.span.lo, window_end(anchors, j, ends)))
-    }
-    found
+    [one_between(optional, a.span.lo, window_end(anchors, j, ends)) for j, a in anchors]
 }
 
 fn one_between(types: List<TypeRef>, after: int, before: int) -> TypeRef? {
@@ -274,12 +237,7 @@ export fn ref_within(t: TypeRef, after: int, before: int) -> bool {
 }
 
 export fn aligned_binds(anchors: List<Token>, optional: List<Token>, ends: int) -> List<string> {
-    mut found: List<string> = []
-    // LICENSED I3: a PAIRED comprehension is our own sugar backlog — `[f(i, x) for i, x in xs]` does not parse
-    for j, a in anchors {
-        found.push(token_between(optional, a.span.lo, window_end(anchors, j, ends)))
-    }
-    found
+    [token_between(optional, a.span.lo, window_end(anchors, j, ends)) for j, a in anchors]
 }
 
 /// The one optional token written between two anchors, or "".
@@ -296,12 +254,7 @@ export fn fields_zipped(b: Builder, fs: List<Token>, ft: List<TypeRef>, fds: Lis
     if fs.length != ft.length {
         return .Err(zip_defect_of("field names and types"))
     }
-    mut fields: List<Param> = []
-    // LICENSED I3: a PAIRED comprehension is our own sugar backlog — `[f(i, x) for i, x in xs]` does not parse
-    for j, f in fs {
-        fields.push(Param { name: f.text, ty: ft[j], default: default_before(b, fs, fds, j), mutable: false })
-    }
-    .Ok(fields)
+    .Ok([Param { name: f.text, ty: ft[j], default: default_before(b, fs, fds, j), mutable: false } for j, f in fs])
 }
 
 /// The default whose position falls between field `j`'s name and
@@ -327,13 +280,12 @@ export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
 /// Seats with their `mut` marks: a mark token between the previous
 /// name (or `from`, before the first) and a name marks that seat.
 export fn marked_seats(ps: List<Token>, tys: List<TypeRef?>, marks: List<Token>, from: int) -> List<Param> {
-    mut out: List<Param> = []
-    // LICENSED I3: a ZIP of parallel captures; comprehensions cannot
-    for j, p in ps {
-        let since = if j == 0 { from } else { ps[j - 1].span.lo }
-        out.push(Param { name: p.text, ty: tys[j], default: null, mutable: marks.any(mark_within(it, since, p.span.lo)) })
-    }
-    out
+    [Param { name: p.text, ty: tys[j], default: null, mutable: marks.any(mark_within(it, seat_since(ps, j, from), p.span.lo)) } for j, p in ps]
+}
+
+/// Where seat `j`'s mark may start: after the previous name, or `from`.
+fn seat_since(ps: List<Token>, j: int, from: int) -> int {
+    if j == 0 { from } else { ps[j - 1].span.lo }
 }
 
 fn mark_within(t: Token, after: int, before: int) -> bool {

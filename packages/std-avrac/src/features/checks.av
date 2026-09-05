@@ -17,10 +17,18 @@ export fn spoken(mut cx: TypeCx, d: Diag) -> TypeId {
 /// The condition law: `subject` names the site ("an `if`
 /// condition"), `label` points at it ("this decides the branch").
 export fn require_bool(mut cx: TypeCx, e: ExprId, subject: string, label: string) {
-    let sh = cx.shape_at(e)
-    if !(sh is .Bool) && !(sh is .Error) {
-        cx.emit(refusal("type.mismatch", cx.loc_of(e), "${subject} is a `bool`, found `${cx.name_at(e)}`", label, null))
-    }
+    if !(cx.shape_at(e) is .Bool) { require_spoken(cx, e, subject, "bool", label) }
+}
+
+/// The counting law, the condition law's twin: a bound or an index
+/// is an int.
+export fn require_int(mut cx: TypeCx, e: ExprId, subject: string, label: string) {
+    if !(cx.shape_at(e) is .Int) { require_spoken(cx, e, subject, "int", label) }
+}
+
+fn require_spoken(mut cx: TypeCx, e: ExprId, subject: string, wanted: string, label: string) {
+    if cx.shape_at(e) is .Error { return }
+    cx.emit(refusal("type.mismatch", cx.loc_of(e), "${subject} is a `${wanted}`, found `${cx.name_at(e)}`", label, null))
 }
 
 /// The agreement law: an Error on EITHER side absorbs (its cause
@@ -231,8 +239,7 @@ export fn member_type_of(mut cx: TypeCx, e: ExprId, shown: string, ty: TypeId, n
     let row: PropertyRow? = property_row(cx.view.lang.properties, name, cx.view.types.shape_of(ty))
     if row != null {
         let r = row!
-        let answered: TypeId = r.check(cx, e, ty)
-        return answered
+        return r.check(cx, e, ty)
     }
     spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "no property `${name}` on `${shown}`", "read here", "a property is a record's field, or a measure like `length` on the shapes that have one"))
 }

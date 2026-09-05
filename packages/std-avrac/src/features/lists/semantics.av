@@ -2,17 +2,18 @@
 //! bodies live beside this file, by concern.
 use core.{Expr, ExprId, TypeId, Reg, elems_of}
 use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, lower_defect}
+use diagnostics.{refusal}
 
 export type ListSemantics = { }
 
 impl NodeSemantics for ListSemantics {
-    /// A literal's elements are kids; a comprehension's SOURCE is —
-    /// it resolves outside the binders — while its element and
-    /// filter are heirs, walked under them.
+    /// A literal's elements are kids; a comprehension's SOURCE and
+    /// range bound are — they resolve outside the binders — while
+    /// its element and filter are heirs, walked under them.
     fn kids(e: Expr) -> List<ExprId> {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match e {
-            .Comp(_, _, _, source, _) -> [source],
+            .Comp(_, _, _, source, hi, _) -> if hi == null { [source] } else { [source, hi!] },
             // LICENSED I18: kids() has no failure channel; [] is the right answer for a node that is not a list
             _ -> elems_of(e) ?? [],
         }
@@ -21,7 +22,7 @@ impl NodeSemantics for ListSemantics {
     fn heirs(e: Expr) -> List<ExprId> {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match e {
-            .Comp(elem, _, _, _, cond) -> if cond == null { [elem] } else { [elem, cond!] },
+            .Comp(elem, _, _, _, _, cond) -> if cond == null { [elem] } else { [elem, cond!] },
             _ -> [],
         }
     }
@@ -29,7 +30,7 @@ impl NodeSemantics for ListSemantics {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
-            .Comp(elem, index, name, _, cond) -> resolve_comp(cx, elem, index, name, cond),
+            .Comp(elem, index, name, _, _, cond) -> resolve_comp(cx, e, elem, index, name, cond),
             _ -> nothing(),
         }
     }
@@ -37,7 +38,7 @@ impl NodeSemantics for ListSemantics {
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
-            .Comp(elem, index, _, source, cond) -> comp_type(cx, e, elem, index, source, cond),
+            .Comp(elem, index, _, source, hi, cond) -> comp_type(cx, e, elem, index, source, hi, cond),
             _ -> literal_type(cx, e),
         }
     }
@@ -45,16 +46,18 @@ impl NodeSemantics for ListSemantics {
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
         // LICENSED I22: a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
-            .Comp(elem, index, _, source, cond) -> comp_reg(cx, e, elem, index, source, cond),
+            .Comp(elem, index, _, source, hi, cond) -> comp_reg(cx, e, elem, index, source, hi, cond),
             _ -> literal_reg(cx, e),
         }
     }
 
 }
 
-/// The binders — `(index, name)` in that order, or the name alone —
+/// The binders — `index, name` in that order, or the name alone —
 /// hold for the element and the filter, each under its own scope.
-fn resolve_comp(mut cx: ResolveCx, elem: ExprId, index: string, name: string, cond: ExprId?) {
+/// A pair names them apart, as the `for` statement's does.
+fn resolve_comp(mut cx: ResolveCx, e: ExprId, elem: ExprId, index: string, name: string, cond: ExprId?) {
+    if index == name { paired_alike(cx, e, name) }
     let names = comp_binds(index, name)
     cx.arm_scope(names, elem)
     if cond != null { cx.arm_scope(names, cond!) }
@@ -64,6 +67,10 @@ fn resolve_comp(mut cx: ResolveCx, elem: ExprId, index: string, name: string, co
 export fn comp_binds(index: string, name: string) -> List<string> {
     if index == "" { return [name] }
     [index, name]
+}
+
+fn paired_alike(mut cx: ResolveCx, e: ExprId, name: string) {
+    cx.emit(refusal("resolve.paired", cx.view.loc_of(e), "`${name}` names both the index and the element", "bound here", "give the index its own name — `for i, ${name} in …`"))
 }
 
 fn literal_type(mut cx: TypeCx, e: ExprId) -> TypeId {

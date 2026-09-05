@@ -817,6 +817,21 @@ CLAUDE.md, the cli entry, this ledger's bs2 section).
         moved below the ledger as OUR debt with its trigger.
   - [x] THE bs2 DEBT LEDGER closed (below): every entry struck or
         handed to its lane; what remains is ours.
+  - [x] THE LANGUAGE SLICE (2026-09-05): a comprehension's head is
+        the `for` statement's (bare pairs, ranges — `Comp.hi`, a
+        counting walk, F2000/F2041 voices for the bounds and the
+        index); EVERY comma list takes a trailing comma (nine
+        grammar spots, one law); `string.is_empty()` (lowered
+        through the shape's measure word; 47 `.length == 0` tests
+        rewritten); the `mod x` rule deleted; the bootstrap's pins
+        un-pinned (18 typed lets that existed for a dead dialect);
+        five counting `while` loops now `for i in 0..n`; `code_at`
+        calls read `s.char_code(i)` at 39 sites (the shim stays only
+        for lane A's held `core/text.av`). Spec cases in seven
+        feature test files; corpus/comprehensions.av proves the new
+        heads native. THREE REVIEWS of the tree (features; grammar +
+        core; language + cli) are filed under THE SWEEP'S FINDINGS
+        below the ledger — the next slices come from there.
 
 THE CLOUD (probed 2026-09-04): an agent asked for "remote" isolation
 from a session on the Mac mini lands on the SAME Mac mini, in a
@@ -3200,12 +3215,13 @@ additions get siblings, nothing changes shape:
   memo of a pure fn breaks neither parallelism nor incrementality.
   FIRING CONDITION: the second pure whole-program value that wants
   computing once (the dispatch table is the likely next).
-- A PAIRED COMPREHENSION: `[f(i, x) for i, x in xs]`. The loop form
-  landed (rung 14 M4) and 69 sites took it, but seven loops whose
-  body is one push still carry a LICENSED I3 because the
-  comprehension cannot pair. Wanting sites: features/builder.av (x3),
-  features/decls.av, features/impls/builders.av, language/ir_text.av,
-  language/typing_declare.av.
+- ~~A PAIRED COMPREHENSION~~ — LANDED 2026-09-05 (lane D): the
+  comprehension's head IS the `for` statement's — `[f(i, x) for i, x
+  in xs]` pairs and `[f(i) for i in lo..hi]` counts (one grammar
+  alternative and one payload field, `Comp.hi`); nine one-push loops
+  became one line each and their I3 licenses retired. The sites
+  still spelled as loops write through a `mut` receiver in the body
+  (`store.alloc_stmt`), which a comprehension element does not.
 
 The compiler is Avra's first real program, and writing it is design
 evidence: whenever its own code WANTS a construct the language
@@ -4741,6 +4757,114 @@ it:
   `grammar { }` blocks (landed), component instantiation in test
   files (works). A `find_index` list method is still wanted ("The
   subset today").
+
+THE SWEEP'S FINDINGS (2026-09-05, three read-only reviews of every
+product file no lane held — features; grammar + core + query +
+diagnostics; language + cli + the std packages). Ranked by lines and
+by meaning; each is a slice for lane D unless a lane is named.
+- A. THE EMISSION VOCABULARY (features, ~100 lines): the region
+  close ritual is spelled 13 times (`values.av`'s `close_presence`
+  IS the verb, wearing a presence name — rename `close_region`,
+  add `close_region_ty`, `present_arm` -> `arm_end`); the array
+  walk skeleton lives twice (`lists/walks.av`'s opened/turn_* and
+  `loops/lower.av`'s hand copy) -> one walk in the features root;
+  `const_bool` x3 and `const_int` beside 8 raw ConstInt pairs; the
+  `length` lowering x3 verbatim (+ nullable's fourth) ->
+  `measured_reg` beside `length_word`; the enum tag ladder x4
+  (`enums/lower.av`) -> `tag_index`/`tag_equals`; seven `lower_*`
+  preambles in `lists/walks.av` -> `seated_walk`; "a span between
+  two offsets" x7 -> one `within`. THE RULE TO ADOPT: a feature's
+  lower.av never writes `cx.emit(Ins.…)` for a CONTROL or ITERATION
+  instruction — only its own value shape.
+- B. TWO LATENT INCONSISTENCIES (semantic; probe, test, fix): (1)
+  the receiver projection is spelled three times and the copies
+  DISAGREE — `contexts.av`'s `declared_decl` drops `.App`, so a
+  generic instantiation implements nothing (`dyn` boxing of
+  `Box<int>` and a `T: Show` bound by a generic struct refuse while
+  the method call on the same value resolves) -> ONE `declared_decl`
+  carrying `.App`; (2) the enum payload seat (`variants.av:27`)
+  SHORT-CIRCUITS unify where the call argument (`fns/check.av:134`)
+  and the struct field (`structs/check.av:96`) record the lift —
+  CLAUDE.md's own "UNIFY BINDS, accepts RECORDS" — so a payload
+  refuses a widen its siblings accept -> `agreed()` in checks.av,
+  three callers. Also `receivers.av:198` `writable`'s `_ -> true`
+  over `Type` with two answering arms (an I22 hole).
+- C. THE DOT-CALL DECIDED ONCE: `impls/check.av:21-60` and
+  `impls/lower.av:13-41` each hand-order a ladder over five receiver
+  kinds, and they already differ (`bounded_call` has no lowering
+  twin) -> `enum Receiverhood` projected once, matched exhaustively
+  in both passes.
+- D. THE ERROR-ABSORB VERB: 28 sites in three spellings ->
+  `cx.errored(e)` / `cx.errored_ty(ty)` on TypeCx.
+- E. VOICES, SCANS, DEAD CODE, STOLEN DOCS: twinned voices
+  (lists/maps `unslottable_want`, lists/loops `not_walkable`,
+  results `covers`/`total`); the struct field law twice
+  (`structs/check.av` generic_field/field_check, same refusal text
+  inline); I28 prose at variants.av:24, structs/check.av x4,
+  checks.av x3; hand scans that are `find` (mod.av method_row/
+  property_row, coherence.av registrar_of, enums tests_variant/
+  tests_first/switchable); `lists/methods.av`'s prelude+seat guard
+  x10 -> `held_and_seated`; DEAD: mutation/resolve.av
+  `through_receiver`, expr_spine/check.av `unpinned_read`,
+  checks.av `empty_into`, typing.av `module_word`, llvm_api's
+  sdiv/srem, `declare`'s `variadic`; I31 stolen `///` runs x13
+  (checks.av:35 wears THE ASSIGNMENT LAW mid-sentence, values.av x2,
+  variants.av x2, nullable/check.av:92, impls/check.av:79,
+  contexts.av:264, core/parts.av:131 — `diverges` sits bare while
+  `leaves` wears its doc — lexer.av x2, nodes.av x2, analysis.av:57).
+- F. GRAMMAR + CORE (lane A owns these files; findings for them):
+  PERF — `grammar/parse.av:14` calls `ready(grammar_of_grammars())`
+  INSIDE parse_grammar, so the 27 `grammar { }` literals of a
+  self-compile each rebuild and re-validate the seed grammar (~120
+  allocations and a FIRST fixpoint) that `Ready`'s doc promises once;
+  six Alt->Seq->Item->Prim descents, three of them one flat walk ->
+  `prims_of`/`items_of`; the BinOp roster x3 (`op_symbol`,
+  `all_binops`, `fp_binop`) -> `fp_binop(op) = fp_str(op_symbol(op))`;
+  `grammar_build` is an 84-line STRING-MATCH dispatch (the rules
+  forbid it; compose.av's table is the shape); `Rep` <-> suffix
+  twice with a lying `_ -> Rep.Opt`; a missing terminal reads
+  "BREAK" on one path and "END" on another -> one `expected_of`;
+  the `fb_diags` flag -> a nullable local; `first_slash` is
+  `index_of`; "every character satisfies" x3 -> `all_codes`;
+  `alt_defects`/`defects` concat folds -> `flatten`;
+  `declared_kind`/`declared_name` re-match the statement up to 11
+  times -> one `declared(s)`; three no-ops (`nothing_noted`,
+  `touch`, `nothing`) -> one in core. ARCHITECTURE: the
+  language-agnostic LEXER hardcodes Avra's words (`grammar`, `else`,
+  `or`, `with`, an operator list with `|>`) and `line_boundary` is a
+  callback whose body is `true` -> a `LexFlavor` VALUE supplied by
+  language/, as `Grammar.keywords()` already supplies the keywords.
+- G. LANGUAGE + CLI (lane C owns language/; sized for it): the
+  memo-query ritual x14 in workspace.av (~70 lines of kernel
+  bookkeeping) -> `Table<T>.memo(db, key, compute)` — blocked on a
+  CLOSURE THROUGH A GENERIC SEAT (sugar); the `dyn` boxing pins —
+  34 in program.av and 11 `let body: XCmd = XCmd { }` in the cli ->
+  a `dyn` want reaching a struct-literal FIELD seat (sugar); the
+  `Family` registry x3 plus a runtime agreement guard -> an enum's
+  ORDINAL (sugar); `imported_line` and seven `resolve.*` voices live
+  in the driver (workspace.av:742-791, 1194-1225; one code spoken
+  twice with different words) -> features/modules; typing_impls.av
+  and typing_declare.av hold ~380 lines of per-declaration feature
+  rules as TypeCx METHODS -> the features, dispatched as
+  semantics_of dispatches; memory.av has no context struct;
+  `method_diagnostics` rescans the whole declaration table per file
+  (I32); `Entry { at }` earns nothing; llvm.av's 31 free fns on
+  `Emit`. THE CLI (lane D's): five commands are ONE body written
+  five times (build/check/emit/ir/run: on_program + clock + timed +
+  the identical `.Err` tail) -> `on_program_phase` + `spoken`, ~60
+  lines; the CommandSpec trio is one record with defaults; four
+  program-locating fns are one `program_for(path, entered)`.
+- H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
+  compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure
+  variant enumeration in core/parts.av and core/nodes.av; F2040
+  already names `rest ->` — verify what it does today); fn-typed
+  arguments through generics, mono-safe (`as_each<T>` for
+  grammar/builders.av's four `.Ok([want(f(x), …)? …])` copies, and
+  the memo bracket); a BINDING across `or` alternatives (memory.av's
+  `.Call`/`.CallPtr` spelled twice, F2039); an enum's ORDINAL; a
+  no-argument generic call pinned by its WANT (12 sites:
+  `new_table<Held>()` x6, …); a `dyn` want in a struct-literal
+  FIELD (45 sites); reverse iteration (`last_slash`, `reversed`).
 
 PARITY RUNG 10 LANDED (2026-09-03) — SLOTS: a nullable POINTER is
 its own word. THE SLOT LAW sees through a nullable to what it

@@ -174,10 +174,10 @@ export enum Expr {
     /// The first aggregate — homogeneous scalar elements.
     ListLit(elems: List<ExprId>)
     /// `[elem for name in source if cond]` — a list built by walking
-    /// another; `index` names the position when written as
-    /// `(index, name)`, "" otherwise. The binders hold for `elem`
-    /// and `cond` alone.
-    Comp(elem: ExprId, index: string, name: string, source: ExprId, cond: ExprId?)
+    /// another, or counting `source..hi` when `hi` is present;
+    /// `index` names the position when written as `index, name`,
+    /// "" otherwise. The binders hold for `elem` and `cond` alone.
+    Comp(elem: ExprId, index: string, name: string, source: ExprId, hi: ExprId?, cond: ExprId?)
     /// `{ "k": v, … }` — keys and values in written order.
     MapLit(keys: List<ExprId>, values: List<ExprId>)
     /// `subject[index]` — element access.
@@ -659,7 +659,7 @@ impl NodeStore {
             .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or
             .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
             .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _) or
-            .Lambda(_, _) or .Is(_, _) or .Comp(_, _, _, _, _) or .VariantLit(_, _) -> null,
+            .Lambda(_, _) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) -> null,
         }
     }
 
@@ -710,7 +710,7 @@ impl NodeStore {
             .Force(v) -> self.pronoun_rides(v),
             .Is(v, _) -> self.pronoun_rides(v),
             .VariantLit(_, args) -> self.any_rides(args),
-            .Comp(elem, _, _, source, cond) -> self.pronoun_rides(elem) || self.pronoun_rides(source) || (cond != null && self.pronoun_rides(cond!)),
+            .Comp(elem, _, _, source, hi, cond) -> self.pronoun_rides(elem) || self.pronoun_rides(source) || (hi != null && self.pronoun_rides(hi!)) || (cond != null && self.pronoun_rides(cond!)),
             .Propagate(v) -> self.pronoun_rides(v),
             .ListLit(elems) -> self.any_rides(elems),
             .MapLit(keys, values) -> self.any_rides(keys) || self.any_rides(values),
@@ -791,8 +791,8 @@ impl NodeStore {
             .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
             .Is(v, variant) -> fp(49, [self.expr_fingerprint(v), fp_str(variant)]),
             .VariantLit(name, args) -> fp(58, [fp_str(name)].concat(self.expr_fps(args))),
-            .Comp(elem, index, name, source, cond) ->
-                fp(55, [self.expr_fingerprint(elem), fp_str(index), fp_str(name), self.expr_fingerprint(source), self.expr_fingerprint(cond ?? elem)]),
+            .Comp(elem, index, name, source, hi, cond) ->
+                fp(if hi == null { 55 } else { 61 }, [self.expr_fingerprint(elem), fp_str(index), fp_str(name), self.expr_fingerprint(source), self.expr_fingerprint(hi ?? source), self.expr_fingerprint(cond ?? elem)]),
             .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),
             .MethodCall(subject, name, margs) ->
                 fp(43, flatten([[self.expr_fingerprint(subject)], [fp_str(name)],
@@ -945,7 +945,7 @@ export fn fp_str(s: string) -> int {
     // A string's `.length` is `strlen`: asked once, not per character.
     let n = s.length
     while i < n {
-        h = fp_mix(h, code_at(s, i))
+        h = fp_mix(h, s.char_code(i))
         i = i + 1
     }
     fp_mix(h, n)

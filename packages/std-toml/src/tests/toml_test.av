@@ -88,7 +88,7 @@ spec "std.toml" {
     given "the reference manifest" {
         then "every line lands: seven entries under five headers, no refusal" {
             let d = parse_toml(manifest())
-            d.errors.length == 0 && d.entries.length == 7 && d.headers.length == 5
+            d.errors.is_empty() && d.entries.length == 7 && d.headers.length == 5
         }
         then "a value reads by section and key" {
             let d = parse_toml(manifest())
@@ -154,11 +154,11 @@ spec "std.toml" {
     given "sections" {
         then "a repeated header reopens its section and is listed once" {
             let d = parse_toml("[a]\nx = 1\n[b]\n[a]\ny = 2\n")
-            d.errors.length == 0 && d.sections().join(",") == "a,b" && d.entries_of("a").length == 2
+            d.errors.is_empty() && d.sections().join(",") == "a,b" && d.entries_of("a").length == 2
         }
         then "a header with no entries is still declared" {
             let d = parse_toml("[a]\n[b]\n")
-            d.has_section("b") && d.sections().join(",") == "a,b" && d.entries.length == 0
+            d.has_section("b") && d.sections().join(",") == "a,b" && d.entries.is_empty()
         }
         then "top-level entries live in the empty section, which leads" {
             let d = parse_toml("x = 1\n[a]\ny = 2\n")
@@ -168,37 +168,37 @@ spec "std.toml" {
     given "values" {
         then "the four escapes unescape, and any other backslash stays" {
             let d = parse_toml("[a]\ns = \"q\\\"b\\\\n\\n\\tt\\z\"\n")
-            d.errors.length == 0 && text_at(d, "a", "s") == "q\"b\\n\n\tt\\z"
+            d.errors.is_empty() && text_at(d, "a", "s") == "q\"b\\n\n\tt\\z"
         }
         then "a negative integer, and zero" {
             let d = parse_toml("n = -5\nz = 0\n")
-            d.errors.length == 0 && value_shown(d, "", "n") == "-5" && value_shown(d, "", "z") == "0"
+            d.errors.is_empty() && value_shown(d, "", "n") == "-5" && value_shown(d, "", "z") == "0"
         }
         then "an inline table holds strings, integers, booleans, and arrays" {
             let d = parse_toml("t = { a = 1, b = true, c = [\"x\"], d = \"s\" }\n")
-            d.errors.length == 0 && value_shown(d, "", "t") == "{a=1,b=true,c=[x],d=\"s\"}"
+            d.errors.is_empty() && value_shown(d, "", "t") == "{a=1,b=true,c=[x],d=\"s\"}"
         }
         then "an empty table and an empty array" {
             let d = parse_toml("t = {}\nxs = []\n")
-            d.errors.length == 0 && value_shown(d, "", "t") == "{}" && value_shown(d, "", "xs") == "[]"
+            d.errors.is_empty() && value_shown(d, "", "t") == "{}" && value_shown(d, "", "xs") == "[]"
         }
         then "indentation and a trailing comment are layout" {
             let d = parse_toml("  [a]\n  x = 1 # c\n")
-            d.errors.length == 0 && value_shown(d, "a", "x") == "1"
+            d.errors.is_empty() && value_shown(d, "a", "x") == "1"
         }
     }
     given "layout" {
         then "the empty document has nothing and refuses nothing" {
             let d = parse_toml("")
-            d.errors.length == 0 && d.entries.length == 0 && d.sections().length == 0
+            d.errors.is_empty() && d.entries.is_empty() && d.sections().is_empty()
         }
         then "comments and blank lines alone are nothing" {
             let d = parse_toml("# just a comment\n\n   \n")
-            d.errors.length == 0 && d.entries.length == 0
+            d.errors.is_empty() && d.entries.is_empty()
         }
         then "the last line needs no newline" {
             let d = parse_toml("[a]\nx = 1")
-            d.errors.length == 0 && value_shown(d, "a", "x") == "1"
+            d.errors.is_empty() && value_shown(d, "a", "x") == "1"
         }
     }
     given "refusals — one per mistake, pointed at its line" {
@@ -215,7 +215,7 @@ spec "std.toml" {
             refused_once(src, "duplicate key `x`", "x = 2") && value_shown(parse_toml(src), "a", "x") == "1"
         }
         then "the same key in another section is fine" {
-            parse_toml("[a]\nx = 1\n[b]\nx = 2\n").errors.length == 0
+            parse_toml("[a]\nx = 1\n[b]\nx = 2\n").errors.is_empty()
         }
         then "a non-string element refuses the array, and reading resumes past its bracket" {
             let src = "[a]\nxs = [\n  \"ok\",\n  7,\n]\ny = 1\n"
@@ -225,11 +225,11 @@ spec "std.toml" {
         then "an empty header, and the entries after it still land" {
             let src = "[]\nx = 1\n"
             let d = parse_toml(src)
-            refused_once(src, "names its section", "[]") && d.headers.length == 0 && d.entries.length == 1
+            refused_once(src, "names its section", "[]") && d.headers.is_empty() && d.entries.length == 1
         }
         then "text after a value" {
             let src = "x = 1 2\n"
-            refused_once(src, "unexpected text after the value", "x = 1 2") && parse_toml(src).entries.length == 0
+            refused_once(src, "unexpected text after the value", "x = 1 2") && parse_toml(src).entries.is_empty()
         }
         then "an unknown value form, named" {
             refused_once("x = foo\n", "unknown value form `foo`", "x = foo")
@@ -239,7 +239,7 @@ spec "std.toml" {
         }
         then "a malformed header, six ways, six refusals" {
             let d = parse_toml("[a.]\n[.a]\n[a..b]\n[a b]\n[a\n[a] x\n")
-            d.errors.length == 6 && d.headers.length == 0 &&
+            d.errors.length == 6 && d.headers.is_empty() &&
                 d.errors[0].message.contains("dotted name") && d.errors[4].message.contains("`]`") &&
                 d.errors[5].message.contains("after the header")
         }

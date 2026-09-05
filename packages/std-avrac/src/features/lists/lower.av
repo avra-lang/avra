@@ -11,17 +11,17 @@ fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
     dst
 }
 
-/// THE COMPREHENSION LOWERED: a fresh box, then the walks' loop
-/// over the source — each turn binds the element (and its index)
-/// for the element expression and the filter, and pushes the
-/// element when the filter holds.
-fn comp_reg(mut cx: LowerCx, e: ExprId, elem: ExprId, index: string, source: ExprId, cond: ExprId?) -> Reg {
+/// THE COMPREHENSION LOWERED: a fresh box, then the walks' loop —
+/// over the source list, or counting the range — each turn binds
+/// the element (and its index) for the element expression and the
+/// filter, and pushes the element when the filter holds.
+fn comp_reg(mut cx: LowerCx, e: ExprId, elem: ExprId, index: string, source: ExprId, hi: ExprId?, cond: ExprId?) -> Reg {
     let dst = cx.result(e)
     grown_box(cx, dst, [])
-    let w = opened(cx, source, elem_type(cx, source))
+    let w = if hi == null { opened(cx, source, elem_type(cx, source)) } else { counted(cx, source, hi!) }
     turn_open(cx, w)
     let here = turn_index(cx, w)
-    let v = turn_elem(cx, w, here)
+    let v = if hi == null { turn_elem(cx, w, here) } else { here }
     let regs = if index == "" { [v] } else { [here, v] }
     cx.bind_patterns(elem, regs)
     if cond != null {

@@ -238,6 +238,11 @@ registry is the idiom engine's spec, written by dogfooding.
   expressible, and has a golden rendering test.
 - Map iteration order never reaches output — iterate an ordered
   source.
+- Grammar authoring: EVERY COMMA LIST TAKES A TRAILING COMMA — a
+  repeated `( "," x )*` ends `","?` before its closer, in every
+  rule (params, type params and args, payload declarations, lambda
+  params, fn types, literals, `use` lists). A list that refuses the
+  comma is a grammar defect, not a style.
 - Grammar authoring: a greedy star cannot be told to stop early. An
   arm that could also START the star's required tail (`_` is a
   NAME; a keyword is a NAME) must be an ordered choice INSIDE the
@@ -449,22 +454,17 @@ both files), a pattern or construction with the wrong payload count
 compiler's help is the note.
 
 Syntax the grammar lacks:
-- A trailing comma in a PARAMETER list (`fn f(a: int, b: int,)`):
-  "expected `)` while parsing `stmt`". Stacked params parse;
-  struct literals and `use` lists take the trailing comma already.
 - Struct destructuring in `let` (`let Sp { lo, hi } = s`):
   "expected `=` while parsing `stmt`".
 - `|` between or-pattern alternatives: "expected `}` to close the
   `match`" — the spelling is `or`. A BINDING across alternatives
   (`.A(n) or .B(n) -> n`): F2039 "an `or` arm binds nothing — its
   alternatives take wildcards only".
-- A comprehension over a RANGE (`[x for x in 0..4]`): "expected
-  `]` to close the comprehension". A PAIRED comprehension (`[f(i,
-  x) for i, x in xs]`): "expected `]` to close the list" (in the
-  sugar backlog). Destructuring `enumerate()` in one (`for (i, m)
-  in xs.enumerate()`): F2005 "`enumerate` pairs only under a paired
-  `for` head — pairs as values arrive with tuples". The loop form
-  `for i, x in xs` is the answer today.
+- Destructuring `enumerate()` in a comprehension (`[i for (i, m)
+  in xs.enumerate()]`): F2005 "`enumerate` pairs only under a paired
+  `for` head — pairs as values arrive with tuples". The head IS the
+  `for` statement's: `[f(i, x) for i, x in xs]` pairs, `[f(i) for i
+  in lo..hi]` counts.
 - Type aliases and newtypes (`type Id = int`): "expected `{` while
   parsing `stmt`". Typed ids are single-field structs (`{ index:
   int }`), which the checker keeps apart.
@@ -508,6 +508,9 @@ Wants the typer does not carry yet:
   `match`'s arms disagree: `Q` vs the first arm's `P`"; the `if`
   twin: F2000 "an `if`'s branches disagree: `P` vs `Q`". Box each
   under `let x: dyn Show = …` and select among the lets.
+- A trait impl over a GENERIC type (`impl Show for Box<T>`): F2031
+  "`P` is generic — a trait impl over a generic type is recorded,
+  not landed". Inherent generic impls (`impl Box<T>`) land.
 - Variant arms on a NULLABLE enum (`match k { .A -> …, null -> …
   }` over `K?`): F2013 "`match` chooses over an enum, found `K?`"
   — unwrap first (a `k?` arm), then match variants.
@@ -530,7 +533,6 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   (and a copy: nothing here mutates in place).
 - `List.find_index(pred)` — builders.av's `attach` is LICENSED I4
   for it.
-- `string.is_empty()` — `s.length == 0` is the emptiness test.
 - `m["k"]` on a map: F2000 "`[...]` indexes a `List`, found
   `Map<string, int>`" — `.get(k)`, which answers `T?`.
 - A `List<T>` never adopts a `List<T?>` want: `let tys: List<TypeRef?>

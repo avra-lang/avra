@@ -376,6 +376,11 @@ reintroducing I3's blind spot names the two spellings it lost.
       and only the red-team ladder noticed): `give` records every
       defining instruction's register and refuses a mint-order
       break as a NAMED build defect — never a native crash.
+      A second specimen (2026-09-05): a mint passed as an ARGUMENT
+      to a verb that `reg_of`s its operands — `measured(cx, e,
+      subject, cx.result(e))` — is the answer minted early by
+      another route; `reg_of` may lower lazily and mint, so the
+      answer is minted after every `reg_of`, never handed in.
 - I5 a FOLD written as a flag where a scan would short-circuit past
       a needed SIDE EFFECT. `all`/`any` stop at the first answer, so
       a loop whose body must run for every element — `paired_unify`
