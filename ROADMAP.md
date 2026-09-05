@@ -5093,7 +5093,7 @@ by meaning; each is a slice for lane D unless a lane is named.
   (lane D): a Var the arguments leave free unifies the declared
   answer with the seat's want, and with no want yet the call goes
   HUNGRY like a generic literal (fns/check.av `pinned_by_answer`);
-  the tree's explicit no-argument pins go in the commit after the seed carries the feature. ~~A `dyn` want in a
+  the tree's explicit no-argument pins are gone (the commit after the seed carried the feature); the one that stays sits in a generic struct literal's field seat, which unifies rather than wants — in "The subset today". ~~A `dyn` want in a
   struct-literal FIELD~~ — it already reached one (probed both
   engines); the 34 pins in program.av and 7 in the cli were
   bootstrap ceremony and are inlined (4 more sit in lane B's held
