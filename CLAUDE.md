@@ -655,7 +655,7 @@ Runtime facts, ours to ratify:
   shared with a loaded desktop and has panicked twice under this
   tree — three concurrent `make test` runs once, and a background
   gate with other compiler runs beside it (a WindowServer watchdog
-  panic). A gate is ~2.4 GB for a minute; nothing else heavy runs
+  panic). A gate is ~0.3 GB for twenty seconds; nothing else heavy runs
   beside it, no gate runs in the background, and every suite, gate
   or whole-package check runs through the watchdog, which holds the
   machine-wide lock, kills the tree past its cap and prints the
