@@ -5469,7 +5469,21 @@ by meaning; each is a slice for lane D unless a lane is named.
   variants.av x2, nullable/check.av:92, impls/check.av:79,
   contexts.av:264, core/parts.av:131 — `diverges` sits bare while
   `leaves` wears its doc — lexer.av x2, nodes.av x2, analysis.av:57).
-- F. GRAMMAR + CORE (lane A owns these files; findings for them):
+- F. GRAMMAR + CORE (lane A owns these files; SENT to lane A
+  2026-09-05 after adversarial verification, which KILLED six of the
+  thirteen — recorded here so nobody re-files them. STRUCK: the
+  `ready(grammar_of_grammars())` perf claim (the DSL seed is 9 rules /
+  12 branches, so it is microseconds; the count is 28 not 29; and a
+  cached Ready is not expressible — no globals, no lazy statics);
+  the BinOp roster x3 (op_symbol and fp_binop are exhaustive, so a
+  14th operator IS a compile error at two of three sites); the
+  BREAK-vs-END divergence (unreachable — no feature grammar puts an
+  `@expect` on an END item, and a probe prints `expected BREAK`);
+  `first_slash` vs `index_of` (already fixed in core/paths.av, though
+  it rode into @std/path); declared_kind's re-matching (view.stmts is
+  top-level only and the projection short-circuits — a nit, not a
+  cost); the three no-ops (nothing_noted has ONE call site and
+  `touch<T>` is a different verb). WHAT SURVIVED:
   PERF — `grammar/parse.av:14` calls `ready(grammar_of_grammars())`
   INSIDE parse_grammar, so the 27 `grammar { }` literals of a
   self-compile each rebuild and re-validate the seed grammar (~120
@@ -5491,7 +5505,14 @@ by meaning; each is a slice for lane D unless a lane is named.
   `or`, `with`, an operator list with `|>`) and `line_boundary` is a
   callback whose body is `true` -> a `LexFlavor` VALUE supplied by
   language/, as `Grammar.keywords()` already supplies the keywords.
-- G. LANGUAGE + CLI (lane C owns language/; sized for it): the
+- G. LANGUAGE + CLI (lane C owns language/; SENT to lane C
+  2026-09-05. STRUCK by verification: the mono mangling by TypeId
+  ordinal (real mechanism, wrong harm — those ordinals index the
+  COMPILED program's registry, so a compiler refactor leaves
+  `avra ir corpus/*.av` byte-identical, no IR goldens are tracked,
+  and the seed is regenerated wholesale anyway); and `Entry { at }`
+  (a single-field struct IS this tree's newtype, and "entry" already
+  means three things in workspace.av). WHAT SURVIVED:  the
   memo-query ritual x14 in workspace.av (~70 lines of kernel
   bookkeeping) -> `Table<T>.memo(db, key, compute)` — blocked on a
   CLOSURE THROUGH A GENERIC SEAT (sugar); the `dyn` boxing pins —
@@ -5529,6 +5550,25 @@ by meaning; each is a slice for lane D unless a lane is named.
   answers 9 for `cx.get(2)`, LLVM refuses the module. The plant is
   withheld at that seat (CLAUDE.md names it); a typed let's arrow
   reaches the body already. The probe is scratchpad/lam/m4.
+- H0. THE FN TYPE DROPS `mut` — A SOUNDNESS HOLE, found 2026-09-05
+  while verifying H's `mut`-seat-in-a-fn-type ask and SENT to lane C.
+  A `mut`-taking fn stored in a NON-`mut` fn type keeps writing
+  through, so a call through that seat mutates an IMMUTABLE `let`
+  with no diagnostic: eval and native both answer `1 2 2` where the
+  V1 law ("aliasing never observable") demands `1 1 0`. Every other
+  path is policed — a direct call on a `let` and a non-`mut`
+  parameter handed to a `mut` seat are both F2048 — so the fn-typed
+  seat is the only hole. THE COMPILER RIDES IT: `MethodRow.check` /
+  `.lower` and `PropertyRow`'s pair (features/mod.av:46, :83) declare
+  non-`mut` fn types while holding `check_map(mut cx: TypeCx, …)` and
+  `lower_map(mut cx: LowerCx, …)`, and every vocabulary dispatch
+  calls through them. CONSEQUENCE: `mut` in a fn type is not sugar,
+  it is the fix — close the hole without it and the row seam has no
+  legal spelling. It also retires the claim that lists/walks.av's
+  seven seat preambles WAIT on that gap: a higher-order `seated` verb
+  checks and runs today (probed), but only because of this hole, and
+  it draws three F2051 "never writes through it" warnings.
+  Probe: scratchpad probe/hole.av.
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure
   variant enumeration in core/parts.av and core/nodes.av; F2040
