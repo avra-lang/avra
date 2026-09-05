@@ -21,6 +21,10 @@
 # heavy work another session runs outside the lock. Two compilers
 # beside a loaded desktop panicked a 16 GB machine twice.
 #
+# AVRA_WATCH_TRACE=1 prints each poll's per-process footprint, so a
+# peak's composition can be read. A gate is ~4.5 GB honestly
+# measured — the compiler and the test binary it waits on — so the
+# cap is 6000 by default.
 # PROFILING runs under the lock too: AVRA_SAMPLE=<seconds> samples
 # the step (after AVRA_SAMPLE_AFTER seconds, default 0) into
 # AVRA_SAMPLE_FILE (default /tmp/avra-sample.txt).
@@ -68,8 +72,11 @@ tree_mem() {
             n=0; q[n++]=root
             for (i=0; i<n; i++) { printf "%s ", q[i]; for (p in pp) if (pp[p]==q[i]) q[n++]=p }
         }')
+    [ -n "$AVRA_WATCH_TRACE" ] && footprint $pids 2>/dev/null | awk '/\[[0-9]+\]:.*Footprint:/ { for (i=1; i<=NF; i++) if ($i=="Footprint:") printf "%s %s%s  ", $1, $(i+1), $(i+2) } END { print "" }' >&2
+    # a per-process header reads `name [pid]: … Footprint: N MB`; the
+    # Summary that follows several pids repeats their total
     footprint $pids 2>/dev/null | awk '
-        /Footprint:/ {
+        /\[[0-9]+\]:.*Footprint:/ {
             for (i=1; i<=NF; i++) if ($i=="Footprint:") {
                 v=$(i+1)+0; u=$(i+2)
                 if (u=="GB") v*=1024; else if (u=="KB") v/=1024; else if (u=="B") v=0

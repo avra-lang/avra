@@ -528,7 +528,7 @@ Runtime facts, ours to ratify:
 ## Working discipline
 
 - ONE HEAVY PROCESS AT A TIME, in the FOREGROUND, under the
-  watchdog: `sh tools/watch.sh 4000 make gate`. The machine is
+  watchdog: `sh tools/watch.sh 6000 make gate`. The machine is
   shared with a loaded desktop and has panicked twice under this
   tree — three concurrent `make test` runs once, and a background
   gate with other compiler runs beside it (a WindowServer watchdog
@@ -540,7 +540,7 @@ Runtime facts, ours to ratify:
   (an argument that is a directory), and a step does not start
   under a 20% memory floor — so NOTHING runs `build/avra` directly,
   and a PROFILE runs under the lock too: `AVRA_SAMPLE=12 sh
-  tools/watch.sh 4000 ./avra test packages/std-avrac` (the file at
+  tools/watch.sh 6000 ./avra test packages/std-avrac` (the file at
   AVRA_SAMPLE_FILE). The second panic (2026-09-05) was exactly a
   bypass: `build/avra test` launched in the background to be
   sampled, beside two lanes' gated steps. `AVRA_RC_GUARD=1` only on
