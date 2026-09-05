@@ -1,0 +1,56 @@
+// proves: the process substrate's seam, abused directly — bogus and
+// stale handles refuse with an errno, never a trap; conflicting flags
+// are -EINVAL; a reaped child refuses a signal; a slot's next tenant
+// does not answer to the old handle; a live child streams; and a
+// lookup never searches a relative PATH entry. Native only: the seam is
+// the runtime's, and the evaluator hosts the same C.
+extern fn avra_proc_spawn(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, max_bytes: int, from_h: int) -> int
+extern fn avra_proc_run(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, stdin_text: string, timeout_ms: int, grace_ms: int, max_bytes: int) -> int
+extern fn avra_proc_poll(h: int, timeout_ms: int) -> int
+extern fn avra_proc_write(h: int, text: string) -> int
+extern fn avra_proc_stdin_close(h: int) -> int
+extern fn avra_proc_take(h: int, stream: int) -> string
+extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
+extern fn avra_proc_status(h: int) -> int
+extern fn avra_proc_pid(h: int) -> int
+extern fn avra_proc_close(h: int)
+extern fn avra_proc_which(file: string, path: string) -> string
+extern fn avra_errno_text(err: int) -> string
+
+fn neg(n: int) -> string {
+    if n < 0 { "err:${avra_errno_text(n)}" } else { "ok:${n}" }
+}
+
+// bogus handles: 0, -1, a huge index, a stale generation
+let bogus = "${neg(avra_proc_poll(0, 0))} ${neg(avra_proc_poll(0 - 1, 0))} ${neg(avra_proc_poll(99999999, 0))} ${neg(avra_proc_status(0))} ${avra_proc_pid(0)} ${neg(avra_proc_signal(0, 15, 1))} ${neg(avra_proc_write(0, "x"))} [${avra_proc_take(0, 1)}]"
+// conflicting flags, a missing stream mode, a bad env word
+let merged = avra_proc_spawn("/bin/echo", [], [], "", 16 + 2 + 8, 0, 0 - 1)
+let conflicts = "${neg(avra_proc_spawn("/bin/echo", [], [], "", 1 + 16 + 2 + 4, 0, 0 - 1))} ${neg(avra_proc_spawn("/bin/echo", [], [], "", 2 + 4, 0, 0 - 1))} ${neg(avra_proc_spawn("/bin/echo", [], ["NOEQUALS"], "", 16 + 2 + 4, 0, 0 - 1))} ${merged > 0}"
+avra_proc_close(merged)
+// a finished handle: status set, signal refused, double close harmless, stale handle refused
+let h = avra_proc_run("/bin/echo", ["hi"], [], "", 16 + 2 + 4, "", 5000, 500, 0)
+let word = avra_proc_status(h)
+let tag = word / 4294967296
+let after = "${neg(avra_proc_signal(h, 15, 1))} tag${tag} pid${avra_proc_pid(h)} [${avra_proc_take(h, 1).trim()}] [${avra_proc_take(h, 1)}]"
+avra_proc_close(h)
+avra_proc_close(h)
+let stale = "${neg(avra_proc_poll(h, 0))} ${neg(avra_proc_status(h))} [${avra_proc_take(h, 2)}]"
+// a slot reused by a new spawn does not answer to the old handle
+let h2 = avra_proc_run("/bin/echo", ["again"], [], "", 16 + 2 + 4, "", 5000, 500, 0)
+let reuse = "${h2 != h} ${neg(avra_proc_status(h))} [${avra_proc_take(h2, 1).trim()}]"
+avra_proc_close(h2)
+// streaming: a live child, write, close stdin, poll to the end
+let s = avra_proc_spawn("/bin/cat", [], [], "", 1 + 2 + 4 + 1024, 0, 0 - 1)
+let wrote = avra_proc_write(s, "abc")
+let closed = avra_proc_stdin_close(s)
+mut ev = 0
+mut turns = 0
+while turns < 200 && (ev / 64) % 2 == 0 {
+    ev = avra_proc_poll(s, 100)
+    turns = turns + 1
+}
+let live = "wrote${wrote} closed${closed} exited${(ev / 64) % 2} [${avra_proc_take(s, 1)}] pid${avra_proc_pid(s)}"
+avra_proc_close(s)
+// which: a name with a slash, an empty PATH, a relative PATH entry only
+let which = "[${avra_proc_which("sh", "")}] [${avra_proc_which("sh", ".:bin")}] [${avra_proc_which("sh", "/usr/bin:/bin")}] [${avra_proc_which("/bin/sh", "")}]"
+"${bogus}\n${conflicts}\n${after}\n${stale}\n${reuse}\n${live}\n${which}"
