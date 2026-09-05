@@ -26,7 +26,7 @@ export fn require_bool(mut cx: TypeCx, e: ExprId, subject: string, label: string
 /// The agreement law: an Error on EITHER side absorbs (its cause
 /// already spoke); otherwise interned ids must match. True means
 /// the site speaks, in its own words.
-export fn types_disagree(mut cx: TypeCx, got: TypeId, want: TypeId) -> bool {
+export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
     if cx.view.types.shape_of(got) is .Error || cx.view.types.shape_of(want) is .Error { return false }
     // LICENSED I9: this IS the agreement law's body
     got.index != want.index
@@ -89,13 +89,13 @@ fn res_accepts(mut cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
 /// array IS a valid list of anything, so `[]` Ok-wraps raw. Every
 /// other compound lift (null -> T? -> Ok) stays explicit — its
 /// value would need staged minting (recorded).
-fn empty_into(mut cx: TypeCx, got: TypeId, ok: TypeId) -> bool {
+fn empty_into(cx: TypeCx, got: TypeId, ok: TypeId) -> bool {
     empty_adopted(cx, got, ok)
 }
 
 /// `[]` is adopted by any list, `{}` by any map — the two identity
 /// widens.
-export fn empty_adopted(mut cx: TypeCx, got: TypeId, want: TypeId) -> bool {
+export fn empty_adopted(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
     (cx.view.types.shape_of(got) is .EmptyList && cx.view.types.shape_of(want) is .List) ||
         (cx.view.types.shape_of(got) is .EmptyMap && cx.view.types.shape_of(want) is .Map)
 }
@@ -128,7 +128,7 @@ fn dyn_accepts(mut cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
 /// or a type parameter whose BOUND is the very trait — each
 /// instantiation re-proves the bound, so the abstract body may box
 /// (an instantiation that arrives ALREADY dyn lifts by identity).
-fn boxable(mut cx: TypeCx, got: TypeId, tname: string) -> bool {
+fn boxable(cx: TypeCx, got: TypeId, tname: string) -> bool {
     if cx.implements(got, tname) { return true }
     match cx.view.types.shape_of(got) {
         .Var(decl, j, _) -> bound_name(cx, decl, j) == tname,
@@ -138,7 +138,7 @@ fn boxable(mut cx: TypeCx, got: TypeId, tname: string) -> bool {
 
 /// The bound a tparam SEAT declares — "" when unconstrained. The
 /// one law both the bounded-call and the boxing widen read.
-export fn bound_name(mut cx: TypeCx, decl: DeclId, j: int) -> string {
+export fn bound_name(cx: TypeCx, decl: DeclId, j: int) -> string {
     let tb = cx.view.decls.tbounds(decl)
     if j >= tb.length { return "" }
     let ann: TypeRef? = tb[j].ty
@@ -151,7 +151,7 @@ export fn bound_name(mut cx: TypeCx, decl: DeclId, j: int) -> string {
 /// facts converge as if the annotations had been written — and any
 /// other hungry expression is FED the want; the comparison then
 /// judges the real type.
-fn heard(mut cx: TypeCx, e: ExprId, want: TypeId) {
+fn heard(cx: TypeCx, e: ExprId, want: TypeId) {
     let arrow: Arrow? = cx.view.types.arrow_parts(want)
     if arrow != null { let _ = cx.retype_seated(e, arrow!.seats) }
     cx.feed(e, want)
@@ -160,14 +160,14 @@ fn heard(mut cx: TypeCx, e: ExprId, want: TypeId) {
 /// A WANT THE TYPE LAW ALREADY REFUSED — the value beneath it adds
 /// nothing: one mistake, one voice. Every aggregate rule asks this
 /// before judging its own parts.
-export fn want_refused(mut cx: TypeCx, e: ExprId) -> bool {
+export fn want_refused(cx: TypeCx, e: ExprId) -> bool {
     let w: TypeId? = cx.want_at(e)
     w != null && cx.view.types.shape_of(w!) is .Error
 }
 
 /// Whether an arm's value stays to answer — every value but a
 /// leaving block.
-export fn stays(mut cx: TypeCx, v: ExprId) -> bool {
+export fn stays(cx: TypeCx, v: ExprId) -> bool {
     !cx.view.store.leaves(v)
 }
 
@@ -196,13 +196,13 @@ export fn join_of(mut cx: TypeCx, a: TypeId, b: TypeId) -> TypeId? {
 }
 
 /// Does the Result `res` carry exactly `ok` on its answer side?
-fn answers(mut cx: TypeCx, res: TypeId, ok: TypeId) -> bool {
+fn answers(cx: TypeCx, res: TypeId, ok: TypeId) -> bool {
     let sides: ResSides? = cx.view.types.res_parts(res)
     sides != null && !types_disagree(cx, sides!.ok, ok)
 }
 
 /// Does the nullable `opt` carry exactly `inner`?
-fn carries(mut cx: TypeCx, opt: TypeId, inner: TypeId) -> bool {
+fn carries(cx: TypeCx, opt: TypeId, inner: TypeId) -> bool {
     let held: TypeId? = cx.view.types.carried(opt)
     held != null && !types_disagree(cx, held!, inner)
 }
@@ -389,12 +389,12 @@ export fn comparable(sh: Type) -> bool {
 
 /// The by-value law over a TYPE: the scalars and text, and an enum
 /// whose variants carry nothing — it compares by variant.
-export fn compares_by_value(mut cx: TypeCx, ty: TypeId) -> bool {
+export fn compares_by_value(cx: TypeCx, ty: TypeId) -> bool {
     comparable(cx.view.types.shape_of(ty)) || unit_enum(cx, ty)
 }
 
 /// An enum every variant of which carries nothing — a tag alone.
-fn unit_enum(mut cx: TypeCx, ty: TypeId) -> bool {
+fn unit_enum(cx: TypeCx, ty: TypeId) -> bool {
     if !(cx.view.types.shape_of(ty) is .Enum) { return false }
     let sig: EnumSig? = cx.variants_of(ty)
     sig != null && sig!.payloads.all(it.is_empty())
@@ -435,14 +435,14 @@ export fn not_mut_call(mut cx: TypeCx, e: ExprId, name: string, root: string) ->
 
 /// Whether an expression is a PLACE rooted in a `mut` binding — what
 /// a `mut` seat, and a writing method's receiver, must be handed.
-export fn mut_place(mut cx: TypeCx, e: ExprId) -> bool {
+export fn mut_place(cx: TypeCx, e: ExprId) -> bool {
     let root: ExprId? = place_binding_root(cx, e)
     root != null && cx.is_mut(root!)
 }
 
 /// A place's root when it is a BINDING — a type name at the root
 /// (`G.a`, a variant) makes the whole a value.
-fn place_binding_root(mut cx: TypeCx, e: ExprId) -> ExprId? {
+fn place_binding_root(cx: TypeCx, e: ExprId) -> ExprId? {
     let root: ExprId? = cx.view.store.place_root(e)
     if root == null || cx.shape_at(root!) is .TypeName { return null }
     root
@@ -463,13 +463,13 @@ export fn receiver_law(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string,
 
 /// A root's word for a voice: its name, or `self` for the receiver
 /// (through any capture of it).
-fn root_word(mut cx: TypeCx, root: ExprId) -> string {
+fn root_word(cx: TypeCx, root: ExprId) -> string {
     let named: string? = cx.view.store.ident_name(root)
     named ?? "self"
 }
 
 /// Whether a root is a lambda's CAPTURE — a copy, never a place.
-fn captured(mut cx: TypeCx, root: ExprId) -> bool {
+fn captured(cx: TypeCx, root: ExprId) -> bool {
     let b: Binding? = cx.names.binding(root)
     b != null && b! is .Capture
 }
@@ -507,7 +507,7 @@ fn judged_seat(mut cx: TypeCx, e: ExprId, callee: string, a: ExprId, j: int, roo
     roots.concat([r])
 }
 
-fn same_root(mut cx: TypeCx, a: ExprId, b: ExprId) -> bool {
+fn same_root(cx: TypeCx, a: ExprId, b: ExprId) -> bool {
     let x: ExprId? = cx.view.store.place_root(a)
     let ba: Binding? = if x == null { null } else { cx.names.binding(x!) }
     let bb: Binding? = cx.names.binding(b)

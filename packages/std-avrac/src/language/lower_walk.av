@@ -21,7 +21,7 @@ fn lower_subtree(mut lo: Lower, e: ExprId) -> Reg {
 
 /// The expression capabilities, wired once per request — what
 /// lower_subtree runs and StmtLowerCx nests as `expr`.
-fn expr_lower_cx(mut lo: Lower) -> LowerCx {
+fn expr_lower_cx(lo: Lower) -> LowerCx {
     LowerCx {
         view: lo.a.view, names: lo.a.names, facts: lo.a.facts, out: lo.out, body: lo.body, sub: lo.sub, fn_ret: lo.fn_ret,
         reg_of: (k: ExprId) -> lower_subtree(lo, k),
@@ -38,7 +38,7 @@ fn expr_lower_cx(mut lo: Lower) -> LowerCx {
 /// wears; the read unwraps here, at the same one edge widening
 /// lifts. Narrow first, widen after: a proven read may itself be
 /// lifted into a fresh nullable.
-fn narrowed(mut cx: LowerCx, mut lo: Lower, e: ExprId, r: Reg) -> Reg {
+fn narrowed(mut cx: LowerCx, lo: Lower, e: ExprId, r: Reg) -> Reg {
     let worn: TypeId? = lo.a.facts.narrowed_at(e)
     if worn == null { return r }
     carried_of(cx, r, lo.concrete(worn!))
@@ -96,7 +96,7 @@ fn boxed_into(mut cx: LowerCx, mut lo: Lower, into: TypeId, r: Reg) -> Reg {
 }
 
 /// The lifted value's declared name — whose impl the box carries.
-fn boxed_decl(mut lo: Lower, r: Reg) -> DeclId? {
+fn boxed_decl(lo: Lower, r: Reg) -> DeclId? {
     match lo.a.view.decls.types.shape_of(lo.out.reg_types[r.index]) {
         .Struct(d, _) -> d,
         .Enum(d, _) -> d,
@@ -168,7 +168,7 @@ fn print_lowering(mut lo: Lower, last: Reg) -> Diag? {
 
 /// The refusal: an answer without a text projection names its type
 /// and the remedy.
-fn no_projection(mut lo: Lower, tname: string) -> Diag {
+fn no_projection(lo: Lower, tname: string) -> Diag {
     refusal("lower.no_projection", lo.answer_loc(), "the program's answer is a `${tname}`, which has no text projection yet", "this is the answer", "project a field instead — `p.x` prints")
 }
 
@@ -179,7 +179,7 @@ fn text_call(mut lo: Lower, callee: string, v: Reg) -> Reg {
 }
 
 /// The runtime printer for a list, by its element shape.
-fn list_text_callee(mut lo: Lower, elem: TypeId) -> string {
+fn list_text_callee(lo: Lower, elem: TypeId) -> string {
     if lo.a.view.decls.types.shape_of(elem) is .Bool { return "avra_bools_text" }
     if lo.a.view.decls.types.shape_of(elem) is .Str { return "avra_strs_text" }
     "avra_ints_text"

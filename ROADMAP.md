@@ -377,6 +377,17 @@ the order is the dependency.
         captured-seat law warns at 91 sites — the closure fields,
         S4b's list. The ratchet reads through the `mut` mark (I21,
         I23). 1661 cases, corpus 73/73.
+        S4b-1 LANDED 2026-09-04 — THE HONEST SEATS: the pass covers
+        every seat of every fn (a fixpoint over (decl, seat) with
+        flows between seats; a trait's declared seat is a write by
+        permission; a local bound to a call, a construction or a
+        place is typed from declarations; an untypable subject marks
+        its managed arguments, never its scalars); `type.seat_unused`
+        F2051 warns a `mut` seat the body never writes through, and
+        the script removed 270 marks the census named — the tree's
+        `mut` now tells the truth (0 unused seats, 108 receiver-law
+        sites at shared-state roots, 54 captured seats). 1661 cases,
+        corpus 73/73.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become

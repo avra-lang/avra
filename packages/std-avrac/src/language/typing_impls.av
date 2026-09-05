@@ -197,6 +197,7 @@ impl Typer {
         let writes = self.view.decls.writes_receiver(x.id)
         if of == "" {
             if self.view.store.is_mutating(x.stmt) && !self.view.decls.written_so_far(x.id) { self.never_writes(x) }
+            self.seat_contract(x, 1)
             return
         }
         let tdecl: DeclId? = self.trait_decl_named(of)
@@ -236,6 +237,21 @@ impl Typer {
 
     fn sig_unworn(s: StmtId, of: string, target: string, mn: string) {
         self.speak(refusal("type.trait", self.stmt_loc(s), "`${target}.${mn}` does not wear `${of}.${mn}`'s signature", "this impl", "match the trait's parameters and return exactly"))
+    }
+
+    /// THE SEATS' CONTRACT: a `mut` seat the body never writes
+    /// through lies at every call site — warned, as an unused `mut`
+    /// local is. Seats count from `base` (1 past a method's own
+    /// receiver); a trait's signatories keep the contract's seats.
+    fn seat_contract(x: Decl, base: int) {
+        let params = written_seats(self.lang.keywords, self.view.store.fn_parts(x.stmt)?.params ?? [])
+        for j, pp in params {
+            if pp.mutable && !self.view.decls.seat_written(x.id, base + j) { self.seat_never_written(x, pp.name) }
+        }
+    }
+
+    fn seat_never_written(x: Decl, seat: string) {
+        self.speak(warning("type.seat_unused", self.stmt_loc(x.stmt), "`${seat}` is a `mut` seat — `${x.name}` never writes through it", "declared `mut`", "drop `mut`: the caller then hands a value"))
     }
 
     fn never_writes(x: Decl) {

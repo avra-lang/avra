@@ -65,7 +65,7 @@ export type Decls = {
     // WRITING through `self` — asked through the armed hook
     seat_muts: List<List<bool>>,
     declared_writes: List<bool>,
-    written: List<bool>,
+    written_seats: List<List<bool>>,
     ensure_writes: List<fn(DeclId)>,
 }
 
@@ -74,7 +74,7 @@ export fn new_decls() -> Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
         stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], children: [], methods: [], impls: [], impls_by_name: {},
         ensure: [no_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
-        seat_muts: [], declared_writes: [], written: [], ensure_writes: [no_ensure],
+        seat_muts: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
     }
 }
 
@@ -345,8 +345,8 @@ impl Decls {
             sm.push([])
             mut dw = self.declared_writes
             dw.push(false)
-            mut wr = self.written
-            wr.push(false)
+            mut wr = self.written_seats
+            wr.push([])
             mut cs = self.children
             cs.push([])
             mut ms = self.methods
@@ -417,10 +417,15 @@ impl Decls {
     // ── the inout seats ──
 
     /// A declaration's `mut` seats, as declared — a method's seat 0
-    /// is its receiver and is never declared here.
+    /// is its receiver and is never declared here. The written bits
+    /// take the same shape, all false until the pass runs.
     fn record_seats(d: DeclId, muts: List<bool>) {
         self.seat_muts.set(d.index, muts)
+        self.written_seats.set(d.index, filled(muts.length, false))
     }
+
+    /// How many seats a declaration has — the receiver's included.
+    fn seat_count(d: DeclId) -> int { self.seat_muts[d.index].length }
 
     /// Asking IS the query: the sig hook declares `d` first, so a
     /// callee named before its own declaration answers truly.
@@ -443,22 +448,36 @@ impl Decls {
         self.declared_writes[d.index]
     }
 
-    /// The receivers pass found the body writing through `self`.
-    fn record_written(d: DeclId) {
-        self.written.set(d.index, true)
+    /// The seats pass found the body writing through seat `i`.
+    fn record_seat_written(d: DeclId, i: int) {
+        mut row = self.written_seats[d.index]
+        if i < row.length { row.set(i, true) }
+        self.written_seats.set(d.index, row)
     }
 
     /// The pass's own reads — hook-free, as the table stands.
-    fn written_so_far(d: DeclId) -> bool { self.written[d.index] }
+    fn seat_written_so_far(d: DeclId, i: int) -> bool {
+        let row = self.written_seats[d.index]
+        i < row.length && row[i]
+    }
 
-    fn writes_so_far(d: DeclId) -> bool { self.declared_writes[d.index] || self.written[d.index] }
+    /// Whether seat `i` is written, declared or found: a method's
+    /// receiver by its word, any seat by the pass.
+    fn seat_writes_so_far(d: DeclId, i: int) -> bool {
+        (i == 0 && self.declared_writes[d.index]) || self.seat_written_so_far(d, i)
+    }
+
+    /// The receiver's inferred bit — seat 0 of a method.
+    fn written_so_far(d: DeclId) -> bool { self.seat_written_so_far(d, 0) }
+
+    fn writes_so_far(d: DeclId) -> bool { self.seat_writes_so_far(d, 0) }
 
     /// The pass starts over: every inferred bit falls, and the
     /// fixpoint re-earns them.
     fn clear_written() {
         mut j = 0
-        while j < self.written.length {
-            self.written.set(j, false)
+        while j < self.written_seats.length {
+            self.written_seats.set(j, filled(self.written_seats[j].length, false))
             j = j + 1
         }
     }
@@ -469,7 +488,15 @@ impl Decls {
     fn writes_receiver(d: DeclId) -> bool {
         let ensure = self.ensure_writes[0]
         ensure(d)
-        self.declared_writes[d.index] || self.written[d.index]
+        self.seat_writes_so_far(d, 0)
+    }
+
+    /// Whether the body writes through seat `i` — asking runs the
+    /// pass; the declared `mut` is what the caller's law reads.
+    fn seat_written(d: DeclId, i: int) -> bool {
+        let ensure = self.ensure_writes[0]
+        ensure(d)
+        self.seat_written_so_far(d, i)
     }
 
     /// The workspace arms the receivers hook once.

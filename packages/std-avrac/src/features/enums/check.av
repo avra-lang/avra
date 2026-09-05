@@ -169,7 +169,7 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
 }
 
 /// The variants these patterns, as one row each, leave uncovered.
-fn uncovered(mut cx: TypeCx, pats: List<PatId>, sig: EnumSig) -> List<string> {
+fn uncovered(cx: TypeCx, pats: List<PatId>, sig: EnumSig) -> List<string> {
     let rows = [[p] for p in pats]
     mut out: List<string> = []
     for k, n in sig.names {
@@ -189,7 +189,7 @@ type Row = { pats: List<PatId?> }
 /// row tests — and a column nothing tests at all — falls to the
 /// hole rows over the remaining columns. Each step consumes a
 /// written pattern, so a recursive enum terminates.
-fn covered(mut cx: TypeCx, rows: List<Row>, tys: List<TypeId>) -> bool {
+fn covered(cx: TypeCx, rows: List<Row>, tys: List<TypeId>) -> bool {
     if tys.is_empty() { return !rows.is_empty() }
     let rest = tys.slice(1, tys.length)
     let defaults = [rest_of(r) for r in rows if hole_first(cx, r)]
@@ -206,7 +206,7 @@ fn covered(mut cx: TypeCx, rows: List<Row>, tys: List<TypeId>) -> bool {
 }
 
 /// Whether some row's first pattern tests this variant.
-fn tests_first(mut cx: TypeCx, rows: List<Row>, name: string) -> bool {
+fn tests_first(cx: TypeCx, rows: List<Row>, name: string) -> bool {
     for r in rows {
         let head: PatId? = r.pats[0]
         if head != null && names_variant(cx, head!, name) { return true }
@@ -214,7 +214,7 @@ fn tests_first(mut cx: TypeCx, rows: List<Row>, name: string) -> bool {
     false
 }
 
-fn names_variant(mut cx: TypeCx, p: PatId, name: string) -> bool {
+fn names_variant(cx: TypeCx, p: PatId, name: string) -> bool {
     match cx.view.store.pat(p) {
         .Variant(n, _) -> n == name,
         .Wild or .Rest or .Bind(_) or .Lit(_) -> false,
@@ -224,7 +224,7 @@ fn names_variant(mut cx: TypeCx, p: PatId, name: string) -> bool {
 /// The rows that test variant K of the first column, each with the
 /// variant's payload patterns spread into the columns; a hole in
 /// the first column tests every variant, its payloads unread.
-fn specialized(mut cx: TypeCx, rows: List<Row>, sig: EnumSig, k: int) -> List<Row> {
+fn specialized(cx: TypeCx, rows: List<Row>, sig: EnumSig, k: int) -> List<Row> {
     mut out: List<Row> = []
     // LICENSED I3: two shapes of row join one list
     for r in rows {
@@ -241,7 +241,7 @@ fn specialized(mut cx: TypeCx, rows: List<Row>, sig: EnumSig, k: int) -> List<Ro
 
 /// Whether variant K is covered: the rows testing it, over its
 /// payloads alone.
-fn covered_variant(mut cx: TypeCx, rows: List<List<PatId>>, sig: EnumSig, k: int) -> bool {
+fn covered_variant(cx: TypeCx, rows: List<List<PatId>>, sig: EnumSig, k: int) -> bool {
     let shaped = [Row { pats: [held(p) for p in r] } for r in rows]
     covered(cx, specialized(cx, shaped, sig, k), sig.payloads[k])
 }
@@ -252,7 +252,7 @@ fn held(p: PatId) -> PatId? {
 
 /// The pattern's payload patterns when it tests THIS variant —
 /// a bare `.V` reads none — else absence.
-fn variant_args(mut cx: TypeCx, p: PatId, name: string, arity: int) -> List<PatId?>? {
+fn variant_args(cx: TypeCx, p: PatId, name: string, arity: int) -> List<PatId?>? {
     match cx.view.store.pat(p) {
         .Variant(n, args) -> if n == name { padded(args, arity) } else { null },
         .Wild or .Rest or .Bind(_) or .Lit(_) -> null,
@@ -272,7 +272,7 @@ fn blanks(n: int) -> List<PatId?> {
     holes
 }
 
-fn hole_first(mut cx: TypeCx, r: Row) -> bool {
+fn hole_first(cx: TypeCx, r: Row) -> bool {
     let head: PatId? = r.pats[0]
     head == null || cx.view.store.irrefutable(head!)
 }
@@ -282,7 +282,7 @@ fn rest_of(r: Row) -> Row {
 }
 
 /// Whether any of the arm's alternatives is a variant test.
-fn tests_variant(mut cx: TypeCx, a: Arm) -> bool {
+fn tests_variant(cx: TypeCx, a: Arm) -> bool {
     for p in a.pats {
         if cx.view.store.pat(p) is .Variant { return true }
     }
@@ -291,7 +291,7 @@ fn tests_variant(mut cx: TypeCx, a: Arm) -> bool {
 
 /// The variants an arm accepts WHOLE: each alternative that tests a
 /// variant and refuses none of its payloads.
-fn covers(mut cx: TypeCx, a: Arm) -> List<string> {
+fn covers(cx: TypeCx, a: Arm) -> List<string> {
     mut out: List<string> = []
     for p in a.pats {
         let n: string? = whole_variant(cx, p)
@@ -302,7 +302,7 @@ fn covers(mut cx: TypeCx, a: Arm) -> List<string> {
 
 /// The variant a pattern accepts whole — a test whose payload
 /// patterns are all irrefutable — or absence.
-fn whole_variant(mut cx: TypeCx, p: PatId) -> string? {
+fn whole_variant(cx: TypeCx, p: PatId) -> string? {
     match cx.view.store.pat(p) {
         .Variant(name, args) -> if all_irrefutable(cx.view.store, args) { name } else { null },
         .Wild or .Rest or .Bind(_) or .Lit(_) -> null,

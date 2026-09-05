@@ -95,7 +95,7 @@ export fn payload_at(mut cx: LowerCx, v: Reg, k: int, ty: TypeId) -> Reg {
 }
 
 /// Whether the value an expression names IS its one field.
-export fn flat_at(mut cx: LowerCx, e: ExprId) -> bool {
+export fn flat_at(cx: LowerCx, e: ExprId) -> bool {
     cx.view.types.is_flat(cx.type_at(e))
 }
 
@@ -213,7 +213,7 @@ enum Repr {
 /// The representation of a nullable TYPE — a projection, and the
 /// catch-all is honest: a non-`Opt` shape is the absorbing error
 /// path, which lowers nothing, so the pair it names is never built.
-fn repr_of(mut cx: LowerCx, opt: TypeId) -> Repr {
+fn repr_of(cx: LowerCx, opt: TypeId) -> Repr {
     match cx.view.types.shape_of(opt) {
         .Opt(inner) -> inner_repr(cx, inner),
         _ -> Repr.Pair,
@@ -228,7 +228,7 @@ fn repr_of(mut cx: LowerCx, opt: TypeId) -> Repr {
 /// sees through an `Opt` to what it carries where `ptr_shape` cannot,
 /// and the machine type asks the same question (`opt_rides_pointer`).
 /// The two answers must never disagree — they are the same layout.
-fn inner_repr(mut cx: LowerCx, inner: TypeId) -> Repr {
+fn inner_repr(cx: LowerCx, inner: TypeId) -> Repr {
     if cx.view.types.is_flat(inner) { return Repr.Boxed }
     if cx.view.types.rides_pointer(inner) { return Repr.Niche }
     Repr.Pair
@@ -236,7 +236,7 @@ fn inner_repr(mut cx: LowerCx, inner: TypeId) -> Repr {
 
 /// What a nullable type carries — the `Opt`'s inner, with the
 /// catch-all pinned to the asker's own type on the error path.
-export fn carried_type(mut cx: LowerCx, opt: TypeId) -> TypeId {
+export fn carried_type(cx: LowerCx, opt: TypeId) -> TypeId {
     match cx.view.types.shape_of(opt) {
         .Opt(inner) -> inner,
         _ -> opt,

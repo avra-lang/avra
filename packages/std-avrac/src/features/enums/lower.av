@@ -53,7 +53,7 @@ fn matched_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, arms: List<Arm>) -> 
 }
 
 /// Every arm but the last tests ONE variant whole: the jump table.
-fn switchable(mut cx: LowerCx, arms: List<Arm>, count: int) -> bool {
+fn switchable(cx: LowerCx, arms: List<Arm>, count: int) -> bool {
     mut j = 0
     while j < count {
         if whole_test(cx, arms[j]) == null { return false }
@@ -63,7 +63,7 @@ fn switchable(mut cx: LowerCx, arms: List<Arm>, count: int) -> bool {
 }
 
 /// The one variant an arm tests whole, when that is all it does.
-fn whole_test(mut cx: LowerCx, a: Arm) -> string? {
+fn whole_test(cx: LowerCx, a: Arm) -> string? {
     if a.pats.length != 1 { return null }
     match cx.view.store.pat(a.pats[0]) {
         .Variant(name, args) -> if all_irrefutable(cx.view.store, args) { name } else { null },
@@ -93,7 +93,7 @@ fn switched_reg(mut cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, sig: EnumSig, a
 
 /// The first `count` arms' selector values, in arm order. A SHORT
 /// answer means an arm named no variant, which typing refused.
-fn arm_cases(mut cx: LowerCx, sig: EnumSig, arms: List<Arm>, count: int) -> List<int> {
+fn arm_cases(cx: LowerCx, sig: EnumSig, arms: List<Arm>, count: int) -> List<int> {
     mut cases: List<int> = []
     for j, a in arms {
         let name: string? = whole_test(cx, a)
@@ -143,7 +143,7 @@ fn bind_regs(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> {
 /// nested variant tests inside it. A wildcard and a literal never
 /// look — and reading a payload nothing looks at is how an arm over
 /// a SHORTER variant read past its end.
-fn looks_inside(mut cx: LowerCx, p: PatId) -> bool {
+fn looks_inside(cx: LowerCx, p: PatId) -> bool {
     match cx.view.store.pat(p) {
         .Bind(_) or .Variant(_, _) -> true,
         .Wild or .Rest or .Lit(_) -> false,

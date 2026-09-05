@@ -144,6 +144,40 @@ spec "features/impls" {
             a.diagnostics.is_empty()
         }
     }
+    given "the seats' contract — a `mut` seat the body never writes is warned" {
+        then "a seat only read" {
+            let a = analyze_source("fn count(mut xs: List<int>) -> int { xs.length }\nmut v = [1]\ncount(v)")
+            a.clean() && a.diagnostics.length == 1 && a.report().contains("`xs` is a `mut` seat — `count` never writes through it")
+        }
+        then "a seat written only by handing it on is written" {
+            let a = analyze_source("fn grow(mut xs: List<int>) { xs.push(1) }\nfn twice(mut ys: List<int>) { grow(ys)\n    grow(ys) }\nmut v = [1]\ntwice(v)\nv.length")
+            a.diagnostics.is_empty() && a.ran() == "3"
+        }
+        then "handed on to a seat nobody writes, both are warned — the fixpoint, not the mark" {
+            let a = analyze_source("fn peek(mut xs: List<int>) -> int { xs.length }\nfn wrap(mut ys: List<int>) -> int { peek(ys) }\nmut v = [1]\nwrap(v)")
+            a.clean() && a.diagnostics.length == 2 && a.report().contains("`peek` never writes") && a.report().contains("`wrap` never writes")
+        }
+        then "handed to a trait's `mut` seat is written by permission" {
+            let a = analyze_source("trait Sink {\n    fn take(mut xs: List<int>)\n}\nfn hand(mut ys: List<int>, s: dyn Sink) { s.take(ys) }\ntype S = { k: int }\nimpl Sink for S {\n    fn take(mut xs: List<int>) { xs.push(self.k) }\n}\nlet s: dyn Sink = S { k: 7 }\nmut v = [1]\nhand(v, s)\nv.length")
+            a.diagnostics.is_empty() && a.ran() == "2"
+        }
+        then "a scalar seat only read" {
+            let a = analyze_source("fn show(mut n: int) -> int { n }\nmut k = 5\nshow(k)")
+            a.clean() && a.diagnostics.length == 1 && a.report().contains("`n` is a `mut` seat — `show` never writes through it")
+        }
+        then "`mut fn` and a `mut` seat both unused — two warnings, one each" {
+            let a = analyze_source("type C = { n: int }\nimpl C {\n    mut fn get(mut k: int) -> int { self.n + k }\n}\nmut c = C { n: 1 }\nmut k = 2\nc.get(k)")
+            a.clean() && a.diagnostics.length == 2 && a.report().contains("`get` never writes through `self`") && a.report().contains("`k` is a `mut` seat")
+        }
+        then "a measured property handed to a scan on a local is a copy — the method stays reading" {
+            let a = analyze_source("type B = { xs: List<int> }\nimpl B {\n    fn read() -> int {\n        let names = self.xs.map(it + 1)\n        if names.contains(self.xs.length) { 1 } else { 0 }\n    }\n}\nlet b = B { xs: [1] }\nb.read()")
+            a.diagnostics.is_empty() && a.ran() == "0"
+        }
+        then "a local bound to a construction is typed — a seat fed through it is found" {
+            let a = analyze_source("type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nimpl B {\n    fn fill() { grow(self.xs) }\n}\nlet b = B { xs: [] }\nb.fill()\n2")
+            a.clean() && a.diagnostics.length == 1 && a.report().contains("`fill` writes through it")
+        }
+    }
     given "the method surface" {
         then "a zero-argument method reads through self" {
             shown("${boxy()}P { x: 3, y: 4 }.area()") == "12"
