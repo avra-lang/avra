@@ -764,21 +764,6 @@ Runtime facts, ours to ratify:
   small programs: its log is bounded but a guarded compiler run
   over a package is still a machine's worth. Scratch probes
   (`./avra check` of one file) are sub-second and need no lock.
-- A CLAIM ABOUT BEHAVIOR CITES A RUN. "The subset today" already
-  demands it of every entry; it is the general rule, and skipping it
-  is the most repeated mistake in this tree's history — three lanes
-  in one day. The shape is always the same: read the SYNTAX, infer
-  the SEMANTICS, explain the difference. `p: mut ptr` refused, so
-  "`mut` params do not parse" (the spelling is `mut` before the
-  NAME, and the file being edited was full of them). Three grammar
-  rules differed, so "the family drifted" (one of them takes no
-  parameters at all and says so in its own words). Twelve builder
-  names matched twelve arms with no checker, so "nothing catches a
-  mismatch" (a mismatch fails the build 28 times with the name
-  printed). Each was one command from the truth. So: before
-  explaining why two things differ, run BOTH and read what they
-  answer — and a finding that survives quotes the output, not the
-  code that produced it.
 - A PATCH SCRIPT that inserts before an anchor, or replaces `old`
   with `new` where `new` CONTAINS `old` (an `export` prefix, a doc
   comment), applies TWICE when re-run after a partial failure: the
@@ -829,8 +814,14 @@ Runtime facts, ours to ratify:
   three parameter rules differed, so "two siblings drifted" (a
   `once fn` takes NO parameters, by a law that speaks — its rule
   accepts a list only so that law can reach the mistake, which is
-  the design, not the drift). Both times a probe was one command
-  away and cheaper than the sentence explaining the difference.
+  the design, not the drift). And once with a state rather than a pair:
+  twelve builder names matched twelve arms with nothing checking
+  them, so "nothing catches a mismatch" — a mismatch fails the build
+  28 times with the offending name printed, which is the consequence
+  nobody traced. Every time a probe was one command away and cheaper
+  than the sentence explaining the difference.
   PROFILE, DON'T REASON is this rule for memory; this is the same
   rule for meaning. THE TELL: an explanation of why two constructs
-  differ, written before either was run.
+  differ, written before either was run. THE STANDARD, which "The
+  subset today" already holds each of its entries to: a finding that
+  survives quotes the OUTPUT, not the code that produced it.
