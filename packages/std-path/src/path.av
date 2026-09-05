@@ -1,0 +1,124 @@
+//! @std.path — paths as text. The directory part, the file name,
+//! its stem and extension; a name joined under a directory; whether
+//! a path lies under another; `.` and `..` folded; one path relative
+//! to another. Nothing here touches the host: `@std/io` reads and
+//! lists, these only cut strings. `/` is the one separator.
+
+/// The directory part of a path; "" when it has none.
+export fn dir_of(path: string) -> string {
+    let cut = last_slash(path)
+    if cut < 0 { return "" }
+    path.substring(0, cut)
+}
+
+/// The last segment — the file's name with its extension.
+export fn file_name(path: string) -> string {
+    path.substring(last_slash(path) + 1, path.length)
+}
+
+/// The file name without its last extension — `src/lower.av` is
+/// `lower`, `a.tar.gz` is `a.tar`. A name that begins with the dot
+/// (`.gitignore`) has no extension to lose.
+export fn stem_of(path: string) -> string {
+    let name = file_name(path)
+    let dot = extension_dot(name)
+    if dot < 0 { return name }
+    name.substring(0, dot)
+}
+
+/// The last extension without its dot — `av` for `lower.av`, "" for
+/// a name with none.
+export fn extension_of(path: string) -> string {
+    let name = file_name(path)
+    let dot = extension_dot(name)
+    if dot < 0 { return "" }
+    name.substring(dot + 1, name.length)
+}
+
+/// The path with its extension replaced — or given, when it had none.
+export fn with_extension(path: string, ext: string) -> string {
+    let dir = dir_of(path)
+    joined_path(dir, "${stem_of(path)}.${ext}")
+}
+
+/// Where a name's extension begins: its last dot, unless that dot
+/// leads the name; -1 when there is none.
+fn extension_dot(name: string) -> int {
+    mut i = name.length - 1
+    while i > 0 {
+        if name.char_code(i) == 46 { return i }
+        i = i - 1
+    }
+    0 - 1
+}
+
+/// The index of a path's last `/`, or -1.
+fn last_slash(path: string) -> int {
+    mut i = path.length - 1
+    while i >= 0 {
+        if path.char_code(i) == 47 { return i }
+        i = i - 1
+    }
+    0 - 1
+}
+
+/// The index of a path's first `/`, or -1.
+export fn first_slash(path: string) -> int {
+    path.index_of("/")
+}
+
+export fn is_absolute(path: string) -> bool {
+    path.starts_with("/")
+}
+
+/// Whether `name` lies under `dir` — strictly below it; the empty
+/// directory is the root of everything.
+export fn under_dir(name: string, dir: string) -> bool {
+    if dir.is_empty() { return true }
+    name.length > dir.length + 1 && name.substring(0, dir.length + 1) == "${dir}/"
+}
+
+/// A name under a directory; the empty directory adds nothing.
+export fn joined_path(dir: string, name: string) -> string {
+    if dir.is_empty() { return name }
+    "${dir}/${name}"
+}
+
+/// A path with `.` dropped and `..` folded into the segment before
+/// it; a leading `/` survives — the root alone is `/` — and a `..`
+/// past the top stays.
+export fn normalized(path: string) -> string {
+    mut kept: List<string> = []
+    for seg in path.split("/") {
+        if seg == ".." && !kept.is_empty() && kept.last()! != ".." && !kept.last()!.is_empty() {
+            kept = kept.slice(0, kept.length - 1)
+        } else if seg != "." && (!seg.is_empty() || kept.is_empty()) {
+            kept.push(seg)
+        }
+    }
+    if kept.length == 1 && kept[0].is_empty() { return "/" }
+    kept.join("/")
+}
+
+/// `to` as a path relative to the directory `from` — `..` up to the
+/// shared prefix, then down.
+export fn relative_path(from: string, to: string) -> string {
+    let a = segments(from)
+    let b = segments(to)
+    let shared = shared_prefix(a, b)
+    let ups = [".." for j in a.slice(shared, a.length)]
+    ups.concat(b.slice(shared, b.length)).join("/")
+}
+
+/// A path's non-empty segments.
+export fn segments(path: string) -> List<string> {
+    [s for s in path.split("/") if !s.is_empty()]
+}
+
+/// How many leading segments two paths share.
+fn shared_prefix(a: List<string>, b: List<string>) -> int {
+    let limit = if a.length < b.length { a.length } else { b.length }
+    mut n = 0
+    while n < limit && a[n] == b[n] { n = n + 1 }
+    n
+}
