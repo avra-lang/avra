@@ -322,7 +322,11 @@ reintroducing I3's blind spot names the two spellings it lost.
       smell this kills: two grammar branches racing for one shape —
       the loser's @recover eats the winner (the let/let-else and
       for/for-each merges are the ordering lessons; the
-      variant-lit/method clash was the breaking case).
+      variant-lit/method clash was the breaking case). The dot-call
+      is the exemplar since 2026-09-05: `impls/callee.av` decides
+      WHO ANSWERS once (`Callee`), and typing and lowering each match
+      it exhaustively — a new receiver kind breaks both passes at
+      compile time.
 - DECLARE THE WRECKAGE. A declaration that REFUSES still records a
       total, error-typed stand-in (a method without `self` declares
       every param a hole; an annotated binding records its declared

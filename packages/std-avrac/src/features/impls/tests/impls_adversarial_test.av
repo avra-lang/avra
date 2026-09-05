@@ -207,4 +207,12 @@ spec "features/impls adversarial" {
             shown("${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n}\nlet a: dyn Show = P { x: 1 }\nlet b: dyn Show = G.hot\na.twice() + b.twice()") == "202"
         }
     }
+    given "names against names — who answers a dot-call" {
+        then "a fn-typed field and an impl method of one name: the field answers" {
+            shown("type Cx = { walk: fn(int) -> int }\nimpl Cx {\n    fn walk(n: int) -> int { n * 100 }\n}\nfn twice(n: int) -> int { n * 2 }\nCx { walk: twice }.walk(3)") == "6"
+        }
+        then "a type name constructs, a bounded parameter and a contract speak through their trait, the impl table answers last" {
+            shown("trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int { self.x }\n}\nimpl P {\n    fn own() -> int { self.x * 10 }\n}\nenum K {\n    A(x: int)\n}\nfn bounded<T: Show>(v: T) -> int { v.show() }\nlet d: dyn Show = P { x: 3 }\nlet k = match K.A(4) { .A(x) -> x }\nbounded(P { x: 1 }) + d.show() + k + P { x: 5 }.own()") == "58"
+        }
+    }
 }
