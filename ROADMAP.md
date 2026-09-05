@@ -826,6 +826,20 @@ the order is the dependency.
         default's seats are the contract's. Differential: 157
         programs, check/run/IR/LLVM identical; F2047 99 -> 97; 19
         files, +35/-114; 1714/1714.
+        THE PINS SEAT, LANDED 2026-09-05 — the last (A) seat the
+        borrow had hidden: the unify family's `bound: Pins` is `mut`
+        exactly where it WRITES (`var_binds`'s `pin` and the eight
+        that hand it there — `unify`, `paired_unify`, `app_unifies`,
+        the five shape unifiers, `generic_argument`, `generic_field`,
+        `agreed`), plain where it reads (`bound_args`, `bound_closed`,
+        `fully_bound`, `unpinned_of`, `unified_lift`, `pinned_by_want`),
+        and every creation site a `mut` local. THE SEAT LAW DREW THE
+        LINE ITSELF: a blanket `mut` refused twelve call sites (a
+        temporary handed to a writer, a `let` handed to a reader
+        marked as a writer), the fixpoint's F2051 named the two seats
+        marked without a write, and the honest marking is what
+        remains. F2047 97 -> 96, F2051 0. 5 files, +17/-17;
+        1714/1714.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become
@@ -856,8 +870,21 @@ the order is the dependency.
   - [ ] PAIRS IN SLOTS (O4): a scalar nullable in a list slot, a
         struct field and a capture lane — ONE design, three sites,
         the three "cannot hold this yet" voices retired together.
+        SIZED 2026-09-05: the typing half is a `slot_worthy` that
+        sees the carried shape; the LOWERING half needs a slot that
+        holds a PAIR (`{present, value}` is two words, a slot is
+        one) — the runtime's slot layout, lane A's. Blocked on that
+        layout; the design is the nullable representation's (above).
   - [ ] FIELD PUNNING `T { name, value }` (needs the type-name
         lexical class decided with the spec — Capitalized?).
+        SIZED 2026-09-05: the builder is a line, the grammar is not.
+        A punned literal `NAME "{" NAME ("," NAME)* "}"` reads
+        `while flag { x }` (a block of one ident after an ident
+        condition) as a literal — today's rule survives on the `:`
+        that a field requires. The spec (28.5) makes types PascalCase
+        and the compiler warns on the rest, so a TYPE token class in
+        the lexer (lane A's engine) is the honest key: a literal
+        opens on a TYPE, a block never does. Blocked on that class.
   - [x] TRAIT DEFAULT METHOD BODIES (every `nothing()` pass method
         collapses; `kind()`/`message()` as defaults). LANDED
         2026-09-05 — the design and the landing below; the
