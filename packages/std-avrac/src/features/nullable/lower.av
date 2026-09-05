@@ -4,8 +4,8 @@
 //! absence opens the SAME region on presence — so `??`'s right
 //! side, the absent arm, and the chain's absence all run only when
 //! the value is not there.
-use core.{ExprId, StmtId, TypeId, Reg, Ins, Type}
-use features.{LowerCx, StructSig, foreign_node, presence_of, carried_of, carried_type, adopted, absent_of, insisted, hollow_of, okness_of, payload_of, lower_defect, length_word, open_presence, field_read, arm_end, open_region, close_region, close_region_as}
+use core.{ExprId, StmtId, TypeId, Reg, Ins}
+use features.{LowerCx, StructSig, foreign_node, presence_of, carried_of, carried_type, adopted, absent_of, insisted, hollow_of, okness_of, payload_of, lower_defect, open_presence, field_read, arm_end, open_region, close_region, close_region_as, measure_of}
 
 fn nullable_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -142,7 +142,7 @@ fn lifted_member(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
 fn member_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
               name: string, answer: TypeId) -> Reg {
     let sig: StructSig? = cx.fields_of(held)
-    if sig == null { return adopted(cx, answer, false, length_reg(cx, e, carried, held)) }
+    if sig == null { return adopted(cx, answer, false, measure_of(cx, e, carried, held)) }
     let fields = sig!
     let slot: int? = fields.slot_of(name)
     if slot == null { return lower_defect(cx, e, "a memberless chain survived typing") }
@@ -160,12 +160,3 @@ fn types_differ(a: TypeId, b: TypeId) -> bool {
     a.index != b.index
 }
 
-/// `length` on the carried value — the word the one measure table
-/// gives its shape; a shape nothing measures is a defect.
-fn length_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId) -> Reg {
-    let word: string? = length_word(cx.view.types.shape_of(held))
-    if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }
-    let dst = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(dst, word!, [carried]))
-    dst
-}

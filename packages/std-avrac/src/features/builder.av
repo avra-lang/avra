@@ -242,7 +242,7 @@ export fn aligned_binds(anchors: List<Token>, optional: List<Token>, ends: int) 
 
 /// The one optional token written between two anchors, or "".
 fn token_between(tokens: List<Token>, after: int, before: int) -> string {
-    let hit: Token? = tokens.find(it.span.lo > after && it.span.lo < before)
+    let hit: Token? = tokens.find(within(it.span.lo, after, before))
     if hit == null { return "" }
     hit!.text
 }
@@ -267,7 +267,12 @@ fn default_before(b: Builder, fs: List<Token>, fds: List<ExprId>, j: int) -> Exp
 
 fn starts_between(b: Builder, e: ExprId, lo: int, hi: int) -> bool {
     let sp: Span? = b.store.expr_span(e)
-    sp != null && sp!.lo > lo && sp!.lo < hi
+    sp != null && within(sp!.lo, lo, hi)
+}
+
+/// Strictly inside the window `after..before`.
+export fn within(at: int, after: int, before: int) -> bool {
+    at > after && at < before
 }
 
 /// Parameter seats from two parallel captures — the names and the
@@ -289,5 +294,5 @@ fn seat_since(ps: List<Token>, j: int, from: int) -> int {
 }
 
 fn mark_within(t: Token, after: int, before: int) -> bool {
-    t.span.lo > after && t.span.lo < before
+    within(t.span.lo, after, before)
 }

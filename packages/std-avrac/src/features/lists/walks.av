@@ -9,8 +9,8 @@
 //! pushes, cell settlement — nothing here spells a retain).
 //! Early exit is the BREAK IDIOM: store the index past the length
 //! and the condition ends the loop.
-use core.{ExprId, Reg, Ins, Type, TypeId, BinOp, UnOp, Level}
-use features.{LowerCx, MethodCall, lower_defect, grown_box, push_slot, slot_read, absent_of, adopted, carried_type, same_value, void_arm, void_close, unique_box, rt_method, open_region, const_int, const_bool}
+use core.{ExprId, Reg, Ins, Type, TypeId, BinOp, UnOp}
+use features.{LowerCx, MethodCall, lower_defect, grown_box, push_slot, slot_read, absent_of, adopted, carried_type, same_value, void_arm, void_close, unique_box, rt_method, open_region, const_int, const_bool, opened, turn_open, turn_index, turn_elem, turn_close, early_exit, seeded_cell, loaded, measure_of}
 
 // ── The rows' rules ──
 
@@ -83,7 +83,7 @@ export fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
 
 /// `xs.is_empty()` — the length against zero.
 export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
-    let len = measured(cx, mc.subject)
+    let len = measure_of(cx, mc.subject, cx.reg_of(mc.subject), cx.type_at(mc.subject))
     let zero = const_int(cx, 0)
     let dst = cx.result(mc.e)
     cx.emit(Ins.Bin(dst, BinOp.Eq, len, zero))
@@ -122,12 +122,6 @@ fn seatless(mut cx: LowerCx, mc: MethodCall) -> Reg {
 }
 
 // ── The walks ──
-
-/// One walk's fixtures: subject, bounds, the index cell the loop
-/// steps, and the element type each turn reads.
-/// A walk counts `idx` up to `len`; over a list, `xs` is the box each
-/// turn reads at the count, and a range has no box to read.
-type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId }
 
 /// A walk's fn: the box and its code pointer (read once —
 /// loop-invariant).
@@ -240,7 +234,7 @@ fn edge(mut cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
     let opt = cx.type_at(mc.e)
     let xs = cx.reg_of(mc.subject)
     let cell = absent_cell(cx, opt)
-    let len = measured(cx, mc.subject)
+    let len = measure_of(cx, mc.subject, cx.reg_of(mc.subject), cx.type_at(mc.subject))
     let zero = const_int(cx, 0)
     let some = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(some, BinOp.Lt, zero, len))
@@ -262,46 +256,6 @@ fn boxed(mut cx: LowerCx, f: ExprId) -> Box {
     Box { f: box, fp: slot_read(cx, box, 0, null) }
 }
 
-/// The fixtures, minted before the brackets open.
-fn opened(mut cx: LowerCx, subject: ExprId, elem: TypeId) -> Walk {
-    let xs = cx.reg_of(subject)
-    let len = measured(cx, subject)
-    let idx = seeded_cell(cx, cx.view.types.intern(Type.Int), const_int(cx, 0))
-    Walk { xs: xs, len: len, idx: idx, elem: elem }
-}
-
-/// `lo..hi` — the count starts at `lo` and stops before `hi`.
-fn counted(mut cx: LowerCx, lo: ExprId, hi: ExprId) -> Walk {
-    let int = cx.view.types.intern(Type.Int)
-    Walk { xs: null, len: cx.reg_of(hi), idx: seeded_cell(cx, int, cx.reg_of(lo)), elem: int }
-}
-
-/// LoopStart, the condition, and the turn's scope.
-fn turn_open(mut cx: LowerCx, w: Walk) {
-    cx.emit(Ins.LoopStart)
-    let at = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Load(at, w.idx))
-    let more = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(more, BinOp.Lt, at, w.len))
-    cx.emit(Ins.LoopCond(more))
-    cx.emit(Ins.ScopeEnter(Level.Application))
-}
-
-/// This turn's index, read out of the cell.
-fn turn_index(mut cx: LowerCx, w: Walk) -> Reg {
-    let here = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Load(here, w.idx))
-    here
-}
-
-/// This turn's element — a RUNTIME index, so the read stays raw.
-/// Asked of a list's walk only; a range's has no box.
-fn turn_elem(mut cx: LowerCx, w: Walk, here: Reg) -> Reg {
-    let v = cx.mint_ty(w.elem)
-    cx.emit(Ins.CallRt(v, "avra_array_get", [w.xs!, here]))
-    v
-}
-
 /// The fn box asked about this element.
 fn turn_call(mut cx: LowerCx, f: Box, v: Reg, ret: TypeId) -> Reg {
     let r = cx.mint_ty(ret)
@@ -310,22 +264,6 @@ fn turn_call(mut cx: LowerCx, f: Box, v: Reg, ret: TypeId) -> Reg {
 }
 
 /// Step, settle the turn's scope, close the back edge.
-fn turn_close(mut cx: LowerCx, w: Walk) {
-    let again = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Load(again, w.idx))
-    let one = const_int(cx, 1)
-    let next = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Bin(next, BinOp.Add, again, one))
-    cx.emit(Ins.Store(w.idx, next))
-    cx.emit(Ins.ScopeExit(null))
-    cx.emit(Ins.LoopEnd)
-}
-
-/// The BREAK idiom: an index past the length ends the walk.
-fn early_exit(mut cx: LowerCx, w: Walk) {
-    cx.emit(Ins.Store(w.idx, w.len))
-}
-
 /// `any` fires ON the predicate; `all` fires on its failure.
 fn flipping(mut cx: LowerCx, p: Reg, all: bool) -> Reg {
     if !all { return p }
@@ -347,27 +285,11 @@ fn bool_ty(mut cx: LowerCx) -> TypeId {
 
 // ── The small mints ─────────────────────────────────────────────
 
-/// The receiver's length, asked of the runtime.
-fn measured(mut cx: LowerCx, subject: ExprId) -> Reg {
-    let xs = cx.reg_of(subject)
-    let len = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(len, "avra_array_len", [xs]))
-    len
-}
-
 fn decremented(mut cx: LowerCx, n: Reg) -> Reg {
     let one = const_int(cx, 1)
     let r = cx.mint_shape(Type.Int)
     cx.emit(Ins.Bin(r, BinOp.Sub, n, one))
     r
-}
-
-/// A cell of `ty`, seeded — the seed minted before the cell.
-fn seeded_cell(mut cx: LowerCx, ty: TypeId, seed: Reg) -> Reg {
-    let cell = cx.mint_ty(ty)
-    cx.emit(Ins.Alloca(cell))
-    cx.emit(Ins.Store(cell, seed))
-    cell
 }
 
 fn bool_cell(mut cx: LowerCx, seed: bool) -> Reg {
@@ -380,13 +302,6 @@ fn store_bool(mut cx: LowerCx, cell: Reg, b: bool) {
 
 fn absent_cell(mut cx: LowerCx, opt: TypeId) -> Reg {
     seeded_cell(cx, opt, absent_of(cx, opt))
-}
-
-/// The node's answer, read out of its cell.
-fn loaded(mut cx: LowerCx, e: ExprId, cell: Reg) -> Reg {
-    let dst = cx.result(e)
-    cx.emit(Ins.Load(dst, cell))
-    dst
 }
 
 /// The answer of a word that answers nothing.

@@ -437,9 +437,14 @@ reintroducing I3's blind spot names the two spellings it lost.
       `length` lowering, three verbatim copies became one row fn).
       THE RULE: a feature's lowering emits its own VALUE shape and
       speaks every CONTROL shape; the IR of all 73 corpus programs
-      was byte-identical before and after. RATCHETED (the matcher
-      exempts emit.av's own body); it grows to the loop instructions
-      when the walk skeleton moves out of lists/ and loops/.
+      was byte-identical before and after. The loop brackets
+      (`loop_start`/`loop_cond`/`loop_end`) and THE WALK (`opened`
+      over a list, `counted` over a range, `turn_open`/`turn_index`/
+      `turn_elem`/`turn_close`) followed: the skeleton that lived in
+      lists/walks.av and again by hand in loops/lower.av is one, so a
+      comprehension, a `for x in xs` and an `xs.map(f)` emit one
+      stream by construction. RATCHETED over regions and loop brackets
+      (the matcher exempts emit.av's own body).
 - I33 THE BORROW UNDER A SAME-SCOPE READ. `mut xs = self.field`
       followed by `xs.push(v)` is the alias form of a write — the
       smell is the alias where a path write (`self.field.push(v)`)

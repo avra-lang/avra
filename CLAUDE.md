@@ -379,11 +379,12 @@ registry is the idiom engine's spec, written by dogfooding.
   re-measure at ~40 instructions, do not re-argue.
 - THE EMISSION VOCABULARY (features/emit.av): a feature's lowering
   emits its own VALUE shape and SPEAKS every control shape —
-  `open_region`/`arm_end`/`close_region`, `const_int`/`const_bool`,
-  `measured_reg` — never a raw `cx.emit(Ins.IfStart…)`. Two
-  engines read one instruction stream by construction; I33
-  ratchets it, and the vocabulary grows with the next shared shape
-  (the walk is next).
+  `open_region`/`arm_end`/`close_region`, `loop_start`/`loop_cond`/
+  `loop_end`, the walk (`opened`/`counted`/`turn_*`), the cells,
+  `const_int`/`const_bool`, `measured_reg`/`measure_of` — never a
+  raw `cx.emit(Ins.IfStart…)` or `Ins.LoopStart`. Two engines read
+  one instruction stream by construction; I33 ratchets it, and the
+  vocabulary grows with the next shared shape.
 - THE IR's BOOL LAW (ours, enforced by the evaluator): `&&`/`||`
   are never `Bin` over bool registers — they are lazy regions
   (`IfStart … ArmEnd … RegionEnd`); a `Bin(Or)` on bools is the
@@ -494,6 +495,10 @@ Syntax the grammar lacks:
 - The pipe `|>`: "expected BREAK while parsing `stmt`".
 - `@comptime`: refuses at the `@` ("expected `mod`, `use`, … while
   parsing `stmt`").
+- A `mut` seat in a fn TYPE (`fn(mut Cx, Seat) -> int`): "expected
+  `)` while parsing `stmt`" — a verb cannot yet take a body that
+  writes through the context it is handed (lists/walks.av's seven
+  seat preambles wait on it).
 - The bare component form (`Cfg d { depth = 8 }`): "expected BREAK
   while parsing `stmt`" — `component Cfg d { … }` is the form.
   Instantiation is a STATEMENT: as a fn's tail it answers `void`
