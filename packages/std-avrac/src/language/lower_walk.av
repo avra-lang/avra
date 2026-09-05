@@ -1,10 +1,11 @@
 //! One body's walk — the context's own verbs: a subtree lowered at
 //! first request (the recursion IS the walk), the narrow/widen edge
 //! every expression passes through, the dyn lift, the statement
-//! loop, a block's scope, and the entry's printed answer.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId}
+//! loop, a block's scope with its `defer` frame, and the entry's
+//! printed answer.
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, push_slot, adopted, carried_of, okayed, hollow_of, semantics_of, stmt_semantics_of}
+use features.{LowerCx, Deferred, push_slot, slot_read, adopted, carried_of, okayed, hollow_of, okness_of, void_arm, void_close, semantics_of, stmt_semantics_of}
 
 impl LowerCx {
     /// One subtree's register, lowered at first request and
@@ -162,10 +163,127 @@ impl LowerCx {
     /// promise for a block that departed, void for one that merely
     /// ended. Every merge it feeds is typed by that same answer.
     mut fn lower_block(stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> Reg {
-        self.out.give(Ins.ScopeEnter(Level.Application))
+        self.scope_enter()
         self.lower_stmts(stmts)
         let r = if value == null { hollow_of(self, ty) } else { self.reg_of(value!) }
-        self.out.give(Ins.ScopeExit(r))
+        self.scope_exit(r)
         r
     }
+
+    // ── The `defer` frames. Every STATEMENT LIST runs in a frame:
+    // a scope's (a block, a loop's turn, the program) or a
+    // statement-list arm's (an `if` statement's branch, a `let …
+    // else`'s else). The list's entries run as its frame closes, last
+    // first; an early exit runs every open frame's, innermost first.
+    // A body's outermost frame (depth 1) is its BLOCK's — the seats'
+    // bracket around it holds no statements and opens none — so that
+    // frame's close IS the fn's tail. An `errdefer` runs on the
+    // failure channel only: `fail` and `?` always; `return` and the
+    // tail when the ANSWER is a failure, asked of its tag at run
+    // time — a bare success, lifted past the frame, never is. ──
+
+    /// A scope opens — and with it the frame its `defer`s join.
+    mut fn scope_enter() {
+        self.open_frame()
+        // LICENSED I33: this IS the verb
+        self.out.give(Ins.ScopeEnter(Level.Application))
+    }
+
+    /// A scope ends normally: its frame closes — after the value
+    /// or the step that follows its statements — and it yields.
+    mut fn scope_exit(gives: Reg?) {
+        self.close_frame(gives)
+        // LICENSED I33: this IS the verb
+        self.out.give(Ins.ScopeExit(gives))
+    }
+
+    /// The seats' bracket: a scope holding no statement list, so no
+    /// frame — the body inside it is the fn's outermost frame.
+    mut fn seats_enter() {
+        // LICENSED I33: this IS the verb
+        self.out.give(Ins.ScopeEnter(Level.Application))
+    }
+
+    mut fn seats_exit(gives: Reg?) {
+        // LICENSED I33: this IS the verb
+        self.out.give(Ins.ScopeExit(gives))
+    }
+
+    /// A statement-list ARM: its statements in their own frame,
+    /// closed as they end — the arm's bracket is the memory pass's.
+    mut fn arm_stmts(stmts: List<StmtId>) {
+        self.open_frame()
+        self.lower_stmts(stmts)
+        self.close_frame(null)
+    }
+
+    mut fn open_frame() {
+        self.depth = self.depth + 1
+    }
+
+    /// The innermost frame's entries run, last first, and it closes.
+    /// Only the outermost frame's close is the fn's tail, where the
+    /// yield is the answer an `errdefer` asks; a nested frame's
+    /// close decides nothing, and its `errdefer`s are dropped.
+    mut fn close_frame(gives: Reg?) {
+        let answer: Reg? = if self.depth == 1 { gives } else { null }
+        for d in reversed([d for d in self.deferred if d.depth == self.depth]) { self.run_entry(d, answer) }
+        self.deferred = [d for d in self.deferred if d.depth < self.depth]
+        self.depth = self.depth - 1
+    }
+
+    /// One entry runs: a `defer` always; an `errdefer` behind the
+    /// tag of `answer` — the fn's answer when this exit is one,
+    /// null when nothing here decides.
+    mut fn run_entry(d: Deferred, answer: Reg?) {
+        if !d.on_error {
+            self.run_deferred(d)
+            return
+        }
+        if answer != null { self.run_if_failed(d, answer!) }
+    }
+
+    /// A fn box to run when the scope ends — or, `on_error`, only
+    /// when the fn fails.
+    mut fn at_exit(box: Reg, on_error: bool) {
+        self.deferred.push(Deferred { box: box, depth: self.depth, on_error: on_error })
+    }
+
+    /// An early exit that ANSWERS `answer`: every open frame's
+    /// entries run, innermost first — an `errdefer` behind the
+    /// answer's tag. Nothing closes — other paths continue.
+    mut fn leaving(answer: Reg?) {
+        for d in reversed(self.deferred) { self.run_entry(d, answer) }
+    }
+
+    /// An early exit that FAILS: every open frame's `defer`s AND
+    /// `errdefer`s run, innermost first.
+    mut fn failing() {
+        for d in reversed(self.deferred) { self.run_deferred(d) }
+    }
+
+    /// An `errdefer` behind the answer's tag: a `Result` answering
+    /// `.Err` runs it. An answer of any other shape is a bare success
+    /// the auto-Ok wrap lifts past this frame — it never does.
+    mut fn run_if_failed(d: Deferred, answer: Reg) {
+        if !(self.view.types.shape_of(self.out.reg_types[answer.index]) is .Res) { return }
+        self.out.give(Ins.IfStart(okness_of(self, answer)))
+        void_arm(self)
+        self.run_deferred(d)
+        void_close(self)
+    }
+
+    /// One deferred box called — the code address at slot 0, the
+    /// box itself as the env seat, the answer dropped.
+    mut fn run_deferred(d: Deferred) {
+        let held: Arrow? = self.view.types.arrow_parts(self.out.reg_types[d.box.index])
+        if held == null {
+            self.defect("a deferred box without a fn type survived typing")
+            return
+        }
+        let fp = slot_read(self, d.box, 0, null)
+        let dst = self.out.mint_ty(held!.answer)
+        self.out.give(Ins.CallPtr(dst, fp, [d.box]))
+    }
 }
+

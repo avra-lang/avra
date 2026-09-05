@@ -59,7 +59,7 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30.
+Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33.
 Unratcheted, read by a human: I5 (a matcher cannot see whether a
 predicate has effects), I31 (a stolen doc and a legitimate
 multi-paragraph header are the same shape).
@@ -433,6 +433,20 @@ reintroducing I3's blind spot names the two spellings it lost.
       changes every turn — there is no one value to bind. The first
       matcher over-counted by reading `s.token!` as a local; a rule
       must justify every hit it prints.
+- I33 (ratcheted) a RAW SCOPE BRACKET through a lowering context:
+      `cx.emit(Ins.ScopeEnter(…))`, `cx.emit(Ins.ScopeExit(…))`,
+      `lo.out.give(Ins.Scope…)`. A scope IS a `defer` frame, and the
+      frames live in the walk's verbs — `scope_enter`/`scope_exit`
+      for a scope, `seats_enter`/`seats_exit` for the seats' bracket
+      (no statement list, so no frame), `arm_stmts` for a
+      statement-list arm — so a bracket emitted raw is invisible to
+      them: a `defer` written inside runs at the ENCLOSING frame's
+      end (an `if` statement's branch did, landing `defer`). Eight
+      sites converted at discovery (three loops, the comprehension
+      walk, the block, the fn, the lambda, the entry). LICENSED at
+      the four verbs that ARE the spelling; an Emitter's own `give`
+      in a synthesized body (test_run.av) has no context and is not
+      the smell.
 
 ## Lowering: MINT IN EMISSION ORDER
 

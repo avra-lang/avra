@@ -505,6 +505,50 @@ fn val_text(m: Machine, v: Val) -> string {
     }
 }
 
+// ── The host seam the evaluator reaches through ─────────────────
+// The process substrate and the clock are the runtime's own C; the
+// evaluator calls the same functions the native program does, so
+// there is one implementation, not two that agree.
+extern fn avra_proc_spawn(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, max_bytes: int, from_h: int) -> int
+extern fn avra_proc_run(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, stdin_text: string, timeout_ms: int, grace_ms: int, max_bytes: int) -> int
+extern fn avra_proc_poll(h: int, timeout_ms: int) -> int
+extern fn avra_proc_write(h: int, text: string) -> int
+extern fn avra_proc_stdin_close(h: int) -> int
+extern fn avra_proc_take(h: int, stream: int) -> string
+extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
+extern fn avra_proc_status(h: int) -> int
+extern fn avra_proc_pid(h: int) -> int
+extern fn avra_proc_close(h: int)
+extern fn avra_proc_which(file: string, path: string) -> string
+extern fn avra_errno_text(err: int) -> string
+extern fn avra_now_ns() -> int
+extern fn avra_eputs(line: string)
+extern fn avra_io_kind(path: string) -> int
+extern fn avra_io_read(path: string) -> int
+extern fn avra_io_write(path: string, text: string) -> int
+extern fn avra_io_list(path: string) -> int
+extern fn avra_io_mkdir(path: string) -> int
+extern fn avra_io_remove(path: string) -> int
+extern fn avra_io_env(name: string) -> int
+extern fn avra_io_taken() -> string
+// `avra_host_env` is the module's already — workspace.av declares it.
+
+/// A word list the host can hold, from an array of texts.
+fn texts_of(m: Machine, v: Val) -> List<string> {
+    match v {
+        .A(id) -> [text_val(m, e) for e in m.arrays[id]],
+        _ -> {
+            defect(m, "a non-array reached the host's word list")
+            []
+        },
+    }
+}
+
+fn proc_close_val(h: int) -> Val {
+    avra_proc_close(h)
+    Val.I(0)
+}
+
 // ── The runtime surface, hosted — runtime_api.av's fifth consumer ─
 
 fn rt_void(m: Machine, callee: string, args: List<Reg>, pc: int) -> int {
@@ -568,6 +612,29 @@ fn rt_dispatch(m: Machine, callee: string, vals: List<Val>) -> Val {
         .StrCharCode -> str_char_code_val(m, vals),
         .StrTrim -> Val.S(trimmed(text_val(m, vals[0]))),
         .StrConcat -> Val.S(text_val(m, vals[0]) + text_val(m, vals[1])),
+        .ProcSpawn -> Val.I(avra_proc_spawn(text_val(m, vals[0]), texts_of(m, vals[1]), texts_of(m, vals[2]), text_val(m, vals[3]), whole(m, vals[4]), whole(m, vals[5]), whole(m, vals[6]))),
+        .ProcRun -> Val.I(avra_proc_run(text_val(m, vals[0]), texts_of(m, vals[1]), texts_of(m, vals[2]), text_val(m, vals[3]), whole(m, vals[4]), text_val(m, vals[5]), whole(m, vals[6]), whole(m, vals[7]), whole(m, vals[8]))),
+        .ProcPoll -> Val.I(avra_proc_poll(whole(m, vals[0]), whole(m, vals[1]))),
+        .ProcWrite -> Val.I(avra_proc_write(whole(m, vals[0]), text_val(m, vals[1]))),
+        .ProcStdinClose -> Val.I(avra_proc_stdin_close(whole(m, vals[0]))),
+        .ProcTake -> Val.S(avra_proc_take(whole(m, vals[0]), whole(m, vals[1]))),
+        .ProcSignal -> Val.I(avra_proc_signal(whole(m, vals[0]), whole(m, vals[1]), whole(m, vals[2]))),
+        .ProcStatus -> Val.I(avra_proc_status(whole(m, vals[0]))),
+        .ProcPid -> Val.I(avra_proc_pid(whole(m, vals[0]))),
+        .ProcClose -> proc_close_val(whole(m, vals[0])),
+        .ProcWhich -> Val.S(avra_proc_which(text_val(m, vals[0]), text_val(m, vals[1]))),
+        .ErrnoText -> Val.S(avra_errno_text(whole(m, vals[0]))),
+        .NowNs -> Val.I(avra_now_ns()),
+        .HostEnv -> Val.S(avra_host_env(text_val(m, vals[0]))),
+        .Eputs -> eputs_val(m, vals),
+        .IoKind -> Val.I(avra_io_kind(text_val(m, vals[0]))),
+        .IoRead -> Val.I(avra_io_read(text_val(m, vals[0]))),
+        .IoWrite -> Val.I(avra_io_write(text_val(m, vals[0]), text_val(m, vals[1]))),
+        .IoList -> Val.I(avra_io_list(text_val(m, vals[0]))),
+        .IoMkdir -> Val.I(avra_io_mkdir(text_val(m, vals[0]))),
+        .IoRemove -> Val.I(avra_io_remove(text_val(m, vals[0]))),
+        .IoEnv -> Val.I(avra_io_env(text_val(m, vals[0]))),
+        .IoTaken -> Val.S(avra_io_taken()),
         .Unhosted -> defect_val(m, "a runtime callee the interpreter does not host: `${callee}`"),
     }
 }
@@ -914,6 +981,12 @@ fn puts_val(m: Machine, vals: List<Val>) -> Val {
     let line = text_val(m, vals[0])
     mut o = m.out
     o.push(line)
+    Val.I(0)
+}
+
+/// A line to the evaluator's own stderr — never the program's answer.
+fn eputs_val(m: Machine, vals: List<Val>) -> Val {
+    avra_eputs(text_val(m, vals[0]))
     Val.I(0)
 }
 
