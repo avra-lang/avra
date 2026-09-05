@@ -176,8 +176,8 @@ export enum Expr {
     /// `[elem for name in source if cond]` — a list built by walking
     /// another, or counting `source..hi` when `hi` is present;
     /// `index` names the position when written as `index, name`,
-    /// "" otherwise. The binders hold for `elem` and `cond` alone.
-    Comp(elem: ExprId, index: string, name: string, source: ExprId, hi: ExprId?, cond: ExprId?)
+    /// null otherwise. The binders hold for `elem` and `cond` alone.
+    Comp(elem: ExprId, index: string?, name: string, source: ExprId, hi: ExprId?, cond: ExprId?)
     /// `{ "k": v, … }` — keys and values in written order.
     MapLit(keys: List<ExprId>, values: List<ExprId>)
     /// `subject[index]` — element access.
@@ -420,9 +420,9 @@ export enum Stmt {
     /// `impl Target { fns… }` — methods for a declared type: each
     /// fn is a method: `self` types as the target, and the
     /// fn lowers under a QUALIFIED name (`Target.method`). `of`
-    /// names the TRAIT being implemented — "" for an inherent impl
+    /// names the TRAIT being implemented — null for an inherent impl
     /// — and an impl-for must answer every trait method.
-    ImplDecl(of: string, target: string, fns: List<StmtId>)
+    ImplDecl(of: string?, target: string, fns: List<StmtId>)
     /// `trait Name { fn sigs… }` — a nominal behavior contract.
     /// The sigs ride as BODYLESS fn declarations (body = a hole no
     /// pass walks), so declare and totality reuse fn machinery.
@@ -823,7 +823,7 @@ impl NodeStore {
             // ONE identity. The 55/61 tag already tells an absent range
             // end from a present one, so `hi` needs no such care.
             .Comp(elem, index, name, source, hi, cond) ->
-                fp(if hi == null { 55 } else { 61 }, [self.expr_fingerprint(elem), fp_str(index), fp_str(name), self.expr_fingerprint(source), self.expr_fingerprint(hi ?? source)].concat(self.expr_fps(some_list(cond)))),
+                fp(if hi == null { 55 } else { 61 }, [self.expr_fingerprint(elem), fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(source), self.expr_fingerprint(hi ?? source)].concat(self.expr_fps(some_list(cond)))),
             .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),
             .MethodCall(subject, name, margs) ->
                 fp(43, flatten([[self.expr_fingerprint(subject)], [fp_str(name)],
@@ -877,7 +877,7 @@ impl NodeStore {
             .Return(value) -> fp(36, [self.expr_fingerprint(v) for v in some_list(value)]),
             .Fail(value) -> fp(39, [self.expr_fingerprint(value)]),
             .ImplDecl(of, target, fns) ->
-                fp(44, [fp_str(of), fp_str(target)].concat(self.stmt_fps(fns))),
+                fp(44, [fp_str(of ?? ""), fp_str(target)].concat(self.stmt_fps(fns))),
             .TraitDecl(name, fns) ->
                 fp(45, [fp_str(name)].concat(self.stmt_fps(fns))),
             .LetElse(name, subject, stmts) ->

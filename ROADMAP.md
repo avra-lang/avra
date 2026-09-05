@@ -5690,6 +5690,12 @@ by meaning; each is a slice for lane D unless a lane is named.
   construction — the DSL's rule is `postfix = primary ( "*" | "+" |
   "?" )?` — which is the point: an honest refusal over a guaranteed
   dispatch, not a default that lies.
+  PROBED, more working shapes recorded: `[self]` as a list element
+  recursing through a method; a comparison inline as a comprehension
+  element's ARGUMENT; a leading-dot `.concat` continuation after a
+  closing paren; `string?` compared to `string` with a bare `==`; and
+  `?.` reaching a NULLABLE FIELD (a nested optional — the tree had no
+  precedent, and it types and runs).
   PROBED (records a WORKING shape, so the fear shrinks): an `or`-RUN
   over STRING literals in a match arm compiles and runs
   (`"+" or "-" or ... -> true`). It had no precedent in the tree.
