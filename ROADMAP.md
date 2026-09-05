@@ -201,9 +201,56 @@ spec tests beside it, a corpus package under corpus/<name>/ proving
 eval == native; each a slice with red-team + review-round). The
 driver is what the compiler and its tools need — the spec has no
 std-lib chapter, so dogfooding decides the surface.
-  - [ ] `@std/process`: spawn with an argv LIST (the runtime row
-        lane 0 adds), args, exit statuses as verdicts. Coordinate
-        with lane 0: whichever lands first owns `avra_spawn_status`.
+  - [ ] `@std/process` — DESIGNED 2026-09-04, FIRST (the user's
+        word: the first real std lib dogfoods everything). The vision
+        is `docs/2026_09_04_STD_PROCESS_VISION.md` on lane/b, with
+        four research reports beside it (`…_RESEARCH_*.md`); it merges
+        with the first slice. THE SPLIT: a command is a PROGRAM (an
+        authority — `Program`, minted from `[process.tools]`, resolved
+        ONCE to an absolute path), its WORDS (data — a literal hole is
+        one argv word) and their POSITIONS (a word from data is fused
+        `--flag=v`, `./`-prefixed as a path, or after the tool's
+        declared terminator — argv-lists delete the shell, NOT
+        argument injection). An exit is `Exit { Clean, Code(n),
+        Signal(sig, core) }`; `run()` judges by `ok_exits` (default
+        `[0]`; grep spells `[0, 1]` once), `outcome()` reads. Env is a
+        named profile (`minimal`/`developer`; `inherit` counted; the
+        failing child's missing variable is NAMED, F4616). Two
+        deadlines (`timeout`, `drain_grace` — a grandchild holding the
+        pipe). `start(ready)` returns when READY. `Runner` is a trait:
+        `host`/`scripted`/`plan`. GRANTED (2026-09-04): (1) lane B
+        writes the TWELVE substrate rows in `runtime/avra_runtime.c`
+        over a handle table with a tagged status word (`0` RUNNING,
+        success never zero, spawn failure `-errno`) — `posix_spawn`
+        never `posix_spawnp`, PATH resolved from the CHILD's envp,
+        SETSIGDEF+SETSIGMASK, CLOEXEC_DEFAULT/close_range, one poll
+        set, drain then reap once; lane 0's `avra_spawn_status`
+        (posix_spawnp, `environ`) is the v0 bridge these REPLACE, and
+        `system()` dies with it; (2) each row gets an `rt_sigs()` row
+        and a thin `RtHost.Proc*` arm calling the same C, so `avra
+        run` spawns and eval == native holds by construction; (3)
+        `manifest.av` learns `[process]` (unknown keys ERROR;
+        `process.<name>` a decl) — the same door `@std.fs` needs.
+        OPEN, per lane: (4) the `cmd""`/`sh""` literals ride the
+        embedded-sublanguage contract — ONE grammar (the shell's word
+        and pipe spelling), lane B writes it in the package, the
+        grammar-lit owner wires the literal hook; (5) `defer` — WANTED
+        by process (a `Child`'s scope is its lifetime, F4609); lane
+        C's by the partition, on the user's word; (9) typed `[link]`
+        rows (`objects`/`search`/`libs`, no `-`-leading token a
+        dependency can spell; `[link.raw]` root-only, allow-listed) —
+        the build machine's steps two and three after lane 0's argv
+        row; (10) `caps.seal()` shared with fs — exec targets are
+        `FS_EXECUTE` rights and Landlock layers are conjunctive. v0
+        SCOPE (lane B alone, this week): the package over the twelve
+        rows with the constructor forms (`program(name)?`,
+        `cmd(p, words)`, the position verbs, `with`), `Pipeline` over
+        kernel pipes with per-stage stderr, `Child`, the `serving`
+        bracket, `parallel(limit)`, `race(stagger)`, `exit(Exit)`,
+        `@std/time`'s `Duration` stub; `shared.av:198` and `test.av:44`
+        move onto it. DONE WHEN the cli links through `@std/process`,
+        `corpus/process/` says eval == native, and `avra explain
+        process` prints the tool set.
   - [ ] `@std/io`: println/eprintln, read/write file, env, list
         dir — over the runtime's existing externs, so a program
         prints without declaring C. DONE WHEN `packages/cli` and
