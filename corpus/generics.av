@@ -2,8 +2,9 @@
 // specialized lowering per distinct instantiation, registers
 // concrete every time. Composition (generic calls generic — the
 // substitutions compose), List<T> params, T? and Result<T, E> in
-// generic signatures, explicit pins, and a string specialization
-// churning owned values.
+// generic signatures, explicit pins, a generic nullable local
+// carrying state across a loop at two instantiations, and a string
+// specialization churning owned values.
 enum E {
     empty
 }
@@ -31,6 +32,14 @@ fn head_or<T>(xs: List<T>) -> Result<T, E> {
     xs[0]
 }
 
+/// A generic NULLABLE local carrying state ACROSS a loop, under mono
+/// — the shape the executor's fallback was once written around.
+fn last_of<T>(xs: List<T>) -> T? {
+    mut held: T? = null
+    for x in xs { held = x }
+    held
+}
+
 fn some_int(v: int) -> int? { v }
 fn none_int() -> int? { null }
 
@@ -49,4 +58,4 @@ while i < 100 {
     t = t + churn(i)
     i = i + 1
 }
-"${id(41) + 1} ${twice_id("deep")} ${pick(1, 2, false)} ${id<bool>(true)} ${or_else(some_int(4), 0)} ${or_else(none_int(), 9)} ${first_of([7, 8])} ${first_of([4])} c ${t}"
+"${id(41) + 1} ${twice_id("deep")} ${pick(1, 2, false)} ${id<bool>(true)} ${or_else(some_int(4), 0)} ${or_else(none_int(), 9)} ${first_of([7, 8])} ${first_of([4])} ${or_else(last_of([7, 8, 9]), 0)} ${or_else(last_of(["a", "b"]), "z")} c ${t}"

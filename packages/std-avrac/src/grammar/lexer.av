@@ -349,13 +349,8 @@ fn rule_boundary(tokens: List<Token>, j: int) -> bool {
     }
 }
 
-/// In language source every line break separates — except directly
-/// inside `(` or `[` (a brace opened inside them separates again),
-/// after a token that promises more (a binary operator, `=`, `->`,
-/// a comma), before an `else`, and before a `.name` line indented
-/// deeper than the line it continues (a method chain; a match arm
-/// sits level with its siblings and follows a `{`), where the line
-/// CONTINUES.
+/// Language source has no rule boundary: every break is a candidate,
+/// and `collapse_breaks` decides which survive.
 // LICENSED I23: conforms to a callback signature — the CONTRACT owns
 // the parameter list, not this body
 fn line_boundary(tokens: List<Token>, j: int) -> bool {
@@ -419,11 +414,18 @@ fn opened(open: List<string>, t: Token) -> List<string> {
 /// A token after which the line continues — an operator that wants
 /// a right side, or the `or` between a pattern's alternatives.
 fn continues(t: Token) -> bool {
-    (t.kind == TokenKind.Op && continuing_ops().contains(t.text)) || (t.kind == TokenKind.Name && t.text == "or")
+    (t.kind == TokenKind.Op && continuing_op(t.text)) || (t.kind == TokenKind.Name && t.text == "or")
 }
 
-fn continuing_ops() -> List<string> {
-    ["+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "&&", "||", "??", "=", "->", "|>", ","]
+/// An operator that wants a right side. A match, not a list: this is
+/// asked once per line of every source, and a list here would be a
+/// fresh list per line.
+fn continuing_op(text: string) -> bool {
+    match text {
+        "+" or "-" or "*" or "/" or "%" or "==" or "!=" or "<" or "<=" or ">"
+            or ">=" or "&&" or "||" or "??" or "=" or "->" or "," -> true,
+        _ -> false,
+    }
 }
 
 /// The whole input, one ScanStep at a time; then the line policy, a
@@ -501,8 +503,13 @@ export fn lex_grammar(src: string) -> LexResult {
     lex_with(src, rule_boundary, false)
 }
 
-/// Language source: a line break survives between any two
-/// statements, and strings carry `${}` holes.
+/// Language source: every line break separates — except directly
+/// inside `(` or `[` (a brace opened inside them separates again),
+/// after a token that promises more (a binary operator, `=`, `->`,
+/// a comma, a trailing `or`), before an `else`, `or` or `with`, and
+/// before a `.name` line indented deeper than the line it continues
+/// (a method chain; a match arm sits level with its siblings and
+/// follows a `{`). Strings carry `${}` holes.
 export fn lex_source(src: string) -> LexResult {
     lex_with(src, line_boundary, true)
 }

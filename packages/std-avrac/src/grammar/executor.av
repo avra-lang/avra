@@ -286,24 +286,18 @@ fn match_alt<N>(cx: MatchContext<N>, rule_name: string, a: Alt,
                 cursor: int, bindings: List<Binding<N>>, acc: bool) -> MatchResult<N> {
     // LICENSED I4: a merge fold (far_merge), not a scan
     mut farthest: FarthestFailure? = null
-    // GENERIC locals cannot carry loop state through mono (subset
-    // note) — a Broke's state and value are never consumed, so the
-    // fallback survives as its non-generic pieces alone.
-    mut have_fallback = false
-    mut fb_diags: List<Diagnostic> = []
+    // LICENSED I4: the first break's words, held while the fold runs on
+    mut fb_diags: List<Diagnostic>? = null
     for br in a.branches {
         let r = match_seq<N>(cx, rule_name, br, cursor, bindings, acc)
         farthest = far_merge(farthest, r.farthest)
         if r.status == MatchStatus.Hit || r.status == MatchStatus.Fatal {
             return r with { farthest: farthest }
         }
-        if r.status == MatchStatus.Broke && !have_fallback {
-            fb_diags = r.diagnostics
-            have_fallback = true
-        }
+        if r.status == MatchStatus.Broke && fb_diags == null { fb_diags = r.diagnostics }
     }
-    if !have_fallback { return missed<N>(cx, cursor, bindings, cx.silence, farthest) }
-    broke<N>(cx, cursor, bindings, fb_diags, farthest)
+    if fb_diags == null { return missed<N>(cx, cursor, bindings, cx.silence, farthest) }
+    broke<N>(cx, cursor, bindings, fb_diags!, farthest)
 }
 
 /// "expected A, B or C while parsing `rule`" from a farthest point.
