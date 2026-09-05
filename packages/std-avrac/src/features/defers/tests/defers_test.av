@@ -1,0 +1,119 @@
+// `defer`, vertically: the body runs when its statement list's frame
+// closes, last-registered first; an early exit runs every open
+// frame; `errdefer` waits on the failure channel; and the laws
+// refuse what would fail unheard or never run.
+use @std.avrac.language.{render_ir}
+use @std.avrac.testing.{shown, refused_with, ir_of}
+
+/// The one observer a deferred body has: the runtime's puts, which
+/// the evaluator collects line by line.
+fn puts() -> string {
+    "extern fn avra_puts(s: string)\n"
+}
+
+/// A fallible fixture: `g` fails, `ok` answers.
+fn fallible() -> string {
+    "${puts()}fn g() -> Result<int, string> {\n    fail \"boom\"\n}\nfn ok() -> Result<int, string> {\n    2\n}\n"
+}
+
+/// The Result read out as text.
+fn told(call: string) -> string {
+    "match ${call} {\n    .Ok(v) -> \"\${v}\"\n    .Err(e) -> e\n}"
+}
+
+spec "features/defers" {
+    given "the frame's close" {
+        then "a deferred body runs after the scope's own work — the answer included" {
+            shown("${puts()}defer avra_puts(\"bye\")\navra_puts(\"hi\")\n1") == "hi\n1\nbye"
+        }
+        then "two defers run last-registered first" {
+            shown("${puts()}defer avra_puts(\"a\")\ndefer avra_puts(\"b\")\n0") == "0\nb\na"
+        }
+        then "a fn's defer runs after its tail value, before the caller sees it" {
+            shown("${puts()}fn f() -> int {\n    defer avra_puts(\"cleanup\")\n    avra_puts(\"work\")\n    1\n}\nf()") == "work\ncleanup\n1"
+        }
+        then "an `if` statement's branch is its own frame" {
+            shown("${puts()}fn f() -> int {\n    defer avra_puts(\"fn\")\n    if true {\n        defer avra_puts(\"block\")\n        avra_puts(\"in\")\n    }\n    avra_puts(\"after\")\n    1\n}\nf()") == "in\nblock\nafter\nfn\n1"
+        }
+        then "a loop's turn is a frame — each turn's defer runs as the turn ends" {
+            shown("${puts()}for x in [1, 2] {\n    defer avra_puts(\"end \${x}\")\n    avra_puts(\"turn \${x}\")\n}\n0") == "turn 1\nend 1\nturn 2\nend 2\n0"
+        }
+        then "a lambda's body frames its own defers" {
+            shown("${puts()}let f = () -> {\n    defer avra_puts(\"lam-end\")\n    avra_puts(\"lam\")\n    1\n}\nf()") == "lam\nlam-end\n1"
+        }
+        then "a program with no answer still runs its defers at the end" {
+            shown("${puts()}defer avra_puts(\"only\")") == "only"
+        }
+    }
+    given "captures are copies — the deferred body sees the value AT the defer" {
+        then "a counter stepped after the defer is read as it was" {
+            shown("${puts()}mut i = 0\nwhile i < 2 {\n    defer avra_puts(\"end \${i}\")\n    avra_puts(\"turn \${i}\")\n    i = i + 1\n}\n0") == "turn 0\nend 0\nturn 1\nend 1\n0"
+        }
+        then "a managed capture rides into the deferred call" {
+            shown("${puts()}type C = { name: string }\nfn hold(c: C) -> int {\n    defer avra_puts(\"stop \${c.name}\")\n    1\n}\nhold(C { name: \"x\" })") == "stop x\n1"
+        }
+        then "a dyn capture dispatches from the deferred body" {
+            shown("${puts()}trait Show {\n    fn show() -> string\n}\ntype P = { n: int }\nimpl Show for P {\n    fn show() -> string {\n        \"p\${self.n}\"\n    }\n}\nfn f(s: dyn Show) -> int {\n    defer avra_puts(s.show())\n    1\n}\nf(P { n: 4 })") == "p4\n1"
+        }
+    }
+    given "early exits run every open frame, innermost first" {
+        then "`return` runs the fn's defers on its way out" {
+            shown("${puts()}fn f(n: int) -> int {\n    defer avra_puts(\"out \${n}\")\n    if n > 0 {\n        return 1\n    }\n    2\n}\nf(1) + f(0)") == "out 1\nout 0\n3"
+        }
+        then "a `let … else` that leaves runs the else's defer, then the fn's" {
+            shown("${puts()}fn f(x: int?) -> int {\n    defer avra_puts(\"fn\")\n    let v? = x else {\n        defer avra_puts(\"else\")\n        return 0\n    }\n    v\n}\nf(null) + f(3)") == "else\nfn\nfn\n3"
+        }
+        then "`?` on an absent nullable answers through the defers" {
+            shown("${puts()}fn none() -> int? {\n    null\n}\nfn m() -> int? {\n    defer avra_puts(\"d\")\n    let v = none()?\n    v\n}\nm() ?? 7") == "d\n7"
+        }
+    }
+    given "`errdefer` — the failure channel's cleanup" {
+        then "`fail` runs both kinds, last-registered first" {
+            shown("${puts()}fn g() -> Result<int, string> {\n    defer avra_puts(\"d\")\n    errdefer avra_puts(\"e\")\n    fail \"x\"\n}\n${told("g()")}") == "e\nd\nx"
+        }
+        then "a success runs the defers and skips the errdefers" {
+            shown("${puts()}fn h() -> Result<int, string> {\n    errdefer avra_puts(\"e\")\n    defer avra_puts(\"d\")\n    1\n}\n${told("h()")}") == "d\n1"
+        }
+        then "`?` passing a failure on runs the errdefers" {
+            shown("${fallible()}fn k() -> Result<int, string> {\n    errdefer avra_puts(\"undo\")\n    let v = g()?\n    v\n}\n${told("k()")}") == "undo\nboom"
+        }
+        then "each `?` in one expression is its own exit — the errdefer runs once, at the one that fails" {
+            shown("${fallible()}fn k() -> Result<int, string> {\n    errdefer avra_puts(\"undo\")\n    let v = ok()? + g()?\n    v\n}\n${told("k()")}") == "undo\nboom"
+        }
+        then "a selective `catch` propagating the unmatched runs the errdefers" {
+            shown("${puts()}enum E {\n    a\n    b\n}\nfn g() -> Result<int, E> {\n    fail E.a\n}\nfn k() -> Result<int, E> {\n    errdefer avra_puts(\"undo\")\n    let v = g() catch {\n        .b -> 0\n    }\n    v\n}\nmatch k() {\n    .Ok(v) -> \"\${v}\"\n    .Err(_) -> \"err\"\n}") == "undo\nerr"
+        }
+        then "an errdefer in a nested branch runs before the fn's" {
+            shown("${puts()}fn g() -> Result<int, string> {\n    errdefer avra_puts(\"e1\")\n    if true {\n        errdefer avra_puts(\"e2\")\n        fail \"x\"\n    }\n    1\n}\n${told("g()")}") == "e2\ne1\nx"
+        }
+    }
+    given "the laws" {
+        then "a deferred body answering a Result is refused — nobody would hear it fail" {
+            refused_with("fn half(n: int) -> Result<int, string> {\n    if n % 2 == 0 { return .Ok(n / 2) }\n    .Err(\"odd\")\n}\ndefer half(3)\n1", "`defer` drops what its body answers, and this one answers `Result<int, string>` — a failure nobody would hear")
+        }
+        then "the remedy is named: catch it, or discard it on purpose" {
+            shown("${puts()}fn half(n: int) -> Result<int, string> {\n    if n % 2 == 0 { return .Ok(n / 2) }\n    .Err(\"odd\")\n}\ndefer { let _ = half(3) }\n1") == "1"
+        }
+        then "an errdefer at the top level has no channel to wait on" {
+            refused_with("${puts()}errdefer avra_puts(\"x\")\n1", "an `errdefer` runs when the enclosing fn fails, and there is none enclosing")
+        }
+        then "an errdefer in a fn that cannot fail never runs — refused" {
+            refused_with("${puts()}fn f() -> int {\n    errdefer avra_puts(\"x\")\n    1\n}\nf()", "an `errdefer` runs when this fn fails, and it promises a `int` — it never does")
+        }
+        then "an errdefer behind a lambda's barrier names the barrier" {
+            refused_with("${puts()}fn k() -> Result<int, string> {\n    let f = () -> {\n        errdefer avra_puts(\"x\")\n        1\n    }\n    f()\n}\n${told("k()")}", "a lambda promises no failure — its answer is inferred")
+        }
+        then "`?` inside a deferred body is the lambda's law, said once" {
+            refused_with("${fallible()}fn k() -> Result<int, string> {\n    defer g()?\n    1\n}\n${told("k()")}", "`?` passes the failure to a caller, and a lambda promises none")
+        }
+        then "a body that does not type earns exactly its own refusal" {
+            refused_with("${puts()}defer avra_puts(1)\n1", "argument 1 of `avra_puts` wants `string`, found `int`")
+        }
+    }
+    given "the IR, as `avra ir` prints it" {
+        then "the box is read and called through after the frame's value, inside the scope — retained for the callee, released by the frame" {
+            let shape = "  r5 = call avra_array_get(r1, r4)\n    retain r1\n    r6 = callptr r5(r1)\n    release r1\n    yield r3\n"
+            render_ir(ir_of("${puts()}fn f() -> int {\n    defer avra_puts(\"x\")\n    1\n}\nf()")).contains(shape)
+        }
+    }
+}
