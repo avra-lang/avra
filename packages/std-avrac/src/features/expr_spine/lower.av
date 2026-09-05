@@ -5,7 +5,7 @@
 //! desugar onto the region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
 use core.{ExprId, BinOp, UnOp, Reg, Ins, Type, TypeId}
-use features.{LowerCx, StructSig, EnumSig, presence_of, lower_defect, foreign_node, variant_defect, tagged_value, PropertyRow, property_row, same_value, open_presence, carried_of, field_read, arm_end, open_region, close_region, const_bool}
+use features.{LowerCx, StructSig, EnumSig, presence_of, lower_defect, foreign_node, variant_defect, tagged_value, PropertyRow, property_row, same_value, open_presence, carried_of, field_read, arm_end, open_region, close_region, const_bool, box_size}
 
 fn spine_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     // LICENSED I22: a feature cannot enumerate OTHER features' variants
@@ -79,8 +79,9 @@ fn variant_reg(mut cx: LowerCx, e: ExprId, name: string) -> Reg {
     if which == null {
         return lower_defect(cx, e, variant_defect())
     }
+    let size = box_size(cx, 1)
     let dst = cx.result(e)
-    tagged_value(cx, dst, which!, [])
+    tagged_value(cx, dst, size, which!, [])
     dst
 }
 fn ident_reg(mut cx: LowerCx, e: ExprId) -> Reg {

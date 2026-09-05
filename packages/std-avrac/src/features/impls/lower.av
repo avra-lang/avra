@@ -3,7 +3,7 @@
 //! derives from the receiver's type both here and at the fn loop,
 //! so no fact table carries it.
 use core.{ExprId, Reg, Ins, Type, DeclId}
-use features.{LowerCx, lower_defect, foreign_node, EnumSig, tagged_value, called_through, slot_read, MethodRow, MethodCall, method_row, StructSig, receiver_decl}
+use features.{LowerCx, lower_defect, foreign_node, EnumSig, tagged_value, called_through, slot_read, MethodRow, MethodCall, method_row, StructSig, receiver_decl, box_size}
 
 /// The receiver's value: seat 0 of the body, as its binding says.
 fn receiver_reg(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -83,7 +83,8 @@ fn built_variant(mut cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -
     let which: int? = sig!.tag_of(name)
     if which == null || args.is_empty() { return lower_defect(cx, e, "an undeclared variant survived typing") }
     let carried = [cx.reg_of(a) for a in args]
+    let size = box_size(cx, 1 + carried.length)
     let dst = cx.result(e)
-    tagged_value(cx, dst, which!, carried)
+    tagged_value(cx, dst, size, which!, carried)
     dst
 }
