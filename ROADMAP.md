@@ -5857,11 +5857,17 @@ by meaning; each is a slice for lane D unless a lane is named.
   at both depths (`c.keep(n)` and `w.cache.keep(n)`) and on both
   layouts (a scalar field, a list field): eval == native == `1 2 2`
   on all four.
-  THE SCALE, measured with main's compiler under the watchdog: F2047
-  fires 198 times tree-wide — workspace.av 124, features/contexts.av
-  22, test_run.av 12, lower.av 12, receivers.av 10, the rest single
-  digits. These are TRUE positives: the lint traces a method that
-  genuinely writes, and every one probed mutates observably. This is
+  THE SCALE, measured with main's compiler under the watchdog and
+  DEDUPED by site: F2047 stands at 101 unique sites — workspace.av 62,
+  features/contexts.av 11, test_run.av 6, lower.av 6, db_test.av 5,
+  receivers.av 5, the rest in twos. THE COUNTING TRAP, paid once here:
+  checking one package reports its DEPENDENCIES' warnings too, so
+  summing per-package runs double-counts — `cli`'s 168 F2040s are 166
+  std-avrac sites and NONE of its own, and the tree's real F2040 total
+  is 191 unique, not the 361 the sum claims. Count unique `file:line`,
+  never the sum of runs. These are TRUE positives: the lint traces a
+  method that genuinely writes, and every one probed mutates
+  observably. This is
   not a lint that miscounts the wrong thing (that is F2040's, lane
   C's slice) — it is a law that shipped as a warning and was never
   paid. It arrived with `feat(impls,fns): the inout seats`.
@@ -5871,7 +5877,7 @@ by meaning; each is a slice for lane D unless a lane is named.
   And `mut` on a record parameter is ADVISORY today, not a
   representation: the mutation propagates either way, so the
   conversion is annotation-only, with no semantic or layout change.
-  WHAT MAKES IT A DECISION rather than a patch: 124 of the 198 are the
+  WHAT MAKES IT A DECISION rather than a patch: 62 of the 101 are the
   MEMO KERNEL, where `parsed(ws, f)` and its siblings read as pure
   queries while writing a cache through `ws.db`/`ws.decls`. Enforcing
   the law spells that mutation out — every query fn takes `mut ws` —
