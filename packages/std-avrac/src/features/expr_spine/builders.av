@@ -1,6 +1,6 @@
 //! Parse-time lowering: captures -> expression nodes.
 use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, Span, Param}
-use features.{LangNode, Builder, token_at, zip_defect, aligned_binds, within}
+use features.{LangNode, Builder, token_at, zip_defect, aligned_binds, within, chained_binder}
 use grammar.{Token}
 
 fn build_int_lit(mut b: Builder) -> Result<LangNode, string> {
@@ -126,10 +126,8 @@ fn build_fold_postfix(mut b: Builder) -> Result<LangNode, string> {
             let upto = next_anchor(b, names, indexes, calls, jn + 1, ji, jc, ends)
             let called = opens.any(within(it.span.lo, np, upto))
             if called {
-                if links[jn].text == "?." { return .Err("`?.` cannot call a method yet — chain methods are recorded") }
-                acc = b.store.alloc_expr(
-                    Expr.MethodCall(acc, names[jn].text,
-                        [pronouned(b, a) for a in args_between(b, margs, np, upto)]), b.span)
+                let margs_here = [pronouned(b, a) for a in args_between(b, margs, np, upto)]
+                acc = if links[jn].text == "?." { chained_call(b, acc, names[jn].text, margs_here) } else { b.store.alloc_expr(Expr.MethodCall(acc, names[jn].text, margs_here), b.span) }
             } else {
                 acc = b.store.alloc_expr(prop_link(links[jn].text, acc, names[jn].text), b.span)
             }
@@ -147,6 +145,16 @@ fn build_fold_postfix(mut b: Builder) -> Result<LangNode, string> {
         }
     }
     b.wrap_expr(acc)
+}
+
+/// `a?.m(args)` IS `match a { null -> null, v? -> v.m(args) }`: the
+/// present arm calls the method on what the nullable carries, the
+/// absent arm answers absence, and the match's own typing joins them.
+fn chained_call(mut b: Builder, subject: ExprId, name: string, args: List<ExprId>) -> ExprId {
+    let carried = b.store.alloc_expr(Expr.Ident(chained_binder()), b.span)
+    let call = b.store.alloc_expr(Expr.MethodCall(carried, name, args), b.span)
+    let absent = b.store.alloc_expr(Expr.NullLit, b.span)
+    b.store.alloc_expr(Expr.MatchOpt(subject, chained_binder(), call, absent), b.span)
 }
 
 /// The nearest UNCONSUMED anchor past the cursors — the window's

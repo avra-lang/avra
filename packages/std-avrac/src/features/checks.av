@@ -62,6 +62,16 @@ export fn unslottable_want(mut cx: TypeCx, e: ExprId, want: TypeId, what: string
     spoken(cx, refusal("type.list_scalar", cx.loc_of(e), "${what} cannot hold `${cx.view.types.name_of(want)}` yet", "this slot", slice_promise("elements")))
 }
 
+/// The binder a chained call (`a?.m(args)`) reads its subject
+/// through — a name no program can spell, so the sugar adds no node
+/// and no rule; the voices that would print it speak the chain's
+/// words instead.
+export fn chained_binder() -> string { "chained value" }
+
+fn chain_writes(mut cx: TypeCx, e: ExprId, name: string) {
+    cx.emit(warning("type.receiver", cx.loc_of(e), "a `?.` chain hands a COPY of what it carries — `${name}` writes through the copy, and the write is lost", "the copy", "bind the value first — `if let v? = … { v.${name}(…) }`"))
+}
+
 /// A UNIFIED SEAT AGREES, or not — BOTH halves, always: `unify` binds
 /// the declaration's Vars and `unified_lift` RECORDS the widen
 /// lowering mints. Short-circuit either way and a hit drops its lift,
@@ -488,6 +498,7 @@ export fn receiver_law(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string,
     let root: ExprId? = place_binding_root(cx, subject)
     if root == null { return cx.emit(warning("type.receiver", cx.loc_of(e), "`${name}` writes its receiver, and this is a value", "a value", "bind it `mut` first — the receiver becomes the caller's own place")) }
     let n = root_word(cx, root!)
+    if n == chained_binder() { return chain_writes(cx, e, name) }
     if captured(cx, root!) { return cx.emit(warning("type.receiver", cx.loc_of(e), "`${n}` is captured by value — `${name}` writes through the lambda's copy", "a copy", "a capture is a copy: write outside the lambda, or answer the new value")) }
     cx.emit(warning("type.receiver", cx.loc_of(e), "`${n}` is not `mut` — `${name}` writes through it", "aliased here", "declare it `mut ${n} = …`"))
 }

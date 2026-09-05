@@ -3,7 +3,7 @@
 //! must be nullable, and the right must be what that nullable
 //! carries; the answer is the carried type, never nullable again.
 use core.{ExprId, StmtId, Type, TypeId, ResSides}
-use features.{TypeCx, accepts, join_of, spoken, this_is, member_type_of, nullable_over, types_disagree}
+use features.{TypeCx, accepts, join_of, spoken, this_is, member_type_of, nullable_over, types_disagree, chained_binder}
 use diagnostics.{refusal, warning, Diag}
 
 fn nullable_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -73,6 +73,9 @@ fn match_opt_type(mut cx: TypeCx, subject: ExprId, bind: string,
     if cx.errored(subject) { return cx.error_type }
     let held: TypeId? = cx.view.types.carried(cx.type_at(subject))
     if held == null {
+        if bind == chained_binder() {
+            return not_absent_able(cx, subject, "type.chain", "`?.` reaches into", "`?.` reaches into what is never absent", "write `.` — the value is a guarantee")
+        }
         return not_absent_able(cx, subject, "type.match_opt", "`${bind}?` asks",
             "`${bind}?` can never bind", "write the absent arm's answer alone")
     }

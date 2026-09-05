@@ -331,4 +331,18 @@ spec "features/nullable" {
             refused_with("${finder()}find_user(7)?.nope ?? 0", "no field `nope` on `User`")
         }
     }
+    given "`?.` calls a method — the chain over a nullable's methods" {
+        then "present calls, absent answers absence, a nullable answer flattens" {
+            shown("type P = { x: int }\nimpl P {\n    fn dbl() -> int { self.x * 2 }\n    fn maybe(b: bool) -> int? { if b { self.x } else { null } }\n}\nfn find(b: bool) -> P? { if b { P { x: 4 } } else { null } }\n\"\${find(true)?.dbl() ?? 0} \${find(false)?.dbl() ?? 0} \${find(true)?.maybe(true) ?? 0} \${find(true)?.maybe(false) ?? 0 - 1}\"") == "8 0 4 -1"
+        }
+        then "the chain continues past the call" {
+            shown("type P = { x: int }\nimpl P {\n    fn name() -> string { \"p\${self.x}\" }\n}\nfn find(b: bool) -> P? { if b { P { x: 4 } } else { null } }\n\"\${find(true)?.name()?.length ?? 0} \${find(false)?.name()?.length ?? 0}\"") == "2 0"
+        }
+        then "a chained call on a guarantee refuses in the chain's words, never the binder's" {
+            refused_with("type P = { x: int }\nimpl P {\n    fn dbl() -> int { self.x * 2 }\n}\nlet p = P { x: 1 }\np?.dbl()", "`?.` reaches into a nullable, this is `P`")
+        }
+        then "a method the carried type lacks refuses in the method's words" {
+            refused_with("type P = { x: int }\nfn find(b: bool) -> P? { if b { P { x: 4 } } else { null } }\nfind(true)?.nope()", "`P` has no method `nope`")
+        }
+    }
 }
