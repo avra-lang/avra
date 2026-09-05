@@ -172,6 +172,14 @@ the order is the dependency.
         observable" kept). Then land it: typing + lowering + the
         corpus pair. DONE WHEN `let d = c; d.set(5)` leaves `c`
         unchanged, natively and in eval.
+        DESIGNED AND RATIFIED IN DIRECTION 2026-09-04 — "`mut self`
+        — THE INOUT RECEIVER" (this file, near the end): `self` is
+        a KEYWORD, implicit, never in a parameter list; the receiver
+        of a writing method is the caller's CELL; a `mut` parameter
+        is the same seat; the fact is a whole-program fixpoint; one
+        runtime row asked (`avra_slot_addr`); liveness lands in the
+        memory pass. Slices S0-S4 there; none landed yet. #1377
+        probed: not ours.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become
@@ -6056,6 +6064,332 @@ cases here" and exit 0. The whole job of `test` is the verdict.
 c6fe1ae's message reported a spec count measured on a tree that commit
 did not carry (the working tree held further edits). Measure the gate
 on the COMMITTED tree, or say which tree the number came from.
+
+## `mut self` — THE INOUT RECEIVER (designed 2026-09-04, lane C; amended the same day at the owner's word: `self` is a keyword, no rent anywhere)
+
+Two ledger entries name one hole: a method writes through `self`
+into the caller's box without opening it unique (RECEIVER
+ALIASING), and a `mut` bound to a parameter's field path writes
+through (THE ALIAS BORROW). Both exist because bs2 aliased and the
+compiler's own state fns leaned on it. The V1 law stands: aliasing
+is NEVER observable. This section designs the mechanism that keeps
+the law AND keeps the compiler's hot methods in place, so that both
+entries can be struck. THE OWNER'S STANDING ORDER for it, given
+2026-09-04: this is the primary user's perfect world, not the least
+change — nothing here works around rent.
+
+THE ONE SENTENCE: **the receiver of a writing method is the
+caller's cell** — `self` in such a method IS a `mut` local whose
+slot the caller owns, and every proof the tree already holds for
+mut locals (corpus/places, the mut-cell protocol, `avra_cell_unique`)
+carries over verbatim. No new IR shape, no new law: a call passes
+a place instead of a value, and the callee's writes open it exactly
+as a mut local's do. A `mut` PARAMETER is the same seat at any
+position — one mechanism, ratified as one.
+
+WHAT WAS FOUND WHILE DESIGNING (both measured on this tree):
+- A mut local CLONES on every read-then-write in one scope: the
+  read's Load is an owned +1 that lives to the scope's end, so the
+  write's `avra_cell_unique` sees a count of two. `u.age = u.age +
+  1` clones the record; `let k = m.n` then `m.frames.push(k)` clones
+  the FRAMES LIST per push. Measured: 20k pushes after a same-scope
+  read 1.71s user, the same loop without the read 0.00s. Every
+  `mut` struct local in the tree pays this today; a receiver that
+  is a cell would inherit it, so the design fixes it at its root
+  (LIVENESS below).
+- bs2's #1377 ICE (a method call on a closure-captured local in a
+  loop with an early return) is NOT in our codegen: probed
+  2026-09-04 with `scan(b, want)` capturing `b` in a lambda and
+  calling `b.count()` in an early-returning `while` — eval and
+  native agree (`2 -1`). The style doctrine's free-fn exception was
+  rent, and CLAUDE.md already says so.
+
+THE SURFACE — `self` IS A KEYWORD, and it is never spelled in a
+parameter list:
+```
+type C = { n: int }
+impl C {
+    fn bump() { self.n = self.n + 1 }      // writes: inferred
+    fn get() -> int { self.n }
+}
+trait Tick { mut fn tick() }               // the contract declares
+impl Tick for C { fn tick() { self.n = 0 } }
+```
+`self` names the receiver of the innermost enclosing method, always
+— there is nothing else it could mean, so the list never repeats it
+(the way `it` is never declared). Outside a method body it REFUSES
+at resolve ("`self` names a method's receiver — this is not a
+method"). Inside a lambda in a method it is captured like any
+binding (a copy; assigning through it there refuses as every
+capture write does). The keyword derives from the grammar as every
+keyword does: the impls feature contributes `primary = "self"`, a
+new core node `Expr.Receiver` (no name — a string could only be a
+tag), and a new `Binding.Receiver`; every exhaustive match over
+`Expr` and `Binding` gains its arm, which is the compiler listing
+the consumers. `place_step(Receiver)` is a Root; `is_mut_at
+(Receiver)` is TRUE by construction (a write through it makes the
+method writing — the fixpoint below); the three string tests
+(`is_mut_at`'s `ident_name(e) == "self"`, `through_receiver`'s,
+typing's `selfed`) DIE, as do `homeless_self`, `selfless_method` and
+`registrable`'s self check — every fn under an `impl` is a method.
+The TYPED sig keeps the receiver as seat 0 (`params[0]`, the ABI's
+truth and the machine projection, P11); the surface omits it (the
+human projection). `mut fn` is the DECLARED form — required in a
+trait sig, optional documentation on an inherent method (written
+and never writing, it WARNS). The marker is the impls grammar's
+(`( "mut" )? fs:stmt` in the impl body loop, `( "mut" )? "fn"` in
+the trait sig loop) and lands as a store flag beside `exported`
+(`mark_mutating(s)`), so `FnDecl`'s payload does not grow and the
+mutation feature's recovering `mut` statement is never in the same
+ordered choice. STATIC METHODS do not exist today (a selfless fn
+under an impl was refused) and are not created here; when the spec
+wants them they need their own marker — recorded.
+
+THE TRANSITION (self-hosting, no dual-form window): the grammar
+change is written in the OLD spelling and built by the standing
+binary; that binary's product accepts only the NEW spelling; the
+tree's 733 method declarations and 13 trait sigs are then rewritten
+by script in the same slice and built by the product; the merger
+refreshes the seed. Order is the whole trick — no cycle accepts
+both forms.
+
+THE LAW (typing, spec 11.5: a `mut` binding permits mutation at
+any depth; a method's receiver is a path under that binding):
+1. A method WRITES THROUGH ITS RECEIVER when its body assigns to a
+   place rooted in `self`, calls a mutating vocabulary method
+   (`push`, `set`, `pop`) on one, or calls a writing method on one.
+   INFERRED for inherent methods — the receiver is the type's own
+   business (Swift asks for `mutating`, Rust for `&mut self`; we
+   are LLM-first and the compiler holds the fact, P10).
+2. A TRAIT SIG DECLARES: `mut fn tick()`. The trait is the contract
+   (P9), and one dyn call site serves every impl, so the declaration
+   decides the ABI for all of them. An impl method that writes
+   under a plain trait sig REFUSES ("`tick` writes through `self`,
+   but `Tick.tick` declares no `mut` — declare `mut fn tick()` in
+   the trait"). An impl that does not use a declared `mut` is fine:
+   a permission, not an obligation. Bounded (`T: Tick`) and `dyn
+   Tick` receivers judge by the trait's declaration.
+3. THE CALL LAW: a call to a writing method needs a PLACE receiver
+   rooted in a `mut` binding — the same law as `push`, the same
+   voice family (`not_a_place_call`, `not_mut_call`): `let d = c;
+   d.set(5)` refuses "`d` is not `mut` — `set` mutates it"; a
+   temporary (`make().set(5)`) refuses as a value. Inside ANY
+   method, `self` is a place: a write there is what makes that
+   method writing.
+4. A `mut` PARAMETER (`fn check(mut cx: TypeCx, s: StmtId)`) is
+   DECLARED, never inferred: a parameter is a boundary with the
+   caller, a receiver is the type's own. The argument must be a mut
+   place (the call law again, at seat N); a body that writes
+   through a plain parameter refuses as today, and the help names
+   `mut`. Trait sigs carry it (`fn type_of(mut cx: TypeCx, e:
+   ExprId)`), so dyn dispatch passes cells. No site marker
+   (`f(&cx)`): the sig says it, the `mut` binding at the site says
+   it, and `c.bump()` carries none either.
+5. Effective per method decl: `mut_self(m) = declared(m) ||
+   declared(m's trait sig) || writes(m)`; per parameter seat:
+   declared only. One bit per seat decides the ABI, the call law,
+   and the projection (`avra explain`, doc, and the sig rendering
+   show `mut fn` and `mut cx` whether written or inferred — P7).
+
+THE FACT (a pass, not a guess): `writes(m)` is a WHOLE-PROGRAM
+FIXPOINT over per-method summaries. A summary reads the RESOLVED
+body and the DECLARATIONS alone — no body typing: every self-rooted
+place has a declared type along its whole path (the impl target,
+then `fields_of_type(...).slot_of(name)` per field step, the list's
+element per index step — the place grammar `self (.f | [i])*` is
+exactly what declarations can type), so at each site the summary
+knows whether the callee is a vocabulary row that mutates (a
+`writes` COLUMN on the method row — a registry fact, not a string),
+a declared method (an edge to it), a trait sig (its declared flag),
+or a call passing the place into a `mut` seat (declared). `own_writes
+[m] || any(writes[callee])` iterates to a fixpoint over the
+program's methods. Why not demand-driven through the memo kernel
+with "cycle = false": UNSOUND — `a` calls `b` and `x`; `b` calls
+`a`; only `x` writes. Asking `a` first settles `b` as false (its
+edge to `a` is a cycle) before `x` makes `a` true, and `let v;
+v.b()` then writes through a `let`. The fixpoint is deterministic,
+order-free, and cheap (a bit per method per round). It lives as one
+workspace query (`Family.Receivers`) over per-decl summary cells,
+recorded into a dense `Decls` column (`writes_receiver`), read
+through an armed hook exactly as `methods(ws, t)` is — a call site's
+ask records the dependency. The store grows two projections it is
+owed anyway: `assign_target(s)` (the `.Assign(t, _) -> t` match is
+spelled THREE times today — resolve, check, lower — the third copy
+names the concept) and `method_parts(e)`.
+
+THE ABI — a `mut` seat carries the ADDRESS OF THE PLACE:
+- A ROOT place (`c.bump()`, `f(c)` into a `mut` seat; `c` a mut
+  local): the caller passes the local's own slot — the Alloca
+  register — nothing opened, nothing retained.
+- A NESTED place (`u.addr.rename(..)`, `xs[i].bump()`,
+  `self.inner.bump()`): the caller opens the PARENT path unique
+  through the existing `unique_box` chain (`avra_cell_unique`, then
+  `avra_slot_unique` per step, so the write lands in the structure
+  the caller sees) and passes the slot's address: `avra_slot_addr
+  (parent, i) -> void**` — THE ONE RUNTIME ROW this design asks for
+  (one line: `&a->data[i]`; a registry row plus the interpreter's
+  host, `Val.R(arr, i)`, a first-class place there: `Load` reads
+  the element, `Store` writes it, `cell_unique` clones into the
+  slot). This is not rent: a `void**` IS the machine's one shape
+  for "where a pointer lives", and `avra_cell_unique` already reads
+  exactly that from an Alloca. THE INVARIANT that makes the address
+  safe: it lives only for the call, and during the call its parent
+  is unreachable — the caller's places are frozen, the callee holds
+  only the slot, every other path to the parent is a by-value alias
+  that would clone before writing. The parent cannot grow, so
+  `data` cannot move.
+- IN THE CALLEE, a `mut` seat is a mut local it does not own: the
+  seat is typed `Ptr` (unmanaged: the caller retains nothing, the
+  exit releases nothing — the two seat laws agree, and
+  `AVRA_RC_GUARD` would name any disagreement); `cell_of(Receiver)`
+  and `cell_of(a mut Param)` answer the seat's register, so
+  `unique_box`'s Root arm — `avra_cell_unique(cell)` then the write
+  — is the mut-local path verbatim; reads Load. A write clones into
+  the caller's slot exactly when the box is shared — and the count
+  sees EVERY alias: a `let d = c` before the call, an argument that
+  reads the receiver (`c.m(c)`: the argument is retained at the
+  call, the first write clones, `other.n` reads the old value), a
+  `let s = self` inside the body, a result carrying `self` out of a
+  reading method. No static exclusivity rule is needed, and none
+  was complete: the refused alternative (pass the box, write
+  unchecked, refuse bare `self` as a value) cannot see a reading
+  method that answers `self`.
+- `self.bump()` inside a writing method passes the seat through;
+  `self.count()` (a reading method) loads the box and pays callee-
+  cleans as any receiver does.
+- A FLAT record needs NO BOX: its cell holds the word, `self.n = v`
+  is the flat place's `Store` (already the mut-local path), and the
+  `unflatten` in `declare_impl_block` DIES — the exclusion UNBOXED
+  RECORDS recorded ("when receivers take value semantics, the
+  exclusion goes and the win grows") goes now.
+- Dyn dispatch: the caller opens the dyn box unique and passes
+  `avra_slot_addr(box, 0)`; mono's bounded receivers reach the
+  concrete method's body, which wears the cell ABI because its
+  trait sig declared it. One call site, every impl, one seat kind.
+- The interpreter clones on every open (the executable spec); eval
+  == native over the corpus is the proof, as for every place.
+
+LIVENESS IN THE MEMORY PASS (the performance half, done as the
+real thing — V2's first rung, not a lowering trick): a managed
+Load retains ONLY when its register is live past a point where its
+cell's box may change, or escapes. Concretely the retain stays when
+any use of the register (a) follows a `Store`, `avra_cell_unique`,
+or `avra_cell_release` on the SAME cell, or a `Call`/`CallPtr` that
+receives that cell as a seat (a writing callee opens it there);
+(b) lies inside a loop opened after the Load (a back-edge re-runs
+the use after the body's writes); or (c) is an escape — the
+register is given upward (`ArmEnd`, `RegionEnd`, `ScopeExit`,
+`RetVal`, `FnExit`), stored, packed, or handed to an owned twin.
+A Load passed as an ordinary call argument needs no retain of its
+own: callee-cleans retains the seat and the callee releases it, and
+the box stays alive through the cell for the call's length. Every
+other Load is a BORROW of the cell's reference: `u.age = u.age + 1`
+and `let k = m.n; m.frames.push(k)` write in place, for `self` and
+for every mut local in the tree alike. One backward scan per body
+over the flat list with a use index; conservative by construction
+(an `if` arm's write before a later arm's use keeps the retain
+though the arms exclude each other — correct, cheap, and V2's
+later rungs refine it). The interpreter runs the same stream, so
+eval == native still refereees; the guard and a leak count on the
+corpus witness the counts. DONE WHEN the 20k-push probe above runs
+in the base loop's time natively with the guard clean, and the
+compiler checking itself is measured before and after.
+
+WHAT DIES: `self` in 746 parameter lists; `borrows_field`,
+`mark_borrow`, `is_borrow` and the `borrows` column; `borrows()` and
+the Load arm in `unique_box`, and its "self is the box itself" arm;
+the three string tests and the three selfless voices; the unflatten
+of impl targets; a `mut` bound to a PARAMETER'S FIELD PATH becomes a
+COPY like a local's — refused where it was a borrow in disguise
+("`xs` copies `m.xs` — write through the place: `m.xs.push(v)`, or
+declare `mut m`"), which is the ledger's entry struck at its root.
+
+THE CORPUS PAIR (`corpus/mut_self.av`, the DONE WHEN made a
+program): a root receiver (`mut c = C { n: 1 }; let d = c;
+c.bump(); c.bump()` — `c.n` 3, `d.n` 1); a flat receiver
+(`type K = { n: int }` with `bump`, no box); a nested receiver
+(`u.addr.rename("x")` with a snapshot kept); a slot receiver
+(`xs[1].bump()` with a `let ys = xs` kept); a writing method that
+also ANSWERS (`Arena<N>.add` returning the index, two instantiations
+— `corpus/generic_impls` rewrites to `mut ints` and
+`self.nodes.push(n)`, its `let` receivers were the aliasing the law
+forbids); a method aliasing itself (`c.m(c)`); a chain of writing
+methods on self; a `mut` parameter root and nested; a trait's `mut
+fn` through `dyn`. Spec tests pin every refusal in its own words
+(`let d = c; d.set(5)`; a temporary; an impl writing under a plain
+trait sig; a plain parameter written through; `self` outside a
+method; a parameter's field path bound `mut`) and the warning.
+Rendering goldens for each new diagnostic kind.
+
+THE SLICES, in order, each red-teamed then reviewed, each a gate:
+- S0 THE KEYWORD: `self` a keyword, `Expr.Receiver`,
+  `Binding.Receiver`, the lists emptied by script, `mut fn` parsed
+  and flagged, `self` outside a method refused. The transition
+  above. Landed alone it changes no semantics — the receiver still
+  aliases — and every string test dies.
+- S1 THE FACT AND THE LAW: the summary, the fixpoint, the column,
+  the call law at seat 0 and seat N, the trait agreement, `mut`
+  parameters parsed, explain. Landed alone it CHANGES NO CODEGEN;
+  its first use is a CENSUS — `./avra check packages/std-avrac`
+  names every call site the law refuses in the compiler's own
+  source, which is the honest size of S4.
+- S2 THE ABI: the cell seat for receivers and parameters, the
+  runtime row and its host, flat receivers unboxed, the corpus
+  pair; the borrow deleted. DONE WHEN `mut d = c; d.set(5)` leaves
+  `c` unchanged natively and in eval, `let d = c; d.set(5)`
+  refuses, and the gate is green.
+- S3 LIVENESS, measured on the probe and on the compiler checking
+  itself (before/after user CPU recorded here).
+- S4 THE CONVERSION: the contexts refactor and the state fns.
+
+THE CONVERSION'S TRUE SIZE — measured 2026-09-04 so S4 is not
+underestimated: methods are HALF of the borrow's users. The census
+(79 `mut x = y.field` sites) splits into fns that borrow a
+parameter's field (interp `m.`, resolve `r.`, llvm `em.`,
+workspace `ws.`, typing `t.`) — those become methods on a `mut`
+local the driver owns — and PASS CONTEXTS HANDED TO FEATURE RULES:
+`cx.emit(d)` reaches `self.facts.speak(d)` — a writing method on a
+nested place — from `check_assign(cx: StmtTypeCx, …)`. 355 mutating
+calls go through a context parameter, 929 fns take a context or
+state struct first, 20 files hold impls that write through `self`.
+The whole capability-record pattern (closure fields capturing the
+driver's state) worked only because bs2 aliased; under value
+semantics a closure captures a COPY. S4 therefore: every rule fn
+takes `mut cx`; the contexts' closure fields (`walk_type`,
+`block_type`, …) become METHODS on the context, recursing with the
+same cell; the drivers' state moves INTO the context; NodeSemantics
+and StmtSemantics sigs take `mut cx`, so dyn dispatch passes cells;
+and no mut-ref capture is needed for any pass. The contexts' shape
+is doctrine (contract.av), so S4 opens with its own short design
+section naming the new shape before the rewrite.
+
+RECORDED, NOT THIS ARC: (1) MUT-REF CAPTURES — spec 11.4's
+`counter += 1` inside a closure is by-reference capture, which the
+V1 law refuses as written; the honest shapes are a cell capture
+that may not escape its cell's scope (non-escaping closures, as
+Swift's default: the same seat a third time) or an interior-
+mutability wrapper (11.3, `Cell<T>`); decide when a program wants
+it, with the spec. (2) A TEMPORARY RECEIVER (`make().bump().get()`)
+is safe by construction (nothing shares a fresh box) and refused
+like `push` on a value; relax when a wanting site appears. (3)
+STATIC METHODS and a `Self` type. (4) V2's later rungs (moves at
+last use, reuse in place).
+
+REFUSED ALTERNATIVES, so they are not re-argued: (a) pass the box,
+write unchecked, close aliasing statically — incomplete (results
+carrying `self`) and it needs a trap for the rest; (b) copy-in
+copy-out through an owning temp cell — clones every nested
+receiver on its first write (`self.facts.speak` would clone the
+fact tables per diagnostic); (c) a new call variant marking the
+seat — the `Ptr` seat type already says it, and the memory pass's
+seat laws already read types; (d) inference by demand with cycles
+answered false — the counterexample above; (e) inferring `mut`
+parameters — invisible magic at a boundary (P7 over P3 there); (f)
+a borrowed Load minted by lowering for adjacent projections — it
+would have been right for exactly those sites and a workaround for
+the memory pass's missing liveness, so the pass gets the liveness;
+(g) `self` kept as a name — three string tests and a word any
+local could shadow.
 
 ## Self-host endgames (recorded, not scheduled)
 
