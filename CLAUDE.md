@@ -252,6 +252,27 @@ registry is the idiom engine's spec, written by dogfooding.
   refused a flat record under the CLI and accepted it under
   `analyze_source`, in the same tree. Ask `decls.sig(d)` for the
   answer's declaration, then judge.
+- AN ENCODING SPENDS THE EMPTY VALUE, so WRITE THE EMPTY CASE
+  FIRST. An encoding earns its efficiency by spending a value it
+  believes is spare, and the spare value is almost always the empty
+  one — the null pointer, the zero length, the absent terminator. So
+  the premise that hides is "nothing is not a real value here", and
+  it hides inside code that is sound everywhere else. Three
+  instances in one day, three authors: a write that truncated on
+  `strlen`; `str_len` distrusting a ZERO length and falling back to
+  `strlen` (safe only because every text box carries a spare byte
+  its callers fill); and the niche — a nullable pointer IS its own
+  value, so ABSENCE is the null pointer. Inside the language the
+  distinction holds, measured in both engines: an empty list, an
+  empty string, a zero-field record and a zero int all read PRESENT
+  while their absent twins read null. It is at the C BOUNDARY that
+  the value gets spent twice — a runtime row answering NULL to mean
+  "empty" collides with the niche's absence, so an empty blob
+  arrives indistinguishable from a SQL NULL. A row answers an EMPTY
+  BOX for empty and NULL only for absent. The rule is a TEST, not a
+  discipline: for every representation you add or consume, the empty
+  case is the first case you write, and a diff shows whether you
+  did.
 - A PROCESS STATUS IS A VERDICT, never a count: statuses are eight
   bits, so 256 failures read as success. Exit 0 or 1 and print the
   count. A TRAP is not a verdict either — `avra_trap` exits 2, so a
@@ -653,6 +674,12 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   for it.
 - `m["k"]` on a map: F2000 "`[...]` indexes a `List`, found
   `Map<string, int>`" — `.get(k)`, which answers `T?`.
+- An EMPTY LITERAL does not adopt a NULLABLE aggregate want: `let
+  xs: List<int>? = []` is F2024 "`xs` declares `List<int>?`, this is
+  `[]`", `{}` under a `Map<K, V>?` reads alike, and a fn tail says
+  "the body answers `[]?` but … declares `List<int>?`". Bind the
+  empty at its own type first (`let none: List<int> = []`). An
+  empty STRING adopts `string?` fine.
 - A struct-literal FIELD seat does not plant a want on its value
   (the value is walked before the field's want exists): a
   comprehension there types on its own, so `Pins { slots: [b ??
