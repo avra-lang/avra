@@ -335,6 +335,22 @@ def raw_region(lines):
         if REGION_EMIT.search(l):
             yield i, l.strip()
 
+COMMA_LIST = re.compile(r'\(\s*","[^()]*\)\*')
+
+def comma_list_open(lines):
+    """A repeated comma list in a GRAMMAR rule that does not offer the
+    trailing comma. CLAUDE.md's grammar law: `( "," x )*` ends `","?`
+    before its closer, in every rule. A list that refuses the comma is
+    a defect, not a style — and a rule copied from a sibling and then
+    diverging is invisible without this, which is how two of three
+    `fn`-shaped rules came to differ."""
+    for i, l in enumerate(lines):
+        if not re.search(r'^\s*(stmt|primary|type|expression|postfix)\s*=', l):
+            continue
+        for m in COMMA_LIST.finditer(l):
+            if not l[m.end():].lstrip().startswith('","?'):
+                yield i, l.strip()[:60] + " … " + m.group(0)[:40]
+
 def restrlen(lines):
     """A loop condition that re-measures a STRING's length. Hoist it:
     `let n = s.length` before the loop, then test `i < n`."""
@@ -409,6 +425,8 @@ RULES = {
             "count (`refused_with`, or `== n`)"),
     "I21": (unmutated_mut,
             "a `mut` nothing mutates — say `let`"),
+    "I38": (comma_list_open,
+            "a grammar comma list with no trailing-comma option — `( \",\" x )*` ends `\",\"?`"),
     "I33": (raw_region,
             "a region instruction emitted raw in a feature — speak emit.av's verb "
             "(open_region / arm_end / close_region)"),
@@ -510,6 +528,8 @@ SPECIMENS = {
             ["    fn m(self, a: int, b: int) -> int {", "        a + a", "    }"],
             ["    fn m(self, a: int) -> int { 1 }"]],
     "I24": [["use core.{Span}"]],
+    "I38": [['            stmt = "fn" n:NAME "(" ( ps:NAME ( "," ps:NAME )* )? ")" END -> fn_decl(n, ps)'],
+             ['            primary = "[" ( a:expression ( "," a:expression )* )? "]" -> lit(a)']],
     "I33": [["    cx.emit(Ins.IfStart(c))"], ["        cx.emit(Ins.ArmEnd(v))"], ["    cx.emit(Ins.RegionEnd(dst, last))"], ["    cx.emit(Ins.LoopStart)"], ["    cx.emit(Ins.LoopCond(more))"], ["    cx.emit(Ins.LoopEnd)"]],
     "I28": [['    cx.emit(pointed(error_at("k", at, "m"), "l"))']],
     "I26": [["fn f(x: int?) -> int {", "    if x == null { return 0 }",

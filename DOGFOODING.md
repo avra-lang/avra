@@ -59,7 +59,7 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33 I35 I36.
+Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33 I38 I35 I36.
 Unratcheted, read by a human: I5 (a matcher cannot see whether a
 predicate has effects), I31 (a stolen doc and a legitimate
 multi-paragraph header are the same shape).
@@ -404,6 +404,17 @@ reintroducing I3's blind spot names the two spellings it lost.
       subject, cx.result(e))` — is the answer minted early by
       another route; `reg_of` may lower lazily and mint, so the
       answer is minted after every `reg_of`, never handed in.
+- I38 (ratcheted) a GRAMMAR comma list with no trailing-comma
+      option. CLAUDE.md's grammar law says a repeated `( "," x )*`
+      ends `","?` before its closer, in every rule — a list that
+      refuses the comma is a defect, not a style. The law was
+      written when nine spots were fixed at once and then went
+      unenforced, which is the same gap I3 sat in: a rule the spec
+      states and no tool implements. All fifteen comply today, so
+      the ratchet exists to catch DRIFT — a rule copied from a
+      sibling and quietly diverging, which is how two of the three
+      `fn`-shaped rules came to differ on `mut`. Lane B named the
+      class; this is the first tool that can see an instance of it.
 - I37 a FOLD written as a flag where a scan would short-circuit past
       a needed SIDE EFFECT. `all`/`any` stop at the first answer, so
       a loop whose body must run for every element — `paired_unify`
