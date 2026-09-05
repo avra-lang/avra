@@ -39,8 +39,11 @@ bootstrap: $(RUNTIME_OBJS)
 	@echo "bootstrap: build/avra from the seed — rebuilding from source"
 	@$(MAKE) -s avra
 
+# A REFUSAL MUST SPEAK: the build's own words went to /dev/null, so a compiler
+# that refused its own source reported only "make: *** Error 2" and the next
+# reader ran `./avra build packages/cli` by hand to find out why.
 avra: $(RUNTIME_OBJS)
-	@./avra build packages/cli > /dev/null
+	@./avra build packages/cli > /tmp/avra-build.out 2>&1 || { cat /tmp/avra-build.out; exit 1; }
 	@mkdir -p build
 	@cp packages/cli/src/main build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
@@ -134,7 +137,7 @@ gate: vocab idioms tested corpus
 
 tested: $(RUNTIME_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
-	@./avra new feature zz_probe > /dev/null
+	@./avra new feature zz_probe > /tmp/avra-scaffold-new.out 2>&1 || { cat /tmp/avra-scaffold-new.out; exit 1; }
 	@trap 'rm -rf packages/std-avrac/src/features/zz_probe' EXIT INT TERM; $(MAKE) -s test
 
 # The differential gate: the compiled binary must say exactly what
@@ -157,7 +160,7 @@ fuzz: $(RUNTIME_OBJS)
 # throwaway feature, run the suite with it in the tree, remove it.
 scaffold-check: $(RUNTIME_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
-	@./avra new feature zz_probe > /dev/null
+	@./avra new feature zz_probe > /tmp/avra-scaffold-new.out 2>&1 || { cat /tmp/avra-scaffold-new.out; exit 1; }
 	@./avra test packages/std-avrac/src/features/zz_probe/tests/zz_probe_test.av > /tmp/avra-scaffold.out 2>&1; s=$$?; \
 	  rm -rf packages/std-avrac/src/features/zz_probe; \
 	  if [ $$s -ne 0 ]; then echo "scaffold-check FAILED"; tail -20 /tmp/avra-scaffold.out; exit 1; fi; \

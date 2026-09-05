@@ -22,8 +22,8 @@
 # beside a loaded desktop panicked a 16 GB machine twice.
 #
 # AVRA_WATCH_TRACE=1 prints each poll's per-process footprint, so a
-# peak's composition can be read. A gate is ~2.4 GB honestly
-# measured; the cap is 4000 by default.
+# peak's composition can be read. A gate is ~0.3 GB honestly
+# measured; the cap is 4000 by default, a wreck-catcher.
 # PROFILING runs under the lock too: AVRA_SAMPLE=<seconds> samples
 # the step (after AVRA_SAMPLE_AFTER seconds, default 0) into
 # AVRA_SAMPLE_FILE (default /tmp/avra-sample.txt). The window must
