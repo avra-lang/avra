@@ -228,12 +228,19 @@ CLAUDE.md, the cli entry, this ledger's bs2 section).
         D's to fix: an ABSOLUTE `path =` in `[dependencies]` is
         joined under the package root (F4007 names `<root>/Users/…`);
         the `mod x` grammar rule (features/modules) is dead weight
-        now; ten unit-only one-line enums stand in the tree
-        (`Confidence`, `Rep`, `TokenKind`, …) — the house rule
-        licenses unit-only enums on one line, payload-carrying ones
-        never; `core/tests/lists_test.av`'s `LICENSED I3` ("a bs2
+        now; I25 RETIRED — the compiler refuses a wrong payload
+        count on one-line enums too (F2015), so the ratchet, its
+        matcher and the one-variant-per-line house rule are gone;
+        `core/tests/lists_test.av`'s `LICENSED I3` ("a bs2
         test unit miscompiles an interpolated comprehension
-        element") is stale — ours takes `["${x}" for x in xs]`.
+        element") is stale — ours takes `["${x}" for x in xs]`; and
+        lane A's PROBE FIRST is answered: a module-level `let` read
+        from a fn body is F3020 (the const law) and `export let` /
+        `export const` is F3014, so a once-per-process `avra()` needs
+        the memo road, not a top-level binding. Two parse CASCADES
+        (one mistake, several messages) for the grammar's owner: an
+        empty-parens pattern `.A()` speaks five F0100s, and `s is
+        .A(_, _)` speaks an F0100 plus a "body answers `void`".
   - [x] `packages/cli/src/main_stamped.av` and its `exclude` line
         deleted; `.gitignore` forgets it; `make clean` sweeps a
         dropping (the main worktree carries one — `make clean`
@@ -4049,8 +4056,8 @@ disagree and the tree spells bs2's side.
   unchecked~~ — STRUCK 2026-09-04: probed, Avra refuses all three
   (F2000 "wants `StmtId`, found `DeclId`"; F2015 "`.A` carries 3, the
   pattern names 2" / "`S.A` carries 2 values, given 1"). The I25
-  ratchet is now belt over braces; retire it when its baseline is
-  empty.
+  ratchet RETIRED with it the same day: its baseline was empty and
+  the compiler refuses the shape on one-line enums too.
 - ~~The reserved words bs2 lexes even as fields/locals~~ — STRUCK
   2026-09-04: ours has its own law with a voice (F3002 names the
   word as a keyword or "reserved for a future Avra feature"); `none`,

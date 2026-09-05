@@ -1,6 +1,6 @@
 # THE COMPILER BUILDS ITSELF. `build/avra` is the working binary and
 # `make avra` rebuilds it with the binary already there; a cold tree
-# bootstraps once through ./avra, which names bs2 in one place.
+# bootstraps from the seed (`make bootstrap`, or `./avra` on its own).
 # What links what:
 #   build/llvm_wrapper.o  OURS — backend/llvm_wrapper.c, the
 #                         compiler's LLVM binding; new builders are
@@ -18,18 +18,8 @@ RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-toml packages/std-testing packages/std-avrac packages/cli
 
-.PHONY: test clean fresh libfresh corpus gate idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
+.PHONY: test clean corpus gate idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
         check run ir emit build-native native-check avra
-
-# A cold-tree bootstrap leaves bs2's freshness sidecars behind; the
-# self-hosted compiler keeps none.
-fresh:
-	@find packages -name "*.avra-sha256" -delete
-
-# Nuclear cache purge — ./avra's stamped entry makes routine runs
-# truthful, so this is for salvage, not the workflow.
-libfresh: fresh
-	@rm -rf packages/*/build
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -77,7 +67,6 @@ build/llvm_wrapper.o: backend/llvm_wrapper.c
 
 clean:
 	rm -rf build scratch packages/cli/src/main_stamped.av
-	find packages corpus -name "*.avra-sha256" -delete
 	find packages corpus -name "*.av.ll" -delete
 	find corpus -type f ! -name "*.av" ! -name "*.expected" ! -name "expected" ! -name "avra.toml" -delete
 	rm -rf packages/*/build

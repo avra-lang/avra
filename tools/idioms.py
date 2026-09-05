@@ -239,9 +239,9 @@ def dead_parameter(lines):
             if not re.search(rf"\b{re.escape(p)}\b", body):
                 yield i, f"{l.strip()[:60]} [{p}]"
 
-# bs2 MERGES a module's files into one bundle, so an import in one
-# file serves every sibling: unused-import analysis is per MODULE
-# (directory), never per file. scan() fills this before each file.
+# A module's files share one namespace, so an import is judged
+# against its whole MODULE (the directory), never one file — lenient
+# by design. scan() fills this before each file.
 MODULE_BODY = {"text": ""}
 
 # A `grammar { … }` block EXPANDS into the grammar's own
@@ -253,8 +253,10 @@ GRAMMAR_BLOCK_NAMES = {
 }
 
 def unused_import(lines):
-    """A name imported and never used ANYWHERE in its module. bs2
-    checks neither direction, so imports are hand-kept truth."""
+    """A name imported and never used ANYWHERE in its module. The
+    compiler refuses a MISSING import (F3000) and one a module does not
+    export (F3012); an unused one is silent, so this rule keeps that
+    direction."""
     expands = "grammar {" in MODULE_BODY["text"]
     for i, l in enumerate(lines):
         m = re.match(r"^use [a-z@][\w.@]*\.\{(.+)\}$", l.strip())
@@ -267,60 +269,6 @@ def unused_import(lines):
                 continue
             if not re.search(rf"\b{re.escape(name)}\b", MODULE_BODY["text"]):
                 yield i, f"{l.strip()[:50]} [{name}]"
-
-# bs2 does NOT check a pattern's payload ARITY: `.A(_, _)` compiles
-# against a three-payload variant and silently binds the wrong
-# things. Node facts grow, so this is the guarantee our doctrine
-# assumes and the compiler never gives — enforced here instead.
-VARIANT_ARITY = {}
-
-def enum_arities(text):
-    """variant -> payload count, for every enum declared in `text`."""
-    out = {}
-    for m in re.finditer(r"^(?:export )?enum \w+ \{(.*?)^\}", text, re.S | re.M):
-        for v in re.finditer(r"^ {4}([A-Z]\w*)(\((.*?)\))?\s*$", m.group(1), re.M):
-            args = v.group(3)
-            out.setdefault(v.group(1), set()).add(
-                0 if not args else len([a for a in args.split(",") if a.strip()]))
-    return out
-
-def written_arity(text, i):
-    """How many payloads the group starting at text[i] == '(' writes."""
-    depth, commas, seen = 0, 0, False
-    while i < len(text):
-        c = text[i]
-        if c == '"':
-            seen, i = True, i + 1
-            while i < len(text) and text[i] != '"':
-                i += 2 if text[i] == "\\" else 1
-        elif c in "([{":
-            depth, seen = depth + 1, depth > 0
-        elif c in ")]}":
-            depth -= 1
-            if depth == 0:
-                return commas + 1 if seen else 0
-        elif c == "," and depth == 1:
-            commas += 1
-        elif not c.isspace():
-            seen = True
-        i += 1
-    return None
-
-def stale_arity(lines):
-    """A variant pattern or construction writing the WRONG number of
-    payloads. Only names with ONE arity tree-wide are judged."""
-    text = "\n".join(lines)
-    known = {v: set(a) for v, a in VARIANT_ARITY.items()}
-    for v, arities in enum_arities(text).items():
-        known.setdefault(v, set()).update(arities)
-    for m in re.finditer(r"\.([A-Z]\w*)\(", text):
-        arities = known.get(m.group(1))
-        if not arities or len(arities) != 1:
-            continue
-        wrote = written_arity(text, m.end() - 1)
-        want = next(iter(arities))
-        if wrote is not None and wrote != want:
-            yield text[:m.start()].count("\n"), f".{m.group(1)}( wrote {wrote}, declares {want}"
 
 # A nullable opened with `!` again and again is a value the code
 # already knows it has. CLAUDE.md's style rule settles it: a `let`
@@ -417,8 +365,8 @@ RULES = {
     "I12": (duplicated(r"[A-Z][a-zA-Z]+ \{ [a-z_]+: [^{}]* \}"),
             "an identical struct literal written twice — name its constructor"),
     "I24": (unused_import,
-            "a name imported and never used in its MODULE — bs2 checks neither "
-            "direction, so imports are hand-kept truth"),
+            "a name imported and never used in its MODULE — the compiler "
+            "refuses a missing one, never an unused one"),
     "I23": (dead_parameter,
             "a parameter nothing reads — the signature lies, and every call site "
             "carries the lie"),
@@ -434,9 +382,6 @@ RULES = {
             "count (`refused_with`, or `== n`)"),
     "I21": (unmutated_mut,
             "a `mut` nothing mutates — say `let`"),
-    "I25": (stale_arity,
-            "a variant pattern with the WRONG payload count — bs2 accepts it "
-            "silently and binds the wrong things"),
     "I27": (restrlen,
             "a STRING's `.length` re-measured in a loop condition — "
             "that is `strlen` per iteration; hoist it"),
@@ -451,6 +396,9 @@ RULES = {
 }
 
 UNRATCHETED = {
+    "I25": "RETIRED: the compiler refuses a wrong payload count (F2015) on\n"
+           "           patterns and constructions, one-line enums included — a\n"
+           "           law now, and a matcher would only repeat it",
     "I31": "a stolen doc and a legitimate multi-paragraph header are the SAME\n"
            "           shape: a sentence ends, the next line opens with `A`/`The`. The\n"
            "           difference is whether the second paragraph ELABORATES the one\n"
@@ -515,7 +463,6 @@ SPECIMENS = {
             ["    fn m(self, a: int, b: int) -> int {", "        a + a", "    }"],
             ["    fn m(self, a: int) -> int { 1 }"]],
     "I24": [["use core.{Span}"]],
-    "I25": [["enum E {", "    A(x: int, y: int)", "}", "    match e {", "        .A(_) -> 1,", "    }"]],
     "I27": [["    while i < s.length {"], ["    while j <= b.length {"],
             ["    while i < src.length && p(i) {"]],
     "I28": [['    cx.emit(pointed(error_at("k", at, "m"), "l"))']],
@@ -567,10 +514,6 @@ def scan():
                 "\n".join(l for l in open(s).read().split("\n")
                           if not l.strip().startswith("use "))
                 for s in glob.glob(os.path.join(d, "*.av")))
-
-    for path in sources():
-        for v, arities in enum_arities(open(path).read()).items():
-            VARIANT_ARITY.setdefault(v, set()).update(arities)
 
     found = {}
     for path in sources():

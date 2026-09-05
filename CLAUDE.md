@@ -541,8 +541,3 @@ Runtime facts, ours to ratify:
   a.{x,\n  y}` as a truncated statement, and one that scans "to the
   closing brace" then eats the code after it. Join continuation
   lines first; write an import on one line where it fits.
-- PAYLOAD-CARRYING ENUMS are written one variant per line: the I25
-  payload-count check reads one variant per line, and a one-line
-  `enum S { A(x: int), B }` is invisible to it, so every pattern
-  over it reports a wrong count. Unit-only enums may stay on one
-  line.
