@@ -3,7 +3,7 @@
 //! must be nullable, and the right must be what that nullable
 //! carries; the answer is the carried type, never nullable again.
 use core.{ExprId, StmtId, Type, TypeId, ResSides}
-use features.{TypeCx, StmtTypeCx, accepts, join_of, spoken, this_is, member_type_of, nullable_over, types_disagree}
+use features.{TypeCx, accepts, join_of, spoken, this_is, member_type_of, nullable_over, types_disagree}
 use diagnostics.{refusal, warning, Diag}
 
 fn nullable_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -108,17 +108,17 @@ fn forced_type(mut cx: TypeCx, v: ExprId) -> TypeId {
 /// carries, recorded for every later read; the else types in its
 /// own walk and must LEAVE, or control would reach the bind with
 /// nothing bound.
-fn check_let_else(mut cx: StmtTypeCx, s: StmtId) {
+fn check_let_else(mut cx: TypeCx, s: StmtId) {
     let subject: ExprId? = cx.view.store.stmt_value(s)
     if subject == null { return }
     let v = subject!
     let bind = cx.view.store.let_name(s) ?? "this binding"
-    let held: TypeId? = cx.expr.view.types.carried(cx.expr.type_at(v))
-    if held == null && !(cx.expr.shape_at(v) is .Error) {
-        let _ = not_absent_able(cx.expr, v, "type.let_else", "`${bind}?` asks",
+    let held: TypeId? = cx.view.types.carried(cx.type_at(v))
+    if held == null && !(cx.shape_at(v) is .Error) {
+        let _ = not_absent_able(cx, v, "type.let_else", "`${bind}?` asks",
             "`${bind}?` can never bind", "the else always runs — write its statements alone")
     }
-    cx.record_binding(s, held ?? cx.expr.error_type)
+    cx.record_binding(s, held ?? cx.error_type)
     let stmts = else_stmts_of(cx.view.store.stmt(s))
     cx.type_stmts(stmts)
     let last: StmtId? = stmts.last()
@@ -208,8 +208,8 @@ fn arms_disagree(mut cx: TypeCx, present: ExprId, absent: ExprId) -> TypeId {
     spoken(cx, refusal("type.match_opt", cx.loc_of(absent), "the arms disagree: `${cx.name_at(present)}` vs `${n}`", this_is(n), null))
 }
 
-fn else_falls_through(mut cx: StmtTypeCx, s: StmtId, bind: string) {
-    cx.expr.emit(refusal("type.let_else", cx.loc_of(s), "the `else` must LEAVE — control cannot fall through to `${bind}`", "falls through", "end the else with `return`"))
+fn else_falls_through(mut cx: TypeCx, s: StmtId, bind: string) {
+    cx.emit(refusal("type.let_else", cx.stmt_loc(s), "the `else` must LEAVE — control cannot fall through to `${bind}`", "falls through", "end the else with `return`"))
 }
 
 fn absence_unpromised(mut cx: TypeCx, v: ExprId, promised: TypeId) -> TypeId {

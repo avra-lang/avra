@@ -143,7 +143,7 @@ def unmutated_mut(lines):
         name = m.group(1)
         rest = []
         for j in range(i + 1, len(lines)):
-            if re.match(r"(export )?fn ", lines[j]):
+            if re.match(r"(export )?(mut )?fn ", lines[j]):
                 break
             rest.append(lines[j])
         body = "\n".join(rest)
@@ -297,7 +297,7 @@ def repeated_unwrap(lines):
 
     start, body = None, []
     for i, l in enumerate(lines):
-        if re.match(r"\s*(export )?fn ", l):
+        if re.match(r"\s*(export )?(mut )?fn ", l):
             scan(start, body)
             start, body = i, []
         elif start is not None:
@@ -474,7 +474,9 @@ SPECIMENS = {
     "I24": [["use core.{Span}"]],
     "I28": [['    cx.emit(pointed(error_at("k", at, "m"), "l"))']],
     "I26": [["fn f(x: int?) -> int {", "    if x == null { return 0 }",
-             "    x! + x! + x!", "}"]],
+             "    x! + x! + x!", "}"],
+            ["    mut fn m(x: int?) -> int {", "        if x == null { return 0 }",
+             "        x! + x! + x!", "    }"]],
 }
 
 def selftest():

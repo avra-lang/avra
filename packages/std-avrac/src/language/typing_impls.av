@@ -3,11 +3,11 @@
 //! target (the receiver typed as the target at seat 0), the impl-for
 //! contract (every trait method, exactly, nothing beyond), the orphan
 //! rule, and the voices these laws speak.
-use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type}
+use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type, filled}
 use diagnostics.{refusal, warning}
-use features.{FnSig, DeclSig, fn_sig_of, trait_named, method_sig_of, Decl, written_seats, trait_member, self_type_of, instance_vars}
+use features.{TypeCx, FnSig, DeclSig, fn_sig_of, trait_named, Decl, written_seats, trait_member, self_type_of, instance_vars}
 
-impl Typer {
+impl TypeCx {
     fn declare_trait_sig(f: StmtId) {
         let parts: FnParts? = self.view.store.fn_parts(f)
         if parts == null { return }
@@ -24,7 +24,7 @@ impl Typer {
     fn record_receiver_word(f: StmtId, receiver: List<bool>) {
         let d = self.decl_of(f)
         let parts: FnParts? = self.view.store.fn_parts(f)
-        let muts = [pp.mutable for pp in written_seats(self.lang.keywords, parts?.params ?? [])]
+        let muts = [pp.mutable for pp in written_seats(self.keywords, parts?.params ?? [])]
         self.view.decls.record_seats(d, receiver.concat(muts))
         if self.view.store.is_mutating(f) { self.view.decls.record_declared_writing(d) }
     }
@@ -32,7 +32,7 @@ impl Typer {
     /// The written params, annotated — a trait sig's whole seat
     /// list, and what a method's sig appends to its receiver.
     fn annotated_params(f: StmtId, fp: FnParts) -> List<TypeId> {
-        [self.annotated(f, pp.ty) for pp in written_seats(self.lang.keywords, fp.params)]
+        [self.annotated(f, pp.ty) for pp in written_seats(self.keywords, fp.params)]
     }
 
     /// The trait a name stands for, in this file's scope.
@@ -53,10 +53,10 @@ impl Typer {
 
     fn declare_under_impl(block: StmtId, f: StmtId) {
         let ip: ImplParts? = self.view.store.impl_parts(block)
-        if ip == null { return self.declare_wreckage(f) }
+        if ip == null { return self.seated_wreckage(f) }
         let parts = ip!
         let target: DeclId? = self.impl_target(block, parts, false)
-        if target == null { return self.declare_wreckage(f) }
+        if target == null { return self.seated_wreckage(f) }
         let d = target!
         self.view.decls.record_target(self.decl_of(block), d)
         self.enter_target_scope(d)
@@ -123,28 +123,38 @@ impl Typer {
             if loud { self.generic_target(s, target) }
             return null
         }
-        if self.orphaned(s, d, parts.of, target, loud) { return null }
+        self.orphan_law(s, d, parts.of, target, loud)
         d
     }
 
-    fn declare_wreckage(f: StmtId) {
+    /// A refused declaration still declares — hole seats, so the
+    /// body types without a crash and speaks nothing more.
+    fn declare_wreckage(f: StmtId) { self.declare_holes(f, 0) }
+
+    /// A refused impl's method declares its RECEIVER's hole seat
+    /// too: the body's reads index the seats it was written with.
+    fn seated_wreckage(f: StmtId) { self.declare_holes(f, 1) }
+
+    fn declare_holes(f: StmtId, seats: int) {
         let parts: FnParts? = self.view.store.fn_parts(f)
         if parts == null { return }
-        self.declare(f, DeclSig.Fn(FnSig {
-            params: [self.error_type for pp in parts!.params],
-            ret: self.error_type,
-        }))
+        self.declare(f, DeclSig.Fn(FnSig { params: filled<TypeId>(seats + parts!.params.length, self.error_type), ret: self.error_type }))
     }
 
-    /// THE ORPHAN RULE: an impl lives in its type's module — or in
-    /// its trait's, when the trait is this module's.
-    fn orphaned(s: StmtId, d: DeclId, of: string, target: string, loud: bool) -> bool {
-        let owner = self.view.decls.module_of(d)
-        if owner == self.view.module() { return false }
+    /// THE ORPHAN RULE (spec 16.5): an impl lives in its type's
+    /// PACKAGE — or in its trait's, when the trait is this package's.
+    /// Ownership is the package's, so a module may give a sibling's
+    /// type its verbs; a dependency's type takes only a local trait.
+    /// The refusal stands ALONE: the impl still serves its target for
+    /// the rest of the walk, so a call of an orphan's method speaks
+    /// nothing more.
+    fn orphan_law(s: StmtId, d: DeclId, of: string, target: string, loud: bool) {
+        if !loud { return }
+        let owner = self.view.decls.package_of(d)
+        if owner == self.view.package() { return }
         let tr: DeclId? = if of == "" { null } else { self.trait_decl_named(of) }
-        if tr != null && self.view.decls.module_of(tr!) == self.view.module() { return false }
-        if loud { self.orphan_impl(s, target, owner) }
-        true
+        if tr != null && self.view.decls.package_of(tr!) == self.view.package() { return }
+        self.orphan_impl(s, impl_heading(of, target), target, owner)
     }
 
     /// An impl-for answers EVERY trait method, exactly — name,
@@ -244,7 +254,7 @@ impl Typer {
     /// local is. Seats count from `base` (1 past a method's own
     /// receiver); a trait's signatories keep the contract's seats.
     fn seat_contract(x: Decl, base: int) {
-        let params = written_seats(self.lang.keywords, self.view.store.fn_parts(x.stmt)?.params ?? [])
+        let params = written_seats(self.keywords, self.view.store.fn_parts(x.stmt)?.params ?? [])
         for j, pp in params {
             if pp.mutable && !self.view.decls.seat_written(x.id, base + j) { self.seat_never_written(x, pp.name) }
         }
@@ -266,10 +276,13 @@ impl Typer {
         self.speak(refusal("type.impl", self.stmt_loc(f), "`${name}` is generic — generic methods are recorded, not landed", "this method", null))
     }
 
-    fn orphan_impl(s: StmtId, target: string, owner: string) {
-        self.speak(refusal("type.orphan", self.stmt_loc(s), "`impl ${target}` belongs in ${module_word(owner)}, where `${target}` is declared", "this impl", "an impl lives with its type — or with its trait, when the trait is this module's"))
+    fn orphan_impl(s: StmtId, heading: string, target: string, owner: string) {
+        self.speak(refusal("type.orphan", self.stmt_loc(s), "`impl ${heading}` belongs in ${package_word(owner)}, where `${target}` is declared", "this impl", "an impl lives in its type's package — or in its trait's, when the trait is this package's"))
     }
+}
 
-    /// The impl table's answer — a sig whose params[0] is `self`.
-    fn method_sig(target: DeclId, mname: string) -> FnSig? { method_sig_of(self.view.decls, target, mname) }
+/// An impl block's heading as written — `T`, or `Tr for T`.
+fn impl_heading(of: string, target: string) -> string {
+    if of == "" { return target }
+    "${of} for ${target}"
 }

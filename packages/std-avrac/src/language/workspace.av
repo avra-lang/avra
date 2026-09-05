@@ -15,7 +15,7 @@
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
 use core.{Table, new_table, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, dir_of, sorted_texts, first_slash, under_dir, joined_path, normalized, relative_path, TypeId, Type, some_list, same_file, touch, SpecParts}
-use features.{Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, module_names, file_names, Clash, method_clashes, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig}
+use features.{TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, module_names, file_names, Clash, method_clashes, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -393,7 +393,7 @@ export fn sig(ws: Workspace, d: DeclId) -> DeclSig? {
         return held
     }
     ws.db.begin(k)
-    mut t = typer_for(ws, x)
+    mut t = type_cx_for(ws, x)
     declare_one(t, x)
     ws.sig_voices.keep(d.index, t.facts.voices)
     let out: DeclSig? = ws.decls.sigs[d.index]
@@ -439,10 +439,11 @@ fn registering(ws: Workspace, d: DeclId) -> bool {
     ws.db.active(key(Family.Sig, d.index))
 }
 
-/// A typer over one declaration's expression range, in its file.
-fn typer_for(ws: Workspace, x: Decl) -> Typer {
+/// A type context over one declaration's expression range, in its
+/// file.
+fn type_cx_for(ws: Workspace, x: Decl) -> TypeCx {
     let p = parsed(ws, x.file)
-    typer(ws.lang, file_view(ws.lang, p, ws.decls, x.file), resolved(ws, x.file), x.lo, x.hi)
+    new_type_cx(ws.lang.dispatch, ws.lang.keywords, file_view(ws.lang, p, ws.decls, x.file), resolved(ws, x.file), x.lo, x.hi)
 }
 
 /// One declaration's body typed — a table over its own expression
@@ -452,7 +453,7 @@ export fn typed(ws: Workspace, d: DeclId) -> TypeFacts {
     if ws.db.ask(k) is .Reuse { return ws.decl_facts.at(d.index)! }
     ws.db.begin(k)
     let x = ws.decls.decl(d)
-    mut t = typer_for(ws, x)
+    mut t = type_cx_for(ws, x)
     let out = type_decl(t, x)
     ws.db.settle(k, ws.db.revision())
     ws.decl_facts.keep(d.index, out)

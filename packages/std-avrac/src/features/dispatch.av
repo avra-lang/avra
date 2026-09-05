@@ -1,0 +1,109 @@
+//! The semantics dispatch: every feature's node and statement
+//! semantics boxed once, and the exhaustive maps that select a
+//! node's. A new node kind breaks the map at compile time, and the
+//! impl it names owes every pass, enforced by the traits. The walk
+//! order every pass shares lives here too.
+use core.{Expr, Stmt, ExprId, NodeStore, flatten}
+
+/// Every feature's boxed semantics, built ONCE per assembly — the
+/// exhaustive maps below only SELECT. The language builds it (the
+/// boxing happens under typed lets there); every pass reaches a
+/// node's semantics through it, never by matching feature nodes.
+export type Dispatch = {
+    spine: dyn NodeSemantics,
+    strs: dyn NodeSemantics,
+    bools: dyn NodeSemantics,
+    ifs: dyn NodeSemantics,
+    whens: dyn NodeSemantics,
+    blocks: dyn NodeSemantics,
+    calls: dyn NodeSemantics,
+    aggs: dyn NodeSemantics,
+    structs: dyn NodeSemantics,
+    enums: dyn NodeSemantics,
+    nullables: dyn NodeSemantics,
+    catches: dyn NodeSemantics,
+    lets: dyn StmtSemantics,
+    exprs: dyn StmtSemantics,
+    decls: dyn StmtSemantics,
+    holes: dyn StmtSemantics,
+    mutlets: dyn StmtSemantics,
+    consts: dyn StmtSemantics,
+    assigns: dyn StmtSemantics,
+    whiles: dyn StmtSemantics,
+    fors: dyn StmtSemantics,
+    structdecls: dyn StmtSemantics,
+    enumdecls: dyn StmtSemantics,
+    ifstmts: dyn StmtSemantics,
+    returns: dyn StmtSemantics,
+    letelses: dyn StmtSemantics,
+    fails: dyn StmtSemantics,
+    foreaches: dyn StmtSemantics,
+    implds: dyn StmtSemantics,
+    methods: dyn NodeSemantics,
+    lambdas: dyn NodeSemantics,
+    maps: dyn NodeSemantics,
+    uses: dyn StmtSemantics,
+    specs: dyn StmtSemantics,
+}
+
+/// The semantics of each expression node — THE exhaustive map,
+/// selecting from the once-built Dispatch. A new variant breaks
+/// HERE at compile time, and the impl it names owes every pass,
+/// enforced by the trait.
+export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
+    match e {
+        .IntLit(_) or .Ident(_) or .Binary(_, _, _) or .Not(_) or
+        .Index(_, _) or .Prop(_, _) or .Error -> d.spine,
+        .ListLit(_) or .Comp(_, _, _, _, _) -> d.aggs,
+        .MapLit(_, _) -> d.maps,
+        .StrLit(_) or .Interp(_, _) -> d.strs,
+        .BoolLit(_) -> d.bools,
+        .If(_, _, _) -> d.ifs,
+        .When(_, _, _) -> d.whens,
+        .Block(_, _) -> d.blocks,
+        .Call(_, _, _) -> d.calls,
+        .StructLit(_, _, _) or .With(_, _, _) -> d.structs,
+        .Match(_, _) or .Is(_, _) or .VariantLit(_, _) -> d.enums,
+        .NullLit or .Coalesce(_, _) or .Force(_) or .Propagate(_) or
+        .MatchOpt(_, _, _, _) or .Chain(_, _) -> d.nullables,
+        .Catch(_, _, _, _) -> d.catches,
+        .MethodCall(_, _, _) or .Receiver -> d.methods,
+        .Lambda(_, _) or .CallValue(_, _) -> d.lambdas,
+    }
+}
+
+/// The semantics of each STATEMENT kind — the stmt-spine's twin of
+/// semantics_of. A new statement kind breaks HERE at compile time,
+/// and the impl it names owes every pass, enforced by the trait.
+export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
+    match s {
+        .Let(_, _, _) -> d.lets,
+        .MutLet(_, _, _) -> d.mutlets,
+        .ConstDecl(_, _, _) -> d.consts,
+        .Assign(_, _) -> d.assigns,
+        .ExprStmt(_) or .Discard(_) -> d.exprs,
+        .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) -> d.decls,
+        .While(_, _) -> d.whiles,
+        .For(_, _, _, _, _, _) -> d.fors,
+        .StructDecl(_, _, _) -> d.structdecls,
+        .EnumDecl(_, _, _) -> d.enumdecls,
+        .IfStmt(_, _, _) -> d.ifstmts,
+        .Return(_) -> d.returns,
+        .LetElse(_, _, _) -> d.letelses,
+        .Fail(_) -> d.fails,
+        .ForEach(_, _, _, _) -> d.foreaches,
+        .ImplDecl(_, _, _) or .TraitDecl(_, _) -> d.implds,
+        .Use(_, _) -> d.uses,
+        .Spec(_, _) -> d.specs,
+        .Error -> d.holes,
+    }
+}
+
+/// Every node at and under `root`, children before owners — THE
+/// order every pass visits: facts a node reads exist before it
+/// speaks. Which nodes are a node's children is each feature's
+/// answer, reached through the dispatch.
+export fn post_order(d: Dispatch, store: NodeStore, root: ExprId) -> List<ExprId> {
+    let node = store.expr(root)
+    flatten([post_order(d, store, k) for k in semantics_of(d, node).kids(node)]).concat([root])
+}

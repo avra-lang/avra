@@ -4,12 +4,12 @@
 //! type. Coverage is the point: adding a variant breaks every match
 //! that spelled them, and a hole that hides several is warned.
 use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, joined, filled}
-use features.{TypeCx, StmtTypeCx, EnumSig, spoken, this_is, nothing, duplicate_names, arms_agree, variants_are, types_disagree, seats_fit, stays}
+use features.{TypeCx, EnumSig, spoken, this_is, nothing, duplicate_names, arms_agree, variants_are, types_disagree, seats_fit, stays}
 use features.enums.{all_irrefutable, hole_of}
 use diagnostics.{refusal, warning}
 
 /// The declaration's own law.
-export fn check_enum_decl(mut cx: StmtTypeCx, s: StmtId) {
+export fn check_enum_decl(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .EnumDecl(name, _, variants) -> decl_checks(cx, s, name, variants),
         _ -> nothing(),
@@ -18,10 +18,10 @@ export fn check_enum_decl(mut cx: StmtTypeCx, s: StmtId) {
 
 /// An enum names at least one variant, each of them once. A dup is
 /// a name whose FIRST position is earlier than this one.
-fn decl_checks(mut cx: StmtTypeCx, s: StmtId, name: string, variants: List<Variant>) {
+fn decl_checks(mut cx: TypeCx, s: StmtId, name: string, variants: List<Variant>) {
     if variants.is_empty() { no_variants(cx, s, name) }
-    for d in duplicate_names("type.enum_decl", name, [v.name for v in variants], cx.loc_of(s)) {
-        cx.expr.emit(d)
+    for d in duplicate_names("type.enum_decl", name, [v.name for v in variants], cx.stmt_loc(s)) {
+        cx.emit(d)
     }
 }
 
@@ -325,8 +325,8 @@ fn arms_type(mut cx: TypeCx, values: List<ExprId>) -> TypeId {
 
 // ── The voices ──
 
-fn no_variants(mut cx: StmtTypeCx, s: StmtId, name: string) {
-    cx.expr.emit(refusal("type.enum_decl", cx.loc_of(s), "`${name}` declares no variants", "this enum is empty", "an enum names at least one variant"))
+fn no_variants(mut cx: TypeCx, s: StmtId, name: string) {
+    cx.emit(refusal("type.enum_decl", cx.stmt_loc(s), "`${name}` declares no variants", "this enum is empty", "an enum names at least one variant"))
 }
 
 fn not_askable(mut cx: TypeCx, subject: ExprId) -> TypeId {

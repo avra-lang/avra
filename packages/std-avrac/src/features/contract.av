@@ -1,9 +1,9 @@
 //! What a feature's nodes DO at each pass — THE contract, and the
 //! vocabulary every feature speaks across it.
 //!
-//! The contract: one capability context per pass per spine — the
-//! statement one nesting the expression one — (STATE verbs only:
-//! walk, look up, record, emit — wired by the driver) and the two
+//! The contract: one capability context per pass — the pass's own
+//! STATE, whose verbs (walk, look up, record, emit) are its methods,
+//! the statement and expression spines sharing it — and the two
 //! semantics traits. Every method is mandatory: a feature that does
 //! nothing at a pass says so in its impl, visibly. The passes reach
 //! an impl through the semantics map and never match feature nodes.
@@ -154,38 +154,43 @@ export fn variant_sig_of(d: DeclSig?) -> EnumSig? {
 /// interning, printing, and every carried/pointer query ride the
 /// one field instead of a verb per question, so this vocabulary
 /// stops growing when the registry does.
+///
+/// The context IS the pass's state: the walk's verbs — a subtree
+/// typed under the seats in scope, a block, a narrowed branch, a
+/// lambda body behind its barrier, the enclosing fn's promise, the
+/// hunger protocol's feed — are its methods, written where the
+/// walk lives. THE HUNGER PROTOCOL: a rule that needs a want it
+/// lacks goes hungry (silently); the agreement door FEEDS it — the
+/// want planted, the rule re-run; at the walk's end every rule
+/// still hungry is re-run STARVING, and speaks in its own words.
 export type TypeCx = {
     view: FileView,
     names: NameFacts,
     facts: TypeFacts,
     error_type: TypeId,
-    // the verbs that need the walk's state: what is in scope, what
-    // the enclosing fn promises, where a lambda's barrier stands
-    walk_type: fn(ExprId) -> TypeId,
-    block_type: fn(List<StmtId>, ExprId?) -> TypeId,
-    walk_narrowed: fn(ExprId, ExprId) -> TypeId,
-    lambda_body: fn(ExprId, List<TypeId>, ExprId) -> TypeId,
-    // what a lambda CAPTURED, typed in lane order — the captured
-    // bindings' own types, which only the walk's scope can answer
-    capture_seats: fn(ExprId) -> List<TypeId>,
-    retype_seated: fn(ExprId, List<TypeId>) -> TypeId?,
-    target_type: fn(ExprId) -> TypeId,
-    enclosing_ret: fn() -> TypeId?,
-    behind_lambda: fn() -> bool,
-    written: fn(ExprId, TypeRef) -> TypeId,
-    written_at: fn(ExprId, TypeRef) -> TypeId,
-    plant_want: fn(ExprId, TypeId),
-    // THE HUNGER PROTOCOL: a rule that needs a want it lacks goes
-    // hungry (silently); the agreement door FEEDS it — the want
-    // planted, the rule re-run; at the walk's end every rule still
-    // hungry is re-run STARVING, and speaks in its own words
-    feed: fn(ExprId, TypeId),
+    // the language's semantics and keywords: the walk dispatches
+    // through the one, the seat law reads the other
+    dispatch: Dispatch,
+    keywords: List<string>,
+    // THE WALK'S STATE: the seats in scope; the narrows in force (a
+    // def's stmt index, a param's position — two stacks keep the
+    // keyspaces apart); the enclosing fns' promises; the lambda
+    // barriers; the type parameters in scope; the paired `for`
+    // heads' subjects — the one place a pairing word may stand
+    scope: List<TypeId>,
+    narrow_defs: List<NarrowFrame>,
+    narrow_params: List<NarrowFrame>,
+    fn_ret: List<TypeId>,
+    lam_bar: List<int>,
+    tscope: List<TypeId>,
+    pairs: List<ExprId>,
     starving: bool,
-    // a paired `for` head's subject, planted before the walk — the
-    // one place a pairing word may stand
-    pair: fn(ExprId),
-    paired: fn(ExprId) -> bool,
 }
+
+/// One narrow in force: the proven binding's key, the INNER its
+/// reads answer, and the OPT each read is recorded as wearing, for
+/// lowering.
+export type NarrowFrame = { key: int, inner: TypeId, opt: TypeId }
 
 /// Lowering capabilities: `reg_of` lowers a child at first request —
 /// a region's branches lower inside its brackets. `result` mints the
@@ -248,19 +253,6 @@ export type StmtResolveCx = {
     impl_stmts: fn(List<StmtId>),
 }
 
-/// Statement typing capabilities: `expr` is the WHOLE expression
-/// vocabulary (types, shapes, interning, diagnostics); the rest are
-/// the statement-level state verbs — walks, signatures, and the
-/// assignment fact.
-export type StmtTypeCx = {
-    view: FileView,
-    expr: TypeCx,
-    walk: fn(ExprId),
-    walk_under: fn(StmtId, ExprId),
-    type_stmts: fn(List<StmtId>),
-    bind_declared: fn(StmtId, TypeRef) -> TypeId,
-}
-
 /// Statement lowering capabilities: `expr` is the WHOLE expression
 /// lowering vocabulary (registers, types, minting, the emit seam) —
 /// the typing cx's twin; the rest are the statement-level verbs:
@@ -281,7 +273,7 @@ export type StmtLowerCx = {
 /// its final expression statement's, read through the store.
 export trait StmtSemantics {
     fn resolve_stmt(mut cx: StmtResolveCx, s: StmtId)
-    fn type_stmt(mut cx: StmtTypeCx, s: StmtId)
+    fn type_stmt(mut cx: TypeCx, s: StmtId)
     fn lower_stmt(mut cx: StmtLowerCx, s: StmtId) -> Reg?
 }
 
@@ -397,15 +389,15 @@ impl StmtResolveCx {
     }
 }
 
-impl StmtTypeCx {
+impl TypeCx {
     /// Walk the statement's value expression, when it carries one —
     /// and refuse a TYPE standing where a value belongs, since
     /// "the statement's value" says it must be one.
-    fn walk_value(s: StmtId) {
+    mut fn walk_value(s: StmtId) {
         let v: ExprId? = self.view.store.stmt_value(s)
         if v == null { return }
         self.walk(v!)
-        let _ = refuses_type_value(self.expr, v!)
+        let _ = refuses_type_value(self, v!)
     }
 }
 

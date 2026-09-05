@@ -1155,9 +1155,10 @@ placement, read for at review.
 
 A declaration with a body that must answer a type — a fn, a field
 default, a test case — is typed in TWO halves that never trade
-places: the DRIVER brackets the walk (the declared answer in scope
-for exactly the walk, `answering(t, want, walk)` — one bracket for
-every kind, so `return` judges where it stands) and the FEATURE
+places: the DRIVER brackets the walk (the declared answer pushed on
+the context's `fn_ret` for exactly the walk — `walk_under`,
+`case_body` — one bracket for every kind, so `return` judges where
+it stands) and the FEATURE
 judges the answer (`fits_default`, `fits_case`: one `accepts`, one
 voice, in the feature's own check.av). The smell that names this
 idiom: a `// ── voices ──` section opening in a pass driver — the

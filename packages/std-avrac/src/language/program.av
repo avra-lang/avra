@@ -3,7 +3,7 @@
 //! spine live here; analysis stacks on top in analysis.av.
 use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, Variant, Case, TypeRef, flatten}
 use grammar.{Captured, RunOutcome, run_grammar, lex_source, lex_diagnostic}
-use features.{LangNode, NodeSemantics, StmtSemantics, build_named, list_at, stmt_id_at}
+use features.{LangNode, NodeSemantics, StmtSemantics, Dispatch, build_named, list_at, stmt_id_at}
 use features.expr_spine.{SpineSemantics}
 use features.str_lit.{StrSemantics}
 use features.bool_lit.{BoolSemantics}
@@ -37,47 +37,6 @@ export type Parsed = {
     stmts: List<StmtId>,
     source: SourceFile,
     voices: Voices,
-}
-
-/// Every feature's boxed semantics, built ONCE per parse — the
-/// exhaustive maps below only SELECT. (Boxing happens under the
-/// typed lets in new_dispatch; per-node construction died with the
-/// dispatch-built-once decision.)
-export type Dispatch = {
-    spine: dyn NodeSemantics,
-    strs: dyn NodeSemantics,
-    bools: dyn NodeSemantics,
-    ifs: dyn NodeSemantics,
-    whens: dyn NodeSemantics,
-    blocks: dyn NodeSemantics,
-    calls: dyn NodeSemantics,
-    aggs: dyn NodeSemantics,
-    structs: dyn NodeSemantics,
-    enums: dyn NodeSemantics,
-    nullables: dyn NodeSemantics,
-    catches: dyn NodeSemantics,
-    lets: dyn StmtSemantics,
-    exprs: dyn StmtSemantics,
-    decls: dyn StmtSemantics,
-    holes: dyn StmtSemantics,
-    mutlets: dyn StmtSemantics,
-    consts: dyn StmtSemantics,
-    assigns: dyn StmtSemantics,
-    whiles: dyn StmtSemantics,
-    fors: dyn StmtSemantics,
-    structdecls: dyn StmtSemantics,
-    enumdecls: dyn StmtSemantics,
-    ifstmts: dyn StmtSemantics,
-    returns: dyn StmtSemantics,
-    letelses: dyn StmtSemantics,
-    fails: dyn StmtSemantics,
-    foreaches: dyn StmtSemantics,
-    implds: dyn StmtSemantics,
-    methods: dyn NodeSemantics,
-    lambdas: dyn NodeSemantics,
-    maps: dyn NodeSemantics,
-    uses: dyn StmtSemantics,
-    specs: dyn StmtSemantics,
 }
 
 export fn new_dispatch() -> Dispatch {
@@ -125,71 +84,6 @@ export fn new_dispatch() -> Dispatch {
         ifstmts: ifstmts, returns: returns, letelses: letelses, fails: fails,
         foreaches: foreaches, implds: implds, methods: methods,
         lambdas: lambdas, maps: mapping, uses: uses, specs: specs,
-    }
-}
-
-/// The semantics of each expression node — THE exhaustive map,
-/// selecting from the once-built Dispatch. A new variant breaks
-/// HERE at compile time, and the impl it names owes every pass,
-/// enforced by the trait.
-export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
-    match e {
-        .IntLit(_) or .Ident(_) or .Binary(_, _, _) or .Not(_) or
-        .Index(_, _) or .Prop(_, _) or .Error -> d.spine,
-        .ListLit(_) or .Comp(_, _, _, _, _) -> d.aggs,
-        .MapLit(_, _) -> d.maps,
-        .StrLit(_) or .Interp(_, _) -> d.strs,
-        .BoolLit(_) -> d.bools,
-        .If(_, _, _) -> d.ifs,
-        .When(_, _, _) -> d.whens,
-        .Block(_, _) -> d.blocks,
-        .Call(_, _, _) -> d.calls,
-        .StructLit(_, _, _) or .With(_, _, _) -> d.structs,
-        .Match(_, _) or .Is(_, _) or .VariantLit(_, _) -> d.enums,
-        .NullLit or .Coalesce(_, _) or .Force(_) or .Propagate(_) or
-        .MatchOpt(_, _, _, _) or .Chain(_, _) -> d.nullables,
-        .Catch(_, _, _, _) -> d.catches,
-        .MethodCall(_, _, _) or .Receiver -> d.methods,
-        .Lambda(_, _) or .CallValue(_, _) -> d.lambdas,
-    }
-}
-
-/// The semantics of each STATEMENT kind — the stmt-spine's twin of
-/// semantics_of. A new statement kind breaks HERE at compile time,
-/// and the impl it names owes every pass, enforced by the trait.
-export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
-    match s {
-        .Let(_, _, _) -> d.lets,
-        .MutLet(_, _, _) -> d.mutlets,
-        .ConstDecl(_, _, _) -> d.consts,
-        .Assign(_, _) -> d.assigns,
-        .ExprStmt(_) or .Discard(_) -> d.exprs,
-        .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) -> d.decls,
-        .While(_, _) -> d.whiles,
-        .For(_, _, _, _, _, _) -> d.fors,
-        .StructDecl(_, _, _) -> d.structdecls,
-        .EnumDecl(_, _, _) -> d.enumdecls,
-        .IfStmt(_, _, _) -> d.ifstmts,
-        .Return(_) -> d.returns,
-        .LetElse(_, _, _) -> d.letelses,
-        .Fail(_) -> d.fails,
-        .ForEach(_, _, _, _) -> d.foreaches,
-        .ImplDecl(_, _, _) or .TraitDecl(_, _) -> d.implds,
-        .Use(_, _) -> d.uses,
-        .Spec(_, _) -> d.specs,
-        .Error -> d.holes,
-    }
-}
-
-/// The walk is the LANGUAGE's: which nodes are a node's children
-/// is each feature's answer, reached through the dispatch.
-impl Language {
-    /// Every node at and under `root`, children before owners — THE
-    /// order every pass visits: facts a node reads exist before it
-    /// speaks.
-    fn post_order(store: NodeStore, root: ExprId) -> List<ExprId> {
-        let node = store.expr(root)
-        flatten([self.post_order(store, k) for k in semantics_of(self.dispatch, node).kids(node)]).concat([root])
     }
 }
 

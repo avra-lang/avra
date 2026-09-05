@@ -5,10 +5,10 @@
 //! Bodies never walk here; a sig may name any file's declaration.
 use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, TypeRegistry, ExternParts}
 use diagnostics.{refusal}
-use features.{FnSig, StructSig, EnumSig, DeclSig, record_sig_of, variant_sig_of, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats}
+use features.{TypeCx, FnSig, StructSig, EnumSig, DeclSig, record_sig_of, variant_sig_of, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats}
 use @std.errors.{Loc}
 
-impl Typer {
+impl TypeCx {
     /// A record's table, from its declaration alone.
     fn declare_record(s: StmtId) {
         self.refuse_taken_tparams(s, self.view.store.type_decl_name(s) ?? "this type")
@@ -148,7 +148,7 @@ impl Typer {
         // the body sees the first, silently. The same law a record's
         // fields and an enum's variants obey, through the same scan.
         let owner: string = self.view.store.fn_parts(s)?.name ?? "this fn"
-        let seats = written_seats(self.lang.keywords, fparams)
+        let seats = written_seats(self.keywords, fparams)
         for d in duplicate_names("type.duplicate_param", owner, [pp.name for pp in seats], self.stmt_loc(s)) {
             self.speak(d)
         }
@@ -188,7 +188,7 @@ impl Typer {
             self.speak(d)
         }
         for n in tp {
-            if builtin_type_name(self.lang.rows.types, n) { self.owned_name(s, n) }
+            if builtin_type_name(self.view.lang.types, n) { self.owned_name(s, n) }
         }
     }
 
@@ -290,7 +290,7 @@ impl Typer {
     /// the registry has no shape for another, and inventing one here
     /// would be a type nothing can lower.
     fn applied(at: Loc?, t: TypeRef) -> TypeId {
-        let row: TypeRow? = type_row(self.lang.rows.types, t.name)
+        let row: TypeRow? = type_row(self.view.lang.types, t.name)
         let takes: int? = row?.arity ?? declared_arity(self, t.name)
         if takes == null {
             // The NAME law speaks first: a constructor that names no
@@ -398,7 +398,7 @@ impl Typer {
 /// A method declares under its parent: a trait's sig, or an impl's
 /// method (the impl's verdict decides whether it is real or
 /// wreckage); the impl block itself checks its contract.
-export fn declare_one(mut t: Typer, x: Decl) {
+export fn declare_one(mut t: TypeCx, x: Decl) {
     match x.kind {
         .Record -> t.declare_record(x.stmt),
         .Enum -> t.declare_enum(x.stmt),

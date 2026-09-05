@@ -371,8 +371,10 @@ registry is the idiom engine's spec, written by dogfooding.
   body living in a driver; it moves home to the feature dir and
   reaches state through general verbs. contract.av changes only
   when a feature needs a verb NO feature has ever needed. The
-  statement typing cx NESTS the whole expression vocabulary
-  (`cx.expr: TypeCx`) rather than re-wiring its verbs.
+  statement and expression spines share ONE context per pass
+  (`type_stmt(mut cx: TypeCx, s)`): the context IS the pass's
+  state, and the walk's verbs are its methods, written where the
+  walk lives (language/typing.av's `impl TypeCx`).
 - Keywords are never listed by hand: they derive from the assembled
   grammar's identifier-shaped literals (`Grammar.keywords()`) — a
   feature's gram fragment IS its keyword claim.

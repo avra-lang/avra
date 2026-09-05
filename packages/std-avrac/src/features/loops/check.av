@@ -3,21 +3,21 @@
 //! unwalked — the refusal gate stops the program before their
 //! (absorbed) types matter.
 use core.{StmtId, ExprId, TypeId, Type}
-use features.{StmtTypeCx, require_bool, nothing, this_is, spoken, TypeCx}
+use features.{TypeCx, require_bool, nothing, this_is, spoken}
 use diagnostics.{refusal}
 
-export fn check_while(mut cx: StmtTypeCx, s: StmtId) {
+export fn check_while(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .While(cond, stmts) -> {
             cx.walk(cond)
-            require_bool(cx.expr, cond, "a `while` condition", "this decides the loop")
+            require_bool(cx, cond, "a `while` condition", "this decides the loop")
             cx.type_stmts(stmts)
         }
         _ -> nothing(),
     }
 }
 
-export fn check_for(mut cx: StmtTypeCx, s: StmtId) {
+export fn check_for(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .For(_, from, to, cond, step, stmts) -> {
             cx.walk(from)
@@ -34,21 +34,21 @@ export fn check_for(mut cx: StmtTypeCx, s: StmtId) {
 }
 
 /// A range bound is an `int`; Error absorbs.
-fn range_bound(mut cx: StmtTypeCx, e: ExprId, verb: string) -> bool {
-    let sh = cx.expr.shape_at(e)
+fn range_bound(mut cx: TypeCx, e: ExprId, verb: string) -> bool {
+    let sh = cx.shape_at(e)
     if sh is .Int { return true }
     if sh is .Error { return false }
-    let n = cx.expr.name_at(e)
-    cx.expr.emit(refusal("type.mismatch", cx.expr.loc_of(e), "a `for` range ${verb} at an `int`, found `${n}`", this_is(n), null))
+    let n = cx.name_at(e)
+    cx.emit(refusal("type.mismatch", cx.loc_of(e), "a `for` range ${verb} at an `int`, found `${n}`", this_is(n), null))
     false
 }
 
 /// `for x in xs` — the subject is a LIST; the name binds its
 /// element type for every read in the body.
-export fn check_for_each(mut cx: StmtTypeCx, s: StmtId) {
+export fn check_for_each(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .ForEach(index, _, subject, stmts) -> {
-            if index != null { cx.expr.pair(subject) }
+            if index != null { cx.pair(subject) }
             cx.walk(subject)
             cx.record_binding(s, walked_elem(cx, subject))
             cx.type_stmts(stmts)
@@ -58,9 +58,9 @@ export fn check_for_each(mut cx: StmtTypeCx, s: StmtId) {
 }
 
 /// The element type the walk hands out — or the refusal.
-fn walked_elem(mut cx: StmtTypeCx, subject: ExprId) -> TypeId {
-    let elem: TypeId? = cx.expr.view.types.element(cx.expr.type_at(subject))
-    elem ?? not_a_walk(cx.expr, subject)
+fn walked_elem(mut cx: TypeCx, subject: ExprId) -> TypeId {
+    let elem: TypeId? = cx.view.types.element(cx.type_at(subject))
+    elem ?? not_a_walk(cx, subject)
 }
 
 /// Not a list: Error absorbs; the empty literal and every other

@@ -7,22 +7,22 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId}
-use features.{no_pins, Pins, TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unify, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, unified_lift, mut_seats_law}
+use features.{no_pins, Pins, TypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unify, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, unified_lift, mut_seats_law}
 use diagnostics.{refusal}
 
-export fn check_fn(mut cx: StmtTypeCx, s: StmtId) {
+export fn check_fn(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .FnDecl(fname, _, _, fret, body) -> checked_fn(cx, s, fname, fret, body),
         _ -> nothing(),
     }
 }
 
-fn checked_fn(mut cx: StmtTypeCx, s: StmtId, fname: string, fret: TypeRef, body: ExprId) {
-    let sig: FnSig? = cx.sig_of(s)
+fn checked_fn(mut cx: TypeCx, s: StmtId, fname: string, fret: TypeRef, body: ExprId) {
+    let sig: FnSig? = cx.stmt_sig(s)
     cx.walk_under(s, body)
-    let want: TypeId = sig?.ret ?? cx.expr.error_type
-    let got: TypeId = cx.expr.type_at(body)
-    if !accepts(cx.expr, body, want) { body_disagrees(cx, body, fname, fret, got) }
+    let want: TypeId = sig?.ret ?? cx.error_type
+    let got: TypeId = cx.type_at(body)
+    if !accepts(cx, body, want) { body_disagrees(cx, body, fname, fret, got) }
 }
 
 fn call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -147,20 +147,20 @@ fn generic_argument(mut cx: TypeCx, callee: string, j: int, param: TypeId, a: Ex
 
 /// `return v` — legal only inside a fn, and `v` must be ACCEPTED
 /// by the declared answer (widening recorded, like every slot).
-export fn check_return(mut cx: StmtTypeCx, s: StmtId) {
+export fn check_return(mut cx: TypeCx, s: StmtId) {
     let held: ExprId? = cx.view.store.stmt_value(s)
     if held == null { return bare_return(cx, s) }
     let v = held!
-    let early: TypeId? = cx.expr.enclosing_ret()
-    if early != null { cx.expr.plant_want(v, early!) }
+    let early: TypeId? = cx.enclosing_ret()
+    if early != null { cx.plant_want(v, early!) }
     cx.walk(v)
-    let want: TypeId? = cx.expr.enclosing_ret()
+    let want: TypeId? = cx.enclosing_ret()
     if want == null {
         no_fn_to_answer(cx, s)
         return
     }
-    if cx.expr.shape_at(v) is .Error { return }
-    if accepts(cx.expr, v, want!) { return }
+    if cx.shape_at(v) is .Error { return }
+    if accepts(cx, v, want!) { return }
     wrong_return(cx, s, v, want!)
 }
 
@@ -186,9 +186,9 @@ fn bounds_hold(mut cx: TypeCx, e: ExprId, decl: DeclId, concrete: List<TypeId>) 
 
 // ── The voices ──
 
-fn body_disagrees(mut cx: StmtTypeCx, body: ExprId, fname: string, fret: TypeRef, got: TypeId) {
-    let gn = cx.expr.view.types.name_of(got)
-    cx.expr.emit(refusal("type.mismatch", cx.expr.loc_of(body), "the body answers `${gn}` but `${fname}` declares `${spelled(fret)}`", this_is(gn), null))
+fn body_disagrees(mut cx: TypeCx, body: ExprId, fname: string, fret: TypeRef, got: TypeId) {
+    let gn = cx.view.types.name_of(got)
+    cx.emit(refusal("type.mismatch", cx.loc_of(body), "the body answers `${gn}` but `${fname}` declares `${spelled(fret)}`", this_is(gn), null))
 }
 
 fn value_takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
@@ -219,20 +219,20 @@ fn null_cannot_pin(mut cx: TypeCx, callee: string, j: int, param: TypeId, a: Exp
     cx.emit(refusal("type.mismatch", cx.loc_of(a), "argument ${j + 1} of `${callee}` wants `${cx.view.types.name_of(param)}`, found `null`", "always absent", "a bare `null` cannot pin `T` — write `${callee}<...>(...)`"))
 }
 
-fn no_fn_to_answer(mut cx: StmtTypeCx, s: StmtId) {
-    cx.expr.emit(refusal("type.return", cx.loc_of(s), "a `return` answers a fn, and there is none enclosing", "returned here", "at the top level the last statement IS the answer"))
+fn no_fn_to_answer(mut cx: TypeCx, s: StmtId) {
+    cx.emit(refusal("type.return", cx.stmt_loc(s), "a `return` answers a fn, and there is none enclosing", "returned here", "at the top level the last statement IS the answer"))
 }
 
-fn bare_return(mut cx: StmtTypeCx, s: StmtId) {
-    let want: TypeId? = cx.expr.enclosing_ret()
+fn bare_return(mut cx: TypeCx, s: StmtId) {
+    let want: TypeId? = cx.enclosing_ret()
     if want == null { return no_fn_to_answer(cx, s) }
-    if cx.expr.view.types.shape_of(want!) is .Void { return }
-    cx.expr.emit(refusal("type.return", cx.loc_of(s), "a bare `return` answers nothing, but this fn declares `${cx.expr.view.types.name_of(want!)}`", "here", "write `return <value>`, or declare no return"))
+    if cx.view.types.shape_of(want!) is .Void { return }
+    cx.emit(refusal("type.return", cx.stmt_loc(s), "a bare `return` answers nothing, but this fn declares `${cx.view.types.name_of(want!)}`", "here", "write `return <value>`, or declare no return"))
 }
 
-fn wrong_return(mut cx: StmtTypeCx, s: StmtId, v: ExprId, want: TypeId) {
-    let gn = cx.expr.name_at(v)
-    cx.expr.emit(refusal("type.return", cx.loc_of(s), "`return` answers `${cx.expr.view.types.name_of(want)}`, this is `${gn}`", this_is(gn), null))
+fn wrong_return(mut cx: TypeCx, s: StmtId, v: ExprId, want: TypeId) {
+    let gn = cx.name_at(v)
+    cx.emit(refusal("type.return", cx.stmt_loc(s), "`return` answers `${cx.view.types.name_of(want)}`, this is `${gn}`", this_is(gn), null))
 }
 
 fn bound_unheld(mut cx: TypeCx, e: ExprId, tname: string, ty: TypeId) {

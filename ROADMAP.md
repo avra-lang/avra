@@ -455,6 +455,48 @@ the order is the dependency.
         the presence region is `open_presence` / `present_arm` /
         `close_presence` at its seven sites. Captured seats 54 -> 39,
         all closure fields now (S4b-3). 1669 cases, corpus 73/73.
+        S4b-3a LANDED 2026-09-04 — THE CONTEXT IS THE TYPER: `TypeCx`
+        carries the pass's state (the seats in scope, the narrows,
+        the promises, the lambda barriers, the paired heads, the
+        dispatch) and the walk's verbs are its methods in
+        language/typing.av — `walk`, `walk_under`, `type_stmts`,
+        `block_type`, `walk_narrowed`, `lambda_body`, `feed`,
+        `speak_hungry`; `StmtTypeCx` and its `cx.expr` are gone (44
+        sites), the thunked `answering` bracket is a push and a pop at
+        its two sites, and five duplicate verbs died (`stmt_loc`,
+        `def_type`, `record_binding`, `method_sig`, `stmt_sig`;
+        `written_at` folded into `written`). Typing's captured seats
+        11 -> 0 (F2048 20 -> 9: the resolver's and lowering's closure
+        fields, S4b-3b/c). `Dispatch`, `semantics_of`,
+        `stmt_semantics_of` and `post_order` moved to
+        features/dispatch.av so a features-level context can hold
+        them. FOUND on the way: (1) the impl in the driver's module
+        was an ORPHAN under a MODULE-level orphan law — the spec's
+        (16.5) is PACKAGE-level, and the law now is (F2037 names the
+        package; sibling modules may give a type its verbs; a
+        dependency's type takes only a local trait); the general
+        ledger's STRICT entry is amended. (2) A refused impl's methods
+        declared WRECKAGE without the receiver seat and the walk
+        TRAPPED reading a param ("index 1 is out of bounds") — the
+        recorded crash class; `seated_wreckage` seats the receiver,
+        and the old binary's trap on `impl Nope { fn f(n: int) … }` is
+        the new binary's F2031. (3) An orphan's method, called,
+        CASCADED (F2037 + F2030): the orphan refusal stands alone now
+        — the impl still serves its target for the walk. (4) STARVING
+        was the re-run node's alone by an accident of the old wiring
+        (every nested walk minted a fresh cx); three tests pinned it,
+        and brackets in `walk`/`type_stmts`/`feed` keep it. (5) The
+        ratchet's I26 and I21 matchers did not read `mut fn` as a fn
+        header (I23's blind spot again) — fixed, a specimen added.
+        (6) `make avra` sends refusals to /dev/null: `avra build`
+        prints diagnostics on stdout while warnings ride stderr — a
+        CLI channel finding for the sweep lane; `./avra check` reads
+        a failed build. Red team: 20 probes through the old and new
+        binaries, 19 byte-identical, 1 crash -> refusal; 6
+        package-level orphan attacks as spec tests. A bridge compiler
+        (HEAD + the law) built the tree. 1674 cases, corpus 73/73.
+        docs/MINIMUM.md's `Typer`/`StmtTypeCx` shapes are the ratified
+        2026-09-02 snapshot, superseded here.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become
@@ -5064,10 +5106,14 @@ workspace_adversarial_test.av):
   their type; `export export` is a builder refusal.
 - `use` LIVES AT THE TOP LEVEL (F3019, the nested_decl voice); a
   lone file's `use` says it needs a package root (F3015).
-- THE ORPHAN RULE (STRICT): an impl lives in its type's module, or
-  in its trait's when the trait is this module's (F2037). A
-  refused impl still declares its methods as WRECKAGE (hole sigs)
-  — found as a CRASH (`self` read from an empty param list).
+- THE ORPHAN RULE (STRICT, at the spec's PACKAGE level since
+  2026-09-04, lane C): an impl lives in its type's package, or in
+  its trait's when the trait is this package's (F2037) — a module
+  may give a sibling's type its verbs. A refused impl still
+  declares its methods as WRECKAGE (hole sigs, the receiver's seat
+  among them — a param read from a seatless sig was this class's
+  second crash), and the refusal stands alone: the impl serves its
+  target for the walk.
 - ONLY THE ENTRY RUNS STATEMENTS (F0902): a module file holds
   declarations; run-time statements elsewhere are refused naming
   the entry.

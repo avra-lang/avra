@@ -3,10 +3,10 @@
 //! PLACE whose type — read off the target — is the slot's law, the
 //! value ACCEPTED by it with widening recorded like every slot's.
 use core.{StmtId, ExprId, TypeId, TypeRef, same_expr, Binding}
-use features.{StmtTypeCx, accepts, declared_binding, this_is, refuses_type_value, refuses_void_value, place_lawful, TypeCx}
+use features.{TypeCx, accepts, declared_binding, this_is, refuses_type_value, refuses_void_value, place_lawful}
 use diagnostics.{refusal}
 
-export fn check_mut(mut cx: StmtTypeCx, s: StmtId) {
+export fn check_mut(mut cx: TypeCx, s: StmtId) {
     let held: ExprId? = cx.view.store.stmt_value(s)
     if held == null { return }
     let v = held!
@@ -15,13 +15,13 @@ export fn check_mut(mut cx: StmtTypeCx, s: StmtId) {
     // see the declaration even when the value refuses.
     let ann: TypeRef? = cx.view.store.binding_ty(s)
     let declared: TypeId? = if ann == null { null } else { cx.bind_declared(s, ann!) }
-    if declared != null { cx.expr.plant_want(v, declared!) }
+    if declared != null { cx.plant_want(v, declared!) }
     cx.walk(v)
-    if refuses_type_value(cx.expr, v) { return }
-    if refuses_void_value(cx.expr, v) { return }
-    if borrows_field(cx.expr, v) { cx.expr.mark_borrow(s) }
+    if refuses_type_value(cx, v) { return }
+    if refuses_void_value(cx, v) { return }
+    if borrows_field(cx, v) { cx.mark_borrow(s) }
     if declared != null {
-        declared_binding(cx.expr, v, cx.view.store.let_name(s) ?? "this binding", declared!)
+        declared_binding(cx, v, cx.view.store.let_name(s) ?? "this binding", declared!)
     }
 }
 
@@ -40,29 +40,29 @@ fn borrows_field(cx: TypeCx, v: ExprId) -> bool {
 /// THE PLACE LAW's typing half: the target types as a READ — its
 /// type IS the slot's law — the want is planted so the value hears
 /// its seat, and acceptance WIDENS like every slot's.
-export fn check_assign(mut cx: StmtTypeCx, s: StmtId) {
+export fn check_assign(mut cx: TypeCx, s: StmtId) {
     let held: ExprId? = cx.view.store.stmt_value(s)
     let target: ExprId? = cx.view.store.assign_target(s)
     if held == null || target == null { return }
     let v = held!
     let t = target!
     cx.walk(t)
-    let want = cx.expr.type_at(t)
-    if cx.expr.view.types.shape_of(want) is .Error || !place_lawful(cx.expr, t) {
+    let want = cx.type_at(t)
+    if cx.view.types.shape_of(want) is .Error || !place_lawful(cx, t) {
         cx.walk(v)
         return
     }
-    cx.expr.plant_want(v, want)
+    cx.plant_want(v, want)
     cx.walk(v)
-    if !accepts(cx.expr, v, want) { slot_refused(cx, s, t, want, v) }
+    if !accepts(cx, v, want) { slot_refused(cx, s, t, want, v) }
 }
 
 // ── The voices ──
 
-fn slot_refused(mut cx: StmtTypeCx, s: StmtId, t: ExprId, want: TypeId, v: ExprId) {
-    let gn = cx.expr.view.types.name_of(cx.expr.type_at(v))
+fn slot_refused(mut cx: TypeCx, s: StmtId, t: ExprId, want: TypeId, v: ExprId) {
+    let gn = cx.view.types.name_of(cx.type_at(v))
     let root: ExprId? = cx.view.store.place_root(t)
     let named = if root == null { "this place" } else { "`${cx.view.store.ident_name(root!) ?? "this place"}`" }
     let spot = if cx.view.store.ident_name(t) == null { "a slot of ${named}" } else { named }
-    cx.expr.emit(refusal("type.mismatch", cx.loc_of(s), "assignment changes ${spot}: `${cx.expr.view.types.name_of(want)}` to `${gn}`", this_is(gn), null))
+    cx.emit(refusal("type.mismatch", cx.stmt_loc(s), "assignment changes ${spot}: `${cx.view.types.name_of(want)}` to `${gn}`", this_is(gn), null))
 }
