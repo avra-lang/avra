@@ -494,8 +494,6 @@ Syntax the grammar lacks:
 - The pipe `|>`: "expected BREAK while parsing `stmt`".
 - `@comptime`: refuses at the `@` ("expected `mod`, `use`, … while
   parsing `stmt`").
-- Trait DEFAULT method bodies: "expected `}` while parsing `stmt`"
-  at the body (sugar backlog; lane C).
 - The bare component form (`Cfg d { depth = 8 }`): "expected BREAK
   while parsing `stmt`" — `component Cfg d { … }` is the form.
   Instantiation is a STATEMENT: as a fn's tail it answers `void`

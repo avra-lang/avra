@@ -1,0 +1,68 @@
+// proves: trait DEFAULT method bodies — a member with a body is a
+// generic method over the trait's `Self`, lowered per signatory: a
+// default answering for a struct and an enum, an override winning
+// (and a default that calls it reaching the override), a default
+// calling the abstract member and another default, a `mut fn`
+// default writing through the receiver, a bounded generic and a
+// dyn box reaching the default, and `Self` as an answer.
+trait Show {
+    fn show() -> int
+    fn twice() -> int {
+        self.show() * 2
+    }
+    fn quad() -> int {
+        self.twice() * 2
+    }
+    fn me() -> Self {
+        self
+    }
+}
+
+trait Bump {
+    mut fn bump()
+    mut fn twice_bump() {
+        self.bump()
+        self.bump()
+    }
+}
+
+type P = { x: int }
+
+enum G {
+    hot
+    cold
+}
+
+impl Show for P {
+    fn show() -> int {
+        self.x
+    }
+}
+
+impl Show for G {
+    fn show() -> int {
+        match self {
+            .hot -> 100
+            .cold -> 1
+        }
+    }
+    fn twice() -> int {
+        7
+    }
+}
+
+impl Bump for P {
+    mut fn bump() {
+        self.x = self.x + 1
+    }
+}
+
+fn eight<T: Show>(v: T) -> int {
+    v.quad() * 2
+}
+
+mut c = P { x: 1 }
+c.twice_bump()
+let d: dyn Show = P { x: 5 }
+let e: dyn Show = G.cold
+"${P { x: 3 }.twice()} ${G.hot.twice()} ${P { x: 3 }.quad()} ${G.cold.quad()} ${eight(P { x: 2 })} ${d.twice()} ${e.quad()} ${c.x} ${P { x: 9 }.me().x}"

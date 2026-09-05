@@ -726,6 +726,63 @@ the order is the dependency.
         and this one, check/run/IR/LLVM identical; the interpreter
         probes at main's speed. 9 files, +1081/-936; 1675 cases,
         corpus 73/73.
+        TRAIT DEFAULT METHOD BODIES — DESIGNED AND LANDED 2026-09-05.
+        THE DESIGN, one sentence: a trait declares ONE type parameter,
+        `Self`, bounded by the trait itself, and a member with a body
+        is a GENERIC METHOD over `Self` — typed once against the
+        trait's own contract, lowered per signatory by the mono
+        worklist. Every piece rides machinery that stood: `Self` is
+        `Var(trait, 0)` (`Decls.tparams` of a trait; `tbounds` binds
+        it to the trait, so `self.show()` inside a default is the
+        bounded call already judged for `T: Show`); the default's
+        body is the member's root (`declared_body`: a sig's body is a
+        HOLE, a default's a block), ranged by the member's statement
+        spanning name to body's end; `Decls.method` answers a
+        signatory's own method first and the trait's default second
+        (`defaulted`, through the impls it recorded — recorded BEFORE
+        the conformance check, so a member the signatory never wrote
+        is answered); a call names the body `method_symbol` mints —
+        the default under `Self` := the receiver's type (`Sub {
+        target: trait, args: [recv] }`), the dyn vtable through the
+        same verb with the boxed value's type — and `lower_fn` types
+        register 0 as the receiver through `viewed`; `selfed_sig`
+        substitutes `Self` at every call site, so `fn me() -> Self`
+        answers the receiver's type. ONE CONVENTION CHANGED: every
+        method sig carries its receiver at seat 0 — a trait member's
+        wears `Self` — so `sigs_agree` compares past the receiver, a
+        contract's seats count from 1 (`contract_judged`, the
+        receivers pass's `feed`), and the "self omitted" reading of a
+        trait sig is gone. `Self` is a reserved name with its own
+        voice. THE GRAMMAR: `( mb:block )?` after a member's answer,
+        windowed by span like its params. Red team, 16 probes + the
+        corpus pair (`corpus/trait_defaults`: a default per struct and
+        enum, an override reached THROUGH a default, a `mut fn`
+        default writing through, a bounded generic and two dyn boxes,
+        `Self` as an answer — eval == native == the hand-computed
+        expected): a default reading `self.x` refuses ("no property
+        `x` on `Self`" — a Var has no fields, only the trait's
+        members); a body disagreeing with its declared answer refuses
+        once, at the default; an empty default is a void method; a
+        signatory's INHERENT method of the same name wins over the
+        default (pinned); recursion through `self`; `type Self`
+        refuses in the trait's words; an override with the wrong sig
+        and a call with the wrong arity refuse in the existing voices;
+        the abstract member is still owed beside a default. FOUND on
+        the way: the member's statement wore its NAME's span, so a
+        default's expressions fell to the trait's range and the
+        member's own facts table was empty (a trap, "index 3 out of
+        bounds"); and `Self` in a sig needed the trait's type scope
+        entered at declaration. Differential: 138 programs, the only
+        diffs the old binary refusing the syntax and one
+        specialization's symbol shifting two interned ids
+        (`safe_show$12` -> `$14`, the trait's `Self` interned). F2047
+        98 -> 99 (`selfed_sig`'s `substituted` interns — a `mut` seat
+        now). 19 new cases (10 vertical, 9 adversarial), 1694/1694;
+        corpus 73 both ways. NEXT: the payoff sweep — every
+        `nothing()` / bare-null pass method in the semantics impls
+        collapses into a trait default; `Self` in a BODY's local
+        annotation is the recorded generic-impl gap (the tscope is
+        the fn's own).
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become
@@ -758,8 +815,10 @@ the order is the dependency.
         the three "cannot hold this yet" voices retired together.
   - [ ] FIELD PUNNING `T { name, value }` (needs the type-name
         lexical class decided with the spec — Capitalized?).
-  - [ ] TRAIT DEFAULT METHOD BODIES (every `nothing()` pass method
-        collapses; `kind()`/`message()` as defaults).
+  - [x] TRAIT DEFAULT METHOD BODIES (every `nothing()` pass method
+        collapses; `kind()`/`message()` as defaults). LANDED
+        2026-09-05 — the design and the landing below; the
+        `nothing()` sweep is the next slice's payoff.
   - [ ] A PRELUDE or qualified expression paths (the 33 files that
         import ten names for a `grammar { }` expansion).
 
@@ -3221,12 +3280,13 @@ additions get siblings, nothing changes shape:
   bs2's — the ledger entry that blamed bs2 was checked and moved
   here. Wanting sites: every builder that binds locals and then
   repeats their names into a literal.
-- TRAIT DEFAULT METHOD BODIES. A trait carries mandatory methods
-  only; a body in a trait refuses at parse. The self-host endgame
-  already names what it buys — `kind()`/`message()` as defaults over
-  `describe()`, and every `nothing()` / bare-`null` pass method in
-  the StmtSemantics impls collapsing so an impl states only what it
-  DOES.
+- TRAIT DEFAULT METHOD BODIES — LANDED 2026-09-05 (lane C: a
+  default is a generic method over the trait's `Self`, lowered per
+  signatory; LANE C's block records the design). What it buys —
+  `kind()`/`message()` as defaults over `describe()`, and every
+  `nothing()` / bare-`null` pass method in the StmtSemantics impls
+  collapsing so an impl states only what it DOES — is the sweep
+  that follows.
 - A PRELUDE, or QUALIFIED EXPRESSION PATHS. `grammar { … }` expands
   into constructors the source never spells, so 33 files import ten
   type names to satisfy an expansion. Avra has neither

@@ -44,7 +44,8 @@ fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args:
     let target = held.name
     let found: FnSig? = cx.method_sig(held.decl, name)
     if found == null { return no_such_method(cx, e, target, name) }
-    let sig = instantiated_sig(cx, e, subject, held.decl, found!)
+    let m: DeclId? = cx.view.decls.method(held.decl, name)
+    let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, held.decl, found!))
     let wants = sig.params.length - 1
     if args.length != wants {
         return wrong_method_arity(cx, e, target, name, wants, args.length)
@@ -52,9 +53,24 @@ fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args:
     for j, a in args {
         if !accepts(cx, a, sig.params[j + 1]) { wrong_method_argument(cx, target, name, j, sig.params[j + 1], a) }
     }
-    let m: DeclId? = cx.view.decls.method(held.decl, name)
     if m != null { seat_laws(cx, e, subject, "${target}.${name}", name, m!, args, 1) }
     sig.ret
+}
+
+/// A trait member's sig on THIS receiver: the trait's `Self` is the
+/// receiver's type — in every seat and the answer. A signatory's
+/// own method names no `Self`, so it passes through.
+fn selfed_sig(mut cx: TypeCx, subject: ExprId, m: DeclId?, sig: FnSig) -> FnSig {
+    if m == null { return sig }
+    let parent: DeclId? = cx.view.decls.decl(m!).parent
+    if parent == null { return sig }
+    let contract = parent!
+    if !cx.view.decls.is_trait(contract) { return sig }
+    let recv = cx.type_at(subject)
+    FnSig {
+        params: [cx.view.types.substituted(p, contract, [recv]) for p in sig.params],
+        ret: cx.view.types.substituted(sig.ret, contract, [recv]),
+    }
 }
 
 /// THE INOUT LAWS at a call: a writing callee needs a `mut` place
@@ -191,8 +207,13 @@ fn contract_judged(mut cx: TypeCx, e: ExprId, subject: ExprId, trait_name: strin
     if found == null { return cx.error_type }
     let writes = cx.view.decls.declares_writing(member)
     receiver_law(cx, e, subject, name, writes)
-    mut_seats_law(cx, e, "${trait_name}.${name}", member, args, 0, if writes { subject } else { null })
-    sig_judged(cx, e, trait_name, name, args, found!)
+    mut_seats_law(cx, e, "${trait_name}.${name}", member, args, 1, if writes { subject } else { null })
+    sig_judged(cx, e, trait_name, name, args, seats_of(selfed_sig(cx, subject, member, found!)))
+}
+
+/// A method sig past its receiver — what the arguments fill.
+fn seats_of(sig: FnSig) -> FnSig {
+    FnSig { params: sig.params.slice(1, sig.params.length), ret: sig.ret }
 }
 
 /// The contract's judgment, shared by the bound and dyn halves:
@@ -206,7 +227,8 @@ fn trait_judged(mut cx: TypeCx, e: ExprId, subject: ExprId, trait_name: string, 
     contract_judged(cx, e, subject, trait_name, name, args, member!)
 }
 
-/// A method sig's judgment — self OMITTED — over the arguments.
+/// A method sig's judgment — its seats past the receiver — over the
+/// arguments.
 fn sig_judged(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, args: List<ExprId>, sig: FnSig) -> TypeId {
     if args.length != sig.params.length {
         return wrong_method_arity(cx, e, trait_name, name, sig.params.length, args.length)

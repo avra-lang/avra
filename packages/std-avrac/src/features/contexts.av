@@ -95,8 +95,8 @@ export fn method_sig_of(decls: Decls, target: DeclId, mname: string) -> FnSig? {
     fn_sig_of(decls.sig(m!))
 }
 
-/// A trait method's sig — self OMITTED — or absence, the trait by
-/// its name in this file's scope.
+/// A trait method's sig — `Self` at seat 0, like every method — or
+/// absence, the trait by its name in this file's scope.
 export fn trait_sig_of(decls: Decls, names: NameFacts, tname: string, mname: string) -> FnSig? {
     let decl: DeclId? = trait_named(decls, names, tname)
     if decl == null { return null }
@@ -333,10 +333,12 @@ export fn same_binding(a: Binding, b: Binding) -> bool {
 }
 
 /// A declared type's INSTANCE type — what its impl's receiver wears:
-/// the record or enum itself, applied to its own Vars when generic.
+/// the record or enum itself, applied to its own Vars when generic;
+/// a trait's is its `Self`, the Var its defaults are generic over.
 export fn self_type_of(decls: Decls, d: DeclId) -> TypeId {
     let name = decls.decl(d).name
     let vars = instance_vars(decls, d)
+    if decls.is_trait(d) { return vars[0] }
     if !vars.is_empty() { return decls.types.intern(Type.App(d, name, vars)) }
     if decls.is_enum(d) { return decls.types.intern(Type.Enum(d, name)) }
     decls.types.intern(Type.Struct(d, name))

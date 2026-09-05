@@ -28,6 +28,17 @@ impl LowerCx {
         self.wanted(d, Sub { target: held!.target, args: [self.concrete(t) for t in held!.args] })
     }
 
+    /// A METHOD's body as this receiver instantiates it: a trait's
+    /// DEFAULT under `Self` := the receiver's type (its parent is
+    /// the trait, whose one Var that is), any other method as typing
+    /// recorded at the site — or plain, where no site stands.
+    fn method_symbol(m: DeclId, at: ExprId?, recv: TypeId) -> string {
+        let parent: DeclId? = self.view.decls.decl(m).parent
+        if parent != null && self.view.decls.is_trait(parent!) { return self.wanted(m, Sub { target: parent!, args: [recv] }) }
+        if at == null { return self.wanted(m, null) }
+        self.symbol_at(m, at!)
+    }
+
     /// A declaration's body under an instantiation, as the symbol a
     /// call or an address names — enqueued on first sight, so the
     /// program lowers exactly what it reaches.

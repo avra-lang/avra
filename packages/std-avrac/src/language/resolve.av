@@ -11,7 +11,7 @@
 use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore}
 use diagnostics.{Diag, error_at, loc_at, pointed, refusal, Voices, no_voices}
 use features.modules.{module_laws}
-use features.{ResolveCx, Def, LFrame, Dispatch, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats, nothing, semantics_of, stmt_semantics_of, post_order}
+use features.{ResolveCx, Def, LFrame, Dispatch, self_word, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats, nothing, semantics_of, stmt_semantics_of, post_order}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
 /// Words the spec reserves for future levels, memory, and
@@ -279,6 +279,10 @@ impl ResolveCx {
     fn refused_name(name: string, at: Loc?) -> bool {
         if self.keywords.contains(name) {
             self.refuse_keyword(name, at, null)
+            return true
+        }
+        if name == self_word() {
+            self.refuse_self(at)
             return true
         }
         if reserved().contains(name) {
@@ -562,6 +566,10 @@ impl ResolveCx {
 
     fn runtime_binding(name: string, at: Loc?) {
         self.emit(refusal("resolve.runtime_binding", at, "`${name}` is a run-time binding of the top level — a fn body sees declarations, not the values around it", "read here", "pass `${name}` in as a parameter, or make it a fn"))
+    }
+
+    fn refuse_self(at: Loc?) {
+        self.emit(refusal("resolve.reserved", at, "`Self` is a trait's name for its implementor", "cannot be a name", "a declaration of your own takes another name"))
     }
 
     fn refuse_reserved(name: string, at: Loc?) {

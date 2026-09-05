@@ -175,4 +175,36 @@ spec "features/impls adversarial" {
             refusals("type C = { n: int }\nimpl C {\n    fn f() -> int { self. }\n}\n2") == 2
         }
     }
+    given "trait defaults under attack" {
+        then "a default reading a field of `self` refuses — `Self` has no fields, only the trait's members" {
+            refused_with("trait Show {\n    fn show() -> int\n    fn peek() -> int {\n        self.x\n    }\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nP { x: 1 }.peek()",
+                         "no property `x` on `Self`")
+        }
+        then "a default's body must answer its declared type — one refusal, at the default" {
+            refused_with("trait Show {\n    fn show() -> int\n    fn word() -> string {\n        self.show()\n    }\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nP { x: 1 }.word()",
+                         "the body answers `int` but `word` declares `string`")
+        }
+        then "an empty default body is a void method" {
+            shown("trait Greet {\n    fn hi() {\n    }\n}\ntype P = { x: int }\nimpl Greet for P {\n}\nP { x: 1 }.hi()\n2") == "2"
+        }
+        then "a signatory's INHERENT method of the same name wins over the default" {
+            shown("${defaulted()}impl P {\n    fn twice() -> int {\n        99\n    }\n}\nP { x: 21 }.twice()") == "99"
+        }
+        then "a default recurses through `self`" {
+            shown("trait Count {\n    fn step() -> int\n    fn down(n: int) -> int {\n        if n <= 0 { return 0 }\n        self.step() + self.down(n - 1)\n    }\n}\ntype P = { x: int }\nimpl Count for P {\n    fn step() -> int {\n        self.x\n    }\n}\nP { x: 3 }.down(4)") == "12"
+        }
+        then "`Self` cannot be declared — it is the trait's word for its implementor" {
+            refused_with("type Self = { x: int }\n1", "`Self` is a trait's name for its implementor")
+        }
+        then "overriding a default with the wrong signature refuses naming both sides" {
+            refused_with("${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n    fn twice() -> bool {\n        true\n    }\n}\n1",
+                         "`G.twice` does not wear `Show.twice`'s signature")
+        }
+        then "calling a default with the wrong arity refuses in the method's words" {
+            refused_with("${defaulted()}P { x: 1 }.twice(3)", "`P.twice` takes 0 arguments beside `self`, found 1")
+        }
+        then "two signatories through two dyn boxes each reach their own answer" {
+            shown("${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n}\nlet a: dyn Show = P { x: 1 }\nlet b: dyn Show = G.hot\na.twice() + b.twice()") == "202"
+        }
+    }
 }

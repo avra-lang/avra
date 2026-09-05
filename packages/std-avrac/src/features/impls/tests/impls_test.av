@@ -10,6 +10,12 @@ fn showp() -> string {
     "trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\n"
 }
 
+/// The contract with a DEFAULT beside its abstract member — and a
+/// default over the default — signed by P.
+fn defaulted() -> string {
+    "trait Show {\n    fn show() -> int\n    fn twice() -> int {\n        self.show() * 2\n    }\n    fn quad() -> int {\n        self.twice() * 2\n    }\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\n"
+}
+
 /// The standard signed impl.
 fn showed() -> string {
     "${showp()}impl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\n"
@@ -279,6 +285,39 @@ spec "features/impls" {
     given "a trailing comma in every comma list" {
         then "a trait signature, an impl's type parameters and a mut fn" {
             shown("trait Tr {\n    fn m(a: int, b: int,) -> int\n}\ntype P<T,> = { x: T }\ntype Q = { y: int }\nimpl P<T,> {\n    fn get() -> T { self.x }\n}\nimpl Tr for Q {\n    fn m(a: int, b: int,) -> int { a + b + self.y }\n}\nP { x: 5 }.get() + Q { y: 1 }.m(1, 2,)") == "9"
+        }
+    }
+    given "trait default method bodies — a member with a body answers for every signatory" {
+        then "a default answers where the signatory wrote nothing" {
+            shown("${defaulted()}P { x: 21 }.twice()") == "42"
+        }
+        then "a signatory's own method overrides the default" {
+            shown("${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n    fn twice() -> int {\n        7\n    }\n}\nG.hot.twice()") == "7"
+        }
+        then "a default reaches the abstract member per signatory — and an override through another default" {
+            shown("${defaulted()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n    fn twice() -> int {\n        7\n    }\n}\nP { x: 5 }.quad() + G.hot.quad()") == "34"
+        }
+        then "a dyn box dispatches a default through its vtable" {
+            shown("${defaulted()}let d: dyn Show = P { x: 5 }\nd.twice()") == "10"
+        }
+        then "a bounded generic reaches a default" {
+            shown("${defaulted()}fn eight<T: Show>(v: T) -> int {\n    v.quad() * 2\n}\neight(P { x: 2 })") == "16"
+        }
+        then "a `mut fn` default writes through the receiver" {
+            shown("trait Bump {\n    mut fn bump()\n    mut fn twice_bump() {\n        self.bump()\n        self.bump()\n    }\n}\ntype C = { n: int }\nimpl Bump for C {\n    mut fn bump() {\n        self.n = self.n + 1\n    }\n}\nmut c = C { n: 1 }\nc.twice_bump()\nc.n") == "3"
+        }
+        then "`Self` names the implementor in a sig — the answer wears the receiver's type" {
+            shown("trait Same {\n    fn me() -> Self {\n        self\n    }\n}\ntype P = { x: int }\nimpl Same for P {\n}\nP { x: 4 }.me().x") == "4"
+        }
+        then "a trait of defaults alone is answered by an empty impl-for" {
+            shown("trait Greet {\n    fn hi() -> int {\n        1\n    }\n}\ntype P = { x: int }\nimpl Greet for P {\n}\nP { x: 1 }.hi()") == "1"
+        }
+        then "a default takes parameters like any method" {
+            shown("trait Scale {\n    fn base() -> int\n    fn by(k: int) -> int {\n        self.base() * k\n    }\n}\ntype P = { x: int }\nimpl Scale for P {\n    fn base() -> int {\n        self.x\n    }\n}\nP { x: 3 }.by(4)") == "12"
+        }
+        then "the abstract member is still owed when a default stands beside it" {
+            refused_with("${showp()}impl Show for P {\n}\n1".replace("trait Show {\n    fn show() -> int\n}", "trait Show {\n    fn show() -> int\n    fn twice() -> int {\n        self.show() * 2\n    }\n}"),
+                         "`impl Show for P` must answer `show`")
         }
     }
 }

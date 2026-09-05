@@ -8,7 +8,7 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{stem_of, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module}
+use core.{stem_of, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
 use features.{TypeRow, TypeArgs}
@@ -185,7 +185,7 @@ impl Decls {
                 self.orphan(d)
                 let fns: List<StmtId> = store.trait_parts(s)?.fns ?? []
                 for m in fns {
-                    let md = self.mint_method(key, f, store, m, name, d, null)
+                    let md = self.mint_method(key, f, store, m, name, d, declared_body(store, m))
                     by_stmt.set(m.index, md)
                     made.push(md)
                 }
@@ -415,6 +415,10 @@ impl Decls {
         let x = self.decl(d)
         if x.kind is .Builtin { return builtin_tparams(self.row_of(d)!.arity) }
         if x.kind is .Impl { return self.target_tparams(d) }
+        // A TRAIT DECLARES ONE TYPE PARAMETER, `Self` — its
+        // implementor — and its members wear it: a default body is
+        // a generic method over `Self`, lowered per signatory.
+        if x.kind is .Trait { return [self_word()] }
         self.store(d).decl_tparams(x.stmt)
     }
 
@@ -526,8 +530,12 @@ impl Decls {
     }
 
     fn tbounds(d: DeclId) -> List<Param> {
-        if self.decl(d).kind is .Builtin { return [] }
-        self.store(d).decl_tbounds(self.decl(d).stmt)
+        let x = self.decl(d)
+        if x.kind is .Builtin { return [] }
+        // `Self` is bounded by the trait itself: inside a default,
+        // `self` answers the trait's own members
+        if x.kind is .Trait { return [Param { name: self_word(), ty: named_ref(x.name), default: null, mutable: false }] }
+        self.store(d).decl_tbounds(x.stmt)
     }
 
     fn is_trait(d: DeclId) -> bool { self.decl(d).kind is .Trait }
@@ -679,7 +687,27 @@ impl Decls {
     fn method(target: DeclId, name: string) -> DeclId? {
         let ensure = self.ensure_methods[0]
         ensure(target)
-        self.held_method(target, name)
+        self.held_method(target, name) ?? self.defaulted(target, name)
+    }
+
+    /// A method the type never wrote: the DEFAULT of a trait it
+    /// implements, when that trait's member carries a body.
+    fn defaulted(target: DeclId, name: string) -> DeclId? {
+        // LICENSED I5: a self-method predicate under `it` ICEs at codegen
+        for tr in self.impls[target.index] {
+            let m: DeclId? = self.default_member(tr, name)
+            if m != null { return m }
+        }
+        null
+    }
+
+    /// A trait's member by name, when it is a default.
+    fn default_member(tr: DeclId, name: string) -> DeclId? {
+        // LICENSED I5: a self-method predicate under `it` ICEs at codegen
+        for m in self.trait_fns(tr) {
+            if self.decl(m).name == name && self.has_body(m) { return m }
+        }
+        null
     }
 
     /// The table as it stands — the registering side's own read.
@@ -744,4 +772,23 @@ fn fresh_key(key: string, s: StmtId, seen: List<string>) -> string {
 /// A range whose first expression never landed starts at zero.
 fn started_at(i: int) -> int {
     if i < 0 { 0 } else { i }
+}
+
+/// The name a trait gives its implementor — the one type parameter
+/// every trait declares.
+export fn self_word() -> string {
+    "Self"
+}
+
+/// A written type naming a declaration, bare.
+fn named_ref(name: string) -> TypeRef {
+    TypeRef { name: name, args: [], optional: false, dynamic: false, arrow: false, span: null }
+}
+
+/// A member's body, when it wrote one — a sig's is a HOLE no pass
+/// walks, and declares nothing to type.
+fn declared_body(store: NodeStore, m: StmtId) -> ExprId? {
+    let body: ExprId? = store.fn_parts(m)?.body
+    if body == null || store.expr(body!) is .Error { return null }
+    body
 }

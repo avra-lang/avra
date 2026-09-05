@@ -3,20 +3,27 @@
 //! target (the receiver typed as the target at seat 0), the impl-for
 //! contract (every trait method, exactly, nothing beyond), the orphan
 //! rule, and the voices these laws speak.
-use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type, filled}
+use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type, filled, same_decl}
 use diagnostics.{refusal, warning}
 use features.{TypeCx, FnSig, DeclSig, fn_sig_of, trait_named, Decl, written_seats, trait_member, self_type_of, instance_vars}
 
 impl TypeCx {
+    /// A trait member's sig: `Self` at seat 0 — the trait's own
+    /// type parameter, which a default's body reads as `self` and a
+    /// signatory's method answers with its own type.
     fn declare_trait_sig(f: StmtId) {
         let parts: FnParts? = self.view.store.fn_parts(f)
         if parts == null { return }
         let fp = parts!
-        self.record_receiver_word(f, [])
+        let contract: DeclId = self.view.decls.decl(self.decl_of(f)).parent!
+        self.record_receiver_word(f, [false])
+        // `Self` is in scope for the sig's annotations
+        self.enter_target_scope(contract)
         self.declare(f, DeclSig.Fn(FnSig {
-            params: self.annotated_params(f, fp),
+            params: [self.impl_self_type(contract)].concat(self.annotated_params(f, fp)),
             ret: self.annotated(f, fp.ret),
         }))
+        self.leave_tscope()
     }
 
     /// The seats a fn-shaped declaration declared `mut` — a method's
@@ -165,20 +172,26 @@ impl TypeCx {
         if tdecl == null { return self.no_such_trait(s, of) }
         let members = self.view.decls.trait_fns(tdecl!)
         let wanted = [self.view.decls.fn_name(m) ?? "" for m in members]
+        // the impl is recorded FIRST: a member the signatory never
+        // wrote is answered by the trait's default through it
+        self.view.decls.record_impl(target, tdecl!)
         for m in members { self.check_trait_member(s, of, target, tname, m) }
         for f in fns {
             let mn = self.fn_named(f)
             if !wanted.contains(mn) { self.beyond_the_trait(f, of, tname, mn) }
         }
-        self.view.decls.record_impl(target, tdecl!)
     }
 
+    /// A member is answered by the signatory's own method, or by
+    /// the trait's DEFAULT — which agrees with itself.
     fn check_trait_member(s: StmtId, of: string, target: DeclId, tname: string, m: DeclId) {
         let mn = self.view.decls.fn_name(m) ?? ""
         let want: FnSig? = fn_sig_of(self.view.decls.sig(m))
-        let got: FnSig? = self.method_sig(target, mn)
-        if got == null { return self.unanswered(s, of, tname, mn) }
-        if want != null && !sigs_agree(want!, got!) { self.sig_unworn(s, of, tname, mn) }
+        let answered: DeclId? = self.view.decls.method(target, mn)
+        if answered == null { return self.unanswered(s, of, tname, mn) }
+        if same_decl(answered!, m) { return }
+        let got: FnSig? = fn_sig_of(self.view.decls.sig(answered!))
+        if want != null && got != null && !sigs_agree(want!, got!) { self.sig_unworn(s, of, tname, mn) }
     }
 
     fn declare_method(ty: TypeId, f: StmtId) {
