@@ -1,0 +1,189 @@
+// The red team's record for `defer`/`errdefer`: how it breaks, by
+// attack class. Two findings drove laws — a bare value deferred did
+// nothing silently, and an `errdefer` slept through a failure that
+// left by `return` or the tail instead of `fail`/`?`.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+fn a_puts() -> string {
+    "extern fn avra_puts(s: string)\n"
+}
+
+/// A fallible fixture: `g0` fails; `told` reads a Result as text.
+fn a_fallible() -> string {
+    "${a_puts()}fn g0() -> Result<int, string> {\n    fail \"boom\"\n}\n"
+}
+
+fn a_told(call: string) -> string {
+    "match ${call} {\n    .Ok(v) -> \"\${v}\"\n    .Err(e) -> e\n}"
+}
+
+/// A Result fn with an `errdefer`, given its body's tail.
+fn guarded(tail: string) -> string {
+    "${a_fallible()}fn g() -> Result<int, string> {\n    errdefer avra_puts(\"e\")\n${tail}\n}\n${a_told("g()")}"
+}
+
+spec "features/defers — adversarial" {
+    given "degenerate shapes" {
+        then "an empty deferred block runs nothing" {
+            shown("${a_puts()}defer {}\n1") == "1"
+        }
+        then "a void fn holding only a defer runs it" {
+            shown("${a_puts()}fn f() {\n    defer avra_puts(\"x\")\n}\nf()\n1") == "x\n1"
+        }
+        then "eight defers run in reverse" {
+            shown("${a_puts()}fn f() -> int {\n    defer avra_puts(\"1\")\n    defer avra_puts(\"2\")\n    defer avra_puts(\"3\")\n    defer avra_puts(\"4\")\n    defer avra_puts(\"5\")\n    defer avra_puts(\"6\")\n    defer avra_puts(\"7\")\n    defer avra_puts(\"8\")\n    0\n}\nf()") == "8\n7\n6\n5\n4\n3\n2\n1\n0"
+        }
+        then "a defer inside a deferred block frames to that block" {
+            shown("${a_puts()}defer {\n    defer avra_puts(\"inner\")\n    avra_puts(\"outer\")\n}\n1") == "1\nouter\ninner"
+        }
+        then "a deferred call's own defers run inside it" {
+            shown("${a_puts()}fn g() {\n    defer avra_puts(\"g-end\")\n    avra_puts(\"g\")\n}\nfn f() -> int {\n    defer g()\n    avra_puts(\"f\")\n    1\n}\nf()") == "f\ng\ng-end\n1"
+        }
+    }
+    given "a bare value in the slot — deferring it does nothing, so it is refused" {
+        then "an int literal" {
+            refused_with("defer 1\n1", "`defer` runs its body later, and this one only names a `int` — deferring a value does nothing")
+        }
+        then "a string literal" {
+            refused_with("defer \"s\"\n1", "only names a `string`")
+        }
+        then "a bool literal" {
+            refused_with("defer true\n1", "only names a `bool`")
+        }
+        then "null" {
+            refused_with("defer null\n1", "deferring a value does nothing")
+        }
+        then "a binding — the Child mistaken for its cleanup" {
+            refused_with("type Child = { n: int }\nlet c = Child { n: 1 }\ndefer c\n1", "only names a `Child`")
+        }
+        then "a fn named, not called" {
+            refused_with("fn f() -> int {\n    1\n}\ndefer f\n1", "only names a `fn() -> int`")
+        }
+        then "a lambda" {
+            refused_with("defer (x: int) -> x\n1", "deferring a value does nothing")
+        }
+        then "a construction may act — a list holding a call is not refused" {
+            shown("${a_puts()}fn g() -> int {\n    avra_puts(\"g\")\n    1\n}\ndefer [g()]\n1") == "1\ng"
+        }
+    }
+    given "the failure channel through `return` and the tail — not only `fail` and `?`" {
+        then "`return .Err(e)` runs the errdefer" {
+            shown(guarded("    if true {\n        return .Err(\"x\")\n    }\n    1")) == "e\nx"
+        }
+        then "a tail `.Err(e)` runs the errdefer" {
+            shown(guarded("    .Err(\"x\")")) == "e\nx"
+        }
+        then "a tail Result VARIABLE holding a failure runs the errdefer — asked of the value at run time" {
+            shown(guarded("    let r: Result<int, string> = g0()\n    r")) == "e\nboom"
+        }
+        then "a tail Result variable holding a success does not" {
+            shown(guarded("    let r: Result<int, string> = Result.Ok(4)\n    r")) == "4"
+        }
+        then "`return .Ok(v)` does not" {
+            shown(guarded("    if true {\n        return .Ok(1)\n    }\n    2")) == "1"
+        }
+        then "a bare success at the tail does not" {
+            shown(guarded("    1")) == "1"
+        }
+        then "the errdefer runs before the defers registered earlier, on the way out" {
+            shown("${a_fallible()}fn g() -> Result<int, string> {\n    defer avra_puts(\"d\")\n    errdefer avra_puts(\"e\")\n    .Err(\"x\")\n}\n${a_told("g()")}") == "e\nd\nx"
+        }
+    }
+    given "malformed surface — every mistake is a diagnostic" {
+        then "`defer` twice" {
+            refused_with("${a_puts()}defer defer avra_puts(\"x\")\n1", "expected BREAK")
+        }
+        then "`defer` after its expression" {
+            refused_with("${a_puts()}avra_puts(\"x\") defer\n1", "expected BREAK")
+        }
+        then "`defer` assigned" {
+            refused_with("defer = 1\n1", "while parsing `unary`")
+        }
+        then "two expressions on the line" {
+            refused_with("${a_puts()}defer avra_puts(\"x\") avra_puts(\"y\")\n1", "expected BREAK")
+        }
+        then "`errdefer` split in two" {
+            refused_with("${a_puts()}err defer avra_puts(\"x\")\n1", "expected BREAK")
+        }
+        then "a statement where the body goes" {
+            refused_with("${a_puts()}defer fail \"x\"\n1", "expected BREAK")
+        }
+        then "a trailing comma" {
+            refused_with("${a_puts()}defer avra_puts(\"x\"),\n1", "expected BREAK")
+        }
+        then "`defer` is a keyword — a binding by that name is refused, and its use is its own mistake" {
+            refusals("let defer = 1\ndefer") == 2
+        }
+        then "a fn by that name is refused at the declaration and the call" {
+            refusals("fn defer() -> int {\n    1\n}\ndefer()") == 2
+        }
+        then "parenthesized, the body is an expression like any" {
+            shown("${a_puts()}defer(avra_puts(\"x\"))\n1") == "1\nx"
+        }
+    }
+    given "crossings — the feature inside every other" {
+        then "a `when` arm's block" {
+            shown("${a_puts()}let v = when {\n    true -> {\n        defer avra_puts(\"w\")\n        1\n    }\n    _ -> 2\n}\nv") == "w\n1"
+        }
+        then "a `match` arm's block" {
+            shown("${a_puts()}enum E {\n    a\n    b\n}\nlet v = match E.a {\n    .a -> {\n        defer avra_puts(\"m\")\n        1\n    }\n    .b -> 2\n}\nv") == "m\n1"
+        }
+        then "a method capturing `self`" {
+            shown("${a_puts()}type P = { name: string }\nimpl P {\n    fn f() -> int {\n        defer avra_puts(self.name)\n        1\n    }\n}\nP { name: \"p\" }.f()") == "p\n1"
+        }
+        then "a `mut fn` writing its receiver beside a defer" {
+            shown("${a_puts()}type C = { n: int }\nimpl C {\n    mut fn bump() {\n        defer avra_puts(\"b\")\n        self.n = self.n + 1\n    }\n}\nmut c = C { n: 0 }\nc.bump()\nc.n") == "b\n1"
+        }
+        then "recursion — each frame's defer as it returns" {
+            shown("${a_puts()}fn f(n: int) -> int {\n    defer avra_puts(\"\${n}\")\n    if n == 0 {\n        return 0\n    }\n    f(n - 1)\n}\nf(2)") == "0\n1\n2\n0"
+        }
+        then "a generic fn, instantiated twice, defers in each" {
+            shown("${a_puts()}fn f<T>(x: T) -> T {\n    defer avra_puts(\"g\")\n    x\n}\n\"\${f(1)} \${f(\"s\")}\"") == "g\ng\n1 s"
+        }
+        then "a bounded generic's capture dispatches through the bound" {
+            shown("${a_puts()}trait Show {\n    fn show() -> string\n}\ntype P = { n: int }\nimpl Show for P {\n    fn show() -> string {\n        \"p\${self.n}\"\n    }\n}\nfn f<T: Show>(x: T) -> T {\n    defer avra_puts(x.show())\n    x\n}\nf(P { n: 3 }).n") == "p3\n3"
+        }
+        then "a `catch` arm's block" {
+            shown("${a_puts()}enum E {\n    a\n    b\n}\nfn g() -> Result<int, E> {\n    fail E.b\n}\nlet v = g() catch {\n    .b -> {\n        defer avra_puts(\"c\")\n        0\n    }\n    .a -> 1\n}\nv") == "c\n0"
+        }
+        then "a `return` inside a loop runs the turn's defer, then the fn's" {
+            shown("${a_puts()}fn f() -> int {\n    defer avra_puts(\"fn\")\n    mut i = 0\n    while i < 5 {\n        defer avra_puts(\"turn \${i}\")\n        if i == 1 {\n            return i\n        }\n        i = i + 1\n    }\n    9\n}\nf()") == "turn 0\nturn 1\nfn\n1"
+        }
+        then "a lambda under `map` frames its own defer per element" {
+            shown("${a_puts()}[1, 2].map((x: int) -> {\n    defer avra_puts(\"m\${x}\")\n    x * 2\n})[1]") == "m1\nm2\n4"
+        }
+        then "a paired `for` captures both the index and the element" {
+            shown("${a_puts()}for i, x in [\"a\", \"b\"] {\n    defer avra_puts(\"\${i}:\${x}\")\n}\n0") == "0:a\n1:b\n0"
+        }
+    }
+    given "names against names" {
+        then "an inner shadow is the one captured" {
+            shown("${a_puts()}let x = 1\nfn f() -> int {\n    let x = 2\n    defer avra_puts(\"\${x}\")\n    3\n}\nf()") == "2\n3"
+        }
+        then "a top-level run-time binding is the const law's refusal, once" {
+            refused_with("${a_puts()}let x = 1\nfn f() -> int {\n    defer avra_puts(\"\${x}\")\n    1\n}\nf()", "`x` is a run-time binding of the top level")
+        }
+        then "a name declared after the defer is used before its definition" {
+            refused_with("${a_puts()}defer avra_puts(name)\nlet name = \"x\"\n1", "`name` is used before its definition")
+        }
+    }
+    given "ownership — managed values through the frame" {
+        then "an interpolated string captured rides to the exit" {
+            shown("${a_puts()}let s = \"a\${1}\"\ndefer avra_puts(s)\n1") == "1\na1"
+        }
+        then "a managed answer the deferred body drops is released, not leaked" {
+            shown("${a_puts()}fn s() -> string {\n    \"x\${1}\"\n}\ndefer s()\n1") == "1"
+        }
+        then "a `mut` string reassigned after the defer is read as it was" {
+            shown("${a_puts()}mut s = \"a\"\ndefer avra_puts(s)\ns = \"b\"\n1") == "1\na"
+        }
+    }
+    given "refusal counts" {
+        then "an errdefer inside a loop in a fn that cannot fail speaks once" {
+            refused_with("${a_puts()}fn f() -> int {\n    while true {\n        errdefer avra_puts(\"x\")\n        return 1\n    }\n    2\n}\nf()", "it promises a `int` — it never does")
+        }
+        then "`?` on a nullable in a deferred body is the lambda's law, once" {
+            refused_with("${a_puts()}fn none() -> int? {\n    null\n}\nfn f() -> int? {\n    defer none()?\n    1\n}\nf() ?? 0", "`?` passes absence to a caller, and a lambda promises none")
+        }
+    }
+}
