@@ -68,7 +68,11 @@ tool path can add to it. Two honest exits: write the idiomatic
 form, or annotate `// LICENSED I<n>: reason` AT the site. Debt is
 zero; keep it there. A new idiom lands in DOGFOODING's registry AT
 DISCOVERY **with its matcher** (or an UNRATCHETED reason — the tool
-refuses a registry entry that has neither).
+refuses a registry entry that has neither), under the NEXT FREE
+NUMBER: two lanes numbered a new idiom the same day, both landed
+I33, and the duplicate key silently dropped the earlier rule while
+`make idioms` kept reporting success. The tool now reads its own
+source and refuses a repeated number.
 
 ## Style
 

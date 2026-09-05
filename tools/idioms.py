@@ -521,6 +521,22 @@ SPECIMENS = {
             ["            out = out + (unescaped(text.char_code(j + 1)) ?? text.substring(j, j + 2))"]],
 }
 
+def duplicate_numbers():
+    """A number claimed twice in any table, read from this file's own
+    text — the dict has already dropped the loser by the time it runs."""
+    text = open(__file__).read()
+    out = []
+    for table in ("RULES", "SPECIMENS", "UNRATCHETED"):
+        start = text.find("\n" + table + " = {")
+        if start < 0:
+            continue
+        body = text[start:text.index("\n}", start)]
+        claimed = re.findall(r'^\s{4}"(I\d+)"\s*:', body, re.M)
+        for code in sorted(set(claimed)):
+            if claimed.count(code) > 1:
+                out.append(code + " is claimed " + str(claimed.count(code)) + " times in " + table + " — the later one silently wins")
+    return out
+
 def selftest():
     """Every rule catches EVERY specimen, or the tool refuses to run.
 
@@ -529,8 +545,15 @@ def selftest():
     passed straight over — I7 could not see a dotted receiver, I3
     could not see a one-line loop, I4 could not see a generic with
     two parameters, and I26 counted field unwraps as locals. A rule
-    claims a SHAPE, so every spelling of that shape belongs here."""
-    dead = []
+    claims a SHAPE, so every spelling of that shape belongs here.
+
+    It also refuses a REPEATED NUMBER. Two lanes numbered a new idiom
+    the same day and both landed I33: a duplicate key in a dict
+    literal is legal Python, the later one wins, and the earlier rule
+    vanishes — the emission law went unenforced for a whole window
+    while this tool reported success. A collapsed dict cannot see its
+    own duplicates, so the check reads the SOURCE."""
+    dead = duplicate_numbers()
     for code, (matcher, _) in RULES.items():
         specimens = SPECIMENS.get(code)
         if specimens is None:
