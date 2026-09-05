@@ -6,7 +6,7 @@
 //! compiler, a clang and a first execution per program.
 use @std.cli.{Subcommand, CliResult, Runnable, CommandSpec, FlagDef, ArgDef, result_has_flag}
 use @std.avrac.language.{Program, Lowered, ProgramCall, corpus_entry, corpus_rows, emit_ll, run_program, program_symbol, programs_workspace, program, avra}
-use @std.avrac.core.{joined_path, stem_of, dir_of, sorted_texts}
+use @std.avrac.core.{joined_path, stem_of, dir_of, sorted_texts, counted}
 
 type CorpusCmd = { }
 
@@ -73,7 +73,7 @@ fn judged_programs(p: Program, lo: Lowered, programs: List<ProgramCall>, native_
     if !native_only {
         let disagreed = [pr for pr in programs if !eval_agrees(lo, pr)]
         if !disagreed.is_empty() { return 1 }
-        println("${counted(programs.length)}: eval == expected")
+        println("${counted(programs.length, "program")}: eval == expected")
     }
     let staged_lo = lo with { entry: corpus_entry(lo.types, programs), externs: lo.externs.concat(corpus_rows()) }
     let path = joined_path(joined_path(p.ws.root, "build"), "corpus.av.ll")
@@ -84,11 +84,6 @@ fn judged_programs(p: Program, lo: Lowered, programs: List<ProgramCall>, native_
         return 1
     }
     staged(path, p)
-}
-
-/// "72 programs", "1 program".
-export fn counted(n: int) -> string {
-    "${n} ${if n == 1 { "program" } else { "programs" }}"
 }
 
 /// One program through the evaluator against its expected text.

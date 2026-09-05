@@ -208,7 +208,7 @@ the compiler checking itself 28.8s.
         `/Users/.../std-avrac` looks for `/tmp/x/Users/.../std-avrac`
         and refuses F4007 with that mangled path). A path that starts
         with `/` is already absolute; `joined_path` must leave it.
-  - [ ] THE ENGINE'S CAPTURE COPYING: repetition captures are
+  - [x] THE ENGINE'S CAPTURE COPYING (MEASURED and REFUSED 2026-09-05): repetition captures are
         copied per append, so an N-statement program parses in
         O(N^2) (the debt below the ledger). `Many` becomes a prefix snapshot
         ({shared list, count}): push at the tip, copy only after a
@@ -224,6 +224,11 @@ the compiler checking itself 28.8s.
         `bind_label`'s list copy is 2%. The capture copying is not
         the parse's weight — the records per hit and the memo's
         teardown are.
+        THE CLAIM MEASURED (2026-09-05): a body of 500, 1000, 2000,
+        4000 `let` statements checks in 0.05, 0.11, 0.22, 0.51s of
+        user CPU — LINEAR, the per-append copy a 16% superlinearity
+        at 4000 statements, below any real file's noise. The prefix
+        snapshot is not needed; struck.
         THE MEMO ITSELF was tried WITHOUT (2026-09-04): parse 10.4s ->
         11.4s, so packrat pays for itself here; REFUSED as a lever.
         SIZE-CLASS FREE LISTS in the runtime (2026-09-04): a box of up
