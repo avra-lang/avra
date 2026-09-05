@@ -72,6 +72,15 @@ impl Db {
         self.verifiers.length - 1
     }
 
+    /// THE CYCLE ENDED: a verifier captures the owner that holds this
+    /// kernel, and a closure stored in a value that captures the
+    /// value's owner never dies under counting. A one-shot kernel —
+    /// never edited, so never re-verifying — replaces every verifier
+    /// with one that refuses; the families stay registered.
+    fn disarm() {
+        self.verifiers = [never_verify for v in self.verifiers]
+    }
+
     /// Where a key's cell sits in the flat list. An unregistered
     /// family would alias another's cells silently; reading its
     /// verifier first keeps the old row layout's trap.
@@ -202,4 +211,13 @@ impl Db {
     fn stats() -> string {
         "rev ${self.revision()}: ${self.hits[0]} hits, ${self.misses[0]} misses"
     }
+}
+
+extern fn avra_trap(message: string)
+
+/// A disarmed kernel asked to re-verify: it was one-shot by its
+/// owner's word.
+fn never_verify(arg: int) -> int { // LICENSED I23: the seat a family's verifier must have
+    avra_trap("a disarmed query kernel was asked to re-verify a dependency")
+    0
 }

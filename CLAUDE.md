@@ -204,6 +204,16 @@ registry is the idiom engine's spec, written by dogfooding.
   the executor kept its last far record, 600 MB of a self-check —
   while `x = null` released nothing. The runtime's accounting found
   both; a flat struct's nullable hid them (that widen mints a box).
+- A CLOSURE STORED IN A VALUE THAT CAPTURES THE VALUE'S OWNER IS A
+  CYCLE, and counting never frees a cycle. The workspace's query
+  verifiers, its declaration table's hooks and every Analysis in its
+  table capture the workspace: no workspace could die, and 1674 spec
+  cases kept 1674 of them — 922 MB in the test binary. A ONE-SHOT
+  workspace ends its own cycles (`disarmed`, at `Language.analyze`)
+  once the analysis it was made for has run: nothing re-verifies at
+  revision one, every sig it will ask for is held, and an Analysis
+  asked after is remade over the memoized parts, never kept. The
+  language's answer is in the sugar backlog: weak captures.
 - A RETAIN THE CALLEE RELEASES MUST BE EMITTED: callee-cleans means
   every managed seat of a call is retained by the caller, and a
   seat typed as unmanaged (`Ptr`, `Int`) is a release with no

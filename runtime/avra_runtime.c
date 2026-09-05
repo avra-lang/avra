@@ -117,20 +117,26 @@ static int cap_bucket(int64_t cap) {
 // LIVE LIST BYTES BY THE SITE THAT MADE THEM — the return address of
 // the constructor, which is inside the Avra fn that called it; the
 // report prints it unslid, so `atos -o build/avra <addr>` names it.
-#define SITES 8192
+// the table is kept under half full, and a probe gives up at 64
+// steps: a full table cost a suite compile a minute of probing
+#define SITES 65536
 typedef struct { void* site; int64_t live; int64_t peak; int64_t count; int64_t made; void* sample; } Site;
 static Site g_sites[SITES];
 static int64_t g_site_slots = 0;
 
 static Site* site_of(void* site) {
     uint64_t i = ((uint64_t)(uintptr_t)site >> 2) & (SITES - 1);
-    while (g_sites[i].site != NULL && g_sites[i].site != site) i = (i + 1) & (SITES - 1);
-    if (g_sites[i].site == NULL) {
-        if (g_site_slots >= SITES - 1) return NULL;
-        g_sites[i].site = site;
-        g_site_slots++;
+    for (int step = 0; step < 64; step++) {
+        if (g_sites[i].site == site) return &g_sites[i];
+        if (g_sites[i].site == NULL) {
+            if (g_site_slots >= SITES / 2) return NULL;
+            g_sites[i].site = site;
+            g_site_slots++;
+            return &g_sites[i];
+        }
+        i = (i + 1) & (SITES - 1);
     }
-    return &g_sites[i];
+    return NULL;
 }
 
 // a clone's site is the Avra fn that wrote to a shared value, not
@@ -440,7 +446,7 @@ void avra_case_begin(const char* label) {
 
 // A TRAP IS A WRECK, not a verdict: status 2 keeps it distinct from
 // the 1 a program leaves when it merely disagrees with its input.
-static void avra_trap(const char* msg) {
+void avra_trap(const char* msg) {
     if (g_case) {
         fputs("avra: while running ", stderr);
         fputs(g_case, stderr);
