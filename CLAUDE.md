@@ -467,13 +467,6 @@ registry is the idiom engine's spec, written by dogfooding.
   `errdefer`s unconditionally) BEFORE its `Ins.FnExit`: the value is
   computed, the deferred calls come next, then the exit.
 
-## Vendored code — do not imitate
-
-`packages/std-cli/` is a symlink into the old tree's bootstrap CLI,
-rent paid until lane B's `@std/cli` lands and the package is
-deleted. It is NOT reference code for anything. (`spec_test` is
-gone: `avra test` is the runner.)
-
 ## The subset today
 
 What our compiler REFUSES that the language will want. Each entry

@@ -5450,8 +5450,9 @@ by meaning; each is a slice for lane D unless a lane is named.
   precedence is pinned by a test. language/receivers.av's own
   `Callee` (Row/Method/Contract/None) is the third copy of this
   decision — lane C's to fold onto impls' when it next touches it.
-- D. THE ERROR-ABSORB VERB: 28 sites in three spellings ->
-  `cx.errored(e)` / `cx.errored_ty(ty)` on TypeCx.
+- ~~D. THE ERROR-ABSORB VERB~~ — DONE 2026-09-05 (lane D): 43 sites
+  in three spellings ask `cx.errored(e)` / `cx.errored_ty(ty)`,
+  the verbs beside `shape_at` on TypeCx (features/contexts.av).
 - ~~E~~ — DONE 2026-09-05 over two slices (lane D), except lists/methods.av's prelude, whose ten sites vary in their wants and read as one honest line each. VOICES, SCANS, DEAD CODE, STOLEN DOCS: twinned voices
   (lists/maps `unslottable_want`, lists/loops `not_walkable`,
   results `covers`/`total`); the struct field law twice
