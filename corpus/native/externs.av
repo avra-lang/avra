@@ -7,10 +7,23 @@ extern fn println(s: string)
 extern fn avra_host_env(name: string) -> string
 extern fn avra_selfhost_argc() -> int
 extern fn avra_selfhost_get_arg_cstr(i: int) -> string
+extern fn avra_spawn_status(prog: string, args: List<string>) -> int
 println("from the host")
 // the host's own words — argv and the environment — are immortal
 // text the program may hold, compare and pass but never owns
 let env = avra_host_env("PATH")
 let missing = avra_host_env("AVRA_NO_SUCH_VARIABLE_")
 let arg0 = avra_selfhost_get_arg_cstr(0)
-"${avra_now_ns() > 0} ${avra_selfhost_file_exists("/definitely/not/here")} ${avra_host_is_dir("corpus")} ${avra_selfhost_file_exists("corpus/native/externs.av")} ${env.length > 0} ${missing.length} ${avra_selfhost_argc() >= 1} ${arg0.length > 0} ${arg0 == avra_selfhost_get_arg_cstr(0)}"
+// a program run with its arguments as WORDS: the exit code, 127 when
+// it cannot start, 128+signal when a signal killed it, and a word
+// that would be a shell command means only itself
+let exit3 = avra_spawn_status("sh", ["-c", "exit 3"])
+let absent = avra_spawn_status("definitely-no-such-program-avra", [])
+let killed = avra_spawn_status("sh", ["-c", "kill -9 $$"])
+let literal = avra_spawn_status("sh", ["-c", "test \"$1\" = '; touch /tmp/PWNED ;'", "x", "; touch /tmp/PWNED ;"])
+// what we printed before the child runs comes out BEFORE the child's
+// words — a buffered stdout is flushed at the seam, or a pipe reorders
+println("before the child")
+let echoed = avra_spawn_status("sh", ["-c", "echo from the child"])
+println("after the child")
+"${avra_now_ns() > 0} ${avra_selfhost_file_exists("/definitely/not/here")} ${avra_host_is_dir("corpus")} ${avra_selfhost_file_exists("corpus/native/externs.av")} ${env.length > 0} ${missing.length} ${avra_selfhost_argc() >= 1} ${arg0.length > 0} ${arg0 == avra_selfhost_get_arg_cstr(0)} ${exit3} ${absent} ${killed} ${literal} ${echoed}"

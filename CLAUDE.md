@@ -207,7 +207,11 @@ registry is the idiom engine's spec, written by dogfooding.
 - A PROCESS STATUS IS A VERDICT, never a count: statuses are eight
   bits, so 256 failures read as success. Exit 0 or 1 and print the
   count. A TRAP is not a verdict either — `avra_trap` exits 2, so a
-  wreck can never be mistaken for a disagreement.
+  wreck can never be mistaken for a disagreement. And A COMMAND IS
+  AN ARGV, never a shell line: `avra_spawn_status(prog, args)` runs
+  a program with its words, so no character in a path or a
+  manifest's `[link]` row means anything but itself — nothing
+  quotes, nothing fences, and a dependency's flag cannot run.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
 - Passes are pure queries with ONE standard signature:
   `pass(p: ParsedProgram, ...upstream Facts) -> Facts` — the program

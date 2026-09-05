@@ -1,7 +1,7 @@
 // The workspace over an in-memory host: a module is a directory or a
 // file, siblings see each other, `use` reaches a module's exports,
 // and every failed `use` speaks in its own words.
-use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, visible, file_id, module_of, all_files, program}
+use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, visible, file_id, module_of, all_files, program, link_words}
 use language.{Workspace}
 
 /// A small package: a root file, a root sibling, a directory module
@@ -29,6 +29,27 @@ fn with_main(text: string) -> Workspace {
     mut fs = ws_files()
     fs.set("/w/src/main.av", text)
     new_workspace(memory_host(fs, ws_names()), "/w", avra())
+}
+
+/// The package with a manifest beside its sources, its entry a spec
+/// of one case.
+fn spec_package(toml: string) -> Workspace {
+    mut fs = ws_files()
+    fs.set("/w/avra.toml", toml)
+    fs.set("/w/src/main.av", "spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n    }\n}\n")
+    new_workspace(memory_host(fs, ws_names().concat(["/w/avra.toml"])), "/w", avra())
+}
+
+/// A manifest whose link flag is a shell command — what a
+/// dependency could carry.
+fn poisoned_manifest() -> string {
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nflags = [\"; touch /tmp/PWNED ;\", \"-lm\"]\n"
+}
+
+/// A manifest whose flags carry environment holes — one that fills
+/// (PATH is always set) and one that names nothing.
+fn holed_manifest() -> string {
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nflags = [\"-L$" + "{PATH}\", \"$" + "{AVRA_NO_SUCH_VAR_}\"]\n"
 }
 
 fn main_report(text: string) -> string {
@@ -135,6 +156,37 @@ spec "language/workspace" {
         }
         then "a package the manifest does not declare — a root without one declares nothing" {
             main_refuses("use @std.errors.{Loc}\n2\n", "`@std/errors` is not a dependency of this package")
+        }
+    }
+    given "the host seam carries words, never a shell line" {
+        then "a link flag with shell metacharacters is ONE word, verbatim" {
+            let words = link_words(spec_package(poisoned_manifest()))
+            words.contains("; touch /tmp/PWNED ;") && words.contains("-lm") && words.length == 2
+        }
+        then "an environment hole in a flag is filled from the environment" {
+            let words = link_words(spec_package(holed_manifest()))
+            !words.any(it.contains("$" + "{")) && words.any(it.starts_with("-L/"))
+        }
+        then "a hole naming nothing leaves no empty word behind" {
+            let words = link_words(spec_package(holed_manifest()))
+            !words.any(it.length == 0) && words.length == 1
+        }
+    }
+    given "a case is selected by the path it MEANS, not the text typed" {
+        then "the file as listed" {
+            program(spec_package(poisoned_manifest()), null).cases_at("/w/src/main.av").length == 1
+        }
+        then "a `./` in the path" {
+            program(spec_package(poisoned_manifest()), null).cases_at("/w/src/./main.av").length == 1
+        }
+        then "a doubled slash" {
+            program(spec_package(poisoned_manifest()), null).cases_at("/w//src/main.av").length == 1
+        }
+        then "a `..` folded into the path" {
+            program(spec_package(poisoned_manifest()), null).cases_at("/w/src/util/../main.av").length == 1
+        }
+        then "another file selects nothing" {
+            program(spec_package(poisoned_manifest()), null).cases_at("/w/src/helper.av").length == 0
         }
     }
 }

@@ -1,7 +1,7 @@
 // Packages over an in-memory host: a root manifest names a path
 // dependency, `use @scope.name.a.{x}` reaches its module, the graph's
 // laws refuse in their own words, and the entry is the manifest's.
-use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, program, module_of, root_files, entry_of}
+use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, program, Program, module_of, root_files, entry_of}
 use @std.avrac.diagnostics.{suggested}
 use diagnostics.{Diag}
 use language.{Workspace}
@@ -39,6 +39,14 @@ fn with_file(path: string, text: string) -> Workspace {
 }
 
 /// The package with two files replaced or added.
+/// The program's printed value, or its refusal.
+fn answered(p: Program) -> string {
+    match p.run() {
+        .Ok(v) -> v,
+        .Err(why) -> why,
+    }
+}
+
 fn with_two(p1: string, t1: string, p2: string, t2: string) -> Workspace {
     mut fs = files()
     fs.set(p1, t1)
@@ -153,6 +161,15 @@ spec "language/packages" {
         then "an unknown section warns and never blocks" {
             let p = program(with_file("/w/avra.toml", root_manifest("\"@corpus/greet\" = { path = \"vendor/greet\" }") + "\n[grants]\nnetwork = []\n"), "/w/src/main.av")
             p.voices.length == 1 && p.voices[0].severity is .Warning && p.clean() && p.report().contains("warning[F4030]")
+        }
+    }
+    given "impl blocks are found by name, and a name is per package" {
+        then "two packages each declaring `P` with an `impl P` keep their own methods" {
+            let ws = with_two("/w/vendor/greet/src/greet.av",
+                              "export type P = { v: int }\nimpl P {\n    fn who(self) -> int {\n        2\n    }\n}\nexport fn make() -> P {\n    P { v: 0 }\n}\n",
+                              "/w/src/main.av",
+                              "use @corpus.greet.{make}\ntype P = { v: int }\nimpl P {\n    fn who(self) -> int {\n        1\n    }\n}\nlet mine = P { v: 0 }\nlet theirs = make()\n\"\${mine.who()} \${theirs.who()}\"\n")
+            answered(program(ws, "/w/src/main.av")) == "1 2"
         }
     }
 }
