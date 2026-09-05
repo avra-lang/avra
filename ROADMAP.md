@@ -5573,6 +5573,55 @@ by meaning; each is a slice for lane D unless a lane is named.
   `or`, `with`, an operator list with `|>`) and `line_boundary` is a
   callback whose body is `true` -> a `LexFlavor` VALUE supplied by
   language/, as `Grammar.keywords()` already supplies the keywords.
+- F-VERDICTS (lane A, 2026-09-05): the eight that reached lane A were
+  re-verified against HEAD, one skeptic each, refute-by-default, plus
+  five fresh lenses over grammar/ and core/. SEVEN of eight hold; every
+  cited line number was ~10 low, so read the code, not the citation.
+  HANDED BACK: `grammar_build` is a string-match dispatch, but it does
+  NOT hold as a Rules violation — the Rules forbid a string deciding
+  BEHAVIOR, and this is the DSL's own builder-name currency crossing
+  the grammar's data seam, which compose.av's table cannot replace
+  without inventing a second registry for nine private fns.
+  REFUSED ON MERIT though TRUE: the `LexFlavor`. CLAUDE.md's
+  grammar-authoring rules PLACE the line law in the lexer by doctrine
+  ("the LINE LAW lives in the lexer"), so the continuation words and
+  the operator list are residents, not leaks; DOGFOODING's I23
+  licenses exactly `line_boundary`'s shape; and the count is a severe
+  UNDERCOUNT — the lexer also hardcodes Avra's whole token alphabet
+  (twenty single-op codes, ten two-char operators, six escapes, `//`,
+  `"""`, `@`-words, the `${` hole), so a five-field flavor parameterizes
+  four of ~eleven facts and leaves the layering claim just as false,
+  bought with a struct and five indirections in the scanner's inner
+  loop. LANDED INSTEAD, the residue that was real: `|>` was not merely
+  unparsed but UNLEXABLE (`two_char_of` has no 124/62 arm, so no token
+  can carry that text) and its list entry was dead data; and
+  `continuing_ops()` MINTED A FRESH 17-STRING LIST PER SOURCE LINE of
+  every file the compiler reads — the same reasoning the file's own doc
+  had already applied to `two_char_of` 150 lines earlier, unapplied
+  here. It is a `match` now. The callback's doc stated another fn's
+  invariant, incompletely (it said "before an `else`" where the code
+  tests `else` or `or` or `with`); it now states its own, and the line
+  law moved onto `lex_source`, corrected. THE ONE SURVIVING WANT from
+  A13: the lexer spells `"grammar"` while features/grammar_lit's gram
+  fragment already claims it — a projection spelled twice — but
+  deriving it needs a RAW primitive in the notation, dragging seed.av,
+  parse.av, ast.av and validate.av. A slice, not a finding's fix; not
+  scheduled.
+  ALSO LANDED: the `fb_diags` flag is one nullable local, and the
+  stale "GENERIC locals cannot carry loop state through mono" note it
+  hid behind is gone — corpus/generics.av now pins a generic `T?`
+  local carrying state across a loop at TWO instantiations, so the
+  retired limit is a permanent proof rather than two lanes' memory.
+  The `Rep` <-> suffix inverse is named (`rep_of_suffix`, `as_rep`),
+  killing two plausible defaults: `_ -> Rep.Opt` turned an impossible
+  token into a silent `?`, and `.Node(_) or .Many(_) -> Rep.One` did
+  the same for an impossible shape. Both refusals are UNREACHABLE by
+  construction — the DSL's rule is `postfix = primary ( "*" | "+" |
+  "?" )?` — which is the point: an honest refusal over a guaranteed
+  dispatch, not a default that lies.
+  PROBED (records a WORKING shape, so the fear shrinks): an `or`-RUN
+  over STRING literals in a match arm compiles and runs
+  (`"+" or "-" or ... -> true`). It had no precedent in the tree.
 - G. LANGUAGE + CLI (lane C owns language/; SENT to lane C
   2026-09-05. STRUCK by verification: the mono mangling by TypeId
   ordinal (real mechanism, wrong harm — those ordinals index the

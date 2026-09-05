@@ -135,6 +135,26 @@ fn as_annots(v: Captured<GrammarNode>) -> Result<List<PendingAnnot>, string> {
     .Ok([want(annot_of(x), "an annotation")? for x in as_list(v)?])
 }
 
+/// The repetition a notation suffix names — the inverse of `Rep.suffix`.
+fn rep_of_suffix(text: string) -> Rep? {
+    match text {
+        "*" -> Rep.Star,
+        "+" -> Rep.Plus,
+        "?" -> Rep.Opt,
+        _ -> null,
+    }
+}
+
+/// A postfix capture's repetition: absent is one, a terminal is its
+/// suffix, and nothing else can stand there.
+fn as_rep(v: Captured<GrammarNode>) -> Result<Rep, string> {
+    match v {
+        .Absent -> .Ok(Rep.One),
+        .Terminal(t) -> want(rep_of_suffix(t.text), "a repetition suffix"),
+        .Node(_) or .Many(_) -> .Err("expected a repetition suffix"),
+    }
+}
+
 /// The builder-call argument names from a repeated NAME capture.
 fn call_args(v: Captured<GrammarNode>) -> Result<List<string>, string> {
     .Ok([arg_text(x)? for x in as_list(v)?])
@@ -237,16 +257,7 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
         }
         "build_postfix" -> {
             let inner = want(prim_of(args[0]), "an atom")?
-            let rep = match args[1] {
-                .Absent -> Rep.One,
-                .Terminal(t) -> when {
-                    t.text == "*" -> Rep.Star
-                    t.text == "+" -> Rep.Plus
-                    _ -> Rep.Opt
-                },
-                .Node(_) or .Many(_) -> Rep.One,
-            }
-            ok(GrammarNode.NItem(item(inner) with { rep: rep }))
+            ok(GrammarNode.NItem(item(inner) with { rep: as_rep(args[1])? }))
         }
         "build_prim_name" -> {
             let t = want(tok_of(args[0]), "a name")?
