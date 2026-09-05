@@ -1,686 +1,407 @@
-// WHY: Pure-Avra CLI argument parsing library — the declarative Components
-// V2 surface (`App`/`CommandSpec`/`Runnable`, populated by the
-// `cli { command { … } }` cmdgen macros) over one shared argv classifier
-// (`parse_tokens`). Uses avra_selfhost_argc/get_arg_cstr for raw argument
-// access.
-//
-// `ui/` is auto-discovered as a sibling submodule (g2eo.1
-// directory-as-module). Consumers reach helpers via
-// `use @std.cli.ui.{X}` without any `mod` decls in this file.
+//! @std.cli — a command line is DATA the program declares, and a
+//! verdict it answers.
+//!
+//! An `App` names its commands. Each `Subcommand` pairs a
+//! `CommandSpec` — its name, flags, options and positionals, data
+//! read directly — with a `Runnable`, its behaviour: one method,
+//! given what the line said as a `CliResult`, answering the exit
+//! code. `parse` reads a word list against the app and answers a
+//! `CliResult` or a `CliError` that names the mistake; `App.run`
+//! renders help, speaks a refusal with the way to the help, and
+//! answers 0 clean, the command's code, or 2 for a line it could
+//! not read. A flag or option is declared as it is typed
+//! (`--time`, `-t`); it is asked for by its plain name (`time`).
+use @std.errors.{Error, ErrorInfo, info}
+use @std.io.{println, eprintln}
 
 extern fn avra_selfhost_argc() -> int
-extern fn avra_selfhost_get_arg_cstr(idx: int) -> string
-extern fn avra_process_exit(code: int)
-extern fn println(s: string)
-extern fn eprintln(s: string)
-// Codepoint-aware width/slice, backed by runtime.c — so help
-// columns measure and truncate names in codepoints, not bytes.
-extern fn avra_str_codepoint_count(s: string) -> int
-extern fn avra_str_substring_codepoints(s: string, start: int, end: int) -> string
+extern fn avra_selfhost_get_arg_cstr(i: int) -> string
 
-// ── Types ──
+// ── The declarations ────────────────────────────────────────────
 
-/// Boolean flag declaration: `--name` / `-s`. No value — presence
-/// alone toggles it. Exported: a command's schema (CommandSpec) is public
-/// so App.run can parse argv against it and hand-written commands can
-/// describe themselves.
-///
-/// `aliases` are extra WHOLE-TOKEN spellings that also set this flag, matched
-/// dash/underscore-insensitively. Two shapes fall out of one field: a bare
-/// alias (`--used-by` for the `callers` flag) and an option-FORM alias
-/// (`--message-format=json` for the `json` flag) — the alias is compared
-/// against the raw argv token intact, so the `=json` is part of the match and
-/// the token never reaches the `--key=value` option classifier. Empty for a
-/// flag with only its canonical (and optional short) spelling.
+/// A switch: present or not. `aliases` are whole tokens that mean
+/// the same (`--used-by` for `callers`, `--message-format=json`).
 export type FlagDef = { name: string, short: string, description: string, aliases: List<string> }
 
-/// Option declaration: `--name <value>` or `--name=<value>` /
-/// `-s <value>`. Carries a default for when the user omits it.
+/// A named value: `--name v`, `--name=v` or `-s v`; `default_val`
+/// stands when the line omits it.
 export type OptionDef = { name: string, short: string, description: string, default_val: string }
 
-/// Positional argument declaration. `required: true` means the
-/// parser fails when the user doesn't supply it (for a variadic arg:
-/// when fewer than one value is supplied). `variadic: true` makes the
-/// arg absorb every remaining positional (`bs2 _test_shard a.av b.av …`)
-/// — all of them bind to this arg's name, retrievable as a group via
-/// `result_get_args`. A variadic arg is naturally declared last: the
-/// positional index stops advancing at it.
+/// A positional. A variadic one absorbs every remaining positional;
+/// declare it last.
 export type ArgDef = { name: string, description: string, required: bool, variadic: bool }
 
-/// A subcommand's full parse schema — its name, one-line description, and
-/// declared flags / positional args / options. This is the DATA half of a
-/// command (its identity + how to parse its argv); the BEHAVIOR half is the
-/// `dyn Runnable` it is paired with in a `Subcommand`. Homogeneous data, so
-/// `App.run` reads its fields DIRECTLY (`c.meta.name`, `c.meta.flags`) — no
-/// vtable, no accessor methods. expand_cli builds one per command; a
-/// hand-written command supplies its own. `hidden: true` keeps the command
-/// out of the app-level `--help` COMMANDS list (for internal commands like
-/// `_test_shard` that users never invoke directly); it still dispatches
-/// normally and its own `<cmd> --help` still renders — hiding is
-/// display-only.
+/// One command's identity and what it takes — the DATA half. A
+/// hidden command dispatches and has its own help, but stays out of
+/// the app's list.
 export type CommandSpec = {
     name: string,
     description: string,
     hidden: bool,
     flags: List<FlagDef>,
     args: List<ArgDef>,
-    options: List<OptionDef>
+    options: List<OptionDef>,
 }
 
-/// Parsed flag: `value: true` when the flag appeared in argv.
-type ParsedFlag = { name: string, value: bool }
-
-/// Parsed option: the user-supplied value (or the default).
-type ParsedOption = { name: string, value: string }
-
-/// Parsed positional arg: name from the schema, value from argv.
-type ParsedArg = { name: string, value: string }
-
-/// Output of `parse_tokens` (via `App.run_argv`). `command` names the
-/// matched subcommand. `error` is "" on success; non-empty strings carry
-/// a user-facing error message.
-export type CliResult = {
-    command: string,
-    flags: List<ParsedFlag>,
-    options: List<ParsedOption>,
-    args: List<ParsedArg>,
-    error: string
-}
-
-// ── Components V2 surface (vez6.11) ──
-//
-// This IS the cli API. The legacy builder surface (`Cli`/`CommandDef`,
-// `cli_new`/`cli_add_*`/`cli_parse`, and its help printers) retired once
-// main.av completed the vez6.12 migration onto `avra.run()` — every
-// consumer parses through the App below and the shared `parse_tokens`
-// classifier. FlagDef / OptionDef / ArgDef live on as the schema types.
-//
-// Shape mirrors `docs/2026_05_08_COMPONENTS_V2_DESIGN.md §4.2`, with the
-// data/behaviour split below:
-//   trait Runnable { fn run(args: CliResult) -> int }   // behaviour only
-//   type CommandSpec = { name, description, hidden, flags, args, options }   // data
-//   type Subcommand  = { meta: CommandSpec, body: dyn Runnable }
-//   @expand(expand_command) component command implements Runnable { ... }
-//   @expand(expand_cli)     component cli                          { ... }
-// The @expand macros generate one `type Command_<inst>` (a behaviour marker)
-// plus `impl Runnable for Command_<inst>` per declared instance, then
-// `cli avra { ... }` becomes a top-level `let avra = App { ..., commands:
-// [Subcommand{…}] }`. `App.run` reads each command's schema by DIRECT field
-// access (`c.meta.name`) and dispatches through the dyn `body` via vtable.
-
-/// A command's BEHAVIOUR: run it with the parsed argv, return an exit code.
-/// This is the whole trait — deliberately ONE method. A command's identity
-/// and parse schema live in its `CommandSpec` (data); that data is paired
-/// with this behaviour in a `Subcommand`. Keeping the trait behaviour-only
-/// means the schema is read by direct field access (`c.meta.flags`), never
-/// smuggled through the vtable as accessor methods — the honest split of
-/// homogeneous data from heterogeneous behaviour.
+/// The BEHAVIOUR half: run with what the line said, answer the exit.
 export trait Runnable {
     fn run(args: CliResult) -> int
 }
 
-/// One subcommand of an `App`: its `meta` (name + parse schema — DATA, read
-/// directly) paired with its `body` (the `dyn Runnable` behaviour, called
-/// through the vtable). Pairing them here is what lets `App.run` reach a
-/// command's schema without a trait accessor.
-export type Subcommand = {
-    meta: CommandSpec,
-    body: dyn Runnable
+export type Subcommand = { meta: CommandSpec, body: dyn Runnable }
+
+export type App = { name: string, description: string, version: string, commands: List<Subcommand> }
+
+// ── What the line said ──────────────────────────────────────────
+
+/// A parsed line, by the declaration's plain names: the flags present, every
+/// option (defaults filled), the positionals, and a variadic's rest.
+export type CliResult = {
+    command: string,
+    flags: List<string>,
+    options: Map<string, string>,
+    args: Map<string, string>,
+    rest: List<string>,
 }
 
-/// The dispatch container (vez6.11). Parallels the design's `Cli` (docs
-/// §4.2); the `App` name dates from coexisting with the since-retired
-/// legacy `Cli` builder. Holds the `Subcommand` pairs expand_cli
-/// generates; `run`/`dispatch` route argv to the matched command via
-/// `meta.name` then `body.run`.
-export type App = {
-    name: string,
-    description: string,
-    version: string,
-    commands: List<Subcommand>
-}
-
-impl App {
-    /// Run the command whose `meta.name` matches `parsed.command`;
-    /// returns its exit code. Returns 1 when nothing matches (the
-    /// caller may print help). The name is read by DIRECT field access
-    /// off the command's `CommandSpec` (data); dispatch is then a vtable
-    /// call through the `dyn Runnable` `body` (behaviour) — each command's
-    /// generated `run` body executes with its flag/arg accessors bound.
-    fn dispatch(parsed: CliResult) -> int {
-        for c in self.commands {
-            if c.meta.name == parsed.command {
-                return c.body.run(parsed)
-            }
-        }
-        1
+impl CliResult {
+    fn has_flag(name: string) -> bool {
+        self.flags.contains(plain(name))
     }
 
-    /// Parse a pre-read argv (the command name followed by its args —
-    /// NOT the program name) against the matched command's own schema,
-    /// then dispatch. `--help`/`-h` and `--version`/`-V` in the command
-    /// slot are handled here (print + return 0). Returns the command's
-    /// exit code, or 1 when the slot is empty or no command matches
-    /// (after printing help). Split out from `run` so the whole
-    /// parse+dispatch path is testable with a synthetic argv list.
-    fn run_argv(argv: List<string>) -> int {
-        if argv.length == 0 {
-            app_print_help(self)
-            return 1
-        }
-        let first = argv[0]
-        if is_help_flag(first) {
-            app_print_help(self)
-            return 0
-        }
-        if first == "--version" || first == "-V" {
-            println("${self.name} v${self.version}")
-            return 0
-        }
-        for c in self.commands {
-            if c.meta.name == first {
-                return self.run_matched(c, argv)
-            }
-        }
-        // An unmatched command NAMES the problem (the same two-line shape
-        // parse errors use) instead of silently dumping the full help — a
-        // typo'd `avra chek` should say so, not scroll the usage past it.
-        eprintln("unknown command: ${first}")
-        eprintln("Try '${self.name} --help'.")
-        1
+    /// The option's value — its default when the line omitted it, ""
+    /// for a name the command never declared.
+    fn option(name: string) -> string {
+        self.options.get(plain(name)) ?? ""
     }
 
-    /// Parse the args of an already-matched command (`argv` = the command
-    /// name followed by its args) against its schema and dispatch. `<cmd>
-    /// --help` short-circuits to the command's own usage; a parse error
-    /// (e.g. an undeclared `--flag`) is reported and stops dispatch — a real
-    /// CLI doesn't silently run a mis-parsed invocation. The command's `meta`
-    /// IS the parse schema (FlagDef/OptionDef/ArgDef lists), read DIRECTLY —
-    /// no accessor round-trip, no name→def rebuild.
-    fn run_matched(c: Subcommand, argv: List<string>) -> int {
-        mut tokens: List<string> = []
-        mut i = 1
-        while i < argv.length {
-            tokens.push(argv[i])
-            i = i + 1
-        }
-        if tokens_have_help(tokens, c.meta.flags, c.meta.options) {
-            cmd_print_help(self, c.meta)
-            return 0
-        }
-        let parsed = parse_tokens(c.meta.name, c.meta.flags, c.meta.options, c.meta.args, tokens)
-        if result_has_error(parsed) {
-            eprintln(parsed.error)
-            eprintln("Try '${self.name} ${c.meta.name} --help'.")
-            return 1
-        }
-        c.body.run(parsed)
+    /// The positional's value, "" when absent.
+    fn arg(name: string) -> string {
+        self.args.get(name) ?? ""
     }
 
-    /// Read the real process argv (dropping the program name at index 0)
-    /// and run. Thin glue over `run_argv` — all the parse/dispatch logic
-    /// lives there so it can be tested without a live process.
-    fn run() -> int {
-        let argc = avra_selfhost_argc()
-        mut argv: List<string> = []
-        mut i = 1
-        while i < argc {
-            argv.push(avra_selfhost_get_arg_cstr(i))
-            i = i + 1
-        }
-        self.run_argv(argv)
+    /// A variadic positional's values, in order.
+    fn args_of(name: string) -> List<string> {
+        if self.args.get(name) == null { return [] }
+        self.rest
     }
 }
 
-/// App-level `--help`: name/version, optional description, usage, and
-/// the command list with each command's one-line description (read
-/// directly from each `Subcommand`'s `meta`). Commands marked `hidden`
-/// are omitted — they still dispatch, they just aren't advertised.
-fn app_print_help(app: App) {
-    println("${app.name} v${app.version}")
-    if app.description != "" {
-        println(app.description)
-    }
-    println("")
-    println("USAGE:")
-    println("  ${app.name} <command> [options]")
-    println("")
-    println("COMMANDS:")
-    for c in app.commands {
-        if !c.meta.hidden {
-            println("  ${c.meta.name}  ${c.meta.description}")
+/// A name as it is asked for: the dashes dropped.
+fn plain(name: string) -> string {
+    if name.starts_with("--") { return name.substring(2, name.length) }
+    if name.starts_with("-") { return name.substring(1, name.length) }
+    name
+}
+
+/// A name as it is typed: dashes restored — two for a word, one for
+/// a letter.
+fn spelled(name: string) -> string {
+    if name.starts_with("-") { return name }
+    if name.length == 1 { return "-${name}" }
+    "--${name}"
+}
+
+// ── Refusals ────────────────────────────────────────────────────
+
+/// Why a line could not be read: which command, which word.
+export enum CliError {
+    UnknownCommand(name: string)
+    UnknownFlag(command: string, token: string)
+    MissingValue(command: string, option: string)
+    MissingArg(command: string, arg: string)
+    ExtraArg(command: string, token: string)
+}
+
+impl Error for CliError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .UnknownCommand(n) -> info("cli.unknown_command", "unknown command: ${n}"),
+            .UnknownFlag(c, t) -> info("cli.unknown_flag", "`${c}` takes no `${t}`"),
+            .MissingValue(c, o) -> info("cli.missing_value", "`${c}`'s `${spelled(o)}` needs a value"),
+            .MissingArg(c, a) -> info("cli.missing_arg", "`${c}` needs its `${a}`"),
+            .ExtraArg(c, t) -> info("cli.extra_arg", "`${c}` does not take `${t}`"),
         }
     }
 }
 
-/// True iff `s` is the help flag in either spelling (`--help` / `-h`).
-/// One place so the two request points — the top-level command slot and a
-/// command's own tokens — can't drift.
-fn is_help_flag(s: string) -> bool {
-    s == "--help" || s == "-h"
+/// The command a refusal belongs to — the app itself for an unknown
+/// command name.
+fn blamed(e: CliError) -> string? {
+    match e {
+        .UnknownCommand(_) -> null,
+        .UnknownFlag(c, _) -> c,
+        .MissingValue(c, _) -> c,
+        .MissingArg(c, _) -> c,
+        .ExtraArg(c, _) -> c,
+    }
 }
 
-/// The canonical name of the declared SPACE-FORM option `arg` names —
-/// the `--key value` shape that consumes the NEXT token verbatim as its
-/// value — or "" when it doesn't: a flag spelling wins a name collision
-/// (consuming nothing), an inline `--key=value` carries its own value,
-/// and an undeclared token consumes nothing. The single source of truth
-/// for "does this token eat the next one": tokens_have_help's pre-scan
-/// and parse_tokens' bare-`--key` arm both key off it, so the two can't
-/// drift apart (a desync hijacks a valid `cmd --opt --help` invocation).
-fn space_option_canonical(flags: List<FlagDef>, options: List<OptionDef>, arg: string) -> string {
-    if flag_canonical_name(flags, arg) != "" { return "" }
-    if arg.contains("=") { return "" }
-    option_canonical_name(options, arg)
+// ── Parsing ─────────────────────────────────────────────────────
+
+/// A word list read against the app: the command is the first word,
+/// the rest are its flags, options and positionals.
+export fn parse(app: App, words: List<string>) -> Result<CliResult, CliError> {
+    let name = words.first() ?? ""
+    let sub: Subcommand? = app.commands.find(it.meta.name == name)
+    if sub == null { fail CliError.UnknownCommand(name) }
+    read_line(sub!.meta, words.slice(1, words.length))
 }
 
-/// True iff the help flag appears among a command's argv tokens IN A FLAG
-/// POSITION. Two places a literal `--help` is a VALUE, not a help request —
-/// the pre-scan must agree with parse_tokens on both or it hijacks a valid
-/// invocation: after a bare `--` (the terminator makes everything a
-/// positional — `cmd -- --help`), and as the consumed value of a
-/// space-form option (`cmd --filter --help` sets filter to "--help").
-fn tokens_have_help(tokens: List<string>, flags: List<FlagDef>, options: List<OptionDef>) -> bool {
-    mut ti = 0
-    while ti < tokens.length {
-        let t = tokens[ti]
-        if t == "--" { return false }
-        if is_help_flag(t) { return true }
-        // A space-form option consumes the NEXT token — skip it, exactly
-        // as parse_tokens will (shared classifier, shared verdict).
-        if space_option_canonical(flags, options, t) != "" {
-            ti = ti + 2
+/// One token's meaning against a declaration.
+enum Token {
+    Flag(name: string)
+    Option(name: string, inline: string?)
+    Word(text: string)
+    Unknown(text: string)
+}
+
+/// The words after the command name, read in order: options stop at
+/// `--`, everything else is a positional bound by declaration order.
+fn read_line(meta: CommandSpec, words: List<string>) -> Result<CliResult, CliError> {
+    mut flags: List<string> = []
+    mut options: Map<string, string> = {}
+    mut positional: List<string> = []
+    mut options_over = false
+    mut i = 0
+    while i < words.length {
+        let w = words[i]
+        if !options_over && w == "--" {
+            options_over = true
         } else {
-            ti = ti + 1
+            match classified(meta, w, options_over) {
+                .Flag(name) -> flags.push(name),
+                .Word(text) -> positional.push(text),
+                .Unknown(text) -> { fail CliError.UnknownFlag(meta.name, text) },
+                .Option(name, inline) -> {
+                    if inline == null {
+                        if i + 1 >= words.length { fail CliError.MissingValue(meta.name, name) }
+                        i = i + 1
+                        options.set(name, words[i])
+                    } else {
+                        options.set(name, inline!)
+                    }
+                },
+            }
         }
-    }
-    false
-}
-
-/// Per-command `--help`: the command's name + description, a usage line
-/// showing its real positionals, then its declared flags, options, and args —
-/// read straight off the `CommandSpec`. Descriptions align to one column across
-/// all three sections; only non-empty sections are printed.
-fn cmd_print_help(app: App, meta: CommandSpec) {
-    println("${app.name} ${meta.name}  ${meta.description}")
-    println("")
-    println("USAGE:")
-    println("  ${app.name} ${meta.name}${cmd_usage_tail(meta)}")
-    let w = cmd_help_col_width(meta)
-    print_flag_section(meta.flags, w)
-    print_option_section(meta.options, w)
-    print_arg_section(meta.args, w)
-}
-
-/// The trailing part of a command's USAGE line: `[FLAGS]`/`[OPTIONS]` markers
-/// when the command has any, then each positional (via `arg_display`, so the
-/// USAGE line and the ARGS section can't drift), in declaration order.
-fn cmd_usage_tail(meta: CommandSpec) -> string {
-    mut s = ""
-    if meta.flags.length > 0 { s = "${s} [FLAGS]" }
-    if meta.options.length > 0 { s = "${s} [OPTIONS]" }
-    for a in meta.args {
-        s = "${s} ${arg_display(a)}"
-    }
-    s
-}
-
-/// Left-column text for a flag in `--help` — `--name`, then the `-s` short,
-/// then each alias, comma-separated. Every listed spelling is a LITERAL
-/// whole token that sets this flag, which is what makes showing an
-/// option-form alias (`--message-format=json`) alongside a bare one
-/// (`--used-by`) honest: the column reads as "type any of these".
-fn flag_display(f: FlagDef) -> string {
-    mut s = f.name
-    if f.short != "" { s = "${s}, ${f.short}" }
-    for al in f.aliases {
-        s = "${s}, ${al}"
-    }
-    s
-}
-
-/// Left-column text for an option — same shape as a flag.
-fn option_display(o: OptionDef) -> string {
-    if o.short != "" { "${o.name}, ${o.short}" } else { o.name }
-}
-
-/// Left-column text for a positional — `<name>` required, `[name]` optional,
-/// with a trailing `...` when the arg is variadic (the getopt convention for
-/// "one or more" / "zero or more").
-fn arg_display(a: ArgDef) -> string {
-    let base = if a.required { "<${a.name}>" } else { "[${a.name}]" }
-    if a.variadic { "${base}..." } else { base }
-}
-
-/// Widest left-column across a command's flags, options, and args, so every
-/// section's descriptions align to a single column.
-fn cmd_help_col_width(meta: CommandSpec) -> int {
-    // Codepoint counts, not byte lengths, so a non-ASCII name doesn't
-    // over-claim the column (a 2-byte codepoint is one cell here).
-    mut w = 0
-    for f in meta.flags {
-        let d = avra_str_codepoint_count(flag_display(f))
-        if d > w { w = d }
+        i = i + 1
     }
     for o in meta.options {
-        let d = avra_str_codepoint_count(option_display(o))
-        if d > w { w = d }
+        if options.get(plain(o.name)) == null { options.set(plain(o.name), o.default_val) }
     }
-    for a in meta.args {
-        let d = avra_str_codepoint_count(arg_display(a))
-        if d > w { w = d }
+    let bound = bind_positionals(meta, positional)?
+    CliResult { command: meta.name, flags: flags, options: options, args: bound.named, rest: bound.rest }
+}
+
+/// A word's kind: a declared flag by name, short or alias; a declared
+/// option by name or short, its value inline after `=` or in the next
+/// word; a dash-led word nothing declares; or a plain word. After
+/// `--`, every word is plain.
+fn classified(meta: CommandSpec, w: string, options_over: bool) -> Token {
+    if options_over || !w.starts_with("-") || w == "-" { return Token.Word(w) }
+    let flag: FlagDef? = meta.flags.find(names_flag(it, w))
+    if flag != null { return Token.Flag(plain(flag!.name)) }
+    let eq = w.index_of("=")
+    let head = if eq < 0 { w } else { w.substring(0, eq) }
+    let option: OptionDef? = meta.options.find(names_option(it, head))
+    if option == null { return Token.Unknown(w) }
+    if eq < 0 { return Token.Option(plain(option!.name), null) }
+    Token.Option(plain(option!.name), w.substring(eq + 1, w.length))
+}
+
+fn names_flag(f: FlagDef, w: string) -> bool {
+    spelled(f.name) == w || (f.short.length > 0 && spelled(f.short) == w) || f.aliases.contains(w)
+}
+
+fn names_option(o: OptionDef, w: string) -> bool {
+    spelled(o.name) == w || (o.short.length > 0 && spelled(o.short) == w)
+}
+
+/// The positionals bound to their declarations, and a variadic's rest.
+type Bound = { named: Map<string, string>, rest: List<string> }
+
+/// Positionals by declaration order: a variadic takes the rest (at
+/// least one when required); a required one missing, or a word past
+/// the last declaration, refuses.
+fn bind_positionals(meta: CommandSpec, positional: List<string>) -> Result<Bound, CliError> {
+    mut named: Map<string, string> = {}
+    mut rest: List<string> = []
+    for j, a in meta.args {
+        if a.variadic {
+            rest = positional.slice(j, positional.length)
+            if rest.is_empty() && a.required { fail CliError.MissingArg(meta.name, a.name) }
+            if !rest.is_empty() { named.set(a.name, rest[0]) }
+        } else if j < positional.length {
+            named.set(a.name, positional[j])
+        } else if a.required {
+            fail CliError.MissingArg(meta.name, a.name)
+        }
+    }
+    if !meta.args.any(it.variadic) && positional.length > meta.args.length {
+        fail CliError.ExtraArg(meta.name, positional[meta.args.length])
+    }
+    Bound { named: named, rest: rest }
+}
+
+// ── Help ────────────────────────────────────────────────────────
+
+/// The app's help: name, version, description, usage, and every
+/// command that is not hidden, aligned.
+export fn app_help(app: App) -> string {
+    let shown = [c.meta for c in app.commands if !c.meta.hidden]
+    let width = widest([s.name for s in shown])
+    let rows = [rendered_row(s.name, s.description, width) for s in shown]
+    "${app.name} ${app.version} — ${app.description}\n\nusage: ${app.name} <command> [flags] [args]\n\ncommands:\n${rows.join("\n")}\n\n`${app.name} <command> --help` says what a command takes."
+}
+
+/// One command's help: its usage line, its description, and each
+/// flag, option and positional with its words.
+export fn command_help(app: App, meta: CommandSpec) -> string {
+    let parts = [usage_of(app, meta), "", meta.description].concat(flags_help(meta)).concat(options_help(meta)).concat(args_help(meta))
+    parts.join("\n")
+}
+
+fn usage_of(app: App, meta: CommandSpec) -> string {
+    let flags = [" [${spelled(f.name)}]" for f in meta.flags].join("")
+    let options = [" [${spelled(o.name)} <value>]" for o in meta.options].join("")
+    let args = [" ${arg_word(a)}" for a in meta.args].join("")
+    "usage: ${app.name} ${meta.name}${flags}${options}${args}"
+}
+
+/// A positional in a usage line: `<file>` required, `[file]` not,
+/// `<files...>` variadic.
+fn arg_word(a: ArgDef) -> string {
+    let dots = if a.variadic { "..." } else { "" }
+    if a.required { return "<${a.name}${dots}>" }
+    "[${a.name}${dots}]"
+}
+
+fn flags_help(meta: CommandSpec) -> List<string> {
+    if meta.flags.is_empty() { return [] }
+    let width = widest([flag_spelling(f) for f in meta.flags])
+    ["", "flags:"].concat([rendered_row(flag_spelling(f), f.description, width) for f in meta.flags])
+}
+
+fn flag_spelling(f: FlagDef) -> string {
+    if f.short.length == 0 { return spelled(f.name) }
+    "${spelled(f.short)}, ${spelled(f.name)}"
+}
+
+fn options_help(meta: CommandSpec) -> List<string> {
+    if meta.options.is_empty() { return [] }
+    let width = widest([option_spelling(o) for o in meta.options])
+    ["", "options:"].concat([rendered_row(option_spelling(o), option_words(o), width) for o in meta.options])
+}
+
+fn option_spelling(o: OptionDef) -> string {
+    let name = "${spelled(o.name)} <value>"
+    if o.short.length == 0 { return name }
+    "${spelled(o.short)}, ${name}"
+}
+
+fn option_words(o: OptionDef) -> string {
+    if o.default_val.length == 0 { return o.description }
+    "${o.description} (default: ${o.default_val})"
+}
+
+fn args_help(meta: CommandSpec) -> List<string> {
+    if meta.args.is_empty() { return [] }
+    let width = widest([a.name for a in meta.args])
+    ["", "args:"].concat([rendered_row(a.name, a.description, width) for a in meta.args])
+}
+
+/// One aligned row: two spaces, the name padded to the column, two
+/// spaces, the words.
+fn rendered_row(name: string, words: string, width: int) -> string {
+    "  ${padded(name, width)}  ${words}"
+}
+
+fn widest(names: List<string>) -> int {
+    mut w = 0
+    for n in names {
+        if n.length > w { w = n.length }
     }
     w
 }
 
-/// Pad `s` with trailing spaces to at least `width` codepoints, so columns
-/// align even when a name contains multibyte UTF-8 (byte length would
-/// over-count and under-pad).
-fn pad_to(s: string, width: int) -> string {
+fn padded(s: string, width: int) -> string {
     mut out = s
-    mut n = avra_str_codepoint_count(s)
-    while n < width {
-        out = "${out} "
-        n = n + 1
+    while out.length < width {
+        out = out + " "
     }
     out
 }
 
-/// Render the `FLAGS:` block, each `--name[, -short]` padded to `col_width` so
-/// descriptions align. Nothing printed when there are none.
-fn print_flag_section(flags: List<FlagDef>, col_width: int) {
-    if flags.length == 0 { return }
-    println("")
-    println("FLAGS:")
-    for f in flags {
-        println("  ${pad_to(flag_display(f), col_width)}  ${f.description}")
+// ── Running ─────────────────────────────────────────────────────
+
+impl App {
+    /// The program's own arguments, read and run.
+    fn run() -> int {
+        self.run_argv(argv())
     }
-}
 
-/// Render the `OPTIONS:` block, names padded to `col_width`. Nothing when none.
-fn print_option_section(options: List<OptionDef>, col_width: int) {
-    if options.length == 0 { return }
-    println("")
-    println("OPTIONS:")
-    for o in options {
-        println("  ${pad_to(option_display(o), col_width)}  ${o.description}")
-    }
-}
-
-/// Render the `ARGS:` block, each `<name>`/`[name]` padded to `col_width`.
-/// Nothing printed when none.
-fn print_arg_section(args: List<ArgDef>, col_width: int) {
-    if args.length == 0 { return }
-    println("")
-    println("ARGS:")
-    for a in args {
-        println("  ${pad_to(arg_display(a), col_width)}  ${a.description}")
-    }
-}
-
-// ── Parsing ──
-
-/// The argv classifier, decoupled from the process: given already-read
-/// `tokens`, build the CliResult. Each token is a flag (`--name`/`-s`),
-/// an option (`--key=value` / `--key value`), or a positional (mapped to
-/// the arg schema by declaration order). `App.run_matched` is the sole
-/// caller, with a synthetic-argv seam so tests drive it without a live
-/// process. Short-flag CLUSTERING (`-abc` for `-a -b -c`) is deliberately
-/// unsupported — every spelling matches whole-token. On multiple errors
-/// the FIRST is reported (the one the user should fix first).
-fn parse_tokens(cmd_name: string, flags: List<FlagDef>, options: List<OptionDef>, args: List<ArgDef>,
-                tokens: List<string>) -> CliResult {
-    mut parsed_flags: List<ParsedFlag> = []
-    mut parsed_options = init_option_defaults(options)
-    mut parsed_args: List<ParsedArg> = []
-    mut positional_idx = 0
-    mut error = ""
-
-    // Indexed walk (not a `for`) so a declared option can consume the NEXT
-    // token as its value — the `--key value` space-separated form alongside
-    // `--key=value`. Matches the bespoke parsers' `read_kv_value` (which the
-    // compiler-internal commands use, e.g. `avra docs --search foo`).
-    mut ti = 0
-    // Latches once a bare `--` is seen: every following token is a positional,
-    // even one that looks like a flag (getopt / POSIX end-of-options marker).
-    // Lets a CLI take positionals that start with `-` (a `-weird` filename, a
-    // `-5` literal) via `myapp -- -5`.
-    mut opts_ended = false
-    while ti < tokens.length {
-        let arg = tokens[ti]
-        if !opts_ended && arg == "--" {
-            // The terminator itself is consumed, not recorded.
-            opts_ended = true
-            ti = ti + 1
-        } else if !opts_ended && (arg.starts_with("--") || (arg.starts_with("-") && arg.length > 1)) {
-            // Check if it's a flag — record under its canonical (long) name so
-            // a `-v` short and a `--verbose` long both set `verbose`.
-            let fcanon = flag_canonical_name(flags, arg)
-            if fcanon != "" {
-                parsed_flags.push(ParsedFlag { name: fcanon, value: true })
-                ti = ti + 1
-            }
-            // An option with an inline value: `--key=value`.
-            else if arg.contains("=") {
-                let eq_idx = arg.index_of("=")
-                let key = arg.substring(0, eq_idx)
-                let val = arg.substring(eq_idx + 1, arg.length)
-                let ocanon = option_canonical_name(options, key)
-                if ocanon != "" {
-                    parsed_options = set_option(parsed_options, ocanon, val)
-                } else if key == "--" || key == "-" {
-                    error = first_error(error, "empty option name in \"${arg}\"")
-                } else {
-                    error = first_error(error, "unknown option: ${key}")
-                }
-                ti = ti + 1
-            }
-            // A bare `--key` that names a declared option takes the next token
-            // as its value (`--key value`). The value is consumed verbatim —
-            // even if it looks like a flag — matching read_kv_value. A trailing
-            // `--key` with no following token is a usage error. Classified by
-            // the same space_option_canonical the help pre-scan uses (the
-            // flag/= exclusions it re-checks are already false on this arm).
-            else {
-                let ocanon = space_option_canonical(flags, options, arg)
-                if ocanon != "" {
-                    if ti + 1 < tokens.length {
-                        parsed_options = set_option(parsed_options, ocanon, tokens[ti + 1])
-                        ti = ti + 2
-                    } else {
-                        error = first_error(error, "option ${arg} requires a value")
-                        ti = ti + 1
-                    }
-                } else {
-                    error = first_error(error, "unknown flag: ${arg}")
-                    ti = ti + 1
-                }
-            }
-        } else {
-            // Positional argument — a bare token, or anything after the `--`
-            // terminator (opts_ended), mapped to the arg schema by order.
-            let arg_def = arg_at(args, positional_idx)
-            let arg_name = if arg_def != null { arg_def!.name } else { "arg${positional_idx}" }
-            parsed_args.push(ParsedArg { name: arg_name, value: arg })
-            // Variadic clamp: the index stops advancing at a variadic arg, so
-            // it absorbs every remaining positional under its own name (all
-            // retrievable via result_get_args). Beyond the schema (null def)
-            // the historic `arg{idx}` capture continues to advance per token.
-            if arg_def == null || !arg_def!.variadic {
-                positional_idx = positional_idx + 1
-            }
-            ti = ti + 1
+    /// A word list run: help and version answer here; a line the app
+    /// cannot read is spoken with the way to its help and answers 2;
+    /// otherwise the command's verdict.
+    fn run_argv(words: List<string>) -> int {
+        let first = words.first() ?? ""
+        if first == "" {
+            println(app_help(self))
+            return 2
+        }
+        if first == "--help" || first == "-h" || first == "help" {
+            return self.helped(words.slice(1, words.length).first())
+        }
+        if first == "--version" || first == "-V" {
+            println("${self.name} ${self.version}")
+            return 0
+        }
+        if words.contains("--help") || words.contains("-h") { return self.helped(first) }
+        match parse(self, words) {
+            .Ok(r) -> self.ran(r),
+            .Err(e) -> self.refused(e),
         }
     }
 
-    // A declared `arg x { required true }` the user omitted is a usage error,
-    // not a silently-empty result_get_arg. Only surfaces when no earlier parse
-    // error already took priority (that one is the more specific complaint).
-    if error == "" {
-        let missing = first_missing_required_arg(args, parsed_args)
-        if missing != "" {
-            error = "missing required argument: ${missing}"
+    /// The help for a command by name — the app's own when none, or
+    /// the refusal when the name is no command.
+    fn helped(name: string?) -> int {
+        if name == null {
+            println(app_help(self))
+            return 0
         }
+        let sub: Subcommand? = self.commands.find(it.meta.name == name!)
+        if sub == null { return self.refused(CliError.UnknownCommand(name!)) }
+        println(command_help(self, sub!.meta))
+        0
     }
 
-    CliResult { command: cmd_name, flags: parsed_flags, options: parsed_options, args: parsed_args, error: error }
-}
-
-// ── Helpers ──
-
-/// Keep the FIRST parse error: later errors never overwrite an earlier one,
-/// so the user is pointed at the leftmost problem (fixing it may change how
-/// the rest of the line parses anyway).
-fn first_error(current: string, new_error: string) -> string {
-    if current != "" { current } else { new_error }
-}
-
-/// The name of the first declared arg with `required: true` that has no parsed
-/// value, or "" when every required positional was supplied. Positionals are
-/// recorded under their declaration-order arg name (see parse_tokens), so a
-/// name lookup answers "was this required slot filled?" — which for a required
-/// VARIADIC arg is exactly the "≥1 value" rule (zero values ⇔ name absent).
-fn first_missing_required_arg(args: List<ArgDef>, parsed: List<ParsedArg>) -> string {
-    for a in args {
-        if a.required {
-            mut found = false
-            for p in parsed {
-                if p.name == a.name { found = true }
-            }
-            if !found { return a.name }
-        }
+    fn ran(r: CliResult) -> int {
+        let sub: Subcommand? = self.commands.find(it.meta.name == r.command)
+        if sub == null { return self.refused(CliError.UnknownCommand(r.command)) }
+        sub!.body.run(r)
     }
-    ""
-}
 
-/// Drop the leading `--` or `-` from a flag/option token.
-fn strip_dashes(s: string) -> string {
-    if s.starts_with("--") { s.substring(2, s.length) }
-    else if s.starts_with("-") { s.substring(1, s.length) }
-    else { s }
-}
-
-/// Normalize a flag/option token for matching: `-` and `_` inside a name are
-/// treated as equivalent, so `--debug-null` and `--debug_null` are the same
-/// flag (a well-established CLI convention — and the reason `compile` could
-/// read both spellings). The leading dashes normalize too, but consistently on
-/// both sides of every comparison, so the equivalence is unaffected.
-fn norm_flag(s: string) -> string {
-    s.replace("-", "_")
-}
-
-/// The canonical (long, dash-stripped) name of the flag that `arg` matches —
-/// by its `--name`, its `-short`, or any of its whole-token `aliases`, all
-/// dash/underscore-insensitive — or "" when no flag matches. A flag is always
-/// RECORDED under this canonical name, so `result_has_flag` (which the
-/// generated run bodies call by long name) resolves it regardless of which
-/// spelling the user typed (`-v` and `--verbose` both set `verbose`;
-/// `--debug-null` sets `debug_null`; `--used-by` sets `callers`;
-/// `--message-format=json` sets `json`). Aliases are matched here — BEFORE the
-/// `--key=value` option classifier — so an option-form alias's `=value` is part
-/// of the whole-token comparison, not split off as an option.
-fn flag_canonical_name(flags: List<FlagDef>, arg: string) -> string {
-    let key = norm_flag(arg)
-    for f in flags {
-        if spelling_matches(f.name, f.short, key) { return strip_dashes(f.name) }
-        for al in f.aliases {
-            if norm_flag(al) == key { return strip_dashes(f.name) }
-        }
+    /// A refusal spoken: the message, then the help that would have
+    /// prevented it. Answers 2.
+    fn refused(e: CliError) -> int {
+        eprintln("${self.name}: ${e.describe().message}")
+        eprintln(try_help(self.name, blamed(e)))
+        2
     }
-    ""
 }
 
-/// The canonical (long, dash-stripped) name of the option that `arg` matches
-/// — by either its `--name` or `-short` spelling, dash/underscore-insensitive
-/// — or "" when none. Mirrors `flag_canonical_name`: an option is recorded
-/// (and defaulted) under this name, so `result_get_option` resolves it
-/// whichever spelling was typed.
-fn option_canonical_name(options: List<OptionDef>, arg: string) -> string {
-    let key = norm_flag(arg)
-    for o in options {
-        if spelling_matches(o.name, o.short, key) { return strip_dashes(o.name) }
-    }
-    ""
+fn try_help(app: string, command: string?) -> string {
+    if command == null { return "try `${app} --help`" }
+    "try `${app} ${command!} --help`"
 }
 
-/// True iff the normalized token `key` is this def's long name or its
-/// non-empty short — the matching predicate flags and options share (a
-/// flag additionally consults its aliases at its own call site).
-fn spelling_matches(name: string, short: string, key: string) -> bool {
-    norm_flag(name) == key || (short != "" && norm_flag(short) == key)
-}
-
-/// Zero-indexed lookup into an arg list — null when out of range.
-fn arg_at(args: List<ArgDef>, idx: int) -> ArgDef? {
-    if idx < 0 || idx >= args.length { return null }
-    args[idx]
-}
-
-/// Pre-fill a parsed-options list with each OptionDef's default value
-/// — overwritten later if the user supplies the option.
-fn init_option_defaults(options: List<OptionDef>) -> List<ParsedOption> {
-    mut out: List<ParsedOption> = []
-    for o in options {
-        out.push(ParsedOption { name: strip_dashes(o.name), value: o.default_val })
-    }
-    out
-}
-
-/// Update or insert a ParsedOption — overwrites the existing entry
-/// when `name` matches, otherwise appends.
-fn set_option(parsed: List<ParsedOption>, name: string, value: string) -> List<ParsedOption> {
-    mut out = parsed
-    for (i, opt) in out.enumerate() {
-        if opt.name == name {
-            out.set(i, ParsedOption { name: name, value: value })
-            return out
-        }
-    }
-    out.push(ParsedOption { name: name, value: value })
-    out
-}
-
-// ── Query parsed results ──
-
-/// True iff the named flag was set on argv. Convenience over
-/// matching on the parsed-flag list directly.
-export fn result_has_flag(result: CliResult, name: string) -> bool {
-    for f in result.flags {
-        if f.name == name { return f.value }
-    }
-    false
-}
-
-/// Read an option's value from the parse result, falling back to
-/// the option's declared default when not set.
-export fn result_get_option(result: CliResult, name: string) -> string {
-    for o in result.options {
-        if o.name == name { return o.value }
-    }
-    ""
-}
-
-/// Read a positional arg's value by name, "" when not supplied.
-export fn result_get_arg(result: CliResult, name: string) -> string {
-    for a in result.args {
-        if a.name == name { return a.value }
-    }
-    ""
-}
-
-/// EVERY value bound to the named positional, in argv order — the plural
-/// accessor for a `variadic` arg (parse_tokens binds all the positionals it
-/// absorbs under the one name). On a non-variadic name this yields the same
-/// 0-or-1 values `result_get_arg` sees. Empty list when the arg was omitted.
-export fn result_get_args(result: CliResult, name: string) -> List<string> {
+/// The program's arguments after its own name.
+fn argv() -> List<string> {
     mut out: List<string> = []
-    for a in result.args {
-        if a.name == name { out.push(a.value) }
+    // LICENSED I3: an index-taking extern — a range comprehension does not parse
+    for i in 1..avra_selfhost_argc() {
+        out.push(avra_selfhost_get_arg_cstr(i))
     }
     out
-}
-
-/// True iff the parser reported an error (unknown flag etc).
-export fn result_has_error(result: CliResult) -> bool {
-    result.error != ""
 }
