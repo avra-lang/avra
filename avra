@@ -9,7 +9,16 @@ LLVM_PREFIX="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}"
 export LLVM_PREFIX
 cd "$root" || exit 2
 
+# A PACKAGE-SCALE RUN — any argument that is a directory — is a
+# heavy step: it takes the machine-wide build lock and runs under
+# the watchdog (tools/watch.sh), unless it already runs inside one.
+# A single-file run is light and runs directly.
+heavy=0
+for a in "$@"; do [ -d "$a" ] && heavy=1; done
 if [ -x build/avra ]; then
+    if [ "$heavy" = 1 ] && [ -z "$AVRA_WATCH_HELD" ]; then
+        exec sh tools/watch.sh "${AVRA_CAP_MB:-6000}" build/avra "$@"
+    fi
     exec build/avra "$@"
 fi
 

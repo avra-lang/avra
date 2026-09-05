@@ -17,7 +17,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 main="$(dirname "$root")/avra"
 worktree="$(dirname "$root")/avra-lane-$lane"
 [ -d "$main/.git" ] && [ -d "$worktree" ] || { echo "integrate: no main at $main or no worktree at $worktree" >&2; exit 2; }
-cap=4000
+cap=6000
 
 cd "$worktree"
 if [ -n "$(git status --porcelain)" ]; then

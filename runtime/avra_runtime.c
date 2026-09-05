@@ -75,10 +75,17 @@ static Header* hdr(void* p) {
 // were a third of it. A record's header `len` holds its class; a
 // string's holds its text length, and its class follows from that.
 // A box past the classes is malloc's, class 0.
+// A list is BOUNDED: it holds the churn (a parse mints and drops
+// the same records by the million) and no more — past LIST_LIMIT a
+// freed box goes back to malloc, whose pools any size can reuse.
+// Unbounded lists hoarded a phase's freed memory by class and
+// nearly doubled a gate's peak.
 #define CLASS_BYTES 16
 #define CLASS_MAX 256
 #define CLASSES (CLASS_MAX / CLASS_BYTES + 1)
+#define LIST_LIMIT 16384
 static Header* g_free[CLASSES];
+static int64_t g_free_len[CLASSES];
 
 static size_t class_of(size_t bytes) {
     size_t cls = (bytes + CLASS_BYTES - 1) / CLASS_BYTES;
@@ -92,6 +99,7 @@ static void* box_alloc(size_t size, int32_t kind) {
     Header* h = cls ? g_free[cls] : NULL;
     if (h) {
         g_free[cls] = *(Header**)(h + 1);
+        g_free_len[cls]--;
     } else {
         h = (Header*)malloc(sizeof(Header) + (cls ? cls * CLASS_BYTES : bytes));
     }
@@ -124,9 +132,10 @@ static void box_free(void* p) {
     Header* h = (Header*)p - 1;
     size_t cls = h->kind == KIND_STR ? class_of((size_t)h->len + 1) : (size_t)h->len;
     h->tag = 0;
-    if (cls) {
+    if (cls && g_free_len[cls] < LIST_LIMIT) {
         *(Header**)(h + 1) = g_free[cls];
         g_free[cls] = h;
+        g_free_len[cls]++;
     } else {
         free(h);
     }
@@ -346,12 +355,62 @@ typedef struct {
     uint8_t* owned;
 } AvraArray;
 
+// ONE BUFFER holds a list's cells and, after them, its owned marks:
+// one allocation per list, not two. A buffer of a small capacity
+// (up to BUF_CLASSES doublings from ARRAY_FIRST) is recycled through
+// a per-capacity free list; a bigger one is malloc's and grows in
+// place.
+#define ARRAY_FIRST 8
+#define BUF_CLASSES 3
+static void* g_buf_free[BUF_CLASSES];
+static int64_t g_buf_free_len[BUF_CLASSES];
+
+static size_t buf_bytes(int64_t cap) {
+    return (size_t)cap * (sizeof(int64_t) + 1);
+}
+
+// The class of a capacity: 0 for ARRAY_FIRST, 1 for its double, …;
+// -1 past the classes.
+static int buf_class(int64_t cap) {
+    int cls = 0;
+    for (int64_t c = ARRAY_FIRST; c < cap; c *= 2) cls++;
+    return cls < BUF_CLASSES ? cls : -1;
+}
+
+static int64_t* buf_alloc(int64_t cap) {
+    int cls = buf_class(cap);
+    if (cls >= 0 && g_buf_free[cls]) {
+        int64_t* buf = (int64_t*)g_buf_free[cls];
+        g_buf_free[cls] = *(void**)buf;
+        g_buf_free_len[cls]--;
+        return buf;
+    }
+    return (int64_t*)malloc(buf_bytes(cap));
+}
+
+static void buf_free(int64_t* buf, int64_t cap) {
+    int cls = buf_class(cap);
+    if (cls >= 0 && g_buf_free_len[cls] < LIST_LIMIT) {
+        *(void**)buf = g_buf_free[cls];
+        g_buf_free[cls] = buf;
+        g_buf_free_len[cls]++;
+    } else {
+        free(buf);
+    }
+}
+
+// The marks live after the cells; a fresh mark region is all zero.
+static void array_marks(AvraArray* a) {
+    a->owned = (uint8_t*)(a->data + a->cap);
+}
+
 void* avra_array_new(void) {
     AvraArray* a = (AvraArray*)box_alloc(sizeof(AvraArray), KIND_ARRAY);
-    a->cap = 8;
+    a->cap = ARRAY_FIRST;
     a->len = 0;
-    a->data = (int64_t*)malloc((size_t)a->cap * sizeof(int64_t));
-    a->owned = (uint8_t*)calloc((size_t)a->cap, 1);
+    a->data = buf_alloc(a->cap);
+    array_marks(a);
+    memset(a->owned, 0, (size_t)a->cap);
     return a;
 }
 
@@ -377,8 +436,7 @@ static void array_reclaim(void* p) {
     for (int64_t i = 0; i < a->len; i++) {
         if (a->owned[i]) avra_rc_release((void*)(uintptr_t)a->data[i]);
     }
-    free(a->data);
-    free(a->owned);
+    buf_free(a->data, a->cap);
     box_free(a);
 }
 
@@ -387,14 +445,33 @@ static void array_reclaim(void* p) {
 // machine for the memory.
 #define CELL_CEILING ((int64_t)1 << 31)
 
+// Doubles the capacity: a classed buffer moves to the next class, a
+// big one grows in place; the marks follow the cells to their new
+// place, the new marks zero.
+static void array_grow(AvraArray* a) {
+    int64_t old_cap = a->cap;
+    int64_t cap = old_cap * 2;
+    int64_t* buf;
+    if (buf_class(old_cap) >= 0) {
+        buf = buf_alloc(cap);
+        memcpy(buf, a->data, (size_t)old_cap * sizeof(int64_t));
+        memcpy((uint8_t*)(buf + cap), a->owned, (size_t)old_cap);
+        buf_free(a->data, old_cap);
+    } else {
+        buf = (int64_t*)realloc(a->data, buf_bytes(cap));
+        memmove((uint8_t*)(buf + cap), (uint8_t*)(buf + old_cap), (size_t)old_cap);
+    }
+    a->data = buf;
+    a->cap = cap;
+    array_marks(a);
+    memset(a->owned + a->len, 0, (size_t)(cap - a->len));
+}
+
 void avra_array_push(void* arr, int64_t v) {
     AvraArray* a = (AvraArray*)arr;
     if (a->len == a->cap) {
         if (a->cap >= CELL_CEILING || a->cap <= 0) avra_trap("a list grew past any possible size — a corrupted box");
-        a->cap *= 2;
-        a->data = (int64_t*)realloc(a->data, (size_t)a->cap * sizeof(int64_t));
-        a->owned = (uint8_t*)realloc(a->owned, (size_t)a->cap);
-        memset(a->owned + a->len, 0, (size_t)(a->cap - a->len));
+        array_grow(a);
     }
     a->data[a->len] = v;
     a->owned[a->len] = 0;
