@@ -33,21 +33,27 @@ export enum Verdict {
 type Cell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int }
 
 /// The revision, hits and misses are one-cell lists (the mut-cell
-/// protocol). `cells` is by family, then by arg; `verifiers` by
-/// family — the fn that re-fetches one of its keys and answers the
-/// cell's changed_at. `open` is the stack of queries computing now.
+/// protocol). `cells` is ONE flat list, ARG-MAJOR — the cell of
+/// (family, arg) sits at `arg * families + family` — so a write is
+/// one element set through the field and growing the arg space is an
+/// append, never a copied row (a row nested in a list copies on
+/// every write). `verifiers` by family — the fn that re-fetches one
+/// of its keys and answers the cell's changed_at. `deps` is every
+/// open computation's reads, flat, and `marks` where each frame
+/// began; `open` is the stack of queries computing now.
 export type Db = {
     rev: List<int>,
-    cells: List<List<Cell?>>,
+    cells: List<Cell?>,
     verifiers: List<fn(int) -> int>,
-    frames: List<List<Key>>,
+    deps: List<Key>,
+    marks: List<int>,
     open: List<Key>,
     hits: List<int>,
     misses: List<int>,
 }
 
 export fn new_db() -> Db {
-    Db { rev: [1], cells: [], verifiers: [], frames: [], open: [], hits: [0], misses: [0] }
+    Db { rev: [1], cells: [], verifiers: [], deps: [], marks: [], open: [], hits: [0], misses: [0] }
 }
 
 impl Db {
@@ -59,10 +65,19 @@ impl Db {
     }
 
     /// A family registered with its verifier; its number answers.
+    /// Every family registers before any cell is written — the
+    /// layout's stride is their count.
     fn family(verify: fn(int) -> int) -> int {
         self.verifiers.push(verify)
-        self.cells.push([])
-        self.cells.length - 1
+        self.verifiers.length - 1
+    }
+
+    /// Where a key's cell sits in the flat list. An unregistered
+    /// family would alias another's cells silently; reading its
+    /// verifier first keeps the old row layout's trap.
+    fn slot(key: Key) -> int {
+        let _ = self.verifiers[key.family]
+        key.arg * self.verifiers.length + key.family
     }
 
     /// The driver sets an INPUT: a cell with no deps whose changed_at
@@ -116,59 +131,58 @@ impl Db {
         self.cell(key)?.changed_at ?? self.revision()
     }
 
-    /// A computation begins: its reads land in a fresh frame, and it
-    /// is open until it settles.
+    /// A computation begins: its reads land after a fresh mark, and
+    /// it is open until it settles.
     fn begin(key: Key) {
         // LICENSED I15: the bracketed VALUE is the caller's — a thunk cannot carry a generic answer (F1002)
-        self.frames.push([])
+        self.marks.push(self.deps.length)
         // LICENSED I15: the open stack brackets the same computation
         self.open.push(key)
     }
 
-    /// A computation ends: its frame becomes the cell's deps; an
-    /// unchanged hash keeps changed_at (early cutoff).
+    /// A computation ends: the reads since its mark become the
+    /// cell's deps and leave the flat list; an unchanged hash keeps
+    /// changed_at (early cutoff).
     fn settle(key: Key, value_hash: int) {
-        let deps: List<Key> = self.frames.pop() ?? []
+        let start = self.marks.pop() ?? 0
+        let deps = self.deps.slice(start, self.deps.length)
+        mut ds = self.deps
+        while ds.length > start { let _ = ds.pop() }
         let _ = self.open.pop()
         let prior: Cell? = self.cell(key)
         let changed = if prior != null && prior!.value_hash == value_hash { prior!.changed_at } else { self.revision() }
         self.write(key, Cell { deps: deps, changed_at: changed, verified_at: self.revision(), value_hash: value_hash })
     }
 
+    /// A read lands in the open frame — one push, no frame copied.
     fn record_dep(key: Key) {
-        if self.frames.is_empty() { return }
-        mut fs = self.frames
-        let at = fs.length - 1
-        mut top = fs[at]
-        top.push(key)
-        fs.set(at, top)
+        if self.marks.is_empty() { return }
+        mut ds = self.deps
+        ds.push(key)
     }
 
     fn cell(key: Key) -> Cell? {
-        let row = self.cells[key.family]
-        if key.arg >= row.length { return null }
-        let held: Cell? = row[key.arg]
+        let at = self.slot(key)
+        if at >= self.cells.length { return null }
+        let held: Cell? = self.cells[at]
         held
     }
 
+    /// One element set through the field; the arg space grows by
+    /// appending a stride of absences.
     fn write(key: Key, cell: Cell) {
-        mut rows = self.cells
-        mut row = rows[key.family]
-        while row.length <= key.arg { row.push(null) }
-        row.set(key.arg, cell)
-        rows.set(key.family, row)
+        let at = self.slot(key)
+        mut cs = self.cells
+        while cs.length <= at { cs.push(null) }
+        cs.set(at, cell)
     }
 
     /// Cells not verified this revision are dead: dropped, so a
     /// long-lived kernel holds only what the last full pass touched.
     fn sweep() {
-        mut rows = self.cells
-        for f, row in rows {
-            mut cells = row
-            for i, held in row {
-                if held != null && held!.verified_at != self.revision() { cells.set(i, null) }
-            }
-            rows.set(f, cells)
+        mut cs = self.cells
+        for i, held in self.cells {
+            if held != null && held!.verified_at != self.revision() { cs.set(i, null) }
         }
     }
 

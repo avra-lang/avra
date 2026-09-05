@@ -284,6 +284,32 @@ the compiler checking itself 28.8s.
         would copy. Two allocations per miss now. MEASURED: the
         suite's parse 11.2s -> 10.2s; with the externs slice, the
         check 17.6s -> 15.6s.
+  - [ ] THE CORPUS AS ONE PROCESS (measured 2026-09-04, not built):
+        `make corpus` is 67s of wall for 10.8s of CPU. A freshly
+        linked binary's FIRST execution costs ~150ms of kernel
+        signature assessment (3ms on the second run; a copy of the
+        same bytes pays it again), and each of the 74 programs is
+        built by its own compiler process and its own clang spawn.
+        THE FIX IS `avra test`'s shape: every corpus program compiled
+        into ONE binary whose entry runs each program's entry in turn
+        and diffs against its `.expected` — one compiler process, one
+        clang, one assessment. Era IV's "one process" for the corpus;
+        the gate would lose ~45s of its ~125s. A runner slice, its own
+        red team; not a constant to shave.
+  - [x] THE QUERY KERNEL'S NESTED WRITES (2026-09-04): `Db.cells` was
+        a list of rows, so every `write` copied its family's whole
+        row (thousands of cells, each retained and released — the rc
+        traffic the parse profile showed), and every `record_dep`
+        copied the open frame's dep list. Both are flat now: cells
+        ARG-MAJOR (`arg * families + family`) so a write is one element
+        set through the field and growth is an append, and one flat
+        `deps` list with a stack of frame `marks`. A key with an
+        unregistered family still traps (the old layout's bounds
+        check, kept by reading the verifier). MEASURED: sigs 268ms ->
+        173ms, bodies 1170ms -> 734ms, the check 15.6s -> 14.9s, the
+        suite's peak RSS ~300 MB lower. db_test pins the layout: a far
+        arg grows the table and the earlier cells stand; two families
+        at one arg keep apart; an unseen key is as new as now.
 
 LANE B — STD LIBS (owns NEW packages only; each package: `avra.toml`,
 spec tests beside it, a corpus package under corpus/<name>/ proving
@@ -6180,6 +6206,7 @@ packages/std-avrac`, user CPU):
   + the memo by ordinal and cursor           18.5s   (3.23x)
   + lengths in the header                    17.6s   (3.40x)
   + the externs once, the miss path          15.6s   (3.83x)
+  + the query kernel flat                    14.9s   (4.01x)
   make gate, wall                           223s -> 152s -> 135s
   make avra (the compiler building itself)  37.6s -> 25.3s
   peak RSS of a gate                         1.8 GB (measured, the watchdog)

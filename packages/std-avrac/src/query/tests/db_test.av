@@ -143,4 +143,24 @@ spec "query/db" {
             both && outer_only && !db.active(outer)
         }
     }
+    given "the flat layout — arg-major, grown by appending" {
+        then "a cell far past every earlier arg is written, and the earlier ones stand" {
+            let t = toy()
+            put(t, 0, 4)
+            t.db.set_input(Key { family: t.input, arg: 300 }, 7)
+            t.db.changed_at(Key { family: t.input, arg: 0 }) == 1 && t.db.changed_at(Key { family: t.input, arg: 300 }) == 1
+        }
+        then "two families at one arg keep apart" {
+            let t = toy()
+            t.db.set_input(Key { family: t.input, arg: 5 }, 1)
+            t.db.set_input(Key { family: t.input, arg: 5 }, 2)
+            t.db.set_input(Key { family: t.double_family, arg: 5 }, 9)
+            t.db.set_input(Key { family: t.input, arg: 5 }, 3)
+            t.db.changed_at(Key { family: t.double_family, arg: 5 }) == 2 && t.db.changed_at(Key { family: t.input, arg: 5 }) == 3
+        }
+        then "a key the kernel never saw is as new as now, wherever it would sit" {
+            let t = toy()
+            t.db.changed_at(Key { family: t.double_family, arg: 9999 }) == t.db.revision()
+        }
+    }
 }
