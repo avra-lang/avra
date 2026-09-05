@@ -5817,25 +5817,33 @@ by meaning; each is a slice for lane D unless a lane is named.
   which means `from_codepoint(0)` refuses too. The @std/sqlite lane
   will meet this first, since a blob is the common case, and it can
   test the whole class with `from_codepoint(0)` and no fixture file.
-- H0. THE FN TYPE DROPS `mut` — A SOUNDNESS HOLE, found 2026-09-05
-  while verifying H's `mut`-seat-in-a-fn-type ask and SENT to lane C.
-  A `mut`-taking fn stored in a NON-`mut` fn type keeps writing
-  through, so a call through that seat mutates an IMMUTABLE `let`
-  with no diagnostic: eval and native both answer `1 2 2` where the
-  V1 law ("aliasing never observable") demands `1 1 0`. Every other
-  path is policed — a direct call on a `let` and a non-`mut`
-  parameter handed to a `mut` seat are both F2048 — so the fn-typed
-  seat is the only hole. THE COMPILER RIDES IT: `MethodRow.check` /
-  `.lower` and `PropertyRow`'s pair (features/mod.av:46, :83) declare
-  non-`mut` fn types while holding `check_map(mut cx: TypeCx, …)` and
-  `lower_map(mut cx: LowerCx, …)`, and every vocabulary dispatch
-  calls through them. CONSEQUENCE: `mut` in a fn type is not sugar,
-  it is the fix — close the hole without it and the row seam has no
-  legal spelling. It also retires the claim that lists/walks.av's
-  seven seat preambles WAIT on that gap: a higher-order `seated` verb
-  checks and runs today (probed), but only because of this hole, and
-  it draws three F2051 "never writes through it" warnings.
-  Probe: scratchpad probe/hole.av.
+- ~~H0. THE FN TYPE DROPS `mut` — A SOUNDNESS HOLE~~ — CLOSED
+  2026-09-05 by lane C, and re-verified by lane D against the probe
+  that found it. A `mut`-taking fn stored in a NON-`mut` fn type used
+  to keep writing through, so a call through that seat mutated an
+  IMMUTABLE `let` with no diagnostic — eval and native both answered
+  `1 2 2` where the V1 law demands `1 1 0` — and the compiler's own
+  MethodRow/PropertyRow seam rode it. Today the same probe refuses at
+  the store: F2010 "field `go` is `fn(Cx, int) -> int`, this is
+  `fn(mut Cx, int) -> int`", and an immutable place handed to a marked
+  seat is F2048. A fn type carries a parallel `muts` in the interner
+  and the key carries them, so the agreement door refuses with no new
+  law written; the seat law reads MARKS rather than a DeclId, so the
+  direct and indirect calls are ONE rule. The asymmetry is deliberate
+  and measured: a seat that PERMITS writing accepts a callee that does
+  not write (so plain builders keep their honest spelling), while a
+  seat that promised not to write refuses one that does. F2051 is now
+  zero tree-wide.
+  ONE THING THE FIX LEAVES, found by lane D probing the closed hole
+  and reported: a fn that FORWARDS its `mut` seat into another `mut`
+  seat is warned F2051 "never writes through it", and taking the
+  warning's advice does not compile — dropping the mark makes the
+  inner call F2048 "`cx` is not `mut` — seat 1 of `go` writes through
+  it". Passing to a mut seat IS writing through, from the caller's
+  side. Nothing in the tree hits it (F2051 is zero), and the shape
+  that would is exactly the `seated_walk` verb lane C declined —
+  which is a second reason to have declined it.
+
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure
   variant enumeration in core/parts.av and core/nodes.av; F2040
