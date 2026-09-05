@@ -764,6 +764,21 @@ Runtime facts, ours to ratify:
   small programs: its log is bounded but a guarded compiler run
   over a package is still a machine's worth. Scratch probes
   (`./avra check` of one file) are sub-second and need no lock.
+- A CLAIM ABOUT BEHAVIOR CITES A RUN. "The subset today" already
+  demands it of every entry; it is the general rule, and skipping it
+  is the most repeated mistake in this tree's history — three lanes
+  in one day. The shape is always the same: read the SYNTAX, infer
+  the SEMANTICS, explain the difference. `p: mut ptr` refused, so
+  "`mut` params do not parse" (the spelling is `mut` before the
+  NAME, and the file being edited was full of them). Three grammar
+  rules differed, so "the family drifted" (one of them takes no
+  parameters at all and says so in its own words). Twelve builder
+  names matched twelve arms with no checker, so "nothing catches a
+  mismatch" (a mismatch fails the build 28 times with the name
+  printed). Each was one command from the truth. So: before
+  explaining why two things differ, run BOTH and read what they
+  answer — and a finding that survives quotes the output, not the
+  code that produced it.
 - A PATCH SCRIPT that inserts before an anchor, or replaces `old`
   with `new` where `new` CONTAINS `old` (an `export` prefix, a doc
   comment), applies TWICE when re-run after a partial failure: the
