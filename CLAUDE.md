@@ -819,3 +819,18 @@ Runtime facts, ours to ratify:
   And the watchdog's poll is not a wall: a fast leak reached 16 GB
   between polls before the kill — cap what you can, but never run a
   suspect product over a big input to "see".
+- MEASURE WHAT A THING DOES BEFORE EXPLAINING WHY TWO DIFFER. The
+  tree is built of parallel structures that mostly agree — sibling
+  grammar rules, registry tables, exhaustive matches, doctrine
+  lists — so a difference between two of them READS as drift, and
+  the reading is often wrong. Four times in one day: `p: mut ptr`
+  refused, so "a `mut` seat does not parse" (the spelling is `mut`
+  before the NAME, and half the pass fns in the tree carry one);
+  three parameter rules differed, so "two siblings drifted" (a
+  `once fn` takes NO parameters, by a law that speaks — its rule
+  accepts a list only so that law can reach the mistake, which is
+  the design, not the drift). Both times a probe was one command
+  away and cheaper than the sentence explaining the difference.
+  PROFILE, DON'T REASON is this rule for memory; this is the same
+  rule for meaning. THE TELL: an explanation of why two constructs
+  differ, written before either was run.
