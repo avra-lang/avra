@@ -175,24 +175,65 @@ the compiler checking itself 28.8s.
         for a Program (the third test rendering a Program's answer
         names `Program.shown`); the empty `Manifest` literal is spelled
         once in `manifest()` (a second site names `no_manifest()`).
+  - [x] THE BUILDER DISPATCH (2026-09-04): every node built walked
+        all 34 features' builder rows with string compares to find
+        its builder. `Language.builders` (indexed once at assembly,
+        first registrar wins — dispatch's own order) and
+        `build_named` (one lookup). MEASURED: the suite's parse 14.2s
+        -> 11.9s; the check 21.0s -> 19.7s.
+  - [x] THE PACKRAT MEMO'S KEY (2026-09-04): every rule attempt spelled
+        `"${name}@${cursor}"` (an interpolation, an allocation) and
+        probed two string maps. The memo is one flat table of
+        `rules x (tokens + 1)` ints indexed by rule ordinal and
+        cursor, holding one past the answer's index in a results list
+        — two reads, no key — with the ordinals settled once in
+        `ready`. MEASURED: the check 19.7s -> 18.5s; the suite's parse
+        11.9s -> 11.6s (its cases are tiny; the compiler's own files
+        carry the win). A two-level table was the first design and a
+        probe refused it: a nested element write copies the row
+        (recorded under lane C). TRIGGER: "the first registrar wins"
+        is spelled twice (`builder_index`, coherence's `registrar_of`,
+        which answers the FEATURE's name); a third reader of the
+        registration order names it.
+        FOUND ON THE WAY (manifests — lane B / 15b's owner takes it):
+        an ABSOLUTE `path` in `[dependencies]` is joined under the
+        manifest's directory (`/tmp/x/avra.toml` naming
+        `/Users/.../std-avrac` looks for `/tmp/x/Users/.../std-avrac`
+        and refuses F4007 with that mangled path). A path that starts
+        with `/` is already absolute; `joined_path` must leave it.
   - [ ] THE ENGINE'S CAPTURE COPYING: repetition captures are
         copied per append, so an N-statement program parses in
         O(N^2) (the debt below the ledger). `Many` becomes a prefix snapshot
         ({shared list, count}): push at the tip, copy only after a
         real rollback. DONE WHEN parse drops measurably on the
         suite and the corpus is green; record the number here.
-  - [ ] LENGTH-CARRYING STRINGS: `s.length` is `strlen`, hoisted at
-        8+ sites (I27). The header has room — a string box carries
-        its length beside its count. DONE WHEN `.length` is a load,
-        the I27 ratchet retires, and the ledger's `s.length` entry
-        is struck.
+  - [x] LENGTH-CARRYING STRINGS (2026-09-04): the profile's real
+        find behind a phantom `Decls.mint` frame — `avra_str_char_code`
+        bounded its index with `strnlen(s, i + 1)`, O(i) per byte, so
+        every scanner walking a string with `code_at` was quadratic in
+        the string. The header carries the length at no size cost (a
+        32-bit count beside a 32-bit length in the same sixteen
+        bytes); every producer sets it, the backend's constants
+        carry it, `char_code`, `.length` (`avra_str_len`, the rt row
+        `strlen` retired) and `substring` read it in O(1), and a zero
+        measures — which is what carried the transition build, whose
+        own constants had no length. MEASURED: the suite's parse
+        11.6s -> 10.7s; the check 18.5s -> 17.6s. I27's ratchet
+        retires; the ledger's `s.length` entry is struck. CLAUDE.md's
+        "A STRING's `.length` is `strlen`" note is now false — lane
+        D's file; it goes with their next sweep.
   - [ ] ONE `avra()` PER PROCESS: every spec case assembles the
         language (dispatch boxes, rows_of), ~12s of the suite's
-        case run. PROBE FIRST: a module-level `let LANG = avra()`
-        evaluated once per process (a bs2 note says module-level
-        lets do not cross imports — test whether OURS does). Else
-        the memo-as-query road in THE PIPELINE, MEASURED. DONE WHEN
-        the case run drops by the measured share.
+        case run. PROBED 2026-09-04, BLOCKED ON A CONSTRUCT: a
+        module-level value cannot be shared — `export let` is
+        refused ("`export` marks a fn, type, enum or trait — not
+        this statement") and a fn body cannot read a top-level
+        `let` ("a run-time binding of the top level — a fn body
+        sees declarations, not the values around it", the const
+        law). The language needs ONCE-PER-PROCESS PURE VALUES (the
+        sugar backlog, below); lane C owns the files. DONE WHEN
+        `avra()` is `once` and the case run drops by the measured
+        share (7.6ms x 1578 cases).
   - [ ] PROFILE THE CASE RUN AGAIN (`sample`, 30s) and land what it
         names; then re-measure and rewrite THE PIPELINE table.
 
@@ -242,6 +283,15 @@ the order is the dependency.
         not have it first, with one probe.)
   - [ ] RECEIVER ALIASING closed: the ledger entry struck, the
         memory doctrine's V1 line updated to "by law, enforced".
+  - [ ] A NESTED ELEMENT WRITE COPIES THE ROW (probed 2026-09-04 by
+        lane A, which needs it for the parse memo): `mut s = m.slots`
+        then `s[i].set(j, v)` answers correctly but costs O(row) per
+        write — 20k writes into a 20k row took seconds. The place
+        path opens slot `i` unique, but the row arrives shared (the
+        read ahead of the write retains it), so `slot_unique` clones
+        every time. DONE WHEN the probe (`/tmp/placeprobe/p.av`'s
+        shape: a struct field `List<List<int>>`, a nested `.set`
+        through a parameter) runs 20k writes under 200ms.
   - [ ] PAIRS IN SLOTS (O4): a scalar nullable in a list slot, a
         struct field and a capture lane — ONE design, three sites,
         the three "cannot hold this yet" voices retired together.
@@ -2651,6 +2701,28 @@ additions get siblings, nothing changes shape:
 
 ## Sugar backlog — dogfooding asks
 
+- ONCE-PER-PROCESS PURE VALUES. `avra()` assembles the language —
+  merges 34 grammars, prepares and validates the result, boxes the
+  dispatch — and every spec case calls it: 7.6ms x 1578 cases = 12s
+  of a 48s suite run, measured 2026-09-04. The value is PURE (the
+  same features make the same language), so computing it once per
+  process is semantically invisible, and the language has no way to
+  say so: `export let` is refused, and a fn body cannot read a
+  top-level `let` (the const law, rightly — a `let` is run-time
+  state). THE ASK: a zero-argument pure fn marked `once` (`once fn
+  avra() -> Language`) whose first call settles its answer for the
+  process. THE SKETCH: lowering gives the fn a hidden static cell
+  (one new memory boundary — the IR vocabulary protocol's eight
+  consumers pay it once: a `Global` slot the backend emits as an
+  LLVM global, the interpreter as a machine-level cell) plus a
+  presence guard; the mut-cell protocol already owns the cell's one
+  reference. Typing refuses `once` on a fn with parameters or one
+  that reads a `mut`. Wanting sites: `avra()` (language/mod.av),
+  every `shown(src)` in 1578 cases through `analyze_source`, and the
+  CLI's own `avra()` per command. Rejected on the way: a runtime
+  cache (a `Language` is an Avra value; the seam would need a cast
+  Avra does not have) and threading a language through every test
+  helper (1500 call sites).
 - FIELD PUNNING: `T { name, value }` where a local of each name is
   in scope. Refused today ("expected BREAK") and it is OURS, not
   bs2's — the ledger entry that blamed bs2 was checked and moved
@@ -6032,6 +6104,9 @@ packages/std-avrac`, user CPU):
   header                                     28.8s   (2.07x)
   + the impl index and the source memo       22.3s   (2.69x)
   + the manifest memo                        21.0s   (2.85x)
+  + the builder index                        19.7s   (3.04x)
+  + the memo by ordinal and cursor           18.5s   (3.23x)
+  + lengths in the header                    17.6s   (3.40x)
   make gate, wall                           223s -> 152s -> 135s
   make avra (the compiler building itself)  37.6s -> 25.3s
   peak RSS of a gate                         1.8 GB (measured, the watchdog)

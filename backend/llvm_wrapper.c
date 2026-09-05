@@ -448,7 +448,8 @@ LLVMValueRef avra_llvm_build_store(LLVMBuilderRef b, LLVMValueRef val, LLVMValue
 // pointer a program holds carries one (runtime/avra_runtime.c), and
 // a literal is no exception. The header says STATIC — retain and
 // release read it and never write — so the global stays constant.
-// Layout and tag mirror the runtime's Header exactly; sixteen-byte
+// Layout and tag mirror the runtime's Header exactly — tag, kind,
+// count, LENGTH — so `.length` on a constant is a load; sixteen-byte
 // alignment is what lets the runtime refuse an unaligned scalar
 // before reading anything.
 LLVMValueRef avra_llvm_build_global_string_ptr(LLVMBuilderRef b, const char* s, const char* name) {
@@ -458,13 +459,14 @@ LLVMValueRef avra_llvm_build_global_string_ptr(LLVMBuilderRef b, const char* s, 
     LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
     unsigned len = (unsigned)strlen(s);
-    LLVMValueRef fields[4] = {
+    LLVMValueRef fields[5] = {
         LLVMConstInt(i32, 0x41565241u, 0),
         LLVMConstInt(i32, (unsigned long long)(int32_t)-1, 1),
-        LLVMConstInt(i64, 0, 0),
+        LLVMConstInt(i32, 0, 0),
+        LLVMConstInt(i32, len, 0),
         LLVMConstStringInContext(ctx, s, len, 0),
     };
-    LLVMValueRef init = LLVMConstStructInContext(ctx, fields, 4, 0);
+    LLVMValueRef init = LLVMConstStructInContext(ctx, fields, 5, 0);
     LLVMValueRef g = LLVMAddGlobal(m, LLVMTypeOf(init), name);
     LLVMSetInitializer(g, init);
     LLVMSetGlobalConstant(g, 1);

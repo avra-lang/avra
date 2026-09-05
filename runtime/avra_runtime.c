@@ -47,10 +47,14 @@ enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MA
 // "AVRA" — the bytes that say a header is this runtime's.
 #define AVRA_TAG 0x41565241u
 
+// A string box also carries its LENGTH, so `.length`, a byte read
+// and a substring cost no walk; zero means "not recorded" (a
+// constant emitted before lengths were), and the text is measured.
 typedef struct {
     uint32_t tag;
     int32_t kind;
-    int64_t rc;
+    int32_t rc;
+    uint32_t len;
 } Header;
 
 // The payload's header. NULL for a pointer that is not a box: the
@@ -71,7 +75,22 @@ static void* box_alloc(size_t size, int32_t kind) {
     h->tag = AVRA_TAG;
     h->kind = kind;
     h->rc = 1;
+    h->len = 0;
     return (void*)(h + 1);
+}
+
+// A string box of `n` bytes plus its terminator, its length known.
+static char* str_box(size_t n, int32_t kind) {
+    char* buf = (char*)box_alloc(n + 1, kind);
+    ((Header*)buf - 1)->len = (uint32_t)n;
+    return buf;
+}
+
+// A string's length in O(1) — the header's, or measured when the
+// box predates lengths (a zero) or the text is not a box.
+static size_t str_len(const char* s) {
+    Header* h = hdr((void*)s);
+    return (h && h->len) ? h->len : strlen(s);
 }
 
 // The tag goes before the memory does: a stale release of a freed
@@ -88,7 +107,7 @@ static void box_free(void* p) {
 // keyword, an argument, the environment's word.
 static const char* str_static(const char* s) {
     size_t n = strlen(s);
-    char* buf = (char*)box_alloc(n + 1, KIND_STATIC);
+    char* buf = str_box(n, KIND_STATIC);
     memcpy(buf, s, n + 1);
     return buf;
 }
@@ -268,8 +287,8 @@ int64_t avra_int_mod(int64_t a, int64_t b) {
 }
 
 const char* avra_int_text(int64_t v) {
-    char* buf = (char*)box_alloc(24, KIND_PLAIN);
-    snprintf(buf, 24, "%lld", (long long)v);
+    char* buf = str_box(23, KIND_PLAIN);
+    ((Header*)buf - 1)->len = (uint32_t)snprintf(buf, 24, "%lld", (long long)v);
     return buf;
 }
 
@@ -614,19 +633,19 @@ static void* box_clone(void* p) {
 // joins. Owned.
 const char* avra_str_join(void* arr, const char* sep) {
     AvraArray* a = (AvraArray*)arr;
-    size_t sep_len = strlen(sep);
+    size_t sep_len = str_len(sep);
     size_t total = 1;
     for (int64_t i = 0; i < a->len; i++) {
         const char* s = (const char*)a->data[i];
-        total += s ? strlen(s) : 0;
+        total += s ? str_len(s) : 0;
         if (i > 0) total += sep_len;
     }
-    char* buf = (char*)box_alloc(total, KIND_PLAIN);
+    char* buf = str_box(total - 1, KIND_PLAIN);
     char* p = buf;
     for (int64_t i = 0; i < a->len; i++) {
         if (i > 0) { memcpy(p, sep, sep_len); p += sep_len; }
         const char* s = (const char*)a->data[i];
-        if (s) { size_t l = strlen(s); memcpy(p, s, l); p += l; }
+        if (s) { size_t l = str_len(s); memcpy(p, s, l); p += l; }
     }
     *p = '\0';
     return buf;
@@ -640,8 +659,8 @@ static const char* list_text(void* arr, const char* (*text)(int64_t)) {
         avra_array_push(parts, (int64_t)(uintptr_t)text(a->data[i]));
     }
     const char* body = avra_str_join(parts, ", ");
-    size_t l = strlen(body);
-    char* buf = (char*)box_alloc(l + 3, KIND_PLAIN);
+    size_t l = str_len(body);
+    char* buf = str_box(l + 2, KIND_PLAIN);
     buf[0] = '[';
     memcpy(buf + 1, body, l);
     buf[l + 1] = ']';
@@ -734,7 +753,7 @@ void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
 // that is new text is owned.
 
 static const char* str_owned(const char* s, size_t n) {
-    char* buf = (char*)box_alloc(n + 1, KIND_PLAIN);
+    char* buf = str_box(n, KIND_PLAIN);
     memcpy(buf, s, n);
     buf[n] = '\0';
     return buf;
@@ -748,7 +767,7 @@ static void push_fresh_text(void* arr, const char* s, size_t n) {
 }
 
 const char* avra_str_substring(const char* s, int64_t lo, int64_t hi) {
-    int64_t n = (int64_t)strlen(s);
+    int64_t n = (int64_t)str_len(s);
     if (lo < 0) lo = 0;
     if (hi > n) hi = n;
     if (lo >= hi) return str_owned("", 0);
@@ -760,12 +779,12 @@ int64_t avra_str_contains(const char* s, const char* needle) {
 }
 
 int64_t avra_str_starts_with(const char* s, const char* prefix) {
-    return strncmp(s, prefix, strlen(prefix)) == 0;
+    return strncmp(s, prefix, str_len(prefix)) == 0;
 }
 
 int64_t avra_str_ends_with(const char* s, const char* suffix) {
-    size_t n = strlen(s);
-    size_t m = strlen(suffix);
+    size_t n = str_len(s);
+    size_t m = str_len(suffix);
     return m <= n && memcmp(s + n - m, suffix, m) == 0;
 }
 
@@ -786,16 +805,22 @@ int64_t avra_str_codepoint_count(const char* s) {
 }
 
 // The byte at `i` as a code — a trap past the text, worded like a
-// list's. The text is measured only as far as `i`, so a scan that
-// reads every byte stays linear; the trap alone measures it whole.
+// list's. The bound is the header's length: a scan that reads
+// every byte costs one load per byte.
 int64_t avra_str_char_code(const char* s, int64_t i) {
-    if (i < 0 || strnlen(s, (size_t)i + 1) <= (size_t)i) {
+    int64_t n = (int64_t)str_len(s);
+    if (i < 0 || i >= n) {
         char msg[80];
         snprintf(msg, sizeof msg, "index %lld is out of bounds (length %lld)",
-                 (long long)i, (long long)strlen(s));
+                 (long long)i, (long long)n);
         avra_trap(msg);
     }
     return (unsigned char)s[i];
+}
+
+// `.length` on text — the header's count, no walk.
+int64_t avra_str_len(const char* s) {
+    return (int64_t)str_len(s);
 }
 
 static int is_blank(char c) {
@@ -803,7 +828,7 @@ static int is_blank(char c) {
 }
 
 const char* avra_str_trim(const char* s) {
-    size_t n = strlen(s);
+    size_t n = str_len(s);
     size_t lo = 0;
     while (lo < n && is_blank(s[lo])) lo++;
     while (n > lo && is_blank(s[n - 1])) n--;
@@ -819,7 +844,7 @@ const char* avra_str_replace(const char* s, const char* from, const char* to) {
     if (fl == 0) return str_owned(s, n);
     size_t count = 0;
     for (const char* p = strstr(s, from); p; p = strstr(p + fl, from)) count++;
-    char* buf = (char*)box_alloc(n + count * tl - count * fl + 1, KIND_PLAIN);
+    char* buf = str_box(n + count * tl - count * fl, KIND_PLAIN);
     char* w = buf;
     const char* r = s;
     for (const char* p; (p = strstr(r, from)) != NULL;) {
@@ -859,9 +884,9 @@ void* avra_str_split(const char* s, const char* sep) {
 
 // `a + b` on text — one fresh string. Owned.
 const char* avra_str_concat(const char* a, const char* b) {
-    size_t n = strlen(a);
-    size_t m = strlen(b);
-    char* buf = (char*)box_alloc(n + m + 1, KIND_PLAIN);
+    size_t n = str_len(a);
+    size_t m = str_len(b);
+    char* buf = str_box(n + m, KIND_PLAIN);
     memcpy(buf, a, n);
     memcpy(buf + n, b, m + 1);
     return buf;
@@ -947,9 +972,10 @@ const char* avra_selfhost_read_file(const char* path) {
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (size < 0) { fclose(f); return str_owned("", 0); }
-    char* buf = (char*)box_alloc((size_t)size + 1, KIND_PLAIN);
+    char* buf = str_box((size_t)size, KIND_PLAIN);
     size_t got = fread(buf, 1, (size_t)size, f);
     buf[got] = '\0';
+    ((Header*)buf - 1)->len = (uint32_t)got;
     fclose(f);
     return buf;
 }
