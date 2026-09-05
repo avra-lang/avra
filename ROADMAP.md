@@ -877,9 +877,27 @@ std-lib chapter, so dogfooding decides the surface.
         shape pinned. NOTE FOR THE MEMORY EPIC: O4's "errdefer
         (ownership milestone)" is this — it needed no ownership
         work, since FnExit already settles every open scope at the
-        site. FOUND ON THE WAY (sugar backlog): a deferred
-        `xs.push(v)` is refused as "`xs` is not `mut`" — the
-        CAPTURE is the copy, and the voice blames the binding.
+        site. A CONSEQUENCE FOR FOREIGN STATE, found 2026-09-05 with
+        the sqlite lane and worth knowing before the next FFI
+        package: because an early exit runs every open frame's
+        deferred calls BEFORE the exit, a `?` sitting between a
+        foreign call and a read of the global state that call set
+        will run cleanup in between — and the offending call is not
+        on the line, it is a `defer` registered far above, firing on
+        a control path the reader is not looking at. SQLite is the
+        specimen: `sqlite3_errcode` must be asked IMMEDIATELY after a
+        suspect NULL, before any other call on that connection, to
+        tell an out-of-memory from an SQL NULL from a zero-length
+        blob — the C API folds all three into one NULL pointer. So
+        the suspect read and its check must share a frame with
+        nothing between them that can leave. Our own libraries are
+        immune by construction, and that is the pattern to copy:
+        every io and process row answers `-errno` as its STATUS
+        rather than leaving a global for the caller to read later, so
+        no window exists to clobber. FOUND ON THE WAY (sugar
+        backlog): a deferred `xs.push(v)` is refused as "`xs` is not
+        `mut`" — the CAPTURE is the copy, and the voice blames the
+        binding.
         MERGED lane A's hand-off onto `@std/process` on the way:
         `avra staged` links through `clang_ran`/`run_binary`
         (`Tool`, `Exit`); `Verdict` reads an `Exit`, and a binary
