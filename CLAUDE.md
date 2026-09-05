@@ -467,13 +467,6 @@ registry is the idiom engine's spec, written by dogfooding.
   `errdefer`s unconditionally) BEFORE its `Ins.FnExit`: the value is
   computed, the deferred calls come next, then the exit.
 
-## Vendored code — do not imitate
-
-`packages/std-cli/` is a symlink into the old tree's bootstrap CLI,
-rent paid until lane B's `@std/cli` lands and the package is
-deleted. It is NOT reference code for anything. (`spec_test` is
-gone: `avra test` is the runner.)
-
 ## The subset today
 
 What our compiler REFUSES that the language will want. Each entry
@@ -514,9 +507,14 @@ Syntax the grammar lacks:
 - `@comptime`: refuses at the `@` ("expected `mod`, `use`, … while
   parsing `stmt`").
 - A `mut` seat in a fn TYPE (`fn(mut Cx, Seat) -> int`): "expected
-  `)` while parsing `stmt`" — a verb cannot yet take a body that
-  writes through the context it is handed (lists/walks.av's seven
-  seat preambles wait on it).
+  `)` while parsing `stmt`". This is not only a syntax gap: because a
+  fn type cannot SAY `mut`, a `mut`-taking fn stored in one keeps
+  writing through, so a call through the seat mutates an immutable
+  `let` with no diagnostic (probed both engines; the direct call and
+  the parameter hand-off both refuse correctly with F2048). The row
+  tables ride it — `MethodRow.check`/`lower` hold `mut`-taking fns in
+  non-`mut` fn types — so the spelling is the fix, not a nicety.
+  Filed for lane C with the probe.
 - The bare component form (`Cfg d { depth = 8 }`): "expected BREAK
   while parsing `stmt`" — `component Cfg d { … }` is the form.
   Instantiation is a STATEMENT: as a fn's tail it answers `void`
@@ -606,6 +604,12 @@ Wants the typer does not carry yet:
   F2033 "`it` has no element here — this seat takes `int`, not a
   fn" — `it` binds to the NEAREST call; write `(k) ->
   self.rides(k)`. `it is .A` binds fine.
+- `is` takes a BARE variant, never a payload pattern: `e is
+  .TimedOut(_, _)` is "expected EOF while parsing `program`" —
+  `e is .TimedOut` is the test, and a `match` arm reads the payload.
+- `join` over a list that is not text: `[1, 2].join(",")` is F2005
+  "`join` reads a list of text, this one holds `int`" — map to text
+  first.
 - `==` between lists, `contains`/`index_of` over structs or enums:
   F2000 "`==` compares scalars for now"; F2005 "`contains` scans by
   value — scalars and text for now, this list holds `K`" — spell
