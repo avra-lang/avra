@@ -1,0 +1,153 @@
+// A command line as data, vertically: a spec declares, `parse` reads a
+// word list into a `CliResult` or a `CliError` in its own words, help
+// renders from the declarations alone, and the accessors answer by
+// bare name.
+use @std.cli.{App, Subcommand, Runnable, CommandSpec, FlagDef, OptionDef, ArgDef, CliResult, CliError, parse, app_help, command_help}
+use @std.errors.{Error}
+
+/// A command that answers a fixed code — the behaviour half, inert.
+type Answers = { code: int }
+
+impl Runnable for Answers {
+    fn run(args: CliResult) -> int {
+        self.code
+    }
+}
+
+fn sub(meta: CommandSpec, code: int) -> Subcommand {
+    let body: Answers = Answers { code: code }
+    Subcommand { meta: meta, body: body }
+}
+
+/// `check <file>` with `--time`/`-t` and `--level <n>` (default 1).
+fn check_spec() -> CommandSpec {
+    CommandSpec {
+        name: "check",
+        description: "Analyze a program and report",
+        hidden: false,
+        flags: [FlagDef { name: "--time", short: "-t", description: "print phase timings", aliases: ["--timings"] }],
+        args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
+        options: [OptionDef { name: "--level", short: "-l", description: "how hard to look", default_val: "1" }],
+    }
+}
+
+/// `test [files...]` — an optional variadic.
+fn test_spec() -> CommandSpec {
+    CommandSpec {
+        name: "test",
+        description: "Run spec cases",
+        hidden: false,
+        flags: [],
+        args: [ArgDef { name: "files", description: "the spec files", required: false, variadic: true }],
+        options: [],
+    }
+}
+
+/// `staged <plan>` — hidden from the app's list.
+fn staged_spec() -> CommandSpec {
+    CommandSpec {
+        name: "staged",
+        description: "Link and run a plan (internal)",
+        hidden: true,
+        flags: [],
+        args: [ArgDef { name: "plan", description: "the link plan", required: true, variadic: false }],
+        options: [],
+    }
+}
+
+fn app() -> App {
+    App { name: "tool", description: "A tool", version: "1.2.3", commands: [sub(check_spec(), 0), sub(test_spec(), 3), sub(staged_spec(), 0)] }
+}
+
+fn said(r: Result<CliResult, CliError>) -> string {
+    match r {
+        .Ok(p) -> "ok:${p.command}",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn parsed(words: List<string>) -> CliResult {
+    parse(app(), words) catch CliResult { command: "?", flags: [], options: {}, args: {}, rest: [] }
+}
+
+spec "std/cli" {
+    given "a line read against its command" {
+        then "the command and its positional" {
+            let p = parsed(["check", "main.av"])
+            p.command == "check" && p.arg("file") == "main.av"
+        }
+        then "a flag by its long name, its short name, or an alias — asked for bare" {
+            parsed(["check", "--time", "m.av"]).has_flag("time") && parsed(["check", "-t", "m.av"]).has_flag("time") &&
+                parsed(["check", "--timings", "m.av"]).has_flag("time") && !parsed(["check", "m.av"]).has_flag("time")
+        }
+        then "a flag asked for with its dashes answers the same" {
+            parsed(["check", "--time", "m.av"]).has_flag("--time")
+        }
+        then "an option's value, in the next word or after `=`, long or short" {
+            parsed(["check", "--level", "3", "m.av"]).option("level") == "3" && parsed(["check", "--level=4", "m.av"]).option("level") == "4" &&
+                parsed(["check", "-l", "5", "m.av"]).option("level") == "5"
+        }
+        then "an omitted option wears its default; an undeclared one is empty" {
+            parsed(["check", "m.av"]).option("level") == "1" && parsed(["check", "m.av"]).option("depth") == ""
+        }
+        then "flags and positionals interleave freely" {
+            let p = parsed(["check", "m.av", "--time", "--level", "2"])
+            p.arg("file") == "m.av" && p.has_flag("time") && p.option("level") == "2"
+        }
+        then "`--` ends the options: a dash-led word after it is a positional" {
+            parsed(["check", "--", "-weird.av"]).arg("file") == "-weird.av"
+        }
+        then "a lone `-` is a word" {
+            parsed(["check", "-"]).arg("file") == "-"
+        }
+        then "a variadic gathers the rest, and answers as a list" {
+            let p = parsed(["test", "a.av", "b.av", "c.av"])
+            p.args_of("files").join(",") == "a.av,b.av,c.av" && p.arg("files") == "a.av"
+        }
+        then "an optional variadic may be empty" {
+            parsed(["test"]).args_of("files").length == 0
+        }
+        then "an absent positional answers empty" {
+            parsed(["test"]).arg("nothing") == ""
+        }
+    }
+    given "the refusals, each in its own words" {
+        then "an unknown command" { said(parse(app(), ["frob"])) == "unknown command: frob" }
+        then "no command at all" { said(parse(app(), [])) == "unknown command: " }
+        then "a flag the command never declared" { said(parse(app(), ["check", "--fast", "m.av"])) == "`check` takes no `--fast`" }
+        then "an option with no value" { said(parse(app(), ["check", "m.av", "--level"])) == "`check`'s `--level` needs a value" }
+        then "a missing required positional" { said(parse(app(), ["check"])) == "`check` needs its `file`" }
+        then "a word past the last positional" { said(parse(app(), ["check", "a.av", "b.av"])) == "`check` does not take `b.av`" }
+        then "a refusal is a value: the variant carries the command and the word" {
+            match parse(app(), ["check", "a.av", "b.av"]) {
+                .Ok(_) -> false,
+                .Err(e) -> match e {
+                    .ExtraArg(c, t) -> c == "check" && t == "b.av",
+                    rest -> false,
+                },
+            }
+        }
+    }
+    given "help, rendered from the declarations alone" {
+        then "the app's help lists every command but the hidden one" {
+            app_help(app()) == "tool 1.2.3 — A tool\n\nusage: tool <command> [flags] [args]\n\ncommands:\n  check  Analyze a program and report\n  test   Run spec cases\n\n`tool <command> --help` says what a command takes."
+        }
+        then "a command's help: usage, words, then flags, options and args aligned" {
+            command_help(app(), check_spec()) == "usage: tool check [--time] [--level <value>] <file>\n\nAnalyze a program and report\n\nflags:\n  -t, --time  print phase timings\n\noptions:\n  -l, --level <value>  how hard to look (default: 1)\n\nargs:\n  file  the source file"
+        }
+        then "an optional variadic reads as `[files...]`, and a command with only args shows only args" {
+            command_help(app(), test_spec()) == "usage: tool test [files...]\n\nRun spec cases\n\nargs:\n  files  the spec files"
+        }
+    }
+    given "a command's verdict" {
+        then "the matched command answers its code" {
+            app().run_argv(["test"]) == 3
+        }
+        then "a line that cannot be read answers 2" {
+            app().run_argv(["check"]) == 2
+        }
+        then "an unknown command answers 2" {
+            app().run_argv(["frob"]) == 2
+        }
+    }
+}

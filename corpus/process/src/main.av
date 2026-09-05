@@ -1,0 +1,56 @@
+// proves: @std/process end to end, evaluated and native alike — a
+// tool minted once, a captured stdout, both streams apart, an exit
+// read as a code and as a signal, stdin fed, an accepted non-zero
+// exit, a deadline that stops a slow child, a pipeline over kernel
+// pipes with a stage's own stderr, a child started and read a line
+// at a time through an open stdin, and a scripted runner.
+use @std.process.{Tool, tool, cmd, Exit, Stdin, Ready, Script, ProcessError, exit_text, scripted, run_through, parallel, race}
+use @std.time.{ms, secs}
+
+fn timed(r: Result<Exit, ProcessError>) -> string {
+    match r {
+        .Ok(x) -> exit_text(x),
+        .Err(e) -> match e {
+            .TimedOut(_, _) -> "timed out",
+            rest -> "other",
+        },
+    }
+}
+
+fn shown() -> Result<string, ProcessError> {
+    let sh = tool("sh")?
+    let echo = tool("echo")?
+    let cat = tool("cat")?
+    let hi = (cmd(echo, ["hi", "there"]).run()?).stdout.trim()
+    let both = cmd(sh, ["-c", "echo out; echo err >&2"]).run()?
+    let code = (cmd(sh, ["-c", "exit 3"]).outcome()?).exit
+    let sig = (cmd(sh, ["-c", "kill -9 $$"]).outcome()?).exit
+    let fed = ((cmd(cat, []) with { stdin: Stdin.Text("abc") }).run()?).stdout
+    let lenient = (cmd(sh, ["-c", "echo fine; exit 1"]) with { ok_exits: [0, 1] }).run()?
+    let slow = cmd(sh, ["-c", "sleep 5"]) with { timeout: ms(100) }
+    let slow_exit: Result<Exit, ProcessError> = match slow.outcome() {
+        .Ok(o) -> .Ok(o.exit),
+        .Err(e) -> .Err(e),
+    }
+    let sort = tool("sort")?
+    let head = cmd(sh, ["-c", "printf 'b\\na\\n'; echo warned >&2"])
+    let piped = head.pipe(cmd(sort, [])).outcome()?
+    let pipeline = "${piped.stages[1].out.stdout.replace("\n", " ").trim()} ${piped.stages[0].out.stderr.trim()} ${exit_text(piped.stages[0].exit)}"
+    mut child = (cmd(cat, []) with { stdin: Stdin.Open }).start(Ready.Started, secs(1))?
+    child.write("one\ntwo\n")?
+    let first = child.read_line(secs(1)) ?? "-"
+    child.close_stdin()
+    let second = child.read_line(secs(1)) ?? "-"
+    let ended = child.wait(secs(1))?
+    let served = "${first} ${second} ${exit_text(ended.exit)}"
+    let row = Script { program: "git", args: "describe", exit: Exit.Clean, stdout: "v9\n", stderr: "" }
+    let fake = scripted([row])
+    let git = Tool { name: "git", path: "/nowhere/git", terminator: null }
+    let scripted_out = (run_through(fake, cmd(git, ["describe"]))?).stdout.trim()
+    let many = parallel([cmd(echo, ["p1"]), cmd(echo, ["p2"]), cmd(sh, ["-c", "exit 5"])], 2)?
+    let raced = race([cmd(sh, ["-c", "sleep 5"]), cmd(echo, ["quick"])], ms(20))?
+    let together = "${[o.out.stdout.trim() for o in many].join("+")} ${exit_text(many[2].exit)} ${raced.out.stdout.trim()}"
+    "${hi} | ${both.stdout.trim()} / ${both.stderr.trim()} | ${exit_text(code)} | ${exit_text(sig)} | ${fed} | ${lenient.stdout.trim()} | ${timed(slow_exit)} | ${pipeline} | ${served} | ${scripted_out} | ${together}"
+}
+
+shown() catch "failed"

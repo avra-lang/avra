@@ -1,0 +1,53 @@
+// proves: @std/cli end to end, evaluated and native alike — an app
+// declared as data, its help rendered, a line parsed into flags, an
+// option, positionals and a variadic's rest, each refusal in its own
+// words, and a command run to its verdict. Refusals are read as values
+// here, since stderr is not the answer.
+use @std.cli.{App, Subcommand, Runnable, CommandSpec, FlagDef, OptionDef, ArgDef, CliResult, CliError, parse, command_help}
+use @std.io.{println}
+use @std.errors.{Error}
+
+type Greet = { }
+
+impl Runnable for Greet {
+    fn run(args: CliResult) -> int {
+        let loud = args.has_flag("loud")
+        let who = args.arg("name")
+        println(if loud { "HELLO ${who}!" } else { "hello ${who} (${args.option("times")} times)" })
+        args.args_of("extras").length
+    }
+}
+
+fn greet_spec() -> CommandSpec {
+    CommandSpec {
+        name: "greet",
+        description: "Say hello",
+        hidden: false,
+        flags: [FlagDef { name: "--loud", short: "-L", description: "shout", aliases: [] }],
+        args: [
+            ArgDef { name: "name", description: "who to greet", required: true, variadic: false },
+            ArgDef { name: "extras", description: "more names", required: false, variadic: true },
+        ],
+        options: [OptionDef { name: "--times", short: "", description: "how often", default_val: "1" }],
+    }
+}
+
+fn said(r: Result<CliResult, CliError>) -> string {
+    match r {
+        .Ok(p) -> "ok ${p.command}",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+let body: Greet = Greet { }
+let app = App { name: "hi", description: "Greetings", version: "0.1", commands: [Subcommand { meta: greet_spec(), body: body }] }
+println(command_help(app, greet_spec()))
+println("--")
+println("${app.run_argv(["greet", "ada"])}")
+println("${app.run_argv(["greet", "-L", "bob", "carol", "dan"])}")
+println("${app.run_argv(["greet", "--times=3", "eve"])}")
+println("${app.run_argv(["--version"])}")
+println(said(parse(app, ["greet"])))
+println(said(parse(app, ["greet", "--quiet", "x"])))
+println(said(parse(app, ["wave"])))
+"done"
