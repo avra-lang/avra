@@ -7,6 +7,7 @@
 use @std.cli.{Subcommand, CliResult, Runnable, CommandSpec, FlagDef, ArgDef, result_has_flag}
 use @std.avrac.language.{Program, Lowered, ProgramCall, corpus_entry, corpus_rows, emit_ll, run_program, program_symbol, programs_workspace, program, avra}
 use @std.avrac.core.{joined_path, stem_of, dir_of, sorted_texts}
+use @std.process.{Exit}
 
 type CorpusCmd = { }
 
@@ -82,8 +83,11 @@ fn judged_programs(p: Program, lo: Lowered, programs: List<ProgramCall>, native_
         return 1
     }
     if link_throwaway(path, p) != 0 { return 1 }
-    let native = avra_spawn_status(binary_name(path), [])
-    if native != 0 || failed != 0 { return 1 }
+    let native: Exit = match run_linked(path) {
+        .Ok(x) -> x,
+        .Err(e) -> Exit.Code(refused_by_host(e)),
+    }
+    if !(native is .Clean) || failed != 0 { return 1 }
     let word = if programs.length == 1 { "program" } else { "programs" }
     println("${programs.length} ${word}: ${if native_only { "native == expected" } else { "eval == native == expected" }}")
     0

@@ -1,10 +1,11 @@
 //! One body's walk — the context's own verbs: a subtree lowered at
 //! first request (the recursion IS the walk), the narrow/widen edge
 //! every expression passes through, the dyn lift, the statement
-//! loop, a block's scope, and the entry's printed answer.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId}
+//! loop, a block's scope with its `defer` frame, and the entry's
+//! printed answer.
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, push_slot, adopted, carried_of, okayed, hollow_of, semantics_of, stmt_semantics_of}
+use features.{LowerCx, Deferred, push_slot, slot_read, adopted, carried_of, okayed, hollow_of, semantics_of, stmt_semantics_of}
 
 impl LowerCx {
     /// One subtree's register, lowered at first request and
@@ -162,10 +163,82 @@ impl LowerCx {
     /// promise for a block that departed, void for one that merely
     /// ended. Every merge it feeds is typed by that same answer.
     mut fn lower_block(stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> Reg {
-        self.out.give(Ins.ScopeEnter(Level.Application))
+        self.scope_enter()
         self.lower_stmts(stmts)
         let r = if value == null { hollow_of(self, ty) } else { self.reg_of(value!) }
-        self.out.give(Ins.ScopeExit(r))
+        self.scope_exit(r)
         r
     }
+
+    // ── The `defer` frames. Every STATEMENT LIST runs in a frame:
+    // a scope's (a block, a loop's turn, a body) or a statement-list
+    // arm's (an `if` statement's branch, a `let … else`'s else). The
+    // list's `defer`s run as its frame closes, last first; an early
+    // exit runs every open frame's, innermost first. ──
+
+    /// A scope opens — and with it the frame its `defer`s join.
+    mut fn scope_enter() {
+        self.open_frame()
+        self.out.give(Ins.ScopeEnter(Level.Application))
+    }
+
+    /// A scope ends normally: its frame closes — after the value
+    /// or the step that follows its statements — and it yields.
+    mut fn scope_exit(gives: Reg?) {
+        self.close_frame()
+        self.out.give(Ins.ScopeExit(gives))
+    }
+
+    /// A statement-list ARM: its statements in their own frame,
+    /// closed as they end — the arm's bracket is the memory pass's.
+    mut fn arm_stmts(stmts: List<StmtId>) {
+        self.open_frame()
+        self.lower_stmts(stmts)
+        self.close_frame()
+    }
+
+    mut fn open_frame() {
+        self.depth = self.depth + 1
+    }
+
+    /// The innermost frame's `defer`s run, last first — never its
+    /// `errdefer`s, which only a failing exit runs — and it closes.
+    mut fn close_frame() {
+        for d in reversed([d for d in self.deferred if ends_here(d, self.depth)]) { self.run_deferred(d) }
+        self.deferred = [d for d in self.deferred if d.depth < self.depth]
+        self.depth = self.depth - 1
+    }
+
+    /// A fn box to run when the scope ends — or, `on_error`, only
+    /// when the fn fails.
+    mut fn at_exit(box: Reg, on_error: bool) {
+        self.deferred.push(Deferred { box: box, depth: self.depth, on_error: on_error })
+    }
+
+    /// An early exit that ANSWERS: every open frame's `defer`s run,
+    /// innermost first. Nothing closes — other paths continue.
+    mut fn leaving() {
+        for d in reversed([d for d in self.deferred if !d.on_error]) { self.run_deferred(d) }
+    }
+
+    /// An early exit that FAILS: every open frame's `defer`s AND
+    /// `errdefer`s run, innermost first.
+    mut fn failing() {
+        for d in reversed(self.deferred) { self.run_deferred(d) }
+    }
+
+    /// One deferred box called — the code address at slot 0, the
+    /// box itself as the env seat, the answer dropped.
+    mut fn run_deferred(d: Deferred) {
+        let fp = slot_read(self, d.box, 0, null)
+        let held: Arrow? = self.view.types.arrow_parts(self.out.reg_types[d.box.index])
+        let dst = self.out.mint_ty(held?.answer ?? self.view.types.intern(Type.Void))
+        self.out.give(Ins.CallPtr(dst, fp, [d.box]))
+    }
+}
+
+/// A `defer` the frame at `depth` runs as it closes — its own, and
+/// not an `errdefer`.
+fn ends_here(d: Deferred, depth: int) -> bool {
+    d.depth == depth && !d.on_error
 }

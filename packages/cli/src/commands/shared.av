@@ -3,11 +3,12 @@
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef, result_get_arg, result_has_flag}
 use @std.avrac.language.{Host, Program, Analysis, TestCase, program, lone_workspace, timed_workspace, entry_of, no_target, avra, emit_ll, link_words}
 use @std.avrac.core.{joined, dir_of, under_dir}
+use @std.process.{Tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit_text}
+use @std.errors.{Error}
 
 extern fn avra_selfhost_read_file(path: string) -> string
 extern fn avra_selfhost_file_exists(path: string) -> int
 extern fn avra_selfhost_write_file(path: string, content: string) -> int
-extern fn avra_spawn_status(prog: string, args: List<string>) -> int
 extern fn avra_mkdir_p(path: string) -> int
 extern fn avra_process_exit(code: int)
 extern fn avra_host_list_dir(path: string) -> string
@@ -190,9 +191,10 @@ fn package_root(dir: string) -> string? {
 
 /// clang links the `.ll` with Avra's runtime — and whatever the
 /// program's packages promised their externs — into a native binary.
-/// The command is an ARGV, never a shell line: a `[link]` row from
-/// any package, the project's own or a dependency's, is one word
-/// that means only itself.
+/// The command is a `Command`, never a shell line: a `[link]` row from
+/// any package, the project's own or a dependency's, is one word that
+/// means only itself. It runs where the developer does — their
+/// environment, their terminal for its words, their Ctrl-C.
 /// A PRODUCT links optimized: what `build` answers is run many times.
 fn link(ll_path: string, p: Program) -> int {
     linked(ll_path, p, "-O1")
@@ -207,17 +209,52 @@ fn link_throwaway(ll_path: string, p: Program) -> int {
 }
 
 fn linked(ll_path: string, p: Program, opt: string) -> int {
+    match linker() {
+        .Ok(clang) -> linked_by(clang, ll_path, p, opt),
+        .Err(e) -> refused_by_host(e),
+    }
+}
+
+/// The one voice for a child the host would not run.
+fn refused_by_host(e: ProcessError) -> int {
+    eprintln("avra: ${e.describe().message}")
+    1
+}
+
+/// The C compiler that links: `CC`, else `clang` on the PATH — the
+/// row `[process.tools] clang` in this package's own manifest says the
+/// same, and mints it the day the manifest mints.
+fn linker() -> Result<Tool, ProcessError> {
+    tool_from_env("CC", "clang")
+}
+
+fn linked_by(clang: Tool, ll_path: string, p: Program, opt: string) -> int {
     let out = binary_name(ll_path)
-    let status = avra_spawn_status("clang", ["-w", opt, ll_path, "build/avra_runtime.o"].concat(link_words(p.ws)).concat(["-o", out]))
-    if status == 127 {
-        eprintln("avra: could not start `clang` — is it on PATH?")
-        return 1
+    let words = ["-w", opt, ll_path, "build/avra_runtime.o"].concat(link_words(p.ws)).concat(["-o", out])
+    match at_the_terminal(cmd(clang, words)).outcome() {
+        .Ok(o) -> judged_link(o.exit, ll_path),
+        .Err(e) -> refused_by_host(e),
     }
-    if status != 0 {
-        eprintln("avra: clang failed linking ${ll_path}")
-        return 1
-    }
-    0
+}
+
+/// A command run where the developer sits: their environment, their
+/// terminal for its words, their Ctrl-C reaching it — the compiler's
+/// own tools are the developer's, not a service's.
+fn at_the_terminal(c: Command) -> Command {
+    c with { env: Env.Inherit, streams: Streams.Inherited, own_group: false }
+}
+
+/// The binary a link just wrote, run at the terminal — its exit, or
+/// the host's refusal to run it at all.
+fn run_linked(path: string) -> Result<Exit, ProcessError> {
+    let binary = Tool { name: "the linked binary", path: binary_name(path), terminator: null }
+    (at_the_terminal(cmd(binary, [])).outcome()?).exit
+}
+
+fn judged_link(x: Exit, ll_path: string) -> int {
+    if x is .Clean { return 0 }
+    eprintln("avra: clang failed linking ${ll_path} — exited ${exit_text(x)}")
+    1
 }
 
 /// Linked, and the binary's path said — what `build` answers.

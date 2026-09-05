@@ -25,12 +25,13 @@ fn valued_call_reg(mut cx: LowerCx, e: ExprId, box: Reg, regs: List<Reg>) -> Reg
     called_through(cx, e, box, regs)
 }
 
-/// `return v`: the value's register exits the fn HERE — the memory
-/// pass settles every open scope's debts before the exit. Answers
-/// no statement value: the driver's last-value tracking never sees
-/// a return.
+/// `return v`: the value's register exits the fn HERE — the open
+/// frames' `defer`s run first, and the memory pass settles every
+/// open scope's debts before the exit. Answers no statement value:
+/// the driver's last-value tracking never sees a return.
 export fn lower_return(mut cx: LowerCx, s: StmtId) -> Reg? {
     let v: Reg? = cx.lower_value(s)
+    cx.leaving()
     cx.emit(Ins.FnExit(v ?? hollow_of(cx, cx.view.types.intern(Type.Void))))
     null
 }

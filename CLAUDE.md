@@ -392,6 +392,16 @@ registry is the idiom engine's spec, written by dogfooding.
   `packages/cli/src/commands/`, exporting
   `<name>_command() -> Subcommand`; `cli/src/main.av` only composes
   the list. A new command is a new file plus one line.
+- A `defer`'s FRAME IS ITS STATEMENT LIST: a scope bracket
+  (`cx.scope_enter()`/`cx.scope_exit(r)`) or a statement-list arm
+  (`cx.arm_stmts(stmts)`) — never a raw `Ins.ScopeEnter`/`ScopeExit`
+  through a LowerCx, never a bare `cx.lower_stmts` inside an arm. A
+  raw bracket is invisible to the frames, so a `defer` inside it
+  runs at the ENCLOSING frame's end (an `if` statement's branch did
+  exactly that). And an early exit calls `cx.leaving()` (an answer)
+  or `cx.failing()` (the failure channel, which alone runs
+  `errdefer`s) BEFORE its `Ins.FnExit` — the value is computed, the
+  deferred calls come next, then the exit.
 
 ## Vendored code — do not imitate
 
@@ -460,6 +470,28 @@ Syntax the grammar lacks:
 - `export let` / `export const`: F3014 "`export` marks a fn, type,
   enum or trait — not this statement" — a constant crosses modules
   as a fn.
+- `const` in a MODULE file (a library's `const PIPE_IN: int = 1`):
+  F0902 "a module file holds declarations — only the entry runs
+  statements" — a library's constant is a fn (`fn pipe_in() -> int
+  { 1 }`; @std/process's flag words).
+- `is` with a PAYLOAD pattern (`e is .TimedOut(_, _)`): "expected
+  `}` to close the `match`" at the `(` — `is` takes a bare variant;
+  a payload question is a two-arm `match` (`.TimedOut(_, _) ->
+  true`, `rest -> false`) hoisted into a named predicate.
+- A METHOD after `?` on a Result (`shell(line)?.run()`): F0102
+  "`?.` cannot call a method yet — chain methods are recorded" —
+  bind the `?` first (`let c = shell(line)?`), then call. The field
+  twin (`x()?.out`) is F2023 above; its help says "write `.out`",
+  which is wrong for the propagate-then-read case — `(x()?).out`.
+- `fail` inside a `catch` ARM's block (`x catch e -> { cleanup(); fail
+  e }`): F2029 "a `catch` arm answers the ok side: `T`, this is
+  `Result<…>`" — the arm's block is not read as diverging. Write the
+  statement `match` (`.Err(e) -> { cleanup(); fail e }, .Ok(v) -> …`),
+  which is (@std/process's three drivers).
+- A `null` LITERAL as a list element under `List<T?>` (`[null for c in
+  cs]`, `T` a struct): F2006 "a list element cannot hold this yet" —
+  lane C's PAIRS IN SLOTS. A `T?`-answering fn fills the slot
+  (`[nothing_yet() for c in cs]`).
 
 Wants the typer does not carry yet:
 - A no-argument generic call under a typed want (`let xs:
@@ -543,7 +575,10 @@ Runtime facts, ours to ratify:
   tools/watch.sh 6000 ./avra test packages/std-avrac` (the file at
   AVRA_SAMPLE_FILE). The second panic (2026-09-05) was exactly a
   bypass: `build/avra test` launched in the background to be
-  sampled, beside two lanes' gated steps. `AVRA_RC_GUARD=1` only on
+  sampled, beside two lanes' gated steps — and lane B's bare `./avra
+  test <pkg>` runs the same night were the other bypass: a package
+  suite is a whole-package compile plus a linked binary spawning
+  children, never a probe. `AVRA_RC_GUARD=1` only on
   small programs: its log is bounded but a guarded compiler run
   over a package is still a machine's worth. Scratch probes
   (`./avra check` of one file) are sub-second and need no lock.

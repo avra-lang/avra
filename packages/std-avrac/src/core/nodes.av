@@ -454,6 +454,12 @@ export enum Stmt {
     /// `spec "name" { given "…" { then "…" { … } } }` — a test
     /// suite; each case is a declaration of its own.
     Spec(name: string, cases: List<Case>)
+    /// `defer e` — the body runs when the enclosing scope ends or
+    /// the fn exits early, last-registered first; `on_error` marks
+    /// an `errdefer`, which runs only when the fn exits through its
+    /// failure channel. The body is a lambda of no seats: captures
+    /// are copied at the statement, the call happens at the exit.
+    Defer(body: ExprId, on_error: bool)
     Error
 }
 
@@ -499,7 +505,7 @@ impl NodeStore {
             .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or
             .LetElse(_, _, _) or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or
-            .TraitDecl(_, _) or .Spec(_, _) or .Error -> null,
+            .TraitDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> null,
         }
     }
 
@@ -857,6 +863,7 @@ impl NodeStore {
                 fp(18, [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to)].concat(self.stmt_fps(stmts))),
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
             .Discard(value) -> fp(57, [self.expr_fingerprint(value)]),
+            .Defer(body, on_error) -> fp(if on_error { 62 } else { 61 }, [self.expr_fingerprint(body)]),
             .Use(path, items) -> fp(50, [fp_str(p) for p in path].concat([fp_str(i) for i in items])),
             .ForEach(index, name, subject, stmts) ->
                 fp(42, [fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),

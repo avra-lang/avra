@@ -84,6 +84,7 @@ fn propagate_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
 fn propagate_res_reg(mut cx: LowerCx, e: ExprId, r: Reg) -> Reg {
     cx.emit(Ins.IfStart(okness_of(cx, r)))
     cx.emit(Ins.ArmEnd(payload_of(cx, r, cx.type_at(e))))
+    cx.failing()
     cx.emit(Ins.FnExit(r))
     let hollow = hollow_of(cx, cx.type_at(e))
     let dst = cx.result(e)
@@ -95,6 +96,7 @@ fn propagate_res_reg(mut cx: LowerCx, e: ExprId, r: Reg) -> Reg {
 fn departed(mut cx: LowerCx, e: ExprId) -> Reg {
     let ret: TypeId? = cx.enclosing_ret()
     if ret == null { return lower_defect(cx, e, "a propagation without an enclosing fn survived typing") }
+    cx.leaving()
     cx.emit(Ins.FnExit(absent_of(cx, ret!)))
     hollow_of(cx, cx.type_at(e))
 }
@@ -111,7 +113,7 @@ fn let_else_reg(mut cx: LowerCx, s: StmtId) -> Reg? {
     let held = cx.type_at(subject!)
     cx.emit(Ins.IfStart(presence_of(cx, v, held)))
     cx.emit(Ins.ArmEnd(carried_of(cx, v, held)))
-    cx.lower_stmts(else_stmts_of(cx.view.store.stmt(s)))
+    cx.arm_stmts(else_stmts_of(cx.view.store.stmt(s)))
     let hollow = hollow_of(cx, carried_type(cx, held))
     let dst = cx.mint_ty(carried_type(cx, held))
     cx.emit(Ins.RegionEnd(dst, hollow))

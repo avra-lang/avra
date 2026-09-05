@@ -63,7 +63,7 @@ fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> LowerCx 
         view: a.view, names: a.names, facts: a.facts, dispatch: a.lang.dispatch,
         out: new_emitter(jobs.externs),
         body: new_body_regs(a.view.store.exprs.count(), a.view.store.stmts.count()),
-        sub: sub, fn_ret: fn_ret, jobs: jobs,
+        sub: sub, fn_ret: fn_ret, jobs: jobs, deferred: [], depth: 0,
     }
 }
 
@@ -209,9 +209,9 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, jobs: Jobs) -> Lower
     // the params ARE registers 0..N-1, minted in order
     for pt in ptypes { let _ = lo.out.mint_ty(pt) }
     lo.out.seeded()
-    lo.out.give(Ins.ScopeEnter(Level.Application))
+    lo.scope_enter()
     let r = lo.reg_of(root)
-    lo.out.give(Ins.ScopeExit(r))
+    lo.scope_exit(r)
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
         body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types },
@@ -234,12 +234,12 @@ fn lower_lambda(a: Analysis, lj: Lift, jobs: Jobs) -> LoweredBody {
     let _ = lo.out.mint_ty(lam_ty)
     for pt in seats { let _ = lo.out.mint_ty(pt) }
     lo.out.seeded()
-    lo.out.give(Ins.ScopeEnter(Level.Application))
+    lo.scope_enter()
     if body == null {
         lo.out.defect("a lift without a lambda survived typing")
     }
     let r = lo.reg_of(body ?? lj.lam)
-    lo.out.give(Ins.ScopeExit(r))
+    lo.scope_exit(r)
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
         body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types },
@@ -272,12 +272,12 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
 /// the entry, a program's own symbol when every file is a program.
 fn lower_main(a: Analysis, name: string, jobs: Jobs) -> LoweredBody {
     mut lo = new_lower_cx(a, null, null, jobs)
-    lo.out.give(Ins.ScopeEnter(Level.Application))
+    lo.scope_enter()
     lo.lower_stmts(a.view.stmts)
     let shown: ExprId? = program_answer(a)
     let refusal: Diag? = if shown == null { null } else { lo.print_lowering(lo.reg_of(shown!)) }
     if refusal != null { lo.out.voices.speak(refusal!) }
-    lo.out.give(Ins.ScopeExit(null))
+    lo.scope_exit(null)
     lo.out.give(Ins.Ret(0))
     LoweredBody {
         body: Body {
