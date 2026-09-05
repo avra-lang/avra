@@ -566,7 +566,12 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   for it.
 - `m["k"]` on a map: F2000 "`[...]` indexes a `List`, found
   `Map<string, int>`" — `.get(k)`, which answers `T?`.
-- A `List<T>` never adopts a `List<T?>` want: `let tys: List<TypeRef?>
+- A struct-literal FIELD seat does not plant a want on its value
+  (the value is walked before the field's want exists): a
+  comprehension there types on its own, so `Pins { slots: [b ??
+  args[j] for j, b in xs] }` under `slots: List<TypeId?>` is F2010
+  "field `slots` is `List<TypeId?>`, this is `List<TypeId>`" — a
+  typed let plants it. A `List<T>` never adopts a `List<T?>` want: `let tys: List<TypeRef?>
   = [t for t in refs]` is F2024 "`tys` declares `List<TypeRef?>`,
   this is `List<TypeRef>`" — the element's nullable is not widened
   through the list. Align by span, or build the nullable list

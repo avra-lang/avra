@@ -86,6 +86,14 @@ HOW TO TAKE A LANE
      file, CLAUDE.md, DOGFOODING.md), commit message handed over.
      Nothing commits without the owner's word.
   5. To land: rebase on main, full gate through the lock, merge.
+     A commit that adds a COMPILER FEATURE leaves the tree compilable
+     by main's current compiler — the compiler's own uses of the
+     feature land in the NEXT commit, once the seed carries it (lane
+     D slipped twice; the cheap pre-flight from the lane is `sh
+     tools/watch.sh 4000 ../avra/build/avra check "$PWD/packages/cli"`
+     — the SHIM cds to its own root, so `../avra/avra` would check
+     main's tree — and the integrator should run it before merging;
+     lane A's tool).
      THE MERGER runs `make seed` and commits the refreshed
      `bootstrap/seed.ll`; that file is DERIVED and is never merged
      by hand.
