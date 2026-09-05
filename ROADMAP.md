@@ -4860,15 +4860,15 @@ by meaning; each is a slice for lane D unless a lane is named.
   and 12 raw pairs gone) and the measure (`measured_reg`; the three
   verbatim `length` lowerings are one row fn). The IR of all 73
   corpus programs was byte-identical before and after; I33 ratchets
-  the rule. PART TWO, still open: the array walk skeleton lives
-  twice (`lists/walks.av`'s opened/counted/turn_* and
-  `loops/lower.av`'s hand copy) -> the walk moves to emit.av and I33
-  grows to the loop instructions; the enum tag ladder x4
-  (`enums/lower.av`) -> `tag_index`/`tag_equals`; seven `lower_*`
-  preambles in `lists/walks.av` -> `seated_walk`; "a span between
-  two offsets" x7 -> one `within`; nullable's fourth `length`
-  lowering (`length_reg`, over a carried register) -> a
-  `measure_of(cx, e, r, ty)` beside `measured_reg`.
+  the rule. PART TWO LANDED the same day: the walk (`opened`,
+  `counted`, `turn_*`, `early_exit`), the loop brackets and the cells
+  live in emit.av; `loops/lower.av` speaks them (its hand copy of the
+  skeleton is gone); I33 covers the loop instructions; the enum tag
+  ladder x3 is `variant_tag`; "a span between two offsets" x7 is one
+  `within`; nullable's fourth `length` is `measure_of`. LEFT: the
+  seven `lower_*` seat preambles in `lists/walks.av` — a
+  `seated_walk` needs a `mut` seat in a fn TYPE, which does not parse
+  (now in "The subset today"; a candidate under H).
 - ~~B. TWO LATENT INCONSISTENCIES~~ — DONE 2026-09-05 (lane D). (2)
   WAS REAL: the enum payload seat short-circuited unify and refused a
   `dyn` box (`Holder.Holds(P { x: 3 })`, F2015) and an auto-Ok
@@ -4949,7 +4949,14 @@ by meaning; each is a slice for lane D unless a lane is named.
   five times (build/check/emit/ir/run: on_program + clock + timed +
   the identical `.Err` tail) -> `on_program_phase` + `spoken`, ~60
   lines; the CommandSpec trio is one record with defaults; four
-  program-locating fns are one `program_for(path, entered)`.
+  program-locating fns are one `program_for(path, entered)`. FOUND
+  2026-09-05 (lane D, by diffing the corpus IR across a pure
+  refactor): a monomorphized fn's mangled name carries the
+  instantiation's TypeId ORDINAL (`twice$14`), so any change to the
+  order types are interned renames every instantiation — the IR and
+  the seed churn for no semantic reason, and a stable diff of two
+  compilers is impossible. A mangling by the type's canonical NAME
+  (`twice$G`, `both$P_G`) is reproducible; lane C's (lower).
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure
   variant enumeration in core/parts.av and core/nodes.av; F2040

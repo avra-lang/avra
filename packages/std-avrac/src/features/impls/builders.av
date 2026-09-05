@@ -3,8 +3,8 @@
 //! declarations; a trait's SIGS mint as BODYLESS FnDecls (the body
 //! is a hole no pass walks), so declare and totality reuse the fn
 //! machinery whole.
-use core.{Expr, Stmt, StmtId, Param, TypeRef, Span, NodeStore, ExprId}
-use features.{LangNode, Builder, window_end, aligned_param_types, void_ref, marked_seats}
+use core.{Expr, Stmt, StmtId, Param, TypeRef, Span, ExprId, NodeStore}
+use features.{LangNode, Builder, window_end, aligned_param_types, void_ref, marked_seats, within, ref_within}
 use grammar.{Token}
 
 /// `self` — the receiver, a keyword: no name rides the node.
@@ -73,7 +73,7 @@ fn build_trait(mut b: Builder) -> Result<LangNode, string> {
         let sig = member_stmt(b, m, params_between(ps, tys, seat_marks, m.span.lo, upto), ret_between(rets, m.span.lo, upto), body_between(b.store, bodies, m.span.lo, upto))
         // a `mut` between the previous sig and this name is this sig's
         let since = if j == 0 { n.span.lo } else { mn[j - 1].span.lo }
-        if muts.any(token_within(it, since, m.span.lo)) { b.store.mark_mutating(sig) }
+        if muts.any(within(it.span.lo, since, m.span.lo)) { b.store.mark_mutating(sig) }
         fns.push(sig)
     }
     b.make_stmt(Stmt.TraitDecl(n.text, fns))
@@ -82,12 +82,8 @@ fn build_trait(mut b: Builder) -> Result<LangNode, string> {
 /// One sig's params — the names inside the window, each typed by
 /// its own inner window, marked `mut` by the marks inside it.
 fn params_between(ps: List<Token>, tys: List<TypeRef>, marks: List<Token>, after: int, before: int) -> List<Param> {
-    let mine = [p for p in ps if token_within(p, after, before)]
+    let mine = [p for p in ps if within(p.span.lo, after, before)]
     marked_seats(mine, aligned_param_types(mine, tys, before), marks, after)
-}
-
-fn token_within(t: Token, after: int, before: int) -> bool {
-    t.span.lo > after && t.span.lo < before
 }
 
 /// A trait's member: a sig with a HOLE body, or a DEFAULT with the
@@ -124,7 +120,3 @@ fn ret_between(rets: List<TypeRef>, after: int, before: int) -> TypeRef {
     mine ?? void_ref()
 }
 
-fn ref_within(r: TypeRef, after: int, before: int) -> bool {
-    let sp: Span? = r.span
-    sp != null && sp!.lo > after && sp!.lo < before
-}

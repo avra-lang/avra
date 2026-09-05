@@ -317,13 +317,14 @@ def repeated_unwrap(lines):
 STRING_LEN_LOOP = re.compile(
     r"while [^{]*\b(s|src|a|b|text|name|source)\.length\b")
 
-REGION_EMIT = re.compile(r"cx\.emit\(Ins\.(IfStart|ArmEnd|RegionEnd)\(")
+REGION_EMIT = re.compile(r"cx\.emit\(Ins\.(IfStart|ArmEnd|RegionEnd|LoopStart|LoopCond|LoopEnd)\b")
 
 def raw_region(lines):
-    """A region instruction emitted raw by a feature. The emission
-    vocabulary (features/emit.av) speaks it: `open_region`, `arm_end`,
-    `close_region`/`close_region_as` — one instruction stream for both
-    engines by construction. The vocabulary's own body is exempt."""
+    """A region or loop instruction emitted raw by a feature. The
+    emission vocabulary (features/emit.av) speaks it: `open_region`,
+    `arm_end`, `close_region`/`close_region_as`; `loop_start`,
+    `loop_cond`, `loop_end` and the walk — one instruction stream for
+    both engines by construction. The vocabulary's own body is exempt."""
     if CURRENT["path"].endswith("features/emit.av"):
         return
     for i, l in enumerate(lines):
@@ -495,7 +496,7 @@ SPECIMENS = {
             ["    fn m(self, a: int, b: int) -> int {", "        a + a", "    }"],
             ["    fn m(self, a: int) -> int { 1 }"]],
     "I24": [["use core.{Span}"]],
-    "I33": [["    cx.emit(Ins.IfStart(c))"], ["        cx.emit(Ins.ArmEnd(v))"], ["    cx.emit(Ins.RegionEnd(dst, last))"]],
+    "I33": [["    cx.emit(Ins.IfStart(c))"], ["        cx.emit(Ins.ArmEnd(v))"], ["    cx.emit(Ins.RegionEnd(dst, last))"], ["    cx.emit(Ins.LoopStart)"], ["    cx.emit(Ins.LoopCond(more))"], ["    cx.emit(Ins.LoopEnd)"]],
     "I28": [['    cx.emit(pointed(error_at("k", at, "m"), "l"))']],
     "I26": [["fn f(x: int?) -> int {", "    if x == null { return 0 }",
              "    x! + x! + x!", "}"],

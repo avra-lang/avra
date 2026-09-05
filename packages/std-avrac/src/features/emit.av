@@ -4,7 +4,7 @@
 //! a constant or a measure it speaks through these verbs, so the two
 //! engines read one instruction stream by construction, never by
 //! two features happening to emit matching brackets.
-use core.{Reg, Ins, Type, TypeId, ExprId}
+use core.{Reg, Ins, Type, TypeId, ExprId, BinOp, Level}
 
 // ── Constants ───────────────────────────────────────────────────
 
@@ -48,6 +48,106 @@ export fn close_region_as(mut cx: LowerCx, ty: TypeId, last: Reg) -> Reg {
     dst
 }
 
+// ── Cells ───────────────────────────────────────────────────────
+
+/// A cell of `ty`, seeded — the seed minted before the cell.
+export fn seeded_cell(mut cx: LowerCx, ty: TypeId, seed: Reg) -> Reg {
+    let cell = cx.mint_ty(ty)
+    cx.emit(Ins.Alloca(cell))
+    cx.emit(Ins.Store(cell, seed))
+    cell
+}
+
+/// The node's answer, read out of its cell.
+export fn loaded(mut cx: LowerCx, e: ExprId, cell: Reg) -> Reg {
+    let dst = cx.result(e)
+    cx.emit(Ins.Load(dst, cell))
+    dst
+}
+
+// ── Loops ───────────────────────────────────────────────────────
+// `loop_start`, the condition's instructions, `loop_cond(more)` —
+// which opens the turn's scope — the body, then `loop_end`.
+
+export fn loop_start(mut cx: LowerCx) {
+    cx.emit(Ins.LoopStart)
+}
+
+export fn loop_cond(mut cx: LowerCx, more: Reg) {
+    cx.emit(Ins.LoopCond(more))
+    cx.emit(Ins.ScopeEnter(Level.Application))
+}
+
+export fn loop_end(mut cx: LowerCx) {
+    cx.emit(Ins.ScopeExit(null))
+    cx.emit(Ins.LoopEnd)
+}
+
+// ── The walk ────────────────────────────────────────────────────
+// One counting loop for every `for` and every list verb: `opened`
+// over a list or `counted` over a range, then per turn `turn_open`,
+// `turn_index`, `turn_elem` (a list's walk only), the body,
+// `turn_close`. Both engines read one stream for a comprehension, a
+// `for x in xs` and an `xs.map(f)` because there is one skeleton.
+
+/// A walk counts `idx` up to `len`; over a list, `xs` is the box each
+/// turn reads at the count, and a range has no box to read.
+export type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId }
+
+export fn opened(mut cx: LowerCx, subject: ExprId, elem: TypeId) -> Walk {
+    let xs = cx.reg_of(subject)
+    let len = measure_of(cx, subject, xs, cx.type_at(subject))
+    let idx = seeded_cell(cx, cx.view.types.intern(Type.Int), const_int(cx, 0))
+    Walk { xs: xs, len: len, idx: idx, elem: elem }
+}
+
+/// `lo..hi` — the count starts at `lo` and stops before `hi`.
+export fn counted(mut cx: LowerCx, lo: ExprId, hi: ExprId) -> Walk {
+    let int = cx.view.types.intern(Type.Int)
+    Walk { xs: null, len: cx.reg_of(hi), idx: seeded_cell(cx, int, cx.reg_of(lo)), elem: int }
+}
+
+/// LoopStart, the condition, and the turn's scope.
+export fn turn_open(mut cx: LowerCx, w: Walk) {
+    loop_start(cx)
+    let at = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Load(at, w.idx))
+    let more = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Bin(more, BinOp.Lt, at, w.len))
+    loop_cond(cx, more)
+}
+
+/// This turn's count, read out of the cell.
+export fn turn_index(mut cx: LowerCx, w: Walk) -> Reg {
+    let here = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Load(here, w.idx))
+    here
+}
+
+/// This turn's element — a RUNTIME index, so the read stays raw.
+/// Asked of a list's walk only; a range's has no box.
+export fn turn_elem(mut cx: LowerCx, w: Walk, here: Reg) -> Reg {
+    let v = cx.mint_ty(w.elem)
+    cx.emit(Ins.CallRt(v, "avra_array_get", [w.xs!, here]))
+    v
+}
+
+/// The step, and the turn's close.
+export fn turn_close(mut cx: LowerCx, w: Walk) {
+    let again = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Load(again, w.idx))
+    let one = const_int(cx, 1)
+    let next = cx.mint_shape(Type.Int)
+    cx.emit(Ins.Bin(next, BinOp.Add, again, one))
+    cx.emit(Ins.Store(w.idx, next))
+    loop_end(cx)
+}
+
+/// The BREAK idiom: an index past the length ends the walk.
+export fn early_exit(mut cx: LowerCx, w: Walk) {
+    cx.emit(Ins.Store(w.idx, w.len))
+}
+
 // ── Measures ────────────────────────────────────────────────────
 
 /// `x.length` on a list, a map or a string — the word the one
@@ -57,8 +157,22 @@ export fn close_region_as(mut cx: LowerCx, ty: TypeId, last: Reg) -> Reg {
 export fn measured_reg(mut cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
     let s = cx.reg_of(subject)
     let word: string? = length_word(cx.view.types.shape_of(cx.type_at(subject)))
-    if word == null { return lower_defect(cx, e, "a length on an unmeasurable shape survived typing") }
+    if word == null { return unmeasurable(cx, e) }
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, word!, [s]))
     dst
+}
+
+/// The length of a register already in hand, as a scratch int — the
+/// same word, the same defect; `e` locates the defect.
+export fn measure_of(mut cx: LowerCx, e: ExprId, r: Reg, ty: TypeId) -> Reg {
+    let word: string? = length_word(cx.view.types.shape_of(ty))
+    if word == null { return unmeasurable(cx, e) }
+    let len = cx.mint_shape(Type.Int)
+    cx.emit(Ins.CallRt(len, word!, [r]))
+    len
+}
+
+fn unmeasurable(mut cx: LowerCx, e: ExprId) -> Reg {
+    lower_defect(cx, e, "a length on an unmeasurable shape survived typing")
 }
