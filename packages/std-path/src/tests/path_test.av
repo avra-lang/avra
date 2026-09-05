@@ -1,0 +1,54 @@
+// Paths as text, vertically: every cut at its edges — no directory,
+// no extension, a dot that leads, a dot in the directory — joining,
+// containment, folding and relating.
+use @std.path.{dir_of, file_name, stem_of, extension_of, with_extension, first_slash, is_absolute, under_dir, joined_path, normalized, relative_path, segments}
+
+spec "std/path" {
+    given "the cuts" {
+        then "dir_of is the part before the last slash, or nothing" {
+            dir_of("a/b/c.av") == "a/b" && dir_of("c.av") == "" && dir_of("/c") == "" && dir_of("a/b/") == "a/b"
+        }
+        then "file_name is the last segment" {
+            file_name("a/b/c.av") == "c.av" && file_name("c.av") == "c.av" && file_name("a/b/") == ""
+        }
+        then "stem_of drops the last extension only" {
+            stem_of("src/lower.av") == "lower" && stem_of("a.tar.gz") == "a.tar" && stem_of("plain") == "plain"
+        }
+        then "a leading dot is a name, not an extension" {
+            stem_of(".gitignore") == ".gitignore" && extension_of(".gitignore") == "" && extension_of(".env.local") == "local"
+        }
+        then "a dot in the directory does not count" {
+            stem_of("a.b/c") == "c" && extension_of("a.b/c") == "" && dir_of("a.b/c") == "a.b"
+        }
+        then "extension_of is the suffix without its dot" {
+            extension_of("x.av") == "av" && extension_of("x.") == "" && extension_of("x") == ""
+        }
+        then "with_extension replaces, or gives one" {
+            with_extension("a/b.av", "ll") == "a/b.ll" && with_extension("b", "ll") == "b.ll" && with_extension("a.tar.gz", "zip") == "a.tar.zip"
+        }
+        then "first_slash and is_absolute" {
+            first_slash("@std/io") == 4 && first_slash("io") < 0 && is_absolute("/x") && !is_absolute("x/")
+        }
+    }
+    given "joining and containment" {
+        then "joined_path puts a name under a directory; the empty directory adds nothing" {
+            joined_path("a", "b") == "a/b" && joined_path("", "b") == "b"
+        }
+        then "under_dir is strictly below; the empty directory holds everything" {
+            under_dir("a/b", "a") && !under_dir("a", "a") && !under_dir("ab/c", "a") && under_dir("x", "")
+        }
+    }
+    given "folding" {
+        then "dots drop, double dots fold, the top survives" {
+            normalized("a/./b/../c") == "a/c" && normalized("/a/../b") == "/b" && normalized("../x") == "../x" && normalized("a//b") == "a/b"
+        }
+        then "a double dot past the top stays" { normalized("a/../..") == ".." }
+        then "segments are the non-empty parts" { segments("/a//b/").join(",") == "a,b" && segments("").length == 0 }
+    }
+    given "relating" {
+        then "relative_path climbs to the shared prefix, then descends" {
+            relative_path("a/b/c", "a/x") == "../../x" && relative_path("a", "a/b") == "b" && relative_path("a/b", "a/b") == ""
+        }
+        then "two unrelated paths climb all the way" { relative_path("a/b", "c") == "../../c" }
+    }
+}
