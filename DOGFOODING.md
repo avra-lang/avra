@@ -59,7 +59,7 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33.
+Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33 I34.
 Unratcheted, read by a human: I5 (a matcher cannot see whether a
 predicate has effects), I31 (a stolen doc and a legitimate
 multi-paragraph header are the same shape).
@@ -474,6 +474,31 @@ reintroducing I3's blind spot names the two spellings it lost.
       changes every turn — there is no one value to bind. The first
       matcher over-counted by reading `s.token!` as a local; a rule
       must justify every hit it prints.
+- I34 (ratcheted) TEXT GROWN BY `s = s + piece` IN A LOOP. Every
+      step copies what came before, so a scanner over n bytes does
+      n²/2 work — the lexer's string literal, the toml scanner and
+      `quoted_text` all spelled it, and the cli's padding too. The
+      form: a `@std/text` builder (`mut out = builder()`, `out.push`,
+      `out.built()`) that keeps pieces apart and joins once; a
+      scanner pushes RUNS (`src.substring(run, j)` at each escape),
+      not characters; a column is `repeat`/`pad_left`/`pad_right`.
+      The matcher reads `x = x + "…"`, `x = x + (…)` and `x = x +
+      y.substring(…)` — an int's `n = n + 1` never matches. Four
+      sites converted at discovery (2026-09-05), none licensed.
+- I33 (ratcheted) a RAW SCOPE BRACKET through a lowering context:
+      `cx.emit(Ins.ScopeEnter(…))`, `cx.emit(Ins.ScopeExit(…))`,
+      `lo.out.give(Ins.Scope…)`. A scope IS a `defer` frame, and the
+      frames live in the walk's verbs — `scope_enter`/`scope_exit`
+      for a scope, `seats_enter`/`seats_exit` for the seats' bracket
+      (no statement list, so no frame), `arm_stmts` for a
+      statement-list arm — so a bracket emitted raw is invisible to
+      them: a `defer` written inside runs at the ENCLOSING frame's
+      end (an `if` statement's branch did, landing `defer`). Eight
+      sites converted at discovery (three loops, the comprehension
+      walk, the block, the fn, the lambda, the entry). LICENSED at
+      the four verbs that ARE the spelling; an Emitter's own `give`
+      in a synthesized body (test_run.av) has no context and is not
+      the smell.
 
 ## Lowering: MINT IN EMISSION ORDER
 
@@ -1211,4 +1236,5 @@ reads for it.
 
 - **Pipe `|>`** — first real pipeline, not two-arg call rewrites.
 
+- THE ROOTS GREW 2026-09-05: the ratchet reads every std package (`packages/std-time`, `std-process`, `std-io`, `std-cli`), not the compiler and the cli alone — the first sweep found 13 sites in packages written under the bar but outside the tool's eye, all paid; a new `packages/std-<name>/src` joins SRC in tools/idioms.py with its first slice.
 - I20/I25 GREW 2026-09-03: a counted refusal also spells `voices.length == n` (a Program's package voices are diagnostics); the ratchet's roots now include packages/std-toml/src, so a standalone package is held to the same bar; I25 reads one variant per line (CLAUDE.md records the one-line-enum blind spot).
