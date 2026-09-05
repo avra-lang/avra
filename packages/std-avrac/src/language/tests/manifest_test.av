@@ -24,7 +24,34 @@ fn speaks(text: string, kind: string) -> bool {
     m.voices.length == 1 && m.voices[0].kind == kind
 }
 
+fn tooled(rest: string) -> string {
+    packaged("\n[process.tools]\ngit = { from = \"path\", terminator = \"--end-of-options\" }\nfind = { terminator = false }\n\n[process.tools.clang]\nfrom = \"env\"\nvar = \"CC\"\ndefault = \"clang\"\n${rest}")
+}
+
 spec "language/manifest" {
+    given "[process.tools]" {
+        then "tools are read in both spellings, with their provenance and their terminator" {
+            let m = read(tooled(""))
+            m.voices.length == 0 && m.tools.length == 3 && m.tools[0].name == "git" && m.tools[0].terminator == "--end-of-options" && m.tools[1].terminator == null && m.tools[2].name == "clang" && m.tools[2].from is .Env && m.tools[2].var == "CC" && m.tools[2].default == "clang"
+        }
+        then "a tool not saying where it comes from comes from the PATH, ending its options at `--`" {
+            let m = read(tooled(""))
+            m.tools[1].from is .Path && m.tools[0].from is .Path && m.tools[2].terminator == "--"
+        }
+        then "an unknown key under [process] REFUSES — a bound on what may run is never degraded" {
+            let m = read(tooled("nope = 1\n"))
+            m.voices.length == 1 && m.voices[0].kind == "manifest.unknown_process_key" && m.voices[0].severity is .Error
+        }
+        then "an unknown key inside a tool's own row refuses too" {
+            speaks(packaged("\n[process.tools]\ngit = { colour = 1 }\n"), "manifest.unknown_process_key")
+        }
+        then "a provenance that is not path, env or abs is refused" {
+            speaks(packaged("\n[process.tools]\ngit = { from = \"magic\" }\n"), "manifest.bad_tool_from")
+        }
+        then "an env tool names its variable; an abs tool names its file" {
+            speaks(packaged("\n[process.tools]\ncc = { from = \"env\" }\n"), "manifest.tool_env_var") && speaks(packaged("\n[process.tools]\nld = { from = \"abs\" }\n"), "manifest.tool_abs_at")
+        }
+    }
     given "the reference manifest" {
         then "its facts are read" {
             let m = read(reference())

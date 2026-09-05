@@ -427,6 +427,20 @@ registry is the idiom engine's spec, written by dogfooding.
   GB for 60k pushes, 0.26 s and 1.6 MB fixed; the gate's peak fell
   3.4 GB -> 1.9 GB. A loop region opens a scope for its condition;
   lower_test pins the placement.
+- A `defer`'s FRAME IS ITS STATEMENT LIST: a scope bracket
+  (`cx.scope_enter()`/`cx.scope_exit(r)`) or a statement-list arm
+  (`cx.arm_stmts(stmts)`) — never a raw `Ins.ScopeEnter`/`ScopeExit`
+  through a LowerCx, never a bare `cx.lower_stmts` inside an arm. A
+  raw bracket is invisible to the frames, so a `defer` inside it
+  runs at the ENCLOSING frame's end (an `if` statement's branch did
+  exactly that). The seats' bracket in lower_fn/lower_lambda is
+  `seats_enter/seats_exit` — no statement list, no frame — so a
+  body's block is depth 1 and its close is the fn's TAIL. And an
+  early exit calls `cx.leaving(answer)` (an answer — an `errdefer`
+  runs behind its tag when it is a failing `Result`) or
+  `cx.failing()` (the failure channel — `fail`, `?` — which runs
+  `errdefer`s unconditionally) BEFORE its `Ins.FnExit`: the value is
+  computed, the deferred calls come next, then the exit.
 
 ## Vendored code — do not imitate
 
@@ -490,6 +504,32 @@ Syntax the grammar lacks:
 - `export let` / `export const`: F3014 "`export` marks a fn, type,
   enum or trait — not this statement" — a constant crosses modules
   as a fn.
+- `Result<void, E>` as a fn's answer: F2019 "a `Result` slot cannot
+  hold this yet" (help: "nullable slots arrive with ownership's next
+  slice"). A writing verb answers what it wrote instead —
+  `@std/io`'s `write_text`/`make_dirs`/`remove` answer the path.
+- `const` in a MODULE file (a library's `const PIPE_IN: int = 1`):
+  F0902 "a module file holds declarations — only the entry runs
+  statements" — a library's constant is a fn (`fn pipe_in() -> int
+  { 1 }`; @std/process's flag words).
+- `is` with a PAYLOAD pattern (`e is .TimedOut(_, _)`): "expected
+  `}` to close the `match`" at the `(` — `is` takes a bare variant;
+  a payload question is a two-arm `match` (`.TimedOut(_, _) ->
+  true`, `rest -> false`) hoisted into a named predicate.
+- A METHOD after `?` on a Result (`shell(line)?.run()`): F0102
+  "`?.` cannot call a method yet — chain methods are recorded" —
+  bind the `?` first (`let c = shell(line)?`), then call. The field
+  twin (`x()?.out`) is F2023 above; its help says "write `.out`",
+  which is wrong for the propagate-then-read case — `(x()?).out`.
+- `fail` inside a `catch` ARM's block (`x catch e -> { cleanup(); fail
+  e }`): F2029 "a `catch` arm answers the ok side: `T`, this is
+  `Result<…>`" — the arm's block is not read as diverging. Write the
+  statement `match` (`.Err(e) -> { cleanup(); fail e }, .Ok(v) -> …`),
+  which is (@std/process's three drivers).
+- A `null` LITERAL as a list element under `List<T?>` (`[null for c in
+  cs]`, `T` a struct): F2006 "a list element cannot hold this yet" —
+  lane C's PAIRS IN SLOTS. A `T?`-answering fn fills the slot
+  (`[nothing_yet() for c in cs]`).
 
 Wants the typer does not carry yet:
 - A no-argument generic call under a typed want (`let xs:
@@ -507,7 +547,11 @@ Wants the typer does not carry yet:
   -> P { … }, _ -> Q { … } }` under `-> dyn Show`: F2013 "a
   `match`'s arms disagree: `Q` vs the first arm's `P`"; the `if`
   twin: F2000 "an `if`'s branches disagree: `P` vs `Q`". Box each
-  under `let x: dyn Show = …` and select among the lets.
+  under `let x: dyn Show = …` and select among the lets. Nor into a
+  CALL's seat: `refused(e)` with `fn refused(e: dyn Error)` and a
+  `ProcessError` in hand is F2000 "argument 1 of `refused` wants
+  `dyn Error`, found `ProcessError`" — bind `let boxed: dyn Error =
+  e` first, or take what the trait answers (the message) instead.
 - A trait impl over a GENERIC type (`impl Show for Box<T>`): F2031
   "`P` is generic — a trait impl over a generic type is recorded,
   not landed". Inherent generic impls (`impl Box<T>`) land.
@@ -582,7 +626,10 @@ Runtime facts, ours to ratify:
   REASON holds for memory too: the first hoard it named was a
   refcount leak no reading had found. The second panic (2026-09-05) was exactly a
   bypass: `build/avra test` launched in the background to be
-  sampled, beside two lanes' gated steps. `AVRA_RC_GUARD=1` only on
+  sampled, beside two lanes' gated steps — and lane B's bare `./avra
+  test <pkg>` runs the same night were the other bypass: a package
+  suite is a whole-package compile plus a linked binary spawning
+  children, never a probe. `AVRA_RC_GUARD=1` only on
   small programs: its log is bounded but a guarded compiler run
   over a package is still a machine's worth. Scratch probes
   (`./avra check` of one file) are sub-second and need no lock.
@@ -604,3 +651,21 @@ Runtime facts, ours to ratify:
   the script must never cross a SYMLINK into another tree
   (`packages/std-cli` was one, into bs2's source, and the rewrite
   changed bs2's file; it is a real file now).
+- A CODEGEN FIX REACHES THE PRODUCT ON THE SECOND BUILD. `make avra`
+  compiles the source with the STANDING binary, so a product built
+  right after merging a memory-pass fix carries the fix as SOURCE
+  but its own body was compiled by the pre-fix pass — it runs with
+  the bug it knows how to fix. Lane A's loop-condition fix merged
+  so: my product compiled the suite at 7 GB (main's at 1.2 GB), and
+  its second build was killed at 4.2 GB — the leaky product could
+  not even compile the cli. The way out is a binary that already
+  HAS the fix (main's `../avra/build/avra build packages/cli`, then
+  `cp` to build/avra), then `make avra` once more to prove the fixed
+  point (1.1 GB both times). Two rules: after merging a pass change,
+  build TWICE before trusting a peak; and run a bare `build/avra`
+  from another worktree with `LLVM_PREFIX` exported — the Makefile
+  exports it, a bare shell does not, and the `[link]` row's
+  `-L${LLVM_PREFIX}/lib` then names `/lib` ("clang failed linking").
+  And the watchdog's poll is not a wall: a fast leak reached 16 GB
+  between polls before the kill — cap what you can, but never run a
+  suspect product over a big input to "see".
