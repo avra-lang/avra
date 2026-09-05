@@ -778,11 +778,23 @@ the order is the dependency.
         (`safe_show$12` -> `$14`, the trait's `Self` interned). F2047
         98 -> 99 (`selfed_sig`'s `substituted` interns — a `mut` seat
         now). 19 new cases (10 vertical, 9 adversarial), 1694/1694;
-        corpus 73 both ways. NEXT: the payoff sweep — every
-        `nothing()` / bare-null pass method in the semantics impls
-        collapses into a trait default; `Self` in a BODY's local
-        annotation is the recorded generic-impl gap (the tscope is
-        the fn's own).
+        corpus 73 both ways. `Self` in a BODY's local annotation is
+        the recorded generic-impl gap (the tscope is the fn's own).
+        THE PAYOFF SWEEP, LANDED 2026-09-05: the pass methods a
+        feature had nothing to say at are the contract's DEFAULTS —
+        `kids` and `heirs` answer `[]`, `resolve`, `resolve_stmt` and
+        `type_stmt` do nothing, `lower_stmt` answers null — and the
+        26 impl methods that spelled exactly that are gone (9 `heirs`,
+        6 `lower_stmt`, 4 `resolve`, 4 `type_stmt`, 2 `kids`, 1
+        `resolve_stmt`), with the 10 imports only they used; `type_of`,
+        `lower` and every statement's own verb stay mandatory. The
+        compiler's own dispatch now runs through defaults mono'd per
+        feature — the first program to exercise the feature at scale
+        is the compiler. The dead-parameter rule (I23) exempts a
+        trait's own block as it exempted `impl Trait for T`: a
+        default's seats are the contract's. Differential: 157
+        programs, check/run/IR/LLVM identical; F2047 99 -> 97; 19
+        files, +35/-114; 1714/1714.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become

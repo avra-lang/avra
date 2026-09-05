@@ -212,8 +212,9 @@ def fn_body(lines, start):
 def dead_parameter(lines):
     """A parameter nothing reads — the signature lies about what the
     fn needs, and every call site carries the lie. Methods count,
-    except under `impl Trait for T`, where the TRAIT owns the
-    signature and a `nothing()` body cannot drop a parameter."""
+    except under `impl Trait for T` and inside `trait T { }` itself,
+    where the TRAIT owns the signature: a `nothing()` body — an
+    impl's or a default's — cannot drop a parameter."""
     contract, in_text = False, False
     for i, l in enumerate(lines):
         # Template text is prose; its fn heads are not fns.
@@ -222,7 +223,7 @@ def dead_parameter(lines):
             continue
         if in_text:
             continue
-        if re.match(r"impl .+ for \w", l):
+        if re.match(r"(?:export )?(?:impl .+ for \w|trait \w+ \{)", l):
             contract = True
         if l == "}":
             contract = False
