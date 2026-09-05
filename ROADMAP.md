@@ -272,6 +272,18 @@ the compiler checking itself 28.8s.
         suite's lower 6.1s -> 3.7s. What remains in lowering is the
         memory pass asking `rt_sig_of` per instruction (15% of the
         phase; memory.av is lane C's, and the once-value covers it).
+  - [x] THE MISS PATH (2026-09-04): a terminal miss — the engine's
+        commonest outcome — cost eight allocations for a literal (an
+        interpolation to backtick the expected word, a one-element
+        list, the farthest-failure record, the result record, an
+        `Absent`, an empty diagnostics list) and five for a token
+        class. The expected-word lists are spelled once per grammar in
+        `ready` (`lit_expects`/`kind_expects`), and one `Absent` and
+        one empty diagnostics list per run ride the context, shared —
+        immutable values share freely; a consumer that changed one
+        would copy. Two allocations per miss now. MEASURED: the
+        suite's parse 11.2s -> 10.2s; with the externs slice, the
+        check 17.6s -> 15.6s.
 
 LANE B — STD LIBS (owns NEW packages only; each package: `avra.toml`,
 spec tests beside it, a corpus package under corpus/<name>/ proving
@@ -6167,6 +6179,7 @@ packages/std-avrac`, user CPU):
   + the builder index                        19.7s   (3.04x)
   + the memo by ordinal and cursor           18.5s   (3.23x)
   + lengths in the header                    17.6s   (3.40x)
+  + the externs once, the miss path          15.6s   (3.83x)
   make gate, wall                           223s -> 152s -> 135s
   make avra (the compiler building itself)  37.6s -> 25.3s
   peak RSS of a gate                         1.8 GB (measured, the watchdog)
