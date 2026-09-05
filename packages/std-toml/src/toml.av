@@ -3,6 +3,7 @@
 //! values are strings, integers, booleans, string arrays, and
 //! one-level inline tables. Reading never aborts: a bad line is one
 //! refusal, and the reader continues at the next line.
+use @std.text.{builder}
 
 /// A TOML value: the subset a manifest uses.
 export enum TomlValue {
@@ -242,16 +243,21 @@ fn string_value(text: string, n: int, i: int) -> ValueScan {
 /// the end.
 fn scan_string(text: string, n: int, i: int) -> TextScan {
     mut j = i + 1
-    mut out = ""
+    mut run = j
+    mut out = builder()
     while j < n {
         let c = text.char_code(j)
-        if c == 34 { return TextScan.Text(out, j + 1) }
+        if c == 34 {
+            out.push(text.substring(run, j))
+            return TextScan.Text(out.built(), j + 1)
+        }
         if c == 10 { return TextScan.Refused(unterminated(i, "string")) }
         if c == 92 && j + 1 < n {
-            out = out + (unescaped(text.char_code(j + 1)) ?? text.substring(j, j + 2))
+            out.push(text.substring(run, j))
+            out.push(unescaped(text.char_code(j + 1)) ?? text.substring(j, j + 2))
             j = j + 2
+            run = j
         } else {
-            out = out + text.substring(j, j + 1)
             j = j + 1
         }
     }

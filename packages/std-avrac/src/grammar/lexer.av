@@ -12,6 +12,7 @@
 //! Lexing is error-tolerant: a bad character, an unterminated
 //! string, or an unclosed hole is recorded and lexing continues, so
 //! one pass reports everything.
+use @std.text.{Text, builder}
 use core.{Span, span_of}
 use core.{is_space, is_name_start, is_name_cont, is_digit}
 
@@ -207,27 +208,36 @@ enum StrStop { Quote, Hole, Ragged }
 type StrPart = { text: string, stop: StrStop, next: int }
 
 /// Text from `from` (already inside the quotes) to the piece's end.
+/// Plain runs are copied whole into the builder; only an escape
+/// breaks a run.
 fn scan_str_part(src: string, from: int, interpolate: bool) -> StrPart {
     let n = src.length
+    mut out = builder()
+    mut run = from
     mut j = from
-    mut text = ""
     while j < n {
         let c = src.char_code(j)
-        if c == 34 { return StrPart { text: text, stop: StrStop.Quote, next: j + 1 } }
-        if c == 10 { return ragged(text, j) }
+        if c == 34 { return StrPart { text: closed(out, src, run, j), stop: StrStop.Quote, next: j + 1 } }
+        if c == 10 { return ragged(closed(out, src, run, j), j) }
         if interpolate && c == 36 && j + 1 < n && src.char_code(j + 1) == 123 {
-            return StrPart { text: text, stop: StrStop.Hole, next: j + 2 }
+            return StrPart { text: closed(out, src, run, j), stop: StrStop.Hole, next: j + 2 }
         }
         if c == 92 && j + 1 < n {
-            let un = unescape(src.char_code(j + 1))
-            text = text + (un ?? src.substring(j, j + 2))
+            out.push(src.substring(run, j))
+            out.push(unescape(src.char_code(j + 1)) ?? src.substring(j, j + 2))
             j = j + 2
+            run = j
         } else {
-            text = text + src.substring(j, j + 1)
             j = j + 1
         }
     }
-    ragged(text, j)
+    ragged(closed(out, src, run, j), j)
+}
+
+/// The run since the last escape appended; the text complete.
+fn closed(mut out: Text, src: string, run: int, j: int) -> string {
+    out.push(src.substring(run, j))
+    out.built()
 }
 
 /// A string piece the line ended before its quote did.
