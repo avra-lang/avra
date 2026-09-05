@@ -29,6 +29,10 @@ export fn impls() -> LanguageFeature {
         "type.mut_fn" | "F2046" | "`mut fn` marks a method — it lives in an impl or a trait"
         "resolve.receiver" | "F3024" | "`self` names a method's receiver"
         "resolve.nested_impl" | "F3025" | "impl and trait blocks live at the top level"
+        "type.receiver" | "F2047" | "a writing method is called on a `mut` place"
+        "type.seat" | "F2048" | "a `mut` seat is handed a `mut` place, one root per seat"
+        "type.contract_write" | "F2049" | "a method writes only under a `mut fn` contract"
+        "type.mut_fn_unused" | "F2050" | "`mut fn` on a method that never writes"
     }
     let words = table<KeywordRemedy> {
         word   | help
@@ -39,8 +43,8 @@ export fn impls() -> LanguageFeature {
         docs = "`impl Target { … }`, `trait Show { fn sigs }`, `impl Show for Target { … }`, and `value.m(…)` — methods and behavior contracts, statically dispatched; `self` is the receiver, implicit; `mut fn` declares a method that writes it."
         gram = grammar {
             stmt = "impl" it:NAME ( "<" tp:NAME ( "," tp:NAME )* ">" )? ( "for" ib:NAME ( "<" tp2:NAME ( "," tp2:NAME )* ">" )? )? "{" ( fs:stmt | BREAK )* "}" END @recover(sync_to: "END") -> impl_decl(it, tp, ib, tp2, fs)
-            stmt = "trait" tn:NAME "{" ( BREAK | ( mk:"mut" )? "fn" mn:NAME "(" ( tps:NAME ( ":" tpt:type )? ( "," tps:NAME ( ":" tpt:type )? )* )? ")" ( "->" mr:type )? )* "}" END @recover(sync_to: "END") -> trait_decl(tn, mk, mn, tps, tpt, mr)
-            stmt = "mut" "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ">" )? "(" ( ps:NAME ( ":" pt:type )? ( "," ps:NAME ( ":" pt:type )? )* )? ")" ( "->" r:type )? b:block END -> mut_fn_decl(n, tp, ps, pt, r, b)
+            stmt = "trait" tn:NAME "{" ( BREAK | ( mk:"mut" )? "fn" mn:NAME "(" ( ( pm:"mut" )? tps:NAME ( ":" tpt:type )? ( "," ( pm:"mut" )? tps:NAME ( ":" tpt:type )? )* )? ")" ( "->" mr:type )? )* "}" END @recover(sync_to: "END") -> trait_decl(tn, mk, mn, pm, tps, tpt, mr)
+            stmt = "mut" "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ">" )? "(" ( ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "," ( mk:"mut" )? ps:NAME ( ":" pt:type )? )* )? ")" ( "->" r:type )? b:block END -> mut_fn_decl(n, tp, mk, ps, pt, r, b)
             primary = "self" -> receiver()
         }
         diags = codes

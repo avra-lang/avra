@@ -5,11 +5,6 @@
 use @std.avrac.language.{analyze_source}
 use @std.avrac.testing.{shown, refused_with, refusals}
 
-/// The standard counter.
-fn counter() -> string {
-    "type C = { n: int }\nimpl C {\n    fn bump() { self.n = self.n + 1 }\n    fn get() -> int { self.n }\n}\n"
-}
-
 spec "features/impls adversarial" {
     given "the receiver outside a method" {
         then "at the top level" {
@@ -126,6 +121,47 @@ spec "features/impls adversarial" {
         }
         then "in an interpolation hole" {
             shown("type C = { n: int }\nimpl C {\n    fn g() -> string { \"" + "\${self.n}!\" }\n}\nC { n: 7 }.g()") == "7!"
+        }
+    }
+    given "the inout seats under attack (S1)" {
+        then "three `mut` seats, three roots" {
+            shown("fn both(mut a: List<int>, mut b: List<int>, mut c: List<int>) { a.push(1)\n    b.push(2)\n    c.push(3) }\nmut x = [0]\nmut y = [0]\nmut z = [0]\nboth(x, y, z)\nx.length + y.length + z.length") == "6"
+        }
+        then "a wrong TYPE in a `mut` seat is the type's refusal alone" {
+            refused_with("fn grow(mut xs: List<int>) { xs.push(1) }\nmut s = \"x\"\ngrow(s)\n2", "argument 1 of `grow` wants `List<int>`, found `string`")
+        }
+        then "a field path under a `mut` root fills a seat; under a `let` it refuses" {
+            shown("type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nmut b = B { xs: [] }\ngrow(b.xs)\nb.xs.length") == "1" &&
+                refused_with("type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nlet b = B { xs: [] }\ngrow(b.xs)\nb.xs.length", "`b` is not `mut` — seat 1 of `grow` writes through it")
+        }
+        then "an index path fills a seat" {
+            shown("fn grow(mut xs: List<int>) { xs.push(1) }\nmut g = [[1]]\ngrow(g[0])\ng[0].length") == "2"
+        }
+        then "a CAPTURED root is a copy, and the seat law says so" {
+            refused_with("fn grow(mut xs: List<int>) { xs.push(1) }\nmut v = [1]\nlet g = () -> grow(v)\ng()\nv.length", "`v` is captured by value — a lambda's copy cannot fill seat 1 of `grow`")
+        }
+        then "the receiver captured in a lambda is a copy, named as `self`" {
+            let a = analyze_source("type C = { n: int }\nimpl C {\n    fn bump() { self.n = self.n + 1 }\n    fn later() { let f = () -> self.bump()\n        f() }\n}\nmut c = C { n: 1 }\nc.later()\nc.n")
+            a.clean() && a.diagnostics.length == 1 && a.report().contains("`self` is captured by value — `bump` writes through the lambda's copy")
+        }
+        then "a generic `mut` seat, two instantiations" {
+            shown("fn grow<T>(mut xs: List<T>, v: T) { xs.push(v) }\nmut a = [1]\nmut b = [\"s\"]\ngrow(a, 2)\ngrow(b, \"t\")\na.length + b.length") == "4"
+        }
+        then "a `mut` seat in a trait sig, through dyn" {
+            shown("trait Sink {\n    fn take(mut xs: List<int>)\n}\ntype S = { k: int }\nimpl Sink for S {\n    fn take(mut xs: List<int>) { xs.push(self.k) }\n}\nlet s: dyn Sink = S { k: 7 }\nmut v = [1]\ns.take(v)\nv[1]") == "7"
+        }
+        then "a seat written, read, written — the reads see each write" {
+            shown("fn grow(mut xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nlet n = v.length\ngrow(v)\n\"" + "\${n} " + "\${v.length}\"") == "2 3"
+        }
+        then "a managed value through a `mut` seat, twice" {
+            shown("fn shout(mut xs: List<string>) { xs.push(\"" + "\${xs.length}!\") }\nmut v = [\"a\"]\nshout(v)\nshout(v)\nv[2]") == "2!"
+        }
+        then "the old design's `mut self` in a list gets the receiver's remedy" {
+            refused_with("type C = { n: int }\nimpl C {\n    mut fn bump(mut self) { self.n = 1 }\n}\n2", "`self` is implicit in a method — drop it from the parameter list")
+        }
+        then "a method that only recurses on self is not writing" {
+            let a = analyze_source("type C = { n: int }\nimpl C {\n    fn spin(k: int) { if k > 0 { self.spin(k - 1) } }\n}\nlet c = C { n: 1 }\nc.spin(3)\nc.n")
+            a.diagnostics.is_empty() && a.ran() == "1"
         }
     }
     given "malformed surface, one message each" {

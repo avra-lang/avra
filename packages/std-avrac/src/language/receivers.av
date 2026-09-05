@@ -1,0 +1,249 @@
+//! THE RECEIVERS PASS — which methods WRITE THROUGH `self`. A
+//! method writes its receiver when its body assigns to a place
+//! rooted in `self`, calls a mutating vocabulary method on one,
+//! hands one to a `mut` seat, or calls a writing method on one —
+//! the last is what makes this a WHOLE-PROGRAM FIXPOINT over
+//! per-method summaries. A summary reads the RESOLVED body and the
+//! DECLARATIONS alone: every self-rooted place has a declared type
+//! along its whole path, so no body is typed to learn it. Asked
+//! through the declaration table's hook, remembered by the kernel
+//! (ROADMAP: the inout receiver).
+use core.{DeclId, ExprId, StmtId, TypeId, Type, NodeStore, Binding, MethodParts, PlaceStep, fp, touch}
+use features.{NameFacts, Decls, Decl, StructSig, fields_of_type, bound_decl_of, row_writes, trait_named, trait_member, self_type_of}
+
+/// One method's own evidence: whether its body writes directly,
+/// and the methods it calls on self-rooted places — the fixpoint's
+/// edges.
+type Summary = { own: bool, edges: List<DeclId> }
+
+/// The pass: every method's receiver bit, settled once per program
+/// state. Declared bits (`mut fn`, a trait's word) are recorded at
+/// declare; this pass adds the INFERRED ones.
+export fn receivers(ws: Workspace) -> int {
+    let k = key(Family.Receivers, 0)
+    if !(ws.db.ask(k) is .Compute) { return 0 }
+    ws.db.begin(k)
+    let methods = [x.id for x in ws.decls.decls if x.kind is .Method]
+    for m in methods { touch(sig(ws, m)) }
+    ws.decls.clear_written()
+    let sums = [summary(ws, m) for m in methods]
+    settle_writers(ws.decls, methods, sums)
+    ws.db.settle(k, fp(17, [if ws.decls.written_so_far(m) { 1 } else { 0 } for m in methods]))
+    methods.length
+}
+
+/// Kleene iteration: a method writes when it writes itself or calls
+/// a writer on self — until no bit moves. Deterministic and order-
+/// free; cycles resolve to the least answer, which is the true one.
+fn settle_writers(decls: Decls, methods: List<DeclId>, sums: List<Summary>) {
+    mut changed = true
+    while changed {
+        changed = false
+        for j, m in methods {
+            if !decls.written_so_far(m) && writes_now(decls, sums[j]) {
+                decls.record_written(m)
+                changed = true
+            }
+        }
+    }
+}
+
+fn writes_now(decls: Decls, s: Summary) -> bool {
+    s.own || s.edges.any((c: DeclId) -> decls.writes_so_far(c))
+}
+
+/// A method's own evidence, read from its resolved body and the
+/// declarations its self-rooted places name.
+fn summary(ws: Workspace, m: DeclId) -> Summary {
+    let x = ws.decls.decl(m)
+    let store = ws.decls.store(m)
+    let names = resolved(ws, x.file)
+    let receiver: TypeId? = receiver_type(ws, x)
+    // a trait sig, or a method whose impl was refused: no body to read
+    if receiver == null { return Summary { own: false, edges: [] } }
+    let cx = Survey { ws: ws, decls: ws.decls, store: store, names: names, receiver: receiver!, lo: x.lo, hi: x.hi }
+    let assigned = assigns_receiver(cx)
+    mut sites: List<Evidence> = []
+    // LICENSED I3: a comprehension over a RANGE is our own sugar backlog
+    for i in x.lo..x.hi { sites.push(site_evidence(cx, ExprId { index: i })) }
+    // the INFERRED evidence alone: the declared word is its own column,
+    // and the never-writes warning needs the two apart
+    Summary {
+        own: assigned || sites.any(it.own),
+        edges: [s.edge! for s in sites if s.edge != null],
+    }
+}
+
+/// What one method's summary reads: the body's file, its receiver's
+/// type, and its expression range.
+type Survey = { ws: Workspace, decls: Decls, store: NodeStore, names: NameFacts, receiver: TypeId, lo: int, hi: int }
+
+/// What one expression in the range says: a direct write, and/or an
+/// edge to a method called on a self-rooted place.
+type Evidence = { own: bool, edge: DeclId? }
+
+fn no_evidence() -> Evidence {
+    Evidence { own: false, edge: null }
+}
+
+/// Any assignment in the range whose target is rooted in `self`.
+fn assigns_receiver(cx: Survey) -> bool {
+    mut i = 0
+    let n = cx.store.stmts.count()
+    while i < n {
+        let t: ExprId? = cx.store.assign_target(StmtId { index: i })
+        if t != null && in_range(cx, t!) && rooted_in_receiver(cx, t!) { return true }
+        i = i + 1
+    }
+    false
+}
+
+fn in_range(cx: Survey, e: ExprId) -> bool {
+    e.index >= cx.lo && e.index < cx.hi
+}
+
+/// Whether a place's root is the receiver — asked of the BINDING.
+fn rooted_in_receiver(cx: Survey, e: ExprId) -> bool {
+    let root: ExprId? = cx.store.place_root(e)
+    if root == null { return false }
+    let b: Binding? = cx.names.binding(root!)
+    b != null && b! is .Receiver
+}
+
+/// One expression's evidence: a method call on a self-rooted place
+/// (a mutating row, a declared method's edge, a contract's word), or
+/// any call handing a self-rooted place to a `mut` seat.
+fn site_evidence(cx: Survey, e: ExprId) -> Evidence {
+    let mp: MethodParts? = cx.store.method_parts(e)
+    if mp != null { return method_evidence(cx, mp!) }
+    let callee: DeclId? = bound_decl_of(cx.names, e)
+    if callee == null { return no_evidence() }
+    Evidence { own: feeds_mut_seat(cx, callee!, call_args(cx, e), 0), edge: null }
+}
+
+/// A named call's arguments; empty for every other node.
+fn call_args(cx: Survey, e: ExprId) -> List<ExprId> {
+    // LICENSED I22: one arm answers — a projection over the core node
+    match cx.store.expr(e) {
+        .Call(_, _, args) -> args,
+        _ -> [],
+    }
+}
+
+fn method_evidence(cx: Survey, mp: MethodParts) -> Evidence {
+    let ty: TypeId? = if rooted_in_receiver(cx, mp.subject) { place_type(cx, mp.subject) } else { null }
+    let callee: Callee = if ty == null { Callee.None } else { callee_of(cx, ty!, mp.name) }
+    match callee {
+        .Row(writes) -> Evidence { own: writes, edge: null },
+        .Method(d) -> Evidence { own: feeds_mut_seat(cx, d, mp.args, 1), edge: d },
+        .Contract(d) -> Evidence { own: cx.decls.declares_writing(d) || feeds_mut_seat(cx, d, mp.args, 0), edge: null },
+        .None -> Evidence { own: fed_callee(cx, mp), edge: null },
+    }
+}
+
+/// A call whose receiver is NOT self-rooted may still hand a
+/// self-rooted place to a `mut` seat of a declared method.
+fn fed_callee(cx: Survey, mp: MethodParts) -> bool {
+    let ty: TypeId? = place_type(cx, mp.subject)
+    if ty == null { return false }
+    match callee_of(cx, ty!, mp.name) {
+        .Method(d) -> feeds_mut_seat(cx, d, mp.args, 1),
+        .Contract(d) -> feeds_mut_seat(cx, d, mp.args, 0),
+        .Row(_) or .None -> false,
+    }
+}
+
+/// Whether any argument rooted in `self` fills a `mut` seat of the
+/// callee, the seats numbered from `base` (1 past a method's own
+/// receiver seat).
+fn feeds_mut_seat(cx: Survey, callee: DeclId, args: List<ExprId>, base: int) -> bool {
+    mut j = 0
+    while j < args.length {
+        if cx.decls.mut_seat(callee, base + j) && rooted_in_receiver(cx, args[j]) { return true }
+        j = j + 1
+    }
+    false
+}
+
+/// What a name on a shape calls: the vocabulary's row, a declared
+/// method, a contract's member — or nothing this pass can name.
+enum Callee {
+    Row(writes: bool)
+    Method(d: DeclId)
+    Contract(d: DeclId)
+    None
+}
+
+fn callee_of(cx: Survey, ty: TypeId, name: string) -> Callee {
+    let sh: Type = cx.decls.types.shape_of(ty)
+    match sh {
+        .List(_) or .Map(_, _) or .Str -> Callee.Row(row_writes(cx.ws.lang.rows.methods, name, sh)),
+        .Struct(d, _) -> declared_method(cx, d, name),
+        .Enum(d, _) -> declared_method(cx, d, name),
+        .App(d, _, _) -> declared_method(cx, d, name),
+        .Var(d, j, _) -> bounded_member(cx, d, j, name),
+        .Dyn(d, _) -> contract_member(cx, d, name),
+        .Ptr or .Int or .Bool or .Res(_, _) or .TypeName(_, _) or .Fn(_, _) or .Opt(_) or .Null or
+        .EmptyList or .Error or .Void or .EmptyMap -> Callee.None,
+    }
+}
+
+fn declared_method(cx: Survey, d: DeclId, name: string) -> Callee {
+    let m: DeclId? = cx.decls.method(d, name)
+    if m == null { return Callee.None }
+    Callee.Method(m!)
+}
+
+/// A method on a BOUNDED type parameter: the bound's trait's member.
+fn bounded_member(cx: Survey, d: DeclId, j: int, name: string) -> Callee {
+    let tb = cx.decls.tbounds(d)
+    if j >= tb.length || tb[j].ty == null { return Callee.None }
+    let tdecl: DeclId? = trait_named(cx.decls, cx.names, tb[j].ty!.name)
+    if tdecl == null { return Callee.None }
+    contract_member(cx, tdecl!, name)
+}
+
+fn contract_member(cx: Survey, tdecl: DeclId, name: string) -> Callee {
+    let member: DeclId? = trait_member(cx.decls, tdecl, name)
+    if member == null { return Callee.None }
+    Callee.Contract(member!)
+}
+
+/// The declared type along a self-rooted place: the receiver at the
+/// root, a field's declared type per field step, the element per
+/// index step — null when a step names nothing declared.
+fn place_type(cx: Survey, e: ExprId) -> TypeId? {
+    let step: PlaceStep? = cx.store.place_step(e)
+    if step == null { return null }
+    match step! {
+        .Root(_) -> cx.receiver,
+        .Field(subject, name) -> field_type(cx, place_type(cx, subject), name),
+        .At(subject, _) -> element_type(cx, place_type(cx, subject)),
+    }
+}
+
+fn field_type(cx: Survey, holder: TypeId?, name: string) -> TypeId? {
+    if holder == null { return null }
+    let sig: StructSig? = fields_of_type(cx.decls, holder!)
+    if sig == null { return null }
+    let slot: int? = sig!.slot_of(name)
+    if slot == null { return null }
+    sig!.types[slot!]
+}
+
+fn element_type(cx: Survey, holder: TypeId?) -> TypeId? {
+    if holder == null { return null }
+    match cx.decls.types.shape_of(holder!) {
+        .List(elem) -> elem,
+        _ -> null,
+    }
+}
+
+/// A method's receiver type: its impl's target's instance type —
+/// null for a trait's sig and for a method whose impl was refused.
+fn receiver_type(ws: Workspace, x: Decl) -> TypeId? {
+    if x.parent == null { return null }
+    let target: DeclId? = ws.decls.target_of(x.parent!)
+    if target == null { return null }
+    self_type_of(ws.decls, target!)
+}

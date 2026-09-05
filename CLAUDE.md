@@ -418,11 +418,6 @@ Syntax the grammar lacks:
 - A trailing comma in a PARAMETER list (`fn f(a: int, b: int,)`):
   "expected `)` while parsing `stmt`". Stacked params parse;
   struct literals and `use` lists take the trailing comma already.
-- `mut` parameters (`fn f(mut xs: List<int>)`): "expected `)`
-  while parsing `stmt`". A fn changes its caller's data only
-  through a receiver or a parameter's field path (DOGFOODING: a
-  write reaches a place); a handed list is a VALUE. Lane C's `mut
-  self` is the design.
 - Struct destructuring in `let` (`let Sp { lo, hi } = s`):
   "expected `=` while parsing `stmt`".
 - `|` between or-pattern alternatives: "expected `}` to close the

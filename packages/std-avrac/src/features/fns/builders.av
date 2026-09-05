@@ -3,14 +3,15 @@
 //! types arrive as two parallel captures and zip into Params.
 use core.{Expr, Stmt, Param, TypeRef}
 use grammar.{Token}
-use features.{LangNode, Builder, aligned_binds, aligned_param_types, expr_id_at, seats}
+use features.{LangNode, Builder, aligned_binds, aligned_param_types, expr_id_at, seats, marked_seats}
 
 fn build_fn(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
-    let ps = b.tokens(3)?
-    let r = b.answer(5)
-    let body = b.expr(6)?
+    let marks = b.tokens(3)?
+    let ps = b.tokens(4)?
+    let r = b.answer(6)
+    let body = b.expr(7)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("a fn declaration without a span") }
     // a tparam's BOUND and a param's TYPE are optional in the
@@ -20,9 +21,9 @@ fn build_fn(b: Builder) -> Result<LangNode, string> {
     mut tparams: List<Param> = []
     // LICENSED I3: a ZIP of parallel captures; comprehensions cannot
     for j, t in tp {
-        tparams.push(Param { name: t.text, ty: bound_ref(bounds[j], t), default: null })
+        tparams.push(Param { name: t.text, ty: bound_ref(bounds[j], t), default: null, mutable: false })
     }
-    b.make_stmt(Stmt.FnDecl(n.text, tparams, seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends!)), r, body))
+    b.make_stmt(Stmt.FnDecl(n.text, tparams, marked_seats(ps, aligned_param_types(ps, b.type_refs(5)?, ends!), marks, n.span.lo), r, body))
 }
 
 /// A bound as a written type — the trait's bare name.

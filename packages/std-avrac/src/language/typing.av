@@ -67,7 +67,8 @@ export fn typer(lang: Language, view: FileView, names: NameFacts, lo: int, hi: i
 export fn type_decl(t: Typer, x: Decl) -> TypeFacts {
     match x.kind {
         .Main -> type_stmts(t, [], runtime_stmts(t.view)),
-        .Fn or .Method -> if x.root == null { nothing() } else { type_stmts(t, [], [x.stmt]) },
+        .Fn -> if x.root == null { nothing() } else { type_stmts(t, [], [x.stmt]) },
+        .Method -> if x.root == null { nothing() } else { method_body(t, x) },
         .Default -> default_body(t, x),
         .Case -> case_body(t, x),
         .Record or .Enum -> type_stmts(t, [], [x.stmt]),
@@ -75,6 +76,13 @@ export fn type_decl(t: Typer, x: Decl) -> TypeFacts {
     }
     t.speak_hungry()
     t.facts
+}
+
+/// A method's body, then its receiver's contract — the trait's word
+/// and the `mut fn` word judged against what the body does.
+fn method_body(t: Typer, x: Decl) {
+    type_stmts(t, [], [x.stmt])
+    t.receiver_contract(x)
 }
 
 /// A file's statements that RUN — everything that declares nothing.

@@ -3,7 +3,7 @@
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
 use core.{ExprId, Type, TypeId, Arrow, DeclId}
-use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant, bound_name, seats_judged, settled_call, trait_sig_under, MethodRow, MethodCall, method_row, StructSig}
+use features.{TypeCx, FnSig, spoken, this_is, accepts, construct_variant, bound_name, seats_judged, settled_call, trait_member, trait_named, MethodRow, MethodCall, method_row, StructSig, receiver_law, mut_seats_law, fn_sig_of}
 use diagnostics.{refusal}
 
 fn method_call_type(cx: TypeCx, e: ExprId) -> TypeId {
@@ -54,7 +54,18 @@ fn method_answer(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: Lis
     for j, a in args {
         if !accepts(cx, a, sig.params[j + 1]) { wrong_method_argument(cx, target, name, j, sig.params[j + 1], a) }
     }
+    let m: DeclId? = cx.view.decls.method(held.decl, name)
+    if m != null { seat_laws(cx, e, subject, "${target}.${name}", name, m!, args, 1) }
     sig.ret
+}
+
+/// THE INOUT LAWS at a call: a writing callee needs a `mut` place
+/// receiver, and its `mut` seats need `mut` places, no two on one
+/// root. Seats count from `base` (1 past a method's own receiver).
+fn seat_laws(cx: TypeCx, e: ExprId, subject: ExprId, callee: string, name: string, m: DeclId, args: List<ExprId>, base: int) {
+    let writes = cx.view.decls.writes_receiver(m)
+    receiver_law(cx, e, subject, name, writes)
+    mut_seats_law(cx, e, callee, m, args, base, if writes { subject } else { null })
 }
 
 /// A receiver's declared type: the impl table's key, and the name
@@ -159,7 +170,7 @@ fn bounded_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List
     if trait_name == "" {
         return spoken(cx, refusal("type.method", cx.loc_of(e), "`${tname}` has no known methods", "called here", "add a bound — `<${tname}: SomeTrait>`"))
     }
-    trait_judged(cx, e, trait_name, name, args) ?? no_trait_method(cx, e, trait_name, name, tname)
+    trait_judged(cx, e, subject, trait_name, name, args) ?? no_trait_method(cx, e, trait_name, name, tname)
 }
 
 /// A method on a CONTRACT value: the trait's sig judges (self
@@ -174,18 +185,31 @@ fn dyn_call(cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<Exp
     }
     if worn == null { return null }
     let contract = worn!
-    let found: FnSig? = trait_sig_under(cx.view.decls, contract.decl, name)
-    if found == null { return no_dyn_method(cx, e, contract.name, name) }
-    sig_judged(cx, e, contract.name, name, args, found!)
+    let member: DeclId? = trait_member(cx.view.decls, contract.decl, name)
+    if member == null { return no_dyn_method(cx, e, contract.name, name) }
+    contract_judged(cx, e, subject, contract.name, name, args, member!)
+}
+
+/// The contract's own laws, then its judgment: the member's word
+/// decides the receiver and the seats for every signatory.
+fn contract_judged(cx: TypeCx, e: ExprId, subject: ExprId, trait_name: string, name: string, args: List<ExprId>, member: DeclId) -> TypeId {
+    let found: FnSig? = fn_sig_of(cx.view.decls.sig(member))
+    if found == null { return cx.error_type }
+    let writes = cx.view.decls.declares_writing(member)
+    receiver_law(cx, e, subject, name, writes)
+    mut_seats_law(cx, e, "${trait_name}.${name}", member, args, 0, if writes { subject } else { null })
+    sig_judged(cx, e, trait_name, name, args, found!)
 }
 
 /// The contract's judgment, shared by the bound and dyn halves:
 /// the trait's sig judges arity and every seat — or absence when
 /// the trait lacks the method (each caller speaks its own remedy).
-fn trait_judged(cx: TypeCx, e: ExprId, trait_name: string, name: string, args: List<ExprId>) -> TypeId? {
-    let found: FnSig? = cx.trait_sig(trait_name, name)
-    if found == null { return null }
-    sig_judged(cx, e, trait_name, name, args, found!)
+fn trait_judged(cx: TypeCx, e: ExprId, subject: ExprId, trait_name: string, name: string, args: List<ExprId>) -> TypeId? {
+    let tdecl: DeclId? = trait_named(cx.view.decls, cx.names, trait_name)
+    if tdecl == null { return null }
+    let member: DeclId? = trait_member(cx.view.decls, tdecl!, name)
+    if member == null { return null }
+    contract_judged(cx, e, subject, trait_name, name, args, member!)
 }
 
 /// A method sig's judgment — self OMITTED — over the arguments.

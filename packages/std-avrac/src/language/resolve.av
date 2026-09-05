@@ -10,7 +10,7 @@
 use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore}
 use diagnostics.{Diag, error_at, loc_at, pointed, refusal, Voices, no_voices}
 use features.modules.{module_laws}
-use features.{ResolveCx, StmtResolveCx, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats}
+use features.{ResolveCx, StmtResolveCx, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats, nothing}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
 /// Words the spec reserves for future levels, memory, and
@@ -44,6 +44,8 @@ type Resolver = {
     // one entry per open impl or trait body: inside, `self` names
     // the receiver seat and the written params start at seat 1
     receivers: List<bool>,
+    // the open fn body's `mut` seats, by written position
+    muts: List<List<bool>>,
     walked: List<bool>,
     scoped: List<bool>,
 }
@@ -55,10 +57,11 @@ export fn resolve(lang: Language, view: FileView, scope: Namespace) -> NameFacts
         facts: NameFacts {
             bindings: filled<Binding?>(view.store.exprs.count(), null),
             captures: filled<Cap?>(view.store.exprs.count(), null),
+            mut_reads: filled(view.store.exprs.count(), false),
             names: scope, voices: no_voices(),
         },
         def_names: [d.name for d in defs],
-        visible: {}, overlays: [], lframes: [], floors: [], receivers: [],
+        visible: {}, overlays: [], lframes: [], floors: [], receivers: [], muts: [],
         walked: filled(view.store.exprs.count(), false),
         scoped: filled(view.store.stmts.count(), false),
     }
@@ -75,7 +78,7 @@ fn resolve_stmts(r: Resolver, param_names: List<string>, in_block: bool, stmts: 
         facts: r.facts,
         in_block: in_block,
         walk: (v: ExprId) -> resolve_walk(r, param_names, v),
-        walk_under: (ps: List<Param>, body: ExprId) -> resolve_body(r, [pp.name for pp in written_seats(r.lang.keywords, ps)], body),
+        walk_under: (ps: List<Param>, body: ExprId) -> resolve_body(r, written_seats(r.lang.keywords, ps), body),
         bind_checked: (s: StmtId) -> r.bind_checked(s),
         check_params: (ps: List<Param>, s: StmtId) -> r.check_params(ps, s),
         scope_stmts: (body: List<StmtId>) -> scoped_stmts(r, param_names, body),
@@ -257,11 +260,16 @@ fn resolve_walk(r: Resolver, param_names: List<string>, root: ExprId) {
 /// A fn's body walks behind a FLOOR: the overlay depth at entry.
 /// Bindings below it are the top level's run-time values, which no
 /// body can see — a body sees declarations and its own bindings.
-fn resolve_body(r: Resolver, param_names: List<string>, body: ExprId) {
+/// The seats' `mut` marks are in scope for the walk, so a read of a
+/// `mut` seat is recorded as one.
+fn resolve_body(r: Resolver, seats: List<Param>, body: ExprId) {
     mut fs = r.floors
+    mut ms = r.muts
     // LICENSED I15: this IS the bracket
     fs.push(r.overlays.length)
-    resolve_walk(r, param_names, body)
+    ms.push([pp.mutable for pp in seats])
+    resolve_walk(r, [pp.name for pp in seats], body)
+    let _ = ms.pop()
     let _ = fs.pop()
 }
 
@@ -342,6 +350,7 @@ impl Resolver {
         let found: Binding? = self.value_binding(name, param_names)
         if found != null {
             self.bind_use(e, found!)
+            self.note_mut_seat(e, found!)
             return
         }
         let at = self.loc_of(e)
@@ -376,6 +385,24 @@ impl Resolver {
     /// receiver's, inside a method.
     fn seat_base() -> int {
         if self.receivers.is_empty() { 0 } else { 1 }
+    }
+
+    /// A parameter read of a `mut` seat is marked as one — the
+    /// place law asks the read, never the name.
+    fn note_mut_seat(e: ExprId, b: Binding) {
+        // LICENSED I22: one arm answers — a projection; every other binding is not a seat
+        let seat: int? = match b {
+            .Param(i) -> i,
+            _ -> null,
+        }
+        if seat != null && self.seat_is_mut(seat!) { self.facts.mark_mut_read(e) }
+    }
+
+    fn seat_is_mut(i: int) -> bool {
+        let open: List<bool>? = self.muts.last()
+        if open == null { return false }
+        let at = i - self.seat_base()
+        at >= 0 && at < open!.length && open![at]
     }
 
     /// A name resolves ONCE — the first walk wins, diagnostics

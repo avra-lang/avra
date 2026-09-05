@@ -59,6 +59,14 @@ export type Decls = {
     // an impl block's target type, once typing found it — dense by
     // DeclId; a method's instantiation is its target's
     targets: List<DeclId?>,
+    // THE INOUT SEATS, dense by DeclId: which seats a fn declared
+    // `mut` (a method's receiver seat included), whether a method
+    // DECLARED `mut fn`, and whether the receivers pass found it
+    // WRITING through `self` — asked through the armed hook
+    seat_muts: List<List<bool>>,
+    declared_writes: List<bool>,
+    written: List<bool>,
+    ensure_writes: List<fn(DeclId)>,
 }
 
 export fn new_decls() -> Decls {
@@ -66,6 +74,7 @@ export fn new_decls() -> Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
         stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], children: [], methods: [], impls: [], impls_by_name: {},
         ensure: [no_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
+        seat_muts: [], declared_writes: [], written: [], ensure_writes: [no_ensure],
     }
 }
 
@@ -332,6 +341,12 @@ impl Decls {
             self.sigs.push(null)
             mut tg = self.targets
             tg.push(null)
+            mut sm = self.seat_muts
+            sm.push([])
+            mut dw = self.declared_writes
+            dw.push(false)
+            mut wr = self.written
+            wr.push(false)
             mut cs = self.children
             cs.push([])
             mut ms = self.methods
@@ -397,6 +412,69 @@ impl Decls {
         let t: DeclId? = self.target_of(impl_decl)
         if t == null { return [] }
         self.tparams(t!)
+    }
+
+    // ── the inout seats ──
+
+    /// A declaration's `mut` seats, as declared — a method's seat 0
+    /// is its receiver and is never declared here.
+    fn record_seats(d: DeclId, muts: List<bool>) {
+        self.seat_muts.set(d.index, muts)
+    }
+
+    /// Asking IS the query: the sig hook declares `d` first, so a
+    /// callee named before its own declaration answers truly.
+    fn mut_seat(d: DeclId, i: int) -> bool {
+        let ensure = self.ensure[0]
+        ensure(d)
+        let muts = self.seat_muts[d.index]
+        i < muts.length && muts[i]
+    }
+
+    /// `mut fn` — the method (or trait sig) declared its receiver
+    /// written.
+    fn record_declared_writing(d: DeclId) {
+        self.declared_writes.set(d.index, true)
+    }
+
+    fn declares_writing(d: DeclId) -> bool {
+        let ensure = self.ensure[0]
+        ensure(d)
+        self.declared_writes[d.index]
+    }
+
+    /// The receivers pass found the body writing through `self`.
+    fn record_written(d: DeclId) {
+        self.written.set(d.index, true)
+    }
+
+    /// The pass's own reads — hook-free, as the table stands.
+    fn written_so_far(d: DeclId) -> bool { self.written[d.index] }
+
+    fn writes_so_far(d: DeclId) -> bool { self.declared_writes[d.index] || self.written[d.index] }
+
+    /// The pass starts over: every inferred bit falls, and the
+    /// fixpoint re-earns them.
+    fn clear_written() {
+        mut j = 0
+        while j < self.written.length {
+            self.written.set(j, false)
+            j = j + 1
+        }
+    }
+
+    /// Whether a method WRITES its receiver: declared, or found by
+    /// the receivers pass — asking IS the query; the hook runs the
+    /// pass and records the dependency.
+    fn writes_receiver(d: DeclId) -> bool {
+        let ensure = self.ensure_writes[0]
+        ensure(d)
+        self.declared_writes[d.index] || self.written[d.index]
+    }
+
+    /// The workspace arms the receivers hook once.
+    fn arm_writes(ensure: fn(DeclId)) {
+        self.ensure_writes.set(0, ensure)
     }
 
     fn record_target(impl_decl: DeclId, target: DeclId) {

@@ -7,7 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId}
-use features.{no_pins, Pins, TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unify, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, unified_lift}
+use features.{no_pins, Pins, TypeCx, StmtTypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unify, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, unified_lift, mut_seats_law}
 use diagnostics.{refusal}
 
 export fn check_fn(cx: StmtTypeCx, s: StmtId) {
@@ -54,12 +54,14 @@ fn dispatched_call(cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                    args: List<ExprId>, s: FnSig) -> TypeId {
     let decl: DeclId? = cx.bound_decl(e)
     if decl == null { return seats_judged(cx, e, callee, s.params, s.ret, args) }
-    let tp: List<string> = cx.tparams(decl!)
+    let d = decl!
+    mut_seats_law(cx, e, callee, d, args, 0, null)
+    let tp: List<string> = cx.tparams(d)
     if tp.is_empty() {
         if !pins.is_empty() { takes_no_pins(cx, e, callee) }
         return seats_judged(cx, e, callee, s.params, s.ret, args)
     }
-    generic_call(cx, e, callee, pins, args, s, decl!, tp)
+    generic_call(cx, e, callee, pins, args, s, d, tp)
 }
 
 /// The instantiation: pins pre-fill by position, arguments unify

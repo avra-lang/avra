@@ -358,6 +358,17 @@ the order is the dependency.
         list; `mut fn` parses and is recorded; 746 declarations and
         51 test strings rewritten by script; the compiler compiles
         itself in the new spelling (1618 cases, corpus 72/72).
+        S1 LANDED 2026-09-04: `mut` parameters parse (fns, `mut fn`,
+        trait sigs); the receivers pass (`language/receivers.av`, a
+        whole-program fixpoint, one memo family) records every
+        writing method; the seat law and the exclusivity law refuse,
+        the receiver law WARNS — 981 sites in the compiler's own
+        source, the conversion's census; the trait contract refuses,
+        an unused `mut fn` warns (1655 cases, corpus 73/73). ORDER
+        AMENDED: the conversion (S4) comes BEFORE the ABI (S2) — the
+        cell ABI has no legacy path, so every writing call site must
+        be a place first; the receiver law's warning becomes the
+        refusal the day S4 closes.
   - [ ] THE ALIAS BORROW paid: the 38 free state fns
         (interp.av `m.frames`, resolve.av `r.overlays`,
         workspace.av `ws.specs`, llvm.av `em.vals`, …) become
@@ -6728,7 +6739,10 @@ THE SLICES, in order, each red-teamed then reviewed, each a gate
   refuses, and the gate is green.
 - S3 LIVENESS, measured on the probe and on the compiler checking
   itself (before/after user CPU recorded here).
-- S4 THE CONVERSION: the contexts refactor and the state fns.
+- S4 THE CONVERSION: the contexts refactor and the state fns —
+  BEFORE S2 (amended at S1's landing: the ABI has no legacy path).
+  DONE WHEN the receiver law's 981 warnings are zero and it turns
+  into the refusal.
 
 S0 LANDED (2026-09-04), what it taught: (1) THE TRANSITION ORDER
 HELD — the grammar written in the old spelling, built by the
@@ -6759,6 +6773,33 @@ an `impl` inside a fn body was silently accepted (F3025 now).
 Recorded from it: `fn bump(mut self)` — the OLD design's spelling
 — parses as a hole today; S1's `mut` parameters give it the
 receiver's remedy.
+
+S1 LANDED (2026-09-04), what it taught: (1) THE ORDER OF THE
+SLICES WAS WRONG BY ONE: the cell ABI cannot coexist with a
+legacy box-passing path — a writing callee compiles ONE way, so
+every call site must hand a place before the ABI lands. S4 (the
+conversion) therefore precedes S2, and the receiver law lands as
+a WARNING: 981 sites in the compiler's own source today (the
+census the design promised), zero refusals, the gate green. (2)
+`mut` SEATS IN THE TRANSITION WRITE THROUGH: a `mut` parameter is
+lowered exactly as a receiver is today — the box, in place — so
+`grow(v)` grows the caller's `v` on both engines; the ABI makes
+the seat a cell without changing a program's answer. A seat
+assigned WHOLE has no cell yet and refuses with the trigger named.
+(3) THE DECLARED AND THE INFERRED STAY APART: `declares_writing`
+(the word, `mut fn`) and `written` (the pass) are two columns, and
+`writes_receiver` is their disjunction — folding the word into the
+summary silenced the never-writes warning. (4) A COLUMN READ MUST
+GO THROUGH THE SIG HOOK: `mut_seat(d, i)` read the table directly
+and answered `[]` for a callee declared after its caller; the pass
+found a fn's seat only when the fn came first. Every declaration-
+table read that a body may ask before the declaration's sig ran
+goes through `ensure`. (5) A CAPTURED ROOT IS A COPY, and the seat
+and receiver laws say so in their own words instead of "not
+`mut`". (6) The red team's thirty-seven programs: the fixpoint's
+counterexample cycle answers right, mutual recursion without a
+write is silent, a generic seat instantiates twice, a trait's
+`mut` seat dispatches through `dyn`.
 
 THE CONVERSION'S TRUE SIZE — measured 2026-09-04 so S4 is not
 underestimated: methods are HALF of the borrow's users. The census

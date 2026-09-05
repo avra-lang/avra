@@ -4,18 +4,29 @@
 //! contract (every trait method, exactly, nothing beyond), the orphan
 //! rule, and the voices these laws speak.
 use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type}
-use diagnostics.{refusal}
-use features.{FnSig, DeclSig, fn_sig_of, trait_named, method_sig_of, Decl, written_seats}
+use diagnostics.{refusal, warning}
+use features.{FnSig, DeclSig, fn_sig_of, trait_named, method_sig_of, Decl, written_seats, trait_member, self_type_of, instance_vars}
 
 impl Typer {
     fn declare_trait_sig(f: StmtId) {
         let parts: FnParts? = self.view.store.fn_parts(f)
         if parts == null { return }
         let fp = parts!
+        self.record_receiver_word(f, [])
         self.declare(f, DeclSig.Fn(FnSig {
             params: self.annotated_params(f, fp),
             ret: self.annotated(f, fp.ret),
         }))
+    }
+
+    /// The seats a fn-shaped declaration declared `mut` — a method's
+    /// receiver seat first, never declared — and its `mut fn` word.
+    fn record_receiver_word(f: StmtId, receiver: List<bool>) {
+        let d = self.decl_of(f)
+        let parts: FnParts? = self.view.store.fn_parts(f)
+        let muts = [pp.mutable for pp in written_seats(self.lang.keywords, parts?.params ?? [])]
+        self.view.decls.record_seats(d, receiver.concat(muts))
+        if self.view.store.is_mutating(f) { self.view.decls.record_declared_writing(d) }
     }
 
     /// The written params, annotated — a trait sig's whole seat
@@ -49,30 +60,19 @@ impl Typer {
         let d = target!
         self.view.decls.record_target(self.decl_of(block), d)
         self.enter_target_scope(d)
-        self.declare_method(self.impl_self_type(d, parts.target), f)
+        self.declare_method(self.impl_self_type(d), f)
         self.leave_tscope()
     }
 
-    /// The type an impl's `self` wears: the declared type, or — for
-    /// a generic target — its application to its own Vars.
-    fn impl_self_type(d: DeclId, name: string) -> TypeId {
-        if self.view.decls.tparams(d).is_empty() { return self.declared_type(d, name) }
-        self.view.types.intern(Type.App(d, name, self.target_vars(d)))
-    }
-
-    /// A generic target's Vars, in scope for its impl's signatures
-    /// under the names the TYPE declared — `impl Arena<N>` spells
-    /// them as `type Arena<N>` did.
-    fn target_vars(d: DeclId) -> List<TypeId> {
-        mut out: List<TypeId> = []
-        // LICENSED I3: the ordinal needs the index; comprehensions cannot destructure enumerate
-        for (j, n) in self.view.decls.tparams(d).enumerate() { out.push(self.view.types.intern(Type.Var(d, j, n))) }
-        out
+    /// The type an impl's `self` wears — the ONE definition, shared
+    /// with the receivers pass.
+    fn impl_self_type(d: DeclId) -> TypeId {
+        self_type_of(self.view.decls, d)
     }
 
     fn enter_target_scope(d: DeclId) {
         // LICENSED I3: pushing through the field alias — concat would rebind the local
-        for v in self.target_vars(d) { self.tscope.push(v) }
+        for v in instance_vars(self.view.decls, d) { self.tscope.push(v) }
     }
 
     /// The impl block's law: its target is declared, plain, and
@@ -92,7 +92,7 @@ impl Typer {
         // in a register with no identity, so behaviour would turn on
         // a field count — it keeps its box while receivers alias
         // (ROADMAP: RECEIVER ALIASING).
-        self.view.types.unflatten(self.impl_self_type(d, parts.target))
+        self.view.types.unflatten(self.impl_self_type(d))
         for f in parts.fns {
             let m = self.decl_of(f)
             let _ = self.view.decls.sig(m)
@@ -176,10 +176,34 @@ impl Typer {
         if parts == null { return }
         let fp = parts!
         if !fp.tparams.is_empty() { return self.generic_method(f, fp.name) }
+        self.record_receiver_word(f, [false])
         self.declare(f, DeclSig.Fn(FnSig {
             params: [ty].concat(self.annotated_params(f, fp)),
             ret: self.annotated(f, fp.ret),
         }))
+    }
+
+    /// THE RECEIVER'S CONTRACT, judged once the body is typed: a
+    /// method that writes through `self` under a trait sig that
+    /// declares no `mut` refuses; an inherent `mut fn` that never
+    /// writes is warned. The receivers pass answers the writing.
+    fn receiver_contract(x: Decl) {
+        if x.parent == null { return }
+        let parent = self.view.decls.decl(x.parent!)
+        if !(parent.kind is .Impl) { return }
+        // a generic method was refused whole; its receiver has no say
+        if !(self.view.store.fn_parts(x.stmt)?.tparams ?? []).is_empty() { return }
+        let of = self.view.store.impl_parts(parent.stmt)?.of ?? ""
+        let writes = self.view.decls.writes_receiver(x.id)
+        if of == "" {
+            if self.view.store.is_mutating(x.stmt) && !self.view.decls.written_so_far(x.id) { self.never_writes(x) }
+            return
+        }
+        let tdecl: DeclId? = self.trait_decl_named(of)
+        if tdecl == null { return }
+        let member: DeclId? = trait_member(self.view.decls, tdecl!, x.name)
+        if member == null { return }
+        if writes && !self.view.decls.declares_writing(member!) { self.writes_under_plain_sig(x, of) }
     }
 
     // ── The declare voices — each refusal worded once, at its name ──
@@ -212,6 +236,14 @@ impl Typer {
 
     fn sig_unworn(s: StmtId, of: string, target: string, mn: string) {
         self.speak(refusal("type.trait", self.stmt_loc(s), "`${target}.${mn}` does not wear `${of}.${mn}`'s signature", "this impl", "match the trait's parameters and return exactly"))
+    }
+
+    fn never_writes(x: Decl) {
+        self.speak(warning("type.mut_fn_unused", self.stmt_loc(x.stmt), "`mut fn` — `${x.name}` never writes through `self`", "declared `mut`", "drop `mut`: the compiler infers a writing method"))
+    }
+
+    fn writes_under_plain_sig(x: Decl, of: string) {
+        self.speak(refusal("type.contract_write", self.stmt_loc(x.stmt), "`${x.name}` writes through `self`, but `${of}.${x.name}` declares no `mut`", "writes here", "declare `mut fn ${x.name}(…)` in the trait — the contract decides for every signatory"))
     }
 
     fn generic_method(f: StmtId, name: string) {

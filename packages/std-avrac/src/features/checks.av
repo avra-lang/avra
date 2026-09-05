@@ -3,8 +3,8 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId}
-use diagnostics.{Diag, refusal}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId}
+use diagnostics.{Diag, refusal, warning}
 
 /// Speak and ABSORB: the diagnostic lands and the answer is the
 /// interned Error — the standard refusal tail of a typing law.
@@ -429,6 +429,105 @@ export fn not_a_place_call(cx: TypeCx, e: ExprId, name: string) -> TypeId {
 
 export fn not_mut_call(cx: TypeCx, e: ExprId, name: string, root: string) -> TypeId {
     spoken(cx, refusal("type.place", cx.loc_of(e), "`${root}` is not `mut` — `${name}` mutates it", "mutated here", "declare it `mut ${root} = ...` — or build a changed copy"))
+}
+
+// ── THE INOUT SEATS (ROADMAP: the inout receiver) ──
+
+/// Whether an expression is a PLACE rooted in a `mut` binding — what
+/// a `mut` seat, and a writing method's receiver, must be handed.
+export fn mut_place(cx: TypeCx, e: ExprId) -> bool {
+    let root: ExprId? = place_binding_root(cx, e)
+    root != null && cx.is_mut(root!)
+}
+
+/// A place's root when it is a BINDING — a type name at the root
+/// (`G.a`, a variant) makes the whole a value.
+fn place_binding_root(cx: TypeCx, e: ExprId) -> ExprId? {
+    let root: ExprId? = cx.view.store.place_root(e)
+    if root == null || cx.shape_at(root!) is .TypeName { return null }
+    root
+}
+
+/// THE RECEIVER LAW: a writing method is called on a `mut` place. A
+/// WARNING while the tree's own call sites become places; then the
+/// refusal `not_mut_call` speaks here (ROADMAP: the inout receiver,
+/// S4).
+export fn receiver_law(cx: TypeCx, e: ExprId, subject: ExprId, name: string, writes: bool) {
+    if !writes || mut_place(cx, subject) { return }
+    let root: ExprId? = place_binding_root(cx, subject)
+    if root == null { return cx.emit(warning("type.receiver", cx.loc_of(e), "`${name}` writes its receiver, and this is a value", "a value", "bind it `mut` first — the receiver becomes the caller's own place")) }
+    let n = root_word(cx, root!)
+    if captured(cx, root!) { return cx.emit(warning("type.receiver", cx.loc_of(e), "`${n}` is captured by value — `${name}` writes through the lambda's copy", "a copy", "a capture is a copy: write outside the lambda, or answer the new value")) }
+    cx.emit(warning("type.receiver", cx.loc_of(e), "`${n}` is not `mut` — `${name}` writes through it", "aliased here", "declare it `mut ${n} = …`"))
+}
+
+/// A root's word for a voice: its name, or `self` for the receiver
+/// (through any capture of it).
+fn root_word(cx: TypeCx, root: ExprId) -> string {
+    let named: string? = cx.view.store.ident_name(root)
+    named ?? "self"
+}
+
+/// Whether a root is a lambda's CAPTURE — a copy, never a place.
+fn captured(cx: TypeCx, root: ExprId) -> bool {
+    let b: Binding? = cx.names.binding(root)
+    b != null && b! is .Capture
+}
+
+/// THE SEAT LAW: every `mut` seat of a call is filled by a `mut`
+/// place, and no two `mut` seats (the receiver counted) share a
+/// root — the exclusivity law. Seats are numbered from `base` (1
+/// past a method's receiver seat).
+export fn mut_seats_law(cx: TypeCx, e: ExprId, callee: string, decl: DeclId, args: List<ExprId>, base: int, receiver: ExprId?) {
+    mut roots: List<ExprId> = if receiver == null { [] } else { [receiver!] }
+    for j, a in args {
+        if cx.view.decls.mut_seat(decl, base + j) { roots = judged_seat(cx, e, callee, a, j, roots) }
+    }
+}
+
+/// One `mut` seat judged; the roots handed so far, grown by this
+/// one when it is lawful.
+fn judged_seat(cx: TypeCx, e: ExprId, callee: string, a: ExprId, j: int, roots: List<ExprId>) -> List<ExprId> {
+    let root: ExprId? = place_binding_root(cx, a)
+    if root == null {
+        value_in_mut_seat(cx, a, callee, j)
+        return roots
+    }
+    let r = root!
+    let n = root_word(cx, r)
+    if captured(cx, r) {
+        captured_in_mut_seat(cx, a, callee, j, n)
+        return roots
+    }
+    if !cx.is_mut(r) {
+        not_mut_seat(cx, a, callee, j, n)
+        return roots
+    }
+    if roots.any(same_root(cx, it, r)) { shared_root(cx, e, callee, n) }
+    roots.concat([r])
+}
+
+fn same_root(cx: TypeCx, a: ExprId, b: ExprId) -> bool {
+    let x: ExprId? = cx.view.store.place_root(a)
+    let ba: Binding? = if x == null { null } else { cx.names.binding(x!) }
+    let bb: Binding? = cx.names.binding(b)
+    ba != null && bb != null && same_binding(ba!, bb!)
+}
+
+fn value_in_mut_seat(cx: TypeCx, a: ExprId, callee: string, j: int) {
+    cx.emit(refusal("type.seat", cx.loc_of(a), "seat ${j + 1} of `${callee}` is `mut`, and this is a value", "a value", "bind it `mut` first — `mut x = …` — then hand `x`"))
+}
+
+fn captured_in_mut_seat(cx: TypeCx, a: ExprId, callee: string, j: int, root: string) {
+    cx.emit(refusal("type.seat", cx.loc_of(a), "`${root}` is captured by value — a lambda's copy cannot fill seat ${j + 1} of `${callee}`", "a copy", "a capture is a copy: call outside the lambda, or answer the new value"))
+}
+
+fn not_mut_seat(cx: TypeCx, a: ExprId, callee: string, j: int, root: string) {
+    cx.emit(refusal("type.seat", cx.loc_of(a), "`${root}` is not `mut` — seat ${j + 1} of `${callee}` writes through it", "handed here", "declare it `mut ${root} = …`"))
+}
+
+fn shared_root(cx: TypeCx, e: ExprId, callee: string, root: string) {
+    cx.emit(refusal("type.seat", cx.loc_of(e), "`${root}` is handed `mut` twice in one call to `${callee}`", "this call", "bind `mut b = ${root}…` first, and write it back after"))
 }
 
 /// THE PROMISE every nullable-in-a-slot refusal makes — one fn, so

@@ -2,6 +2,7 @@
 // surface — a value receiver dispatches through the impl table, a
 // TYPE receiver constructs its variant. NameFacts is provable at
 // typing (spec 4.5); rt19 is the adversarial record.
+use @std.avrac.language.{analyze_source}
 use @std.avrac.testing.{shown, refused_with}
 
 /// The standard contract and its signatory-to-be.
@@ -12,6 +13,11 @@ fn showp() -> string {
 /// The standard signed impl.
 fn showed() -> string {
     "${showp()}impl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\n"
+}
+
+/// The standard counter — a writing method beside a reading one.
+fn counter() -> string {
+    "type C = { n: int }\nimpl C {\n    fn bump() { self.n = self.n + 1 }\n    fn get() -> int { self.n }\n}\n"
 }
 
 /// The standard receiver.
@@ -49,6 +55,93 @@ spec "features/impls" {
         }
         then "a trait impl over a generic type is still recorded" {
             refused_with("trait Show {\n    fn show() -> int\n}\ntype Box<T> = { v: T }\nimpl Show for Box<T> {\n    fn show() -> int { 1 }\n}\n2", "a trait impl over a generic type is recorded, not landed")
+        }
+    }
+    given "the receiver law — a writing method needs a `mut` place (a warning until the tree's own sites are places)" {
+        then "a `let` receiver of a writing method is warned, and the program still runs" {
+            let a = analyze_source("${counter()}let c = C { n: 1 }\nc.bump()\nc.get()")
+            a.clean() && a.diagnostics.length == 1 && a.report().contains("`c` is not `mut` — `bump` writes through it")
+        }
+        then "a `mut` receiver is clean" {
+            let a = analyze_source("${counter()}mut c = C { n: 1 }\nc.bump()\nc.get()")
+            a.diagnostics.is_empty() && a.ran() == "2"
+        }
+        then "a value receiver is warned in its own words" {
+            let a = analyze_source("${counter()}C { n: 1 }.bump()\n2")
+            a.clean() && a.diagnostics.length == 1 && a.report().contains("`bump` writes its receiver, and this is a value")
+        }
+        then "writing is TRANSITIVE — a method calling a writer on self writes" {
+            let a = analyze_source("${counter()}impl C {\n    fn twice() { self.bump()\n        self.bump() }\n}\nlet c = C { n: 1 }\nc.twice()\nc.get()")
+            a.diagnostics.length == 1 && a.report().contains("`twice` writes through it")
+        }
+        then "a mutating vocabulary method on a self-rooted place writes" {
+            let a = analyze_source("type B = { xs: List<int> }\nimpl B {\n    fn put(v: int) { self.xs.push(v) }\n}\nlet b = B { xs: [] }\nb.put(1)\nb.xs.length")
+            a.diagnostics.length == 1 && a.report().contains("`put` writes through it")
+        }
+        then "a self-rooted place handed to a `mut` seat writes" {
+            let a = analyze_source("type B = { xs: List<int> }\nfn grow(mut xs: List<int>) { xs.push(1) }\nimpl B {\n    fn fill() { grow(self.xs) }\n}\nlet b = B { xs: [] }\nb.fill()\n2")
+            a.diagnostics.length == 1 && a.report().contains("`fill` writes through it")
+        }
+        then "mutual recursion with no write is not writing" {
+            let a = analyze_source("type C = { n: int }\nimpl C {\n    fn even(k: int) -> bool { if k == 0 { true } else { self.odd(k - 1) } }\n    fn odd(k: int) -> bool { if k == 0 { false } else { self.even(k - 1) } }\n}\nlet c = C { n: 1 }\nif c.even(4) { 1 } else { 0 }")
+            a.diagnostics.is_empty() && a.ran() == "1"
+        }
+        then "a write reached only through a cycle is still found — the fixpoint, not a demand" {
+            let a = analyze_source("type D = { n: int }\nimpl D {\n    fn a() { self.b()\n        self.x() }\n    fn b() { self.a() }\n    fn x() { self.n = 1 }\n}\nlet d = D { n: 0 }\nd.b()\nd.n")
+            a.diagnostics.length == 1 && a.report().contains("`b` writes through it")
+        }
+        then "a generic impl's writing method is found once for every instantiation" {
+            let a = analyze_source("type Arena<N> = { nodes: List<N> }\nimpl Arena<N> {\n    fn add(n: N) -> int {\n        self.nodes.push(n)\n        self.nodes.length - 1\n    }\n}\nlet ints: Arena<int> = Arena { nodes: [] }\nints.add(7)")
+            a.diagnostics.length == 1 && a.report().contains("`ints` is not `mut` — `add` writes through it")
+        }
+        then "a variant receiver is a value, not a missing `mut` — beside the never-writes warning" {
+            let a = analyze_source("enum G {\n    a\n}\nimpl G {\n    mut fn flip() -> int { 1 }\n}\nG.a.flip()")
+            a.clean() && a.diagnostics.length == 2 && a.report().contains("`flip` writes its receiver, and this is a value")
+        }
+    }
+    given "`mut` seats — declared, filled by `mut` places" {
+        then "a `mut` seat writes through — the caller's list grows (the transition's write-through, the ABI's cell next)" {
+            shown("fn grow(mut xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nv.length") == "2"
+        }
+        then "a plain seat cannot be written, and the help names `mut`" {
+            let a = analyze_source("fn grow(xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nv.length")
+            a.diagnostics.length == 1 && a.report().contains("`xs` is not `mut` — `push` mutates it")
+        }
+        then "a `let` cannot fill a `mut` seat" {
+            refused_with("fn grow(mut xs: List<int>) { xs.push(1) }\nlet v = [1]\ngrow(v)\nv.length", "`v` is not `mut` — seat 1 of `grow` writes through it")
+        }
+        then "a value cannot fill a `mut` seat" {
+            refused_with("fn grow(mut xs: List<int>) { xs.push(1) }\ngrow([1])\n2", "seat 1 of `grow` is `mut`, and this is a value")
+        }
+        then "THE EXCLUSIVITY LAW: one root never fills two `mut` seats" {
+            refused_with("fn swap(mut a: List<int>, mut b: List<int>) { a.push(1)\n    b.push(2) }\nmut v = [1]\nswap(v, v)\nv.length", "`v` is handed `mut` twice in one call to `swap`")
+        }
+        then "two roots fill two seats" {
+            shown("fn swap(mut a: List<int>, mut b: List<int>) { a.push(1)\n    b.push(2) }\nmut v = [1]\nmut w = [1]\nswap(v, w)\nv.length + w.length") == "4"
+        }
+        then "a seat assigned WHOLE waits on the inout ABI, and says so" {
+            refused_with("fn zero(mut n: int) { n = 0 }\nmut k = 5\nzero(k)\nk", "`n` is a `mut` seat — assigning it whole arrives with the inout ABI")
+        }
+    }
+    given "the receiver's contract — a trait's word decides for every signatory" {
+        then "a method writing under a plain trait sig refuses, naming the remedy" {
+            refused_with("trait Tick {\n    fn tick()\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { self.n = 1 }\n}\n2", "`tick` writes through `self`, but `Tick.tick` declares no `mut`")
+        }
+        then "under `mut fn` the signatory writes, and a `mut` dyn receiver is clean" {
+            let a = analyze_source("trait Tick {\n    mut fn tick()\n    fn count() -> int\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { self.n = self.n + 1 }\n    fn count() -> int { self.n }\n}\nmut d: dyn Tick = C { n: 0 }\nd.tick()\nd.count()")
+            a.diagnostics.is_empty() && a.ran() == "1"
+        }
+        then "a `let` dyn receiver of a `mut fn` is warned by the contract's word" {
+            let a = analyze_source("trait Tick {\n    mut fn tick()\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { self.n = 1 }\n}\nlet d: dyn Tick = C { n: 0 }\nd.tick()\n2")
+            a.clean() && a.diagnostics.length == 1 && a.report().contains("`d` is not `mut` — `tick` writes through it")
+        }
+        then "an inherent `mut fn` that never writes is warned" {
+            let a = analyze_source("type C = { n: int }\nimpl C {\n    mut fn get() -> int { self.n }\n}\nmut c = C { n: 1 }\nc.get()")
+            a.clean() && a.diagnostics.length == 1 && a.report().contains("`mut fn` — `get` never writes through `self`")
+        }
+        then "a signatory not using a declared `mut` is not warned — a permission, not an obligation" {
+            let a = analyze_source("trait Tick {\n    mut fn tick()\n}\ntype C = { n: int }\nimpl Tick for C {\n    fn tick() { }\n}\nmut c = C { n: 0 }\nc.tick()\n2")
+            a.diagnostics.is_empty()
         }
     }
     given "the method surface" {

@@ -3,7 +3,7 @@
 //! asks the namespace) — and the CONTEXTS' vocabularies: every
 //! method a feature's rule calls on a TypeCx, LowerCx or statement
 //! context forwards from here to the one definition.
-use core.{Expr, int_of, text_of, bool_of, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, NodeStore, TypeRegistry, Binding, Param, filled, Reg, Ins, dst_of, rt_sig_of}
+use core.{Expr, int_of, text_of, bool_of, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, NodeStore, TypeRegistry, Binding, Param, filled, Reg, Ins, dst_of, rt_sig_of, same_stmt, same_expr, same_decl}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
 
@@ -70,7 +70,9 @@ export fn is_mut_at(names: NameFacts, store: NodeStore, e: ExprId) -> bool {
         // a method's receiver is a place: a write through it is what
         // makes the method a writing one (ROADMAP: the inout receiver)
         .Receiver -> true,
-        .Param(_) or .Decl(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+        // a `mut` seat is a place the fn was handed to write
+        .Param(_) -> names.reads_mut_seat(e),
+        .Decl(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
     }
 }
 
@@ -105,9 +107,16 @@ export fn trait_sig_of(decls: Decls, names: NameFacts, tname: string, mname: str
 /// A trait method's sig under the trait's DECLARATION — what a
 /// `dyn` carries, so a contract dispatches wherever it travels.
 export fn trait_sig_under(decls: Decls, tdecl: DeclId, mname: string) -> FnSig? {
-    let f: DeclId? = decls.trait_fns(tdecl).find(decl_named(decls, it, mname))
+    let f: DeclId? = trait_member(decls, tdecl, mname)
     if f == null { return null }
     fn_sig_of(decls.sig(f!))
+}
+
+/// A trait's member DECLARATION by name — the contract's own word
+/// on its receiver and seats lives there.
+export fn trait_member(decls: Decls, tdecl: DeclId, mname: string) -> DeclId? {
+    let f: DeclId? = decls.trait_fns(tdecl).find(decl_named(decls, it, mname))
+    f
 }
 
 /// Whether a type registered an impl for the trait — and a `dyn` of
@@ -302,4 +311,38 @@ impl StmtLowerCx {
 
 fn not_a_value(decls: Decls, d: DeclId) -> Diag {
     refusal("type.lambda", decls.loc(d), "a generic fn is not a value — no single signature to wear", "declared here", "wrap it — `(x: T0) -> ${decls.fn_name(d) ?? "f"}(x)` with the types pinned")
+}
+
+/// Two bindings name the same thing — the identity every seat law
+/// compares roots by.
+export fn same_binding(a: Binding, b: Binding) -> bool {
+    match a {
+        .Param(i) -> match b { .Param(k) -> i == k, _ -> false },
+        .Receiver -> b is .Receiver,
+        .Def(s) -> match b { .Def(t) -> same_stmt(s, t), _ -> false },
+        .Pattern(v, j) -> match b { .Pattern(w, k) -> same_expr(v, w) && j == k, _ -> false },
+        .LambdaParam(l, i) -> match b { .LambdaParam(m, k) -> same_expr(l, m) && i == k, _ -> false },
+        .Capture(l, j) -> match b { .Capture(m, k) -> same_expr(l, m) && j == k, _ -> false },
+        .Index(s) -> match b { .Index(t) -> same_stmt(s, t), _ -> false },
+        .Decl(d) -> match b { .Decl(e) -> same_decl(d, e), _ -> false },
+    }
+}
+
+/// A declared type's INSTANCE type — what its impl's receiver wears:
+/// the record or enum itself, applied to its own Vars when generic.
+export fn self_type_of(decls: Decls, d: DeclId) -> TypeId {
+    let name = decls.decl(d).name
+    let vars = instance_vars(decls, d)
+    if !vars.is_empty() { return decls.types.intern(Type.App(d, name, vars)) }
+    if decls.is_enum(d) { return decls.types.intern(Type.Enum(d, name)) }
+    decls.types.intern(Type.Struct(d, name))
+}
+
+/// A generic declaration's own Vars, under the names it declared —
+/// `impl Arena<N>` spells them as `type Arena<N>` did.
+export fn instance_vars(decls: Decls, d: DeclId) -> List<TypeId> {
+    mut out: List<TypeId> = []
+    // LICENSED I3: the ordinal names the Var; a paired comprehension is our own sugar backlog
+    for j, n in decls.tparams(d) { out.push(decls.types.intern(Type.Var(d, j, n))) }
+    out
 }

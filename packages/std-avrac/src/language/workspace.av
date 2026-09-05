@@ -121,6 +121,7 @@ enum Family {
     Analysis
     Lowered
     Manifest
+    Receivers
 }
 
 fn key(f: Family, arg: int) -> Key {
@@ -142,13 +143,15 @@ fn ordinal(f: Family) -> int {
         .Analysis -> 10,
         .Lowered -> 11,
         .Manifest -> 12,
+        .Receivers -> 13,
     }
 }
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
     let all: List<Family> = [Family.Source, Family.Parsed, Family.Items, Family.Namespace, Family.Visible, Family.Resolved,
-                             Family.Sig, Family.Methods, Family.Typed, Family.Folded, Family.Analysis, Family.Lowered, Family.Manifest]
+                             Family.Sig, Family.Methods, Family.Typed, Family.Folded, Family.Analysis, Family.Lowered, Family.Manifest,
+                             Family.Receivers]
     all
 }
 
@@ -195,6 +198,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ensured(ws, d))
     ws.decls.arm_methods((d: DeclId) -> methods_ensured(ws, d))
+    ws.decls.arm_writes((d: DeclId) -> writes_ensured(ws))
     load_packages(ws, src)
     ws
 }
@@ -205,6 +209,10 @@ fn ensured(ws: Workspace, d: DeclId) {
 
 fn methods_ensured(ws: Workspace, d: DeclId) {
     let _ = methods(ws, d)
+}
+
+fn writes_ensured(ws: Workspace) {
+    let _ = receivers(ws)
 }
 
 /// A family's arg, as the file, module or declaration it keys by.
@@ -229,6 +237,7 @@ fn refetched(ws: Workspace, f: Family, arg: int) -> int {
         .Analysis -> touch(analysis(ws, file_at(arg))),
         .Lowered -> touch(lowered(ws, arg)),
         .Manifest -> touch(manifest(ws, arg)),
+        .Receivers -> touch(receivers(ws)),
     }
     ws.db.changed_at(key(f, arg))
 }

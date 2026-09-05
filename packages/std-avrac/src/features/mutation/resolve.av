@@ -8,10 +8,7 @@ use diagnostics.{refusal}
 use @std.errors.{Loc}
 
 export fn resolve_assign(cx: StmtResolveCx, s: StmtId) {
-    let target: ExprId? = match cx.view.store.stmt(s) {
-        .Assign(t, _) -> t,
-        _ -> null,
-    }
+    let target: ExprId? = cx.view.store.assign_target(s)
     if target == null { return }
     let t = target!
     let at: Loc? = cx.loc_of(s)
@@ -29,7 +26,9 @@ export fn resolve_assign(cx: StmtResolveCx, s: StmtId) {
         // a method writes through its receiver: a PATH under `self`,
         // never `self` itself
         .Receiver -> if same_expr(t, r) { immutable_receiver(cx, at) } else { nothing() },
-        .Param(_) -> immutable_param(cx, n, at),
+        // a `mut` seat is written through like a mut local — a PATH
+        // under it; the seat itself waits on the inout ABI
+        .Param(_) -> if !cx.facts.reads_mut_seat(r) { immutable_param(cx, n, at) } else if same_expr(t, r) { seat_whole(cx, n, at) } else { nothing() },
         .Index(_) -> immutable_index(cx, n, at),
         .Def(s) -> mut_or_refused(cx, s, n, at),
         .LambdaParam(_, _) -> immutable_param(cx, n, at),
@@ -68,12 +67,19 @@ fn not_a_place(cx: StmtResolveCx, at: Loc?) {
     cx.emit(refusal("resolve.place", at, "a mutation lands on a place — a name, a field, or an index", assigned_here(), "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding"))
 }
 
+/// RECORDED TRIGGER: a `mut` seat assigned WHOLE lands with the
+/// inout ABI, where the seat is the caller's cell (ROADMAP: the
+/// inout receiver, S2); until then a seat is written along a path.
+fn seat_whole(cx: StmtResolveCx, n: string, at: Loc?) {
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is a `mut` seat — assigning it whole arrives with the inout ABI", assigned_here(), "write a path under it (`${n}.field = …`), or answer the new value"))
+}
+
 fn immutable_receiver(cx: StmtResolveCx, at: Loc?) {
     cx.emit(refusal("resolve.immutable", at, "`self` is the receiver — it is not assigned", assigned_here(), "assign a field of it — `self.<field> = …`"))
 }
 
 fn immutable_param(cx: StmtResolveCx, n: string, at: Loc?) {
-    cx.emit(refusal("resolve.immutable", at, "`${n}` is a parameter — parameters are immutable", assigned_here(), null))
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is a parameter — parameters are immutable", assigned_here(), "declare the seat `mut ${n}: …` to write through it; the caller then hands a `mut` place"))
 }
 
 fn immutable_bind(cx: StmtResolveCx, n: string, at: Loc?) {

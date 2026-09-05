@@ -299,7 +299,7 @@ export fn fields_zipped(b: Builder, fs: List<Token>, ft: List<TypeRef>, fds: Lis
     mut fields: List<Param> = []
     // LICENSED I3: a PAIRED comprehension is our own sugar backlog — `[f(i, x) for i, x in xs]` does not parse
     for j, f in fs {
-        fields.push(Param { name: f.text, ty: ft[j], default: default_before(b, fs, fds, j) })
+        fields.push(Param { name: f.text, ty: ft[j], default: default_before(b, fs, fds, j), mutable: false })
     }
     .Ok(fields)
 }
@@ -321,10 +321,21 @@ fn starts_between(b: Builder, e: ExprId, lo: int, hi: int) -> bool {
 /// types they aligned to — with no defaults: what every fn-shaped
 /// declaration zips.
 export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
+    marked_seats(ps, tys, [], 0)
+}
+
+/// Seats with their `mut` marks: a mark token between the previous
+/// name (or `from`, before the first) and a name marks that seat.
+export fn marked_seats(ps: List<Token>, tys: List<TypeRef?>, marks: List<Token>, from: int) -> List<Param> {
     mut out: List<Param> = []
     // LICENSED I3: a ZIP of parallel captures; comprehensions cannot
     for j, p in ps {
-        out.push(Param { name: p.text, ty: tys[j], default: null })
+        let since = if j == 0 { from } else { ps[j - 1].span.lo }
+        out.push(Param { name: p.text, ty: tys[j], default: null, mutable: marks.any(mark_within(it, since, p.span.lo)) })
     }
     out
+}
+
+fn mark_within(t: Token, after: int, before: int) -> bool {
+    t.span.lo > after && t.span.lo < before
 }
