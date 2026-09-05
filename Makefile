@@ -87,32 +87,15 @@ build-native: $(RUNTIME_OBJS)
 	@./avra build $(FILE)
 
 # The corpus gate: every corpus/*.av must say its .expected — first
-# through the evaluator, then through the native binary. A feature's
-# end-to-end proof is one tiny program plus one tiny expected file.
+# through the evaluator, then through ONE native binary holding them
+# all (`avra corpus`). A feature's end-to-end proof is one tiny
+# program plus one tiny expected file.
 # A PACKAGE proves the same as corpus/<name>/main.av (its avra.toml
 # marks the root) beside corpus/<name>/expected. corpus/native/ holds
 # programs the evaluator cannot run — extern fns — proved native only.
 corpus: $(RUNTIME_OBJS)
-	@for f in corpus/*.av; do \
-	  ./avra run $$f > /tmp/avra-corpus-eval.out 2>&1 \
-	    || { echo "$$f: eval FAILED"; cat /tmp/avra-corpus-eval.out; exit 1; }; \
-	  diff $${f%.av}.expected /tmp/avra-corpus-eval.out \
-	    || { echo "$$f: eval != expected"; exit 1; }; \
-	  ./avra build $$f > /tmp/avra-bin.path 2>&1 \
-	    || { echo "$$f: build FAILED"; cat /tmp/avra-bin.path; exit 1; }; \
-	  $$(cat /tmp/avra-bin.path) > /tmp/avra-corpus-native.out; \
-	  diff $${f%.av}.expected /tmp/avra-corpus-native.out \
-	    || { echo "$$f: native != expected"; exit 1; }; \
-	  echo "$$f: eval == native == expected"; \
-	done
-	@for f in corpus/native/*.av; do \
-	  ./avra build $$f > /tmp/avra-bin.path 2>&1 \
-	    || { echo "$$f: build FAILED"; cat /tmp/avra-bin.path; exit 1; }; \
-	  $$(cat /tmp/avra-bin.path) > /tmp/avra-corpus-native.out; \
-	  diff $${f%.av}.expected /tmp/avra-corpus-native.out \
-	    || { echo "$$f: native != expected"; exit 1; }; \
-	  echo "$$f: native == expected (the host seam — no evaluator)"; \
-	done
+	@./avra corpus corpus
+	@./avra corpus --native-only corpus/native
 	@for d in corpus/*/; do \
 	  d=$${d%/}; [ -f $$d/src/main.av ] || continue; \
 	  ./avra run $$d/src/main.av > /tmp/avra-corpus-eval.out 2>&1 \

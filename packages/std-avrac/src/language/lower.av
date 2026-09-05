@@ -7,7 +7,7 @@
 //! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, rt_kind_of, extern_row}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, stem_of, NodeStore, DeclId, FileId, Arrow, RtSig, rt_kind_of, extern_row}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{FnSig, fn_sig_of, Sub, Emitter, BodyRegs, new_emitter, new_body_regs, viewed, Decl, Decls}
 
@@ -119,7 +119,7 @@ fn new_lower(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> Lower {
 /// A lone file's program, lowered without a memo — the tests' seam.
 export fn lower(a: Analysis) -> Lowered {
     let externs = extern_names(a.view.decls)
-    union(a.view.decls, [a], 0, false, (w: Wanted) -> lower_unit(a, externs, w))
+    union(a.view.decls, [a], 0, false, false, (w: Wanted) -> lower_unit(a, externs, w))
 }
 
 /// One unit LOWERED: its body with the lambdas it lifted and the
@@ -140,7 +140,7 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted) -> Unit {
         out.defect("a unit without a body was asked for — `${w.name}`")
         return Unit { bodies: [], wants: [], voices: out.voices }
     }
-    let first = if w.decl == null { lower_main(a, jobs) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, jobs) }
+    let first = if w.decl == null { lower_main(a, w.name, jobs) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, jobs) }
     mut bodies: List<Body> = [first.body]
     mut spoken: List<Diag> = first.voices.list
     while jobs.waiting() {
@@ -164,11 +164,15 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted) -> Unit {
 /// test run asks for `every` declared body under its entry, whose
 /// laws (a module file runs nothing) still hold. A unit is asked
 /// once per symbol; the guard is the polymorphic-recursion refusal.
-export fn union(decls: Decls, files: List<Analysis>, entry: int?, every: bool, unit_of: fn(Wanted) -> Unit) -> Lowered {
+export fn union(decls: Decls, files: List<Analysis>, entry: int?, every: bool, programs: bool, unit_of: fn(Wanted) -> Unit) -> Lowered {
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
     let at: int = entry ?? 0
-    mut wants: List<Wanted> = if entry == null || every { flatten([declared(a) for a in files]) } else { [] }
+    let bodies: List<Wanted> = if entry == null || every { flatten([declared(a) for a in files]) } else { [] }
+    // EVERY FILE A PROGRAM: each file's run-time statements lower as
+    // a body under the program's own symbol, for a runner's entry to
+    // call in turn — the corpus in one binary
+    mut wants: List<Wanted> = if programs { bodies.concat([program_main(a) for a in files]) } else { bodies }
     for i, a in files {
         if entry != null && i != at { spoken = spoken.concat(entry_only(a, files[at])) }
     }
@@ -207,6 +211,17 @@ fn unit_ceiling() -> int { 100000 }
 
 /// A file's declared bodies to ask for, plain — a generic one waits
 /// for an instantiation to want it.
+/// A file's main as a wanted body, named for the program it is.
+fn program_main(a: Analysis) -> Wanted {
+    Wanted { file: a.view.file, decl: null, name: program_symbol(a.view.decls.file(a.view.file).path), sub: null }
+}
+
+/// The symbol a program's body wears in a corpus binary: its file's
+/// stem, so two programs never collide and a wreck names its file.
+export fn program_symbol(path: string) -> string {
+    "program\$${stem_of(path)}"
+}
+
 fn declared(a: Analysis) -> List<Wanted> {
     [Wanted { file: a.view.file, decl: d, name: a.view.decls.symbol(d), sub: null } for d in a.view.decls.decls_of_file(a.view.file) if lowers_plain(a, d)]
 }
@@ -302,21 +317,34 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
     Body { name: w.name, params: [fnty].concat(w.seats), ret: w.ret, gives: dst, ins: ins, reg_types: tys }
 }
 
-fn lower_main(a: Analysis, jobs: Jobs) -> LoweredBody {
+/// A file's run-time statements as a body under `name` — `main` for
+/// the entry, a program's own symbol when every file is a program.
+fn lower_main(a: Analysis, name: string, jobs: Jobs) -> LoweredBody {
     mut lo = new_lower(a, null, null, jobs)
     lo.out.give(Ins.ScopeEnter(Level.Application))
-    let last: Reg? = lower_stmts(lo, a.view.stmts)
-    let refusal: Diag? = if last == null { null } else { print_lowering(lo, last!) }
+    lower_stmts(lo, a.view.stmts)
+    let shown: ExprId? = program_answer(a)
+    let refusal: Diag? = if shown == null { null } else { print_lowering(lo, lower_subtree(lo, shown!)) }
     if refusal != null { lo.out.voices.speak(refusal!) }
     lo.out.give(Ins.ScopeExit(null))
     lo.out.give(Ins.Ret(0))
     LoweredBody {
         body: Body {
-            name: "main", params: [], ret: a.view.decls.types.intern(Type.Int),
+            name: name, params: [], ret: a.view.decls.types.intern(Type.Int),
             gives: null, ins: lo.out.ins, reg_types: lo.out.reg_types,
         },
         voices: lo.out.voices,
     }
+}
+
+/// What a program shows: the expression of its FINAL statement that
+/// RUNS, when that statement is an expression — declarations after
+/// it do not run; a binding, a loop or an assignment last shows
+/// nothing.
+fn program_answer(a: Analysis) -> ExprId? {
+    let last: StmtId? = [s for s in a.view.stmts if runs_at_top(a.view.store, s)].last()
+    if last == null { return null }
+    a.view.store.shown_value(last!)
 }
 
 /// The entry of a program that is only checked: nothing runs.

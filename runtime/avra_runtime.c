@@ -256,10 +256,13 @@ static void avra_trap(const char* msg) {
 
 // ── Printing ────────────────────────────────────────────────────
 
-// One printed line: the text, then a newline.
-void avra_puts(const char* s) {
+static void put_line(const char* s) {
     if (s) fputs(s, stdout);
     fputc('\n', stdout);
+}
+
+void avra_puts(const char* s) {
+    put_line(s);
 }
 
 // ── Strings ─────────────────────────────────────────────────────
@@ -905,8 +908,7 @@ extern char** environ;
 #include <unistd.h>
 
 void println(const char* s) {
-    fputs(s, stdout);
-    fputc('\n', stdout);
+    put_line(s);
 }
 
 void eprintln(const char* s) {
@@ -1054,4 +1056,44 @@ const char* avra_host_list_dir(const char* path) {
     const char* joined = avra_str_join(names, "\n");
     avra_rc_release(names);
     return joined;
+}
+
+// THE CAPTURE: between avra_capture_begin and avra_capture_end, fd 1
+// is a temp file — a child process's output lands there too — and
+// the end answers the text written, its final newline dropped.
+static int g_cap_saved = -1;
+static int g_cap_file = -1;
+
+void avra_capture_begin(void) {
+    if (g_cap_file >= 0) avra_trap("capture: begun twice");
+    fflush(stdout);
+    char path[] = "/tmp/avra-capture-XXXXXX";
+    g_cap_file = mkstemp(path);
+    if (g_cap_file < 0) avra_trap("capture: no temp file");
+    unlink(path);
+    g_cap_saved = dup(1);
+    dup2(g_cap_file, 1);
+}
+
+const char* avra_capture_end(void) {
+    if (g_cap_file < 0) avra_trap("capture: ended before it began");
+    fflush(stdout);
+    dup2(g_cap_saved, 1);
+    close(g_cap_saved);
+    g_cap_saved = -1;
+    off_t size = lseek(g_cap_file, 0, SEEK_END);
+    lseek(g_cap_file, 0, SEEK_SET);
+    char* buf = (char*)malloc((size_t)size + 1);
+    size_t got = 0;
+    while (got < (size_t)size) {
+        ssize_t n = read(g_cap_file, buf + got, (size_t)size - got);
+        if (n <= 0) break;
+        got += (size_t)n;
+    }
+    close(g_cap_file);
+    g_cap_file = -1;
+    if (got > 0 && buf[got - 1] == '\n') got--;
+    const char* out = str_owned(buf, got);
+    free(buf);
+    return out;
 }

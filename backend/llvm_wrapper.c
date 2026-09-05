@@ -264,6 +264,11 @@ LLVMTypeRef avra_llvm_fn_type_of(LLVMValueRef fn_val) {
     return LLVMGlobalGetValueType(fn_val);
 }
 
+/* the answer type a function was declared with */
+LLVMTypeRef avra_llvm_return_type_of(LLVMValueRef fn_val) {
+    return LLVMGetReturnType(avra_llvm_fn_type_of(fn_val));
+}
+
 // ── Globals ──
 
 // ── Basic blocks ──

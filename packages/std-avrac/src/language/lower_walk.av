@@ -109,28 +109,22 @@ fn boxed_decl(lo: Lower, r: Reg) -> DeclId? {
 /// Statements in order, each through its own StmtSemantics — the
 /// ONE statement loop, top level and blocks alike. The driver owns
 /// slots and the running last register.
-fn lower_stmts(mut lo: Lower, stmts: List<StmtId>) -> Reg? {
+fn lower_stmts(mut lo: Lower, stmts: List<StmtId>) {
     mut cx = StmtLowerCx {
         view: lo.a.view,
         expr: expr_lower_cx(lo),
         lower_stmts: (body: List<StmtId>) -> lower_stmt_list(lo, body),
     }
-    // LICENSED I4: the running last register, not a scan
-    mut last: Reg? = null
     for s in stmts {
         let r: Reg? = stmt_semantics_of(lo.a.lang.dispatch, lo.a.view.store.stmt(s)).lower_stmt(cx, s)
-        if r != null {
-            if lo.body.slot_of(s) == null { lo.body.set_slot(s, r!) }
-            last = r
-        }
+        if r != null && lo.body.slot_of(s) == null { lo.body.set_slot(s, r!) }
     }
-    last
 }
 
 /// A statement list lowered for its instructions alone — a loop
 /// body's turn.
 fn lower_stmt_list(mut lo: Lower, stmts: List<StmtId>) {
-    let _ = lower_stmts(lo, stmts)
+    lower_stmts(lo, stmts)
 }
 
 /// The program's answer, shown — printing IS lowering: the text
@@ -193,7 +187,7 @@ fn list_text_callee(lo: Lower, elem: TypeId) -> string {
 /// merge it feeds is typed by that same answer.
 fn block_reg(mut lo: Lower, stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> Reg {
     lo.out.give(Ins.ScopeEnter(Level.Application))
-    let _ = lower_stmts(lo, stmts)
+    lower_stmts(lo, stmts)
     mut cx = expr_lower_cx(lo)
     let r = if value == null { hollow_of(cx, ty) } else { lower_subtree(lo, value!) }
     lo.out.give(Ins.ScopeExit(r))
