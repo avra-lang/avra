@@ -288,6 +288,19 @@ impl Cause {
 /// never clears. Retrying it is a HANG, not a slow error. The design and
 /// the research disagree here and the research is right; the departure
 /// is written where the code is rather than in a note somewhere else.
+///
+/// AND THE REASON ABOVE COVERS DETAIL 0 ONLY, WHICH IS WHY IT IS
+/// WRITTEN OUT RATHER THAN SUMMARISED. `SQLITE_LOCKED_SHAREDCACHE`
+/// (262) is ANOTHER connection holding a shared-cache table lock — not
+/// this one — so "the retry loop holds it itself" is false there, and
+/// this package ships a `shared_cache` field that turns that mode on.
+/// The ANSWER is unchanged and deliberately so: without
+/// `sqlite3_unlock_notify` there is nothing to wait ON that we can
+/// observe, so a hard error beats a spin, and `cause_of` drops the
+/// detail anyway — `Waiting` has no arm that could tell 6 from 262.
+/// The next reader must not quote the first paragraph for the second
+/// case. Same shape as `Cause.Syntax` being wider than its name: the
+/// arm is right, the sentence under it is narrower than the arm.
 fn waiting_clears(b: Waiting) -> bool {
     match b {
         .Recovery or .Timeout or .Plain -> true,

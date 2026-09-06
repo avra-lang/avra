@@ -6,7 +6,8 @@
 // path only because `hdr` refuses a header without its tag.
 use @std.text.{from_codepoint, from_codepoints}
 use @std.sqlite.{version, compiled_with, compile_options, is_complete, describe, is_keyword, like, glob, equal_nocase, keyword_count}
-use @std.sqlite.c.{sqlite3_keyword_check, sqlite3_stricmp}
+use @std.sqlite.c.{sqlite3_keyword_check, sqlite3_stricmp, sqlite3_complete}
+use @std.sqlite.error.{SqlError}
 
 /// Text holding a NUL, which no literal can spell. The five lossy
 /// primitives (`==`, `contains`, `index_of`, `split`, `replace`) stop
@@ -47,6 +48,21 @@ fn version_survives() -> bool {
     held == "3.53.4" && churn == 40
 }
 
+/// The face's answer, with a refusal reading as `false`.
+fn adv_complete_says(sql: string) -> bool { is_complete(sql) catch false }
+
+/// The kind the face refuses a text with, or the word for an answer.
+fn complete_kind(sql: string) -> string {
+    match is_complete(sql) {
+        .Ok(_) -> "ANSWERED",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+/// The WALL's own answer, unguarded — this is C's behaviour and the
+/// place it is asserted.
+fn wall_completes(sql: string) -> bool { sqlite3_complete(sql) == 1 }
+
 spec "std/sqlite adversarial" {
     given "a C answer that can be NULL" {
         // sqlite3_compileoption_get(N) answers NULL past the last
@@ -65,7 +81,7 @@ spec "std/sqlite adversarial" {
     }
 
     given "empty text at every door — the empty case written first" {
-        then "empty SQL is not a complete statement" { !is_complete("") }
+        then "empty SQL is not a complete statement" { !adv_complete_says("") }
         then "empty text is not a keyword" { !is_keyword("") }
         then "an empty option name is not carried" { !compiled_with("") }
         then "LIKE of empty against empty matches" { like("", "") }
@@ -94,8 +110,14 @@ spec "std/sqlite adversarial" {
         then "a longer name reads as the shorter one it hides" { compiled_with("DQS=0${from_codepoint(0)}x") }
         then "which is the same answer as the name it hides" { compiled_with("DQS=0") }
         then "and the two Avra strings are NOT the same length" { "DQS=0${from_codepoint(0)}x".length != "DQS=0".length }
-        then "SQL after a NUL is never judged" { is_complete("select 1;${from_codepoint(0)} select") }
+        // THE WALL TRUNCATES — that is C, and this is where it is
+        // asserted, against `sqlite3_complete` itself. The FACE refuses
+        // the same bytes instead, because it cannot answer truthfully
+        // about text SQLite reads less of than we do.
+        then "the wall judges only the bytes before a NUL" { wall_completes("select 1;${from_codepoint(0)} select") }
         then "though Avra still sees every byte of it" { "select 1;${from_codepoint(0)} select".length == 17 }
+        then "the face refuses those bytes rather than answering about a prefix" { complete_kind("select 1;${from_codepoint(0)} select") == "sqlite.holds_nul" }
+        then "and answers ordinary text as before" { complete_kind("select 1;") == "ANSWERED" }
     }
 
     given "codes and options nobody promised" {
@@ -136,6 +158,20 @@ spec "std/sqlite adversarial" {
         then "two calls for one code answer the same text" { describe(5) == describe(5) }
         then "different codes still answer differently" { describe(5) != describe(7) }
         then "the version survives the same traffic" { version_survives() }
+    }
+
+    given "the three verbs that stop at a NUL, pinned so they cannot drift" {
+        // `strlike`, `strglob` and `stricmp` are C string calls with no
+        // length, so both arguments end at the first NUL. Unlike
+        // `is_complete` these have no guarded twin to disagree with, so
+        // there is no doctrine split — the behaviour is recorded here
+        // instead. TRIGGER for changing them: a `Bytes` value, or a
+        // caller who meets it.
+        then "text and its own prefix compare equal, which is the lie" { equal_nocase("ab${from_codepoint(0)}cd", "ab") }
+        then "though Avra sees five bytes against two" { "ab${from_codepoint(0)}cd".length == 5 }
+        then "LIKE matches a pattern against only the bytes before a NUL" { like("ab", "ab${from_codepoint(0)}cd") }
+        then "GLOB does the same" { glob("ab", "ab${from_codepoint(0)}cd") }
+        then "and all three are honest about text with no NUL in it" { equal_nocase("abcd", "abcd") && !equal_nocase("abcd", "ab") }
     }
 
     given "patterns that make the operators work" {

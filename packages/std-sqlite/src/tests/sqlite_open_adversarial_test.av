@@ -114,6 +114,23 @@ spec "std/sqlite open adversarial" {
         then "an ordinary path is unaffected by that field" { door_uri("/tmp/a.db") == "ACCEPTED" }
     }
 
+    given "a URI whose path component is empty — the THIRD spelling" {
+        // `""` and `":memory:"` were the first two. Measured with URI
+        // parsing on, all four of these open a private temporary
+        // database and leave nothing on disk: rc=0, `db_filename` empty.
+        // An encoding spends the empty value, and SQLite spends it three
+        // ways in one API.
+        then "a bare `file:` is refused even when URIs were asked for" { door_uri("file:") == "sqlite.empty_path" }
+        then "an empty authority is refused too" { door_uri("file://") == "sqlite.empty_path" }
+        then "a query string with no path is refused" { door_uri("file:?mode=ro") == "sqlite.empty_path" }
+        then "a fragment with no path is refused" { door_uri("file:#frag") == "sqlite.empty_path" }
+        // The refusal is about the PATH being empty, not about URIs —
+        // a URI naming a real file is what the field exists for.
+        then "a URI with a real path is accepted" { door_uri("file:/tmp/a.db") == "ACCEPTED" }
+        then "a URI with a path and a mode is accepted" { door_uri("file:/tmp/a.db?mode=ro") == "ACCEPTED" }
+        then "and with URIs off, `file:` is still refused as a URI" { door("file:") == "sqlite.uri_path" }
+    }
+
     given "flags_of over all 48 configurations" {
         then "there are 48" { words().length == 48 }
         // The header allows exactly three combinations and SQLite
