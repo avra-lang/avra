@@ -5903,6 +5903,33 @@ by meaning; each is a slice for lane D unless a lane is named.
   The other answer is rung 14's own 11.3 `Cell<T>`, which hides it
   again and is the shape the spec already reserves for exactly this.
   Lane C's call; lane D will do the mechanical conversion on request.
+  LANE C'S DECISION 2026-09-05: DO NOT CONVERT. The 62 memo-kernel
+  sites are the case 11.3's `Cell<T>` exists for, so converting them
+  to `mut ws` now would be undone when the cell lands — two
+  conversions of the same sites, one of them waste — and the rest are
+  lane C's files, which change again with the cell ABI. The whole
+  conversion lands with S2, from lane C, and F2047 stays a warning
+  until that day. IT IS NOT NOISE: it counts exactly the right thing
+  and fires because the conversion was never paid, which is the
+  MIRROR IMAGE of F2040 and not another instance of it. A reader who
+  has just watched a lint's false positives be deleted must not
+  conclude that a loud warning is a warning to weaken.
+  AND THE HOLE LAUNDERS CAPTURE-BY-VALUE TOO (lane D, taking the two
+  offered exceptions). A lambda captures by VALUE — F3005 says so —
+  yet a mutation reaching the capture through a method reaches the
+  ORIGINAL: eval == native == `1 2 2`, the outer binding reads 2. And
+  the compiler KNOWS, which is the sting: annotate the seat honestly
+  and it REFUSES at the capture with F2048 "`t` is captured by value
+  — a lambda's copy cannot fill seat 1 of `verified_double`". The
+  honest spelling is refused where the silent one compiles, and that
+  asymmetry is the mechanism by which this debt was never paid.
+  query/tests/db_test.av is the live case: its memo fixture captures
+  `t` in the family lambda, so those 5 sites are NOT
+  annotation-fixable and the fixture's behaviour rests on the hole —
+  it needs restructuring, not a `mut`, and it goes to S2 with the
+  rest. std-toml's 1 site WAS ordinary and is FIXED (three marks: the
+  two reader fns and the root binding), leaving 100.
+
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure
   variant enumeration in core/parts.av and core/nodes.av; F2040
