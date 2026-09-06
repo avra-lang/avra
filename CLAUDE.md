@@ -940,6 +940,15 @@ Runtime facts, ours to ratify:
   failure has never been witnessed is an untested instrument — and the
   runtime's kind accounting is the dearest of them, wrong from the
   day it was written and found by CHECKING rather than by failing.
+- A RECEIPT FROM ANOTHER TREE IS LABELLED AS ONE. The laws here carry
+  instances because an instance is what makes a law APPLIED rather
+  than agreed with — so the instances have to stay checkable. One
+  probed in this tree reads as fact; one from a lane's own tree is
+  named as that lane's and stays ATTRIBUTED until the code lands
+  here. The two-hats law carries one of each, deliberately. Mixing
+  them silently is how a file of receipts decays into a file of
+  claims, and the reader loses the ability to tell which line to
+  trust — including the lines that are true.
 - A COUNT FROM A PACKAGE SWEEP IS LINES, NOT SITES. Checking one
   package reports its DEPENDENCIES' warnings too, so summing the
   twelve counts every shared site once per package that reaches it:
