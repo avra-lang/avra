@@ -1697,13 +1697,60 @@ the order is the dependency.
         registry comment of mine: `avra_once_set` was documented as
         consuming the caller's reference when its body retains. Fixed;
         the reliance is written at `borrow_outlives`.
-        NEXT, its payoff: DOGFOODING's 17 `LICENSED I34` borrows were
-        licensed because the pass lacked liveness. They can retire —
-        a sweep whose correctness the gate proves, and which also
-        closes H3, since deleting the borrow makes `mut ys =
-        self.xs` a COPY. The carve-out names its own expiry: "bs2's
-        aliasing, honored until self-host" (places.av), and self-host
-        has happened (lane D).
+        WHAT S3 DOES NOT BUY, measured the same day and correcting
+        this entry's own first draft: it does NOT retire the I34
+        borrows. The sweep was built — 42 sites to the direct path
+        write, of which 31 the law accepts, 5 more once the grammar
+        executor's `mut cx` cascade converged (4 rounds, no other
+        error), and 9 blocked at lane D's capture wall (`ws` is
+        captured by value in the lambda that calls `spec_id`). It
+        was gate-green at 1877 and it made the compiler 3.4x SLOWER:
+        7.5s to 25.6s user, `./avra check packages/std-avrac`,
+        reverted and the 7.69s baseline returned. Lane A audited the
+        machine rather than assert (every heavy step in integrate.sh
+        runs under the lock; their run-to-run variance is under 2%
+        across the day), so the ratio is the change, not the load.
+        THE MECHANISM, and it is the next slice. A direct path write
+        on a receiver field still clones whenever the same fn also
+        READS that field: the read goes through the OWNED TWIN
+        (`owned_form` picks `avra_array_get_owned` whenever the
+        destination is managed), its +1 lives to the scope's end,
+        and `avra_slot_unique` then finds the value shared.
+        `mark_flat` is the exemplar — `if self.flats[id.index].sealed
+        { return }` before `self.flats.set(...)`. S3 as landed
+        governs the slot `Load` alone; the design's own words
+        ("a USE is transitive through non-owning reads: a child taken
+        by `avra_array_get`") say the twin choice belongs to liveness
+        too, and that is S3b. Lane A's `known_id` fix is the same
+        mechanism paid at ONE site, which is why it bought about a
+        second and no more — their ledger attributes the whole
+        retain/release third to S3 and is being corrected.
+        S3b LANDED THE SAME DAY and closed it. `owned_form`'s twin
+        choice is now liveness-governed: a LENDING row's answer — one
+        whose subject still holds it — is a borrow unless it must
+        outlive the subject. Which rows lend is a REGISTRY COLUMN
+        (`lends`, false by default), because the distinction is DATA:
+        `avra_array_pop` also has an owned twin and must never be
+        borrowed, since a pop HANDS OVER — declining its twin trapped
+        "a managed slot popped as a scalar", which is how the column
+        earned its place. MEASURED: S3b alone is 7.49s -> 6.83s on
+        the compiler checking itself, 8.8% on top of S3's 3.3%, on a
+        tree still written in the borrow idiom. Then the sweep — 34
+        sites to the direct path write, plus 5 `mut` seats where the
+        grammar executor's cascade converged (5 rounds, no other
+        error) — is FREE: 6.87s against 6.90s, inside the noise. All
+        17 I34 licenses are gone and the idiom is retired.
+        H3 IS STILL OPEN, and the reason is exact: the borrow
+        MECHANISM cannot be deleted while 9 sites still need it —
+        `ws.packages`, `ws.specs`, `ws.asks` and the db_test fixture,
+        every one blocked at lane D's capture wall (`ws` is captured
+        by value in the lambda that calls `spec_id`). Deleting it
+        anyway was tried and reproduced S0's exact failure: the
+        compiler built and its declaration tables were EMPTY ("index
+        0 is out of bounds"), because a borrow that becomes a copy
+        pushes into the copy. So H3 closes with S2, not before, and
+        the carve-out's own expiry note ("bs2's aliasing, honored
+        until self-host") is now the only thing left of it.
   - [x] THE POINTER-CONSTANT LAW. LANDED 2026-09-05, flagged by the
         SQLITE lane with lane A's placement argument, both adopted. A
         `ConstInt` aimed at a pointer-riding register IS the null

@@ -145,9 +145,9 @@ spec "language/lower" {
         then "a captured fn's lane read is retained before the call that releases it" {
             every_callptr_seat_retained(ir_of("let a = () -> 1\nlet b = () -> a() + 1\nb()"))
         }
-        then "a captured fn's lane read is an OWNED read" {
+        then "a captured fn's lane read BORROWS — the seat's own retain is the callee's reference" {
             let l = ir_of("let a = () -> 1\nlet b = () -> a() + 1\nb()")
-            l.fns.any(it.ins.any(is_owned_get(it)))
+            !l.fns.any(it.ins.any(is_owned_get(it))) && every_callptr_seat_retained(l)
         }
     }
     given "arithmetic" {
@@ -316,29 +316,35 @@ ret 0"""
         }
     }
     given "the loop's condition settles every turn" {
-        then "a managed read in a while condition is released before the test, inside the loop — never after it" {
+        then "a value the condition MINTS is released before the test, inside the loop — never after it" {
+            let l = ir_of("type Db = { cells: List<int> }\nimpl Db {\n    fn tag() -> string {\n        \"ab\"\n    }\n    fn keep(at: int) {\n        while self.tag().length <= at { self.cells.push(1) }\n    }\n}\nmut db = Db { cells: [] }\ndb.keep(4)\ndb.cells.length")
+            let keep: Body? = l.fns.find(it.name == "Db.keep")
+            keep != null && cond_mint_settled(keep!.ins)
+        }
+        then "a LENDING read in a condition borrows — the subject still holds it, so the body writes in place" {
             let l = ir_of("type Db = { cells: List<int> }\nimpl Db {\n    fn keep(at: int) {\n        while self.cells.length <= at { self.cells.push(1) }\n    }\n}\nmut db = Db { cells: [] }\ndb.keep(4)\ndb.cells.length")
             let keep: Body? = l.fns.find(it.name == "Db.keep")
-            keep != null && cond_load_settled(keep!.ins)
+            keep != null && !keep!.ins.any(is_owned_get(it))
         }
     }
 }
 
-/// The condition's owned load is released ONCE inside the loop,
-/// before the test, and never after the loop.
-fn cond_load_settled(ins: List<Ins>) -> bool {
+/// The condition's MINTED value is released ONCE inside the loop,
+/// never after it — the settle runs every turn, as the condition
+/// does.
+fn cond_mint_settled(ins: List<Ins>) -> bool {
     let start = marker_index(ins, Ins.LoopStart)
     let cond = cond_index(ins)
     let end = marker_index(ins, Ins.LoopEnd)
-    let loaded: Reg? = owned_load_in(ins.slice(start, cond))
-    loaded != null && releases_of(ins.slice(start, cond), loaded!) == 1 && releases_of(ins.slice(end, ins.length), loaded!) == 0
+    let minted: Reg? = called_in(ins.slice(start, cond))
+    minted != null && releases_of(ins.slice(start, cond), minted!) == 1 && releases_of(ins.slice(end, ins.length), minted!) == 0
 }
 
-/// The register an `avra_array_get_owned` call defines in the slice.
-fn owned_load_in(ins: List<Ins>) -> Reg? {
+/// The register the first body CALL in the slice defines.
+fn called_in(ins: List<Ins>) -> Reg? {
     for i in ins {
         let dst: Reg? = match i {
-            .CallRt(d, callee, _) -> if callee == "avra_array_get_owned" { d } else { null },
+            .Call(d, _, _) -> d,
             _ -> null,
         }
         if dst != null { return dst }

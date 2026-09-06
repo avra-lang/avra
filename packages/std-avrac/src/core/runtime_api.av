@@ -17,14 +17,14 @@ export once fn rt_sigs() -> List<RtSig> {
         RtSig { name: "avra_array_sized", ret: RtKind.Ptr, params: [RtKind.I64], owns_result: true, has_owned_twin: false, host: RtHost.ArrayNew },
         RtSig { name: "avra_array_push", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.ArrayPush },
         RtSig { name: "avra_array_push_owned", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.ArrayPush },
-        RtSig { name: "avra_array_get", ret: RtKind.I64, params: [RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.ArrayGet },
+        RtSig { name: "avra_array_get", ret: RtKind.I64, params: [RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.ArrayGet, lends: true },
         RtSig { name: "avra_array_get_owned", ret: RtKind.Ptr, params: [RtKind.Ptr, RtKind.I64], owns_result: true, has_owned_twin: false, host: RtHost.ArrayGet },
         RtSig { name: "avra_cell_release", ret: RtKind.Void, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.CellRelease },
         RtSig { name: "avra_cell_unique", ret: RtKind.Ptr, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.CellUnique },
         RtSig { name: "avra_map_new", ret: RtKind.Ptr, params: [], owns_result: true, has_owned_twin: false, host: RtHost.MapNew },
         RtSig { name: "avra_map_len", ret: RtKind.I64, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.MapLen },
         RtSig { name: "avra_map_has", ret: RtKind.I64, params: [RtKind.Ptr, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.MapHas },
-        RtSig { name: "avra_map_get", ret: RtKind.I64, params: [RtKind.Ptr, RtKind.Ptr], owns_result: false, has_owned_twin: true, host: RtHost.MapGet },
+        RtSig { name: "avra_map_get", ret: RtKind.I64, params: [RtKind.Ptr, RtKind.Ptr], owns_result: false, has_owned_twin: true, host: RtHost.MapGet, lends: true },
         RtSig { name: "avra_map_get_owned", ret: RtKind.Ptr, params: [RtKind.Ptr, RtKind.Ptr], owns_result: true, has_owned_twin: false, host: RtHost.MapGet },
         RtSig { name: "avra_map_set", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.MapSet },
         RtSig { name: "avra_map_set_owned", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.Ptr, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.MapSet },
@@ -119,6 +119,14 @@ export once fn rt_index() -> Map<string, RtSig> {
     mut index: Map<string, RtSig> = {}
     for s in rt_sigs() { index.set(s.name, s) }
     index
+}
+
+/// True when the subject STILL HOLDS what the callee answered, so
+/// the answer may be BORROWED rather than taken through the owned
+/// twin. False for every row that hands its answer over.
+export fn rt_lends(name: string) -> bool {
+    let sig: RtSig? = rt_index().get(name)
+    sig != null && sig!.lends
 }
 
 /// True when the callee's result is a FRESH allocation the memory

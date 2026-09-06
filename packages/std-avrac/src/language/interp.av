@@ -120,13 +120,11 @@ impl Machine {
     /// One body under its argument values; params ARE registers 0..N-1.
     /// The answer is RetVal's register, when one fires.
     fn run_body(b: Body, args: List<Val>) -> Val? {
-        // LICENSED I34: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
-        mut frames = self.frames
-        if frames.length >= call_limit() {
+        if self.frames.length >= call_limit() {
             self.trapped("recursion too deep — ${call_limit()} nested calls")
             return null
         }
-        frames.push(filled<Val?>(b.reg_types.length, null))
+        self.frames.push(filled<Val?>(b.reg_types.length, null))
         for (j, a) in args.enumerate() { self.put(Reg { index: j }, a) }
         // LICENSED I4: the run loop's answer, not a scan
         mut answer: Val? = null
@@ -150,7 +148,7 @@ impl Machine {
                 }
             }
         }
-        let _ = frames.pop()
+        let _ = self.frames.pop()
         answer
     }
 
@@ -225,12 +223,10 @@ impl Machine {
     /// A register written in the TOP frame — the frame is a value, so
     /// the frame that holds the write is stored back over the old one.
     fn put(d: Reg, v: Val) {
-        // LICENSED I34: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
-        mut frames = self.frames
-        let at = frames.length - 1
-        mut regs = frames[at]
+        let at = self.frames.length - 1
+        mut regs = self.frames[at]
         regs.set(d.index, v)
-        frames.set(at, regs)
+        self.frames.set(at, regs)
 
 
     }
@@ -606,15 +602,13 @@ impl Machine {
 
 
     fn popped(id: int) -> Val {
-        // LICENSED I34: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
-        mut arrays = self.arrays
-        mut arr = arrays[id]
+        mut arr = self.arrays[id]
         if arr.is_empty() {
             self.trapped("pop on an empty list")
             return Val.I(0)
         }
         let last = arr.pop()
-        arrays.set(id, arr)
+        self.arrays.set(id, arr)
         last
 
 
@@ -724,25 +718,21 @@ impl Machine {
 
 
     fn map_write(id: int, key: string, v: Val) -> Val {
-        // LICENSED I34: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
         let s = self.map_slot(id, key)
-        mut maps = self.maps
-        let entry = maps[id]
+        let entry = self.maps[id]
         let written = if s >= 0 { entry with { vals: copied(entry.vals, [v], s) } }
                       else { entry with { keys: entry.keys.concat([key]), vals: entry.vals.concat([v]) } }
-        maps.set(id, written)
+        self.maps.set(id, written)
         Val.I(0)
 
 
     }
 
     fn cell_unique_val(vals: List<Val>) -> Val {
-        // LICENSED I34: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
         match vals[0] {
             .C(id) -> {
                 let fresh = self.cloned_val(self.cells[id])
-                mut cs = self.cells
-                cs.set(id, fresh)
+                self.cells.set(id, fresh)
                 fresh
             }
             _ -> self.defect_val("a place opened through a non-cell"),
@@ -766,12 +756,10 @@ impl Machine {
 
 
     fn slot_written(id: int, at: int, v: Val) -> Val {
-        // LICENSED I34: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
-        mut arrays = self.arrays
-        mut arr = arrays[id]
+        mut arr = self.arrays[id]
         if at < 0 || at >= arr.length { return self.out_of_bounds(at, arr.length) }
         arr.set(at, v)
-        arrays.set(id, arr)
+        self.arrays.set(id, arr)
         Val.I(0)
     }
 
@@ -788,11 +776,9 @@ impl Machine {
 
 
     fn pushed(id: int, v: Val) -> Val {
-        // LICENSED I34: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
-        mut arrays = self.arrays
-        mut arr = arrays[id]
+        mut arr = self.arrays[id]
         arr.push(v)
-        arrays.set(id, arr)
+        self.arrays.set(id, arr)
         Val.I(0)
     }
 

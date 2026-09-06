@@ -519,7 +519,23 @@ reintroducing I3's blind spot names the two spellings it lost.
       (a path write behind a live alias copies, and the alias goes
       stale — `file_id`'s borrow before `module_id` trapped), and it
       dies with liveness (S3 releases a read at its last use, and
-      every such borrow becomes the path write). UNRATCHETED: the
+      every such borrow becomes the path write).
+      RETIRED 2026-09-05, and the second half of that prediction was
+      WRONG in a way worth keeping. S3's liveness alone did NOT
+      retire it: the sweep to path writes made the compiler 3.4x
+      SLOWER (7.5s to 25.6s), because a read of `self.field` goes
+      through the OWNED TWIN whenever the destination is managed,
+      and that +1 lives to the scope's end whatever the retain rule
+      says. Liveness had to reach the TWIN CHOICE too (S3b): a
+      LENDING row's answer — one the subject still holds, which the
+      registry now says in a `lends` column — is a borrow unless it
+      must outlive the subject. With that, the sweep is FREE (6.87s
+      against 6.90s) and all 17 licenses are gone. The lesson is the
+      registry's: `avra_array_pop` also has an owned twin and must
+      NEVER be borrowed, because a pop HANDS OVER — declining its
+      twin trapped "a managed slot popped as a scalar". Which rows
+      lend is DATA, and `lends` defaults to false so a row nobody
+      has thought about is safe. UNRATCHETED: the
       matcher needs the enclosing fn's scope (a read BEFORE the
       write); the read-then-write scan lives in lane C's landing.
 

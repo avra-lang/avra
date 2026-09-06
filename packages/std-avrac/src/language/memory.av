@@ -8,7 +8,7 @@
 //! RetVal keeps, and the caller owns the call's result. Systems
 //! ownership lands here later as a strategy, touching neither
 //! lowering nor the backend.
-use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, dst_of, reads_of, same_reg, rt_owns, rt_owned_twin, reversed}
+use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, dst_of, reads_of, same_reg, rt_owns, rt_lends, rt_owned_twin, reversed}
 
 /// Managed registers bound in one open scope, its tier remembered.
 export type Scope = { tier: Level, managed: List<Reg>, cells: List<Reg> }
@@ -60,7 +60,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
     mut out: List<Ins> = []
     mut open_scopes: Stack<Scope> = new_stack()
     for at, raw in ins {
-        let i = owned_form(types, reg_types, raw)
+        let i = owned_form(types, reg_types, ins, at, raw)
         match i {
             .ScopeEnter(tier) -> {
                 // LICENSED I15: a scope STACK walked by the pass, not a bracket body
@@ -439,7 +439,7 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
 /// managed becomes an owned +1 read — each by the registry's OWNED
 /// TWIN column. Lowering never chooses; ownership stays this
 /// pass's one concern, and no runtime name is spelled here.
-fn owned_form(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Ins {
+fn owned_form(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: int, i: Ins) -> Ins {
     // a pre-filter — the caller's dispatch is exhaustive
     // over Ins; this rewrite touches only the runtime call shapes
     match i {
@@ -449,10 +449,20 @@ fn owned_form(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Ins {
         }
         .CallRt(dst, callee, args) -> {
             let twin: string? = rt_owned_twin(callee)
-            if twin != null && is_managed(types, reg_types[dst.index]) { Ins.CallRt(dst, twin!, args) } else { i }
+            if twin != null && is_managed(types, reg_types[dst.index]) && (!rt_lends(callee) || read_outlives(types, reg_types, ins, at, dst, args)) { Ins.CallRt(dst, twin!, args) } else { i }
         }
         rest -> i,
     }
+}
+
+/// A LENDING read's child is a BORROW of the subject's
+/// reference unless it must OUTLIVE it — the same question a slot
+/// read asks, with the SUBJECT register standing where the cell
+/// does. Declining the owned twin is what leaves the count at one,
+/// so the write that follows lands IN PLACE instead of cloning.
+fn read_outlives(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: int, dst: Reg, args: List<Reg>) -> bool {
+    if args.is_empty() { return true }
+    borrow_outlives(types, reg_types, ins, at, dst, args[0])
 }
 
 /// A push's VALUE seat (arg 1) holds a managed type.
