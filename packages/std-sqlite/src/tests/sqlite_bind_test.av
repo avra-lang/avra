@@ -1,0 +1,206 @@
+// Values bound into a statement's holes, and read back through SQL.
+//
+// The driver cannot read TEXT out of a cell yet — `column_text` hands
+// back a borrowed pointer and nothing can copy foreign text into a box
+// — so a text bind is proved the way SQLite itself would answer it:
+// `hex(?)` compares the BYTES inside the database and answers an
+// integer, so a value truncated at a NUL fails the comparison instead
+// of passing a length check.
+use @std.sqlite.open.{Db, memory, close}
+use @std.sqlite.stmt.{Stmt, prepare, step, finalize, holes, bind_int, bind_null, bind_text, bind_blob, bind_text_unsafely_borrowed, int_at, class_at}
+use @std.sqlite.error.{Storage, SqlError}
+use @std.text.{from_codepoint, from_codepoints}
+
+/// The integer a one-hole query answers when `v` is bound as text, or
+/// the kind it was refused with. The SQL does the reading.
+fn with_text(sql: string, v: string) -> string { asked(sql, bound_text(v)) }
+fn with_blob(sql: string, v: string) -> string { asked(sql, bound_blob(v)) }
+fn with_int(sql: string, v: int) -> string { asked(sql, bound_int(v)) }
+fn with_null(sql: string) -> string { asked(sql, bound_null()) }
+
+/// How a value gets into hole 1 — a fn per kind, so the cases below
+/// show only the SQL and the value.
+type Binder = { kind: int, text: string, number: int }
+fn bound_text(v: string) -> Binder { Binder { kind: 1, text: v, number: 0 } }
+fn bound_blob(v: string) -> Binder { Binder { kind: 2, text: v, number: 0 } }
+fn bound_int(v: int) -> Binder { Binder { kind: 3, text: "", number: v } }
+fn bound_null() -> Binder { Binder { kind: 4, text: "", number: 0 } }
+fn bound_static(v: string) -> Binder { Binder { kind: 5, text: v, number: 0 } }
+
+fn asked(sql: string, b: Binder) -> string {
+    match memory() {
+        .Ok(db) -> in_db(db, sql, b),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn in_db(db: Db, sql: string, b: Binder) -> string {
+    mut held = db
+    let said = prepared(db, sql, b)
+    let _ = close(held)
+    said
+}
+
+fn prepared(db: Db, sql: string, b: Binder) -> string {
+    match prepare(db, sql) {
+        .Ok(s) -> filled(s, b),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn filled(s: Stmt, b: Binder) -> string {
+    mut held = s
+    let said = after_bind(held, b)
+    let _ = finalize(held)
+    said
+}
+
+fn after_bind(s: Stmt, b: Binder) -> string {
+    match place(s, b) {
+        .Ok(_) -> bound_first_int(s),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn place(s: Stmt, b: Binder) -> Result<int, SqlError> {
+    if b.kind == 1 { return bind_text(s, 1, b.text) }
+    if b.kind == 2 { return bind_blob(s, 1, b.text) }
+    if b.kind == 3 { return bind_int(s, 1, b.number) }
+    if b.kind == 5 { return bind_text_unsafely_borrowed(s, 1, b.text) }
+    bind_null(s, 1)
+}
+
+fn bound_first_int(s: Stmt) -> string {
+    match step(s) {
+        .Ok(more) -> if more { bound_told(int_at(s, 0)) } else { "NO ROW" },
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn bound_told(r: Result<int, SqlError>) -> string {
+    match r {
+        .Ok(v) -> "${v}",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+/// `a`, a NUL, `b` — three bytes no literal can spell, and the exact
+/// shape that a `strlen` measurement would cut to one.
+fn a_nul_b() -> string { from_codepoints([97, 0, 98]) }
+
+spec "std/sqlite binding" {
+
+    given "a value put into a statement and read back by SQL" {
+        then "an integer arrives unchanged" { with_int("select ?", 42) == "42" }
+        then "an integer past 32 bits arrives unchanged" { with_int("select ?", 4294967297) == "4294967297" }
+        then "a negative integer arrives negative" { with_int("select ?", 0 - 7) == "-7" }
+        then "text arrives with its own length" { with_text("select length(?)", "hello") == "5" }
+        then "empty text is text, and its length is zero" { with_text("select length(?)", "") == "0" }
+        then "a bound NULL is SQL NULL rather than a missing value" { with_null("select ? is null") == "1" }
+    }
+
+    given "a bind names the storage class SQLite will store" {
+        then "text binds as text" { with_text("select typeof(?) = 'text'", "hi") == "1" }
+        then "an integer binds as an integer" { with_int("select typeof(?) = 'integer'", 1) == "1" }
+        then "a blob binds as a blob" { with_blob("select typeof(?) = 'blob'", "hi") == "1" }
+        then "NULL binds as null" { with_null("select typeof(?) = 'null'") == "1" }
+        // Empty is a VALUE, not an absence — the trap this driver has
+        // met at four different boundaries now.
+        then "empty text is text and not null" { with_text("select typeof(?) = 'text'", "") == "1" }
+        then "an empty blob is a blob and not null" { with_blob("select typeof(?) = 'blob'", "") == "1" }
+    }
+
+    given "text holding a NUL, which C would cut short" {
+        // `hex` compares the BYTES inside the database, so a value bound
+        // with a `strlen` length fails this rather than passing a
+        // length check. 610062 is 'a', NUL, 'b'.
+        then "all three bytes reach the database" { with_text("select hex(?) = '610062'", a_nul_b()) == "1" }
+        then "the database agrees the value is three bytes long" { with_text("select length(cast(? as blob))", a_nul_b()) == "3" }
+        then "a NUL-bearing value is not equal to its own prefix" { with_text("select ? = 'a'", a_nul_b()) == "0" }
+        then "a lone NUL is one byte, not an empty value" { with_text("select length(cast(? as blob))", from_codepoint(0)) == "1" }
+    }
+
+    given "bytes bound as a blob" {
+        then "the bytes arrive exactly" { with_blob("select hex(?) = '610062'", a_nul_b()) == "1" }
+        then "a blob keeps its length where text would end at a NUL" { with_blob("select length(?)", a_nul_b()) == "3" }
+    }
+
+    given "a parameter index outside the statement's holes" {
+        // Parameters count from 1 and columns from 0, which is the
+        // oldest off-by-one in this API — so the driver names it rather
+        // than letting SQLITE_RANGE come back as a bare code.
+        then "index 0 is refused, because holes count from one" { with_int_at("select ?", 0) == "sqlite.out_of_row" }
+        then "an index past the last hole is refused" { with_int_at("select ?", 2) == "sqlite.out_of_row" }
+        then "binding into a statement with no holes is refused" { with_int_at("select 1", 1) == "sqlite.out_of_row" }
+        then "a statement with one hole reports one" { holes_of("select ?") == 1 }
+        then "a statement with three holes reports three" { holes_of("select ? + ? + ?") == 3 }
+        then "a statement with none reports none" { holes_of("select 1") == 0 }
+    }
+
+    given "the borrowing bind, which is the named hatch and not a default" {
+        // `SQLITE_STATIC` asks SQLite not to copy, so the caller's bytes
+        // must outlive the statement. The value here is alive across the
+        // whole call, which is the only condition under which it is
+        // safe — and the verb's name says what the caller is promising.
+        then "a borrowed bind delivers the same bytes as a copied one" { asked("select hex(?) = '610062'", bound_static(a_nul_b())) == "1" }
+        then "and the copying bind is what the short name gives you" { with_text("select hex(?) = '610062'", a_nul_b()) == "1" }
+    }
+}
+
+/// A bind aimed at a chosen hole, so the index guard can be tested.
+fn with_int_at(sql: string, index: int) -> string {
+    match memory() {
+        .Ok(db) -> at_index(db, sql, index),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn at_index(db: Db, sql: string, index: int) -> string {
+    mut held = db
+    let said = index_said(db, sql, index)
+    let _ = close(held)
+    said
+}
+
+fn index_said(db: Db, sql: string, index: int) -> string {
+    match prepare(db, sql) {
+        .Ok(s) -> index_bound(s, index),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn index_bound(s: Stmt, index: int) -> string {
+    mut held = s
+    let said = bound_told(bind_int(held, index, 1))
+    let _ = finalize(held)
+    said
+}
+
+/// How many holes a statement has.
+fn holes_of(sql: string) -> int {
+    match memory() {
+        .Ok(db) -> counted(db, sql),
+        .Err(_) -> 0 - 1,
+    }
+}
+
+fn counted(db: Db, sql: string) -> int {
+    mut held = db
+    let n = holes_said(db, sql)
+    let _ = close(held)
+    n
+}
+
+fn holes_said(db: Db, sql: string) -> int {
+    match prepare(db, sql) {
+        .Ok(s) -> holes_finalized(s),
+        .Err(_) -> 0 - 1,
+    }
+}
+
+fn holes_finalized(s: Stmt) -> int {
+    mut held = s
+    let n = holes(held)
+    let _ = finalize(held)
+    n
+}

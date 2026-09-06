@@ -27,3 +27,36 @@ export fn has_nul(s: string) -> bool { [s.char_code(i) for i in 0..s.length].any
 export fn is_blank(s: string) -> bool { [s.char_code(i) for i in 0..s.length].all(blank_code(it)) }
 
 fn blank_code(c: int) -> bool { c == 32 || c == 9 || c == 10 || c == 13 }
+
+
+// ── The pointer sentinels ───────────────────────────────────────
+//
+// Two of SQLite's arguments are POINTER VALUES rather than pointers to
+// anything: the destructor seat of every `bind_*` and `result_*` takes
+// either `SQLITE_STATIC` — `(void*)0` — or `SQLITE_TRANSIENT` —
+// `(void*)-1` — and SQLite COMPARES the value before it would ever call
+// through it (`vendor/sqlite3.h:6429-6430`).
+
+/// A pointer at a literal address, which is what a sentinel is.
+extern fn avra_ptr_at(address: int) -> ptr?
+
+/// `SQLITE_TRANSIENT`: SQLite COPIES the bytes before the bind returns,
+/// so nothing the caller holds has to outlive anything. This is the
+/// default every bind should take.
+export fn transient() -> ptr? { avra_ptr_at(0 - 1) }
+
+/// `SQLITE_STATIC`: the caller promises the bytes stay valid until the
+/// statement is finalized or the parameter is rebound
+/// (`vendor/sqlite3.h:4946-4950`). Avra cannot enforce that promise —
+/// a released box is a use-after-free INSIDE SQLite, where the
+/// runtime's refcounter is blind by construction — so this is a named
+/// hatch and never a default.
+export fn static_bytes() -> ptr? { null }
+
+// ONE THING TO KNOW BEFORE A REAL CALLBACK IS EVER BOUND.
+// `SQLITE_TRANSIENT` is a FUNCTION pointer type, and clang SIGNS
+// function pointers on arm64e — it does not sign pointers to ordinary
+// data. `(void*)-1` is safe here only because SQLite compares it and
+// never calls through it. The day this driver binds a real destructor,
+// or any other C callback, that stops being true and the pointer has to
+// be signed like the function pointer it is.
