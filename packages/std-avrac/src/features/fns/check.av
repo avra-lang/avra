@@ -6,15 +6,37 @@
 //! generic call INSTANTIATES: pins pre-fill, arguments unify, a
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
-use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId}
+use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, marked}
 use features.{no_pins, Pins, TypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, mut_seats_law, agreed, unify, hungry, declared_marks}
 use diagnostics.{refusal}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .FnDecl(fname, _, _, fret, body) -> checked_fn(cx, s, fname, fret, body),
-        _ -> nothing(),
+        .ExternFn(hname, hparams, _) -> checked_extern(cx, s, hname, hparams),
+        rest -> nothing(),
     }
+}
+
+/// THE HOST INOUT LAW at the DECLARATION: a `mut` seat hands C the
+/// ADDRESS of the caller's cell, so the cell's machine shape IS the
+/// contract, and only a few shapes line up. A MANAGED value is out —
+/// C cannot keep the refcount contract a box demands. A NARROW WIDTH
+/// is out — the cell is 64 bits and a 32-bit write through it leaves
+/// the top half stale, which is B3's defect wearing the other hat.
+fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
+    for j, pp in hparams {
+        if pp.mutable && !inout_able(pp.ty) { seat_not_inout_able(cx, s, hname, j, pp) }
+    }
+}
+
+/// The types a `mut` extern seat may wear, by the word the seat
+/// WROTE: a `ptr` cell is a `void**` to C, an `int` cell an
+/// `int64_t*`, and `ptr?` is the first with absence.
+fn inout_able(t: TypeRef?) -> bool {
+    let written: TypeRef? = t
+    if written == null { return false }
+    ["ptr", "int", "i64"].contains(written!.name)
 }
 
 fn checked_fn(mut cx: TypeCx, s: StmtId, fname: string, fret: TypeRef, body: ExprId) {
@@ -58,7 +80,9 @@ fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef
     let decl: DeclId? = cx.bound_decl(e)
     if decl == null { return seats_judged(cx, e, callee, s.params, [], s.ret, args) }
     let d = decl!
-    mut_seats_law(cx, e, callee, declared_marks(cx, d, 0, args.length), args, null)
+    let marks = declared_marks(cx, d, 0, args.length)
+    mut_seats_law(cx, e, callee, marks, args, null)
+    if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, marks, args) }
     let tp: List<string> = cx.tparams(d)
     if tp.is_empty() {
         if !pins.is_empty() { takes_no_pins(cx, e, callee) }
@@ -195,6 +219,29 @@ fn bounds_hold(mut cx: TypeCx, e: ExprId, decl: DeclId, concrete: List<TypeId>) 
     true
 }
 
+/// THE HOST INOUT LAW at the CALL: only a LOCAL binding owns a cell,
+/// and the cell's address is what the seat hands over. A parameter,
+/// a capture, a pattern bind and a receiver are registers with
+/// nothing behind them, so handing one over would pass the VALUE and
+/// the callee's write would land in a copy nobody reads.
+fn inout_args_law(mut cx: TypeCx, callee: string, marks: List<bool>, args: List<ExprId>) {
+    for j, a in args {
+        if marked(marks, j) && cellless_place(cx, a) { seat_wants_a_local(cx, a, callee, j) }
+    }
+}
+
+/// A `mut` PLACE whose root owns no cell — a parameter, a capture, a
+/// pattern bind, a receiver. A value and a non-`mut` root are the
+/// SEAT LAW's to refuse and it already has, so this law asks only
+/// about what that one accepted: one mistake, one message.
+fn cellless_place(cx: TypeCx, a: ExprId) -> bool {
+    let held: ExprId? = cx.view.store.place_root(a)
+    if held == null { return false }
+    let root = held!
+    let b: Binding? = cx.names.binding(root)
+    cx.is_mut(root) && b != null && !(b! is .Def)
+}
+
 // ── The voices ──
 
 fn body_disagrees(mut cx: TypeCx, body: ExprId, fname: string, fret: TypeRef, got: TypeId) {
@@ -249,4 +296,18 @@ fn wrong_return(mut cx: TypeCx, s: StmtId, v: ExprId, want: TypeId) {
 fn bound_unheld(mut cx: TypeCx, e: ExprId, tname: string, ty: TypeId) {
     let tn = cx.view.types.name_of(ty)
     cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${tn}` does not implement `${tname}`", "in this call", "write `impl ${tname} for ${tn} { … }`"))
+}
+
+fn seat_not_inout_able(mut cx: TypeCx, s: StmtId, hname: string, j: int, pp: Param) {
+    cx.emit(refusal("type.host_seat", cx.stmt_loc(s), "seat ${j + 1} of `${hname}` is `mut` and wears `${spelled(pp.ty ?? void_written())}` — a `mut` host seat hands C the ADDRESS of the caller's cell", "declared here", "a cell C may write is `ptr`, `ptr?` or `int`. A managed value (`string`, a list, a map, a record) cannot cross — C keeps no refcount — and a narrow width cannot, because the cell is 64 bits wide and a 32-bit write leaves half of it stale."))
+}
+
+fn seat_wants_a_local(mut cx: TypeCx, a: ExprId, callee: string, j: int) {
+    cx.emit(refusal("type.host_seat", cx.loc_of(a), "seat ${j + 1} of `${callee}` is `mut`, and only a LOCAL binding has a cell to hand over", "handed here", "bind it in this body first — `mut x = …` — then hand `x`; a parameter, a capture and a pattern bind are values with no cell behind them"))
+}
+
+/// The stand-in when a seat wrote no type at all — the declare pass
+/// already refused it; the voice must still name something.
+fn void_written() -> TypeRef {
+    TypeRef { name: "void", args: [], optional: false, dynamic: false, arrow: false, span: null }
 }

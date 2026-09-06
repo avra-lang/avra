@@ -7,7 +7,7 @@
 //! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, rt_kind_of, extern_row, no_marks}
+use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind, extern_row, no_marks, ExternParts, Param, TypeRef}
 use @std.path.{stem_of}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{LowerCx, FnSig, fn_sig_of, Sub, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap}
@@ -49,10 +49,34 @@ fn extern_rows(decls: Decls) -> List<RtSig> {
     [extern_row_of(decls, d) for d in decls.decls if decls.is_extern(d.id)]
 }
 
+/// An extern's runtime row. The WIDTHS are read back from the
+/// program — the annotation the seat wrote — because the signature
+/// carries the type that crosses (`int`) and never the machine
+/// width: a width is a property of a SEAT, and the store is where
+/// the seats are.
 fn extern_row_of(decls: Decls, d: Decl) -> RtSig {
     let sig: FnSig? = fn_sig_of(decls.sig(d.id))
+    let host: ExternParts? = decls.store(d.id).extern_parts(d.stmt)
     let params: List<TypeId> = sig?.params ?? []
-    extern_row(decls.symbol(d.id), rt_kind_of(decls.types, sig?.ret ?? decls.types.intern(Type.Void)), [rt_kind_of(decls.types, p) for p in params])
+    extern_row(decls.symbol(d.id),
+               extern_kind(decls.types, host?.ret, sig?.ret ?? decls.types.intern(Type.Void)),
+               [host_seat_kind(decls, d.id, host, j, p) for j, p in params])
+}
+
+/// A host seat's kind. A `mut` seat is an INOUT — it carries the
+/// ADDRESS of the caller's cell, so it is a POINTER whatever the
+/// cell holds; every other seat is its width or its type's kind.
+fn host_seat_kind(decls: Decls, d: DeclId, host: ExternParts?, j: int, p: TypeId) -> RtKind {
+    if decls.mut_seat(d, j) { return RtKind.Ptr }
+    extern_kind(decls.types, seat_written(host, j), p)
+}
+
+/// The annotation seat `j` wrote, when the declaration is an extern
+/// and reaches that far.
+fn seat_written(host: ExternParts?, j: int) -> TypeRef? {
+    let seats: List<Param> = host?.params ?? []
+    if j >= seats.length { return null }
+    seats[j].ty
 }
 
 /// One lowering per BODY — `fn_ret` is that body's declared answer

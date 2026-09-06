@@ -3,7 +3,7 @@
 //! annotations, and the laws of the types annotations WRITE — a
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
-use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, TypeRegistry, ExternParts, no_marks}
+use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, TypeRegistry, ExternParts, no_marks, widthless, width_named, width_words}
 use diagnostics.{refusal}
 use features.{TypeCx, FnSig, StructSig, EnumSig, DeclSig, record_sig_of, variant_sig_of, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats, declared_decl}
 use @std.errors.{Loc}
@@ -141,7 +141,12 @@ impl TypeCx {
             return self.declare_sig(s, fp.params, fp.ret)
         }
         let host: ExternParts? = self.view.store.extern_parts(s)
-        if host != null { self.declare_sig(s, host!.params, host!.ret) }
+        if host == null { return }
+        // An extern's seats may name a machine WIDTH; the value that
+        // crosses is Avra's one integer, so the width is read off
+        // the annotation and the sig declares `int`.
+        let c = host!
+        self.declare_sig(s, widthless_seats(c.params), widthless(c.ret) ?? c.ret)
     }
 
     fn declare_sig(s: StmtId, fparams: List<Param>, fret: TypeRef) {
@@ -402,7 +407,16 @@ impl TypeCx {
         if sh != null { return self.view.types.intern(sh!) }
         let decl: DeclId? = self.type_decl_named(name)
         if decl != null { return self.declared_type(decl!, name) }
+        if width_named(name) != null { return self.width_off_a_seat(at, name) }
         self.emit(refusal("type.unknown", at, "`${name}` names no type", "in this signature", "the types today are `int`, `string`, `bool`, and your declared types"))
+        self.error_type
+    }
+
+    /// A WIDTH IS A PROPERTY OF A SEAT, NOT OF A VALUE — so a width
+    /// word reaching the general type reader is one written where
+    /// no C prototype is being described.
+    fn width_off_a_seat(at: Loc?, name: string) -> TypeId {
+        self.emit(refusal("type.unknown", at, "`${name}` is a machine WIDTH, and widths live on an `extern fn`'s seats — this is not one", "written here", "Avra keeps one integer: write `int`. The widths (${width_words()}) name what a C prototype declares, directly on an `extern fn`'s parameter or answer — never inside `List<…>`, and never on a value."))
         self.error_type
     }
 
@@ -450,3 +464,7 @@ fn scalar_field(t: Type) -> bool {
     }
 }
 
+/// An extern's seats, each width word read as the `int` it carries.
+fn widthless_seats(ps: List<Param>) -> List<Param> {
+    [pp with { ty: widthless(pp.ty) } for pp in ps]
+}

@@ -335,6 +335,18 @@ LLVMValueRef avra_llvm_build_zext(LLVMBuilderRef b, LLVMValueRef val, LLVMTypeRe
     return LLVMBuildZExt(b, val, dest_ty, name);
 }
 
+/* The SIGNED widening. `avra_llvm_cast_to_type` widens with ZExt
+   whatever the value's sign, so it is never the one for a width a
+   declaration called signed — that is the B3 defect written in C. */
+LLVMValueRef avra_llvm_build_sext(LLVMBuilderRef b, LLVMValueRef val, LLVMTypeRef dest_ty, const char* name) {
+    return LLVMBuildSExt(b, val, dest_ty, name);
+}
+
+/* The narrowing an extern's declared width asks for at an argument. */
+LLVMValueRef avra_llvm_build_trunc(LLVMBuilderRef b, LLVMValueRef val, LLVMTypeRef dest_ty, const char* name) {
+    return LLVMBuildTrunc(b, val, dest_ty, name);
+}
+
 // Validate name: if it doesn't start with a letter or underscore, it's a
 // corrupted pointer value being used as a name. Use a deterministic fallback.
 static const char* safe_name(const char* name, const char* fallback) {

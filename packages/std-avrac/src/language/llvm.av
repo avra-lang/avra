@@ -172,9 +172,14 @@ fn declare_externs(lc: ptr, m: ptr, rows: List<RtSig>) {
     }
 }
 
+/// A runtime slot's machine type. The WIDTHS belong to an extern
+/// seat alone — the registry's own rows are all words and pointers.
+/// `.F64`/`.F32` land here as the double and float types the day a
+/// float VALUE exists to construct them.
 fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
     match k {
         .I64 -> avra_llvm_int64_type(lc),
+        .I32 or .U32 -> avra_llvm_int32_type(lc),
         .Ptr -> avra_llvm_pointer_type(lc),
         .Void -> avra_llvm_void_type(lc),
     }
@@ -381,7 +386,7 @@ impl Emit {
     /// The runtime speaks i64 for truth; a bool-shaped register narrows
     /// to i1 (icmp 33, ne 0).
     fn call_rt_value(dst: Reg, callee: string, args: List<Reg>) -> ptr {
-        let raw = self.call(callee, self.rt_args(callee, args))
+        let raw = self.answered(callee, self.call(callee, self.rt_args(callee, args)))
         if self.types.shape_of(self.tys[dst.index]) is .Bool {
             return avra_llvm_build_icmp(self.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(self.lc), 0, 0), "b")
         }
@@ -403,7 +408,29 @@ impl Emit {
         if sig == null { return false }
         match sig!.ret {
             .I64 -> true,
-            .Ptr or .Void -> false,
+            // a width answers an Avra `int`, never a pointer's word
+            .I32 or .U32 or .Ptr or .Void -> false,
+        }
+    }
+
+
+    /// A NARROW ANSWER IS WIDENED WITH THE SIGN ITS WIDTH NAMES, and
+    /// this match is where the author must say which: `i32` and `u32`
+    /// differ in nothing else. Reading a narrow answer at 64 bits is
+    /// the silent wrong answer — a C `int` of -1 reads 4294967295 —
+    /// because the bits above the declared width are the callee's
+    /// business and only the declaration says how to read them.
+    /// NOT `avra_llvm_cast_to_type`: its int-to-int arm widens with
+    /// `LLVMBuildZExt` whatever the sign (llvm_wrapper.c), so it is
+    /// never the one for a signed width.
+    fn answered(callee: string, raw: ptr) -> ptr {
+        let sig: RtSig? = self.callee_sig(callee)
+        if sig == null { return raw }
+        let wide = avra_llvm_int64_type(self.lc)
+        match sig!.ret {
+            .I32 -> avra_llvm_build_sext(self.b, raw, wide, "wide"),
+            .U32 -> avra_llvm_build_zext(self.b, raw, wide, "wide"),
+            .I64 or .Ptr or .Void -> raw,
         }
     }
 
@@ -445,6 +472,9 @@ impl Emit {
         if j >= sig!.params.length { return v }
         match sig!.params[j] {
             .I64 -> self.worded(r, v),
+            // the low bits are what a narrow C seat reads; the
+            // SIGN of an argument is the callee's to interpret
+            .I32 or .U32 -> avra_llvm_build_trunc(self.b, v, avra_llvm_int32_type(self.lc), "narrow"),
             .Ptr or .Void -> v,
         }
     }

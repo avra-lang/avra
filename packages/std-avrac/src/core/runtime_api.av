@@ -5,7 +5,7 @@
 //! HOSTS every row by its host column. The twins: runtime/
 //! avra_runtime.c natively, the host arm in the interpreter — a new
 //! runtime fn is a row plus both bodies, nothing else.
-use core.{RtKind, RtSig, RtHost, TypeRegistry, TypeId}
+use core.{RtKind, RtSig, RtHost, TypeRegistry, TypeId, TypeRef, joined}
 
 export once fn rt_sigs() -> List<RtSig> {
     let sigs: List<RtSig> = [
@@ -98,6 +98,54 @@ export fn rt_kind_of(types: TypeRegistry, ty: TypeId) -> RtKind {
     if types.shape_of(ty) is .Void { return RtKind.Void }
     if types.rides_pointer(ty) { return RtKind.Ptr }
     RtKind.I64
+}
+
+/// One width word and the kind it names.
+export type WidthRow = { word: string, kind: RtKind }
+
+/// THE WIDTH WORDS an extern seat may name. Read both ways — a
+/// declaration asks word -> kind, a refusal reads the words back —
+/// so the roster is data, not a match. `"f64"` and `"f32"` join it
+/// the day a float VALUE exists: two rows here and two `ll_rt_kind`
+/// arms are the whole edit.
+export fn width_rows() -> List<WidthRow> {
+    let rows = table<WidthRow> {
+        word  | kind
+        "i32" | RtKind.I32
+        "u32" | RtKind.U32
+        "i64" | RtKind.I64
+    }
+    rows
+}
+
+/// The kind a width word names, or absence for every other name.
+export fn width_named(name: string) -> RtKind? {
+    width_rows().find(it.word == name)?.kind
+}
+
+/// The width words, spelled for a refusal.
+export fn width_words() -> string {
+    joined(["`${w.word}`" for w in width_rows()], ", ")
+}
+
+/// The annotation a seat DECLARES, with a width word read as the
+/// `int` that actually crosses. A WIDTH IS A PROPERTY OF A SEAT,
+/// NOT OF A VALUE: the width rides the extern's ROW alone, and the
+/// type the seat names is Avra's one integer. Every other
+/// annotation passes through untouched, which is what keeps a width
+/// word a type nowhere else — `let x: i32 = 5` stays a refusal.
+export fn widthless(t: TypeRef?) -> TypeRef? {
+    if t == null { return null }
+    let written = t!
+    if width_named(written.name) == null { return written }
+    written with { name: "int" }
+}
+
+/// A seat's runtime kind: the WIDTH its annotation named, else the
+/// kind its type rides. The fallback IS the whole standing law —
+/// an extern seat with no width is a word or a pointer, as before.
+export fn extern_kind(types: TypeRegistry, written: TypeRef?, ty: TypeId) -> RtKind {
+    width_named(written?.name ?? "") ?? rt_kind_of(types, ty)
 }
 
 /// An extern fn's row — borrowed answers, no twin, hosted by the
