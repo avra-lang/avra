@@ -711,7 +711,12 @@ form the compiler's help names, and when a site wants the missing
 form, add the ask to the ROADMAP's sugar backlog naming the site.
 Every entry was probed with `./avra check` on a scratch file and
 quotes the refusal, so a re-probe is cheap; an entry the compiler
-starts accepting is deleted. Laws that SPEAK are not listed —
+starts accepting is deleted. THIS SECTION IS A CACHE, and it is 21% of
+this file — every entry is a fact the COMPILER can answer, which is
+why two went stale in one day and both were found by luck. RECORDED
+TRIGGER: when the docs campaign's `lang/subset/*.av` lands as a
+gate-verified corpus, this section becomes a POINTER to it and stops
+being a hand-kept list. Measured 2026-09-06 at 1233 lines. Laws that SPEAK are not listed —
 reserved words (F3002 names the word and its status), a mutating
 method on a non-`mut` binding (F2034), a lambda assigning to a
 capture (F3005: captures are copies), a fn body reading a top-level
@@ -1074,6 +1079,17 @@ Runtime facts, ours to ratify:
   one of them still reads as current. This is the attribution rule
   one axis over: that one asks WHICH TREE, this one asks WHICH
   VERSION of it, and receipts decay the same way for the same reason.
+- A SAFETY PROPERTY RESTING ON A CONDITION NOBODY STATED IS A
+  DEADLINE, NOT A GUARANTEE — and the file already holds two, each
+  written as if it were alone. `str_len`'s zero-length fallback is
+  safe only because every text box is minted through `str_box(n)`,
+  a CONVENTION OF THE CALLERS that a `Bytes` value ends. `parsed`'s
+  early cutoff is sound only while compiles are ONE-SHOT. Both are
+  correct today and both have a date. So when a property holds by a
+  condition, NAME THE CONDITION IN THE SAME BREATH — an unstated one
+  is what makes the eventual breakage read as a new bug rather than
+  an expiry. A third instance is a CITATION of this line, never
+  another paragraph; that is what this entry is for.
 - AN ASSUMPTION NOTHING HAS EVER TRIED TO VIOLATE IS NOT A GUARANTEE.
   A check that passes proves the arrangement it was handed happened
   to work; it does not prove the check would NOTICE. Two shapes,
