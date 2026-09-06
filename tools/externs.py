@@ -95,6 +95,13 @@ TYPEDEF = re.compile(r"^\s*typedef\s+([A-Za-z_][A-Za-z_0-9 ]*?)\s+([A-Za-z_][A-Z
 # a spelling the 32-bit rule reads.
 NOISE = re.compile(r"^(const|static|extern|inline|register|volatile|[A-Z][A-Z0-9_]*)$")
 
+# A macro standing where a TYPE belongs, which is a different thing
+# from one decorating a declaration. `SQLITE_API int` is an attribute
+# and its `int` survives stripping; `unsigned SQLITE_INT64_TYPE` IS
+# the type, and stripping leaves `unsigned` — a 32-bit reading of a
+# 64-bit branch. Corruption, not abstention.
+MACRO = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
 
 def typedefs(sources):
     """Each typedef name and EVERY spelling it may stand for.
@@ -106,8 +113,28 @@ def typedefs(sources):
     """
     out = {}
     for rel in sources:
-        for m in TYPEDEF.finditer(open(os.path.join(ROOT, rel)).read()):
+        typedefs_from(open(os.path.join(ROOT, rel)).read(), out)
+    return out
+
+
+def typedefs_from(text, out):
+    """ONE collection, so the self-test below exercises the rule the
+    tree runs and not a copy of it — a copy is how a test agrees with
+    a bug."""
+    for m in TYPEDEF.finditer(text):
             body, name = m.group(1).strip(), m.group(2)
+            # A BRANCH WHOSE TYPE IS A MACRO TAUGHT NOTHING, and no
+            # information is not DISAGREEMENT. A vendored header names
+            # a width through a macro the USER may supply
+            # (`typedef SQLITE_INT64_TYPE sqlite_int64;`), and there is
+            # no reading of it here — counting it as a dissenting vote
+            # refused every sibling branch that DID say something.
+            # It abstains, and its siblings decide.
+            # THE LIMIT, which cannot be closed from source: if the
+            # user's macro names a NARROW type, the siblings are wrong
+            # about it. A width nobody wrote down is not knowable.
+            if any(MACRO.match(w) for w in body.split()):
+                continue
             if name != body and body:
                 out.setdefault(name, set()).add(body)
     return out
@@ -121,12 +148,24 @@ def spellings(ctype, tds, depth=0):
     text = " ".join(words)
     named = [w for w in words if w in tds]
     if not named or depth > 4:
-        return {text}
+        # A BRANCH THAT STRIPS TO NOTHING TAUGHT THE KEEPER NOTHING,
+        # and no information is not DISAGREEMENT. A vendored header
+        # defines a width in a branch whose whole body is a macro the
+        # user may supply (`typedef SQLITE_INT64_TYPE sqlite_int64;`),
+        # and counting that silence as a dissenting vote refused every
+        # typedef standing beside it. It abstains instead.
+        # THE TEETH ARE IN `agrees`, NOT HERE: a type that resolves to
+        # NOTHING AT ALL yields an empty set, which is not "every
+        # reading agrees" — it fails, as an unreadable type must.
+        # THE LIMIT, since it cannot be closed from source: if the
+        # user's macro names a NARROW type, that branch is judged by
+        # its siblings. A width nobody wrote down is not knowable here.
+        return {text} if text else set()
     out = set()
     for w in named:
         for body in tds[w]:
             out |= spellings(" ".join(body if x == w else x for x in words), tds, depth + 1)
-    return out or {text}
+    return out or ({text} if text else set())
 
 
 def agrees(declared, ctype, tds):
@@ -209,14 +248,25 @@ CASES = [
     ("int",  "int64_t", True),
     ("int",  "const char *", True),               # a pointer fills the register
     ("ptr",  "SQLITE_API void *", True),
+    # a branch whose whole body is a macro ABSTAINS: its siblings decide
+    ("int",  "SQLITE_API sqlite3_uint64", True),
+    # and a return type that is ONLY a macro resolves to nothing, which
+    # is not agreement — the teeth the abstention must not file down
+    ("int",  "SQLITE_API SOME_WIDTH", False),
 ]
 FIXTURE = """
-#if defined(_MSC_VER)
+#ifdef SQLITE_INT64_TYPE
+  typedef SQLITE_INT64_TYPE sqlite_int64;
+  typedef unsigned SQLITE_INT64_TYPE sqlite_uint64;
+#elif defined(_MSC_VER)
   typedef __int64 sqlite_int64;
+  typedef unsigned __int64 sqlite_uint64;
 #else
   typedef long long int sqlite_int64;
+  typedef unsigned long long int sqlite_uint64;
 #endif
 typedef sqlite_int64 sqlite3_int64;
+typedef sqlite_uint64 sqlite3_uint64;
 """
 
 
@@ -224,11 +274,7 @@ def self_test():
     """The cases above, against the fixture's typedefs. A failure here
     means the keeper's model moved, and every verdict it gives is
     suspect until it is explained."""
-    tds = {}
-    for m in TYPEDEF.finditer(FIXTURE):
-        body, name = m.group(1).strip(), m.group(2)
-        if name != body and body:
-            tds.setdefault(name, set()).add(body)
+    tds = typedefs_from(FIXTURE, {})
     bad = [(d, c, want) for d, c, want in CASES if agrees(d, c, tds) != want]
     for declared, ctype, want in bad:
         reads = " | ".join(sorted(spellings(ctype, tds)))
