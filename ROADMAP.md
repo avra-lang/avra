@@ -582,6 +582,27 @@ the compiler checking itself 28.8s.
         reworded, the whole gate stayed green (1880 tests, 77
         programs), because the only existing out-of-bounds test goes
         through the evaluator. Three contracts, 1.4s, in the gate.
+  - [ ] A POINTER FROM AN INTEGER — the OWNER's question, asked by
+        the SQLITE lane 2026-09-05 and recorded here because the
+        answer lands in lane A's file. `ptr` is receive-only today:
+        no cast, no constructor, and `const P: ptr = 1` is F2024
+        "`P` declares `ptr`, this is `int`" (probed). So the blocker
+        is the TYPER, not lowering, and the question is not "may we
+        fold a pointer constant" but MAY AN AVRA PROGRAM BUILD A
+        POINTER FROM AN INTEGER AT ALL — a coherent no, with real
+        safety value. What wants it: a named pointer sentinel, e.g.
+        SQLite's `SQLITE_TRANSIENT` = `(void*)-1`, without which a
+        driver ships no TEXT or BLOB bind.
+        THE WRAPPER WAS OFFERED AND DECLINED as premature — a
+        backend wall exists to serve lowering, and one serving none
+        pre-announces a capability the owner may refuse. THE TRAP IT
+        WOULD CARRY IS RECORDED INSTEAD, which is the part worth
+        keeping: it is `LLVMConstIntToPtr`, a CONSTANT expression
+        that folds to `null` at zero, NOT the `LLVMBuildIntToPtr`
+        INSTRUCTION already at llvm_wrapper.c:371 (and inside
+        `cast_to_type`). The names differ by one word and the wrong
+        one emits an instruction where a constant belongs. On a yes,
+        this is minutes.
   - [x] THE EXTERN WALL'S WIDTH (2026-09-05, the SQLITE lane's find,
         REPRODUCED here before acting): Avra's `int` is 64 bits and
         C's is 32. `declare_externs` declares every extern answering
