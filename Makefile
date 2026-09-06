@@ -16,7 +16,7 @@ export LLVM_PREFIX
 RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 
 # Every package that carries spec cases, in dependency order.
-SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli
+SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite
 
 .PHONY: census traps test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
         check run ir emit build-native native-check avra
@@ -55,7 +55,7 @@ avra: $(RUNTIME_OBJS)
 sweep:
 	@rm -rf packages/*/build build/test_shards
 
-test: $(RUNTIME_OBJS)
+test: $(RUNTIME_OBJS) build/sqlite3.o
 	@for p in $(SUITES); do \
 	  ./avra test $$p || exit 1; \
 	done
@@ -154,6 +154,40 @@ externs:
 # test is C someone else compiled. When a package can build its own
 # native sources (ROADMAP: B7) this rule dies and the manifest's
 # `sources` does the work.
+# THE VENDORED SQLITE, one translation unit. `@std/sqlite`'s manifest
+# names this object in its `[link]`, so the package cannot be checked,
+# tested or linked without it — and it had no rule at all: the recipe
+# lived in `vendor/FLAGS.md` as prose, main carried no object, and the
+# package's whole suite sat outside `make gate` because nothing could
+# build what it links.
+#
+# THE FLAG SET LIVES HERE, and the suite is what keeps it honest:
+# `sqlite_test.av`'s `promised()` asks the LIBRARY for every flag below
+# through `sqlite3_compileoption_used`, so the document, this rule and
+# the object cannot drift without a red test. `vendor/FLAGS.md` carries
+# the REASON for each; this carries the flag.
+SQLITE_FLAGS := \
+  -DSQLITE_ENABLE_COLUMN_METADATA=1 -DSQLITE_ENABLE_PREUPDATE_HOOK=1 \
+  -DSQLITE_ENABLE_SESSION=1 -DSQLITE_ENABLE_SNAPSHOT=1 \
+  -DSQLITE_ENABLE_NORMALIZE=1 -DSQLITE_ENABLE_STMT_SCANSTATUS=1 \
+  -DSQLITE_ENABLE_UNLOCK_NOTIFY=1 -DSQLITE_ENABLE_FTS5=1 \
+  -DSQLITE_ENABLE_RTREE=1 -DSQLITE_ENABLE_GEOPOLY=1 \
+  -DSQLITE_ENABLE_MATH_FUNCTIONS=1 -DSQLITE_ENABLE_DBSTAT_VTAB=1 \
+  -DSQLITE_ENABLE_DBPAGE_VTAB=1 -DSQLITE_ENABLE_BYTECODE_VTAB=1 \
+  -DSQLITE_ENABLE_STAT4=1 -DSQLITE_ENABLE_EXPLAIN_COMMENTS=1 \
+  -DSQLITE_ENABLE_OFFSET_SQL_FUNC=1 -DSQLITE_DQS=0 \
+  -DSQLITE_ENABLE_API_ARMOR=1 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS=1 \
+  -DSQLITE_STRICT_SUBTYPE=1 -DSQLITE_DEFAULT_FOREIGN_KEYS=1 \
+  -DSQLITE_THREADSAFE=1 -DSQLITE_MAX_EXPR_DEPTH=1000 \
+  -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1 \
+  -DSQLITE_DEFAULT_MMAP_SIZE=268435456 -DSQLITE_MAX_MMAP_SIZE=1099511627776 \
+  -DSQLITE_DEFAULT_CACHE_SIZE=-8000 -DSQLITE_DEFAULT_WORKER_THREADS=0 \
+  -DNDEBUG=1
+
+build/sqlite3.o: packages/std-sqlite/vendor/sqlite3.c
+	@mkdir -p build
+	cc -c -O2 $(SQLITE_FLAGS) -o $@ $<
+
 build/width_witness.o: packages/width-witness/src/witness.c
 	@mkdir -p build
 	cc -c -O2 -o build/width_witness.o packages/width-witness/src/witness.c

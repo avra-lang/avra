@@ -1,0 +1,73 @@
+// The red team's record for THE HANDLE — the one value that crosses the
+// wall by being WRITTEN THROUGH rather than answered.
+//
+// `opened()` says "THE HANDLE IS CLOSED ON EVERY PATH", because SQLite
+// may allocate a connection object even for a FAILED open and a driver
+// that closes only on success leaks one per failure. That sentence is
+// true only if TWO things hold, and neither was pinned anywhere:
+//
+//   the `mut db: ptr?` seat carries SQLite's write BACK into Avra, and
+//   a FAILED open really does leave a handle to close.
+//
+// If the seat stopped carrying the write, `closing()` would close a
+// null, every failed open would leak, and nothing would fail — the
+// caller has an error in hand and the leak is invisible. So the seat is
+// asserted here directly, at the wall, rather than through the face.
+//
+// CLOSING ITSELF IS NOT HERE: `close` nulls its receiver and the
+// connection suite asks it both ways. This file is about the one value
+// that arrives by being WRITTEN THROUGH.
+use @std.io.{remove}
+use @std.sqlite.open.{Mode, config_at, flags_of}
+use @std.sqlite.c.{sqlite3_open_v2, sqlite3_close_v2}
+
+/// One open at the wall, reported as its code and whether a handle
+/// came back. The handle is closed either way, which is the law under
+/// test.
+fn walled(path: string, flags: int) -> string {
+    mut handle: ptr? = null
+    let rc = sqlite3_open_v2(path, handle, flags, null)
+    let word = "rc=${rc} handle=${present(handle)}"
+    let _ = sqlite3_close_v2(handle)
+    word
+}
+
+fn present(p: ptr?) -> string { if p == null { "absent" } else { "present" } }
+
+/// The one fixture this suite makes: a real file, so the seat is asked
+/// about a VFS path and not only the memory VFS.
+fn a_file() -> string { "/tmp/avra-sqlite-handle-ok.db" }
+
+fn swept() -> bool { (remove(a_file()) catch "") != "" }
+
+fn rw_word() -> int { flags_of(config_at("x")) }
+fn ro_word() -> int { flags_of(config_at("x") with { mode: Mode.ReadOnly }) }
+
+/// A path no filesystem has: the parent directory does not exist, so
+/// the open fails without a fixture to make or remove.
+fn nowhere() -> string { "/no-such-directory-a9f3c1/x.db" }
+
+spec "std/sqlite handle adversarial" {
+
+    given "the out-parameter seat, which nothing else asserts" {
+        // A `sqlite3**` filled by the callee. Avra's niche for an
+        // absent pointer IS the null pointer, so the seat's type and
+        // the C convention are one value — but only if the write
+        // crosses back.
+        then "a successful open hands a handle back" { walled(":memory:", rw_word()) == "rc=0 handle=present" }
+        then "and it is the same for a file" { walled(a_file(), rw_word()) == "rc=0 handle=present" }
+        then "and the fixture is swept up" { swept() }
+    }
+
+    given "a FAILED open, which is where the leak would hide" {
+        // MEASURED: rc=14 CANTOPEN, and a handle comes back anyway.
+        // This is the whole reason `closing()` closes before it builds
+        // the failure. If this case ever reads `handle=absent`, either
+        // SQLite changed or the seat stopped carrying the write — and
+        // the second would make every failed open leak in silence.
+        then "read-only on a missing file fails" { walled(nowhere(), ro_word()).starts_with("rc=14") }
+        then "and STILL leaves a handle to close" { walled(nowhere(), ro_word()) == "rc=14 handle=present" }
+        then "read-write into a missing directory fails the same way" { walled(nowhere(), rw_word()) == "rc=14 handle=present" }
+    }
+
+}

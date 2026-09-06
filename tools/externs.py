@@ -229,6 +229,147 @@ def externs():
             out.append((m.group(1), m.group(2), os.path.relpath(path, ROOT)))
     return out
 
+def wall_seats():
+    """Every `extern fn NAME(...)` the tree declares, with its seats.
+
+    No `->` is required: an extern that answers nothing still FILLS
+    seats, and those are exactly as wrong as any other when they
+    disagree. The answer-side reader above is kept apart because it
+    is keyed by the answer.
+    """
+    out = []
+    for path in glob.glob(os.path.join(ROOT, "packages/**/*.av"), recursive=True):
+        for m in re.finditer(r"^(?:export )?extern fn ([A-Za-z_][A-Za-z_0-9]*)\s*\(([^)]*)\)",
+                             open(path).read(), re.M):
+            out.append((m.group(1), m.group(2), os.path.relpath(path, ROOT)))
+    return out
+
+
+# A C COMMENT STANDS WHERE A PARAMETER'S TYPE DOES. The amalgamation
+# writes `sqlite3 **ppDb, /* OUT: SQLite db handle */ int flags`, and a
+# split on commas hands the comment to the NEXT seat — which then reads
+# as a pointer. The comment is dropped before anything is counted.
+COMMENT = re.compile(r"/\*.*?\*/", re.S)
+
+# The parameter's NAME, which C writes after its type and Avra writes
+# before it. `int iCol` is an `int` seat; the name teaches nothing.
+PARAM_NAME = re.compile(r"\b[A-Za-z_]\w*\s*$")
+
+
+def c_signatures(sources, wanted):
+    """The parameter list of every C function we DEFINE and also
+    DECLARE, by name.
+
+    The definition, never a prototype: a prototype may omit the seat
+    names and the amalgamation carries both, so the body is the one
+    spelling that must be true. It is looked up BY THE NAMES THE WALL
+    ASKS ABOUT — a regex over nine megabytes of amalgamation costs
+    more than the whole rest of this keeper, and every name it would
+    find that no `extern fn` names is work nobody reads.
+    """
+    out = {}
+    for rel in sources:
+        text = open(os.path.join(ROOT, rel)).read()
+        for name in wanted:
+            if name in out:
+                continue
+            at = 0
+            while True:
+                at = text.find(name + "(", at)
+                if at < 0:
+                    break
+                head = at + len(name)
+                if at and (text[at - 1].isalnum() or text[at - 1] == "_"):
+                    at = head
+                    continue
+                close, depth = head, 0
+                while close < len(text):
+                    if text[close] == "(":
+                        depth += 1
+                    elif text[close] == ")":
+                        depth -= 1
+                        if not depth:
+                            break
+                    elif text[close] == ";":
+                        break
+                    close += 1
+                tail = text[close + 1:close + 40].lstrip()
+                if close < len(text) and text[close] == ")" and tail[:1] == "{":
+                    out[name] = (" ".join(COMMENT.sub(" ", text[head + 1:close]).split()),
+                                 rel, text.count("\n", 0, at) + 1)
+                    break
+                at = head
+    return out
+
+
+def split_params(text):
+    """A C parameter list, one entry per seat. Nested parens belong to
+    a function-pointer seat and never separate one."""
+    if text.strip() in ("void", ""):
+        return []
+    out, depth, cur = [], 0, ""
+    for ch in text:
+        if ch in "([":
+            depth += 1
+        if ch in ")]":
+            depth -= 1
+        if ch == "," and depth == 0:
+            out.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        out.append(cur.strip())
+    return out
+
+
+def seat_fits(seat, ctype, tds):
+    """Whether an Avra PARAMETER seat matches the C seat it fills.
+
+    THE SEAT IS READ WHOLE — `mut db: ptr?`, not its type alone —
+    because `mut` is written before the NAME and a split on the colon
+    drops it. A `mut X` seat IS a C `X*`: the out-parameter convention
+    writes through one level of pointer, so the star is spent by the
+    `mut` and what remains must match X. That is why `mut a: i32` over
+    `int *a` is right and not a width defect.
+    """
+    name, _, declared = seat.partition(":")
+    declared = declared.strip().rstrip("?")
+    if name.strip().startswith("mut "):
+        star = ctype.rfind("*")
+        if star < 0:
+            return False
+        ctype = (ctype[:star] + ctype[star + 1:]).strip()
+    if declared not in DEMANDS:
+        return True          # a seat this keeper has no reading for abstains
+    return agrees(declared, ctype, tds)
+
+
+def wrong_seats(wall, sigs, tds):
+    """Every parameter seat that disagrees with the C body it fills,
+    and every arity that does.
+
+    THE RETURN WAS ONLY EVER HALF THE DECLARATION. This keeper read
+    answers for its whole life while a wall's PARAMETERS went
+    unchecked — and a vendored library's are where the widths
+    actually live: 36 of @std/sqlite's seats named a 64-bit `int`
+    over a C `int`, and the truncation is silent in both directions.
+    """
+    out = []
+    for name, params, where in wall:
+        if name not in sigs:
+            continue
+        cargs, crel, cline = sigs[name]
+        cp, ap = split_params(cargs), split_params(params)
+        if len(ap) != len(cp):
+            out.append((name, where, crel, cline, None, len(ap), len(cp)))
+            continue
+        for a, c in zip(ap, cp):
+            if not seat_fits(a, PARAM_NAME.sub("", c).strip() or c, tds):
+                out.append((name, where, crel, cline, (a, c), 0, 0))
+    return out
+
+
 # THE KEEPER'S OWN CASES. This check spent its whole life reading C
 # THIS TREE WROTE, which spells `int64_t` plainly — so its width set
 # never met a typedef or a macro prefix, and it passed every day while
@@ -254,6 +395,38 @@ CASES = [
     # is not agreement — the teeth the abstention must not file down
     ("int",  "SQLITE_API SOME_WIDTH", False),
 ]
+# THE SEAT CASES, pinned for the same reason the answer cases are: the
+# parameter side arrived with a vendored wall and its two hard readings
+# — a comment standing where a type does, and a `mut` seat spending the
+# C star — are exactly the ones a later edit would quietly lose.
+SEAT_CASES = [
+    # (declared seat, written C seat, fits?)
+    ("col: i32",      "int iCol",                True),
+    ("col: int",      "int iCol",                False),  # 64 over 32
+    ("n: i64",        "int N",                   False),
+    ("value: int",    "sqlite3_int64 iValue",    True),   # through the typedef
+    ("escape: u32",   "unsigned int esc",        True),
+    ("escape: i32",   "unsigned int esc",        False),  # signedness is a width
+    ("db: ptr",       "sqlite3 *db",             True),
+    ("vfs: string?",  "const char *zVfs",        True),
+    ("mut db: ptr?",  "sqlite3 **ppDb",          True),   # the `mut` spends one star
+    ("mut a: i32",    "int *a",                  True),
+    ("mut a: i32",    "int a",                   False),  # nothing to write through
+    ("ms: i32",       "int ms",                  True),
+]
+
+
+def seat_self_test():
+    """The seat readings above, against the same typedefs. A failure
+    means the parameter model moved."""
+    tds = typedefs_from(FIXTURE, {})
+    bad = [(d, c, want) for d, c, want in SEAT_CASES if seat_fits(d, PARAM_NAME.sub("", c).strip() or c, tds) != want]
+    for declared, ctype, want in bad:
+        print(f"externs: SELF-TEST — a `{declared}` seat over C `{ctype}` should "
+              f"{'fit' if want else 'not fit'}")
+    return len(bad)
+
+
 FIXTURE = """
 #ifdef SQLITE_INT64_TYPE
   typedef SQLITE_INT64_TYPE sqlite_int64;
@@ -284,7 +457,7 @@ def self_test():
 
 
 def main():
-    if self_test():
+    if self_test() + seat_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -308,7 +481,21 @@ def main():
         print(f"externs: {name} answers C `{ctype}` at {crel}:{cline}, declared `{declared}` in {where}")
         print(f"externs:   a declared `{declared}` needs a C return that {wanted}")
         print(f"externs:   {remedy}")
-    if narrow or voids:
+    walls = wall_seats()
+    sigs = c_signatures(sources, {n for n, _, _ in walls})
+    seats = wrong_seats(walls, sigs, tds)
+    for name, where, crel, cline, pair, an, cn in seats:
+        if pair is None:
+            print(f"externs: {name} declares {an} seat(s) in {where}, "
+                  f"its C body takes {cn} at {crel}:{cline}")
+            print(f"externs:   a call fills seats the body never reads, or leaves its own unfilled")
+            continue
+        a, c = pair
+        print(f"externs: {name} seats `{a}` in {where} over C `{c}` at {crel}:{cline}")
+        print(f"externs:   the seat and the body must name the same width — a C `int` is 32 bits")
+    if narrow or voids or seats:
+        if seats:
+            print(f"externs: {len(seats)} parameter seat(s) disagree with their C body")
         if narrow:
             print(f"externs: {len(narrow)} extern(s) disagree with their C body's width")
         if voids:
@@ -322,7 +509,9 @@ def main():
         scanned += f", {len(vendored)} of them owned by {len(packages)} linking package(s)"
     extra = f"; {widths} name a width" if widths else ""
     print(f"externs: {len(ours)} extern(s) match their C body's width{note}{extra}")
-    print(f"externs: read {scanned}; {len(CASES)} of the keeper's own cases hold")
+    checked = sum(len(split_params(p)) for n, p, _ in walls if n in sigs)
+    print(f"externs: {checked} parameter seat(s) match the C seat they fill")
+    print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES)} of the keeper's own cases hold")
     return 0
 
 sys.exit(main())
