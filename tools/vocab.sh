@@ -4,6 +4,12 @@
 # every consumer of `Ins` dispatches EXHAUSTIVELY, so a new variant
 # breaks all of them at compile time and cannot ship half-implemented.
 #
+# The same law covers every REGISTRY enum, not only `Ins`: a registry
+# a table below does not NAME is unguarded, so naming it is how the
+# law reaches it. And `is .Variant` is refused beside `_ ->`, because
+# over a registry the two say the same thing — this variant, and
+# silence for the ones that do not exist yet.
+#
 # This script is that guarantee's keeper AND the consumer registry:
 # the list below is the authoritative answer to "what does a new
 # instruction owe?", and the gate fails if any of these dispatches
@@ -31,14 +37,15 @@ while IFS='	' read -r file fn what; do
   fi
   hit=$(awk -v fn="$fn" '
     $0 ~ "^ *(export )?fn " fn "\\(" { inside = 1 }
-    inside && /_ ->/ { print FNR ": " $0 }
+    inside && (/_ ->/ || / is \./) { print FNR ": " $0 }
     inside && /^ *}$/ && inside { inside = 0 }
   ' "$file")
   if [ -n "$hit" ]; then
-    echo "vocab: ${file}:${fn} decides ${what} and grew a catch-all:"
+    echo "vocab: ${file}:${fn} decides ${what} and does not answer exhaustively:"
     echo "$hit" | sed 's/^/    /'
-    echo "  A catch-all here lets the NEXT instruction ship unimplemented."
-    echo "  Spell the arms — or-runs keep it affordable."
+    echo "  A catch-all — or an \`is .Variant\` test, which is a catch-all in"
+    echo "  different clothes — lets the NEXT instruction ship unimplemented."
+    echo "  Spell the arms; or-runs keep it affordable."
     exit 1
   fi
 done <<EOF
