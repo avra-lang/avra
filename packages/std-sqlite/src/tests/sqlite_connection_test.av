@@ -17,17 +17,43 @@ fn opens(r: Result<Db, SqlError>) -> bool {
     }
 }
 
-fn closed(db: Db) -> bool { close(db) == 0 }
+/// `close` writes through its receiver, so the handle must sit in a
+/// place that can be nulled — `F2048` refuses a `let`.
+fn closed(db: Db) -> bool {
+    mut held = db
+    close(held) == 0
+}
+
+/// Closing the SAME binding twice: the second finds a nulled handle,
+/// does nothing, and answers zero. This is the half of the double-close
+/// the type actually closes.
+fn closed_twice(db: Db) -> bool {
+    mut held = db
+    close(held) == 0 && close(held) == 0
+}
 
 /// The kind an open was refused with, or the word for success.
 fn open_kind(r: Result<Db, SqlError>) -> string {
     match r {
-        .Ok(db) -> ok_after(close(db)),
+        .Ok(db) -> opened_word(db),
         .Err(e) -> e.cause.kind(),
     }
 }
 
+fn opened_word(db: Db) -> string {
+    mut held = db
+    ok_after(close(held))
+}
+
 fn ok_after(rc: int) -> string { "OPENED" }
+
+/// An open whose handle is closed twice, through one binding.
+fn opens_and_closes_twice(r: Result<Db, SqlError>) -> bool {
+    match r {
+        .Ok(db) -> closed_twice(db),
+        .Err(_) -> false,
+    }
+}
 
 fn a_path() -> string { "/tmp/avra-sqlite-conn-test.db" }
 fn absent() -> string { "/tmp/avra-sqlite-absent-conn.db" }
@@ -45,6 +71,9 @@ spec "std/sqlite connection" {
         then "it opens" { opens(memory()) }
         then "and closing answers zero" { opens(memory()) }
         then "two of them are independent" { opens(memory()) && opens(memory()) }
+        // The half of the double-close this type DOES close: `close`
+        // nulls its receiver, so the second call finds nothing to do.
+        then "closing the same binding twice is safe" { opens_and_closes_twice(memory()) }
     }
 
     given "a database in a file" {
@@ -75,18 +104,30 @@ spec "std/sqlite connection" {
         then "and none of them reached the library" { !exists("file:/tmp/x.db") }
     }
 
-    given "a file that is not a database — T127, and the gap is HERE" {
-        // OPENING IS LAZY. SQLite records the filename and allocates;
-        // the header is not read until a statement needs the schema. So
-        // this OPENS CLEANLY today, and the failure would arrive at the
-        // caller's first query, blaming the query.
+    given "a file that is not a database — T127, now CLOSED" {
+        // OPENING IS LAZY: SQLite records the filename and allocates,
+        // and the header is not read until a statement needs the schema.
+        // So this file used to OPEN CLEANLY and fail at the caller's
+        // first query, blaming the query.
         //
-        // This case asserts the CURRENT behaviour on purpose, the way
-        // the width cases did before their fix: it flips the day
-        // `open` runs its one trivial statement, and that is the notice.
+        // THESE CASES USED TO ASSERT THAT, on purpose, with the note
+        // that they would flip the day `open` ran its one trivial
+        // statement. It runs one now — `select count(*) from
+        // sqlite_schema` — and they flipped, which is how the closure
+        // was noticed rather than remembered.
         then "the fixture is a text file" { made(not_a_db(), "this is not a database") }
-        then "and it OPENS anyway, which is the gap" { opens(open(not_a_db())) }
-        then "the file is unharmed" { exists(not_a_db()) }
+        then "and it is REFUSED at open, not at the first query" { open_kind(open(not_a_db())) == "sqlite.not_a_database" }
+        then "the file is unharmed by the attempt" { exists(not_a_db()) }
         then "cleaned up" { gone(not_a_db()) }
+    }
+
+    given "the probe that closes T127 does not disturb a real database" {
+        // It costs one page read and must leave nothing behind: no open
+        // statement, and no file where there was none.
+        then "a fresh file still opens" { opens(open(a_path())) }
+        then "and opens again, so the probe finalized" { opens(open(a_path())) }
+        then "an in-memory database passes it too" { opens(memory()) }
+        then "read-only passes it on an existing file" { opens(open_read(a_path())) }
+        then "cleaned up" { gone(a_path()) }
     }
 }

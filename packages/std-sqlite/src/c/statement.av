@@ -1,27 +1,38 @@
 //! THE WALL, statement family: preparing's answer, stepping it, and
 //! asking a prepared statement about itself.
 //!
-//! `sqlite3_prepare_v3` IS NOT HERE, for the same reason `open_v2` is
-//! not in `connection.av`: the statement comes back through a
-//! `sqlite3_stmt**` and a second `const char**` tail, and an `extern fn`
-//! refuses a `mut` seat. Everything below takes a statement someone
-//! else made, which today is nobody.
+//! `sqlite3_prepare_v3` TAKES TWO `mut` SEATS, which is what the extern
+//! wall's out-parameter bought: the statement comes back through a
+//! `sqlite3_stmt**` and the unused tail of the SQL through a
+//! `const char**`. Both are `ptr?`, because SQLite leaves NULL in the
+//! statement seat for text that holds no statement — a comment, or
+//! nothing — with `SQLITE_OK` beside it.
 //!
 //! A BORROWED C POINTER IS DECLARED `ptr`, NEVER `string` — the wall's
 //! rule, stated in `connection.av`.
 
+/// A statement compiled from the first statement in `sql`. The handle
+/// arrives through the fifth seat and the UNUSED TAIL through the
+/// sixth; `n` is the SQL's length in bytes, or -1 to read to the first
+/// NUL.
+///
+/// A NULL statement with rc = SQLITE_OK means the text held no
+/// statement — it was empty or a comment. That is not an error to
+/// SQLite and it is the caller's to interpret.
+export extern fn sqlite3_prepare_v3(db: ptr, sql: string, n: i32, flags: u32, mut stmt: ptr?, mut tail: ptr?) -> i32
+
 /// The statement advanced one step: 100 a row is standing, 101 done,
 /// anything else a result code. Since 3.6.23.1 it AUTO-RESETS rather
 /// than answering SQLITE_MISUSE, so the code is the real error.
-export extern fn sqlite3_step(stmt: ptr) -> i32
+export extern fn sqlite3_step(stmt: ptr?) -> i32
 
 /// The statement destroyed. Answers the code of the most recent step,
 /// so a failing statement reports its failure HERE as well.
-export extern fn sqlite3_finalize(stmt: ptr) -> i32
+export extern fn sqlite3_finalize(stmt: ptr?) -> i32
 
 /// The statement rewound, bindings kept. Answers the code of the most
 /// recent step, not of the reset.
-export extern fn sqlite3_reset(stmt: ptr) -> i32
+export extern fn sqlite3_reset(stmt: ptr?) -> i32
 
 /// Every bound parameter set back to NULL.
 export extern fn sqlite3_clear_bindings(stmt: ptr) -> i32
