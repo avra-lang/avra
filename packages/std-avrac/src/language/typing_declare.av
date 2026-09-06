@@ -160,7 +160,20 @@ impl TypeCx {
         self.leave_tscope()
         let sig = FnSig { params: ptypes, ret: rt }
         self.view.decls.record_seats(self.decl_of(s), [pp.mutable for pp in seats])
+        self.keep_boxed(seats, ptypes)
         self.declare(s, DeclSig.Fn(sig))
+    }
+
+    /// A `mut` SEAT KEEPS ITS BOX — the receiver's law
+    /// (typing_impls) at the other seat. A fn WRITES THROUGH a `mut`
+    /// seat, and a flat record is a value in a register with no
+    /// identity to write through, so a one-field record would break
+    /// where a two-field one works. Sealing is sticky, so it holds
+    /// however late the record itself is typed.
+    fn keep_boxed(seats: List<Param>, ptypes: List<TypeId>) {
+        for j, pp in seats {
+            if pp.mutable { self.view.types.unflatten(ptypes[j]) }
+        }
     }
 
     /// Parameters declare their types; the receiver is never among
