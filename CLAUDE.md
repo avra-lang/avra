@@ -1144,6 +1144,23 @@ Runtime facts, ours to ratify:
   concluding which ones there are: `grep -oE 'F[0-9]{4}' | sort -u`
   costs nothing and cannot lie by omission, where a `head` always
   can.
+- A NEW CONSUMER IS THE INSTRUMENT THAT FINDS A LOCALLY COHERENT
+  DEFECT, and reading is not. The entry above says to make a green
+  check fail; this is its half for the artifacts that are not checks
+  — a heading, a directive, a projection, a WORD. Each of these was
+  correct in its own frame and failed only against a use that did
+  not exist when it was written: a "the well is dry" heading that
+  closed a question a re-measurement reopened; a self-test wired to
+  a COPY of the rule, found by a second fix disagreeing with its own
+  fixture; a cycle-breaker directive generalised from one leak to a
+  rule the code does not hold; "one table" in the seam rule read as
+  `table<Row>` by the first person to design a registry from it; the
+  memo kernel's cutoff, sound until something edits; a width keeper
+  blind to a typedef until third-party C arrived. NONE IS VISIBLE TO
+  A READER, however careful — locally coherent is exactly what they
+  all are. So the way to test doctrine is to BUILD SOMETHING AGAINST
+  IT and watch where it misleads, and the way to be useful to another
+  lane is to say out loud where theirs did.
 - A RECEIPT FROM ANOTHER TREE IS LABELLED AS ONE. The laws here carry
   instances because an instance is what makes a law APPLIED rather
   than agreed with — so the instances have to stay checkable. One
