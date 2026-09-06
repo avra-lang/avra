@@ -3050,6 +3050,29 @@ driver forced someone to read a seam nobody had grown before.
   `str_static` answers 0, the four string-answering externs still fall
   back through `hdr()` -> NULL -> `strlen` (6, 12, 33, 19, by hand), and
   the NUL asymmetry is unchanged.
+  AND THE DEADLINE DID NOT ARM — THE MECHANISM IS THE RECEIPT. `Bytes`
+  was named, hours after the fence entry, as the thing that would make
+  `str_len`'s traced branch reachable: a box allocated at exactly n,
+  header authoritative. The HTTP lane built it and **IT DOES NOT ARM**,
+  for a reason neither predictor had: the box is still minted at n+1
+  through `sized_box`, its length comes from its OWN accessor reading the
+  header with no fallback, and NO TYPED PATH HANDS A `Bytes` TO
+  `str_len`. Two people reasoned from the ALLOCATION and the answer lay
+  in the TYPED PATHS.
+  **AND THEY ARMED IT DELIBERATELY ANYWAY**, which is better than either
+  outcome: a witness through the one door that reaches it (`extern fn
+  avra_str_len(b: Bytes)`), made DETERMINISTIC by writing 0xFF rather
+  than NUL into the spare byte, **so a `Bytes` is never accidentally a C
+  string**. The fixed branch now has a test that does not depend on
+  anyone remembering a deadline — which is the deadline's whole purpose,
+  discharged by someone who read the entry rather than by the breakage
+  arriving.
+  THE LAW IT INSTANCES IS ALREADY HERE and this is its second sighting:
+  "THE PREDICTION DID NOT COME TRUE, AND HERE IS THE MECHANISM" BEATS "IT
+  CAME TRUE". The first was the pointer-constant guard failing to arm
+  because a mint is a CALL. This one lands on the entry written to test
+  it, within hours, by a third party — and the useful half is that BOTH
+  predictors reasoned about the same wrong thing.
   A WORDING LAW REPAIRS MESSAGES NOBODY HAS WRITTEN YET — the argument
   for landing one rather than filing it, and it arrived as a NON-EVENT
   spotted in review. Two slices were written the same evening by
