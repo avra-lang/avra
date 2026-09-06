@@ -187,6 +187,16 @@ registry is the idiom engine's spec, written by dogfooding.
   which deviations were once approved.
 - Node facts (spans included) live in side tables keyed by typed ids,
   never on nodes.
+- A SLOT'S SEED IS COMPUTED THE SAME WAY AS ITS UPDATES, or the
+  first decision judges a different quantity from every later one —
+  and only the first, which is what makes it invisible.
+  `collapse_breaks` seeded `line_indent` from `raw[0].span.lo`, a
+  byte OFFSET, and assigned it a character DISTANCE everywhere after;
+  the seed read as a column only while the first token sat on line
+  one, so a LEADING COMMENT's own length became the indent and a
+  four-character comment changed how the file parsed. Write the seed
+  as the update's rule applied to nothing, not as whatever value
+  happens to be at hand.
 - A fact EVERY BODY MAY READ is answered from the PROGRAM — the
   store — never from a pass's fact tables. Fact tables are per
   declaration, over that declaration's expression range alone, so an
@@ -396,6 +406,19 @@ registry is the idiom engine's spec, written by dogfooding.
   red team from a demo. The NUL facts below read like a correctness
   footnote until someone builds a DOOR out of the lossy half.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
+- A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
+  PROPERTY where the body checks an INSTANCE promises coverage the
+  suite does not have. "a comment-only line is a blank line" asserts
+  a BREAK COUNT and nothing else — true, and it read as settling the
+  layout question, so the `line_indent` defect below sat behind it
+  unprobed. Nobody misread the assertion; a reader reads the NAME
+  when deciding whether a question is already answered. NAME A TEST
+  AFTER WHAT IT ASSERTS, never after the property it gestures at.
+  The family is wider than tests and the members look alike: a keeper
+  whose name says it guards an enum while it only ever tested one
+  shape, a green run whose scope excluded its subject. In every one
+  the artifact was CORRECT and its LABEL was broader than its
+  coverage, which is why no amount of verifying the body finds it.
 - Passes are pure queries with ONE standard signature:
   `pass(p: ParsedProgram, ...upstream Facts) -> Facts` — the program
   first, prior passes' facts next, its own Facts (which OWN its
