@@ -53,7 +53,7 @@ So `packages/cli/src/commands/doc.av`:
 //! registries.
 use @std.cli.{Subcommand, CliResult, Runnable, ArgDef}
 use @std.avrac.language.{avra}
-use @std.avrac.features.{LanguageFeature}
+use @std.avrac.features.{LanguageFeature, MethodRow}
 use @std.avrac.grammar.{render_grammar}
 use @std.avrac.diagnostics.{DiagCode}
 use @std.io.{println, eprintln}
@@ -73,6 +73,8 @@ fn resolved(q: string) -> int {
     if feature != null { return feature_page(feature!) }
     let code: DiagCode? = avra().rows.codes.find(it.id == q || it.kind == q)
     if code != null { return code_page(code!) }
+    let method: MethodRow? = avra().rows.methods.find(it.name == q)
+    if method != null { return method_page(method!) }
     unknown(q)
 }
 ```
@@ -88,11 +90,13 @@ for the 28 language features.** It is also the file every later rung
 edits: D1 adds nothing to it, D2 adds the symbol arm, D3 adds the
 projections.
 
-The one design rule to fix now, because it is cheap now and a
-migration later: `resolved` is a **registry** in the doctrine's sense
-— several arms answer — so it spells every arm and grows by a named
-function per arm, never by a catch-all that silently forgets the next
-registry.
+One shape to fix now, while it is one file: `resolved` grows by a
+**named function per arm**, never by widening an existing arm. The
+registry law does not reach it literally — that law is about `_ ->`
+over our own enums, and this is an if-ladder over four different
+tables — but the failure it names is the same one available here: an
+arm that quietly answers for an address kind it was not written for.
+`unknown(q)` is the only fallthrough, and it says what it searched.
 
 ---
 
@@ -159,17 +163,15 @@ export type LexResult = { tokens: List<Token>, errors: List<LexError>, docs: Lis
 The comment arm splits into two, anchor-first:
 
 ```avra
-        // A DOC LINE — `///` or `//!` — is whitespace that the
-        // scanner remembers. It emits no token, so layout cannot see
-        // it; where the run attaches is the docs query's law, never
-        // the lexer's.
-        c == 47 && doc_marker(src, n, i) != null ->
-            kept(DocLine { file_level: doc_marker(src, n, i)! == 33, span: span_of(i, line_end(src, n, i)) },
-                 line_end(src, n, i)),
+        // A DOC LINE — `///` or `//!` — is whitespace the scanner
+        // REMEMBERS. It emits no token, so layout cannot see it; the
+        // run it belongs to, and what that run describes, are the
+        // docs query's law and never the lexer's.
+        c == 47 && doc_marker(src, n, i) != null -> doc_line(src, n, i),
         c == 47 && i + 1 < n && src.char_code(i + 1) == 47 -> skip(line_end(src, n, i)),
 ```
 
-with two new leaves beside `emit`/`skip` (`lexer.av:96,101`):
+with three new leaves beside `emit`/`skip` (`lexer.av:96,101`):
 
 ```avra
 /// The third character of a doc marker — `/` for a declaration's
@@ -181,11 +183,24 @@ fn doc_marker(src: string, n: int, i: int) -> int? {
     null
 }
 
+/// The doc line starting at `i`, to end of line.
+fn doc_line(src: string, n: int, i: int) -> ScanStep {
+    let hi = line_end(src, n, i)
+    kept(DocLine { file_level: doc_marker(src, n, i)! == 33, span: span_of(i, hi) }, hi)
+}
+
 /// A step that produced a doc line and no token.
 fn kept(d: DocLine, next: int) -> ScanStep {
     ScanStep { token: null, err: null, opens_hole: false, doc: d, next: next }
 }
 ```
+
+`doc_marker` is guarded by `c == 47`, so it runs at the tree's 1 534
+plain comments, 6 894 doc lines and division sites — **not once per
+character**, which is what the file's own note at `lexer.av:277-280`
+warns about (*"this is the scanner's inner loop"*). It is named once
+and read twice, which is the idiom bar's rule 3, not a violation of
+it.
 
 and `lex_with` grows one push and one field:
 
@@ -198,8 +213,9 @@ and `lex_with` grows one push and one field:
 ```
 
 **Total edit surface: 7 `ScanStep {}` literals** (`lexer.av:97, 102,
-112, 161, 183, 260, 266) taking `doc: null`, **one struct field, two
-new leaf fns, one arm, one push, one `LexResult` field.** Nothing
+112, 161, 183, 260, 266) taking `doc: null`, **one struct field, three
+new leaf fns, one new type, one arm, one push, one `LexResult`
+field.** Nothing
 else in the tree constructs either struct — `LexResult` is built once,
 at `lexer.av:485`.
 
@@ -776,9 +792,9 @@ no `phased`, reads `avra()`, answers in milliseconds. `grammar.av` is
 the model for the **language** arms: `bare_command`, `avra()`,
 `render_grammar`.
 
-`check.av` is the model for the **symbol** arm: `phased(args, "docs",
-act)`, which needs a `Program` — a whole-package compile. `avra doc
-split` therefore costs what `avra check @std/text` costs.
+`check.av` is the model for the **symbol** arm: it needs a `Program`,
+which is a whole-package compile. `avra doc split` therefore costs what
+`avra check packages/std-text` costs.
 
 That asymmetry is the design decision D3 must make explicitly, and the
 answer is to keep them in one command with two costs, not two
@@ -798,12 +814,24 @@ fn resolved(args: CliResult) -> int {
     if method != null { return method_page(method!) }
     // A SYMBOL COSTS A COMPILE — everything above answered from the
     // assembled language alone.
-    if args.arg("in").length > 0 { return phased(args, "docs", (p: Program) -> symbol_page(p, q)) }
+    if args.arg("at").length > 0 { return on_program(args, (p: Program) -> symbol_page(p, q)) }
     unknown(q)
 }
 ```
 
-The three registry arms and `unknown` **ship at D0, before D1.**
+**Why `on_program` and not `phased`.** `phased(args, phase, act)` takes
+`act: fn(Program) -> Result<int, string>` (`commands/phase.av:10`), and
+the act is required by doctrine to be a **named** fn — which cannot
+close over the address the user typed. `phased`'s own body is the
+precedent: it calls `on_program(args, (p: Program) -> { … })` with an
+`int`-answering lambda over `args` (`phase.av:11`). `doc.av` does the
+same. Two subset entries make this the only shape that compiles: a
+lambda in an argument seat does not read the seat's answer (so a
+`Result`-answering lambda there is F2043), and a trailing-lambda call
+does not parse.
+
+The registry arms — feature, code, method — and `unknown` **ship at
+D0, before D1.**
 `symbol_page` ships at D3 and reads `docs(ws, f)`.
 
 `unknown(q)` is the old spec's fallthrough hint and it is the highest-
@@ -824,12 +852,12 @@ one-file-per-subcommand rule.
 | step | touches | gate | blocked by |
 |---|---|---|---|
 | **D0** `avra doc <feature>` / `<F-code>` | `cli/src/commands/doc.av` (new), `main.av` (+1 line) | `make test` | nothing |
-| **D1** doc lines survive lexing | `grammar/lexer.av` (~11 edits), `language/program.av` (2 literals + 1 field) | `make gate` + 4 new lexer tests + the K0 fixture | nothing |
+| **D1** doc lines survive lexing | `grammar/lexer.av` (~15 edits), `language/program.av` (2 literals + 1 field) | `make gate` + 4 new lexer tests + the K0 fixture | nothing |
 | **D2** the `docs` family | `workspace.av` (7 sites), `language/docs.av` (new), `language/codes.av` (+1 row) | `make gate` + the two-revision staleness fixture | D1 |
 | **D3** `avra doc <symbol>` | `commands/doc.av` (+1 arm) | `make test` | D2 |
 
 **D0 does not block on anything and should land first.** It is the
-smallest change in the campaign, it retires a two-year-old loaded
+smallest change in the campaign, it retires the loaded
 spring, and it makes `doc.av` exist so D3 is an arm rather than a file.
 
 **The riskiest step is D2, and the risk is not the family — it is the

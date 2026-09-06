@@ -15,6 +15,21 @@
 > than reporting agreement, which is the discipline this tree learned the
 > hard way today.
 >
+> **THE EVIDENCE REVISION (2026-09-06).** A commissioned prior-art survey
+> — `2026_09_05_DOC_RESEARCH_prior_art.md`, beside this file — overturned
+> four decisions in the first draft and killed three novelty claims. The
+> load-bearing result: **examples teach, prose does not**, measured three
+> times independently. arXiv:2606.16827 (June 2026) ran Part VII's own
+> experiment on Gleam and MoonBit — RAG over the official *language
+> documentation* scored **1.23%** pass@1; five-shot *code examples* scored
+> **8.06%**. arXiv:2409.19151, learning Kalamang from a grammar book:
+> *"almost all improvements stem from the book's parallel examples rather
+> than its grammatical explanations."* arXiv:2503.15231 over 1,017 APIs:
+> deleting example code collapses accuracy 0.66–0.82 → 0.22–0.39, while
+> deleting the description is near-neutral. **A grammar book is a language
+> reference manual, and this document's first draft was a grammar book.**
+> Every section below is revised accordingly and the revisions are marked.
+>
 > **Prior art, read before writing:**
 > `../forge-crafting-intepreters/docs/spec_doc_system.md` (906 lines, the
 > old tree's design — its `avra lang` / `avra docs` split, its six layers,
@@ -33,16 +48,26 @@
 > and the documentation are SIBLINGS, both projections of the same
 > semantic object).
 
-> **THE PRESENTING FACT.** This tree contains **890 exported symbols. 690 of
-> them — 78% — already carry a `///` doc comment.** Somebody wrote every
+> **THE PRESENTING FACT.** This tree contains **~980 exported declarations,
+> and ~80% of them already carry a `///` doc comment.** The range is
+> deliberate: three text scans of the same tree answered 890/690/78%,
+> 978/782/80.0% and 985/785/79.7%, differing on whether `export extern fn`
+> counts (85 of them do), whether `tests/` directories count, and how an
+> `@`-attribute between the doc and its declaration is walked. **All three
+> are text scans, and a text scan is the wrong instrument** — the real
+> number comes from the compiler over `DeclId`s, which is what D6's
+> ratchet baseline must use, listing SITES and never counts. Debt is
+> ~200. Somebody wrote every
 > one of those by hand, as a discipline, with no tool asking for it and no
 > tool reading it. `lexer.av:312` treats `//` as whitespace to end of line,
 > and `///` starts with `//`. Every one of those 690 comments is discarded
 > during scanning and has never reached a data structure.
 >
 > Meanwhile `features/mod.av:115` declares `docs: string = ""` on the
-> `LanguageFeature` component. **28 of the 29 features fill it in.** Grep
-> the tree for a read of `.docs`: there is none. The language has written
+> `LanguageFeature` component. **There are 28 features and 28 of 28 fill
+> it in — 100%.** (`features/` holds 29 directories; the 29th is
+> `features/tests/` and appears in no `language_features()` row.) Grep the
+> tree for a read of `.docs`: there is none. The language has written
 > its own documentation twice over and built no surface that can see it.
 >
 > This is not a gap. It is a **loaded spring**. The corpus is already
@@ -92,6 +117,65 @@
 > checked and never did, while the artifacts we treat as canonical — the
 > ledgers, the roadmap, the doctrine file — are the half that cannot even
 > be counted without an argument about what counts.
+>
+> **THERE ARE THREE SPRINGS, RANKED — and the first draft picked the
+> worst one for the reader it cared about.**
+> arXiv:2503.15231 found that deleting an API's *description* changed
+> generated-code accuracy about as little as deleting its parameter list —
+> while deleting its *example* collapsed accuracy by two thirds. So the
+> 690 `///` comments are the spring for the **targeted-question** surface
+> (`avra doc split` — a reader who already knows the language and wants
+> one fact), and they are NOT the spring for **cold start**. That spring
+> is `corpus/`: **77 verified programs, gate-enforced, one per feature,**
+> already passing, already the artifact the evidence says teaches.
+>
+> **And `corpus/` is not the best of them either — LANE B, and the reason
+> is written into our own doctrine rather than accidental.** CLAUDE.md
+> requires that *"a corpus program shows its FINAL statement's expression
+> only, and an interpolation hole prints scalars and strings only — a list
+> is shown through `join`, an index or `length`."* So every corpus program
+> ends in a shape the differential runner can compare, **not one a reader
+> should imitate**: `"${told(serve("a", false))} ${early(1)}"`,
+> `"${doc.keys().length}"`. The bodies teach; the tails are assertion
+> harness. **A corpus program is a VERIFIED program, which is not the same
+> artifact as an EXAMPLE, and the difference is exactly one statement at
+> the end of each.**
+>
+> **The best spring is the one nobody had counted: the std packages' spec
+> cases.** Measured at `74fa9fc`: **638 `then` cases across the twelve
+> `@std` packages**, and they are ordinary Avra calling the real API —
+>
+> ```avra
+> then "the text round-trips, newlines and all" {
+>     let p = fresh("rt.txt")
+>     let _ = write_text(p, "one\ntwo\n")
+>     message(read_text(p)) == "ok: one\ntwo\n"
+> }
+> ```
+>
+> — which is **exactly the five-shot shape the survey measured at 8.06%
+> against prose's 1.23%.** And the `then` string is already the caption: a
+> sentence about behaviour, written by someone who had just made the thing
+> work. The spec DSL has been emitting (caption, minimal program) pairs
+> since it landed and nobody counted them as documentation.
+>
+> **The counter-example proves the rule.** The compiler's own feature
+> tests are the opposite artifact — `shown("${puts()}defer
+> avra_puts(\\\"bye\\\")\\nhi\\n1")`, a program inside a string,
+> escaped twice, which a reader must mentally unescape before they can see
+> the language at all. As teaching material that is worse than nothing.
+>
+> **LANE B's own caveat, tested and refuted — their finding is stronger
+> than they claimed.** They worried the ratio might be an artifact of who
+> wrote what: a library's tests naturally call the library, a compiler's
+> must quote programs. So I checked the two packages they did not write —
+> `std-toml` (42 cases) and `std-testing` (9 cases) — and both look like
+> the rest, with escapes confined to TOML/JSON *content* rather than
+> embedded Avra. The pattern follows the artifact, not the author.
+>
+> All three springs are loaded. They serve different readers, and
+> conflating them is how the first draft ended up designing a grammar book
+> for the reader the evidence says learns from programs.
 
 ---
 
@@ -299,16 +383,33 @@ Avra that compiles?"** — and that is a number.
 P6 says a forced trade-off means the model is wrong. Nine, each of which
 a normal doc system picks a horn of.
 
-**1. Complete vs. concise.**
+**1. Complete vs. concise. — REVISED, the axis was backwards.**
 Every doc system picks: a 400-page reference nobody reads, or a
-cheat-sheet that omits what you need. *Collapse:* completeness and
-resolution are different axes. **`avra brief --budget N` is complete at
-every N** — it degrades by dropping *detail*, never by dropping
-*features*. At 800 tokens every feature gets its syntax line and nothing
-else. At 20,000 every feature gets a worked example and its refusals. A
-feature is never absent. The budget buys resolution, and the invariant is
-checkable: the feature count in the output equals the feature count in
-the assembled language, at every budget.
+cheat-sheet that omits what you need.
+
+*The first draft's collapse was:* completeness and resolution are
+different axes, so the brief degrades by dropping **detail**, never
+**features** — at 800 tokens every feature gets its syntax line.
+
+**That artifact has been measured and it scores 1.23%.** A brief of 29
+syntax lines is the closest possible thing to a grammar summary, which is
+exactly what arXiv:2409.19151 found contributes almost nothing and what
+arXiv:2606.16827 scored against real tasks. The axis was inverted: it
+degraded along the dimension that *teaches* and preserved the one that
+does not.
+
+*The corrected collapse:* **degrade by COVERAGE OF THE LANGUAGE, not by
+resolution of each entry.** At low budget, ship **fewer features with one
+complete compiling program each**. At high budget, add features, then
+refusals, then prose. The bet — and it is a bet, to be settled by Part
+VII's first experiment — is that a model that has read three real Avra
+programs transfers to a fourth feature better than one that has read 29
+one-liners and no program. Every study in the survey says it will.
+
+The paradox still collapses, just on the other axis: **you were never
+choosing between complete and concise, you were choosing between
+complete-and-inert and partial-and-generative.** The second one composes;
+the first does not.
 
 **2. Written by humans vs. generated by machines.**
 Generated docs are accurate and lifeless; written docs are useful and
@@ -588,9 +689,16 @@ ids, never on nodes*, and *NodeStore is parse-owned and never accretes
 pass facts*. So:
 
 1. **The lexer becomes lossless about doc runs.** `///` and `//!` stop
-   being whitespace. They emit **trivia**: a span and its raw text,
-   uninterpreted, into a `List<DocRun>` on `Parsed`. The lexer learns no
-   tag vocabulary — it learns one character.
+   being whitespace. They emit **trivia — a SPAN, and no text**:
+   `DocLine { file_level: bool, span: Span }` into a list on `Parsed`. The
+   lexer learns no tag vocabulary; it learns one character.
+   **Spans, not text, and the reason is a cost the compile path would
+   otherwise pay for a feature it never uses:** text would mint ~6900
+   string boxes on every parse of every file — on `avra check`, `avra
+   build` and every `make gate` — where nothing reads them. The `docs`
+   query slices `SourceFile.text` when a page is actually asked for.
+   *(Part IX's string-interning ask is withdrawn: there is nothing to
+   intern.)*
 2. **A new query family, `docs(ws, f: FileId) -> DocFacts`.** It owns the
    attachment (which run belongs to which `DeclId`), the tag parse, and
    its own diagnostics. It is the fourteenth family and it obeys the
@@ -602,8 +710,30 @@ pass facts*. So:
 
 ```
 docs(ws, f: FileId) -> DocFacts     file → docs by DeclId, its voices
-                                    depends on: parsed, items
+                                    depends on: source, parsed, items
 ```
+
+**THAT `source` DEPENDENCY IS NOT TIDINESS — WITHOUT IT THE CACHE SERVES
+STALE PROSE, AND NOTHING COULD EVER CATCH IT.** doc-spine found it:
+`parsed` settles on `program_hash` (`workspace.av:319`), a fold of
+STRUCTURAL statement fingerprints, and `core/nodes.av:3-5` says outright
+that *"reformatting never changes a fingerprint."* So editing a doc
+comment re-runs `parsed` but leaves its `changed_at` where it was (early
+cutoff, `db.av:154-162`) — and a `docs` cell depending on `parsed` alone
+is marked green over prose that has changed (`ask`, `db.av:106-119`). One
+line fixes it (`touch(source(ws, f))`) and it carries the law at the site.
+
+**It is invisible today** because `disarmed` (`workspace.av:224`) kills
+the verifiers and nothing edits — `workspace.av:64-67` says so itself.
+That is *AN ASSUMPTION NOTHING HAS EVER TRIED TO VIOLATE IS NOT A
+GUARANTEE*, arriving in the one place where the whole "documentation is a
+compile target" claim rests. **D2 ships the two-revision fixture that
+makes it go red**, per K0.
+
+**And once fixed, the property is STRONGER than Part II claims:** a doc
+edit re-derives the doc **and nothing else** — not `items`, not `sig`,
+not `typed`, not `lowered`. Documentation gets red-green incrementality
+that is strictly finer than the code's.
 
 **The hazard that goes first, from LANE A.** The LINE LAW lives in the
 lexer, and this change is inside it: breaks are dropped directly inside
@@ -626,18 +756,63 @@ between.** A `//!` run attaches to the FILE. A run attached to nothing is
 that documents nothing is exactly the shape of a doc comment left behind
 by a deleted function.
 
+**AND THAT LAW, AS FIRST WRITTEN, WOULD HAVE FIRED F0911 AT 156 SITES OF
+WHICH 155 ARE CORRECT DOC COMMENTS.** doc-spine measured it: **145 doc
+runs sit on enum VARIANTS and 10 on struct FIELDS** — 6.4% of the tree's
+2436 runs — and they cannot attach, because `Variant` (`core/nodes.av:358`)
+and `Param` (`core/nodes.av:335`) carry no span and mint no id, and
+`DeclKind` (`core/nodes.av:111`) has no member variant. Densest:
+`core/nodes.av` (59), `std-sqlite/error.av` (19), `core/ir.av` (19),
+`core/types.av` (18).
+
+**That is the F2040 trap for the third time in this campaign**, and this
+time it was caught before a line was written. *The collapse:* a run
+INSIDE a declaration's span is that declaration's **MEMBER run** — held
+under the enclosing `DeclId`, unaddressed, silent. F0911 tree-wide drops
+from 156 to **one**, and the one is a real defect: `features/values.av:22`,
+a `///` describing `grown_box` stranded above a `use` line, while
+`grown_box` (`values.av:34`) is an undocumented export. **True-positive
+rate 100%, measured before it ships**, which is what this document's own
+F2040 paragraph demands of every lint here.
+
+**Three attachment traps, each found by reading rather than assuming:**
+- **The blank-line wording is load-bearing.** Nine doc runs are separated
+  from their declaration by a plain `//` line, and **every one is a
+  `// LICENSED I<n>:`** — the exemption law's required spelling, which
+  must stay at the site. "Immediately preceding line" detaches all nine;
+  "no blank line between" keeps both. No ambiguous case exists.
+- **`Decl.lo`/`Decl.hi` are ExprId INDICES, not byte offsets**
+  (`decls.av:24`, filled by `range_bodies` walking the expression arena).
+  Source bytes come from `Decls.decl_span(d)` (`decls.av:276`). A design
+  reaching for `Decl.lo` compares a byte offset to an arena index and is
+  silently wrong.
+- **Attachment excludes `DeclKind.Main`**, whose stmt is `stmts.first()`
+  (`decls.av:216`) — so `decl_span(Main)` is the first statement's span,
+  usually a `use` line, and a run above it would attach to a synthetic
+  `main`.
+
 ## The tag registry — data, not dispatch
 
 THE VOCABULARY SEAM RULE decides this in one question: is a tag DATA or
 BEHAVIOR? A tag is a name, an arity, the declaration kinds it may attach
 to, and how it renders. **Five consumers query it and nothing dispatches
-on it.** So: a registry row, contributed by features and packages, exactly
-as `DiagCode` rows are today.
+on it.** So: a registry row — but **DRIVER-OWNED, not feature-contributed,
+and the first draft had this exactly backwards.**
+
+doc-spine's correction, and it is the sharpest critique the design
+received: features contribute `DiagCode` rows because **those codes are
+their own laws** — `enums/mod.av:32` registers eight enum laws. **No
+feature owns `@warn`.** A `doc_tags: List<DocTag> = []` config field that
+28 of 28 features leave empty **is `docs: string` happening a second
+time** — this campaign's own presenting fact, reproduced by the campaign,
+in the design meant to fix it. So: ship `doc_tags()` beside `pass_codes()`
+(`language/codes.av:26`), and add the config field **at the first feature
+that actually owns a tag**, not before.
 
 ```avra
 export type DocTag = {
   name: string,        // "warn", "since", "see", "unit"
-  attaches: TagSeat,   // .Decl | .Field | .Variant | .File | .Param
+  attaches: TagSeat,   // .Decl | .Member | .File  (per the member-run law)
   arity: TagArity,     // .Prose | .Ref | .Word
   summary: string,     // what `avra doc --tags` says about it
 }
@@ -716,6 +891,15 @@ type → diagnostic code → capability → fuzzy.
 let bad = (0..n).any(it == 2)
 ```
 
+**`@refuses:` ALONE IS INSUFFICIENT — measured, not guessed.** About a
+FIFTH of the 47 entries record something that *compiles*: `\u` is not an
+escape, `split` drops a trailing empty segment, a payload-free enum
+compares by variant, the interpreter traps at 400 nested calls. A refusal
+tag cannot express any of those. So the corpus carries four verbs, not
+one — **`@refuses:`, `@compiles:`, `@answers:`, `@traps:`** — and that is
+what lets the verifier catch drift in *behaviour* rather than only
+staleness in *refusals*. (doc-subset, D5.)
+
 **Three of the 47 cannot be a loose file, and they are the ones that
 matter most.** LAND D probed this today and hit the wall: `export use`
 answers `F3015` "this file is not in a package — `use` needs a root" and
@@ -730,9 +914,30 @@ entries nobody can cheaply check by hand, **which makes them the entries
 most likely to rot — the problem concentrated in exactly what a naive
 instrument would skip.**
 
+**THIS IS BUILT AND IT RUNS IN 2.26 SECONDS.** 60 corpus programs and a
+30-line driver, `verified 60, failed 0` — gate-leg territory, needing no
+compiler change at all, which confirms the ladder's claim that **K5 can
+land before D1.** Its failure is witnessed against four fixtures running
+the REAL driver (K0): it names STALE / DRIFTED / MOVED / BROKE and exits
+1. Had it existed, all three stale entries below would have been caught
+the day the typer changed.
+
 `avra doc --verify-subset` compiles all 47, asserts each refuses with
 **that wording**, and fails the gate on any that now compiles — because a
-refusal that has become legal is a doc that is actively lying to me. The
+refusal that has become legal is a doc that is actively lying to me.
+
+**AND THE STRONGEST ARGUMENT FOR THE CORPUS TURNED OUT NOT TO BE
+STALENESS.** doc-subset's finding, and it reframes the whole rung: **a
+malformed probe reads exactly like a stale entry.** Their first `table`
+probe used the brace-map shape and produced F3000 where the entry records
+F0100 — which looks precisely like drift and was simply a bad probe. Four
+results surprised them; three digs changed the verdict, and **two came
+back from "stale" to "holds".** So a hand-maintained subset section has a
+second failure mode nobody had named: it is re-improvised by every prober,
+and a prober's mistake is indistinguishable from the document's rot. A
+stored program written once beside its claim removes that permanently —
+which means the corpus is not merely a freshness gate, **it is the thing
+that makes a refusal claim falsifiable at all.** The
 hand-maintained section of CLAUDE.md then *generates from* this
 directory, and the day an entry starts compiling, the gate says so
 instead of an agent discovering it six weeks later.
@@ -812,10 +1017,16 @@ set, a fallible fn whose doc never mentions the failure — these are
 checkable without reading English, because the compiler knows the shape.
 *Held to a measured true-positive rate before it ships.*
 
-**K3 · EXAMPLES RUN.** Every `@example` names a corpus program that
-exists and passes. Every inline output in a doc (`"a.".split(".") →
-["a"]`) is executed and compared. **A doc example that breaks fails
-`make gate`, not a doc build.**
+**K3 · EXAMPLES RUN — REVISED, and the revision avoids Rust's decade.**
+Every `@example` names a corpus program that exists and passes. Inline
+outputs in a doc are **extracted INTO corpus programs and never executed
+in place.** The first draft said "every inline output is executed and
+compared," which is Rust's doctest architecture verbatim — a per-snippet
+compile path they ran for ten years (44 doctests, 22 of 26 seconds) and
+rearchitected in the 2024 edition, and whose Python cousin is the
+most-complained-about test tool in that language. **A doc example that
+breaks fails `make gate`, not a doc build** — because it IS a corpus
+program, which is the whole point of paradox 3.
 
 **K4 · FRESHNESS.** Every written doc carries the `stmt_fingerprint` it
 was authored against (`core/nodes.av:664`); a mismatch is `F0912`. Not a
@@ -828,18 +1039,55 @@ mitigation for the gap is K3.
 asserting its recorded refusal and its wording. An entry that now
 compiles fails the gate with "this is no longer true — delete the entry."
 
-**K6 · THE BRIEF IS COMPLETE.** At every budget, the brief mentions every
-feature, every diagnostic family, and every subset entry at least once.
-Completeness is not a judgement call; it is a set difference.
+**K6 · THE BRIEF'S COVERAGE IS REPORTED — REVISED, demoted from a gate.**
+The first draft gated on "the brief mentions every feature, every
+diagnostic family, every subset entry." **That is the F2040 trap in this
+document's own words:** a set difference over *mentions* is a proxy, and
+the doctrine is "the reader can write this feature correctly." It would
+go green on a brief that teaches nothing — precisely the 1.23% artifact —
+and it does worse than fail silently: it **forbids the correct design**,
+because token economics and the evidence both argue for weighting the
+brief by SURPRISE, spending nothing on `let x = 1` and everything on the
+six things that will be written wrong. Uniform coverage as a gate
+condition outlaws that.
+
+So: **gate on the pass rate (K8), report the set difference.** K6 becomes
+a completeness *report* until Part VII can say whether coverage correlates
+with correctness. If it does, promote it back and say so.
+
+**K8 · THE COLD-START PASS RATE DOES NOT REGRESS.** The ratchet that K6
+gave up. Part VII is the mechanism; it lives in `make coldstart`, outside
+`make gate`, because it is non-deterministic and costs tokens. **It is the
+only keeper here that measures the doctrine rather than a proxy for it.**
 
 **K7 · THE SUBJECT IS ALIVE.** A doc atom whose subject nothing
 references is `F0913`. The caller set is a query we are already running —
 `avra doc split --callers` in Part IV is the same data — so this check is
 free at the point of rendering. For a private fn, zero references is the
-defect. For an *exported* symbol, zero internal callers is legitimate API
-surface, so the page **states the count rather than hiding it**: a reader
-must be able to see from the rendered doc what a reader of the file can
-see from the source. (LANE B, whose counterexample named this mechanism.)
+defect.
+
+**FOR AN EXPORTED SYMBOL, ZERO IN-TREE CALLERS IS THE NORMAL CASE, AND A
+NAIVE COUNT WOULD RENDER EVERY STD PACKAGE AS A GRAVEYARD** — LANE B, from
+the sweep: `@std/json`'s `pretty` had no callers until the corpus used
+one, and half of `@std/path`'s surface has one or none. A library's public
+surface is answerable to its TESTS, not to its callers. So the check
+splits by seat: a private fn with no references is `F0913`; an exported
+symbol is asked instead whether a **spec case or a corpus program**
+exercises it, and the page counts callers **across packages** and says
+which currency it is quoting. Getting this wrong would have made K7 a lint
+that fires on the entire standard library and is right about none of it —
+this document's own F2040 trap, in the keeper added to catch a different
+one. (LANE B named both the mechanism and the false positive.)
+
+**AND K7 IS NOT A NICETY BOLTED ONTO A DOC SYSTEM** — LANE B again, and it
+is the better framing. This tree has now found the same shape four times
+in two days: idiom numbers colliding, I3 ratcheted with no registry entry,
+`disarmed`'s hand-kept list, `@std/json`'s registry hole. The common
+factor is not carelessness; it is that **ENFORCEMENT AND KNOWLEDGE LIVED
+IN DIFFERENT PLACES** — a rule the tool cannot see, a registry the
+compiler cannot check, a doc the renderer cannot verify. K7 moves "is this
+symbol real" out of a reader's head and into the build. It is the law the
+tree already applies to its enums, finally applied to its prose.
 
 Plus the meta-keeper, and it is the one this tree's doctrine demands
 loudest:
@@ -859,29 +1107,46 @@ three weeks ago. We do not get to re-earn it.
 
 # Part VII — The cold-start gate: docs with a pass rate
 
-This is the part I have not seen anywhere and the part I would most like
-built.
+~~This is the part I have not seen anywhere.~~ **IT WAS RUN THREE MONTHS
+AGO AND I SHOULD HAVE KNOWN.** Giagnorio, Martín-López and Bavota, *No
+Resource, No Benchmarks, No Problem?* (arXiv:2606.16827, June 2026), took
+Gleam and MoonBit — both stabilised after training cutoffs — and measured
+exactly this. The novelty claim is withdrawn. What survives is better:
+**we can run it continuously, on our own language, as a ratchet**, which
+is the thing nobody has built.
 
 Every doc system in history is evaluated by "does it exist" and "does it
 render." **The only question that matters for P1 is: does an author who
 read only this write code that compiles?** That is not a feeling. It is
-an experiment, and we can run it.
+an experiment, it has been run, and its published numbers tell us what to
+expect before we spend a token.
+
+**THE PREDICTED FIRST NUMBER, WRITTEN DOWN BEFORE BUILDING — because a
+gate whose first result reads as catastrophe gets abandoned.** Published
+McEval-Hard pass@1 on a genuinely unseen language: zero-shot 0–1%;
+retrieval over official *documentation* 1.23%; five-shot *code examples*
+8.06%; full pre-train plus instruction transfer 26–33%. Our tasks will be
+easier than McEval-Hard and our brief richer than a doc dump, so I predict
+a **first run in the 10–25% band and I will not treat a 4/40 as failure.**
+The ratchet is set AFTER the first measurement, never before it. Anyone
+who quotes the mock-up below as a target is quoting an illustration.
 
 ```
 $ make coldstart
 Cold-start gate · brief @ 6000 tokens · 40 tasks · language hash 8f3a21c4
 
-  compiled clean          31/40   (baseline 29 — ratchet holds)
-  compiled with warnings   5/40
-  refused                  4/40
+  compiled clean           7/40   (baseline 6 — ratchet holds)
+  compiled with warnings   4/40
+  refused                 29/40
 
   Refusals, grouped by what the brief failed to say:
-    3 ×  used `xs.sort()`     — no method. Brief lists `reverse` in the
-                                negative space but not `sort`.
-    1 ×  `match` over `K?`    — subset entry exists, not reachable at
-                                this budget.
+   14 ×  syntax               — the published failure mode: 66-90% of
+                                no-resource errors are syntactic
+    6 ×  used `xs.sort()`     — no method, and not in the negative space
+    3 ×  `match` over `K?`    — subset entry exists, unreachable at
+                                this budget
 
-  → 2 gaps, both in the negative space, both fixable by a row.
+  → the number is low BY CONSTRUCTION. It is a ratchet, not a score.
 ```
 
 **The mechanism.** A fixed suite of tasks in `tasks/` ("write a fn that
@@ -931,23 +1196,51 @@ speculative infrastructure; every rung ends with a surface somebody uses.
 diagnostic rows, 47 subset entries. **Zero readers.**
 
 ### v1 — THE SPINE AND THE FIRST ANSWER
-- **D1** Lexer emits doc trivia (lossless; `///` and `//!`). *Smallest
-  possible compiler change. Everything blocks on it.*
+- **D0 — SHIPPABLE TODAY, AND THE LADDER DID NOT HAVE IT.** `avra doc
+  <feature>` / `<F-code>` / `<method>`, reading the `docs: string` field
+  that 28 of 28 features already fill. **One new file
+  (`cli/src/commands/doc.av`) plus one line in `main.av`.** `avra()` is a
+  `once fn` (`language/mod.av:171`) already carrying `features` with
+  `.name`/`.docs`/`.gram`, plus `rows.codes` and `rows.methods`; and
+  `render_grammar` (`grammar/render.av:8`) renders a feature's OWN
+  fragment, not only the merged grammar. No workspace, no `Program`, no
+  `phased` — it answers as fast as `avra grammar`. It also makes `doc.av`
+  exist, so D3 becomes an arm rather than a file. **The loaded spring
+  fires with no compiler change at all.**
+- **D1** Lexer emits doc trivia (lossless; `///` and `//!`, spans only).
+  *Smallest possible compiler change. D2/D3 block on it; D0 and D5 do
+  not.*
 - **D2** `docs(ws, f) -> DocFacts` query family: attachment, tag parse,
   its own voices. Tag registry with the six starting rows.
 - **D3** `avra doc <address>` — the resolver and the terminal projection,
   over symbols, features (reading `.docs` at last), and diagnostics.
-- **D4** `avra brief` at a default budget, assembled from feature `docs`
-  + gram + the subset directory.
+- **D4** `avra brief` at a default budget — **assembled from PROGRAMS
+  first, prose second, in this order: the 638 `@std` spec cases (caption
+  + minimal program, already the five-shot shape), then `corpus/` BODIES
+  with their harness tails dropped, then prose.** *Twice revised: the
+  first draft assembled three prose sources and zero programs (the 1.23%
+  artifact); the second reached for `corpus/`, whose tails are assertion
+  harness rather than idiom (LANE B).* The extractor's one real cost is
+  that spec cases lean on file-local fixtures (`fresh`, `message`), so it
+  must pull or inline them.
 - **D5** `lang/subset/*.av` — "The subset today" migrated to verified
-  programs, with **K5** in the gate. *This one pays for itself the day it
-  lands and does not need D1.*
+  programs, with **K5** in the gate. *Pays for itself the day it lands and
+  **does not need D1**, so it can start now.*
 
-**GATE v1:** an agent that has read only `avra brief` writes a
-compiling Avra function. Measured once, by hand, honestly.
+**GATE v1 — REVISED, and it moved up from v3.** A crude, hand-run
+cold-start measurement: 10 tasks, one budget, the number written down. It
+needs **no compiler change at all** — `corpus/` and CLAUDE.md exist today.
+The survey's G5 is why it moved: Rust left `missing_docs` allow-by-default
+*because it is noisy*; Elm made docs mandatory and got `{-| The name. -}`,
+a second copy of the exposing list, and a decade of false MISSING
+DOCUMENTATION bugs. **Do not build a coverage ratchet before you can
+measure whether coverage buys anything.**
 
 ### v2 — THE KEEPERS
 - **D6** `F0910` coverage diagnostic + the site-listing ratchet (K1).
+  **GATED on v1's measurement showing that prose buys correctness.** If it
+  does not, D6 is deferred and the budget goes to examples instead. This
+  is the one rung the evidence may delete.
 - **D7** Freshness over `stmt_fingerprint` + `F0912` (K4); `avra doc
   --stale`. *No new hash — the door exists (LANE C).*
 - **D8** Work orders: `--stale --json` and the house-style bundle (¶6).
@@ -959,8 +1252,13 @@ compiling Avra function. Measured once, by hand, honestly.
 describes a sig that has moved.
 
 ### v3 — THE SUBSTRATE
-- **D12** `avra brief --budget N` with the completeness invariant (K6).
-- **D13** **The cold-start gate** (Part VII). *The keystone.*
+- **D12** `avra brief --budget N`, degrading by COVERAGE (Part III ¶1),
+  with K6 as a *report*. The first experiment it runs is coverage-vs-
+  resolution, because that decides the whole shape of `brief`.
+- **D13** **The cold-start gate as a ratchet** (Part VII, K8). *The
+  keystone — the measurement moved to v1; this is making it continuous.*
+- **D13b** Position as a contract: head/tail placement measured, not left
+  to chance. Lost-in-the-middle is real and K6's uniformity ignored it.
 - **D14** `avra doctrine` — CLAUDE.md's laws as rows with keeper columns;
   `--unenforced` names the amnesties.
 - **D15** Capability index + `avra doc --for "<task>"`.
@@ -987,11 +1285,15 @@ describes a sig that has moved.
   (Part III ¶5), and its answer is the memo kernel's edges, not a hash.
 
 **From the campaign (coordination):**
-- **D1 touches the lexer**, which every lane depends on. It merges alone,
-  announced, on a quiet tree — CLAUDE.md's syntax-change protocol
-  (`cp build/avra build/avra.pre`, build with the standing binary,
-  rewrite, rebuild, gate), and every lane's first build after it is
-  `make bootstrap`, **never** `make avra`.
+- ~~D1 needs the syntax-change protocol and every lane must bootstrap.~~
+  **WITHDRAWN — I over-constrained five lanes.** The protocol exists for
+  changes that make existing files unparseable by the standing binary.
+  **D1 adds no syntax**: `///` already lexes today (as whitespace), every
+  file stays parseable, nothing needs rewriting, and no lane needs `make
+  bootstrap` on account of it. What D1 *does* need is a quiet window in
+  `grammar/lexer.av`, which is a merge-conflict concern and not a
+  bootstrap one — and lane A owns that file and has the bitwise slice in
+  it first. The correction was sent to every lane I misinformed.
 - **Serial gates.** The machine has panicked twice under this tree. Doc
   lanes do research and design in parallel freely (read-only), and
   **queue** for any `make gate` / whole-package run, always under
@@ -1035,6 +1337,20 @@ describes a sig that has moved.
   "write prose."
 - **`--json` is a public contract the moment an agent parses it.** P9: it
   is versioned from day one, or it is not shipped.
+- **"Docs that cannot be wrong" was over-claimed and is withdrawn.**
+  Unison went furthest anyone has — docs are values of type `Doc`,
+  snippets typecheck, transclusions are hash-linked — and **its prose is
+  still unguarded.** Content-addressing buys nothing here that a memoized
+  query engine does not already have. The honest form: **the derived half
+  cannot be stale; the written half knows what shape it described.**
+- **Doc excellence is not a growth mechanism, and we should not pretend
+  it is.** Unison built what its own users call the best documentation
+  experience in any language ecosystem, and it did not move adoption. For
+  Avra the argument is different and has to be *made* rather than assumed:
+  the author is the audience, the audience is measurable, and P1 makes
+  first-generation correctness the success metric rather than a
+  by-product. That is a claim about our situation, not a general law about
+  documentation.
 
 ---
 
@@ -1047,11 +1363,19 @@ describes a sig that has moved.
   cannot say.**
 - **A doc entry is a diagnostic that has not fired yet.**
 - **The undocumented is a diagnostic.**
-- **The negative space is the documentation.** What is absent, and what
-  you will reach for anyway, teaches more than what is present.
+- **The negative space is the documentation.** Julia shipped it as prose
+  in 2013 and Elixir and Rust each ship a version; **what is ours is that
+  it COMPILES** — a refusal that has become legal fails the build.
 - **A refusal that has become legal is a doc that is lying.**
-- **The compiler never calls a model. It writes the work order.**
-- **Complete at every budget.** Resolution degrades; coverage never does.
+- **A claim that was never true is caught on day one, or never.**
+- **The compiler never calls a model. It writes the work order.** Three
+  papers measure documentation; **none of them close the loop.** That is
+  the second thing here nobody has built.
+- **Examples teach; prose does not.** Measured three times, in three
+  domains. Spend the budget accordingly.
+- **Degrade by coverage, not by resolution.** Three real programs beat
+  twenty-nine syntax lines.
 - **Docs with a pass rate, or docs with an opinion.**
+- **Write the predicted number down before you build the gate.**
 - **A green check whose failure has never been witnessed is an untested
   instrument** — and that includes every keeper in this document.

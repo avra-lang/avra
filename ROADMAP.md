@@ -627,6 +627,41 @@ the compiler checking itself 28.8s.
         fail. An unexercised keeper is an untested instrument, and
         this one proved it by being wrong the first day its domain
         widened.
+  - [ ] AN EARLY-CUTOFF HASH THAT COVERS A PROJECTION OF ITS VALUE
+        IS A LIE, and the memo kernel has one. Found 2026-09-06 by
+        the docs campaign's spine lane for doc comments; VERIFIED AND
+        WIDENED here, because the general case is worse than the one
+        they reported. `parsed` settles on `program_hash`
+        (workspace.av:319), a fold of STRUCTURAL statement
+        fingerprints, and core/nodes.av:5 says so outright:
+        "reformatting never changes a fingerprint". But the VALUE is
+        `Parsed = { store, stmts, source, voices }` — it carries the
+        SourceFile's whole TEXT and, in the store's side tables,
+        every SPAN, which are byte offsets (`Span { lo, hi }`).
+        So `settle` (db.av:155-162) keeps `changed_at` on an
+        unchanged hash while the value it summarises has changed.
+        THE REPORTED CASE is a doc-comment edit: same structure, so
+        dependents are marked green over changed prose. THE WIDER ONE
+        is any edit that MOVES TEXT WITHOUT CHANGING STRUCTURE — a
+        blank line, a reindent, an ordinary `//` — after which every
+        later span is stale and the cutoff says nothing changed. A
+        dependent that renders a diagnostic would point at the wrong
+        place, and be certified fresh doing it.
+        IT CANNOT FAIL TODAY, which is the whole shape of it: compiles
+        are one-shot, `disarmed` kills the verifiers at revision one
+        (workspace.av:64-67 says as much), and nothing edits. It is
+        the untested-instrument law arriving in the memo kernel, and
+        the first incremental consumer is its first real test.
+        THE FIX IS NOT ONE HASH. Hashing the text restores soundness
+        and destroys the property worth having — that reformatting
+        does not re-run typing. The cutoff must be PER CONSUMER: a
+        dependent that read only structure may cut off on the
+        structural fingerprint, one that read spans or text may not.
+        So `parsed` owes two fingerprints, not one, and a consumer's
+        cutoff must name which it read. NOT SCHEDULED — incremental
+        editing does not exist yet — but recorded so whoever builds
+        it does not inherit a silent lie. The docs lane's
+        `touch(source(ws, f))` fixes their family and not this.
   - [ ] A MINTED POINTER HANDED TO A RUNTIME ROW IS A DEREFERENCE,
         so `avra_ptr_at`'s stated ground is already false — found
         2026-09-06 by lane A while judging a foreign-text proposal,

@@ -406,6 +406,14 @@ registry is the idiom engine's spec, written by dogfooding.
   (file, text) pair.
 - Queries own granularity and caching; features own the per-variant
   logic a query's body dispatches to.
+- AN EARLY-CUTOFF HASH MUST COVER THE WHOLE VALUE, or the cutoff
+  claims "unchanged" about something that changed. `parsed` settles
+  on a fold of STRUCTURAL fingerprints while its value carries the
+  source TEXT and every SPAN, so a reindent leaves every later span
+  stale and certified fresh. The answer is not one hash over
+  everything — that re-runs typing on a blank line — it is a cutoff
+  PER CONSUMER: what a dependent READ decides which fingerprint may
+  cut it off. Latent only while compiles are one-shot.
 - Every diagnostic names a registered kind (its F-code is the
   registry's projection), carries help or a structured fix where
   expressible, and has a golden rendering test.
