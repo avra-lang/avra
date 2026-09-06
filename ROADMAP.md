@@ -1654,6 +1654,29 @@ the order is the dependency.
         self.xs` a COPY. The carve-out names its own expiry: "bs2's
         aliasing, honored until self-host" (places.av), and self-host
         has happened (lane D).
+  - [x] THE POINTER-CONSTANT LAW. LANDED 2026-09-05, flagged by the
+        SQLITE lane with lane A's placement argument, both adopted. A
+        `ConstInt` aimed at a pointer-riding register IS the null
+        pointer in BOTH engines (`llvm.av`'s `const_int_value`
+        discards the value; `interp.av`'s `const_int_val` answers
+        `Val.N`), so a NON-ZERO one would be read as null by each —
+        the two engines agreeing on a wrong answer, which is the one
+        class eval == native cannot catch. The premise that made it
+        safe was true and lived in a COMMENT: "the only ConstInt
+        lowering ever aims at a pointer register is 0", which holds
+        because `ptr` is receive-only today. It arms the moment a
+        pointer sentinel becomes spellable, and every C API has one
+        (SQLITE_TRANSIENT is `(void*)-1`).
+        The guard is in LOWERING, not either engine: the backend's
+        emitter has NO failure channel while the interpreter has
+        `defect_val`, so guarding the one that can refuse would make
+        them disagree on a single instruction — the `print_lowering`
+        precedent. One scan at `union`, one refusal, both engines
+        inherit it. Unreachable today, so it costs nothing and
+        refuses nothing that exists; landing it now converts a
+        commented premise into an enforced one while it is free.
+        Pinned by three cases fed a hand-built body, since source
+        cannot reach the shape. 1877 cases.
   - [ ] S2 NEEDS THE OWNER, and the questions are named so the slice
         does not start in the wrong shape. (a) SPEC 11.4 vs 11.5:
         11.4 says v1.0 app-level aliasing is SHARED ("closures can

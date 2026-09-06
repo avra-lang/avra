@@ -164,7 +164,36 @@ export fn union(decls: Decls, files: List<Analysis>, entry: int?, every: bool, p
     if !wants.is_empty() {
         spoken.push(defect_at(null, "specializations exploded past ${unit_ceiling()} — polymorphic recursion is not supported"))
     }
+    spoken = spoken.concat(minted_pointers(decls.types, fns.concat([entry_body])))
     Lowered { fns: fns, entry: entry_body, types: decls.types, diagnostics: spoken, externs: extern_rows(decls) }
+}
+
+/// THE POINTER-CONSTANT LAW. A `ConstInt` aimed at a pointer-riding
+/// register IS the null pointer in both engines — absence is the
+/// zero of its type — so a NON-ZERO one would be read as null by
+/// each, agreeing on the wrong answer. Refused HERE, ahead of both:
+/// the backend's emitter has no failure channel and the interpreter
+/// has one, so a guard in either alone would make them disagree on a
+/// single instruction. Unreachable today (nothing mints a pointer),
+/// which is why it costs nothing and why it lands before the shape
+/// that would reach it.
+export fn minted_pointers(types: TypeRegistry, bodies: List<Body>) -> List<Diag> {
+    [pointer_constant(b.name) for b in bodies if mints_a_pointer(types, b)]
+}
+
+fn mints_a_pointer(types: TypeRegistry, b: Body) -> bool {
+    b.ins.any(is_pointer_constant(types, b.reg_types, it))
+}
+
+fn is_pointer_constant(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> bool {
+    match i {
+        .ConstInt(d, v) -> v != 0 && types.rides_pointer(reg_types[d.index]),
+        _ -> false,
+    }
+}
+
+fn pointer_constant(name: string) -> Diag {
+    defect_at(null, "a non-zero constant reached a pointer register in `${name}` — both engines read it as null")
 }
 
 /// The ceiling on DISTINCT bodies one program mints. A source
