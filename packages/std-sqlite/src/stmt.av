@@ -71,7 +71,23 @@ fn compiled(db: Db, sql: string) -> Result<Stmt, SqlError> {
 /// Since 3.6.23.1 `step` AUTO-RESETS rather than answering
 /// SQLITE_MISUSE, so the code is the real error and not a protocol
 /// complaint about the previous one.
+///
+/// AND THE AUTO-RESET HAS A SECOND HALF THIS DRIVER CANNOT YET STOP:
+/// STEPPING PAST DONE RUNS THE STATEMENT AGAIN. The reset that makes
+/// the error code honest also rewinds, so a step after DONE is a fresh
+/// execution — measured, three steps on one INSERT write THREE ROWS and
+/// every one of them answers `false`, and a SELECT hands its rows out a
+/// second time. Nothing in the answer says so.
+///
+/// A driver that refused this would need to REMEMBER having stepped,
+/// which `Stmt` does not: SQLite's own witness, `sqlite3_stmt_busy`, is
+/// 1 mid-row but 0 after DONE (measured both ways), so it cannot tell a
+/// finished statement from a fresh one and a guard built on it would
+/// refuse half the cases. The fix is a flag on `Stmt` and a `mut` seat
+/// here; until then, step until `false` and then stop.
+/// `sqlite_stmt_adversarial_test.av` pins the behaviour.
 export fn step(s: Stmt) -> Result<bool, SqlError> {
+    if s.raw == null { fail refused(Cause.Finalized, "this statement was finalized — prepare it again") }
     let rc = sqlite3_step(s.raw)
     if rc == row_code() { return true }
     if rc == done_code() { return false }
@@ -127,6 +143,15 @@ fn drained(db: Db, s: Stmt) -> Result<int, SqlError> {
 // off-by-one in this API — so every bind checks its index against
 // `sqlite3_bind_parameter_count` and refuses by name rather than
 // letting SQLITE_RANGE come back as a bare code.
+//
+// A BIND AFTER A STEP, WITH NO RESET, IS SQLITE_MISUSE — and it arrives
+// as `Cause.Defect`, which reads as the driver's bug when it is the
+// caller's sequence. The index guard below cannot help: the mistake is
+// in the ORDER, not the number. It is unguarded for the same reason the
+// step-past-DONE case is — `Stmt` has no memory of having been stepped,
+// and `sqlite3_stmt_busy` witnesses only the mid-row half (1 mid-row, 0
+// after DONE, measured). Both wait on the same flag. Reset before you
+// rebind.
 
 /// How many parameters the statement has.
 export fn holes(s: Stmt) -> int { sqlite3_bind_parameter_count(s.raw) }

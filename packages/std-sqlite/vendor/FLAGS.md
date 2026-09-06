@@ -68,7 +68,7 @@ Deserialize and JSON take **no flag**: both are on unless omitted
 
 | Flag | Reason |
 |---|---|
-| `-DSQLITE_DEFAULT_MEMSTATUS=0` | the per-allocation memory counters off; `sqlite3_status` memory figures go with them |
+| `-DSQLITE_DEFAULT_MEMSTATUS=0` | the per-allocation memory counters off; `sqlite3_status` memory figures go with them — **and so does heap-limit ENFORCEMENT**: `sqlite3_soft_heap_limit64`/`hard_heap_limit64` still store and report a limit, and never apply it (measured: 8 MB allocated under a 100 KB hard limit). The two declarations say so at their own site. |
 | `-DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1` | NORMAL under WAL, which is durable and materially faster than FULL |
 | `-DSQLITE_DEFAULT_MMAP_SIZE=268435456` | 256 MB memory-mapped read window |
 | `-DSQLITE_MAX_MMAP_SIZE=1099511627776` | the ceiling a connection may raise `PRAGMA mmap_size` to |
