@@ -330,6 +330,25 @@ registry is the idiom engine's spec, written by dogfooding.
   a program with its words, so no character in a path or a
   manifest's `[link]` row means anything but itself — nothing
   quotes, nothing fences, and a dependency's flag cannot run.
+- THE LAW ABOVE THE ARGV ONE: A VALUE THE CALLEE WILL REINTERPRET IS
+  TWO THINGS AT ONCE, AND THE FIX MAKES THE REINTERPRETATION
+  IMPOSSIBLE — never an escape. A command asked to be inert data AND
+  a grammar the shell parses is the first firing: `avra_spawn_status`
+  did not quote better, it REMOVED THE PARSER, and the supply-chain
+  hole closed as a consequence rather than as the goal. The sqlite
+  driver lane reports the second at a different boundary — under
+  `SQLITE_USE_URI` a path handed to `sqlite3_open_v2` is a filename
+  AND a URI parsed for `?mode=`, so a user's path beginning `file:`
+  changes meaning with nobody writing a line. The RESOLUTION is the
+  same shape, which is what makes it a law and not a coincidence:
+  SPLIT THE VERB, one per grammar. `open(path)` is always a filename
+  and names its sibling when refusing a `file:` prefix; a separate
+  verb takes a URI deliberately. The capability was never the
+  problem, the AMBIGUITY was. THE TEST: when a value crosses a
+  boundary, ask whether the CALLEE will parse it — if it will, the
+  value wears two hats and the design owes a SPLIT, not an escape.
+  Ask it of format strings, glob patterns, regexes, and the next
+  `[link]`-shaped manifest row.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
 - Passes are pure queries with ONE standard signature:
   `pass(p: ParsedProgram, ...upstream Facts) -> Facts` — the program
@@ -710,6 +729,9 @@ Wants the typer does not carry yet:
 - Variant arms on a NULLABLE enum (`match k { .A -> …, null -> …
   }` over `K?`): F2013 "`match` chooses over an enum, found `K?`"
   — unwrap first (a `k?` arm), then match variants.
+- `is` over a NULLABLE enum, the `match` entry's twin: `c is
+  .Timeout` where `c` is `Cause?` is F2013 "`is` asks an enum for its
+  variant, found `Cause?`" — unwrap first, then ask.
 - A generic impl's body naming its own `T` in a local annotation
   (`let held: T? = self.rows[i]`): F2001 "`T` names no type".
   Leave that local un-annotated; a field read or `with` on a
@@ -730,7 +752,11 @@ Wants the typer does not carry yet:
 - `==` between lists, `contains`/`index_of` over structs or enums:
   F2000 "`==` compares scalars for now"; F2005 "`contains` scans by
   value — scalars and text for now, this list holds `K`" — spell
-  the scan (`xs.any(same(it))`).
+  the scan (`xs.any(same(it))`). ENUMS SPLIT ON THE PAYLOAD, which
+  nobody had written down: a payload-FREE enum compares fine
+  (`.Timeout == .Refused` answers false), and one CARRYING a payload
+  is F2000 with the help "match on it instead — only an enum carrying
+  nothing compares, by variant".
 
 Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
 `List<int>` has none" — the others read alike — or the map's F2000):
