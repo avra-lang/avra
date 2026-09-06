@@ -82,6 +82,18 @@ spec "std/sqlite error adversarial" {
         then "a LOCKED never clears" { !retry_at(6) }
         then "a shared-cache LOCKED never clears either" { !retry_at(262) }
         then "and a LOCKED is still classified as a busy" { kind_at(6) == "sqlite.busy" }
+        // SQLITE_LOCKED_SHAREDCACHE (262) is ANOTHER connection holding
+        // a shared-cache lock, so the reason above — "the retry loop
+        // holds it itself" — is false for it. The ANSWER stays the same
+        // deliberately: without `unlock_notify` there is nothing to wait
+        // on that we can observe, so a hard error beats a spin.
+        then "a shared-cache LOCKED is not retried either" { !retry_at(262) }
+        then "and it too is classified as a busy" { kind_at(262) == "sqlite.busy" }
+        // `cause_of` drops the detail, so the two cannot be told apart
+        // from the cause alone — the extended code is what keeps them
+        // distinct, and it rides in `SqlError.extended`.
+        then "the cause alone cannot tell 6 from 262" { kind_at(6) == kind_at(262) }
+        then "which is why the extended code is carried beside it" { 6 != 262 }
     }
 
     given "extended codes at every boundary" {

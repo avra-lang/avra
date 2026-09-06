@@ -169,7 +169,39 @@ export fn path_fault(c: OpenConfig) -> SqlError? {
     if has_nul(c.path) { return path_holds_a_nul() }
     if c.path == ":memory:" { return spent_empty() }
     if !c.uri && c.path.starts_with("file:") { return reads_as_uri(c.path) }
+    if c.uri && empty_uri_path(c.path) { return spent_empty() }
     null
+}
+
+/// A `file:` URI whose PATH COMPONENT is empty — `file:`, `file://`,
+/// `file:?mode=ro`, `file:#frag`.
+///
+/// THE THIRD SPELLING OF THE EMPTY DATABASE. `""` and `":memory:"` were
+/// the first two; this is the same trap wearing a URI, and it is
+/// reachable by any caller who asked for URIs. Measured, all four:
+/// `rc=0` and `db_filename` empty, which is the private temporary
+/// database deleted at close.
+///
+/// AN ENCODING SPENDS THE EMPTY VALUE, and SQLite spends it three ways
+/// in one API. The door has to know every spelling, because they all
+/// mean the same silent data loss.
+///
+/// This runs AFTER the NUL guard, which is what makes `starts_with`
+/// enough: the text has already been refused if C would read less of it
+/// than we do.
+fn empty_uri_path(path: string) -> bool {
+    let body = past_authority(past_scheme(path))
+    body.is_empty() || body.starts_with("?") || body.starts_with("#")
+}
+
+fn past_scheme(path: string) -> string {
+    if !path.starts_with("file:") { return path }
+    path.substring(5, path.length)
+}
+
+fn past_authority(s: string) -> string {
+    if !s.starts_with("//") { return s }
+    s.substring(2, s.length)
 }
 
 // ── The voices ──────────────────────────────────────────────────

@@ -4,6 +4,7 @@
 // vendor/, never against the system library.
 use @std.sqlite.{version, version_number, source_id, compiled_with, compile_options, threadsafe, is_complete, describe, keyword_count, is_keyword, like, glob, equal_nocase, memory_used, memory_highwater}
 use @std.sqlite.c.{sqlite3_free}
+use @std.sqlite.error.{SqlError}
 
 /// The flags `vendor/FLAGS.md` promises, spelled as
 /// `sqlite3_compileoption_used` names them. THE FLAG SET IS A
@@ -48,6 +49,11 @@ fn freed_null() -> bool {
     true
 }
 
+/// What the face answers about a text's completeness. NUL-bearing text
+/// is refused rather than answered, so the refusal reads as `false`
+/// here and its own case asserts the refusal by name.
+fn complete_says(sql: string) -> bool { is_complete(sql) catch false }
+
 spec "std/sqlite" {
     given "the vendored library answering for itself" {
         then "the version is the pinned 3.53.4" { version() == "3.53.4" }
@@ -68,10 +74,10 @@ spec "std/sqlite" {
     }
 
     given "SQL text judged without a connection" {
-        then "a terminated statement is complete" { is_complete("select 1;") }
-        then "an unterminated statement is not" { !is_complete("select 1") }
-        then "an open string literal is not" { !is_complete("select 'a;") }
-        then "empty text is not a statement" { !is_complete("") }
+        then "a terminated statement is complete" { complete_says("select 1;") }
+        then "an unterminated statement is not" { !complete_says("select 1") }
+        then "an open string literal is not" { !complete_says("select 'a;") }
+        then "empty text is not a statement" { !complete_says("") }
     }
 
     given "a result code described" {

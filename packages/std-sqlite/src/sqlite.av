@@ -37,6 +37,8 @@
 //! and no caller's code changes but its import.
 
 use script.{completes}
+use boundary.{has_nul}
+use error.{Cause, SqlError, refused}
 use c.{sqlite3_libversion, sqlite3_libversion_number, sqlite3_sourceid, sqlite3_compileoption_used, sqlite3_compileoption_get, sqlite3_threadsafe, sqlite3_errstr, sqlite3_keyword_count, sqlite3_keyword_check, sqlite3_strlike, sqlite3_strglob, sqlite3_stricmp, sqlite3_memory_used, sqlite3_memory_highwater}
 
 /// The vendored SQLite's version — "3.53.4".
@@ -76,7 +78,22 @@ export fn threadsafe() -> bool { sqlite3_threadsafe() != 0 }
 
 /// Whether the text ends in a complete, terminated SQL statement.
 /// A partial statement and an allocation failure both answer false.
-export fn is_complete(sql: string) -> bool { completes(sql) }
+///
+/// TEXT HOLDING A NUL IS REFUSED, because this verb cannot answer
+/// truthfully about it. `sqlite3_complete` takes a `const char*` with no
+/// length, so it reads only the bytes before the first NUL and would
+/// answer about a PREFIX — measured: `"select 1;<NUL>junk!!"` is
+/// sixteen bytes and it answers `true` about the first nine.
+///
+/// Its twin `script.statements` already refuses those bytes, and two
+/// face verbs over one C function cannot disagree about whether the
+/// boundary is safe. The WALL still truncates, which is C's behaviour
+/// and is asserted directly against `sqlite3_complete` in the
+/// adversarial suite; the FACE is where the law is kept.
+export fn is_complete(sql: string) -> Result<bool, SqlError> {
+    if has_nul(sql) { fail refused(Cause.HoldsNul, "this text holds a NUL, and `sqlite3_complete` reads only the bytes before it — the answer would be about a prefix") }
+    completes(sql)
+}
 
 /// English text for a primary or extended result code.
 export fn describe(code: int) -> string { sqlite3_errstr(code) }
@@ -88,6 +105,16 @@ export fn keyword_count() -> int { sqlite3_keyword_count() }
 export fn is_keyword(word: string) -> bool { sqlite3_keyword_check(word, word.length) != 0 }
 
 /// SQLite's own LIKE, with no escape character.
+///
+/// NUL-TRUNCATING, KNOWINGLY. This and its two neighbours are C string
+/// calls with no length, so a NUL cuts both arguments short —
+/// `like("a", "a\0b")` answers about one byte. Unlike `is_complete`
+/// they have no guarded twin to disagree with, so there is no doctrine
+/// split to close, and refusing would change three `bool` verbs into
+/// `Result`s for a case that needs a minted NUL to reach. The
+/// behaviour is PINNED in the adversarial suite instead, so it cannot
+/// drift unnoticed. TRIGGER for revisiting: a `Bytes` value, or a
+/// caller who meets it.
 export fn like(pattern: string, text: string) -> bool { sqlite3_strlike(pattern, text, 0) == 0 }
 
 /// SQLite's own GLOB.
