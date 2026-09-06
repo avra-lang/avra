@@ -551,7 +551,7 @@ void avra_llvm_add_incoming(LLVMValueRef phi, LLVMValueRef value, LLVMBasicBlock
 // processes compile one entry — caught it at 0/partial bytes (found by
 // --cache-fuzz-parallel). rename() gives readers whole-old or
 // whole-new, never mid-stream.
-int avra_llvm_print_module_to_file(LLVMModuleRef m, const char* path) {
+int64_t avra_llvm_print_module_to_file(LLVMModuleRef m, const char* path) {
     char tmp[4096];
     if (snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int)getpid())
             >= (int)sizeof(tmp)) {
@@ -574,7 +574,7 @@ int avra_llvm_print_module_to_file(LLVMModuleRef m, const char* path) {
     return 0;
 }
 
-int avra_llvm_verify_module_print(LLVMModuleRef m) {
+int64_t avra_llvm_verify_module_print(LLVMModuleRef m) {
     char* error = NULL;
     int result = LLVMVerifyModule(m, LLVMPrintMessageAction, &error);
     if (error) LLVMDisposeMessage(error);
