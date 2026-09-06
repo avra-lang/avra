@@ -175,6 +175,46 @@ export fn dst_of(i: Ins) -> Reg? {
     }
 }
 
+/// Register identity — two registers are one when their indexes
+/// agree.
+export fn same_reg(a: Reg, b: Reg) -> bool {
+    // LICENSED I9: register identity, not type agreement — ids compare by index
+    a.index == b.index
+}
+
+/// The registers a step READS — its operands, never its
+/// destination. ONE definition of what an instruction consumes, so
+/// a pass asking about a register's uses asks here and no consumer
+/// re-derives the list. A slot is read by the step that touches it:
+/// a Load reads its cell, a Store reads the cell and the value.
+export fn reads_of(i: Ins) -> List<Reg> {
+    match i {
+        .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+        .FnAddr(_, _) or .ScopeEnter(_) or .Alloca(_) or
+        .LoopStart or .LoopEnd or .Ret(_) -> [],
+        .Bin(_, _, a, b) -> [a, b],
+        .Un(_, _, src) -> [src],
+        .CallRtVoid(_, args) -> args,
+        .CallRt(_, _, args) -> args,
+        .Pack(_, elems) -> elems,
+        .Extract(_, src, _) -> [src],
+        .Call(_, _, args) -> args,
+        .CallPtr(_, f, args) -> [f].concat(args),
+        .ScopeExit(gives) -> if gives == null { [] } else { [gives!] },
+        .IfStart(cond) -> [cond],
+        .SwitchStart(selector, _) -> [selector],
+        .ArmEnd(gives) -> [gives],
+        .RegionEnd(_, gives) -> [gives],
+        .RetVal(r) -> [r],
+        .FnExit(gives) -> [gives],
+        .Load(_, slot) -> [slot],
+        .Store(slot, src) -> [slot, src],
+        .LoopCond(c) -> [c],
+        .Retain(r) -> [r],
+        .Release(r) -> [r],
+    }
+}
+
 /// THE USER BODY a step names — a call's callee, a fn value's
 /// address. Runtime and host callees name no body of ours, so they
 /// answer nothing. Every symbol a program's bodies name must be a

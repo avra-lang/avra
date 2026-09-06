@@ -8,7 +8,7 @@
 //! RetVal keeps, and the caller owns the call's result. Systems
 //! ownership lands here later as a strategy, touching neither
 //! lowering nor the backend.
-use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, dst_of, rt_owns, rt_owned_twin, reversed}
+use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, dst_of, reads_of, same_reg, rt_owns, rt_owned_twin, reversed}
 
 /// Managed registers bound in one open scope, its tier remembered.
 export type Scope = { tier: Level, managed: List<Reg>, cells: List<Reg> }
@@ -59,7 +59,7 @@ fn managed_params(types: TypeRegistry, b: Body) -> List<Reg> {
 fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed: List<Reg>) -> List<Ins> {
     mut out: List<Ins> = []
     mut open_scopes: Stack<Scope> = new_stack()
-    for raw in ins {
+    for at, raw in ins {
         let i = owned_form(types, reg_types, raw)
         match i {
             .ScopeEnter(tier) -> {
@@ -163,12 +163,16 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 }
                 out.push(i)
             }
-            // A managed LOAD is an owned +1 — the borrowed pointer
-            // must survive the cell's next overwrite.
-            .Load(dst, _) -> {
+            // A managed LOAD is a BORROW of the cell's reference —
+            // it earns its own +1 only when it must OUTLIVE it.
+            // Retain and ownership travel together: a borrow the
+            // scope does not own is a release it must not emit.
+            .Load(dst, slot) -> {
                 out.push(i)
-                if is_managed(types, reg_types[dst.index]) { out.push(Ins.Retain(dst)) }
-                manages(types, reg_types, open_scopes, i)
+                if is_managed(types, reg_types[dst.index]) && borrow_outlives(types, reg_types, ins, at, dst, slot) {
+                    out.push(Ins.Retain(dst))
+                    manages(types, reg_types, open_scopes, i)
+                }
             }
             // THE CONDITION RUNS EVERY TURN: what it mints is settled
             // at each LoopCond, never at the enclosing scope's exit —
@@ -198,6 +202,109 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
         }
     }
     out
+}
+
+/// A managed LOAD is a BORROW: the cell holds one reference and
+/// the loaded register rides it. The borrow earns its own +1 only
+/// when it must OUTLIVE that reference — it is given UPWARD, or a
+/// use of it (or of a borrow taken from it) stands past a step
+/// that could change the cell, or past a bracket. Conservative by
+/// construction: what the scan cannot read as safe owns.
+///
+/// THE +1 IS NOT BOOKKEEPING. `avra_cell_unique` copies only when
+/// the count is above one, so a borrow that does NOT retain is
+/// exactly what lets a write land in place — the retain was what
+/// made a read-then-write clone.
+///
+/// WHAT THE SCAN DOES NOT ASK, and why it need not: a runtime row
+/// handed the borrow. A row BORROWS its arguments, and a C body
+/// that KEEPS what it was handed takes its own reference — that
+/// law (CLAUDE.md) is what makes a stored borrow safe, and it held
+/// before this pass counted uses. A row that keeps without
+/// retaining is a dangling store whether the read owns or not.
+fn borrow_outlives(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: int, dst: Reg, slot: Reg) -> bool {
+    mut views: List<Reg> = [dst]
+    mut last = at
+    mut j = at + 1
+    while j < ins.length {
+        let i = ins[j]
+        if reads_of(i).any(held_by(views, it)) {
+            if gives_upward(i) { return true }
+            last = j
+            let d: Reg? = view_of(i)
+            if d != null && is_managed(types, reg_types[d!.index]) { views.push(d!) }
+        }
+        j = j + 1
+    }
+    mut k = at + 1
+    while k <= last {
+        if brackets(ins[k]) || changes_cell(ins[k], slot) { return true }
+        k = k + 1
+    }
+    false
+}
+
+/// One of the borrows taken from the load.
+fn held_by(views: List<Reg>, r: Reg) -> bool {
+    views.any(same_reg(it, r))
+}
+
+/// A step that could CHANGE what the cell holds: a store to it, or
+/// any step handed the cell itself — a writing callee opens it
+/// there. A second load only reads it.
+///
+/// COMPLETE, not merely conservative, and that is what the scan
+/// rests on. A cell register is an `Alloca` destination, and every
+/// consumer of one in the tree is a `Load`, a `Store`,
+/// `avra_cell_unique` or this pass's own `avra_cell_release`: a
+/// cell is never packed, never an argument to a user callee, never
+/// aliased into a second register. The day one escapes, this test
+/// goes BLIND and the scan is unsound rather than pessimistic.
+/// The `.Load` exemption rests on the second half: a borrow root's
+/// write loads the cell and writes THROUGH the box (places.av), so
+/// it never re-points the cell. Widen that and the exemption goes
+/// with it.
+fn changes_cell(i: Ins, slot: Reg) -> bool {
+    if i is .Load { return false }
+    reads_of(i).any(same_reg(it, slot))
+}
+
+/// Every BRACKET in the stream. A borrow whose use stands across
+/// one may outlive the cell, so the scan refuses to reason past it.
+fn brackets(i: Ins) -> bool {
+    i is .ScopeEnter || i is .ScopeExit || i is .IfStart || i is .SwitchStart ||
+        i is .ArmEnd || i is .RegionEnd || i is .LoopStart || i is .LoopCond || i is .LoopEnd
+}
+
+/// The uses that give a value UPWARD — out of its scope, into a
+/// cell, or into an aggregate. A borrow that escapes must own.
+fn gives_upward(i: Ins) -> bool {
+    i is .ScopeExit || i is .ArmEnd || i is .RegionEnd || i is .RetVal ||
+        i is .FnExit || i is .Store || i is .Pack
+}
+
+/// A NON-OWNING read makes ANOTHER borrow of the same box — the
+/// child rides the parent's reference, so its uses are the
+/// parent's. Only a MANAGED child does: a scalar pulled out of a
+/// box is a copied word and holds nothing.
+fn view_of(i: Ins) -> Reg? {
+    match i {
+        .Extract(d, _, _) -> d,
+        .CallRt(d, callee, _) -> if rt_owns(callee) { null } else { d },
+        // A REGISTRY: every arm is spelled, so the day a
+        // value-carrying instruction lands the build refuses until
+        // this answers for it. A call's answer is the caller's own
+        // reference, never a view of an argument.
+        .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+        .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or
+        .Pack(_, _) or .FnAddr(_, _) or .ScopeEnter(_) or
+        .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or
+        .ArmEnd(_) or .RegionEnd(_, _) or .Call(_, _, _) or
+        .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or
+        .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or
+        .LoopCond(_) or .LoopEnd or .Retain(_) or .Release(_) or
+        .Ret(_) -> null,
+    }
 }
 
 /// Everything EVERY open scope owes at an early exit, innermost
@@ -238,7 +345,7 @@ fn moved_out(types: TypeRegistry, reg_types: List<TypeId>, scope: Scope, gives: 
     let r = gives!
     if !is_managed(types, reg_types[r.index]) { return [] }
     // LICENSED I9: register identity, not type agreement
-    if scope.managed.any(it.index == r.index) { return [] }
+    if scope.managed.any(same_reg(it, r)) { return [] }
     [Ins.Retain(r)]
 }
 
