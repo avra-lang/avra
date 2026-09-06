@@ -7,17 +7,17 @@
 //! Avra's niche for an absent pointer IS the null pointer, so the type
 //! and the C convention are one value rather than two that agree.
 //!
-//! WHAT IS NOT HERE YET, and it is a real gap rather than an omission:
-//! OPENING IS LAZY (T127). `sqlite3_open_v2` records the filename and
-//! allocates; the file's header is not read until a statement needs the
-//! schema, so a corrupt or non-database file opens CLEANLY and fails at
-//! the first query, blaming the query. The fix is one trivial statement
-//! before answering `Ok`, and it waits for the prepare/step slice —
-//! `probed()` below is where it goes, and it is named so the hole is
-//! visible from the code rather than only from a document.
+//! OPENING IS LAZY, AND THIS VERB IS NOT (T127). `sqlite3_open_v2`
+//! records the filename and allocates; the file's header is not read
+//! until a statement needs the schema, so a corrupt or non-database
+//! file opens CLEANLY and would fail at the caller's first query,
+//! blaming the query. `unreadable` runs one trivial statement before
+//! answering `Ok`, so "the connection opened" and "the file is a
+//! database" are the same answer. It costs one page read.
 use error.{Cause, SqlError, refused, cause_of}
 use boundary.{has_nul}
 use c.{sqlite3_open_v2, sqlite3_close_v2, sqlite3_errstr}
+use stmt.{Stmt, prepare, step, finalize}
 
 /// How the file is opened. THREE MODES AND NO `create` FIELD, because
 /// the header allows exactly three flag combinations and a fourth
@@ -200,18 +200,35 @@ fn reads_as_uri(path: string) -> SqlError {
 
 // ── Opening, and closing ────────────────────────────────────────
 
-/// An open connection. One field, and it is the handle SQLite gave us.
+/// An open connection. The handle is NULLABLE because closing NULLS
+/// it, which is what makes closing twice safe.
 ///
-/// THE DOUBLE-CLOSE IS REAL AND THIS TYPE CANNOT PREVENT IT. A `Db` is
-/// a value, so it copies, and two copies closed is
-/// `sqlite3_close_v2` twice on one pointer — undefined behaviour. The
-/// design's answer is an `opaque type` whose drop runs at the refcount's
-/// zero, which the language does not have yet; until it does, the rule
-/// is a CONVENTION and conventions are what this driver refuses
-/// everywhere else. It is written here rather than hidden: hold one
-/// `Db`, close it once, and prefer a scope that opens and closes in the
-/// same fn.
-export type Db = { raw: ptr }
+/// THE DOUBLE-CLOSE, AND HOW MUCH OF IT IS ACTUALLY CLOSED. Two
+/// `close_v2` calls on one pointer are undefined behaviour, and this
+/// type takes the half it can:
+///
+///   - `close` takes a `mut` receiver and NULLS the handle it closed,
+///     so the same binding closed twice closes once and answers 0.
+///   - The compiler ENFORCES the mutable place: `close(db)` on a `let`
+///     is `F2048: 'db' is not 'mut' — seat 1 of 'close' writes through
+///     it`. A handle can only be closed where it can be nulled.
+///   - What remains is a deliberate COPY — `mut b = a` and both closed.
+///     That is visible at the copy, and it is the only path left.
+///
+/// THE MECHANISM THAT WOULD CLOSE THE REST IS REAL AND NOT AVAILABLE.
+/// `@std/process` catches a stale child handle with a generation tag —
+/// `gen << 32 | idx` into a table, `runtime/avra_runtime.c:1727` — so a
+/// closed slot's handle never names its next tenant. It lives in the C
+/// RUNTIME, not in Avra, and a package cannot build one: Avra has no
+/// process-wide mutable state. Measured, eval == native — a `once fn`
+/// answering a list gives every caller a fresh copy, so three pushes
+/// through it leave the table holding nothing. The alternative is a
+/// sqlite-shaped table inside the language's own runtime, which is the
+/// C shim this campaign refuses by its first rule.
+///
+/// So: a generation-tagged `Db = { id: int }` is the right answer and
+/// it is a LANGUAGE ASK, not a design choice being ducked.
+export type Db = { raw: ptr? }
 
 /// A database at a path, opened for reading and writing and created if
 /// it is not there.
@@ -246,7 +263,43 @@ fn opened(path: string, flags: int) -> Result<Db, SqlError> {
     let rc = sqlite3_open_v2(path, handle, flags, null)
     if rc != 0 { fail closing(handle, rc) }
     if handle == null { fail refused(Cause.CantOpen, "SQLite answered success and no handle") }
-    Db { raw: handle! }
+    mut db = Db { raw: handle }
+    let fault: SqlError? = unreadable(db)
+    if fault != null {
+        let _ = close(db)
+        fail fault!
+    }
+    db
+}
+
+/// T127 CLOSED: the one trivial statement that tells a database from a
+/// file. Answers the failure when the file is not one, or absence when
+/// it is.
+///
+/// `sqlite_schema` is the right table to ask for: every database has
+/// it, an empty one included, and counting it reads the header without
+/// reading the data.
+fn unreadable(db: Db) -> SqlError? {
+    match prepare(db, "select count(*) from sqlite_schema") {
+        .Ok(s) -> ran(s),
+        .Err(e) -> e,
+    }
+}
+
+/// The probe stepped and finalized, whatever it answered — a statement
+/// left open would hold the connection it was meant to prove.
+fn ran(s: Stmt) -> SqlError? {
+    mut held = s
+    let outcome = step(held)
+    let _ = finalize(held)
+    fault_of(outcome)
+}
+
+fn fault_of(r: Result<bool, SqlError>) -> SqlError? {
+    match r {
+        .Ok(_) -> null,
+        .Err(e) -> e,
+    }
 }
 
 /// The failure of an open, with the handle released first.
@@ -261,9 +314,18 @@ fn closing(handle: ptr?, rc: int) -> SqlError {
     SqlError { cause: cause_of(rc), code: rc % 256, extended: rc, message: sqlite3_errstr(rc), sql: null }
 }
 
-/// The connection closed. Answers the result code, which is `0` for
-/// every close a caller can make: `close_v2` is the ZOMBIE form, so a
-/// connection with an outstanding statement is marked and freed when
-/// the last derived object goes, rather than answering BUSY and leaving
-/// the file locked. Anything but zero here is a driver defect.
-export fn close(db: Db) -> int { sqlite3_close_v2(db.raw) }
+/// The connection closed, and the handle NULLED so it cannot be closed
+/// again. Answers the result code, which is `0` for every close a
+/// caller can make: `close_v2` is the ZOMBIE form, so a connection with
+/// an outstanding statement is marked and freed when the last derived
+/// object goes, rather than answering BUSY and leaving the file locked.
+/// Anything but zero here is a driver defect.
+///
+/// Closing an already-closed `Db` answers 0 and does nothing, which is
+/// the whole point of the `mut` seat.
+export fn close(mut db: Db) -> int {
+    if db.raw == null { return 0 }
+    let rc = sqlite3_close_v2(db.raw)
+    db.raw = null
+    rc
+}

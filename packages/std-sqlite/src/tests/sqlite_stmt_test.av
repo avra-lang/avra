@@ -1,0 +1,199 @@
+// A statement compiled, stepped, read and finalized — the first time
+// this driver reads a VALUE out of a database.
+//
+// What a cell can answer today is an INTEGER and a CLASS. `column_text`
+// and `column_blob` hand back borrowed pointers whose buffers die at
+// the next step, and nothing in the tree can copy foreign text into a
+// box, so `text` and `blob` are ABSENT rather than wrong — and
+// `class_at` is how a caller learns a cell holds text it cannot have.
+use @std.sqlite.open.{Db, open, memory, close}
+use @std.sqlite.stmt.{Stmt, prepare, step, finalize, reset, width, standing, class_at, int_at}
+use @std.sqlite.error.{Storage, SqlError}
+
+/// One integer out of a one-row query, or the kind it was refused with.
+fn scalar(sql: string) -> string {
+    match memory() {
+        .Ok(db) -> read_one(db, sql),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn read_one(db: Db, sql: string) -> string {
+    mut held = db
+    let said = said_by(db, sql)
+    let _ = close(held)
+    said
+}
+
+fn said_by(db: Db, sql: string) -> string {
+    match prepare(db, sql) {
+        .Ok(s) -> stepped_int(s),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn stepped_int(s: Stmt) -> string {
+    mut held = s
+    let said = first_int(held)
+    let _ = finalize(held)
+    said
+}
+
+fn first_int(s: Stmt) -> string {
+    match step(s) {
+        .Ok(more) -> if more { told(int_at(s, 0)) } else { "NO ROW" },
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn told(r: Result<int, SqlError>) -> string {
+    match r {
+        .Ok(v) -> "${v}",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+/// The class of column 0 of a one-row query, as a word.
+fn class_word_of(sql: string) -> string {
+    match memory() {
+        .Ok(db) -> classed(db, sql),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn classed(db: Db, sql: string) -> string {
+    mut held = db
+    let said = class_said(db, sql)
+    let _ = close(held)
+    said
+}
+
+fn class_said(db: Db, sql: string) -> string {
+    match prepare(db, sql) {
+        .Ok(s) -> class_stepped(s),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn class_stepped(s: Stmt) -> string {
+    mut held = s
+    let said = class_after_step(held)
+    let _ = finalize(held)
+    said
+}
+
+fn class_after_step(s: Stmt) -> string {
+    match step(s) {
+        .Ok(more) -> if more { named(class_at(s, 0)) } else { "NO ROW" },
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn named(r: Result<Storage, SqlError>) -> string {
+    match r {
+        .Ok(c) -> word(c),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn word(c: Storage) -> string {
+    match c {
+        .Int -> "int",
+        .Real -> "real",
+        .Text -> "text",
+        .Blob -> "blob",
+        .Null -> "null",
+    }
+}
+
+spec "std/sqlite statement" {
+
+    given "a value read out of a database" {
+        then "one is one" { scalar("select 1") == "1" }
+        then "arithmetic arrives" { scalar("select 2 + 3") == "5" }
+        then "a negative arrives as a negative" { scalar("select 0 - 7") == "-7" }
+        // 64 bits, exactly — this is the width work arriving where a
+        // caller can see it. A 32-bit read would wrap this to 1.
+        then "a value past 32 bits survives" { scalar("select 4294967297") == "4294967297" }
+        then "the largest signed 64-bit integer survives" { scalar("select 9223372036854775807") == "9223372036854775807" }
+        then "a count over the schema works" { scalar("select count(*) from sqlite_schema") == "0" }
+    }
+
+    given "a query that answers no row" {
+        then "an empty result steps straight to done" { scalar("select 1 where 0") == "NO ROW" }
+    }
+
+    given "the class is asked first, and a wrong read is refused" {
+        then "an integer is an integer" { class_word_of("select 1") == "int" }
+        then "a real is a real" { class_word_of("select 1.5") == "real" }
+        then "text is text" { class_word_of("select 'hi'") == "text" }
+        then "a blob is a blob" { class_word_of("select x'00ff'") == "blob" }
+        then "null is null" { class_word_of("select null") == "null" }
+        // The cell holds one class and the read asked for another. It
+        // is refused rather than coerced to zero — which is what a
+        // driver that tested the POINTER would answer.
+        then "reading text as an integer is refused" { scalar("select 'hi'") == "sqlite.mismatch" }
+        then "reading a blob as an integer is refused" { scalar("select x'00ff'") == "sqlite.mismatch" }
+        then "reading NULL as an integer is refused" { scalar("select null") == "sqlite.mismatch" }
+        // A real IS a number, and it is still not an integer.
+        then "reading a real as an integer is refused" { scalar("select 1.5") == "sqlite.mismatch" }
+    }
+
+    given "a column index outside the row" {
+        then "column 7 of a row 1 wide is refused" { scalar_at("select 1", 7) == "sqlite.out_of_row" }
+        then "a negative column is refused" { scalar_at("select 1", 0 - 1) == "sqlite.out_of_row" }
+    }
+
+    given "text that is not one statement" {
+        then "two statements are refused" { scalar("select 1; select 2") == "sqlite.many_statements" }
+        then "comment-only text is refused" { scalar("-- nothing") == "sqlite.no_statement" }
+        then "empty text is refused" { scalar("") == "sqlite.no_statement" }
+        // The parser, not a `;` scan: this is ONE statement.
+        then "a semicolon inside a literal is one statement" { scalar("select length('a;b')") == "3" }
+    }
+
+    given "SQL the database refuses" {
+        then "a syntax error names itself" { scalar("select from") == "sqlite.syntax" }
+        // SQLITE_ERROR is SQLite's GENERIC code, so `syntax` is wider
+        // than its name — a missing table lands here too. What tells
+        // them apart is the token offset, which a parse error has and
+        // a missing table does not.
+        then "a missing table is SQLite's generic error" { scalar("select * from nosuchtable") == "sqlite.syntax" }
+    }
+}
+
+/// A read at a chosen column, so the out-of-row guard can be aimed.
+fn scalar_at(sql: string, col: int) -> string {
+    match memory() {
+        .Ok(db) -> at_col(db, sql, col),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn at_col(db: Db, sql: string, col: int) -> string {
+    mut held = db
+    let said = col_said(db, sql, col)
+    let _ = close(held)
+    said
+}
+
+fn col_said(db: Db, sql: string, col: int) -> string {
+    match prepare(db, sql) {
+        .Ok(s) -> col_stepped(s, col),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn col_stepped(s: Stmt, col: int) -> string {
+    mut held = s
+    let said = col_after_step(held, col)
+    let _ = finalize(held)
+    said
+}
+
+fn col_after_step(s: Stmt, col: int) -> string {
+    match step(s) {
+        .Ok(more) -> if more { told(int_at(s, col)) } else { "NO ROW" },
+        .Err(e) -> e.cause.kind(),
+    }
+}

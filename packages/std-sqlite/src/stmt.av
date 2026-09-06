@@ -1,0 +1,165 @@
+//! A STATEMENT: compiled, stepped, read, and finalized.
+//!
+//! WHAT A COLUMN CAN ANSWER TODAY is an INTEGER and a CLASS, and the
+//! limit is a language gap rather than a design one.
+//! `sqlite3_column_text` and `sqlite3_column_blob` answer BORROWED
+//! pointers whose buffers die at the next step, and nothing in the tree
+//! can copy foreign text into a box — every text-answering C body we
+//! own copies inside itself, and we do not own SQLite's. So `text` and
+//! `blob` are absent rather than wrong, and `class_at` is how a caller
+//! learns a cell holds text it cannot yet have.
+//!
+//! THE CLASS IS ASKED FIRST, ALWAYS. `sqlite3_column_blob` answers a
+//! NULL pointer for THREE conditions — SQL NULL, a zero-length blob,
+//! and an out-of-memory — so a read that tests the POINTER cannot tell
+//! them apart. `int_at` asks `column_type` before it reads, and a cell
+//! of the wrong class is a `Mismatch` rather than a coerced zero.
+use error.{Cause, Storage, SqlError, refused, cause_of}
+use open.{Db}
+use script.{statements}
+use c.{sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset,
+       sqlite3_column_count, sqlite3_data_count, sqlite3_column_type,
+       sqlite3_column_int64, sqlite3_errstr}
+
+/// A compiled statement. The handle is nullable because finalizing
+/// NULLS it, so finalizing twice finalizes once — the same law `Db`
+/// holds, and the compiler enforces the `mut` place for both.
+export type Stmt = { raw: ptr? }
+
+/// The result codes this driver reads by name rather than by number.
+fn row_code() -> int { 100 }
+fn done_code() -> int { 101 }
+
+/// One statement compiled from `sql`.
+///
+/// THE TEXT MUST HOLD EXACTLY ONE STATEMENT, and that is checked by the
+/// PARSER before SQLite is asked — `statements` divides the script by
+/// asking `sqlite3_complete` where each one ends, so a semicolon inside
+/// a literal or a trigger body cannot split it. `prepare` compiles only
+/// the FIRST statement and reports success for the rest, which is the
+/// silent wrong answer this refuses.
+export fn prepare(db: Db, sql: string) -> Result<Stmt, SqlError> {
+    let parts = statements(sql)?
+    if parts.length > 1 { fail refused(Cause.ManyStatements, "this verb takes ONE statement and the text holds ${parts.length} — a script verb runs many") }
+    if parts.is_empty() { fail refused(Cause.NoStatement, "the text holds no statement — it is empty or nothing but comments") }
+    compiled(db, parts[0])
+}
+
+/// The call, and the only place the statement handle is nullable.
+fn compiled(db: Db, sql: string) -> Result<Stmt, SqlError> {
+    mut handle: ptr? = null
+    mut tail: ptr? = null
+    let rc = sqlite3_prepare_v3(db.raw!, sql, sql.length, 0, handle, tail)
+    if rc != 0 { fail failed(rc, sql) }
+    // rc = SQLITE_OK WITH A NULL STATEMENT is SQLite's "nothing to run"
+    // — the text was a comment, or blank (T37). The splitter does NOT
+    // judge this and deliberately so: it divides text into segments and
+    // leaves "does this segment hold a statement" to `prepare`, which is
+    // the only thing that can answer. For a verb that takes ONE
+    // statement the answer is a refusal; a script verb skips the
+    // segment instead. Same fact, two verbs, opposite answers.
+    if handle == null { fail refused(Cause.NoStatement, "the text holds no statement — it is a comment, or blank") }
+    Stmt { raw: handle }
+}
+
+/// The statement stepped. `true` when a row is standing, `false` when
+/// the statement is done. Anything else is the failure it names.
+///
+/// Since 3.6.23.1 `step` AUTO-RESETS rather than answering
+/// SQLITE_MISUSE, so the code is the real error and not a protocol
+/// complaint about the previous one.
+export fn step(s: Stmt) -> Result<bool, SqlError> {
+    let rc = sqlite3_step(s.raw)
+    if rc == row_code() { return true }
+    if rc == done_code() { return false }
+    fail failed(rc, null)
+}
+
+/// The statement rewound, its bindings kept.
+export fn reset(s: Stmt) -> int { sqlite3_reset(s.raw) }
+
+/// The statement destroyed, and the handle NULLED so it cannot be
+/// destroyed again. Answers the code of the most recent step, so a
+/// failing statement reports its failure here as well.
+export fn finalize(mut s: Stmt) -> int {
+    if s.raw == null { return 0 }
+    let rc = sqlite3_finalize(s.raw)
+    s.raw = null
+    rc
+}
+
+// ── Reading the row that is standing ────────────────────────────
+
+/// How many columns the statement's rows have — known at PREPARE time,
+/// which is how a driver tells a row-yielding statement from a writing
+/// one without reading the SQL.
+export fn width(s: Stmt) -> int { sqlite3_column_count(s.raw) }
+
+/// How many columns the CURRENT row has: 0 before the first step, 0
+/// after DONE, and 0 after a reset. SQLite's own answer to "is a row
+/// standing", which is why no flag of ours is needed.
+export fn standing(s: Stmt) -> int { sqlite3_data_count(s.raw) }
+
+/// The storage class of a cell. THE FIRST QUESTION ASKED OF ANY CELL.
+export fn class_at(s: Stmt, col: int) -> Result<Storage, SqlError> {
+    let held = in_row(s, col)?
+    storage_of(sqlite3_column_type(s.raw, col))
+}
+
+/// A cell as an integer, refused when it holds another class.
+export fn int_at(s: Stmt, col: int) -> Result<int, SqlError> {
+    let class = class_at(s, col)?
+    if !(class is .Int) { fail wrong_class(col, Storage.Int, class) }
+    sqlite3_column_int64(s.raw, col)
+}
+
+/// A cell's class, or a `NoColumn` when the index is outside the row.
+/// The WIDTH is the witness: `data_count` is zero with no row standing,
+/// so one guard refuses both "column 7 of 4" and "read before step".
+fn in_row(s: Stmt, col: int) -> Result<int, SqlError> {
+    let w = standing(s)
+    if col < 0 || col >= w { fail refused(Cause.OutOfRow(col, w), out_of_row_words(col, w)) }
+    col
+}
+
+fn storage_of(code: int) -> Result<Storage, SqlError> {
+    match code {
+        1 -> Storage.Int,
+        2 -> Storage.Real,
+        3 -> Storage.Text,
+        4 -> Storage.Blob,
+        5 -> Storage.Null,
+        _ -> { fail defect("SQLite named a storage class this driver does not know: ${code}") },
+    }
+}
+
+// ── The voices ──────────────────────────────────────────────────
+
+/// The driver's own bug, said in its own words. `Defect` carries the
+/// sentence AND the message repeats it, because a caller who catches
+/// one should not have to unwrap the cause to read it.
+fn defect(what: string) -> SqlError { refused(Cause.Defect(what), what) }
+
+fn failed(rc: int, sql: string?) -> SqlError {
+    SqlError { cause: cause_of(rc), code: rc % 256, extended: rc, message: sqlite3_errstr(rc), sql: sql }
+}
+
+fn wrong_class(col: int, wanted: Storage, found: Storage) -> SqlError {
+    refused(Cause.Mismatch(col, wanted, found),
+        "column ${col} holds ${class_word(found)} and the read asked for ${class_word(wanted)}")
+}
+
+fn out_of_row_words(col: int, w: int) -> string {
+    if w == 0 { return "column ${col} was read with NO ROW STANDING — step first, and step again after DONE answers nothing" }
+    "column ${col} is outside a row ${w} wide"
+}
+
+fn class_word(c: Storage) -> string {
+    match c {
+        .Int -> "an integer",
+        .Real -> "a real",
+        .Text -> "text",
+        .Blob -> "a blob",
+        .Null -> "NULL",
+    }
+}
