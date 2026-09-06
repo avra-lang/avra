@@ -470,7 +470,11 @@ registry is the idiom engine's spec, written by dogfooding.
   warning count alone, and only the true-positive rate tells them
   apart.
 - Map iteration order never reaches output — iterate an ordered
-  source.
+  source. AND A MAP CANNOT BE ITERATED AT ALL: `for k in m` is F2000
+  "`for … in` walks a `List`, this is `Map<K, V>`" and `.keys()` is
+  F2030 "and `Map<K, V>` has none". Its whole vocabulary is
+  `get`/`set`/`length`. The rule above is the LAW an ordered source
+  obeys, not a description of a walk you can write today.
 - Grammar authoring: EVERY COMMA LIST TAKES A TRAILING COMMA — a
   repeated `( "," x )*` ends `","?` before its closer, in every
   rule (params, type params and args, payload declarations, lambda
@@ -737,8 +741,21 @@ compiler's help is the note.
 Syntax the grammar lacks:
 - Struct destructuring in `let` (`let Sp { lo, hi } = s`):
   "expected `=` while parsing `stmt`".
+- AN IMPORT IS SPELLED WITH DOTS, and this file writes package names
+  with a SLASH throughout (`@std/io`, `@std/text`) because that is the
+  package's name in prose. The `use` line is not:
+
+      use @std.io.{read_text, write_text}
+      use @std.text.{from_codepoint}
+
+  `use @std/io.{…}` is F0100 "expected `.` while parsing `stmt`", at the
+  slash. This is the ONLY spelling a reader of this file was given until
+  now, and a cold-start measurement recorded it as the single failure of
+  a subject that had read nothing else.
 - `|` between or-pattern alternatives: "expected `}` to close the
-  `match`" — the spelling is `or`. A BINDING across alternatives
+  `match`" — the spelling is `or`, IN A PATTERN ONLY. As a BOOLEAN it
+  does not parse: `true or false` is F0100 at the `or`, and `and`/`not`
+  fail alike. The boolean operators are `&&`, `||`, `!`. A BINDING across alternatives
   (`.A(n) or .B(n) -> n`): F2039 "an `or` arm binds nothing — its
   alternatives take wildcards only".
 - Destructuring `enumerate()` in a comprehension (`[i for (i, m)
@@ -749,9 +766,17 @@ Syntax the grammar lacks:
 - Type aliases and newtypes (`type Id = int`): "expected `{` while
   parsing `stmt`". Typed ids are single-field structs (`{ index:
   int }`), which the checker keeps apart.
-- A `table` literal without its row type (`table { … }` under a
-  typed let): "expected BREAK while parsing `stmt`" — `table<Row>
-  { … }` is the form.
+- A `table` literal without its row type: a bare `table { id: 1 }`
+  reads as a STRUCT LITERAL of a type named `table` — F3000 "no `type
+  table` is declared", with no hint that the row type is missing. The
+  form is `table<Row>`, and its body is a PIPE-DELIMITED header plus one
+  line per row, not struct syntax:
+
+      let rows = table<Row> {
+          id | name
+          1  | "a"
+          2  | "b"
+      }
 - The pipe `|>`: "expected BREAK while parsing `stmt`".
 - A RANGE TAKES NO METHODS: `(0..n).any(it == 2)` is "expected `)`
   to close the group", AT the `..`. A range is a `for`-head and a
