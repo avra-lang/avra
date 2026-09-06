@@ -627,9 +627,12 @@ the compiler checking itself 28.8s.
         fail. An unexercised keeper is an untested instrument, and
         this one proved it by being wrong the first day its domain
         widened.
-  - [ ] A POINTER FROM AN INTEGER — the OWNER's question, asked by
-        the SQLITE lane 2026-09-05 and recorded here because the
-        answer lands in lane A's file. `ptr` is receive-only today:
+  - [x] A POINTER FROM AN INTEGER — ANSWERED YES by the owner and
+        LANDED 2026-09-05 as `avra_ptr_at` (lane C's block below).
+        The answer did NOT land in lane A's file: it needed no
+        constant expression and no compiler change at all, only a
+        runtime row. What follows is the question as it stood.
+        `ptr` WAS receive-only:
         no cast, no constructor, and `const P: ptr = 1` is F2024
         "`P` declares `ptr`, this is `int`" (probed). So the blocker
         is the TYPER, not lowering, and the question is not "may we
@@ -1933,7 +1936,7 @@ the order is the dependency.
         class eval == native cannot catch. The premise that made it
         safe was true and lived in a COMMENT: "the only ConstInt
         lowering ever aims at a pointer register is 0", which holds
-        because `ptr` is receive-only today. It arms the moment a
+        because `ptr` WAS receive-only when this landed. It arms the moment a
         pointer sentinel becomes spellable, and every C API has one
         (SQLITE_TRANSIENT is `(void*)-1`).
         The guard is in LOWERING, not either engine: the backend's
@@ -1946,6 +1949,15 @@ the order is the dependency.
         commented premise into an enforced one while it is free.
         Pinned by three cases fed a hand-built body, since source
         cannot reach the shape. 1877 cases.
+        STILL UNREACHED after `avra_ptr_at` landed the same day, and
+        the reason is the shape the capability took: a mint is a
+        RUNTIME CALL, so its answer arrives in a pointer register
+        from a `CallRt` and no integer CONSTANT ever aims at one.
+        Probed — `avra_ptr_at(0 - 1)` lowers to `r4 = call
+        avra_ptr_at(r3)` and `./avra check` is clean. Had the
+        capability been a constant fold instead, this guard would
+        have armed on its first use and lane A's `LLVMConstIntToPtr`
+        wrapper would have been needed; neither is.
   - [x] A `mut` SEAT KEEPS ITS BOX (F0900). LANDED 2026-09-05,
         reported by the SQLITE campaign's FFI lane. `fn bump(mut i:
         Id) { i.index = 1 }` over `type Id = { index: int }` was an
@@ -2068,8 +2080,11 @@ the order is the dependency.
         2026-09-05 on the OWNER'S WORD — escalated as a capability
         rather than decided in a lane, held through a peer's relay of
         the approval, and built on the owner's own say-so. `ptr` is
-        no longer receive-only; the three entries above that say so
-        are superseded.
+        no longer receive-only, and the two entries above that said
+        so are corrected in place rather than left to rot — a stale
+        SUBSET claim is worse than none, because it says "do not
+        write this" and charges every future author the workaround
+        forever while reading exactly like a live one.
         THE SHAPE COST NO COMPILER CHANGE: one C body,
         `avra_ptr_at(int64_t) -> void*`, reached the way every std
         primitive is reached — an `extern fn` declaration and the
