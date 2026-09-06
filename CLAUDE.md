@@ -719,9 +719,9 @@ Syntax the grammar lacks:
 - `export use`, a re-export: F3014 "`export use` — a re-export —
   arrives with a later slice". Without it a package's FILE LAYOUT is
   its public API, so moving a type between files breaks every
-  caller. To reproduce it you need a PACKAGE: a loose scratch file
-  answers F3015 "this file is not in a package — `use` needs a root"
-  first, and never reaches the re-export law.
+  caller. A loose scratch file DOES reproduce it: F3015 "this file is
+  not in a package — `use` needs a root" fires first and F3014
+  follows six lines down — read the whole output, both are there.
 - A `once fn` with TYPE PARAMETERS (`once fn f<T>() -> List<T>`):
   "expected `(` while parsing `stmt`" — the once grammar takes a
   name and a parameter list only, and a `T` no argument can pin has
@@ -1105,6 +1105,16 @@ Runtime facts, ours to ratify:
   and no constant ever aims at one. That non-event with its mechanism
   is the better receipt, and it exists only because someone went back
   to check their own ledger entry against the tree.
+- A PROBE THAT TRUNCATES ITS OWN OUTPUT REPORTS THE ABSENCE OF WHAT
+  IT CUT. `./avra check … | head -6` showed F3015 alone on an `export
+  use` line, so this file recorded that the re-export law is never
+  reached and that the entry needed a package to verify. Both fire —
+  F3015 first, F3014 six lines below the window. The pipe was the
+  instrument and it worked; what it SHOWED was incomplete, and
+  absence-in-the-window was read as absence. So list the codes before
+  concluding which ones there are: `grep -oE 'F[0-9]{4}' | sort -u`
+  costs nothing and cannot lie by omission, where a `head` always
+  can.
 - A RECEIPT FROM ANOTHER TREE IS LABELLED AS ONE. The laws here carry
   instances because an instance is what makes a law APPLIED rather
   than agreed with — so the instances have to stay checkable. One
