@@ -82,7 +82,7 @@ build/llvm_wrapper.o: backend/llvm_wrapper.c
 clean:
 	rm -rf build scratch packages/cli/src/main_stamped.av
 	find packages corpus -name "*.av.ll" -delete
-	find corpus -type f ! -name "*.av" ! -name "*.expected" ! -name "expected" ! -name "avra.toml" -delete
+	find corpus -type f ! -name "*.av" ! -name "*.expected" ! -name "expected" ! -name "avra.toml" ! -name "native-only" -delete
 	rm -rf packages/*/build
 
 check: $(RUNTIME_OBJS)
@@ -107,21 +107,33 @@ build-native: $(RUNTIME_OBJS)
 # A PACKAGE proves the same as corpus/<name>/main.av (its avra.toml
 # marks the root) beside corpus/<name>/expected. corpus/native/ holds
 # programs the evaluator cannot run — extern fns — proved native only.
-corpus: $(RUNTIME_OBJS)
+#
+# A PACKAGE corpus may be native-only too, and it needs its own mark:
+# corpus/native/ takes LOOSE files, which cannot `use` a package at all
+# ("this file is not in a package — `use` needs a root"), so a driver
+# built ON a package can only be proved in the package form. A `native-only`
+# file beside `expected` drops the evaluator leg, and the gate's own line
+# then SAYS "native == expected" rather than claiming a differential it
+# never ran. The label travels with the artifact: a reader of the gate's
+# output learns the program is single-engine without opening a document.
+corpus: $(RUNTIME_OBJS) build/sqlite3.o
 	@./avra corpus corpus
 	@./avra corpus --native-only corpus/native
 	@for d in corpus/*/; do \
 	  d=$${d%/}; [ -f $$d/src/main.av ] || continue; \
-	  ./avra run $$d/src/main.av > /tmp/avra-corpus-eval.out 2>&1 \
-	    || { echo "$$d: eval FAILED"; cat /tmp/avra-corpus-eval.out; exit 1; }; \
-	  diff $$d/expected /tmp/avra-corpus-eval.out \
-	    || { echo "$$d: eval != expected"; exit 1; }; \
+	  if [ -f $$d/native-only ]; then legs="native"; else \
+	    ./avra run $$d/src/main.av > /tmp/avra-corpus-eval.out 2>&1 \
+	      || { echo "$$d: eval FAILED"; cat /tmp/avra-corpus-eval.out; exit 1; }; \
+	    diff $$d/expected /tmp/avra-corpus-eval.out \
+	      || { echo "$$d: eval != expected"; exit 1; }; \
+	    legs="eval == native"; \
+	  fi; \
 	  ./avra build $$d/src/main.av > /tmp/avra-bin.path 2>&1 \
 	    || { echo "$$d: build FAILED"; cat /tmp/avra-bin.path; exit 1; }; \
 	  $$(cat /tmp/avra-bin.path) > /tmp/avra-corpus-native.out; \
 	  diff $$d/expected /tmp/avra-corpus-native.out \
 	    || { echo "$$d: native != expected"; exit 1; }; \
-	  echo "$$d: eval == native == expected"; \
+	  echo "$$d: $$legs == expected"; \
 	done
 
 # The idiom bar: the baseline LISTS sites and only ever shrinks —
