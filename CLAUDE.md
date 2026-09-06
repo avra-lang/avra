@@ -1055,7 +1055,11 @@ Runtime facts, ours to ratify:
   existed to exercise, so its cases guarded a shadow of the rule.
   The tell was not a false green: a fix PASSED the tree and FAILED
   its own fixture, which reads as "the fix is wrong" and means "the
-  test is not testing this" — a rule and its shadow disagreeing,
+  test is not testing this". CHECK THE FIXTURE FIRST: the author of
+  the duplicate, who had written it that morning and knew what it
+  was, still spent TWO ROUNDS re-examining a correct fix before
+  looking at the test — knowing the symptom does not defeat the
+  instinct. It is a rule and its shadow disagreeing,
   which is the boundary law one level up, with the two sides of the
   boundary being a rule and its test. It was written in the same
   change that added the cases, to prove the tool honest, and nobody
