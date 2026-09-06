@@ -1001,6 +1001,15 @@ Runtime facts, ours to ratify:
   again. DEDUP BY IDENTITY BEFORE A NUMBER ENTERS A LEDGER — a count
   is a claim, and this one bit two lanes the same day, in opposite
   directions, one of them while correcting the other's scope.
+  THE GENERAL FORM: A MEASUREMENT GENERALISED PAST WHAT IT MEASURED
+  IS A CLAIM, NOT A FINDING. The sqlite lane measured a PROGRAM,
+  where an entry exists, and reported that a LIBRARY never lowers its
+  uncalled exports — but `union` seeds from every declared body
+  exactly when `entry == null`, which is what a library is, so
+  `check` over a package already lowers all of them. The probe was
+  real and the sentence it became was not. Name the scope a
+  measurement covered, and the generalisation past it turns back into
+  a question.
 - MEASURE WHAT A THING DOES BEFORE EXPLAINING WHY TWO DIFFER. The
   tree is built of parallel structures that mostly agree — sibling
   grammar rules, registry tables, exhaustive matches, doctrine

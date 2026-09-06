@@ -6581,6 +6581,21 @@ by meaning; each is a slice for lane D unless a lane is named.
   1 fixture), 38 value-args (2 production), 1 alias, and the rest
   tests. S2's shape does not move.
 
+- H4. A GENERIC BODY IS NEVER LOWERED BY `check` (found 2026-09-05 by
+  the sqlite campaign's FFI lane, verified here). `declared()` filters
+  through `lowers_plain`, which demands the declaration's OWN type
+  parameters and its PARENT's both be empty (lower.av:217-226), so a
+  generic fn — and a method on a generic type — is never seeded, in a
+  library or a program alike. Nothing instantiates it into existence
+  either, so `avra check` over a package is BLIND to the
+  lowering-defect class in every generic body it holds: the defect
+  waits for a caller with concrete types, which in a library may
+  never arrive from inside the package at all.
+  NOT the wider hole first reported, and the retraction is the
+  finder's own: a library DOES lower its uncalled exports, because
+  `union` seeds from every declared body exactly when `entry == null`
+  (lower.av:134) — which is precisely a library. Verified here.
+
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure
   variant enumeration in core/parts.av and core/nodes.av; F2040
