@@ -6074,6 +6074,44 @@ by meaning; each is a slice for lane D unless a lane is named.
   writes its cache, which is the same shape as the workspace cycle
   `disarmed` exists for. Weak captures and `Cell<T>` are aimed at one
   target between them.
+  THE CENSUS IS A FLOOR, not a total — see H3. F2047 can only count
+  a write the receivers pass SEES, and a write through a borrowed
+  local is invisible to it, so 100 is what the lint reaches and not
+  what the law covers.
+
+- H3. THE BORROW CHANNEL IS SILENT — H2'S SIBLING WITH NO WARNING AT
+  ALL (found 2026-09-05 by lane C; verified here). H2 at least warns.
+  Borrow the field into a local first and there is NO diagnostic:
+    impl Bag { fn sneak(v: int) { mut ys = self.xs  ys.push(v) } }
+    fn touch(b: Bag, v: int) -> int { b.sneak(v)  b.size() }
+  `touch` takes an IMMUTABLE parameter; two calls answer `1 2 2` on
+  both engines where 11.5 demands `1 1 0`, and `./avra check` reports
+  ZERO diagnostics (verified by lane D against the probe). The direct
+  spelling warns F2047; the borrowed one is invisible, because the
+  receivers pass never sees a write through `self` — the write goes
+  through a local that merely ALIASES it. Measured in our own source:
+  37 `mut x = self.field` borrows (46 counting other roots), and lane
+  C reports 5 of their methods classified NON-WRITING because of it.
+  So H2's 100-site census is a FLOOR: the lint counts what it can
+  see, and this channel is what it cannot.
+  IT REORDERS THE ARC. S3 (liveness) goes BEFORE S2 (the receiver
+  conversion), for three reasons that are not preferences: flipping
+  F2047 to a refusal while this channel is open would refuse the
+  HONEST spelling and pass the silent one, which is worse than the
+  warning; S2's own "what dies" list deletes the borrow mechanism,
+  and the 17 I34 licenses exist precisely because the pass lacks
+  liveness, so deleting the borrow first turns each into a cloning
+  path write (measured 60x); and S3 needs no owner decision where S2
+  needs several.
+  RECORDED TRIGGER — when S3 MERGES (lane C's, built and gate-green
+  as of 2026-09-05, not yet landed): CLAUDE.md's "A BORROW ALIASES, A
+  PATH WRITE THROUGH A SHARED INTERMEDIATE COPIES" loses its
+  performance rationale — a managed read becomes a BORROW of the
+  cell's one reference, so the direct path write no longer clones and
+  the borrow idiom buys nothing. The rule is amended and the 17 I34
+  licenses retire THEN, by lane C, whose slice it is. Until it lands
+  the rule stands as written; lane D writes no NEW borrows for
+  performance.
 
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure
