@@ -2983,6 +2983,51 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  A FENCE BUILT BEFORE THE THING THAT WOULD CLIMB IT — and the honest
+  artifact for one is a TRACE, not a test. `str_len`'s zero-length fix
+  (`44c36f1`) changes behaviour in exactly one situation: a headered box
+  with `len == 0`. Asked to verify it by making it matter rather than by
+  re-running the gate, the checker found **the distinguishing case is NOT
+  CONSTRUCTIBLE TODAY**, and traced every path that could produce one:
+  `box_alloc` never yields zero (`bytes = size > 0 ? size : 1`, and the
+  len IS the allocation size); a zero length comes only from
+  `sized_box(0, kind)`, which allocates n+1 and stores n; and **all eight
+  of its callers write the terminator** (`str_static` memcpy's n+1,
+  `str_owned` writes `buf[n]`, `read_whole` writes `buf[got]`, `int_text`
+  via `snprintf`). So every box that can reach the changed branch has
+  `buf[0] == '\0'` and both mechanisms answer 0.
+  **THE FIX IS CORRECT AND ITS CORRECTNESS IS UNOBSERVABLE**, and the
+  reason is the same convention the fix RETIRES: every sized box is
+  minted at n+1 with the terminator written. The fix removes the
+  DEPENDENCE on that convention without removing the convention — which
+  is exactly why nothing changes today and exactly why it is right
+  anyway. Adoption through `str_owned` keeps the convention; a `Bytes`
+  box allocated at exactly n would not, and **on that day the branch
+  becomes reachable and the old code would have been wrong.**
+  THIS IS THE INVERSE OF THE UNTESTED-INSTRUMENT LAW and needs saying as
+  its own rule, because the two are easily confused: that one says a
+  keeper which has only ever guarded a static enum has never been tested,
+  so MAKE IT FAIL. This one says a fix whose triggering case cannot yet
+  EXIST cannot be made to fail, so the trace IS the verification — and a
+  green test written anyway would be theatre, proving only that the
+  unreachable branch was not taken. THE OWED ARTIFACT IS A DEADLINE: when
+  a box can be allocated at exactly n, this branch becomes reachable and
+  wants its test.
+  AND THE RISK WAS CLEARED IN THE BREAKING DIRECTION, which is the half
+  that makes the trace trustworthy: a "trust the header" change breaks by
+  reading 0 for a headered box that HOLDS CONTENT while claiming zero
+  length — a silent truncation to empty, where `strlen` used to rescue
+  it. No such box exists, by the same trace. Checked rather than assumed,
+  and checked in the direction that would have hurt.
+  WHAT THE LIVE PROBES DID SHOW, adjacent and not nothing: nine ways the
+  tree makes an empty string all answer 0 through the changed branch, an
+  empty arriving from OUTSIDE through `str_static` answers 0 (the nearest
+  existing analogue to a foreign copy), the four string-answering externs
+  still fall back correctly through `hdr()` -> NULL -> `strlen` (6, 12,
+  33, 19, counted by hand), and the NUL asymmetry is unchanged —
+  `.length` follows the HEADER over the terminator where the two
+  disagree, which is the mechanism the fix generalises even though it
+  does not exercise the fixed branch.
   A WORDING LAW REPAIRS MESSAGES NOBODY HAS WRITTEN YET — the argument
   for landing one rather than filing it, and it arrived as a NON-EVENT
   spotted in review. Two slices were written the same evening by
