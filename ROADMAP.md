@@ -385,20 +385,39 @@ the compiler checking itself 28.8s.
         float, Bytes), recorded by lane A 2026-09-05 because they are
         about lane A's files and whoever takes those slices needs
         them. Verified in the tree, not asserted:
-        * `RtKind` is `{ I64, Ptr, Void }` at core/ir.av:219. The
-          extern wall therefore cannot DECLARE a float seat, and
-          `rt_kind_of` maps every non-void non-pointer to I64 — a
-          double in an integer register, silently wrong, the same
-          class as the width bug above.
-        * GROWING IT IS SMALL AND ENFORCED. The only exhaustive match
-          over RtKind is `ll_rt_kind` (language/llvm.av:175, three
-          arms), so the compiler demands the new arm and it cannot
-          ship half-done. `rt_kind_of` PRODUCES rather than consumes,
-          so it needs a decision, not an arm. The interpreter
-          dispatches on RtHost, never on RtKind — there is no RtKind
-          match in interp.av at all — so `avra run` needs no arm
-          either. This is a registry-column event, not an
-          eight-consumer instruction event.
+        AMENDED 2026-09-06, AND THE AMENDMENT IS THE POINT: this
+        entry UNDER-SIZED float, a lane sized their ask from it, and
+        the under-sizing propagated through two sessions before
+        anyone opened the files. It described the SEAT half and
+        omitted the VALUE half entirely.
+        * `RtKind` is `{ I64, Ptr, Void, I32, U32 }` at
+          core/ir.av:278 — the sized-int slice landed and APPENDED,
+          so the ordinals held. The extern wall still cannot DECLARE
+          a float seat, and `rt_kind_of` maps every non-void
+          non-pointer to I64 — a double in an integer register,
+          silently wrong, the same class as the width bug above.
+        * GROWING RtKind IS STILL SMALL AND ENFORCED, but it is no
+          longer ONE match: `make vocab` names FIVE consumers
+          (`ll_rt_kind`, `rt_arg`, `answers_word`, `answered`,
+          `narrow_sign`), two of them converted from `is .I64` tests
+          by lane A the same morning this entry was written — so the
+          entry was stale about its own author's change. The
+          interpreter still dispatches on RtHost, never on RtKind.
+        * AND THAT IS THE LEAST OF FLOAT. A WIDTH IS A PROPERTY OF A
+          SEAT; A FLOAT IS A VALUE, which is why the sized-int slice
+          is the COUNTER-EXAMPLE to cite and not the precedent. It
+          created no value category, so nothing dispatched. Float
+          creates one: `Val` in interp.av has six variants and needs
+          a seventh, with 57 `.I(` sites in that one file;
+          `bin_value` emits `avra_llvm_build_add` and must become a
+          dispatch on OPERAND TYPE rather than on the operator; the
+          type registry gains a primitive and typing gains the rules
+          for a second numeric type (what `1 + 1.5` means, whether
+          it means anything, what `==` does across them). A lexer
+          literal and four extern seats are the small half. THE
+          WITNESS IS A REQUIREMENT, not an option — a double in an
+          integer register is silently wrong and no test that stays
+          inside Avra can see it.
         * A NEW SCALAR TYPE MUST JOIN `is_managed`'s unmanaged arm
           (language/memory.av): `.Ptr or .Int or .Bool or .TypeName
           or .Var or .Null or .Error or .Void -> false`. One line —
