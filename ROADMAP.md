@@ -1917,6 +1917,34 @@ the order is the dependency.
         105`). That is the receiver-aliasing hole, S2's, and the fix
         above makes flat and boxed agree about it rather than
         differing.
+  - [ ] THE CONDITIONAL ABI IS WORTH LESS THAN S3b's ENTRY IMPLIES,
+        and this amends it. `retained_args` retains every managed
+        argument of every `Call`/`CallPtr` because callee-cleans
+        requires it, and no liveness touches that — so S3b's entry
+        says "most retains are callee-cleans at call seats rather
+        than reads", which is still true by COUNT. It is no longer
+        true by COST: lane A's cold-path fix (44d5e31) took the
+        self-check 7.2s to 5.3s by getting a cold branch out of every
+        hot leaf — `avra_rc_retain` was saving four register pairs
+        and 64 bytes of stack to perform one increment. The per-call
+        price the ABI change would remove has already fallen, so a
+        CONDITIONAL ABI — a callee that only READS its seat needing
+        no caller retain — must be re-measured before anyone argues
+        from the old share. It was always a much bigger claim than a
+        placement rule; it is now a bigger claim for a smaller prize.
+        THE INSTRUMENT IS `make census`, NOT A SAMPLER (lane A, the
+        hard way): a sampling profiler charges a release cascade to
+        whoever is on the stack, and had them convinced the grammar
+        executor was 45% of a run. It is not. Two optimizations were
+        landed and refuted on that reading.
+        AND THE TECHNIQUE WORTH STEALING: for a change that touches
+        COST and not semantics, an EXACT INVARIANT beats a suite.
+        Lane A's census counts were byte-identical across their fix —
+        557,093,839 retains, 104,997,459 reclaims, 402,442,417 list
+        reads — proving same work, same boxes, same order, each
+        operation cheaper. A memory-pass change that moves PLACEMENT
+        (S3, S3b) cannot use it, because placement changes counts;
+        one that moves only cost can.
   - [ ] A CONST'S REGISTER WEARS THE LITERAL'S TYPE, where the
         DECLARATION's should decide — CLAUDE.md's cell law one seat
         over, never audited for consts. `constant_reg`
