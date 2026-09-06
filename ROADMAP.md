@@ -381,6 +381,41 @@ the compiler checking itself 28.8s.
         refuses today's tree and refuses a trait-default program
         ("expected `}` while parsing `stmt`") where today's binary
         accepts it.
+  - [ ] CORE-SIDE FACTS FOR THE THREE LANGUAGE ASKS (sized ints,
+        float, Bytes), recorded by lane A 2026-09-05 because they are
+        about lane A's files and whoever takes those slices needs
+        them. Verified in the tree, not asserted:
+        * `RtKind` is `{ I64, Ptr, Void }` at core/ir.av:219. The
+          extern wall therefore cannot DECLARE a float seat, and
+          `rt_kind_of` maps every non-void non-pointer to I64 — a
+          double in an integer register, silently wrong, the same
+          class as the width bug above.
+        * GROWING IT IS SMALL AND ENFORCED. The only exhaustive match
+          over RtKind is `ll_rt_kind` (language/llvm.av:175, three
+          arms), so the compiler demands the new arm and it cannot
+          ship half-done. `rt_kind_of` PRODUCES rather than consumes,
+          so it needs a decision, not an arm. The interpreter
+          dispatches on RtHost, never on RtKind — there is no RtKind
+          match in interp.av at all — so `avra run` needs no arm
+          either. This is a registry-column event, not an
+          eight-consumer instruction event.
+        * A NEW SCALAR TYPE MUST JOIN `is_managed`'s unmanaged arm
+          (language/memory.av): `.Ptr or .Int or .Bool or .TypeName
+          or .Var or .Null or .Error or .Void -> false`. One line —
+          but omit it and the memory pass treats the new type as a
+          BOX, retaining and releasing a number. `Ptr` is the closest
+          existing precedent for what a new scalar must do at every
+          seam; read it end to end before designing one.
+        * BYTES MUST NOT REUSE THE STRING BOX. `str_len` is
+          `(h && h->len) ? h->len : strlen(s)`, so a zero length
+          falls back to `strlen`. A wart for text; a correctness bug
+          for a BLOB, since an empty blob is legal and common and the
+          fallback walks off the end. Bytes needs its own kind where
+          the header length is authoritative.
+        * `make externs` CANNOT SEE A THIRD PARTY'S HEADERS. It
+          closes our half of the width class only. A binding to
+          someone else's library is unprotected until the sized types
+          land — do not write declarations against the keeper.
   - [x] THE EXTERN WALL'S WIDTH (2026-09-05, the SQLITE lane's find,
         REPRODUCED here before acting): Avra's `int` is 64 bits and
         C's is 32. `declare_externs` declares every extern answering
