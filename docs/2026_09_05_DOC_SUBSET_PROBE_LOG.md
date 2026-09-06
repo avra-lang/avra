@@ -908,3 +908,130 @@ Both frames and both samples are on disk as `pop1.json`, `pop2.json`,
 `sample1.json`, `sample2.json`. A re-run at a later base with the same
 seed draws the same entries, so the two audits are directly comparable —
 which is the only way this number becomes a trend rather than an anecdote.
+
+---
+
+# Part VII — THE TWO NEEDS-PACKAGE ENTRIES, NOW CLOSED
+
+Building the cold-start harness (`docs/2026_09_06_COLD_START_MEASUREMENT_01.md`)
+produced the thing these entries were waiting on: **a fixture package in
+the scratchpad whose files can be checked ONE AT A TIME.** That is a light
+run by the wrapper's own rule — heavy is triggered by a *directory*
+argument, not by a file that happens to sit inside a package — so it costs
+no lock and no gate.
+
+Both previously unverifiable entries were probed at HEAD `74501ef`. **The
+subset section now has zero unverified entries.**
+
+## A24 · `const` in a MODULE file — HOLDS
+
+`src/helper.av` beside an entry `src/main.av`:
+
+```
+error[F0902]: a module file holds declarations — only the entry
+`…/pkg/src/main.av` runs statements
+1 │ const PIPE_IN: int = 1
+  · ╰── runs here
+help: move it into the entry, or wrap it in a fn the entry calls
+```
+
+Exactly as recorded, and the help names the fn remedy the entry describes.
+
+## D3 · The NUL primitives — HOLDS, every clause
+
+`from_codepoint(0)` woven into `"ab" + nul + "cd"`, then every primitive
+the entry sorts into its two lists:
+
+```
+len=5 eq_ab=true contains_cd=false index_cd=-1 split_n=2 starts=true ends=true
+```
+
+| primitive | answer | entry's claim |
+|---|---|---|
+| `.length` | **5** | header-read, NUL-safe ✓ |
+| `== "ab"` | **true** | the five-byte text reads EQUAL to its two-byte prefix ✓ |
+| `contains("cd")` | **false** | stops at the NUL ✓ |
+| `index_of("cd")` | **-1** | stops at the NUL ✓ |
+| `split` | **2** | stops at the NUL ✓ |
+| `starts_with("ab")` | true | header-read ✓ |
+| `ends_with("cd")` | **true** | header-read ✓ |
+
+**The sharpest line is the last two rows against row three.**
+`ends_with("cd")` answers **true** and `contains("cd")` answers **false**,
+about the same string in the same program. That is CLAUDE.md's guard law —
+*a guard and the thing it guards must read the same bytes* — demonstrated
+in one expression, and it is a stronger exhibit than the entry's own
+prose.
+
+## What this changes for K5
+
+These two cases need a **package fixture**, which the flat corpus and its
+30-line driver cannot express — every other entry is one loose file. So
+`lang/subset/` needs a second shape: an entry that names a small package
+directory rather than a single program. Two of 47 entries need it, and
+without it those two silently drop out of the gate — which is the
+NEEDS-PACKAGE column turning into an unguarded hole rather than a known
+gap.
+
+**Revised tally:** HOLDS 40, DRIFTED 3, STALE 3, PARTIAL 1 (D4's native
+half still needs a package build), NEEDS-PACKAGE **0**.
+
+## Two corrections carried in from other lanes
+
+- **LANE D, at `0612ecd`:** their `export use` entry is corrected — a loose
+  file does reach the re-export law, F3015 and F3014 both firing. This
+  matches A9's DRIFTED verdict in Part II, found independently here.
+- **The `linecol` clamping behaviour is retired** (lane B, `e0e88c8`): it
+  now traps rather than answering a wrong line. It was never recorded in
+  this log, so nothing here changes — noted so the absence is deliberate
+  rather than an oversight.
+
+---
+
+# Part VIII — A24 AND D3 ARE A FORMAT CONSTRAINT, NOT A FOOTNOTE
+
+Part VII closed both entries and noted in passing that they need a package
+fixture. That was too quiet. Stated at full volume, because of what it is:
+
+> **Two of the 47 entries cannot be expressed as a single loose file. A
+> corpus format that only holds single files does not merely omit them —
+> it drops them from the gate SILENTLY, while reporting a clean run over
+> the other 45.**
+
+That is **a keeper whose scope excludes its subject**, which is the exact
+defect this campaign built the keeper to catch. It would be the third
+instance recorded in this tree, after `make vocab` guarding an enum that
+never grew and the externs keeper testing its own inline duplicate — and
+the first one we would have shipped *knowingly*, having written the law
+down that morning.
+
+## The two, and why they resist the format
+
+| entry | why one file cannot hold it |
+|---|---|
+| **A24** `const` in a MODULE file | the law distinguishes the **entry** from a **module**, so it needs two files and a manifest. A loose file is an entry by definition, and `const` compiles clean there — the refusal is unreachable |
+| **D3** the NUL primitives | needs `@std.text`'s `from_codepoint(0)` to mint a NUL, and `use` from a loose file is F3015 before it reaches anything |
+
+Both are now verified (Part VII) — so this is not a gap in knowledge. It
+is a gap in the **artifact that is supposed to keep the knowledge true**.
+
+## What the format needs
+
+A second shape: an entry naming a small package directory rather than a
+single program. The verifier already proves this costs almost nothing —
+a fixture package plus **single-file** checks against files inside it is
+light by the wrapper's own rule (heavy is triggered by a *directory*
+argument), so it needs no lock and no gate slot.
+
+## The rule this generalises to
+
+**A corpus format is a claim about what can be verified, and every entry
+it cannot express is an unguarded hole wearing a green check.** The count
+matters less than the silence: 45 of 47 passing reads identically to 47
+of 47 unless the format says out loud what it declined to hold. So the
+gate must **name its own exclusions and fail on an entry it cannot
+express**, rather than skipping it.
+
+That is the same law as THE EXEMPTION LAW one level up: an exemption not
+written AT THE SITE is an unbounded amnesty. Here the site is the corpus
+directory, and the amnesty is a file that was never written.

@@ -838,10 +838,17 @@ Syntax the grammar lacks:
   `Result<…>`" — the arm's block is not read as diverging. Write the
   statement `match` (`.Err(e) -> { cleanup(); fail e }, .Ok(v) -> …`),
   which is (@std/process's three drivers).
-- A `null` LITERAL as a list element under `List<T?>` (`[null for c in
-  cs]`, `T` a struct): F2006 "a list element cannot hold this yet" —
-  lane C's PAIRS IN SLOTS. A `T?`-answering fn fills the slot
-  (`[nothing_yet() for c in cs]`).
+- A NULLABLE LIST ELEMENT, and the boundary moved — the old entries
+  (a `null` literal under `List<T?>`, and `List<T>` refusing a
+  `List<T?>` want) are RETIRED, both now compile. What refuses today,
+  probed at `8519ae9`: a declared want for a MANAGED element type is
+  HONOURED (`let out: List<C?> = [null for c in cs]`, `C` a struct,
+  and `let tys: List<T?> = [t for t in refs]` — both exit 0); a
+  nullable SCALAR element is F2019 "a `List` slot cannot hold this
+  yet" (`let tys: List<int?> = [n for n in ns]`); and with NO want
+  declared it is still F2006 "a list element cannot hold this yet"
+  (`let xs = [null, null]`). The code neither retired entry quoted is
+  the one that fires.
 
 Wants the typer does not carry yet:
 - A GENERIC struct literal's field seat UNIFIES instead of planting a
@@ -859,11 +866,10 @@ Wants the typer does not carry yet:
   -> P { … }, _ -> Q { … } }` under `-> dyn Show`: F2013 "a
   `match`'s arms disagree: `Q` vs the first arm's `P`"; the `if`
   twin: F2000 "an `if`'s branches disagree: `P` vs `Q`". Box each
-  under `let x: dyn Show = …` and select among the lets. Nor into a
-  CALL's seat: `refused(e)` with `fn refused(e: dyn Error)` and a
-  `ProcessError` in hand is F2000 "argument 1 of `refused` wants
-  `dyn Error`, found `ProcessError`" — bind `let boxed: dyn Error =
-  e` first, or take what the trait answers (the message) instead.
+  under `let x: dyn Show = …` and select among the lets. A CALL's
+  seat DOES reach now — `refused(p)` with `fn refused(e: dyn Error)`
+  and a `ProcessError` in hand checks and dispatches (probed at
+  `8519ae9`, answering `proc 2`); that clause is retired.
 - A trait impl over a GENERIC type (`impl Show for Box<T>`): F2031
   "`P` is generic — a trait impl over a generic type is recorded,
   not landed". Inherent generic impls (`impl Box<T>`) land.
@@ -918,11 +924,9 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   comprehension there types on its own, so `Pins { slots: [b ??
   args[j] for j, b in xs] }` under `slots: List<TypeId?>` is F2010
   "field `slots` is `List<TypeId?>`, this is `List<TypeId>`" — a
-  typed let plants it. A `List<T>` never adopts a `List<T?>` want: `let tys: List<TypeRef?>
-  = [t for t in refs]` is F2024 "`tys` declares `List<TypeRef?>`,
-  this is `List<TypeRef>`" — the element's nullable is not widened
-  through the list. Align by span, or build the nullable list
-  directly.
+  typed let plants it. (The companion clause — `List<T>` refusing a
+  `List<T?>` want — is retired; see the nullable-list-element entry
+  above.)
 
 Runtime facts, ours to ratify:
 - A STRING's `.length` is a LOAD — the header carries the length

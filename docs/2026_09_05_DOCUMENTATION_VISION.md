@@ -43,6 +43,26 @@
 > recorded — the grant is for *correcting refuted claims*, never for
 > writing new doctrine.
 >
+> **THIS DOCUMENT IS ITS OWN BEST EXAMPLE, AND THAT IS THE ARGUMENT
+> RATHER THAN AN APOLOGY.** By its own standard this file is the artifact
+> it warns about: ~2100 lines of prose whose claims are exactly as
+> checkable as any ledger's. **Seven claims in it have already been
+> retracted** — the proximity ratio (audited to insignificance), the
+> `linecol` behaviour (true when read, false when run), the `disarmed`
+> directive (wrong on both horns), the `table<Row>` spelling, the
+> `answers: ""` field, the cold-start novelty claim, and an
+> over-constraint imposed on five lanes. **Every one was caught by
+> someone building against it. None by re-reading it.**
+>
+> A campaign whose founding document is its own best example of the
+> problem is not embarrassing — **it is the only evidence available that
+> the mechanism is real and not a story about other people's
+> carelessness.** Everything here that matters is scheduled to become a
+> row that compiles, a refusal that fails the build, or a number that
+> ratchets. Until then this file holds exactly the status it assigns to
+> "The subset today" before the corpus existed: **useful, load-bearing,
+> and unfalsifiable.**
+>
 > **Prior art, read before writing:**
 > `../forge-crafting-intepreters/docs/spec_doc_system.md` (906 lines, the
 > old tree's design — its `avra lang` / `avra docs` split, its six layers,
@@ -213,6 +233,7 @@
 9. Part IX — The asks
 10. Part X — Honest limits
 11. Part XI — Slogans
+12. Part XII — Why a doc campaign kept finding compiler bugs
 
 ---
 
@@ -404,7 +425,8 @@ Avra that compiles?"** — and that is a number.
 P6 says a forced trade-off means the model is wrong. Nine, each of which
 a normal doc system picks a horn of.
 
-**1. Complete vs. concise. — REVISED, the axis was backwards.**
+**1. Complete vs. concise. — REVISED TWICE; the axis was backwards and
+the ATOM was wrong.**
 Every doc system picks: a 400-page reference nobody reads, or a
 cheat-sheet that omits what you need.
 
@@ -414,23 +436,46 @@ different axes, so the brief degrades by dropping **detail**, never
 
 **That artifact has been measured and it scores 1.23%.** A brief of 29
 syntax lines is the closest possible thing to a grammar summary, which is
-exactly what arXiv:2409.19151 found contributes almost nothing and what
-arXiv:2606.16827 scored against real tasks. The axis was inverted: it
-degraded along the dimension that *teaches* and preserved the one that
-does not.
+exactly what arXiv:2409.19151 found contributes almost nothing. The axis
+was inverted: it degraded along the dimension that *teaches* and preserved
+the one that does not.
 
-*The corrected collapse:* **degrade by COVERAGE OF THE LANGUAGE, not by
-resolution of each entry.** At low budget, ship **fewer features with one
-complete compiling program each**. At high budget, add features, then
-refusals, then prose. The bet — and it is a bet, to be settled by Part
-VII's first experiment — is that a model that has read three real Avra
-programs transfers to a fourth feature better than one that has read 29
-one-liners and no program. Every study in the survey says it will.
+*The second draft's collapse:* degrade by **coverage of the language**,
+not by resolution of each entry. At low budget, fewer features with one
+complete compiling program each.
 
-The paradox still collapses, just on the other axis: **you were never
-choosing between complete and concise, you were choosing between
-complete-and-inert and partial-and-generative.** The second one composes;
-the first does not.
+**AND THE SECOND REVISION FOUND THE HARD CONSTRAINT — A PROGRAM CANNOT BE
+TRUNCATED, ONLY KEPT OR DROPPED.** doc-spine built a compacting renderer
+to see what resolution-degradation would actually look like, and it
+collapses to claim-plus-last-line: `` `enum` declares variants… |
+s.ordinal | → 0 ``. **`s.ordinal` teaches nothing once the declaration is
+gone.** Prose degrades gracefully; **source does not.** A half-program is
+not a low-resolution program, it is a non-program.
+
+**So the atom is the whole SHOW.** A budget drops entire shows, in an
+order that keeps at least one per feature; **it may never truncate a
+program.** That is what "complete at every budget" actually means, and it
+is a stronger constraint than the phrase sounded when it was written —
+the budget buys *how many things you are shown*, never *how much of each
+thing*.
+
+
+**AND COMPLETENESS HAS A FLOOR, WHICH THIS SECTION'S OWN EXAMPLE SITS
+UNDER.** If the atom is the whole show and the invariant is "every
+feature present", then **completeness is unsatisfiable below one show per
+feature** — a complete brief has a hard minimum of `feature count ×
+median show size`. Measured across budgets, the invariant is `n/a` below
+the feature count, holds at and above it, and saturates without over-run.
+
+**So the 800-token brief this section opens with is below its own floor**,
+and "complete at every budget" was written without anyone asking what the
+smallest complete brief costs. **MEASURED, not extrapolated:** median
+**31 tokens per show** across 11 real rows gives **868 tokens for 28
+features** (858 by mean) — independently confirming an earlier estimate
+from seven hand-written shows within 4%. The figure moves with the real
+rows, so **`avra brief` computes it and reports it; a budget below it is
+refused with the number**, rather than silently emitting an incomplete
+brief that satisfies no invariant.
 
 **2. Written by humans vs. generated by machines.**
 Generated docs are accurate and lifeless; written docs are useful and
@@ -1038,19 +1083,57 @@ PROGRAM, every one compiled and checked.** A feature already declares
 `builders`, `diags`, `properties`, `methods` and `types` as tables. Its
 documentation becomes one more:
 
+**SETTLED BY PROBE (doc-spine, at `c6ce7b7`). My idea survived; my
+spelling did not, and two of my three fields were defects.**
+
 ```avra
-let shows = table<Show> {
-    claim                            | program                                  | answers   | refuses
-    "declares a closed set"          | "enum Suit { clubs hearts }"             | ""        | ""
-    "a variant constructs by name"   | "Suit.clubs.ordinal"                     | "0"       | ""
-    "match must cover every variant" | "match s { .clubs -> 1 }"                | ""        | "F2013"
-    "`is` takes a BARE variant"      | "s is .clubs(_)"                         | ""        | "expected BREAK"
-}
+export enum Expect { Answers(text: string), Refuses(code: string) }
+export type Show = { claim: string, program: string, expect: Expect }
+
+let shows = [
+    Show { claim: "declares a closed set; `.variant` constructs",
+           program: """
+enum Suit { clubs hearts }
+let s = Suit.clubs
+s.ordinal
+""",      expect: Expect.Answers("0") },
+    Show { claim: "a match missing a variant is refused",
+           program: "match s { .clubs -> 1 }",
+           expect: Expect.Refuses("F2013") },
+]
 ```
 
-`Show { claim, program, answers, refuses }` — **exactly one of `answers`
-and `refuses` is filled**, and that single shape carries both halves of
-the documentation this campaign has been treating as two systems:
+**Three corrections, each earned by a probe rather than an argument:**
+
+- **THE COST I FEARED IS DEAD.** A row's program need not be an escaped
+  string: a RAW `"""` block works in a cell — `scan_triple`
+  (`lexer.av:175`) takes the whole block as ONE Str token, so newlines
+  never become Breaks. Probed exit 0 for single-line, escaped and
+  multi-line cells, for cells containing `|`, `||`, `}`, `"` and a `///`,
+  and for an indented block. **Lane B's 81%-worse-than-nothing shape does
+  not arise; the format authors real source.**
+- **BUT `table<Row>` IS THE WRONG CONTAINER — the cost nobody raised.**
+  Written out for three features and read back, it does not author: the
+  header promises three aligned columns and there are none, row
+  boundaries become invisible, and programs must sit flush-left fighting
+  every other indent in the file. **A table buys ALIGNMENT and a
+  multi-line cell spends it.** The tree already settled this — CLAUDE.md
+  cites `rt_sigs()` as *the* registry-row exemplar, and it is **78 struct
+  literals in a `List`**, not a `table<Row>` (`core/runtime_api.av:10-`).
+  Short aligned rows get `table`; long rows get struct literals. `Show`
+  rows are long.
+- **AND MY `answers`/`refuses` PAIR HAD TWO DEFECTS, BOTH KILLED BY ONE
+  FIELD.** `answers: ""` **spends the empty value** — a real program can
+  answer the empty string (`"".is_empty()`, `split` dropping a trailing
+  segment) — which is **CLAUDE.md's own encoding law firing on the first
+  row shape written for it**, by an author who had quoted that law twice
+  the same day. And "exactly one of the two is filled" was **prose**, so
+  both-filled and neither-filled compiled. `Expect` makes
+  `Expect.Answers("")` a real distinct value and the bad shapes
+  **unspellable rather than documented**.
+
+That single shape carries both halves of the documentation this campaign
+has been treating as two systems:
 
 | what it buys | how |
 |---|---|
@@ -1077,14 +1160,267 @@ draft. They are **one table** in this one. The 47 subset entries become
 LAND D's clause law falls out for free, because **a row asserts one
 claim** by construction.
 
-**One honest cost, stated before anyone pays it:** a row's program is a
-string in a table, which is the escaped-source shape lane B measured at
-81% in the compiler's own feature tests and called *worse than nothing*
-as teaching material. **The rows must therefore be extracted and rendered
-as real source before a reader sees them** — the brief prints programs,
-never string literals — and the format needs a spelling that keeps
-authoring readable. That is the open question this design owes, and it is
-the first thing to prototype.
+**AND THE FORMAT INHERITS A LAW THIS CAMPAIGN EARNED THE HARD WAY —
+LANE A's, named after the lexer defect and general beyond it:**
+
+> **A TEST'S NAME IS READ AS ITS SCOPE.** `lexer_test.av:110` is called
+> *"a comment-only line is a blank line"* — a general claim about comments
+> and layout. Its body asserts one thing: `count_breaks(...) == 2`. Break
+> counting only. **Nobody misread the assertion; they read the NAME**,
+> which is what a reader reads when deciding whether a question is already
+> answered, and it promised more than the body delivered. Called *"a
+> comment-only line contributes one break"*, my lane would have known
+> instantly that it said nothing about the indent seed and probed hours
+> earlier. **The failure is not a narrow test — a narrow test is fine. It
+> is a name that claims a PROPERTY where the body checks an INSTANCE.**
+> The fix is mechanical: **name a test after what it asserts, not after
+> the property it gestures at** — which is checkable in review in a way
+> "be careful" is not.
+
+**That is the same family as two other things this campaign met:** a
+keeper whose name said it guarded an enum while it only ever tested one
+shape, and a green run whose scope excluded its subject. **In all three
+the artifact was CORRECT and its LABEL was broader than its coverage.**
+
+**A `Show` ROW IS EXACTLY THAT SHAPE, AND THE FORMAT MUST GUARD IT.** A
+row is (claim, program): the claim is the name, the program is the body.
+**A row whose claim is broader than its program lies in precisely the way
+`lexer_test.av:110` did** — well-formed, verified, green, and promising
+more than it checks. Verification proves the program does what the row
+says it answers; **it cannot prove the claim is no wider than the
+program.** So the rule ships with the format: **a claim states what its
+program demonstrates, never the property it gestures at** — and that is
+the one part of this design a machine cannot check, which is exactly why
+it must be written down rather than assumed.
+
+**THE TWO ALTERNATIVES BOTH LOSE, AND ON THE SAME AXIS.** I suspected the
+spec-case route might beat this outright. **It cannot, and it is one
+probe: a `then` body must COMPILE, so a refusing program cannot be a spec
+case.** `then "a match missing a variant is refused" { match s { .clubs ->
+1 } == 1 }` fails at check time with F2013. So spec cases **cannot carry
+the negative space** — the 47 subset entries, and Part I's wants #2 and
+#3, the half this document argues no other language leads with. (Two
+lesser marks: a `then` body is an *assertion*, so a reader gets `== 0`
+noise where a show wants program-and-answer; and it is owned by the test
+suite, so a doc surface would be reading a fixture.) **Spec cases stay the
+tests — and remain the best MINE for candidate rows**, 638 existing
+caption-plus-program pairs.
+
+**The file route loses on the same axis plus friction:** a refusing
+program as a real `.av` file breaks any gate that compiles the tree, so it
+must live somewhere nothing compiles it — **a rot site by definition** —
+plus ~112 files and no claim/program adjacency.
+
+**The axis is the whole answer: A STRING IS INERT DATA UNTIL A HARNESS
+RUNS IT, and that is what lets ONE currency serve both halves.** A
+verified program and a verified refusal cannot share a container the build
+compiles; they can share one the build *interprets*.
+
+**Coverage is then a set difference with no proxy:**
+`[f.name for f in avra().features if f.shows.is_empty()]` — names, never a
+count, as the ratchet law requires.
+
+**TWO THINGS FLAGGED UNVERIFIED RATHER THAN GUESSED**, the second being
+the first thing step 1 must run: that the harness works at gate scale
+(compiling from a string, which no scratch probe can settle), and that a
+raw block survives inside a `component` config block — probed in a fn body
+and in a table, not yet in `component LanguageFeature f { shows = [...] }`,
+which needs the feature type in scope and is package-shaped.
+
+
+### The rendering, and the criterion that decides it
+
+Four renderings were built and looked at. The question that settled it is
+one nobody had written down:
+
+> **Can a reader who skims only the code blocks tell a refusal from an
+> example?**
+
+**A rendered refusal that looks like an example is worse than no docs** —
+the reader copies a program that cannot compile. That kills the obvious
+design immediately: a prose header with `✗ REFUSED F2013` *below* the
+program fails, because a skimmer meets the program first and it looks
+exactly like the valid examples around it. **The verdict leads**, so the
+criterion is met by construction, and a positive show needs no marker at
+all — the common case carries no ceremony:
+
+```
+`enum` declares variants; `Suit.clubs` constructs one
+    enum Suit { clubs hearts }
+    let s = Suit.clubs
+    s.ordinal
+    → 0
+
+✗ REFUSED F0100 — a range answers no methods
+    let hit = (0..3).any(it == 2)
+    hit
+
+comprehend a range, then scan the list
+    let hit = [i for i in 0..3].any(it == 2)
+    hit
+    → true
+```
+
+**THE REMEDY FOR A REFUSAL IS ANOTHER SHOW, NOT A PROSE FIELD.** Those
+last two blocks are a pair — the thing you reach for, refused, then the
+form that works. Both verified, neither able to rot, **and no `instead:
+string` to drift.** That is why `Expect` stays at two variants: a third
+field was nearly added before the pairing turned out to do it for free.
+
+
+### The extractor's rule — and a measurement of mine generalised too far
+
+I probed the raw block in its **flush-left** form, measured that it
+carries a leading empty line and no trailing one, and stated a rule:
+*drop one leading line, never symmetrically drop a trailing one.* **Right
+about the hazard, wrong as a rule** — and wrong in the way this document
+keeps naming in other people's work.
+
+**It fires in only one of the two authoring forms.** Flush-left content
+ends in a bare `\n`, so `split` removes the closing artifact for free.
+**This format's own examples INDENT the closing `"""`**, so the final
+segment is `'            '` — whitespace, not empty — and the trailing
+drop never fires at all. **Same block, same count of four, different
+reason.** An extractor written to my measurement mangles the indented
+form, and one written to the other mangles mine.
+
+**The rule is over the TEXT, not over `split`:**
+
+> Drop the opening line's remainder, asserting only whitespace precedes
+> that first newline. Drop the spaces and tabs following the FINAL
+> newline — **never the newline itself**, so a blank last line survives.
+> Strip the common indent. **A block whose content begins on the `"""`
+> line is REFUSED, not guessed at.**
+
+Form-independent and language-independent, and it puts an author's blank
+lines out of the trimmer's reach. Verified across both forms, a trailing
+blank line, an internal blank, a one-liner and a chain continuation.
+
+**AND THE WARNING FOUND A SECOND BUG AT THE OTHER END.** Run old against
+new, they diverge on two cases, not one. The first is the hazard I named.
+**The second is a defect in every row**: the symmetric trim was dropping
+the trailing newline from *every* program — and `verify.py` was hiding it
+by appending one before writing the file. **This morning's green run was
+green partly by accident**, and it would have surfaced the first time a
+brief rendered a program without appending a newline of its own. A test
+papering over the defect it exists to catch is this tree's own
+fixture law, arriving inside the instrument built to enforce it.
+
+**The lesson is mine and it is the campaign's own:** a measurement
+generalised past what it measured is a claim, not a finding. I measured
+one authoring form and wrote a rule as though it covered both — sixty
+seconds after telling another lane that naming the scope is the
+difference between a finding and a claim.
+
+
+### The reordered row — the hazard's worse twin, found by predicting the class
+
+`shows_of` now **refuses** a source it cannot fully read, rather than
+answering zero rows. **Zero stays honest for a file that genuinely
+declares no shows** — a real answer a caller cannot distinguish from a
+silent miss by counting, which is why the refusal had to be at the source.
+
+**But the table form was not the dangerous one.** Beside it sat a worse
+sibling: **a row whose FIELDS ARE WRITTEN IN A DIFFERENT ORDER is a legal
+row in this format, and the parser dropped it silently.** The table form
+at least announces itself as a different shape; **a reordered row looks
+exactly like a row that was never written.** It was found by going
+looking, on the strength of the class diagnosis — *an instrument correct
+about what it does, wrapped by a consumer reading its silence as success*
+— which predicted siblings. **Naming a defect's CLASS is what turns one
+fix into a search.**
+
+### MIS-EXPRESSIBLE beats INEXPRESSIBLE, and that decides the gate
+
+`Show.program` is ONE FILE. The two package-needing subset entries fail
+that scope **differently**, and the difference is the whole argument:
+
+- **`const` in a module file — INEXPRESSIBLE.** Loose, it compiles clean
+  and the law never fires. **No honest single-file row exists at all**,
+  and any attempt announces itself immediately.
+- **`export use` — MIS-EXPRESSIBLE, which is worse.** Loose, it answers
+  `F3015: this file is not in a package`. A row claiming
+  `Refuses("F3014")` fails honestly — **but a row claiming
+  `Refuses("F3015")` PASSES**, and teaches that a re-export needs a
+  package root, when the law is that `export use` arrives with a later
+  slice. **Green, and wrong.**
+
+**That is the claim-width failure arriving through SCOPE instead of
+through wording, and nothing in the verifier can see it.** A format's
+scope gap and a claim's over-width are **the same defect at two
+altitudes** — a row that says more than its program shows, and a corpus
+that says more than its format can hold.
+
+**So the gate NAMES its exclusions and FAILS on an entry neither expressed
+nor named — never skips.** And the exclusion list is a **REGISTRY, NOT A
+SKIP**: every entry carries its reason and its evidence, and adding one
+means writing both. **That is the exemption law at corpus scale**, and it
+is what stops "2 excluded" drifting into "however many we could not be
+bothered with." The line reads `45 expressed, 2 excluded (named)`, never
+`45 passed`.
+
+**Why an explicit refusal now rather than a second corpus shape:** a
+package fixture holds both entries and charges **every one of the other 45
+rows** a wrapper for a 4% case — ceremony on the common case, decided
+before the cold-start number has said whether those two entries teach
+anything at all. The second shape is named as the known extension and the
+two entries are named as the reason to build it. **The decision is
+reversible in one direction only** — adding the shape later costs
+migrating 45 rows, which is precisely why it waits for evidence rather
+than a guess.
+
+### The claim-width rule caught two of its author's own rows
+
+The verifier checks the program against `Expect`. It never checks that
+the CLAIM is what the program shows, so **a row can be green and teach
+something false** — which is `lexer_test.av:110` with a compiler behind
+it, more convincing for being verified. Applied to the first five rows
+written in this format, **two were over-wide**:
+
+- *"declares a **closed set**; `.variant` constructs"* — the program
+  declares an enum and constructs a variant. **Closedness is nowhere in
+  it.** → *"`enum` declares variants; `Suit.clubs` constructs one"*
+- *"a range takes no methods — **comprehend instead**"* — the program
+  shows `.any` refused. **The remedy is not in the program.** → *"a range
+  answers no methods"*
+
+**AND ITS SIBLING: A CLAIM TAKES COLONS AND SEMICOLONS, NEVER AN
+EM-DASH** — because the renderer spends the em-dash as its refusal
+separator, so a claim carrying one renders as two and the reader cannot
+tell which half is the verdict's. That is small, and it is **the first
+instance of a general obligation**: a rendering choice reaches back and
+constrains authoring, so **every future rendering that claims a character
+— a separator, a marker, a fence — owes a rule where the author is**, or a
+renderer mangles a legal row and the author has no way to learn why.
+
+Its own instance is the row the claim-width rule had already caught for a
+different reason: *"a range takes no methods — comprehend instead"*, where
+**the em-dash was doing the work a second show should do.** That is a hint
+the two rules may be one rule seen twice; it is one example, and it stays
+a hint.
+
+**The claim-width rule does not delete content; it relocates it to the
+program that earns it.** Closedness is what the F2013 row demonstrates; the remedy is
+the comprehension show now sitting beside the refusal. **The two
+corrections and the refusal/remedy pairing are the same discovery** — the
+rule found the missing shows. The test to give an author: *if this
+program were the only thing I saw, what would I have learned? Write
+that.*
+
+### The pipeline runs today, and its failure was witnessed
+
+Extract → dedent → check each row against its own claim: six rows, all
+agreeing — **which also closes the dedent risk, since the refusal codes
+still match exactly after extraction.** Then it was broken three ways:
+a wrong code (`want=F9999 got=F2013`), a refusal that no longer refuses
+(`want=F2013 got=compiled clean`), and a broken program. **The middle one
+is K5 — "a refusal that has become legal is a doc that is lying" — with a
+working instrument behind it, at scratch scale, today.**
+
+**Scoped precisely rather than called green:** `check` proves every
+refusal **completely** and every answer only **halfway**. "It compiles" is
+reachable; "it prints `0`" needs a run. The scratch harness is one half of
+the gate harness, not a preview of all of it.
 
 ## The tag registry — data, not dispatch
 
@@ -1461,7 +1797,11 @@ Resource, No Benchmarks, No Problem?* (arXiv:2606.16827, June 2026), took
 Gleam and MoonBit — both stabilised after training cutoffs — and measured
 exactly this. The novelty claim is withdrawn. What survives is better:
 **we can run it continuously, on our own language, as a ratchet**, which
-is the thing nobody has built.
+is the thing nobody has built. **RETRACTION 9: the header claims the
+prior-art survey "killed three novelty claims" and two are still standing
+verbatim in this file** — one of them contradicted by the slogan section
+1600 lines below it. A retraction announced and not executed is worse
+than one never claimed: it tells the reader the text has been swept.
 
 Every doc system in history is evaluated by "does it exist" and "does it
 render." **The only question that matters for P1 is: does an author who
@@ -1496,6 +1836,241 @@ Cold-start gate · brief @ 6000 tokens · 40 tasks · language hash 8f3a21c4
 
   → the number is low BY CONSTRUCTION. It is a ratchet, not a score.
 ```
+
+## THE FIRST RUN — 2026-09-06, at `74501ef`
+
+**Run, and the honest headline is a DELTA, not a rate.**
+
+| arm | subject had | compiled |
+|---|---|---:|
+| treatment | CLAUDE.md (involuntary) + a 6000-token generated brief | **9/10** |
+| control | CLAUDE.md (involuntary) only | **2/10** |
+
+**The valid finding is +7/10 from the brief** — a clean A/B in which the
+brief is the only difference. **The absolute 9/10 is NOT a cold-start rate
+and must never be quoted as one.**
+
+**WHY, AND THE LANE FOUND IT THEMSELVES BY RUNNING A CONTROL NOBODY ASKED
+FOR.** A subagent launched inside this project **inherits CLAUDE.md in its
+system prompt**. Asked directly, tools forbidden, one answered: *"Yes…
+instructions in my context/system prompt — specifically a `# claudeMd`
+block… I have nothing about Avra from pretraining"* — and then answered
+three of four language questions with **zero tool calls**, two of them
+straight out of "The subset today" (`reverse` does not exist; the
+or-separator is `or`). **Every subject in both arms carried the 47-entry
+refusal list this campaign spent the day verifying.**
+
+**THE TELL WAS THE ARM DESIGNED TO FAIL BEING TOO GOOD.** The control
+wrote `let disc: Shape = .Circle(4)` — the typed-let-so-a-bare-variant-
+reads-its-want idiom. **That is the only reason anyone looked.** Without
+the unasked-for control, a 9/10 goes into the ledger as a cold-start rate
+and seeds the ratchet with a contaminated number.
+
+**What a real cold start needs is now a HARNESS requirement, not a
+research question:** a subject with no project context — a session outside
+this repository, or a bare API call. **It is the blocking dependency for
+D13.**
+
+
+
+## MEASUREMENT 02 — the fix worked, a regression hid it, and the totals said nothing
+
+The one-line import fix landed. **Both runs scored 9/10.** A totals-only
+comparison reads *"the fix did nothing"* — **and is wrong about both
+halves:**
+
+```
+t03   FAIL -> PASS     the import fix landed
+t06   PASS -> FAIL     a regression
+```
+
+**A TOTAL IS NOT A RESULT; THE COMPOSITION IS.** Diffing per task is the
+only reason either half is known, and the falsification case was written
+down *before* the run. A pass rate that does not move is not evidence of
+no change — it is evidence of nothing at all.
+
+### And the regression measured this campaign's central claim
+
+Brief v1 carried `corpus/specs.av`; v2 does not — **one program in the
+entire brief demonstrated the spec shape**, and v2 lost it.
+
+**RETRACTION 10 — THE MECHANISM I GAVE WAS WRONG.** I wrote that the
+IMPORTS section displaced it by greedy character packing. **It did not.**
+The generator's corpus selection is a function of the WHOLE `packages/`
+tree through a **shared seeded RNG stream**, so adding any content
+upstream reshuffles the draw. The regression is real and its attribution
+was invented — a mechanism that sounded right, published as measured.
+
+**RETRACTION 11 — AND ROUND-ROBIN ALONE DOES NOT FIX IT.** `assemble()`
+was routed as the answer. Run at 6000 tokens it **still cuts
+`corpus/specs.av`**, carrying 27 of 83 features, because it truncates its
+first pass in INSERTION ORDER. The completeness invariant needs an
+ordering rule (cheapest-first was probed and does carry specs), not
+round-robin alone. What the subject wrote:
+
+```avra
+then "two plus two is four" { 2 + 2 == 4 }   // v1, example present → PASS
+then 2 + 2 == 4                              // v2, example gone    → FAIL
+error[F0100]: expected STRING while parsing `then_case`
+```
+
+**It still KNEW `spec`/`given`/`then` existed** — the feature-notes prose
+names them and CLAUDE.md names them. **It did not know `then` takes a
+caption string.** So, measured in this tree rather than cited from a
+paper:
+
+> **PROSE NAMES A CONSTRUCT; ONLY AN EXAMPLE CARRIES ITS SHAPE.**
+
+That is the thesis of this whole document, arrived at **by accident,
+through a regression, in an arm nobody designed to test it** — which
+makes it better evidence than the experiment that was designed to.
+
+### It also validates the format's design from the failure side
+
+`assemble` was built with two properties the ad-hoc generator lacks:
+**budget counts SHOWS** (a feature cannot be squeezed out by characters)
+and **round-robin selection** (every feature gets one before any gets
+two). **Both of measurement 02's failures follow from exactly their
+absence.** So the generator is **replaced by `assemble`, not patched** —
+the completeness invariant is not a refinement here; its absence *is* the
+defect.
+
+### The floor, now measured rather than extrapolated
+
+Median **31 tokens per show** across 11 real rows → **868 tokens for 28
+features** (858 by mean), confirming the ~900 estimate within 4%. Both
+runs used 6000 — about **7× the floor** — so neither is near it; a
+smaller-budget arm would be, and `assemble` refuses below the floor with
+the number.
+
+### One more green-by-accident hazard, in the routed interface
+
+`shows_of` parses the **struct-literal** form only. Against a table-form
+fixture holding 8 shows across 3 features it returns **zero rows,
+silently.** Not a defect in the function — the real renderer holds a
+`List<Show>` and parses nothing — but **a caller fed table-form sources
+emits an empty brief and every downstream check still passes.** Same
+class as the trailing-newline defect: an instrument that is correct about
+what it does, wrapped by a consumer that reads its silence as success.
+**Every caller asserts `len(rows) > 0` and per-feature coverage before
+emitting.**
+
+### The harness is separable, and its failure was witnessed
+
+`score.sh` takes a **solutions directory — however produced** — checks
+each candidate, and answers a pass rate plus attribution. **It creates no
+solutions and has no opinion about what wrote them**, so swapping in a
+real cold subject is a directory swap. That is the instrument; the
+subject is the hole.
+
+Two of this campaign's own laws are built into it. **LAND D's**: every
+diagnostic code is listed via `grep -oE 'F[0-9]{4}' | sort -u`, never
+read from a truncated window — the mistake that cost them an entry.
+**And a MISSING candidate is MISSING, never a failure** (`PASS 1 / 9`,
+not `1 / 10`), so a subject that declines to answer cannot be scored as
+one that answered wrongly.
+
+**K0 held: it was made to fail.** Nine candidates each wrong in a *named*
+way, one correct, one absent — every named mode came back named, the
+correct one passed, the absent one reported MISSING. **And building that
+fixture caught a real defect in the instrument itself: `F3000` has TWO
+wordings** — *"no `fn X` is defined"* for a fn and *"`x` is not defined"*
+for a name — and the first rule set matched only the second, **mis-filing
+two failures as "other"**. A pass rate would have been right while its
+attribution was quietly wrong, which is the half that steers doc content.
+
+### The attribution is weakest exactly where it matters most
+
+Stated by its author rather than found by a reviewer: **attribution is
+precise for NAMED FACTS and coarse for SYNTAX.** Three distinct defects —
+the `|` or-pattern, a `type` alias, range methods — all collapse into
+"statement or expression shape", because all three are F0100.
+
+**And the literature puts 66–90% of no-resource failures in exactly that
+bucket.** So the instrument resolves the minority of failures sharply and
+the majority into one undifferentiated pile — which is the half that must
+be sharpened before any number can steer what the docs carry. **The
+47-entry refusal corpus already holds the wordings to do it**, which is
+the second time the negative space has turned out to be the thing that
+makes another surface work.
+
+### Why the first number must NOT set the ratchet
+
+**A ratchet set from an upper bound is worse than no ratchet**, because
+every later honest run reads as a regression — and a gate that reports
+regressions for being correct is a gate that gets switched off. The
+contaminated 9/10 would become the floor that every real cold-start run
+fails to clear, and the first person to see 3/10 would conclude the docs
+had rotted rather than that the instrument had finally been aimed
+correctly.
+
+**So the order is: fix the harness, add the imports, sharpen the syntax
+attribution, and only then ratchet.** The number is not the deliverable
+until the subject is real.
+
+### The prediction missed, and the miss is recorded rather than rescored
+
+Frozen before the brief existed: the lane said 15–30%, I said 10–25%.
+Actual 9/10. **Both of us were predicting a cold start and the experiment
+failed to produce one**, so the band is not rescored against a different
+experiment. Two called shots did land: the lane's predicted trap #5 — the
+`use @std/io` slash-versus-dot — **was the only treatment failure**, and
+predicted syntactic dominance held, every control failure being a name or
+parse error and none semantic.
+
+### THE ATTRIBUTION IS THE PRODUCT, AND IT INDICTED THE GENERATOR
+
+**Treatment: one failure, one character.** `use @std/io.{read_text}`
+refused; changing `/` to `.` and nothing else compiles clean. The fact
+whose absence caused it is **how an import is spelled** — and the brief
+**could not** have carried it:
+
+```
+grep -c 'use @std\|^use ' brief.txt  → 0
+grep -c '@std' brief.txt             → 0
+```
+
+**The assembly method guaranteed the hole.** `then` cases were extracted
+as bare expressions stripped of the `use` lines above them, and `corpus/`
+programs are loose entry files that import nothing. **A brief assembled
+from non-importing programs cannot teach importing.** That is a generator
+defect, not a model failure — and it is this campaign's own law applied by
+its author to their own instrument.
+
+**Control: one fact outweighs everything else.**
+
+| rank | fact absent | failures |
+|---:|---|---:|
+| 1 | **how a program shows a value** (no free `println`; the entry SHOWS its final expression) | **6 of 8** |
+| 2 | import spelling / the `@std` prefix | 1 |
+| 3 | the spec/given/then shape (invented `expect`) | 1 |
+| 4 | statement/BREAK shape | 1 |
+
+`println` was reached for in **every** task needing to show a result. The
+brief killed it outright — **zero occurrences in the treatment arm** — via
+one header line plus 16 corpus programs demonstrating the real form.
+**Both arms point at the same two facts**, and adding `use` lines to the
+generator is one line with a predicted 10/10, cheap to falsify.
+
+### Correctness, not merely compilation
+
+`check` proves only that it compiles, so all nine were **run**: **8
+verified correct**, one unverifiable (running a spec needs a package run
+the lane may not make). **Zero warnings across all ten.**
+
+### Limits the lane stated rather than letting a reviewer find
+
+Subjects not cold (dominant). **The tasks are ordinary by design and may
+simply be easy** — nothing forces `sort`, `reverse`, a trailing lambda, a
+`dyn` want or a generic, and **a trap-dense suite would score far lower**;
+the 47-entry refusal corpus is sitting there ready to become exactly that.
+n=10, one draw per arm. The `then` cases reference package-local helpers
+that teach shape but read as callable API.
+
+**Next, in order: (1) fix the harness before trusting any absolute
+number — ratcheting this one would lock in the contamination; (2) add
+imports to the generator; (3) build the adversarial suite from the subset
+corpus; (4) then ratchet.**
 
 **The mechanism.** A fixed suite of tasks in `tasks/` ("write a fn that
 counts words in a file", "define an enum and exhaustively match it").
@@ -1661,8 +2236,15 @@ describes a sig that has moved.
 - **A doc system cannot make a bad API good.** `@std/sqlite`'s
   `open(path)` was ambiguous between a filename and a URI, and the fix was
   TWO VERBS (the two-hats law) — **landed on main at `f88d0ce`, verified
-  by the SQLITE lane at `bd5c024`**: `open_uri()` and the `uri: bool =
-  false` seat in `packages/std-sqlite/src/open.av`. Not a warning tag. A `@warn` that papers over a design
+  by the SQLITE lane at `bd5c024`**. ~~`open_uri()` and the `uri: bool =
+  false` seat.~~ **RETRACTION 8: that citation is wrong and cites the
+  opposite of the law.** At HEAD, `open.av:85` is `fn open_uri() -> int
+  { 64 }` — a PRIVATE FLAG-BIT CONSTANT, not exported, one of ten under a
+  "── The flag word ──" comment, consumed by `uri_bit(c)`; and `uri: bool
+  = false` (`:63`) is a FIELD on `OpenConfig`. **So the paragraph cited a
+  one-verb-plus-flag API as its proof that the fix was TWO VERBS.** The
+  package does export four open verbs (`open`, `open_read`, `memory`,
+  `open_with`) — the law holds, its exemplar did not. Not a warning tag. A `@warn` that papers over a design
   flaw is this tree's own recorded anti-pattern: *"the unsafe shape is
   unspellable rather than merely documented, which is what the first
   answer — 'the type cannot prevent it, so the doc says so' — would have
@@ -1700,6 +2282,8 @@ describes a sig that has moved.
 
 ---
 
+---
+
 # Part XI — Slogans
 
 - **The compiler already knows. Build the thing that asks it.**
@@ -1725,3 +2309,38 @@ describes a sig that has moved.
 - **Write the predicted number down before you build the gate.**
 - **A green check whose failure has never been witnessed is an untested
   instrument** — and that includes every keeper in this document.
+
+---
+
+# Part XII — Why a doc campaign kept finding compiler bugs
+
+This document set out to design documentation. In two days it produced a
+memo-kernel cache defect, a live lexer parse bug, a latent hole in the
+seat law, a stale doctrine sentence blocking a feature, and an ambiguous
+word in the seam rule. **That is not a digression, and it is not luck.**
+
+**THE METHOD, landed in CLAUDE.md at `d1adbca` as the half-sibling of the
+untested-instrument law.** That law says: when a check has never failed,
+*make it fail*. It reaches keepers, tests and gates. It cannot reach a
+heading, a directive, a projection, or a WORD — none of which can be made
+to fail. For those:
+
+> **BUILD SOMETHING AGAINST IT AND WATCH WHERE IT MISLEADS.**
+
+Six instances, and the count is the argument: a "the well is dry" heading
+that was false when written; a self-test wired to a copy of the thing it
+tested; an over-general directive about `disarmed`; "one table" in the
+seam rule; the memo kernel's single cutoff; the width keeper's typedef
+blindness. **Every one locally coherent. Every one found by a use that
+did not exist when it was written. NONE of them visible to a reader,
+however careful** — which is what makes it a method rather than an
+exhortation to be careful.
+
+**A doc system is an unusually good instrument for this**, and that is the
+honest reason this campaign found what it did: documentation is the one
+consumer that reads *everything* — every declaration, every span, every
+diagnostic, every claim in every ledger — and reads it in an order nobody
+designed for. It is a use that did not exist when any of those artifacts
+were written. **P10 says the compiler holds semantic knowledge no other
+tool has; the corollary nobody states is that building a new projection of
+that knowledge is how you find out where the knowledge is wrong.**
