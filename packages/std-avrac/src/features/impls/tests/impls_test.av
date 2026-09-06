@@ -125,6 +125,12 @@ spec "features/impls" {
         then "two roots fill two seats" {
             shown("fn swap(mut a: List<int>, mut b: List<int>) { a.push(1)\n    b.push(2) }\nmut v = [1]\nmut w = [1]\nswap(v, w)\nv.length + w.length") == "4"
         }
+        then "A `mut` SEAT KEEPS ITS BOX: a FLAT record writes through like any other, so behaviour never turns on a field count" {
+            shown("type Id = { index: int }\nfn bump(mut i: Id, by: int) -> int {\n    i.index = i.index + by\n    i.index\n}\nmut held = Id { index: 1 }\nbump(held, 4)") == "5"
+        }
+        then "the flat seat and its two-field twin answer alike" {
+            shown("type Id = { index: int }\nfn bump(mut i: Id) -> int {\n    i.index = i.index + 1\n    i.index\n}\nmut a = Id { index: 1 }\nbump(a)\na.index") == shown("type Id = { index: int, tag: int }\nfn bump(mut i: Id) -> int {\n    i.index = i.index + 1\n    i.index\n}\nmut a = Id { index: 1, tag: 0 }\nbump(a)\na.index")
+        }
         then "a seat assigned WHOLE waits on the inout ABI, and says so" {
             refused_with("fn zero(mut n: int) { n = 0 }\nmut k = 5\nzero(k)\nk", "`n` is a `mut` seat — assigning it whole arrives with the inout ABI")
         }

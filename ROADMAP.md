@@ -1774,6 +1774,32 @@ the order is the dependency.
         commented premise into an enforced one while it is free.
         Pinned by three cases fed a hand-built body, since source
         cannot reach the shape. 1877 cases.
+  - [x] A `mut` SEAT KEEPS ITS BOX (F0900). LANDED 2026-09-05,
+        reported by the SQLITE campaign's FFI lane. `fn bump(mut i:
+        Id) { i.index = 1 }` over `type Id = { index: int }` was an
+        internal defect — "an assignment to a non-place survived a
+        clean analysis" — and the trigger is FLATNESS: a record of
+        one scalar field travels AS the field, so it arrives in the
+        seat as a word with no place behind it and the write has
+        nowhere to land. Two fields worked; the `mut fn` METHOD twin
+        worked. The law already existed for the receiver and says
+        why — typing_impls unflattens an impl's target because "a
+        flat record is a value in a register with no identity" — and
+        a `mut` seat is the same seat from the other side. `keep_boxed`
+        seals every `mut` seat's type at declaration, so behaviour
+        never turns on a field count. It matters because `type Id = {
+        index: int }` is this tree's documented idiom for a typed id,
+        and because `mut` in a fn TYPE landed the same day so a row
+        table can hold a writing fn — a row's fn writing through a
+        flattened seat is exactly this shape.
+        Pinned twice: the flat seat answers, and it answers the SAME
+        as its two-field twin. 1880 cases.
+        NOT FIXED, and pre-existing on main for boxed records too:
+        `mut copy = held` then a write through `copy` still reaches
+        `held` (`5 105 105 105` where value semantics wants `5 5 105
+        105`). That is the receiver-aliasing hole, S2's, and the fix
+        above makes flat and boxed agree about it rather than
+        differing.
   - [ ] S2 NEEDS THE OWNER, and the questions are named so the slice
         does not start in the wrong shape. (a) SPEC 11.4 vs 11.5:
         11.4 says v1.0 app-level aliasing is SHARED ("closures can
