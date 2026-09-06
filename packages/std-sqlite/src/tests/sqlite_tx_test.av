@@ -204,10 +204,14 @@ spec "std/sqlite transaction" {
         // after a failure they did not cause, so it is not an error.
         then "rollback with nothing open does nothing" { after(rolled_back_with_nothing_open) == "1" }
         then "finish with nothing open does nothing" { after(finished_with_nothing_open) == "1" }
-        // A commit with nothing open is the DRIVER's bug, not SQLite's
-        // — it means the caller lost track of their own frame.
-        then "commit with nothing open is refused as a defect" { after(committed_twice) == "sqlite.defect" }
-        then "a second begin is refused as a defect" { after(begun_twice) == "sqlite.defect" }
+        // NEITHER IS A DEFECT, and calling them one was wrong in a way
+        // that mattered: a caller reading `sqlite.defect` is being told
+        // to report a driver bug. A commit with nothing open is also
+        // what a caller gets when the DATABASE ended their transaction
+        // (`ON CONFLICT ROLLBACK`, a full disk, an I/O error), which is
+        // nobody's bug at all.
+        then "a commit with nothing open names the missing transaction, not a bug" { after(committed_twice) == "sqlite.no_transaction" }
+        then "a second begin names the standing transaction, not a bug" { after(begun_twice) == "sqlite.transaction_open" }
     }
 
     given "a read transaction, which takes no write lock" {
