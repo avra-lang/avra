@@ -27,7 +27,13 @@ C_SOURCES = ["runtime/avra_runtime.c", "backend/llvm_wrapper.c"]
 
 # a return type whose value fills the whole 64-bit register
 WIDE = re.compile(r"(\*|\b(int64_t|uint64_t|long|size_t|ssize_t|ptrdiff_t|intptr_t|uintptr_t|"
-                  r"LLVM[A-Za-z]*Ref|void)\b)")
+                  r"LLVM[A-Za-z]*Ref)\b)")
+
+# `void` is NOT wide — it is a different defect. A C body that answers
+# nothing, read as `int`, hands the program whatever the register held;
+# that is an answer which does not exist rather than one of the wrong
+# size, so it gets its own words.
+VOID = re.compile(r"^void$")
 
 def c_returns():
     """Every C function we define, by name, with its written return type."""
@@ -42,7 +48,12 @@ def externs():
     """Every `extern fn NAME(...) -> TYPE` the tree declares."""
     out = []
     for path in glob.glob(os.path.join(ROOT, "packages/**/*.av"), recursive=True):
-        for m in re.finditer(r"^extern fn ([A-Za-z_][A-Za-z_0-9]*)\s*\([^)]*\)\s*->\s*(\w+)",
+        # `export extern fn` too: a PACKAGE's wall is exported by
+        # definition, since the point of it is that callers reach it.
+        # Matching only the bare spelling made the keeper structurally
+        # blind to every binding package — it had only ever been asked
+        # about the compiler's own walls, which are un-exported.
+        for m in re.finditer(r"^(?:export )?extern fn ([A-Za-z_][A-Za-z_0-9]*)\s*\([^)]*\)\s*->\s*(\w+)",
                              open(path).read(), re.M):
             out.append((m.group(1), m.group(2), os.path.relpath(path, ROOT)))
     return out
@@ -50,15 +61,25 @@ def externs():
 def main():
     bodies, wall = c_returns(), externs()
     ours = [(n, t, w) for n, t, w in wall if n in bodies]
+    voids = [(n, t, w) for n, t, w in ours
+             if t != "void" and VOID.match(bodies[n][0])]
+    for name, avty, where in voids:
+        ctype, crel, cline = bodies[name]
+        print(f"externs: {name} answers C `void` at {crel}:{cline}, read as `{avty}` in {where}")
+        print(f"externs:   there is no value to read — the program takes whatever the")
+        print(f"externs:   register happened to hold. Declare it without an answer.")
     narrow = [(n, t, w) for n, t, w in ours
-              if t == "int" and not WIDE.search(bodies[n][0])]
+              if t == "int" and not WIDE.search(bodies[n][0]) and not VOID.match(bodies[n][0])]
     for name, _, where in narrow:
         ctype, crel, cline = bodies[name]
         print(f"externs: {name} answers C `{ctype}` at {crel}:{cline}, read as `int` in {where}")
         print(f"externs:   a narrow C return writes only the low 32 bits — a negative value")
         print(f"externs:   reads as a large positive `int`. Answer `int64_t`.")
-    if narrow:
-        print(f"externs: {len(narrow)} extern(s) narrower than the `int` they are read as")
+    if narrow or voids:
+        if narrow:
+            print(f"externs: {len(narrow)} extern(s) narrower than the `int` they are read as")
+        if voids:
+            print(f"externs: {len(voids)} extern(s) read an answer their C body does not give")
         return 1
     unchecked = len(wall) - len(ours)
     note = f"; {unchecked} bind C we do not own (the sized types are their answer)" if unchecked else ""
