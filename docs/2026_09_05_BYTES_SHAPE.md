@@ -236,20 +236,38 @@ finalized or the same SQL parameter is bound to something else."* An
 Avra box bound that way and released before `step` is a **use-after-free
 inside SQLite**, at a site with no relationship to the bind.
 
-Meanwhile `SQLITE_TRANSIENT` — which COPIES, and is therefore the safe
-default — is `(void*)-1`, **unspellable**: `ptr` is receive-only, `let p:
-ptr = 0` is F2024, and there is no int→ptr mint. So:
+`SQLITE_TRANSIENT` — which COPIES, and is therefore the safe default —
+is `(void*)-1`.
 
-> **THE EASY CALL IS THE DANGEROUS ONE AND THE SAFE CALL CANNOT BE
-> WRITTEN.** That inversion, not the missing sentinel, is the finding.
+> **DISCHARGED 2026-09-06 at `f7a8bba`.** This section said the safe
+> sentinel was **unspellable**, on three clauses: "`ptr` is
+> receive-only", "there is no int->ptr mint", and "`let p: ptr = 0` is
+> F2024". **The first two are now FALSE.** `avra_ptr_at(address: int)`
+> landed on the owner's word and works at both `-> ptr` and `-> ptr?`;
+> probed at `91b6b61`, binary 2026-09-06 00:17, `./avra check` exit 0
+> on `fn transient() -> ptr { avra_ptr_at(0 - 1) }`. Only the third
+> clause still holds, which is why the page still READ as current.
 
-**Consequences, in order:**
-1. The named mint and the lowering guard are **prerequisites of binding a
-   single value**, not conveniences. Without them the driver's only
-   reachable bind is the one that lends SQLite a pointer it does not own.
-2. Until then the driver must not offer a bind at all, rather than offer
-   the STATIC one and document the hazard. *A hazard documented at a verb
-   the caller can reach is a hazard shipped.*
+**So the finding this section is built on — THE EASY CALL IS THE
+DANGEROUS ONE AND THE SAFE CALL CANNOT BE WRITTEN — is half
+discharged.** The `SQLITE_STATIC` use-after-free hazard is unchanged
+and real: a pointer lent to SQLite that Avra frees first is a read of
+freed memory inside SQLite, invisible to our refcounter because the
+pointer is not ours to count. What has changed is that the SAFE side is
+now expressible, so the INVERSION is gone.
+
+**Consequences, restated on current facts:**
+1. The named mint was indeed a prerequisite of binding a single value,
+   and it has landed. The lowering guard remains the interlock that
+   stops a pointer constant being silently discarded.
+2. ~~Until then the driver must not offer a bind at all~~ — **LIFTED.**
+   The driver ships binds with **TRANSIENT as the default** and STATIC
+   as a named hatch carrying its contract at the site (P8 requires the
+   hatch; it is never what you get by omitting an argument). The
+   reasoning survives the lift: the refusal existed because the only
+   REACHABLE mode was the unsafe one, not because binding is unsafe.
+   *A hazard documented at a verb the caller can reach is a hazard
+   shipped* still stands — which is why STATIC is spelled, not defaulted.*
 3. `SQLITE_STATIC` becomes legitimate later — with `@borrows`, which
    makes "the box outlives the statement" a claim the compiler checks
    rather than a comment, and which is what lets a 10 MB blob stop
