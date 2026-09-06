@@ -132,10 +132,14 @@ registry is the idiom engine's spec, written by dogfooding.
   silently forgets the next variant (`let_name` dropped For's
   counter exactly so; `type_decl_name` would have swallowed the next
   type-declaring statement). Registries spell every arm — `or`-runs
-  keep that affordable. Ratcheted as I22; the two licensed shapes
-  are a feature matching its own variants (it cannot enumerate other
+  keep that affordable. Ratcheted as I22 AND held by the compiler:
+  F2040 counts the ANSWERING ARMS over the declared enum and names
+  the variants a hole would forget. The license is a SPELLING, not a
+  comment — `rest ->` says the remainder is deliberate, and both the
+  compiler and the ratchet read it. The two licensed shapes are a
+  feature matching its own variants (it cannot enumerate other
   features') and a loop that DELEGATES the rest to an exhaustive
-  dispatch — both written at the site.
+  dispatch — each writes `rest ->` at the site.
 - THE EXEMPTION LAW, which the above is one instance of: a doctrine
   exemption that is not written AT THE SITE is an unbounded amnesty.
   Prose exemptions are invisible to tooling and to the next reader,
@@ -310,6 +314,15 @@ registry is the idiom engine's spec, written by dogfooding.
 - Every diagnostic names a registered kind (its F-code is the
   registry's projection), carries help or a structured fix where
   expressible, and has a golden rendering test.
+- A LINT COUNTS WHAT ITS DOCTRINE COUNTS, never a proxy that
+  correlates. F2040 was written to count HIDDEN VARIANTS where the
+  doctrine counts ANSWERING ARMS: measured tree-wide, 191 sites
+  fired (361 warning lines across a package sweep, a shared
+  dependency counted once per package) and 0 were the defect, so
+  the real errors beside them were read past. A warning
+  nobody must act on trains the reader to skip the column errors
+  arrive in — MEASURE a lint's true-positive rate before it ships,
+  and again when its doctrine moves. The rate is the lint's spec.
 - Map iteration order never reaches output — iterate an ordered
   source.
 - Grammar authoring: EVERY COMMA LIST TAKES A TRAILING COMMA — a
@@ -602,6 +615,9 @@ Syntax the grammar lacks:
 - `export let` / `export const`: F3014 "`export` marks a fn, type,
   enum or trait — not this statement" — a constant crosses modules
   as a fn.
+- `is` with a PAYLOAD pattern (`p is .Bind(_)`): "expected BREAK
+  while parsing `stmt`" — `is` takes a BARE variant. A one-arm
+  match is the projection (`.Bind(_) -> true, _ -> false`).
 - `Result<void, E>` as a fn's answer: F2019 "a `Result` slot cannot
   hold this yet" (help: "nullable slots arrive with ownership's next
   slice"). A writing verb answers what it wrote instead —
