@@ -96,12 +96,34 @@ if [ -x "$main/build/avra" ]; then
 fi
 
 cd "$main"
+
+# A STASH IS A DEBT AND EVERY EXIT PATH PAYS IT. Main is a worktree
+# several sessions write to, so this can be holding work whose owner
+# does not know it was taken. A failure between the push and the pop
+# — a merge conflict is the one that fired — would strand it, and the
+# next run would stash ON TOP, which is how one stranded edit becomes
+# two nobody can attribute. The handler is idempotent, so the normal
+# path calls it and the trap finds nothing left to do.
+restore_main() {
+    [ -n "$stashed" ] || return 0
+    stashed=""
+    if git stash pop -q 2>/dev/null; then
+        echo "integrate: main's uncommitted edits restored (they were never committed)"
+    else
+        echo "integrate: COULD NOT restore main's uncommitted edits — another session's"
+        echo "integrate:   work is the newest entry in \`git stash list\`, named"
+        echo "integrate:   \"edits another session left on main's working tree\"."
+        echo "integrate:   Recover it with \`git stash pop\` once this tree is clean."
+    fi
+}
+trap restore_main EXIT INT TERM
+
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { git stash push -q -m "edits another session left on main's working tree"; stashed=1; }
 # the merge is titled by what landed: the message when this run
 # committed, else the lane's last subject
 [ -n "$committed" ] && title="$(head -1 "$msg")" || title="$(git -C "$worktree" log -1 --format=%s)"
 git merge --no-ff -q "lane/$lane" -m "merge: lane $lane — $(echo "$title" | cut -c1-100)"
-[ -n "$stashed" ] && git stash pop -q && echo "integrate: main's uncommitted edits restored (they were never committed)"
+restore_main
 echo "integrate: merged as $(git log -1 --format=%h)"
 
 # The lane's product reads the merged tree BY CONSTRUCTION: the lane was rebased onto
