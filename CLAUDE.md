@@ -337,8 +337,8 @@ registry is the idiom engine's spec, written by dogfooding.
   it hides inside code that is sound everywhere else. Three
   instances in one day, three authors: a write that truncated on
   `strlen`; `str_len` distrusting a ZERO length and falling back to
-  `strlen` (safe only because every text box carries a spare byte
-  its callers fill); and the niche — a nullable pointer IS its own
+  `strlen` — PAID at 44c36f1, and safe until then only because every
+  text box carries a spare byte its callers fill; and the niche — a nullable pointer IS its own
   value, so ABSENCE is the null pointer. Inside the language the
   distinction holds, measured in both engines: an empty list, an
   empty string, a zero-field record and a zero int all read PRESENT
@@ -928,16 +928,16 @@ Runtime facts, ours to ratify:
 - A STRING's `.length` is a LOAD — the header carries the length
   (lane A), as a list's does; `while i < s.length` costs a load per
   turn, and I27 retired with the strlen it ratcheted. WITH ONE
-  CAVEAT worth knowing before a new box type lands: `str_len` reads
-  `(h && h->len) ? h->len : strlen(s)`, so a ZERO length is not
-  trusted — it falls back to `strlen`. That is safe today only
-  because every text box is minted through `str_box(n)`, which
-  allocates n+1, and every caller writes the trailing NUL, so the
-  fallback reads a sentinel and answers 0 (lane B probed all eight
-  ways to make an empty string, both engines). The safety is a
-  CONVENTION OF THE CALLERS, not a property of the function: a box
-  allocated at exactly n, which is what a `Bytes` value would be,
-  makes it a live bug.
+  CAVEAT, NOW PAID: `str_len` read `(h && h->len) ? h->len :
+  strlen(s)`, so an EMPTY box failed the truthiness test, discarded
+  its own header and answered from a terminator instead. That was
+  safe only because every text box is minted at n+1 with the NUL
+  written (lane B probed all eight ways to make an empty string,
+  both engines) — a CONVENTION OF THE CALLERS, not a property of the
+  function, and a live bug the day a box is allocated at exactly n.
+  It reads `h ? h->len : strlen(s)` now (44c36f1): a box that says
+  its length is zero is telling the truth, and the fallback is for a
+  pointer that is not ours.
 - `split` DROPS a trailing empty segment and keeps a leading one:
   `"a.".split(".")` is one element, `".a".split(".")` two,
   `"".split(".")` is `[]`.
@@ -1087,13 +1087,18 @@ Runtime facts, ours to ratify:
   one axis over: that one asks WHICH TREE, this one asks WHICH
   VERSION of it, and receipts decay the same way for the same reason.
 - A SAFETY PROPERTY RESTING ON A CONDITION NOBODY STATED IS A
-  DEADLINE, NOT A GUARANTEE. FIVE are on record and the register is
+  DEADLINE, NOT A GUARANTEE. FIVE are on record, ONE now PAID, and
+  the register is
   SPLIT ACROSS TWO FILES, which is why neither view is complete:
   doctrine instances land here, lane findings with their probes land
   in the ROADMAP, and a curator auditing one cannot see the other.
   HERE: `str_len`'s zero-length fallback, safe only by a CONVENTION
-  OF THE CALLERS that a `Bytes` value ends; and `parsed`'s early
-  cutoff, sound only while compiles are ONE-SHOT (= ROADMAP:2190).
+  OF THE CALLERS that a `Bytes` value ends — PAID at 44c36f1, and
+  the way it was paid is the point: nobody met the deadline, a
+  foreign-text design READ the entry and asked what the empty case
+  would do. A deadline is paid by a new consumer arriving, not by
+  the breakage arriving. And `parsed`'s early cutoff, sound only
+  while compiles are ONE-SHOT (= ROADMAP:2190).
   THERE: the pointer-constant guard, landed as "unreachable today"
   (ROADMAP:2018 — and its condition ACTUALLY CHANGED hours later when
   `avra_ptr_at` made a pointer mintable; it survived only because the
