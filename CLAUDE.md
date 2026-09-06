@@ -330,6 +330,25 @@ registry is the idiom engine's spec, written by dogfooding.
   discipline: for every representation you add or consume, the empty
   case is the first case you write, and a diff shows whether you
   did.
+- A COLD PATH IN A HOT LEAF COSTS EVERY CALL A FRAME. A lazy
+  `getenv`, a `char msg[80]` for a trap's words, a grow branch, a
+  `__builtin_return_address` read — each is free when it runs and
+  ruinous where it sits, because the compiler hoists the register
+  saves it needs ABOVE the fast path. `avra_rc_retain` saved four
+  register pairs to perform one `add`; `avra_array_get` reserved 128
+  bytes per read. Move the cold half OUT OF LINE (`noinline`,
+  `cold`, `noreturn` where it traps) so the branch to it is a TAIL
+  call, and settle env flags in a `constructor`. CONFIRM IN THE
+  DISASSEMBLY — `objdump -d --disassemble-symbols=_fn build/avra`,
+  and a leaf shows no `stp`/`sub sp` — because no profiler names
+  this and LTO cannot see it: the cold code is inside the hot fn.
+  And measure with `make census`, never a sampler: a sampling
+  profiler charges a release cascade to whoever was on the stack.
+- ALLOCATION HERE IS CHEAP, so avoiding one is a trade, not a win.
+  The size-class free lists made a box cost less than the scan or
+  the branch that would dodge it: deduplicating `far_merge`'s
+  expected sets measured 3% SLOWER, and skipping an empty
+  `concat` measured neutral. Measure before removing an allocation.
 - A PROCESS STATUS IS A VERDICT, never a count: statuses are eight
   bits, so 256 failures read as success. Exit 0 or 1 and print the
   count. A TRAP is not a verdict either — `avra_trap` exits 2, so a
@@ -897,6 +916,12 @@ Runtime facts, ours to ratify:
 
 ## Working discipline
 
+- MEASURE, THEN CHANGE. `make census CMD="check <pkg>"` gives EXACT
+  retain/release/list-write counts and, with the per-caller tables,
+  who causes them; `AVRA_SAMPLE=<secs> sh tools/watch.sh 4000 ./avra
+  …` samples. Trust the census over the sample — and read
+  `sample`'s output with its tree characters (`+ ! : |`) in mind,
+  since parsing it as plain indentation reports the wrong fn.
 - ONE HEAVY PROCESS AT A TIME, in the FOREGROUND, under the
   watchdog: `sh tools/watch.sh 4000 make gate`. The machine is
   shared with a loaded desktop and has panicked twice under this

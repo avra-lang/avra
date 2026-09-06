@@ -514,6 +514,74 @@ the compiler checking itself 28.8s.
         Further rounds here would start inventing work. The next real
         gain arrives with S3, or with a persistent memo across
         processes (recorded, big, not scheduled).
+  - [x] THE WELL WAS NOT DRY — the entry above is REFUTED, and its
+        reasoning is the instructive part (2026-09-05, main 7b90a46,
+        self-check 7.21s -> 5.25s, the gate 18.9s -> 15.9s user).
+        Point 1 argued: LTO across the runtime measured neutral,
+        "SO it is the bodies, not the calls". Both halves of that
+        dichotomy were wrong, and the P6 answer was underneath: it
+        was the FRAME the bodies were forced to build. Each hot leaf
+        had a COLD PATH INLINED INTO IT — a lazy `getenv` guard in
+        `rc_guarded`/`accounting`, an 80-byte `char msg[80]` for the
+        out-of-bounds message in `avra_array_get`, the grow branch in
+        `avra_array_push`, a `__builtin_return_address` read for the
+        accounting site in `avra_array_sized` — and clang hoisted the
+        register saves those need ABOVE the fast path. `avra_rc_retain`
+        saved FOUR register pairs, 64 bytes of stack, to perform one
+        `add`; `avra_array_get` reserved 128 bytes per read. LTO
+        cannot see this: the cold code is INSIDE the hot function.
+        THE FIX is one shape, applied six times: the cold path moves
+        out of line (`noinline`, `cold`, and `noreturn` where it
+        traps) so the branch to it is a TAIL call, and the two env
+        flags settle in `__attribute__((constructor))`. All six are
+        now frameless leaves — verified in the disassembly, which is
+        how the defect was found and the only honest way to confirm
+        the fix.
+        THE PROOF OF NO SEMANTIC CHANGE: the census counts are
+        byte-identical across the fix — 557,093,839 retains,
+        661,868,151 releases, 104,997,459 reclaims, 402,442,417 list
+        reads, 481,289,282 list writes, before and after. The
+        compiler does the same work on the same boxes in the same
+        order; only each operation got cheaper.
+        TWO EXPERIMENTS REFUTED HERE, recorded so they are not
+        retried: (a) deduplicating the expected-set merge in
+        `far_merge` — its `concat` is the single largest copy origin
+        at 2.66M calls, and the reader deduplicates anyway, so the
+        merge provably changes no message — measured 3% SLOWER, both
+        with `all` (a closure box per merge) and with a hand loop;
+        (b) skipping the empty `diagnostics.concat` in `match_seq`
+        (1.54M calls) — measured NEUTRAL. Both fail for ONE reason,
+        which is now the standing caution for this runtime: lane A's
+        own size-class free lists made allocation cheap enough that
+        AVOIDING an allocation with a scan, or even with a branch, is
+        a losing trade. Measure before removing an allocation here.
+        WHAT IS LEFT, re-profiled after the fix: `avra_rc_release`
+        22% and its out-of-line reclaim 21% (real work — 105M boxes
+        freed), `avra_rc_retain` 12%, `avra_array_sized` 10%,
+        `avra_array_get` 9%. The remaining refcount cost is the
+        header's belt (an alignment test, an image-base test, a tag
+        load) which is a SAFETY LAW, not overhead to shave, and the
+        call count itself — which is the `retained_args` question in
+        point 1, still lane C's and still unscoped.
+  - [x] TWO TOOLS AND A KEPT CONTRACT (2026-09-05, with the above).
+        `make census` (tools/census.sh) rebuilds the runtime with
+        -DAVRA_CENSUS for EXACT counts — a sampling profiler charges
+        a release cascade to whoever was on the stack, which is how
+        the grammar executor looked like 45% of a run and was not.
+        `AVRA_CENSUS_SITES=1` adds two per-caller tables: writes
+        charged to the runtime fn that makes them, and whole-value
+        copies charged to the AVRA fn that asked, because a concat is
+        one call and many writes. Counting costs 8% of a run, so it
+        is a separate build and the shipping runtime carries none of
+        it; the script restores the shipping runtime ON EVERY EXIT.
+        `make traps` (tools/traps.sh) keeps the runtime's TRAP
+        CONTRACT — the exact words and exit 2 — which no corpus
+        program can hold, because the corpus runs every program in
+        one process and a trap ends it. THE GAP IT CLOSES WAS
+        MEASURED, not assumed: with the bounds message deliberately
+        reworded, the whole gate stayed green (1880 tests, 77
+        programs), because the only existing out-of-bounds test goes
+        through the evaluator. Three contracts, 1.4s, in the gate.
   - [x] THE EXTERN WALL'S WIDTH (2026-09-05, the SQLITE lane's find,
         REPRODUCED here before acting): Avra's `int` is 64 bits and
         C's is 32. `declare_externs` declares every extern answering
