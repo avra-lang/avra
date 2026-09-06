@@ -1828,6 +1828,26 @@ the order is the dependency.
         105`). That is the receiver-aliasing hole, S2's, and the fix
         above makes flat and boxed agree about it rather than
         differing.
+  - [ ] S2's SIZE, censused by lane D on cfa834d and NOT what either
+        of us expected: 100 sites in std-avrac, UNCHANGED by the
+        borrow retirement, plus 3 in std-toml which lane D fixed.
+        The hidden sites did not become visible, and the reason is
+        structural: F2047 fires on a non-`mut` RECEIVER AT A CALL
+        SITE, and a write through `self` INSIDE a method is the
+        receiver's own law, so the warning lives at the caller — who
+        was already counted. The retirement moved writes from a
+        borrowed local to `self.field`, which is a shape the lint
+        still does not count. The exception proves it: every newly
+        visible warning was in std-toml, whose readers are FREE
+        FUNCTIONS taking `rd: Reader` rather than methods.
+        SO F2047 IS THE WRONG INSTRUMENT FOR H3. A self-rooted write
+        never was countable by it. The instrument is the BORROW SITES
+        themselves — 34 before the sweep — and anyone sizing H3's
+        channel from the lint's number will size it at zero.
+        S2's shape is unchanged site for site: 9 captures (8
+        production in workspace.av and lower.av, 1 the db_test
+        fixture), 38 value-args (2 production), 1 alias at
+        typing.av:410, the rest tests.
   - [ ] S2 NEEDS THE OWNER, and the questions are named so the slice
         does not start in the wrong shape. (a) SPEC 11.4 vs 11.5:
         11.4 says v1.0 app-level aliasing is SHARED ("closures can
