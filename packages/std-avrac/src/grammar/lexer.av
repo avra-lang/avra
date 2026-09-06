@@ -70,7 +70,10 @@ export type LexResult = { tokens: List<Token>, errors: List<LexError> }
 fn is_single_op_code(c: int) -> bool {
     c == 61 || c == 124 || c == 40 || c == 41 || c == 42 || c == 43 || c == 63 ||
     c == 58 || c == 44 || c == 45 || c == 60 || c == 62 || c == 123 || c == 125 ||
-    c == 47 || c == 37 || c == 33 || c == 91 || c == 93 || c == 46
+    c == 47 || c == 37 || c == 33 || c == 91 || c == 93 || c == 46 ||
+    // the bitwise three: `&` and `^` reach here only after `&&`
+    // failed its munch, and `~` has no two-character form at all
+    c == 38 || c == 94 || c == 126
 }
 
 /// A token spanning `[lo, hi)`.
@@ -286,6 +289,14 @@ fn two_char_of(a: int, b: int) -> string? {
         a == 60 && b == 61 -> "<="
         a == 62 && b == 61 -> ">="
         a == 38 && b == 38 -> "&&"
+        // `<<` MUNCHES AND `>>` MUST NOT. A type argument closes
+        // with `>`, so `Table<List<string>>` would end in one shift
+        // token and the type would never close. `<<` has no twin —
+        // nothing opens two argument lists with no name between
+        // them. Shift-RIGHT is therefore two adjacent `>` the
+        // grammar joins: the split has to happen somewhere, and this
+        // grammar matches tokens and cannot split one.
+        a == 60 && b == 60 -> "<<"
         a == 124 && b == 124 -> "||"
         a == 63 && b == 63 -> "??"
         a == 63 && b == 46 -> "?."

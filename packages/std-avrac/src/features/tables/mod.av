@@ -16,8 +16,15 @@ export fn tables() -> LanguageFeature {
         name = "tables"
         docs = "`table<Row> { a | b \\n x | y }` — a list of `Row` literals, the header naming the fields, one row per line."
         gram = grammar {
-            primary = "table" "<" t:NAME ">" "{" BREAK h:NAME ( "|" h:NAME )* BREAK ( r:table_row BREAK )* "}" @expect("}", "expected `}` to close the table") -> table_lit(t, h, r)
-            table_row = c:expression ( "|" c:expression )* -> table_row(c)
+            primary = "table" "<" t:NAME ">" "{" BREAK h:NAME ( "|" h:NAME )* BREAK ( r:table_row BREAK )* "}" @expect("}", "expected `}` to close the table, or a cell that stopped early — a cell is a value up to `+`, so `==`, `??` and the bitwise operators need parentheses") -> table_lit(t, h, r)
+            // A CELL PARSES BELOW THE BITWISE BAND. `|` is this
+            // literal's column separator, so a cell that could
+            // contain a bare `|` would eat its own row: `"x" | f`
+            // read as one bitwise-or is a row of ONE cell where the
+            // header names two. `additive` is the first level under
+            // the band, and a cell that genuinely wants the whole
+            // grammar parenthesises — `primary` takes `( … )`.
+            table_row = c:additive ( "|" c:additive )* -> table_row(c)
         }
         builders = rows
     }

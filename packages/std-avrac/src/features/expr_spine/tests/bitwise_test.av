@@ -1,0 +1,79 @@
+// The bitwise band: six operators, the precedence that fixes C's
+// famous bug, the run law that refuses an ambiguous mix, and the
+// shift count — refused when the compiler can read it, trapped when
+// it cannot.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/expr_spine (bitwise)" {
+    given "the six operators" {
+        then "and, or and xor answer bit by bit" {
+            shown("let a = 12\nlet b = 10\n\"\${a & b} \${a | b} \${a ^ b}\"") == "8 14 6"
+        }
+        then "`~` is the INT's negation, and it desugars to `^ -1`" {
+            shown("let a = 12\n~a") == "-13"
+        }
+        then "shifts move bits in both directions" {
+            shown("let a = 12\n\"\${a << 2} \${a >> 2}\"") == "48 3"
+        }
+        then "shift-right is ARITHMETIC — the sign fills" {
+            shown("let a = 0 - 8\na >> 1") == "-4"
+        }
+        then "a shift round-trips through both directions" {
+            shown("let a = 12\n(a << 3) >> 3") == "12"
+        }
+    }
+
+    given "the precedence, where C is WRONG" {
+        then "`a & m == m` is `(a & m) == m`, not C's `a & (m == m)`" {
+            shown("let f = 12\nlet m = 4\nf & m == m") == "true"
+        }
+        then "and it answers what the parenthesised form answers" {
+            shown("let f = 12\nlet m = 4\n(f & m) == m") == "true"
+        }
+        then "a bitwise operand still reaches `??`'s left" {
+            shown("fn some(v: int) -> int? {\n    v\n}\nsome(6 & 3) ?? 0") == "2"
+        }
+    }
+
+    given "the precedence, where C is only ARBITRARY" {
+        then "`a << 1 + 2` reads as C reads it — the additive first" {
+            shown("let a = 1\na << 1 + 2") == "8"
+        }
+    }
+
+    given "the run law" {
+        then "two DIFFERENT bitwise operators with no parens are refused" {
+            refused_with("let a = 1\nlet b = 2\nlet c = 3\na | b & c", "have no agreed order")
+        }
+        then "the refusal names BOTH operators the reader wrote" {
+            refused_with("let a = 1\nlet b = 2\nlet c = 3\na ^ b << c", "`^` and `<<`")
+        }
+        then "one operator repeated is not a mix" {
+            shown("let a = 1\nlet b = 2\nlet c = 4\na | b | c") == "7"
+        }
+        then "parentheses settle it" {
+            shown("let a = 1\nlet b = 2\nlet c = 3\na | (b & c)") == "3"
+        }
+    }
+
+    given "the shift count" {
+        then "a literal 64 is refused where it is written" {
+            refused_with("let a = 1\na << 64", "a shift count must be between 0 and 63, this is 64")
+        }
+        then "a literal 63 is the last legal one" {
+            shown("let a = 1\n(a << 63) >> 63") == "-1"
+        }
+        then "a count the compiler cannot read is not refused — it traps" {
+            shown("let a = 1\nmut n = 0\nn = n + 3\na << n") == "8"
+        }
+    }
+
+    given "the tokens the shifts share with generics" {
+        then "a nested generic still closes — `>>` is never one token" {
+            shown("let xs: List<List<int>> = [[1], [2, 3]]\nxs.length") == "2"
+        }
+        then "comparison is untouched by the band below it" {
+            shown("let a = 3\nlet b = 2\n\"\${a > b} \${a >= 3}\"") == "true true"
+        }
+    }
+}

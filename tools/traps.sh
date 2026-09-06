@@ -53,6 +53,21 @@ xs[i]
 trapped empty "avra: index 0 is out of bounds (length 0)" 2 '' 'let xs: List<int> = []
 xs[0]
 '
+# A SHIFT COUNT the compiler cannot read. A literal one is refused
+# where it is written (F2057); this is its twin — the count arrives at
+# run time, so one C body decides the edge and BOTH engines call it.
+# The words name the LAW, never the mechanism that would enforce it.
+trapped shift_wide "avra: a shift count must be between 0 and 63" 2 '' 'let a = 1
+mut n = 0
+n = n + 64
+a << n
+'
+trapped shift_negative "avra: a shift count must be between 0 and 63" 2 '' 'let a = 1
+mut n = 0
+n = n - 1
+a >> n
+'
+
 # A trap raised with a PACKAGE in use is still a verdict — the row
 # that proves this harness reaches past a bare file, so the capability
 # is exercised rather than merely available.

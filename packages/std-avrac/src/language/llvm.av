@@ -388,6 +388,14 @@ impl Emit {
             .Gt -> avra_llvm_build_icmp(self.b, 38, a, b, "cmp"),
             .Ge -> avra_llvm_build_icmp(self.b, 39, a, b, "cmp"),
             .And or .Or -> self.wrecked("a lazy op reached the eager path", a),
+            .BitAnd -> avra_llvm_build_and(self.b, a, b, "band"),
+            .BitOr -> avra_llvm_build_or(self.b, a, b, "bor"),
+            .BitXor -> avra_llvm_build_xor(self.b, a, b, "bxor"),
+            // Guarded like Div/Mod: a shift past the width is POISON
+            // in LLVM and undefined in C, so one C body decides where
+            // the edge is and both engines call it.
+            .Shl -> self.call("avra_int_shl", [a, b]),
+            .Shr -> self.call("avra_int_shr", [a, b]),
         }
     }
 

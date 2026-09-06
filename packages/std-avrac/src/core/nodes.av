@@ -129,7 +129,13 @@ export type ModuleId = { index: int }
 
 /// The binary operators. And/Or are LAZY — their owner evaluates
 /// and lowers them as control; every other op is an eager Bin.
-export enum BinOp { Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge, And, Or }
+/// THE BINARY OPERATORS. `And`/`Or` are the LAZY pair — `&&`/`||` —
+/// and lowering diverts them to regions before any `Bin` is emitted;
+/// the BITWISE five below are eager machine operations and share
+/// nothing with them but a shape. APPEND-ONLY, like every registry
+/// here: the fingerprint table numbers by ordinal-in-spirit and a
+/// renumbering would silently rewrite every memo key.
+export enum BinOp { Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge, And, Or, BitAnd, BitOr, BitXor, Shl, Shr }
 
 /// The operator's surface symbol — THE one projection; consumers
 /// (parser, law wording, renderer) query, never keep their own.
@@ -148,6 +154,11 @@ export fn op_symbol(op: BinOp) -> string {
         .Ge -> ">=",
         .And -> "&&",
         .Or -> "||",
+        .BitAnd -> "&",
+        .BitOr -> "|",
+        .BitXor -> "^",
+        .Shl -> "<<",
+        .Shr -> ">>",
     }
 }
 
@@ -156,7 +167,8 @@ export fn all_binops() -> List<BinOp> {
     let ops: List<BinOp> =
         [BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.Div, BinOp.Mod,
          BinOp.Eq, BinOp.Ne, BinOp.Lt, BinOp.Le, BinOp.Gt, BinOp.Ge,
-         BinOp.And, BinOp.Or]
+         BinOp.And, BinOp.Or,
+         BinOp.BitAnd, BinOp.BitOr, BinOp.BitXor, BinOp.Shl, BinOp.Shr]
     ops
 }
 
@@ -963,6 +975,11 @@ fn fp_binop(op: BinOp) -> int {
         .Ge -> 11,
         .And -> 12,
         .Or -> 13,
+        .BitAnd -> 14,
+        .BitOr -> 15,
+        .BitXor -> 16,
+        .Shl -> 17,
+        .Shr -> 18,
     }
 }
 

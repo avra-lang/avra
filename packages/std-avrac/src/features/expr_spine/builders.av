@@ -28,6 +28,59 @@ fn build_fold_binary(mut b: Builder) -> Result<LangNode, string> {
     b.wrap_expr(acc)
 }
 
+/// `l (op r)*` over the BITWISE band. One law lives here and it is
+/// the reason the band is one rule rather than five: A RUN THAT MIXES
+/// TWO DIFFERENT BITWISE OPERATORS IS REFUSED. `a | b & c` has two
+/// readings a reader must know a table to choose between, and a
+/// generated one is as likely to mean either — so it names both and
+/// asks for parentheses instead of picking.
+///
+/// Only the run is visible here, which is exactly the right reach:
+/// `a << 1 + 2` is a DIFFERENT level (the additive arrives already
+/// built) and reads as C reads it, because C is arbitrary there
+/// rather than wrong. What C gets wrong is `a & b == c`, and the
+/// band's PLACE in the ladder — tighter than comparison — fixes that
+/// without any law at all.
+fn build_fold_bitwise(mut b: Builder) -> Result<LangNode, string> {
+    mut acc = b.expr(0)?
+    let ops = b.tokens(1)?
+    let rights = b.exprs(2)?
+    let mixed: Token? = ops.find(it.text != ops[0].text)
+    if mixed != null { return .Err(mixed_bitwise(ops[0].text, mixed!.text)) }
+    for i, t in ops {
+        let op = want(binop_of(bitwise_symbol(t.text)), "a bitwise operator")?
+        acc = b.store.alloc_expr(Expr.Binary(op, acc, rights[i]), b.cover(acc, rights[i]))
+    }
+    b.wrap_expr(acc)
+}
+
+/// A captured operator's SYMBOL. Shift-right arrives as a lone `>`
+/// — its twin is matched and dropped by the grammar, because `>>`
+/// cannot be one token without closing type arguments wrong — so the
+/// one place that knows it names it here rather than at every reader.
+fn bitwise_symbol(text: string) -> string {
+    if text == ">" { return ">>" }
+    text
+}
+
+/// The words that law refuses in — one place, so the two operators
+/// it names are always the two the reader wrote.
+fn mixed_bitwise(first: string, second: string) -> string {
+    "`${first}` and `${second}` in one expression have no agreed order — write parentheses to say which binds first"
+}
+
+/// `~v` is `v ^ -1`: the parse desugars, so no pass learns a node —
+/// the same trick `-v` uses, and for the same reason. Two's
+/// complement makes the two exact, and an `Expr` variant would tax
+/// every exhaustive match in the tree for a form that is already
+/// spellable.
+fn build_bitnot(mut b: Builder) -> Result<LangNode, string> {
+    let v = b.expr(0)?
+    let ones = b.store.alloc_expr(Expr.IntLit(0 - 1), b.span)
+    let xor = want(binop_of("^"), "the xor operator")?
+    b.make_expr(Expr.Binary(xor, v, ones))
+}
+
 /// `l (op r)?` — at most one comparison, never a chain; or `l is
 /// .variant`, the tag test, which enums give meaning.
 fn build_fold_cmp(mut b: Builder) -> Result<LangNode, string> {
