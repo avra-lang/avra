@@ -14,9 +14,9 @@
 //! and an out-of-memory — so a read that tests the POINTER cannot tell
 //! them apart. `int_at` asks `column_type` before it reads, and a cell
 //! of the wrong class is a `Mismatch` rather than a coerced zero.
-use error.{Cause, Storage, SqlError, refused, defect, cause_of}
+use error.{Cause, Storage, SqlError, refused, barred, defect, cause_of}
 use boundary.{transient, static_bytes, has_nul}
-use open.{Db}
+use open.{Db, closed_fault}
 use script.{statements}
 use c.{sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset,
        sqlite3_column_count, sqlite3_data_count, sqlite3_column_type,
@@ -42,6 +42,7 @@ fn done_code() -> int { 101 }
 /// the FIRST statement and reports success for the rest, which is the
 /// silent wrong answer this refuses.
 export fn prepare(db: Db, sql: string) -> Result<Stmt, SqlError> {
+    let _ = barred(closed_fault(db))?
     let parts = statements(sql)?
     if parts.length > 1 { fail refused(Cause.ManyStatements, "this verb takes ONE statement and the text holds ${parts.length} — a script verb runs many") }
     if parts.is_empty() { fail refused(Cause.NoStatement, "the text holds no statement — it is empty or nothing but comments") }
@@ -49,6 +50,13 @@ export fn prepare(db: Db, sql: string) -> Result<Stmt, SqlError> {
 }
 
 /// The call, and the only place the statement handle is nullable.
+///
+/// ONE DOOR COVERS THE MODULE. `prepare` asks `closed_fault` before
+/// anything else, and every other verb here that reaches the CONNECTION
+/// is downstream of a successful prepare — `run`'s `sqlite3_changes64`
+/// is reached only after one — so a closed connection is named once,
+/// where the caller can act on it, rather than arriving as SQLite's
+/// SQLITE_MISUSE with the driver's name on it.
 fn compiled(db: Db, sql: string) -> Result<Stmt, SqlError> {
     mut handle: ptr? = null
     mut tail: ptr? = null

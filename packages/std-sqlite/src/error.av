@@ -163,6 +163,26 @@ export enum Cause {
     /// to run it again. And not `Defect` — a defensive extra step is a
     /// careful author's habit, not the driver's bug.
     Done
+    /// A connection used after `close`. THE CONNECTION TWIN OF
+    /// `.Finalized`, carved out of `.Defect` for the same reason: closing
+    /// and then calling is a CALLER's sequence, and naming it a driver
+    /// bug sends them to report their own code.
+    ///
+    /// It is a named arm rather than SQLite's answer because SQLite has
+    /// none to give. `sqlite3_get_autocommit` answers 0 for a handle it
+    /// refuses, and 0 is ALSO its answer for a connection inside a
+    /// transaction — so the misuse path spends the value the real answer
+    /// needs, and every guard reading it inverts.
+    Closed
+    /// A `commit` with no transaction open. The driver cannot tell WHICH
+    /// way the caller arrived — none was ever begun, or the database
+    /// ended it under them — so the message names both. A statement-level
+    /// `ON CONFLICT ROLLBACK`, a full disk and an I/O failure all end a
+    /// transaction after reporting the error that caused it.
+    NoTransaction
+    /// A `begin` on a connection that already has a transaction open.
+    /// Nesting wants a savepoint, which is a later slice.
+    TransactionOpen
 }
 
 /// Why SQLite refused, materialised at the failure site and owning
@@ -293,7 +313,7 @@ impl Cause {
             .Io(_) or .NoMemory or .CantOpen or .NotADatabase or .Expired or
             .Defect(_) or .Other(_) or .EmptyPath or .UriPath or .HoldsNul or
             .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized or
-            .Done -> false,
+            .Done or .Closed or .NoTransaction or .TransactionOpen -> false,
         }
     }
 
@@ -331,6 +351,9 @@ impl Cause {
             .RowsDiscarded -> "sqlite.rows_discarded",
             .Finalized -> "sqlite.finalized",
             .Done -> "sqlite.done",
+            .Closed -> "sqlite.closed",
+            .NoTransaction -> "sqlite.no_transaction",
+            .TransactionOpen -> "sqlite.transaction_open",
         }
     }
 }
@@ -415,6 +438,19 @@ export fn refused(cause: Cause, message: string) -> SqlError {
 ///
 /// Never for a caller's mistake — that is what the other arms are for.
 export fn defect(what: string) -> SqlError { refused(Cause.Defect(what), what) }
+
+/// A DOOR'S ANSWER SPENT AS A FAILURE — a fault gate, written once
+/// because every door in this package (`path_fault`, `closed_fault`)
+/// answers `SqlError?` and every caller of one wants the same two lines.
+///
+/// `if let e? = fault { fail e }` would say it in one, and the subset
+/// refuses a one-armed `if let`: it is an expression form and demands
+/// its `else` (`F0100: expected BREAK while parsing `stmt``, at the
+/// `let`). So the pin is the spelling, and it is spelled here.
+export fn barred(fault: SqlError?) -> Result<int, SqlError> {
+    if fault != null { fail fault! }
+    0
+}
 
 impl Error for SqlError {
     fn describe() -> ErrorInfo { info(self.cause.kind(), self.message) }

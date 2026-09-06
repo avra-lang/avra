@@ -1,0 +1,318 @@
+// THE TRANSACTION SLICE, ATTACKED. Every case here is a survivor of a
+// red-team pass that found five wrong answers, and each one names the
+// mechanism rather than the symptom, so it still means something after
+// the code that produced it has moved.
+use @std.sqlite.open.{Db, open, memory, close}
+use @std.sqlite.stmt.{Stmt, run, prepare, step, finalize}
+use @std.sqlite.tx.{begin, begin_read, commit, rollback, finish, finish_if_opened, in_transaction, begin_unless_open}
+use @std.sqlite.error.{SqlError}
+use @std.io.{exists, remove}
+
+fn tx_kind(r: Result<int, SqlError>) -> string {
+    match r {
+        .Ok(n) -> "Ok(${n})",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+// ── A CLOSED CONNECTION ─────────────────────────────────────────
+//
+// `sqlite3_get_autocommit` answers 0 for a handle API_ARMOR refuses,
+// and 0 is ALSO its answer for a connection inside a transaction. Every
+// case below reads a connection whose handle is null, so each one asks
+// whether the driver believes C or its own `ptr?`.
+
+/// A fresh in-memory database handed to `work`, or the kind the OPEN
+/// itself failed with — the shape every case here starts from, and the
+/// twentieth copy of it in this suite, so it is named once.
+fn in_memory(work: fn(Db) -> string) -> string {
+    match memory() {
+        .Ok(db) -> work(db),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn on_a_closed_db(work: fn(Db) -> string) -> string {
+    in_memory((db) -> after_closing(db, work))
+}
+
+fn after_closing(db: Db, work: fn(Db) -> string) -> string {
+    mut held = db
+    let _ = close(held)
+    work(held)
+}
+
+fn asked_open(db: Db) -> string { "${in_transaction(db)}" }
+fn tried_begin(db: Db) -> string { tx_kind(begin(db)) }
+fn tried_commit(db: Db) -> string { tx_kind(commit(db)) }
+fn tried_rollback(db: Db) -> string { tx_kind(rollback(db)) }
+fn tried_finish(db: Db) -> string { "${finish(db)} open=${in_transaction(db)}" }
+
+// The same law one module over. `prepare` reaches the CONNECTION, and
+// with no door it handed SQLite a null handle and passed SQLITE_MISUSE
+// back as `sqlite.defect` — the driver accusing itself for the caller's
+// sequence, which is the whole reason `.Closed` exists.
+fn tried_prepare(db: Db) -> string {
+    match prepare(db, "select 1") {
+        .Ok(_) -> "Ok",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn tried_run(db: Db) -> string { tx_kind(run(db, "select 1")) }
+
+// ── THE DATABASE ENDING THE TRANSACTION ITSELF ──────────────────
+
+/// A constraint declared `ON CONFLICT ROLLBACK`: the failing statement
+/// ends the whole transaction, and the caller's next verb is a commit
+/// they were right to send.
+fn commit_after_an_auto_rollback() -> string { in_memory(conflicted) }
+
+fn conflicted(db: Db) -> string {
+    match seeded_conflict(db) {
+        .Ok(s) -> s,
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn seeded_conflict(db: Db) -> Result<string, SqlError> {
+    let _ = run(db, "create table t (n int unique on conflict rollback)")?
+    let _ = begin(db)?
+    let _ = run(db, "insert into t values (1)")?
+    let dup = tx_kind(run(db, "insert into t values (1)"))
+    let open_still = in_transaction(db)
+    "${dup} open=${open_still} commit=${tx_kind(commit(db))}"
+}
+
+// ── A BUSY COMMIT ───────────────────────────────────────────────
+//
+// A COMMIT refused for BUSY leaves the transaction OPEN, which is the
+// one failure a caller is most likely to meet and the one the doc block
+// used to deny. Two connections on one FILE — an in-memory database has
+// no second connection to contend with.
+
+fn commit_under_a_standing_reader() -> string {
+    match open(busy_path()) {
+        .Ok(w) -> with_a_writer(w),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn busy_path() -> string { "build/sqlite-tx-busy.db" }
+
+fn with_a_writer(w: Db) -> string {
+    mut held = w
+    let said = contended(w)
+    let _ = finish(held)
+    let _ = close(held)
+    let _ = busy_swept()
+    said
+}
+
+fn busy_swept() -> bool {
+    if !exists(busy_path()) { return false }
+    match remove(busy_path()) {
+        .Ok(_) -> true,
+        .Err(_) -> false,
+    }
+}
+
+fn contended(w: Db) -> string {
+    match seeded_file(w) {
+        .Ok(_) -> with_a_reader(w),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn seeded_file(w: Db) -> Result<int, SqlError> {
+    let _ = run(w, "drop table if exists t")?
+    let _ = run(w, "create table t (n int)")?
+    run(w, "insert into t values (1)")
+}
+
+fn with_a_reader(w: Db) -> string {
+    match open(busy_path()) {
+        .Ok(r) -> reading(w, r),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn reading(w: Db, r: Db) -> string {
+    mut held = r
+    let said = held_open(w, r)
+    let _ = close(held)
+    said
+}
+
+fn held_open(w: Db, r: Db) -> string {
+    match prepare(r, "select n from t") {
+        .Ok(s) -> stepped_then_committed(w, s),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn stepped_then_committed(w: Db, s: Stmt) -> string {
+    mut held = s
+    let _ = step(held)
+    let said = committed_while_read(w)
+    let _ = finalize(held)
+    said
+}
+
+fn committed_while_read(w: Db) -> string {
+    match promoted(w) {
+        .Ok(s) -> s,
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn promoted(w: Db) -> Result<string, SqlError> {
+    let _ = begin(w)?
+    let _ = run(w, "insert into t values (2)")?
+    let c = tx_kind(commit(w))
+    "${c} open=${in_transaction(w)} finish=${finish(w)}"
+}
+
+// ── AN INNER SCOPE CLEANING UP ──────────────────────────────────
+
+/// The composition `begin_unless_open` exists for: an outer frame is
+/// standing, an inner helper is handed it, the helper fails and cleans
+/// up. What the helper cleans up with is the whole question.
+fn inner_cleanup(clean: fn(Db, bool) -> int) -> string {
+    in_memory((db) -> tx_nested(db, clean))
+}
+
+fn tx_nested(db: Db, clean: fn(Db, bool) -> int) -> string {
+    mut held = db
+    let said = outer_then_inner(db, clean)
+    let _ = close(held)
+    said
+}
+
+fn outer_then_inner(db: Db, clean: fn(Db, bool) -> int) -> string {
+    match framed(db, clean) {
+        .Ok(s) -> s,
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn framed(db: Db, clean: fn(Db, bool) -> int) -> Result<string, SqlError> {
+    let _ = run(db, "create table t (n int)")?
+    let _ = begin(db)?
+    let _ = run(db, "insert into t values (1)")?
+    let opened = begin_unless_open(db)?
+    let _ = clean(db, opened)
+    "mine=${opened} outer_open=${in_transaction(db)}"
+}
+
+fn cleaned_by_finish(db: Db, opened: bool) -> int { finish(db) }
+fn cleaned_by_the_pair(db: Db, opened: bool) -> int { finish_if_opened(db, opened) }
+
+// ── A READ TRANSACTION THAT WRITES ──────────────────────────────
+
+fn wrote_inside_a_read() -> string { in_memory(promoting) }
+
+fn promoting(db: Db) -> string {
+    mut held = db
+    let said = deferred_then_wrote(db)
+    let _ = finish(held)
+    let _ = close(held)
+    said
+}
+
+fn deferred_then_wrote(db: Db) -> string {
+    match seeded_deferred(db) {
+        .Ok(s) -> s,
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn seeded_deferred(db: Db) -> Result<string, SqlError> {
+    let _ = run(db, "create table t (n int)")?
+    let _ = begin_read(db)?
+    tx_kind(run(db, "insert into t values (1)"))
+}
+
+spec "std/sqlite transaction adversarial" {
+
+    given "a connection that was closed, which C answers about anyway" {
+        // `close` nulls the handle, and the null is the whole test. C
+        // cannot be asked: API_ARMOR's refusal answers the same 0 that
+        // means "inside a transaction", so a driver that trusts it reads
+        // a dead connection as a busy one.
+        then "a closed connection is in no transaction" { on_a_closed_db(asked_open) == "false" }
+        // Each verb below reported something ELSE before the null test
+        // existed: `begin` announced a standing transaction, and commit
+        // and rollback passed SQLite's own MISUSE back as a driver bug.
+        // These two are held by `closed_fault` rather than by the null
+        // test, which is deliberate — the reading and the writing verbs
+        // fail independently, so neither one alone is the whole guard.
+        then "`begin` names the closed connection rather than a transaction" { on_a_closed_db(tried_begin) == "sqlite.closed" }
+        then "`commit` names it too, instead of SQLite's misuse code" { on_a_closed_db(tried_commit) == "sqlite.closed" }
+        // Rollback and finish mean "end whatever is open", and on a
+        // closed connection nothing is — so they answer, they do not
+        // refuse. That asymmetry is the design: the writing verbs speak,
+        // the cleanup verbs stay quiet.
+        then "`rollback` has nothing to end and says so quietly" { on_a_closed_db(tried_rollback) == "Ok(0)" }
+        // `finish` ANSWERS 0 EITHER WAY — for "nothing was open" and for
+        // "I sent a rollback and it failed" — so the count alone cannot
+        // witness this, and the case asks the question that can. It is
+        // the caller's rule too: after a cleanup that must have worked,
+        // ask `in_transaction`, never the count.
+        then "`finish` leaves nothing open, which the count alone cannot say" { on_a_closed_db(tried_finish) == "0 open=false" }
+        // Fixing this in `tx.av` alone would have shipped a package that
+        // answers TWO different things about one mistake on one
+        // connection. `prepare` asks the same door, first, and `run` is
+        // downstream of it — one door for the module.
+        then "`prepare` names the closed connection, not a driver bug" { on_a_closed_db(tried_prepare) == "sqlite.closed" }
+        then "and `run`, which cannot reach the connection except through it" { on_a_closed_db(tried_run) == "sqlite.closed" }
+    }
+
+    given "a transaction the DATABASE ended, not the caller" {
+        // The duplicate is reported honestly; what follows is the trap.
+        // The caller sends the commit their own code called for, and the
+        // transaction is already gone — so the refusal must not accuse
+        // them of losing track of it, and must never read as a bug to
+        // report.
+        then "the caller is told what is missing, not that they have a bug" {
+            commit_after_an_auto_rollback() == "sqlite.constraint.unique open=false commit=sqlite.no_transaction"
+        }
+    }
+
+    given "a COMMIT refused while another connection reads" {
+        // SQLITE_BUSY is the one commit failure that leaves the
+        // transaction STANDING — a constraint or an I/O error has
+        // already rolled back. A caller who takes the refusal as final
+        // holds the database for the life of the connection; `finish`
+        // asks autocommit and finds the one that is still there.
+        then "the transaction is still open, and `finish` is what ends it" {
+            commit_under_a_standing_reader() == "sqlite.busy open=true finish=1"
+        }
+    }
+
+    given "an inner scope that was handed an open transaction" {
+        // `finish` ends whatever is open. Inside a helper that did not
+        // open it, that is the caller's work being thrown away with
+        // nothing raised anywhere — the outer frame becomes a run of
+        // auto-committed writes and its own commit finds nothing.
+        then "cleaning up with `finish` destroys the caller's frame" {
+            inner_cleanup(cleaned_by_finish) == "mine=false outer_open=false"
+        }
+        // Which is what `begin_unless_open`'s answer is FOR. The pair
+        // spends the bool instead of leaving it as advice.
+        then "cleaning up with `finish_if_opened` leaves it standing" {
+            inner_cleanup(cleaned_by_the_pair) == "mine=false outer_open=true"
+        }
+    }
+
+    given "a read transaction asked to write" {
+        // Deferred simply promotes, and nothing here refuses it: a
+        // refusal would mean reading the caller's SQL, and matching
+        // words in a language this driver does not parse is a blocklist
+        // wearing a guard's clothes. The verb's NAME is the contract,
+        // and this case pins that it is only a name.
+        then "the write lands, so `begin_read` is a promise and not a lock" {
+            wrote_inside_a_read() == "Ok(1)"
+        }
+    }
+}
