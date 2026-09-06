@@ -43,9 +43,16 @@ happens to have. Only the declaration can be held to account.
 import re, sys, glob, os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# The compiler's own C. Every other source comes from the manifest of
-# the package that owns it.
-TREE_SOURCES = ["runtime/avra_runtime.c", "backend/llvm_wrapper.c"]
+# The compiler's own C — GLOBBED, not listed. A hand-written list is a
+# registry that silently forgets its next member, and this one would
+# have: the first new file under `runtime/` would have had every
+# extern in it unchecked, with the keeper reporting green.
+def tree_sources():
+    found = []
+    for d in ("runtime", "backend"):
+        for path in sorted(glob.glob(os.path.join(ROOT, d, "*.c"))):
+            found.append(os.path.relpath(path, ROOT))
+    return found
 
 
 # a C return whose value fills the whole 64-bit register
@@ -461,7 +468,7 @@ def main():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
-    sources = TREE_SOURCES + vendored
+    sources = tree_sources() + vendored
     bodies, wall = c_returns(sources), externs()
     tds = typedefs(sources)
     ours = [(n, t, w) for n, t, w in wall if n in bodies]
