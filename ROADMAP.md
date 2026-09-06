@@ -381,6 +381,40 @@ the compiler checking itself 28.8s.
         refuses today's tree and refuses a trait-default program
         ("expected `}` while parsing `stmt`") where today's binary
         accepts it.
+  - [x] THE EXTERN WALL'S WIDTH (2026-09-05, the SQLITE lane's find,
+        REPRODUCED here before acting): Avra's `int` is 64 bits and
+        C's is 32. `declare_externs` declares every extern answering
+        `int` as `i64`, but a C body answering a narrow type writes
+        only the low half, and neither ABI promises the bits above
+        it — both compilers materialise a 32-bit result with a
+        32-bit write, which ZEROES the upper half. MEASURED under
+        lane A's own hand, five C fns at -O2 linked through an
+        object: a C `int` of -1 reads 4294967295, INT_MIN reads
+        2147483648, a C `short` of -1 reads 4294967295, and
+        `f() == 0 - 1` answers FALSE. A C `long` is right, and an
+        unsigned MAX is right by luck. The emitted line is
+        `declare i64 @avra_probe_i32_neg()`.
+        BOTH ENGINES AGREE ON THE WRONG ANSWER, so `eval == native`
+        cannot catch this class — that property is AGREEMENT, never
+        correctness, and it is worth saying out loud because the tree
+        leans on it hard.
+        OUR HALF IS CLOSED: an audit of all 98 externs whose C body
+        we own found exactly two narrow, both in
+        backend/llvm_wrapper.c (`print_module_to_file`,
+        `verify_module_print`), both right today only because their
+        values are 0 and 1 and a 32-bit write of 0 zeroes the
+        register. Both answer `int64_t` now, and `make externs`
+        (tools/externs.py, in the gate) refuses the class: a C body
+        we own, read as `int`, must answer a 64-bit type or a
+        pointer. Proved by restoring a narrow return and watching the
+        gate go red.
+        WHAT IT CANNOT DO: it cannot read a THIRD party's headers, so
+        a binding to someone else's library is unprotected. That is
+        the sized integer types' job (spec Axis 15.2: `i32`, `u32`
+        map to fixed-width C types; today `extern fn f() -> i32` is
+        F2001 "`i32` names no type"). Specified, missing, and
+        producing wrong answers — a LANGUAGE slice, not lane A's to
+        schedule.
   - [x] THE REBASED LANE IS REBUILT BY WHICHEVER COMPILER READS IT
         (2026-09-05, lane C's find, relayed by lane D): the pre-flight
         fixed the MERGE side; the REBASE side had the mirror gap. The

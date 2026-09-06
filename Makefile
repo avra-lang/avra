@@ -18,7 +18,7 @@ RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli
 
-.PHONY: test tested clean corpus gate idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
+.PHONY: test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
         check run ir emit build-native native-check avra
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
@@ -127,13 +127,20 @@ idioms-accept:
 vocab:
 	@sh tools/vocab.sh
 
+# THE EXTERN WALL'S WIDTH: Avra's `int` is 64 bits and C's is 32, so a
+# C body answering a narrow type writes only the low half and a
+# negative value reads as a large positive one. Both engines agree on
+# that wrong answer, so the corpus cannot catch it.
+externs:
+	@python3 tools/externs.py
+
 # The whole gate: the vocabulary's guarantee, idioms, unit specs,
 # then the corpus end to end.
 # THE GATE: the suites run with the scaffolder's template in place —
 # scaffolded into std-avrac before, removed after, however the suites
 # end — so the templates' own test is one case of that suite, not a
 # second compile of the whole compiler for one case.
-gate: vocab idioms tested corpus
+gate: vocab externs idioms tested corpus
 
 tested: $(RUNTIME_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
