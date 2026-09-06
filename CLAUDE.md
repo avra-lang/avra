@@ -140,6 +140,27 @@ registry is the idiom engine's spec, written by dogfooding.
   feature matching its own variants (it cannot enumerate other
   features') and a loop that DELEGATES the rest to an exhaustive
   dispatch — each writes `rest ->` at the site.
+  AND THE LAW IS ABOUT THE TEST, NOT THE MATCH. For a REGISTRY enum
+  `is .Variant` IS A CATCH-ALL IN DIFFERENT CLOTHES: a boolean that
+  asks about ONE variant and falls through for the rest discharges
+  the registry's obligation no better than `_ ->`, and it is harder
+  to see. For a PROJECTION enum it stays the right idiom. Two
+  `RtKind` consumers were written that way (`rt_arg`, `answers_word`
+  in llvm.av), correct only while the enum had three variants —
+  widening it to carry C's integer widths would have sent an Avra
+  `int` into an `i32` seat with no truncation, compiling clean. Both
+  are exhaustive matches now.
+  ENFORCEMENT SPLITS FROM THE LAW HERE, deliberately: no grep tells a
+  registry enum from a projection one, so this gets NO ratchet rule.
+  The keeper is `make vocab`, which names each registry's consumers
+  and refuses BOTH shapes inside them; it covers `Ins` and `RtKind`,
+  and a registry it does not name is unguarded. Naming the next one
+  IS how this law is enforced.
+  AND THE REASON IT HID GENERALIZES: `RtKind` had three variants from
+  the day it was written and never grew, so nothing ever tested the
+  assumption. A KEEPER THAT HAS ONLY EVER GUARDED A STATIC ENUM IS
+  UNTESTED — the first widening is its first real test, and that is
+  the worst moment to learn it was only ever looking for one shape.
 - THE EXEMPTION LAW, which the above is one instance of: a doctrine
   exemption that is not written AT THE SITE is an unbounded amnesty.
   Prose exemptions are invisible to tooling and to the next reader,
