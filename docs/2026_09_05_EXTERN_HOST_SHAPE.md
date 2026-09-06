@@ -2,8 +2,8 @@
 
 > **Status:** a design, not a patch. Lane C asked for it and will land
 > it; `language/interp.av` is theirs and this lane has written no line
-> in it. Grounded in `2026_09_05_STD_SQLITE_RESEARCH_interp_extern_host.md`
-> (the ABI analysis) and re-verified against the tree where it matters.
+> in it. Grounded in the campaign's ABI analysis (in git history) and
+> re-verified against the tree where it matters.
 >
 > **What it closes:** today `avra run` traps on ANY extern —
 > "`X` is extern — the evaluator cannot host it; build natively",

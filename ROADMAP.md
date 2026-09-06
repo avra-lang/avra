@@ -2280,1389 +2280,499 @@ emits by default. First thing in a cloud lane: `make corpus` green,
 recorded here with the container's `uname -a`.
 
 LANE SQLITE — THE DRIVER THAT GROWS THE LANGUAGE (opened 2026-09-05;
-owns `packages/std-sqlite/` and the FFI surface — the extern grammar
-in `features/fns/`, the ownership annotations, `opaque type`, and the
-interpreter's extern host; BORROWS `core/` and `runtime/` by
-arrangement with lane A, and `language/interp.av` by arrangement with
-lane C).
+owns `packages/std-sqlite/` and the FFI surface — the extern grammar in
+`features/fns/`, the ownership annotations, `opaque type`, and the
+interpreter's extern host; BORROWS `core/` and `runtime/` from lane A,
+`language/interp.av` from lane C).
 
-THE MISSION: `@std/sqlite`, the full SQLite surface, test-driven, as
-the substrate a later ORM is built on. THE RULE THE OWNER SET, which
-shapes every item below: a gap in the language or the stdlib is not
-papered over — it is recorded here and CLOSED, and only then is the
-driver written past it. The driver is the forcing function; the
-language is the deliverable.
+THE MISSION: `@std/sqlite`, the full SQLite surface, test-driven, as the
+substrate a later ORM is built on. THE RULE THE OWNER SET: a gap in the
+language is not papered over — it is recorded here and CLOSED, and only
+then is the driver written past it. The driver is the forcing function;
+the language is the deliverable.
 
 THE DECISIONS (owner, 2026-09-05):
-  - DIRECT `extern fn sqlite3_*`, no hand-written C shim. A shim is
-    the paper, written in C: every call Avra cannot express would
-    hide inside it. Where the call cannot be spelled, the LANGUAGE
-    grows to spell it — the spec's Axis 15.
-  - THE AMALGAMATION IS VENDORED, compiled with our flags.
-    CORRECTED 2026-09-05: this entry first said Apple's libsqlite3
-    lacks `COLUMN_METADATA`, `DESERIALIZE` and `SESSION`. That was
-    WRONG ON ALL THREE — `PRAGMA compile_options` lists
-    `ENABLE_COLUMN_METADATA` and `ENABLE_SESSION`, and DESERIALIZE
-    has been on by default since 3.36.0 (only `OMIT_DESERIALIZE`
-    removes it). THE DECISION STANDS; ITS REASONS CHANGE, and the
-    real ones are better: Apple's build sets `OMIT_LOAD_EXTENSION`
-    (a class of the surface foreclosed permanently, on every Mac);
-    `DQS=3`, so the double-quoted-string misfeature is ON in both
-    DDL and DML and a typo'd column name silently becomes a string
-    literal; it ships no `sqlite3session.h`, so the session symbols
-    exist but binding them means binding an undocumented Apple-
-    private ABI; it carries Apple's SEE codec and a deliberate
-    `BUG_COMPATIBLE_20160819` mode, so it is not stock SQLite; and
-    it is `THREADSAFE=2`, not serialized. Add the two that never
-    depended on flags: this machine ships 3.51.0 while upstream is
-    3.53.4, and a driver whose test results depend on the host's
-    sqlite is not a test. One version, every machine, one static
-    binary (P14).
-    TWO OF THE RECOMMENDED FLAGS ARE REFUSED, each with a segfault
-    behind it: `SQLITE_OMIT_AUTOINIT` (a first call that forgets
-    `sqlite3_initialize()` crashes with no diagnostic, and
-    `ENABLE_API_ARMOR` does not catch it — the FACE could call
-    initialize in `open`, but the WALL cannot, because dropping to
-    the raw surface is a CONTINUATION and not an escape, so it would
-    be a hidden precondition on a public entry point); and
-    `SQLITE_MAX_EXPR_DEPTH=0` (the lemon parser's own recursion
-    limit catches nested parens, but a LEFT-DEEP chain keeps the
-    parser stack shallow while the Expr tree grows — 50 000 terms
-    segfaults in `prepare`; kept explicit at 1000, which a caller
-    who owns their SQL raises per connection). sqlite.org's set
-    optimises for an app that owns every byte of its SQL. A stdlib
-    does not.
-  - `float` LANDS. SQLite's storage classes are NULL, INTEGER, REAL,
-    TEXT, BLOB, and the compiler's own help says what we have: "the
-    types today are `int`, `string`, `bool`, and your declared
-    types". `float` is IEEE-754 binary64, which is exactly what a
-    REAL column holds. Its whole extern footprint is FOUR functions
-    (`bind_double`, `result_double`, `column_double`, `value_double`)
-    — and the ask is sharper than "add a type": `RtKind` is
-    `{I64, Ptr, Void}` (`core/ir.av:219`), so the wall cannot even
-    DECLARE a double seat, and `rt_kind_of` maps every non-void
-    non-pointer to I64 — a double in an integer register, silently
-    wrong. `RtKind` grows an `F64` variant: a registry COLUMN, not
-    an eight-consumer instruction.
-  - `decimal` IS DEFERRED (owner, 2026-09-05, reversing the same
-    day's decision to land it beside `float`, on evidence found
-    after). THREE REASONS, each verified: SQLite HAS NO DECIMAL
-    STORAGE CLASS, so `decimal` gates ZERO externs and the driver
-    never touches it; THE SPEC ALREADY DECIDED IT — arbitrary
-    precision is "(b) `BigInt` / `BigDecimal` in `@std/numbers` —
-    explicit types, no silent promotion", the Rust/Java model, with
-    `@std/money` built on `BigDecimal` for currency; and a decimal
-    would need a round-trip through a database that cannot store one
-    (TEXT? scaled INTEGER?), which is a design question of its own
-    and not this campaign's.
-    THE SPEC'S HALF OF THAT IS OVERRIDDEN (owner, 2026-09-05, in
-    these words: "make it part of core. i dont' want an
-    std.numbers"). `decimal` lands as a CORE VALUE CATEGORY, not a
-    library type, and there is to be no `@std/numbers` package.
-    Spec 31.3 is superseded on this point — one more place the
-    legacy tree is a design source and not law, beside 9.15's
-    small-string optimization, which the string representation
-    already superseded. So the deferral is about ORDER, never about
-    where the type belongs: `decimal` is core, and it lands with the
-    ORM campaign, whose money columns are the customer this driver
-    is not.
-    WHAT A CORE DECIMAL COSTS, recorded now so the ORM campaign
-    inherits a size rather than a surprise. It is the FULL value-
-    protocol ceremony, and more of it than `float`: a literal syntax
-    (and a lexer that can already tell `1.5` from `1.5d` once float
-    exists); exact base-10 arithmetic with a DECLARED rounding mode,
-    because a non-terminating division must answer something and the
-    answer is a decision, not a default; a text projection that
-    round-trips exactly, which is easier than float's shortest-
-    representation problem rather than harder; comparison and a
-    total order; and EXPLICIT conversions to and from `int` and
-    `float`, never implicit — that is the one part of 31.3's
-    reasoning which survives its override, and it survives because
-    silent promotion is how every language that has both loses
-    money. Plus a REPRESENTATION decision the ORM campaign must make
-    and this lane deliberately does not: 96-bit mantissa with a
-    scale (C#), 128-bit IEEE-754 decimal, or arbitrary precision
-    (Java, Python). Whatever `@std/money` becomes, it is then a thin
-    currency-tagging layer over the core type rather than the
-    substrate itself.
-    AND THE SQLITE ROUND-TRIP STAYS THIS LANE'S PROBLEM the day it
-    lands: SQLite has no decimal storage class, so a `decimal`
-    column is TEXT or a scaled INTEGER by a decision the driver
-    defends, and the hazard is named at the verb — a column declared
-    `DECIMAL` or `NUMERIC` takes SQLite's NUMERIC affinity and a
-    value that looks like a float silently BECOMES one.
-  - THE INTERPRETER LEARNS TO HOST ANY EXTERN — dlsym plus a small
-    fixed set of uniform ABI shapes, never libffi (the spec rejects
-    it, 15.3). Then `avra run` hosts every binding in every package
-    and eval == native holds for the FFI BY CONSTRUCTION, instead of
-    a driver being native-only and a trap standing where an answer
-    belongs. THE SHAPE TABLE COLLAPSES: feared combinatorial (~2000
-    shapes for N <= 8), it is ONE fully-applied prototype plus SIX
-    return kinds, because the integer and FP register files are
-    independent and filled in class order, and a callee cannot
-    observe arguments it does not declare.
+  - DIRECT `extern fn sqlite3_*`, no hand-written C shim. A shim is the
+    paper, written in C: every call Avra cannot express would hide inside
+    it. Where the call cannot be spelled, the LANGUAGE grows (Axis 15).
+  - THE AMALGAMATION IS VENDORED, our flags. Apple's libsqlite3 is not
+    stock: `OMIT_LOAD_EXTENSION`, `DQS=3` (a typo'd column name becomes a
+    string literal), no `sqlite3session.h`, Apple's SEE codec,
+    `BUG_COMPATIBLE_20160819`, `THREADSAFE=2` — and it ships 3.51.0 where
+    upstream is 3.53.4. A driver whose test results depend on the host's
+    sqlite is not a test. One version, every machine (P14).
+    TWO RECOMMENDED FLAGS REFUSED, each with a segfault behind it:
+    `OMIT_AUTOINIT` (a first call forgetting `sqlite3_initialize()`
+    crashes silently, and the WALL cannot call it — dropping to the raw
+    surface is a continuation, not an escape) and `MAX_EXPR_DEPTH=0` (a
+    LEFT-DEEP chain keeps the parser stack shallow while the Expr tree
+    grows; 50 000 terms segfaults in `prepare`, kept at 1000).
+  - `float` LANDS — four entry points, and the sharp part is that
+    `RtKind` is `{I64, Ptr, Void}` (`core/ir.av:219`), so the wall cannot
+    DECLARE a double seat and `rt_kind_of` puts every non-void
+    non-pointer in an integer register. `RtKind` grows an `F64` variant:
+    a registry COLUMN, not an eight-consumer instruction.
+  - `decimal` IS DEFERRED, and it is CORE when it lands (owner: "make it
+    part of core. i dont' want an std.numbers" — spec 31.3 superseded).
+    Deferred because SQLite HAS NO DECIMAL STORAGE CLASS, so it gates
+    zero externs; it lands with the ORM campaign, and costs a literal
+    syntax, exact base-10 arithmetic with a DECLARED rounding mode, an
+    exactly round-tripping text projection, a total order, and EXPLICIT
+    conversions — silent promotion is how every language with both loses
+    money.
+  - THE INTERPRETER LEARNS TO HOST ANY EXTERN — dlsym plus a fixed set of
+    uniform ABI shapes, never libffi (spec 15.3). THE SHAPE TABLE
+    COLLAPSES: feared combinatorial (~2000 for N <= 8), it is ONE
+    fully-applied prototype plus SIX return kinds, because the register
+    files are independent and a callee cannot observe arguments it does
+    not declare.
   - LATER, DESIGNED FOR AND NOT BUILT: SQL checked at compile time
-    against the schema (P10), and `table<Row> { … }` backed by
-    SQLite (P5). The ORM sits above both.
+    against the schema (P10), `table<Row> { … }` backed by SQLite (P5).
 
-*** A WRONG ANSWER, LIVE IN THE TREE TODAY — above every other item
-in this lane (found 2026-09-05, CONFIRMED by measurement) ***
+THE CAMPAIGN'S PAPERS, under `docs/` — decisions are recorded HERE:
+  - `..._STRING_REPRESENTATION.md` — DECIDED, and every other paper
+    stands on it. The string is a POINTER to a headered box, not the
+    legacy spec's 24-byte inline value; 9.15's SSO is superseded, because
+    a `Bytes` box sharing the representation, `rides_pointer`, and any
+    verb handing C a payload address all need a `string` to BE a pointer,
+    and an inline short string has no address. THE LAW IT SETTLES: A
+    LENGTH IS CARRIED, NEVER MEASURED.
+  - `..._STD_SQLITE_VISION.md` (the north star), `..._SYNTHESIS.md` (the
+    merged design the driver is built from — three competing drafts were
+    judged into it and are in git history, not beside the finished
+    paper), `..._RESEARCH_probe_log.md` (GROUND TRUTH, everything RUN),
+    `..._STD_SQLITE_TRAPS.md` (all 174 traps indexed, the 15 the package
+    cites in full), `..._BYTES_SHAPE.md` + `..._BYTES_RUNTIME_DIFF.md`
+    (lane A), `..._EXTERN_HOST_SHAPE.md` (lane C),
+    `..._RESEARCH_ptr_from_int.md`.
+  - `packages/std-sqlite/src/c/CENSUS.md` — the ABI census, measured
+    against the VENDORED header. The only census counting what we link.
 
-  THE RETURN-WIDTH LAW: AN EXTERN OVER A C `int` READS ITS NEGATIVES
-  AS HUGE POSITIVES. Avra's `int` is 64 bits; C's `int` is 32.
-  `declare_externs` (`language/llvm.av:169-173`) declares every
-  extern answering `RtKind.I64` as `i64`, and `rt_kind_of`
-  (`core/runtime_api.av:110-114`) maps Avra's `int` there. Neither
-  ABI guarantees the bits above a narrow result, and both compilers
-  materialise a 32-bit result with a 32-bit write (`mov w0, …`),
-  which ZEROES the upper half.
+*** THE RETURN-WIDTH LAW — A WRONG ANSWER LIVE IN THE TREE, above every
+other item in this lane ***
+  AN EXTERN OVER A C `int` READS ITS NEGATIVES AS HUGE POSITIVES. Avra's
+  `int` is 64 bits, C's is 32; `declare_externs` (`llvm.av:169`) declares
+  every I64-answering extern as `i64`, and both compilers materialise a
+  narrow result with a 32-bit write (`mov w0, …`) that ZEROES the upper
+  half. MEASURED at -O2 through a `[link]` row: C `int` -1 reads
+  4294967295, INT_MIN reads 2147483648, `short` -1 reads 4294967295,
+  `long` -1 reads -1 (really 64-bit), `unsigned` MAX reads 4294967295
+  (correct by luck). IT SHIPS IN BUILT BINARIES, and BOTH ENGINES AGREE
+  ON THE WRONG ANSWER, so eval == native does not catch it. AND IT IS
+  CALLEE-DEPENDENT: `atoi("-1")` answers -1 (macOS's is
+  `(int)strtol(...)`) while a hand-written `int f(void){return -1;}`
+  answers 4294967295 — same prototype, opposite answers — so it cannot be
+  audited by CALLING things, only caught AT THE DECLARATION.
+  OUR HALF IS CLOSED (lane A): all 98 externs whose C body we own
+  audited, exactly two narrow, both right only because their values are 0
+  and 1; both answer `int64_t` now and `make externs` refuses the class
+  statically, proved by restoring one and watching the gate go red. It
+  cannot read a third party's headers — 226 of the vendored surface
+  answers C `int`. THE FIX IS SPEC'D AND ABSENT: Axis 15.2's `i32`/`i64`
+  are F2001 "`i32` names no type" — cheapest of the three asks.
 
-  MEASURED — a C file of five functions, compiled -O2, linked
-  through a `[link]` row and read from Avra:
-      C `int`      -1        reads as  4294967295
-      C `int`      INT_MIN   reads as  2147483648
-      C `short`    -1        reads as  4294967295
-      C `long`     -1        reads as  -1          (correct: really 64-bit)
-      C `unsigned` MAX       reads as  4294967295  (correct by luck)
-  and `avra_probe_i32_neg() == 0 - 1` answers FALSE. The
-  disassembly shows the mechanism: `mov w0, #-0x1`, then `ret`.
+AN ARMED LATENT DEFECT: A NON-ZERO POINTER CONSTANT SILENTLY BECOMES
+NULL, in both engines — `const_int_value` (`llvm.av:307`) discards its
+value when the destination rides a pointer, `const_int_val`
+(`interp.av:190`) is the twin. Sound today only because `ptr` is
+RECEIVE-ONLY. WHAT ARMS IT: `SQLITE_TRANSIENT` is `(void*)-1`,
+`RTLD_DEFAULT` `(void*)-2`, `MAP_FAILED` `(void*)-1` — a silently-nulled
+destructor IS `SQLITE_STATIC`, so the Avra box is freed at scope end and
+the next `step` reads freed memory. THE GUARD BELONGS IN LOWERING: the
+backend's `Emit` has no failure channel, the interpreter does, and
+guarding only the engine that CAN refuse would make the two disagree.
+Free today (unreachable), which is why it lands now — it turns a premise
+documented in a comment into one enforced. Lane C's file.
 
-  THIS IS THE NATIVE PATH, not the interpreter's — it has nothing to
-  do with hosting externs, and it ships in built binaries now. BOTH
-  ENGINES AGREE ON THE WRONG ANSWER, so eval == native does not
-  catch it: that property is AGREEMENT, never correctness.
+THE SENTINEL'S SHAPE: a NAMED MINT lowered inline to `inttoptr` — never a
+runtime row (a real call per bind), never a C body (the shim wearing
+another hat), and NEVER a general `int -> ptr` at extern seats. That last
+is refused on P9: a door accepting anything integer-shaped means
+`sqlite3_open_v2("x.db", 5, 6, null)` typechecks, so a transposed
+argument becomes a WILD POINTER — strictly worse than a wrong integer,
+which merely gives a wrong answer. Nine languages surveyed agree and
+sharpen it: every one that revisited this moved toward a NAME and away
+from a CAST, the answer is `ptr?` so address 0 IS `null`, and the reverse
+direction ships separately or not at all (ptr_from_int paper).
 
-  AND IT IS CALLEE-DEPENDENT, WHICH IS WORSE THAN A COUNT. An
-  independent probe against libc got the OPPOSITE result:
-  `atoi("-1")` answers -1, CORRECTLY — macOS's `atoi` is
-  `(int)strtol(...)`, so a full 64-bit value is already in `x0` and
-  nothing truncates. A hand-written `int f(void) { return -1; }` at
-  -O2 emits `mov w0, #-1` and answers 4294967295. TWO C FUNCTIONS
-  WITH THE SAME PROTOTYPE GIVE DIFFERENT AVRA ANSWERS.
-  SO THE DEFECT CANNOT BE AUDITED BY CALLING THINGS: a green proves
-  only that one implementation happened to widen, not that the
-  declaration is right, and not that it survives a different libc, a
-  different optimisation level, or the next release of the same
-  library. It has to be caught AT THE DECLARATION.
-
-  OUR HALF IS CLOSED (lane A, same day): an audit of all 98 externs
-  whose C body we own found exactly two narrow, both in
-  `backend/llvm_wrapper.c`, both right only because their values are
-  0 and 1 and a 32-bit write of 0 zeroes the register. Both answer
-  `int64_t` now, and `make externs` (`tools/externs.py`, in the
-  gate) refuses the class STATICALLY — it reads the C source's
-  declared return type against the Avra declaration that reads it,
-  and refuses a body we own that answers narrower than 64 bits while
-  being read as `int`. Proved by restoring a narrow return and
-  watching the gate go red. A declaration-level check would also
-  flag `atoi`, and that is a TRUE positive: the declaration promises
-  nothing and the value is right only by this libc's choice.
-  WHAT IT CANNOT DO is read a THIRD PARTY's headers, so a binding to
-  someone else's library is unprotected — 153 of SQLite's 284 entry
-  points answer C `int`.
-
-  THE FIX IS ALREADY SPEC'D AND ABSENT. Spec Axis 15.2: "Avra's
-  `int` maps to platform pointer-sized int in `extern` declarations
-  (usually i64)" and "`i32`, `i64`, `u8`, etc. map to fixed-width C
-  types directly". `extern fn f() -> i32` is F2001 "`i32` names no
-  type". Cheapest of the three asks: no literal syntax, no
-  arithmetic, no text projection — only the width an extern declares
-  and the extension the backend emits at the boundary.
-
-THE STRING'S REPRESENTATION — DECIDED BY THE OWNER 2026-09-05, and it
-sits under everything this lane builds. Full record:
-**`docs/2026_09_05_STRING_REPRESENTATION.md`**, which is now the SOURCE
-OF TRUTH and supersedes the legacy tree's sub-decision 9.15.
-  - THE CONTRADICTION, found reconciling `STRINGS FROM THE FUTURE`
-    against the runtime: the legacy spec chose "(b) Heap + RC with
-    small string optimization" and specified a 24-BYTE VALUE with
-    `<= 23` bytes stored INLINE. The tree built a POINTER to a
-    16-byte-headered heap box — option (a) — and every design now
-    standing rests on what was built.
-  - WHY IT WAS LOAD-BEARING, not pedantic: a `Bytes` box sharing the
-    string representation, `rides_pointer` answering true so the
-    memory pass needs no new lane, and any verb handing C a PAYLOAD
-    ADDRESS all require a `string` to BE a pointer. An inline short
-    string has no address. Land SSO and all three collapse at once,
-    and the FFI wall loses the ability to pass a short text to C at
-    all — not just to sqlite, to any C library.
-  - THE DECISION: the implementation is ratified and the spec is
-    corrected, because the header already delivers what SSO was
-    chosen for (`.length` is a LOAD — lane A landed it, I27 retired
-    with the strlen it ratcheted), and because an inline string
-    cannot reach C. SSO is not planned; the reason is recorded so no
-    later lane re-opens it as a spec violation.
-  - THE LAW IT SETTLES, which the tree had been bitten by three
-    times and never written down: A LENGTH IS CARRIED, NEVER
-    MEASURED.
-  - STILL WANTED FROM 9.15, un-built: `s[i]` indexes by byte
-    position and answers `u8`. The byte scalar is specified, absent,
-    and wanted by the same slice as `Bytes`.
-  - A POINTER TO FIX, not this lane's file: CLAUDE.md names
-    `../forge-crafting-intepreters` as "design sources of truth".
-    That tree is LEGACY. Decisions are recorded HERE now; the
-    reference wants rewording, and CLAUDE.md is lane D's.
-
-AN ARMED LATENT DEFECT, found designing the sentinel and not yet paid:
-  - A NON-ZERO POINTER CONSTANT SILENTLY BECOMES NULL, in BOTH
-    engines. `const_int_value` (`language/llvm.av:307-312`) DISCARDS
-    its value when the destination rides a pointer and answers the
-    null pointer; `const_int_val` (`language/interp.av:190-193`) is
-    the twin, answering `Val.N`. Both carry the premise in their
-    comments — "the only ConstInt lowering ever aims at a pointer
-    register is 0" — and it is TRUE TODAY only because `ptr` is
-    RECEIVE-ONLY: `n as ptr` is F0100 (`as` is not a cast; there is
-    none), `ptr(n)` is F3000, `null` into a bare `ptr` is F2000, and
-    an `int` into a `ptr` seat is F2000. Only `ptr?` takes `null`.
-  - WHAT ARMS IT: every pointer-shaped constant a C API defines.
-    `SQLITE_TRANSIENT` is `(void*)-1`, `RTLD_DEFAULT` is `(void*)-2`,
-    `MAP_FAILED` is `(void*)-1`. THE CONCRETE HARM:
-    `sqlite3_bind_text(…, SQLITE_TRANSIENT)` with a silently-nulled
-    destructor IS `SQLITE_STATIC` — it tells SQLite the buffer is
-    immortal, the Avra box is freed at scope end, and the next
-    `step` reads freed memory. A wrong answer that is also a
-    use-after-free, from a constant that looked like it was passed.
-  - WHERE THE GUARD BELONGS (lane A's placement, better than this
-    lane's first answer): NOT in either engine. The backend's `Emit`
-    has NO failure channel — `emit_ll` answers a `string?` from the
-    top and `emit_ins` cannot refuse — so guarding there needs
-    plumbing; the interpreter HAS `defect_val` and could refuse in
-    one line; and guarding only the engine that CAN refuse would
-    make the two engines DISAGREE on one instruction, which this
-    tree refuses outright. It belongs in LOWERING, ahead of both —
-    the existing pattern, since `print_lowering` refuses an
-    unprintable answer at lowering time precisely so eval and native
-    cannot diverge. A non-zero ConstInt into a pointer-shaped
-    register is a `lower_defect`: one site, one refusal, both
-    engines inherit it.
-  - AND IT DOES NOT WAIT FOR THE MINTING SHAPE. Today the case is
-    UNREACHABLE, so the guard is free and refuses nothing that
-    exists. Landing it now converts a premise DOCUMENTED IN A
-    COMMENT into one ENFORCED, while it costs nothing. Lane C's file.
-
-THE SENTINEL'S SHAPE, decided for the FFI lane: a NAMED MINT lowered
-inline to `inttoptr` — never a runtime row (a real call per bind, and
-`bind_text` runs per parameter per statement per step), never a C body
-(the shim wearing another hat, one per sentinel per library forever),
-and NEVER a general `int -> ptr` widening at extern seats. That last
-is the tempting one and it is refused on P9: a door that accepts
-anything integer-shaped means `sqlite3_open_v2("x.db", 5, 6, null)`
-typechecks, so a transposed argument stops being a compile error and
-becomes a WILD POINTER handed to C — strictly worse than the
-wrong-integer class, because a wrong integer gives a wrong answer and a
-wild pointer corrupts at a site with no relationship to the mistake.
-ONE NARROWER SHAPE IS WORTH A PROBE FIRST: name the SENTINEL rather
-than the conversion, since SQLITE_TRANSIENT, RTLD_DEFAULT and
-MAP_FAILED are all NAMED CONSTANTS in C — the door then opens exactly
-as wide as the C API's own vocabulary and the general mint never has
-to exist.
-
-THE CAMPAIGN'S PAPERS, all under `docs/` in this tree — decisions are
-recorded HERE, not in the legacy tree:
-  - `2026_09_05_STRING_REPRESENTATION.md` — DECIDED. The string is a
-    headered box; supersedes the legacy 9.15. Read it first: every
-    other paper stands on it.
-  - `2026_09_05_BYTES_SHAPE.md` — the `Bytes` shape, written for
-    lane A against the THREE kind-aware runtime sites they named:
-    `box_bytes` as the SIZE-CLASS WITNESS (a Bytes allocating
-    exactly `n` frees an EMPTY blob into the wrong class — heap
-    corruption, no diagnostic, not reproducible until the class is
-    reused, because `box_alloc(0,…)` allocates 1 and records 1);
-    `str_len`'s predicate, which must be the KIND (this lane's own
-    earlier fix was WRONG — the unconditional form would trust an
-    array's or map's `len`, which is its payload byte size); and
-    `box_clone`, whose `else` assumes ARRAY.
-  - `..._RESEARCH_probe_log.md` — THE GROUND TRUTH. Everything in it
-    was RUN against this worktree's compiler; a design whose code
-    contradicts it is a defect, not a language ask.
-  - `..._RESEARCH_api_surface.md` — all 284 entry points, classified
-    by ABI shape, the compile-flag matrix, the pointer-lifetime
-    rules. 61% of the surface is callable the day out-params exist.
-  - `..._RESEARCH_avra_ffi_spec.md` — the spec's Axis 15 against what
-    the tree has, as a delta table.
-  - `..._RESEARCH_core_value_cost.md` — the file-by-file cost of a
-    new core value category.
-  - `..._RESEARCH_semantics_traps.md` — SQLite's correctness
-    minefield as laws a driver is tested against.
-  - `..._RESEARCH_orm_substrate.md` — what the ORM will demand.
-  - `..._RESEARCH_numeric_tower.md` — `float` and `decimal`.
-  - `..._RESEARCH_bytes_blob.md` — the `Bytes` value category.
-  - `..._RESEARCH_strings_reconciliation.md` — `STRINGS FROM THE
-    FUTURE` against the tree; where the SSO contradiction was found.
-  - `..._RESEARCH_interp_extern_host.md` — hosting any extern under
-    `avra run`; the ABI analysis and the shape-table collapse.
-  - `..._RESEARCH_prior_art.md` — fifteen bindings, what to steal.
-  - `..._RESEARCH_tdd_and_gates.md` — the test plan.
-  - `..._DESIGN_*.md` + `..._SYNTHESIS.md` — three competing API
-    designs, judged by three lenses, merged.
-
-THE GAPS, EACH PROVED BY PROBE (2026-09-05, `./avra check`, the
-refusal quoted; an entry the compiler starts accepting is struck):
-  - [ ] NO FLOATING POINT AT ALL. `let x: float = 1.0` is F0100
-        "expected BREAK while parsing `stmt`", pointing AT the `.` —
-        the lexer has no float literal, so the gap starts before the
-        type surface. `let x: f64 = 1` is F2001 "`f64` names no
-        type".
+THE GAPS, EACH PROVED BY PROBE (`./avra check`, refusal quoted; an entry
+the compiler starts accepting is struck):
+  - [ ] NO FLOATING POINT. `let x: float = 1.0` is F0100 "expected
+        BREAK", pointing AT the `.` — the lexer has no float literal, so
+        the gap starts before the type surface.
   - [ ] NO BYTES. `let b: Bytes = "hi"` is F2001. A `string` already
-        HOLDS arbitrary bytes — the header carries the length — but
-        `==`, `contains`, `index_of`, `replace` and `split` are C
-        string calls, so a blob compares EQUAL to its own truncation
-        at the first NUL.
-  - [ ] AN EXTERN CANNOT TAKE A `mut` SEAT — which is the out-param.
-        THREE SPELLINGS, kept apart because conflating them
-        mis-sizes the work: `fn g(mut p: int)` in a fn DECLARATION
-        WORKS TODAY (and warns well — F2051); a `mut` seat in a fn
-        TYPE is CLOSED ON MAIN at `656e650`; and `extern fn f(mut p:
-        ptr)` is refused, F0100 "expected `)`".
-        THE GRAMMAR HALF IS ONE LINE: `features/fns/mod.av:32`
-        (extern) is a NARROWER COPY of `:33` (fn) — it simply lacks
-        `( mk:"mut" )?`. BUT SIZING IT AS ONE LINE IS THIS
-        CAMPAIGN'S MOST LIKELY UNDER-ESTIMATE: the semantic half is
-        the INOUT ABI, which the tree names as not-yet-landed in its
-        own words — "a seat assigned WHOLE waits on the inout ABI,
-        and says so" (`impls_test.av:130`) — and that is exactly
-        what `sqlite3**` needs.
-        NO WORKAROUND EXISTS, and not only by doctrine: a
-        one-element `List<int>` as the out-param seat hands C the
-        `AvraArray` pointer whose FIRST FIELD IS THE CAPACITY, so
-        what C writes is not what Avra reads. Making it work needs a
-        C body that knows the layout — the shim itself.
-        THE PARADOX WORTH COLLAPSING (P6): a C fn answering a STATUS
-        and writing a HANDLE through an out-param IS a `Result` —
-        the status is the error channel, the out-param the value.
-        The spec stops at annotating the parameter and then writes
-        `sqlite3_open_wrapped` in its own example, conceding a
-        hand-written wrapper. The compiler projecting `(status, mut
-        out T)` straight to `Result<T, E>` deletes that layer for
-        every C library, not just this one.
-  - [ ] NO OPAQUE TYPES, NO DROP. `opaque type Db` is F0100. A
-        `sqlite3*` is a bare `ptr` today: no header, no refcount, no
-        close. The spec's answer is `opaque type Db
-        @free_with(sqlite3_close_v2)` (15.5), undesigned and
-        unowned, so it is designed here. THE SHAPE, agreed with lane
-        C: a WRAPPER BOX — a headered Avra box whose payload field
-        holds the foreign pointer — not a new header kind. It keeps
-        the raw pointer out of every managed seat, keeps the
-        refcount guard meaningful, and adds one thing rather than
-        changing four.
-  - [ ] NO FFI ANNOTATIONS. `extern fn f(…) -> ptr @free_with(g)` is
-        F0100 at the `@`. The whole ownership vocabulary of spec
-        15.4 (`@takes_ownership`, `@returns_ownership`, `@borrows`,
-        `@returns_borrowed`, `@free_with`) is unspelled.
-  - [ ] A FOREIGN `string` IS ACCEPTED, AND IT IS RIGHT ONLY BY
-        ACCIDENT. PROBED: `extern fn sqlite3_libversion() -> string`
-        answers `3.51.0`, `.length` 6, `==` and `starts_with` true.
-        It works because `hdr` refuses a pointer without the AVRA
-        tag, so retain and release no-op on it, and `str_len` falls
-        back to `strlen` — right, for text that is IMMORTAL and
-        NUL-TERMINATED.
-        AND THE INSTRUMENT IS BLIND HERE: `AVRA_RC_GUARD=1` reports
-        clean, but the guard watches retain and release EVENTS and
-        an untagged pointer raises none — so it cannot tell a
-        correct borrow from a use-after-free and prints clean for
-        both. Everywhere else in this tree the guard is the
-        instrument of record; at this seam it is silent by
-        construction.
-        THE BELT HIDES THREE WRONGS, and the driver is made of all
-        three: TEXT WITH A LIFETIME (`sqlite3_column_text`'s buffer
-        dies at the next step and Avra goes on holding it); BYTES (a
-        blob's length is not `strlen`); and TEXT HOLDING A NUL,
-        which SQLite permits and which is wrong IMMEDIATELY rather
-        than later.
-        THE TREE IS CLEAN TODAY: seven externs answer `string` and
-        every one is backed by a real headered box; `llvm_api`'s
-        wall answers `ptr` and copies at the boundary. So
-        `@returns_borrowed` is not a fix for a mess — it locks a
-        door the whole tree already steps around.
-  - [ ] NO CALLBACKS ACROSS THE BOUNDARY. Spec 15.3's
-        compiler-generated trampolines are unbuilt. But 14 of the 43
-        apparent "callback" functions are NOT callbacks — they take
-        a two-valued integer sentinel (`SQLITE_STATIC` /
-        `SQLITE_TRANSIENT`), so they need only a mintable `ptr`.
-        The real trampolines are hooks, custom SQL functions,
-        collations, the busy handler and the authorizer.
-  - [ ] `Result<void, E>` IS REFUSED (F2019) — a driver is full of
-        verbs that only succeed or fail. It shapes the whole API
-        surface, so it should land BEFORE the driver's API is
-        frozen, not after.
-  - [ ] A MANIFEST SAYS WHAT TO LINK, NEVER HOW TO BUILD IT.
-        `[link] objects = […]` names an object that must ALREADY
-        EXIST; nothing in `avra.toml` says how it comes to exist.
-        Today the root `Makefile` builds `llvm_wrapper.o` for
-        `@std/avrac`, so a package's private native detail lives in
-        the tree's root build file. `@std/sqlite` cannot ship that
-        way: a consumer who adds the dependency gets a manifest
-        pointing at an object no step in their build produces. THE
-        ASK: a package declares its own native build, run before
-        linking, under the same argv discipline the `[link]` rows
-        already have. Blocks SHIPPING, not building.
+        HOLDS arbitrary bytes, but `==`, `contains`, `index_of`,
+        `replace` and `split` are C string calls, so a blob compares
+        EQUAL to its own truncation at the first NUL.
+  - [ ] AN EXTERN CANNOT TAKE A `mut` SEAT — the out-param. THREE
+        SPELLINGS, kept apart because conflating them mis-sizes the work:
+        `fn g(mut p: int)` WORKS TODAY; a `mut` seat in a fn TYPE closed
+        on main at `656e650`; `extern fn f(mut p: ptr)` is F0100. THE
+        GRAMMAR HALF IS ONE LINE (`features/fns/mod.av:32` lacks `(
+        mk:"mut" )?`) AND SIZING IT AS ONE LINE IS THIS CAMPAIGN'S MOST
+        LIKELY UNDER-ESTIMATE: the semantic half is the INOUT ABI, which
+        the tree names as not-yet-landed (`impls_test.av:130`). NO
+        WORKAROUND: a one-element `List<int>` hands C the `AvraArray`
+        pointer whose FIRST FIELD IS THE CAPACITY. THE PARADOX WORTH
+        COLLAPSING (P6): a C fn answering a STATUS and writing a HANDLE
+        through an out-param IS a `Result`, and the compiler projecting
+        `(status, mut out T)` to `Result<T, E>` deletes the hand-written
+        wrapper the spec's own example concedes — for every C library.
+  - [ ] NO OPAQUE TYPES, NO DROP. `opaque type Db` is F0100; a `sqlite3*`
+        is a bare `ptr`. THE SHAPE, agreed with lane C: a WRAPPER BOX (a
+        headered Avra box whose payload holds the foreign pointer), not a
+        new header kind — it keeps the raw pointer out of every managed
+        seat and adds one thing rather than changing four.
+  - [ ] NO FFI ANNOTATIONS. `-> ptr @free_with(g)` is F0100 at the `@`;
+        spec 15.4's whole ownership vocabulary is unspelled.
+  - [ ] A FOREIGN `string` IS ACCEPTED, AND RIGHT ONLY BY ACCIDENT.
+        PROBED: `extern fn sqlite3_libversion() -> string` answers
+        `3.51.0`, because `hdr` refuses an untagged pointer so
+        retain/release no-op and `str_len` falls back to `strlen` — right
+        only for text that is IMMORTAL and NUL-TERMINATED. AND THE
+        INSTRUMENT IS BLIND: `AVRA_RC_GUARD=1` watches retain/release
+        EVENTS, which an untagged pointer never raises, so it reads clean
+        for a correct borrow and a use-after-free alike. THE BELT HIDES
+        THREE WRONGS and the driver is made of all three: text with a
+        LIFETIME, BYTES (a blob's length is not `strlen`), and text
+        HOLDING A NUL.
+  - [ ] NO CALLBACKS ACROSS THE BOUNDARY (spec 15.3's trampolines). But
+        14 of the 43 apparent "callback" functions are NOT callbacks —
+        they take a two-valued integer sentinel, so they need only a
+        mintable `ptr`. The real trampolines are hooks, custom SQL
+        functions, collations, the busy handler and the authorizer.
+  - [ ] `Result<void, E>` IS REFUSED (F2019) — a driver is full of verbs
+        that only succeed or fail, so it shapes the whole API surface and
+        lands BEFORE the driver's API is frozen.
+  - [ ] A MANIFEST SAYS WHAT TO LINK, NEVER HOW TO BUILD IT. `[link]
+        objects` names an object that must ALREADY EXIST; today the root
+        `Makefile` builds `llvm_wrapper.o` for `@std/avrac`, so a
+        consumer adding `@std/sqlite` gets a manifest pointing at an
+        object no step in their build produces. Blocks SHIPPING.
 
-WHAT ALREADY WORKS, PROVED BEFORE ANYTHING WAS BUILT (2026-09-05) —
-the campaign is language gaps and nothing else:
-  - AVRA CALLS SQLITE TODAY. A scratch package whose manifest is one
-    `[link]` row and whose source is `extern fn
-    sqlite3_libversion_number() -> int` builds and prints
-    `3051000`. No shim, no compiler change, no runtime row. Against
-    the VENDORED object it prints `vendored 3.53.4 number=3053004
-    threadsafe=1` — the flags observed from Avra, not assumed.
-  - A C NULL READS AS AVRA `null`. `extern fn getenv(name: string)
-    -> ptr` with `let p: ptr? = getenv(…)` answers `p == null` TRUE
-    for an unset name and FALSE for `PATH`. And it is the SPECIFIED
-    layout, not luck: `features/values.av:229-231` picks `Repr.Niche`
-    for anything pointer-shaped — "a pointer-shaped value IS its own
-    nullable (the null pointer is absence)" — so `ptr?` costs
-    exactly what `ptr` costs. A BARE `ptr` cannot be compared at all
-    (F2000), so `ptr?` is the only null test.
+WHAT ALREADY WORKS, PROVED BEFORE ANYTHING WAS BUILT:
+  - AVRA CALLS SQLITE TODAY — one `[link]` row and `extern fn
+    sqlite3_libversion_number() -> int` prints `3051000`; against the
+    vendored object, `vendored 3.53.4 threadsafe=1`. No shim, no compiler
+    change, no runtime row.
+  - A C NULL READS AS AVRA `null`, by the SPECIFIED layout, not luck:
+    `features/values.av:229` picks `Repr.Niche` for anything
+    pointer-shaped, so `ptr?` costs what `ptr` costs, and a bare `ptr`
+    cannot be compared at all (F2000).
   - BUT A NICHE SPENDS THE NULL POINTER AND CANNOT GET IT BACK.
-    `sqlite3_column_blob` answers NULL for THREE conditions — SQL
-    NULL, a ZERO-LENGTH BLOB (`sqlite3.h:5411`), and an
-    OUT-OF-MEMORY (`:5519-25`) — so a column read NEVER tests the
-    pointer: it asks `sqlite3_column_type` FIRST and branches on the
-    storage class. MEASURED from the other side: `select x''` gives
-    ptr NULL with type 4 (BLOB) while `null` gives type 5. Asking
-    the type is both sufficient and necessary.
-    AND THE OOM CHECK IS `sqlite3_errcode` IMMEDIATELY, before any
-    other call on that connection — which `defer` can break
-    invisibly: an early exit runs every open frame's deferred calls
-    BEFORE exiting, and `?`, `fail` and a propagating `catch` are
-    all early exits, so a `defer stmt.reset()` twenty lines up can
-    eat the errcode on a path nobody is reading. THE STRONG FORM:
-    the suspect read and its errcode check SHARE A FRAME, and
-    NOTHING BETWEEN THEM MAY LEAVE.
-  - EMPTY IS NOT ABSENT, inside the language. An empty list, an
-    empty string, a zero-field record and a zero all read PRESENT
-    through a nullable while their absent twins read absent, on both
-    engines. An empty aggregate is a real box with a NON-NULL
-    pointer. The null is spent twice only at the C BOUNDARY — which
-    gives the rule the runtime rows are written to: A ROW ANSWERS AN
-    EMPTY BOX FOR EMPTY, AND NULL ONLY FOR ABSENT.
-  - A `ptr` RIDES IN A STRUCT FIELD (`type Handle = { raw: ptr }`).
-  - A `List<T>` CROSSES AN EXTERN SEAT (`avra_proc_run` takes
-    `List<string>`), so an argument vector needs no marshalling.
-  - A LAMBDA IN AN ARGUMENT SEAT WORKS: `tx(() -> 42)` is accepted,
-    so `db.tx(() -> { … })` is expressible today. There is NO
-    trailing-lambda sugar — `tx { 42 }` is F0100 — so every scoped
-    shape is spelled `db.tx(() -> { … })`. Sugar-backlog shaped.
-  - F2031 STANDS: `impl Show for Box<T>` is refused — "a trait impl
-    over a generic type is recorded, not landed". A generic decoding
-    trait does not land; inherent generic impls do. The merged
-    design routes around it with a trait BOUND on a fn
-    (`fn note_of<C: Cells>(c: C)`), which is proven by a passing
-    test including a call to a DEFAULT method.
-  - THE INTERPRETER'S REFUSAL IS EXACT AND EXITS 1:
-    "`sqlite3_libversion_number` is extern — the evaluator cannot
-    host it; build natively". That is the message the extern host
-    retires.
+    `sqlite3_column_blob` answers NULL for SQL NULL, a ZERO-LENGTH BLOB,
+    and OUT-OF-MEMORY, so a column read NEVER tests the pointer — it asks
+    `sqlite3_column_type` first (MEASURED: `select x''` gives ptr NULL
+    with type 4, `null` type 5). AND THE OOM CHECK IS `errcode`
+    IMMEDIATELY, which `defer` can break invisibly, since `?`, `fail` and
+    a propagating `catch` all run open frames' deferred calls first. THE
+    STRONG FORM: the suspect read and its errcode check SHARE A FRAME,
+    and NOTHING BETWEEN THEM MAY LEAVE.
+  - EMPTY IS NOT ABSENT inside the language, on both engines; the null is
+    spent twice only at the C BOUNDARY. Hence: A ROW ANSWERS AN EMPTY BOX
+    FOR EMPTY, AND NULL ONLY FOR ABSENT. (CLAUDE.md carries it as AN
+    ENCODING SPENDS THE EMPTY VALUE.)
+  - A `ptr` RIDES IN A STRUCT FIELD; a `List<T>` CROSSES AN EXTERN SEAT,
+    so an argument vector needs no marshalling; a LAMBDA IN AN ARGUMENT
+    SEAT works, so `db.tx(() -> { … })` is expressible — there is NO
+    trailing-lambda sugar (`tx { 42 }` is F0100). Sugar-backlog shaped.
+  - F2031 STANDS: `impl Show for Box<T>` is refused; the design routes
+    around it with a trait BOUND on a fn (`fn note_of<C: Cells>(c: C)`).
 
-THE CHECKLIST — the ORDER is the dependency order, and no driver code
-is written past an open gap above.
-  A LAW ABOVE THE LIST, because it has regenerated THREE TIMES from
-  three different sequencing tables and been corrected twice: A
-  SEQUENCING TABLE COUNTS CALLABILITY, AND CALLABLE IS NOT CORRECT.
-  Any row that reads "the bind_* family costs nothing / needs
-  nothing new / is the short path to the first bound parameter" is
-  arithmetically TRUE and is the trap in THE INVERSION above —
-  the free spelling is `SQLITE_STATIC`, whose contract makes the
-  caller responsible for keeping the box alive until finalize, and
-  the refcount guard is structurally blind to it because the pointer
-  SQLite holds is not one of ours to count. NO BIND VERB SHIPS
-  BEFORE THE MINT AND THE GUARD. A table that can only be read
-  correctly alongside a message will be read incorrectly, so the
-  marking belongs IN the row.
-  - [ ] The LOWERING GUARD for a non-zero pointer constant. Free
-        today, unreachable today, and a prerequisite of binding a
-        single blob. Lane C's file.
-  - [ ] SIZED INTEGER TYPES (`i32`/`u32`, at least in extern
-        signatures). The wrong answer above; cheapest of the three
-        asks. Lane A's files. THE DOCTRINE, which is what makes it
-        cheap: A WIDTH IS A PROPERTY OF A SEAT, NOT OF A VALUE —
-        Avra keeps ONE integer, an extern's seat may name the
-        MACHINE WIDTH its C prototype uses, the value that crosses
-        is still an Avra `int`, and the compiler narrows at the
-        argument and widens the answer WITH THE SIGN THE WIDTH
-        NAMES. So `let x: i32 = 5` staying a refusal FOLLOWS from
-        the doctrine instead of being a scope line to defend. And
-        it carries a hard requirement, below: both silent `RtKind`
-        consumers become exhaustive matches in the same diff.
+THE CHECKLIST — the ORDER is the dependency order, and no driver code is
+written past an open gap above.
+  A LAW ABOVE THE LIST, because it regenerated THREE TIMES from three
+  sequencing tables: A SEQUENCING TABLE COUNTS CALLABILITY, AND CALLABLE
+  IS NOT CORRECT. Any row reading "the bind_* family costs nothing" is
+  arithmetically true and is THE INVERSION below. NO BIND VERB SHIPS
+  BEFORE THE MINT AND THE GUARD, and the marking belongs IN the row.
+  - [ ] The LOWERING GUARD for a non-zero pointer constant. Lane C's.
+  - [ ] SIZED INTEGER TYPES (`i32`/`u32`, in extern signatures at least).
+        THE DOCTRINE that makes it cheap: A WIDTH IS A PROPERTY OF A
+        SEAT, NOT OF A VALUE — Avra keeps ONE integer, an extern's seat
+        names the MACHINE WIDTH its C prototype uses, and the compiler
+        narrows at the argument and widens the answer WITH THE SIGN THE
+        WIDTH NAMES. So `let x: i32 = 5` staying refused FOLLOWS from the
+        doctrine rather than being a scope line to defend. Lane A's.
   - [ ] `float`, with `RtKind`'s `F64` column. Four entry points.
   - [ ] `Bytes`, to `docs/2026_09_05_BYTES_SHAPE.md`.
   - [ ] A `mut` seat on an extern, and the INOUT ABI behind it.
   - [ ] `opaque type T @free_with(f)` as a wrapper box.
-  - [ ] The interpreter's extern host, so `corpus/sqlite/` can prove
-        eval == native by construction.
-  - [ ] `@std/sqlite` itself, to the merged design in
-        `docs/2026_09_05_STD_SQLITE_SYNTHESIS.md`.
+  - [ ] The interpreter's extern host, so `corpus/sqlite/` proves eval ==
+        native by construction.
+  - [ ] `@std/sqlite` itself, to the merged design in the synthesis.
 
-TWO CORRECT RULES CAN COMPOSE INTO A WRONG ANSWER, and neither is the
-one to weaken. The extern keeper holds two rules, both right:
-  - AN ALL-CAPS WORD IN A RETURN TYPE IS NOISE (no C base type shouts)
-    — this is what lets `SQLITE_API int` reach the 32-bit rule.
-  - A TYPEDEF KEEPS EVERY DEFINITION IT HAS ACROSS PREPROCESSOR
-    BRANCHES, and a seat is satisfied only when ALL readings agree —
-    this is what caught `__int64` in the MSVC branch.
-Composed, they meet `typedef SQLITE_INT64_TYPE sqlite_int64` at
-sqlite3.c:615 (verified; three branches at 615, 622, 625). That
-branch's BODY is entirely an all-caps macro, so noise-stripping
-resolves it to the EMPTY STRING — and nothing is never wide, so the
-readings disagree and disagreement correctly fails. A right
-declaration is refused by two right rules.
-THE FIX SHARPENS RATHER THAN LOOSENS: a branch that strips to nothing
-taught the keeper nothing, so IT MUST NOT VOTE. Still refuses a
-genuinely narrow body, still refuses a type that is wholly an
-unresolvable macro.
-Worth naming as its own shape because the usual instinct on a false
-refusal is to weaken a rule, and here both rules are load-bearing —
-the answer was a third rule about ABSTENTION, not a weaker version of
-either. It is also the campaign's one shape again, at the composition
-rather than at a boundary: `SQLITE_INT64_TYPE` resolves to a type for
-a C compiler that defines it and to nothing for a reader that does not.
+THE CAMPAIGN'S FINDINGS — none is about SQLite; each was found because a
+driver forced someone to read a seam nobody had grown before.
 
-FIX C WHERE IT IS WRONG; INHERIT IT WHERE IT IS ONLY ARBITRARY.
-Lane A's rule, and the sharpest statement of what LLM-FIRST means for
-a language decision. The bitwise slice met two C precedences and they
-are not the same kind of thing:
-  - `flags & MASK == 0` parses in C as `flags & (MASK == 0)` and is
-    almost never what anyone wrote. C is WRONG here, and diverging
-    turns a silent bug into the intended reading. So Avra binds the
-    bitwise band TIGHTER than comparison.
-  - `1 << BASE + i` parses in C as `1 << (BASE + i)`. C is not wrong
-    here, only ARBITRARY — and every model writing that line learned
-    C's reading and intends it. Diverging would silently change the
-    meaning of code nobody flagged, in the direction nobody asked.
-    So Avra inherits it.
-THE TEAM LEAD RECOMMENDED DIVERGING ON THE SECOND, arguing from what a
-human reader naively expects, and was overruled. For a language whose
-first principle is CORRECT ON FIRST GENERATION, the input is not what a
-reader expects but WHAT A MODEL WAS TRAINED ON. That is a different
-question and it has a different answer, and it is the first time in
-this campaign the two came apart.
-The docs say which parts of C were copied and why the copying stops —
-which is what makes an inheritance a decision rather than a default.
-
-THE EVIDENCE LAW, IN THREE STEPS, EACH FOUND BY THE PREVIOUS ONE
-FAILING. This is the campaign's most transferable output and it was
-earned by its authors being wrong, repeatedly, in public.
-
-  1. "ALWAYS CHECK" IS NOT THE RULE; "NAME WHAT YOU CHECKED" IS.
-     Four people produced a genuine error from a genuine compiler run
-     and each was wrong — a stale binary, `git log -1` naming the
-     CHECKOUT not the BINARY, a reduction retyped from memory that
-     dropped its trigger, two files run between one pair of echoes
-     and attributed by elimination. Every one of them DID verify.
-  2. NAMING THE BASE IS NECESSARY AND NOT SUFFICIENT. A VERIFICATION
-     NAMES THE BASE **AND THE THING IT ACTUALLY RAN.** Found when a
-     session in the RIGHT tree at the RIGHT commit read one anchored
-     regex (`externs.py:63`) and reported the behaviour of the tool —
-     true about the line, false about the pipeline, because line 96
-     strips macros before that regex ever sees the type, and the
-     keeper's own case at :205 asserts the outcome. A REGEX IS AN
-     INPUT TO A KEEPER, NOT THE KEEPER. Step 1 was built against
-     stale trees; this failure had a perfectly current one. The gap
-     was GRANULARITY, not freshness.
-  3. AND THE FAILURE IS AT THE LAST STEP, NOT THE FIRST. Five times
-     in one day, one session catalogued its own: a probe against an
-     older binary; a repro retyped without its trigger; a measurement
-     extended past the line that handles the case; a rule stated by
-     range when the C TYPE was the input, contradicting its own
-     earlier principle; a regex read as a keeper. EVERY ONE WAS A
-     GENUINE RUN OR A GENUINE READ. **The artifact is real and the
-     sentence is bigger than it.** No amount of checking first
-     prevents that, because the checking happened.
-     THE HABIT, such as it is: SAY THE ARTIFACT AND THE CLAIM IN THE
-     SAME BREATH, so the gap between them is visible to the reader
-     and to the writer. "I ran X and got Y, therefore Z" makes Z's
-     distance from Y inspectable; "Z, verified" hides it.
-
-THE ONE SHAPE, which is what this campaign actually found. Every
-technical finding below and every coordination failure it suffered is
-the same bug in a different substrate: AN IDENTIFIER THAT RESOLVES
-DIFFERENTLY ON THE TWO SIDES OF A BOUNDARY.
-
-  In the compiler:
-    a guard reading `==` while the callee reads the header  — a NUL
-      path that is empty to SQLite and length 2 to Avra
-    a declaration saying `int` while the C body answers 32 bits
-    a probe naming a CHECKOUT while a binary answered from another
-    a doc comment about a NODE read as a claim about the LANGUAGE
-    `h->len` meaning text length to one caller and payload size to
-      another
-  In the coordination, the same day, by the people writing those laws:
-    a worktree two sessions wrote to  -> 250 ROADMAP lines lost to a
-      `git checkout` that could not tell whose lines were whose
-    a worktree renamed without notice -> a failed `cd` RE-POINTED an
-      `&&` chain into main
-    a name two sessions answered to   -> a lost message, a duplicated
-      backlog entry, and an attribution dispute over rulings nobody
-      had misattributed
-
-The laws written this campaign all say one thing: MAKE THE IDENTIFIER
-SAY WHICH ONE IT MEANS. Read the same bytes as the thing you protect.
-Name the binary and the commit it was built from, not the tree. Split
-the verb when a value wears two hats. Address a ref, not a name.
-Recorded as the campaign's summary because the process failures were
-not incidental to the findings — they were the findings, arriving in
-the one substrate nobody had thought to apply them to.
-
-THE CAMPAIGN'S TREE-WIDE FINDINGS (2026-09-05) — none of these is
-about SQLite; each was found because a driver forced someone to read
-a seam nobody had grown before.
-
-  - `RtKind` HAS TWO SILENT CONSUMERS, and they are the two that
-    decide what actually crosses the boundary. `ll_rt_kind` is the
-    one exhaustive match, so the compiler was believed to demand an
-    arm for a new kind. It does not: `rt_arg` (llvm.av:432) tests
-    `if !(sig!.params[j] is .I64) { return v }` — NOT I64 MEANS PASS
-    THE REGISTER UNCONVERTED, correct for three variants because the
-    others are `Ptr` (already a pointer) and `Void` (never a param),
-    and silently wrong the moment a width exists: an `int` reaches an
-    i32 seat with no truncation and a `bool` an i1 with no
-    extension, because `ptr_to_int` and the bool `zext` both live
-    INSIDE the branch it skips. `answers_word` (llvm.av:398, read at
-    :390) is its twin on the way out — a pointer-shaped destination
-    reads its value back out of a word ONLY if the row declares I64,
-    so a width answers false and the `int_to_ptr` is skipped. BOTH
-    BECOME EXHAUSTIVE MATCHES as part of the widening, so a future
-    width must state its conversion or the build fails — and that is
-    also the honest home for the sign question, since `i32` and
-    `u32` differ ONLY in how they extend. (Lane A, re-checking their
-    own claim because a diff was about to be built on it.)
-  - AND THE KEEPER GAP BEHIND IT — FOUND, AND CLOSED THE SAME DAY
-    (lane A, af63eb3). `make vocab` named `Ins`'s eight consumers
-    and refused a catch-all there; NOTHING named a REGISTRY enum's,
-    because `RtKind` had been three variants since it was written
-    and never grew, so nothing ever tested the assumption. This
-    campaign is the FIRST THING IN THE TREE'S LIFE TO WIDEN A
-    REGISTRY ENUM, and it found a keeper that had been guarding one
-    enum while calling itself general.
-    THE RULE THAT CAME OUT OF IT, and it is the transferable part:
-    FOR A REGISTRY ENUM — one every consumer must answer for —
-    `is .Variant` IS A CATCH-ALL IN DIFFERENT CLOTHES. For a
-    PROJECTION enum it stays the right idiom. Both keepers had been
-    looking for `_ ->` alone, which is the shape a catch-all takes
-    in a MATCH; neither could see a partial handler written as a
-    BOOLEAN. That is CLAUDE.md's counting rule extended from the
-    shape of the CODE to the shape of the TEST, and it is proposed
-    to the file's owner as an amendment.
-    RESOLVED: both sites are exhaustive matches on main, behaviour
-    byte-identical (three variants, three arms, 1872 cases, 77
-    programs), and `make vocab` now names `RtKind`'s consumers and
-    refuses a catch-all AND an `is .Variant` test there — proved by
-    restoring the boolean and watching the gate name the function.
-    So the width widening is PURELY ADDITIVE: add the variants and
-    the build refuses until an author has said what an `i32` and a
-    `u32` do in BOTH directions, which is where the sign question
-    belongs, since the two differ only in how they extend.
-  - `avra_llvm_cast_to_type` IS THE WIDTH DEFECT'S SECOND HOME. Its
+  - THE WIDTH NEVER BECOMES A TYPE, and that seam is what made the work
+    small: `core/types.av` is UNTOUCHED and there is NO new `Type`
+    variant, so not one exhaustive match changed. `widthless` rewrites
+    the width word to `int` ON THE EXTERN PATH ONLY and the width is read
+    back FROM THE STORE at `extern_row_of`. COROLLARY refused in the HELP
+    rather than left to be discovered: `List<i32>` is refused — a seat
+    property that leaks into an element type is no longer one.
+  - `RtKind` HAD TWO SILENT CONSUMERS — `rt_arg` (llvm.av:432) and
+    `answers_word` (:398) tested `is .I64` rather than matching, so a new
+    width would have put an Avra `int` in an i32 seat with no truncation,
+    compiling clean. Both are exhaustive now and `make vocab` names them.
+    STANDING RULE: WIDENING A REGISTRY ENUM WITHOUT NAMING IT IN `make
+    vocab` IN THE SAME SLICE IS NOT A LANDING — live candidates `RtHost`
+    and `RtSig`'s BOOLEAN COLUMNS, the same hazard with no enum to hang
+    it on. (CLAUDE.md carries the law.)
+  - `avra_llvm_cast_to_type` IS THE WIDTH DEFECT'S SECOND HOME: its
     int->int arm is `LLVMBuildZExt` UNCONDITIONALLY on widening
-    (llvm_wrapper.c:617-620) — the B3 bug written in C, inside a
-    helper named "cast to type". Adding a correct sibling and
-    leaving the trap is not the fix: a helper that silently
-    zero-extends is a trap with a friendly name, and the next person
-    who reaches for it to widen an i32 reintroduces the defect. The
-    sized-width work decides what `cast_to_type` ITSELF does.
-    ALSO IN THAT FUNCTION, for float's lane: a double<->i64 arm at
-    :623 that BITCASTS. A bitcast is right for reinterpreting bits
-    and WRONG for a numeric conversion, and a helper doing one under
-    a general name is where the next person confuses them.
-  - AND THE PRIMITIVE THE SENTINEL NEEDS IS ALREADY THERE:
-    `LLVMBuildIntToPtr` at llvm_wrapper.c:614-615. The named mint
-    needs no new wrapper primitive — only a lowering that reaches
-    that arm, behind the guard.
-  - THE WIDTH DEFECT CANNOT BE AUDITED BY CALLING THINGS. It is
-    CALLEE-DEPENDENT and silent: this libc's `atoi` is
-    `(int)strtol(...)` so it leaves all 64 bits and answers
-    correctly through our extern, while a hand-written `int
-    f(void){return -1;}` at -O2 answers 4294967295. Same prototype,
-    opposite answers. So a passing test proves only that ONE
-    implementation happened to widen, and the class has to be caught
-    at the DECLARATION. That is the argument for a declaration-level
-    keeper being the right instrument rather than a stopgap.
-  - VENDORING MAKES THE KEEPER COVER A THIRD PARTY. `make externs`
-    was limited to "our half only" because it cannot read a third
-    party's HEADERS — but a vendored amalgamation is a C SOURCE IN
-    THE TREE, and the keeper reads C sources by path. Make its
-    source list MANIFEST-DRIVEN rather than two hard-coded paths and
-    all 284 sqlite declarations become statically checkable against
-    their real prototypes. The vendoring decision was taken for
-    reproducibility and turns out to close the enforcement gap on
-    the worst blocker. (Lane A.)
-  - THE WIDTH NEVER BECOMES A TYPE — the seam that made B3 small,
-    and it is smaller than the synthesis, the brief and the campaign
-    lead each predicted, because the right seam was found rather
-    than because anything was cut. `core/types.av` is UNTOUCHED and
-    there is NO new `Type` variant, so not one exhaustive match in
-    the tree changed. `widthless` rewrites the width word to `int`
-    ON THE EXTERN PATH ONLY, so every seat law still judges an Avra
-    `int` and a wrong argument still reads "wants `int`, found
-    `string`". And the width is read back FROM THE STORE at
-    `extern_row_of` rather than from a new side table — the store
-    law obeyed instead of worked around. That is the doctrine's own
-    consequence: A WIDTH IS A PROPERTY OF A SEAT, NOT OF A VALUE, so
-    it has no business in the type surface.
-    WITH ITS OWN COROLLARY, refused in the HELP rather than left to
-    be discovered: a width must NOT descend into a type argument.
-    `List<i32>` is refused, because a seat property that leaks into
-    an element type is no longer a seat property.
-  - THE WIDTH WORK'S END-TO-END PROOF IS BLOCKED ON THE EXTERN HOST,
-    not on anything in B3 — a real dependency, found by measuring
-    `make corpus` rather than reading it. THREE FACTS: the corpus
-    loop over `corpus/*/` DIRECTORIES (Makefile:102-111) runs
-    package-shaped entries, and a FILE-build inside a package DOES
-    honour its manifest — measured, a `[link] objects` row carrying
-    a C witness linked and the binary printed the defect's own wrong
-    answer, which is what proved the object was reached. So "a
-    corpus binary links only `avra_runtime.o`" is TRUE of the flat
-    corpus and FALSE of the directory entries. BUT that loop runs
-    `./avra run` FIRST and demands eval == expected, and `avra run`
-    TRAPS on any extern — so a corpus package carrying one fails the
-    eval half before reaching the build half, and `corpus/native/`
-    escapes only because it is the FLAT corpus, which links nothing
-    but the runtime. CONSEQUENCE: the width witness stays a TEST
-    PACKAGE with its `.c` checked in and the gate building it, and
-    THE DAY THE EXTERN HOST LANDS THE SAME PACKAGE GRADUATES TO A
-    CORPUS ENTRY — proving both engines agree on a width across the
-    FFI boundary, which is exactly the property the width work is
-    for and the one thing a native-only test cannot show.
-  - "ALWAYS VERIFY" WOULD NOT HAVE SAVED US; ONLY "NAME THE BASE"
-    WOULD. A compiler defect was reported, escalated as urgent by
-    two of us, and nearly routed to the lane that owns the pass:
-
-        type Box = { n: int }
-        fn writes(mut b: Box) -> int { b.n = 1  b.n }
-        error[F0900]: defect: an assignment to a non-place survived
-                      a clean analysis
-
-    It did not reproduce — clean on main's compiler at 22adc6a, on
-    the lead's binary, and on the reporting lane's binary, both
-    `check` and `run`. TRACED: the reporter's `build/avra` was made
-    Sep 5 17:56 from `d96a328`, BEFORE they entered the worktree.
-    So the defect was REAL at d96a328 and was FIXED between there
-    and 22adc6a — most likely lane C's `mut`-in-a-fn-type slice at
-    656e650, which touched the place analysis. Nothing to route,
-    and it was never anybody's uncommitted diff.
-    THE DISTINCTION THAT MATTERS, and it is sharper than "verify
-    your findings": the reporter DID verify — they ran it and got a
-    real error. What went unverified was WHAT THEY RAN IT WITH.
-    That failure is more insidious than not checking, because the
-    check SUCCEEDS and produces a genuine artifact, so nothing feels
-    wrong. A STALE BINARY IS A DIFFERENT COMPILER WEARING YOUR
-    TREE'S NAME. Specificity is not provenance.
-    Recorded as an incident because both the reporter and the lead
-    knew the rule — main's own tip that hour was `docs: a probe
-    result names the base that answered it` — and amplified anyway,
-    one hour after helping write it.
-  - THE 22 SCALAR OUT-PARAMS ARE REALLY 19, AND THE THREE THAT ARE
-    EXEMPT ARE WHY WE GOT LUCKY — RECORDED AS LUCK, DELIBERATELY.
-    Three of the 22 write through `sqlite3_int64*` and are exact at
-    ANY width, because Avra's `int` IS i64. So a `mut` seat landed
-    WITHOUT a width would be CORRECT for those three and silently
-    wrong for the other 19 — the classic shape where the first thing
-    anyone tries happens to work and the defect waits. What saved us
-    is that all three of the driver's first-slice reachers —
-    `wal_checkpoint_v2`, `table_column_metadata`, `keyword_name` —
-    are in the 19, so a width-less seat FAILS ON THE FIRST THING THE
-    DRIVER DOES. Had the first slices happened to be the three
-    `int64` ones, a width-less seat would have SHIPPED BEHIND THREE
-    GREEN TESTS. That is luck and it is written down as luck, so
-    nobody reads the early failure as evidence the process caught
-    it. It is also the second time today that COUNTING INSIDE A
-    BUCKET rather than accepting its edge changed a plan.
-  - A LADDER IS READ AS A PLAN BY ITS SECOND READER, so THE STEP
-    THAT COSTS NOTHING IS THE ONE THAT MUST NOT APPEAR ON IT. Any
-    ordering artifact — a ladder, a checklist, a sequencing table —
-    is scheduled cheapest-first by whoever inherits it, and a row
-    that is CHEAP AND WRONG is worse than a row that is missing.
-    That is why the `SQLITE_STATIC` step was deleted from the
-    driver's ladder rather than annotated, and why the canonical
-    warning is repeated VERBATIM at all seven sites instead of
-    referenced once — the same reasoning as the tree's exemption
-    law: a marker that lives somewhere else is invisible to the
-    reader who arrives at the table.
-  - `SQLITE_LOCKED` IS NOT RETRYABLE, AND THE DESIGN SAID IT WAS —
-    a defect whose failure mode is A HANG rather than a wrong
-    answer. `SQLITE_BUSY` means ANOTHER connection holds the
-    conflicting lock, so waiting can clear it. `SQLITE_LOCKED` means
-    THE SAME connection does (or one sharing its cache) — so a retry
-    loop waits for a lock it is itself holding, forever. The driver's own research (T49) says so, and SQLite's own header
-    proves it sideways at :9863-9866, describing a same-connection
-    conflict: "In this case there is no 'blocking connection', so
-    invoking sqlite3_unlock_notify() results in the unlock-notify
-    callback being invoked immediately. If the application then
-    re-attempts the 'DROP TABLE'… it will result in another
-    SQLITE_LOCKED error." There is provably NO EVENT that could
-    release it — and the existence of an entire `unlock_notify` API
-    is itself the evidence, since SQLite built a notification
-    channel precisely because spinning cannot work. The design's
-    `retryable()` contradicted all of it. DEPARTED FROM THE DESIGN, with
-    the departure named in the function's own doc carrying both
-    codes and the reason, pinned by two cases. Same shape as the
-    DEFENSIVE refusal: THE DESIGN'S OWN RESEARCH CONTRADICTED THE
-    DESIGN, and only running it showed which was right. A design
-    document is evidence, not authority.
-  - A FIXTURE GENERATED FROM ITS SOURCE CANNOT DRIFT FROM IT. The
-    error test enumerates ALL 82 extended result codes the VENDORED
-    header declares, generated from `sqlite3.h` rather than typed
-    from the docs — so a version bump that adds a code fails the
-    suite instead of silently leaving it unhandled. That is the
-    ASSERT-THE-ABSENCE practice pointed forward: the earlier one
-    makes a REMOVAL fail if undone, this makes an ADDITION fail if
-    unnoticed. Both replace a memory with an artifact.
-  - A CLOSED REGISTRY SURFACES DESIGN GAPS THAT PROSE REVIEW MISSED
-    — the catch-all doctrine read FORWARDS, and an argument for
-    closed registries nobody had made from this direction. The
-    driver's `Cause` enum has no `_ ->`, so a refusal the design
-    promised but never picked up has NOWHERE TO BE SPOKEN and the
-    compiler says so. The synthesis had already diagnosed the drop
-    about itself ("no judge read the ten research reports against
-    the designs"); the registry is simply WHERE THAT DROP BECOMES
-    VISIBLE. The tree's law says a catch-all silently forgets the
-    NEXT variant; this says the ABSENCE of one makes an
-    unimplemented decision fail to COMPILE instead of failing to
-    HAPPEN.
-  - AND THE AUDIT THAT FALLS OUT OF THE VARIADIC RULING, commissioned
-    rather than assumed: a ruling that refuses a CLASS must be
-    audited for what the class was the ONLY DOOR TO. `SQLITE_CONFIG_
-    URI` was found by accident, downstream of a flag choice, and it
-    was security-shaped. Seven variadics remain, and
-    `sqlite3_db_config` looks worse than the first: it is the
-    per-connection door for DQS_DDL/DQS_DML (double-quoted string
-    literals — a typo'd column name silently accepted as a string),
-    DEFENSIVE, TRUSTED_SCHEMA, ENABLE_FKEY and WRITABLE_SCHEMA. If
-    it is unbindable then each of those is a COMPILE-TIME-OR-NEVER
-    decision for this driver. THE QUESTION TO ASK OF EACH: is this
-    variadic the only way to control something, is that thing
-    security- or correctness-shaped, does a NON-VARIADIC TWIN exist
-    (`sqlite3_mprintf` has `sqlite3_vmprintf`, so the refusal's blast
-    radius may be smaller than the count suggests), and does a PRAGMA
-    reach it? Answer by MEASURING our own object, not by reading the
-    header's `#define` list — that is what turned the URI reading
-    into a decision. It runs BEFORE the flag set freezes, since a
-    flag set is expensive to revisit once tests are written on it.
-  - THE FLAG TEST, RATIFIED (census §19.1) — and the second half is
-    the one that makes the flag set FINITE: **settle it at compile
-    time only when it is variadic-only AND INVISIBLE AT THE DRIVER'S
-    OWN DOOR; visible at the door means refuse at the door.** The
-    reasoning matters more than the rule: A COMPILE FLAG HAS NO
-    CALLER AND CANNOT CHANGE ITS MIND; A DOOR CAN REFUSE PER-VERB,
-    PER-CALLER, AND SAY WHY. URI had to be closed at the boundary
-    because nothing a verb can inspect distinguishes a path from a
-    path — the reinterpretation happens inside `open_v2`. Everything
-    else the variadic audit found, a caller WROTE, in SQL we were
-    handed: `PRAGMA writable_schema`, `ATTACH`, a double-quoted
-    identifier. The audit's whole output was ONE flag change.
-  - `SQLITE_DEFAULT_DEFENSIVE` REFUSED, on a measurement rather than
-    a preference: two of its three documented protections are SILENT
-    NO-OPS. `PRAGMA journal_mode=OFF` reads back `delete` and
-    `schema_version=99` reads back `1`, BOTH AT rc=0 — a protection
-    that silently discards a caller's request instead of refusing it
-    is A WRONG ANSWER WEARING A SAFETY LABEL, which is this
-    campaign's most recurring shape arriving from inside a hardening
-    flag. The trade: gain one protection already visible at our own
-    door, lose `journal_mode=OFF` from every caller forever with no
-    hatch (P8), inherit two silent lies. And it is irreversible —
-    compiling ON a thing whose OFF switch is one of the eight
-    permanent refusals is the URI mistake repeated KNOWINGLY.
-  - ATTACH IS A CAPABILITY WE CANNOT REMOVE, so it is a CONTRACT.
-    `ENABLE_ATTACH_CREATE`/`_WRITE` are on, with no pragma, no
-    non-variadic twin and no compile symbol — `db_config` is the
-    only setter and it is unbindable. MEASURED: `ATTACH '/tmp/x.db'`
-    then `CREATE TABLE side.made(x)` both accepted, file created on
-    disk. So A PROGRAM THAT HANDS @std/sqlite ARBITRARY SQL HAS
-    HANDED IT THE FILESYSTEM, and that is declared in the README as
-    a property (P9), not filed as a gap.
-    THE DOOR IS `sqlite3_set_authorizer`, NOT A TEXT SCAN. Matching
-    `ATTACH` in SQL we do not parse is a BLOCKLIST on a language we
-    cannot read — defeated by a comment, a case change, or a string
-    literal, and refusing legitimate cross-database work besides.
-    The authorizer refuses `SQLITE_ATTACH` SEMANTICALLY at prepare
-    time, from the parser, per connection, with a reason. It is in
-    the callback class, so it is gated on trampolines — a REQUIREMENT
-    on that rung rather than a note. And the honest caveat: arbitrary
-    SQL was already a write primitive for the OPEN database; ATTACH
-    escalates it to the filesystem. Both are why the driver's answer
-    to untrusted input is BOUND PARAMETERS, never SQL filtering.
-  - ASSERT THE ABSENCE. When a flag or a capability is REMOVED by
-    decision, the removal gets a TEST — `USE_URI` moved from
-    `promised()` to `forbidden()`, so re-adding it fails the suite.
-    A removal normally leaves no artifact at all, which is how it
-    comes back. The same for anything else a flag audit decides
-    against.
-  - A COMPILE FLAG WHOSE ESCAPE HATCH IS VARIADIC IS PERMANENT, and
-    that is how the variadic ruling reached forward and decided a
-    flag. `-DSQLITE_USE_URI=1` makes URI parsing GLOBAL — measured
-    against our own object with NO `SQLITE_OPEN_URI` in the flags,
-    `open_v2("file:/tmp/x.db", …)` answered rc=0 with
-    `db_filename` = `/private/tmp/x.db`: the prefix stripped anyway.
-    There is no per-connection OFF switch (`SQLITE_OPEN_URI` only
-    turns it ON), and the only runtime way off is
-    `sqlite3_config(SQLITE_CONFIG_URI, 0)` — which is one of the
-    EIGHT VARIADICS and so permanently unbindable. DECIDED: the flag
-    comes OUT and the deliberate verb passes `SQLITE_OPEN_URI` for
-    its own connection. That turns the URI ruling from a convention
-    our `open` enforces into a property THE LIBRARY enforces, which
-    matters because P8 promises callers may drop to the raw wall —
-    and a rule at one door is not a boundary. Same shape as the argv
-    law: make the reinterpretation impossible rather than escape it.
-    FLAGS.md records that this flag is load-bearing BECAUSE its
-    escape hatch is unreachable.
-  - SKIP OR REFUSE SPLITS BY VERB, and both answers are right. A
-    comment-only statement prepares to a NULL statement with rc=OK —
-    "succeeded, did nothing". `exec(sql)` is a SCRIPT, so it SKIPS
-    (trailing comments and a blank line after the last `;` are
-    normal, and refusing would break every migration file — SQLite's
-    own T37 says refusing is the opposite bug). `run(sql)` is ONE
-    writing statement, so it REFUSES (`sqlite.no_statement`), because
-    the caller asked to run a statement and there is none. One C
-    behaviour, two answers, because the verbs promise different
-    things — the same collapse as `many_statements`, where a script
-    legitimately holds many and a single-statement verb must not
-    silently drop the tail.
-  - THE 59 OUT-PARAMETERS ARE FIVE DIFFERENT LANDING PROBLEMS, and
-    nobody had separated them before the census did: 26 handle
-    `T**` (the `opaque type` candidates), 22 scalar `int*`/`i64*`
-    (which must write AT THE C WIDTH — this is the row that makes
-    the width work a DEPENDENCY of B1 rather than a parallel track,
-    evidenced by `wal_checkpoint_v2` writing -1 into an 8-byte cell
-    and reading back 4294967295), 9 borrowed `const char**` (a
-    LIFETIME, not a value), 17 OWNED `char**` (a DROP OBLIGATION),
-    and 6 op-typed `void*` that no declaration can type at all.
-    A `mut` seat is one mechanism; these are five contracts.
-    THE SINGLETON WORTH WRITING DOWN BEFORE IT COSTS AN AFTERNOON:
-    `sqlite3_get_table`'s `char ***pazResult` is the ONLY triple
-    pointer in 362, and it is freed by `sqlite3_free_table`, NOT by
-    `sqlite3_free`.
-  - A CROSS-BOUNDARY PROBE THAT SHARES A TRANSLATION UNIT IS NOT
-    TESTING THE BOUNDARY. An earlier form of the variadic probe
-    AGREED with the fixed prototype — because both declarations sat
-    in ONE translation unit and clang resolved the aliased one to
-    the variadic, so the compiler quietly repaired the very mismatch
-    the probe existed to expose. It only asks the question when the
-    two are APART (separate objects, or reached through `dlsym`).
-    A fifth instance of the evidence law, and the one most likely to
-    be re-derived wrongly, because the one-file version is what
-    anybody writes first.
-  - THE INVERSION: THE DANGEROUS BIND IS FREE TO WRITE AND THE SAFE
-    ONE CANNOT BE WRITTEN. Verified in the vendored header:
-
-        #define SQLITE_STATIC     ((sqlite3_destructor_type)0)   :6429
-        #define SQLITE_TRANSIENT  ((sqlite3_destructor_type)-1)  :6430
-
-    `SQLITE_STATIC` IS the null pointer, so Avra can spell it TODAY
-    — `ptr?` takes `null` with no new capability. `SQLITE_TRANSIENT`,
-    which COPIES and is the safe default, is `(void*)-1` and is
-    UNSPELLABLE, because `ptr` is receive-only and there is no
-    int->ptr mint. And the header's contract (:4946-4950) says that
-    under STATIC the object must stay valid until the statement is
-    finalized or the parameter rebound — so an Avra box bound that
-    way and released before `step` is a USE-AFTER-FREE INSIDE
-    SQLITE, at a site with no relationship to the bind.
-    CONSEQUENCE, ratified as campaign policy: the named mint and the
-    lowering guard are PREREQUISITES OF BINDING A SINGLE VALUE, not
-    conveniences — and until they land the driver offers NO BIND
-    VERB AT ALL, rather than the STATIC one with its hazard
-    documented. A HAZARD DOCUMENTED AT A VERB THE CALLER CAN REACH
-    IS A HAZARD SHIPPED. Any sequencing table that lists the
-    null-as-STATIC binds as a free +14 is wrong in the way that
-    matters: they are CALLABLE, not CORRECT, and a row that reads
-    "free" is how the inversion gets scheduled as the cheap next
-    step.
-  - OUT-PARAMETERS ARE DOWNSTREAM OF THE WIDTHS, not parallel to
-    them. Measured on `sqlite3_wal_checkpoint_v2`, which writes 4
-    bytes into an 8-byte cell: read as int32 it answers -1, read as
-    int64 it answers 4294967295. So a `mut` extern seat alone is
-    insufficient — the seat must carry the C WIDTH. The checklist
-    already had them in that order, by luck rather than reasoning;
-    now there is a reason.
-  - AND THE VARIADIC ESCAPE ROUTE IS REFUSED, not merely
-    discouraged. The api_surface report offered "bind one narrow
-    extern per argument shape" and it was repeated into a shipped
-    design another lane was building from. Measured across two
-    translation units: the fixed prototype answers -298729216 where
-    the variadic answers 12345, `mov w1, #12345` versus `str x8,
-    [sp]` — a silent wrong answer with no link error and no trap, on
-    `sqlite3_db_config`, which is how DQS, foreign keys and
-    defensive mode get set. The refusal now reads "a variadic C
-    function cannot be declared with a fixed argument list" with the
-    measurement beneath it.
-  - `float`'s FOOTPRINT IS "4 ON THE SPINE, 5 IN THE FULL SURFACE"
-    (CONFIRMED by both censuses independently),
-    never a bare integer — and the two counts that disagreed were
-    BOTH RIGHT, for different headers. This lane guessed
-    `sqlite3changegroup_change_double` was a false positive from a
-    NAME containing "double". It is not: sqlite3.h:13500, a genuine
-    session-API entry point beneath `changegroup_change_null` in a
-    family with an `_int64` sibling, and `nm` finds
-    `_sqlite3changegroup_change_double` in our object. The reason
-    the earlier report said four is that APPLE'S SDK HEADER SHIPS
-    ZERO SESSION FUNCTIONS, so four is correct there and five is
-    correct here. THE DIFFERENCE BETWEEN THE TWO NUMBERS IS
-    PRECISELY THE VENDORING DECISION, SHOWING UP AS A MEASUREMENT —
-    the second time in one day two censuses disagreed only where the
-    two headers do. What a driver touches to move a REAL in and out
-    is still bind/column/value/result; the fifth is gated behind the
-    session API and is on no path to v0. So `float`'s SCOPE does not
-    move; only the number does, and it is written as a phrase so the
-    next counter does not re-litigate it.
-  - AND THE STEP THAT SETTLES A COUNT DISPUTE IN A MINUTE: `nm`
-    against the object actually linked. A DECLARATION count answers
-    "what COULD exist"; an EXPORT count answers "what DOES". When
-    they disagree the difference is always a COMPILE-FLAG DECISION
-    someone made — so the GAP between the two numbers is a more
-    interesting artifact than either number alone. The driver lane's
-    362 declared / 357 exported / 5 declared-but-ABSENT is that
-    artifact, and it found five symbols that would have compiled and
-    failed at LINK before anyone bound one.
-  - HOW A CORRECTED COUNT EARNS BELIEF, since this campaign produced
-    three different totals: reproduce the EARLIER figure with the
-    SAME parser against the SAME header first — including its
-    hand-corrected false positives — and only then trust the new one
-    against the new header. The driver lane's 362 declared / 357
-    EXPORTED / 5 declared-but-ABSENT carries that control; this
-    file's earlier 365 was a bare re-parse with none, and the gap
-    between them is exactly what the control would have explained.
-    THE HEADER IS NOT A STATEMENT OF WHAT THE LIBRARY EXPORTS; `nm`
-    IS — a binding that compiles and fails at link is the worst
-    surprise a std package can hand a consumer.
-  - A STANDING RULE FOR EVERY LANE, not just this campaign:
-    WIDENING A REGISTRY ENUM WITHOUT NAMING IT IN `make vocab` IN
-    THE SAME SLICE IS NOT A LANDING. The keeper covers `Ins` and
-    `RtKind`; a registry it does not name is unguarded, and naming
-    the next one IS how CLAUDE.md's registry law gets enforced for
-    that enum. Two live candidates this campaign may widen:
-    `RtHost` (the interpreter's dispatch registry — the extern-host
-    work grows it, and it is a registry by the definition) and
-    `RtSig`'s BOOLEAN COLUMNS (`owns_result`, `has_owned_twin`),
-    which are the same hazard with NO ENUM TO HANG IT ON — five
-    consumers read them and a sixth column would be invisible to
-    every one. That may be the case that says the keeper should key
-    on the CONSUMER SET rather than on the enum; flagged to the
-    tool's owner, theirs to decide.
+    (llvm_wrapper.c:617), and :623 BITCASTS double<->i64, which is right
+    for reinterpreting bits and WRONG for a numeric conversion. Adding a
+    correct sibling and leaving the trap is not the fix — a helper that
+    silently zero-extends is a trap with a friendly name. The primitive
+    the sentinel needs is already at :614 (`LLVMBuildIntToPtr`).
+  - VENDORING MAKES THE KEEPER COVER A THIRD PARTY: `make externs` cannot
+    read a third party's HEADERS, but a vendored amalgamation is a C
+    SOURCE IN THE TREE. Made manifest-driven it refused the driver's
+    merge — 53 of 84 declarations answered a narrow C `int` and were
+    declared `int` — plus 8 FALSE POSITIVES, its width set having only
+    met C WE wrote. `__int64` was missing from that set and NOTHING IN
+    THIS TREE SPELLS IT; only the MSVC branch of a vendored typedef
+    surfaced it.
+  - TWO CORRECT RULES CAN COMPOSE INTO A WRONG ANSWER, and neither is the
+    one to weaken. "An all-caps return-type word is noise" and "a typedef
+    keeps every definition across branches, disagreement fails" are both
+    right; composed they meet `typedef SQLITE_INT64_TYPE sqlite_int64`
+    (sqlite3.c:615), an all-caps body stripping to the EMPTY STRING —
+    nothing is never wide, so a right declaration is refused. THE FIX
+    SHARPENS: a branch that strips to nothing MUST NOT VOTE. AND AN
+    ABSTENTION KEYED ON EMPTINESS MISSES THE DECORATED CASE — `unsigned
+    SQLITE_INT64_TYPE` strips to a BARE `unsigned`, votes, and reads
+    32-BIT. WHEN A FIX IS "IGNORE THE EMPTY CASE", ASK WHAT THE HALF-
+    EMPTY CASE DOES.
   - THE CENSUS, FINAL AND RECONCILED (`packages/std-sqlite/src/c/
-    CENSUS.md`, 1118 lines; the header preprocessed with the
-    package's own flags, cross-checked against `nm build/sqlite3.o`):
+    CENSUS.md`; header preprocessed with the package's flags,
+    cross-checked against `nm build/sqlite3.o`):
         362 DECLARED / 357 EXPORTED / 5 DECLARED-BUT-ABSENT
-        (3 win32, 2 carray — each compiles and fails at LINK)
-      exclusive, summing to 362:
-        234  (a) plain — bindable with nothing new
-         59  (d) out-parameter
-         56  (c) function pointer
-          8  (e) variadic — permanent refusal at the declaration
-          5  (b) double
-      touching, overlapping the above:
-        226  (g) narrow C `int` return
-         14  (f) pointer sentinel
-      THE SEQUENCING THE CENSUS WAS COMMISSIONED FOR: nothing new
-      234 -> OUT-PARAMS 286 -> [STATIC 300, BLOCKED — see THE
-      INVERSION] -> float 305 -> trampolines 354.
-      **OUT-PARAMETERS ARE THE ONLY THING ON THE CRITICAL PATH.**
-    AND THE RECONCILIATION IS WHAT MAKES IT BELIEVABLE, not its
-    recency: Apple's 3.51.0 SDK header parses to 284 UNDER THE SAME
-    SCRIPT — the api_surface report's exact denominator — and its
-    class counts reproduce too (fn-pointer 43/43, sentinel 14/14,
-    double 4+1). So the old figures were never wrong; they were
-    measured against a DIFFERENT HEADER, and the entire gap is the
-    vendoring decision.
-    AND THERE ARE THREE NUMBERS, NOT TWO, WHICH IS THE BETTER
-    RESULT: 365 is what the API IS, 362 is what a DECLARATION CAN
-    NAME under our flags, 357 is what it CAN LINK — and A BINDING IS
-    BOUNDED BY THE SMALLEST. The 365/362 gap is exactly three, named
-    rather than waved at: `sqlite3_activate_cerod` (behind
-    `SQLITE_ENABLE_CEROD`) and `sqlite3_mutex_held` /
-    `sqlite3_mutex_notheld` (behind `#ifndef NDEBUG`, against our
-    `-DNDEBUG=1`); none is in the object. Two INDEPENDENT INSTRUMENTS
-    — one over raw header text, one preprocessed — then agreed
-    EXACTLY on four classes, including the eight variadics by name.
-    Agreement between different instruments is worth more than a
-    re-run of one, and it is what makes the count believable.
-    A COUNT EARNS BELIEF BY REPRODUCING THE NUMBER IT REPLACES,
-    NEVER BY BEING NEWER. And to keep the
-    ledger's numbers attached to their headers: "153 of 284" was
-    CORRECT on Apple's denominator and 226 is correct on ours — that
-    pair is NOT a correction, it is two headers. What was wrong was
-    that four lanes, this one included, repeated a figure for hours
-    without anyone asking WHICH HEADER IT COUNTED. A NUMBER NOTHING HAS TRIED TO VIOLATE IS NOT A MEASUREMENT,
-    which is the untested-keeper law applied to a figure.
-  - A VARIADIC C FN CANNOT RIDE A UNIFORM TRAMPOLINE ON arm64 —
-    AND THE OBVIOUS TEST FOR IT PASSES. Verified here, `dlsym` so no
-    optimizer sees both sides. The callee reads its variadic argument
-    FROM THE STACK — `sub sp, sp, #0x10` / `ldr x0, [sp, #0x10]!` at
-    -O2, the mechanism in two instructions — while a uniform
-    trampoline puts it in x1. Isolated, a uniform-only call answers
-    GARBAGE — 8291205376 for a wanted 7777 in one process, -16 in
-    another under a second hand. THE VALUE IS NOT STABLE and that
-    instability is itself the finding: it is whatever the stack slot
-    last held, so a test that PINNED the wrong answer would be
-    pinning noise. Assert that it is not the value asked for, never
-    that it is a particular number. But the FIRST test written for it
-    answered CORRECTLY: calling the fn properly and then through the
-    uniform prototype in one program returns the right value,
-    because the correct call already wrote it into the stack slot
-    the broken call then reads. A two-value run isolates it — 1111
-    correct, then 2222 requested and 1111 returned. So the refusal
-    belongs AT THE DECLARATION, and any test guarding it must never
-    make a correct variadic call in the same program.
-  - AND THE PATTERN THOSE THREE SHARE, which is the campaign's most
-    transferable finding: A BOUNDARY DEFECT CANNOT BE AUDITED BY
-    CALLING THINGS. Three instances, three mechanisms, one shape —
-    the narrow C return (this libc's `atoi` is `(int)strtol(...)` so
-    it answers correctly while a hand-written `int f(void)` does
-    not: CALLEE-DEPENDENT); the variadic trampoline (a correct call
-    seeds the slot the broken one reads: ORDER-DEPENDENT); and the
-    pointer constant (both engines agree on null, so `eval ==
-    native` holds while both are wrong: AGREEMENT IS NOT
-    CORRECTNESS). In each, a passing test proves only that one
-    arrangement happened to work. The instrument has to read the
-    DECLARATION — which is why `make externs` is the right shape of
-    keeper, and why vendoring the amalgamation, by putting a third
-    party's C in the tree, extends it over 284 declarations it
-    could never have reached through headers.
-  - A DOC COMMENT ABOUT AN AST NODE, READ AS A CLAIM ABOUT THE
-    LANGUAGE — and the corrected finding is narrower and better than
-    the wrong one. This campaign reported, twice and to the owner,
-    that AVRA HAS NO UNARY MINUS and that no negative constant can
-    be written. The first half is FALSE: unary minus exists and
-    desugars at parse — `features/expr_spine/builders.av:49-55`,
-    whose own doc says `/// -v is 0 - v: the parse desugars, so no
-    pass learns a node.` The misread was `core/nodes.av:173`'s "the
-    one unary, until minus", which is about which AST NODE exists,
-    not about which OPERATOR the language has.
-    THE REAL GAP: the desugaring stops one step short of FOLDING, so
-    a negative literal reaches the const law as a `Binary` and that
-    law asks for a literal — and the law is already RIGHT ("today
-    that means a literal"). So the slice is ONE PRODUCT FILE,
-    `expr_spine/builders.av`, and `features/consts/` needs no change
-    at all. Blast radius MEASURED: five negative literals tree-wide,
-    none pinning IR text; the i64 minimum stays unreachable either
-    way (`F0001: 9223372036854775808 does not fit an int`), and
-    `const B: int = -A` stays refused because that needs the general
-    folder, which the slice does not claim.
-    THE LESSON: a doc comment is evidence about the thing it sits
-    on. "The one unary, until minus" sitting on a NODE enum is a
-    statement about nodes; reading it as a statement about the
-    language cost two reports and a wrong routing. The tree already
-    held the accurate version at the round's own backlog — `-1`
-    desugars to `Bin(Sub, IntLit(0), IntLit(1))` — and nobody
-    checked it before claiming the opposite.
-  - THE F0900 LEDGER — how a contested finding gets recorded, since
-    four people were wrong about this one in four different
-    directions before it settled. Every line carries its base:
-
-        d96a328   PRESENT    clean tree, call site included
-        cabce5f   PRESENT    zero diffs, binary rebuilt after a stash
-        22adc6a   WITHDRAWN  attributed by elimination; no evidence
-                             either way, in EITHER direction
-        349c74d   FIXED      lane C, who reproduced it independently
-                             before touching anything
-        7b90a46   ABSENT     freshly bootstrapped
-
-    The bug was REAL, the fix is lane C's, and the routing was right
-    on the merits. The only casualty was one datapoint and it was
-    the one nobody needed. A row that says WITHDRAWN is worth more
-    than a row deleted.
-  - THE FOUR FAILURE MODES, ALL FROM ONE DAY, ALL PRODUCING A
-    GENUINE ARTIFACT FROM A GENUINE RUN:
-      1. A probe against a BINARY OLDER THAN ITS OWN SOURCE.
-         Caught by: name the base.
-      2. Quoting `git log -1` as the base — which names the
-         CHECKOUT, not the compiler that answered.
-         Caught by: name the BINARY's base (mtime + built-from).
-      3. A REDUCTION RETYPED FROM MEMORY that silently dropped the
-         trigger. Caught by: re-run the reduction before sending it.
-      4. TWO FILES RUN BETWEEN ONE PAIR OF ECHOES, one error line,
-         attributed by ELIMINATION rather than observation.
-         Caught by: pin the INPUTS, not only the base.
-    NONE of the four would have been caught by "verify before
-    reporting", because all four people DID verify and all four got
-    a real error out of a real compiler. Hence the sentence this
-    campaign should be remembered for:
-    **"ALWAYS CHECK" IS NOT THE RULE. "NAME WHAT YOU CHECKED" IS.**
-  - CORRECT BY SPECIFICATION IS NOT CORRECT BY LUCK, and the rule
-    that refuses safe things gets ignored. This lane ruled that
-    `sqlite3_complete` must wait for `i32` because declaring a
-    narrow C return as `int` is "correct by luck". WRONG, and the
-    driver corrected it: the header STATES the range is 1, 0, or
-    SQLITE_NOMEM — all NON-NEGATIVE — so the widening is exact for
-    every value the function can produce. That is a different case
-    from lane A's unsigned-MAX, where the value COULD exceed the
-    range and happened not to. LUCK is "the values so far have
-    fitted"; SPECIFICATION is "the range cannot leave the safe set".
-    The census draws that line and it stays sharp, because a refusal
-    that catches safe code teaches people to route around the rule.
-  - A `;` SCAN IS A CANDIDATE GENERATOR WITH THE PARSER AS JUDGE —
-    which is how a text scan and "nothing here text-scans SQL" stop
-    contradicting each other. The splitter proposes boundaries by
-    scanning for `;` and `sqlite3_complete` DISPOSES: a false
-    candidate is rejected, and a true one cannot be missed, because
-    every case that breaks a naive split — a `;` inside `'a;b'`, a
-    `"quoted"` or `[bracketed]` identifier, a comment, a trigger
-    body before its `END;` — answers INCOMPLETE to the parser. The
-    rule was never "no scanning"; it was "no scan may be the JUDGE".
-    Measured on the hard question too: appending `"\n;"` completes
-    for every benign tail and stays incomplete for all four
-    genuinely unterminated ones.
-    AND THE SPLITTER TAKES NO VIEW ON WHETHER A SEGMENT HOLDS A
-    STATEMENT: comment-only text prepares to a NULL statement with
-    SQLITE_OK, so that is `prepare`'s answer to give — which is what
-    keeps the splitter from guessing about comments at all.
-  - AN ASK THAT ARRIVES WITH THE CASES THAT STAY REFUSED IS AN ASK
-    THAT CAN BE LANDED IN AN AFTERNOON — lane C's rule, earned on
-    the negative-constant slice and worth more than the slice.
-    Their words: an ask carrying only the cases that START WORKING
-    is one the owner has to redo, because the owner cannot tell what
-    the author decided from what the author missed. The two edges
-    that made this one trustworthy were the two that DO NOT change:
-    `const B: int = -A` stays F2045 (the operand is an `Ident`, so
-    it needs the general folder nobody claimed), and
-    `-9223372036854775808` stays F0001 at the LEXER (the positive
-    literal is read first, so the i64 minimum is unreachable before
-    and after — which is the test that stops a later "improvement"
-    from silently wrapping).
-    LANDED as `ee9e3df` in ten lines: `build_neg` folds when the
-    operand is an int literal, read through core's VALUE PROTOCOL
-    (`int_of`) rather than by matching the variant — so expr_spine
-    reaches into nobody's node and the doctrine holds. Verified here
-    against binary `2026-09-05 22:06:41` at checkout `181b833`:
-    `const N: int = -1` accepted, `const B: int = -A` still refused.
-    BOTH REJECTIONS ARE IN THE COMMIT MESSAGE so nobody re-argues
-    them: not a `Neg` node (it breaks `build_neg`'s own promise that
-    no pass learns a node, and taxes every exhaustive `Expr` match
-    for a case the parser settles itself), and not a general folder
-    (consts cannot match expr_spine's `Binary`, which makes it a
-    core event rather than something smuggled under a const fix).
-  - A FAILED `cd` IN AN `&&` CHAIN DOES NOT STOP THE CHAIN — IT
-    RE-POINTS IT. Every later command runs wherever the shell
-    already was, which for a lane is very often MAIN. Hit here after
-    this lane renamed two worktrees without announcing it: a lane's
-    next command held the old path, the `cd` failed, and the rest of
-    the line executed in main. It was a no-op `git merge` and cost
-    nothing; the shape that bites is a `git checkout` or an `rm` in
-    the tail of the same chain — which is exactly how ~250 lines of
-    this block were lost earlier the same day, a command aimed at
-    one tree landing in another with nothing in the command to say
-    which tree it was in.
-    THE FORM: `cd <path> || exit 1` before the chain, or better
-    `sh -c 'cd X && …'` in a subshell, so a failure is contained and
-    cannot re-point the parent. AND THE RULE BEHIND IT: changing a
-    shared layout is an ANNOUNCEMENT, not a cleanup — the rename was
-    made so `integrate.sh` could find the worktrees, which was
-    correct, and telling nobody was not.
-  - THE KEEPER CAUGHT US, THEN THE VENDORED SOURCE CAUGHT THE
-    KEEPER. `make externs`, made manifest-driven so it reads a
-    package's own C, refused the driver's merge: 53 of 84
-    declarations answered a narrow C `int` and were declared `int`.
-    Exactly the class this campaign spent a day arguing about,
-    in its own code, invisible to every test because both engines
-    agree on the wrong answer. AND 8 FALSE POSITIVES: the keeper
-    read `sqlite3_int64` as narrow because its width set had only
-    ever met C WE wrote, which spells `int64_t` plainly — the same
-    untested-instrument shape as `RtKind`'s `is .Variant`
-    consumers. Fixed by RESOLVING typedefs from the sources it
-    already reads, keeping every definition a name has across
-    preprocessor branches and failing on disagreement rather than
-    guessing; the two easy fixes were refused because hard-coding
-    SQLite's typedef names would be right for SQLite and wrong for
-    the next library, which is the defect the keeper exists to
-    catch. It now tests itself, nine cases before any verdict.
-    THE PART TO REMEMBER: `__int64` was missing from its wide set
-    and NOTHING IN THIS TREE SPELLS IT — only the MSVC branch of a
-    vendored typedef surfaced it. A vendored dependency did more
-    for that keeper than the whole compiler had, and vendoring was
-    chosen for reproducibility.
-  - A GUARD AND THE THING IT GUARDS MUST READ THE SAME BYTES —
-    found by a red team, in the driver's own code, and it is the
-    campaign's own NUL law arriving through the door built to stop
-    it. `path_fault` refused the empty path with `==`, which is a C
-    string call and stops at the first NUL. A path `"\0x"` measures
-    length 2 in Avra, passed the guard, and reached SQLite as THE
-    EMPTY STRING — `db_filename` came back empty, which is the
-    private temporary database DELETED AT CLOSE. So a mid-NUL path
-    silently opened a different file than the caller wrote, every
-    write succeeded, and the data was gone at close: T125 arriving
-    through the guard whose entire purpose is T125. Fixed with
-    `has_nul` over `char_code`/`.length` — both header-honest — with
-    six positions pinned.
-    AND THE NEAR-MISS IS THE SHARPER HALF: `":memory:\0x"` WAS
-    refused before the fix — ACCIDENTALLY, because `==` truncated it
-    into a match. Right answer, wrong reason, and a test asserting
-    the right answer would have locked the wrong reason in.
-  - ENUMERATE THE CONFIGURATION SPACE AND THE ILLEGAL STATES NAME
-    THEMSELVES. `OpenConfig` carried `create: bool`, and enumerating
-    all 64 combinations produced only 48 DISTINCT flag words — so
-    the driver was quietly resolving a contradiction. Asked SQLite
-    what it thought of the one being masked: `READONLY|CREATE` is
-    rc=21, SQLITE_MISUSE, as is every other unlawful spelling.
-    Masking hid the CALLER's contradiction; passing it through would
-    have blamed the DRIVER, since `Cause.Defect` is documented as
-    never the caller's mistake. So `Mode` became three variants and
-    `create` is gone: THE THREE MODES ARE THE THREE LAWFUL
-    COMBINATIONS, SO A FOURTH CANNOT BE SPELLED. Illegal states made
-    unrepresentable, found by counting rather than by reasoning.
-  - AND `avra check` ACCEPTS A DECLARATION FOR A SYMBOL THAT DOES
-    NOT EXIST, with NO SIGNAL AT ALL — demonstrated by declaring one
-    of the five absent entry points and watching the LINKER answer
-    `Undefined symbols for architecture arm64:
-    "_sqlite3_win32_set_directory"`. That is the census's
-    header-is-not-exports claim turned into an artifact, and it is
-    also the honest scope of `check` over a wall: it proves the
+        exclusive, summing to 362: 234 (a) plain, 59 (d) out-param,
+        56 (c) fn pointer, 8 (e) variadic, 5 (b) double
+        touching: 226 (g) narrow C `int`, 14 (f) pointer sentinel
+        SEQUENCING: nothing new 234 -> OUT-PARAMS 286 -> [STATIC 300,
+        BLOCKED — see THE INVERSION] -> float 305 -> trampolines 354.
+        **OUT-PARAMETERS ARE THE ONLY THING ON THE CRITICAL PATH.**
+    THREE NUMBERS, NOT TWO: 365 is what the API IS, 362 what a
+    DECLARATION CAN NAME under our flags, 357 what it CAN LINK — A
+    BINDING IS BOUNDED BY THE SMALLEST. Apple's header parses to 284
+    under the same script, so the old figures were never wrong; the gap
+    is the vendoring decision. A COUNT EARNS BELIEF BY REPRODUCING THE
+    NUMBER IT REPLACES, NEVER BY BEING NEWER — "153 of 284" versus "226"
+    is two headers, not a correction, and what was wrong is that four
+    lanes repeated a figure for hours without asking WHICH HEADER IT
+    COUNTED. `nm` against the object linked settles it in a minute.
+  - AND `avra check` ACCEPTS A DECLARATION FOR A SYMBOL THAT DOES NOT
+    EXIST, with no signal — shown by declaring one of the five absent
+    entry points and watching the LINKER answer `Undefined symbols`.
+    That is the honest scope of `check` over a wall: it proves the
     declaration parses and types, never that anything answers it.
-  - AN EXPORTED GENERIC FN THAT NOTHING INSTANTIATES IS NEVER
-    LOWERED — and this entry replaces a WRONG one this lane recorded
-    and reported upward as "the campaign's most transferable
-    finding". The wrong version: "lowering is reachability-driven,
-    so a library's uncalled exports are unchecked". VERIFIED FALSE
-    at `language/lower.av:134` —
-
-        let bodies = if entry == null || every {
-            flatten([declared(a) for a in files]) } else { [] }
-
-    so with NO ENTRY, which is exactly a library, `union` seeds from
-    EVERY DECLARED BODY. `avra check` over `@std/sqlite` already
-    lowers all 84 declarations. The three-line `never_called` probe
-    was real and its generalisation was not: it measured a PROGRAM,
-    where an entry exists, and the conclusion was extended to
-    libraries without reading the line the measurement should have
-    sent everyone to. Two sessions asserted it; one read the code.
-    THE REAL HOLE, narrower and load-bearing for this campaign:
+  - THE VARIADIC ESCAPE ROUTE IS REFUSED, not merely discouraged — the
+    api_surface report offered "bind one narrow extern per argument
+    shape" and it reached a shipped design. MEASURED across two
+    translation units: the fixed prototype answers -298729216 where the
+    variadic answers 12345, silently, on `sqlite3_db_config`. AND A
+    CROSS-BOUNDARY PROBE THAT SHARES A TRANSLATION UNIT IS NOT TESTING
+    THE BOUNDARY: an earlier form AGREED, clang having resolved the
+    aliased declaration to the variadic.
+  - THE INVERSION: THE DANGEROUS BIND IS FREE TO WRITE AND THE SAFE ONE
+    CANNOT BE WRITTEN. `SQLITE_STATIC` IS the null pointer, spellable
+    today; `SQLITE_TRANSIENT`, which COPIES and is the safe default, is
+    `(void*)-1` and UNSPELLABLE — and under STATIC the header (:4946)
+    requires the object stay valid until finalize, so a box released
+    before `step` is a USE-AFTER-FREE INSIDE SQLITE. RATIFIED: the mint
+    and the guard are PREREQUISITES OF BINDING A SINGLE VALUE, and the
+    driver offers NO BIND VERB AT ALL until they land — A HAZARD
+    DOCUMENTED AT A VERB THE CALLER CAN REACH IS A HAZARD SHIPPED.
+  - THE 59 OUT-PARAMETERS ARE FIVE DIFFERENT LANDING PROBLEMS: 26 handle
+    `T**` (the `opaque type` candidates), 22 scalar `int*`/`i64*` (which
+    must write AT THE C WIDTH), 9 borrowed `const char**` (a LIFETIME),
+    17 OWNED `char**` (a DROP OBLIGATION), 6 op-typed `void*` no
+    declaration can type — a `mut` seat is one mechanism, these are five
+    contracts. SO THEY ARE DOWNSTREAM OF THE WIDTHS: `wal_checkpoint_v2`
+    writes 4 bytes into an 8-byte cell, answering -1 as int32 and
+    4294967295 as int64. AND THE 22 ARE REALLY 19 — RECORDED AS LUCK:
+    three write through `sqlite3_int64*` and are exact at ANY width, and
+    all three first-slice reachers are in the OTHER 19, so a width-less
+    seat FAILS ON THE FIRST THING THE DRIVER DOES rather than SHIPPING
+    BEHIND THREE GREEN TESTS.
+  - THE FLAG TEST, RATIFIED (census §19.1): settle a capability at
+    compile time only when it is VARIADIC-ONLY **AND INVISIBLE AT THE
+    DRIVER'S OWN DOOR**; visible at the door means refuse at the door — A
+    COMPILE FLAG HAS NO CALLER AND CANNOT CHANGE ITS MIND; A DOOR CAN
+    REFUSE PER-VERB AND SAY WHY. Its whole output: `USE_URI` COMES OUT
+    (measured, the `file:` prefix was stripped even with no `OPEN_URI`
+    flag, and the only way off is one of the eight variadics — A COMPILE
+    FLAG WHOSE ESCAPE HATCH IS VARIADIC IS PERMANENT); `DEFAULT_DEFENSIVE`
+    REFUSED, two of its three protections being SILENT NO-OPS
+    (`journal_mode=OFF` reads back `delete`, `schema_version=99` reads
+    back `1`, both rc=0) — A WRONG ANSWER WEARING A SAFETY LABEL; and
+    ATTACH IS A CAPABILITY WE CANNOT REMOVE, so it is a CONTRACT —
+    measured, `ATTACH` then `CREATE TABLE side.made(x)` both succeed, so
+    A PROGRAM THAT HANDS @std/sqlite ARBITRARY SQL HAS HANDED IT THE
+    FILESYSTEM, declared in the README as a property (P9) with
+    `sqlite3_set_authorizer` (not a text scan) as the door — a
+    REQUIREMENT on the trampoline rung. AND A RULING THAT REFUSES A CLASS
+    MUST BE AUDITED FOR WHAT THE CLASS WAS THE ONLY DOOR TO, answered by
+    MEASURING our own object rather than reading `#define`s.
+  - ASSERT THE ABSENCE. When a capability is REMOVED by decision, the
+    removal gets a TEST — `USE_URI` moved from `promised()` to
+    `forbidden()`, so re-adding it fails the suite. ITS TWIN: A FIXTURE
+    GENERATED FROM ITS SOURCE CANNOT DRIFT FROM IT — the error test
+    enumerates all 82 extended result codes the VENDORED header declares,
+    generated from it rather than typed from the docs. One makes a
+    REMOVAL fail if undone, the other an ADDITION fail if unnoticed.
+  - `SQLITE_LOCKED` IS NOT RETRYABLE, AND THE DESIGN SAID IT WAS — a
+    defect whose failure mode is A HANG. `SQLITE_BUSY` means ANOTHER
+    connection holds the lock; `SQLITE_LOCKED` means THE SAME one does,
+    so a retry loop waits for a lock it is itself holding, forever. The
+    existence of an entire `unlock_notify` API is the evidence. DEPARTED
+    FROM THE DESIGN, pinned by two cases: A DESIGN DOCUMENT IS EVIDENCE,
+    NOT AUTHORITY — its own research (T49) contradicted it.
+  - A GUARD AND THE THING IT GUARDS MUST READ THE SAME BYTES — found by
+    a red team, the campaign's own NUL law arriving through the door
+    built to stop it. `path_fault` refused the empty path with `==`, a C
+    string call that stops at the first NUL, so `"\0x"` (length 2 in
+    Avra) passed and reached SQLite as THE EMPTY STRING — the private
+    temporary database DELETED AT CLOSE, every write succeeding and the
+    data gone. Fixed with `has_nul` over `char_code`. AND THE NEAR-MISS
+    IS THE SHARPER HALF: `":memory:\0x"` WAS refused before the fix,
+    ACCIDENTALLY, because `==` truncated it into a match — a test
+    asserting the right answer would have locked the wrong reason in.
+  - A CLOSED REGISTRY SURFACES DESIGN GAPS THAT PROSE REVIEW MISSED — the
+    catch-all doctrine read FORWARDS. The driver's `Cause` enum has no
+    `_ ->`, so a refusal the design promised but never picked up has
+    NOWHERE TO BE SPOKEN and the compiler says so. The tree's law says a
+    catch-all forgets the NEXT variant; this says the ABSENCE of one
+    makes an unimplemented decision fail to COMPILE rather than to HAPPEN.
+  - AN EXPORTED GENERIC FN THAT NOTHING INSTANTIATES IS NEVER LOWERED:
     `declared()` filters through `lowers_plain`, which requires
-    `tparams(d).is_empty()` and the parent's too — so a GENERIC body
-    is excluded, in a library AND in a program, and no entry can
-    reach it because there is nothing to instantiate it with. The
-    merged design's spine is `fn note_of<C: Cells>(c: C)`, so this
-    is not academic: the driver's central abstraction is in the one
-    shape `check` does not lower.
-    AND THE LESSON IS THE DAY'S OWN, ARRIVING ONCE MORE: a
-    measurement generalised past what it measured is a claim, not a
-    finding. `never_called` in a program proves nothing about an
-    export in a library, and the difference was one line away.
-  - `git log -1` NAMES THE SOURCE'S BASE, NOT THE BINARY'S. The
-    sharpening the F0900 incident finally earned, after it burned
-    FOUR people — including the one auditing the other three.
-    `./avra` is only as current as its LAST BUILD, so a tree at
-    `22adc6a` whose `build/avra` was compiled earlier is running a
-    DIFFERENT COMPILER, and `git log` hands you a hash describing
-    the CHECKOUT rather than the thing that answered. The lead
-    quoted `22adc6a` for four non-reproductions of a defect that was
-    real at that commit and never checked what the binary was built
-    from; one lane quoted "main's binary" while running one built
-    before it entered its worktree; another reduced a repro and
-    dropped the trigger while retyping it.
-    THE RULE: a probe result names the BINARY's base — its mtime AND
-    the commit it was built from — never the tree's HEAD. And a
-    REDUCED repro is RE-RUN before it is sent, because a reduction
-    that drops the trigger is indistinguishable from a fix.
-    THE TRIGGER, recorded so nobody re-derives it: a FLAT record
-    (one scalar field) in a `mut` seat whose body writes the field,
-    AND A CALL SITE — a body with no caller is never lowered, and
-    F0900 is a lowering defect. Two fields, a string field, or the
-    `mut fn` method twin are all clean. Fixed by lane C at
-    `349c74d`, in TYPING rather than lowering, because it is the
-    same law as the extern seat's `cellless_place`: a `mut` seat
-    handed something with no place behind it.
-  - A `git checkout` ON A SHARED WORKING FILE CANNOT TELL WHOSE
-    LINES ARE WHOSE. Two sessions in one worktree, one whole-file
-    revert, ~250 lines of this block lost including two owner
-    decisions. Recorded as a fact rather than an apology: a lane
-    that shares a worktree reverts by hunk or not at all.
+    `tparams(d).is_empty()`, so a GENERIC body is excluded in a library
+    AND a program. The design's spine is `fn note_of<C: Cells>(c: C)`, so
+    the driver's central abstraction is in the one shape `check` does not
+    lower. (REPLACES a wrong entry — "a library's uncalled exports are
+    unchecked" — false at `lower.av:134`, where `union` seeds from every
+    declared body exactly when `entry == null`.)
+  - THREE DRIVER-INTERNAL RULINGS LIVE IN THE SYNTHESIS, not here: the
+    `;` splitter is a CANDIDATE GENERATOR WITH THE PARSER AS JUDGE (the
+    rule was never "no scanning", it was "no scan may be the JUDGE");
+    SKIP OR REFUSE SPLITS BY VERB (a script skips a comment-only
+    statement, a single-statement verb refuses it); and enumerating
+    `OpenConfig`'s 64 combinations produced only 48 DISTINCT flag words,
+    so `Mode` became THE THREE LAWFUL COMBINATIONS AND A FOURTH CANNOT BE
+    SPELLED — illegal states found by counting rather than by reasoning.
+  - CORRECT BY SPECIFICATION IS NOT CORRECT BY LUCK. This lane ruled that
+    `sqlite3_complete` must wait for `i32` because a narrow C return
+    declared `int` is "correct by luck". WRONG: the header STATES the
+    range is 1, 0, or SQLITE_NOMEM — all NON-NEGATIVE — so the widening
+    is exact for every value it can produce. LUCK is "the values so far
+    have fitted"; SPECIFICATION is "the range cannot leave the safe set".
+    A refusal that catches safe code teaches people to route around it.
+  - FIX C WHERE IT IS WRONG; INHERIT IT WHERE IT IS ONLY ARBITRARY — the
+    sharpest statement of what LLM-FIRST means for a language decision.
+    `flags & MASK == 0` parses in C as `flags & (MASK == 0)`, almost
+    never what anyone wrote: C is WRONG, so Avra binds the band TIGHTER
+    than comparison. `1 << BASE + i` parses as `1 << (BASE + i)`: C is
+    only ARBITRARY, and every model writing that line learned C's
+    reading, so Avra inherits it. THE TEAM LEAD RECOMMENDED DIVERGING ON
+    THE SECOND, from what a human reader naively expects, and was
+    overruled — the input is not what a reader expects but WHAT A MODEL
+    WAS TRAINED ON.
+  - ADDING A CONSTRUCT IS NOT USING ONE. CLAUDE.md's save-the-standing-
+    binary procedure is for a lane that adds a construct AND USES IT in
+    the compiler's own source; the bitwise slice is not that case, since
+    the runtime-row design makes shifts CALLS and the lexer rows, grammar
+    fragment and node variants are all DATA. THE CHECK rather than the
+    assumption: grep the finished diff for a bare `<<` outside a string
+    and a gram fragment; empty means the procedure was never needed.
+  - A NEGATIVE LITERAL NOW FOLDS AT PARSE (`ee9e3df`, ten lines):
+    `build_neg` folds an int-literal operand through core's VALUE
+    PROTOCOL (`int_of`). Both rejections are in the commit message so
+    nobody re-argues them — not a `Neg` node, not a general folder; and
+    `const B: int = -A` stays refused, `-9223372036854775808` stays F0001
+    at the LEXER. THE RULE IT EARNED (lane C's, worth more than the
+    slice): AN ASK THAT ARRIVES WITH THE CASES THAT STAY REFUSED IS AN
+    ASK THAT CAN BE LANDED IN AN AFTERNOON. AND THE MISREAD BEHIND IT:
+    this campaign reported twice, to the owner, that AVRA HAS NO UNARY
+    MINUS — false, `expr_spine/builders.av:49` desugars it; the misread
+    was `core/nodes.av:173`'s "the one unary, until minus", about which
+    AST NODE exists, not which OPERATOR the language has. A DOC COMMENT
+    IS EVIDENCE ABOUT THE THING IT SITS ON.
+  - A LAW LANDED FOR ONE REASON CLOSED A HAZARD IN A PACKAGE NOBODY HAD
+    WRITTEN YET — the argument for landing LAWS rather than FIXES. The
+    `mut` seat law landed for the extern inout ABI, and it is why
+    `close(db)` on a `let` is F2048, why a closable handle cannot be held
+    immutably, and why the driver's double-close surface is ONE
+    DELIBERATE COPY rather than every binding in the program. Nobody
+    planned that; the driver did not exist when the law was written. With
+    `Db = { raw: ptr? }` and `close(mut db)` nulling the handle, the same
+    binding closed twice closes ONCE — the unsafe shape is unspellable
+    rather than merely documented, which is what the first answer ("the
+    type cannot prevent it, so the doc says so") would have settled for.
+  - A SAFETY PROPERTY RESTING ON A KNOWN DEFECT — and fixing the defect
+    opens the hole. The last double-close path is `mut b = a`, both
+    closed. VERIFIED on main (binary 2026-09-05 23:17:22, checkout
+    f88d0ce): `first=1 second=0 a.raw=0` — `mut b = a` ALIASES, so
+    nulling through `b` nulled `a`. It is safe TODAY only because the
+    copy is not a copy: it rests on lane C's S2 receiver-aliasing hole.
+    THE DAY `mut` BINDINGS COPY PROPERLY, `close(b)` nulls b's handle
+    alone, `a.raw` still holds a freed pointer, and `close(a)`
+    double-frees inside a std package — AND NOTHING WOULD NOTICE, since
+    the driver's test uses ONE binding and passes either way. THE LAW,
+    landed as a GATE CONDITION on S2 at `6553ec6` rather than a note: A
+    CORRECTNESS FIX THAT CHANGES AN ALIASING PROPERTY MUST AUDIT ITS
+    DEPENDENTS, because code that was safe BY the bug becomes unsafe by
+    the fix AND ITS TESTS KEEP PASSING, HAVING BEEN WRITTEN AGAINST THE
+    BEHAVIOUR AND NOT THE LAW. The driver writes the test that FAILS when
+    the fix lands, with its expiry in the comment.
+
+THE EVIDENCE LAW — the campaign's most transferable output, earned by its
+authors being wrong repeatedly in public. CLAUDE.md carries the general
+form; this is the evidence behind it.
+  **"ALWAYS CHECK" IS NOT THE RULE. "NAME WHAT YOU CHECKED" IS.** Four
+  people produced a genuine error from a genuine run and each was wrong —
+  a stale binary; `git log -1` quoted as the base, which names the
+  CHECKOUT and not the compiler that answered; a reduction retyped from
+  memory that dropped its trigger; two files run between one pair of
+  echoes, attributed by elimination. All four DID verify.
+  THE THREE WAYS AN HONEST CHECK LIES: STALE BASE (a real run against a
+  tree that has moved); WRONG GRANULARITY (a real read of a LINE reported
+  as the TOOL — `externs.py:63`'s regex read as the keeper, while line 96
+  strips macros before it ever sees the type); WRONG SCOPE (a real GREEN
+  run that never saw the subject — "104 externs matched, 9 keeper cases
+  hold" on main, where `git ls-tree main -- packages/std-sqlite` is ZERO
+  FILES). THE HABIT: SAY THE ARTIFACT AND THE CLAIM IN THE SAME BREATH.
+  THE F0900 LEDGER — how a contested finding gets recorded, each line
+  carrying its base: PRESENT at `d96a328` (clean tree, call site
+  included) and `cabce5f`; WITHDRAWN at `22adc6a` (attributed by
+  elimination, no evidence either way); FIXED at `349c74d` by lane C, who
+  reproduced it independently; ABSENT at `7b90a46`, freshly bootstrapped.
+  A ROW THAT SAYS WITHDRAWN IS WORTH MORE THAN A ROW DELETED. THE
+  TRIGGER, so nobody re-derives it: a FLAT record in a `mut` seat whose
+  body writes the field, AND A CALL SITE. Fixed in TYPING, not lowering.
+
+THE ONE SHAPE, which is what this campaign actually found. Every finding
+above and every coordination failure it suffered is the same bug in a
+different substrate: AN IDENTIFIER THAT RESOLVES DIFFERENTLY ON THE TWO
+SIDES OF A BOUNDARY. In the compiler: a guard reading `==` while the
+callee reads the header; a declaration saying `int` while the C body
+answers 32 bits; a probe naming a CHECKOUT while a binary answered from
+another; a doc comment about a NODE read as a claim about the LANGUAGE.
+In the coordination, the same day, by the people writing those laws: a
+worktree two sessions wrote to -> 250 ROADMAP lines lost to a whole-file
+`git checkout`; a worktree renamed without notice -> a failed `cd`
+RE-POINTED an `&&` chain into main; a name two sessions answered to -> a
+lost message and a duplicated backlog entry.
+  MAKE THE IDENTIFIER SAY WHICH ONE IT MEANS. Read the same bytes as the
+  thing you protect; name the binary and the commit it was built from,
+  not the tree; address a ref, not a name. TWO OPERATIONAL COROLLARIES,
+  both paid for: a lane that shares a worktree REVERTS BY HUNK OR NOT AT
+  ALL, and a failed `cd` in an `&&` chain RE-POINTS it rather than
+  stopping it — write `cd X || exit 1` before it. Changing a shared
+  layout is an ANNOUNCEMENT, not a cleanup.
 
 ## The eras (the long path, each with its gate)
 
@@ -5977,6 +5087,21 @@ additions get siblings, nothing changes shape:
   moved.
 
 ## Sugar backlog — dogfooding asks
+
+- PROCESS-WIDE MUTABLE STATE — a package cannot own a handle table.
+  MEASURED: `once fn slots() -> List<int> { [] }` then three pushes
+  answers `1 1 1 | table now holds 0`, eval == native — every caller
+  gets a FRESH COPY, because `once` memoizes a PURE value and that is
+  what it is for. So there is no mechanism for a package to hold state
+  across calls. WANTING SITE: `@std/sqlite`'s `Db`. A generation-tagged
+  handle (`gen << 32 | idx` over a table, the shape
+  `runtime/avra_runtime.c:1727` already uses for child processes) would
+  turn a double-close from undefined behaviour into a NAMED refusal —
+  but that table lives in the C RUNTIME, and a package building its own
+  would be the C shim this campaign refuses by its first rule.
+  ASYMMETRY WORTH KEEPING when it lands: the CONNECTION takes an id
+  (touched once per call), the STATEMENT keeps its raw pointer (touched
+  per column per row).
 
 - BITWISE OPERATORS, and a named reason if their absence is
   deliberate (filed 2026-09-05, lane D; found by the sqlite
