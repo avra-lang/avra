@@ -1828,6 +1828,27 @@ the order is the dependency.
         105`). That is the receiver-aliasing hole, S2's, and the fix
         above makes flat and boxed agree about it rather than
         differing.
+  - [ ] A CONST'S REGISTER WEARS THE LITERAL'S TYPE, where the
+        DECLARATION's should decide — CLAUDE.md's cell law one seat
+        over, never audited for consts. `constant_reg`
+        (lower_state.av:118) says so in its own doc, "minted at the
+        literal's OWN shape", and `lifted_constant` lifts for `.Opt`
+        alone. Found 2026-09-05 by the SQLITE campaign's FFI lane
+        while scoping a pointer sentinel.
+        LATENT, and the reason is the typer rather than luck: the
+        only divergence a const can reach today is a literal under a
+        nullable annotation, which the `.Opt` lift already handles.
+        Every other mismatch is refused before lowering — `const P:
+        ptr = 1` is F2024 "declares `ptr`, this is `int`". So the law
+        is violated in shape and not yet in effect.
+        NOT FIXED, deliberately: unlike the pointer-constant guard,
+        which REFUSES and so costs nothing to land early, this one
+        CHANGES lowering, and there is no reachable case to test it
+        against beyond the one already handled. Changing working
+        codegen with no observable difference and no test that can
+        distinguish it is churn carrying risk. The fix lands WITH
+        whatever first makes a declared type diverge from its
+        literal's — the sentinel, if the owner grants it.
   - [ ] A GENERIC BODY NOTHING INSTANTIATES IS NEVER LOWERED, so
         every lowering-level law is blind to it — the pointer-constant
         guard, the mint-order law, every `lower_defect` a feature can
