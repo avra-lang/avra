@@ -2356,6 +2356,30 @@ the order is the dependency.
         passing — they were written against the behaviour, not the
         law. S2 is not green until that search is done and its
         findings are named.
+        S2'S NAMED CHECKLIST, because a general instruction to search
+        is weaker than a list (lane D's point, taken). @std/sqlite is
+        IN THIS TREE NOW, and it holds TWO sites of one shape — the
+        second is mine, found by looking for siblings of the first:
+
+          packages/std-sqlite/src/open.av:358   close(mut db: Db)
+          packages/std-sqlite/src/stmt.av:102   finalize(mut s: Stmt)
+
+        Both are guard-then-null — `if x.raw == null { return 0 }`,
+        call the C destructor, `x.raw = null` — and both say in their
+        own doc comments that the idempotence IS the `mut` seat
+        ("closing an already-closed `Db` answers 0 and does nothing,
+        which is the whole point of the `mut` seat"; "the handle
+        NULLED so it cannot be destroyed again"). Every word of that
+        is true only while the write is visible to every holder.
+        Make copies copy and `close(a)` after `close(b)` is
+        `sqlite3_close_v2` on a freed pointer; `finalize` is the same
+        against `sqlite3_finalize`.
+        THESE ARE LANDMINES, NOT LATENCIES, and that is why they are
+        on the checklist rather than in the register: the other
+        instances of the shape expire into a diagnostic or a latent
+        bug, and these expire into a double free in a SHIPPING
+        package whose own suite cannot catch it, because it uses one
+        binding.
         AND EVIDENCE THE SEAT LAW ALREADY PAYS: the unsafe shape is
         this narrow only because `close(db)` on a `let` is F2048, so
         a closable handle cannot be held in an immutable place. That
