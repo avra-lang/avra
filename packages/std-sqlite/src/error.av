@@ -1,0 +1,320 @@
+//! THE FAILURE, as a value. Built WHERE it failed and owning everything
+//! it says: `sqlite3_errmsg`'s buffer is overwritten by the next call on
+//! the connection, and a connection held inside an error would be a
+//! cycle that reference counting never frees.
+//!
+//! WHAT IS HERE IS EVERYTHING THAT NEEDS NO CONNECTION: the cause
+//! registry, the mapping from a result code to it, and the two
+//! projections a caller branches on. `failure_of(db, sql)` — the fn
+//! that reads the connection at the failure site — waits on the extern
+//! wall's `mut` seat, because a connection cannot yet be opened.
+//!
+//! THE PRIMARY CODE IS THE LOW EIGHT BITS of the extended one. An enum
+//! matched on the extended value without the mask never matches its own
+//! primary arm: `SQLITE_CONSTRAINT_UNIQUE` is 2067, and `2067 == 19` is
+//! false.
+use @std.errors.{Error, ErrorInfo, Loc, info}
+
+/// The five storage classes, where a human reads one. A cell's class is
+/// a machine word on the hot path; this is for a refusal's wording.
+export enum Storage { Int, Real, Text, Blob, Null }
+
+/// The constraint family, whole — because "email already taken" and
+/// "no such author" are different sentences to a user.
+export enum Violation {
+    Check
+    CommitHook
+    ForeignKey
+    Function
+    NotNull
+    PrimaryKey
+    Trigger
+    Unique
+    VTab
+    RowId
+    Pinned
+    DataType
+    Plain
+}
+
+/// The retry decision, and nothing else. `.Snapshot` is 517: a stale
+/// read snapshot never becomes OK in place.
+export enum Waiting { Locked, Recovery, Snapshot, Timeout, Plain }
+
+/// Why a write was refused on a database that can be read.
+export enum Denial { Plain, Recovery, CantLock, Rollback, DbMoved, CantInit, Directory }
+
+/// What went wrong, at the granularity that changes what a caller DOES.
+/// Every arm is a different fix; the exact codes ride beside it in
+/// `SqlError.code` and `.extended` for everything else.
+///
+/// A REGISTRY, so no `_ ->` anywhere it is matched: a code this enum
+/// forgets is a caller acting on `.Other`, which is why `.Other` carries
+/// the code.
+///
+/// THE LAST FIVE ARE THE DRIVER'S OWN REFUSALS OF A CALLER'S ARGUMENT,
+/// riding the same enum deliberately — as `Mismatch` and `NoColumn`
+/// already do — so one `match` covers every way a call can fail. They
+/// carry no SQLite code, because SQLite never saw the call.
+export enum Cause {
+    Constraint(v: Violation)
+    Busy(b: Waiting)
+    Denied(d: Denial)
+    /// The cell holds one storage class and the read asked for another.
+    Mismatch(column: int, wanted: Storage, found: Storage)
+    /// A read named a column this result set does not have, or an index
+    /// past the row's width — which includes reading with NO ROW
+    /// STANDING, because the width is zero there.
+    NoColumn(name: string)
+    OutOfRow(column: int, width: int)
+    /// A slot count and a value count that disagree, caught before
+    /// anything was bound.
+    Unfilled(slots: int, given: int)
+    /// A TEXT cell that is not well-formed UTF-8. SQLite stores what it
+    /// was given and validates nothing; Avra's `string` says UTF-8.
+    NotUtf8(column: int, at: int)
+    NoRow
+    ManyRows
+    Syntax
+    Corrupt
+    Full
+    TooBig
+    Interrupted
+    Io(op: int)
+    NoMemory
+    CantOpen
+    NotADatabase
+    /// A BLOB handle whose row was written under it. Re-open and
+    /// restart; writes already made are NOT undone by the expiry.
+    Expired
+    /// THE DRIVER'S OWN BUG — `SQLITE_MISUSE`, `SQLITE_RANGE`, a
+    /// statement used after finalize. Never the caller's mistake, never
+    /// retryable, never to be caught: report it.
+    Defect(what: string)
+    /// A code with no arm of its own; `code` and `extended` are exact.
+    Other(code: int)
+    /// An empty path, which SQLite spends to mean "a private temporary
+    /// database, deleted at close" — so a missing config key would open,
+    /// succeed at every write, and lose everything at shutdown.
+    EmptyPath
+    /// A path a caller wrote that would be read as a URI. A path is a
+    /// filename; the URI form is a verb of its own.
+    UriPath
+    /// A value crossing to C holds a NUL, so C would read only the
+    /// bytes before it — the path opened, or the statements found, are
+    /// not the ones written. Its own arm because the REMEDY differs
+    /// from every neighbour's: the value is not merely wrong, it means
+    /// something different on the two sides of the boundary.
+    HoldsNul
+    /// More than one statement where the verb takes one. `prepare`
+    /// compiles only the FIRST, so running it and reporting success
+    /// would report success for the rest.
+    ManyStatements
+    /// Text that holds no statement — empty, or nothing but comments.
+    /// `prepare` answers OK with a NULL statement, so the verb that
+    /// asked for ONE statement got none. A SCRIPT verb skips these
+    /// instead; that split is deliberate.
+    NoStatement
+    /// A row-yielding statement handed to a verb that answers a count.
+    /// Running it would throw the rows away silently.
+    RowsDiscarded
+}
+
+/// Why SQLite refused, materialised at the failure site and owning
+/// every field, because every one is stale after the next call.
+export type SqlError = {
+    /// What to DO — the arm a caller branches on.
+    cause: Cause,
+    /// The primary result code, exact: `extended & 0xFF`.
+    code: int,
+    /// The extended result code, exact.
+    extended: int,
+    /// `sqlite3_errmsg` at the moment of the failure, copied.
+    message: string,
+    /// The SQL that failed, when there was one.
+    sql: string?,
+    /// Where in `sql` the parser stopped, absent when
+    /// `sqlite3_error_offset` answered -1.
+    at: Loc? = null,
+}
+
+// ── The mapping ─────────────────────────────────────────────────
+
+/// The cause an extended result code names. The primary code is the low
+/// eight bits and the DETAIL is the high ones, so both are read here and
+/// nowhere else.
+export fn cause_of(extended: int) -> Cause {
+    let detail = extended / 256
+    match extended % 256 {
+        5 -> Cause.Busy(waiting_of(detail)),
+        6 -> Cause.Busy(Waiting.Locked),
+        7 -> Cause.NoMemory,
+        8 -> Cause.Denied(denial_of(detail)),
+        9 -> Cause.Interrupted,
+        10 -> Cause.Io(detail),
+        11 -> Cause.Corrupt,
+        13 -> Cause.Full,
+        14 -> Cause.CantOpen,
+        18 -> Cause.TooBig,
+        19 -> Cause.Constraint(violation_of(detail)),
+        26 -> Cause.NotADatabase,
+        1 -> Cause.Syntax,
+        21 or 25 -> Cause.Defect(misuse_word(extended % 256)),
+        _ -> Cause.Other(extended),
+    }
+}
+
+/// SQLITE_BUSY's detail. Zero is the plain busy, which a timeout may
+/// still clear.
+fn waiting_of(detail: int) -> Waiting {
+    match detail {
+        1 -> Waiting.Recovery,
+        2 -> Waiting.Snapshot,
+        3 -> Waiting.Timeout,
+        _ -> Waiting.Plain,
+    }
+}
+
+/// SQLITE_READONLY's detail.
+fn denial_of(detail: int) -> Denial {
+    match detail {
+        1 -> Denial.Recovery,
+        2 -> Denial.CantLock,
+        3 -> Denial.Rollback,
+        4 -> Denial.DbMoved,
+        5 -> Denial.CantInit,
+        6 -> Denial.Directory,
+        _ -> Denial.Plain,
+    }
+}
+
+/// SQLITE_CONSTRAINT's detail — every one of the twelve the header
+/// declares, because "which constraint" is the whole value of the arm.
+fn violation_of(detail: int) -> Violation {
+    match detail {
+        1 -> Violation.Check,
+        2 -> Violation.CommitHook,
+        3 -> Violation.ForeignKey,
+        4 -> Violation.Function,
+        5 -> Violation.NotNull,
+        6 -> Violation.PrimaryKey,
+        7 -> Violation.Trigger,
+        8 -> Violation.Unique,
+        9 -> Violation.VTab,
+        10 -> Violation.RowId,
+        11 -> Violation.Pinned,
+        12 -> Violation.DataType,
+        _ -> Violation.Plain,
+    }
+}
+
+/// The two codes that mean the driver, not the caller, is wrong.
+fn misuse_word(code: int) -> string {
+    if code == 25 { return "a bind index outside the statement's parameters" }
+    "the library used incorrectly"
+}
+
+// ── The projections a caller branches on ────────────────────────
+
+impl Cause {
+    /// Whether waiting could change the answer. A blanket retry turns a
+    /// constraint violation into an infinite loop and a corrupt database
+    /// into a hot spin; `.Busy(.Snapshot)` needs a full rollback and
+    /// re-run, which is a decision only the caller can make.
+    fn retryable() -> bool {
+        match self {
+            .Busy(b) -> waiting_clears(b),
+            .Constraint(_) or .Denied(_) or .Mismatch(_, _, _) or .NoColumn(_) or
+            .OutOfRow(_, _) or .Unfilled(_, _) or .NotUtf8(_, _) or .NoRow or
+            .ManyRows or .Syntax or .Corrupt or .Full or .TooBig or .Interrupted or
+            .Io(_) or .NoMemory or .CantOpen or .NotADatabase or .Expired or
+            .Defect(_) or .Other(_) or .EmptyPath or .UriPath or .HoldsNul or
+            .ManyStatements or .NoStatement or .RowsDiscarded -> false,
+        }
+    }
+
+    /// The stable dotted kind — hierarchical, matched by prefix.
+    fn kind() -> string {
+        match self {
+            .Constraint(v) -> "sqlite.constraint.${violation_word(v)}",
+            .Busy(_) -> "sqlite.busy",
+            .Denied(_) -> "sqlite.denied",
+            .Mismatch(_, _, _) -> "sqlite.mismatch",
+            .NoColumn(_) -> "sqlite.no_column",
+            .OutOfRow(_, _) -> "sqlite.out_of_row",
+            .Unfilled(_, _) -> "sqlite.unfilled",
+            .NotUtf8(_, _) -> "sqlite.not_utf8",
+            .NoRow -> "sqlite.no_row",
+            .ManyRows -> "sqlite.many_rows",
+            .Syntax -> "sqlite.syntax",
+            .Corrupt -> "sqlite.corrupt",
+            .Full -> "sqlite.full",
+            .TooBig -> "sqlite.too_big",
+            .Interrupted -> "sqlite.interrupted",
+            .Io(_) -> "sqlite.io",
+            .NoMemory -> "sqlite.no_memory",
+            .CantOpen -> "sqlite.cant_open",
+            .NotADatabase -> "sqlite.not_a_database",
+            .Expired -> "sqlite.expired",
+            .Defect(_) -> "sqlite.defect",
+            .Other(_) -> "sqlite.other",
+            .EmptyPath -> "sqlite.empty_path",
+            .HoldsNul -> "sqlite.holds_nul",
+            .UriPath -> "sqlite.uri_path",
+            .ManyStatements -> "sqlite.many_statements",
+            .NoStatement -> "sqlite.no_statement",
+            .RowsDiscarded -> "sqlite.rows_discarded",
+        }
+    }
+}
+
+/// Whether a wait could clear.
+///
+/// `.Snapshot` never does in place — a stale read snapshot needs the
+/// transaction rolled back and re-run, and a driver that retries it
+/// spins forever.
+///
+/// `.Locked` NEVER DOES EITHER, AND THIS DEPARTS FROM THE DESIGN.
+/// §4.2's `retryable` reads `b is .Locked || b is .Recovery || b is
+/// .Timeout`, making a lock retryable. SQLITE_BUSY (5) is ANOTHER
+/// connection and clears on its own; SQLITE_LOCKED (6) is THIS
+/// connection — a write conflicting with a `SELECT` the same connection
+/// is still stepping — so the lock is held by the retry loop itself and
+/// never clears. Retrying it is a HANG, not a slow error. The design and
+/// the research disagree here and the research is right; the departure
+/// is written where the code is rather than in a note somewhere else.
+fn waiting_clears(b: Waiting) -> bool {
+    match b {
+        .Recovery or .Timeout or .Plain -> true,
+        .Locked or .Snapshot -> false,
+    }
+}
+
+fn violation_word(v: Violation) -> string {
+    match v {
+        .Check -> "check",
+        .CommitHook -> "commit_hook",
+        .ForeignKey -> "foreign_key",
+        .Function -> "function",
+        .NotNull -> "not_null",
+        .PrimaryKey -> "primary_key",
+        .Trigger -> "trigger",
+        .Unique -> "unique",
+        .VTab -> "vtab",
+        .RowId -> "rowid",
+        .Pinned -> "pinned",
+        .DataType -> "datatype",
+        .Plain -> "plain",
+    }
+}
+
+/// A refusal the DRIVER made, before or instead of a call. It carries
+/// no result code because SQLite never saw it — a caller tells these
+/// apart by CAUSE, never by `code`, which is zero for every one.
+export fn refused(cause: Cause, message: string) -> SqlError {
+    SqlError { cause: cause, code: 0, extended: 0, message: message, sql: null }
+}
+
+impl Error for SqlError {
+    fn describe() -> ErrorInfo { info(self.cause.kind(), self.message) }
+}

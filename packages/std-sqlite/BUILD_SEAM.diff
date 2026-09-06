@@ -1,0 +1,349 @@
+# THE BUILD SEAM — blocker B7, the recommendation and its diff
+#
+# THE ASK: a package declares its own native build, and the toolchain
+# runs it before the link. Written by the sq-driver lane; every file
+# touched belongs to another lane, so nothing here is applied.
+#
+# WHY A MANIFEST ROW AND NOT A MAKEFILE RULE
+#
+#   1. A Makefile rule does not TRAVEL. A consumer who adds
+#      `"@std/sqlite" = { path = ... }` gets a manifest pointing at
+#      `build/sqlite3.o` that no step in THEIR build produces. The
+#      package cannot ship.
+#   2. `[link]` already crossed this bridge: a package's link promise
+#      lives in its own manifest and `link_words` gathers it in package
+#      order. `[build]` is the same shape one step earlier, and the
+#      section name is ALREADY known — `manifest.av:86` lists "build"
+#      in `known_section` with no keys behind it. An empty seat.
+#   3. THE ARGV LAW HOLDS FOR FREE. `sources` and `flags` parse through
+#      `words_of`, which answers a LIST OF WORDS, and `expanded()`
+#      already fills `${NAME}` holes from the environment. So the
+#      build's argv is built exactly as the link's is, and
+#      `avra_spawn_status(prog, args)` runs it: nothing quotes, nothing
+#      fences, and no character in a path or a flag means anything but
+#      itself.
+#   4. THE COMPILER IS ALREADY A DECLARED TOOL.
+#      `[process.tools] clang = { from = "env", var = "CC", default =
+#      "clang" }` in `packages/cli/avra.toml`, reached by
+#      `tool_from_env("CC", "clang")` (shared.av:308). The build uses
+#      the SAME tool the link uses, declared once.
+#
+# THE ONE DESIGN DECISION, AND IT IS A COLLAPSE (P6)
+#
+#   A first draft of this had `[build] object = "build/sqlite3.o"`, and
+#   that one key introduces a WRITE PRIMITIVE where `[link]` had only a
+#   read: today a dependency's manifest names a path the toolchain
+#   READS; with `object` it would name a path the toolchain WRITES, and
+#   `object = "../../build/avra_runtime.o"` in a dependency's manifest
+#   overwrites the compiler's own runtime. Containment then has to be
+#   enforced, and containment checks are where supply-chain bugs live.
+#
+#   So the manifest does not get to name the output. The object is
+#   DERIVED — `<package root>/build/<stem>.o` — and `[link] objects`
+#   names the same path. The only manifest-supplied path is `sources`,
+#   which is READ. The attack surface is deleted rather than guarded.
+#
+#   Two sources with the same stem would collide on one object; that is
+#   refused at the manifest, which is cheap and total.
+#
+# STALENESS NEEDS BOTH ANSWERS, NOT ONE
+#
+#   An mtime alone is wrong when only the FLAGS changed: the object is
+#   still newer than every source. A stamp alone is wrong when only a
+#   SOURCE changed: the words are identical. They answer different
+#   questions, so a step is fresh when BOTH say so — the object is
+#   newer than its source AND the words beside it are the words we
+#   would run now.
+#
+#   The stamp needs nothing new (a file beside the object).
+#   The mtime needs one more field on `Host` and one runtime row over
+#   the `stat` that `avra_io_kind` ALREADY does — DIFF 4 below, ~15
+#   lines, and every future incremental question wants it.
+#
+# WHAT IT MUST NOT DO
+#   - Not run under `avra check`: nothing links, nothing is needed.
+#     The two call sites below are `link` and `staged`, and no other.
+#   - Not run a shell, and not expand a glob. `sources` are literal
+#     paths; a glob is a shell habit and makes a package's inputs
+#     unpredictable between machines.
+#   - Not compile silently. sqlite3.c is 12.5 s and 526 MB peak
+#     (vendor/FLAGS.md), which under this tree's machine discipline is
+#     a step that must say what it is doing.
+#
+# ONE HAZARD WORTH THE VOICE IT COSTS
+#   A manifest path holding a NUL is invisible to `contains`,
+#   `index_of` and `split` — they are C string calls and stop at it
+#   (CLAUDE.md, "A STRING HOLDS A NUL ONLY HALF-WAY"). A containment
+#   check written with those primitives judges a PREFIX of the path.
+#   The exec truncates at the same NUL, so today the check and the
+#   callee agree and nothing is exploitable — but the agreement is an
+#   accident of two implementations, not a property. `has_nul` below
+#   reads `char_code` over `.length`, both NUL-safe, and refuses the
+#   path outright.
+
+────────────────────────────────────────────────────────────────
+DIFF 1 — packages/std-avrac/src/language/manifest.av
+────────────────────────────────────────────────────────────────
+
+--- a/packages/std-avrac/src/language/manifest.av
++++ b/packages/std-avrac/src/language/manifest.av
+@@
+ /// A tool the package declares it may run — `[process.tools]`.
+ /// `terminator` is the word after which the tool reads no options;
+ /// absent when the tool has none (`terminator = false`).
+ export type ToolRow = { name: string, from: Provenance, var: string?, default: string?, at_path: string?, terminator: string?, at: Loc? }
+ 
++/// A package's own native build — `[build]`. `sources` are C files
++/// under the package root; `flags` are the compiler's words. The
++/// object each source becomes is DERIVED, never written here: a
++/// manifest names what is read, never what is written.
++export type NativeBuild = { sources: List<string>, flags: List<string> }
++
+ /// A manifest's facts. `bin` and `lib` are entry files relative to
+ /// the package root — the written path, or the section's default.
+@@
+-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, flags: List<string>, tools: List<ToolRow> = [], voices: List<Diag> }
++export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, flags: List<string>, native: NativeBuild? = null, tools: List<ToolRow> = [], voices: List<Diag> }
+
+  (the two early-return `Manifest { … }` constructors need no change:
+   `native` carries a default, as `tools` does.)
+
+@@ in read_manifest's constructor @@
+         objects: r.words_of("link", "objects"), flags: r.words_of("link", "flags"),
++        native: r.native(),
+         deps: r.dependencies("dependencies", false, name).concat(r.dependencies("dev-dependencies", true, name)),
+
+@@ known_key @@
+     if section == "link" { return key == "objects" || key == "flags" }
++    if section == "build" { return key == "sources" || key == "flags" }
+
+@@ impl Reader — beside `tools()` and `profiles()` @@
++    /// The package's own native build, or absence when it declares
++    /// none. Every source is judged here: under the root, no NUL, and
++    /// no two sharing a stem, because their objects would collide.
++    fn native() -> NativeBuild? {
++        if !self.doc.has_section("build") { return null }
++        let sources = self.words_of("build", "sources")
++        if sources.is_empty() { self.speak(self.no_sources()) }
++        for s in sources { self.judge_source(s) }
++        for s in sources { if stem_shared(sources, s) { self.speak(self.colliding_stem(s)) } }
++        NativeBuild { sources: sources, flags: self.words_of("build", "flags") }
++    }
++
++    fn judge_source(s: string) {
++        if has_nul(s) { self.speak(self.nul_in_path(s)) }
++        if !under_dir(s, ".") { self.speak(self.escaping_source(s)) }
++    }
+
++/// Whether another source shares this one's stem — two objects at one
++/// path, and the second overwrites the first.
++fn stem_shared(sources: List<string>, s: string) -> bool {
++    [x for x in sources if stem_of(x) == stem_of(s)].length > 1
++}
++
++/// A NUL anywhere in the text. `contains` and `index_of` are C string
++/// calls and stop at the first one, so they cannot answer this.
++fn has_nul(s: string) -> bool {
++    [i for i in 0..s.length if s.char_code(i) == 0].length > 0
++}
+
+  (+ four voices in the file's voices section, each one `spoken`:
+     manifest.build_no_sources    — "`[build]` declares no sources"
+     manifest.build_escapes       — "a source leaves the package root"
+     manifest.build_nul           — "a source path holds a NUL"
+     manifest.build_stem_collides — "two sources share a stem, so one
+                                     object; rename one")
+  (+ `use @std.path.{stem_of, under_dir}` on the import line)
+
+────────────────────────────────────────────────────────────────
+DIFF 2 — packages/std-avrac/src/language/workspace.av
+────────────────────────────────────────────────────────────────
+
+--- a/packages/std-avrac/src/language/workspace.av
++++ b/packages/std-avrac/src/language/workspace.av
+@@ beside link_inputs / link_words @@
++/// One native step: the source, the object it becomes, and the words
++/// that make it.
++export type BuildStep = { package: string, source: string, object: string, words: List<string> }
++
++/// WHAT THE PROGRAM BUILDS BEFORE IT LINKS: every package's `[build]`
++/// promise, in package order — one step per declared source, its
++/// object DERIVED under the package's own `build/`, its flags with
++/// their `${NAME}` holes filled. A package that vendors C says here
++/// how the object `[link]` names comes to exist.
++export fn build_steps(ws: Workspace) -> List<BuildStep> {
++    flatten([package_steps(ws, pkg) for pkg in ws.packages])
++}
++
++fn package_steps(ws: Workspace, pkg: Package) -> List<BuildStep> {
++    let m = manifest(ws, pkg.ordinal)
++    [step_of(m, pkg, s) for s in native_sources(m)]
++}
++
++fn native_sources(m: Manifest) -> List<string> {
++    let n: NativeBuild? = m.native
++    if n == null { return [] }
++    n!.sources
++}
++
++fn step_of(m: Manifest, pkg: Package, source: string) -> BuildStep {
++    let from = joined_path(pkg.root, source)
++    let object = joined_path(pkg.root, "build/${stem_of(source)}.o")
++    BuildStep {
++        package: m.name, source: from, object: object,
++        words: ["-c"].concat(native_flags(m)).concat([from, "-o", object]),
++    }
++}
++
++/// A build's flags as words, `${NAME}` filled, no empty word — the
++/// same discipline `link_words` holds its own to.
++fn native_flags(m: Manifest) -> List<string> {
++    let n: NativeBuild? = m.native
++    if n == null { return [] }
++    [w for w in [expanded(f) for f in n!.flags] if !w.is_empty()]
++}
+
+  (`expanded` is already in this file, private; `stem_of` joins the
+   `@std.path` import.)
+
+  AND ONE CHECK THE COMPILER CAN NOW MAKE, which is the point of
+  putting both promises in one manifest: a `[link] objects` row that
+  names a path no `[build]` step produces AND no file provides is the
+  refusal a consumer gets today at the linker, in the linker's words.
+  It becomes a manifest voice, at the row, before anything runs.
+
+────────────────────────────────────────────────────────────────
+DIFF 3 — packages/cli/src/commands/shared.av
+────────────────────────────────────────────────────────────────
+
+--- a/packages/cli/src/commands/shared.av
++++ b/packages/cli/src/commands/shared.av
+@@ imports @@
+-use @std.avrac.language.{…, emit_ll, link_words}
++use @std.avrac.language.{…, emit_ll, link_words, build_steps, BuildStep}
++use @std.io.{…, modified}
+
+@@ link / staged — the two call sites, and no others @@
+ fn link(ll_path: string, p: Program) -> int {
++    if !native_built(p) { return 1 }
+     linked(ll_path, p, "-O1")
+ }
+ 
+ fn staged(ll_path: string, p: Program) -> int {
++    if !native_built(p) { return 1 }
+     let plan = "${ll_path}.link"
+
+@@ beside clang_words @@
++/// THE NATIVE HALF, BUILT BEFORE THE LINK: every package's `[build]`
++/// steps in package order, each one an argv. The two call sites are
++/// `link` and `staged`, which is `avra build`, `avra test` and `avra
++/// corpus`; `avra check` links nothing and compiles no C.
++fn native_built(p: Program) -> bool {
++    build_steps(p.ws).all(step_done(it))
++}
++
++/// One step run, or skipped as fresh. A step SAYS what it compiles:
++/// a vendored amalgamation is seconds and hundreds of megabytes, and
++/// a build that goes quiet for that long reads as a hang.
++fn step_done(s: BuildStep) -> bool {
++    if fresh(s) { return true }
++    println("${s.package}: compiling ${s.source}")
++    match cc_ran(s) {
++        .Ok(x) -> stamped(s, x),
++        .Err(e) -> host_refused(e.describe().message) == 0,
++    }
++}
++
++/// FRESH TAKES BOTH ANSWERS: the object newer than its source, and the
++/// words beside it the words we would run now. An mtime alone misses a
++/// flag change; a stamp alone misses an edit.
++fn fresh(s: BuildStep) -> bool {
++    exists(s.object) && modified(s.object) >= modified(s.source) &&
++        (read_text(stamp_path(s)) catch "") == joined(s.words, "\n")
++}
++
++fn stamp_path(s: BuildStep) -> string { "${s.object}.words" }
++
++/// The C compiler over one step's words — the same tool the link uses.
++fn cc_ran(s: BuildStep) -> Result<Exit, ProcessError> {
++    (at_the_terminal(cmd(linker()?, s.words)).outcome()?).exit
++}
++
++/// A step that exited 0 leaves its words beside its object; anything
++/// else is spoken in the compiler's own output, which was inherited.
++fn stamped(x: Exit, s: BuildStep) -> bool {
++    if exit_code(x) != 0 { return false }
++    match write_text(stamp_path(s), joined(s.words, "\n")) {
++        .Ok(_) -> true,
++        .Err(_) -> false,
++    }
++}
+
+  (`stamped` takes its arguments in the order `step_done` passes them;
+   `exit_code` is whatever `judged_link` already reads an `Exit` with.)
+
+────────────────────────────────────────────────────────────────
+DIFF 4 — the one new capability: a file's mtime
+────────────────────────────────────────────────────────────────
+
+runtime/avra_runtime.c — beside avra_io_kind, which already stats:
+
++// The path's modification time in seconds, or -errno.
++int64_t avra_io_modified(const char* path) {
++    struct stat st;
++    if (stat(path, &st) != 0) return -errno;
++    return (int64_t)st.st_mtime;
++}
+
+  + its row in the runtime registry (features/facts.av's `rt_sigs`),
+    answering an int, arguments borrowed — a C body that keeps nothing.
+
+packages/std-io/src/io.av:
+
++/// When the path was last written, in seconds. A path the host will
++/// not describe reads as 0, which is older than everything — so a
++/// missing source rebuilds rather than being skipped.
++export fn modified(path: string) -> int {
++    let t = avra_io_modified(path)
++    if t < 0 { return 0 }
++    t
++}
+
+  NOTE the empty case, written first: 0 means "older than everything",
+  so an unreadable source triggers a rebuild instead of a skip. The
+  other polarity silently ships a stale object.
+
+  `Host` (workspace.av:29) does NOT need a fifth field: the freshness
+  question is asked in the CLI, which has @std/io directly. Keep the
+  Host at four.
+
+────────────────────────────────────────────────────────────────
+WHAT std-sqlite's MANIFEST BECOMES
+────────────────────────────────────────────────────────────────
+
+  [build]
+  sources = ["vendor/sqlite3.c"]
+  flags   = ["-O2",
+             "-DSQLITE_ENABLE_COLUMN_METADATA=1", … the 32 of FLAGS.md ]
+
+  [link]
+  objects = ["build/sqlite3.o"]     # what [build] produced
+  flags   = ["-lm", "-lpthread"]
+
+  and `packages/std-sqlite/build/` joins what `make sweep` already
+  removes (`rm -rf packages/*/build`).
+
+────────────────────────────────────────────────────────────────
+THE THREE THINGS TO PROBE BEFORE WRITING THIS
+────────────────────────────────────────────────────────────────
+
+  1. `n?.sources` on a nullable struct field answering a `List<string>`
+     — the diff above avoids it with an explicit `if n == null`, on the
+     strength of CLAUDE.md's warning that an empty literal does not
+     adopt a nullable aggregate want. Probe it; if `n?.sources ?? []`
+     compiles, the two helpers collapse to one line each.
+  2. `.all(step_done(it))` where the predicate has a side effect —
+     short-circuit is wanted here (a failed step stops the rest), but
+     confirm `all` is lazy and does not walk the whole list first.
+  3. `Exit` — read one code out of it the way `judged_link` does, not
+     a second spelling.

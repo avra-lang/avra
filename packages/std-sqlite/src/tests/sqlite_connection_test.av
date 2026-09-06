@@ -1,0 +1,92 @@
+// The first code in this package that opens a real database.
+//
+// What it can assert today is the CONNECTION's own story: a handle
+// arrives, a bad path is refused before SQLite sees it, a missing file
+// under read-only fails rather than being created, and closing answers
+// zero. What it CANNOT assert is that the file is a database — that is
+// T127, opening is lazy, and the check needs a statement.
+use @std.io.{exists, write_text, remove}
+use @std.sqlite.open.{Db, Mode, OpenConfig, config_at, open, open_read, memory, open_with, close}
+use @std.sqlite.error.{SqlError}
+
+/// Whether an open succeeded, having closed whatever it got.
+fn opens(r: Result<Db, SqlError>) -> bool {
+    match r {
+        .Ok(db) -> closed(db),
+        .Err(_) -> false,
+    }
+}
+
+fn closed(db: Db) -> bool { close(db) == 0 }
+
+/// The kind an open was refused with, or the word for success.
+fn open_kind(r: Result<Db, SqlError>) -> string {
+    match r {
+        .Ok(db) -> ok_after(close(db)),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn ok_after(rc: int) -> string { "OPENED" }
+
+fn a_path() -> string { "/tmp/avra-sqlite-conn-test.db" }
+fn absent() -> string { "/tmp/avra-sqlite-absent-conn.db" }
+fn not_a_db() -> string { "/tmp/avra-sqlite-notadb-conn.db" }
+
+/// The fixture files, made and removed by the cases that need them.
+fn made(path: string, text: string) -> bool { (write_text(path, text) catch "") != "" }
+fn gone(path: string) -> bool { (remove(path) catch "") != "" }
+
+spec "std/sqlite connection" {
+
+    given "a database in memory" {
+        // It dies with the connection, so it is a verb rather than a
+        // path a caller could spell by accident.
+        then "it opens" { opens(memory()) }
+        then "and closing answers zero" { opens(memory()) }
+        then "two of them are independent" { opens(memory()) && opens(memory()) }
+    }
+
+    given "a database in a file" {
+        then "the fixture starts absent" { gone(a_path()) || !exists(a_path()) }
+        then "opening creates it" { opens(open(a_path())) }
+        then "and the file is on disk afterwards" { exists(a_path()) }
+        then "opening it again finds it" { opens(open(a_path())) }
+        then "read-only opens an existing file" { opens(open_read(a_path())) }
+        then "open-existing opens it too" { opens(open_with(config_at(a_path()) with { mode: Mode.OpenExisting })) }
+        then "and it can be cleaned up" { gone(a_path()) }
+    }
+
+    given "a file that is not there" {
+        // T129: the default flags carry CREATE, so "open it and see"
+        // CREATES the file. Read-only is the existence check that does
+        // not create what it asks about — measured, rc=14 CANTOPEN.
+        then "the fixture is absent" { !exists(absent()) }
+        then "read-only fails" { open_kind(open_read(absent())) == "sqlite.cant_open" }
+        then "and the file is STILL absent" { !exists(absent()) }
+        then "open-existing fails the same way" { open_kind(open_with(config_at(absent()) with { mode: Mode.OpenExisting })) == "sqlite.cant_open" }
+        then "and still creates nothing" { !exists(absent()) }
+    }
+
+    given "a path the door refuses before SQLite sees it" {
+        then "an empty path" { open_kind(open("")) == "sqlite.empty_path" }
+        then "`:memory:` spelled as a path" { open_kind(open(":memory:")) == "sqlite.empty_path" }
+        then "a `file:` path" { open_kind(open("file:/tmp/x.db")) == "sqlite.uri_path" }
+        then "and none of them reached the library" { !exists("file:/tmp/x.db") }
+    }
+
+    given "a file that is not a database — T127, and the gap is HERE" {
+        // OPENING IS LAZY. SQLite records the filename and allocates;
+        // the header is not read until a statement needs the schema. So
+        // this OPENS CLEANLY today, and the failure would arrive at the
+        // caller's first query, blaming the query.
+        //
+        // This case asserts the CURRENT behaviour on purpose, the way
+        // the width cases did before their fix: it flips the day
+        // `open` runs its one trivial statement, and that is the notice.
+        then "the fixture is a text file" { made(not_a_db(), "this is not a database") }
+        then "and it OPENS anyway, which is the gap" { opens(open(not_a_db())) }
+        then "the file is unharmed" { exists(not_a_db()) }
+        then "cleaned up" { gone(not_a_db()) }
+    }
+}

@@ -1,0 +1,80 @@
+//! THE WALL, column family: reading the row a `sqlite3_step` left
+//! standing.
+//!
+//! THE ORDER IS PART OF THE CONTRACT, and it is not a style. A column
+//! read asks `sqlite3_column_type` FIRST and branches on the storage
+//! class; the pointer is read only once the class says a value is
+//! there. `sqlite3_column_blob` answers a NULL POINTER for THREE
+//! different conditions — the column holds SQL NULL, the column holds a
+//! ZERO-LENGTH BLOB, or the allocation failed — so a read that tests
+//! the POINTER cannot tell them apart, and `column_blob(…) ?? empty`
+//! silently maps an out-of-memory to an empty blob.
+//!
+//! AND THE LENGTH IS READ AFTER THE VALUE. `sqlite3_column_bytes` is
+//! the length of what the most recent `column_blob`/`column_text` on
+//! that column returned; asking it first can convert the value and
+//! change the answer.
+//!
+//! A BORROWED C POINTER IS DECLARED `ptr`, NEVER `string` — the wall's
+//! rule, stated in `connection.av`. Every buffer below dies at the next
+//! `step`, `reset` or `finalize`, so none of them may cross as text.
+
+/// How many columns this statement's rows have — known at prepare
+/// time, and the answer to "is this a SELECT" without reading the SQL.
+/// Zero for a statement that yields no rows.
+export extern fn sqlite3_column_count(stmt: ptr) -> i32
+
+/// How many columns the CURRENT row has: 0 before the first step, 0
+/// after DONE, and 0 after a reset. SQLite's own answer to "is a row
+/// standing", which is why a width guard needs no flag of ours.
+export extern fn sqlite3_data_count(stmt: ptr) -> i32
+
+/// The column's storage class: 1 INTEGER, 2 FLOAT, 3 TEXT, 4 BLOB,
+/// 5 NULL. THE FIRST QUESTION ASKED OF ANY CELL.
+export extern fn sqlite3_column_type(stmt: ptr, col: int) -> i32
+
+/// The cell as a 64-bit integer. Exact: the C answer is 64 bits wide.
+export extern fn sqlite3_column_int64(stmt: ptr, col: int) -> int
+
+/// The 32-bit twin, which TRUNCATES a value that does not fit rather
+/// than failing — SQLite's truncation, faithfully reported by an `i32`
+/// seat. Kept bindable because the wall is total;
+/// `sqlite3_column_int64` is the one to call.
+export extern fn sqlite3_column_int(stmt: ptr, col: int) -> i32
+
+/// The cell's bytes as a borrowed pointer. NULL means SQL NULL, a
+/// ZERO-LENGTH BLOB, or an allocation failure — ask the class first,
+/// and where a NULL must be told from an OOM, `sqlite3_errcode`
+/// IMMEDIATELY and before any other call on that connection.
+export extern fn sqlite3_column_blob(stmt: ptr, col: int) -> ptr?
+
+/// The cell as UTF-8, borrowed. Dies at the next step, reset or
+/// finalize. SQLite stores what it was given and validates nothing, so
+/// these bytes are not known to be well-formed UTF-8.
+export extern fn sqlite3_column_text(stmt: ptr, col: int) -> ptr?
+
+/// The length in bytes of what the most recent `column_blob` or
+/// `column_text` on this column answered. READ IT AFTER THE VALUE.
+export extern fn sqlite3_column_bytes(stmt: ptr, col: int) -> i32
+
+/// The column's name in the result set — the AS alias where there is
+/// one. NULL only under memory pressure. Borrowed, and invalidated by
+/// a finalize, a reset, or the next call to this function.
+export extern fn sqlite3_column_name(stmt: ptr, col: int) -> ptr?
+
+/// The DECLARED type of the column in its table's schema, which is the
+/// text the CREATE TABLE wrote and not a storage class. NULL for an
+/// expression. Borrowed.
+export extern fn sqlite3_column_decltype(stmt: ptr, col: int) -> ptr?
+
+/// The schema this result column came from. Needs
+/// SQLITE_ENABLE_COLUMN_METADATA, which this build sets. NULL for an
+/// expression. Borrowed.
+export extern fn sqlite3_column_database_name(stmt: ptr, col: int) -> ptr?
+
+/// The table this result column came from. NULL for an expression.
+export extern fn sqlite3_column_table_name(stmt: ptr, col: int) -> ptr?
+
+/// The column this result column came from, under its own name rather
+/// than its alias. NULL for an expression.
+export extern fn sqlite3_column_origin_name(stmt: ptr, col: int) -> ptr?

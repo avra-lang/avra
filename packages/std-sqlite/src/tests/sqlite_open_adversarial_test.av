@@ -1,0 +1,136 @@
+// The red team's record for `open`'s pre-flight. Two findings drove the
+// shape it has now, and both are pinned below.
+//
+// ONE: a path holding a NUL walked through the door built to stop the
+// empty-path trap. Avra's `.length` sees every byte; C stops at the
+// first NUL; so `"\0x"` measured as length 2, was ACCEPTED, and reached
+// SQLite as the EMPTY STRING — `db_filename` came back empty, which is
+// the private temporary database deleted at close. The door judged a
+// prefix. `has_nul` reads `char_code` over `.length`, both of which see
+// the whole string.
+//
+// TWO: `Mode` + a `create: bool` made `ReadOnly` + `create: true`
+// expressible, and SQLite answers SQLITE_MISUSE to `READONLY|CREATE`
+// (rc=21, measured). Masking it hid the caller's contradiction; passing
+// it through would have blamed the driver via `Cause.Defect`. Three
+// modes make the contradiction unrepresentable, which is neither.
+use @std.text.{from_codepoint, from_codepoints}
+use @std.sqlite.open.{OpenConfig, Mode, Threading, config_at, flags_of, path_fault}
+use @std.sqlite.error.{SqlError}
+
+// ── The fixtures, so each case shows only its attack ────────────
+
+/// The kind a path is refused with, or the word for acceptance.
+fn door(path: string) -> string { verdict(path_fault(config_at(path))) }
+
+/// The same, for a caller who asked for URIs.
+fn door_uri(path: string) -> string { verdict(path_fault(config_at(path) with { uri: true })) }
+
+fn verdict(e: SqlError?) -> string {
+    if e == null { return "ACCEPTED" }
+    e!.cause.kind()
+}
+
+fn nul() -> string { from_codepoint(0) }
+
+/// All 48 configurations: three modes times four flags.
+fn conf(n: int) -> OpenConfig {
+    config_at("/tmp/a.db") with {
+        mode: mode_at(n % 3),
+        uri: bit(n, 3),
+        shared_cache: bit(n, 6),
+        threading: if bit(n, 12) { Threading.Unshared } else { Threading.Serialized },
+        no_follow: bit(n, 24),
+    }
+}
+fn mode_at(i: int) -> Mode {
+    match i {
+        0 -> Mode.ReadWrite,
+        1 -> Mode.OpenExisting,
+        _ -> Mode.ReadOnly,
+    }
+}
+fn bit(n: int, b: int) -> bool { (n / b) % 2 == 1 }
+fn words() -> List<int> { [flags_of(conf(n)) for n in 0..48] }
+fn set_in(word: int, b: int) -> bool { (word / b) % 2 == 1 }
+fn carrying(word: int) -> int {
+    mut n = word
+    mut c = 0
+    while n > 0 {
+        c = c + n % 2
+        n = n / 2
+    }
+    c
+}
+
+spec "std/sqlite open adversarial" {
+
+    given "degenerate paths" {
+        then "empty is refused" { door("") == "sqlite.empty_path" }
+        then "one blank is a filename, oddly, and accepted" { door(" ") == "ACCEPTED" }
+        then "three blanks likewise" { door("   ") == "ACCEPTED" }
+        then "one character is a filename" { door("a") == "ACCEPTED" }
+        then "a lone colon is a filename" { door(":") == "ACCEPTED" }
+    }
+
+    given "a NUL, in every position it can take" {
+        // Each of these reaches SQLite as the bytes BEFORE the NUL, so
+        // the path opened is not the path written. The first two are the
+        // empty-path trap exactly.
+        then "a lone NUL is refused" { door(nul()) == "sqlite.holds_nul" }
+        then "a NUL first is refused" { door(from_codepoints([0, 120])) == "sqlite.holds_nul" }
+        then "a NUL in the middle is refused" { door("/tmp/a.db${nul()}/../../etc/x") == "sqlite.holds_nul" }
+        then "a NUL last is refused" { door("/tmp/a.db${nul()}") == "sqlite.holds_nul" }
+        then "`:memory:` with a NUL glued on is refused" { door(":memory:${nul()}x") == "sqlite.holds_nul" }
+        then "a `file:` path with a NUL is refused for the NUL first" { door("file:/tmp/a.db${nul()}") == "sqlite.holds_nul" }
+        // The guard must SEE it — the length is the witness the C
+        // primitives do not have.
+        then "Avra measured every byte all along" { "/tmp/a.db${nul()}x".length == 11 }
+        then "and a NUL path is refused even when URIs were asked for" { door_uri("file:${nul()}") == "sqlite.holds_nul" }
+    }
+
+    given "the near misses, which must be ACCEPTED" {
+        // Measured against the library: `:MEMORY:` opens an ordinary
+        // FILE named `:MEMORY:`, so SQLite's own check is
+        // case-sensitive and refusing it here would refuse a legal
+        // filename.
+        then "`:MEMORY:` is a filename" { door(":MEMORY:") == "ACCEPTED" }
+        then "`:Memory:` is a filename" { door(":Memory:") == "ACCEPTED" }
+        then "`:memory` without its tail is a filename" { door(":memory") == "ACCEPTED" }
+        then "`memory:` is a filename" { door("memory:") == "ACCEPTED" }
+        then "`file` without a colon is a filename" { door("file") == "ACCEPTED" }
+        then "a path CONTAINING `file:` is a filename" { door("/tmp/file:x.db") == "ACCEPTED" }
+        // With URI parsing off at the library, `FILE:` is a literal
+        // directory that does not exist — SQLite answers CANTOPEN
+        // honestly, so the door need not guess about case.
+        then "`FILE:` upper case is left to the library" { door("FILE:/tmp/a.db") == "ACCEPTED" }
+    }
+
+    given "the paths that are refused, and the ones that stop being so" {
+        then "`:memory:` exactly is refused" { door(":memory:") == "sqlite.empty_path" }
+        then "`file:` exactly is refused as a URI" { door("file:") == "sqlite.uri_path" }
+        then "a URI path is refused by default" { door("file:/tmp/a.db?mode=ro") == "sqlite.uri_path" }
+        then "and accepted once the caller asked for URIs" { door_uri("file:/tmp/a.db?mode=ro") == "ACCEPTED" }
+        then "an ordinary path is unaffected by that field" { door_uri("/tmp/a.db") == "ACCEPTED" }
+    }
+
+    given "flags_of over all 48 configurations" {
+        then "there are 48" { words().length == 48 }
+        // The header allows exactly three combinations and SQLite
+        // answers SQLITE_MISUSE to every other spelling — measured for
+        // all five of them.
+        then "none sets both access bits" { [w for w in words() if set_in(w, 1) && set_in(w, 2)].length == 0 }
+        then "none sets neither" { [w for w in words() if !set_in(w, 1) && !set_in(w, 2)].length == 0 }
+        then "no read-only word carries CREATE" { [w for w in words() if set_in(w, 1) && set_in(w, 4)].length == 0 }
+        then "every word carries EXRESCODE" { [w for w in words() if !set_in(w, 33554432)].length == 0 }
+        then "none carries both cache bits" { [w for w in words() if set_in(w, 131072) && set_in(w, 262144)].length == 0 }
+        then "none carries both mutex bits" { [w for w in words() if set_in(w, 32768) && set_in(w, 65536)].length == 0 }
+        // `flags_of` SUMS its contributors, and a sum equals a bitwise
+        // OR only while every contributor is a distinct bit. A shared
+        // bit would CARRY into a neighbour and set a flag nobody asked
+        // for, so the bit count is the witness that none does.
+        then "the default carries exactly five bits" { carrying(flags_of(config_at("/tmp/a.db"))) == 5 }
+        then "no word carries fewer than four" { [w for w in words() if carrying(w) < 4].length == 0 }
+        then "no word carries more than seven" { [w for w in words() if carrying(w) > 7].length == 0 }
+    }
+}
