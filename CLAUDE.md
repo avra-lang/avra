@@ -1080,16 +1080,28 @@ Runtime facts, ours to ratify:
   one axis over: that one asks WHICH TREE, this one asks WHICH
   VERSION of it, and receipts decay the same way for the same reason.
 - A SAFETY PROPERTY RESTING ON A CONDITION NOBODY STATED IS A
-  DEADLINE, NOT A GUARANTEE — and the file already holds two, each
-  written as if it were alone. `str_len`'s zero-length fallback is
-  safe only because every text box is minted through `str_box(n)`,
-  a CONVENTION OF THE CALLERS that a `Bytes` value ends. `parsed`'s
-  early cutoff is sound only while compiles are ONE-SHOT. Both are
-  correct today and both have a date. So when a property holds by a
-  condition, NAME THE CONDITION IN THE SAME BREATH — an unstated one
-  is what makes the eventual breakage read as a new bug rather than
-  an expiry. A third instance is a CITATION of this line, never
-  another paragraph; that is what this entry is for.
+  DEADLINE, NOT A GUARANTEE. FIVE are on record and the register is
+  SPLIT ACROSS TWO FILES, which is why neither view is complete:
+  doctrine instances land here, lane findings with their probes land
+  in the ROADMAP, and a curator auditing one cannot see the other.
+  HERE: `str_len`'s zero-length fallback, safe only by a CONVENTION
+  OF THE CALLERS that a `Bytes` value ends; and `parsed`'s early
+  cutoff, sound only while compiles are ONE-SHOT (= ROADMAP:2190).
+  THERE: the pointer-constant guard, landed as "unreachable today"
+  (ROADMAP:2018 — and its condition ACTUALLY CHANGED hours later when
+  `avra_ptr_at` made a pointer mintable; it survived only because the
+  capability took a runtime-row shape rather than a constant fold, so
+  by an unrelated design choice and nothing its author did); `plain`
+  dropping a fn type's seat marks, safe only while a nullable fn type
+  is unspellable (ROADMAP:2109); and @std/sqlite's `close(mut db)`,
+  whose idempotence rests ENTIRELY on `mut b = a` aliasing — the day
+  S2 makes copies copy, `close(a)` is a DOUBLE FREE in a shipping std
+  package, and the driver's own test passes because it uses one
+  binding (ROADMAP:2345, verified here at open.av:358).
+  So NAME THE CONDITION IN THE SAME BREATH — an unstated one is what
+  makes the eventual breakage read as a new bug rather than an
+  EXPIRY. A sixth instance is a CITATION of this line, never another
+  paragraph; that is what this entry is for.
 - AN ASSUMPTION NOTHING HAS EVER TRIED TO VIOLATE IS NOT A GUARANTEE.
   A check that passes proves the arrangement it was handed happened
   to work; it does not prove the check would NOTICE. Two shapes,
