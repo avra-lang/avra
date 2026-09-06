@@ -95,6 +95,11 @@ name saying what it does — a thin validating verb that then calls
 `str_owned`, rather than `str_owned` itself gaining a second life as a
 public symbol. The validating shell and the copy are different jobs, the
 same way the trap helpers are separate from the fast paths.
+**AND THE ROW'S OWNERSHIP COLUMNS ARE NAMED RATHER THAN DESCRIBED**:
+`owns_result: true`, because the box is fresh and the caller must
+release it; `lends: false`, because the subject does not still hold what
+it answered and a borrow of it would be a borrow of nobody's value. The
+default is right here, which is exactly when nobody checks it.
 
 **THE EMPTY CASE IS THE FIRST CASE.** `column_blob` answers a NULL
 pointer for THREE conditions — SQL NULL, a zero-length value, and an
@@ -104,6 +109,27 @@ spends it three ways. **And a NULL meaning three things is not
 disambiguable downstream, only at the source** — which is why the face
 asks `column_type` rather than testing the pointer, and why no amount of
 care in the adoption verb could substitute for it.
+
+**AND ASKING THE CLASS SEPARATES ONLY ONE OF THE THREE.** SQL NULL comes
+away clean; a genuine ZERO-LENGTH value and an OUT-OF-MEMORY both arrive
+as `(null, 0)` after a non-NULL class, so adoption answers an empty box
+for both and **AN ALLOCATION FAILURE IS REPORTED TO THE CALLER AS AN
+EMPTY STRING.** That is the empty-value law firing a FOURTH way, inside
+the design that quotes it. SQLite sets the connection's error code on
+that path, so the driver CAN tell them apart by asking — and the face
+MUST ask, because "we answer empty" and "we check the errcode" are
+different programs and only one of them is honest.
+
+**AND THE DESIGN'S HEADLINE CASE RESTS ON A CONVENTION IT DOES NOT
+CONTROL.** `str_len` is `(h && h->len) ? h->len : strlen(s)` — a ZERO
+length is not trusted, so an EMPTY box discards its own header and
+measures itself by the terminator. It answers 0 only because `str_owned`
+allocates n+1 and writes `buf[n]`. **The empty value is the single case
+where the runtime reads a terminator instead of the header, which is the
+exact thing this design argues against**, and it is the case the design
+leads with. The one-character fix (`h ? (size_t)h->len : strlen(s)`)
+lands IN this slice, not after it — otherwise the first thing adoption
+ships is a value measured the one way the doc refuses.
 
 **THE FACE ASKS THE CLASS FIRST, ALWAYS, AND READS THE LENGTH AFTER THE
 VALUE.** Both laws are already written in `c/column.av` and already held
