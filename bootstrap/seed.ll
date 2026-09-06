@@ -29650,24 +29650,24 @@ entry:
   %b = icmp ne i64 %3, 0
   %4 = call i64 @avra_array_get(ptr %0, i64 4)
   %b1 = icmp ne i64 %4, 0
-  %5 = call i64 @avra_array_get(ptr %0, i64 5)
-  %boxed = inttoptr i64 %5 to ptr
-  %6 = call ptr @avra_array_sized(i64 7)
-  call void @avra_array_push_owned(ptr %6, ptr %1)
-  call void @avra_array_push_owned(ptr %6, ptr %2)
-  call void @avra_array_push(ptr %6, i64 0)
+  %5 = call ptr @avra_array_get_owned(ptr %0, i64 5)
+  %6 = call i64 @avra_array_get(ptr %0, i64 6)
+  %boxed = inttoptr i64 %6 to ptr
+  %7 = call ptr @avra_array_sized(i64 7)
+  call void @avra_array_push_owned(ptr %7, ptr %1)
+  call void @avra_array_push_owned(ptr %7, ptr %2)
+  call void @avra_array_push(ptr %7, i64 0)
   %slot = zext i1 %b to i64
-  call void @avra_array_push(ptr %6, i64 %slot)
+  call void @avra_array_push(ptr %7, i64 %slot)
   %slot2 = zext i1 %b1 to i64
-  call void @avra_array_push(ptr %6, i64 %slot2)
-  call void @avra_array_push_owned(ptr %6, ptr %boxed)
-  %7 = call ptr @"av_$40std$2Eavrac$2Ecore$2ETypeRef$2Emuts"()
-  call void @avra_array_push_owned(ptr %6, ptr %7)
-  call void @avra_rc_release(ptr %7)
+  call void @avra_array_push(ptr %7, i64 %slot2)
+  call void @avra_array_push_owned(ptr %7, ptr %5)
+  call void @avra_array_push_owned(ptr %7, ptr %boxed)
+  call void @avra_rc_release(ptr %5)
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
-  ret ptr %6
+  ret ptr %7
 }
 
 define i64 @"av_$40std$2Eavrac$2Elanguage$2ETypeCx$2Ewritten_type"(ptr %0, ptr %1, ptr %2) {
