@@ -359,14 +359,12 @@ static char* sized_box(size_t n, int32_t kind) {
 }
 
 // A string's length in O(1) — the header's, or measured when the
-// box predates lengths (a zero) or the text is not a box.
-// A ZERO LENGTH IS A LENGTH. Distrusting it sent an EMPTY box to
-// `strlen`, so its own header was discarded and the answer came from
-// a terminator — correct only because every text box is minted at
-// n+1 with `buf[n]` written, a CONVENTION OF THE CALLERS rather than
-// a property of this function. A box allocated at exactly n makes it
-// a live bug, and the empty case is the one a foreign adoption would
-// meet first. The fallback is for a pointer that is not ours.
+// text is not a box. A ZERO LENGTH IS A LENGTH: distrusting it sent
+// an EMPTY box to `strlen`, which discarded its header and answered
+// from a terminator instead. That was right only because every text
+// box is minted at n+1 with `buf[n]` written — a CONVENTION OF THE
+// CALLERS, not a property of this function, and a live bug the day
+// a box is allocated at exactly n, which is what a `Bytes` value is.
 static size_t str_len(const char* s) {
     Header* h = hdr((void*)s);
     return h ? (size_t)h->len : strlen(s);
