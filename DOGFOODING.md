@@ -229,8 +229,7 @@ gate — there is no amnesty left to hide in.
       found exactly that way, and three tests still asserted
       contains alone. The matcher's first guard looked for the
       SUBSTRING `diagnostics.length`, so `>= 1` passed as a count;
-      it now demands the real thing — `== n`, `refused_with(`,
-      `refused_n(`.
+      it now demands the real thing — `== n` or `refused_with(`.
 - I30 a refusal asserted as `>= 1`: `refusals(src) >= 1`,
       `a.diagnostics.length >= 1`, `p.diagnostics >= 1`,
       `p.voices.list.length >= 1`. Each says "something was
@@ -317,9 +316,13 @@ five passes `>= 1` silently. I20 already demands a count beside
 `contains`, but it never saw this spelling, and 33 sites used it.
 `refused_with(source, phrase)` in @std.avrac.testing makes the honest
 form the SHORT one: it pins the count at one and the phrase together,
-replacing a shape hand-spelled at 131 sites. `refused_n` is for the
-shapes where a cascade is today's truth and pinning it makes a later
-improvement VISIBLE — every malformed fn signature is exactly 2.
+replacing a shape hand-spelled at 131 sites. A `refused_n` for the
+shapes where a cascade is today's truth — pinning the count so a
+later improvement is VISIBLE, every malformed fn signature being
+exactly 2 — is a WANT and has never landed: `testing/mod.av` exports
+`shown`, `refusals`, `refused_with`, `refused_at_run`, `ir_of`,
+`makers`, `finder` and `halver`, and nothing else. Spell a cascade
+`refusals(src) == n` until it does.
 
 The remainder is no longer a hand-kept tally: I30 ratchets the
 `>= 1` spelling and I20's guard demands a real count, so the number
@@ -623,7 +626,9 @@ fn op_texts(r: LexResult) -> List<string> {
 }
 ```
 
-Lists only — comprehensions cannot iterate ranges.
+Lists AND ranges: `[f(i) for i in lo..hi]` counts and `[f(i, x) for
+i, x in xs]` pairs — the head is the `for` statement's, so whatever
+that spells, a comprehension spells too.
 
 ## The native list vocabulary
 
