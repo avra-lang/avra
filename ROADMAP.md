@@ -627,6 +627,42 @@ the compiler checking itself 28.8s.
         fail. An unexercised keeper is an untested instrument, and
         this one proved it by being wrong the first day its domain
         widened.
+  - [ ] A MINTED POINTER HANDED TO A RUNTIME ROW IS A DEREFERENCE,
+        so `avra_ptr_at`'s stated ground is already false — found
+        2026-09-06 by lane A while judging a foreign-text proposal,
+        PROBED, not reasoned. The runtime comment says "the danger is
+        DEREFERENCING, and Avra has no dereference at all". The
+        language has none; THE ROWS DO. `avra_array_push` casts what
+        it is handed straight to `AvraArray*` and writes through
+        `a->data[a->len]` with no `hdr()` check — it cannot have one,
+        since it is handed real arrays constantly — and the extern
+        seam accepts ANY name at check time (a nonexistent symbol
+        passes `check`; a real internal one links). So this compiles
+        clean today, with no diagnostic and no unsafe marker:
+            extern fn avra_ptr_at(address: int) -> ptr
+            extern fn avra_array_push(arr: ptr, v: int)
+            fn poke(a: int, v: int) { avra_array_push(avra_ptr_at(a), v) }
+        That is an arbitrary WRITE, which is worse than the arbitrary
+        read the foreign-text debate was fencing against, and it
+        needs no new capability.
+        WHAT IS AND IS NOT THE DEFECT. A systems language with an
+        unrestricted FFI has this property by construction and P8
+        wants escape hatches, so the CAPABILITY may well be right.
+        THE FALSE PREMISE IS THE DEFECT: a comment asserting a safety
+        property that does not hold is what lets the NEXT capability
+        be granted on bad grounds, which is exactly what nearly
+        happened — a foreign-text proposal was argued on "my option
+        leaves that sentence true", and the sentence was already
+        untrue. Restate the ground: creating a pointer is inert IN
+        THE LANGUAGE, and the rows dereference what they are handed,
+        so the FFI is the unsafe corner and should be named as one.
+        AND THE SEAM PROPERTY GENERALISES, worth its own line: AN
+        EXPORTED C SYMBOL IS A LANGUAGE CAPABILITY, because any file
+        may declare an extern for any linked symbol with nothing
+        central authorising it (`avra_trap` is declared privately in
+        query/db.av). There is no "reachable from C but not from
+        Avra" in this design, so every runtime export is a language
+        decision whether or not anyone frames it as one.
   - [x] A POINTER FROM AN INTEGER — ANSWERED YES by the owner and
         LANDED 2026-09-05 as `avra_ptr_at` (lane C's block below).
         The answer did NOT land in lane A's file: it needed no
