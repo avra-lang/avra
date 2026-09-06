@@ -96,7 +96,14 @@ static int64_t g_free_len[CLASSES];
 // indexes — with each one's high-water mark, printed at exit. What a
 // 2.4 GB compiler run is MADE OF, category by category.
 enum { ACC_RECORD, ACC_STR, ACC_LIST, ACC_BUF, ACC_MAP, ACC_INDEX, ACC_KINDS };
-static const char* g_acc_name[ACC_KINDS] = { "records", "strings", "list boxes", "list buffers", "map boxes", "map indexes" };
+// KEYED, never positional: a category inserted mid-enum would take its
+// neighbour's name under a positional initialiser, and the report is
+// read by whoever is asking where the memory went.
+static const char* g_acc_name[ACC_KINDS] = {
+    [ACC_RECORD] = "records",    [ACC_STR]   = "strings",
+    [ACC_LIST]   = "list boxes", [ACC_BUF]   = "list buffers",
+    [ACC_MAP]    = "map boxes",  [ACC_INDEX] = "map indexes",
+};
 static int64_t g_acc_live[ACC_KINDS];
 static int64_t g_acc_peak[ACC_KINDS];
 static int64_t g_acc_total_live = 0;
@@ -273,8 +280,12 @@ static void* box_alloc(size_t size, int32_t kind) {
 
 // A string box of `n` bytes plus its terminator, its length known.
 // An owned string wears KIND_STR so its class can be read back.
-static char* str_box(size_t n, int32_t kind) {
-    char* buf = (char*)box_alloc(n + 1, kind == KIND_PLAIN ? KIND_STR : kind);
+// A box of `n` payload bytes plus a terminator, its LENGTH in the
+// header. The caller names the kind it means — no translation, so a
+// new sized kind is one call and not a guess. Every kind made here
+// allocates n+1 and must therefore join `box_bytes`'s `+1` arm.
+static char* sized_box(size_t n, int32_t kind) {
+    char* buf = (char*)box_alloc(n + 1, kind);
     ((Header*)buf - 1)->len = (uint32_t)n;
     return buf;
 }
@@ -313,7 +324,7 @@ static void box_free(void* p) {
 // keyword, an argument, the environment's word.
 static const char* str_static(const char* s) {
     size_t n = strlen(s);
-    char* buf = str_box(n, KIND_STATIC);
+    char* buf = sized_box(n, KIND_STATIC);
     memcpy(buf, s, n + 1);
     return buf;
 }
@@ -506,7 +517,7 @@ int64_t avra_int_mod(int64_t a, int64_t b) {
 }
 
 const char* avra_int_text(int64_t v) {
-    char* buf = str_box(23, KIND_PLAIN);
+    char* buf = sized_box(23, KIND_STR);
     ((Header*)buf - 1)->len = (uint32_t)snprintf(buf, 24, "%lld", (long long)v);
     return buf;
 }
@@ -1015,7 +1026,7 @@ const char* avra_str_join(void* arr, const char* sep) {
         total += s ? str_len(s) : 0;
         if (i > 0) total += sep_len;
     }
-    char* buf = str_box(total - 1, KIND_PLAIN);
+    char* buf = sized_box(total - 1, KIND_STR);
     char* p = buf;
     for (int64_t i = 0; i < a->len; i++) {
         if (i > 0) { memcpy(p, sep, sep_len); p += sep_len; }
@@ -1035,7 +1046,7 @@ static const char* list_text(void* arr, const char* (*text)(int64_t)) {
     }
     const char* body = avra_str_join(parts, ", ");
     size_t l = str_len(body);
-    char* buf = str_box(l + 2, KIND_PLAIN);
+    char* buf = sized_box(l + 2, KIND_STR);
     buf[0] = '[';
     memcpy(buf + 1, body, l);
     buf[l + 1] = ']';
@@ -1132,7 +1143,7 @@ void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
 // that is new text is owned.
 
 static const char* str_owned(const char* s, size_t n) {
-    char* buf = str_box(n, KIND_PLAIN);
+    char* buf = sized_box(n, KIND_STR);
     memcpy(buf, s, n);
     buf[n] = '\0';
     return buf;
@@ -1223,7 +1234,7 @@ const char* avra_str_replace(const char* s, const char* from, const char* to) {
     if (fl == 0) return str_owned(s, n);
     size_t count = 0;
     for (const char* p = strstr(s, from); p; p = strstr(p + fl, from)) count++;
-    char* buf = str_box(n + count * tl - count * fl, KIND_PLAIN);
+    char* buf = sized_box(n + count * tl - count * fl, KIND_STR);
     char* w = buf;
     const char* r = s;
     for (const char* p; (p = strstr(r, from)) != NULL;) {
@@ -1265,7 +1276,7 @@ void* avra_str_split(const char* s, const char* sep) {
 const char* avra_str_concat(const char* a, const char* b) {
     size_t n = str_len(a);
     size_t m = str_len(b);
-    char* buf = str_box(n + m, KIND_PLAIN);
+    char* buf = sized_box(n + m, KIND_STR);
     memcpy(buf, a, n);
     memcpy(buf + n, b, m + 1);
     return buf;
@@ -1371,7 +1382,7 @@ static const char* read_whole(FILE* f) {
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
     if (size < 0) size = 0;
-    char* buf = str_box((size_t)size, KIND_PLAIN);
+    char* buf = sized_box((size_t)size, KIND_STR);
     size_t got = fread(buf, 1, (size_t)size, f);
     buf[got] = '\0';
     ((Header*)buf - 1)->len = (uint32_t)got;
