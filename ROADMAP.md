@@ -2983,6 +2983,45 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  A WORDING LAW REPAIRS MESSAGES NOBODY HAS WRITTEN YET — the argument
+  for landing one rather than filing it, and it arrived as a NON-EVENT
+  spotted in review. Two slices were written the same evening by
+  different authors who never spoke: the bitwise operator law, whose
+  mixed-run refusal rendered as `builder failed: \`|\` and \`&\` in one
+  expression have no agreed order`, and lane C's builder-wording law,
+  which dropped the executor's blanket prefix. **THE SECOND FIXED THE
+  FIRST'S DIAGNOSTIC BEFORE ANYONE NOTICED IT WAS WRONG.** The case made
+  for the wording law had been about FIVE EXISTING messages; the better
+  case is the sixth, which did not exist when the fix was designed. So
+  the value of a wording law is not the backlog it clears — it is every
+  message written after it, for free, by authors who never read it.
+  AND TWO BROKEN PROBES, THREE MINUTES APART, REACHING ONE WRONG ANSWER.
+  A lane reported `a & b` still F0001 after bitwise merged, concluding
+  the slice had not landed; the team lead, checking that claim, ran a
+  probe using `println` in a LOOSE file, got an error, and nearly read it
+  the same way — it was F3000 "no `fn println` is defined", with the
+  operators parsing fine. Caught only by piping to `grep -oE 'F[0-9]{4}'
+  | sort -u` instead of `tail`, which is THE PROBE-TRUNCATION LAW paying
+  for itself inside the hour it was being quoted. THE ANSWER, run in both
+  binaries rather than reasoned: `(a&b)+(a|b)+(a^b)+(a<<2)+(a>>1)+(~a)`
+  with a=6 b=3 is **34** in main AND in the lane's own tree — the lane's
+  compiler could always do it. **A PROBE HAS ITS OWN DEFECTS, AND A
+  FAILING PROBE IS EVIDENCE ABOUT THE PROBE UNTIL ITS OTHER LINES ARE
+  CLEARED.** Both authors were verifying rather than assuming, and both
+  verifications were honest; the artifact under test was simply not the
+  one either of them meant to run.
+  AND THE INTEGRATOR RAN WHILE THE LANE WAS STILL EDITING — the team
+  lead's error, on the discipline he had spent the evening enforcing on
+  everyone else. A merge read a working tree HALFWAY THROUGH A RENAME
+  (`holes` -> `slots`), coherent at either end and red in between, and
+  the gate's `does not export holes` read as a lost export rather than as
+  a snapshot of work in flight. **"TAKE MY WORKING TREE" IS TRUE AT THE
+  MOMENT IT IS SENT AND FOR NO LONGER.** A lane that asks for its
+  uncommitted state to be merged is describing a photograph; the merge
+  waits for the lane to say GREEN, which is a claim about the tree at the
+  time the claim is made. Nothing was lost (no stashes, main untouched),
+  and the cost was one wasted gate — but the same mistake against a lane
+  mid-rewrite of a shared file is how the 250-line ROADMAP loss happened.
   THE DRIVER HAD NO CORPUS PROGRAMS BECAUSE THE FORM DID NOT EXIST, not
   because nobody wrote them — and that distinction is the finding.
   `corpus/native/` takes LOOSE files, and a loose file cannot reach a
