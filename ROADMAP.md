@@ -582,6 +582,45 @@ the compiler checking itself 28.8s.
         reworded, the whole gate stayed green (1880 tests, 77
         programs), because the only existing out-of-bounds test goes
         through the evaluator. Three contracts, 1.4s, in the gate.
+  - [x] THE KEEPER'S FIRST NEW DOMAIN BROKE IT, which is this tree's
+        own law arriving one domain over (2026-09-05). The SQLITE
+        lane's manifest-driven source list put a VENDORED
+        amalgamation inside `tools/externs.py`'s reach for the first
+        time, and it immediately found 61 wrong declarations — 53
+        TRUE, which nothing else in this tree could have caught,
+        since both engines agree on a narrow C return's wrong answer.
+        AND 8 FALSE, all from one cause: the keeper reads the
+        SPELLING of a C return, and a third party names its widths
+        through TYPEDEFS (`sqlite3_int64` -> `sqlite_int64` -> `long
+        long int`) and prefixes them with a MACRO (`SQLITE_API`). It
+        had spent its whole life reading C THIS TREE WROTE, which
+        spells `int64_t` plainly, so its width set had never met
+        either — it passed every day while structurally unable to see
+        the case it was about to be asked to guard. Same shape as
+        `RtKind`'s two `is .Variant` consumers, same shape as the
+        runtime's `acc_kind_of`.
+        A SECOND FALSE CLASS WAS FOUND BEFORE IT COULD BITE: the
+        32-bit rules are ANCHORED, so `SQLITE_API int` would have
+        failed a correctly declared `i32` seat too — the lane would
+        have fixed all 53 and stayed red.
+        THE FIX RESOLVES rather than lists. Typedefs come from the
+        same sources the keeper already reads, because a list of
+        known names would be right for SQLite and wrong for the next
+        library — the very defect the keeper exists to catch. A name
+        keeps EVERY definition it has across preprocessor branches
+        (`__int64` on one compiler, `long long int` on another) and a
+        seat is satisfied only when ALL readings agree; disagreement
+        fails rather than guesses. All-caps words are dropped as
+        macros, since no C base type shouts. `__int64` joined the
+        wide set, which the fixture caught and no tree source would
+        have.
+        AND THE KEEPER NOW TESTS ITSELF: nine cases pinning these
+        readings run before any verdict, and a failure says the
+        model moved and its verdicts are not to be trusted. Verified
+        to have teeth by breaking the wide set and watching them
+        fail. An unexercised keeper is an untested instrument, and
+        this one proved it by being wrong the first day its domain
+        widened.
   - [ ] A POINTER FROM AN INTEGER — the OWNER's question, asked by
         the SQLITE lane 2026-09-05 and recorded here because the
         answer lands in lane A's file. `ptr` is receive-only today:
