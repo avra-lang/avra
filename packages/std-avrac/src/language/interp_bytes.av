@@ -1,0 +1,47 @@
+//! The byte contract over integer octets, independent of native storage.
+impl Machine {
+    fn octets(v: Val) -> List<int> {
+        match v {
+            .D(data) -> data,
+            _ -> {
+                self.defect("a non-Bytes value reached a byte operation")
+                []
+            },
+        }
+    }
+
+    fn bytes_of_str_val(v: Val) -> Val {
+        let text = self.text_val(v)
+        Val.D([text.char_code(i) for i in 0..text.length])
+    }
+
+    fn bytes_of_list_val(v: Val) -> Val {
+        let id: int? = array_id(v)
+        if id == null { return self.defect_val("a non-list reached byte construction") }
+        let data = [self.whole(x) for x in self.arrays[id!]]
+        if data.any(it < 0 || it > 255) { return Val.N }
+        Val.D(data)
+    }
+
+    fn bytes_at_val(vals: List<Val>) -> Val {
+        let data = self.octets(vals[0])
+        let at = self.whole(vals[1])
+        if at < 0 || at >= data.length {
+            self.trapped("index ${at} is out of bounds (length ${data.length})")
+            return Val.I(0)
+        }
+        Val.I(data[at])
+    }
+
+    fn bytes_slice_val(vals: List<Val>) -> Val {
+        let data = self.octets(vals[0])
+        let lo = self.whole(vals[1])
+        let hi = self.whole(vals[2])
+        if lo < 0 || hi < lo || hi > data.length { return Val.N }
+        Val.D(data.slice(lo, hi))
+    }
+}
+
+fn same_octets(a: List<int>, b: List<int>) -> bool {
+    a.length == b.length && [a[i] == b[i] for i in 0..a.length].all(it)
+}

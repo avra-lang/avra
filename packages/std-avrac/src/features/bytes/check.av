@@ -1,0 +1,36 @@
+//! Method seats and byte-domain construction.
+use core.{Type, TypeId, ExprId}
+use features.{TypeCx, MethodCall, seated, accepts, spoken, this_is}
+use diagnostics.{refusal}
+
+fn on_bytes(t: Type) -> bool { t is .Bytes }
+fn on_text(t: Type) -> bool { t is .Str }
+fn on_byte_list(t: Type) -> bool { t is .List || t is .EmptyList }
+
+fn checked(mut cx: TypeCx, mc: MethodCall, name: string, seats: List<Type>, answer: Type) -> TypeId {
+    if !seated(cx, mc, name, [cx.view.types.intern(t) for t in seats]) { return cx.error_type }
+    cx.view.types.intern(answer)
+}
+
+fn check_text(mut cx: TypeCx, mc: MethodCall) -> TypeId { checked(cx, mc, "bytes", [], Type.Bytes) }
+fn check_at(mut cx: TypeCx, mc: MethodCall) -> TypeId { checked(cx, mc, "at", [Type.Int], Type.Int) }
+fn check_copy(mut cx: TypeCx, mc: MethodCall) -> TypeId { checked(cx, mc, "copy", [], Type.Bytes) }
+fn check_concat(mut cx: TypeCx, mc: MethodCall) -> TypeId { checked(cx, mc, "concat", [Type.Bytes], Type.Bytes) }
+fn check_empty(mut cx: TypeCx, mc: MethodCall) -> TypeId { checked(cx, mc, "is_empty", [], Type.Bool) }
+
+fn check_slice(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    checked(cx, mc, "slice", [Type.Int, Type.Int], Type.Opt(cx.view.types.intern(Type.Bytes)))
+}
+
+fn check_list(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if !seated(cx, mc, "bytes", []) { return cx.error_type }
+    let want = cx.view.types.intern(Type.List(cx.view.types.intern(Type.Int)))
+    if !accepts(cx, mc.subject, want) {
+        let name = cx.name_at(mc.subject)
+        return spoken(cx, refusal("type.mismatch", cx.loc_of(mc.subject), "`bytes` needs `List<int>`, found `${name}`", this_is(name), "supply integers in 0..255"))
+    }
+    cx.view.types.intern(Type.Opt(cx.view.types.intern(Type.Bytes)))
+}
+
+// LICENSED I23: a property row's signature
+fn check_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId { cx.view.types.intern(Type.Int) }
