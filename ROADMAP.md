@@ -2054,6 +2054,42 @@ the order is the dependency.
         production in workspace.av and lower.av, 1 the db_test
         fixture), 38 value-args (2 production), 1 alias at
         typing.av:410, the rest tests.
+  - [ ] S2 CARRIES A SEARCH OF ITS DEPENDENTS — a GATE CONDITION,
+        not a courtesy, and the reason is verified rather than
+        feared. `mut b = a` ALIASES today, both engines:
+
+            type Db = { raw: int, tag: int }
+            fn close(mut d: Db) -> int {
+                if d.raw == 0 { return 0 }
+                d.raw = 0
+                1
+            }
+            mut a = Db { raw: 7, tag: 0 }
+            mut b = a
+            close(b)            -> 1
+            close(a)            -> 0, and a.raw is 0
+
+        Nulling through `b` nulls `a`. @std/sqlite's `close(mut db)`
+        nulls the handle it closed, and that is what closes the
+        double-close — so the day `mut` bindings COPY properly,
+        `close(b)` nulls b's handle only, `a.raw` still holds the
+        pointer `sqlite3_close_v2` already freed, and `close(a)` is a
+        DOUBLE FREE in a std package. The driver's own test uses one
+        binding and passes on both sides of the fix, so nothing
+        fails and nobody is warned. Found by the SQLITE campaign
+        BEFORE it fired, which is the first of the day's class caught
+        ahead of time rather than after.
+        THE LAW, general: A CORRECTNESS FIX THAT CHANGES AN ALIASING
+        PROPERTY MUST AUDIT ITS DEPENDENTS, because code that was
+        safe BY the bug becomes unsafe by the fix, and its tests keep
+        passing — they were written against the behaviour, not the
+        law. S2 is not green until that search is done and its
+        findings are named.
+        AND EVIDENCE THE SEAT LAW ALREADY PAYS: the unsafe shape is
+        this narrow only because `close(db)` on a `let` is F2048, so
+        a closable handle cannot be held in an immutable place. That
+        arrived today from unrelated work and made a driver safe by a
+        route nobody planned.
   - [ ] S2 NEEDS THE OWNER, and the questions are named so the slice
         does not start in the wrong shape. (a) SPEC 11.4 vs 11.5:
         11.4 says v1.0 app-level aliasing is SHARED ("closures can
