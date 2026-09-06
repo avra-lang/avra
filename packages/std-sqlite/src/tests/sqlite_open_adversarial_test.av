@@ -52,16 +52,9 @@ fn mode_at(i: int) -> Mode {
 }
 fn bit(n: int, b: int) -> bool { (n / b) % 2 == 1 }
 fn words() -> List<int> { [flags_of(conf(n)) for n in 0..48] }
-fn set_in(word: int, b: int) -> bool { (word / b) % 2 == 1 }
-fn carrying(word: int) -> int {
-    mut n = word
-    mut c = 0
-    while n > 0 {
-        c = c + n % 2
-        n = n / 2
-    }
-    c
-}
+fn set_in(word: int, b: int) -> bool { (word & b) != 0 }
+/// Every bit `sqlite3.h:603-624` marks "Ok for sqlite3_open_v2()".
+fn known() -> int { 1 | 2 | 4 | 64 | 32768 | 65536 | 131072 | 262144 | 16777216 | 33554432 }
 
 spec "std/sqlite open adversarial" {
 
@@ -150,12 +143,14 @@ spec "std/sqlite open adversarial" {
         then "every word carries EXRESCODE" { [w for w in words() if !set_in(w, 33554432)].length == 0 }
         then "none carries both cache bits" { [w for w in words() if set_in(w, 131072) && set_in(w, 262144)].length == 0 }
         then "none carries both mutex bits" { [w for w in words() if set_in(w, 32768) && set_in(w, 65536)].length == 0 }
-        // `flags_of` SUMS its contributors, and a sum equals a bitwise
-        // OR only while every contributor is a distinct bit. A shared
-        // bit would CARRY into a neighbour and set a flag nobody asked
-        // for, so the bit count is the witness that none does.
-        then "the default carries exactly five bits" { carrying(flags_of(config_at("/tmp/a.db"))) == 5 }
-        then "no word carries fewer than four" { [w for w in words() if carrying(w) < 4].length == 0 }
-        then "no word carries more than seven" { [w for w in words() if carrying(w) > 7].length == 0 }
+        // A stray bit is what a mistyped constant looks like, and it
+        // would set a flag the header reserves for `sqlite3_open_v2`'s
+        // VFS argument rather than this word.
+        then "no word carries a bit the header does not name" { [w for w in words() if (w & ~known()) != 0].length == 0 }
+        // The two words open.av records as measured against the
+        // library. A number in a doc comment is a claim; here it is a
+        // check that fails when a contributor moves.
+        then "the default joins READWRITE, CREATE, PRIVATECACHE, FULLMUTEX and EXRESCODE" { flags_of(config_at("/tmp/a.db")) == 33882118 }
+        then "read-only swaps those two write bits for one, and touches nothing else" { flags_of(config_at("/tmp/a.db") with { mode: Mode.ReadOnly }) == 33882113 }
     }
 }
