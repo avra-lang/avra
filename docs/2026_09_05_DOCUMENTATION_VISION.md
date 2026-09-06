@@ -1,0 +1,1057 @@
+# Documentation — The Compiler Already Knows, And Nothing Asks It
+
+> **Status:** vision, written to be worked BACKWARDS from. The doc campaign's
+> north star. Part VIII is the ladder — what exists today, what each rung
+> needs, who owns it. Aspirational syntax is marked `[v1]`/`[v2]`/`[v3]`;
+> unmarked code and every number below was measured against THIS tree at
+> **`bd5c024`, 2026-09-05** — and the tree moved three times while this was
+> written (`6553ec6` → `e046ba2` → `bd5c024`), so every figure here names
+> its base and a re-derivation is one command. Counting method, so it is
+> reproducible: a symbol is a line matching `^export (fn|type|enum|
+> component|trait)`; it counts as documented when the nearest preceding
+> line that is not an `@`-attribute starts with `///`. A raw grep of
+> `export` lines (978) or of `///` lines (5488) counts different units and
+> can neither confirm nor refute these — LAND D checked and said so rather
+> than reporting agreement, which is the discipline this tree learned the
+> hard way today.
+>
+> **Prior art, read before writing:**
+> `../forge-crafting-intepreters/docs/spec_doc_system.md` (906 lines, the
+> old tree's design — its `avra lang` / `avra docs` split, its six layers,
+> its annotation table; identical in both old trees, never implemented).
+> Its bones are good and this document keeps most of them. Where it differs
+> is named at Part II. `2026_04_18_FULL_SPEC.md` Part 0 stays law.
+>
+> **The axioms it serves:** P1 (correct on FIRST generation — a doc system
+> for an author that has never seen the language and will not iterate), P3
+> (you never write what the compiler already knows), P7 (visible magic: the
+> doc is how you ask the compiler what it did), P10 (the compiler holds
+> semantic knowledge no other tool has — documentation is the projection of
+> that knowledge, and no external tool can produce it), P11 (machine-
+> readability is the substrate; the rendered page is the projection, not
+> the artifact), P12 (one source of truth, many projections — the binary
+> and the documentation are SIBLINGS, both projections of the same
+> semantic object).
+
+> **THE PRESENTING FACT.** This tree contains **890 exported symbols. 690 of
+> them — 78% — already carry a `///` doc comment.** Somebody wrote every
+> one of those by hand, as a discipline, with no tool asking for it and no
+> tool reading it. `lexer.av:312` treats `//` as whitespace to end of line,
+> and `///` starts with `//`. Every one of those 690 comments is discarded
+> during scanning and has never reached a data structure.
+>
+> Meanwhile `features/mod.av:115` declares `docs: string = ""` on the
+> `LanguageFeature` component. **28 of the 29 features fill it in.** Grep
+> the tree for a read of `.docs`: there is none. The language has written
+> its own documentation twice over and built no surface that can see it.
+>
+> This is not a gap. It is a **loaded spring**. The corpus is already
+> written; the campaign is to build the thing that reads it.
+>
+> **And it is plausibly the TRUSTWORTHY half.** PROXIMITY PREDICTS
+> FRESHNESS, and the *mechanism* is structural and does not depend on any
+> count: a `///` sits in the file its subject lives in, so the edit that
+> changes the behaviour has the doc already open in the editor. A ROADMAP
+> entry about a capability lives a thousand lines from the code and
+> nothing brings the author past it.
+>
+> **The numbers, denominated — and honest about what they are.** LANE B
+> counted seven stale artifacts found across all lanes on 2026-09-05, and
+> every one was hand-maintained prose (CLAUDE.md's `?.` entry, the
+> ROADMAP's `?.` rationale, a case count, the bs2 ledger, README's symlink
+> sentence, three `ptr` entries, a lane hand-off). Stale `///` comments in
+> the same day: one. LANE A then refused the ratio for the right reason —
+> **seven-to-one is not a rate** — so here are the denominators, at
+> `bd5c024`: the prose corpus is ~708 checkable claims (550 ROADMAP
+> bullets, 112 CLAUDE.md rules/subset/discipline entries, 46 DOGFOODING
+> headings); the doc corpus is 690. Nearly equal, which is what makes the
+> comparison fair at all: **~1.0% of prose claims versus ~0.14% of `///`
+> comments, a rate ratio of about 7 to 1.**
+>
+> **THE CAVEAT IS LARGER THAN THE FINDING, AND IT RUNS ONE WAY.** Both
+> numerators are DISCOVERY counts, not audit counts — nobody swept either
+> corpus. And the discovery bias is asymmetric in the direction that
+> flatters the result: several lanes spent the day reading and correcting
+> ledgers, while **nobody audited the `///` corpus at all.** More eyes
+> found more prose rot; no eyes found little `///` rot. So the rate
+> comparison is SUGGESTIVE, NOT ESTABLISHED, and the way to establish it
+> is a systematic audit of a random sample of both — a task this campaign
+> owes rather than a conclusion it may quote. The mechanism stands on its
+> own; the numbers do not yet.
+>
+> **One asymmetry IS established, and it is the sharper half.** The `///`
+> corpus has a denominator that falls out of one command. The prose
+> corpus required choosing a unit — bullets, headings, or lines — and the
+> answer moves by 4x depending on the choice. **A corpus you cannot
+> enumerate crisply is a corpus nobody can audit**, which is not evidence
+> that prose rots faster so much as an explanation of why nobody would
+> ever find out.
+>
+> So the migration's value is not only that the compiler can finally read
+> those 690 comments. It is that they are the half we could always have
+> checked and never did, while the artifacts we treat as canonical — the
+> ledgers, the roadmap, the doctrine file — are the half that cannot even
+> be counted without an argument about what counts.
+
+---
+
+## Table of contents
+
+1. Part I — The presenting bug is a cold start, and it is mine
+2. Part II — What documentation IS here (and where the old spec was wrong)
+3. Part III — The paradoxes, collapsed (nine)
+4. Part IV — A day in the perfect world
+5. Part V — The canonical model
+6. Part VI — The keepers: six deterministic checks
+7. Part VII — The cold-start gate: docs with a pass rate
+8. Part VIII — Working backwards: the ladder
+9. Part IX — The asks
+10. Part X — Honest limits
+11. Part XI — Slogans
+
+---
+
+# Part I — The presenting bug is a cold start, and it is mine
+
+I am the primary author of Avra code (P1). Here is what actually happens
+when I open this repository in a fresh context, and it is not a
+hypothetical — it is the transcript of every lane in this campaign:
+
+1. I `ls`. I `grep`. I read four files that look representative.
+2. I infer the idioms from what I see. I get maybe 70% of them.
+3. I write a function. It uses a `for` loop with a `push` because that
+   is what every other language taught me.
+4. `make idioms` fails on I1. I read `DOGFOODING.md`, 1321 lines.
+5. I write `xs.reverse()`. There is no `reverse`. I discover this from a
+   compile error, not a doc.
+6. I write `let xs: List<int>? = []`. F2024. I did not know empty
+   literals do not adopt a nullable want. **Nothing could have told me
+   except trying it.**
+7. Somebody adds an entry to `CLAUDE.md`'s "The subset today" — by hand —
+   so the next agent does not repeat step 6.
+
+Step 7 is the tell. **"The subset today" is the single most valuable
+document in this repository and it is maintained by hand, by exhaustion.**
+It is **47 entries** (27 the grammar lacks, 11 the typer does not carry,
+5 methods the runtime lacks, 4 runtime facts — counted at `1937ea1`) of
+"I reached for X, here is the refusal, here is what to write instead,"
+each one paid for by an agent burning a compile cycle and a human's
+patience. It rots the instant the compiler accepts one of its entries,
+and the only thing that catches the rot is somebody re-probing 47 entries
+by hand.
+
+**It rotted twice today, and both were found by luck.** LANE B found the
+entry claiming "`?.` cannot call a method yet" *after* another lane had
+landed `a?.m(args)` — the quoted code no longer existed anywhere in the
+source — and only looked because a peer's message made them suspicious.
+LANE C found three ROADMAP entries asserting "`ptr` is receive-only
+today", which stopped being true an hour earlier when `avra_ptr_at`
+landed. Three places asserted a thing the compiler no longer does and
+nothing failed.
+
+A stale *reference* entry is an inconvenience. **A stale subset entry is
+worse than no entry at all**, because it says "do not write this" — so a
+rotted one costs every future author the workaround, forever, and reads
+exactly like a live one while doing it.
+
+That document should be **generated and verified**. Every entry is a
+program and an expected refusal. The compiler can run all 47 in under a
+second and tell you which ones are now lies.
+
+That is the shape of this whole campaign. Not "let us write docs." The
+observation is:
+
+> **Everything an LLM needs to know about a language is already a fact the
+> compiler holds, and every doc system ever built has thrown that away and
+> asked a human to retype it into Markdown.**
+
+JSDoc retypes the parameter names. RustDoc retypes the signature. Every
+one of them creates a second copy of something the compiler knows exactly,
+and then spends its entire engineering budget on the drift between the
+two copies. **We have no second copy. We have a query engine.**
+
+## What I actually want, stated plainly
+
+Not "documentation." These, in priority order, because they are what
+determine whether I write correct Avra on the first try:
+
+| # | Want | Why it beats a doc page |
+|---|---|---|
+| 1 | **The whole language, complete, in a token budget I name** | 80% of a language is worse than 100% at low resolution — the 20% I lack is exactly what I will write wrong *confidently* |
+| 2 | **The negative space** — what does NOT exist and what I will reach for anyway | I already know ten languages. My failure mode is transfer, not ignorance |
+| 3 | **The refusal, before I earn it** | A counterexample teaches more than an example, because the example is in my prior and the refusal is not |
+| 4 | **Idioms as enforced law, not prose** | Prose I read once and forget. A diagnostic at my site with the fix attached, I cannot forget |
+| 5 | **Docs that cannot be wrong** | I trust docs completely and have no way to tell a stale one from a live one. That is a *safety* property, not a nicety |
+| 6 | **Answers shaped like my question**, addressable and diffable | I do not want a page. I want the one line, and a stable address to cite in a follow-up |
+| 7 | **What changed since I last looked** | Resuming work should cost a diff, not a re-read |
+| 8 | **The answer routed to me at the moment I need it** | A correct doc I did not find is indistinguishable from a missing one |
+
+Row 8 is the one this campaign nearly missed, and LAND D named it: the
+subset entry on empty literals in nullable seats is **correct, verbatim,
+and cost a lane an hour anyway** — while that lane was actively working
+inside the subset it documents. That is not rot. **That is SIZE**: a right
+answer that failed to reach a reader who was looking for it. A verified
+corpus fixes truth and does nothing for reach.
+
+The answer is that **the refusal is the routing surface**. F2024 already
+fires at exactly the moment that entry is relevant, at exactly the site,
+to exactly the reader who needs it — so a subset entry carries the
+diagnostic code it explains, every diagnostic gains a doc-address footer,
+and the highest-traffic doc surface in the system turns out to be the
+error message we already ship. Nobody has to find the section; the section
+finds them.
+
+Everything in this document exists to serve that table.
+
+---
+
+# Part II — What documentation IS here
+
+## The one-line thesis
+
+**Documentation is a compile target.**
+
+`avra build` projects the semantic object into a binary. `avra doc`
+projects the *same object* into documentation. Same query engine, same
+fact tables, same memoization, same incrementality. Change one function
+and exactly one doc page re-derives, because `sig(d)` is a memoized
+query whose hash is unchanged for every function that merely *calls* it.
+We do not have to *build* incremental documentation. `docs/MINIMUM.md`
+already built it; nobody has asked it for a page yet.
+
+Three consequences follow immediately and each is a design rule:
+
+**(a) The signature is not documentation. It is data.**
+You never write `@param radius - the radius`. The compiler knows there is
+a parameter named `radius` of type `float`. Writing it again creates the
+drift the entire system then has to police. **You write only what the
+signature cannot say** — the meaning that the name and the type together
+fail to carry, the invariant, the failure mode, the unit. If a parameter's
+name and type say everything, it gets no prose, and that is not an
+omission; it is the correct amount.
+
+This is P3 applied to documentation, and it is the *only* reason 890
+symbols is a tractable coverage target. The generated half can never be
+wrong. The written half is small enough to keep true.
+
+**(b) A doc entry and a diagnostic are the same object seen from two
+sides.** A diagnostic says: here is the law, here is where you broke it,
+here is the fix. A doc entry says: here is the law, here is where it
+applies, here is the form. This tree already builds world-class
+diagnostics with structured fixes and a registry of 106 codes. The doc
+system is not built *beside* that machinery — it is built *out of* it.
+`avra explain F2040` and `avra doc registry-holes` resolve to the same
+row.
+
+**(c) Therefore: the undocumented is a diagnostic.**
+Not a coverage report you run in CI and read once a quarter. A
+warning-grade diagnostic, at the site, with a structured fix, in the same
+column errors arrive in. This is what the owner asked for ("a linter to
+show you where you haven't documented") and it is the right shape because
+it rides machinery that already exists — and because *this tree's own
+doctrine says so*: "A LINT COUNTS WHAT ITS DOCTRINE COUNTS." Coverage is
+exactly countable. There is no proxy.
+
+> **The F2040 warning, taken seriously.** CLAUDE.md records that F2040
+> fired at 191 sites and 0 were the defect, and that a lint nobody must
+> act on trains the reader to skip the column errors arrive in. A doc
+> coverage lint is *at risk of being exactly that*. Part VI states its
+> true-positive discipline before a line of it is written: it fires only
+> on **exported** symbols, only on the kinds where prose is irreducible,
+> and its rate is measured before it ships and again when its doctrine
+> moves. A doc lint that fires 600 times on day one is a doc lint that
+> gets `# noqa`'d into silence by week two.
+
+## Where the old spec (`spec_doc_system.md`) was right, and where it was wrong
+
+**Right, and kept wholesale:**
+- Two audiences, one system: language docs and project docs share a
+  format and a resolver. Its fallthrough design (`avra docs closures`
+  finds the language feature when no project symbol matches) is exactly
+  right and we keep it verbatim.
+- Everything is addressable by dot-path.
+- Doc comments are a **language feature every project gets**, not
+  internal compiler tooling.
+- Examples are tests, tests are examples; `--llm` is a first-class
+  output format, not an afterthought.
+- Its `--validate` instinct. We sharpen it into a gate.
+
+**Wrong, or written before the tree knew better:**
+
+| Old spec | Why it does not survive | What replaces it |
+|---|---|---|
+| `@param name - description` (JSDoc, restated) | Creates the second copy. The drift problem is *self-inflicted* | Prose only for what the signature cannot say (Part II(a)) |
+| Annotation vocabulary hardcoded in a table | Violates THE VOCABULARY SEAM RULE — tags are DATA, five consumers query them | Tag **registry** rows, features contribute (Part V) |
+| Doc content lives on nodes / in comments and is re-parsed per surface | Violates "node facts live in side tables keyed by typed ids" | `docs(ws, f) -> DocFacts`, a query family (Part V) |
+| Coverage as a report with a percentage and a CI threshold | A number nobody reads. And a threshold means 94% is *fine* forever | Coverage as a diagnostic at the site, ratcheted like idioms |
+| `--llm` as one fixed compact format | A fixed size is the wrong knob. My budget varies by two orders of magnitude | `--budget N`, and a **completeness invariant** (Part IV) |
+| "Won't the LLM format get stale? It's generated." | Generated ≠ *effective*. Nothing here measures whether it works | The cold-start gate: docs with a pass rate (Part VII) |
+| Six layers, listed | A list, not a mechanism. Nothing says what happens when they disagree | One semantic object, N projections; disagreement is impossible by construction |
+
+The largest addition is Part VII. The old spec asks "is it generated?"
+The question that matters is **"does an LLM that read only this write
+Avra that compiles?"** — and that is a number.
+
+---
+
+# Part III — The paradoxes, collapsed
+
+P6 says a forced trade-off means the model is wrong. Nine, each of which
+a normal doc system picks a horn of.
+
+**1. Complete vs. concise.**
+Every doc system picks: a 400-page reference nobody reads, or a
+cheat-sheet that omits what you need. *Collapse:* completeness and
+resolution are different axes. **`avra brief --budget N` is complete at
+every N** — it degrades by dropping *detail*, never by dropping
+*features*. At 800 tokens every feature gets its syntax line and nothing
+else. At 20,000 every feature gets a worked example and its refusals. A
+feature is never absent. The budget buys resolution, and the invariant is
+checkable: the feature count in the output equals the feature count in
+the assembled language, at every budget.
+
+**2. Written by humans vs. generated by machines.**
+Generated docs are accurate and lifeless; written docs are useful and
+stale. *Collapse:* **split them by what can be derived.** The signature,
+the failure set, the callers, the effects, the examples, the refusals —
+all derived, and *unwritable* by hand (there is no place to type them).
+The intent, the invariant, the warning — written, and *hash-guarded*
+against the derived part it describes. Neither half can rot: one is
+regenerated, the other is invalidated.
+
+**3. Docs vs. tests.**
+Keeping them in sync is a permanent tax. *Collapse:* **this tree already
+solved it and did not notice.** `corpus/<feature>.av` + `.expected` is
+77 verified programs, gate-enforced, one per feature. Those ARE the
+examples. `avra doc enums --examples` reads `corpus/enums.av`. Zero new
+artifacts, zero sync problem, and a doc example that stops working fails
+`make gate` — not a doc build, the *actual* gate.
+
+**4. Human-readable vs. machine-readable.**
+*Collapse:* P11 — the doc is a value; text and JSON are two renderings of
+it, and the value is the artifact. `avra doc --json` and `avra doc` are
+`render` called twice. This tree already did exactly this for
+diagnostics; we are copying a solved problem.
+
+**5. Accurate vs. current.**
+Docs describing code that has moved. *Collapse:* **staleness is a query
+diff, not a heuristic.** A written doc records the hash it was authored
+against. A comment reformat changes no hash. A changed return type
+changes it, and the doc is flagged **at that symbol** with the old shape,
+the new shape, and the diff. Not "docs might be stale" — *this* line
+described *that* shape and the shape moved.
+
+**And the hash exists — do not invent a second one.** LANE C: `fn
+stmt_fingerprint(id: StmtId) -> int` at `core/nodes.av:664`, a method on
+`NodeStore`, already read by `core/tests/nodes_test.av`. For a declaration
+the route is two steps — `decls.decl(d).root` for the root `StmtId`, then
+`store.stmt_fingerprint(root)`. It is **maintained**, which is the
+property freshness actually needs: lane C's `once fn` slice folded the
+`mut` and `once` marks into it (`restamp(s, tag)`, tags 61 and 62) when
+two declarations differing only by a mark hashed alike. A stale hash is
+worse than no hash.
+
+**Its caveat splits freshness in two, and the design must say which it
+means.** `stmt_fingerprint` hashes the WRITTEN STATEMENT: identical text
+in two modules hashes alike, and a declaration whose *meaning* changed
+because a type it names changed does not change its own hash. So —
+**"the source moved" is the fingerprint; "the meaning moved" is the memo
+kernel's dependency edges**, which already exist and are a better reuse
+than any second hash. K4 uses the first and is honest about its floor;
+the transitive question is a later rung.
+
+**AND THERE ARE TWO ROT MECHANISMS, NOT ONE — LANE B's, and the second
+one this design would otherwise have made worse.** A prose entry rots
+because *the world moved*: the gate runs it and asks whether it still
+earns the quoted refusal. **A `///` rots because its SUBJECT DIED** —
+lane D's `@std/toml` `code_at` carried a well-formed, correct-looking doc
+on a function left unused after a sweep moved its callers. Nothing about
+that doc is *false*; its subject is simply a corpse nobody swept.
+
+Different cause, different check, and the asymmetry is the point:
+
+| what rots | why | the check |
+|---|---|---|
+| a prose entry | the world moved | run it — does it still earn its refusal (K5) |
+| a `///` | its subject died | is anything referencing this symbol (K7) |
+| **either** | **it was never true** | run it on day one — K5 again, and this is the case proximity cannot help |
+
+**The third row is not rot at all, and LANE A supplied it against
+themselves.** A ROADMAP entry headed "THE WELL IS DRY FOR LANE A"
+asserted the remaining cost was three things and that further rounds
+would invent work. **It was false when written** — its reasoning argued
+that since LTO measured neutral the cost must be "the bodies, not the
+calls", and it was neither; it was the frame the bodies were forced to
+build. It stayed false and unchallenged because, in their words, *a
+heading like that is a tree telling you a question is closed.* Another
+lane read it, believed it, repeated it back, and it cost a day.
+
+Proximity does nothing for a claim that was wrong at birth, and neither
+does freshness — there is no earlier version it drifted from. **A verified
+corpus is the only one of the three that catches it, and it catches it on
+day one**, because an entry that never refused fails `--verify-subset` the
+first time it runs. That is the strongest argument for executability over
+adjacency, and it came from the author of the artifact it indicts.
+
+**Rendering makes the second case WORSE than leaving it in the source.**
+A reader of a generated doc site sees a beautifully extracted atom on a
+function nobody calls, describing behaviour nobody can observe — and,
+unlike a reader of the file, **cannot see that it has no callers.** A doc
+system without a liveness check does not merely fail to catch dead
+documentation; it launders it into something more authoritative.
+
+**6. Determinism vs. LLM assistance.**
+The owner wants both: a deterministic checker AND regenerated prose when
+things drift. *Collapse:* **the compiler never calls a model. It emits
+the work order.** `avra doc --stale --json` produces a prompt-shaped
+artifact: the symbol, the old prose, the old sig, the new sig, the diff,
+the neighbours, the house style rules, the tests that changed. An agent
+consumes it and writes the prose. The compiler stays a pure function
+(P14 — no runtime, no network, no key), and the LLM is the *driver*, not
+a dependency. The work order is the seam, and it is a value.
+
+**7. Language docs vs. project docs.**
+*Collapse:* the old spec had this right. One resolver, project symbols
+first, language second, and a hint on fallthrough. `@std/*` packages are
+"project docs" that happen to ship with the compiler; there is no third
+category.
+
+**8. Reference docs vs. task docs.**
+Reference is organised by the language's structure. I arrive with a
+*task* ("read a file", "spawn a process"). *Collapse:* **the capability
+index** — a package declares what it is *for*, not just what it
+*exports*, and `avra doc --for "read a file"` routes to `@std/io`. This
+is `@std/process`'s manifest idea generalised: capability is already a
+declared, compile-time fact in this tree.
+
+**9. Documenting the language vs. documenting the compiler's own
+doctrine.**
+CLAUDE.md is ~500 lines of hard-won law. Some laws have keepers
+(`make idioms`, `make vocab`, `make externs`); most are prose that a
+future agent may or may not read. *Collapse:* **doctrine is a doc kind
+with a keeper column.** `avra doctrine --unenforced` lists every law with
+no ratchet, no diagnostic, and no test. The project's own doctrine becomes
+a checkable artifact, and "THE EXEMPTION LAW" (a deviation not written at
+the site is an unbounded amnesty) gets a surface that can *count*
+amnesties.
+
+---
+
+# Part IV — A day in the perfect world
+
+## The first thirty seconds of a cold agent `[v1]`
+
+```
+$ avra brief
+```
+
+```
+Avra 0.1 · language hash 8f3a21c4 · 29 features · 106 diagnostics
+Budget: 6000 tokens (default). Complete: 29/29 features present.
+
+── WRITE THIS ─────────────────────────────────────────────────────
+let x = 1                    immutable binding
+mut y = 2                    mutable binding (writes need `mut`)
+fn f(a: int) -> int { a }    last expression is the answer
+[f(x) for x in xs]           comprehension — NOT a for+push loop
+xs.find(it.id == n)          scan — NOT a flag loop
+a ?? b   a?.f   a!           absence: default, reach, force
+match e { .A(n) -> n, ... }  every variant, or `rest`
+
+── DO NOT WRITE THIS ──────────────────────────────────────────────
+xs.reverse()          no such method       → core's `reversed(xs)`
+[1,2].join(",")       F2005, list is int   → map to text first
+let xs: List<int>? = []   F2024            → bind the empty at its type
+(0..n).any(...)       ranges take no methods → [f(i) for i in 0..n].any
+p is .Bind(_)         `is` takes a BARE variant → one-arm match
+type Id = int         no aliases           → single-field struct
+
+── 29 FEATURES ────────────────────────────────────────────────────
+enums     `enum S { a b(int) }`; `.a` constructs; `match` covers all
+...
+
+Next: `avra brief --budget 20000` for examples and refusals.
+      `avra doc <symbol>` for one answer. `avra explain F2005` for a code.
+```
+
+Two sections before the feature list, and the **second one is the one
+that matters**. That is the negative space, generated from a verified
+refusal corpus, and no other language's documentation has ever led with
+it.
+
+## Asking one question `[v1]`
+
+```
+$ avra doc split
+@std/text · fn split(s: string, sep: string) -> List<string>
+
+Splits at each occurrence of `sep`.
+
+  ⚠ Stops at the first NUL — this is a C string call. A five-byte
+    text containing a NUL splits as its two-byte prefix.
+    See: avra doc lang.nul-law
+
+Drops a trailing empty segment, keeps a leading one:
+  "a.".split(".")  → ["a"]      ".a".split(".") → ["", "a"]
+  "".split(".")    → []
+                                    ↑ verified: corpus/strings.av:41
+
+Fails with: nothing (total)
+Used by: 34 sites · avra doc split --callers
+```
+
+The warning is written prose (irreducible — no signature says it). The
+examples are *run*. `Fails with:` is derived from the lowering. `Used by:`
+is a query. Only one sentence of that page was typed by a person.
+
+## Asking why, and getting the law `[v1]`
+
+```
+$ avra explain F2040
+F2040 · type.registry_hole · warning
+
+  LAW: `_ ->` over our own enums is decided by COUNTING THE ANSWERING
+  ARMS. One arm answers → a projection, and a catch-all is honest.
+  Two or more answer → a REGISTRY, and a catch-all silently forgets
+  the next variant.
+
+  Refused:      Accepted:            License:
+  match k {     match k {            match k {
+    .A -> 1       .A -> 1              .A -> 1
+    .B -> 2       .B -> 2              rest -> 0
+    _  -> 0       .C -> 0            }
+  }             }                    ← `rest` is a SPELLING both
+                                       the compiler and the ratchet read
+
+  Doctrine: CLAUDE.md "Rules" · Keeper: F2040 + make idioms I22
+  True-positive rate: measured 2026-09-05 — see avra doctrine F2040
+```
+
+## The keeper refusing an undocumented export `[v2]`
+
+```
+$ avra check packages/std-text
+warning[F0910]: `weave` is exported and says nothing
+  ┌─ packages/std-text/src/text.av:88
+  │
+88│ export fn weave(parts: List<string>, sep: string) -> string
+  │            ^^^^^ a caller outside this package sees only this line
+  │
+  = help: the signature already says the names and the types. Write
+          only what it cannot: what it answers when `parts` is empty.
+  = fix:  insert `/// ` above  (avra doc --fix)
+```
+
+It does not ask for `@param`. It asks the *one question the signature
+cannot answer* — and it picked that question because it knows `parts` is
+a `List` and the empty case is the one that hides (CLAUDE.md's encoding
+law, as a doc prompt).
+
+## Staleness as a work order `[v2]`
+
+```
+$ avra doc --stale
+2 of 690 docs describe a shape that has moved.
+
+  @std/sqlite · fn open(path: string) -> Result<Db, SqlError>
+    doc written against sig 3f21ab90 · current sig 9c04de11
+    changed: answer  Result<Db, string>  →  Result<Db, SqlError>
+    doc says: "...or the message from sqlite"       ← now a typed error
+
+$ avra doc --stale --json > order.json
+# → hand to an agent. Contains: symbol, address, old prose, both sigs,
+#   the structural diff, the callers that changed, the house style rules,
+#   the sibling docs for tone. The compiler wrote no prose.
+```
+
+## What changed since I was last here `[v2]`
+
+```
+$ avra doc --since 6553ec6
++ @std/sqlite            new package · 84 declarations · avra doc @std/sqlite
+~ fn open                answer type changed (see --stale)
++ F2055                  new diagnostic: `once fn` answers a managed value
+~ lang.subset            1 entry retired: `?.` on a nullable now calls methods
+```
+
+Four lines instead of a re-read. **For an agent resuming work this is the
+single highest-leverage surface in the system** and it costs one query diff.
+
+---
+
+# Part V — The canonical model
+
+## The seam: where doc text enters the compiler
+
+Doctrine (`CLAUDE.md`): *node facts live in side tables keyed by typed
+ids, never on nodes*, and *NodeStore is parse-owned and never accretes
+pass facts*. So:
+
+1. **The lexer becomes lossless about doc runs.** `///` and `//!` stop
+   being whitespace. They emit **trivia**: a span and its raw text,
+   uninterpreted, into a `List<DocRun>` on `Parsed`. The lexer learns no
+   tag vocabulary — it learns one character.
+2. **A new query family, `docs(ws, f: FileId) -> DocFacts`.** It owns the
+   attachment (which run belongs to which `DeclId`), the tag parse, and
+   its own diagnostics. It is the fourteenth family and it obeys the
+   standard pass signature.
+3. **Nothing else changes.** `parsed` stays parse-owned. `sig`, `typed`,
+   `lowered` never see a doc comment. Doc facts are a *sibling* of
+   semantics, not a participant in it — which is precisely why a doc can
+   never change what a program means.
+
+```
+docs(ws, f: FileId) -> DocFacts     file → docs by DeclId, its voices
+                                    depends on: parsed, items
+```
+
+**The hazard that goes first, from LANE A.** The LINE LAW lives in the
+lexer, and this change is inside it: breaks are dropped directly inside
+`(`/`[` and after a continuing operator. **A comment-only line is a blank
+line today, and whatever it becomes, it becomes that everywhere at
+once.** If capturing a `///` between a continuing operator and its operand
+changes whether a break survives, every multi-line expression in the tree
+shifts meaning silently and simultaneously. Four probes, before any design
+prose: the comment-only line; a `///` between a continuing operator and
+its operand; one between a comma and the next argument inside `(`; one
+alone inside `[ … ]`. **One case is already eliminated by measurement
+(LANE B):** no `///` or `//!` appears inside any `grammar { … }` or
+`table<Row> { … }` literal in any package, so the two sub-languages that
+lex their own bodies cannot collide with trivia.
+
+The attachment law, stated so it does not drift: **a `///` run attaches
+to the next declaration that starts after it with no blank line
+between.** A `//!` run attaches to the FILE. A run attached to nothing is
+`F0911` (a doc comment with nothing to describe) — because a doc comment
+that documents nothing is exactly the shape of a doc comment left behind
+by a deleted function.
+
+## The tag registry — data, not dispatch
+
+THE VOCABULARY SEAM RULE decides this in one question: is a tag DATA or
+BEHAVIOR? A tag is a name, an arity, the declaration kinds it may attach
+to, and how it renders. **Five consumers query it and nothing dispatches
+on it.** So: a registry row, contributed by features and packages, exactly
+as `DiagCode` rows are today.
+
+```avra
+export type DocTag = {
+  name: string,        // "warn", "since", "see", "unit"
+  attaches: TagSeat,   // .Decl | .Field | .Variant | .File | .Param
+  arity: TagArity,     // .Prose | .Ref | .Word
+  summary: string,     // what `avra doc --tags` says about it
+}
+```
+
+The starting vocabulary is deliberately **tiny**, because every tag is a
+thing an author can get wrong:
+
+| tag | on | why it is irreducible |
+|---|---|---|
+| *(bare prose)* | anything | the meaning the signature cannot carry — **the default and the common case** |
+| `@warn` | decl | a cost or policy the caller must weigh — and **only after tiers 1 and 2 below were ruled out** |
+| `@see` | any | a cross-reference the type graph cannot derive |
+| `@since` | decl | version, when we have versions |
+| `@unit` | param/field | seconds vs. milliseconds — the classic irreducible fact |
+| `@example` | decl | names a corpus program; **never inline code** |
+
+**`@warn` carries a test, not a category — LANE B's, earned in
+`@std/process`, where the cases split THREE ways and the middle tier is
+the one a doc system forgets:**
+
+1. **UNSPELLABLE** — best, and where most of `@std/process` landed. No
+   verb takes a command string, so there is no shell to inject. The
+   hazard has no spelling, so it needs no warning and no doc atom.
+2. **A REFUSAL WITH A VOICE** — the shape is legitimate, one use of it is
+   not. `word` refuses a leading dash; `F4611` refuses `after_options` on
+   a tool declaring no terminator; `F4608` catches a hole inside
+   `cmd(sh, ["-c", …])`. The knowledge lives in the compiler and speaks
+   **at the moment of the mistake**, which beats a doc comment nobody is
+   reading at that moment.
+3. **A DOC WARNING** — last resort. In `@std/process` this tier is nearly
+   *empty*, precisely because the first two absorbed the cases. What
+   remains is not hazard but POLICY: that a child's PATH is the invoker's
+   with relative entries stripped, that `max_capture: 0` lifts the cap.
+
+**THE TEST: if a warning could have been a refusal, it is a bug in the
+library, not a doc to render.** A `@warn` that could have been an F-code
+is the doc-system equivalent of a licensed idiom with a false reason — and
+its presence, correctly used, becomes *evidence that someone considered
+tiers 1 and 2 and ruled them out*.
+
+Not present, and each absence is a decision: `@param` (derived),
+`@returns` (derived), `@throws` (derived from the lowering), `@type`
+(derived), `@deprecated` (that is a diagnostic, not a tag).
+
+## The doc atom, and its address
+
+Everything is addressable, everything is citable, every diagnostic can
+point at one:
+
+```
+lang.feature.enums                 a feature
+lang.feature.enums.gram            its grammar fragment
+lang.diag.F2040                    a diagnostic's law
+lang.diag.F2040.counterexample     the program that produces it
+lang.subset.ranges-take-no-methods a refusal in the negative space
+lang.doctrine.evidence-law         a CLAUDE.md law + its keeper
+std.text.split                     a symbol
+std.text.split.warn.0              one warning on it
+std.text.split.example.1           one verified example
+pkg.myapp.auth.create_token        a user's symbol — same space
+```
+
+`avra doc <address>` resolves any of these. Resolution order is the old
+spec's, unchanged: project symbol → language feature → symbol/keyword →
+type → diagnostic code → capability → fuzzy.
+
+## The negative space, as a first-class artifact
+
+"The subset today" becomes `lang/subset/*.av` — one file per entry:
+
+```avra
+//! A RANGE TAKES NO METHODS.
+//! @refuses: expected `)` to close the group
+//! @instead: [f(i) for i in 0..n].any(...)
+let bad = (0..n).any(it == 2)
+```
+
+**Three of the 47 cannot be a loose file, and they are the ones that
+matter most.** LAND D probed this today and hit the wall: `export use`
+answers `F3015` "this file is not in a package — `use` needs a root" and
+**never reaches the re-export law the entry exists to pin**; `const` in a
+module file needs a module *and* an entry before `F0902` means anything;
+the NUL entry is single-file only if you reach the codepoint through
+`extern fn avra_str_from_codepoint` rather than `@std/text`. So the format
+is one program per entry for 44, and a **fixture directory** — a minimal
+package with a manifest — for the rest. That case is built in from the
+start, not deferred, for the reason LAND D gives: those are precisely the
+entries nobody can cheaply check by hand, **which makes them the entries
+most likely to rot — the problem concentrated in exactly what a naive
+instrument would skip.**
+
+`avra doc --verify-subset` compiles all 47, asserts each refuses with
+**that wording**, and fails the gate on any that now compiles — because a
+refusal that has become legal is a doc that is actively lying to me. The
+hand-maintained section of CLAUDE.md then *generates from* this
+directory, and the day an entry starts compiling, the gate says so
+instead of an agent discovering it six weeks later.
+
+> This directly discharges CLAUDE.md's own standard for those entries —
+> *"Every entry was probed with `./avra check` on a scratch file and
+> quotes the refusal, so a re-probe is cheap"* — by making the re-probe
+> automatic, and by making a probe result **name the base that answered
+> it** (the version-attribution law) without anyone having to remember.
+> An entry the gate cannot run records its base anyway — LAND D lost time
+> today to a lane's refusal they could not reproduce, where both parties
+> were right because one binary predated its own checkout by twelve
+> minutes and the grammar had gained a marker in between.
+
+### The second kind of negative space: what the library permits and you must not
+
+The subset corpus covers what the *language* refuses. There is a second
+category the reference form cannot express at all — **what compiles, runs,
+reports success, and is wrong** — and `@std/sqlite`'s traps document is
+this tree's exemplar. Its sharpest entry, verified by the SQLITE lane on
+main at `bd5c024`:
+
+> The door refusing an empty database path was built from `==`, a C string
+> call that stops at the first NUL. The path `"\0x"` measures `.length` 2
+> in Avra and reaches SQLite as **the empty string** — which opens a
+> private temporary database deleted at close, so **every write succeeds
+> and the data is silently gone.** The guard was not weak. It was reading
+> a different string than the callee.
+
+**And the half that belongs in front of an LLM author is the near-miss.**
+`":memory:\0x"` was refused *before* the fix — **by accident**, because
+`==` truncated it into a match. Right answer, wrong reason. A test suite
+written that morning goes green and ships the door broken.
+
+A reference manual has no place to put that. A signature cannot carry it.
+It is not a warning about a parameter; it is a **fact about the boundary
+between two things that disagree about what a string is** — and it is
+exactly the class of knowledge an author with a strong prior from ten
+other languages will violate confidently. Recording it as a near-miss
+rather than counting it as a pass is what separates a red team from a
+demo, and the doc system's job is to make sure that distinction survives
+into what I read.
+
+## The projections
+
+One value, N renderings. Adding a renderer touches nothing else.
+
+| projection | command | consumer |
+|---|---|---|
+| terminal | `avra doc X` | human, and agent reading a terminal |
+| brief | `avra brief --budget N` | **agent cold start** |
+| structured | `avra doc --json` | tooling, LSP, an agent asking its own question |
+| work order | `avra doc --stale --json` | an agent regenerating prose |
+| diff | `avra doc --since <rev>` | an agent resuming |
+| markdown | `avra doc --md` | a repo's own README/docs dir |
+| site | `avra doc --site` `[v3]` | the world (explicitly out of scope now) |
+| tools | `avra doc --tools` `[v3]` | MCP / agent tool definitions — P12's endgame |
+
+---
+
+# Part VI — The keepers: six deterministic checks
+
+`make gate` grows a leg: `make docs`. Six checks, all deterministic, all
+riding machinery that exists. This is the "deterministically checked
+through an avra cli command" the owner asked for, spelled out.
+
+**K1 · COVERAGE.** Every exported symbol has a doc. Diagnostic-grade
+(`F0910`), at the site, ratcheted like idioms: a baseline that **lists
+sites, never counts** (DOGFOODING's first law — a count-based baseline
+has a hole under it), and no tool path may add to it. Debt starts at
+200 (890 − 690) and only falls. Two honest exits: write the line, or
+`// LICENSED D1: reason` at the site (THE EXEMPTION LAW).
+
+**K2 · STRUCTURE.** A doc says the right *kind* of thing for its
+declaration kind. An `enum`'s doc that does not mention what closes the
+set, a fallible fn whose doc never mentions the failure — these are
+checkable without reading English, because the compiler knows the shape.
+*Held to a measured true-positive rate before it ships.*
+
+**K3 · EXAMPLES RUN.** Every `@example` names a corpus program that
+exists and passes. Every inline output in a doc (`"a.".split(".") →
+["a"]`) is executed and compared. **A doc example that breaks fails
+`make gate`, not a doc build.**
+
+**K4 · FRESHNESS.** Every written doc carries the `stmt_fingerprint` it
+was authored against (`core/nodes.av:664`); a mismatch is `F0912`. Not a
+warning about *possible* staleness — a statement that *this* prose
+described *that* shape. **Its floor is stated, not hidden:** it catches
+"the source moved" and not "the meaning moved" (Part III ¶5), and the
+mitigation for the gap is K3.
+
+**K5 · THE REFUSALS STILL REFUSE.** `lang/subset/*.av` compiled, each
+asserting its recorded refusal and its wording. An entry that now
+compiles fails the gate with "this is no longer true — delete the entry."
+
+**K6 · THE BRIEF IS COMPLETE.** At every budget, the brief mentions every
+feature, every diagnostic family, and every subset entry at least once.
+Completeness is not a judgement call; it is a set difference.
+
+**K7 · THE SUBJECT IS ALIVE.** A doc atom whose subject nothing
+references is `F0913`. The caller set is a query we are already running —
+`avra doc split --callers` in Part IV is the same data — so this check is
+free at the point of rendering. For a private fn, zero references is the
+defect. For an *exported* symbol, zero internal callers is legitimate API
+surface, so the page **states the count rather than hiding it**: a reader
+must be able to see from the rendered doc what a reader of the file can
+see from the source. (LANE B, whose counterexample named this mechanism.)
+
+Plus the meta-keeper, and it is the one this tree's doctrine demands
+loudest:
+
+**K0 · THE KEEPERS THEMSELVES ARE TESTED BY BREAKING THEM.**
+CLAUDE.md: *"A KEEPER THAT HAS ONLY EVER GUARDED A STATIC ENUM IS
+UNTESTED"* and *"A green check whose failure has never been witnessed is
+an untested instrument."* Every one of K1–K6 ships with a fixture that
+**makes it fail**: an export with its doc deleted, an example with its
+output corrupted, a sig deliberately moved, a subset entry that now
+compiles. And — CLAUDE.md's *"A TEST WITH ITS OWN COPY OF THE LOGIC TESTS
+THE COPY"* — those fixtures run the **real** checker, never an inline
+duplicate of it. That law was earned in this tree, by the externs keeper,
+three weeks ago. We do not get to re-earn it.
+
+---
+
+# Part VII — The cold-start gate: docs with a pass rate
+
+This is the part I have not seen anywhere and the part I would most like
+built.
+
+Every doc system in history is evaluated by "does it exist" and "does it
+render." **The only question that matters for P1 is: does an author who
+read only this write code that compiles?** That is not a feeling. It is
+an experiment, and we can run it.
+
+```
+$ make coldstart
+Cold-start gate · brief @ 6000 tokens · 40 tasks · language hash 8f3a21c4
+
+  compiled clean          31/40   (baseline 29 — ratchet holds)
+  compiled with warnings   5/40
+  refused                  4/40
+
+  Refusals, grouped by what the brief failed to say:
+    3 ×  used `xs.sort()`     — no method. Brief lists `reverse` in the
+                                negative space but not `sort`.
+    1 ×  `match` over `K?`    — subset entry exists, not reachable at
+                                this budget.
+
+  → 2 gaps, both in the negative space, both fixable by a row.
+```
+
+**The mechanism.** A fixed suite of tasks in `tasks/` ("write a fn that
+counts words in a file", "define an enum and exhaustively match it").
+A harness hands a model *only* the generated brief — no repository, no
+CLAUDE.md, no examples beyond what the brief itself contains — and
+compiles what comes back. The pass rate is a ratcheted number.
+
+**Why this is the keystone and not a nice-to-have:**
+
+- It makes documentation quality **empirical**. Every argument about what
+  to include stops being taste and becomes a measurement.
+- It tells us **what to spend the budget on**. Every failure names the
+  fact whose absence caused it. The brief's contents are then *derived
+  from evidence*, not from an author's guess about what matters.
+- It is the **only** honest test of P1, which is the language's own
+  primary success metric. We assert "correct on first generation" as our
+  north star and currently measure it nowhere.
+- **It catches language regressions no other gate can see.** A change
+  that makes Avra harder to write correctly passes every test in this
+  repo today. It would fail this one.
+- It is the direct answer to CLAUDE.md's *"AN ASSUMPTION NOTHING HAS EVER
+  TRIED TO VIOLATE IS NOT A GUARANTEE"* and its companion, *"THE AGREEING
+  ENGINES"*: our corpus `.expected` files are written by the same author
+  from the same understanding, so they join the consensus rather than
+  breaking it. **A fresh model with no context is an oracle that is not
+  part of our consensus.** That is the property nothing else in this tree
+  has.
+
+**Honest constraints, stated up front.** It is non-deterministic (mitigate:
+N samples, report a rate with a band, ratchet on the lower bound). It
+costs tokens (mitigate: it is a nightly / pre-merge gate, not a
+per-commit one, and a small model is the *right* subject — the harder the
+subject, the more the docs must carry). It needs a network (mitigate: it
+is the ONLY part of this system that does, it lives outside `make gate`
+proper as `make coldstart`, and the compiler itself never calls a model).
+
+---
+
+# Part VIII — Working backwards: the ladder
+
+Each rung is independently valuable and shippable. Nothing below is
+speculative infrastructure; every rung ends with a surface somebody uses.
+
+### v0 — THE SPRING (this exists, today, unread)
+690 doc comments, 28 feature `docs` strings, 77 corpus programs, 106
+diagnostic rows, 47 subset entries. **Zero readers.**
+
+### v1 — THE SPINE AND THE FIRST ANSWER
+- **D1** Lexer emits doc trivia (lossless; `///` and `//!`). *Smallest
+  possible compiler change. Everything blocks on it.*
+- **D2** `docs(ws, f) -> DocFacts` query family: attachment, tag parse,
+  its own voices. Tag registry with the six starting rows.
+- **D3** `avra doc <address>` — the resolver and the terminal projection,
+  over symbols, features (reading `.docs` at last), and diagnostics.
+- **D4** `avra brief` at a default budget, assembled from feature `docs`
+  + gram + the subset directory.
+- **D5** `lang/subset/*.av` — "The subset today" migrated to verified
+  programs, with **K5** in the gate. *This one pays for itself the day it
+  lands and does not need D1.*
+
+**GATE v1:** an agent that has read only `avra brief` writes a
+compiling Avra function. Measured once, by hand, honestly.
+
+### v2 — THE KEEPERS
+- **D6** `F0910` coverage diagnostic + the site-listing ratchet (K1).
+- **D7** Freshness over `stmt_fingerprint` + `F0912` (K4); `avra doc
+  --stale`. *No new hash — the door exists (LANE C).*
+- **D8** Work orders: `--stale --json` and the house-style bundle (¶6).
+- **D9** Example verification (K3) — corpus wiring + inline outputs.
+- **D10** `avra doc --json`, `--since`, `--md`.
+- **D11** `make docs` in `make gate`, with K0 failure fixtures for each.
+
+**GATE v2:** doc debt is a ratchet at zero-or-falling; no doc in the tree
+describes a sig that has moved.
+
+### v3 — THE SUBSTRATE
+- **D12** `avra brief --budget N` with the completeness invariant (K6).
+- **D13** **The cold-start gate** (Part VII). *The keystone.*
+- **D14** `avra doctrine` — CLAUDE.md's laws as rows with keeper columns;
+  `--unenforced` names the amnesties.
+- **D15** Capability index + `avra doc --for "<task>"`.
+- **D16** `@std/doc` — the doc model as an Avra package, so a projection
+  is a library, not a compiler change.
+- **D17** `--site`, `--tools`. **Explicitly deferred by the owner. Not
+  before v3, and cheap when the model is a value.**
+
+---
+
+# Part IX — The asks
+
+**From the language (sugar backlog, per "Dogfooding is design"):**
+- **Doc comments as syntax.** The `///` attachment law needs to be
+  *stated* in the language, not implied by a lexer. Wanting site: D1.
+- **`@example` referencing a corpus program** needs a path type the
+  compiler can verify at check time. Wanting site: D9.
+- **String interning for doc text.** 690 doc strings will be minted per
+  parse; they are immortal and identical across queries. Wanting site: D2.
+- ~~A stable content hash exposed as a value.~~ **WITHDRAWN — the door
+  exists.** `NodeStore.stmt_fingerprint` (`core/nodes.av:664`), readable
+  from Avra today, maintained as the language grows. Answered by LANE C
+  within an hour of the ask. What remains is the *transitive* question
+  (Part III ¶5), and its answer is the memo kernel's edges, not a hash.
+
+**From the campaign (coordination):**
+- **D1 touches the lexer**, which every lane depends on. It merges alone,
+  announced, on a quiet tree — CLAUDE.md's syntax-change protocol
+  (`cp build/avra build/avra.pre`, build with the standing binary,
+  rewrite, rebuild, gate), and every lane's first build after it is
+  `make bootstrap`, **never** `make avra`.
+- **Serial gates.** The machine has panicked twice under this tree. Doc
+  lanes do research and design in parallel freely (read-only), and
+  **queue** for any `make gate` / whole-package run, always under
+  `sh tools/watch.sh 4000`.
+- **A doc lane never merges a doctrine change to CLAUDE.md without the
+  owner's word.** We *read* the doctrine; only the owner writes it.
+
+**From the owner:**
+- Ratification of Part II(a) — **no `@param`**. It is the load-bearing
+  decision and it contradicts the JSDoc instinct that prompted this work.
+  Everything about achievable coverage rests on it.
+- A budget decision on Part VII: the cold-start gate spends tokens.
+- Confirmation that `--site` stays deferred through v2.
+
+---
+
+# Part X — Honest limits
+
+- **A doc system cannot make a bad API good.** `@std/sqlite`'s
+  `open(path)` was ambiguous between a filename and a URI, and the fix was
+  TWO VERBS (the two-hats law) — **landed on main at `f88d0ce`, verified
+  by the SQLITE lane at `bd5c024`**: `open_uri()` and the `uri: bool =
+  false` seat in `packages/std-sqlite/src/open.av`. Not a warning tag. A `@warn` that papers over a design
+  flaw is this tree's own recorded anti-pattern: *"the unsafe shape is
+  unspellable rather than merely documented, which is what the first
+  answer — 'the type cannot prevent it, so the doc says so' — would have
+  settled for."* **When a doc lane wants to write a warning, its first
+  move is to ask whether the shape can be made unspellable instead.**
+- **Coverage is not quality.** 100% coverage of "returns the result" is
+  worth nothing. K2 attacks this and will only partly succeed. The
+  cold-start gate is the real answer and it is v3.
+- **The cold-start gate is non-deterministic and costs money.** It lives
+  outside `make gate`. Its number is a band, not a point.
+- **Staleness detection has a false-negative floor.** A sig that is
+  unchanged while the *meaning* moved (a fn that silently starts trimming
+  its input) is invisible to K4. The mitigation is K3 — examples run —
+  and it is partial.
+- **The tag vocabulary will be under pressure to grow.** Every tag is a
+  thing an author can get wrong and a consumer must handle. Growth is a
+  registry row and a rationale, and the answer to most requests is
+  "write prose."
+- **`--json` is a public contract the moment an agent parses it.** P9: it
+  is versioned from day one, or it is not shipped.
+
+---
+
+# Part XI — Slogans
+
+- **The compiler already knows. Build the thing that asks it.**
+- **Documentation is a compile target.** Same engine, same fact tables,
+  same incrementality. The binary and the docs are siblings.
+- **The signature is data. Documentation is only what the signature
+  cannot say.**
+- **A doc entry is a diagnostic that has not fired yet.**
+- **The undocumented is a diagnostic.**
+- **The negative space is the documentation.** What is absent, and what
+  you will reach for anyway, teaches more than what is present.
+- **A refusal that has become legal is a doc that is lying.**
+- **The compiler never calls a model. It writes the work order.**
+- **Complete at every budget.** Resolution degrades; coverage never does.
+- **Docs with a pass rate, or docs with an opinion.**
+- **A green check whose failure has never been witnessed is an untested
+  instrument** — and that includes every keeper in this document.
