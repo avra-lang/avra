@@ -2757,6 +2757,116 @@ is written past an open gap above.
   - [ ] `@std/sqlite` itself, to the merged design in
         `docs/2026_09_05_STD_SQLITE_SYNTHESIS.md`.
 
+TWO CORRECT RULES CAN COMPOSE INTO A WRONG ANSWER, and neither is the
+one to weaken. The extern keeper holds two rules, both right:
+  - AN ALL-CAPS WORD IN A RETURN TYPE IS NOISE (no C base type shouts)
+    — this is what lets `SQLITE_API int` reach the 32-bit rule.
+  - A TYPEDEF KEEPS EVERY DEFINITION IT HAS ACROSS PREPROCESSOR
+    BRANCHES, and a seat is satisfied only when ALL readings agree —
+    this is what caught `__int64` in the MSVC branch.
+Composed, they meet `typedef SQLITE_INT64_TYPE sqlite_int64` at
+sqlite3.c:615 (verified; three branches at 615, 622, 625). That
+branch's BODY is entirely an all-caps macro, so noise-stripping
+resolves it to the EMPTY STRING — and nothing is never wide, so the
+readings disagree and disagreement correctly fails. A right
+declaration is refused by two right rules.
+THE FIX SHARPENS RATHER THAN LOOSENS: a branch that strips to nothing
+taught the keeper nothing, so IT MUST NOT VOTE. Still refuses a
+genuinely narrow body, still refuses a type that is wholly an
+unresolvable macro.
+Worth naming as its own shape because the usual instinct on a false
+refusal is to weaken a rule, and here both rules are load-bearing —
+the answer was a third rule about ABSTENTION, not a weaker version of
+either. It is also the campaign's one shape again, at the composition
+rather than at a boundary: `SQLITE_INT64_TYPE` resolves to a type for
+a C compiler that defines it and to nothing for a reader that does not.
+
+FIX C WHERE IT IS WRONG; INHERIT IT WHERE IT IS ONLY ARBITRARY.
+Lane A's rule, and the sharpest statement of what LLM-FIRST means for
+a language decision. The bitwise slice met two C precedences and they
+are not the same kind of thing:
+  - `flags & MASK == 0` parses in C as `flags & (MASK == 0)` and is
+    almost never what anyone wrote. C is WRONG here, and diverging
+    turns a silent bug into the intended reading. So Avra binds the
+    bitwise band TIGHTER than comparison.
+  - `1 << BASE + i` parses in C as `1 << (BASE + i)`. C is not wrong
+    here, only ARBITRARY — and every model writing that line learned
+    C's reading and intends it. Diverging would silently change the
+    meaning of code nobody flagged, in the direction nobody asked.
+    So Avra inherits it.
+THE TEAM LEAD RECOMMENDED DIVERGING ON THE SECOND, arguing from what a
+human reader naively expects, and was overruled. For a language whose
+first principle is CORRECT ON FIRST GENERATION, the input is not what a
+reader expects but WHAT A MODEL WAS TRAINED ON. That is a different
+question and it has a different answer, and it is the first time in
+this campaign the two came apart.
+The docs say which parts of C were copied and why the copying stops —
+which is what makes an inheritance a decision rather than a default.
+
+THE EVIDENCE LAW, IN THREE STEPS, EACH FOUND BY THE PREVIOUS ONE
+FAILING. This is the campaign's most transferable output and it was
+earned by its authors being wrong, repeatedly, in public.
+
+  1. "ALWAYS CHECK" IS NOT THE RULE; "NAME WHAT YOU CHECKED" IS.
+     Four people produced a genuine error from a genuine compiler run
+     and each was wrong — a stale binary, `git log -1` naming the
+     CHECKOUT not the BINARY, a reduction retyped from memory that
+     dropped its trigger, two files run between one pair of echoes
+     and attributed by elimination. Every one of them DID verify.
+  2. NAMING THE BASE IS NECESSARY AND NOT SUFFICIENT. A VERIFICATION
+     NAMES THE BASE **AND THE THING IT ACTUALLY RAN.** Found when a
+     session in the RIGHT tree at the RIGHT commit read one anchored
+     regex (`externs.py:63`) and reported the behaviour of the tool —
+     true about the line, false about the pipeline, because line 96
+     strips macros before that regex ever sees the type, and the
+     keeper's own case at :205 asserts the outcome. A REGEX IS AN
+     INPUT TO A KEEPER, NOT THE KEEPER. Step 1 was built against
+     stale trees; this failure had a perfectly current one. The gap
+     was GRANULARITY, not freshness.
+  3. AND THE FAILURE IS AT THE LAST STEP, NOT THE FIRST. Five times
+     in one day, one session catalogued its own: a probe against an
+     older binary; a repro retyped without its trigger; a measurement
+     extended past the line that handles the case; a rule stated by
+     range when the C TYPE was the input, contradicting its own
+     earlier principle; a regex read as a keeper. EVERY ONE WAS A
+     GENUINE RUN OR A GENUINE READ. **The artifact is real and the
+     sentence is bigger than it.** No amount of checking first
+     prevents that, because the checking happened.
+     THE HABIT, such as it is: SAY THE ARTIFACT AND THE CLAIM IN THE
+     SAME BREATH, so the gap between them is visible to the reader
+     and to the writer. "I ran X and got Y, therefore Z" makes Z's
+     distance from Y inspectable; "Z, verified" hides it.
+
+THE ONE SHAPE, which is what this campaign actually found. Every
+technical finding below and every coordination failure it suffered is
+the same bug in a different substrate: AN IDENTIFIER THAT RESOLVES
+DIFFERENTLY ON THE TWO SIDES OF A BOUNDARY.
+
+  In the compiler:
+    a guard reading `==` while the callee reads the header  — a NUL
+      path that is empty to SQLite and length 2 to Avra
+    a declaration saying `int` while the C body answers 32 bits
+    a probe naming a CHECKOUT while a binary answered from another
+    a doc comment about a NODE read as a claim about the LANGUAGE
+    `h->len` meaning text length to one caller and payload size to
+      another
+  In the coordination, the same day, by the people writing those laws:
+    a worktree two sessions wrote to  -> 250 ROADMAP lines lost to a
+      `git checkout` that could not tell whose lines were whose
+    a worktree renamed without notice -> a failed `cd` RE-POINTED an
+      `&&` chain into main
+    a name two sessions answered to   -> a lost message, a duplicated
+      backlog entry, and an attribution dispute over rulings nobody
+      had misattributed
+
+The laws written this campaign all say one thing: MAKE THE IDENTIFIER
+SAY WHICH ONE IT MEANS. Read the same bytes as the thing you protect.
+Name the binary and the commit it was built from, not the tree. Split
+the verb when a value wears two hats. Address a ref, not a name.
+Recorded as the campaign's summary because the process failures were
+not incidental to the findings — they were the findings, arriving in
+the one substrate nobody had thought to apply them to.
+
 THE CAMPAIGN'S TREE-WIDE FINDINGS (2026-09-05) — none of these is
 about SQLite; each was found because a driver forced someone to read
 a seam nobody had grown before.
@@ -3383,6 +3493,45 @@ a seam nobody had grown before.
     for a case the parser settles itself), and not a general folder
     (consts cannot match expr_spine's `Binary`, which makes it a
     core event rather than something smuggled under a const fix).
+  - A FAILED `cd` IN AN `&&` CHAIN DOES NOT STOP THE CHAIN — IT
+    RE-POINTS IT. Every later command runs wherever the shell
+    already was, which for a lane is very often MAIN. Hit here after
+    this lane renamed two worktrees without announcing it: a lane's
+    next command held the old path, the `cd` failed, and the rest of
+    the line executed in main. It was a no-op `git merge` and cost
+    nothing; the shape that bites is a `git checkout` or an `rm` in
+    the tail of the same chain — which is exactly how ~250 lines of
+    this block were lost earlier the same day, a command aimed at
+    one tree landing in another with nothing in the command to say
+    which tree it was in.
+    THE FORM: `cd <path> || exit 1` before the chain, or better
+    `sh -c 'cd X && …'` in a subshell, so a failure is contained and
+    cannot re-point the parent. AND THE RULE BEHIND IT: changing a
+    shared layout is an ANNOUNCEMENT, not a cleanup — the rename was
+    made so `integrate.sh` could find the worktrees, which was
+    correct, and telling nobody was not.
+  - THE KEEPER CAUGHT US, THEN THE VENDORED SOURCE CAUGHT THE
+    KEEPER. `make externs`, made manifest-driven so it reads a
+    package's own C, refused the driver's merge: 53 of 84
+    declarations answered a narrow C `int` and were declared `int`.
+    Exactly the class this campaign spent a day arguing about,
+    in its own code, invisible to every test because both engines
+    agree on the wrong answer. AND 8 FALSE POSITIVES: the keeper
+    read `sqlite3_int64` as narrow because its width set had only
+    ever met C WE wrote, which spells `int64_t` plainly — the same
+    untested-instrument shape as `RtKind`'s `is .Variant`
+    consumers. Fixed by RESOLVING typedefs from the sources it
+    already reads, keeping every definition a name has across
+    preprocessor branches and failing on disagreement rather than
+    guessing; the two easy fixes were refused because hard-coding
+    SQLite's typedef names would be right for SQLite and wrong for
+    the next library, which is the defect the keeper exists to
+    catch. It now tests itself, nine cases before any verdict.
+    THE PART TO REMEMBER: `__int64` was missing from its wide set
+    and NOTHING IN THIS TREE SPELLS IT — only the MSVC branch of a
+    vendored typedef surfaced it. A vendored dependency did more
+    for that keeper than the whole compiler had, and vendoring was
+    chosen for reproducibility.
   - A GUARD AND THE THING IT GUARDS MUST READ THE SAME BYTES —
     found by a red team, in the driver's own code, and it is the
     campaign's own NUL law arriving through the door built to stop
