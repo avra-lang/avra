@@ -2,8 +2,8 @@
 // its definition's register), scopes are structure, and the memory
 // pass releases a scope's managed values at its exit — Application
 // strategy, reverse binding order.
-use @std.avrac.core.{Ins, RtSig, Reg, same_reg, distinct}
-use @std.avrac.language.{Lowered, Body, render_ir}
+use @std.avrac.core.{Ins, RtSig, Reg, Type, TypeId, same_reg, distinct, new_type_registry}
+use @std.avrac.language.{Lowered, Body, render_ir, minted_pointers}
 use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns, rt_index}
 use @std.avrac.testing.{ir_of, halver, shown}
 
@@ -426,6 +426,33 @@ fn body_of(text: string, name: string) -> string {
 
 fn cell_settles(text: string) -> int {
     text.split("avra_cell_release").length - 1
+}
+
+/// A one-instruction body whose only register wears `ty`.
+fn constant_body(ty: TypeId, v: int) -> Body {
+    Body { name: "probe", params: [], ret: ty, gives: null, ins: [Ins.ConstInt(Reg { index: 0 }, v)], reg_types: [ty] }
+}
+
+spec "the pointer-constant law" {
+    given "a constant aimed at a pointer-riding register" {
+        // the case source cannot reach — nothing mints a pointer —
+        // so the law is fed a body directly
+        then "a NON-ZERO one is refused at lowering, before either engine reads it as null" {
+            mut types = new_type_registry()
+            let str_ty = types.intern(Type.Str)
+            minted_pointers(types, [constant_body(str_ty, 5)]).length == 1
+        }
+        then "ZERO is the null pointer and passes" {
+            mut types = new_type_registry()
+            let str_ty = types.intern(Type.Str)
+            minted_pointers(types, [constant_body(str_ty, 0)]).is_empty()
+        }
+        then "a scalar register takes any constant" {
+            mut types = new_type_registry()
+            let int_ty = types.intern(Type.Int)
+            minted_pointers(types, [constant_body(int_ty, 5)]).is_empty()
+        }
+    }
 }
 
 spec "a managed read is a borrow" {
