@@ -1,0 +1,29 @@
+//! WHAT THE GUARDS MUST SEE. Avra's `string` carries its length; C's
+//! ends at the first NUL. So a value crossing into C is judged by the
+//! callee on DIFFERENT BYTES than a guard built from the lossy
+//! primitives read.
+//!
+//! NUL-SAFE, because they read the header: `.length`, `char_code`,
+//! `starts_with`, `ends_with`, `trim`, `+`.
+//! NUL-LOSSY, because they are C string calls: `==`, `contains`,
+//! `index_of`, `split`, `replace`.
+//!
+//! THE RULE: a guard and the thing it guards must read the same bytes.
+//! Where the callee is C, that means judging the whole string and
+//! refusing anything C would truncate — a value whose meaning changes at
+//! the boundary is not a value anyone meant to pass.
+//!
+//! This was not theoretical. A path `"\0x"` measured length 2, passed a
+//! door built from `==`, and reached SQLite as the EMPTY STRING — the
+//! private temporary database deleted at close, which is the exact trap
+//! that door exists to prevent.
+
+/// Whether the text holds a NUL anywhere, read with the primitives that
+/// can see one.
+export fn has_nul(s: string) -> bool { [s.char_code(i) for i in 0..s.length].any(it == 0) }
+
+/// Whether the text is nothing but blanks — space, tab, newline,
+/// carriage return. A CHARACTER test, never a reading of SQL.
+export fn is_blank(s: string) -> bool { [s.char_code(i) for i in 0..s.length].all(blank_code(it)) }
+
+fn blank_code(c: int) -> bool { c == 32 || c == 9 || c == 10 || c == 13 }

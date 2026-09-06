@@ -1,0 +1,145 @@
+//! THE WALL, library-wide family: the `sqlite3_*` entry points that
+//! reach the library itself rather than a connection — version,
+//! compile options, initialization, memory, and the SQL-text
+//! utilities. Every one is declared by its C name and exported, so a
+//! caller who needs the wall reaches it with the value they hold.
+//!
+//! The signatures are checked BY HAND against `vendor/sqlite3.h`:
+//! Avra does not read C headers, so the `extern fn` line is the
+//! contract and the vendored header is what keeps it honest.
+//!
+//! THE FOUR DECLARATIONS THAT ANSWER `string`, AND WHY EACH IS ALLOWED
+//! TO. The wall's rule is that a borrowed C pointer crosses as `ptr` and
+//! the face copies, because the runtime cannot see a foreign pointer at
+//! all — `hdr` refuses one without its tag, so retain and release no-op
+//! and `AVRA_RC_GUARD` prints clean for a correct borrow and a
+//! use-after-free alike. `string` is permitted ONLY where the text is
+//! IMMORTAL, and each of the four was read in the amalgamation rather
+//! than assumed:
+//!
+//! ```
+//! sqlite3_libversion        -> sqlite3_version, a global const char[]   :187469
+//! sqlite3_sourceid          -> the SQLITE_SOURCE_ID literal            :187477
+//! sqlite3_compileoption_get -> sqlite3azCompileOpt[N], a
+//!                              `static const char * const` table        :23088
+//! sqlite3_errstr            -> aMsg[], a `static const char* const`
+//!                              table of literals                       :189031
+//! ```
+//!
+//! A FIFTH IS NOT ADDED BY ANALOGY. It is added by reading the body and
+//! quoting the line, and the adversarial suite measures that the text
+//! survives intervening calls rather than trusting that it will.
+//!
+//! AND THE RULE IS PROVISIONAL, not settled: `immortal` is a property of
+//! the CALLEE that a declaration cannot enforce, so the day the language
+//! can copy foreign text into a box these four become `ptr` plus a copy
+//! like every other borrowed answer. Today it cannot — nothing in the
+//! tree turns a `ptr` into a `string`, because every text-answering C
+//! body we own copies inside itself (`str_static`, `str_owned`) and we
+//! do not own SQLite's. Declaring these `ptr` now would not make them
+//! safer; it would make them unreadable.
+//!
+//! A C ANSWER THAT CAN BE NULL IS DECLARED `string?`. Avra's niche
+//! for an absent pointer IS the null pointer, so the two conventions
+//! coincide; declared `string`, a NULL answer reaches `.length` and
+//! the process dies in `strlen`.
+//!
+//! A C `int` IS 32 BITS AND AVRA'S IS 64, so a NEGATIVE C answer
+//! reads here as a large positive one — the wall carries the C
+//! truth, which is 32 bits wide. Result codes, counts and 0/1
+//! verdicts are unharmed; the comparisons are not, and each says so
+//! at its own declaration. The face asks those only for equality.
+
+/// The library's version — "3.53.4". Never NULL.
+export extern fn sqlite3_libversion() -> string
+
+/// The version as `X*1000000 + Y*1000 + Z` — 3053004 for 3.53.4.
+/// NOT the encoding the download filename uses.
+export extern fn sqlite3_libversion_number() -> int
+
+/// The check-in this build came from. Never NULL.
+export extern fn sqlite3_sourceid() -> string
+
+/// Whether the library was compiled with a given option, named
+/// without its `SQLITE_` prefix.
+export extern fn sqlite3_compileoption_used(name: string) -> int
+
+/// The Nth compile option, and NULL once N is past the last.
+export extern fn sqlite3_compileoption_get(n: int) -> string?
+
+/// Zero only when the mutexing code was omitted.
+export extern fn sqlite3_threadsafe() -> int
+
+/// The library brought up. Idempotent; the library also calls it
+/// itself unless compiled with SQLITE_OMIT_AUTOINIT, which this one
+/// is not.
+export extern fn sqlite3_initialize() -> int
+
+/// The library taken down. Every connection must be closed first.
+export extern fn sqlite3_shutdown() -> int
+
+/// Whether the text ends in a complete, terminated SQL statement.
+export extern fn sqlite3_complete(sql: string) -> int
+
+/// English text for a primary or extended result code. Never NULL.
+export extern fn sqlite3_errstr(code: int) -> string
+
+/// How many keywords this build recognises.
+export extern fn sqlite3_keyword_count() -> int
+
+/// Whether the first `n` bytes of the word are a keyword.
+export extern fn sqlite3_keyword_check(word: string, n: int) -> int
+
+/// The LIKE operator's answer, with an escape character's code point
+/// (zero for none). Zero when the pattern matches.
+export extern fn sqlite3_strlike(pattern: string, text: string, escape: int) -> int
+
+/// The GLOB operator's answer. Zero when the pattern matches.
+export extern fn sqlite3_strglob(pattern: string, text: string) -> int
+
+/// NARROW: C answers a signed 32-bit int, so a NEGATIVE result
+/// reads here as a large positive one. Ask it for equality only
+/// until the extern wall carries sized types.
+/// ASCII-case-insensitive comparison, as SQLite's own collation does.
+export extern fn sqlite3_stricmp(a: string, b: string) -> int
+
+/// NARROW: C answers a signed 32-bit int, so a NEGATIVE result
+/// reads here as a large positive one. Ask it for equality only
+/// until the extern wall carries sized types.
+/// The same over the first `n` bytes.
+export extern fn sqlite3_strnicmp(a: string, b: string, n: int) -> int
+
+/// Bytes of memory the library currently holds. Zero under
+/// SQLITE_DEFAULT_MEMSTATUS=0 unless a connection turned it on.
+export extern fn sqlite3_memory_used() -> int
+
+/// The high-water mark, reset when asked.
+export extern fn sqlite3_memory_highwater(reset: int) -> int
+
+/// Memory the library allocated, given back. A NULL is a no-op. This
+/// is what an OWNED answer from the wall goes back through —
+/// `sqlite3_expanded_sql`'s text, and `sqlite3_exec`'s error message.
+export extern fn sqlite3_free(p: ptr?)
+
+/// Memory handed back to the operating system, in bytes.
+export extern fn sqlite3_release_memory(bytes: int) -> int
+
+/// The soft heap limit in bytes; answers the previous limit.
+export extern fn sqlite3_soft_heap_limit64(bytes: int) -> int
+
+/// The hard heap limit in bytes; answers the previous limit.
+export extern fn sqlite3_hard_heap_limit64(bytes: int) -> int
+
+/// Milliseconds slept, which the OS may shorten.
+export extern fn sqlite3_sleep(ms: int) -> int
+
+/// Shared-cache mode, deprecated by SQLite and kept bindable.
+export extern fn sqlite3_enable_shared_cache(on: int) -> int
+
+// NOT DECLARED, and the omission is a decision rather than an
+// oversight: `sqlite3_global_recover`, `sqlite3_soft_heap_limit` and
+// `sqlite3_thread_cleanup` carry SQLITE_DEPRECATED in the header and
+// vanish the day the build takes SQLITE_OMIT_DEPRECATED;
+// `sqlite3_activate_cerod` activates a proprietary extension this
+// build does not carry. `sqlite3_os_init`/`sqlite3_os_end` belong to
+// a custom VFS and are declared with that family.

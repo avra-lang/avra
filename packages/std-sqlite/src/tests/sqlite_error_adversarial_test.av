@@ -1,0 +1,120 @@
+// The red team's record for the failure value. Nothing here found a
+// wrong answer — the registry survived every boundary — so this file is
+// the proof of that rather than a repair, and it holds the boundaries
+// so the next change to `cause_of` has to keep them.
+//
+// The one thing it does pin is a DEPARTURE: §4.2's `retryable` makes
+// `SQLITE_LOCKED` retryable, and a retry loop there waits on a lock its
+// own connection holds — a hang, not a slow error (T49). The two cases
+// under "the retry decision" are what would notice if it were undone.
+use @std.sqlite.error.{Cause, Storage, Violation, Waiting, Denial, cause_of}
+
+fn kind_at(ext: int) -> string { cause_of(ext).kind() }
+fn retry_at(ext: int) -> bool { cause_of(ext).retryable() }
+
+/// Every arm of the registry, once, with a payload where it takes one.
+/// A new variant that nobody adds here still compiles — but every
+/// property below is over this list, so it stops being covered, and the
+/// count is the tripwire.
+fn every_cause() -> List<Cause> {
+    [
+        Cause.Constraint(Violation.Unique),
+        Cause.Busy(Waiting.Timeout),
+        Cause.Denied(Denial.Rollback),
+        Cause.Mismatch(0, Storage.Int, Storage.Text),
+        Cause.NoColumn("nope"),
+        Cause.OutOfRow(7, 4),
+        Cause.Unfilled(3, 2),
+        Cause.NotUtf8(1, 5),
+        Cause.NoRow,
+        Cause.ManyRows,
+        Cause.Syntax,
+        Cause.Corrupt,
+        Cause.Full,
+        Cause.TooBig,
+        Cause.Interrupted,
+        Cause.Io(3),
+        Cause.NoMemory,
+        Cause.CantOpen,
+        Cause.NotADatabase,
+        Cause.Expired,
+        Cause.Defect("used after finalize"),
+        Cause.Other(999),
+        Cause.EmptyPath,
+        Cause.UriPath,
+        Cause.HoldsNul,
+        Cause.ManyStatements,
+        Cause.NoStatement,
+        Cause.RowsDiscarded,
+    ]
+}
+
+fn kinds() -> List<string> { [c.kind() for c in every_cause()] }
+fn retryables() -> List<Cause> { [c for c in every_cause() if c.retryable()] }
+fn unprefixed() -> List<string> { [k for k in kinds() if !k.starts_with("sqlite.")] }
+fn empty_kinds() -> List<string> { [k for k in kinds() if k.is_empty()] }
+
+/// Every one of the twelve constraint details, plus the fallback.
+fn constraint_kinds() -> List<string> { [kind_at(19 + d * 256) for d in 0..14] }
+fn distinct_constraints() -> int {
+    [k for i, k in constraint_kinds() if constraint_kinds().index_of(k) == i].length
+}
+
+spec "std/sqlite error adversarial" {
+
+    given "every arm of the registry" {
+        then "all twenty-eight are here" { every_cause().length == 28 }
+        then "every one names a kind" { empty_kinds().length == 0 }
+        then "every kind is under the package's own prefix" { unprefixed().length == 0 }
+        // Two matches over `Cause` exist — `kind` and `retryable` — and
+        // both spell every arm. A third dispatch is what would rot.
+        then "exactly one arm is retryable in this set" { retryables().length == 1 }
+    }
+
+    given "the retry decision, which is the only thing `Waiting` is for" {
+        then "a plain busy may clear" { retry_at(5) }
+        then "a busy recovery may clear" { retry_at(261) }
+        then "a busy timeout may clear" { retry_at(773) }
+        then "a busy SNAPSHOT never clears" { !retry_at(517) }
+        // THE DEPARTURE. BUSY is another connection and clears on its
+        // own; LOCKED is THIS connection, so the retry loop would wait
+        // on a lock it is itself holding, forever.
+        then "a LOCKED never clears" { !retry_at(6) }
+        then "a shared-cache LOCKED never clears either" { !retry_at(262) }
+        then "and a LOCKED is still classified as a busy" { kind_at(6) == "sqlite.busy" }
+    }
+
+    given "extended codes at every boundary" {
+        then "zero" { kind_at(0) == "sqlite.other" }
+        then "the last value with no high byte" { kind_at(255) == "sqlite.other" }
+        then "the first with one" { kind_at(256) == "sqlite.other" }
+        // The value our own extern wall produces today for a C `int` of
+        // -1, until sized types land. It must not become a real cause by
+        // accident.
+        then "4294967295, the widened -1" { kind_at(4294967295) == "sqlite.other" }
+        then "a negative code" { kind_at(0 - 1) == "sqlite.other" }
+        then "a negative that would mask onto a real primary" { kind_at(0 - 261) == "sqlite.other" }
+        then "a very large code" { kind_at(2147483647) == "sqlite.other" }
+        then "none of those is retryable" { !retry_at(0) && !retry_at(4294967295) }
+    }
+
+    given "details that do not exist, in every family that has them" {
+        // A detail SQLite has not defined must fall to the family's own
+        // plain form, never off the end of the registry.
+        then "a constraint detail past the twelve" { kind_at(19 + 13 * 256) == "sqlite.constraint.plain" }
+        then "a huge constraint detail" { kind_at(19 + 9999 * 256) == "sqlite.constraint.plain" }
+        then "a busy detail past the three" { kind_at(5 + 99 * 256) == "sqlite.busy" }
+        then "a readonly detail past the six" { kind_at(8 + 99 * 256) == "sqlite.denied" }
+        then "an io detail past the thirty-six is still an io" { kind_at(10 + 999 * 256) == "sqlite.io" }
+        then "and a plain busy detail is not retried differently" { retry_at(5 + 99 * 256) }
+    }
+
+    given "the twelve constraint details are twelve different sentences" {
+        // "email already taken" and "no such author" are different
+        // things to say, which is the whole value of the arm.
+        then "fourteen asked, thirteen distinct answers" { distinct_constraints() == 13 }
+        then "unique and foreign key differ" { kind_at(2067) != kind_at(787) }
+        then "not-null and primary key differ" { kind_at(1299) != kind_at(1555) }
+        then "and the bare code is the plain one" { kind_at(19) == "sqlite.constraint.plain" }
+    }
+}

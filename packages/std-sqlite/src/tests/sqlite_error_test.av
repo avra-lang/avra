@@ -1,0 +1,182 @@
+// EVERY EXTENDED RESULT CODE THE VENDORED HEADER DECLARES, with the arm
+// it must land in. The list is generated from `vendor/sqlite3.h` — a
+// code the header gains and the registry forgets fails here rather than
+// reaching a caller as `.Other`.
+//
+// The mapping needs no connection, so it is testable now, and it is the
+// half of the failure value that does not wait on the extern wall.
+use @std.sqlite.error.{Cause, Storage, Violation, Waiting, Denial, SqlError, cause_of}
+use @std.errors.{Error}
+
+/// One row of the header's own table: the extended code, the kind the
+/// registry must answer, and the C name so a failure names itself.
+type Code = { ext: int, kind: string, name: string }
+
+fn codes() -> List<Code> {
+    [
+        Code { ext: 257, kind: "sqlite.syntax", name: "SQLITE_ERROR_MISSING_COLLSEQ" },
+        Code { ext: 513, kind: "sqlite.syntax", name: "SQLITE_ERROR_RETRY" },
+        Code { ext: 769, kind: "sqlite.syntax", name: "SQLITE_ERROR_SNAPSHOT" },
+        Code { ext: 1025, kind: "sqlite.syntax", name: "SQLITE_ERROR_RESERVESIZE" },
+        Code { ext: 1281, kind: "sqlite.syntax", name: "SQLITE_ERROR_KEY" },
+        Code { ext: 1537, kind: "sqlite.syntax", name: "SQLITE_ERROR_UNABLE" },
+        Code { ext: 266, kind: "sqlite.io", name: "SQLITE_IOERR_READ" },
+        Code { ext: 522, kind: "sqlite.io", name: "SQLITE_IOERR_SHORT_READ" },
+        Code { ext: 778, kind: "sqlite.io", name: "SQLITE_IOERR_WRITE" },
+        Code { ext: 1034, kind: "sqlite.io", name: "SQLITE_IOERR_FSYNC" },
+        Code { ext: 1290, kind: "sqlite.io", name: "SQLITE_IOERR_DIR_FSYNC" },
+        Code { ext: 1546, kind: "sqlite.io", name: "SQLITE_IOERR_TRUNCATE" },
+        Code { ext: 1802, kind: "sqlite.io", name: "SQLITE_IOERR_FSTAT" },
+        Code { ext: 2058, kind: "sqlite.io", name: "SQLITE_IOERR_UNLOCK" },
+        Code { ext: 2314, kind: "sqlite.io", name: "SQLITE_IOERR_RDLOCK" },
+        Code { ext: 2570, kind: "sqlite.io", name: "SQLITE_IOERR_DELETE" },
+        Code { ext: 2826, kind: "sqlite.io", name: "SQLITE_IOERR_BLOCKED" },
+        Code { ext: 3082, kind: "sqlite.io", name: "SQLITE_IOERR_NOMEM" },
+        Code { ext: 3338, kind: "sqlite.io", name: "SQLITE_IOERR_ACCESS" },
+        Code { ext: 3594, kind: "sqlite.io", name: "SQLITE_IOERR_CHECKRESERVEDLOCK" },
+        Code { ext: 3850, kind: "sqlite.io", name: "SQLITE_IOERR_LOCK" },
+        Code { ext: 4106, kind: "sqlite.io", name: "SQLITE_IOERR_CLOSE" },
+        Code { ext: 4362, kind: "sqlite.io", name: "SQLITE_IOERR_DIR_CLOSE" },
+        Code { ext: 4618, kind: "sqlite.io", name: "SQLITE_IOERR_SHMOPEN" },
+        Code { ext: 4874, kind: "sqlite.io", name: "SQLITE_IOERR_SHMSIZE" },
+        Code { ext: 5130, kind: "sqlite.io", name: "SQLITE_IOERR_SHMLOCK" },
+        Code { ext: 5386, kind: "sqlite.io", name: "SQLITE_IOERR_SHMMAP" },
+        Code { ext: 5642, kind: "sqlite.io", name: "SQLITE_IOERR_SEEK" },
+        Code { ext: 5898, kind: "sqlite.io", name: "SQLITE_IOERR_DELETE_NOENT" },
+        Code { ext: 6154, kind: "sqlite.io", name: "SQLITE_IOERR_MMAP" },
+        Code { ext: 6410, kind: "sqlite.io", name: "SQLITE_IOERR_GETTEMPPATH" },
+        Code { ext: 6666, kind: "sqlite.io", name: "SQLITE_IOERR_CONVPATH" },
+        Code { ext: 6922, kind: "sqlite.io", name: "SQLITE_IOERR_VNODE" },
+        Code { ext: 7178, kind: "sqlite.io", name: "SQLITE_IOERR_AUTH" },
+        Code { ext: 7434, kind: "sqlite.io", name: "SQLITE_IOERR_BEGIN_ATOMIC" },
+        Code { ext: 7690, kind: "sqlite.io", name: "SQLITE_IOERR_COMMIT_ATOMIC" },
+        Code { ext: 7946, kind: "sqlite.io", name: "SQLITE_IOERR_ROLLBACK_ATOMIC" },
+        Code { ext: 8202, kind: "sqlite.io", name: "SQLITE_IOERR_DATA" },
+        Code { ext: 8458, kind: "sqlite.io", name: "SQLITE_IOERR_CORRUPTFS" },
+        Code { ext: 8714, kind: "sqlite.io", name: "SQLITE_IOERR_IN_PAGE" },
+        Code { ext: 8970, kind: "sqlite.io", name: "SQLITE_IOERR_BADKEY" },
+        Code { ext: 9226, kind: "sqlite.io", name: "SQLITE_IOERR_CODEC" },
+        Code { ext: 262, kind: "sqlite.busy", name: "SQLITE_LOCKED_SHAREDCACHE" },
+        Code { ext: 518, kind: "sqlite.busy", name: "SQLITE_LOCKED_VTAB" },
+        Code { ext: 261, kind: "sqlite.busy", name: "SQLITE_BUSY_RECOVERY" },
+        Code { ext: 517, kind: "sqlite.busy", name: "SQLITE_BUSY_SNAPSHOT" },
+        Code { ext: 773, kind: "sqlite.busy", name: "SQLITE_BUSY_TIMEOUT" },
+        Code { ext: 270, kind: "sqlite.cant_open", name: "SQLITE_CANTOPEN_NOTEMPDIR" },
+        Code { ext: 526, kind: "sqlite.cant_open", name: "SQLITE_CANTOPEN_ISDIR" },
+        Code { ext: 782, kind: "sqlite.cant_open", name: "SQLITE_CANTOPEN_FULLPATH" },
+        Code { ext: 1038, kind: "sqlite.cant_open", name: "SQLITE_CANTOPEN_CONVPATH" },
+        Code { ext: 1294, kind: "sqlite.cant_open", name: "SQLITE_CANTOPEN_DIRTYWAL" },
+        Code { ext: 1550, kind: "sqlite.cant_open", name: "SQLITE_CANTOPEN_SYMLINK" },
+        Code { ext: 267, kind: "sqlite.corrupt", name: "SQLITE_CORRUPT_VTAB" },
+        Code { ext: 523, kind: "sqlite.corrupt", name: "SQLITE_CORRUPT_SEQUENCE" },
+        Code { ext: 779, kind: "sqlite.corrupt", name: "SQLITE_CORRUPT_INDEX" },
+        Code { ext: 264, kind: "sqlite.denied", name: "SQLITE_READONLY_RECOVERY" },
+        Code { ext: 520, kind: "sqlite.denied", name: "SQLITE_READONLY_CANTLOCK" },
+        Code { ext: 776, kind: "sqlite.denied", name: "SQLITE_READONLY_ROLLBACK" },
+        Code { ext: 1032, kind: "sqlite.denied", name: "SQLITE_READONLY_DBMOVED" },
+        Code { ext: 1288, kind: "sqlite.denied", name: "SQLITE_READONLY_CANTINIT" },
+        Code { ext: 1544, kind: "sqlite.denied", name: "SQLITE_READONLY_DIRECTORY" },
+        Code { ext: 516, kind: "sqlite.other", name: "SQLITE_ABORT_ROLLBACK" },
+        Code { ext: 275, kind: "sqlite.constraint.check", name: "SQLITE_CONSTRAINT_CHECK" },
+        Code { ext: 531, kind: "sqlite.constraint.commit_hook", name: "SQLITE_CONSTRAINT_COMMITHOOK" },
+        Code { ext: 787, kind: "sqlite.constraint.foreign_key", name: "SQLITE_CONSTRAINT_FOREIGNKEY" },
+        Code { ext: 1043, kind: "sqlite.constraint.function", name: "SQLITE_CONSTRAINT_FUNCTION" },
+        Code { ext: 1299, kind: "sqlite.constraint.not_null", name: "SQLITE_CONSTRAINT_NOTNULL" },
+        Code { ext: 1555, kind: "sqlite.constraint.primary_key", name: "SQLITE_CONSTRAINT_PRIMARYKEY" },
+        Code { ext: 1811, kind: "sqlite.constraint.trigger", name: "SQLITE_CONSTRAINT_TRIGGER" },
+        Code { ext: 2067, kind: "sqlite.constraint.unique", name: "SQLITE_CONSTRAINT_UNIQUE" },
+        Code { ext: 2323, kind: "sqlite.constraint.vtab", name: "SQLITE_CONSTRAINT_VTAB" },
+        Code { ext: 2579, kind: "sqlite.constraint.rowid", name: "SQLITE_CONSTRAINT_ROWID" },
+        Code { ext: 2835, kind: "sqlite.constraint.pinned", name: "SQLITE_CONSTRAINT_PINNED" },
+        Code { ext: 3091, kind: "sqlite.constraint.datatype", name: "SQLITE_CONSTRAINT_DATATYPE" },
+        Code { ext: 283, kind: "sqlite.other", name: "SQLITE_NOTICE_RECOVER_WAL" },
+        Code { ext: 539, kind: "sqlite.other", name: "SQLITE_NOTICE_RECOVER_ROLLBACK" },
+        Code { ext: 795, kind: "sqlite.other", name: "SQLITE_NOTICE_RBU" },
+        Code { ext: 284, kind: "sqlite.other", name: "SQLITE_WARNING_AUTOINDEX" },
+        Code { ext: 279, kind: "sqlite.other", name: "SQLITE_AUTH_USER" },
+        Code { ext: 256, kind: "sqlite.other", name: "SQLITE_OK_LOAD_PERMANENTLY" },
+        Code { ext: 512, kind: "sqlite.other", name: "SQLITE_OK_SYMLINK" },
+    ]
+}
+
+/// Codes whose arm the registry gets wrong, with their C names.
+fn wrong() -> List<string> { [c.name for c in codes() if cause_of(c.ext).kind() != c.kind] }
+
+/// The primary code is the low eight bits — the mask the whole registry
+/// turns on.
+fn primary(ext: int) -> int { ext % 256 }
+
+fn kind_of(ext: int) -> string { cause_of(ext).kind() }
+
+fn retryable(ext: int) -> bool { cause_of(ext).retryable() }
+
+/// A failure built by hand, to prove the value carries what it says.
+fn a_failure() -> SqlError {
+    SqlError { cause: cause_of(2067), code: 19, extended: 2067, message: "UNIQUE constraint failed", sql: "insert into t values (1)" }
+}
+
+spec "std/sqlite error" {
+
+    given "every extended code the vendored header declares" {
+        then "the header's table is not empty" { codes().length == 82 }
+        then "every one of them lands in the arm it should" { wrong().length == 0 }
+        then "and none of them falls through to `.Other`" { [c.name for c in codes() if c.kind != "sqlite.other" && kind_of(c.ext) == "sqlite.other"].length == 0 }
+    }
+
+    given "the primary code is the low eight bits" {
+        // An enum matched on the EXTENDED value without the mask never
+        // matches its own primary arm.
+        then "SQLITE_CONSTRAINT_UNIQUE's primary is SQLITE_CONSTRAINT" { primary(2067) == 19 }
+        then "and 2067 is not 19, which is the whole trap" { 2067 != 19 }
+        then "a bare primary code maps like its family" { kind_of(19) == "sqlite.constraint.plain" }
+        then "an extended one keeps its detail" { kind_of(2067) == "sqlite.constraint.unique" }
+        then "a foreign key is a different sentence from a unique" { kind_of(787) != kind_of(2067) }
+    }
+
+    given "the retry decision, which is the only thing `Waiting` is for" {
+        then "a plain busy may clear" { retryable(5) }
+        then "a busy recovery may clear" { retryable(261) }
+        then "a busy timeout may clear" { retryable(773) }
+        // A stale read snapshot never becomes OK in place: it needs the
+        // transaction rolled back and re-run, which only a caller can do.
+        then "a busy SNAPSHOT never clears" { !retryable(517) }
+        // SQLITE_BUSY is another connection; SQLITE_LOCKED is THIS one,
+        // so the lock is held by the retry loop itself. Retrying it is a
+        // hang rather than a slow error.
+        then "a LOCKED never clears, though it reads as a busy" { !retryable(6) }
+        then "and it is still classified as a busy" { kind_of(6) == "sqlite.busy" }
+        then "nothing else is retryable — a constraint is not" { !retryable(2067) }
+        then "nor is a corruption" { !retryable(11) }
+        then "nor is the driver's own defect" { !retryable(21) }
+    }
+
+    given "the codes that mean the DRIVER is wrong, not the caller" {
+        then "SQLITE_MISUSE is a defect" { kind_of(21) == "sqlite.defect" }
+        then "SQLITE_RANGE is a defect" { kind_of(25) == "sqlite.defect" }
+        then "a defect is never retryable" { !retryable(25) }
+    }
+
+    given "the arms that carry no SQLite code at all" {
+        // The driver's own refusals of a caller's argument, riding the
+        // same enum so ONE match covers every way a call can fail.
+        then "an empty path names itself" { Cause.EmptyPath.kind() == "sqlite.empty_path" }
+        then "a URI path names itself" { Cause.UriPath.kind() == "sqlite.uri_path" }
+        then "many statements names itself" { Cause.ManyStatements.kind() == "sqlite.many_statements" }
+        then "no statement names itself" { Cause.NoStatement.kind() == "sqlite.no_statement" }
+        then "discarded rows name themselves" { Cause.RowsDiscarded.kind() == "sqlite.rows_discarded" }
+        then "and none of the five is retryable" { !Cause.EmptyPath.retryable() && !Cause.RowsDiscarded.retryable() }
+        // The five sit beside arms that were already the driver's own.
+        then "a class mismatch is one of those too" { Cause.Mismatch(0, Storage.Int, Storage.Text).kind() == "sqlite.mismatch" }
+        then "so is a column that is not there" { Cause.NoColumn("nope").kind() == "sqlite.no_column" }
+    }
+
+    given "the failure value itself" {
+        then "it carries the extended code exactly" { a_failure().extended == 2067 }
+        then "and the primary beside it" { a_failure().code == 19 }
+        then "its cause is the one the code names" { a_failure().cause.kind() == "sqlite.constraint.unique" }
+        then "it describes itself by kind and message" { a_failure().describe().kind == "sqlite.constraint.unique" }
+        then "the message is the one it was built with" { a_failure().describe().message == "UNIQUE constraint failed" }
+        then "the SQL rides along when there was one" { (a_failure().sql ?? "") == "insert into t values (1)" }
+        then "and the span is absent until an offset says otherwise" { a_failure().at == null }
+    }
+}

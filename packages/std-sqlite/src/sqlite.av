@@ -1,0 +1,105 @@
+//! SQLite, vendored and compiled in: the database is a file and the
+//! driver is in the binary.
+//!
+//! The WALL is `c/` — every `sqlite3_*` entry point this build can
+//! declare, by its own name. The FACE is here, written in the wall's
+//! terms, so dropping from one to the other is a continuation rather
+//! than an escape.
+//!
+//! THE MODULES, and what each one owns:
+//!
+//! ```
+//! c/          the WALL — 84 `sqlite3_*` entry points, by their own
+//!             names, in five files by family
+//! error.av    the failure VALUE: the 28-arm `Cause` registry, the map
+//!             from a result code to it, and the two projections a
+//!             caller branches on
+//! open.av     opening's PURE half — the config, the flag word it
+//!             becomes, and the judgement of the path
+//! script.av   a script divided into statements, by asking the PARSER
+//!             where each one ends rather than scanning for `;`
+//! boundary.av what the guards must see: the NUL-safe primitives, the
+//!             NUL-lossy ones, and the law that separates them
+//! sqlite.av   this file — the library-wide face
+//! ```
+//!
+//! Everything above needs NO CONNECTION, which is why it exists while
+//! the FFI does not. A connection, a statement and a row wait on an
+//! out-parameter, a mintable `ptr`, `float` and `Bytes` — and the
+//! driver refuses to fake any of them.
+//!
+//! THE FAILURE TYPES ARE REACHED THROUGH THEIR MODULE, not through this
+//! file: `use @std.sqlite.error.{SqlError, Cause}`. The design spells
+//! them at the package root, and the one line that would do it is
+//! refused — `export use error.{SqlError, Cause}` is `F3014: 'export
+//! use' — a re-export — arrives with a later slice`. This is the
+//! wanting site; the spelling changes to the design's the day it lands,
+//! and no caller's code changes but its import.
+
+use script.{completes}
+use c.{sqlite3_libversion, sqlite3_libversion_number, sqlite3_sourceid, sqlite3_compileoption_used, sqlite3_compileoption_get, sqlite3_threadsafe, sqlite3_errstr, sqlite3_keyword_count, sqlite3_keyword_check, sqlite3_strlike, sqlite3_strglob, sqlite3_stricmp, sqlite3_memory_used, sqlite3_memory_highwater}
+
+/// The vendored SQLite's version — "3.53.4".
+export fn version() -> string { sqlite3_libversion() }
+
+/// The version as one number: `X*1000000 + Y*1000 + Z`.
+export fn version_number() -> int { sqlite3_libversion_number() }
+
+/// The check-in this build came from.
+export fn source_id() -> string { sqlite3_sourceid() }
+
+/// Whether this build carries an option, named without its
+/// `SQLITE_` prefix — `compiled_with("ENABLE_FTS5")`.
+export fn compiled_with(option: string) -> bool { sqlite3_compileoption_used(option) != 0 }
+
+/// Every option this build reports, in the library's own order.
+/// What `avra explain sqlite` shows: the flags the binary holds, not
+/// the flags a build file claims.
+export fn compile_options() -> List<string> {
+    [option_at(i) for i in 0..option_count()]
+}
+
+/// Where the option list ends — the library answers absence rather
+/// than a count.
+fn option_count() -> int {
+    mut n = 0
+    while sqlite3_compileoption_get(n) != null { n = n + 1 }
+    n
+}
+
+/// The Nth option. Every index below `option_count()` has one.
+fn option_at(i: int) -> string { sqlite3_compileoption_get(i) ?? "" }
+
+/// Whether the library carries its mutexes — false only when the
+/// mutexing code was omitted.
+export fn threadsafe() -> bool { sqlite3_threadsafe() != 0 }
+
+/// Whether the text ends in a complete, terminated SQL statement.
+/// A partial statement and an allocation failure both answer false.
+export fn is_complete(sql: string) -> bool { completes(sql) }
+
+/// English text for a primary or extended result code.
+export fn describe(code: int) -> string { sqlite3_errstr(code) }
+
+/// How many keywords this build recognises.
+export fn keyword_count() -> int { sqlite3_keyword_count() }
+
+/// Whether the word is one of SQLite's keywords.
+export fn is_keyword(word: string) -> bool { sqlite3_keyword_check(word, word.length) != 0 }
+
+/// SQLite's own LIKE, with no escape character.
+export fn like(pattern: string, text: string) -> bool { sqlite3_strlike(pattern, text, 0) == 0 }
+
+/// SQLite's own GLOB.
+export fn glob(pattern: string, text: string) -> bool { sqlite3_strglob(pattern, text) == 0 }
+
+/// SQLite's NOCASE comparison — ASCII case folding only, as the
+/// collation itself does.
+export fn equal_nocase(a: string, b: string) -> bool { sqlite3_stricmp(a, b) == 0 }
+
+/// Bytes the library holds. Zero under `DEFAULT_MEMSTATUS=0` unless
+/// a connection turned the counters on.
+export fn memory_used() -> int { sqlite3_memory_used() }
+
+/// The high-water mark in bytes, left standing.
+export fn memory_highwater() -> int { sqlite3_memory_highwater(0) }

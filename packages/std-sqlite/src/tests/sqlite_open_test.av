@@ -1,0 +1,116 @@
+// The half of `open` that happens BEFORE SQLite is called, which is all
+// of it that can be tested today: the flag word a config becomes, and
+// the paths refused before a handle is asked for.
+//
+// The bit values are `vendor/sqlite3.h:603-624`. Asserting them here is
+// what makes the header's table a checked fact rather than a
+// transcription — a bit that moves in a version bump fails here.
+use @std.sqlite.open.{OpenConfig, Mode, Threading, config_at, flags_of, path_fault}
+use @std.sqlite.error.{SqlError}
+
+fn readonly() -> int { 1 }
+fn readwrite() -> int { 2 }
+fn create() -> int { 4 }
+fn uri() -> int { 64 }
+fn nomutex() -> int { 32768 }
+fn fullmutex() -> int { 65536 }
+fn sharedcache() -> int { 131072 }
+fn privatecache() -> int { 262144 }
+fn nofollow() -> int { 16777216 }
+fn exrescode() -> int { 33554432 }
+
+/// Whether a bit is set in the word. The flag word is a sum of distinct
+/// powers of two, so integer division and a parity test read it.
+fn has(word: int, bit: int) -> bool { (word / bit) % 2 == 1 }
+
+fn plain() -> int { flags_of(config_at("/tmp/a.db")) }
+fn read_only() -> int { flags_of(config_at("/tmp/a.db") with { mode: Mode.ReadOnly }) }
+fn open_existing() -> int { flags_of(config_at("/tmp/a.db") with { mode: Mode.OpenExisting }) }
+fn with_uri() -> int { flags_of(config_at("/tmp/a.db") with { uri: true }) }
+fn shared() -> int { flags_of(config_at("/tmp/a.db") with { shared_cache: true }) }
+fn unshared() -> int { flags_of(config_at("/tmp/a.db") with { threading: Threading.Unshared }) }
+fn following() -> int { flags_of(config_at("/tmp/a.db") with { no_follow: true }) }
+
+/// How many of the three access bits a word carries. The header allows
+/// exactly one of READONLY, READWRITE, or READWRITE|CREATE — so
+/// READONLY and READWRITE are never both set.
+fn access_bits(word: int) -> int {
+    [b for b in [readonly(), readwrite()] if has(word, b)].length
+}
+
+/// The kind a refused path names, or empty text when it was accepted.
+fn fault_kind(path: string) -> string { refused_kind(path_fault(config_at(path))) }
+
+fn fault_kind_uri(path: string) -> string { refused_kind(path_fault(config_at(path) with { uri: true })) }
+
+fn refused_kind(e: SqlError?) -> string {
+    if e == null { return "" }
+    e!.cause.kind()
+}
+
+fn fault_message(path: string) -> string {
+    let e: SqlError? = path_fault(config_at(path))
+    if e == null { return "" }
+    e!.message
+}
+
+spec "std/sqlite open" {
+
+    given "the flag word a default config becomes" {
+        // `open(path)` is the line a first-generation LLM writes, and
+        // it must be the correct one.
+        then "it is read-write" { has(plain(), readwrite()) }
+        then "it creates a missing file" { has(plain(), create()) }
+        then "it is not read-only" { !has(plain(), readonly()) }
+        // Extended result codes are not a field: a caller who cannot
+        // tell UNIQUE from FOREIGNKEY cannot be given a cause.
+        then "extended result codes are ALWAYS on" { has(plain(), exrescode()) }
+        then "the cache is private" { has(plain(), privatecache()) }
+        then "and not shared" { !has(plain(), sharedcache()) }
+        then "the connection carries its own mutex" { has(plain(), fullmutex()) }
+        then "URI parsing is off" { !has(plain(), uri()) }
+        then "and symlinks are followed, as a filesystem does" { !has(plain(), nofollow()) }
+    }
+
+    given "the header's law: exactly ONE of three access combinations" {
+        then "the default sets one access bit family, never two" { access_bits(plain()) == 1 }
+        then "read-only sets one" { access_bits(read_only()) == 1 }
+        then "open-existing sets one" { access_bits(open_existing()) == 1 }
+        then "read-only is READONLY and not READWRITE" { has(read_only(), readonly()) && !has(read_only(), readwrite()) }
+        then "read-only never creates" { !has(read_only(), create()) }
+        // READWRITE without CREATE requires the file to exist, which is
+        // what an existence check wants. There is no `create: false` to
+        // write: the three modes ARE the three lawful combinations, so a
+        // fourth cannot be spelled — SQLite answers SQLITE_MISUSE to
+        // every one of them (measured).
+        then "open-existing is READWRITE without CREATE" { has(open_existing(), readwrite()) && !has(open_existing(), create()) }
+        then "and it is not read-only" { !has(open_existing(), readonly()) }
+    }
+
+    given "the fields that turn a bit on" {
+        then "uri sets the URI bit" { has(with_uri(), uri()) }
+        then "shared_cache swaps private for shared" { has(shared(), sharedcache()) && !has(shared(), privatecache()) }
+        then "unshared threading swaps FULLMUTEX for NOMUTEX" { has(unshared(), nomutex()) && !has(unshared(), fullmutex()) }
+        then "no_follow sets NOFOLLOW" { has(following(), nofollow()) }
+        then "and each one leaves the access bits alone" { access_bits(with_uri()) == 1 && access_bits(shared()) == 1 }
+    }
+
+    given "the paths refused before a handle is asked for" {
+        // SQLite SPENDS the empty string: it means "a private temporary
+        // database on disk, deleted at close". A config with a missing
+        // `path =` key would open, succeed at every write, and lose
+        // everything at shutdown, with no error at any point.
+        then "an empty path is refused by name" { fault_kind("") == "sqlite.empty_path" }
+        then "`:memory:` written as a path is refused the same way" { fault_kind(":memory:") == "sqlite.empty_path" }
+        then "the refusal says both spellings have their own verb" { fault_message("").contains("its own verb") }
+        // A raw `file:` path is a URI wherever URI parsing is on. This
+        // build no longer compiles SQLITE_USE_URI, so the library
+        // refuses it too — the door and the boundary agree.
+        then "a `file:` path is refused as a URI" { fault_kind("file:/tmp/a.db?mode=ro") == "sqlite.uri_path" }
+        then "the refusal quotes the path back" { fault_message("file:/tmp/a.db").contains("file:/tmp/a.db") }
+        then "and it is ACCEPTED when the caller asked for URIs" { fault_kind_uri("file:/tmp/a.db?mode=ro") == "" }
+        then "an ordinary path is accepted" { fault_kind("/tmp/a.db") == "" }
+        then "a relative path is accepted" { fault_kind("data.db") == "" }
+        then "a path merely CONTAINING `file:` is accepted" { fault_kind("/tmp/file:weird.db") == "" }
+    }
+}

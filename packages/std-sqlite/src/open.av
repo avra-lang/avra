@@ -1,0 +1,188 @@
+//! OPENING, the half that happens BEFORE SQLite is called: the config a
+//! caller writes, the flag word it becomes, and the judgement of the
+//! path. All three are pure, so all three are tested now — what waits is
+//! the one call in the middle, because `sqlite3_open_v2` answers its
+//! handle through a `sqlite3**` and an `extern fn` refuses a `mut` seat.
+//!
+//! `open(path)` will be: judge the path, compute the flags, call, build
+//! the failure. Three of those four are here.
+use error.{Cause, SqlError, refused}
+use boundary.{has_nul}
+
+/// How the file is opened. THREE MODES AND NO `create` FIELD, because
+/// the header allows exactly three flag combinations and a fourth
+/// cannot be spelled here.
+///
+/// A separate `create: bool` made `ReadOnly` + `create: true`
+/// expressible, and there is no honest thing to do with it: SQLite
+/// answers `SQLITE_MISUSE` to `READONLY|CREATE` (measured, rc=21 "bad
+/// parameter or other API misuse"), so passing it through would blame
+/// the DRIVER through `Cause.Defect` for the caller's contradiction,
+/// and dropping it silently is the accepted-and-ignored shape this
+/// driver refuses everywhere else. The state is unrepresentable
+/// instead.
+export enum Mode {
+    /// Read, write, and create the file when it is not there.
+    ReadWrite
+    /// Read and write a file that must ALREADY EXIST. A missing file is
+    /// `CantOpen` rather than a new empty database.
+    OpenExisting
+    /// Read only, and the file must exist. Also the existence check
+    /// that does not create what it asks about.
+    ReadOnly
+}
+
+/// How the connection is shared between threads. `.Serialized` is the
+/// library's own default under `-DSQLITE_THREADSAFE=1` and is what a
+/// service wants; `.Unshared` drops the per-connection mutex and is only
+/// safe when one thread ever touches the handle.
+export enum Threading { Serialized, Unshared }
+
+/// Everything a connection is, at the moment it is opened. Every field
+/// below is a decision, and each one says what it costs.
+export type OpenConfig = {
+    /// The file. NEVER `""` and never `":memory:"` — both are SQLite's
+    /// spelling for a temporary database, and both are their own verbs
+    /// here so that a config with a missing key cannot become one.
+    path: string,
+    mode: Mode = .ReadWrite,
+    /// Read the path as a URI, so `?mode=ro` and `?cache=shared` ride in
+    /// it. OFF, and off at the LIBRARY: this build no longer compiles
+    /// `SQLITE_USE_URI`, so a caller's raw path cannot be reinterpreted
+    /// by a route that never passed through this field.
+    uri: bool = false,
+    /// A private page cache, which is what a connection wants unless it
+    /// is deliberately sharing one.
+    shared_cache: bool = false,
+    threading: Threading = .Serialized,
+    /// Refuse a path whose final component is a symbolic link.
+    no_follow: bool = false,
+}
+
+/// The config `open(path)` means.
+export fn config_at(path: string) -> OpenConfig { OpenConfig { path: path } }
+
+// ── The flag word ───────────────────────────────────────────────
+//
+// A module file holds declarations, so each constant is a fn. The
+// values are `vendor/sqlite3.h:603-624`, and only the ones the header
+// marks "Ok for sqlite3_open_v2()" appear here — a VFS-only bit in this
+// word is a defect, not an option.
+
+fn open_readonly() -> int { 1 }
+fn open_readwrite() -> int { 2 }
+fn open_create() -> int { 4 }
+fn open_uri() -> int { 64 }
+fn open_nomutex() -> int { 32768 }
+fn open_fullmutex() -> int { 65536 }
+fn open_sharedcache() -> int { 131072 }
+fn open_privatecache() -> int { 262144 }
+fn open_nofollow() -> int { 16777216 }
+fn open_exrescode() -> int { 33554432 }
+
+/// The flags word for a config — `sqlite3_open_v2`'s third argument.
+///
+/// EXTENDED RESULT CODES ARE ALWAYS ON, and that is not a field: a
+/// caller who cannot tell `CONSTRAINT_UNIQUE` from `CONSTRAINT_FOREIGNKEY`
+/// cannot be given a cause, and nobody wants them off.
+///
+/// The header requires exactly one of three combinations, and `access`
+/// is where that law lives.
+///
+/// BOTH WORDS ARE MEASURED against the vendored library, not merely
+/// computed:
+///
+/// ```
+/// the default word          33882118   open_v2 -> rc=0
+///   a UNIQUE violation      errcode=2067, extended=2067
+///   2067 rather than 19 is EXRESCODE observed, not assumed
+/// the read-only word        33882113   on a MISSING file -> rc=14
+///   file created? no — which is the existence check that must not
+///   create the thing it asks about
+/// ```
+/// THE SUM IS A BITWISE OR, and it can only be written as a sum: Avra
+/// has no bitwise operators — `a | b` is `F0100: expected BREAK`. So
+/// `+` equalling `|` is not a coincidence this code chose, it is a
+/// property the language forces it to depend on, and it holds only
+/// while every contributor is a DISTINCT bit. A shared bit would CARRY
+/// into a neighbour and set a flag nobody asked for. Nothing states
+/// that invariant except the adversarial suite's bit count, which is
+/// why that test is load-bearing rather than decorative.
+export fn flags_of(c: OpenConfig) -> int {
+    access(c) + uri_bit(c) + cache_bit(c) + mutex_bit(c) + follow_bit(c) + open_exrescode()
+}
+
+/// One of the header's three lawful combinations, and never anything
+/// else. Every other spelling — `READONLY|CREATE`, both access bits,
+/// `CREATE` alone, none at all — answers `SQLITE_MISUSE`, so this match
+/// is the law rather than a convenience.
+fn access(c: OpenConfig) -> int {
+    match c.mode {
+        .ReadWrite -> open_readwrite() + open_create(),
+        .OpenExisting -> open_readwrite(),
+        .ReadOnly -> open_readonly(),
+    }
+}
+
+fn uri_bit(c: OpenConfig) -> int { if c.uri { open_uri() } else { 0 } }
+
+fn cache_bit(c: OpenConfig) -> int { if c.shared_cache { open_sharedcache() } else { open_privatecache() } }
+
+fn mutex_bit(c: OpenConfig) -> int {
+    match c.threading {
+        .Serialized -> open_fullmutex(),
+        .Unshared -> open_nomutex(),
+    }
+}
+
+fn follow_bit(c: OpenConfig) -> int { if c.no_follow { open_nofollow() } else { 0 } }
+
+// ── The path, judged ────────────────────────────────────────────
+
+/// What is wrong with a path, or absence when nothing is — the whole
+/// refusal, built at the guard that found it.
+///
+/// THE EMPTY CASE IS THE FIRST CASE. SQLite spends the empty string to
+/// mean "a private temporary database on disk, deleted at close", so a
+/// config whose `path =` key is missing would open, succeed at every
+/// write, and lose everything at shutdown, with no error anywhere.
+///
+/// `":memory:"` is spent the same way, and a raw `file:` path would be a
+/// URI wherever URI parsing is on. Both are separately named verbs so a
+/// caller asks for them rather than spelling them.
+///
+/// ONE FN AND NO SECOND DISPATCH: a `match` from `Cause` back to words
+/// would answer two arms out of twenty-seven and need a catch-all, which
+/// is a registry with a hole. Each guard names its own refusal instead.
+export fn path_fault(c: OpenConfig) -> SqlError? {
+    if c.path.is_empty() { return spent_empty() }
+    if has_nul(c.path) { return path_holds_a_nul() }
+    if c.path == ":memory:" { return spent_empty() }
+    if !c.uri && c.path.starts_with("file:") { return reads_as_uri(c.path) }
+    null
+}
+
+// ── The voices ──────────────────────────────────────────────────
+//
+// A refusal carries no SQLite code, because SQLite never saw the call.
+
+fn spent_empty() -> SqlError {
+    refused(Cause.EmptyPath,
+        "a database path is a FILE — `\"\"` and `:memory:` are SQLite's two temporary databases, and each has its own verb")
+}
+
+/// MEASURED, and the reason this guard exists: a path whose first byte
+/// is a NUL reaches SQLite as the EMPTY STRING, because C stops there —
+/// `db_filename` comes back empty, which is the private temporary
+/// database deleted at close. The door's own `.length` said 2. So the
+/// empty-path trap walks straight through a door built to stop it, and
+/// a mid-NUL path opens a file the caller did not name.
+fn path_holds_a_nul() -> SqlError {
+    refused(Cause.HoldsNul,
+        "a database path holds a NUL, and C reads only the bytes before it — the path SQLite would open is not the path you wrote")
+}
+
+fn reads_as_uri(path: string) -> SqlError {
+    refused(Cause.UriPath,
+        "`${path}` begins `file:`, which is a URI and not a filename — ask for a URI deliberately, or give a path")
+}

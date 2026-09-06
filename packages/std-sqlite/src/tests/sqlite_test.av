@@ -1,0 +1,119 @@
+// The vendored library, answering for itself: its version, the flags
+// it was compiled with, and the SQL-text judgements that need no
+// connection. Every case here runs against the amalgamation in
+// vendor/, never against the system library.
+use @std.sqlite.{version, version_number, source_id, compiled_with, compile_options, threadsafe, is_complete, describe, keyword_count, is_keyword, like, glob, equal_nocase, memory_used, memory_highwater}
+use @std.sqlite.c.{sqlite3_free}
+
+/// The flags `vendor/FLAGS.md` promises, spelled as
+/// `sqlite3_compileoption_used` names them. THE FLAG SET IS A
+/// TESTABLE ARTIFACT: this list is the promise and the build is the
+/// answer.
+fn promised() -> List<string> {
+    [
+        "ENABLE_COLUMN_METADATA", "ENABLE_PREUPDATE_HOOK", "ENABLE_SESSION",
+        "ENABLE_SNAPSHOT", "ENABLE_NORMALIZE", "ENABLE_STMT_SCANSTATUS",
+        "ENABLE_UNLOCK_NOTIFY", "ENABLE_FTS5", "ENABLE_RTREE", "ENABLE_GEOPOLY",
+        "ENABLE_MATH_FUNCTIONS", "ENABLE_DBSTAT_VTAB", "ENABLE_DBPAGE_VTAB",
+        "ENABLE_BYTECODE_VTAB", "ENABLE_STAT4", "ENABLE_EXPLAIN_COMMENTS",
+        "ENABLE_OFFSET_SQL_FUNC", "ENABLE_API_ARMOR", "LIKE_DOESNT_MATCH_BLOBS",
+        "STRICT_SUBTYPE", "DEFAULT_FOREIGN_KEYS", "DQS=0",
+        "THREADSAFE=1", "MAX_EXPR_DEPTH=1000", "DEFAULT_MEMSTATUS=0",
+        "DEFAULT_WAL_SYNCHRONOUS=1", "DEFAULT_MMAP_SIZE=268435456",
+        "MAX_MMAP_SIZE=1099511627776", "DEFAULT_CACHE_SIZE=-8000",
+        "DEFAULT_WORKER_THREADS=0",
+    ]
+}
+
+/// Promised flags this build does not carry — empty, or the document
+/// and the object have drifted apart.
+fn unpromised() -> List<string> { [f for f in promised() if !compiled_with(f)] }
+
+/// The flags a full-surface driver must NOT have: each one amputates
+/// surface the campaign calls part of "complete".
+fn forbidden() -> List<string> {
+    // USE_URI is FORBIDDEN, not merely absent: it makes URI parsing
+    // global with no runtime way back, because the off switch is
+    // `sqlite3_config`, which is variadic (vendor/FLAGS.md).
+    ["OMIT_AUTOINIT", "OMIT_DECLTYPE", "OMIT_DEPRECATED", "OMIT_LOAD_EXTENSION", "OMIT_JSON", "OMIT_DESERIALIZE", "OMIT_PROGRESS_CALLBACK", "USE_URI"]
+}
+
+/// Forbidden flags this build carries.
+fn amputated() -> List<string> { [f for f in forbidden() if compiled_with(f)] }
+
+/// `sqlite3_free(NULL)` is a documented no-op. Answers true having
+/// called it, which is the whole point: the symbol resolved.
+fn freed_null() -> bool {
+    sqlite3_free(null)
+    true
+}
+
+spec "std/sqlite" {
+    given "the vendored library answering for itself" {
+        then "the version is the pinned 3.53.4" { version() == "3.53.4" }
+        then "the version number uses the X*1000000 + Y*1000 + Z encoding" { version_number() == 3053004 }
+        then "the source id names the pinned check-in" { source_id().starts_with("2026-07-24 19:02:57") }
+        then "the library carries its mutexes" { threadsafe() }
+    }
+
+    given "the compile options, asked of the object rather than the build file" {
+        then "every flag vendor/FLAGS.md promises is carried" { unpromised().length == 0 }
+        then "no flag that amputates the surface is set" { amputated().length == 0 }
+        then "double-quoted strings are off at the source" { compiled_with("DQS=0") }
+        then "the expression-depth check stays on" { compiled_with("MAX_EXPR_DEPTH=1000") }
+        then "foreign keys are enforced without a pragma" { compiled_with("DEFAULT_FOREIGN_KEYS") }
+        then "an option this build lacks answers false" { !compiled_with("THREADSAFE=0") }
+        then "the option list is as long as the promise" { compile_options().length >= promised().length }
+        then "the list ends rather than running off the end" { compile_options().length < 200 }
+    }
+
+    given "SQL text judged without a connection" {
+        then "a terminated statement is complete" { is_complete("select 1;") }
+        then "an unterminated statement is not" { !is_complete("select 1") }
+        then "an open string literal is not" { !is_complete("select 'a;") }
+        then "empty text is not a statement" { !is_complete("") }
+    }
+
+    given "a result code described" {
+        then "OK is named" { describe(0) == "not an error" }
+        then "an unknown code still answers text, never null" { describe(999999) == "unknown error" }
+        // SQLITE_BUSY_SNAPSHOT and SQLITE_BUSY_TIMEOUT collapse onto
+        // SQLITE_BUSY's words: `errstr` is a PRIMARY-code table, so a
+        // driver that tells the retry cases apart carries its own
+        // naming and keeps the number the text has thrown away.
+        then "an extended code answers its PRIMARY code's words" { describe(261) == describe(5) }
+        then "and so does the other busy" { describe(517) == describe(5) }
+        then "the number is the only thing that keeps them apart" { 261 != 517 }
+    }
+
+    given "the keywords this build recognises" {
+        then "there are some" { keyword_count() > 100 }
+        then "select is one" { is_keyword("select") }
+        then "SELECT is one, case folded" { is_keyword("SELECT") }
+        then "a name of ours is not" { !is_keyword("avra") }
+    }
+
+    given "SQLite's own pattern operators" {
+        then "LIKE folds case, as SQL says" { like("ABC", "abc") }
+        then "LIKE takes % as any run" { like("a%d", "abcd") }
+        then "LIKE refuses what does not match" { !like("a%d", "abce") }
+        then "GLOB does not fold case" { !glob("ABC", "abc") }
+        then "GLOB takes * as any run" { glob("a*d", "abcd") }
+        then "NOCASE folds ASCII" { equal_nocase("Ada", "aDA") }
+        then "NOCASE keeps different text apart" { !equal_nocase("ada", "adb") }
+    }
+
+    given "the connection, statement, column and binding walls" {
+        // Everything in those four files takes a handle, and no handle
+        // exists until `open_v2` can be declared — so the only one that
+        // RUNS today is the free, which SQLite documents as a no-op on
+        // NULL. It proves the new files reach the linker; `nm` against
+        // the object proves the other 60 names resolve.
+        then "a declaration from the new walls links and runs" { freed_null() }
+    }
+
+    given "the library's memory figures" {
+        then "the counters are off, as DEFAULT_MEMSTATUS=0 asks" { memory_used() == 0 }
+        then "the high-water mark reads without disturbing it" { memory_highwater() >= 0 }
+    }
+}

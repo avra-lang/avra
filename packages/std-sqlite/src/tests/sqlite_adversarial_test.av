@@ -1,0 +1,141 @@
+// The red team's record for @std/sqlite's library-wide surface.
+// Two findings drove the wall's shape: a C answer that can be NULL
+// declared `string` kills the process in `strlen` (the fix is the
+// declaration — `string?` — because Avra's absent pointer IS the C
+// null), and a borrowed immortal `const char*` survives every retain
+// path only because `hdr` refuses a header without its tag.
+use @std.text.{from_codepoint, from_codepoints}
+use @std.sqlite.{version, compiled_with, compile_options, is_complete, describe, is_keyword, like, glob, equal_nocase, keyword_count}
+use @std.sqlite.c.{sqlite3_keyword_check, sqlite3_stricmp}
+
+/// Text holding a NUL, which no literal can spell. The five lossy
+/// primitives (`==`, `contains`, `index_of`, `split`, `replace`) stop
+/// at it; the C wall stops at it too, and both must agree.
+fn with_nul() -> string { from_codepoints([115, 101, 108, 101, 99, 116, 0, 120]) }
+
+/// A word held only in a header-less C string is what the wall hands
+/// back; holding it across a list, a struct field and a fn seat is
+/// the retain path that a foreign pointer must survive.
+type Held = { text: string }
+
+fn through(s: string) -> string { s }
+
+/// The borrowed version text, put through every path that retains.
+fn retained() -> List<string> {
+    let v = version()
+    [v, through(v), Held { text: v }.text, v + ""]
+}
+
+/// A borrowed answer held across work that would clobber a reused
+/// buffer. `describe(5)` is "database is locked"; if the pointer were
+/// per-call scratch, walking the option table would overwrite it.
+fn held_survives_options() -> bool {
+    let held = describe(5)
+    let churn = compile_options().length
+    held == "database is locked" && churn > 0
+}
+
+fn held_survives_describes() -> bool {
+    let held = describe(5)
+    let churn = [describe(c).length for c in 0..40].length
+    held == "database is locked" && churn == 40
+}
+
+fn version_survives() -> bool {
+    let held = version()
+    let churn = [describe(c).length for c in 0..40].length
+    held == "3.53.4" && churn == 40
+}
+
+spec "std/sqlite adversarial" {
+    given "a C answer that can be NULL" {
+        // sqlite3_compileoption_get(N) answers NULL past the last
+        // option. Declared `-> string`, reading `.length` on it dies
+        // in strlen; declared `-> string?`, the niche and the C
+        // convention are the same value.
+        then "walking the option list to its end does not die" { compile_options().length > 0 }
+        then "the walk ends where the library says, not at a guess" { compile_options().length < 200 }
+        then "no option in the list is empty text" { [o for o in compile_options() if o.is_empty()].length == 0 }
+    }
+
+    given "a borrowed pointer SQLite owns and never frees" {
+        then "it survives a list, a struct field, a fn seat and a concat" { retained().length == 4 }
+        then "and every one of them still reads as the version" { [s for s in retained() if s.starts_with("3.53.4")].length == 4 }
+        then "its length comes out right without a header" { version().length == 6 }
+    }
+
+    given "empty text at every door — the empty case written first" {
+        then "empty SQL is not a complete statement" { !is_complete("") }
+        then "empty text is not a keyword" { !is_keyword("") }
+        then "an empty option name is not carried" { !compiled_with("") }
+        then "LIKE of empty against empty matches" { like("", "") }
+        then "LIKE of empty against text does not" { !like("", "a") }
+        then "GLOB of empty against empty matches" { glob("", "") }
+        then "NOCASE holds two empties equal" { equal_nocase("", "") }
+    }
+
+    given "a `const char*` seat that CARRIES a length" {
+        // `select\0x` is eight bytes. Passing the honest length puts
+        // the NUL inside the compared region, so the wall judges all
+        // eight — which is why the face never passes -1 and never
+        // lets C measure an Avra string.
+        then "Avra measures the whole text" { with_nul().length == 8 }
+        then "the face passes the honest length, so it is no keyword" { !is_keyword(with_nul()) }
+        then "the same bytes cut at the NUL ARE a keyword" { sqlite3_keyword_check(with_nul(), 6) != 0 }
+        then "a lone NUL is one byte to us" { from_codepoint(0).length == 1 }
+        then "and one byte to the wall too, so it is no keyword" { !is_keyword(from_codepoint(0)) }
+    }
+
+    given "a `const char*` seat with NO length — it truncates, silently" {
+        // THE WALL'S HALF OF THE NUL LAW. Avra's string carries its
+        // length; C's ends at the first NUL. A seat with no companion
+        // length reads the C half, so a longer Avra string smuggles a
+        // shorter C one across and the wall cannot tell them apart.
+        then "a longer name reads as the shorter one it hides" { compiled_with("DQS=0${from_codepoint(0)}x") }
+        then "which is the same answer as the name it hides" { compiled_with("DQS=0") }
+        then "and the two Avra strings are NOT the same length" { "DQS=0${from_codepoint(0)}x".length != "DQS=0".length }
+        then "SQL after a NUL is never judged" { is_complete("select 1;${from_codepoint(0)} select") }
+        then "though Avra still sees every byte of it" { "select 1;${from_codepoint(0)} select".length == 17 }
+    }
+
+    given "codes and options nobody promised" {
+        then "a negative result code still answers text" { describe(0 - 1) == "unknown error" }
+        then "a huge result code still answers text" { describe(2147483647).length > 0 }
+        then "an option name that is a prefix of a real one is not carried" { !compiled_with("ENABLE_FTS") }
+        then "the keyword count is a real count, not a sentinel" { keyword_count() > 100 && keyword_count() < 1000 }
+    }
+
+    given "a C `int` narrower than the Avra `int` reading it" {
+        // C writes 32 bits and neither ABI promises the half above.
+        // Both engines agree on the wrong answer, so `eval == native`
+        // cannot catch it — that property is AGREEMENT, never
+        // correctness. These cases PIN the lie: the day the extern
+        // wall carries sized types they fail, and that is the notice.
+        then "a negative comparison reads as a large positive" { sqlite3_stricmp("a", "b") == 4294967295 }
+        then "so ordering by the wall's own answer is wrong today" { !(sqlite3_stricmp("a", "b") < 0) }
+        then "a positive comparison is unharmed" { sqlite3_stricmp("b", "a") == 1 }
+        then "and zero is zero at either width" { sqlite3_stricmp("a", "a") == 0 }
+        then "which is why the face asks equality alone" { equal_nocase("Ada", "aDA") && !equal_nocase("a", "b") }
+    }
+
+    given "an IMMORTAL borrowed pointer, measured rather than cited" {
+        // The four `-> string` declarations are permitted only because
+        // the text is static for the life of the process. That is read
+        // in the amalgamation, and it is ASSERTED here: an Avra `string`
+        // from the wall IS the C pointer, with no copy anywhere, so if
+        // SQLite reused the memory these would change under us.
+        then "a code's words survive walking the whole option table" { held_survives_options() }
+        then "and survive describing forty other codes" { held_survives_describes() }
+        then "two calls for one code answer the same text" { describe(5) == describe(5) }
+        then "different codes still answer differently" { describe(5) != describe(7) }
+        then "the version survives the same traffic" { version_survives() }
+    }
+
+    given "patterns that make the operators work" {
+        then "LIKE takes _ as one character" { like("a_c", "abc") }
+        then "LIKE's _ is one, not many" { !like("a_c", "abbc") }
+        then "GLOB takes ? as one character" { glob("a?c", "abc") }
+        then "GLOB takes a character class" { glob("a[bc]d", "abd") }
+        then "a pattern of only wildcards matches empty" { like("%", "") }
+    }
+}
