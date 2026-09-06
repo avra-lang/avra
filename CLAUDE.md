@@ -918,6 +918,19 @@ Runtime facts, ours to ratify:
   from it. The same staleness answers questions wrong before it
   fails: `./avra` in a lane is that same old binary, and it will
   re-verify a closed hole as still open.
+  AND IT ARRIVES WITHOUT YOU DOING ANYTHING, which is the half a
+  merge-shaped rule misses: in a worktree two sessions write to, the
+  other session advances the branch and your BINARY is now older than
+  your SOURCE, silently, with nothing failing. The sqlite lane probed
+  `once fn seed(mut n: int)` and got a bare parse error; this tree
+  answered F2055; both were right, because their binary predated the
+  `( mk:"mut" )?` the rule gained in lane C's `mut`-in-a-fn-type
+  slice. So A PROBE RESULT NAMES THE BASE THAT ANSWERED IT. Without
+  that, a probe log is a historical document about a tree its own
+  files no longer describe, and the entries rot in place while every
+  one of them still reads as current. This is the attribution rule
+  one axis over: that one asks WHICH TREE, this one asks WHICH
+  VERSION of it, and receipts decay the same way for the same reason.
 - AN ASSUMPTION NOTHING HAS EVER TRIED TO VIOLATE IS NOT A GUARANTEE.
   A check that passes proves the arrangement it was handed happened
   to work; it does not prove the check would NOTICE. Two shapes,
