@@ -231,8 +231,20 @@ static void acc_add(int k, int64_t bytes) {
     if (g_acc_total_live > g_acc_total_peak) g_acc_total_peak = g_acc_total_live;
 }
 
+// EVERY KIND NAMED, so a new one is visible here rather than filed
+// under whatever the chain ended in. C cannot demand exhaustiveness,
+// so the arms are the record: an immortal string is still a STRING,
+// and only a genuine record falls through.
 static int acc_kind_of(int32_t kind) {
-    return kind == KIND_ARRAY ? ACC_LIST : kind == KIND_MAP ? ACC_MAP : kind == KIND_STR ? ACC_STR : ACC_RECORD;
+    switch (kind) {
+        case KIND_ARRAY:  return ACC_LIST;
+        case KIND_MAP:    return ACC_MAP;
+        case KIND_STR:    return ACC_STR;
+        case KIND_STATIC: return ACC_STR;
+        case KIND_PLAIN:  return ACC_RECORD;
+        case KIND_DEAD:   return ACC_RECORD;
+        default:          return ACC_RECORD;
+    }
 }
 
 static size_t class_of(size_t bytes) {
