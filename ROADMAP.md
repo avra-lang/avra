@@ -416,6 +416,35 @@ the compiler checking itself 28.8s.
           closes our half of the width class only. A binding to
           someone else's library is unprotected until the sized types
           land — do not write declarations against the keeper.
+  - [x] THE WELL IS DRY FOR LANE A (re-profiled 2026-09-05 at the
+        day's end, main 9e8916d, self-check 8.2s / gate 20.2s). The
+        remaining cost is three things and lane A owns none of the
+        cheap part of any of them:
+        1. REFCOUNT TRAFFIC, ~35% of samples, inside
+           `avra_rc_retain`/`avra_rc_release` themselves. That is
+           lane C's S3 liveness, already priced here; LTO across the
+           runtime was measured NEUTRAL (9.34 vs 9.36), so it is the
+           bodies, not the calls.
+        2. ALLOCATION, ~12% (`box_alloc`/`box_free`/`buf_alloc`/
+           `buf_free`). Already paid twice today — size-class free
+           lists, then one classed buffer per list, then sized boxes.
+        3. THE FIELD READ, ~10% (`avra_array_get` + its owned twin).
+           CONSIDERED AND REFUSED: a struct field read passes a
+           COMPILE-TIME index into a compiler-built box, so its
+           bounds check is provably dead weight and an unchecked row
+           would drop a load and two branches. MEASURED SHARE: ~2% of
+           the check, ~0.2s of 8.2s. REFUSED because that bounds
+           check is the trap that turns a wrong generated index into
+           a named failure instead of memory corruption — this tree
+           has been bitten by exactly that ("index -1" from a
+           name-keyed table read). Two percent is not worth trading a
+           loud failure for a silent one. Emitting the load INLINE in
+           the backend was refused for a second reason: it would
+           couple the backend to `AvraArray`'s private layout, which
+           changed twice today.
+        Further rounds here would start inventing work. The next real
+        gain arrives with S3, or with a persistent memo across
+        processes (recorded, big, not scheduled).
   - [x] THE EXTERN WALL'S WIDTH (2026-09-05, the SQLITE lane's find,
         REPRODUCED here before acting): Avra's `int` is 64 bits and
         C's is 32. `declare_externs` declares every extern answering
