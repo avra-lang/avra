@@ -648,6 +648,16 @@ the compiler checking itself 28.8s.
         `cast_to_type`). The names differ by one word and the wrong
         one emits an instruction where a constant belongs. On a yes,
         this is minutes.
+        A RELAYED APPROVAL WAS TRIED AND REFUSED (2026-09-05). A peer
+        carried word that the owner had said "do it"; lane A wrote the
+        wrapper on it and reverted it unlanded when lane C declined
+        the same relay, in better words than either of us had: taking
+        it second-hand converts "the owner decides" into "the owner
+        decides, or someone says they did", and the second is not a
+        fence. THE YES MUST REACH THE LANE THAT BUILDS, FROM THE
+        OWNER. Recorded here so the next relay meets a precedent
+        rather than a memory — the fence is only worth what it
+        refuses under pressure, and it was tested that same day.
   - [x] THE EXTERN WALL'S WIDTH (2026-09-05, the SQLITE lane's find,
         REPRODUCED here before acting): Avra's `int` is 64 bits and
         C's is 32. `declare_externs` declares every extern answering
