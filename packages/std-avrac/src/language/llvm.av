@@ -9,6 +9,12 @@
 use core.{Ins, Reg, body_symbol, hosted_symbol, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_index}
 use features.{nothing}
 
+// The runtime's wreck. The backend has no diagnostic channel — by the
+// time IR is emitted the program has been judged — so an IR shape the
+// compiler's own law forbids exits 2 and is never read as a
+// disagreement with the program.
+extern fn avra_trap(message: string)
+
 /// One body's emission world: the LLVM handles, this body's register
 /// types, the growing register value table (dense by Reg — registers
 /// mint in instruction order, params first), and the open regions,
@@ -354,8 +360,18 @@ impl Emit {
 
 
     /// icmp predicates by number: 32 eq, 33 ne, 38 sgt, 39 sge, 40 slt,
-    /// 41 sle. The lazy ops lower as regions and never reach a Bin; the
-    /// arms stay honest (eager i1 and/or) for exhaustiveness.
+    /// 41 sle. `And`/`Or` are the LAZY ops: they lower as regions and
+    /// a `Bin` carrying one is the IR's bool law broken, which both
+    /// engines say in the same words — an eager `and` here would be a
+    /// plausible answer to an impossible question, in the exact arms a
+    /// bitwise operator would be tempted to reuse.
+    /// An IR shape the compiler's own law forbids. `unreached` is the
+    /// answer the subset demands and the trap never lets it give.
+    fn wrecked(what: string, unreached: ptr) -> ptr {
+        avra_trap("compiler defect: ${what}")
+        unreached
+    }
+
     fn bin_value(op: BinOp, a: ptr, b: ptr) -> ptr {
         match op {
             .Add -> avra_llvm_build_add(self.b, a, b, "add"),
@@ -371,8 +387,7 @@ impl Emit {
             .Le -> avra_llvm_build_icmp(self.b, 41, a, b, "cmp"),
             .Gt -> avra_llvm_build_icmp(self.b, 38, a, b, "cmp"),
             .Ge -> avra_llvm_build_icmp(self.b, 39, a, b, "cmp"),
-            .And -> avra_llvm_build_and(self.b, a, b, "and"),
-            .Or -> avra_llvm_build_or(self.b, a, b, "or"),
+            .And or .Or -> self.wrecked("a lazy op reached the eager path", a),
         }
     }
 
