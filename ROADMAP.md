@@ -2097,6 +2097,32 @@ the order is the dependency.
         operation cheaper. A memory-pass change that moves PLACEMENT
         (S3, S3b) cannot use it, because placement changes counts;
         one that moves only cost can.
+  - [x] A RECONSTRUCTION NAMES ONE FIELD, NEVER THE REST. LANDED
+        2026-09-06; found by the DOCS campaign's subset lane, and it
+        was a latent hole in the seat law's own slice. `plain(t)`
+        answered "the same written type with its `?` dropped" by
+        spelling SIX of TypeRef's seven fields, so `muts` — added by
+        the `mut`-in-a-fn-type slice itself — was dropped from the
+        day it existed. A `mut`-taking fn stored in a plain fn seat
+        writes through an immutable `let` with no diagnostic, in both
+        engines, which is the hazard that slice was landed to close.
+        LATENT ON A GAP THAT WILL CLOSE, which is the shape this lane
+        keeps meeting: the one caller feeds `fn_written`, and a
+        nullable fn type is UNSPELLABLE today (the `?` binds to the
+        return, and the fn-type grammar has no trailing `?`), so
+        nothing can reach `plain` with marks. The day it can, the
+        marks are dropped on the path that decides seat
+        compatibility, and no test fails in between — the same
+        structure as the sqlite double-close, one level in.
+        THE FIX KILLS THE CLASS: `t with { optional: false }`. A
+        reconstruction names WHAT CHANGES and inherits the rest, so
+        the next field cannot be dropped. Spelling the others out is
+        what drops them — and a field with a DEFAULT drops with no
+        compile error at all, so the thing that makes a field cheap
+        to ADD is exactly what makes its omission invisible.
+        Pinned by a hand-built value, since the grammar cannot reach
+        it, and FIRE-TESTED: the test fails against the old `plain`
+        and passes against the new.
   - [ ] A CONST'S REGISTER WEARS THE LITERAL'S TYPE, where the
         DECLARATION's should decide — CLAUDE.md's cell law one seat
         over, never audited for consts. `constant_reg`
