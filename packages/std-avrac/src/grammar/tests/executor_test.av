@@ -2,7 +2,7 @@
 // lexer's own token shapes. Builders render to S-expressions so every
 // outcome asserts as a plain string.
 use @std.avrac.core.{joined, Span}
-use @std.avrac.grammar.{Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect, Recover, rule, seq, seq_to, item, cap, rule_ref, lit, named, lex_grammar, Captured, RunOutcome, run_grammar, ready}
+use @std.avrac.grammar.{Cause, Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect, Recover, rule, seq, seq_to, item, cap, rule_ref, lit, named, lex_grammar, Captured, RunOutcome, run_grammar, ready}
 
 fn render(v: Captured<string>) -> string {
     match v {
@@ -174,7 +174,16 @@ spec "grammar/executor" {
         then "a builder error is a committed diagnostic" {
             let g = g1([rule("e", [seq_to([cap("v", named("NAME")), item(named("BREAK"))], Build.Call("boom", ["v"]))])])
             let o = run_sx(g, "a")
-            o.result == null && o.diagnostics[0].message == "builder failed: boom"
+            o.result == null && o.diagnostics.length == 1
+        }
+        then "a builder's words are carried whole, with nothing prefixed" {
+            // Most builder refusals are LAWS a program broke, so a
+            // blanket "builder failed:" told the reader the compiler
+            // had broken instead. `Cause` carries that distinction;
+            // the words are the builder's own claim.
+            let g = g1([rule("e", [seq_to([cap("v", named("NAME")), item(named("BREAK"))], Build.Call("boom", ["v"]))])])
+            let o = run_sx(g, "a")
+            o.diagnostics[0].message == "boom" && o.diagnostics[0].cause == Cause.Builder
         }
         then "a defective grammar refuses to run" {
             let g = g1([rule("bad", [seq([item(rule_ref("ghost"))])])])
