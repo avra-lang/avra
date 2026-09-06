@@ -3004,30 +3004,33 @@ driver forced someone to read a seam nobody had grown before.
   anyway. Adoption through `str_owned` keeps the convention; a `Bytes`
   box allocated at exactly n would not, and **on that day the branch
   becomes reachable and the old code would have been wrong.**
-  THIS IS THE INVERSE OF THE UNTESTED-INSTRUMENT LAW and needs saying as
-  its own rule, because the two are easily confused: that one says a
-  keeper which has only ever guarded a static enum has never been tested,
-  so MAKE IT FAIL. This one says a fix whose triggering case cannot yet
-  EXIST cannot be made to fail, so the trace IS the verification — and a
-  green test written anyway would be theatre, proving only that the
-  unreachable branch was not taken. THE OWED ARTIFACT IS A DEADLINE: when
-  a box can be allocated at exactly n, this branch becomes reachable and
-  wants its test.
+  THIS IS THE INVERSE OF THE UNTESTED-INSTRUMENT LAW, AND THE QUESTION
+  THAT SORTS THEM IS: **CAN THE TRIGGERING CASE BE CONSTRUCTED FROM THE
+  LANGUAGE TODAY?** YES -> untested instrument; the check has been
+  passing on arrangements that happened to work, so MAKE IT FAIL, and a
+  trace is a rationalisation because the case exists and you did not try
+  it. NO -> fence built early; no test can distinguish the fix from its
+  absence, so the TRACE is the verification and a green test is theatre.
+  AND IT IS A QUESTION RATHER THAN A PAIR OF DESCRIPTIONS BECAUSE THE
+  ANSWER MOVES. The same artifact sits under the second law now and the
+  first law the day a box can be allocated at exactly n — **and nothing
+  about the artifact changes when it crosses.** What changes is the tree
+  around it. So the owed deadline is not bookkeeping: A TRACE IS A CLAIM
+  ABOUT THE WHOLE TREE AT ONE MOMENT, A TEST IS A CLAIM ABOUT ONE BRANCH
+  AT EVERY MOMENT — without the deadline the fix stays verified-by-trace
+  forever, in a tree where the trace stopped being true. ASK WHETHER THE
+  CASE CAN BE CONSTRUCTED, AND RECORD WHEN THE ANSWER WILL CHANGE.
   AND THE RISK WAS CLEARED IN THE BREAKING DIRECTION, which is the half
   that makes the trace trustworthy: a "trust the header" change breaks by
   reading 0 for a headered box that HOLDS CONTENT while claiming zero
   length — a silent truncation to empty, where `strlen` used to rescue
   it. No such box exists, by the same trace. Checked rather than assumed,
   and checked in the direction that would have hurt.
-  WHAT THE LIVE PROBES DID SHOW, adjacent and not nothing: nine ways the
-  tree makes an empty string all answer 0 through the changed branch, an
-  empty arriving from OUTSIDE through `str_static` answers 0 (the nearest
-  existing analogue to a foreign copy), the four string-answering externs
-  still fall back correctly through `hdr()` -> NULL -> `strlen` (6, 12,
-  33, 19, counted by hand), and the NUL asymmetry is unchanged —
-  `.length` follows the HEADER over the terminator where the two
-  disagree, which is the mechanism the fix generalises even though it
-  does not exercise the fixed branch.
+  THE LIVE PROBES, adjacent and not nothing: nine ways the tree makes an
+  empty string all answer 0, an empty arriving from OUTSIDE through
+  `str_static` answers 0, the four string-answering externs still fall
+  back through `hdr()` -> NULL -> `strlen` (6, 12, 33, 19, by hand), and
+  the NUL asymmetry is unchanged.
   A WORDING LAW REPAIRS MESSAGES NOBODY HAS WRITTEN YET — the argument
   for landing one rather than filing it, and it arrived as a NON-EVENT
   spotted in review. Two slices were written the same evening by

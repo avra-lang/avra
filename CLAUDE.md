@@ -1114,6 +1114,24 @@ Runtime facts, ours to ratify:
   makes the eventual breakage read as a new bug rather than an
   EXPIRY. A sixth instance is a CITATION of this line, never another
   paragraph; that is what this entry is for.
+- ITS INVERSE, WHICH LOOKS ALIKE AND PRESCRIBES THE OPPOSITE: A FIX
+  WHOSE TRIGGERING CASE CANNOT EXIST YET IS VERIFIED BY A TRACE, AND
+  OWES A DEADLINE RATHER THAN A CASE. The law below says a check that
+  has never failed is untested, so MAKE it fail. Sometimes you
+  cannot. `str_len` trusting a zero length is unreachable today:
+  `box_alloc` never yields a zero len (`size > 0 ? size : 1`), so
+  only `sized_box(0)` mints one, and all eight of its callers write
+  the terminator — both the old form and the new answer 0. A green
+  test there proves an unreachable branch was not taken, which is
+  theatre. THE TRACE IS THE VERIFICATION, and it is run in the
+  BREAKING direction: trusting a header could only hurt by believing
+  a box that claims zero while HOLDING CONTENT, and no such box
+  exists by the same trace. THE ARTIFACT OWED IS A REGISTER ENTRY,
+  not a test — the day a box is allocated at exactly n the branch
+  becomes reachable, and on that day the old code would have been
+  wrong. Telling the two laws apart is the whole skill: ask whether
+  the failing case CAN BE BUILT. If it can, build it; if it cannot,
+  trace it and write the deadline down.
 - AN ASSUMPTION NOTHING HAS EVER TRIED TO VIOLATE IS NOT A GUARANTEE.
   A check that passes proves the arrangement it was handed happened
   to work; it does not prove the check would NOTICE. Two shapes,
