@@ -674,6 +674,27 @@ Syntax the grammar lacks:
   typed let): "expected BREAK while parsing `stmt`" — `table<Row>
   { … }` is the form.
 - The pipe `|>`: "expected BREAK while parsing `stmt`".
+- BITWISE OPERATORS, all six, and the refusals come in TWO TIERS
+  which is the useful half: `|`, `<<` and `>>` LEX and have no
+  grammar ("expected BREAK while parsing `stmt`", at the operator),
+  while `&`, `^` and `~` are not lexed at all ("unexpected
+  character"). So a flag word for a C API has no spelling but a SUM
+  — @std/sqlite's `flags_of` adds its contributors, and a sum equals
+  an OR only while every contributor is a distinct bit. The language
+  gives no way to state that, so a test is the only place the
+  invariant is said aloud.
+- A RANGE TAKES NO METHODS: `(0..n).any(it == 2)` is "expected `)`
+  to close the group", AT the `..`. A range is a `for`-head and a
+  comprehension's iterable, nothing more — so the idiom bar's "scan
+  with `any`/`find`" reaches a range only THROUGH a comprehension
+  (`[f(i) for i in 0..n].any(…)`), which is worth knowing because
+  the doctrine sends you at a form the parser refuses.
+- `export use`, a re-export: F3014 "`export use` — a re-export —
+  arrives with a later slice". Without it a package's FILE LAYOUT is
+  its public API, so moving a type between files breaks every
+  caller. To reproduce it you need a PACKAGE: a loose scratch file
+  answers F3015 "this file is not in a package — `use` needs a root"
+  first, and never reaches the re-export law.
 - A `once fn` with TYPE PARAMETERS (`once fn f<T>() -> List<T>`):
   "expected `(` while parsing `stmt`" — the once grammar takes a
   name and a parameter list only, and a `T` no argument can pin has

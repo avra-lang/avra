@@ -4395,6 +4395,32 @@ additions get siblings, nothing changes shape:
 
 ## Sugar backlog — dogfooding asks
 
+- BITWISE OPERATORS, and a named reason if their absence is
+  deliberate (filed 2026-09-05, lane D; found by the sqlite
+  campaign's driver lane, probed here). None of `|`, `&`, `^`, `~`,
+  `<<`, `>>` exist, in two tiers — `|`/`<<`/`>>` lex and have no
+  grammar, `&`/`^`/`~` do not lex.
+  THE WANTING SITE IS NOT ERGONOMIC, which is why it is filed rather
+  than noted: @std/sqlite's `flags_of` builds SQLite's open-flag word
+  by SUMMING its contributors, because `+` is the only spelling
+  available, and a sum equals an OR only while every contributor is
+  a distinct bit. The driver lane's reviewer first called that test
+  redundant — "make it an OR so it pins a fact rather than a
+  coincidence" — and the probe inverted the note: there is no OR to
+  replace it with, so `+` equalling `|` is NOT a coincidence the
+  code chose but a PROPERTY THE LANGUAGE FORCES IT TO DEPEND ON, and
+  the test is the only thing anywhere stating it. A language gap
+  that turns an invariant into a coincidence, and pushes the burden
+  of saying it into a test, is the shape worth recording. Every
+  binding to a C API meets a flag word.
+- `export use`, a RE-EXPORT (filed 2026-09-05, lane D; the driver
+  lane's ask, refusal verified here). F3014 "`export use` — a
+  re-export — arrives with a later slice"; rung 15c names it. THE
+  COST IS NOT ERGONOMIC EITHER: without it a package's FILE LAYOUT
+  IS ITS PUBLIC API, so a package cannot curate its own surface and
+  any later move of a type between files breaks every caller. The
+  wanting site is packages/std-sqlite/src/sqlite.av, ATTRIBUTED —
+  that package is not in this tree.
 - TRAILING LAMBDAS for the bracket verbs (filed 2026-09-05, lane D
   from the sqlite driver lane's ask). `tx { 42 }` is "expected BREAK
   while parsing `stmt`" at the `{`; the argument seat is fine, so a
