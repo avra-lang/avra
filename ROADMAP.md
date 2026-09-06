@@ -3061,12 +3061,30 @@ driver forced someone to read a seam nobody had grown before.
   in the TYPED PATHS.
   **AND THEY ARMED IT DELIBERATELY ANYWAY**, which is better than either
   outcome: a witness through the one door that reaches it (`extern fn
-  avra_str_len(b: Bytes)`), made DETERMINISTIC by writing 0xFF rather
-  than NUL into the spare byte, **so a `Bytes` is never accidentally a C
-  string**. The fixed branch now has a test that does not depend on
-  anyone remembering a deadline — which is the deadline's whole purpose,
-  discharged by someone who read the entry rather than by the breakage
+  avra_str_len(b: Bytes)`). The fixed branch now has a test that does not
+  depend on anyone remembering a deadline — the deadline's whole purpose,
+  discharged by someone who READ the entry rather than by the breakage
   arriving.
+  AND THE FIRST DRAFT OF THAT WITNESS PUT 0xFF IN THE SPARE BYTE, "so a
+  `Bytes` is never accidentally a C string" — OVERRULED BY LANE A, and
+  the reason is a law rather than a preference. **A POISON BYTE DOES NOT
+  BUY A DETERMINISTIC FAILURE, IT BUYS AN OUT-OF-BOUNDS READ**: `strlen`
+  walks past the end of the allocation until it finds a zero in unrelated
+  heap, so it can crash, or answer garbage, or answer n+1 because the
+  next byte happened to be zero. Undefined — and this campaign had ruled
+  hours earlier that a stable measurement of undefined behaviour is still
+  undefined behaviour. In a server parsing bytes off a network a
+  truncation is a bug and **A HEAP OVER-READ ON ATTACKER-INFLUENCED DATA
+  IS A VULNERABILITY CLASS**. THE TWO-HATS LAW ASKS FOR THE
+  REINTERPRETATION TO BE MADE IMPOSSIBLE, NOT DANGEROUS — **a poison byte
+  is an escape wearing a fence's clothes.** The spare byte is a NUL and
+  the witness says what it proves.
+  AND THE TEAM LEAD RELAYED THE POISON BYTE AS A VIRTUE — into this
+  ledger and to the owner — an hour AFTER it was overruled and accepted,
+  from a snapshot taken before the ruling. THE CACHED-REF LAW ONE
+  SUBSTRATE OVER: a fact that was true when it was read, repeated as a
+  fact that is true. A relay carries the READING's timestamp, never the
+  tree's.
   THE LAW IT INSTANCES IS ALREADY HERE and this is its second sighting:
   "THE PREDICTION DID NOT COME TRUE, AND HERE IS THE MECHANISM" BEATS "IT
   CAME TRUE". The first was the pointer-constant guard failing to arm
