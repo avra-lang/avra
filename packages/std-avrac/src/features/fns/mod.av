@@ -24,12 +24,13 @@ export fn fns() -> LanguageFeature {
         "resolve.nested_fn"    | "F3004" | "fn declarations live at the top level"
         "type.return"     | "F2025" | "`return` answers the enclosing fn"
         "type.once_fn"    | "F2055" | "a `once` fn takes no arguments and answers a value the runtime owns"
+        "type.host_seat"  | "F2056" | "a `mut` host seat wears a cell C may write, and is handed a local"
     }
     component LanguageFeature f {
         name = "fns"
-        docs = "`fn name(params) -> type { expression }` — generic with `fn name<T>(…)`, one abstract check, one lowering per instantiation; a `mut` parameter is a seat the fn writes through, filled by a `mut` place; calls `name(args)`, `name<int>(args)` pinning what arguments cannot; `return` answers early."
+        docs = "`fn name(params) -> type { expression }` — generic with `fn name<T>(…)`, one abstract check, one lowering per instantiation; a `mut` parameter is a seat the fn writes through, filled by a `mut` place — on an `extern fn` it is the INOUT: C is handed the address of the caller's cell; calls `name(args)`, `name<int>(args)` pinning what arguments cannot; `return` answers early."
         gram = grammar {
-            stmt = "extern" "fn" n:NAME "(" ( ps:NAME ":" pt:type ( "," ps:NAME ":" pt:type )* ","? )? ")" ( "->" r:type )? END @recover(sync_to: "END") -> extern_fn(n, ps, pt, r)
+            stmt = "extern" "fn" n:NAME "(" ( ( mk:"mut" )? ps:NAME ":" pt:type ( "," ( mk:"mut" )? ps:NAME ":" pt:type )* ","? )? ")" ( "->" r:type )? END @recover(sync_to: "END") -> extern_fn(n, mk, ps, pt, r)
             stmt = "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ","? ">" )? "(" ( ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "," ( mk:"mut" )? ps:NAME ( ":" pt:type )? )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> fn_decl(n, tp, tb, mk, ps, pt, r, b)
             stmt = "once" "fn" n:NAME "(" ( ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "," ( mk:"mut" )? ps:NAME ( ":" pt:type )? )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> once_fn(n, mk, ps, pt, r, b)
             stmt = "return" ( v:expression )? END @recover(sync_to: "END") -> return_stmt(v)

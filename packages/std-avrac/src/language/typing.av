@@ -37,7 +37,9 @@ export fn new_type_cx(dispatch: Dispatch, keywords: List<string>, view: FileView
 export fn type_decl(mut t: TypeCx, x: Decl) -> TypeFacts {
     match x.kind {
         .Main -> t.type_stmts(runtime_stmts(t.view)),
-        .Fn -> if x.root == null { nothing() } else { fn_body(t, x) },
+        // a bodyless fn is an EXTERN, and its declaration has laws
+        // of its own — `stmt_semantics_of` already routes it home
+        .Fn -> if x.root == null { t.type_stmts([x.stmt]) } else { fn_body(t, x) },
         .Method -> if x.root == null { nothing() } else { method_body(t, x) },
         .Default -> default_body(t, x),
         .Case -> case_body(t, x),
