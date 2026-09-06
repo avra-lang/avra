@@ -357,6 +357,25 @@ registry is the idiom engine's spec, written by dogfooding.
   value wears two hats and the design owes a SPLIT, not an escape.
   Ask it of format strings, glob patterns, regexes, and the next
   `[link]`-shaped manifest row.
+- ITS SIBLING, AND THE SHARPER ONE: A GUARD AND THE THING IT GUARDS
+  MUST READ THE SAME BYTES. Our own primitives disagree about one
+  value — `avra_str_from_codepoint(0) + "x"` has `.length` 2 AND
+  compares EQUAL to `""`, because `.length` reads the header while
+  `==` is a C call that stops at the NUL (probed here). So a door
+  built from `is_empty`/`==`/`starts_with` and a callee reading the
+  C string are inspecting DIFFERENT VALUES, and the trap the door
+  exists to stop walks straight through it. The sqlite lane's
+  empty-path door is the instance, attributed: an empty path opens a
+  PRIVATE TEMPORARY database deleted at close, so every write
+  succeeds and the data is silently gone. The guard was not weak —
+  it was reading a different string than the callee.
+  AND THE NEAR-MISS IS THE HALF TO REMEMBER: one hostile case was
+  refused BEFORE the fix, by accident, because `==` truncated it
+  into a match. Right answer, wrong reason — a suite written that
+  day goes green and ships the door broken. Recording it as a
+  near-miss rather than counting it as a pass is what separates a
+  red team from a demo. The NUL facts below read like a correctness
+  footnote until someone builds a DOOR out of the lossy half.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
 - Passes are pure queries with ONE standard signature:
   `pass(p: ParsedProgram, ...upstream Facts) -> Facts` — the program
