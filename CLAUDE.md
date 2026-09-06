@@ -323,6 +323,16 @@ registry is the idiom engine's spec, written by dogfooding.
   nobody must act on trains the reader to skip the column errors
   arrive in — MEASURE a lint's true-positive rate before it ships,
   and again when its doctrine moves. The rate is the lint's spec.
+- AND ITS COUNTERPART: A LOUD LINT IS NOT A LINT TO WEAKEN. F2047
+  fires 100 times and every one is TRUE — a writing method called on
+  a non-`mut` receiver, permitted because the receiver law is still a
+  warning. It counts exactly the right thing and fires because the
+  conversion was never paid, which is the MIRROR IMAGE of F2040 and
+  not another instance of it. So measure the rate before deleting a
+  lint's noise AND before trusting a quiet tree: a lint that counts
+  the wrong thing and a law nobody has paid look identical from the
+  warning count alone, and only the true-positive rate tells them
+  apart.
 - Map iteration order never reaches output — iterate an ordered
   source.
 - Grammar authoring: EVERY COMMA LIST TAKES A TRAILING COMMA — a
@@ -830,6 +840,23 @@ Runtime facts, ours to ratify:
   And the watchdog's poll is not a wall: a fast leak reached 16 GB
   between polls before the kill — cap what you can, but never run a
   suspect product over a big input to "see".
+- AFTER A LANGUAGE CHANGE MERGES, A LANE'S FIRST BUILD IS `make
+  bootstrap`, NEVER `make avra`. `make avra` compiles the source with
+  the LANE's standing binary, and a stale compiler cannot read the
+  new syntax — so the build fails pointing AT the new code, which
+  reads as "the merge is broken" when it means "my binary predates
+  it". Main's refreshed seed already carries the change; bootstrap
+  from it. The same staleness answers questions wrong before it
+  fails: `./avra` in a lane is that same old binary, and it will
+  re-verify a closed hole as still open.
+- A COUNT FROM A PACKAGE SWEEP IS LINES, NOT SITES. Checking one
+  package reports its DEPENDENCIES' warnings too, so summing the
+  twelve counts every shared site once per package that reaches it:
+  F2040 read 361 by the sum and 191 deduped by `file:line`, and a
+  single package's figure quoted as "the tree" is a third number
+  again. DEDUP BY IDENTITY BEFORE A NUMBER ENTERS A LEDGER — a count
+  is a claim, and this one bit two lanes the same day, in opposite
+  directions, one of them while correcting the other's scope.
 - MEASURE WHAT A THING DOES BEFORE EXPLAINING WHY TWO DIFFER. The
   tree is built of parallel structures that mostly agree — sibling
   grammar rules, registry tables, exhaustive matches, doctrine

@@ -5980,6 +5980,32 @@ by meaning; each is a slice for lane D unless a lane is named.
   rest. std-toml's 1 site WAS ordinary and is FIXED (three marks: the
   two reader fns and the root binding), leaving 100.
 
+  THE CAPTURE CENSUS (lane D for lane C's S2 scoping, 2026-09-05).
+  Method: mark all 100 F2047 seats `mut`, cascade with the compiler
+  until no further seat can be marked (4 rounds, 66 more seats), and
+  read what REMAINS. F2047 goes to 0 and NO other error is introduced,
+  so the conversion itself is sound; 55 unique sites refuse, in four
+  kinds, and capture-rootedness is NOT the dominant one:
+    CAPTURE 9 — a lambda's by-value copy cannot fill a `mut` seat.
+      8 PRODUCTION (workspace.av 7, lower.av 1), 1 FIXTURE (db_test).
+    VALUE-ARG 38 — a `mut` seat handed a VALUE, not a place.
+      36 TEST, 2 PRODUCTION (workspace.av).
+    ALIAS 1 — typing.av:410, `self` handed `mut` twice in one call
+      (`decl_type_of(self.view.decls, self.facts.voices, …)`): two
+      `mut` seats rooted at one place, the aliasing law refusing
+      correctly. PRODUCTION.
+    NOT-MUT 7 — packages_test.av roots the sweep did not reach. TEST.
+  SO THE SHAPE OF S2 IS 11 PRODUCTION SITES AND 44 TEST SITES, not
+  100 of anything. And all 8 production captures are ONE shape: a
+  CALLBACK REGISTRATION into the memo machinery — `ws.db.family((arg:
+  int) -> refetched(ws, f, arg))`, `ws.decls.arm((d: DeclId) ->
+  ensured(ws, d))`, the `program:` thunk, `(w: Wanted) ->
+  lowered(ws, …)`, and lower.av's `(w: Wanted) -> lower_unit(a, …)`.
+  The lambda captures the workspace and calls back into a query that
+  writes its cache, which is the same shape as the workspace cycle
+  `disarmed` exists for. Weak captures and `Cell<T>` are aimed at one
+  target between them.
+
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure
   variant enumeration in core/parts.av and core/nodes.av; F2040
