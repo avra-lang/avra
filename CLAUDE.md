@@ -98,6 +98,14 @@ source and refuses a repeated number.
   the file's tail or shared where features share words. Rule
   bodies read as guard + verb (I28; enums/check.av is the
   exemplar).
+  AND A VOICE STATES THE LAW, NOT THE SYMPTOM. "a pointer's only
+  constant is null" is the rule; "both engines read it as null" was
+  the observation that happened to hold the day it was written. A
+  symptom-worded refusal goes STALE the moment the mechanism moves,
+  and until then it reads as a workaround for a quirk rather than a
+  rule to obey — so it teaches the reader to look for the quirk. The
+  law's wording outlives its own implementation, which is what makes
+  it worth pinning in the golden (lower.av's pointer-constant guard).
 - A projection is ONE match: nested patterns
   (`.Node(.NAlt(a)) -> a, _ -> null`), never an unwrap ladder.
 - The third copy of a shape names the concept: shared walks and
