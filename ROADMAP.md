@@ -2192,8 +2192,28 @@ the order is the dependency.
         WHY IT IS SAFE, from the research (docs/2026_09_06_RESEARCH_
         ptr_from_int.md, every claim quoted from a primary source):
         CREATING a pointer is harmless in every model surveyed and
-        DEREFERENCING is the entire danger — and Avra has no
-        dereference. Java is the decisive precedent because it drew
+        DEREFERENCING is the entire danger — and THE LANGUAGE has no
+        dereference. CORRECTED THE SAME NIGHT by lane A, who tested
+        the premise instead of accepting it: the ROWS dereference
+        what they are handed. `avra_array_push` casts its argument to
+        an array and writes through it with no header check — it
+        cannot afford one — and the extern seam accepts any linked
+        symbol at check time, so `avra_array_push(avra_ptr_at(a), v)`
+        is an arbitrary WRITE composed of two safe-looking parts, and
+        it compiles clean. That property needs no new capability and
+        holds with or without this door, so the owner's yes stands on
+        its merits; what was wrong was the SENTENCE, and a comment
+        asserting a safety property that does not hold is what lets
+        the NEXT capability be granted on bad grounds. Lane A caught
+        it within the hour, grading foreign-text designs against a
+        property none of them had.
+        AND THE BIGGER FACT IN IT: AN EXPORTED C SYMBOL IS A LANGUAGE
+        CAPABILITY IN THIS TREE. Any file may declare an extern for
+        any linked symbol with nothing central authorising it —
+        `avra_trap` is declared privately in query/db.av and no
+        registry blessed it. There is no "reachable from C but not
+        from Avra" here, so every runtime export is a language
+        decision whether or not anyone frames it as one. Java is the decisive precedent because it drew
         the line explicitly rather than inheriting it
         (`MemorySegment.ofAddress` unrestricted, `reinterpret`
         restricted); Rust's `without_provenance` names our case in

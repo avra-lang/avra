@@ -2188,13 +2188,23 @@ const char* avra_proc_which(const char* file, const char* path) {
     return s;
 }
 
-// AN ADDRESS AS A POINTER. Making one is harmless in every model
-// that allows it — the danger is DEREFERENCING, and Avra has no
-// dereference at all. Zero answers the null pointer, so `ptr?`'s
-// niche carries absence with no extra word and a C sentinel of 0
-// (SQLITE_STATIC) arrives as null on its own.
+// AN ADDRESS AS A POINTER. Making one is inert IN THE LANGUAGE:
+// Avra has no dereference, so a `ptr` can be held, compared to null
+// and handed on, and nothing reads through it. Zero answers the null
+// pointer, so `ptr?`'s niche carries absence with no extra word and
+// a C sentinel of 0 (SQLITE_STATIC) arrives as null on its own.
 // NOT A CAST: the only direction is int -> ptr, and no seat widens
 // implicitly, so a transposed argument stays a compile error.
+//
+// THE ROWS DEREFERENCE WHAT THEY ARE HANDED, and that is where the
+// danger lives — not here. `avra_array_push` casts its argument to
+// an array and writes through it with no header check, because it
+// cannot afford one; the extern seam accepts any linked symbol at
+// check time; so a program that declares both composes an arbitrary
+// WRITE out of two safe-looking parts. That is the FFI's property,
+// not this function's, and it holds with or without this door — but
+// it must be said HERE, because this comment is what a later
+// capability will be graded against.
 void* avra_ptr_at(int64_t address) {
     return (void*)(intptr_t)address;
 }
