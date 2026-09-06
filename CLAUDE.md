@@ -106,6 +106,16 @@ source and refuses a repeated number.
   rule to obey — so it teaches the reader to look for the quirk. The
   law's wording outlives its own implementation, which is what makes
   it worth pinning in the golden (lower.av's pointer-constant guard).
+- A BUILDER'S WORDS ARE ITS CLAIM. The executor prefixes every
+  builder error with "builder failed:" (grammar/executor.av), so a
+  LAW the writer can fix reads as an internal failure — five of
+  today's messages are laws, against eight real defects, and the
+  prefix lies about all five. The seam needed no change: `Cause`
+  already separates `Builder` from `Defect`, and only the WORDING
+  lied. THE GENERAL SHAPE: when a message's TRUTHFULNESS is what is
+  at stake, put the claim in the WORDS and not in a flag beside
+  them — a flag can be set wrong and stay invisible, while words
+  that say the wrong thing are visibly wrong to the next reader.
 - A projection is ONE match: nested patterns
   (`.Node(.NAlt(a)) -> a, _ -> null`), never an unwrap ladder.
 - The third copy of a shape names the concept: shared walks and
@@ -1007,7 +1017,9 @@ Runtime facts, ours to ratify:
   the script must never cross a SYMLINK into another tree
   (`packages/std-cli` was one, into bs2's source, and the rewrite
   changed bs2's file; it is a real file now).
-- A CODEGEN FIX REACHES THE PRODUCT ON THE SECOND BUILD. `make avra`
+- A CHANGE THE COMPILER MUST THEN READ REACHES THE PRODUCT ON THE
+  SECOND BUILD — codegen is one instance, the FRONT END is another,
+  and the wording used to say only the first. `make avra`
   compiles the source with the STANDING binary, so a product built
   right after merging a memory-pass fix carries the fix as SOURCE
   but its own body was compiled by the pre-fix pass — it runs with
@@ -1015,6 +1027,17 @@ Runtime facts, ours to ratify:
   so: my product compiled the suite at 7 GB (main's at 1.2 GB), and
   its second build was killed at 4.2 GB — the leaky product could
   not even compile the cli. The way out is a binary that already
+  AND THE FRONT END IS THE SHARPER HALF, because there the first
+  build PASSES. THE BUILD THAT SUCCEEDED WAS THE BUILD THAT LIED
+  (the sqlite campaign's bitwise lane, three times in one slice): the
+  standing binary knew nothing of `>>`, so it compiled the change
+  happily; the failure arrived on the NEXT build, when the compiler
+  that had learned to munch `>>` read `workspace.av` and lexed
+  `Table<List<string>>`'s closing brackets as a shift. `make
+  bootstrap`, not `make avra`, was the way out each time. A lane
+  touching the LEXER must not read the codegen wording and conclude
+  the rule is not theirs.
+  The way out is a binary that already
   HAS the fix (main's `../avra/build/avra build packages/cli`, then
   `cp` to build/avra), then `make avra` once more to prove the fixed
   point (1.1 GB both times). Two rules: after merging a pass change,
