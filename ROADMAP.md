@@ -2983,6 +2983,52 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  THE DRIVER HAD NO CORPUS PROGRAMS BECAUSE THE FORM DID NOT EXIST, not
+  because nobody wrote them — and that distinction is the finding.
+  `corpus/native/` takes LOOSE files, and a loose file cannot reach a
+  package at all (`use @std.sqlite.{version}` is F3015, "this file is not
+  in a package"). So `corpus/native/` can only ever prove a WALL —
+  externs declared in the file itself, which is exactly what `externs.av`
+  and `process_seam.av` are. A driver built ON a package needs the
+  PACKAGE form, and the package leg runs the evaluator first, which no
+  FFI package survives. **NEITHER FORM FIT, so nothing was written, and
+  the driver never showed up to be excluded.** A `native-only` file
+  beside `expected` is the mark that was missing; the package leg drops
+  the evaluator when it sees one, and the gate now says what it actually
+  proved:
+      corpus/sqlite:           native == expected
+      corpus/sqlite-refusals:  native == expected
+      corpus/text:         eval == native == expected
+  THE SIBLING LINE IS THE POINT: a reader learns what a two-engine
+  program looks like from the output itself, where a sentence in a
+  document saying "the differential was unavailable" reaches nobody.
+  TWO THINGS CHECKED RATHER THAN READ, both by the author. The mark is
+  LOAD-BEARING — removed and re-run, the leg fails with "`sqlite3_open_v2`
+  is extern — the evaluator cannot host it", exit 1; a mark that changed
+  nothing would have been decoration. And **`make clean` WOULD HAVE EATEN
+  IT**: the corpus sweep deletes every file that is not a `.av`, an
+  `.expected`, an `expected` or an `avra.toml`, so the first clean after
+  landing would have removed both marks SILENTLY and the next gate would
+  have failed in the evaluator with nothing saying why. Found by RUNNING
+  clean rather than by reading the `find`.
+  AND A CORPUS PROGRAM IS A PLACE A FINDING CAN WAIT WHERE SOMEONE WILL
+  MEET IT — which is the label argument arriving somewhere nobody aimed
+  it. Read in order, the refusals program puts three lines together:
+      a column past the row          sqlite.out_of_row
+      a cell read before stepping    sqlite.out_of_row
+      a parameter outside the holes  sqlite.out_of_row
+  `Cause.OutOfRow(column, width)` is doing duty for `(index, holes)` too,
+  so a caller branching on it cannot tell a BIND mistake from a READ
+  mistake. It had been reported a round earlier AS A SENTENCE IN A
+  MESSAGE and gone nowhere; as three adjacent lines in a file people read,
+  it is unignorable. Owed: an `error.av` arm split.
+  AND THE PROGRAM EARNED ITS KEEP BEFORE IT WAS GREEN. The `mut` seat on
+  `step` cost nothing visible in the suite — a test binds a statement and
+  steps it in one scope — and collided immediately with the corpus
+  program's OWN HELPERS (`read_one`, `summed`), because a caller writing a
+  LOOP threads the seat through their own functions. **The ergonomic cost
+  of a fix showed up in the shape a user meets it, one commit after the
+  fix was written**, which no test in the package would have shown.
   BITWISE LANDED (2026-09-06, `../avra-lane-sq-ffi`: 13 files, 202
   insertions, 1927/1927, `corpus/bitwise: eval == native == expected`,
   traps 6/6, built twice to a fixed point). THE OPERATORS ARE THE LEAST
