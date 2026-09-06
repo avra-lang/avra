@@ -543,6 +543,12 @@ the compiler checking itself 28.8s.
         reads, 481,289,282 list writes, before and after. The
         compiler does the same work on the same boxes in the same
         order; only each operation got cheaper.
+        ITS BOUNDARY, named by lane C who nearly reached for it: this
+        proof works for a COST-ONLY change and not for a PLACEMENT
+        one. A suite proves the answers did not move; the invariant
+        proves the WORK did not — so a memory-pass change that moves
+        where a retain sits (S3, S3b) cannot use it, because moving
+        the counts is exactly what it does.
         TWO EXPERIMENTS REFUTED HERE, recorded so they are not
         retried: (a) deduplicating the expected-set merge in
         `far_merge` — its `concat` is the single largest copy origin
