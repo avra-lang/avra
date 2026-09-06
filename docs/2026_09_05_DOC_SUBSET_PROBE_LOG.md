@@ -668,3 +668,243 @@ And one number the routed items supply that the manual pass could not:
 **8.2 hours and 14 commits** is the measured cost of one rot in this
 tree, on a day when four lanes were watching. That is the interval
 `--verify-subset` closes to zero.
+
+---
+
+# Part VI — THE RE-RUN, AND THE AUDIT THE CAMPAIGN OWED LANE A
+
+## VI.1 · The corpus re-run at a moved base (follow-up A)
+
+| base | HEAD | binary | result |
+|---|---|---|---|
+| original pass | `e046ba2` | 23:40:22 | 60 verified, 0 failed |
+| +9 commits | `312bd0d` | 00:10:44 | 63 verified, 0 failed |
+| +2 more | `ceacb0d` | 00:10:53 | **63 verified, 0 failed**, 2.12s |
+
+**No verdict changed.** The subset section itself is byte-identical
+across all three (`shasum` of the extracted section, compared — not
+assumed), so the Part II table remains complete. The two commits between
+the last binary build and `ceacb0d` are docs-only (`git diff --stat`
+shows only `.md` files), so the binary is still valid for the source it
+compiles.
+
+A clean re-run is the finding. **Re-attributing 63 verified claims to a
+new base cost one command and two seconds**, against the ~90 minutes the
+original hand pass took. That ratio is the instrument.
+
+> **The tree moved twice more DURING this audit** — to `e0e88c8`, with
+> `packages/std-avrac/src/grammar/lexer.av` uncommitted in the working
+> tree. Line numbers recorded in Part VI.3 were captured at sample time
+> and several had already shifted when re-read minutes later; each is
+> re-quoted by its current location and its text, never by line alone.
+> This is the shared-worktree hazard CLAUDE.md names, observed live.
+
+## VI.2 · The audit: method first, stated before any auditing
+
+**The question.** Does hand-maintained prose rot faster than `///` doc
+comments? The campaign published 7 stale prose artifacts against 1 stale
+`///` in one day. Lane A refused the ratio: both numerators are
+*discovery* counts, and the bias runs one way — several lanes spent that
+day reading ledgers while nobody audited the `///` corpus at all.
+
+**Denominators, measured rather than assumed:**
+
+| population | measured | previously published |
+|---|---:|---:|
+| `///` runs attached to an `export` | **787** | ~690 |
+| prose bullets (ROADMAP + CLAUDE.md + DOGFOODING) | **744** | ~708 |
+
+(787 of 988 exported declarations carry a doc run — 80% coverage. The
+tree grew since the vision measured it.)
+
+**Sampling.** Enumerate, sort by `(file, line)` for stability, then
+`random.Random(20260906).sample(range(N), 40)`. Seed and rule recorded so
+the draw is reproducible; the sample was drawn and frozen to disk
+**before any entry was read**. (The two index lists coincide — an
+artifact of one seed over two similar-sized ranges, not a coupling of the
+populations. Re-drawing after seeing that would have been the
+cherry-picking failure mode, so it stands.)
+
+**Classification, fixed before auditing:**
+
+- **TRUE** — asserts something about the current tree that is true.
+- **STALE** — asserts something about the current tree that is **false today**.
+- **NOT-CHECKABLE** — asserts no checkable fact about the current tree: a
+  plan, a design axiom, an explicitly historical record, or a claim whose
+  verification needs a package sweep this lane may not run. **Excluded
+  from the rate's denominator**, counted separately.
+
+That last category is where the bias lives, and it is not symmetric —
+see VI.4.
+
+## VI.3 · Results
+
+### `///` on exported symbols — 2 stale in 40 (all 40 checkable)
+
+**S4 · `plain()` no longer does what its doc says.**
+`packages/std-avrac/src/core/nodes.av:316`
+
+> /// The same written type with its `?` dropped
+
+```avra
+export fn plain(t: TypeRef) -> TypeRef {
+    TypeRef { name: t.name, args: t.args, optional: false, dynamic: t.dynamic, arrow: t.arrow, span: t.span }
+}
+```
+
+`TypeRef` carries **eight** fields; this constructor names six and
+`optional`. The eighth, `muts: List<bool> = []`, silently takes its
+default — so `plain` drops the `mut` marks as well as the `?`. `muts`
+arrived in `b8fcee8` ("`mut` in a fn type — the seat law's missing
+half"); `plain` was last touched in `108f2d7`, before it. **A field was
+added and this constructor was missed.**
+
+Reachability, probed rather than reasoned: the single caller is
+`typing_declare.av:280`, `full_type` → `written_type(at, plain(t))` →
+`fn_written`, which reads exactly the marks `plain` dropped. But
+`fn(int) -> int?` binds the `?` to the **return** type (confirmed:
+``error[F2024]: `g` declares `fn(int) -> int?` ``), and the fn-type
+grammar has no trailing `?` slot — so `arrow` and `optional` appear
+unable to co-occur, and the drop is **latent**.
+
+Latent, not harmless. CLAUDE.md's own seat law records what this costs
+when it fires: *"a `mut`-taking fn stored in a plain fn seat wrote
+through an immutable `let` with no diagnostic, in both engines."* The
+day a nullable fn type becomes spellable, `plain` strips the marks and
+that law is silently unenforced. It is CLAUDE.md's *"AN ASSUMPTION
+NOTHING HAS EVER TRIED TO VIOLATE IS NOT A GUARANTEE"*, sitting in a
+constructor.
+
+**S5 · `counted`'s doc describes a different function.**
+`packages/std-avrac/src/core/text.av:63`
+
+```avra
+/// Names in byte order — a host listing made deterministic.
+/// "72 programs", "1 program" — a count with its noun.
+export fn counted(n: int, noun: string) -> string {
+    "${n} ${noun}${if n == 1 { "" } else { "s" }}"
+}
+
+export fn sorted_texts(xs: List<string>) -> List<string> {
+```
+
+The first line describes `sorted_texts` — four lines below, exported,
+and now carrying **no doc at all**. `4c967ac` ("one pluralizer in core")
+inserted `counted` between a doc run and the function it described. The
+run did not become orphaned, which is the shape `F0911` would catch; it
+was **adopted by the wrong symbol**, which nothing can catch by
+structure alone.
+
+### Prose claims — 3 stale in 24 checkable (16 not checkable)
+
+**S6 · ROADMAP:3179 justifies a rule by a retired exception.**
+
+> Per-node visitors are FREE FNS by doctrine (#1377).
+
+Contradicted twice in this tree. `ROADMAP.md:2352`: *"the #1377 Style
+exception retired (ours has no #1377: probed with the exact shape)"*.
+`CLAUDE.md:91`: *"has no #1377 (probed); new code writes the method."*
+And the three fns CLAUDE.md names as converted are methods today —
+`eval_node` no longer exists, `put` is `interp.av:225`, `define` is
+`llvm.av:357`. A third sighting of the same dead rationale sits at
+`ROADMAP.md:6880` ("bs2's #1377 ICE is why they are free fns"), outside
+the sample.
+
+**S7 · ROADMAP:10071 calls a converted rule "currently barred".**
+
+> the pass visitors then become methods — the vocabulary rule applied to
+> the hottest code in the tree, **currently barred**.
+
+Same retirement, opposite tense: this one describes as *blocked* the
+conversion that CLAUDE.md's Style section says is now the default.
+
+**S8 · ROADMAP:5053 counts four impls where there are twenty.** *(borderline)*
+
+> StmtSemantics is the stmt-spine's twin of NodeSemantics: four
+> feature-owned impls (let, expr, fn … and the hole), four capability
+> contexts, one stmt_semantics_of map **that breaks loudly on a fifth
+> kind**.
+
+`grep -c "impl StmtSemantics for"` answers **20**. The map did not break
+at a fifth kind; it grew sixteen times past it. Scored STALE because the
+sentence is present-tense and false, and flagged **borderline** because
+the bullet opens "FIRED and DONE (rung 3's opening act)" and may be read
+as a landing record. Both rates are reported below.
+
+**A near-miss worth recording.** `ROADMAP:9897` (S2 THE ABI) states *"DONE
+WHEN `mut d = c; d.set(5)` leaves `c` unchanged … `let d = c; d.set(5)`
+refuses"*. Probed: the first answers `5 5` (c **is** changed) and the
+second only warns (`F2047`, exit 0). Both conditions fail — but S2 is an
+unchecked slice in a plan list, so the probe **confirms it is correctly
+listed as pending**. Scored NOT-CHECKABLE. I nearly scored a plan as a
+rot, and only the checkbox state prevented it; a verifier over prose
+would need to read that state too.
+
+## VI.4 · The rates, with intervals
+
+| population | stale / checkable | rate | 95% CI (Wilson) |
+|---|---:|---:|---|
+| `///` on exports | 2 / 40 | **5.0%** | 1.4% – 16.5% |
+| prose claims | 3 / 24 | **12.5%** | 4.3% – 31.0% |
+| prose, excl. borderline | 2 / 24 | 8.3% | 2.3% – 25.8% |
+
+**Fisher exact, two-tailed: p = 0.355** (p = 0.627 excluding the
+borderline).
+
+### What this settles, and what it does not
+
+**The direction survives; the ratio does not.** Prose is numerically
+worse in both scorings, but **the difference is not statistically
+significant at n = 40**. The intervals overlap across most of their
+range. Seven-to-one is not supportable from this data, and lane A was
+right to refuse it.
+
+**Both published figures were large understatements.** The `///` rate is
+**36× the published 0.14%** and the prose rate **12× the published 1.0%**.
+The asymmetry is exactly the one lane A predicted: the `///` corpus was
+never audited, so its numerator was near zero *because nobody had
+looked*. Correcting only the prose numerator would have made the ratio
+look worse; correcting both makes it vanish.
+
+**The structural finding is larger than the rate.** **40 of 40 `///`
+comments were checkable. Only 24 of 40 prose bullets were** — the other
+16 are plans, axioms, historical records, or claims needing a package
+sweep. That is the difference that matters for a keeper:
+
+> A doc comment sits on a symbol the compiler already knows, so it is
+> *always* falsifiable. Prose is 40% unfalsifiable by construction — and
+> the unfalsifiable 40% is not the safe part, it is the part where a
+> stale claim can never be caught by any tool.
+
+So the honest reframing of the campaign's claim is **not** "prose rots
+faster". It is: **prose rots at a rate we cannot distinguish from `///`,
+and 40% of it cannot be checked at all.** The second half is the
+argument for the doc system, and it does not need the ratio.
+
+### Honest limits of this audit
+
+- **n = 40 per population**, so the intervals are wide and the
+  comparison is underpowered. Distinguishing 5% from 12.5% at p<0.05
+  needs roughly 200 per arm. The design that would settle it is a
+  bigger sample, not a better argument.
+- **One auditor, who also wrote the classification rule.** CLAUDE.md's
+  own warning applies: a corpus checked by its author joins the
+  consensus rather than breaking it. S8 is the visible seam — a second
+  auditor might score it TRUE and move the prose rate to 8.3%.
+- **`NOT-CHECKABLE` absorbed two claims I was barred from measuring**
+  (the F2040 and F2047 tree-wide counts need a package sweep). Both
+  concern lint rates; neither was scored.
+- Only three sources were sampled for prose. `docs/*.md` was excluded,
+  and Part V's `BYTES_SHAPE` finding suggests that surface may be worse
+  than the three sampled.
+
+### Re-running this
+
+```
+python3 …  # enumerate: /// runs above `export`; bullets in the 3 files
+           # sort by (file, line); random.Random(20260906).sample(range(N), 40)
+```
+Both frames and both samples are on disk as `pop1.json`, `pop2.json`,
+`sample1.json`, `sample2.json`. A re-run at a later base with the same
+seed draws the same entries, so the two audits are directly comparable —
+which is the only way this number becomes a trend rather than an anecdote.

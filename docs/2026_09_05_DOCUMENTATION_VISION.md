@@ -30,6 +30,19 @@
 > reference manual, and this document's first draft was a grammar book.**
 > Every section below is revised accordingly and the revisions are marked.
 >
+> **OWNER'S RULINGS (2026-09-06).** **(a) No `@param` — RATIFIED.** Prose
+> documents only the irreducible; the signature is data the compiler
+> already holds and is never retyped. **(b) THE COLD START IS THE
+> PRIORITY** — above every keeper, every surface and every ratchet in this
+> document, and it is to be made REAL rather than designed further.
+> **(c) `avra doctrine` is CUT** (was D14). **(d) The `docs: string`
+> feature format GOES** — a better one is owed, see Part V. **(e) NOTHING
+> MERGES** without a serious `/red-team` and `/review-round`, aggressively
+> run. **(f) A STANDING GRANT for verified rot:** a doctrine claim proved
+> false by a probe at a named base may be corrected with its receipt
+> recorded — the grant is for *correcting refuted claims*, never for
+> writing new doctrine.
+>
 > **Prior art, read before writing:**
 > `../forge-crafting-intepreters/docs/spec_doc_system.md` (906 lines, the
 > old tree's design — its `avra lang` / `avra docs` split, its six layers,
@@ -525,8 +538,9 @@ index** — a package declares what it is *for*, not just what it
 is `@std/process`'s manifest idea generalised: capability is already a
 declared, compile-time fact in this tree.
 
-**9. Documenting the language vs. documenting the compiler's own
-doctrine.**
+**9. ~~Documenting the language vs. documenting the compiler's own
+doctrine.~~ CUT BY THE OWNER — kept only as the reasoning, since the
+mechanism recurs elsewhere.**
 CLAUDE.md is ~500 lines of hard-won law. Some laws have keepers
 (`make idioms`, `make vocab`, `make externs`); most are prose that a
 future agent may or may not read. *Collapse:* **doctrine is a doc kind
@@ -767,15 +781,33 @@ inert and a reader can tell. **A diagnostic pointing confidently at the
 wrong line actively misleads, in the one artifact a user is trusting most
 at that moment.**
 
-**Lane B asked what happens when the file got SHORTER and declined to
-guess. READ, not probed** (`diagnostics/source.av:26-43`): `linecol`
-walks `line_starts` keeping the last start `<= offset`, so an offset past
-the end **clamps to the final line** and computes `col = offset -
-line_starts[last] + 1` — a column beyond that line's text. `line_text`
-then returns the last line intact. **It does not trap. It answers a
-plausible, wrong line and column**, which is the failure mode this tree's
-encoding law warns about: the out-of-range case was never written, so it
-is spent as a normal one.
+~~Lane B asked what happens when the file got SHORTER; I READ the code and
+answered that `linecol` clamps to the last line and returns a plausible,
+wrong column.~~ **TRUE WHEN READ, FALSE WHEN RUN — RETRACTED WITHIN THE
+HOUR, AND THE RETRACTION IS THE POINT.** Lane B probed it instead of
+taking my read: offset 99 of an 8-byte file did answer `3:94`, so the
+reading of `linecol` was right — **but rendering a diagnostic carrying
+that span no longer clamps. It traps**: `avra: a span reaches outside its
+own text — offset 99 of 8 in t.av`. The guard is
+`diagnostics/source.av:36-38` and it landed at **`e0e88c8`** — *"a span
+outside its own text is a wreck, not the last line"* — inside the last
+twelve commits, **after the tree I had read**. It covers negatives too.
+
+So the out-of-range case **is** written now and is no longer spent as a
+normal one; that framing is retired. **This is the second time in two
+days that a claim about behaviour was true when read and false when run**
+— and both times the standard held: quoting the OUTPUT caught what
+quoting the code could not.
+
+**It reshapes the LSP constraint rather than removing it, and makes it
+worse to live with.** The cache hole is unchanged — `program_hash` is
+still blind to spans, so a green cell can still hand a stale `Loc` to a
+renderer over a shortened file. What used to be a misleading caret is now
+a **trap**, and in a long-lived editor process a trap is a **crashed
+language server** rather than a confusing squiggle. Lane A's per-consumer
+cutoff is still the fix and its argument is stronger: the failure moved
+from *wrong output* to *the server dies*, which is easier to sell and
+harder to tolerate.
 
 **AND MY FIX DOES NOT REACH IT — Lane A, and they are right.**
 `touch(source(ws, f))` correctly fixes the `docs` family. It does nothing
@@ -817,6 +849,75 @@ available. The two-revision fixture ships with `docs` because a keeper
 whose failure has never been witnessed is what this campaign has spent
 two days finding.
 
+**THREE CONSTRAINTS ON THE FAMILY, and the first is a directive of mine
+that was WRONG ON BOTH HORNS.**
+
+- ~~The table goes inside `ws.db`, or `disarmed` needs a fourth line.~~ I
+  read `disarmed`'s hand-written list as "every table must be listed" and
+  issued a directive on that premise. **Its membership rule is narrower,
+  and its own comment says so:** `ws.analyses` is cleared *because
+  `Analysis` holds a closure* — `program: fn() -> Program`
+  (`analysis.av:18`), the only `fn` field in the struct — while the
+  Workspace's **thirteen other** value tables are pure data and none is
+  cleared. `DocFacts` is pure data and joins them; the family's *verifier*
+  closes over `ws` and is discharged by `ws.db.disarm()` on line one,
+  free. **And `ws.db` cannot hold it**: `db.av:14` is explicit — *"Values
+  live in the families' own typed tables; the kernel holds only
+  bookkeeping"* — so a typed value table there makes the kernel
+  language-aware, a worse trade than the one I was avoiding.
+  **What D2 adds is the MEMBERSHIP RULE, not an entry**: a comment saying
+  this list is not every table but every table whose VALUE holds a closure
+  over `ws`, plus the invariant this design owes back — the day `DocFacts`
+  gains a lazy field backed by a closure, it joins the list, **and nothing
+  but that sentence will say so.** The registry-hole law still applies; it
+  applies to the missing *rule*, not to a missing entry.
+- **Registered at ordinal 10**, after `Folded` and before `Analysis`,
+  because it depends on `parsed` and `items`. `built` (`workspace.av:207`)
+  already refuses a botched renumber.
+- **A fact every body may read is answered from the DEFINER.** Satisfied
+  by one field: `Decl.file` is set at mint from the admitted file
+  (`decls.av:336`), so it names the defining file even for a declaration
+  reached through a `use`. Lookup is
+  `docs(ws, decl_at(ws, d).file).for_decl(d)` — keyed by definer, never by
+  asker. **The spec case's second conjunct is the half that matters**: a
+  two-file fixture where the symbol is defined in `lib.av` and rendered
+  from `main.av` asserts `docs(main).for_decl(d) == null`, so an
+  implementation cannot pass by accidentally recording the doc on whoever
+  asked.
+
+**AND THE FRESHNESS SPELLING HAD A TYPE ERROR IN IT, plus a trap worth
+more than the fix.** `decls.decl(d).root` is an `ExprId?` — *"the
+expression a body IS"* — not a `StmtId`; the statement is `Decl.stmt`, so
+the spelling is `store.stmt_fingerprint(decls.decl(d).stmt)`. **The trap:
+`stmt_fingerprint` must NOT be the `docs` family's settle hash.** It is
+precisely the hash that does not move when a comment changes — that is
+what makes the stale-doc cell above possible — so using it there would
+rebuild the bug it sits beside. **The two hashes answer opposite
+questions**, and a design reaching for the nearest available fingerprint
+would have closed one hole by reopening the other.
+
+**AND THE PROBES FOUND A LIVE DEFECT IN THE FUNCTION D1 TOUCHES, WHICH
+KILLS A SENTENCE THIS DESIGN RESTED ON.** "A comment is whitespace" is
+**false today**. `collapse_breaks` seeds the enclosing line's indent from
+a byte OFFSET and compares it against a character DISTANCE
+(`lexer.av:365` against `:372`), so with a leading comment `raw[0]` is the
+Break ending that comment line and the seed becomes **that line's
+length**. Reproduced at `6cfdd12`: a continued chain as a file's FIRST
+statement parses one way bare and another with a comment above it, and
+**the flip falls exactly between a 3-character and a 4-character comment**
+against a continuation indent of 4 — predicted from the hypothesis before
+being tested, which is what makes it a mechanism rather than a
+coincidence. One preceding statement masks it entirely, so the tree is
+not currently mis-parsed; the exposure is an entry file whose first
+statement is a chain.
+
+**It is NOT D1's to fix** — the one-line correction changes how existing
+sources parse and needs its own gate and corpus case; landing it beside a
+lexer change would leave neither exonerable if something broke. What it
+changes here is the INVARIANT: not "comments are whitespace, so capture
+is free", but **`s.token` stays null → `raw` is byte-identical → every
+layout decision, the defective one included, is bit-for-bit unchanged.**
+
 **The hazard that goes first, from LANE A.** The LINE LAW lives in the
 lexer, and this change is inside it: breaks are dropped directly inside
 `(`/`[` and after a continuing operator. **A comment-only line is a blank
@@ -826,10 +927,16 @@ changes whether a break survives, every multi-line expression in the tree
 shifts meaning silently and simultaneously. Four probes, before any design
 prose: the comment-only line; a `///` between a continuing operator and
 its operand; one between a comma and the next argument inside `(`; one
-alone inside `[ … ]`. **One case is already eliminated by measurement
-(LANE B):** no `///` or `//!` appears inside any `grammar { … }` or
-`table<Row> { … }` literal in any package, so the two sub-languages that
-lex their own bodies cannot collide with trivia.
+alone inside `[ … ]`. **One case is eliminated by MEASUREMENT and one only
+looks eliminated.** Lane B's count reproduces — zero doc markers inside
+`grammar { … }` or `table<Row> { … }` literals — **but the REASON does
+not, and the difference is a test.** Only `grammar` lexes its own body:
+`opens_grammar` (`lexer.av:122-128`) fires on one word,
+`before.text == "grammar"`. **A `table<Row> { … }` body is lexed normally
+by the same `scan_step`**, so a `///` inside one WOULD become a doc line
+under D1. Zero **by measurement, not by construction** — and an
+implementer taking the reason at face value would skip the case that is
+actually load-bearing. D1 ships that test.
 
 The attachment law, stated so it does not drift: **a `///` run attaches
 to the next declaration that starts after it with no blank line
@@ -872,6 +979,76 @@ F2040 paragraph demands of every lint here.
   (`decls.av:216`) — so `decl_span(Main)` is the first statement's span,
   usually a `use` line, and a run above it would attach to a synthetic
   `main`.
+
+## The feature format — `docs: string` goes (owner's ruling d)
+
+The presenting fact was that 28 of 28 features fill a `docs: string` and
+nothing reads it. **The right response is not to build a reader. It is to
+notice what that field is and replace it**, because every measured result
+in this document indicts it:
+
+- **It is PROSE**, and retrieval over prose scored 1.23% where programs
+  scored 8.06%.
+- **It is UNVERIFIED.** Nothing checks that a word of it is true, which
+  is how `?.`-cannot-call-a-method survived 8.2 hours and 14 commits.
+- **It is ONE BLOB.** Not addressable, so no diagnostic can point into
+  it; not divisible, so a budget cannot degrade it by resolution.
+- **It restates the `gram`**, which is the second-copy problem this
+  campaign exists to refuse — inside the campaign's own presenting fact.
+
+**THE REPLACEMENT: a feature documents itself in the currency it already
+uses for everything else — a TABLE OF ROWS, each row a CLAIM and a
+PROGRAM, every one compiled and checked.** A feature already declares
+`builders`, `diags`, `properties`, `methods` and `types` as tables. Its
+documentation becomes one more:
+
+```avra
+let shows = table<Show> {
+    claim                            | program                                  | answers   | refuses
+    "declares a closed set"          | "enum Suit { clubs hearts }"             | ""        | ""
+    "a variant constructs by name"   | "Suit.clubs.ordinal"                     | "0"       | ""
+    "match must cover every variant" | "match s { .clubs -> 1 }"                | ""        | "F2013"
+    "`is` takes a BARE variant"      | "s is .clubs(_)"                         | ""        | "expected BREAK"
+}
+```
+
+`Show { claim, program, answers, refuses }` — **exactly one of `answers`
+and `refuses` is filled**, and that single shape carries both halves of
+the documentation this campaign has been treating as two systems:
+
+| what it buys | how |
+|---|---|
+| **It cannot be wrong** | every row compiles and runs at gate time; a false claim fails the build |
+| **It is the shape that teaches** | (caption, minimal program) — the five-shot form, measured at 8.06% against prose's 1.23% |
+| **The negative space is not a separate artifact** | a `refuses` row IS a subset entry, per feature, owned by the feature that would falsify it — which is what makes the gate belong to the SLICE AUTHOR |
+| **It is addressable** | `lang.feature.enums.show.2`, so a diagnostic can point at one row |
+| **It is budgetable** | the brief drops ROWS, weighted by surprise — the degradation axis Part III ¶1 corrected to |
+| **Coverage is countable without a proxy** | a feature with no `shows` is undocumented, and that is a fact, not a judgement |
+| **It reuses the tree's own seam rule** | rows are DATA and five consumers query them; nothing dispatches |
+
+**Prose does not vanish — it stops being the artifact.** A one-line
+`summary: string` survives for the resolver's index and for a human
+skimming. Everything that *teaches* is a row. And the ~980 `///` comments
+keep their job, which the evidence says is the **targeted-question**
+reader (`avra doc split`) and not the cold-start one.
+
+**What this collapses, and it is why the ruling is right rather than
+merely ordered:** `lang/subset/*.av`, the feature `docs` string, the
+brief's source, and the coverage metric were four artifacts in the first
+draft. They are **one table** in this one. The 47 subset entries become
+`refuses` rows on the features that own them; doc-subset's four verbs
+(`@refuses`/`@compiles`/`@answers`/`@traps`) become columns; and
+LAND D's clause law falls out for free, because **a row asserts one
+claim** by construction.
+
+**One honest cost, stated before anyone pays it:** a row's program is a
+string in a table, which is the escaped-source shape lane B measured at
+81% in the compiler's own feature tests and called *worse than nothing*
+as teaching material. **The rows must therefore be extracted and rendered
+as real source before a reader sees them** — the brief prints programs,
+never string literals — and the format needs a spelling that keeps
+authoring readable. That is the open question this design owes, and it is
+the first thing to prototype.
 
 ## The tag registry — data, not dispatch
 
@@ -1394,8 +1571,6 @@ describes a sig that has moved.
   keystone — the measurement moved to v1; this is making it continuous.*
 - **D13b** Position as a contract: head/tail placement measured, not left
   to chance. Lost-in-the-middle is real and K6's uniformity ignored it.
-- **D14** `avra doctrine` — CLAUDE.md's laws as rows with keeper columns;
-  `--unenforced` names the amnesties.
 - **D15** Capability index + `avra doc --for "<task>"`.
 - **D16** `@std/doc` — the doc model as an Avra package, so a projection
   is a library, not a compiler change.

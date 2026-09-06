@@ -362,7 +362,13 @@ fn line_boundary(tokens: List<Token>, j: int) -> bool {
 fn collapse_breaks(raw: List<Token>, boundary: fn(List<Token>, int) -> bool) -> List<Token> {
     mut out: List<Token> = []
     mut open: List<string> = []
-    mut line_indent = if raw.is_empty() { 0 } else { raw[0].span.lo }
+    // A COLUMN, and a file's first statement stands at column zero.
+    // `span.lo` is a byte OFFSET, which only reads as a column while
+    // the first token is on line one — a leading comment makes
+    // `raw[0]` that line's Break, whose offset is the comment's
+    // LENGTH, and leading breaks never push, so nothing corrects it
+    // before the first continuation is decided.
+    mut line_indent = 0
     mut i = 0
     while i < raw.length {
         let t = raw[i]

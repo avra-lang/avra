@@ -109,6 +109,17 @@ spec "grammar/lexer" {
         then "a comment-only line is a blank line" {
             count_breaks(lex_source("a\n// note\nb")) == 2
         }
+        then "the LENGTH of a leading comment changes no layout" {
+            // `line_indent` seeded from `raw[0].span.lo` read a byte
+            // OFFSET as a column: with a leading comment `raw[0]` is
+            // that line's Break, whose offset is the comment's
+            // length, so a continuation flipped between a 3- and a
+            // 4-character comment. Every prefix answers alike.
+            let body = "x = f()\n    .g()"
+            let alone = count_breaks(lex_source(body))
+            [count_breaks(lex_source("${p}\n${body}")) for p in ["//", "//a", "//ab", "// leading", "/// doc", "//! header"]]
+                .all((n) -> n == alone)
+        }
         then "a comment at end of input needs no newline" {
             let r = lex_source("a // last")
             let names = [t.text for t in r.tokens if t.kind == TokenKind.Name]
