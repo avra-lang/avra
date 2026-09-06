@@ -6127,6 +6127,35 @@ by meaning; each is a slice for lane D unless a lane is named.
   C reports 5 of their methods classified NON-WRITING because of it.
   So H2's 100-site census is a FLOOR: the lint counts what it can
   see, and this channel is what it cannot.
+  THE CLOSURE IS ONE DELETED PREDICATE, and it is already scoped —
+  lane C read it out after lane D flagged the gap, and lane D
+  verified it in place. features/places.av:57 is the whole hole:
+    if borrows(cx, s) { cx.emit(Ins.Load(dst, cell!)) }
+    else { cx.emit(Ins.CallRt(dst, "avra_cell_unique", [cell!])) }
+  `borrows()` answers true for a `mut` local bound to a PARAMETER'S
+  FIELD PATH, so that one cell writes THROUGH to the field where
+  every other cell opens copy-on-write. Delete it and `mut ys =
+  self.xs` opens unique — the parameter holds a reference, so the
+  count is two, the write lands on a COPY, and the probe answers
+  `1 1 0`. The carve-out names its own expiry in its comment,
+  "bs2's aliasing, honored until self-host", and self-host has
+  happened: it has outlived the condition it was written against.
+  SO IT IS ONE SLICE WITH THE I34 RETIREMENT, not a third thing —
+  correcting lane D's first reading. Deleting the borrow makes the
+  34 sites copy, and the fix at each is the DIRECT form
+  (`self.xs.push(v)`), which cloned once per write BEFORE S3 and does
+  not after. That is why the sweep was unaffordable in both
+  directions until liveness landed: keep the borrow and stay unsound,
+  or drop it and pay a clone per write. The slice is the 34 rewrites,
+  the deletion of `borrows`/`is_borrow`/`borrows_field` and the
+  borrows column, and I34's 17 licenses retiring.
+  WHAT STAYS OPEN AFTER IT, named rather than assumed closed: not
+  unsoundness, but SILENCE ABOUT INTENT. A future `mut ys = self.xs`
+  will compile, copy, and say nothing — the author meant a borrow and
+  got a copy. The remedy is already recorded and deliberately not
+  built ("a lint for a mutated copy of a field that is never read
+  back"), and it stays recorded: once the copy IS the semantics, this
+  is a want, not a soundness question.
   IT REORDERS THE ARC. S3 (liveness) goes BEFORE S2 (the receiver
   conversion), for three reasons that are not preferences: flipping
   F2047 to a refusal while this channel is open would refuse the
