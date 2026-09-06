@@ -6596,6 +6596,22 @@ by meaning; each is a slice for lane D unless a lane is named.
   `union` seeds from every declared body exactly when `entry == null`
   (lower.av:134) — which is precisely a library. Verified here.
 
+- H5. A DECLARATION IS NOT EVIDENCE THE SYMBOL EXISTS (sqlite lane's
+  red team, probed here in full). `./avra check` accepts an `extern
+  fn` for a C symbol that does not exist, with NO signal of any kind:
+  `extern fn sqlite3_win32_set_directory(a: int) -> int` checks
+  clean, and the LINKER produces the entire failure at build time —
+  "Undefined symbols for architecture arm64", exit 1. So the gap
+  between a declared boundary and a real one is invisible for the
+  whole of the checking phase, and a package can ship a declaration
+  nothing satisfies. `nm` over the `[link]` row's libraries is the
+  only step that knows. THE DECISION, not yet made: whether `check`
+  should verify declared symbols against the manifest's libraries
+  (it can, and it would make the extern boundary honest at the phase
+  that claims to check it), or whether the linker is the right and
+  sufficient owner of that failure. Filed as a question because the
+  answer sets what `check` PROMISES.
+
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure
   variant enumeration in core/parts.av and core/nodes.av; F2040
