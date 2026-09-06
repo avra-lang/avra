@@ -1,4 +1,4 @@
-// Values bound into a statement's holes, and read back through SQL.
+// Values bound into a statement's slots, and read back through SQL.
 //
 // The driver cannot read TEXT out of a cell yet — `column_text` hands
 // back a borrowed pointer and nothing can copy foreign text into a box
@@ -7,7 +7,7 @@
 // integer, so a value truncated at a NUL fails the comparison instead
 // of passing a length check.
 use @std.sqlite.open.{Db, memory, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, finalize, holes, bind_int, bind_null, bind_text, bind_blob, bind_text_unsafely_borrowed, int_at, class_at}
+use @std.sqlite.stmt.{Stmt, prepare, step, finalize, slots, bind_int, bind_null, bind_text, bind_blob, bind_text_unsafely_borrowed, int_at, class_at}
 use @std.sqlite.error.{Storage, SqlError}
 use @std.text.{from_codepoint, from_codepoints}
 
@@ -55,7 +55,7 @@ fn filled(s: Stmt, b: Binder) -> string {
     said
 }
 
-fn after_bind(s: Stmt, b: Binder) -> string {
+fn after_bind(mut s: Stmt, b: Binder) -> string {
     match place(s, b) {
         .Ok(_) -> bound_first_int(s),
         .Err(e) -> e.cause.kind(),
@@ -70,7 +70,7 @@ fn place(s: Stmt, b: Binder) -> Result<int, SqlError> {
     bind_null(s, 1)
 }
 
-fn bound_first_int(s: Stmt) -> string {
+fn bound_first_int(mut s: Stmt) -> string {
     match step(s) {
         .Ok(more) -> if more { bound_told(int_at(s, 0)) } else { "NO ROW" },
         .Err(e) -> e.cause.kind(),
@@ -125,16 +125,23 @@ spec "std/sqlite binding" {
         then "a blob keeps its length where text would end at a NUL" { with_blob("select length(?)", a_nul_b()) == "3" }
     }
 
-    given "a parameter index outside the statement's holes" {
+    given "a parameter index outside the statement's slots" {
         // Parameters count from 1 and columns from 0, which is the
         // oldest off-by-one in this API — so the driver names it rather
         // than letting SQLITE_RANGE come back as a bare code.
-        then "index 0 is refused, because holes count from one" { with_int_at("select ?", 0) == "sqlite.out_of_row" }
-        then "an index past the last hole is refused" { with_int_at("select ?", 2) == "sqlite.out_of_row" }
-        then "binding into a statement with no holes is refused" { with_int_at("select 1", 1) == "sqlite.out_of_row" }
-        then "a statement with one hole reports one" { holes_of("select ?") == 1 }
-        then "a statement with three holes reports three" { holes_of("select ? + ? + ?") == 3 }
-        then "a statement with none reports none" { holes_of("select 1") == 0 }
+        //
+        // AND IT IS ITS OWN CAUSE, not the one a bad COLUMN gets. Read
+        // in a row, `out_of_row` for a bad column, a read before
+        // stepping AND a bad parameter told a caller nothing about
+        // which mistake they had made — a write mistake and a read
+        // mistake are different fixes.
+        then "index 0 is refused, because slots count from one" { with_int_at("select ?", 0) == "sqlite.out_of_slots" }
+        then "an index past the last slot is refused" { with_int_at("select ?", 2) == "sqlite.out_of_slots" }
+        then "binding into a statement with no slots is refused" { with_int_at("select 1", 1) == "sqlite.out_of_slots" }
+        then "and a bad COLUMN is still its own, different cause" { with_int("select ?", 1) == "1" }
+        then "a statement with one hole reports one" { slots_of("select ?") == 1 }
+        then "a statement with three slots reports three" { slots_of("select ? + ? + ?") == 3 }
+        then "a statement with none reports none" { slots_of("select 1") == 0 }
     }
 
     given "the borrowing bind, which is the named hatch and not a default" {
@@ -176,8 +183,8 @@ fn index_bound(s: Stmt, index: int) -> string {
     said
 }
 
-/// How many holes a statement has.
-fn holes_of(sql: string) -> int {
+/// How many slots a statement has.
+fn slots_of(sql: string) -> int {
     match memory() {
         .Ok(db) -> counted(db, sql),
         .Err(_) -> 0 - 1,
@@ -186,21 +193,21 @@ fn holes_of(sql: string) -> int {
 
 fn counted(db: Db, sql: string) -> int {
     mut held = db
-    let n = holes_said(db, sql)
+    let n = slots_said(db, sql)
     let _ = close(held)
     n
 }
 
-fn holes_said(db: Db, sql: string) -> int {
+fn slots_said(db: Db, sql: string) -> int {
     match prepare(db, sql) {
-        .Ok(s) -> holes_finalized(s),
+        .Ok(s) -> slots_finalized(s),
         .Err(_) -> 0 - 1,
     }
 }
 
-fn holes_finalized(s: Stmt) -> int {
+fn slots_finalized(s: Stmt) -> int {
     mut held = s
-    let n = holes(held)
+    let n = slots(held)
     let _ = finalize(held)
     n
 }

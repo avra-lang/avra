@@ -67,6 +67,20 @@ export enum Cause {
     /// STANDING, because the width is zero there.
     NoColumn(name: string)
     OutOfRow(column: int, width: int)
+    /// A BIND aimed outside the statement's parameter slots.
+    ///
+    /// ITS OWN ARM BECAUSE THE MISTAKE IS ITS OWN. This used to ride
+    /// `OutOfRow`, and read in a row the refusals were indistinguishable
+    /// — a column past the row, a cell read before stepping, and a
+    /// parameter outside the slots all answered `sqlite.out_of_row`, so
+    /// a caller branching on the cause could not tell a WRITE mistake
+    /// from a READ one. They are different fixes: one is the caller's
+    /// SQL disagreeing with their binds, the other their reader
+    /// disagreeing with their query.
+    ///
+    /// And the off-by-one is the reason it happens at all: parameters
+    /// count from 1 where columns count from 0.
+    OutOfSlots(index: int, slots: int)
     /// A slot count and a value count that disagree, caught before
     /// anything was bound.
     Unfilled(slots: int, given: int)
@@ -137,6 +151,18 @@ export enum Cause {
     /// names the sequence instead, the way `OutOfRow` names a bind index
     /// before SQLITE_RANGE can.
     Finalized
+    /// A statement stepped after it answered DONE. SQLite's `step`
+    /// AUTO-RESETS at DONE — which is why an error code arrives honestly
+    /// rather than as SQLITE_MISUSE — and the reset is also a REWIND, so
+    /// the next step RE-RUNS the statement from the start. Measured:
+    /// one `insert` stepped three times leaves THREE ROWS, and every
+    /// step answers DONE, so nothing in the answer distinguishes "did
+    /// nothing" from "wrote another row".
+    ///
+    /// Its own arm because the REMEDY is its own: `reset` it deliberately
+    /// to run it again. And not `Defect` — a defensive extra step is a
+    /// careful author's habit, not the driver's bug.
+    Done
 }
 
 /// Why SQLite refused, materialised at the failure site and owning
@@ -262,11 +288,12 @@ impl Cause {
         match self {
             .Busy(b) -> waiting_clears(b),
             .Constraint(_) or .Denied(_) or .Mismatch(_, _, _) or .NoColumn(_) or
-            .OutOfRow(_, _) or .Unfilled(_, _) or .NotUtf8(_, _) or .NoRow or
+            .OutOfRow(_, _) or .OutOfSlots(_, _) or .Unfilled(_, _) or .NotUtf8(_, _) or .NoRow or
             .ManyRows or .Syntax or .Corrupt or .Full or .TooBig or .Interrupted or
             .Io(_) or .NoMemory or .CantOpen or .NotADatabase or .Expired or
             .Defect(_) or .Other(_) or .EmptyPath or .UriPath or .HoldsNul or
-            .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized -> false,
+            .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized or
+            .Done -> false,
         }
     }
 
@@ -279,6 +306,7 @@ impl Cause {
             .Mismatch(_, _, _) -> "sqlite.mismatch",
             .NoColumn(_) -> "sqlite.no_column",
             .OutOfRow(_, _) -> "sqlite.out_of_row",
+            .OutOfSlots(_, _) -> "sqlite.out_of_slots",
             .Unfilled(_, _) -> "sqlite.unfilled",
             .NotUtf8(_, _) -> "sqlite.not_utf8",
             .NoRow -> "sqlite.no_row",
@@ -302,6 +330,7 @@ impl Cause {
             .NoStatement -> "sqlite.no_statement",
             .RowsDiscarded -> "sqlite.rows_discarded",
             .Finalized -> "sqlite.finalized",
+            .Done -> "sqlite.done",
         }
     }
 }

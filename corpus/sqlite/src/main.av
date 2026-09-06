@@ -4,7 +4,7 @@
 // finalized and the connection closed. Native only: the driver is FFI
 // and the evaluator cannot host an extern.
 use @std.sqlite.open.{Db, memory, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, finalize, run, bind_int, holes, width, standing, class_at, int_at}
+use @std.sqlite.stmt.{Stmt, prepare, step, finalize, run, bind_int, slots, width, standing, class_at, int_at}
 use @std.sqlite.error.{SqlError, Cause, Storage}
 use @std.sqlite.{version, is_complete}
 use @std.sqlite.script.{statements}
@@ -36,14 +36,14 @@ fn story() -> Result<string, SqlError> {
 /// A parameter bound, a row stepped, and the cell read CLASS FIRST.
 fn counted(db: Db, floor: int) -> Result<string, SqlError> {
     mut s = prepare(db, "select count(*) from fruit where weight >= ?1")?
-    let n = holes(s)
+    let n = slots(s)
     let _ = bind_int(s, 1, floor)?
     let word = read_one(s)?
     let _ = finalize(s)
     "one hole? ${n == 1} — ${word} fruit weigh ${floor} or more"
 }
 
-fn read_one(s: Stmt) -> Result<string, SqlError> {
+fn read_one(mut s: Stmt) -> Result<string, SqlError> {
     let more = step(s)?
     if !more { return "no" }
     let c = class_at(s, 0)?
@@ -71,7 +71,7 @@ fn walked(db: Db) -> Result<string, SqlError> {
 type Walk = { rows: int, total: int }
 
 /// The loop, written as the recursion the subset takes.
-fn summed(s: Stmt, rows: int, total: int) -> Result<Walk, SqlError> {
+fn summed(mut s: Stmt, rows: int, total: int) -> Result<Walk, SqlError> {
     let more = step(s)?
     if !more { return Walk { rows: rows, total: total } }
     summed(s, rows + 1, total + int_at(s, 0)?)

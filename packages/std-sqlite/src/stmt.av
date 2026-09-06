@@ -27,7 +27,7 @@ use c.{sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset,
 /// A compiled statement. The handle is nullable because finalizing
 /// NULLS it, so finalizing twice finalizes once — the same law `Db`
 /// holds, and the compiler enforces the `mut` place for both.
-export type Stmt = { raw: ptr? }
+export type Stmt = { raw: ptr?, done: bool = false }
 
 /// The result codes this driver reads by name rather than by number.
 fn row_code() -> int { 100 }
@@ -86,16 +86,25 @@ fn compiled(db: Db, sql: string) -> Result<Stmt, SqlError> {
 /// refuse half the cases. The fix is a flag on `Stmt` and a `mut` seat
 /// here; until then, step until `false` and then stop.
 /// `sqlite_stmt_adversarial_test.av` pins the behaviour.
-export fn step(s: Stmt) -> Result<bool, SqlError> {
+export fn step(mut s: Stmt) -> Result<bool, SqlError> {
     if s.raw == null { fail refused(Cause.Finalized, "this statement was finalized — prepare it again") }
+    if s.done { fail refused(Cause.Done, "this statement already answered DONE — stepping it again RE-RUNS it from the start; `reset` it if that is what you mean") }
     let rc = sqlite3_step(s.raw)
     if rc == row_code() { return true }
-    if rc == done_code() { return false }
+    if rc == done_code() {
+        s.done = true
+        return false
+    }
     fail failed(rc, null)
 }
 
-/// The statement rewound, its bindings kept.
-export fn reset(s: Stmt) -> int { sqlite3_reset(s.raw) }
+/// The statement rewound, its bindings kept — and the DONE mark
+/// cleared, because rewinding is exactly the caller saying they mean to
+/// run it again.
+export fn reset(mut s: Stmt) -> int {
+    s.done = false
+    sqlite3_reset(s.raw)
+}
 
 /// The statement destroyed, and the handle NULLED so it cannot be
 /// destroyed again. Answers the code of the most recent step, so a
@@ -123,7 +132,7 @@ export fn run(db: Db, sql: string) -> Result<int, SqlError> {
     n
 }
 
-fn drained(db: Db, s: Stmt) -> Result<int, SqlError> {
+fn drained(db: Db, mut s: Stmt) -> Result<int, SqlError> {
     if sqlite3_column_count(s.raw) > 0 { fail refused(Cause.RowsDiscarded, "this statement answers rows and this verb answers a count — read it instead") }
     let more = step(s)?
     if more { fail refused(Cause.RowsDiscarded, "this statement answered a row where none was expected") }
@@ -153,12 +162,12 @@ fn drained(db: Db, s: Stmt) -> Result<int, SqlError> {
 // after DONE, measured). Both wait on the same flag. Reset before you
 // rebind.
 
-/// How many parameters the statement has.
-export fn holes(s: Stmt) -> int { sqlite3_bind_parameter_count(s.raw) }
+/// How many parameter slots the statement has.
+export fn slots(s: Stmt) -> int { sqlite3_bind_parameter_count(s.raw) }
 
 /// An integer bound into the Nth hole, counting from 1.
 export fn bind_int(s: Stmt, index: int, value: int) -> Result<int, SqlError> {
-    let i = in_holes(s, index)?
+    let i = in_slots(s, index)?
     judged(sqlite3_bind_int64(s.raw, i, value))
 }
 
@@ -166,7 +175,7 @@ export fn bind_int(s: Stmt, index: int, value: int) -> Result<int, SqlError> {
 /// the absence of a bind, and a hole never bound is also NULL, which is
 /// why `clear_bindings` and this verb are different things.
 export fn bind_null(s: Stmt, index: int) -> Result<int, SqlError> {
-    let i = in_holes(s, index)?
+    let i = in_slots(s, index)?
     judged(sqlite3_bind_null(s.raw, i))
 }
 
@@ -177,14 +186,14 @@ export fn bind_null(s: Stmt, index: int) -> Result<int, SqlError> {
 /// be bound short and the database would hold a prefix of what the
 /// caller wrote, silently.
 export fn bind_text(s: Stmt, index: int, value: string) -> Result<int, SqlError> {
-    let i = in_holes(s, index)?
+    let i = in_slots(s, index)?
     judged(sqlite3_bind_text(s.raw, i, value, value.length, transient()))
 }
 
 /// Bytes bound into the Nth hole, COPIED. A zero-length blob is a real
 /// value and stays distinct from NULL.
 export fn bind_blob(s: Stmt, index: int, value: string) -> Result<int, SqlError> {
-    let i = in_holes(s, index)?
+    let i = in_slots(s, index)?
     judged(sqlite3_bind_blob(s.raw, i, value, value.length, transient()))
 }
 
@@ -197,21 +206,21 @@ export fn bind_blob(s: Stmt, index: int, value: string) -> Result<int, SqlError>
 /// refcounter is blind because a foreign pointer carries no header. The
 /// verb is long and says so on purpose. `bind_text` is what you want.
 export fn bind_text_unsafely_borrowed(s: Stmt, index: int, value: string) -> Result<int, SqlError> {
-    let i = in_holes(s, index)?
+    let i = in_slots(s, index)?
     judged(sqlite3_bind_text(s.raw, i, value, value.length, static_bytes()))
 }
 
 /// An index inside the statement's holes, or the refusal that names the
 /// off-by-one before SQLite answers a bare SQLITE_RANGE.
-fn in_holes(s: Stmt, index: int) -> Result<int, SqlError> {
-    let n = holes(s)
-    if index < 1 || index > n { fail refused(Cause.OutOfRow(index, n), hole_words(index, n)) }
+fn in_slots(s: Stmt, index: int) -> Result<int, SqlError> {
+    let n = slots(s)
+    if index < 1 || index > n { fail refused(Cause.OutOfSlots(index, n), slot_words(index, n)) }
     index
 }
 
-fn hole_words(index: int, n: int) -> string {
-    if n == 0 { return "parameter ${index} was bound into a statement that has no parameters" }
-    "parameter ${index} is outside the ${n} this statement has — they count from 1, where columns count from 0"
+fn slot_words(index: int, n: int) -> string {
+    if n == 0 { return "parameter ${index} was bound into a statement that has no parameter slots" }
+    "parameter ${index} is outside the ${n} slot(s) this statement has — parameters count from 1, where columns count from 0"
 }
 
 fn judged(rc: int) -> Result<int, SqlError> {
