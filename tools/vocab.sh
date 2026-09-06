@@ -63,7 +63,9 @@ EOF
 # answering for a variant that does not exist yet.
 KIND_CONSUMERS="packages/std-avrac/src/language/llvm.av	ll_rt_kind	the LLVM type it becomes
 packages/std-avrac/src/language/llvm.av	rt_arg	how an argument crosses the boundary
-packages/std-avrac/src/language/llvm.av	answers_word	how an answer crosses back"
+packages/std-avrac/src/language/llvm.av	answers_word	how an answer crosses back
+packages/std-avrac/src/language/llvm.av	answered	the SIGN a narrow answer widens with
+packages/std-avrac/src/language/llvm.av	narrow_sign	the SIGN an inout cell normalises with"
 
 while IFS='	' read -r file fn what; do
   if [ ! -f "$file" ]; then

@@ -65,12 +65,15 @@ fn build_return(mut b: Builder) -> Result<LangNode, string> {
     b.make_stmt(Stmt.Return(expr_id_at(b.args, 0)))
 }
 
-/// `extern fn name(p: T, …) -> R` — every seat typed by the grammar,
-/// so the names and types pair by index.
+/// `extern fn name(mut p: T, …) -> R` — every seat typed by the
+/// grammar, so the names and types pair by index. A `mut` seat is an
+/// INOUT: the C prototype takes the address of the caller's cell,
+/// which is the only way a callee with no box can write back.
 fn build_extern(mut b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    let ps = b.tokens(1)?
+    let marks = b.tokens(1)?
+    let ps = b.tokens(2)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("an extern declaration without a span") }
-    b.make_stmt(Stmt.ExternFn(n.text, seats(ps, aligned_param_types(ps, b.type_refs(2)?, ends!)), b.answer(3)))
+    b.make_stmt(Stmt.ExternFn(n.text, marked_seats(ps, aligned_param_types(ps, b.type_refs(3)?, ends!), marks, n.span.lo), b.answer(4)))
 }

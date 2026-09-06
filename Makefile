@@ -134,13 +134,36 @@ vocab:
 externs:
 	@python3 tools/externs.py
 
+# THE WIDTH WITNESS. C bodies that answer NARROWER than 64 bits, read
+# twice from ONE object — by Avra through the extern seam, and by a C
+# main. Identical output means the seam honours every declared width;
+# a difference names the BOUNDARY rather than the object, which a
+# single reader cannot do. It lives outside runtime/ because `make
+# externs` refuses a narrow body WE own, and rightly: the defect under
+# test is C someone else compiled. When a package can build its own
+# native sources (ROADMAP: B7) this rule dies and the manifest's
+# `sources` does the work.
+build/width_witness.o: packages/width-witness/src/witness.c
+	@mkdir -p build
+	cc -c -O2 -o build/width_witness.o packages/width-witness/src/witness.c
+
+witness: $(RUNTIME_OBJS) build/width_witness.o
+	@./avra build packages/width-witness > /tmp/avra-witness.path 2>&1 \
+	  || { echo "witness: build FAILED"; cat /tmp/avra-witness.path; exit 1; }
+	@$$(tail -1 /tmp/avra-witness.path) > /tmp/avra-witness-avra.out
+	@cc -O2 -o /tmp/avra-witness-c packages/width-witness/src/reader.c build/width_witness.o
+	@/tmp/avra-witness-c > /tmp/avra-witness-c.out
+	@diff /tmp/avra-witness-c.out /tmp/avra-witness-avra.out \
+	  || { echo "witness: Avra and C disagree on the same object — the extern seam lost a width"; exit 1; }
+	@echo "witness: Avra == C on the same object — $$(cat /tmp/avra-witness-avra.out)"
+
 # The whole gate: the vocabulary's guarantee, idioms, unit specs,
 # then the corpus end to end.
 # THE GATE: the suites run with the scaffolder's template in place —
 # scaffolded into std-avrac before, removed after, however the suites
 # end — so the templates' own test is one case of that suite, not a
 # second compile of the whole compiler for one case.
-gate: vocab externs idioms tested corpus
+gate: vocab externs idioms tested corpus witness
 
 tested: $(RUNTIME_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
