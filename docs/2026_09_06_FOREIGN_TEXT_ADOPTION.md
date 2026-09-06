@@ -76,16 +76,34 @@ zero registry rows. It is exported under a name that says what it is,
 takes a pointer and a length, and answers a real headered box the
 refcounter owns.
 
-**NO BELT IS POSSIBLE ON THE READ, so the name carries the warning.**
-The runtime cannot know the extent of a foreign buffer; a wrong length
-reads out of bounds and nothing can catch it. The length's provenance is
-the whole safety argument, and it belongs to the caller.
+**THE POINTER CANNOT BE CHECKED, THE LENGTH CAN, AND THE LENGTH IS WHERE
+THE CATASTROPHIC CASE LIVES.** An earlier draft of this design said no
+belt was possible at all, which overstates it in the dangerous
+direction. `str_owned` takes `size_t`; an Avra `int` is 64-bit SIGNED;
+so **a length of -1 crossing that seam becomes SIZE_MAX and asks
+`sized_box` for eighteen exabytes**. And `column_bytes` answers a C
+`int` — the exact width class this campaign has already caught lying.
+So the export takes a SIGNED length and REFUSES A NEGATIVE ONE AS A
+WRECK before it reaches `memcpy`. A wrong-but-positive length still
+reads out of bounds and nothing catches that; the name carries THAT
+warning, which is a much narrower claim than the one it replaces.
+
+**AND `str_owned` IS THE RIGHT COPY AND THE WRONG EXPORT.** Its
+signature is a C one, `(const char*, size_t)`. The export wants
+`(ptr, int)` with the refusal above, the NULL check below, and its own
+name saying what it does — a thin validating verb that then calls
+`str_owned`, rather than `str_owned` itself gaining a second life as a
+public symbol. The validating shell and the copy are different jobs, the
+same way the trap helpers are separate from the fast paths.
 
 **THE EMPTY CASE IS THE FIRST CASE.** `column_blob` answers a NULL
 pointer for THREE conditions — SQL NULL, a zero-length value, and an
 out-of-memory — so adopting `(null, 0)` must answer an EMPTY BOX and
 never touch the pointer. An encoding spends the empty value; this one
-spends it three ways.
+spends it three ways. **And a NULL meaning three things is not
+disambiguable downstream, only at the source** — which is why the face
+asks `column_type` rather than testing the pointer, and why no amount of
+care in the adoption verb could substitute for it.
 
 **THE FACE ASKS THE CLASS FIRST, ALWAYS, AND READS THE LENGTH AFTER THE
 VALUE.** Both laws are already written in `c/column.av` and already held
@@ -105,6 +123,15 @@ grow one: the lifetime belongs to SQLite's next step, not to the caller,
 so a borrowed read is a promise nobody can make. **It is unspellable
 rather than discouraged** — the same move `Mode`'s three lawful
 combinations made, arrived at from the other direction.
+AND THE MECHANISM IS SHARPER THAN THE PROMISE. A borrowed column
+pointer is INERT held as a `ptr` — `hdr()` refuses it, nothing reads
+through it — and LETHAL typed as a `string`, because `str_len` falls
+back to `strlen` on a non-box and walks freed memory. **The danger is
+not HOLDING it, it is TYPING it.** Nothing in the extern seam stops a
+declaration from typing a borrowed pointer as `string` today, which is
+the same property that makes any exported symbol a language capability.
+So what ENFORCES the absence of the twin is that no `string`-answering
+column extern exists to be misused — not that anyone was warned.
 
 ## What is owed
 
