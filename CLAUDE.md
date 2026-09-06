@@ -870,6 +870,24 @@ Runtime facts, ours to ratify:
   from it. The same staleness answers questions wrong before it
   fails: `./avra` in a lane is that same old binary, and it will
   re-verify a closed hole as still open.
+- AN ASSUMPTION NOTHING HAS EVER TRIED TO VIOLATE IS NOT A GUARANTEE.
+  A check that passes proves the arrangement it was handed happened
+  to work; it does not prove the check would NOTICE. Two shapes,
+  both verified here. THE UNEXERCISED KEEPER: `make vocab` guarded
+  `RtKind` for the enum's whole life without once seeing it grow, so
+  nothing ever tested that it looked for the right shape — and it did
+  not, missing every `is .Variant` test. THE AGREEING ENGINES: `eval
+  == native` proves the two engines AGREE, never that they are RIGHT.
+  H2 and H3 both answer `1 2 2` on both engines where 11.5 demands
+  `1 1 0` — the differential is unanimous and wrong, because
+  agreement is a CONSISTENCY check while the LAW is the oracle. The
+  gate's third leg does not rescue it: a corpus `.expected` is
+  written by the same author from the same understanding, so it joins
+  the consensus rather than breaking it. So when a check has never
+  failed, ask what would make it fail and then MAKE it happen —
+  restore the boolean and watch the keeper name the line, write the
+  probe from the LAW rather than from the code. A green check whose
+  failure has never been witnessed is an untested instrument.
 - A COUNT FROM A PACKAGE SWEEP IS LINES, NOT SITES. Checking one
   package reports its DEPENDENCIES' warnings too, so summing the
   twelve counts every shared site once per package that reaches it:
