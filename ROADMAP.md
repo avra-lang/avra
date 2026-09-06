@@ -1828,6 +1828,29 @@ the order is the dependency.
         105`). That is the receiver-aliasing hole, S2's, and the fix
         above makes flat and boxed agree about it rather than
         differing.
+  - [ ] A GENERIC BODY NOTHING INSTANTIATES IS NEVER LOWERED, so
+        every lowering-level law is blind to it — the pointer-constant
+        guard, the mint-order law, every `lower_defect` a feature can
+        raise. Not "runs and passes": never runs. Found 2026-09-05 by
+        the SQLITE campaign as a claim about LIBRARIES, which is
+        false and worth recording as false: a library has no entry,
+        and `union` (lower.av:134) seeds `bodies` with every declared
+        body exactly when `entry == null`, so `avra check` on a
+        library already lowers all of them. The hole is the FILTER —
+        `declared()` goes through `lowers_plain` (lower.av:223),
+        which requires `tparams(d).is_empty()` and the parent's too.
+        A generic body has nothing to instantiate it WITH, so no
+        `every` flag reaches it.
+        NOT A FLAG. Lowering a generic body with no instantiation
+        needs either a canonical instantiation or a lowering that
+        tolerates unbound type parameters, and both are design
+        questions. Recorded, not scoped.
+        THE SIBLING TRAP, worth its own line because two lanes were
+        caught by it in one day: a REDUCTION THAT REMOVES THE CALL
+        SITE REMOVES THE PASS. A repro cut down to a declaration is a
+        program whose entry reaches nothing, so a lowering defect
+        goes quiet for a reason that has nothing to do with the bug.
+        That is how F0900 hid.
   - [ ] S2's SIZE, censused by lane D on cfa834d and NOT what either
         of us expected: 100 sites in std-avrac, UNCHANGED by the
         borrow retirement, plus 3 in std-toml which lane D fixed.
