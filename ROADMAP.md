@@ -2958,6 +2958,87 @@ driver forced someone to read a seam nobody had grown before.
     BEHAVIOUR AND NOT THE LAW. The driver writes the test that FAILS when
     the fix lands, with its expiry in the comment.
 
+ASSERT THE GUARANTEE, NOT THE MECHANISM. Measuring what a trap
+mid-transaction actually does — a forked child that begins, inserts
+twice and `_exit(2)` — showed SQLite's hot journal recovering it: 1 row
+not 3, stable across two reopens. AND THE DETAIL REASONING WOULD HAVE
+GOT WRONG: the journal is STILL PRESENT AND NON-EMPTY after the
+recovering read, while the data is correctly rolled back. A test
+asserting "the journal is gone" would have been green today and red on
+a WAL database, a different journal mode, or a version that defers
+cleanup — BROKEN WHILE THE GUARANTEE HELD PERFECTLY. The guarantee is
+THE WRITE IS ABSENT; the journal's lifetime is SQLite's business.
+And the recovery is labelled in `tx.av` as SQLITE'S guarantee rather
+than ours, which is what stops a later reader assuming the driver does
+it.
+
+A STABLE MEASUREMENT OF UNDEFINED BEHAVIOUR IS STILL UNDEFINED
+BEHAVIOUR — and this is PROFILE, DON'T REASON cutting the other way.
+A red team measured a double `sqlite3_close_v2` answering `0,21` and
+concluded API_ARMOR made it detectable rather than undefined. Then read
+the C: `sqlite3Close` calls `sqlite3SafetyCheckSickOrOk(db)`, which
+reads `eOpenState` — at :188850 the state is written, at :188856 the db
+is FREED. **The second close reads freed memory**, and the 21 arrives
+only because the freed block still holds the byte. Stress-tested stable
+in 40 of 40 runs, including ten connections opened and closed in
+between to force the block's reuse.
+STABLE IS NOT A CONTRACT. The test was about to pin UB as a guarantee —
+in a suite whose whole job is to warn — where it would have taught the
+next reader that closing twice is answerable and gone red the day a
+lookaside or size class moved. Removed; the suite now asserts only what
+the driver PROMISES, with the measurement, both line numbers and the
+40-run result recorded as an OBSERVATION.
+THE SHARPENING: the tree's law says profile rather than reason, and it
+is right — but a measurement tells you WHAT HAPPENED, never WHAT IS
+GUARANTEED. Where the contract says undefined, forty green runs are
+forty samples of one arrangement, and the honest artifact is a recorded
+observation rather than an assertion.
+
+A TEST MOVES DOWN A LAYER RATHER THAN INTO THE BIN. When `is_complete`
+stopped truncating at a NUL, the test asserting the truncation did not
+become FALSE — it became MISPLACED. C still truncates; the wall still
+sees it. So the assertion moved onto `sqlite3_complete` directly and the
+face's refusal was added beside it: two layers, two behaviours, both
+asserted. **NOTHING THAT WAS TRUE STOPPED BEING ASSERTED.** The failure
+mode it prevents is the common one — a fix lands, a test goes red, and
+the test is deleted because "the behaviour changed", when what changed
+is WHICH LAYER OWNS IT. Ask whether the old assertion is false or
+merely in the wrong place.
+
+THE ARM IS RIGHT AND THE SENTENCE UNDER IT IS NARROWER THAN THE ARM.
+Twice: `Cause.Syntax` covers `SQLITE_ERROR`, which is SQLite's GENERIC
+code, so "no such table" reads as a syntax error; and `waiting_clears`
+explains `SQLITE_LOCKED` as "the lock is held by the retry loop itself",
+true for detail 0 and false for 262, which is another connection in a
+shared cache — in a package that ships the field enabling that mode.
+Both times the instinct is to SPLIT THE ARM, and both times that would
+have been wrong: the discriminator was already in the value (a parse
+error carries a token offset; a shared-cache lock carries its detail).
+A REGISTRY ARM CAN BE CORRECT WHILE ITS JUSTIFICATION IS NARROWER THAN
+ITS MEMBERSHIP, and the honest repair is to narrow the SENTENCE, not the
+arm. Recording the limit beats adding a variant to guess with.
+
+AND THE EMPTY-VALUE LAW, IN THE FORM THE API DEMONSTRATES BEST: AN
+ENCODING SPENDS THE EMPTY VALUE, AND SQLITE SPENDS IT THREE WAYS IN ONE
+FUNCTION — `""`, `":memory:"`, and a URI whose path component is empty.
+Three spellings of the same absence, each meaning something different,
+all reaching the temporary database that is deleted at close with every
+write succeeding. The third was found by a red team after two were
+already guarded.
+
+A SWEEP KEYED TO A FILE LEAVES THE SENTENCE STANDING ELSEWHERE. When
+`ptr_at` landed, a sweep corrected all three ROADMAP entries asserting
+`ptr` was receive-only — correctly and completely. The SAME CLAIM stood
+in a fourth place, `docs/BYTES_SHAPE.md`, with a DECISION hanging off
+it ("the driver must not offer a bind at all"), already lifted in
+messages and not in writing. A DOCTRINE CLAIM IS NOT OWNED BY ONE FILE:
+a sweep keyed to a file finds three and reports done; a keeper keyed to
+the CLAIM finds all four. Rot window measured at 8.2 hours and 14
+commits with four lanes watching — an absent instrument, not
+carelessness. And the shape that hid it: of the page's three clauses,
+two went false and one stayed true, which is what let it keep reading
+as correct. Found by the docs campaign, not by this one.
+
 THE EVIDENCE LAW — the campaign's most transferable output, earned by its
 authors being wrong repeatedly in public. CLAUDE.md carries the general
 form; this is the evidence behind it.
@@ -2982,6 +3063,26 @@ form; this is the evidence behind it.
   A ROW THAT SAYS WITHDRAWN IS WORTH MORE THAN A ROW DELETED. THE
   TRIGGER, so nobody re-derives it: a FLAT record in a `mut` seat whose
   body writes the field, AND A CALL SITE. Fixed in TYPING, not lowering.
+
+AND THE ONE SHAPE'S LAST INSTANCE IS THE COORDINATION ITSELF: QUOTE
+THE CLAUSE YOU ARE ANSWERING. Two sessions sharing the name `SQLITE`
+misdirected five things in a day — a lost message, a duplicated backlog
+entry, an attribution dispute over rulings nobody had misattributed, a
+peer nearly accepting a fault that was not theirs, and credit for a
+finding landing in a third session's inbox. Addressing by REF closed
+the name collision and did not close the last two, **because the defect
+was never in the addressing**: a correctly-addressed reply can still
+answer a conversation the recipient was never in.
+THE FIX IS A CONVENTION, NOT A MECHANISM. A message that carries a
+FRAGMENT OF ITS PARENT is self-identifying in a way no address can be —
+the address says where it went, the quote says what it answers. One
+quoted line would have caught both remaining cases in the first reply
+rather than the third. It costs a line, survives every routing failure
+including ones nobody has met, and needs nothing from the transport.
+Which is the campaign's one shape exactly: an identifier that resolves
+differently on the two sides of a boundary, fixed by making the
+identifier carry what it means rather than by making the boundary
+smarter.
 
 THE ONE SHAPE, which is what this campaign actually found. Every finding
 above and every coordination failure it suffered is the same bug in a
