@@ -2123,6 +2123,48 @@ the order is the dependency.
         Pinned by a hand-built value, since the grammar cannot reach
         it, and FIRE-TESTED: the test fails against the old `plain`
         and passes against the new.
+  - [x] A BUILDER'S WORDS ARE ITS CLAIM. LANDED 2026-09-06, the
+        features half of a two-owner fix the SQLITE-LEAD asked for.
+        The executor prefixes EVERY builder error with "builder
+        failed:" (grammar/executor.av:365), which reads as an
+        internal defect — so a LAW the writer can fix sends them to
+        file a bug instead of adding a parenthesis. Measured before
+        recommending: FIVE laws already read that way today —
+        "`export` written twice", "a `catch` needs at least one arm",
+        "a `when` has ONE `_` arm", "the `_` arm ends a `when` — move
+        it last", "an `impl` block holds `fn` declarations only" —
+        against eight that genuinely are defects.
+        IT IS NOT A SEAM CHANGE, which is what made it cheap: `Cause`
+        ALREADY separates `Builder` from `Defect`
+        (grammar/diagnostics.av:8), so the vocabulary exists and only
+        the wording lies. Nothing needed adding to `BuilderRow`'s
+        `Result<LangNode, string>` — the WORDS ARE THE CLAIM, so a
+        builder cannot say the wrong one by accident.
+        THIS HALF: the eight span defects now say "defect: … — the
+        arena and the grammar disagree", following the tree's own
+        precedent (`tables/builders.av` already said "defect:"). They
+        read correctly under the blanket prefix AND without it, so
+        this half stands whatever the other half does.
+        THE OTHER HALF is `grammar/executor.av:365` — dropping the
+        prefix — and it is lane A's file, routed with the
+        measurement. Sequenced AFTER the bitwise merge on the
+        SQLITE-LEAD's argument, which is right: that slice is gated
+        at a fixed point built twice, and folding a two-owner
+        diagnostics change into it would put a proven artifact back
+        in flight to fix five messages that have read wrong for as
+        long as they existed.
+  - [ ] THE SECOND-BUILD RULE IS NOT ONLY FOR CODEGEN. CLAUDE.md
+        writes it for a codegen fix — "a product built right after
+        merging a memory-pass fix carries the fix as SOURCE but its
+        own body was compiled by the pre-fix pass". The bitwise lane
+        hit it THREE TIMES IN ONE SLICE on FRONT-END changes, and
+        their sentence is the one to keep: THE BUILD THAT SUCCEEDED
+        WAS THE BUILD THAT LIED. Their first build passed because the
+        standing binary knew nothing of `>>`; the failure appeared on
+        the NEXT build, when the compiler that had learned to munch
+        it tried to read `workspace.av`. `make bootstrap`, not `make
+        avra`, was the way out each time. Routed to CLAUDE.md's
+        curator as a generalisation of the existing rule.
   - [ ] A CONTENT HASH THAT EXCLUDES SPANS CUTS OFF CONSUMERS THAT
         CARRY THEM — lane A's finding, traced into this lane's files
         and made concrete. The premise is deliberate and documented:
