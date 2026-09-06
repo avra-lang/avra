@@ -137,6 +137,18 @@ export enum Cause {
     /// names the sequence instead, the way `OutOfRow` names a bind index
     /// before SQLITE_RANGE can.
     Finalized
+    /// A statement stepped after it answered DONE. SQLite's `step`
+    /// AUTO-RESETS at DONE — which is why an error code arrives honestly
+    /// rather than as SQLITE_MISUSE — and the reset is also a REWIND, so
+    /// the next step RE-RUNS the statement from the start. Measured:
+    /// one `insert` stepped three times leaves THREE ROWS, and every
+    /// step answers DONE, so nothing in the answer distinguishes "did
+    /// nothing" from "wrote another row".
+    ///
+    /// Its own arm because the REMEDY is its own: `reset` it deliberately
+    /// to run it again. And not `Defect` — a defensive extra step is a
+    /// careful author's habit, not the driver's bug.
+    Done
 }
 
 /// Why SQLite refused, materialised at the failure site and owning
@@ -266,7 +278,8 @@ impl Cause {
             .ManyRows or .Syntax or .Corrupt or .Full or .TooBig or .Interrupted or
             .Io(_) or .NoMemory or .CantOpen or .NotADatabase or .Expired or
             .Defect(_) or .Other(_) or .EmptyPath or .UriPath or .HoldsNul or
-            .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized -> false,
+            .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized or
+            .Done -> false,
         }
     }
 
@@ -302,6 +315,7 @@ impl Cause {
             .NoStatement -> "sqlite.no_statement",
             .RowsDiscarded -> "sqlite.rows_discarded",
             .Finalized -> "sqlite.finalized",
+            .Done -> "sqlite.done",
         }
     }
 }

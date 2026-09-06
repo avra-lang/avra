@@ -27,7 +27,7 @@ use c.{sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset,
 /// A compiled statement. The handle is nullable because finalizing
 /// NULLS it, so finalizing twice finalizes once — the same law `Db`
 /// holds, and the compiler enforces the `mut` place for both.
-export type Stmt = { raw: ptr? }
+export type Stmt = { raw: ptr?, done: bool = false }
 
 /// The result codes this driver reads by name rather than by number.
 fn row_code() -> int { 100 }
@@ -86,16 +86,25 @@ fn compiled(db: Db, sql: string) -> Result<Stmt, SqlError> {
 /// refuse half the cases. The fix is a flag on `Stmt` and a `mut` seat
 /// here; until then, step until `false` and then stop.
 /// `sqlite_stmt_adversarial_test.av` pins the behaviour.
-export fn step(s: Stmt) -> Result<bool, SqlError> {
+export fn step(mut s: Stmt) -> Result<bool, SqlError> {
     if s.raw == null { fail refused(Cause.Finalized, "this statement was finalized — prepare it again") }
+    if s.done { fail refused(Cause.Done, "this statement already answered DONE — stepping it again RE-RUNS it from the start; `reset` it if that is what you mean") }
     let rc = sqlite3_step(s.raw)
     if rc == row_code() { return true }
-    if rc == done_code() { return false }
+    if rc == done_code() {
+        s.done = true
+        return false
+    }
     fail failed(rc, null)
 }
 
-/// The statement rewound, its bindings kept.
-export fn reset(s: Stmt) -> int { sqlite3_reset(s.raw) }
+/// The statement rewound, its bindings kept — and the DONE mark
+/// cleared, because rewinding is exactly the caller saying they mean to
+/// run it again.
+export fn reset(mut s: Stmt) -> int {
+    s.done = false
+    sqlite3_reset(s.raw)
+}
 
 /// The statement destroyed, and the handle NULLED so it cannot be
 /// destroyed again. Answers the code of the most recent step, so a
@@ -123,7 +132,7 @@ export fn run(db: Db, sql: string) -> Result<int, SqlError> {
     n
 }
 
-fn drained(db: Db, s: Stmt) -> Result<int, SqlError> {
+fn drained(db: Db, mut s: Stmt) -> Result<int, SqlError> {
     if sqlite3_column_count(s.raw) > 0 { fail refused(Cause.RowsDiscarded, "this statement answers rows and this verb answers a count — read it instead") }
     let more = step(s)?
     if more { fail refused(Cause.RowsDiscarded, "this statement answered a row where none was expected") }

@@ -7,6 +7,7 @@
 // T127, opening is lazy, and the check needs a statement.
 use @std.io.{exists, write_text, remove}
 use @std.sqlite.open.{Db, Mode, OpenConfig, config_at, open, open_read, memory, open_with, close}
+use @std.sqlite.stmt.{Stmt, prepare, finalize}
 use @std.sqlite.error.{SqlError}
 
 /// Whether an open succeeded, having closed whatever it got.
@@ -63,7 +64,82 @@ fn not_a_db() -> string { "/tmp/avra-sqlite-notadb-conn.db" }
 fn made(path: string, text: string) -> bool { (write_text(path, text) catch "") != "" }
 fn gone(path: string) -> bool { (remove(path) catch "") != "" }
 
+// ── S2 TRIPWIRES ────────────────────────────────────────────────
+//
+// TWO DESTRUCTORS IN THIS PACKAGE HAVE THE SAME SHAPE: guard on null,
+// call the C destructor, null the handle. `close` (open.av) and
+// `finalize` (stmt.av). Each is safe against a SECOND call through the
+// SAME binding, and the suite proves that elsewhere.
+//
+// NEITHER IS SAFE AGAINST A COPY, and today that does not bite for a
+// reason outside this package: `mut b = a` ALIASES rather than copies —
+// lane C's S2 receiver-aliasing hole. So nulling through `b` nulls `a`
+// too, and the second call finds nothing to free.
+//
+// THE DAY S2 LANDS AND COPIES COPY, `a.raw` still holds a freed pointer
+// and the second call is a DOUBLE FREE inside a std package. These two
+// cases assert TODAY'S answer, so they FAIL the day the aliasing goes —
+// which is the notice, and it is aimed at whoever takes S2.
+
+/// Closing through a copy, and what the original still holds.
+fn close_through_a_copy() -> string {
+    match memory() {
+        .Ok(db) -> aliased_close(db),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn aliased_close(db: Db) -> string {
+    mut a = db
+    mut b = a
+    let first = close(b)
+    let original_nulled = a.raw == null
+    let second = close(a)
+    "first=${first} second=${second} original_nulled=${original_nulled}"
+}
+
+/// Finalizing through a copy, and what the original still holds.
+fn finalize_through_a_copy() -> string {
+    match memory() {
+        .Ok(db) -> aliased_finalize(db),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn aliased_finalize(db: Db) -> string {
+    mut held = db
+    let said = with_statement(db)
+    let _ = close(held)
+    said
+}
+
+fn with_statement(db: Db) -> string {
+    match prepare(db, "select 1") {
+        .Ok(s) -> aliased_stmt(s),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn aliased_stmt(s: Stmt) -> string {
+    mut a = s
+    mut b = a
+    let first = finalize(b)
+    let original_nulled = a.raw == null
+    let second = finalize(a)
+    "first=${first} second=${second} original_nulled=${original_nulled}"
+}
+
 spec "std/sqlite connection" {
+
+    given "the S2 tripwires — these must FAIL when copies stop aliasing" {
+        // Both pass today BECAUSE `mut b = a` aliases. When lane C's S2
+        // lands and copies copy, `original_nulled` goes false and the
+        // second call double-frees. Do not "fix" these by updating the
+        // string: the failure is the point, and the fix is a handle a
+        // copy cannot outlive.
+        then "closing a copy nulls the original too, which is what saves us" { close_through_a_copy() == "first=0 second=0 original_nulled=true" }
+        then "finalizing a copy nulls the original too" { finalize_through_a_copy() == "first=0 second=0 original_nulled=true" }
+    }
 
     given "a database in memory" {
         // It dies with the connection, so it is a verb rather than a
