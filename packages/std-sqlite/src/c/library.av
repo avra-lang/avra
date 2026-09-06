@@ -132,9 +132,21 @@ export extern fn sqlite3_free(p: ptr?)
 export extern fn sqlite3_release_memory(bytes: i32) -> i32
 
 /// The soft heap limit in bytes; answers the previous limit.
+///
+/// INERT IN THIS BUILD, AND IT ANSWERS AS IF IT WERE NOT. Enforcement
+/// reads `sqlite3StatusValue(SQLITE_STATUS_MEMORY_USED)` (:31590) to
+/// decide whether the heap is nearly full, and `SQLITE_DEFAULT_MEMSTATUS=0`
+/// turns that counter off — so the value is STORED, READ BACK FAITHFULLY,
+/// and never applied. Measured: an 8 MB `zeroblob` allocated under a
+/// 100 KB hard limit, with `memory_used()` answering 0 throughout. A
+/// caller bounding a service's memory with this gets a number back and
+/// no guard. `vendor/FLAGS.md` carries the trade; the flag buys speed
+/// and costs these two.
 export extern fn sqlite3_soft_heap_limit64(bytes: int) -> int
 
-/// The hard heap limit in bytes; answers the previous limit.
+/// The hard heap limit in bytes; answers the previous limit. INERT here
+/// for the same reason as its soft twin above, and measured the same
+/// way.
 export extern fn sqlite3_hard_heap_limit64(bytes: int) -> int
 
 /// Milliseconds slept, which the OS may shorten.

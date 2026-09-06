@@ -87,9 +87,22 @@ export enum Cause {
     /// A BLOB handle whose row was written under it. Re-open and
     /// restart; writes already made are NOT undone by the expiry.
     Expired
-    /// THE DRIVER'S OWN BUG — `SQLITE_MISUSE`, `SQLITE_RANGE`, a
-    /// statement used after finalize. Never the caller's mistake, never
-    /// retryable, never to be caught: report it.
+    /// THE DRIVER'S OWN BUG — a `SQLITE_MISUSE` or `SQLITE_RANGE` that
+    /// reached a caller who did nothing wrong. Never retryable: report
+    /// it.
+    ///
+    /// IT ONCE CLAIMED "a statement used after finalize", AND THAT WAS
+    /// BACKWARDS: finalizing and then stepping is a CALLER's protocol
+    /// mistake, reachable through the public face in three lines, and
+    /// naming it a driver bug sent the caller to file a report about
+    /// their own sequence. That case is `.Finalized` now.
+    ///
+    /// ONE CALLER-CAUSED MISUSE STILL LANDS HERE and is not yet
+    /// separable: a bind after a step with no reset. The driver would
+    /// have to remember having stepped to name it, and
+    /// `sqlite3_stmt_busy` answers 0 after DONE, so it cannot. Read this
+    /// arm as "a misuse this driver could not attribute" — see
+    /// `stmt.av`'s bind section.
     Defect(what: string)
     /// A code with no arm of its own; `code` and `extended` are exact.
     Other(code: int)
@@ -118,6 +131,12 @@ export enum Cause {
     /// A row-yielding statement handed to a verb that answers a count.
     /// Running it would throw the rows away silently.
     RowsDiscarded
+    /// A statement used after `finalize` destroyed it. `finalize` nulls
+    /// the handle, so the verb would hand SQLite a NULL and get
+    /// SQLITE_MISUSE back — a bare code that blames the driver. This
+    /// names the sequence instead, the way `OutOfRow` names a bind index
+    /// before SQLITE_RANGE can.
+    Finalized
 }
 
 /// Why SQLite refused, materialised at the failure site and owning
@@ -247,7 +266,7 @@ impl Cause {
             .ManyRows or .Syntax or .Corrupt or .Full or .TooBig or .Interrupted or
             .Io(_) or .NoMemory or .CantOpen or .NotADatabase or .Expired or
             .Defect(_) or .Other(_) or .EmptyPath or .UriPath or .HoldsNul or
-            .ManyStatements or .NoStatement or .RowsDiscarded -> false,
+            .ManyStatements or .NoStatement or .RowsDiscarded or .Finalized -> false,
         }
     }
 
@@ -282,6 +301,7 @@ impl Cause {
             .ManyStatements -> "sqlite.many_statements",
             .NoStatement -> "sqlite.no_statement",
             .RowsDiscarded -> "sqlite.rows_discarded",
+            .Finalized -> "sqlite.finalized",
         }
     }
 }
