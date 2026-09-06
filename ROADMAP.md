@@ -2917,6 +2917,60 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  BITWISE LANDED (2026-09-06, `../avra-lane-sq-ffi`: 13 files, 202
+  insertions, 1927/1927, `corpus/bitwise: eval == native == expected`,
+  traps 6/6, built twice to a fixed point). THE OPERATORS ARE THE LEAST
+  OF IT — TWO TOKEN COLLISIONS, EACH SURFACING AS A LIE ABOUT A MODULE
+  BOUNDARY.
+    `>>` CANNOT BE ONE TOKEN, BECAUSE IT CLOSES NESTED GENERICS.
+    `Table<List<string>>` lexed its last two characters as a shift, so
+    `workspace.av` never parsed and the cascade read `@std.avrac.language
+    does not export Program` — FROM THE FILE THAT DEFINES `Program`. The
+    split every generic language makes somewhere: **`<<` MUNCHES, `>>`
+    DOES NOT** — shift-right is two adjacent `>` the GRAMMAR joins (both
+    branches capturing ONE token into the same label, so the run stays
+    1:1 and the mixed-operator law still sees a whole run). `<<` has no
+    twin, since nothing opens two argument lists with no name between
+    them, so munching it is safe; the asymmetry is documented AT the
+    lexer, because the next reader will try to munch `>>`.
+    AND `|` WAS RULED FREE, AFTER A GENUINE CHECK, AND IS NOT. The
+    ruling verified `|` against or-patterns and against the deleted `|>`
+    pipe — both real, both correctly performed, neither touching TABLE
+    LITERALS, where `|` is the COLUMN SEPARATOR (`tables/mod.av:20`) in
+    **114 sites**, every feature's builder table and diagnostic registry
+    among them. `"fn_decl" | build_fn` folded into one bitwise-or, the
+    row had one cell against a two-column header, and it surfaced as
+    `@std.process does not export Tool`. Fix is ONE WORD — a cell parses
+    at `additive`, and a cell wanting the whole grammar parenthesises.
+    WRONG SCOPE AGAIN, the third way an honest check lies, TWICE IN ONE
+    EVENING by two authors. The transferable half is not "check `|`": it
+    is that **A RULING THAT NAMES WHAT IT CHECKED SHOWS ITS OWN HOLE** —
+    "free of or-patterns and the pipe" invites "and of what else?", where
+    "free" closes the question. THE EVIDENCE LAW, stated as a habit for
+    RULINGS rather than for findings.
+    THE CASCADE IS THE HAZARD IN BOTH: neither error named the change
+    that caused it, and both accused an innocent module boundary. What
+    made it cheap was ISOLATING FIRST — stash, `make bootstrap`, confirm
+    the clean base builds — which turns "main is broken" into "mine is
+    broken" in one step.
+    `UnOp` NEVER GREW: `~v` desugars to `v ^ -1` at parse, as `-v`
+    desugars to `0 - v`; two's complement makes them exact, `core/ir.av`
+    is untouched, no consumer was paid and no catch-all was tempting.
+    The OPPOSITE call from `Paren` and for a stated reason — `~` is
+    already spellable through an operator that exists, `Paren` was not.
+    THE PRECEDENCE, MEASURED BOTH WAYS: `f & m == m` answers `true`,
+    where C reads `f & (m == m)` and answers false — the band binds
+    TIGHTER than comparison because C is WRONG there. `a << 1 + 2`
+    answers 8, C's reading, inherited because C is only ARBITRARY there.
+    ONE WART LEFT STANDING, deliberately: the mixed-operator refusal
+    renders as `builder failed: \`|\` and \`&\` in one expression have no
+    agreed order`. The words are right, but "builder failed:" is the
+    executor's blanket prefix (`grammar/executor.av:365`), so A LAW READS
+    AS AN INTERNAL DEFECT. It cannot move to typing — after folding, `a |
+    b & c` and `a | (b & c)` are the SAME TREE, the parenthesis blindness
+    that killed clause 3 — so the run is visible only in the builder.
+    Open: whether a builder-raised LAW deserves a different prefix from a
+    builder DEFECT.
   - A NEGATIVE LITERAL NOW FOLDS AT PARSE (`ee9e3df`, ten lines):
     `build_neg` folds an int-literal operand through core's VALUE
     PROTOCOL (`int_of`). Both rejections are in the commit message so
@@ -3077,14 +3131,35 @@ ACCEPTED, ECHOED BACK, AND NEVER APPLIED.
   that causes it — because the defect is not in either place alone, it
   is in their PAIRING, which is the file-keyed sweep's failure one level
   down.
-  AND THE BOUND ON WHAT "GATE GREEN" MEANS HERE: `eval == native` CAN
-  NEVER APPLY TO THIS PACKAGE. The interpreter refuses externs outright,
-  so all 380 tests are native-only BY CONSTRUCTION, beside sibling
-  suites that get two engines. That is not a gap in the red team's work
-  and no test in the package can close it — it is a standing property of
-  every FFI package until the extern host lands, and the differential
-  oracle the tree leans on hardest is exactly the one an FFI package
-  cannot have.
+  AND THE BOUND ON WHAT "GATE GREEN" MEANS HERE — HALF RIGHT AS FIRST
+  RECORDED, corrected by lane A within the hour and kept here in both
+  forms, because the wrong half was an ASYMMETRY THAT DOES NOT EXIST.
+  TRUE: `eval == native` can never apply to a package that binds C. The
+  evaluator refuses externs outright (`avra_ptr_at` through `avra run`:
+  "extern — the evaluator cannot host it; build natively", the same
+  program native answers 1), and that holds for every FFI package until
+  the extern host lands. FALSE, as first written: "all 380 tests are
+  native-only, beside sibling suites that get two". **`avra test` IS
+  NATIVE FOR EVERY PACKAGE IN THIS TREE** — std-avrac's 1909 cases are as
+  single-engine as sqlite's 380. THE DIFFERENTIAL DOES NOT LIVE IN THE
+  SUITES AT ALL; it lives in the CORPUS, which is why the gate prints
+  those legs on separate lines. So the driver stands beside IDENTICALLY
+  guaranteed siblings, and the one leg it cannot join is the corpus's
+  eval-vs-native.
+  AND THAT MAKES IT A CATEGORY TO USE RATHER THAN A BOUND TO RECORD:
+  `corpus/native/` already exists for exactly this — `externs.av` and
+  `process_seam.av` live there, `avra corpus --native-only` is the flag
+  ("the programs are the host's: skip the evaluator", `corpus.av:117`),
+  and `make` runs it as its own line. **THE LABEL TRAVELS WITH THE
+  ARTIFACT**, which a note in a document never does. The driver's real
+  gap is therefore not the missing differential; it is that
+  `@std/sqlite` has ZERO corpus programs, so it appears in NEITHER
+  corpus leg — owed: `corpus/native/sqlite*.av` with their `.expected`.
+  THE SHAPE OF THE MISTAKE, which is the campaign's own one shape again:
+  a REAL measurement (the evaluator does refuse externs) carrying an
+  UNMEASURED COMPARISON (that siblings get two engines) — WRONG SCOPE,
+  the third way an honest check lies, committed in the same entry that
+  names it.
   WHAT SURVIVED, worth as much as what did not: the NULL-pointer law
   holds under attack — SQL NULL is class 5 with a NULL pointer, a
   zero-length blob is class 4 with the SAME NULL pointer, so asking the
