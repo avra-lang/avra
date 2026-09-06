@@ -2123,6 +2123,37 @@ the order is the dependency.
         Pinned by a hand-built value, since the grammar cannot reach
         it, and FIRE-TESTED: the test fails against the old `plain`
         and passes against the new.
+  - [ ] A CONTENT HASH THAT EXCLUDES SPANS CUTS OFF CONSUMERS THAT
+        CARRY THEM — lane A's finding, traced into this lane's files
+        and made concrete. The premise is deliberate and documented:
+        core/nodes.av:5, "reformatting never changes a fingerprint".
+        `parsed` settles on `program_hash`, a fold of those
+        fingerprints (workspace.av:319), and `items` settles on
+        `fp(7, [item_print(…)])` — "its name, kind and visibility"
+        (workspace.av:333, :344). Neither hash moves when only spans
+        move.
+        THE CONCRETE EXPOSURE HERE: `Decl` carries `lo` and `hi`
+        (decls.av:24). Reformat a file so a declaration's offsets
+        move with no name, kind or visibility changed, and `parsed`
+        RE-RUNS — its dependency on `source` is dirty — so the store's
+        spans are fresh, but `items` CUTS OFF, so `ws.decls` keeps
+        the old `Decl.lo/hi`. Every diagnostic pointing at that
+        declaration then points at the wrong place, and the query
+        layer reports green.
+        NOT `Typed`: it settles on `ws.db.revision()`
+        (workspace.av:473), so it never cuts off and is not exposed.
+        The rule is narrower than "any consumer of `parsed`" — it is
+        any consumer settling on a hash that omits what the consumer
+        answers.
+        LATENT, on the usual gap: `disarmed` kills the verifiers and
+        nothing re-verifies at revision one, so a one-shot CLI cannot
+        reach it. It fires the day the workspace is long-lived, which
+        is Era IV's whole premise. FOURTH instance in a day of A
+        SAFETY PROPERTY RESTING ON A GAP THAT WILL CLOSE.
+        THE FIX IS PER-CONSUMER, not a second hash: a query whose
+        answer carries spans must settle on something that moves when
+        spans move. Recorded, not built — it wants the live-editing
+        fixture that makes it go red, which does not exist yet.
   - [ ] A CONST'S REGISTER WEARS THE LITERAL'S TYPE, where the
         DECLARATION's should decide — CLAUDE.md's cell law one seat
         over, never audited for consts. `constant_reg`
