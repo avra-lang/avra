@@ -18,7 +18,7 @@ RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli
 
-.PHONY: test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
+.PHONY: census traps test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
         check run ir emit build-native native-check avra
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
@@ -63,6 +63,17 @@ test: $(RUNTIME_OBJS)
 build/avra_runtime.o: runtime/avra_runtime.c
 	@mkdir -p build
 	cc -O2 -Wall -Werror -c runtime/avra_runtime.c -o build/avra_runtime.o
+
+# The runtime's trap contract: the words and the verdict (exit 2).
+# No corpus program can hold it — the corpus runs every program in
+# one process, and a trap ends it.
+traps: $(RUNTIME_OBJS)
+	@sh tools/traps.sh
+
+# Exact refcount and list-write counts; the shipping runtime is put
+# back on every exit.   make census CMD="check packages/std-avrac"
+census:
+	@sh tools/census.sh $(CMD)
 
 build/llvm_wrapper.o: backend/llvm_wrapper.c
 	@mkdir -p build
@@ -163,7 +174,7 @@ witness: $(RUNTIME_OBJS) build/width_witness.o
 # scaffolded into std-avrac before, removed after, however the suites
 # end — so the templates' own test is one case of that suite, not a
 # second compile of the whole compiler for one case.
-gate: vocab externs idioms tested corpus witness
+gate: vocab externs idioms traps tested corpus witness
 
 tested: $(RUNTIME_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
