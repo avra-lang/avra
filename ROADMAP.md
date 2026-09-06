@@ -1567,6 +1567,114 @@ the order is the dependency.
         collapses; `kind()`/`message()` as defaults). LANDED
         2026-09-05 — the design and the landing below; the
         `nothing()` sweep is the next slice's payoff.
+  - [ ] H3 — THE BORROW CHANNEL IS A SILENT HOLE, and it reorders
+        this arc. Measured 2026-09-05 with `./avra check` and both
+        engines. H2's shape (a writing method on a non-`mut`
+        receiver) at least WARNS. Borrow the field first and there is
+        NO diagnostic at all:
+
+            impl Bag {
+                fn sneak(v: int) {
+                    mut ys = self.xs
+                    ys.push(v)
+                }
+            }
+            fn touch(b: Bag, v: int) -> int { b.sneak(v)  b.size() }
+
+        `touch` takes an immutable parameter, and two calls answer
+        `1 2 2` on BOTH engines where 11.5 demands `1 1 0`. The
+        direct spelling (`self.xs.push(v)`) warns F2047; the borrowed
+        one is silent, because the receivers pass never sees a write
+        through `self` — the write goes through a local. 32 such
+        borrows are in the compiler's own source and 5 of their
+        methods are classified NON-WRITING because of it, so the
+        F2047 census UNDER-COUNTS by construction.
+        THE CONSEQUENCE, and it is the reorder: S3 (LIVENESS) NOW
+        COMES BEFORE S2. Three independent reasons, none of them a
+        preference. (1) Flipping F2047 to a refusal does not close
+        the hole while this channel is open — the law would refuse
+        the honest spelling and pass the silent one, which is worse
+        than the warning. (2) S2's "what dies" list DELETES the
+        borrow mechanism, and DOGFOODING's I34 licenses 17 borrow
+        sites precisely because the pass lacks liveness — deleting
+        the borrow first turns each into a cloning path write, whose
+        measured shape is 60x. Only liveness retires them. (3) S3
+        needs no owner decision; S2 needs several (below). Lane A's
+        retain/release third is paid by the same slice.
+  - [x] S3 — LIVENESS IN THE MEMORY PASS. LANDED 2026-09-05, ahead
+        of S2 for the three reasons in H3 above. A managed `Load` was
+        an owned +1 at every read; it is now a BORROW of the cell's
+        one reference, and earns its own +1 only when it must OUTLIVE
+        it — `borrow_outlives` collects the load's register plus
+        every MANAGED register derived from it by a non-owning read
+        (a scalar pulled out of a box is a copied word and holds
+        nothing), finds the last use, and owns when a use gives the
+        value upward, or when a bracket or a step that could change
+        the cell stands between. Conservative by construction: what
+        the scan cannot read as safe owns. Retain and ownership now
+        travel TOGETHER — a borrow the scope does not own is a
+        release it must not emit.
+        MEASURED, which is what the slice was defined by. The
+        read-then-write clone class is GONE: the ledger's own 20k
+        probe (`let k = m.n` then `m.frames.push(k)`, which cloned
+        the frames list once per push) ran 1.71s and now runs in the
+        BASE LOOP'S TIME, 0.00s, guard clean on both engines. The
+        compiler checking itself, three runs each way: 7.72 / 7.61 /
+        7.57 user before, 7.40 / 7.39 / 7.34 after — 3.3%, and the
+        small figure is the honest one, since most retains are
+        callee-cleans at call seats rather than reads.
+        `reads_of` and `same_reg` are new projections in core/ir.av,
+        each ONE definition beside the enum: the reads list is what a
+        pass asks instead of growing its own, and register identity
+        joins `same_expr`/`same_decl`. 1874 cases, 77 programs
+        eval == native == expected.
+        THE RED TEAM raised 23 and three stood. Two were taken: the
+        scan's two INVARIANTS are now written where they are relied
+        on — `changes_cell` is COMPLETE rather than merely
+        conservative (a cell register never escapes an Alloca, a
+        Load, a Store, `avra_cell_unique` or this pass's release, so
+        the day one does the test goes blind and the scan is unsound,
+        not pessimistic), and `view_of` is spelled as a REGISTRY over
+        every `Ins` variant, so a value-carrying instruction cannot
+        land without answering it. The third was DECLINED with its
+        reason: a `keeps_args` column on RtSig, forcing a borrow
+        handed to a storing runtime row to own. It would duplicate a
+        law the C side already holds ("a body that KEEPS what it was
+        handed takes its OWN reference") and cost a retain on the
+        push path, and the hazard it names is not this slice's — a
+        keeping row that does not retain dangles whether the read
+        owns or not, before and after. What WAS wrong there was a
+        registry comment of mine: `avra_once_set` was documented as
+        consuming the caller's reference when its body retains. Fixed;
+        the reliance is written at `borrow_outlives`.
+        NEXT, its payoff: DOGFOODING's 17 `LICENSED I34` borrows were
+        licensed because the pass lacked liveness. They can retire —
+        a sweep whose correctness the gate proves, and which also
+        closes H3, since deleting the borrow makes `mut ys =
+        self.xs` a COPY. The carve-out names its own expiry: "bs2's
+        aliasing, honored until self-host" (places.av), and self-host
+        has happened (lane D).
+  - [ ] S2 NEEDS THE OWNER, and the questions are named so the slice
+        does not start in the wrong shape. (a) SPEC 11.4 vs 11.5:
+        11.4 says v1.0 app-level aliasing is SHARED ("closures can
+        mutate shared state, observer patterns work naturally") with
+        `let increment = () -> counter += 1` as its own example,
+        which the V1 capture law refuses; 11.5 says a `let` is deep
+        and the memory doctrine says aliasing is NEVER observable.
+        The compiler has already chosen 11.5. Is `Cell<T>` the
+        intended reconciliation, or does 11.4 mean the receiver law
+        stays a warning at app level? The arc's whole justification
+        rests on this. (b) `Cell<T>`'s SURFACE: the spec specifies
+        `get`/`set`, but get/set on an AGGREGATE is refused
+        alternative (b) — it clones the fact tables per diagnostic.
+        In-place forwarding is a deviation from 11.3 and needs the
+        owner's word. (c) CACHE vs STATE: 13.3 says `@pure` forbids
+        interior-mut writes and `@memo` requires `@pure`, so the memo
+        kernel built on `Cell` contradicts the spec as written. A
+        cache has a testable definition the kernel already asserts
+        (`Db.sweep()`: clearing it leaves every answer unchanged);
+        whether that becomes a mark, a second wrapper, or an
+        amendment to 13.3 is the owner's.
   - [ ] F2051 MISREADS A FORWARDING SEAT (lane D, 2026-09-05, with
         a reproduction). A fn that PASSES its `mut` seat into another
         `mut` seat is warned "never writes through it", and taking

@@ -2,7 +2,7 @@
 // its definition's register), scopes are structure, and the memory
 // pass releases a scope's managed values at its exit — Application
 // strategy, reverse binding order.
-use @std.avrac.core.{Ins, RtSig, Reg, distinct}
+use @std.avrac.core.{Ins, RtSig, Reg, same_reg, distinct}
 use @std.avrac.language.{Lowered, Body, render_ir}
 use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns, rt_index}
 use @std.avrac.testing.{ir_of, halver, shown}
@@ -269,14 +269,12 @@ spec "language/lower" {
   call avra_cell_release(r4)
   store r4 <- r8
   r9 = load r4
-  retain r9
   r10 = int 0
   r11 = call avra_array_get(r9, r10)
   r12 = call avra_int_text(r11)
   call avra_puts(r12)
   call avra_cell_release(r4)
   release r12
-  release r9
   release r8
   release r3
 }
@@ -354,10 +352,46 @@ fn releases_of(ins: List<Ins>, r: Reg) -> int {
 
 fn releases(i: Ins, r: Reg) -> bool {
     match i {
-        // LICENSED I9: register identity, not type agreement
-        .Release(x) -> x.index == r.index,
+        .Release(x) -> same_reg(x, r),
         _ -> false,
     }
+}
+
+/// The register the FIRST slot read in the slice defines.
+fn loaded_in(ins: List<Ins>) -> Reg? {
+    for i in ins {
+        let dst: Reg? = match i {
+            .Load(d, _) -> d,
+            _ -> null,
+        }
+        if dst != null { return dst }
+    }
+    null
+}
+
+fn retains_of(ins: List<Ins>, r: Reg) -> int {
+    ins.filter((i: Ins) -> retains(i, r)).length
+}
+
+fn retains(i: Ins, r: Reg) -> bool {
+    match i {
+        .Retain(x) -> same_reg(x, r),
+        _ -> false,
+    }
+}
+
+/// The first slot read OWNS its value — retained once, released once.
+fn read_owns(ins: List<Ins>) -> bool {
+    let r: Reg? = loaded_in(ins)
+    if r == null { return false }
+    retains_of(ins, r!) == 1 && releases_of(ins, r!) == 1
+}
+
+/// The first slot read BORROWS — the cell's reference is the only one.
+fn read_borrows(ins: List<Ins>) -> bool {
+    let r: Reg? = loaded_in(ins)
+    if r == null { return false }
+    retains_of(ins, r!) == 0 && releases_of(ins, r!) == 0
 }
 
 fn cond_index(ins: List<Ins>) -> int {
@@ -392,6 +426,17 @@ fn body_of(text: string, name: string) -> string {
 
 fn cell_settles(text: string) -> int {
     text.split("avra_cell_release").length - 1
+}
+
+spec "a managed read is a borrow" {
+    given "liveness in the memory pass (S3)" {
+        then "a read whose uses stand before any change to its cell owns NOTHING" {
+            read_borrows(ir_of("type P = { x: int, y: int }\nmut a = P { x: 1, y: 0 }\na.x").entry.ins)
+        }
+        then "a read whose use stands PAST a write to its cell owns — the borrow must outlive it" {
+            read_owns(ir_of("type P = { x: int, y: int }\nmut a = P { x: 1, y: 0 }\nlet b = a\na = P { x: 2, y: 0 }\nb.x").entry.ins)
+        }
+    }
 }
 
 spec "a mut cell's type" {
