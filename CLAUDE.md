@@ -1049,6 +1049,17 @@ Runtime facts, ours to ratify:
   failure has never been witnessed is an untested instrument — and the
   runtime's kind accounting is the dearest of them, wrong from the
   day it was written and found by CHECKING rather than by failing.
+- AND A KEEPER HAS TWO SURFACES: what it REFUSES and what it
+  ACCEPTS. Making it fail tests only the first. `tools/idioms.py`'s
+  counted-refusal matcher listed `refused_n(` among the honest
+  spellings, and no such fn has ever existed — `testing/mod.av`
+  exports `refused_with` and `refused_at_run` and nothing of that
+  name. A DEAD ALTERNATIVE: accepted by nobody, protecting nothing,
+  quietly widening what the keeper permits, and invisible to every
+  fixture that makes the keeper fail, because the keeper was working.
+  So exercise each alternative a keeper ACCEPTS as well as one that
+  breaks it — a matcher with N spellings needs N positive fixtures,
+  or the dead one sits there for as long as nobody greps it.
 - A TEST WITH ITS OWN COPY OF THE LOGIC TESTS THE COPY, and the
   SYMPTOM IS WHAT MISDIRECTS. The externs keeper's self-test built
   its typedef map from an inline duplicate of the collection it
