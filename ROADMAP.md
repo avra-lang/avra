@@ -1958,6 +1958,20 @@ the order is the dependency.
         capability been a constant fold instead, this guard would
         have armed on its first use and lane A's `LLVMConstIntToPtr`
         wrapper would have been needed; neither is.
+        THE LAW LANE A DREW FROM IT, which is more general than this
+        case and is the reason the near miss is recorded rather than
+        just survived: MACHINERY BUILT AHEAD OF A DECISION BIASES
+        THE DECISION TOWARD THE SHAPE IT SERVES. A correct, unused
+        `LLVMConstIntToPtr` is not inert — it is a thumb on the scale
+        for the constant-fold route, and that route collides with a
+        law landed the same morning, so the feature's first
+        legitimate use would have forced someone to weaken or
+        special-case it. Lane A declined the wrapper on the weaker
+        ground that a backend wall serving no lowering pre-announces
+        a capability; this is the stronger one.
+        AND THE RECEIPT SHAPE: "the prediction did not come true, and
+        here is the mechanism" beats "it came true". The first can be
+        luck; the second names a cause.
   - [x] A `mut` SEAT KEEPS ITS BOX (F0900). LANDED 2026-09-05,
         reported by the SQLITE campaign's FFI lane. `fn bump(mut i:
         Id) { i.index = 1 }` over `type Id = { index: int }` was an
