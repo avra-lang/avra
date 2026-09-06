@@ -1049,6 +1049,19 @@ Runtime facts, ours to ratify:
   failure has never been witnessed is an untested instrument — and the
   runtime's kind accounting is the dearest of them, wrong from the
   day it was written and found by CHECKING rather than by failing.
+- A TEST WITH ITS OWN COPY OF THE LOGIC TESTS THE COPY, and the
+  SYMPTOM IS WHAT MISDIRECTS. The externs keeper's self-test built
+  its typedef map from an inline duplicate of the collection it
+  existed to exercise, so its cases guarded a shadow of the rule.
+  The tell was not a false green: a fix PASSED the tree and FAILED
+  its own fixture, which reads as "the fix is wrong" and means "the
+  test is not testing this" — a rule and its shadow disagreeing,
+  which is the boundary law one level up, with the two sides of the
+  boundary being a rule and its test. It was written in the same
+  change that added the cases, to prove the tool honest, and nobody
+  reading that change would have blinked. ONE DEFINITION, called by
+  the tree and by its test; a keeper's fixture that cannot fail for
+  the real reason is the untested instrument above, one level up.
 - A RECEIPT FROM ANOTHER TREE IS LABELLED AS ONE. The laws here carry
   instances because an instance is what makes a law APPLIED rather
   than agreed with — so the instances have to stay checkable. One
