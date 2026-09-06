@@ -1586,7 +1586,16 @@ the order is the dependency.
         bound `mut` becomes a COPY, not a refusal (see the design).
   - [ ] RECEIVER ALIASING closed: the ledger entry struck, the
         memory doctrine's V1 line updated to "by law, enforced".
-  - [ ] A NESTED ELEMENT WRITE COPIES THE ROW (probed 2026-09-04 by
+  - [x] A NESTED ELEMENT WRITE COPIES THE ROW — CLOSED 2026-09-05 by
+        S3b, which is exactly the diagnosis below: "the row arrives
+        shared (the read ahead of the write retains it)". That read
+        was the OWNED TWIN, and liveness now declines it. The probe's
+        shape — a struct field `List<List<int>>`, a nested `.set`
+        through a `mut` parameter, 20k writes into a 20k row — runs
+        in 0.00s against main's 0.29s, well inside the 200ms the
+        DONE WHEN asked for. Lane A needs it for the parse memo.
+  - [x] (the original entry, kept for its diagnosis) A NESTED
+        ELEMENT WRITE COPIES THE ROW (probed 2026-09-04 by
         lane A, which needs it for the parse memo): `mut s = m.slots`
         then `s[i].set(j, v)` answers correctly but costs O(row) per
         write — 20k writes into a 20k row took seconds. The place
