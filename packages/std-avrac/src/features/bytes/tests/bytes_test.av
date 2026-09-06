@@ -1,0 +1,144 @@
+// Octets as a value: the empty case first, equality over every byte,
+// the two crossings with UTF-8's edges pinned, bounded reads that
+// trap, and the seats a Bytes never fills.
+use @std.avrac.testing.{shown, refused_with, refused_at_run}
+
+spec "features/bytes" {
+    given "the empty value" {
+        then "an empty text's bytes have length 0 and read empty" {
+            shown("let b = \"\".bytes()\n\"\${b.length} \${b.is_empty()}\"") == "0 true"
+        }
+        then "an empty list's bytes have length 0" {
+            shown("[].bytes()!.length") == "0"
+        }
+        then "a slice of nothing at the end has length 0" {
+            shown("[1, 2].bytes()!.slice(2, 2).length") == "0"
+        }
+        then "two empty values made two ways are equal" {
+            shown("\"\".bytes() == [].bytes()!") == "true"
+        }
+        then "a Bytes? holds null or a value" {
+            shown("let b: Bytes? = null\nlet c: Bytes? = [1].bytes()\n\"\${b == null} \${c != null} \${c!.length}\"") == "true true 1"
+        }
+    }
+    given "equality" {
+        then "== compares every byte, a NUL included" {
+            shown("[104, 0, 105].bytes()! == [104, 0, 105].bytes()!") == "true"
+        }
+        then "a value is not its own prefix at a NUL" {
+            shown("[104, 0, 105].bytes()! == [104].bytes()!") == "false"
+        }
+        then "!= is the negation" {
+            shown("[1].bytes()! != [2].bytes()!") == "true"
+        }
+        then "a Bytes and a string do not compare" {
+            refused_with("\"a\".bytes() == \"a\"", "`==` compares matching types, found `Bytes` and `string`")
+        }
+    }
+    given "text to bytes" {
+        then "a text's bytes count its UTF-8 octets, not its characters" {
+            shown("\"hé\".bytes().length") == "3"
+        }
+        then "a two-byte character is two bytes" {
+            shown("let b = \"é\".bytes()\n\"\${b.length} \${b.at(0)} \${b.at(1)}\"") == "2 195 169"
+        }
+    }
+    given "bytes to text" {
+        then "UTF-8 octets become text" {
+            shown("[104, 195, 169].bytes()!.text()!") == "hé"
+        }
+        then "a NUL is text, one byte long" {
+            shown("[0].bytes()!.text()!.length") == "1"
+        }
+        then "a stray continuation is not text" {
+            shown("[128].bytes()!.text() == null") == "true"
+        }
+        then "an overlong NUL is not text" {
+            shown("[192, 128].bytes()!.text() == null") == "true"
+        }
+        then "an overlong three-byte form is not text" {
+            shown("[224, 128, 128].bytes()!.text() == null") == "true"
+        }
+        then "a surrogate is not text" {
+            shown("[237, 160, 128].bytes()!.text() == null") == "true"
+        }
+        then "a truncated sequence is not text" {
+            shown("[226, 130].bytes()!.text() == null") == "true"
+        }
+        then "U+10FFFF is text" {
+            shown("[244, 143, 191, 191].bytes()!.text()!.length") == "4"
+        }
+        then "past U+10FFFF is not text" {
+            shown("[244, 144, 128, 128].bytes()!.text() == null") == "true"
+        }
+        then "a five-byte form is not text" {
+            shown("[248, 128, 128, 128, 128].bytes()!.text() == null") == "true"
+        }
+        then "a wrong later continuation is not text" {
+            shown("[225, 128, 65].bytes()!.text() == null") == "true"
+        }
+    }
+    given "ints to bytes" {
+        then "an int past a byte answers null" {
+            shown("[256].bytes() == null") == "true"
+        }
+        then "a negative int answers null" {
+            shown("[0 - 1].bytes() == null") == "true"
+        }
+        then "a list of text refuses" {
+            refused_with("[\"a\"].bytes()", "`bytes` reads a `List<int>`, this is `List<string>`")
+        }
+    }
+    given "reads" {
+        then "at reads one byte" {
+            shown("[7, 8].bytes()!.at(1)") == "8"
+        }
+        then "at past the end is the trap" {
+            refused_at_run("[7].bytes()!.at(1)", "index 1 is out of bounds (length 1)")
+        }
+        then "a negative index is the trap" {
+            refused_at_run("[7].bytes()!.at(0 - 1)", "index -1 is out of bounds (length 1)")
+        }
+        then "slice copies the bytes between" {
+            shown("[1, 2, 3, 4].bytes()!.slice(1, 3) == [2, 3].bytes()!") == "true"
+        }
+        then "a slice past the end is the trap" {
+            refused_at_run("[1].bytes()!.slice(0, 2).length", "slice 0..2 is out of bounds (length 1)")
+        }
+        then "a slice that ends before it starts is the trap" {
+            refused_at_run("[1, 2].bytes()!.slice(2, 1).length", "slice 2..1 is out of bounds (length 2)")
+        }
+        then "concat joins in order" {
+            shown("[1].bytes()!.concat([2].bytes()!) == [1, 2].bytes()!") == "true"
+        }
+        then "index_of finds the needle at or after from" {
+            shown("let b = [1, 2, 1, 2].bytes()!\nlet n = [1, 2].bytes()!\n\"\${b.index_of(n, 0)} \${b.index_of(n, 1)} \${b.index_of([3].bytes()!, 0)}\"") == "0 2 -1"
+        }
+        then "a needle longer than the rest is not found" {
+            shown("[1, 2].bytes()!.index_of([2, 3].bytes()!, 1)") == "-1"
+        }
+        then "an empty needle is found at from, the length included" {
+            shown("[1].bytes()!.index_of([].bytes()!, 1)") == "1"
+        }
+        then "a from past the length is the trap" {
+            refused_at_run("[1].bytes()!.index_of([1].bytes()!, 2)", "index 2 is out of bounds (length 1)")
+        }
+    }
+    given "what a Bytes is not" {
+        then "it does not print" {
+            refused_with("\"\${[1].bytes()!}\"", "an interpolation hole prints as a scalar or string, found `Bytes`")
+        }
+        then "it does not fill a string seat" {
+            refused_with("fn f(s: string) -> int { s.length }\nf([1].bytes()!)", "argument 1 of `f` wants `string`, found `Bytes`")
+        }
+        then "a string does not fill a Bytes seat" {
+            refused_with("fn g(b: Bytes) -> int { b.length }\ng(\"x\")", "argument 1 of `g` wants `Bytes`, found `string`")
+        }
+        then "it is not indexed like a list" {
+            refused_with("let b = [1, 2].bytes()!\n\"\${b[0]}\"", "`[...]` indexes a `List`, found `Bytes`")
+        }
+        then "it has no growth word" {
+            refused_with("let b = [1].bytes()!\nb.push(2)", "`.push(…)` calls a method, and `Bytes` has none")
+        }
+    }
+}

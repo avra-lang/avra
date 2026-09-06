@@ -1,0 +1,43 @@
+//! Seats and answers for the byte vocabulary; the one law with words
+//! of its own is that `[ints].bytes()` reads a list of `int`.
+use core.{Type, TypeId, ExprId}
+use features.{TypeCx, MethodCall, worded, seated, spoken, this_is}
+use diagnostics.{refusal}
+
+fn on_bytes(t: Type) -> bool { t is .Bytes }
+fn on_str(t: Type) -> bool { t is .Str }
+fn on_ints(t: Type) -> bool { t is .List || t is .EmptyList }
+
+fn check_of_str(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "bytes", [], Type.Bytes) }
+fn check_at(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "at", [Type.Int], Type.Int) }
+fn check_slice(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "slice", [Type.Int, Type.Int], Type.Bytes) }
+fn check_concat(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "concat", [Type.Bytes], Type.Bytes) }
+fn check_index_of(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "index_of", [Type.Bytes, Type.Int], Type.Int) }
+fn check_is_empty(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "is_empty", [], Type.Bool) }
+fn check_text(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "text", [], Type.Opt(cx.view.types.intern(Type.Str))) }
+
+/// `[ints].bytes()` — octets, or null when an element is not a byte;
+/// the list must hold `int`.
+fn check_of_list(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if !seated(cx, mc, "bytes", []) { return cx.error_type }
+    if !int_elements(cx, cx.type_at(mc.subject)) { return not_octets(cx, mc.subject) }
+    cx.view.types.intern(Type.Opt(cx.view.types.intern(Type.Bytes)))
+}
+
+fn int_elements(cx: TypeCx, ty: TypeId) -> bool {
+    match cx.view.types.shape_of(ty) {
+        .List(elem) -> cx.view.types.shape_of(elem) is .Int,
+        .EmptyList -> true,
+        rest -> false,
+    }
+}
+
+// LICENSED I23: a property row's signature
+fn check_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId { cx.view.types.intern(Type.Int) }
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn not_octets(mut cx: TypeCx, e: ExprId) -> TypeId {
+    let name = cx.name_at(e)
+    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`bytes` reads a `List<int>`, this is `${name}`", this_is(name), "an element is one byte, 0..255"))
+}

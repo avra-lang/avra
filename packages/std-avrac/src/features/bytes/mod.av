@@ -1,0 +1,32 @@
+//! Bytes — octets as a value. Text becomes bytes totally
+//! (`s.bytes()`) and bytes become text only when they are UTF-8
+//! (`b.text()`); between the two crossings the word is exact: the
+//! length is the header's, `==` compares every byte, and `at` and
+//! `slice` trap past the end rather than answer short. The
+//! vocabulary is its method rows, each one runtime call.
+use features.{LanguageFeature, MethodRow, PropertyRow, measured_reg, lower_is_empty}
+
+export fn bytes() -> LanguageFeature {
+    let methods = table<MethodRow> {
+        name       | takes    | check          | lower          | writes
+        "bytes"    | on_str   | check_of_str   | lower_of_str   | false
+        "bytes"    | on_ints  | check_of_list  | lower_of_list  | false
+        "text"     | on_bytes | check_text     | lower_text     | false
+        "at"       | on_bytes | check_at       | lower_at       | false
+        "slice"    | on_bytes | check_slice    | lower_slice    | false
+        "concat"   | on_bytes | check_concat   | lower_concat   | false
+        "index_of" | on_bytes | check_index_of | lower_index_of | false
+        "is_empty" | on_bytes | check_is_empty | lower_is_empty | false
+    }
+    let properties = table<PropertyRow> {
+        name     | takes    | check        | lower
+        "length" | on_bytes | check_length | measured_reg
+    }
+    component LanguageFeature f {
+        name = "bytes"
+        docs = "Octets as a value: `s.bytes()` is total, `b.text()` answers null unless the octets are UTF-8, `==` compares every byte, and `at`/`slice` trap past the end."
+        methods = methods
+        properties = properties
+    }
+    f
+}
