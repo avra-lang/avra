@@ -278,8 +278,6 @@ static void* box_alloc(size_t size, int32_t kind) {
     return (void*)(h + 1);
 }
 
-// A string box of `n` bytes plus its terminator, its length known.
-// An owned string wears KIND_STR so its class can be read back.
 // A box of `n` payload bytes plus a terminator, its LENGTH in the
 // header. The caller names the kind it means — no translation, so a
 // new sized kind is one call and not a guess. Every kind made here
@@ -300,8 +298,19 @@ static size_t str_len(const char* s) {
 // The tag goes before the memory does: a stale release of a freed
 // box then reads "not mine" instead of a count that is no longer
 // anyone's.
+// The ALLOCATION size of a box, which is what its size class is filed
+// under. EVERY kind `sized_box` makes allocates n+1 and stores n, so
+// every one of them is listed here — a new sized kind belongs in both
+// places or in neither. C cannot demand that, so the arms are the
+// record. KIND_STATIC was missing and under-reported by one: harmless
+// only because a static box is immortal and `box_free` never sees
+// one, which is safety by immortality rather than by arithmetic.
 static size_t box_bytes(Header* h) {
-    return h->kind == KIND_STR ? (size_t)h->len + 1 : (size_t)h->len;
+    switch (h->kind) {
+        case KIND_STR:
+        case KIND_STATIC: return (size_t)h->len + 1;
+        default:          return (size_t)h->len;
+    }
 }
 
 static void box_free(void* p) {
