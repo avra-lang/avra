@@ -105,17 +105,24 @@ spec "std/sqlite adversarial" {
         then "the keyword count is a real count, not a sentinel" { keyword_count() > 100 && keyword_count() < 1000 }
     }
 
-    given "a C `int` narrower than the Avra `int` reading it" {
-        // C writes 32 bits and neither ABI promises the half above.
-        // Both engines agree on the wrong answer, so `eval == native`
-        // cannot catch it — that property is AGREEMENT, never
-        // correctness. These cases PIN the lie: the day the extern
-        // wall carries sized types they fail, and that is the notice.
-        then "a negative comparison reads as a large positive" { sqlite3_stricmp("a", "b") == 4294967295 }
-        then "so ordering by the wall's own answer is wrong today" { !(sqlite3_stricmp("a", "b") < 0) }
-        then "a positive comparison is unharmed" { sqlite3_stricmp("b", "a") == 1 }
-        then "and zero is zero at either width" { sqlite3_stricmp("a", "a") == 0 }
-        then "which is why the face asks equality alone" { equal_nocase("Ada", "aDA") && !equal_nocase("a", "b") }
+    given "a C `int` read at its own width" {
+        // THESE CASES USED TO PIN A LIE. C writes 32 bits and neither
+        // ABI promises the half above, so a declared `int` read
+        // `sqlite3_stricmp("a","b")` — which is -1 — as 4294967295, and
+        // both engines agreed on the wrong answer, which is why
+        // `eval == native` could never catch it. The old cases asserted
+        // the wrong values on purpose, with the note that the day the
+        // extern wall carried sized types they would fail.
+        //
+        // The wall carries them now, the two cases failed exactly as
+        // written, and these are their replacements. A comparison
+        // answers a COMPARISON again.
+        then "a negative comparison is negative" { sqlite3_stricmp("a", "b") < 0 }
+        then "and it is not the widened lie it used to be" { sqlite3_stricmp("a", "b") != 4294967295 }
+        then "a positive comparison is positive" { sqlite3_stricmp("b", "a") > 0 }
+        then "equal text compares equal" { sqlite3_stricmp("a", "a") == 0 }
+        then "so ordering by the wall's own answer is right now" { sqlite3_stricmp("a", "b") < sqlite3_stricmp("b", "a") }
+        then "and the face's equality is unaffected either way" { equal_nocase("Ada", "aDA") && !equal_nocase("a", "b") }
     }
 
     given "an IMMORTAL borrowed pointer, measured rather than cited" {
