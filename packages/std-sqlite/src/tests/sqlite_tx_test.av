@@ -1,0 +1,220 @@
+// A unit of work: begun, kept or thrown away, and what survives when
+// the process does not.
+use @std.sqlite.open.{Db, open, memory, close}
+use @std.sqlite.stmt.{Stmt, run, prepare, step, finalize, int_at}
+use @std.sqlite.tx.{begin, begin_read, commit, rollback, finish, in_transaction, begin_unless_open}
+use @std.sqlite.error.{SqlError, defect}
+use @std.io.{exists, remove}
+
+/// A database with one table and one row, and the count after `work`
+/// has run against it — or the kind the work was refused with.
+fn after(work: fn(Db) -> Result<int, SqlError>) -> string {
+    match memory() {
+        .Ok(db) -> worked(db, work),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn worked(db: Db, work: fn(Db) -> Result<int, SqlError>) -> string {
+    mut held = db
+    let said = seeded_then(db, work)
+    let _ = close(held)
+    said
+}
+
+fn seeded_then(db: Db, work: fn(Db) -> Result<int, SqlError>) -> string {
+    match seed(db) {
+        .Ok(_) -> ran_then_counted(db, work),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn seed(db: Db) -> Result<int, SqlError> {
+    let _ = run(db, "create table t (a integer)")?
+    run(db, "insert into t values (1)")
+}
+
+fn ran_then_counted(db: Db, work: fn(Db) -> Result<int, SqlError>) -> string {
+    match work(db) {
+        .Ok(_) -> tx_counted(db),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn tx_counted(db: Db) -> string {
+    match prepare(db, "select count(*) from t") {
+        .Ok(s) -> stepped_count(s),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn stepped_count(s: Stmt) -> string {
+    mut held = s
+    let said = first_count(held)
+    let _ = finalize(held)
+    said
+}
+
+fn first_count(s: Stmt) -> string {
+    match step(s) {
+        .Ok(_) -> counted_told(int_at(s, 0)),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn counted_told(r: Result<int, SqlError>) -> string {
+    match r {
+        .Ok(v) -> "${v}",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+// ── The units of work each case runs ────────────────────────────
+
+fn committed(db: Db) -> Result<int, SqlError> {
+    let _ = begin(db)?
+    let _ = run(db, "insert into t values (2)")?
+    commit(db)
+}
+
+fn rolled_back(db: Db) -> Result<int, SqlError> {
+    let _ = begin(db)?
+    let _ = run(db, "insert into t values (2)")?
+    let _ = run(db, "insert into t values (3)")?
+    rollback(db)
+}
+
+/// A unit of work that fails partway and cleans up with `finish` —
+/// the shape a caller writes when they do not know how far they got.
+fn failed_then_finished(db: Db) -> Result<int, SqlError> {
+    let _ = begin(db)?
+    let _ = run(db, "insert into t values (2)")?
+    let outcome = run(db, "insert into nosuchtable values (3)")
+    let _ = finish(db)
+    zeroed(outcome)
+}
+
+/// The failure swallowed, because the CASE is about what survived in
+/// the database rather than about the error.
+fn zeroed(r: Result<int, SqlError>) -> Result<int, SqlError> { 0 }
+
+fn committed_twice(db: Db) -> Result<int, SqlError> {
+    let _ = begin(db)?
+    let _ = run(db, "insert into t values (2)")?
+    let _ = commit(db)?
+    commit(db)
+}
+
+fn begun_twice(db: Db) -> Result<int, SqlError> {
+    let _ = begin(db)?
+    begin(db)
+}
+
+fn finished_with_nothing_open(db: Db) -> Result<int, SqlError> { finish(db) }
+
+fn rolled_back_with_nothing_open(db: Db) -> Result<int, SqlError> { rollback(db) }
+
+fn read_only_transaction(db: Db) -> Result<int, SqlError> {
+    let _ = begin_read(db)?
+    commit(db)
+}
+
+/// A caller who may or may not own the frame: begin one only if none
+/// is open, do the work, and commit. The insert lands either way.
+fn opened_if_needed(db: Db) -> Result<int, SqlError> {
+    let _ = begin(db)?
+    let mine = begin_unless_open(db)?
+    let _ = run(db, "insert into t values (2)")?
+    let _ = commit(db)?
+    mined(mine)
+}
+
+/// `begin_unless_open` must answer FALSE inside an open frame — it did
+/// not open one, so the caller must not end one.
+fn mined(mine: bool) -> Result<int, SqlError> {
+    if mine { fail defect("begin_unless_open opened a second transaction inside an open one") }
+    0
+}
+
+// ── What SQLite says is open, asked directly ────────────────────
+
+fn tx_asked(q: fn(Db) -> bool) -> bool {
+    match memory() {
+        .Ok(db) -> tx_in_db(db, q),
+        .Err(_) -> false,
+    }
+}
+
+fn tx_in_db(db: Db, q: fn(Db) -> bool) -> bool {
+    mut held = db
+    let said = q(db)
+    let _ = finish(db)
+    let _ = close(held)
+    said
+}
+
+fn is_closed(db: Db) -> bool { !in_transaction(db) }
+
+fn is_open_after_begin(db: Db) -> bool {
+    match begin(db) {
+        .Ok(_) -> in_transaction(db),
+        .Err(_) -> false,
+    }
+}
+
+fn is_closed_after_commit(db: Db) -> bool { closed_after(db, ended_by_commit) }
+fn is_closed_after_rollback(db: Db) -> bool { closed_after(db, ended_by_rollback) }
+
+fn closed_after(db: Db, end: fn(Db) -> Result<int, SqlError>) -> bool {
+    match begin(db) {
+        .Ok(_) -> tx_ended(db, end),
+        .Err(_) -> false,
+    }
+}
+
+fn tx_ended(db: Db, end: fn(Db) -> Result<int, SqlError>) -> bool {
+    match end(db) {
+        .Ok(_) -> !in_transaction(db),
+        .Err(_) -> false,
+    }
+}
+
+fn ended_by_commit(db: Db) -> Result<int, SqlError> { commit(db) }
+fn ended_by_rollback(db: Db) -> Result<int, SqlError> { rollback(db) }
+
+spec "std/sqlite transaction" {
+
+    given "work kept and work thrown away" {
+        then "a committed insert is there afterwards" { after(committed) == "2" }
+        then "a rolled-back pair leaves the row that was there before" { after(rolled_back) == "1" }
+        // The shape a caller writes when a statement fails partway: end
+        // whatever is open without having to know how far it got.
+        then "a failure cleaned up with `finish` keeps nothing it wrote" { after(failed_then_finished) == "1" }
+    }
+
+    given "whether a transaction is open, which SQLite answers and we do not track" {
+        then "nothing is open on a fresh connection" { tx_asked(is_closed) }
+        then "one is open after begin" { tx_asked(is_open_after_begin) }
+        then "and closed again after commit" { tx_asked(is_closed_after_commit) }
+        then "and closed again after rollback" { tx_asked(is_closed_after_rollback) }
+    }
+
+    given "the verbs called when there is nothing to end" {
+        // A rollback of nothing is what a caller means when cleaning up
+        // after a failure they did not cause, so it is not an error.
+        then "rollback with nothing open does nothing" { after(rolled_back_with_nothing_open) == "1" }
+        then "finish with nothing open does nothing" { after(finished_with_nothing_open) == "1" }
+        // A commit with nothing open is the DRIVER's bug, not SQLite's
+        // — it means the caller lost track of their own frame.
+        then "commit with nothing open is refused as a defect" { after(committed_twice) == "sqlite.defect" }
+        then "a second begin is refused as a defect" { after(begun_twice) == "sqlite.defect" }
+    }
+
+    given "a read transaction, which takes no write lock" {
+        then "it begins and commits without writing" { after(read_only_transaction) == "1" }
+    }
+
+    given "begin_unless_open, for a caller who may not own the frame" {
+        then "it opens nothing when one is already open" { after(opened_if_needed) == "2" }
+    }
+}

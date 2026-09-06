@@ -1,0 +1,101 @@
+//! TRANSACTIONS: a unit of work, and what happens to it when things go
+//! wrong.
+//!
+//! A WRITE TRANSACTION BEGINS IMMEDIATE, and that is the whole reason
+//! this module has two begin verbs instead of one. `BEGIN` alone is
+//! DEFERRED: it takes no lock until the first statement, so two
+//! connections can both start reading and then both try to promote to a
+//! writer — and one gets `SQLITE_BUSY_SNAPSHOT`, which no timeout can
+//! clear because the loser's read snapshot is already stale. `BEGIN
+//! IMMEDIATE` takes the write lock up front, so the contention happens
+//! at the START where a busy timeout can actually wait it out.
+//!
+//! WHAT A TRAP DOES TO AN OPEN TRANSACTION, measured rather than
+//! assumed: `avra_trap` exits 2 with no unwinding, so no `defer` runs,
+//! no ROLLBACK is sent, and the process is gone with the transaction
+//! open. SQLite's answer is the HOT JOURNAL — measured against the
+//! vendored library with a real child process:
+//!
+//! ```
+//! before the child: 1 row
+//! the child exited 2, and left a journal: YES (4616 bytes)
+//! after reopening:  1 row     <- the two uncommitted inserts are gone
+//! a second reopen still reads: 1 row
+//! ```
+//!
+//! So a dead process cannot leave half a transaction visible, and the
+//! database is not corrupted. That is SQLITE's guarantee and not this
+//! driver's, which is why it is written down with the numbers rather
+//! than trusted.
+use error.{Cause, SqlError, refused, defect}
+use open.{Db}
+use stmt.{run}
+use c.{sqlite3_get_autocommit}
+
+/// Whether a transaction is open on this connection. SQLite's own
+/// answer — `sqlite3_get_autocommit` is zero inside one — so no flag of
+/// ours can drift from the truth.
+export fn in_transaction(db: Db) -> bool { sqlite3_get_autocommit(db.raw) == 0 }
+
+/// A WRITE transaction begun. Takes the write lock now, so a busy
+/// database is a wait at the start rather than a stale-snapshot failure
+/// in the middle.
+export fn begin(db: Db) -> Result<int, SqlError> { started(db, "begin immediate") }
+
+/// A READ transaction begun — deferred, taking no lock until the first
+/// statement. Correct for a connection that only reads, and wrong for
+/// one that might write, which is why it says `read` in its name.
+export fn begin_read(db: Db) -> Result<int, SqlError> { started(db, "begin deferred") }
+
+/// The work kept.
+///
+/// A FAILED COMMIT LEAVES NO OPEN TRANSACTION — SQLite has already
+/// rolled back by the time it answers — so a caller who catches this
+/// must NOT then send a rollback, and `finish` below is what makes that
+/// impossible to get wrong.
+export fn commit(db: Db) -> Result<int, SqlError> {
+    if !in_transaction(db) { fail defect("`commit` was called with no transaction open") }
+    run(db, "commit")
+}
+
+/// The work thrown away. Answers nothing when no transaction is open,
+/// because a rollback of nothing is what a caller means when they are
+/// cleaning up after a failure they did not cause.
+export fn rollback(db: Db) -> Result<int, SqlError> {
+    if !in_transaction(db) { return 0 }
+    run(db, "rollback")
+}
+
+/// A transaction begun only if one is not already open. Answers whether
+/// it opened one, which is what a caller needs to know to decide
+/// whether they are the one who should end it.
+export fn begin_unless_open(db: Db) -> Result<bool, SqlError> {
+    if in_transaction(db) { return false }
+    let _ = begin(db)?
+    true
+}
+
+/// THE CLEANUP THAT CANNOT SEND THE WRONG VERB. Ends whatever is open,
+/// or does nothing when nothing is — so a failure path calls this and
+/// never has to know whether the commit got far enough to have already
+/// rolled back.
+///
+/// This is the shape T69 asks for: ASK AUTOCOMMIT FIRST, and never let
+/// a "cannot rollback" message replace the real error a caller was
+/// about to be told.
+export fn finish(db: Db) -> int {
+    if !in_transaction(db) { return 0 }
+    rolled_back(db)
+}
+
+fn rolled_back(db: Db) -> int {
+    match rollback(db) {
+        .Ok(n) -> n,
+        .Err(_) -> 0,
+    }
+}
+
+fn started(db: Db, sql: string) -> Result<int, SqlError> {
+    if in_transaction(db) { fail defect("a transaction is already open on this connection — nesting wants a savepoint, which is a later slice") }
+    run(db, sql)
+}
