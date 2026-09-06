@@ -577,8 +577,14 @@ registry is the idiom engine's spec, written by dogfooding.
 - THE VOCABULARY SEAM RULE — which shape a new vocabulary takes,
   decided by ONE question: is the item DATA or BEHAVIOR?
   DATA (a runtime fn: name, param kinds, ownership) -> a REGISTRY
-  ROW: `rt_sigs()` is one table and five consumers QUERY it;
-  adding is one row plus one C body, nothing dispatches.
+  ROW: `rt_sigs()` is ONE PLACE holding rows and five consumers
+  QUERY it;
+  adding is one row plus one C body, nothing dispatches. ITS
+  SPELLING IS NOT `table<Row>`, and reading "table" as the literal
+  cost a lane a design round: `rt_sigs`'s 78 WIDE rows are struct
+  literals in a list, while `width_rows`'s three NARROW ones are a
+  `table`. A `table` buys ALIGNMENT and a multi-line cell SPENDS
+  it, so the row's width picks the spelling — both are registries.
   BEHAVIOR (an instruction: five different per-pass meanings) ->
   the ENUM plus exhaustive dispatch, because the exhaustive match
   IS the registration — the build refuses until every consumer
