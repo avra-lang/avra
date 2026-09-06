@@ -8,6 +8,7 @@
 #include <llvm-c/Analysis.h>
 #include <stdlib.h>
 #include <string.h>
+void avra_trap(const char* msg);
 #include <stdio.h>
 #include <unistd.h>
 
@@ -613,14 +614,23 @@ LLVMValueRef avra_llvm_cast_to_type(LLVMBuilderRef b, LLVMValueRef val, LLVMType
     // integer → ptr
     if (ak == LLVMIntegerTypeKind && ek == LLVMPointerTypeKind)
         return LLVMBuildIntToPtr(b, val, expected, "cast");
-    // integer → integer (i1↔i64, i32↔i64, etc.)
+    // integer → integer. NARROWING is sign-agnostic and safe here.
+    // WIDENING is not: only the CALLER knows whether the value is
+    // signed, and a helper named "cast to type" must not guess — an
+    // unconditional zero-extend is the C-int defect written in C.
+    // The one caller that widens says so at its site.
     if (ak == LLVMIntegerTypeKind && ek == LLVMIntegerTypeKind) {
         unsigned aw = LLVMGetIntTypeWidth(actual);
         unsigned ew = LLVMGetIntTypeWidth(expected);
-        if (aw < ew) return LLVMBuildZExt(b, val, expected, "cast");
         if (aw > ew) return LLVMBuildTrunc(b, val, expected, "cast");
+        if (aw < ew) avra_trap("cast_to_type asked to WIDEN an integer — the sign is the caller's to name: build_zext or build_sext");
         return val;
     }
+    // UNREACHABLE TODAY: no double value exists in the language, so
+    // these four arms have never run. They also pre-decide a question
+    // float's lane has not answered — a BITCAST reinterprets bits and
+    // a conversion changes the number, and which one a "cast" means
+    // is exactly what that lane must choose deliberately.
     // double ↔ i64: bitcast (preserves bits)
     if (ak == LLVMDoubleTypeKind && ek == LLVMIntegerTypeKind) {
         unsigned ew = LLVMGetIntTypeWidth(expected);
