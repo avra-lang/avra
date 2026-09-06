@@ -318,6 +318,10 @@ LLVMValueRef avra_llvm_build_or(LLVMBuilderRef b, LLVMValueRef lhs, LLVMValueRef
     return LLVMBuildOr(b, lhs, rhs, name);
 }
 
+LLVMValueRef avra_llvm_build_xor(LLVMBuilderRef b, LLVMValueRef lhs, LLVMValueRef rhs, const char* name) {
+    return LLVMBuildXor(b, lhs, rhs, name);
+}
+
 LLVMValueRef avra_llvm_build_not(LLVMBuilderRef b, LLVMValueRef val, const char* name) {
     return LLVMBuildNot(b, val, name);
 }

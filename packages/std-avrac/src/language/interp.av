@@ -309,6 +309,15 @@ impl Machine {
             .Eq -> Val.B(l == r),
             .Ne -> Val.B(l != r),
             .And or .Or -> self.defect_val("a lazy op reached the eager path"),
+            // THE SAME C BODIES the backend calls for the shifts, and
+            // the same ones for the rest: the evaluator reaches the
+            // machine only through C, so a bitwise answer here and a
+            // bitwise answer there cannot drift.
+            .BitAnd -> Val.I(avra_int_and(l, r)),
+            .BitOr -> Val.I(avra_int_or(l, r)),
+            .BitXor -> Val.I(avra_int_xor(l, r)),
+            .Shl -> Val.I(avra_int_shl(l, r)),
+            .Shr -> Val.I(avra_int_shr(l, r)),
         }
     }
 
@@ -322,7 +331,8 @@ impl Machine {
             .Eq -> Val.B(same),
             .Ne -> Val.B(!same),
             .Add or .Sub or .Mul or .Div or .Mod or .Lt or .Le or .Gt or
-            .Ge or .And or .Or -> self.defect_val("a non-equality op reached an absence"),
+            .Ge or .And or .Or or .BitAnd or .BitOr or .BitXor or .Shl or .Shr ->
+                self.defect_val("a non-equality op reached an absence"),
         }
     }
 
@@ -335,7 +345,8 @@ impl Machine {
             .Eq -> Val.B(l == r),
             .Ne -> Val.B(l != r),
             .Add or .Sub or .Mul or .Div or .Mod or .Lt or .Le or .Gt or
-            .Ge or .And or .Or -> self.defect_val("a non-equality op reached bool operands"),
+            .Ge or .And or .Or or .BitAnd or .BitOr or .BitXor or .Shl or .Shr ->
+                self.defect_val("a non-equality op reached bool operands"),
         }
     }
 
@@ -871,6 +882,11 @@ impl Machine {
 // The process substrate, the io rows and the clock are the runtime's
 // own C; the evaluator calls the same functions the native program
 // does, so there is one implementation, not two that agree.
+extern fn avra_int_and(a: int, b: int) -> int
+extern fn avra_int_or(a: int, b: int) -> int
+extern fn avra_int_xor(a: int, b: int) -> int
+extern fn avra_int_shl(a: int, b: int) -> int
+extern fn avra_int_shr(a: int, b: int) -> int
 extern fn avra_proc_spawn(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, max_bytes: int, from_h: int) -> int
 extern fn avra_proc_run(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, stdin_text: string, timeout_ms: int, grace_ms: int, max_bytes: int) -> int
 extern fn avra_proc_poll(h: int, timeout_ms: int) -> int

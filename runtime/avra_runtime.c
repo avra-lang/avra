@@ -609,6 +609,34 @@ int64_t avra_int_div(int64_t a, int64_t b) {
     return a / b;
 }
 
+/* THE BITWISE SIX. The four unguarded ones exist for the EVALUATOR,
+   which is Avra and reaches the machine only through C; the native
+   backend emits LLVM instructions for them and never calls these.
+   The two SHIFTS are called by both engines, because a shift past the
+   width is undefined in C and poison in LLVM, and one guarded body is
+   the only way the two engines cannot disagree about where the edge
+   is. The words name the LAW, not the mechanism. */
+int64_t avra_int_and(int64_t a, int64_t b) { return a & b; }
+int64_t avra_int_or(int64_t a, int64_t b)  { return a | b; }
+int64_t avra_int_xor(int64_t a, int64_t b) { return a ^ b; }
+int64_t avra_int_not(int64_t a)            { return ~a; }
+
+int64_t avra_int_shl(int64_t a, int64_t b) {
+    if (b < 0 || b >= 64) { avra_trap("a shift count must be between 0 and 63"); }
+    /* shifting INTO the sign bit is undefined for a signed left
+       operand, so the shift is done on the unsigned twin and read
+       back — the bits are what the program asked for either way. */
+    return (int64_t)((uint64_t)a << (uint64_t)b);
+}
+
+int64_t avra_int_shr(int64_t a, int64_t b) {
+    if (b < 0 || b >= 64) { avra_trap("a shift count must be between 0 and 63"); }
+    /* ARITHMETIC: the sign bit fills, so `-8 >> 1` is -4 and not a
+       huge positive. That is the shift Avra's one integer means, and
+       it is what LLVM's `ashr` does on the other side. */
+    return a >> b;
+}
+
 int64_t avra_int_mod(int64_t a, int64_t b) {
     if (b == 0) { avra_trap("division by zero"); }
     return a % b;

@@ -3,7 +3,7 @@
 //! MATCHING operands. An Error operand ABSORBS everywhere — its
 //! cause was diagnosed where it happened; the wording lives here
 //! with the operators.
-use core.{ExprId, BinOp, Type, TypeId, op_symbol, DeclId}
+use core.{ExprId, BinOp, Type, TypeId, op_symbol, DeclId, int_of}
 use features.{TypeCx, EnumSig, spoken, this_is, variants_are, build_a_record, member_type_of, compares_by_value, types_disagree, unit_instantiated}
 use diagnostics.{refusal}
 
@@ -84,8 +84,24 @@ fn binary_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Ty
         .Sub or .Mul or .Div or .Mod -> op_over(cx, op, l, r, Type.Int, Type.Int),
         .Lt or .Le or .Gt or .Ge -> op_over(cx, op, l, r, Type.Int, Type.Bool),
         .And or .Or -> op_over(cx, op, l, r, Type.Bool, Type.Bool),
+        .BitAnd or .BitOr or .BitXor -> op_over(cx, op, l, r, Type.Int, Type.Int),
+        .Shl or .Shr -> shifted_type(cx, op, l, r),
         .Eq or .Ne -> eq_type(cx, e, op, l, r),
     }
+}
+
+/// A shift is an int law with ONE extra rule, and the rule is the
+/// compiler holding knowledge no other tool has: a count outside
+/// 0..63 has no answer on any machine, so a LITERAL one is refused
+/// where it is written rather than trapped when it runs. A count the
+/// compiler cannot read traps instead — `avra_int_shl` guards it, and
+/// both engines call that same body, so neither can be wrong alone.
+fn shifted_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    let held: int? = int_of(cx.view.store.expr(r))
+    if held == null { return op_over(cx, op, l, r, Type.Int, Type.Int) }
+    let count = held!
+    if count < 0 || count > 63 { return bad_shift_count(cx, r, count) }
+    op_over(cx, op, l, r, Type.Int, Type.Int)
 }
 
 /// `+` joins two texts or adds two ints — the left side decides
@@ -260,4 +276,8 @@ fn not_comparable(mut cx: TypeCx, op: BinOp, offender: ExprId) -> TypeId {
 fn mismatched_sides(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     let rn = cx.name_at(r)
     spoken(cx, refusal("type.mismatch", cx.loc_of(r), "`${op_symbol(op)}` compares matching types, found `${cx.name_at(l)}` and `${rn}`", this_is(rn), null))
+}
+
+fn bad_shift_count(mut cx: TypeCx, r: ExprId, count: int) -> TypeId {
+    spoken(cx, refusal("type.shift_count", cx.loc_of(r), "a shift count must be between 0 and 63, this is ${count}", "shifted by this", "an `int` is 64 bits, so a wider shift has no answer to give"))
 }
