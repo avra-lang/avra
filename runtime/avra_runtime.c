@@ -2188,6 +2188,17 @@ const char* avra_proc_which(const char* file, const char* path) {
     return s;
 }
 
+// AN ADDRESS AS A POINTER. Making one is harmless in every model
+// that allows it — the danger is DEREFERENCING, and Avra has no
+// dereference at all. Zero answers the null pointer, so `ptr?`'s
+// niche carries absence with no extra word and a C sentinel of 0
+// (SQLITE_STATIC) arrives as null on its own.
+// NOT A CAST: the only direction is int -> ptr, and no seat widens
+// implicitly, so a transposed argument stays a compile error.
+void* avra_ptr_at(int64_t address) {
+    return (void*)(intptr_t)address;
+}
+
 // A code point as the UTF-8 bytes that spell it; one that no
 // sequence can carry (past U+10FFFF, or a surrogate) is U+FFFD.
 const char* avra_str_from_codepoint(int64_t code) {

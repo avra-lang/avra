@@ -2064,6 +2064,48 @@ the order is the dependency.
         production in workspace.av and lower.av, 1 the db_test
         fixture), 38 value-args (2 production), 1 alias at
         typing.av:410, the rest tests.
+  - [x] A PROGRAM MAY MINT A POINTER FROM AN INTEGER. LANDED
+        2026-09-05 on the OWNER'S WORD — escalated as a capability
+        rather than decided in a lane, held through a peer's relay of
+        the approval, and built on the owner's own say-so. `ptr` is
+        no longer receive-only; the three entries above that say so
+        are superseded.
+        THE SHAPE COST NO COMPILER CHANGE: one C body,
+        `avra_ptr_at(int64_t) -> void*`, reached the way every std
+        primitive is reached — an `extern fn` declaration and the
+        existing host seam. The capability was a RUNTIME row, not a
+        language feature, which is the vocabulary seam rule answering
+        correctly on its own.
+        ANSWERS `ptr?`, and the failability is the NICHE rather than
+        a check: a non-optional pointer structurally cannot hold 0,
+        so zero IS null and SQLITE_STATIC arrives as absence with no
+        extra word. SQLITE_TRANSIENT is -1 and differs from it by
+        PRESENCE alone, which is the one thing observable about a
+        `ptr`.
+        THE FENCE HOLDS, probed three ways: an int literal at a `ptr`
+        seat is F2000, an int binding under a `ptr` annotation is
+        F2024, and — stronger than promised — a MINTED `ptr?` at a
+        bare `ptr` seat is F2000 too, so even the minted pointer
+        cannot slide anywhere without a deliberate unwrap. One named
+        door, no cast operator, no widening seat, and the grammar has
+        no cast syntax to extend.
+        WHY IT IS SAFE, from the research (docs/2026_09_06_RESEARCH_
+        ptr_from_int.md, every claim quoted from a primary source):
+        CREATING a pointer is harmless in every model surveyed and
+        DEREFERENCING is the entire danger — and Avra has no
+        dereference. Java is the decisive precedent because it drew
+        the line explicitly rather than inheriting it
+        (`MemorySegment.ofAddress` unrestricted, `reinterpret`
+        restricted); Rust's `without_provenance` names our case in
+        its own docs; Go forbids it for a MOVING GC we do not have,
+        which is the right kind of negative evidence because the
+        reason does not transfer.
+        THE CAVEAT TO CARRY: SQLITE_TRANSIENT is a FUNCTION pointer,
+        and Clang signs those on arm64e. It is safe today only
+        because SQLite COMPARES it and never calls it — which stops
+        being true the day C callbacks land.
+        Proved in `corpus/native/externs.av`, a file that already
+        existed for the host seam: `null some some`.
   - [ ] S2 CARRIES A SEARCH OF ITS DEPENDENTS — a GATE CONDITION,
         not a courtesy, and the reason is verified rather than
         feared. `mut b = a` ALIASES today, both engines:

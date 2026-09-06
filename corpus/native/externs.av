@@ -10,6 +10,18 @@ extern fn avra_selfhost_get_arg_cstr(i: int) -> string
 extern fn avra_proc_run(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, stdin_text: string, timeout_ms: int, grace_ms: int, max_bytes: int) -> int
 extern fn avra_proc_status(h: int) -> int
 extern fn avra_proc_close(h: int)
+extern fn avra_ptr_at(address: int) -> ptr?
+
+/// An address as a pointer, told apart by its NICHE alone — the one
+/// thing observable about a `ptr` is whether it is null, which is
+/// exactly what a C sentinel of 0 means.
+fn minted(p: ptr?) -> string {
+    if p == null {
+        "null"
+    } else {
+        "some"
+    }
+}
 
 /// A child run to its end through the seam — stdin from /dev/null,
 /// both streams captured, an empty environment — and its status
@@ -36,10 +48,17 @@ let exit3 = verdict("/bin/sh", ["-c", "exit 3"])
 let absent = verdict("/definitely/no/such/program", [])
 let killed = verdict("/bin/sh", ["-c", "kill -9 $$"])
 let literal = verdict("/bin/sh", ["-c", "test \"$1\" = '; touch /tmp/PWNED ;'", "x", "; touch /tmp/PWNED ;"])
+// AN ADDRESS BECOMES A POINTER, and only through this one named
+// door: no cast, no widening seat. Zero IS the null pointer, so the
+// niche carries the C sentinel with no extra word — SQLITE_STATIC is
+// 0 and SQLITE_TRANSIENT is -1, and they differ by presence alone.
+let at_zero = minted(avra_ptr_at(0))
+let at_one = minted(avra_ptr_at(1))
+let at_transient = minted(avra_ptr_at(0 - 1))
 // what we printed before the child runs comes out BEFORE the child's
 // words — a buffered stdout is flushed at the seam, or a pipe reorders
 println("before the child")
 let inherited = avra_proc_run("/bin/sh", ["-c", "echo from the child"], [], "", 128 + 256 + 512, "", 5000, 500, 0)
 avra_proc_close(inherited)
 println("after the child")
-"${avra_now_ns() > 0} ${avra_selfhost_file_exists("/definitely/not/here")} ${avra_host_is_dir("corpus")} ${avra_selfhost_file_exists("corpus/native/externs.av")} ${env.length > 0} ${missing.length} ${avra_selfhost_argc() >= 1} ${arg0.length > 0} ${arg0 == avra_selfhost_get_arg_cstr(0)} ${exit3} ${absent} ${killed} ${literal}"
+"${avra_now_ns() > 0} ${avra_selfhost_file_exists("/definitely/not/here")} ${avra_host_is_dir("corpus")} ${avra_selfhost_file_exists("corpus/native/externs.av")} ${env.length > 0} ${missing.length} ${avra_selfhost_argc() >= 1} ${arg0.length > 0} ${arg0 == avra_selfhost_get_arg_cstr(0)} ${exit3} ${absent} ${killed} ${literal} ${at_zero} ${at_one} ${at_transient}"
