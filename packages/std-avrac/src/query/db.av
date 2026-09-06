@@ -153,11 +153,9 @@ impl Db {
     /// cell's deps and leave the flat list; an unchanged hash keeps
     /// changed_at (early cutoff).
     fn settle(key: Key, value_hash: int) {
-        // LICENSED I34: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
         let start = self.marks.pop() ?? 0
         let deps = self.deps.slice(start, self.deps.length)
-        mut ds = self.deps
-        while ds.length > start { let _ = ds.pop() }
+        while self.deps.length > start { let _ = self.deps.pop() }
         let _ = self.open.pop()
         let prior: Cell? = self.cell(key)
         let changed = if prior != null && prior!.value_hash == value_hash { prior!.changed_at } else { self.revision() }
@@ -180,20 +178,16 @@ impl Db {
     /// One element set through the field; the arg space grows by
     /// appending a stride of absences.
     fn write(key: Key, cell: Cell) {
-        // LICENSED I34: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
         let at = self.slot(key)
-        mut cs = self.cells
-        while cs.length <= at { cs.push(null) }
-        cs.set(at, cell)
+        while self.cells.length <= at { self.cells.push(null) }
+        self.cells.set(at, cell)
     }
 
     /// Cells not verified this revision are dead: dropped, so a
     /// long-lived kernel holds only what the last full pass touched.
     fn sweep() {
-        // LICENSED I34: a BORROW — a read holds the table to the scope's end, so a path write after it would CLONE it (liveness, S3, retires this)
-        mut cs = self.cells
         for i, held in self.cells {
-            if held != null && held!.verified_at != self.revision() { cs.set(i, null) }
+            if held != null && held!.verified_at != self.revision() { self.cells.set(i, null) }
         }
     }
 
