@@ -49,7 +49,7 @@ fn one_int(db: Db, sql: string) -> Result<int, SqlError> {
     v
 }
 
-fn head_int(s: Stmt) -> Result<int, SqlError> {
+fn head_int(mut s: Stmt) -> Result<int, SqlError> {
     let more = step(s)?
     if !more { fail no_row_here() }
     int_at(s, 0)
@@ -222,7 +222,7 @@ fn three_classes(s: Stmt) -> string {
     w
 }
 
-fn one_class(s: Stmt) -> string {
+fn one_class(mut s: Stmt) -> string {
     match step(s) {
         .Ok(m) -> if m { "${ck(class_at(s, 0))}/${ik(int_at(s, 0))}" } else { "DONE" },
         .Err(e) -> e.cause.kind(),
@@ -357,15 +357,21 @@ spec "std/sqlite statement adversarial" {
         // THE FINDING, and it stands as behaviour rather than a fix.
         // `sqlite3_step` auto-resets after DONE, so a second step
         // RE-EXECUTES. Every step answers DONE and nothing in the answer
-        // says a row was written. Three steps on one INSERT write THREE
+        // says a row was written. Three steps on one INSERT wrote THREE
         // ROWS.
         //
-        // Pinned as it behaves, with the row count in the assertion, so
-        // the day the driver carries its own `done` flag these fail and
-        // that failure is the notice.
-        then "three steps all answer DONE" { insert_thrice().starts_with("DONE DONE DONE") }
-        then "and the table holds THREE rows, not one" { insert_thrice() == "DONE DONE DONE rows=3" }
-        then "a SELECT hands its rows out again on a second pass" { select_past_done() == "ROW ROW DONE | ROW ROW" }
+        // THESE CASES WERE PINNED AS THE BUG BEHAVED, with the row count
+        // in the assertion, so that the day the driver carried its own
+        // `done` flag they would fail and that failure would be the
+        // notice. It carries one now, they failed, and these are their
+        // replacements.
+        //
+        // `Stmt` holds `done`, `step` takes a `mut` seat and sets it at
+        // DONE, and `reset` clears it — because rewinding is exactly the
+        // caller saying they mean to run it again.
+        then "the first step answers DONE and the second is refused" { insert_thrice() == "DONE sqlite.done sqlite.done rows=1" }
+        then "and one insert writes ONE row, however many times it is stepped" { insert_thrice().ends_with("rows=1") }
+        then "a SELECT gives each row once and then stops" { select_past_done() == "ROW ROW DONE | sqlite.done sqlite.done" }
     }
 
     given "a bind after a step, with no reset" {
@@ -387,6 +393,13 @@ spec "std/sqlite statement adversarial" {
 
     given "reset rewinds and KEEPS the bindings" {
         then "the statement runs twice on one bind" { reset_keeps() == "step=DONE reset=0 again=DONE 77s=2" }
+        // AND IT IS THE REMEDY THE REFUSAL NAMES. A step past DONE is
+        // refused precisely so that running the statement again is a
+        // thing the caller ASKS for; `reset` is how they ask, and the
+        // second DONE above is the proof it works. Without it the guard
+        // would be a wall rather than a door.
+        then "a reset makes the next step legal again" { reset_keeps().contains("again=DONE") }
+        then "and the second run really wrote a second row" { reset_keeps().ends_with("77s=2") }
     }
 
     given "one column, a different class every row" {
