@@ -2,7 +2,8 @@
 //! `match` chooses by patterns that fit the subject, COVERS it —
 //! every variant whole, or a catch-all — and its arms agree on one
 //! type. Coverage is the point: adding a variant breaks every match
-//! that spelled them, and a hole that hides several is warned.
+//! that spelled them, and a hole under two or more ANSWERING arms
+//! is warned — under one it is a projection, and `rest` is quiet.
 use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, joined, filled, flatten}
 use features.{TypeCx, EnumSig, spoken, this_is, nothing, duplicate_names, arms_agree, variants_are, types_disagree, seats_fit, stays}
 use features.enums.{all_irrefutable, hole_of}
@@ -26,12 +27,12 @@ fn decl_checks(mut cx: TypeCx, s: StmtId, name: string, variants: List<Variant>)
 }
 
 fn enums_type(mut cx: TypeCx, e: ExprId) -> TypeId {
-    // LICENSED I22: a feature cannot enumerate OTHER features' variants
+    // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .Match(subject, arms) -> matched_type(cx, e, subject, arms),
         .Is(subject, variant) -> asked_type(cx, e, subject, variant),
         .VariantLit(name, args) -> literal_type(cx, e, name, args),
-        _ -> cx.error_type,
+        rest -> cx.error_type,
     }
 }
 
@@ -138,14 +139,19 @@ fn lit_types(mut cx: TypeCx, p: PatId, v: ExprId, expected: TypeId) -> List<Type
 /// covered when a catch-all arrives or when the arms' patterns,
 /// taken together, accept every value — judged column by column
 /// over the payloads, so nested arms that split a variant between
-/// them cover it. A variant accepted whole twice is a repeat. A
-/// catch-all that hides more than two variants WARNS — unless it
-/// is `rest`, the deliberate remainder.
+/// them cover it. A variant accepted whole twice is a repeat.
+///
+/// A CATCH-ALL IS JUDGED BY THE ARMS THAT ANSWER, never by the size
+/// of the enum: ONE answering arm is a PROJECTION and its hole is
+/// honest — it pins the answer for variants that do not exist yet.
+/// TWO OR MORE is a REGISTRY, and there a hole silently forgets the
+/// next variant, so it warns unless the writer spelled `rest`.
 fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeId, arms: List<Arm>) {
     let declared: EnumSig? = cx.variants_of(subject_ty)
     let sname = cx.name_at(subject)
     mut covered: List<string> = []
     mut before: List<PatId> = []
+    mut answering = 0
     for a in arms {
         for n in covers(cx, a) {
             if covered.contains(n) { repeated_arm(cx, a.value, n) } else { covered.push(n) }
@@ -154,10 +160,13 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
         if hole != null {
             if declared != null {
                 let sig = declared!
-                hidden_checks(cx, hole!, uncovered(cx, before, sig))
+                hidden_checks(cx, hole!, answering, uncovered(cx, before, sig))
             }
             return
         }
+        // AFTER the hole test, so an arm that both answers and holes
+        // does not count itself
+        if tests_variant(cx, a) { answering = answering + 1 }
         before = before.concat(a.pats)
     }
     if declared == null { return needs_catch_all(cx, e, sname) }
@@ -296,6 +305,14 @@ fn covers(cx: TypeCx, a: Arm) -> List<string> {
     out
 }
 
+/// Whether the hole BINDS what it takes.
+fn hole_binds(cx: TypeCx, hole: PatId) -> bool {
+    match cx.view.store.pat(hole) {
+        .Bind(_) -> true,
+        _ -> false,
+    }
+}
+
 /// The variant a pattern accepts whole — a test whose payload
 /// patterns are all irrefutable — or absence.
 fn whole_variant(cx: TypeCx, p: PatId) -> string? {
@@ -305,11 +322,17 @@ fn whole_variant(cx: TypeCx, p: PatId) -> string? {
     }
 }
 
-/// The hole's lint: the variants it hides are the ones no earlier
-/// arm covered; more than two speak, unless it is `rest`.
-fn hidden_checks(mut cx: TypeCx, hole: PatId, hidden: List<string>) {
+/// The hole's lint: `answering` is how many earlier ARMS tested a
+/// variant — an or-run is ONE, so a predicate stays a projection.
+/// Two or more make the match a REGISTRY, where a hole forgets the
+/// next variant. `rest` says the remainder is deliberate, and a
+/// hole that BINDS is told the other exit, since `rest` binds
+/// nothing.
+fn hidden_checks(mut cx: TypeCx, hole: PatId, answering: int, hidden: List<string>) {
     if cx.view.store.pat(hole) is .Rest { return }
-    if hidden.length > 2 { wildcard_hides(cx, hole, hidden) }
+    if answering < 2 || hidden.is_empty() { return }
+    if hole_binds(cx, hole) { return registry_forgets_bound(cx, hole, hidden) }
+    registry_forgets(cx, hole, hidden)
 }
 
 fn arms_type(mut cx: TypeCx, values: List<ExprId>) -> TypeId {
@@ -398,8 +421,12 @@ fn needs_catch_all(mut cx: TypeCx, e: ExprId, sname: string) {
     cx.emit(refusal("type.match", cx.loc_of(e), "a `match` over `${sname}` needs a catch-all arm", "this match", "end with `_ -> …` or `rest -> …`"))
 }
 
-fn wildcard_hides(mut cx: TypeCx, hole: PatId, hidden: List<string>) {
-    cx.emit(warning("type.wildcard_hides", cx.pat_loc(hole), "this hole hides ${hidden.length} variants: ${joined([".${n}" for n in hidden], ", ")}", "matches them all", "handle each, or write `rest ->` to say the remainder is deliberate"))
+fn registry_forgets(mut cx: TypeCx, hole: PatId, hidden: List<string>) {
+    cx.emit(warning("type.registry_hole", cx.pat_loc(hole), "arms answer for several variants and this hole takes the rest: ${joined([".${n}" for n in hidden], ", ")}", "matches them all", "spell each arm, so the next variant lands here visibly — or write `rest ->` to say the remainder is deliberate"))
+}
+
+fn registry_forgets_bound(mut cx: TypeCx, hole: PatId, hidden: List<string>) {
+    cx.emit(warning("type.registry_hole", cx.pat_loc(hole), "arms answer for several variants and this hole binds the rest: ${joined([".${n}" for n in hidden], ", ")}", "binds them all", "spell each arm, so the next variant lands here visibly — `rest` binds nothing, so it cannot take this arm's place"))
 }
 
 fn unhandled_variant(mut cx: TypeCx, e: ExprId, sname: string, n: string) {

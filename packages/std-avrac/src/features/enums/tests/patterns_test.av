@@ -66,18 +66,36 @@ spec "features/enums (patterns)" {
         then "a pattern naming fewer payloads than the variant carries is refused once — coverage never reads a ragged row" {
             refused_with("${shapes()}match Shape.Rect(3, 4) {\n    .Rect(w) -> w\n    .Line(n) -> n\n    .Dot -> 0\n}", "`.Rect` carries 2, the pattern names 1")
         }
-        then "a hole hiding three variants warns, and the program still runs" {
-            let a = analyze_source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    _ -> 0\n}")
-            a.diagnostics.length == 1 && a.report().contains("warning") && a.report().contains("hides 3 variants: .B, .C, .D") && a.ran() == "0"
+        then "one answering arm is a PROJECTION — its hole is honest, however many it hides" {
+            refusals("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    _ -> 0\n}") == 0
         }
-        then "`rest` is the deliberate remainder — no lint" {
-            refusals("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    rest -> 0\n}") == 0
+        then "two answering arms make a REGISTRY — its hole forgets the next variant, and the program still runs" {
+            let a = analyze_source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    _ -> 0\n}")
+            a.diagnostics.length == 1 && a.report().contains("warning") && a.report().contains("this hole takes the rest: .C, .D") && a.ran() == "2"
+        }
+        then "`rest` is the deliberate remainder — a registry says so and is quiet" {
+            refusals("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    rest -> 0\n}") == 0
         }
         then "a hole after nested arms that already cover a variant does not count it" {
-            refusals("${tree()}match Node.One(Leaf.Num(1)) {\n    .One(.Num(_)) -> 1\n    .One(.Word(_)) -> 2\n    _ -> 3\n}") == 0
+            let a = analyze_source("${tree()}match Node.One(Leaf.Num(1)) {\n    .One(.Num(_)) -> 1\n    .One(.Word(_)) -> 2\n    _ -> 3\n}")
+            a.diagnostics.length == 1 && a.report().contains("the rest: .Empty") && a.ran() == "1"
         }
-        then "a hole hiding two is quiet" {
-            refusals("${shapes()}match Shape.Dot {\n    .Dot -> 1\n    _ -> 0\n}") == 0
+        then "an or-run answering once is a PROJECTION, however many variants it names" {
+            refusals("${shapes()}match Shape.Dot {\n    .Dot or .Line(_) -> 1\n    _ -> 0\n}") == 0
+        }
+        then "an or-run counts as ONE arm — a second answering arm still makes a registry" {
+            let a = analyze_source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.C {\n    .A or .B -> 1\n    .C -> 2\n    _ -> 0\n}")
+            a.diagnostics.length == 1 && a.report().contains("the rest: .D") && a.ran() == "2"
+        }
+        then "an arm that both answers and holes does not count itself" {
+            refusals("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.C {\n    .A -> 1\n    .B or _ -> 2\n}") == 0
+        }
+        then "a hole that BINDS is told the exit that is open to it — `rest` binds nothing" {
+            let a = analyze_source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.C {\n    .A -> 1\n    .B -> 2\n    other -> 9\n}")
+            a.diagnostics.length == 1 && a.report().contains("this hole binds the rest: .C, .D") && a.report().contains("`rest` binds nothing")
+        }
+        then "a hole hiding nothing is quiet, however many answered" {
+            refusals("${shapes()}match Shape.Dot {\n    .Dot -> 1\n    .Line(n) -> n\n    .Rect(w, h) -> w\n    _ -> 0\n}") == 0
         }
     }
 }

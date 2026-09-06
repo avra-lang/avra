@@ -1469,6 +1469,56 @@ the order is the dependency.
         collapses; `kind()`/`message()` as defaults). LANDED
         2026-09-05 — the design and the landing below; the
         `nothing()` sweep is the next slice's payoff.
+  - [ ] F2051 MISREADS A FORWARDING SEAT (lane D, 2026-09-05, with
+        a reproduction). A fn that PASSES its `mut` seat into another
+        `mut` seat is warned "never writes through it", and taking
+        the help's advice does not compile — the caller's plain seat
+        is then refused by F2048 at the inner call. Passing to a
+        marked seat IS writing through the seat; the pass looks for
+        DIRECT writes only. The fixpoint already computes flows
+        between seats, so the fix is one edge: an argument that fills
+        a marked seat marks the seat it came from. No code in the
+        tree has the shape (hence the census's zero) because the only
+        thing wanting it is a higher-order forwarding verb. LANDS
+        WITH S2 — the same fixpoint gains the cell facts there, and
+        it is one visit.
+  - [x] THE COVERAGE LAW COUNTS ITS OWN DOCTRINE (F2040). LANDED
+        2026-09-05 — the lint counted HIDDEN VARIANTS where the
+        doctrine counts ANSWERING ARMS, so it fired at 191 SITES
+        tree-wide (361 warning lines across a package sweep: a shared
+        dependency is counted once per package that checks it) and
+        NONE was the defect it names — the audit reached every
+        NON-TEST site (the 23 it did not reach are test files, which
+        lane D deduped independently and confirmed): every real
+        registry was already annotated, and the noise sat in the
+        column errors arrive in (lane A: "the F2040/F2047 warnings
+        now hide real errors in every build log"). `coverage_checks`
+        now counts arms that TEST a variant, an or-run being one, and
+        warns only when two or more answer AND the hole hides
+        something; the voice says which variants the hole would
+        forget. A hole that BINDS gets the other exit named instead,
+        since `rest` binds nothing and cannot take that arm's place.
+        AMENDS SPEC 8.7, which chose "(b) lint warning when a
+        wildcard hides > 2 variants": the threshold becomes TWO OR
+        MORE ANSWERING ARMS. Proposed, the owner decides — the
+        evidence is the 191-site measurement, and the spec's own
+        purpose (the LLM feedback loop: "either add cases or
+        acknowledge") is better served by a law that fires only
+        where a case is genuinely missing. The `rest` exemption is
+        the spec's, unchanged and now load-bearing: 8.7 already
+        calls it "the acknowledgement the lint asks for, carried in
+        the syntax instead of an annotation", which is exactly what
+        THE LICENSE IS A SPELLING means.
+        The 15 real registries spell `rest ->`, which the
+        language already reads as a deliberate remainder — so THE
+        LICENSE IS A SPELLING both the compiler and the ratchet
+        read, and all 42 `// LICENSED I22` prose licenses (measured
+        dead: the grep flags zero sites tree-wide) kept their reason
+        and lost the claim of an approved deviation.
+        F2040 is 0 across ALL TWELVE packages (measured both ways:
+        main's compiler over main's tree is the 361, the product over
+        this one is 0); 1869 cases, 77 programs eval == native. Warning noise left
+        for S2: F2047's 96, which the cell ABI retires.
   - [ ] A PRELUDE or qualified expression paths (the 33 files that
         import ten names for a `grammar { }` expansion).
 
@@ -6264,7 +6314,9 @@ tests, hole rows cover the rest — so nested arms that split a
 variant cover it, and a recursive enum terminates), a literal match
 needs a catch-all, a variant accepted whole twice is a repeat, and a
 hole hiding more than two variants WARNS with them listed (F2040)
-unless it is `rest`, the contextual deliberate remainder. LOWERING:
+unless it is `rest`, the contextual deliberate remainder
+(SUPERSEDED 2026-09-05: the hole is judged by ANSWERING ARMS, not by
+how many it hides — the landing is in LANE C's block). LOWERING:
 arms that each test one variant whole are the jump table as before;
 anything else is a CHAIN of lazy tests in arm order (`||`/`&&` as
 regions, so an untaken arm's payloads are never read), binds read

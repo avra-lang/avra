@@ -258,6 +258,27 @@ gate — there is no amnesty left to hide in.
       builders. LICENSED where the doctrine FORBIDS exhaustiveness:
       a feature cannot enumerate other features' variants, and
       interp's run loop delegates everything else to `step`.
+      GREW 2026-09-05: the LICENSE IS NOW A SPELLING, not a comment.
+      `rest ->` says in the LANGUAGE what `// LICENSED I22` said in
+      prose — the compiler reads it (F2040 goes quiet), the ratchet
+      reads it (`_ ->` is what it looks for), and a reader sees the
+      deliberate remainder without a tooling footnote. The old law
+      fired at 191 sites tree-wide and none was the defect it names.
+      All 42 prose
+      licenses were measured DEAD the day the compiler's own law
+      started counting answering arms: 15 became `rest ->` and 27
+      were licensing a one-arm PROJECTION, which was never a
+      violation. Their reasons stayed as plain comments; the claim of
+      an approved deviation went. A rule with two enforcers keeps the
+      one that can SEE — the grep still fails the gate on a new `_
+      ->`, the compiler names the variants it forgets.
+      THE PROSE LICENSE STAYS AVAILABLE, and one shape needs it: a
+      registry hole that BINDS (`other -> f(other)`) cannot be
+      spelled `rest`, which binds nothing. The compiler says so at
+      that site rather than giving advice that will not compile, and
+      `// LICENSED I22` is the exit left for it. A spelling that
+      covers most cases does not get to close the escape hatch for
+      the rest (P8).
 
 - I23 a PARAMETER nothing reads: the signature lies about what the
       fn needs and every call site carries the lie (`declare` threaded

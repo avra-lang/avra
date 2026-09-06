@@ -415,7 +415,8 @@ RULES = {
             "carries the lie"),
     "I22": (registry_catchall,
             "2+ variants answer, so this is a REGISTRY — a catch-all here forgets "
-            "the NEXT variant; spell the arms (or-runs keep it affordable)"),
+            "the NEXT variant; spell the arms (or-runs keep it affordable), or "
+            "write `rest ->` to say the remainder is deliberate"),
     "I19": (index_walk,
             "an index walk over a list — `for (j, x) in xs.enumerate()` hands over both"),
     "I20": (uncounted_refusal,
