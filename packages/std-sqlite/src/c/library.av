@@ -19,12 +19,22 @@
 //!
 //! ```
 //! sqlite3_libversion        -> sqlite3_version, a global const char[]   :187469
-//! sqlite3_sourceid          -> the SQLITE_SOURCE_ID literal            :187477
-//! sqlite3_compileoption_get -> sqlite3azCompileOpt[N], a
-//!                              `static const char * const` table        :23088
-//! sqlite3_errstr            -> aMsg[], a `static const char* const`
-//!                              table of literals                       :189031
+//! sqlite3_sourceid          -> the SQLITE_SOURCE_ID literal            :269647
+//! sqlite3_compileoption_get -> sqlite3azCompileOpt[N] (:23088), a
+//!                              `static const char * const` table,
+//!                              reached through sqlite3CompileOptions   :192604
+//! sqlite3_errstr            -> sqlite3ErrStr's aMsg[], a
+//!                              `static const char* const` table of
+//!                              literals, and a literal for the rest    :189031
 //! ```
+//!
+//! TWO OF THOSE FOUR LINES WERE WRONG, and the rule they serve is what
+//! caught it: `sqlite3_sourceid`'s body at :187477 is COMMENTED OUT —
+//! the live one is at the file's tail — and :23088 is the compile-option
+//! TABLE rather than the body that reads it. Both conclusions held; both
+//! citations pointed somewhere else. A line number is the evidence here,
+//! so a wrong one is a wrong claim, and "read the body and quote the
+//! line" means the line the body is on.
 //!
 //! A FIFTH IS NOT ADDED BY ANALOGY. It is added by reading the body and
 //! quoting the line, and the adversarial suite measures that the text
@@ -44,11 +54,11 @@
 //! coincide; declared `string`, a NULL answer reaches `.length` and
 //! the process dies in `strlen`.
 //!
-//! A C `int` IS 32 BITS AND AVRA'S IS 64, so a NEGATIVE C answer
-//! reads here as a large positive one — the wall carries the C
-//! truth, which is 32 bits wide. Result codes, counts and 0/1
-//! verdicts are unharmed; the comparisons are not, and each says so
-//! at its own declaration. The face asks those only for equality.
+//! A C `int` IS 32 BITS AND AVRA'S IS 64, ON BOTH SIDES OF THE ARROW —
+//! the wall carries the C truth at every seat and every answer, so a
+//! comparison is a comparison and a 64-bit argument cannot be handed to
+//! a body that reads 32. `make externs` holds both halves against the
+//! vendored body; see `connection.av` for the half that arrived late.
 
 /// The library's version — "3.53.4". Never NULL.
 export extern fn sqlite3_libversion() -> string
@@ -65,7 +75,7 @@ export extern fn sqlite3_sourceid() -> string
 export extern fn sqlite3_compileoption_used(name: string) -> i32
 
 /// The Nth compile option, and NULL once N is past the last.
-export extern fn sqlite3_compileoption_get(n: int) -> string?
+export extern fn sqlite3_compileoption_get(n: i32) -> string?
 
 /// Zero only when the mutexing code was omitted.
 export extern fn sqlite3_threadsafe() -> i32
@@ -82,17 +92,17 @@ export extern fn sqlite3_shutdown() -> i32
 export extern fn sqlite3_complete(sql: string) -> i32
 
 /// English text for a primary or extended result code. Never NULL.
-export extern fn sqlite3_errstr(code: int) -> string
+export extern fn sqlite3_errstr(code: i32) -> string
 
 /// How many keywords this build recognises.
 export extern fn sqlite3_keyword_count() -> i32
 
 /// Whether the first `n` bytes of the word are a keyword.
-export extern fn sqlite3_keyword_check(word: string, n: int) -> i32
+export extern fn sqlite3_keyword_check(word: string, n: i32) -> i32
 
 /// The LIKE operator's answer, with an escape character's code point
 /// (zero for none). Zero when the pattern matches.
-export extern fn sqlite3_strlike(pattern: string, text: string, escape: int) -> i32
+export extern fn sqlite3_strlike(pattern: string, text: string, escape: u32) -> i32
 
 /// The GLOB operator's answer. Zero when the pattern matches.
 export extern fn sqlite3_strglob(pattern: string, text: string) -> i32
@@ -104,14 +114,14 @@ export extern fn sqlite3_strglob(pattern: string, text: string) -> i32
 export extern fn sqlite3_stricmp(a: string, b: string) -> i32
 
 /// The same over the first `n` bytes, and likewise a real comparison.
-export extern fn sqlite3_strnicmp(a: string, b: string, n: int) -> i32
+export extern fn sqlite3_strnicmp(a: string, b: string, n: i32) -> i32
 
 /// Bytes of memory the library currently holds. Zero under
 /// SQLITE_DEFAULT_MEMSTATUS=0 unless a connection turned it on.
 export extern fn sqlite3_memory_used() -> int
 
 /// The high-water mark, reset when asked.
-export extern fn sqlite3_memory_highwater(reset: int) -> int
+export extern fn sqlite3_memory_highwater(reset: i32) -> int
 
 /// Memory the library allocated, given back. A NULL is a no-op. This
 /// is what an OWNED answer from the wall goes back through —
@@ -119,7 +129,7 @@ export extern fn sqlite3_memory_highwater(reset: int) -> int
 export extern fn sqlite3_free(p: ptr?)
 
 /// Memory handed back to the operating system, in bytes.
-export extern fn sqlite3_release_memory(bytes: int) -> i32
+export extern fn sqlite3_release_memory(bytes: i32) -> i32
 
 /// The soft heap limit in bytes; answers the previous limit.
 export extern fn sqlite3_soft_heap_limit64(bytes: int) -> int
@@ -128,10 +138,10 @@ export extern fn sqlite3_soft_heap_limit64(bytes: int) -> int
 export extern fn sqlite3_hard_heap_limit64(bytes: int) -> int
 
 /// Milliseconds slept, which the OS may shorten.
-export extern fn sqlite3_sleep(ms: int) -> i32
+export extern fn sqlite3_sleep(ms: i32) -> i32
 
 /// Shared-cache mode, deprecated by SQLite and kept bindable.
-export extern fn sqlite3_enable_shared_cache(on: int) -> i32
+export extern fn sqlite3_enable_shared_cache(on: i32) -> i32
 
 // NOT DECLARED, and the omission is a decision rather than an
 // oversight: `sqlite3_global_recover`, `sqlite3_soft_heap_limit` and

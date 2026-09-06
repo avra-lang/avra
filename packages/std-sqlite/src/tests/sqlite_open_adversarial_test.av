@@ -129,6 +129,14 @@ spec "std/sqlite open adversarial" {
         then "a URI with a real path is accepted" { door_uri("file:/tmp/a.db") == "ACCEPTED" }
         then "a URI with a path and a mode is accepted" { door_uri("file:/tmp/a.db?mode=ro") == "ACCEPTED" }
         then "and with URIs off, `file:` is still refused as a URI" { door("file:") == "sqlite.uri_path" }
+        // The three-slash form is a DIFFERENT parse — an empty authority
+        // followed by an absolute path — so it is asked separately from
+        // the one-slash one rather than assumed to travel with it.
+        then "a three-slash URI naming a file is accepted" { door_uri("file:///tmp/a.db") == "ACCEPTED" }
+        // And the two spellings that never reach the URI field at all,
+        // because `path_fault` judges them before it is consulted.
+        then "the empty path is refused under uri too" { door_uri("") == "sqlite.empty_path" }
+        then "`:memory:` is refused under uri too" { door_uri(":memory:") == "sqlite.empty_path" }
     }
 
     given "flags_of over all 48 configurations" {
