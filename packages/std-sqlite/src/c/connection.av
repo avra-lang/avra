@@ -1,0 +1,127 @@
+//! THE WALL, connection family: the `sqlite3_*` entry points that take a
+//! connection. Every one is declared by its C name and exported, so a
+//! caller who needs the wall reaches it with the value they hold.
+//!
+//! The signatures are checked BY HAND against `vendor/sqlite3.h`:
+//! Avra does not read C headers, so the `extern fn` line is the
+//! contract and the vendored header is what keeps it honest.
+//!
+//! `sqlite3_open_v2` IS NOT HERE. Its handle comes back through a
+//! `sqlite3**`, and an `extern fn` refuses a `mut` seat — `F0100:
+//! expected ')'`, pointing at the `mut`. The door to this whole family
+//! is the one declaration that cannot be written; `src/c/CENSUS.md` §8
+//! counts the other 58 waiting behind it.
+//!
+//! A BORROWED C POINTER IS DECLARED `ptr`, NEVER `string`. The runtime
+//! refuses a pointer without its tag, so retain and release no-op on
+//! foreign text and `AVRA_RC_GUARD` is silent by construction — a
+//! correct borrow and a use-after-free print identically clean. Only
+//! IMMORTAL, NUL-terminated text crosses as `string` (`library.av`'s
+//! version words); everything whose buffer has a lifetime crosses as
+//! `ptr` and the face copies at the boundary.
+//!
+//! A C `int` IS 32 BITS AND AVRA'S IS 64, so a NEGATIVE C answer reads
+//! here as a large positive one. Each such answer says so at its own
+//! declaration; the face asks those for equality alone until the extern
+//! wall carries sized types.
+
+/// The connection closed. Answers SQLITE_BUSY and leaves the file
+/// locked when a statement is still outstanding — `close_v2` is what
+/// the driver calls.
+export extern fn sqlite3_close(db: ptr) -> int
+
+/// The connection closed, zombie form: an outstanding statement or blob
+/// handle marks the connection and it deallocates when the last derived
+/// object goes. This is the drop.
+export extern fn sqlite3_close_v2(db: ptr) -> int
+
+/// English text for the most recent failure on this connection. NEVER
+/// NULL — and the buffer is OVERWRITTEN by the next call on the same
+/// connection, so it is `ptr` and the caller copies before doing
+/// anything else with the connection.
+export extern fn sqlite3_errmsg(db: ptr) -> ptr
+
+/// The primary result code of the most recent failure.
+export extern fn sqlite3_errcode(db: ptr) -> int
+
+/// The extended result code. Its low eight bits are the primary code.
+export extern fn sqlite3_extended_errcode(db: ptr) -> int
+
+/// NARROW AND NEGATIVE: answers -1 — read here as 4294967295 — when the
+/// error names no token. A byte offset into the SQL otherwise. Compare
+/// for equality with the widened -1 until sized types land.
+export extern fn sqlite3_error_offset(db: ptr) -> int
+
+/// The host's errno behind the most recent I/O failure.
+export extern fn sqlite3_system_errno(db: ptr) -> int
+
+/// Extended result codes on or off for this connection. The driver
+/// leaves them ON: a caller who cannot tell UNIQUE from FOREIGNKEY
+/// cannot be given a cause.
+export extern fn sqlite3_extended_result_codes(db: ptr, onoff: int) -> int
+
+/// How long a locked connection waits before answering SQLITE_BUSY.
+export extern fn sqlite3_busy_timeout(db: ptr, ms: int) -> int
+
+/// The same, with a flag word naming which locks block.
+export extern fn sqlite3_setlk_timeout(db: ptr, ms: int, flags: int) -> int
+
+/// Any statement running on this connection is asked to stop. Safe to
+/// call from another thread.
+export extern fn sqlite3_interrupt(db: ptr)
+
+/// Whether an interrupt is currently in effect.
+export extern fn sqlite3_is_interrupted(db: ptr) -> int
+
+/// Zero while a transaction is open.
+export extern fn sqlite3_get_autocommit(db: ptr) -> int
+
+/// NARROW AND NEGATIVE: 1 read-only, 0 read/write, and -1 — read here
+/// as 4294967295 — when the name is not a database on this connection.
+export extern fn sqlite3_db_readonly(db: ptr, name: string) -> int
+
+/// The file a schema is stored in. Empty text for a temporary database,
+/// and NULL when the name is not a schema. Borrowed until the schema is
+/// detached or the connection closes.
+export extern fn sqlite3_db_filename(db: ptr, name: string) -> ptr?
+
+/// The Nth schema's name — "main", "temp", then the attached ones.
+/// NULL past the last. Borrowed.
+export extern fn sqlite3_db_name(db: ptr, n: int) -> ptr?
+
+/// NARROW AND NEGATIVE: 0 none, 1 read, 2 write, and -1 — read here as
+/// 4294967295 — when the name is not a valid schema.
+export extern fn sqlite3_txn_state(db: ptr, schema: string) -> int
+
+/// A per-connection limit read or set; answers the PREVIOUS value.
+/// NARROW AND NEGATIVE: answers -1 for an unknown id, and a negative
+/// `new_value` queries without setting.
+export extern fn sqlite3_limit(db: ptr, id: int, new_value: int) -> int
+
+/// The rowid of the most recent successful INSERT on this connection.
+/// Exact: the C answer is 64 bits wide.
+export extern fn sqlite3_last_insert_rowid(db: ptr) -> int
+
+/// That rowid set by hand, which a virtual table's xUpdate wants.
+export extern fn sqlite3_set_last_insert_rowid(db: ptr, rowid: int)
+
+/// Rows the most recent statement changed DIRECTLY — trigger, foreign
+/// key and REPLACE side effects are not counted. Exact at 64 bits.
+export extern fn sqlite3_changes64(db: ptr) -> int
+
+/// Rows changed since the connection opened. Exact at 64 bits.
+export extern fn sqlite3_total_changes64(db: ptr) -> int
+
+/// NARROW: the 32-bit twin of `sqlite3_changes64`, kept bindable
+/// because the wall is total. Prefer the 64-bit one.
+export extern fn sqlite3_changes(db: ptr) -> int
+
+/// NARROW: the 32-bit twin of `sqlite3_total_changes64`, and it WRAPS
+/// past 2147483647 rather than saturating. Prefer the 64-bit one.
+export extern fn sqlite3_total_changes(db: ptr) -> int
+
+/// Cache memory handed back, in bytes.
+export extern fn sqlite3_db_release_memory(db: ptr) -> int
+
+/// Dirty pages flushed without committing.
+export extern fn sqlite3_db_cacheflush(db: ptr) -> int

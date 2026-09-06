@@ -1,0 +1,65 @@
+//! THE WALL, statement family: preparing's answer, stepping it, and
+//! asking a prepared statement about itself.
+//!
+//! `sqlite3_prepare_v3` IS NOT HERE, for the same reason `open_v2` is
+//! not in `connection.av`: the statement comes back through a
+//! `sqlite3_stmt**` and a second `const char**` tail, and an `extern fn`
+//! refuses a `mut` seat. Everything below takes a statement someone
+//! else made, which today is nobody.
+//!
+//! A BORROWED C POINTER IS DECLARED `ptr`, NEVER `string` — the wall's
+//! rule, stated in `connection.av`.
+
+/// The statement advanced one step: 100 a row is standing, 101 done,
+/// anything else a result code. Since 3.6.23.1 it AUTO-RESETS rather
+/// than answering SQLITE_MISUSE, so the code is the real error.
+export extern fn sqlite3_step(stmt: ptr) -> int
+
+/// The statement destroyed. Answers the code of the most recent step,
+/// so a failing statement reports its failure HERE as well.
+export extern fn sqlite3_finalize(stmt: ptr) -> int
+
+/// The statement rewound, bindings kept. Answers the code of the most
+/// recent step, not of the reset.
+export extern fn sqlite3_reset(stmt: ptr) -> int
+
+/// Every bound parameter set back to NULL.
+export extern fn sqlite3_clear_bindings(stmt: ptr) -> int
+
+/// Whether the statement is mid-run — stepped at least once and not
+/// yet done or reset.
+export extern fn sqlite3_stmt_busy(stmt: ptr) -> int
+
+/// Whether the statement writes nothing. A BEGIN or a ROLLBACK answers
+/// true here, which is not the question a caller usually means.
+export extern fn sqlite3_stmt_readonly(stmt: ptr) -> int
+
+/// 1 for EXPLAIN, 2 for EXPLAIN QUERY PLAN, 0 for an ordinary
+/// statement.
+export extern fn sqlite3_stmt_isexplain(stmt: ptr) -> int
+
+/// A prepared statement turned into its own EXPLAIN, or back.
+export extern fn sqlite3_stmt_explain(stmt: ptr, mode: int) -> int
+
+/// The SQL this statement was prepared from. Borrowed until the
+/// statement is finalized.
+export extern fn sqlite3_sql(stmt: ptr) -> ptr?
+
+/// The SQL with its bound parameters written in. OWNED by the caller —
+/// it must go back through `sqlite3_free` — and NULL under memory
+/// pressure or when SQLITE_OMIT_TRACE was set.
+export extern fn sqlite3_expanded_sql(stmt: ptr) -> ptr?
+
+/// The statement's shape without its literals, which is the key a
+/// statement cache and a slow-query log both want. Borrowed.
+export extern fn sqlite3_normalized_sql(stmt: ptr) -> ptr?
+
+/// The connection this statement belongs to. Never NULL.
+export extern fn sqlite3_db_handle(stmt: ptr) -> ptr
+
+/// The next statement on a connection, or NULL past the last — the
+/// walk that finds what an unclosed connection is still holding.
+export extern fn sqlite3_next_stmt(db: ptr, stmt: ptr?) -> ptr?
+
+/// One of the statement's counters, optionally reset.
+export extern fn sqlite3_stmt_status(stmt: ptr, op: int, reset: int) -> int

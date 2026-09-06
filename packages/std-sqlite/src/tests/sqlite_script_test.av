@@ -1,0 +1,90 @@
+// Dividing a script into statements by asking the PARSER, and the five
+// ways a `;` scan gets it wrong. Every case below was first MEASURED
+// against `sqlite3_complete` in the vendored library; the values here
+// are what it answered, not what the documentation promises.
+use @std.sqlite.script.{statements}
+use @std.sqlite.error.{SqlError}
+use @std.text.{from_codepoint}
+
+/// The statements a script divides into, or the kind it was refused
+/// with — one projection, so a `then` reads as one sentence.
+fn parts(script: string) -> List<string> { statements(script) catch [] }
+fn count(script: string) -> int { parts(script).length }
+fn first(script: string) -> string { parts(script).first() ?? "" }
+fn last(script: string) -> string { parts(script).last() ?? "" }
+
+fn split_kind(script: string) -> string {
+    match statements(script) {
+        .Ok(_) -> "",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn a_nul() -> string { from_codepoint(0) }
+
+spec "std/sqlite script" {
+
+    given "the ordinary shapes" {
+        then "one statement with its terminator" { count("select 1;") == 1 }
+        then "and it keeps the terminator" { first("select 1;") == "select 1;" }
+        then "one statement without one" { count("select 1") == 1 }
+        then "two statements" { count("select 1; select 2;") == 2 }
+        then "the second is the second" { last("select 1; select 2;").contains("select 2") }
+        then "three statements" { count("select 1; select 2; select 3;") == 3 }
+        then "a trailing newline is not a statement" { count("select 1;\n") == 1 }
+        then "trailing blanks are not a statement" { count("select 1;   \n\t") == 1 }
+    }
+
+    given "the five ways a `;` scan breaks" {
+        // Each of these answers INCOMPLETE to the parser, so a split on
+        // the character would cut a statement in half.
+        then "a semicolon inside a string literal" { count("select 'a;b';") == 1 }
+        then "and the statement survives whole" { first("select 'a;b';") == "select 'a;b';" }
+        then "a semicolon inside a quoted identifier" { count("select \"a;b\";") == 1 }
+        then "a semicolon inside a bracketed identifier" { count("select [a;b];") == 1 }
+        then "a semicolon inside a block comment" { count("select /* a;b */ 1;") == 1 }
+        // THE ONE THAT BITES REAL MIGRATIONS: a trigger body holds its
+        // own statements, each terminated, before its own END.
+        then "a trigger body's interior semicolons" { count("create trigger t after insert on x begin update y set a=1; end;") == 1 }
+        then "and the trigger arrives whole" { first("create trigger t after insert on x begin update y set a=1; end;").contains("end;") }
+        then "a trigger beside another statement" { count("create trigger t after insert on x begin update y set a=1; end; select 1;") == 2 }
+    }
+
+    given "comments, which a script legitimately holds" {
+        then "a leading line comment rides with its statement" { count("-- migration 004\nselect 1;") == 1 }
+        then "a trailing line comment is its own segment" { count("select 1;\n-- done") == 2 }
+        then "a block comment alone is a segment" { count("/* x */") == 1 }
+        then "comment-only text is one segment, not a refusal" { count("-- nothing at all") == 1 }
+        // The splitter takes NO view on whether a segment holds a
+        // statement — comment-only text prepares to a NULL statement
+        // with SQLITE_OK, and that is `prepare`'s answer to give.
+        then "blanks alone are no segments at all" { count("   \n\t ") == 0 }
+        then "empty text is no segments" { count("") == 0 }
+    }
+
+    given "text that ends inside something unclosed" {
+        // All four measured: appending "\n;" leaves each INCOMPLETE,
+        // which is what separates them from a statement merely missing
+        // its terminator.
+        then "an unterminated string is refused" { split_kind("select 'a") == "sqlite.syntax" }
+        then "an unterminated quoted identifier is refused" { split_kind("select \"a") == "sqlite.syntax" }
+        then "an unterminated bracket is refused" { split_kind("select [a") == "sqlite.syntax" }
+        then "an unterminated block comment is refused" { split_kind("/* x") == "sqlite.syntax" }
+        then "the refusal quotes what was left open" { (statements("select 'a") catch []).length == 0 }
+        // A complete statement followed by rubbish still refuses, and
+        // the good statement is not silently kept.
+        then "a good statement then an unclosed one refuses the whole" { split_kind("select 1; select 'a") == "sqlite.syntax" }
+    }
+
+    given "a NUL, which C cannot see past" {
+        // The same law as the path door: a guard and the thing it
+        // guards must read the same bytes. `sqlite3_complete` takes a
+        // `const char*` with no length, so it would judge the prefix.
+        // The cause is its OWN arm: the value is not merely wrong, it
+        // means something different on the two sides of the boundary.
+        then "a script holding a NUL is refused whole" { split_kind("select 1;${a_nul()} select 2;") == "sqlite.holds_nul" }
+        then "a NUL at the start is refused" { split_kind("${a_nul()}select 1;") == "sqlite.holds_nul" }
+        then "a NUL at the end is refused" { split_kind("select 1;${a_nul()}") == "sqlite.holds_nul" }
+        then "and Avra saw every byte all along" { "select 1;${a_nul()} select 2;".length == 20 }
+    }
+}

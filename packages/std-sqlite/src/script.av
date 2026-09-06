@@ -1,0 +1,86 @@
+//! A SCRIPT DIVIDED INTO STATEMENTS, by asking the PARSER where each
+//! one ends.
+//!
+//! SPLITTING ON `;` IS A TEXT SCAN, and it is wrong in five ways this
+//! driver would meet in its first real migration file — a semicolon
+//! inside `'a;b'`, inside a `"quoted identifier"`, inside a
+//! `[bracketed]` one, inside a `/* block comment */`, and inside a
+//! trigger body's `BEGIN … END`. Each was measured; each answers
+//! INCOMPLETE, so each would break a naive split.
+//!
+//! `sqlite3_complete` is how the parser is asked instead, and it needs
+//! no connection. The `;` scan below is a CANDIDATE GENERATOR, never a
+//! judge: a false candidate — a semicolon inside a literal — is
+//! rejected because the parser says the text is not complete yet, and
+//! accumulation simply continues. A candidate cannot be MISSED, because
+//! a statement other than the last always ends at a semicolon. So this
+//! is not the blocklist the driver's own rule refuses; it is a proposal
+//! confirmed by the parser, which is the mechanism that rule demands.
+//!
+//! WHAT IT DOES NOT DECIDE: whether a segment HOLDS a statement.
+//! Comment-only text prepares to a NULL statement with `SQLITE_OK`, and
+//! that is `prepare`'s answer to give — a script verb skips such a
+//! segment, a single-statement verb refuses it, and the splitter takes
+//! no view. One question, answered where it can be.
+use boundary.{has_nul, is_blank}
+use error.{Cause, SqlError, refused}
+use c.{sqlite3_complete}
+
+/// The script's statements, in order. A segment may still hold no
+/// statement — that is `prepare`'s answer, not this one's.
+export fn statements(script: string) -> Result<List<string>, SqlError> {
+    if has_nul(script) { fail script_holds_a_nul() }
+    mut out: List<string> = []
+    mut from = 0
+    mut i = 0
+    while i < script.length {
+        if script.char_code(i) == semicolon() && completes(script.substring(from, i + 1)) {
+            out.push(script.substring(from, i + 1))
+            from = i + 1
+        }
+        i = i + 1
+    }
+    out.concat(tail_of(script, from)?)
+}
+
+/// What is left after the last complete statement: nothing, one more
+/// statement, or a refusal.
+///
+/// THE TAIL IS PROBED, not guessed. Appending `"\n;"` ends any line
+/// comment and terminates a statement missing its semicolon, so it
+/// completes for every BENIGN tail — a statement without its `;`,
+/// comments, blanks — and stays INCOMPLETE for every genuinely
+/// unterminated one: an open `'string`, an open `"identifier`, an open
+/// `[bracket`, an open `/* comment`. All eight measured.
+fn tail_of(script: string, from: int) -> Result<List<string>, SqlError> {
+    let rest = script.substring(from, script.length)
+    if is_blank(rest) { return [] }
+    if !completes("${rest}\n;") { fail unterminated(rest) }
+    [rest]
+}
+
+/// Whether the text ends in one or more COMPLETE statements.
+///
+/// `== 1` IS THE LAW, not a style: `sqlite3_complete` answers 1, 0, or
+/// SQLITE_NOMEM (7), so `!= 0` would read an allocation failure as a
+/// finished statement. Spelled once, here, and the face's `is_complete`
+/// calls it rather than repeating the comparison.
+export fn completes(sql: string) -> bool { sqlite3_complete(sql) == 1 }
+
+fn semicolon() -> int { 59 }
+
+// ── The voices ──────────────────────────────────────────────────
+
+/// A script holding a NUL is refused whole, because C would read only
+/// the bytes before it and the statements found would not be the
+/// statements written.
+fn script_holds_a_nul() -> SqlError {
+    refused(Cause.HoldsNul,
+        "a script holds a NUL, and C reads only the bytes before it — the statements SQLite would see are not the ones you wrote")
+}
+
+fn unterminated(rest: string) -> SqlError {
+    refused(Cause.Syntax,
+        "the script ends inside an unclosed string, identifier or comment: `${rest}`")
+}
+
