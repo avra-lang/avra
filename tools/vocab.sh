@@ -45,4 +45,38 @@ done <<EOF
 $CONSUMERS
 EOF
 
-echo "vocab: Ins has $(echo "$CONSUMERS" | wc -l | tr -d ' ') exhaustive consumers; a new variant breaks them all"
+# THE SECOND REGISTRY. `RtKind` is the extern seam's width vocabulary,
+# and it has consumers exactly as `Ins` does — but it stayed three
+# variants for so long that nothing guarded them, and two of its
+# consumers had become `is .I64` BOOLEAN tests rather than matches. An
+# `is` test is a partial handler the compiler cannot see: grow the
+# enum and it silently answers "no" for every new kind, which at these
+# two sites means an argument crosses the boundary UNCONVERTED. So a
+# catch-all is refused here AND so is `is .` — both are ways of not
+# answering for a variant that does not exist yet.
+KIND_CONSUMERS="packages/std-avrac/src/language/llvm.av	ll_rt_kind	the LLVM type it becomes
+packages/std-avrac/src/language/llvm.av	rt_arg	how an argument crosses the boundary
+packages/std-avrac/src/language/llvm.av	answers_word	how an answer crosses back"
+
+while IFS='	' read -r file fn what; do
+  if [ ! -f "$file" ]; then
+    echo "vocab: $file is gone — the RtKind consumer registry is stale"
+    exit 1
+  fi
+  hit=$(awk -v fn="$fn" '
+    $0 ~ "^ *(export )?fn " fn "\\(" { inside = 1 }
+    inside && (/_ ->/ || / is \./) { print FNR ": " $0 }
+    inside && /^ *}$/ && inside { inside = 0 }
+  ' "$file")
+  if [ -n "$hit" ]; then
+    echo "vocab: ${file}:${fn} decides ${what} and does not answer exhaustively:"
+    echo "$hit" | sed 's/^/    /'
+    echo "  A catch-all or an \`is .Variant\` test here lets the NEXT RtKind"
+    echo "  cross the extern boundary unconverted. Spell the arms."
+    exit 1
+  fi
+done <<EOF
+$KIND_CONSUMERS
+EOF
+
+echo "vocab: Ins has $(echo "$CONSUMERS" | wc -l | tr -d ' ') exhaustive consumers and RtKind $(echo "$KIND_CONSUMERS" | wc -l | tr -d ' '); a new variant breaks them all"

@@ -416,6 +416,28 @@ the compiler checking itself 28.8s.
           closes our half of the width class only. A binding to
           someone else's library is unprotected until the sized types
           land — do not write declarations against the keeper.
+  - [x] THE EXTERN SEAM ANSWERS EXHAUSTIVELY (2026-09-05, found by
+        re-checking a claim lane A had already made confidently). I
+        told the sqlite lane that `RtKind` has ONE exhaustive consumer
+        (`ll_rt_kind`) so the compiler would demand the arm for a new
+        width. TRUE AND INCOMPLETE: two more consumers were `is .I64`
+        BOOLEAN tests, which the compiler cannot see as partial.
+        `rt_arg` read "not I64 means pass UNCONVERTED" — right for
+        three variants, wrong for four, and every conversion that
+        matters (`ptr_to_int`, the bool `zext`) lives inside the
+        branch it skips, so a new `i32` seat would take an i64
+        register untruncated. `answers_word` is the same shape on the
+        way back. Both are exhaustive matches now, so a new kind must
+        state how it crosses the boundary or the build fails.
+        THE KEEPER GREW A SECOND REGISTRY: `make vocab` guarded `Ins`'s
+        eight consumers and nothing guarded `RtKind`'s, precisely
+        because `RtKind` stayed three variants and never grew. It now
+        names RtKind's three and refuses BOTH a catch-all AND an
+        `is .Variant` test there — an `is` is a partial handler the
+        compiler cannot flag. Proved by restoring the boolean test and
+        watching the gate name the fn. THE GENERAL RULE: for a
+        REGISTRY enum, `is .Variant` is a catch-all wearing different
+        clothes; for a PROJECTION enum it stays the right idiom.
   - [x] THE WELL IS DRY FOR LANE A (re-profiled 2026-09-05 at the
         day's end, main 9e8916d, self-check 8.2s / gate 20.2s). The
         remaining cost is three things and lane A owns none of the

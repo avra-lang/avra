@@ -395,10 +395,16 @@ impl Emit {
 
 
     /// Whether the registry declares an I64 answer for this callee.
+    /// A MATCH, never `is .I64`: this decides what crosses the extern
+    /// boundary, so a new RtKind must state its answer here or the
+    /// build fails — an `is` test would silently answer "not a word".
     fn answers_word(callee: string) -> bool {
         let sig: RtSig? = self.callee_sig(callee)
         if sig == null { return false }
-        sig!.ret is .I64
+        match sig!.ret {
+            .I64 -> true,
+            .Ptr or .Void -> false,
+        }
     }
 
 
@@ -428,13 +434,23 @@ impl Emit {
 
 
     /// A registry I64 param is a SLOT — every value category rides it,
-    /// so pointer-riding registers cast down and bools widen in.
+    /// so pointer-riding registers cast down and bools widen in. A
+    /// MATCH, never `is .I64`: this decides what crosses the extern
+    /// boundary, and an `is` test would pass a NEW kind's argument
+    /// UNCONVERTED — the conversions all live in the branch it skips.
     fn rt_arg(callee: string, j: int, r: Reg) -> ptr {
         let v = self.vals[r.index]
         let sig: RtSig? = self.callee_sig(callee)
         if sig == null { return v }
         if j >= sig!.params.length { return v }
-        if !(sig!.params[j] is .I64) { return v }
+        match sig!.params[j] {
+            .I64 -> self.worded(r, v),
+            .Ptr or .Void -> v,
+        }
+    }
+
+    /// A value cast into the I64 slot every category rides.
+    fn worded(r: Reg, v: ptr) -> ptr {
         let i64t = avra_llvm_int64_type(self.lc)
         if self.types.rides_pointer(self.tys[r.index]) {
             return avra_llvm_build_ptr_to_int(self.b, v, i64t, "slot")
