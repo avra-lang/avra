@@ -8,7 +8,7 @@
 // stands, one as a refusal that did not exist.
 use @std.text.{from_codepoint}
 use @std.sqlite.open.{Db, memory, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, reset, finalize, run, bind_int, bind_text, holes, width, standing, class_at, int_at}
+use @std.sqlite.stmt.{Stmt, prepare, step, reset, finalize, run, bind_int, bind_text, slots, width, standing, class_at, int_at}
 use @std.sqlite.error.{SqlError, Cause, Storage}
 use @std.sqlite.{memory_used}
 use @std.sqlite.c.{sqlite3_column_type, sqlite3_column_blob, sqlite3_column_bytes,
@@ -162,7 +162,7 @@ fn dead(db: Db) -> string {
 fn used_after(s: Stmt) -> string {
     mut held = s
     let rc = finalize(held)
-    "finalize=${rc} step=${sk(step(held))} width=${width(held)} standing=${standing(held)} holes=${holes(held)}"
+    "finalize=${rc} step=${sk(step(held))} width=${width(held)} standing=${standing(held)} slots=${slots(held)}"
 }
 
 /// RESET REWINDS AND KEEPS THE BINDINGS.
@@ -388,7 +388,7 @@ spec "std/sqlite statement adversarial" {
         // that really is empty. That asymmetry is recorded, not hidden.
         then "finalize itself answers zero" { after_finalize().starts_with("finalize=0") }
         then "a step on a finalized statement is refused by name" { after_finalize().contains("step=sqlite.finalized") }
-        then "and the shape verbs answer a silent zero" { after_finalize().ends_with("width=0 standing=0 holes=0") }
+        then "and the shape verbs answer a silent zero" { after_finalize().ends_with("width=0 standing=0 slots=0") }
     }
 
     given "reset rewinds and KEEPS the bindings" {

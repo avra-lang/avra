@@ -162,12 +162,12 @@ fn drained(db: Db, mut s: Stmt) -> Result<int, SqlError> {
 // after DONE, measured). Both wait on the same flag. Reset before you
 // rebind.
 
-/// How many parameters the statement has.
-export fn holes(s: Stmt) -> int { sqlite3_bind_parameter_count(s.raw) }
+/// How many parameter slots the statement has.
+export fn slots(s: Stmt) -> int { sqlite3_bind_parameter_count(s.raw) }
 
 /// An integer bound into the Nth hole, counting from 1.
 export fn bind_int(s: Stmt, index: int, value: int) -> Result<int, SqlError> {
-    let i = in_holes(s, index)?
+    let i = in_slots(s, index)?
     judged(sqlite3_bind_int64(s.raw, i, value))
 }
 
@@ -175,7 +175,7 @@ export fn bind_int(s: Stmt, index: int, value: int) -> Result<int, SqlError> {
 /// the absence of a bind, and a hole never bound is also NULL, which is
 /// why `clear_bindings` and this verb are different things.
 export fn bind_null(s: Stmt, index: int) -> Result<int, SqlError> {
-    let i = in_holes(s, index)?
+    let i = in_slots(s, index)?
     judged(sqlite3_bind_null(s.raw, i))
 }
 
@@ -186,14 +186,14 @@ export fn bind_null(s: Stmt, index: int) -> Result<int, SqlError> {
 /// be bound short and the database would hold a prefix of what the
 /// caller wrote, silently.
 export fn bind_text(s: Stmt, index: int, value: string) -> Result<int, SqlError> {
-    let i = in_holes(s, index)?
+    let i = in_slots(s, index)?
     judged(sqlite3_bind_text(s.raw, i, value, value.length, transient()))
 }
 
 /// Bytes bound into the Nth hole, COPIED. A zero-length blob is a real
 /// value and stays distinct from NULL.
 export fn bind_blob(s: Stmt, index: int, value: string) -> Result<int, SqlError> {
-    let i = in_holes(s, index)?
+    let i = in_slots(s, index)?
     judged(sqlite3_bind_blob(s.raw, i, value, value.length, transient()))
 }
 
@@ -206,21 +206,21 @@ export fn bind_blob(s: Stmt, index: int, value: string) -> Result<int, SqlError>
 /// refcounter is blind because a foreign pointer carries no header. The
 /// verb is long and says so on purpose. `bind_text` is what you want.
 export fn bind_text_unsafely_borrowed(s: Stmt, index: int, value: string) -> Result<int, SqlError> {
-    let i = in_holes(s, index)?
+    let i = in_slots(s, index)?
     judged(sqlite3_bind_text(s.raw, i, value, value.length, static_bytes()))
 }
 
 /// An index inside the statement's holes, or the refusal that names the
 /// off-by-one before SQLite answers a bare SQLITE_RANGE.
-fn in_holes(s: Stmt, index: int) -> Result<int, SqlError> {
-    let n = holes(s)
-    if index < 1 || index > n { fail refused(Cause.OutOfRow(index, n), hole_words(index, n)) }
+fn in_slots(s: Stmt, index: int) -> Result<int, SqlError> {
+    let n = slots(s)
+    if index < 1 || index > n { fail refused(Cause.OutOfSlots(index, n), slot_words(index, n)) }
     index
 }
 
-fn hole_words(index: int, n: int) -> string {
-    if n == 0 { return "parameter ${index} was bound into a statement that has no parameters" }
-    "parameter ${index} is outside the ${n} this statement has — they count from 1, where columns count from 0"
+fn slot_words(index: int, n: int) -> string {
+    if n == 0 { return "parameter ${index} was bound into a statement that has no parameter slots" }
+    "parameter ${index} is outside the ${n} slot(s) this statement has — parameters count from 1, where columns count from 0"
 }
 
 fn judged(rc: int) -> Result<int, SqlError> {
