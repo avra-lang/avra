@@ -476,6 +476,14 @@ registry is the idiom engine's spec, written by dogfooding.
   rule (params, type params and args, payload declarations, lambda
   params, fn types, literals, `use` lists). A list that refuses the
   comma is a grammar defect, not a style.
+- Grammar authoring: A TWO-CHARACTER OPERATOR ENDING IN `>` CANNOT BE
+  MUNCHED. A type argument closes with `>`, so `Table<List<string>>`
+  ends in the same two characters `>>` does, and one token there
+  means the type NEVER CLOSES — 97 sites, and the symptom is a module
+  that stops exporting. `<<` is safe, nothing opening two argument
+  lists adjacently; `>>` is TWO tokens the grammar joins, both
+  branches capturing ONE token into the same label so the run stays
+  aligned. The next `>=`-shaped operator faces the same question.
 - Grammar authoring: a greedy star cannot be told to stop early. An
   arm that could also START the star's required tail (`_` is a
   NAME; a keyword is a NAME) must be an ordered choice INSIDE the
@@ -745,15 +753,6 @@ Syntax the grammar lacks:
   typed let): "expected BREAK while parsing `stmt`" — `table<Row>
   { … }` is the form.
 - The pipe `|>`: "expected BREAK while parsing `stmt`".
-- BITWISE OPERATORS, all six, and the refusals come in TWO TIERS
-  which is the useful half: `|`, `<<` and `>>` LEX and have no
-  grammar ("expected BREAK while parsing `stmt`", at the operator),
-  while `&`, `^` and `~` are not lexed at all ("unexpected
-  character"). So a flag word for a C API has no spelling but a SUM
-  — @std/sqlite's `flags_of` adds its contributors, and a sum equals
-  an OR only while every contributor is a distinct bit. The language
-  gives no way to state that, so a test is the only place the
-  invariant is said aloud.
 - A RANGE TAKES NO METHODS: `(0..n).any(it == 2)` is "expected `)`
   to close the group", AT the `..`. A range is a `for`-head and a
   comprehension's iterable, nothing more — so the idiom bar's "scan
@@ -1042,6 +1041,14 @@ Runtime facts, ours to ratify:
   bootstrap`, not `make avra`, was the way out each time. A lane
   touching the LEXER must not read the codegen wording and conclude
   the rule is not theirs.
+  AND ITS SYMPTOM ACCUSES AN INNOCENT: the `>>` collision surfaced as
+  "@std.avrac.language does not export Program" — from the file that
+  DEFINES `Program` — and the `|` collision as "@std.process does not
+  export Tool". Neither named the change that caused it. So ISOLATE
+  BEFORE REPAIRING: stash, `make bootstrap`, confirm the clean base
+  builds. That turns "main is broken" into "mine is broken" in one
+  step, and it is how a red `make witness` on a stale binary was told
+  apart from a red main the same day.
   The way out is a binary that already
   HAS the fix (main's `../avra/build/avra build packages/cli`, then
   `cp` to build/avra), then `make avra` once more to prove the fixed

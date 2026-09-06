@@ -5628,8 +5628,10 @@ additions get siblings, nothing changes shape:
   (touched once per call), the STATEMENT keeps its raw pointer (touched
   per column per row).
 
-- BITWISE OPERATORS, and a named reason if their absence is
-  deliberate (filed 2026-09-05, lane D; found by the sqlite
+- ~~BITWISE OPERATORS~~ — LANDED 2026-09-06 at 2c6b35f (the sqlite
+  campaign's bitwise lane): all six parse, type, lower and run, eval
+  == native. `flags_of` can spell `|` and the test that existed only
+  to say the invariant aloud goes with it. Filed 2026-09-05 (lane D; found by the sqlite
   campaign's driver lane, probed here). None of `|`, `&`, `^`, `~`,
   `<<`, `>>` exist, in two tiers — `|`/`<<`/`>>` lex and have no
   grammar, `&`/`^`/`~` do not lex.
