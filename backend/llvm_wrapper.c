@@ -336,6 +336,24 @@ LLVMValueRef avra_llvm_build_zext(LLVMBuilderRef b, LLVMValueRef val, LLVMTypeRe
     return LLVMBuildZExt(b, val, dest_ty, name);
 }
 
+/* The SIGNED widening. `avra_llvm_cast_to_type` REFUSES to widen at
+   all — it traps and names these two builders — because only the
+   caller knows the sign. This is the half a caller reaches for when
+   its declaration said `i32`; `build_zext` is the `u32` half.
+
+   Neither existed while `cast_to_type` zero-extended everything, and
+   that is the whole finding said from the other side: the wrapper was
+   written by someone who only ever needed to widen unsigned things,
+   and nothing recorded that until a signed width needed the twin. */
+LLVMValueRef avra_llvm_build_sext(LLVMBuilderRef b, LLVMValueRef val, LLVMTypeRef dest_ty, const char* name) {
+    return LLVMBuildSExt(b, val, dest_ty, name);
+}
+
+/* The narrowing an extern's declared width asks for at an argument. */
+LLVMValueRef avra_llvm_build_trunc(LLVMBuilderRef b, LLVMValueRef val, LLVMTypeRef dest_ty, const char* name) {
+    return LLVMBuildTrunc(b, val, dest_ty, name);
+}
+
 // Validate name: if it doesn't start with a letter or underscore, it's a
 // corrupted pointer value being used as a name. Use a deterministic fallback.
 static const char* safe_name(const char* name, const char* fallback) {

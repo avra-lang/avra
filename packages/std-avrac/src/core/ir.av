@@ -255,8 +255,27 @@ export fn hosted_symbol(i: Ins) -> string? {
     }
 }
 
-/// A slot in a runtime signature — the CallRt contract's currency.
-export enum RtKind { I64, Ptr, Void }
+/// A slot in a runtime signature — the CallRt contract's currency,
+/// and an extern seat's machine WIDTH.
+///
+/// A WIDTH IS A PROPERTY OF A SEAT, NOT OF A VALUE. Avra keeps one
+/// integer; an extern's seat may name the width its C prototype
+/// uses, and the value crossing is still an Avra `int` — the
+/// compiler narrows at the argument and widens the answer with the
+/// sign the width names. A width word is a type NOWHERE else.
+///
+/// APPEND-ONLY: a new kind goes at the END — the widths did, and
+/// `F64`/`F32` will the day a float VALUE exists to construct them.
+/// Nothing reads the ordinal today; the rule is here so that if
+/// anything ever does, it inherits an order that never moved.
+///
+/// A new variant owes FOUR consumers, all in language/llvm.av, and
+/// `make vocab` refuses a catch-all OR an `is .Variant` test at any
+/// of them: `ll_rt_kind` (the LLVM type it becomes), `rt_arg` (how
+/// an argument crosses), `answers_word` (whether an answer is a
+/// pointer's word) and `answered` (the SIGN a narrow answer widens
+/// with). An `is` test is a partial handler the compiler cannot see.
+export enum RtKind { I64, Ptr, Void, I32, U32 }
 
 /// Where the interpreter HOSTS a runtime fn — one variant per host
 /// body, so the interpreter's dispatch is exhaustive: a new row
@@ -343,4 +362,10 @@ export enum RtHost {
 /// owned twin. A row that HANDS OVER — `avra_array_pop`, which
 /// shrinks the list — must never be borrowed, and answering false
 /// is the safe side for every row nobody has thought about.
-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false }
+///
+/// `cells[j]` is the width of the CELL BEHIND an inout seat — never
+/// the seat's own ABI kind, which is always `Ptr` because an inout
+/// carries an address. `Void` means seat `j` is not an inout. Only
+/// an extern fills it: the registry's own rows take addresses of
+/// nothing.
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, cells: List<RtKind> = [] }

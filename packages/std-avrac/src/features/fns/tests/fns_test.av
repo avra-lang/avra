@@ -2,10 +2,89 @@
 // program-wide (recursion free), signatures are the law, one frame
 // per call, and the IR carries the callee-cleans ABI — retains at
 // the call, param releases at the exit, the answer kept.
+use @std.avrac.core.{RtKind, RtSig, joined}
 use @std.avrac.language.{analyze_source, avra, render_ir}
 use @std.avrac.testing.{refused_with, shown, ir_of, refused_at_run}
 
 spec "features/fns" {
+    given "a `mut` seat on an extern — the INOUT ABI" {
+        then "a `mut` host seat is declared a POINTER whatever the cell holds" {
+            extern_shape("extern fn c_open(name: string, mut out: ptr) -> i32\nextern fn c_null() -> ptr\nmut d: ptr = c_null()\nc_open(\"x\", d)", "c_open") == "ptr, ptr -> i32"
+        }
+        then "an `i64` cell crosses as a pointer to itself" {
+            extern_shape("extern fn c_count(mut out: i64) -> int\nmut n = 0\nc_count(n)", "c_count") == "ptr -> i64"
+        }
+        then "a narrow inout seat records the CELL's width beside the pointer" {
+            extern_cells("extern fn c_ck(mut lo: i32, mut hi: u32, plain: int) -> i32\nmut a = 0\nmut b = 0\nc_ck(a, b, 1)", "c_ck") == "i32, u32, void"
+        }
+        then "and its ABI seats are all pointers but the plain one" {
+            extern_shape("extern fn c_ck(mut lo: i32, mut hi: u32, plain: int) -> i32\nmut a = 0\nmut b = 0\nc_ck(a, b, 1)", "c_ck") == "ptr, ptr, i64 -> i32"
+        }
+        then "a bare `int` is refused in a `mut` seat, and only there" {
+            refused_with("extern fn c_ck(mut n: int) -> i32\nmut n = 0\nc_ck(n)", "A bare `int` is refused here alone")
+        }
+        then "a plain `int` seat is untouched by that law" {
+            extern_shape("extern fn c_plain(v: int) -> int\nc_plain(1)", "c_plain") == "i64 -> i64"
+        }
+        then "the call site spells nothing — the `mut` lives on the declaration" {
+            ir_has("extern fn c_open(mut out: ptr) -> int\nextern fn c_null() -> ptr\nmut d: ptr = c_null()\nc_open(d)", "r2 = call c_open(r1)")
+        }
+        then "and the argument is the CELL, never a load of it" {
+            !ir_has("extern fn c_open(mut out: ptr) -> int\nextern fn c_null() -> ptr\nmut d: ptr = c_null()\nc_open(d)", "load")
+        }
+        then "a plain seat still loads its value" {
+            ir_has("extern fn c_read(v: ptr) -> int\nextern fn c_null() -> ptr\nmut d: ptr = c_null()\nc_read(d)", "load")
+        }
+        then "a MANAGED value cannot cross — C keeps no refcount" {
+            refused_with("extern fn c_get(mut out: string) -> int\nmut s = \"\"\nc_get(s)", "C keeps no refcount")
+        }
+        then "a list cannot either, and the voice names the seat" {
+            refused_with("extern fn c_get(mut out: List<int>) -> int\nmut xs: List<int> = []\nc_get(xs)", "seat 1 of `c_get` is `mut` and wears `List<int>`")
+        }
+        then "only a LOCAL binding has a cell — a `mut` param has none" {
+            refused_saying("extern fn c_get(mut out: ptr) -> int\nextern fn c_null() -> ptr\nfn thru(mut p: ptr) -> int {\n    c_get(p)\n}\nmut q: ptr = c_null()\nthru(q)", "only a LOCAL binding has a cell to hand over", 2)
+        }
+        then "a `let` in a host `mut` seat is the standing seat law" {
+            refused_with("extern fn c_open(mut out: ptr) -> int\nextern fn c_null() -> ptr\nlet d: ptr = c_null()\nc_open(d)", "`d` is not `mut` — seat 1 of `c_open` writes through it")
+        }
+        then "a VALUE in a host `mut` seat is refused too" {
+            refused_with("extern fn c_open(mut out: ptr) -> int\nextern fn c_null() -> ptr\nc_open(c_null())", "seat 1 of `c_open` is `mut`, and this is a value")
+        }
+    }
+
+    given "an extern seat's machine WIDTH" {
+        then "a width word on a seat and on the answer reaches the extern's row" {
+            extern_shape("extern fn c_int(v: i32) -> u32\nc_int(1)", "c_int") == "i32 -> u32"
+        }
+        then "an unannotated seat is a word, as it always was" {
+            extern_shape("extern fn c_plain(v: int) -> int\nc_plain(1)", "c_plain") == "i64 -> i64"
+        }
+        then "`i64` spells the standing default out loud" {
+            extern_shape("extern fn c_wide(v: i64) -> i64\nc_wide(1)", "c_wide") == "i64 -> i64"
+        }
+        then "the widths leave pointer seats alone" {
+            extern_shape("extern fn c_open(p: string) -> ptr\nc_open(\"x\")", "c_open") == "ptr -> ptr"
+        }
+        then "a void answer stays void beside a narrow seat" {
+            extern_shape("extern fn c_void(v: i32)\nc_void(1)\n1", "c_void") == "i32 -> void"
+        }
+        then "the value crossing is still an Avra int — the seat judges as `int`" {
+            refused_with("extern fn c_int(v: i32) -> i32\nc_int(\"x\")", "argument 1 of `c_int` wants `int`, found `string`")
+        }
+        then "a binding cannot wear a width — a width is a property of a SEAT" {
+            refused_with("let x: i32 = 5\nx", "`i32` is a machine WIDTH")
+        }
+        then "an ordinary fn's seat cannot wear one either" {
+            refused_with("fn f(x: i32) -> int {\n    x\n}\nf(1)", "widths live on an `extern fn`'s seats")
+        }
+        then "a width inside a type argument is refused, and the help says so" {
+            refused_with("extern fn g(xs: List<i32>) -> int\ng([1])", "never inside `List<…>`")
+        }
+        then "a record field cannot wear one" {
+            refused_with("type P = {\n    n: u32,\n}\nP { n: 1 }.n", "`u32` is a machine WIDTH")
+        }
+    }
+
     given "extern fns — the host's, by their bare symbol" {
         then "an extern declares a signature the call is judged by" {
             refused_with("extern fn host_add(a: int, b: int) -> int\nhost_add(1, \"x\")", "argument 2 of `host_add` wants `int`, found `string`")
@@ -136,4 +215,48 @@ ret 0"""
             shown("once fn tag() -> string {\n    \"x\"\n}\nfn twice() -> string {\n    \"\${tag()}\${tag()}\"\n}\ntwice()") == "xx"
         }
     }
+}
+
+/// An extern's declared row read back from the program that wrote
+/// it, as `seats -> answer`. The width vocabulary's whole surface.
+fn extern_shape(source: string, name: string) -> string {
+    let held: RtSig? = ir_of(source).externs.find(it.name == name)
+    if held == null { return "<no row>" }
+    let row = held!
+    "${joined([kind_word(k) for k in row.params], ", ")} -> ${kind_word(row.ret)}"
+}
+
+/// A runtime kind spelled. Exhaustive on purpose: a new width must
+/// break this test before it can ship unspoken.
+fn kind_word(k: RtKind) -> string {
+    match k {
+        .Void -> "void",
+        .Ptr -> "ptr",
+        .I32 -> "i32",
+        .U32 -> "u32",
+        .I64 -> "i64",
+    }
+}
+
+/// Whether a program's IR contains a line — the lowering read as text.
+fn ir_has(source: string, phrase: string) -> bool {
+    render_ir(ir_of(source)).contains(phrase)
+}
+
+/// A program diagnosed exactly `n` times, one of them saying
+/// `phrase`. `refused_with` pins the count at one; this is its twin
+/// where a second diagnostic is today's truth and pinning it makes a
+/// later improvement VISIBLE — here the seat-unused warning beside
+/// the cell refusal.
+fn refused_saying(source: string, phrase: string, n: int) -> bool {
+    let a = analyze_source(source)
+    a.diagnostics.length == n && a.report().contains(phrase)
+}
+
+/// An extern's CELL widths, read back as the seats' words — `void`
+/// where a seat is not an inout and has no cell behind it.
+fn extern_cells(source: string, name: string) -> string {
+    let held: RtSig? = ir_of(source).externs.find(it.name == name)
+    if held == null { return "<no row>" }
+    joined([kind_word(k) for k in held!.cells], ", ")
 }

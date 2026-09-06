@@ -174,9 +174,14 @@ fn declare_externs(lc: ptr, m: ptr, rows: List<RtSig>) {
     }
 }
 
+/// A runtime slot's machine type. The WIDTHS belong to an extern
+/// seat alone — the registry's own rows are all words and pointers.
+/// `.F64`/`.F32` land here as the double and float types the day a
+/// float VALUE exists to construct them.
 fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
     match k {
         .I64 -> avra_llvm_int64_type(lc),
+        .I32 or .U32 -> avra_llvm_int32_type(lc),
         .Ptr -> avra_llvm_pointer_type(lc),
         .Void -> avra_llvm_void_type(lc),
     }
@@ -383,7 +388,9 @@ impl Emit {
     /// The runtime speaks i64 for truth; a bool-shaped register narrows
     /// to i1 (icmp 33, ne 0).
     fn call_rt_value(dst: Reg, callee: string, args: List<Reg>) -> ptr {
-        let raw = self.call(callee, self.rt_args(callee, args))
+        let called = self.call(callee, self.rt_args(callee, args))
+        self.normalized_cells(callee, args)
+        let raw = self.answered(callee, called)
         if self.types.shape_of(self.tys[dst.index]) is .Bool {
             return avra_llvm_build_icmp(self.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(self.lc), 0, 0), "b")
         }
@@ -405,7 +412,29 @@ impl Emit {
         if sig == null { return false }
         match sig!.ret {
             .I64 -> true,
-            .Ptr or .Void -> false,
+            // a width answers an Avra `int`, never a pointer's word
+            .I32 or .U32 or .Ptr or .Void -> false,
+        }
+    }
+
+
+    /// A NARROW ANSWER IS WIDENED WITH THE SIGN ITS WIDTH NAMES, and
+    /// this match is where the author must say which: `i32` and `u32`
+    /// differ in nothing else. Reading a narrow answer at 64 bits is
+    /// the silent wrong answer — a C `int` of -1 reads 4294967295 —
+    /// because the bits above the declared width are the callee's
+    /// business and only the declaration says how to read them.
+    /// NOT `avra_llvm_cast_to_type`: it TRAPS on a widening rather
+    /// than guess a sign, and names these two builders when it does.
+    /// This match is the caller it means — the row already said which.
+    fn answered(callee: string, raw: ptr) -> ptr {
+        let sig: RtSig? = self.callee_sig(callee)
+        if sig == null { return raw }
+        let wide = avra_llvm_int64_type(self.lc)
+        match sig!.ret {
+            .I32 -> avra_llvm_build_sext(self.b, raw, wide, "wide"),
+            .U32 -> avra_llvm_build_zext(self.b, raw, wide, "wide"),
+            .I64 or .Ptr or .Void -> raw,
         }
     }
 
@@ -419,6 +448,65 @@ impl Emit {
 
     fn void_rt_call(callee: string, args: List<Reg>) {
         let _ = self.call(callee, self.rt_args(callee, args))
+        self.normalized_cells(callee, args)
+    }
+
+
+    /// A NARROW INOUT CELL IS NORMALISED AFTER THE CALL. An Avra cell
+    /// is eight bytes; a C `int*` out-parameter writes FOUR of them,
+    /// and the other four keep whatever the cell held — so
+    /// `wal_checkpoint_v2` writing -1 reads back 4294967295 until the
+    /// low half is extended over the high one.
+    ///
+    /// LITTLE-ENDIAN: the four bytes C writes are the LOW four of the
+    /// slot. True on arm64 and x86-64, which is the only reason a
+    /// shared cell works at all — say it rather than assume it.
+    ///
+    /// The SIGN comes from the WIDTH WORD the seat declared, never
+    /// from the value: `i32` sign-extends, `u32` zero-extends, and
+    /// they differ in nothing else. Lane C's rule holds — the cell
+    /// register went to the call DIRECTLY and this reads the SAME
+    /// register, so the memory pass still sees one slot.
+    ///
+    /// The interpreter needs this too the day it hosts an extern
+    /// (it traps on every one today), and it must read the width
+    /// from the same `cells` column.
+    fn normalized_cells(callee: string, args: List<Reg>) {
+        let sig: RtSig? = self.callee_sig(callee)
+        if sig == null { return }
+        let cells = sig!.cells
+        for j, r in args {
+            if j < cells.length { self.normalized_cell(cells[j], r) }
+        }
+    }
+
+
+    /// One cell re-read at its declared width. DECIDE BEFORE EMITTING:
+    /// a seat that is not a narrow inout gets no instructions at all,
+    /// and its register is not a cell to load from — the first draft
+    /// built the load before asking, and emitted `load i64, i64 %1`
+    /// against an ordinary argument.
+    fn normalized_cell(width: RtKind, slot: Reg) {
+        let signed: bool? = self.narrow_sign(width)
+        if signed == null { return }
+        let wide = avra_llvm_int64_type(self.lc)
+        let cell = self.vals[slot.index]
+        let low = avra_llvm_build_trunc(self.b, avra_llvm_build_load(self.b, wide, cell, "cell"),
+                                        avra_llvm_int32_type(self.lc), "low")
+        let full = if signed! { avra_llvm_build_sext(self.b, low, wide, "signed") }
+                   else { avra_llvm_build_zext(self.b, low, wide, "unsigned") }
+        let _ = avra_llvm_build_store(self.b, full, cell)
+    }
+
+
+    /// Whether a cell's width extends SIGNED, or absence when the
+    /// width is not a narrow one and the cell needs nothing.
+    fn narrow_sign(width: RtKind) -> bool? {
+        match width {
+            .I32 -> true,
+            .U32 -> false,
+            .I64 or .Ptr or .Void -> null,
+        }
     }
 
 
@@ -447,6 +535,9 @@ impl Emit {
         if j >= sig!.params.length { return v }
         match sig!.params[j] {
             .I64 -> self.worded(r, v),
+            // the low bits are what a narrow C seat reads; the
+            // SIGN of an argument is the callee's to interpret
+            .I32 or .U32 -> avra_llvm_build_trunc(self.b, v, avra_llvm_int32_type(self.lc), "narrow"),
             .Ptr or .Void -> v,
         }
     }
