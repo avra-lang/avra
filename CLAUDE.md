@@ -156,6 +156,15 @@ registry is the idiom engine's spec, written by dogfooding.
   and refuses BOTH shapes inside them; it covers `Ins` and `RtKind`,
   and a registry it does not name is unguarded. Naming the next one
   IS how this law is enforced.
+  AND THE OBLIGATION CROSSES INTO C, where no keeper can follow. The
+  runtime's `acc_kind_of` was a kind-keyed ternary falling through to
+  ACC_RECORD — correct for the three kinds that existed when it was
+  written and wrong from that same day for `KIND_STATIC`, so every
+  immortal string was filed as a RECORD by `AVRA_MEM_STATS`: the
+  instrument THIS FILE names as the way to answer a memory question,
+  miscounting its own data since birth. A C chain keyed on our kinds
+  carries a registry's obligation and `make vocab` cannot see it, so
+  spell the kinds there too.
   AND THE REASON IT HID GENERALIZES: `RtKind` had three variants from
   the day it was written and never grew, so nothing ever tested the
   assumption. A KEEPER THAT HAS ONLY EVER GUARDED A STATIC ENUM IS
@@ -883,11 +892,28 @@ Runtime facts, ours to ratify:
   agreement is a CONSISTENCY check while the LAW is the oracle. The
   gate's third leg does not rescue it: a corpus `.expected` is
   written by the same author from the same understanding, so it joins
-  the consensus rather than breaking it. So when a check has never
+  the consensus rather than breaking it. TWO MORE, from the sqlite
+  lane's probes and re-run here. THE CALLEE-DEPENDENT ANSWER: a C
+  `int` return writes 32 bits and ZEROES the upper half (`mov w0,
+  #-0x1`) where a `long` writes 64 (`mov x0, #-0x1`), so an extern
+  read through ONE 64-bit prototype answers 4294967295 for the first
+  and -1 for the second — while this libc's `atoi("-1")` answers -1,
+  because it happens to run through `strtol` and leave all 64 bits
+  populated. A test that calls a REAL library proves only that THAT
+  implementation widened. THE ORDER-DEPENDENT ANSWER: a variadic
+  callee reads its argument from the STACK (`ldr x0, [sp, #0x10]!`)
+  where a uniform trampoline passes it in a register, so calling one
+  through the other returns the PREVIOUS call's value — 1111 when
+  2222 was asked — and garbage when nothing ran before it. The first
+  draft of that probe made the correct call FIRST and reported the
+  broken path working: the check was fine, and its own first line
+  rigged the arrangement it was checking. So when a check has never
   failed, ask what would make it fail and then MAKE it happen —
   restore the boolean and watch the keeper name the line, write the
   probe from the LAW rather than from the code. A green check whose
-  failure has never been witnessed is an untested instrument.
+  failure has never been witnessed is an untested instrument — and the
+  runtime's kind accounting is the dearest of them, wrong from the
+  day it was written and found by CHECKING rather than by failing.
 - A COUNT FROM A PACKAGE SWEEP IS LINES, NOT SITES. Checking one
   package reports its DEPENDENCIES' warnings too, so summing the
   twelve counts every shared site once per package that reaches it:
