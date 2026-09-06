@@ -129,7 +129,13 @@ where the runtime reads a terminator instead of the header, which is the
 exact thing this design argues against**, and it is the case the design
 leads with. The one-character fix (`h ? (size_t)h->len : strlen(s)`)
 lands IN this slice, not after it — otherwise the first thing adoption
-ships is a value measured the one way the doc refuses.
+ships is a value measured the one way the doc refuses. **AND THE ORDER
+MATTERS FOR A REASON STRONGER THAN DEPENDENCY**: land the character
+first and the adopted empty box is measured from the header on the day
+it first exists. Land it after, and for the length of the gap the
+headline case of a design arguing that length lives in the header is
+measured by a terminator — **and it would pass every test**, which is
+exactly why nobody would notice.
 
 **THE FACE ASKS THE CLASS FIRST, ALWAYS, AND READS THE LENGTH AFTER THE
 VALUE.** Both laws are already written in `c/column.av` and already held
