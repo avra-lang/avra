@@ -6461,8 +6461,8 @@ by meaning; each is a slice for lane D unless a lane is named.
   `1 1 0`. The carve-out names its own expiry in its comment,
   "bs2's aliasing, honored until self-host", and self-host has
   happened: it has outlived the condition it was written against.
-  SO IT IS ONE SLICE WITH THE I34 RETIREMENT, not a third thing —
-  correcting lane D's first reading. Deleting the borrow makes the
+  SO IT LOOKED LIKE ONE SLICE WITH THE I34 RETIREMENT — but see the
+  correction below; it is two, and only the first has landed. Deleting the borrow makes the
   34 sites copy, and the fix at each is the DIRECT form
   (`self.xs.push(v)`), which cloned once per write BEFORE S3 and does
   not after. That is why the sweep was unaffordable in both
@@ -6495,6 +6495,48 @@ by meaning; each is a slice for lane D unless a lane is named.
   licenses retire THEN, by lane C, whose slice it is. Until it lands
   the rule stands as written; lane D writes no NEW borrows for
   performance.
+
+  THE RETIREMENT LANDED AND H3 DID NOT CLOSE (2026-09-05, lane C's
+  measurement, lane D's census). The I34 retirement is in at cfa834d
+  and all 17 licenses are gone, but DELETING the borrow mechanism
+  reproduced S0's failure exactly — the compiler built with EMPTY
+  declaration tables, "index 0 is out of bounds", because a borrow
+  that becomes a copy pushes into the copy. Nine sites still need the
+  aliasing (`ws.packages`, `ws.specs`, `ws.asks`, the db_test
+  fixture), every one of them blocked at the CAPTURE wall this
+  ledger's census measured. So H3 closes with S2, not with the
+  retirement: lane D's first reading — that the closure was a
+  separate thing — was right, and the "one slice" correction above
+  was itself wrong. TWO SLICES: the retirement (landed) and the
+  deletion (blocked on captures).
+  AND THE RETIREMENT ALSO NEEDED S3b, which is why the advice to stop
+  writing borrows dates from cfa834d and not from the message that
+  first gave it. S3 alone made the compiler 3.4x SLOWER (7.5s to
+  25.6s, lane A audited the machine so the ratio is the change): a
+  read of `self.field` took the OWNED TWIN whenever the destination
+  was managed, and that +1 lived to the scope's end, so the write
+  that followed found the value shared and cloned. S3 governed the
+  slot `Load` alone. THE REGISTRY LESSON from fixing it: which rows
+  may be borrowed is a `lends` COLUMN, false by default, never a name
+  test — `avra_array_pop` also has an owned twin and must NEVER be
+  borrowed, because a pop HANDS OVER, and a row nobody has thought
+  about must be safe.
+  THE POST-RETIREMENT CENSUS (lane D, on cfa834d). The true total is
+  100 in std-avrac — UNCHANGED from the floor — plus 3 in std-toml,
+  now fixed. The previously-hidden sites did NOT become visible, and
+  the reason is structural rather than lucky: F2047 fires on a
+  non-mut RECEIVER AT A CALL SITE, and the retirement moved writes
+  from a borrowed local to `self.field`, neither of which is an F2047
+  site INSIDE a method — the warning lives at the caller, which the
+  census had already counted. Only FREE FUNCTIONS taking their state
+  as a parameter gained visible warnings, which is why every new one
+  was in std-toml (`placed`, `refused`, `read_entry`; three marks,
+  back to zero, no errors). So "the census is a floor" was true for a
+  different reason than either lane thought: H3's channel is not
+  countable by F2047 at all, because a self-rooted write never was.
+  The production blockers are UNCHANGED — 9 captures (8 production,
+  1 fixture), 38 value-args (2 production), 1 alias, and the rest
+  tests. S2's shape does not move.
 
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure

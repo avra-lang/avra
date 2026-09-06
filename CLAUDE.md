@@ -576,6 +576,16 @@ registry is the idiom engine's spec, written by dogfooding.
   intermediate is shared: make it unique (a value built in place and
   handed back — the worklist per body) or keep the borrow and name
   the sharing. Probed 2026-09-05, both engines agree.
+  THE PERFORMANCE RATIONALE IS GONE as of S3b: liveness reaches the
+  OWNED TWIN choice too, so a path write no longer finds its own
+  read's +1 and no longer clones — sweeping 34 borrow sites to direct
+  writes measured FREE (6.87s against 6.90s, inside the noise) and
+  all 17 I34 licenses retired. SO A BORROW IS WRITTEN FOR ITS
+  ALIASING AND NEVER FOR SPEED. The mechanism survives because nine
+  sites still need the aliasing — deleting it emptied the declaration
+  tables, since a borrow that becomes a copy pushes into the copy —
+  and that same aliasing is H3's silent channel: a write through a
+  borrowed local still reports nothing at all.
 - THE CONDITION RUNS EVERY TURN: the memory pass settles what a
   `while` condition mints at each `LoopCond`, inside the loop. A
   release placed after the loop settles one turn's debts for all of
