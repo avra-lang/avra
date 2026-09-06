@@ -471,10 +471,29 @@ the compiler checking itself 28.8s.
         remaining cost is three things and lane A owns none of the
         cheap part of any of them:
         1. REFCOUNT TRAFFIC, ~35% of samples, inside
-           `avra_rc_retain`/`avra_rc_release` themselves. That is
-           lane C's S3 liveness, already priced here; LTO across the
-           runtime was measured NEUTRAL (9.34 vs 9.36), so it is the
-           bodies, not the calls.
+           `avra_rc_retain`/`avra_rc_release` themselves. LTO across
+           the runtime was measured NEUTRAL (9.34 vs 9.36), so it is
+           the bodies, not the calls.
+           CORRECTED 2026-09-05 (lane C): this entry said "that is
+           S3 liveness" and attributed the whole third to it. The
+           MEASUREMENT stands; the attribution was wrong. S3 governs
+           only the slot `Load`. The other half is the OWNED TWIN —
+           `owned_form` chose `avra_array_get_owned` whenever a
+           call's destination was managed, unconditionally, so a
+           field read minted a +1 that lived to the scope's end and
+           the write after it found the value shared and cloned.
+           That is S3b (cfa834d), and it is where the compiler's own
+           hot paths were: lane A's `known_id` fix was THIS mechanism
+           applied at ONE site by hand, which is why it bought about a
+           second and no more. RE-MEASURED HERE on S3b: the
+           self-check 8.2s -> 7.2s (three runs, 7.15/7.28/7.43), the
+           gate 20.2s -> 18.9s. STILL UNPAID, so the number is not
+           attributed twice: retain/release at CALL SEATS —
+           `retained_args` retains every managed argument of every
+           call because callee-cleans requires it, and no liveness
+           analysis touches that. A callee that only READS its seat
+           needs no caller retain; that is a different design and it
+           is scoped nowhere.
         2. ALLOCATION, ~12% (`box_alloc`/`box_free`/`buf_alloc`/
            `buf_free`). Already paid twice today — size-class free
            lists, then one classed buffer per list, then sized boxes.
