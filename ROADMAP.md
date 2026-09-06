@@ -4038,6 +4038,39 @@ additions get siblings, nothing changes shape:
   db.av 3, the rest scattered). The trade is P3's ceremony against
   P7's visible magic, and the `!` is one character bought for a trap
   that is invisible in every one of those 36 lines today.
+- SIZED INTEGER TYPES (`i32`/`u32` at least, at least in extern
+  signatures). SPECIFIED (spec Axis 15.2: "`i32`, `i64`, `u8`, etc.
+  map to fixed-width C types directly"), MISSING (`extern fn f() ->
+  i32` is F2001, "`i32` names no type"), and PRODUCING WRONG ANSWERS
+  today: Avra's `int` is 64 bits and C's is 32, so an extern over a C
+  `int` reads -1 as 4294967295 on the NATIVE path, and both engines
+  agree on it. WANTING SITE: the @std/sqlite lane, whose library
+  answers C `int` at 153 of 284 entry points. Lane A closed OUR half
+  (two narrow returns widened; `make externs` keeps the class) but
+  the keeper cannot read a third party's headers. Cheapest of the
+  three asks: no literal syntax, no arithmetic, no text projection —
+  only the width an extern declares and the extension the backend
+  emits at the boundary. THE CORE-SIDE FACTS are recorded under lane
+  A's block ("CORE-SIDE FACTS FOR THE THREE LANGUAGE ASKS"), verified
+  in the tree: what RtKind is, how few consumers it has, and the one
+  line in `is_managed` a new scalar must join.
+- FLOAT (IEEE-754 binary64). WANTING SITE: the @std/sqlite lane —
+  SQLite's five storage classes are NULL, INTEGER, REAL, TEXT, BLOB
+  and Avra has three, so a REAL column cannot be bound at all. The
+  seam is narrower than it looks: `RtKind` is `{ I64, Ptr, Void }`
+  (core/ir.av:219) so the extern wall cannot DECLARE a float seat,
+  but growing it is a REGISTRY-COLUMN event, not an eight-consumer
+  instruction event — one exhaustive match (`ll_rt_kind`), none in
+  the interpreter (it dispatches on RtHost). The hard part is not the
+  seam but printing a double so it round-trips and reads naturally,
+  which is a runtime problem.
+- BYTES. WANTING SITE: the @std/sqlite lane needs arbitrary bytes
+  with embedded NULs across the C boundary; `string` is the only byte
+  carrier today and there is no `Bytes` type (zero hits in
+  core/types.av and the runtime). It must NOT reuse the string box:
+  `str_len` falls back to `strlen` on a zero recorded length, which
+  is a wart for text and a CORRECTNESS BUG for a legal empty blob.
+  Its own kind, header length authoritative.
 - WEAK CAPTURES. A closure stored in a value that captures the value's
   owner is a cycle, and counting never frees one: the workspace's
   query verifiers, its declaration hooks and its analyses all
