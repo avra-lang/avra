@@ -3039,6 +3039,60 @@ carelessness. And the shape that hid it: of the page's three clauses,
 two went false and one stayed true, which is what let it keep reading
 as correct. Found by the docs campaign, not by this one.
 
+THE RED TEAM'S SECOND CAMPAIGN (2026-09-06, `f212c7a`; 380/380 sqlite,
+1909/1909 tree). Four findings, three of one shape: A SETTING THAT IS
+ACCEPTED, ECHOED BACK, AND NEVER APPLIED.
+  A RESET IS ALSO A REWIND, AND THE DRIVER RECORDED ONLY HALF OF IT.
+  `step` past DONE answers `false` every time and RE-RUNS THE STATEMENT:
+  `insert into t(v) values (1)` stepped three times gives `DONE DONE
+  DONE` and THREE ROWS; a select's rows come out again. The auto-reset
+  was already written down — as the reason ERROR CODES ARE HONEST, which
+  is true and is the harmless half. NOTHING in the answer distinguishes
+  "did nothing" from "wrote another row", so A DEFENSIVE EXTRA STEP IS A
+  DUPLICATE INSERT — and a defensive extra step is what a careful author
+  writes. NOT FIXED, for a MEASURED reason rather than a preference:
+  SQLite's own witness cannot carry it (`sqlite3_stmt_busy` is 1 mid-row
+  and 0 after DONE, so a guard on it refuses the half still standing and
+  misses the half that finished — the partial blocklist this driver
+  refuses everywhere else). The refusal needs a flag on `Stmt` and a
+  `mut` seat on `step`, which moves `open.av`'s call site, so it was
+  REPORTED rather than restructured across a file another lane owns —
+  and pinned with the ROW COUNT in the assertion, so the fix flips the
+  test instead of merely satisfying it.
+  A BLAME ARM IS A CONTRACT WITH THE CALLER, AND THIS ONE WAS BACKWARDS.
+  `Cause.Defect` documented "a statement used after finalize … never the
+  caller's mistake, report it" — but finalize-then-step is a CALLER'S
+  THREE-LINE SEQUENCE through the public face, so the driver was sending
+  people to file a bug about their own code. Now `Cause.Finalized`, with
+  `step` guarding the null handle the way `in_holes` guards a bind
+  index. The three shape verbs answer `int` and CANNOT refuse, so they
+  still answer a silent 0 on a dead statement — ASSERTED rather than
+  hidden, which is the honest treatment of what a signature cannot fix.
+  A LIMIT THAT IS STORED, REPORTED, AND NEVER APPLIED. `SQLITE_DEFAULT_
+  MEMSTATUS=0` buys speed and silently costs ENFORCEMENT:
+  `hard_heap_limit64(102400)` is accepted, reads back exactly 102400,
+  and then `zeroblob(8388608)` allocates 8 MB while `memory_used()`
+  answers 0. A service bounding its own memory gets a number back that
+  means nothing. Documented at both declarations AND beside the flag
+  that causes it — because the defect is not in either place alone, it
+  is in their PAIRING, which is the file-keyed sweep's failure one level
+  down.
+  AND THE BOUND ON WHAT "GATE GREEN" MEANS HERE: `eval == native` CAN
+  NEVER APPLY TO THIS PACKAGE. The interpreter refuses externs outright,
+  so all 380 tests are native-only BY CONSTRUCTION, beside sibling
+  suites that get two engines. That is not a gap in the red team's work
+  and no test in the package can close it — it is a standing property of
+  every FFI package until the extern host lands, and the differential
+  oracle the tree leans on hardest is exactly the one an FFI package
+  cannot have.
+  WHAT SURVIVED, worth as much as what did not: the NULL-pointer law
+  holds under attack — SQL NULL is class 5 with a NULL pointer, a
+  zero-length blob is class 4 with the SAME NULL pointer, so asking the
+  CLASS first genuinely separates the two reachable cases. Also per-row
+  type variance, a NUL bound as text arriving whole, int64 edges exact,
+  a real refused rather than truncated, `reset` keeping bindings, and a
+  5000-deep expression refusing instead of segfaulting.
+
 THE EVIDENCE LAW — the campaign's most transferable output, earned by its
 authors being wrong repeatedly in public. CLAUDE.md carries the general
 form; this is the evidence behind it.
