@@ -4230,6 +4230,16 @@ additions get siblings, nothing changes shape:
 
 ## Sugar backlog — dogfooding asks
 
+- TRAILING LAMBDAS for the bracket verbs (filed 2026-09-05, lane D
+  from the sqlite driver lane's ask). `tx { 42 }` is "expected BREAK
+  while parsing `stmt`" at the `{`; the argument seat is fine, so a
+  scoped-resource verb is spelled `db.tx(() -> { … })` today. THE
+  WANTING SITE is ATTRIBUTED, not in this tree: the driver's
+  transaction and scoped-handle verbs (`../avra-sq-driver`). The
+  refusal itself is probed here. Worth weighing on P1 grounds rather
+  than taste — the braced form is what gets generated first, so the
+  sugar's absence costs a correction on every bracket verb a caller
+  writes.
 - `pop` ANSWERS `T?`, SO THE TRAP IS SPELLED (filed 2026-09-05, lane
   D; the change is lane C's files and lane A's db.av). `xs.pop()`
   answers the ELEMENT today and traps on an empty list ("pop on an

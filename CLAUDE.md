@@ -641,6 +641,19 @@ Syntax the grammar lacks:
   "expected `(` while parsing `stmt`" — the once grammar takes a
   name and a parameter list only, and a `T` no argument can pin has
   nothing to answer anyway.
+- A `once fn` answering a SCALAR (`once fn seed() -> int { 7 }`):
+  F2055 "`once fn seed` answers `int`, which the runtime cannot
+  keep" — the answer must be MANAGED, and `-> string` and
+  `-> List<int>` both land. Its sibling law speaks too: parameters
+  are F2055 "takes arguments — a `once` answer is one value for the
+  whole process", and that refusal reaches the mistake whether or
+  not the parameter carries a `mut`.
+- A TRAILING-LAMBDA call (`tx { 42 }` where `tx` takes `fn() ->
+  int`): "expected BREAK while parsing `stmt`", pointing at the `{`.
+  The lambda in an ARGUMENT seat is fine (`tx(() -> 42)`), so every
+  scoped-resource verb spells `db.tx(() -> { … })` and never
+  `db.tx { … }` — worth listing because the braced form is the one
+  that gets written first.
 - A GENERIC FN AS A VALUE (`let f: fn(int) -> int = ident<int>`, the
   pinned call unapplied): "expected BREAK while parsing `stmt`" — a
   pinned call is a CALL in the grammar, so a generic fn cannot be
