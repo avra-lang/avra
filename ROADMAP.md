@@ -438,6 +438,34 @@ the compiler checking itself 28.8s.
         watching the gate name the fn. THE GENERAL RULE: for a
         REGISTRY enum, `is .Variant` is a catch-all wearing different
         clothes; for a PROJECTION enum it stays the right idiom.
+  - [ ] THE 43 STRING-TAKING EXTERNS GO FROM SAFE-BY-CONSTRUCTION TO
+        SAFE-BY-CONVENTION THE DAY `Bytes` LANDS (recorded 2026-09-05
+        while reviewing the sqlite lane's UTF-8 validator; a TRIGGER,
+        not open work). Today no Avra string can hold a NUL, because
+        nothing mints one — every string comes from a literal, an
+        interpolation, or a runtime row over text that was already
+        NUL-free. So handing one to C, which reads a bare
+        NUL-terminated `const char*`, is safe for a reason nobody
+        wrote down: there is nothing to truncate.
+        U+0000 IS VALID UTF-8 and is one byte. So a correct
+        bytes-to-text conversion — which the sqlite lane's validator
+        accepts, rightly — MINTS a perfectly valid Avra string with
+        an embedded NUL, and every one of the 43 `extern fn f(s:
+        string)` sites in the tree becomes a place where C sees a
+        prefix. The conversion is right, the validator is right, and
+        the hazard is real: it arrives from the direction where
+        everything is correct.
+        NOT FIXED BY REFUSING NUL — that would make the converter lie
+        about what it validates and MOVE the defect rather than close
+        it. The answer is the law the sqlite lane took: text crossing
+        to C carries a LENGTH, never a terminator. Their C API was
+        already shaped for it (`sqlite3_bind_text(…, int nByte, …)`),
+        and the `-1` sentinel meaning "measure with strlen" is the one
+        form a binding must never use.
+        NO KEEPER: a check over `extern fn f(s: string)` would fire on
+        all 43 today, every one of them legitimate, and teach people
+        to license it — the same reason the `is .Variant` law has no
+        ratchet. WHEN IT FIRES: the first bytes-to-text conversion.
   - [x] THE WELL IS DRY FOR LANE A (re-profiled 2026-09-05 at the
         day's end, main 9e8916d, self-check 8.2s / gate 20.2s). The
         remaining cost is three things and lane A owns none of the
