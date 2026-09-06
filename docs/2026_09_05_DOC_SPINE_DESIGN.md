@@ -5,7 +5,8 @@
 > **READ** (a mechanism read from source, file:line given), or
 > **UNVERIFIED**.
 >
-> **Base: `312bd0d`**, `build/avra` 2026-09-06 00:10 (2 064 272 bytes).
+> **Base: `c6ce7b7`** (§A re-verified there; the rest re-derived at
+> `312bd0d` and unmoved since — `lexer.av` changed only by `74501ef`).
 > **The tree moved twice under this design and the binary moved once.**
 > The first draft was probed at `e046ba2` against a binary of 2026-09-05
 > 23:40 (2 064 224 bytes); the lead's brief quoted `bd5c024`; HEAD is now
@@ -21,7 +22,23 @@
 
 ---
 
-## A — PROBED FIRST: the line law, and a live defect in the code D1 touches
+## A — PROBED FIRST: the line law, and a defect that is now FIXED
+
+> **CLOSED. Found here at `312bd0d`; fixed at `74501ef`, "fix(lexer): a
+> leading comment's LENGTH changed the parse — a byte offset read as a
+> column"; does not reproduce at `c6ce7b7`.** Re-running the exact probe
+> below at HEAD now answers `EXIT=0` for all four variants — no comment,
+> `//`, `///`, `//!` — which is the correct behaviour. **§A.3's "left
+> unverified" is also settled**, and it needed the lock: the fixer ran
+> the corpus and NO GOLDEN MOVED (1908 tests, 77 programs eval == native
+> == expected), so nothing in the tree depended on the defect. The
+> regression case is pinned in `lexer_test` and was verified to fail when
+> the seed is restored. The section is kept as written because the
+> probes are D1's required tests either way, and because it is the
+> receipt for a fix that has now landed. **This is also the sharpest
+> instance of the version-attribution law in this campaign: the finding
+> aged out inside one hour, and only re-running it at HEAD caught that.**
+
 
 Written before any design prose, on the lead's instruction and lane A's.
 The line law lives inside `collapse_breaks` (`lexer.av:362`) — the exact

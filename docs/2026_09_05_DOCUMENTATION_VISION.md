@@ -86,44 +86,52 @@
 > This is not a gap. It is a **loaded spring**. The corpus is already
 > written; the campaign is to build the thing that reads it.
 >
-> **And it is plausibly the TRUSTWORTHY half.** PROXIMITY PREDICTS
-> FRESHNESS, and the *mechanism* is structural and does not depend on any
-> count: a `///` sits in the file its subject lives in, so the edit that
-> changes the behaviour has the doc already open in the editor. A ROADMAP
-> entry about a capability lives a thousand lines from the code and
-> nothing brings the author past it.
+> **THE PROXIMITY CLAIM WAS AUDITED AND DOES NOT SURVIVE. I published a
+> ratio; it is retracted.** LANE A refused "seven stale prose against one
+> stale `///`" because a count is not a rate. I fetched denominators and
+> published ~1.0% against ~0.14%. **Both figures were large
+> understatements and the difference is not significant.**
 >
-> **The numbers, denominated — and honest about what they are.** LANE B
-> counted seven stale artifacts found across all lanes on 2026-09-05, and
-> every one was hand-maintained prose (CLAUDE.md's `?.` entry, the
-> ROADMAP's `?.` rationale, a case count, the bs2 ledger, README's symlink
-> sentence, three `ptr` entries, a lane hand-off). Stale `///` comments in
-> the same day: one. LANE A then refused the ratio for the right reason —
-> **seven-to-one is not a rate** — so here are the denominators, at
-> `bd5c024`: the prose corpus is ~708 checkable claims (550 ROADMAP
-> bullets, 112 CLAUDE.md rules/subset/discipline entries, 46 DOGFOODING
-> headings); the doc corpus is 690. Nearly equal, which is what makes the
-> comparison fair at all: **~1.0% of prose claims versus ~0.14% of `///`
-> comments, a rate ratio of about 7 to 1.**
+> The audit (doc-subset): populations enumerated and **samples frozen to
+> disk before anything was read** — 787 `///` runs on exports, 744 prose
+> bullets, 40 drawn from each with a recorded seed, classification fixed
+> in advance, unfalsifiable items excluded from the denominator.
 >
-> **THE CAVEAT IS LARGER THAN THE FINDING, AND IT RUNS ONE WAY.** Both
-> numerators are DISCOVERY counts, not audit counts — nobody swept either
-> corpus. And the discovery bias is asymmetric in the direction that
-> flatters the result: several lanes spent the day reading and correcting
-> ledgers, while **nobody audited the `///` corpus at all.** More eyes
-> found more prose rot; no eyes found little `///` rot. So the rate
-> comparison is SUGGESTIVE, NOT ESTABLISHED, and the way to establish it
-> is a systematic audit of a random sample of both — a task this campaign
-> owes rather than a conclusion it may quote. The mechanism stands on its
-> own; the numbers do not yet.
+> | population | stale / checkable | rate | 95% CI (Wilson) |
+> |---|---:|---:|---|
+> | `///` on exports | 2 / 40 | **5.0%** | 1.4 – 16.5% |
+> | prose bullets | 3 / 24 | **12.5%** | 4.3 – 31.0% |
 >
-> **One asymmetry IS established, and it is the sharper half.** The `///`
-> corpus has a denominator that falls out of one command. The prose
-> corpus required choosing a unit — bullets, headings, or lines — and the
-> answer moves by 4x depending on the choice. **A corpus you cannot
-> enumerate crisply is a corpus nobody can audit**, which is not evidence
-> that prose rots faster so much as an explanation of why nobody would
-> ever find out.
+> **Fisher exact, two-tailed: p = 0.355.** The direction survives — prose
+> is numerically worse under both scorings — but the intervals overlap
+> across most of their range. **The `///` rate is 36x my published figure;
+> the prose rate 12x.** And the asymmetry is precisely what lane A
+> predicted: the `///` numerator was near zero **because nobody had ever
+> looked.** Correcting prose alone would have made the ratio look better.
+> Correcting both erased it.
+>
+> **WHAT SURVIVES IS STRUCTURAL, AND IT IS A BETTER FINDING THAN THE RATE
+> WAS.** **40 of 40 sampled `///` comments were checkable. Only 24 of 40
+> prose bullets were.** A doc comment sits on a symbol the compiler
+> already knows, so it is *always* falsifiable. **Prose is ~40%
+> unfalsifiable by construction — and that 40% is not the safe part, it is
+> the part no tool can ever catch.** That claim needs no ratio, no
+> significance test and no larger sample. It is a property of where the
+> two artifacts live.
+>
+> **The mechanism (proximity) still stands on its own** and never needed
+> the number: a `///` sits in the file its subject lives in, so the edit
+> that changes the behaviour has the doc already open. A ROADMAP entry
+> lives a thousand lines away.
+>
+> **Limits the lane stated rather than letting a reviewer find:** n=40 per
+> arm is underpowered (separating 5% from 12.5% at p<0.05 needs ~200);
+> one auditor wrote the classification rule and also applied it, which is
+> this document's own consensus warning turned inward; and `docs/*.md` was
+> outside the frame — the `BYTES_SHAPE` finding suggests that surface is
+> worse than the three sampled. Both frames and samples are on disk under
+> a fixed seed, so a re-run at a later base draws the same entries and
+> this becomes a trend rather than an anecdote.
 >
 > So the migration's value is not only that the compiler can finally read
 > those 690 comments. It is that they are the half we could always have
@@ -488,9 +496,26 @@ Different cause, different check, and the asymmetry is the point:
 |---|---|---|
 | a prose entry | the world moved | run it — does it still earn its refusal (K5) |
 | a `///` | its subject died | is anything referencing this symbol (K7) |
+| a `///` | **its subject was REPLACED under it** | the fingerprint it was authored against no longer matches (K4) |
 | **either** | **it was never true** | run it on day one — K5 again, and this is the case proximity cannot help |
 
-**The third row is not rot at all, and LANE A supplied it against
+**The third row was found in the audit and it is the one this design
+would have rendered beautifully.** `core/text.av:63`: a doc run whose
+first line describes `sorted_texts`, four lines below — because a commit
+inserted a function *between a doc run and its subject*. **The run was
+not orphaned**, which is the shape F0911 catches; it was **ADOPTED BY THE
+WRONG SYMBOL**, and no attachment rule can see that, because the
+attachment is structurally valid. The doc is well-formed, correctly
+extracted, and about a different function.
+
+**K4 is what catches it**, and this is the strongest argument for
+freshness that the campaign has produced: the doc records the fingerprint
+of the symbol it was **authored for**, and the symbol that adopted it has
+a different one. A freshness check written for "the source moved" turns
+out to answer "a different subject moved in underneath you" for free —
+which no coverage lint, no liveness check and no attachment law can.
+
+**The fourth row is not rot at all, and LANE A supplied it against
 themselves.** A ROADMAP entry headed "THE WELL IS DRY FOR LANE A"
 asserted the remaining cost was three things and that further rounds
 would invent work. **It was false when written** — its reasoning argued
@@ -911,9 +936,20 @@ coincidence. One preceding statement masks it entirely, so the tree is
 not currently mis-parsed; the exposure is an entry file whose first
 statement is a chain.
 
-**It is NOT D1's to fix** — the one-line correction changes how existing
-sources parse and needs its own gate and corpus case; landing it beside a
-lexer change would leave neither exonerable if something broke. What it
+**FIXED AND LANDED BY LANE A AT `74501ef`, AND THE UNFALSIFIABLE
+QUESTION IS SETTLED.** My lane could not answer whether the tree was
+*currently* mis-parsed anywhere — that needs the lock. Lane A held it:
+seed fixed, rebuilt, full corpus run, **no golden moved — 1908 tests, 77
+programs, eval == native == expected.** Nothing in this tree was parsing
+on the defect, exactly as the masking analysis predicted; the exposure was
+real and unrealised, one `use` line from firing. The fix carries its
+reason at the site — **the seed is a COLUMN, and a file's first statement
+stands at column zero;** `span.lo` only reads as a column while the first
+token is on line one. The regression pins six prefixes and **was verified
+to have teeth** by restoring the old seed and watching it fail by name.
+
+**Keeping it out of D1 was the right call** — a layout change and a lexer
+change in one merge leaves neither exonerable if something breaks — What it
 changes here is the INVARIANT: not "comments are whitespace, so capture
 is free", but **`s.token` stays null → `raw` is byte-identical → every
 layout decision, the defective one included, is bit-for-bit unchanged.**
