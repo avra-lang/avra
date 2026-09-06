@@ -1057,6 +1057,17 @@ Runtime facts, ours to ratify:
   failure has never been witnessed is an untested instrument — and the
   runtime's kind accounting is the dearest of them, wrong from the
   day it was written and found by CHECKING rather than by failing.
+- AND A KEEPER HAS TWO SURFACES: what it REFUSES and what it
+  ACCEPTS. Making it fail tests only the first. `tools/idioms.py`'s
+  counted-refusal matcher listed `refused_n(` among the honest
+  spellings, and no such fn has ever existed — `testing/mod.av`
+  exports `refused_with` and `refused_at_run` and nothing of that
+  name. A DEAD ALTERNATIVE: accepted by nobody, protecting nothing,
+  quietly widening what the keeper permits, and invisible to every
+  fixture that makes the keeper fail, because the keeper was working.
+  So exercise each alternative a keeper ACCEPTS as well as one that
+  breaks it — a matcher with N spellings needs N positive fixtures,
+  or the dead one sits there for as long as nobody greps it.
 - A TEST WITH ITS OWN COPY OF THE LOGIC TESTS THE COPY, and the
   SYMPTOM IS WHAT MISDIRECTS. The externs keeper's self-test built
   its typedef map from an inline duplicate of the collection it
@@ -1074,6 +1085,26 @@ Runtime facts, ours to ratify:
   reading that change would have blinked. ONE DEFINITION, called by
   the tree and by its test; a keeper's fixture that cannot fail for
   the real reason is the untested instrument above, one level up.
+- MACHINERY BUILT AHEAD OF A DECISION BIASES THE DECISION TOWARD THE
+  SHAPE IT SERVES (lane A's, via lane C). The owner was asked whether
+  a program may mint a pointer from an integer, and a correct unused
+  `LLVMConstIntToPtr` wrapper was standing by for the constant-fold
+  route — which aims an integer CONSTANT at a pointer register, the
+  exact thing the pointer-constant law refuses. So the feature's
+  first legitimate use would have ARMED a law hours old, and someone
+  would have had to weaken it to let the feature through. A correct
+  unused wrapper is not inert: IT ARGUES. The capability landed as a
+  runtime row instead (`avra_ptr_at(address: int) -> ptr?`, one named
+  door, a nullable answer) and the guard never armed.
+- "THE PREDICTION DID NOT COME TRUE, AND HERE IS THE MECHANISM"
+  BEATS "IT CAME TRUE". A prediction that lands can be luck; one that
+  fails, explained, names a cause. The pointer-constant guard's entry
+  predicted it would arm the moment a pointer sentinel became
+  spellable. One is spellable now and it did NOT arm — because a mint
+  is a CALL, its answer reaches a pointer register through `CallRt`,
+  and no constant ever aims at one. That non-event with its mechanism
+  is the better receipt, and it exists only because someone went back
+  to check their own ledger entry against the tree.
 - A RECEIPT FROM ANOTHER TREE IS LABELLED AS ONE. The laws here carry
   instances because an instance is what makes a law APPLIED rather
   than agreed with — so the instances have to stay checkable. One
