@@ -735,6 +735,88 @@ edit re-derives the doc **and nothing else** — not `items`, not `sig`,
 not `typed`, not `lowered`. Documentation gets red-green incrementality
 that is strictly finer than the code's.
 
+**THE LAW IS WIDER THAN THIS FAMILY, AND BOTH LANES SHARPENED IT PAST MY
+FRAMING. LANDED IN CLAUDE.md AT `ceacb0d` BY LANE A.**
+
+I said "a query whose input is TEXT rather than STRUCTURE cannot depend
+on `parsed`." That is true and it **undersells the defect**, because the
+problem is not the consumer's input. **THE HASH DOES NOT COVER THE VALUE
+IT SUMMARISES.** `Parsed` is `{ store, stmts, source, voices }` — it
+carries the `SourceFile`'s whole TEXT, and the store's side tables carry
+every SPAN, which are byte offsets. `program_hash` (`workspace.av:313`)
+folds structural statement fingerprints **alone**, exactly as
+`core/nodes.av:3-5` intends: *"a node's identity is the hash of its
+structure alone: reformatting never changes a fingerprint."* So `settle`
+keeps `changed_at` on an unchanged hash **while the value genuinely
+changed.**
+
+So the class is not "doc comments are invisible to the cache." It is
+**any edit that moves text without changing structure** — a blank line, a
+reindent, an ordinary `//` — after which every later span is stale and a
+consumer that renders one **points at the wrong place and is certified
+fresh doing it.** A doc comment is merely the member that made it
+visible.
+
+The member that bites a user is **reformatting**. Reindent a file, rewrap
+a line, add a blank: `parsed` re-runs and mints NEW spans, `program_hash`
+is unchanged, `changed_at` does not move, and every dependent cell stays
+green — **holding diagnostics whose `Loc` is a byte offset into the OLD
+text.** The renderer resolves that stale `lo` against the CURRENT
+`SourceFile`, and the caret underlines the wrong line. A stale doc is
+inert and a reader can tell. **A diagnostic pointing confidently at the
+wrong line actively misleads, in the one artifact a user is trusting most
+at that moment.**
+
+**Lane B asked what happens when the file got SHORTER and declined to
+guess. READ, not probed** (`diagnostics/source.av:26-43`): `linecol`
+walks `line_starts` keeping the last start `<= offset`, so an offset past
+the end **clamps to the final line** and computes `col = offset -
+line_starts[last] + 1` — a column beyond that line's text. `line_text`
+then returns the last line intact. **It does not trap. It answers a
+plausible, wrong line and column**, which is the failure mode this tree's
+encoding law warns about: the out-of-range case was never written, so it
+is spent as a normal one.
+
+**AND MY FIX DOES NOT REACH IT — Lane A, and they are right.**
+`touch(source(ws, f))` correctly fixes the `docs` family. It does nothing
+for every other consumer of `parsed` that reads a span, **which is most
+of them.**
+
+**THE REAL FIX IS NOT ONE HASH, AND THIS IS THE PART TO ARGUE BEFORE
+ANYONE BUILDS INCREMENTAL EDITING.** Hashing the text restores soundness
+and destroys the property that makes the structural fingerprint worth
+having — that reformatting does not re-run typing. Those pull opposite
+ways **only while there is ONE cutoff.** Lane A's resolution: **THE
+CUTOFF MUST BE PER CONSUMER.** What a dependent actually READ decides
+which fingerprint may cut it off — a consumer that read only structure
+cuts off on the structural fold; one that read spans or text may not. So
+`parsed` owes **two fingerprints rather than one**. Recorded, not built:
+incremental editing does not exist yet, and a two-hash kernel today would
+be speculation with no consumer to prove it.
+
+Lane B's consumer-side statement of the same law stands as the rule to
+write at a site: ***a query whose answer carries SPANS or TEXT cannot
+depend on `parsed` alone, because `parsed`'s identity is deliberately
+blind to both.*** The blindness is CORRECT for incremental compilation
+and wrong for anything that renders source.
+
+Both instances are latent today for the same reason — `disarmed` kills
+the verifiers and a one-shot compile never re-edits — so this is a
+**design constraint for the LSP and watch surfaces**, not a bug to fix
+this week. Its consequence for us is concrete: **whatever key `docs` adds
+must be usable by the diagnostics path too**, never a doc-only side
+channel.
+
+**AND THE WAY IT WAS FOUND IS THE POINT.** It cannot fail today: compiles
+are one-shot, `disarmed` kills the verifiers at revision one, nothing
+edits. No test could have caught it and no reading of the kernel had. It
+surfaced because an outsider designed a new consumer **against** the
+kernel rather than reading it — which is this document's own untested-
+instrument law, arriving inside the memo kernel, found by the one method
+available. The two-revision fixture ships with `docs` because a keeper
+whose failure has never been witnessed is what this campaign has spent
+two days finding.
+
 **The hazard that goes first, from LANE A.** The LINE LAW lives in the
 lexer, and this change is inside it: breaks are dropped directly inside
 `(`/`[` and after a continuing operator. **A comment-only line is a blank
@@ -925,6 +1007,59 @@ the day the typer changed.
 `avra doc --verify-subset` compiles all 47, asserts each refuses with
 **that wording**, and fails the gate on any that now compiles — because a
 refusal that has become legal is a doc that is actively lying to me.
+
+**THE GATE BELONGS TO THE SLICE AUTHOR, NOT THE DOC AUTHOR — and that is
+a larger claim than freshness.** doc-subset simulated the bitwise slice's
+landing faithfully (each corpus file keeps its recorded `@refuses:` line
+while its program becomes one the compiler accepts) and ran the real
+driver:
+
+```
+STALE   bitwise-and — now COMPILES; the entry is lying
+STALE   bitwise-not — now COMPILES; the entry is lying
+...
+verified 0, failed 6            exit 1
+```
+
+**It fires in the merge that invalidates the entry, names the six files
+to delete, and reaches someone who has never heard of "The subset
+today."** The status quo is precisely the mechanism that produced all
+three of Part I's stale entries: the slice merges green, the entry keeps
+lying, and the next author writes the workaround it recommends. **Nobody
+is careless at any step** — which is the point, and why a keeper beats a
+discipline.
+
+The interval it closes is measured, not asserted: the F0102 rot window
+was **8.2 hours and 14 commits**, on a day four lanes were actively
+watching the tree.
+
+**THREE DESIGN CONSTRAINTS THE PROBES PAID FOR, each earned rather than
+reasoned:**
+
+1. **ASSERT WORDING AND BEHAVIOUR, NEVER AN F-CODE.** F0102 did not
+   vanish when the `?.`-method rule retired — **it exists and always
+   has**, registered at `codes.av:19` as `"build.failed" | "a builder
+   rejected its captures"`. The retired rule was never a registry row at
+   all; it was a hand-written `.Err(…)` string inside a builder, which
+   merely *surfaced* as F0102 because that is the generic code for any
+   builder rejection. **A verifier asserting "F0102 still exists" would
+   have passed that entry for all 8.2 hours.** Codes are shared and
+   outlive their rules.
+2. **ONE CORPUS FILE ASSERTS ONE CLAUSE.** Earned four separate times —
+   S2 lost 1 of 3 clauses, S3 1 of 2, C4 1 of 3, and `BYTES_SHAPE.md` 2
+   of 3. **A multi-clause entry rots clause by clause, and a file
+   asserting the surviving clause passes while the dead one keeps
+   lying.**
+3. **A KEEPER IS KEYED TO THE CLAIM, NOT TO THE FILE.** Lane C swept all
+   three ROADMAP entries asserting `ptr` was receive-only — correctly and
+   completely for the ROADMAP. The same claim was standing in a fourth
+   place, `docs/2026_09_05_BYTES_SHAPE.md:239-241`, **with a decision
+   hanging off it**: that page calls `SQLITE_TRANSIENT`'s `(void*)-1`
+   *unspellable* and concludes *"the driver must not offer a bind at
+   all."* Probed at `91b6b61`: `avra_ptr_at(0 - 1)` compiles, exit 0.
+   **A stale sentence was telling a live lane to withhold a feature.** A
+   sweep keyed to a file leaves the claim standing elsewhere; a keeper
+   keyed to the claim finds all four.
 
 **AND THE STRONGEST ARGUMENT FOR THE CORPUS TURNED OUT NOT TO BE
 STALENESS.** doc-subset's finding, and it reframes the whole rung: **a

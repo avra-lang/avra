@@ -21,9 +21,22 @@ export fn new_source_file(file: string, text: string) -> SourceFile {
     SourceFile { file: file, text: text, line_starts: starts }
 }
 
+// The compiler's own wreck, for a span that cannot be rendered.
+extern fn avra_trap(message: string)
+
 impl SourceFile {
-    /// The line and column at a byte offset.
+    /// The line and column at a byte offset. AN OFFSET OUTSIDE ITS
+    /// OWN TEXT IS A DEFECT, never a location: the scan below keeps
+    /// the LAST line at or before the offset, so a past-the-end
+    /// offset would answer the final line and a column past its end
+    /// — a plausible place, underlining the wrong code, with nothing
+    /// to say it is wrong. Spans are the compiler's own arithmetic,
+    /// so a bad one is a wreck and says so. The END of the text is a
+    /// real position: a span may close there.
     fn linecol(offset: int) -> LineCol {
+        if offset < 0 || offset > self.text.length {
+            avra_trap("a span reaches outside its own text — offset ${offset} of ${self.text.length} in ${self.file}")
+        }
         mut line = 0
         for i, start in self.line_starts {
             if start <= offset { line = i }

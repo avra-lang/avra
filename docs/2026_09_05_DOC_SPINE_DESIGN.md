@@ -1,15 +1,173 @@
 # The doc spine — D1, D2, D3, landable
 
 > **Status:** design, worked against the real tree. Every claim below
-> names its artifact. Base for every probe: commit `e046ba2`,
-> `build/avra` dated 2026-09-05 23:40 (2 064 224 bytes) — the binary
-> that answered, per the version-attribution law. Probes are marked
-> **PROBED** (output quoted), **READ** (a mechanism read from source,
-> file:line given), or **UNVERIFIED**.
+> names its artifact. Probes are marked **PROBED** (output quoted),
+> **READ** (a mechanism read from source, file:line given), or
+> **UNVERIFIED**.
+>
+> **Base: `312bd0d`**, `build/avra` 2026-09-06 00:10 (2 064 272 bytes).
+> **The tree moved twice under this design and the binary moved once.**
+> The first draft was probed at `e046ba2` against a binary of 2026-09-05
+> 23:40 (2 064 224 bytes); the lead's brief quoted `bd5c024`; HEAD is now
+> `312bd0d`. Every line number and every probe below was re-derived at
+> `312bd0d` against the binary standing now. This is the
+> version-attribution law doing its job three times in one session — a
+> receipt from any of those three bases is a historical document.
 >
 > Implements rungs D1–D3 of `2026_09_05_DOCUMENTATION_VISION.md`
 > Part VIII. Five findings change that document's Part V; they are
-> collected at the end.
+> collected at §5. Section A is a live defect found while probing and
+> is not part of the spine.
+
+---
+
+## A — PROBED FIRST: the line law, and a live defect in the code D1 touches
+
+Written before any design prose, on the lead's instruction and lane A's.
+The line law lives inside `collapse_breaks` (`lexer.av:362`) — the exact
+function D1's change sits next to — so if capturing doc runs shifted a
+break, every multi-line expression in the tree would change meaning
+silently and all at once.
+
+### A.1 The harness
+
+Each shape is one program written three ways: the marker line **absent**,
+the marker line as a **plain `//`**, and the marker line as a **doc
+`///`**. Three shapes (`s2`, `s3`, `s4`) are chosen so the two candidate
+parses differ in **validity** — if the break survived, the program is a
+syntax error — so "the three agree" is a claim about the parse and not
+merely "all three compile".
+
+**The first harness reported a false difference and I nearly explained
+it.** It diffed the rendered diagnostics, which carry line numbers, and
+inserting a comment line necessarily shifts them: `s8` reported
+`none≠plain` because one said `:2:5` and the other `:3:5`. Same code,
+same column, same token. The instrument was wrong, not the tree — which
+is "MEASURE WHAT A THING DOES BEFORE EXPLAINING WHY TWO DIFFER" catching
+its own author. The harness now normalizes `:<line>:` and the gutter, and
+compares exit codes separately.
+
+### A.2 Result — the eight shapes agree
+
+```
+SHAPE                              none   plain  doc     VERDICT
+s1_comment_only_line               0      0      0       AGREE
+s2_after_continuing_op             0      0      0       AGREE
+s3_inside_parens_after_comma       0      0      0       AGREE
+s4_only_line_in_list               0      0      0       AGREE
+s5_before_closing_brace            0      0      0       AGREE
+s6_before_else                     0      0      0       AGREE
+s7_before_chain_step               0      0      0       AGREE
+s8_deeper_indent_after_value       1      1      1       AGREE
+```
+
+**The comment-only line stays a blank line** (`s1`), and it stays one for
+`///` exactly as for `//` — the tree's own claim at
+`grammar/tests/lexer_test.av:110`, re-confirmed at `312bd0d`. Under D1
+that cannot change, because a doc line still emits no token and the
+newline after it still becomes a Break, exactly as today (§1.4).
+
+### A.3 THE DEFECT: a leading comment changes the parse, by its LENGTH
+
+While probing `line_indent` I found a live bug at `312bd0d`. It is not
+caused by D1 and D1 does not fix it, but it lives in the function D1
+touches and it fires on this tree's own house style.
+
+`collapse_breaks` seeds the enclosing line's indent from a **byte
+offset** and then compares it against a **character distance**:
+
+```
+365:    mut line_indent = if raw.is_empty() { 0 } else { raw[0].span.lo }
+372:            let next_indent = if j < raw.length { raw[j].span.lo - raw[j - 1].span.hi } else { 0 }
+374:            if boundary(raw, j) && ... && !continued_by(raw, j, next_indent > line_indent, out.last()!) {
+375:                line_indent = next_indent
+```
+
+`next_indent` is correct — a Break spans exactly its newline, so
+`raw[j].span.lo - raw[j-1].span.hi` is the next line's indent. The
+**seed** is not: with no leading comment `raw[0]` is the first real token
+at offset 0, but with one, `raw[0]` is the Break ending the comment line,
+whose `span.lo` is that line's **length**. Leading breaks never push
+(`out.is_empty()`), so `line_indent` is never corrected until the first
+break that *does* push — and that first decision is made in the wrong
+unit.
+
+**PROBED.** The `.name` chain-continuation rule reads
+`deeper = next_indent > line_indent`, so it flips:
+
+```
+$ printf '"  x  ".trim()\n    .length\n'              > lead_none.av
+$ printf '//! leading\n"  x  ".trim()\n    .length\n' > lead_bang.av
+none         EXIT=0
+plain        EXIT=1 error[F2043]: `.length` needs a known enum — nothing here says which
+doc          EXIT=1 error[F2043]: ...
+bang         EXIT=1 error[F2043]: ...
+```
+
+Without a leading comment the two lines are one method chain. With any
+leading comment — `//`, `///`, or the `//!` **every file in this tree
+carries** — the break survives, `.length` becomes its own statement, and
+it parses as a bare variant literal.
+
+**The mechanism was confirmed by a discriminating prediction, not by
+reading.** If the seed is the comment line's length, the bug must depend
+on that length: a leading comment shorter than the continuation's indent
+must leave the chain intact. Continuation indent is 4, so the flip must
+fall between 3 and 4 characters:
+
+```
+leading "//"         len=2   exit=0
+leading "//a"        len=3   exit=0
+leading "//ab"       len=4   exit=1
+leading "//abc"      len=5   exit=1
+leading "//abcd"     len=6   exit=1
+leading "//abcdefgh" len=10  exit=1
+```
+
+Exactly at the predicted boundary. **A method chain's continuation
+depends on the length of the file's first comment.**
+
+And it reaches a realistic file in this tree's own style:
+
+```
+$ cat real.av
+//! A module header, exactly as every file in this tree carries one.
+let words = "  alpha beta  ".trim()
+    .split(" ")
+let z = words.length
+
+$ ./avra check real.av
+error[F2043]: `.split` needs a known enum — nothing here says which
+  ╭─[real.av:3:5]
+3 │     .split(" ")
+
+$ sed '1d' real.av > real_noheader.av && ./avra check real_noheader.av; echo $?
+0
+```
+
+**Blast radius.** `line_indent` is only stale until the first *pushed*
+break, so exposure needs a `.name` continuation at a file's first pushed
+break. Real files open with `//!` then `use` lines, and no `use` is
+followed by a chain step, so the tree is not currently mis-parsed —
+`make gate` is green and the corpus pins the meanings. The exposure is an
+**entry file whose first statement is a chain**, which is what `real.av`
+above is.
+
+**This is not D1's to fix.** The one-line correction (seed the indent as
+a column, i.e. 0, since leading breaks always drop) changes how existing
+sources parse, so it is a slice with its own gate and its own corpus
+case. Riding it on D1 would mean a doc-comment change and a layout change
+landing together — and if anything then broke, neither could be
+exonerated. **Flagged to the lead as its own slice.**
+
+**What it does mean for D1** is that the wording "a comment is
+whitespace" is *false today* and must not be written into the design. The
+tree's own test says a comment-only line is a blank line
+(`lexer_test.av:110`) and that is true for **break counting**; it is not
+true for the **`line_indent` seed**. D1's invariant is narrower and
+provable: the doc path leaves `s.token` null, so `raw` is byte-identical,
+so every layout decision — including this defective one — is bit-for-bit
+what it is today.
 
 ---
 
@@ -40,7 +198,7 @@ directories, but `features/tests/` is a test directory
 ### The change
 
 `LanguageFeature` already carries everything a feature page needs:
-`name`, `docs`, `gram: Grammar` (`features/mod.av:113-124`), and
+`name`, `docs`, `gram: Grammar` (`features/mod.av:112-124`), and
 `diags: List<DiagCode>`. `render_grammar(g: Grammar) -> string`
 (`grammar/render.av:8`) renders any `Grammar`, merged or fragment —
 `avra grammar` calls it on the merged one (`commands/grammar.av`),
@@ -117,9 +275,9 @@ arm that quietly answers for an address kind it was not written for.
 ### 1.2 One scanner, confirmed
 
 **READ.** `scan_step` (`lexer.av:303`) is called from exactly one
-place, `lex_with` (`lexer.av:434`), which both flavors enter:
-`lex_grammar` = `lex_with(src, rule_boundary, false)` (`lexer.av:500`),
-`lex_source` = `lex_with(src, line_boundary, true)` (`lexer.av:514`).
+place, `lex_with` (`lexer.av:435`), which both flavors enter:
+`lex_grammar` = `lex_with(src, rule_boundary, false)` (`lexer.av:502`),
+`lex_source` = `lex_with(src, line_boundary, true)` (`lexer.av:513`).
 The comment arm is not behind `interpolate` or any other mode. So
 **yes, still one scanner, and doc capture necessarily applies to both
 flavors.**
@@ -197,7 +355,7 @@ fn kept(d: DocLine, next: int) -> ScanStep {
 
 `doc_marker` is guarded by `c == 47`, so it runs at the tree's 1 534
 plain comments, 6 894 doc lines and division sites — **not once per
-character**, which is what the file's own note at `lexer.av:277-280`
+character**, which is what the file's own note at `lexer.av:276-279`
 warns about (*"this is the scanner's inner loop"*). It is named once
 and read twice, which is the idiom bar's rule 3, not a violation of
 it.
@@ -221,7 +379,7 @@ at `lexer.av:485`.
 
 ### 1.4 Why layout cannot change — a proof, not a hope
 
-**READ.** In `lex_with` (`lexer.av:434-486`) the token list `raw` is
+**READ.** In `lex_with` (`lexer.av:435-486`) the token list `raw` is
 written at exactly one site:
 
 ```
@@ -239,7 +397,7 @@ today on the `skip` path. Every layout decision reads `raw`:
 
 That is the whole reason to put the doc on its own channel rather than
 give it a `TokenKind`. A `TokenKind.Doc` would cost only one arm
-(`lit_matches`, `lexer.av:35`, is the tree's **only** exhaustive match
+(`lit_matches`, `lexer.av:34`, is the tree's **only** exhaustive match
 over `TokenKind` — checked), but it would put a doc value *into the
 token stream*, where the layout rules are, and the safety would then
 rest on every path remembering to divert it. A typed side channel
@@ -261,42 +419,19 @@ are what will be asked to keep passing:
 | `lexer_test.av:113` | a comment at end of input needs no newline | yes |
 | `lexer_test.av:118` | a lone `/` is division | yes — `doc_marker` requires two more characters |
 
-**PROBED — comments in the delicate layout positions still parse, and
-these are the cases a doc token would have broken:**
-
-```
-$ cat p2.av
-fn f(a: int,
-     // a comment inside the paren list
-     b: int) -> int { a + b }
-
-fn chain(s: string) -> string {
-    s.trim()
-        // a comment before a chain step
-        .trim()
-}
-
-fn els(c: bool) -> int {
-    if c { 1 }
-    // a comment before else
-    else { 2 }
-}
-
-let xs = [1,
-    // inside a list literal
-    2]
-let y = f(1, 2) + chain("a").length + els(true) + xs.length
-$ ./avra check p2.av; echo "EXIT=$?"
-EXIT=0
-```
-
-Each of those depends on `continued_by`/`continues` seeing the *next
-real token*, not the comment. Under §1.4 they keep seeing it. **These
-four shapes, spelled with `///` instead of `//`, are D1's required new
-tests** — they are the exact cases that fail if a later change ever
+**The layout probes are §A**, which supersedes an earlier and weaker
+version of them: eight shapes, each written three ways (absent / `//` /
+`///`), three of them chosen so the alternative parse is a syntax error.
+All eight agree. **Those eight, spelled with `///`, are D1's required new
+tests** — they are precisely the cases that fail if a later change ever
 routes a doc line into `raw`. Per K0, D1 also ships the fixture that
-*makes* the guard fail: a `///` pushed into `raw` must turn `p2.av`
-red.
+*makes* the guard fail: a `///` pushed into `raw` must turn them red.
+
+§A also records why the answer here is "nothing breaks" rather than "a
+comment is whitespace": at `312bd0d` a comment is **not** whitespace —
+a leading one changes the parse (§A.3). D1's invariant is the narrower,
+provable one from §1.4, and it holds over the defect as well as over the
+correct behaviour.
 
 **One token-count assertion exists** —
 `lexer_test.av:196`, `lex_source("9223372036854775808").tokens.length
@@ -318,6 +453,28 @@ line-oriented text scanner reads that as a file-level doc comment for
 `scan_raw_block` (`lexer.av:134`) takes the block's body to its
 matching brace as one `Str` token. Zero such markers exist today, and
 after D1 they still would not reach `scan_step`.
+
+**LANE B's measurement holds, its reason does not — and the difference
+is a test D1 must keep.** Lane B reports that no `///` or `//!` appears
+inside a `grammar { … }` **or** a `table<Row> { … }` literal anywhere in
+the packages, and gives the reason that "those two sub-languages lex
+their own bodies". Both halves of the measurement reproduce here at
+`312bd0d` — `grammar` literals: 0, `table<Row>` literals: 0 — but only
+`grammar` lexes its own body. `opens_grammar` (`lexer.av:122-128`) fires
+on one word:
+
+```avra
+    before.kind == TokenKind.Name && before.text == "grammar"
+```
+
+A `table<Row> { … }` body is lexed **normally**, character by character,
+by the same `scan_step`. So a `///` written inside a table literal *would*
+become a doc line under D1. It is zero **by measurement**, not zero **by
+construction**, and the two are not interchangeable: an implementer who
+took lane B's reason at face value would skip the test that is actually
+load-bearing. D1 ships a case putting a `///` inside a `table<Row>` and
+pinning what happens to it (it is trivia inside a declaration's span, so
+§2.3's member rule holds it and F0911 stays silent).
 
 Together these are the argument for D1 over "parse the comments with a
 script": **the lexer is the only thing in the tree that already knows a
@@ -399,12 +556,12 @@ half-registered"*). Adding `Docs` after `Folded` costs exactly:
 | 2 | `workspace.av:135` `fn ordinal` | one arm — **and renumber `Analysis`…`Receivers`** |
 | 3 | `workspace.av:156` `fn families()` | one element, in ordinal position |
 | 4 | `workspace.av:262` `fn refetched` | one arm: `.Docs -> touch(docs(ws, file_at(arg)))` |
-| 5 | `workspace.av:57` `type Workspace` | one field: `doc_facts: Table<DocFacts>` |
-| 6 | `workspace.av:201` `fn built` | one initializer: `doc_facts: new_table()` |
+| 5 | `workspace.av:59` `type Workspace` | one field: `doc_facts: Table<DocFacts>` |
+| 6 | `workspace.av:196` `fn built` | one initializer: `doc_facts: new_table()` |
 | 7 | `workspace.av` (new) | the query fn itself |
 
 Seven sites, four of them one line. The ordinal renumbering is not
-optional and not risky: `built` (`workspace.av:212`) refuses at
+optional and not risky: `built` (`workspace.av:207`) refuses at
 startup if the registration order and `ordinal` disagree —
 `"defect: the families registered out of ordinal order"`. **The
 existing keeper catches a botched renumber; nothing else needs to.**
@@ -412,6 +569,55 @@ existing keeper catches a botched renumber; nothing else needs to.**
 `docs` may sit anywhere after `Items`. Placing it at ordinal 10 (after
 `Folded`, before `Analysis`) keeps the enum in pipeline order, which is
 what its doc comment promises.
+
+**THE `disarmed` QUESTION, and the answer is: no fourth line.**
+`disarmed` (`workspace.av:223-230`) is a hand-written list of this
+workspace's cycle sources, and the lead is right that a hand-written
+registry silently forgetting its next member is the law this campaign
+keeps meeting. But its membership rule is narrower than "every table":
+
+```avra
+export fn disarmed(mut ws: Workspace) {
+    ws.db.disarm()
+    ws.decls.disarm()
+    // an Analysis holds a closure over `ws`: the table of them is
+    // the second loop through the same box
+    ws.analyses = new_table()
+    ws.closed = true
+}
+```
+
+The comment names the rule: `ws.analyses` is cleared **because `Analysis`
+holds a closure**, and it does — `program: fn() -> Program`
+(`language/analysis.av:18`), the only `fn` field in the struct. The
+Workspace's **thirteen other** value tables (`sources`, `manifests`,
+`externs`, `programs`, `file_items`, `module_names`, `visibles`,
+`name_facts`, `sig_voices`, `decl_facts`, `method_clashes`, `folds`,
+`units`) are pure data and none is cleared.
+
+`DocFacts` as designed in §2.2 is pure data — a nullable run, two
+tables of runs, and `Voices`. **So the doc table joins its thirteen
+data-only siblings and `disarmed` does not change.** The family's
+*verifier* does close over `ws`, and that is discharged by
+`ws.db.disarm()`, the first line, at no cost to this design.
+
+The lead's directive — *"put the doc table inside `ws.db` if you possibly
+can"* — cannot be followed, and should not be: the kernel's own contract
+forbids it. `query/db.av:14`: *"Values live in the families' own typed
+tables; the kernel holds only bookkeeping."* Putting a typed value table
+inside `Db` would make the kernel language-aware.
+
+So the landmine is not armed — **but it is worth naming the rule at the
+site**, because that is what makes it stay unarmed. The line D2 should
+add to `disarmed`'s comment is the membership test, not a doc entry:
+
+> this list is not every table — it is every table whose VALUE holds a
+> closure over `ws`. A table of plain data cannot make a cycle.
+
+**The invariant this design owes back:** `DocFacts` holds data only. The
+day it gains a lazily-computed field backed by a closure over `ws` — a
+`render: fn() -> string`, say — it joins the list, and nothing but this
+sentence will say so.
 
 > **Cheaper alternative, and why it is refused.** `docs` could be a
 > plain memo-free function over `parsed`+`items`. It would work and
@@ -608,7 +814,7 @@ alone: reformatting never changes a fingerprint."* `alloc_stmt`
 arena, never to the hash.
 
 **So editing a doc comment does not move `parsed`'s hash.** And the
-kernel's early cutoff (`query/db.av:154-162`) keeps `changed_at` when a
+kernel's early cutoff (`query/db.av:155-163`) keeps `changed_at` when a
 recomputed hash is unchanged, while `ask` (`db.av:106-119`) marks a
 cell green when no dep's `changed_at` exceeds its own `verified_at`.
 
@@ -649,7 +855,7 @@ comment re-runs `parsed` and `docs` and nothing else — not `items`, not
 function and exactly one doc page re-derives"*; the true property is
 also *"change one doc and nothing but the doc re-derives."*
 
-**Why it is invisible today.** `disarmed` (`workspace.av:224-233`)
+**Why it is invisible today.** `disarmed` (`workspace.av:223-230`)
 replaces every verifier with `never_verify` once an analysis has run,
 and nothing edits a live workspace — `workspace.av:64-67` says so
 directly: *"A host that changes under a running workspace (Era IV's
@@ -743,13 +949,13 @@ re-measured when the law moves.
 
 **THE ATTACHMENT MUST EXCLUDE `DeclKind.Main`, and here is why.**
 `Main` is minted with `stmts.first() ?? no_stmt()` as its statement
-(`decls.av:216`), and `decl_span` returns `store.stmt_span(x.stmt)` for
+(`decls.av:217`), and `decl_span` returns `store.stmt_span(x.stmt)` for
 every kind but `Builtin`, `Default` and `Case` (`decls.av:276-281`).
 So **`decl_span(Main)` is non-null and is the FIRST STATEMENT's span**
 — usually a `use` line. A `///` run above a file's first statement
 would otherwise attach to a synthetic declaration named `main` that
 spans one `use`, which is both wrong and invisible. `owns_a_range`
-already excludes `Main` for the arena-range walk (`decls.av:268`); the
+already excludes `Main` for the arena-range walk (`decls.av:269`); the
 attachment excludes it for the same reason and says so at the site.
 
 *(values.av's own run survives as a true positive either way — its
@@ -776,6 +982,109 @@ put in the ratchet itself. D6's baseline must be produced by the
 compiler, over `DeclId`s, listing **sites and never counts**
 (DOGFOODING's first law). Methods inside exported impls, which have
 `DeclId`s and are part of a package's surface, are in neither figure.
+
+### 2.8 The freshness door exists — and it is NOT the docs family's hash
+
+Lane C is right that D7 must not invent a hash, and **one detail of its
+message is wrong in a way that would not compile.**
+
+**Verified at `312bd0d`.** `fn stmt_fingerprint(id: StmtId) -> int`
+exists at `core/nodes.av:664`, is exercised by nine assertions in
+`core/tests/nodes_test.av:112-164`, and is maintained: `restamp(s, tag)`
+(`nodes.av:637-639`) folds a mark into an existing fingerprint, called
+from `mark_mutating` for `mut fn` (`nodes.av:616`) and from `mark_once`
+for `once fn` (`nodes.av:627`) — exactly the two marks lane C named, and
+the reason two declarations differing only by a mark stopped hashing
+alike.
+
+**The correction.** Lane C says *"`decls.decl(d).root` gives the root
+`StmtId`"*. It does not — `Decl.root` is an **`ExprId?`**, "the
+expression a body IS"; the statement is `Decl.stmt`:
+
+```
+decls.av:24: export type Decl = { id: DeclId, file: FileId, stmt: StmtId, name: string,
+                                  kind: DeclKind, exported: bool, owner: string,
+                                  parent: DeclId?, nested: bool, root: ExprId?, lo: int, hi: int }
+```
+
+The spelling is `store.stmt_fingerprint(decls.decl(d).stmt)`. Handing
+`root` to a `StmtId` seat is F2000, which CLAUDE.md already lists.
+
+**And the caveat splits freshness in two, exactly as lane C says.**
+`fingerprint_stmt` (`nodes.av:865`) is structural over the written
+statement — `.Let(name, ty, value) -> fp(5, [fp_str(name), type_fp(ty),
+…])`. So:
+
+| question | mechanism | why |
+|---|---|---|
+| **did the SOURCE move?** | `stmt_fingerprint(decl.stmt)` | syntactic, cheap, already maintained and already tested |
+| **did the MEANING move?** | the kernel's dependency edges | a declaration whose type moved because a type it *names* moved has an unchanged statement, so its own fingerprint is unchanged |
+
+The second is the better reuse and it is already built: `sig(ws, d)` is a
+cell whose deps are discovered by execution (`db.ask`/`db.settle`,
+`query/db.av:106,155`), so "this declaration's signature changed" is a
+`changed_at` comparison, not a hash anyone has to design. D7 should ask
+the kernel, and use `stmt_fingerprint` only for "the prose was written
+against *this text*".
+
+**One thing lane C's door does NOT replace: the `docs` family's own
+settle hash.** §2.4 is the reason — `stmt_fingerprint` is precisely the
+hash that *does not move* when a comment changes, which is what makes the
+stale-doc cell possible. `docs` settles on a hash of the **doc text**;
+using a statement fingerprint there would rebuild the very bug §2.4
+exists to close. The two hashes answer opposite questions and must stay
+separate.
+
+### 2.9 A doc is a fact EVERY BODY MAY READ — so it is answered per DEFINER
+
+CLAUDE.md: *a fact every body may read is answered from the PROGRAM,
+never from a pass's fact tables*, because a fact table is right in the
+body that recorded it and wrong everywhere else. A doc surface rendering
+`@std/io` while compiling something else must read the **defining**
+file's docs, not the importing file's.
+
+**The design already satisfies this, and the reason is one field.**
+`Decl.file` is a `FileId` (`decls.av:24`), set at mint from the file
+being admitted (`decls.av:336`, `Decl { … file: f … }`), so it is the **defining** file for every
+declaration, including one reached through a `use`. The lookup is
+therefore keyed by the definer and never by the asker:
+
+```avra
+/// A declaration's doc, wherever it was reached from: asked of the file
+/// that DECLARED it. A doc read from the importing file's facts would be
+/// right in that file and wrong in every other.
+fn doc_of(ws: Workspace, d: DeclId) -> DocRun? {
+    docs(ws, decl_at(ws, d).file).for_decl(d)
+}
+```
+
+**The case, written before the prose, as lane A asked.** It is a
+two-file memory host — the tests' host (`workspace.av:33`) — where the
+symbol is *defined* in one file and *rendered from* another:
+
+```avra
+spec "docs across a module boundary" {
+    given "a symbol defined in one file and imported by another" {
+        then "the doc comes from the DEFINING file, not the importer" {
+            let ws = workspace_over({
+                "/r/avra.toml": "[package]\nname = \"r\"\n",
+                "/r/src/lib.av":  "/// Trims both ends.\nexport fn trim2(s: string) -> string { s.trim() }\n",
+                "/r/src/main.av": "use lib.{trim2}\nlet z = trim2(\" a \")\n",
+            })
+            // the DeclId is reached from main.av's namespace; its doc must
+            // still be lib.av's, and `docs(main)` must hold nothing for it
+            let d: DeclId = decl_named(ws, "trim2")
+            doc_of(ws, d)!.text(ws) == "Trims both ends." &&
+                docs(ws, file_id(ws, "/r/src/main.av")).for_decl(d) == null
+        }
+    }
+}
+```
+
+The second conjunct is the half that matters: it asserts the importing
+file's `DocFacts` is **empty** for that declaration, so a future
+implementation cannot pass by accidentally recording the doc on whoever
+asked.
 
 ---
 
@@ -870,6 +1179,15 @@ it fails at `make gate`, not in six weeks. The **silent** risk in D2 is
 the one line in this design that ships with a fixture whose only job is
 to prove the check can go red.
 
+**Two sequencing facts from the lead, recorded.** The bitwise-operator
+slice adds character arms to the *same* `when` in `scan_step` that D1
+edits, and it lands first — D1 rebases onto it. That costs this design
+nothing: the arm D1 adds is keyed on `c == 47`, which no bitwise
+operator uses (`&` 38, `^` 94, `~` 126), so the two changes touch
+disjoint arms of one `when`. And §A.3's `line_indent` fix, if the lead
+takes it, must **not** ride D1 — a layout change and a lexer change
+landing together leave neither exonerable if something breaks.
+
 **The syntax-change protocol does not apply.** D1 changes the lexer but
 adds no syntax: no source file in the tree becomes unparseable, and no
 existing source needs rewriting. `cp build/avra build/avra.pre` is
@@ -892,7 +1210,7 @@ vision's Part IX coordination ask.**
 2. **`docs` must depend on `source`, not on `parsed` alone.** A doc
    edit does not move `program_hash` (`workspace.av:319`, structural
    fingerprints, `core/nodes.av:3-5`), so the kernel's early cutoff
-   (`query/db.av:154-162`) marks a `parsed`-only `docs` cell green over
+   (`query/db.av:155-163`) marks a `parsed`-only `docs` cell green over
    stale prose. One line fixes it; it ships with the fixture that makes
    it fail. **The corrected property is stronger than the claimed one:
    a doc edit re-derives the doc and nothing else.**
@@ -929,8 +1247,46 @@ vision's Part IX coordination ask.**
 
 ---
 
+## 5b — What this design does not cover
+
+**TWO ROT MECHANISMS, and the spine only serves one.** Lane B's point,
+recorded here and deliberately not solved: prose rots when **the world
+moves**, and a `///` also rots when **its subject dies**. Lane D's
+`@std/toml` `code_at` is the instance — a correct-looking doc on a
+function left unused after a sweep moved its callers. Nothing about the
+doc was wrong; it described something nobody calls. That needs a
+**liveness** check, not a **freshness** one, and §2.8's two mechanisms
+answer neither: `stmt_fingerprint` says the text is unchanged and the
+kernel's edges say the meaning is unchanged. Both are true of a dead
+function.
+
+**The door the spine owes it is open.** A `DeclId` carrying docs can be
+asked whether anything references it, with what exists:
+`NameFacts.bindings` is a `List<Binding?>` keyed by `ExprId`
+(`features/facts.av:47`), and `Binding.Decl(decl: DeclId)`
+(`core/nodes.av:102`) is what a resolved reference to a declaration
+*is*. So "does anything reference `d`?" is a scan of `resolved(ws, f)`
+over the workspace's files for `.Decl(d)` — per-file, memoized, and
+keyed the right way round. **D2 does not build that; it only guarantees
+the `DeclId` a doc attaches to is the same `DeclId` a reference
+resolves to,** which is what makes the keeper the lead is adding a query
+rather than a re-parse.
+
+**Also out of scope, named so nobody assumes otherwise:** member
+addressing (§2.3 — enum variants and struct fields need ids before a doc
+can point at one), the `F0910` coverage lint and its ratchet (D6), the
+`line_indent` defect (§A.3 — its own slice), and every projection past
+the terminal one.
+
+---
+
 ## 6 — Left unverified
 
+- **Whether the tree is currently mis-parsed by §A.3.** Argued not —
+  the first pushed break in every real file follows a `use` line, and
+  `make gate` is green — but "no file relies on the buggy branch" is
+  unfalsifiable from outside the compiler. A lane holding the lock could
+  settle it by fixing the seed and diffing the corpus's `.expected`.
 - **The scan cost of `doc_marker`** (§1.7). Predicted inside the noise;
   needs `make census CMD="check packages/std-avrac"` before and after,
   by a lane holding the machine lock.
