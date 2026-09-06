@@ -6225,11 +6225,11 @@ declare ptr @avra_llvm_pointer_type(ptr)
 
 declare ptr @avra_llvm_void_type(ptr)
 
-declare ptr @avra_llvm_function_type(ptr, ptr, i64, i64)
+declare ptr @avra_llvm_function_type(ptr, ptr, i32, i32)
 
-declare ptr @avra_llvm_type_array_new(i64)
+declare ptr @avra_llvm_type_array_new(i32)
 
-declare void @avra_llvm_type_array_set(ptr, i64, ptr)
+declare void @avra_llvm_type_array_set(ptr, i32, ptr)
 
 declare void @avra_llvm_type_array_free(ptr)
 
@@ -6239,27 +6239,27 @@ declare ptr @avra_llvm_append_basic_block(ptr, ptr, ptr)
 
 declare void @avra_llvm_position_at_end(ptr, ptr)
 
-declare ptr @avra_llvm_const_int(ptr, i64, i64)
+declare ptr @avra_llvm_const_int(ptr, i64, i32)
 
 declare ptr @avra_llvm_const_pointer_null(ptr)
 
-declare ptr @avra_llvm_struct_type(ptr, ptr, i64)
+declare ptr @avra_llvm_struct_type(ptr, ptr, i32)
 
 declare ptr @avra_llvm_get_undef(ptr)
 
-declare ptr @avra_llvm_build_insert_value(ptr, ptr, ptr, i64, ptr)
+declare ptr @avra_llvm_build_insert_value(ptr, ptr, ptr, i32, ptr)
 
-declare ptr @avra_llvm_build_extract_value(ptr, ptr, i64, ptr)
+declare ptr @avra_llvm_build_extract_value(ptr, ptr, i32, ptr)
 
 declare ptr @avra_llvm_build_add(ptr, ptr, ptr, ptr)
 
 declare ptr @avra_llvm_build_sub(ptr, ptr, ptr, ptr)
 
-declare ptr @avra_llvm_build_icmp(ptr, i64, ptr, ptr, ptr)
+declare ptr @avra_llvm_build_icmp(ptr, i32, ptr, ptr, ptr)
 
 declare ptr @avra_llvm_build_global_string_ptr(ptr, ptr, ptr)
 
-declare ptr @avra_llvm_build_call(ptr, ptr, ptr, ptr, i64, ptr)
+declare ptr @avra_llvm_build_call(ptr, ptr, ptr, ptr, i32, ptr)
 
 declare ptr @avra_llvm_build_cond_br(ptr, ptr, ptr, ptr)
 
@@ -6269,15 +6269,15 @@ declare ptr @avra_llvm_build_phi(ptr, ptr, ptr)
 
 declare void @avra_llvm_add_incoming(ptr, ptr, ptr)
 
-declare ptr @avra_llvm_build_switch(ptr, ptr, ptr, i64)
+declare ptr @avra_llvm_build_switch(ptr, ptr, ptr, i32)
 
 declare void @avra_llvm_add_case(ptr, ptr, ptr)
 
 declare ptr @avra_llvm_build_ret(ptr, ptr)
 
-declare ptr @avra_llvm_value_array_new(i64)
+declare ptr @avra_llvm_value_array_new(i32)
 
-declare void @avra_llvm_value_array_set(ptr, i64, ptr)
+declare void @avra_llvm_value_array_set(ptr, i32, ptr)
 
 declare void @avra_llvm_value_array_free(ptr)
 
@@ -6315,7 +6315,7 @@ declare ptr @avra_llvm_get_named_function(ptr, ptr)
 
 declare ptr @avra_llvm_cast_to_type(ptr, ptr, ptr)
 
-declare ptr @avra_llvm_get_param(ptr, i64)
+declare ptr @avra_llvm_get_param(ptr, i32)
 
 declare ptr @avra_llvm_fn_type_of(ptr)
 
@@ -150015,19 +150015,19 @@ entry:
   %10 = call ptr @avra_llvm_append_basic_block(ptr %0, ptr %9, ptr getelementptr inbounds (i8, ptr @.str.5133, i64 16))
   call void @avra_llvm_position_at_end(ptr %2, ptr %10)
   %11 = call ptr @avra_llvm_get_named_function(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.5134, i64 16))
-  %12 = call ptr @avra_llvm_value_array_new(i64 2)
-  %13 = call ptr @avra_llvm_get_param(ptr %9, i64 0)
+  %12 = call ptr @avra_llvm_value_array_new(i32 2)
+  %13 = call ptr @avra_llvm_get_param(ptr %9, i32 0)
   %14 = call ptr @avra_llvm_int64_type(ptr %0)
   %15 = call ptr @avra_llvm_build_zext(ptr %2, ptr %13, ptr %14, ptr getelementptr inbounds (i8, ptr @.str.5135, i64 16))
-  call void @avra_llvm_value_array_set(ptr %12, i64 0, ptr %15)
-  %16 = call ptr @avra_llvm_get_param(ptr %9, i64 1)
-  call void @avra_llvm_value_array_set(ptr %12, i64 1, ptr %16)
+  call void @avra_llvm_value_array_set(ptr %12, i32 0, ptr %15)
+  %16 = call ptr @avra_llvm_get_param(ptr %9, i32 1)
+  call void @avra_llvm_value_array_set(ptr %12, i32 1, ptr %16)
   %17 = call ptr @avra_llvm_fn_type_of(ptr %11)
-  %18 = call ptr @avra_llvm_build_call(ptr %2, ptr %17, ptr %11, ptr %12, i64 2, ptr getelementptr inbounds (i8, ptr @.str.5136, i64 16))
+  %18 = call ptr @avra_llvm_build_call(ptr %2, ptr %17, ptr %11, ptr %12, i32 2, ptr getelementptr inbounds (i8, ptr @.str.5136, i64 16))
   call void @avra_llvm_value_array_free(ptr %12)
-  %19 = call ptr @avra_llvm_value_array_new(i64 0)
+  %19 = call ptr @avra_llvm_value_array_new(i32 0)
   %20 = call ptr @avra_llvm_fn_type_of(ptr %3)
-  %21 = call ptr @avra_llvm_build_call(ptr %2, ptr %20, ptr %3, ptr %19, i64 0, ptr getelementptr inbounds (i8, ptr @.str.5137, i64 16))
+  %21 = call ptr @avra_llvm_build_call(ptr %2, ptr %20, ptr %3, ptr %19, i32 0, ptr getelementptr inbounds (i8, ptr @.str.5137, i64 16))
   call void @avra_llvm_value_array_free(ptr %19)
   %22 = call ptr @avra_llvm_build_ret(ptr %2, ptr %21)
   %23 = call i64 @avra_llvm_verify_function(ptr %9)
@@ -150071,7 +150071,8 @@ entry:
   store ptr null, ptr %slot1, align 8
   %slot = alloca i64, align 8
   %5 = call i64 @avra_array_len(ptr %3)
-  %6 = call ptr @avra_llvm_type_array_new(i64 %5)
+  %narrow = trunc i64 %5 to i32
+  %6 = call ptr @avra_llvm_type_array_new(i32 %narrow)
   %7 = call i64 @avra_array_len(ptr %3)
   store i64 0, ptr %slot, align 8
   br label %lhead
@@ -150090,9 +150091,10 @@ lbody:                                            ; preds = %lhead
   %boxed = inttoptr i64 %8 to ptr
   store ptr %boxed, ptr %slot1, align 8
   %ld3 = load ptr, ptr %slot1, align 8
-  call void @avra_llvm_type_array_set(ptr %6, i64 %ld2, ptr %ld3)
-  %ld4 = load i64, ptr %slot, align 8
-  %add = add i64 %ld4, 1
+  %narrow4 = trunc i64 %ld2 to i32
+  call void @avra_llvm_type_array_set(ptr %6, i32 %narrow4, ptr %ld3)
+  %ld5 = load i64, ptr %slot, align 8
+  %add = add i64 %ld5, 1
   store i64 %add, ptr %slot, align 8
   br label %lhead
 
@@ -150105,7 +150107,9 @@ else:                                             ; preds = %lexit
 endif:                                            ; preds = %else, %then
   %regval = phi i64 [ 1, %then ], [ 0, %else ]
   %9 = call i64 @avra_array_len(ptr %3)
-  %10 = call ptr @avra_llvm_function_type(ptr %2, ptr %6, i64 %9, i64 %regval)
+  %narrow6 = trunc i64 %9 to i32
+  %narrow7 = trunc i64 %regval to i32
+  %10 = call ptr @avra_llvm_function_type(ptr %2, ptr %6, i32 %narrow6, i32 %narrow7)
   %11 = call ptr @avra_llvm_add_function(ptr %0, ptr %1, ptr %10)
   call void @avra_llvm_type_array_free(ptr %6)
   call void @avra_rc_release(ptr %3)
@@ -150173,7 +150177,8 @@ lexit:                                            ; preds = %lhead
 lbody:                                            ; preds = %lhead
   %18 = call ptr @avra_cell_unique(ptr %slot)
   %ld2 = load i64, ptr %slot1, align 8
-  %19 = call ptr @avra_llvm_get_param(ptr %7, i64 %ld2)
+  %narrow = trunc i64 %ld2 to i32
+  %19 = call ptr @avra_llvm_get_param(ptr %7, i32 %narrow)
   %slot3 = ptrtoint ptr %19 to i64
   call void @avra_array_push(ptr %18, i64 %slot3)
   %ld4 = load i64, ptr %slot1, align 8
@@ -150575,7 +150580,7 @@ else:                                             ; preds = %arm1
 
 endif:                                            ; preds = %else, %then
   %regval = phi i64 [ 1, %then ], [ 0, %else ]
-  %105 = call ptr @avra_llvm_const_int(ptr %9, i64 %regval, i64 0)
+  %105 = call ptr @avra_llvm_const_int(ptr %9, i64 %regval, i32 0)
   call void @avra_rc_retain(ptr %0)
   %106 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Edefine"(ptr %0, ptr %105)
   br label %endswitch
@@ -150920,13 +150925,13 @@ else:                                             ; preds = %entry
 
 endif:                                            ; preds = %else, %postret
   %regval = phi i64 [ 0, %postret ], [ 0, %else ]
-  %5 = call ptr @avra_llvm_type_array_new(i64 2)
+  %5 = call ptr @avra_llvm_type_array_new(i32 2)
   %6 = call ptr @avra_llvm_int1_type(ptr %0)
-  call void @avra_llvm_type_array_set(ptr %5, i64 0, ptr %6)
+  call void @avra_llvm_type_array_set(ptr %5, i32 0, ptr %6)
   call void @avra_rc_retain(ptr %1)
   %7 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ell_type_of"(ptr %0, ptr %1, i64 %2)
-  call void @avra_llvm_type_array_set(ptr %5, i64 1, ptr %7)
-  %8 = call ptr @avra_llvm_struct_type(ptr %0, ptr %5, i64 2)
+  call void @avra_llvm_type_array_set(ptr %5, i32 1, ptr %7)
+  %8 = call ptr @avra_llvm_struct_type(ptr %0, ptr %5, i32 2)
   call void @avra_llvm_type_array_free(ptr %5)
   call void @avra_rc_release(ptr %1)
   ret ptr %8
@@ -151115,7 +151120,8 @@ lexit:                                            ; preds = %lhead
   %17 = call i64 @avra_array_get(ptr %9, i64 %16)
   %boxed13 = inttoptr i64 %17 to ptr
   %18 = call i64 @avra_array_len(ptr %2)
-  %19 = call ptr @avra_llvm_build_switch(ptr %boxed10, ptr %boxed12, ptr %boxed13, i64 %18)
+  %narrow = trunc i64 %18 to i32
+  %19 = call ptr @avra_llvm_build_switch(ptr %boxed10, ptr %boxed12, ptr %boxed13, i32 %narrow)
   %20 = call i64 @avra_array_get(ptr %0, i64 0)
   %boxed14 = inttoptr i64 %20 to ptr
   %21 = call ptr @avra_llvm_int64_type(ptr %boxed14)
@@ -151167,7 +151173,7 @@ lbody21:                                          ; preds = %lhead17
   %30 = call i64 @avra_array_get(ptr %2, i64 %ld22)
   store i64 %30, ptr %slot16, align 8
   %ld23 = load i64, ptr %slot16, align 8
-  %31 = call ptr @avra_llvm_const_int(ptr %21, i64 %ld23, i64 1)
+  %31 = call ptr @avra_llvm_const_int(ptr %21, i64 %ld23, i32 1)
   %32 = call i64 @avra_array_get(ptr %9, i64 %ld22)
   %boxed24 = inttoptr i64 %32 to ptr
   call void @avra_llvm_add_case(ptr %19, ptr %31, ptr %boxed24)
@@ -151248,7 +151254,7 @@ entry:
   %3 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed1 = inttoptr i64 %3 to ptr
   %4 = call ptr @avra_llvm_return_type_of(ptr %boxed1)
-  %5 = call ptr @avra_llvm_const_int(ptr %4, i64 %1, i64 0)
+  %5 = call ptr @avra_llvm_const_int(ptr %4, i64 %1, i32 0)
   %6 = call ptr @avra_llvm_build_ret(ptr %boxed, ptr %5)
   call void @avra_rc_release(ptr %0)
   ret i64 0
@@ -151317,7 +151323,8 @@ entry:
   %boxed = inttoptr i64 %3 to ptr
   %4 = call ptr @avra_llvm_get_named_function(ptr %boxed, ptr %1)
   %5 = call i64 @avra_array_len(ptr %2)
-  %6 = call ptr @avra_llvm_value_array_new(i64 %5)
+  %narrow = trunc i64 %5 to i32
+  %6 = call ptr @avra_llvm_value_array_new(i32 %narrow)
   %7 = call i64 @avra_array_len(ptr %2)
   store i64 0, ptr %slot, align 8
   br label %lhead
@@ -151329,10 +151336,11 @@ lhead:                                            ; preds = %lbody, %entry
 
 lexit:                                            ; preds = %lhead
   %8 = call i64 @avra_array_get(ptr %0, i64 2)
-  %boxed6 = inttoptr i64 %8 to ptr
+  %boxed7 = inttoptr i64 %8 to ptr
   %9 = call ptr @avra_llvm_fn_type_of(ptr %4)
   %10 = call i64 @avra_array_len(ptr %2)
-  %11 = call ptr @avra_llvm_build_call(ptr %boxed6, ptr %9, ptr %4, ptr %6, i64 %10, ptr getelementptr inbounds (i8, ptr @.str.5158, i64 16))
+  %narrow8 = trunc i64 %10 to i32
+  %11 = call ptr @avra_llvm_build_call(ptr %boxed7, ptr %9, ptr %4, ptr %6, i32 %narrow8, ptr getelementptr inbounds (i8, ptr @.str.5158, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.5158, i64 16))
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
@@ -151345,9 +151353,10 @@ lbody:                                            ; preds = %lhead
   %boxed3 = inttoptr i64 %12 to ptr
   store ptr %boxed3, ptr %slot1, align 8
   %ld4 = load ptr, ptr %slot1, align 8
-  call void @avra_llvm_value_array_set(ptr %6, i64 %ld2, ptr %ld4)
-  %ld5 = load i64, ptr %slot, align 8
-  %add = add i64 %ld5, 1
+  %narrow5 = trunc i64 %ld2 to i32
+  call void @avra_llvm_value_array_set(ptr %6, i32 %narrow5, ptr %ld4)
+  %ld6 = load i64, ptr %slot, align 8
+  %add = add i64 %ld6, 1
   store i64 %add, ptr %slot, align 8
   br label %lhead
 }
@@ -151373,12 +151382,13 @@ entry:
 
 define ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall_ptr_value"(ptr %0, i64 %1, i64 %2, ptr %3) {
 entry:
-  %slot9 = alloca i64, align 8
-  %slot8 = alloca i64, align 8
+  %slot12 = alloca i64, align 8
+  %slot11 = alloca i64, align 8
   %slot1 = alloca i64, align 8
   %slot = alloca i64, align 8
   %4 = call i64 @avra_array_len(ptr %3)
-  %5 = call ptr @avra_llvm_type_array_new(i64 %4)
+  %narrow = trunc i64 %4 to i32
+  %5 = call ptr @avra_llvm_type_array_new(i32 %narrow)
   %6 = call i64 @avra_array_len(ptr %3)
   store i64 0, ptr %slot, align 8
   br label %lhead
@@ -151390,21 +151400,23 @@ lhead:                                            ; preds = %lbody, %entry
 
 lexit:                                            ; preds = %lhead
   %7 = call i64 @avra_array_get(ptr %0, i64 0)
-  %boxed6 = inttoptr i64 %7 to ptr
+  %boxed7 = inttoptr i64 %7 to ptr
   %8 = call ptr @avra_array_get_owned(ptr %0, i64 4)
   %9 = call i64 @avra_array_get(ptr %0, i64 5)
-  %boxed7 = inttoptr i64 %9 to ptr
-  %10 = call i64 @avra_array_get(ptr %boxed7, i64 %1)
+  %boxed8 = inttoptr i64 %9 to ptr
+  %10 = call i64 @avra_array_get(ptr %boxed8, i64 %1)
   call void @avra_rc_retain(ptr %8)
-  %11 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ell_type_of"(ptr %boxed6, ptr %8, i64 %10)
+  %11 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ell_type_of"(ptr %boxed7, ptr %8, i64 %10)
   %12 = call i64 @avra_array_len(ptr %3)
-  %13 = call ptr @avra_llvm_function_type(ptr %11, ptr %5, i64 %12, i64 0)
+  %narrow9 = trunc i64 %12 to i32
+  %13 = call ptr @avra_llvm_function_type(ptr %11, ptr %5, i32 %narrow9, i32 0)
   call void @avra_llvm_type_array_free(ptr %5)
   %14 = call i64 @avra_array_len(ptr %3)
-  %15 = call ptr @avra_llvm_value_array_new(i64 %14)
+  %narrow10 = trunc i64 %14 to i32
+  %15 = call ptr @avra_llvm_value_array_new(i32 %narrow10)
   %16 = call i64 @avra_array_len(ptr %3)
-  store i64 0, ptr %slot8, align 8
-  br label %lhead10
+  store i64 0, ptr %slot11, align 8
+  br label %lhead13
 
 lbody:                                            ; preds = %lhead
   %ld2 = load i64, ptr %slot, align 8
@@ -151419,66 +151431,69 @@ lbody:                                            ; preds = %lhead
   %21 = call i64 @avra_array_get(ptr %boxed3, i64 %ld4)
   call void @avra_rc_retain(ptr %19)
   %22 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ell_type_of"(ptr %boxed, ptr %19, i64 %21)
-  call void @avra_llvm_type_array_set(ptr %5, i64 %ld2, ptr %22)
-  %ld5 = load i64, ptr %slot, align 8
-  %add = add i64 %ld5, 1
+  %narrow5 = trunc i64 %ld2 to i32
+  call void @avra_llvm_type_array_set(ptr %5, i32 %narrow5, ptr %22)
+  %ld6 = load i64, ptr %slot, align 8
+  %add = add i64 %ld6, 1
   store i64 %add, ptr %slot, align 8
   call void @avra_rc_release(ptr %19)
   br label %lhead
 
-lhead10:                                          ; preds = %lbody14, %lexit
-  %ld12 = load i64, ptr %slot8, align 8
-  %cmp13 = icmp slt i64 %ld12, %16
-  br i1 %cmp13, label %lbody14, label %lexit11
+lhead13:                                          ; preds = %lbody17, %lexit
+  %ld15 = load i64, ptr %slot11, align 8
+  %cmp16 = icmp slt i64 %ld15, %16
+  br i1 %cmp16, label %lbody17, label %lexit14
 
-lexit11:                                          ; preds = %lhead10
+lexit14:                                          ; preds = %lhead13
   %23 = call i64 @avra_array_get(ptr %0, i64 2)
-  %boxed25 = inttoptr i64 %23 to ptr
+  %boxed29 = inttoptr i64 %23 to ptr
   %24 = call i64 @avra_array_get(ptr %0, i64 6)
-  %boxed26 = inttoptr i64 %24 to ptr
-  %25 = call i64 @avra_array_get(ptr %boxed26, i64 %2)
-  %boxed27 = inttoptr i64 %25 to ptr
+  %boxed30 = inttoptr i64 %24 to ptr
+  %25 = call i64 @avra_array_get(ptr %boxed30, i64 %2)
+  %boxed31 = inttoptr i64 %25 to ptr
   %26 = call i64 @avra_array_get(ptr %0, i64 0)
-  %boxed28 = inttoptr i64 %26 to ptr
-  %27 = call ptr @avra_llvm_pointer_type(ptr %boxed28)
-  %28 = call ptr @avra_llvm_cast_to_type(ptr %boxed25, ptr %boxed27, ptr %27)
+  %boxed32 = inttoptr i64 %26 to ptr
+  %27 = call ptr @avra_llvm_pointer_type(ptr %boxed32)
+  %28 = call ptr @avra_llvm_cast_to_type(ptr %boxed29, ptr %boxed31, ptr %27)
   %29 = call i64 @avra_array_get(ptr %0, i64 2)
-  %boxed29 = inttoptr i64 %29 to ptr
+  %boxed33 = inttoptr i64 %29 to ptr
   %30 = call i64 @avra_array_len(ptr %3)
-  %31 = call ptr @avra_llvm_build_call(ptr %boxed29, ptr %13, ptr %28, ptr %15, i64 %30, ptr getelementptr inbounds (i8, ptr @.str.5160, i64 16))
+  %narrow34 = trunc i64 %30 to i32
+  %31 = call ptr @avra_llvm_build_call(ptr %boxed33, ptr %13, ptr %28, ptr %15, i32 %narrow34, ptr getelementptr inbounds (i8, ptr @.str.5160, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.5160, i64 16))
   call void @avra_rc_release(ptr %8)
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %0)
   ret ptr %31
 
-lbody14:                                          ; preds = %lhead10
-  %ld15 = load i64, ptr %slot8, align 8
-  %32 = call i64 @avra_array_get(ptr %3, i64 %ld15)
-  store i64 %32, ptr %slot9, align 8
+lbody17:                                          ; preds = %lhead13
+  %ld18 = load i64, ptr %slot11, align 8
+  %32 = call i64 @avra_array_get(ptr %3, i64 %ld18)
+  store i64 %32, ptr %slot12, align 8
   %33 = call i64 @avra_array_get(ptr %0, i64 2)
-  %boxed16 = inttoptr i64 %33 to ptr
+  %boxed19 = inttoptr i64 %33 to ptr
   %34 = call i64 @avra_array_get(ptr %0, i64 6)
-  %boxed17 = inttoptr i64 %34 to ptr
-  %ld18 = load i64, ptr %slot9, align 8
-  %35 = call i64 @avra_array_get(ptr %boxed17, i64 %ld18)
-  %boxed19 = inttoptr i64 %35 to ptr
+  %boxed20 = inttoptr i64 %34 to ptr
+  %ld21 = load i64, ptr %slot12, align 8
+  %35 = call i64 @avra_array_get(ptr %boxed20, i64 %ld21)
+  %boxed22 = inttoptr i64 %35 to ptr
   %36 = call i64 @avra_array_get(ptr %0, i64 0)
-  %boxed20 = inttoptr i64 %36 to ptr
+  %boxed23 = inttoptr i64 %36 to ptr
   %37 = call ptr @avra_array_get_owned(ptr %0, i64 4)
   %38 = call i64 @avra_array_get(ptr %0, i64 5)
-  %boxed21 = inttoptr i64 %38 to ptr
-  %ld22 = load i64, ptr %slot9, align 8
-  %39 = call i64 @avra_array_get(ptr %boxed21, i64 %ld22)
+  %boxed24 = inttoptr i64 %38 to ptr
+  %ld25 = load i64, ptr %slot12, align 8
+  %39 = call i64 @avra_array_get(ptr %boxed24, i64 %ld25)
   call void @avra_rc_retain(ptr %37)
-  %40 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ell_type_of"(ptr %boxed20, ptr %37, i64 %39)
-  %41 = call ptr @avra_llvm_cast_to_type(ptr %boxed16, ptr %boxed19, ptr %40)
-  call void @avra_llvm_value_array_set(ptr %15, i64 %ld15, ptr %41)
-  %ld23 = load i64, ptr %slot8, align 8
-  %add24 = add i64 %ld23, 1
-  store i64 %add24, ptr %slot8, align 8
+  %40 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ell_type_of"(ptr %boxed23, ptr %37, i64 %39)
+  %41 = call ptr @avra_llvm_cast_to_type(ptr %boxed19, ptr %boxed22, ptr %40)
+  %narrow26 = trunc i64 %ld18 to i32
+  call void @avra_llvm_value_array_set(ptr %15, i32 %narrow26, ptr %41)
+  %ld27 = load i64, ptr %slot11, align 8
+  %add28 = add i64 %ld27, 1
+  store i64 %add28, ptr %slot11, align 8
   call void @avra_rc_release(ptr %37)
-  br label %lhead10
+  br label %lhead13
 }
 
 define ptr @"av_$40std$2Eavrac$2Elanguage$2Emangled"(ptr %0) {
@@ -151521,7 +151536,8 @@ endif:                                            ; preds = %else, %postret
   %boxed3 = inttoptr i64 %7 to ptr
   %8 = call i64 @avra_array_get(ptr %boxed3, i64 %1)
   %boxed4 = inttoptr i64 %8 to ptr
-  %9 = call ptr @avra_llvm_build_extract_value(ptr %boxed2, ptr %boxed4, i64 %2, ptr getelementptr inbounds (i8, ptr @.str.5164, i64 16))
+  %narrow = trunc i64 %2 to i32
+  %9 = call ptr @avra_llvm_build_extract_value(ptr %boxed2, ptr %boxed4, i32 %narrow, ptr getelementptr inbounds (i8, ptr @.str.5164, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.5164, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %9
@@ -151602,7 +151618,8 @@ lbody:                                            ; preds = %lhead
   %ld8 = load i64, ptr %slot3, align 8
   %13 = call i64 @avra_array_get(ptr %boxed7, i64 %ld8)
   %boxed9 = inttoptr i64 %13 to ptr
-  %14 = call ptr @avra_llvm_build_insert_value(ptr %boxed5, ptr %ld6, ptr %boxed9, i64 %ld4, ptr getelementptr inbounds (i8, ptr @.str.5165, i64 16))
+  %narrow = trunc i64 %ld4 to i32
+  %14 = call ptr @avra_llvm_build_insert_value(ptr %boxed5, ptr %ld6, ptr %boxed9, i32 %narrow, ptr getelementptr inbounds (i8, ptr @.str.5165, i64 16))
   store ptr %14, ptr %slot, align 8
   %ld10 = load i64, ptr %slot2, align 8
   %add = add i64 %ld10, 1
@@ -151644,8 +151661,8 @@ then:                                             ; preds = %entry
   %14 = call i64 @avra_array_get(ptr %0, i64 0)
   %boxed2 = inttoptr i64 %14 to ptr
   %15 = call ptr @avra_llvm_int64_type(ptr %boxed2)
-  %16 = call ptr @avra_llvm_const_int(ptr %15, i64 0, i64 0)
-  %17 = call ptr @avra_llvm_build_icmp(ptr %boxed1, i64 33, ptr %7, ptr %16, ptr getelementptr inbounds (i8, ptr @.str.5166, i64 16))
+  %16 = call ptr @avra_llvm_const_int(ptr %15, i64 0, i32 0)
+  %17 = call ptr @avra_llvm_build_icmp(ptr %boxed1, i32 33, ptr %7, ptr %16, ptr getelementptr inbounds (i8, ptr @.str.5166, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.5166, i64 16))
   call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr %8)
@@ -152445,42 +152462,42 @@ arm4:                                             ; preds = %entry
 arm5:                                             ; preds = %entry
   %15 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed17 = inttoptr i64 %15 to ptr
-  %16 = call ptr @avra_llvm_build_icmp(ptr %boxed17, i64 32, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.5183, i64 16))
+  %16 = call ptr @avra_llvm_build_icmp(ptr %boxed17, i32 32, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.5183, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.5183, i64 16))
   br label %endswitch
 
 arm6:                                             ; preds = %entry
   %17 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed18 = inttoptr i64 %17 to ptr
-  %18 = call ptr @avra_llvm_build_icmp(ptr %boxed18, i64 33, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.5184, i64 16))
+  %18 = call ptr @avra_llvm_build_icmp(ptr %boxed18, i32 33, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.5184, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.5184, i64 16))
   br label %endswitch
 
 arm7:                                             ; preds = %entry
   %19 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed19 = inttoptr i64 %19 to ptr
-  %20 = call ptr @avra_llvm_build_icmp(ptr %boxed19, i64 40, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.5185, i64 16))
+  %20 = call ptr @avra_llvm_build_icmp(ptr %boxed19, i32 40, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.5185, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.5185, i64 16))
   br label %endswitch
 
 arm8:                                             ; preds = %entry
   %21 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed20 = inttoptr i64 %21 to ptr
-  %22 = call ptr @avra_llvm_build_icmp(ptr %boxed20, i64 41, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.5186, i64 16))
+  %22 = call ptr @avra_llvm_build_icmp(ptr %boxed20, i32 41, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.5186, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.5186, i64 16))
   br label %endswitch
 
 arm9:                                             ; preds = %entry
   %23 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed21 = inttoptr i64 %23 to ptr
-  %24 = call ptr @avra_llvm_build_icmp(ptr %boxed21, i64 38, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.5187, i64 16))
+  %24 = call ptr @avra_llvm_build_icmp(ptr %boxed21, i32 38, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.5187, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.5187, i64 16))
   br label %endswitch
 
 arm10:                                            ; preds = %entry
   %25 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed22 = inttoptr i64 %25 to ptr
-  %26 = call ptr @avra_llvm_build_icmp(ptr %boxed22, i64 39, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.5188, i64 16))
+  %26 = call ptr @avra_llvm_build_icmp(ptr %boxed22, i32 39, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.5188, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.5188, i64 16))
   br label %endswitch
 
@@ -152543,7 +152560,7 @@ endif:                                            ; preds = %else, %postret
   %10 = call i64 @avra_array_get(ptr %0, i64 0)
   %boxed2 = inttoptr i64 %10 to ptr
   %11 = call ptr @avra_llvm_int64_type(ptr %boxed2)
-  %12 = call ptr @avra_llvm_const_int(ptr %11, i64 %2, i64 1)
+  %12 = call ptr @avra_llvm_const_int(ptr %11, i64 %2, i32 1)
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %0)
   ret ptr %12
