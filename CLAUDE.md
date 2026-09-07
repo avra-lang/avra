@@ -364,8 +364,9 @@ engine's spec, written by dogfooding.
   were the same value), `fn f<T>(x: int)` and `fn f<T, x: int>()`.
   THE FIX IS ARITY: fold each sequence to ONE value so a payload's
   shape is fixed per kind. BOTH INTUITIVE FIXES ARE WRONG, and
-  each is worth knowing. A SEPARATOR is the first — `stmt_fps(then)
-  ++ [0] ++ stmt_fps(else)` was written by someone who saw this
+  each is worth knowing. A SEPARATOR is the first —
+  `stmt_fps(then).concat([0]).concat(stmt_fps(else))` was written by
+  someone who saw this
   hazard exactly and spent the one value that is not spare, which
   is the empty-value law above wearing this law's clothes. A
   RENUMBERING is the second: under a LINEAR fold (`131t + x + 7`)
@@ -924,6 +925,19 @@ Syntax the grammar lacks:
   not-your-home"` above it, the same line compiles clean and the
   command becomes `echo /tmp/not-your-home`. Spell a shell variable
   `$VAR`, which Avra leaves alone.
+- A MAP'S KEYS ARE STRINGS ONLY: `Map<int, int>` is F2019 "a map's
+  keys are strings, not `int`", help "other key types are recorded".
+  It kills the obvious trie-node shape; key by the text.
+- `++` IS NOT A LIST OPERATOR: `xs ++ ys` is "expected BREAK while
+  parsing `stmt`" AT the `++`, and the fn then reads as answering
+  `void`, so the real refusal arrives as a type error about the
+  body. `xs.concat(ys)` is the spelling.
+- `List` HAS `all`, NOT `every`: `.every(it > 0)` is F2030, `.all(it
+  > 0)` compiles — which retires the double negative `![…].any(!it)`.
+- A COMPREHENSION TAKES ONE `for` HEAD: `[a + b for a in as for b in
+  bs]` does not parse, and the SYMPTOM MISDIRECTS — the binding is
+  reported UNDEFINED AT ITS USE SITE (F3000) with nothing said at the
+  comprehension. A nested sweep is a named helper per outer element.
 - A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA
   when another arm follows (found by the HTTP lane, probed here).
   `match v { .R(o) -> o` with `.S -> "s"` on the next line is
