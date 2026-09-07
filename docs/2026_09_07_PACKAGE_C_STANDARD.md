@@ -462,27 +462,38 @@ step above it.
    it stays `native-only` until S2c, because the fifteen `avra_net_*`
    externs are a package's and the evaluator cannot host them yet.
 
-Debris the migration retires from the runtime, re-measured at
-`4516b15` across `packages/` AND `corpus/`, lane A's file to delete:
-`avra_selfhost_read_file`, `avra_selfhost_write_file`,
-`avra_host_list_dir`, `avra_mkdir_p`, `avra_spawn_status` (its own
-comment names the seed refresh as its death), `avra_str_codepoint_count`.
-Six, with zero references anywhere in the tree and zero in
-`bootstrap/seed.ll`.
+Debris the migration retires from the runtime — FIVE names, lane A's
+file to delete: `avra_selfhost_read_file`, `avra_selfhost_write_file`,
+`avra_host_list_dir`, `avra_mkdir_p`, `avra_str_codepoint_count`. Zero
+callers in `packages/` and `corpus/`, zero in `tools/`, zero in the
+`Makefile`, and zero in `bootstrap/seed.ll`.
 
-**TWO NAMES THAT WERE ON THIS LIST ARE NOT DEBRIS, and the mistake is
-worth more than the list.** `avra_selfhost_file_exists` and
-`avra_host_is_dir` are both called by `corpus/native/externs.av` — the
-program S2a nominates as its own proof — and `avra_host_is_dir` also
-pins the unhosted-extern refusal's wording in a compiler test. They
-read as dead because the first grep was scoped to `packages/`, and
-absence in a window was read as absence. That is CLAUDE.md's law about
-a probe that truncates its own output, arriving here as a SCOPE rather
-than a `head`: the instrument worked and what it showed was
-incomplete. Deleting either would have broken the extern seam's own
-witness, which is the exact opposite of debris — so the correction is
-recorded rather than quietly applied, because the next person to read
-a clean grep needs to know which windows this one used.
+**THE LIST WAS WRONG TWICE, IN OPPOSITE DIRECTIONS, AND THE LAW IS
+WORTH MORE THAN THE LIST.** It began at eight.
+
+*Two were live in a window this lane did not open.*
+`avra_selfhost_file_exists` and `avra_host_is_dir` are called by
+`corpus/native/externs.av`; the grep was scoped to `packages/`, and
+absence in a window was read as absence.
+
+*One was live in a window NOBODY opens by widening a source search.*
+`avra_spawn_status` is declared and called inside a program
+`tools/traps.sh` WRITES into `build/traps/…/src/main.av` at gate time,
+builds, runs and deletes. No amount of grepping `.av` files reaches
+it, because the caller is a string inside a shell script. Lane A found
+it; verified here, at `tools/traps.sh:156` and `:198`.
+
+**A SEARCH FOR "WHO CALLS THIS" OVER SOURCE FILES MISSES CALLERS THAT
+ARE GENERATED.** Search the GENERATORS — `tools/`, the `Makefile` —
+and the built artifacts too, and say explicitly that the SEED
+(`bootstrap/seed.ll`, the compiler emitted as LLVM) was checked,
+because it is the second invisible caller and it is 9 MB of text
+nobody reads. A count with no window named is a claim, not a finding.
+
+AND A CITATION DECAYS WHILE YOU WATCH: lane A reported the calls at
+`traps.sh:105` and `:147`; at this base they are `:156` and `:198`,
+because `traps.sh` grew between the two readings. The names were right
+and the line numbers were not, which is why a receipt names its base.
 
 ## 5. DECISIONS — settled and open
 

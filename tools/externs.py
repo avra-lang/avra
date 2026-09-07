@@ -541,6 +541,81 @@ def unframeable_walls(wall, sigs):
     return out
 
 
+# A SYMBOL WITH NO READABLE SOURCE MAY NOT TAKE A DEFAULTED WIDTH.
+# Every rule above reads the C BODY — the return's width, each seat's
+# width, the ellipsis, the shapes one frame cannot carry. For a symbol
+# this tree has no source for (libc, a system library, anything the
+# manifest links but does not carry), all of them abstain, and the
+# declaration is the only thing standing. So a bare `int` there is a
+# 64-bit GUESS about a body nobody here compiled — and the guess is
+# silent in both directions, since a C `int` answer of -1 read as a
+# 64-bit `int` is 4294967295 and a 64-bit argument in an `int` seat
+# arrives truncated. Naming the width converts an unverifiable default
+# into a deliberate statement, which is the most the seam allows.
+#
+# ONLY `int` IS REFUSED. `ptr`, `string`, `float` and `bool` name no
+# integer width, and `i32`/`u32`/`i64` name one already.
+DEFAULTED = re.compile(r"^int$")
+
+# The type a seat declares, with `mut` and the name stripped — a seat
+# is written `name: type` and an inout `mut name: type`.
+SEAT_TYPE = re.compile(r":\s*([^:]+)$")
+
+
+def seat_type(seat):
+    m = SEAT_TYPE.search(seat.strip())
+    return m.group(1).strip() if m else seat.strip()
+
+
+# (a declared Avra type, is it a defaulted width?) — both surfaces.
+WIDTH_CASES = [
+    ("int", True),
+    ("i32", False), ("u32", False), ("i64", False),
+    ("ptr", False), ("ptr?", False),
+    ("string", False), ("string?", False),
+    ("float", False), ("bool", False),
+    ("List<string>", False),
+]
+
+# (a written seat, its type) — the stripping the rule depends on.
+SEAT_TYPE_CASES = [
+    ("a: int", "int"),
+    ("mut out: i64", "i64"),
+    ("vfs: string?", "string?"),
+    ("mut db: ptr?", "ptr?"),
+]
+
+
+def width_self_test():
+    """The readings above. A failure means the default's model moved."""
+    bad = [(t, want) for t, want in WIDTH_CASES if bool(DEFAULTED.match(t)) != want]
+    for t, want in bad:
+        print(f"externs: SELF-TEST — a declared `{t}` should "
+              f"{'be' if want else 'not be'} a defaulted width")
+    stripped = [(w, want) for w, want in SEAT_TYPE_CASES if seat_type(w) != want]
+    for written, want in stripped:
+        print(f"externs: SELF-TEST — seat `{written}` should read its type as `{want}`, "
+              f"read `{seat_type(written)}`")
+    return len(bad) + len(stripped)
+
+
+def defaulted_walls(wall, walls, bodies, sigs):
+    """Every declaration over a symbol with NO readable source that
+    leaves a width to the default."""
+    out = []
+    for name, declared, where in wall:
+        if name not in bodies and DEFAULTED.match(declared):
+            out.append((name, where, "its answer", declared))
+    for name, params, where in walls:
+        if name in sigs:
+            continue
+        for seat in split_params(params):
+            t = seat_type(seat)
+            if DEFAULTED.match(t):
+                out.append((name, where, f"seat `{seat.strip()}`", t))
+    return out
+
+
 # THE KEEPER'S OWN CASES. This check spent its whole life reading C
 # THIS TREE WROTE, which spells `int64_t` plainly — so its width set
 # never met a typedef or a macro prefix, and it passed every day while
@@ -628,7 +703,7 @@ def self_test():
 
 
 def main():
-    if self_test() + seat_self_test() + variadic_self_test() + frame_self_test():
+    if self_test() + seat_self_test() + variadic_self_test() + frame_self_test() + width_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -663,6 +738,15 @@ def main():
         print(f"externs:   calls this body correctly — in either engine.")
         print(f"externs:   One fixed extern per argument shape is NOT the way out: it")
         print(f"externs:   was measured reading 12345 back as -298729216.")
+    guessed = defaulted_walls(wall, walls, bodies, sigs)
+    for name, where, at, declared in guessed:
+        print(f"externs: {name} in {where} leaves {at} as `{declared}`, "
+              f"and this tree has no C source for it")
+        print(f"externs:   nothing checks a width the keeper cannot read, so a bare `int`")
+        print(f"externs:   is a 64-bit guess about a body nobody here compiled — a C `int`")
+        print(f"externs:   answer of -1 reads as 4294967295, and a 64-bit argument in an")
+        print(f"externs:   `int` seat arrives truncated. Name it: `i64` where the C says")
+        print(f"externs:   `long` or `int64_t`, `i32`/`u32` where it says `int`/`unsigned`.")
     unframed = unframeable_walls(walls, sigs)
     for name, where, crel, cline, seat, law in unframed:
         print(f"externs: {name} in {where} faces C seat `{seat}` at {crel}:{cline}, "
@@ -679,7 +763,9 @@ def main():
         a, c = pair
         print(f"externs: {name} seats `{a}` in {where} over C `{c}` at {crel}:{cline}")
         print(f"externs:   the seat and the body must name the same width — a C `int` is 32 bits")
-    if narrow or voids or seats or varargs or unframed:
+    if narrow or voids or seats or varargs or unframed or guessed:
+        if guessed:
+            print(f"externs: {len(guessed)} declaration(s) guess a width over a symbol this tree cannot read")
         if unframed:
             print(f"externs: {len(unframed)} extern(s) face a C seat one frame cannot carry")
         if varargs:
@@ -692,7 +778,7 @@ def main():
             print(f"externs: {len(voids)} extern(s) read an answer their C body does not give")
         return 1
     unchecked = len(wall) - len(ours)
-    note = f"; {unchecked} bind C we do not own (the sized types are their answer)" if unchecked else ""
+    note = f"; {unchecked} bind C we do not own, every width named" if unchecked else ""
     widths = sum(1 for _, t, _ in wall if t in ("i32", "u32", "i64"))
     scanned = f"{len(sources)} C source(s)"
     if packages:
@@ -703,7 +789,7 @@ def main():
     print(f"externs: {checked} parameter seat(s) match the C seat they fill")
     print(f"externs: no declaration faces a variadic C body, nor a seat the frame cannot carry")
     print(f"externs: read {scanned}; "
-          f"{len(CASES) + len(SEAT_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES)} of the keeper's own cases hold")
+          f"{len(CASES) + len(SEAT_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES)} of the keeper's own cases hold")
     return 0
 
 sys.exit(main())
