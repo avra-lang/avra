@@ -26,7 +26,10 @@
 # measured; the cap is 4000 by default, a wreck-catcher.
 # PROFILING runs under the lock too: AVRA_SAMPLE=<seconds> samples
 # the step (after AVRA_SAMPLE_AFTER seconds, default 0) into
-# AVRA_SAMPLE_FILE (default /tmp/avra-sample.txt). The window must
+# AVRA_SAMPLE_FILE (default build/avra-sample.txt, PER-WORKTREE — a
+# shared one hands you another lane's profile as your own, and a
+# wrong measurement read as yours is this tree's costliest shape).
+# The window must
 # END before the step does, or `sample` writes nothing.
 # Exit status is the command's, or 137 when the cap fired.
 cap_mb="$1"; shift
@@ -57,7 +60,9 @@ export AVRA_WATCH_HELD
 "$@" &
 pid=$!
 if [ -n "$AVRA_SAMPLE" ]; then
-    ( sleep "${AVRA_SAMPLE_AFTER:-0}"; sample "$pid" "$AVRA_SAMPLE" -file "${AVRA_SAMPLE_FILE:-/tmp/avra-sample.txt}" > "${AVRA_SAMPLE_FILE:-/tmp/avra-sample.txt}.log" 2>&1 ) &
+    mkdir -p build
+    prof="${AVRA_SAMPLE_FILE:-build/avra-sample.txt}"
+    ( sleep "${AVRA_SAMPLE_AFTER:-0}"; sample "$pid" "$AVRA_SAMPLE" -file "$prof" > "$prof.log" 2>&1 ) &
     sampler=$!
 fi
 peak=0
