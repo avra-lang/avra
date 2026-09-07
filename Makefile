@@ -55,7 +55,7 @@ avra: $(RUNTIME_OBJS)
 sweep:
 	@rm -rf packages/*/build build/test_shards
 
-test: $(RUNTIME_OBJS) build/sqlite3.o
+test: $(RUNTIME_OBJS) build/sqlite3.o build/std_net.o
 	@for p in $(SUITES); do \
 	  ./avra test $$p || exit 1; \
 	done
@@ -119,7 +119,7 @@ build-native: $(RUNTIME_OBJS)
 # then SAYS "native == expected" rather than claiming a differential it
 # never ran. The label travels with the artifact: a reader of the gate's
 # output learns the program is single-engine without opening a document.
-corpus: $(RUNTIME_OBJS) build/sqlite3.o
+corpus: $(RUNTIME_OBJS) build/sqlite3.o build/std_net.o
 	@./avra corpus corpus
 	@./avra corpus --native-only corpus/native
 	@for d in corpus/*/; do \
@@ -202,6 +202,10 @@ SQLITE_FLAGS := \
 build/sqlite3.o: packages/std-sqlite/vendor/sqlite3.c
 	@mkdir -p build
 	cc -c -O2 $(SQLITE_FLAGS) -o $@ $<
+
+build/std_net.o: packages/std-net/src/c/net.c
+	@mkdir -p build
+	cc -c -O2 -Wall -Werror -o $@ $<
 
 build/width_witness.o: packages/width-witness/src/witness.c
 	@mkdir -p build
