@@ -6305,6 +6305,27 @@ additions get siblings, nothing changes shape:
   edit re-runs importers only when the export surface's fingerprint
   moved.
 
+## Recorded triggers — the integrator's substrate
+
+- [ ] THE GATE PROVES A TREE AND THE INTEGRATOR COMMITS A TREE, AND
+      NOTHING TIES THEM TOGETHER. Reported by the SQLITE lead
+      2026-09-07, unfixed, and it is the deepest of three found the
+      same night. `tools/integrate.sh` runs `make gate` over the
+      working tree and then merges what git has; a working tree that
+      moves between the two — a half-finished rename, a deliberate
+      break left in a file — is gated in one state and merged in
+      another. It cost two wasted gates that night, which is the
+      cheap way to meet it.
+      THE OTHER TWO ARE FIXED (16fb4a4) AND NAMING THEM TOGETHER IS
+      THE POINT, because they are ONE SHAPE ON THREE SUBSTRATES: the
+      tree the gate READ, the tree the script COMMITTED, and the tree
+      a `/tmp` path BELONGED TO. Each is a verification whose subject
+      is not pinned to the thing being verified.
+      NOT A PATH-NAMESPACING FIX. It wants the gate to prove the
+      EXACT COMMIT that merges — gate the committed tree, or refuse
+      to merge a tree that changed under the gate. Worth designing
+      rather than patching.
+
 ## Sugar backlog — dogfooding asks
 
 - PROCESS-WIDE MUTABLE STATE — a package cannot own a handle table.
