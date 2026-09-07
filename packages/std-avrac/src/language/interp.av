@@ -627,17 +627,6 @@ impl Machine {
             .FdRead -> Val.I(avra_fd_read(self.whole(vals[0]), self.whole(vals[1]))),
             .FdTaken -> Val.Y(octets_of_box(avra_fd_taken(self.whole(vals[0])))),
             .FdWrite -> Val.I(avra_fd_write(self.whole(vals[0]), self.octets(vals[1]).bytes()!, self.whole(vals[2]))),
-            .ProcSpawn -> Val.I(avra_proc_spawn(self.text_val(vals[0]), self.texts_of(vals[1]), self.texts_of(vals[2]), self.text_val(vals[3]), self.whole(vals[4]), self.whole(vals[5]), self.whole(vals[6]))),
-            .ProcRun -> Val.I(avra_proc_run(self.text_val(vals[0]), self.texts_of(vals[1]), self.texts_of(vals[2]), self.text_val(vals[3]), self.whole(vals[4]), self.text_val(vals[5]), self.whole(vals[6]), self.whole(vals[7]), self.whole(vals[8]))),
-            .ProcPoll -> Val.I(avra_proc_poll(self.whole(vals[0]), self.whole(vals[1]))),
-            .ProcWrite -> Val.I(avra_proc_write(self.whole(vals[0]), self.text_val(vals[1]))),
-            .ProcStdinClose -> Val.I(avra_proc_stdin_close(self.whole(vals[0]))),
-            .ProcTake -> Val.S(avra_proc_take(self.whole(vals[0]), self.whole(vals[1]))),
-            .ProcSignal -> Val.I(avra_proc_signal(self.whole(vals[0]), self.whole(vals[1]), self.whole(vals[2]))),
-            .ProcStatus -> Val.I(avra_proc_status(self.whole(vals[0]))),
-            .ProcPid -> Val.I(avra_proc_pid(self.whole(vals[0]))),
-            .ProcClose -> proc_close_val(self.whole(vals[0])),
-            .ProcWhich -> Val.S(avra_proc_which(self.text_val(vals[0]), self.text_val(vals[1]))),
             .ErrnoText -> Val.S(avra_errno_text(self.whole(vals[0]))),
             .NowNs -> Val.I(avra_now_ns()),
             .HostEnv -> Val.S(avra_host_env(self.text_val(vals[0]))),
@@ -1099,17 +1088,6 @@ extern fn avra_int_or(a: int, b: int) -> int
 extern fn avra_int_xor(a: int, b: int) -> int
 extern fn avra_int_shl(a: int, b: int) -> int
 extern fn avra_int_shr(a: int, b: int) -> int
-extern fn avra_proc_spawn(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, max_bytes: int, from_h: int) -> int
-extern fn avra_proc_run(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, stdin_text: string, timeout_ms: int, grace_ms: int, max_bytes: int) -> int
-extern fn avra_proc_poll(h: int, timeout_ms: int) -> int
-extern fn avra_proc_write(h: int, text: string) -> int
-extern fn avra_proc_stdin_close(h: int) -> int
-extern fn avra_proc_take(h: int, stream: int) -> string
-extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
-extern fn avra_proc_status(h: int) -> int
-extern fn avra_proc_pid(h: int) -> int
-extern fn avra_proc_close(h: int)
-extern fn avra_proc_which(file: string, path: string) -> string
 extern fn avra_errno_text(err: int) -> string
 extern fn avra_now_ns() -> int
 extern fn avra_eputs(line: string)
@@ -1119,12 +1097,6 @@ extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fd_taken(token: int) -> Bytes
 extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
 // `avra_host_env` is the module's already — workspace.av declares it.
-
-/// A void host call answers the placeholder every void call does.
-fn proc_close_val(h: int) -> Val {
-    avra_proc_close(h)
-    Val.I(0)
-}
 
 /// A line to the evaluator's own stderr — never the program's answer.
 fn eputs_val(line: string) -> Val {
