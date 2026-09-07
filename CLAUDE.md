@@ -1230,6 +1230,18 @@ Runtime facts, ours to ratify:
   comment), applies TWICE when re-run after a partial failure: the
   anchor is still there. Check for the new text FIRST, and let
   `grep -c` (never `-l`) say how many times a fn is defined.
+  ITS SIBLING, WHICH CAUGHT ME IN THIS FILE: AN ANCHOR THAT OCCURS
+  TWICE APPLIES TO THE WRONG ONE. A splice bounded by
+  `t.index(start)` and `t.index(end)` where `end` sits EARLIER than
+  `start` re-emits the span between them and leaves the original
+  standing — so 2d49858 duplicated the very law it was correcting,
+  and two entries with one name contradicted each other 55 lines
+  apart. PROSE HAS NO GATE: no test, no build and no keeper reads
+  it, and a MERGE RESOLUTION over prose fails the same way, since
+  both sides can survive. THE CHECK IS ONE COMMAND, run after any
+  prose splice and any resolution of one —
+  `grep -n "^- [A-Z]" CLAUDE.md | sed 's/^[0-9]*://' | sort |
+  uniq -d`, which must answer nothing.
 - A TOOL that reads source line by line sees a multi-line `use
   a.{x,\n  y}` as a truncated statement, and one that scans "to the
   closing brace" then eats the code after it. Join continuation
