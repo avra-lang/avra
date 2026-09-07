@@ -598,26 +598,34 @@ consistent with CLAUDE.md's "allocation here is cheap, so avoiding one is
 a trade, not a win", and a reminder that the scan's cost is scanning.
 
 **THE COMPILED SCAN, MEASURED.** `tools/bench/frame_scan` reads one
-HTTP request line three ways in the same run — the framer over a whole
-head, the line split BY HAND with the vocabulary a programmer actually
-has, and the same line read by a FORMAT PATTERN. 200,000 runs each,
-three runs:
+HTTP request line five ways in the same run: the framer over a whole
+head, and then the line split BY HAND and by a FORMAT PATTERN, over
+text and over octets. 200,000 runs each, the subject hoisted out of
+every loop (a `once` read is not free, and inside the loop it inflates
+both sides and compresses the ratio), three runs:
 
 | way | run 1 | run 2 | run 3 |
 |---|---|---|---|
-| framer, whole head | 780 ns | 676 ns | 680 ns |
-| request line by hand | 90 ns | 91 ns | 90 ns |
-| by format pattern | 119 ns | 120 ns | 120 ns |
+| framer, whole head | 746 ns | 635 ns | 651 ns |
+| text: by hand | 62 ns | 60 ns | 62 ns |
+| text: by format pattern | 98 ns | 96 ns | 97 ns |
+| octets: by hand | 74 ns | 73 ns | 73 ns |
+| octets: by format pattern | 92 ns | 90 ns | 90 ns |
 
-**The compiled scan costs 1.33x the hand-written split**, and that
-number is stable to a nanosecond where the framer's own figure moves by
-ten percent. The gap is allocation, and it is countable: the hand
-version makes seven substring copies; the scan makes four capture copies
-plus one subject-to-octets conversion plus one literal-to-octets
-conversion per literal — ten allocations against seven, and still only
-30 ns apart, which is CLAUDE.md's "allocation here is cheap" holding
-exactly. Hoisting the literals is what closes it, and that wants a
-constant the IR does not carry (§12.6).
+**OVER OCTETS — where the obligation lives, because that is where the
+framer works and where nothing is converted — the compiled scan is
+1.24x a hand-written scan.** Over text it is 1.58x, and the difference
+between the two ratios is exactly the subject conversion the string
+path pays and the octet path does not: about 7 ns.
+
+**The remaining 24% is countable and it is one thing.** The hand
+version hoists its separator into a `once fn`, as `frame.av` hoists
+every literal it scans for; the compiled scan converts each of its four
+literals to octets on every attempt, because the IR carries no `Bytes`
+constant. Four conversions against zero, and the gap is 17 ns — about
+four nanoseconds each, which is what a small box costs here. That is
+ask 6, and this measurement is its firing condition rather than an
+opinion about it.
 
 **And a finding about the oracle, not about this feature.**
 `2026_09_06_HTTP_FRAMING_LAWS.md` §2.1 records picohttpparser at ≈366
@@ -1003,12 +1011,21 @@ first.
 4. **A capture-type registry row** (`CaptureRow`) — this lane, in S2,
    with `int` as its only row. The second row is what proves the seam,
    and it is not in this arc (§1.5).
-5. **A per-pattern slot on the lowering context** — lane C, with the
-   seam. `cx.pinned_at(p, regs)` / `cx.pinned_of(p)`: the registers a
+5. **A per-pattern slot on the lowering context** — DELIVERED by lane
+   C as `LowerCx.bind_test(p, regs)` / `test_regs_of(p)`, keyed by the
+   pattern so a nested one finds its own registers. The scan is emitted
+   once. Original ask: `cx.pinned_at(p, regs)` / `cx.pinned_of(p)`: the registers a
    pattern's test produced, for its binds to read. WANTING SITE:
    formats' `pat_accepts`/`pat_binds` pair, which would otherwise run
    the scan twice per arm (§4.1). General, not format-shaped — a list
    pattern needs the same thing.
+6. **A `Bytes` constant in the IR**, so a scan's literals are converted
+   once rather than per attempt. WANTING SITE: `literal()` in
+   `features/formats/lower.av`. FIRING CONDITION, now measured rather
+   than guessed: the 24% gap between the compiled octet scan and a
+   hand-written one is four literal conversions at about four
+   nanoseconds each (§5). Growing the IR is a vocabulary event with the
+   eight-consumer protocol, so this is not a formats-lane change.
 
 ---
 
