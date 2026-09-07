@@ -531,7 +531,7 @@ NUL inside a `Bytes` is data.
 **AND THE EXCEPTION IS NOT "A PACKAGE THAT MEANS OCTETS".** That is an
 intention, and an intention cannot be held to. It is "A SEAT WHOSE
 PROTOTYPE CARRIES ITS OWN LENGTH" — which is greppable in the header
-beside the seat, so `make externs` can hold it: a `const char*` beside
+beside the seat, so `make externs` holds it: a `const char*` beside
 a length parameter is `Bytes`, a bare one is checked. The sqlite
 lead's wording, and it is better than mine was.
 
@@ -1143,6 +1143,44 @@ caller filled. WHAT IS NOT COVERED, said out loud: a struct by value
 behind a TYPEDEF reads as an ordinary name and passes. It cannot bite
 while an Avra seat can only be `int`, `ptr`, a width word or `float`,
 none of which can name a struct — and that is the recorded trigger.
+
+### 5.6.9 WHAT THE RED TEAM CHANGED ABOUT THE HOST
+
+§5.6.5 recorded that the refusals "almost all became static", and the
+one that stayed dynamic is the one that broke. THE FOUR REFUSALS WERE
+NOT WRITTEN ALIKE: `no_symbol`, `too_many_seats` and `inout_seat` were
+all asked BEFORE the staging and returned; `unstageable` was asked
+INSIDE it and only recorded. So the frame refused an aggregate seat
+and then called the symbol anyway, with the slot at
+`avra_ffi_reset`'s zero — a callee that dereferences read address
+zero and the evaluator SEGFAULTED, five shapes, with `./avra check`
+clean. A LAW REFUSES BEFORE THE WORK, and three siblings in the same
+function already did; the odd one out was the defect. `staged_seats`
+answers a bool now.
+
+THE SHAPE THAT LET IT HIDE IS WORTH MORE THAN THE FIX. `stage_pointer`
+carried the aggregate law in a `rest ->` arm over `Val` — and `Val` is
+a REGISTRY, its handles at `.A`, `.M` and `.C`. A catch-all there
+discharges the registry's obligation no better than `_ ->` and is
+harder to see, which is this tree's own law about registry enums,
+firing inside the host. Every variant is spelled now.
+
+AND `.Void` WAS GROUPED WITH `.Ptr` in the backend's `rt_arg`, so a
+`void` seat got a crossing check natively that `carries_text` does not
+give it in the evaluator. Nothing can fill a void seat today, so it
+was an asymmetry waiting for the day one becomes fillable rather than
+a live divergence — which is exactly the kind that is cheap now and
+expensive later. The arms are separate.
+
+WHAT THE HOST STILL OWES, and it is a CHECK-TIME law rather than a
+frame one: the evaluator refuses an aggregate at an extern seat and
+the NATIVE binary does not. It hands C a real box pointer and the
+program gets a wrong answer with nothing said — `atoi` over a record
+answered 0, `puts` over a list answered 10, `strlen` over a map
+answered 5. Only a law at the declaration covers both engines, and it
+is held pending the lead because the tree's aggregate seats must move
+first: `avra_exec_self(args: List<string>)` reads an `AvraArray` in C,
+which §2.1 makes core's and §2.2 makes a ROW.
 
 ## 6. PROPOSED FOR LAND D — as questions, not text
 
