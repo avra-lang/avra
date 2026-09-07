@@ -970,6 +970,57 @@ this branch had given the shared helper hours earlier, so that body
 and its needle died. All three doors are now decided and two are
 landed; door 2 (S2c) is the substrate lane's, approved in shape above.
 
+## The last seam slice (c3b8b18, merged at 7e85f5d): two rows, and F2056's second arm
+
+The substrate lane's fourth fix on the ROW ruling, green from a cold
+bootstrap. THE SWEEP SAID ONE AGGREGATE SEAT AND THERE WERE TWO:
+`avra_spawn_status(prog, args: List<string>)` is declared inside a
+program `tools/traps.sh` GENERATES, so a grep over `.av` files could not
+see it — the generated-caller lesson, second firing — and it would have
+turned `make traps` red at this merge. Both are runtime rows now on
+§2.1's reading (their C reads an `AvraArray`); `avra_exec_self` re-execs
+under `avra run` for the first time, and the receipt is behavioural (it
+re-ran the compiler and printed `explain F2056`). F2056 grew its second
+arm in lane D's verified wording — the voice and the test say PLAIN, so
+the `mut` half already settled is never re-litigated — and the law is
+spelled as what is ALLOWED: a new type is refused at an extern seat
+until someone decides it crosses, because C is on the other side of
+that door. A ROW'S WORDS NEEDED THEIR OWN CHECK, which nobody had
+named: the seam checks a SEAT, and a `List<string>` seat is a pointer
+to a box, so every word inside crossed unexamined while `execv` and
+`posix_spawn` resolve each one; both C bodies check per word, and the
+trap contract sits on the SPAWNING twin, because a contract whose
+regression is a fork bomb does not belong in a harness (§2.8).
+
+A REFUSING MIRROR WAS ASKED FOR AND NOT BUILT, with the number: a rule
+refusing a `string` seat over a length-carrying prototype is sound in
+one direction only — an integer after the pointer may be a flag, and
+`open(const char*, int)` declared `string` is correct — and it fires
+ZERO times on this tree, since every such seat is `Bytes` already. A
+rule with no true-positive rate and a known false-positive shape is
+F2040 in new clothes, so the other surface is WITNESSED: `make externs`
+reports the nine `Bytes` seats that earn the exemption. The right call.
+§7.3's near-miss is worth carrying: four probes run while `make
+bootstrap` was relinking `build/avra` came back CLEAN and would have
+read as the law not firing — during a bootstrap there is no stable base
+for a probe to name.
+
+LANE A'S ARITHMETIC ON THE DOOR-3 NUMBER, which says more than either
+of us claimed: 172,000,350 retains removed over 86,000,194 `once` reads
+is 2.00 per read where the design predicted ONE. `avra_once_get`'s own
+retain is 86M of it; the other 86M is every OTHER site that touched the
+value, because an immortal box no-ops a retain wherever it is taken —
+`crlf` and `tchar` are two, and 64M sit at sites nobody listed. The
+exactness of 2.00 says the account is complete. So immortality is worth
+about twice what borrowing would have been, which is a second argument
+for the door that nobody had when it was chosen. And RECLAIMS UNCHANGED
+AT EXACTLY 70,000,401 BOTH WAYS IS THE CONTROL: nothing died
+differently, only the counting stopped — a refcount change that moved
+reclaims would be a behaviour change wearing a performance change's
+clothes. The `KIND_STATIC` failure is the registry-obligation law in C
+for the second time on one file: `box_clone`'s kind dispatch is a chain
+keyed on our kinds that no keeper can see, as `acc_kind_of` was.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
