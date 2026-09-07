@@ -69,7 +69,7 @@ avra: $(RUNTIME_OBJS)
 sweep:
 	@rm -rf packages/*/build build/test_shards
 
-test: $(RUNTIME_OBJS) build/sqlite3.o
+test: $(RUNTIME_OBJS) build/sqlite3.o build/sqlite_sentinel.o
 	@for p in $(SUITES); do \
 	  ./avra test $$p || exit 1; \
 	done
@@ -221,6 +221,12 @@ SQLITE_FLAGS := \
 build/sqlite3.o: packages/std-sqlite/vendor/sqlite3.c
 	@mkdir -p build
 	cc -c -O2 $(SQLITE_FLAGS) -o $@ $<
+
+# The driver's own C: the destructor sentinel as a named door, so no
+# Avra program needs a way to build a pointer from an integer.
+build/sqlite_sentinel.o: packages/std-sqlite/src/sentinel.c
+	@mkdir -p build
+	cc -c -O2 -Ipackages/std-sqlite/vendor -o $@ $<
 
 build/width_witness.o: packages/width-witness/src/witness.c
 	@mkdir -p build
