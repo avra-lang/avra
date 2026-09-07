@@ -937,8 +937,71 @@ def keep_self_test():
             return 1
     return 0
 
+# A ROW THAT RESOLVES ITS TEXT OUTSIDE THE PROGRAM IS NOT INERT.
+# `inert: true` claims the row RESOLVES NOTHING — a NUL is data to it —
+# and that claim is what exempts a seat from the crossing check. Where
+# the body hands a text seat to the filesystem, the environment, or a
+# spawn, a NUL is TWO NAMES and there is no correct answer, so the
+# claim is false and the exemption is a hole waiting for the day
+# someone reads the registry instead of the C.
+# HAND-MARKING 81 ROWS IS WHAT THIS GUARDS. `avra_host_env` and
+# `avra_io_env` have the same body — `getenv(name)` — and were marked
+# oppositely by the pass that introduced the column; that is not a
+# judgement anyone lost, it is what a hand sweep does at that size.
+# WRITING, NOT RESOLVING: `puts`/`fputs` truncate output at a NUL,
+# which is data loss rather than name ambiguity. They are left to
+# judgement, so this refuses nothing a reasonable marking allows.
+RESOLVING = re.compile(
+    r"\b(getenv|setenv|fopen|freopen|open|open64|openat|creat|stat|lstat|fstatat"
+    r"|access|faccessat|opendir|unlink|unlinkat|rmdir|mkdir|mkdirat|rename|renameat"
+    r"|link|symlink|readlink|chdir|chmod|chown|truncate|utimes"
+    r"|execv|execve|execvp|execl|execlp|execle|posix_spawn|posix_spawnp"
+    r"|system|popen|dlopen|connect|bind|getaddrinfo|gethostbyname)\s*\(")
+
+def inert_rows(text):
+    """The rows the registry marks `inert: true`."""
+    out = set()
+    for m in re.finditer(r'RtSig \{ name: "([a-z_0-9]+)"(.*?) \},', text, re.S):
+        if re.search(r"inert:\s*true", m.group(2)):
+            out.add(m.group(1))
+    return out
+
+def resolving_inerts(bodies, inert):
+    """Every row claiming `inert` whose C body resolves a text seat."""
+    out = []
+    for name in sorted(inert):
+        if name not in bodies:
+            continue
+        params, body = bodies[name]
+        if "char*" not in params and "char *" not in params:
+            continue
+        calls = sorted({m.group(1) for m in RESOLVING.finditer(body)})
+        if calls:
+            out.append((name, calls))
+    return out
+
+INERT_CASES = [
+    # (params, body, marked inert, refused?)
+    (("const char* n", "getenv(n);", True), True),    # io_env / host_env
+    (("const char* p", "fopen(p, \"r\");", True), True),
+    (("const char* p", "opendir(p);", True), True),
+    (("const char* n", "getenv(n);", False), False),  # marked CHECKED: fine
+    (("void* a, int64_t i", "return a;", True), False),   # no text seat
+    (("const char* s", "fputs(s, stderr);", True), False),  # writes, not resolves
+    (("const char* s", "return str_len(s);", True), False), # reads its own bytes
+]
+
+def inert_self_test():
+    for (params, body, marked), want in INERT_CASES:
+        rows = {"r"} if marked else set()
+        got = bool(resolving_inerts({"r": (params, body)}, rows))
+        if got != want:
+            print(f"externs: inert self-test failed on {body!r} inert={marked}: {got} != {want}")
+            return 1
+    return 0
+
 def main():
-    if self_test() + seat_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + keep_self_test():
+    if self_test() + seat_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + keep_self_test() + inert_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -1020,6 +1083,17 @@ def main():
         if voids:
             print(f"externs: {len(voids)} extern(s) read an answer their C body does not give")
         return 1
+    api = open(os.path.join(ROOT, "packages/std-avrac/src/core/runtime_api.av")).read()
+    loud = resolving_inerts(seated_bodies(sources), inert_rows(api))
+    for name, calls in loud:
+        print(f"externs: {name} is marked `inert` and its C body calls {', '.join(calls)}")
+        print(f"externs:   `inert` claims the row RESOLVES NOTHING, which is what exempts its")
+        print(f"externs:   seat from the crossing check. A NUL in a name it resolves is TWO")
+        print(f"externs:   names and no correct answer — the row is not inert.")
+    if loud:
+        print(f"externs: {len(loud)} row(s) claim `inert` over a body that resolves")
+        return 1
+
     unsaid = unsaid_keeps(seated_bodies(sources), sig_rows())
     for name, held, marked, _ in unsaid:
         print(f"externs: {name} retains seat(s) {held} in C, its row marks {marked or 'none'}")
@@ -1052,7 +1126,7 @@ def main():
     print(f"externs: {checked} parameter seat(s) match the C seat they fill")
     print(f"externs: no declaration faces a variadic C body, nor a seat the frame cannot carry")
     print(f"externs: read {scanned}; "
-          f"{len(CASES) + len(SEAT_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES)} of the keeper's own cases hold")
+          f"{len(CASES) + len(SEAT_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES) + len(INERT_CASES)} of the keeper's own cases hold")
     return 0
 
 sys.exit(main())

@@ -1524,6 +1524,24 @@ Runtime facts, ours to ratify:
   (That trigger never reached main. Audited here on landing: the two
   triggers in these ledgers that name an owner were both confirmed
   with that owner directly.)
+- ITS SIBLING FOR REVIEWS: A REVIEW REQUEST NAMES THE TREE THE CODE
+  IS IN. "It is in your file, for your review" is false whenever the
+  relevant half lives on the ASKER's branch, and it happened twice in
+  one night — a `Hole` field and an `inert` column, both absent from
+  main, both sent as changes to files this lane owns. THE FAILURE MODE
+  IS A FABRICATED REVIEW: the reviewer cannot open the code, and the
+  cheapest reply is "looks right", which is then banked as a review
+  that happened. Both were caught by `grep`ping for the symbol before
+  answering, which is a one-command habit and the whole defence. The
+  reviewer's obligation is to check, and the asker's is to say WHICH
+  TREE — a review of code you cannot see is worth less than silence,
+  because silence does not get quoted back.
+  AND THE CONSTRAINT IS SOMETIMES THE BETTER DESIGN: unable to
+  re-mark a column that was not here, the keeper for it landed FIRST
+  and passes vacuously, so the column arrives into a guarded tree and
+  is certified from its first gated commit instead of being blessed
+  and corrected later. Ask what the absence makes possible before
+  waiting for the code.
 - A RECEIPT FROM ANOTHER TREE IS LABELLED AS ONE. The laws here carry
   instances because an instance is what makes a law APPLIED rather
   than agreed with — so the instances have to stay checkable. One

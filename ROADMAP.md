@@ -2923,9 +2923,35 @@ the order is the dependency.
            it tried. Rule B — a general type-qualified call, which is
            STATIC METHODS (ROADMAP:10786, recorded not this arc) — is
            the OWNER'S and no relay of an answer is a grant.
-        2. `Bytes` (HTTP lane): `is_managed` hardest, because a
-           managed type the memory pass does not know is a leak or a
-           double free and neither shows up in a test.
+        2. `Bytes` (HTTP lane) — DISCHARGED 2026-09-07 on the
+           `is_managed` point, and answered from the code and the C
+           rather than from the compiler's pointer: `.Str or .Bytes
+           -> true`, `KIND_BYTES = 4`, `bytes_box` through
+           `sized_box` with the terminator written, and `acc_kind_of`
+           filing it as its own `ACC_BYTES` row — the miscounting-
+           STATIC lesson applied AT BIRTH rather than after
+           `AVRA_MEM_STATS` was caught lying. Every source is a FRESH
+           box (`.bytes()`, `avra_fd_taken`, `concat`/`slice`/
+           `gathered`, `Bytes.of_list`), and a C body answering
+           octets goes through `bytes_owned` or not at all — the
+           header law's fourth instance, named as one.
+           WHY THE QUESTION WAS WORTH ASKING ANYWAY: an exhaustive
+           match tells you a variant is UNANSWERED and cannot tell
+           you the answer typed is the right one, and an OR-RUN makes
+           the wrong answer a one-word edit. A `Bytes` in the
+           unmanaged run compiles clean, passes every test, and leaks
+           or double-frees — and `hdr` refuses an untagged pointer,
+           so the guard no-ops and a leak reports clean. THE COMPILER
+           POINTS AT THE ARM; ONLY THE AUTHOR KNOWS WHICH ARM WAS
+           MEANT.
+           RESIDUAL, raised as a glance not a blocker: whether
+           `Bytes` took a fresh INTERNER KEY. The type registry keeps
+           the FIRST shape it sees for a key, so two variants sharing
+           one do not fail loudly — they quietly become one type, and
+           the symptom is a wrong `name_of` or a seat taking the
+           wrong value. That is today's fingerprint-collision class
+           in the type registry, and unlike fingerprints and idioms
+           it has NO KEEPER and nothing announces what is free.
         3. THE OPAQUE TYPE / Drop design (SQLITE lane) for the
            memory-pass parts. Position already given: the WRAPPER BOX
            route, because the guard is structurally blind at the
@@ -3594,6 +3620,40 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  A LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS — the layering rule this
+  campaign owes the NUL crossing, earned when the language began trapping
+  on an interior NUL at a `string` extern seat. The driver already
+  refused at three of those seats with a NAMED CAUSE (`path_holds_a_nul`,
+  `script_holds_a_nul`, `Cause.HoldsNul` — *"reads only the bytes before
+  it, so the answer would be about a prefix"*), and the language's trap
+  is a WRECK. **For a caller who typed a bad path, a refusal they can
+  catch is strictly better than a trap they cannot**, and the DRIVER is
+  the layer that knows WHY the seat resolves. So: the seam is the FLOOR
+  for every package that has not thought about it; a package that HAS
+  thought converts the wreck into a diagnosis; **neither makes the other
+  redundant, and the trap firing inside a guarded package is a bug in the
+  GUARDS.**
+  AND THE EXCEPTION IS GREPPABLE RATHER THAN AN INTENTION, which is the
+  better form of the same rule. The crossing check's exception was first
+  written as *"a package that MEANS octets takes `Bytes`"* — an
+  intention, which every author will read in their own favour. The
+  mechanical test is **"a seat whose C PROTOTYPE CARRIES ITS OWN LENGTH"**:
+  the callee resolves nothing when it is told how many bytes to read, so
+  a NUL is data. Inside one package that splits 4 / 7 and the split is
+  not a judgement call —
+      LENGTH-CARRYING   bind_text, bind_blob, keyword_check, prepare_v3
+      RESOLVING         open_v2, complete, bind_parameter_index,
+                        db_readonly, db_filename, txn_state,
+                        compileoption_used
+  `sqlite3_complete` is the clean demonstration: **no length at all**, so
+  C measures it with `strlen` and a NUL genuinely makes the answer about
+  a prefix. A DESIGN RULE STATED AS AN INTENTION IS ARGUED AT EVERY SITE;
+  STATED AS A PROPERTY OF THE PROTOTYPE IT IS CHECKED ONCE.
+  AND THE MEASUREMENT BEHIND THE EXCEPTION IS THIS CAMPAIGN'S: a SQLite
+  TEXT value is a BYTE STRING WITH A TERMINATOR APPENDED, not a C string
+  — `bind_text("ab\0cd", 5)` reads back `column_bytes` 5 and `strlen` 2.
+  The exception is therefore what the LIBRARY DOES rather than a
+  concession to a test.
   A KEEPER THAT INTERROGATES THE ARTIFACT CAUGHT A BUILD REFACTOR THAT
   NOTHING ELSE DID (HTTP lane, `1be60fd`, reported to this campaign).
   Splitting the compiler's object list from the packages' — so `make
