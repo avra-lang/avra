@@ -632,11 +632,34 @@ compare indexed by characters where bytes were meant, and a
 content-length rule keyed on string-matched method names (the length
 is written when there is a body; a body-less request needs no field).
 `@std/http` is 157 cases; the gate is green at 224c89b.
-THE LIBRARY IS WHOLE — framer, router, server loop, client — and what
-remains is the performance the mandate names: the framer's refcount
-traffic (a third of a head, measured before the sub-lanes), and a
-load measurement of the loop against the paper's nginx and h2o
-figures.
+THE LIBRARY IS WHOLE — framer, router, server loop, client.
+
+## Slice 6 — THE LOOP UNDER LOAD (b83abf9, 2fd7fd6)
+
+`tools/bench/serve` is a server answering "hello" on 18080;
+ApacheBench on the same machine, one server thread, loopback:
+
+    keep-alive,  50 concurrent, 20,000 requests   102,059 req/s   99% ≤ 1 ms
+    keep-alive, 200 concurrent, 50,000 requests   118,281 req/s   99% ≤ 2 ms
+    a connection per request, 50 concurrent        41,688 req/s   99% ≤ 4 ms
+
+Zero failed requests in every run. The instrument is named because it
+bounds the number: `ab` is single-threaded and shares the core, so the
+keep-alive figure is close to what the generator can drive, not what
+the loop can serve — a multi-core generator on another host is the
+next measurement. THE FIRST `ab -k` RUN TIMED OUT, which was a law:
+`ab` speaks HTTP/1.0, and a server that honours a 1.0 peer's
+keep-alive must SAY `connection: keep-alive` or the peer waits for a
+close that never comes (RFC 9112 §9.3) — `wire` speaks the
+connection's fate whenever the peer cannot assume it, both 1.0 cases
+pinned. S8 from the strings lane merged in the same window (936ef6a):
+the query as keyed fields over raw octets and the tail route declared
+by its door — and a LIVE BUG in the router I had merged: it matched
+the whole target, so `?redirect=/home` made its route 404; the header
+said "a route matches the PATH" since S7 and nobody checked the code
+held it. The loop's suite now drives the router with such a target.
+@std/http is 254 cases. NEXT: the framer's refcount traffic under the
+census, which was a third of a head before the sub-lanes.
 
 ## Slice 3 — `@std.http` (AFTER)
 
