@@ -566,6 +566,42 @@ block and `kind_of` as the question to ask first. THE CORE DELETIONS (rows,
 `RtHost` variants, evaluator arms leaving core) are the lane's to write, in
 lane A's and lane C's files, for their review before merge — both told.
 
+## Slice 4 — the SERVER LOOP (de9d3f1 … e77fae3), the lead's own
+
+`packages/std-http/src/server.av`: the loop is a VALUE with a `turn`
+verb — one wait, every ready descriptor served, the count answered;
+`run` turns forever, a test turns by hand on one thread with a client
+on the same poller. A connection's whole state is a `Link` (the
+framing paper's per-connection list: socket, unconsumed bytes, the
+scan's reach, the head awaiting its body, the chunked decoder, output
+owed and written, closing, served, heard) and every link lives in a
+`List<Link?>` by descriptor. `Server<A>` carries the app state and a
+`fn(mut A, Request) -> Response` the handler writes through — the
+probe for that shape (a nullable record field, a generic server with a
+mut-seat fn field fed from its own state) found a FALSE F2050: a call
+writing through a fn FIELD's `mut` seat is invisible to the receiver
+pass, and the help walks the writer into a silent write — lane C
+reproduced it and is fixing the pass (234d17c). THE LAWS, each a case:
+responses leave in request order and a pipelined tail is framed next
+from the same buffer; a refused head answers its status with
+`connection: close`, shuts the write side and reads the peer to its
+end; a peer's FIN is not a delimiter and not disinterest; `100
+Continue` when a body is expected and none has arrived; a HEAD carries
+the body's length and none of its bytes; a link idle past its `Timing`
+deadline is dropped. Twelve exchanges exact (server_test), fifteen
+attacks over four classes (server_adversarial_test: every split, the
+bounds at 431/413, garbage/bare LF/HTTP/2.0, peers that vanish) with
+one harness finding — a peer closing mid-head takes three wake-ups,
+one read per wake-up by design. `corpus/http-serve` runs the loop end
+to end natively, `AVRA_RC_GUARD=1` silent, nothing live at exit. Two
+review findings of my own gone (a `Progress` variant nothing built, a
+one-line alias). AND A LATENT TRAP IN THE CORPUS RUNNER: it captured a
+package build's stderr into the binary-path file and EXECUTED the
+file, so the first warning-carrying package corpus program ran
+`warning[F2050]:` as a shell command and reported native != expected;
+the path is stdout alone now, under build/ (e77fae3, lane A's review).
+NEXT: the response framer and the client.
+
 ## Slice 3 — `@std.http` (AFTER)
 
 Message types, an index-driven HTTP/1.1 framer over `Bytes`, a route trie
