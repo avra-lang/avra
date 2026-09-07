@@ -430,6 +430,18 @@ engine's spec, written by dogfooding.
   says to measure. A doc is a claim with a date on it; the test that
   disagrees with it is the newer fact. `85abb9e`'s message carries
   the wrong rationale for a real fix because of it.
+  AND A RETRACTED FACT SPREADS BY CITATION, WHICH NO SWEEP OF ITS
+  ORIGIN REACHES. This one was quoted into four documents across
+  three campaigns — a ROADMAP red-team entry, a docs vision's
+  blockquote, a subset probe log's row, a census heading — and the
+  package that OWNED the claim swept itself twice by file, correcting
+  five sites, while every citation stood. A citation is a COPY that
+  does not know it is one: it names the finding, not the mechanism,
+  so it survives the mechanism changing and reads as corroboration
+  from an independent source. THE SWEEP IS BY CLAIM, NEVER BY FILE
+  OR BY PACKAGE — grep the tree for the ASSERTION and for the
+  distinctive example that carries it (`ab\0cd`, `"\0x"` here), not
+  for the files you remember writing.
 - A COLD PATH IN A HOT LEAF COSTS EVERY CALL A FRAME. A lazy
   `getenv`, a `char msg[80]` for a trap's words, a grow branch, a
   `__builtin_return_address` read — each is free when it runs and
