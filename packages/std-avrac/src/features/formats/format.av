@@ -1,0 +1,187 @@
+//! THE FORMAT READER: text in, a head and its parts out, with the
+//! faults a literal can carry. It knows nothing of typing or
+//! lowering — those read their shape from here, and the shape IS
+//! `Pat.Format`'s, so the reader and the node are one vocabulary.
+use core.{TypeRef, Hole, FormatPart, named_ref, nothing_bound, joined}
+
+/// A format read from a literal: the literal head, then a hole and
+/// the literal following it, repeated. A literal with NO holes is
+/// its head alone. A `fault` makes it no format at all.
+export type Format = { head: string, parts: List<FormatPart>, fault: Fault? }
+
+/// Why a literal is not a format. The first three are the text's;
+/// the last two are laws over the holes it yielded.
+export enum Fault {
+    /// a `{` with no `}` after it
+    Unclosed(at: int)
+    /// a `}` closing nothing
+    Stray(at: int)
+    /// a `{…}` whose body is not a name, or a name and a type
+    Malformed(at: int, body: string)
+    /// two holes with nothing between them — no scan can split them
+    Adjacent(first: string, second: string)
+    /// one name, two spans
+    Repeated(name: string)
+}
+
+/// The format a literal spells.
+export fn read_format(text: string) -> Format {
+    let b = text.bytes()
+    mut r = Reading { at: 0, head: null, parts: [], runs: [], pending: null }
+    while true {
+        match stepped(b, text, r) {
+            .More(next) -> { r = next },
+            .Done(f) -> { return f },
+        }
+    }
+    closed(r, "")
+}
+
+/// Whether a literal spells a format at all. A literal with no holes
+/// is a plain literal, and its pattern is the equality it always was.
+export fn has_holes(f: Format) -> bool {
+    !f.parts.is_empty()
+}
+
+// ── The reading ─────────────────────────────────────────────────
+
+/// A format part-read: where the scan is, the head once a hole has
+/// closed it, the parts behind, the runs of the literal still open,
+/// and the hole waiting for the literal that follows it.
+type Reading = { at: int, head: string?, parts: List<FormatPart>, runs: List<string>, pending: Hole? }
+
+enum Step {
+    More(r: Reading)
+    Done(f: Format)
+}
+
+/// One brace's worth of reading: the text up to it, then what the
+/// brace means — an escape, a hole, or a fault.
+fn stepped(b: Bytes, text: string, r: Reading) -> Step {
+    let brace = next_brace(b, r.at)
+    if brace < 0 { return .Done(closed(r, text.substring(r.at, text.length))) }
+    let run = text.substring(r.at, brace)
+    if doubled(b, brace) { return .More(escaped(r, run, text.substring(brace, brace + 1), brace + 2)) }
+    if b.at(brace) == shut() { return .Done(faulted(Fault.Stray(brace))) }
+    let end = b.index_of(close_brace(), brace + 1)
+    if end < 0 { return .Done(faulted(Fault.Unclosed(brace))) }
+    match hole_of(text.substring(brace + 1, end), brace) {
+        .Err(f) -> .Done(faulted(f)),
+        .Ok(h) -> .More(opened(r, run, h, end + 1)),
+    }
+}
+
+/// A doubled brace: one of it joins the literal still open.
+fn escaped(r: Reading, run: string, brace: string, at: int) -> Reading {
+    r with { at: at, runs: r.runs.concat([run, brace]) }
+}
+
+/// A hole read: the open literal closes with `run` — as the HEAD
+/// when no hole has come before, else as the pending hole's piece —
+/// and this hole becomes the one waiting.
+fn opened(r: Reading, run: string, h: Hole, at: int) -> Reading {
+    let text = joined(r.runs.concat([run]), "")
+    if r.head == null { return Reading { at: at, head: text, parts: [], runs: [], pending: h } }
+    Reading { at: at, head: r.head, parts: closing(r, text), runs: [], pending: h }
+}
+
+/// The parts with the WAITING hole closed by the literal that
+/// followed it — the one place a part is ever made.
+fn closing(r: Reading, text: string) -> List<FormatPart> {
+    r.parts.concat([FormatPart { hole: r.pending!, piece: text }])
+}
+
+/// The text ran out: the last literal closes, then the two laws over
+/// the holes.
+fn closed(r: Reading, tail: string) -> Format {
+    let text = joined(r.runs.concat([tail]), "")
+    if r.head == null { return Format { head: text, parts: [], fault: null } }
+    let f = Format { head: r.head!, parts: closing(r, text), fault: null }
+    f with { fault: adjacent_fault(f.parts) ?? repeated_fault(f.parts) }
+}
+
+/// A literal that is no format: the fault, and a total stand-in that
+/// reads as a format matching nothing anyone wrote.
+fn faulted(f: Fault) -> Format {
+    Format { head: "", parts: [], fault: f }
+}
+
+// ── The braces ──────────────────────────────────────────────────
+
+once fn open_brace() -> Bytes { "{".bytes() }
+once fn close_brace() -> Bytes { "}".bytes() }
+fn shut() -> int { 125 }
+
+/// The first brace of either kind at or after `at`, or -1.
+fn next_brace(b: Bytes, at: int) -> int {
+    earlier(b.index_of(open_brace(), at), b.index_of(close_brace(), at))
+}
+
+/// The earlier of two positions, either of which may be a miss.
+fn earlier(x: int, y: int) -> int {
+    when {
+        x < 0 -> y
+        y < 0 -> x
+        x < y -> x
+        _ -> y
+    }
+}
+
+/// Whether the brace at `at` is followed by its twin.
+fn doubled(b: Bytes, at: int) -> bool {
+    at + 1 < b.length && b.at(at + 1) == b.at(at)
+}
+
+// ── One hole ────────────────────────────────────────────────────
+
+/// A `{…}`'s body as a hole: a name, and an optional `: Type`.
+fn hole_of(body: string, at: int) -> Result<Hole, Fault> {
+    let colon = body.index_of(":")
+    let name = (if colon < 0 { body } else { body.substring(0, colon) }).trim()
+    let ty: string? = if colon < 0 { null } else { body.substring(colon + 1, body.length).trim() }
+    if !named(name) { return .Err(Fault.Malformed(at, body)) }
+    if ty != null && !named(ty!) { return .Err(Fault.Malformed(at, body)) }
+    .Ok(Hole { name: name, ty: written_type(ty) })
+}
+
+/// The written type a hole names, when it named one. Built through
+/// core's constructor, never by hand: a reconstruction that spells
+/// every field drops the next one silently.
+fn written_type(ty: string?) -> TypeRef? {
+    if ty == null { return null }
+    named_ref(ty!)
+}
+
+/// Whether the text is identifier-shaped — a name, not a phrase.
+fn named(s: string) -> bool {
+    !s.is_empty() && name_start(s.char_code(0)) && [name_part(s.char_code(i)) for i in 0..s.length].all(it)
+}
+
+fn name_start(c: int) -> bool { c == 95 || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) }
+fn name_part(c: int) -> bool { name_start(c) || (c >= 48 && c <= 57) }
+
+// ── The two laws over the holes ─────────────────────────────────
+
+/// Two holes with nothing between them: an INTERIOR piece that is
+/// empty. The head and the LAST piece may be empty — a hole at
+/// either end is ordinary. Taken over the PARTS, so the reader and
+/// the node it becomes are judged by one function.
+export fn adjacent_fault(parts: List<FormatPart>) -> Fault? {
+    let k = [j for j in 0..parts.length - 1].find((j) -> parts[j].piece.is_empty())
+    if k == null { return null }
+    Fault.Adjacent(parts[k!].hole.name, parts[k! + 1].hole.name)
+}
+
+/// One name, two spans — a duplicate is a name whose FIRST position
+/// is earlier than this one. `_` binds nothing, so it may repeat.
+export fn repeated_fault(parts: List<FormatPart>) -> Fault? {
+    let names = names_of(parts)
+    let k = [j for j in 0..names.length].find((j) -> names.index_of(names[j]) < j)
+    if k == null { return null }
+    Fault.Repeated(names[k!])
+}
+
+/// The names a list of parts binds, in order.
+export fn names_of(parts: List<FormatPart>) -> List<string> {
+    [p.hole.name for p in parts if p.hole.name != nothing_bound()]
+}

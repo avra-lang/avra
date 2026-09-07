@@ -1,0 +1,152 @@
+// The format reader: what a literal with holes says it is. The empty
+// case first, then the escape, the two laws over the holes, and the
+// faults a malformed literal earns.
+use @std.avrac.features.formats.{read_format, names_of, has_holes, Fault}
+use @std.avrac.core.{nothing_bound, FormatPart}
+
+/// A format re-spelled from what the reader made of it: its head,
+/// then each hole as `<name:type>` and the literal that follows it.
+/// A reader that lost a piece or a type shows it here.
+fn shape(text: string) -> string {
+    let f = read_format(text)
+    if f.fault != null { return why(f.fault!) }
+    f.head + [spelled(p) for p in f.parts].join("")
+}
+
+fn spelled(p: FormatPart) -> string {
+    "<${p.hole.name}:${p.hole.ty?.name ?? "-"}>${p.piece}"
+}
+
+/// A fault as one word, its position included — a fault that moved
+/// would otherwise read as the same fault.
+fn why(f: Fault) -> string {
+    match f {
+        .Unclosed(at) -> "unclosed@${at}",
+        .Stray(at) -> "stray@${at}",
+        .Malformed(at, body) -> "malformed@${at}:${body}",
+        .Adjacent(a, b) -> "adjacent:${a},${b}",
+        .Repeated(n) -> "repeated:${n}",
+    }
+}
+
+spec "features/formats" {
+    given "a literal with no holes" {
+        then "empty text is an empty head and no parts" {
+            shape("") == "" && read_format("").parts.is_empty()
+        }
+        then "plain text is its head" {
+            shape("abc") == "abc"
+        }
+        then "a literal with no holes is not a format" {
+            !has_holes(read_format("abc")) && has_holes(read_format("{a}"))
+        }
+        then "a doubled brace is one brace, and no hole" {
+            shape("a{{b}}c") == "a{b}c" && !has_holes(read_format("a{{b}}c"))
+        }
+        then "a doubled brace alone is that brace" {
+            shape("{{") == "{" && shape("}}") == "}"
+        }
+        then "a doubled pair is two braces" {
+            shape("{{}}") == "{}"
+        }
+    }
+
+    given "holes" {
+        then "one hole leaves an empty head and one empty piece" {
+            shape("{a}") == "<a:->"
+        }
+        then "the request line reads as four holes with the literals between them" {
+            shape("{m} {p} HTTP/{maj: int}.{min: int}") == "<m:-> <p:-> HTTP/<maj:int>.<min:int>"
+        }
+        then "a typed hole carries the type it names" {
+            shape("{n: int}") == "<n:int>"
+        }
+        then "spaces around a name and a type are not part of them" {
+            shape("{ a : int }") == "<a:int>"
+        }
+        then "a hole that binds nothing still consumes its span" {
+            shape("{_}x") == "<_:->x" && names_of(read_format("{_}x").parts).is_empty()
+        }
+        then "the word for binding nothing is the language's own" {
+            read_format("{_}").parts[0].hole.name == nothing_bound()
+        }
+        then "a hole that binds nothing may carry a type" {
+            shape("{_: int}") == "<_:int>"
+        }
+        then "the names a format binds are its hole names, without the anonymous" {
+            names_of(read_format("{a}x{_}y{b}").parts).join(",") == "a,b"
+        }
+        then "a name may hold digits after its first character" {
+            shape("{a1}") == "<a1:->"
+        }
+        then "an escaped brace beside a hole stays a brace" {
+            shape("a{{{x}}}c") == "a{<x:->}c"
+        }
+        then "the head holds everything before the first hole" {
+            read_format("abc{x}def").head == "abc"
+        }
+        then "the last piece holds everything after the last hole" {
+            read_format("abc{x}def").parts[0].piece == "def"
+        }
+    }
+
+    given "the law that two holes need something between them" {
+        then "adjacent holes are refused, naming both" {
+            shape("{a}{b}") == "adjacent:a,b"
+        }
+        then "two anonymous holes are adjacent too" {
+            shape("{_}{_}") == "adjacent:_,_"
+        }
+        then "a hole at each END is ordinary, not adjacent" {
+            shape("{a}x{b}") == "<a:->x<b:->"
+        }
+    }
+
+    given "the law that one name binds one span" {
+        then "a name written twice is refused" {
+            shape("{a} {a}") == "repeated:a"
+        }
+        then "a repeat is refused whether or not the holes agree on type" {
+            shape("{a: int} {a}") == "repeated:a"
+        }
+        then "the anonymous name may repeat, because it binds nothing" {
+            shape("{_} {_}") == "<_:-> <_:->"
+        }
+    }
+
+    given "a literal that is no format" {
+        then "an open brace with no close is refused where it opened" {
+            shape("a{b") == "unclosed@1"
+        }
+        then "a close brace that opens nothing is refused where it sits" {
+            shape("a}b") == "stray@1"
+        }
+        then "a brace at position zero reports position zero" {
+            shape("{") == "unclosed@0" && shape("}") == "stray@0"
+        }
+        then "an empty body is refused" {
+            shape("{}") == "malformed@0:"
+        }
+        then "a body with no name before its colon is refused" {
+            shape("{: int}") == "malformed@0:: int"
+        }
+        then "a colon with no type after it is refused" {
+            shape("{a:}") == "malformed@0:a:"
+        }
+        then "a body that is a phrase, not a name, is refused" {
+            shape("{a b}") == "malformed@0:a b"
+        }
+        then "a name may not start with a digit" {
+            shape("{1a}") == "malformed@0:1a"
+        }
+        then "a name may not hold a dash" {
+            shape("{a-b}") == "malformed@0:a-b"
+        }
+        then "a second colon lands in the type, which is then no name" {
+            shape("{a::int}") == "malformed@0:a::int"
+        }
+        then "a brace inside a body is body text, and no name" {
+            shape("{a{b}}") == "malformed@0:a{b"
+        }
+    }
+}

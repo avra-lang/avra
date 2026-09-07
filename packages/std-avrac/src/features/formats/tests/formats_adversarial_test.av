@@ -1,0 +1,124 @@
+// The adversarial set: 30 programs over seven attack classes, kept
+// apart from the feature's own story so the attacks can grow without
+// drowning it. Every accepted program agreed on both engines and left
+// zero live bytes under the runtime's accounting when this landed.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/formats adversarial" {
+    given "degenerate shapes" {
+        then "one hole takes the whole subject" {
+            shown("match \"abc\" { \"{a}\" -> a\n    _ -> \"no\" }") == "abc"
+        }
+        then "a hole at each end leaves the literal between them" {
+            shown("match \"abc\" { \"{a}b{c}\" -> \"\${a}/\${c}\"\n    _ -> \"no\" }") == "a/c"
+        }
+        then "an empty subject fills one hole with nothing" {
+            shown("match \"\" { \"{a}\" -> \"[\${a}]\"\n    _ -> \"no\" }") == "[]"
+        }
+        then "a hole may match nothing while its neighbour matches something" {
+            shown("match \" x\" { \"{a} {b}\" -> \"[\${a}][\${b}]\"\n    _ -> \"no\" }") == "[][x]"
+        }
+        then "four holes and four literals hold their order" {
+            shown("match \"a1b2c3d\" { \"{p}1{q}2{r}3{s}\" -> \"\${p}\${q}\${r}\${s}\"\n    _ -> \"no\" }") == "abcd"
+        }
+        then "a literal with no holes is still an equality pattern" {
+            shown("match \"abc\" { \"abc\" -> \"lit\"\n    _ -> \"no\" }") == "lit"
+        }
+        then "an empty literal matches only the empty subject" {
+            shown("match \"\" { \"\" -> \"empty\"\n    _ -> \"no\" }") == "empty"
+        }
+        then "holes that bind nothing still consume their spans" {
+            shown("match \"a-b\" { \"{_}-{_}\" -> \"both\"\n    _ -> \"no\" }") == "both"
+        }
+        then "doubled braces match real braces" {
+            shown("match \"{}\" { \"{{}}\" -> \"braces\"\n    _ -> \"no\" }") == "braces"
+        }
+    }
+
+    given "every wrong subject" {
+        then "an int subject is refused, naming the type" {
+            refused_with("match 5 { \"{a}b\" -> 1\n    _ -> 0 }", "a format pattern reads text, found `int`")
+        }
+        then "a bool subject is refused" {
+            refused_with("match true { \"{a}b\" -> 1\n    _ -> 0 }", "a format pattern reads text, found `bool`")
+        }
+        then "a list subject is refused, naming the element type" {
+            refused_with("match [1] { \"{a}b\" -> 1\n    _ -> 0 }", "a format pattern reads text, found `List<int>`")
+        }
+    }
+
+    given "malformed formats" {
+        then "two holes with nothing between them are refused, naming both" {
+            refused_with("match \"x\" { \"{a}{b}\" -> 1\n    _ -> 0 }", "`{a}` and `{b}` have nothing between them")
+        }
+        then "one name over two spans is refused" {
+            refused_with("match \"x\" { \"{a}z{a}\" -> 1\n    _ -> 0 }", "`a` names two spans of this format")
+        }
+        then "a typed hole names the row it waits for" {
+            refused_with("match \"x\" { \"{n: int}z\" -> 1\n    _ -> 0 }", "nothing reads text as `int` yet")
+        }
+        then "a hole named for a keyword is refused by the name law" {
+            refused_with("match \"x\" { \"{match}z\" -> 1\n    _ -> 0 }", "`match` is a keyword")
+        }
+    }
+
+    given "crossing other features" {
+        then "a format in a fn body binds through the return" {
+            shown("fn f(s: string) -> string { match s { \"{a}!\" -> a\n        _ -> \"no\" } }\nf(\"hi!\")") == "hi"
+        }
+        then "a format inside a while runs every turn" {
+            shown("mut i = 0\nmut out = \"\"\nwhile i < 2 {\n    out = out + match \"a=1\" { \"{k}={v}\" -> \"\${k}\${v}\"\n        _ -> \"no\" }\n    i = i + 1\n}\nout") == "a1a1"
+        }
+        then "a format inside a comprehension answers per element" {
+            shown("[match s { \"{a}-{b}\" -> \"\${a}\${b}\"\n    _ -> \"no\" } for s in [\"x-y\", \"zz\"]].join(\",\")") == "xy,no"
+        }
+        then "a format nested in a variant pattern reads the payload" {
+            shown("enum L { R(t: string)  E }\nmatch L.R(\"a b\") {\n    .R(\"{x} {y}\") -> \"\${x}\${y}\"\n    .R(o) -> o\n    .E -> \"e\"\n}") == "ab"
+        }
+        then "a Bytes subject binds Bytes spans" {
+            shown("match \"GET /x\".bytes() { \"{m} {p}\" -> \"\${m.length}/\${p.length}\"\n    _ -> \"no\" }") == "3/2"
+        }
+    }
+
+    given "names against names" {
+        then "a hole shadows an outer binding for its arm alone" {
+            shown("let a = \"outer\"\nmatch \"1x2\" { \"{a}x{b}\" -> \"\${a}\${b}\"\n    _ -> \"no\" }") == "12"
+        }
+        then "one name may bind in two different arms" {
+            shown("match \"a-b\" { \"{v}-b\" -> v\n    \"{v}!b\" -> v\n    _ -> \"no\" }") == "a"
+        }
+    }
+
+    given "ownership" {
+        then "a capture outlives the match that made it" {
+            shown("fn grab(s: string) -> string {\n    match s {\n        \"{a}|{b}\" -> a\n        _ -> \"\"\n    }\n}\nlet held = grab(\"keep|drop\")\n\"\${held}\${held.length}\"") == "keep4"
+        }
+        then "captures pushed into a list survive the loop" {
+            shown("mut xs: List<string> = []\nfor s in [\"a=1\", \"b=2\"] {\n    xs.push(match s { \"{k}={v}\" -> k + v\n        _ -> \"\" })\n}\nxs.join(\",\")") == "a1,b2"
+        }
+        then "a capture read four times is read four times" {
+            shown("match \"x-y\" { \"{a}-{b}\" -> \"\${a}\${b}\${a}\${b}\"\n    _ -> \"no\" }") == "xyxy"
+        }
+        then "the same format run three times answers three times" {
+            shown("fn f(s: string) -> string { match s { \"{a}.{b}\" -> a + b\n        _ -> \"-\" } }\nf(\"1.2\") + f(\"3.4\") + f(\"zz\")") == "1234-"
+        }
+    }
+
+    given "the scan's own laws" {
+        then "an interior hole stops at the FIRST next literal, never the last" {
+            shown("match \"w.x.y\" { \"{a}.{b}\" -> \"\${a}|\${b}\"\n    _ -> \"no\" }") == "w|x.y"
+        }
+        then "the last hole runs to the suffix, which is anchored at the end" {
+            shown("match \"x.txt.txt\" { \"{a}.txt\" -> a\n    _ -> \"no\" }") == "x.txt"
+        }
+        then "a subject too short for head and tail together is refused" {
+            shown("match \"a\" { \"a{x}a\" -> \"yes\"\n    _ -> \"no\" }") == "no"
+        }
+        then "a capture is measured in BYTES, as every length here is" {
+            shown("match \"café|thé\" { \"{a}|{b}\" -> \"\${a}\${b}\${a.length}\"\n    _ -> \"no\" }") == "caféthé5"
+        }
+        then "a long subject scans the same as a short one" {
+            shown("let s = \"a\" + \"0123456789012345678901234567890123456789\" + \"|z\"\nmatch s { \"{head}|{tail}\" -> \"\${head.length}\${tail}\"\n    _ -> \"no\" }") == "41z"
+        }
+    }
+}

@@ -115,7 +115,9 @@ export fn pat_types_of(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeI
 
 export fn bind_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
     match cx.view.store.pat(p) {
-        .Wild or .Rest -> [],
+        // the seam routes a format to its own owner; if one ever
+        // arrived here its names would go unbound, and loudly
+        .Wild or .Rest or .Format(_, _) -> [],
         .Bind(_) -> [expected],
         .Variant(name, args) -> variant_types(cx, p, name, args, expected),
         .Lit(v) -> lit_types(cx, p, v, expected),
@@ -231,7 +233,7 @@ fn tests_first(cx: TypeCx, rows: List<Row>, name: string) -> bool {
 fn names_variant(cx: TypeCx, p: PatId, name: string) -> bool {
     match cx.view.store.pat(p) {
         .Variant(n, _) -> n == name,
-        .Wild or .Rest or .Bind(_) or .Lit(_) -> false,
+        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) -> false,
     }
 }
 
@@ -269,7 +271,7 @@ fn held(p: PatId) -> PatId? {
 fn variant_args(cx: TypeCx, p: PatId, name: string, arity: int) -> List<PatId?>? {
     match cx.view.store.pat(p) {
         .Variant(n, args) -> if n == name { padded(args, arity) } else { null },
-        .Wild or .Rest or .Bind(_) or .Lit(_) -> null,
+        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) -> null,
     }
 }
 
@@ -326,7 +328,7 @@ fn hole_binds(cx: TypeCx, hole: PatId) -> bool {
 fn whole_variant(cx: TypeCx, p: PatId) -> string? {
     match cx.view.store.pat(p) {
         .Variant(name, args) -> if all_irrefutable(cx.view.store, args) { name } else { null },
-        .Wild or .Rest or .Bind(_) or .Lit(_) -> null,
+        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) -> null,
     }
 }
 
