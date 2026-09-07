@@ -155,6 +155,32 @@ O(1) slot comes FIRST and the lowering hoist after; a `ConstBytes` waits
 for `Bytes` on main. NEXT: S4, the `grammar` value that parses, probed to
 need no new door.
 
+## Sub-lane: substrate — S3b LANDED (8fd2a6e): a NUL path read another file
+
+MERGED (lane/substrate c9c7880 io, 1be60fd the build split), bootstrap +
+two builds + full gate green. THE FINDING: a path holding a NUL read a
+DIFFERENT FILE than it named, on both engines — a 79-byte name ending
+`/../../etc/passwd` with a NUL at byte 5 read a 5-byte file and answered
+ok, `exists` answered true for nothing, `write_text` created a file under
+a truncated name. Agreement, not correctness: the face measured the
+header's length and C stopped at the NUL. `one_path` refuses it at all
+six verbs that hand C a path, judged over the BYTES (a door built from
+`==`/`is_empty`/`contains` stops at the same NUL), four cases pin the
+words and the offset. The empty path came back clean, run: ENOENT at
+three verbs, `kind_of("")` Missing, identically on both engines — a
+pointer to a terminator, never NULL. THE TWINS: `read_bytes`/`write_bytes`
+land and the text verbs are built ON them; `ab\xffcd` → `NotText(path,
+2)` is a real case beside lane B's NUL accept case. THE GATHER: 64 MB
+file, 0.97 s concatenating per landing → 0.46 s gathering once, peak 128
+MB either way (the parts and the box coexist as the last concat's two
+buffers did). THE ENV CONDITION at the site, premise verified. THE BUILD
+SPLIT: `COMPILER_OBJS`/`PACKAGE_OBJS`, `TREE_OBJS` retired, `make avra`
+no longer compiles the amalgamation; `stems.sh` asks `nm` of the binary
+and the manifests of the packages, and reports a zero-object scan aloud.
+NEAR-MISS: moving the block dropped `CFLAGS_sqlite3` and the amalgamation
+rebuilt without its flags; only `@std/sqlite`'s suite, asking the library
+its compile options, noticed. NEXT: S4, `@std/process` on the standard.
+
 ## Sub-lane: substrate — S3b (in progress): the cold path, the offset
 
 MERGED at c8af70b (lane/substrate 3f8da0a): `make bootstrap` from the
