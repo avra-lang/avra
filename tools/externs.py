@@ -613,8 +613,93 @@ def ptr_self_test():
             return 1
     return 0
 
+# A ROW THAT RETAINS A SEAT MUST SAY WHICH WAY. Two bodies both call
+# `avra_rc_retain` on a parameter and they mean opposite things:
+# `avra_insist` retains and ANSWERS it, handing the reference to the
+# caller (`owns_result`), while `avra_array_push_owned` retains and
+# STORES it, so the value outlives the call (`keeps`). Nothing but the
+# body tells them apart, so the registry's claim is checked against it
+# here — an unmarked retainer would make its seat read as borrowed by
+# anything that asks, and a wrongly-marked one makes every `!` unwrap
+# look like an escape.
+def seat_names(params):
+    out = []
+    for p in params.split(","):
+        p = p.strip()
+        if p and p != "void":
+            out.append(p.split()[-1].lstrip("*"))
+    return out
+
+def seated_bodies(sources):
+    """Every C fn we can read, name -> (its seat list, its body text).
+
+    `c_bodies` answers the body alone; a keep is about WHICH SEAT, so
+    this reads the parameter list beside it, brace-counted the same way.
+    """
+    out = {}
+    for rel in sources:
+        text = open(os.path.join(ROOT, rel), errors="ignore").read()
+        for m in re.finditer(r"^(?:static\s+)?(?:const\s+)?[A-Za-z_][A-Za-z_0-9 \*]*?\b([a-z_][a-z_0-9]*)\s*\(([^)]*)\)\s*\{", text, re.M):
+            depth, i, n = 1, m.end(), len(text)
+            while i < n and depth:
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                i += 1
+            out[m.group(1)] = (m.group(2), text[m.end():i - 1])
+    return out
+
+def retaining_seats(bodies):
+    """Every row body that takes its own reference to a seat."""
+    out = {}
+    for name, (params, body) in bodies.items():
+        held = [i for i, p in enumerate(seat_names(params))
+                if re.search(r"avra_rc_retain\(\s*" + re.escape(p) + r"\s*[,)]", body)]
+        if held:
+            out[name] = held
+    return out
+
+def sig_rows():
+    """Each `rt_sigs()` row's name, `keeps` seats, and `owns_result`."""
+    text = open(os.path.join(ROOT, "packages/std-avrac/src/core/runtime_api.av")).read()
+    out = {}
+    for m in re.finditer(r'RtSig \{ name: "([a-z_0-9]+)"(.*?) \},', text, re.S):
+        keeps = re.search(r"keeps: \[([^\]]*)\]", m.group(2))
+        marked = [i for i, v in enumerate(keeps.group(1).split(",")) if v.strip() == "true"] if keeps else []
+        out[m.group(1)] = (marked, "owns_result: true" in m.group(2))
+    return out
+
+def unsaid_keeps(bodies, sigs):
+    """Rows whose body retains a seat the row does not account for."""
+    out = []
+    for name, held in sorted(retaining_seats(bodies).items()):
+        if name not in sigs:
+            continue
+        marked, owns = sigs[name]
+        if marked == held or owns:
+            continue
+        out.append((name, held, marked, owns))
+    return out
+
+KEEP_CASES = [
+    # (body params, body text, marked seats, owns_result, refused?)
+    (("void* a, void* v", "avra_rc_retain(v);", [1], False), False),   # marked, stored
+    (("void* a, void* v", "avra_rc_retain(v);", [], False), True),     # retains, says nothing
+    (("void* p", "avra_rc_retain(p); return p;", [], True), False),    # answers it
+    (("void* a, void* v", "return a;", [], False), False),             # retains nothing
+]
+
+def keep_self_test():
+    for (params, body, marked, owns), want in KEEP_CASES:
+        got = bool(unsaid_keeps({"r": (params, body)}, {"r": (marked, owns)}))
+        if got != want:
+            print(f"externs: keeps self-test failed on {body!r} marked={marked}: {got} != {want}")
+            return 1
+    return 0
+
 def main():
-    if self_test() + seat_self_test() + mint_self_test() + ptr_self_test():
+    if self_test() + seat_self_test() + mint_self_test() + ptr_self_test() + keep_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -666,6 +751,16 @@ def main():
         if voids:
             print(f"externs: {len(voids)} extern(s) read an answer their C body does not give")
         return 1
+    unsaid = unsaid_keeps(seated_bodies(sources), sig_rows())
+    for name, held, marked, _ in unsaid:
+        print(f"externs: {name} retains seat(s) {held} in C, its row marks {marked or 'none'}")
+        print(f"externs:   a body that RETAINS a seat either KEEPS it — stored past the call,")
+        print(f"externs:   `keeps` — or ANSWERS it, `owns_result`. Unsaid, the seat reads as")
+        print(f"externs:   borrowed and whatever asks about escape is told the wrong thing.")
+    if unsaid:
+        print(f"externs: {len(unsaid)} row(s) retain a seat their row does not account for")
+        return 1
+
     leaks = leaking_externs(wall, c_bodies(sources), rows())
     for name, declared, where in leaks:
         print(f"externs: {name} is declared in {where} and its C body MINTS an owned box")
@@ -686,7 +781,7 @@ def main():
     print(f"externs: {len(ours)} extern(s) match their C body's width{note}{extra}")
     checked = sum(len(split_params(p)) for n, p, _ in walls if n in sigs)
     print(f"externs: {checked} parameter seat(s) match the C seat they fill")
-    print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES) + len(MINT_CASES)} of the keeper's own cases hold")
+    print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES)} of the keeper's own cases hold")
     return 0
 
 sys.exit(main())

@@ -435,9 +435,18 @@ export enum RtHost {
 /// shrinks the list — must never be borrowed, and answering false
 /// is the safe side for every row nobody has thought about.
 ///
+/// `keeps[j]` says seat `j` OUTLIVES the call: the body takes its own
+/// reference and stores it somewhere the callee owns, so the value
+/// ESCAPES. It is the mirror of `lends`, which is about the ANSWER.
+/// RETAINING IS NOT KEEPING — `avra_insist` retains its seat and
+/// ANSWERS it, which is `owns_result` and hands the reference to the
+/// caller; only a body that STORES what it retained keeps. Marking
+/// the answering kind would make every `!` unwrap read as an escape.
+/// Empty means the row keeps nothing, which is 82 of 86 rows.
+///
 /// `cells[j]` is the width of the CELL BEHIND an inout seat — never
 /// the seat's own ABI kind, which is always `Ptr` because an inout
 /// carries an address. `Void` means seat `j` is not an inout. Only
 /// an extern fills it: the registry's own rows take addresses of
 /// nothing.
-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, cells: List<RtKind> = [] }
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], cells: List<RtKind> = [] }
