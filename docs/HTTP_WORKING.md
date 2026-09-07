@@ -67,7 +67,10 @@ that is not a row has `owns_result: false` hard-coded, so what it mints
 is never released; `avra_fd_taken` as a bare extern leaked 3 MB per
 200k takes, 0 as a row. The three doors are `rt_sigs` rows with
 `RtHost` variants and evaluator arms, so the evaluator hosts the fd
-half; the socket half stays native-only. Everything
+half; the socket half stays native-only. AND THE SECOND-BUILD RULE
+HELD, measured: a compiled program stopped leaking after one `make
+avra`, the EVALUATOR only after the second (3 MB then 0), because the
+product's own body was compiled by the pre-row binary. Everything
 socket-shaped is `packages/std-net/src/c/net.c`, built to
 `build/std_net.o` by the Makefile, linked by the manifest's `[link]`,
 declared by `extern fn` in `net.av`, answering ints only (a peer
