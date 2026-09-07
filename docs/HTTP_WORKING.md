@@ -1034,6 +1034,25 @@ LIVES, and this one had been wrong twice while reporting green — the
 showcase in `corpus/`, then the generated fixture — both times exactly
 where the interesting declarations were. 300 externs, 562 seats here.
 
+THE PREMISE UNDER `Bytes`, RE-READ AFTER THE RETRACTION. Lane D swept
+CLAUDE.md's three stale receipts (the five primitives NUL-lossy, a text
+EQUAL to its own prefix) and marked ROADMAP H1 — "is a `string` text,
+or bytes?" — ANSWERED BY IMPLEMENTATION: the entry's two ways out were
+"make the five length-aware" or "add `Bytes` with exactly that scope",
+and lane A took the first. So one argument for `Bytes` is gone, and
+the design was re-read for anything that DEPENDED on it. Nothing did:
+the feature's words are octets as a value (`s.bytes()` total,
+`b.text()` null unless UTF-8, `==` over every byte); the seam's
+exemption is a seat whose PROTOTYPE carries the length, a fact about C;
+the framer scans indices over octets because a body need not be text.
+The shape paper quotes the lossy claim at its line 11 as the question
+that opened it and marks that reason STALE at its line 203. `Bytes`
+stands for binary data on its own terms — the stronger footing, as
+lane D said. A DESIGN INPUT IS A RECEIPT TOO, and this one was probed
+before it was sent, which is exactly why it read as trustworthy; the
+check that found nothing to re-plumb cost one grep and is what makes
+the footing a fact rather than a hope.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
