@@ -1384,6 +1384,21 @@ Runtime facts, ours to ratify:
   all are. So the way to test doctrine is to BUILD SOMETHING AGAINST
   IT and watch where it misleads, and the way to be useful to another
   lane is to say out loud where theirs did.
+- IN A RECORDED TRIGGER, NAME THE OWNER OR NAME NOTHING (lane A's
+  wording, via the HTTP lane). "lane A's X" is a ROUTING INSTRUCTION;
+  "X, owner unconfirmed" is a question. The difference matters more
+  in a trigger than in prose because a trigger is written to be ACTED
+  ON — a wrong owner does not sit there being wrong, it RECRUITS. One
+  read "fires when lane A's shared decimal-parse row lands"; a lane
+  acted on the trigger rather than asking, and by the time it reached
+  lane A it arrived as a dependency they were expected to schedule.
+  The row is nobody's and unbuilt, and the `decimal` it had been
+  conflated with is another campaign's deferred value type. NOBODY
+  MISREAD ANYTHING: every step was a faithful read of the one before,
+  which is exactly what a routing instruction does when it is wrong.
+  (That trigger never reached main. Audited here on landing: the two
+  triggers in these ledgers that name an owner were both confirmed
+  with that owner directly.)
 - A RECEIPT FROM ANOTHER TREE IS LABELLED AS ONE. The laws here carry
   instances because an instance is what makes a law APPLIED rather
   than agreed with — so the instances have to stay checkable. One
