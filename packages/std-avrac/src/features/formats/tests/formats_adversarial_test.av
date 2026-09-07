@@ -3,6 +3,17 @@
 // drowning it. Every accepted program agreed on both engines and left
 // zero live bytes under the runtime's accounting when this landed.
 use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.features.formats.{read_format}
+use @std.avrac.core.{new_node_store, Pat}
+
+/// A format literal's PATTERN fingerprint — the identity two
+/// different formats must not share. A payload is a flat list, so a
+/// boundary between spliced runs is where two shapes would collide.
+fn same_shape(text: string) -> int {
+    let f = read_format(text)
+    mut s = new_node_store()
+    s.pat_fingerprint(s.alloc_pat(Pat.Format(f.head, f.parts), null))
+}
 
 spec "features/formats adversarial" {
     given "degenerate shapes" {
@@ -215,6 +226,30 @@ spec "features/formats adversarial" {
         }
         then "no argument is refused by arity" {
             refused_with("grammar L = \"{a}-{b}\"\nL.print()", "`print` takes 1 arguments, found 0")
+        }
+    }
+
+    given "a format's fingerprint, at every boundary it splices" {
+        then "a literal before a hole is not the same as one after it" {
+            same_shape("x{a}y") != same_shape("xy{a}")
+        }
+        then "moving a character across the head's boundary changes the pattern" {
+            same_shape("ab{x}") != same_shape("a{x}b")
+        }
+        then "the same holes with different literals between them differ" {
+            same_shape("{a}1{b}") != same_shape("{a}2{b}")
+        }
+        then "the same literals with different hole names differ" {
+            same_shape("{a}-{b}") != same_shape("{a}-{c}")
+        }
+        then "a hole's TYPE is part of the pattern's identity" {
+            same_shape("{a: int}-{b}") != same_shape("{a}-{b}")
+        }
+        then "one hole and two holes over the same text differ" {
+            same_shape("{a}-b") != same_shape("{a}-{b}")
+        }
+        then "the same format twice is the same fingerprint" {
+            same_shape("{a}-{b}") == same_shape("{a}-{b}")
         }
     }
 }

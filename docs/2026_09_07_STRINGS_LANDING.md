@@ -841,7 +841,10 @@ deliberately the NARROW one:
 > name. Anything else is variant construction, unchanged.
 
 The wider **Rule B** — any type name with an inherent fn of that name —
-is STATIC METHODS, which the ROADMAP records as not this arc. The
+is STATIC METHODS. **The owner granted them after this was written**, so
+Rule B lands in lane C's slice and a grammar's `parse` becomes one case
+of a general type-qualified call; nothing here is thrown away, because
+Rule A's test is a narrowing of Rule B's and not a different question. The
 difference matters at the test, not at the wording: Rule A asks the
 DECLARATION's KIND, never "does it have a fn called that", because the
 second question IS Rule B wearing Rule A's clothes. If static methods are
@@ -1055,6 +1058,24 @@ degenerate format shapes (11), malformed surface position by position
 Classes 2, 4, 5 (wrong types in every slot, crossing every other
 feature, names against names) have no surface until the feature exists;
 they run in S2 against the real thing.
+
+**A CLAIM I MADE ABOUT FINGERPRINTS WAS WRONG, and lane A corrected
+it.** Surveying the tree's duplicate `fp` tags, I reported that the
+repeats were benign because they split between "genuinely separate
+spaces" — the AST's and the query memo's. They do not split. `arm_fps`
+folds pattern and expression fingerprints into ONE list, a statement
+folds its expression's, and `restamp` wraps a statement's, so
+`Pat.Rest` and `Expr.Receiver` were the same number and therefore the
+same identity, always. The repeats I called benign were live.
+The deeper correction is lane A's and it outranks tag choice entirely:
+`fp` is LINEAR, so a tag is an additive offset and a payload is a flat
+list — two spliced sequences share a boundary that can MOVE. The
+defence is ARITY, not numbering. My grammar mark now folds each hole to
+one value under its own tag so no boundary between holes can shift, and
+`fp` itself folds the payload's length. The lesson for this paper: I
+reached a structural conclusion from a `sort | uniq -c` and did not
+check what the code does with the numbers, which is the same shape of
+error as the round-trip proof two sections above.
 
 **S5 LANDED, AND IT FALSIFIED §6.3's PROOF.** Writing `print` meant
 implementing the domain condition, and implementing it meant asking
