@@ -366,9 +366,27 @@ def seat_fits(seat, ctype, tds):
         if star < 0:
             return False
         ctype = (ctype[:star] + ctype[star + 1:]).strip()
+    if points_at(declared, ctype):
+        return False
     if declared not in DEMANDS:
         return True          # a seat this keeper has no reading for abstains
     return agrees(declared, ctype, tds)
+
+
+# AN INTEGER SEAT CANNOT FILL A POINTER, and the width demands could
+# not see it: they ask whether a seat FILLS THE 64-BIT REGISTER, and a
+# pointer fills one — so `int` over `char*` agreed about width and
+# about nothing else. `extern fn avra_puts(s: int)` checked clean and
+# hands `avra_puts` an integer to DEREFERENCE.
+# THIS IS THE SEAT-SIDE TWIN of a `ptr` answer minted from an integer.
+# There a program RECEIVES an address it never earned; here it HANDS
+# ONE OVER, and the callee dereferences it, which is the worse
+# direction. Closing one and not the other left the door open on the
+# hinge side.
+# A `mut` SEAT IS EXEMPT BY CONSTRUCTION, above: the out-parameter
+# convention spends the star, so `mut a: i32` over `int*` is right.
+def points_at(declared, ctype):
+    return declared in ("int", "i64", "i32", "u32") and "*" in ctype
 
 
 # AN EXTERN WHOSE C BODY MINTS AN OWNED BOX MUST BE A ROW. `owns_result`
@@ -500,11 +518,14 @@ def wrong_seats(wall, sigs, tds):
         cargs, crel, cline = sigs[name]
         cp, ap = split_params(cargs), split_params(params)
         if len(ap) != len(cp):
-            out.append((name, where, crel, cline, None, len(ap), len(cp)))
+            out.append((name, where, crel, cline, None, len(ap), len(cp), "arity"))
             continue
         for a, c in zip(ap, cp):
-            if not seat_fits(a, PARAM_NAME.sub("", c).strip() or c, tds):
-                out.append((name, where, crel, cline, (a, c), 0, 0))
+            bare = PARAM_NAME.sub("", c).strip() or c
+            if not seat_fits(a, bare, tds):
+                d = a.partition(":")[2].strip().rstrip("?")
+                why = "pointer" if (not a.strip().startswith("mut ") and points_at(d, bare)) else "width"
+                out.append((name, where, crel, cline, (a, c), 0, 0, why))
     return out
 
 
@@ -538,6 +559,12 @@ CASES = [
 # — a comment standing where a type does, and a `mut` seat spending the
 # C star — are exactly the ones a later edit would quietly lose.
 SEAT_CASES = [
+    ("s: int", "const char*", False),   # an integer handed to a dereference
+    ("s: int", "void*", False),
+    ("s: ptr", "const char*", True),    # the honest spelling
+    ("s: string", "const char*", True),
+    ("mut a: i32", "int*", True),       # the out-parameter convention
+    ("n: int", "int64_t", True),        # width, untouched
     # (declared seat, written C seat, fits?)
     ("col: i32",      "int iCol",                True),
     ("col: int",      "int iCol",                False),  # 64 over 32
@@ -798,7 +825,7 @@ def main():
     walls = wall_seats()
     sigs = c_signatures(sources, {n for n, _, _ in walls})
     seats = wrong_seats(walls, sigs, tds)
-    for name, where, crel, cline, pair, an, cn in seats:
+    for name, where, crel, cline, pair, an, cn, why in seats:
         if pair is None:
             print(f"externs: {name} declares {an} seat(s) in {where}, "
                   f"its C body takes {cn} at {crel}:{cline}")
@@ -806,7 +833,13 @@ def main():
             continue
         a, c = pair
         print(f"externs: {name} seats `{a}` in {where} over C `{c}` at {crel}:{cline}")
-        print(f"externs:   the seat and the body must name the same width — a C `int` is 32 bits")
+        if why == "pointer":
+            print(f"externs:   an INTEGER cannot fill a POINTER. Both are 64 bits, so the widths")
+            print(f"externs:   agree and nothing else does — the body DEREFERENCES what it is")
+            print(f"externs:   handed. Declare the seat `ptr` or `string`, or take a `mut` seat")
+            print(f"externs:   if the body writes through it.")
+        else:
+            print(f"externs:   the seat and the body must name the same width — a C `int` is 32 bits")
     minting = unread_pointers(wall, bodies)
     for name, declared, where in minting:
         print(f"externs: {name} answers `ptr` in {where} and no C in the tree declares it")
