@@ -970,11 +970,22 @@ fn linked_of(ws: Workspace, pkg: Package) -> LinkedPackage {
 }
 
 /// A package's manifest name as a library stem: `@std/sqlite` becomes
-/// `std-sqlite`. The `@` goes, `/` becomes `-`, nothing else moves —
-/// so two packages collide here only if their full names collide,
-/// which the workspace already refuses.
+/// `std-sqlite`. ONE leading `@` is dropped and every `/` becomes a
+/// `-`.
+///
+/// THE RULE IS SPELLED TWICE, here and in `tools/libs.py`, and the
+/// first draft of this half read `.replace("@", "")` — which strips
+/// an `@` ANYWHERE, so `@std/a@b` derived `std-ab` here and
+/// `std-a@b` there. The two halves must be copyable into each other,
+/// and "strip one leading `@`" is; "strip every `@`" is not.
+///
+/// A DISAGREEMENT IS LOUD — nothing opens and the refusal names the
+/// package — which is what makes two spellings tolerable at all. The
+/// COLLISION they could both share is not loud, so the build side
+/// refuses it: `@std/a-b` and `@std/a/b` derive one stem.
 fn library_stem(named: string) -> string {
-    named.replace("@", "").replace("/", "-")
+    let stripped = if named.starts_with("@") { named.substring(1, named.length) } else { named }
+    stripped.replace("/", "-")
 }
 
 fn package_link(ws: Workspace, pkg: Package) -> List<string> {
