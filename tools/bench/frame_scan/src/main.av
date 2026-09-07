@@ -1,25 +1,28 @@
-//! THE BASELINE, measured before there is anything to compare it to.
-//! One head framed N times by the hand-written framer, reported as
-//! nanoseconds per call. A number measured after a change is a number
-//! nobody can check.
+//! THE BASELINE, and what the compiled scan costs beside it. Three
+//! ways to read one HTTP request line, timed in the same run so the
+//! comparison survives a noisy machine even when the absolute
+//! numbers do not:
+//!
+//!   1. `@std.http`'s framer over a whole head — the standing
+//!      baseline, kept so a faster oracle can be measured against
+//!      the same harness.
+//!   2. A request line split BY HAND, with the vocabulary a
+//!      programmer actually has: `index_of` takes no offset, so
+//!      every step re-slices the tail.
+//!   3. The same line read by a FORMAT PATTERN, which the compiler
+//!      lowers to one anchored scan.
+//!
+//! 2 and 3 read the same string and answer the same thing, so their
+//! difference is the feature's cost and nothing else.
 use @std.http.frame.{framed, limits}
 use @std.time.{now_ns}
 
-/// The minimal HTTP/1.0 head: a request line and the blank line, no
-/// fields — so the figure is the request line's cost plus the framer's
-/// own bookkeeping, and nothing else.
 fn head() -> Bytes { "GET /index.html HTTP/1.0\r\n\r\n".bytes() }
-
-/// A head with the fields a real request carries, for the second row.
-fn full() -> Bytes {
-    "GET /index.html HTTP/1.1\r\nHost: example.com\r\nUser-Agent: avra/0.1\r\nAccept: */*\r\nConnection: keep-alive\r\n\r\n".bytes()
-}
+fn line() -> string { "GET /index.html HTTP/1.0" }
 
 /// How many of `runs` framed completely — the count is read, so the
 /// loop is not work a backend may drop.
-fn completed(buf: Bytes, runs: int) -> int {
-    // the bounds are a server's, settled once — inside the loop the
-    // record's allocation would be counted as framing
+fn framings(buf: Bytes, runs: int) -> int {
     let bounds = limits()
     mut ok = 0
     // LICENSED I3: a timed loop counts, it does not build a list
@@ -29,17 +32,63 @@ fn completed(buf: Bytes, runs: int) -> int {
     ok
 }
 
-/// Nanoseconds per call, framing `buf` `runs` times; -1 when a run
-/// did not frame, so a broken measurement cannot read as a fast one.
-fn per_call(buf: Bytes, runs: int) -> int {
-    let start = now_ns()
-    let ok = completed(buf, runs)
-    let spent = now_ns() - start
-    if ok != runs { return -1 }
+/// The request line split by hand: find a space, cut, find the next
+/// in what is left, cut again. Each cut copies, because a string's
+/// `index_of` cannot resume at an offset.
+fn split(l: string) -> int {
+    let first = l.index_of(" ")
+    if first < 0 { return 0 }
+    let rest = l.substring(first + 1, l.length)
+    let second = rest.index_of(" ")
+    if second < 0 { return 0 }
+    let version = rest.substring(second + 1, rest.length)
+    let dot = version.index_of(".")
+    if dot < 0 { return 0 }
+    l.substring(0, first).length + rest.substring(0, second).length +
+        version.substring(0, dot).length + version.substring(dot + 1, version.length).length
+}
+
+/// The same line, read by the compiler's scan.
+fn scanned(l: string) -> int {
+    match l {
+        "{method} {path} {major}.{minor}" -> method.length + path.length + major.length + minor.length
+        _ -> 0
+    }
+}
+
+fn hand_reads(l: string, runs: int) -> int {
+    mut total = 0
+    // LICENSED I3: a timed loop sums, it does not build a list
+    for i in 0..runs { total = total + split(l) }
+    total
+}
+
+fn scan_reads(l: string, runs: int) -> int {
+    mut total = 0
+    // LICENSED I3: a timed loop sums, it does not build a list
+    for i in 0..runs { total = total + scanned(l) }
+    total
+}
+
+/// Nanoseconds per call, and -1 when a run answered wrongly, so a
+/// broken measurement cannot read as a fast one.
+fn per_call(spent: int, runs: int, got: int, want: int) -> int {
+    if got != want { return -1 }
     spent / runs
 }
 
 let runs = 200000
-let minimal = per_call(head(), runs)
-let whole = per_call(full(), runs)
-"runs ${runs} | minimal HTTP/1.0 head, 0 fields: ${minimal} ns/call | full HTTP/1.1 head, 4 fields: ${whole} ns/call"
+
+let t0 = now_ns()
+let framings_ok = framings(head(), runs)
+let t1 = now_ns()
+let hand_total = hand_reads(line(), runs)
+let t2 = now_ns()
+let scan_total = scan_reads(line(), runs)
+let t3 = now_ns()
+
+let expected = split(line()) * runs
+let framer = per_call(t1 - t0, runs, framings_ok, runs)
+let hand = per_call(t2 - t1, runs, hand_total, expected)
+let scan = per_call(t3 - t2, runs, scan_total, expected)
+"runs ${runs} | framer whole head ${framer} ns | request line by hand ${hand} ns | by format pattern ${scan} ns"
