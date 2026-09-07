@@ -271,6 +271,17 @@ BOTH surfaces — four clashes it must refuse by name, four distinct
 sets it must accept — and its failure has been witnessed: disarming
 `TREE_STEM_LAW` fails four of its eight rows and names each.
 
+**AND THE STEM LAW GUARANTEES ONE OBJECT PER STEM. IT HAS NEVER
+GUARANTEED ONE SYMBOL PER NAME**, and S2c is where that distinction
+becomes observable for the first time. Under a flat image two packages
+exporting one name collide at link time and somebody notices. Under
+per-handle lookup they resolve PER HANDLE and nobody does — a program
+reaches only what its own manifest named, which is strictly SAFER and
+is exactly why the moved guarantee will go unnoticed. This gets its
+own line rather than a note beneath the stem law for that reason: a
+reader who has just read "a stem is unique tree-wide" will carry it to
+symbols unless told here that it does not reach them.
+
 What this does not do, recorded rather than argued: it does not
 TRAVEL. A consumer outside this tree who adds `@std/sqlite` gets a
 manifest naming an object their build never produces. That is ROADMAP
