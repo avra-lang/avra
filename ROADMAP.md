@@ -4424,6 +4424,15 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         where a door wants to be a value; the same door-as-value
         question the subset's "a generic fn as a value" entry records
         for pinned calls. Recorded by the strings lane at S7.
+  - [ ] A GRAMMAR CANNOT STATE ITS OWN PATTERN TEXT, so `routed` takes
+        the pattern TWICE — once as the string the route table keys on,
+        once as the grammar the reader is — and a disagreement is a
+        SILENTLY DEAD route: at the string's target the reader refuses,
+        at the grammar's the table never offers it; never a wrong
+        answer, never a word. The ask: `G.pattern` (a grammar's format
+        as a value), or a `routed` that takes the grammar itself.
+        WANTING SITE: `packages/std-http/src/route.av`. The sharpest
+        thing S7 taught about the formats feature (strings lane).
   - [ ] AN UNBOXED (ptr, len) VIEW, escape-analysed: the zero-copy
         capture the typed-routes paper wants. WANTING SITE: the framer's
         header values. Slot-layout territory (lane A). Until then, the
