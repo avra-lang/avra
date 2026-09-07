@@ -99,7 +99,7 @@ seed: $(RUNTIME_OBJS)
 
 bootstrap: $(RUNTIME_OBJS)
 	@mkdir -p build
-	@clang -w -O1 bootstrap/seed.ll build/avra_runtime.o build/llvm_wrapper.o build/ffi.o \
+	@clang -w -O1 bootstrap/seed.ll $(RUNTIME_OBJS) \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "bootstrap: build/avra from the seed — rebuilding from source"
