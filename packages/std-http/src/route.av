@@ -1,0 +1,121 @@
+//! THE ROUTER — a route is a GRAMMAR over the request target, and a
+//! handler keeps its own typed record. The framer's boundary is the
+//! contract: the target arrives already framed, its CTL and SP
+//! refused, and the router never re-reads the head.
+//!
+//! THE QUERY IS THE REQUEST'S, NOT THE ROUTE'S. A grammar is
+//! POSITIONAL and ORDERED; a query is KEYED and order-independent, so
+//! `"/search?q={q}"` swallows `&page=2` into its capture and refuses
+//! `?page=2&q=cats`, which is the same request written the other way
+//! round. A route matches the PATH; the query is read as keyed fields
+//! beside it.
+//!
+//! A HOLE IS ONE SEGMENT. A format's hole runs to the next literal,
+//! so `/ideas/{id}` alone would bind `7/extra` — a capture that
+//! crossed a `/` and invented a segment. A route counts segments
+//! before it parses. A TAIL capture, one hole deliberately spanning
+//! several segments, is a declared thing and is not built here.
+//!
+//! ONE RECORD TYPE PER ROUTE, AND ONE PLACE IT IS ERASED. `routed` is
+//! generic over the record; the table holds the erased handler, so
+//! routes whose records differ live in one list while every handler
+//! is written against its own type.
+use frame.{Method}
+use http.{Request, Response, status}
+
+/// One route: the method it answers, the pattern it was declared
+/// with — kept so two routes that cannot be told apart can be named —
+/// and its handler, with the record type already erased.
+export type Route = { method: Method, pattern: string, width: int, serve: fn(Request, string) -> Response? }
+
+/// A route from a grammar's reader and a TYPED handler. ABSENCE from
+/// `serve` means THIS ROUTE DOES NOT ANSWER THAT TARGET; a 404 the
+/// handler chose is a Response like any other, and the two must not
+/// be the same value.
+export fn routed<R>(method: Method, pattern: string, read: fn(string) -> R?, serve: fn(Request, R) -> Response) -> Route {
+    Route { method: method, pattern: pattern, width: segments(pattern), serve: (q: Request, t: string) -> answered(read(t), q, serve) }
+}
+
+/// How many `/`-separated segments a target or a pattern has. A HOLE
+/// IS ONE SEGMENT: a format alone would let `{id}` swallow `7/extra`,
+/// and a capture that crosses a `/` has invented a segment the sender
+/// did not send. Counting first is what keeps a route's holes inside
+/// their own segment without teaching the scan about slashes.
+///
+/// It counts SEPARATORS, not pieces: `split` drops a trailing empty
+/// segment, so `/ideas/` would count one fewer than `/ideas/{id}` and
+/// a route would refuse its own empty capture. The framer already
+/// refused every byte below 0x21 in a target, so no NUL reaches the
+/// C-string call underneath.
+fn segments(t: string) -> int {
+    t.length - t.replace("/", "").length + 1
+}
+
+/// The handler run under its own record, or absence when the target
+/// is not this route's.
+fn answered<R>(found: R?, q: Request, serve: fn(Request, R) -> Response) -> Response? {
+    if found == null { return null }
+    serve(q, found!)
+}
+
+/// THE DISPATCH: the first route whose method, WIDTH and target all
+/// answer. The width is counted ONCE per request and compared against
+/// each route's own, so a route of the wrong shape costs a compare
+/// rather than a parse — and the count never happens per route.
+/// A target nothing answers is a 404, which is a VALUE — the router
+/// refuses nothing here. A target that is not UTF-8 is a 400: the
+/// framer admits `obs-text`, so this is the ONE crossing where octets
+/// become text, and an empty target would otherwise match a route.
+export fn dispatch(routes: List<Route>, q: Request) -> Response {
+    let target: string? = targeted(q)
+    if target == null { return status(400) }
+    let width = segments(target!)
+    for r in routes {
+        if r.method == q.head.method && r.width == width {
+            let answer: Response? = r.serve(q, target!)
+            if answer != null { return answer! }
+        }
+    }
+    status(404)
+}
+
+/// The target's octets as text, or absence when they are not UTF-8.
+fn targeted(q: Request) -> string? {
+    q.raw.slice(q.head.target.lo, q.head.target.hi).text()
+}
+
+// ── The law over a table ────────────────────────────────────────
+
+/// TWO ROUTES THAT CANNOT BE TOLD APART, named. Routes are tried in
+/// order, so a later route with the same method and the same SHAPE is
+/// unreachable — not a smaller set of targets, but none at all. The
+/// shape is the pattern with every hole's NAME removed: `/ideas/{id}`
+/// and `/ideas/{slug}` match exactly the same targets, and which
+/// handler runs would be decided by declaration order alone.
+export fn conflicts(routes: List<Route>) -> List<string> {
+    mut out: List<string> = []
+    // LICENSED I3: a pair scan reports the LATER of two, so it needs both positions
+    for j, r in routes {
+        let earlier = [k for k in 0..j].find((k) -> same_route(routes[k], r))
+        if earlier != null { out.push("`${r.pattern}` cannot be told apart from `${routes[earlier!].pattern}` — the later route is unreachable") }
+    }
+    out
+}
+
+fn same_route(a: Route, b: Route) -> bool {
+    a.method == b.method && shape_of(a.pattern) == shape_of(b.pattern)
+}
+
+/// A pattern with its hole NAMES removed — what the matcher actually
+/// distinguishes. `/ideas/{id}` and `/ideas/{slug}` share one shape.
+fn shape_of(pattern: string) -> string {
+    [hole_free(piece) for piece in pattern.split("{")].join("{")
+}
+
+/// One `{name}` piece reduced to its literal tail: everything from
+/// the closing brace on, with the name gone.
+fn hole_free(piece: string) -> string {
+    let shut = piece.index_of("}")
+    if shut < 0 { return piece }
+    piece.substring(shut, piece.length)
+}

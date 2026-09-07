@@ -1,0 +1,96 @@
+// The router: a route is a grammar over the FRAMED target, each
+// handler keeps its own record, and one table holds routes whose
+// records differ. A target nothing answers is a 404 — a value. A
+// target that is not UTF-8 is a 400, because the framer admits
+// obs-text and an empty target would otherwise match a route.
+use @std.http.frame.{framed, limits, Framed, Method}
+use @std.http.http.{Request, Response, text}
+use @std.http.route.{Route, routed, dispatch, conflicts}
+
+grammar Idea = "/ideas/{id}"
+grammar Search = "/search/{term}/{page}"
+
+fn serve_idea(q: Request, i: Idea) -> Response { text(200, "idea " + i.id) }
+fn serve_search(q: Request, s: Search) -> Response { text(200, "search " + s.term + " " + s.page) }
+fn serve_gone(q: Request, i: Idea) -> Response { Response { status: 410 } }
+
+fn routes() -> List<Route> {
+    [routed<Idea>(Method.Get, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_idea),
+     routed<Search>(Method.Get, "/search/{term}/{page}", (t: string) -> Search.parse(t), serve_search)]
+}
+
+/// A request built the way the server gets one: framed from octets,
+/// so the target is a span the framer already judged.
+fn asked(line: string) -> Request? {
+    let raw = (line + "\r\nHost: h\r\n\r\n").bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t" }
+        .Partial -> null
+        .Refused(_) -> null
+    }
+}
+
+/// The status and body a target earns, or "unframed" when the framer
+/// refused the line before the router ever saw it.
+fn answered(line: string) -> string {
+    let q = asked(line)
+    if q == null { return "unframed" }
+    let r = dispatch(routes(), q!)
+    "${r.status} ${r.body.text() ?? ""}"
+}
+
+spec "@std.http route" {
+    given "a table of routes whose records differ" {
+        then "each route answers through its own typed handler" {
+            answered("GET /ideas/7 HTTP/1.1") == "200 idea 7"
+        }
+        then "the second route reads a record of a different type" {
+            answered("GET /search/cats/2 HTTP/1.1") == "200 search cats 2"
+        }
+        then "a target nothing answers is a 404, and a value" {
+            answered("GET /nowhere HTTP/1.1") == "404 "
+        }
+        then "a target that is one segment short does not match" {
+            answered("GET /search/cats HTTP/1.1") == "404 "
+        }
+        then "a target with an extra segment does not match" {
+            answered("GET /ideas/7/extra HTTP/1.1") == "404 "
+        }
+        then "an empty capture still matches, because a hole may take nothing" {
+            answered("GET /ideas/ HTTP/1.1") == "200 idea "
+        }
+        then "the method is part of the match" {
+            answered("POST /ideas/7 HTTP/1.1") == "404 "
+        }
+    }
+
+    given "a handler's own 404" {
+        then "a handler answering 410 is its answer, not a miss" {
+            dispatch([routed<Idea>(Method.Get, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_gone)], asked("GET /ideas/7 HTTP/1.1")!).status == 410
+        }
+        then "a route that does not match still falls through to the next" {
+            dispatch([routed<Search>(Method.Get, "/search/{term}/{page}", (t: string) -> Search.parse(t), serve_search),
+                      routed<Idea>(Method.Get, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_idea)],
+                     asked("GET /ideas/7 HTTP/1.1")!).status == 200
+        }
+    }
+
+    given "the law over a table" {
+        then "two routes of one shape are named, later first" {
+            conflicts([routed<Idea>(Method.Get, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_idea),
+                       routed<Idea>(Method.Get, "/ideas/{slug}", (t: string) -> Idea.parse(t), serve_gone)]).length == 1
+        }
+        then "the refusal names both patterns and says which is unreachable" {
+            let found = conflicts([routed<Idea>(Method.Get, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_idea),
+                                   routed<Idea>(Method.Get, "/ideas/{slug}", (t: string) -> Idea.parse(t), serve_gone)])
+            found[0] == "`/ideas/{slug}` cannot be told apart from `/ideas/{id}` — the later route is unreachable"
+        }
+        then "routes of different shapes do not conflict" {
+            conflicts(routes()).is_empty()
+        }
+        then "one shape under two methods is two routes, not a conflict" {
+            conflicts([routed<Idea>(Method.Get, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_idea),
+                       routed<Idea>(Method.Post, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_gone)]).is_empty()
+        }
+    }
+}
