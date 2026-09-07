@@ -1092,6 +1092,25 @@ Runtime facts, ours to ratify:
   makes `cp build/avra build/avra.pre` the whole protocol rather than
   a nicety — the HTTP lane's strings slice paid for this and its way
   back was a copy of ANOTHER LANE's product.
+- THE RECEIPT FOR A SLICE THAT REMOVES A RUNTIME SYMBOL IS `make
+  bootstrap` GREEN, NEVER `make avra` GREEN. `make avra` builds the
+  cli with the STANDING binary and copies the result; it never
+  touches `bootstrap/seed.ll`, which is a COMMITTED artifact naming
+  every runtime symbol it needs (31 `avra_io_` references today). So
+  deleting a runtime symbol gates clean under `make avra`, twice,
+  while the cold path is already broken — `make bootstrap` links the
+  seed against the runtime and every removed name is undefined.
+  Naming a package's object on the link line rescues only the names
+  that SURVIVED into package C; one deleted by design exists nowhere
+  in the tree, so only a SEED REFRESH restores the cold path, which
+  is why that refresh rides the REMOVING commit and never a later
+  chore. And the failed link DESTROYS `build/avra`, because bootstrap
+  links straight at it (`-o build/avra`), so `cp build/avra
+  build/avra.pre` is the whole protocol here too. It is the
+  shadowing law one mechanism over: a target green because a
+  DIFFERENT mechanism was doing the work. (The @std/io instance is
+  the HTTP lane's, ATTRIBUTED — lane/http c8af70b, not in this tree;
+  the mechanism above is verified here.)
 - A CHANGE THE COMPILER MUST THEN READ REACHES THE PRODUCT ON THE
   SECOND BUILD — codegen is one instance, the FRONT END is another,
   and the wording used to say only the first. `make avra`
