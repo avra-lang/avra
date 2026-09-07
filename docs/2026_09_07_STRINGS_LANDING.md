@@ -724,20 +724,49 @@ The second is not byte identity — `007` parses to 7 and prints as `7` —
 which is exactly the caution `2026_09_06_STD_HTTP_TYPED_ROUTES.md`
 records, honoured rather than restated.
 
-The first is provable because the scan law is first-occurrence between
-two anchors, and it gives a **checkable domain condition**:
+**THIS CONDITION WAS WRONG IN ITS FIRST DRAFT, and building `print`
+found it.** The draft said:
 
-> For each capture *i* **except the last**, its text does not contain
-> piece *i+1*.
+> ~~For each capture *i* except the last, its text does not contain
+> piece *i+1*.~~
+
+It is NECESSARY and it is NOT SUFFICIENT, and the counterexample is
+small. Take `grammar G = "{a}--{b}"` with `a = "x-"` and `b = "b"`.
+Printed, that is `x-` + `--` + `b` = `x---b`. `"x-"` does not contain
+`"--"`, so the draft admits it. Parsed, the first `--` in `x---b` sits
+at index 1, not 2, so the scan answers `a = "x"`, `b = "-b"`. Run at
+this base, both engines: `[x][-b]`. The split moved and the draft
+condition never saw it, because **a capture that ENDS WITH A PROPER
+PREFIX of the following piece overlaps it**, and `contains` cannot see
+an overlap that only exists once the piece is appended.
+
+**THE CORRECTED CONDITION**, which is exact rather than approximate:
+
+> For each capture *i* except the last, appending its following piece
+> must place that piece at the boundary and nowhere earlier:
+> `(c_i + p_{i+1}).index_of(p_{i+1}) == |c_i|`.
+
+It is the same question the scan itself asks, asked of the smallest
+text that can answer it. On the counterexample:
+`("x-" + "--").index_of("--")` is 1 and `|"x-"|` is 2, so it is refused.
+On the safe case `("x" + "--").index_of("--")` is 1 and `|"x"|` is 1,
+so it is admitted.
 
 *Sufficiency.* The printed text is `p0 c0 p1 c1 … p_{n-1} c_{n-1} pn`.
 `p0` matches as the prefix, so the cursor sits at `|p0|`; `pn` matches as
-the suffix, so `stop` is the start of the trailing `pn`. Because `c0`
-does not contain `p1`, the first occurrence of `p1` at or after the
-cursor is exactly at `|p0| + |c0|` — `c0` is recovered exactly and the
-cursor advances past `p1`. Induction recovers every capture up to
-`c_{n-2}`, leaving the cursor at the start of `c_{n-1}`, which the scan
-takes as the span to `stop`. ∎
+the suffix, so `stop` is the start of the trailing `pn`. The first
+occurrence of `p1` at or after the cursor is at `|p0| + |c0|` — not
+earlier, because the condition says `p1` does not occur inside
+`c0 + p1` before `|c0|`, and the text from the cursor begins with
+exactly that. So `c0` is recovered exactly and the cursor advances past
+`p1`. Induction recovers every capture up to `c_{n-2}`, leaving the
+cursor at the start of `c_{n-1}`, which the scan takes as the span to
+`stop`. ∎
+
+The lesson is the one this paper keeps relearning: a condition stated
+in terms a reader finds natural (`contains`) is not the same as the
+condition the machine actually imposes (where the scan STOPS), and only
+writing the code that must obey it finds the gap.
 
 The **last capture carries no condition**, and that falls out of the
 suffix anchor rather than being granted: its end is positional, so a
@@ -746,8 +775,8 @@ round-trips. `"{a}!"` prints `x!` as `x!!` and parses it back to `x!`.
 Verified, not argued: §11's ledger records it.
 
 So **`print` answers `string?` and refuses off-domain**: an interior
-capture whose text contains its following delimiter cannot round-trip,
-and printing it would produce text that parses back as something else.
+capture that would move its own delimiter cannot round-trip, and
+printing it would produce text that parses back as something else.
 Refusing is what makes the law true rather than hoped-for. `print` is
 total over the domain it admits, and it says so by its type.
 
@@ -914,8 +943,11 @@ lands here, against `frame.av`.
 **S4 — `grammar` declarations that parse.** The declaration, the record
 type, `parse`. Opens with the namespace probe of §6.4.
 
-**S5 — `print` and the round-trip law.** `print` answering `string?`,
-the domain check, and the law tested per §6.3.
+**S5 — `print` and the round-trip law.** LANDED. `print` answers
+`string?` and refuses off-domain; the domain is §6.3's CORRECTED
+condition, asked in octets so the check and the scan read the same
+bytes. The law is a corpus program on both engines, not a proof in
+prose.
 
 ---
 
@@ -1023,6 +1055,31 @@ degenerate format shapes (11), malformed surface position by position
 Classes 2, 4, 5 (wrong types in every slot, crossing every other
 feature, names against names) have no surface until the feature exists;
 they run in S2 against the real thing.
+
+**S5 LANDED, AND IT FALSIFIED §6.3's PROOF.** Writing `print` meant
+implementing the domain condition, and implementing it meant asking
+what the scan actually stops at rather than what a reader would call
+natural. The first draft — "the capture does not contain the next
+piece" — admits `{a}--{b}` with `a = "x-"`, which prints `x---b` and
+parses back as `x` and `-b`. Verified at this base, both engines:
+`[x][-b]`. §6.3 now carries the counterexample and the exact condition
+(`(c + p).index_of(p) == |c|`), and `print` implements THAT.
+
+`print` asks it in OCTETS, because that is the currency the scan uses:
+a check built from `contains` or a C-string `index_of` would inspect
+different bytes than the guard it protects, which is the law this tree
+already learned the hard way. Verified outputs at this base:
+
+| case | result |
+|---|---|
+| the flagship record printed | `GET /x HTTP/1.1` |
+| print then parse, every field recovered | `ok` |
+| all-empty values | `ok` — the literals alone |
+| a space inside the PATH, whose delimiter is `" HTTP/"` | `ok` |
+| a space inside the METHOD, whose delimiter IS a space | `refused` |
+| the LAST hole holding its own delimiter | `ok` — the suffix anchor fixes its end |
+| `{a}--{b}` with `a = "x-"` — the overlap | `refused` |
+| the same one character shorter | `x--b` |
 
 **Also built:** the benchmark harness of §5 against `frame.av` alone.
 Its numbers and the noise band are in §5; the point of running it now is
