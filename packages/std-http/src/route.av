@@ -1,7 +1,8 @@
 //! THE ROUTER — a route is a GRAMMAR over the request target, and a
 //! handler keeps its own typed record. The framer's boundary is the
 //! contract: the target arrives already framed, its CTL and SP
-//! refused, and the router never re-reads the head.
+//! refused, and the router never re-reads the head — nor converts it,
+//! since a grammar reads octets and the span is what the framer left.
 //!
 //! THE QUERY IS THE REQUEST'S, NOT THE ROUTE'S. A grammar is
 //! POSITIONAL and ORDERED; a query is KEYED and order-independent, so
@@ -26,14 +27,14 @@ use http.{Request, Response, status}
 /// One route: the method it answers, the pattern it was declared
 /// with — kept so two routes that cannot be told apart can be named —
 /// and its handler, with the record type already erased.
-export type Route = { method: Method, pattern: string, width: int, serve: fn(Request, string) -> Response? }
+export type Route = { method: Method, pattern: string, width: int, serve: fn(Request, Bytes) -> Response? }
 
 /// A route from a grammar's reader and a TYPED handler. ABSENCE from
 /// `serve` means THIS ROUTE DOES NOT ANSWER THAT TARGET; a 404 the
 /// handler chose is a Response like any other, and the two must not
 /// be the same value.
-export fn routed<R>(method: Method, pattern: string, read: fn(string) -> R?, serve: fn(Request, R) -> Response) -> Route {
-    Route { method: method, pattern: pattern, width: segments(pattern), serve: (q: Request, t: string) -> answered(read(t), q, serve) }
+export fn routed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request, R) -> Response) -> Route {
+    Route { method: method, pattern: pattern, width: segments(pattern.bytes()), serve: (q: Request, t: Bytes) -> answered(read(t), q, serve) }
 }
 
 /// How many `/`-separated segments a target or a pattern has. A HOLE
@@ -44,12 +45,22 @@ export fn routed<R>(method: Method, pattern: string, read: fn(string) -> R?, ser
 ///
 /// It counts SEPARATORS, not pieces: `split` drops a trailing empty
 /// segment, so `/ideas/` would count one fewer than `/ideas/{id}` and
-/// a route would refuse its own empty capture. The framer already
-/// refused every byte below 0x21 in a target, so no NUL reaches the
-/// C-string call underneath.
-fn segments(t: string) -> int {
-    t.length - t.replace("/", "").length + 1
+/// a route would refuse its own empty capture. Counted over OCTETS,
+/// allocating nothing, and over the same function for a pattern and a
+/// target so the two can never disagree about what a segment is.
+fn segments(b: Bytes) -> int {
+    mut n = 1
+    mut at = 0
+    while at < b.length {
+        let hit = b.index_of(slash(), at)
+        if hit < 0 { return n }
+        n = n + 1
+        at = hit + 1
+    }
+    n
 }
+
+once fn slash() -> Bytes { "/".bytes() }
 
 /// The handler run under its own record, or absence when the target
 /// is not this route's.
@@ -62,26 +73,23 @@ fn answered<R>(found: R?, q: Request, serve: fn(Request, R) -> Response) -> Resp
 /// answer. The width is counted ONCE per request and compared against
 /// each route's own, so a route of the wrong shape costs a compare
 /// rather than a parse — and the count never happens per route.
-/// A target nothing answers is a 404, which is a VALUE — the router
-/// refuses nothing here. A target that is not UTF-8 is a 400: the
-/// framer admits `obs-text`, so this is the ONE crossing where octets
-/// become text, and an empty target would otherwise match a route.
+///
+/// The target is the FRAMED SPAN, never a string: the framer's
+/// boundary holds to the door, and a grammar reads octets. A target
+/// that is not UTF-8 matches no route and earns a 404 rather than a
+/// 400 — the framer ADMITS `obs-text`, so such a target is well
+/// formed and simply unrouted. A target nothing answers is a 404
+/// either way, which is a VALUE: the router refuses nothing here.
 export fn dispatch(routes: List<Route>, q: Request) -> Response {
-    let target: string? = targeted(q)
-    if target == null { return status(400) }
-    let width = segments(target!)
+    let target = q.raw.slice(q.head.target.lo, q.head.target.hi)
+    let width = segments(target)
     for r in routes {
         if r.method == q.head.method && r.width == width {
-            let answer: Response? = r.serve(q, target!)
+            let answer: Response? = r.serve(q, target)
             if answer != null { return answer! }
         }
     }
     status(404)
-}
-
-/// The target's octets as text, or absence when they are not UTF-8.
-fn targeted(q: Request) -> string? {
-    q.raw.slice(q.head.target.lo, q.head.target.hi).text()
 }
 
 // ── The law over a table ────────────────────────────────────────

@@ -15,8 +15,8 @@ fn serve_search(q: Request, s: Search) -> Response { text(200, "search " + s.ter
 fn serve_gone(q: Request, i: Idea) -> Response { Response { status: 410 } }
 
 fn routes() -> List<Route> {
-    [routed<Idea>(Method.Get, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_idea),
-     routed<Search>(Method.Get, "/search/{term}/{page}", (t: string) -> Search.parse(t), serve_search)]
+    [routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+     routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search)]
 }
 
 /// A request built the way the server gets one: framed from octets,
@@ -66,31 +66,31 @@ spec "@std.http route" {
 
     given "a handler's own 404" {
         then "a handler answering 410 is its answer, not a miss" {
-            dispatch([routed<Idea>(Method.Get, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_gone)], asked("GET /ideas/7 HTTP/1.1")!).status == 410
+            dispatch([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_gone)], asked("GET /ideas/7 HTTP/1.1")!).status == 410
         }
         then "a route that does not match still falls through to the next" {
-            dispatch([routed<Search>(Method.Get, "/search/{term}/{page}", (t: string) -> Search.parse(t), serve_search),
-                      routed<Idea>(Method.Get, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_idea)],
+            dispatch([routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search),
+                      routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea)],
                      asked("GET /ideas/7 HTTP/1.1")!).status == 200
         }
     }
 
     given "the law over a table" {
         then "two routes of one shape are named, later first" {
-            conflicts([routed<Idea>(Method.Get, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_idea),
-                       routed<Idea>(Method.Get, "/ideas/{slug}", (t: string) -> Idea.parse(t), serve_gone)]).length == 1
+            conflicts([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                       routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone)]).length == 1
         }
         then "the refusal names both patterns and says which is unreachable" {
-            let found = conflicts([routed<Idea>(Method.Get, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_idea),
-                                   routed<Idea>(Method.Get, "/ideas/{slug}", (t: string) -> Idea.parse(t), serve_gone)])
+            let found = conflicts([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                                   routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone)])
             found[0] == "`/ideas/{slug}` cannot be told apart from `/ideas/{id}` — the later route is unreachable"
         }
         then "routes of different shapes do not conflict" {
             conflicts(routes()).is_empty()
         }
         then "one shape under two methods is two routes, not a conflict" {
-            conflicts([routed<Idea>(Method.Get, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_idea),
-                       routed<Idea>(Method.Post, "/ideas/{id}", (t: string) -> Idea.parse(t), serve_gone)]).is_empty()
+            conflicts([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                       routed<Idea>(Method.Post, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_gone)]).is_empty()
         }
     }
 }
