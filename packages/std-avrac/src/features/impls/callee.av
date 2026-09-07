@@ -5,11 +5,18 @@
 //! parameter and a contract value speak through their trait; a
 //! fn-typed field is called; the vocabulary's row answers; the impl
 //! table answers last; nothing else has methods.
+//!
+//! A TYPE NAME is the one receiver two things answer for: its
+//! VARIANTS and its `static fn`s share the spelling `Type.name(…)`.
+//! THE VARIANT WINS, decided here so typing and lowering cannot
+//! disagree, and with neither the variant law speaks the refusal —
+//! it is the one that can name what the type does have.
 use core.{Type, TypeId, DeclId}
-use features.{FileView, MethodRow, method_row, fields_of_type, StructSig}
+use features.{FileView, MethodRow, method_row, fields_of_type, StructSig, EnumSig, variant_sig_of}
 
 export enum Callee {
     Variant(decl: DeclId, tname: string)
+    Static(m: DeclId, tname: string)
     Bounded(decl: DeclId, j: int, tname: string)
     Contract(tdecl: DeclId, tname: string)
     FnField(slot: int, fty: TypeId)
@@ -20,7 +27,7 @@ export enum Callee {
 
 export fn callee_of(view: FileView, ty: TypeId, name: string) -> Callee {
     let sh: Type = view.types.shape_of(ty)
-    let spoken_for: Callee? = through_a_contract(sh)
+    let spoken_for: Callee? = through_a_contract(view, sh, name)
     if spoken_for != null { return spoken_for! }
     let field: Callee? = fn_field(view, ty, name)
     if field != null { return field! }
@@ -31,15 +38,38 @@ export fn callee_of(view: FileView, ty: TypeId, name: string) -> Callee {
 
 /// A receiver whose methods a TYPE or a TRAIT supplies before any
 /// field or row is asked.
-fn through_a_contract(sh: Type) -> Callee? {
+fn through_a_contract(view: FileView, sh: Type, name: string) -> Callee? {
     match sh {
-        .TypeName(decl, tname) -> Callee.Variant(decl, tname),
+        .TypeName(decl, tname) -> type_receiver(view, decl, tname, name),
         .Var(decl, j, tname) -> Callee.Bounded(decl, j, tname),
         .Dyn(d, n) -> Callee.Contract(d, n),
         .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Int or .Float or .Bool or .Str or .Ptr or .List(_) or
         .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or
         .Error or .Void -> null,
     }
+}
+
+/// A TYPE as the receiver: its VARIANT of that name, else a `static
+/// fn` of its impl. With neither it is still the variant's answer,
+/// so the refusal names the variants the type has.
+fn type_receiver(view: FileView, decl: DeclId, tname: string, name: string) -> Callee {
+    if names_a_variant(view, decl, name) { return Callee.Variant(decl, tname) }
+    let m: DeclId? = static_method(view, decl, name)
+    if m == null { return Callee.Variant(decl, tname) }
+    Callee.Static(m!, tname)
+}
+
+/// A receiverless method of the type's impl, by name.
+fn static_method(view: FileView, target: DeclId, name: string) -> DeclId? {
+    let m: DeclId? = view.decls.method(target, name)
+    if m == null { return null }
+    if !view.store.is_static(view.decls.decl(m!).stmt) { return null }
+    m
+}
+
+fn names_a_variant(view: FileView, decl: DeclId, name: string) -> bool {
+    let sig: EnumSig? = variant_sig_of(view.decls.sig(decl))
+    sig != null && sig!.tag_of(name) != null
 }
 
 /// A fn-typed field of the name — the capability-record pattern.

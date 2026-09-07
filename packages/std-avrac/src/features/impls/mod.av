@@ -18,6 +18,7 @@ export fn impls() -> LanguageFeature {
         "impl_decl"   | build_impl
         "trait_decl"  | build_trait
         "mut_fn_decl" | build_mut_fn
+        "static_fn_decl" | build_static_fn
         "receiver"    | build_receiver
     }
     let codes = table<DiagCode> {
@@ -34,17 +35,21 @@ export fn impls() -> LanguageFeature {
         "type.contract_write" | "F2049" | "a method writes only under a `mut fn` contract"
         "type.mut_fn_unused" | "F2050" | "`mut fn` on a method that never writes"
         "type.seat_unused" | "F2051" | "a `mut` seat the fn never writes through"
+        "type.static_fn" | "F2058" | "`static fn` marks a receiverless method — it lives in an impl"
+        "type.static_name" | "F2059" | "a `static fn` and a variant of the same type cannot share a name"
     }
     let words = table<KeywordRemedy> {
         word   | help
         "self" | "`self` is implicit in a method — drop it from the parameter list"
+        "static" | "`static fn` declares a method with no receiver — it lives in an `impl`"
     }
     component LanguageFeature f {
         name = "impls"
-        docs = "`impl Target { … }`, `trait Show { fn sigs }`, `impl Show for Target { … }`, and `value.m(…)` — methods and behavior contracts, statically dispatched; `self` is the receiver, implicit; `mut fn` declares a method that writes it."
+        docs = "`impl Target { … }`, `trait Show { fn sigs }`, `impl Show for Target { … }`, and `value.m(…)` — methods and behavior contracts, statically dispatched; `self` is the receiver, implicit; `mut fn` declares a method that writes it, and `static fn` declares one that has none — called `Type.name(…)`."
         gram = grammar {
             stmt = "impl" it:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? ( "for" ib:NAME ( "<" tp2:NAME ( "," tp2:NAME )* ","? ">" )? )? "{" ( fs:stmt | BREAK )* "}" END @recover(sync_to: "END") -> impl_decl(it, tp, ib, tp2, fs)
-            stmt = "trait" tn:NAME "{" ( BREAK | ( mk:"mut" )? "fn" mn:NAME "(" ( ( pm:"mut" )? tps:NAME ( ":" tpt:type )? ( "," ( pm:"mut" )? tps:NAME ( ":" tpt:type )? )* ","? )? ")" ( "->" mr:type )? ( mb:block )? )* "}" END @recover(sync_to: "END") -> trait_decl(tn, mk, mn, pm, tps, tpt, mr, mb)
+            stmt = "trait" tn:NAME "{" ( BREAK | ( sk:"static" )? ( mk:"mut" )? "fn" mn:NAME "(" ( ( pm:"mut" )? tps:NAME ( ":" tpt:type )? ( "," ( pm:"mut" )? tps:NAME ( ":" tpt:type )? )* ","? )? ")" ( "->" mr:type )? ( mb:block )? )* "}" END @recover(sync_to: "END") -> trait_decl(tn, sk, mk, mn, pm, tps, tpt, mr, mb)
+            stmt = "static" "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ","? ">" )? "(" ( ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "," ( mk:"mut" )? ps:NAME ( ":" pt:type )? )* ","? )? ")" ( "->" r:type )? b:block END -> static_fn_decl(n, tp, mk, ps, pt, r, b)
             stmt = "mut" "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ","? ">" )? "(" ( ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "," ( mk:"mut" )? ps:NAME ( ":" pt:type )? )* ","? )? ")" ( "->" r:type )? b:block END -> mut_fn_decl(n, tp, mk, ps, pt, r, b)
             primary = "self" -> receiver()
         }

@@ -140,12 +140,24 @@ impl ResolveCx {
         for e in post_order(self.dispatch, self.view.store, root) { semantics_of(self.dispatch, self.view.store.expr(e)).resolve(self, e) }
     }
 
-    /// An impl's or a trait's fns: every fn inside is a method, and
-    /// `self` names its receiver for exactly their resolution.
+    /// An impl's or a trait's fns: `self` names a receiver for
+    /// exactly their resolution — member by member, because a
+    /// `static fn` among them has none.
     mut fn impl_stmts(body: List<StmtId>) {
-        self.receivers.push(true)
-        self.resolve_stmts(false, body)
+        for s in body { self.impl_member(s) }
+    }
+
+    /// One member. A `static fn` resolves with NO receiver, so
+    /// `self` inside it refuses and its seats start at 0.
+    mut fn impl_member(s: StmtId) {
+        self.receivers.push(!self.view.store.is_static(s))
+        self.resolve_stmts(false, [s])
         let _ = self.receivers.pop()
+    }
+
+    /// Is the innermost enclosing fn a method — one WITH a receiver?
+    fn in_a_method() -> bool {
+        self.receivers.last() ?? false
     }
 
     /// A fn's body walks behind a FLOOR: the overlay depth at entry.
@@ -354,13 +366,14 @@ impl ResolveCx {
     mut fn use_receiver(e: ExprId) {
         if self.met(e) { return }
         if self.receivers.is_empty() { return self.no_receiver(self.loc_of(e)) }
+        if !self.in_a_method() { return self.static_has_none(self.loc_of(e)) }
         self.bind_use(e, self.chained(0, receiver_key(), Binding.Receiver))
     }
 
     /// The seat the written parameters start at: after the
     /// receiver's, inside a method.
     fn seat_base() -> int {
-        if self.receivers.is_empty() { 0 } else { 1 }
+        if self.in_a_method() { 1 } else { 0 }
     }
 
     /// A parameter read of a `mut` seat is marked as one — the
@@ -580,6 +593,10 @@ impl ResolveCx {
 
     fn no_receiver(at: Loc?) {
         self.emit(refusal("resolve.receiver", at, "`self` names a method's receiver — this is not a method", "no receiver here", "move this into `impl <Type> { … }`"))
+    }
+
+    fn static_has_none(at: Loc?) {
+        self.emit(refusal("resolve.receiver", at, "`self` names a method's receiver — a `static fn` has none", "no receiver here", "drop `static`, or take what this needs as a parameter"))
     }
 
     fn emit(d: Diag) { self.facts.voices.speak(d) }

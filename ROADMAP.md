@@ -2653,11 +2653,10 @@ the order is the dependency.
         at the seam for every `string` seat of an extern, a `Bytes`
         seat that carries the length, or a documented hazard. It is
         not io's to decide and it is not settled by io's fix.
-  - [ ] STATIC METHODS (RULE B) — THE SPELLING, MEASURED. The owner
-        is pressing for this and asked another lane for the shape;
-        the marker is this lane's grammar, so the design is here and
-        the BUILD waits on the owner's word IN THIS SESSION. Every
-        claim below is a probe's output, not a reading of the code.
+  - [x] STATIC METHODS (RULE B) — LANDED 2026-09-07, on the owner's
+        direct word in this session. The design below is unchanged by
+        the build; what the build ADDED is at the end. Every claim is
+        a probe's output, not a reading of the code.
         WHAT IS TRUE TODAY. `self` is IMPLICIT — the impls feature's
         remedy table says so ("`self` is implicit in a method — drop
         it from the parameter list") and `primary = "self" ->
@@ -2718,6 +2717,69 @@ the order is the dependency.
         static (`trait Default { static fn default() -> Self }`) is
         BLOCKED on `Self` existing at all, so the slice lands
         INHERENT statics and says so, or it grows `Self` first.
+        WHAT THE BUILD ADDED TO THE DESIGN, all three found by
+        running rather than reading:
+        1. THE PRECEDENCE BELONGS IN `callee.av`, not in either
+           consumer. That file's header already promised what the
+           slice needed — who answers a dot-call is decided ONCE and
+           matched EXHAUSTIVELY by typing and lowering — so
+           `Callee.Static` is a variant there and both matches paid
+           it at compile time. Deciding it twice (a test in typing, a
+           fact-table absence in lowering) was the first draft and it
+           would have let the two passes disagree about a call.
+        2. THE TRAIT RULE SPELLS ITS OWN MEMBERS, so `static fn` in a
+           trait did not PARSE and the law could not reach it — a
+           bare "expected `fn`" for the mistake every Rust reader
+           makes first. The rule now accepts `( sk:"static" )?` for
+           the same reason a `once fn`'s rule accepts a parameter
+           list it forbids: so the refusal can SPEAK. Alignment is by
+           span window, as `mut` already was.
+        3. THE COLLISION CHECK'S FIRST DRAFT WOULD HAVE POISONED THE
+           TYPE REGISTRY. It asked `types.intern(Type.Enum(target,
+           tname))` for the target's variants — for a RECORD target
+           that MINTS A BOGUS ENUM the registry then keeps, since it
+           holds the first shape it sees for a key, and every later
+           printing of that type carries it. The DECLARATION answers
+           the same question with no write:
+           `variant_sig_of(decls.sig(target))`. A read that mints is
+           not a read.
+        AND THE MINT LAW CAUGHT THE LOWERING, unprompted: the first
+        `static_dispatch` minted its answer before the operands and
+        the corpus program refused with "register r2 defines out of
+        mint order". Three F0900s, no debugging, one line to fix.
+        AND `make fingerprints` CAUGHT A COLLISION THE SUITE COULD
+        NOT: `mark_static` restamped at tag 105, which lane A's
+        `fp_list` already owned — 1979 cases green, gate RED. The
+        keeper the collision thread produced, catching a collision
+        introduced by the lane that retracted about that thread, on
+        the keeper's first day, from a lane that did not know it
+        existed. A fingerprint conflating two node kinds does not
+        FAIL, it answers wrong later; that is why the class was worth
+        chasing and why no test would have found this.
+        AND THE NEAR-MISS BESIDE IT IS THE PART TO KEEP, because it
+        SHARPENS A LAW WHOSE OWN PRESCRIBED CURE FAILED. Choosing the
+        replacement tag, `grep -oE "fp\([0-9]+"` answered
+        `102 105 108 109` and I reasoned from it that 106 and 107
+        were free. THEY ARE NOT — `type_fp` and `Defer` spell theirs
+        as `fp(if … { 106 } else { 107 }, …)`, so four of the ten
+        taken numbers are INVISIBLE to a grep for literals. I took
+        110 by habit (highest plus one), not by judgement; reasoning
+        about the gap would have introduced a second collision the
+        same night. Lane A independently nearly quoted the shorter
+        list.
+        THE LAW IT SHARPENS is "A PROBE THAT TRUNCATES ITS OWN OUTPUT
+        REPORTS THE ABSENCE OF WHAT IT CUT" (CLAUDE.md), whose cure
+        is written as `grep -oE … | sort -u`, which "costs nothing
+        and cannot lie by omission, where a `head` always can". IT
+        LIED BY OMISSION. Not by truncating — **a grep for literal
+        values cannot see a value that is COMPUTED**. So the cure
+        holds only for literals, and the general form is: ENUMERATE
+        FROM WHAT THE CONSUMER SEES, NOT FROM WHAT THE SOURCE SPELLS.
+        The keeper reads the tag space correctly — it found the
+        collision — so the honest way to ask "what is free" was to
+        ASK THE KEEPER, not to grep the file it guards. The
+        instrument was already in the gate and a worse one was used
+        to plan against it.
   - [ ] REVIEWS THIS LANE OWES, recorded because they live in
         messages and messages do not survive a compaction. Each is a
         diff another lane writes in this lane's files, with this
