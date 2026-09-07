@@ -729,6 +729,30 @@ real. What remains of the `once` share is the retain/release pair
 around each read, half (b), with the owner. The ledger: the framer's
 own wastes 2410 → 2185, the slot 2185 → 2045, both on shipping.
 
+## RED at ec98057 — door 1 met its one exception (2026-09-07)
+
+Door 1 merged (lane/substrate d0d5756: `avra_str_crossing` at three
+seams — the native lowering, the extern frame, and the evaluator's row
+path, which the brief had not named and without which the engines would
+disagree about which strings may cross; `inert` on `RtSig` with CHECKED
+as the default; four trap contracts) and THE GATE WENT RED in
+`std-sqlite`: the driver's own case "a `const char*` seat that CARRIES a
+length" trapped at byte 6. The case is right and the seam is right:
+`sqlite3_bind_text` takes text WITH a length, so a NUL inside is DATA
+and the callee resolves nothing. The design's named escape is a `Bytes`
+seat — "a package that means octets takes `Bytes`" — and it must be
+spellable on a package extern for the design to hold; the substrate
+lane lands it in the same slice, the driver's `bind_text`/`bind_blob`
+seats move to it (the sqlite lead's package, told). Lane A's review
+found the marking pass answering two identical rows differently
+(`avra_host_env` checked, `avra_io_env` inert — the same `getenv`); not
+a live hole, since both cross through package externs that are never
+inert, but a false fact in a registry, so `make externs` grows an
+`inert` keeper (a body calling `getenv`/`fopen`/`stat`/`opendir`/
+`exec*`/`posix_spawn*` on a text seat cannot be inert) and the four are
+re-marked, lane A's. NOTHING MERGES INTO lane/http UNTIL THE GATE IS
+GREEN AGAIN.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
