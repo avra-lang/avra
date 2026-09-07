@@ -4,6 +4,7 @@
 // attack; the fixtures are the shell and a hand-built tool.
 use @std.process.{Tool, tool, cmd, Command, Pipeline, Stdin, Ready, Env, ProcessError, minimal, exit_text, parallel, race}
 use @std.time.{ms, secs, now_ms}
+use @std.text.{from_codepoint}
 
 fn posix_sh() -> Result<Tool, ProcessError> {
     tool("sh")
@@ -12,6 +13,25 @@ fn posix_sh() -> Result<Tool, ProcessError> {
 /// A tool that ends its options at `--`, standing on echo.
 fn dashed() -> Tool {
     Tool { name: "t", path: "/bin/echo", terminator: "--" }
+}
+
+/// One NUL byte, minted in process — no file, no environment needed.
+fn nul() -> string {
+    from_codepoint(0)
+}
+
+/// A tool whose path names a program that does NOT exist, truncated at
+/// a NUL to one that does — the attack in one value.
+fn holed_tool() -> Tool {
+    Tool { name: "echo", path: "/bin/echo${nul()}/not/here", terminator: null }
+}
+
+/// A refusal's own words.
+fn said(r: Result<string, ProcessError>) -> string {
+    match r {
+        .Ok(s) -> s,
+        .Err(e) -> e.describe().message,
+    }
 }
 
 fn kind(e: ProcessError) -> string {
@@ -24,6 +44,7 @@ fn kind(e: ProcessError) -> string {
         .TimedOut(after, o) -> "timeout:${after}:${o.stdout.trim()}",
         .TooMuch(_, cap, _) -> "toomuch:${cap}",
         .Unplaceable(w, _) -> "unplaceable:${w}",
+        .Holed(_, at) -> "holed:${at}",
         .NotReady(waited, _) -> "not_ready:${waited >= 0}",
         .StageFailed(i, x, _) -> "stage_failed:${i}:${exit_text(x)}",
         .Unscripted(p, a) -> "unscripted:${p} ${a}",
@@ -237,6 +258,32 @@ fn middle_stdin_ignored() -> Result<string, ProcessError> {
 }
 
 spec "std/process adversarial" {
+    given "a NUL makes a value two values, so the host is never handed one" {
+        then "a tool path holding a NUL refuses — it does NOT run the truncated program" {
+            shown(text(cmd(holed_tool(), ["x"]))) == "holed:9"
+        }
+        then "the refusal says what it means, and where" {
+            said(text(cmd(holed_tool(), ["x"]))) == "a word holding a NUL is two words — the host reads to byte 9 and no further"
+        }
+        then "an ARGUMENT holding a NUL refuses — a word from data arrives whole or not at all" {
+            shown(text(cmd(dashed(), ["ok", "ab${nul()}cd"]))) == "holed:2"
+        }
+        then "the WORKING DIRECTORY holding a NUL refuses" {
+            shown(text(cmd(dashed(), ["x"]) with { cwd: "/tm${nul()}p" })) == "holed:3"
+        }
+        then "an ENVIRONMENT value holding a NUL refuses" {
+            shown(text(cmd(dashed(), ["x"]) with { env: minimal().with_var("K", "a${nul()}b") })) == "holed:3"
+        }
+        then "`tool` refuses a NUL in the name before it searches" {
+            match tool("ec${nul()}ho") {
+                .Ok(_) -> false,
+                .Err(e) -> kind(e) == "holed:2",
+            }
+        }
+        then "a NUL-free command still runs — the guard refuses nothing it should not" {
+            shown(text(cmd(dashed(), ["fine"]))).trim() == "fine"
+        }
+    }
     given "children and pipelines at their edges" {
         then "an empty pipeline is refused, never a trap on its last stage" {
             shown(empty_pipeline()) == "empty:the pipeline"

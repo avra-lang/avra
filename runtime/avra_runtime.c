@@ -2418,7 +2418,9 @@ int64_t avra_proc_run(const char* file, void* argv, void* envp, const char* cwd,
     if (h < 0) return h;
     Proc* p = proc_at(h);
     if (p->in_fd >= 0) {
-        size_t n = stdin_text ? strlen(stdin_text) : 0;
+        // the HEADER's length, never strlen: stdin is a byte stream and a
+        // NUL is data — `avra_proc_write` has always read it this way
+        size_t n = stdin_text ? str_len(stdin_text) : 0;
         if (n > 0) { p->in_text = (char*)malloc(n); memcpy(p->in_text, stdin_text, n); p->in_len = n; }
         p->in_close = 1;
     }
