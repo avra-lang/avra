@@ -1232,6 +1232,35 @@ design two independent laws agree on — the seat law and the lifetime
 law meeting at one handle — is one nobody has to remember the reason
 for.
 
+## S2c COMPLETE (030a66a, merged at 06e3862, seed ec96a1e): the review round, and what the arc delivered
+
+The review round found one real thing and the arc was otherwise clean:
+the machine held bare handles in a list PARALLEL to the program's
+libraries, so the refusal that names an unopened package indexed one
+list by the other's position — both readers need both halves (the
+lookup asks the handle, the refusal names the package), and they
+travel as one value now, the index arithmetic gone with the alignment
+it depended on. Two leave-alones with reasons: `opened` tries `.dylib`
+then `.so` rather than asking the platform, because the compiler has
+no platform verb and inventing one to save a failed `dlopen` on a cold
+path is the wrong trade (kept); and `symbol_of` evaluating every
+handle before taking the first hit "because only a miss reaches it" —
+NOT kept, because the premise is wrong: `hosted_extern` calls it on
+EVERY extern call (interp.av:704), which is exactly lane A's finding,
+and the memo (.1.13) is the next slice.
+
+WHAT S2C DELIVERED, for the owner's read: a program run under the
+evaluator reaches a package's C only when it DEPENDS on the package —
+one derived library per linking package outside the image, opened
+`RTLD_LOCAL`, asked before the image, refused by name when unbuilt;
+`corpus/net` and `corpus/http-serve` differential for the first time;
+the leak refused by mechanism and witnessed under `RTLD_GLOBAL`; the
+keeper accounting for every open symbol in three bands; one stem rule
+and a collision refused. What it did not deliver, honestly: the two
+sqlite corpora stay native-only, because `sqlite3_open_v2` has a `mut`
+seat and the frame carries no inout — §5.6.8's recorded trigger fired,
+and the inout frame is the substrate lane's next slice after the memo.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
