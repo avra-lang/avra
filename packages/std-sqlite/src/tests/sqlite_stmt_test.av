@@ -7,7 +7,7 @@
 // box, so `text` and `blob` are ABSENT rather than wrong — and
 // `class_at` is how a caller learns a cell holds text it cannot have.
 use @std.sqlite.open.{Db, open, memory, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, finalize, reset, width, standing, class_at, int_at}
+use @std.sqlite.stmt.{Stmt, prepare, step, finalize, reset, width, standing, class_at, int_at, real_at}
 use @std.sqlite.error.{Storage, SqlError}
 
 /// One integer out of a one-row query, or the kind it was refused with.
@@ -42,6 +42,37 @@ fn first_int(mut s: Stmt) -> string {
 }
 
 fn told(r: Result<int, SqlError>) -> string {
+    match r {
+        .Ok(v) -> "${v}",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+/// Column 0 of a one-row query read as a FLOAT, or the refusal's kind.
+fn real_scalar(sql: string) -> string { in_memory((db) -> real_said_by(db, sql)) }
+
+fn real_said_by(db: Db, sql: string) -> string {
+    match prepare(db, sql) {
+        .Ok(s) -> stepped_real(s),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn stepped_real(s: Stmt) -> string {
+    mut held = s
+    let said = first_real(held)
+    let _ = finalize(held)
+    said
+}
+
+fn first_real(mut s: Stmt) -> string {
+    match step(s) {
+        .Ok(more) -> if more { told_real(real_at(s, 0)) } else { "NO ROW" },
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn told_real(r: Result<float, SqlError>) -> string {
     match r {
         .Ok(v) -> "${v}",
         .Err(e) -> e.cause.kind(),
@@ -107,6 +138,23 @@ spec "std/sqlite statement" {
         then "a value past 32 bits survives" { scalar("select 4294967297") == "4294967297" }
         then "the largest signed 64-bit integer survives" { scalar("select 9223372036854775807") == "9223372036854775807" }
         then "a count over the schema works" { scalar("select count(*) from sqlite_schema") == "0" }
+    }
+
+    given "a real cell read as a float" {
+        then "a fraction arrives" { real_scalar("select 1.5") == "1.5" }
+        then "a real that is a whole number keeps its class" { real_scalar("select 3.0") == "3.0" }
+        then "arithmetic over reals arrives" { real_scalar("select 1.5 + 2.25") == "3.75" }
+        then "avg over integers is a real" { real_scalar("select avg(v) from (select 1 as v union all select 2)") == "1.5" }
+        // THE REFUSAL IS THE DESIGN. An INTEGER cell read as a double
+        // loses precision above 2^53, and nothing in the answer says
+        // so — accepting it would be an implicit widen at the boundary,
+        // decided by the driver, on a value from outside. The language
+        // refuses the same widen inside itself:  does not
+        // compile.
+        then "an integer is refused rather than widened" { real_scalar("select 1") == "sqlite.mismatch" }
+        then "sum over integers is an integer, and refused" { real_scalar("select sum(v) from (select 1 as v union all select 2)") == "sqlite.mismatch" }
+        then "text is refused" { real_scalar("select 'hi'") == "sqlite.mismatch" }
+        then "null is refused" { real_scalar("select null") == "sqlite.mismatch" }
     }
 
     given "a query that answers no row" {
