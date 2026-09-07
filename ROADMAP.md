@@ -3938,11 +3938,29 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         program can handle; (3) `Bytes` IS THE ESCAPE HATCH — a seat
         that carries its length, for a caller who means octets; and a
         documented hazard with a lint is REFUSED, since a lint documents
-        what it cannot close. COST: one scan per string seat per extern
-        call, on calls that are syscalls or spawns; runtime ROWS are
-        trusted and unchanged. Runtime rows that take text (`avra_fd_*`
-        take `Bytes`) are already length-carrying by the descriptor
-        design.
+        what it cannot close. AMENDED BY LANE C'S PROBE, run on main:
+        `avra_host_env("PATH" + NUL + "NOT_A_REAL_VARIABLE")` answers
+        PATH's value — a RUNTIME ROW truncated at byte 4 and resolved a
+        name the program never wrote — and `avra_proc_spawn`/`run`/
+        `which` are rows whose first seat is a PROGRAM PATH, so "rows
+        are trusted" would let a NUL-bearing path SPAWN A DIFFERENT
+        PROGRAM with the seam declining to look. THE AXIS IS NOT ROW
+        VERSUS EXTERN: it is whether the CALLEE RESOLVES THE STRING
+        AGAINST SOMETHING OUTSIDE THE PROGRAM. `avra_str_join` holds a
+        NUL harmlessly (our body, bytes we own — the LOSS hazard already
+        documented); `avra_proc_run` resolves a path against a
+        filesystem and is a door that happens to be a row. So clause
+        (1) attaches to the SEAT, not the family: a registry column
+        beside `lends`, and THE DEFAULT IS THE SAFE ONE — every `string`
+        seat is CHECKED unless its row writes `inert: true` at the site
+        (its C body operates on bytes the program owns and resolves
+        nothing), the exemption law's shape: an exemption not written
+        where the code is would be an unbounded amnesty, and the hot
+        string rows the framer scans with are exactly the ones that
+        write it. A package extern's `string` seats are always checked;
+        a package that means octets takes `Bytes`. COST: one scan per
+        checked seat per call, on calls that are syscalls, spawns or
+        lookups. `avra_fd_*` take `Bytes` and carry their length.
   - [ ] AN UNBOXED (ptr, len) VIEW, escape-analysed: the zero-copy
         capture the typed-routes paper wants. WANTING SITE: the framer's
         header values. Slot-layout territory (lane A). Until then, the
