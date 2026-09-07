@@ -1021,6 +1021,19 @@ clothes. The `KIND_STATIC` failure is the registry-obligation law in C
 for the second time on one file: `box_clone`'s kind dispatch is a chain
 keyed on our kinds that no keeper can see, as `acc_kind_of` was.
 
+AND THE SECOND ROW CLOSED A BLIND SPOT IN LANE A'S KEEPER (main
+e05d4b2, merged at c148b12): `make externs` globbed `packages/` and
+`corpus/`, and `tools/traps.sh` writes whole programs from heredocs —
+four `extern fn` declarations it had never read, one of them the
+genuinely unchecked `avra_spawn_status`, the other three covered BY
+ACCIDENT rather than by scope. It reads the GENERATOR now, not its
+output, because a keeper whose coverage varies with which target ran
+first reports different things on different days. Lane A's sentence
+is the one to keep: A KEEPER'S GLOB IS A CLAIM ABOUT WHERE ITS SUBJECT
+LIVES, and this one had been wrong twice while reporting green — the
+showcase in `corpus/`, then the generated fixture — both times exactly
+where the interesting declarations were. 300 externs, 562 seats here.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
