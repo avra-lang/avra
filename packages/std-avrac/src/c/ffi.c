@@ -79,9 +79,12 @@ void avra_ffi_set_bytes(int64_t k, const char* b) {
 extern const char* avra_str_crossing(const char* s);
 
 void avra_ffi_set_text(int64_t k, const char* s) {
-    /* A PACKAGE'S EXTERN CAN NEVER BE INERT — its C is not ours to
-       certify — so every text seat crossing this frame is checked,
-       by the same helper the backend emits at its own seam. */
+    /* EVERY CALLEE THAT REACHES THIS FRAME IS A NON-ROW: both engines
+       ask the registry first, and a declaration that names a row IS
+       the row and dispatches there. A non-row's C is not ours to
+       certify and its row is built at the default, so nothing
+       arriving here is inert and the check is unconditional — the
+       same helper the backend emits at its own seam. */
     if (k >= 0 && k < AVRA_FFI_MAX_I) g_ffi_i[k] = (int64_t)(uintptr_t)avra_str_crossing(s);
 }
 
