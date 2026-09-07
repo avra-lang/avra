@@ -635,6 +635,25 @@ the compiler checking itself 28.8s.
         the language's. When the counts say a cost is O(n) and n is 1
         locally, hand the clock to a caller with a bigger n rather
         than concluding the well is dry.
+        AND THE STRINGS LANE RE-TOOK IT WITH A CONTROL, which is the
+        method worth copying rather than the number. Probe counts
+        PREDICTED FIRST from what each path emits, then five
+        independent before/after pairs: 1 probe 47->40 ns, 1 probe
+        25->17, 3 probes 210->191, 9 probes 655->598 — ~6-7 ns
+        recovered per read. THE CONTROL IS THE HALF THAT MAKES IT A
+        FINDING: the ZERO-probe paths (a greedy scan, a scalar ask, a
+        marked last hole) moved by noise and no more. Without them the
+        same five numbers are indistinguishable from a machine warming
+        up, and this tree has already published one product of two
+        aggregates and one frame fix inside its own noise floor.
+        THE CLAIM IS PER-READ, NOT PER CENT: "6-7 ns per read, and the
+        read count is what you can count" survives being quoted; a
+        percentage is a fact about one benchmark's denominator.
+        AND A FLOOR IS NOT A REFUTATION: their router's composite
+        dispatch bench has a +/-40 ns floor and cannot see its one
+        probe's 7 ns. The isolated measurement resolves what the
+        composite cannot, and reading the composite's silence as
+        absence is the instrument reporting what it cut.
         A THIRD, 2026-09-07: TAKING THE FRAME OUT OF
         `avra_array_get_owned` — REFUTED, and it refines the
         cold-path law rather than denying it. That fn builds a
