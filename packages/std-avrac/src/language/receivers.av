@@ -8,7 +8,7 @@
 //! has a declared type along its whole path, so no body is typed to
 //! learn it. Asked through the declaration table's hook, remembered
 //! by the kernel (ROADMAP: the inout receiver).
-use core.{DeclId, ExprId, StmtId, TypeId, Type, NodeStore, Binding, MethodParts, PlaceStep, fp, touch, filled, flatten}
+use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, Binding, MethodParts, PlaceStep, fp, touch, filled, flatten, marked}
 use features.{NameFacts, Decls, Decl, StructSig, fields_of_type, bound_decl_of, row_writes, trait_named, trait_member, self_type_of, fn_sig_of, FnSig, nothing, property_row}
 
 /// One fn's own evidence: which of its seats the body writes
@@ -172,6 +172,7 @@ fn method_evidence(mut cx: Survey, mp: MethodParts) {
             feed(cx, d, mp.args, 1)
         }
         .Static(d) -> feed(cx, d, mp.args, 0),
+        .FnSeats(held) -> feed_marks(cx, held.muts, mp.args),
         .Contract(d) -> {
             if cx.decls.declares_writing(d) { mark(cx, seat) }
             feed(cx, d, mp.args, 1)
@@ -222,6 +223,16 @@ fn feed(mut cx: Survey, callee: DeclId, args: List<ExprId>, base: int) {
     }
 }
 
+/// `feed`'s twin over MARKS rather than a declaration's seats: a fn
+/// VALUE names no callee to flow into, so a marked seat MARKS its
+/// argument — the conservative answer, and the right one, since any
+/// fn of that type may fill the field.
+fn feed_marks(mut cx: Survey, muts: List<bool>, args: List<ExprId>) {
+    for j, a in args {
+        if marked(muts, j) { mark(cx, seat_of(cx, a)) }
+    }
+}
+
 /// Whether a declaration is a trait's bodiless member — a sig; a
 /// DEFAULT has a body to infer from, like any method.
 fn under_trait(cx: Survey, d: DeclId) -> bool {
@@ -237,6 +248,9 @@ enum Callee {
     /// A `static fn` under a TYPE NAME — no receiver, so its
     /// arguments start at seat 0.
     Static(d: DeclId)
+    /// A FN-TYPED FIELD. No declaration to flow into — the contract
+    /// rides the TYPE, so its marks are the whole answer.
+    FnSeats(held: Arrow)
     Contract(d: DeclId)
     None
 }
@@ -245,15 +259,36 @@ fn callee_of(cx: Survey, ty: TypeId, name: string) -> Callee {
     let sh: Type = cx.decls.types.shape_of(ty)
     match sh {
         .List(_) or .Map(_, _) or .Str -> Callee.Row(row_writes(cx.ws.lang.rows.methods, name, sh)),
-        .Struct(d, _) -> declared_method(cx, d, name),
+        .Struct(d, _) -> field_or_method(cx, ty, d, name),
         .Enum(d, _) -> declared_method(cx, d, name),
-        .App(d, _, _) -> declared_method(cx, d, name),
+        .App(d, _, _) -> field_or_method(cx, ty, d, name),
         .Var(d, j, _) -> bounded_member(cx, d, j, name),
         .Dyn(d, _) -> contract_member(cx, d, name),
         .TypeName(d, _) -> static_member(cx, d, name),
         .Ptr or .Int or .Float or .Bool or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or
         .EmptyList or .Error or .Void or .EmptyMap -> Callee.None,
     }
+}
+
+/// A FN-TYPED FIELD ANSWERS BEFORE THE IMPL TABLE, as it does at
+/// typing: the capability-record pattern puts a callee in a field,
+/// and its `mut` seats write their arguments exactly as a declared
+/// callee's do. Without this the write is invisible to the survey
+/// and a `mut fn` that writes only through such a call is inferred
+/// non-writing — silently.
+fn field_or_method(cx: Survey, ty: TypeId, d: DeclId, name: string) -> Callee {
+    let held: Arrow? = fn_field_arrow(cx, ty, name)
+    if held == null { return declared_method(cx, d, name) }
+    Callee.FnSeats(held!)
+}
+
+/// The arrow a fn-typed field of that name holds.
+fn fn_field_arrow(cx: Survey, ty: TypeId, name: string) -> Arrow? {
+    let sig: StructSig? = fields_of_type(cx.decls, ty)
+    if sig == null { return null }
+    let slot: int? = sig!.slot_of(name)
+    if slot == null { return null }
+    cx.decls.types.arrow_parts(sig!.types[slot!])
 }
 
 fn declared_method(cx: Survey, d: DeclId, name: string) -> Callee {
@@ -331,6 +366,7 @@ fn bound_type(cx: Survey, s: StmtId) -> TypeId? {
     match callee_of(cx, subject!, m.name) {
         .Method(d) -> fn_sig_of(cx.decls.sig(d))?.ret,
         .Static(d) -> fn_sig_of(cx.decls.sig(d))?.ret,
+        .FnSeats(held) -> held.answer,
         .Contract(d) -> fn_sig_of(cx.decls.sig(d))?.ret,
         .Row(_) or .None -> null,
     }
