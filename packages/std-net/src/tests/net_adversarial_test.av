@@ -1,0 +1,107 @@
+// The red team's survivors, by attack class: degenerate ports and
+// hosts, a timeout that is a budget and never a sentinel, verbs on a
+// descriptor that is gone, the poller's edges, and the empty write.
+// Every refusal names its verb and its subject in the platform's
+// words. Wrong types in every slot were attacked and refuse at check
+// time; a package spec cannot pin a compile refusal, so they are
+// recorded in the working log.
+use @std.net.{listen, listen_all, connect, poller, Listener, Conn, Poller, Read, Interest, NetError}
+use @std.time.{secs, ms}
+use @std.errors.{Error}
+
+fn words<T>(r: Result<T, NetError>) -> string {
+    match r {
+        .Err(e) -> e.describe().message,
+        .Ok(_) -> "<ok>",
+    }
+}
+
+fn holds(r: Result<bool, NetError>) -> bool {
+    match r {
+        .Ok(b) -> b,
+        .Err(_) -> false,
+    }
+}
+
+/// A connected attacked with the server side accepted.
+type Attacked = { l: Listener, client: Conn, server: Conn, p: Poller }
+
+fn attacked() -> Result<Attacked, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let client = connect("127.0.0.1", l.port, secs(2))?
+    let p = poller()?
+    p.watch(l.fd, .Read)?
+    p.wait(secs(2))?
+    let server = l.accept()?
+    .Ok(Attacked { l: l, client: client, server: server!, p: p })
+}
+
+fn gone_names_the_descriptor() -> Result<bool, NetError> {
+    let pr = attacked()?
+    pr.client.close()?
+    let again = words(pr.client.close())
+    let read = words(pr.client.read(10))
+    let write = words(pr.client.write("x".bytes(), 0))
+    .Ok(again.starts_with("close fd ") && read.starts_with("read fd ") && write.starts_with("write fd ") && pr.client.peer() == "")
+}
+
+fn poller_edges() -> Result<bool, NetError> {
+    let p = poller()?
+    let removed = p.watch(999999, .None)?
+    let bad = words(p.watch(999999, .Read))
+    let nothing = p.wait(ms(10))?
+    let l = listen("127.0.0.1", 0)?
+    p.watch(l.fd, .Read)?
+    p.watch(l.fd, .Both)?
+    p.watch(l.fd, .None)?
+    let still_nothing = p.wait(ms(10))?
+    p.close()?
+    .Ok(removed == 999999 && bad.starts_with("watch fd 999999: ") && nothing.is_empty() && still_nothing.is_empty() && words(p.wait(ms(1))).starts_with("wait poller: "))
+}
+
+fn empty_writes_and_reads() -> Result<bool, NetError> {
+    let pr = attacked()?
+    let empty = pr.client.write("".bytes(), 0)?
+    let at_end = pr.client.write("abc".bytes(), 3)?
+    let zero = pr.server.read(0)?
+    let huge = pr.server.read(100000000)?
+    .Ok(empty == 0 && at_end == 0 && zero is .Pending && huge is .Pending)
+}
+
+spec "std.net adversarial" {
+    given "degenerate ports and hosts" {
+        then "a port past 65535 or below 0 is refused with the verb and the subject" {
+            words(listen("127.0.0.1", 65536)) == "listen 127.0.0.1:65536: Invalid argument" &&
+                words(listen("127.0.0.1", -1)) == "listen 127.0.0.1:-1: Invalid argument"
+        }
+        then "the loopback names, both families' wildcards and localhost all listen" {
+            listen("::1", 0) is .Ok && listen("localhost", 0) is .Ok && listen("0.0.0.0", 0) is .Ok && listen("::", 0) is .Ok
+        }
+        then "a name that resolves to nothing, a trailing space, and a port inside the host all refuse" {
+            words(listen("no.such.host.invalid", 0)).starts_with("listen no.such.host.invalid:0: ") &&
+                words(listen("127.0.0.1 ", 0)).starts_with("listen 127.0.0.1 :0: ") &&
+                words(listen("127.0.0.1:80", 0)).starts_with("listen 127.0.0.1:80:0: ")
+        }
+        then "connect refuses an empty host and a port past 65535" {
+            words(connect("", 80, secs(1))) == "connect \"\":80: Invalid argument" &&
+                words(connect("127.0.0.1", 70000, secs(1))).starts_with("connect 127.0.0.1:70000: ")
+        }
+    }
+    given "a timeout is a budget, never a sentinel" {
+        then "a negative timeout is refused rather than read as forever" {
+            words(connect("127.0.0.1", 1, ms(-1))) == "connect 127.0.0.1:1 within -1 ms: Invalid argument"
+        }
+        then "a zero budget looks once and reports the timeout" {
+            words(connect("10.255.255.1", 9, ms(0))).contains("timed out")
+        }
+    }
+    given "a descriptor that is gone" {
+        then "close, read and write name the descriptor once the peer is gone" { holds(gone_names_the_descriptor()) }
+    }
+    given "the poller's edges" {
+        then "removing the unwatched is fine, watching a bad descriptor refuses, and a closed poller refuses to wait" { holds(poller_edges()) }
+    }
+    given "the empty write and the empty read" {
+        then "an empty write and a write at the end take nothing; a read of zero or a hundred million bytes is pending" { holds(empty_writes_and_reads()) }
+    }
+}

@@ -128,10 +128,13 @@ static int64_t gai_errno(int rc) {
 }
 
 // The stream addresses host:port names, in the resolver's order;
-// `passive` asks for addresses to bind, where an empty host is every
-// interface. Answers 0 with the list, or -errno with none.
+// `passive` asks for addresses to bind, and a NULL host asks for
+// every interface — ONLY a null, never an empty text, so no spelling
+// of a host means the wildcard. Answers 0 with the list, or -errno
+// with none.
 static int64_t net_resolved(const char* host, int64_t port, int passive, struct addrinfo** out) {
     if (port < 0 || port > 65535) return -EINVAL;
+    if (host && !host[0]) return -EINVAL;
     char service[6];
     snprintf(service, sizeof service, "%d", (int)port);
     struct addrinfo hints;
@@ -139,7 +142,7 @@ static int64_t net_resolved(const char* host, int64_t port, int passive, struct 
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_NUMERICSERV | (passive ? AI_PASSIVE : 0);
-    int rc = getaddrinfo(host[0] ? host : NULL, service, &hints, out);
+    int rc = getaddrinfo(host, service, &hints, out);
     return rc == 0 ? 0 : gai_errno(rc);
 }
 
@@ -158,12 +161,7 @@ static int64_t net_bound(const struct addrinfo* ai, int backlog) {
     return fd;
 }
 
-// A listening socket on host:port — an empty host is every
-// interface, "0.0.0.0" and "::" the family's — as a nonblocking
-// CLOEXEC descriptor, or -errno. Port 0 asks the kernel for one
-// (`avra_net_local_port` reads it back); a negative backlog is the
-// kernel's maximum. The first address that binds wins.
-int64_t avra_net_listen(const char* host, int64_t port, int64_t backlog) {
+static int64_t net_listening(const char* host, int64_t port, int64_t backlog) {
     net_armed();
     struct addrinfo* list;
     int64_t r = net_resolved(host, port, 1, &list);
@@ -172,6 +170,22 @@ int64_t avra_net_listen(const char* host, int64_t port, int64_t backlog) {
     for (const struct addrinfo* ai = list; ai && r < 0; ai = ai->ai_next) r = net_bound(ai, net_int(backlog));
     freeaddrinfo(list);
     return r;
+}
+
+// A listening socket on ONE interface named by host — "0.0.0.0" and
+// "::" name a family's wildcard explicitly — as a nonblocking CLOEXEC
+// descriptor, or -errno; an empty host is -EINVAL, never every
+// interface. Port 0 asks the kernel for one (`avra_net_local_port`
+// reads it back); a negative backlog is the kernel's maximum. The
+// first address that binds wins.
+int64_t avra_net_listen(const char* host, int64_t port, int64_t backlog) {
+    return net_listening(host, port, backlog);
+}
+
+// A listening socket on EVERY interface — the wildcard, asked for by
+// name and never by an empty host.
+int64_t avra_net_listen_all(int64_t port, int64_t backlog) {
+    return net_listening(NULL, port, backlog);
 }
 
 // Errors accept reports about the connection it did not take rather
