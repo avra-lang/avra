@@ -402,6 +402,48 @@ correct foreign-text externs to catch one real leak. It is lane A's,
 in `tools/externs.py`, and §5.4 records the diagnostic that was
 designed and withdrawn in its favour.
 
+### 2.6 A STAGE THAT CROSSES THE SEAM CANNOT BE SPARSE OR STALE
+
+Some values cannot cross as one argument. A spawn's argv and
+environment are lists, and a list cannot reach a package's C at all —
+the evaluator holds one as a HANDLE into its own table, never as a
+box, so the extern frame refuses it. The words are LANDED one at a
+time and the act consumes them, which is this tree's land-then-act
+idiom a fourth time.
+
+A stage kept between calls has exactly two ways to be wrong, and both
+must be made UNSPELLABLE rather than checked, because a stage that CAN
+be written wrong will be.
+
+**SPARSE — a hole that reads as a value.** An index-keyed
+`word(i, text)` can be called with 0 and 2 and never 1, and the
+missing slot arrives at the child as an EMPTY ARGUMENT rather than as
+an error: a command silently one word short, in the right shape. The
+answer is that there is no index. `word(text)` APPENDS and answers the
+new count, so the third word cannot exist without the second.
+
+**STALE — another call's words spent by this one.** A caller that
+stages and then fails BEFORE acting leaves the words standing, and the
+next act spends them. "Clear on the act" does not close this: the
+abandoned stage is never reached by an act at all. The answer is a
+GENERATION — every stage carries one, and a token from an abandoned
+stage is refused by every verb that takes it, the act included.
+
+THE EMPTY CASE IS THE FIRST CASE, as CLAUDE.md's encoding law demands:
+a stage opened and acted on with NOTHING landed is a legitimate act,
+not an error. And an oversized stage refuses by a named errno rather
+than truncating — a cap that truncates is the bound-after-the-work
+mistake in another costume.
+
+**WHY THIS LIVES HERE AND NOT IN CLAUDE.md.** It was offered as a
+tree-wide law and lane D declined it, rightly: CLAUDE.md is loaded
+into every session, and a law that fires for one mechanism in one
+package pays rent from everyone. RECORDED TRIGGER: it becomes a law
+the day a SECOND mechanism shows the shape. The descriptor scratch's
+generation is its cousin and not a second instance — that guards one
+scratch against a deferred read, where this guards a multi-call
+sequence against abandonment.
+
 ## 3. THE SHAPE OF A PACKAGE'S C — the checklist
 
 For every package that owns C, in this order; a box unticked is a gap
@@ -433,10 +475,10 @@ the package's README names.
       the words are STAGED one at a time, and the cast the checklist
       tolerates simply dies.
 - [ ] A STAGE IT KEEPS BETWEEN CALLS CANNOT BE WRITTEN SPARSE OR ACTED
-      ON STALE. An append that answers the count leaves no index to
-      hole; a generation refuses a token from an abandoned stage. Both
-      are structural, not checked — a stage that CAN be written wrong
-      will be.
+      ON STALE, and both are STRUCTURAL rather than checked (§2.6): an
+      append that answers the count leaves no index to hole, and a
+      generation refuses a token from an abandoned stage. The empty
+      stage acts; an oversized one refuses by name.
 - [ ] A C body that KEEPS an argument retains it; one that answers a
       value it keeps answers it retained (the once cache's shape).
 - [ ] Its C carries no `static` state a second process would want
