@@ -14,8 +14,8 @@
 //! octets and the span cells in the pattern's test slot; `pat_binds`
 //! reads them back and cuts the values inside the arm's region, so
 //! an untaken arm mints no managed value at all.
-use core.{Reg, Ins, PatId, Type, TypeId, BinOp, FormatPart, binds}
-use features.{LowerCx, const_int, const_bool, open_region, arm_end, close_region_as, seeded_cell}
+use core.{Reg, Ins, PatId, ExprId, Type, TypeId, BinOp, FormatPart, GrammarSpec, binds}
+use features.{LowerCx, MethodCall, const_int, const_bool, open_region, arm_end, close_region, close_region_as, seeded_cell, box_size, grown_box, adopted, absent_of, lower_defect}
 
 /// Whether the subject matches. The walk's octets and span cells are
 /// left in the pattern's slot for the binds — written once here,
@@ -207,4 +207,50 @@ fn minus(mut cx: LowerCx, a: Reg, b: Reg) -> Reg {
     let r = cx.mint_shape(Type.Int)
     cx.emit(Ins.Bin(r, BinOp.Sub, a, b))
     r
+}
+
+// ── The doors a grammar declares ────────────────────────────────
+
+/// `Name.parse(text)` — the SAME walk the pattern emits, and then
+/// the record its holes name, or absence. No format exists at run
+/// time: the declaration's spec is read here, at compile time.
+export fn lower_parse(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let found: GrammarSpec? = grammar_at(cx, mc.subject)
+    if found == null { return lower_defect(cx, mc.e, "a grammar door without its declaration survived typing") }
+    let read = found!
+    let text = cx.reg_of(mc.args[0])
+    let w = walked(cx, read.head, read.parts, text, cx.type_at(mc.args[0]))
+    let want = cx.type_at(mc.e)
+    open_region(cx, w.ok)
+    arm_end(cx, adopted(cx, want, false, gathered(cx, w, read.parts, text, want)))
+    let none = absent_of(cx, want)
+    close_region(cx, mc.e, none)
+}
+
+/// The record the holes fill, slot by slot in declaration order —
+/// which is hole order, because the fields ARE the holes.
+fn gathered(mut cx: LowerCx, w: Walked, parts: List<FormatPart>, text: Reg, want: TypeId) -> Reg {
+    let held = carried(cx, want)
+    mut slots: List<Reg> = []
+    // LICENSED I3: the cuts must be EMITTED in hole order, each minting its own answer
+    for i, part in parts {
+        if binds(part.hole) { slots.push(cut(cx, w.subject, w.spans[2 * i], w.spans[2 * i + 1], text, cx.view.types.intern(Type.Str))) }
+    }
+    let size = box_size(cx, slots.length)
+    let dst = cx.mint_ty(held)
+    grown_box(cx, dst, size, slots)
+    dst
+}
+
+/// The grammar a type-name receiver stands for.
+fn grammar_at(cx: LowerCx, subject: ExprId) -> GrammarSpec? {
+    match cx.view.types.shape_of(cx.type_at(subject)) {
+        .TypeName(decl, _) -> cx.view.decls.grammar_of(decl),
+        rest -> null,
+    }
+}
+
+/// What a nullable carries.
+fn carried(cx: LowerCx, opt: TypeId) -> TypeId {
+    cx.view.types.carried(opt) ?? opt
 }

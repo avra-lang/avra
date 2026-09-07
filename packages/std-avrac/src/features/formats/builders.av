@@ -5,8 +5,9 @@
 //! head and parts has no node to carry; the two LAWS over the holes
 //! are re-derived from the node and spoken by typing, where they
 //! carry a span and a code.
-use core.{Expr, Pat, Stmt, Param, named_ref, binds, bound_names}
+use core.{Expr, Pat, Stmt, Param, GrammarSpec, named_ref, binds, bound_names}
 use features.{LangNode, Builder}
+use core.{StmtId}
 use features.formats.{read_format, has_holes, Format, Fault}
 
 fn build_format_pat(mut b: Builder) -> Result<LangNode, string> {
@@ -40,7 +41,18 @@ fn build_grammar_decl(mut b: Builder) -> Result<LangNode, string> {
     let f = read_format(t.text)
     let broken: string? = undeclarable(f, n.text)
     if broken != null { return .Err(broken!) }
-    b.make_stmt(Stmt.StructDecl(n.text, [], [field_of(name) for name in bound_names(f.parts)]))
+    let made = b.make_stmt(Stmt.StructDecl(n.text, [], [field_of(name) for name in bound_names(f.parts)]))?
+    b.store.mark_grammar(stmt_of(made)?, GrammarSpec { head: f.head, parts: f.parts })
+    .Ok(made)
+}
+
+/// The statement a builder just made — absent would mean `make_stmt`
+/// answered something other than the statement it was given.
+fn stmt_of(made: LangNode) -> Result<StmtId, string> {
+    match made {
+        .NStmt(id) -> .Ok(id),
+        rest -> .Err("defect: a grammar declaration did not answer a statement"),
+    }
 }
 
 /// Why a format names no record — the FIRST law it breaks. A

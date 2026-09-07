@@ -61,6 +61,17 @@ fn split_octets(b: Bytes) -> int {
         b.slice(second + 1, b.length).length
 }
 
+grammar Line = "{method} {path} {version}"
+
+/// The same line through the DOOR a grammar declares: the same scan,
+/// then the record its holes name.
+fn door_text(l: string) -> int {
+    match Line.parse(l) {
+        r? -> r.method.length + r.path.length + r.version.length
+        null -> 0
+    }
+}
+
 fn scan_text(l: string) -> int {
     match l {
         "{method} {path} {version}" -> method.length + path.length + version.length
@@ -92,6 +103,16 @@ fn text_by_scan(runs: int) -> int {
     mut total = 0
     // LICENSED I3: a timed loop sums, it does not build a list
     for i in 0..runs { total = total + scan_text(subject) }
+    total
+}
+
+fn text_by_door(runs: int) -> int {
+    // the subject is read ONCE: a `once` read is not free, and inside
+    // the loop it would inflate both sides and compress the ratio
+    let subject = line()
+    mut total = 0
+    // LICENSED I3: a timed loop sums, it does not build a list
+    for i in 0..runs { total = total + door_text(subject) }
     total
 }
 
@@ -132,6 +153,8 @@ let hand_text = text_by_hand(runs)
 let t2 = now_ns()
 let scan_text_total = text_by_scan(runs)
 let t3 = now_ns()
+let door_total = text_by_door(runs)
+let t35 = now_ns()
 let hand_octets = octets_by_hand(runs)
 let t4 = now_ns()
 let scan_octets_total = octets_by_scan(runs)
@@ -140,6 +163,7 @@ let t5 = now_ns()
 let framer = per_call(t1 - t0, runs, framings_ok, runs)
 let th = per_call(t2 - t1, runs, hand_text, want)
 let ts = per_call(t3 - t2, runs, scan_text_total, want)
-let oh = per_call(t4 - t3, runs, hand_octets, want)
+let dr = per_call(t35 - t3, runs, door_total, want)
+let oh = per_call(t4 - t35, runs, hand_octets, want)
 let os = per_call(t5 - t4, runs, scan_octets_total, want)
-"runs ${runs} | framer head ${framer} | text: hand ${th} scan ${ts} | octets: hand ${oh} scan ${os}"
+"runs ${runs} | framer head ${framer} | text: hand ${th} scan ${ts} door ${dr} | octets: hand ${oh} scan ${os}"

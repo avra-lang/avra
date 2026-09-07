@@ -729,59 +729,74 @@ second law is canonicalisation and not identity. `#assert
 RequestLine.round_trips` at compile time is Move 5 territory and is a
 recorded trigger, not this arc.
 
-### 6.4 The door `parse` reaches through — and how to need no new one
+### 6.4 The door `parse` reaches through — and what each route costs
 
-A **type name** as a receiver means variant construction and nothing
-else. Probed at `9fe5597`: with `type Port = { n: int }` and an
-`impl Port { fn parse(s: string) -> Port? { … } }`, the call `Port.parse("80")`
-is F2003, "`Port` is a record, not an enum", help "build a record with
-`Port { ... }`". There are **no static methods in this language today**,
-and `callee_of` maps every `.TypeName` receiver to `Callee.Variant`.
+**THIS SECTION WAS WRONG, and the correction is the point.** It said the
+value shape needed "zero new doors and no other feature touched", and the
+HTTP lead ruled on that sentence. The probe behind it was of USER-WRITTEN
+Avra — `type Fmt<T>` with an `impl` — generalised to a BUILTIN row
+without checking, which is CLAUDE.md's measurement-generalised-past-its-
+scope trap committed inside a design paper. Both routes cost something,
+and the counts below are what reversed the ruling.
 
-So `RequestLine.parse(line)` needs a door. Two ways:
+**The starting fact, unchanged.** A type name as a receiver means variant
+construction and nothing else. Probed at `9fe5597`: with
+`type Port = { n: int }` and `impl Port { fn parse(s: string) -> Port? }`,
+the call `Port.parse("80")` is F2003, "`Port` is a record, not an enum".
+`callee_of` maps every `.TypeName` receiver to `Callee.Variant`, and
+**there is no type-qualified call anywhere in this language** — CLAUDE.md
+says so in as many words.
 
-- **A new `Callee` variant** in `features/impls/callee.av`, asking the
-  declaration's kind before assuming a variant. Honest, breaks typing and
-  lowering at compile time as designed — and it is another feature's file,
-  and it makes `impls` know what a grammar is.
-- **No new door at all**, by making the grammar name a **value** as well
-  as a type: the declaration binds `RequestLine` in the value namespace to
-  a compile-time value of type `Format<RequestLine>`, and `parse`/`print`
-  are ordinary **method rows** this feature registers on that shape. A row
-  selects on `takes(Type) -> bool`, and its `check` reads the receiver's
-  type argument to answer `RequestLine?` for `parse` and `string?` for
-  `print`. Zero new doors, zero other features touched, and the format
-  becomes a first-class value — which is Move 1's actual claim.
+**ROUTE A — the grammar name is a VALUE of a generic `Format<R>`, with
+`parse`/`print` as method rows.** Cost, counted: every builtin generic
+type row in the tree maps to a DEDICATED `Type` variant — `List` to
+`Type.List`, `Map` to `Type.Map`, `Result` to `Type.Res`, and those three
+are all of them — so `Format<R>` needs `Type.Format(R)`. That breaks **44
+exhaustive `Type` matches across 19 files**, spanning core, features and
+the language driver. (`make vocab` reports "Type has 2 exhaustive
+consumers"; the tree has forty-four. A keeper claiming a scope wider than
+its coverage, reported separately.) What it buys: a format is a real
+value, so `handle(RequestLine)` works, and its literals are converted to
+octets ONCE at construction rather than per attempt — which would erase
+the pattern's whole 24% gap (§5) with no IR constant at all.
 
-**Recommendation: the second — and it is no longer a hope, it is
-probed.** Both halves work at `9fe5597`:
+**ROUTE B — `Name.parse(text)` EXPANDS at compile time** into the same
+scan the pattern lowers, plus a record construction. Cost: one new
+`Callee` variant with its admission rule, in `features/impls/`. `Callee`
+has **four consumers** — its definition in `impls/callee.av`,
+`impls/check.av`, `impls/lower.av` and `features/contexts.av` — one
+directory, and its own doc says a new receiver kind breaks both passes at
+compile time. (Grep the FILE, not the name: `language/receivers.av` has a
+different enum also called `Callee`.) What it costs: no format exists at
+run time, so a grammar cannot be PASSED as a value — Move 1's
+`handle(RequestLine)` does not compile. What it buys: parsing costs
+exactly what the pattern costs, and four sites against forty-four.
 
-```avra
-type Line = { method: string, path: string }
-let Line = Line { method: "GET", path: "/x" }
-Line.method                                    // runs, answers GET
-```
+**RULED: ROUTE B.** Three-and-a-bit sites in one directory against 44 in
+three lanes is not close, and the run-time argument agrees. The admission
+rule is what makes it a capability rather than a special case, and it is
+deliberately the NARROW one:
 
-One name lives in both namespaces: `Line { … }` builds the record and
-`Line.method` reads the value. And the generic half:
+> **RULE A.** A type-name receiver means a call when the type's
+> declaration is a `grammar` AND that grammar declares a door of that
+> name. Anything else is variant construction, unchanged.
 
-```avra
-type Fmt<T> = { pieces: List<string> }
-impl Fmt<T> { fn parse(text: string) -> T? { null } }
-fn rl() -> Fmt<Line> { Fmt { pieces: [] } }
-let got: Line? = rl().parse("GET /x")          // runs, answers true for null
-```
+The wider **Rule B** — any type name with an inherent fn of that name —
+is STATIC METHODS, which the ROADMAP records as not this arc. The
+difference matters at the test, not at the wording: Rule A asks the
+DECLARATION's KIND, never "does it have a fn called that", because the
+second question IS Rule B wearing Rule A's clothes. If static methods are
+later granted, Rule A's test widens by one line and nothing here is
+thrown away.
 
-An inherent generic impl whose answer follows the type argument lands, so
-`RequestLine.parse(line)` answering `RequestLine?` is expressible with
-**zero new doors and no other feature touched**. One subset fact came out
-of it: a generic struct literal cannot be written with its arguments
-pinned — `Fmt<Line> { pieces: [] }` is F0100, "expected BREAK while
-parsing `stmt`" — so the literal is written bare and takes its arguments
-from the seat, which is what a `grammar` declaration would do anyway.
-
-**Consequence for the plan:** S4 does not depend on §10.1 at all. If the
-seam ruling goes to Route C, S4 can start the hour it arrives.
+**RECORDED TRIGGER — Move 1's value-passing, and the number that brings
+it back.** Route B forfeits passing a grammar as a value. It returns if
+either fires: a consumer needs `handle(RequestLine)` — a router taking a
+route as data is the obvious one — or the measurement shows Route B's
+expansion costing MORE than the pattern's scan, which would mean the
+per-attempt literal conversions are being paid anyway and the value's
+once-converted literals are worth the 44 sites. The pattern's scan is 90
+ns over octets (§5); if `Name.parse` measures above that, this fires.
 
 `{_}` is legal in a match pattern and **refused in a `grammar`
 declaration** — an anonymous capture has no field to record and nothing

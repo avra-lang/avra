@@ -193,4 +193,25 @@ spec "features/formats" {
             refused_with("grammar Bad = \"a{b\"\n1", "opens a hole that is never closed")
         }
     }
+
+    given "the parse door a grammar declares" {
+        then "a grammar's name parses text into its own record" {
+            shown("grammar L = \"{m} {p}\"\nmatch L.parse(\"GET /x\") {\n    r? -> \"\${r.m}|\${r.p}\"\n    null -> \"no\"\n}") == "GET|/x"
+        }
+        then "text the format does not read answers absence" {
+            shown("grammar L = \"{m} {p}\"\nmatch L.parse(\"nope\") {\n    r? -> \"yes\"\n    null -> \"no\"\n}") == "no"
+        }
+        then "the flagship reads its four holes through the door" {
+            shown("grammar R = \"{method} {path} HTTP/{major}.{minor}\"\nmatch R.parse(\"GET /x HTTP/1.1\") {\n    r? -> \"\${r.method} \${r.path} \${r.major}.\${r.minor}\"\n    null -> \"no\"\n}") == "GET /x 1.1"
+        }
+        then "the name still constructs its record, as any type name does" {
+            shown("grammar L = \"{a}-{b}\"\nlet g = L { a: \"1\", b: \"2\" }\ng.a + g.b") == "12"
+        }
+        then "a door the grammar does not declare falls through to construction" {
+            refused_with("grammar G = \"{a}-{b}\"\nG.print(\"x\")", "`G` is a record, not an enum")
+        }
+        then "a type name that is no grammar is unchanged" {
+            refused_with("type Port = { n: int }\nPort.parse(\"80\")", "`Port` is a record, not an enum")
+        }
+    }
 }
