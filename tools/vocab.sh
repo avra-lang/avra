@@ -5,34 +5,48 @@
 # breaks all of them at compile time and cannot ship half-implemented.
 #
 # The same law covers every REGISTRY enum, not only `Ins`: a registry
-# a table below does not NAME is unguarded, so naming it is how the
-# law reaches it. And `is .Variant` is refused beside `_ ->`, because
-# over a registry the two say the same thing — this variant, and
-# silence for the ones that do not exist yet.
+# this table does not NAME is unguarded, so naming it is how the law
+# reaches it. And `is .Variant` is refused beside `_ ->`, because over
+# a registry the two say the same thing — this variant, and silence
+# for the ones that do not exist yet.
 #
-# This script is that guarantee's keeper AND the consumer registry:
-# the list below is the authoritative answer to "what does a new
-# instruction owe?", and the gate fails if any of these dispatches
-# grows a `_ ->` catch-all, which would let the next variant slip
-# through unimplemented.
+# ONE TABLE, THREE REGISTRIES. It was two loops with two messages
+# saying the same thing in different words; the third registry is what
+# named the concept. A row is: the enum, the file, the dispatch fn,
+# and what it decides.
+#
+# WHAT IS NOT HERE IS A DECISION, NOT AN OVERSIGHT. Only a REGISTRY
+# belongs — two or more arms answering. A PROJECTION (one arm answers,
+# the catch-all honest for variants that do not exist yet) is right to
+# use `is`, and naming it here would demand ceremony: `needs` in
+# expr_spine/check.av asks whether a shape is the ERROR ABSORBER, and
+# a new type is never the absorber.
 set -e
 cd "$(dirname "$0")/.."
 
-# file <TAB> dispatch fn <TAB> what it decides
-CONSUMERS="packages/std-avrac/src/core/ir.av	dst_of	the register it defines
-packages/std-avrac/src/language/interp.av	step	its MEANING, interpreted
-packages/std-avrac/src/language/memory.av	memory_ins	its ownership effect
-packages/std-avrac/src/language/ir_text.av	body_lines	its human projection
-packages/std-avrac/src/language/llvm.av	emit_ins	its machine projection
-packages/std-avrac/src/features/facts.av	give	whether the runtime registry validates it
-packages/std-avrac/src/core/ir.av	body_symbol	the program body it names
-packages/std-avrac/src/core/ir.av	hosted_symbol	the hosted fn it calls"
+# enum <TAB> file <TAB> dispatch fn <TAB> what it decides
+CONSUMERS="Ins	packages/std-avrac/src/core/ir.av	dst_of	the register it defines
+Ins	packages/std-avrac/src/language/interp.av	step	its MEANING, interpreted
+Ins	packages/std-avrac/src/language/memory.av	memory_ins	its ownership effect
+Ins	packages/std-avrac/src/language/ir_text.av	body_lines	its human projection
+Ins	packages/std-avrac/src/language/llvm.av	emit_ins	its machine projection
+Ins	packages/std-avrac/src/features/facts.av	give	whether the runtime registry validates it
+Ins	packages/std-avrac/src/core/ir.av	body_symbol	the program body it names
+Ins	packages/std-avrac/src/core/ir.av	hosted_symbol	the hosted fn it calls
+RtKind	packages/std-avrac/src/language/llvm.av	ll_rt_kind	the LLVM type it becomes
+RtKind	packages/std-avrac/src/language/llvm.av	rt_arg	how an argument crosses the boundary
+RtKind	packages/std-avrac/src/language/llvm.av	answers_word	how an answer crosses back
+RtKind	packages/std-avrac/src/language/llvm.av	answered	the SIGN a narrow answer widens with
+RtKind	packages/std-avrac/src/language/llvm.av	narrow_sign	the SIGN an inout cell normalises with
+Type	packages/std-avrac/src/features/checks.av	comparable	which shapes equality may compare
+Type	packages/std-avrac/src/features/str_lit/check.av	printable	which shapes an interpolation hole may show"
 
 # A here-doc, not a pipe: the loop runs in THIS shell, so `exit 1`
 # ends the script rather than a subshell the gate never sees.
-while IFS='	' read -r file fn what; do
+while IFS='	' read -r enum file fn what; do
+  [ -n "$file" ] || continue
   if [ ! -f "$file" ]; then
-    echo "vocab: $file is gone — the consumer registry is stale"
+    echo "vocab: $file is gone — the $enum consumer registry is stale"
     exit 1
   fi
   hit=$(awk -v fn="$fn" '
@@ -44,7 +58,7 @@ while IFS='	' read -r file fn what; do
     echo "vocab: ${file}:${fn} decides ${what} and does not answer exhaustively:"
     echo "$hit" | sed 's/^/    /'
     echo "  A catch-all — or an \`is .Variant\` test, which is a catch-all in"
-    echo "  different clothes — lets the NEXT instruction ship unimplemented."
+    echo "  different clothes — lets the NEXT $enum variant ship unhandled."
     echo "  Spell the arms; or-runs keep it affordable."
     exit 1
   fi
@@ -52,40 +66,7 @@ done <<EOF
 $CONSUMERS
 EOF
 
-# THE SECOND REGISTRY. `RtKind` is the extern seam's width vocabulary,
-# and it has consumers exactly as `Ins` does — but it stayed three
-# variants for so long that nothing guarded them, and two of its
-# consumers had become `is .I64` BOOLEAN tests rather than matches. An
-# `is` test is a partial handler the compiler cannot see: grow the
-# enum and it silently answers "no" for every new kind, which at these
-# two sites means an argument crosses the boundary UNCONVERTED. So a
-# catch-all is refused here AND so is `is .` — both are ways of not
-# answering for a variant that does not exist yet.
-KIND_CONSUMERS="packages/std-avrac/src/language/llvm.av	ll_rt_kind	the LLVM type it becomes
-packages/std-avrac/src/language/llvm.av	rt_arg	how an argument crosses the boundary
-packages/std-avrac/src/language/llvm.av	answers_word	how an answer crosses back
-packages/std-avrac/src/language/llvm.av	answered	the SIGN a narrow answer widens with
-packages/std-avrac/src/language/llvm.av	narrow_sign	the SIGN an inout cell normalises with"
-
-while IFS='	' read -r file fn what; do
-  if [ ! -f "$file" ]; then
-    echo "vocab: $file is gone — the RtKind consumer registry is stale"
-    exit 1
-  fi
-  hit=$(awk -v fn="$fn" '
-    $0 ~ "^ *(export )?fn " fn "\\(" { inside = 1 }
-    inside && (/_ ->/ || / is \./) { print FNR ": " $0 }
-    inside && /^ *}$/ && inside { inside = 0 }
-  ' "$file")
-  if [ -n "$hit" ]; then
-    echo "vocab: ${file}:${fn} decides ${what} and does not answer exhaustively:"
-    echo "$hit" | sed 's/^/    /'
-    echo "  A catch-all or an \`is .Variant\` test here lets the NEXT RtKind"
-    echo "  cross the extern boundary unconverted. Spell the arms."
-    exit 1
-  fi
-done <<EOF
-$KIND_CONSUMERS
-EOF
-
-echo "vocab: Ins has $(echo "$CONSUMERS" | wc -l | tr -d ' ') exhaustive consumers and RtKind $(echo "$KIND_CONSUMERS" | wc -l | tr -d ' '); a new variant breaks them all"
+for e in Ins RtKind Type; do
+  printf 'vocab: %s has %s exhaustive consumers\n' "$e" "$(echo "$CONSUMERS" | grep -c "^$e	")"
+done
+echo "vocab: a new variant of any of them breaks every consumer named"

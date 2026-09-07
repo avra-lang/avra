@@ -103,6 +103,15 @@ fn binary_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Re
     let a = cx.reg_of(l)
     let b = cx.reg_of(r)
     let sh: Type = cx.shape_at(l)
+    // THE BACKEND PICKS THE INSTRUCTION FROM THE OPERAND TYPE, so the
+    // shapes below are the ones needing a DIFFERENT lowering, not a
+    // different opcode — float needed no arm here for exactly that
+    // reason. By arm count this is a registry and `make vocab` does
+    // NOT name it, deliberately: converting it means refactoring the
+    // dispatch, which is a slice and not a line.
+    // THE HAZARD, so it is not rediscovered: a future value category
+    // that needs its own lowering SHAPE (as `Str` does for `+`) falls
+    // to the eager `Bin` in silence. Add its arm here when it lands.
     if (op == BinOp.Eq || op == BinOp.Ne) && (sh is .Opt || cx.shape_at(r) is .Opt) {
         return negated_when(cx, e, op == BinOp.Ne, nullable_eq_reg(cx, e, l, r))
     }
