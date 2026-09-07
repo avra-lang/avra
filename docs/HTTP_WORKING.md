@@ -312,7 +312,7 @@ at any speed. WHERE THE PATTERNS WIN is the ROUTE, already framed, its
 captures values a handler wants — which is where the typed-routes paper
 put them before any of this existed. S7 is the router.
 
-## Sub-lane: strings — S7 (the router) on lane/strings, closing
+## Sub-lane: strings — S7 (the router) LANDED (ab23a41)
 
 `grammar Idea = "/ideas/{id}"`, a handler `fn(Request, Idea) -> Response`,
 `routed<Idea>(...)` the ONE place a record type is erased, `dispatch`
@@ -340,7 +340,36 @@ matches inside valid UTF-8 is itself valid. THE SWEEP, GENERATED
 costs nearly what framing a head costs (2410 on `frame_head`), and at
 three hundred ten times; the trie has its number at the point that
 matters and the point that proves it. The 8-route slope predicted ~24 µs
-and the measurement said 23.8: right this time, knowable only after. Two laws from the lane's own tests: a hole is ONE
+and the measurement said 23.8: right this time, knowable only after.
+THE TABLE (b9c313e): a full-depth trie keyed on each literal segment's
+hash — NOT a first-segment index, which would have won the flat bench
+and lost on `/api/v1/...`-shaped tables — measured on THREE shapes at
+300 routes: flat 23,427 → 346 ns, deep (shared `/api/v1`) 23,361 → 437,
+wild (a hole first) 36,492 → 423; flat across shapes where the scan is
+not, and it wins at three routes too (324 against 460), so there is no
+crossover and no threshold branch. The descent is one octet pass with
+the hash folded and spent per segment, zero allocation; `separates` is
+the one definition of a segment for the descent and the pattern's cut.
+Two measurements changed the design: fusing the descent into one pass
+(352 against 425), and the guess that went the other way — reading a
+node's two lists through the table to dodge retains measured SLOWER
+than passing the node by value (337 against 317). THE RED TEAM FOUND
+THREE: a hole-free route was UNSPELLABLE (a grammar refuses to bind
+nothing, so `/health` and `/` could not be declared — `fixed` is the
+door; the new-consumer law on the lane's own feature); the conflict law
+asked about SHAPE and missed `/ideas/new` dying under `/ideas/{id}` —
+it is SUBSUMPTION now, the same-shape case its symmetric instance, and
+sound the day typed holes land because `open_hole` asks the type; and
+the new law cried wolf over a static path holding braces — `Route.literal`
+says which kind of string a pattern is. 87 case-pairs over 9 routes
+agree with a linear scan on both engines; 60,000 dispatches over a
+`once fn` table peak at 0 MB. Recorded, not fixed: a grammar cannot
+state its own pattern text, so `routed` takes it twice and a
+disagreement is a silently dead route (ROADMAP ask); `covers`
+under-reports a mixed segment, the safe direction. A capture holds RAW
+OCTETS — nothing is percent-decoded, `%2F` is not a separator — tested.
+S8: the tail capture, then the query as keyed fields. BOTH SUB-LANE
+CHARTERS ARE COMPLETE; the lead's own work resumes. Two laws from the lane's own tests: a hole is ONE
 segment (`/ideas/{id}` had bound `7/extra`), and segments are counted
 by separators, never `split`. An ask recorded: a grammar's door as a
 VALUE (`Idea.parse` unapplied is F2003; every route wraps it). Owed:
