@@ -8,6 +8,11 @@
 #   build/avra_runtime.o  OURS — runtime/avra_runtime.c, the native
 #                         half of the LANGUAGE's semantics; the only
 #                         runtime avra-built programs link.
+#   build/<stem>.o        A PACKAGE'S — its C under src/c/, or a
+#                         vendored unit under vendor/, named by its
+#                         manifest's [link].
+# ONE RULE builds all of them, the two above included: every object in
+# this tree comes from `build/%.o: %.c` and from nowhere else.
 
 LLVM_PREFIX ?= /opt/homebrew/opt/llvm
 # a manifest's link flags name it as ${LLVM_PREFIX}
@@ -15,15 +20,70 @@ export LLVM_PREFIX
 
 RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 
+# EVERY OBJECT THIS TREE COMPILES, ONE RULE. The language's own C
+# (runtime/, and the compiler's LLVM binding in backend/) and a
+# package's C — its own under src/c/, a vendored translation unit
+# under vendor/ — all compile to build/<stem>.o, and a package's
+# manifest names that object in its [link]: A MANIFEST SAYS WHAT TO
+# LINK, NEVER HOW TO BUILD IT, and this rule is the how
+# (docs/2026_09_07_PACKAGE_C_STANDARD.md). The sources are GLOBBED,
+# never listed — a hand-written list forgets its next member, and
+# build/sqlite3.o had no rule at all for a day — so a new package's C
+# is built without a line here. ONE HOW FOR EVERY OBJECT is the point:
+# a hand-written rule beside the pattern SHADOWS it (make prefers the
+# explicit one), so a package source named avra_runtime.c was compiled
+# by nobody while its manifest linked the runtime. Our own C is held
+# to -Wall -Werror; a vendored unit takes its author's flags
+# (CFLAGS_<stem>) and no warning of ours.
+TREE_C := $(wildcard packages/*/src/c/*.c packages/*/vendor/*.c backend/*.c runtime/*.c)
+vpath %.c $(sort $(dir $(TREE_C)))
+
+# A STEM NAMES ITS OBJECT, so a stem is UNIQUE TREE-WIDE. One flat
+# build/ holds every object and vpath answers the FIRST directory
+# carrying a name, so two packages with a src/c/util.c compile ONE of
+# them and the other's manifest links an object built from someone
+# else's source. The law is named HERE because the link cannot name
+# it: it fails on a symbol that does exist in the tree, in a file
+# nothing ever compiled. Make expands a rule's prerequisites as it
+# READS them, so a clash refuses every target, `clean` included —
+# nothing but renaming a file fixes it anyway. tools/stems.sh drives
+# these three lines with synthetic sources; there is no second copy.
+TREE_STEMS = $(basename $(notdir $(TREE_C)))
+TREE_CLASH = $(strip $(foreach s,$(sort $(TREE_STEMS)),\
+               $(if $(word 2,$(filter $(s),$(TREE_STEMS))),$(s))))
+TREE_STEM_LAW = $(if $(TREE_CLASH),$(error A STEM NAMES ITS OBJECT, \
+  so a stem is unique tree-wide — rename one of: \
+  $(foreach s,$(TREE_CLASH),$(filter %/$(s).c,$(TREE_C)))))
+TREE_OBJS = $(TREE_STEM_LAW)$(patsubst %.c,build/%.o,$(notdir $(TREE_C)))
+CFLAGS_llvm_wrapper := -I$(LLVM_PREFIX)/include
+CFLAGS_sqlite3 = $(SQLITE_FLAGS)
+
+# A HEADER IS A SOURCE. cc writes each object's dependency list beside
+# it and the next make reads it back, so editing a .h rebuilds what
+# includes it — without this a package that grows a header links a
+# stale object and the defect is attributed to the compiler. The
+# include is silent on a cold tree, where no .d exists yet.
+build/%.o: %.c
+	@mkdir -p build
+	cc -c -O2 -MMD -MP $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
+
+-include $(TREE_OBJS:.o=.d)
+
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite
 
-.PHONY: census traps test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
+.PHONY: census traps test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab stems sweep seed bootstrap \
         check run ir emit build-native native-check avra
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
+# A BARE `make` BUILDS THE COMPILER. Without this the default goal is
+# whatever target comes first, and that is `seed` — so `make` with no
+# argument, and any `make -p` reading a variable, REWRITES a committed
+# 9.6 MB artifact as a side effect and says nothing.
+.DEFAULT_GOAL := avra
+
 # THE SEED: the compiler, emitted, so the chain cannot be lost.
 # `make bootstrap` builds a compiler from it and then rebuilds from
 # source; `make seed` refreshes it. bootstrap/README.md holds the rule.
@@ -55,14 +115,10 @@ avra: $(RUNTIME_OBJS)
 sweep:
 	@rm -rf packages/*/build build/test_shards
 
-test: $(RUNTIME_OBJS) build/sqlite3.o build/std_net.o
+test: $(RUNTIME_OBJS) $(TREE_OBJS)
 	@for p in $(SUITES); do \
 	  ./avra test $$p || exit 1; \
 	done
-
-build/avra_runtime.o: runtime/avra_runtime.c
-	@mkdir -p build
-	cc -O2 -Wall -Werror -c runtime/avra_runtime.c -o build/avra_runtime.o
 
 # The runtime's trap contract: the words and the verdict (exit 2).
 # No corpus program can hold it — the corpus runs every program in
@@ -78,9 +134,11 @@ traps: $(RUNTIME_OBJS)
 census:
 	@sh tools/census.sh $(CMD)
 
-build/llvm_wrapper.o: backend/llvm_wrapper.c
-	@mkdir -p build
-	cc -c -O2 -I$(LLVM_PREFIX)/include -o build/llvm_wrapper.o backend/llvm_wrapper.c
+# THE STEM LAW's keeper — the Makefile's own TREE_STEM_LAW driven
+# with synthetic sources, both the clashes it must refuse and the
+# distinct sets it must accept.
+stems:
+	@sh tools/stems.sh
 
 clean:
 	rm -rf build scratch packages/cli/src/main_stamped.av
@@ -119,7 +177,7 @@ build-native: $(RUNTIME_OBJS)
 # then SAYS "native == expected" rather than claiming a differential it
 # never ran. The label travels with the artifact: a reader of the gate's
 # output learns the program is single-engine without opening a document.
-corpus: $(RUNTIME_OBJS) build/sqlite3.o build/std_net.o
+corpus: $(RUNTIME_OBJS) $(TREE_OBJS)
 	@./avra corpus corpus
 	@./avra corpus --native-only corpus/native
 	@for d in corpus/*/; do \
@@ -166,15 +224,14 @@ externs:
 # a difference names the BOUNDARY rather than the object, which a
 # single reader cannot do. It lives outside runtime/ because `make
 # externs` refuses a narrow body WE own, and rightly: the defect under
-# test is C someone else compiled. When a package can build its own
-# native sources (ROADMAP: B7) this rule dies and the manifest's
-# `sources` does the work.
-# THE VENDORED SQLITE, one translation unit. `@std/sqlite`'s manifest
-# names this object in its `[link]`, so the package cannot be checked,
-# tested or linked without it — and it had no rule at all: the recipe
-# lived in `vendor/FLAGS.md` as prose, main carried no object, and the
-# package's whole suite sat outside `make gate` because nothing could
-# build what it links.
+# test is C someone else compiled. Its object is a package's, built by
+# the one rule above.
+# THE VENDORED SQLITE's FLAGS. `@std/sqlite`'s manifest names
+# build/sqlite3.o in its `[link]`, so the package cannot be checked,
+# tested or linked without it; the package rule builds it, under these
+# words — once the recipe lived in `vendor/FLAGS.md` as prose, main
+# carried no object, and the package's whole suite sat outside `make
+# gate` because nothing could build what it links.
 #
 # THE FLAG SET LIVES HERE, and the suite is what keeps it honest:
 # `sqlite_test.av`'s `promised()` asks the LIBRARY for every flag below
@@ -199,18 +256,6 @@ SQLITE_FLAGS := \
   -DSQLITE_DEFAULT_CACHE_SIZE=-8000 -DSQLITE_DEFAULT_WORKER_THREADS=0 \
   -DNDEBUG=1
 
-build/sqlite3.o: packages/std-sqlite/vendor/sqlite3.c
-	@mkdir -p build
-	cc -c -O2 $(SQLITE_FLAGS) -o $@ $<
-
-build/std_net.o: packages/std-net/src/c/std_net.c
-	@mkdir -p build
-	cc -c -O2 -Wall -Werror -o $@ $<
-
-build/width_witness.o: packages/width-witness/src/witness.c
-	@mkdir -p build
-	cc -c -O2 -o build/width_witness.o packages/width-witness/src/witness.c
-
 witness: $(RUNTIME_OBJS) build/width_witness.o
 	@./avra build packages/width-witness > /tmp/avra-witness.path 2>&1 \
 	  || { echo "witness: build FAILED"; cat /tmp/avra-witness.path; exit 1; }
@@ -227,7 +272,7 @@ witness: $(RUNTIME_OBJS) build/width_witness.o
 # scaffolded into std-avrac before, removed after, however the suites
 # end — so the templates' own test is one case of that suite, not a
 # second compile of the whole compiler for one case.
-gate: vocab externs idioms tested traps corpus witness
+gate: stems vocab externs idioms tested traps corpus witness
 
 tested: $(RUNTIME_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
