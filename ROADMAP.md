@@ -2455,6 +2455,23 @@ the order is the dependency.
         being true the day C callbacks land.
         Proved in `corpus/native/externs.av`, a file that already
         existed for the host seam: `null some some`.
+  - [x] THE CLASS CHECKED, after the arm fix: every other flattened
+        fingerprint in core/nodes.av is unambiguous, and the reasons
+        are worth recording so nobody re-derives them.
+        A FLATTEN IS AMBIGUOUS ONLY WHEN TWO OR MORE VARIABLE-LENGTH
+        RUNS MEET WITH NO BOUNDARY BETWEEN THEM. The survivors are
+        safe by one of two structures: FIXED ARITY PER GROUP
+        (`case_fps` 3 per case, `param_fps` 2 per param — the group
+        size implies the boundary), or PAIRED LISTS OF EQUAL LENGTH
+        (`When`'s conds and values, which `build_when` refuses to
+        build unequal, so 2n+1 determines n).
+        `variant_fps` is the one that is ambiguous only by a HASH
+        COINCIDENCE rather than by construction — a variant name's
+        `fp_str` sitting where a param's would — which is the
+        birthday risk every hash carries and not this defect. The arm
+        case was different in kind: two different structures mapped
+        to the SAME SEQUENCE with no coincidence needed, because a
+        pattern's hash and an expression's hash are the same space.
   - [ ] A NUL AT THE C BOUNDARY DOES NOT LOSE DATA, IT REDIRECTS
         THE OPERATION — and that is a bigger claim than CLAUDE.md's
         NUL law makes. Found 2026-09-07 by the HTTP campaign's
