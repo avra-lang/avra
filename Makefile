@@ -66,7 +66,10 @@ build/avra_runtime.o: runtime/avra_runtime.c
 
 # The runtime's trap contract: the words and the verdict (exit 2).
 # No corpus program can hold it — the corpus runs every program in
-# one process, and a trap ends it.
+# one process, and a trap ends it. AFTER `tested`, because a row may
+# depend on a package: a broken package should fail its OWN suite
+# first, not this keeper, which would name the harness for someone
+# else's defect.
 traps: $(RUNTIME_OBJS)
 	@sh tools/traps.sh
 
@@ -220,7 +223,7 @@ witness: $(RUNTIME_OBJS) build/width_witness.o
 # scaffolded into std-avrac before, removed after, however the suites
 # end — so the templates' own test is one case of that suite, not a
 # second compile of the whole compiler for one case.
-gate: vocab externs idioms traps tested corpus witness
+gate: vocab externs idioms tested traps corpus witness
 
 tested: $(RUNTIME_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
