@@ -50,17 +50,28 @@ export fn push_slot(mut cx: LowerCx, box: Reg, v: Reg) {
     cx.emit(Ins.CallRtVoid("avra_array_push", [box, v]))
 }
 
-/// Equality of two values of one type as a bool register — the
-/// runtime's `avra_streq` for text, the Eq operator otherwise.
+/// Equality of two values of one type as a bool register — an enum
+/// by its tag, a managed value by its equality word, a scalar by
+/// the Eq operator.
 export fn same_value(mut cx: LowerCx, a: Reg, b: Reg, ty: TypeId) -> Reg {
-    if cx.view.types.shape_of(ty) is .Enum { return same_tag(cx, a, b) }
+    let sh = cx.view.types.shape_of(ty)
+    if sh is .Enum { return same_tag(cx, a, b) }
     let dst = cx.mint_shape(Type.Bool)
-    if cx.view.types.shape_of(ty) is .Str {
-        cx.emit(Ins.CallRt(dst, "avra_streq", [a, b]))
-    } else {
-        cx.emit(Ins.Bin(dst, BinOp.Eq, a, b))
-    }
+    let word: string? = equality_word(sh)
+    cx.emit(if word == null { Ins.Bin(dst, BinOp.Eq, a, b) } else { Ins.CallRt(dst, word!, [a, b]) })
     dst
+}
+
+/// The runtime word that compares two values of a shape by VALUE, or
+/// null where the operator itself is the comparison.
+export fn equality_word(sh: Type) -> string? {
+    match sh {
+        .Str -> "avra_streq",
+        .Bytes -> "avra_bytes_eq",
+        .Int or .Float or .Bool or .Ptr or .List(_) or .Map(_, _) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or .Null or
+        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or
+        .EmptyList or .EmptyMap or .Error or .Void -> null,
+    }
 }
 
 /// Two enum values of one type compare by TAG — what a unit enum's
@@ -428,6 +439,7 @@ export fn void_close(mut cx: LowerCx) {
 export fn length_word(sh: Type) -> string? {
     match sh {
         .Str -> "avra_str_len",
+        .Bytes -> "avra_bytes_len",
         .List(_) -> "avra_array_len",
         .Map(_, _) -> "avra_map_len",
         .Ptr or .Int or .Float or .Bool or .Opt(_) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or

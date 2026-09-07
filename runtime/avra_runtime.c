@@ -44,9 +44,10 @@
 // ── The box header ──────────────────────────────────────────────
 
 // A box's KIND decides how it reclaims and clones: 0 a plain
-// allocation, 1 an array, 2 a map. Below zero it is not counted:
-// STATIC is immortal, DEAD is the guard's mark on a reclaimed box.
-enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MAP = 2, KIND_STR = 3 };
+// allocation, 1 an array, 2 a map, 3 text, 4 octets. Below zero it
+// is not counted: STATIC is immortal, DEAD is the guard's mark on a
+// reclaimed box.
+enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MAP = 2, KIND_STR = 3, KIND_BYTES = 4 };
 
 // "AVRA" — the bytes that say a header is this runtime's.
 #define AVRA_TAG 0x41565241u
@@ -96,12 +97,13 @@ static int64_t g_free_len[CLASSES];
 // records, strings, list boxes and their buffers, map boxes and their
 // indexes — with each one's high-water mark, printed at exit. What a
 // 2.4 GB compiler run is MADE OF, category by category.
-enum { ACC_RECORD, ACC_STR, ACC_LIST, ACC_BUF, ACC_MAP, ACC_INDEX, ACC_KINDS };
+enum { ACC_RECORD, ACC_STR, ACC_BYTES, ACC_LIST, ACC_BUF, ACC_MAP, ACC_INDEX, ACC_KINDS };
 // KEYED, never positional: a category inserted mid-enum would take its
 // neighbour's name under a positional initialiser, and the report is
 // read by whoever is asking where the memory went.
 static const char* g_acc_name[ACC_KINDS] = {
     [ACC_RECORD] = "records",    [ACC_STR]   = "strings",
+    [ACC_BYTES] = "bytes",
     [ACC_LIST]   = "list boxes", [ACC_BUF]   = "list buffers",
     [ACC_MAP]    = "map boxes",  [ACC_INDEX] = "map indexes",
 };
@@ -318,6 +320,7 @@ static int acc_kind_of(int32_t kind) {
         case KIND_ARRAY:  return ACC_LIST;
         case KIND_MAP:    return ACC_MAP;
         case KIND_STR:    return ACC_STR;
+        case KIND_BYTES:  return ACC_BYTES;
         case KIND_STATIC: return ACC_STR;
         case KIND_PLAIN:  return ACC_RECORD;
         case KIND_DEAD:   return ACC_RECORD;
@@ -384,6 +387,7 @@ static size_t str_len(const char* s) {
 static size_t box_bytes(Header* h) {
     switch (h->kind) {
         case KIND_STR:
+        case KIND_BYTES:
         case KIND_STATIC: return (size_t)h->len + 1;
         default:          return (size_t)h->len;
     }
@@ -937,6 +941,15 @@ static void trap_bounds(int64_t i, int64_t len) {
     abort();
 }
 
+__attribute__((noinline, cold, noreturn))
+static void trap_slice(int64_t lo, int64_t hi, int64_t len) {
+    char msg[96];
+    snprintf(msg, sizeof msg, "slice %lld..%lld is out of bounds (length %lld)",
+             (long long)lo, (long long)hi, (long long)len);
+    avra_trap(msg);
+    abort();
+}
+
 // THE GUARDED READ, whole and out of line. The guard is a BRANCH on
 // the read's path, never a call — a call there would cost the read a
 // frame it does not otherwise need.
@@ -1365,6 +1378,246 @@ int64_t avra_float_lt(int64_t a, int64_t b) { return as_double(a) <  as_double(b
 int64_t avra_float_le(int64_t a, int64_t b) { return as_double(a) <= as_double(b); }
 int64_t avra_float_gt(int64_t a, int64_t b) { return as_double(a) >  as_double(b); }
 int64_t avra_float_ge(int64_t a, int64_t b) { return as_double(a) >= as_double(b); }
+
+// ── Bytes ─────────────────────────────────────────────────────────
+// Immutable octets in a box of their own kind. THE HEADER'S LENGTH IS
+// THE LENGTH: no fallback, no scan, no terminator anyone reads. The
+// box is minted at n+1 through `sized_box`, so every sized kind
+// shares one size-class rule and the empty value is a real box. The
+// spare byte holds a NUL: a Bytes lent to C as a string then reads
+// its own content and STOPS — a bounded truncation, never a walk
+// past the box, which on network data is a vulnerability and not a
+// bug. A length crosses the boundary beside the pointer.
+
+static size_t bytes_len(const char* b) { return (size_t)((const Header*)b - 1)->len; }
+
+static char* bytes_box(size_t n) {
+    if (n >= UINT32_MAX) avra_trap("a Bytes value is longer than its header can carry");
+    char* b = sized_box(n, KIND_BYTES);
+    b[n] = '\0';
+    return b;
+}
+
+// An owned copy of n foreign octets: how every byte enters.
+static const char* bytes_owned(const void* p, size_t n) {
+    char* b = bytes_box(n);
+    if (n) memcpy(b, p, n);
+    return b;
+}
+
+int64_t avra_bytes_len(const char* b) { return (int64_t)bytes_len(b); }
+
+// Equality is the reason the kind exists: lengths, then every byte.
+int64_t avra_bytes_eq(const char* a, const char* b) {
+    size_t n = bytes_len(a);
+    return n == bytes_len(b) && memcmp(a, b, n) == 0;
+}
+
+// One octet, 0..255. A bad index traps: -1 is not a byte.
+int64_t avra_bytes_at(const char* b, int64_t i) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(i < 0 || i >= n, 0)) trap_bounds(i, n);
+    return (unsigned char)b[i];
+}
+
+// The octets from lo up to hi, owned. Bounds are a precondition: a
+// slice traps and never clamps, because a short answer parses.
+const char* avra_bytes_slice(const char* b, int64_t lo, int64_t hi) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(lo < 0 || hi < lo || hi > n, 0)) trap_slice(lo, hi, n);
+    return bytes_owned(b + lo, (size_t)(hi - lo));
+}
+
+const char* avra_bytes_concat(const char* a, const char* b) {
+    size_t n = bytes_len(a), m = bytes_len(b);
+    char* out = bytes_box(n + m);
+    memcpy(out, a, n);
+    memcpy(out + n, b, m);
+    return out;
+}
+
+// Where `needle` first begins at or after `from`, or -1. `from` may
+// equal the length, and an empty needle is found there.
+int64_t avra_bytes_index_of(const char* b, const char* needle, int64_t from) {
+    int64_t n = (int64_t)bytes_len(b), m = (int64_t)bytes_len(needle);
+    if (__builtin_expect(from < 0 || from > n, 0)) trap_bounds(from, n);
+    if (m == 0) return from;
+    if (m > n - from) return -1;
+    const char* end = b + n - m + 1;
+    for (const char* p = b + from; (p = (const char*)memchr(p, needle[0], (size_t)(end - p))) != NULL; p++)
+        if (memcmp(p, needle, (size_t)m) == 0) return (int64_t)(p - b);
+    return -1;
+}
+
+// Text to octets: total.
+const char* avra_bytes_of_str(const char* s) { return bytes_owned(s, str_len(s)); }
+
+// Ints to octets: null when one of them is not a byte.
+const char* avra_bytes_of_list(void* arr) {
+    AvraArray* a = (AvraArray*)arr;
+    for (int64_t i = 0; i < a->len; i++)
+        if (a->data[i] < 0 || a->data[i] > 255) return NULL;
+    char* out = bytes_box((size_t)a->len);
+    for (int64_t i = 0; i < a->len; i++) out[i] = (char)a->data[i];
+    return out;
+}
+
+// Many values as one box: the lengths summed, one allocation, one copy
+// each — what a body assembled from chunks and a response assembled
+// from its parts both need, so neither is quadratic.
+const char* avra_bytes_gathered(void* arr) {
+    AvraArray* a = (AvraArray*)arr;
+    size_t total = 0;
+    for (int64_t i = 0; i < a->len; i++) total += bytes_len((const char*)(uintptr_t)a->data[i]);
+    char* out = bytes_box(total);
+    size_t at = 0;
+    for (int64_t i = 0; i < a->len; i++) {
+        const char* part = (const char*)(uintptr_t)a->data[i];
+        size_t n = bytes_len(part);
+        memcpy(out + at, part, n);
+        at += n;
+    }
+    return out;
+}
+
+// The offset of the first byte that is not UTF-8, or -1 when the
+// whole buffer is. THE LEAD BYTE'S RANGE DECIDES EVERYTHING: how many
+// continuations follow, and the range the FIRST must fall in, which
+// is where overlongs and surrogates are refused. Every later
+// continuation is 80..BF. U+0000 is text, one byte; its overlong
+// spelling C0 80 is refused at the lead. A truncated sequence is
+// reported at its lead, never at the buffer's end.
+static int64_t utf8_bad_at(const char* p, size_t n) {
+    const unsigned char* b = (const unsigned char*)p;
+    size_t i = 0;
+    while (i < n) {
+        unsigned char c = b[i];
+        size_t need;
+        unsigned char lo, hi;
+        if (c <= 0x7F)                   { i += 1; continue; }
+        else if (c >= 0xC2 && c <= 0xDF) { need = 1; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xE0)              { need = 2; lo = 0xA0; hi = 0xBF; }
+        else if (c >= 0xE1 && c <= 0xEC) { need = 2; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xED)              { need = 2; lo = 0x80; hi = 0x9F; }
+        else if (c >= 0xEE && c <= 0xEF) { need = 2; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xF0)              { need = 3; lo = 0x90; hi = 0xBF; }
+        else if (c >= 0xF1 && c <= 0xF3) { need = 3; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xF4)              { need = 3; lo = 0x80; hi = 0x8F; }
+        else                             { return (int64_t)i; }
+        if (i + need >= n) return (int64_t)i;
+        if (b[i + 1] < lo || b[i + 1] > hi) return (int64_t)i;
+        for (size_t k = 2; k <= need; k++)
+            if (b[i + k] < 0x80 || b[i + k] > 0xBF) return (int64_t)i;
+        i += need + 1;
+    }
+    return -1;
+}
+
+// Octets to text: null when they are not UTF-8, and the row below
+// says where. A NUL is text.
+const char* avra_str_of_bytes(const char* b) {
+    size_t n = bytes_len(b);
+    return utf8_bad_at(b, n) < 0 ? str_owned(b, n) : NULL;
+}
+
+int64_t avra_utf8_bad_at(const char* b) { return utf8_bad_at(b, bytes_len(b)); }
+
+__attribute__((noinline, cold, noreturn))
+static void trap_table(int64_t len) {
+    char msg[80];
+    snprintf(msg, sizeof msg, "a class table holds 256 bytes (length %lld)", (long long)len);
+    avra_trap(msg);
+    abort();
+}
+
+// The end of the run of bytes at or after `from` that `table` admits —
+// a 256-byte table whose non-zero entry says "in the class". The
+// caller asks where a token ENDS, never what each byte is: one scan
+// in C is what makes a byte-at-a-time parser fast.
+int64_t avra_bytes_run(const char* b, int64_t from, const char* table) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(from < 0 || from > n, 0)) trap_bounds(from, n);
+    if (__builtin_expect(bytes_len(table) != 256, 0)) trap_table((int64_t)bytes_len(table));
+    const unsigned char* t = (const unsigned char*)table;
+    const unsigned char* p = (const unsigned char*)b;
+    int64_t i = from;
+    while (i < n && t[p[i]]) i++;
+    return i;
+}
+
+// Whether the bytes from lo up to hi are exactly `needle`.
+int64_t avra_bytes_eq_at(const char* b, int64_t lo, int64_t hi, const char* needle) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(lo < 0 || hi < lo || hi > n, 0)) trap_slice(lo, hi, n);
+    return (size_t)(hi - lo) == bytes_len(needle) && memcmp(b + lo, needle, (size_t)(hi - lo)) == 0;
+}
+
+static unsigned char ascii_lower(unsigned char c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+
+// `eq_at` with ASCII letters folded — how a field name is compared.
+int64_t avra_bytes_ieq_at(const char* b, int64_t lo, int64_t hi, const char* needle) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(lo < 0 || hi < lo || hi > n, 0)) trap_slice(lo, hi, n);
+    if ((size_t)(hi - lo) != bytes_len(needle)) return 0;
+    for (int64_t i = 0; i < hi - lo; i++)
+        if (ascii_lower((unsigned char)b[lo + i]) != ascii_lower((unsigned char)needle[i])) return 0;
+    return 1;
+}
+
+// ── Descriptors ──────────────────────────────────────────────────
+// THE ONE DOOR THROUGH WHICH FOREIGN BYTES BECOME A VALUE. A package's
+// own C opens files and sockets and answers descriptors; what flows
+// through a descriptor becomes a Bytes here and nowhere else, because
+// only the runtime may mint a managed box. A read lands in a scratch
+// the next `taken` mints from — ONCE: the take spends the scratch, so
+// a take after nothing, after EOF, or a second take answers the EMPTY
+// box, never null. A write takes a box from an offset and answers
+// what the descriptor accepted; a short count is normal. Both answer
+// -EAGAIN when a nonblocking descriptor has nothing to give or take,
+// and a peer that has gone answers -EPIPE or -ECONNRESET to the
+// caller who armed against SIGPIPE.
+
+#include <unistd.h>
+#include <errno.h>
+
+enum { FD_SCRATCH = 1 << 20 };
+static char g_fd_buf[FD_SCRATCH];
+static int64_t g_fd_len = 0;
+
+// Up to `max` bytes (clamped to 1..1 MiB) into the scratch: the
+// count, 0 at EOF, -EAGAIN when nothing is ready, -errno otherwise.
+int64_t avra_fd_read(int64_t fd, int64_t max) {
+    size_t n = max < 1 ? 1 : max > FD_SCRATCH ? FD_SCRATCH : (size_t)max;
+    for (;;) {
+        ssize_t got = read((int)fd, g_fd_buf, n);
+        if (got >= 0) { g_fd_len = got; return got; }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return -EAGAIN;
+        if (errno != EINTR) return -errno;
+    }
+}
+
+// The last read's bytes as a fresh box, once.
+const char* avra_fd_taken(void) {
+    const char* b = bytes_owned(g_fd_buf, (size_t)g_fd_len);
+    g_fd_len = 0;
+    return b;
+}
+
+// The box's bytes from `from` written as far as the descriptor takes
+// them: the count, -EAGAIN when it takes none, -errno otherwise.
+// `from` past the box traps; `from` at its end writes nothing.
+int64_t avra_fd_write(int64_t fd, const char* bytes, int64_t from) {
+    int64_t n = (int64_t)bytes_len(bytes);
+    if (__builtin_expect(from < 0 || from > n, 0)) trap_bounds(from, n);
+    if (from == n) return 0;
+    for (;;) {
+        ssize_t put = write((int)fd, bytes + from, (size_t)(n - from));
+        if (put >= 0) return put;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return -EAGAIN;
+        if (errno != EINTR) return -errno;
+    }
+}
+
 
 // A list slot holding fresh text — the list owns the one reference.
 static void push_fresh_text(void* arr, const char* s, size_t n) {

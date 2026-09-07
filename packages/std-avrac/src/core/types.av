@@ -21,6 +21,9 @@ export enum Type {
     /// Text — the first MANAGED value: a headered box the runtime
     /// reclaims at count zero.
     Str
+    /// Octets — the second managed value: a box of its own kind whose
+    /// header length is the length, with no terminator anyone reads.
+    Bytes
     /// An opaque host pointer — what an extern fn passes and answers;
     /// nothing reads through it.
     Ptr
@@ -126,7 +129,7 @@ export fn new_type_registry() -> TypeRegistry {
 /// truth the machine projections ask.
 export fn ptr_shape(t: Type) -> bool {
     match t {
-        .Str or .Ptr or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
+        .Bytes or .Str or .Ptr or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
         .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or
         .Map(_, _) or .EmptyMap -> true,
         .Int or .Float or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
@@ -143,6 +146,7 @@ impl TypeRegistry {
             .Ptr -> "ptr",
             .Error -> "1",
             .Str -> "2",
+            .Bytes -> "19",
             .Bool -> "3",
             .List(elem) -> "4:${elem.index}",
             .Struct(decl, _) -> "5:${decl.index}",
@@ -287,7 +291,7 @@ impl TypeRegistry {
             .Fn(ps, muts, ret) ->
                 self.intern(Type.Fn([self.substituted(a, target, args) for a in ps], muts,
                                     self.substituted(ret, target, args))),
-            .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
             .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> ty,
         }
     }
@@ -299,6 +303,7 @@ impl TypeRegistry {
             .Float -> "float",
             .Ptr -> "ptr",
             .Str -> "string",
+            .Bytes -> "Bytes",
             .Bool -> "bool",
             .List(elem) -> "List<${self.name_of(elem)}>",
             .Struct(_, name) -> name,
@@ -328,7 +333,7 @@ impl TypeRegistry {
             .List(t) -> [t],
             .Map(k, v) -> [k, v],
             .Opt(t) -> [t],
-            .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
             .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> [],
         }
     }

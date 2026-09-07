@@ -5,6 +5,7 @@
 //! engines read one instruction stream by construction, never by
 //! two features happening to emit matching brackets.
 use core.{Reg, Ins, Type, TypeId, ExprId, BinOp}
+use features.{MethodCall}
 
 // ── Constants ───────────────────────────────────────────────────
 
@@ -177,4 +178,17 @@ export fn measure_of(mut cx: LowerCx, e: ExprId, r: Reg, ty: TypeId) -> Reg {
 
 fn unmeasurable(mut cx: LowerCx, e: ExprId) -> Reg {
     lower_defect(cx, e, "a length on an unmeasurable shape survived typing")
+}
+
+/// `x.is_empty()` — its length, by the shape's measure word, is zero.
+/// The subject lowers FIRST: `reg_of` may mint, and the answer is
+/// minted last (I29). A method lowering among the control verbs
+/// because it is the ONE method every measurable shape shares —
+/// text, lists, bytes — not a precedent for the rest.
+export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let len = measure_of(cx, mc.subject, cx.reg_of(mc.subject), cx.type_at(mc.subject))
+    let zero = const_int(cx, 0)
+    let dst = cx.result(mc.e)
+    cx.emit(Ins.Bin(dst, BinOp.Eq, len, zero))
+    dst
 }

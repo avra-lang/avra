@@ -57,6 +57,22 @@ xs[0]
 # where it is written (F2057); this is its twin — the count arrives at
 # run time, so one C body decides the edge and BOTH engines call it.
 # The words name the LAW, never the mechanism that would enforce it.
+trapped bytes_at "avra: index 3 is out of bounds (length 3)" 2 '' 'let b = [1, 2, 3].bytes()!
+b.at(3)
+'
+trapped bytes_slice "avra: slice 2..4 is out of bounds (length 3)" 2 '' 'let b = [1, 2, 3].bytes()!
+let s = b.slice(2, 4)
+s.length
+'
+trapped bytes_from "avra: index 4 is out of bounds (length 3)" 2 '' 'let b = [1, 2, 3].bytes()!
+b.index_of([2].bytes()!, 4)
+'
+trapped bytes_table "avra: a class table holds 256 bytes (length 3)" 2 '' 'let b = [1, 2, 3].bytes()!
+b.run(0, b)
+'
+trapped bytes_eq_at "avra: slice 1..4 is out of bounds (length 3)" 2 '' 'let b = [1, 2, 3].bytes()!
+b.eq_at(1, 4, b)
+'
 trapped shift_wide "avra: a shift count must be between 0 and 63" 2 '' 'let a = 1
 mut n = 0
 n = n + 64

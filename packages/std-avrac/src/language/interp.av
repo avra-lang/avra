@@ -23,6 +23,9 @@ enum Val {
     F(bits: int)
     B(v: bool)
     S(v: string)
+    /// Octets, held directly: immutable, so no identity and no handle.
+    /// The evaluator's representation, never the language's.
+    Y(v: List<int>)
     /// An aggregate — a handle into the machine's array table.
     A(id: int)
     /// A mut binding's cell — a handle into the cell table.
@@ -518,6 +521,7 @@ impl Machine {
             .B(t) -> if t { "true" } else { "false" },
             .S(s) -> s,
             .A(id) -> "[${joined([self.val_text(e) for e in self.arrays[id]], ", ")}]",
+            .Y(_) -> "<Bytes>",
             .C(_) -> "<cell>",
             .M(_) -> "<map>",
             .N -> "null",
@@ -590,6 +594,20 @@ impl Machine {
             .StrCharCode -> self.str_char_code_val(vals),
             .StrTrim -> Val.S(trimmed(self.text_val(vals[0]))),
             .StrConcat -> Val.S(self.text_val(vals[0]) + self.text_val(vals[1])),
+            .BytesLen -> Val.I(self.octets(vals[0]).length),
+            .BytesEq -> verdict(same_octets(self.octets(vals[0]), self.octets(vals[1]))),
+            .BytesAt -> self.bytes_at_val(vals),
+            .BytesSlice -> self.bytes_slice_val(vals),
+            .BytesConcat -> Val.Y(self.octets(vals[0]).concat(self.octets(vals[1]))),
+            .BytesIndexOf -> self.bytes_index_of_val(vals),
+            .BytesOfStr -> Val.Y(octets_of(self.text_val(vals[0]))),
+            .BytesOfList -> self.bytes_of_list_val(vals[0]),
+            .StrOfBytes -> text_of_octets(self.octets(vals[0])),
+            .Utf8BadAt -> Val.I(utf8_bad_at(self.octets(vals[0]))),
+            .BytesRun -> self.bytes_run_val(vals),
+            .BytesEqAt -> self.bytes_eq_at_val(vals, false),
+            .BytesIeqAt -> self.bytes_eq_at_val(vals, true),
+            .BytesGathered -> self.bytes_gathered_val(vals[0]),
             .ProcSpawn -> Val.I(avra_proc_spawn(self.text_val(vals[0]), self.texts_of(vals[1]), self.texts_of(vals[2]), self.text_val(vals[3]), self.whole(vals[4]), self.whole(vals[5]), self.whole(vals[6]))),
             .ProcRun -> Val.I(avra_proc_run(self.text_val(vals[0]), self.texts_of(vals[1]), self.texts_of(vals[2]), self.text_val(vals[3]), self.whole(vals[4]), self.text_val(vals[5]), self.whole(vals[6]), self.whole(vals[7]), self.whole(vals[8]))),
             .ProcPoll -> Val.I(avra_proc_poll(self.whole(vals[0]), self.whole(vals[1]))),
@@ -727,7 +745,7 @@ impl Machine {
                 self.maps.push(MapVal { keys: [k for k in self.maps[id].keys], vals: [x for x in self.maps[id].vals] })
                 Val.M(self.maps.length - 1)
             }
-            .I(_) or .B(_) or .S(_) or .C(_) or .N -> v,
+            .I(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N -> v,
         }
     }
 

@@ -453,12 +453,19 @@ export fn seated(mut cx: TypeCx, mc: MethodCall, name: string, wants: List<TypeI
 /// answers a question nobody asked.
 export fn comparable(sh: Type) -> bool {
     match sh {
-        .Int or .Float or .Bool or .Str -> true,
+        .Int or .Float or .Bool or .Str or .Bytes -> true,
         .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or
         .List(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or
         .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or
         .Var(_, _, _) or .Error -> false,
     }
+}
+
+/// A method row's seats, then its answer — the shape every
+/// runtime-backed method check takes.
+export fn worded(mut cx: TypeCx, mc: MethodCall, name: string, wants: List<Type>, answers: Type) -> TypeId {
+    if !seated(cx, mc, name, [cx.view.types.intern(w) for w in wants]) { return cx.error_type }
+    cx.view.types.intern(answers)
 }
 
 /// The by-value law over a TYPE: the scalars and text, and an enum

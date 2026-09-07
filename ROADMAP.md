@@ -3591,6 +3591,123 @@ lost message and a duplicated backlog entry.
   stopping it — write `cd X || exit 1` before it. Changing a shared
   layout is an ANNOUNCEMENT, not a cleanup.
 
+## THE HTTP CAMPAIGN (opened 2026-09-06) — `@std.http`, and the foundations it forces
+
+Lane `lane/http` (worktree `../avra-lane-http`), taken over 2026-09-06 by
+session avra-2a after the first session died mid-slice. The mandate: a
+client and a server, backbone-grade, tiny and idiomatic; build the
+missing foundations, never entrench a workaround. Papers:
+`docs/2026_09_06_STD_HTTP_DESIGN.md` (an endpoint is a contract),
+`docs/2026_09_06_STD_HTTP_TYPED_ROUTES.md` (one format, two directions),
+`docs/2026_09_06_HTTP_FRAMING_LAWS.md` (RFC 9110/9112 framing, the fast
+parsers' tricks, the event loop, the attack table). The working log is
+`docs/HTTP_WORKING.md`.
+
+THE SLICES, in dependency order: `Bytes` (built, gated, awaiting the
+OWNER's ruling on the capability — lane A: who touches a file is a lane's
+to say, whether Avra gains a value type is not) → the net substrate
+(runtime rows: listen/accept/connect, nonblocking read into an
+exact-size box, write from an offset, a readiness poller over
+kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
+`Bytes`, a route trie compiled once, an event loop, a blocking client).
+
+*** `Bytes` — WHAT WAS DECIDED, and by whom ***
+  - The shape is `docs/2026_09_05_BYTES_SHAPE.md` — the SQLITE campaign's
+    paper written FOR lane A, never lane A's — with three deviations
+    ruled correct by lane A on the merits, all three moving from a silent
+    wrong answer to a loud refusal:
+    1. `at` TRAPS past the end (through `trap_bounds`, as a list index
+       does), never answers -1: a byte is 0..255, so -1 is a legal-looking
+       value spent as a sentinel, and a framing parser would read it.
+    2. `slice` TRAPS on bad bounds (`trap_slice`, cold and noreturn beside
+       `trap_bounds`), never clamps. `substring` and a list's `slice`
+       clamp, and that precedent was nearly followed for consistency —
+       but a clamp is a display artefact for text and a SILENT WRONG
+       ANSWER THAT PARSES for a protocol. Consistency with a precedent
+       from a different domain is how a clamp gets into a parser.
+    3. NO VIEW KIND. The first draft carried `KIND_BYTE_VIEW` (a retained
+       `{owner, offset, length}`); dropped because a view's pointer is
+       not its data, which breaks "a Bytes crosses as Ptr" at every
+       extern seat — the property the whole wall rests on — and a tiny
+       view pins a large receive buffer. Slices COPY; the HTTP parser is
+       index-driven and slices only what escapes. Views return the day
+       the compiler can hand back an unboxed (ptr, len) — slot-layout
+       territory, a recorded trigger, not a workaround.
+  - THE SPARE BYTE IS A NUL, by lane A's overrule of a 0xFF poison byte.
+    The poison was argued from the two-hats law (make the reinterpretation
+    impossible); it bought an OUT-OF-BOUNDS READ instead — `strlen` walks
+    past the box into unrelated heap, undefined and attacker-influenced on
+    a server. A NUL makes an accidental C-string read a BOUNDED
+    TRUNCATION: wrong in one documented way, never undefined. Wrong is
+    fine; undefined is not.
+  - THE LAW THAT SORTED THE ROWS: A BOUND IS A PRECONDITION AND TRAPS; A
+    DOMAIN IS A QUESTION AND ANSWERS NULL. `at`, `slice` and `index_of`'s
+    `from` trap; `[ints].bytes()` past a byte and `b.text()` on
+    non-UTF-8 answer null, through the pointer niche, and mean absence
+    and nothing else.
+  - AN EMPTY BYTES IS PRESENT, BY CONSTRUCTION (lane C asked; it is the
+    one class eval == native cannot catch): every minting row goes
+    through `bytes_box(n)` = `sized_box(n, KIND_BYTES)`, so a zero-length
+    value is a real box, and no row returns NULL to mean "empty".
+    Pinned as `corpus/bytes_presence.av`, written as "every way to make
+    one" so the next constructor has a list to join.
+  - THE EVALUATOR HOLDS OCTETS DIRECTLY, `Val.Y(List<int>)`, permanently
+    (lane C): the vocabulary splits on IDENTITY, not on scalar-or-heap —
+    a string is held directly and an array by handle because mutation
+    must show through every holder. Bytes is immutable, so no identity,
+    so no handle, and the representation is the evaluator's business.
+  - `text()` ANSWERS A STRING FOR A NUL, because U+0000 is text and a
+    validator that refuses valid input to protect a downstream boundary
+    moves the defect rather than closing it. What that forces is H1's
+    other half, below.
+  - THE DEADLINE THAT DID NOT ARM, with its mechanism (lane A's register
+    entry at 44c36f1 predicted `Bytes` would be the box allocated at
+    exactly n that made `str_len`'s fallback live): the box is minted at
+    n+1 through `sized_box`, its length is read by its OWN accessor, and
+    no typed path hands a Bytes to `str_len`. The one door that does —
+    `extern fn avra_str_len(b: Bytes)`, which any file may declare — is
+    `corpus/bytes-header` (native-only), and it answers the header.
+  - THE KEEPER GAP THAT OPENS THE DAY THE TYPE LANDS (lane A's, theirs to
+    close in the same hour): `tools/externs.py`'s `seat_fits` ABSTAINS
+    on a declared type it has no reading for, so every `Bytes` extern
+    seat is unchecked and reported green until `DEMANDS` learns it.
+  - TWO COLLAPSES LAND ALONE, ahead of the ruling (lane C's request,
+    verified in their tree): `worded` (a row's seats, then its answer)
+    exported from `features/checks.av`, and `lower_is_empty` exported
+    from `features/emit.av` — lane C proved the short form EXPANDS to the
+    long one ("one is the other with a verb around it"), and checked the
+    one thing a collapse silently breaks, the I29 mint order.
+  - THE RED TEAM: 85 programs over eight classes; zero findings in the
+    type. Every accepted program agrees on both engines under
+    `AVRA_RC_GUARD=1` with zero live bytes at exit; every refusal refuses
+    once, in its own words. The survivors are `features/bytes/tests`
+    (two specs, ~100 cases), three rows in `tools/traps.sh`, and four
+    corpus programs.
+
+*** THE LANGUAGE ASKS, each with its wanting site ***
+  - [ ] AXIS 18 — GREEN THREADS. `spawn`, `Task<T, E>`, fibers parked on
+        kqueue/epoll, blocking-looking I/O rows that yield. WANTING SITE:
+        the `@std.http` SERVER. Its handler is `fn(Request) -> Response`,
+        synchronous, so the API is fiber-shaped from day one; until the
+        scheduler exists the server is an EVENT LOOP in Avra over the net
+        rows, and a handler that blocks (a sqlite call) blocks the loop.
+        Nobody owns Axis 18 (lane A, 2026-09-06); a runtime scheduler is
+        in no lane's plan. Recorded here as the first consumer's ask.
+  - [ ] TYPED STRING CAPTURES / NAMED FORMATS. `"/ideas/{id: int}"` as a
+        pattern binding `id` (F3000 today), and `route P = "…"` as a
+        value that parses AND prints (`docs/2026_09_06_STD_HTTP_TYPED_ROUTES.md`).
+        WANTING SITE: `@std.http`'s router. Unclaimed (lane C searched).
+        LANE C'S ADVICE, adopted: keep it OUT of the `match` pattern
+        ladder — that grammar already carries or-arms, `rest`, nested
+        variants, binds and literals, and CLAUDE.md's grammar laws are
+        its scar tissue; a format that lives elsewhere fails cheaper.
+        Routes compile at runtime into a trie until then.
+  - [ ] AN UNBOXED (ptr, len) VIEW, escape-analysed: the zero-copy
+        capture the typed-routes paper wants. WANTING SITE: the framer's
+        header values. Slot-layout territory (lane A). Until then, the
+        Request holds OFFSETS into its own buffer and materialises a
+        value when the user asks for it — which is the moment it escapes.
+
 ## The eras (the long path, each with its gate)
 
 - ERA I — THE VERTICAL (done): one thin language, source to native,
@@ -7925,6 +8042,22 @@ by meaning; each is a slice for lane D unless a lane is named.
   which means `from_codepoint(0)` refuses too. The @std/sqlite lane
   will meet this first, since a blob is the common case, and it can
   test the whole class with `from_codepoint(0)` and no fixture file.
+  THE SECOND WAY OUT IS TAKEN, AND IT FORCES THE FIRST (2026-09-06,
+  the HTTP lane): `Bytes` exists, `string` means text, and
+  `b.text()` answers a string for a NUL because U+0000 is text. So a
+  CORRECT conversion now mints the five-byte string that compares
+  equal to its two-byte prefix, from the honest direction, and the
+  five C-string primitives are BUGS ON `string`'S SIDE to fix, not a
+  reason for `text()` to lie. Calibrated by lane B from the bodies:
+  `==` is ONE memcmp (`str_len(a) == str_len(b) && memcmp`),
+  behaviour-preserving by construction for every NUL-free string,
+  guard for a foreign pointer kept; `contains`/`index_of` share one
+  length-aware search helper; `split`/`replace` are REWRITES that
+  decide the end by NUL today and must reproduce the PINNED edges —
+  a trailing empty dropped, a leading one kept, `"".split(".")` is
+  `[]`, the empty separator — none of which a rewrite may normalise.
+  Land `==` first: it is the one that misleads rather than
+  under-reports. Owner: unassigned; the runtime is lane A's.
 - ~~H0. THE FN TYPE DROPS `mut` — A SOUNDNESS HOLE~~ — CLOSED
   2026-09-05 by lane C, and re-verified by lane D against the probe
   that found it. A `mut`-taking fn stored in a NON-`mut` fn type used
