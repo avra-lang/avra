@@ -145,18 +145,19 @@ avra_host_env(s).length'
 #
 # The seat is `sqlite3_stricmp(const char*, const char*)`: two bare
 # pointers, no length, so C measures both with `strlen`. The face
-# refuses these bytes with a named cause of its own — a library
-# refuses before the language traps — and this is the floor beneath
-# that face.
+# above it (`equal_nocase`) refuses these bytes with a named cause of
+# its own — a library refuses before the language traps — so this
+# row calls the WALL, as a package that has not thought about it
+# would, and meets the floor beneath that face.
 trapped nul_at_a_package_wall "avra: a string holding a NUL crossed to C as two strings — byte 2" 2 '
 [dependencies]
 "@std/sqlite" = { path = "../../../packages/std-sqlite" }
 "@std/errors" = { path = "../../../packages/std-errors" }
 "@std/text"   = { path = "../../../packages/std-text" }
-' 'use @std.sqlite.{equal_nocase}
+' 'use @std.sqlite.c.{sqlite3_stricmp}
 use @std.text.{from_codepoint}
 let holed = "ab" + from_codepoint(0) + "cd"
-if equal_nocase(holed, "ab") { 1 } else { 0 }
+sqlite3_stricmp(holed, "ab")
 '
 
 # AND THE EXEMPTION IS NOT A HOLE: an INERT row reads the bytes it was
