@@ -149,30 +149,23 @@ fn reply_too_large() -> Result<bool, ClientError> {
     .Ok(outcome(spoken(w, "HTTP/1.1 200 OK\r\nx-pad: ${filler}\r\n\r\n", 5)) == "http.refused")
 }
 
-fn holds(r: Result<bool, ClientError>) -> bool {
-    match r {
-        .Ok(b) -> b,
-        .Err(_) -> false,
-    }
-}
-
 spec "std.http client adversarial" {
     given "a reply in pieces" {
-        then "a head torn at its terminator completes on the next bytes" { holds(torn_reply()) }
-        then "a body torn across reads is gathered" { holds(body_torn()) }
-        then "a chunked reply is decoded across reads" { holds(chunked_reply()) }
-        then "a reply with no length is whole at the close" { holds(read_to_close()) }
+        then "a head torn at its terminator completes on the next bytes" { passes(torn_reply()) }
+        then "a body torn across reads is gathered" { passes(body_torn()) }
+        then "a chunked reply is decoded across reads" { passes(chunked_reply()) }
+        then "a reply with no length is whole at the close" { passes(read_to_close()) }
     }
     given "a peer that misbehaves" {
-        then "a reply the framer refuses is an error naming the law" { holds(refused_reply()) }
-        then "a reply past the head bound is refused" { holds(reply_too_large()) }
-        then "a body cut short by the close is an error" { holds(cut_short()) }
-        then "a close before any reply is an error" { holds(closed_before_any_reply()) }
-        then "a close with the request unread is a reset, and the network's verdict" { holds(reset_by_peer()) }
-        then "a peer that never replies is a timeout" { holds(never_replies()) }
+        then "a reply the framer refuses is an error naming the law" { passes(refused_reply()) }
+        then "a reply past the head bound is refused" { passes(reply_too_large()) }
+        then "a body cut short by the close is an error" { passes(cut_short()) }
+        then "a close before any reply is an error" { passes(closed_before_any_reply()) }
+        then "a close with the request unread is a reset, and the network's verdict" { passes(reset_by_peer()) }
+        then "a peer that never replies is a timeout" { passes(never_replies()) }
     }
     given "the reply's rules" {
-        then "a 204 has no body and needs none" { holds(no_content()) }
-        then "two replies ride one connection" { holds(two_replies_one_connection()) }
+        then "a 204 has no body and needs none" { passes(no_content()) }
+        then "two replies ride one connection" { passes(two_replies_one_connection()) }
     }
 }
