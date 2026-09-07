@@ -468,20 +468,39 @@ carrying the position. Go's `syscall.ByteSliceFromString` answers
 `ERR_INVALID_ARG_VALUE`. PHP's long history of truncating instead is
 the counter-example each of them was written against.
 
-**THE EXEMPTION IS WRITTEN AT THE SITE, AND ITS POLARITY IS THE POINT.**
-A registry row whose C reads the bytes it was handed and resolves
-nothing outside the program — no path, no name, no command, no
-environment key — writes `inert: true` beside `owns_result` and
-`lends`. THE DEFAULT IS CHECKED: a row nobody has thought about is
-checked, not exempt, because an `exempt: false` default makes
-forgetting the field identical to deciding it and the forgetting is
-silent. A package's extern can NEVER be inert — its C is not ours to
-certify.
+**THE TRAP GOVERNS ONLY WHAT THE CALLEE RESOLVES**, and that boundary
+is the whole of it. A path, a name, a command word, an environment key
+— where a NUL makes TWO names and no correct answer exists. Everywhere
+else there IS a correct answer and the fix is to give it, not to
+refuse: a row that reads the header's length treats a NUL as DATA and
+carries it through untouched.
 
-`inert` says RESOLVES NOTHING. It is not a claim of NUL-safety: the
-five lossy primitives CLAUDE.md records (`==`, `contains`, `index_of`,
-`split`, `replace` stop at a NUL) are inert AND lossy, and that is a
-separate language question with its own record.
+That distinction cost this slice a correction. `avra_puts` and
+`avra_eputs` were first marked CHECKED because `fputs` truncates a
+line at a NUL — but writing bytes RESOLVES nothing, so trapping was
+the wrong tool. They read the header's length now
+(`fwrite(s, 1, str_len(s), …)`), a NUL-bearing line prints WHOLE on
+both engines where it was silently cut before, and only then is their
+row honestly `inert`.
+
+**THE EXEMPTION'S POLARITY IS THE POINT.** `inert: true` says THIS ROW
+READS THE HEADER'S LENGTH; A NUL IS DATA TO IT. THE DEFAULT IS
+CHECKED, because an `exempt: false` default makes forgetting the field
+identical to deciding it and the forgetting is silent. A package's
+extern can NEVER be inert — its C is not ours to certify, and the
+constructors that build an extern's row leave the field at its
+default, so that holds by construction rather than by discipline.
+Eighty rows are inert; TWO are not, `avra_host_env` and
+`avra_io_list`, and both resolve.
+
+**THE GUARD READS THE SAME BYTES THE CALLEE WILL.** It asks the HEADER
+directly and never `str_len`, whose fallback is `strlen` for a pointer
+that is not ours — and a scan bounded by `strlen` can never find an
+interior NUL. It would pass every foreign string VACUOUSLY while
+looking exactly like a check, which is this tree's guard-and-guarded
+law firing inside the guard itself. A foreign pointer has no interior
+NUL by definition, so the check is SKIPPED there, visibly, rather than
+performed on a length that makes it meaningless.
 
 **THE FACES REFUSE FIRST, AND THIS IS THE BELT.** `@std/io`'s
 `Holed(path, at)` and `@std/process`'s guard refuse with words a
@@ -493,16 +512,30 @@ caller who means octets, and the check never touches one: it fires for
 a TEXT register only, so a list or a map at a pointer seat is a box
 and not a name.
 
-**THE COST, MEASURED AND HONESTLY BOUNDED.** The inert rows pay
-nothing, which is why the framer benches are unchanged — their spreads
-overlap completely across the change, which confirms no regression
-rather than proving a number. Measured directly instead, 400,000
-crossings of a 128-byte name through a checked row: 142 ns per call
-with the check against 136 without, medians of three runs with a
-132-183 spread on a machine shared by eight sessions. The check is a
-`memchr` over the string's length, and it is below the noise floor of
-the `getenv` it guards. Every checked seat precedes a syscall or a
-spawn; that is why the line was drawn at resolution.
+**THE COST, AT THREE SCALES.** The inert rows pay nothing, which is
+why the framer benches are unchanged — and their spreads overlap
+completely across the change, which confirms no regression rather than
+proving a number.
+
+At a TYPICAL size, 400,000 crossings of a 128-byte name: 142 ns per
+call with the check against 136 without, medians of three runs with a
+132-183 spread on a machine shared by eight sessions. Below the noise
+floor of the `getenv` it guards.
+
+At the WORST case, 200 crossings of a 1.18 MB name: 82 ms with against
+76 ms without, and the runs are 82/82/82 against 76/77/78 — tight
+enough that the signal is real where the smaller one was not. That is
+25 µs added per megabyte-sized crossing, about 47 GB/s for the scan, a
+figure worth stating because it is the sanity check lane A insists on:
+a throughput above memory bandwidth means the loop was hoisted, and
+this one is cache-resident and plausible.
+
+A BENCHMARK THAT REPEATS ITS ARGUMENT MEASURES NOTHING. Lane A read
+`strstr` at 1.8 µs against `memmem` at 692.7 µs — a 385x regression
+that was 580 GB/s and physically impossible — because `strstr` is
+declared pure and the loop was hoisted to one call. The bench above
+cycles eight DISTINCT megabyte strings for that reason, and computes
+its implied throughput so the impossible answer cannot be believed.
 
 ## 3. THE SHAPE OF A PACKAGE'S C — the checklist
 
