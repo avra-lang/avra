@@ -1597,10 +1597,20 @@ static char g_fd_buf[FD_SCRATCH];
 static int64_t g_fd_len = 0;
 static int64_t g_fd_gen = 0;
 
+// A take presents a token, and three values are not one: 0 is EOF,
+// a negative is the errno the read answered, and a superseded token
+// names bytes another read has replaced. Each refused in its own
+// words, the reserved ones first, so the superseded message is always
+// true when it is spoken.
 __attribute__((noinline, cold, noreturn))
-static void trap_stale_take(int64_t token) {
+static void trap_take(int64_t token) {
     char msg[96];
-    snprintf(msg, sizeof msg, "a take of read %lld, but read %lld has landed since", (long long)token, (long long)g_fd_gen);
+    if (token == 0)
+        snprintf(msg, sizeof msg, "a take at EOF — `read` answered 0, which names no bytes");
+    else if (token < 0)
+        snprintf(msg, sizeof msg, "a take of an error — `read` answered %lld, not a token", (long long)token);
+    else
+        snprintf(msg, sizeof msg, "a take of read %lld, but read %lld has landed since", (long long)token, (long long)g_fd_gen);
     avra_trap(msg);
     abort();
 }
@@ -1635,10 +1645,10 @@ int64_t avra_errno_again(void) { return EAGAIN; }
 int64_t avra_errno_invalid(void) { return EINVAL; }
 
 // The bytes a token names, as a fresh box, once: a second take of the
-// same token answers the empty box, and a take of a superseded token
-// traps.
+// same token answers the empty box, and a take of anything that is
+// not the current token traps.
 const char* avra_fd_taken(int64_t token) {
-    if (__builtin_expect(token != g_fd_gen, 0)) trap_stale_take(token);
+    if (__builtin_expect(token <= 0 || token != g_fd_gen, 0)) trap_take(token);
     const char* b = bytes_owned(g_fd_buf, (size_t)g_fd_len);
     g_fd_len = 0;
     return b;

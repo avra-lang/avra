@@ -73,6 +73,12 @@ b.run(0, b)
 trapped bytes_eq_at "avra: slice 1..4 is out of bounds (length 3)" 2 '' 'let b = [1, 2, 3].bytes()!
 b.eq_at(1, 4, b)
 '
+trapped take_at_eof "avra: a take at EOF — \`read\` answered 0, which names no bytes" 2 '' 'extern fn avra_fd_taken(token: int) -> Bytes
+avra_fd_taken(0).length
+'
+trapped take_of_error "avra: a take of an error — \`read\` answered -35, not a token" 2 '' 'extern fn avra_fd_taken(token: int) -> Bytes
+avra_fd_taken(-35).length
+'
 trapped stale_take "avra: a take of read 1, but read 2 has landed since" 2 '
 [dependencies]
 "@std/net"  = { path = "../../../packages/std-net" }
