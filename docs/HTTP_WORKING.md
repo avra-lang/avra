@@ -149,6 +149,26 @@ O(1) slot comes FIRST and the lowering hoist after; a `ConstBytes` waits
 for `Bytes` on main. NEXT: S4, the `grammar` value that parses, probed to
 need no new door.
 
+## Sub-lane: substrate — S3b (in progress): the cold path, the offset
+
+MERGED at c8af70b (lane/substrate 3f8da0a): `make bootstrap` from the
+REFRESHED SEED green here (685 MB), two builds, 11 io symbols, full gate.
+THE FINDING THE GATE COULD NOT SEE: deleting seven runtime symbols left
+the committed seed referencing them, so the cold path was broken while
+`make avra` gated clean twice — it never touches the seed. Three of the
+seven are restored by naming the package's object; four exist nowhere by
+design, so only a seed refresh restores `make bootstrap`, and it rides
+the removing commit so every commit bootstraps. RECEIPT LAW, to CLAUDE.md
+via lane D: a slice that removes a runtime symbol is proved by `make
+bootstrap` green. LANDED: `NotText(path, at)` ("is not UTF-8 — byte 5"),
+the FIFO sentence, the twins check (one C body reached through two
+identical declarations — nothing could drift). A FINDING against lane
+B's fold-it-in: a character straddling a chunk seam makes per-landing
+validation unsound; one walk over the assembled bytes, a RESUMABLE
+validator recorded as the ask. OPEN: the byte twins, the real refuse
+case, the gather, the env condition at the site, lane A's per-target
+object split, the marshalling probes and the NUL-path refusal.
+
 ## Sub-lane: substrate — S3 (io) LANDED, with two findings open
 
 MERGED into lane/http at 7a9f227 (lane/substrate 0cf47f2), built twice, 11
