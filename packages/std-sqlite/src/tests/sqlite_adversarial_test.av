@@ -63,6 +63,19 @@ fn complete_kind(sql: string) -> string {
 /// place it is asserted.
 fn wall_completes(sql: string) -> bool { sqlite3_complete(sql) == 1 }
 
+
+/// The answer of a verb that now refuses NUL-bearing text, for cases
+/// whose arguments HOLD NO NUL — the refusal is unreachable here and a
+/// `.Err` would be a defect in the case, not a result.
+fn held(r: Result<bool, SqlError>) -> bool {
+    match r { .Ok(v) -> v, .Err(_) -> false }
+}
+
+/// The refusal's kind, for cases that assert the guard fires.
+fn guard_kind(r: Result<bool, SqlError>) -> string {
+    match r { .Ok(v) -> "ok:${v}", .Err(e) -> e.cause.kind() }
+}
+
 spec "std/sqlite adversarial" {
     given "a C answer that can be NULL" {
         // sqlite3_compileoption_get(N) answers NULL past the last
@@ -83,11 +96,11 @@ spec "std/sqlite adversarial" {
     given "empty text at every door — the empty case written first" {
         then "empty SQL is not a complete statement" { !adv_complete_says("") }
         then "empty text is not a keyword" { !is_keyword("") }
-        then "an empty option name is not carried" { !compiled_with("") }
-        then "LIKE of empty against empty matches" { like("", "") }
-        then "LIKE of empty against text does not" { !like("", "a") }
-        then "GLOB of empty against empty matches" { glob("", "") }
-        then "NOCASE holds two empties equal" { equal_nocase("", "") }
+        then "an empty option name is not carried" { !held(compiled_with("")) }
+        then "LIKE of empty against empty matches" { held(like("", "")) }
+        then "LIKE of empty against text does not" { !held(like("", "a")) }
+        then "GLOB of empty against empty matches" { held(glob("", "")) }
+        then "NOCASE holds two empties equal" { held(equal_nocase("", "")) }
     }
 
     given "a `const char*` seat that CARRIES a length" {
@@ -120,6 +133,8 @@ spec "std/sqlite adversarial" {
         // for a package that has not thought about it. Neither makes
         // the other redundant — and the trap firing inside a package
         // that has guards is a bug in the guards.
+        then "a name holding a NUL is refused, not read as the option it hides" { guard_kind(compiled_with("DQS=0${from_codepoint(0)}x")) == "sqlite.holds_nul" }
+        then "while the option it hides is real, so a truncation would have answered about it" { held(compiled_with("DQS=0")) }
         then "the face refuses those bytes rather than answering about a prefix" { complete_kind("select 1;${from_codepoint(0)} select") == "sqlite.holds_nul" }
         then "and answers ordinary text as before" { complete_kind("select 1;") == "ANSWERED" }
         then "though Avra still sees every byte of it" { "select 1;${from_codepoint(0)} select".length == 17 }
@@ -129,7 +144,7 @@ spec "std/sqlite adversarial" {
     given "codes and options nobody promised" {
         then "a negative result code still answers text" { describe(0 - 1) == "unknown error" }
         then "a huge result code still answers text" { describe(2147483647).length > 0 }
-        then "an option name that is a prefix of a real one is not carried" { !compiled_with("ENABLE_FTS") }
+        then "an option name that is a prefix of a real one is not carried" { !held(compiled_with("ENABLE_FTS")) }
         then "the keyword count is a real count, not a sentinel" { keyword_count() > 100 && keyword_count() < 1000 }
     }
 
@@ -150,7 +165,7 @@ spec "std/sqlite adversarial" {
         then "a positive comparison is positive" { sqlite3_stricmp("b", "a") > 0 }
         then "equal text compares equal" { sqlite3_stricmp("a", "a") == 0 }
         then "so ordering by the wall's own answer is right now" { sqlite3_stricmp("a", "b") < sqlite3_stricmp("b", "a") }
-        then "and the face's equality is unaffected either way" { equal_nocase("Ada", "aDA") && !equal_nocase("a", "b") }
+        then "and the face's equality is unaffected either way" { held(equal_nocase("Ada", "aDA")) && !held(equal_nocase("a", "b")) }
     }
 
     given "an IMMORTAL borrowed pointer, measured rather than cited" {
@@ -168,27 +183,27 @@ spec "std/sqlite adversarial" {
 
     given "the three verbs that stopped at a NUL — their trigger fired" {
         // `strlike`, `strglob` and `stricmp` are C string calls with no
-        // length, so both arguments ended at the first NUL and text
-        // compared equal to its own prefix. This group PINNED that lie
-        // and recorded its own TRIGGER for changing it: "a `Bytes`
-        // value, or a caller who meets it."
-        //
-        // THE TRIGGER FIRED. The seam checks every bare `const char*`
-        // seat against the header's length and traps the crossing, so
-        // the lie is no longer reachable to assert — a suite cannot
-        // hold a case that ends the process. The demonstrations moved
-        // to `tools/traps.sh`; what stays is the behaviour on text
-        // these verbs can answer about honestly.
-        then "all three are honest about text with no NUL in it" { equal_nocase("abcd", "abcd") && !equal_nocase("abcd", "ab") }
-        then "LIKE and GLOB agree on the same bytes" { like("ab", "ab") && glob("ab", "ab") }
-        then "and Avra still measures what C would not have seen" { "ab${from_codepoint(0)}cd".length == 5 }
+        // length, so C would end both arguments at the first NUL and
+        // answer about a PREFIX. THE TRIGGER RECORDED HERE HAS FIRED —
+        // it read "a `Bytes` value, or a caller who meets it", and a
+        // `Bytes` value is landing — so these three refuse now rather
+        // than truncating, and these cases assert the REFUSAL where
+        // they used to pin the lie. The C behaviour they documented is
+        // unchanged and still true; it is asserted at the wall, not
+        // through a face that now guards — and the seam traps the crossing
+        // beneath these guards, so a trap here is a bug in them.
+        then "text holding a NUL is refused, not held equal to its own prefix" { guard_kind(equal_nocase("ab${from_codepoint(0)}cd", "ab")) == "sqlite.holds_nul" }
+        then "though Avra sees five bytes against two" { "ab${from_codepoint(0)}cd".length == 5 }
+        then "LIKE refuses rather than matching only the bytes before a NUL" { guard_kind(like("ab", "ab${from_codepoint(0)}cd")) == "sqlite.holds_nul" }
+        then "GLOB does the same" { guard_kind(glob("ab", "ab${from_codepoint(0)}cd")) == "sqlite.holds_nul" }
+        then "and all three are honest about text with no NUL in it" { held(equal_nocase("abcd", "abcd")) && !held(equal_nocase("abcd", "ab")) }
     }
 
     given "patterns that make the operators work" {
-        then "LIKE takes _ as one character" { like("a_c", "abc") }
-        then "LIKE's _ is one, not many" { !like("a_c", "abbc") }
-        then "GLOB takes ? as one character" { glob("a?c", "abc") }
-        then "GLOB takes a character class" { glob("a[bc]d", "abd") }
-        then "a pattern of only wildcards matches empty" { like("%", "") }
+        then "LIKE takes _ as one character" { held(like("a_c", "abc")) }
+        then "LIKE's _ is one, not many" { !held(like("a_c", "abbc")) }
+        then "GLOB takes ? as one character" { held(glob("a?c", "abc")) }
+        then "GLOB takes a character class" { held(glob("a[bc]d", "abd")) }
+        then "a pattern of only wildcards matches empty" { held(like("%", "")) }
     }
 }

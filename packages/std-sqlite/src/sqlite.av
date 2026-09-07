@@ -59,7 +59,10 @@ export fn source_id() -> string { sqlite3_sourceid() }
 
 /// Whether this build carries an option, named without its
 /// `SQLITE_` prefix — `compiled_with("ENABLE_FTS5")`.
-export fn compiled_with(option: string) -> bool { sqlite3_compileoption_used(option) != 0 }
+export fn compiled_with(option: string) -> Result<bool, SqlError> {
+    let _ = nul_free(option, "compiled_with")?
+    sqlite3_compileoption_used(option) != 0
+}
 
 /// Every option this build reports, in the library's own order. The
 /// flags the BINARY holds, not the flags a build file claims.
@@ -112,25 +115,51 @@ export fn is_keyword(word: string) -> bool { sqlite3_keyword_check(word.bytes(),
 
 /// SQLite's own LIKE, with no escape character.
 ///
-/// NUL-TRUNCATING, KNOWINGLY. This and its two neighbours are C string
-/// calls with no length, so a NUL cuts both arguments short —
-/// `like("a", "a${from_codepoint(0)}b")` answers about one byte, and
-/// `@std/text`'s `from_codepoint` is what mints that NUL, since no
-/// literal can. Unlike `is_complete`
-/// they have no guarded twin to disagree with, so there is no doctrine
-/// split to close, and refusing would change three `bool` verbs into
-/// `Result`s for a case that needs a minted NUL to reach. The
-/// behaviour is PINNED in the adversarial suite instead, so it cannot
-/// drift unnoticed. TRIGGER for revisiting: a `Bytes` value, or a
-/// caller who meets it.
-export fn like(pattern: string, text: string) -> bool { sqlite3_strlike(pattern, text, 0) == 0 }
+/// THE TRIGGER FIRED. These three were `bool` and NUL-TRUNCATING
+/// KNOWINGLY, pinned in the adversarial suite rather than refused,
+/// with the note: "TRIGGER for revisiting: a `Bytes` value, or a
+/// caller who meets it." A `Bytes` value is landing, so they refuse
+/// now. They are C string calls with NO LENGTH, so a NUL cuts both
+/// arguments short and the answer is about a PREFIX — which is a
+/// silently wrong answer, not a trap, and the worst outcome this
+/// driver can produce.
+///
+/// A LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS: the extern seam now
+/// traps on an interior NUL at a `string` seat, and a trap inside a
+/// package that owns a cause for it is a bug in the guards. The cause
+/// existed (`is_complete` used it); these five did not reach for it.
+export fn like(pattern: string, text: string) -> Result<bool, SqlError> {
+    let _ = nul_free(pattern, "like")?
+    let _ = nul_free(text, "like")?
+    sqlite3_strlike(pattern, text, 0) == 0
+}
 
 /// SQLite's own GLOB.
-export fn glob(pattern: string, text: string) -> bool { sqlite3_strglob(pattern, text) == 0 }
+export fn glob(pattern: string, text: string) -> Result<bool, SqlError> {
+    let _ = nul_free(pattern, "glob")?
+    let _ = nul_free(text, "glob")?
+    sqlite3_strglob(pattern, text) == 0
+}
 
 /// SQLite's NOCASE comparison — ASCII case folding only, as the
 /// collation itself does.
-export fn equal_nocase(a: string, b: string) -> bool { sqlite3_stricmp(a, b) == 0 }
+export fn equal_nocase(a: string, b: string) -> Result<bool, SqlError> {
+    let _ = nul_free(a, "equal_nocase")?
+    let _ = nul_free(b, "equal_nocase")?
+    sqlite3_stricmp(a, b) == 0
+}
+
+/// The one refusal these five share: text bound for a `const char*`
+/// seat that carries NO length, where C stops at the first NUL and the
+/// answer would be about a prefix.
+fn nul_free(s: string, verb: string) -> Result<int, SqlError> {
+    if has_nul(s) { fail refused(Cause.HoldsNul, holds_nul_words(verb)) }
+    0
+}
+
+fn holds_nul_words(verb: string) -> string {
+    "`${verb}` hands this text to a C call that carries no length, so it stops at the first NUL — the answer would be about the bytes before it, not the text you passed"
+}
 
 /// Bytes the library holds. Zero under `DEFAULT_MEMSTATUS=0` unless
 /// a connection turned the counters on.

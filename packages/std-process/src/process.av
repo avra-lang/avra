@@ -275,6 +275,8 @@ export fn tool(name: string) -> Result<Tool, ProcessError> {
 /// variable's value is taken as written — a path or a name — and the
 /// fallback is looked up when it is unset or empty.
 export fn tool_from_env(var: string, default: string) -> Result<Tool, ProcessError> {
+    let holed_at = nul_at(var)
+    if holed_at >= 0 { fail ProcessError.Holed(var, holed_at) }
     let named = avra_host_env(var)
     tool(if named.length > 0 { named } else { default })
 }
@@ -394,7 +396,14 @@ impl Env {
     /// the pair set holds no such name. Under `.Inherit` an unset name
     /// answers the empty string, never `null`; that is the absence
     /// `is_set` reads.
+    /// The variable's value, or null. A name holding a NUL names
+    /// nothing and answers null from BOTH variants: `Only` compares
+    /// with `==`, which is `strcmp` and would match "AB" against
+    /// "AB\0CD", while `Inherit` hands the name to C, which reads it
+    /// short — one method must not read one name two ways because of
+    /// which variant it holds.
     fn get(name: string) -> string? {
+        if nul_at(name) >= 0 { return null }
         match self {
             .Only(pairs) -> pairs.find(it.name == name)?.value,
             .Inherit -> avra_host_env(name),

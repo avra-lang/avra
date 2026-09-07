@@ -28,7 +28,7 @@ fn promised() -> List<string> {
 
 /// Promised flags this build does not carry — empty, or the document
 /// and the object have drifted apart.
-fn unpromised() -> List<string> { [f for f in promised() if !compiled_with(f)] }
+fn unpromised() -> List<string> { [f for f in promised() if !held(compiled_with(f))] }
 
 /// The flags a full-surface driver must NOT have: each one amputates
 /// surface the campaign calls part of "complete".
@@ -40,7 +40,7 @@ fn forbidden() -> List<string> {
 }
 
 /// Forbidden flags this build carries.
-fn amputated() -> List<string> { [f for f in forbidden() if compiled_with(f)] }
+fn amputated() -> List<string> { [f for f in forbidden() if held(compiled_with(f))] }
 
 /// `sqlite3_free(NULL)` is a documented no-op. Answers true having
 /// called it, which is the whole point: the symbol resolved.
@@ -54,6 +54,8 @@ fn freed_null() -> bool {
 /// here and its own case asserts the refusal by name.
 fn complete_says(sql: string) -> bool { is_complete(sql) catch false }
 
+
+
 spec "std/sqlite" {
     given "the vendored library answering for itself" {
         then "the version is the pinned 3.53.4" { version() == "3.53.4" }
@@ -65,10 +67,10 @@ spec "std/sqlite" {
     given "the compile options, asked of the object rather than the build file" {
         then "every flag vendor/FLAGS.md promises is carried" { unpromised().length == 0 }
         then "no flag that amputates the surface is set" { amputated().length == 0 }
-        then "double-quoted strings are off at the source" { compiled_with("DQS=0") }
-        then "the expression-depth check stays on" { compiled_with("MAX_EXPR_DEPTH=1000") }
-        then "foreign keys are enforced without a pragma" { compiled_with("DEFAULT_FOREIGN_KEYS") }
-        then "an option this build lacks answers false" { !compiled_with("THREADSAFE=0") }
+        then "double-quoted strings are off at the source" { held(compiled_with("DQS=0")) }
+        then "the expression-depth check stays on" { held(compiled_with("MAX_EXPR_DEPTH=1000")) }
+        then "foreign keys are enforced without a pragma" { held(compiled_with("DEFAULT_FOREIGN_KEYS")) }
+        then "an option this build lacks answers false" { !held(compiled_with("THREADSAFE=0")) }
         then "the option list is as long as the promise" { compile_options().length >= promised().length }
         then "the list ends rather than running off the end" { compile_options().length < 200 }
     }
@@ -100,13 +102,13 @@ spec "std/sqlite" {
     }
 
     given "SQLite's own pattern operators" {
-        then "LIKE folds case, as SQL says" { like("ABC", "abc") }
-        then "LIKE takes % as any run" { like("a%d", "abcd") }
-        then "LIKE refuses what does not match" { !like("a%d", "abce") }
-        then "GLOB does not fold case" { !glob("ABC", "abc") }
-        then "GLOB takes * as any run" { glob("a*d", "abcd") }
-        then "NOCASE folds ASCII" { equal_nocase("Ada", "aDA") }
-        then "NOCASE keeps different text apart" { !equal_nocase("ada", "adb") }
+        then "LIKE folds case, as SQL says" { held(like("ABC", "abc")) }
+        then "LIKE takes % as any run" { held(like("a%d", "abcd")) }
+        then "LIKE refuses what does not match" { !held(like("a%d", "abce")) }
+        then "GLOB does not fold case" { !held(glob("ABC", "abc")) }
+        then "GLOB takes * as any run" { held(glob("a*d", "abcd")) }
+        then "NOCASE folds ASCII" { held(equal_nocase("Ada", "aDA")) }
+        then "NOCASE keeps different text apart" { !held(equal_nocase("ada", "adb")) }
     }
 
     given "the connection, statement, column and binding walls" {
