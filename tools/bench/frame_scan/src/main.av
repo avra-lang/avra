@@ -1,0 +1,45 @@
+//! THE BASELINE, measured before there is anything to compare it to.
+//! One head framed N times by the hand-written framer, reported as
+//! nanoseconds per call. A number measured after a change is a number
+//! nobody can check.
+use @std.http.frame.{framed, limits}
+use @std.time.{now_ns}
+
+/// The minimal HTTP/1.0 head: a request line and the blank line, no
+/// fields — so the figure is the request line's cost plus the framer's
+/// own bookkeeping, and nothing else.
+fn head() -> Bytes { "GET /index.html HTTP/1.0\r\n\r\n".bytes() }
+
+/// A head with the fields a real request carries, for the second row.
+fn full() -> Bytes {
+    "GET /index.html HTTP/1.1\r\nHost: example.com\r\nUser-Agent: avra/0.1\r\nAccept: */*\r\nConnection: keep-alive\r\n\r\n".bytes()
+}
+
+/// How many of `runs` framed completely — the count is read, so the
+/// loop is not work a backend may drop.
+fn completed(buf: Bytes, runs: int) -> int {
+    // the bounds are a server's, settled once — inside the loop the
+    // record's allocation would be counted as framing
+    let bounds = limits()
+    mut ok = 0
+    // LICENSED I3: a timed loop counts, it does not build a list
+    for i in 0..runs {
+        if framed(buf, 0, 0, bounds) is .Complete { ok = ok + 1 }
+    }
+    ok
+}
+
+/// Nanoseconds per call, framing `buf` `runs` times; -1 when a run
+/// did not frame, so a broken measurement cannot read as a fast one.
+fn per_call(buf: Bytes, runs: int) -> int {
+    let start = now_ns()
+    let ok = completed(buf, runs)
+    let spent = now_ns() - start
+    if ok != runs { return -1 }
+    spent / runs
+}
+
+let runs = 200000
+let minimal = per_call(head(), runs)
+let whole = per_call(full(), runs)
+"runs ${runs} | minimal HTTP/1.0 head, 0 fields: ${minimal} ns/call | full HTTP/1.1 head, 4 fields: ${whole} ns/call"

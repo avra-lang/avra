@@ -506,6 +506,56 @@ span is computed.
 
 ---
 
+### 4.1 The three bodies, and the one thing the seam must carry
+
+`PatSemantics` is three methods, and formats' three are written against
+this shape:
+
+```avra
+fn pat_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId>
+fn pat_accepts(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg
+fn pat_binds(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg>
+```
+
+`pat_types` is straightforward: the subject must be `string` or `Bytes`,
+and each capture answers its written type resolved, or `Str`.
+
+The lowering pair is not, and the reason is structural: **enums' pattern
+protocol is test-then-bind, and a format's test IS its bind.** The
+accept runs *outside* the arm's region (so an untaken arm reads nothing);
+the binds run *inside* it. Emitting the scan in both places runs it twice
+per arm and forfeits §5 outright.
+
+**THE RESOLUTION IS THE ORACLE'S OWN RULE, and it costs nothing.**
+`frame.av` keeps "names and values as (lo, hi) offsets, never a `slice`
+until the application asks" — §2.5 rule 4 of the framing laws. So:
+
+- `pat_accepts` emits the scan and records, per capture, either its
+  **(lo, hi) offset pair** (an untyped capture) or its **parsed value**
+  (a typed one). Every one of those is an `int`. **No managed value is
+  minted outside the arm's region**, so an untaken format arm allocates
+  nothing at all — it does its literal searches and stops.
+- `pat_binds`, inside the region, emits one `avra_str_substring` or
+  `avra_bytes_slice` per untyped capture from the offsets it was left,
+  and hands a typed capture's value straight through.
+
+**What the seam must carry for this to work** (the one ask on lane C's
+shape, §12.5): a per-pattern slot on the lowering context — say
+`cx.pinned_at(p, regs)` and `cx.pinned_of(p)` — holding the registers a
+pattern's *test* produced for its *binds* to read. That is pass STATE,
+not a feature's rule, so it belongs on the context by CLAUDE.md's own
+line. It is general rather than format-shaped: a list pattern
+(`[a, b, ...rest]`, which "The subset today" still wants) has exactly the
+same property — its length test and its element reads share one walk.
+
+If lane C would rather not add the slot, the alternative is to widen the
+lowering side to one method answering both the verdict and the binds.
+That is cleaner in isolation and it would change how **enums** emits its
+arms, which is the one thing this arc is trying not to do — so the slot
+is the recommendation.
+
+---
+
 ## 5. (f) The performance obligation, and how it is measured
 
 **The obligation.** The compiled scan for the HTTP request line runs
@@ -931,6 +981,12 @@ first.
 4. **A capture-type registry row** (`CaptureRow`) — this lane, in S2,
    with `int` as its only row. The second row is what proves the seam,
    and it is not in this arc (§1.5).
+5. **A per-pattern slot on the lowering context** — lane C, with the
+   seam. `cx.pinned_at(p, regs)` / `cx.pinned_of(p)`: the registers a
+   pattern's test produced, for its binds to read. WANTING SITE:
+   formats' `pat_accepts`/`pat_binds` pair, which would otherwise run
+   the scan twice per arm (§4.1). General, not format-shaped — a list
+   pattern needs the same thing.
 
 ---
 
