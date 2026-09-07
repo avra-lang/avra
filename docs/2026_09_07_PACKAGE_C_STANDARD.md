@@ -1428,11 +1428,23 @@ are right about their own base.
 **AND THREE FACES TRAP WHERE §2.7 SAYS THEY SHOULD REFUSE.** A trap
 inside a package that HAS guards is a bug in the guards, and each of
 these has guards:
-- `@std/io`: ten verbs answer `io.holed`; `env` and `env_or` trap. And
-  `env`'s own guard is `name.contains("=")`, a NUL-LOSSY call — so
-  `"A\0=B"` hides its `=` from the guard and is stopped only by the
-  crossing trap downstream. Right outcome, wrong reason: the
-  guard-and-guarded law firing inside @std/io.
+- `@std/io`: ten verbs answer `io.holed`; `env` and `env_or` trap.
+  ALL THREE ARE FIXED (lane B, 85abb9e), and MY READING OF THE THIRD
+  WAS WRONG. I wrote that `env`'s guard, `name.contains("=")`, was a
+  NUL-LOSSY call that let `"A\0=B"` hide its `=`. Lane B retracted
+  that the same night and they are right: f57372a had already made
+  every `@std/text` verb read the HEADER, so nothing on the Avra side
+  was ever blind. Re-probed here on this base, where all three of the
+  doctrine's old receipts now answer the other way — `"A\0=B"
+  .contains("=")` is TRUE, a five-byte text is UNEQUAL to its own
+  two-byte prefix, and `from_codepoint(0) + "x"` is unequal to `""`.
+  THE CAUSE WAS THAT NO CHECK STOOD BEFORE THE EXTERN SEAT, and
+  `getenv` truncates regardless of what any guard saw. The fixes
+  stand; the reason moved. THE CROSSING IS THE EXTERN SEAT AND ONLY
+  THAT, which is where this section's own check lives — and the
+  correction is worth more than the finding was, because a
+  guard-and-guarded diagnosis aimed at the LANGUAGE would have sent
+  someone to re-plumb five primitives that were already right.
 - `@std/process`: `tool` guards, `tool_from_env` traps on its `var`,
   and `Env.Only(…).get("AB\0CD")` answers `"v"` — the value of `AB` —
   while `Env.Inherit.get` on the SAME argument traps. One method, two
