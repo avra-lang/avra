@@ -221,10 +221,20 @@ a day, and the package's suite sat outside the gate because nothing
 could build what it links. Globbed, a new package's C is built without
 a line in the Makefile. Second, the rule is where the tree's C
 discipline lives in one place: our own C takes `-Wall -Werror`, a
-vendored unit takes its author's flags (`CFLAGS_<stem>`) and none of
-ours; a header is a source, so `-MMD -MP` and an `-include` of the
-`.d` files mean editing a `.h` rebuilds what includes it, which the
-hand-written rules never did.
+vendored unit takes its author's flags and none of ours; a header is a
+source, so `-MMD -MP` and an `-include` of the `.d` files mean editing
+a `.h` rebuilds what includes it, which the hand-written rules never
+did.
+
+**`CFLAGS_<stem>` IS NOT ONLY FOR VENDORED UNITS**, which is a
+correction the FIFTH consumer made — a package this lane did not
+write. `@std/sqlite`'s destructor sentinel is OUR C, held to our
+warnings, and it still needed `CFLAGS_sqlite_sentinel :=
+-Ipackages/std-sqlite/vendor` because it includes a header outside its
+own directory. So the claim above holds for the OBJECT and not for the
+FLAGS: a new package's C is built with no line, and one line is owed
+the moment it reaches past itself for a header. The paragraph read as
+"vendored units only" until a consumer needed otherwise.
 
 Third, and it is the one the red team found: **ONE HOW FOR EVERY
 OBJECT, because a hand-written rule beside the pattern SHADOWS it.**
