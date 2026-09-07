@@ -175,8 +175,19 @@ existing `Callee.Row(door)` when the DECLARATION has a format
 has a door of that name, else `Callee.Variant` byte for byte; lane C's
 four constraints verified by running (a grammar with no `print` door
 refuses as a construction; `Port.parse` on a record still names the
-record). Constraint 4 — the refusal naming the door it tried — lives in
-features/variants.av, the features root, and waits on lane C's word.
+record). MEASURED WITH A CONTROL: `Name.parse` 122–125 ns against
+121–125 for the pattern plus the same record built in the arm (the bare
+pattern 97–100, by hand 62–63), so the door adds nothing of its own — and
+the trigger as first written ("above the pattern") would have fired
+forever naming a cost the value shape pays identically; corrected to
+"above the pattern plus an equivalent record", where it does not fire.
+Route B is vindicated by measurement. REVIEWS: lane C approved the rule
+against all four constraints and rules that the lane writes constraint 4
+in this slice at features/variants.av:114, a grammar's own voice beside
+the record refusal, firing only where a grammar's door lookup failed;
+lane A approved the core shape with two findings for the close — a
+reserved code 63 with the format hash as PAYLOAD instead of a hash in the
+tag slot, and `type_fp`'s doc comment moved back below `grammar_fp`.
 Rule B, STATIC METHODS, is the owner's, recorded in the asks with both
 wanting sites. Two grammar-law findings paid on the way: a recovering
 statement branch on `grammar` ate the compiler's own `grammar { … }`
