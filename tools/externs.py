@@ -426,7 +426,11 @@ def variadic_self_test():
     """The readings above. A failure means the ellipsis model moved."""
     bad = [(c, want) for c, want in VARIADIC_CASES if is_variadic(c) != want]
     for cargs, want in bad:
-        print(f"externs: SELF-TEST — C `({cargs})` should read as "
+        # THE MESSAGE COLLAPSES THE WHITESPACE THE CASE KEEPS. One case
+        # spreads its list over lines to prove the newline does not
+        # matter; printed as written, its failure is the one place it
+        # looks like it does.
+        print(f"externs: SELF-TEST — C `({' '.join(cargs.split())})` should read as "
               f"{'variadic' if want else 'fixed'}")
     return len(bad)
 

@@ -119,11 +119,25 @@ type; five are not rows and all five are correct as they stand —
 `avra_float_text_bits`, DID mint through `str_owned` and leaked every
 float the evaluator rendered; it is a row now with its own
 `RtHost.FloatTextBits` — not `RtHost.Text`, whose seat is an `F64`.
-**A RELAYED COUNT OF SEVEN NAMED `sqlite3_errmsg` AS A SIXTH FOREIGN
-CASE; at this base it is not declared as an extern at all, only
-discussed in `@std/sqlite`'s comments.** Both counts are printed
-because neither is wrong about its own tree, and a fixture built from
-the other lane's number would have a member that does not exist.
+**TWO COUNTS, RECONCILED, AND THE RECONCILIATION IS THE USEFUL PART.**
+A relayed count of seven named `sqlite3_errmsg` as a sixth foreign
+case. It is not declared as an extern anywhere in this tree — the
+match was a MARKDOWN line, `packages/std-sqlite/src/c/CENSUS.md:213`,
+which spells `extern fn sqlite3_errmsg(db: ptr) -> string` as a
+PROPOSAL while the real declaration beside it answers `ptr`. The grep
+that found it was scoped to `packages/` without restricting to `.av`,
+so a document describing a declaration was counted as one. Restricted
+to `.av` that count is twelve at its own base and thirteen here, which
+is the same measurement one merge later. Both are printed because
+neither lane is wrong about its own tree, and a fixture built from the
+unrestricted number would have had a member that does not exist.
+
+IT IS THE SAME MISTAKE THIS LANE MADE IN THE OTHER DIRECTION, ONE
+SECTION DOWN: §4's debris list read two live names as dead because its
+grep was scoped to `packages/` and missed `corpus/`. One window was
+too wide by file type and one too narrow by directory, and both
+produced a confident count. A COUNT IS A CLAIM ABOUT A WINDOW —
+whoever quotes one owes the window with it.
 
 THE SECOND REASON, the one the first draft had. Every pointer Avra
 holds carries a sixteen-byte header before its payload (CLAUDE.md,
