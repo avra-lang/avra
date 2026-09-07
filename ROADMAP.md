@@ -3620,6 +3620,40 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  A LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS — the layering rule this
+  campaign owes the NUL crossing, earned when the language began trapping
+  on an interior NUL at a `string` extern seat. The driver already
+  refused at three of those seats with a NAMED CAUSE (`path_holds_a_nul`,
+  `script_holds_a_nul`, `Cause.HoldsNul` — *"reads only the bytes before
+  it, so the answer would be about a prefix"*), and the language's trap
+  is a WRECK. **For a caller who typed a bad path, a refusal they can
+  catch is strictly better than a trap they cannot**, and the DRIVER is
+  the layer that knows WHY the seat resolves. So: the seam is the FLOOR
+  for every package that has not thought about it; a package that HAS
+  thought converts the wreck into a diagnosis; **neither makes the other
+  redundant, and the trap firing inside a guarded package is a bug in the
+  GUARDS.**
+  AND THE EXCEPTION IS GREPPABLE RATHER THAN AN INTENTION, which is the
+  better form of the same rule. The crossing check's exception was first
+  written as *"a package that MEANS octets takes `Bytes`"* — an
+  intention, which every author will read in their own favour. The
+  mechanical test is **"a seat whose C PROTOTYPE CARRIES ITS OWN LENGTH"**:
+  the callee resolves nothing when it is told how many bytes to read, so
+  a NUL is data. Inside one package that splits 4 / 7 and the split is
+  not a judgement call —
+      LENGTH-CARRYING   bind_text, bind_blob, keyword_check, prepare_v3
+      RESOLVING         open_v2, complete, bind_parameter_index,
+                        db_readonly, db_filename, txn_state,
+                        compileoption_used
+  `sqlite3_complete` is the clean demonstration: **no length at all**, so
+  C measures it with `strlen` and a NUL genuinely makes the answer about
+  a prefix. A DESIGN RULE STATED AS AN INTENTION IS ARGUED AT EVERY SITE;
+  STATED AS A PROPERTY OF THE PROTOTYPE IT IS CHECKED ONCE.
+  AND THE MEASUREMENT BEHIND THE EXCEPTION IS THIS CAMPAIGN'S: a SQLite
+  TEXT value is a BYTE STRING WITH A TERMINATOR APPENDED, not a C string
+  — `bind_text("ab\0cd", 5)` reads back `column_bytes` 5 and `strlen` 2.
+  The exception is therefore what the LIBRARY DOES rather than a
+  concession to a test.
   A KEEPER THAT INTERROGATES THE ARTIFACT CAUGHT A BUILD REFACTOR THAT
   NOTHING ELSE DID (HTTP lane, `1be60fd`, reported to this campaign).
   Splitting the compiler's object list from the packages' — so `make
