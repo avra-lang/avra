@@ -86,13 +86,21 @@ export fn status_of(why: Refusal) -> int {
 /// A byte named by its character.
 fn byte(s: string) -> int { s.char_code(0) }
 
-fn admits(pred: fn(int) -> bool) -> Bytes { [if pred(i) { 1 } else { 0 } for i in 0..256].bytes()! }
+/// A 256-entry class table: one byte per octet, 1 where the
+/// predicate admits it. `run` walks a span in one call against one of
+/// these, so a scan asks where a class ENDS and never what each byte
+/// is.
+export fn admits(pred: fn(int) -> bool) -> Bytes { [if pred(i) { 1 } else { 0 } for i in 0..256].bytes()! }
 fn is_digit(c: int) -> bool { c >= byte("0") && c <= byte("9") }
 fn is_alpha(c: int) -> bool { (c >= byte("A") && c <= byte("Z")) || (c >= byte("a") && c <= byte("z")) }
 fn is_mark(c: int) -> bool { marks().index_of([c].bytes()!, 0) >= 0 }
 fn is_tchar(c: int) -> bool { is_digit(c) || is_alpha(c) || is_mark(c) }
 fn is_vchar(c: int) -> bool { c == byte("\t") || (c >= byte(" ") && c <= byte("~")) }
-fn is_target(c: int) -> bool { (c >= byte("!") && c <= byte("~")) || c >= 128 }
+/// What octet a request target may carry (RFC 9112 §3.2): visible
+/// ASCII, plus `obs-text`. The law lives here so a consumer that
+/// narrows it — the path, which is a target minus `?` — composes
+/// rather than copies.
+export fn is_target(c: int) -> bool { (c >= byte("!") && c <= byte("~")) || c >= 128 }
 
 once fn marks() -> Bytes { "!#$%&'*+-.^_`|~".bytes() }
 once fn tchar() -> Bytes { admits(is_tchar) }

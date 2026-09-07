@@ -1292,6 +1292,143 @@ table wants it.
 
 ---
 
+## 15. S8 — the router's two open doors
+
+### 15.1 The query, and the bug that was hiding behind it
+
+The module header claimed "a route matches the PATH" from the day it
+was written. The code matched the whole target, and S8's first probe
+found what that cost:
+
+    /ideas/7?q=x      bound  id = "7?q=x"
+    /ideas/7?a=b/c    404
+
+The second is the one that matters. **A `/` INSIDE A QUERY STRING WAS
+A PATH SEGMENT**, so `?redirect=/home` — an ordinary query — made the
+route it was aimed at disappear. Not a subtle failure: a whole class of
+request silently 404s, and nothing in the table looks wrong.
+
+`Request.path()` is the split, and THE ONLY ONE. It asks where the
+PATH CLASS ends rather than where a `?` is, and the difference is
+measurable: searching for the octet runs to the end of the BUFFER when
+the target has none, so a head with no query would be scanned whole on
+every request. Measured over the same target under two head sizes:
+
+| head | `path()` |
+| --- | --- |
+| 2 fields | 47 ns |
+| 62 fields (~3 KB) | 47 ns |
+
+Identical. A buffer-bounded split would have grown by roughly 200 ns
+across that head. This is the measurement that tells the two apart,
+and dispatch's own cost could not: a few hundred nanoseconds hide
+under it, which is why the split was timed alone.
+
+### 15.2 What the query reads, and what it refuses to guess
+
+`query.av` reads the pairs after the `?` as spans, in encounter order.
+Its laws, each pinned by a test:
+
+- **RAW OCTETS.** The splits are on the literal `&` and `=`, so
+  **`%26` is not `&`** and an escape cannot smuggle a separator past
+  the reader. `;` is not a separator either — a dead HTML
+  recommendation, and a parser differential wherever it is honoured.
+- **`+` IS NOT A SPACE.** That is a form encoding, and a query is not
+  always a form.
+- **DECODING HAPPENS IN THE HANDLER**, through `decoded`, on the one
+  value it asked for. A decode before the split changes what the split
+  means.
+- **A NAME IS COMPARED EXACTLY**, octet for octet and case for case. A
+  field name folds because RFC 9110 says so; a query name is opaque.
+- **ABSENT, BARE, EMPTY AND REPEATED ARE FOUR ANSWERS.** `Asked` keeps
+  them apart. A scalar ask over a repeated key answers `.Repeated`
+  rather than a side, because picking one silently is how one layer
+  reads `?id=1` and the next reads `?id=2` out of one request.
+- **A MALFORMED ESCAPE IS NOT A CHARACTER.** `%` at the end, or not
+  followed by two hex digits, answers absence — a reader that repairs
+  an escape and one that refuses it disagree about what was sent.
+
+| what | cost |
+| --- | --- |
+| `query()`, no pairs | 78 ns |
+| `query()`, 1 pair | 210 ns |
+| `query()`, 4 pairs | 655 ns |
+| `one(name)` over 4 pairs | 125 ns |
+| `decoded`, no escape | 25 ns |
+| `decoded`, one escape | 231 ns |
+
+**AND ONE LAW THE RED TEAM ADDED.** `%00` decodes to a REAL NUL, and a
+value carrying one has a `.length` that counts it while `==`,
+`contains`, `index_of` and `split` stop before it. That is the tree's
+own NUL law arriving through a URL, and `decoded` is the door. The
+ordering is what bounds it: the framer refuses every CTL in a target,
+so no NUL reaches the pair reader, and `decoded` runs AFTER the split —
+what it mints can never change where a pair began.
+
+### 15.3 The tail, and why it is declared by its door
+
+`tailed<R>(method, pattern, read, serve)` is a route whose last hole
+takes the remaining segments. `/static/{path}` given
+`/static/css/app.css` binds `css/app.css`.
+
+**THE SPELLING IS THE VERB, NOT A MARK IN THE PATTERN — and that is a
+departure from the brief, argued rather than assumed.** `/static/{path...}`
+was the suggested form. The grammar refuses it in its own voice today
+(F0102, "`{path...}` at 8 is no hole — a hole is `{name}` or `{name:
+Type}`"), so writing it in the ROUTE's pattern while the GRAMMAR says
+`/static/{path}` would make the two strings differ ON PURPOSE — and
+§14.3 records that a pattern disagreeing with its grammar is a route
+that is silently dead in both directions. A marker only the router
+understood would be the worst possible answer to the ask that finding
+raised.
+
+**THE P6 ANSWER EXISTS AND WAS NOT TAKEN, DELIBERATELY.** `...` could
+mean GREEDY in a general format — an interior hole finding its next
+piece at the LAST occurrence rather than the first — and then a tail
+capture is an INSTANCE of a general law rather than a router special
+case, and the pattern says it while the grammar agrees. That is the
+better design. It is also a change to the scan law and to §6.3's
+round-trip proof, which is a formats slice and not a router one. Filed
+as ask #8 rather than taken unilaterally.
+
+So a tail is declared by which door a route came through. There is
+nowhere to write it but last, and the only malformation left is a
+last segment that binds nothing — which `faults` names.
+
+**THE TRIE PAYS FOR IT AT BUILD TIME AND NOWHERE ELSE.** A rest-taker
+answers at every depth past its own, so it is CARRIED DOWN the trie
+during construction and merged into every deeper node's rows by
+declaration index. Where a target outruns the trie entirely, the walk
+lands on a node that answers the carried routes and steps to ITSELF.
+Nothing accumulates at dispatch: measured at 357–383 ns on the
+tail-free 300-route table, unchanged from S7's 346–379, with compile
+up from 1.35 ms to 1.47 ms.
+
+**AND THE LAW OVER A TABLE GREW WITH IT.** `conflicts` is `faults` now,
+because it names two different mistakes. A rest-taker covers every
+width past its own, so it needs only its prefix to cover and a last
+segment that answers anything; and NO ROUTE OF FIXED WIDTH CAN COVER
+ONE THAT TAKES THE REST, because there is always a deeper target it
+does not reach. A catch-all hoisted to the top of a six-route table is
+named five times.
+
+### 15.4 What the red team ran
+
+87 case-pairs on the S7 route set still agree with a linear scan;
+a second differential over 48 case-pairs with a root catch-all, a
+hole-prefixed tail, a suffix-anchored tail, a 42-segment target
+through the self-looping node and queries throughout finds ZERO
+disagreements, identical on both engines. 50 000 dispatches through
+the tail peak at 0 MB with the refcount guard silent.
+
+The attacks that found nothing are results too: a name that is a
+PREFIX of another is answered apart, 200 pairs and 50 duplicates of
+one name behave, an absolute-form target still yields its query, and
+`Bytes.index_of` reads the header's length so the pair reader is
+NUL-safe by construction rather than by luck.
+
+---
+
 ## 12. The asks still open, with their wanting sites
 
 1. **`avra_str_index_of_from(s, needle, from)`** — lane A. `string`'s
@@ -1336,6 +1473,14 @@ table wants it.
    hand-written one is four literal conversions at about four
    nanoseconds each (§5). Growing the IR is a vocabulary event with the
    eight-consumer protocol, so this is not a formats-lane change.
+8. **A GREEDY HOLE in a format** — `{name...}`, meaning the next
+   piece is found at its LAST occurrence rather than its first. It
+   would make the router's tail capture an instance of a general law
+   instead of a door of its own, and let a route's pattern say what it
+   does while still reading exactly as its grammar does (§15.3). It is
+   a change to the scan law and owes §6.3's round-trip proof a greedy
+   clause, so it is a formats slice, not a router one. WANTING SITE:
+   `packages/std-http/src/route.av`'s `tailed`.
 
 ---
 

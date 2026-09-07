@@ -5,12 +5,17 @@
 //! ```
 //! frame.av   the FRAMER: a head over `Bytes`, stateless, every
 //!            widening MAY refused, each refusal a named law
+//! query.av   the QUERY: what follows the target's `?`, as keyed
+//!            fields over raw octets, and the one decoder
 //! http.av    this file — the values a handler sees and answers
+//! route.av   the ROUTER: a route is a grammar over the PATH, and
+//!            one table compiled from the declared list
 //! ```
 //!
 //! The head's field spans index the buffer they were framed from, so
 //! a `Request` keeps that buffer and slices a value only when asked.
-use frame.{Head, Field, Span, Method}
+use frame.{Head, Field, Span, Method, admits, is_target}
+use query.{Query, query_of}
 
 /// What a handler receives: the raw buffer the head was framed from,
 /// the head, the body (owned, complete), and who sent it.
@@ -20,6 +25,40 @@ impl Request {
     fn method() -> Method { self.head.method }
     /// The request target, whole — path and query as sent.
     fn target() -> string { self.raw.slice(self.head.target.lo, self.head.target.hi).text() ?? "" }
+
+    /// THE PATH: the target up to its first `?`, which is what a
+    /// route matches. THE ONE PLACE THE TARGET IS SPLIT — a consumer
+    /// that forgets to split counts a `/` inside `?redirect=/home` as
+    /// a path segment, and the route it was looking for disappears.
+    fn path() -> Bytes { self.raw.slice(self.head.target.lo, self.split_at()) }
+
+    /// THE QUERY: what follows that `?`, as keyed fields. Built when
+    /// asked, so a handler that wants it binds it once.
+    fn query() -> Query { query_of(self.raw, self.query_from(), self.head.target.hi) }
+
+    /// Whether the target carried a `?` at all. `/x?` has an EMPTY
+    /// query and `/x` has NONE, and only this tells them apart.
+    fn queried() -> bool { self.split_at() < self.head.target.hi }
+
+    /// Where the path ends: the first `?` in the target, or its end.
+    ///
+    /// IT ASKS WHERE THE PATH CLASS ENDS, never where a `?` is. A
+    /// search for the octet runs to the end of the BUFFER when the
+    /// target has none, so a head with no query would be scanned
+    /// whole for every request; a class that admits a target octet
+    /// but not `?` stops at the query OR at the target's own end,
+    /// whichever comes first, in one call.
+    fn split_at() -> int {
+        let stop = self.raw.run(self.head.target.lo, path_char())
+        if stop > self.head.target.hi { return self.head.target.hi }
+        stop
+    }
+
+    fn query_from() -> int {
+        let at = self.split_at()
+        if at == self.head.target.hi { return at }
+        at + 1
+    }
     /// The first field of this name, ASCII-folded, or null when the
     /// request carries none. Field values are ASCII by framing, so
     /// the text is total.
@@ -44,6 +83,12 @@ fn nothing() -> Bytes { "".bytes() }
 /// How much a socket is asked for per read: h2o's figure times four,
 /// one read per wake-up.
 export fn read_size() -> int { 16384 }
+
+/// A target octet that is not `?` — composed from the framer's law
+/// rather than restated, so the two cannot drift apart.
+once fn path_char() -> Bytes { admits((c) -> is_target(c) && c != question_octet()) }
+
+fn question_octet() -> int { 63 }
 
 export fn text(status: int, body: string) -> Response {
     Response { status: status, headers: [Header { name: "content-type", value: "text/plain; charset=utf-8" }], body: body.bytes() }
