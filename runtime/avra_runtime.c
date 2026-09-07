@@ -888,9 +888,19 @@ typedef struct {
 static OnceSlot g_once[AVRA_ONCE_MAX];
 static int g_once_count = 0;
 
+// A POINTER PASS FIRST, AND THE STRCMP ONLY IF IT MISSES. A key is a
+// symbol constant, so after the first read the pointer matches — and
+// interleaving the two tests made the i-th `once` cost i strcmps on
+// EVERY read, which is a third of a parser that reads its constant
+// tables per token. The strcmp pass is for a key arriving as a
+// different constant, and it must not run before the pointer one.
+// The order is safe because `avra_once_set` refuses a duplicate, so
+// no two entries can share a string.
 static int once_at(const char* key) {
     for (int i = 0; i < g_once_count; i++) {
         if (g_once[i].key == (void*)key) return i;
+    }
+    for (int i = 0; i < g_once_count; i++) {
         if (strcmp((const char*)g_once[i].key, key) == 0) return i;
     }
     return -1;
