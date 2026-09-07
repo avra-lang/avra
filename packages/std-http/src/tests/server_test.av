@@ -3,9 +3,27 @@
 //! landed, and the client reads it. Every exchange is exact bytes.
 use @std.net.{Listener, Conn, Poller, Read, NetError, listen, connect, poller}
 use @std.time.{ms, secs}
-use @std.http.frame.{limits}
+use @std.http.frame.{limits, Method}
 use @std.http.http.{Request, Response, text}
+use @std.http.route.{Route, Table, routed, compiled, dispatch}
 use @std.http.server.{Server, Timing, served, timing}
+
+grammar Note = "/notes/{id}"
+
+fn serve_note(q: Request, n: Note) -> Response {
+    text(200, "note ${n.id} redirect:${q.query().has("redirect")}")
+}
+
+once fn notes_table() -> Table {
+    compiled([routed<Note>(Method.Get, "/notes/{id}", (t: Bytes) -> Note.parse(t), serve_note)])
+}
+
+/// A handler that is the router: the loop hands it the request, the
+/// table answers.
+fn routed_app(mut app: App, q: Request) -> Response {
+    app.hits = app.hits + 1
+    dispatch(notes_table(), q)
+}
 
 /// The application: a counter the handler bumps, so a test can see
 /// that state threads through the loop as a value.
@@ -151,6 +169,20 @@ fn old_client_is_closed() -> Result<bool, NetError> {
     .Ok((got.text() ?? "").contains("connection: close\r\n") && pr.s.connections() == 0)
 }
 
+/// The loop under the router: a target with a query holding a `/`
+/// still finds its route, and the query is read beside the path.
+fn routed_through_the_loop() -> Result<bool, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, App { hits: 0 }, routed_app, limits(), timing())?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let p = poller()?
+    p.watch(c.fd, .Read)?
+    mut pr = Pair { s: s, c: c, p: p }
+    let found = reply(pr, "GET /notes/7?redirect=/home HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let missing = reply(pr, "GET /nope HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(found.ends_with("note 7 redirect:true") && missing.starts_with("HTTP/1.1 404 Not Found"))
+}
+
 fn passes(r: Result<bool, NetError>) -> bool {
     match r {
         .Ok(b) -> b,
@@ -176,5 +208,8 @@ spec "std.http server" {
         then "a peer that ends first still gets its answer" { passes(peer_ends_first()) }
         then "an HTTP/1.0 peer asking to keep alive is told the connection persists" { passes(old_client_keeps_alive()) }
         then "an HTTP/1.0 peer not asking is told close, and closed" { passes(old_client_is_closed()) }
+    }
+    given "the router in the loop" {
+        then "a target with a slash inside its query still finds its route, and the query reads beside the path" { passes(routed_through_the_loop()) }
     }
 }
