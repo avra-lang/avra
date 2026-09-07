@@ -119,6 +119,29 @@ if [ "$looked" = 0 ]; then
     echo "stems: the compiler's objects were not on disk — that rule examined NOTHING"
 fi
 
+# A MAKEFILE VARIABLE IS ASSIGNED ONCE. Make takes the LAST assignment
+# and the earlier one is dead — but it does not LOOK dead, and a
+# reader who edits it is editing nothing. `COMPILER_OBJS` was defined
+# twice inside the very change that fixed the link-dependency class,
+# and the cost was a FALSE NEGATIVE IN A REVIEW: lane A edited the
+# dead copy to test this keeper's teeth, watched the keeper pass, and
+# was drafting "the compiler-list check does not work" before the
+# prerequisite order made them look again. A dead definition that
+# reads as authoritative turns a working keeper into a broken one in
+# the reviewer's notes.
+#
+# READ TEXTUALLY, and here that is right rather than a shortcut: the
+# rule is about the FILE's own shape, and make's database shows only
+# the surviving value — it cannot say a name was assigned twice.
+rows=$((rows + 1))
+twice=$(grep -E '^[A-Za-z_][A-Za-z0-9_]* *:?\??=' Makefile \
+        | sed -E 's/^([A-Za-z_][A-Za-z0-9_]*).*/\1/' | sort | uniq -d)
+for name in $twice; do
+    where=$(grep -nE "^$name *:?\??=" Makefile | cut -d: -f1 | tr '\n' ' ')
+    echo "stems: the Makefile assigns $name more than once (lines $where) — make takes the last and the rest are dead"
+    fails=$((fails + 1))
+done
+
 if [ "$fails" != 0 ]; then
     echo "stems: $fails of $rows rows failed"
     exit 1

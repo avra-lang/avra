@@ -661,23 +661,23 @@ impl Machine {
         if self.past_the_frame(sig) { return self.too_many_seats(callee) }
         if sig.cells.any(carries_cell(it)) { return self.inout_seat(callee) }
         avra_ffi_reset()
-        self.staged(sig, vals)
+        self.staged(callee, sig, vals)
         self.answered(sig.ret, sym)
     }
 
     /// Every seat staged into its own register file, at its own
     /// file's index — the k-th integer-class value and the k-th
     /// float, which is the order both ABIs fill.
-    fn staged(sig: RtSig, vals: List<Val>) {
-        for i, k in sig.params { self.stage_seat(k, file_slots(sig.params)[i], vals[i]) }
+    fn staged(callee: string, sig: RtSig, vals: List<Val>) {
+        for i, k in sig.params { self.stage_seat(callee, k, file_slots(sig.params)[i], vals[i]) }
     }
 
     /// HOW ONE ARGUMENT CROSSES — the evaluator's twin of the
     /// backend's `rt_arg`, over the same column.
-    fn stage_seat(k: RtKind, at: int, v: Val) {
+    fn stage_seat(callee: string, k: RtKind, at: int, v: Val) {
         match k {
             .F64 -> avra_ffi_set_f64(at, self.bits_of_val(v)),
-            .Ptr -> self.stage_pointer(at, v),
+            .Ptr -> self.stage_pointer(callee, at, v),
             .I64 or .I32 or .U32 -> avra_ffi_set_int(at, self.word_of(v)),
             .Void -> self.void_seat(),
         }
@@ -686,12 +686,14 @@ impl Machine {
     /// A pointer seat takes a BOX from text and an ADDRESS from a
     /// number; absence is the null pointer, which is what a C
     /// sentinel of zero means.
-    fn stage_pointer(at: int, v: Val) {
+    fn stage_pointer(callee: string, at: int, v: Val) {
         match v {
             .S(t) -> avra_ffi_set_text(at, t),
             .N -> avra_ffi_set_int(at, 0),
             .I(a) -> avra_ffi_set_int(at, a),
-            rest -> self.unstageable(),
+            rest -> {
+                let _ = self.unstageable(callee)
+            }
         }
     }
 
@@ -770,11 +772,17 @@ impl Machine {
         self.defect("a `void` seat reached the extern frame")
     }
 
-    /// An aggregate at a seat. The evaluator holds a list or a map as
-    /// a HANDLE into its own table, not as a box, so there is nothing
-    /// to hand C; a row's arm materialises one and the frame cannot.
-    fn unstageable() {
-        self.defect("an aggregate reached an extern seat — only a row's arm can materialise one")
+    /// AN AGGREGATE AT A SEAT, which is a LAW and not a defect. The
+    /// evaluator holds a list or a map as a HANDLE into its own
+    /// table, never as a box, so there is nothing to hand C — a
+    /// runtime row's arm materialises one, and the uniform frame
+    /// cannot. It was worded as a defect while only a row could
+    /// reach the frame; a package's `extern fn` may declare an
+    /// aggregate seat, so the words now name the remedy its writer
+    /// can act on.
+    fn unstageable(callee: string) -> Val {
+        self.trapped("`${callee}` takes a list or a map — the evaluator holds one as a handle, not a box; stage the elements one at a time")
+        Val.I(0)
     }
 
     /// Whether the declaration asks for more seats than one frame
