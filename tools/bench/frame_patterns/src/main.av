@@ -1,0 +1,89 @@
+//! THE FRAMER'S HAND SCANS AGAINST FORMAT PATTERNS — what each
+//! ACCEPTS first, and only then what each costs. A pattern is a
+//! SPLITTER; the framer's scan is a splitter AND a validator, and
+//! every law the pattern drops is one RFC 9112 gives a
+//! smuggling-shaped reason for. So the inputs decide this, not the
+//! nanoseconds: a faster scan that accepts a smuggled request is not
+//! a win at any speed.
+use @std.http.frame.{framed, limits, Framed}
+use @std.time.{now_ns}
+
+grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"
+
+/// A whole head built around one request line, so the framer sees
+/// what it expects and the difference is the line alone.
+fn head(line: string) -> Bytes { (line + "\r\nHost: h\r\n\r\n").bytes() }
+
+/// What the FRAMER says: does this head frame at all?
+fn framed_takes(line: string) -> bool {
+    framed(head(line), 0, 0, limits()) is .Complete
+}
+
+/// What the PATTERN says: does the request line split?
+fn pattern_takes(line: string) -> bool {
+    RequestLine.parse(line) != null
+}
+
+/// One input, and whether the two agree about it.
+fn verdict(line: string) -> string {
+    let f = framed_takes(line)
+    let p = pattern_takes(line)
+    if f == p { return if f { "both take" } else { "both refuse" } }
+    if p { return "PATTERN TAKES, FRAMER REFUSES" }
+    "framer takes, pattern refuses"
+}
+
+/// The attack table, drawn from the framing laws: each line is one
+/// the RFC names, and the interesting column is where they disagree.
+fn inputs() -> List<string> {
+    ["GET /x HTTP/1.1",
+     "GET  /x HTTP/1.1",
+     "GET /x HTTP/1.1extra",
+     "GET /x HTTP/11.1",
+     "GET /x HTTP/a.1",
+     " GET /x HTTP/1.1",
+     "GE\tT /x HTTP/1.1",
+     "GET /x HTTP/1.1 ",
+     "GET / HTTP/1.1"]
+}
+
+fn rows() -> string {
+    [inputs()[i] + "  ->  " + verdict(inputs()[i]) for i in 0..inputs().length].join("\n")
+}
+
+// ── what each costs, over the line both accept ──────────────────
+
+fn ok_line() -> string { "GET /index.html HTTP/1.0" }
+
+fn framings(runs: int) -> int {
+    let buf = head(ok_line())
+    let bounds = limits()
+    mut n = 0
+    // LICENSED I3: a timed loop counts, it does not build a list
+    for i in 0..runs {
+        if framed(buf, 0, 0, bounds) is .Complete { n = n + 1 }
+    }
+    n
+}
+
+fn patterns(runs: int) -> int {
+    let line = ok_line()
+    mut n = 0
+    // LICENSED I3: a timed loop counts, it does not build a list
+    for i in 0..runs {
+        if RequestLine.parse(line) != null { n = n + 1 }
+    }
+    n
+}
+
+let runs = 200000
+let t0 = now_ns()
+let framed_ok = framings(runs)
+let t1 = now_ns()
+let pattern_ok = patterns(runs)
+let t2 = now_ns()
+
+let framer_ns = if framed_ok == runs { (t1 - t0) / runs } else { 0 - 1 }
+let pattern_ns = if pattern_ok == runs { (t2 - t1) / runs } else { 0 - 1 }
+
+"${rows()}\n\nwhole head by the framer: ${framer_ns} ns | request line by the pattern: ${pattern_ns} ns"

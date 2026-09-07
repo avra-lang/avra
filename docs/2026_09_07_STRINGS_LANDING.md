@@ -724,20 +724,49 @@ The second is not byte identity — `007` parses to 7 and prints as `7` —
 which is exactly the caution `2026_09_06_STD_HTTP_TYPED_ROUTES.md`
 records, honoured rather than restated.
 
-The first is provable because the scan law is first-occurrence between
-two anchors, and it gives a **checkable domain condition**:
+**THIS CONDITION WAS WRONG IN ITS FIRST DRAFT, and building `print`
+found it.** The draft said:
 
-> For each capture *i* **except the last**, its text does not contain
-> piece *i+1*.
+> ~~For each capture *i* except the last, its text does not contain
+> piece *i+1*.~~
+
+It is NECESSARY and it is NOT SUFFICIENT, and the counterexample is
+small. Take `grammar G = "{a}--{b}"` with `a = "x-"` and `b = "b"`.
+Printed, that is `x-` + `--` + `b` = `x---b`. `"x-"` does not contain
+`"--"`, so the draft admits it. Parsed, the first `--` in `x---b` sits
+at index 1, not 2, so the scan answers `a = "x"`, `b = "-b"`. Run at
+this base, both engines: `[x][-b]`. The split moved and the draft
+condition never saw it, because **a capture that ENDS WITH A PROPER
+PREFIX of the following piece overlaps it**, and `contains` cannot see
+an overlap that only exists once the piece is appended.
+
+**THE CORRECTED CONDITION**, which is exact rather than approximate:
+
+> For each capture *i* except the last, appending its following piece
+> must place that piece at the boundary and nowhere earlier:
+> `(c_i + p_{i+1}).index_of(p_{i+1}) == |c_i|`.
+
+It is the same question the scan itself asks, asked of the smallest
+text that can answer it. On the counterexample:
+`("x-" + "--").index_of("--")` is 1 and `|"x-"|` is 2, so it is refused.
+On the safe case `("x" + "--").index_of("--")` is 1 and `|"x"|` is 1,
+so it is admitted.
 
 *Sufficiency.* The printed text is `p0 c0 p1 c1 … p_{n-1} c_{n-1} pn`.
 `p0` matches as the prefix, so the cursor sits at `|p0|`; `pn` matches as
-the suffix, so `stop` is the start of the trailing `pn`. Because `c0`
-does not contain `p1`, the first occurrence of `p1` at or after the
-cursor is exactly at `|p0| + |c0|` — `c0` is recovered exactly and the
-cursor advances past `p1`. Induction recovers every capture up to
-`c_{n-2}`, leaving the cursor at the start of `c_{n-1}`, which the scan
-takes as the span to `stop`. ∎
+the suffix, so `stop` is the start of the trailing `pn`. The first
+occurrence of `p1` at or after the cursor is at `|p0| + |c0|` — not
+earlier, because the condition says `p1` does not occur inside
+`c0 + p1` before `|c0|`, and the text from the cursor begins with
+exactly that. So `c0` is recovered exactly and the cursor advances past
+`p1`. Induction recovers every capture up to `c_{n-2}`, leaving the
+cursor at the start of `c_{n-1}`, which the scan takes as the span to
+`stop`. ∎
+
+The lesson is the one this paper keeps relearning: a condition stated
+in terms a reader finds natural (`contains`) is not the same as the
+condition the machine actually imposes (where the scan STOPS), and only
+writing the code that must obey it finds the gap.
 
 The **last capture carries no condition**, and that falls out of the
 suffix anchor rather than being granted: its end is positional, so a
@@ -746,8 +775,8 @@ round-trips. `"{a}!"` prints `x!` as `x!!` and parses it back to `x!`.
 Verified, not argued: §11's ledger records it.
 
 So **`print` answers `string?` and refuses off-domain**: an interior
-capture whose text contains its following delimiter cannot round-trip,
-and printing it would produce text that parses back as something else.
+capture that would move its own delimiter cannot round-trip, and
+printing it would produce text that parses back as something else.
 Refusing is what makes the law true rather than hoped-for. `print` is
 total over the domain it admits, and it says so by its type.
 
@@ -812,7 +841,10 @@ deliberately the NARROW one:
 > name. Anything else is variant construction, unchanged.
 
 The wider **Rule B** — any type name with an inherent fn of that name —
-is STATIC METHODS, which the ROADMAP records as not this arc. The
+is STATIC METHODS. **The owner granted them after this was written**, so
+Rule B lands in lane C's slice and a grammar's `parse` becomes one case
+of a general type-qualified call; nothing here is thrown away, because
+Rule A's test is a narrowing of Rule B's and not a different question. The
 difference matters at the test, not at the wording: Rule A asks the
 DECLARATION's KIND, never "does it have a fn called that", because the
 second question IS Rule B wearing Rule A's clothes. If static methods are
@@ -862,7 +894,7 @@ arc**.
 ## 8. (h) The diagnostics
 
 Codes claimed from the first free typing slot at `9fe5597`, where F2057
-is the highest in use. **F2058–F2062 are claimed by announcement**: the
+is the highest in use. **F2063–F2062 are claimed by announcement**: the
 HTTP lead confirms F2057 is the highest on `main` and lane C has
 reserved nothing past it. Re-checked against `main` immediately before
 S2 commits; if the build refuses a collision, the codes move and nothing
@@ -870,8 +902,8 @@ else does.
 
 | code | kind | message | help |
 |---|---|---|---|
-| F2058 | `type.format` | ``a format pattern reads text, found `int` `` | "a format matches a `string` or a `Bytes`" |
-| F2059 | `type.format_capture` | ``a capture named `id` twice — one name, one span`` | "rename one, or write `{_}` for a span you do not need" |
+| F2063 | `type.format` | ``a format pattern reads text, found `int` `` | "a format matches a `string` or a `Bytes`" |
+| F2064 | `type.format_capture` | ``a capture named `id` twice — one name, one span`` | "rename one, or write `{_}` for a span you do not need" |
 | F2060 | `type.format_parse` | ```{n: Port}` parses through `Port`, which does not read text`` | "`int` reads text today; a type joins by registering a capture row" |
 | F2061 | `type.format_shape` | "two captures with nothing between them cannot be split" | "put a literal between them — a scan needs something to stop at" |
 | F2062 | `type.format_brace` | ``a `{` opens a capture — this one does not close`` | "write `{{` for a literal brace" |
@@ -914,8 +946,11 @@ lands here, against `frame.av`.
 **S4 — `grammar` declarations that parse.** The declaration, the record
 type, `parse`. Opens with the namespace probe of §6.4.
 
-**S5 — `print` and the round-trip law.** `print` answering `string?`,
-the domain check, and the law tested per §6.3.
+**S5 — `print` and the round-trip law.** LANDED. `print` answers
+`string?` and refuses off-domain; the domain is §6.3's CORRECTED
+condition, asked in octets so the check and the scan read the same
+bytes. The law is a corpus program on both engines, not a proof in
+prose.
 
 ---
 
@@ -935,7 +970,7 @@ it — which is the point of asking.
 2. **`avra_str_index_of_from`:** asked of lane A with this lane's
    wanting site. S2 ships the one-copy fallback and swaps when the row
    lands. *Unchanged.*
-3. **F2058–F2062:** free and unreserved; claimed by announcement,
+3. **F2063–F2062:** free and unreserved; claimed by announcement,
    re-checked before S2 commits. *Unchanged.*
 4. **The meaning change:** ruled right — a pattern that compiles and can
    never match is a silent trap, zero sites in the tree, and `{{`/`}}`
@@ -1024,6 +1059,49 @@ Classes 2, 4, 5 (wrong types in every slot, crossing every other
 feature, names against names) have no surface until the feature exists;
 they run in S2 against the real thing.
 
+**A CLAIM I MADE ABOUT FINGERPRINTS WAS WRONG, and lane A corrected
+it.** Surveying the tree's duplicate `fp` tags, I reported that the
+repeats were benign because they split between "genuinely separate
+spaces" — the AST's and the query memo's. They do not split. `arm_fps`
+folds pattern and expression fingerprints into ONE list, a statement
+folds its expression's, and `restamp` wraps a statement's, so
+`Pat.Rest` and `Expr.Receiver` were the same number and therefore the
+same identity, always. The repeats I called benign were live.
+The deeper correction is lane A's and it outranks tag choice entirely:
+`fp` is LINEAR, so a tag is an additive offset and a payload is a flat
+list — two spliced sequences share a boundary that can MOVE. The
+defence is ARITY, not numbering. My grammar mark now folds each hole to
+one value under its own tag so no boundary between holes can shift, and
+`fp` itself folds the payload's length. The lesson for this paper: I
+reached a structural conclusion from a `sort | uniq -c` and did not
+check what the code does with the numbers, which is the same shape of
+error as the round-trip proof two sections above.
+
+**S5 LANDED, AND IT FALSIFIED §6.3's PROOF.** Writing `print` meant
+implementing the domain condition, and implementing it meant asking
+what the scan actually stops at rather than what a reader would call
+natural. The first draft — "the capture does not contain the next
+piece" — admits `{a}--{b}` with `a = "x-"`, which prints `x---b` and
+parses back as `x` and `-b`. Verified at this base, both engines:
+`[x][-b]`. §6.3 now carries the counterexample and the exact condition
+(`(c + p).index_of(p) == |c|`), and `print` implements THAT.
+
+`print` asks it in OCTETS, because that is the currency the scan uses:
+a check built from `contains` or a C-string `index_of` would inspect
+different bytes than the guard it protects, which is the law this tree
+already learned the hard way. Verified outputs at this base:
+
+| case | result |
+|---|---|
+| the flagship record printed | `GET /x HTTP/1.1` |
+| print then parse, every field recovered | `ok` |
+| all-empty values | `ok` — the literals alone |
+| a space inside the PATH, whose delimiter is `" HTTP/"` | `ok` |
+| a space inside the METHOD, whose delimiter IS a space | `refused` |
+| the LAST hole holding its own delimiter | `ok` — the suffix anchor fixes its end |
+| `{a}--{b}` with `a = "x-"` — the overlap | `refused` |
+| the same one character shorter | `x--b` |
+
 **Also built:** the benchmark harness of §5 against `frame.av` alone.
 Its numbers and the noise band are in §5; the point of running it now is
 that a baseline measured after the change is a number nobody can check.
@@ -1035,6 +1113,68 @@ F2033 and wants the lambda written out; and an empty list does not adopt
 a nullable aggregate want, so `return if c { [] } else { null }` under
 `List<string>?` is F2025, and the empty must be bound at its own type
 first.
+
+---
+
+## 13. S6 — the framer, and why it keeps its hand scans
+
+The arc was built for `@std.http`'s framer, so the last question is
+whether the framer should adopt it. **Measured, the answer is no**, and
+the measurement is not the one that decides it.
+
+**WHAT EACH ACCEPTS**, nine request lines drawn from the framing laws,
+the framer against `grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"`:
+
+| line | verdict |
+|---|---|
+| `GET /x HTTP/1.1` | both take |
+| `GET / HTTP/1.1` | both take |
+| `GET  /x HTTP/1.1` (two spaces) | **pattern takes, framer refuses** |
+| `GET /x HTTP/1.1extra` | **pattern takes, framer refuses** |
+| `GET /x HTTP/11.1` | **pattern takes, framer refuses** |
+| `GET /x HTTP/a.1` | **pattern takes, framer refuses** |
+| ` GET /x HTTP/1.1` (leading space) | **pattern takes, framer refuses** |
+| `GE<TAB>T /x HTTP/1.1` | **pattern takes, framer refuses** |
+| `GET /x HTTP/1.1 ` (trailing space) | **pattern takes, framer refuses** |
+
+Seven of nine. Every one is a law RFC 9112 gives a smuggling-shaped
+reason for: §3 warns in the same paragraph that whitespace-delimited
+parsing enables request smuggling, §2.3 fixes the version at one digit
+each side, and the method is a `token` — an HTAB inside it is not a
+method with a tab, it is two tokens a lenient parser might disagree
+about.
+
+**AND THE SPEED, which does not rescue it:** 146 ns for the pattern
+against 1201 ns for a whole head. Not comparable — one line against a
+head with a field — and it does not matter. **A faster scan that
+accepts a smuggled request is not a win at any speed.**
+
+**THE REASON, stated as a law rather than a result.** A FORMAT PATTERN
+IS A SPLITTER; THE FRAMER'S SCAN IS A SPLITTER AND A VALIDATOR. Every
+line of an HTTP head carries a byte-class law — the method is a
+`token`, the target excludes CTL and SP, the field name is a `token`
+that must touch its colon, the field value is `field-vchar` — and a
+format's holes say only "up to the next literal". The header line is
+worse than the request line in both directions at once: `OWS` is
+`*( SP / HTAB )`, so a pattern with `": "` REFUSES the valid
+`Host:example.com` while ACCEPTING the invalid `Host : example.com`
+that §5.1 says a server MUST reject.
+
+Applying the classes after the split costs strictly more than the hand
+scan, which does both in one pass — so there is no fast path here
+either.
+
+**WHERE THE PATTERNS DO WIN** is where the typed-routes paper already
+put them: the ROUTE, not the frame. A route's target has been framed
+already, its shape is fixed, and its captures are values a handler
+wants rather than spans a parser walks. That paper wrote "HTTP framing
+stays byte-oriented … Converting the entire received buffer to UTF-8
+and trimming lines loses the distinction between protocol syntax and
+content" before any of this existed; this section is that sentence with
+a number and an attack table behind it.
+
+`tools/bench/frame_patterns` is the harness, kept so the claim can be
+re-run rather than believed.
 
 ---
 

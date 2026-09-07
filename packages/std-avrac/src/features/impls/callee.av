@@ -5,11 +5,18 @@
 //! parameter and a contract value speak through their trait; a
 //! fn-typed field is called; the vocabulary's row answers; the impl
 //! table answers last; nothing else has methods.
+//!
+//! A TYPE NAME is the one receiver two things answer for: its
+//! VARIANTS and its `static fn`s share the spelling `Type.name(…)`.
+//! THE VARIANT WINS, decided here so typing and lowering cannot
+//! disagree, and with neither the variant law speaks the refusal —
+//! it is the one that can name what the type does have.
 use core.{Type, TypeId, DeclId}
-use features.{FileView, MethodRow, method_row, fields_of_type, StructSig}
+use features.{FileView, MethodRow, method_row, fields_of_type, StructSig, EnumSig, variant_sig_of}
 
 export enum Callee {
     Variant(decl: DeclId, tname: string)
+    Static(m: DeclId, tname: string)
     Bounded(decl: DeclId, j: int, tname: string)
     Contract(tdecl: DeclId, tname: string)
     FnField(slot: int, fty: TypeId)
@@ -33,7 +40,7 @@ export fn callee_of(view: FileView, ty: TypeId, name: string) -> Callee {
 /// field or row is asked.
 fn through_a_contract(view: FileView, sh: Type, name: string) -> Callee? {
     match sh {
-        .TypeName(decl, tname) -> named_type(view, decl, tname, name),
+        .TypeName(decl, tname) -> type_receiver(view, decl, tname, name),
         .Var(decl, j, tname) -> Callee.Bounded(decl, j, tname),
         .Dyn(d, n) -> Callee.Contract(d, n),
         .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or
@@ -42,18 +49,41 @@ fn through_a_contract(view: FileView, sh: Type, name: string) -> Callee? {
     }
 }
 
-/// A TYPE NAME constructs a variant — unless a `grammar` declared it
-/// AND the vocabulary gives that grammar a door of this name. BOTH
-/// conditions: a grammar type asked for a name no door answers falls
-/// through to construction, so a reader who meant a variant is told
-/// about variants. The test asks the DECLARATION, never whether some
-/// fn of that name exists — that question is static methods, and it
-/// is not this door.
-fn named_type(view: FileView, decl: DeclId, tname: string, name: string) -> Callee {
-    if view.decls.grammar_of(decl) == null { return Callee.Variant(decl, tname) }
-    let door: MethodRow? = method_row(view.lang.methods, name, Type.TypeName(decl, tname))
-    if door == null { return Callee.Variant(decl, tname) }
-    Callee.Row(door!)
+/// A TYPE as the receiver: its VARIANT of that name (the type's own
+/// shape), else a `grammar`'s vocabulary door, else a `static fn` of
+/// its impl. With none it is still the variant's answer, so the
+/// refusal names what the type has.
+fn type_receiver(view: FileView, decl: DeclId, tname: string, name: string) -> Callee {
+    if names_a_variant(view, decl, name) { return Callee.Variant(decl, tname) }
+    let door: MethodRow? = grammar_door(view, decl, tname, name)
+    if door != null { return Callee.Row(door!) }
+    let m: DeclId? = static_method(view, decl, name)
+    if m == null { return Callee.Variant(decl, tname) }
+    Callee.Static(m!, tname)
+}
+
+/// A `grammar`-declared type's vocabulary door of this name —
+/// `parse`, `print` — a method row whose receiver is the type. The
+/// vocabulary outranks a user's impl here as it does for a value
+/// (`method_row` before `declared`), so a door beats a `static fn` of
+/// the same name. The test asks the DECLARATION for its format, never
+/// whether some fn of that name exists — that question is the static.
+fn grammar_door(view: FileView, decl: DeclId, tname: string, name: string) -> MethodRow? {
+    if view.decls.grammar_of(decl) == null { return null }
+    method_row(view.lang.methods, name, Type.TypeName(decl, tname))
+}
+
+/// A receiverless method of the type's impl, by name.
+fn static_method(view: FileView, target: DeclId, name: string) -> DeclId? {
+    let m: DeclId? = view.decls.method(target, name)
+    if m == null { return null }
+    if !view.store.is_static(view.decls.decl(m!).stmt) { return null }
+    m
+}
+
+fn names_a_variant(view: FileView, decl: DeclId, name: string) -> bool {
+    let sig: EnumSig? = variant_sig_of(view.decls.sig(decl))
+    sig != null && sig!.tag_of(name) != null
 }
 
 /// A fn-typed field of the name — the capability-record pattern.

@@ -3,6 +3,17 @@
 // drowning it. Every accepted program agreed on both engines and left
 // zero live bytes under the runtime's accounting when this landed.
 use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.features.formats.{read_format}
+use @std.avrac.core.{new_node_store, Pat}
+
+/// A format literal's PATTERN fingerprint — the identity two
+/// different formats must not share. A payload is a flat list, so a
+/// boundary between spliced runs is where two shapes would collide.
+fn same_shape(text: string) -> int {
+    let f = read_format(text)
+    mut s = new_node_store()
+    s.pat_fingerprint(s.alloc_pat(Pat.Format(f.head, f.parts), null))
+}
 
 spec "features/formats adversarial" {
     given "degenerate shapes" {
@@ -176,6 +187,69 @@ spec "features/formats adversarial" {
         }
         then "a grammar clashing with a record of its name is refused" {
             refused_with("type G = { n: int }\ngrammar G = \"{a}-{b}\"\n1", "`G` is declared more than once")
+        }
+    }
+
+    given "print, and the domain it refuses outside" {
+        then "the domain's edge: every value that would move its delimiter is refused" {
+            shown("grammar L = \"{a}--{b}\"\nfn p(a: string) -> string { L.print(L { a: a, b: \"z\" }) ?? \"refused\" }\n[p(\"x\"), p(\"x-\"), p(\"-\"), p(\"--\"), p(\"x--\"), p(\"xy\")].join(\" \")") == "x--z refused refused refused refused xy--z"
+        }
+        then "the last hole takes its delimiter freely, because the suffix fixes its end" {
+            shown("grammar L = \"{a}-{b}\"\nfn p(b: string) -> string { L.print(L { a: \"x\", b: b }) ?? \"refused\" }\n[p(\"y\"), p(\"-\"), p(\"y-z\"), p(\"--\")].join(\" \")") == "x-y x-- x-y-z x---"
+        }
+        then "empty values print the literals alone" {
+            shown("grammar L = \"{a}-{b}\"\nL.print(L { a: \"\", b: \"\" }) ?? \"refused\"") == "-"
+        }
+        then "a grammar of one hole prints its literals around it" {
+            shown("grammar L = \"x{a}y\"\nL.print(L { a: \"\" }) ?? \"refused\"") == "xy"
+        }
+        then "print then parse recovers every field" {
+            shown("grammar L = \"{a}-{b}\"\nlet t = L.print(L { a: \"p\", b: \"q\" })!\nmatch L.parse(t) { r? -> r.a + r.b\n    null -> \"no\" }") == "pq"
+        }
+        then "parse then print returns the text it was given" {
+            shown("grammar L = \"{a}-{b}\"\nmatch L.parse(\"p-q\") { r? -> L.print(r) ?? \"refused\"\n    null -> \"no\" }") == "p-q"
+        }
+        then "printed text outlives the record it came from" {
+            shown("grammar L = \"{a}-{b}\"\nfn made() -> string {\n    let r = L { a: \"keep\", b: \"this\" }\n    L.print(r) ?? \"refused\"\n}\nmade() + \"!\"") == "keep-this!"
+        }
+        then "print inside a comprehension answers per element" {
+            shown("grammar L = \"{a}-{b}\"\n[L.print(L { a: s, b: \"z\" }) ?? \"refused\" for s in [\"p\", \"q-\"]].join(\",\")") == "p-z,refused"
+        }
+        then "an int in the record seat is refused" {
+            refused_with("grammar L = \"{a}-{b}\"\nL.print(5)", "argument 1 of `print` wants `L`, found `int`")
+        }
+        then "a string in the record seat is refused" {
+            refused_with("grammar L = \"{a}-{b}\"\nL.print(\"x\")", "argument 1 of `print` wants `L`, found `string`")
+        }
+        then "another record in the seat is refused by name" {
+            refused_with("grammar L = \"{a}-{b}\"\ntype P = { n: int }\nL.print(P { n: 1 })", "argument 1 of `print` wants `L`, found `P`")
+        }
+        then "no argument is refused by arity" {
+            refused_with("grammar L = \"{a}-{b}\"\nL.print()", "`print` takes 1 arguments, found 0")
+        }
+    }
+
+    given "a format's fingerprint, at every boundary it splices" {
+        then "a literal before a hole is not the same as one after it" {
+            same_shape("x{a}y") != same_shape("xy{a}")
+        }
+        then "moving a character across the head's boundary changes the pattern" {
+            same_shape("ab{x}") != same_shape("a{x}b")
+        }
+        then "the same holes with different literals between them differ" {
+            same_shape("{a}1{b}") != same_shape("{a}2{b}")
+        }
+        then "the same literals with different hole names differ" {
+            same_shape("{a}-{b}") != same_shape("{a}-{c}")
+        }
+        then "a hole's TYPE is part of the pattern's identity" {
+            same_shape("{a: int}-{b}") != same_shape("{a}-{b}")
+        }
+        then "one hole and two holes over the same text differ" {
+            same_shape("{a}-b") != same_shape("{a}-{b}")
+        }
+        then "the same format twice is the same fingerprint" {
+            same_shape("{a}-{b}") == same_shape("{a}-{b}")
         }
     }
 }
