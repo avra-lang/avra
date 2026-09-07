@@ -78,12 +78,6 @@ SUITES := packages/std-errors packages/std-testing packages/std-text packages/st
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
-# A BARE `make` BUILDS THE COMPILER. Without this the default goal is
-# whatever target comes first, and that is `seed` — so `make` with no
-# argument, and any `make -p` reading a variable, REWRITES a committed
-# 9.6 MB artifact as a side effect and says nothing.
-.DEFAULT_GOAL := avra
-
 # THE SEED: the compiler, emitted, so the chain cannot be lost.
 # `make bootstrap` builds a compiler from it and then rebuilds from
 # source; `make seed` refreshes it. bootstrap/README.md holds the rule.

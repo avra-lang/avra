@@ -59,8 +59,11 @@ on network data, a NUL makes it a bounded truncation.
 THE STANDARD the owner set on 2026-09-06 (the substrate lane writes it
 up and applies it to io and process): CORE owns the language's own
 substrate — boxes, strings, lists, maps, Bytes, float, the process's
-own facts, and DESCRIPTORS (`avra_fd_read` into a scratch,
-`avra_fd_taken` minting the box once, `avra_fd_write` from an offset),
+own facts, and DESCRIPTORS (`avra_fd_read` into ONE scratch, answering
+a TOKEN — the scratch's generation — that `avra_fd_taken(token)` must
+present, trapping on a stale one, so a read landing between a read and
+its take is a loud wreck and never a stranger's bytes — lane B's
+finding, reviewing io's shape; `avra_fd_write` from an offset),
 because a managed value is minted ONLY by a core row — and that law is
 MECHANICAL, not moral (the substrate lane measured it): an `extern fn`
 that is not a row has `owns_result: false` hard-coded, so what it mints
@@ -89,7 +92,20 @@ timeout)`, `poller()`, `Listener.accept() -> Conn?`, `Conn.read(max)
 int` (0 when it would block), `shutdown_write`, `close`, `peer`,
 `Poller.watch(fd, readable, writable)`, `wait(timeout?) ->
 List<Event>`; every failure a `NetError { verb, subject, errno }`
-implementing `Error`. Loopback spec in `packages/std-net/src/tests`.
+implementing `Error`. Loopback spec in `packages/std-net/src/tests`; the red team's survivors
+in `net_adversarial_test.av`. RED-TEAMED 2026-09-07 (13 programs, native):
+every wrong type in every slot refuses once in its own words (a text
+port, an int host, a bool interest, a string body, an int timeout); the
+edges hold. Three findings, all fixed: a NEGATIVE `Duration` reached
+`connect` as "forever" (a sentinel in a value — refused now, a zero
+budget looks once); a read or write on a gone peer named an EMPTY
+subject (it names the descriptor now); the poller's wait named nothing.
+ONE HAZARD RECORDED, NOT FIXED: a closed descriptor's NUMBER is reused
+by the next open, so a stale `Conn` value's `close()` can close a
+stranger — the answer is the ROADMAP's generation-tagged handle table,
+which needs process-wide package state (sugar backlog); until then a
+`Conn` is used once and dropped, and the tests pin the refusal words
+for the honest case (EBADF).
 
 ## Slice 3 — `@std.http` (IN PROGRESS)
 

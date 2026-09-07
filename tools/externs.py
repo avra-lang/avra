@@ -367,6 +367,12 @@ def wrong_seats(wall, sigs, tds):
         if name not in sigs:
             continue
         cargs, crel, cline = sigs[name]
+        # A VARIADIC BODY IS THE VARIADIC RULE'S, not this one's. Its
+        # arity always "disagrees" — the ellipsis counts as a seat —
+        # and reporting that beside the real law is a cascade: one
+        # mistake, one message, and the arity is the symptom.
+        if is_variadic(cargs):
+            continue
         cp, ap = split_params(cargs), split_params(params)
         if len(ap) != len(cp):
             out.append((name, where, crel, cline, None, len(ap), len(cp)))
@@ -375,6 +381,66 @@ def wrong_seats(wall, sigs, tds):
             if not seat_fits(a, PARAM_NAME.sub("", c).strip() or c, tds):
                 out.append((name, where, crel, cline, (a, c), 0, 0))
     return out
+
+
+# A VARIADIC BODY CANNOT BE CALLED BY A FIXED DECLARATION, in either
+# engine. Apple's arm64 ABI reads a variadic callee's arguments from
+# the STACK while a fixed call puts them in REGISTERS, so the callee
+# reads a slot nobody wrote — no link error, no trap, a wrong answer.
+# The trailing `...` is the whole test: a `va_list` seat is an ordinary
+# pointer and calls correctly, so it is NOT variadic here.
+#
+# THE NARROWING CONDITION, written where the keeper is rather than in a
+# paper: this refuses for BOTH engines only while the grammar cannot
+# spell a variadic seat. `declare` already takes LLVM's vararg flag and
+# both call sites pass false, so today the native path is as wrong as
+# the evaluator. The day an ellipsis seat exists and the backend passes
+# that flag, this narrows to the interpreter alone and the wording
+# above loses its last four words.
+def is_variadic(cargs):
+    """Whether a C parameter list ends in an ellipsis. Takes the list
+    as written, newlines and all — a prototype spread over lines is
+    the same list."""
+    seats = split_params(" ".join(cargs.split()))
+    return bool(seats) and seats[-1] == "..."
+
+
+# (a C parameter list, variadic?) — both surfaces, because a keeper
+# watched only refusing is half tested.
+VARIADIC_CASES = [
+    ("int op, ...", True),                          # sqlite3_test_control, the measured case
+    ("sqlite3 *db, int op, ...", True),             # sqlite3_db_config
+    ("...", True),                                  # the degenerate list
+    ("const char *zFormat,\n  ...", True),          # spread over lines
+    ("int op, va_list ap", False),                   # a va_list rides a pointer
+    ("sqlite3 *db, int op, int a, int b", False),
+    ("void", False),
+    ("", False),
+    ("void (*xFunc)(void*, int, char**)", False),   # parens are a fn-pointer seat
+    ("const char *zDots", False),                    # a name is not an ellipsis
+    ("struct dots ...x", False),                     # not a bare `...`
+]
+
+
+def variadic_self_test():
+    """The readings above. A failure means the ellipsis model moved."""
+    bad = [(c, want) for c, want in VARIADIC_CASES if is_variadic(c) != want]
+    for cargs, want in bad:
+        # THE MESSAGE COLLAPSES THE WHITESPACE THE CASE KEEPS. One case
+        # spreads its list over lines to prove the newline does not
+        # matter; printed as written, its failure is the one place it
+        # looks like it does.
+        print(f"externs: SELF-TEST — C `({' '.join(cargs.split())})` should read as "
+              f"{'variadic' if want else 'fixed'}")
+    return len(bad)
+
+
+def variadic_walls(wall, sigs):
+    """Every declaration whose C body is variadic — the fixed spelling
+    that cannot call it."""
+    return [(name, where, sigs[name][1], sigs[name][2], len(split_params(params)))
+            for name, params, where in wall
+            if name in sigs and is_variadic(sigs[name][0])]
 
 
 # THE KEEPER'S OWN CASES. This check spent its whole life reading C
@@ -464,7 +530,7 @@ def self_test():
 
 
 def main():
-    if self_test() + seat_self_test():
+    if self_test() + seat_self_test() + variadic_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -490,6 +556,15 @@ def main():
         print(f"externs:   {remedy}")
     walls = wall_seats()
     sigs = c_signatures(sources, {n for n, _, _ in walls})
+    varargs = variadic_walls(walls, sigs)
+    for name, where, crel, cline, an in varargs:
+        print(f"externs: {name} declares {an} fixed seat(s) in {where}, "
+              f"its C body is VARIADIC at {crel}:{cline}")
+        print(f"externs:   a variadic callee reads its arguments from the stack and a")
+        print(f"externs:   fixed call passes them in registers, so no fixed declaration")
+        print(f"externs:   calls this body correctly — in either engine.")
+        print(f"externs:   One fixed extern per argument shape is NOT the way out: it")
+        print(f"externs:   was measured reading 12345 back as -298729216.")
     seats = wrong_seats(walls, sigs, tds)
     for name, where, crel, cline, pair, an, cn in seats:
         if pair is None:
@@ -500,7 +575,9 @@ def main():
         a, c = pair
         print(f"externs: {name} seats `{a}` in {where} over C `{c}` at {crel}:{cline}")
         print(f"externs:   the seat and the body must name the same width — a C `int` is 32 bits")
-    if narrow or voids or seats:
+    if narrow or voids or seats or varargs:
+        if varargs:
+            print(f"externs: {len(varargs)} extern(s) face a variadic C body with a fixed spelling")
         if seats:
             print(f"externs: {len(seats)} parameter seat(s) disagree with their C body")
         if narrow:
@@ -518,7 +595,9 @@ def main():
     print(f"externs: {len(ours)} extern(s) match their C body's width{note}{extra}")
     checked = sum(len(split_params(p)) for n, p, _ in walls if n in sigs)
     print(f"externs: {checked} parameter seat(s) match the C seat they fill")
-    print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES)} of the keeper's own cases hold")
+    print(f"externs: no declaration faces a variadic C body")
+    print(f"externs: read {scanned}; "
+          f"{len(CASES) + len(SEAT_CASES) + len(VARIADIC_CASES)} of the keeper's own cases hold")
     return 0
 
 sys.exit(main())
