@@ -3798,10 +3798,19 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
   moment a SECOND feature owns a `Pat` variant), and the per-pattern
   slot `bind_test`/`test_regs_of` (lane C) let the test find the spans
   and the binds cut them, so AN UNTAKEN FORMAT ARM MINTS NOTHING.
-  MEASURED (tools/bench/frame_scan): a request line by hand 90 ns, by
-  format 120 ns — 1.33x, stable to a nanosecond, the whole gap
-  allocations (ten against seven). Red-teamed: 30 programs, seven
-  classes, zero findings; `formats_adversarial_test.av`.
+  MEASURED (tools/bench/frame_scan, subject hoisted, three runs): a
+  request line over TEXT by hand 62 ns, by format 97 ns (1.58x); over
+  OCTETS — where the framer works and nothing is converted — by hand
+  74 ns, by format 90 ns, 1.24x. The difference between the two ratios
+  is the subject conversion the text path pays and the octet path does
+  not, ~6 ns. THE HARNESS RULE, found by an inflated first run: a
+  `once` read inside a timed loop cost 20% on both sides and
+  compressed the ratio — hoist the subject, or the harness measures
+  the runtime's lookup. Red-teamed: 30 programs, seven classes, zero
+  findings; `formats_adversarial_test.av`; the NUL-past-both-separators
+  scan (`a | NUL b | c`, three exact spans, both engines) is
+  `corpus/formats_bytes.av`, the guard-and-guarded law pinned where a C
+  string scan would lose both separators.
   THE MEANING CHANGE, measured before it was made: 37 arm-head string
   patterns across packages/ and corpus/ at 9fe5597, ZERO containing a
   brace; a pattern with braces used to compile as a literal that could
@@ -3811,10 +3820,18 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         pending row). FIRES when lane A's shared decimal-parse row
         lands — the framer's `decimal`, the hole and a user's `"42"`
         are one law.
-  - [ ] HOISTED LITERAL OCTETS: the scan converts each literal piece
-        to octets per attempt (a `Bytes` constant is a vocabulary event
-        the IR does not carry). FIRES when the 30 ns gap above becomes
-        material in a measurement.
+  - [ ] HOISTED LITERAL OCTETS — FIRED 2026-09-07, now an ASK of the
+        core owners: the scan converts each literal piece to octets on
+        EVERY attempt because the IR carries no `Bytes` constant, and
+        over octets that is THE WHOLE remaining gap — four conversions,
+        17 ns of a 90 ns scan, ~4 ns each, the cost of a small box
+        here. The hand-written scan hoists its separator into a `once
+        fn`, as frame.av hoists every literal it scans for. A `Bytes`
+        constant is a vocabulary event under the eight-consumer
+        protocol (a `ConstBytes` beside `ConstStr`, or the string
+        constant's octets read without a mint); the strings lane does
+        not grow the IR. WANTING SITE: `features/formats/lower.av`'s
+        per-piece conversion.
   - [ ] MOVE 4, a grammar on a live stream: FIRES when the server's
         read loop shows the head re-scanned per read in a census.
 

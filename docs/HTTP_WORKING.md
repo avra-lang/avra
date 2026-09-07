@@ -132,6 +132,19 @@ hand, an untaken arm mints nothing; typed holes wait on the decimal
 row; the framer's own scans stay until the `Bytes`-subject parity is
 measured (the strings lane's S3), then they become patterns.
 
+## Sub-lane: strings — S3 (the octet parity)
+
+THE NUMBER THE CAMPAIGN NEEDED: over octets the compiled scan is 1.24x a
+hand-written one (74 against 90 ns), and the gap is COUNTED — four
+literal-to-octet conversions per attempt, ~4 ns each, because the IR has
+no `Bytes` constant; the ROADMAP's hoisted-octets trigger fired by its
+own condition and is an ask of the core owners now. Over text 1.58x, the
+extra being the subject conversion the framer never pays. The harness
+rule: a `once` read inside a timed loop inflated both sides 20% — hoist
+the subject. The NUL-past-both-separators scan is a corpus pair. The
+formats feature contributes zero F2047 warnings. NEXT: S4, the `grammar`
+value that parses, probed to need no new door.
+
 ## Sub-lane: substrate — S3 (io) rulings
 
 THREE DECISIONS, ALL MEASURED BY THE LANE, RULED 2026-09-07. (1) `avra_io_env`
