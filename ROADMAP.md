@@ -4289,6 +4289,26 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         constant is a vocabulary event under the eight-consumer
         protocol; the strings lane does not grow the IR. WANTING SITE:
         `features/formats/lower.av`'s per-piece conversion.
+        THE CENSUS ANSWER (2026-09-07, `tools/bench/frame_head` under
+        `-DAVRA_CENSUS`): a framed head pays 52 `once` reads = 104
+        retain/release ops (`avra_once_get` is the program's largest
+        retain site, 104M over 2M heads) and 988 pointer compares
+        (nineteen a read — a program holding twenty tables, not the
+        compiler's one). THE ASK, TWO HALVES: (a) the per-site O(1)
+        slot — lane A: "take it", pure lookup cost, no semantics; (b)
+        A `once` ANSWER IS IMMORTAL — its header wears the STATIC kind
+        and a read is a borrowed load, no retain, no release. LANE A'S
+        PROBE against (b) as stated: `is_shared` answers FALSE for a
+        STATIC box (`kind == -1`), so `avra_cell_unique` hands the box
+        back for in-place mutation — `mut xs = shared(); xs.push(99)`
+        writes INTO THE CACHE for every later reader, no diagnostic
+        (today rc == 2 makes the write copy). THE PREREQUISITE is one
+        line — an immortal value is shared by definition, so
+        `is_shared` is `kind == KIND_STATIC || (kind >= 0 && rc > 1)`
+        — landed WITH the decision, not before it (machinery ahead of a
+        decision biases it). THE OWNER'S CALL on (b); the census ratio
+        (~a quarter of a head) is on a runtime ~8% slower than
+        shipping, the counts are exact.
         RULED BY LANE A, MEASURED (4M reads): a `once` read is ~12 ns
         and it is ENTIRELY the read — call, pointer scan, retain, the
         caller's release — so hoisting four conversions through a
