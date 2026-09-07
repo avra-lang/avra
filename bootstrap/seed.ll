@@ -142668,7 +142668,7 @@ endif12:                                          ; preds = %else11, %then10
 define ptr @"av_$40std$2Eprocess$2Etool_from_env"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %0)
-  %2 = call i64 @"av_$40std$2Eprocess$2Enul_at"(ptr %0)
+  %2 = call i64 @"av_$40std$2Etext$2Enul_at"(ptr %0)
   %cmp = icmp sge i64 %2, 0
   br i1 %cmp, label %then, label %else
 
@@ -142721,7 +142721,7 @@ endif4:                                           ; preds = %else3, %then2
 define ptr @"av_$40std$2Eprocess$2Etool"(ptr %0) {
 entry:
   call void @avra_rc_retain(ptr %0)
-  %1 = call i64 @"av_$40std$2Eprocess$2Enul_at"(ptr %0)
+  %1 = call i64 @"av_$40std$2Etext$2Enul_at"(ptr %0)
   %cmp = icmp sge i64 %1, 0
   br i1 %cmp, label %then, label %else
 
@@ -142979,7 +142979,7 @@ entry:
   ret i1 %b
 }
 
-define i64 @"av_$40std$2Eprocess$2Enul_at"(ptr %0) {
+define i64 @"av_$40std$2Etext$2Enul_at"(ptr %0) {
 entry:
   %slot4 = alloca i64, align 8
   %slot1 = alloca i64, align 8
@@ -151528,7 +151528,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l794" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l785" to i64))
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 0)
   %4 = call ptr @avra_array_get_owned(ptr %3, i64 1)
@@ -151625,7 +151625,7 @@ endif14:                                          ; preds = %else13, %postret
   %15 = call ptr @avra_insist(ptr %ld10)
   %16 = call ptr @avra_insist(ptr %ld10)
   call void @avra_rc_retain(ptr %16)
-  %17 = call i64 @"av_$40std$2Eprocess$2Enul_at"(ptr %16)
+  %17 = call i64 @"av_$40std$2Etext$2Enul_at"(ptr %16)
   %18 = call ptr @avra_array_sized(i64 3)
   call void @avra_array_push(ptr %18, i64 8)
   call void @avra_array_push_owned(ptr %18, ptr %15)
@@ -151653,10 +151653,10 @@ postret:                                          ; No predecessors!
   br label %endif14
 }
 
-define i1 @"av_$40std$2Eprocess$2Eprocess$24l794"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eprocess$2Eprocess$24l785"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
-  %2 = call i64 @"av_$40std$2Eprocess$2Enul_at"(ptr %1)
+  %2 = call i64 @"av_$40std$2Etext$2Enul_at"(ptr %1)
   %cmp = icmp sge i64 %2, 0
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
