@@ -3915,11 +3915,33 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
   never match and fell through silently.
   TRIGGERS, recorded with their firing conditions:
   - [ ] TYPED HOLES: `{n: int}` refuses today (F2060, naming the
-        pending row). FIRES when the shared decimal-parse row — CORE by the
-        sqlite campaign's scope decision, the SQLITE lead's to own, and
-        misrouted to lane A until 2026-09-07 —
-        lands — the framer's `decimal`, the hole and a user's `"42"`
-        are one law.
+        pending row). FIRES when a TEXT -> INT PARSE ROW lands — the
+        framer's `decimal`, the hole and a user's `"42"` are one law.
+        ROUTED TWICE WRONG AND SETTLED 2026-09-07 by the SQLITE lead: it
+        is NOT the `decimal` question (`decimal` is a VALUE TYPE — exact
+        base-10 arithmetic, ruled core, deferred to the ORM campaign) and
+        it is nobody's in flight — measured, NO such row exists: no
+        `to_int`, no `parse_int`, no `strtol` in the runtime, and
+        @std/text's twelve exports parse nothing. So the trigger stays
+        recorded because nobody has built it. THE ROW'S SHAPE, as
+        proposed and agreed: text -> `Result<int, E>`, refusing at the
+        first bad byte with its offset, an overflow answer. FOUR LAWS IT
+        OBEYS: (1) it reads the HEADER'S LENGTH, never `strlen` — a
+        parse built on C string calls reads `"12\0garbage"` as 12 and
+        the caller never learns, and this row will parse a path segment
+        off the network; (2) THE EMPTY CASE FIRST, and it REFUSES —
+        `""` is not zero; (3) OVERFLOW REFUSES, never wraps or
+        saturates (the 320-digit float literal that became `inf` is the
+        precedent: what must never stand is a number nobody wrote); (4)
+        it ACCEPTS `-9223372036854775808`, which the LEXER refuses as a
+        literal (F0001) — lane A's law settles both: a literal is what
+        the programmer wrote and the compiler can see it does not fit; a
+        computation's result is discovered at runtime and the parse's
+        own contract defines it — written AT THE SITE, or the next
+        reader files one of the two as a bug. OWNERS: the row is lane
+        A's (runtime rows), the face @std/text's owner's; the strings
+        lane is the consumer. The hole ships as TEXT with the handler
+        converting, so the typing lands against a live consumer.
   - [ ] HOISTED LITERAL OCTETS — FIRED 2026-09-07, now an ASK of the
         core owners: the scan converts each literal piece to octets on
         EVERY attempt because the IR carries no `Bytes` constant, and
