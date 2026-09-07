@@ -4543,7 +4543,23 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         length only for a pointer that is ours — a foreign pointer has
         no interior NUL by definition, so the check is skipped there
         rather than passed vacuously through a `strlen` fallback. The
-        substrate lane writes (2)–(4) under lane A's review.
+        substrate lane writes (2)–(4) under lane A's review. AND THE
+        EXCEPTION, STATED MECHANICALLY (the sqlite lead, sweeping their
+        wall after the first merge went red on their length-carrying
+        `bind_text` case): the escape is not "a package that means
+        octets" — an intention — but A SEAT WHOSE PROTOTYPE CARRIES ITS
+        OWN LENGTH, greppable in the header: a `const char*` beside a
+        byte count is `Bytes` and pays no scan (four in the driver —
+        `bind_text`, `bind_blob`, `keyword_check`, and `prepare_v3`, the
+        hottest seat in the package); a bare `const char*` is checked
+        (seven in the driver, two of them already guarded with a
+        `Result`). A SQLite TEXT value is a byte string with a
+        terminator appended, so a NUL there is legal, stored data. And
+        the layering: A LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS — a
+        package that knows why a seat resolves answers a named cause;
+        the seam is the floor for every package that has not thought
+        about it; the trap firing inside a guarded package is a bug in
+        the guards.
   - [ ] A GRAMMAR'S DOOR AS A VALUE. `routed<Idea>(…, Idea.parse, …)`
         is F2003 "`Idea` is a record, not an enum": the type-name
         admission rule fires for a CALL, never for a bare `Name.parse`
