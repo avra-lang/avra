@@ -1063,6 +1063,66 @@ then the octet form is allocation-free too and the choice is
 RE-MEASURED, not inherited from that number. Owner: nobody yet — that
 view is unbuilt and unasked-for.
 
+## S2c step 1 (816a7a2, merged): the package libraries, derived — and the design shrank twice
+
+`tools/libs.py`, `make libs`, the keeper, the measurements. Building
+it found two things the note could not, and both make the design
+SMALLER. A PACKAGE THE COMPILER ALREADY CARRIES GETS NO LIBRARY: six
+packages declare `[link]` objects and three — @std/avrac, @std/io,
+@std/process — are inside `build/avra`, which is why S2a could host
+their externs at all; a library for one adds no reach and a SECOND
+COPY of state meant to be single (`ffi.o`: one staging area in the
+image, another in the library, lookup order deciding which a call
+used — §1's leak by a different cause). The roster is the linking
+packages MINUS the image, tested with `nm build/avra`, the instrument
+stems.sh already reads, so one truth answers both questions: THREE
+libraries, not six, and a package split across that seam is refused
+in words. THE RUNTIME IS LEFT UNDEFINED ON PURPOSE: the first link
+failed on `avra_trap`, and linking the runtime INTO each library —
+the obvious fix — would give every library its own allocator, free
+lists and accounting, so a box minted in one and released by the
+evaluator reaches the wrong list. The libraries bind those symbols to
+the HOST at load. Measured: exactly one runtime symbol left open
+across all three (`avra_trap`, @std/net); sqlite and the witness
+leave none; the rest is libc. The flag that permits it also permits
+a typo, so stems.sh holds every undefined `avra_*` to what
+`build/avra` exports, consuming `libs.py --undefined` rather than
+re-deriving — witnessed failing first on a bogus `avra_nosuch`. The
+same instrument answers the question this lead asked about a symbol
+that is neither `avra_*` nor libc: `--undefined` names every open
+symbol per library, so a new one is visible.
+
+LANE A APPROVED THE BINDING AND CORRECTED ITS REASON, which is the
+half worth keeping: the free lists are the WEAKEST argument — two
+copies of `g_free[CLASSES]` PARTITION one malloc heap rather than
+corrupt it (a box freed into one list is re-used from that list), a
+footprint cost, and a footprint argument loses to "it links". THE
+DECISIVE REASON IS `g_once`: a second copy of the `once` table means a
+`once fn` reachable from both settles TWICE with two different
+answers, where "one value for the whole process" is the contract
+F2055 exists to protect — and since 2b4685d those answers are
+IMMORTAL, so two immortal answers where the language promises one,
+neither ever dying. A semantic break, not a cost. Second, `g_acc_live`:
+`AVRA_MEM_STATS` would report one copy's view and look complete —
+`acc_kind_of`'s lesson, structurally. And the honest narrowing: today's
+libraries are PURE C from `[link]` rows — no Avra code, no `once`, no
+allocation — which is exactly why one open symbol was measured; the
+hazard is not live at step 1, it is what makes "bind to the host" the
+RULE rather than a lucky default, and it fires the first time a
+package's C calls back into Avra. `hdr()` is no obstacle (alignment and
+a 4 GB floor, not an image range), and `T _avra_trap` is exported.
+
+NUMBERS ON ONE BASE (b2255fe): `make avra` 12.45s/2.08s -> 12.22s/
+1.81s user/sys; `build/avra` 2,263,728 bytes BOTH times, the same
+number and not a similar one; the three libraries link in 0.52s and
+occupy 1.73 MB in `build/`, nothing in any user's binary. WALL TIME
+NOT QUOTED, and the reason is a law for this machine: the "before"
+run's wall was 503s against 12s of CPU, all of it waiting on the
+shared build lock — WALL TIME HERE MEASURES THE QUEUE, so CPU is the
+measurement and wall is noise with a plausible face. The gate's
+corpus target took its `libs` dependency before anything opens a
+library. Gate green at 593 MB peak with the libraries built inside it.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
