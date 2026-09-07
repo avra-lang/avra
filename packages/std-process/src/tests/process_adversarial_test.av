@@ -2,7 +2,7 @@
 // can grow: degenerate shapes, every wrong value in every slot, the
 // two engines, ownership, and refusal quality. Each case names the
 // attack; the fixtures are the shell and a hand-built tool.
-use @std.process.{Tool, tool, cmd, Command, Pipeline, Stdin, Ready, Env, ProcessError, minimal, exit_text, parallel, race}
+use @std.process.{Tool, tool, cmd, Command, Pipeline, Stdin, Ready, Env, EnvPair, Output, ProcessError, minimal, exit_text, parallel, race}
 use @std.time.{ms, secs, now_ms}
 use @std.text.{from_codepoint}
 
@@ -91,6 +91,39 @@ fn split_env_name() -> Result<string, ProcessError> {
 
 fn empty_env_name() -> Result<string, ProcessError> {
     text(shell("echo x")? with { env: minimal().with_var("", "x") })
+}
+
+/// What a flooding child leaves in the partial capture when it breaks
+/// a cap — the SIZE, which is what diverged.
+/// A command carrying one environment pair, run.
+fn named(n: string, v: string) -> Result<Output, ProcessError> {
+    let c = shell("true")? with { env: Env.Only([EnvPair { name: n, value: v }]) }
+    c.run()
+}
+
+fn env_said(r: Result<Output, ProcessError>) -> string {
+    match r {
+        .Ok(_) -> "ok",
+        .Err(e) -> e.describe().kind.replace("process.", ""),
+    }
+}
+
+fn captured_over(cap: int) -> int {
+    match flooded(cap) {
+        .Ok(n) -> n,
+        .Err(_) -> 0 - 1,
+    }
+}
+
+fn flooded(cap: int) -> Result<int, ProcessError> {
+    let c = shell("yes")? with { timeout: secs(5), max_capture: cap }
+    match c.run() {
+        .Ok(o) -> o.stdout.length,
+        .Err(e) -> match e {
+            .TooMuch(s, n, part) -> part.stdout.length,
+            rest -> { fail e }
+        },
+    }
 }
 
 fn grandchild_is_stopped() -> Result<string, ProcessError> {
@@ -391,6 +424,27 @@ spec "std/process adversarial" {
         }
         then "an empty path stays empty instead of naming the directory" {
             cmd(dashed(), []).path("").args.join("|") == ""
+        }
+    }
+    given "an environment entry with no name" {
+        then "the face refuses one, whatever its value" {
+            env_said(named("", "V")) == "bad_env_name" && env_said(named("", "")) == "bad_env_name"
+        }
+        then "a name set to EMPTY is set, and is not the same thing" {
+            env_said(named("AVRA_RT_SET", "")) == "ok"
+        }
+    }
+    given "the cap bounds what it captures, not merely what it accepts" {
+        // A FLOODING CHILD gave 679 KB natively and 52 MB under the
+        // evaluator for a cap of 1000 — the decision agreed and the
+        // CAPTURE did not, which is a divergence in a value the caller
+        // reads. A drain that empties the pipe before testing the bound
+        // is bounded by the child's speed, not by the cap.
+        then "a cap of 1000 keeps at most a chunk past it, not megabytes" {
+            captured_over(1000) <= 2000
+        }
+        then "the same cap keeps the same amount whatever the engine's speed" {
+            captured_over(64) <= 128 && captured_over(64) >= 64
         }
     }
     given "the tree, not the child" {

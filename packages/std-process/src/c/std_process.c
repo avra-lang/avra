@@ -97,10 +97,17 @@ int64_t avra_proc_word(int64_t token, const char* text) {
 }
 
 /* One `NAME=VALUE` appended. An entry with no `=` names nothing the
-   host can set, and it is refused HERE rather than at the spawn, so
-   the caller learns which entry was wrong while it still knows. */
+   host can set, and neither does one whose NAME is empty — `=V` and
+   `=` alone both have their separator and no name at all. Refused
+   HERE rather than at the spawn, so the caller learns which entry was
+   wrong while it still knows which one it was.
+
+   The package's Avra face refuses an empty name too, and that is the
+   door a program meets. This is not the same check twice: the C is a
+   public seam its own corpus calls directly, so it owes the refusal
+   on its own account. */
 int64_t avra_proc_var(int64_t token, const char* text) {
-    if (!strchr(text, '=')) return -EINVAL;
+    if (text[0] == '=' || !strchr(text, '=')) return -EINVAL;
     return staged(token, g_vars, &g_nvars, text);
 }
 
