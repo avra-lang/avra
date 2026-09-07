@@ -390,6 +390,24 @@ engine's spec, written by dogfooding.
   this and LTO cannot see it: the cold code is inside the hot fn.
   And measure with `make census`, never a sampler: a sampling
   profiler charges a release cascade to whoever was on the stack.
+  THE WIN IS THE FRAME-TO-BODY RATIO, NOT THE FRAME, and the law
+  reads as a licence to chase every prologue without it.
+  `avra_rc_retain` is ~5 instructions called 557M times, so its
+  4-instruction prologue more than DOUBLED it — that is the 26%.
+  `avra_array_get_owned` carries the same prologue on a ~20
+  instruction body at 3.9% of self time: worth ~0.8%, which is
+  UNDER a stopwatch's noise floor here (+/-0.05s on 5.9s), and
+  removing it measured nothing. Price the ratio before paying.
+  AND FIXING EACH LEAF DOES NOT FIX A CALLER THAT INLINES SEVERAL:
+  `get_owned` inlines two ALREADY-CLEAN leaves and their cold
+  tails, and the union's saves get hoisted above the fast path
+  again. Two acquittals worth keeping: counting `stp` does not
+  find this — `avra_array_get` reports one and is clean, its `stp`
+  sitting below the `ret` — so count frame ops BEFORE the first
+  branch; and a `__builtin_return_address` read, named above as a
+  suspect, was innocent here (removing it left the prologue
+  byte-identical). The cold branch being a CALL is what clobbers
+  x30 and forces the save.
 - ALLOCATION HERE IS CHEAP, so avoiding one is a trade, not a win.
   The size-class free lists made a box cost less than the scan or
   the branch that would dodge it: deduplicating `far_merge`'s
