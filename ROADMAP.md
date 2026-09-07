@@ -2455,7 +2455,35 @@ the order is the dependency.
         being true the day C callbacks land.
         Proved in `corpus/native/externs.av`, a file that already
         existed for the host seam: `null some some`.
-  - [x] THE CLASS CHECKED, after the arm fix: every other flattened
+  - [ ] THE CLASS CHECK ABOVE WAS WRONG — RETRACTED THE SAME HOUR by
+        lane A, who found ~10 more sites and CONSTRUCTED three
+        collisions from ordinary source. What follows is kept as
+        written, because the way it was wrong is the useful part.
+        HOW IT WAS WRONG: I grepped fifteen flattened fingerprints,
+        EXAMINED TWO, and reported on all fifteen. `.Call(callee,
+        pins, args)` was in my own grep output and I never opened it
+        — it splices pins and args flat, and `type_fp` of an OPTIONAL
+        type is `fp(2, [fp_str(name)])` while `.Ident(name)` is
+        `fp(2, [fp_str(name)])`, byte for byte. So `f<A>(B)` and
+        `f<A, B?>()` are one fingerprint, with no crafted literal.
+        That is a measured fact plus an inference asserted at the
+        confidence of the measurement — the exact shape I have named
+        in three other lanes today, committed by me while naming it.
+        LANE A'S FIX GENERALISES MINE: a sequence folds to ONE value
+        (`fp_list`), so every payload has fixed arity and no boundary
+        can move — which is what `fp(29, …)` did per arm, applied to
+        every splice. And the tell they found is our own law in our
+        own core: `.If` already reached for a separator,
+        `stmt_fps(then) ++ [0] ++ stmt_fps(else)`, and 0 IS NOT A
+        SPARE VALUE — a statement fingerprint can be 0, and then the
+        separator is data. AN ENCODING SPENDS THE EMPTY VALUE, in the
+        file that records the law.
+        SEVERITY, theirs and bounded: `program_hash` is the parse
+        query's value, so a collision reuses stale analysis for a
+        changed program — latent while a workspace is one-shot, live
+        the day incremental re-analysis ships, where the symptom is
+        "the compiler ignored my edit".
+  - [x] THE CLASS CHECK, AS WRITTEN AND WRONG: every other flattened
         fingerprint in core/nodes.av is unambiguous, and the reasons
         are worth recording so nobody re-derives them.
         A FLATTEN IS AMBIGUOUS ONLY WHEN TWO OR MORE VARIABLE-LENGTH
