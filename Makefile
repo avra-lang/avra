@@ -224,7 +224,9 @@ build/sqlite3.o: packages/std-sqlite/vendor/sqlite3.c
 
 # The driver's own C: the destructor sentinel as a named door, so no
 # Avra program needs a way to build a pointer from an integer.
-build/sqlite_sentinel.o: packages/std-sqlite/src/sentinel.c
+# THE STEM IS THE C FILE'S STEM, so the package-C standard's generic
+# rule can replace this hand rule by deleting it.
+build/sqlite_sentinel.o: packages/std-sqlite/src/c/sqlite_sentinel.c
 	@mkdir -p build
 	cc -c -O2 -Ipackages/std-sqlite/vendor -o $@ $<
 
