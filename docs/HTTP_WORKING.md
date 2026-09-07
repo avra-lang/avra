@@ -61,7 +61,13 @@ up and applies it to io and process): CORE owns the language's own
 substrate — boxes, strings, lists, maps, Bytes, float, the process's
 own facts, and DESCRIPTORS (`avra_fd_read` into a scratch,
 `avra_fd_taken` minting the box once, `avra_fd_write` from an offset),
-because a managed value is minted ONLY by a core row; everything
+because a managed value is minted ONLY by a core row — and that law is
+MECHANICAL, not moral (the substrate lane measured it): an `extern fn`
+that is not a row has `owns_result: false` hard-coded, so what it mints
+is never released; `avra_fd_taken` as a bare extern leaked 3 MB per
+200k takes, 0 as a row. The three doors are `rt_sigs` rows with
+`RtHost` variants and evaluator arms, so the evaluator hosts the fd
+half; the socket half stays native-only. Everything
 socket-shaped is `packages/std-net/src/c/net.c`, built to
 `build/std_net.o` by the Makefile, linked by the manifest's `[link]`,
 declared by `extern fn` in `net.av`, answering ints only (a peer

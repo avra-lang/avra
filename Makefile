@@ -203,7 +203,7 @@ build/sqlite3.o: packages/std-sqlite/vendor/sqlite3.c
 	@mkdir -p build
 	cc -c -O2 $(SQLITE_FLAGS) -o $@ $<
 
-build/std_net.o: packages/std-net/src/c/net.c
+build/std_net.o: packages/std-net/src/c/std_net.c
 	@mkdir -p build
 	cc -c -O2 -Wall -Werror -o $@ $<
 
