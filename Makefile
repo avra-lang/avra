@@ -104,6 +104,7 @@ PACKAGE_OBJS = $(TREE_STEM_LAW)$(sort $(foreach o,$(shell sed -n \
 # own suite asks the LIBRARY to confirm.
 CFLAGS_llvm_wrapper := -I$(LLVM_PREFIX)/include
 CFLAGS_sqlite3 = $(SQLITE_FLAGS)
+CFLAGS_sqlite_sentinel := -Ipackages/std-sqlite/vendor
 
 # A HEADER IS A SOURCE. cc writes each object's dependency list beside
 # it and the next make reads it back, so editing a .h rebuilds what
