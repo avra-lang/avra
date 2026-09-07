@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <stdio.h>
 
 /* ── The stage ────────────────────────────────────────────────────
    THE WORDS FOR THE NEXT SPAWN, LANDED ONE AT A TIME. A spawn used to
@@ -121,4 +122,385 @@ int64_t avra_proc_executable(const char* path) {
     if (stat(path, &st) != 0) return -errno;
     if (!S_ISREG(st.st_mode)) return -EACCES;
     return access(path, X_OK) == 0 ? 0 : -errno;
+}
+
+/* ── The children ─────────────────────────────────────────────────
+   A HANDLE IS A GENERATION OVER AN INDEX, so a closed slot's handle
+   never names the slot's next tenant.
+
+   WHAT IS NOT HERE IS THE POINT: no growth buffers, no pending stdin,
+   no pump. A child's streams are DESCRIPTORS and the language reads
+   and writes them through the runtime's descriptor rows — the only
+   door that mints a managed box. This C opens, signals, reaps and
+   reports readiness; what flows is not its business.  */
+
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <time.h>
+
+/* A child's cwd bound through a file action: POSIX-2024's name where
+   the SDK has it (macOS 26), the `_np` spelling before (Darwin 10.15,
+   glibc 2.29); elsewhere a cwd is refused as unsupported. */
+#if defined(__APPLE__)
+#include <Availability.h>
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+#define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir
+#else
+#define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir_np
+#endif
+#elif defined(__GLIBC__)
+#if __GLIBC_PREREQ(2, 29)
+#define AVRA_ADDCHDIR posix_spawn_file_actions_addchdir_np
+#endif
+#endif
+
+extern char** environ;
+
+enum {
+    PROC_PIPE_IN = 0x1, PROC_PIPE_OUT = 0x2, PROC_PIPE_ERR = 0x4, PROC_MERGE_ERR = 0x8,
+    PROC_NULL_IN = 0x10, PROC_NULL_OUT = 0x20, PROC_NULL_ERR = 0x40,
+    PROC_INHERIT_IN = 0x80, PROC_INHERIT_OUT = 0x100, PROC_INHERIT_ERR = 0x200,
+    PROC_NEW_PGROUP = 0x400, PROC_NEW_SESSION = 0x800, PROC_INHERIT_ENV = 0x2000
+};
+
+/* A status is a TAGGED word — never a small code, so an exit of 0 and
+   a signal of 0 can never read alike. */
+enum { EXIT_CODE = 1, EXIT_SIGNAL = 2 };
+
+/* What `ready` reports. Bits, because more than one can be true. */
+enum { READY_OUT = 1, READY_ERR = 2, READY_IN = 4, READY_GONE = 8 };
+
+typedef struct {
+    int live;
+    int64_t gen;
+    pid_t pid;
+    int pgid;
+    int group;
+    int in_fd, out_fd, err_fd;
+    int64_t status;         /* the tagged word; 0 while running */
+} Proc;
+
+static Proc* g_procs = NULL;
+static int64_t g_nprocs = 0;
+
+static Proc* proc_at(int64_t h) {
+    if (h < 0) return NULL;
+    int64_t idx = h & 0xffffffffLL, gen = h >> 32;
+    if (idx >= g_nprocs || !g_procs[idx].live || g_procs[idx].gen != gen) return NULL;
+    return &g_procs[idx];
+}
+
+static int64_t proc_slot(void) {
+    for (int64_t i = 0; i < g_nprocs; i++) if (!g_procs[i].live) return i;
+    int64_t n = g_nprocs ? g_nprocs * 2 : 16;
+    g_procs = (Proc*)realloc(g_procs, (size_t)n * sizeof(Proc));
+    for (int64_t i = g_nprocs; i < n; i++) { memset(&g_procs[i], 0, sizeof(Proc)); g_procs[i].gen = 1; }
+    int64_t at = g_nprocs;
+    g_nprocs = n;
+    return at;
+}
+
+static void close_fd(int* fd) {
+    if (*fd >= 0) close(*fd);
+    *fd = -1;
+}
+
+/* A pipe's ends kept clear of 0, 1 and 2, so a child's dup2 can never
+   land on an end we still hold. */
+static int raised(int fd) {
+    while (fd >= 0 && fd <= 2) {
+        int d = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+        close(fd);
+        fd = d;
+    }
+    if (fd >= 0) fcntl(fd, F_SETFD, FD_CLOEXEC);
+    return fd;
+}
+
+static int make_pipe(int p[2]) {
+    if (pipe(p) != 0) return -errno;
+    p[0] = raised(p[0]);
+    p[1] = raised(p[1]);
+    return (p[0] < 0 || p[1] < 0) ? -EMFILE : 0;
+}
+
+/* Exactly one of a group of flags, so a caller cannot ask for a pipe
+   AND /dev/null on the same stream and get whichever the code tests
+   first. */
+static int one_of(int64_t flags, int64_t a, int64_t b, int64_t c, int64_t d) {
+    return !!(flags & a) + !!(flags & b) + !!(flags & c) + !!(flags & d) == 1;
+}
+
+/* The staged words as C's argv: the file's own name first, then what
+   was landed, NULL-terminated. The caller frees. */
+static char** argv_of(const char* file) {
+    char** out = (char**)malloc((size_t)(g_nwords + 2) * sizeof(char*));
+    if (!out) return NULL;
+    out[0] = (char*)file;
+    for (int64_t i = 0; i < g_nwords; i++) out[i + 1] = g_words[i];
+    out[g_nwords + 1] = NULL;
+    return out;
+}
+
+static char** envp_of(void) {
+    char** out = (char**)malloc((size_t)(g_nvars + 1) * sizeof(char*));
+    if (!out) return NULL;
+    for (int64_t i = 0; i < g_nvars; i++) out[i] = g_vars[i];
+    out[g_nvars] = NULL;
+    return out;
+}
+
+/* A child up, or -errno. The path is ALREADY RESOLVED — the PATH
+   search is the language's walk over `executable`, so nothing here
+   guesses which program a bare name meant.
+
+   THE STAGE IS SPENT WHETHER OR NOT THE SPAWN SUCCEEDS, which is what
+   makes a failed spawn's words unable to reach the next one. */
+int64_t avra_proc_spawn(int64_t token, const char* file, const char* cwd, int64_t flags, int64_t from_h) {
+    if (token != g_stage_gen || g_stage_gen == 0) return -EINVAL;
+    Proc* from = from_h >= 0 ? proc_at(from_h) : NULL;
+    if (from_h >= 0 && (!from || from->out_fd < 0)) { avra_proc_unstage(token); return -EBADF; }
+    if (from) flags = (flags & ~(int64_t)(PROC_NULL_IN | PROC_INHERIT_IN)) | PROC_PIPE_IN;
+
+    int64_t rc = 0;
+    if (!one_of(flags, PROC_PIPE_IN, PROC_NULL_IN, PROC_INHERIT_IN, 0)) rc = -EINVAL;
+    else if (!one_of(flags, PROC_PIPE_OUT, PROC_NULL_OUT, PROC_INHERIT_OUT, 0)) rc = -EINVAL;
+    else if (!one_of(flags, PROC_PIPE_ERR, PROC_NULL_ERR, PROC_INHERIT_ERR, PROC_MERGE_ERR)) rc = -EINVAL;
+    else if ((flags & PROC_MERGE_ERR) && !(flags & PROC_PIPE_OUT)) rc = -EINVAL;
+    if (rc == 0 && cwd && cwd[0]) {
+        struct stat st;
+        if (stat(cwd, &st) != 0 || !S_ISDIR(st.st_mode)) rc = -ENOTDIR;
+    }
+    if (rc != 0) { avra_proc_unstage(token); return rc; }
+
+    int in[2] = { -1, -1 }, out[2] = { -1, -1 }, err[2] = { -1, -1 };
+    if (from) {
+        /* the upstream's read end was ours to poll — non-blocking; the
+           child that inherits it reads as a child does */
+        in[0] = from->out_fd;
+        fcntl(in[0], F_SETFL, 0);
+    } else if ((flags & PROC_PIPE_IN) && (rc = make_pipe(in)) != 0) goto fail;
+    if ((flags & PROC_PIPE_OUT) && (rc = make_pipe(out)) != 0) goto fail;
+    if ((flags & PROC_PIPE_ERR) && (rc = make_pipe(err)) != 0) goto fail;
+
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (flags & PROC_PIPE_IN) posix_spawn_file_actions_adddup2(&fa, in[0], 0);
+    if (flags & PROC_NULL_IN) posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    if (flags & PROC_PIPE_OUT) posix_spawn_file_actions_adddup2(&fa, out[1], 1);
+    if (flags & PROC_NULL_OUT) posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
+    if (flags & PROC_PIPE_ERR) posix_spawn_file_actions_adddup2(&fa, err[1], 2);
+    if (flags & PROC_MERGE_ERR) posix_spawn_file_actions_adddup2(&fa, out[1], 2);
+    if (flags & PROC_NULL_ERR) posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
+    /* Darwin closes every fd the actions do not name — so the three a
+       child inherits are named. */
+    if (flags & PROC_INHERIT_IN) posix_spawn_file_actions_addinherit_np(&fa, 0);
+    if (flags & PROC_INHERIT_OUT) posix_spawn_file_actions_addinherit_np(&fa, 1);
+    if (flags & PROC_INHERIT_ERR) posix_spawn_file_actions_addinherit_np(&fa, 2);
+#endif
+    if (cwd && cwd[0]) {
+#ifdef AVRA_ADDCHDIR
+        AVRA_ADDCHDIR(&fa, cwd);
+#else
+        posix_spawn_file_actions_destroy(&fa);
+        rc = -ENOTSUP;
+        goto fail;
+#endif
+    }
+    posix_spawnattr_t at;
+    posix_spawnattr_init(&at);
+    short af = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF;
+    sigset_t none, all;
+    sigemptyset(&none);
+    sigfillset(&all);
+    sigdelset(&all, SIGKILL);
+    sigdelset(&all, SIGSTOP);
+    posix_spawnattr_setsigmask(&at, &none);
+    posix_spawnattr_setsigdefault(&at, &all);
+    if (flags & PROC_NEW_PGROUP) { af |= POSIX_SPAWN_SETPGROUP; posix_spawnattr_setpgroup(&at, 0); }
+#ifdef POSIX_SPAWN_SETSID
+    if (flags & PROC_NEW_SESSION) af |= POSIX_SPAWN_SETSID;
+#endif
+#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
+    af |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+#endif
+    posix_spawnattr_setflags(&at, af);
+
+    char** cargv = argv_of(file);
+    char** cenvp = (flags & PROC_INHERIT_ENV) ? environ : envp_of();
+    /* what this program printed comes out before the child's words */
+    fflush(NULL);
+    pid_t pid = -1;
+    int started = (cargv && cenvp) ? posix_spawn(&pid, file, &fa, &at, cargv, cenvp) : ENOMEM;
+    posix_spawn_file_actions_destroy(&fa);
+    posix_spawnattr_destroy(&at);
+    free(cargv);
+    if (cenvp != environ) free(cenvp);
+    avra_proc_unstage(token);
+    /* the upstream's read end is the child's now; we stop reading it */
+    if (from) { in[0] = -1; close_fd(&from->out_fd); }
+    close_fd(&in[0]);
+    close_fd(&out[1]);
+    close_fd(&err[1]);
+    if (started != 0) { rc = -started; goto fail; }
+    if (in[1] >= 0) fcntl(in[1], F_SETFL, O_NONBLOCK);
+    if (out[0] >= 0) fcntl(out[0], F_SETFL, O_NONBLOCK);
+    if (err[0] >= 0) fcntl(err[0], F_SETFL, O_NONBLOCK);
+
+    int64_t idx = proc_slot();
+    Proc* p = &g_procs[idx];
+    int64_t gen = p->gen;
+    memset(p, 0, sizeof(Proc));
+    p->gen = gen;
+    p->live = 1;
+    p->pid = pid;
+    p->pgid = pid;
+    p->group = (flags & (PROC_NEW_PGROUP | PROC_NEW_SESSION)) != 0;
+    p->in_fd = in[1];
+    p->out_fd = out[0];
+    p->err_fd = err[0];
+    return (gen << 32) | idx;
+
+fail:
+    avra_proc_unstage(token);
+    if (from) in[0] = -1;
+    close_fd(&in[0]); close_fd(&in[1]);
+    close_fd(&out[0]); close_fd(&out[1]);
+    close_fd(&err[0]); close_fd(&err[1]);
+    return rc;
+}
+
+/* One of the child's streams as a DESCRIPTOR — 0 its stdin, 1 its
+   stdout, 2 its stderr — for the runtime's read and write rows. A
+   stream that was never a pipe, or whose end we have already let go,
+   is -EBADF: absence is a refusal here and not a sentinel the caller
+   might read as a descriptor. */
+int64_t avra_proc_fd(int64_t h, int64_t stream) {
+    Proc* p = proc_at(h);
+    if (!p) return -EBADF;
+    int fd = stream == 0 ? p->in_fd : stream == 1 ? p->out_fd : stream == 2 ? p->err_fd : -1;
+    return fd >= 0 ? fd : -EBADF;
+}
+
+/* Our end of one stream let go. Closing the child's stdin is how it
+   learns there is no more input; closing a read end stops us reading
+   what we no longer want. Idempotent — a stream already let go is 0,
+   because a caller unwinding should not have to remember. */
+int64_t avra_proc_shut(int64_t h, int64_t stream) {
+    Proc* p = proc_at(h);
+    if (!p) return -EBADF;
+    if (stream == 0) close_fd(&p->in_fd);
+    else if (stream == 1) close_fd(&p->out_fd);
+    else if (stream == 2) close_fd(&p->err_fd);
+    else return -EINVAL;
+    return 0;
+}
+
+/* WHAT IS READY, waiting at most timeout_ms — a negative waits until
+   something is. The answer is BITS, because more than one can be
+   true at once, and 0 means the wait expired with nothing ready.
+
+   THE CHILD'S EXIT IS A BIT LIKE ANY OTHER (READY_GONE), so a pump
+   never has to reap to find out whether to keep going. An interrupted
+   wait answers 0 rather than an error: the caller's own deadline is
+   the authority on whether to wait again. */
+int64_t avra_proc_ready(int64_t h, int64_t timeout_ms) {
+    Proc* p = proc_at(h);
+    if (!p) return -EBADF;
+    struct pollfd fds[3];
+    int n = 0, slot_out = -1, slot_err = -1, slot_in = -1;
+    if (p->out_fd >= 0) { fds[n].fd = p->out_fd; fds[n].events = POLLIN; slot_out = n++; }
+    if (p->err_fd >= 0) { fds[n].fd = p->err_fd; fds[n].events = POLLIN; slot_err = n++; }
+    if (p->in_fd >= 0) { fds[n].fd = p->in_fd; fds[n].events = POLLOUT; slot_in = n++; }
+    int64_t ev = 0;
+    if (n > 0) {
+        int r = poll(fds, (nfds_t)n, timeout_ms < 0 ? -1 : (int)timeout_ms);
+        if (r < 0 && errno != EINTR) return -errno;
+        if (r > 0) {
+            if (slot_out >= 0 && fds[slot_out].revents) ev |= READY_OUT;
+            if (slot_err >= 0 && fds[slot_err].revents) ev |= READY_ERR;
+            if (slot_in >= 0 && (fds[slot_in].revents & (POLLOUT | POLLERR | POLLHUP))) ev |= READY_IN;
+        }
+    } else if (p->pid >= 0 && timeout_ms > 0) {
+        /* nothing to watch but a child still running: a bare wait,
+           since polling no descriptors would spin */
+        struct timespec ts = { timeout_ms / 1000, (timeout_ms % 1000) * 1000000L };
+        nanosleep(&ts, NULL);
+    }
+    if (p->pid < 0) ev |= READY_GONE;
+    return ev;
+}
+
+/* The child reaped if it has ended, without waiting: 0 while it runs,
+   else its TAGGED status — the tag says whether the payload is an exit
+   code or a signal, so an exit of 0 and a signal of 0 never read
+   alike. Reaped once; the status stands for every later ask. */
+int64_t avra_proc_reap(int64_t h) {
+    Proc* p = proc_at(h);
+    if (!p) return -EBADF;
+    if (p->pid < 0) return p->status;
+    int st = 0;
+    pid_t r;
+    while ((r = waitpid(p->pid, &st, WNOHANG)) < 0 && errno == EINTR) {}
+    if (r == 0) return 0;
+    if (r < 0) return -errno;
+    p->pid = -1;
+    if (WIFEXITED(st)) p->status = ((int64_t)EXIT_CODE << 32) | (int64_t)WEXITSTATUS(st);
+    else {
+        int64_t payload = WTERMSIG(st);
+#ifdef WCOREDUMP
+        if (WCOREDUMP(st)) payload |= 0x100;
+#endif
+        p->status = ((int64_t)EXIT_SIGNAL << 32) | payload;
+    }
+    return p->status;
+}
+
+/* A signal to the child, or to its whole group when it leads one and
+   the caller asks — a tree is what a shell leaves behind, and killing
+   only the leader leaves the grandchildren running. A child already
+   reaped is 0, not an error: signalling the dead is a no-op the
+   caller should not have to guard. */
+int64_t avra_proc_signal(int64_t h, int64_t sig, int64_t to_group) {
+    Proc* p = proc_at(h);
+    if (!p) return -EBADF;
+    /* A GROUP OUTLIVES ITS LEADER. The child may already be reaped
+       while a grandchild it left behind still holds the group — and
+       that grandchild is exactly who a caller signalling the TREE
+       means to reach. Testing the child's own life first would make
+       the signal a no-op precisely when it matters. */
+    if (to_group && p->group && p->pgid > 0) {
+        int rc = kill(-p->pgid, (int)sig);
+        return rc == 0 || errno == ESRCH ? 0 : -errno;
+    }
+    if (p->pid < 0) return 0;
+    int rc = kill(p->pid, (int)sig);
+    return rc == 0 || errno == ESRCH ? 0 : -errno;
+}
+
+int64_t avra_proc_pid(int64_t h) {
+    Proc* p = proc_at(h);
+    return p ? (p->pid < 0 ? -ESRCH : p->pid) : -EBADF;
+}
+
+/* The handle let go: every end closed, and the child reaped if it has
+   ended. A child still running is NOT waited for here — the caller
+   decides whether to stop it; this only stops us holding its ends. */
+int64_t avra_proc_close(int64_t h) {
+    Proc* p = proc_at(h);
+    if (!p) return -EBADF;
+    close_fd(&p->in_fd);
+    close_fd(&p->out_fd);
+    close_fd(&p->err_fd);
+    if (p->pid >= 0) {
+        int st = 0;
+        if (waitpid(p->pid, &st, WNOHANG) > 0) p->pid = -1;
+    }
+    p->live = 0;
+    p->gen++;
+    return 0;
 }
