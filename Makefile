@@ -239,16 +239,16 @@ corpus: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@for d in corpus/*/; do \
 	  d=$${d%/}; [ -f $$d/src/main.av ] || continue; \
 	  if [ -f $$d/native-only ]; then legs="native"; else \
-	    ./avra run $$d/src/main.av > /tmp/avra-corpus-eval.out 2>&1 \
-	      || { echo "$$d: eval FAILED"; cat /tmp/avra-corpus-eval.out; exit 1; }; \
-	    diff $$d/expected /tmp/avra-corpus-eval.out \
+	    ./avra run $$d/src/main.av > build/corpus-eval.out 2>&1 \
+	      || { echo "$$d: eval FAILED"; cat build/corpus-eval.out; exit 1; }; \
+	    diff $$d/expected build/corpus-eval.out \
 	      || { echo "$$d: eval != expected"; exit 1; }; \
 	    legs="eval == native"; \
 	  fi; \
 	  ./avra build $$d/src/main.av > build/corpus-bin.path 2> build/corpus-bin.err \
 	    || { echo "$$d: build FAILED"; cat build/corpus-bin.err build/corpus-bin.path; exit 1; }; \
-	  $$(cat build/corpus-bin.path) > /tmp/avra-corpus-native.out; \
-	  diff $$d/expected /tmp/avra-corpus-native.out \
+	  "$$(cat build/corpus-bin.path)" > build/corpus-native.out; \
+	  diff $$d/expected build/corpus-native.out \
 	    || { echo "$$d: native != expected"; exit 1; }; \
 	  echo "$$d: $$legs == expected"; \
 	done

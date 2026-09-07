@@ -232,20 +232,34 @@ fn method_of(buf: Bytes, lo: int, hi: int) -> Method {
     }
 }
 
-/// Every field line up to the blank one, each as two spans.
+/// The request's fields walked, then its head settled.
 fn fields(buf: Bytes, from: int, mark: int, line: Line, limits: Limits) -> Framed {
+    match field_lines(buf, from, mark, limits) {
+        .Bad(why) -> .Refused(why),
+        .All(fs) -> settled(buf, line, fs, mark + 4, limits),
+    }
+}
+
+enum Fields {
+    All(fs: List<Field>)
+    Bad(why: Refusal)
+}
+
+/// Every field line from `from` up to the blank line at `mark`, each
+/// as two spans — the walk a request and a reply share.
+fn field_lines(buf: Bytes, from: int, mark: int, limits: Limits) -> Fields {
     mut out: List<Field> = []
     mut at = from
     while at < mark {
-        if out.length == limits.fields { return .Refused(.FieldCount) }
+        if out.length == limits.fields { return .Bad(.FieldCount) }
         let eol = buf.index_of(crlf(), at)
         match field_line(buf, at, eol, limits) {
-            .Bad(why) -> { return .Refused(why) },
+            .Bad(why) -> { return .Bad(why) },
             .Line(f) -> { out.push(f) },
         }
         at = eol + 2
     }
-    settled(buf, line, out, mark + 4, limits)
+    .All(out)
 }
 
 enum FieldLine {
@@ -379,6 +393,79 @@ fn tokens(buf: Bytes, v: Span) -> List<Span> {
         at = cut + 1
     }
     out
+}
+
+// ── A reply's head (RFC 9112 §4, §6.3; 9110 §15) ──────────────────
+
+/// A framed reply. Spans index the buffer it was framed from; `end`
+/// is the first byte past the blank line.
+export type Reply = { status: int, minor: int, fields: List<Field>, body: ReplyBody, keep_alive: bool, end: int }
+
+/// How a reply's body is delimited: not at all, by a length, by
+/// chunks, or by the connection's close (RFC 9112 §6.3).
+export enum ReplyBody { None, Length(n: int), Chunked, UntilClose }
+
+export enum FramedReply {
+    Partial
+    Complete(reply: Reply)
+    Refused(why: Refusal)
+}
+
+/// The reply at `from` to a request made with `asked`, or why not.
+/// `scanned` is as `framed`'s.
+export fn framed_reply(buf: Bytes, from: int, scanned: int, limits: Limits, asked: Method) -> FramedReply {
+    let mark = buf.index_of(blank_line(), if scanned - 3 > from { scanned - 3 } else { from })
+    if mark < 0 { return reply_unfinished(buf, from, limits) }
+    if mark + 4 - from > limits.head { return .Refused(.HeadLength) }
+    if !crlf_only(buf, from, mark) { return .Refused(.LineEnd) }
+    status_line(buf, from, mark, limits, asked)
+}
+
+fn reply_unfinished(buf: Bytes, from: int, limits: Limits) -> FramedReply {
+    match unfinished(buf, from, limits) {
+        .Refused(why) -> .Refused(why),
+        .Partial or .Complete(_) -> .Partial,
+    }
+}
+
+/// `HTTP/1.x SP 3DIGIT SP reason` — the version's laws are the
+/// request line's, the status three digits, the reason anything
+/// visible.
+fn status_line(buf: Bytes, from: int, mark: int, limits: Limits, asked: Method) -> FramedReply {
+    let eol = buf.index_of(crlf(), from)
+    if eol - from > limits.line { return .Refused(.LineLength) }
+    if eol - from < 12 || buf.at(from + 8) != byte(" ") || buf.at(from + 12) != byte(" ") && eol != from + 12 { return .Refused(.RequestLine) }
+    if !versioned(buf, from, from + 8) { return .Refused(.Version) }
+    if buf.at(from + 5) != byte("1") { return .Refused(.Major) }
+    if buf.run(from + 9, digit()) != from + 12 { return .Refused(.RequestLine) }
+    let reason_lo = if eol == from + 12 { eol } else { from + 13 }
+    if buf.run(reason_lo, vchar()) != eol { return .Refused(.RequestLine) }
+    let status = (buf.at(from + 9) - byte("0")) * 100 + (buf.at(from + 10) - byte("0")) * 10 + buf.at(from + 11) - byte("0")
+    match field_lines(buf, eol + 2, mark, limits) {
+        .Bad(why) -> .Refused(why),
+        .All(fs) -> settled_reply(buf, status, buf.at(from + 7) - byte("0"), fs, mark + 4, limits, asked),
+    }
+}
+
+/// A reply's body is delimited by its status and the request's method
+/// before any field (RFC 9112 §6.3): none for a HEAD's answer, a 1xx,
+/// a 204 or a 304; then chunks; then a length; then the close.
+fn settled_reply(buf: Bytes, status: int, minor: int, fields: List<Field>, end: int, limits: Limits, asked: Method) -> FramedReply {
+    mut fr = Framing {}
+    for f in fields { fr = noted(buf, f, fr) }
+    if fr.why != null { return .Refused(fr.why!) }
+    if fr.chunked && fr.lengths > 0 { return .Refused(.TransferEncoding) }
+    if fr.codings { return .Refused(.Coding) }
+    if fr.length > limits.body { return .Refused(.BodyLength) }
+    let bodiless = asked is .Head || status < 200 || status == 204 || status == 304
+    let body: ReplyBody = when {
+        bodiless -> .None
+        fr.chunked -> .Chunked
+        fr.lengths > 0 -> .Length(fr.length)
+        _ -> .UntilClose
+    }
+    let alive = if fr.close { false } else if minor == 0 { fr.keep } else { true }
+    .Complete(Reply { status: status, minor: minor, fields: fields, body: body, keep_alive: alive && !(body is .UntilClose), end: end })
 }
 
 // ── The chunked body (RFC 9112 §7.1) ────────────────────────────
