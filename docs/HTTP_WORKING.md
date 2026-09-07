@@ -1090,8 +1090,27 @@ a typo, so stems.sh holds every undefined `avra_*` to what
 re-deriving — witnessed failing first on a bogus `avra_nosuch`. The
 same instrument answers the question this lead asked about a symbol
 that is neither `avra_*` nor libc: `--undefined` names every open
-symbol per library, so a new one is visible. Lane A has the runtime
-decision, tree named, with the window to object before step 3.
+symbol per library, so a new one is visible.
+
+LANE A APPROVED THE BINDING AND CORRECTED ITS REASON, which is the
+half worth keeping: the free lists are the WEAKEST argument — two
+copies of `g_free[CLASSES]` PARTITION one malloc heap rather than
+corrupt it (a box freed into one list is re-used from that list), a
+footprint cost, and a footprint argument loses to "it links". THE
+DECISIVE REASON IS `g_once`: a second copy of the `once` table means a
+`once fn` reachable from both settles TWICE with two different
+answers, where "one value for the whole process" is the contract
+F2055 exists to protect — and since 2b4685d those answers are
+IMMORTAL, so two immortal answers where the language promises one,
+neither ever dying. A semantic break, not a cost. Second, `g_acc_live`:
+`AVRA_MEM_STATS` would report one copy's view and look complete —
+`acc_kind_of`'s lesson, structurally. And the honest narrowing: today's
+libraries are PURE C from `[link]` rows — no Avra code, no `once`, no
+allocation — which is exactly why one open symbol was measured; the
+hazard is not live at step 1, it is what makes "bind to the host" the
+RULE rather than a lucky default, and it fires the first time a
+package's C calls back into Avra. `hdr()` is no obstacle (alignment and
+a 4 GB floor, not an image range), and `T _avra_trap` is exported.
 
 NUMBERS ON ONE BASE (b2255fe): `make avra` 12.45s/2.08s -> 12.22s/
 1.81s user/sys; `build/avra` 2,263,728 bytes BOTH times, the same
