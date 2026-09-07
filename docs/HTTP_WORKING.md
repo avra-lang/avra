@@ -241,8 +241,17 @@ order invariants to the letter. A NEAR-MISS ON RECORD: `AVRA_RC_GUARD=1`
 showed 1486 MB live at exit under forty capped floods — the guard KEEPS
 every box that reaches zero; without it 1 MB and nothing live. Knowing
 what an instrument does to a measurement is part of reading it. 95 cases
-in `@std/process`. Pending: the standard's review round, the laws for
-lane D.
+in `@std/process`. THE CHARTER CLOSED (82e6daf lane B's bound — a group
+observed EMPTY is never signalled again, its fixture failing once for
+the wrong reason, a 400-poll bound where a shell needs 32,213; 29496c9
+the standard's review round — four places it misled, every one found by
+a package built against it, never by reading: a descriptor contract
+stale under its own heading, the predicate split missing and invented
+twice, the roster and §5.1 disagreeing about listing for the whole
+campaign, a checklist asking for less than was reachable; 2acff96 lane
+D's shell-variable case — `$NAME`, since a same-named local makes
+`${NAME}` silent). Merged at db0b41e, gate green, 97 process cases.
+Five laws drafted for lane D: two already on main, three sent.
 
 ## Sub-lane: strings — S5 (print, the round-trip law) LANDED (aaab397)
 
@@ -281,6 +290,30 @@ not matter — a faster scan that accepts a smuggled request is not a win
 at any speed. WHERE THE PATTERNS WIN is the ROUTE, already framed, its
 captures values a handler wants — which is where the typed-routes paper
 put them before any of this existed. S7 is the router.
+
+## Sub-lane: strings — S7 (the router) on lane/strings, closing
+
+`grammar Idea = "/ideas/{id}"`, a handler `fn(Request, Idea) -> Response`,
+`routed<Idea>(...)` the ONE place a record type is erased, `dispatch`
+the first route whose method, width and target answer; 404 is a value;
+an unroutable target is a 404 and never a 400 (the framer admits
+`obs-text`, so it is well formed and unrouted). RULINGS: the query is the
+REQUEST's (positional grammar, keyed query — measured failing both
+ways); erasure at the table boundary; the linear scan first with the
+trie earning its number; `parse` gains a `Bytes` seat — one door, two
+seats, the seat following the argument, the crossing at the door.
+MEASURED: 308/506/773 ns at 1/4/8 routes, ~66 ns a route — at eight
+routes the dispatch costs a whole head, the trie's number; the lane's
+first draft cost 36% (a per-route width check) and the bench found it.
+The octets seat then cost 10% at eight routes (850 against 773) because
+the door converts the whole target per route — RULED as S7's design,
+not a hunch: scan octets, convert only a hit's captures, a miss
+allocation-free. Two laws from the lane's own tests: a hole is ONE
+segment (`/ideas/{id}` had bound `7/extra`), and segments are counted
+by separators, never `split`. An ask recorded: a grammar's door as a
+VALUE (`Idea.parse` unapplied is F2003; every route wraps it). Owed:
+the conversion fix, the trie at 3/30/300 (generated), the red team,
+the review.
 
 ## Three receipts from keeping the branch (2026-09-07, to 28f1a4a)
 
