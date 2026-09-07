@@ -671,7 +671,7 @@ impl NodeStore {
             .Bind(name) -> fp(52, [fp_str(name)]),
             .Variant(name, args) -> fp(53, [fp_str(name)].concat([self.pat_fingerprint(a) for a in args])),
             .Lit(v) -> fp(54, [self.expr_fingerprint(v)]),
-            .Format(head, parts) -> fp(112, [fp_str(head)].concat(flatten([hole_fps(p) for p in parts]))),
+            .Format(head, parts) -> fp(112, [fp_str(head)].concat([hole_fp(p) for p in parts])),
         }
     }
 
@@ -737,7 +737,7 @@ impl NodeStore {
     /// coherence law to catch a repeated one.
     fn mark_grammar(s: StmtId, read: GrammarSpec) {
         self.grammars.set(s.index, read)
-        self.restamp(s, 113, [fp_str(read.head)].concat([fp(111, hole_fps(p)) for p in read.parts]))
+        self.restamp(s, 113, [fp_str(read.head)].concat([hole_fp(p) for p in read.parts]))
     }
 
     fn grammar_of(s: StmtId) -> GrammarSpec? {
@@ -1052,6 +1052,11 @@ fn param_fps(params: List<Param>) -> List<int> {
 /// A format part's identity: what it binds, what it parses through,
 /// and the literal that follows it — every field, so a reindented
 /// or retyped hole is a different pattern.
+/// One hole folded to ONE value, so a run of holes has no boundary
+/// that can move whatever a hole comes to carry — the pattern and
+/// the grammar mark fold each hole through this one door.
+fn hole_fp(p: FormatPart) -> int { fp(111, hole_fps(p)) }
+
 fn hole_fps(p: FormatPart) -> List<int> {
     [fp_str(p.hole.name), type_fp(p.hole.ty), fp_str(p.piece), greed_fp(p.hole.greedy)]
 }
