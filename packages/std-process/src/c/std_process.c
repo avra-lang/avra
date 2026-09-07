@@ -186,6 +186,7 @@ typedef struct {
     pid_t pid;
     int pgid;
     int group;
+    int group_gone;         /* the group has been observed EMPTY once */
     int in_fd, out_fd, err_fd;
     int64_t status;         /* the tagged word; 0 while running */
 } Proc;
@@ -479,10 +480,24 @@ int64_t avra_proc_signal(int64_t h, int64_t sig, int64_t to_group) {
        while a grandchild it left behind still holds the group — and
        that grandchild is exactly who a caller signalling the TREE
        means to reach. Testing the child's own life first would make
-       the signal a no-op precisely when it matters. */
+       the signal a no-op precisely when it matters.
+
+       AND THE SAME REASONING BOUNDS IT. A group is safe to signal
+       only while some member exists; once it is genuinely EMPTY the
+       OS may recycle the pgid, and a late signal lands on an
+       UNRELATED group. The pgid is a raw OS number and no generation
+       of ours can guard it — so the slot records the first emptiness
+       it ever observes, and from then on the syscall is not made at
+       all. That bounds the stale window to "never yet observed
+       empty", which is as tight as this gets without the kernel's
+       help. `avra_proc_close` fences a closed handle; this is the
+       one still open. */
     if (to_group && p->group && p->pgid > 0) {
-        int rc = kill(-p->pgid, (int)sig);
-        return rc == 0 || errno == ESRCH ? 0 : -errno;
+        if (p->group_gone) return -ESRCH;
+        if (kill(-p->pgid, (int)sig) == 0) return 0;
+        if (errno != ESRCH) return -errno;
+        p->group_gone = 1;
+        return -ESRCH;
     }
     if (p->pid < 0) return 0;
     int rc = kill(p->pid, (int)sig);

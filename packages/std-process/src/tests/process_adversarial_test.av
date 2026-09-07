@@ -126,6 +126,33 @@ fn flooded(cap: int) -> Result<int, ProcessError> {
     }
 }
 
+extern fn avra_proc_stage() -> int
+extern fn avra_proc_word(token: int, text: string) -> int
+extern fn avra_proc_spawn(token: int, file: string, cwd: string, flags: int, from_h: int) -> int
+extern fn avra_proc_reap(h: int) -> int
+extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
+extern fn avra_proc_close(h: int) -> int
+
+/// A child in its OWN GROUP, run to its end and reaped, then its
+/// group signalled twice — the answers, negated.
+fn emptied_group() -> string {
+    let t = avra_proc_stage()
+    let _ = avra_proc_word(t, "-c")
+    let _ = avra_proc_word(t, "exit 0")
+    // NEW_PGROUP so the child leads a group; NULL in, PIPE out and err
+    let h = avra_proc_spawn(t, "/bin/sh", "", 16 + 2 + 4 + 1024, 0 - 1)
+    // REAPED, NOT MERELY POLLED AT. `reap` does not wait, so the bound
+    // counts immediate asks and a shell takes tens of thousands of
+    // them to start and exit — a bound of 400 left the group ALIVE and
+    // the case read as a failing fix rather than a short loop.
+    mut turns = 0
+    while turns < 400000 && avra_proc_reap(h) == 0 { turns = turns + 1 }
+    let first = 0 - avra_proc_signal(h, 15, 1)
+    let second = 0 - avra_proc_signal(h, 15, 1)
+    let _ = avra_proc_close(h)
+    "${first}/${second}"
+}
+
 fn grandchild_is_stopped() -> Result<string, ProcessError> {
     // the child prints its grandchild's pid and exits; the grandchild
     // holds our pipe past the grace, so the run is truncated — and the
@@ -445,6 +472,17 @@ spec "std/process adversarial" {
         }
         then "the same cap keeps the same amount whatever the engine's speed" {
             captured_over(64) <= 128 && captured_over(64) >= 64
+        }
+    }
+    given "a group whose members are gone" {
+        // A GROUP OUTLIVES ITS LEADER, which is why a signal must not
+        // test the leader's life — and the same reasoning bounds it:
+        // once the group is genuinely EMPTY the OS may recycle the
+        // pgid, and a late signal lands on an unrelated group. The
+        // pgid is a raw OS number no generation can guard, so the
+        // slot records the first emptiness it ever observes.
+        then "the first signal to an emptied group answers ESRCH, and so does every later one" {
+            emptied_group() == "3/3"
         }
     }
     given "the tree, not the child" {
