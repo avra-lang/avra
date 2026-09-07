@@ -1,11 +1,10 @@
 // The router: a route is a grammar over the FRAMED target, each
-// handler keeps its own record, and one table holds routes whose
-// records differ. A target nothing answers is a 404 — a value. A
-// target that is not UTF-8 is a 400, because the framer admits
-// obs-text and an empty target would otherwise match a route.
+// handler keeps its own record, and one compiled table holds routes
+// whose records differ. A target nothing answers is a 404 — a value.
+// The adversarial half of this story is route_adversarial_test.av.
 use @std.http.frame.{framed, limits, Framed, Method}
 use @std.http.http.{Request, Response, text}
-use @std.http.route.{Route, routed, dispatch, conflicts}
+use @std.http.route.{Route, Table, routed, compiled, dispatch, conflicts}
 
 grammar Idea = "/ideas/{id}"
 grammar Search = "/search/{term}/{page}"
@@ -35,7 +34,7 @@ fn asked(line: string) -> Request? {
 fn answered(line: string) -> string {
     let q = asked(line)
     if q == null { return "unframed" }
-    let r = dispatch(routes(), q!)
+    let r = dispatch(compiled(routes()), q!)
     "${r.status} ${r.body.text() ?? ""}"
 }
 
@@ -66,11 +65,11 @@ spec "@std.http route" {
 
     given "a handler's own 404" {
         then "a handler answering 410 is its answer, not a miss" {
-            dispatch([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_gone)], asked("GET /ideas/7 HTTP/1.1")!).status == 410
+            dispatch(compiled([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_gone)]), asked("GET /ideas/7 HTTP/1.1")!).status == 410
         }
         then "a route that does not match still falls through to the next" {
-            dispatch([routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search),
-                      routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea)],
+            dispatch(compiled([routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search),
+                               routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea)]),
                      asked("GET /ideas/7 HTTP/1.1")!).status == 200
         }
     }
@@ -83,7 +82,7 @@ spec "@std.http route" {
         then "the refusal names both patterns and says which is unreachable" {
             let found = conflicts([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
                                    routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone)])
-            found[0] == "`/ideas/{slug}` cannot be told apart from `/ideas/{id}` — the later route is unreachable"
+            found[0] == "`/ideas/{slug}` is unreachable — `/ideas/{id}` is declared above it and matches every target it does"
         }
         then "routes of different shapes do not conflict" {
             conflicts(routes()).is_empty()
