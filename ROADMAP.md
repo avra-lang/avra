@@ -2197,6 +2197,46 @@ the order is the dependency.
         it tried to read `workspace.av`. `make bootstrap`, not `make
         avra`, was the way out each time. Routed to CLAUDE.md's
         curator as a generalisation of the existing rule.
+  - [x] THE PATTERN LADDER GAINS ITS SEAM. LANDED 2026-09-06 for the
+        strings lane's typed string patterns. `Pat` is CORE's, and
+        its three consumers — `pat_types` (enums/check.av),
+        `pat_reg` and `bind_regs` (enums/lower.av) — matched it
+        exhaustively from inside `features/enums/`. So the moment a
+        SECOND feature owns a `Pat` variant, those enums functions
+        must answer for a variant enums does not own, which the
+        doctrine forbids in its own words: "a feature never matches
+        ANOTHER feature's variants". That is why the seam is OWED
+        rather than a rule-of-three judgement — the strings lane
+        offered the weaker argument and I replaced it.
+        `PatSemantics` (contract.av) with NO DEFAULTS, since a
+        pattern that types without accepting is a silently wrong
+        match rather than a missing feature; `pat_semantics_of`
+        (dispatch.av) beside its twins, exhaustive over `Pat`; enums'
+        three bodies behind `EnumPatSemantics`, unchanged.
+        THE RECURSION GOES THROUGH THE SEAM — the point that makes it
+        work at all. A nested pattern is reached by asking
+        `pat_semantics_of` again (`pat_types_of`, `pat_accepts_of`,
+        `pat_binds_of`), never by a local call, so one feature's
+        pattern can sit inside another's. All seven call sites route
+        through it. 1928 cases, 397 spec, no behaviour change.
+  - [ ] AN UNRESOLVABLE `dyn` TRAIT AT A FIELD SEAT REPORTS THE WRONG
+        LAW, and it cost an hour today. `Dispatch { enumpats:
+        EnumPatSemantics { } }` with `PatSemantics` NOT IMPORTED into
+        the file reports F2010 "field `enumpats` is `dyn
+        PatSemantics`, this is `EnumPatSemantics`" — which reads as
+        "your type does not implement the trait" and sends you to
+        audit the impl. The truth is F2032 "`dyn PatSemantics` names
+        no trait", which the same value under a TYPED LET reports
+        immediately.
+        THE CAUSE: `dyn_accepts` (checks.av:173) asks
+        `dyn_contract(shape_of(want))` and answers FALSE when the
+        name does not resolve, so the field seat falls through to its
+        generic mismatch. The typed-let path asks whether the name
+        IS a trait first. Two paths, one question, different answers.
+        This is the builder-prefix defect one law over: a message
+        that is TRUE about the symptom and points away from the
+        cause. The fix is for the field seat to ask the same question
+        the typed let asks, before judging the value.
   - [ ] A CONTENT HASH THAT EXCLUDES SPANS CUTS OFF CONSUMERS THAT
         CARRY THEM — lane A's finding, traced into this lane's files
         and made concrete. The premise is deliberate and documented:

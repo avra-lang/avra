@@ -1596,6 +1596,10 @@ int64_t avra_fd_read(int64_t fd, int64_t max) {
     }
 }
 
+// The errno a nonblocking descriptor answers when it has nothing to
+// give or take — the platform's, asked rather than assumed.
+int64_t avra_errno_again(void) { return EAGAIN; }
+
 // The last read's bytes as a fresh box, once.
 const char* avra_fd_taken(void) {
     const char* b = bytes_owned(g_fd_buf, (size_t)g_fd_len);

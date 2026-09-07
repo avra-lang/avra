@@ -61,7 +61,16 @@ up and applies it to io and process): CORE owns the language's own
 substrate — boxes, strings, lists, maps, Bytes, float, the process's
 own facts, and DESCRIPTORS (`avra_fd_read` into a scratch,
 `avra_fd_taken` minting the box once, `avra_fd_write` from an offset),
-because a managed value is minted ONLY by a core row; everything
+because a managed value is minted ONLY by a core row — and that law is
+MECHANICAL, not moral (the substrate lane measured it): an `extern fn`
+that is not a row has `owns_result: false` hard-coded, so what it mints
+is never released; `avra_fd_taken` as a bare extern leaked 3 MB per
+200k takes, 0 as a row. The three doors are `rt_sigs` rows with
+`RtHost` variants and evaluator arms, so the evaluator hosts the fd
+half; the socket half stays native-only. AND THE SECOND-BUILD RULE
+HELD, measured: a compiled program stopped leaking after one `make
+avra`, the EVALUATOR only after the second (3 MB then 0), because the
+product's own body was compiled by the pre-row binary. Everything
 socket-shaped is `packages/std-net/src/c/net.c`, built to
 `build/std_net.o` by the Makefile, linked by the manifest's `[link]`,
 declared by `extern fn` in `net.av`, answering ints only (a peer
@@ -90,7 +99,15 @@ index-driven over `run`/`index_of`/`eq_at`/`ieq_at`; the chunked
 decoder is RESUMABLE (`chunker`/`fed`, a `Phase`), never a re-walk;
 45 attack-table rows pinned in `tests/frame_test.av`. `http.av`:
 `Request` (spans into its own buffer; `header(name)` slices on ask),
-`Response`, `wire`, `reason`. NEXT: `server.av` (the event loop, a
+`Response`, `wire`, `reason`. THE FRAMER'S COST, MEASURED (bench in
+`corpus/build/bench-frame`, ignored): 3457 ns per four-field 112-byte
+head natively, an order of magnitude off picohttpparser's 366 ns for
+nine fields. Sampled top of stack: `once` reads a THIRD (`once_at` does
+a strcmp per earlier entry on every read — lane A's, asked with the
+numbers), refcount traffic a third (the `with`-copied `Framing` per
+field and the per-field boxes — mine, to measure after lane A's fix),
+the scans a tenth, the framer's own code three percent. Not hoisted
+around: the code reads as it should. NEXT: `server.av` (the event loop, a
 handler `fn(mut A, Request) -> Response`, app state threaded as a
 value), the response framer, `client.av`. The strings lane's typed
 patterns will replace the hand-written scans; until then the framer is

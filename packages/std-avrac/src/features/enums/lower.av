@@ -5,7 +5,7 @@
 //! chain of comparisons; any other match is a CHAIN of tests in arm
 //! order, each arm's binds read inside its own region.
 use core.{ExprId, Reg, Ins, TypeId, Type, BinOp, Arm, PatId}
-use features.{LowerCx, EnumSig, arm_yield, tag_of, payload_at, foreign_node, same_value, tagged_value, lower_defect, arm_end, open_region, close_region, close_region_as, const_int, const_bool, box_size}
+use features.{LowerCx, EnumSig, arm_yield, tag_of, payload_at, foreign_node, same_value, tagged_value, lower_defect, arm_end, open_region, close_region, close_region_as, const_int, const_bool, box_size, pat_semantics_of}
 use features.enums.{arm_binds, all_irrefutable}
 
 fn enums_reg(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -123,14 +123,25 @@ fn chained_reg(mut cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, arms: List<Arm>,
 fn arm_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm, want: TypeId) -> Reg {
     // an OR-RUN binds nothing (the law), and its patterns name
     // variants of different shapes — only a lone pattern binds
-    let regs: List<Reg> = if a.pats.length == 1 { bind_regs(cx, a.pats[0], v, vty) } else { [] }
+    let regs: List<Reg> = if a.pats.length == 1 { pat_binds_of(cx, a.pats[0], v, vty) } else { [] }
     cx.bind_patterns(a.value, regs)
     arm_yield(cx, a.value, cx.reg_of(a.value), want)
 }
 
 /// The registers an arm's binds read, in pattern order — each
 /// payload read at its path.
-fn bind_regs(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> {
+/// THE SEAM, lowering's half: a nested pattern is accepted and
+/// bound by ITS OWNER. The recursion travels through here, which is
+/// what lets one feature's pattern sit inside another's.
+export fn pat_accepts_of(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
+    pat_semantics_of(cx.dispatch, cx.view.store.pat(p)).pat_accepts(cx, p, v, vty)
+}
+
+export fn pat_binds_of(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> {
+    pat_semantics_of(cx.dispatch, cx.view.store.pat(p)).pat_binds(cx, p, v, vty)
+}
+
+export fn bind_regs(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> {
     match cx.view.store.pat(p) {
         .Bind(_) -> [v],
         .Variant(name, args) -> payload_binds(cx, name, args, v, vty),
@@ -157,7 +168,7 @@ fn payload_binds(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: 
     // LICENSED I3: the payload reads must be EMITTED in pattern order — a fold, not a map
     for k, a in args {
         if k < carried.length && looks_inside(cx, a) {
-            out = out.concat(bind_regs(cx, a, payload_at(cx, v, k, carried[k]), carried[k]))
+            out = out.concat(pat_binds_of(cx, a, payload_at(cx, v, k, carried[k]), carried[k]))
         }
     }
     out
@@ -167,12 +178,12 @@ fn payload_binds(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: 
 /// `a || b` as the lazy region, so a later alternative is tested
 /// only when the earlier ones refused.
 fn accepts_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm) -> Reg {
-    mut acc = pat_reg(cx, a.pats[0], v, vty)
+    mut acc = pat_accepts_of(cx, a.pats[0], v, vty)
     mut j = 1
     while j < a.pats.length {
         open_region(cx, acc)
         arm_end(cx, const_bool(cx, true))
-        let next = pat_reg(cx, a.pats[j], v, vty)
+        let next = pat_accepts_of(cx, a.pats[j], v, vty)
         acc = close_region_as(cx, cx.view.types.intern(Type.Bool), next)
         j = j + 1
     }
@@ -183,7 +194,7 @@ fn accepts_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm) -> Reg {
 /// a literal when equal; a variant when the tag agrees AND its
 /// payload patterns accept — read only under the tag test, so a
 /// missing payload is never touched.
-fn pat_reg(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
+export fn pat_reg(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
     match cx.view.store.pat(p) {
         .Wild or .Rest or .Bind(_) -> const_bool(cx, true),
         .Lit(lit) -> same_value(cx, v, cx.reg_of(lit), vty),
@@ -218,7 +229,7 @@ fn payloads_reg(mut cx: LowerCx, carried: List<TypeId>, args: List<PatId>, v: Re
     for k, a in args {
         if k < carried.length {
             open_region(cx, acc)
-            let next = pat_reg(cx, a, payload_at(cx, v, k, carried[k]), carried[k])
+            let next = pat_accepts_of(cx, a, payload_at(cx, v, k, carried[k]), carried[k])
             arm_end(cx, next)
             let no = const_bool(cx, false)
             acc = close_region_as(cx, cx.view.types.intern(Type.Bool), no)
