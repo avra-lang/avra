@@ -3913,6 +3913,36 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         alternative before asking: a `Fmt<R>` value type would have
         been a new core `Type` variant, 44 exhaustive matches in 19
         files across three lanes (`make vocab` names two of them).
+  - [ ] A `string` CROSSING TO C THAT HOLDS A NUL — THE OWNER'S DOOR,
+        raised by lane C (main 9c49b6e) off the io lane's finding: a
+        79-byte path with a NUL at byte 5 READ A DIFFERENT FILE on both
+        engines, and lane B's twin in @std/process RAN A DIFFERENT
+        PROGRAM. Not loss — the C side RESOLVES the name, so the
+        truncation acts on an object the program never named; and
+        eval == native is blind to it by construction, the third such
+        finding in a day. Every package may declare `extern fn f(path:
+        string)` through the extern host and inherits it; io fixed six
+        verbs, process its three plus every word — the next package will
+        not know how many verbs it has. THE HTTP LEAD'S RECOMMENDATION,
+        by the two-hats law (a value the callee reinterprets wears two
+        hats; the fix makes the reinterpretation impossible, never an
+        escape): (1) THE SEAM TRAPS — every `string` seat of a package
+        extern checks the header's length against the first NUL at the
+        crossing, in ONE check both engines share (the trampoline's
+        marshalling and the native lowering's), and a NUL there is a
+        wreck ("a string holding a NUL crossed to C as two strings",
+        exit 2), so the invariant is the seam's and no package can
+        forget a verb; (2) A FACE THAT TAKES FOREIGN TEXT REFUSES WITH
+        WORDS BEFORE THE SEAM (`one_path`, `Holed(path, at)`), the
+        braces to the seam's belt, because a trap is not an answer a
+        program can handle; (3) `Bytes` IS THE ESCAPE HATCH — a seat
+        that carries its length, for a caller who means octets; and a
+        documented hazard with a lint is REFUSED, since a lint documents
+        what it cannot close. COST: one scan per string seat per extern
+        call, on calls that are syscalls or spawns; runtime ROWS are
+        trusted and unchanged. Runtime rows that take text (`avra_fd_*`
+        take `Bytes`) are already length-carrying by the descriptor
+        design.
   - [ ] AN UNBOXED (ptr, len) VIEW, escape-analysed: the zero-copy
         capture the typed-routes paper wants. WANTING SITE: the framer's
         header values. Slot-layout territory (lane A). Until then, the
