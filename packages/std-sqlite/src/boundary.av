@@ -1,36 +1,37 @@
 //! WHAT THE GUARDS MUST SEE. Avra's `string` carries its length; C's
 //! ends at the first NUL. So a value crossing into C is judged by the
-//! callee on DIFFERENT BYTES than a guard built from the lossy
-//! primitives read.
+//! callee on DIFFERENT BYTES than the caller passed.
 //!
-//! NUL-SAFE, because they read the header: `.length`, `char_code`,
-//! `starts_with`, `ends_with`, `trim`, `+`.
-//! NUL-LOSSY, because they are C string calls: `==`, `contains`,
-//! `index_of`, `split`, `replace`.
+//! THE SPLIT THIS HEADER USED TO NAME IS GONE. It listed `==`,
+//! `contains`, `index_of`, `split` and `replace` as NUL-LOSSY C string
+//! calls, against a NUL-SAFE half that read the header. `f57372a`
+//! changed all five to `memcmp`/`memmem` over the length. Measured:
+//! `"ab\0cd"` has length 5, is UNEQUAL to `"ab"`, `contains("cd")`
+//! answers true, `index_of("cd")` answers 3, and splitting on the NUL
+//! gives two parts. **A NUL IS AN ORDINARY CHARACTER ON THE AVRA SIDE.**
 //!
-//! THE RULE: a guard and the thing it guards must read the same bytes.
-//! Where the callee is C, that means judging the whole string and
-//! refusing anything C would truncate — a value whose meaning changes at
-//! the boundary is not a value anyone meant to pass.
+//! THE RULE IS UNCHANGED AND THE GUARD IS STILL NECESSARY, because the
+//! truncation was never on our side of the seam — it is at the EXTERN
+//! SEAT and only there. `sqlite3_open` stops at the first NUL whatever
+//! Avra can see, so a guard and the thing it guards must still read the
+//! same bytes, and a value whose meaning changes at the boundary is not
+//! a value anyone meant to pass. What changed is the REASON: nothing
+//! here was ever blind, and the door is a boundary door rather than a
+//! compensation for lossy primitives.
 //!
 //! A NUL HAS NO LITERAL SPELLING. `"\0x"` is THREE characters —
 //! backslash, `0`, `x` — so `@std/text`'s `from_codepoint` and
 //! `from_codepoints` are the only way to mint one.
 //!
 //! This was not theoretical. A path `from_codepoints([0, 120])` — a NUL
-//! then an `x`, length 2 — passed a door built from `==`, and reached
-//! SQLite as the EMPTY STRING: the private temporary database deleted at
-//! close, which is the exact trap that door exists to prevent.
+//! then an `x`, length 2 — reaches SQLite as the EMPTY STRING: the
+//! private temporary database deleted at close, every write succeeding
+//! and the data silently gone. That is the trap this door exists to
+//! prevent and it is unaffected by any of the above.
 
-/// Whether the text holds a NUL anywhere, read with the primitives that
-/// can see one.
-export fn has_nul(s: string) -> bool { [s.char_code(i) for i in 0..s.length].any(it == 0) }
 
-/// Whether the text is nothing but blanks — space, tab, newline,
-/// carriage return. A CHARACTER test, never a reading of SQL.
-export fn is_blank(s: string) -> bool { [s.char_code(i) for i in 0..s.length].all(blank_code(it)) }
 
-fn blank_code(c: int) -> bool { c == 32 || c == 9 || c == 10 || c == 13 }
+
 
 
 // ── The pointer sentinels ───────────────────────────────────────
