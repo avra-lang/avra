@@ -865,6 +865,111 @@ contracts held. The seed is unchanged: no runtime symbol moved.
 Door 1's primitives half is DONE; its seam half is the substrate
 lane's, in flight; immortal `once` is still on the owner's word.
 
+## The seam's fixes landed (342ad91), the review round (01d4b3d), and S2c approved in shape
+
+The substrate lane's 55c2dd4 fixed the three severe findings its red
+team made beside the crossing check, and a cold bootstrap proved them:
+the frame REFUSES BEFORE THE WORK (it had recorded the refusal and
+staged on, so `atoi` read address zero and the evaluator segfaulted
+five ways with `check` clean — the one sibling of four not hoisted
+above the work); F2065, an extern that names a row IS the row (both
+engines ask the registry first, so a same-named extern's seats were
+discarded in silence; it fires nowhere, which is the point); and
+`make externs` holds the `Bytes` exemption by whether the CALLEE KNOWS
+THE LENGTH — from its prototype, or from the box header that only core
+may read — which is why three of our own lengthless seats are right
+and foreign C's never are. Merged with one conflict, the keeper's
+self-test list (octet and inert cases unioned, 92 hold).
+
+The review round (c1dea58) found the frame's text door justifying its
+unconditional check with the sentence F2065 had just disproved — the
+check stays, the reason moved, and a comment carrying a justification
+carries the true one. `carries_text` stays where it is until a THIRD
+consumer asks the question.
+
+S2C, THE DESIGN NOTE (1247120, `docs/2026_09_07_S2C_DESIGN.md`), read
+whole and APPROVED IN SHAPE before any code, with lane A's review in
+the named tree. Its centre is a hazard found by looking at how the
+corpus runs: every corpus program runs in ONE PROCESS, so a library
+opened `RTLD_GLOBAL` would let every LATER program reach `sqlite3_open`
+whether or not it declared the dependency — a PASS that should have
+been a refusal, decided by directory order. The library is opened
+`RTLD_LOCAL`, written explicitly, and the scope test is an ORDERED pair
+in one process. Its second find is the deadline law self-applied: the
+acceptance test "no sqlite dependency refuses `sqlite3_open`" passes
+today only because the symbol is ABSENT from `build/avra`
+(`nm | grep -c` answers 0, verified on main by lane A), so it expires
+the day anything links sqlite into the compiler.
+
+THE TWO QUESTIONS, answered by lane A and matching this lead's
+recommendation: the lookup takes the handles AS AN ARGUMENT
+(`avra_ffi_symbol_in(handles, name)`) — the frame's staging area is
+per-CALL scratch and a handle set is per-PROGRAM identity, and a set
+held in frame state is §1's leak one layer up; and `tools/libs.py`
+groups the `[link]` rows per package and answers a package's library as
+DATA that `stems.sh` consumes, since make cannot parse TOML and a
+generated `.mk` adds a staleness nothing reports. Folded in before
+code: the ordered test WITNESSED failing under `RTLD_GLOBAL`; the order
+of the pair a property of the harness, never of a directory walk; the
+gate's corpus target depending on `libs`; every §5 number with its
+commit beside it (2,263,008 bytes is lane/http's image, main's is
+2,122,704 — unbased numbers are not a comparison); §6 as its own line
+in §2.3; and a registered condition — under the evaluator two programs
+that depend on sqlite share the library's PROCESS-GLOBAL STATE, which
+native never did, and symbol scoping does not scope state.
+
+Order from here: the `avra_exec_self` row and the aggregate-seat law
+(ROW, ruled; the law worded as the PLAIN half of F2056, lane D's
+verified wording), then S2c in its §8 order.
+
+## Door 3 landed: a `once` answer is IMMORTAL (main 2b4685d, merged at 6c3522a, seed 1c47ce5)
+
+Lane A landed the second half of the `once` ask on the owner's word in
+their session: a `once` answer is minted once and lives for the
+process, and its header says so as a REFLECTION of the kind
+(`-(kind + 4)`, negative for every shape so `kind < 0` still no-ops
+retain and release for free) — never a replacement for it. TWO
+DESIGNS FAILED FIRST, both worth carrying with lane A's name on them:
+marking the box `KIND_STATIC` CORRUPTS, because `box_clone` dispatches
+on kind and a once-answered map would have been cloned as an array —
+the registry law in C again; and the BORROW route (`lends: true`, no
+retain) segfaulted every suite, because the lowering's region has ARMS
+THAT DIFFER IN OWNERSHIP — the present arm carries the cached value,
+the absent arm a fresh one — and the caller releases either way. That
+is what immortality buys and borrowing does not: it makes the
+asymmetry HARMLESS instead of teaching the lowering about it. And the
+prerequisite landed as part of the decision: an immortal value is
+shared by definition, `is_shared` answers true, a write through it
+copies (lane A's probe: `after poke: 3, cache now: 2`).
+
+THE NUMBER LANE A COULD NOT TAKE, taken here on ONE tree: lane/http
+1c47ce5, the same compiler and the same bench binary
+(`tools/bench/frame_head`, 2M four-field heads), only the runtime
+object swapped between e45e37b's and 1c47ce5's, census sites resolved
+by `nm`.
+
+    retains    410,001,348 -> 238,000,998   (205 -> 119 a head)
+    releases   480,001,749 -> 308,001,380   (240 -> 154 a head)
+    reclaims    70,000,401 -> 70,000,401
+    once reads  86,000,194 -> 86,000,194, one pointer compare each
+    avra_once_get as a retain site: 86,000,175 -> gone, and the two
+    call-site retains behind it (crlf 12.0M, tchar 10.0M) with it
+
+172M retains and 172M releases off the run — twice the read count,
+the retain at the read and the caller's release of it. Timing, three
+runs each back to back: 2066/2104/2069 -> 2028/2038/2020 ns a head,
+~40 ns, ~2%, at the edge of what the stopwatch resolves; THE COUNT IS
+THE RECEIPT and the clock only agrees with it. The framer's ledger on
+shipping: 2410 (own wastes) -> 2185 (once index) -> 2045 -> ~2030.
+Largest retain site now: `avra_array_get_owned` at 11 a head, then the
+framer's own `settled` records. Also in this merge: the sqlite lead's
+retraction of the lossy claim in four more places, and lane B's
+`nul_at` as ONE SEARCH (`s.index_of(nul_needle())`, a `memmem` over
+the header's length, allocating nothing) — which beat the octet body
+this branch had given the shared helper hours earlier, so that body
+and its needle died. All three doors are now decided and two are
+landed; door 2 (S2c) is the substrate lane's, approved in shape above.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
@@ -899,8 +1004,8 @@ faces refuse with words first, `Bytes` the escape; (2) S2c — the
 per-package shared library the evaluator opens by the program's own
 closure, derived by the tree and never named by a manifest (the
 substrate lane, after the seam); (3) immortal `once` answers with the
-`is_shared` line landed alongside (lane A, on the owner's word in their
-session). Still owed: the validation of lane/http itself, before
+`is_shared` line landed alongside — LANDED, main 2b4685d, merged here at
+6c3522a and measured above. Still owed: the validation of lane/http itself, before
 anything reaches main.
 
 ## Slice 3 — `@std.http` (AFTER)

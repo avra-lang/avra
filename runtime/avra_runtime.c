@@ -49,6 +49,18 @@
 // reclaimed box.
 enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MAP = 2, KIND_STR = 3, KIND_BYTES = 4 };
 
+// AN IMMORTAL BOX KEEPS ITS SHAPE. A `once` answer lives for the
+// process, so retain and release must no-op on it — which the
+// `kind < 0` test already gives free — but `box_clone` still has to
+// know whether it is a MAP, because a write through a shared value
+// CLONES it, and a map cloned as an array is memory corruption.
+// Overwriting the kind with KIND_STATIC loses exactly that. So
+// immortality is a REFLECTION of the kind and never a replacement:
+// negative for every shape, and it decodes back.
+#define KIND_IMMORTAL(k) (-((k) + 4))
+#define IS_IMMORTAL(k)   ((k) <= -4)
+#define KIND_SHAPE(k)    (IS_IMMORTAL(k) ? -(k) - 4 : (k))
+
 // "AVRA" — the bytes that say a header is this runtime's.
 #define AVRA_TAG 0x41565241u
 
@@ -989,6 +1001,13 @@ void avra_once_set(void* key, void* value) {
     if (g_once_count == AVRA_ONCE_MAX) { avra_trap("more `once` values than the cache holds"); }
     avra_rc_retain(key);
     avra_rc_retain(value);
+    // THE ANSWER BECOMES IMMORTAL. It is held for the life of the
+    // process, so every later retain and release of it is bookkeeping
+    // for a death that cannot happen — 104M of them in one framer
+    // run. Marked here, where the cache takes its reference, so the
+    // kind reflects the fact rather than the intention.
+    Header* vh = hdr(value);
+    if (vh != NULL && vh->kind >= 0) vh->kind = KIND_IMMORTAL(vh->kind);
     g_once[g_once_count].key = key;
     g_once[g_once_count].value = value;
     once_index(key, g_once_count);
@@ -1125,9 +1144,15 @@ static void* array_clone(AvraArray* a) {
 
 // Shared means a count above one — the holder's own reference is
 // the one. What is not a counted box is never one a place opens.
+// AN IMMORTAL VALUE IS SHARED BY DEFINITION — nothing can hold the
+// only reference to something that never dies, so a write through it
+// must COPY. Without this an immortal box reads as UNIQUE and the
+// write lands in the process-wide original.
 static int is_shared(void* p) {
     Header* h = hdr(p);
-    return h != NULL && h->kind >= 0 && h->rc > 1;
+    if (h == NULL) return 0;
+    if (IS_IMMORTAL(h->kind)) return 1;
+    return h->kind >= 0 && h->rc > 1;
 }
 
 // Opens a mut cell's box for writing: itself when nothing else
@@ -1302,7 +1327,7 @@ static void* map_clone(AvraMap* m) {
 static void* box_clone(void* p) {
     CENSUS(note_copy(__builtin_return_address(0)));
     Header* h = hdr(p);
-    return (h && h->kind == KIND_MAP) ? map_clone((AvraMap*)p) : array_clone((AvraArray*)p);
+    return (h && KIND_SHAPE(h->kind) == KIND_MAP) ? map_clone((AvraMap*)p) : array_clone((AvraArray*)p);
 }
 
 // ── Text building ───────────────────────────────────────────────
