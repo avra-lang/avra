@@ -117,7 +117,7 @@ build/%.o: %.c
 -include $(patsubst %.o,%.d,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS)))
 
 # Every package that carries spec cases, in dependency order.
-SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite
+SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite packages/std-net packages/std-http
 
 .PHONY: census traps test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab stems sweep seed bootstrap \
         check run ir emit build-native native-check avra
