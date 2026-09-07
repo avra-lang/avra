@@ -3015,6 +3015,46 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  THE COUNTING RULE, WORKED — four `is`-chains over `Type`, and they do
+  not all go the same way. The law says count the ANSWERING ARMS and no
+  grep separates a registry from a projection; these are the first hard
+  cases anyone has written down.
+    `comparable` — 4 shapes answer true. REGISTRY, converted.
+    the interpolation law — 5 answer printable. REGISTRY, converted,
+      extracted as a named `printable(sh)` whose doc says why it is a
+      match and not a chain.
+    `wears(sh, want) || sh is .Error` — ONE arm answers. The `is` asks
+      whether a shape is THE ABSORBER, and a new type is never the
+      absorber. **PROJECTION: `is` is the right idiom and a match would
+      be ceremony.**
+    `sh is .Opt` / `sh is .Str` in lowering — strictly THREE behaviours,
+      therefore a registry — AND THE CATCH-ALL IS HONEST, which is the
+      case the law did not have. Lowering there is deliberately
+      TYPE-AGNOSTIC: it emits `Bin` and the BACKEND picks the instruction
+      from the operand type, which is exactly why float needed no edit at
+      that site. **The hazard is one level down** — a future value
+      category needing a different lowering SHAPE (as `Str` does) would
+      silently get `Bin`. Left, flagged, and reported as reasoning rather
+      than as a patch, because converting it refactors the lowering
+      dispatch: a slice, not a line.
+  So HALF of a reflexive sweep would have been churn dressed as rigour,
+  and the difference is visible only by counting.
+  **AND A CONVERTED REGISTRY THAT CANNOT BREAK IS THEATRE.** The
+  conversions were FIRE-TESTED: a throwaway `Probe` variant added to
+  `Type`, rebuilt, and both converted sites now appear in the break list
+  **where they were silent before**; probe reverted, tree clean. That is
+  the untested-instrument law turned on one's own fix, unprompted — and
+  it is the step that separates "I made it exhaustive" from "I watched it
+  refuse".
+  AND A KEEPER'S ORDER CARRIES ATTRIBUTION. `make gate` now runs `traps`
+  AFTER `tested` (lane A, `34faa19`), because a trap row may now depend on
+  a PACKAGE: under the old order a broken `@std/sqlite` failed the TRAP
+  KEEPER first — "tx_hot_journal did not COMPILE" — **naming the harness
+  for the driver's defect.** The suites run first so a package's own cases
+  fail before anything of the keeper's does. Attribution over a
+  two-second head start, and the same shape as the three cascades that
+  misdirected three authors in one evening: an error naming an innocent
+  artifact.
   FLOAT'S FINDINGS, NONE OF WHICH ARE FLOAT (built 2026-09-06; 13 files
   and 30 arms for `Type.Float`, 4 for `Expr.FloatLit`, 5 for
   `RtKind.F64` — the compiler enumerated every one).
