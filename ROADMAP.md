@@ -1868,6 +1868,19 @@ the order is the dependency.
         holds a PAIR (`{present, value}` is two words, a slot is
         one) — the runtime's slot layout, lane A's. Blocked on that
         layout; the design is the nullable representation's (above).
+        A NAMED WANTING SITE, 2026-09-06, from the HTTP lane:
+        `packages/std-http/src/frame.av`'s `Framing`, where "a
+        Content-Length was seen" is exactly a nullable int and
+        `{ length: int? = null }` is F2008. It carries a count beside
+        the value for now — an honest workaround rather than an
+        entrenched one, since the framing law needs that count
+        anyway. Their probe also isolates the boundary the way this
+        entry claims it: a nullable ENUM field COMPILES (it rides a
+        pointer, so its nullable is a niche), and only the SCALAR
+        nullable refuses. Verified here at both halves.
+        A wanting site is what turns a blocked item from a want into
+        a debt, so it belongs here rather than as a fourth record of
+        one thing in the sugar backlog.
   - [ ] FIELD PUNNING `T { name, value }` (needs the type-name
         lexical class decided with the spec — Capitalized?).
         SIZED 2026-09-05: the builder is a line, the grammar is not.
