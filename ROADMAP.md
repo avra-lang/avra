@@ -3620,6 +3620,28 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  A TEST MOVES DOWN A LAYER RATHER THAN INTO THE BIN — THIRD FIRING, and
+  the third is the one that makes it a law rather than a habit, because
+  the test could not simply be REWRITTEN: it had to change PROCESS. When
+  the extern seam began trapping on an interior NUL at a bare `const
+  char*` seat, two adversarial cases documenting the WALL's truncation
+  (`wall_completes("select 1;\0 select")`, and `sqlite3_stricmp` on text
+  and its own prefix) **stopped being expressible in a suite at all** —
+  a trap ends the process, so the assertion cannot be made where
+  assertions live. They became a `traps.sh` row demanding the trap's
+  exact words.
+  THE C BEHAVIOUR THEY DOCUMENTED IS UNCHANGED AND STILL TRUE. What
+  changed is which layer can WITNESS it: the face refuses (a `Result` a
+  caller catches), the seam traps (a verdict, exit 2), and the wall's
+  truncation is now visible only from a harness that expects a process to
+  die. **Ask whether the old assertion is FALSE or merely in the wrong
+  PLACE** — here it was in the wrong place twice over, first the wrong
+  layer and then the wrong kind of harness.
+  AND THE LAW IT PROVES IS THE LAYERING ONE: with the seam trapping
+  beneath them, "a library refuses before the language traps" became
+  literally true rather than aspirational — the trap is the FLOOR under
+  the driver's guards, so a trap firing inside `@std/sqlite` is now a
+  bug in the guards by construction rather than by agreement.
   A LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS — the layering rule this
   campaign owes the NUL crossing, earned when the language began trapping
   on an interior NUL at a `string` extern seat. The driver already
