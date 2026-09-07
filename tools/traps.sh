@@ -108,6 +108,42 @@ match run() {
     .Err(e) -> e.verb,
 }
 '
+# A STRING CROSSING TO C IS ONE STRING. Avra measures text by the
+# header and C reads to the first NUL, so a string holding one is TWO
+# VALUES at the seam — a name that was checked is not the name that is
+# used. Every mature runtime refuses rather than truncates; ours traps
+# with the OFFSET, and the same helper is called by the extern frame,
+# so the two engines cannot disagree about which strings may cross.
+#
+# THREE POSITIONS, because a scan that stops early passes one of them:
+# a NUL first, last and inside. "Last" is inside the LENGTH — a
+# five-byte string ending in NUL is four bytes to C and five to the
+# program, which is the same two values.
+trapped nul_crossing_first "avra: a string holding a NUL crossed to C as two strings — byte 0" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
+extern fn avra_host_env(name: string) -> string
+let s = avra_str_from_codepoint(0) + "PATH"
+avra_host_env(s).length'
+
+trapped nul_crossing_inside "avra: a string holding a NUL crossed to C as two strings — byte 2" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
+extern fn avra_host_env(name: string) -> string
+let s = "PA" + avra_str_from_codepoint(0) + "TH"
+avra_host_env(s).length'
+
+trapped nul_crossing_last "avra: a string holding a NUL crossed to C as two strings — byte 4" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
+extern fn avra_host_env(name: string) -> string
+let s = "PATH" + avra_str_from_codepoint(0)
+avra_host_env(s).length'
+
+# AND THE EXEMPTION IS NOT A HOLE: an INERT row reads the bytes it was
+# handed and resolves nothing, so a NUL rides through it untouched —
+# the trap here is the BOUNDS one, reached only because the string
+# carried all five of its bytes past `join`, `length` and `char_code`.
+trapped nul_through_inert "avra: index 9 is out of bounds (length 5)" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
+let s = "ab" + avra_str_from_codepoint(0) + "cd"
+let joined = ["x", s].join("|")
+let codes = [s.char_code(i) for i in 0..s.length]
+codes[9]'
+
 trapped shift_wide "avra: a shift count must be between 0 and 63" 2 '' 'let a = 1
 mut n = 0
 n = n + 64

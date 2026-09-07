@@ -42,6 +42,7 @@ RtKind	packages/std-avrac/src/language/interp.av	stage_seat	how an argument cros
 RtKind	packages/std-avrac/src/language/interp.av	answered	how an answer crosses back, interpreted
 RtKind	packages/std-avrac/src/language/interp.av	rides_fp	which register file a seat rides
 RtKind	packages/std-avrac/src/language/interp.av	carries_cell	whether a seat holds an inout's address
+RtKind	packages/std-avrac/src/language/interp.av	carries_text	whether a seat could carry text across the seam
 Type	packages/std-avrac/src/features/checks.av	comparable	which shapes equality may compare
 Type	packages/std-avrac/src/features/str_lit/check.av	printable	which shapes an interpolation hole may show"
 

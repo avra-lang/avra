@@ -992,6 +992,43 @@ int64_t avra_insist_scalar(int64_t present, int64_t value) {
 // itself needs no frame: an 80-byte message buffer written into the
 // hot path cost every one of a compile's hundreds of millions of
 // reads a 128-byte stack reservation.
+/* A STRING CROSSING TO C IS ONE STRING. Avra measures text by the
+   header's length and C reads to the first NUL, so a string holding
+   one is TWO VALUES at the seam — the guard and the callee inspect
+   different bytes, and a name that was checked is not the name that
+   is used. Every mature runtime refuses this rather than truncating:
+   Rust's `CString::new` answers a `NulError` carrying the position,
+   Go's `syscall.ByteSliceFromString` answers EINVAL, Python raises
+   `ValueError: embedded null byte`, Node throws
+   `ERR_INVALID_ARG_VALUE`. Avra traps, with the offset, and never
+   truncates and never escapes.
+
+   THE CHECK IS AT THE CROSSING AND NOWHERE ELSE, so both engines
+   share it: the native lowering calls this and so does the extern
+   frame's text staging. A face that refuses earlier with words a
+   program can handle — `@std/io`'s `Holed(path, at)` — is the door;
+   this is the belt behind it.
+
+   `Bytes` IS THE ESCAPE: a seat that carries its own length is for a
+   caller who means octets, and nothing here touches one. */
+__attribute__((noinline, cold, noreturn))
+static void trap_nul(size_t at) {
+    char msg[96];
+    snprintf(msg, sizeof msg,
+             "a string holding a NUL crossed to C as two strings — byte %lld",
+             (long long)at);
+    avra_trap(msg);
+    abort();
+}
+
+const char* avra_str_crossing(const char* s) {
+    if (__builtin_expect(s != NULL, 1)) {
+        const char* at = (const char*)memchr(s, 0, str_len(s));
+        if (__builtin_expect(at != NULL, 0)) trap_nul((size_t)(at - s));
+    }
+    return s;
+}
+
 __attribute__((noinline, cold, noreturn))
 static void trap_bounds(int64_t i, int64_t len) {
     char msg[80];
