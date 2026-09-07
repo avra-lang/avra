@@ -507,10 +507,40 @@ performed on a length that makes it meaningless.
 program can HANDLE, before any C is reached. The trap is what stands
 behind a face nobody wrote.
 
-**`Bytes` IS THE ESCAPE.** A seat carrying its own length is for a
-caller who means octets, and the check never touches one: it fires for
-a TEXT register only, so a list or a map at a pointer seat is a box
-and not a name.
+**THE RULE IN THREE SENTENCES.** A text seat the callee RESOLVES is
+checked. A seat whose prototype CARRIES ITS OWN LENGTH is `Bytes`. A
+NUL inside a `Bytes` is data.
+
+**AND THE EXCEPTION IS NOT "A PACKAGE THAT MEANS OCTETS".** That is an
+intention, and an intention cannot be held to. It is "A SEAT WHOSE
+PROTOTYPE CARRIES ITS OWN LENGTH" — which is greppable in the header
+beside the seat, so `make externs` can hold it: a `const char*` beside
+a length parameter is `Bytes`, a bare one is checked. The sqlite
+lead's wording, and it is better than mine was.
+
+`sqlite3_bind_text(stmt, i, text, n, …)` is the shape. Their driver
+has FOUR such seats — `bind_text`, `bind_blob`, `keyword_check` and
+`prepare_v3`, the last being the hottest in the package, on the path
+of every prepare — and as `string` seats every SQL statement in every
+program would have paid an interior-NUL scan per call. As `Bytes`
+seats they pay none, by the seat's own type.
+
+**A LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS.** The sqlite lead's
+principle, adopted here. Their guards answer a `Result` with a named
+cause at exactly the seats the callee resolves, because the driver
+knows WHY a seat resolves — a NUL path opens a private temporary
+database deleted at close. The seam's trap is the FLOOR for a package
+that has not thought about it. Neither makes the other redundant, and
+the trap firing inside a package that HAS guards is a bug in the
+guards.
+
+**THE COST OF THE LAYERING, MEASURED.** A value that came through a
+guard is scanned once there and again at the crossing. At the hot
+length-carrying seats that second scan is ZERO, because those are
+`Bytes`: a bind plus step plus reset with an 80-byte value is about
+400 ns and none of it is a crossing scan. The double scan remains only
+at the seats the callee resolves, which is where both layers are
+wanted.
 
 **THE COST, AT THREE SCALES.** The inert rows pay nothing, which is
 why the framer benches are unchanged — and their spreads overlap

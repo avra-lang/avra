@@ -52,11 +52,16 @@ type Machine = {
     onces: Map<string, Val>,
     out: List<string>,
     failures: List<string>,
+    // BOXES MINTED FOR A CROSSING, HELD UNTIL IT RETURNS. The frame
+    // stashes a raw pointer; a box materialised only to be staged has
+    // no other holder, so without this its last reference dies before
+    // the call and C reads freed memory. Cleared after every call.
+    staged: List<Bytes>,
 }
 
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, out: [], failures: [] }
+    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, out: [], failures: [], staged: [] }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -669,14 +674,15 @@ impl Machine {
         if self.past_the_frame(sig) { return self.too_many_seats(callee) }
         if sig.cells.any(carries_cell(it)) { return self.inout_seat(callee) }
         avra_ffi_reset()
-        self.staged(callee, sig, vals)
+        self.staged = []
+        self.staged_seats(callee, sig, vals)
         self.answered(sig.ret, sym)
     }
 
     /// Every seat staged into its own register file, at its own
     /// file's index — the k-th integer-class value and the k-th
     /// float, which is the order both ABIs fill.
-    fn staged(callee: string, sig: RtSig, vals: List<Val>) {
+    fn staged_seats(callee: string, sig: RtSig, vals: List<Val>) {
         for i, k in sig.params { self.stage_seat(callee, k, file_slots(sig.params)[i], vals[i]) }
     }
 
@@ -697,12 +703,22 @@ impl Machine {
     fn stage_pointer(callee: string, at: int, v: Val) {
         match v {
             .S(t) -> avra_ffi_set_text(at, t),
+            .Y(_) -> self.stage_bytes(at, v),
             .N -> avra_ffi_set_int(at, 0),
             .I(a) -> avra_ffi_set_int(at, a),
             rest -> {
                 let _ = self.unstageable(callee)
             }
         }
+    }
+
+    /// OCTETS STAGED, AND HELD. The box is materialised from the
+    /// evaluator's own octets, so nothing else holds it: the frame
+    /// keeps a raw pointer and the reference must outlive the call.
+    fn stage_bytes(at: int, v: Val) {
+        let b = self.octets(v).bytes()!
+        self.staged.push(b)
+        avra_ffi_set_bytes(at, b)
     }
 
     /// A word seat's value. A bool crosses as the word the runtime
@@ -784,7 +800,8 @@ impl Machine {
     /// evaluator holds a list or a map as a HANDLE into its own
     /// table, never as a box, so there is nothing to hand C — a
     /// runtime row's arm materialises one, and the uniform frame
-    /// cannot. It was worded as a defect while only a row could
+    /// cannot. `Bytes` is NOT one of these: it is a headered box and
+    /// the frame stages it. It was worded as a defect while only a row could
     /// reach the frame; a package's `extern fn` may declare an
     /// aggregate seat, so the words now name the remedy its writer
     /// can act on.
@@ -1300,6 +1317,7 @@ extern fn avra_ffi_max_f64() -> int
 extern fn avra_ffi_set_int(at: int, v: int)
 extern fn avra_ffi_set_f64(at: int, bits: int)
 extern fn avra_ffi_set_text(at: int, s: string)
+extern fn avra_ffi_set_bytes(at: int, b: Bytes)
 extern fn avra_ffi_call(sym: int) -> int
 extern fn avra_ffi_call_f64(sym: int) -> int
 extern fn avra_ffi_text_at(address: int) -> string
