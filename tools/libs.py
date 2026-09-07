@@ -98,12 +98,26 @@ def platform():
 def libname(pkg_name):
     """The library stem a package's MANIFEST NAME derives.
 
-    `@std/sqlite` -> `std-sqlite`. The `@` is dropped and `/` becomes
-    `-`; nothing else is touched, so two packages can only collide
-    here if their full names collide, which the workspace already
-    refuses.
+    `@std/sqlite` -> `std-sqlite`. ONE leading `@` is dropped and `/`
+    becomes `-`.
+
+    THE RULE IS SPELLED TWICE — here and in the compiler's
+    `library_stem` — so it is written to be COPYABLE EXACTLY: strip
+    one leading `@`, replace every `/`. `lstrip("@")` was wrong for
+    that reason and not for its own: it strips EVERY leading `@`,
+    which no substring-based twin will do.
+
+    AND IT IS NOT INJECTIVE, which the first draft claimed it was.
+    `@std/a-b` and `@std/a/b` both derive `std-a-b` — two different
+    package names, one library path, the second build overwriting the
+    first and the evaluator opening whichever is on disk. That is
+    SILENT, unlike a disagreement between the two spellings, which is
+    loud. So `libraries()` refuses a collision rather than the stem
+    escaping its way out of one: an escape would rename every existing
+    library to buy injectivity nobody has needed yet.
     """
-    return pkg_name.lstrip("@").replace("/", "-")
+    stripped = pkg_name[1:] if pkg_name.startswith("@") else pkg_name
+    return stripped.replace("/", "-")
 
 
 def host_symbols():
@@ -176,6 +190,12 @@ def libraries():
             sys.exit(1)
         stem = libname(pkg)
         suffix, _ = platform()
+        clash = [r for r in rows if r["name"] == stem]
+        if clash:
+            print(f"libs: {pkg} and {clash[0]['package']} both derive `{stem}` — one library "
+                  f"path for two packages, and the second build would overwrite the first",
+                  file=sys.stderr)
+            sys.exit(1)
         rows.append({
             "package": pkg,
             "name": stem,
