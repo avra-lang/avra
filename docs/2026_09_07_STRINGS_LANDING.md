@@ -1568,6 +1568,39 @@ spellings now. A refusal whose remedy list goes stale the moment a form
 lands is the quietest kind of wrong, because the code around it is
 correct and the reader is simply misdirected.
 
+### 16.5 What this lane's own attacks could not see
+
+Lane A could not review `Hole.greedy` — it is not on main — and asked
+the deciding question instead: **does each hole fold to ONE value, or
+splice FLAT?** The answer from the code was BOTH. The grammar mark
+folded each hole under 111; `Pat.Format` spliced `hole_fps` runs flat
+through `flatten`. Both consumers fold through one door now
+(`hole_fp`, lane/http `0b0bfb2`).
+
+**AND THE PART THIS LANE OWES IS THAT ITS OWN BOUNDARY ATTACKS PASSED
+THROUGHOUT.** Seven of them exist precisely to make a flat payload
+collide across a run boundary, and they held — because every hole
+contributes the SAME number of elements, so the boundaries sit at a
+fixed stride and a shift across holes cannot happen. Then S9 WIDENED
+that stride from three to four by adding `greed_fp`, and they held
+again, because the widening was uniform.
+
+The invariant they rested on — every hole contributes equally — was
+never written down anywhere. It was a property the code happened to
+have. A boundary attack on a flat splice tests THE BOUNDARIES THAT
+EXIST, not the rule that keeps them where they are, and no amount of
+adding cases would have changed that: there was no way to build a
+non-uniform hole, so the hostile case could not be written.
+
+**THE QUESTION FOUND WHAT THE PROBES COULD NOT**, and the difference is
+that it asked about the SHAPE rather than the behaviour. That is the
+untested-instrument law arriving one level up: a keeper can be
+exercised and still be blind, and so can a suite — this one was green
+on every run, correct on every case, and silent about the assumption
+holding it up. It is also the second time in this campaign that a
+reviewer who could not run the code found something the person who
+could did not.
+
 ---
 
 ## 17. The `once` index, measured as a pair
