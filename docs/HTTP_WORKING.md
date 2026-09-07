@@ -160,8 +160,12 @@ regression window zero. Ten int-answering entry points in
 `packages/std-io/src/c/std_io.c`; seven rows, seven `RtHost` variants and
 seven arms left core; `avra_io_taken` died (no remnant, the mint keeper
 green). THE ENVIRONMENT split rather than moved: `fd_landed` is static,
-so the package answers the PREDICATE (set or unset) and the core row the
-VALUE — lane B's distinction kept with nothing new in core. THE BUILD:
+so the package answers the PREDICATE (set or unset) and the VALUE rides
+the existing `avra_host_env` row — `avra_io_env` is GONE from rows,
+`RtHost` and the evaluator (lane C caught my summary saying its arm was
+kept); lane B's distinction kept with nothing new in core, atomic only
+while nothing mutates the environment — the condition is written at the
+site in S3b. THE BUILD:
 `avra`/`seed`/`bootstrap` depend on `$(TREE_OBJS)` (every object the
 tree compiles, so no link can want an absent one — the ffi.o class
 fixed, not the instance), `RUNTIME_OBJS` renamed `COMPILER_OBJS`, and
