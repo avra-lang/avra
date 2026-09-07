@@ -2164,6 +2164,34 @@ the order is the dependency.
         operation cheaper. A memory-pass change that moves PLACEMENT
         (S3, S3b) cannot use it, because placement changes counts;
         one that moves only cost can.
+        RE-MEASURED 2026-09-07 (lane A), as this entry asked, and it
+        RE-PRICES UPWARD rather than down. Two 6s samples of
+        `./avra check packages/std-avrac`, leaf SELF time — the one
+        reading a sampler is sound for, since the cascade caveat is
+        about attributing to CALLERS, not about a leaf's own time:
+
+            refcounting, all leaves   41.2% / 41.0%
+            avra_rc_retain + release  22.9% / 22.6%
+            release_dead (the frees)  16.0% / 16.3%
+
+        So the cold-path fix made each retain cheaper WITHOUT making
+        the traffic small: refcounting is still forty per cent of
+        self time. The conditional ABI's ceiling is the RETAIN AND
+        ITS PAIRED RELEASE — callee-cleans means removing one removes
+        both — so ~23% times the share of seats whose callee only
+        reads, and NOT `release_dead`, which reclaims the same boxes
+        whoever owns them. A qualifying share of a third is ~7%; two
+        thirds is ~15%. That is a real prize, and the entry above
+        ("a bigger claim for a smaller prize") should be read as
+        pricing the PER-CALL saving, which did fall, rather than the
+        total, which did not.
+        WHAT IS STILL UNMEASURED, and it is the whole decision: the
+        QUALIFYING SHARE. Nothing here counts how many call seats
+        have a callee that only reads. The census attributes pushes
+        and copies to sites but has no retain table, so that number
+        needs either one or a compiler-side count of `retained_args`
+        emissions by callee disposition. Do not argue the ABI from
+        the 23% alone — it is the ceiling, not the estimate.
   - [x] A RECONSTRUCTION NAMES ONE FIELD, NEVER THE REST. LANDED
         2026-09-06; found by the DOCS campaign's subset lane, and it
         was a latent hole in the seat law's own slice. `plain(t)`
