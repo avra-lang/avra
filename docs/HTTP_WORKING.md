@@ -1053,6 +1053,16 @@ before it was sent, which is exactly why it read as trustworthy; the
 check that found nothing to re-plumb cost one grep and is what makes
 the footing a fact rather than a hope.
 
+RECORDED TRIGGER (lane B's caveat, on the record at their ask): the
+shared `nul_at` took the string SEARCH (`s.index_of(nul_needle())`)
+over this branch's octet body because the search allocates nothing and
+`s.bytes()` copies — a comparison measured over `string` (lane B's 41x
+on main, 1.64s -> 0.04s over 2M guarded words), never over `Bytes`. It
+FIRES when a string's bytes become a borrowed view rather than a copy:
+then the octet form is allocation-free too and the choice is
+RE-MEASURED, not inherited from that number. Owner: nobody yet — that
+view is unbuilt and unasked-for.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
