@@ -149,6 +149,38 @@ O(1) slot comes FIRST and the lowering hoist after; a `ConstBytes` waits
 for `Bytes` on main. NEXT: S4, the `grammar` value that parses, probed to
 need no new door.
 
+## Sub-lane: substrate — S3 (io) LANDED, with two findings open
+
+MERGED into lane/http at 7a9f227 (lane/substrate 0cf47f2), built twice, 11
+`avra_io_*` symbols in the image, full gate green (2138 + 406 cases, 15
+traps, 84 corpus programs, witness). THE HEADLINE: `corpus/io` KEPT BOTH
+ENGINES — the compiler's image links `@std/io`, so the extern host runs
+the package's own C under `avra run`; ordering the host first made the
+regression window zero. Ten int-answering entry points in
+`packages/std-io/src/c/std_io.c`; seven rows, seven `RtHost` variants and
+seven arms left core; `avra_io_taken` died (no remnant, the mint keeper
+green). THE ENVIRONMENT split rather than moved: `fd_landed` is static,
+so the package answers the PREDICATE (set or unset) and the VALUE rides
+the existing `avra_host_env` row — `avra_io_env` is GONE from rows,
+`RtHost` and the evaluator (lane C caught my summary saying its arm was
+kept); lane B's distinction kept with nothing new in core, atomic only
+while nothing mutates the environment — the condition is written at the
+site in S3b. THE BUILD:
+`avra`/`seed`/`bootstrap` depend on `$(TREE_OBJS)` (every object the
+tree compiles, so no link can want an absent one — the ffi.o class
+fixed, not the instance), `RUNTIME_OBJS` renamed `COMPILER_OBJS`, and
+`tools/stems.sh` reads the manifests against make's own list (witnessed
+naming three objects). For lane A's standard: a seventh `RtKind` variant
+fails NINE sites, not eight (`carries_cell` arrived with the inout
+refusal). TWO FINDINGS AGAINST LANE B'S BINDING RULINGS, sent back as
+S3b: `NotText(path)` carries NO BYTE OFFSET (io.av:167 tests
+`Bytes.text()` for null — the shape lane B refused by name); and
+`read_bytes`/`write_bytes`, the lossless twins ordered in the SAME slice,
+did not land — with `write_bytes` the "cannot be provoked from inside the
+package" note becomes a real case (`ab\xffcd` reads back as
+`NotText(path, 2)`). Lane C's arm-against-C-body check was not reported;
+its result, negative or not, is owed in S3b's message.
+
 ## Sub-lane: substrate — S3 (io) rulings
 
 THREE DECISIONS, ALL MEASURED BY THE LANE, RULED 2026-09-07. (1) `avra_io_env`

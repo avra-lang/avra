@@ -3867,6 +3867,26 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         variants, binds and literals, and CLAUDE.md's grammar laws are
         its scar tissue; a format that lives elsewhere fails cheaper.
         Routes compile at runtime into a trie until then.
+  - [ ] STATIC METHODS — A TYPE-QUALIFIED CALL (`Name.parse(text)`
+        meaning a call to an inherent fn, not variant construction).
+        THE OWNER'S DOOR, put separately by lane C's ruling and not
+        taken as a feature's side effect: the ROADMAP already records
+        "STATIC METHODS do not exist today … when the spec wants them
+        they need their own marker", and CLAUDE.md records the absence
+        from the other side (`g.keywords()` is a method on a Grammar
+        VALUE because Avra has no type-qualified call). WANTING SITES:
+        the strings lane's `grammar Name = "…"`, whose `parse` is the
+        first consumer — landing NOW under lane C's narrow admission
+        RULE A (a type-name receiver is a call only when the type's
+        declaration is a `grammar`, a feature giving meaning over its
+        own declared types), a `Callee` variant in features/impls with
+        four consumers; and every selfless fn a type wants to own. IF
+        GRANTED (RULE B, any type name with an inherent fn of that
+        name), A's admission test widens by one line in lane C's file
+        and nothing written under A is thrown away. Costed against the
+        alternative before asking: a `Fmt<R>` value type would have
+        been a new core `Type` variant, 44 exhaustive matches in 19
+        files across three lanes (`make vocab` names two of them).
   - [ ] AN UNBOXED (ptr, len) VIEW, escape-analysed: the zero-copy
         capture the typed-routes paper wants. WANTING SITE: the framer's
         header values. Slot-layout territory (lane A). Until then, the
