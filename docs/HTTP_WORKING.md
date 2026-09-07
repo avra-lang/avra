@@ -174,6 +174,32 @@ judges the whole command before the first staged word, and stdin stays
 length-aware as `avra_fd_write` (a NUL is data in a stream and two names
 in a path).
 
+## Three receipts from keeping the branch (2026-09-07, to 28f1a4a)
+
+A SEED NOBODY CHOSE, MINE: the main-merge chain ran `make seed` AFTER the
+merge commit and never committed the result, so a regenerated seed sat
+in the worktree and every `make bootstrap` proof after it ran from a
+seed the branch did not carry — exactly what the Makefile's comment on
+`seed` warns of. Found by `git status` after an unrelated failure;
+discarded, and the COMMITTED seed re-proven twice (after the strings
+fold and after main's float and renderer fixes): `make bootstrap` green,
+two builds, gate green, tree clean. The rule: a bootstrap proof is
+taken from a CLEAN tree, and `git status` is part of the receipt.
+A CODE COLLISION INSIDE ITS OWN REMEDY: moving `grammar_fp` to code 56
+landed on `Stmt.Spec`'s (one payload shape apart — a spec named X and a
+grammar headed X could fingerprint alike); lane C found it reading the
+pair, I renumbered to 64, and the strings lane did better in the same
+hour — the format folds into the mark's own code 63 as payload, no
+second reservation (d0fd2e9 superseded my 3dbc04e at the merge). Their
+survey: nine tags repeat tree-wide, all across separate spaces (AST
+fingerprints in nodes.av; memo tags in workspace/receivers), benign by
+construction; the keeper's rule is uniqueness WITHIN a space, asked of
+lane A. Fingerprint codes have no coherence law — a repeat is a silent
+alike-fingerprint, not a red build. MAIN MERGED TWICE (589e52c: lane B's
+process guard, doc fixes; 0be7257: the sqlite REAL class, the float
+container fix, lane A's renderer fix — an arrow points at something, so
+three declaration goldens lost their empty `╰──` line at 28f1a4a).
+
 ## Sub-lane: strings — S4 (grammar values) LANDED (5e1f118)
 
 `grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"` declares
