@@ -369,7 +369,26 @@ disagreement is a silently dead route (ROADMAP ask); `covers`
 under-reports a mixed segment, the safe direction. A capture holds RAW
 OCTETS — nothing is percent-decoded, `%2F` is not a separator — tested.
 S8: the tail capture, then the query as keyed fields. BOTH SUB-LANE
-CHARTERS ARE COMPLETE; the lead's own work resumes. Two laws from the lane's own tests: a hole is ONE
+CHARTERS ARE COMPLETE; the lead's own work resumes.
+S8 LANDED (936ef6a) — the query as keyed fields over raw octets (`%26`
+is not `&`, `;` is not a separator, `+` is not a space, absent / bare
+/ empty / repeated four answers, `decoded` the one place decoding
+happens and a malformed escape absence), the tail route declared by
+its door, and the live bug in the router (it matched the whole target;
+`Request.path()` is the one split, asking where the path class ends so
+a head with no query is not scanned whole — 47 ns at 2 and at 62
+fields). S9 LANDED (6f24335, merged 827fdb7) — the greedy hole
+`{name...}` taking its literal at the LAST occurrence, no backtracking;
+the round-trip proof's mirror, and THE TWO DOMAINS ARE COMPLEMENTS AT
+THE OVERLAP CASE (`a = "x-"` under `"{a}--{b}"`, the value that forced
+S4's correction: lazy refuses, greedy round-trips); greed inert on the
+last hole (63 against 64 ns) so a route's pattern and its grammar carry
+one string; greedy search linear in the occurrences (94 → 1008 ns at
+99), the backward-scan row refused by lane A until a consumer is
+linear-bound; `Hole.greedy` folded into the fingerprint — and lane A's
+question found the pattern fingerprint splicing holes flat at a fixed
+stride where the grammar mark folded them: both fold each hole through
+`hole_fp` now (0b0bfb2), closed by construction. Two laws from the lane's own tests: a hole is ONE
 segment (`/ideas/{id}` had bound `7/extra`), and segments are counted
 by separators, never `split`. An ask recorded: a grammar's door as a
 VALUE (`Idea.parse` unapplied is F2003; every route wraps it). Owed:
@@ -690,7 +709,18 @@ head to `find` a verb (18M pushes), and `crlf_only` read `cr()`/`lf()`
 inside its loop; 2410 → 2185 ns a head, 254/254. Left where it is: the
 `Framing` fold's per-field record copies (4 retains a head at
 `settled`) and the empty-literal copies on a `mut` list's first push
-(2 a head) — small, and allocation here is cheap. LANE A LANDED HALF
+(2 a head) — small, and allocation here is cheap. THE LOOP UNDER THE
+CENSUS (`tools/bench/turn`, 200k round trips): 323 retains, 401
+releases, 308 list writes and 37 `once` reads a round trip; the
+sites are the framer's per-field records, the poller's event list,
+`Conn.read`'s record and `avra_once_get` — and ONE SCALABILITY DEFECT:
+the idle sweep walked every link on every turn, O(connections) per
+event; it runs on quiet turns and once a second under load now. A
+breadth case (two hundred clients in bursts of fifty) found a kernel
+fact rather than a defect: macOS caps a listen backlog at 128 whatever
+was asked, so a burst past it times out on the connect side; and the
+loopback delivers after the write returns, so a client reads until its
+answer lands. LANE A LANDED HALF
 (a) on main (6b38795): the `once` cache is an index keyed by the
 symbol's pointer, one probe a read at any table count, a strcmp hit
 indexed on the way out; merged at e25f46a and re-taken on shipping:
