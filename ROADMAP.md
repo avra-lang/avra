@@ -615,6 +615,26 @@ the compiler checking itself 28.8s.
         own size-class free lists made allocation cheap enough that
         AVOIDING an allocation with a scan, or even with a branch, is
         a losing trade. Measure before removing an allocation here.
+        A CONFIRMED ONE, 2026-09-07, AND IT IS RECORDED HERE BECAUSE
+        THE COMMIT THAT MADE IT CANNOT SEE IT. `6b38795` turned the
+        `once` cache from a scan into a pointer index — 3.00 pointer
+        compares per read to 1.00 in this compiler, three collisions
+        in a whole self-check — and measured NO clock change here
+        (5.85-5.93s against 5.87-5.93s), because 286k compares out of
+        billions is under the noise floor. The commit says so.
+        THE WIN IS REAL AND BELONGS TO ANOTHER WORKLOAD. The cost was
+        O(tables) per read: this compiler holds one `once` table and
+        paid 3, the HTTP lane's framer holds twenty and paid 19. Their
+        shipping measurement after merging it: 2185 -> 2045 ns a
+        parsed head, ~140 ns, 6.5%, which is what 52 reads x 18 saved
+        probes should cost. Predicted from the counts, confirmed on
+        the clock, by the lane whose workload shows it.
+        SO A CHANGE CAN BE INVISIBLE IN THE TREE THAT MAKES IT. A
+        self-check is one program with one shape, and "no measurable
+        change" here means only that — this lane's stopwatch is not
+        the language's. When the counts say a cost is O(n) and n is 1
+        locally, hand the clock to a caller with a bigger n rather
+        than concluding the well is dry.
         A THIRD, 2026-09-07: TAKING THE FRAME OUT OF
         `avra_array_get_owned` — REFUTED, and it refines the
         cold-path law rather than denying it. That fn builds a

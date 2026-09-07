@@ -62,7 +62,27 @@ pid=$!
 if [ -n "$AVRA_SAMPLE" ]; then
     mkdir -p build
     prof="${AVRA_SAMPLE_FILE:-build/avra-sample.txt}"
-    ( sleep "${AVRA_SAMPLE_AFTER:-0}"; sample "$pid" "$AVRA_SAMPLE" -file "$prof" > "$prof.log" 2>&1 ) &
+    # A PROFILE NAMES ITS SUBJECT. `$!` is the command this watchdog
+    # launched — right when that command EXECS (`./avra` does), and the
+    # WRONG process the moment it forks a worker and waits. A profile
+    # of the wrong pid does not fail; it reports its subject as idle,
+    # and a reader with two hypotheses and no pid cannot tell that from
+    # a slow syscall. Say which pid, so the question is answerable.
+    # A PROFILE NAMES ITS SUBJECT, FROM THE REPORT ITSELF. `$!` is the
+    # command this watchdog launched — the right pid when that command
+    # EXECS, as `./avra` does, and the WRONG one the moment something
+    # forks a worker and waits on it. A profile of the wrong process
+    # does not fail: it reports its subject as IDLE, and a reader with
+    # no pid cannot tell that from a slow syscall.
+    # ASKING `ps` IS NOT THE WAY. Read at launch it answers `/bin/sh`
+    # for every `./avra` run, because the script has not reached its
+    # `exec` yet — a diagnostic that lies in the same direction as the
+    # defect it exists to expose. `sample`'s own header cannot race:
+    # it names what the sampler actually attached to.
+    ( sleep "${AVRA_SAMPLE_AFTER:-0}"
+      sample "$pid" "$AVRA_SAMPLE" -file "$prof" > "$prof.log" 2>&1
+      head -1 "$prof" 2>/dev/null | sed 's/^/watch: profiled /' >&2
+      echo "watch: profile at $prof" >&2 ) &
     sampler=$!
 fi
 peak=0
