@@ -165,6 +165,7 @@ export enum ProcessError {
     TooMuch(stream: Stream, cap: int, partial: Output)
     /// A positional word begins with `-` and the tool declares no end of options.
     Unplaceable(word: string, program: string)
+    Holed(word: string, at: int)
     /// `start` waited the window out and the sign of readiness never came;
     /// the child was stopped, and what it said rides along.
     NotReady(waited_ms: int, partial: Output)
@@ -189,6 +190,7 @@ impl Error for ProcessError {
             .TimedOut(after, _) -> info("process.timed_out", "the child was stopped after ${after}ms"),
             .TooMuch(s, cap, _) -> info("process.too_much", "${stream_text(s)} exceeded the capture cap of ${cap} bytes"),
             .Unplaceable(w, p) -> info("process.unplaceable", "`${w}` begins with `-` and `${p}` declares no end of options"),
+            .Holed(_, at) -> info("process.holed", "a word holding a NUL is two words — the host reads to byte ${at} and no further"),
             .NotReady(waited, _) -> info("process.not_ready", "the child gave no sign of readiness in ${waited}ms and was stopped"),
             .StageFailed(i, e, _) -> info("process.stage_failed", "pipeline stage ${i + 1} exited ${exit_text(e)}"),
             .Unscripted(p, a) -> info("process.unscripted", "no script answers `${p} ${a}`"),
@@ -242,6 +244,8 @@ fn stream_text(s: Stream) -> string {
 /// PATH now — relative entries never searched — and pinned as an
 /// absolute path for good. A name spelled with a `/` is taken as written.
 export fn tool(name: string) -> Result<Tool, ProcessError> {
+    let holed_at = nul_at(name)
+    if holed_at >= 0 { fail ProcessError.Holed(name, holed_at) }
     let path = avra_proc_which(name, search_path())
     if path.length == 0 { fail ProcessError.NotFound(name, search_path()) }
     Tool { name: name, path: path, terminator: terminator_of(name) }
@@ -433,6 +437,8 @@ impl Command {
     fn outcome() -> Result<Outcome, ProcessError> {
         let bad: string? = self.env.names().find(bad_env_name(it))
         if bad != null { fail ProcessError.BadEnvName(bad!) }
+        let short: ProcessError? = holed(self)
+        if short != null { fail short! }
         let started = now_ms()
         let h = avra_proc_run(self.tool.path, self.args, self.env.words(), self.cwd ?? "", self.flags(), stdin_text(self.stdin), timeout_ms(self.timeout), self.drain_grace.ms, self.max_capture)
         if h < 0 { fail spawn_error(self.tool, self.cwd ?? "", 0 - h) }
@@ -519,6 +525,27 @@ fn spawn_error(t: Tool, cwd: string, errno: int) -> ProcessError {
 /// `=` that would split it into two.
 fn bad_env_name(n: string) -> bool {
     n.length == 0 || n.contains("=")
+}
+
+/// Where a NUL sits in a value, or -1. Judged over the BYTES, and it
+/// must be: `contains` is `strstr`, and a needle whose first byte is
+/// NUL is the EMPTY needle, which matches every string at 0 — a guard
+/// built from it finds nothing and refuses everything.
+fn nul_at(s: string) -> int {
+    [s.char_code(i) for i in 0..s.length].index_of(0)
+}
+
+/// THE DOOR every value this command hands the host passes through —
+/// the tool's path, the directory, each argument, each `NAME=value`.
+/// C reads a C STRING, so a NUL ends the value there while Avra still
+/// holds the rest: the guard and the kernel read different bytes, and
+/// an allowlisted path executes another program. Refused, never
+/// truncated. Stdin is the one string that MAY hold a NUL, because it
+/// is a byte stream rather than a name.
+fn holed(c: Command) -> ProcessError? {
+    let bad: string? = [c.tool.path, c.cwd ?? ""].concat(c.args).concat(c.env.words()).find(nul_at(it) >= 0)
+    if bad == null { return null }
+    ProcessError.Holed(bad!, nul_at(bad!))
 }
 
 // ── A running child ─────────────────────────────────────────────
@@ -731,6 +758,8 @@ type Ticked = { stage: Stage, ev: int }
 fn launched(c: Command, upstream: int) -> Result<Stage, ProcessError> {
     let bad: string? = c.env.names().find(bad_env_name(it))
     if bad != null { fail ProcessError.BadEnvName(bad!) }
+    let short: ProcessError? = holed(c)
+    if short != null { fail short! }
     let h = avra_proc_spawn(c.tool.path, c.args, c.env.words(), c.cwd ?? "", c.flags(), c.max_capture, upstream)
     if h < 0 { fail spawn_error(c.tool, c.cwd ?? "", 0 - h) }
     if upstream < 0 && !(c.stdin is .Open) {
