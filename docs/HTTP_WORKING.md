@@ -132,6 +132,26 @@ hand, an untaken arm mints nothing; typed holes wait on the decimal
 row; the framer's own scans stay until the `Bytes`-subject parity is
 measured (the strings lane's S3), then they become patterns.
 
+## Sub-lane: substrate — S3 (io) rulings
+
+THREE DECISIONS, ALL MEASURED BY THE LANE, RULED 2026-09-07. (1) `avra_io_env`
+STAYS A CORE ROW beside `avra_io_list`, both landing through the descriptor
+scratch: a package's C cannot reach `fd_landed`, and the standard's roster
+already names the environment as the process's own fact — a law, not an
+exception. (2) `read_text` VALIDATES UTF-8 (lane B's word): every file the
+compiler reads was scanned, 547, zero invalid; a stray `0xff` in a STRING
+LITERAL passes `check` clean today, so the change closes a silent hole. The
+refusal carries the PATH AND THE BYTE OFFSET (`utf8_bad_at`, never
+`Bytes.text() ?? fail`, which throws the offset away), the scan folds into
+the read loop's one pass, and `read_bytes` lands in the same slice as the
+lossless twin — split the verb, one per promise. (3) THE FIFO stays
+BLOCKING and `Other` is not refused: `read_text("/dev/null")` answers `""`
+today and `/dev/null` is `Other`, so a refusal would newly reject a
+legitimate read; the artifact is one doc sentence on `read_text` naming the
+block and `kind_of` as the question to ask first. THE CORE DELETIONS (rows,
+`RtHost` variants, evaluator arms leaving core) are the lane's to write, in
+lane A's and lane C's files, for their review before merge — both told.
+
 ## Slice 3 — `@std.http` (AFTER)
 
 Message types, an index-driven HTTP/1.1 framer over `Bytes`, a route trie
