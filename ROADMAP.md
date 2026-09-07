@@ -2867,6 +2867,49 @@ the order is the dependency.
         ASK THE KEEPER, not to grep the file it guards. The
         instrument was already in the gate and a worse one was used
         to plan against it.
+  - [x] A LAW CAN BE PAID IN ONE PASS AND UNPAID IN ANOTHER. LANDED
+        2026-09-07; found by the HTTP lane probing a server shape,
+        verified here at `234d17c`, and it is a SILENT wrong answer
+        of the class this lane spent the night on.
+
+            type S = { app: C, handle: fn(mut C, int) -> int }
+            impl S { mut fn turn(by: int) -> int { self.handle(self.app, by) } }
+
+        The call WRITES through `self.app` — probed, the counter
+        reaches 5 — and F2050 said "`turn` never writes through
+        `self`". WORSE THAN A WRONG WARNING: its help reads "drop
+        `mut`: the compiler infers a writing method", and TAKING THE
+        HELP MADE `./avra check` PRINT NOTHING AT ALL while the write
+        still happened. A diagnostic whose remedy walks the writer
+        into the hole it should have named.
+        THE SPLIT, which the reporter suspected and did not probe:
+        a DECLARED callee's `mut` seat was seen (`bump(self.app, by)`
+        warns correctly); a fn-typed FIELD's was not. Typing was never
+        blind — `fielded_call` carries `arrow.muts` into
+        `mut_seats_law`, and `self.app` is a lawful `mut` place, so
+        the seat law rightly said nothing. THE BLINDNESS WAS IN
+        `language/receivers.av`, the survey that INFERS whether a
+        method writes its receiver: its own `Callee` enum had
+        `Row`/`Method`/`Static`/`Contract`/`None` and NO fn-field
+        case, so the call fell to `declared_method`, found no method
+        of that name, answered `None`, and the write was never
+        flowed back. THE MARKS EXISTED — this lane put them on the
+        interner key — and this pass never asked for them.
+        WHAT IT SHARPENS, and why it is recorded as a law rather than
+        a fix: the seat law's own entry says the marks make "a
+        declared callee and a fn-typed value ONE RULE and not two".
+        TRUE OF TYPING, FALSE OF THE SURVEY, which still wore the
+        two-rule shape the entry claims to have retired. **A LAW CAN
+        BE PAID IN ONE PASS AND UNPAID IN ANOTHER**, and an entry
+        that records the currency reaching the interner reads as
+        though it settled everywhere. When a law lands, name the
+        passes that consume it, not the seam that carries it.
+        THE FIX: `Callee.FnSeats(held: Arrow)` answering ahead of the
+        impl table for struct and App receivers, and `feed_marks`,
+        `feed`'s twin over MARKS rather than a declaration's seats —
+        it MARKS rather than flows, since a fn VALUE names no callee
+        to flow into and any fn of that type may fill the field.
+        Three adversarial cases, one of them the silent shape.
   - [ ] REVIEWS THIS LANE OWES, recorded because they live in
         messages and messages do not survive a compaction. Each is a
         diff another lane writes in this lane's files, with this
@@ -2880,9 +2923,35 @@ the order is the dependency.
            it tried. Rule B — a general type-qualified call, which is
            STATIC METHODS (ROADMAP:10786, recorded not this arc) — is
            the OWNER'S and no relay of an answer is a grant.
-        2. `Bytes` (HTTP lane): `is_managed` hardest, because a
-           managed type the memory pass does not know is a leak or a
-           double free and neither shows up in a test.
+        2. `Bytes` (HTTP lane) — DISCHARGED 2026-09-07 on the
+           `is_managed` point, and answered from the code and the C
+           rather than from the compiler's pointer: `.Str or .Bytes
+           -> true`, `KIND_BYTES = 4`, `bytes_box` through
+           `sized_box` with the terminator written, and `acc_kind_of`
+           filing it as its own `ACC_BYTES` row — the miscounting-
+           STATIC lesson applied AT BIRTH rather than after
+           `AVRA_MEM_STATS` was caught lying. Every source is a FRESH
+           box (`.bytes()`, `avra_fd_taken`, `concat`/`slice`/
+           `gathered`, `Bytes.of_list`), and a C body answering
+           octets goes through `bytes_owned` or not at all — the
+           header law's fourth instance, named as one.
+           WHY THE QUESTION WAS WORTH ASKING ANYWAY: an exhaustive
+           match tells you a variant is UNANSWERED and cannot tell
+           you the answer typed is the right one, and an OR-RUN makes
+           the wrong answer a one-word edit. A `Bytes` in the
+           unmanaged run compiles clean, passes every test, and leaks
+           or double-frees — and `hdr` refuses an untagged pointer,
+           so the guard no-ops and a leak reports clean. THE COMPILER
+           POINTS AT THE ARM; ONLY THE AUTHOR KNOWS WHICH ARM WAS
+           MEANT.
+           RESIDUAL, raised as a glance not a blocker: whether
+           `Bytes` took a fresh INTERNER KEY. The type registry keeps
+           the FIRST shape it sees for a key, so two variants sharing
+           one do not fail loudly — they quietly become one type, and
+           the symptom is a wrong `name_of` or a seat taking the
+           wrong value. That is today's fingerprint-collision class
+           in the type registry, and unlike fingerprints and idioms
+           it has NO KEEPER and nothing announces what is free.
         3. THE OPAQUE TYPE / Drop design (SQLITE lane) for the
            memory-pass parts. Position already given: the WRAPPER BOX
            route, because the guard is structurally blind at the
@@ -3551,6 +3620,62 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  A TEST MOVES DOWN A LAYER RATHER THAN INTO THE BIN — THIRD FIRING, and
+  the third is the one that makes it a law rather than a habit, because
+  the test could not simply be REWRITTEN: it had to change PROCESS. When
+  the extern seam began trapping on an interior NUL at a bare `const
+  char*` seat, two adversarial cases documenting the WALL's truncation
+  (`wall_completes("select 1;\0 select")`, and `sqlite3_stricmp` on text
+  and its own prefix) **stopped being expressible in a suite at all** —
+  a trap ends the process, so the assertion cannot be made where
+  assertions live. They became a `traps.sh` row demanding the trap's
+  exact words.
+  THE C BEHAVIOUR THEY DOCUMENTED IS UNCHANGED AND STILL TRUE. What
+  changed is which layer can WITNESS it: the face refuses (a `Result` a
+  caller catches), the seam traps (a verdict, exit 2), and the wall's
+  truncation is now visible only from a harness that expects a process to
+  die. **Ask whether the old assertion is FALSE or merely in the wrong
+  PLACE** — here it was in the wrong place twice over, first the wrong
+  layer and then the wrong kind of harness.
+  AND THE LAW IT PROVES IS THE LAYERING ONE: with the seam trapping
+  beneath them, "a library refuses before the language traps" became
+  literally true rather than aspirational — the trap is the FLOOR under
+  the driver's guards, so a trap firing inside `@std/sqlite` is now a
+  bug in the guards by construction rather than by agreement.
+  A LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS — the layering rule this
+  campaign owes the NUL crossing, earned when the language began trapping
+  on an interior NUL at a `string` extern seat. The driver already
+  refused at three of those seats with a NAMED CAUSE (`path_holds_a_nul`,
+  `script_holds_a_nul`, `Cause.HoldsNul` — *"reads only the bytes before
+  it, so the answer would be about a prefix"*), and the language's trap
+  is a WRECK. **For a caller who typed a bad path, a refusal they can
+  catch is strictly better than a trap they cannot**, and the DRIVER is
+  the layer that knows WHY the seat resolves. So: the seam is the FLOOR
+  for every package that has not thought about it; a package that HAS
+  thought converts the wreck into a diagnosis; **neither makes the other
+  redundant, and the trap firing inside a guarded package is a bug in the
+  GUARDS.**
+  AND THE EXCEPTION IS GREPPABLE RATHER THAN AN INTENTION, which is the
+  better form of the same rule. The crossing check's exception was first
+  written as *"a package that MEANS octets takes `Bytes`"* — an
+  intention, which every author will read in their own favour. The
+  mechanical test is **"a seat whose C PROTOTYPE CARRIES ITS OWN LENGTH"**:
+  the callee resolves nothing when it is told how many bytes to read, so
+  a NUL is data. Inside one package that splits 4 / 7 and the split is
+  not a judgement call —
+      LENGTH-CARRYING   bind_text, bind_blob, keyword_check, prepare_v3
+      RESOLVING         open_v2, complete, bind_parameter_index,
+                        db_readonly, db_filename, txn_state,
+                        compileoption_used
+  `sqlite3_complete` is the clean demonstration: **no length at all**, so
+  C measures it with `strlen` and a NUL genuinely makes the answer about
+  a prefix. A DESIGN RULE STATED AS AN INTENTION IS ARGUED AT EVERY SITE;
+  STATED AS A PROPERTY OF THE PROTOTYPE IT IS CHECKED ONCE.
+  AND THE MEASUREMENT BEHIND THE EXCEPTION IS THIS CAMPAIGN'S: a SQLite
+  TEXT value is a BYTE STRING WITH A TERMINATOR APPENDED, not a C string
+  — `bind_text("ab\0cd", 5)` reads back `column_bytes` 5 and `strlen` 2.
+  The exception is therefore what the LIBRARY DOES rather than a
+  concession to a test.
   A KEEPER THAT INTERROGATES THE ARTIFACT CAUGHT A BUILD REFACTOR THAT
   NOTHING ELSE DID (HTTP lane, `1be60fd`, reported to this campaign).
   Splitting the compiler's object list from the packages' — so `make
@@ -4474,6 +4599,49 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         a package that means octets takes `Bytes`. COST: one scan per
         checked seat per call, on calls that are syscalls, spawns or
         lookups. `avra_fd_*` take `Bytes` and carry their length.
+        DECIDED BY THE OWNER 2026-09-07 ("yes do the same thing as
+        other mature languages. make it beautiful and safe and
+        performant."), AND DOORS 2 AND 3 DECIDED THE SAME DAY ("yes to
+        decision 2 and 3"): S2c's per-package library is the substrate
+        lane's slice after the seam; immortal `once` answers with the
+        `is_shared` prerequisite are lane A's, on the owner's word in
+        lane A's session. AND SHARPENED BY LANE A BEFORE A LINE WAS
+        WRITTEN — the first brief had two readings: (A) the check
+        governs only seats the callee resolves, and the LANGUAGE stays
+        as lossy as today (`"ab\0cd" == "ab"` true); (B) the column
+        governs every row, and `==` TRAPS. Neither is what mature
+        languages do: Rust, Go, Python and Java answer FALSE, because
+        their string operations read the whole length. THE THIRD
+        READING, taken: (1) the five lossy primitives (`==`,
+        `contains`, `index_of`, `split`, `replace`) become CORRECT —
+        length-aware `memcmp`/`memmem` in the runtime, lane A's C, the
+        worst case (a megabyte string) measured; (2) the seam TRAP
+        governs only seats the callee RESOLVES outside the program —
+        paths, names, command words, environment keys — where a NUL
+        is two names and no correct answer exists; (3) `inert: true`
+        means "reads the header's length; a NUL is data", the state
+        every string row is in after (1), so CHECKED-by-default bites
+        only the resolving rows; (4) the guard reads the header's
+        length only for a pointer that is ours — a foreign pointer has
+        no interior NUL by definition, so the check is skipped there
+        rather than passed vacuously through a `strlen` fallback. The
+        substrate lane writes (2)–(4) under lane A's review. AND THE
+        EXCEPTION, STATED MECHANICALLY (the sqlite lead, sweeping their
+        wall after the first merge went red on their length-carrying
+        `bind_text` case): the escape is not "a package that means
+        octets" — an intention — but A SEAT WHOSE PROTOTYPE CARRIES ITS
+        OWN LENGTH, greppable in the header: a `const char*` beside a
+        byte count is `Bytes` and pays no scan (four in the driver —
+        `bind_text`, `bind_blob`, `keyword_check`, and `prepare_v3`, the
+        hottest seat in the package); a bare `const char*` is checked
+        (seven in the driver, two of them already guarded with a
+        `Result`). A SQLite TEXT value is a byte string with a
+        terminator appended, so a NUL there is legal, stored data. And
+        the layering: A LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS — a
+        package that knows why a seat resolves answers a named cause;
+        the seam is the floor for every package that has not thought
+        about it; the trap firing inside a guarded package is a bug in
+        the guards.
   - [ ] A GRAMMAR'S DOOR AS A VALUE. `routed<Idea>(…, Idea.parse, …)`
         is F2003 "`Idea` is a record, not an enum": the type-name
         admission rule fires for a CALL, never for a bare `Name.parse`
@@ -9129,6 +9297,28 @@ by meaning; each is a slice for lane D unless a lane is named.
   that claims to check it), or whether the linker is the right and
   sufficient owner of that failure. Filed as a question because the
   answer sets what `check` PROMISES.
+
+- THE SCOPE-NARROWING PATTERN — the bar is met, the audit is not done
+  (lane D, 2026-09-06/07). FOUR laws in CLAUDE.md were found this
+  session to have a stated scope NARROWER than their actual danger,
+  every one found by a lane walking into the gap and none by anyone
+  auditing the file: the second-build rule said CODEGEN and applied
+  to the front end; the syntax-change protocol said REWRITING and
+  applied to additions; the recovery law said WITHIN A RULE and
+  applied across rules; and the base-naming rule said PROBE LOGS and
+  applied to a live correction (a count offered as a correction, each
+  side right about a different tree).
+  THE MECHANISM, which is why it recurs: a law is written from the
+  ONE instance that taught it, so its wording carries that instance's
+  shape — and the shape is invisible to the author precisely because
+  it is the only case they had. The author cannot see it; the next
+  lane walks into it.
+  I SET THE BAR AT FOUR and it is met, so this is a shape rather than
+  three accidents. What is NOT done is the deliberate audit: reading
+  every law in the file and asking what its wording EXCLUDES that its
+  mechanism does not. That is a large pass over a 1500-line file and
+  it is the owner's call whether it happens, not a thing to start on
+  a hunch at the end of a long session.
 
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure

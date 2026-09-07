@@ -231,8 +231,9 @@ spec "@std.http query" {
         then "`%00` DECODES TO A REAL NUL, and the length counts it" {
             decoded("a%00b".bytes())!.length == 3
         }
-        then "and the lossy primitives stop before it, so the two disagree" {
-            decoded("a%00b".bytes())!.text()! == "a"
+        then "and `==` reads every byte, so the text is not its own prefix" {
+            let t = decoded("a%00b".bytes())!.text()!
+            t != "a" && t == "a${from_codepoint(0)}b"
         }
         then "a minted NUL cannot move where a pair began, because the split ran first" {
             q_one("/x?a=1%002", "a") == "[1%002]"

@@ -729,6 +729,142 @@ real. What remains of the `once` share is the retain/release pair
 around each read, half (b), with the owner. The ledger: the framer's
 own wastes 2410 → 2185, the slot 2185 → 2045, both on shipping.
 
+## RED at ec98057 — door 1 met its one exception (2026-09-07)
+
+Door 1 merged (lane/substrate d0d5756: `avra_str_crossing` at three
+seams — the native lowering, the extern frame, and the evaluator's row
+path, which the brief had not named and without which the engines would
+disagree about which strings may cross; `inert` on `RtSig` with CHECKED
+as the default; four trap contracts) and THE GATE WENT RED in
+`std-sqlite`: the driver's own case "a `const char*` seat that CARRIES a
+length" trapped at byte 6. The case is right and the seam is right:
+`sqlite3_bind_text` takes text WITH a length, so a NUL inside is DATA
+and the callee resolves nothing. The design's named escape is a `Bytes`
+seat — "a package that means octets takes `Bytes`" — and it must be
+spellable on a package extern for the design to hold; the substrate
+lane lands it in the same slice, the driver's `bind_text`/`bind_blob`
+seats move to it (the sqlite lead's package, told). Lane A's review
+found the marking pass answering two identical rows differently
+(`avra_host_env` checked, `avra_io_env` inert — the same `getenv`); not
+a live hole, since both cross through package externs that are never
+inert, but a false fact in a registry, so `make externs` grows an
+`inert` keeper (a body calling `getenv`/`fopen`/`stat`/`opendir`/
+`exec*`/`posix_spawn*` on a text seat cannot be inert) and the four are
+re-marked, lane A's. NOTHING MERGES INTO lane/http UNTIL THE GATE IS
+GREEN AGAIN.
+GREEN AGAIN AT ac4e185. The `Bytes` seat crossed (lane/substrate
+f431d98): a package extern seat typed `Bytes` hands C the payload
+pointer, the face passes the length beside it, no crossing check runs
+by the seat's type — natively it always crossed, so it had been
+spellable on ONE engine and nobody had written one. The sqlite lead's
+sweep found FOUR such seats (`bind_text`, `bind_blob`, `keyword_check`,
+`prepare_v3` — the hottest in the driver) and SEVEN resolving ones, and
+gave the rule its mechanical form: A SEAT WHOSE PROTOTYPE CARRIES ITS
+OWN LENGTH IS `Bytes`; a bare `const char*` is checked; a NUL inside a
+`Bytes` is data. STAGING IT CAUGHT A USE-AFTER-FREE the lane had just
+written (a box materialised only to be staged had no holder; native
+`kind=2` against evaluated `kind=0`; staged boxes are held until the
+call returns) — and the same shape one level up: `bind_text_unsafely_
+borrowed` takes `Bytes` now, because a `string` face would have MINTED
+octets nobody else held and turned a keepable promise into a dangling
+pointer created by the verb; the sqlite lead's law: A TYPE MIGRATION
+CAN MOVE WHO HOLDS A VALUE, AND A LIFETIME PROMISE IS A PROMISE ABOUT
+THE HOLDER. The guard reads `hdr()` directly and skips a foreign
+pointer visibly (its first draft was bounded by `strlen` and could
+never find an interior NUL); `puts`/`eputs` read the header's length
+and a NUL-bearing line prints whole. The four false marks lane A named
+do not exist here — those rows left the registry in S3 and S4 — and
+main's `inert` keeper (0bc7426), merged, certifies the column unchanged:
+80 inert, two checked, both resolving. Two adversarial groups that
+asserted the truncation are trap contracts now (20). Worst case: 25 µs
+per megabyte crossing, ~47 GB/s, eight distinct strings cycled. A
+LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS is §2.7's layering, in the
+sqlite lead's words.
+THE RED TEAM OVER THE SEAM (46 programs, both engines): the CHECK
+SURVIVED EVERYTHING — 17 cases both ways, byte-identical words and
+status; the three severes are in the FRAME beside it, fixed in the same
+slice. (1) An aggregate at an extern seat passed `check` clean and the
+evaluator staged its HANDLE as an address (a record, a map: segfault on
+eval, garbage natively; a list refused) — an extern seat's type must be
+one that crosses, a check-time law. (2) The `unstageable` refusal did
+not stop the call — `puts` printed "(null)" and THEN the refusal; the
+frame stops at the first. (3) An extern declared with a CORE ROW's name
+is dispatched to the row with its own seats and answer discarded
+(`extern fn avra_host_env(a, b) -> int` handed a program a raw pointer
+as an int, and inherited the row's `inert`, so "never inert by
+construction" was false as written) — an agreement law at the dispatch.
+And the `Bytes` exemption was unenforced: `Bytes` joins `make externs`'s
+demands. THE TREE'S ONLY AGGREGATE SEAT, `avra_exec_self(args:
+List<string>)` in packages/cli, becomes a ROW (§2.1: a C body that
+reads a box is a row) and works under `avra run` for the first time.
+THREE FACES THAT TRAP WHERE THEY SHOULD REFUSE, routed to their owners
+by §2.7's own rule: @std/io's `env`/`env_or` (no NUL check before the
+seat — the "NUL-lossy `contains`" reading was retracted, see the merge
+entry below), @std/process's
+`tool_from_env` and `Env.Only.get` answering the prefix's value where
+`Env.Inherit.get` traps on the same name (lane B); @std/sqlite's
+`equal_nocase`, `like`, `glob`, `is_complete`, `compiled_with`, with a
+`HoldsNul` cause the package has and does not use there (the sqlite
+lead).
+
+## Main merged (9fe4efe, fixed at c921b93): the three routed faces came home
+
+The seam's red team routed three trapping faces to their owners; main
+brought all three back in one day, plus the half of door 1 that was
+waiting on the owner's word in lane A's session:
+
+- LANE B (85abb9e): `env`/`env_or` judge the NUL FIRST — `env("PATH\0/
+  junk")` had answered PATH's own value, a silent read of a different
+  variable, because NO check stood before the extern seat and `getenv`
+  truncates whatever our own verbs do; `tool_from_env` refuses as
+  `tool` does; `Env.get` answers null for a holed name under both
+  variants. (Lane B's first rationale — that the `=` guard was built
+  from a NUL-lossy `contains` — was RETRACTED the same night: lane A's
+  f57372a had already made every primitive read the header, so nothing
+  on the Avra side was blind. The crossing is the extern seat and only
+  that; the fixes stand, the reason moved.)
+- THE SQLITE LEAD (0130321): `compiled_with`, `equal_nocase`, `like`,
+  `glob` answer a `Result` and refuse a NUL with `HoldsNul` — reaching
+  for the cause `is_complete` already had.
+- LANE A (f57372a): `==` is a length compare then `memcmp`; `contains`,
+  `index_of`, `split`, `replace` walk the header's length with `memmem`.
+  Measured there: `contains` over a megabyte 477 -> 681 us, equality
+  free, the self-check ~1%.
+
+FOUR CONFLICTS, one of them design. The env guard lands on this
+branch's set/host shape with the NUL judged first — on this branch a
+holed name that reached the extern would TRAP at the crossing, so the
+library's refusal must come before it. The io and process suites take
+both sides' cases. The sqlite suite keeps the seam's comment and every
+FACE case of main's, and DROPS main's two WALL cases: `wall_completes`
+with a NUL passes a holed string to a bare `const char*` seat, which
+here ends the process. The wall's truncation is witnessed in
+`tools/traps.sh`, which exists for cases a suite cannot hold.
+
+TWO GREENS THE MERGE THEN NEEDED, both expiries rather than defects.
+The query suite's "the lossy primitives stop before it, so the two
+disagree" PINNED `==` stopping at a NUL — a witness of the lie, written
+so it could not drift unnoticed — and the lie is gone, so the case
+asserts the truth now: a decoded `a%00b` is not its own prefix. And the
+traps row `nul_at_a_package_wall` drove its trap through
+`equal_nocase`, which main taught to refuse before the wall; the row
+calls `sqlite3_stricmp` directly, the call a package that has not
+thought about it would write, and meets the floor its own comment had
+named. A TEST THAT PINS A LIE EXPIRES WITH THE LIE, and the expiry
+reads as a red gate.
+
+TWO RECEIPTS FROM THE DAY. Lane B's: "a guard is not a place, it is a
+property of every crossing" — the defect survived one door down in a
+file whose path door was already judged over bytes. Lane D's: a COUNT
+offered as a correction names its TREE — five aggregate extern seats
+on main against one here (S4 killed the other four), both right, and
+the aggregate-seat law lands alone on this branch.
+
+Built twice (594, 624 MB), gate green at 330 MB, twenty trap
+contracts held. The seed is unchanged: no runtime symbol moved.
+Door 1's primitives half is DONE; its seam half is the substrate
+lane's, in flight; immortal `once` is still on the owner's word.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
@@ -752,15 +888,20 @@ the loop serves 102–118k keep-alive requests a second on one core at
 `ps`); dispatch over 300 routes is 346 ns; a request line by pattern is
 1.24x a hand scan over octets.
 
-OPEN, THE OWNER'S: (1) a NUL crossing to C — the seam checks every
-`string` seat that resolves, `inert: true` written at the site as the
-exemption, faces refuse with words first, `Bytes` the escape; (2) S2c
-— a per-package shared library the evaluator opens by the program's
-own closure, derived by the tree and never named by a manifest; (3)
-immortal `once` answers, with the `is_shared` line as the prerequisite
-that lands with the decision. Each in the ROADMAP's HTTP asks with its
-measurements. And the validation of lane/http itself, before anything
-reaches main.
+THE THREE DOORS, DECIDED BY THE OWNER 2026-09-07 and each in the
+ROADMAP's HTTP asks with its measurements: (1) a NUL crossing to C —
+"do the same thing as other mature languages": the five lossy string
+primitives ARE CORRECT (length-aware, lane A's C — landed on main at
+f57372a, merged here at 9fe4efe), the seam TRAPS only a seat the callee RESOLVES (a
+path, a name, a command word, an environment key — the substrate lane,
+in flight), `inert: true` at the site means "reads the header's length",
+faces refuse with words first, `Bytes` the escape; (2) S2c — the
+per-package shared library the evaluator opens by the program's own
+closure, derived by the tree and never named by a manifest (the
+substrate lane, after the seam); (3) immortal `once` answers with the
+`is_shared` line landed alongside (lane A, on the owner's word in their
+session). Still owed: the validation of lane/http itself, before
+anything reaches main.
 
 ## Slice 3 — `@std.http` (AFTER)
 

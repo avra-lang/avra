@@ -12,6 +12,7 @@
 //! `remove(write_text(p, t)?)`. That answer is a `Result`, so reading
 //! it parenthesises the propagation: `(write_text(p, t)?).length`.
 use @std.errors.{Error, ErrorInfo, info}
+use @std.text.{nul_at}
 
 // THIS PACKAGE'S OWN C (src/c/std_io.c) — every one answers an int: a
 // status, a descriptor, a handle, a kind, or a negative errno. No text
@@ -288,8 +289,14 @@ export fn remove(path: string) -> Result<string, IoError> {
 /// The variable's value, or null when it is not set — an empty
 /// value is set. A name holding `=` names nothing: the host would
 /// read it up to the `=` and answer another variable's value.
+/// The variable's value, or null when it is not set — an empty value
+/// is set. A name holding `=` or a NUL names nothing: `getenv` reads
+/// only to the NUL and would answer about a DIFFERENT variable, so
+/// absence is the honest answer. `env` has no failure channel by
+/// design — absence IS its answer — which is why this refuses by
+/// answering null where the file verbs answer `io.holed`.
 export fn env(name: string) -> string? {
-    if name.contains("=") || avra_io_env_set(name) < 0 { return null }
+    if nul_at(name) >= 0 || name.contains("=") || avra_io_env_set(name) < 0 { return null }
     // THE PREDICATE CARRIES WHAT THE VALUE CANNOT. The host answers
     // the empty string for a variable that is unset AND for one set
     // to nothing, so the value alone cannot tell them apart.

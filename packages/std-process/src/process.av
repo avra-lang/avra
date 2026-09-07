@@ -15,6 +15,7 @@
 //! string, so there is no shell to inject.
 use @std.time.{Duration, secs, now_ms}
 use @std.errors.{Error, ErrorInfo, info}
+use @std.text.{nul_at}
 
 // THIS PACKAGE'S OWN C (src/c/std_process.c) — the spawn table, the
 // pipes, the signals and the reaping, every one answering an int. A
@@ -275,6 +276,8 @@ export fn tool(name: string) -> Result<Tool, ProcessError> {
 /// variable's value is taken as written — a path or a name — and the
 /// fallback is looked up when it is unset or empty.
 export fn tool_from_env(var: string, default: string) -> Result<Tool, ProcessError> {
+    let holed_at = nul_at(var)
+    if holed_at >= 0 { fail ProcessError.Holed(var, holed_at) }
     let named = avra_host_env(var)
     tool(if named.length > 0 { named } else { default })
 }
@@ -394,7 +397,14 @@ impl Env {
     /// the pair set holds no such name. Under `.Inherit` an unset name
     /// answers the empty string, never `null`; that is the absence
     /// `is_set` reads.
+    /// The variable's value, or null. A name holding a NUL names
+    /// nothing and answers null from BOTH variants: `Only` compares
+    /// with `==`, which is `strcmp` and would match "AB" against
+    /// "AB\0CD", while `Inherit` hands the name to C, which reads it
+    /// short — one method must not read one name two ways because of
+    /// which variant it holds.
     fn get(name: string) -> string? {
+        if nul_at(name) >= 0 { return null }
         match self {
             .Only(pairs) -> pairs.find(it.name == name)?.value,
             .Inherit -> avra_host_env(name),
@@ -560,20 +570,6 @@ fn spawn_error(t: Tool, cwd: string, errno: int) -> ProcessError {
 fn bad_env_name(n: string) -> bool {
     n.length == 0 || n.contains("=")
 }
-
-/// Where a NUL sits in a value, or -1. Judged over the BYTES, and it
-/// must be: `contains` is `strstr`, and a needle whose first byte is
-/// NUL is the EMPTY needle, which matches every string at 0 — a guard
-/// built from it finds nothing and refuses everything.
-///
-/// It reads the octets directly now that `Bytes` is here. Walking
-/// `char_code` built a `List<int>` as long as the value for every
-/// value of every command, to look for one byte.
-fn nul_at(s: string) -> int {
-    s.bytes().index_of(nul(), 0)
-}
-
-once fn nul() -> Bytes { [0].bytes()! }
 
 /// THE DOOR every value this command hands the host passes through —
 /// the tool's path, the directory, each argument, each `NAME=value`.

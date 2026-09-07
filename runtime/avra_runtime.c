@@ -630,9 +630,17 @@ void avra_puts(const char* s) {
 // ── Strings ─────────────────────────────────────────────────────
 
 // Value equality; null equals only null.
+// TEXT IS A LENGTH AND BYTES, NEVER A TERMINATOR. A NUL is a
+// character like any other — `from_codepoint(0)` mints one with no
+// foreign input at all — so a comparison that stops at the first one
+// answers about a PREFIX and calls it the whole string. `"ab\0cd"`
+// read EQUAL to `"ab"` while `.length` said 5. The length comes
+// first: unequal lengths are unequal text in O(1), where `strcmp`
+// scanned to the first difference.
 int64_t avra_streq(const char* a, const char* b) {
     if (a == NULL || b == NULL) return a == b;
-    return strcmp(a, b) == 0;
+    size_t la = str_len(a);
+    return la == str_len(b) && memcmp(a, b, la) == 0;
 }
 
 // An int's decimal text — what `${n}` interpolates and `print`
@@ -1787,8 +1795,14 @@ const char* avra_str_substring(const char* s, int64_t lo, int64_t hi) {
     return str_owned(s + lo, (size_t)(hi - lo));
 }
 
+// `strstr` reads both sides as C strings, so a needle after a NUL
+// was unfindable and a haystack's tail invisible. An EMPTY needle is
+// present in everything, which is what `strstr(s, "")` answered too.
 int64_t avra_str_contains(const char* s, const char* needle) {
-    return strstr(s, needle) != NULL;
+    size_t nl = str_len(needle);
+    if (nl == 0) return 1;
+    size_t sl = str_len(s);
+    return nl <= sl && memmem(s, sl, needle, nl) != NULL;
 }
 
 int64_t avra_str_starts_with(const char* s, const char* prefix) {
@@ -1803,7 +1817,11 @@ int64_t avra_str_ends_with(const char* s, const char* suffix) {
 
 // The first position of `needle`, or -1.
 int64_t avra_str_index_of(const char* s, const char* needle) {
-    const char* at = strstr(s, needle);
+    size_t nl = str_len(needle);
+    if (nl == 0) return 0;
+    size_t sl = str_len(s);
+    if (nl > sl) return -1;
+    const char* at = (const char*)memmem(s, sl, needle, nl);
     return at ? (int64_t)(at - s) : -1;
 }
 
@@ -1851,23 +1869,33 @@ const char* avra_str_trim(const char* s) {
 // Every occurrence of `from` becomes `to`; an empty `from` changes
 // nothing.
 const char* avra_str_replace(const char* s, const char* from, const char* to) {
-    size_t n = strlen(s);
-    size_t fl = strlen(from);
-    size_t tl = strlen(to);
+    size_t n = str_len(s);
+    size_t fl = str_len(from);
+    size_t tl = str_len(to);
     if (fl == 0) return str_owned(s, n);
+    const char* end = s + n;
     size_t count = 0;
-    for (const char* p = strstr(s, from); p; p = strstr(p + fl, from)) count++;
-    char* buf = sized_box(n + count * tl - count * fl, KIND_STR);
+    for (const char* p = s;;) {
+        const char* q = (const char*)memmem(p, (size_t)(end - p), from, fl);
+        if (q == NULL) break;
+        count++;
+        p = q + fl;
+    }
+    size_t out = n + count * tl - count * fl;
+    char* buf = sized_box(out, KIND_STR);
     char* w = buf;
     const char* r = s;
-    for (const char* p; (p = strstr(r, from)) != NULL;) {
+    for (const char* p; (p = (const char*)memmem(r, (size_t)(end - r), from, fl)) != NULL;) {
         memcpy(w, r, (size_t)(p - r));
         w += p - r;
         memcpy(w, to, tl);
         w += tl;
         r = p + fl;
     }
-    strcpy(w, r);
+    // `sized_box` mints n+1 and writes no terminator — that is the
+    // CALLERS' convention, and `strcpy` was quietly keeping it here.
+    memcpy(w, r, (size_t)(end - r));
+    buf[out] = '\0';
     return buf;
 }
 
@@ -1875,19 +1903,23 @@ const char* avra_str_replace(const char* s, const char* from, const char* to) {
 // trailing empty piece is dropped, and empty text splits to
 // nothing. An empty separator keeps the text whole. Owned, holding
 // owned pieces.
+// A trailing empty segment is DROPPED and a leading one KEPT, which
+// the length walk preserves exactly: the tail is pushed only when it
+// is not empty, and an empty first segment is a real push.
 void* avra_str_split(const char* s, const char* sep) {
     void* out = avra_array_new();
-    size_t sl = strlen(sep);
-    if (*s == '\0') return out;
+    size_t n = str_len(s), sl = str_len(sep);
+    if (n == 0) return out;
     if (sl == 0) {
-        push_fresh_text(out, s, strlen(s));
+        push_fresh_text(out, s, n);
         return out;
     }
     const char* r = s;
+    const char* end = s + n;
     for (;;) {
-        const char* p = strstr(r, sep);
+        const char* p = (const char*)memmem(r, (size_t)(end - r), sep, sl);
         if (p == NULL) {
-            if (*r != '\0') push_fresh_text(out, r, strlen(r));
+            if (r != end) push_fresh_text(out, r, (size_t)(end - r));
             return out;
         }
         push_fresh_text(out, r, (size_t)(p - r));

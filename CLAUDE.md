@@ -312,6 +312,27 @@ engine's spec, written by dogfooding.
   The seat law then reads MARKS, never a DeclId, so a declared
   callee and a fn-typed value are one rule: `declared_marks`
   projects a declaration into the same currency.
+- A TYPE MIGRATION CAN MOVE WHO HOLDS A VALUE, AND A LIFETIME PROMISE
+  IS A PROMISE ABOUT THE HOLDER. Changing a seat's type is arithmetic
+  on signatures until the value's PROVENANCE changes — then a
+  caller-held box silently becomes a CALLEE-MINTED one. @std/sqlite's
+  `bind_text_unsafely_borrowed(…, value: string)` promises the
+  caller's bytes outlive the statement, and is keepable only because
+  the caller's own box goes straight through; migrating the WALL seat
+  to `Bytes` while the FACE kept `string` would force the face to
+  call `.bytes()` — minting a box whose only holder is that call,
+  dead at return, handing C a dangling pointer every time with the
+  caller having done nothing wrong. The face takes the new type too,
+  so the box stays in the caller's hands and the type says what the
+  contract always required. THE SEATS WHERE THIS BITES ARE FEW AND
+  GREPPABLE: those whose contract mentions LIFETIME (19 sites here).
+  One level down, the same law: a box materialised ONLY to be staged
+  has no other holder, so its last reference dies before the call and
+  C reads freed memory — staged boxes are held until the call
+  returns, and the engines disagreeing is how it was seen.
+  (Attributed to the sqlite lead and the substrate lane: `Bytes` is
+  not on main. The seat, its contract and its `string` type ARE here,
+  so the hazard is live for whoever migrates it.)
 - A RUNTIME ROW BORROWS ITS ARGUMENTS — callee-cleans is the AVRA
   call's convention, not the registry's. `retained_args` retains for
   `.Call` and `.CallPtr` alone; a `CallRt`/`CallRtVoid` argument
@@ -377,6 +398,89 @@ engine's spec, written by dogfooding.
   that pair as a test BEFORE the fix. Three collisions were
   nameable by hand here; enumerating every splice site and running
   it against the parent made nine.
+- A GUARD IS A PROPERTY OF EVERY CROSSING, NOT OF A PACKAGE. The law
+  above says a NUL is spent at the C boundary; this one is where the
+  refusal goes. THE CROSSING IS THE EXTERN SEAT, and only that: every
+  verb in `@std/text` reads the header, so a NUL is an ordinary
+  character on this side — text carrying one is longer than its
+  prefix and unequal to it (`==`, `contains`, `index_of`, `split`,
+  `replace` walk the length under `memcmp`/`memmem`, f57372a). It is
+  `getenv`, `execvp`, `fopen`, `sqlite3_open` that end at the first
+  NUL, so a value means a PREFIX of itself the moment it crosses, and
+  the guard belongs at the row that hands the pointer over.
+  `@std/text`'s `nul_at`/`has_nul` are that guard, once.
+  THE SPREAD IS THE LESSON, and it is what made eight defects in two
+  days across three packages: `@std/process` guarded `tool` and not
+  `tool_from_env`; `@std/io` guarded ten verbs and not `env`;
+  `@std/sqlite` guarded some and not five. Each package HAD the
+  guard, one door down. The failures were SILENT, not traps — a holed
+  name read a DIFFERENT variable (`env("PATH\0/junk")` answered
+  PATH's value), which no crash surfaces. And A METHOD MUST NOT READ
+  ONE NAME TWO WAYS: `Env.get` compared with `==` under `Only` and
+  handed the name to C under `Inherit`, so one method disagreed with
+  itself by variant. THE TEST: list every row that hands text to C,
+  and diff it against the guarded ones — never "does this package
+  guard".
+  AND THE STALE-DOCTRINE TRAP THIS LAW WAS FIRST WRITTEN INTO. The
+  first draft of this entry, and `@std/text`'s own module doc, and
+  `std-sqlite/boundary.av`, all taught that those five verbs stop at
+  a NUL. They DID until f57372a landed the same day, and I wrote the
+  correction quoting the behavior the docs described instead of the
+  behavior I measured — in the entry directly above the rule that
+  says to measure. A doc is a claim with a date on it; the test that
+  disagrees with it is the newer fact. `85abb9e`'s message carries
+  the wrong rationale for a real fix because of it.
+- ITS SIBLING AT THE OTHER END: A FLAT CONCATENATION OF TWO
+  SEQUENCES HAS A BOUNDARY THAT MOVES. Splice two variable-length
+  runs into one list and the split between them is not recorded, so
+  moving an item from the first into the second leaves the SAME
+  list and two different things wear one identity. `use a.b` and
+  `use a.{b}` fingerprinted alike; so did `f<A>(B)` and
+  `f<A, B?>()`, `f<B?>()` and `f(B)` (a written type and an ident
+  were the same value), `fn f<T>(x: int)` and `fn f<T, x: int>()`.
+  THE FIX IS ARITY: fold each sequence to ONE value so a payload's
+  shape is fixed per kind. BOTH INTUITIVE FIXES ARE WRONG, and
+  each is worth knowing. A SEPARATOR is the first —
+  `stmt_fps(then).concat([0]).concat(stmt_fps(else))` was written by
+  someone who saw this
+  hazard exactly and spent the one value that is not spare, which
+  is the empty-value law above wearing this law's clothes. A
+  RENUMBERING is the second: under a LINEAR fold (`131t + x + 7`)
+  a tag is an additive offset, so distinct tags separate nothing
+  that a chosen literal can reach — renumbering turns the first
+  test green and leaves every collision live. THE TEST: for each
+  encoding ask which two shapes produce the same bytes, and write
+  that pair as a test BEFORE the fix. Three collisions were
+  nameable by hand here; enumerating every splice site and running
+  it against the parent made nine.
+- A GUARD IS A PROPERTY OF EVERY CROSSING, NOT OF A PACKAGE — and
+  A GUARD WRITTEN IN THE FLAWED PRIMITIVE CANNOT CATCH THE FLAW.
+  The law above says a NUL is spent at the C boundary; this one is
+  how the refusal gets written, because eight defects in two days
+  across three packages were all the SECOND half. Our text verbs
+  split in two: the HEADER-AWARE (`length`, `substring`, `trim`,
+  `starts_with`, `concat`, `char_code`) see every byte, and the
+  NUL-LOSSY (`==`, `contains`, `index_of`, `split`, `replace` —
+  strcmp and strstr underneath) stop at the first NUL. So a guard
+  spelled `name.contains("=")` READS DIFFERENT BYTES THAN THE
+  CALLEE IT PROTECTS: `"A\0=B"` hid its `=` from the very guard
+  that looks for one. Judge over the bytes —
+  `[s.char_code(i) for i in 0..s.length].index_of(0)` — and judge
+  the NUL FIRST, which is what makes every test beneath it true.
+  Measured, before assuming a naive guard is merely incomplete:
+  `"abc".contains(NUL)` is TRUE (strstr with a NUL-headed needle
+  is the empty needle), so the obvious guard refuses EVERYTHING.
+  THE SPREAD IS THE LESSON. `@std/process` guarded its `tool` and
+  not `tool_from_env`; `@std/io` guarded ten verbs and not `env`;
+  `@std/sqlite` guarded some and not five. Each package HAD the
+  guard, one door down. And the failures were not traps — a holed
+  name silently read a DIFFERENT variable (`env("PATH\0/junk")`
+  answered PATH's value), which no crash would have surfaced.
+  A METHOD MUST NOT READ ONE NAME TWO WAYS: `Env.get` compared
+  with `==` under `Only` and handed the name to C under `Inherit`,
+  so one method disagreed with itself by variant. THE TEST: list
+  every verb that hands text to C, and diff that list against the
+  guarded ones — not "does this package guard".
 - A COLD PATH IN A HOT LEAF COSTS EVERY CALL A FRAME. A lazy
   `getenv`, a `char msg[80]` for a trap's words, a grow branch, a
   `__builtin_return_address` read — each is free when it runs and
@@ -1288,6 +1392,15 @@ Runtime facts, ours to ratify:
   one of them still reads as current. This is the attribution rule
   one axis over: that one asks WHICH TREE, this one asks WHICH
   VERSION of it, and receipts decay the same way for the same reason.
+  AND A CORRECTION IS A PROBE RESULT TOO, which this wording reached
+  only for LOGS. Told that `avra_exec_self` was the tree's only
+  aggregate extern seat, I counted five and said so; the HTTP lane
+  counted one. Both right — the other four died in their S4 and live
+  on main. A count offered as a correction that does not name ITS
+  base invites the other side to concede to a number that was never
+  about their tree. When two people disagree about a COUNT of things
+  in the tree, the first question is WHICH TREE EACH COUNTED, asked
+  before either concedes.
 - A SAFETY PROPERTY RESTING ON A CONDITION NOBODY STATED IS A
   DEADLINE, NOT A GUARANTEE. FIVE are on record, ONE now PAID, and
   the register is
@@ -1334,6 +1447,22 @@ Runtime facts, ours to ratify:
   wrong. Telling the two laws apart is the whole skill: ask whether
   the failing case CAN BE BUILT. If it can, build it; if it cannot,
   trace it and write the deadline down.
+- AND THE SHARPEST MEMBER, because it defeats the usual remedy: A
+  SUITE CAN BE GREEN ON EVERY RUN, CORRECT ON EVERY CASE, AND SILENT
+  ABOUT THE ASSUMPTION HOLDING IT UP — and NO ADDED CASE FINDS IT
+  when the hostile case CANNOT BE BUILT. Seven fingerprint boundary
+  attacks passed before a widening and after it, because every hole
+  contributed the SAME NUMBER of elements, so the boundaries sat at a
+  fixed stride nobody had written down; the widening was uniform, so
+  they passed again. No non-uniform hole could be constructed, so the
+  case that would fail did not exist to be written. THE TELL IS NOT A
+  FAILING TEST, because there is none. What finds it is a question
+  about SHAPE — does each sequence fold to ONE value or splice flat —
+  where every probe asks about BEHAVIOUR, and a reviewer who CANNOT
+  RUN THE CODE is forced to ask it. (Strings lane's, attributed. The
+  ARITY law above is the fix, and this tree already pays it:
+  `fingerprint_stmt` folds through `fp_list(param_fps(…))` rather
+  than splicing.)
 - A CHECK THAT EXAMINED NOTHING IS NOT A CHECK THAT PASSED. A keeper
   reading objects from disk examines nothing on a COLD TREE and
   reports success; a grep scoped too narrowly answers "absent" about
@@ -1508,6 +1637,24 @@ Runtime facts, ours to ratify:
   (That trigger never reached main. Audited here on landing: the two
   triggers in these ledgers that name an owner were both confirmed
   with that owner directly.)
+- ITS SIBLING FOR REVIEWS: A REVIEW REQUEST NAMES THE TREE THE CODE
+  IS IN. "It is in your file, for your review" is false whenever the
+  relevant half lives on the ASKER's branch, and it happened twice in
+  one night — a `Hole` field and an `inert` column, both absent from
+  main, both sent as changes to files this lane owns. THE FAILURE MODE
+  IS A FABRICATED REVIEW: the reviewer cannot open the code, and the
+  cheapest reply is "looks right", which is then banked as a review
+  that happened. Both were caught by `grep`ping for the symbol before
+  answering, which is a one-command habit and the whole defence. The
+  reviewer's obligation is to check, and the asker's is to say WHICH
+  TREE — a review of code you cannot see is worth less than silence,
+  because silence does not get quoted back.
+  AND THE CONSTRAINT IS SOMETIMES THE BETTER DESIGN: unable to
+  re-mark a column that was not here, the keeper for it landed FIRST
+  and passes vacuously, so the column arrives into a guarded tree and
+  is certified from its first gated commit instead of being blessed
+  and corrected later. Ask what the absence makes possible before
+  waiting for the code.
 - A RECEIPT FROM ANOTHER TREE IS LABELLED AS ONE. The laws here carry
   instances because an instance is what makes a law APPLIED rather
   than agreed with — so the instances have to stay checkable. One

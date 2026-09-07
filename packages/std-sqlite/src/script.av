@@ -34,7 +34,7 @@ export fn statements(script: string) -> Result<List<string>, SqlError> {
     mut from = 0
     mut i = 0
     while i < script.length {
-        if script.char_code(i) == semicolon() && completes(script.substring(from, i + 1)) {
+        if script.char_code(i) == semicolon() && complete_bytes(script.substring(from, i + 1)) {
             out.push(script.substring(from, i + 1))
             from = i + 1
         }
@@ -55,7 +55,7 @@ export fn statements(script: string) -> Result<List<string>, SqlError> {
 fn tail_of(script: string, from: int) -> Result<List<string>, SqlError> {
     let rest = script.substring(from, script.length)
     if is_blank(rest) { return [] }
-    if !completes("${rest}\n;") { fail unterminated(rest) }
+    if !complete_bytes("${rest}\n;") { fail unterminated(rest) }
     [rest]
 }
 
@@ -65,7 +65,18 @@ fn tail_of(script: string, from: int) -> Result<List<string>, SqlError> {
 /// SQLITE_NOMEM (7), so `!= 0` would read an allocation failure as a
 /// finished statement. Spelled once, here, and the face's `is_complete`
 /// calls it rather than repeating the comparison.
-export fn completes(sql: string) -> bool { sqlite3_complete(sql) == 1 }
+/// Whether the text is a complete statement, refusing text that holds a
+/// NUL — `sqlite3_complete` takes no length, so C stops at the first one
+/// and the answer would be about a prefix.
+export fn completes(sql: string) -> Result<bool, SqlError> {
+    if has_nul(sql) { fail script_holds_a_nul() }
+    complete_bytes(sql)
+}
+
+/// The wall call with no guard, for callers that have ALREADY guarded
+/// the whole script — `statements` checks once at the top rather than
+/// once per candidate.
+fn complete_bytes(sql: string) -> bool { sqlite3_complete(sql) == 1 }
 
 fn semicolon() -> int { 59 }
 

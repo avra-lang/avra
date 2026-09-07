@@ -2,7 +2,7 @@
 // can grow: degenerate shapes, every wrong value in every slot, the
 // two engines, ownership, and refusal quality. Each case names the
 // attack; the fixtures are the shell and a hand-built tool.
-use @std.process.{Tool, tool, cmd, Command, Pipeline, Stdin, Ready, Env, EnvPair, Output, ProcessError, minimal, exit_text, parallel, race}
+use @std.process.{Tool, tool, tool_from_env, cmd, Command, Pipeline, Stdin, Ready, Env, EnvPair, Output, ProcessError, minimal, exit_text, parallel, race}
 use @std.time.{ms, secs, now_ms}
 use @std.text.{from_codepoint}
 
@@ -348,6 +348,16 @@ spec "std/process adversarial" {
                 .Ok(_) -> false,
                 .Err(e) -> kind(e) == "holed:2",
             }
+        }
+        then "`tool_from_env` refuses a holed variable rather than reading another one" {
+            match tool_from_env("PA${nul()}TH", "sh") {
+                .Ok(_) -> false,
+                .Err(e) -> kind(e) == "holed:2",
+            }
+        }
+        then "`Env.get` reads one name one way — a holed name is null in BOTH variants" {
+            let only = minimal().with_var("AB", "v")
+            only.get("AB${nul()}CD") == null && Env.Inherit.get("PA${nul()}TH") == null && only.get("AB") == "v"
         }
         then "a NUL-free command still runs — the guard refuses nothing it should not" {
             shown(text(cmd(dashed(), ["fine"]))).trim() == "fine"
