@@ -2455,6 +2455,33 @@ the order is the dependency.
         being true the day C callbacks land.
         Proved in `corpus/native/externs.av`, a file that already
         existed for the host seam: `null some some`.
+  - [ ] A NUL AT THE C BOUNDARY DOES NOT LOSE DATA, IT REDIRECTS
+        THE OPERATION — and that is a bigger claim than CLAUDE.md's
+        NUL law makes. Found 2026-09-07 by the HTTP campaign's
+        substrate lane, following this lane's marshalling redirect on
+        the io slice. A 79-byte path ending `/../../etc/passwd` with
+        a NUL at byte 5 READ A 5-BYTE FILE and answered ok; `exists`
+        answered true for nothing; `write_text` created a file under
+        a truncated name. Both engines AGREED — which is the class
+        eval == native cannot catch, three times over now.
+        THE EXISTING LAW IS ABOUT LOSS: five string primitives stop
+        at the first NUL, so a five-byte text reads equal to its
+        two-byte prefix. This is about TARGET: the same truncation,
+        applied to a NAME the C side resolves, does not answer a
+        wrong value — it acts on a DIFFERENT OBJECT. That is a
+        security property rather than a correctness one.
+        THE FIX IS A REFUSAL AT THE BOUNDARY, not a sanitisation:
+        six verbs that hand C a path now judge over the BYTES and
+        refuse, with the NUL's offset in the words.
+        AND IT GENERALISES PAST IO, which is the part this lane
+        should carry: with the extern host, ANY package may declare
+        `extern fn f(path: string)`, and every one inherits this.
+        io fixed its six verbs; the next package will not know. So
+        the question is a LANGUAGE one — what does a string crossing
+        to C mean when it holds a NUL — and the answers are a refusal
+        at the seam for every `string` seat of an extern, a `Bytes`
+        seat that carries the length, or a documented hazard. It is
+        not io's to decide and it is not settled by io's fix.
   - [ ] REVIEWS THIS LANE OWES, recorded because they live in
         messages and messages do not survive a compaction. Each is a
         diff another lane writes in this lane's files, with this
