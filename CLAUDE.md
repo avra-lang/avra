@@ -1367,6 +1367,20 @@ Runtime facts, ours to ratify:
   concluding which ones there are: `grep -oE 'F[0-9]{4}' | sort -u`
   costs nothing and cannot lie by omission, where a `head` always
   can.
+  THAT CURE HOLDS FOR LITERALS ONLY, AND IT FAILED HERE. Choosing a
+  free fingerprint tag, `grep -oE 'fp\([0-9]+'` answered
+  `102 105 108 109` — and 100, 101, 106 and 107 are taken, spelled
+  `fp(if … { 106 } else { 107 }, …)`. A GREP FOR LITERAL VALUES
+  CANNOT SEE A VALUE THAT IS COMPUTED, so four of ten were invisible
+  and 106 read as free; only reaching for highest-plus-one out of
+  habit kept a second collision out of the tree, and `make
+  fingerprints` had just caught the first. THE GENERAL FORM:
+  ENUMERATE FROM WHAT THE CONSUMER SEES, NOT FROM WHAT THE SOURCE
+  SPELLS. The keeper reads that space correctly — it is what found
+  the collision — so the honest way to ask "what is free" was to ASK
+  THE KEEPER, not to grep the file it guards. When a question already
+  has an instrument in the gate, a hand-rolled second instrument is
+  not a shortcut, it is an unverified one.
 - A NEW CONSUMER IS THE INSTRUMENT THAT FINDS A LOCALLY COHERENT
   DEFECT, and reading is not. The entry above says to make a green
   check fail; this is its half for the artifacts that are not checks

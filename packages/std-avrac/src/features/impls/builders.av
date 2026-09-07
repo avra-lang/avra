@@ -15,10 +15,14 @@ fn build_receiver(mut b: Builder) -> Result<LangNode, string> {
 /// `mut fn name(params) -> ret { body }` — a fn declaration that
 /// DECLARES its receiver written: the store flag carries the word,
 /// and the declare pass judges its placement (a method, or a stray).
-/// Type parameters parse so a generic `mut fn` meets the generic-
-/// method law, not a parse hole; their bounds are dropped — the
-/// law refuses the method before a bound could matter.
-fn build_mut_fn(mut b: Builder) -> Result<LangNode, string> {
+/// A FN DECLARATION UNDER A MARKER WORD — `mut fn` and `static fn`
+/// fill the same slots and differ only in the mark their builder
+/// then sets, so the declaration is built once here.
+///
+/// Type parameters parse so a generic one meets the generic-method
+/// law, not a parse hole; their bounds are dropped — the law refuses
+/// the method before a bound could matter.
+fn marked_fn(mut b: Builder) -> Result<StmtId, string> {
     let n = b.token(0)?
     let tparams = [Param { name: t.text, ty: null, default: null, mutable: false } for t in b.tokens(1)?]
     let marks = b.tokens(2)?
@@ -28,8 +32,21 @@ fn build_mut_fn(mut b: Builder) -> Result<LangNode, string> {
     let ends: int? = b.span_end()
     if ends == null { return .Err("defect: a fn declaration without a span — the arena and the grammar disagree") }
     let params = marked_seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends!), marks, n.span.lo)
-    let s = b.store.alloc_stmt(Stmt.FnDecl(n.text, tparams, params, r, body), b.span)
+    .Ok(b.store.alloc_stmt(Stmt.FnDecl(n.text, tparams, params, r, body), b.span))
+}
+
+/// `mut fn` — a method declaring that it writes its receiver.
+fn build_mut_fn(mut b: Builder) -> Result<LangNode, string> {
+    let s = marked_fn(b)?
     b.store.mark_mutating(s)
+    .Ok(LangNode.NStmt(s))
+}
+
+/// `static fn` — a method declaring it has NO receiver. The third
+/// value of the word `fn` and `mut fn` are the first two of.
+fn build_static_fn(mut b: Builder) -> Result<LangNode, string> {
+    let s = marked_fn(b)?
+    b.store.mark_static(s)
     .Ok(LangNode.NStmt(s))
 }
 
@@ -58,13 +75,14 @@ fn is_fn(b: Builder, s: StmtId) -> bool {
 /// method anchors window their own params, the rets zip.
 fn build_trait(mut b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    let muts = b.tokens(1)?
-    let mn = b.tokens(2)?
-    let seat_marks = b.tokens(3)?
-    let ps = b.tokens(4)?
-    let tys = b.type_refs(5)?
-    let rets = b.type_refs(6)?
-    let bodies = b.exprs(7)?
+    let statics = b.tokens(1)?
+    let muts = b.tokens(2)?
+    let mn = b.tokens(3)?
+    let seat_marks = b.tokens(4)?
+    let ps = b.tokens(5)?
+    let tys = b.type_refs(6)?
+    let rets = b.type_refs(7)?
+    let bodies = b.exprs(8)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("defect: a trait declaration without a span — the arena and the grammar disagree") }
     mut fns: List<StmtId> = []
@@ -74,6 +92,7 @@ fn build_trait(mut b: Builder) -> Result<LangNode, string> {
         // a `mut` between the previous sig and this name is this sig's
         let since = if j == 0 { n.span.lo } else { mn[j - 1].span.lo }
         if muts.any(within(it.span.lo, since, m.span.lo)) { b.store.mark_mutating(sig) }
+        if statics.any(within(it.span.lo, since, m.span.lo)) { b.store.mark_static(sig) }
         fns.push(sig)
     }
     b.make_stmt(Stmt.TraitDecl(n.text, fns))

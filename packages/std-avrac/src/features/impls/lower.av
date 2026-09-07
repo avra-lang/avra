@@ -15,6 +15,7 @@ fn method_call_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     match cx.view.store.expr(e) {
         .MethodCall(subject, name, args) -> match callee_of(cx.view, cx.type_at(subject), name) {
             .Variant(_, _) -> built_variant(cx, e, name, args),
+            .Static(m, _) -> static_dispatch(cx, e, m, args),
             .Bounded(_, _, _) -> lower_defect(cx, e, "a bounded receiver survived mono"),
             .Contract(tdecl, _) -> dyn_dispatch(cx, e, subject, tdecl, name, args),
             .FnField(slot, fty) -> fielded_dispatch(cx, e, subject, slot, fty, args),
@@ -58,6 +59,16 @@ fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, 
     if m == null { return lower_defect(cx, e, "a method with no symbol survived typing") }
     let dst = cx.result(e)
     cx.emit(Ins.Call(dst, cx.method_symbol(m!, e, cx.type_at(subject)), [recv].concat(regs)))
+    dst
+}
+
+/// A STATIC's dispatch: a direct Call to the method's qualified
+/// symbol with NO receiver — the seats are the written ones.
+fn static_dispatch(mut cx: LowerCx, e: ExprId, m: DeclId, args: List<ExprId>) -> Reg {
+    // THE MINT LAW: the operands' registers first, the answer last
+    let regs = [cx.reg_of(a) for a in args]
+    let dst = cx.result(e)
+    cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(e)), regs))
     dst
 }
 

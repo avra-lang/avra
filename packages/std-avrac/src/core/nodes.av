@@ -507,6 +507,8 @@ export type NodeStore = {
     // `mut fn` — a method declaring that it writes its receiver
     mutating: List<bool>,
     onces: List<bool>,
+    // `static fn` — a fn under an impl declaring it has NO receiver
+    statics: List<bool>,
     pats: List<Pat>,
     pat_spans: List<Span?>,
     pat_fingerprints: List<int>,
@@ -515,7 +517,7 @@ export type NodeStore = {
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
-        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [],
+        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], statics: [],
         pats: [], pat_spans: [], pat_fingerprints: [],
     }
 }
@@ -643,6 +645,7 @@ impl NodeStore {
         self.exported.push(false)
         self.mutating.push(false)
         self.onces.push(false)
+        self.statics.push(false)
         StmtId { index: self.stmts.add(s, span) }
     }
 
@@ -666,6 +669,18 @@ impl NodeStore {
 
     fn is_once(s: StmtId) -> bool {
         self.onces[s.index]
+    }
+
+    /// `static fn` crossed this declaration — it lives under an impl
+    /// and takes NO receiver, which is the third value of the same
+    /// word `fn` and `mut fn` are the first two of.
+    fn mark_static(s: StmtId) {
+        self.statics.set(s.index, true)
+        self.restamp(s, 110)
+    }
+
+    fn is_static(s: StmtId) -> bool {
+        self.statics[s.index]
     }
 
     /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()` and
