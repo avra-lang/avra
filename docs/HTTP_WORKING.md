@@ -99,7 +99,15 @@ index-driven over `run`/`index_of`/`eq_at`/`ieq_at`; the chunked
 decoder is RESUMABLE (`chunker`/`fed`, a `Phase`), never a re-walk;
 45 attack-table rows pinned in `tests/frame_test.av`. `http.av`:
 `Request` (spans into its own buffer; `header(name)` slices on ask),
-`Response`, `wire`, `reason`. NEXT: `server.av` (the event loop, a
+`Response`, `wire`, `reason`. THE FRAMER'S COST, MEASURED (bench in
+`corpus/build/bench-frame`, ignored): 3457 ns per four-field 112-byte
+head natively, an order of magnitude off picohttpparser's 366 ns for
+nine fields. Sampled top of stack: `once` reads a THIRD (`once_at` does
+a strcmp per earlier entry on every read — lane A's, asked with the
+numbers), refcount traffic a third (the `with`-copied `Framing` per
+field and the per-field boxes — mine, to measure after lane A's fix),
+the scans a tenth, the framer's own code three percent. Not hoisted
+around: the code reads as it should. NEXT: `server.av` (the event loop, a
 handler `fn(mut A, Request) -> Response`, app state threaded as a
 value), the response framer, `client.av`. The strings lane's typed
 patterns will replace the hand-written scans; until then the framer is
