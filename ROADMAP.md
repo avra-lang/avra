@@ -2455,7 +2455,39 @@ the order is the dependency.
         being true the day C callbacks land.
         Proved in `corpus/native/externs.av`, a file that already
         existed for the host seam: `null some some`.
-  - [ ] THE CLASS CHECK ABOVE WAS WRONG — RETRACTED THE SAME HOUR by
+  - [x] THE FINGERPRINT CLASS CLOSED by lane A at 292d273, and two
+        PROCESS laws came out of it that are worth more than the fix.
+        NINE OF THIRTEEN splice sites collided; all thirteen pass
+        now. The fix is at the COMBINER: `fp` folds the payload's
+        LENGTH before its parts, so arity rides the hash and no
+        boundary can move. It subsumes `fp(29, …)` per arm, which
+        was already that shape.
+        1. RENUMBERING WOULD HAVE FIXED NOTHING, and I recommended it
+           — I told the HTTP lane "64 is free, that's the fix". The
+           OLD `fp` was `h = tag` then `h*131 + p + 7`, so a
+           single-part hash is `131·tag + part + 7`: LINEAR IN THE
+           TAG. Changing a code shifts every hash by a constant and
+           separates nothing, because a payload can be chosen to
+           absorb it. The axis was never WHICH code, it was whether
+           ARITY is in the hash. A fix that moves the cases rather
+           than separating them turns the first test green and leaves
+           every collision reachable.
+        2. A TEST THAT PASSES FOR THE WRONG REASON IS WORSE THAN NO
+           TEST. Lane A's first `type_fp` case compared two `let`s
+           differing only in optionality — which differ by TAG anyway,
+           so it would have passed against the BROKEN tree. It was in
+           the file until they ran it against the PARENT commit. That
+           is the fire-test discipline stated as a law: a test for a
+           defect that has never been SEEN to fail is a test you are
+           trusting on faith, and running it against the parent is
+           what converts faith into evidence.
+        AND THE SPACE QUESTION IS SETTLED THE OTHER WAY: core/nodes.av
+        is ONE space, not three. Patterns, expressions and statements
+        MEET, because `arm_fps` folds two of them together and
+        `restamp` wraps the third. The earlier "benign across spaces"
+        reading was wrong about this file. `make fingerprints` is in
+        the gate, with its teeth witnessed.
+  - [ ] THE CLASS CHECK BEFORE IT WAS WRONG — RETRACTED THE SAME HOUR by
         lane A, who found ~10 more sites and CONSTRUCTED three
         collisions from ordinary source. What follows is kept as
         written, because the way it was wrong is the useful part.
