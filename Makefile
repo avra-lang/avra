@@ -245,9 +245,9 @@ corpus: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	      || { echo "$$d: eval != expected"; exit 1; }; \
 	    legs="eval == native"; \
 	  fi; \
-	  ./avra build $$d/src/main.av > /tmp/avra-bin.path 2>&1 \
-	    || { echo "$$d: build FAILED"; cat /tmp/avra-bin.path; exit 1; }; \
-	  $$(cat /tmp/avra-bin.path) > /tmp/avra-corpus-native.out; \
+	  ./avra build $$d/src/main.av > build/corpus-bin.path 2> build/corpus-bin.err \
+	    || { echo "$$d: build FAILED"; cat build/corpus-bin.err build/corpus-bin.path; exit 1; }; \
+	  $$(cat build/corpus-bin.path) > /tmp/avra-corpus-native.out; \
 	  diff $$d/expected /tmp/avra-corpus-native.out \
 	    || { echo "$$d: native != expected"; exit 1; }; \
 	  echo "$$d: $$legs == expected"; \
