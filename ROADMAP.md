@@ -2568,6 +2568,19 @@ the order is the dependency.
         `restamp` wraps the third. The earlier "benign across spaces"
         reading was wrong about this file. `make fingerprints` is in
         the gate, with its teeth witnessed.
+        AND IT CAUGHT A REAL ONE WITHIN HOURS, which is the receipt
+        that matters more than the teeth test. Lane C's statics slice
+        went red on `make fingerprints`: tag 105 claimed twice — lane
+        A's `fp_list` and lane C's `mark_static`, two lanes picking
+        the same free number the same night, exactly the way I33 was
+        once landed twice and silently dropped the earlier rule.
+        Neither author could have seen the other's choice, no review
+        would have compared them, and the collision would have been
+        SILENT — a fingerprint that quietly conflates two node kinds
+        does not fail, it answers wrong later. Caught in the gate, on
+        a case the keeper was not built for, by a lane that did not
+        know it existed. A keeper's worth is measured by the catch it
+        did not anticipate, and this one had it on day one.
   - [ ] THE CLASS CHECK BEFORE IT WAS WRONG — RETRACTED THE SAME HOUR by
         lane A, who found ~10 more sites and CONSTRUCTED three
         collisions from ordinary source. What follows is kept as
