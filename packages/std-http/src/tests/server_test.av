@@ -1,0 +1,166 @@
+//! The server loop, turned by hand on one thread: a client on the
+//! loopback writes a request, the server turns until the response has
+//! landed, and the client reads it. Every exchange is exact bytes.
+use @std.net.{Listener, Conn, Poller, Read, NetError, listen, connect, poller}
+use @std.time.{ms, secs}
+use @std.http.frame.{limits}
+use @std.http.http.{Request, Response, text}
+use @std.http.server.{Server, Timing, served, timing}
+
+/// The application: a counter the handler bumps, so a test can see
+/// that state threads through the loop as a value.
+type App = { hits: int }
+
+fn echo(mut app: App, q: Request) -> Response {
+    app.hits = app.hits + 1
+    text(200, "${q.head.method is .Get} ${q.target()} ${q.body.text() ?? "?"} ${app.hits}")
+}
+
+/// A server on a kernel-chosen loopback port with a client attached.
+type Pair = { s: Server<App>, c: Conn, p: Poller }
+
+fn pair(t: Timing) -> Result<Pair, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, App { hits: 0 }, echo, limits(), t)?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let p = poller()?
+    p.watch(c.fd, .Read)?
+    .Ok(Pair { s: s, c: c, p: p })
+}
+
+/// The client's bytes written whole, then the server turned and the
+/// client read until `expected` bytes have arrived or the peer ends.
+/// Every read is one turn of the server, so the exchange is
+/// deterministic.
+fn exchanged(mut pr: Pair, sent: string, expected: int) -> Result<Bytes, NetError> {
+    mut from = 0
+    let out = sent.bytes()
+    while from < out.length { from = from + pr.c.write(out, from)? }
+    mut got = "".bytes()
+    mut turns = 0
+    while got.length < expected && turns < 50 {
+        pr.s.turn(ms(50))?
+        pr.p.wait(ms(50))?
+        let chunk: Bytes? = match pr.c.read(65536)? {
+            .Data(b) -> b,
+            .Eof -> { return .Ok(got) },
+            .Pending -> null,
+        }
+        got = got.concat(chunk ?? "".bytes())
+        turns = turns + 1
+    }
+    .Ok(got)
+}
+
+fn reply(mut pr: Pair, sent: string) -> Result<string, NetError> {
+    let got = exchanged(pr, sent, 1)?
+    .Ok(got.text() ?? "<not text>")
+}
+
+fn get_root() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let r = reply(pr, "GET /x HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(r == "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 10\r\n\r\ntrue /x  1")
+}
+
+fn keep_alive_twice() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let first = reply(pr, "GET /a HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let second = reply(pr, "GET /b HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(first.ends_with("true /a  1") && second.ends_with("true /b  2") && pr.s.connections() == 1)
+}
+
+fn pipelined() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let both = exchanged(pr, "GET /a HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n", 200)?
+    let t = both.text() ?? ""
+    .Ok(t.index_of("true /a  1") < t.index_of("true /b  2") && t.index_of("true /b  2") > 0)
+}
+
+fn posted() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let r = reply(pr, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello")?
+    .Ok(r.ends_with("false /p hello 1"))
+}
+
+fn body_in_two_reads() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let partial = exchanged(pr, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhel", 1)?
+    let rest = reply(pr, "lo")?
+    .Ok(partial.length == 0 && rest.ends_with("false /p hello 1"))
+}
+
+fn chunked_body() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let r = reply(pr, "POST /c HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nhel\r\n2\r\nlo\r\n0\r\n\r\n")?
+    .Ok(r.ends_with("false /c hello 1"))
+}
+
+fn refused_then_closed() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let got = exchanged(pr, "GET  /x HTTP/1.1\r\nHost: a\r\n\r\n", 1000)?
+    let t = got.text() ?? ""
+    .Ok(t.starts_with("HTTP/1.1 400 Bad Request\r\n") && t.contains("connection: close\r\n") && pr.s.connections() == 0)
+}
+
+fn head_carries_no_body() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let r = reply(pr, "HEAD /h HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(r.ends_with("content-length: 11\r\n\r\n"))
+}
+
+fn expect_continue() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let first = reply(pr, "POST /e HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n")?
+    let second = reply(pr, "ok")?
+    .Ok(first == "HTTP/1.1 100 Continue\r\n\r\n" && second.ends_with("false /e ok 1"))
+}
+
+fn closes_when_asked() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let got = exchanged(pr, "GET /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n", 1000)?
+    let t = got.text() ?? ""
+    .Ok(t.contains("connection: close\r\n") && pr.s.connections() == 0)
+}
+
+fn idle_is_dropped() -> Result<bool, NetError> {
+    mut pr = pair(Timing { idle: ms(20) })?
+    let _ = reply(pr, "GET /x HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let before = pr.s.connections()
+    let _ = exchanged(pr, "", 1)?
+    .Ok(before == 1 && pr.s.connections() == 0)
+}
+
+fn peer_ends_first() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let _ = pr.c.write("GET /x HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)?
+    let _ = pr.c.shutdown_write()?
+    let got = exchanged(pr, "", 1000)?
+    .Ok((got.text() ?? "").ends_with("true /x  1") && pr.s.connections() == 0)
+}
+
+fn passes(r: Result<bool, NetError>) -> bool {
+    match r {
+        .Ok(b) -> b,
+        .Err(_) -> false,
+    }
+}
+
+spec "std.http server" {
+    given "one request" {
+        then "a GET is answered exactly, and the handler saw its state" { passes(get_root()) }
+        then "a POST's body arrives whole" { passes(posted()) }
+        then "a body split across reads is gathered before the handler runs" { passes(body_in_two_reads()) }
+        then "a chunked body is decoded before the handler runs" { passes(chunked_body()) }
+        then "a HEAD carries the body's length and none of its bytes" { passes(head_carries_no_body()) }
+        then "100 Continue is written before the body is sent" { passes(expect_continue()) }
+    }
+    given "a connection's life" {
+        then "two requests ride one connection and the state counts both" { passes(keep_alive_twice()) }
+        then "two pipelined requests are answered in order" { passes(pipelined()) }
+        then "a refused head is answered 400 and the connection closed" { passes(refused_then_closed()) }
+        then "connection: close is honoured" { passes(closes_when_asked()) }
+        then "an idle connection is dropped at its deadline" { passes(idle_is_dropped()) }
+        then "a peer that ends first still gets its answer" { passes(peer_ends_first()) }
+    }
+}
