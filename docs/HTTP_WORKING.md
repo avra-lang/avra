@@ -865,6 +865,63 @@ contracts held. The seed is unchanged: no runtime symbol moved.
 Door 1's primitives half is DONE; its seam half is the substrate
 lane's, in flight; immortal `once` is still on the owner's word.
 
+## The seam's fixes landed (342ad91), the review round (01d4b3d), and S2c approved in shape
+
+The substrate lane's 55c2dd4 fixed the three severe findings its red
+team made beside the crossing check, and a cold bootstrap proved them:
+the frame REFUSES BEFORE THE WORK (it had recorded the refusal and
+staged on, so `atoi` read address zero and the evaluator segfaulted
+five ways with `check` clean — the one sibling of four not hoisted
+above the work); F2065, an extern that names a row IS the row (both
+engines ask the registry first, so a same-named extern's seats were
+discarded in silence; it fires nowhere, which is the point); and
+`make externs` holds the `Bytes` exemption by whether the CALLEE KNOWS
+THE LENGTH — from its prototype, or from the box header that only core
+may read — which is why three of our own lengthless seats are right
+and foreign C's never are. Merged with one conflict, the keeper's
+self-test list (octet and inert cases unioned, 92 hold).
+
+The review round (c1dea58) found the frame's text door justifying its
+unconditional check with the sentence F2065 had just disproved — the
+check stays, the reason moved, and a comment carrying a justification
+carries the true one. `carries_text` stays where it is until a THIRD
+consumer asks the question.
+
+S2C, THE DESIGN NOTE (1247120, `docs/2026_09_07_S2C_DESIGN.md`), read
+whole and APPROVED IN SHAPE before any code, with lane A's review in
+the named tree. Its centre is a hazard found by looking at how the
+corpus runs: every corpus program runs in ONE PROCESS, so a library
+opened `RTLD_GLOBAL` would let every LATER program reach `sqlite3_open`
+whether or not it declared the dependency — a PASS that should have
+been a refusal, decided by directory order. The library is opened
+`RTLD_LOCAL`, written explicitly, and the scope test is an ORDERED pair
+in one process. Its second find is the deadline law self-applied: the
+acceptance test "no sqlite dependency refuses `sqlite3_open`" passes
+today only because the symbol is ABSENT from `build/avra`
+(`nm | grep -c` answers 0, verified on main by lane A), so it expires
+the day anything links sqlite into the compiler.
+
+THE TWO QUESTIONS, answered by lane A and matching this lead's
+recommendation: the lookup takes the handles AS AN ARGUMENT
+(`avra_ffi_symbol_in(handles, name)`) — the frame's staging area is
+per-CALL scratch and a handle set is per-PROGRAM identity, and a set
+held in frame state is §1's leak one layer up; and `tools/libs.py`
+groups the `[link]` rows per package and answers a package's library as
+DATA that `stems.sh` consumes, since make cannot parse TOML and a
+generated `.mk` adds a staleness nothing reports. Folded in before
+code: the ordered test WITNESSED failing under `RTLD_GLOBAL`; the order
+of the pair a property of the harness, never of a directory walk; the
+gate's corpus target depending on `libs`; every §5 number with its
+commit beside it (2,263,008 bytes is lane/http's image, main's is
+2,122,704 — unbased numbers are not a comparison); §6 as its own line
+in §2.3; and a registered condition — under the evaluator two programs
+that depend on sqlite share the library's PROCESS-GLOBAL STATE, which
+native never did, and symbol scoping does not scope state.
+
+Order from here: the `avra_exec_self` row and the aggregate-seat law
+(ROW, ruled; the law worded as the PLAIN half of F2056, lane D's
+verified wording), then S2c in its §8 order.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
