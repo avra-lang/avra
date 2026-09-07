@@ -580,6 +580,7 @@ impl Machine {
             .Insist -> self.insist_val(vals),
             .InsistScalar -> self.insist_scalar_val(vals),
             .Text -> Val.S(self.val_text(vals[0])),
+            .FloatTextBits -> Val.S(avra_float_text_bits(self.whole(vals[0]))),
             .Strlen -> Val.I(self.text_val(vals[0]).length),
             .ArrayPop -> self.array_pop_val(vals),
             .ArrayConcat -> self.array_concat_val(vals),
@@ -608,6 +609,9 @@ impl Machine {
             .BytesEqAt -> self.bytes_eq_at_val(vals, false),
             .BytesIeqAt -> self.bytes_eq_at_val(vals, true),
             .BytesGathered -> self.bytes_gathered_val(vals[0]),
+            .FdRead -> Val.I(avra_fd_read(self.whole(vals[0]), self.whole(vals[1]))),
+            .FdTaken -> Val.Y(octets_of_box(avra_fd_taken())),
+            .FdWrite -> Val.I(avra_fd_write(self.whole(vals[0]), self.octets(vals[1]).bytes()!, self.whole(vals[2]))),
             .ProcSpawn -> Val.I(avra_proc_spawn(self.text_val(vals[0]), self.texts_of(vals[1]), self.texts_of(vals[2]), self.text_val(vals[3]), self.whole(vals[4]), self.whole(vals[5]), self.whole(vals[6]))),
             .ProcRun -> Val.I(avra_proc_run(self.text_val(vals[0]), self.texts_of(vals[1]), self.texts_of(vals[2]), self.text_val(vals[3]), self.whole(vals[4]), self.text_val(vals[5]), self.whole(vals[6]), self.whole(vals[7]), self.whole(vals[8]))),
             .ProcPoll -> Val.I(avra_proc_poll(self.whole(vals[0]), self.whole(vals[1]))),
@@ -973,6 +977,9 @@ extern fn avra_io_remove(path: string) -> int
 extern fn avra_io_env(name: string) -> int
 extern fn avra_io_taken() -> string
 extern fn avra_str_from_codepoint(code: int) -> string
+extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_fd_taken() -> Bytes
+extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
 // `avra_host_env` is the module's already — workspace.av declares it.
 
 /// A void host call answers the placeholder every void call does.

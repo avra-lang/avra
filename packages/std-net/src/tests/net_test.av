@@ -3,7 +3,7 @@
 // exact read, EOF after a close, and the failures each verb names.
 // Every case is a fn answering `Result<bool, NetError>` so `?` reads
 // straight, and `passes` is the one seam to the harness.
-use @std.net.{listen, connect, poller, Listener, Conn, Poller, Read, Event, NetError}
+use @std.net.{listen, listen_all, connect, poller, Listener, Conn, Poller, Read, Event, Interest, NetError}
 use @std.time.{secs, ms}
 use @std.errors.{Error}
 
@@ -15,11 +15,11 @@ fn pair() -> Result<Pair, NetError> {
     let l = listen("127.0.0.1", 0)?
     let client = connect("127.0.0.1", l.port, secs(2))?
     let p = poller()?
-    p.watch(l.fd, true, false)?
+    p.watch(l.fd, .Read)?
     p.wait(secs(2))?
     let server = l.accept()?
-    p.watch(l.fd, false, false)?
-    p.watch(server!.fd, true, false)?
+    p.watch(l.fd, .None)?
+    p.watch(server!.fd, .Read)?
     .Ok(Pair { l: l, client: client, server: server!, p: p })
 }
 
@@ -86,7 +86,7 @@ fn large_transfer() -> Result<bool, NetError> {
     mut at = 0
     mut got: List<Bytes> = []
     mut total = 0
-    pr.p.watch(pr.client.fd, false, true)?
+    pr.p.watch(pr.client.fd, .Write)?
     while total < big.length {
         if at < big.length { at = at + pr.client.write(big, at)? }
         if readable(pr.p, pr.server.fd)? {
@@ -118,6 +118,20 @@ fn port_in_use() -> Result<bool, NetError> {
     })
 }
 
+fn every_interface_by_name() -> Result<bool, NetError> {
+    let l = listen_all(0)?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    c.close()?
+    .Ok(l.port > 0)
+}
+
+fn listen_words(host: string) -> string {
+    match listen(host, 0) {
+        .Err(e) -> e.describe().message,
+        .Ok(_) -> "<listening>",
+    }
+}
+
 fn gone_peer() -> Result<bool, NetError> {
     let pr = pair()?
     pr.server.close()?
@@ -143,6 +157,13 @@ spec "std.net" {
             message_of(connect("10.255.255.1", 9, ms(200))).contains("timed out")
         }
         then "a listen on a port in use is refused" { passes(port_in_use()) }
+        then "an empty host is refused by name, never bound to every interface" {
+            listen_words("").starts_with("listen \"\":0: ")
+        }
+        then "a host holding a NUL is refused by its bytes, not by a C string" {
+            listen_words([0].bytes()!.text()! + "127.0.0.1").starts_with("listen ")
+        }
+        then "every interface is asked for by name" { passes(every_interface_by_name()) }
         then "a write to a peer that has gone is an error, never a death" { passes(gone_peer()) }
     }
 }
