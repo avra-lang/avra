@@ -39,7 +39,12 @@ export LLVM_PREFIX
 # object this tree compiles, so no link can want one that is absent.
 # The cost is one vendored amalgamation compiled on a cold tree that
 # the compiler does not link; the gate builds it anyway.
-COMPILER_OBJS := build/llvm_wrapper.o build/avra_runtime.o build/ffi.o
+# @std/io's object is here because the SEED-BUILT compiler links it:
+# the bootstrap's clang line takes this list, and a compiler that
+# cannot open a file cannot compile the tree it was built to compile.
+# Every package whose C the compiler's own closure links belongs here
+# the day it lands — S4 adds @std/process's.
+COMPILER_OBJS := build/llvm_wrapper.o build/avra_runtime.o build/ffi.o build/std_io.o
 
 # EVERY OBJECT THIS TREE COMPILES, ONE RULE. The language's own C
 # (runtime/, and the compiler's LLVM binding in backend/) and a
@@ -115,6 +120,11 @@ seed: $(TREE_OBJS)
 	@./avra emit packages/cli > bootstrap/seed.ll
 	@echo "seed: bootstrap/seed.ll ($$(wc -l < bootstrap/seed.ll | tr -d ' ') lines)"
 
+# THE ONLY RULE THAT LINKS BY HAND, and the one a cold tree and every
+# recovery must take — `seed` and `avra` link through the compiler.
+# So the object list is named ONCE: a prerequisite and a link line
+# spelling it twice were two definitions nothing kept in step, and the
+# gap opens silently the instant the variable grows.
 bootstrap: $(TREE_OBJS)
 	@mkdir -p build
 	@clang -w -O1 bootstrap/seed.ll $(COMPILER_OBJS) \

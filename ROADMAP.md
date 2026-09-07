@@ -2455,6 +2455,32 @@ the order is the dependency.
         being true the day C callbacks land.
         Proved in `corpus/native/externs.av`, a file that already
         existed for the host seam: `null some some`.
+  - [ ] REVIEWS THIS LANE OWES, recorded because they live in
+        messages and messages do not survive a compaction. Each is a
+        diff another lane writes in this lane's files, with this
+        lane's word already given and its conditions already stated:
+        1. THE `Callee` VARIANT + grammar's side (strings lane, one
+           slice). Four constraints: BOTH conditions (a grammar type
+           with no door of that name still falls through), the test
+           asks the DECLARATION'S KIND and never "has an inherent fn"
+           (which would be Rule B wearing Rule A's clothes), the
+           fall-through byte for byte, and the refusal names the door
+           it tried. Rule B — a general type-qualified call, which is
+           STATIC METHODS (ROADMAP:10786, recorded not this arc) — is
+           the OWNER'S and no relay of an answer is a grant.
+        2. `Bytes` (HTTP lane): `is_managed` hardest, because a
+           managed type the memory pass does not know is a leak or a
+           double free and neither shows up in a test.
+        3. THE OPAQUE TYPE / Drop design (SQLITE lane) for the
+           memory-pass parts. Position already given: the WRAPPER BOX
+           route, because the guard is structurally blind at the
+           foreign seam — `hdr` refuses an untagged pointer, so
+           retain and release no-op on one and a borrowed foreign
+           pointer reports clean.
+        4. THE INTERPRETER HALF of the uniform-ABI extern host, mine
+           to land if the ABI research holds. Their variadic finding
+           is verified under their own hand and the refusal belongs
+           at the DECLARATION.
   - [ ] S2 CARRIES A SEARCH OF ITS DEPENDENTS — a GATE CONDITION,
         not a courtesy, and the reason is verified rather than
         feared. `mut b = a` ALIASES today, both engines:
@@ -3867,6 +3893,26 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         variants, binds and literals, and CLAUDE.md's grammar laws are
         its scar tissue; a format that lives elsewhere fails cheaper.
         Routes compile at runtime into a trie until then.
+  - [ ] STATIC METHODS — A TYPE-QUALIFIED CALL (`Name.parse(text)`
+        meaning a call to an inherent fn, not variant construction).
+        THE OWNER'S DOOR, put separately by lane C's ruling and not
+        taken as a feature's side effect: the ROADMAP already records
+        "STATIC METHODS do not exist today … when the spec wants them
+        they need their own marker", and CLAUDE.md records the absence
+        from the other side (`g.keywords()` is a method on a Grammar
+        VALUE because Avra has no type-qualified call). WANTING SITES:
+        the strings lane's `grammar Name = "…"`, whose `parse` is the
+        first consumer — landing NOW under lane C's narrow admission
+        RULE A (a type-name receiver is a call only when the type's
+        declaration is a `grammar`, a feature giving meaning over its
+        own declared types), a `Callee` variant in features/impls with
+        four consumers; and every selfless fn a type wants to own. IF
+        GRANTED (RULE B, any type name with an inherent fn of that
+        name), A's admission test widens by one line in lane C's file
+        and nothing written under A is thrown away. Costed against the
+        alternative before asking: a `Fmt<R>` value type would have
+        been a new core `Type` variant, 44 exhaustive matches in 19
+        files across three lanes (`make vocab` names two of them).
   - [ ] AN UNBOXED (ptr, len) VIEW, escape-analysed: the zero-copy
         capture the typed-routes paper wants. WANTING SITE: the framer's
         header values. Slot-layout territory (lane A). Until then, the

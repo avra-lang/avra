@@ -35,6 +35,7 @@ extern fn avra_io_list(path: string) -> int
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fd_taken(token: int) -> Bytes
 extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
+extern fn avra_utf8_bad_at(b: Bytes) -> int
 extern fn avra_host_env(name: string) -> string
 extern fn avra_errno_text(err: int) -> string
 
@@ -58,7 +59,7 @@ export enum IoError {
     Denied(path: string)
     IsDirectory(path: string)
     NotDirectory(path: string)
-    NotText(path: string)
+    NotText(path: string, at: int)
     Failed(path: string, errno: int)
 }
 
@@ -69,7 +70,7 @@ impl Error for IoError {
             .Denied(p) -> info("io.denied", "`${p}` may not be accessed"),
             .IsDirectory(p) -> info("io.is_directory", "`${p}` is a directory"),
             .NotDirectory(p) -> info("io.not_directory", "`${p}` is not a directory"),
-            .NotText(p) -> info("io.not_text", "`${p}` does not hold UTF-8 text"),
+            .NotText(p, at) -> info("io.not_text", "`${p}` is not UTF-8 — byte ${at}"),
             .Failed(p, e) -> info("io.failed", "`${p}`: ${avra_errno_text(e)}"),
         }
     }
@@ -140,6 +141,9 @@ fn standing(path: string) -> Entry {
 // ── Files ───────────────────────────────────────────────────────
 
 /// The whole file as text.
+///
+/// READING A FIFO OR A DEVICE WITH NO WRITER BLOCKS, and there is no
+/// timeout — ask `kind_of` what stands there first.
 export fn read_text(path: string) -> Result<string, IoError> {
     let fd = done(path, avra_io_open(path))?
     defer avra_io_close(fd)
@@ -160,12 +164,22 @@ fn drained(path: string, fd: int) -> Result<Bytes, IoError> {
     whole
 }
 
-/// A file's bytes as text. TEXT THAT IS NOT TEXT IS A REFUSAL: the
-/// bytes are checked for UTF-8, so a `string` from here is one.
+/// A file's bytes as text. TEXT THAT IS NOT TEXT IS A REFUSAL, and
+/// the refusal CARRIES THE OFFSET: `at` is the first byte that is not
+/// UTF-8, which is what a reader needs when one file among hundreds
+/// is wrong. Asking `.text()` and failing on its null would throw
+/// exactly that away.
+///
+/// IT IS ONE WALK OVER THE ASSEMBLED BYTES, not one per chunk read.
+/// A multi-byte character may STRADDLE a chunk boundary, and
+/// `utf8_bad_at` cannot tell a truncated sequence from an invalid
+/// one — so validating each landing would refuse a good file whose
+/// character fell across the seam. A resumable validator would let
+/// this fold into the read; there is none, and the ask is recorded.
 fn text_of(path: string, raw: Bytes) -> Result<string, IoError> {
-    let t: string? = raw.text()
-    if t == null { fail IoError.NotText(path) }
-    t!
+    let at = avra_utf8_bad_at(raw)
+    if at >= 0 { fail IoError.NotText(path, at) }
+    raw.text()!
 }
 
 /// The read's bite. A megabyte is the descriptor scratch's own size,

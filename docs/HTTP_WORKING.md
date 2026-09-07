@@ -123,7 +123,13 @@ a strcmp per earlier entry on every read — lane A's, asked with the
 numbers), refcount traffic a third (the `with`-copied `Framing` per
 field and the per-field boxes — mine, to measure after lane A's fix),
 the scans a tenth, the framer's own code three percent. Not hoisted
-around: the code reads as it should. NEXT: `server.av` (the event loop, a
+around: the code reads as it should. RE-MEASURED after lane A's two-pass
+`once` fix reached this branch through main (6f528dd): 2420/2399/2427
+ns a head, a 30% drop with no framer change — the `once` third was the
+strcmp scan, and a read is ~12 ns now; lane A measured a per-site O(1)
+slot at 1.7 ms of a 5.8 s compile and refused it for the compiler, and
+the framer makes no case for it either: what remains is the refcount
+traffic, mine. NEXT: `server.av` (the event loop, a
 handler `fn(mut A, Request) -> Response`, app state threaded as a
 value), the response framer, `client.av`. The strings lane's typed
 patterns are LANDED on this branch (e49a637): `"{method} {path}
@@ -149,6 +155,26 @@ O(1) slot comes FIRST and the lowering hoist after; a `ConstBytes` waits
 for `Bytes` on main. NEXT: S4, the `grammar` value that parses, probed to
 need no new door.
 
+## Sub-lane: substrate — S3b (in progress): the cold path, the offset
+
+MERGED at c8af70b (lane/substrate 3f8da0a): `make bootstrap` from the
+REFRESHED SEED green here (685 MB), two builds, 11 io symbols, full gate.
+THE FINDING THE GATE COULD NOT SEE: deleting seven runtime symbols left
+the committed seed referencing them, so the cold path was broken while
+`make avra` gated clean twice — it never touches the seed. Three of the
+seven are restored by naming the package's object; four exist nowhere by
+design, so only a seed refresh restores `make bootstrap`, and it rides
+the removing commit so every commit bootstraps. RECEIPT LAW, to CLAUDE.md
+via lane D: a slice that removes a runtime symbol is proved by `make
+bootstrap` green. LANDED: `NotText(path, at)` ("is not UTF-8 — byte 5"),
+the FIFO sentence, the twins check (one C body reached through two
+identical declarations — nothing could drift). A FINDING against lane
+B's fold-it-in: a character straddling a chunk seam makes per-landing
+validation unsound; one walk over the assembled bytes, a RESUMABLE
+validator recorded as the ask. OPEN: the byte twins, the real refuse
+case, the gather, the env condition at the site, lane A's per-target
+object split, the marshalling probes and the NUL-path refusal.
+
 ## Sub-lane: substrate — S3 (io) LANDED, with two findings open
 
 MERGED into lane/http at 7a9f227 (lane/substrate 0cf47f2), built twice, 11
@@ -160,8 +186,12 @@ regression window zero. Ten int-answering entry points in
 `packages/std-io/src/c/std_io.c`; seven rows, seven `RtHost` variants and
 seven arms left core; `avra_io_taken` died (no remnant, the mint keeper
 green). THE ENVIRONMENT split rather than moved: `fd_landed` is static,
-so the package answers the PREDICATE (set or unset) and the core row the
-VALUE — lane B's distinction kept with nothing new in core. THE BUILD:
+so the package answers the PREDICATE (set or unset) and the VALUE rides
+the existing `avra_host_env` row — `avra_io_env` is GONE from rows,
+`RtHost` and the evaluator (lane C caught my summary saying its arm was
+kept); lane B's distinction kept with nothing new in core, atomic only
+while nothing mutates the environment — the condition is written at the
+site in S3b. THE BUILD:
 `avra`/`seed`/`bootstrap` depend on `$(TREE_OBJS)` (every object the
 tree compiles, so no link can want an absent one — the ffi.o class
 fixed, not the instance), `RUNTIME_OBJS` renamed `COMPILER_OBJS`, and

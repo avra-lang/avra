@@ -468,6 +468,32 @@ step above it.
    for — which is recorded as the absence of a test case rather than
    papered over with one that asserts the wrong thing.
 
+   **THE TWINS, CHECKED — and the answer is stronger than "they
+   agree".** Every one of the seven evaluator arms that left core was
+   `Val.I(avra_io_x(self.text_val(vals[0])))` — a direct call into the
+   SAME C body the native path calls. Not one canned a value,
+   simplified, skipped an effect or answered a fixed handle. They were
+   never two implementations: they were ONE body reached through TWO
+   declarations, `interp.av`'s and `@std/io`'s, which at the pre-S3
+   commit are byte-for-byte identical and were each held to that body
+   by `make externs`. So there was nothing to drift, and after the
+   move there is one declaration where there were two. (Checked after
+   the writing rather than before it, which was the instruction; the
+   result would have been the same and the order was not.)
+
+   **AND THE COLD PATH BROKE, WHICH ONE EDIT DOES NOT FIX.** Deleting
+   seven runtime symbols leaves the committed seed referencing symbols
+   that no longer exist: `make bootstrap` fails on
+   `avra_io_env/kind/mkdir/read/remove/taken/write`. Three of those
+   seven live in the package's object and are reached by naming it in
+   the compiler's link list — necessary, and not sufficient. The other
+   FOUR (`read`, `write`, `taken`, `env`) exist NOWHERE in the tree by
+   design, so only a SEED REFRESH restores the cold path. A slice that
+   removes a runtime symbol owes one, and the receipt is
+   `make bootstrap` green rather than `make avra` green — the second
+   never touches the seed. The failed link also DELETES `build/avra`,
+   which is why the protocol saves it aside first.
+
 4. **S4 — `@std/process`.** (lane B's package.) The spawn table, the
    pipes' descriptors, signals and reaping are package C; the PUMP —
    poll, drain, feed, escalate — moves into Avra over the descriptor
