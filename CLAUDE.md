@@ -398,6 +398,89 @@ engine's spec, written by dogfooding.
   that pair as a test BEFORE the fix. Three collisions were
   nameable by hand here; enumerating every splice site and running
   it against the parent made nine.
+- A GUARD IS A PROPERTY OF EVERY CROSSING, NOT OF A PACKAGE. The law
+  above says a NUL is spent at the C boundary; this one is where the
+  refusal goes. THE CROSSING IS THE EXTERN SEAT, and only that: every
+  verb in `@std/text` reads the header, so a NUL is an ordinary
+  character on this side — text carrying one is longer than its
+  prefix and unequal to it (`==`, `contains`, `index_of`, `split`,
+  `replace` walk the length under `memcmp`/`memmem`, f57372a). It is
+  `getenv`, `execvp`, `fopen`, `sqlite3_open` that end at the first
+  NUL, so a value means a PREFIX of itself the moment it crosses, and
+  the guard belongs at the row that hands the pointer over.
+  `@std/text`'s `nul_at`/`has_nul` are that guard, once.
+  THE SPREAD IS THE LESSON, and it is what made eight defects in two
+  days across three packages: `@std/process` guarded `tool` and not
+  `tool_from_env`; `@std/io` guarded ten verbs and not `env`;
+  `@std/sqlite` guarded some and not five. Each package HAD the
+  guard, one door down. The failures were SILENT, not traps — a holed
+  name read a DIFFERENT variable (`env("PATH\0/junk")` answered
+  PATH's value), which no crash surfaces. And A METHOD MUST NOT READ
+  ONE NAME TWO WAYS: `Env.get` compared with `==` under `Only` and
+  handed the name to C under `Inherit`, so one method disagreed with
+  itself by variant. THE TEST: list every row that hands text to C,
+  and diff it against the guarded ones — never "does this package
+  guard".
+  AND THE STALE-DOCTRINE TRAP THIS LAW WAS FIRST WRITTEN INTO. The
+  first draft of this entry, and `@std/text`'s own module doc, and
+  `std-sqlite/boundary.av`, all taught that those five verbs stop at
+  a NUL. They DID until f57372a landed the same day, and I wrote the
+  correction quoting the behavior the docs described instead of the
+  behavior I measured — in the entry directly above the rule that
+  says to measure. A doc is a claim with a date on it; the test that
+  disagrees with it is the newer fact. `85abb9e`'s message carries
+  the wrong rationale for a real fix because of it.
+- ITS SIBLING AT THE OTHER END: A FLAT CONCATENATION OF TWO
+  SEQUENCES HAS A BOUNDARY THAT MOVES. Splice two variable-length
+  runs into one list and the split between them is not recorded, so
+  moving an item from the first into the second leaves the SAME
+  list and two different things wear one identity. `use a.b` and
+  `use a.{b}` fingerprinted alike; so did `f<A>(B)` and
+  `f<A, B?>()`, `f<B?>()` and `f(B)` (a written type and an ident
+  were the same value), `fn f<T>(x: int)` and `fn f<T, x: int>()`.
+  THE FIX IS ARITY: fold each sequence to ONE value so a payload's
+  shape is fixed per kind. BOTH INTUITIVE FIXES ARE WRONG, and
+  each is worth knowing. A SEPARATOR is the first —
+  `stmt_fps(then).concat([0]).concat(stmt_fps(else))` was written by
+  someone who saw this
+  hazard exactly and spent the one value that is not spare, which
+  is the empty-value law above wearing this law's clothes. A
+  RENUMBERING is the second: under a LINEAR fold (`131t + x + 7`)
+  a tag is an additive offset, so distinct tags separate nothing
+  that a chosen literal can reach — renumbering turns the first
+  test green and leaves every collision live. THE TEST: for each
+  encoding ask which two shapes produce the same bytes, and write
+  that pair as a test BEFORE the fix. Three collisions were
+  nameable by hand here; enumerating every splice site and running
+  it against the parent made nine.
+- A GUARD IS A PROPERTY OF EVERY CROSSING, NOT OF A PACKAGE — and
+  A GUARD WRITTEN IN THE FLAWED PRIMITIVE CANNOT CATCH THE FLAW.
+  The law above says a NUL is spent at the C boundary; this one is
+  how the refusal gets written, because eight defects in two days
+  across three packages were all the SECOND half. Our text verbs
+  split in two: the HEADER-AWARE (`length`, `substring`, `trim`,
+  `starts_with`, `concat`, `char_code`) see every byte, and the
+  NUL-LOSSY (`==`, `contains`, `index_of`, `split`, `replace` —
+  strcmp and strstr underneath) stop at the first NUL. So a guard
+  spelled `name.contains("=")` READS DIFFERENT BYTES THAN THE
+  CALLEE IT PROTECTS: `"A\0=B"` hid its `=` from the very guard
+  that looks for one. Judge over the bytes —
+  `[s.char_code(i) for i in 0..s.length].index_of(0)` — and judge
+  the NUL FIRST, which is what makes every test beneath it true.
+  Measured, before assuming a naive guard is merely incomplete:
+  `"abc".contains(NUL)` is TRUE (strstr with a NUL-headed needle
+  is the empty needle), so the obvious guard refuses EVERYTHING.
+  THE SPREAD IS THE LESSON. `@std/process` guarded its `tool` and
+  not `tool_from_env`; `@std/io` guarded ten verbs and not `env`;
+  `@std/sqlite` guarded some and not five. Each package HAD the
+  guard, one door down. And the failures were not traps — a holed
+  name silently read a DIFFERENT variable (`env("PATH\0/junk")`
+  answered PATH's value), which no crash would have surfaced.
+  A METHOD MUST NOT READ ONE NAME TWO WAYS: `Env.get` compared
+  with `==` under `Only` and handed the name to C under `Inherit`,
+  so one method disagreed with itself by variant. THE TEST: list
+  every verb that hands text to C, and diff that list against the
+  guarded ones — not "does this package guard".
 - A COLD PATH IN A HOT LEAF COSTS EVERY CALL A FRAME. A lazy
   `getenv`, a `char msg[80]` for a trap's words, a grow branch, a
   `__builtin_return_address` read — each is free when it runs and

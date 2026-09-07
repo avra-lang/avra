@@ -15,6 +15,7 @@
 //! string, so there is no shell to inject.
 use @std.time.{Duration, secs, now_ms}
 use @std.errors.{Error, ErrorInfo, info}
+use @std.text.{nul_at}
 
 // THIS PACKAGE'S OWN C (src/c/std_process.c) — the spawn table, the
 // pipes, the signals and the reaping, every one answering an int. A
@@ -569,20 +570,6 @@ fn spawn_error(t: Tool, cwd: string, errno: int) -> ProcessError {
 fn bad_env_name(n: string) -> bool {
     n.length == 0 || n.contains("=")
 }
-
-/// Where a NUL sits in a value, or -1. Judged over the BYTES, and it
-/// must be: `contains` is `strstr`, and a needle whose first byte is
-/// NUL is the EMPTY needle, which matches every string at 0 — a guard
-/// built from it finds nothing and refuses everything.
-///
-/// It reads the octets directly now that `Bytes` is here. Walking
-/// `char_code` built a `List<int>` as long as the value for every
-/// value of every command, to look for one byte.
-fn nul_at(s: string) -> int {
-    s.bytes().index_of(nul(), 0)
-}
-
-once fn nul() -> Bytes { [0].bytes()! }
 
 /// THE DOOR every value this command hands the host passes through —
 /// the tool's path, the directory, each argument, each `NAME=value`.
