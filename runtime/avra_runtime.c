@@ -1578,13 +1578,15 @@ int64_t avra_bytes_ieq_at(const char* b, int64_t lo, int64_t hi, const char* nee
 // THE ONE DOOR THROUGH WHICH FOREIGN BYTES BECOME A VALUE. A package's
 // own C opens files and sockets and answers descriptors; what flows
 // through a descriptor becomes a Bytes here and nowhere else, because
-// only the runtime may mint a managed box. A read lands in a scratch
-// the next `taken` mints from — ONCE: the take spends the scratch, so
-// a take after nothing, after EOF, or a second take answers the EMPTY
-// box, never null. A write takes a box from an offset and answers
-// what the descriptor accepted; a short count is normal. Both answer
-// -EAGAIN when a nonblocking descriptor has nothing to give or take,
-// and a peer that has gone answers -EPIPE or -ECONNRESET to the
+// only the runtime may mint a managed box. A read lands in ONE scratch
+// and answers a TOKEN — the scratch's generation — that the take must
+// present: a take with a stale token traps, so a read landing between
+// a read and its take (a deferred call is how that happens) is a loud
+// wreck and never a stranger's bytes. The count is the box's length;
+// 0 is EOF and needs no take. A write takes a box from an offset and
+// answers what the descriptor accepted; a short count is normal. Both
+// answer -EAGAIN when a nonblocking descriptor has nothing to give or
+// take, and a peer that has gone answers -EPIPE or -ECONNRESET to the
 // caller who armed against SIGPIPE.
 
 #include <unistd.h>
@@ -1593,14 +1595,33 @@ int64_t avra_bytes_ieq_at(const char* b, int64_t lo, int64_t hi, const char* nee
 enum { FD_SCRATCH = 1 << 20 };
 static char g_fd_buf[FD_SCRATCH];
 static int64_t g_fd_len = 0;
+static int64_t g_fd_gen = 0;
 
-// Up to `max` bytes (clamped to 1..1 MiB) into the scratch: the
-// count, 0 at EOF, -EAGAIN when nothing is ready, -errno otherwise.
+__attribute__((noinline, cold, noreturn))
+static void trap_stale_take(int64_t token) {
+    char msg[96];
+    snprintf(msg, sizeof msg, "a take of read %lld, but read %lld has landed since", (long long)token, (long long)g_fd_gen);
+    avra_trap(msg);
+    abort();
+}
+
+// Bytes landed in the scratch by whoever produced them: the token the
+// take must present. The runtime's own producers enter through here.
+static int64_t fd_landed(int64_t n) {
+    g_fd_len = n;
+    g_fd_gen++;
+    return g_fd_gen;
+}
+
+// Up to `max` bytes (clamped to 1..1 MiB) into the scratch: the token
+// of what landed, 0 at EOF, -EAGAIN when nothing is ready, -errno
+// otherwise.
 int64_t avra_fd_read(int64_t fd, int64_t max) {
     size_t n = max < 1 ? 1 : max > FD_SCRATCH ? FD_SCRATCH : (size_t)max;
     for (;;) {
         ssize_t got = read((int)fd, g_fd_buf, n);
-        if (got >= 0) { g_fd_len = got; return got; }
+        if (got > 0) return fd_landed(got);
+        if (got == 0) return 0;
         if (errno == EAGAIN || errno == EWOULDBLOCK) return -EAGAIN;
         if (errno != EINTR) return -errno;
     }
@@ -1613,8 +1634,11 @@ int64_t avra_errno_again(void) { return EAGAIN; }
 // The errno for an argument that names nothing — the platform's word.
 int64_t avra_errno_invalid(void) { return EINVAL; }
 
-// The last read's bytes as a fresh box, once.
-const char* avra_fd_taken(void) {
+// The bytes a token names, as a fresh box, once: a second take of the
+// same token answers the empty box, and a take of a superseded token
+// traps.
+const char* avra_fd_taken(int64_t token) {
+    if (__builtin_expect(token != g_fd_gen, 0)) trap_stale_take(token);
     const char* b = bytes_owned(g_fd_buf, (size_t)g_fd_len);
     g_fd_len = 0;
     return b;

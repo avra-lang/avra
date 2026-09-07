@@ -59,8 +59,11 @@ on network data, a NUL makes it a bounded truncation.
 THE STANDARD the owner set on 2026-09-06 (the substrate lane writes it
 up and applies it to io and process): CORE owns the language's own
 substrate — boxes, strings, lists, maps, Bytes, float, the process's
-own facts, and DESCRIPTORS (`avra_fd_read` into a scratch,
-`avra_fd_taken` minting the box once, `avra_fd_write` from an offset),
+own facts, and DESCRIPTORS (`avra_fd_read` into ONE scratch, answering
+a TOKEN — the scratch's generation — that `avra_fd_taken(token)` must
+present, trapping on a stale one, so a read landing between a read and
+its take is a loud wreck and never a stranger's bytes — lane B's
+finding, reviewing io's shape; `avra_fd_write` from an offset),
 because a managed value is minted ONLY by a core row — and that law is
 MECHANICAL, not moral (the substrate lane measured it): an `extern fn`
 that is not a row has `owns_result: false` hard-coded, so what it mints

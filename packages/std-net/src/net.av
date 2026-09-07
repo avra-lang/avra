@@ -15,7 +15,7 @@ extern fn avra_net_listen_all(port: int, backlog: int) -> int
 extern fn avra_net_accept(lfd: int) -> int
 extern fn avra_net_connect(host: string, port: int, timeout_ms: int) -> int
 extern fn avra_fd_read(fd: int, max: int) -> int
-extern fn avra_fd_taken() -> Bytes
+extern fn avra_fd_taken(token: int) -> Bytes
 extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
 extern fn avra_net_close(fd: int) -> int
 extern fn avra_net_shutdown(fd: int, how: int) -> int
@@ -138,13 +138,15 @@ impl Listener {
 
 impl Conn {
     /// Up to `max` bytes, as an owned value; `.Eof` once the peer has
-    /// finished writing; `.Pending` when nothing has arrived yet.
+    /// finished writing; `.Pending` when nothing has arrived yet. The
+    /// read answers a token its take presents, so a read that lands
+    /// between the two is a trap and never a stranger's bytes.
     fn read(max: int) -> Result<Read, NetError> {
-        let n = avra_fd_read(self.fd, max)
-        if would_block(n) { return .Ok(.Pending) }
-        if n < 0 { return failed("read", self.named(), n) }
-        if n == 0 { return .Ok(.Eof) }
-        .Ok(.Data(avra_fd_taken()))
+        let token = avra_fd_read(self.fd, max)
+        if would_block(token) { return .Ok(.Pending) }
+        if token < 0 { return failed("read", self.named(), token) }
+        if token == 0 { return .Ok(.Eof) }
+        .Ok(.Data(avra_fd_taken(token)))
     }
 
     /// `bytes` from `from` written as far as the socket takes them:

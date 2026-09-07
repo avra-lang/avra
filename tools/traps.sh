@@ -73,6 +73,35 @@ b.run(0, b)
 trapped bytes_eq_at "avra: slice 1..4 is out of bounds (length 3)" 2 '' 'let b = [1, 2, 3].bytes()!
 b.eq_at(1, 4, b)
 '
+trapped stale_take "avra: a take of read 1, but read 2 has landed since" 2 '
+[dependencies]
+"@std/net"  = { path = "../../../packages/std-net" }
+"@std/time" = { path = "../../../packages/std-time" }
+' 'use @std.net.{listen, connect, poller, Interest, NetError}
+use @std.time.{secs}
+extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_fd_taken(token: int) -> Bytes
+fn run() -> Result<int, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let p = poller()?
+    p.watch(l.fd, .Read)?
+    p.wait(secs(2))?
+    let s = l.accept()?
+    p.watch(s!.fd, .Read)?
+    c.write("a".bytes(), 0)?
+    p.wait(secs(2))?
+    let first = avra_fd_read(s!.fd, 10)
+    c.write("b".bytes(), 0)?
+    p.wait(secs(2))?
+    let second = avra_fd_read(s!.fd, 10)
+    .Ok(avra_fd_taken(first).length + second)
+}
+match run() {
+    .Ok(n) -> "${n}",
+    .Err(e) -> e.verb,
+}
+'
 trapped shift_wide "avra: a shift count must be between 0 and 63" 2 '' 'let a = 1
 mut n = 0
 n = n + 64
