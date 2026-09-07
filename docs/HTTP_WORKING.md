@@ -329,7 +329,18 @@ first draft cost 36% (a per-route width check) and the bench found it.
 The octets seat then cost 10% at eight routes (850 against 773) because
 the door converts the whole target per route — RULED as S7's design,
 not a hunch: scan octets, convert only a hit's captures, a miss
-allocation-free. Two laws from the lane's own tests: a hole is ONE
+allocation-free. BUILT, AND IT INVERTED ITS OWN COST (0f8446d): at eight
+routes the string seat is 773 ns, converting up front at the door 850,
+SCANNING OCTETS AND CROSSING ON A HIT 661 — keeping the framer's
+boundary is faster than the shortcut, 80 ns a route to 54; one crossing
+on a hit is every capture's crossing, because a span between two literal
+matches inside valid UTF-8 is itself valid. THE SWEEP, GENERATED
+(f348e6c, `tools/bench/routes/generate.py`): 370 ns at 3 routes, 1860 at
+30, 23,800 at 300 — at thirty routes, where a real API sits, dispatch
+costs nearly what framing a head costs (2410 on `frame_head`), and at
+three hundred ten times; the trie has its number at the point that
+matters and the point that proves it. The 8-route slope predicted ~24 µs
+and the measurement said 23.8: right this time, knowable only after. Two laws from the lane's own tests: a hole is ONE
 segment (`/ideas/{id}` had bound `7/extra`), and segments are counted
 by separators, never `split`. An ask recorded: a grammar's door as a
 VALUE (`Idea.parse` unapplied is F2003; every route wraps it). Owed:
