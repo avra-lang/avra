@@ -1334,6 +1334,22 @@ Runtime facts, ours to ratify:
   wrong. Telling the two laws apart is the whole skill: ask whether
   the failing case CAN BE BUILT. If it can, build it; if it cannot,
   trace it and write the deadline down.
+- AND THE SHARPEST MEMBER, because it defeats the usual remedy: A
+  SUITE CAN BE GREEN ON EVERY RUN, CORRECT ON EVERY CASE, AND SILENT
+  ABOUT THE ASSUMPTION HOLDING IT UP — and NO ADDED CASE FINDS IT
+  when the hostile case CANNOT BE BUILT. Seven fingerprint boundary
+  attacks passed before a widening and after it, because every hole
+  contributed the SAME NUMBER of elements, so the boundaries sat at a
+  fixed stride nobody had written down; the widening was uniform, so
+  they passed again. No non-uniform hole could be constructed, so the
+  case that would fail did not exist to be written. THE TELL IS NOT A
+  FAILING TEST, because there is none. What finds it is a question
+  about SHAPE — does each sequence fold to ONE value or splice flat —
+  where every probe asks about BEHAVIOUR, and a reviewer who CANNOT
+  RUN THE CODE is forced to ask it. (Strings lane's, attributed. The
+  ARITY law above is the fix, and this tree already pays it:
+  `fingerprint_stmt` folds through `fp_list(param_fps(…))` rather
+  than splicing.)
 - A CHECK THAT EXAMINED NOTHING IS NOT A CHECK THAT PASSED. A keeper
   reading objects from disk examines nothing on a COLD TREE and
   reports success; a grep scoped too narrowly answers "absent" about
