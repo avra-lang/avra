@@ -199,9 +199,12 @@ Slice one, and deliberately short:
 | `.bytes()` on a string | total | a string is always valid bytes |
 | hex / base64 | Avra-level | not runtime rows |
 
-NOT in slice one: `split`, `replace`, `contains`, `index_of`. They are
-the NUL-lossy five, and a blob wants byte-search semantics that differ
-from text's. They arrive with a measured need, not speculatively.
+NOT in slice one: `split`, `replace`, `contains`, `index_of`. **The
+reason given here — "they are the NUL-lossy five" — is STALE as of
+`f57372a`**, which moved all five onto the header's length; nothing on
+the Avra side truncates now. The conclusion stands on its other leg: a
+blob wants byte-search semantics that differ from text's. They arrive
+with a measured need, not speculatively.
 
 ## 6. THE SQLITE BOUNDARY
 

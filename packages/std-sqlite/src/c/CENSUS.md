@@ -1597,12 +1597,13 @@ SUCCEEDS on `""` and that is the whole trap.
 
 ### 20.2 A DOOR BUILT FROM NUL-LOSSY PRIMITIVES JUDGES A PREFIX
 
-The campaign's string law says `==`, `contains`, `index_of`, `split` and
-`replace` are C string calls and stop at the first NUL, while `.length`,
-`char_code`, `starts_with`, `ends_with` and `+` read the header. Stated
-that way it sounds like a formatting concern. It is not: **a guard built
-from the lossy half judges a PREFIX of what it was handed, and the callee
-sees a different string than the guard did.**
+The campaign's string law USED TO SAY that `==`, `contains`,
+`index_of`, `split` and `replace` were C string calls stopping at the
+first NUL. **That is no longer true**: `f57372a` moved all five onto the
+header's length, so nothing on the Avra side truncates. The law that
+survives is sharper, because the truncation was only ever on ONE side:
+**the callee sees a different string than the guard did, and the seam
+where that happens is the extern seat and only there.**
 
 `path_fault` was such a guard, and the red team walked the empty-path
 trap straight through the door built to stop it:
