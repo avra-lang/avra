@@ -3015,6 +3015,52 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  FLOAT'S FINDINGS, NONE OF WHICH ARE FLOAT (built 2026-09-06; 13 files
+  and 30 arms for `Type.Float`, 4 for `Expr.FloatLit`, 5 for
+  `RtKind.F64` — the compiler enumerated every one).
+  **A WITNESS COMPARES BITS, NOT TEXT.** The float witness FAILED first
+  time: C's `%g` printed `11` where Avra printed `11.0`. **The values
+  were identical and the FORMATTERS differed.** Comparing rendered text
+  tests the formatter; comparing bit patterns tests the BOUNDARY, and the
+  boundary is what a witness is for — a witness that renders is measuring
+  the wrong artifact and will go red for a reason that has nothing to do
+  with the seam it guards. It covers a double ANSWER, a double ARGUMENT,
+  and a MIXED call (`int64_t, double, int64_t, double`), because the
+  classic way a wrong register file shows up is when the two files fill
+  independently.
+  **A TABLE THAT ONLY EVER HELD ONE KIND OF ROW WAS NEVER TESTED AGAINST
+  A SECOND** — `RtKind`'s lesson one level over, in a table its own
+  author wrote weeks earlier. `widthless` mapped EVERY width word to
+  `"int"`: correct while every width was an integer, wrong the instant
+  `f64` existed, so an `f64` seat resolved to `int` and refused a
+  `float`. **Found by the WITNESS FAILING TO BUILD, not by any test.** It
+  carries a `carries` column now. The generalisation is the point: the
+  untested-instrument law is usually read about KEEPERS, and it applies
+  identically to any TABLE, REGISTRY or ROSTER whose rows have only ever
+  been one shape.
+  AND THE `is .Variant` SHAPE IN THE WILD, failing CLOSED. Two laws did
+  NOT break at compile time — `comparable` (`sh is .Int || sh is .Bool ||
+  sh is .Str`) and the interpolation-hole law — because they enumerate
+  scalars with `is` tests rather than an exhaustive match, so a new
+  `Type` variant is invisible to them. Float was REFUSED rather than
+  silently accepted, which is the safe direction, but they had to be
+  found by RUNNING. **`make vocab` does not cover `Type`** — the second
+  enum in one day whose consumers turned out to be only partly guarded.
+  AND A FIXTURE WHOSE PREMISE A SLICE DELETES. Two pre-existing tests
+  used `float` as their example of *a name that names no type*
+  (`fns_test.av:163`, `type_expr_test.av:37`). Landing float made both
+  false — not wrong when written, and not detectable by reading either
+  one. Moved to `decimal`, which will itself need moving the day decimal
+  lands: **visible debt rather than silent**, which is the right kind.
+  THE KEEPER PAID OFF: all five `RtKind` consumers broke on `.F64`
+  (`ll_rt_kind`, `rt_arg`, `answers_word`, `answered`, `narrow_sign`). A
+  keeper exercised once and hardened once has now been tested twice and
+  held. AND THE AUTHOR NEARLY REPORTED THE OPPOSITE — a first grep for
+  `"must handle .F64"` answered zero, where the real text is ``must
+  handle `.F64` ``: one wildcard where two characters stood. **THE FOURTH
+  TIME IN ONE EVENING THAT THE PROBE WAS THE FAULT AND NOT THE
+  COMPILER**, across three authors, and every time the truncated or
+  mismatched view was COHERENT.
   A FENCE BUILT BEFORE THE THING THAT WOULD CLIMB IT — and the honest
   artifact for one is a TRACE, not a test. `str_len`'s zero-length fix
   (`44c36f1`) changes behaviour in exactly one situation: a headered box
