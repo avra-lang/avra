@@ -397,6 +397,11 @@ export type Hole = { name: string, ty: TypeRef? }
 /// A hole and the literal text that follows it.
 export type FormatPart = { hole: Hole, piece: string }
 
+/// The format a `grammar` declaration read. Its holes became the
+/// record's fields, and a record cannot say what text it reads —
+/// so the format is kept beside the statement that declared it.
+export type GrammarSpec = { head: string, parts: List<FormatPart> }
+
 /// The word a name takes when it binds nothing.
 export fn nothing_bound() -> string { "_" }
 
@@ -538,6 +543,8 @@ export type NodeStore = {
     // `mut fn` — a method declaring that it writes its receiver
     mutating: List<bool>,
     onces: List<bool>,
+    // the format a `grammar` declaration read, by its statement
+    grammars: List<GrammarSpec?>,
     pats: List<Pat>,
     pat_spans: List<Span?>,
     pat_fingerprints: List<int>,
@@ -546,7 +553,7 @@ export type NodeStore = {
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
-        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [],
+        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], grammars: [],
         pats: [], pat_spans: [], pat_fingerprints: [],
     }
 }
@@ -672,6 +679,7 @@ impl NodeStore {
         self.exported.push(false)
         self.mutating.push(false)
         self.onces.push(false)
+        self.grammars.push(null)
         StmtId { index: self.stmts.add(s, span) }
     }
 
@@ -679,7 +687,7 @@ impl NodeStore {
     /// written; a trait sig's word is the contract.
     fn mark_mutating(s: StmtId) {
         self.mutating.set(s.index, true)
-        self.restamp(s, 61)
+        self.restamp(s, 61, [])
     }
 
     fn is_mutating(s: StmtId) -> bool {
@@ -690,18 +698,32 @@ impl NodeStore {
     /// the process.
     fn mark_once(s: StmtId) {
         self.onces.set(s.index, true)
-        self.restamp(s, 62)
+        self.restamp(s, 62, [])
     }
 
     fn is_once(s: StmtId) -> bool {
         self.onces[s.index]
     }
 
+    /// `grammar Name = "…"` declared this record — the format it
+    /// reads, which the record's fields cannot spell.
+    fn mark_grammar(s: StmtId, read: GrammarSpec) {
+        self.grammars.set(s.index, read)
+        self.restamp(s, 63, [grammar_fp(read)])
+    }
+
+    fn grammar_of(s: StmtId) -> GrammarSpec? {
+        self.grammars[s.index]
+    }
+
     /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()` and
     /// `once fn f()` declare different things, so no two of them
-    /// may wear one fingerprint.
-    fn restamp(s: StmtId, tag: int) {
-        self.stmt_fingerprints.set(s.index, fp(tag, [self.stmt_fingerprints[s.index]]))
+    /// may wear one fingerprint. The tag is the mark's reserved
+    /// CODE and nothing else; a mark that CARRIES something folds it
+    /// in as `carried`, so the codes stay a registry a reader can
+    /// scan for the next free one.
+    fn restamp(s: StmtId, tag: int, carried: List<int>) {
+        self.stmt_fingerprints.set(s.index, fp(tag, [self.stmt_fingerprints[s.index]].concat(carried)))
     }
 
     /// `export` crossed this declaration — the module's surface
@@ -999,8 +1021,14 @@ fn param_fps(params: List<Param>) -> List<int> {
     flatten([[fp_str(p.name), type_fp(p.ty)] for p in params])
 }
 
-/// A written type's identity: absence is its own value, and the `?`
-/// is part of what the type IS.
+/// A format's identity, whole — its head, and every hole and literal
+/// after it. Two grammars whose fields agree and whose text does not
+/// are different declarations. Its code sits with the pattern codes
+/// it mirrors, not with the statement MARKS that carry it.
+fn grammar_fp(read: GrammarSpec) -> int {
+    fp(56, [fp_str(read.head)].concat(flatten([hole_fps(p) for p in read.parts])))
+}
+
 /// A format part's identity: what it binds, what it parses through,
 /// and the literal that follows it — every field, so a reindented
 /// or retyped hole is a different pattern.
@@ -1008,6 +1036,8 @@ fn hole_fps(p: FormatPart) -> List<int> {
     [fp_str(p.hole.name), type_fp(p.hole.ty), fp_str(p.piece)]
 }
 
+/// A written type's identity: absence is its own value, and the `?`
+/// is part of what the type IS.
 fn type_fp(t: TypeRef?) -> int {
     if t == null { return 0 }
     let written = t!

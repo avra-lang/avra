@@ -4,7 +4,7 @@
 //! re-derived from the node by the reader's own functions, so the
 //! literal and the pattern it became are judged once.
 use core.{PatId, Type, TypeId, FormatPart, bound_names}
-use features.{TypeCx, this_is}
+use features.{TypeCx, MethodCall, worded, this_is}
 use features.formats.{adjacent_fault, repeated_fault, Fault}
 use diagnostics.{refusal}
 
@@ -62,4 +62,29 @@ fn unparsed(mut cx: TypeCx, p: PatId, part: FormatPart) -> List<TypeId> {
     let n = part.hole.ty!.name
     cx.emit(refusal("type.format_parse", cx.pat_loc(p), "`{${part.hole.name}: ${n}}` parses its span, and nothing reads text as `${n}` yet", "here", "take the span as text and convert it in the arm — a typed hole arrives with the decimal row"))
     []
+}
+
+// ── The doors a grammar declares ────────────────────────────────
+
+/// A type name is a CALL only on a grammar, so this row's receiver
+/// is the type NAME itself — the admission rule in `callee_of` is
+/// what keeps every other type name a construction.
+export fn on_grammar(t: Type) -> bool {
+    t is .TypeName
+}
+
+/// `Name.parse(text)` — the text this grammar reads, or absence.
+/// The answer is the RECORD the declaration's holes became.
+export fn check_parse(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let named: TypeId? = record_of(cx, cx.type_at(mc.subject))
+    if named == null { return cx.error_type }
+    worded(cx, mc, "parse", [Type.Str], Type.Opt(named!))
+}
+
+/// The record a type name's declaration stands for.
+fn record_of(mut cx: TypeCx, ty: TypeId) -> TypeId? {
+    match cx.view.types.shape_of(ty) {
+        .TypeName(decl, tname) -> cx.view.types.intern(Type.Struct(decl, tname)),
+        rest -> null,
+    }
 }

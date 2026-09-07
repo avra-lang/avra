@@ -193,4 +193,40 @@ spec "features/formats" {
             refused_with("grammar Bad = \"a{b\"\n1", "opens a hole that is never closed")
         }
     }
+
+    given "the parse door a grammar declares" {
+        then "a grammar's name parses text into its own record" {
+            shown("grammar L = \"{m} {p}\"\nmatch L.parse(\"GET /x\") {\n    r? -> \"\${r.m}|\${r.p}\"\n    null -> \"no\"\n}") == "GET|/x"
+        }
+        then "text the format does not read answers absence" {
+            shown("grammar L = \"{m} {p}\"\nmatch L.parse(\"nope\") {\n    r? -> \"yes\"\n    null -> \"no\"\n}") == "no"
+        }
+        then "the flagship reads its four holes through the door" {
+            shown("grammar R = \"{method} {path} HTTP/{major}.{minor}\"\nmatch R.parse(\"GET /x HTTP/1.1\") {\n    r? -> \"\${r.method} \${r.path} \${r.major}.\${r.minor}\"\n    null -> \"no\"\n}") == "GET /x 1.1"
+        }
+        then "the name still constructs its record, as any type name does" {
+            shown("grammar L = \"{a}-{b}\"\nlet g = L { a: \"1\", b: \"2\" }\ng.a + g.b") == "12"
+        }
+        then "a door the grammar does not declare is told about doors, not variants" {
+            refused_with("grammar G = \"{a}-{b}\"\nG.print(\"x\")", "`G` is a `grammar`, not an enum")
+        }
+        then "the refusal names the door it tried" {
+            refused_with("grammar G = \"{a}-{b}\"\nG.print(\"x\")", "`G.print` is a call only where the grammar declares a door of that name")
+        }
+        then "a type name that is no grammar is unchanged" {
+            refused_with("type Port = { n: int }\nPort.parse(\"80\")", "`Port` is a record, not an enum")
+        }
+    }
+
+    given "the declaration's refusals, rendered whole" {
+        then "a format with no holes, rendered whole" {
+            analyze_source("grammar None = \"plain\"\n1").report().starts_with("error[F0102]: `grammar None` has no holes — a grammar names the fields its holes bind, and this format binds none\n  ╭─[<source>:1:1]\n1 │ grammar None = \"plain\"\n  · ┬\n  · ╰──\n──╯")
+        }
+        then "a hole that binds nothing, rendered whole" {
+            analyze_source("grammar Anon = \"{a} {_}\"\n1").report().starts_with("error[F0102]: `grammar Anon` has a hole that binds nothing — every hole of a grammar names a field\n  ╭─[<source>:1:1]\n1 │ grammar Anon = \"{a} {_}\"\n  · ┬\n  · ╰──\n──╯")
+        }
+        then "two holes with nothing between them, rendered whole" {
+            analyze_source("grammar Adj = \"{a}{b}\"\n1").report().starts_with("error[F0102]: `grammar Adj` puts `{a}` and `{b}` next to each other — a scan needs a literal between them to stop at\n  ╭─[<source>:1:1]\n1 │ grammar Adj = \"{a}{b}\"\n  · ┬\n  · ╰──\n──╯")
+        }
+    }
 }
