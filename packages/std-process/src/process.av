@@ -1,14 +1,18 @@
 //! @std.process — the program is the authority, the words are data.
 //!
-//! A `Tool` is minted once (`tool("git")?`) and resolved to an
-//! absolute path right there, so no call site ever looks anything
-//! up. A `Command` is a tool, its words and its wiring — a record
-//! with defaults, changed by `with`. A word built from DATA lands
-//! where a dash is inert: `flag` fuses it to its option, `path`
-//! anchors it under `./`, `after_options` puts it past the tool's
-//! end-of-options word. An exit is a VERDICT, never a count: `run()`
-//! judges it by `ok_exits`, `outcome()` reads it. No verb here takes
-//! a command string, so there is no shell to inject.
+//! A `Tool` is minted once (`tool("git")?`) and pinned right there:
+//! a NAME becomes an absolute path no call site looks up again; a
+//! name spelled with a `/` is kept as written, so every child
+//! re-reads it against its own `cwd`. A `Command` is a tool, its
+//! words and its wiring — a record with defaults, changed by `with`.
+//! A word built from DATA lands where a dash is inert: `flag` fuses
+//! it to its option and `path` anchors it under `./`, both answering
+//! a `Command`, so they chain; `after_options` puts words past the
+//! tool's end-of-options word and `word` places a bare positional,
+//! and those two answer a `Result`, so the next verb reads `(…)?`.
+//! An exit is a VERDICT, never a count: `run()` judges it by
+//! `ok_exits`, `outcome()` reads it. No verb here takes a command
+//! string, so there is no shell to inject.
 use @std.time.{Duration, secs, now_ms}
 use @std.errors.{Error, ErrorInfo, info}
 
@@ -56,8 +60,10 @@ fn sigkill() -> int { 9 }
 // ── The types ───────────────────────────────────────────────────
 
 /// The right to run one binary: minted by `tool`, never typed. `path`
-/// is absolute and was resolved exactly once; `terminator` is the word
-/// after which the tool reads no options, when it has one.
+/// is what the mint pinned — absolute when a NAME was looked up on the
+/// PATH, the spelling itself when it held a `/`, which every child
+/// re-reads against its own `cwd`; `terminator` is the word after
+/// which the tool reads no options, when it has one.
 export type Tool = { name: string, path: string, terminator: string? }
 
 /// Where a child's standard input comes from. `Open` is a pipe held
@@ -141,7 +147,9 @@ export enum Stream {
 }
 
 export enum ProcessError {
-    /// At mint: the name resolved to nothing on the PATH searched.
+    /// The program resolved to nothing — at mint, or at spawn when the
+    /// file is gone by then. `searched` is the PATH at mint and the
+    /// tool's own path at spawn.
     NotFound(program: string, searched: string)
     /// At spawn: the file exists and may not be executed.
     Denied(program: string, path: string)
@@ -191,8 +199,8 @@ impl Error for ProcessError {
 }
 
 /// A tool that resolved to nothing: a spelled path is not an executable
-/// file; a name is on none of the PATH's entries — counted, never
-/// dumped.
+/// file; a name is counted against `searched`'s entries, never dumped —
+/// and `searched` is one path at spawn, so the count reads 1 there.
 fn not_found_text(p: string, searched: string) -> string {
     if p.contains(" ") { return "`${p}` is not one program — a tool is a name or a path, never a command line" }
     if p.contains("/") { return "`${p}` is not an executable file" }
@@ -241,7 +249,7 @@ export fn tool(name: string) -> Result<Tool, ProcessError> {
 
 /// A tool named by the environment (`CC`) with a fallback name: the
 /// variable's value is taken as written — a path or a name — and the
-/// fallback is looked up when it is unset.
+/// fallback is looked up when it is unset or empty.
 export fn tool_from_env(var: string, default: string) -> Result<Tool, ProcessError> {
     let named = avra_host_env(var)
     tool(if named.length > 0 { named } else { default })
@@ -260,7 +268,9 @@ fn is_absolute(d: string) -> bool {
 /// Where a tool stops reading options — data about the tool, never a
 /// rule in the compiler. git repurposed `--` for pathspecs and has its
 /// own word; find and dd have none at all; every getopt tool honours
-/// `--`, which is what a tool not listed here gets.
+/// `--`, which is what a tool not listed here gets. A row is keyed by
+/// the minted NAME, so a tool spelled as a path matches none and takes
+/// `--`: mint by name wherever the tool has a word of its own.
 type Terminator = { name: string, word: string? }
 
 fn terminators() -> List<Terminator> {
@@ -342,7 +352,10 @@ impl Env {
             .Inherit -> [],
         }
     }
-    /// One variable's value, when the child would see it.
+    /// One variable's value, when the child would see it — `null` when
+    /// the pair set holds no such name. Under `.Inherit` an unset name
+    /// answers the empty string, never `null`; that is the absence
+    /// `is_set` reads.
     fn get(name: string) -> string? {
         match self {
             .Only(pairs) -> pairs.find(it.name == name)?.value,
@@ -859,16 +872,15 @@ impl Pipeline {
 
 // ── Many at once ────────────────────────────────────────────────
 
-/// The commands run at most `limit` at a time — never unbounded by
-/// accident: a list of a thousand is not a fork bomb — and their
-/// outcomes in the list's order, unjudged. One past its deadline or its
-/// cap stops every sibling and fails the whole.
-/// An outcome slot not yet filled — a fn, because a `null` literal
-/// cannot fill a `List<Outcome?>` slot yet (F2006).
+/// An outcome slot not yet filled.
 fn nothing_yet() -> Outcome? {
     null
 }
 
+/// The commands run at most `limit` at a time — never unbounded by
+/// accident: a list of a thousand is not a fork bomb — and their
+/// outcomes in the list's order, unjudged. One past its deadline or its
+/// cap stops every sibling and fails the whole.
 export fn parallel(cs: List<Command>, limit: int) -> Result<List<Outcome>, ProcessError> {
     let width = if limit < 1 { 1 } else { limit }
     let began = now_ms()
