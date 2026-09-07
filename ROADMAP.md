@@ -2640,6 +2640,71 @@ the order is the dependency.
         at the seam for every `string` seat of an extern, a `Bytes`
         seat that carries the length, or a documented hazard. It is
         not io's to decide and it is not settled by io's fix.
+  - [ ] STATIC METHODS (RULE B) — THE SPELLING, MEASURED. The owner
+        is pressing for this and asked another lane for the shape;
+        the marker is this lane's grammar, so the design is here and
+        the BUILD waits on the owner's word IN THIS SESSION. Every
+        claim below is a probe's output, not a reading of the code.
+        WHAT IS TRUE TODAY. `self` is IMPLICIT — the impls feature's
+        remedy table says so ("`self` is implicit in a method — drop
+        it from the parameter list") and `primary = "self" ->
+        receiver()` makes it an EXPRESSION, never a parameter. So a
+        receiverless fn under an impl COMPILES CLEAN and is a method
+        with a receiver it never touches:
+
+            impl Point { fn origin() -> Point { Point { x: 0, y: 0 } } }
+
+        reachable only as `q.origin()` off an instance — useless for
+        the constructor that is the whole motivation.
+        THE CALL SIDE NEEDS NO NEW SYNTAX, which is the finding that
+        resizes the slice. `Type.name(args)` already PARSES; the
+        CHECKER refuses it, with a variant-shaped message:
+
+            Point.origin()   F2003 `Point` is a record, not an enum
+            K.other()        F2003 `K` has no variant `other`
+                                   help: the variants are `a`, `b`
+
+        Both are one resolution step from working. The slice is a
+        marker plus a FALL-THROUGH in variant resolution, not a new
+        call form.
+        THE SPELLING IS `static fn`, AND THE ARGUMENT IS `mut fn`.
+        The receiver-disposition marker ALREADY EXISTS in that exact
+        grammar slot with TWO values — `fn` reads the receiver, `mut
+        fn` writes it (its own stmt rule `mut_fn_decl`; F2046 refuses
+        it outside an impl precisely because it speaks ABOUT a
+        receiver). `static fn` is that field's THIRD value, not a
+        second mechanism for the same fact, and it composes for free:
+        a fn with no receiver cannot write one, so `static mut fn` is
+        a refusal the compiler SPEAKS rather than a hole. `static` is
+        not reserved today (`let static = 1` compiles), so the break
+        is real — but F3002 names a word and its status, so it breaks
+        loudly with help attached.
+        REJECTED, `fn Point.origin()` / `fn Self.origin()`: inside
+        `impl Point` the type is already in the header, so the name
+        repeats it and invents a disagreement to refuse; under
+        `impl<T> Box<T>` the name must spell a generic. And `Self`
+        NAMES NO TYPE — F2001, "the types today are `int`, `string`,
+        `bool`, and your declared types".
+        REJECTED, AND THIS IS THE LOAD-BEARING REJECTION: inferring
+        it from the BODY. A fn that never mentions `self` could be
+        called static — and then ADDING a `self` read to a body
+        silently changes the fn's arity and breaks every call site.
+        A BODY EDIT MUST NEVER CHANGE A SIGNATURE.
+        TWO THINGS THE SLICE MUST CARRY. First, a LIVE LATENT
+        COLLISION — this compiles CLEAN in the tree right now:
+
+            enum K { a, b }
+            impl K { fn a() -> int { 7 } }
+
+        A variant and a would-be static share a name with no
+        diagnostic. The day `K.a()` resolves, `K.a` and `K.a()` are
+        two different things spelled the same and nothing refuses the
+        pair. THE SHAPE THIS LANE KEEPS MEETING — a safety property
+        resting on a gap that will close — and the refusal belongs AT
+        THE DECLARATION, not at the call. Second: a trait-level
+        static (`trait Default { static fn default() -> Self }`) is
+        BLOCKED on `Self` existing at all, so the slice lands
+        INHERENT statics and says so, or it grows `Self` first.
   - [ ] REVIEWS THIS LANE OWES, recorded because they live in
         messages and messages do not survive a compaction. Each is a
         diff another lane writes in this lane's files, with this

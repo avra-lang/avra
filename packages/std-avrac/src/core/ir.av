@@ -222,6 +222,65 @@ export fn reads_of(i: Ins) -> List<Reg> {
     }
 }
 
+/// Does `i` let `r` OUTLIVE the call that handed it over? A seat
+/// that never escapes needs no caller retain, which is exactly what
+/// a conditional ABI would stop spending. A REGISTRY: every arm is
+/// spelled, so a new instruction breaks the build until it answers.
+///
+/// A RUNTIME ROW BORROWS ITS ARGUMENTS, so a `CallRt` seat is NOT an
+/// escape — the `_owned` twins that do keep one are named by suffix
+/// rather than declared, and until `RtSig` says which, `rt_seat`
+/// below brackets them. AND A RETAIN IS NOT AN ESCAPE EITHER: it is
+/// the instruction the ABI removes, so counting it would make the
+/// question circular — every escape it accompanies (a call seat, an
+/// answered value) is counted by that escape's own arm.
+export fn escapes_in(i: Ins, r: Reg) -> bool {
+    match i {
+        // written into memory, or packed into a structure
+        .Pack(_, elems) -> elems.any(same_reg(it, r)),
+        .Store(_, src) -> same_reg(src, r),
+        // answered outward, or flowed to a region's answer
+        .RetVal(v) -> same_reg(v, r),
+        .FnExit(v) -> same_reg(v, r),
+        .ArmEnd(v) -> same_reg(v, r),
+        .RegionEnd(_, v) -> same_reg(v, r),
+        .ScopeExit(gives) -> gives != null && same_reg(gives!, r),
+        // handed to a callee that may keep it
+        .Call(_, _, args) -> args.any(same_reg(it, r)),
+        .CallPtr(_, f, args) -> same_reg(f, r) || args.any(same_reg(it, r)),
+        // read and spent: a field pulled out is its own reference, a
+        // slot's address is not its contents, a release is the
+        // opposite of keeping, a runtime row borrows
+        .CallRt(_, _, _) or .CallRtVoid(_, _) or .Retain(_) or
+        .Extract(_, _, _) or .Bin(_, _, _, _) or .Un(_, _, _) or
+        .Load(_, _) or .Release(_) or .IfStart(_) or
+        .SwitchStart(_, _) or .LoopCond(_) or .ScopeEnter(_) or
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or
+        .ConstBool(_, _) or .FnAddr(_, _) or .Alloca(_) or
+        .LoopStart or .LoopEnd or .Ret(_) -> false,
+    }
+}
+
+/// Is `r` an argument of a RUNTIME ROW here? Rows borrow, so this is
+/// not an escape — but the owning twins take a reference and no
+/// column declares which, so a seat that reaches a row is the
+/// bracket between what certainly reads and what may keep.
+export fn rt_seat(i: Ins, r: Reg) -> bool {
+    match i {
+        .CallRt(_, _, args) -> args.any(same_reg(it, r)),
+        .CallRtVoid(_, args) -> args.any(same_reg(it, r)),
+        .Pack(_, _) or .Store(_, _) or .Retain(_) or .Release(_) or
+        .RetVal(_) or .FnExit(_) or .ArmEnd(_) or .RegionEnd(_, _) or
+        .ScopeExit(_) or .Call(_, _, _) or .CallPtr(_, _, _) or
+        .Extract(_, _, _) or .Bin(_, _, _, _) or .Un(_, _, _) or
+        .Load(_, _) or .IfStart(_) or .SwitchStart(_, _) or
+        .LoopCond(_) or .ScopeEnter(_) or .ConstInt(_, _) or
+        .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+        .FnAddr(_, _) or .Alloca(_) or .LoopStart or .LoopEnd or
+        .Ret(_) -> false,
+    }
+}
+
 /// THE USER BODY a step names — a call's callee, a fn value's
 /// address. Runtime and host callees name no body of ours, so they
 /// answer nothing. Every symbol a program's bodies name must be a
