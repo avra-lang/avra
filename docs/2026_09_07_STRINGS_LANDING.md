@@ -117,9 +117,10 @@ and the scan is:
 1. `pieces[0]` must be a **prefix**; the cursor moves past it.
 2. `pieces[4]`, the last, must be a **suffix**; call its position `stop`.
 3. For each capture but the last: find its following piece at the first
-   position at or after the cursor. Absent → the arm fails. The capture
-   is the span from the cursor to that position; the cursor moves past
-   the piece.
+   position at or after the cursor — **or at the LAST such position,
+   when the capture's hole carries the greedy mark `...`**. Absent →
+   the arm fails. The capture is the span from the cursor to that
+   position; the cursor moves past the piece.
 4. The last capture is the span from the cursor to `stop`. Negative →
    the arm fails.
 5. A typed capture parses its span. Failure → the arm fails.
@@ -128,6 +129,21 @@ An empty last piece needs no case: an empty suffix sits at the subject's
 end, so `stop` is the length and the last capture runs to it. A format
 with **no** captures is a plain literal and is compared for equality —
 which is the node it is built as anyway.
+
+**GREED IS INERT ON THE LAST HOLE**, and step 4 is why: that capture's
+end is fixed by `stop`, a position the suffix anchor computed, not by a
+search. First and last are the same place, so `{p}` and `{p...}` in
+final position answer identically — proved over a matching, a refusing
+and an empty-capture subject. That is what lets a route's pattern carry
+the mark and still read exactly as its grammar does, which is the whole
+reason the mark exists in this shape rather than as a router-private one.
+
+**AND THERE IS STILL NO BACKTRACKING**, which is greed's one sharp
+consequence: a greedy hole can FAIL where its lazy twin matches, because
+the occurrence it took may leave a later piece unfindable and nothing
+goes back to try an earlier one. `"{a...}-{b}-{c}"` refuses `1-2-3-4`
+where `"{a}-{b}-{c}"` accepts it. That is the writer's choice made
+exact, not a defect — each spelling names one split and takes it.
 
 ### 1.3 The consequence that must be tested, not hidden
 
@@ -754,6 +770,30 @@ text that can answer it. On the counterexample:
 `("x-" + "--").index_of("--")` is 1 and `|"x-"|` is 2, so it is refused.
 On the safe case `("x" + "--").index_of("--")` is 1 and `|"x"|` is 1,
 so it is admitted.
+
+**AND THE GREEDY CLAUSE IS ITS MIRROR, which is the sharpest thing S9
+found.** The lazy condition looks LEFT — it asks that nothing before the
+boundary claim the piece. A greedy hole takes the LAST occurrence, so
+its condition must look RIGHT:
+
+> For each GREEDY capture *i*, its following piece, followed by
+> everything printed after that piece, must hold no further occurrence
+> of it: `(p_{i+1} + rest_i).index_of(p_{i+1}, 1) < 0`.
+
+The capture's own text is not asked about at all, and that is the point:
+a greedy hole may hold its own delimiter as often as it likes, because
+it takes the last one. The search runs over the piece and the tail
+JOINED rather than the tail alone, so an occurrence straddling the
+boundary is caught.
+
+**THE TWO DOMAINS ARE COMPLEMENTS AT THE OVERLAP CASE**, and that is the
+receipt. `G = "{a}--{b}"` with `a = "x-"` is the value that forced the
+correction above — lazy REFUSES it. `G = "{a...}--{b}"` with the same
+value ACCEPTS it and round-trips to `[x-][y]`, because the overlap that
+moves a first-occurrence split is exactly what a last-occurrence split
+is immune to. Measured both ways at this base: greedy accepts
+`a = "1-2", b = "3"` where lazy refuses, and refuses `a = "1", b = "2-3"`
+where lazy accepts. Neither condition reaches the other's side.
 
 *Sufficiency.* The printed text is `p0 c0 p1 c1 … p_{n-1} c_{n-1} pn`.
 `p0` matches as the prefix, so the cursor sits at `|p0|`; `pn` matches as
@@ -1429,6 +1469,98 @@ NUL-safe by construction rather than by luck.
 
 ---
 
+## 16. S9 — the greedy hole, and the mark that says what it does
+
+`{name...}` is a GREEDY hole: it takes the literal after it at that
+literal's LAST occurrence rather than its first. The mark rides beside
+the NAME (`{path...}`, `{path...: Type}`) because it answers how the
+hole MATCHES, where the type answers what it parses to.
+
+### 16.1 What it buys, and what it costs
+
+| subject | lazy | greedy |
+| --- | --- | --- |
+| 1 delimiter | 89 ns | 94 ns |
+| 9 delimiters | 88 ns | 181 ns |
+| 99 delimiters | 94 ns | 1 008 ns |
+
+Lazy is FLAT — one `index_of`. Greedy is LINEAR IN THE OCCURRENCES,
+about 10 ns each, because the search is a forward scan that keeps its
+last hit. That is the honest shape of a keep-the-last loop and it is
+the number a `avra_bytes_last_index_of` row would have to beat; the ask
+is filed at §12 with this measurement rather than a guess.
+
+**AND THE ROUTER PAYS NOTHING**, which is the case that mattered:
+
+| `/s/a/b/c` | cost |
+| --- | --- |
+| `/s/{p...}` | 63 ns |
+| `/s/{p}` | 64 ns |
+
+Identical, because GREED IS INERT ON THE LAST HOLE. That hole's end is
+fixed by the suffix anchor — a position computed, not searched — so
+first and last are the same place and the emitted code never reaches
+the greedy branch. The mark there STATES what the hole already does.
+
+That is the whole reason this shape was the P6 answer rather than a
+router-private marker: a route's pattern now carries `{path...}`, its
+grammar spells `{path...}`, the two strings are IDENTICAL, and the
+silently-dead-route hazard of §14.3 never opens.
+
+### 16.2 The two laws that grew
+
+**THE SCAN LAW** gained one clause (§1.2) and one consequence. The
+consequence is the sharp half: THERE IS STILL NO BACKTRACKING, so a
+greedy hole can FAIL where its lazy twin matches — `"{a...}-{b}-{c}"`
+refuses `1-2-3-4` where `"{a}-{b}-{c}"` accepts it. Each spelling names
+one split and takes it; neither searches for a split that works.
+
+**THE ROUND-TRIP PROOF** gained its mirror (§6.3), and this is the
+result worth keeping. The lazy condition looks LEFT: nothing before the
+boundary may claim the piece. The greedy condition looks RIGHT: nothing
+after it may. The capture's own text is not asked about at all, because
+a greedy hole may hold its own delimiter as often as it likes.
+
+**AND THE TWO DOMAINS ARE COMPLEMENTS AT THE OVERLAP CASE.** `a = "x-"`
+under `"{a}--{b}"` is the value that forced §6.3's correction in the
+first place — lazy refuses it. Greedy ACCEPTS it and round-trips,
+because the overlap that moves a first-occurrence split is exactly what
+a last-occurrence split is immune to. A design that had to be corrected
+once now has a sibling that is correct for the case that corrected it.
+
+### 16.3 The door and the pattern must agree
+
+`tailed` still declares — the lead's law, and I did not weaken it — but
+the pattern must now SAY so, and `faults` names either half failing:
+
+- a route declared `tailed` whose last hole has no mark;
+- a route declared `routed` whose last hole has one.
+
+A mark on a hole that is NOT last is neither: it is an ordinary greedy
+hole, and a route may carry one. **THAT IS THE LAW I FOUND WHERE THE
+BRIEF EXPECTED A POSITION RULE.** "Refused anywhere but last" is not
+the format's law, because greed is meaningful anywhere in a format; it
+is the ROUTER's, and it is about AGREEMENT rather than position.
+
+### 16.4 What the red team ran
+
+Eleven malformed marks, each refusing in its own words: two dots, four
+dots, dots alone, dots before the name, dots inside it, a space before
+them, an empty type after them. Overlapping needles take the last
+OVERLAPPING occurrence (`{a...}aa{b}` over `aaaaXY` binds `aa`, not the
+last disjoint one). Greed works in a PATTERN and over OCTETS, not only
+in a grammar declaration. 20 000 parses leave zero live bytes, and
+every accepted program agrees on both engines.
+
+ONE DEFECT, in a refusal rather than in the scan: `{a..}` — the likeliest
+typo for the new mark — was told "a hole is `{name}` or `{name: Type}`",
+a list the form it wanted was missing from. The voice names all three
+spellings now. A refusal whose remedy list goes stale the moment a form
+lands is the quietest kind of wrong, because the code around it is
+correct and the reader is simply misdirected.
+
+---
+
 ## 12. The asks still open, with their wanting sites
 
 1. **`avra_str_index_of_from(s, needle, from)`** — lane A. `string`'s
@@ -1473,14 +1605,17 @@ NUL-safe by construction rather than by luck.
    hand-written one is four literal conversions at about four
    nanoseconds each (§5). Growing the IR is a vocabulary event with the
    eight-consumer protocol, so this is not a formats-lane change.
-8. **A GREEDY HOLE in a format** — `{name...}`, meaning the next
-   piece is found at its LAST occurrence rather than its first. It
-   would make the router's tail capture an instance of a general law
-   instead of a door of its own, and let a route's pattern say what it
-   does while still reading exactly as its grammar does (§15.3). It is
-   a change to the scan law and owes §6.3's round-trip proof a greedy
-   clause, so it is a formats slice, not a router one. WANTING SITE:
-   `packages/std-http/src/route.av`'s `tailed`.
+8. **A GREEDY HOLE in a format** — DELIVERED in S9 (§16). The scan law
+   carries the clause, the round-trip proof carries its mirror, and a
+   route's pattern now reads exactly as its grammar does.
+9. **`avra_bytes_last_index_of(b, needle, from)`** — a runtime row, to
+   whoever owns the runtime. A greedy hole searches by keeping the last
+   hit of a forward scan, which is LINEAR IN THE OCCURRENCES: 94 ns at
+   one delimiter, 1 008 ns at ninety-nine, against a flat 90 ns for its
+   lazy twin (§16.1). One backward scan would make greedy cost what
+   lazy costs. NOT BLOCKING and not yet worth it: the router's use is
+   the last hole, where greed is inert and the mark measures free.
+   WANTING SITE: `features/formats/lower.av`'s `farthest`.
 
 ---
 

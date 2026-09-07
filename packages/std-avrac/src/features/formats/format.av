@@ -2,6 +2,12 @@
 //! faults a literal can carry. It knows nothing of typing or
 //! lowering — those read their shape from here, and the shape IS
 //! `Pat.Format`'s, so the reader and the node are one vocabulary.
+//!
+//! A HOLE IS `{name}`, `{name: Type}`, or either with a `...` after
+//! the name. The mark says the hole is GREEDY — it takes the literal
+//! after it at that literal's LAST occurrence — and it rides beside
+//! the NAME because it answers how the hole MATCHES, where the type
+//! answers what it parses to.
 use core.{TypeRef, Hole, FormatPart, named_ref, bound_names, joined}
 
 /// A format read from a literal: the literal head, then a hole and
@@ -134,15 +140,28 @@ fn doubled(b: Bytes, at: int) -> bool {
 
 // ── One hole ────────────────────────────────────────────────────
 
-/// A `{…}`'s body as a hole: a name, and an optional `: Type`.
+/// A `{…}`'s body as a hole: a name, an optional trailing `...`, and
+/// an optional `: Type`. The mark rides the NAME (`{path...}`,
+/// `{path...: Type}`) because it says how the hole MATCHES, and the
+/// type says what it parses to — two questions, and the one the mark
+/// answers belongs beside the name.
 fn hole_of(body: string, at: int) -> Result<Hole, Fault> {
     let colon = body.index_of(":")
-    let name = (if colon < 0 { body } else { body.substring(0, colon) }).trim()
+    let written = (if colon < 0 { body } else { body.substring(0, colon) }).trim()
+    let name = shorn(written)
     let ty: string? = if colon < 0 { null } else { body.substring(colon + 1, body.length).trim() }
     if !named(name) { return .Err(Fault.Malformed(at, body)) }
     if ty != null && !named(ty!) { return .Err(Fault.Malformed(at, body)) }
-    .Ok(Hole { name: name, ty: written_type(ty) })
+    .Ok(Hole { name: name, ty: written_type(ty), greedy: written != name })
 }
+
+/// A written hole name with its greed mark removed.
+fn shorn(written: string) -> string {
+    if !written.ends_with(ellipsis()) { return written }
+    written.substring(0, written.length - ellipsis().length)
+}
+
+fn ellipsis() -> string { "..." }
 
 /// The written type a hole names, when it named one. Built through
 /// core's constructor, never by hand: a reconstruction that spells

@@ -390,9 +390,15 @@ export enum Pat {
 }
 
 /// One hole of a format: the name it binds — `_` binds nothing, as
-/// `Wild` spells it — and the type it parses through, absent when it
-/// takes the span as text.
-export type Hole = { name: string, ty: TypeRef? }
+/// `Wild` spells it — the type it parses through, absent when it
+/// takes the span as text, and whether it is GREEDY.
+///
+/// A greedy hole (`{name...}`) finds the literal after it at that
+/// literal's LAST occurrence rather than its first. On the final hole
+/// the two agree, because a suffix anchor already fixes that hole's
+/// end — which is why the mark reads there as a statement of what the
+/// hole does rather than a change to it.
+export type Hole = { name: string, ty: TypeRef?, greedy: bool }
 
 /// A hole and the literal text that follows it.
 export type FormatPart = { hole: Hole, piece: string }
@@ -1047,8 +1053,13 @@ fn param_fps(params: List<Param>) -> List<int> {
 /// and the literal that follows it — every field, so a reindented
 /// or retyped hole is a different pattern.
 fn hole_fps(p: FormatPart) -> List<int> {
-    [fp_str(p.hole.name), type_fp(p.hole.ty), fp_str(p.piece)]
+    [fp_str(p.hole.name), type_fp(p.hole.ty), fp_str(p.piece), greed_fp(p.hole.greedy)]
 }
+
+/// Greed rides the fingerprint: two formats that differ only in which
+/// occurrence a hole takes are different formats, and a fold that
+/// dropped it would hand them one hash.
+fn greed_fp(greedy: bool) -> int { if greedy { 1 } else { 0 } }
 
 /// A written type's identity: absence is its own value, and the `?`
 /// is part of what the type IS.

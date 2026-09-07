@@ -8,8 +8,8 @@ use @std.http.route.{Route, Table, Reach, routed, fixed, tailed, compiled, dispa
 
 grammar Idea = "/ideas/{id}"
 grammar Search = "/search/{term}/{page}"
-grammar Static = "/static/{path}"
-grammar Png = "/img/{path}.png"
+grammar Static = "/static/{path...}"
+grammar Png = "/img/{path...}.png"
 
 fn serve_idea(q: Request, i: Idea) -> Response { text(200, "idea " + i.id) }
 fn serve_search(q: Request, s: Search) -> Response { text(200, "search " + s.term + " " + s.page) }
@@ -18,8 +18,8 @@ fn serve_static(q: Request, s: Static) -> Response { text(200, "static " + s.pat
 fn serve_png(q: Request, p: Png) -> Response { text(200, "png " + p.path) }
 fn serve_word(q: Request) -> Response { text(200, "word") }
 
-fn r_static() -> Route { tailed<Static>(Method.Get, "/static/{path}", (t: Bytes) -> Static.parse(t), serve_static) }
-fn r_png() -> Route { tailed<Png>(Method.Get, "/img/{path}.png", (t: Bytes) -> Png.parse(t), serve_png) }
+fn r_static() -> Route { tailed<Static>(Method.Get, "/static/{path...}", (t: Bytes) -> Static.parse(t), serve_static) }
+fn r_png() -> Route { tailed<Png>(Method.Get, "/img/{path...}.png", (t: Bytes) -> Png.parse(t), serve_png) }
 
 /// What a table of these routes answers for a target.
 fn under(rows: List<Route>, line: string) -> string {
@@ -164,11 +164,23 @@ spec "@std.http route" {
     }
 
     given "what the law says about a rest-taker" {
-        then "a rest-taking route whose last segment binds nothing is named" {
-            faults([tailed<Static>(Method.Get, "/static/files", (t: Bytes) -> Static.parse(t), serve_static)])[0] == "`/static/files` takes the rest of the target and its last segment binds nothing — a rest-taking route needs a hole to hold what it takes"
+        then "A DOOR THAT TAKES THE REST NEEDS A PATTERN THAT SAYS SO" {
+            faults([tailed<Static>(Method.Get, "/static/files", (t: Bytes) -> Static.parse(t), serve_static)])[0] == "`/static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
+        }
+        then "and a pattern without the mark is named even when it has a hole" {
+            faults([tailed<Static>(Method.Get, "/static/{path}", (t: Bytes) -> Static.parse(t), serve_static)]).length == 1
+        }
+        then "A PATTERN THAT SPELLS THE REST NEEDS A DOOR THAT TAKES IT" {
+            faults([routed<Static>(Method.Get, "/static/{path...}", (t: Bytes) -> Static.parse(t), serve_static)])[0] == "`/static/{path...}` spells a hole that takes the rest and the route was declared for one width — declare it with `tailed`, or drop the `...`"
+        }
+        then "a static path holding the three dots is neither, because its braces are octets" {
+            faults([fixed(Method.Get, "/static/{a...}", serve_word)]).is_empty()
+        }
+        then "a mark on a hole that is not last is a greedy hole, not a claim on the rest" {
+            faults([routed<Search>(Method.Get, "/search/{term...}/{page}", (t: Bytes) -> Search.parse(t), serve_search)]).is_empty()
         }
         then "a rest-taker shadows a deeper path below it" {
-            faults([r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)])[0] == "`/static/logo.svg` is unreachable — `/static/{path}` is declared above it and matches every target it does"
+            faults([r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)])[0] == "`/static/logo.svg` is unreachable — `/static/{path...}` is declared above it and matches every target it does"
         }
         then "it shadows a route of greater width too, because it reaches every width" {
             faults([r_static(), routed<Search>(Method.Get, "/static/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search)]).length == 1
@@ -183,7 +195,7 @@ spec "@std.http route" {
             faults([r_png(), fixed(Method.Get, "/img/a/b.jpg", serve_word)]).is_empty()
         }
         then "two rest-takers of one shape are named" {
-            faults([r_static(), tailed<Static>(Method.Get, "/static/{rest}", (t: Bytes) -> Static.parse(t), serve_static)]).length == 1
+            faults([r_static(), tailed<Static>(Method.Get, "/static/{rest...}", (t: Bytes) -> Static.parse(t), serve_static)]).length == 1
         }
     }
 }

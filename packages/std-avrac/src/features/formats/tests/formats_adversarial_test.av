@@ -255,4 +255,67 @@ spec "features/formats adversarial" {
             same_shape("{a}-{b}") == same_shape("{a}-{b}")
         }
     }
+
+    given "the greedy mark, attacked position by position" {
+        then "two dots are no hole" {
+            shape("{a..}-{z}") == "malformed@0:a.."
+        }
+        then "four dots are no hole" {
+            shape("{a....}-{z}") == "malformed@0:a...."
+        }
+        then "dots with no name are no hole" {
+            shape("{...}-{z}") == "malformed@0:..."
+        }
+        then "dots before the name are no hole" {
+            shape("{...a}-{z}") == "malformed@0:...a"
+        }
+        then "dots inside the name are no hole" {
+            shape("{a...b}-{z}") == "malformed@0:a...b"
+        }
+        then "a space between the name and the mark is no hole" {
+            shape("{a ...}-{z}") == "malformed@0:a ..."
+        }
+        then "a mark with an empty type is no hole" {
+            shape("{a...:}-{z}") == "malformed@0:a...:"
+        }
+        then "trailing space after the mark is trimmed, and the hole is greedy" {
+            shape("{a...  }-{z}") == "<a...:->-<z:->"
+        }
+        then "THE REFUSAL NAMES THE GREEDY FORM, so a typo is told the spelling it missed" {
+            refused_with("grammar G = \"{a..}-{z}\"", "`{name...}`")
+        }
+    }
+
+    given "a greedy hole against a needle that overlaps itself" {
+        then "the LAST overlapping occurrence is taken, not the last disjoint one" {
+            shown("grammar G = \"{a...}aa{b}\"\nG.parse(\"aaaaXY\")?.a ?? \"no\"") == "aa"
+        }
+        then "one occurrence leaves an empty capture" {
+            shown("grammar G = \"{a...}aa{b}\"\nG.parse(\"aaXY\")?.a ?? \"no\"") == ""
+        }
+        then "three overlapping octets take the second" {
+            shown("grammar G = \"{a...}aa{b}\"\nG.parse(\"aaa\")?.a ?? \"no\"") == "a"
+        }
+        then "a wide needle is taken whole" {
+            shown("grammar G = \"{a...}::{b}\"\nG.parse(\"a::b::c\")?.a ?? \"no\"") == "a::b"
+        }
+        then "and half a wide needle is no occurrence" {
+            shown("grammar G = \"{a...}::{b}\"\nG.parse(\"a:b\") == null") == "true"
+        }
+    }
+
+    given "a greedy hole outside a grammar declaration" {
+        then "IT WORKS IN A PATTERN, where the format is spelled inline" {
+            shown("let s = \"1-2-3\"\nmatch s { \"{a...}-{b}\" -> a + \"|\" + b\n    _ -> \"no\" }") == "1-2|3"
+        }
+        then "and the lazy spelling of that pattern splits the other way" {
+            shown("let s = \"1-2-3\"\nmatch s { \"{a}-{b}\" -> a + \"|\" + b\n    _ -> \"no\" }") == "1|2-3"
+        }
+        then "IT WORKS OVER OCTETS, which is the seat a router reads" {
+            shown("grammar G = \"/s/{p...}\"\nG.parse(\"/s/a/b/c\".bytes())?.p ?? \"no\"") == "a/b/c"
+        }
+        then "and refuses octets its head does not open" {
+            shown("grammar G = \"/s/{p...}\"\nG.parse(\"/x/y\".bytes()) == null") == "true"
+        }
+    }
 }
