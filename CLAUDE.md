@@ -827,6 +827,14 @@ Syntax the grammar lacks:
   Instantiation is a STATEMENT: as a fn's tail it answers `void`
   ("the body answers `void` but `made` declares `Cfg`") — bind,
   then return the name.
+- A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA
+  when another arm follows (found by the HTTP lane, probed here).
+  `match v { .R(o) -> o` with `.S -> "s"` on the next line is
+  "expected `}` to close the `match`", reported at the SECOND arm —
+  so the message points past the arm that needs the comma. Two forms
+  work: the comma (`.R(o) -> o,`), and the whole match on ONE line
+  (`match v { .R(o) -> o }`), which has no following arm to separate.
+  Each arm on its own line is the ordinary spelling and parses.
 - A PRESENT-BIND arm after a COMMA-ended arm (`null -> a,` then `v?
   -> b`): "expected `}` to close the `match`" — the comma continues
   the line and `v?` is read into it. Separate such arms by line, as
