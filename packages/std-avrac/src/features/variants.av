@@ -9,7 +9,7 @@ use diagnostics.{Diag, refusal}
 /// The one law, at the call — the module's header states it.
 export fn construct_variant(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, variant: string, args: List<ExprId>) -> TypeId {
     let declared: EnumSig? = variants_declared(cx, decl, tname)
-    if declared == null { return not_an_enum(cx, e, tname) }
+    if declared == null { return no_variants_here(cx, e, decl, tname, variant) }
     let sig = declared!
     if sig.tag_of(variant) == null { return no_such_variant(cx, e, tname, variant, sig) }
     let tp = cx.view.decls.tparams(decl)
@@ -108,7 +108,20 @@ fn variants_declared(mut cx: TypeCx, decl: DeclId, tname: string) -> EnumSig? {
     cx.variants_of(cx.view.types.intern(Type.Enum(decl, tname)))
 }
 
+/// A type name that names no enum: a GRAMMAR is told about its
+/// doors, every other record about records. Both fire exactly where
+/// the record refusal fired before, so nothing that reads well today
+/// reads differently.
+fn no_variants_here(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
+    if cx.view.decls.grammar_of(decl) == null { return not_an_enum(cx, e, tname) }
+    no_such_door(cx, e, tname, name)
+}
+
 // ── The voices ──
+
+fn no_such_door(mut cx: TypeCx, e: ExprId, tname: string, name: string) -> TypeId {
+    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` is a `grammar`, not an enum", "built here", "`${tname}.${name}` is a call only where the grammar declares a door of that name"))
+}
 
 fn not_an_enum(mut cx: TypeCx, e: ExprId, tname: string) -> TypeId {
     spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` is a record, not an enum", "built here", build_a_record(tname)))

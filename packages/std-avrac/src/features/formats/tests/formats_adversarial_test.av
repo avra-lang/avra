@@ -124,4 +124,58 @@ spec "features/formats adversarial" {
             shown("let s = \"a\" + \"0123456789012345678901234567890123456789\" + \"|z\"\nmatch s { \"{head}|{tail}\" -> \"\${head.length}\${tail}\"\n    _ -> \"no\" }") == "41z"
         }
     }
+
+    given "a grammar and the door it declares" {
+        then "a grammar of one hole parses the span between its literals" {
+            shown("grammar One = \"x{a}y\"\nmatch One.parse(\"xQy\") { r? -> r.a\n    null -> \"no\" }") == "Q"
+        }
+        then "a hole at each end leaves the literal between them" {
+            shown("grammar Ends = \"{a}-{b}\"\nmatch Ends.parse(\"p-q\") { r? -> r.a + r.b\n    null -> \"no\" }") == "pq"
+        }
+        then "four holes keep their order through the record" {
+            shown("grammar Four = \"{a}1{b}2{c}3{d}\"\nmatch Four.parse(\"w1x2y3z\") { r? -> r.a + r.b + r.c + r.d\n    null -> \"no\" }") == "wxyz"
+        }
+        then "a hole may bind nothing and still fill its field" {
+            shown("grammar E = \"{a}|{b}\"\nmatch E.parse(\"|x\") { r? -> \"[\${r.a}][\${r.b}]\"\n    null -> \"no\" }") == "[][x]"
+        }
+        then "a hole named for the door is a field, and the door still opens" {
+            shown("grammar G = \"{parse}-{b}\"\nlet g = G { parse: \"1\", b: \"2\" }\nmatch G.parse(\"x-y\") { r? -> r.parse + g.parse\n    null -> \"no\" }") == "x1"
+        }
+        then "the door and the pattern read the same text the same way" {
+            shown("grammar G = \"{a}-{b}\"\nlet byhand = match \"x-y\" { \"{a}-{b}\" -> a + b\n    _ -> \"no\" }\nlet bydoor = match G.parse(\"x-y\") { r? -> r.a + r.b\n    null -> \"no\" }\nbyhand + bydoor") == "xyxy"
+        }
+        then "a record outlives the subject its spans were cut from" {
+            shown("grammar G = \"{a}-{b}\"\nfn held() -> G? {\n    let subject = \"keep\" + \"-\" + \"this\"\n    G.parse(subject)\n}\nmatch held() { r? -> r.a + r.b\n    null -> \"no\" }") == "keepthis"
+        }
+        then "a record survives a list and a loop" {
+            shown("grammar G = \"{a}-{b}\"\nmut xs: List<G> = []\nfor s in [\"1-2\", \"3-4\", \"zz\"] {\n    match G.parse(s) { r? -> { xs.push(r) }\n        null -> { xs.push(G { a: \"?\", b: \"?\" }) } }\n}\n[x.a + x.b for x in xs].join(\",\")") == "12,34,??"
+        }
+        then "`with` copies a parsed record without disturbing it" {
+            shown("grammar G = \"{a}-{b}\"\nmatch G.parse(\"x-y\") { r? -> (r with { a: \"Z\" }).a + r.a\n    null -> \"no\" }") == "Zx"
+        }
+        then "a format with no holes names no fields" {
+            refused_with("grammar None = \"plain text\"\n1", "has no holes")
+        }
+        then "an int in the text seat is refused" {
+            refused_with("grammar G = \"{a}-{b}\"\nG.parse(5)", "argument 1 of `parse` wants `string`, found `int`")
+        }
+        then "a Bytes in the text seat is refused" {
+            refused_with("grammar G = \"{a}-{b}\"\nG.parse(\"x\".bytes())", "argument 1 of `parse` wants `string`, found `Bytes`")
+        }
+        then "no argument is refused by arity" {
+            refused_with("grammar G = \"{a}-{b}\"\nG.parse()", "`parse` takes 1 arguments, found 0")
+        }
+        then "two arguments are refused by arity" {
+            refused_with("grammar G = \"{a}-{b}\"\nG.parse(\"x\", \"y\")", "`parse` takes 1 arguments, found 2")
+        }
+        then "a grammar named for a keyword is refused by the name law" {
+            refused_with("grammar match = \"{a}-{b}\"\n1", "`match` is a keyword")
+        }
+        then "one name declared twice is refused" {
+            refused_with("grammar G = \"{a}-{b}\"\ngrammar G = \"{c}-{d}\"\n1", "`G` is declared more than once")
+        }
+        then "a grammar clashing with a record of its name is refused" {
+            refused_with("type G = { n: int }\ngrammar G = \"{a}-{b}\"\n1", "`G` is declared more than once")
+        }
+    }
 }
