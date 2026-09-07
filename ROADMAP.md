@@ -2192,6 +2192,30 @@ the order is the dependency.
         needs either one or a compiler-side count of `retained_args`
         emissions by callee disposition. Do not argue the ABI from
         the 23% alone — it is the ceiling, not the estimate.
+        AND THE FENCE ABOVE IS ONE LEVEL TOO SHALLOW (lane C, same
+        day, correcting this entry as it was written). TWO unknowns
+        sit under the 23%, not one:
+          1. The AVRA-CALL SHARE. `retained_args` retains for `.Call`
+             and `.CallPtr` alone — a `CallRt`/`CallRtVoid` argument
+             arrives BORROWED — so part of the 22.9% is traffic the
+             ABI cannot reach at all, and the seat denominator must
+             exclude runtime rows or the exclusion is counted twice.
+          2. The QUALIFYING SHARE IS ITSELF WEIGHTED. "The callee only
+             reads" is a STATIC property of the callee (does the seat
+             escape its body); "how many retains run here" is a
+             DYNAMIC property of the call site. The prize is the sum
+             over sites of one TIMES the other, so a tree whose
+             qualifying callees are all cold and whose hot ones all
+             escape prices near zero while BOTH halves read "two
+             thirds". A count of qualifying seats is not the share.
+        So: ceiling = 22.9% x (Avra-call share) x (weighted
+        qualifying share), and neither factor is measured. The
+        split of work is agreed — lane A builds the retain table
+        keyed by CALL SITE (the seat is what qualifies, not the
+        call), lane C counts callee-side escape against the IR,
+        where `view_of` already answers what an instruction does to
+        a register and `borrow_outlives` is the same question turned
+        around. Neither half is a number on its own.
   - [x] A RECONSTRUCTION NAMES ONE FIELD, NEVER THE REST. LANDED
         2026-09-06; found by the DOCS campaign's subset lane, and it
         was a latent hole in the seat law's own slice. `plain(t)`
