@@ -729,6 +729,39 @@ real. What remains of the `once` share is the retain/release pair
 around each read, half (b), with the owner. The ledger: the framer's
 own wastes 2410 → 2185, the slot 2185 → 2045, both on shipping.
 
+## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
+
+BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
+string patterns, the octet parity (1.24x), grammar values that parse
+and print with the round-trip law enforced, the framer's no with its
+attack table, the router with a full-depth trie (68x, flat across three
+shapes), the query and the tail, the greedy hole (the two domains
+complements at the overlap case), and the once-index re-take as a pair.
+Substrate: the package-C standard, the extern host, io and process out
+of the runtime onto their own C with the evaluator running the same
+bodies, the descriptor scratch and the stage, the build's per-target
+lists and keepers, the S2c paper. The lead's own: the server loop, the
+reply framer, the client, corpus/http-serve, the loop under load and
+under the census. @std/http is 259 cases across framer, reply, router,
+query, server and client suites, every one in the gate.
+
+THE NUMBERS THE MANDATE ASKED FOR, each with its instrument named: a
+four-field head frames in 2,045 ns on shipping (`tools/bench/frame_head`);
+the loop serves 102–118k keep-alive requests a second on one core at
+8.2 µs CPU a request, 4.9 in the loop and 3.4 in the kernel (`ab -k`,
+`ps`); dispatch over 300 routes is 346 ns; a request line by pattern is
+1.24x a hand scan over octets.
+
+OPEN, THE OWNER'S: (1) a NUL crossing to C — the seam checks every
+`string` seat that resolves, `inert: true` written at the site as the
+exemption, faces refuse with words first, `Bytes` the escape; (2) S2c
+— a per-package shared library the evaluator opens by the program's
+own closure, derived by the tree and never named by a manifest; (3)
+immortal `once` answers, with the `is_shared` line as the prerequisite
+that lands with the decision. Each in the ROADMAP's HTTP asks with its
+measurements. And the validation of lane/http itself, before anything
+reaches main.
+
 ## Slice 3 — `@std.http` (AFTER)
 
 Message types, an index-driven HTTP/1.1 framer over `Bytes`, a route trie
