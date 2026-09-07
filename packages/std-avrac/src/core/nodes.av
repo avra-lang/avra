@@ -706,10 +706,13 @@ impl NodeStore {
     }
 
     /// `grammar Name = "…"` declared this record — the format it
-    /// reads, which the record's fields cannot spell.
+    /// reads, which the record's fields cannot spell. The mark's code
+    /// is 63 and the format is its PAYLOAD, whole: a second tag here
+    /// would be a second reservation, and fingerprint codes have no
+    /// coherence law to catch a repeated one.
     fn mark_grammar(s: StmtId, read: GrammarSpec) {
         self.grammars.set(s.index, read)
-        self.restamp(s, 63, [grammar_fp(read)])
+        self.restamp(s, 63, [fp_str(read.head)].concat(flatten([hole_fps(p) for p in read.parts])))
     }
 
     fn grammar_of(s: StmtId) -> GrammarSpec? {
@@ -1019,14 +1022,6 @@ fn str_fps(texts: List<string>) -> List<int> {
 
 fn param_fps(params: List<Param>) -> List<int> {
     flatten([[fp_str(p.name), type_fp(p.ty)] for p in params])
-}
-
-/// A format's identity, whole — its head, and every hole and literal
-/// after it. Two grammars whose fields agree and whose text does not
-/// are different declarations. Its code sits with the pattern codes
-/// it mirrors, not with the statement MARKS that carry it.
-fn grammar_fp(read: GrammarSpec) -> int {
-    fp(64, [fp_str(read.head)].concat(flatten([hole_fps(p) for p in read.parts])))
 }
 
 /// A format part's identity: what it binds, what it parses through,
