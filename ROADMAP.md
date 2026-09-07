@@ -615,6 +615,35 @@ the compiler checking itself 28.8s.
         own size-class free lists made allocation cheap enough that
         AVOIDING an allocation with a scan, or even with a branch, is
         a losing trade. Measure before removing an allocation here.
+        A THIRD, 2026-09-07: TAKING THE FRAME OUT OF
+        `avra_array_get_owned` — REFUTED, and it refines the
+        cold-path law rather than denying it. That fn builds a
+        48-byte frame on its FAST path: it inlines two already-clean
+        leaves (`avra_array_get`, `avra_rc_retain`) and their cold
+        tails, and clang hoists the union's register saves above
+        everything, which is the law's own mechanism one level up —
+        FIXING EACH LEAF DOES NOT FIX A CALLER THAT INLINES SEVERAL.
+        Restructured so the guarded half is one `noinline cold` tail
+        call: the prologue GOES (`adrp` first, no `sub sp`), and the
+        self-check measured 5.90/5.91/5.94 against 5.87/5.93/5.87.
+        Nothing.
+        WHY IT PAID AT 26% AND NOT HERE, which is the transferable
+        part: the win is the FRAME-TO-BODY RATIO, not the frame.
+        `avra_rc_retain` is ~5 instructions called 557M times, so a
+        4-instruction prologue more than doubled it. `get_owned` is
+        ~20 instructions at 3.9% of self time, so the same prologue
+        is worth ~0.8% — BELOW THIS MEASUREMENT'S NOISE FLOOR
+        (+/-0.05s on 5.9s is ~1%). So this is honestly "too small to
+        see with a stopwatch", not "zero": resolving it needs a
+        microbenchmark or a census, and it is not worth either.
+        The `stp`-counting shortcut is ALSO refuted as an instrument:
+        `avra_array_get` reports one and is CLEAN — its `stp` sits
+        below the `ret`, on the cold path. Count frame ops before the
+        first branch, or read the disassembly.
+        AND ONE SUSPECT ACQUITTED: the law names a
+        `__builtin_return_address` read as a cause. It is not this
+        one — removing it left the prologue byte-identical. The cold
+        branch being a CALL is what clobbers x30 and forces the save.
         WHAT IS LEFT, re-profiled after the fix: `avra_rc_release`
         22% and its out-of-line reclaim 21% (real work — 105M boxes
         freed), `avra_rc_retain` 12%, `avra_array_sized` 10%,
