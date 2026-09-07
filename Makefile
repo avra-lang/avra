@@ -120,7 +120,7 @@ build/%.o: %.c
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite packages/std-net packages/std-http
 
-.PHONY: census traps test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab stems sweep seed bootstrap libs \
+.PHONY: census traps test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab stems sweep seed bootstrap libs libscope \
         check run ir emit build-native native-check avra
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
@@ -239,6 +239,12 @@ build-native: $(COMPILER_OBJS)
 # answer rather than parsing the manifests a second time. The roster is
 # the linking packages MINUS the ones `build/avra` already carries, so
 # it needs the compiler built first and says so as a prerequisite.
+# THE LIBRARY SCOPE, KEPT — a package's library is reached by its
+# dependents and by nobody else. One program, no ordering: see the
+# harness for why an ordered PAIR is not expressible here.
+libscope: avra libs
+	@sh tools/libscope.sh
+
 libs: avra $(PACKAGE_OBJS)
 	@for n in `python3 tools/libs.py --names`; do \
 	  python3 tools/libs.py --build $$n || exit 1; \

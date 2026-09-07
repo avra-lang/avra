@@ -96,6 +96,39 @@ int64_t avra_ffi_symbol(const char* name) {
     return (int64_t)(uintptr_t)dlsym(RTLD_DEFAULT, name);
 }
 
+/* A PACKAGE'S LIBRARY, OPENED RTLD_LOCAL — and the flag is the whole
+   design rather than a detail. RTLD_GLOBAL would put the library's
+   symbols into the PROCESS's namespace, where `dlsym(RTLD_DEFAULT)`
+   finds them for every later lookup by anyone; and `avra corpus` runs
+   every program in ONE PROCESS. So under RTLD_GLOBAL the first
+   program that depends on a package would open its library and every
+   LATER program in that run would reach its symbols, declared
+   dependency or not — a program PASSING where it should have been
+   refused, with which programs leak decided by the order the corpus
+   walks its directories. A green run is what that looks like.
+
+   RTLD_LOCAL is the default when neither flag is given; it is written
+   out because a reader must not have to know that.
+
+   THE HANDLE IS AN INTEGER THE CALLER HOLDS. Nothing is remembered
+   here: a handle set is per-PROGRAM identity, and C state would
+   outlive the program that opened it — RTLD_GLOBAL's leak wearing a
+   stale field. The evaluator holds them and hands one over per ask,
+   which is also why this takes ONE handle and not a list: an
+   aggregate cannot cross an extern seat (F2056), and the loop belongs
+   where the identity lives. */
+int64_t avra_ffi_open(const char* path) {
+    void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    return (int64_t)(uintptr_t)h;
+}
+
+/* The symbol in ONE opened library, or 0. A handle of 0 is not a
+   library and answers 0 rather than reaching the process. */
+int64_t avra_ffi_symbol_in(int64_t handle, const char* name) {
+    if (handle == 0) return 0;
+    return (int64_t)(uintptr_t)dlsym((void*)(uintptr_t)handle, name);
+}
+
 #define AVRA_FFI_ARGS \
     g_ffi_i[0], g_ffi_i[1], g_ffi_i[2], g_ffi_i[3], g_ffi_i[4], \
     g_ffi_i[5], g_ffi_i[6], g_ffi_i[7], g_ffi_i[8], g_ffi_i[9], \

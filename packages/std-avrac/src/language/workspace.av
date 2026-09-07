@@ -940,6 +940,43 @@ export fn link_inputs(ws: Workspace) -> List<string> {
     flatten([package_link(ws, pkg) for pkg in ws.packages])
 }
 
+/// THE PROGRAM'S OWN CLOSURE AS LIBRARIES the evaluator may open —
+/// one per package that owns native code, derived from the package's
+/// manifest NAME and never from a path a manifest wrote. A manifest
+/// path the toolchain OPENS is a load primitive, which is §2.3's
+/// write-primitive law at the same force.
+///
+/// THE STEM CARRIES NO SUFFIX, so the platform question never enters
+/// the compiler: the evaluator tries the ones it knows and the
+/// refusal names the PACKAGE rather than a path only one machine has.
+///
+/// AND A DISAGREEMENT WITH `tools/libs.py`, which derives the same
+/// stem on the build side, is LOUD: the evaluator opens nothing, the
+/// symbol is not found, and the refusal names the package whose
+/// library it could not open. That is what makes two derivations
+/// tolerable here where `keeps` and `inert` were not — those failed
+/// quietly, and this cannot.
+export fn linked_packages(ws: Workspace) -> List<LinkedPackage> {
+    [linked_of(ws, pkg) for pkg in ws.packages if owns_native(ws, pkg)]
+}
+
+fn owns_native(ws: Workspace, pkg: Package) -> bool {
+    !manifest(ws, pkg.ordinal).objects.is_empty()
+}
+
+fn linked_of(ws: Workspace, pkg: Package) -> LinkedPackage {
+    let named = manifest(ws, pkg.ordinal).name
+    LinkedPackage { name: named, library: "build/lib${library_stem(named)}" }
+}
+
+/// A package's manifest name as a library stem: `@std/sqlite` becomes
+/// `std-sqlite`. The `@` goes, `/` becomes `-`, nothing else moves —
+/// so two packages collide here only if their full names collide,
+/// which the workspace already refuses.
+fn library_stem(named: string) -> string {
+    named.replace("@", "").replace("/", "-")
+}
+
 fn package_link(ws: Workspace, pkg: Package) -> List<string> {
     let m = manifest(ws, pkg.ordinal)
     [joined_path(pkg.root, o) for o in m.objects].concat(m.flags)
@@ -1046,7 +1083,7 @@ impl Program {
 
     fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
         let ws = self.ws
-        memory(union(self.ws.decls, self.files, entry, every, programs, (w: Wanted) -> lowered(ws, spec_id(ws, w))))
+        memory(union(self.ws.decls, self.files, entry, every, programs, (w: Wanted) -> lowered(ws, spec_id(ws, w)))) with { libraries: linked_packages(ws) }
     }
 
     /// The lowered program, CHECKED — every file's analysis first,
