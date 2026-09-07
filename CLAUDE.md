@@ -827,6 +827,14 @@ Syntax the grammar lacks:
   Instantiation is a STATEMENT: as a fn's tail it answers `void`
   ("the body answers `void` but `made` declares `Cfg`") — bind,
   then return the name.
+- A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA
+  when another arm follows (found by the HTTP lane, probed here).
+  `match v { .R(o) -> o` with `.S -> "s"` on the next line is
+  "expected `}` to close the `match`", reported at the SECOND arm —
+  so the message points past the arm that needs the comma. Two forms
+  work: the comma (`.R(o) -> o,`), and the whole match on ONE line
+  (`match v { .R(o) -> o }`), which has no following arm to separate.
+  Each arm on its own line is the ordinary spelling and parses.
 - A PRESENT-BIND arm after a COMMA-ended arm (`null -> a,` then `v?
   -> b`): "expected `}` to close the `match`" — the comma continues
   the line and `v?` is read into it. Separate such arms by line, as
@@ -1059,6 +1067,19 @@ Runtime facts, ours to ratify:
   the script must never cross a SYMLINK into another tree
   (`packages/std-cli` was one, into bs2's source, and the rewrite
   changed bs2's file; it is a real file now).
+  AN ADDED GRAMMAR ALTERNATIVE IS ONE, and its failure is worse than
+  a rewrite's. Adding a branch that shares a leading terminal with an
+  existing one is a defect in the ASSEMBLED grammar — "branches 1 and
+  2 both begin with STRING — branch 2 is unreachable" (grammar/
+  first.av) — and only the PRODUCT assembles it, so the first `make
+  avra` SUCCEEDS: the standing binary knows nothing of the new rule.
+  The second build refuses, and by then the first has already
+  replaced `build/avra`, so the product refuses ITS OWN grammar and
+  the lane has no compiler at all. The tree is fine; the compiler is
+  broken, which is the reverse of a rewrite's failure. That is what
+  makes `cp build/avra build/avra.pre` the whole protocol rather than
+  a nicety — the HTTP lane's strings slice paid for this and its way
+  back was a copy of ANOTHER LANE's product.
 - A CHANGE THE COMPILER MUST THEN READ REACHES THE PRODUCT ON THE
   SECOND BUILD — codegen is one instance, the FRONT END is another,
   and the wording used to say only the first. `make avra`

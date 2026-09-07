@@ -352,6 +352,118 @@ def seat_fits(seat, ctype, tds):
     return agrees(declared, ctype, tds)
 
 
+# AN EXTERN WHOSE C BODY MINTS AN OWNED BOX MUST BE A ROW. `owns_result`
+# lives on a row in `rt_sigs()` and NOWHERE ELSE, so an `extern fn`
+# whose name is not one is hard-coded to own nothing and the memory
+# pass plans no release for what it mints. That is a silent leak: the
+# evaluator leaked every float it rendered exactly so, and the HTTP
+# lane leaked every socket read.
+#
+# THE TEST IS "MINTS", NOT "ANSWERS A MANAGED TYPE". Most externs
+# answering text are CORRECT without a row — argv, a library's rodata,
+# anything `str_static` made immortal — and refusing those would be a
+# lint counting a proxy. `str_static` is excluded from the seeds for
+# that reason: it allocates, and what it allocates must never be
+# released.
+MINTS = re.compile(r"\b(str_owned|box_alloc|sized_box|bytes_owned)\s*\(")
+IMMORTAL = {"str_static"}
+
+
+def c_bodies(sources):
+    """Every C fn we can read, name -> its body text."""
+    out = {}
+    for rel in sources:
+        out.update(bodies_in(open(os.path.join(ROOT, rel), errors="ignore").read()))
+    return out
+
+
+
+
+def owned_mints(bodies):
+    """The C fns that hand back a box the caller must release —
+    directly, or by RETURNING one that does."""
+    mints = {n for n, b in bodies.items() if MINTS.search(b)} - IMMORTAL
+    for _ in range(5):
+        grown = set(mints)
+        for n, b in bodies.items():
+            if n in IMMORTAL:
+                continue
+            for m in mints:
+                if re.search(r"\breturn\s+" + re.escape(m) + r"\s*\(", b):
+                    grown.add(n)
+        if grown == mints:
+            break
+        mints = grown
+    return mints
+
+
+def rows():
+    """The names `rt_sigs()` carries — the only place `owns_result` is
+    written."""
+    text = open(os.path.join(ROOT, "packages/std-avrac/src/core/runtime_api.av")).read()
+    return set(re.findall(r'RtSig \{ name: "([a-z_0-9]+)"', text))
+
+
+def leaking_externs(wall, bodies, known):
+    """Every declaration facing a minting body that is not a row."""
+    minting = owned_mints(bodies)
+    out = []
+    for name, declared, where in wall:
+        if name in minting and name not in known:
+            out.append((name, declared, where))
+    return out
+
+
+# THE MINT RULE'S OWN CASES. This check lands GREEN on today's tree —
+# no declaration faces a minting body without a row — so these cases
+# are the ONLY evidence it looks at the right thing. `one_liner` is
+# not decoration: bodies were scanned to the next line-starting brace,
+# which a one-line body does not have, so it swallowed the definitions
+# after it and twelve float helpers read as minting because a minter
+# sat two definitions below them.
+MINT_FIXTURE = """
+static const char* str_static(const char* s) { char* b = sized_box(1, 1); return b; }
+static const char* str_owned(const char* s, size_t n) { char* b = sized_box(n, 1); return b; }
+static const char* float_text(double d) { char buf[40]; return str_owned(buf, 3); }
+const char* answers_minted(int64_t bits) { return float_text(1.0); }
+int64_t one_liner(int64_t a, int64_t b) { return as_bits(as_double(a) + as_double(b)); }
+const char* answers_immortal(void) { return str_static("x"); }
+int64_t answers_a_number(int64_t x) { return x + 1; }
+"""
+
+MINT_CASES = [
+    ("str_owned", True),
+    ("float_text", True),
+    ("answers_minted", True),
+    ("one_liner", False),
+    ("answers_immortal", False),
+    ("answers_a_number", False),
+]
+
+
+def bodies_in(text):
+    """C fn bodies, brace-counted so a one-line body ends at its own
+    closing brace rather than the next line-starting one."""
+    out = {}
+    for m in re.finditer(r"^(?:static\s+)?(?:const\s+)?[A-Za-z_][A-Za-z_0-9 \*]*?\b([a-z_][a-z_0-9]*)\s*\([^)]*\)\s*\{", text, re.M):
+        depth, i, n = 1, m.end(), len(text)
+        while i < n and depth:
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+            i += 1
+        out[m.group(1)] = text[m.end():i - 1]
+    return out
+
+
+def mint_self_test():
+    bad = [(n, w) for n, w in MINT_CASES if (n in owned_mints(bodies_in(MINT_FIXTURE))) != w]
+    for name, want in bad:
+        print(f"externs: SELF-TEST — `{name}` should {'MINT' if want else 'not mint'} an owned box")
+    return len(bad)
+
+
 def wrong_seats(wall, sigs, tds):
     """Every parameter seat that disagrees with the C body it fills,
     and every arity that does.
@@ -703,7 +815,7 @@ def self_test():
 
 
 def main():
-    if self_test() + seat_self_test() + variadic_self_test() + frame_self_test() + width_self_test():
+    if self_test() + seat_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -777,6 +889,16 @@ def main():
         if voids:
             print(f"externs: {len(voids)} extern(s) read an answer their C body does not give")
         return 1
+    leaks = leaking_externs(wall, c_bodies(sources), rows())
+    for name, declared, where in leaks:
+        print(f"externs: {name} is declared in {where} and its C body MINTS an owned box")
+        print(f"externs:   `owns_result` lives on a row in `rt_sigs()` and nowhere else, so")
+        print(f"externs:   this declaration owns nothing and the memory pass plans no release")
+        print(f"externs:   for what it makes. Give it a row, or answer text it does not own.")
+    if leaks:
+        print(f"externs: {len(leaks)} extern(s) mint a box no row accounts for")
+        return 1
+
     unchecked = len(wall) - len(ours)
     note = f"; {unchecked} bind C we do not own, every width named" if unchecked else ""
     widths = sum(1 for _, t, _ in wall if t in ("i32", "u32", "i64"))
@@ -789,7 +911,7 @@ def main():
     print(f"externs: {checked} parameter seat(s) match the C seat they fill")
     print(f"externs: no declaration faces a variadic C body, nor a seat the frame cannot carry")
     print(f"externs: read {scanned}; "
-          f"{len(CASES) + len(SEAT_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES)} of the keeper's own cases hold")
+          f"{len(CASES) + len(SEAT_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES)} of the keeper's own cases hold")
     return 0
 
 sys.exit(main())

@@ -402,7 +402,15 @@ the compiler checking itself 28.8s.
           `narrow_sign`), two of them converted from `is .I64` tests
           by lane A the same morning this entry was written — so the
           entry was stale about its own author's change. The
-          interpreter still dispatches on RtHost, never on RtKind.
+          interpreter still dispatches on RtHost, never on RtKind —
+          AND THAT SENTENCE EXPIRES WHEN lane/substrate's extern host
+          merges (f9e2168), which gives `interp.av` four exhaustive
+          RtKind consumers and takes `make vocab` from five to eight.
+          Recorded as a trigger rather than amended, because the fact
+          is TRUE ON MAIN today (main's interp.av has zero RtKind
+          mentions, the keeper reports five) and a record that
+          describes a LANE is wrong about the tree it lives in. Amend
+          at the merge, not at the report.
         * AND THAT IS THE LEAST OF FLOAT. A WIDTH IS A PROPERTY OF A
           SEAT; A FLOAT IS A VALUE, which is why the sized-int slice
           is the COUNTER-EXAMPLE to cite and not the precedent. It
@@ -533,6 +541,33 @@ the compiler checking itself 28.8s.
         Further rounds here would start inventing work. The next real
         gain arrives with S3, or with a persistent memo across
         processes (recorded, big, not scheduled).
+  - [ ] ONE PRECEDENCE LEVEL COSTS ~9% OF EVERY COMPILE, measured
+        2026-09-07 across 44d5e31 -> b82bfaf. Not an argument against
+        the feature that revealed it — the owner asked for bitwise
+        and it is right — but a COST MODEL NOBODY HAD, and the next
+        operator family costs the same again.
+        THE NUMBERS, and the disproportion is the finding: the source
+        grew 2.0% (36,801 -> 37,523 lines of std-avrac) while the
+        self-check grew 11% (5.25s -> 5.83s user). Exact counts say
+        it is MORE WORK rather than slower work — retains 557M ->
+        610M (+9.4%), releases 662M -> 725M, list reads 402M -> 439M,
+        list writes 481M -> 525M, all within a point of each other.
+        THE CAUSE IS ONE GRAMMAR RULE. `expr_spine/mod.av` gained
+        exactly one: `bitwise = l:additive ( op … r:additive )*`,
+        inserted between `coalescing` and `additive`, taking the
+        expression chain from 16 rules to 17. Every expression in
+        every program now descends one level deeper, and each level
+        costs a `MatchResult` box, a bindings list and the
+        retain/release traffic they carry — which is the recorded
+        trigger about a MatchResult per attempt, arriving with a
+        price tag.
+        SO THE ENGINE'S COST IS PER LEVEL, NOT PER OPERATOR: a family
+        of six operators sharing one level cost what one operator
+        would. A future precedence level — a pipeline, a comparison
+        chain, a range band — costs another ~9% whether it carries
+        one operator or ten. That is the number to weigh before
+        adding a band, and the argument for precedence CLIMBING over
+        a rule-per-level chain if the count keeps rising.
   - [x] THE WELL WAS NOT DRY — the entry above is REFUTED, and its
         reasoning is the instructive part (2026-09-05, main 7b90a46,
         self-check 7.21s -> 5.25s, the gate 18.9s -> 15.9s user).
@@ -2219,6 +2254,29 @@ the order is the dependency.
         `pat_binds_of`), never by a local call, so one feature's
         pattern can sit inside another's. All seven call sites route
         through it. 1928 cases, 397 spec, no behaviour change.
+  - [ ] THE PATTERN TEST SLOT HAS NO CLEARING LAW, and the reason is
+        a CHAIN OF OTHER LAWS rather than a property of the slot.
+        `bind_test` written twice for one pattern would silently lose
+        the first scan's registers and read the wrong offsets. The
+        strings lane checked every path and none exists — but the
+        argument rests on: the COVERAGE LAW (a format is refutable
+        and a string subject has no variants, so `needs_catch_all`
+        forbids a format as the last arm, where `chained_reg` emits
+        no test), and the BIND LAW (F2039 refuses an `or` run that
+        binds). Both live, and I CHANGED the first one today.
+        SO THE DEPENDENCY IS WRITTEN DOWN rather than the law built:
+        if `needs_catch_all` is ever relaxed for a non-enum subject,
+        or F2039 ever permits a binding `or` alternative, this slot
+        gains a second write and nothing says so.
+        WHY NOT A CHEAP GUARD: "written" would have to mean
+        "non-empty", and an encoding that spends the empty value is
+        the law this tree has already paid for twice. It happens to
+        be exact for FORMATS — a hole-free literal builds `Pat.Lit`,
+        so a `Pat.Format` always has at least one hole and never
+        writes empty — but the slot is general, and an empty list
+        pattern would write empty legitimately. A guard exact for one
+        owner and wrong for the next is worse than a named
+        dependency.
   - [ ] AN UNRESOLVABLE `dyn` TRAIT AT A FIELD SEAT REPORTS THE WRONG
         LAW, and it cost an hour today. `Dispatch { enumpats:
         EnumPatSemantics { } }` with `PatSemantics` NOT IMPORTED into
