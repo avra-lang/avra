@@ -27,14 +27,20 @@ fn window(at_loc: Loc, frame_label: string?, src: SourceFile) -> string {
     let num = "${at.line}"
     let gutter = repeat(" ", num.length)
     let indent = repeat(" ", at.col - 1)
-    let label = if frame_label == null { "" } else { " ${frame_label!}" }
+    // AN ARROW POINTS AT SOMETHING. A frame with no label drew
+    // `╰──` and then stopped, promising a note that was never
+    // written — every parse refusal in the tree read that way, since
+    // the parse channel carries a message and no label. The caret
+    // already marks the span; without a label there is nothing for a
+    // second line to say.
+    let pointed = if frame_label == null { [] } else {
+        ["${gutter} ·${indent} ╰── ${frame_label!}"]
+    }
     joined([
         "${gutter} ╭─[${file}:${at.line}:${at.col}]",
         "${num} │ ${src.line_text(at.line)}",
         "${gutter} ·${indent} ┬",
-        "${gutter} ·${indent} ╰──${label}",
-        "${repeat("─", num.length + 1)}╯",
-    ], "\n")
+    ].concat(pointed).concat(["${repeat("─", num.length + 1)}╯"]), "\n")
 }
 
 /// The whole diagnostic as terminal text. The F-code is the
