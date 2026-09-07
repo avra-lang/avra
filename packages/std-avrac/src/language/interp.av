@@ -63,16 +63,24 @@ type Machine = {
     /// IDENTITY, so handles kept in C would outlive the program that
     /// opened them and a later program would reach a symbol it never
     /// declared. That is the `RTLD_GLOBAL` leak wearing a stale field.
-    libs: List<int>,
+    libs: List<OpenLibrary>,
 }
+
+/// One package's library as the machine holds it: the package that
+/// owns it, and the handle — 0 when it did not open. THE TWO TRAVEL
+/// TOGETHER because both readers need both halves: the lookup asks
+/// the handle, the refusal names the package, and holding them as
+/// parallel lists made the second index one list by the other's
+/// position.
+type OpenLibrary = { name: string, handle: int }
 
 /// The program's closure opened, in package order. A handle of 0 is
 /// ORDINARY rather than a failure: a package the compiler's own image
 /// already carries has no library at all, and the image answers for
 /// it. The stem carries no suffix, so the platform question stays out
 /// of the compiler and the machine tries the ones it knows.
-fn opened_libraries(l: Lowered) -> List<int> {
-    [opened(p.library) for p in l.libraries]
+fn opened_libraries(l: Lowered) -> List<OpenLibrary> {
+    [OpenLibrary { name: p.name, handle: opened(p.library) } for p in l.libraries]
 }
 
 fn opened(stem: string) -> int {
@@ -822,7 +830,7 @@ impl Machine {
     /// is what the extern host delivered and what the frame itself
     /// calls; dropping it would take the evaluator's own doors away.
     fn symbol_of(callee: string) -> int {
-        [avra_ffi_symbol_in(h, callee) for h in self.libs].find(it != 0) ?? avra_ffi_symbol(callee)
+        [avra_ffi_symbol_in(o.handle, callee) for o in self.libs].find(it != 0) ?? avra_ffi_symbol(callee)
     }
 
     fn no_symbol(callee: string) -> Val {
@@ -835,7 +843,7 @@ impl Machine {
     /// else it would have looked. Empty when every one opened, and
     /// then the refusal is the plain one.
     fn unopened() -> string {
-        let missing = [self.l.libraries[i].name for i, h in self.libs if h == 0]
+        let missing = [o.name for o in self.libs if o.handle == 0]
         if missing.is_empty() { return "" }
         ", and ${joined(missing, ", ")} owns native code whose library is not built — run `make libs`"
     }
