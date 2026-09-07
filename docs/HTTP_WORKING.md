@@ -658,8 +658,29 @@ by its door — and a LIVE BUG in the router I had merged: it matched
 the whole target, so `?redirect=/home` made its route 404; the header
 said "a route matches the PATH" since S7 and nobody checked the code
 held it. The loop's suite now drives the router with such a target.
-@std/http is 254 cases. NEXT: the framer's refcount traffic under the
-census, which was a third of a head before the sub-lanes.
+@std/http is 254 cases.
+
+## Slice 7 — THE FRAMER UNDER THE CENSUS (bccc2f4)
+
+`-DAVRA_CENSUS` with `AVRA_CENSUS_SITES=1` over `tools/bench/frame_head`
+(2M four-field heads), sites named by `atos`. PER HEAD: 226 retains,
+263 releases, 74 reclaims, 132 list reads, 140 list writes, and 52
+`once` reads costing 988 POINTER COMPARES — nineteen per read, because
+the framer holds ~20 `once` tables and the pointer pass walks the
+entries before the hit; the single largest retain site in the program
+is `avra_once_get` at 104M, one retain per read, released by the
+caller. So `once` is a quarter of the head in a mechanism the framer's
+code does not spell. THE ASK TO LANE A, with these numbers: a `once`
+answer is IMMORTAL (minted once, alive for the process, its header
+wearing the STATIC kind so a read is a borrowed load with no retain and
+no release) plus the per-site O(1) slot — ~15 ns × 52 off every head,
+and every `once`-tabled scanner in the tree gets it. TWO WASTES WERE THE
+FRAMER'S OWN AND ARE GONE: `method_of` built a nine-element list per
+head to `find` a verb (18M pushes), and `crlf_only` read `cr()`/`lf()`
+inside its loop; 2410 → 2185 ns a head, 254/254. Left where it is: the
+`Framing` fold's per-field record copies (4 retains a head at
+`settled`) and the empty-literal copies on a `mut` list's first push
+(2 a head) — small, and allocation here is cheap.
 
 ## Slice 3 — `@std.http` (AFTER)
 
