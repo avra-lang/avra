@@ -597,6 +597,28 @@ the loop changed nothing measurable (971 ns before, 813–972 after) —
 consistent with CLAUDE.md's "allocation here is cheap, so avoiding one is
 a trade, not a win", and a reminder that the scan's cost is scanning.
 
+**THE COMPILED SCAN, MEASURED.** `tools/bench/frame_scan` reads one
+HTTP request line three ways in the same run — the framer over a whole
+head, the line split BY HAND with the vocabulary a programmer actually
+has, and the same line read by a FORMAT PATTERN. 200,000 runs each,
+three runs:
+
+| way | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| framer, whole head | 780 ns | 676 ns | 680 ns |
+| request line by hand | 90 ns | 91 ns | 90 ns |
+| by format pattern | 119 ns | 120 ns | 120 ns |
+
+**The compiled scan costs 1.33x the hand-written split**, and that
+number is stable to a nanosecond where the framer's own figure moves by
+ten percent. The gap is allocation, and it is countable: the hand
+version makes seven substring copies; the scan makes four capture copies
+plus one subject-to-octets conversion plus one literal-to-octets
+conversion per literal — ten allocations against seven, and still only
+30 ns apart, which is CLAUDE.md's "allocation here is cheap" holding
+exactly. Hoisting the literals is what closes it, and that wants a
+constant the IR does not carry (§12.6).
+
 **And a finding about the oracle, not about this feature.**
 `2026_09_06_HTTP_FRAMING_LAWS.md` §2.1 records picohttpparser at ≈366
 ns for a *9-header, 430-byte* GET. `frame.av` takes ≈3.2 µs for a

@@ -2,7 +2,7 @@
 //! faults a literal can carry. It knows nothing of typing or
 //! lowering — those read their shape from here, and the shape IS
 //! `Pat.Format`'s, so the reader and the node are one vocabulary.
-use core.{TypeRef, Hole, FormatPart, nothing_bound, joined}
+use core.{TypeRef, Hole, FormatPart, named_ref, nothing_bound, joined}
 
 /// A format read from a literal: the literal head, then a hole and
 /// the literal following it, repeated. A literal with NO holes is
@@ -35,11 +35,6 @@ export fn read_format(text: string) -> Format {
         }
     }
     closed(r, "")
-}
-
-/// The names a format binds, in order — what a pattern's binds are.
-export fn bound_names(f: Format) -> List<string> {
-    names_of(f.parts)
 }
 
 /// Whether a literal spells a format at all. A literal with no holes
@@ -149,10 +144,12 @@ fn hole_of(body: string, at: int) -> Result<Hole, Fault> {
     .Ok(Hole { name: name, ty: written_type(ty) })
 }
 
-/// The written type a hole names, when it named one.
+/// The written type a hole names, when it named one. Built through
+/// core's constructor, never by hand: a reconstruction that spells
+/// every field drops the next one silently.
 fn written_type(ty: string?) -> TypeRef? {
     if ty == null { return null }
-    TypeRef { name: ty!, args: [], optional: false, dynamic: false, arrow: false, span: null }
+    named_ref(ty!)
 }
 
 /// Whether the text is identifier-shaped — a name, not a phrase.

@@ -10,33 +10,47 @@
 //! whose `from` traps. The spans land in cells the steps write, and
 //! the values are cut from them afterwards.
 //!
-//! The walk is written once and EMITTED twice — `pat_accepts` wants
-//! the verdict, `pat_binds` the values — because the seam hands a
-//! pattern's test and its binds to two calls with no register
-//! between them. ROADMAP records the slot that would collapse it.
-use core.{Reg, Ins, Type, TypeId, BinOp, FormatPart, nothing_bound}
+//! The walk is EMITTED ONCE. `pat_accepts` runs it and leaves the
+//! octets and the span cells in the pattern's test slot; `pat_binds`
+//! reads them back and cuts the values inside the arm's region, so
+//! an untaken arm mints no managed value at all.
+use core.{Reg, Ins, PatId, Type, TypeId, BinOp, FormatPart, nothing_bound}
 use features.{LowerCx, const_int, const_bool, open_region, arm_end, close_region_as, seeded_cell}
 
-/// Whether the subject matches: the walk, read for its verdict.
-export fn format_accepts(mut cx: LowerCx, head: string, parts: List<FormatPart>, v: Reg, vty: TypeId) -> Reg {
-    walked(cx, head, parts, v, vty).ok
+/// Whether the subject matches. The walk's octets and span cells are
+/// left in the pattern's slot for the binds — written once here,
+/// read once there.
+export fn format_accepts(mut cx: LowerCx, p: PatId, head: string, parts: List<FormatPart>, v: Reg, vty: TypeId) -> Reg {
+    let w = walked(cx, head, parts, v, vty)
+    cx.bind_test(p, [w.subject].concat(w.spans))
+    w.ok
 }
 
 /// The values the holes bind, in order, skipping the holes that bind
-/// nothing — the same order `pattern_binds` answers.
-export fn format_binds(mut cx: LowerCx, head: string, parts: List<FormatPart>, v: Reg, vty: TypeId) -> List<Reg> {
-    let w = walked(cx, head, parts, v, vty)
+/// nothing — the same order `pattern_binds` answers. The spans were
+/// found by the test; only the cutting happens here, which is what
+/// keeps an untaken arm free of allocation.
+export fn format_binds(mut cx: LowerCx, p: PatId, parts: List<FormatPart>, v: Reg, vty: TypeId) -> List<Reg> {
+    let regs = cx.test_regs_of(p)
+    if regs.length != 1 + 2 * parts.length { return untested(cx) }
     mut out: List<Reg> = []
     // LICENSED I3: the cuts must be EMITTED in hole order, each minting its own answer
     for i, part in parts {
-        if part.hole.name != nothing_bound() { out.push(cut(cx, w, i, v, vty)) }
+        if part.hole.name != nothing_bound() { out.push(cut(cx, regs[0], regs[1 + 2 * i], regs[2 + 2 * i], v, vty)) }
     }
     out
 }
 
-/// A walk's result: the verdict, the octets it read, and one cell
-/// per hole holding where its span begins and ends.
-type Walked = { ok: Reg, subject: Reg, los: List<Reg>, his: List<Reg> }
+/// The test runs before the binds and leaves the spans behind, so an
+/// empty slot means the seam called them out of order.
+fn untested(mut cx: LowerCx) -> List<Reg> {
+    cx.defect("a format's binds were asked before its test found the spans")
+    []
+}
+
+/// A walk's result: the verdict, the octets it read, and the span
+/// cells — a lo and a hi per hole, in hole order.
+type Walked = { ok: Reg, subject: Reg, spans: List<Reg> }
 
 fn walked(mut cx: LowerCx, head: string, parts: List<FormatPart>, v: Reg, vty: TypeId) -> Walked {
     let subject = octets(cx, v, vty)
@@ -45,14 +59,13 @@ fn walked(mut cx: LowerCx, head: string, parts: List<FormatPart>, v: Reg, vty: T
     let last = parts.last()!.piece
     let stop = seeded_cell(cx, int_ty, minus(cx, len, const_int(cx, byte_length(last))))
     let cur = seeded_cell(cx, int_ty, const_int(cx, byte_length(head)))
-    mut los: List<Reg> = []
-    mut his: List<Reg> = []
-    // LICENSED I3: a cell per hole, minted in hole order before any step writes one
-    for i in 0..parts.length {
-        los.push(seeded_cell(cx, int_ty, const_int(cx, 0)))
-        his.push(seeded_cell(cx, int_ty, const_int(cx, 0)))
+    mut spans: List<Reg> = []
+    // LICENSED I3: a lo and a hi per hole, minted in hole order before any step writes one
+    for part in parts {
+        spans.push(seeded_cell(cx, int_ty, const_int(cx, 0)))
+        spans.push(seeded_cell(cx, int_ty, const_int(cx, 0)))
     }
-    let w = Walked { ok: anchored(cx, subject, len, head, last), subject: subject, los: los, his: his }
+    let w = Walked { ok: anchored(cx, subject, len, head, last), subject: subject, spans: spans }
     w with { ok: spanned(cx, w, parts, cur, stop, 0) }
 }
 
@@ -90,11 +103,11 @@ fn spanned(mut cx: LowerCx, w: Walked, parts: List<FormatPart>, cur: Reg, stop: 
 /// cursor then moves past that literal. Absent, and the arm fails.
 fn next_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, piece: string) -> Reg {
     let from = loaded_from(cx, cur)
-    cx.emit(Ins.Store(w.los[i], from))
+    cx.emit(Ins.Store(w.spans[2 * i], from))
     let needle = literal(cx, piece)
     let found = cx.mint_shape(Type.Int)
     cx.emit(Ins.CallRt(found, "avra_bytes_index_of", [w.subject, needle, from]))
-    cx.emit(Ins.Store(w.his[i], found))
+    cx.emit(Ins.Store(w.spans[2 * i + 1], found))
     let width = const_int(cx, byte_length(piece))
     cx.emit(Ins.Store(cur, plus(cx, found, width)))
     let zero = const_int(cx, 0)
@@ -108,8 +121,8 @@ fn next_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, piece: string) -> Reg
 fn last_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, stop: Reg) -> Reg {
     let from = loaded_from(cx, cur)
     let upto = loaded_from(cx, stop)
-    cx.emit(Ins.Store(w.los[i], from))
-    cx.emit(Ins.Store(w.his[i], upto))
+    cx.emit(Ins.Store(w.spans[2 * i], from))
+    cx.emit(Ins.Store(w.spans[2 * i + 1], upto))
     let room = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(room, BinOp.Le, from, upto))
     room
@@ -119,12 +132,12 @@ fn last_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, stop: Reg) -> Reg {
 /// and as text when it is text. A text span is cut from the ORIGINAL
 /// string, whose byte positions the octets share, so nothing is
 /// re-validated and no copy is made twice.
-fn cut(mut cx: LowerCx, w: Walked, i: int, v: Reg, vty: TypeId) -> Reg {
-    let lo = loaded_from(cx, w.los[i])
-    let hi = loaded_from(cx, w.his[i])
+fn cut(mut cx: LowerCx, subject: Reg, lo_cell: Reg, hi_cell: Reg, v: Reg, vty: TypeId) -> Reg {
+    let lo = loaded_from(cx, lo_cell)
+    let hi = loaded_from(cx, hi_cell)
     if cx.view.types.shape_of(vty) is .Bytes {
         let out = cx.mint_shape(Type.Bytes)
-        cx.emit(Ins.CallRt(out, "avra_bytes_slice", [w.subject, lo, hi]))
+        cx.emit(Ins.CallRt(out, "avra_bytes_slice", [subject, lo, hi]))
         return out
     }
     let out = cx.mint_shape(Type.Str)
