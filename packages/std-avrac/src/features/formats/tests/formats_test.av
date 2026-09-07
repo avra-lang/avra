@@ -1,8 +1,9 @@
 // The format reader: what a literal with holes says it is. The empty
 // case first, then the escape, the two laws over the holes, and the
 // faults a malformed literal earns.
-use @std.avrac.features.formats.{read_format, names_of, has_holes, Fault}
-use @std.avrac.core.{nothing_bound, FormatPart}
+use @std.avrac.features.formats.{read_format, has_holes, Fault}
+use @std.avrac.core.{nothing_bound, bound_names, FormatPart}
+use @std.avrac.language.{analyze_source}
 
 /// A format re-spelled from what the reader made of it: its head,
 /// then each hole as `<name:type>` and the literal that follows it.
@@ -65,7 +66,7 @@ spec "features/formats" {
             shape("{ a : int }") == "<a:int>"
         }
         then "a hole that binds nothing still consumes its span" {
-            shape("{_}x") == "<_:->x" && names_of(read_format("{_}x").parts).is_empty()
+            shape("{_}x") == "<_:->x" && bound_names(read_format("{_}x").parts).is_empty()
         }
         then "the word for binding nothing is the language's own" {
             read_format("{_}").parts[0].hole.name == nothing_bound()
@@ -74,7 +75,7 @@ spec "features/formats" {
             shape("{_: int}") == "<_:int>"
         }
         then "the names a format binds are its hole names, without the anonymous" {
-            names_of(read_format("{a}x{_}y{b}").parts).join(",") == "a,b"
+            bound_names(read_format("{a}x{_}y{b}").parts).join(",") == "a,b"
         }
         then "a name may hold digits after its first character" {
             shape("{a1}") == "<a1:->"
@@ -147,6 +148,21 @@ spec "features/formats" {
         }
         then "a brace inside a body is body text, and no name" {
             shape("{a{b}}") == "malformed@0:a{b"
+        }
+    }
+
+    given "the refusals, rendered whole" {
+        then "a wrong subject names the type it found" {
+            analyze_source("match 5 { \"{a}b\" -> 1\n    _ -> 0 }").report().starts_with("error[F2058]: a format pattern reads text, found `int`\n  ╭─[<source>:1:11]\n1 │ match 5 { \"{a}b\" -> 1\n  ·           ┬\n  ·           ╰── this is a `int`\n──╯\nhelp: a format matches a `string` or a `Bytes`")
+        }
+        then "two holes with nothing between them name both" {
+            analyze_source("match \"x\" { \"{a}{b}\" -> 1\n    _ -> 0 }").report().starts_with("error[F2061]: `{a}` and `{b}` have nothing between them\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{a}{b}\" -> 1\n  ·             ┬\n  ·             ╰── here\n──╯\nhelp: a scan needs a literal to stop at — put one between the holes")
+        }
+        then "a repeated name says which name" {
+            analyze_source("match \"x\" { \"{a}z{a}\" -> 1\n    _ -> 0 }").report().starts_with("error[F2059]: `a` names two spans of this format\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{a}z{a}\" -> 1\n  ·             ┬\n  ·             ╰── written twice\n──╯\nhelp: rename one, or write `{_}` for a span you do not need")
+        }
+        then "a typed hole names the type nothing reads yet" {
+            analyze_source("match \"x\" { \"{n: int}z\" -> 1\n    _ -> 0 }").report().starts_with("error[F2060]: `{n: int}` parses its span, and nothing reads text as `int` yet\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{n: int}z\" -> 1\n  ·             ┬\n  ·             ╰── here\n──╯\nhelp: take the span as text and convert it in the arm — a typed hole arrives with the decimal row")
         }
     }
 }
