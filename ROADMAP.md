@@ -4474,6 +4474,29 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         a package that means octets takes `Bytes`. COST: one scan per
         checked seat per call, on calls that are syscalls, spawns or
         lookups. `avra_fd_*` take `Bytes` and carry their length.
+        DECIDED BY THE OWNER 2026-09-07 ("yes do the same thing as
+        other mature languages. make it beautiful and safe and
+        performant."), AND SHARPENED BY LANE A BEFORE A LINE WAS
+        WRITTEN — the first brief had two readings: (A) the check
+        governs only seats the callee resolves, and the LANGUAGE stays
+        as lossy as today (`"ab\0cd" == "ab"` true); (B) the column
+        governs every row, and `==` TRAPS. Neither is what mature
+        languages do: Rust, Go, Python and Java answer FALSE, because
+        their string operations read the whole length. THE THIRD
+        READING, taken: (1) the five lossy primitives (`==`,
+        `contains`, `index_of`, `split`, `replace`) become CORRECT —
+        length-aware `memcmp`/`memmem` in the runtime, lane A's C, the
+        worst case (a megabyte string) measured; (2) the seam TRAP
+        governs only seats the callee RESOLVES outside the program —
+        paths, names, command words, environment keys — where a NUL
+        is two names and no correct answer exists; (3) `inert: true`
+        means "reads the header's length; a NUL is data", the state
+        every string row is in after (1), so CHECKED-by-default bites
+        only the resolving rows; (4) the guard reads the header's
+        length only for a pointer that is ours — a foreign pointer has
+        no interior NUL by definition, so the check is skipped there
+        rather than passed vacuously through a `strlen` fallback. The
+        substrate lane writes (2)–(4) under lane A's review.
   - [ ] A GRAMMAR'S DOOR AS A VALUE. `routed<Idea>(…, Idea.parse, …)`
         is F2003 "`Idea` is a record, not an enum": the type-name
         admission rule fires for a CALL, never for a bare `Name.parse`
