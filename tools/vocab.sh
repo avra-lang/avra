@@ -38,6 +38,10 @@ RtKind	packages/std-avrac/src/language/llvm.av	rt_arg	how an argument crosses th
 RtKind	packages/std-avrac/src/language/llvm.av	answers_word	how an answer crosses back
 RtKind	packages/std-avrac/src/language/llvm.av	answered	the SIGN a narrow answer widens with
 RtKind	packages/std-avrac/src/language/llvm.av	narrow_sign	the SIGN an inout cell normalises with
+RtKind	packages/std-avrac/src/language/interp.av	stage_seat	how an argument crosses, interpreted
+RtKind	packages/std-avrac/src/language/interp.av	answered	how an answer crosses back, interpreted
+RtKind	packages/std-avrac/src/language/interp.av	rides_fp	which register file a seat rides
+RtKind	packages/std-avrac/src/language/interp.av	carries_cell	whether a seat holds an inout's address
 Type	packages/std-avrac/src/features/checks.av	comparable	which shapes equality may compare
 Type	packages/std-avrac/src/features/str_lit/check.av	printable	which shapes an interpolation hole may show"
 
