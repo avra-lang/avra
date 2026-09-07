@@ -1123,6 +1123,71 @@ measurement and wall is noise with a plausible face. The gate's
 corpus target took its `libs` dependency before anything opens a
 library. Gate green at 593 MB peak with the libraries built inside it.
 
+## S2c step 3 landed (1bb5684, 7a56bc2, 6ade15d; merged, seed 934f395): the evaluator reached package C
+
+`corpus/net` and `corpus/http-serve` read `eval == native == expected`
+— the first package C the evaluator has ever reached. The closure's
+libraries open `RTLD_LOCAL`, written explicitly; the absent library
+refuses by name; the workspace hands the closure's derived stems
+through `Lowered.libraries` and no manifest path is ever opened.
+
+THE ORDERED PAIR DIED, and the reason is worth more than the test: the
+corpus runs many programs in ONE process — exactly what the leak
+needs — but builds ONE WORKSPACE over the directory, so every program
+shares one dependency closure, and "a program that does not depend on
+sqlite, running after one that does" cannot be written there. A
+harness for two closures would have been a compiler change made to
+serve a test. So `tools/libscope.sh` tests the MECHANISM directly: one
+program that depends on @std/sqlite asks the frame's image-only lookup
+for a symbol its own closure opened, and under `RTLD_LOCAL` that
+answers 0 — no order to get wrong, no directory walk, no rename that
+reverses it. WITNESSED FAILING as lane A required: `RTLD_GLOBAL` turns
+the second row red, `RTLD_LOCAL` green again. `make libscope`.
+
+THE HOST TAKES ONE HANDLE, NOT A LIST, and this slice's own law
+decided it: `avra_ffi_symbol_in(handle, name)` asks about one library
+because an aggregate cannot cross an extern seat under F2056, so a
+`List<int>` of handles could not be a seat at all; the loop lives in
+the evaluator, where per-program identity belongs. Lane A reached that
+from the LIFETIME side, the seat law from the TYPE side, and they met.
+
+AND SQLITE STILL DOES NOT CROSS, FOR A DIFFERENT REASON — the honest
+result: `corpus/sqlite` and `corpus/sqlite-refusals` refuse with
+"`sqlite3_open_v2` has a `mut` seat — the frame does not carry an
+inout yet". That is §5.6.8's recorded refusal, whose trigger read "the
+first in-image extern with a `mut` seat, or S2c putting a package's
+own C in reach" — S2c FIRED IT, so the inout frame is the next slice
+rather than a surprise, which is what a recorded trigger is for.
+
+THE KEEPER ACCOUNTS FOR EVERY OPEN SYMBOL (6ade15d), and the answer to
+"what bounds a symbol that is neither ours nor libc" is sharper than
+"nothing yet": under `RTLD_LOCAL` a symbol another PACKAGE's library
+defines cannot resolve AT ALL, so a cross-package C reference is a
+DEFECT the keeper names exactly. Three bands per library — OURS (an
+`avra_*` the host exports), MISSING (an `avra_*` it does not: the typo
+band, refused), FOREIGN (the platform's; one another library defines
+is named as a cross-package reference and refused) — both new bands
+witnessed on planted symbols, and "libstd-net leaves 26 symbol(s) open
+— 1 ours (avra_trap), 25 the platform's" printed so a new one arrives
+visibly. The runtime-binding reason is corrected in the note and in
+libs.py's docstring to lane A's: `g_once` decisive, `g_acc_live`
+second, the free lists a footprint argument; and the hazard is not
+live while the libraries are pure C. Two derivations of the library
+stem (the compiler's and libs.py's) are tolerable where `keeps` and
+`inert` were not, because a disagreement here is LOUD — nothing opens,
+the refusal names the package — and that reason is written down.
+
+THE TRACKER. On the owner's word the tree's work is now tracked in a
+LOCAL SQLite db (`TASKS_DB=/Users/tristan/projects/tristanMatthias/
+avra/.tasks/avra.db`, root `avra-8sb5`, the `tasks` CLI in direct
+mode); this lead is tasks master for every stream. Two lanes declined
+to switch their reporting channel on this lead's relay of the owner's
+word — the right fence — so the owner's own line in each session is
+what moves them; meanwhile their lists are mirrored into the db from
+their messages. 124 open or deferred nodes, including the ROADMAP's
+sweep: 61 open asks and unfired triggers filed, landed ones left in
+the ROADMAP as its record.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
