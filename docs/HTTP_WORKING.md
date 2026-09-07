@@ -219,8 +219,24 @@ programs, zero findings; three tests that asserted `print` was doorless
 now test the admission rule with a name no grammar declares; three review
 collapses and one voice (`doorless`). `corpus/grammar_print.av` on both
 engines. THE ARC IS COMPLETE: S1 the paper, S2 the patterns, S3 the
-octet parity, S4 the value that parses, S5 print and the law. NEXT, S6:
-the framer adopts the patterns where they win, measured.
+octet parity, S4 the value that parses, S5 print and the law. S6 ANSWERED
+NO, with an attack table (b6f63d6, `tools/bench/frame_patterns`): the
+framer keeps its hand scans. Nine request lines from the framing laws
+against `grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"`:
+the pattern TAKES seven the framer REFUSES — two spaces, `HTTP/1.1extra`,
+`HTTP/11.1`, `HTTP/a.1`, a leading space, an HTAB inside the method, a
+trailing space — every one a smuggling shape RFC 9112 names. THE LAW: a
+format pattern is a SPLITTER; the framer's scan is a splitter AND a
+validator (a method is a `token`, the target excludes CTL and SP, a field
+name must touch its colon, a value is `field-vchar`), and applying the
+classes after the split costs more than the one pass that does both. The
+header line is worse in both directions at once: `": "` refuses the valid
+`Host:example.com` and accepts the invalid `Host : example.com`. 146 ns
+for the pattern against 1201 for a whole head is not comparable and would
+not matter — a faster scan that accepts a smuggled request is not a win
+at any speed. WHERE THE PATTERNS WIN is the ROUTE, already framed, its
+captures values a handler wants — which is where the typed-routes paper
+put them before any of this existed. S7 is the router.
 
 ## Three receipts from keeping the branch (2026-09-07, to 28f1a4a)
 
