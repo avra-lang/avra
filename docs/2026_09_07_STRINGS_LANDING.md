@@ -1484,6 +1484,15 @@ hole MATCHES, where the type answers what it parses to.
 | 9 delimiters | 88 ns | 181 ns |
 | 99 delimiters | 94 ns | 1 008 ns |
 
+**THE BASE THESE WERE TAKEN AT**, because a number outlives the tree
+that produced it: `lane/strings` at `936ef6a`, before lane A's `once`
+cache became an index. THEY ARE IMMUNE TO THAT CHANGE, and the
+mechanism is checkable rather than hoped for — the emitted scan holds
+NO `once` read at all. Every literal is a `ConstStr` handed to
+`avra_bytes_of_str`, and the needle is hoisted out of the loop, so the
+whole hot path is direct runtime calls. Predicted before the index
+landed and confirmed after it: 1 008 ns to 994 (§17).
+
 Lazy is FLAT — one `index_of`. Greedy is LINEAR IN THE OCCURRENCES,
 about 10 ns each, because the search is a forward scan that keeps its
 last hit. That is the honest shape of a keep-the-last loop and it is
@@ -1558,6 +1567,48 @@ a list the form it wanted was missing from. The voice names all three
 spellings now. A refusal whose remedy list goes stale the moment a form
 lands is the quietest kind of wrong, because the code around it is
 correct and the reader is simply misdirected.
+
+---
+
+## 17. The `once` index, measured as a pair
+
+Lane A made the runtime's `once` cache an INDEX rather than a scan —
+19 probes a read down to 1. This lane's numbers were taken before it,
+so they were re-taken after, and kept as a PAIR rather than replaced:
+the arc is lane A's work showing up in a lane that never asked for it,
+and a replacement would have hidden that.
+
+**THE PROBE COUNTS WERE PREDICTED FIRST, from what each path emits,
+and the deltas were measured second.** That order is the point — a
+re-take alone would have shown numbers moving and said nothing about
+why.
+
+| path | `once` reads | before | after | delta |
+| --- | --- | --- | --- | --- |
+| `path()`, 2 fields | 1 | 47 ns | 40 ns | −7 |
+| `path()`, 62 fields | 1 | 47 ns | 40 ns | −7 |
+| `decoded`, no escape | 1 | 25 ns | 17 ns | −8 |
+| `query()`, 0 pairs | 1 | 78 ns | 73 ns | −5 |
+| `query()`, 1 pair | 3 | 210 ns | 191 ns | −19 |
+| `query()`, 4 pairs | 9 | 655 ns | 598 ns | −57 |
+| `one()` over 4 pairs | 0 | 125 ns | 122 ns | −3 |
+| greedy scan, 99 delimiters | 0 | 1 008 ns | 994 ns | −14 |
+| last hole, marked | 0 | 63 ns | 62 ns | −1 |
+
+**THE DELTA TRACKS THE COUNT**: about 6 to 7 ns recovered per probe,
+across five independent measurements with counts of 1, 1, 1, 3 and 9.
+The ZERO-probe paths moved by noise and no more — which is the half
+that makes the other half a finding rather than a coincidence.
+
+**AND ONE PATH CARRIES A PROBE THIS HARNESS CANNOT SEE.** `dispatch`
+holds exactly one, through `path()`, and measures 343–383 ns against a
+before of 346–379: unchanged, because the router harness has a ±40 ns
+noise floor and the shift is 7. The isolated `path()` measurement
+resolves it and the composite one cannot. That is the same lesson S8
+learned when the split's target-boundedness had to be timed alone —
+A COMPOSITE MEASUREMENT HIDES ANY EFFECT SMALLER THAN ITS NOISE, and
+knowing which of your numbers is composite is what stops you reporting
+"no change" about a change you can name.
 
 ---
 
