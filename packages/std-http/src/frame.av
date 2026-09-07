@@ -156,10 +156,12 @@ fn unfinished(buf: Bytes, start: int, limits: Limits) -> Framed {
 /// a bare one is refused before anything is parsed (RFC 9112 §2.2).
 /// The last byte of a torn buffer is left for the next read.
 fn crlf_only(buf: Bytes, lo: int, hi: int) -> bool {
+    let carriage = cr()
+    let feed = lf()
     mut at = lo
     while at < hi {
-        let cr = bounded(buf.index_of(cr(), at), hi)
-        let lf = bounded(buf.index_of(lf(), at), hi)
+        let cr = bounded(buf.index_of(carriage, at), hi)
+        let lf = bounded(buf.index_of(feed, at), hi)
         if cr < 0 && lf < 0 { return true }
         if cr >= 0 && (cr + 1 >= buf.length || buf.at(cr + 1) != byte("\n")) { return false }
         if lf >= 0 && (lf == 0 || buf.at(lf - 1) != byte("\r")) { return false }
@@ -224,19 +226,21 @@ fn target_form_fits(buf: Bytes, method: Method, lo: int, hi: int) -> bool {
 once fn star() -> Bytes { "*".bytes() }
 once fn scheme_end() -> Bytes { "://".bytes() }
 
-/// The method by its bytes — length first, as the compare does.
+/// The method by its bytes — one compare per verb, length first as
+/// the compare does, and nothing built per head.
 fn method_of(buf: Bytes, lo: int, hi: int) -> Method {
-    match [i for i in 0..verbs().length].find((i) -> buf.eq_at(lo, hi, verbs()[i])) ?? -1 {
-        0 -> .Get,
-        1 -> .Head,
-        2 -> .Post,
-        3 -> .Put,
-        4 -> .Delete,
-        5 -> .Patch,
-        6 -> .Options,
-        7 -> .Connect,
-        8 -> .Trace,
-        _ -> .Other,
+    let v = verbs()
+    when {
+        buf.eq_at(lo, hi, v[0]) -> .Get
+        buf.eq_at(lo, hi, v[1]) -> .Head
+        buf.eq_at(lo, hi, v[2]) -> .Post
+        buf.eq_at(lo, hi, v[3]) -> .Put
+        buf.eq_at(lo, hi, v[4]) -> .Delete
+        buf.eq_at(lo, hi, v[5]) -> .Patch
+        buf.eq_at(lo, hi, v[6]) -> .Options
+        buf.eq_at(lo, hi, v[7]) -> .Connect
+        buf.eq_at(lo, hi, v[8]) -> .Trace
+        _ -> .Other
     }
 }
 
