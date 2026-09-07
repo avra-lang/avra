@@ -134,6 +134,31 @@ extern fn avra_host_env(name: string) -> string
 let s = "PATH" + avra_str_from_codepoint(0)
 avra_host_env(s).length'
 
+# A PACKAGE'S BARE `const char*` SEAT, which is where the rule was
+# WRITTEN DOWN before it was enforced. @std/sqlite's adversarial suite
+# pinned the truncation for years — text comparing equal to its own
+# prefix, a longer name reading as the shorter one it hides — and
+# recorded its own trigger: "a `Bytes` value, or a caller who meets
+# it." The trigger fired, and the cases that ASSERTED the lie cannot
+# live in a suite any more, because they end the process. They are
+# here, which is what this harness is for.
+#
+# The seat is `sqlite3_stricmp(const char*, const char*)`: two bare
+# pointers, no length, so C measures both with `strlen`. The face
+# refuses these bytes with a named cause of its own — a library
+# refuses before the language traps — and this is the floor beneath
+# that face.
+trapped nul_at_a_package_wall "avra: a string holding a NUL crossed to C as two strings — byte 2" 2 '
+[dependencies]
+"@std/sqlite" = { path = "../../../packages/std-sqlite" }
+"@std/errors" = { path = "../../../packages/std-errors" }
+"@std/text"   = { path = "../../../packages/std-text" }
+' 'use @std.sqlite.{equal_nocase}
+use @std.text.{from_codepoint}
+let holed = "ab" + from_codepoint(0) + "cd"
+if equal_nocase(holed, "ab") { 1 } else { 0 }
+'
+
 # AND THE EXEMPTION IS NOT A HOLE: an INERT row reads the bytes it was
 # handed and resolves nothing, so a NUL rides through it untouched —
 # the trap here is the BOUNDS one, reached only because the string

@@ -67,6 +67,15 @@ void avra_ffi_set_f64(int64_t k, int64_t bits) {
 
 /* A text seat: the box the caller holds, passed as the pointer C
    reads. Avra hands it over borrowed and C must not keep it. */
+/* OCTETS AT A SEAT, and NO crossing check on them. A `Bytes` seat says
+   the callee was given a length beside the pointer — a prototype that
+   carries its own length, which is what the exception is actually
+   about — so a NUL inside is DATA and there is nothing ambiguous to
+   refuse. `sqlite3_bind_text(stmt, i, text, n, …)` is the shape. */
+void avra_ffi_set_bytes(int64_t k, const char* b) {
+    if (k >= 0 && k < AVRA_FFI_MAX_I) g_ffi_i[k] = (int64_t)(uintptr_t)b;
+}
+
 extern const char* avra_str_crossing(const char* s);
 
 void avra_ffi_set_text(int64_t k, const char* s) {

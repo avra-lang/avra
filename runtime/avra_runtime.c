@@ -613,8 +613,13 @@ void avra_trap(const char* msg) {
 
 // ── Printing ────────────────────────────────────────────────────
 
+/* A LINE IS AS LONG AS ITS HEADER SAYS. `fputs` stops at the first
+   NUL, so a line holding one was printed truncated with nothing said —
+   and the seam's trap does not govern this seat, because writing bytes
+   RESOLVES nothing and a correct answer exists: write all of them.
+   Making it correct is what lets its row be marked `inert` honestly. */
 static void put_line(const char* s) {
-    if (s) fputs(s, stdout);
+    if (s) fwrite(s, 1, str_len(s), stdout);
     fputc('\n', stdout);
 }
 
@@ -1022,8 +1027,18 @@ static void trap_nul(size_t at) {
 }
 
 const char* avra_str_crossing(const char* s) {
-    if (__builtin_expect(s != NULL, 1)) {
-        const char* at = (const char*)memchr(s, 0, str_len(s));
+    /* THE GUARD READS THE SAME BYTES THE CALLEE WILL, so it asks the
+       HEADER directly and never `str_len`. That helper falls back to
+       `strlen` for a pointer that is not ours, and a scan bounded by
+       `strlen` can never find an interior NUL — it would pass every
+       foreign string VACUOUSLY while looking exactly like a check.
+       A foreign pointer has no interior NUL by definition: whatever C
+       handed us ends where C says it ends. So the check is SKIPPED
+       there, deliberately and visibly, rather than performed on a
+       length that makes it meaningless. */
+    Header* h = hdr((void*)s);
+    if (__builtin_expect(h != NULL, 1)) {
+        const char* at = (const char*)memchr(s, 0, (size_t)h->len);
         if (__builtin_expect(at != NULL, 0)) trap_nul((size_t)(at - s));
     }
     return s;
@@ -2040,7 +2055,7 @@ int64_t avra_selfhost_write_file(const char* path, const char* content) {
 // the owner's to export — the day it lands this leaves too.
 
 void avra_eputs(const char* s) {
-    if (s) fputs(s, stderr);
+    if (s) fwrite(s, 1, str_len(s), stderr);
     fputc('\n', stderr);
 }
 

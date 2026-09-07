@@ -60,7 +60,7 @@ export fn prepare(db: Db, sql: string) -> Result<Stmt, SqlError> {
 fn compiled(db: Db, sql: string) -> Result<Stmt, SqlError> {
     mut handle: ptr? = null
     mut tail: ptr? = null
-    let rc = sqlite3_prepare_v3(db.raw, sql, sql.length, 0, handle, tail)
+    let rc = sqlite3_prepare_v3(db.raw, sql.bytes(), sql.length, 0, handle, tail)
     if rc != 0 { fail failed(rc, sql) }
     // rc = SQLITE_OK WITH A NULL STATEMENT is SQLite's "nothing to run"
     // — the text was a comment, or blank (T37). The splitter does NOT
@@ -205,14 +205,14 @@ export fn bind_null(s: Stmt, index: int) -> Result<int, SqlError> {
 /// caller wrote, silently.
 export fn bind_text(s: Stmt, index: int, value: string) -> Result<int, SqlError> {
     let i = in_slots(s, index)?
-    judged(sqlite3_bind_text(s.raw, i, value, value.length, transient()))
+    judged(sqlite3_bind_text(s.raw, i, value.bytes(), value.length, transient()))
 }
 
 /// Bytes bound into the Nth hole, COPIED. A zero-length blob is a real
 /// value and stays distinct from NULL.
 export fn bind_blob(s: Stmt, index: int, value: string) -> Result<int, SqlError> {
     let i = in_slots(s, index)?
-    judged(sqlite3_bind_blob(s.raw, i, value, value.length, transient()))
+    judged(sqlite3_bind_blob(s.raw, i, value.bytes(), value.length, transient()))
 }
 
 /// Text bound WITHOUT a copy — the named hatch (P8).
@@ -223,7 +223,15 @@ export fn bind_blob(s: Stmt, index: int, value: string) -> Result<int, SqlError>
 /// site with no relationship to this call, where the runtime's
 /// refcounter is blind because a foreign pointer carries no header. The
 /// verb is long and says so on purpose. `bind_text` is what you want.
-export fn bind_text_unsafely_borrowed(s: Stmt, index: int, value: string) -> Result<int, SqlError> {
+///
+/// IT TAKES `Bytes`, AND THE BORROW IS WHY. The wall's seat carries a
+/// length, so the value crossing is octets — and a face taking
+/// `string` would have to MINT those octets here, handing SQLite a box
+/// with no holder but this call. That is the very use-after-free the
+/// verb's name warns about, created BY the verb rather than by its
+/// caller. Taking `Bytes` puts the box in the caller's hands, where
+/// the promise it is making can actually be kept.
+export fn bind_text_unsafely_borrowed(s: Stmt, index: int, value: Bytes) -> Result<int, SqlError> {
     let i = in_slots(s, index)?
     judged(sqlite3_bind_text(s.raw, i, value, value.length, static_bytes()))
 }
