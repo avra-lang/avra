@@ -160,6 +160,7 @@ static Site* site_of(void* site) { return site_in(g_sites, &g_site_slots, site);
 #define CENSUS(x) x
 
 static int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets, g_list_pushes;
+static int64_t g_once_reads, g_once_steps;
 
 // The per-caller tables (AVRA_CENSUS_SITES=1). A list write is the
 // compiler's commonest single act, so writes are charged to the
@@ -234,6 +235,8 @@ static void acc_report(void) {
             (long long)g_rc_retains, (long long)g_rc_releases, (long long)g_rc_frees);
     fprintf(stderr, "rc: %lld list reads, %lld list writes\n",
             (long long)g_list_gets, (long long)g_list_pushes);
+    fprintf(stderr, "once: %lld reads, %lld pointer compares\n",
+            (long long)g_once_reads, (long long)g_once_steps);
 #endif
 
     fprintf(stderr, "mem: peak %lld MB in all\n", (long long)(g_acc_total_peak >> 20));
@@ -914,6 +917,8 @@ static int once_at(const char* key) {
 // for its callee — so the cache takes its OWN reference to each
 // thing it keeps, and gives one away with every answer.
 void* avra_once_get(void* key) {
+    CENSUS(g_once_reads++);
+    CENSUS(g_once_steps += g_once_count);
     int at = once_at((const char*)key);
     void* held = at < 0 ? NULL : g_once[at].value;
     avra_rc_retain(held);
@@ -2413,7 +2418,9 @@ int64_t avra_proc_run(const char* file, void* argv, void* envp, const char* cwd,
     if (h < 0) return h;
     Proc* p = proc_at(h);
     if (p->in_fd >= 0) {
-        size_t n = stdin_text ? strlen(stdin_text) : 0;
+        // the HEADER's length, never strlen: stdin is a byte stream and a
+        // NUL is data — `avra_proc_write` has always read it this way
+        size_t n = stdin_text ? str_len(stdin_text) : 0;
         if (n > 0) { p->in_text = (char*)malloc(n); memcpy(p->in_text, stdin_text, n); p->in_len = n; }
         p->in_close = 1;
     }

@@ -70,7 +70,16 @@ done <<EOF
 $CONSUMERS
 EOF
 
+# THE COUNT IS OF THE LIST, NOT OF THE TREE. "Type has 2 exhaustive
+# consumers" was a sentence about Type; what this script knows is a
+# sentence about ITSELF. A lane counting the cost of a new `Type`
+# variant found 44 exhaustive matches across 19 files and read the
+# line as a census — the label-wider-than-its-coverage species, in the
+# output of the keeper that exists to catch it.
+line=""
 for e in Ins RtKind Type; do
-  printf 'vocab: %s has %s exhaustive consumers\n' "$e" "$(echo "$CONSUMERS" | grep -c "^$e	")"
+  line="$line $e $(echo "$CONSUMERS" | grep -c "^$e	")"
 done
-echo "vocab: a new variant of any of them breaks every consumer named"
+echo "vocab: consumers GUARDED —$line"
+echo "vocab: the lists are CURATED, not a census: a consumer they do not name is"
+echo "vocab: unguarded, and naming it is how this law reaches it."

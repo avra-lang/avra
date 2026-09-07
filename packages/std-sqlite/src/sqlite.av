@@ -9,13 +9,19 @@
 //! THE MODULES, and what each one owns:
 //!
 //! ```
-//! c/          the WALL — 84 `sqlite3_*` entry points, by their own
+//! c/          the WALL — the `sqlite3_*` entry points, by their own
 //!             names, in five files by family
-//! error.av    the failure VALUE: the 28-arm `Cause` registry, the map
+//! error.av    the failure VALUE: the 34-arm `Cause` registry, the map
 //!             from a result code to it, and the two projections a
 //!             caller branches on
-//! open.av     opening's PURE half — the config, the flag word it
-//!             becomes, and the judgement of the path
+//! open.av     the CONNECTION — `Db`, `open`, `open_read`, `memory`,
+//!             `open_with`, `close` — and opening's PURE half: the
+//!             config, the flag word it becomes, the judgement of the
+//!             path
+//! stmt.av     the STATEMENT — `prepare`, `step`, `reset`, `finalize`,
+//!             `run`, every bind, and the column reads
+//! tx.av       the TRANSACTION — `begin`, `begin_read`, `commit`,
+//!             `rollback`, `finish`, `in_transaction`
 //! script.av   a script divided into statements, by asking the PARSER
 //!             where each one ends rather than scanning for `;`
 //! boundary.av what the guards must see: the NUL-safe primitives, the
@@ -23,10 +29,11 @@
 //! sqlite.av   this file — the library-wide face
 //! ```
 //!
-//! Everything above needs NO CONNECTION, which is why it exists while
-//! the FFI does not. A connection, a statement and a row wait on an
-//! out-parameter, a mintable `ptr`, `float` and `Bytes` — and the
-//! driver refuses to fake any of them.
+//! CONNECTIONS AND STATEMENTS ARE HERE — `open`/`close`, `prepare`/
+//! `step`/`finalize`, the binds and the transaction verbs all land.
+//! WHAT A ROW CAN ANSWER is still an integer and a storage class: `text`
+//! and `blob` wait on a `Bytes` value the language does not have
+//! (`Bytes` names no type), and the driver refuses to fake one.
 //!
 //! THE FAILURE TYPES ARE REACHED THROUGH THEIR MODULE, not through this
 //! file: `use @std.sqlite.error.{SqlError, Cause}`. The design spells
@@ -54,9 +61,8 @@ export fn source_id() -> string { sqlite3_sourceid() }
 /// `SQLITE_` prefix — `compiled_with("ENABLE_FTS5")`.
 export fn compiled_with(option: string) -> bool { sqlite3_compileoption_used(option) != 0 }
 
-/// Every option this build reports, in the library's own order.
-/// What `avra explain sqlite` shows: the flags the binary holds, not
-/// the flags a build file claims.
+/// Every option this build reports, in the library's own order. The
+/// flags the BINARY holds, not the flags a build file claims.
 export fn compile_options() -> List<string> {
     [option_at(i) for i in 0..option_count()]
 }
@@ -108,7 +114,9 @@ export fn is_keyword(word: string) -> bool { sqlite3_keyword_check(word, word.le
 ///
 /// NUL-TRUNCATING, KNOWINGLY. This and its two neighbours are C string
 /// calls with no length, so a NUL cuts both arguments short —
-/// `like("a", "a\0b")` answers about one byte. Unlike `is_complete`
+/// `like("a", "a${from_codepoint(0)}b")` answers about one byte, and
+/// `@std/text`'s `from_codepoint` is what mints that NUL, since no
+/// literal can. Unlike `is_complete`
 /// they have no guarded twin to disagree with, so there is no doctrine
 /// split to close, and refusing would change three `bool` verbs into
 /// `Result`s for a case that needs a minted NUL to reach. The

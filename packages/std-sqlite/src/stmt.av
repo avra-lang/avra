@@ -20,7 +20,7 @@ use open.{Db, closed_fault}
 use script.{statements}
 use c.{sqlite3_bind_double, sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset,
        sqlite3_column_count, sqlite3_data_count, sqlite3_column_type,
-       sqlite3_column_int64, sqlite3_errstr, sqlite3_bind_int64,
+       sqlite3_column_int64, sqlite3_column_double, sqlite3_errstr, sqlite3_bind_int64,
        sqlite3_bind_null, sqlite3_bind_text, sqlite3_bind_blob,
        sqlite3_bind_parameter_count, sqlite3_changes64}
 
@@ -189,7 +189,9 @@ export fn bind_real(s: Stmt, index: int, value: float) -> Result<int, SqlError> 
 
 /// SQL NULL bound into the Nth hole. NULL is a VALUE here — it is not
 /// the absence of a bind, and a hole never bound is also NULL, which is
-/// why `clear_bindings` and this verb are different things.
+/// why clearing the binds and this verb are different things. The face
+/// has no clearing verb: the wall's `sqlite3_clear_bindings` is the one
+/// there is, and it takes a non-null `ptr`.
 export fn bind_null(s: Stmt, index: int) -> Result<int, SqlError> {
     let i = in_slots(s, index)?
     judged(sqlite3_bind_null(s.raw, i))
@@ -267,6 +269,42 @@ export fn int_at(s: Stmt, col: int) -> Result<int, SqlError> {
     let class = class_at(s, col)?
     if !(class is .Int) { fail wrong_class(col, Storage.Int, class) }
     sqlite3_column_int64(s.raw, col)
+}
+
+/// A cell as a float, refused when it holds another class — the INTEGER
+/// class included, and that refusal is the whole design.
+///
+/// AN INTEGER CELL READ AS A DOUBLE LOSES PRECISION ABOVE 2^53, and
+/// nothing in the answer says so. Measured against the vendored library,
+/// through SQLite's own cast so the loss is the library's rather than
+/// this driver's arithmetic:
+///
+/// ```
+/// stored                    9007199254740993   (2^53 + 1, INTEGER)
+/// cast to real, back to int 9007199254740992
+/// the round trip compares   0                  <- false
+/// what it lost              -1
+/// ```
+///
+/// So accepting an INTEGER here would be an implicit widen at the
+/// boundary, decided by the driver, on a value that came from outside
+/// and may be any 64-bit integer. That is the widen the language itself
+/// refuses — `1.5 + 2` does not compile — and a driver must not reopen
+/// at its door what the language closed inside it. A caller who means
+/// the widen writes it: read `int_at` and convert, or ask SQL for
+/// `cast(v as real)`, which moves the decision into the query where it
+/// is visible.
+///
+/// AFFINITY MAKES THIS RARER THAN IT SOUNDS, measured across the four
+/// affinities: a column DECLARED `real` answers REAL for every value,
+/// `3` and `3.0` alike, because REAL affinity converts on the way in.
+/// The INTEGER class reaches a `real_at` from a column with NO declared
+/// type, where `3` and `3.0` are stored as they were written, and from
+/// `sum` over integers — while `avg` and `total` are always REAL.
+export fn real_at(s: Stmt, col: int) -> Result<float, SqlError> {
+    let class = class_at(s, col)?
+    if !(class is .Real) { fail wrong_class(col, Storage.Real, class) }
+    sqlite3_column_double(s.raw, col)
 }
 
 

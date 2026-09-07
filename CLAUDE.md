@@ -532,6 +532,18 @@ engine's spec, written by dogfooding.
   branch swallowed every let line — 352 tests). And a NAME-headed
   branch (assignment) must stay non-committing — recovery there
   swallows every expression line.
+  AND THE ANCHOR IS SHARED ACROSS RULES, not just within one, which
+  this wording did not reach. `grammar` anchors a STATEMENT and an
+  EXPRESSION both — `grammar_lit` contributes `primary = "grammar"
+  "{" s:STRING`. A recovering statement branch on that keyword
+  commits every `grammar {` line as a hole and eats it, and five fns
+  in the compiler's own source "answered void", because `stmt` is
+  tried before the expression floor ever sees the line. So the law is
+  not "the last branch in this RULE" but THE LAST BRANCH ON THAT
+  KEYWORD ANYWHERE: a statement anchored on a keyword that already
+  anchors an expression must NOT recover. (The instance is
+  lane/strings', ATTRIBUTED and not yet in this tree; the shared
+  anchor is verified here.)
 - Grammar authoring: a rule's GRAM TEXT and its BUILDERS are one
   unit — a builder named in feature A's grammar registers in
   feature A, never in a feature that might be absent (a partial

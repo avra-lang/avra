@@ -4,7 +4,7 @@
 // name too long, and `env("PATH=")` answered PATH's value because the
 // C library reads a name up to its `=`.
 use @std.text.{from_codepoint}
-use @std.io.{IoError, kind_of, exists, is_dir, read_text, write_text, list_dir, make_dirs, remove, env, env_or}
+use @std.io.{IoError, Entry, kind_of, exists, is_file, is_dir, read_text, write_text, read_bytes, write_bytes, list_dir, make_dirs, remove, env, env_or}
 
 /// The scratch directory for the adversarial set, made.
 fn pit() -> string {
@@ -25,6 +25,13 @@ fn cleared(name: string) -> string {
 fn said(r: Result<string, IoError>) -> string {
     match r {
         .Ok(t) -> "ok:${t}",
+        .Err(e) -> e.describe().message,
+    }
+}
+
+fn stands(r: Result<Entry, IoError>) -> string {
+    match r {
+        .Ok(e) -> match e { .Missing -> "missing", .File -> "file", .Dir -> "dir", .Other -> "other" }
         .Err(e) -> e.describe().message,
     }
 }
@@ -141,14 +148,28 @@ spec "std/io — adversarial" {
             let _ = write_text(p, "")
             said(read_text(p)) == "ok:"
         }
-        // NO CASE HERE FOR BYTES THAT ARE NOT UTF-8, and the absence
-        // is the finding: `write_text` takes a `string`, and every
-        // Avra string is already valid UTF-8, so this package cannot
-        // BUILD the file its own `NotText` refusal exists for. That
-        // refusal is for a file written by something else, and it is
-        // proved outside the suite — a shell writing `ab\xffcd` reads
-        // back as `io.not_text`. A case pretending to cover it from
-        // in here would assert the wrong thing in the right words.
+        then "bytes that are not UTF-8 are refused as text, and the refusal names the OFFSET" {
+            let p = cleared("raw.bin")
+            let _ = write_bytes(p, [97, 98, 255, 99, 100].bytes()!)
+            match read_text(p) {
+                .Ok(_) -> false,
+                .Err(e) -> match e {
+                    .NotText(at, off) -> at == p && off == 2,
+                    rest -> false,
+                },
+            }
+        }
+        then "and it says so in words a reader can act on" {
+            let p = cleared("raw2.bin")
+            let _ = write_bytes(p, [255].bytes()!)
+            said(read_text(p)) == "`${p}` is not UTF-8 — byte 0"
+        }
+        then "the same bytes read back WHOLE through the lossless door" {
+            let p = cleared("raw3.bin")
+            let raw = [97, 98, 255, 99, 100].bytes()!
+            let _ = write_bytes(p, raw)
+            (read_bytes(p) catch "".bytes()).length == 5 && (read_bytes(p) catch "".bytes()).at(2) == 255
+        }
         then "a write that cannot open its temp leaves NOTHING beside the target" {
             let d = cleared("nowhere")
             let _ = make_dirs(d)
@@ -162,6 +183,36 @@ spec "std/io — adversarial" {
             let _ = write_text(p, "a much longer first version")
             let _ = write_text(p, "short")
             said(read_text(p)) == "ok:short"
+        }
+    }
+    given "a path holding a NUL — two paths at once, refused at the face" {
+        // MEASURED BEFORE THE DOOR EXISTED: a 79-byte path ending
+        // `/../../etc/passwd` read a 5-byte file and `exists` answered
+        // true, on BOTH engines. Agreement, not correctness.
+        then "every verb that takes a path refuses one, in the law's own words" {
+            let p = "${pit()}/a${from_codepoint(0)}/../../etc/passwd"
+            let law = "a path holding a NUL is two paths — the host reads to byte ${pit().length + 2} and no further"
+            said(read_text(p)) == law && said(write_text(p, "x")) == law &&
+                said(make_dirs(p)) == law && said(remove(p)) == law &&
+                names(list_dir(p)) == law && stands(kind_of(p)) == law
+        }
+        then "the asking verbs answer false rather than the truth about a shorter path" {
+            let p = "${pit()}/a${from_codepoint(0)}bcd"
+            !exists(p) && !is_dir(p)
+        }
+        then "the refusal carries the NUL's own offset" {
+            match read_text("ab${from_codepoint(0)}cd") {
+                .Ok(_) -> false,
+                .Err(e) -> match e {
+                    .Holed(_, at) -> at == 2,
+                    rest -> false,
+                },
+            }
+        }
+        then "a path with no NUL is untouched by the door" {
+            let p = cleared("plain.txt")
+            let _ = write_text(p, "fine")
+            said(read_text(p)) == "ok:fine"
         }
     }
     given "the environment's names" {

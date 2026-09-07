@@ -2455,6 +2455,33 @@ the order is the dependency.
         being true the day C callbacks land.
         Proved in `corpus/native/externs.av`, a file that already
         existed for the host seam: `null some some`.
+  - [ ] A NUL AT THE C BOUNDARY DOES NOT LOSE DATA, IT REDIRECTS
+        THE OPERATION — and that is a bigger claim than CLAUDE.md's
+        NUL law makes. Found 2026-09-07 by the HTTP campaign's
+        substrate lane, following this lane's marshalling redirect on
+        the io slice. A 79-byte path ending `/../../etc/passwd` with
+        a NUL at byte 5 READ A 5-BYTE FILE and answered ok; `exists`
+        answered true for nothing; `write_text` created a file under
+        a truncated name. Both engines AGREED — which is the class
+        eval == native cannot catch, three times over now.
+        THE EXISTING LAW IS ABOUT LOSS: five string primitives stop
+        at the first NUL, so a five-byte text reads equal to its
+        two-byte prefix. This is about TARGET: the same truncation,
+        applied to a NAME the C side resolves, does not answer a
+        wrong value — it acts on a DIFFERENT OBJECT. That is a
+        security property rather than a correctness one.
+        THE FIX IS A REFUSAL AT THE BOUNDARY, not a sanitisation:
+        six verbs that hand C a path now judge over the BYTES and
+        refuse, with the NUL's offset in the words.
+        AND IT GENERALISES PAST IO, which is the part this lane
+        should carry: with the extern host, ANY package may declare
+        `extern fn f(path: string)`, and every one inherits this.
+        io fixed its six verbs; the next package will not know. So
+        the question is a LANGUAGE one — what does a string crossing
+        to C mean when it holds a NUL — and the answers are a refusal
+        at the seam for every `string` seat of an extern, a `Bytes`
+        seat that carries the length, or a documented hazard. It is
+        not io's to decide and it is not settled by io's fix.
   - [ ] REVIEWS THIS LANE OWES, recorded because they live in
         messages and messages do not survive a compaction. Each is a
         diff another lane writes in this lane's files, with this
@@ -3139,6 +3166,34 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  A KEEPER THAT INTERROGATES THE ARTIFACT CAUGHT A BUILD REFACTOR THAT
+  NOTHING ELSE DID (HTTP lane, `1be60fd`, reported to this campaign).
+  Splitting the compiler's object list from the packages' — so `make
+  avra` no longer compiles the amalgamation, 9.2 s off every cold build —
+  **silently took `CFLAGS_sqlite3` with the moved block**, and
+  `build/sqlite3.o` rebuilt WITHOUT its author's flags. **Nothing in the
+  build noticed**: the object compiled, linked and ran, and every
+  behavioural test passed, because the flags it lost were the ones that
+  disable features rather than the ones that produce code.
+  WHAT CAUGHT IT WAS `@std/sqlite`'s `compiled_with(option)` — a test
+  that asks the LIBRARY which options it was built with, through
+  `sqlite3_compileoption_get`, rather than reading the Makefile that was
+  supposed to set them. **THE ARTIFACT IS THE ONLY HONEST WITNESS TO ITS
+  OWN BUILD**: a build file states an INTENTION, and the gap between the
+  intention and the object is exactly where a refactor lands. Same
+  instinct as a stems keeper reading `nm` of the binary rather than the
+  link line, and the same shape as ASSERT THE ABSENCE — the flags removed
+  by decision (`USE_URI`) already had a test that fails if they return,
+  and this is its twin: the flags ADDED by decision have a test that
+  fails if they leave.
+  AND IT IS A RECEIPT FOR A TEST WRITTEN MONTHS BEFORE ITS FAILURE MODE
+  EXISTED. Nobody wrote `compiled_with` anticipating a Makefile
+  reorganisation by another lane; it was written because a vendored
+  library's build flags are a CONTRACT and a contract wants a witness.
+  The general form: A TEST THAT READS THE ARTIFACT RATHER THAN THE
+  RECIPE PAYS OFF AT A DISTANCE, in changes its author never imagined,
+  and that is what makes it worth the awkwardness of asking a library
+  about itself.
   THE COUNTING RULE, WORKED — four `is`-chains over `Type`, and they do
   not all go the same way. The law says count the ANSWERING ARMS and no
   grep separates a registry from a projection; these are the first hard
@@ -3913,6 +3968,54 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         alternative before asking: a `Fmt<R>` value type would have
         been a new core `Type` variant, 44 exhaustive matches in 19
         files across three lanes (`make vocab` names two of them).
+  - [ ] A `string` CROSSING TO C THAT HOLDS A NUL — THE OWNER'S DOOR,
+        raised by lane C (main 9c49b6e) off the io lane's finding: a
+        79-byte path with a NUL at byte 5 READ A DIFFERENT FILE on both
+        engines, and lane B's twin in @std/process RAN A DIFFERENT
+        PROGRAM. Not loss — the C side RESOLVES the name, so the
+        truncation acts on an object the program never named; and
+        eval == native is blind to it by construction, the third such
+        finding in a day. Every package may declare `extern fn f(path:
+        string)` through the extern host and inherits it; io fixed six
+        verbs, process its three plus every word — the next package will
+        not know how many verbs it has. THE HTTP LEAD'S RECOMMENDATION,
+        by the two-hats law (a value the callee reinterprets wears two
+        hats; the fix makes the reinterpretation impossible, never an
+        escape): (1) THE SEAM TRAPS — every `string` seat of a package
+        extern checks the header's length against the first NUL at the
+        crossing, in ONE check both engines share (the trampoline's
+        marshalling and the native lowering's), and a NUL there is a
+        wreck ("a string holding a NUL crossed to C as two strings",
+        exit 2), so the invariant is the seam's and no package can
+        forget a verb; (2) A FACE THAT TAKES FOREIGN TEXT REFUSES WITH
+        WORDS BEFORE THE SEAM (`one_path`, `Holed(path, at)`), the
+        braces to the seam's belt, because a trap is not an answer a
+        program can handle; (3) `Bytes` IS THE ESCAPE HATCH — a seat
+        that carries its length, for a caller who means octets; and a
+        documented hazard with a lint is REFUSED, since a lint documents
+        what it cannot close. AMENDED BY LANE C'S PROBE, run on main:
+        `avra_host_env("PATH" + NUL + "NOT_A_REAL_VARIABLE")` answers
+        PATH's value — a RUNTIME ROW truncated at byte 4 and resolved a
+        name the program never wrote — and `avra_proc_spawn`/`run`/
+        `which` are rows whose first seat is a PROGRAM PATH, so "rows
+        are trusted" would let a NUL-bearing path SPAWN A DIFFERENT
+        PROGRAM with the seam declining to look. THE AXIS IS NOT ROW
+        VERSUS EXTERN: it is whether the CALLEE RESOLVES THE STRING
+        AGAINST SOMETHING OUTSIDE THE PROGRAM. `avra_str_join` holds a
+        NUL harmlessly (our body, bytes we own — the LOSS hazard already
+        documented); `avra_proc_run` resolves a path against a
+        filesystem and is a door that happens to be a row. So clause
+        (1) attaches to the SEAT, not the family: a registry column
+        beside `lends`, and THE DEFAULT IS THE SAFE ONE — every `string`
+        seat is CHECKED unless its row writes `inert: true` at the site
+        (its C body operates on bytes the program owns and resolves
+        nothing), the exemption law's shape: an exemption not written
+        where the code is would be an unbounded amnesty, and the hot
+        string rows the framer scans with are exactly the ones that
+        write it. A package extern's `string` seats are always checked;
+        a package that means octets takes `Bytes`. COST: one scan per
+        checked seat per call, on calls that are syscalls, spawns or
+        lookups. `avra_fd_*` take `Bytes` and carry their length.
   - [ ] AN UNBOXED (ptr, len) VIEW, escape-analysed: the zero-copy
         capture the typed-routes paper wants. WANTING SITE: the framer's
         header values. Slot-layout territory (lane A). Until then, the

@@ -5,9 +5,9 @@
 //!
 //! WHAT IS HERE IS EVERYTHING THAT NEEDS NO CONNECTION: the cause
 //! registry, the mapping from a result code to it, and the two
-//! projections a caller branches on. `failure_of(db, sql)` — the fn
-//! that reads the connection at the failure site — waits on the extern
-//! wall's `mut` seat, because a connection cannot yet be opened.
+//! projections a caller branches on. The error that READS a connection
+//! is built where the failure happened — `stmt.av`'s `failed(rc, sql)`
+//! — because `sqlite3_errmsg`'s buffer is gone by the next call.
 //!
 //! THE PRIMARY CODE IS THE LOW EIGHT BITS of the extended one. An enum
 //! matched on the extended value without the mask never matches its own
@@ -190,7 +190,8 @@ export enum Cause {
 export type SqlError = {
     /// What to DO — the arm a caller branches on.
     cause: Cause,
-    /// The primary result code, exact: `extended & 0xFF`.
+    /// The primary result code, exact: `extended & 255` — the low
+    /// eight bits.
     code: int,
     /// The extended result code, exact.
     extended: int,
