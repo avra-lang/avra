@@ -599,8 +599,44 @@ one-line alias). AND A LATENT TRAP IN THE CORPUS RUNNER: it captured a
 package build's stderr into the binary-path file and EXECUTED the
 file, so the first warning-carrying package corpus program ran
 `warning[F2050]:` as a shell command and reported native != expected;
-the path is stdout alone now, under build/ (e77fae3, lane A's review).
-NEXT: the response framer and the client.
+the path is stdout alone now, under build/ (e77fae3, lane A's review) —
+and lane A swept the class: fourteen more shared /tmp paths in the same
+Makefile, the sharpest under `make witness` (one lane's C run by
+another under a rule claiming "the same object"), the quietest the
+profiler's default file (a wrong measurement read as yours, which no
+check can go red on); the lock alone stays in /tmp, machine-wide being
+its job.
+
+## Slice 5 — the REPLY FRAMER and the CLIENT (d59d292 … 224c89b)
+
+`framed_reply` in frame.av: `HTTP/1.x SP 3DIGIT SP reason`, the field
+walk a request and a reply now SHARE (`field_lines`, split out of the
+request's `fields`), then a reply's delimiting by its status and the
+request's method before any field — none for a HEAD's answer, a 1xx,
+a 204 or a 304; chunks; a length; else the close, which cannot persist.
+Twenty cases (reply_test). `client.av`: `Client` has the server's shape
+— `sent` writes a request whole, `polled` is one wait and one read
+answering the reply when it is whole, `fetched` polls until the reply
+or the deadline; `Answer` (status, fields as text, body), `ClientError`
+(the network, a refused reply naming the status it would earn, the
+peer closing before a reply, the deadline); `request` writes a request
+on the wire. Five exchanges against the server on one thread; twelve
+attacks against a scripted peer speaking raw bytes — torn heads and
+bodies, chunks across reads, a reply whole only at the close, a
+refusal, a head past its bound, a cut-short body, a close before any
+reply, a silent peer, two replies on one connection — with ONE TCP
+FACT pinned as its own verdict: a peer that closes with the request
+UNREAD resets the connection, and the client reports the network's
+error, not a clean close. Two review findings of mine: a header
+compare indexed by characters where bytes were meant, and a
+content-length rule keyed on string-matched method names (the length
+is written when there is a body; a body-less request needs no field).
+`@std/http` is 157 cases; the gate is green at 224c89b.
+THE LIBRARY IS WHOLE — framer, router, server loop, client — and what
+remains is the performance the mandate names: the framer's refcount
+traffic (a third of a head, measured before the sub-lanes), and a
+load measurement of the loop against the paper's nginx and h2o
+figures.
 
 ## Slice 3 — `@std.http` (AFTER)
 
