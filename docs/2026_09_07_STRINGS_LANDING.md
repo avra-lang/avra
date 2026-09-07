@@ -1181,6 +1181,117 @@ re-run rather than believed.
 
 ---
 
+## 14. S7 — the router, and what the table had to beat
+
+A route is a grammar over the framed target. `packages/std-http/src/route.av`
+holds it: `routed<R>` erases the record at the table boundary,
+`compiled` turns a declared list into a table, `dispatch` answers.
+
+### 14.1 The table is an INDEX, never a policy
+
+The trie keys each node on the FNV hash of one literal segment, sorted
+ascending beside a parallel list of kids, so a step is a binary search
+over unboxed ints. Two properties make it a drop-in for the scan it
+replaced, and both are constructional rather than tested-into:
+
+- **Nothing narrows wrongly.** A route is dropped only where a LITERAL
+  segment differs from the target's — which no reader could have
+  matched. Everything that widens the candidate set (a hole, a hash
+  collision) costs a parse the reader then refuses.
+- **Declaration order survives.** Every node's rows are filtered from
+  its parent's candidate list, which arrives in declaration order, and
+  a LITERAL kid carries the hole routes too. So the first route that
+  answers is the first route declared, exactly as the scan chose.
+
+Measured against a linear scan in one program, so both numbers share a
+machine and a minute (`tools/bench/routes`, 50 000 runs each, hitting
+the LAST route so the scan pays its worst case):
+
+| table | scan | compiled |
+| --- | --- | --- |
+| flat, 3 routes | 460 ns | 324 ns |
+| flat, 30 routes | 1 851 ns | 317 ns |
+| flat, 300 routes | 23 427 ns | 346 ns |
+| deep, 300 routes (shared `/api/v1` prefix) | 23 361 ns | 437 ns |
+| wild, 300 routes (a HOLE first) | 36 492 ns | 423 ns |
+
+Compiling 300 routes costs 1.4 ms, once. **THREE SHAPES, NOT ONE,
+because a table of distinct first segments is the case a one-level
+index would already win** — `deep` moves the deciding step to the third
+segment and `wild` opens with a hole so every route stays live past
+step one. The table is flat across all three; the scan is not.
+
+The descent allocates nothing: a segment's hash is folded as the walk
+crosses it and spent at its end, one pass over the octets. An earlier
+draft built a `List<int>` of segment ends first and measured 20 % worse
+(425 ns against 352 at flat 300). One definition survives the fusion —
+`separates(b, i)` is asked by the descent AND by the comprehension that
+cuts a pattern into segments, so the two cannot disagree.
+
+**AND ONE MEASUREMENT SAID THE OPPOSITE OF THE GUESS.** Passing a
+whole `Node` by value into the binary search was expected to cost three
+list retains per step; reading only the two lists it needs through the
+table measured SLOWER (337 ns against 317). The readable form is the
+fast one, and it is in the tree because it was measured, not because it
+was argued.
+
+### 14.2 What the red team found
+
+Three defects, all fixed in the slice, all now pinned by
+`route_adversarial_test.av`:
+
+1. **A HOLE-FREE ROUTE WAS UNSPELLABLE.** A grammar refuses to bind
+   nothing (F0102), so `/health`, `/metrics` and `/` — the routes every
+   server has — had no way to be declared. `fixed(method, path, serve)`
+   is the door: its reader is an octet compare and its handler takes no
+   record because there is nothing to read.
+2. **THE LAW MISSED THE COMMONEST ROUTING MISTAKE.** `conflicts` asked
+   whether two routes had the same SHAPE, so it named `/ideas/{id}`
+   against `/ideas/{slug}` and said nothing about `/ideas/new` sitting
+   under `/ideas/{id}` — a specific route that reads as an exception to
+   a general one and is dead. The law is SUBSUMPTION now: an earlier
+   route that matches every target a later one does. The old case is
+   the symmetric instance of the new one, so it is one law and not two.
+3. **AND THEN THE NEW LAW CRIED WOLF.** A static path may legally hold
+   braces, and `covers` read `/a/{}` as a hole that shadowed `/a/z`.
+   The fix is a field: `Route.literal` says which kind of string the
+   pattern is. The table reads it too, so a static path's braces now
+   key exactly instead of falling to the wildcard.
+
+**THE SUBSUMPTION LAW DOES NOT REST ON A DEADLINE.** A typed hole
+(`{id: int}`) can refuse a segment, so it covers nothing but its own
+spelling — and `open_hole` asks about the type rather than assuming
+holes are untyped. Typed holes refuse today (F0102, "nothing reads text
+as `int` yet"); the law stays sound on the day they land, which is the
+difference between writing the condition into the rule and writing it
+into a comment.
+
+The differential is the headline result: **87 case-pairs (3 methods ×
+29 targets) over 9 routes covering a hole first, a hole beside a
+literal, an empty segment, a static path under a hole, and a static
+path holding braces — ZERO disagreements between the table and a
+linear scan, identical on both engines.** Degenerate shapes (an empty
+table, `/`, `//`, `/////`, a 301-segment pattern) all answer. 60 000
+dispatches over a `once fn` table peak at 0 MB with `AVRA_RC_GUARD`
+silent.
+
+### 14.3 Two things the red team recorded rather than fixed
+
+**A GRAMMAR CANNOT STATE ITS OWN PATTERN TEXT**, so `routed` takes the
+pattern twice — once as the string the table keys on, once as the
+grammar the reader is. A disagreement between them is a SILENTLY DEAD
+route: at the pattern's target the reader refuses, at the grammar's the
+table never offers it. Never a wrong answer, and never a word either.
+The ask is in §12.
+
+**`covers` UNDER-REPORTS A MIXED SEGMENT.** `/v{major}/x` does cover
+`/v2/x` and is not named. Under-reporting is the safe direction for a
+lint — a warning nobody must act on trains the reader to skip the
+column errors arrive in — so the rule stays conservative until a real
+table wants it.
+
+---
+
 ## 12. The asks still open, with their wanting sites
 
 1. **`avra_str_index_of_from(s, needle, from)`** — lane A. `string`'s
@@ -1196,15 +1307,21 @@ re-run rather than believed.
    conversion (§1.5). Not blocking, and not scheduled: `{n: int}`
    refuses today and the handler converts, with the typing a later
    slice against a live consumer.
-3. **`named_ref(name) -> TypeRef` exported from core** — whoever writes
+3. **A grammar that states its own pattern text** — `G.pattern`, or a
+   `routed` that takes the grammar itself rather than a string beside
+   it. Today the router keys its table on a string the author repeats,
+   and a disagreement with the grammar is a route that is silently
+   dead in both directions (§14.3). WANTING SITE:
+   `packages/std-http/src/route.av`'s `routed`. Not blocking.
+4. **`named_ref(name) -> TypeRef` exported from core** — whoever writes
    the `Pat.Format` variant, so its builder is not the sixth
    hand-spelling of a seven-field record whose own doc warns against
    exactly that (§3.3). Small, and it wants doing *before* the variant,
    not after.
-4. **A capture-type registry row** (`CaptureRow`) — this lane, in S2,
+5. **A capture-type registry row** (`CaptureRow`) — this lane, in S2,
    with `int` as its only row. The second row is what proves the seam,
    and it is not in this arc (§1.5).
-5. **A per-pattern slot on the lowering context** — DELIVERED by lane
+6. **A per-pattern slot on the lowering context** — DELIVERED by lane
    C as `LowerCx.bind_test(p, regs)` / `test_regs_of(p)`, keyed by the
    pattern so a nested one finds its own registers. The scan is emitted
    once. Original ask: `cx.pinned_at(p, regs)` / `cx.pinned_of(p)`: the registers a
@@ -1212,7 +1329,7 @@ re-run rather than believed.
    formats' `pat_accepts`/`pat_binds` pair, which would otherwise run
    the scan twice per arm (§4.1). General, not format-shaped — a list
    pattern needs the same thing.
-6. **A `Bytes` constant in the IR**, so a scan's literals are converted
+7. **A `Bytes` constant in the IR**, so a scan's literals are converted
    once rather than per attempt. WANTING SITE: `literal()` in
    `features/formats/lower.av`. FIRING CONDITION, now measured rather
    than guessed: the 24% gap between the compiled octet scan and a
