@@ -126,8 +126,11 @@ the scans a tenth, the framer's own code three percent. Not hoisted
 around: the code reads as it should. NEXT: `server.av` (the event loop, a
 handler `fn(mut A, Request) -> Response`, app state threaded as a
 value), the response framer, `client.av`. The strings lane's typed
-patterns will replace the hand-written scans; until then the framer is
-the oracle they are measured against.
+patterns are LANDED on this branch (e49a637): `"{method} {path}
+HTTP/{major}.{minor}"` binds from one scan, 120 ns against 90 ns by
+hand, an untaken arm mints nothing; typed holes wait on the decimal
+row; the framer's own scans stay until the `Bytes`-subject parity is
+measured (the strings lane's S3), then they become patterns.
 
 ## Slice 3 — `@std.http` (AFTER)
 

@@ -3724,6 +3724,42 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
     (two specs, ~100 cases), three rows in `tools/traps.sh`, and four
     corpus programs.
 
+*** TYPED STRING PATTERNS — LANDED (the strings lane, 2026-09-07) ***
+  `match line { "{method} {path} HTTP/{major}.{minor}" -> … }` binds
+  four holes from ONE anchored scan: the first piece is a prefix, the
+  last a suffix, every piece between found at its first occurrence
+  after the cursor — no backtracking, linear by construction, and the
+  law was CORRECTED BY RUNNING IT (the first draft found an empty last
+  piece at the cursor). The format is read out of the PEG ladder (a
+  string-literal token whose holes a small reader parses at build
+  time); enums' STRING pattern alternative moved to formats because the
+  grammar coherence check refuses two branches with one first token
+  (grammar/first.av:117) — the gram decides ownership of PARSE,
+  `semantics_of` of MEANING, and a hole-free literal still means
+  `Pat.Lit`. The seam it needed, `pat_semantics_of` (lane C, owed the
+  moment a SECOND feature owns a `Pat` variant), and the per-pattern
+  slot `bind_test`/`test_regs_of` (lane C) let the test find the spans
+  and the binds cut them, so AN UNTAKEN FORMAT ARM MINTS NOTHING.
+  MEASURED (tools/bench/frame_scan): a request line by hand 90 ns, by
+  format 120 ns — 1.33x, stable to a nanosecond, the whole gap
+  allocations (ten against seven). Red-teamed: 30 programs, seven
+  classes, zero findings; `formats_adversarial_test.av`.
+  THE MEANING CHANGE, measured before it was made: 37 arm-head string
+  patterns across packages/ and corpus/ at 9fe5597, ZERO containing a
+  brace; a pattern with braces used to compile as a literal that could
+  never match and fell through silently.
+  TRIGGERS, recorded with their firing conditions:
+  - [ ] TYPED HOLES: `{n: int}` refuses today (F2060, naming the
+        pending row). FIRES when lane A's shared decimal-parse row
+        lands — the framer's `decimal`, the hole and a user's `"42"`
+        are one law.
+  - [ ] HOISTED LITERAL OCTETS: the scan converts each literal piece
+        to octets per attempt (a `Bytes` constant is a vocabulary event
+        the IR does not carry). FIRES when the 30 ns gap above becomes
+        material in a measurement.
+  - [ ] MOVE 4, a grammar on a live stream: FIRES when the server's
+        read loop shows the head re-scanned per read in a census.
+
 *** THE LANGUAGE ASKS, each with its wanting site ***
   - [ ] AXIS 18 — GREEN THREADS. `spawn`, `Task<T, E>`, fibers parked on
         kqueue/epoll, blocking-looking I/O rows that yield. WANTING SITE:
