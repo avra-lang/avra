@@ -380,12 +380,13 @@ impl Emitter {
 /// A body's per-node registers: each expression's, each binding's
 /// slot (a cell when boxed), each pattern bind's, each pairing
 /// loop's index.
-export type BodyRegs = { regs: List<Reg?>, slots: List<Reg?>, boxed: List<bool>, pattern_regs: List<List<Reg>>, index_regs: List<Reg?> }
+export type BodyRegs = { regs: List<Reg?>, slots: List<Reg?>, boxed: List<bool>, pattern_regs: List<List<Reg>>, index_regs: List<Reg?>, test_regs: List<List<Reg>> }
 
-export fn new_body_regs(exprs: int, stmts: int) -> BodyRegs {
+export fn new_body_regs(exprs: int, stmts: int, pats: int) -> BodyRegs {
     BodyRegs {
         regs: filled<Reg?>(exprs, null), slots: filled<Reg?>(stmts, null), boxed: filled(stmts, false),
         pattern_regs: empty_lists_reg(exprs), index_regs: filled<Reg?>(stmts, null),
+        test_regs: empty_lists_reg(pats),
     }
 }
 
@@ -420,6 +421,18 @@ impl BodyRegs {
     fn index_reg(s: StmtId) -> Reg? {
         let held: Reg? = self.index_regs[s.index]
         held
+    }
+    /// WHAT A PATTERN'S TEST PRODUCED FOR ITS BINDS. Enums' protocol
+    /// is TEST then BIND — the test emits OUTSIDE an arm's region so
+    /// an untaken arm reads nothing, the binds inside — and a
+    /// pattern whose test IS its bind would otherwise run its scan
+    /// twice. Keyed by the PATTERN, so a nested one finds its own
+    /// and no caller threads it through the recursion.
+    fn test_regs_of(p: PatId) -> List<Reg> {
+        self.test_regs[p.index]
+    }
+    fn bind_test(p: PatId, regs: List<Reg>) {
+        self.test_regs.set(p.index, regs)
     }
     fn bind_index(s: StmtId, r: Reg) {
         self.index_regs.set(s.index, r)
