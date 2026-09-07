@@ -80,6 +80,79 @@ let xs = [a]
 xs[5]
 '
 
+# HAZARD 4: A PROCESS THAT DIES INSIDE A TRANSACTION. `avra_trap` exits
+# 2 with no unwinding — no `defer`, no ROLLBACK — so what survives a
+# half-written transaction is SQLITE's guarantee and not a driver's, and
+# the only way to witness it is to kill a process holding one.
+#
+# ONE ROW, TWO PROCESSES: the program SPAWNS ITSELF with a word, and the
+# child is the half that dies. Both halves are one artifact, the row is
+# self-contained and order-independent like every other row here, and it
+# TRAPS BY CONSTRUCTION — the recovered row count rides the trap's own
+# words, so a recovery that yields 3 fails with the number printed.
+trapped tx_hot_journal "avra: index 5 is out of bounds (length 1)
+avra: the writer exited 2, and of the 3 rows it wrote the database kept 1" 2 '
+[dependencies]
+"@std/sqlite" = { path = "../../../packages/std-sqlite" }
+' 'use @std.sqlite.open.{Db, open, close}
+use @std.sqlite.stmt.{Stmt, run, prepare, step, finalize, int_at}
+use @std.sqlite.tx.{begin}
+use @std.sqlite.error.{SqlError}
+
+extern fn avra_trap(message: string)
+extern fn avra_selfhost_argc() -> int
+extern fn avra_selfhost_get_arg_cstr(i: int) -> string
+extern fn avra_spawn_status(prog: string, args: List<string>) -> int
+
+fn db_path() -> string { "build/traps/tx_hot_journal.db" }
+
+/// The half that dies: one row committed, a transaction opened, two more
+/// written, and the process gone with the transaction standing.
+fn wrote() -> Result<int, SqlError> {
+    mut db = open(db_path())?
+    let _ = run(db, "drop table if exists t")?
+    let _ = run(db, "create table t (n int)")?
+    let _ = run(db, "insert into t values (1)")?
+    let _ = begin(db)?
+    let _ = run(db, "insert into t values (2)")?
+    let _ = run(db, "insert into t values (3)")?
+    let xs = [0]
+    xs[5]
+}
+
+/// The half that reads what the other half left behind.
+fn counted() -> Result<int, SqlError> {
+    mut db = open(db_path())?
+    mut s = prepare(db, "select count(*) from t")?
+    let n = read_one(s)?
+    let _ = finalize(s)
+    let _ = close(db)
+    n
+}
+
+fn read_one(mut s: Stmt) -> Result<int, SqlError> {
+    let _ = step(s)?
+    int_at(s, 0)?
+}
+
+fn said(r: Result<int, SqlError>) -> string {
+    match r {
+        .Ok(n) -> "${n}",
+        .Err(e) -> "FAILED ${e.cause.kind()}",
+    }
+}
+
+fn story() -> string {
+    if avra_selfhost_argc() > 1 { return said(wrote()) }
+    let rc = avra_spawn_status(avra_selfhost_get_arg_cstr(0), ["child"])
+    let kept = said(counted())
+    avra_trap("the writer exited ${rc}, and of the 3 rows it wrote the database kept ${kept}")
+    "the trap above never returns"
+}
+
+story()
+'
+
 rm -rf "$ROOT"
 if [ "$fails" -gt 0 ]; then
     echo "traps: $fails of $rows contracts broken"

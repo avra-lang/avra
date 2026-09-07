@@ -8,12 +8,7 @@ use @std.io.{exists, remove}
 
 /// A database with one table and one row, and the count after `work`
 /// has run against it — or the kind the work was refused with.
-fn after(work: fn(Db) -> Result<int, SqlError>) -> string {
-    match memory() {
-        .Ok(db) -> worked(db, work),
-        .Err(e) -> e.cause.kind(),
-    }
-}
+fn after(work: fn(Db) -> Result<int, SqlError>) -> string { in_memory((db) -> worked(db, work)) }
 
 fn worked(db: Db, work: fn(Db) -> Result<int, SqlError>) -> string {
     mut held = db
@@ -138,6 +133,8 @@ fn mined(mine: bool) -> Result<int, SqlError> {
 
 // ── What SQLite says is open, asked directly ────────────────────
 
+/// SPELLED OUT because it answers a `bool`: an open that fails is not a
+/// kind here, it is "the question was never asked".
 fn tx_asked(q: fn(Db) -> bool) -> bool {
     match memory() {
         .Ok(db) -> tx_in_db(db, q),
