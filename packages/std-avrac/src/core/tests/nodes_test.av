@@ -1,12 +1,12 @@
 // The arena contract: sequential opaque ids, spans in side tables,
 // and content identity that sees structure only — never spans.
-use @std.avrac.core.{Span, new_node_store, Expr, Stmt, BinOp, Param, TypeRef, Variant, plain}
+use @std.avrac.core.{Span, new_node_store, Expr, Stmt, BinOp, Param, TypeRef, Variant, plain, named_ref}
 
 fn at(lo: int, hi: int) -> Span? { Span { lo: lo, hi: hi } }
 
 /// A written type, as the parser would hand it over.
 fn ty(name: string, optional: bool) -> TypeRef {
-    TypeRef { name: name, args: [], optional: optional, dynamic: false, arrow: false, span: null }
+    named_ref(name) with { optional: optional }
 }
 
 /// One param carrying a written type.
@@ -140,7 +140,7 @@ spec "core/nodes" {
             mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1), null)
             let plain = param("x", ty("int", false))
-            let applied = TypeRef { name: "List", args: [ty("int", false)], optional: false, dynamic: false, arrow: false, span: null }
+            let applied = named_ref("List") with { args: [ty("int", false)], optional: false }
             let a = s.alloc_stmt(Stmt.FnDecl("f", [], [plain], ty("int", false), body), null)
             let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", applied)], ty("int", false), body), null)
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
@@ -148,8 +148,8 @@ spec "core/nodes" {
         then "the ELEMENT is part of identity: `List<int>` vs `List<bool>`" {
             mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1), null)
-            let li = TypeRef { name: "List", args: [ty("int", false)], optional: false, dynamic: false, arrow: false, span: null }
-            let lb = TypeRef { name: "List", args: [ty("bool", false)], optional: false, dynamic: false, arrow: false, span: null }
+            let li = named_ref("List") with { args: [ty("int", false)], optional: false }
+            let lb = named_ref("List") with { args: [ty("bool", false)], optional: false }
             let a = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", li)], ty("int", false), body), null)
             let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", lb)], ty("int", false), body), null)
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
@@ -157,8 +157,8 @@ spec "core/nodes" {
         then "NESTING is part of identity: `List<int>` vs `List<List<int>>`" {
             mut s = new_node_store()
             let body = s.alloc_expr(Expr.IntLit(1), null)
-            let li = TypeRef { name: "List", args: [ty("int", false)], optional: false, dynamic: false, arrow: false, span: null }
-            let ll = TypeRef { name: "List", args: [li], optional: false, dynamic: false, arrow: false, span: null }
+            let li = named_ref("List") with { args: [ty("int", false)], optional: false }
+            let ll = named_ref("List") with { args: [li], optional: false }
             let a = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", li)], ty("int", false), body), null)
             let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", ll)], ty("int", false), body), null)
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
@@ -170,8 +170,8 @@ spec "core/nodes" {
         }
         then "two spellings of one type still agree — spans never count" {
             mut s = new_node_store()
-            let here = TypeRef { name: "int", args: [], optional: true, dynamic: false, arrow: false, span: at(0, 4) }
-            let there = TypeRef { name: "int", args: [], optional: true, dynamic: false, arrow: false, span: at(90, 94) }
+            let here = named_ref("int") with { optional: true, span: at(0, 4) }
+            let there = named_ref("int") with { optional: true, span: at(90, 94) }
             let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", here)]), null)
             let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", there)]), null)
             s.stmt_fingerprint(a) == s.stmt_fingerprint(b)
