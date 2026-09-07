@@ -3940,8 +3940,16 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         own contract defines it — written AT THE SITE, or the next
         reader files one of the two as a bug. OWNERS: the row is lane
         A's (runtime rows), the face @std/text's owner's; the strings
-        lane is the consumer. The hole ships as TEXT with the handler
-        converting, so the typing lands against a live consumer.
+        lane is the consumer. THE ORDER WHEN THE SLICE COMES, lane A's:
+        lane A writes `<row>_adversarial_test.av` against the four laws
+        FIRST, with nothing behind it; the strings lane implements in
+        the owner's file until it goes green; lane A reviews the C for
+        what a test cannot see (the header law, the allocation). The
+        fourth law is the reason for tests-first: an asymmetry that is
+        correct reads as a bug to whoever implements it and gets "fixed"
+        into a refusal — as a named failing test it survives the lane,
+        the rebase and the next person. The hole ships as TEXT with the
+        handler converting, so the typing lands against a live consumer.
   - [ ] HOISTED LITERAL OCTETS — FIRED 2026-09-07, now an ASK of the
         core owners: the scan converts each literal piece to octets on
         EVERY attempt because the IR carries no `Bytes` constant, and
