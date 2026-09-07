@@ -7,7 +7,7 @@
 use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, joined, filled, flatten}
 use features.{TypeCx, EnumSig, spoken, this_is, nothing, duplicate_names, arms_agree, variants_are, types_disagree, seats_fit, stays, pat_semantics_of}
 use features.enums.{all_irrefutable, hole_of}
-use diagnostics.{refusal, warning}
+use diagnostics.{refusal, warning, defect_at}
 
 /// The declaration's own law.
 export fn check_enum_decl(mut cx: TypeCx, s: StmtId) {
@@ -115,9 +115,12 @@ export fn pat_types_of(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeI
 
 export fn bind_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
     match cx.view.store.pat(p) {
-        // the seam routes a format to its own owner; if one ever
-        // arrived here its names would go unbound, and loudly
-        .Wild or .Rest or .Format(_, _) -> [],
+        .Wild or .Rest -> [],
+        // the seam routes a format to its own owner; one arriving here is a defect
+        .Format(_, _) -> {
+            cx.emit(defect_at(cx.pat_loc(p), "a format pattern reached the enum typing's binds"))
+            []
+        },
         .Bind(_) -> [expected],
         .Variant(name, args) -> variant_types(cx, p, name, args, expected),
         .Lit(v) -> lit_types(cx, p, v, expected),

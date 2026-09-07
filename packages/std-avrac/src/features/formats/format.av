@@ -2,7 +2,7 @@
 //! faults a literal can carry. It knows nothing of typing or
 //! lowering — those read their shape from here, and the shape IS
 //! `Pat.Format`'s, so the reader and the node are one vocabulary.
-use core.{TypeRef, Hole, FormatPart, named_ref, nothing_bound, joined}
+use core.{TypeRef, Hole, FormatPart, named_ref, bound_names, joined}
 
 /// A format read from a literal: the literal head, then a hole and
 /// the literal following it, repeated. A literal with NO holes is
@@ -175,13 +175,9 @@ export fn adjacent_fault(parts: List<FormatPart>) -> Fault? {
 /// One name, two spans — a duplicate is a name whose FIRST position
 /// is earlier than this one. `_` binds nothing, so it may repeat.
 export fn repeated_fault(parts: List<FormatPart>) -> Fault? {
-    let names = names_of(parts)
+    let names = bound_names(parts)
     let k = [j for j in 0..names.length].find((j) -> names.index_of(names[j]) < j)
     if k == null { return null }
     Fault.Repeated(names[k!])
 }
 
-/// The names a list of parts binds, in order.
-export fn names_of(parts: List<FormatPart>) -> List<string> {
-    [p.hole.name for p in parts if p.hole.name != nothing_bound()]
-}
