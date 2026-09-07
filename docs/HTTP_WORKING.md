@@ -155,6 +155,63 @@ O(1) slot comes FIRST and the lowering hoist after; a `ConstBytes` waits
 for `Bytes` on main. NEXT: S4, the `grammar` value that parses, probed to
 need no new door.
 
+## Sub-lane: strings — S4 (grammar values) on lane/strings, closing
+
+`grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"` declares
+its capture RECORD (a `StructDecl`, the `component` precedent; merged at
+9806321), and `RequestLine.parse(line)` answers `RequestLine?` on both
+engines (`corpus/grammar.av`; lane/strings 5efa5fa, b7b1d28, awaiting
+its red team, review round and goldens before merge). THE ROUTE, ruled
+on the lane's own count after it refuted its paper: the value shape
+(`Fmt<R>` as a builtin generic) needs a new core `Type` variant — 44
+exhaustive matches in 19 files across three lanes, of which `make vocab`
+names two — against compile-time EXPANSION through `Callee`'s four
+consumers in one directory; the expansion is also the faster answer (no
+format exists at run time). It landed SMALLER than lane C authorized: no
+new `Callee` variant — `named_type` in impls/callee.av answers the
+existing `Callee.Row(door)` when the DECLARATION has a format
+(`grammar_of`, a side table keyed by StmtId beside `exported`/
+`mutating`/`onces`, restamped over the whole format) AND the vocabulary
+has a door of that name, else `Callee.Variant` byte for byte; lane C's
+four constraints verified by running (a grammar with no `print` door
+refuses as a construction; `Port.parse` on a record still names the
+record). Constraint 4 — the refusal naming the door it tried — lives in
+features/variants.av, the features root, and waits on lane C's word.
+Rule B, STATIC METHODS, is the owner's, recorded in the asks with both
+wanting sites. Two grammar-law findings paid on the way: a recovering
+statement branch on `grammar` ate the compiler's own `grammar { … }`
+expressions (the anchor law now reaches across rules, main 88bb058), and
+an adjacent-hole grammar was accepted until the declaration heard every
+law in the builder. S5 is `print` and the round-trip law, stated and
+proven over the paper's reference implementation, enforced end to end
+only once `print` exists.
+
+## Sub-lane: substrate — S3b LANDED (8fd2a6e): a NUL path read another file
+
+MERGED (lane/substrate c9c7880 io, 1be60fd the build split), bootstrap +
+two builds + full gate green. THE FINDING: a path holding a NUL read a
+DIFFERENT FILE than it named, on both engines — a 79-byte name ending
+`/../../etc/passwd` with a NUL at byte 5 read a 5-byte file and answered
+ok, `exists` answered true for nothing, `write_text` created a file under
+a truncated name. Agreement, not correctness: the face measured the
+header's length and C stopped at the NUL. `one_path` refuses it at all
+six verbs that hand C a path, judged over the BYTES (a door built from
+`==`/`is_empty`/`contains` stops at the same NUL), four cases pin the
+words and the offset. The empty path came back clean, run: ENOENT at
+three verbs, `kind_of("")` Missing, identically on both engines — a
+pointer to a terminator, never NULL. THE TWINS: `read_bytes`/`write_bytes`
+land and the text verbs are built ON them; `ab\xffcd` → `NotText(path,
+2)` is a real case beside lane B's NUL accept case. THE GATHER: 64 MB
+file, 0.97 s concatenating per landing → 0.46 s gathering once, peak 128
+MB either way (the parts and the box coexist as the last concat's two
+buffers did). THE ENV CONDITION at the site, premise verified. THE BUILD
+SPLIT: `COMPILER_OBJS`/`PACKAGE_OBJS`, `TREE_OBJS` retired, `make avra`
+no longer compiles the amalgamation; `stems.sh` asks `nm` of the binary
+and the manifests of the packages, and reports a zero-object scan aloud.
+NEAR-MISS: moving the block dropped `CFLAGS_sqlite3` and the amalgamation
+rebuilt without its flags; only `@std/sqlite`'s suite, asking the library
+its compile options, noticed. NEXT: S4, `@std/process` on the standard.
+
 ## Sub-lane: substrate — S3b (in progress): the cold path, the offset
 
 MERGED at c8af70b (lane/substrate 3f8da0a): `make bootstrap` from the
