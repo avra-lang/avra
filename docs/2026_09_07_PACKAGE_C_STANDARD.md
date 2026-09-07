@@ -5,8 +5,12 @@
 > migration it orders; every file the migration touches has an owner
 > named in §4, and nothing here is written in a peer's file without
 > that peer hearing it first. **Base for every probe and every count
-> below: `9fe5597`** — the tree after `@std/net` and `Bytes` landed.
-> A receipt from another tree is labelled as one; there are none here.
+> below: `4516b15`** — this lane's merge of `lane/http` at `5cca925`,
+> which carries the descriptor rows, lane C's pattern seam and lane A's
+> float and default-goal fixes. Every number here was re-measured at
+> that base after two builds; a receipt from another tree is labelled
+> as one, and where a relayed count and my own disagree BOTH are
+> printed with their bases.
 
 ## 0. THE STANDARD, IN FIVE SENTENCES
 
@@ -47,7 +51,7 @@ itself can answer?** Yes is core. Everything else is a package.
 | the standard streams (`avra_puts`, `avra_eputs`, the capture) | core | the process's own descriptors, and a capture rewires fd 1 |
 | `avra_errno_text` | core | immortal text, shared by every package that answers an errno |
 | the once cache | core | a process-wide table the language's `once fn` stands on |
-| DESCRIPTORS: `avra_fd_read`, `avra_fd_taken`, `avra_fd_write` | core | THE ONE DOOR through which foreign bytes become a value — **externs today, not rows; §2.1 is why that is a live defect** |
+| DESCRIPTORS: `avra_fd_read`, `avra_fd_taken`, `avra_fd_write` | core | THE ONE DOOR through which foreign bytes become a value — core ROWS as of `3bfab94`, `owns_result: true` on the take, `RtHost.FdRead/FdTaken/FdWrite` with evaluator arms |
 | opening, listing, making, removing files; `stat`; mtime | `@std/io` C | host facts; answer ints (a status, a descriptor, a kind) |
 | the spawn table, its pipes, its signals, its reaping | `@std/process` C | host facts; answer ints (a handle, its descriptors, a tagged status) |
 | sockets and readiness (`avra_net_*`) | `@std/net` C | LANDED; host facts, answering ints (a descriptor, a count, a NEGATIVE errno) |
@@ -56,70 +60,70 @@ itself can answer?** Yes is core. Everything else is a package.
 
 What leaves core under this roster, by name — the whole `avra_io_*`
 section and the whole `avra_proc_*` section, `avra_io_list` excepted
-(§5.1). What core GAINS: nothing a package could own, and the three
-descriptor doors as REAL ROWS, which they are not yet.
+(§5.1). What core has GAINED: the three descriptor doors as real rows,
+and nothing a package could own.
 
 ## 2. THE LAWS, AND THE REASON FOR EACH
 
 ### 2.1 A MANAGED VALUE IS MINTED ONLY BY A CORE ROW
 
-The first draft of this section argued the law from the header
-contract, and the argument was true but soft. Measuring the tree
-turned it into a mechanism, so the header argument is the second
-reason now and this is the first.
+The first draft argued this from the header contract, and the argument
+was true but soft. Measuring the tree turned it into a mechanism, and
+then lane A narrowed the mechanism into a law that is exact. Theirs is
+the wording that stands:
 
-**ONLY A ROW CAN CARRY `owns_result`, so a mint that is not a row has
-no ownership plan.** `rt_owns(name)` (`core/runtime_api.av:217`)
-answers from `rt_sig_of(name)` — the CORE registry index over
-`rt_sigs()`, keyed by NAME. A program's own extern rows are built by
-`extern_row`/`inout_row` (`runtime_api.av:182,188`) with
-`owns_result: false` HARD-CODED, and nothing else in the tree ever
-writes that field. Two consumers act on the answer:
+> AN EXTERN WHOSE C BODY MINTS AN OWNED BOX MUST BE A ROW, because
+> `owns_result` lives on a row and nowhere else — and an extern
+> answering foreign or immortal text must NOT be, for the same reason.
 
-```
-memory.av:431   managed_dst:  .CallRt(_, callee, _) -> if rt_owns(callee) { dst } else { null }
-memory.av:293   view_of:      .CallRt(d, callee, _) -> if rt_owns(callee) { null } else { d }
-```
+**WHY ONLY A ROW CAN CARRY IT.** `rt_owns(name)`
+(`core/runtime_api.av`) answers from `rt_sig_of(name)` — the CORE
+registry index over `rt_sigs()`, keyed by NAME. A program's own extern
+rows are built by `extern_row`/`inout_row` with `owns_result: false`
+HARD-CODED, and nothing else in the tree ever writes that field. Two
+consumers act on the answer: `managed_dst` plans NO RELEASE, and
+`view_of` files the answer as a BORROW of an argument — for a
+zero-argument mint, a view of nothing. So an extern that mints and
+answers a box leaks every one, silently: nothing warns, the program is
+correct, the box is never freed.
 
-The first plans NO RELEASE. The second files the answer as a BORROW of
-an argument — for a zero-argument mint, a view of nothing. So an
-`extern fn` that answers a managed type leaks every value it mints,
-and does so silently: nothing warns, the program is correct, the box
-is simply never freed.
+MEASURED WHEN IT WAS BROKEN, `./avra build` then `AVRA_MEM_STATS=1`:
+`avra_fd_taken()` 200k times left 3 MB live and 800k left 12 MB, `now
+== peak` both times, while `avra_str_from_codepoint(65)` — declared
+`extern fn` in the SAME loose-file shape but a core row — left 0 MB.
+The control was the finding: the defect is not "extern", it is NOT A
+ROW. It was a leak and not a use-after-free; four taken boxes pushed
+into a `List<Bytes>` under `AVRA_RC_GUARD=1` exited clean, because the
+pack retains and only the mint's own +1 went unspent.
 
-MEASURED, `./avra build` then `AVRA_MEM_STATS=1`, loose files:
+**AND THE OTHER HALF IS WHY A REFUSAL BY ANSWER TYPE WOULD BE WRONG.**
+Most externs answering `string` answer memory that was never ours —
+`str_static`'s immortal text, or a library's rodata. Making one of
+those a row would file it for release, and the release would write
+memory that is not ours. So the two cases look identical on the Avra
+side and only the C BODY tells them apart, which is why the keeper
+lives in `tools/externs.py` (lane A's, prototyped and landing): a C
+function is an owned mint when its body reaches
+`str_owned`/`box_alloc`/`sized_box` through a `return`, excluding
+`str_static`. A compiler diagnostic keyed on the answer TYPE was
+designed and WITHDRAWN for exactly this — it would refuse every
+foreign-text extern to catch one real leak, and a lint's true-positive
+rate is its spec.
 
-| program | live at exit |
-|---|---|
-| `avra_fd_taken()` x 200k | 3 MB, `now == peak` |
-| `avra_fd_taken()` x 800k | 12 MB, `now == peak` |
-| `avra_str_from_codepoint(65)` x 200k | 0 MB |
-| `("a" + "b")` x 200k | 0 MB |
-
-The control is the finding. `avra_str_from_codepoint` is declared
-`extern fn` in the SAME loose-file shape and leaks nothing, because its
-name is also a core row with `owns_result: true`. The defect is not
-"extern"; it is NOT A ROW. It is a leak and not a use-after-free: four
-taken boxes pushed into a `List<Bytes>` under `AVRA_RC_GUARD=1` exit
-clean, because the pack retains and only the mint's own +1 goes unspent.
-
-Two live instances at this base, and no others — every extern in the
-tree answering a managed type was read:
-
-- `avra_fd_taken() -> Bytes`, NOT a row. `packages/std-net/src/net.av:120`
-  is `.Ok(.Data(avra_fd_taken()))`, so a server leaks a buffer per read.
-- `avra_float_text_bits(bits) -> string` (`language/interp.av:1140`),
-  NOT a row; `runtime/avra_runtime.c:1362` ends in `str_owned`. The
-  EVALUATOR leaks every float it renders — 60k renders under `avra run`
-  left 1 MB of strings live, `now == peak`. Its compiled twin
-  `avra_float_text` IS a row (`runtime_api.av:47`) and does not leak.
-
-Clean, and worth naming so the next reader does not re-check them:
-`avra_io_taken`, `avra_proc_take`, `avra_proc_which` and
-`avra_str_from_codepoint` are rows with `owns_result: true`
-(`runtime_api.av:93,98,110`); `avra_errno_text`, `avra_host_env` and
-`avra_selfhost_get_arg_cstr` answer immortal text; `@std/sqlite`'s four
-`string` externs answer static C strings that were never boxes.
+THE FIXTURE IS THE WHOLE POPULATION, and it is small enough to name.
+Measured at `4516b15`: thirteen extern declarations answer a managed
+type; five are not rows and all five are correct as they stand —
+`avra_selfhost_get_arg_cstr` (argv through `str_static`) and
+`@std/sqlite`'s `libversion`, `sourceid`, `errstr` and
+`compileoption_get` (the amalgamation's rodata). The sixth,
+`avra_float_text_bits`, DID mint through `str_owned` and leaked every
+float the evaluator rendered; it is a row now with its own
+`RtHost.FloatTextBits` — not `RtHost.Text`, whose seat is an `F64`.
+**A RELAYED COUNT OF SEVEN NAMED `sqlite3_errmsg` AS A SIXTH FOREIGN
+CASE; at this base it is not declared as an extern at all, only
+discussed in `@std/sqlite`'s comments.** Both counts are printed
+because neither is wrong about its own tree, and a fixture built from
+the other lane's number would have a member that does not exist.
 
 THE SECOND REASON, the one the first draft had. Every pointer Avra
 holds carries a sixteen-byte header before its payload (CLAUDE.md,
@@ -139,6 +143,15 @@ kind, a count, a negative errno; a `ptr` to something C owns. Never a
 `string`, never a `Bytes`, never a list. Text and bytes cross INTO the
 language only through core's doors (§2.5).
 
+AND THE MEASUREMENT ITSELF HAS A RULE. A memory-pass or ownership
+change reaches the COMPILER'S OWN BODY only on the second build:
+`make avra` compiles the source with the standing binary, so a product
+built once carries the fix as source while its own body was compiled by
+the binary that predated it. Lane A measured their float leak after one
+build and read the identical number. A compiled user program needs one
+build; anything the evaluator or the compiler itself exercises needs
+two.
+
 ### 2.2 THE EVALUATOR HOSTS CORE BY ARMS AND NEVER LEARNS A PACKAGE
 
 `RtHost` is exhaustive by design: a new row demands its arm, and that
@@ -149,7 +162,7 @@ second engine, then carries a `ProcSpawn` arm, an `IoMkdir` arm, and
 grows one for every package anyone writes. Sockets are not a language
 feature; the evaluator must not know them.
 
-The count at this base: nineteen arms are a package's — eight `Io*`,
+The count at `4516b15`: nineteen arms are a package's — eight `Io*`,
 eleven `Proc*` — each a thin call into C the native program calls
 directly, each a line the language's engine carries for a library's
 convenience. **`@std/net` is the proof the standard works**: it landed
@@ -157,6 +170,13 @@ with fifteen C entry points and added ZERO `RtHost` variants and ZERO
 arms. The first draft of this document predicted fifteen `Net*` arms
 and was wrong, because the package was built to the standard before
 the standard was finished. That non-event is the better receipt.
+
+The three `Fd*` arms core gained in the same week are the counter-case
+that shows the line is drawn by the ROSTER and not by a quota. They
+are core because they MINT, and §2.1 is why only core can. A package's
+row is the evaluator learning a library; a descriptor door is the
+evaluator learning how bytes become a value, which is its own
+business.
 
 The standard splits the two: CORE rows are hosted by arms, because
 their meaning is the evaluator's business; a PACKAGE's externs are
@@ -273,19 +293,17 @@ Two doors, both core, and a package uses the first wherever it can:
    case is written first (a take after nothing is the empty box), as
    CLAUDE.md's encoding law demands.
 
-   **THEY ARE NOT ROWS YET, AND THAT IS §5.3's DECISION.** At
-   `9fe5597` the three doors are C in `runtime/avra_runtime.c`
-   (lines 1567–1620) reached through `extern fn` declarations in
-   `packages/std-net/src/net.av:16-18` and `corpus/net/src/main.av:8-10`
-   — no `rt_sigs` entry, no `RtHost` variant, no evaluator arm. Two
-   consequences, both real: `avra_fd_taken` leaks every box it mints
-   (§2.1, measured), and the evaluator cannot host the fd half of
-   `corpus/net` any more than it can host the net half, so that corpus
-   dir would stay `native-only` even after S2 hosts `avra_net_*`.
-   `@std/io` already has this shape done RIGHT and it is the model:
-   `avra_io_read(path)` answers an `I64` and `avra_io_taken()` is the
-   mint, and both are rows (`runtime_api.av:104,110`) with
-   `owns_result: true` on the take.
+   **THEY ARE ROWS**, as of `3bfab94` — `rt_sigs` entries with
+   `owns_result: true` on the take, `RtHost.FdRead/FdTaken/FdWrite`,
+   and evaluator arms. They were `extern fn` declarations against
+   runtime C for one slice, and §2.1's leak is what that cost: every
+   socket read kept its buffer. Re-measured here at `4516b15` after
+   two builds — 800k takes, 0 MB live natively, and the EVALUATOR now
+   hosts them rather than trapping, 40k takes through `avra run` at
+   0 MB. `@std/io` already had the shape done right and was the model:
+   `avra_io_read` answers a count and `avra_io_taken` is the mint,
+   both rows. The fd pair is that pair generalized from a path to a
+   descriptor.
 
 2. **THE ADOPTION.** Some host facts are text that flows through no
    descriptor — a directory entry's name is the one case in `@std/io`.
@@ -314,11 +332,12 @@ answer are static, so there is nothing to free and no lifetime to
 outlive. A package's own C has no such excuse, because it can answer a
 descriptor or a `(ptr, len)` instead.
 
-**THIS REFUSAL WANTS TO BE A KEEPER AND IS PROSE.** A checklist item
-is invisible to the next author; the law belongs in the compiler, as a
-refusal by name when an `extern fn`'s answer type is managed and its
-symbol is not a registry row. That is §5.4, and no line of it is
-written.
+**THIS REFUSAL WANTS TO BE A KEEPER AND IS PROSE** — and the keeper is
+not the compiler. It reads the C BODY, not the Avra answer type, for
+the reason §2.1 gives: a refusal keyed on the answer would refuse five
+correct foreign-text externs to catch one real leak. It is lane A's,
+in `tools/externs.py`, and §5.4 records the diagnostic that was
+designed and withdrawn in its favour.
 
 ## 3. THE SHAPE OF A PACKAGE'S C — the checklist
 
@@ -377,10 +396,15 @@ step above it.
    law and `tools/stems.sh` land with it (§2.3). One trap was closed
    on the way: the Makefile's default goal was `seed`, so a bare
    `make` — and any `make -p` reading a variable — silently rewrote
-   the committed 9.6 MB `bootstrap/seed.ll`. It bit this lane twice
-   before it was noticed, both times while probing a variable's
-   value. `.DEFAULT_GOAL := avra` now. Gate green. DONE when the lead
-   has the doc.
+   the committed `bootstrap/seed.ll`. It bit this lane twice before it
+   was noticed, both times while probing a variable's value. Lane A
+   found and fixed it independently on main, and the merge left the
+   fix stated TWICE with different prose — this lane's copy is dropped
+   and theirs stands, since it sits where the seed rule does and its
+   size figure is the current one. MERGED into `lane/http` at
+   `e45f818`, the Makefile taken whole; `corpus/net`'s manifest kept
+   the lead's shape rather than this lane's `[link]` row, because the
+   corpus program was rewritten to speak the package's face.
 2. **S2 — the extern host.** (lane C's `language/interp.av`; lane A's
    `core/` and `runtime/`; designed with SQLITE-LEAD and lane C.)
    The evaluator calls any linked extern by name through a uniform
@@ -412,13 +436,17 @@ step above it.
    descriptor); `avra_proc_run`'s one-shot loop is Avra;
    `avra_proc_which` resolves in Avra over a package `executable(path)`
    row. Eleven rows, eleven variants and eleven arms leave core.
-5. **`@std/net` — LANDED at `9fe5597`, ahead of this document.** It is
-   the standard's first consumer and it never needed the migration:
+5. **`@std/net` — LANDED ahead of this document.** It is the
+   standard's first consumer and it never needed the migration:
    fifteen C entry points under `packages/std-net/src/c/std_net.c`, a
    `[link]` naming one object, zero `RtHost` variants, zero evaluator
-   arms, `corpus/net` marked `native-only`. What it did NOT do is
-   §5.3: it reached the descriptor doors as externs rather than rows,
-   and §2.1 is the cost.
+   arms. What it did not do at first was §5.3 — it reached the
+   descriptor doors as externs rather than rows, and §2.1 is what that
+   cost — and that is closed. `corpus/net` speaks the package's face
+   through a `[dependencies]` row rather than raw externs and a
+   `[link]`, which is how a corpus dir proving a package should link;
+   it stays `native-only` until S2c, because the fifteen `avra_net_*`
+   externs are a package's and the evaluator cannot host them yet.
 
 Debris the migration retires from the runtime, re-verified by grep at
 `9fe5597` (zero Avra callers outside `tests/`, zero references in
@@ -447,29 +475,92 @@ is `@std/avrac`'s C and would belong at
 `backend/` (lane A), the README's layout and `tools/externs.py`, and
 is a slice of lane A's if it is ever taken.
 
-**5.3 ARE THE DESCRIPTOR DOORS ROWS OR EXTERNS? OPEN, and it is the
-one that costs memory today.** §2.1 measures the leak; §2.5.1 shows
-`@std/io` already does the same shape as rows. The recommendation is
-three `rt_sigs` entries (`owns_result: true` on the take), three
-`RtHost` variants and three evaluator arms — which fixes the leak,
-makes §0's central sentence true of the tree, and gives the fd half of
-`corpus/net` `eval == native` before S2 lands. It touches
-`core/runtime_api.av` and `core/ir.av` (lane A), `language/interp.av`
-(lane C) and `packages/std-net/src/net.av` (the HTTP lead). A second,
-one-line half: `avra_float_text_bits` gains its row beside
-`avra_float_text`, both `owns_result: true`, and the evaluator stops
-leaking every float it renders.
+**5.3 ARE THE DESCRIPTOR DOORS ROWS OR EXTERNS? SETTLED — ROWS,
+landed by the HTTP lead at `3bfab94`.** Three `rt_sigs` entries with
+`owns_result: true` on the take, three `RtHost` variants, three
+evaluator arms. The leak is gone (§2.5), the evaluator hosts the fd
+half, and §0's central sentence is true of the tree. Its one-line
+sibling landed too: `avra_float_text_bits` is a row with its own
+`RtHost.FloatTextBits`, so the evaluator no longer leaks the text of
+every float it renders. The decision was smaller than it looked
+because `@std/io` already shipped the same shape as rows; the fd pair
+generalizes a path to a descriptor and invented nothing.
 
-**5.4 SHOULD THE MANAGED-ANSWER REFUSAL BE A COMPILER LAW? OPEN.**
-§2.5's "no package extern answers `string` or `Bytes`" is prose in a
-checklist, and prose is invisible to the next author — CLAUDE.md's
-EXEMPTION LAW one axis over. As a keeper it is a refusal by name when
-an `extern fn`'s answer type is managed and its symbol is not a
-registry row, in lane C's typing, with `@std/sqlite`'s four static-text
-externs needing a spelled license at the site. Not written.
+**5.4 SHOULD THE MANAGED-ANSWER REFUSAL BE A COMPILER LAW? DESIGNED
+AND WITHDRAWN, and the withdrawal is the more useful record.** The
+proposal was a refusal by name when an `extern fn`'s answer type is
+managed and its symbol is not a registry row. Lane A counted the
+population and it does not survive contact: five of the six
+non-row managed answers are CORRECT, answering foreign or immortal
+text that must never be filed for release, so the diagnostic would
+refuse five to catch one. A lint's true-positive rate is its spec
+(CLAUDE.md), and one in six is not a spec. The law it was meant to
+enforce is real and now stated exactly in §2.1; the keeper reads the C
+body rather than the Avra type and lives in `tools/externs.py`, lane
+A's. WHAT THE NEAR-MISS TEACHES: the doctrine was right, the CURRENCY
+was wrong. A rule about ownership cannot be enforced from the side of
+the boundary that cannot see who allocated.
 
-**5.5 HOW S2 REACHES A SYMBOL THAT IS NOT IN THE COMPILER'S IMAGE.
-OPEN — the S2 design conversation.** `dlsym(RTLD_DEFAULT)` reaches
+**5.5a WHAT THE S2 SURVEY MEASURED, before any of it is written.**
+Four findings, each against `0998a7c`, and each one a thing the prior
+design (`docs/2026_09_05_EXTERN_HOST_SHAPE.md`, the sqlite lane's for
+lane C) does not answer.
+
+- THE EVALUATOR HAS NO POINTER — ANSWERED BY LANE C, and the answer is
+  that it does not need one. A foreign pointer RIDES `Val.I`,
+  witnessed by the seat's `RtKind` in the row, with no new variant.
+  The fact the survey and the prior paper both missed: the evaluator
+  already hosts `RtKind.Ptr` rows (`avra_array_new`, `avra_map_new`,
+  `avra_cell_unique`) as HANDLES — `Val.A/M/C` — so "Ptr" there
+  already means "a managed box"; a FOREIGN pointer is the new thing,
+  an address never dereferenced, with no identity Avra can observe. A
+  `Val.P` would differ from `Val.I` in zero reachable behaviours, since
+  a `ptr` has no dereference, no equality, no text projection and no
+  arithmetic — eight consumers paid for nothing. The witness is the
+  ROW and not the type registry, which is what makes `eval == native`
+  hold by construction: the native path reads each seat's `RtKind` to
+  decide how a value crosses, and the evaluator reads the same column.
+  The mapping lives at the boundary only — a `Ptr` answer of 0 is
+  `Val.N` and non-zero is `Val.I(address)`; a `Ptr` seat takes `Val.N`
+  as 0 and `Val.I(a)` as `a` — unambiguous because the row says the
+  seat is a pointer. AND THE REVERSAL CONDITION IS WRITTEN AT THE
+  MAPPING, not here: a pointer rides `Val.I` only while Avra cannot
+  tell a pointer from a number, and the day `ptr` gains equality, a
+  text projection or arithmetic, `Val.P` is earned. Not a handle
+  table: handles exist for identity and mutation, and a foreign
+  pointer has neither.
+- THE VARIADIC REFUSAL IS PLACED WRONG TODAY, by that paper's own
+  receipt. It reasons that the refusal belongs at interpretation
+  because "the native path can host variadics perfectly well" — but
+  `declare`'s vararg flag is hard-wired false at both call sites and
+  the grammar has no ellipsis, so the NATIVE path emits a fixed call
+  and reads the garbage that paper measured. The refusal belongs at
+  the DECLARATION until the grammar can spell a variadic seat, and
+  `make externs` already reads each package's real C definitions, so
+  it can see the `...` and refuse with a source location.
+- §5.3 WAS FORCED, NOT OPTIONAL, AND IS NOW DONE. The host's own law
+  is that a returned foreign pointer is never adopted as text, and
+  `avra_fd_taken` answers `Bytes` — so while the doors were externs
+  the host had to break its own law or refuse them. They are rows
+  (§5.3), which is why the trampoline S2a builds NEVER MINTS: every
+  minting door is a row, hosted by an arm, and the uniform frame only
+  ever moves words and addresses.
+- THE CAPABILITY OBJECTION IS ALREADY MOOT. That paper worries the
+  host widens what the "just look at it" verb can do. `avra run`
+  already reaches the host in full through the hosted `Proc*` and
+  `Io*` arms: `corpus/process` under the evaluator spawns children,
+  captures both streams, feeds stdin, kills one by signal 9, and runs
+  a pipeline and a scripted runner. The host adds REACH, not a class
+  of power that was denied. Measured, not argued.
+
+AND WHAT TIER 1 BUYS, by comparing every declaration against the
+compiler's own symbol table: 235 externs declared tree-wide, 125
+already in `build/avra`'s image, 110 not — 88 `sqlite3_*`, 14
+`avra_net_*`, 8 `witness_*`. So a `dlsym(RTLD_DEFAULT)` tier hosts a
+clear majority on day one and reaches NEITHER corpus S2 names.
+
+**5.5b HOW S2 REACHES A SYMBOL THAT IS NOT IN THE COMPILER'S IMAGE.
+OPEN — the owner's, routed through the lead.** `dlsym(RTLD_DEFAULT)` reaches
 `@std/io` and `@std/process` once they are package C, because the `cli`
 package depends on both and `build/avra` links their objects.
 `@std/sqlite` is in no dependency of the compiler. Three routes:
@@ -526,44 +617,68 @@ whether the idiom's prefix list is the right matcher or whether a
 manifest-driven one (every package with a `[link]` section names its
 own prefix) is.
 
-## 7. RECEIPTS, each at `9fe5597` in this worktree
+## 7. RECEIPTS, each at `4516b15` in this worktree, after two builds
 
-- `sh tools/watch.sh 4000 make bootstrap` after merging `lane/http`:
-  exit 0, peak 654 MB.
+- The merge of `lane/http` at `5cca925`, then `cp
+  ../avra-lane-http/build/avra build/avra` and `make avra` TWICE —
+  536 MB then 562 MB, both exit 0. Not `make bootstrap`: main's seed
+  does not know `Bytes` and `interp.av` names it, so the seed would
+  refuse the tree until it is refreshed on main.
 - `make -B -n` resolves all five objects through the one rule, each
   from the source its stem names: `build/sqlite3.o` (with
   `SQLITE_FLAGS`, no `-Wall -Werror`), `build/llvm_wrapper.o` (with
   `-I$LLVM_PREFIX/include`), `build/width_witness.o`,
   `build/std_net.o`, `build/avra_runtime.o`.
 - The rule's `-Wall -Werror` is real, not decorative: a package `.c`
-  with an unused local failed the build ("1 error generated"). A
-  vendored unit takes none of it — `make -n build/sqlite3.o` shows
-  `SQLITE_FLAGS` and no warning flag.
-- Header dependencies work: a package `.c` including a new `.h` wrote
-  `build/<stem>.d` naming the header, and touching the header
-  re-ran the compile.
-- The stem law, before it existed: two packages each given a
-  `src/c/util.c` put `build/util.o` in the object list TWICE and
-  compiled only the first, silently. After: `make` refuses at parse
-  time naming both files, exit 2. A package source named
-  `avra_runtime.c` was shadowed by the explicit runtime rule and is
-  now named by the same law.
+  with an unused local failed the build. A vendored unit takes none of
+  it.
+- THE STEM LAW NAMES BOTH SIDES, which is what a reader can act on:
+  `rename one of: packages/std-io/src/c/util.c
+  packages/std-path/src/c/util.c`, exit 2. Before the law, those two
+  put `build/util.o` in the object list TWICE and compiled only the
+  first, in silence. A package source named `avra_runtime.c` was
+  shadowed by the explicit runtime rule and is named by the same law
+  now that the runtime goes through the pattern.
 - `sh tools/stems.sh`: 8 rows green. With `TREE_STEM_LAW` disarmed:
-  4 of 8 fail, each named. Restored: green again.
-- `make idioms` (debt 0), `make vocab` (Ins 8 consumers, RtKind 5,
-  Type 2), `make externs` (238 externs, 491 parameter seats, 6 C
-  sources, 23 of the keeper's own cases): all exit 0.
-- The leak, and its control, in §2.1's table. The guard probe
-  (`List<Bytes>` of four takes, `AVRA_RC_GUARD=1`) exits 0 with no
-  event: a leak, not a use-after-free.
-- `RtHost` at this base holds eight `Io*` and eleven `Proc*` variants
-  and ZERO `Net*`; the evaluator carries nineteen matching arms.
-  `grep` for `avra_fd_read|avra_fd_taken|avra_fd_write` across
-  `*.av` and `*.c` outside `tests/` finds exactly three sites: the
-  runtime's bodies, `packages/std-net/src/net.av:16-18`, and
-  `corpus/net/src/main.av:8-10` — all three declarations, no row.
-- Avra callers of the seven debris fns named in §4: 0 each outside
-  `tests/`, and 0 in `bootstrap/seed.ll`. `avra_host_is_dir`: 1.
-- Every `extern fn` in the tree answering `string`, `Bytes` or a list,
-  read one by one for §2.1's "two live instances and no others": 27
-  declarations across `packages/` and `corpus/`.
+  4 of 8 fail, each named. Restored: green. Its first draft passed for
+  the WRONG reason — the accept rows leaned on objects already on disk
+  — and only a cold gate exposed it, so every row now carries the
+  tree's own C.
+- THE DEPENDENCY FILES, all four properties checked. They land in
+  `build/` and `.gitignore`'s `build/` covers them (`git check-ignore`
+  names the line). A tree with no `.d` at all builds and regenerates
+  them. `-MP` survives a DELETED header: a stale `.d` naming a header
+  that no longer exists rebuilds cleanly instead of "No rule to make
+  target", because the phony line is there. And the vendored 9 MB
+  amalgamation causes no per-touch rebuild — its `.d` is 54 bytes and
+  names only the `.c`, because `-MMD` excludes system headers and the
+  amalgamation inlines its own.
+- THE LEAK, gone at this base: `avra_fd_taken()` 800k times leaves
+  0 MB live natively, where it left 12 MB when the door was an extern.
+  And the evaluator HOSTS it now rather than trapping — 40k takes
+  through `avra run`, 0 MB live.
+- THE MANAGED-ANSWER POPULATION, the fixture for lane A's keeper:
+  thirteen extern declarations answer a managed type; five are not
+  rows and all five are correct (`avra_selfhost_get_arg_cstr` plus
+  `@std/sqlite`'s `libversion`, `sourceid`, `errstr`,
+  `compileoption_get`). `sqlite3_errmsg`, named in a relayed count of
+  seven, is not declared as an extern at this base.
+- `RtHost` holds eight `Io*` and eleven `Proc*` variants, ZERO `Net*`,
+  and three `Fd*`; the evaluator carries the matching arms.
+- Avra callers of the debris fns named in §4: 0 each outside `tests/`,
+  and 0 in `bootstrap/seed.ll`. `avra_host_is_dir`: 1.
+- THE VARIADIC KEEPER, both surfaces witnessed. Green on the tree —
+  "no declaration faces a variadic C body", 34 of the keeper's own
+  cases holding. Disarmed (`is_variadic` forced false): 4 of its 11
+  cases fail and each is named, while the 7 negative cases still pass,
+  which is the accept surface. Against a REAL variadic body — a
+  temporary `extern fn sqlite3_db_config(db: ptr, op: i32) -> i32`
+  over the amalgamation's `sqlite3_db_config(sqlite3 *db, int op,
+  ...)` at `sqlite3.c:188321` — it refuses with exit 1 and ONE
+  message, not two: `wrong_seats` steps aside for a variadic body, so
+  the arity symptom never cascades over the law. A multi-line variadic
+  definition is caught end to end with the right file and line, which
+  was the hazard lane A named.
+- `sh tools/watch.sh 4000 make gate`: green, peak 244 MB — 2062 + 406
+  tests, 12 trap contracts, 81 corpus programs on both engines,
+  witness, stems.
