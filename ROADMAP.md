@@ -2455,6 +2455,33 @@ the order is the dependency.
         being true the day C callbacks land.
         Proved in `corpus/native/externs.av`, a file that already
         existed for the host seam: `null some some`.
+  - [ ] A NUL AT THE C BOUNDARY DOES NOT LOSE DATA, IT REDIRECTS
+        THE OPERATION — and that is a bigger claim than CLAUDE.md's
+        NUL law makes. Found 2026-09-07 by the HTTP campaign's
+        substrate lane, following this lane's marshalling redirect on
+        the io slice. A 79-byte path ending `/../../etc/passwd` with
+        a NUL at byte 5 READ A 5-BYTE FILE and answered ok; `exists`
+        answered true for nothing; `write_text` created a file under
+        a truncated name. Both engines AGREED — which is the class
+        eval == native cannot catch, three times over now.
+        THE EXISTING LAW IS ABOUT LOSS: five string primitives stop
+        at the first NUL, so a five-byte text reads equal to its
+        two-byte prefix. This is about TARGET: the same truncation,
+        applied to a NAME the C side resolves, does not answer a
+        wrong value — it acts on a DIFFERENT OBJECT. That is a
+        security property rather than a correctness one.
+        THE FIX IS A REFUSAL AT THE BOUNDARY, not a sanitisation:
+        six verbs that hand C a path now judge over the BYTES and
+        refuse, with the NUL's offset in the words.
+        AND IT GENERALISES PAST IO, which is the part this lane
+        should carry: with the extern host, ANY package may declare
+        `extern fn f(path: string)`, and every one inherits this.
+        io fixed its six verbs; the next package will not know. So
+        the question is a LANGUAGE one — what does a string crossing
+        to C mean when it holds a NUL — and the answers are a refusal
+        at the seam for every `string` seat of an extern, a `Bytes`
+        seat that carries the length, or a documented hazard. It is
+        not io's to decide and it is not settled by io's fix.
   - [ ] REVIEWS THIS LANE OWES, recorded because they live in
         messages and messages do not survive a compaction. Each is a
         diff another lane writes in this lane's files, with this
@@ -3139,6 +3166,34 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  A KEEPER THAT INTERROGATES THE ARTIFACT CAUGHT A BUILD REFACTOR THAT
+  NOTHING ELSE DID (HTTP lane, `1be60fd`, reported to this campaign).
+  Splitting the compiler's object list from the packages' — so `make
+  avra` no longer compiles the amalgamation, 9.2 s off every cold build —
+  **silently took `CFLAGS_sqlite3` with the moved block**, and
+  `build/sqlite3.o` rebuilt WITHOUT its author's flags. **Nothing in the
+  build noticed**: the object compiled, linked and ran, and every
+  behavioural test passed, because the flags it lost were the ones that
+  disable features rather than the ones that produce code.
+  WHAT CAUGHT IT WAS `@std/sqlite`'s `compiled_with(option)` — a test
+  that asks the LIBRARY which options it was built with, through
+  `sqlite3_compileoption_get`, rather than reading the Makefile that was
+  supposed to set them. **THE ARTIFACT IS THE ONLY HONEST WITNESS TO ITS
+  OWN BUILD**: a build file states an INTENTION, and the gap between the
+  intention and the object is exactly where a refactor lands. Same
+  instinct as a stems keeper reading `nm` of the binary rather than the
+  link line, and the same shape as ASSERT THE ABSENCE — the flags removed
+  by decision (`USE_URI`) already had a test that fails if they return,
+  and this is its twin: the flags ADDED by decision have a test that
+  fails if they leave.
+  AND IT IS A RECEIPT FOR A TEST WRITTEN MONTHS BEFORE ITS FAILURE MODE
+  EXISTED. Nobody wrote `compiled_with` anticipating a Makefile
+  reorganisation by another lane; it was written because a vendored
+  library's build flags are a CONTRACT and a contract wants a witness.
+  The general form: A TEST THAT READS THE ARTIFACT RATHER THAN THE
+  RECIPE PAYS OFF AT A DISTANCE, in changes its author never imagined,
+  and that is what makes it worth the awkwardness of asking a library
+  about itself.
   THE COUNTING RULE, WORKED — four `is`-chains over `Type`, and they do
   not all go the same way. The law says count the ANSWERING ARMS and no
   grep separates a registry from a projection; these are the first hard
