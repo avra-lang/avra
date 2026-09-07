@@ -687,7 +687,7 @@ impl NodeStore {
     /// written; a trait sig's word is the contract.
     fn mark_mutating(s: StmtId) {
         self.mutating.set(s.index, true)
-        self.restamp(s, 61)
+        self.restamp(s, 61, [])
     }
 
     fn is_mutating(s: StmtId) -> bool {
@@ -698,7 +698,7 @@ impl NodeStore {
     /// the process.
     fn mark_once(s: StmtId) {
         self.onces.set(s.index, true)
-        self.restamp(s, 62)
+        self.restamp(s, 62, [])
     }
 
     fn is_once(s: StmtId) -> bool {
@@ -709,7 +709,7 @@ impl NodeStore {
     /// reads, which the record's fields cannot spell.
     fn mark_grammar(s: StmtId, read: GrammarSpec) {
         self.grammars.set(s.index, read)
-        self.restamp(s, grammar_fp(read))
+        self.restamp(s, 63, [grammar_fp(read)])
     }
 
     fn grammar_of(s: StmtId) -> GrammarSpec? {
@@ -718,9 +718,12 @@ impl NodeStore {
 
     /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()` and
     /// `once fn f()` declare different things, so no two of them
-    /// may wear one fingerprint.
-    fn restamp(s: StmtId, tag: int) {
-        self.stmt_fingerprints.set(s.index, fp(tag, [self.stmt_fingerprints[s.index]]))
+    /// may wear one fingerprint. The tag is the mark's reserved
+    /// CODE and nothing else; a mark that CARRIES something folds it
+    /// in as `carried`, so the codes stay a registry a reader can
+    /// scan for the next free one.
+    fn restamp(s: StmtId, tag: int, carried: List<int>) {
+        self.stmt_fingerprints.set(s.index, fp(tag, [self.stmt_fingerprints[s.index]].concat(carried)))
     }
 
     /// `export` crossed this declaration — the module's surface
@@ -1018,13 +1021,12 @@ fn param_fps(params: List<Param>) -> List<int> {
     flatten([[fp_str(p.name), type_fp(p.ty)] for p in params])
 }
 
-/// A written type's identity: absence is its own value, and the `?`
-/// is part of what the type IS.
 /// A format's identity, whole — its head, and every hole and literal
 /// after it. Two grammars whose fields agree and whose text does not
-/// are different declarations.
+/// are different declarations. Its code sits with the pattern codes
+/// it mirrors, not with the statement MARKS that carry it.
 fn grammar_fp(read: GrammarSpec) -> int {
-    fp(63, [fp_str(read.head)].concat(flatten([hole_fps(p) for p in read.parts])))
+    fp(56, [fp_str(read.head)].concat(flatten([hole_fps(p) for p in read.parts])))
 }
 
 /// A format part's identity: what it binds, what it parses through,
@@ -1034,6 +1036,8 @@ fn hole_fps(p: FormatPart) -> List<int> {
     [fp_str(p.hole.name), type_fp(p.hole.ty), fp_str(p.piece)]
 }
 
+/// A written type's identity: absence is its own value, and the `?`
+/// is part of what the type IS.
 fn type_fp(t: TypeRef?) -> int {
     if t == null { return 0 }
     let written = t!
