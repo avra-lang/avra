@@ -39,7 +39,12 @@ export LLVM_PREFIX
 # object this tree compiles, so no link can want one that is absent.
 # The cost is one vendored amalgamation compiled on a cold tree that
 # the compiler does not link; the gate builds it anyway.
-COMPILER_OBJS := build/llvm_wrapper.o build/avra_runtime.o build/ffi.o
+# @std/io's object is here because the SEED-BUILT compiler links it:
+# the bootstrap's clang line takes this list, and a compiler that
+# cannot open a file cannot compile the tree it was built to compile.
+# Every package whose C the compiler's own closure links belongs here
+# the day it lands — S4 adds @std/process's.
+COMPILER_OBJS := build/llvm_wrapper.o build/avra_runtime.o build/ffi.o build/std_io.o
 
 # EVERY OBJECT THIS TREE COMPILES, ONE RULE. The language's own C
 # (runtime/, and the compiler's LLVM binding in backend/) and a
