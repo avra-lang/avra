@@ -119,11 +119,25 @@ type; five are not rows and all five are correct as they stand —
 `avra_float_text_bits`, DID mint through `str_owned` and leaked every
 float the evaluator rendered; it is a row now with its own
 `RtHost.FloatTextBits` — not `RtHost.Text`, whose seat is an `F64`.
-**A RELAYED COUNT OF SEVEN NAMED `sqlite3_errmsg` AS A SIXTH FOREIGN
-CASE; at this base it is not declared as an extern at all, only
-discussed in `@std/sqlite`'s comments.** Both counts are printed
-because neither is wrong about its own tree, and a fixture built from
-the other lane's number would have a member that does not exist.
+**TWO COUNTS, RECONCILED, AND THE RECONCILIATION IS THE USEFUL PART.**
+A relayed count of seven named `sqlite3_errmsg` as a sixth foreign
+case. It is not declared as an extern anywhere in this tree — the
+match was a MARKDOWN line, `packages/std-sqlite/src/c/CENSUS.md:213`,
+which spells `extern fn sqlite3_errmsg(db: ptr) -> string` as a
+PROPOSAL while the real declaration beside it answers `ptr`. The grep
+that found it was scoped to `packages/` without restricting to `.av`,
+so a document describing a declaration was counted as one. Restricted
+to `.av` that count is twelve at its own base and thirteen here, which
+is the same measurement one merge later. Both are printed because
+neither lane is wrong about its own tree, and a fixture built from the
+unrestricted number would have had a member that does not exist.
+
+IT IS THE SAME MISTAKE THIS LANE MADE IN THE OTHER DIRECTION, ONE
+SECTION DOWN: §4's debris list read two live names as dead because its
+grep was scoped to `packages/` and missed `corpus/`. One window was
+too wide by file type and one too narrow by directory, and both
+produced a confident count. A COUNT IS A CLAIM ABOUT A WINDOW —
+whoever quotes one owes the window with it.
 
 THE SECOND REASON, the one the first draft had. Every pointer Avra
 holds carries a sixteen-byte header before its payload (CLAUDE.md,
@@ -448,14 +462,27 @@ step above it.
    it stays `native-only` until S2c, because the fifteen `avra_net_*`
    externs are a package's and the evaluator cannot host them yet.
 
-Debris the migration retires from the runtime, re-verified by grep at
-`9fe5597` (zero Avra callers outside `tests/`, zero references in
-`bootstrap/seed.ll`), lane A's file: `avra_selfhost_file_exists`,
+Debris the migration retires from the runtime, re-measured at
+`4516b15` across `packages/` AND `corpus/`, lane A's file to delete:
 `avra_selfhost_read_file`, `avra_selfhost_write_file`,
 `avra_host_list_dir`, `avra_mkdir_p`, `avra_spawn_status` (its own
-comment names the seed refresh as its death),
-`avra_str_codepoint_count`. `avra_host_is_dir` has one caller and
-moves with `@std/io`.
+comment names the seed refresh as its death), `avra_str_codepoint_count`.
+Six, with zero references anywhere in the tree and zero in
+`bootstrap/seed.ll`.
+
+**TWO NAMES THAT WERE ON THIS LIST ARE NOT DEBRIS, and the mistake is
+worth more than the list.** `avra_selfhost_file_exists` and
+`avra_host_is_dir` are both called by `corpus/native/externs.av` — the
+program S2a nominates as its own proof — and `avra_host_is_dir` also
+pins the unhosted-extern refusal's wording in a compiler test. They
+read as dead because the first grep was scoped to `packages/`, and
+absence in a window was read as absence. That is CLAUDE.md's law about
+a probe that truncates its own output, arriving here as a SCOPE rather
+than a `head`: the instrument worked and what it showed was
+incomplete. Deleting either would have broken the extern seam's own
+witness, which is the exact opposite of debris — so the correction is
+recorded rather than quietly applied, because the next person to read
+a clean grep needs to know which windows this one used.
 
 ## 5. DECISIONS — settled and open
 
@@ -501,10 +528,12 @@ A's. WHAT THE NEAR-MISS TEACHES: the doctrine was right, the CURRENCY
 was wrong. A rule about ownership cannot be enforced from the side of
 the boundary that cannot see who allocated.
 
-**5.5a WHAT THE S2 SURVEY MEASURED, before any of it is written.**
-Four findings, each against `0998a7c`, and each one a thing the prior
-design (`docs/2026_09_05_EXTERN_HOST_SHAPE.md`, the sqlite lane's for
-lane C) does not answer.
+**5.5a WHAT THE S2 SURVEY MEASURED.** Four findings, each against
+`0998a7c` and every one since acted on — the pointer answered by lane
+C, the variadic refusal landed as S2b, §5.3 done, the capability
+objection retired. Each was a thing the prior design
+(`docs/2026_09_05_EXTERN_HOST_SHAPE.md`, the sqlite lane's for lane C)
+does not answer.
 
 - THE EVALUATOR HAS NO POINTER — ANSWERED BY LANE C, and the answer is
   that it does not need one. A foreign pointer RIDES `Val.I`,
@@ -535,7 +564,8 @@ lane C) does not answer.
   `declare`'s vararg flag is hard-wired false at both call sites and
   the grammar has no ellipsis, so the NATIVE path emits a fixed call
   and reads the garbage that paper measured. The refusal belongs at
-  the DECLARATION until the grammar can spell a variadic seat, and
+  the DECLARATION until the grammar can spell a variadic seat — LANDED
+  as S2b, with that narrowing condition written at the keeper — and
   `make externs` already reads each package's real C definitions, so
   it can see the `...` and refuse with a source location.
 - §5.3 WAS FORCED, NOT OPTIONAL, AND IS NOW DONE. The host's own law
@@ -573,6 +603,138 @@ re-execs it, no `dlopen`, static, cached by hash; (c) the compiler
 links every package object in the tree, refused — the compiler would
 carry SQLite. This is where S2 may prove larger than one slice; the
 estimate goes to the lead before a line is written.
+
+## 5.6 S2a — THE EXTERN HOST'S MECHANISM, designed, no code written
+
+The prior paper (`docs/2026_09_05_EXTERN_HOST_SHAPE.md`) settled the
+spine and it stands: ONE fully-applied C prototype rather than libffi,
+integer class then floating class, the answer read through the seat's
+declared width so the host and the backend narrow from ONE declaration.
+Its ABI argument holds on both targets — the doubles never reach the
+stack, so the k-th stacked integer of the uniform shape lands where the
+k-th stacked integer of any all-integer callee lands. What follows is
+what that paper does not say.
+
+### 5.6.1 THE TRAMPOLINE IS `@std/avrac`'s C, NOT THE RUNTIME'S
+
+This falls straight out of §0 and it is the decision with the largest
+blast radius. `build/avra_runtime.o` is hard-coded into the link line
+of EVERY avra-built program (`cli/src/commands/shared.av:277`), so a
+`dlsym` trampoline placed there ships in every binary the compiler
+emits. `build/llvm_wrapper.o` is linked only by `@std/avrac`, and only
+`packages/cli` depends on it — so the compiler's own foreign machinery
+already has a home, and the trampoline belongs beside it as
+`packages/std-avrac/src/c/ffi.c`, built to `build/ffi.o` by the one
+generic rule with no Makefile line, named in `@std/avrac`'s `[link]`.
+
+Two things follow. The blast radius is the COMPILER, never a user's
+program — which answers most of the owner's capability question by
+construction rather than by policy. And S2a becomes the first NEW
+package C to land under this standard, which is the proof the standard
+is usable by its own author and not only by the package that predated
+it.
+
+### 5.6.2 THE TRAMPOLINE NEVER MINTS
+
+Every door that mints a managed value is a core row hosted by an arm
+(§5.3). So the uniform frame only ever moves WORDS and ADDRESSES, and
+the host's law — a returned foreign pointer is never adopted as text —
+costs it nothing, because there is no code path where it could. That
+is why §5.3 had to land first.
+
+### 5.6.3 THE VALUE MAPPING, at the boundary and nowhere else
+
+Lane C's answer: a foreign pointer rides `Val.I`, witnessed by the
+seat's `RtKind` in the row, with no new variant (§5.5a). The mapping:
+
+| direction | `RtKind` | the host |
+|---|---|---|
+| argument | `I64`/`I32`/`U32` | the next integer slot, narrowed by the seat's width with the sign that width names |
+| argument | `Ptr` | the next integer slot; `Val.N` is 0, `Val.I(a)` is `a` |
+| argument | `F64` | the next FP slot, from `Val.F`'s bits |
+| answer | `Void` | discarded |
+| answer | `Ptr` | 0 is `Val.N`, non-zero is `Val.I(address)` |
+| answer | `I64`/`I32`/`U32` | the return register read through the seat's width, extended as that width names |
+| answer | `F64` | `Val.F` of the returned bits |
+
+A REVERSAL CONDITION IS WRITTEN AT THE MAPPING: a pointer rides
+`Val.I` only while Avra cannot tell a pointer from a number, and the
+day `ptr` gains equality, a text projection or arithmetic, `Val.P` is
+earned.
+
+### 5.6.4 THE STAGING PROTOCOL, and why not nineteen seats
+
+The uniform prototype needs MAX_I integers and MAX_F doubles fully
+applied. Declaring that directly is an `extern fn` with nineteen
+seats. The alternative is the shape this tree already uses for
+descriptors — LAND, THEN ACT: `avra_ffi_set_int(k, v)` and
+`avra_ffi_set_f64(k, bits)` stage into the trampoline's own slots, and
+`avra_ffi_call(sym, nint, nf64) -> int64` performs the one fully
+applied call. Five seats instead of nineteen, no Avra-side array
+building, and the same idiom as `avra_fd_read` followed by
+`avra_fd_taken`.
+
+ITS CONDITION, named rather than assumed: the staging area is static,
+so it is correct only while an extern cannot call back into Avra.
+Nothing can today. If a callback seat ever lands, the staging must
+become a frame or the protocol breaks silently, which is the worst
+way for it to break — so the condition is written at the staging
+area, not here.
+
+### 5.6.5 THE REFUSALS ALMOST ALL BECAME STATIC
+
+The prior paper lists eight shapes the uniform frame cannot host and
+places their refusal at INTERPRETATION, by name. S2b moved the most
+dangerous one — the variadic callee — to the DECLARATION, where
+`make externs` reads the real C body. The same currency reaches the
+rest: a struct or union by value, a struct returned by value, a
+`long double`, an `__int128`, a vector, an `f32` parameter and an
+integer-class arity past MAX_I are ALL visible in the C signature the
+keeper already reads. So they belong in the keeper too, and S2a's
+runtime refusal shrinks to almost nothing.
+
+WITH ONE HONEST EXCEPTION, which is the seam: the keeper can only read
+a C body it has a SOURCE for. An extern naming a libc symbol has none.
+For those the Avra DECLARATION bounds the shape — a seat can only be
+`int`, `ptr`, a named width or `float`, so a struct by value cannot be
+spelled at all — and only the arity limits remain as a runtime check.
+That is the whole of the interpretation-time refusal, and it is a
+defect-shaped one rather than a law: a shape that reaches it should
+have been refused by the keeper.
+
+### 5.6.6 WHAT THE SLICE OWES
+
+- `RtKind` gains TWO new exhaustive consumers in `language/interp.av`
+  — the argument coercion and the answer coercion — and both must join
+  `tools/vocab.sh`'s table in the SAME slice. All five of today's
+  consumers are in `llvm.av`; a keeper that has only ever guarded one
+  file is the untested instrument this tree keeps finding.
+- One `RtHost` variant for "a symbol in the image, called through the
+  uniform frame", and the seam at the evaluator's runtime dispatch,
+  which today asks `any(it.name == callee)` and throws away the row it
+  finds. `find` hands it the name, the answer kind, the seat kinds and
+  the inout cells with no plumbing.
+- THE INOUT HALF, which the backend already specifies for the
+  interpreter in its own comment: allocate an eight-byte slot, seed it
+  from the evaluator's cell, pass its address in the integer slot,
+  read it back, truncate and extend by the row's `cells[j]` with the
+  same sign table the backend uses, and write it back to the cell.
+- The extension of `make externs` in §5.6.5.
+
+### 5.6.7 WHAT IT DELIVERS, AND WHAT IT DOES NOT
+
+It retires the evaluator's blanket extern trap for every symbol in the
+compiler's image — 125 of the tree's 235 declarations at the S2 survey
+— and moves `corpus/native/externs.av` into the differential corpus.
+It delivers NEITHER `corpus/net` NOR `corpus/sqlite`: those are 110
+symbols outside the image and they are S2c, the owner's. Saying so
+here is the point, because "the extern host lands" is the recorded
+trigger on several marks and it must not be read as delivering more
+than it does.
+
+A FLOAT IN A HEAP CONTAINER ICES ON MAIN until an approved fix merges,
+so nothing in this slice boxes one; the FP class travels as bits in
+registers only.
 
 ## 6. PROPOSED FOR LAND D — as questions, not text
 
@@ -665,8 +827,11 @@ own prefix) is.
   seven, is not declared as an extern at this base.
 - `RtHost` holds eight `Io*` and eleven `Proc*` variants, ZERO `Net*`,
   and three `Fd*`; the evaluator carries the matching arms.
-- Avra callers of the debris fns named in §4: 0 each outside `tests/`,
-  and 0 in `bootstrap/seed.ll`. `avra_host_is_dir`: 1.
+- The debris list, re-measured over `packages/` AND `corpus/`: six
+  names with zero references anywhere and zero in `bootstrap/seed.ll`.
+  Two names an earlier `packages/`-only grep had called dead are LIVE
+  in `corpus/native/externs.av`; §4 records why that miss is the more
+  useful half.
 - THE VARIADIC KEEPER, both surfaces witnessed. Green on the tree —
   "no declaration faces a variadic C body", 34 of the keeper's own
   cases holding. Disarmed (`is_variadic` forced false): 4 of its 11
