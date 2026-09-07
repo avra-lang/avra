@@ -3,7 +3,7 @@
 //! node's. A new node kind breaks the map at compile time, and the
 //! impl it names owes every pass, enforced by the traits. The walk
 //! order every pass shares lives here too.
-use core.{Expr, Stmt, ExprId, NodeStore, flatten}
+use core.{Expr, Stmt, ExprId, NodeStore, flatten, Pat}
 
 /// Every feature's boxed semantics, built ONCE per assembly — the
 /// exhaustive maps below only SELECT. The language builds it (the
@@ -45,6 +45,7 @@ export type Dispatch = {
     uses: dyn StmtSemantics,
     specs: dyn StmtSemantics,
     defers: dyn StmtSemantics,
+    enumpats: dyn PatSemantics,
 }
 
 /// The semantics of each expression node — THE exhaustive map,
@@ -70,6 +71,17 @@ export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
         .Catch(_, _, _, _) -> d.catches,
         .MethodCall(_, _, _) or .Receiver -> d.methods,
         .Lambda(_, _) or .CallValue(_, _) -> d.lambdas,
+    }
+}
+
+/// The semantics of each PATTERN kind — the pattern ladder's twin
+/// of semantics_of. A new `Pat` variant breaks HERE at compile
+/// time, and the impl it names owes all three methods, enforced by
+/// the trait. Enums owns every variant today; a second owner adds
+/// its arms here and nowhere else.
+export fn pat_semantics_of(d: Dispatch, p: Pat) -> dyn PatSemantics {
+    match p {
+        .Wild or .Rest or .Bind(_) or .Variant(_, _) or .Lit(_) -> d.enumpats,
     }
 }
 
