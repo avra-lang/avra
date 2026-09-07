@@ -31,7 +31,7 @@ OWN="runtime/avra_runtime.c backend/llvm_wrapper.c"
 row() {
     what="$1"; want_status="$2"; sources="$3"; want_words="$4"
     rows=$((rows + 1))
-    out=$(make -n test TREE_C="$OWN $sources" 2>&1) && status=0 || status=$?
+    out=$(make -n idioms TREE_C="$OWN $sources" 2>&1) && status=0 || status=$?
     if [ "$status" != "$want_status" ]; then
         echo "stems: $what — status $status, wanted $want_status"
         fails=$((fails + 1))
@@ -63,38 +63,64 @@ row "the tree's own C alone stands" 0 "" ""
 rows=$((rows + 1))
 make -n test >/dev/null 2>&1 || { echo "stems: the tree's own stems clash"; fails=$((fails + 1)); }
 
-# A TARGET THAT LINKS AN OBJECT MUST DEPEND ON IT. `make avra` runs
-# `./avra build packages/cli`, which links every `[link]` object in
-# that package's closure — so a target depending on a hand-kept list
-# fails on a tree where some other package's object was never made.
-# It happened twice: the evaluator's trampoline, then @std/io's own C,
-# each green only because a sibling target had built the object first.
-# Every object this tree compiles is a prerequisite of `avra` now, and
-# this is what says so.
-rows=$((rows + 1))
-prereqs=" $(make -p -n avra 2>/dev/null | grep -m1 '^avra:' | sed 's/^avra://') "
-# The manifests are the OTHER source: what each package promises the
-# link, checked against what make actually depends on. Reading the
-# glob again would be a copy of the Makefile's own rule and would
-# agree with it by construction.
+# A TARGET DEPENDS ON WHAT IT LINKS. Two lists, two rules, and the
+# rules read DIFFERENT sources from the Makefile so they cannot agree
+# with it by construction: the manifests say what a package promises
+# the link, and `build/avra` itself says what the compiler took.
 #
-# IT ASKS FOR MORE THAN THE COMPILER LINKS, deliberately. Only the
-# packages in `packages/cli`'s closure reach that link, and computing
-# a closure here would be a second implementation of the dependency
-# resolver. Demanding every package's object is the SAFE direction —
-# it can cost a vendored amalgamation compiled once on a cold tree,
-# and it cannot let a needed object go unbuilt.
+# It went wrong twice in one campaign, in both directions. A
+# hand-kept list let `make avra` link an object it had never built —
+# the evaluator's trampoline, then @std/io's own C. Depending on every
+# object instead cost a 9.5 MB vendored amalgamation compiled for a
+# binary that never links it.
+# A target's PREREQUISITES, which is the question — `make -n` prints
+# only what it would DO, and an object already on disk produces no
+# line at all, so a recipe scan answers "absent" about everything a
+# warm tree already has.
+prereqs_of() { make -p -n "$1" 2>/dev/null | grep -m1 "^$1:" | sed "s/^$1://"; }
+
+# EVERY OBJECT A MANIFEST NAMES IS A PACKAGE OBJECT.
+rows=$((rows + 1))
+package_objs=" $(prereqs_of test) "
 for obj in $(sed -n 's/.*objects *= *\[\(.*\)\].*/\1/p' packages/*/avra.toml \
              | tr ',' '\n' | tr -d ' "' | sed 's|.*/||' | sort -u); do
-    case "$prereqs" in
+    case "$package_objs" in
         *" build/$obj "*) ;;
-        *) echo "stems: \`make avra\` may link build/$obj but does not depend on it"
+        *) echo "stems: a manifest names build/$obj and no target that runs programs depends on it"
            fails=$((fails + 1)) ;;
     esac
 done
+
+# EVERY OBJECT THE COMPILER TOOK IS A COMPILER OBJECT — asked of the
+# BINARY, not of a closure walked here. A second dependency resolver
+# would be a copy of the one that decides the answer; `nm` reads what
+# actually happened.
+rows=$((rows + 1))
+looked=0
+if [ -x build/avra ]; then
+    compiler_objs=" $(prereqs_of avra) "
+    for o in build/*.o; do
+        [ -e "$o" ] || continue
+        sym=$(nm -gU "$o" 2>/dev/null | sed -n 's/.* T _//p' | head -1)
+        [ -n "$sym" ] || continue
+        nm -gU build/avra 2>/dev/null | grep -q " T _$sym\$" || continue
+        looked=$((looked + 1))
+        case "$compiler_objs" in
+            *" $o "*) ;;
+            *) echo "stems: build/avra carries $sym from $o, and \`make avra\` does not depend on it"
+               fails=$((fails + 1)) ;;
+        esac
+    done
+fi
+# A CHECK THAT EXAMINED NOTHING IS NOT A CHECK THAT PASSED. It reads
+# objects on disk, and on a cold tree there are none — so it says how
+# many it looked at rather than reporting green over an empty set.
+if [ "$looked" = 0 ]; then
+    echo "stems: the compiler's objects were not on disk — that rule examined NOTHING"
+fi
 
 if [ "$fails" != 0 ]; then
     echo "stems: $fails of $rows rows failed"
     exit 1
 fi
-echo "stems: $rows rows — the stem law refuses every clash and accepts every distinct set"
+echo "stems: $rows rows — the stem law holds, every manifest object has a target, and $looked of the compiler's own were read from the binary"
