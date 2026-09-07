@@ -834,14 +834,27 @@ type Landed = { parts: List<Bytes>, len: int, over: bool, ended: bool }
 fn landed(fd: int, have: int, cap: int) -> Landed {
     mut parts: List<Bytes> = []
     mut len = have
-    mut token = avra_fd_read(fd, chunk())
+    mut token = avra_fd_read(fd, bite(len, cap))
     while token > 0 {
         let b = avra_fd_taken(token)
         parts.push(b)
         len = len + b.length
-        token = avra_fd_read(fd, chunk())
+        if cap > 0 && len > cap { return Landed { parts: parts, len: len, over: true, ended: false } }
+        token = avra_fd_read(fd, bite(len, cap))
     }
     Landed { parts: parts, len: len, over: cap > 0 && len > cap, ended: token == 0 }
+}
+
+/// HOW MUCH TO ASK FOR, which a cap decides. Draining the pipe dry
+/// and THEN testing the bound makes the capture as big as the child
+/// is fast: a cap of 1000 against `yes` kept 679 KB natively and 52 MB
+/// under the evaluator — the same decision, a different answer, which
+/// is a divergence in a value the caller reads. Asking for one byte
+/// past what is left bounds the overshoot to that byte.
+fn bite(have: int, cap: int) -> int {
+    if cap <= 0 { return chunk() }
+    let left = cap - have + 1
+    if left < chunk() { left } else { chunk() }
 }
 
 /// A command launched; `upstream` is the handle whose stdout feeds
