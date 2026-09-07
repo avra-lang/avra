@@ -155,6 +155,25 @@ O(1) slot comes FIRST and the lowering hoist after; a `ConstBytes` waits
 for `Bytes` on main. NEXT: S4, the `grammar` value that parses, probed to
 need no new door.
 
+## The gate had never run this campaign's suites
+
+`SUITES` in the Makefile named every std package but `std-net` and
+`std-http`, so the 22 net cases and the 45 framer cases ran only by hand —
+the sq-redteam lane's finding ("the gate had never run a sqlite test")
+one campaign over, found by counting the gate's package lines after lane
+B's process guard added seven cases and the visible total did not move.
+Both suites join SUITES at d58ff78; the gate is green with them (22 and 45
+under the watchdog, every other suite unchanged). LANE B'S PROCESS GUARD
+(`Holed(word, at)`, every value the host is handed judged over its bytes;
+a 30-character `Tool.path` had RUN `/bin/echo`) is on lane/http at
+a0dbd4e by `cherry-pick -x` of lane/b f012645 — main's working tree holds
+another session's uncommitted work across the same file, so lane B holds
+its integration rather than conflict a pop; the merge from main later
+sees the same patch. The substrate lane's S4 face builds ON it: the guard
+judges the whole command before the first staged word, and stdin stays
+length-aware as `avra_fd_write` (a NUL is data in a stream and two names
+in a path).
+
 ## Sub-lane: strings — S4 (grammar values) on lane/strings, closing
 
 `grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"` declares
@@ -175,8 +194,19 @@ existing `Callee.Row(door)` when the DECLARATION has a format
 has a door of that name, else `Callee.Variant` byte for byte; lane C's
 four constraints verified by running (a grammar with no `print` door
 refuses as a construction; `Port.parse` on a record still names the
-record). Constraint 4 — the refusal naming the door it tried — lives in
-features/variants.av, the features root, and waits on lane C's word.
+record). MEASURED WITH A CONTROL: `Name.parse` 122–125 ns against
+121–125 for the pattern plus the same record built in the arm (the bare
+pattern 97–100, by hand 62–63), so the door adds nothing of its own — and
+the trigger as first written ("above the pattern") would have fired
+forever naming a cost the value shape pays identically; corrected to
+"above the pattern plus an equivalent record", where it does not fire.
+Route B is vindicated by measurement. REVIEWS: lane C approved the rule
+against all four constraints and rules that the lane writes constraint 4
+in this slice at features/variants.av:114, a grammar's own voice beside
+the record refusal, firing only where a grammar's door lookup failed;
+lane A approved the core shape with two findings for the close — a
+reserved code 63 with the format hash as PAYLOAD instead of a hash in the
+tag slot, and `type_fp`'s doc comment moved back below `grammar_fp`.
 Rule B, STATIC METHODS, is the owner's, recorded in the asks with both
 wanting sites. Two grammar-law findings paid on the way: a recovering
 statement branch on `grammar` ate the compiler's own `grammar { … }`

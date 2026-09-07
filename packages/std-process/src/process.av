@@ -1,14 +1,18 @@
 //! @std.process — the program is the authority, the words are data.
 //!
-//! A `Tool` is minted once (`tool("git")?`) and resolved to an
-//! absolute path right there, so no call site ever looks anything
-//! up. A `Command` is a tool, its words and its wiring — a record
-//! with defaults, changed by `with`. A word built from DATA lands
-//! where a dash is inert: `flag` fuses it to its option, `path`
-//! anchors it under `./`, `after_options` puts it past the tool's
-//! end-of-options word. An exit is a VERDICT, never a count: `run()`
-//! judges it by `ok_exits`, `outcome()` reads it. No verb here takes
-//! a command string, so there is no shell to inject.
+//! A `Tool` is minted once (`tool("git")?`) and pinned right there:
+//! a NAME becomes an absolute path no call site looks up again; a
+//! name spelled with a `/` is kept as written, so every child
+//! re-reads it against its own `cwd`. A `Command` is a tool, its
+//! words and its wiring — a record with defaults, changed by `with`.
+//! A word built from DATA lands where a dash is inert: `flag` fuses
+//! it to its option and `path` anchors it under `./`, both answering
+//! a `Command`, so they chain; `after_options` puts words past the
+//! tool's end-of-options word and `word` places a bare positional,
+//! and those two answer a `Result`, so the next verb reads `(…)?`.
+//! An exit is a VERDICT, never a count: `run()` judges it by
+//! `ok_exits`, `outcome()` reads it. No verb here takes a command
+//! string, so there is no shell to inject.
 use @std.time.{Duration, secs, now_ms}
 use @std.errors.{Error, ErrorInfo, info}
 
@@ -56,8 +60,10 @@ fn sigkill() -> int { 9 }
 // ── The types ───────────────────────────────────────────────────
 
 /// The right to run one binary: minted by `tool`, never typed. `path`
-/// is absolute and was resolved exactly once; `terminator` is the word
-/// after which the tool reads no options, when it has one.
+/// is what the mint pinned — absolute when a NAME was looked up on the
+/// PATH, the spelling itself when it held a `/`, which every child
+/// re-reads against its own `cwd`; `terminator` is the word after
+/// which the tool reads no options, when it has one.
 export type Tool = { name: string, path: string, terminator: string? }
 
 /// Where a child's standard input comes from. `Open` is a pipe held
@@ -141,7 +147,9 @@ export enum Stream {
 }
 
 export enum ProcessError {
-    /// At mint: the name resolved to nothing on the PATH searched.
+    /// The program resolved to nothing — at mint, or at spawn when the
+    /// file is gone by then. `searched` is the PATH at mint and the
+    /// tool's own path at spawn.
     NotFound(program: string, searched: string)
     /// At spawn: the file exists and may not be executed.
     Denied(program: string, path: string)
@@ -157,6 +165,7 @@ export enum ProcessError {
     TooMuch(stream: Stream, cap: int, partial: Output)
     /// A positional word begins with `-` and the tool declares no end of options.
     Unplaceable(word: string, program: string)
+    Holed(word: string, at: int)
     /// `start` waited the window out and the sign of readiness never came;
     /// the child was stopped, and what it said rides along.
     NotReady(waited_ms: int, partial: Output)
@@ -181,6 +190,7 @@ impl Error for ProcessError {
             .TimedOut(after, _) -> info("process.timed_out", "the child was stopped after ${after}ms"),
             .TooMuch(s, cap, _) -> info("process.too_much", "${stream_text(s)} exceeded the capture cap of ${cap} bytes"),
             .Unplaceable(w, p) -> info("process.unplaceable", "`${w}` begins with `-` and `${p}` declares no end of options"),
+            .Holed(_, at) -> info("process.holed", "a word holding a NUL is two words — the host reads to byte ${at} and no further"),
             .NotReady(waited, _) -> info("process.not_ready", "the child gave no sign of readiness in ${waited}ms and was stopped"),
             .StageFailed(i, e, _) -> info("process.stage_failed", "pipeline stage ${i + 1} exited ${exit_text(e)}"),
             .Unscripted(p, a) -> info("process.unscripted", "no script answers `${p} ${a}`"),
@@ -191,8 +201,8 @@ impl Error for ProcessError {
 }
 
 /// A tool that resolved to nothing: a spelled path is not an executable
-/// file; a name is on none of the PATH's entries — counted, never
-/// dumped.
+/// file; a name is counted against `searched`'s entries, never dumped —
+/// and `searched` is one path at spawn, so the count reads 1 there.
 fn not_found_text(p: string, searched: string) -> string {
     if p.contains(" ") { return "`${p}` is not one program — a tool is a name or a path, never a command line" }
     if p.contains("/") { return "`${p}` is not an executable file" }
@@ -234,6 +244,8 @@ fn stream_text(s: Stream) -> string {
 /// PATH now — relative entries never searched — and pinned as an
 /// absolute path for good. A name spelled with a `/` is taken as written.
 export fn tool(name: string) -> Result<Tool, ProcessError> {
+    let holed_at = nul_at(name)
+    if holed_at >= 0 { fail ProcessError.Holed(name, holed_at) }
     let path = avra_proc_which(name, search_path())
     if path.length == 0 { fail ProcessError.NotFound(name, search_path()) }
     Tool { name: name, path: path, terminator: terminator_of(name) }
@@ -241,7 +253,7 @@ export fn tool(name: string) -> Result<Tool, ProcessError> {
 
 /// A tool named by the environment (`CC`) with a fallback name: the
 /// variable's value is taken as written — a path or a name — and the
-/// fallback is looked up when it is unset.
+/// fallback is looked up when it is unset or empty.
 export fn tool_from_env(var: string, default: string) -> Result<Tool, ProcessError> {
     let named = avra_host_env(var)
     tool(if named.length > 0 { named } else { default })
@@ -260,7 +272,9 @@ fn is_absolute(d: string) -> bool {
 /// Where a tool stops reading options — data about the tool, never a
 /// rule in the compiler. git repurposed `--` for pathspecs and has its
 /// own word; find and dd have none at all; every getopt tool honours
-/// `--`, which is what a tool not listed here gets.
+/// `--`, which is what a tool not listed here gets. A row is keyed by
+/// the minted NAME, so a tool spelled as a path matches none and takes
+/// `--`: mint by name wherever the tool has a word of its own.
 type Terminator = { name: string, word: string? }
 
 fn terminators() -> List<Terminator> {
@@ -342,7 +356,10 @@ impl Env {
             .Inherit -> [],
         }
     }
-    /// One variable's value, when the child would see it.
+    /// One variable's value, when the child would see it — `null` when
+    /// the pair set holds no such name. Under `.Inherit` an unset name
+    /// answers the empty string, never `null`; that is the absence
+    /// `is_set` reads.
     fn get(name: string) -> string? {
         match self {
             .Only(pairs) -> pairs.find(it.name == name)?.value,
@@ -420,6 +437,8 @@ impl Command {
     fn outcome() -> Result<Outcome, ProcessError> {
         let bad: string? = self.env.names().find(bad_env_name(it))
         if bad != null { fail ProcessError.BadEnvName(bad!) }
+        let short: ProcessError? = holed(self)
+        if short != null { fail short! }
         let started = now_ms()
         let h = avra_proc_run(self.tool.path, self.args, self.env.words(), self.cwd ?? "", self.flags(), stdin_text(self.stdin), timeout_ms(self.timeout), self.drain_grace.ms, self.max_capture)
         if h < 0 { fail spawn_error(self.tool, self.cwd ?? "", 0 - h) }
@@ -506,6 +525,27 @@ fn spawn_error(t: Tool, cwd: string, errno: int) -> ProcessError {
 /// `=` that would split it into two.
 fn bad_env_name(n: string) -> bool {
     n.length == 0 || n.contains("=")
+}
+
+/// Where a NUL sits in a value, or -1. Judged over the BYTES, and it
+/// must be: `contains` is `strstr`, and a needle whose first byte is
+/// NUL is the EMPTY needle, which matches every string at 0 — a guard
+/// built from it finds nothing and refuses everything.
+fn nul_at(s: string) -> int {
+    [s.char_code(i) for i in 0..s.length].index_of(0)
+}
+
+/// THE DOOR every value this command hands the host passes through —
+/// the tool's path, the directory, each argument, each `NAME=value`.
+/// C reads a C STRING, so a NUL ends the value there while Avra still
+/// holds the rest: the guard and the kernel read different bytes, and
+/// an allowlisted path executes another program. Refused, never
+/// truncated. Stdin is the one string that MAY hold a NUL, because it
+/// is a byte stream rather than a name.
+fn holed(c: Command) -> ProcessError? {
+    let bad: string? = [c.tool.path, c.cwd ?? ""].concat(c.args).concat(c.env.words()).find(nul_at(it) >= 0)
+    if bad == null { return null }
+    ProcessError.Holed(bad!, nul_at(bad!))
 }
 
 // ── A running child ─────────────────────────────────────────────
@@ -718,6 +758,8 @@ type Ticked = { stage: Stage, ev: int }
 fn launched(c: Command, upstream: int) -> Result<Stage, ProcessError> {
     let bad: string? = c.env.names().find(bad_env_name(it))
     if bad != null { fail ProcessError.BadEnvName(bad!) }
+    let short: ProcessError? = holed(c)
+    if short != null { fail short! }
     let h = avra_proc_spawn(c.tool.path, c.args, c.env.words(), c.cwd ?? "", c.flags(), c.max_capture, upstream)
     if h < 0 { fail spawn_error(c.tool, c.cwd ?? "", 0 - h) }
     if upstream < 0 && !(c.stdin is .Open) {
@@ -859,16 +901,15 @@ impl Pipeline {
 
 // ── Many at once ────────────────────────────────────────────────
 
-/// The commands run at most `limit` at a time — never unbounded by
-/// accident: a list of a thousand is not a fork bomb — and their
-/// outcomes in the list's order, unjudged. One past its deadline or its
-/// cap stops every sibling and fails the whole.
-/// An outcome slot not yet filled — a fn, because a `null` literal
-/// cannot fill a `List<Outcome?>` slot yet (F2006).
+/// An outcome slot not yet filled.
 fn nothing_yet() -> Outcome? {
     null
 }
 
+/// The commands run at most `limit` at a time — never unbounded by
+/// accident: a list of a thousand is not a fork bomb — and their
+/// outcomes in the list's order, unjudged. One past its deadline or its
+/// cap stops every sibling and fails the whole.
 export fn parallel(cs: List<Command>, limit: int) -> Result<List<Outcome>, ProcessError> {
     let width = if limit < 1 { 1 } else { limit }
     let began = now_ms()
