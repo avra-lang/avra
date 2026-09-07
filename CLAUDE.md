@@ -884,6 +884,12 @@ Syntax the grammar lacks:
   Instantiation is a STATEMENT: as a fn's tail it answers `void`
   ("the body answers `void` but `made` declares `Cfg`") — bind,
   then return the name.
+- A SHELL `${VAR}` INSIDE AN AVRA STRING IS AVRA'S INTERPOLATION.
+  `"echo ${HOME}"` is F3000 "`HOME` is not defined" when no binding
+  has that name — and SILENT when one does: with `let HOME = "/tmp/
+  not-your-home"` above it, the same line compiles clean and the
+  command becomes `echo /tmp/not-your-home`. Spell a shell variable
+  `$VAR`, which Avra leaves alone.
 - A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA
   when another arm follows (found by the HTTP lane, probed here).
   `match v { .R(o) -> o` with `.S -> "s"` on the next line is
@@ -1102,7 +1108,13 @@ Runtime facts, ours to ratify:
   sampled, beside two lanes' gated steps — and lane B's bare `./avra
   test <pkg>` runs the same night were the other bypass: a package
   suite is a whole-package compile plus a linked binary spawning
-  children, never a probe. `AVRA_RC_GUARD=1` only on
+  children, never a probe. AND KNOWING WHAT AN INSTRUMENT DOES TO A
+  MEASUREMENT IS PART OF READING IT: under `AVRA_RC_GUARD=1` a box
+  that reaches rc 0 is KEPT (runtime, by design — that is how it
+  replays a dead box's life), so `AVRA_MEM_STATS` reads 1486 MB with
+  `now == peak` and looks exactly like a total leak; the same run
+  unguarded peaks at 1 MB with every category zero at exit. A lane
+  nearly reported the instrument as the defect. `AVRA_RC_GUARD=1` only on
   small programs: its log is bounded but a guarded compiler run
   over a package is still a machine's worth. Scratch probes
   (`./avra check` of one file) are sub-second and need no lock.
@@ -1287,7 +1299,18 @@ Runtime facts, ours to ratify:
   agreement is a CONSISTENCY check while the LAW is the oracle. The
   gate's third leg does not rescue it: a corpus `.expected` is
   written by the same author from the same understanding, so it joins
-  the consensus rather than breaking it. TWO MORE, from the sqlite
+  the consensus rather than breaking it. AND A THIRD BLINDNESS, from
+  the HTTP lane: the engines can AGREE ON THE VERDICT AND DIVERGE ON
+  THE VALUE. `max_capture: 1000` against `yes` answered `TooMuch` at
+  the same cap in both, while the partial capture the caller reads
+  was 679,786 bytes native and 52,035,584 evaluated — a 51 MB
+  disagreement under a green differential, because the test asserted
+  the DECISION. So A BOUND TESTED AFTER THE WORK IS A BOUND ON
+  ACCEPTANCE, NOT ON THE THING IT NAMES: the drain emptied the pipe
+  until it would block and THEN tested the bound, so the capture was
+  bounded by the CHILD'S SPEED, which is exactly what differs between
+  the engines. Ask for ONE BYTE PAST what is left and stop at the
+  crossing — both answer 1002 for a cap of 1000. TWO MORE, from the sqlite
   lane's probes and re-run here. THE CALLEE-DEPENDENT ANSWER: a C
   `int` return writes 32 bits and ZEROES the upper half (`mov w0,
   #-0x1`) where a `long` writes 64 (`mov x0, #-0x1`), so an extern
