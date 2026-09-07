@@ -402,7 +402,15 @@ the compiler checking itself 28.8s.
           `narrow_sign`), two of them converted from `is .I64` tests
           by lane A the same morning this entry was written — so the
           entry was stale about its own author's change. The
-          interpreter still dispatches on RtHost, never on RtKind.
+          interpreter still dispatches on RtHost, never on RtKind —
+          AND THAT SENTENCE EXPIRES WHEN lane/substrate's extern host
+          merges (f9e2168), which gives `interp.av` four exhaustive
+          RtKind consumers and takes `make vocab` from five to eight.
+          Recorded as a trigger rather than amended, because the fact
+          is TRUE ON MAIN today (main's interp.av has zero RtKind
+          mentions, the keeper reports five) and a record that
+          describes a LANE is wrong about the tree it lives in. Amend
+          at the merge, not at the report.
         * AND THAT IS THE LEAST OF FLOAT. A WIDTH IS A PROPERTY OF A
           SEAT; A FLOAT IS A VALUE, which is why the sized-int slice
           is the COUNTER-EXAMPLE to cite and not the precedent. It
