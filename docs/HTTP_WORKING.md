@@ -174,6 +174,36 @@ judges the whole command before the first staged word, and stdin stays
 length-aware as `avra_fd_write` (a NUL is data in a stream and two names
 in a path).
 
+## Main merged with static methods (aa5e8e6 … ebc60e3): five conflicts, two of them design
+
+The owner granted static methods; lane C landed `static fn` on main
+(e351840) and the merge into lane/http met the strings lane's grammar
+door head on. RESOLVED: `type_receiver` is ONE rule — variant (the
+type's own shape) → grammar door (the vocabulary, `method_row` before
+`declared` as for a value; lane C's precedent, reversing my first order)
+→ `static fn` (the user's impl) → the variant's answer; the obligation
+recorded that a static named like a door becomes unreachable the day a
+grammar type holds an impl (F2059's twin at the declaration). The
+`statics` and `grammars` side tables both stand; `mark_static` and
+`mark_grammar` had BOTH claimed fingerprint 110 — the keeper caught it,
+the grammar mark is 113, next free 114 — and lane C's five-marks check
+is a case now (nodes_adversarial_test: plain, `mut`, `once`, `static`
+and a grammar mark are five fingerprints). THE CODES COLLIDED TOO: the
+strings lane's F2058/F2059 (claimed by announcement) met lane C's
+`type.static_fn`/`type.static_name` on main; the coherence law refused
+the merged tree, and the formats codes are F2063/F2064 here. The
+externs keeper is the union of both sides (78 cases, 10 C sources); the
+sqlite sentinel joined the generic rule as `src/c/sqlite_sentinel.c`
+with its CFLAGS line. THREE LESSONS PAID: my resolution left
+`is_static` unclosed and the store's later methods vanished — the
+SEED-BUILT compiler caught it where `make avra` could not (its binary
+already knew the methods), so `make bootstrap` from the committed seed
+is the check that a resolution is CLOSED; that bootstrap then produced a
+product whose OWN registry held the duplicate codes and refused every
+run — the way back was the saved `build/avra.pre`; and my test named
+bindings `static` and `once`, which are keywords now. Gate green at
+ec2a60d (87 corpus programs), seed refreshed and proven at ebc60e3.
+
 ## Sub-lane: substrate — S4 (process) LANDED (945a251); the seed refreshed (c53fd88)
 
 Eleven rows, eleven `RtHost` variants and eleven evaluator arms out of
