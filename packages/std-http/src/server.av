@@ -105,7 +105,7 @@ impl Server<A> {
         if e.failed { return self.dropped(l!) }
         if e.readable || e.hangup { self.readable(l!)? }
         let again: Link? = self.link_at(e.fd)
-        if again != null && e.writable { self.writable(again!)? }
+        if again != null && e.writable { self.kept(again!)? }
         .Ok(e.fd)
     }
 
@@ -141,7 +141,6 @@ impl Server<A> {
             match self.stepped(cur) {
                 .Served(next) -> { cur = next },
                 .Waiting(next) -> { return self.kept(next) },
-                .Closed -> { return .Ok(l.conn.fd) },
             }
         }
         .Ok(l.conn.fd)
@@ -216,7 +215,7 @@ impl Server<A> {
 
     /// The link written as far as the socket takes it, then kept: a
     /// link owing output watches for writability, one owing nothing
-    /// closes if it was closing.
+    /// closes if it was closing. A writable socket comes here too.
     mut fn kept(l: Link) -> Result<int, NetError> {
         let flushed = self.flushed(l)?
         if flushed.written < flushed.out.length {
@@ -235,12 +234,6 @@ impl Server<A> {
         if l.written >= l.out.length { return .Ok(l) }
         let n = l.conn.write(l.out, l.written)?
         .Ok(l with { written: l.written + n })
-    }
-
-    /// The socket is writable: what is owed goes out, then the link
-    /// is kept as after a read.
-    mut fn writable(l: Link) -> Result<int, NetError> {
-        self.kept(l)
     }
 
     /// The peer has finished writing: what is owed is still written,
@@ -294,10 +287,11 @@ impl Server<A> {
     }
 }
 
+/// Where one step over the buffer left a link: a request served and
+/// its bytes consumed, or nothing more to serve until a read.
 enum Progress {
     Served(l: Link)
     Waiting(l: Link)
-    Closed
 }
 
 /// The response on the wire for a method: a HEAD's answer carries the
