@@ -468,8 +468,47 @@ an `extern fn`'s answer type is managed and its symbol is not a
 registry row, in lane C's typing, with `@std/sqlite`'s four static-text
 externs needing a spelled license at the site. Not written.
 
-**5.5 HOW S2 REACHES A SYMBOL THAT IS NOT IN THE COMPILER'S IMAGE.
-OPEN — the S2 design conversation.** `dlsym(RTLD_DEFAULT)` reaches
+**5.5a WHAT THE S2 SURVEY MEASURED, before any of it is written.**
+Four findings, each against `0998a7c`, and each one a thing the prior
+design (`docs/2026_09_05_EXTERN_HOST_SHAPE.md`, the sqlite lane's for
+lane C) does not answer.
+
+- THE EVALUATOR HAS NO POINTER. `Val` has eight variants and none is
+  an address; `Val.N` is ABSENCE, minted for a null-riding constant.
+  So the prior design's `Ptr` return row has nowhere to land, and the
+  argument side has the same hole. Lane C's value model decides it,
+  and nothing should be built before they do.
+- THE VARIADIC REFUSAL IS PLACED WRONG TODAY, by that paper's own
+  receipt. It reasons that the refusal belongs at interpretation
+  because "the native path can host variadics perfectly well" — but
+  `declare`'s vararg flag is hard-wired false at both call sites and
+  the grammar has no ellipsis, so the NATIVE path emits a fixed call
+  and reads the garbage that paper measured. The refusal belongs at
+  the DECLARATION until the grammar can spell a variadic seat, and
+  `make externs` already reads each package's real C definitions, so
+  it can see the `...` and refuse with a source location.
+- §5.3 IS FORCED, NOT OPTIONAL. The host's own law is that a returned
+  foreign pointer is never adopted as text. `avra_fd_taken` answers
+  `Bytes`. So while the doors are externs, the host must break its own
+  law or refuse them, and `corpus/net` can never be `eval == native` —
+  which is S2's stated deliverable. The rows are a precondition, not a
+  tidy-up.
+- THE CAPABILITY OBJECTION IS ALREADY MOOT. That paper worries the
+  host widens what the "just look at it" verb can do. `avra run`
+  already reaches the host in full through the hosted `Proc*` and
+  `Io*` arms: `corpus/process` under the evaluator spawns children,
+  captures both streams, feeds stdin, kills one by signal 9, and runs
+  a pipeline and a scripted runner. The host adds REACH, not a class
+  of power that was denied. Measured, not argued.
+
+AND WHAT TIER 1 BUYS, by comparing every declaration against the
+compiler's own symbol table: 235 externs declared tree-wide, 125
+already in `build/avra`'s image, 110 not — 88 `sqlite3_*`, 14
+`avra_net_*`, 8 `witness_*`. So a `dlsym(RTLD_DEFAULT)` tier hosts a
+clear majority on day one and reaches NEITHER corpus S2 names.
+
+**5.5b HOW S2 REACHES A SYMBOL THAT IS NOT IN THE COMPILER'S IMAGE.
+OPEN — the owner's, routed through the lead.** `dlsym(RTLD_DEFAULT)` reaches
 `@std/io` and `@std/process` once they are package C, because the `cli`
 package depends on both and `build/avra` links their objects.
 `@std/sqlite` is in no dependency of the compiler. Three routes:
