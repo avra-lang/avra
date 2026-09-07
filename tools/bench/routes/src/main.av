@@ -1,0 +1,89 @@
+//! WHAT A LINEAR ROUTE SCAN COSTS as the rows grows — the number a
+//! trie has to beat before it earns its keep. Every measurement hits
+//! the LAST route in the rows, which is the scan's worst case and
+//! the trie's best argument.
+use @std.http.frame.{framed, limits, Method, Head}
+use @std.http.http.{Request, Response, text}
+use @std.http.route.{Route, routed, dispatch}
+use @std.time.{now_ns}
+
+grammar A = "/alpha/{x}"
+grammar B = "/bravo/{x}"
+grammar C = "/charlie/{x}"
+grammar D = "/delta/{x}"
+grammar E = "/echo/{x}"
+grammar F = "/foxtrot/{x}"
+grammar G = "/golf/{x}"
+grammar H = "/hotel/{x}"
+
+fn hit(q: Request, r: A) -> Response { text(200, r.x) }
+fn b_hit(q: Request, r: B) -> Response { text(200, r.x) }
+fn c_hit(q: Request, r: C) -> Response { text(200, r.x) }
+fn d_hit(q: Request, r: D) -> Response { text(200, r.x) }
+fn e_hit(q: Request, r: E) -> Response { text(200, r.x) }
+fn f_hit(q: Request, r: F) -> Response { text(200, r.x) }
+fn g_hit(q: Request, r: G) -> Response { text(200, r.x) }
+fn h_hit(q: Request, r: H) -> Response { text(200, r.x) }
+
+/// Eight routes, the target's own route LAST — so a scan of n pays
+/// n parses and a trie would pay one lookup.
+fn eight() -> List<Route> {
+    [routed<A>(Method.Get, "/alpha/{x}", (t: string) -> A.parse(t), hit),
+     routed<B>(Method.Get, "/bravo/{x}", (t: string) -> B.parse(t), b_hit),
+     routed<C>(Method.Get, "/charlie/{x}", (t: string) -> C.parse(t), c_hit),
+     routed<D>(Method.Get, "/delta/{x}", (t: string) -> D.parse(t), d_hit),
+     routed<E>(Method.Get, "/echo/{x}", (t: string) -> E.parse(t), e_hit),
+     routed<F>(Method.Get, "/foxtrot/{x}", (t: string) -> F.parse(t), f_hit),
+     routed<G>(Method.Get, "/golf/{x}", (t: string) -> G.parse(t), g_hit),
+     routed<H>(Method.Get, "/hotel/{x}", (t: string) -> H.parse(t), h_hit)]
+}
+
+fn asked(line: string) -> Request {
+    let raw = (line + "\r\nHost: h\r\n\r\n").bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "b" },
+        .Partial -> Request { raw: raw, head: nothing_head(), body: "".bytes(), peer: "b" },
+        .Refused(_) -> Request { raw: raw, head: nothing_head(), body: "".bytes(), peer: "b" },
+    }
+}
+
+/// A head no route answers — used only when the bench's own input
+/// fails to frame, which the answer check then reports as -1.
+fn nothing_head() -> Head {
+    match framed("GET / HTTP/1.1\r\nHost: h\r\n\r\n".bytes(), 0, 0, limits()) {
+        .Complete(head) -> head,
+        .Partial -> nothing_head(),
+        .Refused(_) -> nothing_head(),
+    }
+}
+
+fn scanned(rows: List<Route>, q: Request, runs: int) -> int {
+    mut ok = 0
+    // LICENSED I3: a timed loop counts, it does not build a list
+    for i in 0..runs {
+        if dispatch(rows, q).status == 200 { ok = ok + 1 }
+    }
+    ok
+}
+
+/// Nanoseconds per dispatch, or -1 when a run did not answer 200 —
+/// so a rows that never matched cannot read as a fast one.
+fn per_call(spent: int, runs: int, ok: int) -> int {
+    if ok != runs { return 0 - 1 }
+    spent / runs
+}
+
+fn cost(rows: List<Route>, line: string, runs: int) -> int {
+    let q = asked(line)
+    let start = now_ns()
+    let ok = scanned(rows, q, runs)
+    per_call(now_ns() - start, runs, ok)
+}
+
+let runs = 200000
+let one = eight().slice(7, 8)
+let four = eight().slice(4, 8)
+let all = eight()
+let target = "GET /hotel/7 HTTP/1.1"
+
+"runs ${runs}, hitting the LAST route | 1 route ${cost(one, target, runs)} ns | 4 routes ${cost(four, target, runs)} ns | 8 routes ${cost(all, target, runs)} ns"
