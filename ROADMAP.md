@@ -2455,6 +2455,23 @@ the order is the dependency.
         being true the day C callbacks land.
         Proved in `corpus/native/externs.av`, a file that already
         existed for the host seam: `null some some`.
+  - [x] THE CLASS CHECKED, after the arm fix: every other flattened
+        fingerprint in core/nodes.av is unambiguous, and the reasons
+        are worth recording so nobody re-derives them.
+        A FLATTEN IS AMBIGUOUS ONLY WHEN TWO OR MORE VARIABLE-LENGTH
+        RUNS MEET WITH NO BOUNDARY BETWEEN THEM. The survivors are
+        safe by one of two structures: FIXED ARITY PER GROUP
+        (`case_fps` 3 per case, `param_fps` 2 per param — the group
+        size implies the boundary), or PAIRED LISTS OF EQUAL LENGTH
+        (`When`'s conds and values, which `build_when` refuses to
+        build unequal, so 2n+1 determines n).
+        `variant_fps` is the one that is ambiguous only by a HASH
+        COINCIDENCE rather than by construction — a variant name's
+        `fp_str` sitting where a param's would — which is the
+        birthday risk every hash carries and not this defect. The arm
+        case was different in kind: two different structures mapped
+        to the SAME SEQUENCE with no coincidence needed, because a
+        pattern's hash and an expression's hash are the same space.
   - [ ] A NUL AT THE C BOUNDARY DOES NOT LOSE DATA, IT REDIRECTS
         THE OPERATION — and that is a bigger claim than CLAUDE.md's
         NUL law makes. Found 2026-09-07 by the HTTP campaign's
@@ -3948,8 +3965,20 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         variants, binds and literals, and CLAUDE.md's grammar laws are
         its scar tissue; a format that lives elsewhere fails cheaper.
         Routes compile at runtime into a trie until then.
-  - [ ] STATIC METHODS — A TYPE-QUALIFIED CALL (`Name.parse(text)`
-        meaning a call to an inherent fn, not variant construction).
+  - [ ] STATIC METHODS — the owner said "Yes to static methods" to
+        the HTTP lead 2026-09-07; lane C, who lands it, holds that a
+        relayed word is not a grant (the pointer-mint fence), so it
+        lands when the owner says so IN LANE C'S SESSION. THE SHAPE
+        BEING APPROVED, probed by lane C: a fn under an impl with no
+        `self` is TODAY silently a method with an implicit receiver
+        (`p.make(5)` compiles clean), so the slice is (1) a MARKER for
+        a receiver-less fn under an impl — a declaration-surface change
+        with a grammar half; (2) the admission test reading it; (3) the
+        refusal's voice widening; (4) `Self`, if in the same slice.
+        Grammar's `parse` then becomes one case of the general door and
+        nothing landed under Rule A is thrown away.
+        THE ASK AS IT WAS PUT — a type-qualified call (`Name.parse(text)`
+        meaning a call to an inherent fn, not variant construction),
         THE OWNER'S DOOR, put separately by lane C's ruling and not
         taken as a feature's side effect: the ROADMAP already records
         "STATIC METHODS do not exist today … when the spec wants them

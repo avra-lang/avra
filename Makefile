@@ -266,6 +266,11 @@ idioms-accept:
 vocab:
 	@sh tools/vocab.sh
 
+# A fingerprint tag NAMES a node kind: inside one fold space no two
+# kinds may wear one number, or they fingerprint alike by construction.
+fingerprints:
+	@python3 tools/fingerprints.py
+
 # THE EXTERN WALL'S WIDTH: Avra's `int` is 64 bits and C's is 32, so a
 # C body answering a narrow type writes only the low half and a
 # negative value reads as a large positive one. Both engines agree on
@@ -327,7 +332,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # scaffolded into std-avrac before, removed after, however the suites
 # end — so the templates' own test is one case of that suite, not a
 # second compile of the whole compiler for one case.
-gate: stems vocab externs idioms tested traps corpus witness
+gate: stems vocab fingerprints externs idioms tested traps corpus witness
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe

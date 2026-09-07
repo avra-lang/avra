@@ -1,0 +1,123 @@
+// A FINGERPRINT'S PAYLOAD IS A FLAT LIST, so two sequences spliced
+// into one carry a boundary that can MOVE: shifting an item from the
+// first to the second leaves the same list, and two different nodes
+// wear one identity. Every node kind splicing two sequences is
+// attacked here by moving exactly one item across its boundary.
+use @std.avrac.core.{new_node_store, Expr, Stmt, Pat, Param, TypeRef, named_ref}
+
+fn written(name: string, optional: bool) -> TypeRef {
+    named_ref(name) with { optional: optional }
+}
+
+fn seat(name: string, t: TypeRef?) -> Param {
+    Param { name: name, ty: t, default: null, mutable: false }
+}
+
+spec "core/nodes adversarial" {
+    given "a boundary between two spliced sequences" {
+        then "a pinned type is not an argument — `f<A>(B)` vs `f<A, B?>()`" {
+            mut s = new_node_store()
+            let b = s.alloc_expr(Expr.Ident("B"), null)
+            let arg = s.alloc_expr(Expr.Call("f", [written("A", false)], [b]), null)
+            let pin = s.alloc_expr(Expr.Call("f", [written("A", false), written("B", true)], []), null)
+            s.expr_fingerprint(arg) != s.expr_fingerprint(pin)
+        }
+        then "a module path is not an item list — `use a.b` vs `use a.{b}`" {
+            mut s = new_node_store()
+            let deep = s.alloc_stmt(Stmt.Use(["a", "b"], []), null)
+            let item = s.alloc_stmt(Stmt.Use(["a"], ["b"]), null)
+            s.stmt_fingerprint(deep) != s.stmt_fingerprint(item)
+        }
+        then "a type parameter is not a value parameter" {
+            mut s = new_node_store()
+            let body = s.alloc_expr(Expr.IntLit(1), null)
+            let t = seat("T", null)
+            let x = seat("x", written("int", false))
+            let split = s.alloc_stmt(Stmt.FnDecl("f", [t], [x], written("int", false), body), null)
+            let both = s.alloc_stmt(Stmt.FnDecl("f", [t, x], [], written("int", false), body), null)
+            s.stmt_fingerprint(split) != s.stmt_fingerprint(both)
+        }
+        then "a then-branch is not an else-branch — `if c { a b }` vs `if c { a } else { b }`" {
+            mut s = new_node_store()
+            let v = s.alloc_expr(Expr.IntLit(1), null)
+            let c = s.alloc_expr(Expr.BoolLit(true), null)
+            let a = s.alloc_stmt(Stmt.ExprStmt(v), null)
+            let b = s.alloc_stmt(Stmt.ExprStmt(v), null)
+            let fell = s.alloc_stmt(Stmt.IfStmt(c, [a, b], []), null)
+            let split = s.alloc_stmt(Stmt.IfStmt(c, [a], [b]), null)
+            s.stmt_fingerprint(fell) != s.stmt_fingerprint(split)
+        }
+        then "a map's keys are not its values" {
+            mut s = new_node_store()
+            let a = s.alloc_expr(Expr.IntLit(1), null)
+            let b = s.alloc_expr(Expr.IntLit(2), null)
+            let c = s.alloc_expr(Expr.IntLit(3), null)
+            let l = s.alloc_expr(Expr.MapLit([a, b], [c]), null)
+            let r = s.alloc_expr(Expr.MapLit([a], [b, c]), null)
+            s.expr_fingerprint(l) != s.expr_fingerprint(r)
+        }
+        then "a `when`'s conditions are not its values" {
+            mut s = new_node_store()
+            let a = s.alloc_expr(Expr.IntLit(1), null)
+            let b = s.alloc_expr(Expr.IntLit(2), null)
+            let c = s.alloc_expr(Expr.IntLit(3), null)
+            let f = s.alloc_expr(Expr.IntLit(4), null)
+            let l = s.alloc_expr(Expr.When([a, b], [c], f), null)
+            let r = s.alloc_expr(Expr.When([a], [b, c], f), null)
+            s.expr_fingerprint(l) != s.expr_fingerprint(r)
+        }
+        then "a caught variant is not its bind" {
+            mut s = new_node_store()
+            let subject = s.alloc_expr(Expr.IntLit(1), null)
+            let v = s.alloc_expr(Expr.IntLit(2), null)
+            let l = s.alloc_expr(Expr.Catch(subject, ["A", "B"], ["b"], [v]), null)
+            let r = s.alloc_expr(Expr.Catch(subject, ["A"], ["B", "b"], [v]), null)
+            s.expr_fingerprint(l) != s.expr_fingerprint(r)
+        }
+        then "a block's statements are not its tail" {
+            mut s = new_node_store()
+            let v = s.alloc_expr(Expr.IntLit(1), null)
+            let a = s.alloc_stmt(Stmt.ExprStmt(v), null)
+            let held = s.alloc_expr(Expr.Block([a], v), null)
+            let left = s.alloc_expr(Expr.Block([a], null), null)
+            s.expr_fingerprint(held) != s.expr_fingerprint(left)
+        }
+        then "an interpolation's text is not its holes" {
+            mut s = new_node_store()
+            let h = s.alloc_expr(Expr.IntLit(1), null)
+            let l = s.alloc_expr(Expr.Interp(["a", "b"], [h]), null)
+            let r = s.alloc_expr(Expr.Interp(["a"], [h, h]), null)
+            s.expr_fingerprint(l) != s.expr_fingerprint(r)
+        }
+        then "a lambda's parameters are not its body" {
+            mut s = new_node_store()
+            let body = s.alloc_expr(Expr.IntLit(1), null)
+            let l = s.alloc_expr(Expr.Lambda([seat("x", null)], body), null)
+            let r = s.alloc_expr(Expr.Lambda([seat("x", null), seat("y", null)], body), null)
+            s.expr_fingerprint(l) != s.expr_fingerprint(r)
+        }
+    }
+    given "a tag shared by two node kinds" {
+        then "a zero-payload pattern and expression cannot share one" {
+            mut s = new_node_store()
+            let rest = s.alloc_pat(Pat.Rest, null)
+            let recv = s.alloc_expr(Expr.Receiver, null)
+            s.pat_fingerprint(rest) != s.expr_fingerprint(recv)
+        }
+        then "a zero-payload pattern and statement cannot share one" {
+            mut s = new_node_store()
+            let wild = s.alloc_pat(Pat.Wild, null)
+            let empty_use = s.alloc_stmt(Stmt.Use([], []), null)
+            s.pat_fingerprint(wild) != s.stmt_fingerprint(empty_use)
+        }
+        then "a written type and an expression cannot share one — `f<B?>()` vs `f(B)`" {
+            mut s = new_node_store()
+            // A nullable type read as `fp(2, [fp_str("B")])` and `.Ident("B")`
+            // read the same: one is a PIN, the other an ARGUMENT.
+            let ident = s.alloc_expr(Expr.Ident("B"), null)
+            let pinned = s.alloc_expr(Expr.Call("f", [written("B", true)], []), null)
+            let passed = s.alloc_expr(Expr.Call("f", [], [ident]), null)
+            s.expr_fingerprint(pinned) != s.expr_fingerprint(passed)
+        }
+    }
+}

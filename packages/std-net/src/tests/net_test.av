@@ -72,7 +72,9 @@ fn half_close() -> Result<bool, NetError> {
     pr.client.shutdown_write()?
     let ready = readable(pr.p, pr.server.fd)?
     let first = data_of(pr.server.read(64)?)
-    .Ok(ready && first == "bye".bytes() && data_of(pr.server.read(64)?) == "<eof>".bytes())
+    // the shutdown is its own segment: waited for like the data
+    let again = readable(pr.p, pr.server.fd)?
+    .Ok(ready && first == "bye".bytes() && again && data_of(pr.server.read(64)?) == "<eof>".bytes())
 }
 
 fn peers() -> Result<bool, NetError> {
