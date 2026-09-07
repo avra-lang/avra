@@ -221,8 +221,11 @@ export fn lower_parse(mut cx: LowerCx, mc: MethodCall) -> Reg {
 /// same thing absence always means — this grammar does not read that.
 fn from_octets(mut cx: LowerCx, mc: MethodCall, read: GrammarSpec, want: TypeId) -> Reg {
     let str_opt = cx.view.types.intern(Type.Opt(cx.view.types.intern(Type.Str)))
+    // the argument lowers FIRST: `reg_of` may mint, and an answer
+    // minted before it would define out of order (I29)
+    let octets = cx.reg_of(mc.args[0])
     let crossed = cx.mint_ty(str_opt)
-    cx.emit(Ins.CallRt(crossed, "avra_str_of_bytes", [cx.reg_of(mc.args[0])]))
+    cx.emit(Ins.CallRt(crossed, "avra_str_of_bytes", [octets]))
     open_presence(cx, crossed, str_opt)
     arm_end(cx, read_into(cx, read, carried_of(cx, crossed, str_opt), want))
     let none = absent_of(cx, want)

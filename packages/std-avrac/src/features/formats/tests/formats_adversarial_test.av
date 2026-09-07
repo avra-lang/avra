@@ -170,8 +170,11 @@ spec "features/formats adversarial" {
         then "an int in the text seat is refused" {
             refused_with("grammar G = \"{a}-{b}\"\nG.parse(5)", "argument 1 of `parse` wants `string`, found `int`")
         }
-        then "a Bytes in the text seat is refused" {
-            refused_with("grammar G = \"{a}-{b}\"\nG.parse(\"x\".bytes())", "argument 1 of `parse` wants `string`, found `Bytes`")
+        then "octets read the same as the text they came from" {
+            shown("grammar G = \"{a}-{b}\"\nmatch G.parse(\"p-q\".bytes()) { r? -> r.a + r.b\n    null -> \"no\" }") == "pq"
+        }
+        then "octets that are not UTF-8 answer absence, like any target this grammar cannot read" {
+            shown("grammar G = \"{a}-{b}\"\nlet bad = [112, 45, 255].bytes()!\nmatch G.parse(bad) { r? -> r.a + r.b\n    null -> \"no\" }") == "no"
         }
         then "no argument is refused by arity" {
             refused_with("grammar G = \"{a}-{b}\"\nG.parse()", "`parse` takes 1 arguments, found 0")
