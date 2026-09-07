@@ -1286,6 +1286,30 @@ Runtime facts, ours to ratify:
   wrong. Telling the two laws apart is the whole skill: ask whether
   the failing case CAN BE BUILT. If it can, build it; if it cannot,
   trace it and write the deadline down.
+- A CHECK THAT EXAMINED NOTHING IS NOT A CHECK THAT PASSED. A keeper
+  reading objects from disk examines nothing on a COLD TREE and
+  reports success; a grep scoped too narrowly answers "absent" about
+  a thing that exists — `avra_ptr_at` read as missing here because
+  the search was confined to `packages/`, and it was in the runtime
+  and the corpus. So A KEEPER COUNTS WHAT IT LOOKED AT AND SAYS SO:
+  `tools/externs.py` already does ("N C source(s)"), `make idioms`
+  reports its debt and not its coverage. The hazard is live because
+  there are TWO LINK SITES — the bootstrap's hand-written clang line
+  and `make avra`'s per-target prerequisites — and a hand-kept list
+  let the compiler link an object it had never built, twice in one
+  night. A keeper for that must read a DIFFERENT SOURCE than the
+  Makefile: the manifests for the package list, `nm build/avra` for
+  the compiler's. (Substrate lane's, attributed; the two sites and
+  the idioms gap verified here.)
+- ORDER, NOT GRANULARITY: when two requirements are opposite
+  ORDERINGS around one event, no tuning satisfies both and TWO
+  INVARIANTS do. A deadline already passed must fire BEFORE the child
+  is polled, or `echo` under `ms(0)` still gets its word out; and a
+  timeout's capture must hold everything readable WHEN it fired, so
+  the last act before declaring is a DRAIN and the grace is a floor.
+  Stated as order, the process pump's turn length was never tuned
+  once when it moved from C into Avra — A TUNED INTERVAL IS THE SMELL
+  that two orderings are being approximated by one number.
 - AN ASSUMPTION NOTHING HAS EVER TRIED TO VIOLATE IS NOT A GUARANTEE.
   A check that passes proves the arrangement it was handed happened
   to work; it does not prove the check would NOTICE. Two shapes,
