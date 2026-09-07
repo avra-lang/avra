@@ -116,7 +116,7 @@ decoder is RESUMABLE (`chunker`/`fed`, a `Phase`), never a re-walk;
 45 attack-table rows pinned in `tests/frame_test.av`. `http.av`:
 `Request` (spans into its own buffer; `header(name)` slices on ask),
 `Response`, `wire`, `reason`. THE FRAMER'S COST, MEASURED (bench in
-`corpus/build/bench-frame`, ignored): 3457 ns per four-field 112-byte
+`tools/bench/frame_head`, ignored): 3457 ns per four-field 112-byte
 head natively, an order of magnitude off picohttpparser's 366 ns for
 nine fields. Sampled top of stack: `once` reads a THIRD (`once_at` does
 a strcmp per earlier entry on every read — lane A's, asked with the
@@ -174,6 +174,41 @@ judges the whole command before the first staged word, and stdin stays
 length-aware as `avra_fd_write` (a NUL is data in a stream and two names
 in a path).
 
+## Main merged with static methods (aa5e8e6 … ebc60e3): five conflicts, two of them design
+
+The owner granted static methods; lane C landed `static fn` on main
+(e351840) and the merge into lane/http met the strings lane's grammar
+door head on. RESOLVED: `type_receiver` is ONE rule — variant (the
+type's own shape) → grammar door (the vocabulary, `method_row` before
+`declared` as for a value; lane C's precedent, reversing my first order)
+→ `static fn` (the user's impl) → the variant's answer; the obligation
+recorded that a static named like a door becomes unreachable the day a
+grammar type holds an impl (F2059's twin at the declaration). The
+`statics` and `grammars` side tables both stand; `mark_static` and
+`mark_grammar` had BOTH claimed fingerprint 110 — the keeper caught it,
+the grammar mark is 113, next free 114 — and lane C's five-marks check
+is a case now (nodes_adversarial_test: plain, `mut`, `once`, `static`
+and a grammar mark are five fingerprints). THE CODES COLLIDED TOO: the
+strings lane's F2058/F2059 (claimed by announcement) met lane C's
+`type.static_fn`/`type.static_name` on main; the coherence law refused
+the merged tree, and the formats codes are F2063/F2064 here. The
+externs keeper is the union of both sides (78 cases, 10 C sources); the
+sqlite sentinel joined the generic rule as `src/c/sqlite_sentinel.c`
+with its CFLAGS line. THREE LESSONS PAID: my resolution left
+`is_static` unclosed and the store's later methods vanished — the
+SEED-BUILT compiler caught it where `make avra` could not (its binary
+already knew the methods), so `make bootstrap` from the committed seed
+is the check that a resolution is CLOSED; that bootstrap then produced a
+product whose OWN registry held the duplicate codes and refused every
+run — the way back was the saved `build/avra.pre`; and my test named
+bindings `static` and `once`, which are keywords now. Gate green at
+ec2a60d (87 corpus programs), seed refreshed and proven at ebc60e3.
+MAIN AGAIN at 6e206a9 (lane A's census caller and its label fix, lane
+C's seats bracket, the sqlite lane's own sentinel move to the same path
+mine chose — the merge reconciled the rename with no hand work, only the
+Makefile's hand rules dropped once more); gate green, seed refreshed and
+proven after.
+
 ## Sub-lane: substrate — S4 (process) LANDED (945a251); the seed refreshed (c53fd88)
 
 Eleven rows, eleven `RtHost` variants and eleven evaluator arms out of
@@ -196,9 +231,48 @@ gone so a recycled pgid is never signalled). THE SEAM GAINED AN ENGINE:
 `corpus/native/process_seam.av` became `corpus/proc-seam`, a package
 corpus dir, `eval == native == expected` where it was native-only. 14
 `avra_proc_*` symbols at both link sites, every one the package's. The
-seed was refreshed over the merged tree at c53fd88 and proven. Pending:
-the red team over S4's C and pump, the standard's review round, the laws
-for lane D.
+seed was refreshed over the merged tree at c53fd88 and proven. THE RED
+TEAM (ae3fd47, merged at 7a38127, gate green) found a DIVERGENCE: a
+`max_capture` of 1000 against `yes` kept 680 KB natively and 52 MB under
+the evaluator — both engines agreed on `TooMuch` and disagreed by 51 MB
+on the partial the caller reads, because the drain emptied the pipe and
+THEN tested the bound, so the capture was bounded by the child's speed;
+it asks for one byte past what is left now and stops at the crossing,
+1002 bytes on either engine. THE LAW: a bound tested after the work is a
+bound on ACCEPTANCE, not on the thing it names. The C refuses a nameless
+env entry on its own account. Survived: nine degenerate shapes, fourteen
+hostile seat values, every one an errno and never a trap; the three
+order invariants to the letter. A NEAR-MISS ON RECORD: `AVRA_RC_GUARD=1`
+showed 1486 MB live at exit under forty capped floods — the guard KEEPS
+every box that reaches zero; without it 1 MB and nothing live. Knowing
+what an instrument does to a measurement is part of reading it. 95 cases
+in `@std/process`. THE CHARTER CLOSED (82e6daf lane B's bound — a group
+observed EMPTY is never signalled again, its fixture failing once for
+the wrong reason, a 400-poll bound where a shell needs 32,213; 29496c9
+the standard's review round — four places it misled, every one found by
+a package built against it, never by reading: a descriptor contract
+stale under its own heading, the predicate split missing and invented
+twice, the roster and §5.1 disagreeing about listing for the whole
+campaign, a checklist asking for less than was reachable; 2acff96 lane
+D's shell-variable case — `$NAME`, since a same-named local makes
+`${NAME}` silent). Merged at db0b41e, gate green, 97 process cases.
+Five laws drafted for lane D: two already on main, three sent (lane D
+took the examined-nothing corollary and order-not-granularity, declined
+the staging law as a one-mechanism property — it lives in the standard).
+THE S2C PAPER (5551523, merged at 597aa54; `docs/2026_09_07_S2C_DYLIB.md`)
+puts the last door to the owner with numbers: `build/avra` 2.1 MB,
+`sqlite3.o` 2.08 MB and 357 symbols, a 13.61 s cold compile — but the
+objection to linking every package into the compiler is CONTAINMENT, not
+size: `dlsym(RTLD_DEFAULT)` searches the whole image, so a program that
+never named `@std/sqlite` could call it. RECOMMENDED: a per-package
+shared library DERIVED by the tree from the object the manifest names
+(never named by a manifest — an opened path is a load primitive across a
+dependency boundary), opened by the program's own closure — the only
+shape where the host's reach MATCHES the native link; today's reach is
+wider (libc is in the image). A dylib's own symbol namespace is a
+different guarantee than the flat image's, to be stated. The standard
+took its fifth correction from the sentinel: `CFLAGS_<stem>` is what OUR
+C needs for a header past its directory, not a vendored concession.
 
 ## Sub-lane: strings — S5 (print, the round-trip law) LANDED (aaab397)
 
@@ -219,8 +293,53 @@ programs, zero findings; three tests that asserted `print` was doorless
 now test the admission rule with a name no grammar declares; three review
 collapses and one voice (`doorless`). `corpus/grammar_print.av` on both
 engines. THE ARC IS COMPLETE: S1 the paper, S2 the patterns, S3 the
-octet parity, S4 the value that parses, S5 print and the law. NEXT, S6:
-the framer adopts the patterns where they win, measured.
+octet parity, S4 the value that parses, S5 print and the law. S6 ANSWERED
+NO, with an attack table (b6f63d6, `tools/bench/frame_patterns`): the
+framer keeps its hand scans. Nine request lines from the framing laws
+against `grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"`:
+the pattern TAKES seven the framer REFUSES — two spaces, `HTTP/1.1extra`,
+`HTTP/11.1`, `HTTP/a.1`, a leading space, an HTAB inside the method, a
+trailing space — every one a smuggling shape RFC 9112 names. THE LAW: a
+format pattern is a SPLITTER; the framer's scan is a splitter AND a
+validator (a method is a `token`, the target excludes CTL and SP, a field
+name must touch its colon, a value is `field-vchar`), and applying the
+classes after the split costs more than the one pass that does both. The
+header line is worse in both directions at once: `": "` refuses the valid
+`Host:example.com` and accepts the invalid `Host : example.com`. 146 ns
+for the pattern against 1201 for a whole head is not comparable and would
+not matter — a faster scan that accepts a smuggled request is not a win
+at any speed. WHERE THE PATTERNS WIN is the ROUTE, already framed, its
+captures values a handler wants — which is where the typed-routes paper
+put them before any of this existed. S7 is the router.
+
+## Sub-lane: strings — S7 (the router) on lane/strings, closing
+
+`grammar Idea = "/ideas/{id}"`, a handler `fn(Request, Idea) -> Response`,
+`routed<Idea>(...)` the ONE place a record type is erased, `dispatch`
+the first route whose method, width and target answer; 404 is a value;
+an unroutable target is a 404 and never a 400 (the framer admits
+`obs-text`, so it is well formed and unrouted). RULINGS: the query is the
+REQUEST's (positional grammar, keyed query — measured failing both
+ways); erasure at the table boundary; the linear scan first with the
+trie earning its number; `parse` gains a `Bytes` seat — one door, two
+seats, the seat following the argument, the crossing at the door.
+MEASURED: 308/506/773 ns at 1/4/8 routes, ~66 ns a route — at eight
+routes the dispatch costs a whole head, the trie's number; the lane's
+first draft cost 36% (a per-route width check) and the bench found it.
+The octets seat then cost 10% at eight routes (850 against 773) because
+the door converts the whole target per route — RULED as S7's design,
+not a hunch: scan octets, convert only a hit's captures, a miss
+allocation-free. Two laws from the lane's own tests: a hole is ONE
+segment (`/ideas/{id}` had bound `7/extra`), and segments are counted
+by separators, never `split`. An ask recorded: a grammar's door as a
+VALUE (`Idea.parse` unapplied is F2003; every route wraps it). Owed:
+the conversion fix, the trie at 3/30/300 (generated), the red team,
+the review. A REAL BUG in the octets seat, found by a test that pinned
+the feature's ABSENCE and broke when it landed: `from_octets` minted its
+answer and then `reg_of`'d its argument, which may lower lazily and mint —
+I29's second specimen verbatim ("register r1 defines out of mint order");
+a probe over a BINDING hid it, the test's EXPRESSION argument found it
+(a88585a).
 
 ## Three receipts from keeping the branch (2026-09-07, to 28f1a4a)
 

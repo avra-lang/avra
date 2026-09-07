@@ -1,0 +1,72 @@
+//! THE QUALIFYING SHARE — how many managed seats have a callee that
+//! only READS them. Callee-cleans makes the caller retain every
+//! managed argument and the callee release it, so a seat the callee
+//! never keeps costs a retain AND its paired release for nothing;
+//! that pair is what a conditional ABI would stop spending.
+//!
+//! IT IS A FLOOR, and the floor is what makes it decidable: a seat
+//! handed to another Avra fn counts as escaping, because a callee's
+//! own disposition needs a fixpoint over the call graph. So the true
+//! share is at least this, and the fixpoint changes the size, never
+//! the sign.
+//!
+//! IT WAS A BRACKET UNTIL `RtSig.keeps` LANDED. A runtime row borrows
+//! its arguments, but the `_owned` twins take their own reference and
+//! nothing declared which — so every row seat had to be counted both
+//! ways, and the answer spanned 8.6% to 47.8%. One column collapsed
+//! it to a number.
+use core.{Ins, Reg, TypeId, TypeRegistry, escapes_in, flatten, joined}
+
+/// A body's managed seats, and which of them the body only reads.
+type BodySeats = { name: string, managed: List<int>, reads: List<int> }
+
+/// The whole program's seats: how many are managed, and how many a
+/// callee only reads.
+export type SeatCensus = { bodies: int, seats: int, reads: int, lines: List<string> }
+
+export fn seat_census(l: Lowered) -> SeatCensus {
+    let rows = [body_seats(l.types, b) for b in l.fns]
+    SeatCensus {
+        bodies: l.fns.length,
+        seats: flatten([r.managed for r in rows]).length,
+        reads: flatten([r.reads for r in rows]).length,
+        lines: [seat_line(r) for r in rows if !r.managed.is_empty()],
+    }
+}
+
+/// The census as text — the share first, the bodies under it.
+export fn render_census(c: SeatCensus) -> string {
+    joined([
+        "seats: ${c.seats} managed, across ${c.bodies} bodies",
+        "read-only: ${c.reads} — a FLOOR: a seat handed to another fn counts as escaping",
+    ].concat(c.lines), "\n")
+}
+
+fn body_seats(types: TypeRegistry, b: Body) -> BodySeats {
+    let managed = managed_seats(types, b)
+    BodySeats {
+        name: b.name,
+        managed: managed,
+        reads: [j for j in managed if !escapes(b.ins, seat_reg(j))],
+    }
+}
+
+/// The seat indexes at which a body's params hold managed values —
+/// the params ARE registers 0..N-1, in order.
+fn managed_seats(types: TypeRegistry, b: Body) -> List<int> {
+    [j for j, pt in b.params if is_managed(types, pt)]
+}
+
+/// A seat's register: the params ARE registers 0..N-1, in order.
+fn seat_reg(j: int) -> Reg {
+    Reg { index: j }
+}
+
+/// Does any instruction let `r` outlive the body?
+fn escapes(ins: List<Ins>, r: Reg) -> bool {
+    ins.any(escapes_in(it, r))
+}
+
+fn seat_line(r: BodySeats) -> string {
+    "  ${r.name}: ${r.reads.length}/${r.managed.length} read-only"
+}

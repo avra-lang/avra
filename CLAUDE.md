@@ -354,6 +354,28 @@ engine's spec, written by dogfooding.
   discipline: for every representation you add or consume, the empty
   case is the first case you write, and a diff shows whether you
   did.
+- ITS SIBLING AT THE OTHER END: A FLAT CONCATENATION OF TWO
+  SEQUENCES HAS A BOUNDARY THAT MOVES. Splice two variable-length
+  runs into one list and the split between them is not recorded, so
+  moving an item from the first into the second leaves the SAME
+  list and two different things wear one identity. `use a.b` and
+  `use a.{b}` fingerprinted alike; so did `f<A>(B)` and
+  `f<A, B?>()`, `f<B?>()` and `f(B)` (a written type and an ident
+  were the same value), `fn f<T>(x: int)` and `fn f<T, x: int>()`.
+  THE FIX IS ARITY: fold each sequence to ONE value so a payload's
+  shape is fixed per kind. BOTH INTUITIVE FIXES ARE WRONG, and
+  each is worth knowing. A SEPARATOR is the first — `stmt_fps(then)
+  ++ [0] ++ stmt_fps(else)` was written by someone who saw this
+  hazard exactly and spent the one value that is not spare, which
+  is the empty-value law above wearing this law's clothes. A
+  RENUMBERING is the second: under a LINEAR fold (`131t + x + 7`)
+  a tag is an additive offset, so distinct tags separate nothing
+  that a chosen literal can reach — renumbering turns the first
+  test green and leaves every collision live. THE TEST: for each
+  encoding ask which two shapes produce the same bytes, and write
+  that pair as a test BEFORE the fix. Three collisions were
+  nameable by hand here; enumerating every splice site and running
+  it against the parent made nine.
 - A COLD PATH IN A HOT LEAF COSTS EVERY CALL A FRAME. A lazy
   `getenv`, a `char msg[80]` for a trap's words, a grow branch, a
   `__builtin_return_address` read — each is free when it runs and
@@ -368,6 +390,24 @@ engine's spec, written by dogfooding.
   this and LTO cannot see it: the cold code is inside the hot fn.
   And measure with `make census`, never a sampler: a sampling
   profiler charges a release cascade to whoever was on the stack.
+  THE WIN IS THE FRAME-TO-BODY RATIO, NOT THE FRAME, and the law
+  reads as a licence to chase every prologue without it.
+  `avra_rc_retain` is ~5 instructions called 557M times, so its
+  4-instruction prologue more than DOUBLED it — that is the 26%.
+  `avra_array_get_owned` carries the same prologue on a ~20
+  instruction body at 3.9% of self time: worth ~0.8%, which is
+  UNDER a stopwatch's noise floor here (+/-0.05s on 5.9s), and
+  removing it measured nothing. Price the ratio before paying.
+  AND FIXING EACH LEAF DOES NOT FIX A CALLER THAT INLINES SEVERAL:
+  `get_owned` inlines two ALREADY-CLEAN leaves and their cold
+  tails, and the union's saves get hoisted above the fast path
+  again. Two acquittals worth keeping: counting `stp` does not
+  find this — `avra_array_get` reports one and is clean, its `stp`
+  sitting below the `ret` — so count frame ops BEFORE the first
+  branch; and a `__builtin_return_address` read, named above as a
+  suspect, was innocent here (removing it left the prologue
+  byte-identical). The cold branch being a CALL is what clobbers
+  x30 and forces the save.
 - ALLOCATION HERE IS CHEAP, so avoiding one is a trade, not a win.
   The size-class free lists made a box cost less than the scan or
   the branch that would dodge it: deduplicating `far_merge`'s
@@ -844,6 +884,12 @@ Syntax the grammar lacks:
   Instantiation is a STATEMENT: as a fn's tail it answers `void`
   ("the body answers `void` but `made` declares `Cfg`") — bind,
   then return the name.
+- A SHELL `${VAR}` INSIDE AN AVRA STRING IS AVRA'S INTERPOLATION.
+  `"echo ${HOME}"` is F3000 "`HOME` is not defined" when no binding
+  has that name — and SILENT when one does: with `let HOME = "/tmp/
+  not-your-home"` above it, the same line compiles clean and the
+  command becomes `echo /tmp/not-your-home`. Spell a shell variable
+  `$VAR`, which Avra leaves alone.
 - A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA
   when another arm follows (found by the HTTP lane, probed here).
   `match v { .R(o) -> o` with `.S -> "s"` on the next line is
@@ -1062,7 +1108,13 @@ Runtime facts, ours to ratify:
   sampled, beside two lanes' gated steps — and lane B's bare `./avra
   test <pkg>` runs the same night were the other bypass: a package
   suite is a whole-package compile plus a linked binary spawning
-  children, never a probe. `AVRA_RC_GUARD=1` only on
+  children, never a probe. AND KNOWING WHAT AN INSTRUMENT DOES TO A
+  MEASUREMENT IS PART OF READING IT: under `AVRA_RC_GUARD=1` a box
+  that reaches rc 0 is KEPT (runtime, by design — that is how it
+  replays a dead box's life), so `AVRA_MEM_STATS` reads 1486 MB with
+  `now == peak` and looks exactly like a total leak; the same run
+  unguarded peaks at 1 MB with every category zero at exit. A lane
+  nearly reported the instrument as the defect. `AVRA_RC_GUARD=1` only on
   small programs: its log is bounded but a guarded compiler run
   over a package is still a machine's worth. Scratch probes
   (`./avra check` of one file) are sub-second and need no lock.
@@ -1247,7 +1299,18 @@ Runtime facts, ours to ratify:
   agreement is a CONSISTENCY check while the LAW is the oracle. The
   gate's third leg does not rescue it: a corpus `.expected` is
   written by the same author from the same understanding, so it joins
-  the consensus rather than breaking it. TWO MORE, from the sqlite
+  the consensus rather than breaking it. AND A THIRD BLINDNESS, from
+  the HTTP lane: the engines can AGREE ON THE VERDICT AND DIVERGE ON
+  THE VALUE. `max_capture: 1000` against `yes` answered `TooMuch` at
+  the same cap in both, while the partial capture the caller reads
+  was 679,786 bytes native and 52,035,584 evaluated — a 51 MB
+  disagreement under a green differential, because the test asserted
+  the DECISION. So A BOUND TESTED AFTER THE WORK IS A BOUND ON
+  ACCEPTANCE, NOT ON THE THING IT NAMES: the drain emptied the pipe
+  until it would block and THEN tested the bound, so the capture was
+  bounded by the CHILD'S SPEED, which is exactly what differs between
+  the engines. Ask for ONE BYTE PAST what is left and stop at the
+  crossing — both answer 1002 for a cap of 1000. TWO MORE, from the sqlite
   lane's probes and re-run here. THE CALLEE-DEPENDENT ANSWER: a C
   `int` return writes 32 bits and ZEROES the upper half (`mov w0,
   #-0x1`) where a `long` writes 64 (`mov x0, #-0x1`), so an extern
@@ -1327,6 +1390,20 @@ Runtime facts, ours to ratify:
   concluding which ones there are: `grep -oE 'F[0-9]{4}' | sort -u`
   costs nothing and cannot lie by omission, where a `head` always
   can.
+  THAT CURE HOLDS FOR LITERALS ONLY, AND IT FAILED HERE. Choosing a
+  free fingerprint tag, `grep -oE 'fp\([0-9]+'` answered
+  `102 105 108 109` — and 100, 101, 106 and 107 are taken, spelled
+  `fp(if … { 106 } else { 107 }, …)`. A GREP FOR LITERAL VALUES
+  CANNOT SEE A VALUE THAT IS COMPUTED, so four of ten were invisible
+  and 106 read as free; only reaching for highest-plus-one out of
+  habit kept a second collision out of the tree, and `make
+  fingerprints` had just caught the first. THE GENERAL FORM:
+  ENUMERATE FROM WHAT THE CONSUMER SEES, NOT FROM WHAT THE SOURCE
+  SPELLS. The keeper reads that space correctly — it is what found
+  the collision — so the honest way to ask "what is free" was to ASK
+  THE KEEPER, not to grep the file it guards. When a question already
+  has an instrument in the gate, a hand-rolled second instrument is
+  not a shortcut, it is an unverified one.
 - A NEW CONSUMER IS THE INSTRUMENT THAT FINDS A LOCALLY COHERENT
   DEFECT, and reading is not. The entry above says to make a green
   check fail; this is its half for the artifacts that are not checks
@@ -1344,6 +1421,21 @@ Runtime facts, ours to ratify:
   all are. So the way to test doctrine is to BUILD SOMETHING AGAINST
   IT and watch where it misleads, and the way to be useful to another
   lane is to say out loud where theirs did.
+- IN A RECORDED TRIGGER, NAME THE OWNER OR NAME NOTHING (lane A's
+  wording, via the HTTP lane). "lane A's X" is a ROUTING INSTRUCTION;
+  "X, owner unconfirmed" is a question. The difference matters more
+  in a trigger than in prose because a trigger is written to be ACTED
+  ON — a wrong owner does not sit there being wrong, it RECRUITS. One
+  read "fires when lane A's shared decimal-parse row lands"; a lane
+  acted on the trigger rather than asking, and by the time it reached
+  lane A it arrived as a dependency they were expected to schedule.
+  The row is nobody's and unbuilt, and the `decimal` it had been
+  conflated with is another campaign's deferred value type. NOBODY
+  MISREAD ANYTHING: every step was a faithful read of the one before,
+  which is exactly what a routing instruction does when it is wrong.
+  (That trigger never reached main. Audited here on landing: the two
+  triggers in these ledgers that name an owner were both confirmed
+  with that owner directly.)
 - A RECEIPT FROM ANOTHER TREE IS LABELLED AS ONE. The laws here carry
   instances because an instance is what makes a law APPLIED rather
   than agreed with — so the instances have to stay checkable. One

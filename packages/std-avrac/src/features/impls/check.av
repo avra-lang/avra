@@ -24,6 +24,7 @@ fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args:
     if cx.errored(subject) { return cx.error_type }
     match callee_of(cx.view, cx.type_at(subject), name) {
         .Variant(decl, tname) -> construct_variant(cx, e, decl, tname, name, args),
+        .Static(m, tname) -> static_call(cx, e, m, tname, name, args),
         .Bounded(decl, j, tname) -> bounded_call(cx, e, subject, tname, bound_name(cx, decl, j), name, args),
         .Contract(tdecl, tname) -> dyn_call(cx, e, subject, tdecl, tname, name, args),
         .FnField(_, fty) -> fielded_call(cx, e, name, fty, args),
@@ -48,6 +49,21 @@ fn declared_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, targe
         if !accepts(cx, a, sig.params[j + 1]) { wrong_method_argument(cx, target, name, j, sig.params[j + 1], a) }
     }
     if m != null { seat_laws(cx, e, subject, "${target}.${name}", name, m!, args, 1) }
+    sig.ret
+}
+
+/// A STATIC's call: a plain fn call under a type's name. No
+/// receiver rides a seat, so every argument judges against the sig
+/// exactly as written and the seats are numbered from zero.
+fn static_call(mut cx: TypeCx, e: ExprId, m: DeclId, target: string, name: string, args: List<ExprId>) -> TypeId {
+    let found: FnSig? = fn_sig_of(cx.view.decls.sig(m))
+    if found == null { return no_such_method(cx, e, target, name) }
+    let sig = found!
+    if args.length != sig.params.length { return wrong_static_arity(cx, e, target, name, sig.params.length, args.length) }
+    for j, a in args {
+        if !accepts(cx, a, sig.params[j]) { wrong_method_argument(cx, target, name, j, sig.params[j], a) }
+    }
+    mut_seats_law(cx, e, "${target}.${name}", declared_marks(cx, m, 0, args.length), args, null)
     sig.ret
 }
 
@@ -112,6 +128,14 @@ fn no_trait_method(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, 
 
 fn no_dyn_method(mut cx: TypeCx, e: ExprId, tname: string, name: string) -> TypeId {
     spoken(cx, refusal("type.method", cx.loc_of(e), "`${tname}` has no method `${name}`", "called here", "the contract decides what a `dyn ${tname}` can do"))
+}
+
+fn wrong_static_arity(mut cx: TypeCx, e: ExprId, target: string, name: string, wants: int, found: int) -> TypeId {
+    spoken(cx, refusal("type.method", cx.loc_of(e), "`${target}.${name}` takes ${seat_word(wants)}, found ${found}", "this call", "a `static fn` has no receiver — every seat is written"))
+}
+
+fn seat_word(n: int) -> string {
+    if n == 1 { "1 argument" } else { "${n} arguments" }
 }
 
 fn wrong_method_argument(mut cx: TypeCx, target: string, name: string, j: int, want: TypeId, a: ExprId) {

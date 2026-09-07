@@ -545,6 +545,26 @@ SPECIMENS = {
             ["            out = out + (unescaped(text.char_code(j + 1)) ?? text.substring(j, j + 2))"]],
 }
 
+def next_free_code():
+    """The next free I-number, from this file's own text and from
+    DOGFOODING's registry — the sources `duplicate_numbers` reads.
+
+    NOBODY SHOULD HAVE TO GREP FOR THIS. A registry that refuses a
+    repeat while staying silent about what is FREE makes every author
+    work the answer out alone, and two lanes working it out the same
+    day is exactly how I33 landed twice. The keeper knows; it says so.
+    AND IT TAKES THE EXTREME, NEVER A GAP: highest-plus-one is robust
+    to an instrument that under-reports the middle of a list, which a
+    literal search over a computed spelling always is.
+    """
+    seen = set(_CODE.findall(open(__file__).read()))
+    reg = os.path.join(ROOT, "DOGFOODING.md")
+    if os.path.exists(reg):
+        seen |= set(_CODE.findall(open(reg).read()))
+    return max((int(n) for n in seen), default=0) + 1
+
+_CODE = re.compile(r"\bI(\d+)\b")
+
 def duplicate_numbers():
     """A number claimed twice in any table, read from this file's own
     text — the dict has already dropped the loser by the time it runs."""
@@ -717,7 +737,8 @@ def main():
         by_code[fp.split("\t")[0]] = by_code.get(fp.split("\t")[0], 0) + 1
     tally = " ".join(f"{c}={n}" for c, n in sorted(by_code.items()))
     note = f"; {len(gone)} fixed — `make idioms-accept` banks it" if gone else ""
-    print(f"idioms: no new violations. debt {len(base) - len(gone)} ({tally}){note}")
+    print(f"idioms: no new violations. debt {len(base) - len(gone)} ({tally}){note}"
+          f" — next free I{next_free_code()}")
     return 0
 
 sys.exit(main())

@@ -9,7 +9,7 @@ flattens pattern and expression fingerprints into one list, a
 statement folds its expression's, and `restamp` wraps a statement's).
 The memo tags in workspace.av and receivers.av are their own spaces.
 """
-import re, sys, glob, collections
+import re, sys, os, glob, collections
 
 TAG = re.compile(r"\bfp\(\s*(\d+)\s*,")
 MARK = re.compile(r"\brestamp\(\s*\w+\s*,\s*(\d+)")
@@ -43,6 +43,18 @@ def selftest():
         if sorted(got) != sorted(want):
             sys.exit(f"fingerprints: self-test failed on {text!r}: {got} != {want}")
 
+
+def free_report():
+    """The next free tag in each file that claims any."""
+    out = []
+    for path in sorted(glob.glob("packages/std-avrac/src/**/*.av", recursive=True)):
+        if "/tests/" in path:
+            continue
+        claimed = {t for t, _ in tags_in(open(path).read())}
+        if claimed:
+            out.append(f"{os.path.basename(path)} next free {max(claimed) + 1}")
+    return " — " + ", ".join(out) if out else ""
+
 def main():
     selftest()
     bad = 0
@@ -61,7 +73,14 @@ def main():
         print(f"fingerprints: {bad} REPEATED tags — two node kinds wearing one number "
               f"fingerprint alike, so a consumer reads them as one")
         return 1
-    print("fingerprints: every tag names one kind")
+    # THE KEEPER ANSWERS "WHAT IS FREE", so nobody has to grep for it.
+    # A grep cannot see a COMPUTED tag — `fp(if … { 106 } else { 107 },
+    # …)` contains no `fp(106` anywhere — so `grep -oE "fp\([0-9]+"`
+    # reported 106 and 107 free while both were taken, and two lanes
+    # picking a free number the same night is how tag 105 collided.
+    # This reader already resolves the conditional spelling; asking it
+    # is the only honest way to ask.
+    print("fingerprints: every tag names one kind" + free_report())
     return 0
 
 sys.exit(main())

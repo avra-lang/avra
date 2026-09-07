@@ -171,6 +171,7 @@ fn method_evidence(mut cx: Survey, mp: MethodParts) {
             flow(cx, seat, d, 0)
             feed(cx, d, mp.args, 1)
         }
+        .Static(d) -> feed(cx, d, mp.args, 0),
         .Contract(d) -> {
             if cx.decls.declares_writing(d) { mark(cx, seat) }
             feed(cx, d, mp.args, 1)
@@ -233,6 +234,9 @@ fn under_trait(cx: Survey, d: DeclId) -> bool {
 enum Callee {
     Row(writes: bool)
     Method(d: DeclId)
+    /// A `static fn` under a TYPE NAME — no receiver, so its
+    /// arguments start at seat 0.
+    Static(d: DeclId)
     Contract(d: DeclId)
     None
 }
@@ -246,7 +250,8 @@ fn callee_of(cx: Survey, ty: TypeId, name: string) -> Callee {
         .App(d, _, _) -> declared_method(cx, d, name),
         .Var(d, j, _) -> bounded_member(cx, d, j, name),
         .Dyn(d, _) -> contract_member(cx, d, name),
-        .Ptr or .Int or .Float or .Bool or .Res(_, _) or .TypeName(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or
+        .TypeName(d, _) -> static_member(cx, d, name),
+        .Ptr or .Int or .Float or .Bool or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or
         .EmptyList or .Error or .Void or .EmptyMap -> Callee.None,
     }
 }
@@ -255,6 +260,15 @@ fn declared_method(cx: Survey, d: DeclId, name: string) -> Callee {
     let m: DeclId? = cx.decls.method(d, name)
     if m == null { return Callee.None }
     Callee.Method(m!)
+}
+
+/// A TYPE NAME's callee: a `static fn` of its impl. A variant
+/// construction names no callee — its payload is a value.
+fn static_member(cx: Survey, d: DeclId, name: string) -> Callee {
+    let m: DeclId? = cx.decls.method(d, name)
+    if m == null { return Callee.None }
+    if !cx.store.is_static(cx.decls.decl(m!).stmt) { return Callee.None }
+    Callee.Static(m!)
 }
 
 /// A method on a BOUNDED type parameter: the bound's trait's member.
@@ -316,6 +330,7 @@ fn bound_type(cx: Survey, s: StmtId) -> TypeId? {
     if subject == null { return null }
     match callee_of(cx, subject!, m.name) {
         .Method(d) -> fn_sig_of(cx.decls.sig(d))?.ret,
+        .Static(d) -> fn_sig_of(cx.decls.sig(d))?.ret,
         .Contract(d) -> fn_sig_of(cx.decls.sig(d))?.ret,
         .Row(_) or .None -> null,
     }

@@ -137,6 +137,7 @@ impl TypeCx {
         if parts != null {
             let fp = parts!
             if self.view.store.is_mutating(s) { self.stray_mut_fn(s, fp.name) }
+            if self.view.store.is_static(s) { self.stray_static_fn(s, fp.name) }
             if self.view.store.is_once(s) { self.once_laws(s, fp) }
             return self.declare_sig(s, fp.params, fp.ret)
         }
@@ -223,6 +224,10 @@ impl TypeCx {
 
     fn stray_mut_fn(s: StmtId, name: string) {
         self.emit(refusal("type.mut_fn", self.stmt_loc(s), "`mut fn` marks a method that writes its receiver — `${name}` has none", "declared here", "drop `mut`, or move `${name}` into `impl <Type> { … }`"))
+    }
+
+    fn stray_static_fn(s: StmtId, name: string) {
+        self.emit(refusal("type.static_fn", self.stmt_loc(s), "`static fn` marks a method with no receiver — `${name}` is already a plain fn", "declared here", "drop `static`, or move `${name}` into `impl <Type> { … }` and call it `<Type>.${name}(…)`"))
     }
 
     /// A type parameter cannot take a name the LANGUAGE owns — the

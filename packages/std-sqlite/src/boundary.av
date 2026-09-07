@@ -41,13 +41,17 @@ fn blank_code(c: int) -> bool { c == 32 || c == 9 || c == 10 || c == 13 }
 // `(void*)-1` — and SQLite COMPARES the value before it would ever call
 // through it (`vendor/sqlite3.h:6429-6430`).
 
-/// A pointer at a literal address, which is what a sentinel is.
-extern fn avra_ptr_at(address: int) -> ptr?
+/// `SQLITE_TRANSIENT` itself, from the header, through this package's
+/// own C (`src/c/sqlite_sentinel.c`). A DOOR PER CONSTANT RATHER THAN A VERB
+/// THAT BUILDS ANY POINTER: a general `ptr_at(address)` would answer
+/// this sentinel and every other address besides, and a capability that
+/// wide cannot be made safe by a check — only unnecessary.
+extern fn avra_sqlite_transient() -> ptr?
 
 /// `SQLITE_TRANSIENT`: SQLite COPIES the bytes before the bind returns,
 /// so nothing the caller holds has to outlive anything. This is the
 /// default every bind should take.
-export fn transient() -> ptr? { avra_ptr_at(0 - 1) }
+export fn transient() -> ptr? { avra_sqlite_transient() }
 
 /// `SQLITE_STATIC`: the caller promises the bytes stay valid until the
 /// statement is finalized or the parameter is rebound

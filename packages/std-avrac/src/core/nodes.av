@@ -545,6 +545,8 @@ export type NodeStore = {
     onces: List<bool>,
     // the format a `grammar` declaration read, by its statement
     grammars: List<GrammarSpec?>,
+    // `static fn` — a fn under an impl declaring it has NO receiver
+    statics: List<bool>,
     pats: List<Pat>,
     pat_spans: List<Span?>,
     pat_fingerprints: List<int>,
@@ -553,7 +555,7 @@ export type NodeStore = {
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
-        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], grammars: [],
+        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], grammars: [], statics: [],
         pats: [], pat_spans: [], pat_fingerprints: [],
     }
 }
@@ -684,6 +686,7 @@ impl NodeStore {
         self.mutating.push(false)
         self.onces.push(false)
         self.grammars.push(null)
+        self.statics.push(false)
         StmtId { index: self.stmts.add(s, span) }
     }
 
@@ -709,14 +712,26 @@ impl NodeStore {
         self.onces[s.index]
     }
 
+    /// `static fn` crossed this declaration — it lives under an impl
+    /// and takes NO receiver, which is the third value of the same
+    /// word `fn` and `mut fn` are the first two of.
+    fn mark_static(s: StmtId) {
+        self.statics.set(s.index, true)
+        self.restamp(s, 110, [])
+    }
+
+    fn is_static(s: StmtId) -> bool {
+        self.statics[s.index]
+    }
+
     /// `grammar Name = "…"` declared this record — the format it
     /// reads, which the record's fields cannot spell. The mark's code
-    /// is 63 and the format is its PAYLOAD, whole: a second tag here
+    /// is 113 and the format is its PAYLOAD, whole: a second tag here
     /// would be a second reservation, and fingerprint codes have no
     /// coherence law to catch a repeated one.
     fn mark_grammar(s: StmtId, read: GrammarSpec) {
         self.grammars.set(s.index, read)
-        self.restamp(s, 110, [fp_str(read.head)].concat([fp(111, hole_fps(p)) for p in read.parts]))
+        self.restamp(s, 113, [fp_str(read.head)].concat([fp(111, hole_fps(p)) for p in read.parts]))
     }
 
     fn grammar_of(s: StmtId) -> GrammarSpec? {

@@ -185,6 +185,23 @@ static void note_copy(void* site) {
     if (s) s->made++;
 }
 
+// A RETAIN'S CALLER. The conditional ABI's prize is the retain
+// traffic at CALL SEATS, and `retained_args` reaches `.Call`/`.CallPtr`
+// alone — a managed list read (`avra_array_get_owned`) and a cell
+// retain too, and neither is reachable. The total says nothing about
+// the split, so a seat count and a self-time share are measured on
+// DIFFERENT AXES and do not multiply. This charges each retain to the
+// Avra fn that asked for it, which is the weight that makes them one
+// axis again. Census-only: the shipping runtime carries no such read.
+static Site g_retain_sites[SITES];
+static int64_t g_retain_slots = 0;
+
+static void note_retain(void* site) {
+    if (!g_sites_census) return;
+    Site* s = site_in(g_retain_sites, &g_retain_slots, site);
+    if (s) s->made++;
+}
+
 // A table's heaviest callers, most first. A printed row is SPENT —
 // its count goes negative — so the next pass finds the next one.
 static void report_made(const char* label, Site* tbl, int limit, intptr_t slide) {
@@ -252,6 +269,7 @@ static void acc_report(void) {
     if (g_sites_census) {
         report_made("copy", g_copy_sites, 12, slide);
         report_made("push", g_push_sites, 16, slide);
+        report_made("retain", g_retain_sites, 20, slide);
     }
 #endif
     const char* wanted = getenv("AVRA_MEM_SITES");
@@ -507,6 +525,7 @@ void avra_rc_retain(void* p) {
     Header* h = hdr(p);
     if (h == NULL || h->kind < 0) return;
     CENSUS(g_rc_retains++);
+    CENSUS(note_retain(__builtin_return_address(0)));
     h->rc++;
     if (__builtin_expect(rc_guarded(), 0)) retain_noted(p, h->rc, __builtin_return_address(0));
 }

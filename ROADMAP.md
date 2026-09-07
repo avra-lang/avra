@@ -615,6 +615,35 @@ the compiler checking itself 28.8s.
         own size-class free lists made allocation cheap enough that
         AVOIDING an allocation with a scan, or even with a branch, is
         a losing trade. Measure before removing an allocation here.
+        A THIRD, 2026-09-07: TAKING THE FRAME OUT OF
+        `avra_array_get_owned` — REFUTED, and it refines the
+        cold-path law rather than denying it. That fn builds a
+        48-byte frame on its FAST path: it inlines two already-clean
+        leaves (`avra_array_get`, `avra_rc_retain`) and their cold
+        tails, and clang hoists the union's register saves above
+        everything, which is the law's own mechanism one level up —
+        FIXING EACH LEAF DOES NOT FIX A CALLER THAT INLINES SEVERAL.
+        Restructured so the guarded half is one `noinline cold` tail
+        call: the prologue GOES (`adrp` first, no `sub sp`), and the
+        self-check measured 5.90/5.91/5.94 against 5.87/5.93/5.87.
+        Nothing.
+        WHY IT PAID AT 26% AND NOT HERE, which is the transferable
+        part: the win is the FRAME-TO-BODY RATIO, not the frame.
+        `avra_rc_retain` is ~5 instructions called 557M times, so a
+        4-instruction prologue more than doubled it. `get_owned` is
+        ~20 instructions at 3.9% of self time, so the same prologue
+        is worth ~0.8% — BELOW THIS MEASUREMENT'S NOISE FLOOR
+        (+/-0.05s on 5.9s is ~1%). So this is honestly "too small to
+        see with a stopwatch", not "zero": resolving it needs a
+        microbenchmark or a census, and it is not worth either.
+        The `stp`-counting shortcut is ALSO refuted as an instrument:
+        `avra_array_get` reports one and is CLEAN — its `stp` sits
+        below the `ret`, on the cold path. Count frame ops before the
+        first branch, or read the disassembly.
+        AND ONE SUSPECT ACQUITTED: the law names a
+        `__builtin_return_address` read as a cause. It is not this
+        one — removing it left the prologue byte-identical. The cold
+        branch being a CALL is what clobbers x30 and forces the save.
         WHAT IS LEFT, re-profiled after the fix: `avra_rc_release`
         22% and its out-of-line reclaim 21% (real work — 105M boxes
         freed), `avra_rc_retain` 12%, `avra_array_sized` 10%,
@@ -2164,6 +2193,106 @@ the order is the dependency.
         operation cheaper. A memory-pass change that moves PLACEMENT
         (S3, S3b) cannot use it, because placement changes counts;
         one that moves only cost can.
+        RE-MEASURED 2026-09-07 (lane A), as this entry asked, and it
+        RE-PRICES UPWARD rather than down. Two 6s samples of
+        `./avra check packages/std-avrac`, leaf SELF time — the one
+        reading a sampler is sound for, since the cascade caveat is
+        about attributing to CALLERS, not about a leaf's own time:
+
+            refcounting, all leaves   41.2% / 41.0%
+            avra_rc_retain + release  22.9% / 22.6%
+            release_dead (the frees)  16.0% / 16.3%
+
+        So the cold-path fix made each retain cheaper WITHOUT making
+        the traffic small: refcounting is still forty per cent of
+        self time. The conditional ABI's ceiling is the RETAIN AND
+        ITS PAIRED RELEASE — callee-cleans means removing one removes
+        both — so ~23% times the share of seats whose callee only
+        reads, and NOT `release_dead`, which reclaims the same boxes
+        whoever owns them. A qualifying share of a third is ~7%; two
+        thirds is ~15%. That is a real prize, and the entry above
+        ("a bigger claim for a smaller prize") should be read as
+        pricing the PER-CALL saving, which did fall, rather than the
+        total, which did not.
+        WHAT IS STILL UNMEASURED, and it is the whole decision: the
+        QUALIFYING SHARE. Nothing here counts how many call seats
+        have a callee that only reads. The census attributes pushes
+        and copies to sites but has no retain table, so that number
+        needs either one or a compiler-side count of `retained_args`
+        emissions by callee disposition. Do not argue the ABI from
+        the 23% alone — it is the ceiling, not the estimate.
+        AND THE FENCE ABOVE IS ONE LEVEL TOO SHALLOW (lane C, same
+        day, correcting this entry as it was written). TWO unknowns
+        sit under the 23%, not one:
+          1. The AVRA-CALL SHARE. `retained_args` retains for `.Call`
+             and `.CallPtr` alone — a `CallRt`/`CallRtVoid` argument
+             arrives BORROWED — so part of the 22.9% is traffic the
+             ABI cannot reach at all, and the seat denominator must
+             exclude runtime rows or the exclusion is counted twice.
+          2. The QUALIFYING SHARE IS ITSELF WEIGHTED. "The callee only
+             reads" is a STATIC property of the callee (does the seat
+             escape its body); "how many retains run here" is a
+             DYNAMIC property of the call site. The prize is the sum
+             over sites of one TIMES the other, so a tree whose
+             qualifying callees are all cold and whose hot ones all
+             escape prices near zero while BOTH halves read "two
+             thirds". A count of qualifying seats is not the share.
+        So: ceiling = 22.9% x (Avra-call share) x (weighted
+        qualifying share), and neither factor is measured. The
+        split of work is agreed — lane A builds the retain table
+        keyed by CALL SITE (the seat is what qualifies, not the
+        call), lane C counts callee-side escape against the IR,
+        where `view_of` already answers what an instruction does to
+        a register and `borrow_outlives` is the same question turned
+        around. Neither half is a number on its own.
+        MEASURED 2026-09-07 (lane C, `avra seats` against `keeps`):
+        **1980 of 5389 managed seats are READ-ONLY, 36.7%** — one
+        factor, a floor (a seat handed to another Avra fn still counts
+        as escaping), with all five known-answer bodies correct and
+        `packs` right on the first run, which is what `keeps` bought.
+        The bracket collapsed on the QUALIFYING axis exactly as
+        intended (it was 8.6%-47.8%).
+        THE CONVERSION TO SELF TIME IS NOT ESTABLISHED, and
+        `36.7% x 22.9% = 8.4%` IS NOT IT — recorded because that
+        product is the natural next keystroke and it repeats both
+        errors this entry already names. It substitutes a STATIC seat
+        count for the WEIGHTED share (point 2 above: qualifying seats
+        would have to run as often as escaping ones), and it multiplies
+        by the WHOLE 22.9%, which includes retain traffic the ABI
+        cannot reach — `avra_array_get_owned` retains on every managed
+        list read, and cells retain too, while `retained_args` reaches
+        `.Call`/`.CallPtr` only (point 1). The second error inflates;
+        the first has unknown sign. So the product is an ESTIMATE
+        WEARING A FLOOR'S CLOTHES, and 36.7% being a floor does not
+        make it one.
+        WHAT REMAINS IS ONE FACTOR: the call-seat share of retain
+        traffic, and its per-site weight. That is the retain table,
+        lane A's, unbuilt. Until it exists nobody can convert seats
+        into seconds, and the two published figures — 36.7% of seats,
+        22.9% of self time — are measured on DIFFERENT AXES and do not
+        multiply.
+        AND IT WAS NOT A NEXT KEYSTROKE — I PUBLISHED IT, and lane A
+        refused it. The wording above is more generous than the
+        record: 8.4% went out as a finding, called a floor, and was
+        withdrawn an hour later. It matters because a receipt that
+        softens who made the error stops being checkable, and this
+        entry is where someone looking for the number will land.
+        THE PART THAT GENERALISES: A LAW YOU HAVE JUST FINISHED
+        WRITING IS NOT A LAW YOU HAVE INTERNALISED. Clause 2 above is
+        mine, written FOUR HOURS EARLIER to correct another lane for
+        this exact substitution in the other direction; it stopped
+        their version and not my own, in the same lane, the same
+        night. And the tell was already in my hand — one message
+        before, I had refused to leave a stale upper bound standing
+        beside a correct number on the grounds that a range someone
+        can quote the top of is worse than no range.
+        THE JOIN, WHEN THE TABLE EXISTS, IS PER SITE: weights keyed by
+        the call site's callee symbol and seat index, joined to the
+        static qualification, summed over sites — never two aggregates
+        multiplied, which is the only form that cannot smuggle
+        uniformity back in. If only a coarser table is reachable the
+        join is UNAVAILABLE, not approximate; approximating it is how
+        this error returns wearing a different hat.
   - [x] A RECONSTRUCTION NAMES ONE FIELD, NEVER THE REST. LANDED
         2026-09-06; found by the DOCS campaign's subset lane, and it
         was a latent hole in the seat law's own slice. `plain(t)`
@@ -2455,7 +2584,80 @@ the order is the dependency.
         being true the day C callbacks land.
         Proved in `corpus/native/externs.av`, a file that already
         existed for the host seam: `null some some`.
-  - [x] THE CLASS CHECKED, after the arm fix: every other flattened
+  - [x] THE FINGERPRINT CLASS CLOSED by lane A at 292d273, and two
+        PROCESS laws came out of it that are worth more than the fix.
+        NINE OF THIRTEEN splice sites collided; all thirteen pass
+        now. The fix is at the COMBINER: `fp` folds the payload's
+        LENGTH before its parts, so arity rides the hash and no
+        boundary can move. It subsumes `fp(29, …)` per arm, which
+        was already that shape.
+        1. RENUMBERING WOULD HAVE FIXED NOTHING, and I recommended it
+           — I told the HTTP lane "64 is free, that's the fix". The
+           OLD `fp` was `h = tag` then `h*131 + p + 7`, so a
+           single-part hash is `131·tag + part + 7`: LINEAR IN THE
+           TAG. Changing a code shifts every hash by a constant and
+           separates nothing, because a payload can be chosen to
+           absorb it. The axis was never WHICH code, it was whether
+           ARITY is in the hash. A fix that moves the cases rather
+           than separating them turns the first test green and leaves
+           every collision reachable.
+        2. A TEST THAT PASSES FOR THE WRONG REASON IS WORSE THAN NO
+           TEST. Lane A's first `type_fp` case compared two `let`s
+           differing only in optionality — which differ by TAG anyway,
+           so it would have passed against the BROKEN tree. It was in
+           the file until they ran it against the PARENT commit. That
+           is the fire-test discipline stated as a law: a test for a
+           defect that has never been SEEN to fail is a test you are
+           trusting on faith, and running it against the parent is
+           what converts faith into evidence.
+        AND THE SPACE QUESTION IS SETTLED THE OTHER WAY: core/nodes.av
+        is ONE space, not three. Patterns, expressions and statements
+        MEET, because `arm_fps` folds two of them together and
+        `restamp` wraps the third. The earlier "benign across spaces"
+        reading was wrong about this file. `make fingerprints` is in
+        the gate, with its teeth witnessed.
+        AND IT CAUGHT A REAL ONE WITHIN HOURS, which is the receipt
+        that matters more than the teeth test. Lane C's statics slice
+        went red on `make fingerprints`: tag 105 claimed twice — lane
+        A's `fp_list` and lane C's `mark_static`, two lanes picking
+        the same free number the same night, exactly the way I33 was
+        once landed twice and silently dropped the earlier rule.
+        Neither author could have seen the other's choice, no review
+        would have compared them, and the collision would have been
+        SILENT — a fingerprint that quietly conflates two node kinds
+        does not fail, it answers wrong later. Caught in the gate, on
+        a case the keeper was not built for, by a lane that did not
+        know it existed. A keeper's worth is measured by the catch it
+        did not anticipate, and this one had it on day one.
+  - [ ] THE CLASS CHECK BEFORE IT WAS WRONG — RETRACTED THE SAME HOUR by
+        lane A, who found ~10 more sites and CONSTRUCTED three
+        collisions from ordinary source. What follows is kept as
+        written, because the way it was wrong is the useful part.
+        HOW IT WAS WRONG: I grepped fifteen flattened fingerprints,
+        EXAMINED TWO, and reported on all fifteen. `.Call(callee,
+        pins, args)` was in my own grep output and I never opened it
+        — it splices pins and args flat, and `type_fp` of an OPTIONAL
+        type is `fp(2, [fp_str(name)])` while `.Ident(name)` is
+        `fp(2, [fp_str(name)])`, byte for byte. So `f<A>(B)` and
+        `f<A, B?>()` are one fingerprint, with no crafted literal.
+        That is a measured fact plus an inference asserted at the
+        confidence of the measurement — the exact shape I have named
+        in three other lanes today, committed by me while naming it.
+        LANE A'S FIX GENERALISES MINE: a sequence folds to ONE value
+        (`fp_list`), so every payload has fixed arity and no boundary
+        can move — which is what `fp(29, …)` did per arm, applied to
+        every splice. And the tell they found is our own law in our
+        own core: `.If` already reached for a separator,
+        `stmt_fps(then) ++ [0] ++ stmt_fps(else)`, and 0 IS NOT A
+        SPARE VALUE — a statement fingerprint can be 0, and then the
+        separator is data. AN ENCODING SPENDS THE EMPTY VALUE, in the
+        file that records the law.
+        SEVERITY, theirs and bounded: `program_hash` is the parse
+        query's value, so a collision reuses stale analysis for a
+        changed program — latent while a workspace is one-shot, live
+        the day incremental re-analysis ships, where the symptom is
+        "the compiler ignored my edit".
+  - [x] THE CLASS CHECK, AS WRITTEN AND WRONG: every other flattened
         fingerprint in core/nodes.av is unambiguous, and the reasons
         are worth recording so nobody re-derives them.
         A FLATTEN IS AMBIGUOUS ONLY WHEN TWO OR MORE VARIABLE-LENGTH
@@ -2499,6 +2701,133 @@ the order is the dependency.
         at the seam for every `string` seat of an extern, a `Bytes`
         seat that carries the length, or a documented hazard. It is
         not io's to decide and it is not settled by io's fix.
+  - [x] STATIC METHODS (RULE B) — LANDED 2026-09-07, on the owner's
+        direct word in this session. The design below is unchanged by
+        the build; what the build ADDED is at the end. Every claim is
+        a probe's output, not a reading of the code.
+        WHAT IS TRUE TODAY. `self` is IMPLICIT — the impls feature's
+        remedy table says so ("`self` is implicit in a method — drop
+        it from the parameter list") and `primary = "self" ->
+        receiver()` makes it an EXPRESSION, never a parameter. So a
+        receiverless fn under an impl COMPILES CLEAN and is a method
+        with a receiver it never touches:
+
+            impl Point { fn origin() -> Point { Point { x: 0, y: 0 } } }
+
+        reachable only as `q.origin()` off an instance — useless for
+        the constructor that is the whole motivation.
+        THE CALL SIDE NEEDS NO NEW SYNTAX, which is the finding that
+        resizes the slice. `Type.name(args)` already PARSES; the
+        CHECKER refuses it, with a variant-shaped message:
+
+            Point.origin()   F2003 `Point` is a record, not an enum
+            K.other()        F2003 `K` has no variant `other`
+                                   help: the variants are `a`, `b`
+
+        Both are one resolution step from working. The slice is a
+        marker plus a FALL-THROUGH in variant resolution, not a new
+        call form.
+        THE SPELLING IS `static fn`, AND THE ARGUMENT IS `mut fn`.
+        The receiver-disposition marker ALREADY EXISTS in that exact
+        grammar slot with TWO values — `fn` reads the receiver, `mut
+        fn` writes it (its own stmt rule `mut_fn_decl`; F2046 refuses
+        it outside an impl precisely because it speaks ABOUT a
+        receiver). `static fn` is that field's THIRD value, not a
+        second mechanism for the same fact, and it composes for free:
+        a fn with no receiver cannot write one, so `static mut fn` is
+        a refusal the compiler SPEAKS rather than a hole. `static` is
+        not reserved today (`let static = 1` compiles), so the break
+        is real — but F3002 names a word and its status, so it breaks
+        loudly with help attached.
+        REJECTED, `fn Point.origin()` / `fn Self.origin()`: inside
+        `impl Point` the type is already in the header, so the name
+        repeats it and invents a disagreement to refuse; under
+        `impl<T> Box<T>` the name must spell a generic. And `Self`
+        NAMES NO TYPE — F2001, "the types today are `int`, `string`,
+        `bool`, and your declared types".
+        REJECTED, AND THIS IS THE LOAD-BEARING REJECTION: inferring
+        it from the BODY. A fn that never mentions `self` could be
+        called static — and then ADDING a `self` read to a body
+        silently changes the fn's arity and breaks every call site.
+        A BODY EDIT MUST NEVER CHANGE A SIGNATURE.
+        TWO THINGS THE SLICE MUST CARRY. First, a LIVE LATENT
+        COLLISION — this compiles CLEAN in the tree right now:
+
+            enum K { a, b }
+            impl K { fn a() -> int { 7 } }
+
+        A variant and a would-be static share a name with no
+        diagnostic. The day `K.a()` resolves, `K.a` and `K.a()` are
+        two different things spelled the same and nothing refuses the
+        pair. THE SHAPE THIS LANE KEEPS MEETING — a safety property
+        resting on a gap that will close — and the refusal belongs AT
+        THE DECLARATION, not at the call. Second: a trait-level
+        static (`trait Default { static fn default() -> Self }`) is
+        BLOCKED on `Self` existing at all, so the slice lands
+        INHERENT statics and says so, or it grows `Self` first.
+        WHAT THE BUILD ADDED TO THE DESIGN, all three found by
+        running rather than reading:
+        1. THE PRECEDENCE BELONGS IN `callee.av`, not in either
+           consumer. That file's header already promised what the
+           slice needed — who answers a dot-call is decided ONCE and
+           matched EXHAUSTIVELY by typing and lowering — so
+           `Callee.Static` is a variant there and both matches paid
+           it at compile time. Deciding it twice (a test in typing, a
+           fact-table absence in lowering) was the first draft and it
+           would have let the two passes disagree about a call.
+        2. THE TRAIT RULE SPELLS ITS OWN MEMBERS, so `static fn` in a
+           trait did not PARSE and the law could not reach it — a
+           bare "expected `fn`" for the mistake every Rust reader
+           makes first. The rule now accepts `( sk:"static" )?` for
+           the same reason a `once fn`'s rule accepts a parameter
+           list it forbids: so the refusal can SPEAK. Alignment is by
+           span window, as `mut` already was.
+        3. THE COLLISION CHECK'S FIRST DRAFT WOULD HAVE POISONED THE
+           TYPE REGISTRY. It asked `types.intern(Type.Enum(target,
+           tname))` for the target's variants — for a RECORD target
+           that MINTS A BOGUS ENUM the registry then keeps, since it
+           holds the first shape it sees for a key, and every later
+           printing of that type carries it. The DECLARATION answers
+           the same question with no write:
+           `variant_sig_of(decls.sig(target))`. A read that mints is
+           not a read.
+        AND THE MINT LAW CAUGHT THE LOWERING, unprompted: the first
+        `static_dispatch` minted its answer before the operands and
+        the corpus program refused with "register r2 defines out of
+        mint order". Three F0900s, no debugging, one line to fix.
+        AND `make fingerprints` CAUGHT A COLLISION THE SUITE COULD
+        NOT: `mark_static` restamped at tag 105, which lane A's
+        `fp_list` already owned — 1979 cases green, gate RED. The
+        keeper the collision thread produced, catching a collision
+        introduced by the lane that retracted about that thread, on
+        the keeper's first day, from a lane that did not know it
+        existed. A fingerprint conflating two node kinds does not
+        FAIL, it answers wrong later; that is why the class was worth
+        chasing and why no test would have found this.
+        AND THE NEAR-MISS BESIDE IT IS THE PART TO KEEP, because it
+        SHARPENS A LAW WHOSE OWN PRESCRIBED CURE FAILED. Choosing the
+        replacement tag, `grep -oE "fp\([0-9]+"` answered
+        `102 105 108 109` and I reasoned from it that 106 and 107
+        were free. THEY ARE NOT — `type_fp` and `Defer` spell theirs
+        as `fp(if … { 106 } else { 107 }, …)`, so four of the ten
+        taken numbers are INVISIBLE to a grep for literals. I took
+        110 by habit (highest plus one), not by judgement; reasoning
+        about the gap would have introduced a second collision the
+        same night. Lane A independently nearly quoted the shorter
+        list.
+        THE LAW IT SHARPENS is "A PROBE THAT TRUNCATES ITS OWN OUTPUT
+        REPORTS THE ABSENCE OF WHAT IT CUT" (CLAUDE.md), whose cure
+        is written as `grep -oE … | sort -u`, which "costs nothing
+        and cannot lie by omission, where a `head` always can". IT
+        LIED BY OMISSION. Not by truncating — **a grep for literal
+        values cannot see a value that is COMPUTED**. So the cure
+        holds only for literals, and the general form is: ENUMERATE
+        FROM WHAT THE CONSUMER SEES, NOT FROM WHAT THE SOURCE SPELLS.
+        The keeper reads the tag space correctly — it found the
+        collision — so the honest way to ask "what is free" was to
+        ASK THE KEEPER, not to grep the file it guards. The
+        instrument was already in the gate and a worse one was used
+        to plan against it.
   - [ ] REVIEWS THIS LANE OWES, recorded because they live in
         messages and messages do not survive a compaction. Each is a
         diff another lane writes in this lane's files, with this
@@ -3915,9 +4244,41 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
   never match and fell through silently.
   TRIGGERS, recorded with their firing conditions:
   - [ ] TYPED HOLES: `{n: int}` refuses today (F2060, naming the
-        pending row). FIRES when lane A's shared decimal-parse row
-        lands — the framer's `decimal`, the hole and a user's `"42"`
-        are one law.
+        pending row). FIRES when a TEXT -> INT PARSE ROW lands — the
+        framer's `decimal`, the hole and a user's `"42"` are one law.
+        ROUTED TWICE WRONG AND SETTLED 2026-09-07 by the SQLITE lead: it
+        is NOT the `decimal` question (`decimal` is a VALUE TYPE — exact
+        base-10 arithmetic, ruled core, deferred to the ORM campaign) and
+        it is nobody's in flight — measured, NO such row exists: no
+        `to_int`, no `parse_int`, no `strtol` in the runtime, and
+        @std/text's twelve exports parse nothing. So the trigger stays
+        recorded because nobody has built it. THE ROW'S SHAPE, as
+        proposed and agreed: text -> `Result<int, E>`, refusing at the
+        first bad byte with its offset, an overflow answer. FOUR LAWS IT
+        OBEYS: (1) it reads the HEADER'S LENGTH, never `strlen` — a
+        parse built on C string calls reads `"12\0garbage"` as 12 and
+        the caller never learns, and this row will parse a path segment
+        off the network; (2) THE EMPTY CASE FIRST, and it REFUSES —
+        `""` is not zero; (3) OVERFLOW REFUSES, never wraps or
+        saturates (the 320-digit float literal that became `inf` is the
+        precedent: what must never stand is a number nobody wrote); (4)
+        it ACCEPTS `-9223372036854775808`, which the LEXER refuses as a
+        literal (F0001) — lane A's law settles both: a literal is what
+        the programmer wrote and the compiler can see it does not fit; a
+        computation's result is discovered at runtime and the parse's
+        own contract defines it — written AT THE SITE, or the next
+        reader files one of the two as a bug. OWNERS: the row is lane
+        A's (runtime rows), the face @std/text's owner's; the strings
+        lane is the consumer. THE ORDER WHEN THE SLICE COMES, lane A's:
+        lane A writes `<row>_adversarial_test.av` against the four laws
+        FIRST, with nothing behind it; the strings lane implements in
+        the owner's file until it goes green; lane A reviews the C for
+        what a test cannot see (the header law, the allocation). The
+        fourth law is the reason for tests-first: an asymmetry that is
+        correct reads as a bug to whoever implements it and gets "fixed"
+        into a refusal — as a named failing test it survives the lane,
+        the rebase and the next person. The hole ships as TEXT with the
+        handler converting, so the typing lands against a live consumer.
   - [ ] HOISTED LITERAL OCTETS — FIRED 2026-09-07, now an ASK of the
         core owners: the scan converts each literal piece to octets on
         EVERY attempt because the IR carries no `Bytes` constant, and
@@ -3976,7 +4337,16 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         with a grammar half; (2) the admission test reading it; (3) the
         refusal's voice widening; (4) `Self`, if in the same slice.
         Grammar's `parse` then becomes one case of the general door and
-        nothing landed under Rule A is thrown away.
+        nothing landed under Rule A is thrown away. LANDED on main at
+        e351840 (lane C) and merged into lane/http: `type_receiver`
+        resolves a type-name receiver as VARIANT (the type's own
+        shape) → GRAMMAR DOOR (the vocabulary, `method_row` before
+        `declared` as for a value) → `static fn` (the user's impl) →
+        the variant's answer. OBLIGATION RECORDED (lane C): the day a
+        grammar type can hold an impl, a `static fn` named like a door
+        is unreachable — the refusal belongs at the declaration in
+        `static_shadows`'s shape (F2059's twin, asked of the
+        declaration's doors); no test can fail on it yet.
         THE ASK AS IT WAS PUT — a type-qualified call (`Name.parse(text)`
         meaning a call to an inherent fn, not variant construction),
         THE OWNER'S DOOR, put separately by lane C's ruling and not
@@ -4045,6 +4415,15 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         a package that means octets takes `Bytes`. COST: one scan per
         checked seat per call, on calls that are syscalls, spawns or
         lookups. `avra_fd_*` take `Bytes` and carry their length.
+  - [ ] A GRAMMAR'S DOOR AS A VALUE. `routed<Idea>(…, Idea.parse, …)`
+        is F2003 "`Idea` is a record, not an enum": the type-name
+        admission rule fires for a CALL, never for a bare `Name.parse`
+        passed as a fn value, so every route wraps it — `(t: string)
+        -> Idea.parse(t)`, one honest line. WANTING SITE: the router's
+        table (`packages/std-http/src/route.av`), the first consumer
+        where a door wants to be a value; the same door-as-value
+        question the subset's "a generic fn as a value" entry records
+        for pinned calls. Recorded by the strings lane at S7.
   - [ ] AN UNBOXED (ptr, len) VIEW, escape-analysed: the zero-copy
         capture the typed-routes paper wants. WANTING SITE: the framer's
         header values. Slot-layout territory (lane A). Until then, the
@@ -6362,6 +6741,27 @@ additions get siblings, nothing changes shape:
   memoized by content fingerprint (nodes already fingerprint); an
   edit re-runs importers only when the export surface's fingerprint
   moved.
+
+## Recorded triggers — the integrator's substrate
+
+- [ ] THE GATE PROVES A TREE AND THE INTEGRATOR COMMITS A TREE, AND
+      NOTHING TIES THEM TOGETHER. Reported by the SQLITE lead
+      2026-09-07, unfixed, and it is the deepest of three found the
+      same night. `tools/integrate.sh` runs `make gate` over the
+      working tree and then merges what git has; a working tree that
+      moves between the two — a half-finished rename, a deliberate
+      break left in a file — is gated in one state and merged in
+      another. It cost two wasted gates that night, which is the
+      cheap way to meet it.
+      THE OTHER TWO ARE FIXED (16fb4a4) AND NAMING THEM TOGETHER IS
+      THE POINT, because they are ONE SHAPE ON THREE SUBSTRATES: the
+      tree the gate READ, the tree the script COMMITTED, and the tree
+      a `/tmp` path BELONGED TO. Each is a verification whose subject
+      is not pinned to the thing being verified.
+      NOT A PATH-NAMESPACING FIX. It wants the gate to prove the
+      EXACT COMMIT that merges — gate the committed tree, or refuse
+      to merge a tree that changed under the gate. Worth designing
+      rather than patching.
 
 ## Sugar backlog — dogfooding asks
 

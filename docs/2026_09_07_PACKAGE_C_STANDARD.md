@@ -46,14 +46,16 @@ itself can answer?** Yes is core. Everything else is a package.
 | boxes, refcounts, clone-on-write (`avra_rc_*`, `*_unique`) | core | the memory model |
 | strings, lists, maps, `Bytes`, floats and their vocabulary rows | core | every one mints or reads a box |
 | argv (`avra_args_init`, `avra_selfhost_*arg*`) | core | the process's own words, adopted as immortal boxes at entry |
-| the environment (`avra_host_env`) | core | the process's own facts, immortal |
+| the environment's VALUE (`avra_host_env`) | core | the process's own facts, immortal — and a package adds the PREDICATE beside it (§2.5.3), because the value cannot carry set-from-unset |
 | the clock (`avra_now_ns`), exit (`avra_process_exit`), re-exec (`avra_exec_self`) | core | the process's own life |
 | the standard streams (`avra_puts`, `avra_eputs`, the capture) | core | the process's own descriptors, and a capture rewires fd 1 |
 | `avra_errno_text` | core | immortal text, shared by every package that answers an errno |
 | the once cache | core | a process-wide table the language's `once fn` stands on |
 | DESCRIPTORS: `avra_fd_read`, `avra_fd_taken`, `avra_fd_write` | core | THE ONE DOOR through which foreign bytes become a value — core ROWS as of `3bfab94`, `owns_result: true` on the take, `RtHost.FdRead/FdTaken/FdWrite` with evaluator arms |
-| opening, listing, making, removing files; `stat`; mtime | `@std/io` C | host facts; answer ints (a status, a descriptor, a kind) |
-| the spawn table, its pipes, its signals, its reaping | `@std/process` C | host facts; answer ints (a handle, its descriptors, a tagged status) |
+| opening, making, removing files; `stat` | `@std/io` C | host facts; answer ints (a status, a descriptor, a kind) |
+| LISTING a directory (`avra_io_list`) | core | an entry's name flows through no descriptor — the ONE io row core keeps, until the adoption row lands (§5.1). The roster said this was the package's for four slices while the tree said otherwise. |
+| the extern frame (`ffi.c`) | `@std/avrac` C | the compiler's own machinery, in no user's binary (§5.6.1) |
+| the spawn table, its pipes, its signals, its reaping | `@std/process` C | host facts; answer ints (a handle, its descriptors, a tagged status) — and it reads NO box at all, which is stronger than §3 asks (§2.5.3) |
 | sockets and readiness (`avra_net_*`) | `@std/net` C | LANDED; host facts, answering ints (a descriptor, a count, a NEGATIVE errno) |
 | the vendored amalgamation | `@std/sqlite` | not ours; `vendor/`, its author's flags |
 | the LLVM binding (`llvm_wrapper.c`) | `@std/avrac` C | the compiler's own foreign library; answers `LLVM*Ref` pointers and ints |
@@ -219,10 +221,20 @@ a day, and the package's suite sat outside the gate because nothing
 could build what it links. Globbed, a new package's C is built without
 a line in the Makefile. Second, the rule is where the tree's C
 discipline lives in one place: our own C takes `-Wall -Werror`, a
-vendored unit takes its author's flags (`CFLAGS_<stem>`) and none of
-ours; a header is a source, so `-MMD -MP` and an `-include` of the
-`.d` files mean editing a `.h` rebuilds what includes it, which the
-hand-written rules never did.
+vendored unit takes its author's flags and none of ours; a header is a
+source, so `-MMD -MP` and an `-include` of the `.d` files mean editing
+a `.h` rebuilds what includes it, which the hand-written rules never
+did.
+
+**`CFLAGS_<stem>` IS NOT ONLY FOR VENDORED UNITS**, which is a
+correction the FIFTH consumer made — a package this lane did not
+write. `@std/sqlite`'s destructor sentinel is OUR C, held to our
+warnings, and it still needed `CFLAGS_sqlite_sentinel :=
+-Ipackages/std-sqlite/vendor` because it includes a header outside its
+own directory. So the claim above holds for the OBJECT and not for the
+FLAGS: a new package's C is built with no line, and one line is owed
+the moment it reaches past itself for a header. The paragraph read as
+"vendored units only" until a consumer needed otherwise.
 
 Third, and it is the one the red team found: **ONE HOW FOR EVERY
 OBJECT, because a hand-written rule beside the pattern SHADOWS it.**
@@ -297,15 +309,28 @@ descriptor exactly those bytes.
 
 ### 2.5 TEXT AND BYTES ENTER THROUGH CORE'S DOORS
 
-Two doors, both core, and a package uses the first wherever it can:
+THREE shapes, and the third is the one this section did not have when
+four packages were built against it — see §2.5.3, which is a review
+round's finding against this document rather than against the tree.
 
 1. **THE DESCRIPTOR READ.** `avra_fd_read(fd, max)` lands up to `max`
-   bytes in a scratch; `avra_fd_taken()` mints them as a fresh `Bytes`
-   box, ONCE — a second take answers the EMPTY box, never null. This
-   is how a file's text, a child's output and a peer's bytes all
-   arrive. Package C answers the descriptor; core reads it. The empty
-   case is written first (a take after nothing is the empty box), as
-   CLAUDE.md's encoding law demands.
+   bytes in a scratch and answers a TOKEN — the scratch's generation;
+   0 at EOF, a negative errno otherwise. `avra_fd_taken(token)` mints
+   that landing as a fresh `Bytes` box, ONCE, and TRAPS on a stale or
+   spent token. This is how a file's text, a child's output and a
+   peer's bytes all arrive. Package C answers the descriptor; core
+   reads it. The empty case is written first: a landing of zero bytes
+   answers a token whose take is the empty box.
+
+   **THE TOKEN REPLACED A BARE TAKE, and the reason is worth keeping**
+   — a shared scratch with an unkeyed take is a WINDOW a deferred read
+   steps into, so the second reader gets the first reader's bytes with
+   nothing to say so. The generation makes that unspellable rather
+   than unlikely, and the same reasoning shaped `@std/process`'s stage
+   (§2.5.3) one slice later. This paragraph said "a second take
+   answers the EMPTY box, never null" for four slices after that
+   stopped being true, which is what a receipt costs when the design
+   it describes moves underneath it.
 
    **THEY ARE ROWS**, as of `3bfab94` — `rt_sigs` entries with
    `owns_result: true` on the take, `RtHost.FdRead/FdTaken/FdWrite`,
@@ -330,6 +355,30 @@ Two doors, both core, and a package uses the first wherever it can:
    the OWNER'S decision, put with both halves. **This standard needs
    it for exactly one verb**, and §5.1 names the fallback the lead has
    already chosen, so S3 is not blocked on it.
+
+3. **THE PREDICATE SPLIT — the shape that needs no door at all, and
+   the one this section was missing.** Some host facts are text the
+   language ALREADY has a core row for, and what the package must add
+   is not the value but a QUESTION only C can answer. `@std/io`'s
+   `env` is the instance: the runtime's environment row answers "",
+   for a variable that is unset AND for one set to nothing, so the
+   value alone cannot tell them apart — the package's C answers the
+   PREDICATE (0 set, -1 not) and the language assembles the answer
+   from core's existing row. `@std/process`'s `which` is the same
+   shape: C answers `executable(path)` and the SEARCH is the
+   language's walk.
+
+   IT WAS INVENTED TWICE BECAUSE THIS SECTION DID NOT NAME IT. S3
+   reached for it when a package's C turned out to be unable to reach
+   the runtime's scratch at all (`fd_landed` is static, and the door
+   that would open it is §2.5.2's adoption row, the owner's); S4
+   reached for it again without recognising the repetition until the
+   review round. A shape found twice by accident is a shape the
+   document owed its readers.
+
+   THE TEST: before designing a door, ask whether core ALREADY answers
+   the value and the package need only answer the question. Two of the
+   four migrations needed no door once that was asked.
 
 What is REFUSED: a package extern that answers `string` or `Bytes`.
 §2.1 gives the mechanical reason — no row, no `owns_result`, no
@@ -378,7 +427,16 @@ the package's README names.
       descriptor (§2.5.1) or as `(ptr, len)` (§2.5.2).
 - [ ] It reads a box only through the runtime's exported verbs
       (§2.4); `grep -n 'AvraArray\|Header' packages/<p>/src/c/` is
-      empty.
+      empty. BETTER, AND `@std/process` PROVED IT REACHABLE: it reads
+      no box AT ALL. An aggregate seat cannot cross the extern frame
+      anyway — the evaluator holds a list as a handle, not a box — so
+      the words are STAGED one at a time, and the cast the checklist
+      tolerates simply dies.
+- [ ] A STAGE IT KEEPS BETWEEN CALLS CANNOT BE WRITTEN SPARSE OR ACTED
+      ON STALE. An append that answers the count leaves no index to
+      hole; a generation refuses a token from an abandoned stage. Both
+      are structural, not checked — a stage that CAN be written wrong
+      will be.
 - [ ] A C body that KEEPS an argument retains it; one that answers a
       value it keeps answers it retained (the once cache's shape).
 - [ ] Its C carries no `static` state a second process would want
@@ -494,15 +552,30 @@ step above it.
    never touches the seed. The failed link also DELETES `build/avra`,
    which is why the protocol saves it aside first.
 
-4. **S4 — `@std/process`.** (lane B's package.) The spawn table, the
-   pipes' descriptors, signals and reaping are package C; the PUMP —
-   poll, drain, feed, escalate — moves into Avra over the descriptor
-   rows plus one package row for readiness over a handle's
-   descriptors. `avra_proc_take`, `avra_proc_write` and
-   `avra_proc_stdin_close` die (a read, a write and a close of a
-   descriptor); `avra_proc_run`'s one-shot loop is Avra;
-   `avra_proc_which` resolves in Avra over a package `executable(path)`
-   row. Eleven rows, eleven variants and eleven arms leave core.
+4. **S4 — `@std/process`. DONE.** Its C is
+   `packages/std-process/src/c/std_process.c`, fourteen entry points
+   answering ints. Eleven rows, eleven `RtHost` variants and eleven
+   arms left core; 525 lines of C left the runtime. The pump — poll,
+   drain, feed, escalate — is Avra, over the descriptor rows.
+
+   THE ARGUMENT LIST COULD NOT CROSS THE FRAME, which the migration
+   order did not anticipate: a spawn took `List<string>` argv and
+   envp, and that works only while it is a runtime ROW, because the
+   evaluator holds a list as a HANDLE and a package's extern cannot be
+   handed one. The words are STAGED instead — land-then-act a fourth
+   time — which also kills §2.4's cast rather than moving it.
+
+   THE PUMP'S RULES ARE ORDER, NOT GRANULARITY, and that is why the
+   turn length never needed tuning: a deadline already passed fires
+   before any poll, a timeout sweeps before it declares, and the drain
+   grace is a floor. Two of those are opposite orderings around one
+   event, which is why no turn size satisfies both.
+
+   `corpus/process` kept both engines and the SEAM GAINED one:
+   `corpus/native/process_seam.av` could not survive the move, since a
+   loose file cannot link a package's object, so it is `corpus/proc-seam`
+   and it is `eval == native` where it was native-only.
+
 5. **`@std/net` — LANDED ahead of this document.** It is the
    standard's first consumer and it never needed the migration:
    fifteen C entry points under `packages/std-net/src/c/std_net.c`, a
@@ -913,71 +986,70 @@ whether the idiom's prefix list is the right matcher or whether a
 manifest-driven one (every package with a `[link]` section names its
 own prefix) is.
 
-## 7. RECEIPTS, each at `4516b15` in this worktree, after two builds
+## 7. RECEIPTS, and what four consumers cost this document
 
-- The merge of `lane/http` at `5cca925`, then `cp
-  ../avra-lane-http/build/avra build/avra` and `make avra` TWICE —
-  536 MB then 562 MB, both exit 0. Not `make bootstrap`: main's seed
-  does not know `Bytes` and `interp.av` names it, so the seed would
-  refuse the tree until it is refreshed on main.
-- `make -B -n` resolves all five objects through the one rule, each
-  from the source its stem names: `build/sqlite3.o` (with
-  `SQLITE_FLAGS`, no `-Wall -Werror`), `build/llvm_wrapper.o` (with
-  `-I$LLVM_PREFIX/include`), `build/width_witness.o`,
-  `build/std_net.o`, `build/avra_runtime.o`.
-- The rule's `-Wall -Werror` is real, not decorative: a package `.c`
-  with an unused local failed the build. A vendored unit takes none of
-  it.
-- THE STEM LAW NAMES BOTH SIDES, which is what a reader can act on:
-  `rename one of: packages/std-io/src/c/util.c
-  packages/std-path/src/c/util.c`, exit 2. Before the law, those two
-  put `build/util.o` in the object list TWICE and compiled only the
-  first, in silence. A package source named `avra_runtime.c` was
-  shadowed by the explicit runtime rule and is named by the same law
-  now that the runtime goes through the pattern.
-- `sh tools/stems.sh`: 8 rows green. With `TREE_STEM_LAW` disarmed:
-  4 of 8 fail, each named. Restored: green. Its first draft passed for
-  the WRONG reason — the accept rows leaned on objects already on disk
-  — and only a cold gate exposed it, so every row now carries the
-  tree's own C.
-- THE DEPENDENCY FILES, all four properties checked. They land in
-  `build/` and `.gitignore`'s `build/` covers them (`git check-ignore`
-  names the line). A tree with no `.d` at all builds and regenerates
-  them. `-MP` survives a DELETED header: a stale `.d` naming a header
-  that no longer exists rebuilds cleanly instead of "No rule to make
-  target", because the phony line is there. And the vendored 9 MB
-  amalgamation causes no per-touch rebuild — its `.d` is 54 bytes and
-  names only the `.c`, because `-MMD` excludes system headers and the
-  amalgamation inlines its own.
-- THE LEAK, gone at this base: `avra_fd_taken()` 800k times leaves
-  0 MB live natively, where it left 12 MB when the door was an extern.
-  And the evaluator HOSTS it now rather than trapping — 40k takes
-  through `avra run`, 0 MB live.
-- THE MANAGED-ANSWER POPULATION, the fixture for lane A's keeper:
-  thirteen extern declarations answer a managed type; five are not
-  rows and all five are correct (`avra_selfhost_get_arg_cstr` plus
-  `@std/sqlite`'s `libversion`, `sourceid`, `errstr`,
-  `compileoption_get`). `sqlite3_errmsg`, named in a relayed count of
-  seven, is not declared as an extern at this base.
-- `RtHost` holds eight `Io*` and eleven `Proc*` variants, ZERO `Net*`,
-  and three `Fd*`; the evaluator carries the matching arms.
-- The debris list, re-measured over `packages/` AND `corpus/`: six
-  names with zero references anywhere and zero in `bootstrap/seed.ll`.
-  Two names an earlier `packages/`-only grep had called dead are LIVE
-  in `corpus/native/externs.av`; §4 records why that miss is the more
-  useful half.
-- THE VARIADIC KEEPER, both surfaces witnessed. Green on the tree —
-  "no declaration faces a variadic C body", 34 of the keeper's own
-  cases holding. Disarmed (`is_variadic` forced false): 4 of its 11
-  cases fail and each is named, while the 7 negative cases still pass,
-  which is the accept surface. Against a REAL variadic body — a
-  temporary `extern fn sqlite3_db_config(db: ptr, op: i32) -> i32`
-  over the amalgamation's `sqlite3_db_config(sqlite3 *db, int op,
-  ...)` at `sqlite3.c:188321` — it refuses with exit 1 and ONE
-  message, not two: `wrong_seats` steps aside for a variadic body, so
-  the arity symptom never cascades over the law. A multi-line variadic
-  definition is caught end to end with the right file and line, which
-  was the hazard lane A named.
-- `sh tools/watch.sh 4000 make gate`: green, peak 244 MB — 2062 + 406
-  tests, 12 trap contracts, 81 corpus programs on both engines,
-  witness, stems.
+The receipts below are at `82e6daf`, after the four migrations. What
+matters more than any of them is §7.1: this document MISLED in four
+places, each found by a package being built against it and none
+visible to a reader of the document alone.
+
+### 7.1 WHERE THE STANDARD MISLED, and what fixed it
+
+- **THE DESCRIPTOR CONTRACT WENT STALE UNDER ITS OWN SECTION.** §2.5.1
+  said a second take answers the empty box; the take became a TOKEN
+  and a stale one TRAPS, four slices before anyone re-read the
+  paragraph. A design section describing a contract it does not own is
+  a receipt, and receipts decay.
+- **THE THIRD SHAPE WAS MISSING, AND SO WAS INVENTED TWICE.** §2.5 had
+  two doors and no PREDICATE SPLIT, so S3 discovered it under
+  pressure (a package's C cannot reach the runtime's scratch) and S4
+  reached for it again without noticing the repetition. It is §2.5.3
+  now, with the test that would have found it first: ask whether core
+  already answers the VALUE and the package need only answer the
+  QUESTION.
+- **THE ROSTER PUT LISTING IN THE PACKAGE** while §5.1 kept it in
+  core, and the two sat four sections apart disagreeing for the whole
+  campaign. A roster row and a decision about the same name must be
+  one place or one of them is wrong.
+- **THE CHECKLIST ASKED FOR LESS THAN WAS REACHABLE.** "Reads a box
+  only through the runtime's exported verbs" tolerates a cast that
+  `@std/process` turned out not to need at all: an aggregate cannot
+  cross the extern frame, so the words are staged and the package
+  reads NO box. The stronger form is in §3 now, with the stage's two
+  structural properties beside it.
+
+### 7.2 THE MEASUREMENTS
+
+- The ownership law's leak, before the doors were rows: 800k takes of
+  `avra_fd_taken` left 12 MB live; the identical extern shape whose
+  name IS a row left 0.
+- One gather beats a concat per landing: 64 MB read in 0.97 s before
+  and 0.46 s after, peak 128 MB either way.
+- A cap bounds CAPTURE, not acceptance: `max_capture: 1000` against
+  `yes` kept 679,786 bytes natively and 52,035,584 under the
+  evaluator — the same verdict, a 51 MB divergence in the value the
+  caller reads — and 1002 bytes on both engines after.
+- The extern frame reaches what the image carries: 235 declarations,
+  125 in `build/avra` at the survey.
+- `RtKind` grown by a throwaway variant breaks NINE consumers: five in
+  the backend, four in the evaluator.
+- `nm build/avra | grep -c ' T _avra_io_'` answers 11 after
+  `make avra` and 11 after `make bootstrap`; the process count is 14
+  at both.
+
+### 7.3 THE NEAR-MISSES, which are the cheaper half
+
+- A path holding a NUL read a DIFFERENT FILE than it named, and
+  `exists` answered true for a path that does not exist — on both
+  engines, which is agreement rather than correctness.
+- 1486 MB "leaked" under `AVRA_RC_GUARD=1` and 1 MB without it: the
+  guard poisons and KEEPS every box that reaches zero, so `now ==
+  peak` is the instrument working. Nearly reported as a defect.
+- A debris list of eight was five: two names live in a directory the
+  grep did not open, one live inside a program the test harness
+  WRITES at gate time. A search for callers over source files misses
+  callers that are generated.
+- A refusal case pinned the WRONG refusal because it named a symbol
+  `build/avra` carries and the TEST binary does not.
+- A case bounded its wait at 400 immediate asks where the child needed
+  32,213, so a correct fix read as a failing one.

@@ -222,6 +222,51 @@ export fn reads_of(i: Ins) -> List<Reg> {
     }
 }
 
+/// Does `i` let `r` OUTLIVE the call that handed it over? A seat
+/// that never escapes needs no caller retain, which is exactly what
+/// a conditional ABI would stop spending. A REGISTRY: every arm is
+/// spelled, so a new instruction breaks the build until it answers.
+///
+/// A RUNTIME ROW BORROWS ITS ARGUMENTS, so a `CallRt` seat is not an
+/// escape — EXCEPT at a seat the row KEEPS, which `RtSig.keeps`
+/// declares. AND A RETAIN IS NOT AN ESCAPE EITHER: it is
+/// the instruction the ABI removes, so counting it would make the
+/// question circular — every escape it accompanies (a call seat, an
+/// answered value) is counted by that escape's own arm.
+export fn escapes_in(i: Ins, r: Reg) -> bool {
+    match i {
+        // written into memory, or packed into a structure
+        .Pack(_, elems) -> elems.any(same_reg(it, r)),
+        .Store(_, src) -> same_reg(src, r),
+        // answered outward, or flowed to a region's answer
+        .RetVal(v) -> same_reg(v, r),
+        .FnExit(v) -> same_reg(v, r),
+        .ArmEnd(v) -> same_reg(v, r),
+        .RegionEnd(_, v) -> same_reg(v, r),
+        .ScopeExit(gives) -> gives != null && same_reg(gives!, r),
+        // handed to a callee that may keep it
+        .Call(_, _, args) -> args.any(same_reg(it, r)),
+        .CallPtr(_, f, args) -> same_reg(f, r) || args.any(same_reg(it, r)),
+        // a row borrows every seat but the ones it keeps
+        .CallRt(_, callee, args) -> kept_seat(callee, args, r),
+        .CallRtVoid(callee, args) -> kept_seat(callee, args, r),
+        // read and spent: a field pulled out is its own reference, a
+        // slot's address is not its contents, a release is the
+        // opposite of keeping
+        .Retain(_) or .Extract(_, _, _) or .Bin(_, _, _, _) or .Un(_, _, _) or
+        .Load(_, _) or .Release(_) or .IfStart(_) or
+        .SwitchStart(_, _) or .LoopCond(_) or .ScopeEnter(_) or
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or
+        .ConstBool(_, _) or .FnAddr(_, _) or .Alloca(_) or
+        .LoopStart or .LoopEnd or .Ret(_) -> false,
+    }
+}
+
+/// Does `r` fill a seat this row keeps?
+fn kept_seat(callee: string, args: List<Reg>, r: Reg) -> bool {
+    [j for j, a in args if same_reg(a, r)].any(rt_keeps(callee, it))
+}
+
 /// THE USER BODY a step names — a call's callee, a fn value's
 /// address. Runtime and host callees name no body of ours, so they
 /// answer nothing. Every symbol a program's bodies name must be a
@@ -375,9 +420,18 @@ export enum RtHost {
 /// shrinks the list — must never be borrowed, and answering false
 /// is the safe side for every row nobody has thought about.
 ///
+/// `keeps[j]` says seat `j` OUTLIVES the call: the body takes its own
+/// reference and stores it somewhere the callee owns, so the value
+/// ESCAPES. It is the mirror of `lends`, which is about the ANSWER.
+/// RETAINING IS NOT KEEPING — `avra_insist` retains its seat and
+/// ANSWERS it, which is `owns_result` and hands the reference to the
+/// caller; only a body that STORES what it retained keeps. Marking
+/// the answering kind would make every `!` unwrap read as an escape.
+/// Empty means the row keeps nothing, which is 82 of 86 rows.
+///
 /// `cells[j]` is the width of the CELL BEHIND an inout seat — never
 /// the seat's own ABI kind, which is always `Ptr` because an inout
 /// carries an address. `Void` means seat `j` is not an inout. Only
 /// an extern fills it: the registry's own rows take addresses of
 /// nothing.
-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, cells: List<RtKind> = [] }
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], cells: List<RtKind> = [] }

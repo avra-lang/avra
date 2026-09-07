@@ -5,7 +5,7 @@
 //! rule, and the voices these laws speak.
 use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type, filled, same_decl}
 use diagnostics.{refusal, warning}
-use features.{TypeCx, FnSig, DeclSig, fn_sig_of, trait_named, Decl, written_seats, trait_member, self_type_of, instance_vars}
+use features.{TypeCx, FnSig, DeclSig, fn_sig_of, trait_named, Decl, written_seats, trait_member, self_type_of, instance_vars, EnumSig, variant_sig_of}
 
 impl TypeCx {
     /// A trait member's sig: `Self` at seat 0 — the trait's own
@@ -16,6 +16,7 @@ impl TypeCx {
         if parts == null { return }
         let fp = parts!
         let contract: DeclId = self.view.decls.decl(self.decl_of(f)).parent!
+        if self.view.store.is_static(f) { self.static_in_a_trait(f) }
         self.record_receiver_word(f, [false])
         // `Self` is in scope for the sig's annotations
         self.enter_target_scope(contract)
@@ -104,8 +105,23 @@ impl TypeCx {
             let m = self.decl_of(f)
             let _ = self.view.decls.sig(m)
             if self.registrable(f) { self.view.decls.declare_method(d, m) }
+            self.static_shadows(f, d, parts.target)
         }
         if parts.of != null { self.check_trait_impl(s, parts.of!, d, parts.target, parts.fns) }
+    }
+
+    /// A `static fn` and a VARIANT of the same name are two things
+    /// spelled `Type.name` — the variant wins at the call, so the
+    /// pair is refused where it is written rather than shadowed.
+    fn static_shadows(f: StmtId, target: DeclId, tname: string) {
+        if !self.view.store.is_static(f) { return }
+        let name: string? = self.view.store.fn_parts(f)?.name
+        if name == null { return }
+        // the DECLARATION answers, never an interned type: a record
+        // target would mint a bogus `Type.Enum` the registry keeps
+        let sig: EnumSig? = variant_sig_of(self.view.decls.sig(target))
+        if sig == null || sig!.tag_of(name!) == null { return }
+        self.static_names_a_variant(f, tname, name!)
     }
 
     /// A method the table can serve: plain — generic methods wait.
@@ -200,9 +216,12 @@ impl TypeCx {
         let fp = parts!
         if !fp.tparams.is_empty() { return self.generic_method(f, fp.name) }
         if self.view.store.is_once(f) { self.once_is_a_method(f, fp.name) }
-        self.record_receiver_word(f, [false])
+        // A STATIC SPENDS NO SEAT ON A RECEIVER: the marks and the
+        // params both start at the written seats.
+        let receiverless = self.view.store.is_static(f)
+        self.record_receiver_word(f, if receiverless { [] } else { [false] })
         self.declare(f, DeclSig.Fn(FnSig {
-            params: [ty].concat(self.annotated_params(f, fp)),
+            params: if receiverless { self.annotated_params(f, fp) } else { [ty].concat(self.annotated_params(f, fp)) },
             ret: self.annotated(f, fp.ret),
         }))
     }
@@ -290,6 +309,16 @@ impl TypeCx {
 
     fn generic_method(f: StmtId, name: string) {
         self.emit(refusal("type.impl", self.stmt_loc(f), "`${name}` is generic — generic methods are recorded, not landed", "this method", null))
+    }
+
+    fn static_names_a_variant(f: StmtId, tname: string, name: string) {
+        self.emit(refusal("type.static_name", self.stmt_loc(f), "`${tname}.${name}` is already a variant — a `static fn` of that name could never be called", "declared here", "rename the `static fn`: a variant wins the spelling `${tname}.${name}`"))
+    }
+
+    /// A `static fn` in a TRAIT: a contract with no receiver answers
+    /// `Self`, and `Self` has no name in a signature yet.
+    fn static_in_a_trait(f: StmtId) {
+        self.emit(refusal("type.static_fn", self.stmt_loc(f), "`static fn` in a trait would answer `Self`, which has no name in a signature yet", "declared here", "declare it in each `impl` instead — inherent statics land"))
     }
 
     fn orphan_impl(s: StmtId, heading: string, target: string, owner: string) {
