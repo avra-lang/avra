@@ -126,8 +126,48 @@ the scans a tenth, the framer's own code three percent. Not hoisted
 around: the code reads as it should. NEXT: `server.av` (the event loop, a
 handler `fn(mut A, Request) -> Response`, app state threaded as a
 value), the response framer, `client.av`. The strings lane's typed
-patterns will replace the hand-written scans; until then the framer is
-the oracle they are measured against.
+patterns are LANDED on this branch (e49a637): `"{method} {path}
+HTTP/{major}.{minor}"` binds from one scan, 120 ns against 90 ns by
+hand, an untaken arm mints nothing; typed holes wait on the decimal
+row; the framer's own scans stay until the `Bytes`-subject parity is
+measured (the strings lane's S3), then they become patterns.
+
+## Sub-lane: strings — S3 (the octet parity)
+
+THE NUMBER THE CAMPAIGN NEEDED: over octets the compiled scan is 1.24x a
+hand-written one (74 against 90 ns), and the gap is COUNTED — four
+literal-to-octet conversions per attempt, ~4 ns each, because the IR has
+no `Bytes` constant; the ROADMAP's hoisted-octets trigger fired by its
+own condition and is an ask of the core owners now. Over text 1.58x, the
+extra being the subject conversion the framer never pays. The harness
+rule: a `once` read inside a timed loop inflated both sides 20% — hoist
+the subject. The NUL-past-both-separators scan is a corpus pair. The
+formats feature contributes zero F2047 warnings. MERGED into lane/http at
+8d56477 (two commits, 70b10b5 and 23cd31a), full gate green. Lane A ruled
+the octets ask by measurement: a `once` read is ~12 ns, so the per-site
+O(1) slot comes FIRST and the lowering hoist after; a `ConstBytes` waits
+for `Bytes` on main. NEXT: S4, the `grammar` value that parses, probed to
+need no new door.
+
+## Sub-lane: substrate — S3 (io) rulings
+
+THREE DECISIONS, ALL MEASURED BY THE LANE, RULED 2026-09-07. (1) `avra_io_env`
+STAYS A CORE ROW beside `avra_io_list`, both landing through the descriptor
+scratch: a package's C cannot reach `fd_landed`, and the standard's roster
+already names the environment as the process's own fact — a law, not an
+exception. (2) `read_text` VALIDATES UTF-8 (lane B's word): every file the
+compiler reads was scanned, 547, zero invalid; a stray `0xff` in a STRING
+LITERAL passes `check` clean today, so the change closes a silent hole. The
+refusal carries the PATH AND THE BYTE OFFSET (`utf8_bad_at`, never
+`Bytes.text() ?? fail`, which throws the offset away), the scan folds into
+the read loop's one pass, and `read_bytes` lands in the same slice as the
+lossless twin — split the verb, one per promise. (3) THE FIFO stays
+BLOCKING and `Other` is not refused: `read_text("/dev/null")` answers `""`
+today and `/dev/null` is `Other`, so a refusal would newly reject a
+legitimate read; the artifact is one doc sentence on `read_text` naming the
+block and `kind_of` as the question to ask first. THE CORE DELETIONS (rows,
+`RtHost` variants, evaluator arms leaving core) are the lane's to write, in
+lane A's and lane C's files, for their review before merge — both told.
 
 ## Slice 3 — `@std.http` (AFTER)
 

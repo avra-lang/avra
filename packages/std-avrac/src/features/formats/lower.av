@@ -14,7 +14,7 @@
 //! octets and the span cells in the pattern's test slot; `pat_binds`
 //! reads them back and cuts the values inside the arm's region, so
 //! an untaken arm mints no managed value at all.
-use core.{Reg, Ins, PatId, Type, TypeId, BinOp, FormatPart, nothing_bound}
+use core.{Reg, Ins, PatId, Type, TypeId, BinOp, FormatPart, binds}
 use features.{LowerCx, const_int, const_bool, open_region, arm_end, close_region_as, seeded_cell}
 
 /// Whether the subject matches. The walk's octets and span cells are
@@ -36,7 +36,7 @@ export fn format_binds(mut cx: LowerCx, p: PatId, parts: List<FormatPart>, v: Re
     mut out: List<Reg> = []
     // LICENSED I3: the cuts must be EMITTED in hole order, each minting its own answer
     for i, part in parts {
-        if part.hole.name != nothing_bound() { out.push(cut(cx, regs[0], regs[1 + 2 * i], regs[2 + 2 * i], v, vty)) }
+        if binds(part.hole) { out.push(cut(cx, regs[0], regs[1 + 2 * i], regs[2 + 2 * i], v, vty)) }
     }
     out
 }
@@ -176,8 +176,8 @@ fn tail_span(mut cx: LowerCx, subject: Reg, len: Reg, last: string) -> Reg {
     at_span(cx, subject, minus(cx, len, const_int(cx, byte_length(last))), len, last)
 }
 
-/// A literal as octets. The conversion runs per attempt; hoisting it
-/// wants a constant the IR does not carry, recorded as a trigger.
+/// A literal as octets. The conversion runs per attempt: the IR
+/// carries no constant of this shape to hoist it into.
 fn literal(mut cx: LowerCx, text: string) -> Reg {
     let s = cx.mint_shape(Type.Str)
     cx.emit(Ins.ConstStr(s, text))

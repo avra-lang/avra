@@ -400,6 +400,20 @@ export type FormatPart = { hole: Hole, piece: string }
 /// The word a name takes when it binds nothing.
 export fn nothing_bound() -> string { "_" }
 
+/// Whether a hole BINDS what it takes. One definition: the arm's
+/// scope, the lowering's cuts and the pattern's bind list must agree
+/// about which holes bind, and a rule spelled three times is a
+/// disagreement waiting to happen that no reading would find.
+export fn binds(h: Hole) -> bool {
+    h.name != nothing_bound()
+}
+
+/// The names a format's parts bind, in order — the arm's bind order,
+/// which every pass keys by index.
+export fn bound_names(parts: List<FormatPart>) -> List<string> {
+    [p.hole.name for p in parts if binds(p.hole)]
+}
+
 /// One match arm: its alternatives (`a or b`) and its value.
 export type Arm = { pats: List<PatId>, value: ExprId }
 
@@ -620,7 +634,7 @@ impl NodeStore {
         match self.pat(id) {
             .Bind(name) -> [name],
             .Variant(_, args) -> flatten([self.pattern_binds(a) for a in args]),
-            .Format(_, parts) -> [p.hole.name for p in parts if p.hole.name != nothing_bound()],
+            .Format(_, parts) -> bound_names(parts),
             .Wild or .Rest or .Lit(_) -> [],
         }
     }
