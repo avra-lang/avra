@@ -15,10 +15,10 @@ grammar AdvIdea = "/ideas/{id}"
 grammar AdvTenant = "/{tenant}/ideas"
 grammar AdvMajor = "/v{major}/x"
 grammar AdvTrio = "/a/{b}/{c}"
-grammar AdvRest = "/static/{path}"
-grammar AdvSuffix = "/img/{path}.png"
-grammar AdvHoled = "/{tenant}/files/{path}"
-grammar AdvRoot = "/{path}"
+grammar AdvRest = "/static/{path...}"
+grammar AdvSuffix = "/img/{path...}.png"
+grammar AdvHoled = "/{tenant}/files/{path...}"
+grammar AdvRoot = "/{path...}"
 
 fn adv_idea(q: Request, r: AdvIdea) -> Response { text(200, "I" + r.id) }
 fn adv_tenant(q: Request, r: AdvTenant) -> Response { text(200, "T" + r.tenant) }
@@ -118,10 +118,10 @@ fn named(rows: List<Route>) -> string { faults(rows).join(" ; ") }
 
 // ── Rest-taking fixtures ────────────────────────────────────────
 
-fn r_rest() -> Route { tailed<AdvRest>(Method.Get, "/static/{path}", (t: Bytes) -> AdvRest.parse(t), adv_rest) }
-fn r_suffix() -> Route { tailed<AdvSuffix>(Method.Get, "/img/{path}.png", (t: Bytes) -> AdvSuffix.parse(t), adv_suffix) }
-fn r_holed() -> Route { tailed<AdvHoled>(Method.Get, "/{tenant}/files/{path}", (t: Bytes) -> AdvHoled.parse(t), adv_holed) }
-fn r_root() -> Route { tailed<AdvRoot>(Method.Get, "/{path}", (t: Bytes) -> AdvRoot.parse(t), adv_root) }
+fn r_rest() -> Route { tailed<AdvRest>(Method.Get, "/static/{path...}", (t: Bytes) -> AdvRest.parse(t), adv_rest) }
+fn r_suffix() -> Route { tailed<AdvSuffix>(Method.Get, "/img/{path...}.png", (t: Bytes) -> AdvSuffix.parse(t), adv_suffix) }
+fn r_holed() -> Route { tailed<AdvHoled>(Method.Get, "/{tenant}/files/{path...}", (t: Bytes) -> AdvHoled.parse(t), adv_holed) }
+fn r_root() -> Route { tailed<AdvRoot>(Method.Get, "/{path...}", (t: Bytes) -> AdvRoot.parse(t), adv_root) }
 
 /// Six routes: exact, static, three rest-takers of different shapes,
 /// and a root catch-all LAST where it shadows nothing.
@@ -301,13 +301,13 @@ spec "@std.http route adversarial" {
             faults([r_root()].concat(resting().slice(0, 5))).length == 5
         }
         then "the first name is the first route it swallowed" {
-            faults([r_root()].concat(resting().slice(0, 5)))[0] == "`/ideas/{id}` is unreachable — `/{path}` is declared above it and matches every target it does"
+            faults([r_root()].concat(resting().slice(0, 5)))[0] == "`/ideas/{id}` is unreachable — `/{path...}` is declared above it and matches every target it does"
         }
     }
 
-    given "a rest-taker whose last segment binds nothing" {
+    given "a door and a pattern that disagree about the rest" {
         then "the fault names it" {
-            named([tailed<AdvRest>(Method.Get, "/static/files", (t: Bytes) -> AdvRest.parse(t), adv_rest)]) == "`/static/files` takes the rest of the target and its last segment binds nothing — a rest-taking route needs a hole to hold what it takes"
+            named([tailed<AdvRest>(Method.Get, "/static/files", (t: Bytes) -> AdvRest.parse(t), adv_rest)]) == "`/static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
         }
         then "and a well-formed rest-taker earns no such fault" {
             named([r_rest()]) == ""

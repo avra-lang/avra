@@ -15,9 +15,16 @@
 //! A HOLE IS ONE SEGMENT, and the table holds it structurally: a
 //! route is reached only at the depth its own pattern has, so
 //! `/ideas/{id}` is never offered `/ideas/7/extra` and cannot bind a
-//! capture that invented a segment. A TAIL capture, one hole
-//! deliberately spanning several segments, is a declared thing and is
-//! not built here.
+//! capture that invented a segment.
+//!
+//! UNLESS THE HOLE SAYS OTHERWISE, and it says so in the format's own
+//! words. `{name...}` is the GREEDY mark — the hole takes its literal
+//! at the LAST occurrence rather than the first — and on a final hole
+//! the two are the same position, because a suffix anchor already
+//! fixes that hole's end. So the mark STATES what the hole does
+//! rather than changing it, `tailed` declares the route that carries
+//! it, and the pattern reads exactly as its grammar does. `faults`
+//! names a door and a pattern that disagree.
 //!
 //! A CAPTURE HOLDS RAW OCTETS. Nothing is percent-decoded, so `%2F`
 //! is not a separator and `/ideas/{id}` binds `a%2Fb` whole. A
@@ -97,17 +104,18 @@ export fn fixed(method: Method, path: string, serve: fn(Request) -> Response) ->
     Route { method: method, pattern: path, reach: .Literal, serve: (q: Request, t: Bytes) -> if t == want { serve(q) } else { null } }
 }
 
-/// A ROUTE WHOSE LAST HOLE TAKES THE REST — `/static/{path}` given
-/// `/static/css/app.css` binds `css/app.css`. It matches targets of
-/// its own width and every width beyond.
+/// A ROUTE WHOSE LAST HOLE TAKES THE REST — `/static/{path...}`
+/// given `/static/css/app.css` binds `css/app.css`. It matches
+/// targets of its own width and every width beyond.
 ///
-/// A TAIL IS DECLARED BY THE DOOR, NEVER BY A MARK IN THE PATTERN.
-/// The pattern here reads exactly as its grammar does, which is the
-/// point: a marker only the router understood would make the two
-/// strings differ on purpose, and a route whose pattern disagrees
-/// with its grammar is silently dead. So there is nowhere to write a
-/// tail but last, and nothing to refuse but a last segment that binds
-/// nothing — which `faults` names.
+/// THE DOOR DECLARES AND THE PATTERN STATES, and `faults` names a
+/// disagreement. `...` is the format's own GREEDY mark, meaning the
+/// hole takes its literal at the LAST occurrence rather than the
+/// first; on a final hole the two are the same position, because a
+/// suffix anchor already fixes that hole's end. So the mark states
+/// what the hole does instead of changing it, the pattern reads
+/// EXACTLY as its grammar does, and the router is not reading a
+/// marker only it understands.
 export fn tailed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request, R) -> Response) -> Route {
     Route { method: method, pattern: pattern, reach: .Rest, serve: (q: Request, t: Bytes) -> answered(read(t), q, serve) }
 }
@@ -361,29 +369,31 @@ fn step_to(n: Node, key: int) -> int {
 /// `/ideas/{id}` is the commoner one and the quieter one, a specific
 /// route reading as an exception to a general one, and dead.
 ///
-/// A REST-TAKING ROUTE WHOSE LAST SEGMENT BINDS NOTHING. `tailed`
-/// promises the remaining segments to a hole, and a last segment with
-/// no hole in it has nowhere to put them, so the route matches only
-/// its own width and the door lied.
+/// A DOOR AND A PATTERN THAT DISAGREE ABOUT THE REST. `tailed`
+/// promises the remaining segments to a hole and the pattern must say
+/// so with `...`; `routed` promises one width and its pattern must
+/// not. Either way round the route still ANSWERS something — the
+/// reader is the truth — so nothing here is a wrong answer, and both
+/// are a claim the other half of the declaration does not keep.
 export fn faults(routes: List<Route>) -> List<string> {
     mut out: List<string> = []
     // LICENSED I3: a pair scan reports the LATER of two, so it needs both positions
     for j, r in routes {
-        if takes_rest(r.reach) && !absorbs(r.pattern) { out.push(binds_nothing(r.pattern)) }
+        if takes_rest(r.reach) && !marks_rest(r.pattern) { out.push(unmarked(r.pattern)) }
+        if r.reach == Reach.Width && marks_rest(r.pattern) { out.push(unclaimed(r.pattern)) }
         let above = [k for k in 0..j].find((k) -> shadows(routes[k], r))
         if above != null { out.push(unreachable(r.pattern, routes[above!].pattern)) }
     }
     out
 }
 
-/// Whether a rest-taking pattern's last segment can hold what it
-/// takes. A hole ANYWHERE in that segment does — `{path}` and
-/// `{path}.png` both absorb, the second anchoring its own end.
-fn absorbs(pattern: string) -> bool {
-    let b = pattern.bytes()
-    let cs = cuts(b)
-    holed(b, opened(cs, cs.length - 1), cs[cs.length - 1])
-}
+/// Whether a pattern's LAST segment carries a greedy hole. Anywhere
+/// in that segment counts — `{path...}` and `{path...}.png` both take
+/// the rest, the second anchoring its own end.
+fn marks_rest(pattern: string) -> bool { pieces(pattern).last()!.contains(rest_mark()) }
+
+/// The format's greedy mark, closing its hole.
+fn rest_mark() -> string { "...}" }
 
 fn shadows(a: Route, b: Route) -> bool { a.method == b.method && covers(a, b) }
 
@@ -432,6 +442,10 @@ fn unreachable(later: string, earlier: string) -> string {
     "`${later}` is unreachable — `${earlier}` is declared above it and matches every target it does"
 }
 
-fn binds_nothing(pattern: string) -> string {
-    "`${pattern}` takes the rest of the target and its last segment binds nothing — a rest-taking route needs a hole to hold what it takes"
+fn unmarked(pattern: string) -> string {
+    "`${pattern}` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
+}
+
+fn unclaimed(pattern: string) -> string {
+    "`${pattern}` spells a hole that takes the rest and the route was declared for one width — declare it with `tailed`, or drop the `...`"
 }

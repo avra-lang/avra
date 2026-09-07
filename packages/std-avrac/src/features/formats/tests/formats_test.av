@@ -16,8 +16,10 @@ fn shape(text: string) -> string {
 }
 
 fn spelled(p: FormatPart) -> string {
-    "<${p.hole.name}:${p.hole.ty?.name ?? "-"}>${p.piece}"
+    "<${p.hole.name}${greed(p)}:${p.hole.ty?.name ?? "-"}>${p.piece}"
 }
+
+fn greed(p: FormatPart) -> string { if p.hole.greedy { "..." } else { "" } }
 
 /// A fault as one word, its position included — a fault that moved
 /// would otherwise read as the same fault.
@@ -254,6 +256,78 @@ spec "features/formats" {
         }
         then "print then parse recovers every field" {
             shown("grammar L = \"{a}-{b}\"\nlet t = L.print(L { a: \"p\", b: \"q\" })!\nmatch L.parse(t) { r? -> r.a + r.b\n    null -> \"no\" }") == "pq"
+        }
+    }
+
+    given "a greedy hole" {
+        then "the mark is read off the name and does not join it" {
+            shape("{a...}-{b}") == "<a...:->-<b:->"
+        }
+        then "a hole without the mark is not greedy" {
+            shape("{a}-{b}") == "<a:->-<b:->"
+        }
+        then "the mark rides beside a type" {
+            shape("{a...: int}-{b}") == "<a...:int>-<b:->"
+        }
+        then "the mark does not make `_` bind" {
+            bound_names(read_format("{_...}-{b}").parts).join(",") == "b"
+        }
+        then "A GREEDY HOLE TAKES ITS LITERAL AT THE LAST OCCURRENCE" {
+            shown("grammar G = \"{a...}-{b}\"\nmatch G.parse(\"1-2-3\") { r? -> r.a + \"|\" + r.b\n    null -> \"no\" }") == "1-2|3"
+        }
+        then "and its lazy twin takes the first" {
+            shown("grammar L = \"{a}-{b}\"\nmatch L.parse(\"1-2-3\") { r? -> r.a + \"|\" + r.b\n    null -> \"no\" }") == "1|2-3"
+        }
+        then "with one occurrence the two agree" {
+            shown("grammar G = \"{a...}-{b}\"\nmatch G.parse(\"1-2\") { r? -> r.a + \"|\" + r.b\n    null -> \"no\" }") == "1|2"
+        }
+        then "with no occurrence both fail" {
+            shown("grammar G = \"{a...}-{b}\"\nmatch G.parse(\"12\") { r? -> \"yes\"\n    null -> \"no\" }") == "no"
+        }
+        then "an empty capture is still a capture" {
+            shown("grammar G = \"{a...}-{b}\"\nmatch G.parse(\"-x\") { r? -> \"[\" + r.a + \"][\" + r.b + \"]\"\n    null -> \"no\" }") == "[][x]"
+        }
+        then "THERE IS NO BACKTRACKING, so a greedy hole can fail where its lazy twin matches" {
+            shown("grammar G = \"{a...}-{b}-{c}\"\nmatch G.parse(\"1-2-3-4\") { r? -> \"yes\"\n    null -> \"no\" }") == "no"
+        }
+        then "and the lazy twin of that format does match" {
+            shown("grammar L = \"{a}-{b}-{c}\"\nmatch L.parse(\"1-2-3-4\") { r? -> \"yes\"\n    null -> \"no\" }") == "yes"
+        }
+    }
+
+    given "greed on the LAST hole, which is inert" {
+        then "a marked last hole answers what an unmarked one does" {
+            shown("grammar G = \"/s/{p...}\"\ngrammar P = \"/s/{p}\"\nlet a = G.parse(\"/s/a/b/c\")?.p ?? \"no\"\nlet b = P.parse(\"/s/a/b/c\")?.p ?? \"no\"\na + \"|\" + b") == "a/b/c|a/b/c"
+        }
+        then "and both refuse the same text" {
+            shown("grammar G = \"/s/{p...}\"\ngrammar P = \"/s/{p}\"\nlet a = G.parse(\"/x/y\")?.p ?? \"no\"\nlet b = P.parse(\"/x/y\")?.p ?? \"no\"\na + \"|\" + b") == "no|no"
+        }
+        then "and both take an empty capture the same way" {
+            shown("grammar G = \"/s/{p...}\"\ngrammar P = \"/s/{p}\"\nlet a = G.parse(\"/s/\")?.p ?? \"no\"\nlet b = P.parse(\"/s/\")?.p ?? \"no\"\n\"[\" + a + \"][\" + b + \"]\"") == "[][]"
+        }
+    }
+
+    given "the round trip, and its greedy mirror" {
+        then "A GREEDY PRINT ACCEPTS WHAT ITS LAZY TWIN REFUSES" {
+            shown("grammar G = \"{a...}-{b}\"\nG.print(G { a: \"1-2\", b: \"3\" }) ?? \"refused\"") == "1-2-3"
+        }
+        then "and the lazy twin refuses that very value" {
+            shown("grammar L = \"{a}-{b}\"\nL.print(L { a: \"1-2\", b: \"3\" }) ?? \"refused\"") == "refused"
+        }
+        then "AND REFUSES WHAT ITS LAZY TWIN ACCEPTS — the conditions are mirrors" {
+            shown("grammar G = \"{a...}-{b}\"\nG.print(G { a: \"1\", b: \"2-3\" }) ?? \"refused\"") == "refused"
+        }
+        then "and the lazy twin accepts that one" {
+            shown("grammar L = \"{a}-{b}\"\nL.print(L { a: \"1\", b: \"2-3\" }) ?? \"refused\"") == "1-2-3"
+        }
+        then "THE OVERLAP CASE ROUND-TRIPS UNDER GREED — a value ending in its own delimiter's prefix" {
+            shown("grammar G = \"{a...}--{b}\"\nlet t = G.print(G { a: \"x-\", b: \"y\" })!\nmatch G.parse(t) { r? -> \"[\" + r.a + \"][\" + r.b + \"]\"\n    null -> \"no\" }") == "[x-][y]"
+        }
+        then "and its lazy twin refuses that value, which is why the proof has two clauses" {
+            shown("grammar L = \"{a}--{b}\"\nL.print(L { a: \"x-\", b: \"y\" }) ?? \"refused\"") == "refused"
+        }
+        then "whatever a greedy print answers, parsing it gives the fields back" {
+            shown("grammar G = \"{a...}-{b}\"\nlet t = G.print(G { a: \"p-q\", b: \"r\" })!\nmatch G.parse(t) { r? -> r.a + \"|\" + r.b\n    null -> \"no\" }") == "p-q|r"
         }
     }
 }

@@ -1,8 +1,16 @@
 //! THE SCAN, emitted. One anchored left-to-right pass over the
 //! subject's octets: the head is a prefix, the last piece a suffix,
 //! and every piece between them is found at the FIRST position at or
-//! after the cursor. No backtracking, so the emitted code is linear
-//! in the subject.
+//! after the cursor — or at the LAST, when its hole is GREEDY. No
+//! backtracking either way, so the emitted code is linear in the
+//! subject.
+//!
+//! AND NO BACKTRACKING IS THE CONSEQUENCE TO KNOW ABOUT GREED. A
+//! greedy hole can fail where its lazy twin would have matched,
+//! because the occurrence it took may leave a later piece unfindable
+//! and nothing goes back to try an earlier one. That is a property of
+//! the format the writer chose, not a defect: the two spellings pick
+//! different splits and each is exact about which.
 //!
 //! Every step is a LAZY REGION over the verdict so far, as an enum
 //! pattern's payload tests are: a step after a failure never runs,
@@ -15,7 +23,7 @@
 //! reads them back and cuts the values inside the arm's region, so
 //! an untaken arm mints no managed value at all.
 use core.{Reg, Ins, PatId, ExprId, Type, TypeId, BinOp, FormatPart, GrammarSpec, binds}
-use features.{LowerCx, MethodCall, const_int, const_bool, open_region, arm_end, close_region, close_region_as, seeded_cell, box_size, grown_box, adopted, absent_of, carried_type, carried_of, open_presence, field_read, lower_defect}
+use features.{LowerCx, MethodCall, const_int, const_bool, open_region, arm_end, close_region, close_region_as, seeded_cell, loop_start, loop_cond, loop_end, box_size, grown_box, adopted, absent_of, carried_type, carried_of, open_presence, field_read, lower_defect}
 
 /// Whether the subject matches. The walk's octets and span cells are
 /// left in the pattern's slot for the binds — written once here,
@@ -93,9 +101,77 @@ fn anchored(mut cx: LowerCx, subject: Reg, len: Reg, head: string, last: string)
 fn spanned(mut cx: LowerCx, w: Walked, parts: List<FormatPart>, cur: Reg, stop: Reg, i: int) -> Reg {
     if i == parts.length { return w.ok }
     open_region(cx, w.ok)
-    arm_end(cx, if i == parts.length - 1 { last_span(cx, w, i, cur, stop) } else { next_span(cx, w, i, cur, parts[i].piece) })
+    arm_end(cx, hole_span(cx, w, parts, i, cur, stop))
     let no = const_bool(cx, false)
     spanned(cx, w with { ok: close_region_as(cx, cx.view.types.intern(Type.Bool), no) }, parts, cur, stop, i + 1)
+}
+
+/// WHICH SPAN THIS HOLE TAKES. The last hole runs to the suffix
+/// anchor; an interior one ends at its literal, taken at that
+/// literal's FIRST occurrence, or its LAST when the hole is greedy.
+///
+/// GREED IS INERT ON THE LAST HOLE and this is why: that hole's end
+/// is fixed by the suffix anchor, not by a search, so first and last
+/// are the same position. The mark there STATES what the hole already
+/// does, which is what lets a route's pattern carry it and still read
+/// exactly as its grammar does.
+fn hole_span(mut cx: LowerCx, w: Walked, parts: List<FormatPart>, i: int, cur: Reg, stop: Reg) -> Reg {
+    if i == parts.length - 1 { return last_span(cx, w, i, cur, stop) }
+    if parts[i].hole.greedy { return greedy_span(cx, w, i, cur, parts[i].piece) }
+    next_span(cx, w, i, cur, parts[i].piece)
+}
+
+/// A GREEDY interior hole's span: its literal taken at the LAST
+/// occurrence at or after the cursor rather than the first — the
+/// mirror of its lazy twin, over the same region, choosing the other
+/// end of it.
+///
+/// The search is a forward scan that keeps its last hit, so it is one
+/// pass. THERE IS STILL NO BACKTRACKING, which is the consequence to
+/// know: a greedy hole can fail where its lazy twin would have
+/// matched, because the piece it took may leave a later piece
+/// unfindable, and nothing goes back to try the earlier occurrence.
+///
+/// ONLY CELLS CROSS THE LOOP'S EDGE. The probe is read by the
+/// condition and written by the body, and no register minted in one
+/// is read in the other.
+fn greedy_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, piece: string) -> Reg {
+    let from = loaded_from(cx, cur)
+    cx.emit(Ins.Store(w.spans[2 * i], from))
+    let int_ty = cx.view.types.intern(Type.Int)
+    let needle = literal(cx, piece)
+    let first = cx.mint_shape(Type.Int)
+    cx.emit(Ins.CallRt(first, "avra_bytes_index_of", [w.subject, needle, from]))
+    let probe = seeded_cell(cx, int_ty, first)
+    let miss = const_int(cx, 0 - 1)
+    let best = seeded_cell(cx, int_ty, miss)
+    farthest(cx, w, best, probe, needle)
+    let hi = loaded_from(cx, best)
+    cx.emit(Ins.Store(w.spans[2 * i + 1], hi))
+    let width = const_int(cx, byte_length(piece))
+    cx.emit(Ins.Store(cur, plus(cx, hi, width)))
+    let zero = const_int(cx, 0)
+    let hit = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Bin(hit, BinOp.Ge, hi, zero))
+    hit
+}
+
+/// While the probe holds a hit, keep it and look one past it.
+fn farthest(mut cx: LowerCx, w: Walked, best: Reg, probe: Reg, needle: Reg) {
+    loop_start(cx)
+    let seen = loaded_from(cx, probe)
+    let zero = const_int(cx, 0)
+    let more = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Bin(more, BinOp.Ge, seen, zero))
+    loop_cond(cx, more)
+    let here = loaded_from(cx, probe)
+    cx.emit(Ins.Store(best, here))
+    let one = const_int(cx, 1)
+    let after = plus(cx, here, one)
+    let next = cx.mint_shape(Type.Int)
+    cx.emit(Ins.CallRt(next, "avra_bytes_index_of", [w.subject, needle, after]))
+    cx.emit(Ins.Store(probe, next))
+    loop_end(cx)
 }
 
 /// An INTERIOR hole's span: it begins at the cursor and ends where
@@ -323,11 +399,59 @@ fn read_fields(mut cx: LowerCx, subject: ExprId, parts: List<FormatPart>) -> Lis
 /// no condition — the suffix anchor fixes its end positionally.
 fn survives(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int) -> Reg {
     if i >= parts.length - 1 { return const_bool(cx, true) }
-    let here = unmoved(cx, fields[i], parts[i].piece)
+    let here = holds(cx, parts, fields, i)
     open_region(cx, here)
     arm_end(cx, survives(cx, parts, fields, i + 1))
     let no = const_bool(cx, false)
     close_region_as(cx, cx.view.types.intern(Type.Bool), no)
+}
+
+/// WHICH CONDITION THIS HOLE OWES, and they are mirrors: a LAZY hole
+/// needs its literal to appear no EARLIER than the boundary, so the
+/// test looks LEFT, at the value itself; a GREEDY one needs it to
+/// appear no LATER, so the test looks RIGHT, at everything printed
+/// after it. Neither condition reaches the other's side, which is why
+/// a value one accepts the other may refuse.
+fn holds(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int) -> Reg {
+    if parts[i].hole.greedy { return unpassed(cx, parts, fields, i) }
+    unmoved(cx, fields[i], parts[i].piece)
+}
+
+/// A GREEDY hole's condition: its literal, followed by everything
+/// printed after it, must hold NO FURTHER occurrence of that literal.
+/// An occurrence straddling the boundary counts, which is why the
+/// search runs over the literal and the tail JOINED rather than over
+/// the tail alone.
+///
+/// The value itself is not asked about, and that is the point: a
+/// greedy hole may hold its own delimiter as often as it likes,
+/// because it takes the LAST one.
+fn unpassed(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int) -> Reg {
+    let after = trailing(cx, parts, fields, i)
+    let octets = rt1(cx, Type.Bytes, "avra_bytes_of_str", after)
+    let needle = literal(cx, parts[i].piece)
+    let one = const_int(cx, 1)
+    let at = cx.mint_shape(Type.Int)
+    cx.emit(Ins.CallRt(at, "avra_bytes_index_of", [octets, needle, one]))
+    let zero = const_int(cx, 0)
+    let alone = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Bin(alone, BinOp.Lt, at, zero))
+    alone
+}
+
+/// This hole's literal, then every later hole's value and literal —
+/// the text the scan will still have in front of it when it takes
+/// this hole's delimiter.
+fn trailing(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int) -> Reg {
+    mut pieces = [text_const(cx, parts[i].piece)]
+    // LICENSED I3: the pieces must be EMITTED in order, each minting its own register
+    for j, part in parts {
+        if j > i {
+            pieces.push(fields[j])
+            pieces.push(text_const(cx, part.piece))
+        }
+    }
+    glued(cx, pieces)
 }
 
 /// One hole's value against the literal that follows it: appended,
@@ -355,6 +479,11 @@ fn woven(mut cx: LowerCx, read: GrammarSpec, fields: List<Reg>) -> Reg {
         pieces.push(fields[i])
         pieces.push(text_const(cx, part.piece))
     }
+    glued(cx, pieces)
+}
+
+/// Text registers joined into one, in the order they were minted.
+fn glued(mut cx: LowerCx, pieces: List<Reg>) -> Reg {
     let size = box_size(cx, pieces.length)
     let arr = cx.mint_ty(cx.view.types.intern(Type.List(cx.view.types.intern(Type.Str))))
     grown_box(cx, arr, size, pieces)
