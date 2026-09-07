@@ -222,10 +222,20 @@ def c_returns(sources):
             out[m.group(2)] = (m.group(1).strip(), rel, text.count("\n", 0, m.start()) + 1)
     return out
 
+# WHERE AN EXTERN CAN BE DECLARED. `packages/` alone left the CORPUS
+# unscanned, and corpus/native/externs.av is the file that
+# DEMONSTRATES this seam — the one place a reader looks to learn what
+# an extern may do. A keeper blind to its own subject's showcase is
+# the untested-instrument shape: it had never been asked about the
+# declarations most likely to be copied.
+def declaring_sources():
+    return sorted(glob.glob(os.path.join(ROOT, "packages/**/*.av"), recursive=True)
+                  + glob.glob(os.path.join(ROOT, "corpus/**/*.av"), recursive=True))
+
 def externs():
     """Every `extern fn NAME(...) -> TYPE` the tree declares."""
     out = []
-    for path in glob.glob(os.path.join(ROOT, "packages/**/*.av"), recursive=True):
+    for path in declaring_sources():
         # `export extern fn` too: a PACKAGE's wall is exported by
         # definition, since the point of it is that callers reach it.
         # Matching only the bare spelling made the keeper structurally
@@ -245,7 +255,7 @@ def wall_seats():
     is keyed by the answer.
     """
     out = []
-    for path in glob.glob(os.path.join(ROOT, "packages/**/*.av"), recursive=True):
+    for path in declaring_sources():
         for m in re.finditer(r"^(?:export )?extern fn ([A-Za-z_][A-Za-z_0-9]*)\s*\(([^)]*)\)",
                              open(path).read(), re.M):
             out.append((m.group(1), m.group(2), os.path.relpath(path, ROOT)))
@@ -575,8 +585,36 @@ def self_test():
     return len(bad)
 
 
+# A POINTER IS A CAPABILITY, so a `ptr`-answering extern must be READ
+# and never abstained. This keeper reads C in the tree; a symbol whose
+# prototype it cannot find is one it can hold to nothing, and for a
+# pointer answer that abstention MINTS — `extern fn atoi(s: string) ->
+# ptr?` reinterprets a C `int` as an address and checks clean, so
+# deleting any one named minting door leaves the seam itself open.
+# Abstention stays permission for every other answer and is refusal
+# here.
+def unread_pointers(wall, bodies):
+    return [(n, t, w) for n, t, w in wall if t == "ptr" and n not in bodies]
+
+PTR_CASES = [
+    # (wall row, is the prototype readable, refused?)
+    (("atoi", "ptr", "x.av"), False, True),      # libc: unreadable, minting
+    (("avra_ptr_at", "ptr", "x.av"), True, False),  # ours: read, held to its C
+    (("atoi", "int", "x.av"), False, False),     # unreadable but answers a width
+    (("avra_now_ns", "int", "x.av"), True, False),
+]
+
+def ptr_self_test():
+    for row, readable, want in PTR_CASES:
+        bodies = {row[0]: ("void*", "r.c", 1)} if readable else {}
+        got = bool(unread_pointers([row], bodies))
+        if got != want:
+            print(f"externs: ptr self-test failed on {row} readable={readable}: {got} != {want}")
+            return 1
+    return 0
+
 def main():
-    if self_test() + seat_self_test() + mint_self_test():
+    if self_test() + seat_self_test() + mint_self_test() + ptr_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -612,7 +650,15 @@ def main():
         a, c = pair
         print(f"externs: {name} seats `{a}` in {where} over C `{c}` at {crel}:{cline}")
         print(f"externs:   the seat and the body must name the same width — a C `int` is 32 bits")
-    if narrow or voids or seats:
+    minting = unread_pointers(wall, bodies)
+    for name, declared, where in minting:
+        print(f"externs: {name} answers `ptr` in {where} and no C in the tree declares it")
+        print(f"externs:   a pointer from a body this keeper cannot read is an address minted")
+        print(f"externs:   from whatever the register held — the width check abstains and the")
+        print(f"externs:   abstention is what grants it. Name it in tree C, or answer its width.")
+    if narrow or voids or seats or minting:
+        if minting:
+            print(f"externs: {len(minting)} extern(s) answer a pointer no C body here declares")
         if seats:
             print(f"externs: {len(seats)} parameter seat(s) disagree with their C body")
         if narrow:
