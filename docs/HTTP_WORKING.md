@@ -123,7 +123,13 @@ a strcmp per earlier entry on every read — lane A's, asked with the
 numbers), refcount traffic a third (the `with`-copied `Framing` per
 field and the per-field boxes — mine, to measure after lane A's fix),
 the scans a tenth, the framer's own code three percent. Not hoisted
-around: the code reads as it should. NEXT: `server.av` (the event loop, a
+around: the code reads as it should. RE-MEASURED after lane A's two-pass
+`once` fix reached this branch through main (6f528dd): 2420/2399/2427
+ns a head, a 30% drop with no framer change — the `once` third was the
+strcmp scan, and a read is ~12 ns now; lane A measured a per-site O(1)
+slot at 1.7 ms of a 5.8 s compile and refused it for the compiler, and
+the framer makes no case for it either: what remains is the refcount
+traffic, mine. NEXT: `server.av` (the event loop, a
 handler `fn(mut A, Request) -> Response`, app state threaded as a
 value), the response framer, `client.av`. The strings lane's typed
 patterns are LANDED on this branch (e49a637): `"{method} {path}
