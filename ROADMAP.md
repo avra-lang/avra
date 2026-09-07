@@ -4519,7 +4519,11 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         lookups. `avra_fd_*` take `Bytes` and carry their length.
         DECIDED BY THE OWNER 2026-09-07 ("yes do the same thing as
         other mature languages. make it beautiful and safe and
-        performant."), AND SHARPENED BY LANE A BEFORE A LINE WAS
+        performant."), AND DOORS 2 AND 3 DECIDED THE SAME DAY ("yes to
+        decision 2 and 3"): S2c's per-package library is the substrate
+        lane's slice after the seam; immortal `once` answers with the
+        `is_shared` prerequisite are lane A's, on the owner's word in
+        lane A's session. AND SHARPENED BY LANE A BEFORE A LINE WAS
         WRITTEN — the first brief had two readings: (A) the check
         governs only seats the callee resolves, and the LANGUAGE stays
         as lossy as today (`"ab\0cd" == "ab"` true); (B) the column
