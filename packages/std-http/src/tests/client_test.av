@@ -1,0 +1,99 @@
+//! The client against the server on one thread: the server turns, the
+//! client polls, and the answer is the handler's.
+use @std.net.{NetError, listen}
+use @std.time.{ms, secs}
+use @std.http.frame.{limits, Method}
+use @std.http.http.{Request, Response, Header, text}
+use @std.http.server.{Server, served, timing}
+use @std.http.client.{Client, Answer, ClientError, connected, request}
+
+fn tagged(mut app: App, q: Request) -> Response {
+    app.hits = app.hits + 1
+    text(200, "${q.target()}|${q.body.text() ?? "?"}|${q.header("x-tag") ?? "-"}|${app.hits}")
+}
+
+type Duo = { s: Server<App>, c: Client }
+
+fn lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
+    match r {
+        .Ok(v) -> .Ok(v),
+        .Err(e) -> .Err(.Net(e)),
+    }
+}
+
+fn duo() -> Result<Duo, ClientError> {
+    let l = lifted(listen("127.0.0.1", 0))?
+    let s = lifted(served(l, App { hits: 0 }, tagged, limits(), timing()))?
+    let c = connected("127.0.0.1", l.port, secs(2), limits())?
+    .Ok(Duo { s: s, c: c })
+}
+
+/// The request sent, then the server turned and the client polled
+/// until the answer.
+fn answered_by(mut d: Duo, method: Method, req: Bytes) -> Result<Answer, ClientError> {
+    d.c.sent(method, req)?
+    mut turns = 0
+    while turns < 50 {
+        lifted(d.s.turn(ms(20)))?
+        let a: Answer? = d.c.polled(ms(20))?
+        if a != null { return .Ok(a!) }
+        turns = turns + 1
+    }
+    .Err(.TimedOut)
+}
+
+fn get_answer() -> Result<bool, ClientError> {
+    mut d = duo()?
+    let a = answered_by(d, .Get, request("GET", "/g", "a", [Header { name: "x-tag", value: "t1" }], "".bytes()))?
+    .Ok(a.status == 200 && (a.body.text() ?? "") == "/g||t1|1" && a.header("Content-Length") == "8" && a.header("nope") == null)
+}
+
+fn post_answer() -> Result<bool, ClientError> {
+    mut d = duo()?
+    let a = answered_by(d, .Post, request("POST", "/p", "a", [], "hello".bytes()))?
+    .Ok(a.status == 200 && (a.body.text() ?? "") == "/p|hello|-|1")
+}
+
+fn two_on_one_connection() -> Result<bool, ClientError> {
+    mut d = duo()?
+    let one = answered_by(d, .Get, request("GET", "/1", "a", [], "".bytes()))?
+    let two = answered_by(d, .Get, request("GET", "/2", "a", [], "".bytes()))?
+    .Ok((one.body.text() ?? "").ends_with("|1") && (two.body.text() ?? "").ends_with("|2") && d.s.connections() == 1)
+}
+
+fn head_answer() -> Result<bool, ClientError> {
+    mut d = duo()?
+    let a = answered_by(d, .Head, request("HEAD", "/h", "a", [], "".bytes()))?
+    let after = answered_by(d, .Get, request("GET", "/g", "a", [], "".bytes()))?
+    .Ok(a.status == 200 && a.body.length == 0 && a.header("content-length") == "7" && (after.body.text() ?? "") == "/g||-|2")
+}
+
+fn bad_reply_is_refused() -> Result<bool, ClientError> {
+    mut d = duo()?
+    let a = answered_by(d, .Get, request("GET", "/x", "a", [], "".bytes()))
+    .Ok(passes_client(a))
+}
+
+fn passes_client(r: Result<Answer, ClientError>) -> bool {
+    match r {
+        .Ok(_) -> true,
+        .Err(_) -> false,
+    }
+}
+
+fn client_passes(r: Result<bool, ClientError>) -> bool {
+    match r {
+        .Ok(b) -> b,
+        .Err(_) -> false,
+    }
+}
+
+spec "std.http client" {
+    given "against the server" {
+        then "a GET's answer carries the status, the headers and the body" { client_passes(get_answer()) }
+        then "a POST's body reaches the handler" { client_passes(post_answer()) }
+        then "two fetches ride one connection" { client_passes(two_on_one_connection()) }
+        then "a HEAD's answer has a length and no body, and the connection goes on" { client_passes(head_answer()) }
+        then "a well-formed reply is an answer, not an error" { client_passes(bad_reply_is_refused()) }
+    }
+}
