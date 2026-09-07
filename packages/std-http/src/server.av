@@ -59,6 +59,7 @@ export type Server<A> = {
     timing: Timing,
     links: List<Link?>,
     live: int,
+    swept_at: int,
 }
 
 /// A server on `l`, its handler watching `app`. The listener is
@@ -66,10 +67,13 @@ export type Server<A> = {
 export fn served<A>(l: Listener, app: A, handle: fn(mut A, Request) -> Response, limits: Limits, timing: Timing) -> Result<Server<A>, NetError> {
     let p = poller()?
     p.watch(l.fd, .Read)?
-    .Ok(Server { listener: l, poll: p, app: app, handle: handle, limits: limits, timing: timing, links: [], live: 0 })
+    .Ok(Server { listener: l, poll: p, app: app, handle: handle, limits: limits, timing: timing, links: [], live: 0, swept_at: now_ms() })
 }
 
 once fn continue_line() -> Bytes { "HTTP/1.1 100 Continue\r\n\r\n".bytes() }
+
+/// How long a loaded loop goes between sweeps, in ms.
+fn sweep_gap() -> int { 1000 }
 
 impl Server<A> {
     /// Turns until the listener fails.
@@ -83,12 +87,18 @@ impl Server<A> {
     }
 
     /// One wait of up to `budget` (null waits for the first event),
-    /// then every ready descriptor served and every idle link swept.
-    /// Answers how many events were served.
+    /// then every ready descriptor served. Idle links are swept on
+    /// every quiet turn and once a second under load: a sweep walks
+    /// every link, and a loop serving thousands must not pay that per
+    /// event. Answers how many events were served.
     mut fn turn(budget: Duration?) -> Result<int, NetError> {
         let events = self.poll.wait(budget)?
         for e in events { self.served_event(e)? }
-        self.swept()
+        let now = now_ms()
+        if events.is_empty() || now - self.swept_at >= sweep_gap() {
+            self.swept(now)
+            self.swept_at = now
+        }
         .Ok(events.length)
     }
 
@@ -272,8 +282,7 @@ impl Server<A> {
 
     /// Every link past its deadline dropped: a head in flight past
     /// `head`, a body past `body`, an idle connection past `idle`.
-    mut fn swept() {
-        let now = now_ms()
+    mut fn swept(now: int) {
         for l in [x! for x in self.links if x != null] {
             if now - l.heard > self.deadline(l) { let _ = self.dropped(l) }
         }

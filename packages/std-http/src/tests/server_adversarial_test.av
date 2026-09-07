@@ -202,6 +202,37 @@ fn two_clients() -> Result<bool, NetError> {
     .Ok(mine.contains("/m 0") && (theirs?.text() ?? "").contains("/o 0") && pr.s.connections() == 2)
 }
 
+/// Two hundred clients in four bursts of fifty, a turn between each
+/// so the loop accepts as they come (a listen backlog is 128 on
+/// macOS, whatever was asked): every one accepted, answered and
+/// counted; the link table grows past every descriptor.
+fn many_clients() -> Result<bool, NetError> {
+    mut pr = attacked()?
+    let port = pr.s.listener.port
+    mut others: List<Conn> = []
+    for burst in 0..4 {
+        for i in 0..50 { others.push(connect("127.0.0.1", port, secs(2))?) }
+        pr.s.turn(ms(20))?
+    }
+    for o in others { let _ = o.write("GET /w HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)? }
+    mut turns = 0
+    while pr.s.app.hits < 200 && turns < 400 {
+        pr.s.turn(ms(20))?
+        turns = turns + 1
+    }
+    let answered = [o for o in others if replied_to(o)].length
+    .Ok(pr.s.app.hits == 200 && answered == 200 && pr.s.connections() == 201)
+}
+
+fn replied_to(o: Conn) -> bool {
+    match o.read(4096) {
+        .Ok(.Data(b)) -> b.length > 0,
+        .Ok(.Eof) -> false,
+        .Ok(.Pending) -> false,
+        .Err(_) -> false,
+    }
+}
+
 spec "std.http server adversarial" {
     given "every split" {
         then "a request in one-byte reads is the unsplit verdict" { passes(one_byte_reads()) }
@@ -225,5 +256,6 @@ spec "std.http server adversarial" {
         then "a peer gone after pipelining gets both answers" { passes(vanish_after_pipeline()) }
         then "a head that stalls past its deadline is dropped" { passes(head_then_silence_times_out()) }
         then "two clients are served apart" { passes(two_clients()) }
+        then "two hundred clients at once are each accepted and answered" { passes(many_clients()) }
     }
 }
