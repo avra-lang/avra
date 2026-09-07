@@ -207,6 +207,15 @@ fn many() -> Result<string, ProcessError> {
     "${clean}"
 }
 
+/// A command whose shell variable shares its name with a local. The
+/// local must not reach the child: the shell expands `$AVRA_PROBE`,
+/// and the `${…}` spelling would have handed over "decoy" instead.
+fn shadowed_var() -> Result<string, ProcessError> {
+    let AVRA_PROBE = "decoy"
+    let c = shell("echo $AVRA_PROBE")? with { env: minimal().with_var("AVRA_PROBE", "seen") }
+    "${(c.run()?).stdout.trim()}${AVRA_PROBE.replace("decoy", "")}"
+}
+
 fn hostile_words() -> Result<string, ProcessError> {
     let echo = tool("echo")?
     (cmd(echo, ["b c", "d\"e", "$HOME", "; rm -rf /", "--flag", "`id`"]).run()?).stdout.trim()
@@ -493,6 +502,17 @@ spec "std/process adversarial" {
     given "the words are data" {
         then "shell metacharacters in words reach the child as themselves" {
             shown(hostile_words()) == "b c d\"e $HOME ; rm -rf / --flag `id`"
+        }
+        // A SHELL VARIABLE IS SPELLED `$NAME`, NEVER `${NAME}`, and the
+        // difference is silent. `"${HOME}"` is Avra's interpolation: with
+        // nothing of that name it is a loud F3000, and with a `let HOME`
+        // in scope it COMPILES CLEAN and the command becomes the local's
+        // value — measured here, `echo /tmp/not-your-home`, no
+        // diagnostics. So the loud half protects a writer only while no
+        // local shares the name, and a command line is exactly where
+        // HOME, PATH and USER are likely to be locals too.
+        then "a same-named local does not reach the child — the `$NAME` spelling is the shell's" {
+            shown(shadowed_var()) == "seen"
         }
     }
 }
