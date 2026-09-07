@@ -574,6 +574,138 @@ links every package object in the tree, refused — the compiler would
 carry SQLite. This is where S2 may prove larger than one slice; the
 estimate goes to the lead before a line is written.
 
+## 5.6 S2a — THE EXTERN HOST'S MECHANISM, designed, no code written
+
+The prior paper (`docs/2026_09_05_EXTERN_HOST_SHAPE.md`) settled the
+spine and it stands: ONE fully-applied C prototype rather than libffi,
+integer class then floating class, the answer read through the seat's
+declared width so the host and the backend narrow from ONE declaration.
+Its ABI argument holds on both targets — the doubles never reach the
+stack, so the k-th stacked integer of the uniform shape lands where the
+k-th stacked integer of any all-integer callee lands. What follows is
+what that paper does not say.
+
+### 5.6.1 THE TRAMPOLINE IS `@std/avrac`'s C, NOT THE RUNTIME'S
+
+This falls straight out of §0 and it is the decision with the largest
+blast radius. `build/avra_runtime.o` is hard-coded into the link line
+of EVERY avra-built program (`cli/src/commands/shared.av:277`), so a
+`dlsym` trampoline placed there ships in every binary the compiler
+emits. `build/llvm_wrapper.o` is linked only by `@std/avrac`, and only
+`packages/cli` depends on it — so the compiler's own foreign machinery
+already has a home, and the trampoline belongs beside it as
+`packages/std-avrac/src/c/ffi.c`, built to `build/ffi.o` by the one
+generic rule with no Makefile line, named in `@std/avrac`'s `[link]`.
+
+Two things follow. The blast radius is the COMPILER, never a user's
+program — which answers most of the owner's capability question by
+construction rather than by policy. And S2a becomes the first NEW
+package C to land under this standard, which is the proof the standard
+is usable by its own author and not only by the package that predated
+it.
+
+### 5.6.2 THE TRAMPOLINE NEVER MINTS
+
+Every door that mints a managed value is a core row hosted by an arm
+(§5.3). So the uniform frame only ever moves WORDS and ADDRESSES, and
+the host's law — a returned foreign pointer is never adopted as text —
+costs it nothing, because there is no code path where it could. That
+is why §5.3 had to land first.
+
+### 5.6.3 THE VALUE MAPPING, at the boundary and nowhere else
+
+Lane C's answer: a foreign pointer rides `Val.I`, witnessed by the
+seat's `RtKind` in the row, with no new variant (§5.5a). The mapping:
+
+| direction | `RtKind` | the host |
+|---|---|---|
+| argument | `I64`/`I32`/`U32` | the next integer slot, narrowed by the seat's width with the sign that width names |
+| argument | `Ptr` | the next integer slot; `Val.N` is 0, `Val.I(a)` is `a` |
+| argument | `F64` | the next FP slot, from `Val.F`'s bits |
+| answer | `Void` | discarded |
+| answer | `Ptr` | 0 is `Val.N`, non-zero is `Val.I(address)` |
+| answer | `I64`/`I32`/`U32` | the return register read through the seat's width, extended as that width names |
+| answer | `F64` | `Val.F` of the returned bits |
+
+A REVERSAL CONDITION IS WRITTEN AT THE MAPPING: a pointer rides
+`Val.I` only while Avra cannot tell a pointer from a number, and the
+day `ptr` gains equality, a text projection or arithmetic, `Val.P` is
+earned.
+
+### 5.6.4 THE STAGING PROTOCOL, and why not nineteen seats
+
+The uniform prototype needs MAX_I integers and MAX_F doubles fully
+applied. Declaring that directly is an `extern fn` with nineteen
+seats. The alternative is the shape this tree already uses for
+descriptors — LAND, THEN ACT: `avra_ffi_set_int(k, v)` and
+`avra_ffi_set_f64(k, bits)` stage into the trampoline's own slots, and
+`avra_ffi_call(sym, nint, nf64) -> int64` performs the one fully
+applied call. Five seats instead of nineteen, no Avra-side array
+building, and the same idiom as `avra_fd_read` followed by
+`avra_fd_taken`.
+
+ITS CONDITION, named rather than assumed: the staging area is static,
+so it is correct only while an extern cannot call back into Avra.
+Nothing can today. If a callback seat ever lands, the staging must
+become a frame or the protocol breaks silently, which is the worst
+way for it to break — so the condition is written at the staging
+area, not here.
+
+### 5.6.5 THE REFUSALS ALMOST ALL BECAME STATIC
+
+The prior paper lists eight shapes the uniform frame cannot host and
+places their refusal at INTERPRETATION, by name. S2b moved the most
+dangerous one — the variadic callee — to the DECLARATION, where
+`make externs` reads the real C body. The same currency reaches the
+rest: a struct or union by value, a struct returned by value, a
+`long double`, an `__int128`, a vector, an `f32` parameter and an
+integer-class arity past MAX_I are ALL visible in the C signature the
+keeper already reads. So they belong in the keeper too, and S2a's
+runtime refusal shrinks to almost nothing.
+
+WITH ONE HONEST EXCEPTION, which is the seam: the keeper can only read
+a C body it has a SOURCE for. An extern naming a libc symbol has none.
+For those the Avra DECLARATION bounds the shape — a seat can only be
+`int`, `ptr`, a named width or `float`, so a struct by value cannot be
+spelled at all — and only the arity limits remain as a runtime check.
+That is the whole of the interpretation-time refusal, and it is a
+defect-shaped one rather than a law: a shape that reaches it should
+have been refused by the keeper.
+
+### 5.6.6 WHAT THE SLICE OWES
+
+- `RtKind` gains TWO new exhaustive consumers in `language/interp.av`
+  — the argument coercion and the answer coercion — and both must join
+  `tools/vocab.sh`'s table in the SAME slice. All five of today's
+  consumers are in `llvm.av`; a keeper that has only ever guarded one
+  file is the untested instrument this tree keeps finding.
+- One `RtHost` variant for "a symbol in the image, called through the
+  uniform frame", and the seam at the evaluator's runtime dispatch,
+  which today asks `any(it.name == callee)` and throws away the row it
+  finds. `find` hands it the name, the answer kind, the seat kinds and
+  the inout cells with no plumbing.
+- THE INOUT HALF, which the backend already specifies for the
+  interpreter in its own comment: allocate an eight-byte slot, seed it
+  from the evaluator's cell, pass its address in the integer slot,
+  read it back, truncate and extend by the row's `cells[j]` with the
+  same sign table the backend uses, and write it back to the cell.
+- The extension of `make externs` in §5.6.5.
+
+### 5.6.7 WHAT IT DELIVERS, AND WHAT IT DOES NOT
+
+It retires the evaluator's blanket extern trap for every symbol in the
+compiler's image — 125 of the tree's 235 declarations at the S2 survey
+— and moves `corpus/native/externs.av` into the differential corpus.
+It delivers NEITHER `corpus/net` NOR `corpus/sqlite`: those are 110
+symbols outside the image and they are S2c, the owner's. Saying so
+here is the point, because "the extern host lands" is the recorded
+trigger on several marks and it must not be read as delivering more
+than it does.
+
+A FLOAT IN A HEAP CONTAINER ICES ON MAIN until an approved fix merges,
+so nothing in this slice boxes one; the FP class travels as bits in
+registers only.
+
 ## 6. PROPOSED FOR LAND D — as questions, not text
 
 Neither is written by this lane; both are put to LAND D through the
