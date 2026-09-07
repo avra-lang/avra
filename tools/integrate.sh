@@ -91,11 +91,43 @@ fi
 # every worktree wrote, so a red file could not say whose run made it —
 # it sent a reader after the wrong mechanism once already.
 gate_out="$tmp-gate.out"
+
+# THE GATE PROVES THE TREE THAT MERGES, OR IT PROVES NOTHING. The
+# commit above is the tree the merge takes; `make gate` reads the
+# WORKING TREE. Edit a file while the gate runs and the two are
+# different — the gate compiles a mixture nobody wrote and the merge
+# lands the pre-edit commit, so a green verdict describes neither.
+# It happened: a lane edited its worktree during its own gate, which
+# is tempting precisely because the gate is long.
+# HEAD, the tracked CONTENT, and the untracked list — before and
+# after. The porcelain alone is not enough and the first draft of this
+# proved it: it names WHICH files are dirty, not what is in them, so a
+# further edit to an already-dirty file passes it unchanged. Here the
+# commit above empties the porcelain first, so the weak form would
+# have worked BY CIRCUMSTANCE — which is how a check comes to be
+# trusted for a reason that is not its own. `git diff HEAD` carries
+# the content.
+pinned() {
+    echo "$(git rev-parse HEAD)"
+    git diff HEAD | shasum -a 256
+    git status --porcelain | shasum -a 256
+}
+before="$(pinned)"
+
 sh tools/watch.sh $cap make gate > "$gate_out" 2>&1 || {
     echo "integrate: the gate is RED on lane/$lane — main untouched ($gate_out)"
     grep -n "✗\|FAILED\|error" "$gate_out" | head -12
     exit 1
 }
+
+if [ "$(pinned)" != "$before" ]; then
+    echo "integrate: the tree CHANGED under the gate — main untouched"
+    echo "integrate:   the gate read one tree and the merge would take another, so its"
+    echo "integrate:   green says nothing about what would land. Re-run integrate; it"
+    echo "integrate:   will commit the edit and gate the tree that merges."
+    git status --short | head -12
+    exit 1
+fi
 echo "integrate: gate green on lane/$lane ($(grep -c 'tests passed' "$gate_out") suites)"
 
 # THE PRE-FLIGHT: can MAIN's standing compiler READ the lane's tree? A lane that
