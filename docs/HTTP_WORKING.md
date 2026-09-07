@@ -752,6 +752,34 @@ inert, but a false fact in a registry, so `make externs` grows an
 `exec*`/`posix_spawn*` on a text seat cannot be inert) and the four are
 re-marked, lane A's. NOTHING MERGES INTO lane/http UNTIL THE GATE IS
 GREEN AGAIN.
+GREEN AGAIN AT ac4e185. The `Bytes` seat crossed (lane/substrate
+f431d98): a package extern seat typed `Bytes` hands C the payload
+pointer, the face passes the length beside it, no crossing check runs
+by the seat's type — natively it always crossed, so it had been
+spellable on ONE engine and nobody had written one. The sqlite lead's
+sweep found FOUR such seats (`bind_text`, `bind_blob`, `keyword_check`,
+`prepare_v3` — the hottest in the driver) and SEVEN resolving ones, and
+gave the rule its mechanical form: A SEAT WHOSE PROTOTYPE CARRIES ITS
+OWN LENGTH IS `Bytes`; a bare `const char*` is checked; a NUL inside a
+`Bytes` is data. STAGING IT CAUGHT A USE-AFTER-FREE the lane had just
+written (a box materialised only to be staged had no holder; native
+`kind=2` against evaluated `kind=0`; staged boxes are held until the
+call returns) — and the same shape one level up: `bind_text_unsafely_
+borrowed` takes `Bytes` now, because a `string` face would have MINTED
+octets nobody else held and turned a keepable promise into a dangling
+pointer created by the verb; the sqlite lead's law: A TYPE MIGRATION
+CAN MOVE WHO HOLDS A VALUE, AND A LIFETIME PROMISE IS A PROMISE ABOUT
+THE HOLDER. The guard reads `hdr()` directly and skips a foreign
+pointer visibly (its first draft was bounded by `strlen` and could
+never find an interior NUL); `puts`/`eputs` read the header's length
+and a NUL-bearing line prints whole. The four false marks lane A named
+do not exist here — those rows left the registry in S3 and S4 — and
+main's `inert` keeper (0bc7426), merged, certifies the column unchanged:
+80 inert, two checked, both resolving. Two adversarial groups that
+asserted the truncation are trap contracts now (20). Worst case: 25 µs
+per megabyte crossing, ~47 GB/s, eight distinct strings cycled. A
+LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS is §2.7's layering, in the
+sqlite lead's words.
 
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
