@@ -188,6 +188,7 @@ fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
     match k {
         .I64 -> avra_llvm_int64_type(lc),
         .I32 or .U32 -> avra_llvm_int32_type(lc),
+        .F64 -> avra_llvm_double_type(lc),
         .Ptr -> avra_llvm_pointer_type(lc),
         .Void -> avra_llvm_void_type(lc),
     }
@@ -212,6 +213,7 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
     match types.shape_of(ty) {
         // TypeName never materializes: no value ever has it — nor
         // does Var: mono substitutes before any register minted.
+        .Float -> avra_llvm_double_type(lc),
         .Int or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
         .Opt(inner) -> opt_ll_type(lc, types, inner),
@@ -281,9 +283,10 @@ impl Emit {
     fn emit_ins(i: Ins) {
         match i {
             .ConstInt(dst, v) -> self.define(self.const_int_value(dst, v)),
+            .ConstFloat(_, bits) -> self.define(avra_llvm_const_double_bits(self.lc, bits)),
             .ConstBool(_, v) -> self.define(avra_llvm_const_int(avra_llvm_int1_type(self.lc), if v { 1 } else { 0 }, 0)),
             .ConstStr(_, s) -> self.define(avra_llvm_build_global_string_ptr(self.b, s, ".str")),
-            .Bin(_, op, a, x) -> self.define(self.bin_value(op, self.vals[a.index], self.vals[x.index])),
+            .Bin(_, op, a, x) -> self.define(self.binary_value(op, a, x)),
             .Un(_, op, src) -> self.define(self.un_value(op, self.vals[src.index])),
             .CallRtVoid(callee, args) -> self.void_rt_call(callee, args),
             .CallRt(dst, callee, args) -> self.define(self.call_rt_value(dst, callee, args)),
@@ -372,6 +375,40 @@ impl Emit {
         unreached
     }
 
+    /// A binary operation, by the OPERANDS' kind. A double lives in
+    /// its own register file, so the float ops are a separate table
+    /// and not a flag on the integer one — mixing them is not a
+    /// wrong answer, it is a wrong instruction.
+    fn binary_value(op: BinOp, a: Reg, x: Reg) -> ptr {
+        let l = self.vals[a.index]
+        let r = self.vals[x.index]
+        if self.types.shape_of(self.tys[a.index]) is .Float { return self.float_value(op, l, r) }
+        self.bin_value(op, l, r)
+    }
+
+
+    /// IEEE-754 arithmetic and ORDERED comparison. NaN answers false
+    /// to every ordered question, which is the standard's rule.
+    fn float_value(op: BinOp, a: ptr, b: ptr) -> ptr {
+        match op {
+            .Add -> avra_llvm_build_fadd(self.b, a, b, "fadd"),
+            .Sub -> avra_llvm_build_fsub(self.b, a, b, "fsub"),
+            .Mul -> avra_llvm_build_fmul(self.b, a, b, "fmul"),
+            .Div -> avra_llvm_build_fdiv(self.b, a, b, "fdiv"),
+            // LLVMRealPredicate: OEQ 1, OGT 2, OGE 3, OLT 4, OLE 5, ONE 6
+            .Eq -> avra_llvm_build_fcmp(self.b, 1, a, b, "fcmp"),
+            .Ne -> avra_llvm_build_fcmp(self.b, 6, a, b, "fcmp"),
+            .Gt -> avra_llvm_build_fcmp(self.b, 2, a, b, "fcmp"),
+            .Ge -> avra_llvm_build_fcmp(self.b, 3, a, b, "fcmp"),
+            .Lt -> avra_llvm_build_fcmp(self.b, 4, a, b, "fcmp"),
+            .Le -> avra_llvm_build_fcmp(self.b, 5, a, b, "fcmp"),
+            .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr ->
+                self.wrecked(int_only_on_floats(), a),
+            .And or .Or -> self.wrecked(lazy_in_eager(), a),
+        }
+    }
+
+
     fn bin_value(op: BinOp, a: ptr, b: ptr) -> ptr {
         match op {
             .Add -> avra_llvm_build_add(self.b, a, b, "add"),
@@ -387,7 +424,7 @@ impl Emit {
             .Le -> avra_llvm_build_icmp(self.b, 41, a, b, "cmp"),
             .Gt -> avra_llvm_build_icmp(self.b, 38, a, b, "cmp"),
             .Ge -> avra_llvm_build_icmp(self.b, 39, a, b, "cmp"),
-            .And or .Or -> self.wrecked("a lazy op reached the eager path", a),
+            .And or .Or -> self.wrecked(lazy_in_eager(), a),
             .BitAnd -> avra_llvm_build_and(self.b, a, b, "band"),
             .BitOr -> avra_llvm_build_or(self.b, a, b, "bor"),
             .BitXor -> avra_llvm_build_xor(self.b, a, b, "bxor"),
@@ -436,7 +473,9 @@ impl Emit {
         match sig!.ret {
             .I64 -> true,
             // a width answers an Avra `int`, never a pointer's word
-            .I32 or .U32 or .Ptr or .Void -> false,
+            // a width answers an Avra `int`, and a double answers in
+            // its own register file — neither is a pointer's word
+            .I32 or .U32 or .F64 or .Ptr or .Void -> false,
         }
     }
 
@@ -457,7 +496,8 @@ impl Emit {
         match sig!.ret {
             .I32 -> avra_llvm_build_sext(self.b, raw, wide, "wide"),
             .U32 -> avra_llvm_build_zext(self.b, raw, wide, "wide"),
-            .I64 or .Ptr or .Void -> raw,
+            // a double is already the width its seat declared
+            .I64 or .F64 or .Ptr or .Void -> raw,
         }
     }
 
@@ -528,7 +568,8 @@ impl Emit {
         match width {
             .I32 -> true,
             .U32 -> false,
-            .I64 or .Ptr or .Void -> null,
+            // a double cell is whole — nothing to sign-extend
+            .I64 or .F64 or .Ptr or .Void -> null,
         }
     }
 
@@ -561,6 +602,7 @@ impl Emit {
             // the low bits are what a narrow C seat reads; the
             // SIGN of an argument is the callee's to interpret
             .I32 or .U32 -> avra_llvm_build_trunc(self.b, v, avra_llvm_int32_type(self.lc), "narrow"),
+            .F64 -> v,
             .Ptr or .Void -> v,
         }
     }
@@ -710,3 +752,12 @@ impl Emit {
         self.define(phi)
     }
 }
+
+/// `&&`/`||` are LAZY REGIONS — lowering diverts them before any
+/// `Bin` is emitted, so one reaching an eager table is the
+/// compiler's own defect. ONE definition for the whole `language`
+/// module, so the two engines cannot word it differently.
+fn lazy_in_eager() -> string { "a lazy op reached the eager path" }
+
+/// The integer-only operations, met by a double.
+fn int_only_on_floats() -> string { "an integer-only op reached float operands" }

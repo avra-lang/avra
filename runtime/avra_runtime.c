@@ -1308,6 +1308,56 @@ static const char* str_owned(const char* s, size_t n) {
     return buf;
 }
 
+/* ── THE FLOAT SEAM. Avra's float is binary64 and the machine's, so
+   these are reinterpretations and IEEE arithmetic, never decimal.
+
+   The compiler that emits a float literal is written in Avra, whose
+   own source holds no float, so a literal crosses it as its BIT
+   PATTERN in an int64. `_bits` names every entry point that speaks
+   that currency; the plain ones take the real thing. */
+static double as_double(int64_t bits) { double d; memcpy(&d, &bits, sizeof d); return d; }
+static int64_t as_bits(double d) { int64_t b; memcpy(&b, &d, sizeof b); return b; }
+
+/* A literal's text to its bits — compile-time only. Text the lexer
+   already shaped as digits, a point and digits, so `strtod` reads all
+   of it; anything it would refuse cannot reach here. */
+int64_t avra_float_bits(const char* s) { return as_bits(strtod(s, NULL)); }
+
+/* THE SHORTEST TEXT THAT READS BACK AS THE SAME DOUBLE — `%.17g`
+   round-trips every binary64 but prints 0.1 as 0.10000000000000001,
+   so the shortest faithful form is found by trying. A trailing `.0`
+   is added when the text would otherwise read as an integer, because
+   a float that prints as `3` is a float wearing an int's clothes. */
+static const char* float_text(double d) {
+    char buf[40];
+    for (int prec = 1; prec <= 17; prec++) {
+        snprintf(buf, sizeof buf, "%.*g", prec, d);
+        if (strtod(buf, NULL) == d) break;
+    }
+    if (!strpbrk(buf, ".eEni")) { strncat(buf, ".0", sizeof buf - strlen(buf) - 1); }
+    return str_owned(buf, strlen(buf));
+}
+const char* avra_float_text(double d) { return float_text(d); }
+const char* avra_float_text_bits(int64_t bits) { return float_text(as_double(bits)); }
+
+/* The EVALUATOR's arithmetic. It holds a float as bits and reaches
+   the machine only through here, so an answer under `avra run` and an
+   answer from a compiled program are the same instruction's. */
+int64_t avra_float_add(int64_t a, int64_t b) { return as_bits(as_double(a) + as_double(b)); }
+int64_t avra_float_sub(int64_t a, int64_t b) { return as_bits(as_double(a) - as_double(b)); }
+int64_t avra_float_mul(int64_t a, int64_t b) { return as_bits(as_double(a) * as_double(b)); }
+int64_t avra_float_div(int64_t a, int64_t b) { return as_bits(as_double(a) / as_double(b)); }
+
+/* ORDERED comparisons: NaN answers false to every one, IEEE-754's
+   rule. `!=` is NOT the negation of `==` for NaN and is spelled
+   separately for that reason. */
+int64_t avra_float_eq(int64_t a, int64_t b) { return as_double(a) == as_double(b); }
+int64_t avra_float_ne(int64_t a, int64_t b) { return as_double(a) != as_double(b); }
+int64_t avra_float_lt(int64_t a, int64_t b) { return as_double(a) <  as_double(b); }
+int64_t avra_float_le(int64_t a, int64_t b) { return as_double(a) <= as_double(b); }
+int64_t avra_float_gt(int64_t a, int64_t b) { return as_double(a) >  as_double(b); }
+int64_t avra_float_ge(int64_t a, int64_t b) { return as_double(a) >= as_double(b); }
+
 // A list slot holding fresh text — the list owns the one reference.
 static void push_fresh_text(void* arr, const char* s, size_t n) {
     avra_array_push(arr, (int64_t)(uintptr_t)str_owned(s, n));

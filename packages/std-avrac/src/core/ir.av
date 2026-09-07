@@ -50,6 +50,12 @@ export fn un_symbol(op: UnOp) -> string {
 export enum Ins {
     // Values.
     ConstInt(dst: Reg, v: int)
+    /// A REAL constant, carried as its IEEE-754 bit pattern because
+    /// the compiler that emits it holds no float of its own. THE
+    /// VARIANT IS THE TYPE: every value category has its own
+    /// constant, so what an instruction MEANS never depends on where
+    /// its answer is going.
+    ConstFloat(dst: Reg, bits: int)
     ConstStr(dst: Reg, s: string)
     ConstBool(dst: Reg, v: bool)
     /// The eager binary operations — operands same-typed. The lazy
@@ -153,6 +159,7 @@ export fn closes_region(i: Ins) -> bool {
 export fn dst_of(i: Ins) -> Reg? {
     match i {
         .ConstInt(d, _) -> d,
+        .ConstFloat(d, _) -> d,
         .ConstStr(d, _) -> d,
         .ConstBool(d, _) -> d,
         .Bin(d, _, _, _) -> d,
@@ -189,7 +196,7 @@ export fn same_reg(a: Reg, b: Reg) -> bool {
 /// a Load reads its cell, a Store reads the cell and the value.
 export fn reads_of(i: Ins) -> List<Reg> {
     match i {
-        .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
         .FnAddr(_, _) or .ScopeEnter(_) or .Alloca(_) or
         .LoopStart or .LoopEnd or .Ret(_) -> [],
         .Bin(_, _, a, b) -> [a, b],
@@ -223,7 +230,7 @@ export fn body_symbol(i: Ins) -> string? {
     match i {
         .Call(_, callee, _) -> callee,
         .FnAddr(_, symbol) -> symbol,
-        .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
         .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or
         .Pack(_, _) or .Extract(_, _, _) or .CallPtr(_, _, _) or
         .RegionEnd(_, _) or .Alloca(_) or .Load(_, _) or
@@ -243,7 +250,7 @@ export fn hosted_symbol(i: Ins) -> string? {
         .CallRt(_, callee, _) -> callee,
         .CallRtVoid(callee, _) -> callee,
         .Call(_, _, _) or .FnAddr(_, _) or
-        .ConstInt(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
         .Bin(_, _, _, _) or .Un(_, _, _) or
         .Pack(_, _) or .Extract(_, _, _) or .CallPtr(_, _, _) or
         .RegionEnd(_, _) or .Alloca(_) or .Load(_, _) or
@@ -264,8 +271,9 @@ export fn hosted_symbol(i: Ins) -> string? {
 /// compiler narrows at the argument and widens the answer with the
 /// sign the width names. A width word is a type NOWHERE else.
 ///
-/// APPEND-ONLY: a new kind goes at the END — the widths did, and
-/// `F64`/`F32` will the day a float VALUE exists to construct them.
+/// APPEND-ONLY: a new kind goes at the END — the integer widths did,
+/// then `F64` when a float VALUE arrived to construct it. `F32` is
+/// the same edit again the day a seat needs it.
 /// Nothing reads the ordinal today; the rule is here so that if
 /// anything ever does, it inherits an order that never moved.
 ///
@@ -275,7 +283,7 @@ export fn hosted_symbol(i: Ins) -> string? {
 /// an argument crosses), `answers_word` (whether an answer is a
 /// pointer's word) and `answered` (the SIGN a narrow answer widens
 /// with). An `is` test is a partial handler the compiler cannot see.
-export enum RtKind { I64, Ptr, Void, I32, U32 }
+export enum RtKind { I64, Ptr, Void, I32, U32, F64 }
 
 /// Where the interpreter HOSTS a runtime fn — one variant per host
 /// body, so the interpreter's dispatch is exhaustive: a new row

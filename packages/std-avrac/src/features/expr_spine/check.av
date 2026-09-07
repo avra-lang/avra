@@ -11,6 +11,7 @@ fn spine_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .IntLit(_) -> cx.view.types.intern(Type.Int),
+        .FloatLit(_) -> cx.view.types.intern(Type.Float),
         .Ident(_) -> cx.target_type(e),
         .Binary(op, l, r) -> binary_type(cx, e, op, l, r),
         .Not(v) -> not_type(cx, v),
@@ -81,8 +82,12 @@ fn member_type(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> Type
 fn binary_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     match op {
         .Add -> added_type(cx, op, l, r),
-        .Sub or .Mul or .Div or .Mod -> op_over(cx, op, l, r, Type.Int, Type.Int),
-        .Lt or .Le or .Gt or .Ge -> op_over(cx, op, l, r, Type.Int, Type.Bool),
+        .Sub or .Mul or .Div -> arith_type(cx, op, l, r),
+        // `%` stays INT-ONLY: a remainder of two reals is `fmod`, a
+        // different operation wearing the same symbol, and nobody has
+        // asked for it. The refusal names `int` and is the whole law.
+        .Mod -> op_over(cx, op, l, r, Type.Int, Type.Int),
+        .Lt or .Le or .Gt or .Ge -> ordered_type(cx, op, l, r),
         .And or .Or -> op_over(cx, op, l, r, Type.Bool, Type.Bool),
         .BitAnd or .BitOr or .BitXor -> op_over(cx, op, l, r, Type.Int, Type.Int),
         .Shl or .Shr -> shifted_type(cx, op, l, r),
@@ -108,7 +113,23 @@ fn shifted_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
 /// which law the right must meet.
 fn added_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     if cx.shape_at(l) is .Str { return op_over(cx, op, l, r, Type.Str, Type.Str) }
+    arith_type(cx, op, l, r)
+}
+
+/// THE NUMERIC LAW: the LEFT operand names the kind and the right
+/// must wear it. `int` and `float` never mix on their own — an
+/// implicit widening is a precision decision nobody wrote down, and
+/// the two kinds answer differently for the same digits. A mixed
+/// expression says which it means by converting.
+fn arith_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    if cx.shape_at(l) is .Float { return op_over(cx, op, l, r, Type.Float, Type.Float) }
     op_over(cx, op, l, r, Type.Int, Type.Int)
+}
+
+/// The ordered comparisons, by the same law, answering a bool.
+fn ordered_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    if cx.shape_at(l) is .Float { return op_over(cx, op, l, r, Type.Float, Type.Bool) }
+    op_over(cx, op, l, r, Type.Int, Type.Bool)
 }
 
 /// The homogeneous-operand law: both sides `want`, or each PRESENT
@@ -133,6 +154,7 @@ fn needs(mut cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
 fn wears(sh: Type, want: Type) -> bool {
     match want {
         .Int -> sh is .Int,
+        .Float -> sh is .Float,
         .Bool -> sh is .Bool,
         .Str -> sh is .Str,
         .Ptr or .List(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or
@@ -184,7 +206,7 @@ fn compare_help(sh: Type) -> string {
         .Fn(_, _, _) -> "fn values do not compare — call them instead",
         .Void -> "nothing compares — a mutation answers no value",
         .App(_, _, _) -> "reach for a member instead — the declaration decides field or `match`",
-        .Ptr or .Int or .Bool or .Str or .TypeName(_, _) or .Error -> "compare scalars or strings",
+        .Ptr or .Int or .Float or .Bool or .Str or .TypeName(_, _) or .Error -> "compare scalars or strings",
     }
 }
 

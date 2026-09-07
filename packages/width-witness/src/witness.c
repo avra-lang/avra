@@ -17,6 +17,7 @@
    callee it happens to have can tell those apart — only the
    declaration can. */
 #include <stdint.h>
+#include <string.h>
 
 /* ── narrow ANSWERS ── */
 int      witness_i32_neg(void)  { return -1; }
@@ -33,6 +34,28 @@ int witness_seat32(int v) { return v + 1; }
 int witness_out_i32(int *a, int *b)      { *a = -1; *b = -2; return 0; }
 int witness_out_u32(unsigned *out)       { *out = 4294967295u; return 0; }
 int witness_out_i64(int64_t *out)        { *out = -42; return 0; }
+
+/* ── A DOUBLE, which travels in its own register file. An integer
+      seat and a float seat are DIFFERENT REGISTERS on every target we
+      build for, so a float declared as a word is not a rounded answer
+      — it is a different register read, and the number that comes
+      back was never related to the one sent. No test inside Avra can
+      see that; only C on the other side can. ── */
+double witness_f64_neg(void)          { return -1.5; }
+double witness_f64_round(double v)    { return v * 2.0; }
+/* Two doubles AND two ints in one call: the classic way a wrong
+   register file shows up is when the two files fill independently. */
+double witness_f64_mixed(int64_t a, double x, int64_t b, double y) {
+    return (double)(a + b) + x * y;
+}
+
+/* A double's BIT PATTERN. The readers compare bits rather than
+   rendered text, because text compares the FORMATTER and bits
+   compare the BOUNDARY — and the boundary is what a witness is for.
+   A float that arrived in the wrong register file differs here in
+   every bit; one that merely printed differently does not differ at
+   all. */
+int64_t witness_f64_bits(double v) { int64_t b; memcpy(&b, &v, sizeof b); return b; }
 
 /* ── a pointer out-parameter: sqlite3_open_v2's shape ── */
 static char the_handle[8] = "HANDLE";

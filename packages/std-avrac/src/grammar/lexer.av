@@ -38,6 +38,15 @@ impl Token {
         }
     }
 
+    /// The BITS of the real this number denotes. A fraction only —
+    /// `is_fraction` is the guard, and the text the scanner shaped is
+    /// exactly what `strtod` reads.
+    fn float_bits() -> int { avra_float_bits(self.text) }
+
+    /// Whether this number carries a POINT — a fraction, whose value
+    /// no `int` holds and whose ceiling law is a different one.
+    fn is_fraction() -> bool { self.text.contains(".") }
+
     /// The integer a Num token's digits denote.
     /// The digits as a number, or absence when no `int` holds them —
     /// `v * 10 + d` past the ceiling wraps, and the wrapped number is
@@ -105,13 +114,24 @@ fn skip(next: int) -> ScanStep {
     ScanStep { token: null, err: null, opens_hole: false, next: next }
 }
 
+/// Where a number's FRACTION ends, or `j` when it has none. A `.`
+/// JOINS the number only when a DIGIT follows it, and that one
+/// character of lookahead is the whole rule: `0..3` is a range and
+/// `5.length` is a property, and a greedier scan eats both. A number
+/// never STARTS with a point either — `.A` is a bare variant.
+fn fraction_end(src: string, n: int, j: int) -> int {
+    if j >= n || src.char_code(j) != 46 { return j }
+    if j + 1 >= n || !is_digit(src.char_code(j + 1)) { return j }
+    scan_while(src, n, j + 1, is_digit)
+}
+
 /// A number token — and, when the digits name a value no `int` can
 /// hold, the refusal beside it. The token still stands so one bad
 /// literal does not cascade; what must never stand is the WRAPPED
 /// value, which is not the number on the page.
 fn numbered(text: string, lo: int, hi: int) -> ScanStep {
     let t = token(TokenKind.Num, text, lo, hi)
-    if t.int_value() != null { return emit(t, hi) }
+    if t.is_fraction() || t.int_value() != null { return emit(t, hi) }
     ScanStep {
         token: t, opens_hole: false,
         err: LexError { message: "`${text}` does not fit an `int`", span: span_of(lo, hi) },
@@ -326,10 +346,12 @@ fn scan_step(src: string, n: int, i: int, interpolate: bool) -> ScanStep {
             let j = scan_while(src, n, i + 1, is_name_cont)
             emit(token(TokenKind.Name, src.substring(i, j), i, j), j)
         }
-        // Number: a digit run; adjacent letters lex as their own Name.
+        // Number: a digit run and its fraction; adjacent letters lex
+        // as their own Name.
         is_digit(c) -> {
             let j = scan_while(src, n, i + 1, is_digit)
-            numbered(src.substring(i, j), i, j)
+            let k = fraction_end(src, n, j)
+            numbered(src.substring(i, k), i, k)
         }
         // A RAW string: `"""` to `"""`, no escapes, no holes.
         c == 34 && triple_at(src, n, i) -> scan_triple(src, n, i)
@@ -530,3 +552,7 @@ export fn lex_grammar(src: string) -> LexResult {
 export fn lex_source(src: string) -> LexResult {
     lex_with(src, line_boundary, true)
 }
+
+/// A literal's text to its IEEE-754 bits — the compiler holds no
+/// float of its own, so this is how one crosses it.
+extern fn avra_float_bits(text: string) -> int

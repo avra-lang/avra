@@ -318,6 +318,31 @@ LLVMValueRef avra_llvm_build_or(LLVMBuilderRef b, LLVMValueRef lhs, LLVMValueRef
     return LLVMBuildOr(b, lhs, rhs, name);
 }
 
+/* ── The FLOAT seam. A double lives in its own register file, so a
+   float value never rides an integer instruction — the builders are
+   separate on purpose and mixing them is silently wrong. */
+LLVMTypeRef avra_llvm_double_type(LLVMContextRef ctx) { return LLVMDoubleTypeInContext(ctx); }
+
+/* A float CONSTANT arrives as its IEEE-754 BIT PATTERN in an int64,
+   because the compiler that emits it is written in a language whose
+   own source holds no float value. The reinterpretation is exact. */
+LLVMValueRef avra_llvm_const_double_bits(LLVMContextRef ctx, int64_t bits) {
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    return LLVMConstReal(LLVMDoubleTypeInContext(ctx), d);
+}
+
+LLVMValueRef avra_llvm_build_fadd(LLVMBuilderRef b, LLVMValueRef l, LLVMValueRef r, const char* n) { return LLVMBuildFAdd(b, l, r, n); }
+LLVMValueRef avra_llvm_build_fsub(LLVMBuilderRef b, LLVMValueRef l, LLVMValueRef r, const char* n) { return LLVMBuildFSub(b, l, r, n); }
+LLVMValueRef avra_llvm_build_fmul(LLVMBuilderRef b, LLVMValueRef l, LLVMValueRef r, const char* n) { return LLVMBuildFMul(b, l, r, n); }
+LLVMValueRef avra_llvm_build_fdiv(LLVMBuilderRef b, LLVMValueRef l, LLVMValueRef r, const char* n) { return LLVMBuildFDiv(b, l, r, n); }
+
+/* An ORDERED comparison: NaN answers false to every one, which is
+   IEEE-754's rule and not ours to soften. */
+LLVMValueRef avra_llvm_build_fcmp(LLVMBuilderRef b, int pred, LLVMValueRef l, LLVMValueRef r, const char* n) {
+    return LLVMBuildFCmp(b, (LLVMRealPredicate)pred, l, r, n);
+}
+
 LLVMValueRef avra_llvm_build_xor(LLVMBuilderRef b, LLVMValueRef lhs, LLVMValueRef rhs, const char* name) {
     return LLVMBuildXor(b, lhs, rhs, name);
 }
