@@ -4289,7 +4289,16 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         with a grammar half; (2) the admission test reading it; (3) the
         refusal's voice widening; (4) `Self`, if in the same slice.
         Grammar's `parse` then becomes one case of the general door and
-        nothing landed under Rule A is thrown away.
+        nothing landed under Rule A is thrown away. LANDED on main at
+        e351840 (lane C) and merged into lane/http: `type_receiver`
+        resolves a type-name receiver as VARIANT (the type's own
+        shape) → GRAMMAR DOOR (the vocabulary, `method_row` before
+        `declared` as for a value) → `static fn` (the user's impl) →
+        the variant's answer. OBLIGATION RECORDED (lane C): the day a
+        grammar type can hold an impl, a `static fn` named like a door
+        is unreachable — the refusal belongs at the declaration in
+        `static_shadows`'s shape (F2059's twin, asked of the
+        declaration's doors); no test can fail on it yet.
         THE ASK AS IT WAS PUT — a type-qualified call (`Name.parse(text)`
         meaning a call to an inherent fn, not variant construction),
         THE OWNER'S DOOR, put separately by lane C's ruling and not

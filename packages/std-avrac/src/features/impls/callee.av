@@ -49,26 +49,28 @@ fn through_a_contract(view: FileView, sh: Type, name: string) -> Callee? {
     }
 }
 
-/// A TYPE as the receiver: its VARIANT of that name, else a `static
-/// fn` of its impl, else a `grammar`'s door. With none it is still
-/// the variant's answer, so the refusal names what the type has.
+/// A TYPE as the receiver: its VARIANT of that name (the type's own
+/// shape), else a `grammar`'s vocabulary door, else a `static fn` of
+/// its impl. With none it is still the variant's answer, so the
+/// refusal names what the type has.
 fn type_receiver(view: FileView, decl: DeclId, tname: string, name: string) -> Callee {
     if names_a_variant(view, decl, name) { return Callee.Variant(decl, tname) }
+    let door: MethodRow? = grammar_door(view, decl, tname, name)
+    if door != null { return Callee.Row(door!) }
     let m: DeclId? = static_method(view, decl, name)
-    if m != null { return Callee.Static(m!, tname) }
-    grammar_door(view, decl, tname, name)
+    if m == null { return Callee.Variant(decl, tname) }
+    Callee.Static(m!, tname)
 }
 
-/// A `grammar`-declared type answers its vocabulary's door of this
-/// name — `parse`, `print` — as a method row whose receiver is the
-/// type; with no such door it is still the variant's answer. The test
-/// asks the DECLARATION for its format, never whether some fn of that
-/// name exists — that question is the static above.
-fn grammar_door(view: FileView, decl: DeclId, tname: string, name: string) -> Callee {
-    if view.decls.grammar_of(decl) == null { return Callee.Variant(decl, tname) }
-    let door: MethodRow? = method_row(view.lang.methods, name, Type.TypeName(decl, tname))
-    if door == null { return Callee.Variant(decl, tname) }
-    Callee.Row(door!)
+/// A `grammar`-declared type's vocabulary door of this name —
+/// `parse`, `print` — a method row whose receiver is the type. The
+/// vocabulary outranks a user's impl here as it does for a value
+/// (`method_row` before `declared`), so a door beats a `static fn` of
+/// the same name. The test asks the DECLARATION for its format, never
+/// whether some fn of that name exists — that question is the static.
+fn grammar_door(view: FileView, decl: DeclId, tname: string, name: string) -> MethodRow? {
+    if view.decls.grammar_of(decl) == null { return null }
+    method_row(view.lang.methods, name, Type.TypeName(decl, tname))
 }
 
 /// A receiverless method of the type's impl, by name.
