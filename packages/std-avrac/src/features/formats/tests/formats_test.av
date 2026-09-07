@@ -1,0 +1,137 @@
+// The format reader: what a literal with holes says it is. The empty
+// case first, then the escape, the two laws over the captures, and
+// the faults a malformed literal earns.
+use @std.avrac.features.formats.{read_format, bound_names, anonymous, Fault}
+
+/// A format's shape as one word: its pieces, then its captures with
+/// the type each parses through.
+fn shape(text: string) -> string {
+    let f = read_format(text)
+    if f.fault != null { return why(f.fault!) }
+    "[${f.pieces.join("|")}]<${[c.name + ":" + (c.ty?.name ?? "-") for c in f.captures].join(",")}>"
+}
+
+/// A fault as one word, its position included — a fault that moved
+/// would otherwise read as the same fault.
+fn why(f: Fault) -> string {
+    match f {
+        .Unclosed(at) -> "unclosed@${at}",
+        .Stray(at) -> "stray@${at}",
+        .Malformed(at, body) -> "malformed@${at}:${body}",
+        .Adjacent(a, b) -> "adjacent:${a},${b}",
+        .Repeated(n) -> "repeated:${n}",
+    }
+}
+
+spec "features/formats" {
+    given "a literal with no holes" {
+        then "empty text is one empty piece and no captures" {
+            shape("") == "[]<>"
+        }
+        then "plain text is one piece" {
+            shape("abc") == "[abc]<>"
+        }
+        then "a doubled brace is one brace, and no capture" {
+            shape("a{{b}}c") == "[a{b}c]<>"
+        }
+        then "a doubled brace alone is that brace" {
+            shape("{{") == "[{]<>" && shape("}}") == "[}]<>"
+        }
+        then "a doubled pair is two braces" {
+            shape("{{}}") == "[{}]<>"
+        }
+    }
+
+    given "captures" {
+        then "one capture leaves an empty piece on each side" {
+            shape("{a}") == "[|]<a:->"
+        }
+        then "the request line reads as four captures and five pieces" {
+            shape("{m} {p} HTTP/{maj: int}.{min: int}") == "[| | HTTP/|.|]<m:-,p:-,maj:int,min:int>"
+        }
+        then "a typed capture carries the type it names" {
+            shape("{n: int}") == "[|]<n:int>"
+        }
+        then "spaces around a name and a type are not part of them" {
+            shape("{ a : int }") == "[|]<a:int>"
+        }
+        then "an anonymous capture consumes and binds nothing" {
+            shape("{_}x") == "[|x]<_:->" && bound_names(read_format("{_}x")).is_empty()
+        }
+        then "the anonymous word is the one the reader records" {
+            read_format("{_}").captures[0].name == anonymous()
+        }
+        then "an anonymous capture may carry a type" {
+            shape("{_: int}") == "[|]<_:int>"
+        }
+        then "bound names are the capture names in order, without the anonymous" {
+            bound_names(read_format("{a}x{_}y{b}")).join(",") == "a,b"
+        }
+        then "a name may hold digits after its first character" {
+            shape("{a1}") == "[|]<a1:->"
+        }
+        then "an escaped brace beside a capture stays a brace" {
+            shape("a{{{x}}}c") == "[a{|}c]<x:->"
+        }
+    }
+
+    given "the law that two captures need something between them" {
+        then "adjacent captures are refused, naming both" {
+            shape("{a}{b}") == "adjacent:a,b"
+        }
+        then "two anonymous captures are adjacent too" {
+            shape("{_}{_}") == "adjacent:_,_"
+        }
+        then "a capture at each END is ordinary, not adjacent" {
+            shape("{a}x{b}") == "[|x|]<a:-,b:->"
+        }
+    }
+
+    given "the law that one name binds one span" {
+        then "a name written twice is refused" {
+            shape("{a} {a}") == "repeated:a"
+        }
+        then "a repeat is refused whether or not the captures agree on type" {
+            shape("{a: int} {a}") == "repeated:a"
+        }
+        then "the anonymous name may repeat, because it binds nothing" {
+            shape("{_} {_}") == "[| |]<_:-,_:->"
+        }
+    }
+
+    given "a literal that is no format" {
+        then "an open brace with no close is refused where it opened" {
+            shape("a{b") == "unclosed@1"
+        }
+        then "a close brace that opens nothing is refused where it sits" {
+            shape("a}b") == "stray@1"
+        }
+        then "a brace at position zero reports position zero" {
+            shape("{") == "unclosed@0" && shape("}") == "stray@0"
+        }
+        then "an empty body is refused" {
+            shape("{}") == "malformed@0:"
+        }
+        then "a body with no name before its colon is refused" {
+            shape("{: int}") == "malformed@0:: int"
+        }
+        then "a colon with no type after it is refused" {
+            shape("{a:}") == "malformed@0:a:"
+        }
+        then "a body that is a phrase, not a name, is refused" {
+            shape("{a b}") == "malformed@0:a b"
+        }
+        then "a name may not start with a digit" {
+            shape("{1a}") == "malformed@0:1a"
+        }
+        then "a name may not hold a dash" {
+            shape("{a-b}") == "malformed@0:a-b"
+        }
+        then "a second colon lands in the type, which is then no name" {
+            shape("{a::int}") == "malformed@0:a::int"
+        }
+        then "a brace inside a body is body text, and no name" {
+            shape("{a{b}}") == "malformed@0:a{b"
+        }
+    }
+}
