@@ -2867,6 +2867,49 @@ the order is the dependency.
         ASK THE KEEPER, not to grep the file it guards. The
         instrument was already in the gate and a worse one was used
         to plan against it.
+  - [x] A LAW CAN BE PAID IN ONE PASS AND UNPAID IN ANOTHER. LANDED
+        2026-09-07; found by the HTTP lane probing a server shape,
+        verified here at `234d17c`, and it is a SILENT wrong answer
+        of the class this lane spent the night on.
+
+            type S = { app: C, handle: fn(mut C, int) -> int }
+            impl S { mut fn turn(by: int) -> int { self.handle(self.app, by) } }
+
+        The call WRITES through `self.app` — probed, the counter
+        reaches 5 — and F2050 said "`turn` never writes through
+        `self`". WORSE THAN A WRONG WARNING: its help reads "drop
+        `mut`: the compiler infers a writing method", and TAKING THE
+        HELP MADE `./avra check` PRINT NOTHING AT ALL while the write
+        still happened. A diagnostic whose remedy walks the writer
+        into the hole it should have named.
+        THE SPLIT, which the reporter suspected and did not probe:
+        a DECLARED callee's `mut` seat was seen (`bump(self.app, by)`
+        warns correctly); a fn-typed FIELD's was not. Typing was never
+        blind — `fielded_call` carries `arrow.muts` into
+        `mut_seats_law`, and `self.app` is a lawful `mut` place, so
+        the seat law rightly said nothing. THE BLINDNESS WAS IN
+        `language/receivers.av`, the survey that INFERS whether a
+        method writes its receiver: its own `Callee` enum had
+        `Row`/`Method`/`Static`/`Contract`/`None` and NO fn-field
+        case, so the call fell to `declared_method`, found no method
+        of that name, answered `None`, and the write was never
+        flowed back. THE MARKS EXISTED — this lane put them on the
+        interner key — and this pass never asked for them.
+        WHAT IT SHARPENS, and why it is recorded as a law rather than
+        a fix: the seat law's own entry says the marks make "a
+        declared callee and a fn-typed value ONE RULE and not two".
+        TRUE OF TYPING, FALSE OF THE SURVEY, which still wore the
+        two-rule shape the entry claims to have retired. **A LAW CAN
+        BE PAID IN ONE PASS AND UNPAID IN ANOTHER**, and an entry
+        that records the currency reaching the interner reads as
+        though it settled everywhere. When a law lands, name the
+        passes that consume it, not the seam that carries it.
+        THE FIX: `Callee.FnSeats(held: Arrow)` answering ahead of the
+        impl table for struct and App receivers, and `feed_marks`,
+        `feed`'s twin over MARKS rather than a declaration's seats —
+        it MARKS rather than flows, since a fn VALUE names no callee
+        to flow into and any fn of that type may fill the field.
+        Three adversarial cases, one of them the silent shape.
   - [ ] REVIEWS THIS LANE OWES, recorded because they live in
         messages and messages do not survive a compaction. Each is a
         diff another lane writes in this lane's files, with this

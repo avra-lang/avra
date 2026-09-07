@@ -5,7 +5,34 @@
 use @std.avrac.language.{analyze_source}
 use @std.avrac.testing.{shown, refused_with, refusals}
 
+/// A capability record: its callee lives in a FIELD whose `mut` seat
+/// writes the argument. `word` is the receiver's marker.
+fn fn_field_server(word: string) -> string {
+    "type C = { n: int }\ntype S = { app: C, handle: fn(mut C, int) -> int }\nfn bump(mut c: C, by: int) -> int {\n    c.n = c.n + by\n    c.n\n}\nimpl S {\n    ${word} turn(by: int) -> int { self.handle(self.app, by) }\n}\nlet s = S { app: C { n: 0 }, handle: bump }\ns.turn(2)"
+}
+
 spec "features/impls adversarial" {
+    given "a write through a FN-TYPED FIELD's `mut` seat" {
+        // THE SURVEY READS MARKS, NOT ONLY DECLARATIONS. A capability
+        // record holds its callee in a field, and that field's `mut`
+        // seats write their arguments exactly as a declared callee's
+        // do. Before this the write was INVISIBLE: `mut fn` warned
+        // "never writes through `self`", and taking its help — drop
+        // `mut` — left the tree silent about a real write.
+        then "a `mut fn` writing only through a fn field is not called idle" {
+            // the COUNT is pinned with the absence: without it the
+            // case passes just as well when nothing was analysed
+            let a = analyze_source(fn_field_server("mut fn"))
+            a.diagnostics.length == 1 && !a.report().contains("never writes through `self`")
+        }
+        then "without `mut fn` the write is still SEEN, never silent" {
+            refused_with(fn_field_server("fn"), "`s` is not `mut` — `turn` writes through it")
+        }
+        then "a declared callee's `mut` seat reads the same — one rule, not two" {
+            refused_with("type C = { n: int }\ntype S = { app: C }\nfn bump(mut c: C, by: int) -> int {\n    c.n = c.n + by\n    c.n\n}\nimpl S {\n    mut fn turn(by: int) -> int { bump(self.app, by) }\n}\nlet s = S { app: C { n: 0 } }\ns.turn(2)", "`s` is not `mut` — `turn` writes through it")
+        }
+    }
+
     given "the receiver outside a method" {
         then "at the top level" {
             refused_with("self", "`self` names a method's receiver — this is not a method")
