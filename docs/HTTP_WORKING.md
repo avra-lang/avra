@@ -806,6 +806,59 @@ by §2.7's own rule: @std/io's `env`/`env_or` (and a NUL-lossy
 `HoldsNul` cause the package has and does not use there (the sqlite
 lead).
 
+## Main merged (9fe4efe, fixed at c921b93): the three routed faces came home
+
+The seam's red team routed three trapping faces to their owners; main
+brought all three back in one day, plus the half of door 1 that was
+waiting on the owner's word in lane A's session:
+
+- LANE B (85abb9e): `env`/`env_or` judge the NUL FIRST, over the bytes
+  — `env("PATH\0/junk")` had answered PATH's own value, a silent read of
+  a different variable, because the `contains("=")` guard was `strstr`
+  and the NUL hid the `=` from it; `tool_from_env` refuses as `tool`
+  does; `Env.get` answers null for a holed name under both variants.
+- THE SQLITE LEAD (0130321): `compiled_with`, `equal_nocase`, `like`,
+  `glob` answer a `Result` and refuse a NUL with `HoldsNul` — reaching
+  for the cause `is_complete` already had.
+- LANE A (f57372a): `==` is a length compare then `memcmp`; `contains`,
+  `index_of`, `split`, `replace` walk the header's length with `memmem`.
+  Measured there: `contains` over a megabyte 477 -> 681 us, equality
+  free, the self-check ~1%.
+
+FOUR CONFLICTS, one of them design. The env guard lands on this
+branch's set/host shape with the NUL judged first — on this branch a
+holed name that reached the extern would TRAP at the crossing, so the
+library's refusal must come before it. The io and process suites take
+both sides' cases. The sqlite suite keeps the seam's comment and every
+FACE case of main's, and DROPS main's two WALL cases: `wall_completes`
+with a NUL passes a holed string to a bare `const char*` seat, which
+here ends the process. The wall's truncation is witnessed in
+`tools/traps.sh`, which exists for cases a suite cannot hold.
+
+TWO GREENS THE MERGE THEN NEEDED, both expiries rather than defects.
+The query suite's "the lossy primitives stop before it, so the two
+disagree" PINNED `==` stopping at a NUL — a witness of the lie, written
+so it could not drift unnoticed — and the lie is gone, so the case
+asserts the truth now: a decoded `a%00b` is not its own prefix. And the
+traps row `nul_at_a_package_wall` drove its trap through
+`equal_nocase`, which main taught to refuse before the wall; the row
+calls `sqlite3_stricmp` directly, the call a package that has not
+thought about it would write, and meets the floor its own comment had
+named. A TEST THAT PINS A LIE EXPIRES WITH THE LIE, and the expiry
+reads as a red gate.
+
+TWO RECEIPTS FROM THE DAY. Lane B's: "a guard is not a place, it is a
+property of every crossing" — the defect survived one door down in a
+file whose path door was already judged over bytes. Lane D's: a COUNT
+offered as a correction names its TREE — five aggregate extern seats
+on main against one here (S4 killed the other four), both right, and
+the aggregate-seat law lands alone on this branch.
+
+Built twice (594, 624 MB), gate green at 330 MB, twenty trap
+contracts held. The seed is unchanged: no runtime symbol moved.
+Door 1's primitives half is DONE; its seam half is the substrate
+lane's, in flight; immortal `once` is still on the owner's word.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
@@ -832,8 +885,8 @@ the loop serves 102–118k keep-alive requests a second on one core at
 THE THREE DOORS, DECIDED BY THE OWNER 2026-09-07 and each in the
 ROADMAP's HTTP asks with its measurements: (1) a NUL crossing to C —
 "do the same thing as other mature languages": the five lossy string
-primitives become CORRECT (length-aware, lane A's C, on the owner's word
-in lane A's session), the seam TRAPS only a seat the callee RESOLVES (a
+primitives ARE CORRECT (length-aware, lane A's C — landed on main at
+f57372a, merged here at 9fe4efe), the seam TRAPS only a seat the callee RESOLVES (a
 path, a name, a command word, an environment key — the substrate lane,
 in flight), `inert: true` at the site means "reads the header's length",
 faces refuse with words first, `Bytes` the escape; (2) S2c — the
