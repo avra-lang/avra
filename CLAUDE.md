@@ -354,6 +354,28 @@ engine's spec, written by dogfooding.
   discipline: for every representation you add or consume, the empty
   case is the first case you write, and a diff shows whether you
   did.
+- ITS SIBLING AT THE OTHER END: A FLAT CONCATENATION OF TWO
+  SEQUENCES HAS A BOUNDARY THAT MOVES. Splice two variable-length
+  runs into one list and the split between them is not recorded, so
+  moving an item from the first into the second leaves the SAME
+  list and two different things wear one identity. `use a.b` and
+  `use a.{b}` fingerprinted alike; so did `f<A>(B)` and
+  `f<A, B?>()`, `f<B?>()` and `f(B)` (a written type and an ident
+  were the same value), `fn f<T>(x: int)` and `fn f<T, x: int>()`.
+  THE FIX IS ARITY: fold each sequence to ONE value so a payload's
+  shape is fixed per kind. BOTH INTUITIVE FIXES ARE WRONG, and
+  each is worth knowing. A SEPARATOR is the first — `stmt_fps(then)
+  ++ [0] ++ stmt_fps(else)` was written by someone who saw this
+  hazard exactly and spent the one value that is not spare, which
+  is the empty-value law above wearing this law's clothes. A
+  RENUMBERING is the second: under a LINEAR fold (`131t + x + 7`)
+  a tag is an additive offset, so distinct tags separate nothing
+  that a chosen literal can reach — renumbering turns the first
+  test green and leaves every collision live. THE TEST: for each
+  encoding ask which two shapes produce the same bytes, and write
+  that pair as a test BEFORE the fix. Three collisions were
+  nameable by hand here; enumerating every splice site and running
+  it against the parent made nine.
 - A COLD PATH IN A HOT LEAF COSTS EVERY CALL A FRAME. A lazy
   `getenv`, a `char msg[80]` for a trap's words, a grow branch, a
   `__builtin_return_address` read — each is free when it runs and
