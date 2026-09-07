@@ -5042,7 +5042,7 @@ source_filename = "avra"
 @.str.5038 = private unnamed_addr constant { i32, i32, i32, i32, [2 x i8] } { i32 1096176193, i32 -1, i32 0, i32 1, [2 x i8] c":\00" }, align 16
 @.str.5039 = private unnamed_addr constant { i32, i32, i32, i32, [2 x i8] } { i32 1096176193, i32 -1, i32 0, i32 1, [2 x i8] c":\00" }, align 16
 @.str.5040 = private unnamed_addr constant { i32, i32, i32, i32, [2 x i8] } { i32 1096176193, i32 -1, i32 0, i32 1, [2 x i8] c"/\00" }, align 16
-@.str.5041 = private unnamed_addr constant { i32, i32, i32, i32, [14 x i8] } { i32 1096176193, i32 -1, i32 0, i32 13, [14 x i8] c"@std.text.nul\00" }, align 16
+@.str.5041 = private unnamed_addr constant { i32, i32, i32, i32, [21 x i8] } { i32 1096176193, i32 -1, i32 0, i32 20, [21 x i8] c"@std.text.nul_needle\00" }, align 16
 @.str.5042 = private unnamed_addr constant { i32, i32, i32, i32, [1 x i8] } { i32 1096176193, i32 -1, i32 0, i32 0, [1 x i8] zeroinitializer }, align 16
 @.str.5043 = private unnamed_addr constant { i32, i32, i32, i32, [2 x i8] } { i32 1096176193, i32 -1, i32 0, i32 1, [2 x i8] c"[\00" }, align 16
 @.str.5044 = private unnamed_addr constant { i32, i32, i32, i32, [4 x i8] } { i32 1096176193, i32 -1, i32 0, i32 3, [4 x i8] c"]: \00" }, align 16
@@ -151422,16 +151422,14 @@ entry:
 
 define i64 @"av_$40std$2Etext$2Enul_at"(ptr %0) {
 entry:
-  %1 = call ptr @avra_bytes_of_str(ptr %0)
-  %2 = call ptr @"av_$40std$2Etext$2Enul"()
-  %3 = call i64 @avra_bytes_index_of(ptr %1, ptr %2, i64 0)
-  call void @avra_rc_release(ptr %2)
+  %1 = call ptr @"av_$40std$2Etext$2Enul_needle"()
+  %2 = call i64 @avra_str_index_of(ptr %0, ptr %1)
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
-  ret i64 %3
+  ret i64 %2
 }
 
-define ptr @"av_$40std$2Etext$2Enul"() {
+define ptr @"av_$40std$2Etext$2Enul_needle"() {
 entry:
   %0 = call ptr @avra_once_get(ptr getelementptr inbounds (i8, ptr @.str.5041, i64 16))
   %cmp = icmp ne ptr %0, null
@@ -151442,21 +151440,22 @@ then:                                             ; preds = %entry
   br label %endif
 
 else:                                             ; preds = %entry
-  %1 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %1, i64 0)
-  %2 = call ptr @avra_bytes_of_list(ptr %1)
-  %3 = call ptr @avra_insist(ptr %2)
-  call void @avra_once_set(ptr getelementptr inbounds (i8, ptr @.str.5041, i64 16), ptr %3)
-  call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr %1)
+  %1 = call ptr @"av_$40std$2Etext$2Efrom_codepoint"(i64 0)
+  call void @avra_once_set(ptr getelementptr inbounds (i8, ptr @.str.5041, i64 16), ptr %1)
   br label %endif
 
 endif:                                            ; preds = %else, %then
-  %regval = phi ptr [ %0, %then ], [ %3, %else ]
+  %regval = phi ptr [ %0, %then ], [ %1, %else ]
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %0)
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.5041, i64 16))
   ret ptr %regval
+}
+
+define ptr @"av_$40std$2Etext$2Efrom_codepoint"(i64 %0) {
+entry:
+  %1 = call ptr @avra_str_from_codepoint(i64 %0)
+  ret ptr %1
 }
 
 define ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender"(ptr %0, ptr %1, ptr %2) {
@@ -166829,7 +166828,7 @@ else11:                                           ; preds = %endif6
   br i1 %cmp13, label %then14, label %else15
 
 endif12:                                          ; preds = %endif21, %then10
-  %regval30 = phi ptr [ %13, %then10 ], [ %regval29, %endif21 ]
+  %regval35 = phi ptr [ %13, %then10 ], [ %regval34, %endif21 ]
   call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr %10)
   call void @avra_rc_release(ptr %7)
@@ -166837,7 +166836,7 @@ endif12:                                          ; preds = %endif21, %then10
   call void @avra_rc_release(ptr %6)
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
-  ret ptr %regval30
+  ret ptr %regval35
 
 then14:                                           ; preds = %else11
   br label %endif16
@@ -166868,21 +166867,33 @@ else20:                                           ; preds = %endif16
   br i1 %cmp24, label %then25, label %else26
 
 endif21:                                          ; preds = %endif27, %then19
-  %regval29 = phi ptr [ %20, %then19 ], [ %regval28, %endif27 ]
+  %regval34 = phi ptr [ %20, %then19 ], [ %regval33, %endif27 ]
   br label %endif12
 
 then25:                                           ; preds = %else20
   br label %endif27
 
 else26:                                           ; preds = %else20
+  %22 = call i64 @avra_array_get(ptr %11, i64 0)
+  %cmp28 = icmp eq i64 %22, 1
+  br i1 %cmp28, label %then29, label %else30
+
+endif27:                                          ; preds = %endif31, %then25
+  %regval33 = phi ptr [ %boxed1, %then25 ], [ %regval32, %endif31 ]
+  br label %endif21
+
+then29:                                           ; preds = %else26
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %7)
-  %22 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecrossing"(ptr %0, ptr %7, i64 %3, ptr %boxed1)
-  br label %endif27
+  %23 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecrossing"(ptr %0, ptr %7, i64 %3, ptr %boxed1)
+  br label %endif31
 
-endif27:                                          ; preds = %else26, %then25
-  %regval28 = phi ptr [ %boxed1, %then25 ], [ %22, %else26 ]
-  br label %endif21
+else30:                                           ; preds = %else26
+  br label %endif31
+
+endif31:                                          ; preds = %else30, %then29
+  %regval32 = phi ptr [ %23, %then29 ], [ %boxed1, %else30 ]
+  br label %endif27
 }
 
 define ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecrossing"(ptr %0, ptr %1, i64 %2, ptr %3) {
