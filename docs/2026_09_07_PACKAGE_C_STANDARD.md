@@ -561,6 +561,27 @@ of every prepare — and as `string` seats every SQL statement in every
 program would have paid an interior-NUL scan per call. As `Bytes`
 seats they pay none, by the seat's own type.
 
+**AND THE MIGRATION, NOT THE VERB, WAS THE HAZARD.** The sqlite lead's
+framing, better than the one this section shipped with. Changing those
+four seats from `string` to `Bytes` is arithmetic on signatures right
+up to the moment it changes who HOLDS the value — and
+`bind_text_unsafely_borrowed(…, value)` promises the caller's bytes
+outlive the statement, which is keepable only because the caller's own
+box goes straight through. Migrating the WALL seat while the FACE kept
+`string` would have forced the face to call `.bytes()`, minting a box
+whose only holder is that call: dead at return, a dangling pointer
+handed to SQLite every time, with the caller having done nothing
+wrong. A TYPE MIGRATION CAN MOVE WHO HOLDS A VALUE, AND A LIFETIME
+PROMISE IS A PROMISE ABOUT THE HOLDER. So the face takes the new type
+too, and the type now says what the contract always required.
+
+THE SEATS WHERE THIS BITES ARE FEW AND GREPPABLE — the ones whose
+contract mentions LIFETIME. It is a TWO-INSTANCE law, and lane D holds
+the second: one level down, a box materialised ONLY to be staged has
+no other holder, so its last reference dies before the call and C
+reads freed memory. The engines disagreeing is how that one was seen,
+and the frame holds staged boxes until the call returns because of it.
+
 **A LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS.** The sqlite lead's
 principle, adopted here. Their guards answer a `Result` with a named
 cause at exactly the seats the callee resolves, because the driver
@@ -1292,6 +1313,15 @@ visible to a reader of the document alone.
   `build/avra` carries and the TEST binary does not.
 - A case bounded its wait at 400 immediate asks where the child needed
   32,213, so a correct fix read as a failing one.
+- A PROBE RUN MID-BOOTSTRAP ANSWERED ABOUT A COMPILER THAT NO LONGER
+  EXISTED. `make bootstrap` links straight at `build/avra`, so while
+  it runs the front door IS being replaced — four probes of the new
+  seat law came back CLEAN and would have read as the law not firing.
+  A probe result names the base that answered it, and during a
+  bootstrap there is no stable base to name. Nothing was concluded,
+  because the law had fired on those same four programs ten minutes
+  earlier; that is luck, not method. Do not probe while a bootstrap
+  holds the lock.
 - THE TEST WHOSE NAME WAS BROADER THAN ITS BODY, found by attacking
   what it claimed: "an aggregate seat is refused as a law, with the
   remedy in its words" asserted the WORDS and never that the call was
@@ -1299,6 +1329,55 @@ visible to a reader of the document alone.
   zero, so it was green for as long as the refusal did not refuse. A
   reader deciding whether the question was settled reads the NAME.
 
+
+### 2.8 A PLAIN EXTERN SEAT WEARS A TYPE THAT CROSSES
+
+The `mut` half of this was landed with the inout ABI: a `mut` seat
+hands C the ADDRESS of the caller's cell, so only a few shapes line
+up and F2056 says which. THE PLAIN HALF WAS HELD BY NOTHING. A record,
+a list or a map at a `const char*` seat compiled clean and crossed —
+the native binary handing C the box's address and answering garbage
+(`atoi` over a record answered 0, `strlen` over a map answered 5), the
+evaluator staging a HANDLE into its own table as if it were an
+address. Both engines wrong, differently, with `./avra check` silent.
+
+F2056 grew the second arm rather than taking a new code, because it is
+one law about one thing: A HOST SEAT WEARS A TYPE THAT CROSSES. A
+plain seat is a machine word or ONE pointer C can read — `int`,
+`float`, `bool`, a width word, `string`, `Bytes`, `ptr`, or a nullable
+over those. Everything else that rides a pointer is a box in Avra's
+layout and its address means nothing on the far side.
+
+**IT IS SPELLED AS WHAT IS ALLOWED.** A forbidden list would admit
+every type the language grows, in silence, at the door C is on the
+other side of. Spelled positively, a new type is REFUSED at an extern
+seat until someone decides it crosses — a loud answer a writer can act
+on, and the catch-all's contract says exactly that.
+
+**A ROW IS THE EXEMPTION, AND NOT A SPECIAL CASE.** A row has a
+hand-written arm on both sides that MATERIALISES the aggregate, which
+is precisely what a uniform frame cannot do; `avra_str_join` has taken
+a `List<string>` that way since before this law. So the two aggregate
+seats in the tree became rows, which is what §2.1 already said about
+them — their C reads an `AvraArray`. `avra_exec_self` now re-execs
+under `avra run` for the first time, and `avra_spawn_status` spawns
+there; both answered on both engines where the evaluator used to stage
+a handle as an address.
+
+**AND A ROW'S WORDS ARE CHECKED IN C, because the seam checks a
+SEAT.** A `List<string>` seat is a pointer to a box, so every word
+inside it crosses unexamined while `execv` and `posix_spawn` RESOLVE
+each one. Neither row is `inert` and both bodies call
+`avra_str_crossing` per word — the flag says a NUL is data to the
+body, and to these bodies it is two words. Proved on both engines: a
+NUL word traps at byte 1, a clean word spawns.
+
+**THE CONTRACT IS ON `avra_spawn_status` AND NOT ON `avra_exec_self`,
+deliberately.** They are the same law, and a program that re-execs
+ITSELF with a word the check no longer refuses would LOOP. A contract
+whose regression is a fork bomb does not belong in a harness, so the
+harness holds the child-spawning twin and this paragraph holds the
+reason.
 
 ### 7.4 THE RED TEAM OVER THE SEAM
 

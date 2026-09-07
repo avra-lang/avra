@@ -160,6 +160,21 @@ let holed = "ab" + from_codepoint(0) + "cd"
 sqlite3_stricmp(holed, "ab")
 '
 
+# A WORD INSIDE A LIST, which the per-SEAT check cannot see. The seam
+# checks a seat, and a `List<string>` seat is a pointer to a BOX — so
+# every word inside it crosses unexamined while the host RESOLVES each
+# one. `avra_spawn_status` and `avra_exec_self` are ROWS for that
+# reason (their C reads an `AvraArray`, which §2.1 makes core's), and
+# their C bodies check each word at the crossing itself.
+#
+# THE CHILD IS `/bin/echo` DELIBERATELY: `avra_exec_self` is the same
+# law and cannot be a row here, because a program that re-execs ITSELF
+# with a word the check no longer refuses would loop. A contract whose
+# regression is a fork bomb does not belong in a harness.
+trapped nul_in_a_spawned_word "avra: a string holding a NUL crossed to C as two strings — byte 1" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
+extern fn avra_spawn_status(prog: string, args: List<string>) -> int
+avra_spawn_status("/bin/echo", ["a" + avra_str_from_codepoint(0) + "b"])'
+
 # AND THE EXEMPTION IS NOT A HOLE: an INERT row reads the bytes it was
 # handed and resolves nothing, so a NUL rides through it untouched —
 # the trap here is the BOUNDS one, reached only because the string

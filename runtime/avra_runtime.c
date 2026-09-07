@@ -2201,7 +2201,13 @@ int64_t avra_spawn_status(const char* prog, void* args) {
     AvraArray* a = (AvraArray*)args;
     char** argv = (char**)malloc((size_t)(a->len + 2) * sizeof(char*));
     argv[0] = (char*)prog;
-    for (int64_t i = 0; i < a->len; i++) argv[i + 1] = (char*)(uintptr_t)a->data[i];
+    /* EVERY WORD IS CHECKED, because the host RESOLVES each one and
+       the seam's per-SEAT check cannot see inside a list: the seat is
+       a pointer to a box, so a NUL in a word would cross unexamined.
+       That is why neither row is `inert` — the flag says a NUL is data
+       to the body, and to these bodies it is two words. */
+    for (int64_t i = 0; i < a->len; i++)
+        argv[i + 1] = (char*)(uintptr_t)avra_str_crossing((const char*)(uintptr_t)a->data[i]);
     argv[a->len + 1] = NULL;
     // what this program printed comes out before the child's words:
     // a buffered stdout is flushed at the seam, or a pipe reorders
@@ -2237,7 +2243,13 @@ int64_t avra_exec_self(void* args) {
     if (!self_path(self, sizeof self)) return 127;
     char** argv = (char**)malloc((size_t)(a->len + 2) * sizeof(char*));
     argv[0] = self;
-    for (int64_t i = 0; i < a->len; i++) argv[i + 1] = (char*)(uintptr_t)a->data[i];
+    /* EVERY WORD IS CHECKED, because the host RESOLVES each one and
+       the seam's per-SEAT check cannot see inside a list: the seat is
+       a pointer to a box, so a NUL in a word would cross unexamined.
+       That is why neither row is `inert` — the flag says a NUL is data
+       to the body, and to these bodies it is two words. */
+    for (int64_t i = 0; i < a->len; i++)
+        argv[i + 1] = (char*)(uintptr_t)avra_str_crossing((const char*)(uintptr_t)a->data[i]);
     argv[a->len + 1] = NULL;
     if (accounting()) acc_report();
     fflush(NULL);

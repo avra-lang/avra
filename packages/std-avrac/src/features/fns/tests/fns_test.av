@@ -117,11 +117,18 @@ spec "features/fns" {
         then "a declaration wider than one frame is refused by name" {
             refused_at_run("extern fn avra_selfhost_argc(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, i: int, j: int, k: int) -> int\navra_selfhost_argc(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11) > 0", "takes more seats than one frame carries")
         }
-        then "an aggregate seat is refused as a law, with the remedy in its words" {
-            // the symbol is the compiler's own frame, which every test
-            // binary links; a package's would answer `no_symbol` first
-            // and pin the wrong refusal
-            refused_at_run("extern fn avra_ffi_set_int(at: int, xs: List<string>)\navra_ffi_set_int(0, [\"a\"])\n1", "the evaluator holds one as a handle, not a box; stage the elements one at a time")
+        then "a plain aggregate seat cannot cross either — the `mut` half is above" {
+            // lane D's wording: `mut xs: List<string>` was ALREADY
+            // refused by the inout law and a PLAIN one passed, so this
+            // closes exactly that half and the name says which
+            refused_with("extern fn zz(xs: List<string>)\nzz([\"a\"])", "seat 1 of `zz` wears `List<string>`, which cannot cross to C")
+        }
+        then "a map seat cannot cross, and a record seat cannot either" {
+            refused_with("extern fn zz(m: Map<string, int>) -> i64\nzz({ \"a\": 1 })", "wears `Map<string, int>`, which cannot cross to C") &&
+                refused_with("type P = {\n    s: string,\n}\nextern fn zz(p: P) -> i64\nzz(P { s: \"a\" })", "wears `P`, which cannot cross to C")
+        }
+        then "a ROW is the exemption — its arm materialises the box on both sides" {
+            shown("extern fn avra_str_join(xs: List<string>, sep: string) -> string\navra_str_join([\"a\", \"b\"], \"-\")") == "a-b"
         }
         then "a refused seat means the symbol is never CALLED" {
             // THE NAME ABOVE ASSERTS THE WORDS AND NOTHING ELSE, which
@@ -132,7 +139,11 @@ spec "features/fns" {
             // clean. The callee here is chosen to dereference, so a
             // regression kills this suite outright rather than
             // reporting a wrong string.
-            refused_at_run("extern fn strlen(m: Map<string, int>) -> i64\nstrlen({ \"a\": 1 })", "has a seat the frame cannot carry")
+            // the seat law refuses an aggregate at `./avra check` now,
+            // so the frame's own floor is reached by a CELL alone —
+            // which no source can write either. Verified by trace and
+            // by `build/avra.pre`: the same program exits 139 there.
+            refused_with("extern fn strlen(m: Map<string, int>) -> i64\nstrlen({ \"a\": 1 })", "wears `Map<string, int>`, which cannot cross to C")
         }
         then "a `mut` seat is refused by name — the frame carries no inout yet" {
             refused_at_run("extern fn avra_selfhost_argc(mut out: i64) -> int\nmut n = 0\navra_selfhost_argc(n) > 0", "has a `mut` seat — the frame does not carry an inout yet")

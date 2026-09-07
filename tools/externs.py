@@ -554,6 +554,37 @@ def foreign_body(crel):
     return "/vendor/" in crel.replace(os.sep, "/")
 
 
+# THE KEEPER'S OTHER SURFACE, AND WHY IT IS A COUNT AND NOT A REFUSAL.
+# The refusing half above is SOUND IN ONE DIRECTION ONLY: no integer
+# after the pointer PROVES the body must scan, while an integer after
+# it proves nothing — it may be a length or a flag, and
+# `open(const char *, int)` declared `string` is correct and would be
+# refused by the mirror rule. Measured on this tree: the mirror would
+# fire ZERO times, because @std/sqlite's four length-carrying seats are
+# already `Bytes`. A rule with no measurable true-positive rate and a
+# known false-positive shape is F2040 again, so the other surface is
+# WITNESSED rather than enforced — the count makes the migration
+# visible and goes up when a seat earns its exemption.
+def earned_octets(wall, sigs):
+    out = []
+    for name, params, where in wall:
+        if name not in sigs:
+            continue
+        cargs, crel, cline = sigs[name]
+        if is_variadic(cargs):
+            continue
+        cp, ap = split_params(cargs), split_params(params)
+        if len(ap) != len(cp):
+            continue
+        for i, seat in enumerate(ap):
+            if declared_of(seat) != "Bytes":
+                continue
+            after = [PARAM_NAME.sub("", c).strip() or c for c in cp[i + 1:]]
+            if any(integer_seat(c) for c in after):
+                out.append((name, seat))
+    return out
+
+
 def bytes_without_length(wall, sigs):
     out = []
     for name, params, where in wall:
@@ -1171,6 +1202,7 @@ def main():
         a, c = pair
         print(f"externs: {name} seats `{a}` in {where} over C `{c}` at {crel}:{cline}")
         print(f"externs:   the seat and the body must name the same width — a C `int` is 32 bits")
+    earned = earned_octets(walls, sigs)
     octets = bytes_without_length(walls, sigs)
     for name, seat, where, crel, cline in octets:
         print(f"externs: {name} seats `{seat}` in {where} over C at {crel}:{cline}")
@@ -1212,6 +1244,8 @@ def main():
         print(f"externs: {len(loud)} row(s) claim `inert` over a body that resolves")
         return 1
 
+    if earned:
+        print(f"externs: {len(earned)} `Bytes` seat(s) earn the exemption from a length in the prototype")
     unsaid = unsaid_keeps(seated_bodies(sources), sig_rows())
     for name, held, marked, _ in unsaid:
         print(f"externs: {name} retains seat(s) {held} in C, its row marks {marked or 'none'}")
