@@ -3591,14 +3591,24 @@ driver forced someone to read a seam nobody had grown before.
     NOT AUTHORITY — its own research (T49) contradicted it.
   - A GUARD AND THE THING IT GUARDS MUST READ THE SAME BYTES — found by
     a red team, the campaign's own NUL law arriving through the door
-    built to stop it. `path_fault` refused the empty path with `==`, a C
-    string call that stops at the first NUL, so `"\0x"` (length 2 in
-    Avra) passed and reached SQLite as THE EMPTY STRING — the private
-    temporary database DELETED AT CLOSE, every write succeeding and the
-    data gone. Fixed with `has_nul` over `char_code`. AND THE NEAR-MISS
-    IS THE SHARPER HALF: `":memory:\0x"` WAS refused before the fix,
-    ACCIDENTALLY, because `==` truncated it into a match — a test
-    asserting the right answer would have locked the wrong reason in.
+    built to stop it. `path_fault` refused the empty path with **the
+    pre-`f57372a` `==`**, then a C string call stopping at the first NUL,
+    so `"\0x"` (length 2 in Avra) passed and reached SQLite as THE EMPTY
+    STRING — the private temporary database DELETED AT CLOSE, every write
+    succeeding and the data gone. Fixed with `has_nul` over `char_code`.
+    AND THE NEAR-MISS IS THE SHARPER HALF: `":memory:\0x"` WAS refused
+    before the fix, ACCIDENTALLY, because **that same pre-`f57372a` `==`**
+    truncated it into a match — a test asserting the right answer would
+    have locked the wrong reason in.
+    THE MECHANISM IS HISTORY AND THE LAW IS NOT. `f57372a` moved all five
+    primitives onto the header's length, so nothing on the Avra side
+    truncates now and that accident is no longer reachable. **The law is
+    untouched, because the truncation was only ever on ONE side**: the
+    callee still sees different bytes than the guard did, at the EXTERN
+    SEAT and only there. The version is named in both clauses on
+    purpose — a reader with no dates cannot otherwise tell a live
+    mechanism from a dead one, and four documents inherited this
+    sentence before anyone noticed.
   - A CLOSED REGISTRY SURFACES DESIGN GAPS THAT PROSE REVIEW MISSED — the
     catch-all doctrine read FORWARDS. The driver's `Cause` enum has no
     `_ ->`, so a refusal the design promised but never picked up has
@@ -3645,6 +3655,35 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  A CITATION IS A COPY THAT DOES NOT KNOW IT IS ONE — lane B's, and the
+  reason two thorough file-keyed sweeps both missed the same claim. A
+  citation names the FINDING rather than the MECHANISM, so **it survives
+  the mechanism changing**, and it reads as independent corroboration
+  when it is one fact copied. The NUL claim lived in FOUR documents
+  across THREE campaigns — this ledger's red-team entry, CLAUDE.md's
+  subset note, the documentation vision (attributing the finding back to
+  this campaign), and the doc probe log. **Four documents agreeing looked
+  like four confirmations and was one claim four times.**
+  AND IT DEFEATS A FILE-KEYED SWEEP BY CONSTRUCTION. Two sweeps ran here
+  — four sites, then five more — both thorough, both scoped to
+  `@std/sqlite`, and neither could ever reach a ROADMAP entry or another
+  campaign's paper. Lane B's own sweep was scoped to CLAUDE.md and missed
+  all four for the same reason. **SWEEP BY THE CLAIM, and grep for the
+  DISTINCTIVE EXAMPLE that carries it** — here `ab\0cd` and `"\0x"` —
+  because the example travels into citations where the mechanism's words
+  do not.
+  AND NAME THE VERSION IN THE SENTENCE, which costs four words: "the
+  pre-`f57372a` `==`". A mechanism clause written in the present tense
+  reads as CURRENT BEHAVIOUR to a reader with no dates, so an accurate
+  history becomes a false claim the day the mechanism moves — without
+  anyone editing it. The entry keeps its incident and its near-miss,
+  both real; only the tense was doing the lying.
+  THE LAW ITSELF SURVIVED ALL OF IT UNTOUCHED, which is the test of
+  whether a retraction was done right: the truncation was only ever on
+  ONE side, so the callee still sees different bytes than the guard did,
+  at the extern seat and only there. **A retraction that has to weaken
+  the law is a retraction of the law; this one replaced only the
+  reason.**
   A TEST MOVES DOWN A LAYER RATHER THAN INTO THE BIN — THIRD FIRING, and
   the third is the one that makes it a law rather than a habit, because
   the test could not simply be REWRITTEN: it had to change PROCESS. When
