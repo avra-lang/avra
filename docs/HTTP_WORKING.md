@@ -155,6 +155,25 @@ O(1) slot comes FIRST and the lowering hoist after; a `ConstBytes` waits
 for `Bytes` on main. NEXT: S4, the `grammar` value that parses, probed to
 need no new door.
 
+## The gate had never run this campaign's suites
+
+`SUITES` in the Makefile named every std package but `std-net` and
+`std-http`, so the 22 net cases and the 45 framer cases ran only by hand —
+the sq-redteam lane's finding ("the gate had never run a sqlite test")
+one campaign over, found by counting the gate's package lines after lane
+B's process guard added seven cases and the visible total did not move.
+Both suites join SUITES at d58ff78; the gate is green with them (22 and 45
+under the watchdog, every other suite unchanged). LANE B'S PROCESS GUARD
+(`Holed(word, at)`, every value the host is handed judged over its bytes;
+a 30-character `Tool.path` had RUN `/bin/echo`) is on lane/http at
+a0dbd4e by `cherry-pick -x` of lane/b f012645 — main's working tree holds
+another session's uncommitted work across the same file, so lane B holds
+its integration rather than conflict a pop; the merge from main later
+sees the same patch. The substrate lane's S4 face builds ON it: the guard
+judges the whole command before the first staged word, and stdin stays
+length-aware as `avra_fd_write` (a NUL is data in a stream and two names
+in a path).
+
 ## Sub-lane: strings — S4 (grammar values) on lane/strings, closing
 
 `grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"` declares
