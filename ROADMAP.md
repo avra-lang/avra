@@ -3828,10 +3828,24 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         here. The hand-written scan hoists its separator into a `once
         fn`, as frame.av hoists every literal it scans for. A `Bytes`
         constant is a vocabulary event under the eight-consumer
-        protocol (a `ConstBytes` beside `ConstStr`, or the string
-        constant's octets read without a mint); the strings lane does
-        not grow the IR. WANTING SITE: `features/formats/lower.av`'s
-        per-piece conversion.
+        protocol; the strings lane does not grow the IR. WANTING SITE:
+        `features/formats/lower.av`'s per-piece conversion.
+        RULED BY LANE A, MEASURED (4M reads): a `once` read is ~12 ns
+        and it is ENTIRELY the read — call, pointer scan, retain, the
+        caller's release — so hoisting four conversions through a
+        `once` today trades 17 ns for 12, a 5 ns saving not worth a
+        lowering change; the hoist pays only once the read is O(1) (a
+        per-site slot, a load and a null test, ~1 ns: sixteen of the
+        seventeen). SO THE ORDER IS THE FINDING: the per-site `once`
+        slot FIRST (lane A's, scoped after measuring what it buys IN A
+        COMPILE — `rt_index()` is a `once fn` read per instruction
+        lookup — never on a parser's number alone), the lowering hoist
+        after. A `ConstBytes` is blocked until `Bytes` is on main and,
+        when it can land, pays its eight consumers as `ConstFloat`
+        did — the right cost for a value category, the wrong one for
+        a hoistable conversion. AND THE 4 ns IS NOT STABLE UPWARD: it
+        is a small box's cost because the size-class free lists made
+        it one; a conversion that outgrows a class stops being 4 ns.
   - [ ] MOVE 4, a grammar on a live stream: FIRES when the server's
         read loop shows the head re-scanned per read in a census.
 

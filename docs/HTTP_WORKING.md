@@ -142,8 +142,12 @@ own condition and is an ask of the core owners now. Over text 1.58x, the
 extra being the subject conversion the framer never pays. The harness
 rule: a `once` read inside a timed loop inflated both sides 20% — hoist
 the subject. The NUL-past-both-separators scan is a corpus pair. The
-formats feature contributes zero F2047 warnings. NEXT: S4, the `grammar`
-value that parses, probed to need no new door.
+formats feature contributes zero F2047 warnings. MERGED into lane/http at
+8d56477 (two commits, 70b10b5 and 23cd31a), full gate green. Lane A ruled
+the octets ask by measurement: a `once` read is ~12 ns, so the per-site
+O(1) slot comes FIRST and the lowering hoist after; a `ConstBytes` waits
+for `Bytes` on main. NEXT: S4, the `grammar` value that parses, probed to
+need no new door.
 
 ## Sub-lane: substrate — S3 (io) rulings
 
