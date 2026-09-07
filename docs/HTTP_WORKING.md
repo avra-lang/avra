@@ -922,6 +922,54 @@ Order from here: the `avra_exec_self` row and the aggregate-seat law
 (ROW, ruled; the law worded as the PLAIN half of F2056, lane D's
 verified wording), then S2c in its §8 order.
 
+## Door 3 landed: a `once` answer is IMMORTAL (main 2b4685d, merged at 6c3522a, seed 1c47ce5)
+
+Lane A landed the second half of the `once` ask on the owner's word in
+their session: a `once` answer is minted once and lives for the
+process, and its header says so as a REFLECTION of the kind
+(`-(kind + 4)`, negative for every shape so `kind < 0` still no-ops
+retain and release for free) — never a replacement for it. TWO
+DESIGNS FAILED FIRST, both worth carrying with lane A's name on them:
+marking the box `KIND_STATIC` CORRUPTS, because `box_clone` dispatches
+on kind and a once-answered map would have been cloned as an array —
+the registry law in C again; and the BORROW route (`lends: true`, no
+retain) segfaulted every suite, because the lowering's region has ARMS
+THAT DIFFER IN OWNERSHIP — the present arm carries the cached value,
+the absent arm a fresh one — and the caller releases either way. That
+is what immortality buys and borrowing does not: it makes the
+asymmetry HARMLESS instead of teaching the lowering about it. And the
+prerequisite landed as part of the decision: an immortal value is
+shared by definition, `is_shared` answers true, a write through it
+copies (lane A's probe: `after poke: 3, cache now: 2`).
+
+THE NUMBER LANE A COULD NOT TAKE, taken here on ONE tree: lane/http
+1c47ce5, the same compiler and the same bench binary
+(`tools/bench/frame_head`, 2M four-field heads), only the runtime
+object swapped between e45e37b's and 1c47ce5's, census sites resolved
+by `nm`.
+
+    retains    410,001,348 -> 238,000,998   (205 -> 119 a head)
+    releases   480,001,749 -> 308,001,380   (240 -> 154 a head)
+    reclaims    70,000,401 -> 70,000,401
+    once reads  86,000,194 -> 86,000,194, one pointer compare each
+    avra_once_get as a retain site: 86,000,175 -> gone, and the two
+    call-site retains behind it (crlf 12.0M, tchar 10.0M) with it
+
+172M retains and 172M releases off the run — twice the read count,
+the retain at the read and the caller's release of it. Timing, three
+runs each back to back: 2066/2104/2069 -> 2028/2038/2020 ns a head,
+~40 ns, ~2%, at the edge of what the stopwatch resolves; THE COUNT IS
+THE RECEIPT and the clock only agrees with it. The framer's ledger on
+shipping: 2410 (own wastes) -> 2185 (once index) -> 2045 -> ~2030.
+Largest retain site now: `avra_array_get_owned` at 11 a head, then the
+framer's own `settled` records. Also in this merge: the sqlite lead's
+retraction of the lossy claim in four more places, and lane B's
+`nul_at` as ONE SEARCH (`s.index_of(nul_needle())`, a `memmem` over
+the header's length, allocating nothing) — which beat the octet body
+this branch had given the shared helper hours earlier, so that body
+and its needle died. All three doors are now decided and two are
+landed; door 2 (S2c) is the substrate lane's, approved in shape above.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
@@ -956,8 +1004,8 @@ faces refuse with words first, `Bytes` the escape; (2) S2c — the
 per-package shared library the evaluator opens by the program's own
 closure, derived by the tree and never named by a manifest (the
 substrate lane, after the seam); (3) immortal `once` answers with the
-`is_shared` line landed alongside (lane A, on the owner's word in their
-session). Still owed: the validation of lane/http itself, before
+`is_shared` line landed alongside — LANDED, main 2b4685d, merged here at
+6c3522a and measured above. Still owed: the validation of lane/http itself, before
 anything reaches main.
 
 ## Slice 3 — `@std.http` (AFTER)
