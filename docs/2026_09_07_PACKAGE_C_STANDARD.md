@@ -1324,6 +1324,18 @@ visible to a reader of the document alone.
   `build/avra` carries and the TEST binary does not.
 - A case bounded its wait at 400 immediate asks where the child needed
   32,213, so a correct fix read as a failing one.
+- A LEAVE-ALONE IS A CLAIM AND OWES A RECEIPT, exactly as a finding
+  does — and mine did not have one. A review round named
+  `symbol_of` as deliberately left alone because "at most three
+  handles, and only a MISS reaches it". The second half is false:
+  `symbol_of` is the FIRST line of `hosted_extern` and its answer is
+  what the call is made with, so it runs on EVERY extern call. Four
+  lines would have said so, in code written that hour and still
+  open. The damage is not the missed optimisation, it is that a
+  review round's leave-alone exists to STOP RE-LITIGATION: a wrong
+  one tells the next reader the question is settled. Lane A read the
+  line and asked the question anyway. State a leave-alone's reason
+  as something checkable, then check it.
 - WALL TIME ON A SHARED MACHINE MEASURES THE QUEUE. The same
   `make avra` took 503 s and 12 s within one hour on one tree, the
   difference being entirely whether another lane held the build lock.
