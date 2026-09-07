@@ -60,7 +60,7 @@ fn repeated(mut cx: TypeCx, p: PatId, n: string) -> List<TypeId> {
 
 fn unparsed(mut cx: TypeCx, p: PatId, part: FormatPart) -> List<TypeId> {
     let n = part.hole.ty!.name
-    cx.emit(refusal("type.format_parse", cx.pat_loc(p), "`{${part.hole.name}: ${n}}` parses its span, and nothing reads text as `${n}` yet", "here", "take the span as text and convert it in the arm — a typed hole arrives with the decimal row"))
+    cx.emit(refusal("type.format_parse", cx.pat_loc(p), "`{${part.hole.name}: ${n}}` parses its span, and nothing reads text as `${n}` yet", "here", "take the span as text and convert it in the arm — a typed hole waits on a shared decimal reader"))
     []
 }
 
@@ -73,12 +73,23 @@ export fn on_grammar(t: Type) -> bool {
     t is .TypeName
 }
 
-/// `Name.parse(text)` — the text this grammar reads, or absence.
-/// The answer is the RECORD the declaration's holes became.
+/// `Name.parse(text)` — the text this grammar reads, or absence. The
+/// answer is the RECORD the declaration's holes became.
 export fn check_parse(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let named: TypeId? = record_of(cx, cx.type_at(mc.subject))
     if named == null { return cx.error_type }
-    worded(cx, mc, "parse", [Type.Str], Type.Opt(named!))
+    worded(cx, mc, "parse", [read_seat(cx, mc)], Type.Opt(named!))
+}
+
+/// ONE DOOR, TWO SEATS: a grammar reads TEXT, or the OCTETS the text
+/// was framed from. A router holds a span and never had a string; a
+/// test holds a string and never had a span. The seat follows what
+/// the caller has, and octets that are not UTF-8 answer absence like
+/// any other target this grammar cannot read.
+fn read_seat(mut cx: TypeCx, mc: MethodCall) -> Type {
+    if mc.args.length != 1 { return Type.Str }
+    if cx.view.types.shape_of(cx.type_at(mc.args[0])) is .Bytes { return Type.Bytes }
+    Type.Str
 }
 
 /// The record a type name's declaration stands for.

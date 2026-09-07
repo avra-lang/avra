@@ -481,8 +481,11 @@ Two ways forward, and S2 does not have to block on either:
   format arm, and nothing else. For a request line that is one ~50-byte
   allocation.
 
-The typed `int` capture lowers to a **shared runtime row** (§1.5), asked
-for from lane A alongside the offset row. Until it lands, the capture
+The typed `int` capture lowers to a **shared runtime row** (§1.5). Its
+owner is the SQLITE campaign, not lane A: decimal is CORE by that
+campaign's scope decision, and lane A has nothing in flight on it. A
+misrouted dependency is how a lane comes to block on another that does
+not know it is blocking, so the row is named by its owner here. Until it lands, the capture
 emits the framer's exact arithmetic through the walk vocabulary, so the
 compiled scan and the hand-written one agree on the answer from the
 first day and swap implementation later.
@@ -1185,10 +1188,14 @@ re-run rather than believed.
    left-to-right scan over text in this language is quadratic or
    copying. WANTING SITE: the string-subject format scan (§4). Not
    blocking; S2 ships the one-copy fallback.
-2. **A decimal-parsing row** — lane A, with lane C naming its Avra face.
-   WANTING SITES: `frame.av`'s `decimal`, this feature's `int` capture,
-   and a user's `"42"` conversion (§1.5). Not blocking; the interim is
-   the framer's arithmetic emitted inline.
+2. **A decimal-parsing row** — the SQLITE campaign's, because decimal is
+   CORE by that campaign's scope decision. NOT lane A's: an earlier
+   draft of this paper said it was, and a dependency filed against the
+   wrong owner is one nobody is carrying. WANTING SITES: `frame.av`'s
+   `decimal`, this feature's `int` capture, and a user's `"42"`
+   conversion (§1.5). Not blocking, and not scheduled: `{n: int}`
+   refuses today and the handler converts, with the typing a later
+   slice against a live consumer.
 3. **`named_ref(name) -> TypeRef` exported from core** — whoever writes
    the `Pat.Format` variant, so its builder is not the sixth
    hand-spelling of a seven-field record whose own doc warns against

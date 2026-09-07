@@ -15,7 +15,7 @@
 //! reads them back and cuts the values inside the arm's region, so
 //! an untaken arm mints no managed value at all.
 use core.{Reg, Ins, PatId, ExprId, Type, TypeId, BinOp, FormatPart, GrammarSpec, binds}
-use features.{LowerCx, MethodCall, const_int, const_bool, open_region, arm_end, close_region, close_region_as, seeded_cell, box_size, grown_box, adopted, absent_of, carried_type, field_read, lower_defect}
+use features.{LowerCx, MethodCall, const_int, const_bool, open_region, arm_end, close_region, close_region_as, seeded_cell, box_size, grown_box, adopted, absent_of, carried_type, carried_of, open_presence, field_read, lower_defect}
 
 /// Whether the subject matches. The walk's octets and span cells are
 /// left in the pattern's slot for the binds — written once here,
@@ -210,13 +210,32 @@ export fn lower_parse(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let found: GrammarSpec? = grammar_at(cx, mc.subject)
     if found == null { return doorless(cx, mc.e) }
     let read = found!
-    let text = cx.reg_of(mc.args[0])
-    let w = walked(cx, read.head, read.parts, text, cx.type_at(mc.args[0]))
     let want = cx.type_at(mc.e)
+    if cx.view.types.shape_of(cx.type_at(mc.args[0])) is .Bytes { return from_octets(cx, mc, read, want) }
+    read_into(cx, read, cx.reg_of(mc.args[0]), want)
+}
+
+/// OCTETS become text ONCE, at the door: a span that is not UTF-8
+/// cannot fill a record whose fields are text, and validating the
+/// whole target beats validating each capture. Absence here means the
+/// same thing absence always means — this grammar does not read that.
+fn from_octets(mut cx: LowerCx, mc: MethodCall, read: GrammarSpec, want: TypeId) -> Reg {
+    let str_opt = cx.view.types.intern(Type.Opt(cx.view.types.intern(Type.Str)))
+    let crossed = cx.mint_ty(str_opt)
+    cx.emit(Ins.CallRt(crossed, "avra_str_of_bytes", [cx.reg_of(mc.args[0])]))
+    open_presence(cx, crossed, str_opt)
+    arm_end(cx, read_into(cx, read, carried_of(cx, crossed, str_opt), want))
+    let none = absent_of(cx, want)
+    close_region(cx, mc.e, none)
+}
+
+/// The scan over text in hand, and the record it fills.
+fn read_into(mut cx: LowerCx, read: GrammarSpec, text: Reg, want: TypeId) -> Reg {
+    let w = walked(cx, read.head, read.parts, text, cx.view.types.intern(Type.Str))
     open_region(cx, w.ok)
     arm_end(cx, adopted(cx, want, false, gathered(cx, w, read.parts, text, want)))
     let none = absent_of(cx, want)
-    close_region(cx, mc.e, none)
+    close_region_as(cx, want, none)
 }
 
 /// The record the holes fill, slot by slot in declaration order —
