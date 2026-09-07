@@ -62,7 +62,10 @@ anywhere — **none**.
 
 ## 2. THE SHAPE TABLE, AGAINST `RtKind` — AS LANE C ASKED
 
-`RtKind` is `{ I64, Ptr, Void }` today (`core/ir.av:219`), and the width
+`RtKind` is `{ I64, Ptr, Void, I32, U32, F64 }` (`core/ir.av:331`) —
+three variants when this was written, six now: `I32`/`U32` from the
+width slice and `F64` from float. Re-probe every citation below against
+your own base. The width
 work landing this hour adds seat widths. **The host's argument
 coercions are exactly `RtKind`'s three, and its return coercions are
 exactly the width vocabulary.** This is the design's one real economy and
@@ -112,14 +115,34 @@ why a return-side f32 is admissible and an argument-side one is not.)*
 
 ### The refusal, placed correctly
 
-**A NATIVE-ONLY SIGNATURE IS NOT AN ERROR.** The native path can host
+> **CORRECTED 2026-09-07. THE PARAGRAPH BELOW WAS FALSE AND IS KEPT SO
+> NOBODY RE-DERIVES IT.** It claimed the native path hosts variadics and
+> concluded the refusal belongs at INTERPRETATION. Measured on main:
+> every caller of `declare(…, variadic)` — `llvm.av` 109, 111, 121, 172,
+> 179, 199 — passes **false**, the extern path hard-wires **0**, and the
+> grammar has **no ellipsis**. **A variadic C body under a fixed
+> declaration emits a fixed call on the native path too**, which this
+> paper's own `12345 -> -298729216` measurement demonstrates three
+> sections above. The claim and its refutation were on the same page and
+> nobody put them together.
+>
+> **THE REFUSAL BELONGS AT THE DECLARATION, FOR BOTH ENGINES**, in a
+> keeper that reads the C (`make externs`), narrowing to the evaluator
+> only on the day a variadic seat is spellable. Refusing at
+> interpretation would let a variadic declaration compile natively and
+> answer a silently wrong value — the class this campaign opened on. A
+> declaration-level refusal makes the unsound thing UNSPELLABLE rather
+> than merely unhosted. Found by the HTTP lane reading this paper against
+> the tree instead of trusting it.
+
+**~~A NATIVE-ONLY SIGNATURE IS NOT AN ERROR.~~** ~~The native path can host
 variadics perfectly well — LLVM knows the Darwin rule, and `declare`
 already takes the vararg flag (`language/llvm.av:189-195`), hard-wired
 `false` at both call sites. Refusing a variadic extern at its
-declaration would break a program that only ever builds.
+declaration would break a program that only ever builds.~~
 
-So: **classify once, at the declaration; refuse at the point of
-interpretation, by name, with the reason and the fix.**
+~~So: classify once, at the declaration; refuse at the point of
+interpretation, by name, with the reason and the fix.~~
 
 ```
 `sqlite3_db_config` is variadic — the evaluator calls through a uniform
@@ -296,7 +319,7 @@ and both engines consult the same verdict.
 | `avra run` interprets inside `build/avra` | `language/workspace.av:1068-1071` |
 | `[link]` words reach clang only on a native build | `cli/src/commands/shared.av:277` |
 | therefore `dlsym(RTLD_DEFAULT, "sqlite3_open")` is NULL | follows from the two above — **the finding that forces the two-tier design** |
-| `RtKind` is `{I64, Ptr, Void}`, matched exhaustively in one file | `core/ir.av:219`; `RtKind` has ZERO hits in `language/interp.av`, re-verified in this worktree |
+| ~~`RtKind` is `{I64, Ptr, Void}`~~ **STALE** — it is `{I64, Ptr, Void, I32, U32, F64}` at `core/ir.av:331`, and `make vocab` names FIVE exhaustive consumers | re-probed 2026-09-07 |
 | `declare` already carries a vararg flag, hard-wired false | `language/llvm.av:189-195`, call sites `:171` and `:187` |
 | the extern grammar has no `...` | `features/fns/mod.av:32` |
 | Apple arm64 reads variadic arguments from the stack | the ABI research report §1.2; **not independently re-verified here** — MEDIUM, and it is the load-bearing reason variadics refuse |
