@@ -3915,7 +3915,9 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
   never match and fell through silently.
   TRIGGERS, recorded with their firing conditions:
   - [ ] TYPED HOLES: `{n: int}` refuses today (F2060, naming the
-        pending row). FIRES when lane A's shared decimal-parse row
+        pending row). FIRES when the shared decimal-parse row — CORE by the
+        sqlite campaign's scope decision, the SQLITE lead's to own, and
+        misrouted to lane A until 2026-09-07 —
         lands — the framer's `decimal`, the hole and a user's `"42"`
         are one law.
   - [ ] HOISTED LITERAL OCTETS — FIRED 2026-09-07, now an ASK of the
