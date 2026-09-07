@@ -8635,7 +8635,21 @@ by meaning; each is a slice for lane D unless a lane is named.
   answers 9 for `cx.get(2)`, LLVM refuses the module. The plant is
   withheld at that seat (CLAUDE.md names it); a typed let's arrow
   reaches the body already. The probe is scratchpad/lam/m4.
-- H1. IS A `string` TEXT, OR BYTES? A decision, not a bug report,
+- ~~H1. IS A `string` TEXT, OR BYTES?~~ — ANSWERED BY IMPLEMENTATION
+  2026-09-07 (f57372a, lane B): the entry named TWO ways out — make
+  the five length-aware, or add a `Bytes` value whose scope is
+  exactly those five — and the FIRST was taken. `==`, `contains`,
+  `index_of`, `split` and `replace` walk the length under
+  `memcmp`/`memmem`, so every verb in @std/text reads the header and
+  a NUL is an ordinary character on this side. Re-probed by lane D:
+  `ab\0cd` answers `5 false true` where this ledger recorded `5 true
+  false`. WHAT SURVIVES: the crossing is the EXTERN SEAT — `getenv`,
+  `execvp`, `fopen`, `sqlite3_open` still end at the first NUL — so
+  a refusal belongs there and nowhere on this side, and `Bytes` is
+  no longer needed to carve out those five. The original entry
+  follows, kept because its reasoning is what made the choice
+  legible.
+- H1 (as raised). A decision, not a bug report,
   raised 2026-09-05 (lane B found it, lane D verified both engines).
   Text that arrives from outside can carry a NUL, and the primitives
   disagree about it: `.length`, `char_code`, `starts_with`,
