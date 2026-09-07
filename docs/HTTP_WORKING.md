@@ -155,6 +155,37 @@ O(1) slot comes FIRST and the lowering hoist after; a `ConstBytes` waits
 for `Bytes` on main. NEXT: S4, the `grammar` value that parses, probed to
 need no new door.
 
+## Sub-lane: strings — S4 (grammar values) on lane/strings, closing
+
+`grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"` declares
+its capture RECORD (a `StructDecl`, the `component` precedent; merged at
+9806321), and `RequestLine.parse(line)` answers `RequestLine?` on both
+engines (`corpus/grammar.av`; lane/strings 5efa5fa, b7b1d28, awaiting
+its red team, review round and goldens before merge). THE ROUTE, ruled
+on the lane's own count after it refuted its paper: the value shape
+(`Fmt<R>` as a builtin generic) needs a new core `Type` variant — 44
+exhaustive matches in 19 files across three lanes, of which `make vocab`
+names two — against compile-time EXPANSION through `Callee`'s four
+consumers in one directory; the expansion is also the faster answer (no
+format exists at run time). It landed SMALLER than lane C authorized: no
+new `Callee` variant — `named_type` in impls/callee.av answers the
+existing `Callee.Row(door)` when the DECLARATION has a format
+(`grammar_of`, a side table keyed by StmtId beside `exported`/
+`mutating`/`onces`, restamped over the whole format) AND the vocabulary
+has a door of that name, else `Callee.Variant` byte for byte; lane C's
+four constraints verified by running (a grammar with no `print` door
+refuses as a construction; `Port.parse` on a record still names the
+record). Constraint 4 — the refusal naming the door it tried — lives in
+features/variants.av, the features root, and waits on lane C's word.
+Rule B, STATIC METHODS, is the owner's, recorded in the asks with both
+wanting sites. Two grammar-law findings paid on the way: a recovering
+statement branch on `grammar` ate the compiler's own `grammar { … }`
+expressions (the anchor law now reaches across rules, main 88bb058), and
+an adjacent-hole grammar was accepted until the declaration heard every
+law in the builder. S5 is `print` and the round-trip law, stated and
+proven over the paper's reference implementation, enforced end to end
+only once `print` exists.
+
 ## Sub-lane: substrate — S3b LANDED (8fd2a6e): a NUL path read another file
 
 MERGED (lane/substrate c9c7880 io, 1be60fd the build split), bootstrap +
