@@ -798,8 +798,9 @@ demands. THE TREE'S ONLY AGGREGATE SEAT, `avra_exec_self(args:
 List<string>)` in packages/cli, becomes a ROW (§2.1: a C body that
 reads a box is a row) and works under `avra run` for the first time.
 THREE FACES THAT TRAP WHERE THEY SHOULD REFUSE, routed to their owners
-by §2.7's own rule: @std/io's `env`/`env_or` (and a NUL-lossy
-`contains("=")` guard — right outcome, wrong reason), @std/process's
+by §2.7's own rule: @std/io's `env`/`env_or` (no NUL check before the
+seat — the "NUL-lossy `contains`" reading was retracted, see the merge
+entry below), @std/process's
 `tool_from_env` and `Env.Only.get` answering the prefix's value where
 `Env.Inherit.get` traps on the same name (lane B); @std/sqlite's
 `equal_nocase`, `like`, `glob`, `is_complete`, `compiled_with`, with a
@@ -812,11 +813,16 @@ The seam's red team routed three trapping faces to their owners; main
 brought all three back in one day, plus the half of door 1 that was
 waiting on the owner's word in lane A's session:
 
-- LANE B (85abb9e): `env`/`env_or` judge the NUL FIRST, over the bytes
-  — `env("PATH\0/junk")` had answered PATH's own value, a silent read of
-  a different variable, because the `contains("=")` guard was `strstr`
-  and the NUL hid the `=` from it; `tool_from_env` refuses as `tool`
-  does; `Env.get` answers null for a holed name under both variants.
+- LANE B (85abb9e): `env`/`env_or` judge the NUL FIRST — `env("PATH\0/
+  junk")` had answered PATH's own value, a silent read of a different
+  variable, because NO check stood before the extern seat and `getenv`
+  truncates whatever our own verbs do; `tool_from_env` refuses as
+  `tool` does; `Env.get` answers null for a holed name under both
+  variants. (Lane B's first rationale — that the `=` guard was built
+  from a NUL-lossy `contains` — was RETRACTED the same night: lane A's
+  f57372a had already made every primitive read the header, so nothing
+  on the Avra side was blind. The crossing is the extern seat and only
+  that; the fixes stand, the reason moved.)
 - THE SQLITE LEAD (0130321): `compiled_with`, `equal_nocase`, `like`,
   `glob` answer a `Result` and refuse a NUL with `HoldsNul` — reaching
   for the cause `is_complete` already had.
