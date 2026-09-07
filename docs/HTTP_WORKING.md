@@ -752,15 +752,20 @@ the loop serves 102–118k keep-alive requests a second on one core at
 `ps`); dispatch over 300 routes is 346 ns; a request line by pattern is
 1.24x a hand scan over octets.
 
-OPEN, THE OWNER'S: (1) a NUL crossing to C — the seam checks every
-`string` seat that resolves, `inert: true` written at the site as the
-exemption, faces refuse with words first, `Bytes` the escape; (2) S2c
-— a per-package shared library the evaluator opens by the program's
-own closure, derived by the tree and never named by a manifest; (3)
-immortal `once` answers, with the `is_shared` line as the prerequisite
-that lands with the decision. Each in the ROADMAP's HTTP asks with its
-measurements. And the validation of lane/http itself, before anything
-reaches main.
+THE THREE DOORS, DECIDED BY THE OWNER 2026-09-07 and each in the
+ROADMAP's HTTP asks with its measurements: (1) a NUL crossing to C —
+"do the same thing as other mature languages": the five lossy string
+primitives become CORRECT (length-aware, lane A's C, on the owner's word
+in lane A's session), the seam TRAPS only a seat the callee RESOLVES (a
+path, a name, a command word, an environment key — the substrate lane,
+in flight), `inert: true` at the site means "reads the header's length",
+faces refuse with words first, `Bytes` the escape; (2) S2c — the
+per-package shared library the evaluator opens by the program's own
+closure, derived by the tree and never named by a manifest (the
+substrate lane, after the seam); (3) immortal `once` answers with the
+`is_shared` line landed alongside (lane A, on the owner's word in their
+session). Still owed: the validation of lane/http itself, before
+anything reaches main.
 
 ## Slice 3 — `@std.http` (AFTER)
 
