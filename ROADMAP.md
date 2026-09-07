@@ -3948,8 +3948,13 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         variants, binds and literals, and CLAUDE.md's grammar laws are
         its scar tissue; a format that lives elsewhere fails cheaper.
         Routes compile at runtime into a trie until then.
-  - [ ] STATIC METHODS — A TYPE-QUALIFIED CALL (`Name.parse(text)`
-        meaning a call to an inherent fn, not variant construction).
+  - [x] STATIC METHODS — GRANTED BY THE OWNER 2026-09-07 ("Yes to
+        static methods"), landing in lane C's slice: the admission
+        test widens to "the declaration has an inherent fn of that
+        name", the impls grammar admits a selfless fn under an impl,
+        and grammar's `parse` becomes one case of the general door.
+        THE ASK AS IT WAS PUT — a type-qualified call (`Name.parse(text)`
+        meaning a call to an inherent fn, not variant construction),
         THE OWNER'S DOOR, put separately by lane C's ruling and not
         taken as a feature's side effect: the ROADMAP already records
         "STATIC METHODS do not exist today … when the spec wants them
