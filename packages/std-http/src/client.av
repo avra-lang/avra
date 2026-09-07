@@ -24,7 +24,10 @@ impl Answer {
     }
 }
 
-fn same_name(a: string, b: string) -> bool { a.bytes().ieq_at(0, a.length, b.bytes()) }
+fn same_name(a: string, b: string) -> bool {
+    let octets = a.bytes()
+    octets.ieq_at(0, octets.length, b.bytes())
+}
 
 /// Why a fetch did not answer: the network, a reply the framer
 /// refuses (with the status the refusal names, as a server would
@@ -76,10 +79,11 @@ export fn connected(host: string, port: int, timeout: Duration, limits: Limits) 
 }
 
 /// A request on the wire: the line, `host`, the fields, the body's
-/// length when there is a body, the body.
+/// length when there is a body (a body-less request has length zero
+/// by RFC 9112 §6.3 and needs no field), the body.
 export fn request(method: string, target: string, host: string, headers: List<Header>, body: Bytes) -> Bytes {
     let fields = ["${h.name}: ${h.value}\r\n" for h in headers].join("")
-    let length = if body.length > 0 || method == "POST" || method == "PUT" || method == "PATCH" { "content-length: ${body.length}\r\n" } else { "" }
+    let length = if body.length > 0 { "content-length: ${body.length}\r\n" } else { "" }
     "${method} ${target} HTTP/1.1\r\nhost: ${host}\r\n${fields}${length}\r\n".bytes().concat(body)
 }
 
