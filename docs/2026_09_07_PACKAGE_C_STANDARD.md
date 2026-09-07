@@ -448,14 +448,27 @@ step above it.
    it stays `native-only` until S2c, because the fifteen `avra_net_*`
    externs are a package's and the evaluator cannot host them yet.
 
-Debris the migration retires from the runtime, re-verified by grep at
-`9fe5597` (zero Avra callers outside `tests/`, zero references in
-`bootstrap/seed.ll`), lane A's file: `avra_selfhost_file_exists`,
+Debris the migration retires from the runtime, re-measured at
+`4516b15` across `packages/` AND `corpus/`, lane A's file to delete:
 `avra_selfhost_read_file`, `avra_selfhost_write_file`,
 `avra_host_list_dir`, `avra_mkdir_p`, `avra_spawn_status` (its own
-comment names the seed refresh as its death),
-`avra_str_codepoint_count`. `avra_host_is_dir` has one caller and
-moves with `@std/io`.
+comment names the seed refresh as its death), `avra_str_codepoint_count`.
+Six, with zero references anywhere in the tree and zero in
+`bootstrap/seed.ll`.
+
+**TWO NAMES THAT WERE ON THIS LIST ARE NOT DEBRIS, and the mistake is
+worth more than the list.** `avra_selfhost_file_exists` and
+`avra_host_is_dir` are both called by `corpus/native/externs.av` — the
+program S2a nominates as its own proof — and `avra_host_is_dir` also
+pins the unhosted-extern refusal's wording in a compiler test. They
+read as dead because the first grep was scoped to `packages/`, and
+absence in a window was read as absence. That is CLAUDE.md's law about
+a probe that truncates its own output, arriving here as a SCOPE rather
+than a `head`: the instrument worked and what it showed was
+incomplete. Deleting either would have broken the extern seam's own
+witness, which is the exact opposite of debris — so the correction is
+recorded rather than quietly applied, because the next person to read
+a clean grep needs to know which windows this one used.
 
 ## 5. DECISIONS — settled and open
 
@@ -501,10 +514,12 @@ A's. WHAT THE NEAR-MISS TEACHES: the doctrine was right, the CURRENCY
 was wrong. A rule about ownership cannot be enforced from the side of
 the boundary that cannot see who allocated.
 
-**5.5a WHAT THE S2 SURVEY MEASURED, before any of it is written.**
-Four findings, each against `0998a7c`, and each one a thing the prior
-design (`docs/2026_09_05_EXTERN_HOST_SHAPE.md`, the sqlite lane's for
-lane C) does not answer.
+**5.5a WHAT THE S2 SURVEY MEASURED.** Four findings, each against
+`0998a7c` and every one since acted on — the pointer answered by lane
+C, the variadic refusal landed as S2b, §5.3 done, the capability
+objection retired. Each was a thing the prior design
+(`docs/2026_09_05_EXTERN_HOST_SHAPE.md`, the sqlite lane's for lane C)
+does not answer.
 
 - THE EVALUATOR HAS NO POINTER — ANSWERED BY LANE C, and the answer is
   that it does not need one. A foreign pointer RIDES `Val.I`,
@@ -535,7 +550,8 @@ lane C) does not answer.
   `declare`'s vararg flag is hard-wired false at both call sites and
   the grammar has no ellipsis, so the NATIVE path emits a fixed call
   and reads the garbage that paper measured. The refusal belongs at
-  the DECLARATION until the grammar can spell a variadic seat, and
+  the DECLARATION until the grammar can spell a variadic seat — LANDED
+  as S2b, with that narrowing condition written at the keeper — and
   `make externs` already reads each package's real C definitions, so
   it can see the `...` and refuse with a source location.
 - §5.3 WAS FORCED, NOT OPTIONAL, AND IS NOW DONE. The host's own law
@@ -797,8 +813,11 @@ own prefix) is.
   seven, is not declared as an extern at this base.
 - `RtHost` holds eight `Io*` and eleven `Proc*` variants, ZERO `Net*`,
   and three `Fd*`; the evaluator carries the matching arms.
-- Avra callers of the debris fns named in §4: 0 each outside `tests/`,
-  and 0 in `bootstrap/seed.ll`. `avra_host_is_dir`: 1.
+- The debris list, re-measured over `packages/` AND `corpus/`: six
+  names with zero references anywhere and zero in `bootstrap/seed.ll`.
+  Two names an earlier `packages/`-only grep had called dead are LIVE
+  in `corpus/native/externs.av`; §4 records why that miss is the more
+  useful half.
 - THE VARIADIC KEEPER, both surfaces witnessed. Green on the tree —
   "no declaration faces a variadic C body", 34 of the keeper's own
   cases holding. Disarmed (`is_variadic` forced false): 4 of its 11
