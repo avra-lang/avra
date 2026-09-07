@@ -256,7 +256,23 @@ twice, the roster and §5.1 disagreeing about listing for the whole
 campaign, a checklist asking for less than was reachable; 2acff96 lane
 D's shell-variable case — `$NAME`, since a same-named local makes
 `${NAME}` silent). Merged at db0b41e, gate green, 97 process cases.
-Five laws drafted for lane D: two already on main, three sent.
+Five laws drafted for lane D: two already on main, three sent (lane D
+took the examined-nothing corollary and order-not-granularity, declined
+the staging law as a one-mechanism property — it lives in the standard).
+THE S2C PAPER (5551523, merged at 597aa54; `docs/2026_09_07_S2C_DYLIB.md`)
+puts the last door to the owner with numbers: `build/avra` 2.1 MB,
+`sqlite3.o` 2.08 MB and 357 symbols, a 13.61 s cold compile — but the
+objection to linking every package into the compiler is CONTAINMENT, not
+size: `dlsym(RTLD_DEFAULT)` searches the whole image, so a program that
+never named `@std/sqlite` could call it. RECOMMENDED: a per-package
+shared library DERIVED by the tree from the object the manifest names
+(never named by a manifest — an opened path is a load primitive across a
+dependency boundary), opened by the program's own closure — the only
+shape where the host's reach MATCHES the native link; today's reach is
+wider (libc is in the image). A dylib's own symbol namespace is a
+different guarantee than the flat image's, to be stated. The standard
+took its fifth correction from the sentinel: `CFLAGS_<stem>` is what OUR
+C needs for a header past its directory, not a vendored concession.
 
 ## Sub-lane: strings — S5 (print, the round-trip law) LANDED (aaab397)
 
@@ -318,7 +334,12 @@ segment (`/ideas/{id}` had bound `7/extra`), and segments are counted
 by separators, never `split`. An ask recorded: a grammar's door as a
 VALUE (`Idea.parse` unapplied is F2003; every route wraps it). Owed:
 the conversion fix, the trie at 3/30/300 (generated), the red team,
-the review.
+the review. A REAL BUG in the octets seat, found by a test that pinned
+the feature's ABSENCE and broke when it landed: `from_octets` minted its
+answer and then `reg_of`'d its argument, which may lower lazily and mint —
+I29's second specimen verbatim ("register r1 defines out of mint order");
+a probe over a BINDING hid it, the test's EXPRESSION argument found it
+(a88585a).
 
 ## Three receipts from keeping the branch (2026-09-07, to 28f1a4a)
 
