@@ -27,12 +27,7 @@ fn bound_int(v: int) -> Binder { Binder { kind: 3, text: "", number: v } }
 fn bound_null() -> Binder { Binder { kind: 4, text: "", number: 0 } }
 fn bound_static(v: string) -> Binder { Binder { kind: 5, text: v, number: 0 } }
 
-fn asked(sql: string, b: Binder) -> string {
-    match memory() {
-        .Ok(db) -> in_db(db, sql, b),
-        .Err(e) -> e.cause.kind(),
-    }
-}
+fn asked(sql: string, b: Binder) -> string { in_memory((db) -> in_db(db, sql, b)) }
 
 fn in_db(db: Db, sql: string, b: Binder) -> string {
     mut held = db
@@ -97,6 +92,10 @@ fn bound_told(r: Result<int, SqlError>) -> string {
 // bind is: SQL does the comparison INSIDE the database and answers an
 // integer. Nothing read here is a float.
 
+/// SPELLED OUT, and not by choice: `in_memory` takes a lambda, a
+/// lambda's captures live in a heap box, and a float does not survive
+/// one — `LLVM verification failed`, the same defect that holds
+/// `real_at` back. These two convert the day it lands.
 fn with_real(sql: string, v: float) -> string {
     match memory() {
         .Ok(db) -> real_in_db(db, sql, v),
@@ -266,12 +265,7 @@ spec "std/sqlite binding" {
 }
 
 /// A bind aimed at a chosen hole, so the index guard can be tested.
-fn with_int_at(sql: string, index: int) -> string {
-    match memory() {
-        .Ok(db) -> at_index(db, sql, index),
-        .Err(e) -> e.cause.kind(),
-    }
-}
+fn with_int_at(sql: string, index: int) -> string { in_memory((db) -> at_index(db, sql, index)) }
 
 fn at_index(db: Db, sql: string, index: int) -> string {
     mut held = db
@@ -295,6 +289,8 @@ fn index_bound(s: Stmt, index: int) -> string {
 }
 
 /// How many slots a statement has.
+/// SPELLED OUT because it answers an `int`, not a `string` — the one
+/// place in this file `in_memory` does not reach.
 fn slots_of(sql: string) -> int {
     match memory() {
         .Ok(db) -> counted(db, sql),
