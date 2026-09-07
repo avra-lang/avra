@@ -18,7 +18,10 @@ LLVM_PREFIX ?= /opt/homebrew/opt/llvm
 # a manifest's link flags name it as ${LLVM_PREFIX}
 export LLVM_PREFIX
 
-RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
+# The objects the COMPILER itself links: the runtime every program
+# carries, and the compiler's own foreign machinery (the LLVM wrapper,
+# the evaluator's extern trampoline), which no user program does.
+RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o build/ffi.o
 
 # EVERY OBJECT THIS TREE COMPILES, ONE RULE. The language's own C
 # (runtime/, and the compiler's LLVM binding in backend/) and a
@@ -96,7 +99,7 @@ seed: $(RUNTIME_OBJS)
 
 bootstrap: $(RUNTIME_OBJS)
 	@mkdir -p build
-	@clang -w -O1 bootstrap/seed.ll build/avra_runtime.o build/llvm_wrapper.o \
+	@clang -w -O1 bootstrap/seed.ll build/avra_runtime.o build/llvm_wrapper.o build/ffi.o \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "bootstrap: build/avra from the seed — rebuilding from source"

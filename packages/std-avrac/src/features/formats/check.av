@@ -1,0 +1,65 @@
+//! The format laws: a format reads TEXT; two holes need a literal
+//! between them; one name binds one span; and a typed hole parses
+//! through a type that reads text. The two laws over the holes are
+//! re-derived from the node by the reader's own functions, so the
+//! literal and the pattern it became are judged once.
+use core.{PatId, Type, TypeId, FormatPart}
+use features.{TypeCx, this_is}
+use features.formats.{adjacent_fault, repeated_fault, names_of, Fault}
+use diagnostics.{refusal}
+
+/// THE FORMAT LAW: the subject is text, the holes are separable and
+/// distinctly named, and each hole binds the span it takes — as
+/// text over a `string`, as octets over a `Bytes`.
+export fn format_types(mut cx: TypeCx, p: PatId, parts: List<FormatPart>, expected: TypeId) -> List<TypeId> {
+    let span = span_type(cx, expected)
+    if span == null { return not_text(cx, p, expected) }
+    let shape: Fault? = adjacent_fault(parts) ?? repeated_fault(parts)
+    if shape != null { return broken(cx, p, shape!) }
+    let typed: FormatPart? = parts.find((h) -> h.hole.ty != null)
+    if typed != null { return unparsed(cx, p, typed!) }
+    [span! for n in names_of(parts)]
+}
+
+/// What a hole's span IS, by what the subject is made of; absence
+/// when the subject is neither.
+fn span_type(cx: TypeCx, expected: TypeId) -> TypeId? {
+    match cx.view.types.shape_of(expected) {
+        .Str -> cx.view.types.intern(Type.Str),
+        .Bytes -> cx.view.types.intern(Type.Bytes),
+        rest -> null,
+    }
+}
+
+// ── The voices ──────────────────────────────────────────────────
+
+fn not_text(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+    let n = cx.view.types.name_of(expected)
+    cx.emit(refusal("type.format", cx.pat_loc(p), "a format pattern reads text, found `${n}`", this_is(n), "a format matches a `string` or a `Bytes`"))
+    []
+}
+
+/// The two laws over the holes, each in its own words.
+fn broken(mut cx: TypeCx, p: PatId, fault: Fault) -> List<TypeId> {
+    match fault {
+        .Adjacent(a, b) -> adjacent(cx, p, a, b),
+        .Repeated(n) -> repeated(cx, p, n),
+        .Unclosed(_) or .Stray(_) or .Malformed(_, _) -> [],
+    }
+}
+
+fn adjacent(mut cx: TypeCx, p: PatId, a: string, b: string) -> List<TypeId> {
+    cx.emit(refusal("type.format_shape", cx.pat_loc(p), "`{${a}}` and `{${b}}` have nothing between them", "here", "a scan needs a literal to stop at — put one between the holes"))
+    []
+}
+
+fn repeated(mut cx: TypeCx, p: PatId, n: string) -> List<TypeId> {
+    cx.emit(refusal("type.format_repeat", cx.pat_loc(p), "`${n}` names two spans of this format", "written twice", "rename one, or write `{_}` for a span you do not need"))
+    []
+}
+
+fn unparsed(mut cx: TypeCx, p: PatId, part: FormatPart) -> List<TypeId> {
+    let n = part.hole.ty!.name
+    cx.emit(refusal("type.format_parse", cx.pat_loc(p), "`{${part.hole.name}: ${n}}` parses its span, and nothing reads text as `${n}` yet", "here", "take the span as text and convert it in the arm — a typed hole arrives with the decimal row"))
+    []
+}
