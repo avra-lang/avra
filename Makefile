@@ -90,7 +90,7 @@ TREE_STEM_LAW = $(if $(TREE_CLASH),$(error A STEM NAMES ITS OBJECT, \
 # object in the compiler's own closure is BOTH a package object and a
 # compiler one, and belongs here the day its package lands.
 COMPILER_OBJS = $(TREE_STEM_LAW)build/avra_runtime.o build/llvm_wrapper.o \
-                build/ffi.o build/std_io.o
+                build/ffi.o build/std_io.o build/std_process.o
 
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
