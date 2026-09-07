@@ -533,6 +533,33 @@ the compiler checking itself 28.8s.
         Further rounds here would start inventing work. The next real
         gain arrives with S3, or with a persistent memo across
         processes (recorded, big, not scheduled).
+  - [ ] ONE PRECEDENCE LEVEL COSTS ~9% OF EVERY COMPILE, measured
+        2026-09-07 across 44d5e31 -> b82bfaf. Not an argument against
+        the feature that revealed it — the owner asked for bitwise
+        and it is right — but a COST MODEL NOBODY HAD, and the next
+        operator family costs the same again.
+        THE NUMBERS, and the disproportion is the finding: the source
+        grew 2.0% (36,801 -> 37,523 lines of std-avrac) while the
+        self-check grew 11% (5.25s -> 5.83s user). Exact counts say
+        it is MORE WORK rather than slower work — retains 557M ->
+        610M (+9.4%), releases 662M -> 725M, list reads 402M -> 439M,
+        list writes 481M -> 525M, all within a point of each other.
+        THE CAUSE IS ONE GRAMMAR RULE. `expr_spine/mod.av` gained
+        exactly one: `bitwise = l:additive ( op … r:additive )*`,
+        inserted between `coalescing` and `additive`, taking the
+        expression chain from 16 rules to 17. Every expression in
+        every program now descends one level deeper, and each level
+        costs a `MatchResult` box, a bindings list and the
+        retain/release traffic they carry — which is the recorded
+        trigger about a MatchResult per attempt, arriving with a
+        price tag.
+        SO THE ENGINE'S COST IS PER LEVEL, NOT PER OPERATOR: a family
+        of six operators sharing one level cost what one operator
+        would. A future precedence level — a pipeline, a comparison
+        chain, a range band — costs another ~9% whether it carries
+        one operator or ten. That is the number to weigh before
+        adding a band, and the argument for precedence CLIMBING over
+        a rule-per-level chain if the count keeps rising.
   - [x] THE WELL WAS NOT DRY — the entry above is REFUTED, and its
         reasoning is the instructive part (2026-09-05, main 7b90a46,
         self-check 7.21s -> 5.25s, the gate 18.9s -> 15.9s user).
