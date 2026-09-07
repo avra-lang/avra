@@ -1,0 +1,64 @@
+// The float: a literal that lexes without eating a range or a
+// property, arithmetic that is the machine's rather than decimal's,
+// the numeric law that refuses a silent mix, and a seat at the
+// extern wall that names the C type it fills.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/expr_spine (float)" {
+    given "the literal" {
+        then "a fraction is one token and answers itself" {
+            shown("let x = 1.5\nx") == "1.5"
+        }
+        then "a whole float keeps its point — it never wears an int's clothes" {
+            shown("let x = 4.0 / 2.0\nx") == "2.0"
+        }
+        then "the text ROUND-TRIPS: the shortest form that reads back the same" {
+            shown("let x = 0.1\nx") == "0.1"
+        }
+        then "and the arithmetic is IEEE's, not decimal's" {
+            shown("let x = 0.1 + 0.2\nx") == "0.30000000000000004"
+        }
+        then "`float` names the type" {
+            shown("let x: float = 2.5\nx * 2.0") == "5.0"
+        }
+    }
+
+    given "the tokens a fraction shares" {
+        then "a range from an int literal is untouched" {
+            shown("mut n = 0\nfor i in 0..3 {\n    n = n + i\n}\nn") == "3"
+        }
+        then "a property on an int literal is still a property" {
+            refused_with("5.length", "no property `length` on `int`")
+        }
+        then "a number never STARTS with a point — `.A` is a variant" {
+            refused_with("enum K {\n    A,\n}\nlet k: K = .A\nlet x = .5\nk is .A", "expected BREAK while parsing `stmt`")
+        }
+    }
+
+    given "the numeric law" {
+        then "the LEFT operand names the kind and the right must wear it" {
+            refused_with("let a = 1.5\nlet b = 2\na + b", "`+` needs `float` operands, found `int`")
+        }
+        then "an int expression is untouched by the float rules" {
+            shown("let a = 7\nlet b = 2\n\"\${a / b} \${a % b}\"") == "3 1"
+        }
+        then "`%` stays int-only — a real remainder is a different operation" {
+            refused_with("let a = 1.5\na % 1", "`%` needs `int` operands, found `float`")
+        }
+        then "the ordered comparisons answer a bool" {
+            shown("let a = 0.1\nlet b = 0.2\n\"\${a < b} \${b <= b} \${a > b} \${b >= a}\"") == "true true false true"
+        }
+        then "equality compares by value" {
+            shown("let a = 0.5\n\"\${a == 0.5} \${a != 0.5}\"") == "true false"
+        }
+    }
+
+    given "the extern seat" {
+        then "`f64` names the C double a seat fills, and carries a `float`" {
+            shown("extern fn hypot(a: f64, b: f64) -> f64\nfn ask() -> float {\n    hypot(3.0, 4.0)\n}\n\"declared\"") == "declared"
+        }
+        then "a width word is still refused where widths do not live" {
+            refused_with("let x: f64 = 1.5\nx", "is a machine WIDTH")
+        }
+    }
+}

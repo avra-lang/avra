@@ -44,6 +44,7 @@ export once fn rt_sigs() -> List<RtSig> {
         RtSig { name: "avra_insist_scalar", ret: RtKind.I64, params: [RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.InsistScalar },
         RtSig { name: "avra_int_div", ret: RtKind.I64, params: [RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.Unhosted },
         RtSig { name: "avra_int_mod", ret: RtKind.I64, params: [RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.Unhosted },
+        RtSig { name: "avra_float_text", ret: RtKind.Ptr, params: [RtKind.F64], owns_result: true, has_owned_twin: false, host: RtHost.Text },
         RtSig { name: "avra_int_and", ret: RtKind.I64, params: [RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.Unhosted },
         RtSig { name: "avra_int_or", ret: RtKind.I64, params: [RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.Unhosted },
         RtSig { name: "avra_int_xor", ret: RtKind.I64, params: [RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.Unhosted },
@@ -102,12 +103,17 @@ export once fn rt_sigs() -> List<RtSig> {
 /// scalars are words, every pointer shape a pointer, void nothing.
 export fn rt_kind_of(types: TypeRegistry, ty: TypeId) -> RtKind {
     if types.shape_of(ty) is .Void { return RtKind.Void }
+    // A DOUBLE IS NOT A WORD. It travels in its own register file, so
+    // a float falling through to `I64` puts it in an integer seat and
+    // the callee reads a different number — the same silent class the
+    // integer widths closed, one register file over.
+    if types.shape_of(ty) is .Float { return RtKind.F64 }
     if types.rides_pointer(ty) { return RtKind.Ptr }
     RtKind.I64
 }
 
 /// One width word and the kind it names.
-export type WidthRow = { word: string, kind: RtKind }
+export type WidthRow = { word: string, kind: RtKind, carries: string }
 
 /// THE WIDTH WORDS an extern seat may name. Read both ways — a
 /// declaration asks word -> kind, a refusal reads the words back —
@@ -116,10 +122,11 @@ export type WidthRow = { word: string, kind: RtKind }
 /// arms are the whole edit.
 export fn width_rows() -> List<WidthRow> {
     let rows = table<WidthRow> {
-        word  | kind
-        "i32" | RtKind.I32
-        "u32" | RtKind.U32
-        "i64" | RtKind.I64
+        word  | kind       | carries
+        "i32" | RtKind.I32  | "int"
+        "u32" | RtKind.U32  | "int"
+        "i64" | RtKind.I64  | "int"
+        "f64" | RtKind.F64  | "float"
     }
     rows
 }
@@ -143,8 +150,9 @@ export fn width_words() -> string {
 export fn widthless(t: TypeRef?) -> TypeRef? {
     if t == null { return null }
     let written = t!
-    if width_named(written.name) == null { return written }
-    written with { name: "int" }
+    let row: WidthRow? = width_rows().find(it.word == written.name)
+    if row == null { return written }
+    written with { name: row!.carries }
 }
 
 /// A seat's runtime kind: the WIDTH its annotation named, else the

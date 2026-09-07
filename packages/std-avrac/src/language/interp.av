@@ -15,6 +15,12 @@ use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, fil
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
     I(v: int)
+    /// A real, held as its IEEE-754 BITS. The evaluator is Avra and
+    /// Avra's own source has no float, so it keeps the pattern and
+    /// reaches the machine through C — which is also what makes an
+    /// answer here and an answer from a compiled program the same
+    /// instruction's.
+    F(bits: int)
     B(v: bool)
     S(v: string)
     /// An aggregate — a handle into the machine's array table.
@@ -155,6 +161,7 @@ impl Machine {
     fn step(b: Body, pc: int) -> int {
         match b.ins[pc] {
             .ConstInt(d, v) -> self.put_at(d, self.const_int_val(b, d, v), pc),
+            .ConstFloat(d, bits) -> self.put_at(d, Val.F(bits), pc),
             .ConstBool(d, v) -> self.put_at(d, Val.B(v), pc),
             .ConstStr(d, s) -> self.put_at(d, Val.S(s), pc),
             .Bin(d, op, a, x) -> self.put_at(d, self.bin_val(op, a, x), pc),
@@ -285,11 +292,46 @@ impl Machine {
     }
 
 
+    /// A register's float BITS — the evaluator's float currency.
+    fn bits_val(r: Reg) -> int {
+        match self.value(r) {
+            .F(bits) -> bits,
+            rest -> {
+                self.defect("a non-float reached float arithmetic")
+                0
+            }
+        }
+    }
+
+
+    /// IEEE-754 through the SAME C bodies the compiled program uses,
+    /// so the two engines cannot drift on a rounding.
+    fn float_bin_val(op: BinOp, l: int, r: int) -> Val {
+        match op {
+            .Add -> Val.F(avra_float_add(l, r)),
+            .Sub -> Val.F(avra_float_sub(l, r)),
+            .Mul -> Val.F(avra_float_mul(l, r)),
+            .Div -> Val.F(avra_float_div(l, r)),
+            .Eq -> Val.B(avra_float_eq(l, r) != 0),
+            .Ne -> Val.B(avra_float_ne(l, r) != 0),
+            .Lt -> Val.B(avra_float_lt(l, r) != 0),
+            .Le -> Val.B(avra_float_le(l, r) != 0),
+            .Gt -> Val.B(avra_float_gt(l, r) != 0),
+            .Ge -> Val.B(avra_float_ge(l, r) != 0),
+            .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr ->
+                self.defect_val(int_only_on_floats()),
+            .And or .Or -> self.defect_val(lazy_in_eager()),
+        }
+    }
+
+
     fn bin_val(op: BinOp, a: Reg, x: Reg) -> Val {
         let nulls: bool = self.value(a) is .N || self.value(x) is .N
         if nulls { return self.null_eq_val(op, a, x) }
         let bools: bool = self.value(a) is .B && self.value(x) is .B
         if bools { return self.bool_eq_val(op, a, x) }
+        let reals: bool = self.value(a) is .F && self.value(x) is .F
+        if reals { return self.float_bin_val(op, self.bits_val(a), self.bits_val(x)) }
         let l = self.int_val(a)
         let r = self.int_val(x)
         if (op == BinOp.Div || op == BinOp.Mod) && r == 0 {
@@ -308,7 +350,7 @@ impl Machine {
             .Ge -> Val.B(l >= r),
             .Eq -> Val.B(l == r),
             .Ne -> Val.B(l != r),
-            .And or .Or -> self.defect_val("a lazy op reached the eager path"),
+            .And or .Or -> self.defect_val(lazy_in_eager()),
             // THE SAME C BODIES the backend calls for the shifts, and
             // the same ones for the rest: the evaluator reaches the
             // machine only through C, so a bitwise answer here and a
@@ -472,6 +514,7 @@ impl Machine {
     fn val_text(v: Val) -> string {
         match v {
             .I(n) -> "${n}",
+            .F(bits) -> avra_float_text_bits(bits),
             .B(t) -> if t { "true" } else { "false" },
             .S(s) -> s,
             .A(id) -> "[${joined([self.val_text(e) for e in self.arrays[id]], ", ")}]",
@@ -674,6 +717,8 @@ impl Machine {
     /// the two agree.
     fn cloned_val(v: Val) -> Val {
         match v {
+            // a word is its own copy
+            .F(_) -> v,
             .A(id) -> {
                 self.arrays.push([x for x in self.arrays[id]])
                 Val.A(self.arrays.length - 1)
@@ -1073,3 +1118,15 @@ fn map_id(v: Val) -> int? {
         _ -> null,
     }
 }
+
+extern fn avra_float_text_bits(bits: int) -> string
+extern fn avra_float_add(a: int, b: int) -> int
+extern fn avra_float_sub(a: int, b: int) -> int
+extern fn avra_float_mul(a: int, b: int) -> int
+extern fn avra_float_div(a: int, b: int) -> int
+extern fn avra_float_eq(a: int, b: int) -> int
+extern fn avra_float_ne(a: int, b: int) -> int
+extern fn avra_float_lt(a: int, b: int) -> int
+extern fn avra_float_le(a: int, b: int) -> int
+extern fn avra_float_gt(a: int, b: int) -> int
+extern fn avra_float_ge(a: int, b: int) -> int

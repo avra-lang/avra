@@ -12,6 +12,11 @@ export type TypeId = { index: int }
 export enum Type {
     // ── The words: one unmanaged register each. ──
     Int
+    /// A binary64 real. THE VALUE IS THE MACHINE'S, not a decimal:
+    /// `0.1 + 0.2` is not `0.3` and no amount of wishing changes it.
+    /// A money column wants `decimal`, which is core's and arrives
+    /// with the ORM.
+    Float
     Bool
     /// Text — the first MANAGED value: a headered box the runtime
     /// reclaims at count zero.
@@ -124,7 +129,7 @@ export fn ptr_shape(t: Type) -> bool {
         .Str or .Ptr or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
         .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or
         .Map(_, _) or .EmptyMap -> true,
-        .Int or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
+        .Int or .Float or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
     }
 }
 
@@ -134,6 +139,7 @@ impl TypeRegistry {
     fn canon(t: Type) -> string {
         match t {
             .Int -> "0",
+            .Float -> "f",
             .Ptr -> "ptr",
             .Error -> "1",
             .Str -> "2",
@@ -281,7 +287,7 @@ impl TypeRegistry {
             .Fn(ps, muts, ret) ->
                 self.intern(Type.Fn([self.substituted(a, target, args) for a in ps], muts,
                                     self.substituted(ret, target, args))),
-            .Ptr or .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+            .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
             .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> ty,
         }
     }
@@ -290,6 +296,7 @@ impl TypeRegistry {
     fn name_of(id: TypeId) -> string {
         match self.shape_of(id) {
             .Int -> "int",
+            .Float -> "float",
             .Ptr -> "ptr",
             .Str -> "string",
             .Bool -> "bool",
@@ -321,7 +328,7 @@ impl TypeRegistry {
             .List(t) -> [t],
             .Map(k, v) -> [k, v],
             .Opt(t) -> [t],
-            .Ptr or .Int or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+            .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
             .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> [],
         }
     }
