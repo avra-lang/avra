@@ -364,11 +364,13 @@ impl Env {
     /// answers the empty string, never `null`; that is the absence
     /// `is_set` reads.
     /// The variable's value, or null. A name holding a NUL names
-    /// nothing and answers null from BOTH variants: `Only` compares
-    /// with `==`, which is `strcmp` and would match "AB" against
-    /// "AB\0CD", while `Inherit` hands the name to C, which reads it
-    /// short — one method must not read one name two ways because of
-    /// which variant it holds.
+    /// nothing and answers null from BOTH variants — one method must
+    /// not read one name two ways because of which variant it holds.
+    /// Only `Inherit` needs the guard, measured by removing it:
+    /// `Only` compares with `==`, which reads the header and refuses
+    /// a holed name on its own, while `Inherit` hands the name to C,
+    /// which stops at the NUL. The guard is what makes the two
+    /// variants agree rather than what makes either one safe.
     fn get(name: string) -> string? {
         if nul_at(name) >= 0 { return null }
         match self {

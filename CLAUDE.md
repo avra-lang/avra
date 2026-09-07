@@ -414,8 +414,17 @@ engine's spec, written by dogfooding.
   `tool_from_env`; `@std/io` guarded ten verbs and not `env`;
   `@std/sqlite` guarded some and not five. Each package HAD the
   guard, one door down. The failures were SILENT, not traps — a holed
-  name read a DIFFERENT variable (`env("PATH\0/junk")` answered
-  PATH's value), which no crash surfaces. And A METHOD MUST NOT READ
+  name read a DIFFERENT variable (`env("PATH" + from_codepoint(0) +
+  "/junk")` answered PATH's value), which no crash surfaces. SPELL
+  THE EXAMPLE THE WAY THE HAZARD IS MINTED: this entry first wrote
+  that name as `"PATH\0/junk"`, and `\0` IS NOT AN ESCAPE, so the
+  demonstration contained no NUL and would have answered null for
+  the wrong reason. @std/sqlite's boundary header taught the same
+  trap with the same dead literal (fixed by the docs lead at
+  e523655), in the file whose whole subject is that hazard. A doc
+  that DEMONSTRATES a hazard is code that has never been run — the
+  four guard cases here were witnessed failing with the guards
+  removed, which is what a prose example cannot be. And A METHOD MUST NOT READ
   ONE NAME TWO WAYS: `Env.get` compared with `==` under `Only` and
   handed the name to C under `Inherit`, so one method disagreed with
   itself by variant. THE TEST: list every row that hands text to C,
