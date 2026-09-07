@@ -8,12 +8,37 @@
 #   build/avra_runtime.o  OURS — runtime/avra_runtime.c, the native
 #                         half of the LANGUAGE's semantics; the only
 #                         runtime avra-built programs link.
+#   build/<stem>.o        A PACKAGE'S — its C under src/c/, or a
+#                         vendored unit under vendor/, named by its
+#                         manifest's [link]; one rule builds them all.
 
 LLVM_PREFIX ?= /opt/homebrew/opt/llvm
 # a manifest's link flags name it as ${LLVM_PREFIX}
 export LLVM_PREFIX
 
 RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
+
+# THE PACKAGE OBJECTS, ONE RULE. A package's C — its own under src/c/,
+# a vendored translation unit under vendor/ — compiles to
+# build/<stem>.o, and the package's manifest names that object in its
+# [link]: A MANIFEST SAYS WHAT TO LINK, NEVER HOW TO BUILD IT, and this
+# rule is the how (docs/2026_09_07_PACKAGE_C_STANDARD.md). The sources
+# are GLOBBED, never listed — a hand-written list forgets its next
+# member, and build/sqlite3.o had no rule at all for a day — so a new
+# package's C is built without a line here. One directory holds every
+# object, so a stem is unique across the tree. Our own C is held to the
+# runtime's warnings; a vendored unit takes its author's flags
+# (CFLAGS_<stem>) and no warning of ours. The compiler's LLVM binding
+# lives in backend/ and is @std/avrac's object under the same rule.
+PACKAGE_C := $(wildcard packages/*/src/c/*.c packages/*/vendor/*.c backend/*.c)
+PACKAGE_OBJS := $(patsubst %.c,build/%.o,$(notdir $(PACKAGE_C)))
+vpath %.c $(sort $(dir $(PACKAGE_C)))
+CFLAGS_llvm_wrapper := -I$(LLVM_PREFIX)/include
+CFLAGS_sqlite3 = $(SQLITE_FLAGS)
+
+build/%.o: %.c
+	@mkdir -p build
+	cc -c -O2 $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
 
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite
@@ -55,7 +80,7 @@ avra: $(RUNTIME_OBJS)
 sweep:
 	@rm -rf packages/*/build build/test_shards
 
-test: $(RUNTIME_OBJS) build/sqlite3.o build/std_net.o
+test: $(RUNTIME_OBJS) $(PACKAGE_OBJS)
 	@for p in $(SUITES); do \
 	  ./avra test $$p || exit 1; \
 	done
@@ -77,10 +102,6 @@ traps: $(RUNTIME_OBJS)
 # back on every exit.   make census CMD="check packages/std-avrac"
 census:
 	@sh tools/census.sh $(CMD)
-
-build/llvm_wrapper.o: backend/llvm_wrapper.c
-	@mkdir -p build
-	cc -c -O2 -I$(LLVM_PREFIX)/include -o build/llvm_wrapper.o backend/llvm_wrapper.c
 
 clean:
 	rm -rf build scratch packages/cli/src/main_stamped.av
@@ -119,7 +140,7 @@ build-native: $(RUNTIME_OBJS)
 # then SAYS "native == expected" rather than claiming a differential it
 # never ran. The label travels with the artifact: a reader of the gate's
 # output learns the program is single-engine without opening a document.
-corpus: $(RUNTIME_OBJS) build/sqlite3.o build/std_net.o
+corpus: $(RUNTIME_OBJS) $(PACKAGE_OBJS)
 	@./avra corpus corpus
 	@./avra corpus --native-only corpus/native
 	@for d in corpus/*/; do \
@@ -166,15 +187,14 @@ externs:
 # a difference names the BOUNDARY rather than the object, which a
 # single reader cannot do. It lives outside runtime/ because `make
 # externs` refuses a narrow body WE own, and rightly: the defect under
-# test is C someone else compiled. When a package can build its own
-# native sources (ROADMAP: B7) this rule dies and the manifest's
-# `sources` does the work.
-# THE VENDORED SQLITE, one translation unit. `@std/sqlite`'s manifest
-# names this object in its `[link]`, so the package cannot be checked,
-# tested or linked without it — and it had no rule at all: the recipe
-# lived in `vendor/FLAGS.md` as prose, main carried no object, and the
-# package's whole suite sat outside `make gate` because nothing could
-# build what it links.
+# test is C someone else compiled. Its object is a package's, built by
+# the one rule above.
+# THE VENDORED SQLITE's FLAGS. `@std/sqlite`'s manifest names
+# build/sqlite3.o in its `[link]`, so the package cannot be checked,
+# tested or linked without it; the package rule builds it, under these
+# words — once the recipe lived in `vendor/FLAGS.md` as prose, main
+# carried no object, and the package's whole suite sat outside `make
+# gate` because nothing could build what it links.
 #
 # THE FLAG SET LIVES HERE, and the suite is what keeps it honest:
 # `sqlite_test.av`'s `promised()` asks the LIBRARY for every flag below
@@ -198,18 +218,6 @@ SQLITE_FLAGS := \
   -DSQLITE_DEFAULT_MMAP_SIZE=268435456 -DSQLITE_MAX_MMAP_SIZE=1099511627776 \
   -DSQLITE_DEFAULT_CACHE_SIZE=-8000 -DSQLITE_DEFAULT_WORKER_THREADS=0 \
   -DNDEBUG=1
-
-build/sqlite3.o: packages/std-sqlite/vendor/sqlite3.c
-	@mkdir -p build
-	cc -c -O2 $(SQLITE_FLAGS) -o $@ $<
-
-build/std_net.o: packages/std-net/src/c/net.c
-	@mkdir -p build
-	cc -c -O2 -Wall -Werror -o $@ $<
-
-build/width_witness.o: packages/width-witness/src/witness.c
-	@mkdir -p build
-	cc -c -O2 -o build/width_witness.o packages/width-witness/src/witness.c
 
 witness: $(RUNTIME_OBJS) build/width_witness.o
 	@./avra build packages/width-witness > /tmp/avra-witness.path 2>&1 \
