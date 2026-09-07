@@ -443,6 +443,104 @@ def variadic_walls(wall, sigs):
             if name in sigs and is_variadic(sigs[name][0])]
 
 
+# SHAPES ONE UNIFORM FRAME CANNOT CARRY, refused at the declaration
+# for the same reason a variadic body is: the evaluator calls through
+# ONE fully applied prototype of int64 and double slots, so a seat that
+# rides another class, another width, or memory is read from a place
+# nobody wrote. Each is detected POSITIVELY and by name — never as
+# "not a scalar I recognise", which would refuse every typedef the
+# keeper has not met and make the rule's true-positive rate its
+# author's imagination.
+#
+# WHAT IS NOT COVERED, said out loud: a struct passed by value behind
+# a TYPEDEF (`sqlite3_value v`) reads as an ordinary name here and
+# passes. Catching it needs the typedef's target resolved to a struct,
+# which `typedefs()` does not record. RECORDED TRIGGER: the first
+# declaration that faces one — which cannot happen while an Avra seat
+# can only be `int`, `ptr`, a width word or `float`, since none of
+# those can name a struct.
+UNFRAMEABLE = [
+    # (a regex over one C seat or return, the words that name the law)
+    (re.compile(r"\blong\s+double\b"),
+     "a `long double` rides its own class, which the frame has no slot for"),
+    (re.compile(r"\b__int128\b"),
+     "an `__int128` rides a register PAIR, which the frame passes as one"),
+    (re.compile(r"__attribute__\s*\(\s*\(\s*vector_size|\b__m(64|128|256|512)\b|\bfloat(32|64)x\d+_t\b"),
+     "a vector rides its own file, which the frame does not fill"),
+    (re.compile(r"^(const\s+|volatile\s+)*(struct|union)\s+[A-Za-z_]\w*\s*$"),
+     "a struct or union BY VALUE classifies by field — it may split registers or ride memory"),
+]
+
+# An f32 SEAT is half of a `v` register and a double written there is
+# read as a different number. An f32 RETURN is fine: the answer is read
+# back through the declared width, not through a slot the caller filled.
+F32_SEAT = re.compile(r"^(const\s+|volatile\s+)*float\s*$")
+
+
+def unframeable(seat):
+    """The law a C seat breaks, or None. Takes the seat with its name
+    already stripped, as the width rules take it."""
+    bare = " ".join(seat.split())
+    if F32_SEAT.match(bare):
+        return "an `f32` seat is half of a `v` register — a double written there reads as another number"
+    for pattern, law in UNFRAMEABLE:
+        if pattern.search(bare):
+            return law
+    return None
+
+
+# (a C seat, the law it breaks or None) — both surfaces, as the
+# variadic cases are.
+FRAME_CASES = [
+    ("long double", "long double"),
+    ("const long double", "long double"),
+    ("__int128", "__int128"),
+    ("unsigned __int128", "__int128"),
+    ("float", "f32"),
+    ("const float", "f32"),
+    ("struct sqlite3_index_info", "by value"),
+    ("union u_tag", "by value"),
+    ("double", None),                    # the class the frame DOES carry
+    ("float *", None),                   # a pointer to f32 is a pointer
+    ("struct sqlite3_index_info *", None),  # by reference is a pointer
+    ("int", None),
+    ("const char *", None),
+    ("sqlite3_int64", None),             # a typedef to a word
+    ("long", None),
+]
+
+
+def frame_self_test():
+    """The readings above. A failure means the frame's model moved."""
+    bad = []
+    for seat, want in FRAME_CASES:
+        got = unframeable(seat)
+        hit = got is not None
+        if hit != (want is not None) or (want and want not in got and want != "by value" and want != "f32"):
+            bad.append((seat, want, got))
+    for seat, want, got in bad:
+        print(f"externs: SELF-TEST — C seat `{seat}` should "
+              f"{'break the frame (' + want + ')' if want else 'ride the frame'}"
+              f"; it reads as {got!r}")
+    return len(bad)
+
+
+def unframeable_walls(wall, sigs):
+    """Every declaration whose C body has a seat the frame cannot
+    carry."""
+    out = []
+    for name, params, where in wall:
+        if name not in sigs:
+            continue
+        cargs, crel, cline = sigs[name]
+        for c in split_params(cargs):
+            law = unframeable(PARAM_NAME.sub("", c).strip() or c)
+            if law:
+                out.append((name, where, crel, cline, c.strip(), law))
+                break
+    return out
+
+
 # THE KEEPER'S OWN CASES. This check spent its whole life reading C
 # THIS TREE WROTE, which spells `int64_t` plainly — so its width set
 # never met a typedef or a macro prefix, and it passed every day while
@@ -530,7 +628,7 @@ def self_test():
 
 
 def main():
-    if self_test() + seat_self_test() + variadic_self_test():
+    if self_test() + seat_self_test() + variadic_self_test() + frame_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -565,6 +663,12 @@ def main():
         print(f"externs:   calls this body correctly — in either engine.")
         print(f"externs:   One fixed extern per argument shape is NOT the way out: it")
         print(f"externs:   was measured reading 12345 back as -298729216.")
+    unframed = unframeable_walls(walls, sigs)
+    for name, where, crel, cline, seat, law in unframed:
+        print(f"externs: {name} in {where} faces C seat `{seat}` at {crel}:{cline}, "
+              f"which one frame cannot carry")
+        print(f"externs:   {law} — so the evaluator would read a slot nobody wrote.")
+        print(f"externs:   Pass it by pointer, or leave the symbol to the native path.")
     seats = wrong_seats(walls, sigs, tds)
     for name, where, crel, cline, pair, an, cn in seats:
         if pair is None:
@@ -575,7 +679,9 @@ def main():
         a, c = pair
         print(f"externs: {name} seats `{a}` in {where} over C `{c}` at {crel}:{cline}")
         print(f"externs:   the seat and the body must name the same width — a C `int` is 32 bits")
-    if narrow or voids or seats or varargs:
+    if narrow or voids or seats or varargs or unframed:
+        if unframed:
+            print(f"externs: {len(unframed)} extern(s) face a C seat one frame cannot carry")
         if varargs:
             print(f"externs: {len(varargs)} extern(s) face a variadic C body with a fixed spelling")
         if seats:
@@ -595,9 +701,9 @@ def main():
     print(f"externs: {len(ours)} extern(s) match their C body's width{note}{extra}")
     checked = sum(len(split_params(p)) for n, p, _ in walls if n in sigs)
     print(f"externs: {checked} parameter seat(s) match the C seat they fill")
-    print(f"externs: no declaration faces a variadic C body")
+    print(f"externs: no declaration faces a variadic C body, nor a seat the frame cannot carry")
     print(f"externs: read {scanned}; "
-          f"{len(CASES) + len(SEAT_CASES) + len(VARIADIC_CASES)} of the keeper's own cases hold")
+          f"{len(CASES) + len(SEAT_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES)} of the keeper's own cases hold")
     return 0
 
 sys.exit(main())
