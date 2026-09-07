@@ -5,7 +5,7 @@
 //! that spelled them, and a hole under two or more ANSWERING arms
 //! is warned — under one it is a projection, and `rest` is quiet.
 use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, joined, filled, flatten}
-use features.{TypeCx, EnumSig, spoken, this_is, nothing, duplicate_names, arms_agree, variants_are, types_disagree, seats_fit, stays}
+use features.{TypeCx, EnumSig, spoken, this_is, nothing, duplicate_names, arms_agree, variants_are, types_disagree, seats_fit, stays, pat_semantics_of}
 use features.enums.{all_irrefutable, hole_of}
 use diagnostics.{refusal, warning}
 
@@ -91,7 +91,7 @@ fn matched_type(mut cx: TypeCx, e: ExprId, subject: ExprId, arms: List<Arm>) -> 
 /// One arm: each alternative fits the subject; the binds come from
 /// the first pattern, and an `or` arm may bind nothing.
 fn arm_checks(mut cx: TypeCx, subject_ty: TypeId, a: Arm) {
-    let typed = [pat_types(cx, p, subject_ty) for p in a.pats]
+    let typed = [pat_types_of(cx, p, subject_ty) for p in a.pats]
     let first: List<TypeId> = typed.first() ?? []
     if a.pats.length > 1 && typed.any(!it.is_empty()) {
         or_binds(cx, a.value)
@@ -105,7 +105,15 @@ fn arm_checks(mut cx: TypeCx, subject_ty: TypeId, a: Arm) {
 /// variant of the enum and takes exactly its payloads, each
 /// pattern against its payload; a literal's type agrees; a name
 /// binds the value at its path.
-fn pat_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+/// THE SEAM: a pattern's types come from ITS OWNER, so a nested
+/// pattern of another feature is reached here and not by a local
+/// call. Enums owns every variant today; the dispatch is what lets
+/// that stop being true.
+export fn pat_types_of(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+    pat_semantics_of(cx.dispatch, cx.view.store.pat(p)).pat_types(cx, p, expected)
+}
+
+export fn bind_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
     match cx.view.store.pat(p) {
         .Wild or .Rest -> [],
         .Bind(_) -> [expected],
@@ -124,7 +132,7 @@ fn variant_types(mut cx: TypeCx, p: PatId, name: string, args: List<PatId>, expe
     // a bare `.V` accepts the variant whole, payloads unread
     if args.is_empty() { return [] }
     if carried.length != args.length { return pattern_arity(cx, p, name, carried.length, args.length) }
-    flatten([pat_types(cx, a, carried[k]) for k, a in args])
+    flatten([pat_types_of(cx, a, carried[k]) for k, a in args])
 }
 
 /// A literal in a pattern is typed like any literal, then judged

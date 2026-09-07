@@ -10,6 +10,22 @@ use @std.sqlite.open.{Db, Mode, OpenConfig, config_at, open, open_read, memory, 
 use @std.sqlite.stmt.{Stmt, prepare, finalize}
 use @std.sqlite.error.{SqlError}
 
+/// A fresh in-memory database handed to `work`, or the kind the OPEN
+/// itself failed with. FOURTEEN COPIES OF THIS SHAPE stood across six
+/// files in this suite; it lives here because a connection is what it
+/// makes, and test files share one module so every file reaches it.
+///
+/// It answers `string` because that is what fourteen of the seventeen
+/// answered. The other three take their own type and stay spelled out:
+/// a helper generic in the answer would need `absent` as a second
+/// parameter, which is more ceremony than the ladder it replaces.
+fn in_memory(work: fn(Db) -> string) -> string {
+    match memory() {
+        .Ok(db) -> work(db),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
 /// Whether an open succeeded, having closed whatever it got.
 fn opens(r: Result<Db, SqlError>) -> bool {
     match r {
@@ -82,12 +98,7 @@ fn gone(path: string) -> bool { (remove(path) catch "") != "" }
 // which is the notice, and it is aimed at whoever takes S2.
 
 /// Closing through a copy, and what the original still holds.
-fn close_through_a_copy() -> string {
-    match memory() {
-        .Ok(db) -> aliased_close(db),
-        .Err(e) -> e.cause.kind(),
-    }
-}
+fn close_through_a_copy() -> string { in_memory(aliased_close) }
 
 fn aliased_close(db: Db) -> string {
     mut a = db
@@ -99,12 +110,7 @@ fn aliased_close(db: Db) -> string {
 }
 
 /// Finalizing through a copy, and what the original still holds.
-fn finalize_through_a_copy() -> string {
-    match memory() {
-        .Ok(db) -> aliased_finalize(db),
-        .Err(e) -> e.cause.kind(),
-    }
-}
+fn finalize_through_a_copy() -> string { in_memory(aliased_finalize) }
 
 fn aliased_finalize(db: Db) -> string {
     mut held = db

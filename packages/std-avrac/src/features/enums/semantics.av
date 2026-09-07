@@ -5,9 +5,21 @@
 //! CONTROL-OWNING: its arms are hidden from `kids` and walked
 //! through the driver, each under its own bind.
 use core.{Expr, ExprId, StmtId, TypeId, Reg, Arm, PatId, NodeStore}
-use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing, refuses_nested}
+use features.{NodeSemantics, StmtSemantics, PatSemantics, ResolveCx, TypeCx, LowerCx, nothing, refuses_nested}
+use features.enums.{bind_types, pat_reg, bind_regs}
 
 export type EnumsSemantics = { }
+
+/// The pattern ladder's five variants are all enums' today. Each
+/// body lives with its concern — typing in check.av, meaning in
+/// lower.av — and this is the dispatch only.
+export type EnumPatSemantics = { }
+
+impl PatSemantics for EnumPatSemantics {
+    fn pat_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> { bind_types(cx, p, expected) }
+    fn pat_accepts(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg { pat_reg(cx, p, v, vty) }
+    fn pat_binds(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> { bind_regs(cx, p, v, vty) }
+}
 
 impl NodeSemantics for EnumsSemantics {
     fn kids(e: Expr) -> List<ExprId> {
