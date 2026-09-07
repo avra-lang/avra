@@ -54,12 +54,18 @@ export fn ok(body: string) -> Response { text(200, body) }
 export fn status(code: int) -> Response { Response { status: code } }
 
 /// The response on the wire: status line, the fields, the body's
-/// length, `connection: close` when the connection will not persist,
-/// then the body.
-export fn wire(r: Response, keep_alive: bool) -> Bytes {
+/// length, the connection's fate, then the body. The fate is spoken
+/// when the peer cannot assume it: `close` when the connection will
+/// not persist, and `keep-alive` when it will and the request was
+/// HTTP/1.0 — a 1.0 peer waits for the close otherwise (RFC 9112 §9.3).
+export fn wire(r: Response, keep_alive: bool, minor: int) -> Bytes {
     let fields = ["${h.name}: ${h.value}\r\n" for h in r.headers].join("")
-    let closing = if keep_alive { "" } else { "connection: close\r\n" }
-    "HTTP/1.1 ${r.status} ${reason(r.status)}\r\n${fields}content-length: ${r.body.length}\r\n${closing}\r\n".bytes().concat(r.body)
+    let fate = when {
+        !keep_alive -> "connection: close\r\n"
+        minor == 0 -> "connection: keep-alive\r\n"
+        _ -> ""
+    }
+    "HTTP/1.1 ${r.status} ${reason(r.status)}\r\n${fields}content-length: ${r.body.length}\r\n${fate}\r\n".bytes().concat(r.body)
 }
 
 /// The reason phrase — the registered ones, and the class's word for

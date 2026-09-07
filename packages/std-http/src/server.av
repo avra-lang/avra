@@ -202,14 +202,14 @@ impl Server<A> {
         let r = self.handle(self.app, q)
         let served = l.served + 1
         let keep = head.keep_alive && served < self.timing.requests
-        let bytes = wired(r, keep, head.method)
+        let bytes = wired(r, keep, head)
         .Served(l with { buf: l.buf.slice(end, l.buf.length), scanned: 0, head: null, out: l.out.concat(bytes), closing: !keep, served: served })
     }
 
     /// A refused head: its status, `connection: close`, and no more
     /// requests read from this connection.
     fn refused(l: Link, code: int) -> Progress {
-        .Served(l with { out: l.out.concat(wire(status(code), false)), closing: true, head: null, buf: "".bytes() })
+        .Served(l with { out: l.out.concat(wire(status(code), false, 1)), closing: true, head: null, buf: "".bytes() })
     }
 
     /// The link written as far as the socket takes it, then kept: a
@@ -293,10 +293,10 @@ enum Progress {
     Waiting(l: Link)
 }
 
-/// The response on the wire for a method: a HEAD's answer carries the
-/// body's length and none of its bytes.
-fn wired(r: Response, keep: bool, method: Method) -> Bytes {
-    let whole = wire(r, keep)
-    if method is .Head { return whole.slice(0, whole.length - r.body.length) }
+/// The response on the wire for a request: a HEAD's answer carries
+/// the body's length and none of its bytes.
+fn wired(r: Response, keep: bool, head: Head) -> Bytes {
+    let whole = wire(r, keep, head.minor)
+    if head.method is .Head { return whole.slice(0, whole.length - r.body.length) }
     whole
 }

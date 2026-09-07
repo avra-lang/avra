@@ -139,6 +139,18 @@ fn peer_ends_first() -> Result<bool, NetError> {
     .Ok((got.text() ?? "").ends_with("true /x  1") && pr.s.connections() == 0)
 }
 
+fn old_client_keeps_alive() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let r = reply(pr, "GET /k HTTP/1.0\r\nHost: a\r\nConnection: keep-alive\r\n\r\n")?
+    .Ok(r.contains("connection: keep-alive\r\n") && pr.s.connections() == 1)
+}
+
+fn old_client_is_closed() -> Result<bool, NetError> {
+    mut pr = pair(timing())?
+    let got = exchanged(pr, "GET /c HTTP/1.0\r\nHost: a\r\n\r\n", 1000)?
+    .Ok((got.text() ?? "").contains("connection: close\r\n") && pr.s.connections() == 0)
+}
+
 fn passes(r: Result<bool, NetError>) -> bool {
     match r {
         .Ok(b) -> b,
@@ -162,5 +174,7 @@ spec "std.http server" {
         then "connection: close is honoured" { passes(closes_when_asked()) }
         then "an idle connection is dropped at its deadline" { passes(idle_is_dropped()) }
         then "a peer that ends first still gets its answer" { passes(peer_ends_first()) }
+        then "an HTTP/1.0 peer asking to keep alive is told the connection persists" { passes(old_client_keeps_alive()) }
+        then "an HTTP/1.0 peer not asking is told close, and closed" { passes(old_client_is_closed()) }
     }
 }
