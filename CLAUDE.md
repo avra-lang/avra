@@ -650,6 +650,33 @@ engine's spec, written by dogfooding.
      variant breaks all eight at compile time. The vocabulary
      cannot grow half-way, and a variant nobody implements cannot
      ship. Keep them catch-all free.
+  5. AND THE PROTOCOL GUARDS THE WRONG DOOR ON ITS OWN — it gates
+     ADDING a variant and says nothing about REPURPOSING one, so it
+     refuses the honest change and would pass the dishonest one.
+     Found by lane A dropping their own design: wanting seat retains
+     distinguishable for a measurement, the honest form is a reason
+     on `Ins.Retain` — which the four justifications refuse, rightly,
+     since a measurement is not a control shape, a value category, a
+     memory boundary or a machine shape. THE ESCAPE HATCH PASSES
+     EVERY GATE: emit `CallRt("avra_rc_retain_seat", [r])` at seat
+     sites instead. An existing instruction, an existing mechanism,
+     one registry row, no vocabulary growth — and those retains stop
+     being RETAINS to the compiler. The memory pass reasons about
+     `Ins.Retain`; the largest category of the thing it exists to
+     manage would become an opaque runtime call, and liveness and
+     every later placement pass would silently stop seeing it.
+     THE LAW: THE REASON A VALUE WAS PRODUCED IS NOT PART OF WHAT THE
+     INSTRUCTION MEANS. Encoding it there — as a payload, a sibling
+     variant, or a runtime row worn as a disguise — CORRUPTS the
+     instruction rather than extending it. So the question the four
+     justifications do not ask, and the one to ask first: does every
+     pass that reads this instruction still read the same thing
+     afterwards? A change that grows nothing and answers NO is worse
+     than one that grows the vocabulary and answers yes.
+     THE MEASUREMENT WANTED A COMPILER-SIDE COUNT INSTEAD — the
+     memory pass knows why it emitted each retain at the moment it
+     emits it (four emitters: a cell store, an owned load, a scope's
+     yield, a call seat), and counting them needs no IR at all.
   The backend and memory pass stay functions of the IR, dispatching
   on shapes, never on features.
 - THE VOCABULARY SEAM RULE — which shape a new vocabulary takes,
