@@ -643,8 +643,18 @@ ApacheBench on the same machine, one server thread, loopback:
     keep-alive, 200 concurrent, 50,000 requests   118,281 req/s   99% ≤ 2 ms
     a connection per request, 50 concurrent        41,688 req/s   99% ≤ 4 ms
 
-Zero failed requests in every run. The instrument is named because it
-bounds the number: `ab` is single-threaded and shares the core, so the
+Zero failed requests in every run. CPU-ACCOUNTED (`ps -o utime,stime`
+on the server after 300,000 requests, twice): 1.46 s user + 1.01 s
+system per 300,000 — 8.2 µs a request, 4.9 µs the loop's own code and
+3.4 µs the kernel's three calls; at 116k req/s the thread is 96% busy,
+so the generator and the loop are both near the ceiling. THE SAMPLER
+LIED: `AVRA_SAMPLE` under watch.sh reported every sample in `kevent`
+for a server that accounting shows 96% busy — read a server profile
+from that tool with that in mind. `tools/bench/turn` (a server and a
+client on one thread, 200,000 keep-alive requests turned by hand) is
+the deterministic instrument: 21.1 µs a round trip including the
+client's own three calls, census-able. The instrument is named because
+it bounds the number: `ab` is single-threaded and shares the core, so the
 keep-alive figure is close to what the generator can drive, not what
 the loop can serve — a multi-core generator on another host is the
 next measurement. THE FIRST `ab -k` RUN TIMED OUT, which was a law:
