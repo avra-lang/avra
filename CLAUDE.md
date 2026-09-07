@@ -430,57 +430,6 @@ engine's spec, written by dogfooding.
   says to measure. A doc is a claim with a date on it; the test that
   disagrees with it is the newer fact. `85abb9e`'s message carries
   the wrong rationale for a real fix because of it.
-- ITS SIBLING AT THE OTHER END: A FLAT CONCATENATION OF TWO
-  SEQUENCES HAS A BOUNDARY THAT MOVES. Splice two variable-length
-  runs into one list and the split between them is not recorded, so
-  moving an item from the first into the second leaves the SAME
-  list and two different things wear one identity. `use a.b` and
-  `use a.{b}` fingerprinted alike; so did `f<A>(B)` and
-  `f<A, B?>()`, `f<B?>()` and `f(B)` (a written type and an ident
-  were the same value), `fn f<T>(x: int)` and `fn f<T, x: int>()`.
-  THE FIX IS ARITY: fold each sequence to ONE value so a payload's
-  shape is fixed per kind. BOTH INTUITIVE FIXES ARE WRONG, and
-  each is worth knowing. A SEPARATOR is the first —
-  `stmt_fps(then).concat([0]).concat(stmt_fps(else))` was written by
-  someone who saw this
-  hazard exactly and spent the one value that is not spare, which
-  is the empty-value law above wearing this law's clothes. A
-  RENUMBERING is the second: under a LINEAR fold (`131t + x + 7`)
-  a tag is an additive offset, so distinct tags separate nothing
-  that a chosen literal can reach — renumbering turns the first
-  test green and leaves every collision live. THE TEST: for each
-  encoding ask which two shapes produce the same bytes, and write
-  that pair as a test BEFORE the fix. Three collisions were
-  nameable by hand here; enumerating every splice site and running
-  it against the parent made nine.
-- A GUARD IS A PROPERTY OF EVERY CROSSING, NOT OF A PACKAGE — and
-  A GUARD WRITTEN IN THE FLAWED PRIMITIVE CANNOT CATCH THE FLAW.
-  The law above says a NUL is spent at the C boundary; this one is
-  how the refusal gets written, because eight defects in two days
-  across three packages were all the SECOND half. Our text verbs
-  split in two: the HEADER-AWARE (`length`, `substring`, `trim`,
-  `starts_with`, `concat`, `char_code`) see every byte, and the
-  NUL-LOSSY (`==`, `contains`, `index_of`, `split`, `replace` —
-  strcmp and strstr underneath) stop at the first NUL. So a guard
-  spelled `name.contains("=")` READS DIFFERENT BYTES THAN THE
-  CALLEE IT PROTECTS: `"A\0=B"` hid its `=` from the very guard
-  that looks for one. Judge over the bytes —
-  `[s.char_code(i) for i in 0..s.length].index_of(0)` — and judge
-  the NUL FIRST, which is what makes every test beneath it true.
-  Measured, before assuming a naive guard is merely incomplete:
-  `"abc".contains(NUL)` is TRUE (strstr with a NUL-headed needle
-  is the empty needle), so the obvious guard refuses EVERYTHING.
-  THE SPREAD IS THE LESSON. `@std/process` guarded its `tool` and
-  not `tool_from_env`; `@std/io` guarded ten verbs and not `env`;
-  `@std/sqlite` guarded some and not five. Each package HAD the
-  guard, one door down. And the failures were not traps — a holed
-  name silently read a DIFFERENT variable (`env("PATH\0/junk")`
-  answered PATH's value), which no crash would have surfaced.
-  A METHOD MUST NOT READ ONE NAME TWO WAYS: `Env.get` compared
-  with `==` under `Only` and handed the name to C under `Inherit`,
-  so one method disagreed with itself by variant. THE TEST: list
-  every verb that hands text to C, and diff that list against the
-  guarded ones — not "does this package guard".
 - A COLD PATH IN A HOT LEAF COSTS EVERY CALL A FRAME. A lazy
   `getenv`, a `char msg[80]` for a trap's words, a grow branch, a
   `__builtin_return_address` read — each is free when it runs and
@@ -546,13 +495,16 @@ engine's spec, written by dogfooding.
   Ask it of format strings, glob patterns, regexes, and the next
   `[link]`-shaped manifest row.
 - ITS SIBLING, AND THE SHARPER ONE: A GUARD AND THE THING IT GUARDS
-  MUST READ THE SAME BYTES. Our own primitives disagree about one
-  value — @std/text's `from_codepoint(0) + "x"` has `.length` 2 AND
-  compares EQUAL to `""`, because `.length` reads the header while
-  `==` is a C call that stops at the NUL (probed here). So a door
-  built from `is_empty`/`==`/`starts_with` and a callee reading the
-  C string are inspecting DIFFERENT VALUES, and the trap the door
-  exists to stop walks straight through it. The sqlite lane's
+  MUST READ THE SAME BYTES — and the DISAGREEING PAIR is not always
+  the one you can name. This entry first said our own primitives
+  disagree, `from_codepoint(0) + "x"` having `.length` 2 while `==`
+  read it as `""`. RETRACTED, re-probed at 927ed49: it is length 2
+  and UNEQUAL to `""`, because f57372a made `==` a length compare
+  (pinned in std-text's suite). The two readers that actually
+  disagree are AVRA AND C, never two Avra verbs, so the door and its
+  callee are inspecting DIFFERENT VALUES only where the callee is
+  the C one. The trap the door exists to stop walks straight through
+  it there. The sqlite lane's
   empty-path door is the instance, attributed: an empty path opens a
   PRIVATE TEMPORARY database deleted at close, so every write
   succeeds and the data is silently gone. The guard was not weak —
@@ -562,8 +514,8 @@ engine's spec, written by dogfooding.
   into a match. Right answer, wrong reason — a suite written that
   day goes green and ships the door broken. Recording it as a
   near-miss rather than counting it as a pass is what separates a
-  red team from a demo. The NUL facts below read like a correctness
-  footnote until someone builds a DOOR out of the lossy half.
+  red team from a demo. (That accident was the pre-f57372a `==`; the
+  lossy half it relied on is gone, and the near-miss lesson is not.)
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
@@ -1202,24 +1154,27 @@ Runtime facts, ours to ratify:
 - `split` DROPS a trailing empty segment and keeps a leading one:
   `"a.".split(".")` is one element, `".a".split(".")` two,
   `"".split(".")` is `[]`.
-- A STRING HOLDS A NUL ONLY HALF-WAY, and the failing half is
-  SILENT. A NUL cannot be written as a LITERAL (`\0` is not an
-  escape — `"ab\0cd"` is six characters), but a program MINTS one
-  with no foreign input at all: `@std/text`'s `from_codepoint(0)`
-  answers a one-byte NUL, `from_codepoints` weaves it, and `+` and
-  interpolation both carry it. It also arrives from outside — a
-  file, an env var, a process's output, a database blob. Either
-  way the primitives split. Reading the header's length,
-  and so NUL-safe: `.length`, `char_code`, `starts_with`,
-  `ends_with`, `trim`, `+`. Stopping at the first NUL, because they
-  are C string calls: `==`, `contains`, `index_of`, `split`,
-  `replace`. So a five-byte text READS EQUAL to its own two-byte
-  prefix — `read_text` of `ab\0cd` `== "ab"` answers true, while
-  `.length` answers 5 — and `contains("cd")` answers false about
-  text that ends with `cd`. Lane B found it and fixed the one write
-  that truncated; the five lossy primitives are a LANGUAGE decision,
-  not a package's, and they are exactly the scope a `Bytes` value
-  would carve out. Probed both engines, minted and foreign alike.
+- A STRING HOLDS A NUL, ALL THE WAY. A NUL cannot be written as a
+  LITERAL (`\0` is not an escape — `"ab\0cd"` is six characters),
+  but a program MINTS one with no foreign input at all:
+  `@std/text`'s `from_codepoint(0)` answers a one-byte NUL,
+  `from_codepoints` weaves it, and `+` and interpolation both carry
+  it. It also arrives from outside — a file, an env var, a process's
+  output, a database blob. EVERY text verb reads the header, so a
+  NUL is an ordinary character: `ab\0cd` has `.length` 5, is UNEQUAL
+  to `ab`, and `contains("cd")` answers true at index 3. A NUL is
+  itself a findable needle.
+  THIS ENTRY SAID THE OPPOSITE UNTIL 927ed49, and half this file's
+  NUL doctrine was written from it. Five primitives — `==`,
+  `contains`, `index_of`, `split`, `replace` — WERE C string calls
+  that stopped at the first NUL; f57372a made them walk the header
+  under `memcmp`/`memmem`. The retraction is worth more than the
+  fact: I wrote three guards and a law against this paragraph on the
+  day it stopped being true, and no test disagreed because I had
+  asserted rather than run. The scope a `Bytes` value would have
+  carved out is gone with it — f57372a's own message says so, and
+  the HTTP lane confirmed `Bytes` never rested on this premise.
+  Probed both engines, minted and foreign alike, before and after.
 - `avra run` INTERPRETS, and recursion past 400 calls traps
   ("recursion too deep — 400 nested calls", exit 1); `avra test`
   and `avra build` are native and have no such floor (5000 deep
