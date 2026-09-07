@@ -116,7 +116,7 @@ decoder is RESUMABLE (`chunker`/`fed`, a `Phase`), never a re-walk;
 45 attack-table rows pinned in `tests/frame_test.av`. `http.av`:
 `Request` (spans into its own buffer; `header(name)` slices on ask),
 `Response`, `wire`, `reason`. THE FRAMER'S COST, MEASURED (bench in
-`corpus/build/bench-frame`, ignored): 3457 ns per four-field 112-byte
+`tools/bench/frame_head`, ignored): 3457 ns per four-field 112-byte
 head natively, an order of magnitude off picohttpparser's 366 ns for
 nine fields. Sampled top of stack: `once` reads a THIRD (`once_at` does
 a strcmp per earlier entry on every read — lane A's, asked with the
