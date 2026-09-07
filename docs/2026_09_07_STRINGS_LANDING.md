@@ -627,6 +627,36 @@ four nanoseconds each, which is what a small box costs here. That is
 ask 6, and this measurement is its firing condition rather than an
 opinion about it.
 
+**THE PARSE DOOR, MEASURED — AND THE TRIGGER IT FALSIFIES.** Six runs
+after the machine quietened, 200,000 each:
+
+| way | ns |
+|---|---|
+| framer, whole head | 625–652 |
+| text: by hand | 62–63 |
+| text: by format pattern | 97–100 |
+| text: by pattern **plus the same record** | 121–125 |
+| text: by `Name.parse` | 122–125 |
+
+**`Name.parse` costs what the pattern costs plus the record it builds,
+and nothing else.** The door and the pattern-plus-record control are
+identical within noise — the door adds no cost of its own.
+
+That **falsifies the trigger this paper wrote for Move 1's value
+shape.** The trigger said: if `Name.parse` measures above the pattern's
+scan, the value's once-converted literals are worth the 44 sites. It
+does measure above — by 25 ns — and every one of those nanoseconds is
+the RECORD, which the value shape would pay identically. The trigger
+compared the door against a control that does strictly less work, so it
+would have fired forever while naming a cause it could not fix. The
+first draft of a firing condition can be wrong in exactly the way a
+first draft of a law can, and only a control measurement says so.
+
+**Restated, and this is the version that means something:** the trigger
+fires if `Name.parse` measures above **the pattern plus an equivalent
+record construction**. Today it does not — 122–125 against 121–125 — so
+Route B is vindicated by measurement rather than by argument.
+
 **And a finding about the oracle, not about this feature.**
 `2026_09_06_HTTP_FRAMING_LAWS.md` §2.1 records picohttpparser at ≈366
 ns for a *9-header, 430-byte* GET. `frame.av` takes ≈3.2 µs for a
@@ -792,11 +822,12 @@ thrown away.
 **RECORDED TRIGGER — Move 1's value-passing, and the number that brings
 it back.** Route B forfeits passing a grammar as a value. It returns if
 either fires: a consumer needs `handle(RequestLine)` — a router taking a
-route as data is the obvious one — or the measurement shows Route B's
-expansion costing MORE than the pattern's scan, which would mean the
-per-attempt literal conversions are being paid anyway and the value's
-once-converted literals are worth the 44 sites. The pattern's scan is 90
-ns over octets (§5); if `Name.parse` measures above that, this fires.
+route as data is the obvious one — or `Name.parse` measures above **the
+pattern plus an equivalent record construction**. The second half is the
+CORRECTED form: the first draft compared the door against the bare
+pattern, which does strictly less work, so it fired on the record's cost
+and named a cause the value shape could not fix (§5). Measured today the
+door is at parity with that control, so this half does not fire.
 
 `{_}` is legal in a match pattern and **refused in a `grammar`
 declaration** — an anonymous capture has no field to record and nothing
