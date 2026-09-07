@@ -12,6 +12,7 @@
 //! `remove(write_text(p, t)?)`. That answer is a `Result`, so reading
 //! it parenthesises the propagation: `(write_text(p, t)?).length`.
 use @std.errors.{Error, ErrorInfo, info}
+use @std.text.{nul_at}
 
 extern fn avra_puts(line: string)
 extern fn avra_eputs(line: string)
@@ -168,18 +169,9 @@ export fn remove(path: string) -> Result<string, IoError> {
 /// The variable's value, or null when it is not set — an empty
 /// value is set. A name holding `=` names nothing: the host would
 /// read it up to the `=` and answer another variable's value.
-/// Where a NUL sits in a name, or -1. Judged over the BYTES, and the
-/// ORDER matters: a NUL is refused FIRST, which is what makes the `=`
-/// test beneath it correct — `contains` reads the C string, so
-/// `"A\0=B"` hides its `=` behind the NUL and passes a guard that
-/// looks for one.
-fn nul_at(s: string) -> int {
-    [s.char_code(i) for i in 0..s.length].index_of(0)
-}
-
 /// The variable's value, or null when it is not set — an empty value
-/// is set. A name holding `=` or a NUL names nothing: the host would
-/// read it up to that byte and answer about a DIFFERENT variable, so
+/// is set. A name holding `=` or a NUL names nothing: `getenv` reads
+/// only to the NUL and would answer about a DIFFERENT variable, so
 /// absence is the honest answer. `env` has no failure channel by
 /// design — absence IS its answer — which is why this refuses by
 /// answering null where the file verbs answer `io.holed`.
