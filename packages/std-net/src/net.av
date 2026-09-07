@@ -11,6 +11,7 @@ use @std.errors.{Error, ErrorInfo, info}
 use @std.time.{Duration, secs}
 
 extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
+extern fn avra_net_listen_all(port: int, backlog: int) -> int
 extern fn avra_net_accept(lfd: int) -> int
 extern fn avra_net_connect(host: string, port: int, timeout_ms: int) -> int
 extern fn avra_fd_read(fd: int, max: int) -> int
@@ -29,6 +30,7 @@ extern fn avra_net_peer_word(fd: int, i: int) -> int
 extern fn avra_net_local_port(fd: int) -> int
 extern fn avra_errno_text(err: int) -> string
 extern fn avra_errno_again() -> int
+extern fn avra_errno_invalid() -> int
 
 /// A verb that failed: which, on what, and the platform's word.
 export type NetError = { verb: string, subject: string, errno: int }
@@ -69,19 +71,42 @@ export enum Read {
     Pending
 }
 
-/// A listener on host:port — an empty host is every interface, port
-/// 0 is the kernel's choice.
+/// A listener on ONE interface, named — never every interface: an
+/// empty host is refused, because a value the callee reinterprets
+/// is two things at once and the wildcard is `listen_all`'s to ask
+/// for. Port 0 is the kernel's choice.
 export fn listen(host: string, port: int) -> Result<Listener, NetError> {
+    if !names_a_host(host) { return no_host("listen", host, port) }
     let fd = avra_net_listen(host, port, 511)
     if fd < 0 { return failed("listen", "${host}:${port}", fd) }
     .Ok(Listener { fd: fd, port: avra_net_local_port(fd) })
 }
 
+/// A listener on EVERY interface, asked for by name.
+export fn listen_all(port: int) -> Result<Listener, NetError> {
+    let fd = avra_net_listen_all(port, 511)
+    if fd < 0 { return failed("listen", "*:${port}", fd) }
+    .Ok(Listener { fd: fd, port: avra_net_local_port(fd) })
+}
+
 /// A connection to host:port made within `timeout`.
 export fn connect(host: string, port: int, timeout: Duration) -> Result<Conn, NetError> {
+    if !names_a_host(host) { return no_host("connect", host, port) }
     let fd = avra_net_connect(host, port, timeout.ms)
     if fd < 0 { return failed("connect", "${host}:${port}", fd) }
     .Ok(Conn { fd: fd })
+}
+
+/// Whether text names a host at all: not empty, and holding no NUL —
+/// judged over its bytes, which is what the resolver will read; a
+/// door built from `==` would read a C string and stop at the NUL.
+fn names_a_host(host: string) -> bool {
+    let b = host.bytes()
+    !b.is_empty() && b.index_of([0].bytes()!, 0) < 0
+}
+
+fn no_host<T>(verb: string, host: string, port: int) -> Result<T, NetError> {
+    .Err(NetError { verb: verb, subject: "\"${host}\":${port}", errno: avra_errno_invalid() })
 }
 
 /// A readiness queue.
