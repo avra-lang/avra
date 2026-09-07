@@ -1309,6 +1309,15 @@ Runtime facts, ours to ratify:
   one of them still reads as current. This is the attribution rule
   one axis over: that one asks WHICH TREE, this one asks WHICH
   VERSION of it, and receipts decay the same way for the same reason.
+  AND A CORRECTION IS A PROBE RESULT TOO, which this wording reached
+  only for LOGS. Told that `avra_exec_self` was the tree's only
+  aggregate extern seat, I counted five and said so; the HTTP lane
+  counted one. Both right — the other four died in their S4 and live
+  on main. A count offered as a correction that does not name ITS
+  base invites the other side to concede to a number that was never
+  about their tree. When two people disagree about a COUNT of things
+  in the tree, the first question is WHICH TREE EACH COUNTED, asked
+  before either concedes.
 - A SAFETY PROPERTY RESTING ON A CONDITION NOBODY STATED IS A
   DEADLINE, NOT A GUARANTEE. FIVE are on record, ONE now PAID, and
   the register is

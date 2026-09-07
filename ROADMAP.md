@@ -8874,6 +8874,28 @@ by meaning; each is a slice for lane D unless a lane is named.
   sufficient owner of that failure. Filed as a question because the
   answer sets what `check` PROMISES.
 
+- THE SCOPE-NARROWING PATTERN — the bar is met, the audit is not done
+  (lane D, 2026-09-06/07). FOUR laws in CLAUDE.md were found this
+  session to have a stated scope NARROWER than their actual danger,
+  every one found by a lane walking into the gap and none by anyone
+  auditing the file: the second-build rule said CODEGEN and applied
+  to the front end; the syntax-change protocol said REWRITING and
+  applied to additions; the recovery law said WITHIN A RULE and
+  applied across rules; and the base-naming rule said PROBE LOGS and
+  applied to a live correction (a count offered as a correction, each
+  side right about a different tree).
+  THE MECHANISM, which is why it recurs: a law is written from the
+  ONE instance that taught it, so its wording carries that instance's
+  shape — and the shape is invisible to the author precisely because
+  it is the only case they had. The author cannot see it; the next
+  lane walks into it.
+  I SET THE BAR AT FOUR and it is met, so this is a shape rather than
+  three accidents. What is NOT done is the deliberate audit: reading
+  every law in the file and asking what its wording EXCLUDES that its
+  mechanism does not. That is a large pass over a 1500-line file and
+  it is the owner's call whether it happens, not a thing to start on
+  a hunch at the end of a long session.
+
 - H. SUGAR THE CODE WANTS, with the sites: a `rest ->` arm the
   compiler EXPANDS or refuses-until-acknowledged (~50 lines of pure
   variant enumeration in core/parts.av and core/nodes.av; F2040
