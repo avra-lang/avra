@@ -34,6 +34,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <stdint.h>
 #include <errno.h>
 #ifdef __APPLE__
@@ -1322,6 +1323,13 @@ static int64_t as_bits(double d) { int64_t b; memcpy(&b, &d, sizeof b); return b
    already shaped as digits, a point and digits, so `strtod` reads all
    of it; anything it would refuse cannot reach here. */
 int64_t avra_float_bits(const char* s) { return as_bits(strtod(s, NULL)); }
+
+/* Whether the text names a real a `float` HOLDS. Overflow answers
+   infinity, and infinity is not the number on the page — the same
+   law the integer literal already keeps, where a wrapped value must
+   never stand. UNDERFLOW is not refused: every float literal is an
+   approximation, and a subnormal is the nearest one. */
+int64_t avra_float_fits(const char* s) { return isfinite(strtod(s, NULL)); }
 
 /* THE SHORTEST TEXT THAT READS BACK AS THE SAME DOUBLE — `%.17g`
    round-trips every binary64 but prints 0.1 as 0.10000000000000001,

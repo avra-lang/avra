@@ -131,10 +131,23 @@ fn fraction_end(src: string, n: int, j: int) -> int {
 /// value, which is not the number on the page.
 fn numbered(text: string, lo: int, hi: int) -> ScanStep {
     let t = token(TokenKind.Num, text, lo, hi)
-    if t.is_fraction() || t.int_value() != null { return emit(t, hi) }
+    if t.is_fraction() { return measured_real(t, text, lo, hi) }
+    if t.int_value() != null { return emit(t, hi) }
     ScanStep {
         token: t, opens_hole: false,
         err: LexError { message: "`${text}` does not fit an `int`", span: span_of(lo, hi) },
+        next: hi,
+    }
+}
+
+/// A REAL, refused when it overflows to infinity. Its twin is the
+/// integer's: the token stands so one bad literal does not cascade,
+/// and what must never stand is the value that is not on the page.
+fn measured_real(t: Token, text: string, lo: int, hi: int) -> ScanStep {
+    if avra_float_fits(text) != 0 { return emit(t, hi) }
+    ScanStep {
+        token: t, opens_hole: false,
+        err: LexError { message: "`${text}` does not fit a `float`", span: span_of(lo, hi) },
         next: hi,
     }
 }
@@ -556,3 +569,6 @@ export fn lex_source(src: string) -> LexResult {
 /// A literal's text to its IEEE-754 bits — the compiler holds no
 /// float of its own, so this is how one crosses it.
 extern fn avra_float_bits(text: string) -> int
+
+/// Whether a real fits a `float` — infinity is not the number written.
+extern fn avra_float_fits(text: string) -> int
