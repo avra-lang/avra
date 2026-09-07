@@ -39,15 +39,24 @@ reads.
 
 THE RUNTIME IS LEFT UNDEFINED ON PURPOSE, AND THAT IS THE DESIGN'S
 LOAD-BEARING PART. A package's C references a few of the runtime's own
-symbols — measured here, exactly two across the whole tree,
-`avra_trap` from @std/net and `avra_str_crossing` from the frame. They
-are NOT linked into the library. Linking them would give each library
-its own copy of the runtime, and therefore its own allocator, its own
-free lists and its own accounting: a box minted inside the library and
-released by the evaluator would be handed to the wrong allocator. So
-the library binds them to the HOST at load, and the contract is
-narrow, nameable and checked — every symbol a library leaves undefined
-must be one `build/avra` exports.
+symbols; they are NOT linked into the library, which binds them to the
+HOST at load instead.
+
+THE REASON IS `g_once`, NOT THE FREE LISTS. Two copies of
+`g_free[CLASSES]` PARTITION memory rather than corrupt it — a box
+freed into one list is re-used from that list, on one shared malloc
+heap — so that costs footprint and a footprint argument loses to "but
+it links". `static OnceSlot g_once[AVRA_ONCE_MAX]` duplicated means a
+`once fn` reachable from both copies settles TWICE with two different
+answers, where "one value for the whole process" is the contract F2055
+protects; and those answers are immortal, so neither ever dies. A
+semantic break. `g_acc_live` is the second: `AVRA_MEM_STATS` would
+report one copy's view and look complete.
+
+AND THE HAZARD IS NOT LIVE TODAY, which is why it is a RULE rather
+than a lucky default: these libraries are pure C from `[link]` rows,
+with no Avra code, no `once` and no allocation. It fires the first
+time a package's C calls back into Avra.
 
 AND THE LINK RUNS AS AN ARGV, never a shell line. `--build` calls the
 linker through a list, so no character in a path or a manifest's

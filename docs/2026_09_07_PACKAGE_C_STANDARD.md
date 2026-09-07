@@ -1324,6 +1324,22 @@ visible to a reader of the document alone.
   `build/avra` carries and the TEST binary does not.
 - A case bounded its wait at 400 immediate asks where the child needed
   32,213, so a correct fix read as a failing one.
+- WALL TIME ON A SHARED MACHINE MEASURES THE QUEUE. The same
+  `make avra` took 503 s and 12 s within one hour on one tree, the
+  difference being entirely whether another lane held the build lock.
+  CPU time was 12.45 s and 12.22 s across the same pair. A wall
+  figure here is not a slow measurement, it is a measurement OF
+  SOMETHING ELSE wearing a plausible face — quote user+sys, or quote
+  nothing.
+- A SPLICE ANCHOR THAT OCCURS TWICE RE-EMITS THE OLD LAW BESIDE THE
+  NEW ONE. Lane B's correction of the NUL primitives landed
+  correctly and the retracted wording survived in three other
+  passages, which read as three missed sweeps and were one patch
+  script whose anchor was not unique. This tree's own patch law says
+  to check for the new text FIRST and let `grep -c` say how many
+  times an anchor matches; the failure mode it protects against is
+  not a broken file but a file that says BOTH things and looks
+  edited. (Lane B's, attributed; swept at their 278120b.)
 - A PROBE RUN MID-BOOTSTRAP ANSWERED ABOUT A COMPILER THAT NO LONGER
   EXISTED. `make bootstrap` links straight at `build/avra`, so while
   it runs the front door IS being replaced — four probes of the new

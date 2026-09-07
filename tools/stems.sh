@@ -142,34 +142,73 @@ for name in $twice; do
     fails=$((fails + 1))
 done
 
-# EVERY RUNTIME SYMBOL A PACKAGE LIBRARY LEAVES OPEN IS HOST-BOUND.
-# A library is linked with the runtime DELIBERATELY unresolved — a
-# second copy would give it a second allocator, and a box minted
-# inside it and released by the evaluator would reach the wrong free
-# list. Mach-O needs `-undefined dynamic_lookup` to permit that, and
-# that flag also permits a TYPO: `avra_traap` would link clean and
-# fail at first call. So the flag's amnesty is bounded here — every
-# `avra_*` a library leaves undefined must be a symbol `build/avra`
-# exports. libc is the loader's business and not ours.
+# EVERY SYMBOL A PACKAGE LIBRARY LEAVES OPEN IS ACCOUNTED FOR, and
+# the accounting is PRINTED — a keeper counts what it looked at and
+# says so, or a new open symbol arrives invisibly.
 #
-# THE ROSTER IS CONSUMED, NOT RE-DERIVED. `tools/libs.py --undefined`
-# answers what each built library left open; parsing the manifests a
+# A library is linked with the runtime DELIBERATELY unresolved; a
+# second copy would duplicate state the language promises is single
+# (`g_once` above all: a `once fn` reachable from two copies settles
+# TWICE, and since those answers are immortal, neither ever dies).
+# Mach-O needs `-undefined dynamic_lookup` to permit that, and the
+# flag also permits a TYPO — `avra_traap` links clean and fails at
+# first call. So the amnesty is bounded, in THREE bands:
+#
+#   OURS      an `avra_*` the host exports — bound at load, correct.
+#   MISSING   an `avra_*` the host does NOT export — the typo band,
+#             and a refusal.
+#   FOREIGN   everything else. Almost all of it is the platform's,
+#             which the loader answers. But a symbol another PACKAGE's
+#             library defines is a CROSS-PACKAGE C reference, and
+#             under RTLD_LOCAL it will not resolve AT ALL — the other
+#             library's symbols are not in any namespace this one can
+#             see. That is a defect the keeper names rather than a
+#             band it tolerates.
+#
+# THE ROSTER IS CONSUMED, NOT RE-DERIVED: `tools/libs.py --undefined`
+# answers what each built library left open. Parsing the manifests a
 # second time here is how `keeps` and `inert` both went wrong.
 if [ -x build/avra ]; then
     rows=$((rows + 1))
-    exported=$(nm build/avra 2>/dev/null | awk '{print $NF}' | sed 's/^_//' | sort -u)
-    python3 tools/libs.py --undefined 2>/dev/null | while IFS='	' read -r lib syms; do
-        for sym in $syms; do
-            case "$sym" in
-                avra_*)
-                    if ! printf '%s\n' "$exported" | grep -qx "$sym"; then
-                        echo "stems: lib$lib leaves $sym for the host and build/avra does not export it"
-                        exit 1
-                    fi
-                    ;;
-            esac
-        done
-    done || fails=$((fails + 1))
+    python3 - "$fails" <<'PYEOF' || fails=$((fails + 1))
+import subprocess, sys, os
+
+def syms(argv):
+    out = subprocess.run(argv, capture_output=True, text=True)
+    return {l.split()[-1].lstrip("_") for l in out.stdout.splitlines() if l.strip()}
+
+host = syms(["nm", "build/avra"])
+rows = subprocess.run(["python3", "tools/libs.py", "--undefined"],
+                      capture_output=True, text=True).stdout
+# what each OTHER library defines, so a cross-package reference is nameable
+defined = {}
+for line in subprocess.run(["python3", "tools/libs.py", "--data"],
+                           capture_output=True, text=True).stdout.splitlines():
+    name, out = line.split("\t")[0], line.split("\t")[1]
+    if os.path.exists(out):
+        defined[name] = syms(["nm", "-g", "--defined-only", out])
+
+bad = 0
+for line in rows.splitlines():
+    parts = line.split("\t")
+    lib, open_syms = parts[0], (parts[1].split() if len(parts) > 1 else [])
+    ours = [x for x in open_syms if x.startswith("avra_") and x in host]
+    missing = [x for x in open_syms if x.startswith("avra_") and x not in host]
+    foreign = [x for x in open_syms if not x.startswith("avra_")]
+    crossed = sorted({x for x in foreign
+                      for other, defs in defined.items()
+                      if other != lib and x in defs})
+    for x in missing:
+        print(f"stems: lib{lib} leaves {x} for the host and build/avra does not export it")
+        bad += 1
+    for x in crossed:
+        print(f"stems: lib{lib} leaves {x}, which lib{[o for o, d in defined.items() if o != lib and x in d][0]} defines "
+              f"— a cross-package reference cannot resolve under RTLD_LOCAL")
+        bad += 1
+    print(f"stems:   lib{lib} leaves {len(open_syms)} symbol(s) open — "
+          f"{len(ours)} ours ({' '.join(ours) or 'none'}), {len(foreign)} the platform's")
+sys.exit(1 if bad else 0)
+PYEOF
 fi
 
 if [ "$fails" != 0 ]; then
