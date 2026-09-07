@@ -40,9 +40,14 @@ seed: $(RUNTIME_OBJS)
 	@./avra emit packages/cli > bootstrap/seed.ll
 	@echo "seed: bootstrap/seed.ll ($$(wc -l < bootstrap/seed.ll | tr -d ' ') lines)"
 
+# THE ONLY RULE THAT LINKS BY HAND, and the one a cold tree and every
+# recovery must take — `seed` and `avra` link through the compiler.
+# So the object list is named ONCE: a prerequisite and a link line
+# spelling it twice were two definitions nothing kept in step, and the
+# gap opens silently the instant the variable grows.
 bootstrap: $(RUNTIME_OBJS)
 	@mkdir -p build
-	@clang -w -O1 bootstrap/seed.ll build/avra_runtime.o build/llvm_wrapper.o \
+	@clang -w -O1 bootstrap/seed.ll $(RUNTIME_OBJS) \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "bootstrap: build/avra from the seed — rebuilding from source"
