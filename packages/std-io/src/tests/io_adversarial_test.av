@@ -130,6 +130,15 @@ spec "std/io — adversarial" {
         }
     }
     given "the environment's names" {
+        then "a name holding a NUL names nothing — it must not read the variable it truncates to" {
+            env("PATH${from_codepoint(0)}/junk") == null && env("PATH") != null
+        }
+        then "a NUL hides an `=` from the guard that looks for one, so the NUL is judged first" {
+            env("A${from_codepoint(0)}=B") == null
+        }
+        then "env_or falls back for a holed name rather than answering another variable's value" {
+            env_or("PATH${from_codepoint(0)}/junk", "fallback") == "fallback"
+        }
         then "a name holding `=` is no variable — null, not the prefix's value" {
             env("PATH=") == null && env("=") == null && env("=PATH") == null
         }
