@@ -381,7 +381,24 @@ export enum Pat {
     Bind(name: string)
     Variant(name: string, args: List<PatId>)
     Lit(value: ExprId)
+    /// A text FORMAT: literal `head`, then a hole and the literal
+    /// that follows it, repeated. `"a{x}b{y}c"` is head `"a"` with
+    /// parts `[{x, "b"}, {y, "c"}]`; a format with no holes is head
+    /// alone. The count relationship between literals and holes is
+    /// true by construction and unspellable otherwise.
+    Format(head: string, parts: List<FormatPart>)
 }
+
+/// One hole of a format: the name it binds — `_` binds nothing, as
+/// `Wild` spells it — and the type it parses through, absent when it
+/// takes the span as text.
+export type Hole = { name: string, ty: TypeRef? }
+
+/// A hole and the literal text that follows it.
+export type FormatPart = { hole: Hole, piece: string }
+
+/// The word a name takes when it binds nothing.
+export fn nothing_bound() -> string { "_" }
 
 /// One match arm: its alternatives (`a or b`) and its value.
 export type Arm = { pats: List<PatId>, value: ExprId }
@@ -603,6 +620,7 @@ impl NodeStore {
         match self.pat(id) {
             .Bind(name) -> [name],
             .Variant(_, args) -> flatten([self.pattern_binds(a) for a in args]),
+            .Format(_, parts) -> [p.hole.name for p in parts if p.hole.name != nothing_bound()],
             .Wild or .Rest or .Lit(_) -> [],
         }
     }
@@ -611,7 +629,7 @@ impl NodeStore {
     fn irrefutable(id: PatId) -> bool {
         match self.pat(id) {
             .Wild or .Rest or .Bind(_) -> true,
-            .Variant(_, _) or .Lit(_) -> false,
+            .Variant(_, _) or .Lit(_) or .Format(_, _) -> false,
         }
     }
 
@@ -624,6 +642,7 @@ impl NodeStore {
             .Bind(name) -> fp(52, [fp_str(name)]),
             .Variant(name, args) -> fp(53, [fp_str(name)].concat([self.pat_fingerprint(a) for a in args])),
             .Lit(v) -> fp(54, [self.expr_fingerprint(v)]),
+            .Format(head, parts) -> fp(55, [fp_str(head)].concat(flatten([hole_fps(p) for p in parts]))),
         }
     }
 
@@ -968,6 +987,13 @@ fn param_fps(params: List<Param>) -> List<int> {
 
 /// A written type's identity: absence is its own value, and the `?`
 /// is part of what the type IS.
+/// A format part's identity: what it binds, what it parses through,
+/// and the literal that follows it — every field, so a reindented
+/// or retyped hole is a different pattern.
+fn hole_fps(p: FormatPart) -> List<int> {
+    [fp_str(p.hole.name), type_fp(p.hole.ty), fp_str(p.piece)]
+}
+
 fn type_fp(t: TypeRef?) -> int {
     if t == null { return 0 }
     let written = t!

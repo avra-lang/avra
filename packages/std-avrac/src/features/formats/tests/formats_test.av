@@ -1,14 +1,20 @@
 // The format reader: what a literal with holes says it is. The empty
-// case first, then the escape, the two laws over the captures, and
-// the faults a malformed literal earns.
-use @std.avrac.features.formats.{read_format, bound_names, anonymous, Fault}
+// case first, then the escape, the two laws over the holes, and the
+// faults a malformed literal earns.
+use @std.avrac.features.formats.{read_format, bound_names, has_holes, Fault}
+use @std.avrac.core.{nothing_bound, FormatPart}
 
-/// A format's shape as one word: its pieces, then its captures with
-/// the type each parses through.
+/// A format re-spelled from what the reader made of it: its head,
+/// then each hole as `<name:type>` and the literal that follows it.
+/// A reader that lost a piece or a type shows it here.
 fn shape(text: string) -> string {
     let f = read_format(text)
     if f.fault != null { return why(f.fault!) }
-    "[${f.pieces.join("|")}]<${[c.name + ":" + (c.ty?.name ?? "-") for c in f.captures].join(",")}>"
+    f.head + [spelled(p) for p in f.parts].join("")
+}
+
+fn spelled(p: FormatPart) -> string {
+    "<${p.hole.name}:${p.hole.ty?.name ?? "-"}>${p.piece}"
 }
 
 /// A fault as one word, its position included — a fault that moved
@@ -25,65 +31,74 @@ fn why(f: Fault) -> string {
 
 spec "features/formats" {
     given "a literal with no holes" {
-        then "empty text is one empty piece and no captures" {
-            shape("") == "[]<>"
+        then "empty text is an empty head and no parts" {
+            shape("") == "" && read_format("").parts.is_empty()
         }
-        then "plain text is one piece" {
-            shape("abc") == "[abc]<>"
+        then "plain text is its head" {
+            shape("abc") == "abc"
         }
-        then "a doubled brace is one brace, and no capture" {
-            shape("a{{b}}c") == "[a{b}c]<>"
+        then "a literal with no holes is not a format" {
+            !has_holes(read_format("abc")) && has_holes(read_format("{a}"))
+        }
+        then "a doubled brace is one brace, and no hole" {
+            shape("a{{b}}c") == "a{b}c" && !has_holes(read_format("a{{b}}c"))
         }
         then "a doubled brace alone is that brace" {
-            shape("{{") == "[{]<>" && shape("}}") == "[}]<>"
+            shape("{{") == "{" && shape("}}") == "}"
         }
         then "a doubled pair is two braces" {
-            shape("{{}}") == "[{}]<>"
+            shape("{{}}") == "{}"
         }
     }
 
-    given "captures" {
-        then "one capture leaves an empty piece on each side" {
-            shape("{a}") == "[|]<a:->"
+    given "holes" {
+        then "one hole leaves an empty head and one empty piece" {
+            shape("{a}") == "<a:->"
         }
-        then "the request line reads as four captures and five pieces" {
-            shape("{m} {p} HTTP/{maj: int}.{min: int}") == "[| | HTTP/|.|]<m:-,p:-,maj:int,min:int>"
+        then "the request line reads as four holes with the literals between them" {
+            shape("{m} {p} HTTP/{maj: int}.{min: int}") == "<m:-> <p:-> HTTP/<maj:int>.<min:int>"
         }
-        then "a typed capture carries the type it names" {
-            shape("{n: int}") == "[|]<n:int>"
+        then "a typed hole carries the type it names" {
+            shape("{n: int}") == "<n:int>"
         }
         then "spaces around a name and a type are not part of them" {
-            shape("{ a : int }") == "[|]<a:int>"
+            shape("{ a : int }") == "<a:int>"
         }
-        then "an anonymous capture consumes and binds nothing" {
-            shape("{_}x") == "[|x]<_:->" && bound_names(read_format("{_}x")).is_empty()
+        then "a hole that binds nothing still consumes its span" {
+            shape("{_}x") == "<_:->x" && bound_names(read_format("{_}x")).is_empty()
         }
-        then "the anonymous word is the one the reader records" {
-            read_format("{_}").captures[0].name == anonymous()
+        then "the word for binding nothing is the language's own" {
+            read_format("{_}").parts[0].hole.name == nothing_bound()
         }
-        then "an anonymous capture may carry a type" {
-            shape("{_: int}") == "[|]<_:int>"
+        then "a hole that binds nothing may carry a type" {
+            shape("{_: int}") == "<_:int>"
         }
-        then "bound names are the capture names in order, without the anonymous" {
+        then "bound names are the hole names in order, without the anonymous" {
             bound_names(read_format("{a}x{_}y{b}")).join(",") == "a,b"
         }
         then "a name may hold digits after its first character" {
-            shape("{a1}") == "[|]<a1:->"
+            shape("{a1}") == "<a1:->"
         }
-        then "an escaped brace beside a capture stays a brace" {
-            shape("a{{{x}}}c") == "[a{|}c]<x:->"
+        then "an escaped brace beside a hole stays a brace" {
+            shape("a{{{x}}}c") == "a{<x:->}c"
+        }
+        then "the head holds everything before the first hole" {
+            read_format("abc{x}def").head == "abc"
+        }
+        then "the last piece holds everything after the last hole" {
+            read_format("abc{x}def").parts[0].piece == "def"
         }
     }
 
-    given "the law that two captures need something between them" {
-        then "adjacent captures are refused, naming both" {
+    given "the law that two holes need something between them" {
+        then "adjacent holes are refused, naming both" {
             shape("{a}{b}") == "adjacent:a,b"
         }
-        then "two anonymous captures are adjacent too" {
+        then "two anonymous holes are adjacent too" {
             shape("{_}{_}") == "adjacent:_,_"
         }
-        then "a capture at each END is ordinary, not adjacent" {
-            shape("{a}x{b}") == "[|x|]<a:-,b:->"
+        then "a hole at each END is ordinary, not adjacent" {
+            shape("{a}x{b}") == "<a:->x<b:->"
         }
     }
 
@@ -91,11 +106,11 @@ spec "features/formats" {
         then "a name written twice is refused" {
             shape("{a} {a}") == "repeated:a"
         }
-        then "a repeat is refused whether or not the captures agree on type" {
+        then "a repeat is refused whether or not the holes agree on type" {
             shape("{a: int} {a}") == "repeated:a"
         }
         then "the anonymous name may repeat, because it binds nothing" {
-            shape("{_} {_}") == "[| |]<_:-,_:->"
+            shape("{_} {_}") == "<_:-> <_:->"
         }
     }
 

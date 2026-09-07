@@ -1,183 +1,45 @@
 //! Formats — a string literal with holes. `"{method} {path}"` in
-//! PATTERN position parses; the same text as a `grammar` declaration
-//! is a value that parses and prints. This file is the FORMAT
-//! READER: text in, pieces and captures out, with the faults a
-//! format can carry. It knows nothing of nodes, typing or lowering —
-//! those arrive with the pattern seam, and every one of them reads
-//! its shape from here.
+//! PATTERN position parses: each `{name}` binds the span up to the
+//! next literal, by ONE anchored left-to-right pass with no
+//! backtracking. This feature owns the PARSE of a string in pattern
+//! position, and the MEANING of `Pat.Format`; a literal with no
+//! holes is still the equality pattern it always was, built here.
 //!
-//! THE SCAN LAW, which the reader's output exists to serve: a format
-//! matches by one anchored left-to-right pass — the FIRST piece is a
-//! prefix, the LAST is a suffix, and every piece between them is
-//! found at the first position at or after the cursor. No
-//! backtracking, so the scan is linear.
-use core.{TypeRef, joined}
+//! THE MODULES:
+//!   mod.av      this manifest, and the pattern branch it claims
+//!   format.av   the reader: text -> a head and its parts
+//!   builders.av parse lowering: a STRING token -> the pattern, and
+//!               the three BRACE faults, which refuse in the
+//!               builder's own words: a literal that cannot be split
+//!               into a head and its parts has no node to carry a
+//!               code, and the parse channel is where it belongs
+//!   semantics.av the PatSemantics impl — dispatch one-liners
+//!   check.av    the laws a format must keep
+//!   lower.av    the scan, emitted
+use features.{LanguageFeature, BuilderRow}
+use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
 
-/// One capture: the name it binds — `_` binds nothing, as `Pat.Wild`
-/// spells it — and the type it parses through, absent for a text span.
-export type Capture = { name: string, ty: TypeRef? }
-
-/// A format read from a literal: the literal pieces and the captures
-/// between them, with `pieces.length == captures.length + 1`. A
-/// format with NO captures is a plain literal whose text is
-/// `pieces[0]`. A `fault` makes it no format at all.
-export type Format = { pieces: List<string>, captures: List<Capture>, fault: Fault? }
-
-/// Why a literal is not a format. The first four are the text's; the
-/// last two are laws over the captures it yielded.
-export enum Fault {
-    /// a `{` with no `}` after it
-    Unclosed(at: int)
-    /// a `}` closing nothing
-    Stray(at: int)
-    /// a `{…}` whose body is not a name, or a name and a type
-    Malformed(at: int, body: string)
-    /// two captures with nothing between them — no scan can split them
-    Adjacent(first: string, second: string)
-    /// one name, two spans
-    Repeated(name: string)
-}
-
-/// The word for a capture that binds nothing.
-export fn anonymous() -> string { "_" }
-
-/// The format a literal spells.
-export fn read_format(text: string) -> Format {
-    let b = text.bytes()
-    mut r = Reading { at: 0, pieces: [], runs: [], caps: [] }
-    while true {
-        match stepped(b, text, r) {
-            .More(next) -> { r = next },
-            .Done(f) -> { return f },
+export fn formats() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name         | build
+        "format_pat" | build_format_pat
+    }
+    let codes = table<DiagCode> {
+        kind                  | id      | summary
+        "type.format"         | "F2058" | "a format pattern reads text — a `string` or a `Bytes`"
+        "type.format_repeat"  | "F2059" | "one name binds one span"
+        "type.format_parse"   | "F2060" | "a typed hole parses through a type that reads text"
+        "type.format_shape"   | "F2061" | "two holes need a literal between them to be split"
+    }
+    component LanguageFeature f {
+        name = "formats"
+        docs = "A string literal in pattern position: `\"{method} {path}\"` binds each hole to the span up to the next literal, by one anchored left-to-right pass. `{{` and `}}` are literal braces; a literal with no holes matches by equality, as it always did."
+        gram = grammar {
+            pattern = s:STRING -> format_pat(s)
         }
+        builders = rows
+        diags = codes
     }
-    closed(r, "")
-}
-
-/// The names a format binds, in order — what a pattern's binds are.
-export fn bound_names(f: Format) -> List<string> {
-    [c.name for c in f.captures if c.name != anonymous()]
-}
-
-// ── The reading ─────────────────────────────────────────────────
-
-/// A format part-read: where the scan is, the pieces closed behind
-/// it, the runs of the piece still open, and the captures between.
-type Reading = { at: int, pieces: List<string>, runs: List<string>, caps: List<Capture> }
-
-enum Step {
-    More(r: Reading)
-    Done(f: Format)
-}
-
-/// One brace's worth of reading: the text up to it, then what the
-/// brace means — an escape, a capture, or a fault.
-fn stepped(b: Bytes, text: string, r: Reading) -> Step {
-    let brace = next_brace(b, r.at)
-    if brace < 0 { return .Done(closed(r, text.substring(r.at, text.length))) }
-    let run = text.substring(r.at, brace)
-    if doubled(b, brace) { return .More(escaped(r, run, text.substring(brace, brace + 1), brace + 2)) }
-    if b.at(brace) == shut() { return .Done(faulted(Fault.Stray(brace))) }
-    let end = b.index_of(close_brace(), brace + 1)
-    if end < 0 { return .Done(faulted(Fault.Unclosed(brace))) }
-    match capture_of(text.substring(brace + 1, end), brace) {
-        .Err(f) -> .Done(faulted(f)),
-        .Ok(c) -> .More(opened(r, run, c, end + 1)),
-    }
-}
-
-/// A doubled brace: one of it joins the piece still open.
-fn escaped(r: Reading, run: string, brace: string, at: int) -> Reading {
-    r with { at: at, runs: r.runs.concat([run, brace]) }
-}
-
-/// A capture read: the open piece closes with `run`, the capture
-/// joins, and a fresh piece opens.
-fn opened(r: Reading, run: string, c: Capture, at: int) -> Reading {
-    Reading { at: at, pieces: r.pieces.concat([joined(r.runs.concat([run]), "")]), runs: [], caps: r.caps.concat([c]) }
-}
-
-/// The text ran out: the last piece closes with `tail`, then the two
-/// laws over the captures.
-fn closed(r: Reading, tail: string) -> Format {
-    let f = Format { pieces: r.pieces.concat([joined(r.runs.concat([tail]), "")]), captures: r.caps, fault: null }
-    f with { fault: adjacent_fault(f) ?? repeated_fault(f) }
-}
-
-/// A literal that is no format: the fault, and a total stand-in that
-/// keeps `pieces.length == captures.length + 1` for every reader.
-fn faulted(f: Fault) -> Format {
-    Format { pieces: [""], captures: [], fault: f }
-}
-
-// ── The braces ──────────────────────────────────────────────────
-
-once fn open_brace() -> Bytes { "{".bytes() }
-once fn close_brace() -> Bytes { "}".bytes() }
-fn shut() -> int { 125 }
-
-/// The first brace of either kind at or after `at`, or -1.
-fn next_brace(b: Bytes, at: int) -> int {
-    earlier(b.index_of(open_brace(), at), b.index_of(close_brace(), at))
-}
-
-/// The earlier of two positions, either of which may be a miss.
-fn earlier(x: int, y: int) -> int {
-    when {
-        x < 0 -> y
-        y < 0 -> x
-        x < y -> x
-        _ -> y
-    }
-}
-
-/// Whether the brace at `at` is followed by its twin.
-fn doubled(b: Bytes, at: int) -> bool {
-    at + 1 < b.length && b.at(at + 1) == b.at(at)
-}
-
-// ── One capture ─────────────────────────────────────────────────
-
-/// A `{…}`'s body as a capture: a name, and an optional `: Type`.
-fn capture_of(body: string, at: int) -> Result<Capture, Fault> {
-    let colon = body.index_of(":")
-    let name = (if colon < 0 { body } else { body.substring(0, colon) }).trim()
-    let ty: string? = if colon < 0 { null } else { body.substring(colon + 1, body.length).trim() }
-    if !named(name) { return .Err(Fault.Malformed(at, body)) }
-    if ty != null && !named(ty!) { return .Err(Fault.Malformed(at, body)) }
-    .Ok(Capture { name: name, ty: written_type(ty) })
-}
-
-/// The written type a capture names, when it named one.
-fn written_type(ty: string?) -> TypeRef? {
-    if ty == null { return null }
-    TypeRef { name: ty!, args: [], optional: false, dynamic: false, arrow: false, span: null }
-}
-
-/// Whether the text is identifier-shaped — a name, not a phrase.
-fn named(s: string) -> bool {
-    !s.is_empty() && name_start(s.char_code(0)) && [name_part(s.char_code(i)) for i in 0..s.length].all(it)
-}
-
-fn name_start(c: int) -> bool { c == 95 || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) }
-fn name_part(c: int) -> bool { name_start(c) || (c >= 48 && c <= 57) }
-
-// ── The two laws over the captures ──────────────────────────────
-
-/// Two captures with nothing between them: an INTERIOR piece that is
-/// empty. The first and last pieces may be empty — a capture at
-/// either end is ordinary.
-fn adjacent_fault(f: Format) -> Fault? {
-    let k = [j for j in 1..f.captures.length].find((j) -> f.pieces[j].is_empty())
-    if k == null { return null }
-    Fault.Adjacent(f.captures[k! - 1].name, f.captures[k!].name)
-}
-
-/// One name, two spans — a duplicate is a name whose FIRST position
-/// is earlier than this one. `_` binds nothing, so it may repeat.
-fn repeated_fault(f: Format) -> Fault? {
-    let names = bound_names(f)
-    let k = [j for j in 0..names.length].find((j) -> names.index_of(names[j]) < j)
-    if k == null { return null }
-    Fault.Repeated(names[k!])
+    f
 }

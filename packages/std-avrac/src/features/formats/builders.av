@@ -1,0 +1,31 @@
+//! Parse-time lowering: a STRING token in pattern position becomes
+//! the FORMAT it spells, or — when it spells no holes — the literal
+//! pattern it always was. The three TEXT faults refuse here in the
+//! builder's own words, because a literal that cannot be split into
+//! head and parts has no node to carry; the two LAWS over the holes
+//! are re-derived from the node and spoken by typing, where they
+//! carry a span and a code.
+use core.{Expr, Pat}
+use features.{LangNode, Builder}
+use features.formats.{read_format, has_holes, Fault}
+
+fn build_format_pat(mut b: Builder) -> Result<LangNode, string> {
+    let t = b.token(0)?
+    let f = read_format(t.text)
+    let text: string? = refusal_of(f.fault)
+    if text != null { return .Err(text!) }
+    if !has_holes(f) { return b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.StrLit(f.head), b.span))) }
+    b.make_pat(Pat.Format(f.head, f.parts))
+}
+
+/// The words a TEXT fault earns. The two laws over the holes answer
+/// absence here — typing speaks them, with a code and a span.
+fn refusal_of(fault: Fault?) -> string? {
+    if fault == null { return null }
+    match fault! {
+        .Unclosed(at) -> "a `{` at ${at} opens a hole that is never closed — write `{{` for a literal brace",
+        .Stray(at) -> "a `}` at ${at} closes nothing — write `}}` for a literal brace",
+        .Malformed(at, body) -> "`{${body}}` at ${at} is no hole — a hole is `{name}` or `{name: Type}`",
+        .Adjacent(_, _) or .Repeated(_) -> null,
+    }
+}
