@@ -312,6 +312,27 @@ engine's spec, written by dogfooding.
   The seat law then reads MARKS, never a DeclId, so a declared
   callee and a fn-typed value are one rule: `declared_marks`
   projects a declaration into the same currency.
+- A TYPE MIGRATION CAN MOVE WHO HOLDS A VALUE, AND A LIFETIME PROMISE
+  IS A PROMISE ABOUT THE HOLDER. Changing a seat's type is arithmetic
+  on signatures until the value's PROVENANCE changes — then a
+  caller-held box silently becomes a CALLEE-MINTED one. @std/sqlite's
+  `bind_text_unsafely_borrowed(…, value: string)` promises the
+  caller's bytes outlive the statement, and is keepable only because
+  the caller's own box goes straight through; migrating the WALL seat
+  to `Bytes` while the FACE kept `string` would force the face to
+  call `.bytes()` — minting a box whose only holder is that call,
+  dead at return, handing C a dangling pointer every time with the
+  caller having done nothing wrong. The face takes the new type too,
+  so the box stays in the caller's hands and the type says what the
+  contract always required. THE SEATS WHERE THIS BITES ARE FEW AND
+  GREPPABLE: those whose contract mentions LIFETIME (19 sites here).
+  One level down, the same law: a box materialised ONLY to be staged
+  has no other holder, so its last reference dies before the call and
+  C reads freed memory — staged boxes are held until the call
+  returns, and the engines disagreeing is how it was seen.
+  (Attributed to the sqlite lead and the substrate lane: `Bytes` is
+  not on main. The seat, its contract and its `string` type ARE here,
+  so the hazard is live for whoever migrates it.)
 - A RUNTIME ROW BORROWS ITS ARGUMENTS — callee-cleans is the AVRA
   call's convention, not the registry's. `retained_args` retains for
   `.Call` and `.CallPtr` alone; a `CallRt`/`CallRtVoid` argument
