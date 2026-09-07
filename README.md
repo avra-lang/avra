@@ -40,9 +40,10 @@ reclaims; strings ride struct fields, enum payloads, list
 elements, and `Result<T, string>` — the self-host shape),
 closures (`(x: int) -> x + n` capturing by value, fn-typed fields
 making capability records first-class), maps (`Map<string, T>`,
-insertion-ordered, `.get`/`.set`), typed table literals
-(`table<Row> { … }`), components and record field defaults
-(`type P = { y: int = 2 }` — a default is a declaration every
+`.get`/`.set`/`.length` — nothing iterates a map yet), typed table
+literals (`table<Row> { … }` — a header line of field names, then
+one pipe-delimited row per line), components and record field
+defaults (`type P = { y: int = 2 }` — a default is a declaration every
 literal that omits the field calls), index-paired `for i, x in xs`,
 and modules (`use a.b.{f}`, `export`, an `avra.toml` marking the
 package root, and `avra check <dir>` checking every file under it)

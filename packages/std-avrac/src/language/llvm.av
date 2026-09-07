@@ -459,6 +459,9 @@ impl Emit {
         if self.types.rides_pointer(self.tys[dst.index]) && self.answers_word(callee) {
             return avra_llvm_build_int_to_ptr(self.b, raw, avra_llvm_pointer_type(self.lc), "boxed")
         }
+        // A DOUBLE IS NOT A WORD. Every container keeps its elements in
+        // an i64 slot, so a float coming back out of one is
+        // REINTERPRETED, not converted. `worded` is the twin.
         raw
     }
 
@@ -615,6 +618,10 @@ impl Emit {
         }
         if self.types.shape_of(self.tys[r.index]) is .Bool {
             return avra_llvm_build_zext(self.b, v, i64t, "slot")
+        }
+        // Its twin in `call_rt_value`: the bits go in as they come out.
+        if self.types.shape_of(self.tys[r.index]) is .Float {
+            return avra_llvm_build_bitcast(self.b, v, i64t, "slot")
         }
         v
     }

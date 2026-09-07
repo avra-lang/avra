@@ -400,6 +400,15 @@ LLVMValueRef avra_llvm_build_int_to_ptr(LLVMBuilderRef b, LLVMValueRef val, LLVM
     return LLVMBuildIntToPtr(b, val, dest_ty, safe_name(name, "i2p"));
 }
 
+/* A REINTERPRETATION, never a conversion: a double and the i64 word a
+   container slot keeps it in are the same bits, and a conversion would
+   change the number. Its two directions are `worded` and the result
+   coercion in `call_rt_value`, and a value that goes in one way and
+   comes back the other is the defect that pair exists to prevent. */
+LLVMValueRef avra_llvm_build_bitcast(LLVMBuilderRef b, LLVMValueRef val, LLVMTypeRef dest_ty, const char* name) {
+    return LLVMBuildBitCast(b, val, dest_ty, safe_name(name, "bc"));
+}
+
 // ── Memory ──
 
 LLVMValueRef avra_llvm_build_alloca(LLVMBuilderRef b, LLVMTypeRef ty, const char* name) {
