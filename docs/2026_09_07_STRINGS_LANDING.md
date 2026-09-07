@@ -1116,6 +1116,68 @@ first.
 
 ---
 
+## 13. S6 — the framer, and why it keeps its hand scans
+
+The arc was built for `@std.http`'s framer, so the last question is
+whether the framer should adopt it. **Measured, the answer is no**, and
+the measurement is not the one that decides it.
+
+**WHAT EACH ACCEPTS**, nine request lines drawn from the framing laws,
+the framer against `grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"`:
+
+| line | verdict |
+|---|---|
+| `GET /x HTTP/1.1` | both take |
+| `GET / HTTP/1.1` | both take |
+| `GET  /x HTTP/1.1` (two spaces) | **pattern takes, framer refuses** |
+| `GET /x HTTP/1.1extra` | **pattern takes, framer refuses** |
+| `GET /x HTTP/11.1` | **pattern takes, framer refuses** |
+| `GET /x HTTP/a.1` | **pattern takes, framer refuses** |
+| ` GET /x HTTP/1.1` (leading space) | **pattern takes, framer refuses** |
+| `GE<TAB>T /x HTTP/1.1` | **pattern takes, framer refuses** |
+| `GET /x HTTP/1.1 ` (trailing space) | **pattern takes, framer refuses** |
+
+Seven of nine. Every one is a law RFC 9112 gives a smuggling-shaped
+reason for: §3 warns in the same paragraph that whitespace-delimited
+parsing enables request smuggling, §2.3 fixes the version at one digit
+each side, and the method is a `token` — an HTAB inside it is not a
+method with a tab, it is two tokens a lenient parser might disagree
+about.
+
+**AND THE SPEED, which does not rescue it:** 146 ns for the pattern
+against 1201 ns for a whole head. Not comparable — one line against a
+head with a field — and it does not matter. **A faster scan that
+accepts a smuggled request is not a win at any speed.**
+
+**THE REASON, stated as a law rather than a result.** A FORMAT PATTERN
+IS A SPLITTER; THE FRAMER'S SCAN IS A SPLITTER AND A VALIDATOR. Every
+line of an HTTP head carries a byte-class law — the method is a
+`token`, the target excludes CTL and SP, the field name is a `token`
+that must touch its colon, the field value is `field-vchar` — and a
+format's holes say only "up to the next literal". The header line is
+worse than the request line in both directions at once: `OWS` is
+`*( SP / HTAB )`, so a pattern with `": "` REFUSES the valid
+`Host:example.com` while ACCEPTING the invalid `Host : example.com`
+that §5.1 says a server MUST reject.
+
+Applying the classes after the split costs strictly more than the hand
+scan, which does both in one pass — so there is no fast path here
+either.
+
+**WHERE THE PATTERNS DO WIN** is where the typed-routes paper already
+put them: the ROUTE, not the frame. A route's target has been framed
+already, its shape is fixed, and its captures are values a handler
+wants rather than spans a parser walks. That paper wrote "HTTP framing
+stays byte-oriented … Converting the entire received buffer to UTF-8
+and trimming lines loses the distinction between protocol syntax and
+content" before any of this existed; this section is that sentence with
+a number and an attack table behind it.
+
+`tools/bench/frame_patterns` is the harness, kept so the claim can be
+re-run rather than believed.
+
+---
+
 ## 12. The asks still open, with their wanting sites
 
 1. **`avra_str_index_of_from(s, needle, from)`** — lane A. `string`'s
