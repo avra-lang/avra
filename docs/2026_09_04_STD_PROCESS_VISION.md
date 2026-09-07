@@ -219,7 +219,7 @@ Go added `WaitDelay` in 1.20 for exactly this; every other stdlib hangs.
 ### 4. Exit code as a number vs. as a verdict
 **Horns:** `if r.returncode != 0` (forgotten in half of all scripts) vs.
 `check=True` throwing on `grep`'s honest `1`.
-**Collapse:** `Exit` is an enum — `.Clean`, `.Code(n)`, `.Signal(sig)` —
+**Collapse:** `Exit` is an enum — `.Clean`, `.Code(n)`, `.Signal(sig, core)` —
 and `.Code(0)` is unconstructible. `run()` JUDGES: any exit outside the
 command's `ok_exits` (default `[0]`) is `Err(.Failed(exit, out))`, so `?`
 propagates it and a forgotten check cannot be written. `grep`'s `1` is
@@ -301,10 +301,12 @@ landed 2026-09-05).
 ## IV.1 The one-liner
 
 ```avra
-use @std.process.{program, cmd}
+use @std.process.{tool, cmd, ProcessError}
 
-let git = tool("git")?                      // resolved ONCE: /opt/homebrew/bin/git
-let head = cmd(git, ["rev-parse", "HEAD"]).run()?.stdout.trim()
+fn head() -> Result<string, ProcessError> {
+    let git = tool("git")?                  // resolved ONCE: /opt/homebrew/bin/git
+    (cmd(git, ["rev-parse", "HEAD"]).run()?).stdout.trim()
+}
 ```
 
 ```avra
@@ -362,7 +364,7 @@ match found.exit {
     .Clean -> "present",
     .Code(1) -> "absent",
     .Code(n) -> fail SearchError.tool_failed(n, found.out.stderr),
-    .Signal(s) -> fail SearchError.killed(s),
+    .Signal(s, _) -> fail SearchError.killed(s),
 }
 // or: declare grep's convention once and let run() judge the rest
 let hit = cmd(grep, ["-q", pat]).path(file) with { ok_exits: [0, 1] }
@@ -637,7 +639,7 @@ match cmd(tool(binary)?, []).outcome()?.exit {
     .Clean -> 0,
     .Code(1) -> 1,
     .Code(n) -> wrecked("the suite's binary exited ${n}"),
-    .Signal(s) -> wrecked("the suite's binary died of signal ${s}"),
+    .Signal(s, _) -> wrecked("the suite's binary died of signal ${s}"),
 }
 ```
 

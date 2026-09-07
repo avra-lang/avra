@@ -314,7 +314,10 @@ violations to migrate.
 ```avra
 type Id = { index: int, tag: int }
 
-fn bump(mut i: Id, by: int) -> int { i.index = i.index + by  i.index }
+fn bump(mut i: Id, by: int) -> int {
+    i.index = i.index + by
+    i.index
+}
 
 mut held = Id { index: 1, tag: 0 }
 bump(held, 4)                       // held.index -> 5
