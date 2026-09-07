@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 /* What stands at the path: 0 nothing, 1 a file, 2 a directory, 3
    something else; -errno when the host will not say. */
@@ -163,4 +164,18 @@ int64_t avra_io_drop(int64_t h) {
     t->fd = -1;
     unlink(t->temp);
     return 0;
+}
+
+/* ── The environment ──────────────────────────────────────────────
+   WHETHER THE VARIABLE IS SET, and nothing else: 0 set, -1 not. The
+   VALUE comes from the runtime's own environment row, which answers
+   immortal text — so no text crosses here and this package needs no
+   door into the runtime's scratch.
+
+   THE PREDICATE EXISTS BECAUSE THE VALUE CANNOT CARRY IT. `getenv`
+   answers NULL for unset and "" for set-to-empty, and the runtime's
+   row hands both back as "" — so the value alone cannot tell them
+   apart, and `env` must answer null for one and "" for the other. */
+int64_t avra_io_env_set(const char* name) {
+    return getenv(name) != NULL ? 0 : -1;
 }

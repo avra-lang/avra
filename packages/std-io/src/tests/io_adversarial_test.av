@@ -94,7 +94,7 @@ spec "std/io — adversarial" {
             said(write_text(p, "x")) == "`${p}`: File name too long"
         }
     }
-    given "the stash — one text, handed over once" {
+    given "the shared scratch — one landing, taken once" {
         then "a failed read between two reads leaves each its own text" {
             let p = cleared("kept.txt")
             let _ = write_text(p, "kept")
@@ -129,7 +129,45 @@ spec "std/io — adversarial" {
             back.length == 3 && back.char_code(0) == 120 && back.char_code(1) == 0 && back.char_code(2) == 121
         }
     }
+    given "the descriptor loops — past one chunk, and bytes that are not text" {
+        then "a file past ONE read lands whole — the loop takes each landing before asking again" {
+            let p = cleared("wide.txt")
+            let payload = ["0123456789" for i in 0..300000].join("")
+            let _ = write_text(p, payload)
+            (read_text(p) catch "").length == 3000000 && payload.length == 3000000
+        }
+        then "an empty file round-trips — the write pours nothing and the read takes the empty box" {
+            let p = cleared("hollow.txt")
+            let _ = write_text(p, "")
+            said(read_text(p)) == "ok:"
+        }
+        // NO CASE HERE FOR BYTES THAT ARE NOT UTF-8, and the absence
+        // is the finding: `write_text` takes a `string`, and every
+        // Avra string is already valid UTF-8, so this package cannot
+        // BUILD the file its own `NotText` refusal exists for. That
+        // refusal is for a file written by something else, and it is
+        // proved outside the suite — a shell writing `ab\xffcd` reads
+        // back as `io.not_text`. A case pretending to cover it from
+        // in here would assert the wrong thing in the right words.
+        then "a write that cannot open its temp leaves NOTHING beside the target" {
+            let d = cleared("nowhere")
+            let _ = make_dirs(d)
+            // the parent of the target does not exist, so the temp
+            // never opens — and no half-written sibling is left
+            let r = write_text("${d}/deep/gone.txt", "x")
+            names(list_dir(d)) == "" && r is .Err
+        }
+        then "a write over a standing file replaces it whole, never appends" {
+            let p = cleared("replaced.txt")
+            let _ = write_text(p, "a much longer first version")
+            let _ = write_text(p, "short")
+            said(read_text(p)) == "ok:short"
+        }
+    }
     given "the environment's names" {
+        then "set-to-empty is SET, and unset is null — the value alone cannot tell them apart" {
+            env("AVRA_IO_SURELY_UNSET_") == null
+        }
         then "a name holding `=` is no variable — null, not the prefix's value" {
             env("PATH=") == null && env("=") == null && env("=PATH") == null
         }

@@ -11,16 +11,31 @@
 //! answers the path it wrote, so calls chain.
 use @std.errors.{Error, ErrorInfo, info}
 
-extern fn avra_puts(line: string)
-extern fn avra_eputs(line: string)
+// THIS PACKAGE'S OWN C (src/c/std_io.c) — every one answers an int: a
+// status, a descriptor, a handle, a kind, or a negative errno. No text
+// and no bytes cross here.
 extern fn avra_io_kind(path: string) -> int
-extern fn avra_io_read(path: string) -> int
-extern fn avra_io_write(path: string, text: string) -> int
-extern fn avra_io_list(path: string) -> int
+extern fn avra_io_open(path: string) -> int
+extern fn avra_io_close(fd: int) -> int
 extern fn avra_io_mkdir(path: string) -> int
 extern fn avra_io_remove(path: string) -> int
-extern fn avra_io_env(name: string) -> int
-extern fn avra_io_taken() -> string
+extern fn avra_io_temp(path: string) -> int
+extern fn avra_io_temp_fd(h: int) -> int
+extern fn avra_io_commit(h: int) -> int
+extern fn avra_io_drop(h: int) -> int
+extern fn avra_io_env_set(name: string) -> int
+
+// THE RUNTIME'S OWN, which mint or answer immortal text — the only
+// doors through which bytes become a value. `avra_io_list` is the one
+// io row core keeps, because a directory entry's name flows through no
+// descriptor; it leaves the day the adoption row lands.
+extern fn avra_puts(line: string)
+extern fn avra_eputs(line: string)
+extern fn avra_io_list(path: string) -> int
+extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_fd_taken(token: int) -> Bytes
+extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
+extern fn avra_host_env(name: string) -> string
 extern fn avra_errno_text(err: int) -> string
 
 // ── Streams ─────────────────────────────────────────────────────
@@ -43,6 +58,7 @@ export enum IoError {
     Denied(path: string)
     IsDirectory(path: string)
     NotDirectory(path: string)
+    NotText(path: string)
     Failed(path: string, errno: int)
 }
 
@@ -53,6 +69,7 @@ impl Error for IoError {
             .Denied(p) -> info("io.denied", "`${p}` may not be accessed"),
             .IsDirectory(p) -> info("io.is_directory", "`${p}` is a directory"),
             .NotDirectory(p) -> info("io.not_directory", "`${p}` is not a directory"),
+            .NotText(p) -> info("io.not_text", "`${p}` does not hold UTF-8 text"),
             .Failed(p, e) -> info("io.failed", "`${p}`: ${avra_errno_text(e)}"),
         }
     }
@@ -124,21 +141,67 @@ fn standing(path: string) -> Entry {
 
 /// The whole file as text.
 export fn read_text(path: string) -> Result<string, IoError> {
-    done(path, avra_io_read(path))?
-    avra_io_taken()
+    let fd = done(path, avra_io_open(path))?
+    defer avra_io_close(fd)
+    text_of(path, drained(path, fd)?)
 }
+
+/// Every byte the descriptor gives, to its end. A read answers a
+/// TOKEN and the take mints from it once, so the loop takes each
+/// landing before asking for the next — a token held across a second
+/// read is stale and traps.
+fn drained(path: string, fd: int) -> Result<Bytes, IoError> {
+    mut whole = "".bytes()
+    mut token = done(path, avra_fd_read(fd, chunk()))?
+    while token > 0 {
+        whole = whole.concat(avra_fd_taken(token))
+        token = done(path, avra_fd_read(fd, chunk()))?
+    }
+    whole
+}
+
+/// A file's bytes as text. TEXT THAT IS NOT TEXT IS A REFUSAL: the
+/// bytes are checked for UTF-8, so a `string` from here is one.
+fn text_of(path: string, raw: Bytes) -> Result<string, IoError> {
+    let t: string? = raw.text()
+    if t == null { fail IoError.NotText(path) }
+    t!
+}
+
+/// The read's bite. A megabyte is the descriptor scratch's own size,
+/// so a whole small file lands in one turn and a large one in as few
+/// as the scratch allows.
+fn chunk() -> int { 1048576 }
 
 /// The text written whole — a reader sees the old file or the new,
 /// never half. Answers the path.
 export fn write_text(path: string, text: string) -> Result<string, IoError> {
-    done(path, avra_io_write(path, text))?
+    let h = done(path, avra_io_temp(path))?
+    // DROPPING IS THE DEFAULT AND COMMITTING THE DELIBERATE ACT: a
+    // `?` below runs this before it leaves, and an uncommitted temp
+    // is REMOVED. A deferred commit here would publish a truncated
+    // file over the reader's data, in code that reads as careful.
+    defer avra_io_drop(h)
+    let fd = done(path, avra_io_temp_fd(h))?
+    poured(path, fd, text.bytes())?
+    done(path, avra_io_commit(h))?
     path
+}
+
+/// The bytes handed to the descriptor from the front, however many
+/// turns it takes — a short write is normal and not an error.
+fn poured(path: string, fd: int, bytes: Bytes) -> Result<int, IoError> {
+    mut at = 0
+    while at < bytes.length {
+        at = at + done(path, avra_fd_write(fd, bytes, at))?
+    }
+    at
 }
 
 /// The directory's entries in byte order, `.` and `..` left out.
 export fn list_dir(path: string) -> Result<List<string>, IoError> {
-    done(path, avra_io_list(path))?
-    names_of(avra_io_taken())
+    let token = done(path, avra_io_list(path))?
+    names_of(text_of(path, avra_fd_taken(token))?)
 }
 
 /// The stash's names, joined on `/` — the one byte a name cannot
@@ -167,8 +230,11 @@ export fn remove(path: string) -> Result<string, IoError> {
 /// value is set. A name holding `=` names nothing: the host would
 /// read it up to the `=` and answer another variable's value.
 export fn env(name: string) -> string? {
-    if name.contains("=") || avra_io_env(name) < 0 { return null }
-    avra_io_taken()
+    if name.contains("=") || avra_io_env_set(name) < 0 { return null }
+    // THE PREDICATE CARRIES WHAT THE VALUE CANNOT. The host answers
+    // the empty string for a variable that is unset AND for one set
+    // to nothing, so the value alone cannot tell them apart.
+    avra_host_env(name)
 }
 
 export fn env_or(name: string, default: string) -> string {

@@ -431,16 +431,43 @@ step above it.
    Deliverable: `corpus/sqlite` and `corpus/net` are `eval == native`
    — `corpus/net` needs §5.3 as well, since its fd half is unhosted
    for a different reason than its net half.
-3. **S3 — `@std/io`.** (lane B's package; the descriptor rows are the
-   HTTP lead's.) Opening, `stat`, listing, `mkdir`, `remove` stay
-   package C answering ints; `read_text` becomes open + `avra_fd_read`
-   loop + close, `write_text` becomes open-temp + `avra_fd_write` loop
-   + commit (the rename stays in C, since the temp name is the
-   package's); `env` reads core's environment row. Seven of the eight
-   `avra_io_*` rows, their `RtHost` variants and their arms leave core;
-   `avra_io_list` stays by §5.1. `avra_io_taken` dies into
-   `avra_fd_taken`. `corpus/io` stays `eval == native` under S2, or is
-   marked `native-only` with the trigger.
+3. **S3 — `@std/io`. DONE.** Its C is
+   `packages/std-io/src/c/std_io.c`, ten entry points answering ints
+   only: `kind`, `open`, `close`, `mkdir`, `remove`, the durable-write
+   four (`temp`, `temp_fd`, `commit`, `drop`) and `env_set`. Seven
+   `avra_io_*` rows, seven `RtHost` variants and seven evaluator arms
+   left core; `avra_io_list` stays by §5.1 and now lands in the ONE
+   descriptor scratch, answering its token. `read_text` is open plus a
+   read loop plus close; `write_text` is a temp, a write loop and a
+   commit, with `defer drop(h)` on both paths.
+
+   THREE THINGS WORTH KEEPING FROM IT. **`corpus/io` DID NOT BECOME
+   NATIVE-ONLY** — it stays `eval == native == expected`, because the
+   compiler's own image links `@std/io` and S2a's host resolves the
+   package's C. The regression window was zero, which is what ordering
+   S2a first bought; predicted by the lead and measured here.
+
+   **THE ENVIRONMENT COULD NOT MOVE THE WAY IT WAS SPECIFIED**, and
+   the reason was mechanical: routing the value "through the
+   descriptor scratch" needs `fd_landed`, which is `static` in the
+   runtime with no exported door — the adoption row of §2.5.2, the
+   owner's to export. The shape that needs no door splits the
+   question: the package's C answers the PREDICATE (`env_set`, 0 set
+   and -1 unset) and core's existing environment row answers the
+   VALUE. That keeps the distinction the ruling was protecting — the
+   host hands back "" for a variable that is unset AND for one set to
+   nothing, so the value alone cannot tell them apart — and it needs
+   nothing new in core.
+
+   **AND `read_text` GAINED A REFUSAL**: bytes are now checked for
+   UTF-8, so `IoError.NotText` is possible where the old path handed
+   back whatever was on disk typed as `string`. That is the standard's
+   own §2.5 logic reaching the package's API. It cannot be provoked
+   from inside the package — every Avra `string` is already valid
+   UTF-8, so `write_text` cannot build the file its own refusal is
+   for — which is recorded as the absence of a test case rather than
+   papered over with one that asserts the wrong thing.
+
 4. **S4 — `@std/process`.** (lane B's package.) The spawn table, the
    pipes' descriptors, signals and reaping are package C; the PUMP —
    poll, drain, feed, escalate — moves into Avra over the descriptor
@@ -793,6 +820,17 @@ consumers in the evaluator, not two — the argument coercion, the
 answer coercion, and two projections the registry law forbids writing
 as `is .Variant`. All four are in `make vocab`, which reports eight
 where it reported five.
+
+**AND `make vocab` NAMING THEM IS THE REGISTRATION, NOT THE PROOF.**
+The proof is the enum growing and every consumer breaking. Measured:
+a throwaway seventh variant added to `RtKind` fails NINE sites —
+five in `llvm.av` (`ll_rt_kind`, `rt_arg`, `answers_word`, `answered`,
+`narrow_sign`) and four in `interp.av` (`stage_seat`, `answered`,
+`rides_fp`, `carries_cell`). Nine, not the eight a relayed estimate
+expected, because `carries_cell` was added after the design when the
+inout refusal landed. The variant was removed and the build is green
+again; the number is here so the next person does not have to run it
+to know what to expect.
 
 THE STATIC REFUSALS LANDED WITH IT. `make externs` now refuses a
 `long double`, an `__int128`, a vector, a bare struct or union by

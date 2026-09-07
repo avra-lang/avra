@@ -63,6 +63,36 @@ row "the tree's own C alone stands" 0 "" ""
 rows=$((rows + 1))
 make -n test >/dev/null 2>&1 || { echo "stems: the tree's own stems clash"; fails=$((fails + 1)); }
 
+# A TARGET THAT LINKS AN OBJECT MUST DEPEND ON IT. `make avra` runs
+# `./avra build packages/cli`, which links every `[link]` object in
+# that package's closure — so a target depending on a hand-kept list
+# fails on a tree where some other package's object was never made.
+# It happened twice: the evaluator's trampoline, then @std/io's own C,
+# each green only because a sibling target had built the object first.
+# Every object this tree compiles is a prerequisite of `avra` now, and
+# this is what says so.
+rows=$((rows + 1))
+prereqs=" $(make -p -n avra 2>/dev/null | grep -m1 '^avra:' | sed 's/^avra://') "
+# The manifests are the OTHER source: what each package promises the
+# link, checked against what make actually depends on. Reading the
+# glob again would be a copy of the Makefile's own rule and would
+# agree with it by construction.
+#
+# IT ASKS FOR MORE THAN THE COMPILER LINKS, deliberately. Only the
+# packages in `packages/cli`'s closure reach that link, and computing
+# a closure here would be a second implementation of the dependency
+# resolver. Demanding every package's object is the SAFE direction —
+# it can cost a vendored amalgamation compiled once on a cold tree,
+# and it cannot let a needed object go unbuilt.
+for obj in $(sed -n 's/.*objects *= *\[\(.*\)\].*/\1/p' packages/*/avra.toml \
+             | tr ',' '\n' | tr -d ' "' | sed 's|.*/||' | sort -u); do
+    case "$prereqs" in
+        *" build/$obj "*) ;;
+        *) echo "stems: \`make avra\` may link build/$obj but does not depend on it"
+           fails=$((fails + 1)) ;;
+    esac
+done
+
 if [ "$fails" != 0 ]; then
     echo "stems: $fails of $rows rows failed"
     exit 1

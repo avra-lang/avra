@@ -20,8 +20,26 @@ export LLVM_PREFIX
 
 # The objects the COMPILER itself links: the runtime every program
 # carries, and the compiler's own foreign machinery (the LLVM wrapper,
-# the evaluator's extern trampoline), which no user program does.
-RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o build/ffi.o
+# the evaluator's extern trampoline), which no user program does. The
+# name says COMPILER because that is what it is — a user's binary
+# links build/avra_runtime.o and nothing else here.
+#
+# ONE LIST, NOT TWO. The bootstrap's clang line spells its inputs, and
+# spelling them twice is a law waiting to disagree with itself: the
+# trampoline was added to one and not the other, and the seed-built
+# compiler would have failed to link the day the seed was refreshed.
+#
+# THIS IS WHAT THE BOOTSTRAP LINKS BY HAND, NOT WHAT THE COMPILER'S
+# BUILD NEEDS ON DISK. `make avra` runs `./avra build packages/cli`,
+# which links every `[link]` object in that package's dependency
+# closure — @std/io's among them — so a build that depended on this
+# list alone fails on a tree where the package's object was never
+# made. It did, twice: once for the trampoline and once for @std/io's
+# own C. The targets below depend on TREE_OBJS for that reason: every
+# object this tree compiles, so no link can want one that is absent.
+# The cost is one vendored amalgamation compiled on a cold tree that
+# the compiler does not link; the gate builds it anyway.
+COMPILER_OBJS := build/llvm_wrapper.o build/avra_runtime.o build/ffi.o
 
 # EVERY OBJECT THIS TREE COMPILES, ONE RULE. The language's own C
 # (runtime/, and the compiler's LLVM binding in backend/) and a
@@ -93,13 +111,13 @@ SUITES := packages/std-errors packages/std-testing packages/std-text packages/st
 # unread.
 .DEFAULT_GOAL := avra
 
-seed: $(RUNTIME_OBJS)
+seed: $(TREE_OBJS)
 	@./avra emit packages/cli > bootstrap/seed.ll
 	@echo "seed: bootstrap/seed.ll ($$(wc -l < bootstrap/seed.ll | tr -d ' ') lines)"
 
-bootstrap: $(RUNTIME_OBJS)
+bootstrap: $(TREE_OBJS)
 	@mkdir -p build
-	@clang -w -O1 bootstrap/seed.ll build/avra_runtime.o build/llvm_wrapper.o build/ffi.o \
+	@clang -w -O1 bootstrap/seed.ll $(COMPILER_OBJS) \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "bootstrap: build/avra from the seed — rebuilding from source"
@@ -108,7 +126,7 @@ bootstrap: $(RUNTIME_OBJS)
 # A REFUSAL MUST SPEAK: the build's own words went to /dev/null, so a compiler
 # that refused its own source reported only "make: *** Error 2" and the next
 # reader ran `./avra build packages/cli` by hand to find out why.
-avra: $(RUNTIME_OBJS)
+avra: $(TREE_OBJS)
 	@./avra build packages/cli > /tmp/avra-build.out 2>&1 || { cat /tmp/avra-build.out; exit 1; }
 	@mkdir -p build
 	@cp packages/cli/src/main build/avra
@@ -121,7 +139,7 @@ avra: $(RUNTIME_OBJS)
 sweep:
 	@rm -rf packages/*/build build/test_shards
 
-test: $(RUNTIME_OBJS) $(TREE_OBJS)
+test: $(TREE_OBJS)
 	@for p in $(SUITES); do \
 	  ./avra test $$p || exit 1; \
 	done
@@ -132,7 +150,7 @@ test: $(RUNTIME_OBJS) $(TREE_OBJS)
 # depend on a package: a broken package should fail its OWN suite
 # first, not this keeper, which would name the harness for someone
 # else's defect.
-traps: $(RUNTIME_OBJS)
+traps: $(TREE_OBJS)
 	@sh tools/traps.sh
 
 # Exact refcount and list-write counts; the shipping runtime is put
@@ -152,19 +170,19 @@ clean:
 	find corpus -type f ! -name "*.av" ! -name "*.expected" ! -name "expected" ! -name "avra.toml" ! -name "native-only" -delete
 	rm -rf packages/*/build
 
-check: $(RUNTIME_OBJS)
+check: $(TREE_OBJS)
 	@./avra check $(FILE)
 
-run: $(RUNTIME_OBJS)
+run: $(TREE_OBJS)
 	@./avra run $(FILE)
 
-ir: $(RUNTIME_OBJS)
+ir: $(TREE_OBJS)
 	@./avra ir $(FILE)
 
-emit: $(RUNTIME_OBJS)
+emit: $(TREE_OBJS)
 	@./avra emit $(FILE)
 
-build-native: $(RUNTIME_OBJS)
+build-native: $(TREE_OBJS)
 	@./avra build $(FILE)
 
 # The corpus gate: every corpus/*.av must say its .expected — first
@@ -183,7 +201,7 @@ build-native: $(RUNTIME_OBJS)
 # then SAYS "native == expected" rather than claiming a differential it
 # never ran. The label travels with the artifact: a reader of the gate's
 # output learns the program is single-engine without opening a document.
-corpus: $(RUNTIME_OBJS) $(TREE_OBJS)
+corpus: $(TREE_OBJS)
 	@./avra corpus corpus
 	@./avra corpus --native-only corpus/native
 	@for d in corpus/*/; do \
@@ -262,7 +280,7 @@ SQLITE_FLAGS := \
   -DSQLITE_DEFAULT_CACHE_SIZE=-8000 -DSQLITE_DEFAULT_WORKER_THREADS=0 \
   -DNDEBUG=1
 
-witness: $(RUNTIME_OBJS) build/width_witness.o
+witness: $(TREE_OBJS)
 	@./avra build packages/width-witness > /tmp/avra-witness.path 2>&1 \
 	  || { echo "witness: build FAILED"; cat /tmp/avra-witness.path; exit 1; }
 	@$$(tail -1 /tmp/avra-witness.path) > /tmp/avra-witness-avra.out
@@ -280,30 +298,30 @@ witness: $(RUNTIME_OBJS) build/width_witness.o
 # second compile of the whole compiler for one case.
 gate: stems vocab externs idioms tested traps corpus witness
 
-tested: $(RUNTIME_OBJS)
+tested: $(TREE_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
 	@./avra new feature zz_probe > /tmp/avra-scaffold-new.out 2>&1 || { cat /tmp/avra-scaffold-new.out; exit 1; }
 	@trap 'rm -rf packages/std-avrac/src/features/zz_probe' EXIT INT TERM; $(MAKE) -s test
 
 # The differential gate: the compiled binary must say exactly what
 # the evaluator says.
-native-check: $(RUNTIME_OBJS)
+native-check: $(TREE_OBJS)
 	@./avra run $(FILE) > /tmp/avra-eval.out
 	@./avra build $(FILE) > /tmp/avra-bin.path
 	@$$(cat /tmp/avra-bin.path) > /tmp/avra-native.out
 	@diff /tmp/avra-eval.out /tmp/avra-native.out && echo "native == eval"
 
 # The measured curve: suite + native corpus wall times.
-bench: $(RUNTIME_OBJS)
+bench: $(COMPILER_OBJS)
 	@sh tools/bench.sh
 
 # Mutated corpus through `avra check`: diagnose, never crash.
-fuzz: $(RUNTIME_OBJS)
+fuzz: $(COMPILER_OBJS)
 	@sh tools/fuzz.sh
 
 # The scaffolder's templates must stay compilable: scaffold a
 # throwaway feature, run the suite with it in the tree, remove it.
-scaffold-check: $(RUNTIME_OBJS)
+scaffold-check: $(TREE_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
 	@./avra new feature zz_probe > /tmp/avra-scaffold-new.out 2>&1 || { cat /tmp/avra-scaffold-new.out; exit 1; }
 	@./avra test packages/std-avrac/src/features/zz_probe/tests/zz_probe_test.av > /tmp/avra-scaffold.out 2>&1; s=$$?; \

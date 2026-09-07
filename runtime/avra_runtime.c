@@ -1944,64 +1944,27 @@ int64_t avra_selfhost_write_file(const char* path, const char* content) {
     return write_whole(path, content) == 0;
 }
 
-// ── Files, streams and the environment ──────────────────────────
-// The substrate @std/io stands on. Every verb answers a STATUS — 0
-// done, -errno refused — and hands text through ONE stash that
-// avra_io_taken empties: the library judges the status, then takes.
-
-static const char* g_io_text = NULL;
-
-// The stash holds one owned text; a new one releases the last.
-static void io_stash(const char* owned) {
-    if (g_io_text) avra_rc_release((void*)g_io_text);
-    g_io_text = owned;
-}
-
-// The stashed text, handed over once — its reference moves to the
-// caller; "" when nothing waits.
-const char* avra_io_taken(void) {
-    const char* text = g_io_text ? g_io_text : str_owned("", 0);
-    g_io_text = NULL;
-    return text;
-}
+// ── Streams, and the ONE directory listing ──────────────────────
+// What is left of the io substrate after @std/io took its own C. A
+// package opens, stats, makes and removes; only LISTING stays, because
+// a directory entry's name is text that flows through no descriptor
+// and nothing but the runtime may mint a box. RECORDED TRIGGER: the
+// adoption row of docs/2026_09_06_FOREIGN_TEXT_ADOPTION.md, which is
+// the owner's to export — the day it lands this leaves too.
 
 void avra_eputs(const char* s) {
     if (s) fputs(s, stderr);
     fputc('\n', stderr);
 }
 
-// What stands at the path: 0 nothing, 1 a file, 2 a directory, 3
-// something else; -errno when the host will not say.
-int64_t avra_io_kind(const char* path) {
-    struct stat st;
-    if (stat(path, &st) != 0) return errno == ENOENT ? 0 : -errno;
-    if (S_ISREG(st.st_mode)) return 1;
-    if (S_ISDIR(st.st_mode)) return 2;
-    return 3;
-}
-
-// The whole file, stashed.
-int64_t avra_io_read(const char* path) {
-    struct stat st;
-    if (stat(path, &st) != 0) return -errno;
-    if (S_ISDIR(st.st_mode)) return -EISDIR;
-    FILE* f = fopen(path, "rb");
-    if (!f) return -errno;
-    io_stash(read_whole(f));
-    fclose(f);
-    return 0;
-}
-
-int64_t avra_io_write(const char* path, const char* content) {
-    return write_whole(path, content);
-}
-
 static int by_text(const void* a, const void* b) {
     return strcmp((const char*)(uintptr_t)*(const int64_t*)a, (const char*)(uintptr_t)*(const int64_t*)b);
 }
 
-// The directory's entries in byte order, joined on `/` — the one
-// byte no name can hold — and stashed; `.` and `..` never among them.
+// The directory's entries in byte order, joined on `/` — the one byte
+// no name can hold — landed in the descriptor scratch; `.` and `..`
+// never among them. Answers the scratch's TOKEN, which avra_fd_taken
+// mints from once.
 int64_t avra_io_list(const char* path) {
     DIR* d = opendir(path);
     if (!d) return -errno;
@@ -2014,9 +1977,17 @@ int64_t avra_io_list(const char* path) {
     closedir(d);
     AvraArray* a = (AvraArray*)names;
     qsort(a->data, (size_t)a->len, sizeof(int64_t), by_text);
-    io_stash(avra_str_join(names, "/"));
+    const char* joined = avra_str_join(names, "/");
     avra_rc_release(names);
-    return 0;
+    size_t n = str_len(joined);
+    // ONE SCRATCH, ONE TAKE. A listing past the scratch is -E2BIG and
+    // never a silent truncation; an EMPTY directory lands zero bytes
+    // and answers a token whose take is the empty box, which is the
+    // first case this had to answer and not the last.
+    if (n > FD_SCRATCH) { avra_rc_release((void*)joined); return -E2BIG; }
+    memcpy(g_fd_buf, joined, n);
+    avra_rc_release((void*)joined);
+    return fd_landed((int64_t)n);
 }
 
 // Every directory along the path made; one already standing is fine,
@@ -2039,24 +2010,6 @@ static int64_t mkdir_all(const char* path) {
         }
         buf[i] = saved;
     }
-    return 0;
-}
-
-int64_t avra_io_mkdir(const char* path) {
-    return mkdir_all(path);
-}
-
-// A file, or an empty directory, gone.
-int64_t avra_io_remove(const char* path) {
-    return remove(path) == 0 ? 0 : -errno;
-}
-
-// The variable's value stashed; -1 when it is not set at all — an
-// empty value is set.
-int64_t avra_io_env(const char* name) {
-    const char* v = getenv(name);
-    if (!v) return -1;
-    io_stash(str_owned(v, strlen(v)));
     return 0;
 }
 
