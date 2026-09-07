@@ -2,6 +2,7 @@
 // case first, then the escape, the two laws over the holes, and the
 // faults a malformed literal earns.
 use @std.avrac.features.formats.{read_format, has_holes, Fault}
+use @std.avrac.testing.{shown, refused_with}
 use @std.avrac.core.{nothing_bound, bound_names, FormatPart}
 use @std.avrac.language.{analyze_source}
 
@@ -163,6 +164,33 @@ spec "features/formats" {
         }
         then "a typed hole names the type nothing reads yet" {
             analyze_source("match \"x\" { \"{n: int}z\" -> 1\n    _ -> 0 }").report().starts_with("error[F2060]: `{n: int}` parses its span, and nothing reads text as `int` yet\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{n: int}z\" -> 1\n  ·             ┬\n  ·             ╰── here\n──╯\nhelp: take the span as text and convert it in the arm — a typed hole arrives with the decimal row")
+        }
+    }
+
+    given "a grammar declaration" {
+        then "its holes are the fields of a record of its name" {
+            shown("grammar Line = \"{method} {path}\"\nlet r = Line { method: \"GET\", path: \"/x\" }\n\"\${r.method}\${r.path}\"") == "GET/x"
+        }
+        then "the fields keep the holes' order and names" {
+            shown("grammar P = \"{a}-{b}-{c}\"\nlet p = P { a: \"1\", b: \"2\", c: \"3\" }\n\"\${p.a}\${p.b}\${p.c}\"") == "123"
+        }
+        then "a format with no holes names no fields, and is refused" {
+            refused_with("grammar Empty = \"no holes here\"\n1", "has no holes")
+        }
+        then "a hole that binds nothing cannot name a field" {
+            refused_with("grammar Anon = \"{a} {_}\"\n1", "has a hole that binds nothing")
+        }
+        then "a typed hole names the row it waits for" {
+            refused_with("grammar Typed = \"{n: int}z\"\n1", "nothing reads text as `int` yet")
+        }
+        then "two holes with nothing between them cannot be scanned, so cannot be declared" {
+            refused_with("grammar Adj = \"{a}{b}\"\n1", "a scan needs a literal between them")
+        }
+        then "one name twice is refused by the record's own law" {
+            refused_with("grammar Dup = \"{a}z{a}\"\n1", "declares `a` more than once")
+        }
+        then "a malformed format refuses where the brace is" {
+            refused_with("grammar Bad = \"a{b\"\n1", "opens a hole that is never closed")
         }
     }
 }
