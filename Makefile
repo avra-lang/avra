@@ -159,7 +159,8 @@ bootstrap: $(COMPILER_OBJS)
 # that refused its own source reported only "make: *** Error 2" and the next
 # reader ran `./avra build packages/cli` by hand to find out why.
 avra: $(COMPILER_OBJS)
-	@./avra build packages/cli > /tmp/avra-build.out 2>&1 || { cat /tmp/avra-build.out; exit 1; }
+	@mkdir -p build
+	@./avra build packages/cli > build/avra-build.out 2>&1 || { cat build/avra-build.out; exit 1; }
 	@mkdir -p build
 	@cp packages/cli/src/main build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
@@ -317,15 +318,23 @@ SQLITE_FLAGS := \
   -DSQLITE_DEFAULT_CACHE_SIZE=-8000 -DSQLITE_DEFAULT_WORKER_THREADS=0 \
   -DNDEBUG=1
 
+# EVERY WORKING FILE LIVES IN `build/`, WHICH IS PER-WORKTREE. A
+# shared `/tmp` path is written by one lane and read by another: the
+# `.out` files here are DIFFED, and every worktree runs the same
+# witness, so a clobber between two lanes comparing the same program
+# is a false PASS rather than a noisy failure. `build/witness-c` was
+# the sharpest — a BINARY one lane compiled and another could run,
+# under a rule whose whole claim is "Avra == C on the SAME object".
+# The build LOCK stays in /tmp by design: it is machine-wide.
 witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@./avra build packages/width-witness > /tmp/avra-witness.path 2>&1 \
-	  || { echo "witness: build FAILED"; cat /tmp/avra-witness.path; exit 1; }
-	@$$(tail -1 /tmp/avra-witness.path) > /tmp/avra-witness-avra.out
-	@cc -O2 -o /tmp/avra-witness-c packages/width-witness/src/reader.c build/width_witness.o
-	@/tmp/avra-witness-c > /tmp/avra-witness-c.out
-	@diff /tmp/avra-witness-c.out /tmp/avra-witness-avra.out \
+	@./avra build packages/width-witness > build/witness.path 2>&1 \
+	  || { echo "witness: build FAILED"; cat build/witness.path; exit 1; }
+	@$$(tail -1 build/witness.path) > build/witness-avra.out
+	@cc -O2 -o build/witness-c packages/width-witness/src/reader.c build/width_witness.o
+	@build/witness-c > build/witness-c.out
+	@diff build/witness-c.out build/witness-avra.out \
 	  || { echo "witness: Avra and C disagree on the same object — the extern seam lost a width"; exit 1; }
-	@echo "witness: Avra == C on the same object — $$(cat /tmp/avra-witness-avra.out)"
+	@echo "witness: Avra == C on the same object — $$(cat build/witness-avra.out)"
 
 # The whole gate: the vocabulary's guarantee, idioms, unit specs,
 # then the corpus end to end.
@@ -337,16 +346,16 @@ gate: stems vocab fingerprints externs idioms tested traps corpus witness
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
-	@./avra new feature zz_probe > /tmp/avra-scaffold-new.out 2>&1 || { cat /tmp/avra-scaffold-new.out; exit 1; }
+	@./avra new feature zz_probe > build/scaffold-new.out 2>&1 || { cat build/scaffold-new.out; exit 1; }
 	@trap 'rm -rf packages/std-avrac/src/features/zz_probe' EXIT INT TERM; $(MAKE) -s test
 
 # The differential gate: the compiled binary must say exactly what
 # the evaluator says.
 native-check: $(COMPILER_OBJS)
-	@./avra run $(FILE) > /tmp/avra-eval.out
-	@./avra build $(FILE) > /tmp/avra-bin.path
-	@$$(cat /tmp/avra-bin.path) > /tmp/avra-native.out
-	@diff /tmp/avra-eval.out /tmp/avra-native.out && echo "native == eval"
+	@./avra run $(FILE) > build/native-check-eval.out
+	@./avra build $(FILE) > build/native-check-bin.path 2> build/native-check-bin.err
+	@"$$(cat build/native-check-bin.path)" > build/native-check-native.out
+	@diff build/native-check-eval.out build/native-check-native.out && echo "native == eval"
 
 # The measured curve: suite + native corpus wall times.
 bench: $(COMPILER_OBJS)
@@ -360,8 +369,8 @@ fuzz: $(COMPILER_OBJS)
 # throwaway feature, run the suite with it in the tree, remove it.
 scaffold-check: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
-	@./avra new feature zz_probe > /tmp/avra-scaffold-new.out 2>&1 || { cat /tmp/avra-scaffold-new.out; exit 1; }
-	@./avra test packages/std-avrac/src/features/zz_probe/tests/zz_probe_test.av > /tmp/avra-scaffold.out 2>&1; s=$$?; \
+	@./avra new feature zz_probe > build/scaffold-new.out 2>&1 || { cat build/scaffold-new.out; exit 1; }
+	@./avra test packages/std-avrac/src/features/zz_probe/tests/zz_probe_test.av > build/scaffold.out 2>&1; s=$$?; \
 	  rm -rf packages/std-avrac/src/features/zz_probe; \
-	  if [ $$s -ne 0 ]; then echo "scaffold-check FAILED"; tail -20 /tmp/avra-scaffold.out; exit 1; fi; \
+	  if [ $$s -ne 0 ]; then echo "scaffold-check FAILED"; tail -20 build/scaffold.out; exit 1; fi; \
 	  echo "scaffold-check: the templates compile and their test passes"

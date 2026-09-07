@@ -364,8 +364,9 @@ engine's spec, written by dogfooding.
   were the same value), `fn f<T>(x: int)` and `fn f<T, x: int>()`.
   THE FIX IS ARITY: fold each sequence to ONE value so a payload's
   shape is fixed per kind. BOTH INTUITIVE FIXES ARE WRONG, and
-  each is worth knowing. A SEPARATOR is the first — `stmt_fps(then)
-  ++ [0] ++ stmt_fps(else)` was written by someone who saw this
+  each is worth knowing. A SEPARATOR is the first —
+  `stmt_fps(then).concat([0]).concat(stmt_fps(else))` was written by
+  someone who saw this
   hazard exactly and spent the one value that is not spare, which
   is the empty-value law above wearing this law's clothes. A
   RENUMBERING is the second: under a LINEAR fold (`131t + x + 7`)
@@ -650,6 +651,40 @@ engine's spec, written by dogfooding.
      variant breaks all eight at compile time. The vocabulary
      cannot grow half-way, and a variant nobody implements cannot
      ship. Keep them catch-all free.
+  5. AND THE PROTOCOL GUARDS THE WRONG DOOR ON ITS OWN — it gates
+     ADDING a variant and says nothing about REPURPOSING one, so it
+     refuses the honest change and would pass the dishonest one.
+     THE SEQUENCE IS THE RECIPE, and no name belongs on it: seat
+     retains were wanted distinguishable for a measurement; the
+     HONEST form is a reason on `Ins.Retain`, and it was REFUSED on
+     the four justifications, rightly, since a measurement is not a
+     control shape, a value category, a memory boundary or a machine
+     shape; the hatch below was then reached for, and its cost was
+     noticed only while WRITING OUT WHY THE REFUSAL WAS RIGHT. Had
+     the honest version not been refused first, the dishonest one
+     would have been built and nobody would have looked. So the
+     finding needs both moves and belongs to neither — REFUSE THE
+     HONEST FORM ON THE RULE, THEN WRITE DOWN WHY, and the cheat you
+     were about to reach for becomes visible in the writing.
+     THE ESCAPE HATCH PASSES EVERY GATE: emit `CallRt("avra_rc_retain_seat", [r])` at seat
+     sites instead. An existing instruction, an existing mechanism,
+     one registry row, no vocabulary growth — and those retains stop
+     being RETAINS to the compiler. The memory pass reasons about
+     `Ins.Retain`; the largest category of the thing it exists to
+     manage would become an opaque runtime call, and liveness and
+     every later placement pass would silently stop seeing it.
+     THE LAW: THE REASON A VALUE WAS PRODUCED IS NOT PART OF WHAT THE
+     INSTRUCTION MEANS. Encoding it there — as a payload, a sibling
+     variant, or a runtime row worn as a disguise — CORRUPTS the
+     instruction rather than extending it. So the question the four
+     justifications do not ask, and the one to ask first: does every
+     pass that reads this instruction still read the same thing
+     afterwards? A change that grows nothing and answers NO is worse
+     than one that grows the vocabulary and answers yes.
+     THE MEASUREMENT WANTED A COMPILER-SIDE COUNT INSTEAD — the
+     memory pass knows why it emitted each retain at the moment it
+     emits it (four emitters: a cell store, an owned load, a scope's
+     yield, a call seat), and counting them needs no IR at all.
   The backend and memory pass stay functions of the IR, dispatching
   on shapes, never on features.
 - THE VOCABULARY SEAM RULE — which shape a new vocabulary takes,
@@ -890,6 +925,19 @@ Syntax the grammar lacks:
   not-your-home"` above it, the same line compiles clean and the
   command becomes `echo /tmp/not-your-home`. Spell a shell variable
   `$VAR`, which Avra leaves alone.
+- A MAP'S KEYS ARE STRINGS ONLY: `Map<int, int>` is F2019 "a map's
+  keys are strings, not `int`", help "other key types are recorded".
+  It kills the obvious trie-node shape; key by the text.
+- `++` IS NOT A LIST OPERATOR: `xs ++ ys` is "expected BREAK while
+  parsing `stmt`" AT the `++`, and the fn then reads as answering
+  `void`, so the real refusal arrives as a type error about the
+  body. `xs.concat(ys)` is the spelling.
+- `List` HAS `all`, NOT `every`: `.every(it > 0)` is F2030, `.all(it
+  > 0)` compiles — which retires the double negative `![…].any(!it)`.
+- A COMPREHENSION TAKES ONE `for` HEAD: `[a + b for a in as for b in
+  bs]` does not parse, and the SYMPTOM MISDIRECTS — the binding is
+  reported UNDEFINED AT ITS USE SITE (F3000) with nothing said at the
+  comprehension. A nested sweep is a named helper per outer element.
 - A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA
   when another arm follows (found by the HTTP lane, probed here).
   `match v { .R(o) -> o` with `.S -> "s"` on the next line is
@@ -1286,6 +1334,30 @@ Runtime facts, ours to ratify:
   wrong. Telling the two laws apart is the whole skill: ask whether
   the failing case CAN BE BUILT. If it can, build it; if it cannot,
   trace it and write the deadline down.
+- A CHECK THAT EXAMINED NOTHING IS NOT A CHECK THAT PASSED. A keeper
+  reading objects from disk examines nothing on a COLD TREE and
+  reports success; a grep scoped too narrowly answers "absent" about
+  a thing that exists — `avra_ptr_at` read as missing here because
+  the search was confined to `packages/`, and it was in the runtime
+  and the corpus. So A KEEPER COUNTS WHAT IT LOOKED AT AND SAYS SO:
+  `tools/externs.py` already does ("N C source(s)"), `make idioms`
+  reports its debt and not its coverage. The hazard is live because
+  there are TWO LINK SITES — the bootstrap's hand-written clang line
+  and `make avra`'s per-target prerequisites — and a hand-kept list
+  let the compiler link an object it had never built, twice in one
+  night. A keeper for that must read a DIFFERENT SOURCE than the
+  Makefile: the manifests for the package list, `nm build/avra` for
+  the compiler's. (Substrate lane's, attributed; the two sites and
+  the idioms gap verified here.)
+- ORDER, NOT GRANULARITY: when two requirements are opposite
+  ORDERINGS around one event, no tuning satisfies both and TWO
+  INVARIANTS do. A deadline already passed must fire BEFORE the child
+  is polled, or `echo` under `ms(0)` still gets its word out; and a
+  timeout's capture must hold everything readable WHEN it fired, so
+  the last act before declaring is a DRAIN and the grace is a floor.
+  Stated as order, the process pump's turn length was never tuned
+  once when it moved from C into Avra — A TUNED INTERVAL IS THE SMELL
+  that two orderings are being approximated by one number.
 - AN ASSUMPTION NOTHING HAS EVER TRIED TO VIOLATE IS NOT A GUARANTEE.
   A check that passes proves the arrangement it was handed happened
   to work; it does not prove the check would NOTICE. Two shapes,
