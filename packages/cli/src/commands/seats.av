@@ -1,0 +1,21 @@
+//! `avra seats` — the qualifying share for a conditional ABI: how
+//! many managed call seats have a callee that only reads them.
+use @std.cli.{Subcommand, CliResult, Runnable}
+use @std.avrac.language.{seat_census, render_census, Program}
+use @std.io.{println}
+
+type SeatsCmd = { }
+
+impl Runnable for SeatsCmd {
+    fn run(args: CliResult) -> int { phased(args, "lower+count", tallied) }
+}
+
+fn tallied(p: Program) -> Result<int, string> {
+    if !p.clean() { fail p.report() }
+    println(render_census(seat_census(p.lowered())))
+    0
+}
+
+export fn seats_command() -> Subcommand {
+    Subcommand { meta: file_command("seats", "Count managed seats whose callee only reads them"), body: SeatsCmd { } }
+}

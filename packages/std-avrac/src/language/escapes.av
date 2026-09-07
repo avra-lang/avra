@@ -1,0 +1,79 @@
+//! THE QUALIFYING SHARE — how many managed seats have a callee that
+//! only READS them. Callee-cleans makes the caller retain every
+//! managed argument and the callee release it, so a seat the callee
+//! never keeps costs a retain AND its paired release for nothing;
+//! that pair is what a conditional ABI would stop spending.
+//!
+//! IT ANSWERS A BRACKET, NOT A NUMBER, and the bracket is honest
+//! about which gap is which. The CEILING assumes every runtime row
+//! borrows, which is the law; the FLOOR assumes every row keeps,
+//! which the `_owned` twins actually do and no `RtSig` column yet
+//! declares. Both are computed per body, so the day a `keeps` column
+//! lands the two collapse into one answer.
+//!
+//! BOTH BOUNDS ARE CONSERVATIVE AT A CALL: a seat handed to another
+//! Avra fn counts as escaping, because the callee's own disposition
+//! needs a fixpoint over the call graph. So the true share is at
+//! least the ceiling, and a fixpoint changes the size, never the
+//! sign.
+use core.{Ins, Reg, TypeId, TypeRegistry, escapes_in, rt_seat, flatten, joined}
+
+/// A body's managed seats, split by what the callee does with them.
+type BodySeats = { name: string, managed: List<int>, reads: List<int>, certain: List<int> }
+
+/// The whole program's seats: how many are managed, and the bracket
+/// on how many a callee only reads.
+export type SeatCensus = { bodies: int, seats: int, ceiling: int, floor: int, lines: List<string> }
+
+export fn seat_census(l: Lowered) -> SeatCensus {
+    let rows = [body_seats(l.types, b) for b in l.fns]
+    SeatCensus {
+        bodies: l.fns.length,
+        seats: flatten([r.managed for r in rows]).length,
+        ceiling: flatten([r.reads for r in rows]).length,
+        floor: flatten([r.certain for r in rows]).length,
+        lines: [seat_line(r) for r in rows if !r.managed.is_empty()],
+    }
+}
+
+/// The census as text — the bracket first, the bodies under it.
+export fn render_census(c: SeatCensus) -> string {
+    joined([
+        "seats: ${c.seats} managed, across ${c.bodies} bodies",
+        "read-only: ${c.floor} to ${c.ceiling} — the gap is the runtime rows, which borrow by law and keep by suffix",
+        "both bounds count a seat handed to another fn as escaping",
+    ].concat(c.lines), "\n")
+}
+
+fn body_seats(types: TypeRegistry, b: Body) -> BodySeats {
+    let managed = managed_seats(types, b)
+    // `certain` is a SUBSET of `reads` — the rows are the only doubt
+    let reads = [j for j in managed if !escapes(b.ins, Reg { index: j })]
+    BodySeats {
+        name: b.name,
+        managed: managed,
+        reads: reads,
+        certain: [j for j in reads if !rides_a_row(b.ins, Reg { index: j })],
+    }
+}
+
+/// The seat indexes at which a body's params hold managed values —
+/// the params ARE registers 0..N-1, so an index is a register.
+fn managed_seats(types: TypeRegistry, b: Body) -> List<int> {
+    [j for j, pt in b.params if is_managed(types, pt)]
+}
+
+/// Does any instruction let `r` outlive the body?
+fn escapes(ins: List<Ins>, r: Reg) -> bool {
+    ins.any(escapes_in(it, r))
+}
+
+/// Does `r` reach a runtime row, whose owning twins keep what they
+/// are handed?
+fn rides_a_row(ins: List<Ins>, r: Reg) -> bool {
+    ins.any(rt_seat(it, r))
+}
+
+fn seat_line(r: BodySeats) -> string {
+    "  ${r.name}: ${r.certain.length} to ${r.reads.length} of ${r.managed.length} read-only"
+}
