@@ -654,6 +654,31 @@ the compiler checking itself 28.8s.
         probe's 7 ns. The isolated measurement resolves what the
         composite cannot, and reading the composite's silence as
         absence is the instrument reporting what it cut.
+        IMMORTAL `once` ANSWERS (2b4685d) MEASURED THE SAME WAY, and
+        the accounting says something the design did not promise. On
+        ONE tree (lane/http 1c47ce5), one compiler, one bench binary,
+        only `build/avra_runtime.o` swapped:
+
+            retains   410,001,348 -> 238,000,998   (205 -> 119 a head)
+            releases  480,001,749 -> 308,001,380
+            reclaims   70,000,401 -> 70,000,401    (unchanged)
+            2066/2104/2069 ns a head -> 2028/2038/2020
+
+        RECLAIMS UNCHANGED IS THE CONTROL: nothing died differently,
+        only the counting stopped. And 172,000,350 retains removed
+        against 86,000,194 once reads is EXACTLY 2.00 PER READ, where
+        the design predicted one — `avra_once_get`'s own retain is
+        86M of it, and the other 86M is every OTHER site that touched
+        the value, because an immortal box no-ops a retain wherever it
+        is taken. Two of those are named (`crlf` 12.0M, `tchar`
+        10.0M); 64M sit at sites nobody listed.
+        SO IMMORTALITY IS WORTH ~2x WHAT BORROWING WOULD HAVE BEEN,
+        which is an argument for the door independent of the one that
+        chose it. Borrowing removes the READ's retain and its paired
+        release; immortality removes the value's retains EVERYWHERE.
+        The borrow route was rejected for over-releasing (the once
+        region's arms differ in ownership); it would also have been
+        half the prize.
         A THIRD, 2026-09-07: TAKING THE FRAME OUT OF
         `avra_array_get_owned` — REFUTED, and it refines the
         cold-path law rather than denying it. That fn builds a
