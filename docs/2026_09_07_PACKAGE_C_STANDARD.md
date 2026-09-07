@@ -444,6 +444,66 @@ generation is its cousin and not a second instance — that guards one
 scratch against a deferred read, where this guards a multi-call
 sequence against abandonment.
 
+### 2.7 A STRING CROSSING TO C IS ONE STRING
+
+Avra measures text by the header's length; C reads to the first NUL.
+So a string holding one is TWO VALUES at the seam — the guard and the
+callee inspect different bytes, and a name that was checked is not the
+name that is used. `@std/io` measured what that costs: a 79-byte path
+ending `/../../etc/passwd` read a 5-byte file and `exists` answered
+true for a path that does not exist, identically on both engines.
+
+**THE CHECK IS AT THE CROSSING AND NOWHERE ELSE.** One C helper,
+`avra_str_crossing`, called from both seams — the native lowering
+emits it at every non-inert text seat, and the extern frame's text
+staging calls the same function. That is what makes it impossible for
+the engines to disagree about which strings may cross. A NUL traps
+with the offset in its words and exit 2: never a truncation, never an
+escape, never a quieter spelling that gets through.
+
+**WHAT MATURE RUNTIMES DO**, because this is not novel and the design
+should not pretend it is. Rust's `CString::new` answers a `NulError`
+carrying the position. Go's `syscall.ByteSliceFromString` answers
+`EINVAL`. Python raises `ValueError: embedded null byte`. Node throws
+`ERR_INVALID_ARG_VALUE`. PHP's long history of truncating instead is
+the counter-example each of them was written against.
+
+**THE EXEMPTION IS WRITTEN AT THE SITE, AND ITS POLARITY IS THE POINT.**
+A registry row whose C reads the bytes it was handed and resolves
+nothing outside the program — no path, no name, no command, no
+environment key — writes `inert: true` beside `owns_result` and
+`lends`. THE DEFAULT IS CHECKED: a row nobody has thought about is
+checked, not exempt, because an `exempt: false` default makes
+forgetting the field identical to deciding it and the forgetting is
+silent. A package's extern can NEVER be inert — its C is not ours to
+certify.
+
+`inert` says RESOLVES NOTHING. It is not a claim of NUL-safety: the
+five lossy primitives CLAUDE.md records (`==`, `contains`, `index_of`,
+`split`, `replace` stop at a NUL) are inert AND lossy, and that is a
+separate language question with its own record.
+
+**THE FACES REFUSE FIRST, AND THIS IS THE BELT.** `@std/io`'s
+`Holed(path, at)` and `@std/process`'s guard refuse with words a
+program can HANDLE, before any C is reached. The trap is what stands
+behind a face nobody wrote.
+
+**`Bytes` IS THE ESCAPE.** A seat carrying its own length is for a
+caller who means octets, and the check never touches one: it fires for
+a TEXT register only, so a list or a map at a pointer seat is a box
+and not a name.
+
+**THE COST, MEASURED AND HONESTLY BOUNDED.** The inert rows pay
+nothing, which is why the framer benches are unchanged — their spreads
+overlap completely across the change, which confirms no regression
+rather than proving a number. Measured directly instead, 400,000
+crossings of a 128-byte name through a checked row: 142 ns per call
+with the check against 136 without, medians of three runs with a
+132-183 spread on a machine shared by eight sessions. The check is a
+`memchr` over the string's length, and it is below the noise floor of
+the `getenv` it guards. Every checked seat precedes a syscall or a
+spawn; that is why the line was drawn at resolution.
+
 ## 3. THE SHAPE OF A PACKAGE'S C — the checklist
 
 For every package that owns C, in this order; a box unticked is a gap

@@ -600,17 +600,34 @@ impl Emit {
     /// UNCONVERTED — the conversions all live in the branch it skips.
     fn rt_arg(callee: string, j: int, r: Reg) -> ptr {
         let v = self.vals[r.index]
-        let sig: RtSig? = self.callee_sig(callee)
-        if sig == null { return v }
-        if j >= sig!.params.length { return v }
-        match sig!.params[j] {
+        let found: RtSig? = self.callee_sig(callee)
+        if found == null { return v }
+        let sig = found!
+        if j >= sig.params.length { return v }
+        match sig.params[j] {
             .I64 -> self.worded(r, v),
             // the low bits are what a narrow C seat reads; the
             // SIGN of an argument is the callee's to interpret
             .I32 or .U32 -> avra_llvm_build_trunc(self.b, v, avra_llvm_int32_type(self.lc), "narrow"),
             .F64 -> v,
-            .Ptr or .Void -> v,
+            .Ptr or .Void -> self.crossing(sig, r, v),
         }
+    }
+
+    /// A STRING CROSSING TO C IS ONE STRING. Avra measures text by the
+    /// header and C reads to the first NUL, so a string holding one is
+    /// TWO VALUES at the seam. The check is a call to the runtime's
+    /// own `avra_str_crossing`, which the extern frame calls too — ONE
+    /// check, so the engines cannot disagree about which strings are
+    /// allowed to cross.
+    ///
+    /// It fires for a TEXT register only. `Bytes` carries its own
+    /// length and is the escape for a caller who means octets; a list
+    /// or a map at a `Ptr` seat is a box, not a name.
+    fn crossing(sig: RtSig, r: Reg, v: ptr) -> ptr {
+        if sig.inert { return v }
+        if !(self.types.shape_of(self.tys[r.index]) is .Str) { return v }
+        self.call("avra_str_crossing", [v])
     }
 
     /// A value cast into the I64 slot every category rides.

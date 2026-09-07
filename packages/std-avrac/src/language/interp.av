@@ -572,6 +572,13 @@ impl Machine {
             if host != null { return self.hosted_extern(host!, callee, vals) }
             return self.defect_val("an unknown runtime callee `${callee}` survived lowering")
         }
+        // THE SAME CHECK THE BACKEND EMITS, at the same seam. A row's
+        // arm hands C an Avra string directly, so without this the
+        // evaluator would let a NUL-bearing name cross where the
+        // native binary traps — the engines disagreeing about which
+        // strings may cross, which is the one thing this check exists
+        // to prevent.
+        self.crossings(sig!, vals)
         let host = sig!.host
         match host {
             .Puts -> self.puts_val(vals),
@@ -637,6 +644,18 @@ impl Machine {
         }
     }
 
+
+    /// Every text seat of a non-inert row checked before it crosses.
+    fn crossings(sig: RtSig, vals: List<Val>) {
+        if sig.inert { return }
+        for i, k in sig.params { self.crossed(k, vals[i]) }
+    }
+
+    fn crossed(k: RtKind, v: Val) {
+        if !carries_text(k) { return }
+        let t: string? = text_of_val(v)
+        if t != null { let _ = avra_str_crossing(t!) }
+    }
 
     /// AN EXTERN, HOSTED: the symbol in the running image, called
     /// through ONE fully applied frame. The declaration's row is the
@@ -1284,6 +1303,7 @@ extern fn avra_ffi_set_text(at: int, s: string)
 extern fn avra_ffi_call(sym: int) -> int
 extern fn avra_ffi_call_f64(sym: int) -> int
 extern fn avra_ffi_text_at(address: int) -> string
+extern fn avra_str_crossing(s: string) -> string
 
 /// WHICH REGISTER FILE A SEAT RIDES. Spelled over every kind rather
 /// than asked with `is`: `RtKind` is a registry, and a boolean about
@@ -1301,6 +1321,26 @@ fn rides_fp(k: RtKind) -> bool {
 /// interleave.
 fn file_slots(kinds: List<RtKind>) -> List<int> {
     [[1 for j, p in kinds if j < i && rides_fp(p) == rides_fp(k)].length for i, k in kinds]
+}
+
+/// WHETHER A SEAT COULD CARRY TEXT — a pointer seat, and only that.
+/// Spelled over every kind: `RtKind` is a registry, and a boolean
+/// asking about ONE variant forgets the next exactly as a catch-all
+/// would.
+fn carries_text(k: RtKind) -> bool {
+    match k {
+        .Ptr -> true,
+        .I64 or .Void or .I32 or .U32 or .F64 -> false,
+    }
+}
+
+/// A `Val`'s text, or absence — the evaluator's own enum, so a
+/// catch-all here forgets nothing a registry would.
+fn text_of_val(v: Val) -> string? {
+    match v {
+        .S(t) -> t,
+        rest -> null,
+    }
 }
 
 /// WHETHER A SEAT CARRIES A CELL — an inout, holding the address of

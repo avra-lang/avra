@@ -67,8 +67,13 @@ void avra_ffi_set_f64(int64_t k, int64_t bits) {
 
 /* A text seat: the box the caller holds, passed as the pointer C
    reads. Avra hands it over borrowed and C must not keep it. */
+extern const char* avra_str_crossing(const char* s);
+
 void avra_ffi_set_text(int64_t k, const char* s) {
-    if (k >= 0 && k < AVRA_FFI_MAX_I) g_ffi_i[k] = (int64_t)(uintptr_t)s;
+    /* A PACKAGE'S EXTERN CAN NEVER BE INERT — its C is not ours to
+       certify — so every text seat crossing this frame is checked,
+       by the same helper the backend emits at its own seam. */
+    if (k >= 0 && k < AVRA_FFI_MAX_I) g_ffi_i[k] = (int64_t)(uintptr_t)avra_str_crossing(s);
 }
 
 /* The symbol in the running image, or 0 when there is none. Only the
