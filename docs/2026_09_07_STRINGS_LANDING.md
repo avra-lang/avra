@@ -894,7 +894,7 @@ arc**.
 ## 8. (h) The diagnostics
 
 Codes claimed from the first free typing slot at `9fe5597`, where F2057
-is the highest in use. **F2058–F2062 are claimed by announcement**: the
+is the highest in use. **F2063–F2062 are claimed by announcement**: the
 HTTP lead confirms F2057 is the highest on `main` and lane C has
 reserved nothing past it. Re-checked against `main` immediately before
 S2 commits; if the build refuses a collision, the codes move and nothing
@@ -902,8 +902,8 @@ else does.
 
 | code | kind | message | help |
 |---|---|---|---|
-| F2058 | `type.format` | ``a format pattern reads text, found `int` `` | "a format matches a `string` or a `Bytes`" |
-| F2059 | `type.format_capture` | ``a capture named `id` twice — one name, one span`` | "rename one, or write `{_}` for a span you do not need" |
+| F2063 | `type.format` | ``a format pattern reads text, found `int` `` | "a format matches a `string` or a `Bytes`" |
+| F2064 | `type.format_capture` | ``a capture named `id` twice — one name, one span`` | "rename one, or write `{_}` for a span you do not need" |
 | F2060 | `type.format_parse` | ```{n: Port}` parses through `Port`, which does not read text`` | "`int` reads text today; a type joins by registering a capture row" |
 | F2061 | `type.format_shape` | "two captures with nothing between them cannot be split" | "put a literal between them — a scan needs something to stop at" |
 | F2062 | `type.format_brace` | ``a `{` opens a capture — this one does not close`` | "write `{{` for a literal brace" |
@@ -970,7 +970,7 @@ it — which is the point of asking.
 2. **`avra_str_index_of_from`:** asked of lane A with this lane's
    wanting site. S2 ships the one-copy fallback and swaps when the row
    lands. *Unchanged.*
-3. **F2058–F2062:** free and unreserved; claimed by announcement,
+3. **F2063–F2062:** free and unreserved; claimed by announcement,
    re-checked before S2 commits. *Unchanged.*
 4. **The meaning change:** ruled right — a pattern that compiles and can
    never match is a silent trap, zero sites in the tree, and `{{`/`}}`

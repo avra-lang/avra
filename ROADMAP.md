@@ -4367,6 +4367,15 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         a package that means octets takes `Bytes`. COST: one scan per
         checked seat per call, on calls that are syscalls, spawns or
         lookups. `avra_fd_*` take `Bytes` and carry their length.
+  - [ ] A GRAMMAR'S DOOR AS A VALUE. `routed<Idea>(…, Idea.parse, …)`
+        is F2003 "`Idea` is a record, not an enum": the type-name
+        admission rule fires for a CALL, never for a bare `Name.parse`
+        passed as a fn value, so every route wraps it — `(t: string)
+        -> Idea.parse(t)`, one honest line. WANTING SITE: the router's
+        table (`packages/std-http/src/route.av`), the first consumer
+        where a door wants to be a value; the same door-as-value
+        question the subset's "a generic fn as a value" entry records
+        for pinned calls. Recorded by the strings lane at S7.
   - [ ] AN UNBOXED (ptr, len) VIEW, escape-analysed: the zero-copy
         capture the typed-routes paper wants. WANTING SITE: the framer's
         header values. Slot-layout territory (lane A). Until then, the
