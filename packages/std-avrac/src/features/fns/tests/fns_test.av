@@ -92,14 +92,26 @@ spec "features/fns" {
         then "a ptr is a word an extern passes and answers" {
             refused_with("extern fn open_it() -> ptr\nlet p = open_it()\np + 1", "`+` needs `int` operands, found `ptr`")
         }
-        then "the evaluator cannot host one — it names the call and says how" {
-            refused_at_run("extern fn avra_host_is_dir(p: string) -> int\navra_host_is_dir(\"/\") > 0", "`avra_host_is_dir` is extern — the evaluator cannot host it; build natively")
+        then "the evaluator hosts a symbol its own image carries" {
+            shown("extern fn avra_host_is_dir(p: string) -> int\navra_host_is_dir(\"/\") > 0") == "true"
         }
         then "an extern the runtime registry hosts answers under the evaluator" {
             shown("extern fn avra_now_ns() -> int\navra_now_ns() > 0") == "true"
         }
+        then "a symbol the image does not carry is refused by name" {
+            refused_at_run("extern fn sqlite3_libversion() -> string\nsqlite3_libversion().length > 0", "`sqlite3_libversion` is extern and this image does not carry it — build natively")
+        }
+        then "a declaration wider than one frame is refused by name" {
+            refused_at_run("extern fn avra_selfhost_argc(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, i: int, j: int, k: int) -> int\navra_selfhost_argc(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11) > 0", "takes more seats than one frame carries")
+        }
+        then "a `mut` seat is refused by name — the frame carries no inout yet" {
+            refused_at_run("extern fn avra_selfhost_argc(mut out: i64) -> int\nmut n = 0\navra_selfhost_argc(n) > 0", "has a `mut` seat — the frame does not carry an inout yet")
+        }
         then "a void extern is a statement" {
-            refused_at_run("extern fn println(s: string)\nprintln(\"hi\")\n2", "`println` is extern")
+            shown("extern fn avra_ffi_reset()\navra_ffi_reset()\n2") == "2"
+        }
+        then "a foreign pointer answers by its niche alone" {
+            shown("extern fn avra_ptr_at(a: int) -> ptr?\nif avra_ptr_at(0) == null { \"null\" } else { \"some\" }") == "null"
         }
     }
     given "`return` — the enclosing fn answers now" {

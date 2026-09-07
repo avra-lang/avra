@@ -604,7 +604,7 @@ links every package object in the tree, refused — the compiler would
 carry SQLite. This is where S2 may prove larger than one slice; the
 estimate goes to the lead before a line is written.
 
-## 5.6 S2a — THE EXTERN HOST'S MECHANISM, designed, no code written
+## 5.6 S2a — THE EXTERN HOST, LANDED. What follows is the design; §5.6.8 is where the tree disagreed with it.
 
 The prior paper (`docs/2026_09_05_EXTERN_HOST_SHAPE.md`) settled the
 spine and it stands: ONE fully-applied C prototype rather than libffi,
@@ -735,6 +735,65 @@ than it does.
 A FLOAT IN A HEAP CONTAINER ICES ON MAIN until an approved fix merges,
 so nothing in this slice boxes one; the FP class travels as bits in
 registers only.
+
+### 5.6.8 WHERE THE TREE DISAGREED WITH THE DESIGN
+
+Four deltas, each found by building the thing rather than by reading
+the plan — which is the only way any of them could have been found.
+
+**NO `RtHost` VARIANT WAS NEEDED.** §5.6.6 said the slice owed one. An
+extern's row carries `Unhosted`, and the seam handles it BEFORE the
+`match host`, so the variant would have been a state nothing reaches.
+The design asked for machinery the seam already made unnecessary.
+
+**THE TEXT ANSWER IS A CAST AT THE DESTINATION, not a second call
+shape.** The design's frame had three entry points, one of them a
+`const char*` variant. But a `-> string` extern's row says `Ptr`, and
+a kind cannot say whether the declaration meant text — so choosing the
+entry point before the call is impossible. The DESTINATION can say it,
+and `rt_val` is already where the bool answer narrows for exactly that
+reason. So the frame answers every pointer as its address and the
+destination reads it as text, through a pure cast with the target
+called once.
+
+**THE INOUT IS REFUSED, NOT MARSHALLED**, and the reason is a rule
+this file already holds. No symbol in the compiler's image takes a
+`mut` seat — every one in the tree belongs to `@std/sqlite` or the
+width witness, both outside — so the marshalling would have been an
+instrument nothing could exercise, which is how a keeper comes to look
+only for the shape its author imagined. The trigger is written at the
+refusal's voice: the first in-image extern with a `mut` seat, or S2c
+putting a package's own C in reach.
+
+**THE READY-MADE PROOF WAS NOT READY.** The design nominated
+`corpus/native/externs.av`, following the prior paper. Moving it into
+the differential corpus fails, and the reason is worth keeping: its
+own `println` is an EXTERN writing to fd 1, so its output escapes the
+evaluator's capture while the hosted `avra_puts` is captured. Its
+printed ordering is therefore a native property — the paper's own
+point about a buffered stdout flushing at the seam — and not a
+differential one. It stays native-only. `corpus/extern_host.av` is the
+differential proof instead: a text seat, a word seat, no seats, an FP
+seat, and answers that are a word, a pointer, absence and foreign
+text.
+
+AND ONE THING THE DESIGN UNDERCOUNTED: `RtKind` gained FOUR exhaustive
+consumers in the evaluator, not two — the argument coercion, the
+answer coercion, and two projections the registry law forbids writing
+as `is .Variant`. All four are in `make vocab`, which reports eight
+where it reported five.
+
+THE STATIC REFUSALS LANDED WITH IT. `make externs` now refuses a
+`long double`, an `__int128`, a vector, a bare struct or union by
+value, and an `f32` SEAT — each detected positively and by name, never
+as "not a scalar I recognise", which would refuse every typedef the
+keeper has not met and make the rule's true-positive rate its author's
+imagination. An f32 RETURN is fine and passes, because an answer is
+read back through the declared width rather than from a slot the
+caller filled. WHAT IS NOT COVERED, said out loud: a struct by value
+behind a TYPEDEF reads as an ordinary name and passes. It cannot bite
+while an Avra seat can only be `int`, `ptr`, a width word or `float`,
+none of which can name a struct — and that is the recorded trigger.
 
 ## 6. PROPOSED FOR LAND D — as questions, not text
 
