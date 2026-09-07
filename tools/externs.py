@@ -229,8 +229,17 @@ def c_returns(sources):
 # the untested-instrument shape: it had never been asked about the
 # declarations most likely to be copied.
 def declaring_sources():
+    # AND THE GENERATORS. `tools/traps.sh` writes whole programs into
+    # `build/traps/` from heredocs, and their `extern fn` lines are
+    # declarations like any other — invisible to a glob over `.av`
+    # because the file they live in has not been written yet. The
+    # substrate lane found a missing host row inside one of those
+    # programs, where no source grep could reach it. Reading the
+    # GENERATOR is order-independent, where scanning its output would
+    # depend on `make traps` having run first.
     return sorted(glob.glob(os.path.join(ROOT, "packages/**/*.av"), recursive=True)
-                  + glob.glob(os.path.join(ROOT, "corpus/**/*.av"), recursive=True))
+                  + glob.glob(os.path.join(ROOT, "corpus/**/*.av"), recursive=True)
+                  + glob.glob(os.path.join(ROOT, "tools/*.sh")))
 
 def externs():
     """Every `extern fn NAME(...) -> TYPE` the tree declares."""
