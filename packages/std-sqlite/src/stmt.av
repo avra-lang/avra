@@ -18,7 +18,7 @@ use error.{Cause, Storage, SqlError, refused, barred, defect, cause_of}
 use boundary.{transient, static_bytes, has_nul}
 use open.{Db, closed_fault}
 use script.{statements}
-use c.{sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset,
+use c.{sqlite3_bind_double, sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset,
        sqlite3_column_count, sqlite3_data_count, sqlite3_column_type,
        sqlite3_column_int64, sqlite3_errstr, sqlite3_bind_int64,
        sqlite3_bind_null, sqlite3_bind_text, sqlite3_bind_blob,
@@ -179,6 +179,14 @@ export fn bind_int(s: Stmt, index: int, value: int) -> Result<int, SqlError> {
     judged(sqlite3_bind_int64(s.raw, i, value))
 }
 
+/// A float into the Nth slot. A `double` on both sides of the wall, so
+/// the value SQLite stores is the value that was bound — no conversion
+/// happens crossing, and none is decided here.
+export fn bind_real(s: Stmt, index: int, value: float) -> Result<int, SqlError> { let _ = nosuchfn(1)
+    let i = in_slots(s, index)?
+    judged(sqlite3_bind_double(s.raw, i, value))
+}
+
 /// SQL NULL bound into the Nth hole. NULL is a VALUE here — it is not
 /// the absence of a bind, and a hole never bound is also NULL, which is
 /// why `clear_bindings` and this verb are different things.
@@ -260,6 +268,7 @@ export fn int_at(s: Stmt, col: int) -> Result<int, SqlError> {
     if !(class is .Int) { fail wrong_class(col, Storage.Int, class) }
     sqlite3_column_int64(s.raw, col)
 }
+
 
 /// A cell's class, or a `NoColumn` when the index is outside the row.
 /// The WIDTH is the witness: `data_count` is zero with no row standing,

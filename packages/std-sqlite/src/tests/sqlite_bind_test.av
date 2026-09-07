@@ -7,7 +7,7 @@
 // integer, so a value truncated at a NUL fails the comparison instead
 // of passing a length check.
 use @std.sqlite.open.{Db, memory, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, finalize, slots, bind_int, bind_null, bind_text, bind_blob, bind_text_unsafely_borrowed, int_at, class_at}
+use @std.sqlite.stmt.{Stmt, prepare, step, finalize, slots, bind_int, bind_null, bind_real, bind_text, bind_blob, bind_text_unsafely_borrowed, int_at, class_at}
 use @std.sqlite.error.{Storage, SqlError}
 use @std.text.{from_codepoint, from_codepoints}
 
@@ -84,6 +84,89 @@ fn bound_told(r: Result<int, SqlError>) -> string {
     }
 }
 
+// ── A REAL, on its own path ─────────────────────────────────────
+//
+// A FLOAT CANNOT RIDE THE `Binder` STRUCT, so the real bind gets its own
+// four-step walk. A float in a heap slot — a struct field, a list, an
+// enum payload — does not survive the native backend yet, and `Binder`
+// is a struct. The value travels as a PARAMETER the whole way, which is
+// where a float is sound today.
+//
+// The reading verb is absent for the same reason (it would answer
+// `Result<float, SqlError>`), so a real bind is proved exactly as a text
+// bind is: SQL does the comparison INSIDE the database and answers an
+// integer. Nothing read here is a float.
+
+fn with_real(sql: string, v: float) -> string {
+    match memory() {
+        .Ok(db) -> real_in_db(db, sql, v),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn real_in_db(db: Db, sql: string, v: float) -> string {
+    mut held = db
+    let said = real_prepared(db, sql, v)
+    let _ = close(held)
+    said
+}
+
+fn real_prepared(db: Db, sql: string, v: float) -> string {
+    match prepare(db, sql) {
+        .Ok(s) -> real_filled(s, v),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn real_filled(s: Stmt, v: float) -> string {
+    mut held = s
+    let said = real_after_bind(held, v)
+    let _ = finalize(held)
+    said
+}
+
+fn with_real_at(index: int, sql: string, v: float) -> string {
+    match memory() {
+        .Ok(db) -> real_at_index(db, index, sql, v),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn real_at_index(db: Db, index: int, sql: string, v: float) -> string {
+    mut held = db
+    let said = aimed(db, index, sql, v)
+    let _ = close(held)
+    said
+}
+
+fn aimed(db: Db, index: int, sql: string, v: float) -> string {
+    match prepare(db, sql) {
+        .Ok(s) -> aimed_bind(s, index, v),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn aimed_bind(s: Stmt, index: int, v: float) -> string {
+    mut held = s
+    let said = said_of(bind_real(held, index, v))
+    let _ = finalize(held)
+    said
+}
+
+fn said_of(r: Result<int, SqlError>) -> string {
+    match r {
+        .Ok(_) -> "bound",
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn real_after_bind(mut s: Stmt, v: float) -> string {
+    match bind_real(s, 1, v) {
+        .Ok(_) -> bound_first_int(s),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
 /// `a`, a NUL, `b` — three bytes no literal can spell, and the exact
 /// shape that a `strlen` measurement would cut to one.
 fn a_nul_b() -> string { from_codepoints([97, 0, 98]) }
@@ -97,6 +180,34 @@ spec "std/sqlite binding" {
         then "text arrives with its own length" { with_text("select length(?)", "hello") == "5" }
         then "empty text is text, and its length is zero" { with_text("select length(?)", "") == "0" }
         then "a bound NULL is SQL NULL rather than a missing value" { with_null("select ? is null") == "1" }
+    }
+
+    given "a real bound, compared where the driver cannot yet read one" {
+        // The comparison happens INSIDE SQLite over the stored double,
+        // so a value that lost bits crossing the wall fails it — where a
+        // test that read the number back through the driver would be
+        // comparing the driver against itself.
+        then "a real arrives bit-for-bit" { with_real("select ? = 3.5", 3.5) == "1" }
+        // 0.1 has no exact binary form, which is what makes it the
+        // interesting one: both sides must round the SAME way.
+        then "a real with no exact binary form arrives unchanged too" { with_real("select ? = 0.1", 0.1) == "1" }
+        // The class is the second half of "arrived unchanged" — a value
+        // that arrived as the right number in the wrong class would pass
+        // the comparison above and still be stored wrong.
+        then "and it lands in the REAL storage class" { with_real("select typeof(?) = 'real'", 2.0) == "1" }
+        // A WHOLE number bound as a real STAYS a real. SQLite converts
+        // on INSERT by affinity, never on a bind, so nothing narrows it
+        // back to an integer on the way in.
+        then "a whole number bound as a real is still a real" { with_real("select typeof(?) = 'real'", 3.0) == "1" }
+        then "and it is not equal to the integer that prints the same" { with_real("select typeof(?) = 'integer'", 3.0) == "0" }
+        // Zero is the value an encoding spends, and a bind is an
+        // encoding: a slot never bound is also NULL.
+        then "a bound zero is a value, not an absent bind" { with_real("select ? is null", 0.0) == "0" }
+        then "a negative real keeps its sign" { with_real("select ? = 0.0 - 1.5", 0.0 - 1.5) == "1" }
+        // The slot law is the bind's, not the value's, so it must answer
+        // the same for a real as for every other kind.
+        then "slot 1 of a one-slot statement takes it" { with_real_at(1, "select ?1", 3.5) == "bound" }
+        then "and slot 2 of that statement is out of the slots" { with_real_at(2, "select ?1", 3.5) == "sqlite.out_of_slots" }
     }
 
     given "a bind names the storage class SQLite will store" {
