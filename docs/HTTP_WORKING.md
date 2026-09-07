@@ -198,7 +198,17 @@ lane A. Fingerprint codes have no coherence law — a repeat is a silent
 alike-fingerprint, not a red build. MAIN MERGED TWICE (589e52c: lane B's
 process guard, doc fixes; 0be7257: the sqlite REAL class, the float
 container fix, lane A's renderer fix — an arrow points at something, so
-three declaration goldens lost their empty `╰──` line at 28f1a4a).
+three declaration goldens lost their empty `╰──` line at 28f1a4a). AND A
+THIRD AND FOURTH TIME (0713e6d, 8a74436): lane C's arm-boundary fix (arms
+flattened into one run hashed alike — found by following the code count),
+then lane A's `make fingerprints` KEEPER in the gate and the ARITY fold —
+the survey's "separate spaces" premise was wrong, `Pat.Rest == Expr.Receiver`
+exactly, and the deeper defect was movable boundaries in flat payloads,
+nine of thirteen adversarial cases failing on the parent; `fp` is linear,
+so a tag separates nothing and arity does. The merge renumbered ours under
+the keeper's eye (it refused 106/107 — Defer's — and 55 — reclaimed):
+marks 103/104, the grammar mark 110 with each hole folded to one value
+under 111, the format pattern 112. Gate green at db4f08e.
 
 ## Sub-lane: strings — S4 (grammar values) LANDED (5e1f118)
 
