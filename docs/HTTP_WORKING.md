@@ -203,6 +203,11 @@ product whose OWN registry held the duplicate codes and refused every
 run — the way back was the saved `build/avra.pre`; and my test named
 bindings `static` and `once`, which are keywords now. Gate green at
 ec2a60d (87 corpus programs), seed refreshed and proven at ebc60e3.
+MAIN AGAIN at 6e206a9 (lane A's census caller and its label fix, lane
+C's seats bracket, the sqlite lane's own sentinel move to the same path
+mine chose — the merge reconciled the rename with no hand work, only the
+Makefile's hand rules dropped once more); gate green, seed refreshed and
+proven after.
 
 ## Sub-lane: substrate — S4 (process) LANDED (945a251); the seed refreshed (c53fd88)
 
