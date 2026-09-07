@@ -15,7 +15,7 @@
 //! reads them back and cuts the values inside the arm's region, so
 //! an untaken arm mints no managed value at all.
 use core.{Reg, Ins, PatId, ExprId, Type, TypeId, BinOp, FormatPart, GrammarSpec, binds}
-use features.{LowerCx, MethodCall, const_int, const_bool, open_region, arm_end, close_region, close_region_as, seeded_cell, box_size, grown_box, adopted, absent_of, carried_type, lower_defect}
+use features.{LowerCx, MethodCall, const_int, const_bool, open_region, arm_end, close_region, close_region_as, seeded_cell, box_size, grown_box, adopted, absent_of, carried_type, field_read, lower_defect}
 
 /// Whether the subject matches. The walk's octets and span cells are
 /// left in the pattern's slot for the binds — written once here,
@@ -152,15 +152,11 @@ fn cut(mut cx: LowerCx, subject: Reg, lo_cell: Reg, hi_cell: Reg, v: Reg, vty: T
 /// C-string primitives are not.
 fn octets(mut cx: LowerCx, v: Reg, vty: TypeId) -> Reg {
     if cx.view.types.shape_of(vty) is .Bytes { return v }
-    let b = cx.mint_shape(Type.Bytes)
-    cx.emit(Ins.CallRt(b, "avra_bytes_of_str", [v]))
-    b
+    rt1(cx, Type.Bytes, "avra_bytes_of_str", v)
 }
 
 fn measured(mut cx: LowerCx, subject: Reg) -> Reg {
-    let len = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(len, "avra_bytes_len", [subject]))
-    len
+    rt1(cx, Type.Int, "avra_bytes_len", subject)
 }
 
 /// Whether `lo..hi` of the subject is this literal.
@@ -179,11 +175,7 @@ fn tail_span(mut cx: LowerCx, subject: Reg, len: Reg, last: string) -> Reg {
 /// A literal as octets. The conversion runs per attempt: the IR
 /// carries no constant of this shape to hoist it into.
 fn literal(mut cx: LowerCx, text: string) -> Reg {
-    let s = cx.mint_shape(Type.Str)
-    cx.emit(Ins.ConstStr(s, text))
-    let b = cx.mint_shape(Type.Bytes)
-    cx.emit(Ins.CallRt(b, "avra_bytes_of_str", [s]))
-    b
+    rt1(cx, Type.Bytes, "avra_bytes_of_str", text_const(cx, text))
 }
 
 /// A literal's length in OCTETS, which is what the scan counts.
@@ -216,7 +208,7 @@ fn minus(mut cx: LowerCx, a: Reg, b: Reg) -> Reg {
 /// time: the declaration's spec is read here, at compile time.
 export fn lower_parse(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let found: GrammarSpec? = grammar_at(cx, mc.subject)
-    if found == null { return lower_defect(cx, mc.e, "a grammar door without its declaration survived typing") }
+    if found == null { return doorless(cx, mc.e) }
     let read = found!
     let text = cx.reg_of(mc.args[0])
     let w = walked(cx, read.head, read.parts, text, cx.type_at(mc.args[0]))
@@ -242,6 +234,12 @@ fn gathered(mut cx: LowerCx, w: Walked, parts: List<FormatPart>, text: Reg, want
     dst
 }
 
+/// A door's format lives on its DECLARATION, so a door reached
+/// without one is the admission rule broken.
+fn doorless(mut cx: LowerCx, e: ExprId) -> Reg {
+    lower_defect(cx, e, "a grammar door without its declaration survived typing")
+}
+
 /// The grammar a type-name receiver stands for.
 fn grammar_at(cx: LowerCx, subject: ExprId) -> GrammarSpec? {
     match cx.view.types.shape_of(cx.type_at(subject)) {
@@ -250,3 +248,100 @@ fn grammar_at(cx: LowerCx, subject: ExprId) -> GrammarSpec? {
     }
 }
 
+/// `Name.print(r)` — the record's fields woven back between the
+/// format's literals, or absence when a value would not survive the
+/// round trip. THE DOMAIN, checked here because it is a property of
+/// the VALUES and not of the format: an interior hole's text, with
+/// its following literal appended, must place that literal at the
+/// boundary and nowhere earlier. A value ENDING IN a proper prefix of
+/// its delimiter overlaps it and would move its own split; `contains`
+/// cannot see that, and the scan can.
+export fn lower_print(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let found: GrammarSpec? = grammar_at(cx, mc.subject)
+    if found == null { return doorless(cx, mc.e) }
+    let read = found!
+    let fields = read_fields(cx, mc.args[0], read.parts)
+    let want = cx.type_at(mc.e)
+    open_region(cx, survives(cx, read.parts, fields, 0))
+    arm_end(cx, adopted(cx, want, false, woven(cx, read, fields)))
+    let none = absent_of(cx, want)
+    close_region(cx, mc.e, none)
+}
+
+/// Every hole's value, read from the record in hole order — the same
+/// order the fields were declared in, because the fields ARE the holes.
+fn read_fields(mut cx: LowerCx, subject: ExprId, parts: List<FormatPart>) -> List<Reg> {
+    let v = cx.reg_of(subject)
+    let vty = cx.type_at(subject)
+    let str_ty = cx.view.types.intern(Type.Str)
+    mut out: List<Reg> = []
+    // LICENSED I3: the reads must be EMITTED in slot order, each minting its own answer
+    for i, part in parts {
+        out.push(field_read(cx, v, vty, i, str_ty))
+    }
+    out
+}
+
+/// WHETHER THE VALUES SURVIVE, hole by hole, as a lazy chain: a later
+/// check runs only while the earlier ones hold. The LAST hole carries
+/// no condition — the suffix anchor fixes its end positionally.
+fn survives(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int) -> Reg {
+    if i >= parts.length - 1 { return const_bool(cx, true) }
+    let here = unmoved(cx, fields[i], parts[i].piece)
+    open_region(cx, here)
+    arm_end(cx, survives(cx, parts, fields, i + 1))
+    let no = const_bool(cx, false)
+    close_region_as(cx, cx.view.types.intern(Type.Bool), no)
+}
+
+/// One hole's value against the literal that follows it: appended,
+/// the literal must first appear exactly where the value ends. Asked
+/// in OCTETS, because that is what the scan will ask.
+fn unmoved(mut cx: LowerCx, value: Reg, piece: string) -> Reg {
+    let joined = rt2(cx, Type.Str, "avra_str_concat", value, text_const(cx, piece))
+    let octets = rt1(cx, Type.Bytes, "avra_bytes_of_str", joined)
+    let needle = literal(cx, piece)
+    let zero = const_int(cx, 0)
+    let at = cx.mint_shape(Type.Int)
+    cx.emit(Ins.CallRt(at, "avra_bytes_index_of", [octets, needle, zero]))
+    let width = rt1(cx, Type.Int, "avra_str_len", value)
+    let same = cx.mint_shape(Type.Bool)
+    cx.emit(Ins.Bin(same, BinOp.Eq, at, width))
+    same
+}
+
+/// The literals and the values, alternating, joined once — the head,
+/// then each hole's text and the literal that follows it.
+fn woven(mut cx: LowerCx, read: GrammarSpec, fields: List<Reg>) -> Reg {
+    mut pieces = [text_const(cx, read.head)]
+    // LICENSED I3: the pieces must be EMITTED in order, each minting its own register
+    for i, part in read.parts {
+        pieces.push(fields[i])
+        pieces.push(text_const(cx, part.piece))
+    }
+    let size = box_size(cx, pieces.length)
+    let arr = cx.mint_ty(cx.view.types.intern(Type.List(cx.view.types.intern(Type.Str))))
+    grown_box(cx, arr, size, pieces)
+    let sep = text_const(cx, "")
+    let dst = cx.mint_shape(Type.Str)
+    cx.emit(Ins.CallRt(dst, "avra_str_join", [arr, sep]))
+    dst
+}
+
+fn text_const(mut cx: LowerCx, text: string) -> Reg {
+    let r = cx.mint_shape(Type.Str)
+    cx.emit(Ins.ConstStr(r, text))
+    r
+}
+
+fn rt1(mut cx: LowerCx, sh: Type, callee: string, a: Reg) -> Reg {
+    let r = cx.mint_shape(sh)
+    cx.emit(Ins.CallRt(r, callee, [a]))
+    r
+}
+
+fn rt2(mut cx: LowerCx, sh: Type, callee: string, a: Reg, b: Reg) -> Reg {
+    let r = cx.mint_shape(sh)
+    cx.emit(Ins.CallRt(r, callee, [a, b]))
+    r
+}

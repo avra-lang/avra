@@ -4,7 +4,7 @@
 //! re-derived from the node by the reader's own functions, so the
 //! literal and the pattern it became are judged once.
 use core.{PatId, Type, TypeId, FormatPart, bound_names}
-use features.{TypeCx, MethodCall, worded, this_is}
+use features.{TypeCx, MethodCall, worded, seated, this_is}
 use features.formats.{adjacent_fault, repeated_fault, Fault}
 use diagnostics.{refusal}
 
@@ -87,4 +87,14 @@ fn record_of(mut cx: TypeCx, ty: TypeId) -> TypeId? {
         .TypeName(decl, tname) -> cx.view.types.intern(Type.Struct(decl, tname)),
         rest -> null,
     }
+}
+
+/// `Name.print(r)` — the text this grammar reads back, or absence
+/// when a value would not survive the round trip. The seat is the
+/// RECORD the declaration's holes became; the answer is its text.
+export fn check_print(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let named: TypeId? = record_of(cx, cx.type_at(mc.subject))
+    if named == null { return cx.error_type }
+    if !seated(cx, mc, "print", [named!]) { return cx.error_type }
+    cx.view.types.intern(Type.Opt(cx.view.types.intern(Type.Str)))
 }
