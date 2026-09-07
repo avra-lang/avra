@@ -910,20 +910,46 @@ typedef struct {
 static OnceSlot g_once[AVRA_ONCE_MAX];
 static int g_once_count = 0;
 
-// A POINTER PASS FIRST, AND THE STRCMP ONLY IF IT MISSES. A key is a
-// symbol constant, so after the first read the pointer matches — and
-// interleaving the two tests made the i-th `once` cost i strcmps on
-// EVERY read, which is a third of a parser that reads its constant
-// tables per token. The strcmp pass is for a key arriving as a
-// different constant, and it must not run before the pointer one.
-// The order is safe because `avra_once_set` refuses a duplicate, so
-// no two entries can share a string.
-static int once_at(const char* key) {
-    for (int i = 0; i < g_once_count; i++) {
-        if (g_once[i].key == (void*)key) return i;
+// A POINTER INDEX, AND THE STRCMP ONLY IF IT MISSES. A key is a
+// symbol constant, so after the first read the pointer matches — but
+// SCANNING for it costs the i-th `once` i compares on EVERY read, and
+// a program holding twenty tables paid nineteen per read where this
+// compiler's single table paid three. The scan is an index now: the
+// key POINTER is the hash, so a hit is one probe whatever the count.
+// The strcmp pass stays for a key arriving as a DIFFERENT constant,
+// and it must not run before the pointer one; it is safe in that
+// order because `avra_once_set` refuses a duplicate, so no two
+// entries can share a string. A key found that way is INDEXED on the
+// way out, so it costs the scan once rather than once per read.
+#define AVRA_ONCE_IX 1024   /* power of two, a quarter full at MAX */
+static int g_once_ix[AVRA_ONCE_IX];   /* index + 1; 0 is empty */
+
+static int once_slot(const void* key) {
+    return (int)(((uintptr_t)key >> 4) & (AVRA_ONCE_IX - 1));
+}
+
+static void once_index(const void* key, int at) {
+    int i = once_slot(key);
+    for (int step = 0; step < AVRA_ONCE_IX; step++) {
+        if (g_once_ix[i] == 0) { g_once_ix[i] = at + 1; return; }
+        i = (i + 1) & (AVRA_ONCE_IX - 1);
     }
-    for (int i = 0; i < g_once_count; i++) {
-        if (strcmp((const char*)g_once[i].key, key) == 0) return i;
+}
+
+static int once_at(const char* key) {
+    int i = once_slot(key);
+    for (int step = 0; step < AVRA_ONCE_IX; step++) {
+        CENSUS(g_once_steps++);
+        int at = g_once_ix[i];
+        if (at == 0) break;
+        if (g_once[at - 1].key == (void*)key) return at - 1;
+        i = (i + 1) & (AVRA_ONCE_IX - 1);
+    }
+    for (int j = 0; j < g_once_count; j++) {
+        if (strcmp((const char*)g_once[j].key, key) == 0) {
+            once_index(key, j);
+            return j;
+        }
     }
     return -1;
 }
@@ -933,7 +959,6 @@ static int once_at(const char* key) {
 // thing it keeps, and gives one away with every answer.
 void* avra_once_get(void* key) {
     CENSUS(g_once_reads++);
-    CENSUS(g_once_steps += g_once_count);
     int at = once_at((const char*)key);
     void* held = at < 0 ? NULL : g_once[at].value;
     avra_rc_retain(held);
@@ -949,6 +974,7 @@ void avra_once_set(void* key, void* value) {
     avra_rc_retain(value);
     g_once[g_once_count].key = key;
     g_once[g_once_count].value = value;
+    once_index(key, g_once_count);
     g_once_count++;
 }
 
