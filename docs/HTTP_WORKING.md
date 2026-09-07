@@ -1188,6 +1188,50 @@ their messages. 124 open or deferred nodes, including the ROADMAP's
 sweep: 61 open asks and unfired triggers filed, landed ones left in
 the ROADMAP as its record.
 
+## The S2c red team (d876659, merged at 28a0650, seed 058f215), and lane A's review of step 3
+
+THE ARGUMENT WAS RIGHT AND THE CODE WAS NOT. The design note waved
+through two spellings of the stem rule (the compiler's and libs.py's)
+because a disagreement between them is LOUD — nothing opens, the
+refusal names the package. That holds. Nobody had checked whether the
+two spellings AGREED: `lstrip("@")` strips every leading `@`,
+`.replace("@", "")` strips one anywhere, so `@std/a@b` derived two
+different stems. Both now strip exactly ONE leading `@` and replace
+every `/` — a rule written to be COPIED, the property a twice-spelled
+rule actually needs and neither original had. AND THE COLLISION THEY
+SHARED WAS NOT LOUD: `@std/a-b` and `@std/a/b` derive ONE stem in both
+halves — two packages, one library path, the second build overwriting
+the first, the evaluator opening whichever was on disk — under a
+docstring that said "two packages collide here only if their full
+names collide, which the workspace already refuses", the kind of
+sentence that reads as settled so nobody checks it. The build refuses
+a collision now and names both packages; the stem is NOT escaped to
+buy injectivity, because an escape renames every existing library for
+a case nobody has hit. Witnessed both ways. Survived: a bare file with
+no closure, a package with no objects, an unbuilt library, a handle of
+0, both keeper bands under attack; the three libscope rows held.
+
+LANE A REVIEWED STEP 3 at 934f395 and approves the mechanism —
+`RTLD_NOW | RTLD_LOCAL` written explicitly with its reason, and the
+detail that carries the narrowing: a handle of 0 answers 0 rather than
+reaching the process, the one line they read first, since a zero
+handle falling through to `RTLD_DEFAULT` would have undone the design
+quietly. `libscope.sh` is better than the pair they asked for, for the
+reason given. ONE FINDING, in their own pattern from tonight:
+`symbol_of` (interp.av:825) is called once per extern call and
+allocates a list to find one element, evaluates every handle (N
+`dlsym`s, not until-found) and repeats a lookup whose answer is fixed
+for the life of the program — the third instance of A LOOKUP WHOSE
+ANSWER CANNOT CHANGE, RECOMPUTED PER USE (`once_at`'s scan, 19 probes
+a read, now 1; `avra_once_get`'s retain, 104M gone). Fix: a memo keyed
+by callee, the image fallback memoized alike; measured before/after
+under `avra run` over corpus/net, which is differential now. Routed
+to the substrate lane's review round (the file and the arc are theirs;
+lane A reviews the result). Lane A's closing line is worth the log: a
+design two independent laws agree on — the seat law and the lifetime
+law meeting at one handle — is one nobody has to remember the reason
+for.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
