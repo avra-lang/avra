@@ -2923,9 +2923,35 @@ the order is the dependency.
            it tried. Rule B — a general type-qualified call, which is
            STATIC METHODS (ROADMAP:10786, recorded not this arc) — is
            the OWNER'S and no relay of an answer is a grant.
-        2. `Bytes` (HTTP lane): `is_managed` hardest, because a
-           managed type the memory pass does not know is a leak or a
-           double free and neither shows up in a test.
+        2. `Bytes` (HTTP lane) — DISCHARGED 2026-09-07 on the
+           `is_managed` point, and answered from the code and the C
+           rather than from the compiler's pointer: `.Str or .Bytes
+           -> true`, `KIND_BYTES = 4`, `bytes_box` through
+           `sized_box` with the terminator written, and `acc_kind_of`
+           filing it as its own `ACC_BYTES` row — the miscounting-
+           STATIC lesson applied AT BIRTH rather than after
+           `AVRA_MEM_STATS` was caught lying. Every source is a FRESH
+           box (`.bytes()`, `avra_fd_taken`, `concat`/`slice`/
+           `gathered`, `Bytes.of_list`), and a C body answering
+           octets goes through `bytes_owned` or not at all — the
+           header law's fourth instance, named as one.
+           WHY THE QUESTION WAS WORTH ASKING ANYWAY: an exhaustive
+           match tells you a variant is UNANSWERED and cannot tell
+           you the answer typed is the right one, and an OR-RUN makes
+           the wrong answer a one-word edit. A `Bytes` in the
+           unmanaged run compiles clean, passes every test, and leaks
+           or double-frees — and `hdr` refuses an untagged pointer,
+           so the guard no-ops and a leak reports clean. THE COMPILER
+           POINTS AT THE ARM; ONLY THE AUTHOR KNOWS WHICH ARM WAS
+           MEANT.
+           RESIDUAL, raised as a glance not a blocker: whether
+           `Bytes` took a fresh INTERNER KEY. The type registry keeps
+           the FIRST shape it sees for a key, so two variants sharing
+           one do not fail loudly — they quietly become one type, and
+           the symptom is a wrong `name_of` or a seat taking the
+           wrong value. That is today's fingerprint-collision class
+           in the type registry, and unlike fingerprints and idioms
+           it has NO KEEPER and nothing announces what is free.
         3. THE OPAQUE TYPE / Drop design (SQLITE lane) for the
            memory-pass parts. Position already given: the WRAPPER BOX
            route, because the guard is structurally blind at the
