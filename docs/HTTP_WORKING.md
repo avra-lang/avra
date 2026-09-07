@@ -174,6 +174,54 @@ judges the whole command before the first staged word, and stdin stays
 length-aware as `avra_fd_write` (a NUL is data in a stream and two names
 in a path).
 
+## Sub-lane: substrate — S4 (process) LANDED (945a251); the seed refreshed (c53fd88)
+
+Eleven rows, eleven `RtHost` variants and eleven evaluator arms out of
+core, 525 lines of C out of the runtime: the spawn table, pipes, signals
+and reaping are the package's own C answering ints, a child's streams are
+descriptors, the pump is Avra under lane B's three ORDER invariants (the
+deadline asked before any poll; the sweep the last act before declaring a
+timeout; the grace a floor) — the turn length never tuned once. The words
+are STAGED (an append answering the count; a generation refusing a stale
+stage; E2BIG at both caps) because an aggregate cannot cross the extern
+host, and the §2.4 cast died with it. FOUR DEFECTS lane B's suite found in
+the move: nothing closed a stream at EOF; the pump closed a caller-owned
+`Open` stdin the instant the pipe was writable; the grace marked
+truncation without stopping the tree; and A GROUP OUTLIVES ITS LEADER —
+the signal tested the child's own life first and went silent once the
+leader was reaped, exactly when the grandchild holding our pipe is who a
+caller means (lane B: complementary to their face, which short-circuits a
+seen end; one bound added to the red team — `ESRCH` records the group
+gone so a recycled pgid is never signalled). THE SEAM GAINED AN ENGINE:
+`corpus/native/process_seam.av` became `corpus/proc-seam`, a package
+corpus dir, `eval == native == expected` where it was native-only. 14
+`avra_proc_*` symbols at both link sites, every one the package's. The
+seed was refreshed over the merged tree at c53fd88 and proven. Pending:
+the red team over S4's C and pump, the standard's review round, the laws
+for lane D.
+
+## Sub-lane: strings — S5 (print, the round-trip law) LANDED (aaab397)
+
+`Name.print(r)` weaves the record back through the same door, and the
+domain that keeps the round trip true is ENFORCED, not proven in prose —
+because implementing the paper's condition PROVED IT WRONG: §6.3 said an
+interior capture round-trips when its text does not contain the following
+piece; `grammar G = "{a}--{b}"` with `a = "x-"` passes that test, prints
+`x---b`, and parses back as `[x][-b]` on both engines — a capture ending
+in a proper prefix of its delimiter overlaps it, which `contains` cannot
+see. THE CORRECTED CONDITION asks the scan's own question of the smallest
+text that can answer it, `(c + p).index_of(p) == |c|`, IN OCTETS (a check
+built from `contains` or a C-string `index_of` would inspect different
+bytes than the scan it protects — the guard-and-guarded law). The last
+hole takes anything, its end fixed by the suffix anchor — an asymmetry
+that falls out of the scan law and is tested as such. Red team: 15
+programs, zero findings; three tests that asserted `print` was doorless
+now test the admission rule with a name no grammar declares; three review
+collapses and one voice (`doorless`). `corpus/grammar_print.av` on both
+engines. THE ARC IS COMPLETE: S1 the paper, S2 the patterns, S3 the
+octet parity, S4 the value that parses, S5 print and the law. NEXT, S6:
+the framer adopts the patterns where they win, measured.
+
 ## Three receipts from keeping the branch (2026-09-07, to 28f1a4a)
 
 A SEED NOBODY CHOSE, MINE: the main-merge chain ran `make seed` AFTER the
