@@ -1,49 +1,52 @@
-//! proves: the net rows, both engines, on loopback — a listener on a
-//! kernel-chosen port, a connect, an accept, readiness for the server
-//! side, a write, an exact-size read, EOF after the client closes, and
-//! a read that would block answering so.
-extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
-extern fn avra_net_accept(lfd: int) -> int
-extern fn avra_net_connect(host: string, port: int, timeout_ms: int) -> int
-extern fn avra_fd_read(fd: int, max: int) -> int
-extern fn avra_fd_taken() -> Bytes
-extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
-extern fn avra_net_close(fd: int) -> int
-extern fn avra_net_poll_new() -> int
-extern fn avra_net_watch(pfd: int, fd: int, interest: int) -> int
-extern fn avra_net_wait(pfd: int, timeout_ms: int) -> int
-extern fn avra_net_event_fd(i: int) -> int
-extern fn avra_net_event_flags(i: int) -> int
-extern fn avra_net_local_port(fd: int) -> int
-extern fn avra_net_peer_family(fd: int) -> int
-extern fn avra_net_peer_port(fd: int) -> int
+//! proves: @std.net on loopback — a listener on the kernel's port, a
+//! connect, an accept, readiness for the server side through the
+//! poller, a write, an exact read, the echo back, EOF after the
+//! client closes, and the peer named as the loopback address.
+use @std.net.{listen, connect, poller, Poller, Read, Interest, NetError}
+use @std.time.{secs}
 
-fn readable(pfd: int, fd: int) -> bool {
-    let n = avra_net_wait(pfd, 2000)
-    [avra_net_event_fd(i) == fd && avra_net_event_flags(i) & 1 == 1 for i in 0..n].any(it)
+fn ready(p: Poller, fd: int) -> Result<bool, NetError> {
+    let events = p.wait(secs(2))?
+    .Ok(events.any((e) -> e.fd == fd && e.readable))
 }
 
-let lfd = avra_net_listen("127.0.0.1", 0, 16)
-let port = avra_net_local_port(lfd)
-let client = avra_net_connect("127.0.0.1", port, 2000)
-let pfd = avra_net_poll_new()
-let watched = avra_net_watch(pfd, lfd, 1)
-let listener_ready = readable(pfd, lfd)
-let server = avra_net_accept(lfd)
-let pending = avra_fd_read(server, 64)
-let hello = "GET / HTTP/1.1\r\n".bytes()
-let put = avra_fd_write(client, hello, 0)
-let unwatched = avra_net_watch(pfd, lfd, 0)
-let watched_server = avra_net_watch(pfd, server, 1)
-let server_ready = readable(pfd, server)
-let got = avra_fd_read(server, 64)
-let taken = avra_fd_taken()
-let echoed = avra_fd_write(server, taken, 0)
-let watched_client = avra_net_watch(pfd, client, 1)
-let client_ready = readable(pfd, client)
-let back = avra_fd_read(client, 64)
-let peer_ok = avra_net_peer_family(server) == 4 && avra_net_peer_port(server) > 0
-let closed = avra_net_close(client)
-let eof_ready = readable(pfd, server)
-let eof = avra_fd_read(server, 64)
-"${lfd > 0} ${port > 0} ${client > 0} ${watched} ${listener_ready} ${server > 0} ${pending == 0 - 35} ${put} ${unwatched} ${watched_server} ${server_ready} ${got} ${taken == hello} ${echoed} ${watched_client} ${client_ready} ${back} ${peer_ok} ${closed} ${eof_ready} ${eof} ${avra_net_close(server)} ${avra_net_close(lfd)} ${avra_net_close(pfd)}"
+fn shown(r: Read) -> string {
+    match r {
+        .Data(b) -> b.text() ?? "<bytes>",
+        .Eof -> "<eof>",
+        .Pending -> "<pending>",
+    }
+}
+
+fn exchange() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let client = connect("127.0.0.1", l.port, secs(2))?
+    let p = poller()?
+    p.watch(l.fd, .Read)?
+    let listener_ready = ready(p, l.fd)?
+    let server = l.accept()?
+    p.watch(l.fd, .None)?
+    p.watch(server!.fd, .Read)?
+    let quiet = shown(server!.read(64)?)
+    let hello = "GET / HTTP/1.1\r\n".bytes()
+    let put = client.write(hello, 0)?
+    let server_ready = ready(p, server!.fd)?
+    let got = server!.read(64)?
+    let echoed = server!.write(hello, 0)?
+    p.watch(client.fd, .Read)?
+    let client_ready = ready(p, client.fd)?
+    let back = shown(client.read(64)?)
+    let peer = server!.peer().starts_with("127.0.0.1:")
+    client.close()?
+    let eof_ready = ready(p, server!.fd)?
+    let eof = shown(server!.read(64)?)
+    server!.close()?
+    l.close()?
+    p.close()?
+    .Ok("${l.port > 0} ${listener_ready} ${quiet} ${put} ${server_ready} ${shown(got).length} ${echoed} ${client_ready} ${back.length} ${peer} ${eof_ready} ${eof}")
+}
+
+match exchange() {
+    .Ok(line) -> line,
+    .Err(e) -> "failed: ${e.verb} ${e.subject}",
+}
