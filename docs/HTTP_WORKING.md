@@ -196,9 +196,23 @@ gone so a recycled pgid is never signalled). THE SEAM GAINED AN ENGINE:
 `corpus/native/process_seam.av` became `corpus/proc-seam`, a package
 corpus dir, `eval == native == expected` where it was native-only. 14
 `avra_proc_*` symbols at both link sites, every one the package's. The
-seed was refreshed over the merged tree at c53fd88 and proven. Pending:
-the red team over S4's C and pump, the standard's review round, the laws
-for lane D.
+seed was refreshed over the merged tree at c53fd88 and proven. THE RED
+TEAM (ae3fd47, merged at 7a38127, gate green) found a DIVERGENCE: a
+`max_capture` of 1000 against `yes` kept 680 KB natively and 52 MB under
+the evaluator — both engines agreed on `TooMuch` and disagreed by 51 MB
+on the partial the caller reads, because the drain emptied the pipe and
+THEN tested the bound, so the capture was bounded by the child's speed;
+it asks for one byte past what is left now and stops at the crossing,
+1002 bytes on either engine. THE LAW: a bound tested after the work is a
+bound on ACCEPTANCE, not on the thing it names. The C refuses a nameless
+env entry on its own account. Survived: nine degenerate shapes, fourteen
+hostile seat values, every one an errno and never a trap; the three
+order invariants to the letter. A NEAR-MISS ON RECORD: `AVRA_RC_GUARD=1`
+showed 1486 MB live at exit under forty capped floods — the guard KEEPS
+every box that reaches zero; without it 1 MB and nothing live. Knowing
+what an instrument does to a measurement is part of reading it. 95 cases
+in `@std/process`. Pending: the standard's review round, the laws for
+lane D.
 
 ## Sub-lane: strings — S5 (print, the round-trip law) LANDED (aaab397)
 
