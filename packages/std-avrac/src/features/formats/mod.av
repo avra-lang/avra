@@ -5,8 +5,17 @@
 //! position, and the MEANING of `Pat.Format`; a literal with no
 //! holes is still the equality pattern it always was, built here.
 //!
+//! A `grammar Name = "…"` declaration names the same shape once: its
+//! holes ARE a record's fields, so the format and the type it yields
+//! cannot drift.
+//!
+//! The declaration's branch does NOT recover: it shares the `grammar`
+//! anchor with the compiler's own `grammar { … }` expression, and a
+//! recovering branch on a shared anchor commits the miss and eats the
+//! line the other form owns.
+//!
 //! THE MODULES:
-//!   mod.av      this manifest, and the pattern branch it claims
+//!   mod.av      this manifest, and the two branches it claims
 //!   format.av   the reader: text -> a head and its parts
 //!   builders.av parse lowering: a STRING token -> the pattern, and
 //!               the three BRACE faults, which refuse in the
@@ -22,8 +31,9 @@ use diagnostics.{DiagCode}
 
 export fn formats() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name         | build
-        "format_pat" | build_format_pat
+        name           | build
+        "format_pat"   | build_format_pat
+        "grammar_decl" | build_grammar_decl
     }
     let codes = table<DiagCode> {
         kind                  | id      | summary
@@ -36,6 +46,7 @@ export fn formats() -> LanguageFeature {
         name = "formats"
         docs = "A string literal in pattern position: `\"{method} {path}\"` binds each hole to the span up to the next literal, by one anchored left-to-right pass. `{{` and `}}` are literal braces; a literal with no holes matches by equality, as it always did."
         gram = grammar {
+            stmt = "grammar" n:NAME "=" s:STRING END -> grammar_decl(n, s)
             pattern = s:STRING -> format_pat(s)
         }
         builders = rows

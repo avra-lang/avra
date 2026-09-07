@@ -2455,6 +2455,32 @@ the order is the dependency.
         being true the day C callbacks land.
         Proved in `corpus/native/externs.av`, a file that already
         existed for the host seam: `null some some`.
+  - [ ] REVIEWS THIS LANE OWES, recorded because they live in
+        messages and messages do not survive a compaction. Each is a
+        diff another lane writes in this lane's files, with this
+        lane's word already given and its conditions already stated:
+        1. THE `Callee` VARIANT + grammar's side (strings lane, one
+           slice). Four constraints: BOTH conditions (a grammar type
+           with no door of that name still falls through), the test
+           asks the DECLARATION'S KIND and never "has an inherent fn"
+           (which would be Rule B wearing Rule A's clothes), the
+           fall-through byte for byte, and the refusal names the door
+           it tried. Rule B — a general type-qualified call, which is
+           STATIC METHODS (ROADMAP:10786, recorded not this arc) — is
+           the OWNER'S and no relay of an answer is a grant.
+        2. `Bytes` (HTTP lane): `is_managed` hardest, because a
+           managed type the memory pass does not know is a leak or a
+           double free and neither shows up in a test.
+        3. THE OPAQUE TYPE / Drop design (SQLITE lane) for the
+           memory-pass parts. Position already given: the WRAPPER BOX
+           route, because the guard is structurally blind at the
+           foreign seam — `hdr` refuses an untagged pointer, so
+           retain and release no-op on one and a borrowed foreign
+           pointer reports clean.
+        4. THE INTERPRETER HALF of the uniform-ABI extern host, mine
+           to land if the ABI research holds. Their variadic finding
+           is verified under their own hand and the refusal belongs
+           at the DECLARATION.
   - [ ] S2 CARRIES A SEARCH OF ITS DEPENDENTS — a GATE CONDITION,
         not a courtesy, and the reason is verified rather than
         feared. `mut b = a` ALIASES today, both engines:

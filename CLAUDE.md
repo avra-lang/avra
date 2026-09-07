@@ -51,7 +51,9 @@ the body exists, answer:
 
 1. Is any loop a MAP/FILTER/FLAT-MAP? Comprehension (`?` works in
    element and iterable; predicates hoist into named fns).
-2. Building head-plus-tail? `concat`/`flatten`, never push-ceremony.
+2. Building head-plus-tail? `concat` (a list METHOD) / `flatten`
+   (core's FREE fn — `flatten(xs)`, never `xs.flatten()`), never
+   push-ceremony.
 3. Is a projection being spelled twice? The second spelling names a
    verb (`cx.int_at`, `expr_fps`) or uses the existing one.
 4. Does absence read straight? (`?? `, `?.`, if-null early return —
@@ -131,8 +133,9 @@ change that hit it. Request your own features: the backlog feeds the
 spec. The same discipline runs one level down: a PATTERN discovered
 while writing (a beautiful form, a smell, a licensed exception) is
 an IDIOM — it lands in DOGFOODING.md's registry at discovery, and
-the greppable ones grow ratchet rules in tools/idioms.sh. The
-registry is the idiom engine's spec, written by dogfooding.
+the greppable ones grow ratchet rules in tools/idioms.py (the
+`tools/idioms.sh` shim runs it). The registry is the idiom
+engine's spec, written by dogfooding.
 
 ## Rules
 
@@ -184,10 +187,11 @@ registry is the idiom engine's spec, written by dogfooding.
   carries a registry's obligation and `make vocab` cannot see it, so
   spell the kinds there too.
   AND THE REASON IT HID GENERALIZES: `RtKind` had three variants from
-  the day it was written and never grew, so nothing ever tested the
-  assumption. A KEEPER THAT HAS ONLY EVER GUARDED A STATIC ENUM IS
-  UNTESTED — the first widening is its first real test, and that is
-  the worst moment to learn it was only ever looking for one shape.
+  the day it was written and had not yet grown — it carries six now
+  — so nothing ever tested the assumption. A KEEPER THAT HAS ONLY
+  EVER GUARDED A STATIC ENUM IS UNTESTED — the first widening is its
+  first real test, and that is the worst moment to learn it was only
+  ever looking for one shape.
 - THE EXEMPTION LAW, which the above is one instance of: a doctrine
   exemption that is not written AT THE SITE is an unbounded amnesty.
   Prose exemptions are invisible to tooling and to the next reader,
@@ -254,7 +258,7 @@ registry is the idiom engine's spec, written by dogfooding.
   value that came from anywhere else reads memory that is not ours.
   The sources are all headered: the backend's string constants
   (`avra_llvm_build_global_string_ptr`, kind STATIC, immortal),
-  the runtime's own words (`bool_text`, "null"), argv and the
+  the runtime's own words (`avra_bool_text`, "null"), argv and the
   environment (`str_static`). A new C fn that answers TEXT to a
   program allocates it with `box_alloc`/`str_owned`, or
   `str_static` when the program must never own it — never a bare
@@ -398,7 +402,7 @@ registry is the idiom engine's spec, written by dogfooding.
   `[link]`-shaped manifest row.
 - ITS SIBLING, AND THE SHARPER ONE: A GUARD AND THE THING IT GUARDS
   MUST READ THE SAME BYTES. Our own primitives disagree about one
-  value — `avra_str_from_codepoint(0) + "x"` has `.length` 2 AND
+  value — @std/text's `from_codepoint(0) + "x"` has `.length` 2 AND
   compares EQUAL to `""`, because `.length` reads the header while
   `==` is a C call that stops at the NUL (probed here). So a door
   built from `is_empty`/`==`/`starts_with` and a callee reading the
@@ -430,13 +434,13 @@ registry is the idiom engine's spec, written by dogfooding.
   the artifact was CORRECT and its LABEL was broader than its
   coverage, which is why no amount of verifying the body finds it.
 - Passes are pure queries with ONE standard signature:
-  `pass(p: ParsedProgram, ...upstream Facts) -> Facts` — the program
+  `pass(p: Parsed, ...upstream Facts) -> Facts` — the program
   first, prior passes' facts next, its own Facts (which OWN its
   diagnostics) out. A pass OWNS its fact tables — NodeStore is
   parse-owned and never accretes pass facts. `analyze` is the only
   place pass order exists; consumers hold ONE Analysis. A source is
-  ONE value (`SourceFile`: name + text + line index) — never a loose
-  (file, text) pair.
+  ONE value (`SourceFile`: `file` + `text` + `line_starts`) — never a
+  loose (file, text) pair.
 - Queries own granularity and caching; features own the per-variant
   logic a query's body dispatches to.
 - AN EARLY-CUTOFF HASH MUST COVER THE WHOLE VALUE, or the cutoff
@@ -528,6 +532,18 @@ registry is the idiom engine's spec, written by dogfooding.
   branch swallowed every let line — 352 tests). And a NAME-headed
   branch (assignment) must stay non-committing — recovery there
   swallows every expression line.
+  AND THE ANCHOR IS SHARED ACROSS RULES, not just within one, which
+  this wording did not reach. `grammar` anchors a STATEMENT and an
+  EXPRESSION both — `grammar_lit` contributes `primary = "grammar"
+  "{" s:STRING`. A recovering statement branch on that keyword
+  commits every `grammar {` line as a hole and eats it, and five fns
+  in the compiler's own source "answered void", because `stmt` is
+  tried before the expression floor ever sees the line. So the law is
+  not "the last branch in this RULE" but THE LAST BRANCH ON THAT
+  KEYWORD ANYWHERE: a statement anchored on a keyword that already
+  anchors an expression must NOT recover. (The instance is
+  lane/strings', ATTRIBUTED and not yet in this tree; the shared
+  anchor is verified here.)
 - Grammar authoring: a rule's GRAM TEXT and its BUILDERS are one
   unit — a builder named in feature A's grammar registers in
   feature A, never in a feature that might be absent (a partial
@@ -537,7 +553,8 @@ registry is the idiom engine's spec, written by dogfooding.
   MEANING, the gram decides ownership of PARSE.
 - Grammar authoring: a KEYWORD ANCHOR merges before every
   NAME-HEADED branch, not merely before the spine's bare `ident`.
-  `fns` contributes `primary = NAME "(" args ")"`, so with `fns`
+  `fns` contributes a call rule headed `primary = c:NAME "("`
+  (features/fns/mod.av spells its argument list), so with `fns`
   ahead of `if_expr` the parser read `if (c) { }` as a CALL to a fn
   named `if` and reported "expected BREAK" — `if`, `match` and
   `while` all lost their parenthesised condition, the habit every
@@ -547,7 +564,7 @@ registry is the idiom engine's spec, written by dogfooding.
   statement TWICE and leaks the failed attempt's nodes into the
   arena (node counts double, orphan exprs go untyped). An optional
   TAIL belongs AT the floor — `v:expression ( "=" a:expression )?
-  BREAK` — and the floor's builder picks the node (assignment
+  END` — and the floor's builder picks the node (assignment
   landed so; the Assign node is built by expr_stmt, given meaning
   by mutation).
 - Grammar authoring: expr_stmt is the stmt rule's FLOOR — its
@@ -557,14 +574,13 @@ registry is the idiom engine's spec, written by dogfooding.
   floor's @recover commits the hole, stealing the line).
 - A feature never matches ANOTHER feature's variants — nor
   re-extracts its OWN literal's payload inline: all literal reads
-  go through core's value protocol (`truth_of`, `text_of`,
-  `elems_of`) — one projection per category a feature reads WITHOUT
-  its own dispatch. Int has none: its only reader binds it in its
-  own dispatch match, so the projection was dead; add one at the
-  second reader. The protocol grows with value categories — a core
-  event — never per feature. (N variants need N projections —
-  payload types differ, and a unified return would be the parallel
-  Value enum the doctrine refuses.) A protocol read is NEVER `?? <a
+  go through core's value protocol (`bool_of`, `int_of`, `text_of`,
+  `pairs_of`, `elems_of`, all in core/nodes.av) — one projection per
+  category a feature reads WITHOUT its own dispatch. The protocol
+  grows with value categories — a core event — never per feature.
+  (N variants need N projections — payload types differ, and a
+  unified return would be the parallel Value enum the doctrine
+  refuses.) A protocol read is NEVER `?? <a
   plausible default>`: the dispatch guaranteed that payload, so
   absence is a DEFECT — `lower_defect(cx, e, ...)`, or the compiler
   ships a silently wrong program.
@@ -603,8 +619,8 @@ registry is the idiom engine's spec, written by dogfooding.
   QUERY it;
   adding is one row plus one C body, nothing dispatches. ITS
   SPELLING IS NOT `table<Row>`, and reading "table" as the literal
-  cost a lane a design round: `rt_sigs`'s 78 WIDE rows are struct
-  literals in a list, while `width_rows`'s three NARROW ones are a
+  cost a lane a design round: `rt_sigs`'s WIDE rows are struct
+  literals in a list, while `width_rows`'s NARROW ones are a
   `table`. A `table` buys ALIGNMENT and a multi-line cell SPENDS
   it, so the row's width picks the spelling — both are registries.
   BEHAVIOR (an instruction: five different per-pass meanings) ->
@@ -649,8 +665,9 @@ registry is the idiom engine's spec, written by dogfooding.
   state, and the walk's verbs are its methods, written where the
   walk lives (language/typing.av's `impl TypeCx`).
 - Keywords are never listed by hand: they derive from the assembled
-  grammar's identifier-shaped literals (`Grammar.keywords()`) — a
-  feature's gram fragment IS its keyword claim.
+  grammar's identifier-shaped literals (`g.keywords()`, a method on
+  a Grammar VALUE — Avra has no type-qualified call) — a feature's
+  gram fragment IS its keyword claim.
   A feature owning a STATEMENT kind also impls `StmtSemantics`
   (`stmt.av` or `semantics.av`) and joins `stmt_semantics_of` — the
   drivers' one statement loop reaches it there.
@@ -670,7 +687,7 @@ registry is the idiom engine's spec, written by dogfooding.
   `Result<int, string>` — its exit code, or the report `phased`
   prints as exit 1 — and says only what its phase does.
 - A BORROW ALIASES, A PATH WRITE THROUGH A SHARED INTERMEDIATE
-  COPIES. `mut xs = a.b.list; xs.push(v)` writes through every
+  COPIES. `mut xs = a.b.list` then `xs.push(v)` writes through every
   holder of `a.b`; `a.b.list.push(v)` opens `a.b` unique and COPIES
   it when another reference holds it, so the push lands in a copy
   the other holder never sees (the lowering's worklist lost every
@@ -1058,6 +1075,13 @@ Runtime facts, ours to ratify:
   a.{x,\n  y}` as a truncated statement, and one that scans "to the
   closing brace" then eats the code after it. Join continuation
   lines first; write an import on one line where it fits.
+  ITS MIRROR, and it caught the author of this line: a tool that ends
+  a body at the next LINE-STARTING brace eats everything after a
+  ONE-LINE definition, which has no such brace. The mint keeper's
+  first draft did exactly that over C and read twelve float helpers as
+  minting, because a minter sat two definitions below them. THE
+  DELIMITER IS NOT WHERE THE LAYOUT SUGGESTS — count the nesting, in
+  either direction, and pin a one-line case.
 - A SYNTAX CHANGE TO THE COMPILER'S OWN SOURCE runs in one order:
   write the new grammar in the OLD spelling, SAVE the standing
   binary aside (`cp build/avra build/avra.pre`), build the product
@@ -1080,6 +1104,25 @@ Runtime facts, ours to ratify:
   makes `cp build/avra build/avra.pre` the whole protocol rather than
   a nicety — the HTTP lane's strings slice paid for this and its way
   back was a copy of ANOTHER LANE's product.
+- THE RECEIPT FOR A SLICE THAT REMOVES A RUNTIME SYMBOL IS `make
+  bootstrap` GREEN, NEVER `make avra` GREEN. `make avra` builds the
+  cli with the STANDING binary and copies the result; it never
+  touches `bootstrap/seed.ll`, which is a COMMITTED artifact naming
+  every runtime symbol it needs (31 `avra_io_` references today). So
+  deleting a runtime symbol gates clean under `make avra`, twice,
+  while the cold path is already broken — `make bootstrap` links the
+  seed against the runtime and every removed name is undefined.
+  Naming a package's object on the link line rescues only the names
+  that SURVIVED into package C; one deleted by design exists nowhere
+  in the tree, so only a SEED REFRESH restores the cold path, which
+  is why that refresh rides the REMOVING commit and never a later
+  chore. And the failed link DESTROYS `build/avra`, because bootstrap
+  links straight at it (`-o build/avra`), so `cp build/avra
+  build/avra.pre` is the whole protocol here too. It is the
+  shadowing law one mechanism over: a target green because a
+  DIFFERENT mechanism was doing the work. (The @std/io instance is
+  the HTTP lane's, ATTRIBUTED — lane/http c8af70b, not in this tree;
+  the mechanism above is verified here.)
 - A CHANGE THE COMPILER MUST THEN READ REACHES THE PRODUCT ON THE
   SECOND BUILD — codegen is one instance, the FRONT END is another,
   and the wording used to say only the first. `make avra`
@@ -1089,7 +1132,7 @@ Runtime facts, ours to ratify:
   the bug it knows how to fix. Lane A's loop-condition fix merged
   so: my product compiled the suite at 7 GB (main's at 1.2 GB), and
   its second build was killed at 4.2 GB — the leaky product could
-  not even compile the cli. The way out is a binary that already
+  not even compile the cli.
   AND THE FRONT END IS THE SHARPER HALF, because there the first
   build PASSES. THE BUILD THAT SUCCEEDED WAS THE BUILD THAT LIED
   (the sqlite campaign's bitwise lane, three times in one slice): the
