@@ -89,9 +89,12 @@ export fn listen_all(port: int) -> Result<Listener, NetError> {
     .Ok(Listener { fd: fd, port: avra_net_local_port(fd) })
 }
 
-/// A connection to host:port made within `timeout`.
+/// A connection to host:port made within `timeout`, which is a
+/// budget and never a sentinel: a negative one is refused rather than
+/// read as "forever", and a zero one looks once.
 export fn connect(host: string, port: int, timeout: Duration) -> Result<Conn, NetError> {
     if !names_a_host(host) { return no_host("connect", host, port) }
+    if timeout.ms < 0 { return failed("connect", "${host}:${port} within ${timeout.ms} ms", -avra_errno_invalid()) }
     let fd = avra_net_connect(host, port, timeout.ms)
     if fd < 0 { return failed("connect", "${host}:${port}", fd) }
     .Ok(Conn { fd: fd })
@@ -139,7 +142,7 @@ impl Conn {
     fn read(max: int) -> Result<Read, NetError> {
         let n = avra_fd_read(self.fd, max)
         if would_block(n) { return .Ok(.Pending) }
-        if n < 0 { return failed("read", self.peer(), n) }
+        if n < 0 { return failed("read", self.named(), n) }
         if n == 0 { return .Ok(.Eof) }
         .Ok(.Data(avra_fd_taken()))
     }
@@ -150,14 +153,14 @@ impl Conn {
     fn write(bytes: Bytes, from: int) -> Result<int, NetError> {
         let n = avra_fd_write(self.fd, bytes, from)
         if would_block(n) { return .Ok(0) }
-        if n < 0 { return failed("write", self.peer(), n) }
+        if n < 0 { return failed("write", self.named(), n) }
         .Ok(n)
     }
 
     /// The write side closed: the peer reads EOF after what was sent.
     fn shutdown_write() -> Result<int, NetError> {
         let r = avra_net_shutdown(self.fd, 1)
-        if r < 0 { return failed("shutdown", self.peer(), r) }
+        if r < 0 { return failed("shutdown", self.named(), r) }
         .Ok(self.fd)
     }
 
@@ -166,6 +169,13 @@ impl Conn {
         let r = avra_net_close(self.fd)
         if r < 0 { return failed("close", "fd ${self.fd}", r) }
         .Ok(self.fd)
+    }
+
+    /// The connection's name in a refusal: its peer while it has one,
+    /// its descriptor once the peer is gone.
+    fn named() -> string {
+        let peer = self.peer()
+        if peer.is_empty() { "fd ${self.fd}" } else { peer }
     }
 
     /// The peer as "ip:port" — a v6 address in brackets — or "" once
@@ -194,7 +204,7 @@ impl Poller {
     /// none.
     fn wait(timeout: Duration?) -> Result<List<Event>, NetError> {
         let n = avra_net_wait(self.fd, timeout?.ms ?? -1)
-        if n < 0 { return failed("wait", "", n) }
+        if n < 0 { return failed("wait", "poller", n) }
         .Ok([event_at(i) for i in 0..n])
     }
 

@@ -89,7 +89,20 @@ timeout)`, `poller()`, `Listener.accept() -> Conn?`, `Conn.read(max)
 int` (0 when it would block), `shutdown_write`, `close`, `peer`,
 `Poller.watch(fd, readable, writable)`, `wait(timeout?) ->
 List<Event>`; every failure a `NetError { verb, subject, errno }`
-implementing `Error`. Loopback spec in `packages/std-net/src/tests`.
+implementing `Error`. Loopback spec in `packages/std-net/src/tests`; the red team's survivors
+in `net_adversarial_test.av`. RED-TEAMED 2026-09-07 (13 programs, native):
+every wrong type in every slot refuses once in its own words (a text
+port, an int host, a bool interest, a string body, an int timeout); the
+edges hold. Three findings, all fixed: a NEGATIVE `Duration` reached
+`connect` as "forever" (a sentinel in a value — refused now, a zero
+budget looks once); a read or write on a gone peer named an EMPTY
+subject (it names the descriptor now); the poller's wait named nothing.
+ONE HAZARD RECORDED, NOT FIXED: a closed descriptor's NUMBER is reused
+by the next open, so a stale `Conn` value's `close()` can close a
+stranger — the answer is the ROADMAP's generation-tagged handle table,
+which needs process-wide package state (sugar backlog); until then a
+`Conn` is used once and dropped, and the tests pin the refusal words
+for the honest case (EBADF).
 
 ## Slice 3 — `@std.http` (IN PROGRESS)
 
