@@ -1,0 +1,179 @@
+//! @std.net — stream sockets and readiness, as values.
+//!
+//! A `Listener` is a bound port, a `Conn` a nonblocking stream, a
+//! `Poller` a readiness queue (kqueue on darwin, epoll on linux),
+//! and every verb answers a `Result` whose failure names the verb,
+//! its subject and the platform's errno. Nothing here blocks except
+//! `connect` for its own timeout and `wait` for its own; a read that
+//! finds nothing answers `.Pending`, a write that takes nothing
+//! answers 0, and the loop above decides.
+use @std.errors.{Error, ErrorInfo, info}
+use @std.time.{Duration, secs}
+
+extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
+extern fn avra_net_accept(lfd: int) -> int
+extern fn avra_net_connect(host: string, port: int, timeout_ms: int) -> int
+extern fn avra_net_read(fd: int, max: int) -> int
+extern fn avra_net_taken() -> Bytes
+extern fn avra_net_write(fd: int, bytes: Bytes, from: int) -> int
+extern fn avra_net_close(fd: int) -> int
+extern fn avra_net_shutdown(fd: int, how: int) -> int
+extern fn avra_net_poll_new() -> int
+extern fn avra_net_watch(pfd: int, fd: int, interest: int) -> int
+extern fn avra_net_wait(pfd: int, timeout_ms: int) -> int
+extern fn avra_net_event_fd(i: int) -> int
+extern fn avra_net_event_flags(i: int) -> int
+extern fn avra_net_peer(fd: int) -> string
+extern fn avra_net_local_port(fd: int) -> int
+extern fn avra_errno_text(err: int) -> string
+
+/// The errno the substrate answers for "nothing yet" and for a peer
+/// that has gone; the rest are the platform's.
+fn eagain() -> int { 35 }
+fn eagain_linux() -> int { 11 }
+
+/// A verb that failed: which, on what, and the platform's word.
+export type NetError = { verb: string, subject: string, errno: int }
+
+impl Error for NetError {
+    fn describe() -> ErrorInfo {
+        info("net.${self.verb}", "${self.verb} ${self.subject}: ${avra_errno_text(self.errno)}")
+    }
+}
+
+fn failed<T>(verb: string, subject: string, code: int) -> Result<T, NetError> {
+    .Err(NetError { verb: verb, subject: subject, errno: 0 - code })
+}
+
+fn would_block(code: int) -> bool { code == 0 - eagain() || code == 0 - eagain_linux() }
+
+/// A bound, listening port. `port` is the one the kernel gave, so a
+/// listener asked for port 0 knows where it is.
+export type Listener = { fd: int, port: int }
+
+/// A nonblocking stream to a peer.
+export type Conn = { fd: int }
+
+/// A readiness queue over descriptors.
+export type Poller = { fd: int }
+
+/// One readiness report: what the descriptor is ready for, and
+/// whether its peer hung up or the socket holds an error.
+export type Event = { fd: int, readable: bool, writable: bool, hangup: bool, failed: bool }
+
+/// What a read found.
+export enum Read {
+    Data(b: Bytes)
+    Eof
+    Pending
+}
+
+/// A listener on host:port — an empty host is every interface, port
+/// 0 is the kernel's choice.
+export fn listen(host: string, port: int) -> Result<Listener, NetError> {
+    let fd = avra_net_listen(host, port, 511)
+    if fd < 0 { return failed("listen", "${host}:${port}", fd) }
+    .Ok(Listener { fd: fd, port: avra_net_local_port(fd) })
+}
+
+/// A connection to host:port made within `timeout`.
+export fn connect(host: string, port: int, timeout: Duration) -> Result<Conn, NetError> {
+    let fd = avra_net_connect(host, port, timeout.ms)
+    if fd < 0 { return failed("connect", "${host}:${port}", fd) }
+    .Ok(Conn { fd: fd })
+}
+
+/// A readiness queue.
+export fn poller() -> Result<Poller, NetError> {
+    let fd = avra_net_poll_new()
+    if fd < 0 { return failed("poller", "", fd) }
+    .Ok(Poller { fd: fd })
+}
+
+impl Listener {
+    /// The next pending connection, or null when none is waiting.
+    fn accept() -> Result<Conn?, NetError> {
+        let fd = avra_net_accept(self.fd)
+        if would_block(fd) { return .Ok(null) }
+        if fd < 0 { return failed("accept", "port ${self.port}", fd) }
+        .Ok(Conn { fd: fd })
+    }
+
+    /// Closed; answers the port it held.
+    fn close() -> Result<int, NetError> {
+        let r = avra_net_close(self.fd)
+        if r < 0 { return failed("close", "port ${self.port}", r) }
+        .Ok(self.port)
+    }
+}
+
+impl Conn {
+    /// Up to `max` bytes, as an owned value; `.Eof` once the peer has
+    /// finished writing; `.Pending` when nothing has arrived yet.
+    fn read(max: int) -> Result<Read, NetError> {
+        let n = avra_net_read(self.fd, max)
+        if would_block(n) { return .Ok(.Pending) }
+        if n < 0 { return failed("read", self.peer(), n) }
+        if n == 0 { return .Ok(.Eof) }
+        .Ok(.Data(avra_net_taken()))
+    }
+
+    /// `bytes` from `from` written as far as the socket takes them:
+    /// the count, which is 0 when it would block — a short count is
+    /// normal, and the caller keeps its cursor.
+    fn write(bytes: Bytes, from: int) -> Result<int, NetError> {
+        let n = avra_net_write(self.fd, bytes, from)
+        if would_block(n) { return .Ok(0) }
+        if n < 0 { return failed("write", self.peer(), n) }
+        .Ok(n)
+    }
+
+    /// The write side closed: the peer reads EOF after what was sent.
+    fn shutdown_write() -> Result<int, NetError> {
+        let r = avra_net_shutdown(self.fd, 1)
+        if r < 0 { return failed("shutdown", self.peer(), r) }
+        .Ok(self.fd)
+    }
+
+    /// Closed; answers the descriptor it held.
+    fn close() -> Result<int, NetError> {
+        let r = avra_net_close(self.fd)
+        if r < 0 { return failed("close", "fd ${self.fd}", r) }
+        .Ok(self.fd)
+    }
+
+    /// The peer as "ip:port", or "" once it is gone.
+    fn peer() -> string { avra_net_peer(self.fd) }
+}
+
+impl Poller {
+    /// Interest in `fd`: readable, writable, both, or neither — which
+    /// stops watching it. Answers the descriptor.
+    fn watch(fd: int, readable: bool, writable: bool) -> Result<int, NetError> {
+        let interest = (if readable { 1 } else { 0 }) + (if writable { 2 } else { 0 })
+        let r = avra_net_watch(self.fd, fd, interest)
+        if r < 0 { return failed("watch", "fd ${fd}", r) }
+        .Ok(fd)
+    }
+
+    /// The descriptors ready now, waiting up to `timeout` for the
+    /// first — null waits until one is. An interrupted wait answers
+    /// none.
+    fn wait(timeout: Duration?) -> Result<List<Event>, NetError> {
+        let forever = 0 - 1
+        let n = avra_net_wait(self.fd, timeout?.ms ?? forever)
+        if n < 0 { return failed("wait", "", n) }
+        .Ok([event_at(i) for i in 0..n])
+    }
+
+    fn close() -> Result<int, NetError> {
+        let r = avra_net_close(self.fd)
+        if r < 0 { return failed("close", "poller", r) }
+        .Ok(self.fd)
+    }
+}
+
+fn event_at(i: int) -> Event {
+    let flags = avra_net_event_flags(i)
+    Event { fd: avra_net_event_fd(i), readable: flags & 1 == 1, writable: flags & 2 == 2, hangup: flags & 4 == 4, failed: flags & 8 == 8 }
+}

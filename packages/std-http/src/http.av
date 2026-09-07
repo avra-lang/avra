@@ -1,0 +1,75 @@
+//! @std.http — HTTP/1.1, strict and small.
+//!
+//! THE MODULES, and what each one owns:
+//!
+//! ```
+//! frame.av   the FRAMER: a head over `Bytes`, stateless, every
+//!            widening MAY refused, each refusal a named law
+//! http.av    this file — the values a handler sees and answers
+//! ```
+//!
+//! The head's field spans index the buffer they were framed from, so
+//! a `Request` keeps that buffer and slices a value only when asked.
+use frame.{Head, Field, Span, Method}
+
+/// What a handler receives: the raw buffer the head was framed from,
+/// the head, the body (owned, complete), and who sent it.
+export type Request = { raw: Bytes, head: Head, body: Bytes, peer: string }
+
+impl Request {
+    fn method() -> Method { self.head.method }
+    /// The request target, whole — path and query as sent.
+    fn target() -> string { self.raw.slice(self.head.target.lo, self.head.target.hi).text() ?? "" }
+    /// The first field of this name, ASCII-folded, or null when the
+    /// request carries none. Field values are ASCII by framing, so
+    /// the text is total.
+    fn header(name: string) -> string? {
+        let wanted = name.bytes()
+        let raw = self.raw
+        let f: Field? = self.head.fields.find((f) -> raw.ieq_at(f.name.lo, f.name.hi, wanted))
+        if f == null { return null }
+        raw.slice(f!.value.lo, f!.value.hi).text()
+    }
+}
+
+/// One outgoing field.
+export type Header = { name: string, value: string }
+
+/// What a handler answers. `content-length` is written from the body;
+/// nothing here is chunked.
+export type Response = { status: int = 200, headers: List<Header> = [], body: Bytes = nothing() }
+
+fn nothing() -> Bytes { "".bytes() }
+
+export fn text(status: int, body: string) -> Response {
+    Response { status: status, headers: [Header { name: "content-type", value: "text/plain; charset=utf-8" }], body: body.bytes() }
+}
+
+export fn ok(body: string) -> Response { text(200, body) }
+
+export fn status(code: int) -> Response { Response { status: code } }
+
+/// The response on the wire: status line, the fields, the body's
+/// length, `connection: close` when the connection will not persist,
+/// then the body.
+export fn wire(r: Response, keep_alive: bool) -> Bytes {
+    let fields = ["${h.name}: ${h.value}\r\n" for h in r.headers].join("")
+    let closing = if keep_alive { "" } else { "connection: close\r\n" }
+    "HTTP/1.1 ${r.status} ${reason(r.status)}\r\n${fields}content-length: ${r.body.length}\r\n${closing}\r\n".bytes().concat(r.body)
+}
+
+/// The reason phrase — the registered ones, and the class's word for
+/// the rest.
+export fn reason(status: int) -> string {
+    match status {
+        100 -> "Continue", 101 -> "Switching Protocols",
+        200 -> "OK", 201 -> "Created", 202 -> "Accepted", 204 -> "No Content", 206 -> "Partial Content",
+        301 -> "Moved Permanently", 302 -> "Found", 303 -> "See Other", 304 -> "Not Modified", 307 -> "Temporary Redirect", 308 -> "Permanent Redirect",
+        400 -> "Bad Request", 401 -> "Unauthorized", 403 -> "Forbidden", 404 -> "Not Found", 405 -> "Method Not Allowed",
+        408 -> "Request Timeout", 409 -> "Conflict", 411 -> "Length Required", 413 -> "Content Too Large", 414 -> "URI Too Long",
+        415 -> "Unsupported Media Type", 417 -> "Expectation Failed", 422 -> "Unprocessable Content", 429 -> "Too Many Requests",
+        431 -> "Request Header Fields Too Large",
+        500 -> "Internal Server Error", 501 -> "Not Implemented", 502 -> "Bad Gateway", 503 -> "Service Unavailable", 504 -> "Gateway Timeout", 505 -> "HTTP Version Not Supported",
+        _ -> if status < 300 { "Success" } else if status < 400 { "Redirection" } else if status < 500 { "Client Error" } else { "Server Error" },
+    }
+}
