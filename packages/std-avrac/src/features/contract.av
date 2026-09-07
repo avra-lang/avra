@@ -19,7 +19,7 @@
 //! values.av the runtime VALUE representation, builder.av the
 //! parse-time authoring surface. A feature-named fn has no place
 //! in any of them.
-use core.{Expr, ExprId, StmtId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at, Binding}
+use core.{Expr, ExprId, StmtId, PatId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at, Binding}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 
@@ -298,6 +298,24 @@ export trait StmtSemantics {
     fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? {
         null
     }
+}
+
+/// The semantics of one PATTERN KIND — the pattern ladder's twin of
+/// NodeSemantics. NO DEFAULTS: a feature that owns a `Pat` variant
+/// owes all three, because a pattern that types without accepting,
+/// or accepts without binding, is a silently wrong match rather
+/// than a missing feature.
+///
+/// THE RECURSION GOES THROUGH THE SEAM. A nested pattern is reached
+/// by asking `pat_semantics_of` again, never by a local call — that
+/// is what lets one feature's pattern sit inside another's.
+export trait PatSemantics {
+    /// The types this pattern's binds take, in pattern order.
+    fn pat_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId>
+    /// A bool register: does the value match?
+    fn pat_accepts(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg
+    /// The registers this pattern's binds read, in pattern order.
+    fn pat_binds(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg>
 }
 
 /// The written-out nothing — a pass method that deliberately does no
