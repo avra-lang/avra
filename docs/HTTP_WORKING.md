@@ -780,6 +780,31 @@ asserted the truncation are trap contracts now (20). Worst case: 25 µs
 per megabyte crossing, ~47 GB/s, eight distinct strings cycled. A
 LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS is §2.7's layering, in the
 sqlite lead's words.
+THE RED TEAM OVER THE SEAM (46 programs, both engines): the CHECK
+SURVIVED EVERYTHING — 17 cases both ways, byte-identical words and
+status; the three severes are in the FRAME beside it, fixed in the same
+slice. (1) An aggregate at an extern seat passed `check` clean and the
+evaluator staged its HANDLE as an address (a record, a map: segfault on
+eval, garbage natively; a list refused) — an extern seat's type must be
+one that crosses, a check-time law. (2) The `unstageable` refusal did
+not stop the call — `puts` printed "(null)" and THEN the refusal; the
+frame stops at the first. (3) An extern declared with a CORE ROW's name
+is dispatched to the row with its own seats and answer discarded
+(`extern fn avra_host_env(a, b) -> int` handed a program a raw pointer
+as an int, and inherited the row's `inert`, so "never inert by
+construction" was false as written) — an agreement law at the dispatch.
+And the `Bytes` exemption was unenforced: `Bytes` joins `make externs`'s
+demands. THE TREE'S ONLY AGGREGATE SEAT, `avra_exec_self(args:
+List<string>)` in packages/cli, becomes a ROW (§2.1: a C body that
+reads a box is a row) and works under `avra run` for the first time.
+THREE FACES THAT TRAP WHERE THEY SHOULD REFUSE, routed to their owners
+by §2.7's own rule: @std/io's `env`/`env_or` (and a NUL-lossy
+`contains("=")` guard — right outcome, wrong reason), @std/process's
+`tool_from_env` and `Env.Only.get` answering the prefix's value where
+`Env.Inherit.get` traps on the same name (lane B); @std/sqlite's
+`equal_nocase`, `like`, `glob`, `is_complete`, `compiled_with`, with a
+`HoldsNul` cause the package has and does not use there (the sqlite
+lead).
 
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
