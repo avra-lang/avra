@@ -120,7 +120,7 @@ build/%.o: %.c
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite packages/std-net packages/std-http
 
-.PHONY: census traps test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab stems sweep seed bootstrap \
+.PHONY: census traps test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab stems sweep seed bootstrap libs \
         check run ir emit build-native native-check avra
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
@@ -234,7 +234,18 @@ build-native: $(COMPILER_OBJS)
 # then SAYS "native == expected" rather than claiming a differential it
 # never ran. The label travels with the artifact: a reader of the gate's
 # output learns the program is single-engine without opening a document.
-corpus: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+# THE PACKAGE LIBRARIES the evaluator opens. `tools/libs.py` is the ONE
+# definition of what each is made of — `tools/stems.sh` consumes that
+# answer rather than parsing the manifests a second time. The roster is
+# the linking packages MINUS the ones `build/avra` already carries, so
+# it needs the compiler built first and says so as a prerequisite.
+libs: avra $(PACKAGE_OBJS)
+	@for n in `python3 tools/libs.py --names`; do \
+	  python3 tools/libs.py --build $$n || exit 1; \
+	done
+	@echo "libs: `python3 tools/libs.py --names | wc -w | tr -d ' '` package librar(y|ies) built"
+
+corpus: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
 	@./avra corpus corpus
 	@./avra corpus --native-only corpus/native
 	@for d in corpus/*/; do \

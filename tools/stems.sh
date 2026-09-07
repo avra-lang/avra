@@ -142,6 +142,36 @@ for name in $twice; do
     fails=$((fails + 1))
 done
 
+# EVERY RUNTIME SYMBOL A PACKAGE LIBRARY LEAVES OPEN IS HOST-BOUND.
+# A library is linked with the runtime DELIBERATELY unresolved — a
+# second copy would give it a second allocator, and a box minted
+# inside it and released by the evaluator would reach the wrong free
+# list. Mach-O needs `-undefined dynamic_lookup` to permit that, and
+# that flag also permits a TYPO: `avra_traap` would link clean and
+# fail at first call. So the flag's amnesty is bounded here — every
+# `avra_*` a library leaves undefined must be a symbol `build/avra`
+# exports. libc is the loader's business and not ours.
+#
+# THE ROSTER IS CONSUMED, NOT RE-DERIVED. `tools/libs.py --undefined`
+# answers what each built library left open; parsing the manifests a
+# second time here is how `keeps` and `inert` both went wrong.
+if [ -x build/avra ]; then
+    rows=$((rows + 1))
+    exported=$(nm build/avra 2>/dev/null | awk '{print $NF}' | sed 's/^_//' | sort -u)
+    python3 tools/libs.py --undefined 2>/dev/null | while IFS='	' read -r lib syms; do
+        for sym in $syms; do
+            case "$sym" in
+                avra_*)
+                    if ! printf '%s\n' "$exported" | grep -qx "$sym"; then
+                        echo "stems: lib$lib leaves $sym for the host and build/avra does not export it"
+                        exit 1
+                    fi
+                    ;;
+            esac
+        done
+    done || fails=$((fails + 1))
+fi
+
 if [ "$fails" != 0 ]; then
     echo "stems: $fails of $rows rows failed"
     exit 1
