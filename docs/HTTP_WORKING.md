@@ -174,7 +174,7 @@ judges the whole command before the first staged word, and stdin stays
 length-aware as `avra_fd_write` (a NUL is data in a stream and two names
 in a path).
 
-## Sub-lane: strings — S4 (grammar values) on lane/strings, closing
+## Sub-lane: strings — S4 (grammar values) LANDED (5e1f118)
 
 `grammar RequestLine = "{method} {path} HTTP/{major}.{minor}"` declares
 its capture RECORD (a `StructDecl`, the `component` precedent; merged at
@@ -207,6 +207,15 @@ the record refusal, firing only where a grammar's door lookup failed;
 lane A approved the core shape with two findings for the close — a
 reserved code 63 with the format hash as PAYLOAD instead of a hash in the
 tag slot, and `type_fp`'s doc comment moved back below `grammar_fp`.
+CLOSED AND MERGED at 5e1f118 (a7dcd85: `restamp(s, tag, payload)`, the
+mark at code 63, `grammar_fp`'s own code 56; 0ab01ac: constraint 4 as the
+grammar's own voice in variants.av, 28 red-team programs over seven
+classes with zero findings in the feature, two review-round collapses —
+a third `carried_type` and an invented projection — and the
+declaration's goldens; 56 spec cases, 50 adversarial). One finding for
+the parse channel's owner: a builder refusal renders with an empty label
+(`Cause.Builder` has no label field). NEXT: S5, `print` and the
+round-trip law enforced by the compiler.
 Rule B, STATIC METHODS, is the owner's, recorded in the asks with both
 wanting sites. Two grammar-law findings paid on the way: a recovering
 statement branch on `grammar` ate the compiler's own `grammar { … }`
