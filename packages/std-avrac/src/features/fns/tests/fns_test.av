@@ -86,6 +86,19 @@ spec "features/fns" {
     }
 
     given "extern fns — the host's, by their bare symbol" {
+        then "an extern naming a runtime row must wear that row's shape" {
+            // both engines call a row by the REGISTRY's seats, so a
+            // declaration that disagrees is called on the row's shape
+            // with nothing said — this one handed a raw pointer back
+            // as an `int`, differently on each engine
+            refused_with("extern fn avra_host_env(a: string, b: string) -> int\navra_host_env(\"a\", \"b\")", "`avra_host_env` is a runtime row, and this declaration does not wear its shape")
+        }
+        then "an extern that AGREES with its row is the row, and passes" {
+            shown("extern fn avra_host_env(name: string) -> string\navra_host_env(\"PATH\").length > 0") == "true"
+        }
+        then "the row's help names how many seats it takes" {
+            refused_with("extern fn avra_now_ns(a: int) -> int\navra_now_ns(1)", "The row takes 0 seat(s)")
+        }
         then "an extern declares a signature the call is judged by" {
             refused_with("extern fn host_add(a: int, b: int) -> int\nhost_add(1, \"x\")", "argument 2 of `host_add` wants `int`, found `string`")
         }
@@ -109,6 +122,17 @@ spec "features/fns" {
             // binary links; a package's would answer `no_symbol` first
             // and pin the wrong refusal
             refused_at_run("extern fn avra_ffi_set_int(at: int, xs: List<string>)\navra_ffi_set_int(0, [\"a\"])\n1", "the evaluator holds one as a handle, not a box; stage the elements one at a time")
+        }
+        then "a refused seat means the symbol is never CALLED" {
+            // THE NAME ABOVE ASSERTS THE WORDS AND NOTHING ELSE, which
+            // is how this sat: the refusal was recorded MID-staging and
+            // the loop carried on, so the symbol ran with the slot at
+            // the reset's zero. `strlen` reads address zero and the
+            // evaluator SEGFAULTED — five shapes did, with `check`
+            // clean. The callee here is chosen to dereference, so a
+            // regression kills this suite outright rather than
+            // reporting a wrong string.
+            refused_at_run("extern fn strlen(m: Map<string, int>) -> i64\nstrlen({ \"a\": 1 })", "has a seat the frame cannot carry")
         }
         then "a `mut` seat is refused by name — the frame carries no inout yet" {
             refused_at_run("extern fn avra_selfhost_argc(mut out: i64) -> int\nmut n = 0\navra_selfhost_argc(n) > 0", "has a `mut` seat — the frame does not carry an inout yet")
