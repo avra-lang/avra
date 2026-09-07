@@ -6,14 +6,14 @@
 //! generic call INSTANTIATES: pins pre-fill, arguments unify, a
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
-use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, marked}
+use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, marked, RtSig, rt_sig_of, extern_kind}
 use features.{no_pins, Pins, TypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, mut_seats_law, agreed, unify, hungry, declared_marks}
 use diagnostics.{refusal}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .FnDecl(fname, _, _, fret, body) -> checked_fn(cx, s, fname, fret, body),
-        .ExternFn(hname, hparams, _) -> checked_extern(cx, s, hname, hparams),
+        .ExternFn(hname, hparams, hret) -> checked_extern(cx, s, hname, hparams, hret),
         rest -> nothing(),
     }
 }
@@ -24,10 +24,36 @@ export fn check_fn(mut cx: TypeCx, s: StmtId) {
 /// C cannot keep the refcount contract a box demands. A NARROW WIDTH
 /// is out — the cell is 64 bits and a 32-bit write through it leaves
 /// the top half stale, which is B3's defect wearing the other hat.
-fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
+fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, hret: TypeRef) {
     for j, pp in hparams {
         if pp.mutable && !inout_able(pp.ty) { seat_not_inout_able(cx, s, hname, j, pp) }
     }
+    row_law(cx, s, hname, hparams, hret)
+}
+
+/// AN EXTERN THAT NAMES A RUNTIME ROW *IS* THE ROW. Both engines ask
+/// the registry BEFORE the program's own declarations, so a
+/// same-named extern's seats and answer are DISCARDED and the call is
+/// made on the ROW's shape — with no diagnostic anywhere. Declaring
+/// `avra_host_env(a: string, b: string) -> int` over a one-seat row
+/// ran on both engines and handed the program a raw pointer as an
+/// `int`. A row's name is not one a program may re-spell: either the
+/// declaration wears the row's shape, or it wears another name.
+fn row_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, hret: TypeRef) {
+    let row: RtSig? = rt_sig_of(hname)
+    if row == null { return nothing() }
+    let sig: FnSig? = cx.stmt_sig(s)
+    if sig == null { return nothing() }
+    if !row_agrees(cx, row!, sig!, hparams, hret) { extern_redeclares_a_row(cx, s, hname, row!) }
+}
+
+/// Whether a declaration crosses the way its row does — the arity,
+/// every seat's kind and the answer's, in the currency the seam
+/// actually uses.
+fn row_agrees(cx: TypeCx, row: RtSig, sig: FnSig, hparams: List<Param>, hret: TypeRef) -> bool {
+    if row.params.length != sig.params.length { return false }
+    if extern_kind(cx.view.types, hret, sig.ret) != row.ret { return false }
+    [1 for j, p in sig.params if extern_kind(cx.view.types, hparams[j].ty, p) != row.params[j]].is_empty()
 }
 
 /// The types a `mut` extern seat may wear, by the word the seat
@@ -309,6 +335,10 @@ fn bound_unheld(mut cx: TypeCx, e: ExprId, tname: string, ty: TypeId) {
 
 fn seat_not_inout_able(mut cx: TypeCx, s: StmtId, hname: string, j: int, pp: Param) {
     cx.emit(refusal("type.host_seat", cx.stmt_loc(s), "seat ${j + 1} of `${hname}` is `mut` and wears `${spelled(pp.ty ?? void_written())}` — a `mut` host seat hands C the ADDRESS of the caller's cell", "declared here", "a cell C may write is `ptr`, `ptr?`, or an integer at its DECLARED WIDTH — `i32` for a C `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`. A bare `int` is refused here alone, because it is right for `int64_t*` and silently wrong for `int*`, and only the declaration knows which. A managed value (`string`, a list, a map, a record) cannot cross at all — C keeps no refcount for what it writes."))
+}
+
+fn extern_redeclares_a_row(mut cx: TypeCx, s: StmtId, hname: string, row: RtSig) {
+    cx.emit(refusal("type.host_row", cx.stmt_loc(s), "`${hname}` is a runtime row, and this declaration does not wear its shape", "declared here", "both engines call a row by the REGISTRY's seats, never by a program's — so a declaration that disagrees is called on the row's shape with nothing said. The row takes ${row.params.length} seat(s). Spell it as the row does, or name your own C something else."))
 }
 
 fn seat_wants_a_local(mut cx: TypeCx, a: ExprId, callee: string, j: int) {

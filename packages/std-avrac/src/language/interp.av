@@ -675,50 +675,77 @@ impl Machine {
         if sig.cells.any(carries_cell(it)) { return self.inout_seat(callee) }
         avra_ffi_reset()
         self.staged = []
-        self.staged_seats(callee, sig, vals)
+        if !self.staged_seats(sig, vals) { return self.unstageable(callee) }
         self.answered(sig.ret, sym)
     }
 
     /// Every seat staged into its own register file, at its own
     /// file's index — the k-th integer-class value and the k-th
     /// float, which is the order both ABIs fill.
-    fn staged_seats(callee: string, sig: RtSig, vals: List<Val>) {
-        for i, k in sig.params { self.stage_seat(callee, k, file_slots(sig.params)[i], vals[i]) }
+    /// Whether every seat crossed. A LAW REFUSES BEFORE THE WORK: a
+    /// refusal recorded MID-staging left the symbol CALLED anyway,
+    /// with the slot at the reset's zero — a callee that dereferences
+    /// read address zero and one that did not answered a number
+    /// attributed to a refused call.
+    fn staged_seats(sig: RtSig, vals: List<Val>) -> bool {
+        let slots = file_slots(sig.params)
+        [self.stage_seat(k, slots[i], vals[i]) for i, k in sig.params].all(it)
     }
 
     /// HOW ONE ARGUMENT CROSSES — the evaluator's twin of the
     /// backend's `rt_arg`, over the same column.
-    fn stage_seat(callee: string, k: RtKind, at: int, v: Val) {
+    fn stage_seat(k: RtKind, at: int, v: Val) -> bool {
         match k {
-            .F64 -> avra_ffi_set_f64(at, self.bits_of_val(v)),
-            .Ptr -> self.stage_pointer(callee, at, v),
-            .I64 or .I32 or .U32 -> avra_ffi_set_int(at, self.word_of(v)),
+            .F64 -> self.staged_f64(at, v),
+            .Ptr -> self.stage_pointer(at, v),
+            .I64 or .I32 or .U32 -> self.staged_word(at, v),
             .Void -> self.void_seat(),
         }
     }
 
     /// A pointer seat takes a BOX from text and an ADDRESS from a
     /// number; absence is the null pointer, which is what a C
-    /// sentinel of zero means.
-    fn stage_pointer(callee: string, at: int, v: Val) {
+    /// sentinel of zero means. Spelled over every `Val`: a handle
+    /// into the machine's own tables is NOT an address, and a
+    /// catch-all here would forget the next variant that is.
+    fn stage_pointer(at: int, v: Val) -> bool {
         match v {
-            .S(t) -> avra_ffi_set_text(at, t),
+            .S(t) -> self.staged_text(at, t),
             .Y(_) -> self.stage_bytes(at, v),
-            .N -> avra_ffi_set_int(at, 0),
-            .I(a) -> avra_ffi_set_int(at, a),
-            rest -> {
-                let _ = self.unstageable(callee)
-            }
+            .N -> self.staged_at(at, 0),
+            .I(a) -> self.staged_at(at, a),
+            .F(_) or .B(_) or .A(_) or .M(_) or .C(_) -> false,
         }
+    }
+
+    fn staged_f64(at: int, v: Val) -> bool {
+        avra_ffi_set_f64(at, self.bits_of_val(v))
+        true
+    }
+
+    fn staged_word(at: int, v: Val) -> bool {
+        avra_ffi_set_int(at, self.word_of(v))
+        true
+    }
+
+    fn staged_at(at: int, address: int) -> bool {
+        avra_ffi_set_int(at, address)
+        true
+    }
+
+    fn staged_text(at: int, t: string) -> bool {
+        avra_ffi_set_text(at, t)
+        true
     }
 
     /// OCTETS STAGED, AND HELD. The box is materialised from the
     /// evaluator's own octets, so nothing else holds it: the frame
     /// keeps a raw pointer and the reference must outlive the call.
-    fn stage_bytes(at: int, v: Val) {
+    fn stage_bytes(at: int, v: Val) -> bool {
         let b = self.octets(v).bytes()!
         self.staged.push(b)
         avra_ffi_set_bytes(at, b)
+        true
     }
 
     /// A word seat's value. A bool crosses as the word the runtime
@@ -792,8 +819,9 @@ impl Machine {
 
     /// A `void` seat is a shape no declaration can write — the
     /// keeper refuses it before lowering, so reaching here is ours.
-    fn void_seat() {
+    fn void_seat() -> bool {
         self.defect("a `void` seat reached the extern frame")
+        false
     }
 
     /// AN AGGREGATE AT A SEAT, which is a LAW and not a defect. The
@@ -806,7 +834,7 @@ impl Machine {
     /// aggregate seat, so the words now name the remedy its writer
     /// can act on.
     fn unstageable(callee: string) -> Val {
-        self.trapped("`${callee}` takes a list or a map — the evaluator holds one as a handle, not a box; stage the elements one at a time")
+        self.trapped("`${callee}` has a seat the frame cannot carry — the evaluator holds one as a handle, not a box; stage the elements one at a time")
         Val.I(0)
     }
 

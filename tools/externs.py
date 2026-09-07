@@ -505,6 +505,77 @@ def wrong_seats(wall, sigs, tds):
     return out
 
 
+# A `Bytes` SEAT IS THE CROSSING CHECK'S ONE EXEMPTION, and the
+# PROTOTYPE EARNS IT — never the author's intention. A text seat the
+# callee RESOLVES is scanned for an interior NUL and traps; a seat
+# whose C prototype CARRIES ITS OWN LENGTH is `Bytes` and pays
+# nothing. So the question is structural: can the body know where the
+# bytes end?
+#
+# A prototype with NO integer seat after the pointer cannot know — it
+# must scan for a NUL — so a `Bytes` there is the truncation the check
+# exists to stop, wearing the exemption. `sqlite3_stricmp(const char*,
+# const char*)` declared with `Bytes` seats answers EQUAL for "ab\0cd"
+# and "ab\0ce"; `memcmp(a, b, n)` over the same five bytes does not.
+#
+# A PROTOTYPE IS NOT THE ONLY WAY A CALLEE KNOWS THE LENGTH, which
+# this rule learned from the tree the hour it was written: three of
+# our own seats carry no length and are RIGHT — `avra_str_len`,
+# `avra_utf8_bad_at` and the frame's own `avra_ffi_set_bytes` read the
+# Avra box's HEADER, which is core's C doing what §2.1 says only core
+# may. So the exemption is earned by the callee KNOWING the length,
+# from the prototype OR from the box; and a body this tree did not
+# write knows only what its prototype says. The scope is vendored C.
+#
+# TWO LIMITS, STATED HERE RATHER THAN DISCOVERED LATER. An integer
+# after the pointer may be a length or a flag and no spelling tells
+# them apart, so `open(const char *, int)` passes. And a package's own
+# C is trusted the way core's is, though nothing certifies it — the
+# day a package writes a scanning body of its own, this abstains. The
+# keeper refuses what PROVABLY scans and abstains where it cannot
+# tell, which is the posture `seat_fits` takes one rule over.
+def integer_seat(ctype):
+    """Whether a C seat is an integer — a pointer never is."""
+    if PTR.search(ctype):
+        return False
+    bare = ctype.strip()
+    return bool(WIDE.search(bare) or I32.match(bare) or U32.match(bare))
+
+
+def declared_of(seat):
+    """The type an Avra seat names, without its `mut` or its `?`."""
+    _, _, declared = seat.partition(":")
+    return declared.strip().rstrip("?")
+
+
+def foreign_body(crel):
+    """Whether a C body is one this tree did not write — vendored
+    under a package, by §3's own layout rule."""
+    return "/vendor/" in crel.replace(os.sep, "/")
+
+
+def bytes_without_length(wall, sigs):
+    out = []
+    for name, params, where in wall:
+        if name not in sigs:
+            continue
+        cargs, crel, cline = sigs[name]
+        if not foreign_body(crel):
+            continue
+        if is_variadic(cargs):
+            continue
+        cp, ap = split_params(cargs), split_params(params)
+        if len(ap) != len(cp):
+            continue          # the arity rule speaks first
+        for i, seat in enumerate(ap):
+            if declared_of(seat) != "Bytes":
+                continue
+            after = [PARAM_NAME.sub("", c).strip() or c for c in cp[i + 1:]]
+            if not any(integer_seat(c) for c in after):
+                out.append((name, seat, where, crel, cline))
+    return out
+
+
 # A VARIADIC BODY CANNOT BE CALLED BY A FIXED DECLARATION, in either
 # engine. Apple's arm64 ABI reads a variadic callee's arguments from
 # the STACK while a fixed call puts them in REGISTERS, so the callee
@@ -784,6 +855,45 @@ SEAT_CASES = [
 ]
 
 
+OCTET_CASES = [
+    # (Avra seats, the C seats they fill, refused?)
+    # Both surfaces: what the rule REFUSES and what it must ACCEPT.
+    # An accepting path with no fixture is a dead alternative that
+    # widens the keeper silently.
+    ("a: Bytes, b: Bytes",         "const char *a, const char *b",           True),
+    ("s: Bytes",                   "const char *s",                          True),
+    ("b: Bytes, f: ptr",           "const void *b, FILE *f",                 True),
+    ("a: Bytes, b: Bytes, n: i64", "const void *a, const void *b, size_t n", False),
+    ("t: Bytes, n: i32",           "const char *t, int n",                   False),
+    ("s: string, t: string",       "const char *s, const char *t",           False),
+    ("d: ptr, t: Bytes, n: i32",   "sqlite3 *d, const char *t, int n",       False),
+]
+
+# The abstaining path needs its own fixture, or it is a dead
+# alternative: a `Bytes` seat with no length over C THIS TREE WROTE
+# passes, because the body may read the box's header.
+OWN_OCTET_CASE = ("b: Bytes", "const char *s", "runtime/avra_runtime.c")
+
+
+def octet_self_test():
+    """The `Bytes` rule against whole prototypes, through the SAME
+    function the tree runs — a fixture built from a copy of the rule
+    would test the copy."""
+    bad = []
+    for params, cargs, want in OCTET_CASES:
+        found = bytes_without_length([("f", params, "fixture.av:1")],
+                                     {"f": (cargs, "packages/p/vendor/lib.c", 1)})
+        if bool(found) != want:
+            bad.append((params, cargs, want))
+    params, cargs, crel = OWN_OCTET_CASE
+    if bytes_without_length([("f", params, "fixture.av:1")], {"f": (cargs, crel, 1)}):
+        bad.append((params, cargs, False))
+    for params, cargs, want in bad:
+        print(f"externs: SELF-TEST — `{params}` over C `{cargs}` should "
+              f"{'be refused' if want else 'pass'}")
+    return len(bad)
+
+
 def seat_self_test():
     """The seat readings above, against the same typedefs. A failure
     means the parameter model moved."""
@@ -938,7 +1048,7 @@ def keep_self_test():
     return 0
 
 def main():
-    if self_test() + seat_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + keep_self_test():
+    if self_test() + seat_self_test() + octet_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + keep_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -998,13 +1108,21 @@ def main():
         a, c = pair
         print(f"externs: {name} seats `{a}` in {where} over C `{c}` at {crel}:{cline}")
         print(f"externs:   the seat and the body must name the same width — a C `int` is 32 bits")
+    octets = bytes_without_length(walls, sigs)
+    for name, seat, where, crel, cline in octets:
+        print(f"externs: {name} seats `{seat}` in {where} over C at {crel}:{cline}")
+        print(f"externs:   its C carries no length after that pointer, so the body must scan")
+        print(f"externs:   to a NUL — a `Bytes` seat there wears the crossing check's exemption")
+        print(f"externs:   without earning it. Declare the seat `string` and let it be checked.")
     minting = unread_pointers(wall, bodies)
     for name, declared, where in minting:
         print(f"externs: {name} answers `ptr` in {where} and no C in the tree declares it")
         print(f"externs:   a pointer from a body this keeper cannot read is an address minted")
         print(f"externs:   from whatever the register held — the width check abstains and the")
         print(f"externs:   abstention is what grants it. Name it in tree C, or answer its width.")
-    if narrow or voids or seats or varargs or unframed or guessed or minting:
+    if narrow or voids or seats or varargs or unframed or guessed or minting or octets:
+        if octets:
+            print(f"externs: {len(octets)} `Bytes` seat(s) face a C body that carries no length")
         if minting:
             print(f"externs: {len(minting)} extern(s) answer a pointer no C body here declares")
         if guessed:
@@ -1052,7 +1170,7 @@ def main():
     print(f"externs: {checked} parameter seat(s) match the C seat they fill")
     print(f"externs: no declaration faces a variadic C body, nor a seat the frame cannot carry")
     print(f"externs: read {scanned}; "
-          f"{len(CASES) + len(SEAT_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES)} of the keeper's own cases hold")
+          f"{len(CASES) + len(SEAT_CASES) + len(OCTET_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES)} of the keeper's own cases hold")
     return 0
 
 sys.exit(main())

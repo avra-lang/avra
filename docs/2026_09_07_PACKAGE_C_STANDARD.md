@@ -493,6 +493,23 @@ default, so that holds by construction rather than by discipline.
 Eighty rows are inert; TWO are not, `avra_host_env` and
 `avra_io_list`, and both resolve.
 
+**AND "BY CONSTRUCTION" WAS TOO STRONG BY EXACTLY ONE CASE**, which
+the red team found by declaring one. A DECLARATION THAT NAMES A ROW
+*IS* THE ROW: both engines ask `rt_index()` before the program's own
+externs, so a same-named extern's seats and answer are DISCARDED and
+the call is made on the ROW's shape. It inherits the row's `inert`
+along with everything else — which is sound, because it inherits the
+row's C and its certification too. What was NOT sound is that the
+declaration's own shape was thrown away in silence:
+`avra_host_env(a: string, b: string) -> int` over a one-seat row built
+and ran, and handed the program 4294967295-shaped garbage — a RAW
+POINTER as an `int` natively, nothing at all under the evaluator. Two
+engines, two wrong answers, no diagnostic. **F2065** holds it now: an
+`extern fn` naming a row wears that row's arity, seat kinds and answer
+kind, or it names its own C something else. It fires nowhere in the
+tree, which is the point — every existing redeclaration already
+agreed, and nothing said so.
+
 **THE GUARD READS THE SAME BYTES THE CALLEE WILL.** It asks the HEADER
 directly and never `str_len`, whose fallback is `strlen` for a pointer
 that is not ours — and a scan bounded by `strlen` can never find an
@@ -517,6 +534,25 @@ PROTOTYPE CARRIES ITS OWN LENGTH" — which is greppable in the header
 beside the seat, so `make externs` can hold it: a `const char*` beside
 a length parameter is `Bytes`, a bare one is checked. The sqlite
 lead's wording, and it is better than mine was.
+
+**AND UNTIL THE RED TEAM, `make externs` DID NOT HOLD IT.** `Bytes`
+was not in the keeper's `DEMANDS`, so `seat_fits` ABSTAINED on every
+`Bytes` seat — the sentence above described a keeper that did not
+exist, which is the intention it refuses, one level up. Declaring
+`sqlite3_stricmp(const char*, const char*)` with `Bytes` seats
+restores the truncation in full: "ab\0cd" and "ab\0ce" compare EQUAL
+on both engines, where `memcmp` over the same five bytes does not. The
+rule is enforced now, and WRITING IT TAUGHT IT SOMETHING. A PROTOTYPE
+IS NOT THE ONLY WAY A CALLEE KNOWS THE LENGTH: three of our own seats
+carry none and are RIGHT — `avra_str_len`, `avra_utf8_bad_at` and the
+frame's `avra_ffi_set_bytes` read the Avra box's HEADER, which is core
+doing what §2.1 says only core may. So the exemption is earned by the
+callee KNOWING the length, from the prototype OR from the box, and a
+body this tree did not write knows only what its prototype says. The
+keeper's scope is FOREIGN C — a body under `packages/*/vendor/` — with
+two limits written at the rule: an integer after the pointer may be a
+length or a flag and no spelling tells them apart, and a package's own
+C is trusted the way core's is though nothing certifies it.
 
 `sqlite3_bind_text(stmt, i, text, n, …)` is the shape. Their driver
 has FOUR such seats — `bind_text`, `bind_blob`, `keyword_check` and
@@ -1218,3 +1254,72 @@ visible to a reader of the document alone.
   `build/avra` carries and the TEST binary does not.
 - A case bounded its wait at 400 immediate asks where the child needed
   32,213, so a correct fix read as a failing one.
+- THE TEST WHOSE NAME WAS BROADER THAN ITS BODY, found by attacking
+  what it claimed: "an aggregate seat is refused as a law, with the
+  remedy in its words" asserted the WORDS and never that the call was
+  STOPPED. It picked `avra_ffi_set_int`, which tolerates the reset's
+  zero, so it was green for as long as the refusal did not refuse. A
+  reader deciding whether the question was settled reads the NAME.
+
+
+### 7.4 THE RED TEAM OVER THE SEAM
+
+46 programs, both engines, run against the crossing check the day it
+landed. What SURVIVED first, because a class attacked and found empty
+is a result: the three NUL positions and a two-NUL string reporting
+the FIRST, a NUL at byte 1000, through an interpolation hole, a `for`,
+a lambda, a comprehension, a generic call's answer and a `string?` —
+17 cases, byte-identical words and status on both engines. The empty
+string and an empty `Bytes` cross clean. Inert rows carry a NUL
+through untouched. A `Bytes` seat is never checked and its octets
+arrive whole. The frame's seat bound refuses at 11 with the remedy and
+is tested BEFORE staging.
+
+WHAT BROKE was never the check. It was the frame beside it.
+
+**A LAW MUST REFUSE BEFORE THE WORK.** `unstageable` fired correctly
+for every aggregate and then the staging loop CARRIED ON and the
+symbol was CALLED, with the slot at `avra_ffi_reset`'s zero. `puts`
+printed "(null)" and the refusal followed it; `atoi`, `atol` and
+`strlen` read address zero and the evaluator SEGFAULTED — five ways,
+with `./avra check` clean. The three sibling refusals in the same
+function (`no_symbol`, `too_many_seats`, `inout_seat`) were all
+hoisted above the work and returned; this one alone was recorded
+inside it. `staged_seats` answers a bool now and `hosted_extern`
+refuses on it, so the shape matches its siblings.
+
+**AND `stage_pointer` WAS A REGISTRY WEARING A CATCH-ALL.** Its `rest
+->` arm carried the whole aggregate law over a `Val`, which is a
+REGISTRY enum — the handles are `.A`, `.M` and `.C`, and a catch-all
+there would have silently swallowed the next variant that is not an
+address. It spells every variant now.
+
+**WHAT IS STILL OPEN, AND IT IS THE ENGINES DISAGREEING.** Native has
+no law here at all: an aggregate at an extern seat is handed to C as a
+real box pointer and the program gets a wrong answer with nothing said
+(`atoi` over a record answered 0, `puts` over a list answered 10,
+`strlen` over a map answered 5). The evaluator refuses, the binary
+answers garbage, and only a CHECK-TIME law covers both. The law is one
+line — an extern seat names a scalar, `string`, `Bytes`, `ptr` or
+their nullable twins, never an aggregate — and it is held pending the
+lead's word because the tree's aggregate seats must go somewhere
+first: `avra_exec_self(args: List<string>)` reads an `AvraArray` in C,
+which by §2.1 makes it core's and by §2.2 makes it a ROW. Lane D
+counts five such seats on main against one on `lane/http`; both counts
+are right about their own base.
+
+**AND THREE FACES TRAP WHERE §2.7 SAYS THEY SHOULD REFUSE.** A trap
+inside a package that HAS guards is a bug in the guards, and each of
+these has guards:
+- `@std/io`: ten verbs answer `io.holed`; `env` and `env_or` trap. And
+  `env`'s own guard is `name.contains("=")`, a NUL-LOSSY call — so
+  `"A\0=B"` hides its `=` from the guard and is stopped only by the
+  crossing trap downstream. Right outcome, wrong reason: the
+  guard-and-guarded law firing inside @std/io.
+- `@std/process`: `tool` guards, `tool_from_env` traps on its `var`,
+  and `Env.Only(…).get("AB\0CD")` answers `"v"` — the value of `AB` —
+  while `Env.Inherit.get` on the SAME argument traps. One method, two
+  readings of one name, chosen by the variant.
+- `@std/sqlite`: `equal_nocase`, `like`, `glob`, `is_complete` and
+  `compiled_with` hand text to C unguarded. The package already has a
+  `HoldsNul` cause it does not use at those five.
