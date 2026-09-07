@@ -3139,6 +3139,34 @@ driver forced someone to read a seam nobody had grown before.
     fragment and node variants are all DATA. THE CHECK rather than the
     assumption: grep the finished diff for a bare `<<` outside a string
     and a gram fragment; empty means the procedure was never needed.
+  A KEEPER THAT INTERROGATES THE ARTIFACT CAUGHT A BUILD REFACTOR THAT
+  NOTHING ELSE DID (HTTP lane, `1be60fd`, reported to this campaign).
+  Splitting the compiler's object list from the packages' — so `make
+  avra` no longer compiles the amalgamation, 9.2 s off every cold build —
+  **silently took `CFLAGS_sqlite3` with the moved block**, and
+  `build/sqlite3.o` rebuilt WITHOUT its author's flags. **Nothing in the
+  build noticed**: the object compiled, linked and ran, and every
+  behavioural test passed, because the flags it lost were the ones that
+  disable features rather than the ones that produce code.
+  WHAT CAUGHT IT WAS `@std/sqlite`'s `compiled_with(option)` — a test
+  that asks the LIBRARY which options it was built with, through
+  `sqlite3_compileoption_get`, rather than reading the Makefile that was
+  supposed to set them. **THE ARTIFACT IS THE ONLY HONEST WITNESS TO ITS
+  OWN BUILD**: a build file states an INTENTION, and the gap between the
+  intention and the object is exactly where a refactor lands. Same
+  instinct as a stems keeper reading `nm` of the binary rather than the
+  link line, and the same shape as ASSERT THE ABSENCE — the flags removed
+  by decision (`USE_URI`) already had a test that fails if they return,
+  and this is its twin: the flags ADDED by decision have a test that
+  fails if they leave.
+  AND IT IS A RECEIPT FOR A TEST WRITTEN MONTHS BEFORE ITS FAILURE MODE
+  EXISTED. Nobody wrote `compiled_with` anticipating a Makefile
+  reorganisation by another lane; it was written because a vendored
+  library's build flags are a CONTRACT and a contract wants a witness.
+  The general form: A TEST THAT READS THE ARTIFACT RATHER THAN THE
+  RECIPE PAYS OFF AT A DISTANCE, in changes its author never imagined,
+  and that is what makes it worth the awkwardness of asking a library
+  about itself.
   THE COUNTING RULE, WORKED — four `is`-chains over `Type`, and they do
   not all go the same way. The law says count the ANSWERING ARMS and no
   grep separates a registry from a projection; these are the first hard
