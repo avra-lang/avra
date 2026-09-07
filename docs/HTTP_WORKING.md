@@ -680,7 +680,14 @@ head to `find` a verb (18M pushes), and `crlf_only` read `cr()`/`lf()`
 inside its loop; 2410 → 2185 ns a head, 254/254. Left where it is: the
 `Framing` fold's per-field record copies (4 retains a head at
 `settled`) and the empty-literal copies on a `mut` list's first push
-(2 a head) — small, and allocation here is cheap.
+(2 a head) — small, and allocation here is cheap. LANE A LANDED HALF
+(a) on main (6b38795): the `once` cache is an index keyed by the
+symbol's pointer, one probe a read at any table count, a strcmp hit
+indexed on the way out; merged at e25f46a and re-taken on shipping:
+2063/2043/2040 ns a head against 2185 — ~140 ns, the compares were
+real. What remains of the `once` share is the retain/release pair
+around each read, half (b), with the owner. The ledger: the framer's
+own wastes 2410 → 2185, the slot 2185 → 2045, both on shipping.
 
 ## Slice 3 — `@std.http` (AFTER)
 
