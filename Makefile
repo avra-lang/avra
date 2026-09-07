@@ -37,12 +37,6 @@ export LLVM_PREFIX
 # made. It did, twice: once for the trampoline and once for @std/io's
 # own C. So each target depends on WHAT IT LINKS, and the two lists
 # below are that split.
-# @std/io's object is here because the SEED-BUILT compiler links it:
-# the bootstrap's clang line takes this list, and a compiler that
-# cannot open a file cannot compile the tree it was built to compile.
-# Every package whose C the compiler's own closure links belongs here
-# the day it lands — S4 adds @std/process's.
-COMPILER_OBJS := build/llvm_wrapper.o build/avra_runtime.o build/ffi.o build/std_io.o
 
 # EVERY OBJECT THIS TREE COMPILES, ONE RULE. The language's own C
 # (runtime/, and the compiler's LLVM binding in backend/) and a
@@ -90,7 +84,11 @@ TREE_STEM_LAW = $(if $(TREE_CLASH),$(error A STEM NAMES ITS OBJECT, \
 # program carries, plus the compiler's own foreign machinery, plus
 # every package in the cli's dependency closure whose manifest names
 # an object. The bootstrap's clang line takes this same variable, so
-# the two can never be a list and its copy.
+# the two can never be a list and its copy. @std/io's object is here
+# because the SEED-BUILT compiler links it — a compiler that cannot
+# open a file cannot compile the tree it was built for — so a package
+# object in the compiler's own closure is BOTH a package object and a
+# compiler one, and belongs here the day its package lands.
 COMPILER_OBJS = $(TREE_STEM_LAW)build/avra_runtime.o build/llvm_wrapper.o \
                 build/ffi.o build/std_io.o
 
