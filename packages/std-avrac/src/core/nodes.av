@@ -650,7 +650,7 @@ impl NodeStore {
     /// written; a trait sig's word is the contract.
     fn mark_mutating(s: StmtId) {
         self.mutating.set(s.index, true)
-        self.restamp(s, 61)
+        self.restamp(s, 103)
     }
 
     fn is_mutating(s: StmtId) -> bool {
@@ -661,7 +661,7 @@ impl NodeStore {
     /// the process.
     fn mark_once(s: StmtId) {
         self.onces.set(s.index, true)
-        self.restamp(s, 62)
+        self.restamp(s, 104)
     }
 
     fn is_once(s: StmtId) -> bool {
@@ -816,38 +816,38 @@ impl NodeStore {
             .IntLit(value) -> fp(1, [value]),
             .FloatLit(bits) -> fp(60, [bits]),
             .Ident(name) -> fp(2, [fp_str(name)]),
-            .Receiver -> fp(51, []),
+            .Receiver -> fp(102, []),
             .Binary(op, left, right) ->
                 fp(3, [fp_binop(op), self.expr_fingerprint(left), self.expr_fingerprint(right)]),
             .Error -> fp(4, []),
             .Not(value) -> fp(19, [self.expr_fingerprint(value)]),
             .ListLit(elems) -> fp(20, self.expr_fps(elems)),
-            .MapLit(keys, values) -> fp(48, self.expr_fps(keys).concat(self.expr_fps(values))),
+            .MapLit(keys, values) -> fp(48, [fp_list(self.expr_fps(keys)), fp_list(self.expr_fps(values))]),
             .Index(subject, index) ->
                 fp(21, [self.expr_fingerprint(subject), self.expr_fingerprint(index)]),
             .Prop(subject, name) ->
                 fp(22, [self.expr_fingerprint(subject), fp_str(name)]),
             .Interp(parts, holes) ->
-                fp(23, str_fps(parts).concat(self.expr_fps(holes))),
+                fp(23, [fp_list(str_fps(parts)), fp_list(self.expr_fps(holes))]),
             .StrLit(value) -> fp(8, [fp_str(value)]),
             .BoolLit(value) -> fp(9, [if value { 1 } else { 0 }]),
             .If(cond, on_true, on_false) ->
                 fp(10, [self.expr_fingerprint(cond), self.expr_fingerprint(on_true),
                         self.expr_fingerprint(on_false)]),
             .Call(callee, pins, args) ->
-                fp(11, flatten([[fp_str(callee)], [type_fp(p) for p in pins],
-                                self.expr_fps(args)])),
+                fp(11, [fp_str(callee), fp_list([type_fp(p) for p in pins]),
+                        fp_list(self.expr_fps(args))]),
             .When(conds, values, fallback) ->
-                fp(13, flatten([self.expr_fps(conds), self.expr_fps(values),
-                                [self.expr_fingerprint(fallback)]])),
+                fp(13, [fp_list(self.expr_fps(conds)), fp_list(self.expr_fps(values)),
+                        self.expr_fingerprint(fallback)]),
             .Block(stmts, value) ->
-                fp(14, self.stmt_fps(stmts).concat(self.tail_fp(value))),
+                fp(14, [fp_list(self.stmt_fps(stmts)), fp_list(self.tail_fp(value))]),
             .StructLit(name, fields, values) ->
-                fp(24, flatten([[fp_str(name)], str_fps(fields),
-                                self.expr_fps(values)])),
+                fp(24, [fp_str(name), fp_list(str_fps(fields)),
+                        fp_list(self.expr_fps(values))]),
             .With(subject, fields, values) ->
-                fp(26, flatten([[self.expr_fingerprint(subject)],
-                                str_fps(fields), self.expr_fps(values)])),
+                fp(26, [self.expr_fingerprint(subject),
+                        fp_list(str_fps(fields)), fp_list(self.expr_fps(values))]),
             .Match(subject, arms) ->
                 fp(28, [self.expr_fingerprint(subject)].concat(self.arm_fps(arms))),
             .NullLit -> fp(30, []),
@@ -867,14 +867,14 @@ impl NodeStore {
                 fp(43, flatten([[self.expr_fingerprint(subject)], [fp_str(name)],
                                 self.expr_fps(margs)])),
             .Lambda(params, body) ->
-                fp(46, param_fps(params).concat([self.expr_fingerprint(body)])),
+                fp(46, [fp_list(param_fps(params)), self.expr_fingerprint(body)]),
             .CallValue(subject, cargs) ->
                 fp(47, [self.expr_fingerprint(subject)].concat(self.expr_fps(cargs))),
             .Catch(subject, variants, binds, values) ->
-                fp(40, flatten([[self.expr_fingerprint(subject)],
-                                str_fps(variants),
-                                str_fps(binds),
-                                self.expr_fps(values)])),
+                fp(40, [self.expr_fingerprint(subject),
+                        fp_list(str_fps(variants)),
+                        fp_list(str_fps(binds)),
+                        fp_list(self.expr_fps(values))]),
             .MatchOpt(subject, bind, present, absent) ->
                 fp(33, [self.expr_fingerprint(subject), fp_str(bind),
                         self.expr_fingerprint(present), self.expr_fingerprint(absent)]),
@@ -904,14 +904,14 @@ impl NodeStore {
         match s {
             .Let(name, ty, value) -> fp(5, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
             .MutLet(name, ty, value) -> fp(15, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
-            .ConstDecl(name, ty, value) -> fp(60, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
+            .ConstDecl(name, ty, value) -> fp(109, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
             .Assign(target, value) -> fp(16, [self.expr_fingerprint(target), self.expr_fingerprint(value)]),
             .While(cond, stmts) ->
                 fp(17, [self.expr_fingerprint(cond)].concat(self.stmt_fps(stmts))),
             .IfStmt(cond, then_stmts, else_stmts) ->
-                fp(35, flatten([[self.expr_fingerprint(cond)],
-                                self.stmt_fps(then_stmts), [0],
-                                self.stmt_fps(else_stmts)])),
+                fp(35, [self.expr_fingerprint(cond),
+                        fp_list(self.stmt_fps(then_stmts)),
+                        fp_list(self.stmt_fps(else_stmts))]),
             .Return(value) -> fp(36, [self.expr_fingerprint(v) for v in some_list(value)]),
             .Fail(value) -> fp(39, [self.expr_fingerprint(value)]),
             .ImplDecl(of, target, fns) ->
@@ -926,23 +926,23 @@ impl NodeStore {
                 fp(18, [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to)].concat(self.stmt_fps(stmts))),
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
             .Discard(value) -> fp(57, [self.expr_fingerprint(value)]),
-            .Defer(body, on_error) -> fp(if on_error { 62 } else { 61 }, [self.expr_fingerprint(body)]),
-            .Use(path, items) -> fp(50, str_fps(path).concat(str_fps(items))),
+            .Defer(body, on_error) -> fp(if on_error { 107 } else { 106 }, [self.expr_fingerprint(body)]),
+            .Use(path, items) -> fp(108, [fp_list(str_fps(path)), fp_list(str_fps(items))]),
             .ForEach(index, name, subject, stmts) ->
                 fp(42, [fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
             .Error -> fp(7, []),
-            .ExternFn(name, params, ret) -> fp(59, flatten([[fp_str(name)], param_fps(params), [type_fp(ret)]])),
+            .ExternFn(name, params, ret) -> fp(59, [fp_str(name), fp_list(param_fps(params)), type_fp(ret)]),
             .FnDecl(name, tparams, params, ret, body) ->
-                fp(12, flatten([[fp_str(name)], param_fps(tparams),
-                                param_fps(params),
-                                [type_fp(ret), self.expr_fingerprint(body)]])),
+                fp(12, [fp_str(name), fp_list(param_fps(tparams)),
+                        fp_list(param_fps(params)),
+                        type_fp(ret), self.expr_fingerprint(body)]),
             .StructDecl(name, tparams, fields) ->
-                fp(25, flatten([[fp_str(name)], str_fps(tparams),
-                                param_fps(fields),
-                                self.expr_fps([f.default! for f in fields if f.default != null])])),
+                fp(25, [fp_str(name), fp_list(str_fps(tparams)),
+                        fp_list(param_fps(fields)),
+                        fp_list(self.expr_fps([f.default! for f in fields if f.default != null]))]),
             .EnumDecl(name, tparams, variants) ->
-                fp(27, flatten([[fp_str(name)], str_fps(tparams),
-                                variant_fps(variants)])),
+                fp(27, [fp_str(name), fp_list(str_fps(tparams)),
+                        fp_list(variant_fps(variants))]),
             .Spec(name, cases) -> fp(56, [fp_str(name)].concat(self.case_fps(cases))),
         }
     }
@@ -975,7 +975,7 @@ fn param_fps(params: List<Param>) -> List<int> {
 fn type_fp(t: TypeRef?) -> int {
     if t == null { return 0 }
     let written = t!
-    fp(if written.optional { 2 } else { 1 },
+    fp(if written.optional { 101 } else { 100 },
        [fp_str(written.name)].concat([type_fp(a) for a in written.args]))
 }
 
@@ -1005,10 +1005,16 @@ fn fp_binop(op: BinOp) -> int {
 /// A variant tag folded with its parts, in order — THE fingerprint
 /// fold, for nodes and for every query value's hash alike.
 export fn fp(tag: int, parts: List<int>) -> int {
-    mut h = tag
+    mut h = fp_mix(tag, parts.length)
     for p in parts { h = fp_mix(h, p) }
     h
 }
+
+/// A SEQUENCE FOLDS TO ONE VALUE, so a payload's ARITY is fixed and
+/// the boundary between two of them cannot move. Spliced flat,
+/// `f<A>(B)` and `f<A, B?>()` wore one fingerprint — a pinned type
+/// and an argument are the same value in a flat list.
+fn fp_list(parts: List<int>) -> int { fp(105, parts) }
 
 /// In-process rolling hash; both operands normalized under a prime so
 /// mixing never overflows, negative payloads included. The crypto
