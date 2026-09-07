@@ -653,12 +653,19 @@ engine's spec, written by dogfooding.
   5. AND THE PROTOCOL GUARDS THE WRONG DOOR ON ITS OWN — it gates
      ADDING a variant and says nothing about REPURPOSING one, so it
      refuses the honest change and would pass the dishonest one.
-     Found by lane A dropping their own design: wanting seat retains
-     distinguishable for a measurement, the honest form is a reason
-     on `Ins.Retain` — which the four justifications refuse, rightly,
-     since a measurement is not a control shape, a value category, a
-     memory boundary or a machine shape. THE ESCAPE HATCH PASSES
-     EVERY GATE: emit `CallRt("avra_rc_retain_seat", [r])` at seat
+     THE SEQUENCE IS THE RECIPE, and no name belongs on it: seat
+     retains were wanted distinguishable for a measurement; the
+     HONEST form is a reason on `Ins.Retain`, and it was REFUSED on
+     the four justifications, rightly, since a measurement is not a
+     control shape, a value category, a memory boundary or a machine
+     shape; the hatch below was then reached for, and its cost was
+     noticed only while WRITING OUT WHY THE REFUSAL WAS RIGHT. Had
+     the honest version not been refused first, the dishonest one
+     would have been built and nobody would have looked. So the
+     finding needs both moves and belongs to neither — REFUSE THE
+     HONEST FORM ON THE RULE, THEN WRITE DOWN WHY, and the cheat you
+     were about to reach for becomes visible in the writing.
+     THE ESCAPE HATCH PASSES EVERY GATE: emit `CallRt("avra_rc_retain_seat", [r])` at seat
      sites instead. An existing instruction, an existing mechanism,
      one registry row, no vocabulary growth — and those retains stop
      being RETAINS to the compiler. The memory pass reasons about
