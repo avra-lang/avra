@@ -1,12 +1,13 @@
 // THE QUALIFYING SHARE: which managed seats a callee only READS.
-// The answer is a BRACKET whose whole width is the runtime rows —
-// they borrow by law, and the `_owned` twins keep what they are
-// handed with no column saying so. Every case here pins one side of
-// that gap.
+// It was a BRACKET until `RtSig.keeps` landed — a runtime row borrows
+// its arguments, but the `_owned` twins keep theirs and nothing said
+// which, so every row seat had to be counted both ways. One column
+// collapsed it. Each case here is a body whose answer is known before
+// the instrument runs.
 use @std.avrac.language.{SeatCensus, seat_census}
 use @std.avrac.testing.{ir_of}
 
-/// The bracket for a source's one interesting body, by name.
+/// The line for a source's one interesting body, by name.
 fn line_for(source: string, name: string) -> string {
     let c: SeatCensus = seat_census(ir_of(source))
     c.lines.find(it.starts_with("  ${name}:")) ?? "no such body"
@@ -14,38 +15,40 @@ fn line_for(source: string, name: string) -> string {
 
 spec "language/escapes" {
     given "a seat the callee only reads" {
-        then "the CEILING counts it and the FLOOR does not — the row is the doubt" {
+        then "a read through a runtime row is not an escape — the row BORROWS" {
             line_for("fn f(s: string) -> int { s.length }\nf(\"a\")", "f") ==
-                "  f: 0 to 1 of 1 read-only"
+                "  f: 1/1 read-only"
+        }
+        then "one seat read and one kept are counted apart" {
+            line_for("fn f(a: string, b: string) -> string {\n    let n = a.length\n    b\n}\nf(\"a\", \"b\").length", "f") ==
+                "  f: 1/2 read-only"
         }
         then "a scalar seat is not a seat at all — nothing to count" {
             seat_census(ir_of("fn f(n: int) -> int { n + 1 }\nf(1)")).seats == 0
         }
     }
     given "a seat the callee keeps" {
-        then "answered outward, it escapes on BOTH bounds" {
+        then "answered outward, it escapes" {
             line_for("fn f(s: string) -> string { s }\nf(\"a\").length", "f") ==
-                "  f: 0 to 0 of 1 read-only"
+                "  f: 0/1 read-only"
         }
-        then "handed to another fn, it escapes on both — a callee's own disposition wants a fixpoint" {
+        then "handed to another fn, it escapes — a callee's disposition wants a fixpoint" {
             line_for("fn r(s: string) -> int { s.length }\nfn f(s: string) -> int { r(s) }\nf(\"a\")", "f") ==
-                "  f: 0 to 0 of 1 read-only"
+                "  f: 0/1 read-only"
         }
-    }
-    given "a seat packed into a record" {
-        // THE WHOLE REASON THE BRACKET IS WIDE: a record literal
-        // lowers to `avra_array_push_owned`, an OWNING row, so the
-        // ceiling counts a seat that is plainly kept. The floor is
-        // the sound bound until `RtSig` declares which rows keep.
-        then "the CEILING is loose — an owning row reads as a borrow" {
+        // THE CASE THE `keeps` COLUMN BOUGHT, and the one that made
+        // the old bracket wide: a record literal lowers to
+        // `avra_array_push_owned`, which TAKES ITS OWN REFERENCE. It
+        // read as read-only until the column declared the seat.
+        then "packed into a record, it escapes through the row that keeps it" {
             line_for("type H = { t: string, n: int }\nfn f(s: string) -> H { H { t: s, n: 1 } }\nf(\"a\").n", "f") ==
-                "  f: 0 to 1 of 1 read-only"
+                "  f: 0/1 read-only"
         }
     }
     given "the census over a whole program" {
-        then "the floor never exceeds the ceiling, and neither exceeds the seats" {
+        then "the reads never exceed the seats" {
             let c: SeatCensus = seat_census(ir_of("fn f(s: string) -> int { s.length }\nfn g(s: string) -> string { s }\nf(\"a\") + g(\"b\").length"))
-            c.floor <= c.ceiling && c.ceiling <= c.seats && c.seats == 2
+            c.reads == 1 && c.seats == 2
         }
     }
 }
