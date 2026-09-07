@@ -2245,6 +2245,54 @@ the order is the dependency.
         where `view_of` already answers what an instruction does to
         a register and `borrow_outlives` is the same question turned
         around. Neither half is a number on its own.
+        MEASURED 2026-09-07 (lane C, `avra seats` against `keeps`):
+        **1980 of 5389 managed seats are READ-ONLY, 36.7%** — one
+        factor, a floor (a seat handed to another Avra fn still counts
+        as escaping), with all five known-answer bodies correct and
+        `packs` right on the first run, which is what `keeps` bought.
+        The bracket collapsed on the QUALIFYING axis exactly as
+        intended (it was 8.6%-47.8%).
+        THE CONVERSION TO SELF TIME IS NOT ESTABLISHED, and
+        `36.7% x 22.9% = 8.4%` IS NOT IT — recorded because that
+        product is the natural next keystroke and it repeats both
+        errors this entry already names. It substitutes a STATIC seat
+        count for the WEIGHTED share (point 2 above: qualifying seats
+        would have to run as often as escaping ones), and it multiplies
+        by the WHOLE 22.9%, which includes retain traffic the ABI
+        cannot reach — `avra_array_get_owned` retains on every managed
+        list read, and cells retain too, while `retained_args` reaches
+        `.Call`/`.CallPtr` only (point 1). The second error inflates;
+        the first has unknown sign. So the product is an ESTIMATE
+        WEARING A FLOOR'S CLOTHES, and 36.7% being a floor does not
+        make it one.
+        WHAT REMAINS IS ONE FACTOR: the call-seat share of retain
+        traffic, and its per-site weight. That is the retain table,
+        lane A's, unbuilt. Until it exists nobody can convert seats
+        into seconds, and the two published figures — 36.7% of seats,
+        22.9% of self time — are measured on DIFFERENT AXES and do not
+        multiply.
+        AND IT WAS NOT A NEXT KEYSTROKE — I PUBLISHED IT, and lane A
+        refused it. The wording above is more generous than the
+        record: 8.4% went out as a finding, called a floor, and was
+        withdrawn an hour later. It matters because a receipt that
+        softens who made the error stops being checkable, and this
+        entry is where someone looking for the number will land.
+        THE PART THAT GENERALISES: A LAW YOU HAVE JUST FINISHED
+        WRITING IS NOT A LAW YOU HAVE INTERNALISED. Clause 2 above is
+        mine, written FOUR HOURS EARLIER to correct another lane for
+        this exact substitution in the other direction; it stopped
+        their version and not my own, in the same lane, the same
+        night. And the tell was already in my hand — one message
+        before, I had refused to leave a stale upper bound standing
+        beside a correct number on the grounds that a range someone
+        can quote the top of is worse than no range.
+        THE JOIN, WHEN THE TABLE EXISTS, IS PER SITE: weights keyed by
+        the call site's callee symbol and seat index, joined to the
+        static qualification, summed over sites — never two aggregates
+        multiplied, which is the only form that cannot smuggle
+        uniformity back in. If only a coarser table is reachable the
+        join is UNAVAILABLE, not approximate; approximating it is how
+        this error returns wearing a different hat.
   - [x] A RECONSTRUCTION NAMES ONE FIELD, NEVER THE REST. LANDED
         2026-09-06; found by the DOCS campaign's subset lane, and it
         was a latent hole in the seat law's own slice. `plain(t)`
