@@ -75,7 +75,34 @@ test: $(RUNTIME_OBJS) build/sqlite3.o build/sqlite_sentinel.o
 	  ./avra test $$p || exit 1; \
 	done
 
-build/avra_runtime.o: runtime/avra_runtime.c
+# THE OBJECT FOLLOWS THE SOURCE'S CONTENT, NOT ITS TIMESTAMP. make
+# compares mtimes at ONE-SECOND granularity, so a stash-and-rebuild
+# cycle that lands inside one second leaves the object looking current
+# while the source has changed under it — and `make gate` then reports
+# the PARENT's behaviour over a tree that carries the change. That
+# happened landing f57372a: 39/46 in std-text with the fix on disk,
+# and it read as "my change is broken" rather than "the object is
+# stale". Reproduced deterministically with `touch -r`.
+# THE GATE IS THE RECEIPT, and a receipt for a tree nobody has is
+# worse than no receipt. The stamp is rewritten only when the hash
+# CHANGES, so its mtime moves on content and nothing else, and a
+# repeated build recompiles nothing. One cost, stated: the stamp
+# depends on FORCE, so `make -q` always reports work pending for these
+# objects even when none is — nothing here reads `make -q`, and the
+# alternative is to trust the timestamps again.
+.PHONY: FORCE
+FORCE:
+
+build/%.sha: FORCE
+	@mkdir -p build
+	@shasum -a 256 $(SHA_SRC) | cut -d' ' -f1 > $@.tmp
+	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
+	@rm -f $@.tmp
+
+build/runtime.sha: SHA_SRC := runtime/avra_runtime.c
+build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c
+
+build/avra_runtime.o: runtime/avra_runtime.c build/runtime.sha
 	@mkdir -p build
 	cc -O2 -Wall -Werror -c runtime/avra_runtime.c -o build/avra_runtime.o
 
@@ -93,7 +120,7 @@ traps: $(RUNTIME_OBJS)
 census:
 	@sh tools/census.sh $(CMD)
 
-build/llvm_wrapper.o: backend/llvm_wrapper.c
+build/llvm_wrapper.o: backend/llvm_wrapper.c build/llvm_wrapper.sha
 	@mkdir -p build
 	cc -c -O2 -I$(LLVM_PREFIX)/include -o build/llvm_wrapper.o backend/llvm_wrapper.c
 
