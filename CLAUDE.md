@@ -1219,7 +1219,26 @@ Runtime facts, ours to ratify:
   beside it, no gate runs in the background, and every suite, gate
   or whole-package check runs through the watchdog, which holds the
   machine-wide lock, kills the tree past its cap and prints the
-  peak. `./avra` takes that lock ITSELF for any package-scale run
+  peak.
+  THE LOCK IS THE LAW AND THE FOREGROUND IS ITS MECHANISM. "One
+  heavy process at a time" means ONE PROCESS HOLDING THE WATCHDOG'S
+  LOCK, and every heavy run is LAUNCHED in the foreground under it.
+  When the harness moves a launched run to the background past its
+  own window — `make gate` and `tools/integrate.sh` both outgrew a
+  600s limit — that is NOT a violation: the lock still serialises,
+  the cap still kills, the peak still prints, and three
+  watchdog-wrapped runs were measured queued behind it with exactly
+  one executing. WHAT IS FORBIDDEN IS WHAT THE PANICS ACTUALLY WERE:
+  a heavy process OUTSIDE the lock, or one launched into the
+  background IN ORDER TO RUN BESIDE another. Both panics are that
+  and neither is a backgrounded watchdog — the first was three
+  CONCURRENT `make test` runs, the second a `build/avra test`
+  launched in the background to be sampled BESIDE two lanes' gated
+  steps, with lane B's bare `./avra test <pkg>` the same night as
+  the other bypass. Read the rule as the lock and it has never
+  changed; read it as the foreground and a harness limit gets to
+  shape the tree's proof.
+  `./avra` takes that lock ITSELF for any package-scale run
   (an argument that is a directory), and a step does not start
   under a 20% memory floor — so NOTHING runs `build/avra` directly,
   and a PROFILE runs under the lock too: `AVRA_SAMPLE=12 sh
