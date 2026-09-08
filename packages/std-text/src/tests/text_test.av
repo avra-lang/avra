@@ -80,23 +80,29 @@ spec "std/text" {
 
     given "the C boundary" {
         then "nul_at finds the NUL a C reader would stop at" { nul_at(holed()) == 2 }
-        then "nul_at is -1 for text a C reader would take whole" {
-            nul_at("plain") == 0 - 1 && nul_at("") == 0 - 1
-        }
+        then "nul_at is -1 for text a C reader would take whole" { nul_at("plain") == 0 - 1 }
+        then "nul_at is -1 for the empty text" { nul_at("") == 0 - 1 }
         then "a leading NUL is position 0 — C sees nothing at all" {
             nul_at(from_codepoints([0, 120])) == 0
         }
-        then "has_nul asks nul_at as a question" {
-            has_nul(holed()) && !has_nul("plain") && !has_nul("")
+        then "has_nul is true for text holding one" { has_nul(holed()) }
+        then "has_nul is false for text holding none" { !has_nul("plain") }
+        then "has_nul is false for the empty text" { !has_nul("") }
+        then "length reads the whole text, past the NUL" { holed().length == 5 }
+        then "contains reads past the NUL" { holed().contains("CD") }
+        then "== does not read a prefix — holed text is unequal to it" { !(holed() == "AB") }
+        then "text beginning with a NUL is two characters long" {
+            (from_codepoint(0) + "x").length == 2
         }
-        then "these read the header, as every text verb here does — the loss is the C callee's" {
-            holed().length == 5 && holed().contains("CD") && !(holed() == "AB")
+        then "text beginning with a NUL does not equal the empty string" {
+            !((from_codepoint(0) + "x") == "")
         }
-        then "text beginning with a NUL is not empty, and does not equal the empty string" {
-            (from_codepoint(0) + "x").length == 2 && !((from_codepoint(0) + "x") == "") && !(from_codepoint(0) == "")
+        then "a lone NUL does not equal the empty string" { !(from_codepoint(0) == "") }
+        then "a NUL is an ordinary needle — found where it is" {
+            holed().contains(from_codepoint(0))
         }
-        then "a NUL is an ordinary needle — text without one does not contain it" {
-            !"abc".contains(from_codepoint(0)) && holed().contains(from_codepoint(0))
+        then "a NUL is an ordinary needle — absent where it is not" {
+            !"abc".contains(from_codepoint(0))
         }
     }
 }
