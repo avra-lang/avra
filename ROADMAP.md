@@ -4419,7 +4419,30 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
     n+1 through `sized_box`, its length is read by its OWN accessor, and
     no typed path hands a Bytes to `str_len`. The one door that does —
     `extern fn avra_str_len(b: Bytes)`, which any file may declare — is
-    `corpus/bytes-header` (native-only), and it answers the header.
+    `corpus/bytes-header`, and it answers the header — differential
+    since the text-seat law below; it was native-only until then.
+  - A `Bytes` AT A TEXT SEAT IS THOSE BYTES VIEWED AS TEXT (the
+    substrate lane, 2026-09-08). A row's seat kind is `Ptr`, which a
+    string and a `Bytes` both fill — natively one headered box, read
+    the same way — while the evaluator held them as two `Val` variants
+    and its text projection read one: `corpus/bytes-header` was
+    native-only, and `avra_str_trim(" hi ".bytes()).length` was `2`
+    compiled and "a non-string reached text in a clean program"
+    interpreted. Fixed ONCE, in `text_val` (interp.av), so every row
+    arm that reads a pointer seat as text — fourteen, measured:
+    Strlen, StrContains, StrStartsWith, StrEndsWith, StrIndexOf,
+    StrSplit, StrReplace, StrTrim, StrConcat, BytesOfStr, HostEnv,
+    Eputs, IoList, SpawnStatus — inherits it by construction. THE
+    DECODE IS LOSSLESS FOR UTF-8 AND ONLY FOR UTF-8 (probed: twelve
+    bytes through a NUL and a snowman round-trip exactly); an
+    evaluator string cannot hold arbitrary octets, so bytes that are
+    not UTF-8 are REFUSED BY NAME rather than approximated, and a
+    LENGTH never decodes — `Strlen` answers the header for any octets,
+    as the row does natively. RECORDED TRIGGER: a byte-lossless
+    evaluator string, or a `Bytes` twin for the text rows, retires the
+    refusal (`refused_octets`, interp.av) and its spec in
+    `language/tests/run_test.av`. `corpus/bytes-as-text` pins the
+    decode on both engines.
   - THE KEEPER GAP THAT OPENS THE DAY THE TYPE LANDS (lane A's, theirs to
     close in the same hour): `tools/externs.py`'s `seat_fits` ABSTAINS
     on a declared type it has no reading for, so every `Bytes` extern
