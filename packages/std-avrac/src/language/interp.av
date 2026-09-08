@@ -64,6 +64,11 @@ type Machine = {
     /// opened them and a later program would reach a symbol it never
     /// declared. That is the `RTLD_GLOBAL` leak wearing a stale field.
     libs: List<OpenLibrary>,
+    /// EVERY CALLEE'S ADDRESS, ASKED ONCE. A symbol's address is fixed
+    /// for the life of the process — nothing here ever `dlclose`s —
+    /// and the lookup runs on EVERY extern call, so without this a
+    /// loop calling one extern pays a `dlsym` per handle per turn.
+    symbols: Map<string, int>,
 }
 
 /// One package's library as the machine holds it: the package that
@@ -91,7 +96,7 @@ fn opened(stem: string) -> int {
 
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, out: [], failures: [], staged: [], libs: opened_libraries(l) }
+    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, out: [], failures: [], staged: [], libs: opened_libraries(l), symbols: {} }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -830,7 +835,25 @@ impl Machine {
     /// is what the extern host delivered and what the frame itself
     /// calls; dropping it would take the evaluator's own doors away.
     fn symbol_of(callee: string) -> int {
+        let known: int? = self.symbols.get(callee)
+        if known != null { return known! }
+        self.remembered(callee, self.looked_up(callee))
+    }
+
+    /// The closure's handles, then the image. The answer cannot change
+    /// for the life of the process, which is what makes remembering it
+    /// correct rather than merely faster.
+    fn looked_up(callee: string) -> int {
         [avra_ffi_symbol_in(o.handle, callee) for o in self.libs].find(it != 0) ?? avra_ffi_symbol(callee)
+    }
+
+    /// ABSENCE IS REMEMBERED TOO. `0` is a real answer here and not a
+    /// missing one — a callee no library and no image carries stays
+    /// absent, and asking again would re-walk every handle to learn
+    /// the same thing.
+    fn remembered(callee: string, found: int) -> int {
+        self.symbols.set(callee, found)
+        found
     }
 
     fn no_symbol(callee: string) -> Val {
