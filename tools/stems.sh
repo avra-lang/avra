@@ -54,6 +54,14 @@ row "a vendored unit against a package's own" 2 \
 row "three sharing one stem" 2 \
     "a/src/c/u.c b/src/c/u.c c/src/c/u.c" "rename one of: a/src/c/u.c b/src/c/u.c c/src/c/u.c"
 row "two clashes at once" 2 "a/p.c b/p.c a/q.c b/q.c" "a/p.c b/p.c a/q.c b/q.c"
+# A CASE-ONLY CLASH IS A CLASH. One flat `build/` sits on a volume
+# that does not tell `util.o` from `Util.o` — proved on this tree:
+# both sources compiled, `build/Casestem.o` was never a separate file,
+# and `build/casestem.o` carried the OTHER package's symbol.
+row "a case-only clash" 2 \
+    "packages/std-io/src/c/util.c packages/std-path/src/c/Util.c" \
+    "rename one of: packages/std-io/src/c/util.c packages/std-path/src/c/Util.c"
+row "a clash of three spellings" 2 "a/u.c b/U.c c/uU.c" "a/u.c b/U.c"
 row "distinct stems stand" 0 \
     "packages/std-net/src/c/std_net.c packages/width-witness/src/c/width_witness.c" ""
 row "one package source stands" 0 "packages/std-net/src/c/std_net.c" ""

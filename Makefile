@@ -65,13 +65,25 @@ vpath %.c $(sort $(dir $(TREE_C)))
 # nothing ever compiled. Make expands a rule's prerequisites as it
 # READS them, so a clash refuses every target, `clean` included —
 # nothing but renaming a file fixes it anyway. tools/stems.sh drives
-# these three lines with synthetic sources; there is no second copy.
-TREE_STEMS = $(basename $(notdir $(TREE_C)))
-TREE_CLASH = $(strip $(foreach s,$(sort $(TREE_STEMS)),\
-               $(if $(word 2,$(filter $(s),$(TREE_STEMS))),$(s))))
+# these lines with synthetic sources; there is no second copy.
+#
+# AND THE COMPARISON FOLDS CASE, because `build/` is a DIRECTORY and
+# not a set of names: on the volumes this tree builds on it does not
+# tell `util.o` from `Util.o`, so `a/util.c` beside `b/Util.c` has
+# distinct spellings and ONE object. Proved rather than argued — both
+# compiled, `build/Casestem.o` was never a separate file, and
+# `build/casestem.o` carried the other package's symbol, with the law
+# reporting the tree fine. The clash is read in ONE pass that answers
+# the FILES, so nothing has to search a folded stem back to its
+# spelling; groups come out ordered by that stem, since an awk map's
+# own order must never reach output.
+TREE_CLASH := $(strip $(shell printf '%s\n' $(TREE_C) \
+  | awk -F/ '{ s = tolower($$NF); sub(/\.c$$/, "", s); n[s]++; f[s] = f[s] " " $$0 } \
+              END { for (s in n) if (n[s] > 1) print s "\t" f[s] }' \
+  | sort | cut -f2))
 TREE_STEM_LAW = $(if $(TREE_CLASH),$(error A STEM NAMES ITS OBJECT, \
-  so a stem is unique tree-wide — rename one of: \
-  $(foreach s,$(TREE_CLASH),$(filter %/$(s).c,$(TREE_C)))))
+  so a stem is unique tree-wide — one flat `build/` holds every object \
+  and does not tell `u.c` from `U.c` — rename one of: $(TREE_CLASH)))
 
 # A TARGET DEPENDS ON WHAT IT LINKS, AND ON NOTHING ELSE. Two lists,
 # because there are two kinds of link and one list served neither
