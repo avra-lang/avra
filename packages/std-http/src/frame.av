@@ -360,19 +360,48 @@ fn before_ows(buf: Bytes, lo: int, hi: int) -> int {
 /// `why` is the first law broken.
 type Framing = { length: int = 0, lengths: int = 0, chunked: bool = false, codings: bool = false, hosts: int = 0, close: bool = false, keep: bool = false, expects: bool = false, why: Refusal? = null }
 
+/// EVERY FRAMING FIELD READ, folded one at a time — the walk a
+/// request and a reply share.
+fn framing_of(buf: Bytes, fields: List<Field>) -> Framing {
+    mut fr = Framing {}
+    for f in fields { fr = noted(buf, f, fr) }
+    fr
+}
+
+/// THE BODY LAWS A REQUEST AND A REPLY KEEP ALIKE, or absence. A
+/// message is delimited ONE way — a length beside chunks is a length
+/// two readers disagree about — a coding this framer does not
+/// implement is refused rather than guessed at, and a declared length
+/// past the bound is refused before a byte of it arrives. The two
+/// callers keep them in ONE spelling: this file composes its classes
+/// rather than restating them, and its body laws are no different.
+fn body_refusal(fr: Framing, limits: Limits) -> Refusal? {
+    when {
+        fr.chunked && fr.lengths > 0 -> .TransferEncoding
+        fr.codings -> .Coding
+        fr.length > limits.body -> .BodyLength
+        _ -> null
+    }
+}
+
+/// Whether the connection persists past this message (RFC 9112 §9.3):
+/// `close` ends it, and a 1.0 peer keeps it only by saying so.
+fn persists(fr: Framing, minor: int) -> bool {
+    if fr.close { return false }
+    if minor == 0 { return fr.keep }
+    true
+}
+
 /// The head, once the framing fields have been read and their laws
 /// kept: the body's delimiting, persistence, and the expectation.
 fn settled(buf: Bytes, line: Line, fields: List<Field>, end: int, limits: Limits) -> Framed {
-    mut fr = Framing {}
-    for f in fields { fr = noted(buf, f, fr) }
+    let fr = framing_of(buf, fields)
     if fr.why != null { return .Refused(fr.why!) }
     if fr.hosts > 1 || (line.minor == 1 && fr.hosts == 0) { return .Refused(.Host) }
     if fr.chunked && line.minor == 0 { return .Refused(.OldChunked) }
-    if fr.chunked && fr.lengths > 0 { return .Refused(.TransferEncoding) }
-    if fr.codings { return .Refused(.Coding) }
-    if fr.length > limits.body { return .Refused(.BodyLength) }
+    let broken: Refusal? = body_refusal(fr, limits)
+    if broken != null { return .Refused(broken!) }
     let body: Body = if fr.chunked { .Chunked } else if fr.lengths > 0 { .Length(fr.length) } else { .None }
-    let alive = if fr.close { false } else if line.minor == 0 { fr.keep } else { true }
     .Complete(Head {
         method: line.method,
         verb: line.verb,
@@ -380,7 +409,7 @@ fn settled(buf: Bytes, line: Line, fields: List<Field>, end: int, limits: Limits
         minor: line.minor,
         fields: fields,
         body: body,
-        keep_alive: alive,
+        keep_alive: persists(fr, line.minor),
         expects_continue: fr.expects && line.minor == 1,
         end: end,
     })
@@ -413,9 +442,9 @@ fn with_length(buf: Bytes, v: Span, fr: Framing) -> Framing {
 fn with_codings(buf: Bytes, v: Span, fr: Framing) -> Framing {
     let ts = tokens(buf, v)
     if ts.is_empty() { return fr with { why: .TransferEncoding } }
-    let last = ts[ts.length - 1]
+    let last = ts.last()!
     let final_chunked = buf.ieq_at(last.lo, last.hi, chunked())
-    let earlier_chunked = [buf.ieq_at(t.lo, t.hi, chunked()) for t in ts.slice(0, ts.length - 1)].any(it)
+    let earlier_chunked = ts.slice(0, ts.length - 1).any((t) -> buf.ieq_at(t.lo, t.hi, chunked()))
     if !final_chunked && !earlier_chunked { return fr with { why: .Coding } }
     if !final_chunked || earlier_chunked { return fr with { why: .TransferEncoding } }
     fr with { chunked: true, codings: ts.length > 1 }
@@ -501,7 +530,7 @@ fn reply_unfinished(buf: Bytes, from: int, limits: Limits) -> FramedReply {
 fn status_line(buf: Bytes, from: int, mark: int, limits: Limits, asked: Method) -> FramedReply {
     let eol = buf.index_of(crlf(), from)
     if eol - from > limits.line { return .Refused(.LineLength) }
-    if eol - from < 12 || buf.at(from + 8) != byte(" ") || buf.at(from + 12) != byte(" ") && eol != from + 12 { return .Refused(.RequestLine) }
+    if eol - from < 12 || buf.at(from + 8) != byte(" ") || (buf.at(from + 12) != byte(" ") && eol != from + 12) { return .Refused(.RequestLine) }
     if !versioned(buf, from, from + 8) { return .Refused(.Version) }
     if buf.at(from + 5) != byte("1") { return .Refused(.Major) }
     if buf.run(from + 9, digit()) != from + 12 { return .Refused(.RequestLine) }
@@ -518,12 +547,10 @@ fn status_line(buf: Bytes, from: int, mark: int, limits: Limits, asked: Method) 
 /// before any field (RFC 9112 §6.3): none for a HEAD's answer, a 1xx,
 /// a 204 or a 304; then chunks; then a length; then the close.
 fn settled_reply(buf: Bytes, status: int, minor: int, fields: List<Field>, end: int, limits: Limits, asked: Method) -> FramedReply {
-    mut fr = Framing {}
-    for f in fields { fr = noted(buf, f, fr) }
+    let fr = framing_of(buf, fields)
     if fr.why != null { return .Refused(fr.why!) }
-    if fr.chunked && fr.lengths > 0 { return .Refused(.TransferEncoding) }
-    if fr.codings { return .Refused(.Coding) }
-    if fr.length > limits.body { return .Refused(.BodyLength) }
+    let broken: Refusal? = body_refusal(fr, limits)
+    if broken != null { return .Refused(broken!) }
     let bodiless = asked is .Head || status < 200 || status == 204 || status == 304
     let body: ReplyBody = when {
         bodiless -> .None
@@ -531,8 +558,7 @@ fn settled_reply(buf: Bytes, status: int, minor: int, fields: List<Field>, end: 
         fr.lengths > 0 -> .Length(fr.length)
         _ -> .UntilClose
     }
-    let alive = if fr.close { false } else if minor == 0 { fr.keep } else { true }
-    .Complete(Reply { status: status, minor: minor, fields: fields, body: body, keep_alive: alive && !(body is .UntilClose), end: end })
+    .Complete(Reply { status: status, minor: minor, fields: fields, body: body, keep_alive: persists(fr, minor) && !(body is .UntilClose), end: end })
 }
 
 // ── The chunked body (RFC 9112 §7.1) ────────────────────────────
@@ -636,21 +662,24 @@ fn size_line_end(buf: Bytes, at: int, limits: Limits) -> int {
     if buf.at(ext_end + 1) != byte("\n") { -2 } else { ext_end }
 }
 
-fn is_hex(c: int) -> bool { is_digit(c) || (c >= byte("A") && c <= byte("F")) || (c >= byte("a") && c <= byte("f")) }
+/// ONE HEX DIGIT'S VALUE, or absence when the octet is not one — the
+/// ONE hex law this package has. A chunk size reads it and so does a
+/// percent-escape; spelled twice, a lenient reader and a strict one
+/// would disagree about the same two octets.
+export fn hex_of(c: int) -> int? {
+    if is_digit(c) { return c - byte("0") }
+    if c >= byte("A") && c <= byte("F") { return c - byte("A") + 10 }
+    if c >= byte("a") && c <= byte("f") { return c - byte("a") + 10 }
+    null
+}
+
+fn is_hex(c: int) -> bool { hex_of(c) != null }
 once fn hexdigit() -> Bytes { admits(is_hex) }
 
 /// The value of 1..15 hex digits — under 2^60, so it fits a signed
 /// word; a sixteenth digit is past any body bound before it is read.
 fn hex_value(buf: Bytes, lo: int, hi: int) -> int {
     mut n = 0
-    for i in lo..hi { n = n * 16 + hex_digit(buf.at(i)) }
+    for i in lo..hi { n = n * 16 + hex_of(buf.at(i))! }
     n
-}
-
-fn hex_digit(c: int) -> int {
-    when {
-        c <= byte("9") -> c - byte("0")
-        c <= byte("F") -> c - byte("A") + 10
-        _ -> c - byte("a") + 10
-    }
 }
