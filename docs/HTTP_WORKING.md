@@ -1351,6 +1351,43 @@ checked — the volume is drifting down again as lanes build). The
 substrate lane's red team and review round over the frame come next,
 on their own task; S2c's remaining open item is `bytes-header`.
 
+## The inout frame's red team and review (25b73dd, 7a1abdd; merged at a9f7963, seed 1c21943)
+
+THE DIVERGENCE HUNTED HAS NO PROGRAM. The attack expected to land was
+aliasing — one `mut` binding handed to TWO seats of a single call: the
+frame gives each seat its own storage, so it would pass two addresses
+where native passes one and the engines would disagree about which
+write survives. It cannot be built: F2048 refuses it at check time
+("`same` is handed `mut` twice in one call"). Recorded as a survivor
+rather than shrugged off, because THE FRAME DOES NOT DEFEND AGAINST IT
+AND DOES NOT NEED TO — the defence is upstream, in a law written for a
+different reason, and whoever narrows F2048 later would be taking a
+load this seam never knew it was carried by. Knowing which layer holds
+a property is how it stays held; it is written at the seam now. The
+rest of the set found nothing: every width the `cells` column can name,
+a cell the callee never writes (the seeded value survives — the inout
+half of the contract, now a test), a call refused before the frame runs
+(cells not settled), a stale cell from an earlier call (reset zeroes
+the cell storage as it zeroes the slots).
+
+THE REVIEW found two things in code an hour old: `settled_cells` built a
+slot map on EVERY extern call to discover nothing needed settling — an
+allocation per call beside the lookup just made free; it asks the cells
+column first now — and one projection spelled twice. NOT QUOTED AS A
+WIN: 0.58s before, 0.60s after, inside a control that varies 0.48 to
+0.50; the saving is real but small for a one-seat extern, the change
+stands on the reasoning (the cost grows with seat count, the benefit is
+the common case), and saying so beats dressing a noise reading as a
+result.
+
+WHERE THE EVALUATOR STANDS, for the owner: every corpus directory is
+differential except `corpus/bytes-header`, held by an evaluator defect
+("a non-string reached text in a clean program") the substrate lane
+now owns; package C, sqlite included, runs under `avra run` and answers
+what the native binary answers. That was the whole arc. Disk: 2.3 GiB
+free before the seed's link — falling as lanes build; the floor lane A
+set will start refusing links at 2 GiB, which is the design working.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
