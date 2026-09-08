@@ -45,7 +45,7 @@
 //! key asked for as a scalar that came twice — `Asked` keeps all four
 //! apart, because collapsing them is how one layer reads `?id=1` and
 //! the next reads `?id=2` from the same request.
-use frame.{Span}
+use frame.{Span, hex_of}
 
 /// One `name=value` from the query, as spans into the target's
 /// buffer. `value` is ABSENT when the pair carried no `=` at all —
@@ -101,7 +101,14 @@ fn no_octets() -> Bytes { "".bytes() }
 /// trailing `&` and `?=v` all yield no starts — which is why an empty
 /// query and a query of separators agree.
 fn starts(raw: Bytes) -> List<int> {
-    [i for i in 0..raw.length if opens(raw, i) && raw.at(i) != amp_octet() && raw.at(i) != equals_octet()]
+    [i for i in 0..raw.length if names_a_key(raw, i)]
+}
+
+/// Whether a pair WITH A NAME begins at `i`: the query's own start or
+/// one past an `&`, and not itself a separator.
+fn names_a_key(raw: Bytes, i: int) -> bool {
+    let c = raw.at(i)
+    opens(raw, i) && c != amp_octet() && c != equals_octet()
 }
 
 fn opens(raw: Bytes, i: int) -> bool { i == 0 || raw.at(i - 1) == amp_octet() }
@@ -122,6 +129,12 @@ fn pair_of(raw: Bytes, at: int, end: int) -> Pair {
     Pair { name: Span { lo: at, hi: eq }, value: Span { lo: eq + 1, hi: end } }
 }
 
+/// Whether a pair's name IS this one — compared exactly, octet for
+/// octet and case for case: a query name is opaque where a field name
+/// folds. The one place a name is judged, so an ask and a count can
+/// never disagree about which pairs answered.
+fn carries(raw: Bytes, p: Pair, want: Bytes) -> bool { raw.eq_at(p.name.lo, p.name.hi, want) }
+
 fn amp_octet() -> int { 38 }
 fn equals_octet() -> int { 61 }
 once fn amp() -> Bytes { "&".bytes() }
@@ -134,7 +147,11 @@ impl Query {
     fn length() -> int { self.pairs.length }
 
     /// Whether any pair carries this name, `=` or not.
-    fn has(name: string) -> bool { !self.at(name).is_empty() }
+    fn has(name: string) -> bool {
+        let want = name.bytes()
+        let raw = self.raw
+        self.pairs.any((p) -> carries(raw, p, want))
+    }
 
     /// Every name the query carries, IN ENCOUNTER ORDER and with
     /// repeats kept — what was sent, not what a set of it would be.
@@ -166,8 +183,7 @@ impl Query {
     fn at(name: string) -> List<int> {
         let want = name.bytes()
         let raw = self.raw
-        let pairs = self.pairs
-        [j for j in 0..pairs.length if raw.eq_at(pairs[j].name.lo, pairs[j].name.hi, want)]
+        [j for j, p in self.pairs if carries(raw, p, want)]
     }
 
     fn value_at(j: int) -> Bytes? {
@@ -216,14 +232,8 @@ fn inside_escape(b: Bytes, i: int) -> bool {
 /// The octet position `i` contributes: an escape's value at its `%`,
 /// otherwise the octet itself.
 fn octet_at(b: Bytes, i: int) -> int {
-    if b.at(i) != percent_octet() { return b.at(i) }
-    (hex_of(b.at(i + 1)) ?? 0) * 16 + (hex_of(b.at(i + 2)) ?? 0)
+    let c = b.at(i)
+    if c != percent_octet() { return c }
+    hex_of(b.at(i + 1))! * 16 + hex_of(b.at(i + 2))!
 }
 
-/// One hex digit's value, or absence when the octet is not one.
-fn hex_of(c: int) -> int? {
-    if c >= 48 && c <= 57 { return c - 48 }
-    if c >= 97 && c <= 102 { return c - 87 }
-    if c >= 65 && c <= 70 { return c - 55 }
-    null
-}
