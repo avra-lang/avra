@@ -1261,6 +1261,58 @@ sqlite corpora stay native-only, because `sqlite3_open_v2` has a `mut`
 seat and the frame carries no inout — §5.6.8's recorded trigger fired,
 and the inout frame is the substrate lane's next slice after the memo.
 
+## Main merged (d8422aa, 082f284, 8bb0d85) and the symbol memo (d8f996a, merged at fcfa831; seed a59138d)
+
+MAIN'S ELEVEN: lane A's watchdog DISK FLOOR (e7e1d1f — it REFUSES where
+the memory floor WAITS, because memory pressure passes when a process
+exits and a full volume stays full, so a wait loop would spin forever
+while looking like patience; exit 2, remedy named, `AVRA_DISK_FLOOR_MB`
+moves it, checked before the lock), the integrator's TREE PIN
+(fe1c152 — HEAD, the tracked content and the untracked list pinned
+across the gate; its first draft pinned the porcelain alone and its
+own test caught that the porcelain names WHICH files are dirty and
+not what is in them), the content-hashed object rule (ba2f495), the
+keeper refusing an integer seat over a pointer (5542ef3), lane B's
+Env.get narrowing, and the doctrine sweeps. TWO CONFLICTS. The keeper:
+a union. THE MAKEFILE, a FOLD: main hashes two NAMED objects
+(`build/runtime.sha: SHA_SRC := …`), this branch builds every object
+through ONE stem rule with per-stem flags and `-MMD`, so two named
+rules beside it would have been the stem law's second definition and
+bypassed both. The fold is `build/%.sha: %.c FORCE` — the stem resolves
+its source through vpath as `build/%.o` does — and the object depends
+on the stamp. THE FOLD BIT AT ONCE: the first build printed `rm
+build/llvm_wrapper.sha …` — make DELETED the stamps — and every object
+would have rebuilt every run, the exact opposite of the rule, reading
+as a slow build and never as a wrong one. `.PRECIOUS: build/%.sha`
+keeps them; witnessed: the second build recompiled the five once
+against fresh stamps, the third compiled nothing. LANE A REPRODUCED IT
+IN A SCRATCH MAKEFILE AND CORRECTED THE MECHANISM: not the MENTION
+(their guess, refused by their own probe) but the CHAIN — `a.c ->
+a.sha -> a.o`, made by one pattern rule and consumed by another, and
+make deletes the middle of a chain; main's `%.sha: FORCE` has no source
+prerequisite, joins no chain, and needs nothing. So `.PRECIOUS` is
+LOAD-BEARING AT INTEGRATION, when main takes the generic form, for a
+reason visible in neither diff — recorded on the integration task.
+
+THE MEMO (d8f996a, substrate-2, closing lane A's finding): a symbol's
+address is asked once per callee — a `Map<string, int>` on the
+machine, ABSENCE MEMOIZED TOO (0 is a real answer at this seam, so a
+callee nothing carries stays absent rather than re-walking every
+handle: the empty-value law at a cache boundary, and a program with
+one bad extern name would have paid the full walk on every call), no
+short-circuit because caching dominates and the early exit would be
+the flag loop. MEASURED on base db688ac, 200,000 extern calls under
+`avra run` over a two-library closure, medians of three: the program
+1.12s -> 0.58s; the extern calls alone 0.62s -> 0.09s — 3.1 us -> 0.45
+us per call, ~7x, bigger than "invisible in the compiler, real in a
+framer" because the walk was N `dlsym`s plus a list allocation rather
+than one lookup. THE CONTROL: the same loop with the extern call
+removed, 0.50s before and 0.49s after — the difference is the lookup,
+not the interpreter. Not measured, said rather than implied: the
+compiler's own suite, whose native path never takes this seam. Lane A
+believes the number for the control. Gate green at 571 MB, seed
+a59138d. Disk: 4.6 GiB before the link, checked. Next: the inout frame.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
