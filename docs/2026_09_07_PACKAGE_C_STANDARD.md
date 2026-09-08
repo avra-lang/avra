@@ -1608,3 +1608,125 @@ these has guards:
 - `@std/sqlite`: `equal_nocase`, `like`, `glob`, `is_complete` and
   `compiled_with` hand text to C unguarded. The package already has a
   `HoldsNul` cause it does not use at those five.
+
+### 7.5 THE RED TEAM OVER THE SUBSTRATE — the host, the keeper, the build
+
+156 programs and experiments over the three parts of the seam: the
+extern host under the evaluator, `tools/externs.py`, and the
+Makefile's stem law and content stamps. §7.4 attacked the CROSSING
+CHECK and the frame beside it; this round attacked the DECLARATION,
+the keeper that reads it, and the build that turns it into an object.
+
+**WHAT WAS FOUND, WRONG ANSWERS FIRST.**
+
+*A crossing has two ends and only one was held.* §2.8's law is worded
+about SEATS and the answer wore nothing at all. A non-row extern
+declared `-> R` (a record of two fields), `-> E`, `-> dyn Show` or
+`-> Bytes` checked CLEAN, then said `defect: a read from a non-array
+in a clean program` under the evaluator and SIGSEGV'd natively. One
+user mistake, two internal failures, in two different ways. Two
+positively-spelled sets hold both ends now, and the asymmetry between
+them IS the rule: `void` is the ordinary answer and refused at a seat,
+`Bytes` is taken at a seat and refused as an answer — a seat hands C a
+box whose length the caller knows, an answer would have to invent one.
+
+*A `void` seat was admitted by the set itself.* `.Void` sat among the
+allowed shapes, so `extern fn f(x: void)` checked clean while THREE
+comments — `ffi.c`'s, `void_seat`'s and this document's — asserted no
+declaration could write it. Both engines answered with an internal
+failure. A comment asserting that a law holds is not that law.
+
+*A REGISTER FILE IS NOT A WIDTH, and the keeper could not see one.*
+`points_at` named four of the seven non-pointer scalar seats and
+`DEMANDS` had no reading for `float`, `f64` or `bool` at all, so three
+whole types abstained in both directions. `witness_f64_round(v: bool)`
+over `double witness_f64_round(double)` — check clean, `make externs`
+GREEN — answers `bits=0` evaluated and `bits=-3198791103` natively.
+Two engines, two numbers, nothing said anywhere.
+
+*An f32 RETURN, recorded in §5.6.8 as fine, is not.* There is no f32
+width word, so `avra_ffi_call_f64` reads `v0` WHOLE and a C `float`
+wrote only its low half: a witness body answering `1.5f` through a
+declared `f64` reads `5.28426686e-315` in BOTH engines. The
+differential was green over a wrong number. Nobody ran it, because
+nothing in the tree has ever answered a C `float` — the claim was
+written from the design's model of the read and quoted forward from
+the paper that predates the frame.
+
+*Two packages may define one symbol.* `symbol_of` memoizes an address
+under the NAME alone, with no package on the key, and `looked_up`
+takes the first library in the closure that carries it. Two throwaway
+linking packages defining `probe_dup` as 111 and 222, one program
+depending on both: `check` said nothing, `./avra run` answered
+`alpha=111 beta=111` — beta's own verb running alpha's C — and `./avra
+build` refused with `ld: 1 duplicate symbols`. The evaluator runs,
+wrongly and silently, a program the native path cannot link, and the
+differential never sees it because there is no binary to compare.
+`tools/stems.sh` refuses it tree-wide now.
+
+*A case-only stem clash passed the stem law.* `build/` is a DIRECTORY,
+not a set of names, and on the volumes this tree builds on it does not
+tell `util.o` from `Util.o`. Proved with two fixture sources: the law
+reported the tree fine, both compiled, `build/Casestem.o` was never a
+separate file, and `build/casestem.o` carried the OTHER package's
+symbol. The stamp collapses with it — one `.sha` for two sources.
+
+**WHAT SURVIVED, which is the half worth having.**
+
+The INOUT frame, ten cases: every width the `cells` column names, a
+`ptr?` cell seeded null and filled by the callee, a cell the callee
+never writes, a stale cell from an earlier call, a call refused before
+the frame runs, two `mut` seats in one call, one binding at two seats
+(F2048), an aggregate cell (F2056), a parameter at a `mut` seat, and a
+cell settled every turn of a loop. `eval == native` in every one.
+
+Ownership, eleven programs under `AVRA_RC_GUARD` and `AVRA_MEM_STATS`:
+a foreign `const char*` answered as `string` — text with no header of
+ours in front of it — held, joined, stored in a list of fifty, stored
+in a record that outlives its maker, overwritten in a cell holding an
+owned box, and made in a loop. No release of a dead box, nothing live
+at exit. Octets minted only to be staged outlive the call.
+
+Malformed surface, 38 programs: every token of `extern fn NAME(x:
+int) -> i64` deleted, duplicated, swapped with its neighbour and
+replaced with a keyword. Every one produced a diagnostic; no crash, no
+silence; the trailing comma is taken.
+
+Degenerate shapes, 12 programs: zero seats, one seat, ten integer
+seats and the eleventh refused by name, eight FP seats and the ninth
+refused, an empty string and empty octets crossing as themselves, a
+160-character symbol, a one-character symbol, an absent symbol, and a
+declaration never called.
+
+Crossings, 17 programs: the host inside a fn, a `while`, a `for`, an
+`if`, a `match`, a list element, a struct field, a comprehension, a
+lambda, recursion twenty deep, an interpolation hole, a `mut` binding,
+a `catch`, and one extern's answer filling another's seat. `eval ==
+native` in every one.
+
+The content stamps, five experiments: a source edited within the same
+second as its object REBUILDS, a repeated build compiles nothing, the
+stamps survive (`.PRECIOUS` holds), a header touch rebuilds through
+the `.d` files, and a stamp deleted by hand is restored. Every claim
+the Makefile makes about them holds.
+
+**WHAT IS STILL OPEN.** An `extern fn` used as a VALUE is an internal
+defect shown to the user:
+
+    extern fn avra_host_is_dir(path: string) -> int
+    let f = avra_host_is_dir
+    f("corpus")
+
+  error[F0900]: defect: a unit without a body was asked for — `avra_host_is_dir`
+
+Three shapes reach it — a `let`, a list element, and a fn-typed
+argument seat — in `check`, `run` and `build` alike. A plain `fn` in
+the same position is fine, so it is the extern's. `fn_value_reg` mints
+a wrapper whose target is the symbol and asks `union` for that
+declaration's unit; an extern has no body. Fixing the want is not
+enough: `wrapped_body` emits `Ins.Call`, and an extern is a `CallRt`.
+The refusal wants to be a check-time law — an extern is a C symbol,
+not a value — and it is held because the node it fires on (`.Ident`)
+belongs to `expr_spine` while the law belongs to `fns`, and which
+feature owns "a name that resolves to an extern in a value position"
+is a decision, not a detail.
