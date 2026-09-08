@@ -414,8 +414,17 @@ engine's spec, written by dogfooding.
   `tool_from_env`; `@std/io` guarded ten verbs and not `env`;
   `@std/sqlite` guarded some and not five. Each package HAD the
   guard, one door down. The failures were SILENT, not traps — a holed
-  name read a DIFFERENT variable (`env("PATH\0/junk")` answered
-  PATH's value), which no crash surfaces. And A METHOD MUST NOT READ
+  name read a DIFFERENT variable (`env("PATH" + from_codepoint(0) +
+  "/junk")` answered PATH's value), which no crash surfaces. SPELL
+  THE EXAMPLE THE WAY THE HAZARD IS MINTED: this entry first wrote
+  that name as `"PATH\0/junk"`, and `\0` IS NOT AN ESCAPE, so the
+  demonstration contained no NUL and would have answered null for
+  the wrong reason. @std/sqlite's boundary header taught the same
+  trap with the same dead literal (fixed by the docs lead at
+  e523655), in the file whose whole subject is that hazard. A doc
+  that DEMONSTRATES a hazard is code that has never been run — the
+  four guard cases here were witnessed failing with the guards
+  removed, which is what a prose example cannot be. And A METHOD MUST NOT READ
   ONE NAME TWO WAYS: `Env.get` compared with `==` under `Only` and
   handed the name to C under `Inherit`, so one method disagreed with
   itself by variant. THE TEST: list every row that hands text to C,
@@ -430,6 +439,18 @@ engine's spec, written by dogfooding.
   says to measure. A doc is a claim with a date on it; the test that
   disagrees with it is the newer fact. `85abb9e`'s message carries
   the wrong rationale for a real fix because of it.
+  AND A RETRACTED FACT SPREADS BY CITATION, WHICH NO SWEEP OF ITS
+  ORIGIN REACHES. This one was quoted into four documents across
+  three campaigns — a ROADMAP red-team entry, a docs vision's
+  blockquote, a subset probe log's row, a census heading — and the
+  package that OWNED the claim swept itself twice by file, correcting
+  five sites, while every citation stood. A citation is a COPY that
+  does not know it is one: it names the finding, not the mechanism,
+  so it survives the mechanism changing and reads as corroboration
+  from an independent source. THE SWEEP IS BY CLAIM, NEVER BY FILE
+  OR BY PACKAGE — grep the tree for the ASSERTION and for the
+  distinctive example that carries it (`ab\0cd`, `"\0x"` here), not
+  for the files you remember writing.
 - A COLD PATH IN A HOT LEAF COSTS EVERY CALL A FRAME. A lazy
   `getenv`, a `char msg[80]` for a trap's words, a grow branch, a
   `__builtin_return_address` read — each is free when it runs and
@@ -1230,6 +1251,18 @@ Runtime facts, ours to ratify:
   comment), applies TWICE when re-run after a partial failure: the
   anchor is still there. Check for the new text FIRST, and let
   `grep -c` (never `-l`) say how many times a fn is defined.
+  ITS SIBLING, WHICH CAUGHT ME IN THIS FILE: AN ANCHOR THAT OCCURS
+  TWICE APPLIES TO THE WRONG ONE. A splice bounded by
+  `t.index(start)` and `t.index(end)` where `end` sits EARLIER than
+  `start` re-emits the span between them and leaves the original
+  standing — so 2d49858 duplicated the very law it was correcting,
+  and two entries with one name contradicted each other 55 lines
+  apart. PROSE HAS NO GATE: no test, no build and no keeper reads
+  it, and a MERGE RESOLUTION over prose fails the same way, since
+  both sides can survive. THE CHECK IS ONE COMMAND, run after any
+  prose splice and any resolution of one —
+  `grep -n "^- [A-Z]" CLAUDE.md | sed 's/^[0-9]*://' | sort |
+  uniq -d`, which must answer nothing.
 - A TOOL that reads source line by line sees a multi-line `use
   a.{x,\n  y}` as a truncated statement, and one that scans "to the
   closing brace" then eats the code after it. Join continuation

@@ -111,7 +111,7 @@ CFLAGS_sqlite_sentinel := -Ipackages/std-sqlite/vendor
 # includes it — without this a package that grows a header links a
 # stale object and the defect is attributed to the compiler. The
 # include is silent on a cold tree, where no .d exists yet.
-build/%.o: %.c
+build/%.o: %.c build/%.sha
 	@mkdir -p build
 	cc -c -O2 -MMD -MP $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
 
@@ -176,6 +176,43 @@ test: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@for p in $(SUITES); do \
 	  ./avra test $$p || exit 1; \
 	done
+
+# THE OBJECT FOLLOWS THE SOURCE'S CONTENT, NOT ITS TIMESTAMP. make
+# compares mtimes at ONE-SECOND granularity, so a stash-and-rebuild
+# cycle that lands inside one second leaves the object looking current
+# while the source has changed under it — and `make gate` then reports
+# the PARENT's behaviour over a tree that carries the change. That
+# happened landing f57372a: 39/46 in std-text with the fix on disk,
+# and it read as "my change is broken" rather than "the object is
+# stale". Reproduced deterministically with `touch -r`.
+# THE GATE IS THE RECEIPT, and a receipt for a tree nobody has is
+# worse than no receipt. The stamp is rewritten only when the hash
+# CHANGES, so its mtime moves on content and nothing else, and a
+# repeated build recompiles nothing. ONE RULE FOR EVERY OBJECT: the
+# stem resolves the source through vpath exactly as `build/%.o` does,
+# so a named-object copy of this rule would be the stem law's second
+# definition. One cost, stated: the stamp depends on FORCE, so
+# `make -q` always reports work pending for these objects even when
+# none is — nothing here reads `make -q`, and the alternative is to
+# trust the timestamps again.
+.PHONY: FORCE
+FORCE:
+
+# THE STAMP IS A LINK IN A CHAIN — `a.c -> a.sha -> a.o`, made by one
+# pattern rule and consumed by another — and make deletes the middle
+# of a chain as an intermediate file once the end is built. A stamp
+# rule with no source prerequisite (`%.sha: FORCE`, hashing a named
+# path) never joins a chain and needs none of this; the generic form
+# does, and without it every stamp is minted afresh on the next run
+# and every object rebuilds every time — which reads as a slow build,
+# never as a wrong rule. Precious keeps the stamps.
+.PRECIOUS: build/%.sha
+
+build/%.sha: %.c FORCE
+	@mkdir -p build
+	@shasum -a 256 $< | cut -d' ' -f1 > $@.tmp
+	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
+	@rm -f $@.tmp
 
 # The runtime's trap contract: the words and the verdict (exit 2).
 # No corpus program can hold it — the corpus runs every program in
