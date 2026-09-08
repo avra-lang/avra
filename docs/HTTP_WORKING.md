@@ -1313,6 +1313,44 @@ compiler's own suite, whose native path never takes this seam. Lane A
 believes the number for the control. Gate green at 571 MB, seed
 a59138d. Disk: 4.6 GiB before the link, checked. Next: the inout frame.
 
+## The INOUT FRAME (e92ac37, merged at a540a3b, seed 79b415c): sqlite crosses to the evaluator
+
+`corpus/sqlite` and `corpus/sqlite-refusals` lost `native-only` and
+read `eval == native == expected`; every corpus directory but
+`corpus/bytes-header` is differential now, and that one is held by an
+unrelated evaluator defect the substrate lane is filing, not by this
+seam. §5.6.8's TRIGGER IS PAID AND ITS REFUSAL DELETED: the refusal
+said the marshalling would be "an instrument nothing could exercise"
+and recorded the condition that would change that; S2c fired it, and
+the refusal was removed rather than left beside its replacement — a
+trigger is paid by the code it held a place for, and a dead refusal
+that still reads as current is the thing this tree keeps finding.
+
+THE SQLITE RED TEAM'S FINDING, REPRODUCED AND CLOSED BY CONSTRUCTION.
+With the width normalisation disarmed, the width witness answers
+`out=4294967295,4294967294` where native says `out=-1,-2` — a plausible
+number, not a crash, exactly the `int*` shape they reported: a C
+`int*` writes 32 bits and leaves the top half of a 64-bit cell stale.
+The frame reads the width from the SAME `cells` column the backend's
+normalisation reads, so the two engines agree by construction rather
+than by two hand-written tables happening to match; restored, they
+agree byte for byte across every seat the witness has.
+
+TWO THINGS WRONG FIRST, BOTH THE EMPTY-VALUE LAW at a seam built this
+week: `whole` calls a `null` a defect, and a `ptr?` cell STARTS at null
+— `sqlite3_open_v2`'s handle is precisely that — so seeding had to
+read `word_of`, where absence is the address zero; and reading back,
+zero is ABSENCE and not the number nought, or a program that took `0`
+for a failed open would carry a non-null handle to a database that
+never opened. Walked into twice by the author of the seam, which is
+the law's own claim about itself.
+
+Merged clean, built twice, gate green at 596 MB with both sqlite
+corpora on both engines, seed 79b415c (3.5 GiB free before the link,
+checked — the volume is drifting down again as lanes build). The
+substrate lane's red team and review round over the frame come next,
+on their own task; S2c's remaining open item is `bytes-header`.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
