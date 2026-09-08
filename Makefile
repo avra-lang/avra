@@ -198,9 +198,14 @@ test: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 .PHONY: FORCE
 FORCE:
 
-# A PATTERN-MADE PREREQUISITE IS AN INTERMEDIATE FILE, and make deletes
-# those after the build — which would mint every stamp afresh on the
-# next run and rebuild every object every time. Precious keeps them.
+# THE STAMP IS A LINK IN A CHAIN — `a.c -> a.sha -> a.o`, made by one
+# pattern rule and consumed by another — and make deletes the middle
+# of a chain as an intermediate file once the end is built. A stamp
+# rule with no source prerequisite (`%.sha: FORCE`, hashing a named
+# path) never joins a chain and needs none of this; the generic form
+# does, and without it every stamp is minted afresh on the next run
+# and every object rebuilds every time — which reads as a slow build,
+# never as a wrong rule. Precious keeps the stamps.
 .PRECIOUS: build/%.sha
 
 build/%.sha: %.c FORCE
