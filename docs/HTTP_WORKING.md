@@ -1670,6 +1670,125 @@ our seed, the compiler package's manifest in the OLD spelling for the
 first build, then the typed spelling built twice by the product that
 reads it. No other manifest here spelled `flags`. Gate green at 667 MB.
 
+## THE REVIEW ROUND over lane/http (2123273 … bff319e)
+
+THE HEADLINE IS A KEEPER THAT HAD NEVER OPENED THIS CAMPAIGN'S CODE.
+`tools/idioms.py` kept its scan roots as a hand-written list of twelve
+`packages/*/src` paths. std-http, std-net and std-sqlite were never on
+it, so every `make idioms` of this campaign — inside every gate, on
+every merge — printed DEBT 0 over three packages it had never opened.
+71 unlicensed sites were behind that, including three
+`xs[xs.length - 1]` where I7 has been ratcheted for four milestones,
+one `?? 0` on a payload the caller had already proved (I18, which
+exists because that shape is a SILENT WRONG ANSWER), and twelve
+imports nothing used. The roots are read from `packages/*/src` now,
+and the run PRINTS WHAT IT LOOKED AT — 389 file(s) in 16 package(s) —
+because a check that examined nothing is not a check that passed and
+the number is the only thing that tells a reader which one happened.
+DOGFOODING's bar grew a fifth law for it, and names the two other
+known hosts of the same disease: the Makefile's two link sites, and
+any keeper whose subject list a new arrival does not join.
+
+TWO MATCHER REACH DEFECTS FELL OUT OF THE WIDENING, and both were
+ACCUSING CODE THE COMPILER REQUIRES:
+
+- I23 took a fn's parameter list to the LINE'S LAST `)`, so a one-line
+  body holding a lambda put that lambda's seat in the fn's own list.
+  SEVEN sites in std-sqlite were that, latent, against 23 true hits —
+  and the round TRIPLED it to ten in one commit, because DRYing
+  target_form's three readers into `tf_read(line, pick)` wrote three
+  more one-line bodies with lambdas in them. A latent false positive
+  is invisible until a new consumer writes its shape; that is the
+  whole of how this one surfaced. (5aa15e5's message quotes "nineteen
+  true ones" and a 34% rate; nineteen is the count of HANDLERS
+  renamed, and the true HIT count is 23 — the rate is 30%. Corrected
+  here rather than in a rewritten commit, which is what this file is
+  for.)
+- I21 read ONE field segment, so `pr.s.turn(…)` — a writing method on
+  a field PATH, which the compiler refuses to call on a `let` — read
+  as no mutation at all. Three sites accused.
+
+AND THE MECHANISM THOSE TWO WERE MISSING: a keeper has two surfaces,
+and every fixture the tool had exercised only what it REFUSES. `CLEAN`
+holds the shapes a rule must NOT fire on, checked beside SPECIMENS,
+and both entries were WITNESSED FAILING against the pre-fix matchers
+before the fixes were kept.
+
+WHAT THE ROUND FOUND IN THE LIBRARY ITSELF, by shape:
+
+- A LAW TWO WRITERS KEPT, SPELLED TWICE. `sendable` (the reply) and
+  `sayable` (the request) each hand-spelled the smuggling law — every
+  field framable, none of the ones the writer writes itself. This
+  module already composes its CLASSES rather than restating them
+  (`path_char` from `is_target`); its field law was the one place that
+  did not. `fields_writable(headers, written_by)` is the one spelling.
+- THE FRAMING LAWS A REQUEST AND A REPLY KEEP ALIKE, spelled twice —
+  the field fold, the delimited-two-ways refusal, the coding refusal,
+  the body bound, the persistence rule. Three verbs hold them now
+  (`framing_of`, `body_refusal`, `persists`) and the two callers keep
+  their own asymmetries where they belong. THE EXTRACTION SURFACED AN
+  ASYMMETRY NOBODY HAD DECIDED: a REQUEST is refused for chunked on
+  HTTP/1.0 and a REPLY is not. Filed (avra-8sb5.1.16) rather than
+  changed — a shape round does not move a framing law.
+- TWO HEX READERS, one in frame.av and one in query.av with its digit
+  ranges spelled as bare numbers. One `hex_of` now, and `is_hex` and
+  the chunk-size reader compose from it, so the class table and the
+  value can no longer disagree about the same octet.
+- A TABLE READ WHILE IT WAS STILL BEING BUILT: `compiled` put the node
+  list in one struct field while another field's expression was still
+  filling it through a `mut` seat. Correct today only because both
+  hold the same box, and silently empty the day field order or the
+  copy rule moves. The root is bound first now.
+- I39, A NEW IDIOM: a comprehension over a LIST built only to be
+  folded by `.any(it)`/`.all(it)` is a SCAN — seven sites, five in the
+  two writer laws above, and the file holding one of them spelled the
+  scan correctly two lines further down, which is what makes it a
+  habit rather than a belief. Ratcheted, licensed BY THE MATCHER over
+  a range (a range takes no methods) and under a paired head.
+
+AND THE TEST DRY THE THREE-TEAM NIGHT PREDICTED. Six suites each built
+a `Request` from octets — two pairs byte-identical, an eighth inlined;
+three `from_codepoint(0)` helpers; four copies of the server pair
+scaffolding, two of them inlined beside the helper that already held
+it; three copies of the client wiring; two exchange loops; and in
+std-net a `holds` that was `passes` renamed and an `Attacked` that was
+`Pair` renamed. Every file in a tests directory is ONE module, so the
+prefixes existed only to dodge a clash the sharing removes.
+`fixtures_test.av` holds the one builder; 135 net lines went.
+
+I23'S LICENSED CASE GAINED A SPELLING, which is I22's lesson one rule
+over: nineteen route handlers whose signature `routed`/`fixed`/
+`tailed` owns now name the unread seat `_q`. The bar has ALWAYS
+skipped a leading underscore and nothing in the tree had ever written
+one — a license the tool could read, sitting unused, while the
+alternative was nineteen comments.
+
+LEFT ALONE, WITH THE REASON:
+- `method_of`'s nine-arm `when` over `verbs()[0..8]` is index-coupled
+  to a list, and stays: its doc says "nothing built per head", and a
+  `find` with a closure would build one per request. The coupling is
+  real and the trade is documented, which is the difference between a
+  smell and a decision.
+- traps.sh's rows repeat their program text. That text IS the row —
+  a trap contract's virtue is that each row reads standalone — and
+  the three NUL positions are a parameter sweep, not a copy.
+- `bytes_test.av` and traps.sh hold the same program and the same
+  message. Not duplication: `refused_at_run` runs the INTERPRETER and
+  `trapped` builds and runs a NATIVE binary, so the pair is a
+  two-engine differential of one trap.
+- `passes` / `passes_client` / `passes_with` ask three different
+  questions of a Result and keep three names.
+- Each route suite's own grammars and handler words are its subject,
+  not scaffolding.
+
+VERIFIED: std-http 427/427, std-net 25/25, std-sqlite 413/413; the
+http-route, http-serve, net and net-sizes corpora byte-identical;
+`make idioms` debt 0 across 16 packages, `make vocab`, `make
+fingerprints`, `tools/externs.py` (10 C sources, 582 seats) and
+`tools/stems.sh` (14 rows, 391 symbols) all green. Two defects filed
+(avra-8sb5.1.16, .1.17), three survey wants (avra-8sb5.11.47-.49), two
+sugar-backlog asks with their wanting sites.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
