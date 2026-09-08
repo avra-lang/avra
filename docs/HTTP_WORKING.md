@@ -1508,6 +1508,105 @@ three specs in run_test.av. Gate green at 650 MB here; std-avrac 2285,
 std-sqlite 413. With this, S2c is closed end to end and the final red
 team over the branch begins.
 
+## The FINAL RED TEAM over lane/http (three Opus teams, 9e97b5b -> 64a802e)
+
+Three teams, all eight classes each, deterministic, every survivor a
+test written first: the HTTP library; the extern seam, the keeper and
+the build rules; the Bytes value with its evaluator twin and @std/net.
+Roughly 400 programs run. THE FINDINGS, worst first, by the law each
+one broke.
+
+THE WIRE HAD NO GUARD ON THE WAY OUT. Both @std/http writers
+interpolated `name: value` unguarded while the framer refused those
+bytes inbound, so a query value with a CRLF in it split the response
+and smuggled a second one — proven end to end against a loopback
+server through the library's own documented handler shape; a status
+outside 100..999 wrote a malformed status line, a handler's
+content-length joined the writer's, its transfer-encoding rode beside
+a length, its connection contradicted the fate. One `writable` law
+composed from the framer's own `is_tchar`/`is_vchar`; `wire` answers
+500, `request` answers `Bytes?`; 29 assertions go red with the guards
+removed. A HEAD cut mid-field was introduced by that fix and caught by
+re-attacking it — one `as_sent` verb, asked by both readers. The query
+reader searched the body per pair: 102 ms per request at default
+limits, 2 ms now, fixed structurally so the tests assert what is held
+and never a duration. `target()` answered "" for an admitted obs-text
+target: `string?` now.
+
+A Bytes CARRYING A NUL RAN A DIFFERENT PROGRAM. `avra_spawn_status`
+over ("/usr/bin/true" + NUL + "/evil").bytes() RAN /usr/bin/true
+natively, and `avra_host_env` as a Bytes answered PATH for a name that
+is not PATH; the identical values spelled `string` were refused in
+both engines. `crossing` tested `is .Str` — the registry-is shape this
+tree's own doctrine condemns — and forgot `.Bytes`; the evaluator's
+`text_of_val` had `rest -> null` and forgot it too, so its trap arrived
+from a different seat and was a near-miss, not a check. The exemption
+is load-bearing for a PACKAGE's extern (sqlite3_bind_blob carries its
+length), so the check is scoped to core rows, whose non-inert bodies
+carry no length beside the pointer, and `names_a_name` spells every
+Type arm under `make vocab`. `starts_with` used strncmp — the sixth
+NUL-blind verb after f57372a's five; `read(0)` stole a byte off the
+wire; `Poller.wait(ms(-1))` blocked forever three verbs below a
+refusal of the same budget; a string at an octet row was a defect
+shown to a user (0ef691e's law read the other way, the half left
+standing); and AN EFFECT AFTER A REFUSAL — a row that reads and acts
+in one expression acted with the stand-in inside it, the child ran —
+so the four acting rows read seats, ask `failures.is_empty()`, then
+act. That last one no suite can see; the receipt is the probe.
+
+THE CROSSING HAS TWO ENDS AND ONLY ONE WAS HELD. The keeper abstained
+on every bool, float and f64 seat — `points_at` named four of seven
+scalars — so nine declarations lying about their C passed as matching
+and were COUNTED among the 577; a register file is not a width. An f32
+C return read through a declared f64 answers 5.28e-315 for 1.5f in
+BOTH engines — a green differential over a wrong number, the claim
+retracted in the standard and its ancestor. One symbol in two
+libraries: `symbol_of` memoizes under the NAME alone, so the
+evaluator ran alpha's C for beta while native could not link, and
+eval == native never saw it because there was no binary; stems.sh
+refuses it tree-wide. F2056 held every seat and nothing held the
+ANSWER: a record, enum, dyn or Bytes answer from a non-row extern
+segfaulted after a clean check — the answer arm now, two
+positively-spelled sets because the ends differ. A `void` seat reached
+the frame past three comments asserting it could not; a case-only
+stem clash was silent because build/ is a directory, not a set of
+names.
+
+WHAT SURVIVED, which is the other half of the receipt: the router,
+attacked hardest, zero findings (its oracle-vs-scan design is why); 38
+wrong-type placements with exactly one error each and no cascade; an
+88-line eval-vs-native differential over the whole HTTP library,
+byte-identical before and after; the inout frame 10/10 on both
+engines; the content stamps' five claims; ownership 0 live at exit
+under AVRA_RC_GUARD and AVRA_MEM_STATS everywhere; the Bytes UTF-8
+matrix at every text row; every net refusal naming verb, subject and
+the platform's word on both engines.
+
+RECORDED, NOT FIXED, each filed with its probe: a nullable at a host
+seat is a NULL C dereferences (atoi(null) SIGSEGVs both engines and
+the evaluator takes the compiler down — avra-somc, this lane, before
+integration); absolute-form targets route unlike origin-form (ruled:
+`path()` answers the path of every form — avra-ffek, this lane);
+a row's Ptr seat says a pointer, not which box (an RtSig column —
+lane A, avra-ihk9); an extern fn used as a value is F0900 in all three
+engines (avra-3cvq); a program ending in a range-headed `for` traps
+`avra check` on main too (lane C, avra-qx1k); four comparison rows
+still refuse octets (a ROADMAP trigger). Gate green at 709 MB; seed
+64a802e.
+
+TWO PROCESS FINDINGS. The three teams were briefed with the lane's
+PATH as "your isolated worktree" and all three worked in the branch
+itself, interleaving commits and, once, sweeping one team's
+uncommitted evaluator halves into another's commit (5099e70 carries
+findings its message does not describe); a brief names the agent's
+OWN worktree or names nothing. And THE SURVEY: on the owner's word
+every agent is now asked at the end of its life what it wanted from
+the language and did not have — forty wants under avra-8sb5.11 from
+three teams, the count already doing its job (a differential command
+and raw multi-line strings asked for by every team; `index_of` with
+no bound and a public struct literal each named as the CAUSE of a
+defect rather than friction).
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
