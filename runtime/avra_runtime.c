@@ -1758,11 +1758,23 @@ static int64_t fd_landed(int64_t n) {
     return g_fd_gen;
 }
 
-// Up to `max` bytes (clamped to 1..1 MiB) into the scratch: the token
-// of what landed, 0 at EOF, -EAGAIN when nothing is ready, -errno
+// Up to `max` bytes (capped at 1 MiB) into the scratch: the token of
+// what landed, 0 at EOF, -EAGAIN when nothing is ready, -errno
 // otherwise.
+//
+// THE EMPTY CASE IS THE FIRST CASE. `max` is the caller's arithmetic
+// — `read(want - have)` reaches zero the turn a frame is complete —
+// and this answer encoding already spends 0 on EOF, so a zero-length
+// landing has no code of its own. Clamping the ASK to one instead
+// bought a byte off the wire that nobody requested: the next message's
+// first byte, taken and never reported as taken. A zero ask lands zero
+// bytes and presents its token like any other, so the empty answer is
+// an empty box and 0 still means EOF alone. A NEGATIVE ask is a bound,
+// not a question, and answers -EINVAL rather than reading anything.
 int64_t avra_fd_read(int64_t fd, int64_t max) {
-    size_t n = max < 1 ? 1 : max > FD_SCRATCH ? FD_SCRATCH : (size_t)max;
+    if (__builtin_expect(max < 0, 0)) return -EINVAL;
+    if (max == 0) return fd_landed(0);
+    size_t n = max > FD_SCRATCH ? FD_SCRATCH : (size_t)max;
     for (;;) {
         ssize_t got = read((int)fd, g_fd_buf, n);
         if (got > 0) return fd_landed(got);
@@ -1830,8 +1842,15 @@ int64_t avra_str_contains(const char* s, const char* needle) {
     return nl <= sl && memmem(s, sl, needle, nl) != NULL;
 }
 
+// AT EQUAL LENGTH A PREFIX IS EQUALITY, so this and `avra_streq` are
+// answering the same question and may never disagree. `strncmp` made
+// them disagree: it stops at a NUL in either side, so two five-byte
+// texts that differ only past one read as a prefix while `==` reads
+// them as unequal, and a prefix LONGER than the text read as a prefix
+// too. The walk is the length's, as its sibling below already had it.
 int64_t avra_str_starts_with(const char* s, const char* prefix) {
-    return strncmp(s, prefix, str_len(prefix)) == 0;
+    size_t m = str_len(prefix);
+    return m <= str_len(s) && memcmp(s, prefix, m) == 0;
 }
 
 int64_t avra_str_ends_with(const char* s, const char* suffix) {
