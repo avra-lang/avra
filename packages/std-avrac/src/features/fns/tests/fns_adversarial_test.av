@@ -134,4 +134,46 @@ spec "features/fns (adversarial)" {
             shown("once fn t() -> string? {\n    null\n}\nt() ?? \"absent\"") == "absent"
         }
     }
+    given "wrong types in every extern slot — the host seat law's third arm" {
+        // THE SEAT SIDE WAS HELD AND THE ANSWER SIDE WAS NOT. A
+        // record, an enum, a `dyn` or a `Bytes` answered by a non-row
+        // extern checked CLEAN, and then the evaluator said `defect:`
+        // while the native binary SEGFAULTED — one user mistake, two
+        // internal failures, in two different ways.
+        then "a record ANSWER refuses — a foreign pointer is not a box in our layout" {
+            refused_with("type R = { a: int, b: int }\nextern fn c_get() -> R\nc_get().a",
+                         "the answer of `c_get` wears `R`, which cannot cross to C")
+        }
+        then "an enum answer refuses in the same words" {
+            refused_with("enum E { A, B }\nextern fn c_get() -> E\nc_get() is .A",
+                         "the answer of `c_get` wears `E`, which cannot cross to C")
+        }
+        then "a `dyn` answer refuses" {
+            refused_with("trait Show {\n    fn show() -> string\n}\nextern fn c_get() -> dyn Show\nc_get().show()",
+                         "the answer of `c_get` wears `dyn Show`, which cannot cross to C")
+        }
+        then "a `Bytes` answer refuses — no length crosses back" {
+            refused_with("extern fn c_get() -> Bytes\nc_get().length",
+                         "the answer of `c_get` wears `Bytes`, which cannot cross to C")
+        }
+        then "a ROW answering `Bytes` is the exemption, and stands" {
+            refusals("extern fn avra_fd_taken(token: int) -> Bytes\n1") == 0
+        }
+        then "every answer the frame reads back is taken" {
+            refusals("extern fn c_w() -> int\nextern fn c_n(x: int) -> i32\nextern fn c_u(x: int) -> u32\n" +
+                     "extern fn c_l(x: int) -> i64\nextern fn c_f(x: int) -> f64\nextern fn c_g(x: int) -> float\n" +
+                     "extern fn c_b(x: int) -> bool\nextern fn c_s(x: int) -> string\nextern fn c_o(x: int) -> string?\n" +
+                     "extern fn c_p(x: int) -> ptr\nextern fn c_q(x: int) -> ptr?\nextern fn c_v(x: int)\n1") == 0
+        }
+        then "a `void` SEAT refuses — the frame calls it a defect and LLVM refuses the module" {
+            refused_with("extern fn c_take(x: void) -> int\n1",
+                         "seat 1 of `c_take` wears `void`, which cannot cross to C")
+        }
+        then "one mistake in the answer earns one message" {
+            refusals("type R = { a: int, b: int }\nextern fn c_get() -> R\n1") == 1
+        }
+        then "a seat and an answer that both refuse speak once each" {
+            refusals("type R = { a: int, b: int }\nextern fn c_get(x: R) -> R\n1") == 2
+        }
+    }
 }

@@ -353,6 +353,19 @@ impl Machine {
         }
     }
 
+    /// ONE BYTE OF A ROW'S BOX, WITHOUT DECODING — `byte_length`'s
+    /// sibling, and the family's rule: A ROW THAT ANSWERS A SCALAR
+    /// FROM OCTETS NEVER DECODES. Natively the row indexes the box,
+    /// so it answers for any octets at all. Asked per byte rather
+    /// than through `octets`, which would build the whole sequence
+    /// for one question.
+    fn byte_at(v: Val, i: int) -> int {
+        match v {
+            .Y(data) -> data[i],
+            rest -> self.text_val(v).char_code(i),
+        }
+    }
+
     /// Octets as text. THE DECODE IS LOSSLESS FOR UTF-8 AND ONLY FOR
     /// UTF-8: an evaluator string cannot hold arbitrary octets, so
     /// bytes that are not UTF-8 are refused by name, never
@@ -698,7 +711,7 @@ impl Machine {
             .BytesSlice -> self.bytes_slice_val(vals),
             .BytesConcat -> Val.Y(self.octets(vals[0]).concat(self.octets(vals[1]))),
             .BytesIndexOf -> self.bytes_index_of_val(vals),
-            .BytesOfStr -> Val.Y(octets_of(self.text_val(vals[0]))),
+            .BytesOfStr -> Val.Y(self.octets(vals[0])),
             .BytesOfList -> self.bytes_of_list_val(vals[0]),
             .StrOfBytes -> text_of_octets(self.octets(vals[0])),
             .Utf8BadAt -> Val.I(utf8_bad_at(self.octets(vals[0]))),
@@ -712,11 +725,11 @@ impl Machine {
             .ErrnoText -> Val.S(avra_errno_text(self.whole(vals[0]))),
             .NowNs -> Val.I(avra_now_ns()),
             .HostEnv -> Val.S(avra_host_env(self.text_val(vals[0]))),
-            .Eputs -> eputs_val(self.text_val(vals[0])),
-            .IoList -> Val.I(avra_io_list(self.text_val(vals[0]))),
+            .Eputs -> self.eputs_row(vals),
+            .IoList -> self.io_list_val(vals),
             .StrFromCodepoint -> Val.S(avra_str_from_codepoint(self.whole(vals[0]))),
-            .ExecSelf -> Val.I(avra_exec_self(self.texts_of(vals[0]))),
-            .SpawnStatus -> Val.I(avra_spawn_status(self.text_val(vals[0]), self.texts_of(vals[1]))),
+            .ExecSelf -> self.exec_self_val(vals),
+            .SpawnStatus -> self.spawn_status_val(vals),
             .Unhosted -> self.defect_val("a runtime callee the interpreter does not host: `${callee}`"),
         }
     }
@@ -730,8 +743,8 @@ impl Machine {
 
     fn crossed(k: RtKind, v: Val) {
         if !carries_text(k) { return }
-        let t: string? = text_of_val(v)
-        if t != null { let _ = avra_str_crossing(t!) }
+        let b: Bytes? = bytes_of_val(v)
+        if b != null { let _ = avra_str_crossing(b!) }
     }
 
     /// AN EXTERN, HOSTED: the symbol in the running image, called
@@ -964,8 +977,16 @@ impl Machine {
         Val.I(0)
     }
 
-    /// A `void` seat is a shape no declaration can write — the
-    /// keeper refuses it before lowering, so reaching here is ours.
+    /// A `void` seat is a shape no declaration can write — F2056
+    /// refuses it at the declaration, so reaching here is ours.
+    ///
+    /// THAT SENTENCE WAS FALSE WHEN IT WAS FIRST WRITTEN. The seat
+    /// law admitted `.Void`, so `extern fn f(x: void)` checked clean
+    /// and a program that filled the seat reached this defect under
+    /// the evaluator while LLVM refused the module the backend
+    /// emitted — two internal failures for one user mistake. The
+    /// claim is kept because it is the right one; naming the law is
+    /// what makes it checkable rather than believed.
     fn void_seat() -> bool {
         self.defect("a `void` seat reached the extern frame")
         false
@@ -1068,13 +1089,12 @@ impl Machine {
     }
 
 
-    /// The byte at `i` as a code; past the text, the runtime's trap.
+    /// The byte at `i` as a code; past the box, the runtime's trap.
     fn str_char_code_val(vals: List<Val>) -> Val {
-        let s = self.text_val(vals[0])
         let i = self.whole(vals[1])
-        let n = s.length
+        let n = self.byte_length(vals[0])
         if i < 0 || i >= n { return self.out_of_bounds(i, n) }
-        Val.I(s.char_code(i))
+        Val.I(self.byte_at(vals[0], i))
     }
 
 
@@ -1283,6 +1303,45 @@ impl Machine {
                 []
             },
         }
+    }
+
+
+    /// THE NAME A ROW THAT ACTS WILL RESOLVE, or absence once reading
+    /// it refused. A LAW REFUSES BEFORE THE WORK — the law the extern
+    /// host's staging already pays, owed by these rows too. A seat
+    /// read that refuses hands back a STAND-IN and the machine only
+    /// stops at the next INSTRUCTION, so a row that reads and acts in
+    /// one expression acts with the stand-in inside it: a child ran
+    /// with a word the program never wrote, a directory opened at a
+    /// path nobody asked for, and the refusal was spoken after.
+    fn named_act(v: Val) -> string? {
+        let name = self.text_val(v)
+        if self.failures.is_empty() { name } else { null }
+    }
+
+    fn io_list_val(vals: List<Val>) -> Val {
+        let path? = self.named_act(vals[0]) else { return Val.I(0) }
+        Val.I(avra_io_list(path))
+    }
+
+    fn eputs_row(vals: List<Val>) -> Val {
+        let line? = self.named_act(vals[0]) else { return Val.I(0) }
+        eputs_val(line)
+    }
+
+    /// This process REPLACED, so the seats are read first and the row
+    /// acts only over a machine that is still clean.
+    fn exec_self_val(vals: List<Val>) -> Val {
+        let words = self.texts_of(vals[0])
+        if !self.failures.is_empty() { return Val.I(0) }
+        Val.I(avra_exec_self(words))
+    }
+
+    fn spawn_status_val(vals: List<Val>) -> Val {
+        let prog? = self.named_act(vals[0]) else { return Val.I(0) }
+        let words = self.texts_of(vals[1])
+        if !self.failures.is_empty() { return Val.I(0) }
+        Val.I(avra_spawn_status(prog, words))
     }
 
 
@@ -1502,7 +1561,7 @@ extern fn avra_ffi_set_bytes(at: int, b: Bytes)
 extern fn avra_ffi_call(sym: int) -> int
 extern fn avra_ffi_call_f64(sym: int) -> int
 extern fn avra_ffi_text_at(address: int) -> string
-extern fn avra_str_crossing(s: string) -> string
+extern fn avra_str_crossing(b: Bytes) -> Bytes
 
 /// WHICH REGISTER FILE A SEAT RIDES. Spelled over every kind rather
 /// than asked with `is`: `RtKind` is a registry, and a boolean about
@@ -1533,11 +1592,17 @@ fn carries_text(k: RtKind) -> bool {
     }
 }
 
-/// A `Val`'s text, or absence — the evaluator's own enum, so a
-/// catch-all here forgets nothing a registry would.
-fn text_of_val(v: Val) -> string? {
+/// A `Val`'s BYTES at a row's seat, or absence for a value that is
+/// not a box of bytes. A string and a `Bytes` are ONE headered box
+/// natively and the check reads that header, so both cross the same
+/// door — reading only the string was the check declining to look at
+/// the box the native binary was about to hand over. A word list at a
+/// seat is a box and not a name; the rows that take one check their
+/// own words in C.
+fn bytes_of_val(v: Val) -> Bytes? {
     match v {
-        .S(t) -> t,
+        .S(t) -> t.bytes(),
+        .Y(data) -> data.bytes()!,
         rest -> null,
     }
 }

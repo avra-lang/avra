@@ -1485,6 +1485,31 @@ other side of. Spelled positively, a new type is REFUSED at an extern
 seat until someone decides it crosses — a loud answer a writer can act
 on, and the catch-all's contract says exactly that.
 
+**AND THE ANSWER IS THE OTHER END OF THE SAME CROSSING, held by
+nothing until the red team asked.** This section says "a HOST SEAT
+wears a type that crosses" and every word of it was about the
+arguments. A non-row extern declared `-> R` (a record of two fields),
+`-> E`, `-> dyn Show` or `-> Bytes` checked CLEAN, and then the
+evaluator said `defect: a read from a non-array in a clean program`
+while the native binary SEGFAULTED — one user mistake, two internal
+failures, in two different ways. `crossing_law` holds both ends now,
+through TWO positively-spelled sets rather than one shared, because
+the ends genuinely differ: `void` is the ordinary answer and refused
+at a seat, and `Bytes` is taken at a seat and refused as an answer. A
+seat hands C a box whose length the caller already knows; an answer
+would have to INVENT one for a pointer the callee owns. A row is the
+exemption at both ends — `avra_str_join` takes a `List<string>`,
+`avra_fd_taken` answers `Bytes`, and each has a hand-written arm that
+materialises the box.
+
+**AND A `void` SEAT WAS ADMITTED BY THE SET ITSELF.** `.Void` sat in
+the allowed shapes, so `extern fn f(x: void)` checked clean — while
+`ffi.c`'s own refusal said "a shape no declaration can write" and the
+evaluator's `void_seat` said the keeper refuses it before lowering.
+Neither did. Both engines answered with an internal failure: `defect:
+a `void` seat reached the extern frame`, and `LLVM verification failed
+for main`. A comment asserting that a law holds is not that law.
+
 **A ROW IS THE EXEMPTION, AND NOT A SPECIAL CASE.** A row has a
 hand-written arm on both sides that MATERIALISES the aggregate, which
 is precisely what a uniform frame cannot do; `avra_str_join` has taken
