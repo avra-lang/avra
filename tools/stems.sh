@@ -179,7 +179,7 @@ done
 if [ -x build/avra ]; then
     rows=$((rows + 1))
     python3 - "$fails" <<'PYEOF' || fails=$((fails + 1))
-import subprocess, sys, os
+import glob, os, subprocess, sys, tomllib
 
 def syms(argv):
     out = subprocess.run(argv, capture_output=True, text=True)
@@ -231,18 +231,146 @@ for given, want in DUP_CASES:
 if bad:
     sys.exit(1)
 
+# EVERY DECLARED `[link]` ROW REACHES THE LINK LINE. A `[link]` row is
+# the manifest's promise about what a package's C needs; the library
+# is where that promise is kept, and nothing else in the tree checks
+# that it was. The DECLARATION is read from the manifests here and the
+# TOOL's answer is held to it — the keeper does not re-derive the
+# answer, which is what `keeps` and `inert` were.
+#
+# WITNESSED FAILING: `tools/libs.py` read `link.flags`, a key the
+# manifest law has no place for (`[link]` takes `objects`/`search`/
+# `libs`, `[link.raw]` takes `flags`), so its expansion was
+# unreachable and every library was linked with an EMPTY word list.
+# `@std/sqlite`'s `libs = ["m", "pthread"]` and `@std/avrac`'s
+# `search`/`libs` had never reached a link line.
+#
+# AND DARWIN HID IT, which is why it needed a keeper and not a reader:
+# libSystem is linked implicitly and re-exports libm and libpthread,
+# so libstd-sqlite links CLEAN with both rows missing and `nm -m`
+# shows every one of those symbols already bound. Measured: the
+# library links with neither `-lm` nor `-undefined dynamic_lookup`.
+# ELF is where a dropped row bites, and no local run would ever say so.
+#
+# BY WORD WHERE A ROW IS LITERAL, BY COUNT WHERE IT CARRIES A `${}`
+# HOLE: filling a hole here would be a THIRD expander beside the
+# compiler's `filled_words` and the tool's `expanded`, and a hole that
+# fills to nothing is dropped by both. So a literal row must be on the
+# line by name, and no `-L`/`-l` word may exist beyond the rows
+# declared — which bounds the holed ones from above and catches a word
+# no manifest asked for.
+def link_gaps(link, objects, words):
+    """Where a library's link line and its package's `[link]` rows
+    disagree — a declared row missing, or a word nobody declared."""
+    gaps = []
+    if len(objects) != len(link.get("objects", [])):
+        gaps.append(f"links {len(objects)} object(s) against "
+                    f"{len(link.get('objects', []))} declared")
+    for key, letter in (("search", "-L"), ("libs", "-l")):
+        declared = link.get(key, [])
+        gaps += [f"declares `{key}` row `{r}` and the line carries no `{letter}{r}`"
+                 for r in declared if "${" not in r and letter + r not in words]
+        on_line = [w for w in words if w.startswith(letter)]
+        if len(on_line) > len(declared):
+            gaps.append(f"carries {len(on_line)} `{letter}` word(s) against "
+                        f"{len(declared)} declared `{key}` row(s)")
+    return gaps
+
+
+# BOTH SURFACES, and the EMPTY CASE FIRST: a keeper's accept side is
+# where a dead alternative widens the law in silence.
+GAP_CASES = [
+    # (the `[link]` table, the objects linked, the words linked, the gaps)
+    ({}, [], [], []),
+    ({"objects": ["../../build/a.o"], "libs": ["m", "pthread"]},
+     ["build/a.o"], ["-lm", "-lpthread"], []),
+    ({"objects": ["../../build/a.o"], "libs": ["m", "pthread"]},
+     ["build/a.o"], [],
+     ["declares `libs` row `m` and the line carries no `-lm`",
+      "declares `libs` row `pthread` and the line carries no `-lpthread`"]),
+    ({}, [], ["-lz"], ["carries 1 `-l` word(s) against 0 declared `libs` row(s)"]),
+    ({"objects": ["a", "b"]}, ["build/a.o"], [], ["links 1 object(s) against 2 declared"]),
+    # a `${}` hole, filled and dropped: held by count, never by word
+    ({"search": ["${P}/lib"]}, [], ["-L/opt/lib"], []),
+    ({"search": ["${P}/lib"]}, [], [], []),
+]
+
+bad = sum(1 for link, objs, words, want in GAP_CASES
+          if link_gaps(link, objs, words) != want)
+for link, objs, words, want in GAP_CASES:
+    if link_gaps(link, objs, words) != want:
+        print(f"stems: SELF-TEST — {link} linked as {objs} {words} should read "
+              f"{want}, reads {link_gaps(link, objs, words)}")
+if bad:
+    sys.exit(1)
+
+
+def declared_link():
+    """Each package's `[link]` table, keyed by its MANIFEST NAME — the
+    same key `tools/libs.py` prints, so no stem rule is spelled a
+    third time here."""
+    out = {}
+    for path in sorted(glob.glob("packages/*/avra.toml")):
+        with open(path, "rb") as f:
+            m = tomllib.load(f)
+        name = m.get("package", {}).get("name")
+        if name:
+            out[name] = m.get("link", {})
+    return out
+
+
+# WHAT NOTHING ON THE LINK LINE ANSWERS. `-undefined dynamic_lookup`
+# is the amnesty that lets the RUNTIME bind to the host at load, and
+# `nm -u` cannot tell that band from a symbol the loader will answer:
+# it lists a symbol bound to a named library too. `nm -m` splits them,
+# so "the platform's" stops being a claim and becomes a count. A
+# FOREIGN symbol left for dynamic lookup is one no `-l` row covered —
+# which is the shape a dropped `libs` row takes on a platform that
+# does not link libSystem implicitly.
+#
+# ELF HAS NO SUCH COLUMN, so off darwin this answers None and the
+# keeper says it did not ask. A check that examined nothing is not a
+# check that passed.
+def unbound(path):
+    """The symbols a Mach-O library leaves for DYNAMIC LOOKUP, or None
+    where the question cannot be asked."""
+    if sys.platform != "darwin":
+        return None
+    out = subprocess.run(["nm", "-m", path], capture_output=True, text=True)
+    return {l.split()[-4].lstrip("_") for l in out.stdout.splitlines()
+            if l.strip().endswith("(dynamically looked up)")}
+
+
 host = syms(["nm", "build/avra"])
 rows = subprocess.run(["python3", "tools/libs.py", "--undefined"],
                       capture_output=True, text=True).stdout
 # what each OTHER library defines, so a cross-package reference is nameable
-defined = {}
-for line in subprocess.run(["python3", "tools/libs.py", "--data"],
-                           capture_output=True, text=True).stdout.splitlines():
-    name, out = line.split("\t")[0], line.split("\t")[1]
-    if os.path.exists(out):
-        defined[name] = syms(["nm", "-g", "--defined-only", out])
+data = [line.split("\t") for line in
+        subprocess.run(["python3", "tools/libs.py", "--data"],
+                       capture_output=True, text=True).stdout.splitlines()]
+defined = {row[0]: syms(["nm", "-g", "--defined-only", row[1]])
+           for row in data if os.path.exists(row[1])}
+outputs = {row[0]: row[1] for row in data if os.path.exists(row[1])}
 
 bad = 0
+declared = declared_link()
+rows_seen = held = holed = 0
+for name, out, objects, words, pkg in data:
+    link, line = declared.get(pkg, {}), words.split()
+    for gap in link_gaps(link, objects.split(), line):
+        print(f"stems: lib{name} {gap} — {pkg}'s `[link]` is the promise and the "
+              f"library is where it is kept")
+        bad += 1
+    for key, letter in (("search", "-L"), ("libs", "-l")):
+        for r in link.get(key, []):
+            rows_seen += 1
+            if "${" in r:
+                holed += 1
+            elif letter + r in line:
+                held += 1
+print(f"stems:   {rows_seen} declared `[link]` search/libs row(s) across {len(data)} "
+      f"package librar{'y' if len(data) == 1 else 'ies'} — {held} found by name on a "
+      f"link line, {holed} carrying a `${{}}` hole and held by count")
 for line in rows.splitlines():
     parts = line.split("\t")
     lib, open_syms = parts[0], (parts[1].split() if len(parts) > 1 else [])
@@ -259,8 +387,17 @@ for line in rows.splitlines():
         print(f"stems: lib{lib} leaves {x}, which lib{[o for o, d in defined.items() if o != lib and x in d][0]} defines "
               f"— a cross-package reference cannot resolve under RTLD_LOCAL")
         bad += 1
+    loose = unbound(outputs[lib])
+    stray = sorted(x for x in (loose or set()) if not x.startswith("avra_"))
+    for x in stray:
+        print(f"stems: lib{lib} leaves {x} for dynamic lookup and nothing on its link "
+              f"line answers it — a `[link] libs` row is missing")
+        bad += 1
+    note = ("binding not asked here" if loose is None
+            else f"{len(foreign) - len(stray)} bound to a named library")
     print(f"stems:   lib{lib} leaves {len(open_syms)} symbol(s) open — "
-          f"{len(ours)} ours ({' '.join(ours) or 'none'}), {len(foreign)} the platform's")
+          f"{len(ours)} ours ({' '.join(ours) or 'none'}), "
+          f"{len(foreign)} the platform's ({note})")
 for sym, libs in duplicated(defined):
     print(f"stems: {' and '.join('lib' + l for l in libs)} each define {sym} "
           f"— the evaluator takes the FIRST and memoizes it under the name alone, "

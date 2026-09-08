@@ -286,7 +286,8 @@ build-native: $(COMPILER_OBJS)
 # output learns the program is single-engine without opening a document.
 # THE PACKAGE LIBRARIES the evaluator opens. `tools/libs.py` is the ONE
 # definition of what each is made of — `tools/stems.sh` consumes that
-# answer rather than parsing the manifests a second time. The roster is
+# answer rather than re-deriving it; the manifests it reads beside it
+# are the DECLARATION the answer is held to. The roster is
 # the linking packages MINUS the ones `build/avra` already carries, so
 # it needs the compiler built first and says so as a prerequisite.
 # THE LIBRARY SCOPE, KEPT — a package's library is reached by its

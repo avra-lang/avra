@@ -1798,12 +1798,45 @@ idiom bar named it. Two more live blind spots, both measured:
   `libs = ["m", "pthread"]`. `nm -u build/libstd-sqlite.dylib` leaves
   13 libm/libpthread symbols open, and S2C_DESIGN.md:91-97 says in its
   own words that a package library must link "exactly the objects and
-  flags the `[link]` row already promises" or be forced onto
-  `-undefined dynamic_lookup`, "the flag that turns a link error into
-  a run-time crash" — which libs.py:90 passes unconditionally on
-  darwin. Latent here, a link failure on linux. FILED
-  (avra-8sb5.1.20), not fixed: it changes what `make libs` emits, and
-  the design is the substrate lane's.
+  flags the `[link]` row already promises". Latent here, a link
+  failure on linux.
+
+  FIXED (avra-8sb5.1.20). The tool grew its own `link_words`, reading
+  `search` as `-L` and `libs` as `-l` with the option letter written
+  by the TOOL — the compiler's `link_words` writes the same two
+  letters for the native link, so one manifest row means one thing on
+  both paths. There is no `flags` path at all rather than a dead one:
+  a library built here is opened by a package's DEPENDENTS, and F4016
+  refuses a dependency's raw options outright. `tools/stems.sh` now
+  holds every declared `[link]` row to the tool's answer, reading the
+  DECLARATION from the manifests and the ANSWER from `--data`;
+  witnessed RED on the parent, twice — "libstd-sqlite declares `libs`
+  row `m` and the line carries no `-lm`".
+
+  AND ONE CLAIM IN THE PARAGRAPH ABOVE IS RETRACTED, which is worth
+  more than the fix. `-undefined dynamic_lookup` is NOT what held
+  those symbols open. MEASURED: libstd-sqlite links clean with
+  neither the flag nor the rows, because darwin links libSystem
+  implicitly and libSystem re-exports libm and libpthread — `nm -m`
+  reads all 110 of its undefined symbols "from libSystem" and 0 left
+  for dynamic lookup, before the fix and after. The flag's whole live
+  job is libstd-net's `_avra_trap`; removing it fails THAT link and no
+  other. So `nm -u … | grep -ciE "sqrt|pow|pthread|cos|sin|log"` is 23
+  before and 23 after: `nm -u` lists a symbol BOUND to a named library
+  too, and a keeper counting it alone would have inherited the
+  mistake. It reads `nm -m` now, so "the platform's" is a count and
+  not a claim, and a FOREIGN symbol left for dynamic lookup — the
+  shape a dropped `libs` row takes on ELF — is a refusal. Witnessed
+  both ways with a throwaway linking package referencing
+  `LLVMContextCreate`: red without the row, green with it, the symbol
+  bound to libLLVM. The flag STAYS, for the reason the design gives
+  it and no other — the runtime is bound to the host at load, and a
+  second copy inside a library would settle `once` twice.
+
+  VERIFIED: `make libs` (3 built), `make libscope` (3 rows),
+  `tools/stems.sh` (14 rows, 2 declared rows on their lines, 391
+  symbols), `tools/externs.py` (520 declaring sources, 10 C sources),
+  `./avra test packages/std-sqlite` 413/413.
 
 Six more hand-kept lists were censused and filed as a group
 (avra-8sb5.1.21) — externs.py's two-directory tree-C tuple sitting
