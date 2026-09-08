@@ -8,7 +8,7 @@
 //! finds nothing answers `.Pending`, a write that takes nothing
 //! answers 0, and the loop above decides.
 use @std.errors.{Error, ErrorInfo, info}
-use @std.time.{Duration, secs}
+use @std.time.{Duration}
 
 extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
 extern fn avra_net_listen_all(port: int, backlog: int) -> int
@@ -77,17 +77,24 @@ export enum Read {
 /// for. Port 0 is the kernel's choice.
 export fn listen(host: string, port: int) -> Result<Listener, NetError> {
     if !names_a_host(host) { return no_host("listen", host, port) }
-    let fd = avra_net_listen(host, port, 511)
-    if fd < 0 { return failed("listen", "${host}:${port}", fd) }
-    .Ok(Listener { fd: fd, port: avra_net_local_port(fd) })
+    bound(avra_net_listen(host, port, backlog()), "${host}:${port}")
 }
 
 /// A listener on EVERY interface, asked for by name.
 export fn listen_all(port: int) -> Result<Listener, NetError> {
-    let fd = avra_net_listen_all(port, 511)
-    if fd < 0 { return failed("listen", "*:${port}", fd) }
+    bound(avra_net_listen_all(port, backlog()), "*:${port}")
+}
+
+/// A bound descriptor as a listener, or the verb that failed on it.
+/// The port is READ BACK rather than echoed: a listener asked for
+/// port 0 knows where the kernel put it.
+fn bound(fd: int, subject: string) -> Result<Listener, NetError> {
+    if fd < 0 { return failed("listen", subject, fd) }
     .Ok(Listener { fd: fd, port: avra_net_local_port(fd) })
 }
+
+/// How many connections the kernel may queue before one is accepted.
+fn backlog() -> int { 511 }
 
 /// A connection to host:port made within `timeout`, which is a
 /// budget and never a sentinel: a negative one is refused rather than
@@ -95,8 +102,12 @@ export fn listen_all(port: int) -> Result<Listener, NetError> {
 export fn connect(host: string, port: int, timeout: Duration) -> Result<Conn, NetError> {
     if !names_a_host(host) { return no_host("connect", host, port) }
     if timeout.ms < 0 { return failed("connect", "${host}:${port} within ${timeout.ms} ms", -avra_errno_invalid()) }
-    let fd = avra_net_connect(host, port, timeout.ms)
-    if fd < 0 { return failed("connect", "${host}:${port}", fd) }
+    streamed(avra_net_connect(host, port, timeout.ms), "connect", "${host}:${port}")
+}
+
+/// A connected descriptor as a stream, or the verb that failed on it.
+fn streamed(fd: int, verb: string, subject: string) -> Result<Conn, NetError> {
+    if fd < 0 { return failed(verb, subject, fd) }
     .Ok(Conn { fd: fd })
 }
 
@@ -109,7 +120,7 @@ fn names_a_host(host: string) -> bool {
 }
 
 fn no_host<T>(verb: string, host: string, port: int) -> Result<T, NetError> {
-    .Err(NetError { verb: verb, subject: "\"${host}\":${port}", errno: avra_errno_invalid() })
+    failed(verb, "\"${host}\":${port}", 0 - avra_errno_invalid())
 }
 
 /// A BUDGET ALREADY SPENT: present and negative. Absence is not spent
@@ -133,8 +144,8 @@ impl Listener {
     fn accept() -> Result<Conn?, NetError> {
         let fd = avra_net_accept(self.fd)
         if would_block(fd) { return .Ok(null) }
-        if fd < 0 { return failed("accept", "port ${self.port}", fd) }
-        .Ok(Conn { fd: fd })
+        let c = streamed(fd, "accept", "port ${self.port}")?
+        .Ok(c)
     }
 
     /// Closed; answers the port it held.
