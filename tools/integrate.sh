@@ -12,7 +12,9 @@
 # compiler against the lane's tree, so a lane that lands a language change never
 # leaves main merged and unbuildable. Every heavy step runs through
 # the watchdog and its lock. Edits another session left on main's
-# working tree are stashed around the merge and restored, uncommitted.
+# working tree are NEVER touched: the merge, the builds, the gate and
+# the seed happen in an integration worktree of main, born clean, and
+# the primary is fast-forwarded onto the result at the end.
 # The first red stops everything, with main untouched past that point.
 set -e
 lane="$1"; msg="$2"
@@ -156,35 +158,38 @@ if [ -x "$main/build/avra" ]; then
     fi
 fi
 
-cd "$main"
-
-# A STASH IS A DEBT AND EVERY EXIT PATH PAYS IT. Main is a worktree
-# several sessions write to, so this can be holding work whose owner
-# does not know it was taken. A failure between the push and the pop
-# — a merge conflict is the one that fired — would strand it, and the
-# next run would stash ON TOP, which is how one stranded edit becomes
-# two nobody can attribute. The handler is idempotent, so the normal
-# path calls it and the trap finds nothing left to do.
-restore_main() {
-    [ -n "$stashed" ] || return 0
-    stashed=""
-    if git stash pop -q 2>/dev/null; then
-        echo "integrate: main's uncommitted edits restored (they were never committed)"
-    else
-        echo "integrate: COULD NOT restore main's uncommitted edits — another session's"
-        echo "integrate:   work is the newest entry in \`git stash list\`, named"
-        echo "integrate:   \"edits another session left on main's working tree\"."
-        echo "integrate:   Recover it with \`git stash pop\` once this tree is clean."
-    fi
+# THE INTEGRATION HAPPENS IN A WORKTREE OF ITS OWN, BORN CLEAN. Main's
+# primary worktree carries other campaigns' live uncommitted edits, and
+# this script used to STASH them around the merge — a debt paid on every
+# exit path, holding work whose owner did not know it was taken. It
+# never lost any; it was one conflict away from doing so.
+#
+# AND THE REF IS ADVANCED FROM THE PRIMARY, NEVER BEHIND ITS BACK.
+# `git update-ref` moves the branch pointer and leaves the working tree
+# where it was, so every file the merge ADDS reads as DELETED in the
+# primary — `D path` in `git status` — and the next ordinary commit
+# there removes it. Tested; that is worse than the stash it replaces,
+# because a stash can strand work while this silently stages its
+# removal. `git merge --ff-only` from the primary materialises the
+# files, keeps uncommitted edits that do not collide, and REFUSES when
+# they would.
+integ="$(dirname "$root")/avra-integrate-$lane"
+drop_integ() {
+    [ -d "$integ" ] || return 0
+    git -C "$main" worktree remove --force "$integ" 2>/dev/null ||
+        echo "integrate: the integration worktree is still at $integ"
 }
-trap restore_main EXIT INT TERM
+trap drop_integ EXIT INT TERM
 
-[ -z "$(git status --porcelain --untracked-files=no)" ] || { git stash push -q -m "edits another session left on main's working tree"; stashed=1; }
+git -C "$main" worktree add --detach -q "$integ" main ||
+    { echo "integrate: could not make an integration worktree at $integ"; exit 1; }
+cd "$integ"
+echo "integrate: integrating in $integ (main's primary is untouched)"
+
 # the merge is titled by what landed: the message when this run
 # committed, else the lane's last subject
 [ -n "$committed" ] && title="$(head -1 "$msg")" || title="$(git -C "$worktree" log -1 --format=%s)"
 git merge --no-ff -q "lane/$lane" -m "merge: lane $lane — $(echo "$title" | cut -c1-100)"
-restore_main
 echo "integrate: merged as $(git log -1 --format=%h)"
 
 # The lane's product reads the merged tree BY CONSTRUCTION: the lane was rebased onto
@@ -221,7 +226,26 @@ git diff --quiet --cached -- bootstrap/seed.ll && echo "integrate: the seed is u
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01XXBDccuDA8Ntk55RXKedD2"
-echo "integrate: main at $(git log -1 --format=%h), fixed point and seed cycle hold"
+echo "integrate: integrated at $(git log -1 --format=%h), fixed point and seed cycle hold"
+
+# THE PRIMARY IS FAST-FORWARDED, NOT POINTED. `--ff-only` moves the
+# branch AND the files together, keeps uncommitted edits that do not
+# collide, and refuses when they would — leaving the integration
+# worktree standing so nothing is lost and a person can look.
+landed="$(git rev-parse HEAD)"
+git -C "$main" merge --ff-only -q "$landed" || {
+    echo "integrate: main's PRIMARY worktree would not fast-forward — nothing moved there"
+    echo "integrate:   its uncommitted edits collide with what landed, or it is not on main."
+    echo "integrate:   The integration is COMPLETE and standing at $integ ($landed);"
+    echo "integrate:   settle the primary and \`git merge --ff-only $landed\` it by hand."
+    git -C "$main" status --short | head -12
+    trap - EXIT INT TERM
+    exit 1
+}
+# the primary keeps a compiler that predates its own HEAD otherwise
+cp build/avra "$main/build/avra"
+codesign -f -s - "$main/build/avra" 2>/dev/null || true
+echo "integrate: main at $(git -C "$main" log -1 --format=%h), its compiler and files with it"
 
 cd "$worktree" && git rebase -q main && echo "integrate: lane/$lane rebased onto main"
 # the lane's binary must read the tree it now sits on: a rebase past
