@@ -122,7 +122,6 @@ once fn close() -> Bytes { "close".bytes() }
 once fn keep_alive() -> Bytes { "keep-alive".bytes() }
 once fn continue_100() -> Bytes { "100-continue".bytes() }
 
-fn is_line_end(c: int) -> bool { c == byte("\r") || c == byte("\n") }
 fn is_ows(c: int) -> bool { c == byte(" ") || c == byte("\t") }
 
 // ── The head ────────────────────────────────────────────────────
@@ -192,7 +191,9 @@ fn request_line(buf: Bytes, start: int, mark: int, limits: Limits) -> Framed {
     if verb_end == start || buf.at(verb_end) != byte(" ") { return .Refused(.RequestLine) }
     let t_lo = verb_end + 1
     let t_end = buf.run(t_lo, target_char())
-    if t_end == t_lo || buf.at(t_end) != byte(" ") { return .Refused(if is_line_end(buf.at(t_end)) { .LineEnd } else { .RequestLine }) }
+    // the head's line ends were judged whole before this ran, so a
+    // target stopping at a CR is a line of two words, not a torn end
+    if t_end == t_lo || buf.at(t_end) != byte(" ") { return .Refused(.RequestLine) }
     let v_lo = t_end + 1
     let eol = buf.index_of(crlf(), v_lo)
     if eol - start > limits.line { return .Refused(.LineLength) }

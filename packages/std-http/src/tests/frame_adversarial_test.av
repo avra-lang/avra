@@ -1,0 +1,197 @@
+// THE FRAMER UNDER ATTACK, class by class. frame_test.av walks the
+// framing-laws paper row by row; this file holds what a red team
+// found by enumerating the SURFACE — the N=0 and N=1 of every list,
+// each word of the request line deleted and duplicated, each line end
+// torn, each octet class crossed.
+//
+// A REFUSAL NAMES THE LAW IT BROKE, NOT A LAW THAT HAPPENED TO FIRE.
+// `status_of` collapses most of these to 400, so an assertion on the
+// status would pass while the arm named the wrong rule; every `then`
+// here names the ARM.
+use @std.http.frame.{framed, limits, Framed, Refusal, Method, Body, Head, status_of}
+use @std.text.{from_codepoint}
+
+fn fa_nul() -> string { from_codepoint(0) }
+
+// ── Fixtures ────────────────────────────────────────────────────
+
+fn fa_verdict(b: Bytes) -> string {
+    match framed(b, 0, 0, limits()) {
+        .Complete(h) -> "complete ${h.fields.length} ${h.end}",
+        .Partial -> "partial",
+        .Refused(why) -> "refused",
+    }
+}
+
+fn fa_law(b: Bytes) -> Refusal? {
+    match framed(b, 0, 0, limits()) {
+        .Refused(why) -> why,
+        .Partial -> null,
+        .Complete(_) -> null,
+    }
+}
+
+fn fa_refuses(src: string, want: Refusal) -> bool { fa_law(src.bytes()) == want }
+fn fa_partial(src: string) -> bool { fa_verdict(src.bytes()) == "partial" }
+fn fa_frames(src: string) -> bool { fa_law(src.bytes()) == null && !fa_partial(src) }
+
+/// A 1.1 request line with a Host, then `more` lines, then the blank
+/// line — the same fixture frame_test.av uses.
+fn fa_req(more: string) -> string { "GET / HTTP/1.1\r\nHost: a\r\n${more}\r\n" }
+
+spec "@std.http frame adversarial" {
+    given "degenerate shapes" {
+        then "an empty buffer is partial, never a refusal" { fa_partial("") }
+        then "one octet of a method is partial" { fa_partial("G") }
+        then "a lone CR is partial, because its LF may be the next read" { fa_partial("\r") }
+        then "a lone LF is partial for the same reason" { fa_partial("\n") }
+        then "a lone NUL is partial" { fa_verdict(fa_nul().bytes()) == "partial" }
+        then "a blank line alone is partial — one empty line before the request line is ignored" {
+            fa_partial("\r\n\r\n")
+        }
+        then "TWO empty lines are one too many, and the request line is what is missing" {
+            fa_refuses("\r\n\r\n" + fa_req(""), .RequestLine)
+        }
+        then "a request with no fields at all is refused for the Host it owes" {
+            fa_refuses("GET / HTTP/1.1\r\n\r\n", .Host)
+        }
+        then "and HTTP/1.0 owes none" { fa_frames("GET / HTTP/1.0\r\n\r\n") }
+        then "a field with an empty value frames — an empty value is a value" {
+            fa_verdict(fa_req("X:\r\n").bytes()) == "complete 2 31"
+        }
+        then "a value of only OWS is an empty value, not an absence" {
+            fa_verdict(fa_req("X:   \r\n").bytes()) == "complete 2 34"
+        }
+    }
+
+    given "the request line, word by word" {
+        then "ONE WORD IS NOT A REQUEST LINE" { fa_refuses("GET\r\nHost: a\r\n\r\n", .RequestLine) }
+        then "TWO WORDS ARE NOT EITHER, and the law is the line's rather than its ends'" {
+            fa_refuses("GET /\r\nHost: a\r\n\r\n", .RequestLine)
+        }
+        then "a method and a version with no target is the same law" {
+            fa_refuses("GET HTTP/1.1\r\nHost: a\r\n\r\n", .RequestLine)
+        }
+        then "a fourth word is read as the version and refused as one" {
+            fa_refuses("GET / x HTTP/1.1\r\nHost: a\r\n\r\n", .Version)
+        }
+        then "and a word AFTER the version is refused as one too" {
+            fa_refuses("GET / HTTP/1.1 x\r\nHost: a\r\n\r\n", .Version)
+        }
+        then "no words at all is the line's law" { fa_refuses(" \r\nHost: a\r\n\r\n", .RequestLine) }
+        then "a leading space is not a method" { fa_refuses(" GET / HTTP/1.1\r\nHost: a\r\n\r\n", .RequestLine) }
+        then "A METHOD IS A TOKEN AND CASE IS ITS OWN: a lowercase get is Other, not Get" {
+            fa_method_of("get / HTTP/1.1\r\nHost: a\r\n\r\n") == Method.Other
+        }
+        then "and an unknown method frames as Other rather than refusing" {
+            fa_method_of("GETX / HTTP/1.1\r\nHost: a\r\n\r\n") == Method.Other
+        }
+        then "a target may carry a query" { fa_frames("GET /a?b=c HTTP/1.1\r\nHost: a\r\n\r\n") }
+        then "A FRAGMENT NEVER TRAVELS" { fa_refuses("GET /a#b HTTP/1.1\r\nHost: a\r\n\r\n", .Target) }
+        then "and one behind a query does not either" {
+            fa_refuses("GET /a?b=c#d HTTP/1.1\r\nHost: a\r\n\r\n", .Target)
+        }
+        then "a NUL is not a target octet, so the line ends where it sits" {
+            fa_law(("GET /a" + fa_nul() + "b HTTP/1.1\r\nHost: a\r\n\r\n").bytes()) == Refusal.RequestLine
+        }
+    }
+
+    given "line ends, each torn" {
+        then "a CR with no LF in the request line is refused" {
+            fa_refuses("GET / HTTP/1.1\rHost: a\r\n\r\n", .LineEnd)
+        }
+        then "an LF with no CR is refused" { fa_refuses("GET / HTTP/1.1\nHost: a\r\n\r\n", .LineEnd) }
+        then "a head terminated by bare LFs throughout is refused" {
+            fa_refuses("GET / HTTP/1.1\nHost: a\n\n", .LineEnd)
+        }
+        then "a head terminated by bare CRs is refused" {
+            fa_refuses("GET / HTTP/1.1\rHost: a\r\r", .LineEnd)
+        }
+        then "a bare LF closing the head is HELD, because the CR may be the next read" {
+            fa_partial("GET / HTTP/1.1\r\nHost: a\r\n\n")
+        }
+    }
+
+    given "field lines, position by position" {
+        then "a line with no colon is not a field" { fa_refuses(fa_req("XY\r\n"), .FieldName) }
+        then "an empty name is not a token" { fa_refuses(fa_req(": v\r\n"), .FieldName) }
+        then "a space before the colon is not part of the name" { fa_refuses(fa_req("X : v\r\n"), .FieldName) }
+        then "OBS-FOLD IS NOT A CONTINUATION, it is a line with no name" {
+            fa_refuses(fa_req("X: 1\r\n  cont\r\n"), .FieldName)
+        }
+        then "a NUL in a value is not visible ASCII" {
+            fa_law(("GET / HTTP/1.1\r\nHost: a\r\nX: a" + fa_nul() + "b\r\n\r\n").bytes()) == Refusal.FieldValue
+        }
+        then "a NUL in a name is not a token octet" {
+            fa_law(("GET / HTTP/1.1\r\nHost: a\r\nX" + fa_nul() + "Y: 1\r\n\r\n").bytes()) == Refusal.FieldName
+        }
+        then "A COLON AFTER THE FIRST BELONGS TO THE VALUE" {
+            fa_verdict(fa_req("X:Y: 1\r\n").bytes()) == "complete 2 35"
+        }
+        then "an ordinary field repeated is two fields, which is not the framer's quarrel" {
+            fa_verdict(fa_req("X: 1\r\nX: 2\r\n").bytes()) == "complete 3 39"
+        }
+    }
+
+    given "content-length, every spelling" {
+        then "zero is a length" { fa_length_of("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\n\r\n") == 0 }
+        then "leading zeros are read as the number" {
+            fa_length_of("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0005\r\n\r\n") == 5
+        }
+        then "a negative one is not 1*DIGIT" {
+            fa_refuses("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: -1\r\n\r\n", .ContentLength)
+        }
+        then "NINETEEN DIGITS ARE REFUSED AS A NUMBER, never wrapped" {
+            fa_refuses("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 9999999999999999999\r\n\r\n", .ContentLength)
+        }
+        then "and eighteen are read, then refused for the bound they pass" {
+            fa_refuses("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 999999999999999999\r\n\r\n", .BodyLength)
+        }
+        then "an empty value is not a number" {
+            fa_refuses("POST / HTTP/1.1\r\nHost: a\r\nContent-Length:\r\n\r\n", .ContentLength)
+        }
+        then "TWO THAT AGREE ARE STILL TWO — merging equal values is a MAY, and this is a server" {
+            fa_refuses("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n", .ContentLength)
+        }
+    }
+
+    given "transfer-encoding against content-length" {
+        then "chunked beside a length is the smuggling shape and is refused" {
+            fa_refuses("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n", .TransferEncoding)
+        }
+        then "chunked alone frames the body by chunks" {
+            fa_length_of("POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n") == 0 - 2
+        }
+        then "identity is a coding this server does not implement" {
+            fa_refuses("POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: identity\r\n\r\n", .Coding)
+        }
+        then "an empty coding list is not a list" {
+            fa_refuses("POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding:\r\n\r\n", .TransferEncoding)
+        }
+    }
+}
+
+fn fa_method_of(src: string) -> Method? {
+    match framed(src.bytes(), 0, 0, limits()) {
+        .Complete(h) -> h.method,
+        .Partial -> null,
+        .Refused(_) -> null,
+    }
+}
+
+/// The declared length, -1 for no body and -2 for chunked.
+fn fa_length_of(src: string) -> int {
+    match framed(src.bytes(), 0, 0, limits()) {
+        .Complete(h) -> fa_body_length(h.body),
+        .Partial -> 0 - 3,
+        .Refused(_) -> 0 - 4,
+    }
+}
+
+fn fa_body_length(b: Body) -> int {
+    match b {
+        .Length(n) -> n,
+        .Chunked -> 0 - 2,
+        .None -> 0 - 1,
+    }
+}
