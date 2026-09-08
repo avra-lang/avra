@@ -1,10 +1,10 @@
 // The red team's survivors, by attack class: degenerate ports and
-// hosts, a timeout that is a budget and never a sentinel, verbs on a
-// descriptor that is gone, the poller's edges, and the empty write.
-// Every refusal names its verb and its subject in the platform's
-// words. Wrong types in every slot were attacked and refuse at check
-// time; a package spec cannot pin a compile refusal, so they are
-// recorded in the working log.
+// hosts, a timeout that is a budget and never a sentinel, degenerate
+// SIZES at the read, verbs on a descriptor that is gone, the poller's
+// edges, and the empty write. Every refusal names its verb and its
+// subject in the platform's words. Wrong types in every slot were
+// attacked and refuse at check time; a package spec cannot pin a
+// compile refusal, so they are recorded in the working log.
 use @std.net.{listen, listen_all, connect, poller, Listener, Conn, Poller, Read, Interest, NetError}
 use @std.time.{secs, ms}
 use @std.errors.{Error}
@@ -63,9 +63,50 @@ fn empty_writes_and_reads() -> Result<bool, NetError> {
     let pr = attacked()?
     let empty = pr.client.write("".bytes(), 0)?
     let at_end = pr.client.write("abc".bytes(), 3)?
-    let zero = pr.server.read(0)?
     let huge = pr.server.read(100000000)?
-    .Ok(empty == 0 && at_end == 0 && zero is .Pending && huge is .Pending)
+    .Ok(empty == 0 && at_end == 0 && huge is .Pending)
+}
+
+fn taken(r: Read) -> int {
+    match r {
+        .Data(b) -> b.length,
+        .Eof -> -1,
+        .Pending -> -2,
+    }
+}
+
+/// A READ OF ZERO TAKES NOTHING OFF THE WIRE. The size is the
+/// caller's arithmetic — `read(want - have)` reaches zero the turn a
+/// frame is complete — so a zero that reads one byte steals the first
+/// byte of the next message and nothing says so. The empty answer is
+/// a present, empty landing, told apart from EOF and from a wait.
+fn a_read_of_zero_takes_nothing() -> Result<bool, NetError> {
+    let pr = attacked()?
+    pr.client.write("abcdef".bytes(), 0)?
+    pr.p.watch(pr.server.fd, .Read)?
+    pr.p.wait(secs(2))?
+    let zero = taken(pr.server.read(0)?)
+    let rest = taken(pr.server.read(64)?)
+    .Ok(zero == 0 && rest == 6)
+}
+
+/// A NEGATIVE SIZE IS A BOUND, and a bound is refused by name rather
+/// than clamped into a read of one byte.
+fn a_negative_read_is_refused() -> Result<bool, NetError> {
+    let pr = attacked()?
+    let said = words(pr.server.read(0 - 5))
+    .Ok(said.starts_with("read 127.0.0.1:") && said.ends_with(": Invalid argument"))
+}
+
+/// THE POLLER'S BUDGET IS NEVER A SENTINEL EITHER. `connect` refuses
+/// a negative one by name; the wait read it as "forever" and blocked
+/// with nothing watched, which is the one thing an event loop's own
+/// verb must not do — and absence already spells forever.
+fn a_negative_budget_never_waits() -> Result<bool, NetError> {
+    let p = poller()?
+    let said = words(p.wait(ms(0 - 1)))
+    p.close()?
+    .Ok(said == "wait poller within -1 ms: Invalid argument")
 }
 
 spec "std.net adversarial" {
@@ -102,6 +143,11 @@ spec "std.net adversarial" {
         then "removing the unwatched is fine, watching a bad descriptor refuses, and a closed poller refuses to wait" { holds(poller_edges()) }
     }
     given "the empty write and the empty read" {
-        then "an empty write and a write at the end take nothing; a read of zero or a hundred million bytes is pending" { holds(empty_writes_and_reads()) }
+        then "an empty write and a write at the end take nothing; a read of a hundred million bytes is pending" { holds(empty_writes_and_reads()) }
+    }
+    given "degenerate sizes at the read" {
+        then "a read of zero answers an empty landing and leaves every byte on the wire" { holds(a_read_of_zero_takes_nothing()) }
+        then "a negative size is refused by name, never clamped into a read of one" { holds(a_negative_read_is_refused()) }
+        then "a negative budget at the wait is refused rather than read as forever" { holds(a_negative_budget_never_waits()) }
     }
 }

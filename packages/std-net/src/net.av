@@ -112,6 +112,15 @@ fn no_host<T>(verb: string, host: string, port: int) -> Result<T, NetError> {
     .Err(NetError { verb: verb, subject: "\"${host}\":${port}", errno: avra_errno_invalid() })
 }
 
+/// A BUDGET ALREADY SPENT: present and negative. Absence is not spent
+/// — it is the wait that carries no budget at all, and forever is
+/// what it means.
+fn spent(ms: int?) -> bool { (ms ?? 0) < 0 }
+
+fn no_budget(ms: int) -> Result<List<Event>, NetError> {
+    failed("wait", "poller within ${ms} ms", -avra_errno_invalid())
+}
+
 /// A readiness queue.
 export fn poller() -> Result<Poller, NetError> {
     let fd = avra_net_poll_new()
@@ -202,10 +211,14 @@ impl Poller {
     }
 
     /// The descriptors ready now, waiting up to `timeout` for the
-    /// first — null waits until one is. An interrupted wait answers
-    /// none.
+    /// first — null waits until one is. The budget is never a
+    /// sentinel here either: a negative one is refused rather than
+    /// read as forever, which absence already spells. An interrupted
+    /// wait answers none.
     fn wait(timeout: Duration?) -> Result<List<Event>, NetError> {
-        let n = avra_net_wait(self.fd, timeout?.ms ?? -1)
+        let budget = timeout?.ms
+        if spent(budget) { return no_budget(budget!) }
+        let n = avra_net_wait(self.fd, budget ?? -1)
         if n < 0 { return failed("wait", "poller", n) }
         .Ok([event_at(i) for i in 0..n])
     }
