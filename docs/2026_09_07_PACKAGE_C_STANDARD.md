@@ -1251,6 +1251,25 @@ address zero. And reading back, zero is ABSENCE and not the number
 nought: a program that took `0` for a failed open would carry a
 non-null handle to a database that never opened.
 
+**THE RED TEAM OVER THE INOUT FRAME.** The attack I expected to find
+something was ALIASING — one `mut` binding handed to TWO seats of one
+call. The frame gives each seat its own storage, so it would pass two
+DIFFERENT addresses where native passes one, and the two engines would
+disagree about which write survives. It cannot be built: the language
+refuses it at check time with F2048, "`same` is handed `mut` twice in
+one call". The divergence has no program. That is a survivor worth
+writing down, because the frame does NOT defend against it and does
+not need to — the defence is upstream, and knowing which layer holds a
+property is how it stays held.
+
+The rest of the set: every width the column can name (`i32` negative,
+`u32` at max, `i64`, `ptr` including null), a cell the callee never
+writes (the seeded value survives, which is the inout half), a call
+refused before the frame runs (cells are not settled, because the
+callee never ran), and a stale cell from an earlier call (`reset`
+zeroes the cell storage as it zeroes the slots). No divergence in any
+of them.
+
 **WHAT IT DELIVERS.** `corpus/sqlite` and `corpus/sqlite-refusals`
 lose `native-only`: `eval == native == expected`. Every corpus
 directory but `corpus/bytes-header` is differential now, and that one
