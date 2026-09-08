@@ -264,12 +264,20 @@ def declaring_sources():
     # programs, where no source grep could reach it. Reading the
     # GENERATOR is order-independent, where scanning its output would
     # depend on `make traps` having run first.
+    # AND `tools/` HOLDS `.av` TOO, not only the generators. A bench
+    # program there declares externs like any other program; the walk
+    # had `tools/*.sh` and stopped, because the person who widened it
+    # was thinking about heredocs rather than about the directory.
+    # THIS LIST IS ENUMERATED AND STAYS THAT WAY. Deriving it — walking
+    # the tree for every `.av` — was measured and is WRONG here: it
+    # finds 72 more declaring files and every one of them is inside
+    # `.claude/worktrees/agent-*/`, three stale copies of this whole
+    # tree. The keeper would then check other agents' snapshots and
+    # report their problems as main's. A hand-kept list that has been
+    # wrong three times is still the right shape when the alternative
+    # reads someone else's tree.
     return sorted(glob.glob(os.path.join(ROOT, "packages/**/*.av"), recursive=True)
                   + glob.glob(os.path.join(ROOT, "corpus/**/*.av"), recursive=True)
-                  # `tools/` DECLARES TOO: a bench is a package like any
-                  # other, and `tools/bench/frame_head` names
-                  # `avra_now_ns`. A root the keeper does not walk is a
-                  # crossing it reports nothing about.
                   + glob.glob(os.path.join(ROOT, "tools/**/*.av"), recursive=True)
                   + glob.glob(os.path.join(ROOT, "tools/*.sh")))
 
