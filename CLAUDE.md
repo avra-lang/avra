@@ -1349,7 +1349,13 @@ Runtime facts, ours to ratify:
 - A CHANGE THE COMPILER MUST THEN READ REACHES THE PRODUCT ON THE
   SECOND BUILD — codegen is one instance, the FRONT END is another,
   and the wording used to say only the first. `make avra`
-  compiles the source with the STANDING binary, so a product built
+  compiles the source with the STANDING binary — ONE `make avra`
+  ADVANCES THE COMPILER BY EXACTLY ONE GENERATION, because the recipe
+  is one `./avra build packages/cli` and one `cp` over `build/avra`
+  while the shim execs the binary already on disk (Makefile:59-64,
+  `avra`:19-24). THE GENERATION IS THE LAW AND "THE SECOND BUILD" IS
+  ITS CONSEQUENCE: change the recipe and the count goes stale while
+  the rule does not. So a product built
   right after merging a memory-pass fix carries the fix as SOURCE
   but its own body was compiled by the pre-fix pass — it runs with
   the bug it knows how to fix. Lane A's loop-condition fix merged
