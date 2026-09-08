@@ -1232,7 +1232,26 @@ Runtime facts, ours to ratify:
   beside it, no gate runs in the background, and every suite, gate
   or whole-package check runs through the watchdog, which holds the
   machine-wide lock, kills the tree past its cap and prints the
-  peak. `./avra` takes that lock ITSELF for any package-scale run
+  peak.
+  THE LOCK IS THE LAW AND THE FOREGROUND IS ITS MECHANISM. "One
+  heavy process at a time" means ONE PROCESS HOLDING THE WATCHDOG'S
+  LOCK, and every heavy run is LAUNCHED in the foreground under it.
+  When the harness moves a launched run to the background past its
+  own window — `make gate` and `tools/integrate.sh` both outgrew a
+  600s limit — that is NOT a violation: the lock still serialises,
+  the cap still kills, the peak still prints, and three
+  watchdog-wrapped runs were measured queued behind it with exactly
+  one executing. WHAT IS FORBIDDEN IS WHAT THE PANICS ACTUALLY WERE:
+  a heavy process OUTSIDE the lock, or one launched into the
+  background IN ORDER TO RUN BESIDE another. Both panics are that
+  and neither is a backgrounded watchdog — the first was three
+  CONCURRENT `make test` runs, the second a `build/avra test`
+  launched in the background to be sampled BESIDE two lanes' gated
+  steps, with lane B's bare `./avra test <pkg>` the same night as
+  the other bypass. Read the rule as the lock and it has never
+  changed; read it as the foreground and a harness limit gets to
+  shape the tree's proof.
+  `./avra` takes that lock ITSELF for any package-scale run
   (an argument that is a directory), and a step does not start
   under a 20% memory floor — so NOTHING runs `build/avra` directly,
   and a PROFILE runs under the lock too: `AVRA_SAMPLE=12 sh
@@ -1324,10 +1343,18 @@ Runtime facts, ours to ratify:
   chore. And the failed link DESTROYS `build/avra`, because bootstrap
   links straight at it (`-o build/avra`), so `cp build/avra
   build/avra.pre` is the whole protocol here too — and RUNNING OUT OF
-  DISK is the same destruction by a second cause, so `df -h
-  /System/Volumes/Data` before a bootstrap when the volume is tight
-  (2026-09-07: 4.8 GiB free at 100%, one lane already stopped on
-  ENOSPC). It is the
+  DISK is the same destruction by a second cause (2026-09-07: a lane
+  stopped on ENOSPC).
+  BUT THE FREE-SPACE NUMBER BREATHES, so ONE `df` READING IS NOT A
+  DECISION. It went 4.7 GiB -> 651 MiB -> 3.1 GiB -> 2.1 GiB in
+  minutes with NOTHING DELETED: macOS mints and releases swapfiles
+  on the data volume in gigabyte steps under memory pressure, and
+  `sysctl vm.swapusage` read 6.5 GB of 6.9 GB in use at the trough.
+  So a low reading may be a swing rather than a budget, and CLEANING
+  AT A TROUGH treats a symptom that is not there. What actually
+  protects the binary is `cp build/avra build/avra.pre` and FEWER
+  CONCURRENT HEAVY PROCESSES — the same serial discipline the
+  watchdog exists for, which is also what shrinks the swings. It is the
   shadowing law one mechanism over: a target green because a
   DIFFERENT mechanism was doing the work. (The @std/io instance is
   the HTTP lane's, ATTRIBUTED — lane/http c8af70b, not in this tree;
@@ -1335,7 +1362,13 @@ Runtime facts, ours to ratify:
 - A CHANGE THE COMPILER MUST THEN READ REACHES THE PRODUCT ON THE
   SECOND BUILD — codegen is one instance, the FRONT END is another,
   and the wording used to say only the first. `make avra`
-  compiles the source with the STANDING binary, so a product built
+  compiles the source with the STANDING binary — ONE `make avra`
+  ADVANCES THE COMPILER BY EXACTLY ONE GENERATION, because the recipe
+  is one `./avra build packages/cli` and one `cp` over `build/avra`
+  while the shim execs the binary already on disk (Makefile:59-64,
+  `avra`:19-24). THE GENERATION IS THE LAW AND "THE SECOND BUILD" IS
+  ITS CONSEQUENCE: change the recipe and the count goes stale while
+  the rule does not. So a product built
   right after merging a memory-pass fix carries the fix as SOURCE
   but its own body was compiled by the pre-fix pass — it runs with
   the bug it knows how to fix. Lane A's loop-condition fix merged

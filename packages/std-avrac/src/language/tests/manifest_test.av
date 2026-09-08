@@ -87,6 +87,31 @@ spec "language/manifest" {
         then "a profile name outside its charset" { speaks(packaged("[profile.Fast]\nopt_level = 2\n"), "manifest.bad_profile") }
         then "a line that is not TOML" { speaks(packaged("name\n"), "manifest.syntax") }
     }
+    given "[link] is typed — a dependency cannot spell a clang option" {
+        then "objects, search and libs read as words" {
+            let m = read(packaged("[link]\nobjects = [\"a.o\"]\nsearch = [\"/opt/lib\"]\nlibs = [\"m\", \"pthread\"]\n"))
+            m.objects.join(",") == "a.o" && m.search.join(",") == "/opt/lib" && m.libs.join(",") == "m,pthread"
+        }
+        then "a `-`-leading token in libs is refused — the row spells the NAME" {
+            speaks(packaged("[link]\nlibs = [\"-lm\"]\n"), "manifest.link_option")
+        }
+        then "a `-`-leading token in search is refused" {
+            speaks(packaged("[link]\nsearch = [\"-L/opt\"]\n"), "manifest.link_option")
+        }
+        then "a `-`-leading token in objects is refused" {
+            speaks(packaged("[link]\nobjects = [\"-Wl,--wrap=malloc\"]\n"), "manifest.link_option")
+        }
+        then "`flags` is no longer a [link] key" {
+            speaks(packaged("[link]\nflags = [\"-lm\"]\n"), "manifest.unknown_key")
+        }
+        then "[link.raw] reads its flags — the root's escape hatch" {
+            read(packaged("[link.raw]\nflags = [\"-Wl,-dead_strip\"]\n")).raw.join(",") == "-Wl,-dead_strip"
+        }
+        then "[link.raw] is not refused at the manifest layer — only the workspace knows the root" {
+            read(packaged("[link.raw]\nflags = [\"-Wl,-dead_strip\"]\n")).voices.is_empty()
+        }
+    }
+
     given "the unknown warns" {
         then "an unknown section is a warning that names it" {
             let m = read(packaged("[grants]\nnetwork = []\n"))
@@ -98,6 +123,11 @@ spec "language/manifest" {
         }
     }
     given "rendered" {
+        then "a `[link]` row spelling an option renders with its code and remedy" {
+            let text = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nlibs = [\"-lm\"]\n"
+            let m = read(text)
+            render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).starts_with("error[F4015]: `libs` takes library names, and `-lm` spells a linker option\n  ╭─[avra.toml:6:1]")
+        }
         then "a refusal points at its line in the manifest" {
             let text = "[package]\nname = \"app\"\nversion = \"1.2\"\n"
             let m = read(text)

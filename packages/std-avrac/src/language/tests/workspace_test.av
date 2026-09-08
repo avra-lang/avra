@@ -40,16 +40,29 @@ fn spec_package(toml: string) -> Workspace {
     new_workspace(memory_host(fs, ws_names().concat(["/w/avra.toml"])), "/w", avra())
 }
 
-/// A manifest whose link flag is a shell command — what a
-/// dependency could carry.
+/// A manifest whose raw link option is a shell command — the
+/// program's own hatch, carrying the worst word it could.
 fn poisoned_manifest() -> string {
-    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nflags = [\"; touch /tmp/PWNED ;\", \"-lm\"]\n"
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nlibs = [\"m\"]\n\n[link.raw]\nflags = [\"; touch /tmp/PWNED ;\"]\n"
 }
 
-/// A manifest whose flags carry environment holes — one that fills
-/// (PATH is always set) and one that names nothing.
+/// A manifest whose search rows carry environment holes — one that
+/// fills (PATH is always set) and one that names nothing.
 fn holed_manifest() -> string {
-    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nflags = [\"-L$" + "{PATH}\", \"$" + "{AVRA_NO_SUCH_VAR_}\"]\n"
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[link]\nsearch = [\"$" + "{PATH}\", \"$" + "{AVRA_NO_SUCH_VAR_}\"]\n"
+}
+
+/// A root and one dependency, where the DEPENDENCY asks for raw
+/// linker options and for a library by name. Nobody reads a
+/// transitive manifest; this is what it could carry.
+fn borrowing_workspace() -> Workspace {
+    let files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@corpus/dep\" = { path = \"vendor/dep\" }\n",
+        "/w/src/main.av": "use @corpus.dep.{d}\nd(1)\n",
+        "/w/vendor/dep/avra.toml": "[package]\nname = \"@corpus/dep\"\nversion = \"0.1.0\"\n\n[link]\nlibs = [\"m\"]\n\n[link.raw]\nflags = [\"-o\", \"/tmp/PWNED\"]\n",
+        "/w/vendor/dep/src/dep.av": "export fn d(n: int) -> int {\n    n\n}\n",
+    }
+    new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/dep/avra.toml", "/w/vendor/dep/src/dep.av"]), "/w", avra())
 }
 
 fn main_report(text: string) -> string {
@@ -163,13 +176,35 @@ spec "language/workspace" {
             let words = link_words(spec_package(poisoned_manifest()))
             words.contains("; touch /tmp/PWNED ;") && words.contains("-lm") && words.length == 2
         }
-        then "an environment hole in a flag is filled from the environment" {
+        then "an environment hole in a search row is filled from the environment" {
             let words = link_words(spec_package(holed_manifest()))
             !words.any(it.contains("$" + "{")) && words.any(it.starts_with("-L/"))
         }
         then "a hole naming nothing leaves no empty word behind" {
             let words = link_words(spec_package(holed_manifest()))
             !words.any(it.is_empty()) && words.length == 1
+        }
+        then "a hole naming nothing leaves no BARE `-L` either — it would eat the word after it" {
+            !link_words(spec_package(holed_manifest())).any(it == "-L")
+        }
+        then "the option letter is ours: a library is named, never spelled as an option" {
+            link_words(spec_package(poisoned_manifest())).contains("-lm")
+        }
+    }
+    given "a dependency cannot put an option on the linker's line" {
+        then "the dependency's raw options never reach the words" {
+            let words = link_words(borrowing_workspace())
+            !words.contains("-o") && !words.contains("/tmp/PWNED")
+        }
+        then "its TYPED row is still honoured — the rule refuses options, not needs" {
+            link_words(borrowing_workspace()).contains("-lm")
+        }
+        then "and it is told, by name" {
+            let spoken = program(borrowing_workspace(), null).voices
+            spoken.any(it.kind == "manifest.borrowed_raw")
+        }
+        then "the root's own raw hatch still carries its word" {
+            link_words(spec_package(poisoned_manifest())).contains("; touch /tmp/PWNED ;")
         }
     }
     given "a case is selected by the path it MEANS, not the text typed" {

@@ -32,7 +32,7 @@ export type ToolRow = { name: string, from: Provenance, var: string?, default: s
 /// `deps_at` is where a new dependency line goes: after the last
 /// one, else after the `[dependencies]` header, else absent (the
 /// file has no such section yet).
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, flags: List<string>, tools: List<ToolRow> = [], voices: List<Diag> }
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, search: List<string>, libs: List<string>, raw: List<string>, tools: List<ToolRow> = [], voices: List<Diag> }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
@@ -44,7 +44,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
     r.unknowns()
     if !r.doc.has_section("package") {
         r.speak(refusal("manifest.no_package", r.at(0, 0), "a manifest declares its package — `[package]` is missing", "this manifest", "add `[package]` with `name` and `version`"))
-        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], flags: [], voices: r.voices }
+        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], voices: r.voices }
     }
     let name = r.word("name", "manifest.no_name", "a name — `name = \"@scope/name\"`")
     let version = r.word("version", "manifest.no_version", "a version — `version = \"0.1.0\"`")
@@ -54,7 +54,8 @@ export fn read_manifest(src: SourceFile) -> Manifest {
     Manifest {
         name: name, version: version,
         bin: r.target("bin", "src/main.av"), lib: r.target("lib", "src/lib.av"), excludes: r.excludes(),
-        objects: r.words_of("link", "objects"), flags: r.words_of("link", "flags"),
+        objects: r.linked("objects"), search: r.linked("search"), libs: r.linked("libs"),
+        raw: r.words_of("link.raw", "flags"),
         deps: r.dependencies("dependencies", false, name).concat(r.dependencies("dev-dependencies", true, name)),
         deps_at: r.deps_at(),
         tools: r.tools(),
@@ -83,7 +84,7 @@ fn is_number(s: string) -> bool {
 /// The sections a manifest may hold, and the keys each takes.
 fn known_section(name: string) -> bool {
     name == "package" || name == "bin" || name == "lib" || name == "dependencies" || name == "dev-dependencies" ||
-        name == "features" || name == "build" || name == "link" || name.starts_with("profile.") || is_process_section(name)
+        name == "features" || name == "build" || name == "link" || name == "link.raw" || name.starts_with("profile.") || is_process_section(name)
 }
 
 /// `[process]` and what hangs off it: the tools, each inline or as
@@ -99,12 +100,30 @@ fn is_tool_table(name: string) -> bool {
 fn known_key(section: string, key: string) -> bool {
     if section == "package" { return ["name", "version", "edition", "authors", "license", "description", "repository", "exclude"].contains(key) }
     if section == "bin" || section == "lib" { return key == "path" || key == "name" }
-    if section == "link" { return key == "objects" || key == "flags" }
+    if section == "link" { return key == "objects" || key == "search" || key == "libs" }
+    if section == "link.raw" { return key == "flags" }
     if section.starts_with("profile.") { return ["opt_level", "debug", "overflow_checks", "incremental", "coverage"].contains(key) }
     if section == "process" { return key == "max_capture" || key == "enforce" }
     if section == "process.env" { return key == "base" || key == "pass" || key == "set" }
     if is_tool_table(section) { return is_tool_key(key) }
     true
+}
+
+/// What a `[link]` row holds, in the words its refusal uses.
+fn link_shape(key: string) -> string {
+    match key {
+        "objects" -> "object files under the package root",
+        "search" -> "directories",
+        rest -> "library names",
+    }
+}
+
+fn link_help(key: string) -> string {
+    match key {
+        "objects" -> "write the path alone",
+        "search" -> "write the directory alone — the `-L` is ours to add",
+        rest -> "write the name alone — `m`, not `-lm`",
+    }
 }
 
 fn is_tool_key(key: string) -> bool {
@@ -287,6 +306,16 @@ impl Reader {
 
     /// A key's list of words — absent, or written as something else,
     /// is no words at all.
+    /// A `[link]` row's words, each refused if it spells a clang
+    /// OPTION where the row takes a name or a path.
+    fn linked(key: string) -> List<string> {
+        let words = self.words_of("link", key)
+        for w in words {
+            if w.starts_with("-") { self.speak(self.link_option(key, w)) }
+        }
+        words
+    }
+
     fn words_of(section: string, key: string) -> List<string> {
         let e: TomlEntry? = self.doc.entry(section, key)
         if e == null { return [] }
@@ -313,6 +342,12 @@ impl Reader {
 
     fn bad_version(version: string) -> Diag {
         refusal("manifest.bad_version", self.entry_at(self.doc.entry("package", "version")!), "a version is `MAJOR.MINOR.PATCH` — `${version}` is not", "here", null)
+    }
+
+    fn link_option(key: string, word: string) -> Diag {
+        refusal("manifest.link_option", self.entry_at(self.doc.entry("link", key)!),
+            "`${key}` takes ${link_shape(key)}, and `${word}` spells a linker option", "here",
+            "${link_help(key)} — `[link.raw]` carries an option, and only in the program's own manifest")
     }
 
     fn self_dependency(at: Loc?, key: string) -> Diag {
