@@ -118,8 +118,16 @@ export fn status(code: int) -> Response { Response { status: code } }
 /// that value; refusing at the crossing is what makes the
 /// reinterpretation impossible, where escaping would only move it.
 export fn wire(r: Response, keep_alive: bool, minor: int) -> Bytes {
-    written(if sendable(r) { r } else { status(500) }, keep_alive, minor)
+    written(as_sent(r), keep_alive, minor)
 }
+
+/// THE RESPONSE AS IT WILL BE WRITTEN — `r` when a peer could read
+/// it, the server's own 500 when not. EVERY reader of that wire asks
+/// THIS ONE VERB: `wire` writes it, and a HEAD's answer measures the
+/// body it must not send by it. A second reader that judged the
+/// HANDLER'S response instead would measure a body the wire does not
+/// carry and cut the head mid-field.
+export fn as_sent(r: Response) -> Response { if sendable(r) { r } else { status(500) } }
 
 fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
     let fields = ["${h.name}: ${h.value}\r\n" for h in r.headers].join("")

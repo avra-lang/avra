@@ -5,7 +5,7 @@
 use @std.net.{Listener, Conn, Poller, Read, NetError, listen, connect, poller}
 use @std.time.{ms, secs}
 use @std.http.frame.{limits, Limits}
-use @std.http.http.{Request, Response, text}
+use @std.http.http.{Request, Response, Header, text}
 use @std.http.server.{Server, Timing, served, timing}
 
 fn sized_echo(mut app: App, q: Request) -> Response {
@@ -241,7 +241,44 @@ fn replied_to(o: Conn) -> bool {
     }
 }
 
+/// A handler that answers a response NO PEER COULD READ, carrying a
+/// body: the wire is the server's 500 and the body is this one's, so
+/// anything measuring the handler's body against that wire cuts the
+/// head mid-field.
+fn splitting_echo(mut app: App, q: Request) -> Response {
+    app.hits = app.hits + 1
+    Response { status: 200, headers: [Header { name: "x", value: "1\r\nevil: 1" }], body: "hello".bytes() }
+}
+
+fn answered_500(sent: string) -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, App { hits: 0 }, splitting_echo, limits(), timing())?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let p = poller()?
+    p.watch(c.fd, .Read)?
+    mut pr = Pair { s: s, c: c, p: p }
+    let got = exchanged_bytes(pr, sent.bytes(), 1)?
+    .Ok((got.text() ?? "<not text>").replace("\r\n", "|"))
+}
+
+/// A network answer that must equal `want`.
+fn passes_with(r: Result<string, NetError>, want: string) -> bool {
+    match r {
+        .Ok(t) -> t == want,
+        .Err(_) -> false,
+    }
+}
+
 spec "std.http server adversarial" {
+    given "a handler that answers what no peer could read" {
+        then "A GET gets the server's own 500, whole" {
+            passes_with(answered_500("GET /a HTTP/1.1\r\nHost: h\r\n\r\n"), "HTTP/1.1 500 Internal Server Error|content-length: 0||")
+        }
+        then "AND SO DOES A HEAD — the body it strips is the WRITTEN response's, never the handler's" {
+            passes_with(answered_500("HEAD /a HTTP/1.1\r\nHost: h\r\n\r\n"), "HTTP/1.1 500 Internal Server Error|content-length: 0||")
+        }
+    }
+
     given "every split" {
         then "a request in one-byte reads is the unsplit verdict" { passes(one_byte_reads()) }
         then "a terminator torn at each of its seams completes, never refuses" { passes(torn_terminator()) }

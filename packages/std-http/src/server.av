@@ -23,7 +23,7 @@
 use @std.net.{Listener, Conn, Poller, Event, Interest, Read, NetError, poller}
 use @std.time.{Duration, now_ms, secs}
 use frame.{Head, Body, Method, Framed, Chunker, Chunked, Limits, framed, chunker, fed, status_of, limits}
-use http.{Request, Response, wire, status, read_size}
+use http.{Request, Response, wire, status, read_size, as_sent}
 
 /// The deadlines a server names: a head must complete within `head`
 /// of the first byte, a body must advance within `body` of its last
@@ -304,8 +304,14 @@ enum Progress {
 
 /// The response on the wire for a request: a HEAD's answer carries
 /// the body's length and none of its bytes.
+///
+/// IT MEASURES THE BODY OF THE RESPONSE THAT WAS WRITTEN, never the
+/// handler's — `wire` answers the server's own 500 for a response no
+/// peer could read, and measuring the handler's body against that
+/// wire cuts the head mid-field.
 fn wired(r: Response, keep: bool, head: Head) -> Bytes {
-    let whole = wire(r, keep, head.minor)
-    if head.method is .Head { return whole.slice(0, whole.length - r.body.length) }
+    let sent = as_sent(r)
+    let whole = wire(sent, keep, head.minor)
+    if head.method is .Head { return whole.slice(0, whole.length - sent.body.length) }
     whole
 }
