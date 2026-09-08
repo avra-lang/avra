@@ -1398,6 +1398,23 @@ visible to a reader of the document alone.
   one tells the next reader the question is settled. Lane A read the
   line and asked the question anyway. State a leave-alone's reason
   as something checkable, then check it.
+- A PAID TRIGGER IS PAID BY DELETION, not by a note beside its
+  replacement. §5.6.8 refused a `mut` seat and recorded the condition
+  that would change that; S2c fired it and the inout frame was
+  written. The refusal was REMOVED in the same commit rather than
+  left standing with "landed now" appended — a refusal that still
+  reads as current is the shape this tree keeps finding, and the
+  evidence it was paid is the code that replaced it, not a sentence
+  claiming so.
+- AND A DIRECTORY HELD BACK BY AN UNNAMED DEFECT IS THE
+  UNTESTED-INSTRUMENT SHAPE. `corpus/bytes-header` stayed
+  `native-only` after every other directory became differential, and
+  the reason was carried in a report as "an unrelated evaluator
+  defect". Naming it took one probe and found a CLASS rather than a
+  case: 14 row arms read a `Ptr` seat as text, and a `Bytes` fills
+  that seat legitimately, so `avra_str_trim` over octets answers 2
+  natively and an internal defect under the evaluator. "Unrelated"
+  was doing the work of a measurement.
 - WALL TIME ON A SHARED MACHINE MEASURES THE QUEUE. The same
   `make avra` took 503 s and 12 s within one hour on one tree, the
   difference being entirely whether another lane held the build lock.
