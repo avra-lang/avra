@@ -216,8 +216,17 @@ fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
 /// are not statuses — and every field a field the framer would frame.
 /// Public so a handler can ask before it answers.
 export fn sendable(r: Response) -> bool {
-    r.status >= 100 && r.status <= 999 && [writable(h) for h in r.headers].all(it) &&
-        ![names_one_of(h.name, reply_writes()) for h in r.headers].any(it)
+    r.status >= 100 && r.status <= 999 && fields_writable(r.headers, reply_writes())
+}
+
+/// EVERY FIELD A WRITER MAY WRITE: each one a field the framer would
+/// frame, and none of the ones the writer writes ITSELF. A second
+/// `content-length` on the wire is a length two readers disagree
+/// about, which is the whole of request smuggling — so the law is
+/// ONE, and a writer says only which fields it owns. The reply's
+/// writer and the request's each name their own list.
+export fn fields_writable(headers: List<Header>, written_by: List<Bytes>) -> bool {
+    headers.all((h) -> writable(h)) && !headers.any((h) -> names_one_of(h.name, written_by))
 }
 
 /// A FIELD LINE ON THE WIRE OBEYS THE FRAMER'S OWN LAW, or the two
@@ -238,13 +247,10 @@ export fn every_octet(s: string, class: Bytes) -> bool {
     b.run(0, class) == b.length
 }
 
-/// Whether `name` is one of `written_by`, ASCII-folded — the fields a
-/// writer writes ITSELF. A second one on the wire is a length two
-/// readers disagree about, which is the whole of request smuggling,
-/// and each writer names the ones it owns.
+/// Whether `name` is one of `written_by`, ASCII-folded.
 export fn names_one_of(name: string, written_by: List<Bytes>) -> bool {
     let b = name.bytes()
-    [b.ieq_at(0, b.length, w) for w in written_by].any(it)
+    written_by.any((w) -> b.ieq_at(0, b.length, w))
 }
 
 export once fn token_char() -> Bytes { admits(is_tchar) }

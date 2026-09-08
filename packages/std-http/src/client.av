@@ -10,7 +10,7 @@ use @std.errors.{Error, ErrorInfo, info}
 use @std.net.{Conn, Poller, Read, NetError, connect, poller}
 use @std.time.{Duration, now_ms, ms}
 use frame.{Method, Reply, ReplyBody, Refusal, Chunker, Limits, framed_reply, chunker, fed, status_of, admits, is_target}
-use http.{Header, read_size, writable, every_octet, names_one_of, token_char}
+use http.{Header, read_size, every_octet, fields_writable, token_char}
 
 /// What a fetch answers: the status, the fields as text, the body
 /// whole.
@@ -98,8 +98,7 @@ export fn request(method: string, target: string, host: string, headers: List<He
 
 /// Whether every word and field of a request can be written.
 fn sayable(method: string, target: string, host: string, headers: List<Header>) -> bool {
-    is_token(method) && is_word(target) && is_word(host) && [writable(h) for h in headers].all(it) &&
-        ![names_one_of(h.name, request_writes()) for h in headers].any(it)
+    is_token(method) && is_word(target) && is_word(host) && fields_writable(headers, request_writes())
 }
 
 fn is_token(s: string) -> bool { !s.is_empty() && every_octet(s, token_char()) }
@@ -111,8 +110,6 @@ once fn word_char() -> Bytes { admits(is_target) }
 
 /// The framing fields `request` writes itself.
 once fn request_writes() -> List<Bytes> { [w.bytes() for w in ["host", "content-length", "transfer-encoding"]] }
-
-fn nothing_yet() -> Result<Answer?, ClientError> { .Ok(null) }
 
 impl Client {
     /// The request written whole, waiting on the socket as needed;
@@ -196,16 +193,17 @@ impl Client {
     /// The decoder kept between reads; no answer yet.
     mut fn decoding(c: Chunker) -> Result<Answer?, ClientError> {
         self.decoder = c
-        nothing_yet()
+        .Ok(null)
     }
 
     /// The peer has finished: a reply read to the close is whole now;
     /// anything else was cut short.
     mut fn ended() -> Result<Answer?, ClientError> {
-        let r: Reply? = self.reply
-        if r == null { return .Err(.Closed) }
-        match r!.body {
-            .UntilClose -> self.answered(r!, self.buf.slice(r!.end, self.buf.length), self.buf.length),
+        let held: Reply? = self.reply
+        if held == null { return .Err(.Closed) }
+        let r = held!
+        match r.body {
+            .UntilClose -> self.answered(r, self.buf.slice(r.end, self.buf.length), self.buf.length),
             .None or .Length(_) or .Chunked -> .Err(.Closed),
         }
     }
