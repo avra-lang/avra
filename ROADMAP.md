@@ -10572,7 +10572,29 @@ without one, the seed rots exactly as the bs2 path did. FIRING
 CONDITION: the next construct dogfooded into the compiler's own
 source.
 
-## THE SUBSET NOTES ARE STALE — an audit owed (2026-09-04)
+## ~~THE SUBSET NOTES ARE STALE — an audit owed~~ — DONE THE SAME DAY
+## IT WAS WRITTEN (2026-09-04), and never marked until 2026-09-07
+
+STRUCK. The audit this section asks for was performed on the day the
+section was written: all 76 notes probed, 37 ACCEPTED and deleted, 28
+still refused and moved into CLAUDE.md's "The subset today" with
+their refusals quoted, 11 reworded. The completion record is the
+struck entry above (search "Every entry of CLAUDE.md's"), and the
+"bs2 subset notes" section it describes no longer exists in
+CLAUDE.md.
+
+WHY IT MATTERED THAT NOBODY MARKED IT: this section reads in the
+PRESENT TENSE — "CLAUDE.md carries 76 notes", "an audit owed" — so
+three days later the tasks master read it and filed the audit as open
+work owed by lane D. Nobody misread anything; the text says what it
+says. It is the same shape as the retracted NUL receipts: A
+CORRECTION THAT DOES NOT SWEEP THE OLDER PASSAGES LEAVES FINISHED
+WORK WEARING AN OPEN TASK'S CLOTHES, and a ledger's stale entry
+recruits, exactly as a wrong owner in a trigger does.
+
+The original text follows, kept because its reasoning is why the
+audit happened at all.
+
 
 CLAUDE.md carries **76 "bs2 subset notes"**, and they govern how every
 line here gets written: "probe before assuming", "fear of traps is how
