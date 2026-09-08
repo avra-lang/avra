@@ -3,7 +3,7 @@
 //! read to the close, one chunked, one that never comes.
 use @std.net.{Listener, Conn, Poller, Read, NetError, listen, poller}
 use @std.time.{ms, secs}
-use @std.http.frame.{limits, Limits, Method}
+use @std.http.frame.{framed, limits, Limits, Method, Refusal}
 use @std.http.http.{Header}
 use @std.http.client.{Client, Answer, ClientError, connected, request}
 
@@ -13,7 +13,7 @@ type Wire = { c: Client, peer: Conn, l: Listener, p: Poller }
 fn wired() -> Result<Wire, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     mut c = connected("127.0.0.1", l.port, secs(2), limits())?
-    c.sent(.Get, request("GET", "/", "a", [], "".bytes()))?
+    c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
     let p = lifted(poller())?
     lifted(p.watch(l.fd, .Read))?
     lifted(p.wait(ms(500)))?
@@ -86,7 +86,7 @@ fn closed_before_any_reply() -> Result<bool, ClientError> {
 fn reset_by_peer() -> Result<bool, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     mut c = connected("127.0.0.1", l.port, secs(2), limits())?
-    c.sent(.Get, request("GET", "/", "a", [], "".bytes()))?
+    c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
     let p = lifted(poller())?
     lifted(p.watch(l.fd, .Read))?
     lifted(p.wait(ms(500)))?
@@ -120,7 +120,7 @@ fn no_content() -> Result<bool, ClientError> {
 
 fn never_replies() -> Result<bool, ClientError> {
     mut w = wired()?
-    let r = w.c.fetched(.Get, request("GET", "/", "a", [], "".bytes()), ms(60))
+    let r = w.c.fetched(.Get, request("GET", "/", "a", [], "".bytes())!, ms(60))
     .Ok(outcome(match r {
         .Ok(a) -> .Ok(a),
         .Err(e) -> .Err(e),
@@ -130,7 +130,7 @@ fn never_replies() -> Result<bool, ClientError> {
 fn two_replies_one_connection() -> Result<bool, ClientError> {
     mut w = wired()?
     let one = outcome(spoken(w, "HTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\na", 5))
-    w.c.sent(.Get, request("GET", "/", "a", [], "".bytes()))?
+    w.c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
     let two = outcome(spoken(w, "HTTP/1.1 201 Created\r\ncontent-length: 1\r\n\r\nb", 5))
     .Ok(one == "200 a" && two == "201 b")
 }
@@ -138,7 +138,7 @@ fn two_replies_one_connection() -> Result<bool, ClientError> {
 fn reply_too_large() -> Result<bool, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     mut c = connected("127.0.0.1", l.port, secs(2), Limits { head: 64 })?
-    c.sent(.Get, request("GET", "/", "a", [], "".bytes()))?
+    c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
     let p = lifted(poller())?
     lifted(p.watch(l.fd, .Read))?
     lifted(p.wait(ms(500)))?
@@ -149,7 +149,69 @@ fn reply_too_large() -> Result<bool, ClientError> {
     .Ok(outcome(spoken(w, "HTTP/1.1 200 OK\r\nx-pad: ${filler}\r\n\r\n", 5)) == "http.refused")
 }
 
+/// What a SERVER makes of the bytes the builder wrote — the oracle
+/// is the framer, a different algorithm, and it counts the field
+/// lines a peer would actually get.
+fn ca_server_reads(req: Bytes?) -> string {
+    if req == null { return "unwritable" }
+    match framed(req!, 0, 0, limits()) {
+        .Complete(h) -> "framed fields=${h.fields.length}",
+        .Partial -> "partial",
+        .Refused(_) -> "refused",
+    }
+}
+
+fn ca_nothing() -> Bytes { "".bytes() }
+
 spec "std.http client adversarial" {
+    given "a request word a peer would reinterpret" {
+        then "A CRLF IN THE HOST IS NOT A SECOND FIELD" {
+            ca_server_reads(request("GET", "/", "h\r\nX-Evil: 1", [], ca_nothing())) == "unwritable"
+        }
+        then "A CRLF IN A HEADER VALUE IS NOT A SECOND FIELD" {
+            ca_server_reads(request("GET", "/", "h", [Header { name: "x", value: "1\r\nX-Evil: 1" }], ca_nothing())) == "unwritable"
+        }
+        then "A CRLF IN THE TARGET IS NOT A SECOND REQUEST" {
+            ca_server_reads(request("GET", "/ HTTP/1.1\r\nX: 1\r\n\r\nGET /evil", "h", [], ca_nothing())) == "unwritable"
+        }
+        then "and neither is one in the method" {
+            ca_server_reads(request("GET / HTTP/1.1\r\nX: 1\r\n\r\nGET", "/", "h", [], ca_nothing())) == "unwritable"
+        }
+        then "a space in the target is not a target" {
+            ca_server_reads(request("GET", "/a b", "h", [], ca_nothing())) == "unwritable"
+        }
+        then "an empty target is not a target" {
+            ca_server_reads(request("GET", "", "h", [], ca_nothing())) == "unwritable"
+        }
+        then "an empty method is not a method" {
+            ca_server_reads(request("", "/", "h", [], ca_nothing())) == "unwritable"
+        }
+        then "an empty host is not a host" {
+            ca_server_reads(request("GET", "/", "", [], ca_nothing())) == "unwritable"
+        }
+        then "a lowercase method is a token and is written" {
+            ca_server_reads(request("get", "/", "h", [], ca_nothing())) == "framed fields=1"
+        }
+    }
+
+    given "the framing fields the builder owns" {
+        then "a caller's content-length does not join the builder's" {
+            ca_server_reads(request("POST", "/", "h", [Header { name: "content-length", value: "0" }], "hi".bytes())) == "unwritable"
+        }
+        then "and a transfer-encoding beside a length is the smuggling shape" {
+            ca_server_reads(request("POST", "/", "h", [Header { name: "transfer-encoding", value: "chunked" }], "hi".bytes())) == "unwritable"
+        }
+        then "an ordinary field is written, and the server frames it" {
+            ca_server_reads(request("GET", "/", "h", [Header { name: "x-tag", value: "t1" }], ca_nothing())) == "framed fields=2"
+        }
+        then "a plain request frames with its host alone" {
+            ca_server_reads(request("GET", "/", "h", [], ca_nothing())) == "framed fields=1"
+        }
+        then "a body earns a length, which the server reads" {
+            ca_server_reads(request("POST", "/p", "h", [], "hello".bytes())) == "framed fields=2"
+        }
+    }
+
     given "a reply in pieces" {
         then "a head torn at its terminator completes on the next bytes" { passes(torn_reply()) }
         then "a body torn across reads is gathered" { passes(body_torn()) }

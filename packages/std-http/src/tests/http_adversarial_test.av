@@ -1,11 +1,147 @@
-// http.av UNDER ATTACK: the values a handler READS, and the bytes it
-// answers. reply_test.av reads a peer's bytes; this file asks what a
-// handler is told about octets nobody chose.
+// http.av UNDER ATTACK: the WRITER, and the values a handler reads.
+// reply_test.av reads a peer's bytes; this file writes our own and
+// asks WHAT A PEER WOULD MAKE OF THEM.
+//
+// THE ORACLE IS THE FRAMER, WHICH IS A DIFFERENT ALGORITHM. A test
+// that compared the wire against a second copy of the interpolation
+// would agree with the writer by construction; framing the bytes back
+// asks the only question that matters — how many fields did the peer
+// get, and did a second reply appear inside the first.
 use @std.http.frame.{framed, framed_reply, limits, Method, Refusal, Reply, FramedReply}
-use @std.http.http.{Request, Response, Header, wire, text}
+use @std.http.http.{Request, Response, Header, wire, text, sendable, writable}
 use @std.text.{from_codepoint}
 
+fn ha_nul() -> string { from_codepoint(0) }
+
+// ── Fixtures ────────────────────────────────────────────────────
+
+/// One response carrying one handler-chosen field, which is the shape
+/// every redirect, CORS and ETag handler has.
+fn ha_one_field(name: string, value: string) -> Response {
+    Response { status: 200, headers: [Header { name: name, value: value }], body: "b".bytes() }
+}
+
+/// The bytes as written, line ends shown.
+fn ha_wired(r: Response) -> string { (wire(r, true, 1).text() ?? "<not text>").replace("\r\n", "|") }
+
+/// WHAT A PEER GETS: the status and how many field lines it framed,
+/// or the law that refused the reply outright.
+fn ha_peer_reads(r: Response) -> string {
+    match framed_reply(wire(r, true, 1), 0, 0, limits(), Method.Get) {
+        .Complete(reply) -> "${reply.status} fields=${reply.fields.length}",
+        .Partial -> "partial",
+        .Refused(_) -> "refused",
+    }
+}
+
+/// The status line alone — the first line of the wire.
+fn ha_wire_status_line(r: Response) -> string {
+    let t = wire(r, true, 1).text() ?? "<not text>"
+    t.substring(0, t.index_of("\r\n"))
+}
+
 spec "@std.http http adversarial" {
+    given "a field a peer would reinterpret" {
+        then "A CRLF IN A VALUE IS NOT A SECOND FIELD" {
+            ha_peer_reads(ha_one_field("x", "1\r\nevil: 1")) == "500 fields=1"
+        }
+        then "and the wire carries no injected line" {
+            !ha_wired(ha_one_field("x", "1\r\nevil: 1")).contains("evil")
+        }
+        then "A BLANK LINE IN A VALUE IS NOT A SECOND REPLY" {
+            !ha_wired(ha_one_field("x", "1\r\n\r\nHTTP/1.1 200 OK\r\n\r\npwn")).contains("pwn")
+        }
+        then "a bare LF in a value is refused too" {
+            ha_peer_reads(ha_one_field("x", "1\nevil: 1")) == "500 fields=1"
+        }
+        then "a CRLF in a NAME is not a second field" {
+            ha_peer_reads(ha_one_field("a\r\nevil", "1")) == "500 fields=1"
+        }
+        then "a colon in a name is not a second field" {
+            ha_peer_reads(ha_one_field("a: 1\r\nevil", "1")) == "500 fields=1"
+        }
+        then "a space in a name is refused" {
+            ha_peer_reads(ha_one_field("a b", "1")) == "500 fields=1"
+        }
+        then "an empty name is refused" {
+            ha_peer_reads(ha_one_field("", "1")) == "500 fields=1"
+        }
+        then "an empty value is a value, and the framer frames it" {
+            ha_peer_reads(ha_one_field("x", "")) == "200 fields=2"
+        }
+        then "A NUL IS AN OCTET HERE AND A TERMINATOR THERE, so a value carrying one is refused" {
+            ha_peer_reads(ha_one_field("x", "a" + ha_nul() + "b")) == "500 fields=1"
+        }
+        then "and a name carrying one is refused" {
+            ha_peer_reads(ha_one_field("a" + ha_nul() + "b", "1")) == "500 fields=1"
+        }
+        then "a high octet in a value is refused" {
+            ha_peer_reads(ha_one_field("x", "a" + from_codepoint(233) + "b")) == "500 fields=1"
+        }
+    }
+
+    given "the framing fields the writer owns" {
+        then "a handler's content-length does not join the writer's" {
+            ha_peer_reads(ha_one_field("content-length", "999")) == "500 fields=1"
+        }
+        then "and its case does not smuggle it past" {
+            ha_peer_reads(ha_one_field("Content-Length", "999")) == "500 fields=1"
+        }
+        then "a handler's transfer-encoding is refused beside a length" {
+            ha_peer_reads(ha_one_field("transfer-encoding", "chunked")) == "500 fields=1"
+        }
+        then "a handler's connection contradicts the fate the writer speaks" {
+            ha_peer_reads(ha_one_field("connection", "close")) == "500 fields=1"
+        }
+    }
+
+    given "a status the handler chose" {
+        then "a status line carries three digits, so 1000 cannot be written" {
+            ha_wire_status_line(Response { status: 1000 }) == "HTTP/1.1 500 Internal Server Error"
+        }
+        then "and neither can 99" { ha_wire_status_line(Response { status: 99 }) == "HTTP/1.1 500 Internal Server Error" }
+        then "nor 0" { ha_wire_status_line(Response { status: 0 }) == "HTTP/1.1 500 Internal Server Error" }
+        then "nor a negative one, which the reason phrase used to call a success" {
+            ha_wire_status_line(Response { status: 0 - 1 }) == "HTTP/1.1 500 Internal Server Error"
+        }
+        then "999 is three digits and goes out as it was chosen" {
+            ha_wire_status_line(Response { status: 999 }) == "HTTP/1.1 999 Server Error"
+        }
+        then "100 is the lowest a peer can frame" { ha_wire_status_line(Response { status: 100 }) == "HTTP/1.1 100 Continue" }
+    }
+
+    given "what the keeper ACCEPTS, which making it fail never tests" {
+        then "an ordinary field goes out untouched" {
+            ha_wired(ha_one_field("x-tag", "t1")) == "HTTP/1.1 200 OK|x-tag: t1|content-length: 1||b"
+        }
+        then "a value holding a colon, a comma and a space is ordinary" {
+            ha_wired(ha_one_field("date", "Mon, 01 Jan 2035 00:00:00 GMT")) == "HTTP/1.1 200 OK|date: Mon, 01 Jan 2035 00:00:00 GMT|content-length: 1||b"
+        }
+        then "a name of every token mark is a name" {
+            sendable(ha_one_field("!#$%&'*+-.^_`|~0aZ", "v"))
+        }
+        then "a value may hold a tab, which is visible ASCII by the framer's law" {
+            sendable(ha_one_field("x", "a\tb"))
+        }
+        then "content-type is not a framing field, so a handler owns it" {
+            sendable(ha_one_field("content-type", "text/plain"))
+        }
+        then "the library's own text() answer is writable" { sendable(text(200, "hi")) }
+        then "a response with no fields at all is writable" { sendable(Response { status: 204 }) }
+        then "and the field law answers about ONE field, so it can be asked before answering" {
+            writable(Header { name: "x", value: "1" }) && !writable(Header { name: "x", value: "1\r\ny: 2" })
+        }
+    }
+
+    given "the body is octets and never a field" {
+        then "a NUL in the body is written, because a body is not a line" {
+            wire(text(200, "a" + ha_nul() + "b"), true, 1).length == wire(text(200, "axb"), true, 1).length
+        }
+        then "an empty body is a length of zero, not an absence" {
+            ha_wired(Response { status: 200 }) == "HTTP/1.1 200 OK|content-length: 0||"
+        }
+    }
+
     given "what a Request answers about octets it holds" {
         then "A TARGET THE FRAMER ADMITS AND UTF-8 CANNOT SPELL IS ABSENT, NEVER EMPTY" {
             ha_asked_for(ha_obs_target()) == null
@@ -29,8 +165,6 @@ spec "@std.http http adversarial" {
         }
     }
 }
-
-// ── Fixtures ────────────────────────────────────────────────────
 
 /// A target carrying obs-text — an octet the framer ADMITS and no
 /// UTF-8 decoding can answer.

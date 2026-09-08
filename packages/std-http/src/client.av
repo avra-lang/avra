@@ -9,8 +9,8 @@
 use @std.errors.{Error, ErrorInfo, info}
 use @std.net.{Conn, Poller, Read, NetError, connect, poller}
 use @std.time.{Duration, now_ms, ms}
-use frame.{Method, Reply, ReplyBody, Refusal, Chunker, Limits, framed_reply, chunker, fed, status_of}
-use http.{Header, read_size}
+use frame.{Method, Reply, ReplyBody, Refusal, Chunker, Limits, framed_reply, chunker, fed, status_of, admits, is_target}
+use http.{Header, read_size, writable, every_octet, names_one_of, token_char}
 
 /// What a fetch answers: the status, the fields as text, the body
 /// whole.
@@ -81,11 +81,36 @@ export fn connected(host: string, port: int, timeout: Duration, limits: Limits) 
 /// A request on the wire: the line, `host`, the fields, the body's
 /// length when there is a body (a body-less request has length zero
 /// by RFC 9112 §6.3 and needs no field), the body.
-export fn request(method: string, target: string, host: string, headers: List<Header>, body: Bytes) -> Bytes {
+///
+/// ABSENT WHEN A WORD OR A FIELD BREAKS THE FRAMER'S LAW. A method is
+/// a token, a target and a host are target octets, and every field is
+/// one the framer would frame — so a CRLF in a value a caller was
+/// handed cannot become a SECOND REQUEST LINE, which is the whole of
+/// request smuggling. A malformed request is refused rather than
+/// escaped, the way `decoded` refuses a malformed escape: a builder
+/// that repairs and a peer that does not disagree about what was sent.
+export fn request(method: string, target: string, host: string, headers: List<Header>, body: Bytes) -> Bytes? {
+    if !sayable(method, target, host, headers) { return null }
     let fields = ["${h.name}: ${h.value}\r\n" for h in headers].join("")
     let length = if body.length > 0 { "content-length: ${body.length}\r\n" } else { "" }
     "${method} ${target} HTTP/1.1\r\nhost: ${host}\r\n${fields}${length}\r\n".bytes().concat(body)
 }
+
+/// Whether every word and field of a request can be written.
+fn sayable(method: string, target: string, host: string, headers: List<Header>) -> bool {
+    is_token(method) && is_word(target) && is_word(host) && [writable(h) for h in headers].all(it) &&
+        ![names_one_of(h.name, request_writes()) for h in headers].any(it)
+}
+
+fn is_token(s: string) -> bool { !s.is_empty() && every_octet(s, token_char()) }
+
+/// A word of the request line: target octets, and at least one.
+fn is_word(s: string) -> bool { !s.is_empty() && every_octet(s, word_char()) }
+
+once fn word_char() -> Bytes { admits(is_target) }
+
+/// The framing fields `request` writes itself.
+once fn request_writes() -> List<Bytes> { [w.bytes() for w in ["host", "content-length", "transfer-encoding"]] }
 
 fn nothing_yet() -> Result<Answer?, ClientError> { .Ok(null) }
 

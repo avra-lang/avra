@@ -18,7 +18,7 @@
 //!
 //! The head's field spans index the buffer they were framed from, so
 //! a `Request` keeps that buffer and slices a value only when asked.
-use frame.{Head, Field, Span, Method, admits, is_target}
+use frame.{Head, Field, Span, Method, admits, is_target, is_tchar, is_vchar}
 use query.{Query, query_of}
 
 /// What a handler receives: the raw buffer the head was framed from,
@@ -111,7 +111,17 @@ export fn status(code: int) -> Response { Response { status: code } }
 /// when the peer cannot assume it: `close` when the connection will
 /// not persist, and `keep-alive` when it will and the request was
 /// HTTP/1.0 — a 1.0 peer waits for the close otherwise (RFC 9112 §9.3).
+///
+/// A RESPONSE NO PEER COULD READ IS THE SERVER'S OWN FAULT, and it
+/// answers 500. A handler that hands a field a CRLF has written a
+/// SECOND REPLY of its caller's choosing, and a caller is who fills
+/// that value; refusing at the crossing is what makes the
+/// reinterpretation impossible, where escaping would only move it.
 export fn wire(r: Response, keep_alive: bool, minor: int) -> Bytes {
+    written(if sendable(r) { r } else { status(500) }, keep_alive, minor)
+}
+
+fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
     let fields = ["${h.name}: ${h.value}\r\n" for h in r.headers].join("")
     let fate = when {
         !keep_alive -> "connection: close\r\n"
@@ -120,6 +130,48 @@ export fn wire(r: Response, keep_alive: bool, minor: int) -> Bytes {
     }
     "HTTP/1.1 ${r.status} ${reason(r.status)}\r\n${fields}content-length: ${r.body.length}\r\n${fate}\r\n".bytes().concat(r.body)
 }
+
+/// WHETHER THIS RESPONSE CAN GO ON A WIRE AT ALL: a status of three
+/// digits — the status line's own grammar, which is why 1000 and 99
+/// are not statuses — and every field a field the framer would frame.
+/// Public so a handler can ask before it answers.
+export fn sendable(r: Response) -> bool {
+    r.status >= 100 && r.status <= 999 && [writable(h) for h in r.headers].all(it) &&
+        ![names_one_of(h.name, reply_writes()) for h in r.headers].any(it)
+}
+
+/// A FIELD LINE ON THE WIRE OBEYS THE FRAMER'S OWN LAW, or the two
+/// sides of one boundary read different bytes. A name is a token and
+/// a value is visible ASCII — composed from the framer's predicates
+/// rather than restated, so the writer cannot drift lenient while the
+/// reader stays strict. An empty VALUE is a value and passes; an
+/// empty NAME is not a token.
+export fn writable(h: Header) -> bool {
+    !h.name.is_empty() && every_octet(h.name, token_char()) && every_octet(h.value, value_char())
+}
+
+/// EVERY OCTET OF `s` IS IN `class` — the one place text is judged
+/// against a framer class, so no writer narrows a law by restating
+/// it. Empty text is in every class.
+export fn every_octet(s: string, class: Bytes) -> bool {
+    let b = s.bytes()
+    b.run(0, class) == b.length
+}
+
+/// Whether `name` is one of `written_by`, ASCII-folded — the fields a
+/// writer writes ITSELF. A second one on the wire is a length two
+/// readers disagree about, which is the whole of request smuggling,
+/// and each writer names the ones it owns.
+export fn names_one_of(name: string, written_by: List<Bytes>) -> bool {
+    let b = name.bytes()
+    [b.ieq_at(0, b.length, w) for w in written_by].any(it)
+}
+
+export once fn token_char() -> Bytes { admits(is_tchar) }
+export once fn value_char() -> Bytes { admits(is_vchar) }
+
+/// The framing fields `wire` writes from what it is sending.
+once fn reply_writes() -> List<Bytes> { [w.bytes() for w in ["content-length", "connection", "transfer-encoding"]] }
 
 /// The reason phrase — the registered ones, and the class's word for
 /// the rest.
