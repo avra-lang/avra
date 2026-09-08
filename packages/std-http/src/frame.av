@@ -13,6 +13,9 @@ export type Span = { lo: int, hi: int }
 /// One field line as two spans; the name compares in place.
 export type Field = { name: Span, value: Span }
 
+/// The nine methods RFC 9110 registers, and `Other` for a token this
+/// framer read and does not name — a method is extensible, so an
+/// unknown one is well formed and not a refusal.
 export enum Method { Get, Head, Post, Put, Delete, Patch, Options, Connect, Trace, Other }
 
 /// The four shapes a request target may take (RFC 9112 §3.2), and
@@ -63,6 +66,8 @@ export enum Refusal {
     Chunk
 }
 
+/// What a buffer holds so far: not yet a whole head, a head, or the
+/// law it broke.
 export enum Framed {
     Partial
     Complete(head: Head)
@@ -73,6 +78,7 @@ export enum Framed {
 /// are owned, never implicit.
 export type Limits = { line: int = 8192, field: int = 8192, head: int = 65536, fields: int = 100, body: int = 1048576, ext: int = 4096, trailers: int = 16 }
 
+/// The default bounds.
 export fn limits() -> Limits { Limits {} }
 
 /// The reply a refusal earns.
@@ -278,6 +284,9 @@ fn schemed(buf: Bytes, lo: int, hi: int) -> bool {
     at > lo && at < hi
 }
 
+/// What separates an absolute-form target's scheme from its
+/// authority — the octets `path()` splits on, so the reader and the
+/// framer agree on where a scheme ends.
 export once fn scheme_end() -> Bytes { "://".bytes() }
 once fn star() -> Bytes { "*".bytes() }
 
@@ -501,6 +510,7 @@ export type Reply = { status: int, minor: int, fields: List<Field>, body: ReplyB
 /// chunks, or by the connection's close (RFC 9112 §6.3).
 export enum ReplyBody { None, Length(n: int), Chunked, UntilClose }
 
+/// `Framed`'s twin for a reply.
 export enum FramedReply {
     Partial
     Complete(reply: Reply)
@@ -576,8 +586,11 @@ export enum Phase {
 /// gathered until the body is whole.
 export type Chunker = { at: int, phase: Phase, total: int, parts: List<Bytes>, trailers: int }
 
+/// A decoder starting at `at` — the first byte past the head.
 export fn chunker(at: int) -> Chunker { Chunker { at: at, phase: Phase.Size, total: 0, parts: [], trailers: 0 } }
 
+/// What a fed decoder answers: keep it and feed again, the body
+/// whole with the offset past the trailers, or the law it broke.
 export enum Chunked {
     More(c: Chunker)
     Done(body: Bytes, end: int)
