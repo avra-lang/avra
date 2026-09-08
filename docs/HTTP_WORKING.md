@@ -1474,6 +1474,40 @@ gate green at 708 MB, seed 4382c4a). Every lane session resumed; the
 substrate subagent did not, and its uncommitted bytes-header fix is
 being finished by its successor from the worktree it left.
 
+## A Bytes at a text seat (0ef691e, merged at d8173f0, seed 1093d2f): every corpus directory on both engines
+
+The last native-only corpus is differential. THE LAW: a runtime row's
+pointer seat is filled by BOTH a string and a `Bytes` — natively they
+are the same headered box and the C body reads the header either way —
+so a `Bytes` at a text seat IS those bytes viewed as text, and the two
+engines must agree about it. The decode is lossless for UTF-8 and only
+for UTF-8 (twelve bytes through a NUL and a snowman round-trip
+exactly); an evaluator string cannot hold arbitrary octets, so octets
+that are not UTF-8 are REFUSED BY NAME ("octets that are not UTF-8
+reached a text seat — the evaluator carries text as text and cannot
+hold these bytes; build natively") rather than approximated, because
+a silent disagreement with the native answer is the one outcome worse
+than a refusal; the retiring trigger (a byte-lossless string, or a
+Bytes twin for the text rows) lives in the ROADMAP's Bytes entry, not
+in a code comment. IMPLEMENTED ONCE, in the text projection, so the
+fourteen row arms that read a pointer seat as text — twenty-three
+`text_val` call sites — inherit it; the class avra-8sb5.1.15 named is
+closed by construction. Only then is the corpus the oracle:
+`[104, 0, 105]` is valid UTF-8, so `0 0 2 3` is right by the law.
+
+THE SUCCESSOR TIGHTENED THE PREDECESSOR'S DIFF before building: an
+eight-variant match over a value the projection only ever answers two
+ways was a projection spelled as a registry, and reads as absence now
+(`utf8_text(data) ?? self.refused_octets()`); the refusal is a named
+voice; the narration left the doc comments. Witnessed first: the stale
+binary answered "a non-string reached text in a clean program" on both
+corpus programs, the fixed product answers by the law, and a non-UTF-8
+`Bytes` traps by name while its length still answers. Coverage:
+`corpus/bytes-as-text` (trim, length, the snowman, a NUL inside) and
+three specs in run_test.av. Gate green at 650 MB here; std-avrac 2285,
+std-sqlite 413. With this, S2c is closed end to end and the final red
+team over the branch begins.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
