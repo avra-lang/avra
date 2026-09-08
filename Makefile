@@ -160,7 +160,8 @@ bootstrap: $(COMPILER_OBJS)
 # reader ran `./avra build packages/cli` by hand to find out why.
 avra: $(COMPILER_OBJS)
 	@mkdir -p build
-	@./avra build packages/cli > build/avra-build.out 2>&1 || { cat build/avra-build.out; exit 1; }
+	@: > build/avra-build.out
+	@./avra build packages/cli >> build/avra-build.out 2>&1 || { tail -c 200000 build/avra-build.out; exit 1; }
 	@mkdir -p build
 	@cp packages/cli/src/main build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true

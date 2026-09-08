@@ -7,6 +7,7 @@ root="$(cd "$(dirname "$0")" && pwd)"
 # the link flags a manifest writes as ${LLVM_PREFIX}
 LLVM_PREFIX="${LLVM_PREFIX:-/opt/homebrew/opt/llvm}"
 export LLVM_PREFIX
+export AVRA_BOOTSTRAPPING
 cd "$root" || exit 2
 
 # A PACKAGE-SCALE RUN — any argument that is a directory — is a
@@ -25,8 +26,25 @@ fi
 # COLD TREE: no compiler yet. The SEED is the way back — the compiler
 # emitted, committed, and linkable by clang alone.
 if [ -f "$root/bootstrap/seed.ll" ]; then
+    # A BOOTSTRAP NEVER RE-ENTERS ITSELF. `make bootstrap` ends in
+    # `make avra`, which runs THIS script; if the bootstrap did not
+    # produce a compiler — a refused floor, a failed link, a full disk
+    # — that run finds no `build/avra` and bootstraps AGAIN, forever.
+    # It is not merely a spin: each level redirects to the same
+    # `build/avra-build.out` and truncates it while the level above
+    # still holds an open descriptor at a high offset, so the file
+    # grows by a hole per lap. It reached 4.5 GB in minutes and filled
+    # the volume TWICE, and it read as swap and as "something is
+    # regenerating what we freed" — because a runaway that writes
+    # nothing visible looks like the machine misbehaving.
+    if [ -n "$AVRA_BOOTSTRAPPING" ]; then
+        echo "avra: a bootstrap is already running and produced no build/avra — refusing to re-enter" >&2
+        echo "avra:   the seed's link did not leave a compiler. Read the bootstrap's own" >&2
+        echo "avra:   output; a refused disk floor and a failed link both land here." >&2
+        exit 2
+    fi
     echo "avra: no build/avra — bootstrapping from the seed" >&2
-    make -C "$root" -s bootstrap >&2 || exit 2
+    AVRA_BOOTSTRAPPING=1 make -C "$root" -s bootstrap >&2 || exit 2
     exec build/avra "$@"
 fi
 echo "avra: no build/avra and no bootstrap/seed.ll" >&2
