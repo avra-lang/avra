@@ -8,7 +8,6 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind, extern_row, inout_row, no_marks, ExternParts, Param, TypeRef}
-use @std.path.{stem_of}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{LowerCx, FnSig, fn_sig_of, Sub, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap}
 
@@ -240,10 +239,15 @@ fn program_main(a: Analysis) -> Wanted {
     Wanted { file: a.view.file, decl: null, name: program_symbol(a.view.decls.file(a.view.file).path), sub: null }
 }
 
-/// The symbol a program's body wears in a corpus binary: its file's
-/// stem, so two programs never collide and a wreck names its file.
+/// The symbol a program's body wears in a corpus binary: its whole
+/// PATH, every separator written as `_`, so a wreck names its file
+/// and no two programs collide. A STEM ALONE COLLIDED: a package's
+/// corpus program is named after the module it proves
+/// (`std-path/corpus/path.av` beside `std-path/src/path.av`), both
+/// wanted `program$path`, and the one the worklist minted was the
+/// module's — an empty body that printed nothing.
 export fn program_symbol(path: string) -> string {
-    "program\$${stem_of(path)}"
+    "program\$${path.replace("/", "_").replace(".", "_")}"
 }
 
 fn declared(a: Analysis) -> List<Wanted> {

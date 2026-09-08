@@ -1,55 +1,197 @@
-//! `avra test` — run every spec case of a package root or a file:
-//! one analysis, one lowering, and a BINARY whose entry calls each
-//! case by its symbol. Native, because a suite that interprets the
+//! `avra test` — EVERY PROOF A PACKAGE CARRIES. Its spec cases become
+//! a BINARY whose entry calls each by its symbol; its CORPUS programs
+//! are the same thing with a second engine — each run under the
+//! evaluator here and native there, both answers held against the
+//! text the program must print. One image lowers them all; a fresh
+//! one links and runs. Native, because a suite that interprets the
 //! compiler takes an hour where the machine takes seconds.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.language.{Program, TestCase, Lowered, CaseCall, cases_entry, runner_rows, emit_ll, case_words}
-use @std.path.{joined_path}
-use @std.io.{println, eprintln, make_dirs}
+use @std.avrac.language.{Program, TestCase, Lowered, CaseCall, ProgramCall, cases_entry, corpus_entry, runner_rows, corpus_rows, emit_ll, case_words, program, program_symbol, programs_workspace, timed_workspace, run_program, avra}
+use @std.avrac.core.{sorted_texts, joined, flatten}
+use @std.path.{joined_path, dir_of, stem_of}
+use @std.io.{println, eprintln, read_text, exists, is_dir, list_dir, make_dirs}
 use @std.time.{now_ns}
 
 type TestCmd = { }
 
 impl Runnable for TestCmd {
     fn run(args: CliResult) -> int {
-        on_cases(args, (p: Program, cases: List<TestCase>) -> {
-            let t0 = now_ns()
-            warn(p)
-            let made = p.cases_checked()
-            if timed(args) { eprintln(timings(p, "lower", now_ns() - t0)) }
-            match made {
-                .Ok(lo) -> staged_suite(p, lo, cases),
-                .Err(text) -> {
-                    println(text)
-                    1
-                }
-            }
-        })
+        on_cases(args, (p: Program, cases: List<TestCase>) -> proved(args, p, cases))
     }
 }
 
-/// The cases as a binary, run by a fresh image of this program.
-fn staged_suite(p: Program, lo: Lowered, cases: List<TestCase>) -> int {
+/// The suite lowered here, then handed off once.
+fn proved(args: CliResult, p: Program, cases: List<TestCase>) -> int {
+    let t0 = now_ns()
+    warn(p)
+    let made = p.cases_checked()
+    if timed(args) { eprintln(timings(p, "lower", now_ns() - t0)) }
+    match made {
+        .Ok(lo) -> staged_suite(args, p, lo, cases),
+        .Err(text) -> {
+            println(text)
+            1
+        }
+    }
+}
+
+fn staged_suite(args: CliResult, p: Program, lo: Lowered, cases: List<TestCase>) -> int {
+    match suite_plans(args, p, lo, cases) {
+        .Ok(plans) -> if plans.is_empty() { nothing_to_prove() } else { handed_off(plans) },
+        .Err(text) -> {
+            println(text)
+            1
+        }
+    }
+}
+
+/// The cases' module when the package has cases, then every corpus
+/// beside it. A CORPUS IS A PACKAGE'S PROOF: `avra test <file>` runs
+/// that file's cases and nothing else.
+fn suite_plans(args: CliResult, p: Program, lo: Lowered, cases: List<TestCase>) -> Result<List<string>, string> {
+    let head: List<string> = if cases.is_empty() { [] } else { [cases_plan(p, lo, cases)?] }
+    let corpus: List<string> = if is_dir(path_arg(args)) { corpus_plans(p.ws.root)? } else { [] }
+    .Ok(head.concat(corpus))
+}
+
+/// The cases as ONE module: an entry that calls each by its symbol.
+fn cases_plan(p: Program, lo: Lowered, cases: List<TestCase>) -> Result<string, string> {
     let calls = [CaseCall { symbol: c.symbol, label: case_words(c) } for c in cases]
-    let staged = lo with { entry: cases_entry(lo.types, calls), externs: lo.externs.concat(runner_rows()) }
-    let path = staged_path(p)
-    let failure: string? = emit_ll(staged, path)
-    if failure != null {
-        println(failure!)
-        return 1
-    }
-    staged(path, p)
+    planned_module(lo with { entry: cases_entry(lo.types, calls), externs: lo.externs.concat(runner_rows()) }, p, "cases.av.ll")
 }
 
-/// Where the test binary is written — under the root's `build/`,
-/// never beside the source it tests.
-fn staged_path(p: Program) -> string {
+/// A PACKAGE'S CORPUS: `corpus/` beside it. The programs directly in
+/// it are proved in ONE binary; a subdirectory that is a package of
+/// its own — a module tree, a vendored dependency: what a flat
+/// program cannot say — is proved on its own. No corpus is no plans,
+/// never a refusal.
+fn corpus_plans(root: string) -> Result<List<string>, string> {
+    let dir = joined_path(root, "corpus")
+    let files = corpus_files(dir)
+    let flat: List<string> = if files.is_empty() { [] } else { [batch_plan(dir, files)?] }
+    .Ok(flat.concat([nested_plan(joined_path(dir, name))? for name in listed(dir) if is_corpus_package(dir, name)]))
+}
+
+/// The flat programs as ONE workspace, ONE lowering and ONE binary —
+/// every file its own module there, so eighty programs' `P`s never
+/// share a namespace.
+fn batch_plan(dir: string, files: List<string>) -> Result<string, string> {
+    proved_programs(program(programs_workspace(disk_host(), dir, avra(), () -> now_ns()), null), files)
+}
+
+/// A corpus program shaped as a package: its files are the package's,
+/// and the programs among them are those proved by a text beside them.
+fn nested_plan(root: string) -> Result<string, string> {
+    let p: Program = program(timed_workspace(disk_host(), root, avra(), () -> now_ns()), null)
+    proved_programs(p, sorted_texts([f.path for f in p.ws.decls.files if is_program(f.path)]))
+}
+
+/// EVERY PROOF IS BOTH ENGINES: the evaluator's leg runs HERE and
+/// stops the run when it disagrees, so a green suite is never the
+/// binary's alone; the plan carries the native leg.
+fn proved_programs(p: Program, paths: List<string>) -> Result<string, string> {
+    let unproved = [unproved_program(path) for path in paths if !is_program(path)]
+    if !unproved.is_empty() { return .Err(joined(unproved, "\n")) }
+    if paths.is_empty() { return .Err(no_programs(p.ws.root)) }
+    let programs = [call_of(path) for path in paths]
+    let lo = p.programs_checked()?
+    let quarrels = eval_quarrels(lo, programs)
+    if !quarrels.is_empty() { return .Err(joined(quarrels, "\n")) }
+    planned_module(lo with { entry: corpus_entry(lo.types, programs), externs: lo.externs.concat(corpus_rows()) }, p, "corpus.av.ll")
+}
+
+/// One program as the binary needs it: the `.expected` beside it with
+/// its final newline dropped — the shape the capture answers.
+fn call_of(path: string) -> ProgramCall {
+    let text = read_text(expected_path(path)) catch ""
+    ProgramCall {
+        symbol: program_symbol(path),
+        label: joined_path(dir_of(path), stem_of(path)),
+        expected: if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text },
+        evaluated: !native_only(path),
+    }
+}
+
+/// Every program the evaluator did not say, in its own words.
+fn eval_quarrels(lo: Lowered, programs: List<ProgramCall>) -> List<string> {
+    flatten([quarrel(lo, pr) for pr in programs if pr.evaluated])
+}
+
+/// One program's disagreement with the evaluator, as none or one.
+fn quarrel(lo: Lowered, pr: ProgramCall) -> List<string> {
+    match run_program(lo, pr.symbol) {
+        .Ok(out) -> if out == pr.expected { [] } else { [said_otherwise(pr, out)] },
+        .Err(why) -> [eval_wrecked(pr, why)],
+    }
+}
+
+/// A lowered module written under the root's `build/`, never beside
+/// the source it proves, and the link plan a fresh image runs it by.
+fn planned_module(lo: Lowered, p: Program, name: string) -> Result<string, string> {
     let dir = joined_path(p.ws.root, "build")
     let _ = make_dirs(dir)
-    joined_path(dir, "cases.av.ll")
+    let path = joined_path(dir, name)
+    let failure: string? = emit_ll(lo, path)
+    if failure != null { return .Err(failure!) }
+    plan_for(path, p)
+}
+
+/// The programs directly in a corpus directory, in name order — every
+/// `.av` there is one.
+fn corpus_files(dir: string) -> List<string> {
+    [joined_path(dir, f) for f in listed(dir) if f.ends_with(".av")]
+}
+
+/// A directory's names, in order — a directory that is not there
+/// holds nothing.
+fn listed(dir: string) -> List<string> {
+    sorted_texts(list_dir(dir) catch [])
+}
+
+fn is_corpus_package(dir: string, name: string) -> bool {
+    exists(joined_path(joined_path(dir, name), "avra.toml"))
+}
+
+/// Whether a file is a corpus program: the text it must print sits
+/// beside it.
+fn is_program(path: string) -> bool {
+    exists(expected_path(path))
+}
+
+fn expected_path(path: string) -> string {
+    joined_path(dir_of(path), "${stem_of(path)}.expected")
+}
+
+/// A marker beside a program drops the evaluator's leg — the seam is
+/// the host's, and the marker's text says why.
+fn native_only(path: string) -> bool {
+    exists(joined_path(dir_of(path), "${stem_of(path)}.native-only"))
 }
 
 export fn test_command() -> Subcommand {
     let body: TestCmd = TestCmd { }
-    Subcommand { meta: file_command("test", "Run a package's or a file's spec cases"), body: body }
+    Subcommand { meta: file_command("test", "Run a package's spec cases and its corpus programs"), body: body }
+}
+
+// ── The voices ──
+
+fn nothing_to_prove() -> int {
+    println("no spec cases here")
+    0
+}
+
+fn unproved_program(path: string) -> string {
+    "avra: ${path} has no ${stem_of(path)}.expected beside it — a corpus program is proved by the text it must print"
+}
+
+fn no_programs(dir: string) -> string {
+    "avra: ${dir} holds no programs — a corpus is `.av` files beside their `.expected`"
+}
+
+fn said_otherwise(pr: ProgramCall, out: string) -> string {
+    "${pr.label}: eval != expected\n${out}"
+}
+
+fn eval_wrecked(pr: ProgramCall, why: string) -> string {
+    "${pr.label}: eval FAILED\n${why}"
 }
