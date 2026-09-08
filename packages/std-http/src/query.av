@@ -52,7 +52,15 @@ use frame.{Span}
 /// `?a` and `?a=` are different on the wire and stay different here.
 export type Pair = { name: Span, value: Span? }
 
-/// The query, in encounter order, over the buffer it was framed from.
+/// The query, in encounter order, over ITS OWN OCTETS.
+///
+/// THE READER HOLDS THE QUERY AND NOTHING ELSE, and that is a bound
+/// rather than a convenience. A reader over the whole request buffer
+/// searches it for each separator, so the BODY is searched too, and a
+/// request well inside the declared bounds — a target at the line
+/// bound, a body at the body bound — costs (pairs x buffer) on one
+/// call to `query()`. The answer was never wrong; the cost was, and
+/// no bound on a search fixes what having the body in reach permits.
 export type Query = { raw: Bytes, pairs: List<Pair> }
 
 /// What asking a query for ONE name answers. A scalar is at most
@@ -75,25 +83,34 @@ export enum Asked {
 /// and a segment opening with `=` name no key — and a key of no
 /// octets is not a key. `starts` is where that is decided.
 export fn query_of(raw: Bytes, lo: int, hi: int) -> Query {
-    if lo >= hi { return Query { raw: raw, pairs: [] } }
-    Query { raw: raw, pairs: [pair_of(raw, at, ends(raw, at, hi)) for at in starts(raw, lo, hi)] }
+    if lo >= hi { return Query { raw: no_octets(), pairs: [] } }
+    own(raw.slice(lo, hi))
 }
 
-/// Where each NAMED pair begins: `lo`, then one past every `&`, minus
+/// The query read over octets that are ITS OWN, so every separator
+/// search ends where the query does.
+fn own(b: Bytes) -> Query {
+    Query { raw: b, pairs: [pair_of(b, at, ends(b, at)) for at in starts(b)] }
+}
+
+fn no_octets() -> Bytes { "".bytes() }
+
+/// Where each NAMED pair begins: 0, then one past every `&`, minus
 /// the positions that begin no key. A segment opening with `&` is
 /// empty and a segment opening with `=` has no name, so `?&&`, a
 /// trailing `&` and `?=v` all yield no starts — which is why an empty
 /// query and a query of separators agree.
-fn starts(raw: Bytes, lo: int, hi: int) -> List<int> {
-    [i for i in lo..hi if opens(raw, i, lo) && raw.at(i) != amp_octet() && raw.at(i) != equals_octet()]
+fn starts(raw: Bytes) -> List<int> {
+    [i for i in 0..raw.length if opens(raw, i) && raw.at(i) != amp_octet() && raw.at(i) != equals_octet()]
 }
 
-fn opens(raw: Bytes, i: int, lo: int) -> bool { i == lo || raw.at(i - 1) == amp_octet() }
+fn opens(raw: Bytes, i: int) -> bool { i == 0 || raw.at(i - 1) == amp_octet() }
 
-/// Where the pair beginning at `at` ends — the next `&`, or `hi`.
-fn ends(raw: Bytes, at: int, hi: int) -> int {
+/// Where the pair beginning at `at` ends — the next `&`, or the
+/// query's end.
+fn ends(raw: Bytes, at: int) -> int {
     let amp = raw.index_of(amp(), at)
-    if amp < 0 || amp > hi { return hi }
+    if amp < 0 { return raw.length }
     amp
 }
 

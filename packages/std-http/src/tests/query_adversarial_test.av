@@ -1,0 +1,138 @@
+// THE QUERY UNDER ATTACK. query_test.av tells the vertical story —
+// absent, bare, empty, repeated; this file holds what a red team
+// found: what the reader is allowed to SEE, and what a hostile
+// request can make it spend.
+//
+// THE COST OF READING A QUERY IS A PROPERTY OF THE QUERY, NOT OF THE
+// REQUEST IT ARRIVED IN. A reader that searches the buffer for its
+// next separator searches the BODY too, so one request under the
+// declared bounds — a target at the line bound, a body at the body
+// bound — costs (pairs x buffer) and a handler that reads its query
+// burns the loop. The law is not a bound on the search: it is that
+// the reader HOLDS ONLY THE QUERY, so there is nothing past it to
+// search. That is checkable without a stopwatch, which is why it is
+// asserted here and not timed.
+use @std.http.frame.{framed, limits, Limits}
+use @std.http.http.{Request}
+use @std.http.query.{Query, Asked, decoded}
+use @std.text.{from_codepoint}
+
+fn qa_nul() -> string { from_codepoint(0) }
+
+// ── Fixtures ────────────────────────────────────────────────────
+
+/// A request as the server holds one: the head, and a body of
+/// `filler` octets in the SAME buffer.
+fn qa_q_asked_body(target: string, filler: int) -> Request {
+    let head = "POST ${target} HTTP/1.1\r\nHost: h\r\nContent-Length: ${filler}\r\n\r\n"
+    qa_framed_from(head.bytes().concat([97 for i in 0..filler].bytes()!))!
+}
+
+fn qa_framed_from(raw: Bytes) -> Request? {
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t" }
+        .Partial -> null
+        .Refused(_) -> null
+    }
+}
+
+fn qa_q_of(target: string) -> Query { qa_q_asked_body(target, 0).query() }
+
+fn qa_said(a: Asked) -> string {
+    match a {
+        .Absent -> "absent",
+        .Bare -> "bare",
+        .Value(v) -> "[${v.text() ?? "?"}]",
+        .Repeated(n) -> "repeated ${n}",
+    }
+}
+
+fn qa_one(target: string, name: string) -> string { qa_said(qa_q_of(target).one(name)) }
+
+/// The same query read out of a bare head and out of a head carrying
+/// a body — the answers a handler gets, either way.
+fn qa_shown(q: Query) -> string {
+    "${q.length()}|${[n.text() ?? "?" for n in q.names()].join(",")}|${qa_said(q.one("a"))}"
+}
+
+fn qa_dec(s: string) -> string { decoded(s.bytes())?.text() ?? "refused" }
+
+/// A query of `n` bare keys — the shape that costs the most per octet.
+fn qa_many(n: int) -> string { "/x?" + ["k${i}" for i in 0..n].join("&") }
+
+spec "@std.http query adversarial" {
+    given "the reader sees the query and nothing else" {
+        then "A QUERY READER HOLDS ONLY THE QUERY'S OCTETS, so a body cannot be searched" {
+            qa_q_of("/x?a=1").raw.length == 3
+        }
+        then "and an empty query holds nothing" { qa_q_of("/x?").raw.length == 0 }
+        then "and a request with no query holds nothing either" { qa_q_of("/x").raw.length == 0 }
+        then "a query at the line bound holds exactly its own octets" {
+            qa_q_asked_body(qa_many(1000), 0).query().raw.length == qa_many(1000).length - 3
+        }
+        then "AND A MEGABYTE OF BODY BEHIND IT CHANGES NEITHER THE ANSWER NOR THE OCTETS HELD" {
+            let big = qa_q_asked_body("/x?a=1&b=2", 1048570).query()
+            qa_shown(big) == qa_shown(qa_q_of("/x?a=1&b=2")) && big.raw.length == 7
+        }
+        then "a thousand pairs behind a megabyte answer what a thousand pairs answer" {
+            qa_q_asked_body(qa_many(1000), 1048570).query().length() == 1000
+        }
+    }
+
+    given "separators a request can carry into the body" {
+        then "an `&` in the body is not a separator of the query" {
+            qa_body_query("/x?a=1", "z&z&z") == "1|a|[1]"
+        }
+        then "an `=` in the body does not split a bare key" {
+            qa_body_query("/x?a", "z=z") == "1|a|bare"
+        }
+        then "and neither reaches a query that ends at the target's end" {
+            qa_body_query("/x?a=1&b", "&&&===") == "2|a,b|[1]"
+        }
+    }
+
+    given "degenerate queries" {
+        then "only separators carry no pairs" { qa_q_of("/x?&&&&").length() == 0 }
+        then "a lone `=` names no key" { qa_q_of("/x?=").length() == 0 }
+        then "a lone `&` names no key" { qa_q_of("/x?&").length() == 0 }
+        then "a key of one octet is a key" { qa_one("/x?a", "a") == "bare" }
+        then "a key with an empty value is a value" { qa_one("/x?a=", "a") == "[]" }
+        then "a value holding the separator's escape is one value" { qa_one("/x?a=1%262", "a") == "[1%262]" }
+        then "the FIRST `=` splits and the rest is the value" { qa_one("/x?a=b=c", "a") == "[b=c]" }
+        then "a name that is a prefix of another is not that other" { qa_one("/x?a=1&ab=2", "a") == "[1]" }
+        then "a repeat is a mistake and says how many" { qa_one("/x?a=1&a=2&a=3", "a") == "repeated 3" }
+        then "a name asked for with an `&` in it matches nothing, because no name holds one" {
+            qa_one("/x?a=1", "a&b") == "absent"
+        }
+        then "a name asked for with a NUL in it matches nothing" {
+            qa_one("/x?a=1", "a" + qa_nul()) == "absent"
+        }
+    }
+
+    given "decoding, and the escapes that are not characters" {
+        then "a trailing `%` is refused" { qa_dec("%") == "refused" }
+        then "a `%` with one digit left is refused" { qa_dec("a%4") == "refused" }
+        then "a `%` followed by non-hex is refused" { qa_dec("%zz") == "refused" }
+        then "a `%` at the very end of a long value is refused" {
+            qa_dec(["a" for i in 0..200].join("") + "%") == "refused"
+        }
+        then "TWO ADJACENT PERCENTS OPEN NO ESCAPE, so nothing is repaired" { qa_dec("%%41") == "refused" }
+        then "an escape whose second digit is a `%` is refused" { qa_dec("%4%41") == "refused" }
+        then "consecutive escapes each decode once" { qa_dec("%41%42%43") == "ABC" }
+        then "an escaped percent decodes once, never twice" { qa_dec("%2525") == "%25" }
+        then "a value with no escape is answered as it arrived" { qa_dec("plain") == "plain" }
+        then "an empty value decodes to an empty value" { qa_dec("") == "" }
+        then "`%00` MINTS A REAL NUL, and the length counts it" { decoded("a%00b".bytes())!.length == 3 }
+        then "a decoded NUL is an octet, so the text is not its own prefix" {
+            decoded("a%00b".bytes())!.text()! == "a" + qa_nul() + "b"
+        }
+        then "`+` is not a space, because a query is not a form" { qa_dec("a+b") == "a+b" }
+    }
+}
+
+/// The query of a target read out of a request whose BODY holds
+/// `body` — the octets a reader must never reach.
+fn qa_body_query(target: string, body: string) -> string {
+    let head = "POST ${target} HTTP/1.1\r\nHost: h\r\nContent-Length: ${body.length}\r\n\r\n"
+    qa_shown(qa_framed_from((head + body).bytes())!.query())
+}
