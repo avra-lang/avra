@@ -198,6 +198,11 @@ test: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 .PHONY: FORCE
 FORCE:
 
+# A PATTERN-MADE PREREQUISITE IS AN INTERMEDIATE FILE, and make deletes
+# those after the build — which would mint every stamp afresh on the
+# next run and rebuild every object every time. Precious keeps them.
+.PRECIOUS: build/%.sha
+
 build/%.sha: %.c FORCE
 	@mkdir -p build
 	@shasum -a 256 $< | cut -d' ' -f1 > $@.tmp
