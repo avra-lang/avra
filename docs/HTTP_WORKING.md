@@ -1441,6 +1441,39 @@ builds because killing mid-`cp` is a corruption path, and that
 restraint is what left the evidence in the log to read; the kill,
 when it came, was aimed at the writer, once.
 
+## The owner delegated the open decisions (2026-09-08), and the restart closed the disk
+
+THE OWNER'S WORDS: "i need you to handle 4. you are task master. stop
+asking me to do this sort of thing." So the four decisions that had sat
+under the owner epic were ruled by the tasks master from the lanes' own
+options, each recorded on its task with the reasoning, and the owner
+queue is EMPTY. Cell<T> (avra-8sb5.8.2): spec 11.5 wins and Cell<T> is
+the only door — a copy is a copy, sharing is visible at the type, H3
+closes as a consequence, and the nine compiler sites plus @std/sqlite's
+close(mut db)/finalize(mut s) are paid INSIDE S2's slice; get/set, not
+forwarding; @memo's write is the compiler's state. Foreign bytes
+(.8.5): Option A — the copy exported, named unsafe, wrapped, a negative
+length refused before memcpy, (null, 0) the empty box, an empty text or
+blob an EMPTY BOX and only SQL NULL null, the borrowed view a recorded
+trigger. The foreground-gate rule (.5.2): THE LOCK IS THE LAW AND THE
+FOREGROUND WAS ITS MECHANISM — a foreground-launched watchdog run the
+harness backgrounds violates nothing; a process outside the lock, or
+one launched to run BESIDE another, is what the two panics were. Main's
+uncommitted files (.5.3): the docs campaign's live edits stay where
+they are, the ignore line was committed, and the integrator moves to a
+DETACHED CLEAN WORKTREE of main so it never stashes the primary. Two
+more, ruled the same way: the law-wording audit is lane D's, one
+section per slice, each law probed once; weak captures is a recorded
+trigger (the second owner-capturing closure that must outlive a
+one-shot), because one consumer does not earn a language feature.
+
+THE DISK closed with the restart: macOS 26.6.2 installed, the three
+update snapshots gone, 46 GiB free, swap 1 GB. Lane A's re-entry guard
+(8a61f86) and lane C's retain histogram are on lane/http (dc4d16d,
+gate green at 708 MB, seed 4382c4a). Every lane session resumed; the
+substrate subagent did not, and its uncommitted bytes-header fix is
+being finished by its successor from the worktree it left.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
