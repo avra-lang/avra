@@ -1004,6 +1004,12 @@ Syntax the grammar lacks:
   not-your-home"` above it, the same line compiles clean and the
   command becomes `echo /tmp/not-your-home`. Spell a shell variable
   `$VAR`, which Avra leaves alone.
+- `_` IS A PARAMETER NAME NOWHERE, and `let _ = f()` everywhere.
+  `fn f(_: int)` is F3002 "`_` is a keyword — cannot be a name", help
+  "pick another name", while `let _ = g()` and `.Bind(_)` are the
+  ordinary spellings. A parameter a SEAT owns and the body never reads
+  is `_q` — a leading underscore is a name, it compiles, and the idiom
+  bar has always read that prefix as "unread by contract" (I23).
 - A MAP'S KEYS ARE STRINGS ONLY: `Map<int, int>` is F2019 "a map's
   keys are strings, not `int`", help "other key types are recorded".
   It kills the obvious trie-node shape; key by the text.

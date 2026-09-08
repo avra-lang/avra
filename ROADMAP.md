@@ -7088,6 +7088,33 @@ additions get siblings, nothing changes shape:
 
 ## Sugar backlog — dogfooding asks
 
+- A LOOP THAT DIVERGES STILL OWES A TAIL VALUE (filed 2026-09-08, the
+  HTTP lane's review round). `while true { ... }` whose every path
+  `return`s or propagates is a diverging loop, and the type checker
+  cannot see it, so each such fn ends with an UNREACHABLE expression
+  written only to satisfy the answer type. FOUR WANTING SITES, all in
+  code a reader has to be told to ignore: `frame.av`'s `fed` ends
+  `.More(cur)`, `server.av`'s `run` ends `.Ok(turns)`, its `advanced`
+  ends `.Ok(l.conn.fd)`, its `accepted` ends `.Ok(n)`. THE COST IS
+  HONESTY, not keystrokes: the dead tail is a VALUE a reader must
+  decide is unreachable, and in `fed`'s case it is a `Chunked` variant
+  that would be a WRONG ANSWER if it ever ran. THE FORM WANTED: either
+  a `loop { }` that types as never, or flow analysis that reads `while
+  true` with no `break` as diverging — the second costs no syntax and
+  reaches the sites already written. NOT the recursion these fns would
+  otherwise use: `avra run` traps at 400 nested calls, and a chunked
+  body of 200 chunks reaches that.
+
+- A WILDCARD PARAMETER (filed 2026-09-08, the HTTP lane's review
+  round). `fn f(_: int)` is F3002 "`_` is a keyword — cannot be a
+  name", while `let _ = g()` and `.Bind(_)` are ordinary. WANTING
+  SITE: nineteen route handlers in std-http's suites whose signature
+  `routed`/`fixed`/`tailed` owns and whose body never reads the
+  request — they spell `_q` today, which works and which the idiom bar
+  reads, but the language already has the word for "I am deliberately
+  not naming this" and a seat is the one place it refuses it. Cheap,
+  and it makes I23's licensed case spell itself the way I22's does.
+
 - PROCESS-WIDE MUTABLE STATE — a package cannot own a handle table.
   MEASURED: `once fn slots() -> List<int> { [] }` then three pushes
   answers `1 1 1 | table now holds 0`, eval == native — every caller
