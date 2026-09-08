@@ -266,6 +266,11 @@ def declaring_sources():
     # depend on `make traps` having run first.
     return sorted(glob.glob(os.path.join(ROOT, "packages/**/*.av"), recursive=True)
                   + glob.glob(os.path.join(ROOT, "corpus/**/*.av"), recursive=True)
+                  # `tools/` DECLARES TOO: a bench is a package like any
+                  # other, and `tools/bench/frame_head` names
+                  # `avra_now_ns`. A root the keeper does not walk is a
+                  # crossing it reports nothing about.
+                  + glob.glob(os.path.join(ROOT, "tools/**/*.av"), recursive=True)
                   + glob.glob(os.path.join(ROOT, "tools/*.sh")))
 
 def externs():
@@ -1425,7 +1430,7 @@ def main():
     unchecked = len(wall) - len(ours)
     note = f"; {unchecked} bind C we do not own, every width named" if unchecked else ""
     widths = sum(1 for _, t, _ in wall if t in ("i32", "u32", "i64"))
-    scanned = f"{len(sources)} C source(s)"
+    scanned = f"{len(declaring_sources())} declaring source(s) and {len(sources)} C source(s)"
     if packages:
         scanned += f", {len(vendored)} of them owned by {len(packages)} linking package(s)"
     extra = f"; {widths} name a width" if widths else ""
