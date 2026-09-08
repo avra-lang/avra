@@ -324,14 +324,49 @@ impl Machine {
     }
 
 
+    /// TEXT AT A ROW'S SEAT, FROM EITHER BOX. A row's seat kind is
+    /// `Ptr`, which a string and a `Bytes` both fill — natively one
+    /// headered box, read the same way — so a `Bytes` here is those
+    /// bytes viewed as text, and the engines agree about it. Spelled
+    /// over every variant: a `Val` is a registry, and the next kind
+    /// that can fill a pointer seat must answer here.
     fn text_val(v: Val) -> string {
         match v {
             .S(s) -> s,
-            _ -> {
+            .Y(data) -> self.decoded(data),
+            .I(_) or .F(_) or .B(_) or .A(_) or .M(_) or .C(_) or .N -> {
                 self.defect("a non-string reached text")
                 ""
             }
         }
+    }
+
+    /// A BOX'S LENGTH IN BYTES, WITHOUT DECODING: the row reads a
+    /// header natively, so it answers for any octets — including ones
+    /// that are not UTF-8, which text has to refuse and a length never
+    /// needs to. `rest ->` delegates everything that is not octets to
+    /// `text_val`, which is exhaustive.
+    fn byte_length(v: Val) -> int {
+        match v {
+            .Y(data) -> data.length,
+            rest -> self.text_val(v).length,
+        }
+    }
+
+    /// Octets as text. THE DECODE IS LOSSLESS FOR UTF-8 AND ONLY FOR
+    /// UTF-8: an evaluator string cannot hold arbitrary octets, so
+    /// bytes that are not UTF-8 are refused by name, never
+    /// approximated — a silent disagreement with the native answer is
+    /// the one outcome worse than a refusal.
+    fn decoded(data: List<int>) -> string {
+        utf8_text(data) ?? self.refused_octets()
+    }
+
+    /// The refusal above, spoken: the trap names the fault and the
+    /// engine that has none.
+    fn refused_octets() -> string {
+        self.trapped("octets that are not UTF-8 reached a text seat — the evaluator carries text as text and cannot hold these bytes; build natively")
+        ""
     }
 
 
@@ -643,7 +678,7 @@ impl Machine {
             .InsistScalar -> self.insist_scalar_val(vals),
             .Text -> Val.S(self.val_text(vals[0])),
             .FloatTextBits -> Val.S(avra_float_text_bits(self.whole(vals[0]))),
-            .Strlen -> Val.I(self.text_val(vals[0]).length),
+            .Strlen -> Val.I(self.byte_length(vals[0])),
             .ArrayPop -> self.array_pop_val(vals),
             .ArrayConcat -> self.array_concat_val(vals),
             .ArraySlice -> self.array_slice_val(vals),
