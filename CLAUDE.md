@@ -404,7 +404,9 @@ engine's spec, written by dogfooding.
   verb in `@std/text` reads the header, so a NUL is an ordinary
   character on this side — text carrying one is longer than its
   prefix and unequal to it (`==`, `contains`, `index_of`, `split`,
-  `replace` walk the length under `memcmp`/`memmem`, f57372a). It is
+  `replace` walk the length under `memcmp`/`memmem`, f57372a, and
+  `starts_with` joined them here — it was left off that list and
+  still walked with `strncmp`). It is
   `getenv`, `execvp`, `fopen`, `sqlite3_open` that end at the first
   NUL, so a value means a PREFIX of itself the moment it crosses, and
   the guard belongs at the row that hands the pointer over.
@@ -1185,6 +1187,17 @@ Runtime facts, ours to ratify:
   NUL is an ordinary character: `ab\0cd` has `.length` 5, is UNEQUAL
   to `ab`, and `contains("cd")` answers true at index 3. A NUL is
   itself a findable needle.
+  "EVERY" WAS A CLAIM ABOUT FIVE VERBS AND THERE WERE SEVEN.
+  `starts_with` was not on f57372a's list and still walked with
+  `strncmp`, so at EQUAL LENGTH it disagreed with `==` about the same
+  pair — `"ab" + from_codepoint(0) + "cd"` was NOT equal to the same
+  text ending `ce` and DID start with it — and a prefix longer than
+  the text read as a prefix. `ends_with` was on neither list and was
+  already right, which is what let the gap read as closed. Fixed here
+  (`memcmp` over the header), pinned in std-text's NUL block. A
+  UNIVERSAL written from an ENUMERATION is only as wide as the list
+  that produced it, and the list came from the fix rather than from
+  the vocabulary.
   THIS ENTRY SAID THE OPPOSITE UNTIL 927ed49, and half this file's
   NUL doctrine was written from it. Five primitives — `==`,
   `contains`, `index_of`, `split`, `replace` — WERE C string calls

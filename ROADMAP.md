@@ -11446,6 +11446,121 @@ turn loop, which is exactly that shape. Reported, not fixed: it is
 `packages/std-avrac`'s, and a front-end change there wants the
 two-build protocol and its owner.
 
+## THE SUBSTRATE-VALUES RED TEAM — `Bytes` at the row seat, and @std.net (2026-09-07)
+
+Base `9e97b5b`, every probe re-run at HEAD after two builds. Six
+defects fixed with tests; three findings are recorded rather than
+fixed, because each is a DECISION the seat law's owner holds.
+
+FIXED, with where each is pinned:
+1. `starts_with` walked to a NUL where `==` walked the length, so at
+   equal length the two disagreed about the same pair. The pair, in
+   the spelling that MINTS the hazard (`\0` is not an escape, so a
+   literal cannot carry one):
+
+       let a = "ab" + from_codepoint(0) + "cd"
+       let b = "ab" + from_codepoint(0) + "ce"
+       a == b            -> false
+       a.starts_with(b)  -> TRUE
+
+   `strncmp` -> `memcmp` over the header, four cases in std-text's
+   NUL block. The sweep that taught the other five verbs the length
+   walk named five, and these two were the sixth and seventh.
+2. `avra_fd_read` clamped a zero ASK up to one, so `Conn.read(0)`
+   took a byte off the wire nobody asked for — the next message's
+   first byte, taken and never reported. The answer encoding already
+   spends 0 on EOF, so a zero landing had no code; it presents its
+   token now and answers an empty box. A negative ask answers
+   -EINVAL rather than reading. `corpus/net-sizes`, both engines.
+3. `Poller.wait(ms(-1))` BLOCKED FOREVER — the sentinel `connect`
+   refuses by name three verbs up, in the one verb an event loop
+   cannot afford to have block. Absence already spells forever, so a
+   present negative budget is refused.
+4. `Machine.octets` had a catch-all where `text_val` has every
+   variant, so a string at a row that READS OCTETS
+   (`avra_bytes_len("hi")`) answered 2 compiled and "defect: a
+   non-Bytes value reached a byte operation in a clean program"
+   interpreted. That is 0ef691e's law read the other way, and it was
+   the half left standing.
+5. A ROW THAT ANSWERS A SCALAR FROM OCTETS NEVER DECODES —
+   `byte_length` was the first of the family and `avra_str_char_code`
+   its sibling, refusing octets the native row answers for.
+   `BytesOfStr` joined it: octets in, octets out, no decode between.
+6. A `Bytes` carrying a NUL crossed CORE's four name-resolving rows
+   unguarded, so the same holed value refused as a `string` read a
+   different environment variable and RAN A DIFFERENT PROGRAM as a
+   `Bytes`. `tools/traps.sh` gained the two rows.
+
+### (1) A ROW'S `Ptr` SEAT SAYS A POINTER, NOT WHICH BOX
+
+F2056 refuses an aggregate at a host seat — "seat 1 of `atoi` wears
+`List<int>`, which cannot cross to C". A declaration NAMING A ROW
+goes through F2065 instead, which compares ABI KINDS, and every
+pointer-riding type fills `Ptr`. So the seat law is enforced where
+the compiler knows least (a package's C) and skipped where it knows
+most (its own rows). Probed at HEAD, `./avra check` silent on all
+five:
+
+    extern fn avra_str_len(b: List<Bytes>) -> int   native 40, eval defect
+    extern fn avra_str_len(b: List<int>) -> int     native 40, eval defect
+    extern fn avra_str_len(b: Map<string, int>)     native 32, eval defect
+    extern fn avra_str_len(b: P)                    native 40, eval defect
+    extern fn avra_str_len(b: E)                    native 40, eval defect
+
+Natively a box's internal header word is read as a text LENGTH; the
+evaluator says "defect: a non-string reached text in a clean
+program", which is the compiler blaming itself for a program it
+accepted. A BLANKET refusal is wrong — `avra_array_push`'s `Ptr`
+seat takes a list and means it — so closing this wants the row to
+carry what its pointer seats MEAN, which is a column on `RtSig` and
+the vocabulary seam's owner's call.
+
+### (2) A NULLABLE AT A HOST SEAT IS A NULL POINTER C DEREFERENCES
+
+`extern fn atoi(x: string?) -> int` then `atoi(null)` checks CLEAN
+and **crashes both engines with SIGSEGV (139)** — the evaluator's
+crash takes the compiler's own process down. `Bytes?` at a row seat
+does the same. F2056's help says a plain host seat may be "a nullable
+over those", so the allowance is deliberate and fresh; what has no
+holder is the NULL that then crosses. The split is real and is why
+this is a decision and not a patch: a package's C may take
+`const char*` OR NULL and mean it (`getaddrinfo(NULL, …)` is the
+wildcard `avra_net_listen_all` exists to name), while CORE's rows
+never take NULL at a text seat and the compiler knows their bodies.
+Refusing a nullable at a ROW's seat closes the crash without taking
+the capability away from a package.
+
+### (3) THE FOUR COMPARISON ROWS STILL REFUSE OCTETS NATIVE ANSWERS FOR
+
+`avra_streq`, `avra_str_contains`, `avra_str_starts_with` and
+`avra_str_ends_with` decode both seats, so octets that are not UTF-8
+trap in the evaluator where the native row answers:
+
+    extern fn avra_streq(a: Bytes, b: Bytes) -> int
+    avra_streq([255, 254].bytes()!, [255, 254].bytes()!)
+    eval  : octets that are not UTF-8 reached a text seat …
+    native: 1
+
+They belong to the family fixed above and the reason they were left
+is MEASURED, not assumed: a length and a byte read are answered per
+question (`byte_length`, `byte_at`) at no cost, while a COMPARISON
+needs both sides in one currency, and the evaluator's currency for
+octets is `List<int>` — two list builds, or two `Bytes` copies, on
+the hottest string operation the evaluator has. The ROADMAP's
+recorded trigger (a byte-lossless evaluator string, or a `Bytes`
+twin for the text rows) retires these four; it no longer covers the
+scalar rows, which needed no trigger at all.
+
+### WHAT SURVIVED
+
+`Bytes` in every seat and every crossing of every feature, the UTF-8
+matrix at every text row (empty, ASCII, an interior NUL, a snowman, a
+four-byte code point, a BOM — 6 fixtures x 8 rows, `eval == native`),
+ownership under `AVRA_RC_GUARD=1` with zero live bytes at exit, and
+@std.net's hosts, ports, gone descriptors, poller edges, hand-made
+descriptors and write bounds — every one refusing in its own words,
+once, on both engines.
+
 ## THE OPEN LEDGER — the red team's second round (2026-09-03)
 
 980 programs, 77 candidates, 45 confirmed; every wrong answer,

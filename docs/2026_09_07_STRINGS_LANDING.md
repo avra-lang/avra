@@ -1398,9 +1398,12 @@ Its laws, each pinned by a test:
 | `decoded`, one escape | 231 ns |
 
 **AND ONE LAW THE RED TEAM ADDED.** `%00` decodes to a REAL NUL, and a
-value carrying one has a `.length` that counts it while `==`,
-`contains`, `index_of` and `split` stop before it. That is the tree's
-own NUL law arriving through a URL, and `decoded` is the door. The
+value carrying one is an ordinary Avra string — `.length` counts it and
+`==`, `contains`, `index_of` and `split` walk past it (f57372a; this
+paragraph said they stop before it, which was the retracted fact
+travelling by citation). The NUL bites at the C BOUNDARY, not here.
+That is the tree's own NUL law arriving through a URL, and `decoded`
+is the door. The
 ordering is what bounds it: the framer refuses every CTL in a target,
 so no NUL reaches the pair reader, and `decoded` runs AFTER the split —
 what it mints can never change where a pair began.
