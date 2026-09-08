@@ -19,20 +19,18 @@ ROOT=build/traps
 fails=0
 rows=0
 
-# `deps` is a manifest fragment, empty for a row that needs none.
-# `avra build <dir>` answers the binary at <dir>/src/main.
-trapped() {
-    name="$1"; want_msg="$2"; want_status="$3"; deps="$4"; src="$5"
-    rows=$((rows + 1))
-    dir="$ROOT/$name"
+# A row's package on disk. `deps` is a manifest fragment, empty for a
+# row that needs none; the directory is left in `$dir` for the caller.
+scaffold() {
+    dir="$ROOT/$1"
     mkdir -p "$dir/src"
-    printf '[package]\nname    = "zz-trap-%s"\nversion = "0.0.1"\n%s' "$name" "$deps" > "$dir/avra.toml"
-    printf '%s' "$src" > "$dir/src/main.av"
-    if ! ./avra build "$dir" > "$dir/build.out" 2>&1; then
-        echo "traps: $name did not COMPILE"; sed -n '1,4p' "$dir/build.out"
-        fails=$((fails + 1)); return
-    fi
-    got=$("$dir/src/main" 2>&1) && status=0 || status=$?
+    printf '[package]\nname    = "zz-trap-%s"\nversion = "0.0.1"\n%s' "$1" "$2" > "$dir/avra.toml"
+    printf '%s' "$3" > "$dir/src/main.av"
+}
+
+# The words and the status a row must have answered.
+verdict() {
+    name="$1"; want_msg="$2"; want_status="$3"; got="$4"; status="$5"
     if [ "$status" != "$want_status" ]; then
         echo "traps: $name exited $status, the contract says $want_status"
         fails=$((fails + 1))
@@ -40,6 +38,29 @@ trapped() {
         echo "traps: $name said"; echo "  $got"; echo "  the contract says"; echo "  $want_msg"
         fails=$((fails + 1))
     fi
+}
+
+# A NATIVE row. `avra build <dir>` answers the binary at <dir>/src/main.
+trapped() {
+    rows=$((rows + 1))
+    scaffold "$1" "$4" "$5"
+    if ! ./avra build "$dir" > "$dir/build.out" 2>&1; then
+        echo "traps: $1 did not COMPILE"; sed -n '1,4p' "$dir/build.out"
+        fails=$((fails + 1)); return
+    fi
+    got=$("$dir/src/main" 2>&1) && status=0 || status=$?
+    verdict "$1" "$2" "$3" "$got" "$status"
+}
+
+# AN EVALUATED row, which `trapped` cannot reach: it builds and runs a
+# BINARY, so a law belonging to `avra run` — the frame that hosts a
+# package's C inside the compiler's own process — has no row there at
+# all. A nested watchdog's own lines are not the program's words.
+trapped_run() {
+    rows=$((rows + 1))
+    scaffold "$1" "$4" "$5"
+    ./avra run "$dir" > "$dir/run.out" 2>&1 && status=0 || status=$?
+    verdict "$1" "$2" "$3" "$(grep -v '^watch: ' "$dir/run.out")" "$status"
 }
 
 trapped past_end "avra: index 3 is out of bounds (length 3)" 2 '' 'let xs = [1, 2, 3]
@@ -204,6 +225,20 @@ let s = "ab" + avra_str_from_codepoint(0) + "cd"
 let joined = ["x", s].join("|")
 let codes = [s.char_code(i) for i in 0..s.length]
 codes[9]'
+
+# A FOREIGN BODY'S WRECK IS THE PROGRAM'S VERDICT, NOT THE COMPILER'S.
+# Under `avra run` a package's C is called inside the COMPILER's own
+# process, so a callee that dereferences what it was handed took that
+# process down with exit 139 and no words at all — a wreck no reader
+# can tell from a defect of ours. A null at a host seat is how a
+# program reaches it, and the null is not itself the fault: `free(null)`
+# is defined and @std/sqlite hands `SQLITE_STATIC` — a null — at every
+# bind seat and means it (both stand, pinned in features/fns). So the
+# guard is on the FAULT, and its words name the callee and the seats
+# that carried absence into it.
+trapped_run null_at_a_package_seat 'avra: a foreign body faulted inside `atoi` — seat 1 was handed `null`' 2 '' 'extern fn atoi(x: string?) -> int
+atoi(null)
+'
 
 trapped shift_wide "avra: a shift count must be between 0 and 63" 2 '' 'let a = 1
 mut n = 0

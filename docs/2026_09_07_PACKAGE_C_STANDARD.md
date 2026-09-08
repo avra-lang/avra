@@ -1535,6 +1535,35 @@ whose regression is a fork bomb does not belong in a harness, so the
 harness holds the child-spawning twin and this paragraph holds the
 reason.
 
+**AND ABSENCE WAS ADMITTED AT BOTH KINDS OF SEAT, WHERE ONLY ONE OF
+THEM MEANS IT.** The set above ends "or a nullable over those", and
+`extern fn atoi(x: string?)` with `atoi(null)` then checked CLEAN and
+SIGSEGV'd both engines — under `avra run`, inside the compiler's own
+process. THE SPLIT IS THE ANSWER AND IT IS NOT ONE RULE. At a CORE
+ROW's seat the compiler knows the body: every one of core's rows reads
+the pointer it is handed, and `row_agrees` could not see the mistake
+because a nullable fills the same `Ptr` its present twin does. So a
+nullable at a row's plain seat is refused BY NAME (F2066), which is
+where the compiler knows most and was checking least. At a PACKAGE's
+seat it may not be refused, and the measurement is why: `free(NULL)`
+is defined, `getaddrinfo(NULL, …)` is the wildcard, and @std/sqlite
+hands `SQLITE_STATIC` — a null pointer — at every bind seat and a null
+`vfs` at `sqlite3_open_v2`. A refusal there would refuse two shipping
+doors and MINT a divergence where the engines agree today.
+
+**SO THE EVALUATOR GUARDS THE FAULT, NOT THE NULL.** A foreign body is
+not ours to certify and the null is not the thing that goes wrong — the
+DEREFERENCE is, and only the callee's own contract says whether it will
+make one. `ffi.c` arms a verdict before each hosted call and takes
+SIGSEGV/SIGBUS while inside one: the wreck becomes a TRAP (exit 2)
+naming the callee and every seat that carried absence, which is strictly
+wider than a null check, since a stale `ptr` and a freed handle end the
+same way. Outside a hosted call the disposition goes back to the default
+and a defect of the compiler's own wrecks exactly as it did.
+`tools/traps.sh` gained `trapped_run` for it — the harness had no way to
+pin a law belonging to `avra run` at all, because every row before it
+built a binary.
+
 ### 7.4 THE RED TEAM OVER THE SEAM
 
 46 programs, both engines, run against the crossing check the day it

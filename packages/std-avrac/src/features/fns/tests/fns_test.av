@@ -4,7 +4,7 @@
 // the call, param releases at the exit, the answer kept.
 use @std.avrac.core.{RtKind, RtSig, joined}
 use @std.avrac.language.{analyze_source, avra, render_ir}
-use @std.avrac.testing.{refused_with, shown, ir_of, refused_at_run}
+use @std.avrac.testing.{refused_with, shown, ir_of, refused_at_run, refusals}
 
 spec "features/fns" {
     given "a `mut` seat on an extern — the INOUT ABI" {
@@ -98,6 +98,34 @@ spec "features/fns" {
         }
         then "the row's help names how many seats it takes" {
             refused_with("extern fn avra_now_ns(a: int) -> int\navra_now_ns(1)", "The row takes 0 seat(s)")
+        }
+        then "a ROW's seat takes no absence — core's C reads every pointer it is handed" {
+            // `avra_host_env(null)` checked CLEAN and the two engines
+            // wrecked differently: `defect: a non-string reached text
+            // in a clean program` evaluated, a `getenv(NULL)` natively.
+            refused_with("extern fn avra_host_env(name: string?) -> string\navra_host_env(null).length",
+                         "seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence")
+        }
+        then "octets are refused there in the same words — the box is not the axis" {
+            refused_with("extern fn avra_str_len(s: Bytes?) -> int\navra_str_len(null)",
+                         "seat 1 of `avra_str_len` wears `Bytes?`, and a runtime row's seat takes no absence")
+        }
+        then "the row's absence law renders whole" {
+            analyze_source("extern fn avra_host_env(name: string?) -> string\n1").report().starts_with("error[F2066]: seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_env(name: string?) -> string\n  · ┬\n  · ╰── declared here\n──╯\nhelp: core's rows are the compiler's own C and every one of them READS the pointer it is handed")
+        }
+        then "a PACKAGE's C keeps the capability — a nullable seat it may test" {
+            refusals("extern fn zz(name: string?, p: ptr?, n: int?) -> int\n1") == 0
+        }
+        then "and a package's nullable seat carries a PRESENT value across" {
+            shown("extern fn strlen(s: string?) -> int\nstrlen(\"abc\")") == "3"
+        }
+        then "an ABSENT one crosses too where the callee spends the null" {
+            // the guard is on the FAULT and not on the null: C's own
+            // conventions spend the null pointer as a value, and
+            // @std/sqlite hands `SQLITE_STATIC` — a null — at every
+            // bind seat. `atoi(null)` wrecks and is the traps harness's
+            // row; a refusal here would take both of these with it.
+            shown("extern fn free(p: ptr?)\nfree(null)\n7") == "7"
         }
         then "an extern declares a signature the call is judged by" {
             refused_with("extern fn host_add(a: int, b: int) -> int\nhost_add(1, \"x\")", "argument 2 of `host_add` wants `int`, found `string`")

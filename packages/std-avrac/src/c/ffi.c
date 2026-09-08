@@ -28,6 +28,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <dlfcn.h>
+#include <signal.h>
+#include <unistd.h>
 
 enum { AVRA_FFI_MAX_I = 10, AVRA_FFI_MAX_F = 8 };
 
@@ -157,6 +159,61 @@ int64_t avra_ffi_symbol_in(int64_t handle, const char* name) {
     return (int64_t)(uintptr_t)dlsym((void*)(uintptr_t)handle, name);
 }
 
+/* THE FRAME'S FAULT GUARD, and the reason it guards the FAULT and not
+   the null. A foreign body is not ours to certify: it may read a
+   pointer the program handed it and wreck, and under `avra run` that
+   wreck lands in the COMPILER's own process — exit 139, no words,
+   indistinguishable from a defect of ours. A NULL at a host seat is
+   the way a program reaches it, and the null is NOT the fault: C's
+   own conventions spend the null pointer as a value, `free(NULL)` is
+   defined, and @std/sqlite hands `SQLITE_STATIC` — a null — at every
+   bind seat and means it. Refusing the null would refuse those, and
+   mint a divergence where the engines agree today. So the verdict is
+   raised where the wreck is: a SIGSEGV or SIGBUS taken while the frame
+   is inside a callee becomes a TRAP, whose words name the callee and
+   every seat that carried absence into it.
+
+   THE HANDLER IS ASYNC-SIGNAL-SAFE BY CONSTRUCTION. The words are
+   composed by the caller BEFORE the call and copied here, so the fault
+   path is one `write` and one `_exit` — no formatting, no allocation,
+   nothing that could fault again. A fault taken OUTSIDE a hosted call
+   is none of the frame's business: the disposition goes back to the
+   default and the instruction re-faults, so a defect of the compiler's
+   own still wrecks exactly as it did, with the same signal. */
+enum { AVRA_FFI_WORDS = 512 };
+static char g_ffi_words[AVRA_FFI_WORDS];
+static volatile sig_atomic_t g_ffi_words_len = 0;
+static volatile sig_atomic_t g_ffi_in_call = 0;
+static int g_ffi_guarded = 0;
+
+static void ffi_faulted(int sig) {
+    if (!g_ffi_in_call) {
+        signal(sig, SIG_DFL);
+        return;
+    }
+    (void)write(STDERR_FILENO, "avra: ", 6);
+    (void)write(STDERR_FILENO, g_ffi_words, (size_t)g_ffi_words_len);
+    (void)write(STDERR_FILENO, "\n", 1);
+    _exit(2);
+}
+
+/* The verdict a fault inside the NEXT call will wear. Armed per call
+   because the callee and the seats it was handed are what the words
+   name; the handler is installed on the first one, so a run that hosts
+   no extern carries no handler at all. */
+void avra_ffi_arm(const char* words) {
+    size_t n = 0;
+    if (!g_ffi_guarded) {
+        signal(SIGSEGV, ffi_faulted);
+        signal(SIGBUS, ffi_faulted);
+        g_ffi_guarded = 1;
+    }
+    while (n + 1 < AVRA_FFI_WORDS && words[n]) n++;
+    memcpy(g_ffi_words, words, n);
+    g_ffi_words[n] = 0;
+    g_ffi_words_len = (sig_atomic_t)n;
+}
+
 #define AVRA_FFI_ARGS \
     g_ffi_i[0], g_ffi_i[1], g_ffi_i[2], g_ffi_i[3], g_ffi_i[4], \
     g_ffi_i[5], g_ffi_i[6], g_ffi_i[7], g_ffi_i[8], g_ffi_i[9], \
@@ -176,14 +233,21 @@ typedef double (*avra_ffi_real)(AVRA_FFI_SEATS);
    and leaves the rest, so the evaluator extends by the seat's
    declared width exactly as the backend does. */
 int64_t avra_ffi_call(int64_t sym) {
-    return ((avra_ffi_word)(uintptr_t)sym)(AVRA_FFI_ARGS);
+    int64_t answer;
+    g_ffi_in_call = 1;
+    answer = ((avra_ffi_word)(uintptr_t)sym)(AVRA_FFI_ARGS);
+    g_ffi_in_call = 0;
+    return answer;
 }
 
 /* A double answer, handed back as BITS for the same reason the
    argument arrives as bits. */
 int64_t avra_ffi_call_f64(int64_t sym) {
-    double d = ((avra_ffi_real)(uintptr_t)sym)(AVRA_FFI_ARGS);
+    double d;
     int64_t bits;
+    g_ffi_in_call = 1;
+    d = ((avra_ffi_real)(uintptr_t)sym)(AVRA_FFI_ARGS);
+    g_ffi_in_call = 0;
     memcpy(&bits, &d, sizeof bits);
     return bits;
 }

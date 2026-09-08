@@ -117,6 +117,21 @@ fn row_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, hret:
     let sig: FnSig? = cx.stmt_sig(s)
     if sig == null { return nothing() }
     if !row_agrees(cx, row!, sig!, hparams, hret) { extern_redeclares_a_row(cx, s, hname, row!) }
+    row_absence_law(cx, s, hname, hparams, sig!)
+}
+
+/// A ROW'S SEAT TAKES NO ABSENCE, and this is the half the seat law
+/// could not hold: `row_agrees` compares ABI KINDS, and a nullable
+/// fills the same `Ptr` its present twin does, so `avra_host_env(name:
+/// string?)` wore the row's shape exactly and `null` crossed. The
+/// COMPILER KNOWS THESE BODIES — they are core's own C, and every one
+/// of them reads the pointer it is handed — which is why the refusal
+/// is by name here and the capability stays for a package, whose C may
+/// take a pointer-or-NULL and mean it.
+fn row_absence_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, sig: FnSig) {
+    for j, p in sig.params {
+        if !hparams[j].mutable && cx.view.types.carried(p) != null { row_seat_takes_no_absence(cx, s, hname, j, p) }
+    }
 }
 
 /// Whether a declaration crosses the way its row does — the arity,
@@ -419,6 +434,10 @@ fn answer_cannot_cross(mut cx: TypeCx, s: StmtId, hname: string, ret: TypeId) {
 
 fn extern_redeclares_a_row(mut cx: TypeCx, s: StmtId, hname: string, row: RtSig) {
     cx.emit(refusal("type.host_row", cx.stmt_loc(s), "`${hname}` is a runtime row, and this declaration does not wear its shape", "declared here", "both engines call a row by the REGISTRY's seats, never by a program's — so a declaration that disagrees is called on the row's shape with nothing said. The row takes ${row.params.length} seat(s). Spell it as the row does, or name your own C something else."))
+}
+
+fn row_seat_takes_no_absence(mut cx: TypeCx, s: StmtId, hname: string, j: int, p: TypeId) {
+    cx.emit(refusal("type.host_absence", cx.stmt_loc(s), "seat ${j + 1} of `${hname}` wears `${cx.view.types.name_of(p)}`, and a runtime row's seat takes no absence", "declared here", "core's rows are the compiler's own C and every one of them READS the pointer it is handed, so absence there is a null nothing tests: the compiled program faults and the evaluator's fault takes the compiler down with it. A PACKAGE's C may take a pointer-or-NULL and mean it, and that seat is untouched — a row never does. Spell this one without the `?`."))
 }
 
 fn seat_wants_a_local(mut cx: TypeCx, a: ExprId, callee: string, j: int) {

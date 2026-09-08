@@ -11515,7 +11515,32 @@ seat takes a list and means it — so closing this wants the row to
 carry what its pointer seats MEAN, which is a column on `RtSig` and
 the vocabulary seam's owner's call.
 
-### (2) A NULLABLE AT A HOST SEAT IS A NULL POINTER C DEREFERENCES
+### (2) A NULLABLE AT A HOST SEAT IS A NULL POINTER C DEREFERENCES — PAID 2026-09-08
+
+PAID IN TWO HALVES, and the second is not the one this entry proposed.
+The ROW half landed as written: a nullable at a core row's plain seat
+is F2066 "seat 1 of `avra_host_env` wears `string?`, and a runtime
+row's seat takes no absence", because the compiler knows those bodies
+and `row_agrees` could not see it — a nullable fills the same `Ptr` its
+present twin does. THE PACKAGE HALF WAS MEASURED BEFORE IT WAS
+REFUSED, and the measurement turned it around: `free(null)` answers
+under both engines today, and @std/sqlite hands `SQLITE_STATIC` — a
+null — at every bind seat and a null `vfs` at `sqlite3_open_v2`, so
+`avra run` over a sqlite program works. Refusing the null under the
+evaluator would have refused two shipping doors and MINTED a divergence
+where the engines agree. THE NULL IS NOT THE FAULT; the dereference is,
+and only the callee's contract says whether it makes one. So the
+evaluator's frame arms a verdict and takes SIGSEGV/SIGBUS while inside
+a hosted call: `avra: a foreign body faulted inside `atoi` — seat 1 was
+handed `null``, exit 2, pinned by `tools/traps.sh`'s new `trapped_run`.
+That is wider than a null check — a stale `ptr` and a freed handle end
+the same way — and it costs no correct program. What remains open is
+NATIVE: `atoi(null)` in a built binary is still 139, because the guard
+lives in the compiler's C (§5.6.1) and not in the runtime every emitted
+binary carries. Whether an Avra binary should ever die with a bare
+signal is the runtime owner's call.
+
+
 
 `extern fn atoi(x: string?) -> int` then `atoi(null)` checks CLEAN
 and **crashes both engines with SIGSEGV (139)** — the evaluator's

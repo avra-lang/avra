@@ -760,6 +760,7 @@ impl Machine {
         avra_ffi_reset()
         self.staged = []
         if !self.staged_seats(sig, vals) { return self.unstageable(callee) }
+        avra_ffi_arm(fault_words(callee, vals))
         let answer = self.answered(sig.ret, sym)
         self.settled_cells(sig, vals)
         answer
@@ -1558,10 +1559,30 @@ extern fn avra_ffi_set_int(at: int, v: int)
 extern fn avra_ffi_set_f64(at: int, bits: int)
 extern fn avra_ffi_set_text(at: int, s: string)
 extern fn avra_ffi_set_bytes(at: int, b: Bytes)
+extern fn avra_ffi_arm(words: string)
 extern fn avra_ffi_call(sym: int) -> int
 extern fn avra_ffi_call_f64(sym: int) -> int
 extern fn avra_ffi_text_at(address: int) -> string
 extern fn avra_str_crossing(b: Bytes) -> Bytes
+
+/// THE VERDICT A FAULT INSIDE THE CALLEE WILL WEAR, composed BEFORE
+/// the call because a fault handler may not allocate. A HOST SEAT'S
+/// ABSENCE IS A NULL POINTER and only the callee's own contract says
+/// whether it may be one — `free(null)` is defined and `atoi(null)`
+/// wrecks — so the seats that carried absence are named beside the
+/// callee rather than refused ahead of it.
+fn fault_words(callee: string, vals: List<Val>) -> string {
+    let absent: List<int> = [j + 1 for j, v in vals if v is .N]
+    if absent.is_empty() { return "a foreign body faulted inside `${callee}`" }
+    "a foreign body faulted inside `${callee}` — ${absent_seats(absent)}"
+}
+
+/// The seats a call handed absence, spelled for those words.
+fn absent_seats(absent: List<int>) -> string {
+    let ns = joined(["${n}" for n in absent], ", ")
+    if absent.length == 1 { return "seat ${ns} was handed `null`" }
+    "seats ${ns} were handed `null`"
+}
 
 /// WHICH REGISTER FILE A SEAT RIDES. Spelled over every kind rather
 /// than asked with `is`: `RtKind` is a registry, and a boolean about
