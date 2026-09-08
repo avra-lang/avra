@@ -262,6 +262,62 @@ export fn escapes_in(i: Ins, r: Reg) -> bool {
     }
 }
 
+/// An AVRA CALL's argument registers — the seats `retained_args`
+/// retains, and the only ones a conditional ABI could stop retaining.
+/// A REGISTRY: every arm is spelled, so an instruction that grows
+/// call seats breaks the build until it answers.
+export fn seat_regs(i: Ins) -> List<Reg> {
+    match i {
+        .Call(_, _, args) -> args,
+        .CallPtr(_, _, args) -> args,
+        // a runtime row BORROWS its arguments; everything else has none
+        .CallRt(_, _, _) or .CallRtVoid(_, _) or .Pack(_, _) or
+        .Store(_, _) or .Retain(_) or .Release(_) or .RetVal(_) or
+        .FnExit(_) or .ArmEnd(_) or .RegionEnd(_, _) or .ScopeExit(_) or
+        .Extract(_, _, _) or .Bin(_, _, _, _) or .Un(_, _, _) or
+        .Load(_, _) or .IfStart(_) or .SwitchStart(_, _) or
+        .LoopCond(_) or .ScopeEnter(_) or .ConstInt(_, _) or
+        .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+        .FnAddr(_, _) or .Alloca(_) or .LoopStart or .LoopEnd or
+        .Ret(_) -> [],
+    }
+}
+
+/// The symbol an AVRA call names, when it is a known body — a
+/// `CallPtr` names none, so its seats can never be shown read-only.
+export fn call_symbol(i: Ins) -> string? {
+    match i {
+        .Call(_, callee, _) -> callee,
+        .CallPtr(_, _, _) or .CallRt(_, _, _) or .CallRtVoid(_, _) or
+        .Pack(_, _) or .Store(_, _) or .Retain(_) or .Release(_) or
+        .RetVal(_) or .FnExit(_) or .ArmEnd(_) or .RegionEnd(_, _) or
+        .ScopeExit(_) or .Extract(_, _, _) or .Bin(_, _, _, _) or
+        .Un(_, _, _) or .Load(_, _) or .IfStart(_) or
+        .SwitchStart(_, _) or .LoopCond(_) or .ScopeEnter(_) or
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or
+        .ConstBool(_, _) or .FnAddr(_, _) or .Alloca(_) or
+        .LoopStart or .LoopEnd or .Ret(_) -> null,
+    }
+}
+
+/// A store that RETAINS: the pass's rule is both the cell and the
+/// value being managed, so this answers the pair for a caller that
+/// applies `is_managed` itself.
+export fn store_pair(i: Ins) -> List<Reg> {
+    match i {
+        .Store(slot, src) -> [slot, src],
+        .Call(_, _, _) or .CallPtr(_, _, _) or .CallRt(_, _, _) or
+        .CallRtVoid(_, _) or .Pack(_, _) or .Retain(_) or .Release(_) or
+        .RetVal(_) or .FnExit(_) or .ArmEnd(_) or .RegionEnd(_, _) or
+        .ScopeExit(_) or .Extract(_, _, _) or .Bin(_, _, _, _) or
+        .Un(_, _, _) or .Load(_, _) or .IfStart(_) or
+        .SwitchStart(_, _) or .LoopCond(_) or .ScopeEnter(_) or
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or
+        .ConstBool(_, _) or .FnAddr(_, _) or .Alloca(_) or
+        .LoopStart or .LoopEnd or .Ret(_) -> [],
+    }
+}
+
 /// Does `r` fill a seat this row keeps?
 fn kept_seat(callee: string, args: List<Reg>, r: Reg) -> bool {
     [j for j, a in args if same_reg(a, r)].any(rt_keeps(callee, it))
