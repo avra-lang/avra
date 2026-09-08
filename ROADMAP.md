@@ -11385,6 +11385,67 @@ closures_adversarial_test (26 specs):
       the binding the walk had just recorded. Ask the binding: the
       name-keyed verb had no other reader and died with the bug.
 
+## THE HTTP RED TEAM — @std/http, all eight classes (2026-09-07)
+
+Four defects fixed with tests (131e146, a406103, db23051, bc39156).
+Two findings are recorded rather than fixed, because each is a
+DECISION someone else owns.
+
+### (1) ABSOLUTE-FORM IS FRAMED AND CANNOT BE ROUTED — a routing differential
+
+The framer ACCEPTS absolute-form by RFC 9112 §3.2.2, and frame_test
+pins that it does. `Request.path()` then answers the target up to its
+first `?`, which for `GET http://h/p HTTP/1.1` is the WHOLE URI —
+scheme, authority and all. So a route declared `/p` answers the
+origin-form request and 404s the absolute-form one for the same
+resource. Probed at 9e97b5b, both engines:
+
+    origin-form   /p           -> 200
+    absolute-form http://h/p   -> 404
+    path=[http://h/p] segs=4
+
+RFC 9112 §3.3 says a server MUST accept absolute-form and MUST ignore
+the received Host when it does, so a conforming origin server routes
+on its PATH. The differential is the hazard, not the 404: a front end
+that normalises absolute-form to origin-form and an Avra origin
+behind it disagree about WHICH ROUTE ANSWERS, and a filter on
+`/admin` in front of a server that reads `http://h/admin` as a
+different path is the whole shape of a routing bypass.
+
+NOT FIXED HERE BECAUSE IT MOVES A DOCUMENTED CONTRACT. `path()` is
+"THE ONE PLACE THE TARGET IS SPLIT" and its law would become "the
+path component — for an absolute-form target, what follows its
+authority", with `queried()` and the router following. That is the
+lane lead's call, and the alternative — refusing absolute-form at the
+framer — is a real option that costs a §3.2.2 MUST.
+
+### (2) A PROGRAM ENDING IN A RANGE-HEADED `for` CRASHES THE COMPILER
+
+Not @std/http's. Found while writing an ownership probe, minimised to
+one line, and it is on MAIN as well as on lane/http (main's build/avra
+of 2026-09-07 20:08 answers the same):
+
+    $ cat a.av
+    for i in 0..1 { let x = i }
+    $ ./avra check a.av
+    avra: index 3 is out of bounds (length 3)
+
+Exit 2 — a trap, no diagnostic, no file, no line, and the same for
+`run` and `build`. The index is always exactly the list's length, so
+something reads one past a per-statement table. It fires only when
+the LAST top-level statement of a program is a `for` over a RANGE:
+the same loop over a LIST is fine, a `while` is fine, a `for` inside
+a fn is fine, and moving one statement below it is fine.
+
+    for i in [1, 2] { let x = i }        -> clean
+    while false { let x = 1 }            -> clean
+    for i in 0..1 { let x = i }  then  0 -> clean
+
+It bites this surface because a program driving a server ends in a
+turn loop, which is exactly that shape. Reported, not fixed: it is
+`packages/std-avrac`'s, and a front-end change there wants the
+two-build protocol and its owner.
+
 ## THE OPEN LEDGER — the red team's second round (2026-09-03)
 
 980 programs, 77 candidates, 45 confirmed; every wrong answer,
