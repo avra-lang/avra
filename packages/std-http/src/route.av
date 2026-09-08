@@ -144,7 +144,9 @@ fn answered<R>(found: R?, q: Request, serve: fn(Request, R) -> Response) -> Resp
 /// It asks about SEPARATORS, not pieces: `split` drops a trailing
 /// empty segment, so `/ideas/` would come up one short of
 /// `/ideas/{id}` and a route would refuse its own empty capture.
-fn separates(b: Bytes, i: int) -> bool { i == b.length || b.at(i) == 47 }
+fn separates(b: Bytes, i: int) -> bool { i == b.length || b.at(i) == slash_octet() }
+
+fn slash_octet() -> int { 47 }
 
 /// Where each segment of `b` ends — one entry per segment, always at
 /// least one, the last past the final octet.
@@ -192,7 +194,7 @@ type Seg = { hole: bool, key: int, tail: bool }
 
 /// Where a shape's tail begins, or -1 when it has none.
 fn tail_at(shape: List<Seg>) -> int {
-    if shape[shape.length - 1].tail { return shape.length - 1 }
+    if shape.last()!.tail { return shape.length - 1 }
     0 - 1
 }
 
@@ -220,9 +222,14 @@ export type Table = { routes: List<Route>, nodes: List<Node>, root: int }
 
 /// Compile the table. Belongs in a `once fn` — the cost is paid at
 /// the first request and never again.
+///
+/// THE NODES ARE BUILT BEFORE THE TABLE HOLDS THEM. `built` fills the
+/// list through its seat, so a literal reading that list beside the
+/// call would answer whatever the field order happened to be.
 export fn compiled(routes: List<Route>) -> Table {
     mut nodes: List<Node> = []
-    Table { routes: routes, nodes: nodes, root: built(nodes, [shaped(r) for r in routes], [i for i in 0..routes.length], 0, []) }
+    let root = built(nodes, [shaped(r) for r in routes], [i for i in 0..routes.length], 0, [])
+    Table { routes: routes, nodes: nodes, root: root }
 }
 
 /// The node for `cands` at depth `d`, its children built first.
@@ -238,9 +245,9 @@ fn built(mut nodes: List<Node>, shapes: List<List<Seg>>, cands: List<int>, d: in
     let down = sorted_distinct(carried.concat([r for r in cands if tail_at(shapes[r]) == d]))
     let live = [r for r in cands if shapes[r].length > d && tail_at(shapes[r]) != d]
     let segs = [shapes[r][d] for r in live]
-    let keys = sorted_distinct([segs[j].key for j in 0..live.length if !segs[j].hole])
-    let kids = [built(nodes, shapes, [live[j] for j in 0..live.length if segs[j].hole || segs[j].key == k], d + 1, down) for k in keys]
-    let holes = [live[j] for j in 0..live.length if segs[j].hole]
+    let keys = sorted_distinct([s.key for s in segs if !s.hole])
+    let kids = [built(nodes, shapes, [live[j] for j, s in segs if s.hole || s.key == k], d + 1, down) for k in keys]
+    let holes = [live[j] for j, s in segs if s.hole]
     nodes.push(Node {
         rows: sorted_distinct(carried.concat([r for r in cands if shapes[r].length == d])),
         keys: keys,
@@ -424,7 +431,7 @@ fn covers(a: Route, b: Route) -> bool {
     if takes_rest(b.reach) && !takes_rest(a.reach) { return false }
     let x = pieces(a.pattern)
     let y = pieces(b.pattern)
-    if takes_rest(a.reach) { return y.length >= x.length && open_hole(x[x.length - 1]) && covers_upto(x, y, x.length - 1) }
+    if takes_rest(a.reach) { return y.length >= x.length && open_hole(x.last()!) && covers_upto(x, y, x.length - 1) }
     x.length == y.length && covers_upto(x, y, x.length)
 }
 

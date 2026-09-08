@@ -20,7 +20,7 @@
 //! still written; a `100 Continue` is written when a body is expected
 //! and none of it has arrived; a HEAD carries the body's length and
 //! none of its bytes; an idle connection is dropped at its deadline.
-use @std.net.{Listener, Conn, Poller, Event, Interest, Read, NetError, poller}
+use @std.net.{Listener, Conn, Poller, Event, Read, NetError, poller}
 use @std.time.{Duration, now_ms, secs}
 use frame.{Head, Body, Method, Framed, Chunker, Chunked, Limits, framed, chunker, fed, status_of, limits}
 use http.{Request, Response, wire, status, read_size, as_sent}
@@ -122,10 +122,11 @@ impl Server<A> {
     mut fn accepted() -> Result<int, NetError> {
         mut n = 0
         while true {
-            let c: Conn? = self.listener.accept()?
-            if c == null { return .Ok(n) }
-            self.poll.watch(c!.fd, .Read)?
-            self.seated(Link { conn: c!, peer: c!.peer(), buf: "".bytes(), scanned: 0, head: null, decoder: null, out: "".bytes(), written: 0, closing: false, served: 0, heard: now_ms() })
+            let pending: Conn? = self.listener.accept()?
+            if pending == null { return .Ok(n) }
+            let c = pending!
+            self.poll.watch(c.fd, .Read)?
+            self.seated(Link { conn: c, peer: c.peer(), buf: "".bytes(), scanned: 0, head: null, decoder: null, out: "".bytes(), written: 0, closing: false, served: 0, heard: now_ms() })
             n = n + 1
         }
         .Ok(n)
@@ -288,10 +289,15 @@ impl Server<A> {
         }
     }
 
+    /// How long this link may stay silent: a body in flight is owed
+    /// the body deadline, a head half-arrived the head's, an idle
+    /// keep-alive connection the idle one.
     fn deadline(l: Link) -> int {
-        if l.head != null { return self.timing.body.ms }
-        if l.buf.length > 0 { return self.timing.head.ms }
-        self.timing.idle.ms
+        when {
+            l.head != null -> self.timing.body.ms
+            l.buf.length > 0 -> self.timing.head.ms
+            _ -> self.timing.idle.ms
+        }
     }
 }
 
