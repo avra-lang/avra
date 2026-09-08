@@ -610,7 +610,7 @@ impl Emit {
             // SIGN of an argument is the callee's to interpret
             .I32 or .U32 -> avra_llvm_build_trunc(self.b, v, avra_llvm_int32_type(self.lc), "narrow"),
             .F64 -> v,
-            .Ptr -> self.crossing(sig, r, v),
+            .Ptr -> self.crossing(callee, sig, r, v),
             // nothing fills a `void` seat, and grouping it with `.Ptr`
             // gave it a check here that `carries_text` does not give it
             // in the evaluator — an asymmetry waiting for the day one
@@ -626,13 +626,33 @@ impl Emit {
     /// check, so the engines cannot disagree about which strings are
     /// allowed to cross.
     ///
-    /// It fires for a TEXT register only. `Bytes` carries its own
-    /// length and is the escape for a caller who means octets; a list
-    /// or a map at a `Ptr` seat is a box, not a name.
-    fn crossing(sig: RtSig, r: Reg, v: ptr) -> ptr {
+    fn crossing(callee: string, sig: RtSig, r: Reg, v: ptr) -> ptr {
         if sig.inert { return v }
-        if !(self.types.shape_of(self.tys[r.index]) is .Str) { return v }
+        if !self.names_a_name(callee, r) { return v }
         self.call("avra_str_crossing", [v])
+    }
+
+    /// WHETHER THIS REGISTER IS A NAME THE CALLEE WILL RESOLVE, which
+    /// is a question about the ROW and not only about the type. Text
+    /// always is. A `Bytes` is the caller saying OCTETS, and the
+    /// exemption it wears is EARNED BY THE CALLEE KNOWING THE LENGTH
+    /// — a blob and its `n` — which only a C prototype can say, so a
+    /// PACKAGE's extern is `tools/externs.py`'s to judge and never
+    /// this seam's. CORE's non-inert rows take a name and no length
+    /// at all (`avra_host_env`, `avra_io_list`, `avra_exec_self`,
+    /// `avra_spawn_status`), so octets there mean a PREFIX of
+    /// themselves exactly as text does: the same holed name refused as
+    /// a `string` read a different variable as a `Bytes`, and the same
+    /// holed program ran.
+    fn names_a_name(callee: string, r: Reg) -> bool {
+        match self.types.shape_of(self.tys[r.index]) {
+            .Str -> true,
+            .Bytes -> self.rt.get(callee) != null,
+            .Int or .Float or .Bool or .Ptr or .Struct(_, _) or .Enum(_, _) or
+            .App(_, _, _) or .Dyn(_, _) or .List(_) or .Map(_, _) or .Res(_, _) or
+            .Fn(_, _, _) or .Void or .Opt(_) or .Null or .EmptyList or .EmptyMap or
+            .TypeName(_, _) or .Var(_, _, _) or .Error -> false,
+        }
     }
 
     /// A value cast into the I64 slot every category rides.

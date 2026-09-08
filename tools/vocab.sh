@@ -44,7 +44,8 @@ RtKind	packages/std-avrac/src/language/interp.av	rides_fp	which register file a 
 RtKind	packages/std-avrac/src/language/interp.av	carries_cell	whether a seat holds an inout's address
 RtKind	packages/std-avrac/src/language/interp.av	carries_text	whether a seat could carry text across the seam
 Type	packages/std-avrac/src/features/checks.av	comparable	which shapes equality may compare
-Type	packages/std-avrac/src/features/str_lit/check.av	printable	which shapes an interpolation hole may show"
+Type	packages/std-avrac/src/features/str_lit/check.av	printable	which shapes an interpolation hole may show
+Type	packages/std-avrac/src/language/llvm.av	names_a_name	which shapes a callee reads as a NUL-terminated name"
 
 # A here-doc, not a pipe: the loop runs in THIS shell, so `exit 1`
 # ends the script rather than a subshell the gate never sees.

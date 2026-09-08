@@ -134,6 +134,26 @@ extern fn avra_host_env(name: string) -> string
 let s = "PATH" + avra_str_from_codepoint(0)
 avra_host_env(s).length'
 
+# THE FOURTH POSITION IS NOT WHERE THE NUL SITS — IT IS WHICH BOX
+# CARRIES IT. A row's seat kind is `Ptr`, which a string and a `Bytes`
+# both fill, so the same bytes spelled `Bytes` reach the same
+# `getenv`. The exemption a `Bytes` wears is EARNED BY THE CALLEE
+# KNOWING THE LENGTH — a blob and its `n` — and CORE's name-resolving
+# rows carry no length at all, so there the octets mean a PREFIX of
+# themselves exactly as text does. Three positions of the NUL were
+# attacked above and this axis was not, so `avra_host_env` read a
+# different variable and `avra_spawn_status` ran a different program,
+# each with the guard one spelling away.
+trapped nul_crossing_bytes "avra: a string holding a NUL crossed to C as two strings — byte 2" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
+extern fn avra_host_env(name: Bytes) -> string
+let s = ("PA" + avra_str_from_codepoint(0) + "TH").bytes()
+avra_host_env(s).length'
+
+trapped nul_crossing_bytes_prog "avra: a string holding a NUL crossed to C as two strings — byte 13" 2 '' 'extern fn avra_str_from_codepoint(code: int) -> string
+extern fn avra_spawn_status(prog: Bytes, args: List<string>) -> int
+let prog = ("/usr/bin/true" + avra_str_from_codepoint(0) + "/evil").bytes()
+avra_spawn_status(prog, [])'
+
 # A PACKAGE'S BARE `const char*` SEAT, which is where the rule was
 # WRITTEN DOWN before it was enforced. @std/sqlite's adversarial suite
 # pinned the truncation for years — text comparing equal to its own
