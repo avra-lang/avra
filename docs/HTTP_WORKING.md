@@ -1862,43 +1862,65 @@ fingerprints`, `tools/externs.py` (10 C sources, 582 seats) and
 (avra-8sb5.1.16, .1.17), three survey wants (avra-8sb5.11.47-.49), two
 sugar-backlog asks with their wanting sites.
 
-## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
+## WHERE THE CAMPAIGN STANDS (2026-09-08, lane/http 4d298f5 — HANDED TO THE OWNER)
 
-BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
-string patterns, the octet parity (1.24x), grammar values that parse
-and print with the round-trip law enforced, the framer's no with its
-attack table, the router with a full-depth trie (68x, flat across three
-shapes), the query and the tail, the greedy hole (the two domains
-complements at the overlap case), and the once-index re-take as a pair.
-Substrate: the package-C standard, the extern host, io and process out
-of the runtime onto their own C with the evaluator running the same
-bodies, the descriptor scratch and the stage, the build's per-target
-lists and keepers, the S2c paper. The lead's own: the server loop, the
-reply framer, the client, corpus/http-serve, the loop under load and
-under the census. @std/http is 259 cases across framer, reply, router,
-query, server and client suites, every one in the gate.
+THE BRANCH IS COMPLETE TO ITS MANDATE AND WAITS ON ONE THING: the
+owner's validation, their standing rule that nothing reaches main
+without it. 323 commits beyond main, 192 files; gate green at 594 MB;
+the seed at its fixed point; main merged through be54aac (lane B's
+typed [link] rows, lane D's lock law, lane A's integrator in a
+detached worktree). Validate in ../avra-lane-http: `sh tools/watch.sh
+4000 make gate`; read this section and the ten entries above it; run
+corpus/http-serve and corpus/net both ways. Then lane A's integrator
+lands it on main from a worktree born clean.
 
-THE NUMBERS THE MANDATE ASKED FOR, each with its instrument named: a
-four-field head frames in 2,045 ns on shipping (`tools/bench/frame_head`);
-the loop serves 102–118k keep-alive requests a second on one core at
-8.2 µs CPU a request, 4.9 in the loop and 3.4 in the kernel (`ab -k`,
-`ps`); dispatch over 300 routes is 346 ns; a request line by pattern is
-1.24x a hand scan over octets.
+WHAT IT CARRIES. @std/net and @std/http (a framer over Bytes, the
+reply writer, a route trie compiled once, patterns, the query reader,
+the server loop, a blocking client, every target form routed); the
+Bytes value and its evaluator twin, every corpus directory on both
+engines; the package-C standard with the extern host — dlopen by the
+program's own closure, a symbol asked once per callee, the inout
+frame, the fault guard — so package C, sqlite included, runs under
+`avra run` and answers what the native binary answers; the crossing
+check with both surfaces exercised; the stem law and content stamps;
+trap contracts that can pin an `avra run` law. The numbers the mandate
+asked for stand as measured on 2026-09-07: a four-field head frames in
+2,045 ns, the loop serves 102–118k keep-alive requests a second on one
+core at 8.2 µs CPU a request, dispatch over 300 routes is 346 ns, a
+request line by pattern is 1.24x a hand scan.
 
-THE THREE DOORS, DECIDED BY THE OWNER 2026-09-07 and each in the
-ROADMAP's HTTP asks with its measurements: (1) a NUL crossing to C —
-"do the same thing as other mature languages": the five lossy string
-primitives ARE CORRECT (length-aware, lane A's C — landed on main at
-f57372a, merged here at 9fe4efe), the seam TRAPS only a seat the callee RESOLVES (a
-path, a name, a command word, an environment key — the substrate lane,
-in flight), `inert: true` at the site means "reads the header's length",
-faces refuse with words first, `Bytes` the escape; (2) S2c — the
-per-package shared library the evaluator opens by the program's own
-closure, derived by the tree and never named by a manifest (the
-substrate lane, after the seam); (3) immortal `once` answers with the
-`is_shared` line landed alongside — LANDED, main 2b4685d, merged here at
-6c3522a and measured above. Still owed: the validation of lane/http itself, before
-anything reaches main.
+WHAT THE LAST DAY DID TO IT. Three Opus red teams ran all eight
+classes over the whole branch, ~400 programs, and the worst findings
+were on the wire and at the crossing: response splitting through
+unguarded header values, a Bytes carrying a NUL running a different
+program, the keeper abstaining on every float and bool seat, an f32
+return wrong in both engines, one symbol in two libraries, the
+crossing's answer end unheld. All fixed with the test first, and what
+survived — the router, the inout frame, the stamps, ownership, an
+88-line byte-identical differential — is written down as the other
+half of the receipt. The review round then spelled each law once
+where two writers had copies, wrote the shared fixture once, and found
+that the idiom keeper had never opened three packages: 71 sites paid,
+and the keeper now says what it read. The libs tool linked every
+package library with an empty word list; it reads the typed rows now,
+and a keeper holds the manifest's promise to the link line.
+
+OPEN AFTER HAND-OFF, none blocking: the reply framer accepting chunked
+on HTTP/1.0 (.1.16), a per-octet recursion in `past_ows` (.1.17), two
+doctrine collisions and a census of hand-kept lists (.1.18, .1.19,
+.1.21), the narrowed amnesty for the runtime band (.1.22), an extern
+used as a value (avra-3cvq). Handed to other lanes with probes: a
+Ptr seat that names which box (lane A), a tail range-`for` trapping
+`avra check` on main too (lane C), the sqlite read half under its
+ruling (the sqlite lead, waiting on the owner's one line).
+
+AND THE SURVEY. On the owner's word every agent is asked at the end
+of its life what it wanted from the language and did not have; 52
+wants sit under avra-8sb5.11 from six agents, the count already
+doing its job — a differential command and raw multi-line strings
+asked for by every team, `index_of` with no bound and a public struct
+literal each named as the CAUSE of a defect, and four tools parsing
+one manifest four ways named as the shape of the defect just fixed.
 
 ## Slice 3 — `@std.http` (AFTER)
 
