@@ -7,7 +7,7 @@ set -u
 cd "$(dirname "$0")/.."
 fails=0
 n=0
-for f in corpus/*.av; do
+for f in packages/*/corpus/*.av; do
     base=$(basename "$f" .av)
     for m in head1 head2 noparen dupbrace dropfirst reversed noquote; do
         out="build/fuzz_${base}_${m}.av"

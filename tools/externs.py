@@ -222,12 +222,11 @@ def c_returns(sources):
             out[m.group(2)] = (m.group(1).strip(), rel, text.count("\n", 0, m.start()) + 1)
     return out
 
-# WHERE AN EXTERN CAN BE DECLARED. `packages/` alone left the CORPUS
-# unscanned, and corpus/native/externs.av is the file that
-# DEMONSTRATES this seam — the one place a reader looks to learn what
+# WHERE AN EXTERN CAN BE DECLARED. `packages/**` reaches a package's
+# CORPUS too — `std-avrac/corpus/externs.av` is the file that
+# DEMONSTRATES this seam, the one place a reader looks to learn what
 # an extern may do. A keeper blind to its own subject's showcase is
-# the untested-instrument shape: it had never been asked about the
-# declarations most likely to be copied.
+# the untested-instrument shape.
 def declaring_sources():
     # AND THE GENERATORS. `tools/traps.sh` writes whole programs into
     # `build/traps/` from heredocs, and their `extern fn` lines are
@@ -250,7 +249,6 @@ def declaring_sources():
     # wrong three times is still the right shape when the alternative
     # reads someone else's tree.
     return sorted(glob.glob(os.path.join(ROOT, "packages/**/*.av"), recursive=True)
-                  + glob.glob(os.path.join(ROOT, "corpus/**/*.av"), recursive=True)
                   + glob.glob(os.path.join(ROOT, "tools/**/*.av"), recursive=True)
                   + glob.glob(os.path.join(ROOT, "tools/*.sh")))
 

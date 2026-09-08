@@ -824,7 +824,8 @@ engine's spec, written by dogfooding.
   (`stmt.av` or `semantics.av`) and joins `stmt_semantics_of` — the
   drivers' one statement loop reaches it there.
   Start a feature with `avra new feature <name>`; prove it with a
-  corpus pair (`corpus/<name>.av` + `.expected`). `make gate` is
+  corpus pair (`packages/std-avrac/corpus/<name>.av` + `.expected`,
+  which `avra test packages/std-avrac` runs). `make gate` is
   the bar. A corpus program shows its FINAL statement's expression
   only, and only when that statement IS an expression, and
   an interpolation hole prints scalars and strings only — a list
