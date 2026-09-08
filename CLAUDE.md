@@ -1311,10 +1311,18 @@ Runtime facts, ours to ratify:
   chore. And the failed link DESTROYS `build/avra`, because bootstrap
   links straight at it (`-o build/avra`), so `cp build/avra
   build/avra.pre` is the whole protocol here too — and RUNNING OUT OF
-  DISK is the same destruction by a second cause, so `df -h
-  /System/Volumes/Data` before a bootstrap when the volume is tight
-  (2026-09-07: 4.8 GiB free at 100%, one lane already stopped on
-  ENOSPC). It is the
+  DISK is the same destruction by a second cause (2026-09-07: a lane
+  stopped on ENOSPC).
+  BUT THE FREE-SPACE NUMBER BREATHES, so ONE `df` READING IS NOT A
+  DECISION. It went 4.7 GiB -> 651 MiB -> 3.1 GiB -> 2.1 GiB in
+  minutes with NOTHING DELETED: macOS mints and releases swapfiles
+  on the data volume in gigabyte steps under memory pressure, and
+  `sysctl vm.swapusage` read 6.5 GB of 6.9 GB in use at the trough.
+  So a low reading may be a swing rather than a budget, and CLEANING
+  AT A TROUGH treats a symptom that is not there. What actually
+  protects the binary is `cp build/avra build/avra.pre` and FEWER
+  CONCURRENT HEAVY PROCESSES — the same serial discipline the
+  watchdog exists for, which is also what shrinks the swings. It is the
   shadowing law one mechanism over: a target green because a
   DIFFERENT mechanism was doing the work. (The @std/io instance is
   the HTTP lane's, ATTRIBUTED — lane/http c8af70b, not in this tree;
