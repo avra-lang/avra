@@ -1,0 +1,59 @@
+// http.av UNDER ATTACK: the values a handler READS, and the bytes it
+// answers. reply_test.av reads a peer's bytes; this file asks what a
+// handler is told about octets nobody chose.
+use @std.http.frame.{framed, framed_reply, limits, Method, Refusal, Reply, FramedReply}
+use @std.http.http.{Request, Response, Header, wire, text}
+use @std.text.{from_codepoint}
+
+spec "@std.http http adversarial" {
+    given "what a Request answers about octets it holds" {
+        then "A TARGET THE FRAMER ADMITS AND UTF-8 CANNOT SPELL IS ABSENT, NEVER EMPTY" {
+            ha_asked_for(ha_obs_target()) == null
+        }
+        then "and the octets are still there to be read" {
+            ha_framed_target(ha_obs_target()).length == 5
+        }
+        then "an ordinary target answers itself" { ha_asked_for("/a?b=c".bytes()) == "/a?b=c" }
+        then "an empty query is still a target" { ha_asked_for("/a?".bytes()) == "/a?" }
+        then "a field value is ASCII by framing, so a header is total" {
+            ha_header_of("/a", "x-tag: t1\r\n", "x-tag") == "t1"
+        }
+        then "a field the request does not carry is absent" {
+            ha_header_of("/a", "x-tag: t1\r\n", "x-other") == null
+        }
+        then "A FIELD NAME IS COMPARED WHOLE, so a prefix of one is not it" {
+            ha_header_of("/a", "x-tag: t1\r\n", "x-ta") == null
+        }
+        then "and neither is an extension of one" {
+            ha_header_of("/a", "x-tag: t1\r\n", "x-tag-2") == null
+        }
+    }
+}
+
+// ── Fixtures ────────────────────────────────────────────────────
+
+/// A target carrying obs-text — an octet the framer ADMITS and no
+/// UTF-8 decoding can answer.
+fn ha_obs_target() -> Bytes { "/caf".bytes().concat([233].bytes()!) }
+
+fn ha_framed_from(target: Bytes) -> Request? {
+    let raw = "GET ".bytes().concat(target).concat(" HTTP/1.1\r\nHost: h\r\n\r\n".bytes())
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t" }
+        .Partial -> null
+        .Refused(_) -> null
+    }
+}
+
+fn ha_asked_for(target: Bytes) -> string? { ha_framed_from(target)!.target() }
+
+fn ha_framed_target(target: Bytes) -> Bytes { ha_framed_from(target)!.path() }
+
+fn ha_header_of(target: string, fields: string, name: string) -> string? {
+    let raw = ("GET " + target + " HTTP/1.1\r\nHost: h\r\n" + fields + "\r\n").bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t" }.header(name)
+        .Partial -> null
+        .Refused(_) -> null
+    }
+}
