@@ -1214,6 +1214,49 @@ is held pending the lead because the tree's aggregate seats must move
 first: `avra_exec_self(args: List<string>)` reads an `AvraArray` in C,
 which §2.1 makes core's and §2.2 makes a ROW.
 
+### 5.6.10 THE INOUT FRAME — the trigger paid
+
+§5.6.8 refused a `mut` seat and wrote the reason down: the marshalling
+would have been "an instrument nothing could exercise", with the
+RECORDED TRIGGER "the first in-image extern with a `mut` seat, or S2c
+putting a package's own C in reach". S2c fired it, and this is the
+payment. The refusal is DELETED rather than kept beside its
+replacement — a trigger is paid by the code it was holding a place
+for.
+
+THE MECHANISM, mirroring the backend exactly. A `mut` seat hands C the
+ADDRESS of the caller's cell, so the frame keeps storage whose address
+is stable across the call: `avra_ffi_set_cell` seeds it from the
+evaluator's cell and puts that ADDRESS in the staging slot;
+`avra_ffi_cell_at` reads it back afterwards. SEEDED, not zeroed,
+because an inout is not always an out and a callee may read what it
+was handed.
+
+**AND THE WIDTH IS THE WHOLE POINT.** A C `int*` writes 32 bits and
+leaves the top half of a 64-bit cell STALE, so reading it whole
+answers a number the callee never wrote. The backend already
+normalises for this (`normalized_cell`), and the frame reads the width
+from the SAME `cells` column, which is what keeps the engines
+agreeing. WITNESSED BY DISARMING IT: with the narrowing removed, the
+width witness answers `out=4294967295,4294967294` where native says
+`out=-1,-2` — a plausible number, not a crash, which is exactly the
+shape the sqlite red team reported for `int*` out-params. Restored, the
+two engines agree byte for byte.
+
+**A POINTER CELL ANSWERS THROUGH THE SAME DOOR AS A POINTER ANSWER**,
+which the first draft got wrong twice over. `whole` calls a `null` a
+defect, and a `ptr?` cell STARTS at null — `sqlite3_open_v2`'s handle
+is exactly that — so seeding reads `word_of`, where absence is the
+address zero. And reading back, zero is ABSENCE and not the number
+nought: a program that took `0` for a failed open would carry a
+non-null handle to a database that never opened.
+
+**WHAT IT DELIVERS.** `corpus/sqlite` and `corpus/sqlite-refusals`
+lose `native-only`: `eval == native == expected`. Every corpus
+directory but `corpus/bytes-header` is differential now, and that one
+is held by an unrelated evaluator defect ("a non-string reached
+text"), not by this seam.
+
 ## 6. PROPOSED FOR LAND D — as questions, not text
 
 Neither is written by this lane; both are put to LAND D through the

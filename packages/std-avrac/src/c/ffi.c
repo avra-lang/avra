@@ -38,6 +38,14 @@ enum { AVRA_FFI_MAX_I = 10, AVRA_FFI_MAX_F = 8 };
    a wrong argument rather than a crash, so this becomes a frame or
    the protocol breaks silently. */
 static int64_t g_ffi_i[AVRA_FFI_MAX_I];
+
+/* THE CELLS A `mut` SEAT POINTS AT. An inout hands C the ADDRESS of
+   the caller's cell, so the frame needs storage whose address is
+   stable across the call: the staging slot holds that ADDRESS, and
+   this holds the value the callee reads and writes. One per integer
+   slot, because a `mut` seat's ABI kind is always a pointer and every
+   pointer rides the integer file. */
+static int64_t g_ffi_cell[AVRA_FFI_MAX_I];
 static double g_ffi_f[AVRA_FFI_MAX_F];
 
 /* Every slot filled, so a stale value from an earlier call can never
@@ -45,6 +53,7 @@ static double g_ffi_f[AVRA_FFI_MAX_F];
 void avra_ffi_reset(void) {
     memset(g_ffi_i, 0, sizeof g_ffi_i);
     memset(g_ffi_f, 0, sizeof g_ffi_f);
+    memset(g_ffi_cell, 0, sizeof g_ffi_cell);
 }
 
 int64_t avra_ffi_max_int(void) { return AVRA_FFI_MAX_I; }
@@ -94,6 +103,25 @@ void avra_ffi_set_text(int64_t k, const char* s) {
    refuses by name. */
 int64_t avra_ffi_symbol(const char* name) {
     return (int64_t)(uintptr_t)dlsym(RTLD_DEFAULT, name);
+}
+
+/* A `mut` SEAT: cell k seeded with the caller's value, and slot k
+   filled with that cell's ADDRESS. Seeded rather than zeroed because
+   an inout is not always an out — a callee may read what it was
+   handed before writing. */
+void avra_ffi_set_cell(int64_t k, int64_t v) {
+    if (k >= 0 && k < AVRA_FFI_MAX_I) {
+        g_ffi_cell[k] = v;
+        g_ffi_i[k] = (int64_t)(uintptr_t)&g_ffi_cell[k];
+    }
+}
+
+/* What the callee left in cell k, WHOLE. The caller normalises by the
+   width its row declares: a C `int*` writes 32 bits and leaves the
+   top half of this stale, so reading it as an `int64_t` and believing
+   it is the silent wrong answer this seam exists to avoid. */
+int64_t avra_ffi_cell_at(int64_t k) {
+    return (k >= 0 && k < AVRA_FFI_MAX_I) ? g_ffi_cell[k] : 0;
 }
 
 /* A PACKAGE'S LIBRARY, OPENED RTLD_LOCAL — and the flag is the whole

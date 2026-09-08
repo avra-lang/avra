@@ -145,8 +145,14 @@ spec "features/fns" {
             // by `build/avra.pre`: the same program exits 139 there.
             refused_with("extern fn strlen(m: Map<string, int>) -> i64\nstrlen({ \"a\": 1 })", "wears `Map<string, int>`, which cannot cross to C")
         }
-        then "a `mut` seat is refused by name — the frame carries no inout yet" {
-            refused_at_run("extern fn avra_selfhost_argc(mut out: i64) -> int\nmut n = 0\navra_selfhost_argc(n) > 0", "has a `mut` seat — the frame does not carry an inout yet")
+        then "a `mut` seat CROSSES now — the frame seeds a cell and reads it back" {
+            // the refusal this replaced carried a recorded trigger,
+            // "the first in-image extern with a `mut` seat, or S2c
+            // putting a package's own C in reach". S2c fired it.
+            // `avra_selfhost_argc` writes nothing through its seat, so
+            // the cell comes back as it went in — which is the inout
+            // half of the contract, an inout not always being an out.
+            shown("extern fn avra_selfhost_argc(mut out: i64) -> int\nmut n = 7\nlet _ = avra_selfhost_argc(n)\nn") == "7"
         }
         then "a void extern is a statement" {
             shown("extern fn avra_ffi_reset()\navra_ffi_reset()\n2") == "2"

@@ -709,11 +709,12 @@ impl Machine {
         let sym = self.symbol_of(callee)
         if sym == 0 { return self.no_symbol(callee) }
         if self.past_the_frame(sig) { return self.too_many_seats(callee) }
-        if sig.cells.any(carries_cell(it)) { return self.inout_seat(callee) }
         avra_ffi_reset()
         self.staged = []
         if !self.staged_seats(sig, vals) { return self.unstageable(callee) }
-        self.answered(sig.ret, sym)
+        let answer = self.answered(sig.ret, sym)
+        self.settled_cells(sig, vals)
+        answer
     }
 
     /// Every seat staged into its own register file, at its own
@@ -728,12 +729,33 @@ impl Machine {
     /// a frame that is never called does not care what is in it.
     fn staged_seats(sig: RtSig, vals: List<Val>) -> bool {
         let slots = file_slots(sig.params)
-        [self.stage_seat(k, slots[i], vals[i]) for i, k in sig.params].all(it)
+        [self.stage_seat(k, cell_at(sig, i), slots[i], vals[i]) for i, k in sig.params].all(it)
+    }
+
+    /// EVERY `mut` SEAT READ BACK, AT ITS DECLARED WIDTH, after the
+    /// call. A C `int*` writes 32 bits and leaves the top half of a
+    /// 64-bit cell STALE, so reading it whole answers a number the
+    /// callee never wrote. The backend normalises for exactly this
+    /// reason (`normalized_cell`) and reads the width from the SAME
+    /// `cells` column, which is what keeps the two engines agreeing.
+    fn settled_cells(sig: RtSig, vals: List<Val>) {
+        let slots = file_slots(sig.params)
+        for i, k in sig.params {
+            if carries_cell(cell_at(sig, i)) { self.settled_cell(cell_at(sig, i), slots[i], vals[i]) }
+        }
+    }
+
+    fn settled_cell(width: RtKind, at: int, v: Val) {
+        match v {
+            .C(id) -> self.cells.set(id, settled_word(width, avra_ffi_cell_at(at))),
+            rest -> self.defect("a `mut` seat settled onto something that is not a cell"),
+        }
     }
 
     /// HOW ONE ARGUMENT CROSSES — the evaluator's twin of the
     /// backend's `rt_arg`, over the same column.
-    fn stage_seat(k: RtKind, at: int, v: Val) -> bool {
+    fn stage_seat(k: RtKind, cell: RtKind, at: int, v: Val) -> bool {
+        if carries_cell(cell) { return self.staged_cell(at, v) }
         match k {
             .F64 -> self.staged_f64(at, v),
             .Ptr -> self.stage_pointer(at, v),
@@ -755,6 +777,28 @@ impl Machine {
             .I(a) -> self.staged_at(at, a),
             .F(_) or .B(_) or .A(_) or .M(_) or .C(_) -> false,
         }
+    }
+
+    /// A `mut` SEAT HANDS C THE ADDRESS OF THE CALLER'S CELL. The
+    /// frame seeds its own storage with the cell's current value —
+    /// an inout is not always an out, and a callee may read what it
+    /// was handed — and passes THAT address; `settled_cells` reads it
+    /// back. Only a local `mut` binding has a cell, which the seat
+    /// law already holds the CALL site to.
+    fn staged_cell(at: int, v: Val) -> bool {
+        match v {
+            .C(id) -> self.seeded(at, id),
+            .S(_) or .Y(_) or .N or .I(_) or .F(_) or .B(_) or .A(_) or .M(_) -> false,
+        }
+    }
+
+    /// A cell's value as a machine word. `word_of` and not `whole`,
+    /// because a `ptr?` cell starts at `null` and a null pointer
+    /// seeds as the address zero — `sqlite3_open_v2`'s handle is
+    /// exactly that, and `whole` calls a null a defect.
+    fn seeded(at: int, id: int) -> bool {
+        avra_ffi_set_cell(at, self.word_of(self.cells[id]))
+        true
     }
 
     fn staged_f64(at: int, v: Val) -> bool {
@@ -876,21 +920,6 @@ impl Machine {
     /// able to call.
     fn too_many_seats(callee: string) -> Val {
         self.trapped("`${callee}` takes more seats than one frame carries — build natively")
-        Val.I(0)
-    }
-
-    /// AN INOUT SEAT, REFUSED RATHER THAN MARSHALLED. The frame would
-    /// have to seed a slot from the evaluator's cell, pass its
-    /// address, then truncate and extend the answer by the row's
-    /// `cells` column — the backend's own comment specifies it. It is
-    /// NOT written, deliberately: no symbol in the compiler's image
-    /// takes one, so the code would be an instrument nothing could
-    /// ever exercise, which is how a keeper comes to look only for
-    /// the shape its author imagined. RECORDED TRIGGER: the first
-    /// in-image extern with a `mut` seat, or S2c putting a package's
-    /// own C in reach.
-    fn inout_seat(callee: string) -> Val {
-        self.trapped("`${callee}` has a `mut` seat — the frame does not carry an inout yet; build natively")
         Val.I(0)
     }
 
@@ -1420,6 +1449,8 @@ extern fn avra_float_ge(a: int, b: int) -> int
 extern fn avra_ffi_symbol(name: string) -> int
 extern fn avra_ffi_open(path: string) -> int
 extern fn avra_ffi_symbol_in(handle: int, name: string) -> int
+extern fn avra_ffi_set_cell(at: int, v: int)
+extern fn avra_ffi_cell_at(at: int) -> int
 extern fn avra_ffi_reset()
 extern fn avra_ffi_max_int() -> int
 extern fn avra_ffi_max_f64() -> int
@@ -1474,6 +1505,32 @@ fn text_of_val(v: Val) -> string? {
 /// the caller's own slot. `Void` in the row's `cells` column means
 /// the seat is not one. Spelled over every kind: a boolean asking
 /// about ONE variant forgets the next exactly as a catch-all would.
+/// The width behind seat `i`, or `Void` where the row declares none —
+/// a row's `cells` column is shorter than its params whenever no seat
+/// is an inout.
+fn cell_at(sig: RtSig, i: int) -> RtKind {
+    if i >= sig.cells.length { return RtKind.Void }
+    sig.cells[i]
+}
+
+/// A cell as its declared width leaves it — the backend's
+/// `narrow_sign` in the evaluator's currency, spelled over every kind
+/// so a new width demands an answer here too.
+///
+/// A POINTER CELL ANSWERS THROUGH THE SAME DOOR AS A POINTER ANSWER:
+/// zero is ABSENCE, not the number nought. `sqlite3_open_v2` leaves
+/// NULL there when it fails, and a program that reads the handle back
+/// as `0` rather than `null` would carry a non-null pointer to a
+/// database that never opened.
+fn settled_word(width: RtKind, w: int) -> Val {
+    match width {
+        .Ptr -> pointer_val(w),
+        .I32 -> Val.I(sign_extended(w)),
+        .U32 -> Val.I(zero_extended(w)),
+        .I64 or .F64 or .Void -> Val.I(w),
+    }
+}
+
 fn carries_cell(k: RtKind) -> bool {
     match k {
         .Void -> false,
