@@ -1620,6 +1620,56 @@ and raw multi-line strings asked for by every team; `index_of` with
 no bound and a public struct literal each named as the CAUSE of a
 defect rather than friction).
 
+## The red team's two follow-ups (317c72b, 546a76b) and main's typed link rows (f6a9cca, seed a46e4dd)
+
+A ROW'S SEAT TAKES NO ABSENCE, AND THE EVALUATOR GUARDS THE FAULT
+RATHER THAN THE NULL. `row_agrees` compares ABI kinds, and a nullable
+fills the same Ptr its present twin does, so a declaration naming a
+core row wore the row's shape exactly and `atoi(null)` went through to
+a SIGSEGV in both engines, the evaluator's taking the compiler down
+with it. F2066 refuses a nullable at a ROW's seat by name ("seat 1 of
+`avra_host_env` wears `string?`, and a runtime row's seat takes no
+absence"), three specs witnessed failing first. THE PACKAGE HALF
+DEVIATED FROM THE RULING, ON A MEASUREMENT: `free(null)` answers 7 in
+both engines today, and @std/sqlite hands SQLITE_STATIC — a null
+pointer — at every bind seat and a null vfs at open, so refusing the
+null under the evaluator would refuse two shipping doors and MINT a
+divergence where the engines agree. The null is not the fault; the
+dereference is, and only the callee's contract says whether it makes
+one. So ffi.c arms a verdict around each hosted call and takes
+SIGSEGV/SIGBUS inside one — "a foreign body faulted inside `atoi` —
+seat 1 was handed `null`", exit 2 — async-signal-safe by construction
+(words composed before the call, one write, one _exit); a fault outside
+a hosted call restores the default disposition and re-faults, so a
+compiler defect still wrecks exactly as before. Wider than a null
+check (a stale ptr and a freed handle end the same way) and free for
+every correct program. tools/traps.sh had no way to pin an `avra run`
+law at all; `trapped_run` shares its scaffold now, 24 contracts.
+Recorded: natively `atoi(null)` is still a bare signal — whether an
+Avra binary should ever die so is the runtime owner's call.
+
+`path()` ANSWERS THE PATH COMPONENT OF EVERY TARGET FORM. Measured
+through the real framer and router before: origin `/p` 200, absolute
+`http://h/p` 404 — the differential. After: both 200 with
+authority `h`; `http://h` is `/` (9110 §4.2.3, minted rather than
+sliced, or the root's one slash-less spelling 404s); asterisk-form and
+authority-form answer a null path and `dispatch` never walks the table
+for them. `frame.av` gained `TargetForm`, and `target_form_fits` is a
+projection over it — one decision, two readers. The hostile case that
+paid: `http://h?x=/admin` has authority `h` and path `/`. 31 specs in
+target_form_adversarial_test.av, corpus/http-route differential,
+std-http 427. One call to overturn if wanted: `authority()` answers
+null for authority-form (CONNECT), spelled as its own arm.
+
+MAIN'S TYPED LINK ROWS could not be bootstrapped from main's seed:
+that seed names `avra_io_*`/`avra_proc_*`, the runtime symbols this
+branch moved into package objects under the standard, so the link
+failed — and DELETED build/avra, exactly as the doctrine says; the
+saved copy was the way back. The syntax-change protocol carried it:
+our seed, the compiler package's manifest in the OLD spelling for the
+first build, then the typed spelling built twice by the product that
+reads it. No other manifest here spelled `flags`. Gate green at 667 MB.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
