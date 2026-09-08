@@ -1781,6 +1781,46 @@ LEFT ALONE, WITH THE REASON:
 - Each route suite's own grammars and handler words are its subject,
   not scaffolding.
 
+AND THE SAME DISEASE, HUNTED THROUGH THE ARC'S OWN TOOLS once the
+idiom bar named it. Two more live blind spots, both measured:
+
+- `tools/externs.py` walked `packages/**`, `corpus/**` and
+  `tools/*.sh` — non-recursive for the last — so
+  `tools/bench/frame_head/src/main.av`'s `extern fn avra_now_ns() ->
+  int` had never once been checked. It is CORRECT (`int64_t
+  avra_now_ns(void)`), which is exactly why nobody found it. Fixed
+  here; the keeper now reads 520 declaring sources and says so.
+- `tools/libs.py` reads `link.get("flags")` — a key the compiler's own
+  manifest law CANNOT admit under `[link]` (manifest.av:103-104 puts
+  `flags` under `[link.raw]`, which no manifest declares). So the
+  flags list is always empty, `expanded()`'s 17 lines are unreachable,
+  and the two keys manifests DO declare are never read:
+  `libs = ["m", "pthread"]`. `nm -u build/libstd-sqlite.dylib` leaves
+  13 libm/libpthread symbols open, and S2C_DESIGN.md:91-97 says in its
+  own words that a package library must link "exactly the objects and
+  flags the `[link]` row already promises" or be forced onto
+  `-undefined dynamic_lookup`, "the flag that turns a link error into
+  a run-time crash" — which libs.py:90 passes unconditionally on
+  darwin. Latent here, a link failure on linux. FILED
+  (avra-8sb5.1.20), not fixed: it changes what `make libs` emits, and
+  the design is the substrate lane's.
+
+Six more hand-kept lists were censused and filed as a group
+(avra-8sb5.1.21) — externs.py's two-directory tree-C tuple sitting
+UNDER a comment that says "a hand-written list is a registry that
+silently forgets its next member", stems.sh's third copy of the same
+set, the Makefile's SUITES (audited: covers every package that has
+tests today, and nothing checks it — avra-8sb5.1.19). None is a wrong
+answer today; each is the same shape as the one that hid 71 sites.
+
+LEFT ALONE THERE TOO: `stems.sh` prints "that rule examined NOTHING"
+when no compiler objects are on disk and does not fail. Measured
+rather than assumed — `make stems` lists `$(COMPILER_OBJS)
+$(PACKAGE_OBJS)` as prerequisites, so make builds them before the
+script runs, and the summary reports `$looked` either way. The
+mechanism is the prerequisite line, and the keeper already says what
+it looked at.
+
 VERIFIED: std-http 427/427, std-net 25/25, std-sqlite 413/413; the
 http-route, http-serve, net and net-sizes corpora byte-identical;
 `make idioms` debt 0 across 16 packages, `make vocab`, `make
