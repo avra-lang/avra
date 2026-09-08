@@ -71,6 +71,15 @@ I32 = re.compile(r"^(signed\s+)?(int|int32_t)$")
 U32 = re.compile(r"^(unsigned(\s+int)?|uint32_t)$")
 PTR = re.compile(r"(\*|\bLLVM[A-Za-z]*Ref\b)")
 
+# THE FLOATING CLASS IS A REGISTER FILE, not a width, so a rule that
+# only weighs bits cannot see it: an integer answer read from `v0` and
+# a double staged into `x0` both "fill the register" and neither
+# arrives. `double` is the ONE C type the frame reads whole — a C
+# `float` writes the LOW HALF of `v0`, so a body answering `1.5f`
+# through an `f64` seat read as `5.28426686e-315` on BOTH engines, and
+# an agreeing pair of engines is not an oracle.
+F64 = re.compile(r"^(const\s+|volatile\s+)*double$")
+
 # what each DECLARED Avra answer demands of the C body it names
 DEMANDS = {
     "int":    (lambda t: bool(WIDE.search(t)), "fills the 64-bit register",
@@ -85,7 +94,25 @@ DEMANDS = {
                "the seat says `ptr`, so the body must answer one"),
     "string": (lambda t: bool(PTR.search(t)), "is a pointer",
                "the seat says `string`, so the body must answer a `char*`"),
+    "f64":    (lambda t: bool(F64.match(t)), "is a C `double`",
+               "the frame reads `v0` WHOLE — a C `float` writes only its low half, "
+               "and an integer body never touches that file at all"),
+    "float":  (lambda t: bool(F64.match(t)), "is a C `double`",
+               "the frame reads `v0` WHOLE — a C `float` writes only its low half, "
+               "and an integer body never touches that file at all"),
+    # A `bool` crosses as the machine word the runtime words it with,
+    # so it demands exactly what an `int` demands. Abstaining left a
+    # bool seat free to fill a `char*` the body then dereferenced.
+    "bool":   (lambda t: bool(WIDE.search(t)), "fills the 64-bit register",
+               "a `bool` crosses as a word — answer `int64_t`, or declare the seat "
+               "at the width the body uses"),
 }
+
+# EVERY AVRA TYPE THAT IS NOT A POINTER ON THE FAR SIDE. Read as a set
+# rather than spelled at each rule: `points_at` named four of these
+# seven and the three it missed — `bool`, `float`, `f64` — filled a
+# `const char*` the body dereferenced, with the keeper green.
+NOT_A_POINTER = ("int", "i64", "i32", "u32", "f64", "float", "bool")
 
 
 # C THE TREE DID NOT WRITE names its widths through TYPEDEFS and
@@ -373,6 +400,20 @@ def seat_fits(seat, ctype, tds):
     return agrees(declared, ctype, tds)
 
 
+# WHICH LAW A DISAGREEING SEAT BROKE. Three, and only the third is
+# about bits: a value that is not a pointer cannot fill one, a value
+# that rides the FLOATING file cannot fill an integer seat or be
+# filled by one, and what is left is the width. A voice states the law
+# it broke — telling a `bool` seat over a C `double` that "a C `int`
+# is 32 bits" names a symptom that is not even present.
+def seat_fault(seat, declared, ctype):
+    if not seat.strip().startswith("mut ") and points_at(declared, ctype):
+        return "pointer"
+    if (declared in ("f64", "float")) != bool(F64.match(ctype)):
+        return "file"
+    return "width"
+
+
 # AN INTEGER SEAT CANNOT FILL A POINTER, and the width demands could
 # not see it: they ask whether a seat FILLS THE 64-BIT REGISTER, and a
 # pointer fills one — so `int` over `char*` agreed about width and
@@ -386,7 +427,7 @@ def seat_fits(seat, ctype, tds):
 # A `mut` SEAT IS EXEMPT BY CONSTRUCTION, above: the out-parameter
 # convention spends the star, so `mut a: i32` over `int*` is right.
 def points_at(declared, ctype):
-    return declared in ("int", "i64", "i32", "u32") and "*" in ctype
+    return declared in NOT_A_POINTER and "*" in ctype
 
 
 # AN EXTERN WHOSE C BODY MINTS AN OWNED BOX MUST BE A ROW. `owns_result`
@@ -530,7 +571,7 @@ def wrong_seats(wall, sigs, tds):
             bare = PARAM_NAME.sub("", c).strip() or c
             if not seat_fits(a, bare, tds):
                 d = a.partition(":")[2].strip().rstrip("?")
-                why = "pointer" if (not a.strip().startswith("mut ") and points_at(d, bare)) else "width"
+                why = seat_fault(a, d, bare)
                 out.append((name, where, crel, cline, (a, c), 0, 0, why))
     return out
 
@@ -726,8 +767,16 @@ UNFRAMEABLE = [
 ]
 
 # An f32 SEAT is half of a `v` register and a double written there is
-# read as a different number. An f32 RETURN is fine: the answer is read
-# back through the declared width, not through a slot the caller filled.
+# read as a different number.
+#
+# AN f32 RETURN WAS RECORDED AS FINE AND IS NOT. The reasoning was
+# "the answer is read back through the declared width" — but there IS
+# no f32 width word, so `avra_ffi_call_f64` reads `v0` WHOLE and a C
+# `float` wrote only its low half. Measured: a body answering `1.5f`
+# read as `5.28426686e-315` in BOTH engines, so `eval == native` was
+# green over a wrong number. The answer side is `DEMANDS["f64"]`'s
+# now, which asks for a C `double` and names the `float` that is not
+# one; this stays the SEAT's rule alone.
 F32_SEAT = re.compile(r"^(const\s+|volatile\s+)*float\s*$")
 
 
@@ -894,6 +943,21 @@ CASES = [
     # and a return type that is ONLY a macro resolves to nothing, which
     # is not agreement — the teeth the abstention must not file down
     ("int",  "SQLITE_API SOME_WIDTH", False),
+    # THE FLOATING ANSWERS. A `double` is the only C return the frame
+    # reads back whole: `avra_ffi_call_f64` reads `v0` as a double, and
+    # a C `float` writes only its LOW HALF. Measured on this tree — a
+    # body answering `1.5f` read as `5.28426686e-315` in BOTH engines,
+    # so the differential cannot see it.
+    ("f64",   "double",           True),
+    ("f64",   "SQLITE_API double", True),
+    ("float", "double",           True),
+    ("f64",   "float",            False),
+    ("f64",   "int64_t",          False),   # a word answer read from the FP file
+    ("float", "sqlite_int64",     False),
+    # A `bool` crosses as the machine word it is worded with, so it
+    # demands what an `int` demands.
+    ("bool",  "int64_t",          True),
+    ("bool",  "SQLITE_API int",   False),
 ]
 # THE SEAT CASES, pinned for the same reason the answer cases are: the
 # parameter side arrived with a vendored wall and its two hard readings
@@ -919,6 +983,21 @@ SEAT_CASES = [
     ("mut a: i32",    "int *a",                  True),
     ("mut a: i32",    "int a",                   False),  # nothing to write through
     ("ms: i32",       "int ms",                  True),
+    # THE SCALARS THE POINTER RULE DID NOT NAME. `points_at` listed
+    # four of the seven non-pointer scalar seats, so `bool`, `float`
+    # and `f64` over a C pointer read as "the widths agree" and passed
+    # — the same hole `int` over `char*` closed, three types over.
+    ("s: bool",       "const char *s",           False),
+    ("v: float",      "void *h",                 False),
+    ("v: f64",        "const char *s",           False),
+    # AND THE REGISTER FILE, which no width rule can see. A `f64` seat
+    # rides `v0`; a word seat rides `x0`. Neither abstains now.
+    ("x: f64",        "double x",                True),
+    ("x: float",      "double v",                True),
+    ("x: f64",        "int v",                   False),
+    ("x: i64",        "double v",                False),
+    ("x: bool",       "int64_t v",               True),
+    ("x: bool",       "int v",                   False),   # 64 over 32
 ]
 
 
@@ -958,6 +1037,36 @@ def octet_self_test():
     for params, cargs, want in bad:
         print(f"externs: SELF-TEST — `{params}` over C `{cargs}` should "
               f"{'be refused' if want else 'pass'}")
+    return len(bad)
+
+
+# (a written seat, its declared type, the C seat, the law it broke) —
+# one fixture per answer `seat_fault` can give, because an answer no
+# fixture reaches is a wording nobody has ever read.
+FAULT_CASES = [
+    ("s: bool",    "bool",  "const char *", "pointer"),
+    ("v: f64",     "f64",   "void *",       "pointer"),
+    ("x: f64",     "f64",   "int",          "file"),
+    ("x: i64",     "i64",   "double",       "file"),
+    ("col: int",   "int",   "int",          "width"),
+    ("mut a: i32", "i32",   "int *",        "pointer" ),
+]
+
+
+def fault_self_test():
+    """Every law `seat_fault` can name, reached. A `mut` seat spends
+    the star, so its row is the one that must NOT read as a pointer
+    fault."""
+    bad = []
+    for seat, declared, ctype, want in FAULT_CASES:
+        got = seat_fault(seat, declared, ctype)
+        if seat.strip().startswith("mut "):
+            want = "width"
+        if got != want:
+            bad.append((seat, ctype, want, got))
+    for seat, ctype, want, got in bad:
+        print(f"externs: SELF-TEST — seat `{seat}` over C `{ctype}` breaks the "
+              f"{want} law; it reads as {got}")
     return len(bad)
 
 
@@ -1178,7 +1287,7 @@ def inert_self_test():
     return 0
 
 def main():
-    if self_test() + seat_self_test() + octet_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + keep_self_test() + inert_self_test():
+    if self_test() + seat_self_test() + fault_self_test() + octet_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + keep_self_test() + inert_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -1238,10 +1347,15 @@ def main():
         a, c = pair
         print(f"externs: {name} seats `{a}` in {where} over C `{c}` at {crel}:{cline}")
         if why == "pointer":
-            print(f"externs:   an INTEGER cannot fill a POINTER. Both are 64 bits, so the widths")
+            print(f"externs:   A VALUE CANNOT FILL A POINTER. Both are 64 bits, so the widths")
             print(f"externs:   agree and nothing else does — the body DEREFERENCES what it is")
             print(f"externs:   handed. Declare the seat `ptr` or `string`, or take a `mut` seat")
             print(f"externs:   if the body writes through it.")
+        elif why == "file":
+            print(f"externs:   A REGISTER FILE IS NOT A WIDTH. A `f64` seat rides `v0` and a word")
+            print(f"externs:   seat rides `x0`, so the callee reads a slot nobody wrote and the")
+            print(f"externs:   number that comes back was never related to the one sent. Declare")
+            print(f"externs:   the seat `f64` where the C says `double`, and a width word elsewhere.")
         else:
             print(f"externs:   the seat and the body must name the same width — a C `int` is 32 bits")
     earned = earned_octets(walls, sigs)
@@ -1320,7 +1434,7 @@ def main():
     print(f"externs: {checked} parameter seat(s) match the C seat they fill")
     print(f"externs: no declaration faces a variadic C body, nor a seat the frame cannot carry")
     print(f"externs: read {scanned}; "
-          f"{len(CASES) + len(SEAT_CASES) + len(OCTET_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES) + len(INERT_CASES)} of the keeper's own cases hold")
+          f"{len(CASES) + len(SEAT_CASES) + len(FAULT_CASES) + len(OCTET_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES) + len(INERT_CASES)} of the keeper's own cases hold")
     return 0
 
 sys.exit(main())

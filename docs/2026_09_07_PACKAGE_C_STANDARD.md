@@ -1169,9 +1169,22 @@ THE STATIC REFUSALS LANDED WITH IT. `make externs` now refuses a
 value, and an `f32` SEAT — each detected positively and by name, never
 as "not a scalar I recognise", which would refuse every typedef the
 keeper has not met and make the rule's true-positive rate its author's
-imagination. An f32 RETURN is fine and passes, because an answer is
-read back through the declared width rather than from a slot the
-caller filled. WHAT IS NOT COVERED, said out loud: a struct by value
+imagination.
+
+**AN f32 RETURN WAS RECORDED HERE AS FINE, AND IS NOT.** This
+paragraph said "an answer is read back through the declared width
+rather than from a slot the caller filled" — and there IS no f32 width
+word: `width_rows()` names `i32`, `u32`, `i64`, `f64` and nothing else,
+so `avra_ffi_call_f64` reads `v0` WHOLE while a C `float` writes only
+its low half. Measured on a witness body answering `1.5f` through a
+declared `f64`: **`5.28426686e-315`, in BOTH engines.** The
+differential was green over a wrong number, which is this file's own
+"agreeing engines are not an oracle" firing inside its own claim. The
+sentence was written from the DESIGN's model of the read; nobody ran
+it, because nothing in the tree has ever answered a C `float`. `make
+externs` now holds a declared `f64`/`float` to a C `double` and names
+the `float` that is not one — the answer side is the width rule's, the
+SEAT stays `F32_SEAT`'s. WHAT IS NOT COVERED, said out loud: a struct by value
 behind a TYPEDEF reads as an ordinary name and passes. It cannot bite
 while an Avra seat can only be `int`, `ptr`, a width word or `float`,
 none of which can name a struct — and that is the recorded trigger.
