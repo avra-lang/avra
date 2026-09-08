@@ -1,7 +1,7 @@
 //! The reply framer: a status line's forms, a reply's body rules by
 //! status and by the request's method, and the refusals it shares
 //! with the request framer.
-use @std.http.frame.{framed_reply, limits, FramedReply, ReplyBody, Reply, Refusal, Method}
+use @std.http.frame.{framed_reply, limits, ReplyBody, Reply, Refusal, Method}
 
 fn reply_of(text: string, asked: Method) -> Reply? {
     match framed_reply(text.bytes(), 0, 0, limits(), asked) {
@@ -37,9 +37,10 @@ fn body_word(b: ReplyBody) -> string {
 }
 
 fn shape(text: string, asked: Method) -> string {
-    let r: Reply? = reply_of(text, asked)
-    if r == null { return "no reply" }
-    "${r!.status} 1.${r!.minor} ${body_word(r!.body)} ${r!.keep_alive} ${r!.fields.length} ${r!.end}"
+    let held: Reply? = reply_of(text, asked)
+    if held == null { return "no reply" }
+    let r = held!
+    "${r.status} 1.${r.minor} ${body_word(r.body)} ${r.keep_alive} ${r.fields.length} ${r.end}"
 }
 
 spec "std.http reply framer" {

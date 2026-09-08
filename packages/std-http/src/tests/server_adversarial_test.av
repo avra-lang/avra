@@ -175,7 +175,7 @@ fn many_clients() -> Result<bool, NetError> {
     let port = pr.s.listener.port
     mut others: List<Conn> = []
     for burst in 0..4 {
-        for i in 0..50 { others.push(connect("127.0.0.1", port, secs(2))?) }
+        others = others.concat([connect("127.0.0.1", port, secs(2))? for i in 0..50])
         pr.s.turn(ms(20))?
     }
     for o in others { let _ = o.write("GET /w HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)? }
@@ -209,7 +209,7 @@ fn replied_to(o: Conn) -> bool {
 /// body: the wire is the server's 500 and the body is this one's, so
 /// anything measuring the handler's body against that wire cuts the
 /// head mid-field.
-fn splitting_echo(mut app: App, q: Request) -> Response {
+fn splitting_echo(mut app: App, _q: Request) -> Response {
     app.hits = app.hits + 1
     Response { status: 200, headers: [Header { name: "x", value: "1\r\nevil: 1" }], body: "hello".bytes() }
 }

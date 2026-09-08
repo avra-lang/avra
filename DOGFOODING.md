@@ -34,7 +34,7 @@ commit). When a review round or a milestone discovers a NEW idiom,
 it lands here AT DISCOVERY, with its smell, its licensed
 exceptions, and — where greppable — a ratchet rule.
 
-THE BAR (tools/idioms.py) rests on four laws, and the first three
+THE BAR (tools/idioms.py) rests on five laws, and the first three
 exist because the old ratchet had a hole under each:
 
   1. THE BASELINE LISTS SITES, NEVER COUNTS. The old tool compared
@@ -54,12 +54,22 @@ exist because the old ratchet had a hole under each:
      must have a matcher or an entry in the tool's UNRATCHETED with
      its reason; the tool fails otherwise. New idioms arrive with
      enforcement or with a written admission of why they cannot.
+  5. THE ROOTS ARE THE PACKAGES, ASKED OF THE TREE. The scan list was
+     hand-kept, so std-http, std-net and std-sqlite were never on it
+     and the bar reported ZERO DEBT over three packages it had never
+     opened — 71 unlicensed sites, including three `xs[xs.length - 1]`
+     that I7 has ratcheted for four milestones. A check that examined
+     nothing is not a check that passed, so the roots are read from
+     `packages/*/src` and the run PRINTS WHAT IT LOOKED AT (389 files
+     in 16 packages today). The same disease has two other known
+     hosts: the Makefile's two link sites, and any keeper whose
+     subject list a new arrival does not join.
 
 Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33 I38 I35 I36.
+Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33 I38 I39 I35 I36.
 Unratcheted, read by a human: I5 (a matcher cannot see whether a
 predicate has effects), I31 (a stolen doc and a legitimate
 multi-paragraph header are the same shape).
@@ -290,6 +300,20 @@ gate — there is no amnesty left to hide in.
       whose signature the trait owns (fifty `nothing()` pass
       methods would otherwise each carry a license). Bodiless trait
       signatures and template text are skipped the same way.
+      THE LICENSED CASE HAS A SPELLING, and it is I22's lesson one
+      rule over: a parameter a SEAT owns and the body never reads is
+      named `_q`, not annotated. The matcher has always skipped a
+      leading underscore and nothing in the tree had ever written one,
+      so nineteen route handlers — whose signature `routed`/`fixed`/
+      `tailed` owns — were each facing a comment. The spelling says
+      "unread by contract" in the language, where a reader sees it
+      without a tooling footnote.
+      ITS MATCHER READ A LAMBDA'S SEAT AS THE FN'S OWN: the parameter
+      list was taken to the line's LAST `)`, so a one-line body
+      holding `f(line, (q: Request) -> ...)` put `q` in the fn's list
+      and the rule accused a parameter that was never declared. Ten
+      hits across std-http and std-sqlite were that, against nineteen
+      true ones — the list ends at its MATCHING paren now.
 - I herein note why I24 is MODULE-scoped: bs2 merges a module's
       files into one bundle, so an import in `program.av` serves
       `mod.av`. Per-FILE unused-import analysis is wrong and will
@@ -439,6 +463,27 @@ reintroducing I3's blind spot names the two spellings it lost.
       sibling and quietly diverging, which is how two of the three
       `fn`-shaped rules came to differ on `mut`. Lane B named the
       class; this is the first tool that can see an instance of it.
+- I39 (ratcheted) A COMPREHENSION OVER A LIST, BUILT ONLY TO BE
+      FOLDED TO A BOOL. `[writable(h) for h in r.headers].all(it)`
+      builds every element and then measures what it built;
+      `r.headers.all((h) -> writable(h))` stops at the first answer
+      and allocates nothing. Seven sites when the rule landed, five of
+      them in one campaign's two writer laws — and the file holding
+      one of those spelled the scan correctly two lines further down,
+      which is what makes this a habit rather than a belief. Two more
+      were in a suite, where the list is a table of hostile inputs and
+      the scan reads better than the fold did. LICENSED BY THE MATCHER
+      and never by an annotation, in the two shapes where the scan
+      cannot be written: over a RANGE (a range takes no methods, so
+      the comprehension is the only form the language has — seven such
+      sites stand, in route.av, format.av and interp_bytes.av), and
+      under a PAIRED head (`for i, k in xs`), where the element alone
+      is what native `all` hands over. Nothing in the tree matches
+      today, so the ratchet is against DRIFT, as I38's is.
+      THE NEAR RELATION IS NOT THE SMELL: a FILTERED comprehension
+      (`[f(x) for x in xs if p(x)].any(it)`) folds a different
+      question, and converting it inverts the predicate; the matcher
+      does not claim it.
 - I37 a FOLD written as a flag where a scan would short-circuit past
       a needed SIDE EFFECT. `all`/`any` stop at the first answer, so
       a loop whose body must run for every element — `paired_unify`

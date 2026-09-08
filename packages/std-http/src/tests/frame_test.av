@@ -1,7 +1,7 @@
 // The framer against the attack table of the framing-laws paper: every
 // row's bytes go in, the law's verdict comes out. A `then` asserts the
 // arm, the status, or the framed value it produced, never a disjunction.
-use @std.http.frame.{framed, chunker, fed, limits, status_of, Framed, Chunked, Chunker, Refusal, Method, Body, Head, Limits}
+use @std.http.frame.{framed, chunker, fed, limits, status_of, Chunked, Chunker, Refusal, Method, Body, Head, Limits}
 
 /// A 1.1 request line with a Host, then `more` lines, then the blank
 /// line — the fixture this suite and the adversarial one share.
@@ -159,7 +159,7 @@ spec "std.http frame" {
                 refuses(req("Content-Length: 5\r\nContent-Length: 6\r\n"), Refusal.ContentLength)
         }
         then "anything but 1*DIGIT refuses, and so does a 20-digit number" {
-            [refuses(req("Content-Length: ${v}\r\n"), Refusal.ContentLength) for v in ["-1", "+5", "0x5", "", "5abc", "5 5", "18446744073709551616"]].all(it)
+            ["-1", "+5", "0x5", "", "5abc", "5 5", "18446744073709551616"].all((v) -> refuses(req("Content-Length: ${v}\r\n"), Refusal.ContentLength))
         }
         then "trailing OWS is not part of the number" {
             length_of(head_of(req("Content-Length: 5 \r\n"))!) == 5
@@ -271,7 +271,7 @@ spec "std.http chunked" {
             got == "abcde"
         }
         then "a size that is not hex refuses" {
-            [chunk_status("${s}\r\nhello\r\n0\r\n\r\n") == 400 for s in ["0x5", "-1", "", "G"]].all(it)
+            ["0x5", "-1", "", "G"].all((s) -> chunk_status("${s}\r\nhello\r\n0\r\n\r\n") == 400)
         }
         then "seventeen digits refuse and sixteen past the body bound are 413" {
             chunk_status("10000000000000000\r\n") == 400 && chunk_status("FFFFFFFFFFFFFFFF\r\n") == 413
