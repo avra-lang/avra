@@ -34,25 +34,9 @@ fn routes() -> List<Route> {
      routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search)]
 }
 
-/// A request built the way the server gets one: framed from octets,
-/// so the target is a span the framer already judged.
-fn asked(line: string) -> Request? {
-    let raw = (line + "\r\nHost: h\r\n\r\n").bytes()
-    match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t" }
-        .Partial -> null
-        .Refused(_) -> null
-    }
-}
-
 /// The status and body a target earns, or "unframed" when the framer
 /// refused the line before the router ever saw it.
-fn answered(line: string) -> string {
-    let q = asked(line)
-    if q == null { return "unframed" }
-    let r = dispatch(compiled(routes()), q!)
-    "${r.status} ${r.body.text() ?? ""}"
-}
+fn answered(line: string) -> string { under(routes(), line) }
 
 spec "@std.http route" {
     given "a table of routes whose records differ" {

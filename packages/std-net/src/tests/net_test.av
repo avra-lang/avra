@@ -43,13 +43,6 @@ fn data_of(r: Read) -> Bytes {
     }
 }
 
-fn message_of(r: Result<Conn, NetError>) -> string {
-    match r {
-        .Err(e) -> e.describe().message,
-        .Ok(_) -> "<connected>",
-    }
-}
-
 fn exact_read() -> Result<bool, NetError> {
     let pr = pair()?
     let sent = "GET / HTTP/1.1\r\n".bytes()
@@ -108,7 +101,7 @@ fn nothing_pending() -> Result<bool, NetError> {
 fn refused_port() -> Result<bool, NetError> {
     let l = listen("127.0.0.1", 0)?
     let port = l.close()?
-    let words = message_of(connect("127.0.0.1", port, secs(2)))
+    let words = words(connect("127.0.0.1", port, secs(2)))
     .Ok(words.starts_with("connect 127.0.0.1:${port}: ") && words.contains("refused"))
 }
 
@@ -127,17 +120,14 @@ fn every_interface_by_name() -> Result<bool, NetError> {
     .Ok(l.port > 0)
 }
 
-fn listen_words(host: string) -> string {
-    match listen(host, 0) {
-        .Err(e) -> e.describe().message,
-        .Ok(_) -> "<listening>",
-    }
-}
+fn listen_words(host: string) -> string { words(listen(host, 0)) }
 
 fn gone_peer() -> Result<bool, NetError> {
     let pr = pair()?
     pr.server.close()?
-    let first = pr.client.write("x".bytes(), 0)
+    // the first write lands in the closed peer's buffer and provokes
+    // the reset the second one then meets; its own answer says nothing
+    let _ = pr.client.write("x".bytes(), 0)
     .Ok(match pr.client.write([1 for i in 0..100000].bytes()!, 0) {
         .Err(e) -> e.describe().kind == "net.write",
         .Ok(_) -> false,
@@ -156,7 +146,7 @@ spec "std.net" {
     given "the failures each verb names" {
         then "a connect to a closed port is refused, with the verb and the peer in its words" { passes(refused_port()) }
         then "a connect that nobody answers times out within its budget" {
-            message_of(connect("10.255.255.1", 9, ms(200))).contains("timed out")
+            words(connect("10.255.255.1", 9, ms(200))).contains("timed out")
         }
         then "a listen on a port in use is refused" { passes(port_in_use()) }
         then "an empty host is refused by name, never bound to every interface" {

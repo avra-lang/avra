@@ -11,8 +11,6 @@
 use @std.http.frame.{framed, limits, Framed, Refusal, Method, Body, Head, status_of}
 use @std.text.{from_codepoint}
 
-fn fa_nul() -> string { from_codepoint(0) }
-
 // ── Fixtures ────────────────────────────────────────────────────
 
 fn fa_verdict(b: Bytes) -> string {
@@ -23,21 +21,9 @@ fn fa_verdict(b: Bytes) -> string {
     }
 }
 
-fn fa_law(b: Bytes) -> Refusal? {
-    match framed(b, 0, 0, limits()) {
-        .Refused(why) -> why,
-        .Partial -> null,
-        .Complete(_) -> null,
-    }
-}
-
-fn fa_refuses(src: string, want: Refusal) -> bool { fa_law(src.bytes()) == want }
-fn fa_partial(src: string) -> bool { fa_verdict(src.bytes()) == "partial" }
-fn fa_frames(src: string) -> bool { fa_law(src.bytes()) == null && !fa_partial(src) }
-
-/// A 1.1 request line with a Host, then `more` lines, then the blank
-/// line — the same fixture frame_test.av uses.
-fn fa_req(more: string) -> string { "GET / HTTP/1.1\r\nHost: a\r\n${more}\r\n" }
+fn fa_refuses(src: string, want: Refusal) -> bool { refuses(src.bytes(), want) }
+fn fa_partial(src: string) -> bool { partial(src.bytes()) }
+fn fa_frames(src: string) -> bool { why(src.bytes()) == null && !fa_partial(src) }
 
 spec "@std.http frame adversarial" {
     given "degenerate shapes" {
@@ -45,22 +31,22 @@ spec "@std.http frame adversarial" {
         then "one octet of a method is partial" { fa_partial("G") }
         then "a lone CR is partial, because its LF may be the next read" { fa_partial("\r") }
         then "a lone LF is partial for the same reason" { fa_partial("\n") }
-        then "a lone NUL is partial" { fa_verdict(fa_nul().bytes()) == "partial" }
+        then "a lone NUL is partial" { fa_verdict(nul().bytes()) == "partial" }
         then "a blank line alone is partial — one empty line before the request line is ignored" {
             fa_partial("\r\n\r\n")
         }
         then "TWO empty lines are one too many, and the request line is what is missing" {
-            fa_refuses("\r\n\r\n" + fa_req(""), .RequestLine)
+            fa_refuses("\r\n\r\n" + req_text(""), .RequestLine)
         }
         then "a request with no fields at all is refused for the Host it owes" {
             fa_refuses("GET / HTTP/1.1\r\n\r\n", .Host)
         }
         then "and HTTP/1.0 owes none" { fa_frames("GET / HTTP/1.0\r\n\r\n") }
         then "a field with an empty value frames — an empty value is a value" {
-            fa_verdict(fa_req("X:\r\n").bytes()) == "complete 2 31"
+            fa_verdict(req_text("X:\r\n").bytes()) == "complete 2 31"
         }
         then "a value of only OWS is an empty value, not an absence" {
-            fa_verdict(fa_req("X:   \r\n").bytes()) == "complete 2 34"
+            fa_verdict(req_text("X:   \r\n").bytes()) == "complete 2 34"
         }
     }
 
@@ -92,7 +78,7 @@ spec "@std.http frame adversarial" {
             fa_refuses("GET /a?b=c#d HTTP/1.1\r\nHost: a\r\n\r\n", .Target)
         }
         then "a NUL is not a target octet, so the line ends where it sits" {
-            fa_law(("GET /a" + fa_nul() + "b HTTP/1.1\r\nHost: a\r\n\r\n").bytes()) == Refusal.RequestLine
+            why(("GET /a" + nul() + "b HTTP/1.1\r\nHost: a\r\n\r\n").bytes()) == Refusal.RequestLine
         }
     }
 
@@ -113,23 +99,23 @@ spec "@std.http frame adversarial" {
     }
 
     given "field lines, position by position" {
-        then "a line with no colon is not a field" { fa_refuses(fa_req("XY\r\n"), .FieldName) }
-        then "an empty name is not a token" { fa_refuses(fa_req(": v\r\n"), .FieldName) }
-        then "a space before the colon is not part of the name" { fa_refuses(fa_req("X : v\r\n"), .FieldName) }
+        then "a line with no colon is not a field" { fa_refuses(req_text("XY\r\n"), .FieldName) }
+        then "an empty name is not a token" { fa_refuses(req_text(": v\r\n"), .FieldName) }
+        then "a space before the colon is not part of the name" { fa_refuses(req_text("X : v\r\n"), .FieldName) }
         then "OBS-FOLD IS NOT A CONTINUATION, it is a line with no name" {
-            fa_refuses(fa_req("X: 1\r\n  cont\r\n"), .FieldName)
+            fa_refuses(req_text("X: 1\r\n  cont\r\n"), .FieldName)
         }
         then "a NUL in a value is not visible ASCII" {
-            fa_law(("GET / HTTP/1.1\r\nHost: a\r\nX: a" + fa_nul() + "b\r\n\r\n").bytes()) == Refusal.FieldValue
+            why(("GET / HTTP/1.1\r\nHost: a\r\nX: a" + nul() + "b\r\n\r\n").bytes()) == Refusal.FieldValue
         }
         then "a NUL in a name is not a token octet" {
-            fa_law(("GET / HTTP/1.1\r\nHost: a\r\nX" + fa_nul() + "Y: 1\r\n\r\n").bytes()) == Refusal.FieldName
+            why(("GET / HTTP/1.1\r\nHost: a\r\nX" + nul() + "Y: 1\r\n\r\n").bytes()) == Refusal.FieldName
         }
         then "A COLON AFTER THE FIRST BELONGS TO THE VALUE" {
-            fa_verdict(fa_req("X:Y: 1\r\n").bytes()) == "complete 2 35"
+            fa_verdict(req_text("X:Y: 1\r\n").bytes()) == "complete 2 35"
         }
         then "an ordinary field repeated is two fields, which is not the framer's quarrel" {
-            fa_verdict(fa_req("X: 1\r\nX: 2\r\n").bytes()) == "complete 3 39"
+            fa_verdict(req_text("X: 1\r\nX: 2\r\n").bytes()) == "complete 3 39"
         }
     }
 
@@ -171,27 +157,14 @@ spec "@std.http frame adversarial" {
     }
 }
 
-fn fa_method_of(src: string) -> Method? {
-    match framed(src.bytes(), 0, 0, limits()) {
-        .Complete(h) -> h.method,
-        .Partial -> null,
-        .Refused(_) -> null,
-    }
-}
+fn fa_method_of(src: string) -> Method? { head_of(src.bytes())?.method }
 
-/// The declared length, -1 for no body and -2 for chunked.
+/// The declared length, -1 for no body and -2 for chunked; -3 partial
+/// and -4 refused, which the framed head cannot say.
 fn fa_length_of(src: string) -> int {
     match framed(src.bytes(), 0, 0, limits()) {
-        .Complete(h) -> fa_body_length(h.body),
+        .Complete(h) -> body_length(h.body),
         .Partial -> 0 - 3,
         .Refused(_) -> 0 - 4,
-    }
-}
-
-fn fa_body_length(b: Body) -> int {
-    match b {
-        .Length(n) -> n,
-        .Chunked -> 0 - 2,
-        .None -> 0 - 1,
     }
 }

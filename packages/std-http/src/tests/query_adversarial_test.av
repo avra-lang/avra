@@ -17,23 +17,13 @@ use @std.http.http.{Request}
 use @std.http.query.{Query, Asked, decoded}
 use @std.text.{from_codepoint}
 
-fn qa_nul() -> string { from_codepoint(0) }
-
 // ── Fixtures ────────────────────────────────────────────────────
 
 /// A request as the server holds one: the head, and a body of
 /// `filler` octets in the SAME buffer.
 fn qa_q_asked_body(target: string, filler: int) -> Request {
     let head = "POST ${target} HTTP/1.1\r\nHost: h\r\nContent-Length: ${filler}\r\n\r\n"
-    qa_framed_from(head.bytes().concat([97 for i in 0..filler].bytes()!))!
-}
-
-fn qa_framed_from(raw: Bytes) -> Request? {
-    match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t" }
-        .Partial -> null
-        .Refused(_) -> null
-    }
+    framed_from(head.bytes().concat([97 for i in 0..filler].bytes()!))!
 }
 
 fn qa_q_of(target: string) -> Query { qa_q_asked_body(target, 0).query() }
@@ -105,7 +95,7 @@ spec "@std.http query adversarial" {
             qa_one("/x?a=1", "a&b") == "absent"
         }
         then "a name asked for with a NUL in it matches nothing" {
-            qa_one("/x?a=1", "a" + qa_nul()) == "absent"
+            qa_one("/x?a=1", "a" + nul()) == "absent"
         }
     }
 
@@ -124,7 +114,7 @@ spec "@std.http query adversarial" {
         then "an empty value decodes to an empty value" { qa_dec("") == "" }
         then "`%00` MINTS A REAL NUL, and the length counts it" { decoded("a%00b".bytes())!.length == 3 }
         then "a decoded NUL is an octet, so the text is not its own prefix" {
-            decoded("a%00b".bytes())!.text()! == "a" + qa_nul() + "b"
+            decoded("a%00b".bytes())!.text()! == "a" + nul() + "b"
         }
         then "`+` is not a space, because a query is not a form" { qa_dec("a+b") == "a+b" }
     }
@@ -134,5 +124,5 @@ spec "@std.http query adversarial" {
 /// `body` — the octets a reader must never reach.
 fn qa_body_query(target: string, body: string) -> string {
     let head = "POST ${target} HTTP/1.1\r\nHost: h\r\nContent-Length: ${body.length}\r\n\r\n"
-    qa_shown(qa_framed_from((head + body).bytes())!.query())
+    qa_shown(framed_from((head + body).bytes())!.query())
 }

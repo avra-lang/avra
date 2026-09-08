@@ -11,8 +11,6 @@ use @std.http.frame.{framed, framed_reply, limits, Method, Refusal, Reply, Frame
 use @std.http.http.{Request, Response, Header, wire, text, sendable, writable}
 use @std.text.{from_codepoint}
 
-fn ha_nul() -> string { from_codepoint(0) }
-
 // ── Fixtures ────────────────────────────────────────────────────
 
 /// One response carrying one handler-chosen field, which is the shape
@@ -70,10 +68,10 @@ spec "@std.http http adversarial" {
             ha_peer_reads(ha_one_field("x", "")) == "200 fields=2"
         }
         then "A NUL IS AN OCTET HERE AND A TERMINATOR THERE, so a value carrying one is refused" {
-            ha_peer_reads(ha_one_field("x", "a" + ha_nul() + "b")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("x", "a" + nul() + "b")) == "500 fields=1"
         }
         then "and a name carrying one is refused" {
-            ha_peer_reads(ha_one_field("a" + ha_nul() + "b", "1")) == "500 fields=1"
+            ha_peer_reads(ha_one_field("a" + nul() + "b", "1")) == "500 fields=1"
         }
         then "a high octet in a value is refused" {
             ha_peer_reads(ha_one_field("x", "a" + from_codepoint(233) + "b")) == "500 fields=1"
@@ -135,7 +133,7 @@ spec "@std.http http adversarial" {
 
     given "the body is octets and never a field" {
         then "a NUL in the body is written, because a body is not a line" {
-            wire(text(200, "a" + ha_nul() + "b"), true, 1).length == wire(text(200, "axb"), true, 1).length
+            wire(text(200, "a" + nul() + "b"), true, 1).length == wire(text(200, "axb"), true, 1).length
         }
         then "an empty body is a length of zero, not an absence" {
             ha_wired(Response { status: 200 }) == "HTTP/1.1 200 OK|content-length: 0||"
@@ -171,12 +169,7 @@ spec "@std.http http adversarial" {
 fn ha_obs_target() -> Bytes { "/caf".bytes().concat([233].bytes()!) }
 
 fn ha_framed_from(target: Bytes) -> Request? {
-    let raw = "GET ".bytes().concat(target).concat(" HTTP/1.1\r\nHost: h\r\n\r\n".bytes())
-    match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t" }
-        .Partial -> null
-        .Refused(_) -> null
-    }
+    framed_from("GET ".bytes().concat(target).concat(" HTTP/1.1\r\nHost: h\r\n\r\n".bytes()))
 }
 
 fn ha_asked_for(target: Bytes) -> string? { ha_framed_from(target)!.target() }
@@ -184,10 +177,5 @@ fn ha_asked_for(target: Bytes) -> string? { ha_framed_from(target)!.target() }
 fn ha_framed_target(target: Bytes) -> Bytes { ha_framed_from(target)!.path()! }
 
 fn ha_header_of(target: string, fields: string, name: string) -> string? {
-    let raw = ("GET " + target + " HTTP/1.1\r\nHost: h\r\n" + fields + "\r\n").bytes()
-    match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t" }.header(name)
-        .Partial -> null
-        .Refused(_) -> null
-    }
+    framed_from(("GET " + target + " HTTP/1.1\r\nHost: h\r\n" + fields + "\r\n").bytes())?.header(name)
 }

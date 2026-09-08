@@ -6,18 +6,7 @@ use @std.http.http.{Request}
 use @std.http.query.{Query, Asked, decoded}
 use @std.text.{from_codepoint}
 
-/// A request built the way the server gets one, so the target is a
-/// span the framer already judged.
-fn q_asked(target: string) -> Request? {
-    let raw = ("GET " + target + " HTTP/1.1\r\nHost: h\r\n\r\n").bytes()
-    match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t" }
-        .Partial -> null
-        .Refused(_) -> null
-    }
-}
-
-fn q_of(target: string) -> Query { q_asked(target)!.query() }
+fn q_of(target: string) -> Query { asked_get(target)!.query() }
 
 /// What one scalar ask answers, as a word.
 fn q_said(a: Asked) -> string {
@@ -41,7 +30,7 @@ fn q_dec(s: string) -> string { decoded(s.bytes())?.text() ?? "refused" }
 
 fn q_names(target: string) -> string { [n.text() ?? "?" for n in q_of(target).names()].join(",") }
 
-fn q_path(target: string) -> string { q_asked(target)!.path()!.text() ?? "?" }
+fn q_path(target: string) -> string { asked_get(target)!.path()!.text() ?? "?" }
 
 spec "@std.http query" {
     given "absent, bare and empty are three answers" {
@@ -151,7 +140,7 @@ spec "@std.http query" {
             q_path("/ideas/7?") == "/ideas/7"
         }
         then "a query that was sent and a query that was not are told apart" {
-            q_asked("/x?")!.queried() && !q_asked("/x")!.queried()
+            asked_get("/x?")!.queried() && !asked_get("/x")!.queried()
         }
     }
 
@@ -239,7 +228,7 @@ spec "@std.http query" {
             q_one("/x?a=1%002", "a") == "[1%002]"
         }
         then "and the framer refuses a NUL in the target outright" {
-            q_asked("/x?a=" + from_codepoint(0)) == null
+            asked_get("/x?a=" + from_codepoint(0)) == null
         }
     }
 

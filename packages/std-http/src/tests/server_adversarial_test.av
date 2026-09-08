@@ -13,45 +13,9 @@ fn sized_echo(mut app: App, q: Request) -> Response {
     text(200, "${q.target() ?? "?"} ${q.body.length} ${app.hits}")
 }
 
-fn pair_with(lim: Limits, t: Timing) -> Result<Pair, NetError> {
-    let l = listen("127.0.0.1", 0)?
-    let s = served(l, App { hits: 0 }, sized_echo, lim, t)?
-    let c = connect("127.0.0.1", l.port, secs(2))?
-    let p = poller()?
-    p.watch(c.fd, .Read)?
-    .Ok(Pair { s: s, c: c, p: p })
-}
+fn pair_with(lim: Limits, t: Timing) -> Result<Pair, NetError> { paired(sized_echo, lim, t) }
 
 fn attacked() -> Result<Pair, NetError> { pair_with(limits(), timing()) }
-
-/// Bytes sent whole, then turns until `expected` bytes are back or the
-/// peer ends.
-fn exchanged_bytes(mut pr: Pair, sent: Bytes, expected: int) -> Result<Bytes, NetError> {
-    mut from = 0
-    while from < sent.length {
-        let n = pr.c.write(sent, from)?
-        if n == 0 { pr.s.turn(ms(20))? }
-        from = from + n
-    }
-    mut got = "".bytes()
-    mut turns = 0
-    while got.length < expected && turns < 60 {
-        pr.s.turn(ms(20))?
-        pr.p.wait(ms(20))?
-        let chunk: Bytes? = match pr.c.read(65536)? {
-            .Data(b) -> b,
-            .Eof -> { return .Ok(got) },
-            .Pending -> null,
-        }
-        got = got.concat(chunk ?? "".bytes())
-        turns = turns + 1
-    }
-    .Ok(got)
-}
-
-fn replied(mut pr: Pair, sent: string) -> Result<string, NetError> {
-    .Ok((exchanged_bytes(pr, sent.bytes(), 1)?).text() ?? "<not text>")
-}
 
 fn status_line(got: Bytes) -> string {
     let t = got.text() ?? ""
@@ -82,7 +46,7 @@ fn torn_terminator() -> Result<bool, NetError> {
         let head = req.substring(0, req.length - 4 + cut)
         let tail = req.substring(req.length - 4 + cut, req.length)
         let early = exchanged_bytes(pr, head.bytes(), 1)?
-        let late = replied(pr, tail)?
+        let late = reply(pr, tail)?
         all = all && early.length == 0 && late.starts_with("HTTP/1.1 200 OK")
     }
     .Ok(all)
@@ -125,7 +89,7 @@ fn too_many_fields() -> Result<bool, NetError> {
 
 fn requests_per_connection() -> Result<bool, NetError> {
     mut pr = pair_with(limits(), Timing { requests: 2 })?
-    let first = replied(pr, "GET /1 HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let first = reply(pr, "GET /1 HTTP/1.1\r\nHost: a\r\n\r\n")?
     let second = exchanged_bytes(pr, "GET /2 HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 1000)?
     .Ok(!first.contains("connection: close") && (second.text() ?? "").contains("connection: close\r\n") && pr.s.connections() == 0)
 }
@@ -153,7 +117,7 @@ fn wrong_major() -> Result<bool, NetError> {
 fn empty_write_then_request() -> Result<bool, NetError> {
     mut pr = attacked()?
     let nothing = exchanged_bytes(pr, "".bytes(), 0)?
-    let r = replied(pr, "GET /e HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let r = reply(pr, "GET /e HTTP/1.1\r\nHost: a\r\n\r\n")?
     .Ok(nothing.length == 0 && r.starts_with("HTTP/1.1 200 OK"))
 }
 
@@ -192,7 +156,7 @@ fn two_clients() -> Result<bool, NetError> {
     mut pr = attacked()?
     let other = connect("127.0.0.1", pr.s.listener.port, secs(2))?
     let _ = other.write("GET /o HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)?
-    let mine = replied(pr, "GET /m HTTP/1.1\r\nHost: a\r\n\r\n")?
+    let mine = reply(pr, "GET /m HTTP/1.1\r\nHost: a\r\n\r\n")?
     pr.s.turn(ms(20))?
     let theirs: Bytes? = match other.read(65536)? {
         .Data(b) -> b,
@@ -251,12 +215,7 @@ fn splitting_echo(mut app: App, q: Request) -> Response {
 }
 
 fn answered_500(sent: string) -> Result<string, NetError> {
-    let l = listen("127.0.0.1", 0)?
-    let s = served(l, App { hits: 0 }, splitting_echo, limits(), timing())?
-    let c = connect("127.0.0.1", l.port, secs(2))?
-    let p = poller()?
-    p.watch(c.fd, .Read)?
-    mut pr = Pair { s: s, c: c, p: p }
+    mut pr = paired(splitting_echo, limits(), timing())?
     let got = exchanged_bytes(pr, sent.bytes(), 1)?
     .Ok((got.text() ?? "<not text>").replace("\r\n", "|"))
 }

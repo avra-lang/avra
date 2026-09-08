@@ -53,15 +53,6 @@ fn targets() -> List<string> {
      "/a//c", "/ideas/a%2Fb", "/v/x/", "/*", "/a/b", "/new/ideas"]
 }
 
-fn framed_get(target: string) -> Request? {
-    let raw = ("GET " + target + " HTTP/1.1\r\nHost: h\r\n\r\n").bytes()
-    match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t" }
-        .Partial -> null
-        .Refused(_) -> null
-    }
-}
-
 /// A target carrying one octet chosen by number — obs-text the framer
 /// admits, or a CTL it must refuse.
 fn with_octet(octet: int) -> Bytes {
@@ -73,17 +64,15 @@ fn shown(r: Response) -> string { "${r.status}${r.body.text() ?? ""}" }
 /// What the table answers for a target, or "unframed" when the framer
 /// refused the line before the router saw it.
 fn hit(rows: List<Route>, target: string) -> string {
-    let q = framed_get(target)
+    let q = asked_get(target)
     if q == null { return "unframed" }
     shown(dispatch(compiled(rows), q!))
 }
 
 fn hit_raw(rows: List<Route>, raw: Bytes) -> string {
-    match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> shown(dispatch(compiled(rows), Request { raw: raw, head: head, body: "".bytes(), peer: "t" }))
-        .Partial -> "unframed"
-        .Refused(_) -> "unframed"
-    }
+    let q = framed_from(raw)
+    if q == null { return "unframed" }
+    shown(dispatch(compiled(rows), q!))
 }
 
 /// THE ORACLE — the algorithm the table replaced, judging each
@@ -113,7 +102,7 @@ fn wide_enough(r: Route, target: Bytes) -> bool {
 /// The targets on which the table and the scan disagree.
 fn disagreements() -> List<string> {
     let t = compiled(every())
-    [g for g in targets() if framed_get(g) != null && shown(dispatch(t, framed_get(g)!)) != shown(scanned(every(), framed_get(g)!))]
+    [g for g in targets() if asked_get(g) != null && shown(dispatch(t, asked_get(g)!)) != shown(scanned(every(), asked_get(g)!))]
 }
 
 fn named(rows: List<Route>) -> string { faults(rows).join(" ; ") }
@@ -144,7 +133,7 @@ fn deep_targets() -> List<string> {
 /// The deep targets on which the table and the scan disagree.
 fn deep_disagreements() -> List<string> {
     let t = compiled(resting())
-    [g for g in deep_targets() if framed_get(g) != null && shown(dispatch(t, framed_get(g)!)) != shown(scanned(resting(), framed_get(g)!))]
+    [g for g in deep_targets() if asked_get(g) != null && shown(dispatch(t, asked_get(g)!)) != shown(scanned(resting(), asked_get(g)!))]
 }
 
 spec "@std.http route adversarial" {
@@ -156,7 +145,7 @@ spec "@std.http route adversarial" {
             targets().length == 27
         }
         then "a target the framer refuses is asked of neither" {
-            [g for g in targets() if framed_get(g) == null].is_empty()
+            [g for g in targets() if asked_get(g) == null].is_empty()
         }
     }
 

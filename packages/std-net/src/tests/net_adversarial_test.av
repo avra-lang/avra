@@ -16,24 +16,17 @@ fn words<T>(r: Result<T, NetError>) -> string {
     }
 }
 
-fn holds(r: Result<bool, NetError>) -> bool {
-    match r {
-        .Ok(b) -> b,
-        .Err(_) -> false,
-    }
-}
-
-/// A connected attacked with the server side accepted.
-type Attacked = { l: Listener, client: Conn, server: Conn, p: Poller }
-
-fn attacked() -> Result<Attacked, NetError> {
+/// A connected pair with the server side accepted and NOTHING
+/// unwatched — `pair` is the settled one; this leaves the listener in
+/// the poller, which is what several of these attacks need.
+fn attacked() -> Result<Pair, NetError> {
     let l = listen("127.0.0.1", 0)?
     let client = connect("127.0.0.1", l.port, secs(2))?
     let p = poller()?
     p.watch(l.fd, .Read)?
     p.wait(secs(2))?
     let server = l.accept()?
-    .Ok(Attacked { l: l, client: client, server: server!, p: p })
+    .Ok(Pair { l: l, client: client, server: server!, p: p })
 }
 
 fn gone_names_the_descriptor() -> Result<bool, NetError> {
@@ -137,17 +130,17 @@ spec "std.net adversarial" {
         }
     }
     given "a descriptor that is gone" {
-        then "close, read and write name the descriptor once the peer is gone" { holds(gone_names_the_descriptor()) }
+        then "close, read and write name the descriptor once the peer is gone" { passes(gone_names_the_descriptor()) }
     }
     given "the poller's edges" {
-        then "removing the unwatched is fine, watching a bad descriptor refuses, and a closed poller refuses to wait" { holds(poller_edges()) }
+        then "removing the unwatched is fine, watching a bad descriptor refuses, and a closed poller refuses to wait" { passes(poller_edges()) }
     }
     given "the empty write and the empty read" {
-        then "an empty write and a write at the end take nothing; a read of a hundred million bytes is pending" { holds(empty_writes_and_reads()) }
+        then "an empty write and a write at the end take nothing; a read of a hundred million bytes is pending" { passes(empty_writes_and_reads()) }
     }
     given "degenerate sizes at the read" {
-        then "a read of zero answers an empty landing and leaves every byte on the wire" { holds(a_read_of_zero_takes_nothing()) }
-        then "a negative size is refused by name, never clamped into a read of one" { holds(a_negative_read_is_refused()) }
-        then "a negative budget at the wait is refused rather than read as forever" { holds(a_negative_budget_never_waits()) }
+        then "a read of zero answers an empty landing and leaves every byte on the wire" { passes(a_read_of_zero_takes_nothing()) }
+        then "a negative size is refused by name, never clamped into a read of one" { passes(a_negative_read_is_refused()) }
+        then "a negative budget at the wait is refused rather than read as forever" { passes(a_negative_budget_never_waits()) }
     }
 }

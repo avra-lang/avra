@@ -10,20 +10,29 @@ use @std.http.client.{Client, Answer, ClientError, connected, request}
 /// A client and the raw peer it is talking to.
 type Wire = { c: Client, peer: Conn, l: Listener, p: Poller }
 
-fn wired() -> Result<Wire, ClientError> {
+/// A client with its request WRITTEN and the peer accepted, under
+/// `lim` — the scaffolding every attack here shares. The request is
+/// not yet read, so a peer that closes at this point RESETS.
+fn wiring(lim: Limits) -> Result<Wire, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
-    mut c = connected("127.0.0.1", l.port, secs(2), limits())?
+    mut c = connected("127.0.0.1", l.port, secs(2), lim)?
     c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
     let p = lifted(poller())?
     lifted(p.watch(l.fd, .Read))?
     lifted(p.wait(ms(500)))?
     let peer: Conn? = lifted(l.accept())?
     if peer == null { return .Err(.Closed) }
-    // the request read, so a later close is a FIN and never a reset
-    lifted(p.watch(peer!.fd, .Read))?
-    lifted(p.wait(ms(500)))?
-    let _ = lifted(peer!.read(4096))?
     .Ok(Wire { c: c, peer: peer!, l: l, p: p })
+}
+
+/// The same, with the request READ, so a later close is a FIN and
+/// never a reset.
+fn wired() -> Result<Wire, ClientError> {
+    let w = wiring(limits())?
+    lifted(w.p.watch(w.peer.fd, .Read))?
+    lifted(w.p.wait(ms(500)))?
+    let _ = lifted(w.peer.read(4096))?
+    .Ok(w)
 }
 
 /// The peer's bytes written, then the client polled until it answers
@@ -84,16 +93,8 @@ fn closed_before_any_reply() -> Result<bool, ClientError> {
 /// A peer that closes with the request unread resets the connection:
 /// the verdict is the network's, not a clean close.
 fn reset_by_peer() -> Result<bool, ClientError> {
-    let l = lifted(listen("127.0.0.1", 0))?
-    mut c = connected("127.0.0.1", l.port, secs(2), limits())?
-    c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
-    let p = lifted(poller())?
-    lifted(p.watch(l.fd, .Read))?
-    lifted(p.wait(ms(500)))?
-    let peer: Conn? = lifted(l.accept())?
-    if peer == null { return .Err(.Closed) }
-    let _ = lifted(peer!.close())?
-    mut w = Wire { c: c, peer: peer!, l: l, p: p }
+    mut w = wiring(limits())?
+    let _ = lifted(w.peer.close())?
     .Ok(outcome(spoken(w, "", 5)) == "net.read")
 }
 
@@ -136,15 +137,7 @@ fn two_replies_one_connection() -> Result<bool, ClientError> {
 }
 
 fn reply_too_large() -> Result<bool, ClientError> {
-    let l = lifted(listen("127.0.0.1", 0))?
-    mut c = connected("127.0.0.1", l.port, secs(2), Limits { head: 64 })?
-    c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
-    let p = lifted(poller())?
-    lifted(p.watch(l.fd, .Read))?
-    lifted(p.wait(ms(500)))?
-    let peer: Conn? = lifted(l.accept())?
-    if peer == null { return .Err(.Closed) }
-    mut w = Wire { c: c, peer: peer!, l: l, p: p }
+    mut w = wiring(Limits { head: 64 })?
     let filler = ["x" for i in 0..100].join("")
     .Ok(outcome(spoken(w, "HTTP/1.1 200 OK\r\nx-pad: ${filler}\r\n\r\n", 5)) == "http.refused")
 }

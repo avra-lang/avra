@@ -3,8 +3,11 @@
 // arm, the status, or the framed value it produced, never a disjunction.
 use @std.http.frame.{framed, chunker, fed, limits, status_of, Framed, Chunked, Chunker, Refusal, Method, Body, Head, Limits}
 
-/// A 1.1 request line with a Host, then `more` lines, then the blank line.
-fn req(more: string) -> Bytes { "GET / HTTP/1.1\r\nHost: a\r\n${more}\r\n".bytes() }
+/// A 1.1 request line with a Host, then `more` lines, then the blank
+/// line — the fixture this suite and the adversarial one share.
+fn req_text(more: string) -> string { "GET / HTTP/1.1\r\nHost: a\r\n${more}\r\n" }
+
+fn req(more: string) -> Bytes { req_text(more).bytes() }
 
 fn head_of(b: Bytes) -> Head? {
     match framed(b, 0, 0, limits()) {
@@ -26,8 +29,11 @@ fn partial(b: Bytes) -> bool { framed(b, 0, 0, limits()) is .Partial }
 fn refuses(b: Bytes, law: Refusal) -> bool { why(b) == law }
 fn status(b: Bytes) -> int { status_of(why(b)!) }
 
-fn length_of(h: Head) -> int {
-    match h.body {
+fn length_of(h: Head) -> int { body_length(h.body) }
+
+/// The declared length, -1 for no body and -2 for chunked.
+fn body_length(b: Body) -> int {
+    match b {
         .Length(n) -> n,
         .Chunked -> -2,
         .None -> -1,
@@ -203,13 +209,7 @@ fn body_of(src: string) -> string {
     }
 }
 
-fn end_of(src: string) -> int {
-    match fed(chunker(0), src.bytes(), limits()) {
-        .Done(_, end) -> end,
-        .More(_) -> -1,
-        .Refused(_) -> -2,
-    }
-}
+fn end_of(src: string) -> int { end_of_fed(chunker(0), src) }
 
 fn chunk_status(src: string) -> int {
     match fed(chunker(0), src.bytes(), limits()) {

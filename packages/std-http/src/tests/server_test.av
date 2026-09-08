@@ -3,7 +3,7 @@
 //! landed, and the client reads it. Every exchange is exact bytes.
 use @std.net.{Listener, Conn, Poller, Read, NetError, listen, connect, poller}
 use @std.time.{ms, secs}
-use @std.http.frame.{limits, Method}
+use @std.http.frame.{limits, Limits, Method}
 use @std.http.http.{Request, Response, text}
 use @std.http.route.{Route, Table, routed, compiled, dispatch}
 use @std.http.server.{Server, Timing, served, timing}
@@ -37,28 +37,37 @@ fn echo(mut app: App, q: Request) -> Response {
 /// A server on a kernel-chosen loopback port with a client attached.
 type Pair = { s: Server<App>, c: Conn, p: Poller }
 
-fn pair(t: Timing) -> Result<Pair, NetError> {
+/// A server running `handle` under `lim` and `t`, with a client
+/// attached — THE ONE PAIR BUILDER. A suite that spells its own is
+/// testing its own scaffolding beside the loop.
+fn paired(handle: fn(mut App, Request) -> Response, lim: Limits, t: Timing) -> Result<Pair, NetError> {
     let l = listen("127.0.0.1", 0)?
-    let s = served(l, App { hits: 0 }, echo, limits(), t)?
+    let s = served(l, App { hits: 0 }, handle, lim, t)?
     let c = connect("127.0.0.1", l.port, secs(2))?
     let p = poller()?
     p.watch(c.fd, .Read)?
     .Ok(Pair { s: s, c: c, p: p })
 }
 
-/// The client's bytes written whole, then the server turned and the
-/// client read until `expected` bytes have arrived or the peer ends.
-/// Every read is one turn of the server, so the exchange is
-/// deterministic.
-fn exchanged(mut pr: Pair, sent: string, expected: int) -> Result<Bytes, NetError> {
+fn pair(t: Timing) -> Result<Pair, NetError> { paired(echo, limits(), t) }
+
+/// The client's bytes written whole — the server turned whenever the
+/// socket takes none, so a write larger than the buffer cannot spin —
+/// then the server turned and the client read until `expected` bytes
+/// have arrived or the peer ends. Every read is one turn of the
+/// server, so the exchange is deterministic.
+fn exchanged_bytes(mut pr: Pair, sent: Bytes, expected: int) -> Result<Bytes, NetError> {
     mut from = 0
-    let out = sent.bytes()
-    while from < out.length { from = from + pr.c.write(out, from)? }
+    while from < sent.length {
+        let n = pr.c.write(sent, from)?
+        if n == 0 { pr.s.turn(ms(20))? }
+        from = from + n
+    }
     mut got = "".bytes()
     mut turns = 0
-    while got.length < expected && turns < 50 {
-        pr.s.turn(ms(50))?
-        pr.p.wait(ms(50))?
+    while got.length < expected && turns < 60 {
+        pr.s.turn(ms(20))?
+        pr.p.wait(ms(20))?
         let chunk: Bytes? = match pr.c.read(65536)? {
             .Data(b) -> b,
             .Eof -> { return .Ok(got) },
@@ -68,6 +77,10 @@ fn exchanged(mut pr: Pair, sent: string, expected: int) -> Result<Bytes, NetErro
         turns = turns + 1
     }
     .Ok(got)
+}
+
+fn exchanged(mut pr: Pair, sent: string, expected: int) -> Result<Bytes, NetError> {
+    exchanged_bytes(pr, sent.bytes(), expected)
 }
 
 fn reply(mut pr: Pair, sent: string) -> Result<string, NetError> {
@@ -172,12 +185,7 @@ fn old_client_is_closed() -> Result<bool, NetError> {
 /// The loop under the router: a target with a query holding a `/`
 /// still finds its route, and the query is read beside the path.
 fn routed_through_the_loop() -> Result<bool, NetError> {
-    let l = listen("127.0.0.1", 0)?
-    let s = served(l, App { hits: 0 }, routed_app, limits(), timing())?
-    let c = connect("127.0.0.1", l.port, secs(2))?
-    let p = poller()?
-    p.watch(c.fd, .Read)?
-    mut pr = Pair { s: s, c: c, p: p }
+    mut pr = paired(routed_app, limits(), timing())?
     let found = reply(pr, "GET /notes/7?redirect=/home HTTP/1.1\r\nHost: a\r\n\r\n")?
     let missing = reply(pr, "GET /nope HTTP/1.1\r\nHost: a\r\n\r\n")?
     .Ok(found.ends_with("note 7 redirect:true") && missing.starts_with("HTTP/1.1 404 Not Found"))
