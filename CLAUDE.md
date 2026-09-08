@@ -1310,7 +1310,11 @@ Runtime facts, ours to ratify:
   is why that refresh rides the REMOVING commit and never a later
   chore. And the failed link DESTROYS `build/avra`, because bootstrap
   links straight at it (`-o build/avra`), so `cp build/avra
-  build/avra.pre` is the whole protocol here too. It is the
+  build/avra.pre` is the whole protocol here too — and RUNNING OUT OF
+  DISK is the same destruction by a second cause, so `df -h
+  /System/Volumes/Data` before a bootstrap when the volume is tight
+  (2026-09-07: 4.8 GiB free at 100%, one lane already stopped on
+  ENOSPC). It is the
   shadowing law one mechanism over: a target green because a
   DIFFERENT mechanism was doing the work. (The @std/io instance is
   the HTTP lane's, ATTRIBUTED — lane/http c8af70b, not in this tree;
