@@ -739,9 +739,15 @@ impl Machine {
     /// reason (`normalized_cell`) and reads the width from the SAME
     /// `cells` column, which is what keeps the two engines agreeing.
     fn settled_cells(sig: RtSig, vals: List<Val>) {
+        // MOST CALLS HAVE NO INOUT, and this runs on every one — the
+        // walk below allocates a slot map to discover that nothing
+        // needs settling, right beside a lookup that was just made
+        // free. Ask the column first.
+        if !sig.cells.any(carries_cell(it)) { return }
         let slots = file_slots(sig.params)
         for i, k in sig.params {
-            if carries_cell(cell_at(sig, i)) { self.settled_cell(cell_at(sig, i), slots[i], vals[i]) }
+            let width = cell_at(sig, i)
+            if carries_cell(width) { self.settled_cell(width, slots[i], vals[i]) }
         }
     }
 
