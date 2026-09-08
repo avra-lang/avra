@@ -185,6 +185,52 @@ def syms(argv):
     out = subprocess.run(argv, capture_output=True, text=True)
     return {l.split()[-1].lstrip("_") for l in out.stdout.splitlines() if l.strip()}
 
+
+# TWO PACKAGES MAY NOT DEFINE ONE SYMBOL, and it is the stem law one
+# level up: a stem names an OBJECT, a symbol names a BODY, and the
+# evaluator resolves a body BY NAME across the whole closure. It walks
+# the program's libraries and takes the first handle that carries the
+# name, then MEMOIZES that address under the name alone — no package
+# rides the key — so the second package's own calls reach the first
+# package's body.
+#
+# MEASURED, with two throwaway linking packages defining `probe_dup`
+# as 111 and 222 and one program depending on both: `./avra check`
+# said nothing, `./avra run` answered `alpha=111 beta=111` — beta's
+# own verb running alpha's C — and `./avra build` refused with `ld: 1
+# duplicate symbols`. So the evaluator RUNS, wrongly and silently, a
+# program the native path cannot link, and which body wins is decided
+# by the order the closure was walked.
+#
+# TREE-WIDE RATHER THAN PER-CLOSURE, the same posture the stem law
+# takes: a duplicate only bites a program that depends on both, and
+# working out which programs those are is a second dependency
+# resolver. The names are a package's own C and nothing forces them to
+# collide.
+def duplicated(defined):
+    owners = {}
+    for lib in sorted(defined):
+        for s in defined[lib]:
+            owners.setdefault(s, []).append(lib)
+    return sorted((s, libs) for s, libs in owners.items() if len(libs) > 1)
+
+
+DUP_CASES = [
+    # (what each library defines, the clashes)
+    ({"a": {"one", "shared"}, "b": {"two", "shared"}}, [("shared", ["a", "b"])]),
+    ({"a": {"one"}, "b": {"two"}}, []),
+    ({"a": {"s"}, "b": {"s"}, "c": {"s"}}, [("s", ["a", "b", "c"])]),
+    ({"a": set()}, []),
+    ({}, []),
+]
+
+bad = sum(1 for given, want in DUP_CASES if duplicated(given) != want)
+for given, want in DUP_CASES:
+    if duplicated(given) != want:
+        print(f"stems: SELF-TEST — {given} should clash as {want}, reads as {duplicated(given)}")
+if bad:
+    sys.exit(1)
+
 host = syms(["nm", "build/avra"])
 rows = subprocess.run(["python3", "tools/libs.py", "--undefined"],
                       capture_output=True, text=True).stdout
@@ -215,6 +261,13 @@ for line in rows.splitlines():
         bad += 1
     print(f"stems:   lib{lib} leaves {len(open_syms)} symbol(s) open — "
           f"{len(ours)} ours ({' '.join(ours) or 'none'}), {len(foreign)} the platform's")
+for sym, libs in duplicated(defined):
+    print(f"stems: {' and '.join('lib' + l for l in libs)} each define {sym} "
+          f"— the evaluator takes the FIRST and memoizes it under the name alone, "
+          f"so one package's calls reach the other's body; the native link refuses outright")
+    bad += 1
+print(f"stems:   {sum(len(d) for d in defined.values())} defined symbol(s) across "
+      f"{len(defined)} package librar{'y' if len(defined) == 1 else 'ies'}, each owned once")
 sys.exit(1 if bad else 0)
 PYEOF
 fi
