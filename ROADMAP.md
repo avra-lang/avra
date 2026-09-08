@@ -11391,7 +11391,7 @@ Four defects fixed with tests (131e146, a406103, db23051, bc39156).
 Two findings are recorded rather than fixed, because each is a
 DECISION someone else owns.
 
-### (1) ABSOLUTE-FORM IS FRAMED AND CANNOT BE ROUTED — a routing differential
+### (1) ABSOLUTE-FORM IS FRAMED AND CANNOT BE ROUTED — a routing differential — FIXED 2026-09-08
 
 The framer ACCEPTS absolute-form by RFC 9112 §3.2.2, and frame_test
 pins that it does. `Request.path()` then answers the target up to its
@@ -11412,12 +11412,27 @@ behind it disagree about WHICH ROUTE ANSWERS, and a filter on
 `/admin` in front of a server that reads `http://h/admin` as a
 different path is the whole shape of a routing bypass.
 
-NOT FIXED HERE BECAUSE IT MOVES A DOCUMENTED CONTRACT. `path()` is
-"THE ONE PLACE THE TARGET IS SPLIT" and its law would become "the
-path component — for an absolute-form target, what follows its
-authority", with `queried()` and the router following. That is the
-lane lead's call, and the alternative — refusing absolute-form at the
-framer — is a real option that costs a §3.2.2 MUST.
+FIXED AS THE LEAD RULED, and the contract moved rather than the
+framer: `path()` answers the PATH COMPONENT of the target in EVERY
+form. Origin-form as sent; absolute-form with scheme and authority
+stripped, with `authority()` beside it handing back what was stripped
+— which §3.3's "its authority wins over `Host`" needs in order to be
+obeyable at all; ABSENT for `*` and CONNECT's authority, which name no
+resource, and `dispatch` never walks the table for those. Measured in
+this tree at 317c72b and after:
+
+    before  origin /p 200  absolute http://h/p 404   path=[http://h/p]
+    after   origin /p 200  absolute http://h/p 200   path=[/p] authority=[h]
+
+AN EMPTY PATH IS `/` (9110 §4.2.3) and is MINTED rather than sliced:
+`http://h` names the root, and answering the empty octets would have
+404'd the one spelling of the root that carries no `/` — the same
+differential one target further in. THE HOSTILE CASE THAT PAID: the
+authority ends where the PATH CLASS does, so `http://h?x=/admin` has
+authority `h` and path `/`, and the `/` inside the query neither
+becomes the path nor extends the authority. `corpus/http-route` proves
+it on both engines; 31 specs in `target_form_adversarial_test.av` go
+through the real framer and the real router.
 
 ### (2) A PROGRAM ENDING IN A RANGE-HEADED `for` CRASHES THE COMPILER
 

@@ -36,10 +36,17 @@
 //! POSITIONAL and ORDERED; a query is KEYED and order-independent, so
 //! `"/search?q={q}"` would swallow `&page=2` into its capture and
 //! refuse `?page=2&q=cats`, the same request written the other way
-//! round. A ROUTE MATCHES THE PATH — `Request.path()`, the target up
-//! to its first `?` — and the handler reads `Request.query()` beside
-//! it. A router that matched the whole target would let a `/` inside
-//! `?redirect=/home` add a segment and make its own route vanish.
+//! round. A ROUTE MATCHES THE PATH — `Request.path()`, the PATH
+//! COMPONENT of the target in whichever form it arrived — and the
+//! handler reads `Request.query()` beside it. A router that matched
+//! the whole target would let a `/` inside `?redirect=/home` add a
+//! segment and make its own route vanish, and would answer `/p` and
+//! `http://h/p` from two different routes for one resource.
+//!
+//! A TARGET THAT NAMES NO RESOURCE IS NOT ROUTED. `OPTIONS *` asks
+//! about the server and CONNECT's target is a tunnel's destination, so
+//! `path()` answers absent for both and the table is never walked —
+//! a 404, which is the same value a target nothing answers earns.
 //!
 //! ONE RECORD TYPE PER ROUTE, AND ONE PLACE IT IS ERASED. `routed` is
 //! generic over the record; the table holds the erased handler, so
@@ -308,8 +315,14 @@ once fn open_brace() -> Bytes { "{".bytes() }
 /// 400 — the framer ADMITS `obs-text`, so such a target is well
 /// formed and simply unrouted. A target nothing answers is a 404
 /// either way, which is a VALUE: the router refuses nothing here.
+///
+/// A TARGET WITH NO PATH IS THE SAME 404, and the table is not walked
+/// at all: `OPTIONS *` and CONNECT's authority name no resource, so
+/// there is nothing to match them against.
 export fn dispatch(t: Table, q: Request) -> Response {
-    let target = q.path()
+    let held: Bytes? = q.path()
+    if held == null { return status(404) }
+    let target = held!
     let node = landed(t, target)
     if node < 0 { return status(404) }
     for i in t.nodes[node].rows {

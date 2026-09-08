@@ -18,7 +18,7 @@
 //!
 //! The head's field spans index the buffer they were framed from, so
 //! a `Request` keeps that buffer and slices a value only when asked.
-use frame.{Head, Field, Span, Method, admits, is_target, is_tchar, is_vchar}
+use frame.{Head, Field, Span, Method, TargetForm, target_form, scheme_end, admits, is_target, is_tchar, is_vchar}
 use query.{Query, query_of}
 
 /// What a handler receives: the raw buffer the head was framed from,
@@ -30,15 +30,82 @@ impl Request {
     /// The request target, whole — path and query as sent, ABSENT
     /// when the octets are not text. The framer ADMITS `obs-text`, so
     /// a target UTF-8 cannot spell was still sent; answering the
-    /// empty string would tell a handler it never was. `path()` hands
-    /// over the octets themselves and always answers.
+    /// empty string would tell a handler it never was. It is the whole
+    /// target in the form it was SENT — `path()` and `authority()` are
+    /// where its components are read.
     fn target() -> string? { self.raw.slice(self.head.target.lo, self.head.target.hi).text() }
 
-    /// THE PATH: the target up to its first `?`, which is what a
-    /// route matches. THE ONE PLACE THE TARGET IS SPLIT — a consumer
-    /// that forgets to split counts a `/` inside `?redirect=/home` as
-    /// a path segment, and the route it was looking for disappears.
-    fn path() -> Bytes { self.raw.slice(self.head.target.lo, self.split_at()) }
+    /// THE PATH COMPONENT OF THE TARGET, IN EVERY FORM IT MAY ARRIVE
+    /// IN, which is what a route matches. THE ONE PLACE THE TARGET IS
+    /// SPLIT — a consumer that forgets to split counts a `/` inside
+    /// `?redirect=/home` as a path segment, and the route it was
+    /// looking for disappears.
+    ///
+    /// AN ORIGIN SERVER MUST ACCEPT ABSOLUTE-FORM AND ROUTE ON ITS
+    /// PATH (RFC 9112 §3.3), and this answered the WHOLE URI: `/p`
+    /// answered 200 and `http://h/p` answered 404 for one resource. A
+    /// 404 is not the hazard — the DIFFERENTIAL is, because a front
+    /// end that normalises one form into the other and an Avra origin
+    /// behind it then disagree about which route answers, and a filter
+    /// on `/admin` in front of a server that reads `http://h/admin` as
+    /// a different path is the whole shape of a routing bypass.
+    ///
+    /// ABSENT FOR THE TWO FORMS THAT NAME NO RESOURCE — `OPTIONS *`
+    /// and CONNECT's authority. A router cannot route them and must
+    /// not be handed a path that looks routable; the server keeps the
+    /// framer's law for them, and `target()` still answers whole.
+    fn path() -> Bytes? {
+        match self.form() {
+            .Origin -> self.raw.slice(self.head.target.lo, self.split_at()),
+            .Absolute -> self.absolute_path(),
+            .Asterisk or .Authority or .Other -> null,
+        }
+    }
+
+    /// THE AUTHORITY AN ABSOLUTE-FORM TARGET CARRIED, which `path()`
+    /// strips — absent for every other form. RFC 9112 §3.3 has an
+    /// origin server IGNORE the `Host` field when the target is
+    /// absolute-form and take the authority from the target, so the
+    /// two halves must be separately readable or that rule cannot be
+    /// obeyed. A CONNECT target IS an authority and still answers
+    /// absent here: it is a tunnel's destination and not this
+    /// request's, and `target()` hands it over whole.
+    fn authority() -> string? {
+        match self.form() {
+            .Absolute -> self.raw.slice(self.authority_from(), self.authority_to()).text(),
+            .Origin or .Asterisk or .Authority or .Other -> null,
+        }
+    }
+
+    /// Which of the four forms this request's target is in.
+    fn form() -> TargetForm { target_form(self.raw, self.head.method, self.head.target.lo, self.head.target.hi) }
+
+    /// An absolute-form target's path: from the first `/` after its
+    /// authority to where the path class ends.
+    ///
+    /// AN EMPTY PATH IS `/` (RFC 9110 §4.2.3), and it is MINTED rather
+    /// than sliced because there is nothing to slice: `http://h` names
+    /// the root, and answering the empty octets would 404 the one
+    /// spelling of the root that carries no `/` at all — the same
+    /// differential this reader exists to close, one target further in.
+    fn absolute_path() -> Bytes? {
+        let stop = self.split_at()
+        let from = self.authority_to()
+        if from == stop { return root() }
+        self.raw.slice(from, stop)
+    }
+
+    /// Where an absolute-form target's authority begins: past `://`.
+    fn authority_from() -> int { self.raw.index_of(scheme_end(), self.head.target.lo) + 3 }
+
+    /// Where it ends: at the path's first `/`, else where the path
+    /// class itself ends — a `?` or the target's own last octet.
+    fn authority_to() -> int {
+        let stop = self.split_at()
+        let at = self.raw.index_of(slash(), self.authority_from())
+        if at < 0 || at >= stop { return stop }
+        at
+    }
 
     /// THE QUERY: what follows that `?`, as keyed fields. Built when
     /// asked, so a handler that wants it binds it once.
@@ -97,6 +164,11 @@ export fn read_size() -> int { 16384 }
 once fn path_char() -> Bytes { admits((c) -> is_target(c) && c != question_octet()) }
 
 fn question_octet() -> int { 63 }
+
+/// The root path, for an absolute-form target that carried none.
+once fn root() -> Bytes { "/".bytes() }
+
+once fn slash() -> Bytes { "/".bytes() }
 
 export fn text(status: int, body: string) -> Response {
     Response { status: status, headers: [Header { name: "content-type", value: "text/plain; charset=utf-8" }], body: body.bytes() }

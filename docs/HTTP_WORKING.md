@@ -1594,6 +1594,19 @@ engines (avra-3cvq); a program ending in a range-headed `for` traps
 still refuse octets (a ROADMAP trigger). Gate green at 709 MB; seed
 64a802e.
 
+BOTH OF THIS LANE'S TWO ARE NOW FIXED. avra-somc (317c72b): a nullable
+at a CORE ROW's seat is F2066, refused by name where the compiler knows
+the body; and at a PACKAGE's seat the null STAYS, because `free(null)`
+answers under both engines and @std/sqlite hands `SQLITE_STATIC` — a
+null — at every bind seat. The evaluator guards the FAULT instead: a
+SIGSEGV inside a hosted call is a trap naming the callee and the seats
+that carried absence, pinned by `tools/traps.sh`'s new `trapped_run`.
+avra-ffek: `Request.path()` answers the PATH COMPONENT of every target
+form and `authority()` hands back what it stripped, so `/admin` and
+`http://h/admin` reach ONE handler through the real router — measured
+200/404 before and 200/200 after, in `corpus/http-route` on both
+engines and in 31 specs.
+
 TWO PROCESS FINDINGS. The three teams were briefed with the lane's
 PATH as "your isolated worktree" and all three worked in the branch
 itself, interleaving commits and, once, sweeping one team's

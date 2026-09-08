@@ -54,6 +54,14 @@ Sources: [RFC 9112](https://www.rfc-editor.org/rfc/rfc9112.html) (HTTP/1.1, cite
 - "A server MUST accept the absolute-form in requests" (§3.2.2); "The target URI is the
   request-target when the request-target is in absolute-form" (§3.3): its authority wins
   over `Host`, and a proxy MUST replace `Host` from it (§3.2.2).
+- **AND ACCEPTING IT IS HALF THE MUST.** An ORIGIN server routes on the target's PATH, so
+  `/p` and `http://h/p` name ONE resource; a reader that answered the whole URI made them
+  two, and a front end that normalises one form into the other then disagrees with the
+  origin behind it about which route answers. `Request.path()` answers the PATH COMPONENT
+  of every form — origin-form as sent, absolute-form with scheme and authority stripped
+  (an empty path is `/`, 9110 §4.2.3), and ABSENT for `*` and CONNECT's authority, which
+  name no resource. `Request.authority()` hands back what it stripped, which is what §3.3's
+  "its authority wins over `Host`" needs in order to be obeyable at all.
 - `Host = uri-host [ ":" port ]` (9110 §7.2). "A server MUST respond with a 400 (Bad
   Request) status code to any HTTP/1.1 request message that lacks a Host header field
   and to any request message that contains more than one Host header field line or a

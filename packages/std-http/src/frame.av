@@ -15,6 +15,14 @@ export type Field = { name: Span, value: Span }
 
 export enum Method { Get, Head, Post, Put, Delete, Patch, Options, Connect, Trace, Other }
 
+/// The four shapes a request target may take (RFC 9112 §3.2), and
+/// `Other` for a target in none of them. WHICH FORM IT IS DECIDES
+/// WHERE ITS PATH BEGINS, which is why this is a value and not a
+/// predicate: `Origin` IS its path, `Absolute` carries a scheme and an
+/// authority in front of one, and `Asterisk` and `Authority` name no
+/// resource and so have no path to route on.
+export enum TargetForm { Origin, Absolute, Asterisk, Authority, Other }
+
 /// How a request body is delimited (RFC 9112 §6.3).
 export enum Body { None, Length(n: int), Chunked }
 
@@ -219,19 +227,59 @@ fn versioned(buf: Bytes, at: int, eol: int) -> bool {
 
 /// The target's form belongs to its method (RFC 9112 §3.2): origin-form
 /// to any, absolute-form to any, authority-form to CONNECT alone,
-/// `*` to OPTIONS alone; a fragment never travels.
+/// `*` to OPTIONS alone; a fragment never travels. `.Other` alone
+/// refuses, and the catch-all is the honest direction: a form the RFC
+/// grows is a form, and this law admits it.
 fn target_form_fits(buf: Bytes, method: Method, lo: int, hi: int) -> bool {
     if bounded(buf.index_of(hash(), lo), hi) >= 0 { return false }
-    when {
-        method == Method.Connect -> buf.at(lo) != byte("/")
-        buf.at(lo) == byte("/") -> true
-        buf.eq_at(lo, hi, star()) -> method == Method.Options
-        _ -> buf.index_of(scheme_end(), lo) > lo && buf.index_of(scheme_end(), lo) < hi
+    match target_form(buf, method, lo, hi) {
+        .Other -> false,
+        _ -> true,
     }
 }
 
+/// WHICH OF THE FOUR FORMS A TARGET IS IN (RFC 9112 §3.2), `.Other`
+/// when it is in none — the shape this framer refuses.
+///
+/// ONE DECISION, TWO READERS. The framer's law asks it to refuse, and
+/// `Request.path()` asks it to know WHERE THE PATH BEGINS: an
+/// origin-form target IS its path, an absolute-form one carries a
+/// scheme and an authority before it, and the other two have no path
+/// at all. Spelled twice, the reader would have gone on routing the
+/// whole URI — which it did, and `/p` and `http://h/p` answered from
+/// two routes for one resource.
+export fn target_form(buf: Bytes, method: Method, lo: int, hi: int) -> TargetForm {
+    when {
+        method == Method.Connect -> connect_form(buf, lo)
+        buf.at(lo) == byte("/") -> .Origin
+        buf.eq_at(lo, hi, star()) -> asterisk_form(method)
+        schemed(buf, lo, hi) -> .Absolute
+        _ -> .Other
+    }
+}
+
+/// CONNECT's target is an AUTHORITY and never a path (RFC 9112 §3.2.3).
+fn connect_form(buf: Bytes, lo: int) -> TargetForm {
+    if buf.at(lo) == byte("/") { return .Other }
+    .Authority
+}
+
+/// `*` is OPTIONS' alone — the server itself, not a resource on it
+/// (RFC 9112 §3.2.4).
+fn asterisk_form(method: Method) -> TargetForm {
+    if method != Method.Options { return .Other }
+    .Asterisk
+}
+
+/// Whether a scheme opens this target — `://` inside it and not at
+/// its very start.
+fn schemed(buf: Bytes, lo: int, hi: int) -> bool {
+    let at = buf.index_of(scheme_end(), lo)
+    at > lo && at < hi
+}
+
+export once fn scheme_end() -> Bytes { "://".bytes() }
 once fn star() -> Bytes { "*".bytes() }
-once fn scheme_end() -> Bytes { "://".bytes() }
 
 /// The method by its bytes — one compare per verb, length first as
 /// the compare does, and nothing built per head.
