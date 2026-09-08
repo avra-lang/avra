@@ -933,26 +933,35 @@ fn same_body(c: Case, body: ExprId) -> bool {
 }
 
 /// WHAT THE PROGRAM LINKS: every package's `[link]` promise, in
-/// package order — the objects it names (under its own root) and
-/// the flags it asks for. A package that declares `extern fn` says
-/// here who keeps the promise.
-export fn link_inputs(ws: Workspace) -> List<string> {
+/// package order — the objects it names under its own root, the
+/// directories it searches, the libraries it needs. A package that
+/// declares `extern fn` says here who keeps the promise.
+///
+/// THE ROWS ARE TYPED AND THE OPTION LETTER IS OURS. A dependency
+/// names a directory or a library; `-L` and `-l` are written here,
+/// so no word a package spells can BECOME an option — the linker
+/// reads what it was told to read. `[link.raw]` carries an option
+/// verbatim and is heard from the program's own manifest alone.
+/// Each word is ONE argv element, so nothing in any of them means
+/// anything to a shell.
+export fn link_words(ws: Workspace) -> List<string> {
     flatten([package_link(ws, pkg) for pkg in ws.packages])
 }
 
 fn package_link(ws: Workspace, pkg: Package) -> List<string> {
     let m = manifest(ws, pkg.ordinal)
-    [joined_path(pkg.root, o) for o in m.objects].concat(m.flags)
+    [joined_path(pkg.root, o) for o in filled_words(m.objects)]
+        .concat(["-L${d}" for d in filled_words(m.search)])
+        .concat(["-l${l}" for l in filled_words(m.libs)])
+        .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
 }
 
-/// THE PROMISES AS WORDS: every package's `[link]` row with its
-/// `${NAME}` holes filled from the environment — one argv element
-/// each, so no character in any of them means anything to a shell,
-/// and a hole that names nothing leaves no empty word. The driver
-/// puts them on clang's line.
-export fn link_words(ws: Workspace) -> List<string> {
-    let promised = [expanded(f) for f in link_inputs(ws)]
-    [w for w in promised if !w.is_empty()]
+/// A row's words with their `${NAME}` holes filled, dropping any
+/// that fill to nothing. A hole naming nothing asks for NO WORD:
+/// an empty one would be an argument the linker still counts, and a
+/// bare `-L` eats the word after it.
+fn filled_words(words: List<string>) -> List<string> {
+    [w for w in [expanded(x) for x in words] if !w.is_empty()]
 }
 
 /// A link input with its `${NAME}` holes filled from the
@@ -1107,7 +1116,7 @@ export fn manifest(ws: Workspace, i: int) -> Manifest {
     if !has_manifest(ws, pkg) {
         ws.db.set_input(k, 0)
         ws.db.record_dep(k)
-        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], flags: [], voices: [] }
+        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], voices: [] }
     }
     let held: Manifest? = ws.manifests.at(i)
     if held != null {
@@ -1178,7 +1187,15 @@ fn speak_package(ws: Workspace, d: Diag) {
 /// Everything the packages said: each manifest's own voices, then
 /// the graph's.
 fn package_voices(ws: Workspace) -> List<Diag> {
-    flatten([manifest(ws, pkg.ordinal).voices for pkg in ws.packages]).concat(ws.package_voices)
+    flatten([manifest(ws, pkg.ordinal).voices for pkg in ws.packages])
+        .concat([borrowed_raw(pkg) for pkg in ws.packages if raw_from_dependency(ws, pkg)])
+        .concat(ws.package_voices)
+}
+
+/// A dependency asking for raw linker options: `[link.raw]` is the
+/// PROGRAM's hatch, so only ordinal 0 is heard.
+fn raw_from_dependency(ws: Workspace, pkg: Package) -> bool {
+    pkg.ordinal != 0 && !manifest(ws, pkg.ordinal).raw.is_empty()
 }
 
 /// The package a file belongs to — the one whose source root holds
@@ -1238,6 +1255,16 @@ fn dependency_fix(ws: Workspace, from: Package, k: string) -> List<Suggestion> {
 }
 
 // ── voices ──
+
+/// A dependency's `[link.raw]`, refused. The whole point of the
+/// typed rows is that a package nobody read cannot put an option on
+/// the linker's line; the hatch is the program's own.
+fn borrowed_raw(pkg: Package) -> Diag {
+    refusal("manifest.borrowed_raw", pkg.at,
+        "`${pkg.key}` asks for raw linker options, and `[link.raw]` is the program's own", "this dependency",
+        "a dependency names what it needs — `objects`, `search`, `libs` under `[link]`; a raw option belongs in the manifest of the program being built")
+}
+
 
 fn not_a_dependency(ws: Workspace, at: Loc?, from: Package, k: string) -> Diag {
     let fixes = dependency_fix(ws, from, k)
