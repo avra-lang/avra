@@ -38,6 +38,24 @@ if [ -n "$AVRA_WATCH_HELD" ]; then
 fi
 lock=/tmp/avra-build.lock
 floor="${AVRA_MEM_FLOOR:-20}"
+
+# A LINK THAT RUNS OUT OF DISK DELETES `build/avra`. `make bootstrap`
+# links straight at it (`-o build/avra`), so an ENOSPC there leaves the
+# tree with NO COMPILER — the same class this file's memory floor
+# exists to prevent, on the other resource, with a worse ending.
+# AND DISK DOES NOT FREE ITSELF, which is why this REFUSES where the
+# memory floor WAITS: memory pressure passes when a process exits, a
+# full volume stays full, and a wait loop there spins forever while
+# looking like patience. Checked BEFORE the lock, so a refusal does
+# not queue behind someone else's build.
+disk_floor="${AVRA_DISK_FLOOR_MB:-2048}"
+free_mb=$(df -Pm . 2>/dev/null | awk 'NR==2 {print $4}')
+if [ -n "$free_mb" ] && [ "$free_mb" -lt "$disk_floor" ]; then
+    echo "watch: ${free_mb} MB free, under the ${disk_floor} MB floor — refusing to start" >&2
+    echo "watch:   a link that runs out of disk DELETES build/avra, and \`make bootstrap\`" >&2
+    echo "watch:   links straight at it. Free space first; AVRA_DISK_FLOOR_MB moves the floor." >&2
+    exit 2
+fi
 until mkdir "$lock" 2>/dev/null; do
     holder=$(cat "$lock/pid" 2>/dev/null)
     if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
