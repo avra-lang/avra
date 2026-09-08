@@ -1388,6 +1388,59 @@ what the native binary answers. That was the whole arc. Disk: 2.3 GiB
 free before the seed's link — falling as lanes build; the floor lane A
 set will start refusing links at 2 GiB, which is the design working.
 
+## The night the disk filled (2026-09-08): a refusal that re-entered itself
+
+The data volume hit ~500 MiB free three times in six hours, and the
+explanations went in this order, each better than the last and only
+the last one true. FIRST: the owner's data — 884 GiB used, the avra
+trees under a gigabyte, a directory walk seeing 344 GiB and a ~540 GiB
+gap invisible to `du`, which is APFS snapshot retention around a
+pending macOS update (still true, still the owner's, still the only
+DURABLE fix). SECOND, on the owner's word: cleaning — 390 MiB of
+corpus outputs and IR dumps across the avra worktrees, 4,087 MiB of
+`target/` and `build/` from the forge trees; free space rose to 4.8
+GiB and fell to 653 MiB within an hour with nothing deleted. THIRD:
+swap — `vm.swapusage` 6.9 GB total, 6.5 GB used, 31% memory free, the
+sessions and builds pressing on memory; real, and secondary. FOURTH,
+from lane B noticing TWO `./avra build packages/cli` in main's tree
+and not killing them: `build/avra-build.out` in main at 4,541,804,579
+bytes and growing, its tail the disk floor's refusal — "watch: … links
+straight at it. Free space first; AVRA_DISK_FLOOR_MB moves the floor."
+— repeated without end, then "cat: stdout: No space left on device /
+make[3]: *** [avra] Error 1 / make[2]: *** [bootstrap] Error 2".
+
+THE MECHANISM, from the make levels: `tools/census.sh` removes
+`build/avra` to relink it with the counting runtime and runs `make
+avra`; `make avra` runs `./avra build packages/cli`; `./avra` on a
+tree with no compiler BOOTSTRAPS; bootstrap's last step is `$(MAKE)
+-s avra`, which runs `./avra` again, which finds no compiler again —
+and lane A's new disk floor (e7e1d1f, right to exist, right to refuse)
+refusing at a swap trough turned that re-entry into an unbounded
+recursion whose every level appended the refusal to one log. A
+refusal that re-enters the thing it refused is a disk fill wearing a
+guard's words. The process was killed (the build step, never a `cp`),
+the log deleted, 120 MiB -> 4.3 GiB; the census run continues and the
+loop returns the moment the floor refuses again, so its owner is
+asked to stop it. Filed as a P0 bug under lane A's epic (avra-y1e6):
+`./avra` must not bootstrap from inside a bootstrap — an env guard
+the way `AVRA_WATCH_HELD` marks the lock — a refused floor inside
+bootstrap EXITS rather than re-enters, and the avra rule's redirected
+log gets a bound.
+
+THREE LESSONS, each paid for. A DELETION THAT FREES SPACE WHICH THEN
+VANISHES AGAIN NAMES A WRITER, NOT A SNAPSHOT — the question "what
+consumed 4 GB in four minutes" (lane D's) was the right one and the
+first three answers did not answer it; `find -size +300M -mmin -20`
+over the plausible directories missed the file because it was inside
+`build/`, the one directory everyone had already measured as small,
+an hour earlier. THE TRACKER'S ID MINTING COUNTS A PARENT'S CHILDREN,
+so a task reparented out of an epic keeps its number and every later
+create under that epic collides forever — create at the root and
+reparent. AND A KILL IS A VERDICT TOO: lane B declined to kill two
+builds because killing mid-`cp` is a corruption path, and that
+restraint is what left the evidence in the log to read; the kill,
+when it came, was aimed at the writer, once.
+
 ## WHERE THE CAMPAIGN STANDS (2026-09-07, lane/http ea2a6ce)
 
 BOTH SUB-LANE ARCS ARE COMPLETE AND MERGED. Strings: the paper, typed
