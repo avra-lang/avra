@@ -2,7 +2,7 @@
 // lexer's own token shapes. Builders render to S-expressions so every
 // outcome asserts as a plain string.
 use @std.avrac.core.{joined, Span}
-use @std.avrac.grammar.{Cause, Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect, Recover, rule, seq, seq_to, item, cap, rule_ref, lit, named, lex_grammar, Captured, RunOutcome, run_grammar, ready}
+use @std.avrac.grammar.{Cause, Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect, Recover, rule, seq, seq_to, item, cap, rule_ref, lit, named, lex_grammar, Captured, RunOutcome, run_grammar, ready, parse_grammar}
 
 fn render(v: Captured<string>) -> string {
     match v {
@@ -43,7 +43,27 @@ fn g1(rules: List<Rule>) -> Grammar {
     Grammar { name: "t", start: rules[0].name, rules: rules }
 }
 
+/// A toy language with the head law: a `call` may take a trailing
+/// `block`, and an `if`'s condition is a HEAD.
+fn headed() -> Grammar {
+    parse_grammar("prog = s:stmt BREAK -> prog(s)\nstmt = \"if\" c:call \"{\" b:NAME \"}\" -> if_(c, b) @head(c) | c:call -> c\ncall = n:NAME ( \"(\" a:call \")\" )? ( tb:block )? -> call(n, a, tb) @trailer(tb)\nblock = \"{\" v:NAME \"}\" -> block(v)\n").built!
+}
+
 spec "grammar/executor" {
+    given "the head law: a trailer never matches inside a head" {
+        then "a call takes its trailing block outside a head" {
+            result_str(run_sx(headed(), "f { x }")) == "(prog (call f _ (block x)))"
+        }
+        then "an `if` keeps its brace — the head's call takes none" {
+            result_str(run_sx(headed(), "if f { x }")) == "(prog (if_ (call f _ _) x))"
+        }
+        then "a delimiter opens the head: inside parentheses the block is the call's" {
+            result_str(run_sx(headed(), "if g ( f { x } ) { y }")) == "(prog (if_ (call g (call f _ (block x)) _) y))"
+        }
+        then "a head is memoized apart from an open match at the same cursor" {
+            result_str(run_sx(headed(), "if f { x }")) == "(prog (if_ (call f _ _) x))" && result_str(run_sx(headed(), "f { x }")) == "(prog (call f _ (block x)))"
+        }
+    }
     given "sequencing, captures, and repetition" {
         then "a starred capture accumulates into the build" {
             let g = g1([rule("list", [seq_to(

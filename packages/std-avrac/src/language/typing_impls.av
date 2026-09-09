@@ -5,7 +5,7 @@
 //! rule, and the voices these laws speak.
 use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type, filled, same_decl}
 use diagnostics.{refusal, warning}
-use features.{TypeCx, FnSig, DeclSig, fn_sig_of, trait_named, Decl, written_seats, trait_member, self_type_of, instance_vars, EnumSig, variant_sig_of}
+use features.{TypeCx, FnSig, DeclSig, fn_sig_of, Decl, written_seats, EnumSig, variant_sig_of}
 
 impl TypeCx {
     /// A trait member's sig: `Self` at seat 0 — the trait's own
@@ -44,7 +44,7 @@ impl TypeCx {
     }
 
     /// The trait a name stands for, in this file's scope.
-    fn trait_decl_named(name: string) -> DeclId? { trait_named(self.view.decls, self.names, name) }
+    fn trait_decl_named(name: string) -> DeclId? { self.view.decls.trait_named(self.names, name) }
 
     /// A member's sig under its parent: a trait's method declares
     /// its contract; an impl's method declares under the impl's
@@ -75,12 +75,12 @@ impl TypeCx {
     /// The type an impl's `self` wears — the ONE definition, shared
     /// with the receivers pass.
     fn impl_self_type(d: DeclId) -> TypeId {
-        self_type_of(self.view.decls, d)
+        self.view.decls.self_type_of(d)
     }
 
     fn enter_target_scope(d: DeclId) {
         // LICENSED I3: pushing through the field alias — concat would rebind the local
-        for v in instance_vars(self.view.decls, d) { self.tscope.push(v) }
+        for v in self.view.decls.instance_vars(d) { self.tscope.push(v) }
     }
 
     /// The impl block's law: its target is declared, plain, and
@@ -247,7 +247,7 @@ impl TypeCx {
         }
         let tdecl: DeclId? = self.trait_decl_named(of!)
         if tdecl == null { return }
-        let member: DeclId? = trait_member(self.view.decls, tdecl!, x.name)
+        let member: DeclId? = self.view.decls.trait_member(tdecl!, x.name)
         if member == null { return }
         if writes && !self.view.decls.declares_writing(member!) { self.writes_under_plain_sig(x, of!) }
     }

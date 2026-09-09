@@ -1,7 +1,7 @@
 // Packages over an in-memory host: a root manifest names a path
 // dependency, `use @scope.name.a.{x}` reaches its module, the graph's
 // laws refuse in their own words, and the entry is the manifest's.
-use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, program, Program, module_of, root_files, entry_of}
+use @std.avrac.language.{avra, new_workspace, memory_host, Program}
 use @std.avrac.diagnostics.{suggested}
 use diagnostics.{Diag}
 use language.{Workspace}
@@ -63,7 +63,7 @@ fn root_manifest(deps: string) -> string {
 }
 
 fn ran(ws: Workspace) -> string? {
-    match program(ws, "/w/src/main.av").run() {
+    match ws.program("/w/src/main.av").run() {
         .Ok(text) -> text,
         .Err(_) -> null,
     }
@@ -71,7 +71,7 @@ fn ran(ws: Workspace) -> string? {
 
 /// The root file's ONE diagnostic.
 fn main_diag(ws: Workspace) -> Diag? {
-    let a = analyze_file(ws, "/w/src/main.av")
+    let a = ws.analyze_file("/w/src/main.av")
     if a.diagnostics.length != 1 { return null }
     a.diagnostics[0]
 }
@@ -93,7 +93,7 @@ fn back_edge(section: string) -> Workspace {
 
 /// The packages' ONE voice, saying this.
 fn package_voice(ws: Workspace, saying: string) -> bool {
-    let p = program(ws, "/w/src/main.av")
+    let p = ws.program("/w/src/main.av")
     p.voices.length == 1 && p.rendered(p.voices).contains(saying)
 }
 
@@ -109,14 +109,14 @@ spec "language/packages" {
         }
         then "a dependency file's module carries its package" {
             let ws = workspace()
-            module_of(ws, "/w/vendor/greet/src/greet.av") == "@acme.greet" &&
-                module_of(ws, "/w/vendor/greet/src/deep/x.av") == "@acme.greet.deep" &&
-                module_of(ws, "/w/src/main.av") == ""
+            ws.module_of("/w/vendor/greet/src/greet.av") == "@acme.greet" &&
+                ws.module_of("/w/vendor/greet/src/deep/x.av") == "@acme.greet.deep" &&
+                ws.module_of("/w/src/main.av") == ""
         }
         then "a nested package is not a module of the package above it" {
             let ws = workspace()
             let kind: string? = main_diag(with_file("/w/src/main.av", "use tools.src.t.{t}\n1\n"))?.kind
-            root_files(ws).length == 1 && kind == "resolve.no_module"
+            ws.root_files().length == 1 && kind == "resolve.no_module"
         }
     }
     given "a package sees only what its manifest declares" {
@@ -138,7 +138,7 @@ spec "language/packages" {
         then "a diamond over one directory is one package" {
             let ws = with_two("/w/avra.toml", both_deps(), "/w/src/main.av", "use @acme.greet.{greet}\nuse @acme.words.{word}\ngreet(1) + word()\n")
             let out: string? = ran(ws)
-            program(ws, "/w/src/main.av").voices.is_empty() && out == "81"
+            ws.program("/w/src/main.av").voices.is_empty() && out == "81"
         }
     }
     given "the graph's laws" {
@@ -147,7 +147,7 @@ spec "language/packages" {
                           "packages depend in a cycle: app -> @acme/greet -> @acme/words -> @acme/greet")
         }
         then "a dev dependency closes no cycle through the package it tests" {
-            program(back_edge("dev-dependencies"), "/w/src/main.av").voices.is_empty()
+            back_edge("dev-dependencies").program("/w/src/main.av").voices.is_empty()
         }
         then "the same edge as a library dependency refuses" {
             package_voice(back_edge("dependencies"), "packages depend in a cycle: @acme/app -> @acme/greet -> @acme/app")
@@ -167,12 +167,12 @@ spec "language/packages" {
     }
     given "the entry and the warnings" {
         then "the entry is `[bin]`, else src/main.av" {
-            let plain: string? = entry_of(workspace())
-            let binned: string? = entry_of(with_file("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/app.av\"\n"))
+            let plain: string? = workspace().entry_of()
+            let binned: string? = with_file("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/app.av\"\n").entry_of()
             plain == "/w/src/main.av" && binned == "/w/src/app.av"
         }
         then "an unknown section warns and never blocks" {
-            let p = program(with_file("/w/avra.toml", root_manifest("\"@acme/greet\" = { path = \"vendor/greet\" }") + "\n[grants]\nnetwork = []\n"), "/w/src/main.av")
+            let p = with_file("/w/avra.toml", root_manifest("\"@acme/greet\" = { path = \"vendor/greet\" }") + "\n[grants]\nnetwork = []\n").program("/w/src/main.av")
             p.voices.length == 1 && p.voices[0].severity is .Warning && p.clean() && p.report().contains("warning[F4030]")
         }
     }
@@ -182,7 +182,7 @@ spec "language/packages" {
                               "export type P = { v: int }\nimpl P {\n    fn who() -> int {\n        2\n    }\n}\nexport fn make() -> P {\n    P { v: 0 }\n}\n",
                               "/w/src/main.av",
                               "use @acme.greet.{make}\ntype P = { v: int }\nimpl P {\n    fn who() -> int {\n        1\n    }\n}\nlet mine = P { v: 0 }\nlet theirs = make()\n\"\${mine.who()} \${theirs.who()}\"\n")
-            answered(program(ws, "/w/src/main.av")) == "1 2"
+            answered(ws.program("/w/src/main.av")) == "1 2"
         }
     }
 }

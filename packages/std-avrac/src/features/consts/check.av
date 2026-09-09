@@ -3,7 +3,7 @@
 //! today a literal, tomorrow anything the evaluator finishes. And
 //! an annotated const holds what it declares, like any binding.
 use core.{StmtId, ExprId, TypeId, TypeRef}
-use features.{TypeCx, declared_binding, refuses_void_value, spoken}
+use features.{TypeCx}
 use diagnostics.{refusal}
 
 /// The value walks under its declaration's want, then two laws: it
@@ -21,9 +21,9 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     if declared != null { cx.plant_want(v, declared!) }
     cx.walk_value(s)
     if !settles(cx, v) { return }
-    if refuses_void_value(cx, v) { return }
+    if cx.refuses_void_value(v) { return }
     if declared == null { return }
-    declared_binding(cx, v, cx.view.store.let_name(s) ?? "this const", declared!)
+    cx.declared_binding(v, cx.view.store.let_name(s) ?? "this const", declared!)
 }
 
 /// Whether the compiler can settle this value TODAY. A literal it
@@ -46,7 +46,7 @@ fn literal(cx: TypeCx, v: ExprId) -> bool {
 // ── The voices ──
 
 fn unsettled(mut cx: TypeCx, v: ExprId) {
-    let _ = spoken(cx, refusal("type.const", cx.loc_of(v),
+    let _ = cx.spoken(refusal("type.const", cx.loc_of(v),
                        "a const's value must be known at compile time",
                        "computed here",
                        "today that means a literal — `let` holds what the program computes"))

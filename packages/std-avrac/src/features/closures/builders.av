@@ -2,18 +2,18 @@
 //! TYPE. A param's annotation is optional in the PARSE (the typing
 //! law demands it until the expected-type channel lands); spans
 //! re-align them, the same window law fns use.
-use core.{Expr, TypeRef, Param}
+use core.{Expr, TypeRef}
 use grammar.{Token}
-use features.{LangNode, Builder, aligned_param_types, within}
+use features.{LangNode, Builder, aligned_param_types, within, marked_seats}
 
 fn build_lambda(mut b: Builder) -> Result<LangNode, string> {
-    let ps = b.tokens(0)?
-    let body = b.expr(2)?
+    let marks = b.tokens(0)?
+    let ps = b.tokens(1)?
+    let body = b.expr(3)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("defect: a lambda without a span — the arena and the grammar disagree") }
-    let tys = aligned_param_types(ps, b.type_refs(1)?, ends!)
-    let params = [Param { name: p.text, ty: tys[j], default: null, mutable: false } for j, p in ps]
-    b.make_expr(Expr.Lambda(params, body))
+    let from: int = b.span?.lo ?? 0
+    b.make_expr(Expr.Lambda(marked_seats(ps, aligned_param_types(ps, b.type_refs(2)?, ends!), marks, from), body))
 }
 
 /// `fn(mut int, bool) -> bool` — the LAST arg is the return

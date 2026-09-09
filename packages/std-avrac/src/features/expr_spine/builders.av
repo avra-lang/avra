@@ -1,6 +1,6 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, int_of, Span, Param}
-use features.{LangNode, Builder, token_at, zip_defect, aligned_binds, within, chained_binder}
+use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, int_of, Span, TypeRef, pronoun_param}
+use features.{LangNode, Builder, token_at, zip_defect, aligned_binds, within, chained_binder, marked_seats}
 use grammar.{Token}
 
 fn build_int_lit(mut b: Builder) -> Result<LangNode, string> {
@@ -149,13 +149,15 @@ fn build_fold_coalesce(mut b: Builder) -> Result<LangNode, string> {
     b.wrap_expr(acc)
 }
 
-/// `v ( .name | .name(args) | ?.name | [i] | (args) )*` — ONE
-/// postfix star: property links, method calls, chains, indexes,
-/// and applications interleave freely, folded left in SOURCE
-/// order (a three-way merge over the capture families' spans).
-/// The paren WITNESS in a link's window makes a dot a METHOD call;
-/// a bare paren group applies the value built so far. The ladder
-/// owns the parse; each node's meaning lives with its feature.
+/// `v ( .name | .name(args) | ?.name | [i] | (args) | { … } )*` —
+/// ONE postfix star: property links, method calls, chains, indexes,
+/// applications and trailing blocks interleave freely, folded left
+/// in SOURCE order (a merge over the capture families' spans). The
+/// paren WITNESS in a link's window makes a dot a METHOD call; a
+/// bare paren group applies the value built so far; a block widens
+/// the call built so far by the call protocol, its `else` beside it.
+/// The ladder owns the parse; each node's meaning lives with its
+/// feature.
 fn build_fold_postfix(mut b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
     let links = b.tokens(1)?
@@ -166,43 +168,58 @@ fn build_fold_postfix(mut b: Builder) -> Result<LangNode, string> {
     let calls = b.tokens(6)?
     let cargs = b.exprs(7)?
     let forces = b.tokens(8)?
+    let blocks = b.exprs(9)?
+    let elses = b.exprs(10)?
     if links.length != names.length { return .Err(zip_defect()) }
     let held: int? = b.span_end()
     if held == null { return .Err("defect: a postfix chain without a span — the arena and the grammar disagree") }
     let ends = held!
-    // the four families' cursors — each turn folds the link whose
+    // the five families' cursors — each turn folds the link whose
     // anchor comes first in the source
     mut jn = 0
     mut ji = 0
     mut jc = 0
     mut jf = 0
-    while jn < names.length || ji < indexes.length || jc < calls.length || jf < forces.length {
+    mut jb = 0
+    // a block after a block is a mistake named, never a third argument
+    mut blocked = false
+    while jn < names.length || ji < indexes.length || jc < calls.length || jf < forces.length || jb < blocks.length {
         let np = if jn < names.length { names[jn].span.lo } else { ends }
         let ip = if ji < indexes.length { span_lo(b, indexes[ji]) ?? ends } else { ends }
         let cp = if jc < calls.length { calls[jc].span.lo } else { ends }
         let fp = if jf < forces.length { forces[jf].span.lo } else { ends }
-        if fp < np && fp < ip && fp < cp {
-            acc = b.store.alloc_expr(force_link(forces[jf].text, acc), b.span)
-            jf = jf + 1
-        } else if np <= ip && np <= cp {
-            let upto = next_anchor(b, names, indexes, calls, jn + 1, ji, jc, ends)
-            let called = opens.any(within(it.span.lo, np, upto))
-            if called {
-                let margs_here = [pronouned(b, a) for a in args_between(b, margs, np, upto)]
-                acc = if links[jn].text == "?." { chained_call(b, acc, names[jn].text, margs_here) } else { b.store.alloc_expr(Expr.MethodCall(acc, names[jn].text, margs_here), b.span) }
-            } else {
-                acc = b.store.alloc_expr(prop_link(links[jn].text, acc, names[jn].text), b.span)
-            }
-            jn = jn + 1
+        let bp = if jb < blocks.length { span_lo(b, blocks[jb]) ?? ends } else { ends }
+        if bp < np && bp < ip && bp < cp && bp < fp {
+            if blocked { return .Err("a second trailing block follows the first — `else { … }` fills the next fn seat, and a block statement starts on its own line") }
+            let upto = if jb + 1 < blocks.length { span_lo(b, blocks[jb + 1]) ?? ends } else { ends }
+            acc = b.trailed(acc, [blocks[jb]].concat(args_between(b, elses, bp, upto)))?
+            jb = jb + 1
+            blocked = true
         } else {
-            if ip <= cp {
-                acc = b.store.alloc_expr(Expr.Index(acc, indexes[ji]), b.span)
-                ji = ji + 1
+            blocked = false
+            if fp < np && fp < ip && fp < cp {
+                acc = b.store.alloc_expr(force_link(forces[jf].text, acc), b.span)
+                jf = jf + 1
+            } else if np <= ip && np <= cp {
+                let upto = next_anchor(b, names, indexes, calls, jn + 1, ji, jc, ends)
+                let called = opens.any(within(it.span.lo, np, upto))
+                if called {
+                    let margs_here = [b.store.pronouned(a) for a in args_between(b, margs, np, upto)]
+                    acc = if links[jn].text == "?." { chained_call(b, acc, names[jn].text, margs_here) } else { b.store.alloc_expr(Expr.MethodCall(acc, names[jn].text, margs_here), b.span) }
+                } else {
+                    acc = b.store.alloc_expr(prop_link(links[jn].text, acc, names[jn].text), b.span)
+                }
+                jn = jn + 1
             } else {
-                let upto = next_anchor(b, names, indexes, calls, jn, ji, jc + 1, ends)
-                acc = b.store.alloc_expr(
-                    Expr.CallValue(acc, args_between(b, cargs, cp, upto)), b.span)
-                jc = jc + 1
+                if ip <= cp {
+                    acc = b.store.alloc_expr(Expr.Index(acc, indexes[ji]), b.span)
+                    ji = ji + 1
+                } else {
+                    let upto = next_anchor(b, names, indexes, calls, jn, ji, jc + 1, ends)
+                    acc = b.store.alloc_expr(
+                        Expr.CallValue(acc, args_between(b, cargs, cp, upto)), b.span)
+                    jc = jc + 1
+                }
             }
         }
     }
@@ -249,16 +266,6 @@ fn span_lo(b: Builder, e: ExprId) -> int? {
     sp!.lo
 }
 
-/// An argument the PRONOUN rides becomes an implicit one-param
-/// lambda — `xs.map(it * 2)` is `xs.map((it) -> it * 2)`, and the
-/// expected-type channel seats it like any other. The wrap is the
-/// pronoun's WHOLE mechanism: nothing downstream knows it exists.
-fn pronouned(mut b: Builder, a: ExprId) -> ExprId {
-    if !b.store.pronoun_rides(a) { return a }
-    b.store.alloc_expr(
-        Expr.Lambda([Param { name: "it", ty: null, default: null, mutable: false }], a), b.store.expr_span(a))
-}
-
 /// The node a link token names — the chain when absence rides it.
 fn prop_link(link: string, subject: ExprId, name: string) -> Expr {
     if link == "?." { return Expr.Chain(subject, name) }
@@ -269,6 +276,19 @@ fn prop_link(link: string, subject: ExprId, name: string) -> Expr {
 /// so the symbol projection stays the single source.
 fn binop_of(text: string) -> BinOp? {
     all_binops().find(op_symbol(it) == text)
+}
+
+/// `{ ( mut? x, … -> )? statements }` — a lambda whose body is a
+/// block: the written seats, or the pronoun's one seat when no seat
+/// is written and the body reads `it`, or none.
+fn build_trailing(mut b: Builder) -> Result<LangNode, string> {
+    let marks = b.tokens(0)?
+    let ps = b.tokens(1)?
+    let body = b.block_of(b.stmts(2)?)
+    let from: int = b.span?.lo ?? 0
+    let unwritten: List<TypeRef?> = [null for p in ps]
+    let seats = if ps.is_empty() && b.store.pronoun_rides(body) { [pronoun_param()] } else { marked_seats(ps, unwritten, marks, from) }
+    b.make_expr(Expr.Lambda(seats, body))
 }
 
 /// The one catch builder — the four surfaces are alternatives of

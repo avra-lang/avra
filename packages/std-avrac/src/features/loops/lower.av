@@ -4,13 +4,13 @@
 //! and its step store after the body — nothing the IR does not
 //! already say.
 use core.{StmtId, ExprId, Ins, TypeId}
-use features.{LowerCx, loop_start, loop_cond, loop_end, opened, turn_open, turn_index, turn_elem, turn_close}
+use features.{LowerCx}
 
 export fn lower_while(mut cx: LowerCx, cond: ExprId, stmts: List<StmtId>) {
-    loop_start(cx)
-    loop_cond(cx, cx.reg_of(cond))
+    cx.loop_start()
+    cx.loop_cond(cx.reg_of(cond))
     cx.lower_stmts(stmts)
-    loop_end(cx)
+    cx.loop_end()
 }
 
 /// The counter is born before the loop, read through its cell each
@@ -22,27 +22,27 @@ export fn lower_for(mut cx: LowerCx, s: StmtId, from: ExprId, cond: ExprId, step
     cx.emit(Ins.Alloca(slot))
     cx.emit(Ins.Store(slot, start))
     cx.bind_slot(s, slot)
-    loop_start(cx)
-    loop_cond(cx, cx.reg_of(cond))
+    cx.loop_start()
+    cx.loop_cond(cx.reg_of(cond))
     cx.lower_stmts(stmts)
     cx.emit(Ins.Store(slot, cx.reg_of(step)))
-    loop_end(cx)
+    cx.loop_end()
 }
 
 /// `for x in xs`: the walk, plus the ELEMENT cell the name binds
 /// through — stored fresh each turn, read wherever the body says the
 /// name.
 export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
-    let w = opened(cx, subject, elem_of(cx, subject))
+    let w = cx.opened(subject, elem_of(cx, subject))
     let cell = cx.mint_ty(w.elem)
     cx.emit(Ins.Alloca(cell))
     cx.bind_slot(s, cell)
-    turn_open(cx, w)
-    let here = turn_index(cx, w)
+    cx.turn_open(w)
+    let here = cx.turn_index(w)
     cx.bind_index(s, here)
-    cx.emit(Ins.Store(cell, turn_elem(cx, w, here)))
+    cx.emit(Ins.Store(cell, cx.turn_elem(w, here)))
     cx.lower_stmts(stmts)
-    turn_close(cx, w)
+    cx.turn_close(w)
 }
 
 /// The subject's element type — typing proved it a List, and the

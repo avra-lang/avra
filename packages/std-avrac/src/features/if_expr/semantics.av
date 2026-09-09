@@ -1,7 +1,7 @@
 //! The if-expression's NodeSemantics: dispatch only. The typing rule
 //! lives in check.av; lowering — the MEANING — in lower.av.
 use core.{Expr, ExprId, StmtId, TypeId, Reg}
-use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, require_bool, nothing, void_arm, void_close, open_region}
+use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing}
 
 export type IfSemantics = { }
 
@@ -63,7 +63,7 @@ impl StmtSemantics for IfStmtSemantics {
         match cx.view.store.stmt(s) {
             .IfStmt(c, t, e) -> {
                 cx.walk(c)
-                require_bool(cx, c, "an `if` condition", "this decides the branch")
+                cx.require_bool(c, "an `if` condition", "this decides the branch")
                 cx.type_stmts(t)
                 cx.type_stmts(e)
             }
@@ -86,9 +86,5 @@ impl StmtSemantics for IfStmtSemantics {
 /// merge register exists because every region merges, and nothing
 /// reads it. A branch that RETURNS never reaches its yield.
 fn lower_if_stmt(mut cx: LowerCx, c: ExprId, t: List<StmtId>, e: List<StmtId>) {
-    open_region(cx, cx.reg_of(c))
-    cx.arm_stmts(t)
-    void_arm(cx)
-    cx.arm_stmts(e)
-    void_close(cx)
+    cx.void_branches(cx.reg_of(c)) { cx -> cx.arm_stmts(t) } else { cx -> cx.arm_stmts(e) }
 }

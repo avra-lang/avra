@@ -6722,16 +6722,88 @@ additions get siblings, nothing changes shape:
   any later move of a type between files breaks every caller. The
   wanting site is packages/std-sqlite/src/sqlite.av, ATTRIBUTED —
   that package is not in this tree.
-- TRAILING LAMBDAS for the bracket verbs (filed 2026-09-05, lane D
-  from the sqlite driver lane's ask). `tx { 42 }` is "expected BREAK
-  while parsing `stmt`" at the `{`; the argument seat is fine, so a
-  scoped-resource verb is spelled `db.tx(() -> { … })` today. THE
-  WANTING SITE is ATTRIBUTED, not in this tree: the driver's
-  transaction and scoped-handle verbs (`../avra-sq-driver`). The
-  refusal itself is probed here. Worth weighing on P1 grounds rather
-  than taste — the braced form is what gets generated first, so the
-  sugar's absence costs a correction on every bracket verb a caller
-  writes.
+- ~~TRAILING LAMBDAS for the bracket verbs~~ — LANDED 2026-09-09 as
+  sugar 1's level two (docs/2026_09_09_SUGAR_1_CONTEXT_RECEIVER.md):
+  `f(a) { x -> body }` is `f(a, (x) -> body)`, `else { … }` after it
+  fills the next fn seat (PROVISIONAL — the word is positional and
+  reads as a branch, a lie wherever the seat is not a choice's other
+  arm; sugar 5 retires it for the seat's name, `other: { … }`, docs/
+  2026_09_09_SUGAR_5_NAMED_ARGUMENTS.md), `{ … }` with no arrow takes no seat (or `it`
+  when the body reads it, its statements included), a name or a field
+  read takes one as a call with no parentheses (`run { … }`, `db.tx {
+  … }`), and the block is a POSTFIX like the rest (`xs.find { it > 1
+  } ?? 0`, `xs.filter { … }.length`). A seat HEARS its slot's `mut`
+  mark as it hears its type, so a block on `fn(mut Cx) -> R` writes
+  through the context it is handed; a lambda may write `mut` on its
+  own seats. THE HEAD LAW paid for it: `if f(a) { … }` keeps its
+  brace because a head (`if`, `while`, `for`, `match`, `if let`,
+  `let … else`) is matched with trailers CLOSED until a delimiter
+  opens — two DSL marks (`@head(c)`, `@trailer(tb)`) and an executor
+  cap, memoized per cursor; a block on a call in a head is
+  parenthesised (`if (f(a) { … }) { … }`), Swift's rule. NOT
+  spelled: a trailer on a `?.` chain (`a?.m { … }` — the chain lowers
+  to a match, so the block goes in the parentheses), and `(f(a)) {
+  … }` widens `f(a)` — a paren group mints no node, so the trailer
+  cannot tell it from `f(a) { … }` — while `f(a)() { … }` applies the
+  answer. THE EXPANSION LESSON: a `grammar { }` literal is expanded
+  into constructor code by the COMPILING compiler, spelling `Item`'s
+  fields by hand, so the two new marks reached no product for one
+  generation ("every field is spelled", grammar_lit/builders.av) —
+  and a DSL word is a syntax change to the compiler's own source:
+  the ladder was seed -> a product that knows the words with no rule
+  using them -> the full grammar -> the fixed point. Filed 2026-09-05
+  (lane D from the sqlite driver lane's ask); the wanting site was
+  attributed (`../avra-sq-driver`'s `db.tx(() -> { … })`), and the
+  compiler's own regions were the first sweep: `cx.region(c, e) { cx
+  -> … } else { cx -> … }`, `cx.presence(v, held, e) { cx, carried ->
+  … } else { … }`, `cx.void_region(c) { cx -> … }` at 22 sites, IR
+  byte-identical.
+- THE RED TEAM ON TRAILING BLOCKS (2026-09-09, 90 programs across the
+  eight classes, eval == native on every accepted one — no wrong
+  answer, no divergence). Six survivors, each a test now
+  (closures/tests/trailing_adversarial_test.av): a block with no
+  seats on a slot whose answer already REFUSED cascaded a second
+  message (`fn_fits` absorbs an errored answer, as every Error does);
+  `{ x, x -> x }` bound one name to two seats silently — a fn refuses
+  it, and a paren lambda did not either (pre-existing, fixed for
+  both); a second BARE block (`f { 1 } { 2 }`) filled a third seat
+  silently, where `else { }` is the spelling and the misread is a
+  block statement — refused in those words; `run { it }` on a
+  seatless fn slot said "not a fn" of a fn (the pronoun voice assumed
+  a scalar seat); `noop { }` is a RECORD LITERAL by the grammar (a
+  name before an empty brace pair), so the remedy names `noop() { }`.
+  TWO FOUND AND LEFT, named: a CALL BY NAME resolves the declared fn
+  before a fn-typed local of the same name — `fn f() …` then `fn run(f:
+  fn() -> int) -> int { f() }` calls the declared `f` (`use_call`, "the
+  pinned arm law", by design and documented; the red team's own
+  fixture fell into it, and a seat named like a top-level fn is the
+  trap); and a head with an unparenthesised block (`for v in xs.map {
+  … } { }`) refuses as "expected `..`" — the farthest failure names
+  the range branch, not the head law; the cure would be a head's own
+  voice, unbuilt. AND THE F2051 GAP the sweep closed: a `mut` seat
+  handed to a fn VALUE's `mut` seat (`f(c)` with `f: fn(mut C)`)
+  counted as never written (`valued_evidence`, receivers.av).
+- A BOUND METHOD AS A VALUE (filed 2026-09-09, the sugar 1 sweep).
+  `xs.any(self.stmt_rides)` is F2003 "no field `stmt_rides` on
+  `NodeStore`" — a method name read without parentheses is a property
+  read, and typing asks the record for a field. A free fn IS a value
+  (`xs.any(big)` answers), so the gap is the receiver: the method
+  plus the `self` it closes over. The spelling today is the wrapper
+  lambda `(k) -> self.stmt_rides(k)`, which the sweep wrote at ten
+  sites (the pronoun trap forced it: `xs.any(self.verb(it))` rebinds
+  `it` to the nearest method call). WANTING SITES: core/nodes.av's
+  `any_rides` and `any_stmt_rides`, features/unify.av's three
+  `all`/`find` folds, workspace.av's `parse_clean`. THE SHAPE: a
+  method read on a receiver answers `fn(seats) -> answer` with the
+  receiver captured — the same fn box a lambda mints, seat 0 the
+  receiver — so it is the pronoun's wrapper minted by the reader
+  rather than the writer, and the lambda feature owns it.
+- THE PRONOUN INSIDE A BLOCK'S STATEMENTS (landed with the above):
+  `pronoun_rides` read a block's VALUE alone, recorded as a
+  limitation; a trailing block exists for multi-statement bodies, so
+  `it` now rides a block's statements too (`stmt_rides`, exhaustive
+  over Stmt). Strictly more programs compile; an unbound `it` was
+  F3000 before and is bound now.
 - `pop` ANSWERS `T?`, SO THE TRAP IS SPELLED (filed 2026-09-05, lane
   D; the change is lane C's files and lane A's db.av). `xs.pop()`
   answers the ELEMENT today and traps on an empty list ("pop on an

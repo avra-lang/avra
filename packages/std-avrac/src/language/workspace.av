@@ -16,7 +16,7 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, module_names, file_names, Clash, method_clashes, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted}
+use features.{TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -204,71 +204,66 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         clock: clock, phases: [],
     }
     for f in families() {
-        if ws.db.family((arg: int) -> refetched(ws, f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
+        if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
     }
     // the table's reads ARE the queries
-    ws.decls.arm((d: DeclId) -> ensured(ws, d))
-    ws.decls.arm_methods((d: DeclId) -> methods_ensured(ws, d))
-    ws.decls.arm_writes((d: DeclId) -> writes_ensured(ws))
-    load_packages(ws, src)
+    ws.decls.arm((d: DeclId) -> ws.ensured(d))
+    ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
+    ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
+    ws.load_packages(src)
     ws
 }
 
-/// A ONE-SHOT WORKSPACE ENDS ITS OWN CYCLE: the families and the
-/// table's hooks capture `ws`, so `ws` could never die — 1674 spec
-/// cases kept 1674 workspaces, 922 MB. Once the analysis it was made
-/// for has run, nothing re-verifies (the revision never moves) and
-/// every sig it will ask for is held, so the captures go; the
-/// workspace then dies with its last holder.
-export fn disarmed(mut ws: Workspace) {
-    ws.db.disarm()
-    ws.decls.disarm()
-    // an Analysis holds a closure over `ws`: the table of them is
-    // the second loop through the same box
-    ws.analyses = new_table()
-    ws.closed = true
-}
-
-fn ensured(ws: Workspace, d: DeclId) {
-    let _ = sig(ws, d)
-}
-
-fn methods_ensured(ws: Workspace, d: DeclId) {
-    let _ = methods(ws, d)
-}
-
-fn writes_ensured(ws: Workspace) {
-    let _ = receivers(ws)
-}
-
-/// A family's arg, as the file, module or declaration it keys by.
-fn file_at(arg: int) -> FileId { FileId { index: arg } }
-fn module_at(arg: int) -> ModuleId { ModuleId { index: arg } }
-fn decl_at_arg(arg: int) -> DeclId { DeclId { index: arg } }
-
-/// The kernel's verifier for every family: the key re-asked through
-/// its own query, then the cell's changed_at.
-fn refetched(ws: Workspace, f: Family, arg: int) -> int {
-    match f {
-        .Source -> touch(source(ws, file_at(arg))),
-        .Parsed -> touch(parsed(ws, file_at(arg))),
-        .Items -> touch(items(ws, file_at(arg))),
-        .Namespace -> touch(namespace(ws, module_at(arg))),
-        .Visible -> touch(visible(ws, file_at(arg))),
-        .Resolved -> touch(resolved(ws, file_at(arg))),
-        .Sig -> touch(sig(ws, decl_at_arg(arg))),
-        .Methods -> touch(methods(ws, decl_at_arg(arg))),
-        .Typed -> touch(typed(ws, decl_at_arg(arg))),
-        .Folded -> touch(folded(ws, file_at(arg))),
-        .Analysis -> touch(analysis(ws, file_at(arg))),
-        .Lowered -> touch(lowered(ws, arg)),
-        .Manifest -> touch(manifest(ws, arg)),
-        .Receivers -> touch(receivers(ws)),
-    }
-    ws.db.changed_at(key(f, arg))
-}
-
 impl Workspace {
+    /// A ONE-SHOT WORKSPACE ENDS ITS OWN CYCLE: the families and the
+    /// table's hooks capture `ws`, so `ws` could never die — 1674 spec
+    /// cases kept 1674 workspaces, 922 MB. Once the analysis it was made
+    /// for has run, nothing re-verifies (the revision never moves) and
+    /// every sig it will ask for is held, so the captures go; the
+    /// workspace then dies with its last holder.
+    mut fn disarmed() {
+        self.db.disarm()
+        self.decls.disarm()
+        // an Analysis holds a closure over `self`: the table of them is
+        // the second loop through the same box
+        self.analyses = new_table()
+        self.closed = true
+    }
+
+    fn ensured(d: DeclId) {
+        let _ = self.sig(d)
+    }
+
+    fn methods_ensured(d: DeclId) {
+        let _ = self.methods(d)
+    }
+
+    fn writes_ensured() {
+        let _ = self.receivers()
+    }
+
+    /// The kernel's verifier for every family: the key re-asked through
+    /// its own query, then the cell's changed_at.
+    fn refetched(f: Family, arg: int) -> int {
+        match f {
+            .Source -> touch(self.source(file_at(arg))),
+            .Parsed -> touch(self.parsed(file_at(arg))),
+            .Items -> touch(self.items(file_at(arg))),
+            .Namespace -> touch(self.namespace(module_at(arg))),
+            .Visible -> touch(self.visible(file_at(arg))),
+            .Resolved -> touch(self.resolved(file_at(arg))),
+            .Sig -> touch(self.sig(decl_at_arg(arg))),
+            .Methods -> touch(self.methods(decl_at_arg(arg))),
+            .Typed -> touch(self.typed(decl_at_arg(arg))),
+            .Folded -> touch(self.folded(file_at(arg))),
+            .Analysis -> touch(self.analysis(file_at(arg))),
+            .Lowered -> touch(self.lowered(arg)),
+            .Manifest -> touch(self.manifest(arg)),
+            .Receivers -> touch(self.receivers()),
+        }
+        self.db.changed_at(key(f, arg))
+    }
+
     fn timed(name: string, ns: int) {
         self.phases.push(Phase { name: name, ns: ns })
     }
@@ -277,143 +272,238 @@ impl Workspace {
         self.defects.push(error_at("language.defect", null, message))
     }
 
-}
-
-// ── The families ──
-
-/// A path's identity — the table mints it at first mention.
-export fn file_id(ws: Workspace, path: string) -> FileId {
-    ws.decls.file_id(path, module_of(ws, path))
-}
-
-/// An INPUT: the file's text, hashed; the revision moves only when
-/// the text did.
-export fn source(ws: Workspace, f: FileId) -> SourceFile {
-    let k = key(Family.Source, f.index)
-    let held: SourceFile? = ws.sources.at(f.index)
-    if held != null {
-        ws.db.record_dep(k)
-        return held!
+    // ── The families ──
+    /// A path's identity — the table mints it at first mention.
+    fn file_id(path: string) -> FileId {
+        self.decls.file_id(path, self.module_of(path))
     }
-    let path = ws.decls.file(f).path
-    let text = ws.host.read(path)
-    ws.db.set_input(k, fp_str(text))
-    ws.db.record_dep(k)
-    let src = new_source_file(path, text)
-    ws.sources.keep(f.index, src)
-    src
+
+    /// An INPUT: the file's text, hashed; the revision moves only when
+    /// the text did.
+    fn source(f: FileId) -> SourceFile {
+        let k = key(Family.Source, f.index)
+        let held: SourceFile? = self.sources.at(f.index)
+        if held != null {
+            self.db.record_dep(k)
+            return held!
+        }
+        let path = self.decls.file(f).path
+        let text = self.host.read(path)
+        self.db.set_input(k, fp_str(text))
+        self.db.record_dep(k)
+        let src = new_source_file(path, text)
+        self.sources.keep(f.index, src)
+        src
+    }
+
+    /// The file parsed — pure in its text.
+    fn parsed(f: FileId) -> Parsed {
+        let k = key(Family.Parsed, f.index)
+        if self.db.ask(k) is .Reuse { return self.programs.at(f.index)! }
+        self.db.begin(k)
+        let p = parse_program(self.lang, self.source(f))
+        self.db.settle(k, program_hash(p))
+        self.programs.keep(f.index, p)
+        p
+    }
+
+    /// The declarations a file MINTS into the one table; the answer's
+    /// hash is the item tree's — names and kinds.
+    fn items(f: FileId) -> List<DeclId> {
+        let k = key(Family.Items, f.index)
+        if self.db.ask(k) is .Reuse {
+            return self.file_items.at(f.index) ?? []
+        }
+        self.db.begin(k)
+        let p = self.parsed(f)
+        let ids = self.decls.admit(f, p.store, p.stmts)
+        self.db.settle(k, fp(7, [self.item_print(d) for d in ids]))
+        self.file_items.keep(f.index, ids)
+        ids
+    }
+
+    /// The declaration behind an id.
+    fn decl_at(d: DeclId) -> Decl {
+        self.decls.decl(d)
+    }
+
+    /// An item's print in the item tree's hash: its name, kind and
+    /// visibility.
+    fn item_print(d: DeclId) -> int {
+        let x = self.decl_at(d)
+        fp_str("${x.name}/${kind_word(x.kind)}/${x.exported}")
+    }
+
+    /// A module's names, bound ONCE: every file's declarations in file
+    /// then declaration order.
+    fn namespace(m: ModuleId) -> ModuleNames {
+        let k = key(Family.Namespace, m.index)
+        if self.db.ask(k) is .Reuse { return self.module_names.at(m.index)! }
+        self.db.begin(k)
+        let paths = self.module_files(module_path(segments_of(self.decls.module_name(m))))
+        let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
+        let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
+        self.db.settle(k, fp(3, [d.index for d in names.bound].concat([names.clashes.length])))
+        self.module_names.keep(m.index, names)
+        names
+    }
+
+    /// What a file's top level sees: its module's names, then its
+    /// imports — with what the `use` lines earned.
+    fn visible(f: FileId) -> Namespace {
+        let k = key(Family.Visible, f.index)
+        if self.db.ask(k) is .Reuse { return self.visibles.at(f.index)! }
+        self.db.begin(k)
+        let p = self.parsed(f)
+        mut imports: List<Import> = []
+        mut diags: List<Diag> = []
+        for u in use_lines(p) {
+            let line = self.imported_line(p, u)
+            imports = imports.concat(line.imports)
+            diags = diags.concat(line.diagnostics)
+        }
+        let names = self.decls.file_names(f, self.namespace(self.decls.file(f).module_id), imports, (path: string) -> self.shown(path))
+        let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
+        self.db.settle(k, self.db.revision())
+        self.visibles.keep(f.index, out)
+        out
+    }
+
+    /// A file's names resolved.
+    fn resolved(f: FileId) -> NameFacts {
+        let k = key(Family.Resolved, f.index)
+        if self.db.ask(k) is .Reuse { return self.name_facts.at(f.index)! }
+        self.db.begin(k)
+        touch(self.items(f))
+        let p = self.parsed(f)
+        let out = resolve(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, f), self.visible(f))
+        self.db.settle(k, self.db.revision())
+        self.name_facts.keep(f.index, out)
+        out
+    }
+
+    /// A declaration's signature, computed on first ask: the ONE place
+    /// declaration order stops mattering — a sig asks the sigs it names
+    /// lazily through the table. A sig reached from inside its own
+    /// computation (a recursive payload re-judging its slots) is
+    /// simply not there yet.
+    fn sig(d: DeclId) -> DeclSig? {
+        let k = key(Family.Sig, d.index)
+        let x = self.decls.decl(d)
+        // the language's own declarations were signed at admission
+        if !(self.db.ask(k) is .Compute) || x.kind is .Builtin {
+            return self.decls.sigs[d.index]
+        }
+        self.db.begin(k)
+        mut t = self.type_cx_for(x)
+        t.declare_one(x)
+        self.sig_voices.keep(d.index, t.facts.voices)
+        let out: DeclSig? = self.decls.sigs[d.index]
+        self.db.settle(k, sig_hash(out))
+        out
+    }
+
+    /// A type's method table, filled from its own members and every
+    /// impl block that names it — asked through the table's read, so a
+    /// body depends on exactly the impls it dispatches through. Asked
+    /// again from inside one of those impls' own registration, it
+    /// answers what stands.
+    fn methods(target: DeclId) -> List<DeclId> {
+        let blocks = self.decls.children_of(target).concat(self.decls.impls_named(self.decls.decl(target).name))
+        // asked while one of its impls registers: the table so far,
+        // remembered by nobody
+        if blocks.any((b) -> self.registering(b)) { return self.decls.methods_of(target) }
+        let k = key(Family.Methods, target.index)
+        if !(self.db.ask(k) is .Compute) { return self.decls.methods_of(target) }
+        self.db.begin(k)
+        for b in blocks { touch(self.sig(b)) }
+        let out = self.decls.methods_of(target)
+        self.method_clashes.keep(target.index, self.decls.method_clashes(target))
+        self.db.settle(k, fp_str(joined([self.decls.decl(m).name for m in out], ",")))
+        out
+    }
+
+    /// Whether a declaration's signature is being computed right now.
+    fn registering(d: DeclId) -> bool {
+        self.db.active(key(Family.Sig, d.index))
+    }
+
+    /// A type context over one declaration's expression range, in its
+    /// file.
+    fn type_cx_for(x: Decl) -> TypeCx {
+        let p = self.parsed(x.file)
+        new_type_cx(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, x.file), self.resolved(x.file), x.lo, x.hi)
+    }
+
+    /// One declaration's body typed — a table over its own expression
+    /// range, the sigs it names asked as it reads them.
+    fn typed(d: DeclId) -> TypeFacts {
+        let k = key(Family.Typed, d.index)
+        if self.db.ask(k) is .Reuse { return self.decl_facts.at(d.index)! }
+        self.db.begin(k)
+        let x = self.decls.decl(d)
+        mut t = self.type_cx_for(x)
+        let out = t.type_decl(x)
+        self.db.settle(k, self.db.revision())
+        self.decl_facts.keep(d.index, out)
+        out
+    }
+
+    /// A file's bodies as one table: Main's facts first (its range
+    /// spans the file), each declaration's laid over its own range,
+    /// their voices in source order — what the facade and lowering
+    /// read by expression.
+    fn folded(f: FileId) -> TypeFacts {
+        let k = key(Family.Folded, f.index)
+        if self.db.ask(k) is .Reuse { return self.folds.at(f.index)! }
+        self.db.begin(k)
+        let p = self.parsed(f)
+        let hole = self.decls.types.intern(Type.Error)
+        mut out = new_type_facts(0, p.store.exprs.count(), p.store.stmts.count(), hole)
+        mut spoken: List<Diag> = []
+        for d in self.bodies_of(f) {
+            let facts = self.typed(d)
+            out.absorb(facts)
+            spoken = spoken.concat(facts.voices.list)
+        }
+        let folded_facts = out with { voices: Voices { list: by_position(spoken) } }
+        self.db.settle(k, self.db.revision())
+        self.folds.keep(f.index, folded_facts)
+        folded_facts
+    }
+
+    /// A file's bodies to type: Main, then every declaration owning a
+    /// range, in declaration order.
+    fn bodies_of(f: FileId) -> List<DeclId> {
+        some_list(self.decls.main_of(f)).concat([d for d in self.decls.decls_of_file(f) if self.decls.owns_a_range(d)])
+    }
+
+    /// A file's signature diagnostics, in the order the rounds spoke
+    /// them: types, then traits' members, then fns, then impls.
+    fn sig_diagnostics(f: FileId) -> List<Diag> {
+        let own = self.top_level_decls(f)
+        mut out: List<Diag> = []
+        for rank in 0..4 {
+            for d in own {
+                if self.decls.sig_rank(self.decls.decl(d)) == rank {
+                    touch(self.sig(d))
+                    let v: Voices? = self.sig_voices.at(d.index)
+                    if v != null { out = out.concat(v!.list) }
+                }
+            }
+        }
+        out
+    }
 }
 
-/// The file parsed — pure in its text.
-export fn parsed(ws: Workspace, f: FileId) -> Parsed {
-    let k = key(Family.Parsed, f.index)
-    if ws.db.ask(k) is .Reuse { return ws.programs.at(f.index)! }
-    ws.db.begin(k)
-    let p = parse_program(ws.lang, source(ws, f))
-    ws.db.settle(k, program_hash(p))
-    ws.programs.keep(f.index, p)
-    p
-}
+/// A family's arg, as the file, module or declaration it keys by.
+fn file_at(arg: int) -> FileId { FileId { index: arg } }
+fn module_at(arg: int) -> ModuleId { ModuleId { index: arg } }
+fn decl_at_arg(arg: int) -> DeclId { DeclId { index: arg } }
 
 /// A program's fingerprint — the fold of its statements'.
 fn program_hash(p: Parsed) -> int {
     fp(17, [p.store.stmt_fingerprint(s) for s in p.stmts])
-}
-
-/// The declarations a file MINTS into the one table; the answer's
-/// hash is the item tree's — names and kinds.
-export fn items(ws: Workspace, f: FileId) -> List<DeclId> {
-    let k = key(Family.Items, f.index)
-    if ws.db.ask(k) is .Reuse {
-        return ws.file_items.at(f.index) ?? []
-    }
-    ws.db.begin(k)
-    let p = parsed(ws, f)
-    let ids = ws.decls.admit(f, p.store, p.stmts)
-    ws.db.settle(k, fp(7, [item_print(ws, d) for d in ids]))
-    ws.file_items.keep(f.index, ids)
-    ids
-}
-
-/// The declaration behind an id.
-export fn decl_at(ws: Workspace, d: DeclId) -> Decl {
-    ws.decls.decl(d)
-}
-
-/// An item's print in the item tree's hash: its name, kind and
-/// visibility.
-fn item_print(ws: Workspace, d: DeclId) -> int {
-    let x = decl_at(ws, d)
-    fp_str("${x.name}/${kind_word(x.kind)}/${x.exported}")
-}
-
-/// A module's names, bound ONCE: every file's declarations in file
-/// then declaration order.
-export fn namespace(ws: Workspace, m: ModuleId) -> ModuleNames {
-    let k = key(Family.Namespace, m.index)
-    if ws.db.ask(k) is .Reuse { return ws.module_names.at(m.index)! }
-    ws.db.begin(k)
-    let paths = module_files(ws, module_path(segments_of(ws.decls.module_name(m))))
-    let ordered: List<DeclId> = flatten([items(ws, file_id(ws, path)) for path in paths])
-    let names = module_names(ws.decls, ordered, (path: string) -> shown(ws, path))
-    ws.db.settle(k, fp(3, [d.index for d in names.bound].concat([names.clashes.length])))
-    ws.module_names.keep(m.index, names)
-    names
-}
-
-/// What a file's top level sees: its module's names, then its
-/// imports — with what the `use` lines earned.
-export fn visible(ws: Workspace, f: FileId) -> Namespace {
-    let k = key(Family.Visible, f.index)
-    if ws.db.ask(k) is .Reuse { return ws.visibles.at(f.index)! }
-    ws.db.begin(k)
-    let p = parsed(ws, f)
-    mut imports: List<Import> = []
-    mut diags: List<Diag> = []
-    for u in use_lines(p) {
-        let line = imported_line(ws, p, u)
-        imports = imports.concat(line.imports)
-        diags = diags.concat(line.diagnostics)
-    }
-    let names = file_names(ws.decls, f, namespace(ws, ws.decls.file(f).module_id), imports, (path: string) -> shown(ws, path))
-    let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
-    ws.db.settle(k, ws.db.revision())
-    ws.visibles.keep(f.index, out)
-    out
-}
-
-/// A file's names resolved.
-export fn resolved(ws: Workspace, f: FileId) -> NameFacts {
-    let k = key(Family.Resolved, f.index)
-    if ws.db.ask(k) is .Reuse { return ws.name_facts.at(f.index)! }
-    ws.db.begin(k)
-    touch(items(ws, f))
-    let p = parsed(ws, f)
-    let out = resolve(ws.lang.dispatch, ws.lang.keywords, file_view(ws.lang, p, ws.decls, f), visible(ws, f))
-    ws.db.settle(k, ws.db.revision())
-    ws.name_facts.keep(f.index, out)
-    out
-}
-
-/// A declaration's signature, computed on first ask: the ONE place
-/// declaration order stops mattering — a sig asks the sigs it names
-/// lazily through the table. A sig reached from inside its own
-/// computation (a recursive payload re-judging its slots) is
-/// simply not there yet.
-export fn sig(ws: Workspace, d: DeclId) -> DeclSig? {
-    let k = key(Family.Sig, d.index)
-    let x = ws.decls.decl(d)
-    // the language's own declarations were signed at admission
-    if !(ws.db.ask(k) is .Compute) || x.kind is .Builtin {
-        return ws.decls.sigs[d.index]
-    }
-    ws.db.begin(k)
-    mut t = type_cx_for(ws, x)
-    declare_one(t, x)
-    ws.sig_voices.keep(d.index, t.facts.voices)
-    let out: DeclSig? = ws.decls.sigs[d.index]
-    ws.db.settle(k, sig_hash(out))
-    out
 }
 
 /// A signature's fingerprint — interned type ids and member names,
@@ -429,215 +519,390 @@ fn sig_hash(s: DeclSig?) -> int {
     fp(5, [t.index for t in flatten(v!.payloads)].concat([fp_str(joined(v!.names, ","))]))
 }
 
-/// A type's method table, filled from its own members and every
-/// impl block that names it — asked through the table's read, so a
-/// body depends on exactly the impls it dispatches through. Asked
-/// again from inside one of those impls' own registration, it
-/// answers what stands.
-export fn methods(ws: Workspace, target: DeclId) -> List<DeclId> {
-    let blocks = ws.decls.children_of(target).concat(ws.decls.impls_named(ws.decls.decl(target).name))
-    // asked while one of its impls registers: the table so far,
-    // remembered by nobody
-    if blocks.any(registering(ws, it)) { return ws.decls.methods_of(target) }
-    let k = key(Family.Methods, target.index)
-    if !(ws.db.ask(k) is .Compute) { return ws.decls.methods_of(target) }
-    ws.db.begin(k)
-    for b in blocks { touch(sig(ws, b)) }
-    let out = ws.decls.methods_of(target)
-    ws.method_clashes.keep(target.index, method_clashes(ws.decls, target))
-    ws.db.settle(k, fp_str(joined([ws.decls.decl(m).name for m in out], ",")))
-    out
-}
-
-/// Whether a declaration's signature is being computed right now.
-fn registering(ws: Workspace, d: DeclId) -> bool {
-    ws.db.active(key(Family.Sig, d.index))
-}
-
-/// A type context over one declaration's expression range, in its
-/// file.
-fn type_cx_for(ws: Workspace, x: Decl) -> TypeCx {
-    let p = parsed(ws, x.file)
-    new_type_cx(ws.lang.dispatch, ws.lang.keywords, file_view(ws.lang, p, ws.decls, x.file), resolved(ws, x.file), x.lo, x.hi)
-}
-
-/// One declaration's body typed — a table over its own expression
-/// range, the sigs it names asked as it reads them.
-export fn typed(ws: Workspace, d: DeclId) -> TypeFacts {
-    let k = key(Family.Typed, d.index)
-    if ws.db.ask(k) is .Reuse { return ws.decl_facts.at(d.index)! }
-    ws.db.begin(k)
-    let x = ws.decls.decl(d)
-    mut t = type_cx_for(ws, x)
-    let out = type_decl(t, x)
-    ws.db.settle(k, ws.db.revision())
-    ws.decl_facts.keep(d.index, out)
-    out
-}
-
-/// A file's bodies as one table: Main's facts first (its range
-/// spans the file), each declaration's laid over its own range,
-/// their voices in source order — what the facade and lowering
-/// read by expression.
-export fn folded(ws: Workspace, f: FileId) -> TypeFacts {
-    let k = key(Family.Folded, f.index)
-    if ws.db.ask(k) is .Reuse { return ws.folds.at(f.index)! }
-    ws.db.begin(k)
-    let p = parsed(ws, f)
-    let hole = ws.decls.types.intern(Type.Error)
-    mut out = new_type_facts(0, p.store.exprs.count(), p.store.stmts.count(), hole)
-    mut spoken: List<Diag> = []
-    for d in bodies_of(ws, f) {
-        let facts = typed(ws, d)
-        out.absorb(facts)
-        spoken = spoken.concat(facts.voices.list)
-    }
-    let folded_facts = out with { voices: Voices { list: by_position(spoken) } }
-    ws.db.settle(k, ws.db.revision())
-    ws.folds.keep(f.index, folded_facts)
-    folded_facts
-}
-
-/// A file's bodies to type: Main, then every declaration owning a
-/// range, in declaration order.
-fn bodies_of(ws: Workspace, f: FileId) -> List<DeclId> {
-    some_list(ws.decls.main_of(f)).concat([d for d in ws.decls.decls_of_file(f) if ws.decls.owns_a_range(d)])
-}
-
-/// A file's signature diagnostics, in the order the rounds spoke
-/// them: types, then traits' members, then fns, then impls.
-fn sig_diagnostics(ws: Workspace, f: FileId) -> List<Diag> {
-    let own = top_level_decls(ws, f)
-    mut out: List<Diag> = []
-    for rank in 0..4 {
-        for d in own {
-            if sig_rank(ws.decls, ws.decls.decl(d)) == rank {
-                touch(sig(ws, d))
-                let v: Voices? = ws.sig_voices.at(d.index)
-                if v != null { out = out.concat(v!.list) }
-            }
+impl Decls {
+    fn sig_rank(x: Decl) -> int {
+        match x.kind {
+            .Record or .Enum or .Builtin -> 0,
+            .Method -> if x.parent != null && self.decl(x.parent!).kind is .Trait { 1 } else { 3 },
+            .Fn -> 2,
+            .Impl -> 3,
+            .Trait or .Default or .Main or .Case -> 4,
         }
     }
-    out
 }
 
-fn sig_rank(decls: Decls, x: Decl) -> int {
-    match x.kind {
-        .Record or .Enum or .Builtin -> 0,
-        .Method -> if x.parent != null && decls.decl(x.parent!).kind is .Trait { 1 } else { 3 },
-        .Fn -> 2,
-        .Impl -> 3,
-        .Trait or .Default or .Main or .Case -> 4,
+impl Workspace {
+    /// The method-table clashes spoken in a file: every type's table
+    /// asked, the clashes whose later declaration lives here.
+    fn method_diagnostics(f: FileId) -> List<Diag> {
+        mut out: List<Diag> = []
+        for t in self.typed_decls() {
+            touch(self.methods(t))
+            let held: List<Clash> = self.method_clashes.at(t.index) ?? []
+            out = out.concat([c.diag for c in held if same_file(c.file, f)])
+        }
+        out
     }
-}
 
-/// The method-table clashes spoken in a file: every type's table
-/// asked, the clashes whose later declaration lives here.
-fn method_diagnostics(ws: Workspace, f: FileId) -> List<Diag> {
-    mut out: List<Diag> = []
-    for t in typed_decls(ws) {
-        touch(methods(ws, t))
-        let held: List<Clash> = ws.method_clashes.at(t.index) ?? []
-        out = out.concat([c.diag for c in held if same_file(c.file, f)])
+    /// Every record and enum of the program, in id order.
+    fn typed_decls() -> List<DeclId> {
+        [x.id for x in self.decls.decls if is_type_decl(x)]
     }
-    out
-}
 
-/// Every record and enum of the program, in id order.
-fn typed_decls(ws: Workspace) -> List<DeclId> {
-    [x.id for x in ws.decls.decls if is_type_decl(x)]
+    /// One file's analysis: the snapshot every facade reads.
+    fn analysis(f: FileId) -> Analysis {
+        let k = key(Family.Analysis, f.index)
+        if self.db.ask(k) is .Reuse {
+            // a closed workspace keeps no Analysis: the record is remade
+            // over its memoized parts, and never kept
+            let held: Analysis? = self.analyses.at(f.index)
+            return held ?? self.analyzed(f)
+        }
+        self.db.begin(k)
+        let out = self.analyzed(f)
+        self.db.settle(k, self.db.revision())
+        if !self.closed { self.analyses.keep(f.index, out) }
+        out
+    }
+
+    /// The record itself: every pass's facts for the file, and the way
+    /// to its program.
+    fn analyzed(f: FileId) -> Analysis {
+        let p = self.parsed(f)
+        let names = self.resolved(f)
+        let facts = self.folded(f)
+        let path = self.decls.file(f).path
+        Analysis {
+            view: file_view(self.lang, p, self.decls, f), names: names, facts: facts, lang: self.lang,
+            diagnostics: flatten([p.voices.list, names.voices.list, self.sig_diagnostics(f), self.method_diagnostics(f), facts.voices.list]),
+            program: () -> self.program(path),
+        }
+    }
+
+    /// A unit's identity: its symbol, interned.
+    fn spec_id(w: Wanted) -> int {
+        let known: int? = self.specs.get(w.name)
+        if known != null { return known! }
+        let id = self.asks.length
+        mut ss = self.specs
+        ss.set(w.name, id)
+        mut as_ = self.asks
+        as_.push(w)
+        id
+    }
+
+    /// The program's extern fns by symbol, gathered ONCE per run — every
+    /// file is admitted before the first unit lowers, and the emitters
+    /// asked per body where each walked every declaration.
+    fn extern_symbols() -> List<string> {
+        let held: List<string>? = self.externs.at(0)
+        if held != null { return held! }
+        let names = self.decls.extern_names()
+        self.externs.keep(0, names)
+        names
+    }
+
+    /// One unit lowered and remembered: a body edit re-lowers its own
+    /// unit; the specializations it wants are other units.
+    fn lowered(id: int) -> Unit {
+        let k = key(Family.Lowered, id)
+        if self.db.ask(k) is .Reuse { return self.units.at(id)! }
+        self.db.begin(k)
+        let w = self.asks[id]
+        let out = lower_unit(self.analysis(w.file), self.extern_symbols(), w)
+        self.db.settle(k, self.db.revision())
+        self.units.keep(id, out)
+        out
+    }
+
+    // ── Modules ──
+    /// A path as a diagnostic shows it: under its package's source root.
+    fn shown(path: string) -> string {
+        below(path, self.packages[self.holder_of_path(path)].src)
+    }
+
+    /// The module a file belongs to: its directory under its package's
+    /// source root, `.`-joined — "" for a file at the root package's
+    /// source root, `@scope.name.a` for a dependency's.
+    fn module_of(path: string) -> string {
+        let pkg = self.packages[self.holder_of_path(path)]
+        // EVERY FILE ITS OWN MODULE in a directory of programs: the
+        // module is the file's path under the root, stem included, so
+        // seventy programs' `P`s never share a namespace
+        let rel = below(path, pkg.src)
+        let local = if self.per_file { own_module(rel) } else { dir_of(rel).replace("/", ".") }
+        if pkg.ordinal == 0 { return local }
+        if local.is_empty() { return key_spelled(pkg.key) }
+        "${key_spelled(pkg.key)}.${local}"
+    }
+
+    /// The files a module path names: a directory's `.av` files, else
+    /// the one file, else nothing (the module does not exist). A
+    /// directory holding its own `avra.toml` is a package, never a
+    /// module of the one above it.
+    fn module_files(m: ModulePath) -> List<string> {
+        let pkg: Package? = self.holder(m)
+        if pkg == null { return [] }
+        let src = pkg!.src
+        if self.crosses_package(src, m.local()) { return [] }
+        let dir = m.dir_under(src)
+        if self.host.is_dir(dir) {
+            return [ joined_path(dir, f) for f in self.host.list(dir) if self.listed_source(dir, f) ]
+        }
+        let file = m.file_under(src)
+        if self.host.exists(file) { return [file] }
+        []
+    }
+
+    /// Whether a path — a directory or a file — is one its package's
+    /// manifest EXCLUDES.
+    fn excluded(path: string) -> bool {
+        let pkg = self.packages[self.holder_of_path(path)]
+        self.manifest(pkg.ordinal).excludes.any(under_dir(path, joined_path(pkg.root, it)) || path == joined_path(pkg.root, it))
+    }
+
+    /// A source file the package lists — `.av`, and not excluded.
+    fn listed_source(dir: string, f: string) -> bool {
+        is_source(f, dir) && !self.excluded(joined_path(dir, f))
+    }
+
+    /// Whether a directory is a package root of its own.
+    fn is_package_dir(dir: string) -> bool {
+        self.host.exists(joined_path(dir, "avra.toml"))
+    }
+
+    /// Whether a module path passes through a nested package — any
+    /// directory along it holding its own manifest.
+    fn crosses_package(src: string, local: List<string>) -> bool {
+        mut j = 1
+        while j <= local.length {
+            if self.is_package_dir(joined_path(src, joined(local.slice(0, j), "/"))) { return true }
+            j = j + 1
+        }
+        false
+    }
+
+    /// A file's declarations that speak for themselves — a NESTED one
+    /// (refused by its feature, or an orphan of a failed parse) is
+    /// asked only if a walk reaches it.
+    fn top_level_decls(f: FileId) -> List<DeclId> {
+        [d for d in self.decls.decls_of_file(f) if self.is_top_level(d)]
+    }
+
+    fn is_top_level(d: DeclId) -> bool {
+        !self.decls.decl(d).nested
+    }
+
+    /// Every `.av` file under a directory, recursively, stopping at a
+    /// nested package — `check <root>`. The empty root is a lone file's
+    /// package of one: every name it was given is a file of it,
+    /// whatever the name.
+    fn all_files(dir: string) -> List<string> {
+        mut out: List<string> = []
+        for f in self.host.list(dir) {
+            let full = joined_path(dir, f)
+            if self.host.is_dir(full) {
+                // a directory of programs holds only its own files
+                if !self.per_file && !self.is_package_dir(full) && !self.excluded(full) { out = out.concat(self.all_files(full)) }
+            } else if self.listed_source(dir, f) {
+                out.push(full)
+            }
+        }
+        out
+    }
+
+    /// The root package's source files — what `check <root>` analyzes.
+    fn root_files() -> List<string> {
+        self.all_files(self.packages[0].src)
+    }
+
+    /// A module's exported declarations, in file and declaration order.
+    fn exported_decls(m: ModulePath) -> List<Decl> {
+        [self.decl_at(id) for id in flatten([self.items(self.file_id(f)) for f in self.module_files(m)]) if self.is_exported(id)]
+    }
+
+    fn is_exported(id: DeclId) -> bool {
+        self.decl_at(id).exported
+    }
+
+    /// A module's exported names.
+    fn surface(m: ModulePath) -> Map<string, DeclId> {
+        mut out: Map<string, DeclId> = {}
+        for d in self.exported_decls(m) { out.set(d.name, d.id) }
+        out
+    }
+
+    /// One `use a.b.{x, y}`: a package root must exist, a named package
+    /// must be one the asking package's manifest declares, the module
+    /// must exist and be one thing, each item must be exported by it
+    /// and listed once.
+    fn imported_line(p: Parsed, u: UseParts) -> Imported {
+        let at = loc_at(p.source.file, p.store.stmt_span(u.stmt))
+        let from = self.packages[self.holder_of_path(p.source.file)]
+        let m = qualified(module_path(u.path), from)
+        if self.lone { return Imported { imports: [], diagnostics: [unpackaged_use(at)] } }
+        if m.malformed() { return Imported { imports: [], diagnostics: [package_form(at, m)] } }
+        if m.package() != null && !self.reaches(from, m.package()!) {
+            return Imported { imports: [], diagnostics: [self.not_a_dependency(at, from, m.package()!)] }
+        }
+        if self.ambiguous_module(m) { return Imported { imports: [], diagnostics: [module_ambiguous(at, m)] } }
+        if self.module_files(m).is_empty() { return Imported { imports: [], diagnostics: [no_module(at, m)] } }
+        let surf = self.surface(m)
+        mut imports: List<Import> = []
+        mut diags: List<Diag> = []
+        mut listed: List<string> = []
+        for item in u.items {
+            let id: DeclId? = surf.get(item)
+            if listed.contains(item) {
+                diags.push(listed_twice(at, item))
+            } else if id == null {
+                diags.push(not_exported(at, m, item, self.exported_names(m)))
+            } else {
+                imports.push(Import { decl: id!, at: at })
+            }
+            listed.push(item)
+        }
+        Imported { imports: imports, diagnostics: diags }
+    }
+
+    /// A name that is both a directory and a file under the source root.
+    fn ambiguous_module(m: ModulePath) -> bool {
+        let pkg: Package? = self.holder(m)
+        pkg != null && self.host.is_dir(m.dir_under(pkg!.src)) && self.host.exists(m.file_under(pkg!.src))
+    }
+
+    fn exported_names(m: ModulePath) -> List<string> {
+        [d.name for d in self.exported_decls(m)]
+    }
+
+    // ── The whole program ──
+    /// Every file under the root analyzed, in FileId order — each step
+    /// asked for every file before the next, so the phases time apart.
+    fn analyze_all() -> List<Analysis> {
+        let t0 = self.clock()
+        for path in self.root_files() { let _ = self.items(self.file_id(path)) }
+        self.timed("parse", self.clock() - t0)
+        let t1 = self.clock()
+        for fi in self.decls.files { let _ = self.resolved(fi.id) }
+        self.timed("resolve", self.clock() - t1)
+        let t2 = self.clock()
+        for fi in self.decls.files { let _ = self.sig_diagnostics(fi.id) }
+        self.timed("sigs", self.clock() - t2)
+        let t3 = self.clock()
+        let out = [self.analysis(fi.id) for fi in self.decls.files]
+        self.timed("bodies", self.clock() - t3)
+        out
+    }
+
+    /// One file's analysis by path.
+    fn analyze_file(path: string) -> Analysis {
+        self.analysis(self.file_id(path))
+    }
+
+    /// The program rooted at `ws.root`, entered at one of its files.
+    fn program(entry: string?) -> Program {
+        let files = self.analyze_all()
+        let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
+        let seat: Entry? = if at == null { null } else { Entry { at: at! } }
+        Program {
+            ws: self, files: files, entry: seat, phases: self.phases, cache: self.db.stats(), defects: self.defects,
+            voices: self.packages_voiced(), manifests: [self.manifest_source(pkg) for pkg in self.packages if self.has_manifest(pkg)],
+        }
+    }
+
+    /// Every case of every file, in file and declaration order.
+    fn cases() -> List<TestCase> {
+        flatten([self.file_cases(fi.id) for fi in self.decls.files])
+    }
+
+    /// The cases a workspace holds, known from PARSING alone: every
+    /// file's items minted, nothing typed — so a package without cases
+    /// says so before its dependencies are analyzed.
+    mut fn parsed_cases() -> List<TestCase> {
+        // the file table fills as files are first asked for — the root's
+        // sources are entered here, each one's items minted; the parse
+        // is timed as the parse phase it is
+        let t0 = self.clock()
+        for path in self.root_files() { let _ = self.items(self.file_id(path)) }
+        self.timed("parse", self.clock() - t0)
+        self.cases()
+    }
+
+    /// Whether every root source PARSED clean. A package that parsed to
+    /// no cases has none only when nothing refused to parse — a broken
+    /// spec file parses to nothing, and saying "no cases" of it would
+    /// be a green over a red.
+    fn parse_clean() -> bool {
+        self.root_files().all((f) -> !has_errors(self.parsed(self.file_id(f)).voices.list))
+    }
+
+    /// The cases of ONE file, named by the path it MEANS: both sides
+    /// normalized, so `./` and a doubled slash select what the listing
+    /// spelled cleanly.
+    fn cases_at(path: string) -> List<TestCase> {
+        let wanted = normalized(path)
+        [c for c in self.cases() if normalized(c.at.file) == wanted]
+    }
+
+    fn file_cases(f: FileId) -> List<TestCase> {
+        let src = self.source(f)
+        let store = self.decls.store_of(f)
+        [self.test_case(src, store, self.decl_at(d)) for d in self.decls.decls_of_file(f) if self.is_case(d)]
+    }
+
+    fn is_case(d: DeclId) -> bool {
+        self.decl_at(d).kind is .Case
+    }
+
+    /// The case's group from its spec's own list — its body is the key
+    /// — and its line from the source.
+    fn test_case(src: SourceFile, store: NodeStore, x: Decl) -> TestCase {
+        let parts: SpecParts? = store.spec_parts(x.stmt)
+        let written: Case = parts!.cases.find(same_body(it, x.root!))!
+        let lo = self.decls.decl_span(x.id)!.lo
+        TestCase {
+            at: CaseRef { suite: x.owner, group: written.group, name: x.name, file: src.file, line: src.linecol(lo).line },
+            symbol: self.decls.symbol(x.id),
+        }
+    }
+
+    /// WHAT THE PROGRAM LINKS: every package's `[link]` promise, in
+    /// package order — the objects it names under its own root, the
+    /// directories it searches, the libraries it needs. A package that
+    /// declares `extern fn` says here who keeps the promise.
+    ///
+    /// THE ROWS ARE TYPED AND THE OPTION LETTER IS OURS. A dependency
+    /// names a directory or a library; `-L` and `-l` are written here,
+    /// so no word a package spells can BECOME an option — the linker
+    /// reads what it was told to read. `[link.raw]` carries an option
+    /// verbatim and is heard from the program's own manifest alone.
+    /// Each word is ONE argv element, so nothing in any of them means
+    /// anything to a shell.
+    fn link_words() -> List<string> {
+        flatten([self.package_link(pkg) for pkg in self.packages])
+    }
+
+    fn package_link(pkg: Package) -> List<string> {
+        let m = self.manifest(pkg.ordinal)
+        [joined_path(pkg.root, o) for o in filled_words(m.objects)]
+            .concat(["-L${d}" for d in filled_words(m.search)])
+            .concat(["-l${l}" for l in filled_words(m.libs)])
+            .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
+    }
+
+    /// The root package's entry file: its `[bin]` path, else
+    /// `src/main.av` when that exists, else absence.
+    fn entry_of() -> string? {
+        let pkg = self.packages[0]
+        let bin: string? = self.manifest(0).bin
+        let path = joined_path(pkg.root, bin ?? "src/main.av")
+        if bin == null && !self.host.exists(path) { return null }
+        path
+    }
 }
 
 fn is_type_decl(x: Decl) -> bool {
     x.kind is .Record || x.kind is .Enum
-}
-
-/// One file's analysis: the snapshot every facade reads.
-export fn analysis(ws: Workspace, f: FileId) -> Analysis {
-    let k = key(Family.Analysis, f.index)
-    if ws.db.ask(k) is .Reuse {
-        // a closed workspace keeps no Analysis: the record is remade
-        // over its memoized parts, and never kept
-        let held: Analysis? = ws.analyses.at(f.index)
-        return held ?? analyzed(ws, f)
-    }
-    ws.db.begin(k)
-    let out = analyzed(ws, f)
-    ws.db.settle(k, ws.db.revision())
-    if !ws.closed { ws.analyses.keep(f.index, out) }
-    out
-}
-
-/// The record itself: every pass's facts for the file, and the way
-/// to its program.
-fn analyzed(ws: Workspace, f: FileId) -> Analysis {
-    let p = parsed(ws, f)
-    let names = resolved(ws, f)
-    let facts = folded(ws, f)
-    let path = ws.decls.file(f).path
-    Analysis {
-        view: file_view(ws.lang, p, ws.decls, f), names: names, facts: facts, lang: ws.lang,
-        diagnostics: flatten([p.voices.list, names.voices.list, sig_diagnostics(ws, f), method_diagnostics(ws, f), facts.voices.list]),
-        program: () -> program(ws, path),
-    }
-}
-
-/// A unit's identity: its symbol, interned.
-fn spec_id(ws: Workspace, w: Wanted) -> int {
-    let known: int? = ws.specs.get(w.name)
-    if known != null { return known! }
-    let id = ws.asks.length
-    mut ss = ws.specs
-    ss.set(w.name, id)
-    mut as_ = ws.asks
-    as_.push(w)
-    id
-}
-
-/// The program's extern fns by symbol, gathered ONCE per run — every
-/// file is admitted before the first unit lowers, and the emitters
-/// asked per body where each walked every declaration.
-fn extern_symbols(ws: Workspace) -> List<string> {
-    let held: List<string>? = ws.externs.at(0)
-    if held != null { return held! }
-    let names = extern_names(ws.decls)
-    ws.externs.keep(0, names)
-    names
-}
-
-/// One unit lowered and remembered: a body edit re-lowers its own
-/// unit; the specializations it wants are other units.
-export fn lowered(ws: Workspace, id: int) -> Unit {
-    let k = key(Family.Lowered, id)
-    if ws.db.ask(k) is .Reuse { return ws.units.at(id)! }
-    ws.db.begin(k)
-    let w = ws.asks[id]
-    let out = lower_unit(analysis(ws, w.file), extern_symbols(ws), w)
-    ws.db.settle(k, ws.db.revision())
-    ws.units.keep(id, out)
-    out
-}
-
-// ── Modules ──
-
-/// A path as a diagnostic shows it: under its package's source root.
-fn shown(ws: Workspace, path: string) -> string {
-    below(path, ws.packages[holder_of_path(ws, path)].src)
-}
-
-/// The module a file belongs to: its directory under its package's
-/// source root, `.`-joined — "" for a file at the root package's
-/// source root, `@scope.name.a` for a dependency's.
-export fn module_of(ws: Workspace, path: string) -> string {
-    let pkg = ws.packages[holder_of_path(ws, path)]
-    // EVERY FILE ITS OWN MODULE in a directory of programs: the
-    // module is the file's path under the root, stem included, so
-    // seventy programs' `P`s never share a namespace
-    let rel = below(path, pkg.src)
-    let local = if ws.per_file { own_module(rel) } else { dir_of(rel).replace("/", ".") }
-    if pkg.ordinal == 0 { return local }
-    if local.is_empty() { return key_spelled(pkg.key) }
-    "${key_spelled(pkg.key)}.${local}"
 }
 
 /// A file's own module name: its path with `.av` dropped and `/`
@@ -654,106 +919,10 @@ fn below(path: string, dir: string) -> string {
     path.substring(dir.length + 1, path.length)
 }
 
-/// The files a module path names: a directory's `.av` files, else
-/// the one file, else nothing (the module does not exist). A
-/// directory holding its own `avra.toml` is a package, never a
-/// module of the one above it.
-export fn module_files(ws: Workspace, m: ModulePath) -> List<string> {
-    let pkg: Package? = holder(ws, m)
-    if pkg == null { return [] }
-    let src = pkg!.src
-    if crosses_package(ws, src, m.local()) { return [] }
-    let dir = m.dir_under(src)
-    if ws.host.is_dir(dir) {
-        return [ joined_path(dir, f) for f in ws.host.list(dir) if listed_source(ws, dir, f) ]
-    }
-    let file = m.file_under(src)
-    if ws.host.exists(file) { return [file] }
-    []
-}
-
-/// Whether a path — a directory or a file — is one its package's
-/// manifest EXCLUDES.
-fn excluded(ws: Workspace, path: string) -> bool {
-    let pkg = ws.packages[holder_of_path(ws, path)]
-    manifest(ws, pkg.ordinal).excludes.any(under_dir(path, joined_path(pkg.root, it)) || path == joined_path(pkg.root, it))
-}
-
-/// A source file the package lists — `.av`, and not excluded.
-fn listed_source(ws: Workspace, dir: string, f: string) -> bool {
-    is_source(f, dir) && !excluded(ws, joined_path(dir, f))
-}
-
-/// Whether a directory is a package root of its own.
-fn is_package_dir(ws: Workspace, dir: string) -> bool {
-    ws.host.exists(joined_path(dir, "avra.toml"))
-}
-
-/// Whether a module path passes through a nested package — any
-/// directory along it holding its own manifest.
-fn crosses_package(ws: Workspace, src: string, local: List<string>) -> bool {
-    mut j = 1
-    while j <= local.length {
-        if is_package_dir(ws, joined_path(src, joined(local.slice(0, j), "/"))) { return true }
-        j = j + 1
-    }
-    false
-}
-
 /// A source file: `.av`, or anything at all under the empty root —
 /// a lone file's package of one holds exactly what it was given.
 fn is_source(name: string, dir: string) -> bool {
     name.ends_with(".av") || dir.is_empty()
-}
-
-/// A file's declarations that speak for themselves — a NESTED one
-/// (refused by its feature, or an orphan of a failed parse) is
-/// asked only if a walk reaches it.
-fn top_level_decls(ws: Workspace, f: FileId) -> List<DeclId> {
-    [d for d in ws.decls.decls_of_file(f) if is_top_level(ws, d)]
-}
-
-fn is_top_level(ws: Workspace, d: DeclId) -> bool {
-    !ws.decls.decl(d).nested
-}
-
-/// Every `.av` file under a directory, recursively, stopping at a
-/// nested package — `check <root>`. The empty root is a lone file's
-/// package of one: every name it was given is a file of it,
-/// whatever the name.
-export fn all_files(ws: Workspace, dir: string) -> List<string> {
-    mut out: List<string> = []
-    for f in ws.host.list(dir) {
-        let full = joined_path(dir, f)
-        if ws.host.is_dir(full) {
-            // a directory of programs holds only its own files
-            if !ws.per_file && !is_package_dir(ws, full) && !excluded(ws, full) { out = out.concat(all_files(ws, full)) }
-        } else if listed_source(ws, dir, f) {
-            out.push(full)
-        }
-    }
-    out
-}
-
-/// The root package's source files — what `check <root>` analyzes.
-export fn root_files(ws: Workspace) -> List<string> {
-    all_files(ws, ws.packages[0].src)
-}
-
-/// A module's exported declarations, in file and declaration order.
-fn exported_decls(ws: Workspace, m: ModulePath) -> List<Decl> {
-    [decl_at(ws, id) for id in flatten([items(ws, file_id(ws, f)) for f in module_files(ws, m)]) if is_exported(ws, id)]
-}
-
-fn is_exported(ws: Workspace, id: DeclId) -> bool {
-    decl_at(ws, id).exported
-}
-
-/// A module's exported names.
-export fn surface(ws: Workspace, m: ModulePath) -> Map<string, DeclId> {
-    mut out: Map<string, DeclId> = {}
-    for d in exported_decls(ws, m) { out.set(d.name, d.id) }
-    out
 }
 
 fn use_lines(p: Parsed) -> List<UseParts> {
@@ -768,77 +937,9 @@ fn use_lines(p: Parsed) -> List<UseParts> {
 /// What one `use` line brought in, and what it earned.
 type Imported = { imports: List<Import>, diagnostics: List<Diag> }
 
-/// One `use a.b.{x, y}`: a package root must exist, a named package
-/// must be one the asking package's manifest declares, the module
-/// must exist and be one thing, each item must be exported by it
-/// and listed once.
-fn imported_line(ws: Workspace, p: Parsed, u: UseParts) -> Imported {
-    let at = loc_at(p.source.file, p.store.stmt_span(u.stmt))
-    let from = ws.packages[holder_of_path(ws, p.source.file)]
-    let m = qualified(module_path(u.path), from)
-    if ws.lone { return Imported { imports: [], diagnostics: [unpackaged_use(at)] } }
-    if m.malformed() { return Imported { imports: [], diagnostics: [package_form(at, m)] } }
-    if m.package() != null && !reaches(ws, from, m.package()!) {
-        return Imported { imports: [], diagnostics: [not_a_dependency(ws, at, from, m.package()!)] }
-    }
-    if ambiguous_module(ws, m) { return Imported { imports: [], diagnostics: [module_ambiguous(at, m)] } }
-    if module_files(ws, m).is_empty() { return Imported { imports: [], diagnostics: [no_module(at, m)] } }
-    let surf = surface(ws, m)
-    mut imports: List<Import> = []
-    mut diags: List<Diag> = []
-    mut listed: List<string> = []
-    for item in u.items {
-        let id: DeclId? = surf.get(item)
-        if listed.contains(item) {
-            diags.push(listed_twice(at, item))
-        } else if id == null {
-            diags.push(not_exported(at, m, item, exported_names(ws, m)))
-        } else {
-            imports.push(Import { decl: id!, at: at })
-        }
-        listed.push(item)
-    }
-    Imported { imports: imports, diagnostics: diags }
-}
-
-/// A name that is both a directory and a file under the source root.
-fn ambiguous_module(ws: Workspace, m: ModulePath) -> bool {
-    let pkg: Package? = holder(ws, m)
-    pkg != null && ws.host.is_dir(m.dir_under(pkg!.src)) && ws.host.exists(m.file_under(pkg!.src))
-}
-
-fn exported_names(ws: Workspace, m: ModulePath) -> List<string> {
-    [d.name for d in exported_decls(ws, m)]
-}
-
 fn segments_of(dotted_text: string) -> List<string> {
     if dotted_text.is_empty() { return [] }
     dotted_text.split(".")
-}
-
-// ── The whole program ──
-
-/// Every file under the root analyzed, in FileId order — each step
-/// asked for every file before the next, so the phases time apart.
-export fn analyze_all(ws: Workspace) -> List<Analysis> {
-    let t0 = ws.clock()
-    for path in root_files(ws) { let _ = items(ws, file_id(ws, path)) }
-    ws.timed("parse", ws.clock() - t0)
-    let t1 = ws.clock()
-    for fi in ws.decls.files { let _ = resolved(ws, fi.id) }
-    ws.timed("resolve", ws.clock() - t1)
-    let t2 = ws.clock()
-    for fi in ws.decls.files { let _ = sig_diagnostics(ws, fi.id) }
-    ws.timed("sigs", ws.clock() - t2)
-    let t3 = ws.clock()
-    let out = [analysis(ws, fi.id) for fi in ws.decls.files]
-    ws.timed("bodies", ws.clock() - t3)
-    out
-}
-
-/// One file's analysis by path.
-export fn analyze_file(ws: Workspace, path: string) -> Analysis {
-    analysis(ws, file_id(ws, path))
 }
 
 /// A whole program: every file analyzed together, and the entry
@@ -850,17 +951,6 @@ export type Program = { ws: Workspace, files: List<Analysis>, entry: Entry?, pha
 /// The entry's seat among the program's files.
 type Entry = { at: int }
 
-/// The program rooted at `ws.root`, entered at one of its files.
-export fn program(ws: Workspace, entry: string?) -> Program {
-    let files = analyze_all(ws)
-    let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
-    let seat: Entry? = if at == null { null } else { Entry { at: at! } }
-    Program {
-        ws: ws, files: files, entry: seat, phases: ws.phases, cache: ws.db.stats(), defects: ws.defects,
-        voices: package_voices(ws), manifests: [manifest_source(ws, pkg) for pkg in ws.packages if has_manifest(ws, pkg)],
-    }
-}
-
 /// One test case as the runner sees it: the library's reference —
 /// its three names and its place — and the symbol that runs it.
 export type TestCase = { at: CaseRef, symbol: string }
@@ -871,89 +961,9 @@ export fn case_words(c: TestCase) -> string {
     words(c.at)
 }
 
-/// Every case of every file, in file and declaration order.
-export fn cases(ws: Workspace) -> List<TestCase> {
-    flatten([file_cases(ws, fi.id) for fi in ws.decls.files])
-}
-
-/// The cases a workspace holds, known from PARSING alone: every
-/// file's items minted, nothing typed — so a package without cases
-/// says so before its dependencies are analyzed.
-export fn parsed_cases(mut ws: Workspace) -> List<TestCase> {
-    // the file table fills as files are first asked for — the root's
-    // sources are entered here, each one's items minted; the parse
-    // is timed as the parse phase it is
-    let t0 = ws.clock()
-    for path in root_files(ws) { let _ = items(ws, file_id(ws, path)) }
-    ws.timed("parse", ws.clock() - t0)
-    cases(ws)
-}
-
-/// Whether every root source PARSED clean. A package that parsed to
-/// no cases has none only when nothing refused to parse — a broken
-/// spec file parses to nothing, and saying "no cases" of it would
-/// be a green over a red.
-export fn parse_clean(ws: Workspace) -> bool {
-    root_files(ws).all(!has_errors(parsed(ws, file_id(ws, it)).voices.list))
-}
-
-/// The cases of ONE file, named by the path it MEANS: both sides
-/// normalized, so `./` and a doubled slash select what the listing
-/// spelled cleanly.
-export fn cases_at(ws: Workspace, path: string) -> List<TestCase> {
-    let wanted = normalized(path)
-    [c for c in cases(ws) if normalized(c.at.file) == wanted]
-}
-
-fn file_cases(ws: Workspace, f: FileId) -> List<TestCase> {
-    let src = source(ws, f)
-    let store = ws.decls.store_of(f)
-    [test_case(ws, src, store, decl_at(ws, d)) for d in ws.decls.decls_of_file(f) if is_case(ws, d)]
-}
-
-fn is_case(ws: Workspace, d: DeclId) -> bool {
-    decl_at(ws, d).kind is .Case
-}
-
-/// The case's group from its spec's own list — its body is the key
-/// — and its line from the source.
-fn test_case(ws: Workspace, src: SourceFile, store: NodeStore, x: Decl) -> TestCase {
-    let parts: SpecParts? = store.spec_parts(x.stmt)
-    let written: Case = parts!.cases.find(same_body(it, x.root!))!
-    let lo = ws.decls.decl_span(x.id)!.lo
-    TestCase {
-        at: CaseRef { suite: x.owner, group: written.group, name: x.name, file: src.file, line: src.linecol(lo).line },
-        symbol: ws.decls.symbol(x.id),
-    }
-}
-
 fn same_body(c: Case, body: ExprId) -> bool {
     // LICENSED I9: node identity — ids compare by index
     c.body.index == body.index
-}
-
-/// WHAT THE PROGRAM LINKS: every package's `[link]` promise, in
-/// package order — the objects it names under its own root, the
-/// directories it searches, the libraries it needs. A package that
-/// declares `extern fn` says here who keeps the promise.
-///
-/// THE ROWS ARE TYPED AND THE OPTION LETTER IS OURS. A dependency
-/// names a directory or a library; `-L` and `-l` are written here,
-/// so no word a package spells can BECOME an option — the linker
-/// reads what it was told to read. `[link.raw]` carries an option
-/// verbatim and is heard from the program's own manifest alone.
-/// Each word is ONE argv element, so nothing in any of them means
-/// anything to a shell.
-export fn link_words(ws: Workspace) -> List<string> {
-    flatten([package_link(ws, pkg) for pkg in ws.packages])
-}
-
-fn package_link(ws: Workspace, pkg: Package) -> List<string> {
-    let m = manifest(ws, pkg.ordinal)
-    [joined_path(pkg.root, o) for o in filled_words(m.objects)]
-        .concat(["-L${d}" for d in filled_words(m.search)])
-        .concat(["-l${l}" for l in filled_words(m.libs)])
-        .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
 }
 
 /// A row's words with their `${NAME}` holes filled, dropping any
@@ -983,16 +993,6 @@ fn closing_brace(s: string, from: int) -> int {
     let at = s.substring(from, s.length).index_of("}")
     if at < 0 { return 0 - 1 }
     from + at
-}
-
-/// The root package's entry file: its `[bin]` path, else
-/// `src/main.av` when that exists, else absence.
-export fn entry_of(ws: Workspace) -> string? {
-    let pkg = ws.packages[0]
-    let bin: string? = manifest(ws, 0).bin
-    let path = joined_path(pkg.root, bin ?? "src/main.av")
-    if bin == null && !ws.host.exists(path) { return null }
-    path
 }
 
 fn index_of_file(files: List<Analysis>, path: string) -> int? {
@@ -1055,7 +1055,7 @@ impl Program {
 
     fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
         let ws = self.ws
-        memory(union(self.ws.decls, self.files, entry, every, programs, (w: Wanted) -> lowered(ws, spec_id(ws, w))))
+        memory(self.ws.decls.union(self.files, entry, every, programs, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
     }
 
     /// The lowered program, CHECKED — every file's analysis first,
@@ -1080,8 +1080,8 @@ impl Program {
     }
 
     /// Every test case the program declares.
-    fn cases() -> List<TestCase> { cases(self.ws) }
-    fn cases_at(path: string) -> List<TestCase> { cases_at(self.ws, path) }
+    fn cases() -> List<TestCase> { self.ws.cases() }
+    fn cases_at(path: string) -> List<TestCase> { self.ws.cases_at(path) }
 
     /// Everything wrong, rendered, as the refusal; or what merely
     /// warned, rendered, as the answer — "" when nothing spoke.
@@ -1106,59 +1106,151 @@ fn is_warning(d: Diag) -> bool {
 
 // ── The packages ──
 
-/// A package's manifest, read from its `avra.toml` — an INPUT: the
-/// revision moves only when the text did. A root without a manifest
-/// reads as an empty one, quietly.
-export fn manifest(ws: Workspace, i: int) -> Manifest {
-    let pkg = ws.packages[i]
-    let path = joined_path(pkg.root, "avra.toml")
-    let k = key(Family.Manifest, i)
-    if !has_manifest(ws, pkg) {
-        ws.db.set_input(k, 0)
-        ws.db.record_dep(k)
-        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], voices: [] }
+impl Workspace {
+    /// A package's manifest, read from its `avra.toml` — an INPUT: the
+    /// revision moves only when the text did. A root without a manifest
+    /// reads as an empty one, quietly.
+    fn manifest(i: int) -> Manifest {
+        let pkg = self.packages[i]
+        let path = joined_path(pkg.root, "avra.toml")
+        let k = key(Family.Manifest, i)
+        if !self.has_manifest(pkg) {
+            self.db.set_input(k, 0)
+            self.db.record_dep(k)
+            return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], voices: [] }
+        }
+        let held: Manifest? = self.manifests.at(i)
+        if held != null {
+            self.db.record_dep(k)
+            return held!
+        }
+        let text = self.host.read(path)
+        self.db.set_input(k, fp_str(text))
+        self.db.record_dep(k)
+        let m = read_manifest(new_source_file(path, text))
+        self.manifests.keep(i, m)
+        m
     }
-    let held: Manifest? = ws.manifests.at(i)
-    if held != null {
-        ws.db.record_dep(k)
-        return held!
+
+    fn has_manifest(pkg: Package) -> bool {
+        self.host.exists(joined_path(pkg.root, "avra.toml"))
     }
-    let text = ws.host.read(path)
-    ws.db.set_input(k, fp_str(text))
-    ws.db.record_dep(k)
-    let m = read_manifest(new_source_file(path, text))
-    ws.manifests.keep(i, m)
-    m
-}
 
-fn has_manifest(ws: Workspace, pkg: Package) -> bool {
-    ws.host.exists(joined_path(pkg.root, "avra.toml"))
-}
+    fn manifest_source(pkg: Package) -> SourceFile {
+        let path = joined_path(pkg.root, "avra.toml")
+        new_source_file(path, self.host.read(path))
+    }
 
-fn manifest_source(ws: Workspace, pkg: Package) -> SourceFile {
-    let path = joined_path(pkg.root, "avra.toml")
-    new_source_file(path, ws.host.read(path))
-}
+    /// The root package, then every path dependency reachable from its
+    /// manifest: each admitted once by key, each judged — the directory
+    /// holds a manifest, the manifest calls itself the keyed name, one
+    /// key is one directory, and no cycle closes.
+    fn load_packages(src: string) {
+        mut ps = self.packages
+        let unnamed = Package { key: "", root: self.root, src: src, ordinal: 0, at: null }
+        ps.push(unnamed)
+        let m = self.manifest(0)
+        let named = unnamed with { key: m.name }
+        ps.set(0, named)
+        self.admit_dependencies(0, m, true, [m.name])
+    }
 
-/// The root package, then every path dependency reachable from its
-/// manifest: each admitted once by key, each judged — the directory
-/// holds a manifest, the manifest calls itself the keyed name, one
-/// key is one directory, and no cycle closes.
-fn load_packages(ws: Workspace, src: string) {
-    mut ps = ws.packages
-    let unnamed = Package { key: "", root: ws.root, src: src, ordinal: 0, at: null }
-    ps.push(unnamed)
-    let m = manifest(ws, 0)
-    let named = unnamed with { key: m.name }
-    ps.set(0, named)
-    admit_dependencies(ws, 0, m, true, [m.name])
-}
+    /// A package's dependencies admitted — tests' dependencies only for
+    /// the root, since they never travel.
+    fn admit_dependencies(i: int, m: Manifest, root: bool, chain: List<string>) {
+        for d in m.deps {
+            if !d.dev || root { self.admitted(d.key, normalized(joined_path(self.packages[i].root, d.path!)), d.at, dep_chain(d, chain)) }
+        }
+    }
 
-/// A package's dependencies admitted — tests' dependencies only for
-/// the root, since they never travel.
-fn admit_dependencies(ws: Workspace, i: int, m: Manifest, root: bool, chain: List<string>) {
-    for d in m.deps {
-        if !d.dev || root { admitted(ws, d.key, normalized(joined_path(ws.packages[i].root, d.path!)), d.at, dep_chain(d, chain)) }
+    fn admitted(key: string, dir: string, at: Loc?, chain: List<string>) {
+        if chain.contains(key) { return self.speak_package(dependency_cycle(at, chain.concat([key]))) }
+        let known: Package? = self.packages.find(it.key == key)
+        if known != null {
+            if known!.root != dir { self.speak_package(duplicate_package(at, key, known!.root, dir)) }
+            return
+        }
+        if !self.host.exists(joined_path(dir, "avra.toml")) { return self.speak_package(bad_dependency_path(at, key, dir)) }
+        mut ps = self.packages
+        let i = ps.length
+        let pkg = Package { key: key, root: dir, src: joined_path(dir, "src"), ordinal: i, at: at }
+        ps.push(pkg)
+        let m = self.manifest(i)
+        if m.name != key { self.speak_package(name_mismatch(at, key, m.name, dir)) }
+        self.admit_dependencies(i, m, false, chain.concat([key]))
+    }
+
+    fn speak_package(d: Diag) {
+        mut vs = self.package_voices
+        vs.push(d)
+    }
+
+    /// Everything the packages said: each manifest's own voices, then
+    /// the graph's.
+    fn packages_voiced() -> List<Diag> {
+        flatten([self.manifest(pkg.ordinal).voices for pkg in self.packages])
+            .concat([borrowed_raw(pkg) for pkg in self.packages if self.raw_from_dependency(pkg)])
+            .concat(self.package_voices)
+    }
+
+    /// A dependency asking for raw linker options: `[link.raw]` is the
+    /// PROGRAM's hatch, so only ordinal 0 is heard.
+    fn raw_from_dependency(pkg: Package) -> bool {
+        pkg.ordinal != 0 && !self.manifest(pkg.ordinal).raw.is_empty()
+    }
+
+    /// The package a file belongs to — the one whose source root holds
+    /// it, the deepest when nested; the root package otherwise.
+    fn holder_of_path(path: string) -> int {
+        // the DEEPEST package whose source root holds the path — a
+        // nested package wins over the one around it; a path no package
+        // holds is the root's (a lone file)
+        // LICENSED I4: a max-by fold (the deepest holder), not a scan
+        mut best: int? = null
+        for pkg in self.packages {
+            if under_dir(path, pkg.src) && (best == null || pkg.src.length > self.packages[best!].src.length) { best = pkg.ordinal }
+        }
+        best ?? 0
+    }
+
+    /// The package a module path names: the root package for a local
+    /// path, a dependency by key, absence when no package has the key.
+    fn holder(m: ModulePath) -> Package? {
+        let k: string? = m.package()
+        if k == null { return self.packages[0] }
+        self.packages.find(it.key == k!)
+    }
+
+    /// A package reaches itself — its own files `use` it by name — and
+    /// every package its manifest declares.
+    fn reaches(from: Package, k: string) -> bool {
+        k == from.key || self.depends_on(from, k)
+    }
+
+    /// Whether a package's manifest declares the key.
+    fn depends_on(from: Package, k: string) -> bool {
+        self.manifest(from.ordinal).deps.any(it.key == k)
+    }
+
+    /// The dependency line a manifest lacks, as a structured fix when
+    /// the package is already in the workspace (reached through
+    /// another package's manifest): the path relative to the asking
+    /// package's root after its last dependency.
+    fn dependency_fix(from: Package, k: string) -> List<Suggestion> {
+        let known: Package? = self.packages.find(it.key == k)
+        if known == null { return [] }
+        let m = self.manifest(from.ordinal)
+        let line = "\"${k}\" = { path = \"${relative_path(from.root, known!.root)}\" }"
+        let manifest_path = joined_path(from.root, "avra.toml")
+        let text = if m.deps_at == null { "\n[dependencies]\n${line}\n" } else { "\n${line}" }
+        let at = deps_offset(m) ?? self.host.read(manifest_path).length
+        [Suggestion { confidence: Confidence.High, description: "add `${line}` under `[dependencies]` in `${manifest_path}`", edits: [Edit { loc: Loc { file: manifest_path, lo: at, hi: at }, replacement: text }] }]
+    }
+
+    fn not_a_dependency(at: Loc?, from: Package, k: string) -> Diag {
+        let fixes = self.dependency_fix(from, k)
+        let at_file = joined_path(from.root, "avra.toml")
+        refusal("resolve.not_a_dependency", at, "`${k}` is not a dependency of this package", "in this use", "declare it under `[dependencies]` in `${at_file}` — `\"${k}\" = { path = \"…\" }`") with { suggestions: fixes }
     }
 }
 
@@ -1172,96 +1264,12 @@ fn dep_chain(d: Dependency, chain: List<string>) -> List<string> {
     chain
 }
 
-fn admitted(ws: Workspace, key: string, dir: string, at: Loc?, chain: List<string>) {
-    if chain.contains(key) { return speak_package(ws, dependency_cycle(at, chain.concat([key]))) }
-    let known: Package? = ws.packages.find(it.key == key)
-    if known != null {
-        if known!.root != dir { speak_package(ws, duplicate_package(at, key, known!.root, dir)) }
-        return
-    }
-    if !ws.host.exists(joined_path(dir, "avra.toml")) { return speak_package(ws, bad_dependency_path(at, key, dir)) }
-    mut ps = ws.packages
-    let i = ps.length
-    let pkg = Package { key: key, root: dir, src: joined_path(dir, "src"), ordinal: i, at: at }
-    ps.push(pkg)
-    let m = manifest(ws, i)
-    if m.name != key { speak_package(ws, name_mismatch(at, key, m.name, dir)) }
-    admit_dependencies(ws, i, m, false, chain.concat([key]))
-}
-
-fn speak_package(ws: Workspace, d: Diag) {
-    mut vs = ws.package_voices
-    vs.push(d)
-}
-
-/// Everything the packages said: each manifest's own voices, then
-/// the graph's.
-fn package_voices(ws: Workspace) -> List<Diag> {
-    flatten([manifest(ws, pkg.ordinal).voices for pkg in ws.packages])
-        .concat([borrowed_raw(pkg) for pkg in ws.packages if raw_from_dependency(ws, pkg)])
-        .concat(ws.package_voices)
-}
-
-/// A dependency asking for raw linker options: `[link.raw]` is the
-/// PROGRAM's hatch, so only ordinal 0 is heard.
-fn raw_from_dependency(ws: Workspace, pkg: Package) -> bool {
-    pkg.ordinal != 0 && !manifest(ws, pkg.ordinal).raw.is_empty()
-}
-
-/// The package a file belongs to — the one whose source root holds
-/// it, the deepest when nested; the root package otherwise.
-fn holder_of_path(ws: Workspace, path: string) -> int {
-    // the DEEPEST package whose source root holds the path — a
-    // nested package wins over the one around it; a path no package
-    // holds is the root's (a lone file)
-    // LICENSED I4: a max-by fold (the deepest holder), not a scan
-    mut best: int? = null
-    for pkg in ws.packages {
-        if under_dir(path, pkg.src) && (best == null || pkg.src.length > ws.packages[best!].src.length) { best = pkg.ordinal }
-    }
-    best ?? 0
-}
-
-/// The package a module path names: the root package for a local
-/// path, a dependency by key, absence when no package has the key.
-fn holder(ws: Workspace, m: ModulePath) -> Package? {
-    let k: string? = m.package()
-    if k == null { return ws.packages[0] }
-    ws.packages.find(it.key == k!)
-}
-
-/// A package reaches itself — its own files `use` it by name — and
-/// every package its manifest declares.
-fn reaches(ws: Workspace, from: Package, k: string) -> bool {
-    k == from.key || depends_on(ws, from, k)
-}
-
 /// A module path as the whole workspace names it: a dependency's
 /// own local path carries its package's head, so `use core.{…}`
 /// inside `@std/avrac` names `@std.avrac.core` from anywhere.
 fn qualified(m: ModulePath, from: Package) -> ModulePath {
     if m.packaged() || from.ordinal == 0 { return m }
     ModulePath { segments: key_spelled(from.key).split(".").concat(m.segments) }
-}
-
-/// Whether a package's manifest declares the key.
-fn depends_on(ws: Workspace, from: Package, k: string) -> bool {
-    manifest(ws, from.ordinal).deps.any(it.key == k)
-}
-
-/// The dependency line a manifest lacks, as a structured fix when
-/// the package is already in the workspace (reached through
-/// another package's manifest): the path relative to the asking
-/// package's root after its last dependency.
-fn dependency_fix(ws: Workspace, from: Package, k: string) -> List<Suggestion> {
-    let known: Package? = ws.packages.find(it.key == k)
-    if known == null { return [] }
-    let m = manifest(ws, from.ordinal)
-    let line = "\"${k}\" = { path = \"${relative_path(from.root, known!.root)}\" }"
-    let manifest_path = joined_path(from.root, "avra.toml")
-    let text = if m.deps_at == null { "\n[dependencies]\n${line}\n" } else { "\n${line}" }
-    let at = deps_offset(m) ?? ws.host.read(manifest_path).length
-    [Suggestion { confidence: Confidence.High, description: "add `${line}` under `[dependencies]` in `${manifest_path}`", edits: [Edit { loc: Loc { file: manifest_path, lo: at, hi: at }, replacement: text }] }]
 }
 
 // ── voices ──
@@ -1273,13 +1281,6 @@ fn borrowed_raw(pkg: Package) -> Diag {
     refusal("manifest.borrowed_raw", pkg.at,
         "`${pkg.key}` asks for raw linker options, and `[link.raw]` is the program's own", "this dependency",
         "a dependency names what it needs — `objects`, `search`, `libs` under `[link]`; a raw option belongs in the manifest of the program being built")
-}
-
-
-fn not_a_dependency(ws: Workspace, at: Loc?, from: Package, k: string) -> Diag {
-    let fixes = dependency_fix(ws, from, k)
-    let at_file = joined_path(from.root, "avra.toml")
-    refusal("resolve.not_a_dependency", at, "`${k}` is not a dependency of this package", "in this use", "declare it under `[dependencies]` in `${at_file}` — `\"${k}\" = { path = \"…\" }`") with { suggestions: fixes }
 }
 
 fn package_form(at: Loc?, m: ModulePath) -> Diag {
@@ -1297,7 +1298,6 @@ fn not_exported(at: Loc?, m: ModulePath, item: string, exports: List<string>) ->
 fn module_ambiguous(at: Loc?, m: ModulePath) -> Diag {
     refusal("resolve.module_ambiguous", at, "`${m.text()}` is both a directory and a file under the root", "in this use", "a module is one or the other — keep `${m.dir_under("")}/` or `${m.dir_under("")}.av`")
 }
-
 
 fn listed_twice(at: Loc?, item: string) -> Diag {
     refusal("resolve.import_clash", at, "`${item}` is listed twice", "in this use", null)

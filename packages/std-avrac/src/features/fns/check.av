@@ -7,7 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, marked}
-use features.{no_pins, Pins, TypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, mut_seats_law, agreed, unify, hungry, declared_marks}
+use features.{no_pins, Pins, TypeCx, FnSig, nothing, this_is, tparams_refused, unpinned_of, slice_promise}
 use diagnostics.{refusal}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
@@ -53,15 +53,15 @@ fn checked_fn(mut cx: TypeCx, s: StmtId, fname: string, fret: TypeRef, body: Exp
     cx.walk_under(s, body)
     let want: TypeId = sig?.ret ?? cx.error_type
     let got: TypeId = cx.type_at(body)
-    if !accepts(cx, body, want) { body_disagrees(cx, body, fname, fret, got) }
+    if !cx.accepts(body, want) { body_disagrees(cx, body, fname, fret, got) }
 }
 
 fn call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) {
         .Call(callee, pins, args) -> {
             let sig: FnSig? = cx.sig_of(e)
-            if sig == null { return settled_call(cx, args, valued_call(cx, e, callee, pins, args)) }
-            settled_call(cx, args, dispatched_call(cx, e, callee, pins, args, sig!))
+            if sig == null { return cx.settled_call(args, valued_call(cx, e, callee, pins, args)) }
+            cx.settled_call(args, dispatched_call(cx, e, callee, pins, args, sig!))
         }
         _ -> cx.error_type,
     }
@@ -75,7 +75,7 @@ fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, a
     let held: Arrow? = cx.view.types.arrow_parts(bound)
     if held != null {
         let arrow = held!
-        return seats_judged(cx, e, callee, arrow.seats, arrow.muts, arrow.answer, args)
+        return cx.seats_judged(e, callee, arrow.seats, arrow.muts, arrow.answer, args)
     }
     if cx.errored_ty(bound) { return cx.error_type }
     not_callable(cx, e, callee, bound)
@@ -87,15 +87,15 @@ fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, a
 fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                    args: List<ExprId>, s: FnSig) -> TypeId {
     let decl: DeclId? = cx.bound_decl(e)
-    if decl == null { return seats_judged(cx, e, callee, s.params, [], s.ret, args) }
+    if decl == null { return cx.seats_judged(e, callee, s.params, [], s.ret, args) }
     let d = decl!
-    let marks = declared_marks(cx, d, 0, args.length)
-    mut_seats_law(cx, e, callee, marks, args, null)
+    let marks = cx.declared_marks(d, 0, args.length)
+    cx.mut_seats_law(e, callee, marks, args, null)
     if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, marks, args) }
     let tp: List<string> = cx.tparams(d)
     if tp.is_empty() {
         if !pins.is_empty() { takes_no_pins(cx, e, callee) }
-        return seats_judged(cx, e, callee, s.params, [], s.ret, args)
+        return cx.seats_judged(e, callee, s.params, [], s.ret, args)
     }
     generic_call(cx, e, callee, pins, args, s, d, tp)
 }
@@ -107,7 +107,7 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                 args: List<ExprId>, s: FnSig, decl: DeclId, tp: List<string>) -> TypeId {
     if tparams_refused(tp) { return cx.error_type }
     if args.length != s.params.length {
-        wrong_arity(cx, e, callee, s.params.length, args.length)
+        cx.wrong_arity(e, callee, s.params.length, args.length)
         return cx.error_type
     }
     mut bound = pinned_slots(cx, e, callee, pins, decl, tp)
@@ -122,8 +122,8 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
     if spoke { return cx.error_type }
     if unpinned_of(tp, bound) != null { pinned_by_answer(cx, e, s.ret, decl, bound) }
     let missing: string? = unpinned_of(tp, bound)
-    if missing != null { return if cx.starving { unpinned_by_arguments(cx, e, callee, missing!) } else { hungry(cx, e) } }
-    let concrete = bound_closed(cx, bound)
+    if missing != null { return if cx.starving { unpinned_by_arguments(cx, e, callee, missing!) } else { cx.hungry(e) } }
+    let concrete = cx.bound_closed(bound)
     if !bounds_hold(cx, e, decl, concrete) { return cx.error_type }
     if !lawful_instantiation(cx, e, s, decl, concrete) { return cx.error_type }
     cx.record_subst(e, decl, concrete)
@@ -139,7 +139,7 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
 fn pinned_by_answer(cx: TypeCx, e: ExprId, ret: TypeId, decl: DeclId, mut bound: Pins) {
     let wanted: TypeId? = cx.want_at(e)
     if wanted == null { return }
-    let _ = unify(cx, ret, wanted!, decl, bound)
+    let _ = cx.unify(ret, wanted!, decl, bound)
 }
 
 /// The representation laws re-judge every substituted slot — a
@@ -153,7 +153,7 @@ fn lawful_instantiation(mut cx: TypeCx, e: ExprId, s: FnSig, decl: DeclId, concr
 
 /// One substituted type checked against the representation laws.
 fn refused_instantiation(mut cx: TypeCx, e: ExprId, raw: TypeId, decl: DeclId, concrete: List<TypeId>) -> bool {
-    let offender: TypeId? = unlawful_side(cx, cx.view.types.substituted(raw, decl, concrete))
+    let offender: TypeId? = cx.unlawful_side(cx.view.types.substituted(raw, decl, concrete))
     if offender == null { return false }
     side_unholdable(cx, e, offender!)
     true
@@ -180,12 +180,12 @@ fn pinned_slots(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
 /// which is what lets `null` and widening ride a pinned `T?`.
 fn generic_argument(mut cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId,
                     decl: DeclId, mut bound: Pins) -> bool {
-    if agreed(cx, a, param, decl, bound) { return true }
+    if cx.agreed(a, param, decl, bound) { return true }
     if cx.shape_at(a) is .Null {
         null_cannot_pin(cx, callee, j, param, a)
         return false
     }
-    wrong_argument(cx, callee, j, param, a)
+    cx.wrong_argument(callee, j, param, a)
     false
 }
 
@@ -204,7 +204,7 @@ export fn check_return(mut cx: TypeCx, s: StmtId) {
         return
     }
     if cx.errored(v) { return }
-    if accepts(cx, v, want!) { return }
+    if cx.accepts(v, want!) { return }
     wrong_return(cx, s, v, want!)
 }
 
@@ -259,11 +259,11 @@ fn body_disagrees(mut cx: TypeCx, body: ExprId, fname: string, fret: TypeRef, go
 }
 
 fn value_takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
-    spoken(cx, refusal("type.lambda", cx.loc_of(e), "`${callee}` is a fn VALUE — it takes no type arguments", "pinned here", null))
+    cx.spoken(refusal("type.lambda", cx.loc_of(e), "`${callee}` is a fn VALUE — it takes no type arguments", "pinned here", null))
 }
 
 fn not_callable(mut cx: TypeCx, e: ExprId, callee: string, bound: TypeId) -> TypeId {
-    spoken(cx, refusal("type.lambda", cx.loc_of(e), "`${callee}` is not callable — it holds a `${cx.view.types.name_of(bound)}`", "called here", "only fns and fn-typed values take arguments"))
+    cx.spoken(refusal("type.lambda", cx.loc_of(e), "`${callee}` is not callable — it holds a `${cx.view.types.name_of(bound)}`", "called here", "only fns and fn-typed values take arguments"))
 }
 
 fn takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) {
@@ -271,7 +271,7 @@ fn takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) {
 }
 
 fn unpinned_by_arguments(mut cx: TypeCx, e: ExprId, callee: string, tparam: string) -> TypeId {
-    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${tparam}` is not pinned by the arguments", "in this call", "write the type explicitly — `${callee}<...>(...)`"))
+    cx.spoken(refusal("type.mismatch", cx.loc_of(e), "`${tparam}` is not pinned by the arguments", "in this call", "write the type explicitly — `${callee}<...>(...)`"))
 }
 
 fn side_unholdable(mut cx: TypeCx, e: ExprId, offender: TypeId) {

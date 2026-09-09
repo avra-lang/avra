@@ -349,20 +349,22 @@ export fn duplicate_member(kind: string, owner: string, member: string, at: Loc?
     refusal(kind, at, "`${owner}` declares `${member}` more than once", "in this declaration", "rename one of them")
 }
 
-/// A lowering defect: record it and stand on a fresh register — the
-/// driver refuses the whole build afterward. THE answer when a
-/// payload the dispatch GUARANTEES comes back absent; never a
-/// plausible default, which would compile a wrong program silently.
-export fn lower_defect(mut cx: LowerCx, e: ExprId, what: string) -> Reg {
-    cx.defect(what)
-    cx.result(e)
-}
+impl LowerCx {
+    /// A lowering defect: record it and stand on a fresh register — the
+    /// driver refuses the whole build afterward. THE answer when a
+    /// payload the dispatch GUARANTEES comes back absent; never a
+    /// plausible default, which would compile a wrong program silently.
+    mut fn lower_defect(e: ExprId, what: string) -> Reg {
+        self.defect(what)
+        self.result(e)
+    }
 
-/// A node another feature owns reached this one's lowering: the
-/// dispatch map is wrong, and the answer is a recorded defect on a
-/// fresh register — never a silent register with nothing behind it.
-export fn foreign_node(mut cx: LowerCx, e: ExprId) -> Reg {
-    lower_defect(cx, e, hole_defect())
+    /// A node another feature owns reached this one's lowering: the
+    /// dispatch map is wrong, and the answer is a recorded defect on a
+    /// fresh register — never a silent register with nothing behind it.
+    mut fn foreign_node(e: ExprId) -> Reg {
+        self.lower_defect(e, hole_defect())
+    }
 }
 
 /// A declaration that must live at the TOP LEVEL, refused where it
@@ -373,13 +375,23 @@ export fn nested_decl(kind: string, what: string, at: Loc?) -> Diag {
     refusal(kind, at, "${what} live at the top level", "declared inside a block", "move it out of the block")
 }
 
-/// THE nested-declaration guard every declaring statement opens
-/// with: inside a block it refuses and answers true, so the rule
-/// returns; at the top level it answers false.
-export fn refuses_nested(mut cx: ResolveCx, s: StmtId, kind: string, what: string) -> bool {
-    if !cx.in_block { return false }
-    cx.emit(nested_decl(kind, what, cx.stmt_loc(s)))
-    true
+impl ResolveCx {
+    /// THE nested-declaration guard every declaring statement opens
+    /// with: inside a block it refuses and answers true, so the rule
+    /// returns; at the top level it answers false.
+    mut fn refuses_nested(s: StmtId, kind: string, what: string) -> bool {
+        if !self.in_block { return false }
+        self.emit(nested_decl(kind, what, self.stmt_loc(s)))
+        true
+    }
+
+    // ── The statement-value rituals: one verb per shape, so no rule
+    // ever spells the stmt_value-guard two-step. ──
+    /// Walk the statement's value expression, when it carries one.
+    mut fn walk_value(s: StmtId) {
+        let v: ExprId? = self.view.store.stmt_value(s)
+        if v != null { self.walk(v!) }
+    }
 }
 
 /// The parallel-capture mismatch, worded once — every zip builder
@@ -419,17 +431,6 @@ export fn variant_defect() -> string {
     "an undeclared variant survived typing"
 }
 
-// ── The statement-value rituals: one verb per shape, so no rule
-// ever spells the stmt_value-guard two-step. ──
-
-impl ResolveCx {
-    /// Walk the statement's value expression, when it carries one.
-    mut fn walk_value(s: StmtId) {
-        let v: ExprId? = self.view.store.stmt_value(s)
-        if v != null { self.walk(v!) }
-    }
-}
-
 impl TypeCx {
     /// Walk the statement's value expression, when it carries one —
     /// and refuse a TYPE standing where a value belongs, since
@@ -438,7 +439,7 @@ impl TypeCx {
         let v: ExprId? = self.view.store.stmt_value(s)
         if v == null { return }
         self.walk(v!)
-        let _ = refuses_type_value(self, v!)
+        let _ = self.refuses_type_value(v!)
     }
 }
 

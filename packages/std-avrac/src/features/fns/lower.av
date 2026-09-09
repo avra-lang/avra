@@ -1,7 +1,7 @@
 //! The call's lowering rule: argument registers, then one Call —
 //! the memory pass owns the retains the ABI demands.
 use core.{Type, ExprId, Reg, Ins, StmtId, DeclId, marked}
-use features.{hollow_of, LowerCx, called_through, foreign_node, lower_defect, bound_decl_of}
+use features.{LowerCx, bound_decl_of}
 
 fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     match cx.view.store.expr(e) {
@@ -15,7 +15,7 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
             cx.emit(Ins.Call(dst, cx.callee_of(e, callee), regs))
             dst
         }
-        _ -> foreign_node(cx, e),
+        _ -> cx.foreign_node(e),
     }
 }
 
@@ -37,7 +37,7 @@ fn host_regs(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> List<Reg> {
 fn seat_reg(mut cx: LowerCx, a: ExprId, inout: bool) -> Reg {
     if !inout { return cx.reg_of(a) }
     let cell: Reg? = cx.cell_of(a)
-    if cell == null { return lower_defect(cx, a, "a `mut` host seat with no cell behind it") }
+    if cell == null { return cx.lower_defect(a, "a `mut` host seat with no cell behind it") }
     cell!
 }
 
@@ -51,7 +51,7 @@ fn host_marks(cx: LowerCx, e: ExprId, n: int) -> List<bool> {
 /// The indirect path: through the box, which rides seat 0 —
 /// exactly as `self` does.
 fn valued_call_reg(mut cx: LowerCx, e: ExprId, box: Reg, regs: List<Reg>) -> Reg {
-    called_through(cx, e, box, regs)
+    cx.called_through(e, box, regs)
 }
 
 /// `return v`: the value's register exits the fn HERE — the open
@@ -61,7 +61,7 @@ fn valued_call_reg(mut cx: LowerCx, e: ExprId, box: Reg, regs: List<Reg>) -> Reg
 export fn lower_return(mut cx: LowerCx, s: StmtId) -> Reg? {
     let v: Reg? = cx.lower_value(s)
     cx.leaving(v)
-    cx.emit(Ins.FnExit(v ?? hollow_of(cx, cx.view.types.intern(Type.Void))))
+    cx.emit(Ins.FnExit(v ?? cx.hollow_of(cx.view.types.intern(Type.Void))))
     null
 }
 
