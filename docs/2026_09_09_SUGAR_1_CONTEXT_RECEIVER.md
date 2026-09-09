@@ -27,7 +27,9 @@ pair, and nothing checks that they do.
    block after the parentheses: `f(a) { x -> body }` is
    `f(a, (x) -> body)`; an `else { }` after it fills a second trailing
    fn seat. This is Swift's trailing closure, Ruby's block, Rust's
-   `thread::scope(|s| …)` without the punctuation.
+   `thread::scope(|s| …)` without the punctuation. The `else` is
+   PROVISIONAL: it is positional and reads as a branch, so sugar 5
+   retires it for the seat's own name (`other: { … }`).
 3. **Implicit receiver inside the block** — NOT proposed here. In
    Kotlin a lambda-with-receiver makes the block's free calls resolve
    against the receiver, so `cx.` vanishes and a builder reads like a

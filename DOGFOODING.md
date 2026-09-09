@@ -15,10 +15,13 @@ so is an ELEMENT read out of a container (`mut r = xs[i]`), which
 is why a mutated element must be written BACK (`xs.set(i, r)`).
 
 So a mutable out-parameter is a one-field STRUCT, never a bare
-list: `Pins { slots }` for the unifier's bindings, `Frames { stack }`
-for a narrowing bracket, `Table<T> { rows }` for every memo. The
+list: `type Pins = { slots: List<TypeId?> }` for the unifier's
+bindings, `type Table<T> = { rows: List<T?> }` for every memo. The
 struct's field is the place; the bare list was only ever bs2's
-aliasing in disguise.
+aliasing in disguise. There is no field shorthand — a literal
+spells every pair (`Pins { slots: slots }`) — and a generic literal
+takes its type from a typed `let`, never from `<int>` at the
+construction (`let t: Table<int> = Table { rows: [] }`).
 
 Discovered by self-hosting: every one of these sites worked under
 bs2 and silently did nothing under Avra's own semantics.
@@ -60,7 +63,7 @@ the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
 Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33 I38 I35 I36.
-Unratcheted, read by a human: I5 (a matcher cannot see whether a
+Unratcheted, read by a human: I37 (a matcher cannot see whether a
 predicate has effects), I31 (a stolen doc and a legitimate
 multi-paragraph header are the same shape).
 I12 came BACK from unratcheted once its regex was repaired: it had
@@ -69,14 +72,16 @@ so it was retired for false positives that were the rule's fault,
 not the code's. Requiring a `field:` pair inside the braces fixed
 it, and it immediately found three constructors waiting for names
 (Span's four spellings, seed's `alt`, memory's nested scope).
-Not ratcheted, each with its reason in tools/idioms.py's
-UNRATCHETED: I1 (the accumulator DECLARATION is a weak proxy — I3
+Not ratcheted — the tool's UNRATCHETED table, entire, each with its
+reason there: I1 (the accumulator DECLARATION is a weak proxy — I3
 matches the real smell), I2 (died with the eval collapse), I5
 (duplicate DETECTION), I6 (subsumed by I3), I8 (the ritual and the
 only legitimate use are textually identical), I10 and I17
-(semantic — the review round hunts them), I12 (false-positives on
-doc prose), I28 (voicehood is intent — the round hunts inline
-prose; I11 catches the duplicated-wording consequence).
+(semantic — the review round hunts them), I25 and I27 (RETIRED —
+the compiler's F2015 and the string header answer them), I29 (mint
+order is structure, not a token), I31 (above), I32 (only a profile
+tells the per-query scan from the one-shot walk), I34 (the matcher
+needs the enclosing fn's scope), I37 (above).
 
 A RULE MUST BE ABLE TO FIRE. Every matcher carries a specimen the
 tool re-checks on every run — added after I18 shipped with a regex
@@ -403,9 +408,10 @@ reintroducing I3's blind spot names the two spellings it lost.
       field voices, fns' wrong_argument/wrong_arity. NOT the
       smell: the voice fn's own body, and a refusal spoken exactly
       once in a fn that is otherwise one guard (extraction would
-      just rename it). Unratcheted — voicehood is intent, not
-      text; the review round hunts it, and I11 (duplicated long
-      strings) catches the worst consequence mechanically.
+      just rename it). RATCHETED on the greppable smell —
+      `pointed(error_at(` on a line — while voicehood ITSELF is
+      intent, so the review round still reads for the placement and
+      I11 (duplicated long strings) catches the worst consequence.
 - I29 an EMISSION VERB that mints its answer register early. The
       lowering contract is one line — registers are numbered in
       emission order — and a shared verb that takes `dst` from its
@@ -632,13 +638,22 @@ that spells, a comprehension spells too.
 
 ## The native list vocabulary
 
-`push`, `length`, indexing, `set(i, v)`, `get`, `pop`, `insert`,
-`slice`, `join`, `map`, `filter`, `reduce`, `foreach`, `enumerate`,
-`zip`, `sort`, `reverse`, `contains(v)` (-> bool), `index_of(v)`,
-`find(pred)` (-> `T?`), `any(pred)`, `all(pred)`, `first()`/`last()`
-(-> `T?`), `is_empty()` — all native, and native closures are
-mono-safe (unlike fn args through OUR generics). They work in
-`<N>`-generic bodies too (`bindings.find(it.label == label)`).
+`length`, indexing, `push`, `set(i, v)`, `pop` (-> `T`, never
+`T?`), `concat(ys)`, `slice(lo, hi)`, `join(sep)`, `map`, `filter`,
+`contains(v)` (-> bool), `index_of(v)`, `find(pred)` (-> `T?`),
+`any(pred)`, `all(pred)`, `first()`/`last()` (-> `T?`),
+`is_empty()` — all native, and native closures are mono-safe
+(unlike fn args through OUR generics). They work in `<N>`-generic
+bodies too (`bindings.find(it.label == label)`). The list is
+features/lists/mod.av's method table, entire.
+
+`enumerate` is a `for`-head and a comprehension head only, never a
+value: `xs.enumerate()` alone is F2005 "`enumerate` pairs only
+under a paired `for` head". And the runtime has NO `get`, `insert`,
+`reduce`, `foreach`, `zip`, `sort` or `reverse` — each is F2030
+"`.sort(…)` calls a method, and `List<int>` has none". core/lists
+answers two of them with COPIES (`reversed`, `inserted`); a fold is
+a loop, and there is no sort.
 
 A scan is never a loop:
 
@@ -658,12 +673,12 @@ and stateful transforms.
 ## Absence reads STRAIGHT — the if-null rule
 
 One of the most important patterns in this tree.
-A null/`let x ->` MATCH earns its lines only when both arms carry
-real payload logic — absence handling reads straight, never as a
-two-arm ceremony:
+A two-arm `null ->` / `x? ->` MATCH earns its lines only when both
+arms carry real payload logic — absence handling reads straight,
+never as a two-arm ceremony:
 
 ```avra
-if target == null { return null }     // not: match target { null -> null, let s -> ... }
+if target == null { return null }     // not: a `null ->` / `s? ->` match
 self.slots[target!.index]
 
 let f = r.farthest ?? FarthestFailure { cursor: c, expected: [p], in_rule: r }
@@ -806,7 +821,8 @@ impl Prim {
 
 Absence is `T?`, never `-1` or `""`: `label: string?`, `build: Build?`
 (null = pass-through), `expect: Expect?`. Consume with `??`, `!`, and
-null/`let x ->` match arms.
+`null ->` / `x? ->` match arms — one arm per LINE, since a
+comma-ended arm swallows the `x?` that follows it.
 
 ```avra
 text = text + (unescape(e) ?? src.substring(j, j + 2))
@@ -823,8 +839,9 @@ fn later_def(name: string) -> StmtId? {
 engine_codes().find(it.cause == c)?.kind ?? "language.defect"
 ```
 
-`?.` reaches FIELDS only; mapping a present value through a fn or
-constructor is a guarded `if`.
+`?.` reaches FIELDS and METHODS — `p?.doubled()` answers the
+method's type, nullable. Mapping a present value through a FREE fn
+or a constructor is still a guarded `if`.
 
 ## Extractor + `want` for typed unwrapping
 
@@ -868,24 +885,23 @@ Proven capabilities:
 - Constructions infer under a typed `let` and in a fn's TAIL position
   (expected types thread through match arms, if-branches, and list
   elements) — `Captured.Many([Captured.Terminal(t), v])` needs no
-  pinned intermediate, and a generic ctor works as a match-arm tail.
-  Early `return`s do NOT get this — keep the typed let there. Neither
-  does a construction whose only N-evidence is SIBLING fields
-  (`MatchResult { status: r.status, state: state, ... }` — F1002):
-  that one keeps its typed-let pin.
+  pinned intermediate, a generic ctor works as a match-arm tail, and
+  an early `return` reads the declared answer type too. What does
+  NOT infer is a construction whose only N-evidence is SIBLING
+  fields (`MatchResult { status: st, state: state, held:
+  Captured.Absent }` — F2003 "`Captured.Absent` cannot pin `N` —
+  nothing carries it"): that one keeps its typed-let pin.
 
-Pin explicitly (`f<N>(...)`) when:
-
-- the only N-evidence rides inside a struct argument
-  (`match_rule<N>(cx, ...)` — `cx: MatchContext<N>` is not enough), or
-- the call happens inside another generic fn's body, even at a
-  concrete type (`concat<Diagnostic>(diagnostics, r.diagnostics)`).
-
-Never nest a generic type inside an explicit type argument —
-`concat<Captured<N>>(...)` does not take (write the loop instead).
-Fn-typed arguments carry no T-evidence, and pinning `<T>` over one
-corrupts scalar payloads through mono — never thread fn args through
-generics.
+Pin explicitly (`f<N>(...)`) when the arguments carry no evidence.
+The case the compiler names is a bare `null`: `filled(3, null)` is
+F2000 "argument 2 of `filled` wants `T`, found `null`", help "a bare
+`null` cannot pin `T` — write `filled<...>(...)`". A struct argument
+carries its own evidence (fn-typed fields included), and so does a
+call sitting inside another generic body — probe before adding a
+pin, and nesting a generic inside the pin (`f<Captured<N>>(...)`)
+takes fine. Fn-typed ARGUMENTS carry no T-evidence, and pinning
+`<T>` over one corrupts scalar payloads through mono — never thread
+fn args through generics.
 
 ```avra
 fn captured_absent<N>() -> Captured<N> { Captured.Absent }
@@ -1064,17 +1080,19 @@ for (i, m) in out.enumerate() {
 }
 ```
 
-## `concat` / `flatten` / `joined` / `filled` / `some_list` from core/lists
+## `flatten` / `joined` / `filled` / `some_list` from core/lists
 
 ```avra
-diagnostics = concat<Diagnostic>(diagnostics, r.diagnostics)
+diagnostics = diagnostics.concat(r.diagnostics)          // two lists — the native method
 diagnostics: flatten([p.diagnostics, r.diagnostics, t.diagnostics])  // N lists, in order
 "[${joined([render(x) for x in items], " ")}]"
 targets: filled<StmtId?>(p.store.exprs.count(), null)   // dense-table prefill
 ```
 
-Pin `concat<T>` inside generic fn bodies — mono needs the explicit
-type there even when T is concrete.
+`concat` is the LIST's own method, not a core fn — there is no free
+`concat` anywhere (`concat<int>(a, b)` is F3000 "no `fn concat` is
+defined"). `filled` keeps its pin because its only T-carrying
+argument is a bare `null`.
 
 ## Components for self-describing bundles
 

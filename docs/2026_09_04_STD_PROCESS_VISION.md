@@ -219,7 +219,7 @@ Go added `WaitDelay` in 1.20 for exactly this; every other stdlib hangs.
 ### 4. Exit code as a number vs. as a verdict
 **Horns:** `if r.returncode != 0` (forgotten in half of all scripts) vs.
 `check=True` throwing on `grep`'s honest `1`.
-**Collapse:** `Exit` is an enum — `.Clean`, `.Code(n)`, `.Signal(sig)` —
+**Collapse:** `Exit` is an enum — `.Clean`, `.Code(n)`, `.Signal(sig, core)` —
 and `.Code(0)` is unconstructible. `run()` JUDGES: any exit outside the
 command's `ok_exits` (default `[0]`) is `Err(.Failed(exit, out))`, so `?`
 propagates it and a forgotten check cannot be written. `grep`'s `1` is
@@ -301,10 +301,12 @@ landed 2026-09-05).
 ## IV.1 The one-liner
 
 ```avra
-use @std.process.{program, cmd}
+use @std.process.{tool, cmd, ProcessError}
 
-let git = tool("git")?                      // resolved ONCE: /opt/homebrew/bin/git
-let head = cmd(git, ["rev-parse", "HEAD"]).run()?.stdout.trim()
+fn head() -> Result<string, ProcessError> {
+    let git = tool("git")?                  // resolved ONCE: /opt/homebrew/bin/git
+    (cmd(git, ["rev-parse", "HEAD"]).run()?).stdout.trim()
+}
 ```
 
 ```avra
@@ -337,7 +339,7 @@ let log = cmd(git, ["log", "--oneline", branch]).run()?
 
 ```avra
 // today: the position verbs — a value lands where a dash is inert
-let clone = cmd(git, ["clone"]).flag("--depth", "1").after_options([url]).path(dest)
+let clone = (cmd(git, ["clone"]).flag("--depth", "1").after_options([url])?).path(dest)
 //  argv = ["git", "clone", "--depth=1", "--end-of-options", url, "./checkout"]
 ```
 
@@ -362,7 +364,7 @@ match found.exit {
     .Clean -> "present",
     .Code(1) -> "absent",
     .Code(n) -> fail SearchError.tool_failed(n, found.out.stderr),
-    .Signal(s) -> fail SearchError.killed(s),
+    .Signal(s, _) -> fail SearchError.killed(s),
 }
 // or: declare grep's convention once and let run() judge the rest
 let hit = cmd(grep, ["-q", pat]).path(file) with { ok_exits: [0, 1] }
@@ -393,9 +395,14 @@ the only evidence anyone will have.
 ## IV.6 Lines as they arrive
 
 ```avra
+// [v1] streaming — `Seq` and `Command.lines` both arrive with it
 for line in cmd(tail, ["-f"]).path(log).lines() {       // a Seq<string>
     if line.contains("ERROR") { alerts.push(line) }
 }
+
+// today: run to completion, then scan the text
+let alerts = [l for l in (cmd(tail, ["-n", "200"]).path(log).run()?).stdout.split("\n")
+              if l.contains("ERROR")]
 ```
 
 While this loop reads stdout, the same poll loop drains stderr into a
@@ -404,6 +411,7 @@ loop; a child that never closes stdout is bounded by `timeout`. Both
 streams, tagged and in arrival order, when the order matters:
 
 ```avra
+// [v1] both streams, tagged, in arrival order
 for l in cmd(make, ["-j8"]).output() {              // Seq<Line>
     match l.stream { .Stdout -> plain(l.text), .Stderr -> red(l.text) }
 }
@@ -442,8 +450,10 @@ convention. When failure is not failure to you, ask instead of being
 judged:
 
 ```avra
+fn broke(o: Outcome) -> bool { !(o.exit is .Clean) }
+
 let r: PipeOutcome = pipeline.outcome()?
-let failing = r.stages.enumerate().find(!(it.exit is .Clean))    // pipefail, as data
+let failing = [i for i, o in r.stages if broke(o)].first() ?? -1  // pipefail, as data
 ```
 
 ## IV.8 Where text ends and values begin
@@ -599,9 +609,9 @@ a control that was never applied.
 spec "release notes" {
     given "a tagged repository" {
         let fake = scripted(table<Script> {
-            program | args                    | exit    | stdout
-            "git"   | ["describe", "--tags"]  | .Clean  | "v1.4.0\n"
-            "git"   | ["log", "--oneline"]    | .Clean  | "abc feat: x\n"
+            program | args              | exit    | stdout          | stderr
+            "git"   | "describe --tags" | .Clean  | "v1.4.0\n"      | ""
+            "git"   | "log --oneline"   | .Clean  | "abc feat: x\n" | ""
         })
         then "the version comes from the tag" {
             release_notes(fake).version == "v1.4.0"
@@ -637,7 +647,7 @@ match cmd(tool(binary)?, []).outcome()?.exit {
     .Clean -> 0,
     .Code(1) -> 1,
     .Code(n) -> wrecked("the suite's binary exited ${n}"),
-    .Signal(s) -> wrecked("the suite's binary died of signal ${s}"),
+    .Signal(s, _) -> wrecked("the suite's binary died of signal ${s}"),
 }
 ```
 
@@ -864,8 +874,8 @@ impl Command {
 
     fn run(self) -> Result<Output, ProcessError>               // judged by ok_exits
     fn outcome(self) -> Result<Outcome, ProcessError>          // read: the exit is yours
-    fn lines(self) -> Seq<string>                              // stdout by line; stderr drained, capped
-    fn output(self) -> Seq<Line>                               // both streams, tagged, in order — recording is this verb's cost, never run()'s
+    fn lines(self) -> Seq<string>                              // [v1] stdout by line; stderr drained, capped
+    fn output(self) -> Seq<Line>                               // [v1] both streams, tagged, in order — recording is this verb's cost, never run()'s
     fn start(self, ready: Ready, within: Duration) -> Result<Child, ProcessError>   // returns when READY, or stopped and `.NotReady`
     fn pipe(self, next: Command) -> Pipeline
 }
