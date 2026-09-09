@@ -3,7 +3,7 @@
 //! their wrappers, lambdas lifted, captures packed, callee symbols
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, int_of, text_of, bool_of, bits_of}
-use diagnostics.{loc_at, refusal}
+use diagnostics.{loc_at, refusal, Diag}
 use features.{LowerCx, capture_lane, Sub, Cap, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, const_symbol}
 use @std.errors.{Loc}
 
@@ -351,11 +351,12 @@ impl LowerCx {
         // AT THE DECLARATION'S VALUE, not the use that asked — a const
         // that reached here has one
         let at = self.view.loc_of(self.view.store.const_value(s)!)
-        let d = match why {
+        let d: Diag? = match why {
             .Reach(label) -> refusal("const.reach", at, "a const cannot read the world", "`${name}` ${label}", "a const settles at compile time from pure computation alone — read the world at run time, under `let`"),
             .Budget(label) -> refusal("const.budget", at, "a const ran past its budget", "`${name}` ${label}", "compute less here, or settle it at run time under `let`"),
             .Trap(words) -> refusal("const.trap", at, "a const trapped while settling", "`${name}` ${words}", "the initializer runs at compile time, so what traps there is refused here"),
+            .Spoken -> null,
         }
-        self.out.voices.speak(d)
+        if d != null { self.out.voices.speak(d!) }
     }
 }

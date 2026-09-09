@@ -94,9 +94,11 @@ export type Workspace = {
     closed: bool,
     clock: fn() -> int,
     phases: List<Phase>,
-    // consts settled this workspace, by their unit name; and the ones
-    // settling now, so a const asking for itself is refused
+    // consts settled this workspace, by their unit name; the ones
+    // refused, so the refusal is spoken once; and the ones settling
+    // now, so a const asking for itself is refused
     settles: Map<string, Settled>,
+    refused: Map<string, Unsettled>,
     settling: Map<string, bool>,
 }
 
@@ -205,7 +207,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         decl_facts: new_table(), method_clashes: new_table(), folds: new_table(),
         analyses: new_table(), units: new_table(), specs: {}, asks: [], defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
-        clock: clock, phases: [], settles: {}, settling: {},
+        clock: clock, phases: [], settles: {}, refused: {}, settling: {},
     }
     for f in families() {
         if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
@@ -629,19 +631,26 @@ impl Workspace {
         let name = const_symbol(f, s)
         let held: Settled? = self.settles.get(name)
         if held != null { return .Ok(held!) }
-        if self.settling.get(name) != null { return .Err(Unsettled.Trap("asks for its own value while settling")) }
+        // refused once, spoken once: every later read is silent
+        if self.refused.get(name) != null { return .Err(Unsettled.Spoken) }
+        if self.settling.get(name) ?? false { return .Err(Unsettled.Trap("asks for its own value while settling")) }
         self.settling.set(name, true)
+        let r = self.settlement_of(f, s, name)
+        self.settling.set(name, false)
+        match r {
+            .Ok(x) -> self.settles.set(name, x),
+            .Err(why) -> self.refused.set(name, why),
+        }
+        r
+    }
+
+    /// One settlement run: the initializer lowered as a program, its
+    /// laws checked, its value spelled when the type spells one.
+    fn settlement_of(f: FileId, s: StmtId, name: string) -> Result<Settled, Unsettled> {
         let ws = self
         let l = memory(self.decls.settlement(Wanted { file: f, decl: null, name: name, sub: null, settles: s }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
-        // a scalar is SPELLED at its uses; a boxed value is called for
-        match run_settle(l, settle_steps(), !self.decls.types.rides_pointer(l.entry.ret), dir_of(self.decls.file(f).path)) {
-            .Ok(x) -> {
-                self.settles.set(name, x)
-                .Ok(x)
-            },
-            .Err(why) -> .Err(why),
-        }
+        run_settle(l, settle_steps(), self.decls.types.spells(l.entry.ret), dir_of(self.decls.file(f).path))
     }
 
     // ── Modules ──
