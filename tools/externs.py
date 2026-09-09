@@ -223,7 +223,7 @@ def c_returns(sources):
     return out
 
 # WHERE AN EXTERN CAN BE DECLARED. `packages/**` reaches a package's
-# CORPUS too — `std-avrac/corpus/externs.av` is the file that
+# PROGRAM TESTS too — `language/tests/externs/externs.av` is the file that
 # DEMONSTRATES this seam, the one place a reader looks to learn what
 # an extern may do. A keeper blind to its own subject's showcase is
 # the untested-instrument shape.

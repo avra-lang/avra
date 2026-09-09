@@ -250,7 +250,7 @@ engine's spec, written by dogfooding.
   and the three unified seats — a call argument, a struct field, an
   enum payload — call it; the payload once short-circuited and
   refused a `dyn` box and an auto-Ok its siblings took
-  (corpus/seats.av holds the proof).
+  (language/tests/seats holds the proof).
 - EVERY POINTER AVRA HOLDS CARRIES A HEADER. The runtime counts
   references in sixteen bytes BEFORE each payload (tag, kind, rc,
   and a record's size class or a string's length),
@@ -722,7 +722,7 @@ engine's spec, written by dogfooding.
      and `hosted_symbol` (core/ir.av), `step` (interp),
      `memory_ins`, `body_lines` (ir_text), `emit_ins` (llvm),
      `give` (features/facts.av — does the runtime registry
-     validate it) — plus a corpus program proving eval == native
+     validate it) — plus a program test proving eval == native
      and the IR golden that shows the shape.
   4. THE GUARANTEE: those eight matches carry no `_ ->`, so a new
      variant breaks all eight at compile time. The vocabulary
@@ -824,9 +824,10 @@ engine's spec, written by dogfooding.
   (`stmt.av` or `semantics.av`) and joins `stmt_semantics_of` — the
   drivers' one statement loop reaches it there.
   Start a feature with `avra new feature <name>`; prove it with a
-  corpus pair (`packages/std-avrac/corpus/<name>.av` + `.expected`,
+  program test (`<feature>/tests/<name>/<name>.av` + `.expected` — a
+  program gets a directory of its own, so its names are its own,
   which `avra test packages/std-avrac` runs). `make gate` is
-  the bar. A corpus program shows its FINAL statement's expression
+  the bar. A program test shows its FINAL statement's expression
   only, and only when that statement IS an expression, and
   an interpolation hole prints scalars and strings only — a list
   is shown through `join`, an index or `length`.
@@ -897,7 +898,7 @@ starts accepting is deleted. THIS SECTION IS A CACHE, and it is 21% of
 this file — every entry is a fact the COMPILER can answer, which is
 why two went stale in one day and both were found by luck. RECORDED
 TRIGGER: when the docs campaign's `lang/subset/*.av` lands as a
-gate-verified corpus, this section becomes a POINTER to it and stops
+gate-verified program tests, this section becomes a POINTER to them and stops
 being a hand-kept list. Measured 2026-09-06 at 1233 lines. Laws that SPEAK are not listed —
 reserved words (F3002 names the word and its status), a mutating
 method on a non-`mut` binding (F2034), a lambda assigning to a
@@ -1027,7 +1028,7 @@ Syntax the grammar lacks:
 - A PRESENT-BIND arm after a COMMA-ended arm (`null -> a,` then `v?
   -> b`): "expected `}` to close the `match`" — the comma continues
   the line and `v?` is read into it. Separate such arms by line, as
-  the corpus does; variant and literal arms take the comma.
+  the program tests do; variant and literal arms take the comma.
 - A match arm whose body is an EMPTY BLOCK (`1 -> {}` in statement
   position): `{}` is an empty map — F2013 "a `match`'s arms
   disagree: `void` vs the first arm's `{}`".
@@ -1494,7 +1495,7 @@ Runtime facts, ours to ratify:
   reports success; a grep scoped too narrowly answers "absent" about
   a thing that exists — `avra_ptr_at` read as missing here because
   the search was confined to `packages/`, and it was in the runtime
-  and the corpus. So A KEEPER COUNTS WHAT IT LOOKED AT AND SAYS SO:
+  and the program tests. So A KEEPER COUNTS WHAT IT LOOKED AT AND SAYS SO:
   `tools/externs.py` already does ("N C source(s)"), `make idioms`
   reports its debt and not its coverage. The hazard is live because
   there are TWO LINK SITES — the bootstrap's hand-written clang line
@@ -1524,7 +1525,7 @@ Runtime facts, ours to ratify:
   H2 and H3 both answer `1 2 2` on both engines where 11.5 demands
   `1 1 0` — the differential is unanimous and wrong, because
   agreement is a CONSISTENCY check while the LAW is the oracle. The
-  gate's third leg does not rescue it: a corpus `.expected` is
+  gate's third leg does not rescue it: a program test's `.expected` is
   written by the same author from the same understanding, so it joins
   the consensus rather than breaking it. AND A THIRD BLINDNESS, from
   the HTTP lane: the engines can AGREE ON THE VERDICT AND DIVERGE ON

@@ -109,7 +109,7 @@ build/avra_runtime.o: runtime/avra_runtime.c build/runtime.sha
 	cc -O2 -Wall -Werror -c runtime/avra_runtime.c -o build/avra_runtime.o
 
 # The runtime's trap contract: the words and the verdict (exit 2).
-# No corpus program can hold it — a suite runs every program in
+# No program test can hold it — a suite runs every program in
 # one process, and a trap ends it. AFTER `tested`, because a row may
 # depend on a package: a broken package should fail its OWN suite
 # first, not this keeper, which would name the harness for someone
@@ -168,7 +168,7 @@ fingerprints:
 # THE EXTERN WALL'S WIDTH: Avra's `int` is 64 bits and C's is 32, so a
 # C body answering a narrow type writes only the low half and a
 # negative value reads as a large positive one. Both engines agree on
-# that wrong answer, so the corpus cannot catch it.
+# that wrong answer, so a program test cannot catch it.
 externs:
 	@python3 tools/externs.py
 
@@ -246,7 +246,7 @@ witness: $(RUNTIME_OBJS) build/width_witness.o
 	@echo "witness: Avra == C on the same object — $$(cat build/witness-avra.out)"
 
 # The whole gate: the vocabulary's guarantee, idioms, then every
-# proof a package carries — its spec cases and its corpus programs,
+# proof a package carries — its spec cases and its program tests,
 # both inside its own suite.
 # THE GATE: the suites run with the scaffolder's template in place —
 # scaffolded into std-avrac before, removed after, however the suites
@@ -271,7 +271,7 @@ native-check: $(RUNTIME_OBJS)
 bench: $(RUNTIME_OBJS)
 	@sh tools/bench.sh
 
-# Mutated corpus programs through `avra check`: diagnose, never crash.
+# Mutated program tests through `avra check`: diagnose, never crash.
 fuzz: $(RUNTIME_OBJS)
 	@sh tools/fuzz.sh
 
