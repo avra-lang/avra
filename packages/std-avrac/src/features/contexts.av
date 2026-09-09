@@ -3,7 +3,7 @@
 //! asks the namespace) — and the CONTEXTS' vocabularies: every
 //! method a feature's rule calls on a TypeCx, LowerCx or statement
 //! context forwards from here to the one definition.
-use core.{Expr, int_of, text_of, bool_of, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, filled, Reg, Ins, dst_of, rt_sig_of, same_stmt, same_expr, same_decl}
+use core.{Expr, int_of, text_of, bool_of, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, filled, Reg, Ins, dst_of, rt_sig_of, same_stmt, same_expr, same_decl, bits_of, TypeRef}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
 
@@ -190,14 +190,15 @@ export fn def_type_of(facts: TypeFacts, store: NodeStore, types: TypeRegistry, e
     facts.type_at(v!)
 }
 
-/// The type a const wears: its settled value's own shape, wrapped
-/// when the annotation asks for absence. Read from the store alone
-/// — the value and the written type are all a const's type needs,
-/// and both are the program's, not a body's.
+/// The type a const wears: its written value's own shape, else the
+/// scalar its annotation names — a COMPUTED const declares what it
+/// settles to — wrapped when the annotation asks for absence. Read
+/// from the store alone: the value and the written type are all a
+/// const's type needs, and both are the program's, not a body's.
 fn settled_type(store: NodeStore, types: TypeRegistry, s: StmtId) -> TypeId? {
     let v: ExprId? = store.const_value(s)
     if v == null { return null }
-    let word: Type? = literal_shape(store.expr(v!))
+    let word: Type? = literal_shape(store.expr(v!)) ?? annotated_scalar(store.binding_ty(s))
     if word == null { return null }
     let held = types.intern(word!)
     if store.binding_ty(s)?.optional ?? false { return types.type(held?) }
@@ -209,7 +210,26 @@ fn literal_shape(value: Expr) -> Type? {
     if int_of(value) != null { return Type.Int }
     if text_of(value) != null { return Type.Str }
     if bool_of(value) != null { return Type.Bool }
+    if bits_of(value) != null { return Type.Float }
     null
+}
+
+/// The scalar an annotation names, when it names one.
+fn annotated_scalar(ann: TypeRef?) -> Type? {
+    if ann == null { return null }
+    if !ann!.args.is_empty() { return null }
+    scalar_named(ann!.name)
+}
+
+/// What a settlement SPELLS today: a scalar or text, by its word.
+export fn scalar_named(name: string) -> Type? {
+    match name {
+        "int" -> Type.Int,
+        "float" -> Type.Float,
+        "string" -> Type.Str,
+        "bool" -> Type.Bool,
+        _ -> null,
+    }
 }
 
 /// A type under a body's instantiation — IDENTITY for a plain body.

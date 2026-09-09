@@ -2,8 +2,9 @@
 //! runs — a literal as written, or what the evaluator finishes; the
 //! lowering asks it and speaks its refusals. And an annotated const
 //! holds what it declares, like any binding.
-use core.{StmtId, ExprId, TypeId, TypeRef}
-use features.{TypeCx}
+use core.{StmtId, ExprId, TypeId, TypeRef, Expr, int_of, text_of, bool_of, bits_of}
+use features.{TypeCx, scalar_named}
+use diagnostics.{refusal}
 
 /// The value walks under its declaration's want, then — when
 /// annotated — it holds what it declares.
@@ -19,7 +20,35 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     let declared: TypeId? = if ann == null { null } else { cx.bind_declared(s, ann!) }
     if declared != null { cx.plant_want(v, declared!) }
     cx.walk_value(s)
+    if !written(cx.view.store.expr(v)) && annotated_scalar(ann) == null {
+        undeclared(cx, v)
+        return
+    }
     if cx.refuses_void_value(v) { return }
     if declared == null { return }
     cx.declared_binding(v, cx.view.store.let_name(s) ?? "this const", declared!)
+}
+
+/// A value read straight off the page.
+fn written(value: Expr) -> bool {
+    int_of(value) != null || text_of(value) != null || bool_of(value) != null || bits_of(value) != null
+}
+
+/// The scalar an annotation names, when it names one.
+fn annotated_scalar(ann: TypeRef?) -> TypeRef? {
+    if ann == null { return null }
+    if !ann!.args.is_empty() || scalar_named(ann!.name) == null { return null }
+    ann
+}
+
+// ── The voices ──
+
+/// A computed const is read from every body, and a body's facts hold
+/// only its own range — so the const's type is written where every
+/// body can read it: on the declaration.
+fn undeclared(mut cx: TypeCx, v: ExprId) {
+    let _ = cx.spoken(refusal("const.declares", cx.loc_of(v),
+                       "a const the compiler computes declares what it settles to",
+                       "computed here",
+                       "write the type on the const — `const N: int = …` — a scalar or text; a list or a record arrives with the next slice"))
 }
