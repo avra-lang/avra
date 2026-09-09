@@ -1158,8 +1158,18 @@ fn load_packages(ws: Workspace, src: string) {
 /// the root, since they never travel.
 fn admit_dependencies(ws: Workspace, i: int, m: Manifest, root: bool, chain: List<string>) {
     for d in m.deps {
-        if !d.dev || root { admitted(ws, d.key, normalized(joined_path(ws.packages[i].root, d.path!)), d.at, chain) }
+        if !d.dev || root { admitted(ws, d.key, normalized(joined_path(ws.packages[i].root, d.path!)), d.at, dep_chain(d, chain)) }
     }
+}
+
+/// The chain a dependency's admission extends. A DEV EDGE STARTS ITS
+/// OWN: the tests are the consumer and nothing depends on them, so a
+/// package's test reaching a library that depends BACK on it closes no
+/// cycle — `@std/text`'s program prints through `@std/io`, which reads
+/// `@std/text`. A library edge carries the chain it came by.
+fn dep_chain(d: Dependency, chain: List<string>) -> List<string> {
+    if d.dev { return [] }
+    chain
 }
 
 fn admitted(ws: Workspace, key: string, dir: string, at: Loc?, chain: List<string>) {

@@ -84,6 +84,13 @@ fn fixes(ws: Workspace) -> List<string> {
     suggested(d!)
 }
 
+/// The root reaching `@acme/greet` under the named dependency section,
+/// with greet depending BACK on the root.
+fn back_edge(section: string) -> Workspace {
+    with_two("/w/avra.toml", "[package]\nname = \"@acme/app\"\nversion = \"0.1.0\"\n\n[${section}]\n\"@acme/greet\" = { path = \"vendor/greet\" }\n",
+             "/w/vendor/greet/avra.toml", "[package]\nname = \"@acme/greet\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/words\" = { path = \"../words\" }\n\"@acme/app\" = { path = \"../..\" }\n")
+}
+
 /// The packages' ONE voice, saying this.
 fn package_voice(ws: Workspace, saying: string) -> bool {
     let p = program(ws, "/w/src/main.av")
@@ -138,6 +145,12 @@ spec "language/packages" {
         then "a cycle refuses naming it" {
             package_voice(with_file("/w/vendor/words/avra.toml", "[package]\nname = \"@acme/words\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/greet\" = { path = \"../greet\" }\n"),
                           "packages depend in a cycle: app -> @acme/greet -> @acme/words -> @acme/greet")
+        }
+        then "a dev dependency closes no cycle through the package it tests" {
+            program(back_edge("dev-dependencies"), "/w/src/main.av").voices.is_empty()
+        }
+        then "the same edge as a library dependency refuses" {
+            package_voice(back_edge("dependencies"), "packages depend in a cycle: @acme/app -> @acme/greet -> @acme/app")
         }
         then "a dependency calls itself what it was keyed as" {
             package_voice(with_file("/w/vendor/greet/avra.toml", "[package]\nname = \"@acme/greeting\"\nversion = \"0.1.0\"\n"),
