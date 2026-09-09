@@ -5,6 +5,35 @@
 use @std.avrac.testing.{shown, refused_with, refusals}
 
 spec "features/loops/adversarial" {
+    given "a range loop as the LAST statement that runs" {
+        // A RANGE HEAD DESUGARS INTO SPAN-LESS NODES (builders.av mints
+        // the `i < hi` condition and the `i + 1` step with null spans),
+        // and a declaration's expression RANGE is computed only from
+        // expressions that HAVE a span (decls.av `range_bodies`). So
+        // when the loop is the last thing that runs, those nodes sit
+        // ABOVE the range's `hi` and `type_at` — a window read,
+        // `of_expr[e.index - lo]` — indexes past its end. It TRAPPED:
+        // "index N is out of bounds (length N)", exit 2, no diagnostic.
+        //
+        // A following RUN-TIME statement hid it by extending the range;
+        // a following fn DECLARATION did not, because its expressions
+        // are owned by that fn. That is why it survived every suite.
+        then "the loop alone checks clean" {
+            refusals("for i in 0..1 {\n    let x = i\n}") == 0
+        }
+        then "an empty body checks clean — fewest expressions, still past the end" {
+            refusals("for i in 0..1 {\n}") == 0
+        }
+        then "a fn declaration after it does NOT shield it" {
+            refusals("for i in 0..1 {\n    let x = i\n}\nfn g() -> int { 1 }") == 0
+        }
+        then "two loops, the second last" {
+            refusals("for i in 0..1 {\n}\nfor j in 0..1 {\n}") == 0
+        }
+        then "and it still RUNS" {
+            shown("mut n = 0\nfor i in 0..3 {\n    n = n + i\n}\nn") == "3"
+        }
+    }
     given "degenerate subjects" {
         then "an empty literal cannot be walked; a declared empty list walks nothing" {
             refused_with("mut t = 0\nfor i, x in [] {\n    t = t + i\n}\nt", "walks an empty literal") &&
