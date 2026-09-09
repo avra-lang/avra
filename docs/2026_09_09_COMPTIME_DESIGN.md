@@ -585,6 +585,17 @@ values (S2), `const` as an exportable module declaration, the reach
 refusal's full call chain (it names the row and the body), and the
 refusal pointing at the declaration (it points at the first use).
 
+S2 STATUS (lane/comptime, 2026-09-09): the AGGREGATE half LANDED, the
+`embed` half NOT YET. A const whose value rides a pointer (a list, a
+map, text/list/map under `?`) is settled by the evaluator for the
+laws and then CALLED by the program: its unit is `once`-shaped
+(`lower_const` → `once_body`), answering the value once per process
+and the same box after (`const_call`, lower_state.av). The type is
+still read from the store, so it is spelled in WORDS (`spelled_type`,
+contexts.av: scalars, `List<…>`, `Map<string, …>`, `?` over a
+pointer-riding one); a declared type's NAME and `?` over a scalar
+refuse with F2064. Static data (§4.5 later) and `embed` remain.
+
 Order rationale: S1 is what the owner already queued (ROADMAP:8218,
 "NEXT: comptime (`const`, evaluated at compile time)") and proves the
 engine seam with no namespace change. S3 before S4 because the

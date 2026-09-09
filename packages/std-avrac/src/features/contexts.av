@@ -215,8 +215,11 @@ export fn spelled_type(types: TypeRegistry, ann: TypeRef?) -> TypeId? {
     let plain: TypeId? = spelled_plain(types, a)
     if plain == null { return null }
     let held = plain!
-    if a.optional { return types.type(held?) }
-    held
+    if !a.optional { return held }
+    // `?` over a scalar is a box the runtime cannot keep (the once law
+    // refuses it too); over a pointer it is the pointer, null for absent
+    if !types.rides_pointer(held) { return null }
+    types.type(held?)
 }
 
 fn spelled_plain(types: TypeRegistry, a: TypeRef) -> TypeId? {
