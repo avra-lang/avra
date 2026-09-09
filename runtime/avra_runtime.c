@@ -1805,6 +1805,15 @@ int64_t avra_io_read(const char* path) {
     return 0;
 }
 
+/* `embed` is answered by the compiler, at compile time, under the
+   const's own directory; a program that reaches this body called it
+   outside a const. */
+const char* avra_embed(const char* path) {
+    (void)path;
+    avra_trap("`embed` reads a file at compile time, into a const — this program reached it at run time");
+    return "";
+}
+
 int64_t avra_io_write(const char* path, const char* content) {
     return write_whole(path, content);
 }

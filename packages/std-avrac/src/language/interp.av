@@ -10,7 +10,8 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, filled, joined, rt_index, hosted_symbol, Expr}
+use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, Reach, opens_region, closes_region, filled, joined, rt_index, hosted_symbol, Expr}
+use @std.path.{joined_path}
 use features.{Unsettled, Settled}
 
 /// A runtime value: the interpreter's whole vocabulary.
@@ -52,11 +53,15 @@ type Machine = {
     failures: List<string>,
     // instructions this run may still execute; below zero it traps
     budget: int,
+    // a settlement's own directory, which `embed` reads beside — and
+    // the files it read; null outside a settlement, where embed traps
+    base: string?,
+    embeds: List<string>,
 }
 
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, out: [], failures: [], budget: unbudgeted() }
+    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, out: [], failures: [], budget: unbudgeted(), base: null, embeds: [] }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -124,44 +129,54 @@ fn unbudgeted() -> int { 1000000000000000 }
 /// program's own call answers it. Refused BEFORE running when any
 /// body reaches the world, DURING it when the budget runs out or a
 /// body traps, and AFTER it when a spelled value has no literal.
-export fn run_settle(l: Lowered, steps: int, spell: bool) -> Result<Settled, Unsettled> {
-    let world: string? = world_reached(l)
+export fn run_settle(l: Lowered, steps: int, spell: bool, base: string) -> Result<Settled, Unsettled> {
+    let world: string? = world_reached(l, spell)
     if world != null { return .Err(Unsettled.Reach(world!)) }
     mut m = fresh_machine(l)
     m.budget = steps
+    m.base = base
     let answer: Val? = m.run_body(l.entry, [])
     if m.budget < 0 { return .Err(Unsettled.Budget("took more than ${steps} steps")) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
-    if !spell { return .Ok(Settled { spelled: null }) }
+    if !spell { return .Ok(Settled { spelled: null, embeds: m.embeds }) }
     match literal_of(answer) {
-        .Ok(x) -> .Ok(Settled { spelled: x }),
+        .Ok(x) -> .Ok(Settled { spelled: x, embeds: m.embeds }),
         .Err(why) -> .Err(why),
     }
 }
 
-/// The first row a settlement reaches that touches the world, with
-/// the body it sits in — or null when every row is pure.
-fn world_reached(l: Lowered) -> string? {
+/// The first row a settlement reaches that it may not, with the body
+/// it sits in — or null when every row is allowed. An embed is
+/// allowed only where the value is SPELLED: a boxed const is built at
+/// run time, where no source sits beside the program.
+fn world_reached(l: Lowered, spell: bool) -> string? {
     let rows = rt_index()
-    let hit: Body? = l.fns.concat([l.entry]).find((b: Body) -> world_in(rows, b) != null)
+    let hit: Body? = l.fns.concat([l.entry]).find((b: Body) -> world_in(rows, b, spell) != null)
     if hit == null { return null }
-    world_in(rows, hit!)
+    world_in(rows, hit!, spell)
 }
 
-fn world_in(rows: Map<string, RtSig>, b: Body) -> string? {
-    let hit: Ins? = b.ins.find((i: Ins) -> reaches_world(rows, i))
+fn world_in(rows: Map<string, RtSig>, b: Body, spell: bool) -> string? {
+    let hit: Ins? = b.ins.find((i: Ins) -> reaches_out(rows, i, spell))
     if hit == null { return null }
-    "reaches `${hosted_symbol(hit!) ?? ""}` in `${b.name}`"
+    let row = hosted_symbol(hit!) ?? ""
+    if rows.get(row)?.reach ?? Reach.World is .Embed { return "embeds a file in `${b.name}`, and a boxed value is built at run time — embed into a `string` const" }
+    "reaches `${row}` in `${b.name}`"
 }
 
-/// A row the registry marks World — or one it does not know, which
-/// is a program's own extern and reaches whatever it likes.
-fn reaches_world(rows: Map<string, RtSig>, i: Ins) -> bool {
+/// A row a settlement may not run: one the registry marks World, an
+/// embed where the value is not spelled — or one it does not know,
+/// which is a program's own extern and reaches whatever it likes.
+fn reaches_out(rows: Map<string, RtSig>, i: Ins, spell: bool) -> bool {
     let h: string? = hosted_symbol(i)
     if h == null { return false }
     let row: RtSig? = rows.get(h!)
     if row == null { return true }
-    row!.reach is .World
+    match row!.reach {
+        .Pure -> false,
+        .Embed -> !spell,
+        .World -> true,
+    }
 }
 
 /// A settled value as the literal a use lowers.
@@ -305,6 +320,22 @@ impl Machine {
 
     fn at(r: Reg) -> Val? {
         self.frames.last()![r.index]
+    }
+
+    /// `embed`: the file beside the settlement's source, read whole —
+    /// and recorded, so the build knows what the const read.
+    fn embedded(rel: string) -> Val {
+        if self.base == null {
+            self.trapped("`embed` reads a file at compile time, into a const — this run reached it outside one")
+            return Val.S("")
+        }
+        let path = if rel.starts_with("/") { rel } else { joined_path(self.base!, rel) }
+        if avra_io_read(path) < 0 {
+            self.trapped("`embed` finds no `${rel}` beside the source")
+            return Val.S("")
+        }
+        self.embeds.push(path)
+        Val.S(avra_io_taken())
     }
 
     fn trapped(msg: string) {
@@ -646,6 +677,7 @@ impl Machine {
             .IoRemove -> Val.I(avra_io_remove(self.text_val(vals[0]))),
             .IoEnv -> Val.I(avra_io_env(self.text_val(vals[0]))),
             .IoTaken -> Val.S(avra_io_taken()),
+            .Embed -> self.embedded(self.text_val(vals[0])),
             .StrFromCodepoint -> Val.S(avra_str_from_codepoint(self.whole(vals[0]))),
             .Unhosted -> self.defect_val("a runtime callee the interpreter does not host: `${callee}`"),
         }

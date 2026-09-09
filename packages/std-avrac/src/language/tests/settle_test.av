@@ -9,7 +9,7 @@ use @std.avrac.features.{Unsettled}
 spec "language/settle — the evaluator settles a const" {
     given "a program's own entry" {
         then "prints, and printing reaches the world" {
-            match run_settle(ir_of("3 + 4"), 1000, true) {
+            match run_settle(ir_of("3 + 4"), 1000, true, "/") {
                 .Err(why) -> reaches(why, "avra_puts"),
                 .Ok(_) -> false,
             }
@@ -20,15 +20,24 @@ spec "language/settle — the evaluator settles a const" {
             let l = ir_of("fn f() -> int { 3 }\nf()")
             let f: Body = l.fns.first()!
             let worldly = f with { ins: [Ins.CallRtVoid("avra_io_write", [])].concat(f.ins) }
-            match run_settle(l with { fns: [worldly] }, 1000, true) {
+            match run_settle(l with { fns: [worldly] }, 1000, true, "/") {
                 .Err(why) -> reaches(why, "avra_io_write"),
+                .Ok(_) -> false,
+            }
+        }
+        then "an embed under a BOXED const is refused — the value is built at run time" {
+            let l = ir_of("fn f() -> int { 3 }\nf()")
+            let f: Body = l.fns.first()!
+            let embedding = f with { ins: [Ins.CallRtVoid("avra_embed", [])].concat(f.ins) }
+            match run_settle(l with { fns: [embedding] }, 1000, false, "/") {
+                .Err(why) -> reaches(why, "embeds a file"),
                 .Ok(_) -> false,
             }
         }
         then "a row the registry does not know is the program's own extern, and reaches the world" {
             let l = ir_of("3")
             let e: Body = l.entry
-            match run_settle(l with { entry: e with { ins: [Ins.CallRtVoid("sqlite3_open", [])].concat(e.ins) } }, 1000, true) {
+            match run_settle(l with { entry: e with { ins: [Ins.CallRtVoid("sqlite3_open", [])].concat(e.ins) } }, 1000, true, "/") {
                 .Err(why) -> reaches(why, "sqlite3_open"),
                 .Ok(_) -> false,
             }
