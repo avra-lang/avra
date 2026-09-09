@@ -1,7 +1,8 @@
 // `const` — the value the compiler settles. What is proved here:
-// the use IS the value (no slot, no load), the settled law refuses
-// what the compiler cannot compute, an annotation is held to, and a
-// const crosses into a fn body where a top-level `let` cannot.
+// the use IS the value (no slot, no load), the evaluator SETTLES a
+// computed value at compile time and refuses what traps, runs away
+// or reaches the world, an annotation is held to, and a const
+// crosses into a fn body where a top-level `let` cannot.
 use @std.avrac.testing.{shown, refused_with, refusals, ir_of}
 use @std.avrac.language.{render_ir}
 
@@ -34,17 +35,30 @@ spec "features/consts — a value the compiler settles" {
         then "a NEGATIVE LITERAL is settled — the parse folds it, so `-1` IS a literal" {
             shown("const N: int = -1\nN") == "-1"
         }
-        then "a negated NAME is not — that wants a general folder, which consts cannot write" {
-            refusals("const A: int = 1\nconst B: int = -A\nB") == 1
+        then "a negated NAME settles — the evaluator folds what the parse cannot" {
+            shown("const A: int = 1\nconst B: int = -A\nB") == "-1"
         }
         then "the smallest int stays refused at the lexer, which reads the positive literal first" {
             refused_with("const N: int = -9223372036854775808\nN", "does not fit an `int`")
         }
-        then "a call is not settled" {
-            refused_with("fn f() -> int {\n    3\n}\nconst N = f()\nN", "a const's value must be known at compile time")
+        then "a CALL settles: the evaluator runs it at compile time" {
+            shown("fn f() -> int {\n    3\n}\nconst N: int = f()\nN") == "3"
         }
-        then "a name is not settled either — not yet" {
-            refusals("const A = 1\nconst B = A\nB") == 1
+        then "a const of a const settles" {
+            shown("const A: int = 2 + 3\nconst B: int = A * A\nB") == "25"
+        }
+        then "the settled use is a CONSTANT — no call survives into the program" {
+            let text = render_ir(ir_of("fn f() -> int {\n    3\n}\nconst N: int = f()\nN + 1"))
+            !text.contains("call f") && text.contains("int 3")
+        }
+        then "a computed const DECLARES what it settles to" {
+            refused_with("fn f() -> int {\n    3\n}\nconst N = f()\nN", "declares what it settles to")
+        }
+        then "a trap while settling is refused at compile time" {
+            refused_with("fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nZ", "trapped while settling")
+        }
+        then "a runaway settlement is refused at its budget" {
+            refused_with("fn spin() -> int {\n    mut i = 0\n    while i >= 0 { i = i + 1 }\n    i\n}\nconst W: int = spin()\nW", "ran past its budget")
         }
     }
     given "an annotation" {

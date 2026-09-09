@@ -572,6 +572,19 @@ goldens, F-codes, `make gate` green, and its idiom entries.
 | **S5** | **`const` seats** | the seat mark in fn types; `Sub` widened by settled values; per-instantiation folding | `matches(const pattern, s)` compiles one unit per pattern; the regex body folds | 3 days |
 | later | static data for aggregates; JIT engine behind `run_call`; type operators (`Type -> Type`, needs aliases); typed sublanguage holes (`sql { }`); manifest read grants; parallel settlement; `@total` | | |
 
+S1 STATUS (lane/comptime, 2026-09-09): LANDED for scalars and text.
+`run_settle` (interp.av) + `Machine.budget`; `reach` column on
+`rt_sigs` (24 World rows); `settlement`/`lower_const` (lower.av);
+`Workspace.settled` memo + self-cycle guard; F2060 reach, F2061
+budget, F2062 trap, F2063 declares. ONE DEVIATION FROM §3.1: a
+computed const DECLARES its scalar type (`const F: int = fact(5)`),
+because a const's type is read from the store alone (contexts.av
+`settled_type`); inference is a sugar-backlog entry. Not yet: the
+`settled` FAMILY (the memo is a workspace map, per build), aggregate
+values (S2), `const` as an exportable module declaration, the reach
+refusal's full call chain (it names the row and the body), and the
+refusal pointing at the declaration (it points at the first use).
+
 Order rationale: S1 is what the owner already queued (ROADMAP:8218,
 "NEXT: comptime (`const`, evaluated at compile time)") and proves the
 engine seam with no namespace change. S3 before S4 because the

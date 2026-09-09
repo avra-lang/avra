@@ -6679,6 +6679,15 @@ additions get siblings, nothing changes shape:
 
 ## Sugar backlog — dogfooding asks
 
+- A COMPUTED CONST INFERS ITS TYPE. `const F: int = fact(5)` must
+  declare `int` (F2063): a const's type is read from every body, a
+  body's facts hold only its own range, so today the STORE answers
+  it — a literal's shape or the annotation's scalar word
+  (`settled_type`, features/contexts.av). The inference is a
+  workspace query over the entry's typed facts, keyed by the const's
+  StmtId; wanting site: every computed const in the tree. Landed
+  with comptime S1 (docs/2026_09_09_COMPTIME_DESIGN.md §6).
+
 - PROCESS-WIDE MUTABLE STATE — a package cannot own a handle table.
   MEASURED: `once fn slots() -> List<int> { [] }` then three pushes
   answers `1 1 1 | table now holds 0`, eval == native — every caller
