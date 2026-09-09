@@ -21,7 +21,7 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     if declared != null { cx.plant_want(v, declared!) }
     cx.walk_value(s)
     // a value or an annotation the walk already refused is spoken for
-    if cx.errored(v) || (declared != null && cx.view.types.shape_of(declared!) is .Error) { return }
+    if cx.errored(v) || refused_annotation(cx, declared) { return }
     if !written(cx.view.store.expr(v)) {
         if ann == null {
             undeclared(cx, v)
@@ -47,8 +47,14 @@ fn written(value: Expr) -> bool {
 /// literal is never absent.
 fn annotated_scalar(ann: TypeRef?) -> TypeRef? {
     if ann == null { return null }
-    if ann!.optional || !ann!.args.is_empty() || scalar_named(ann!.name) == null { return null }
+    let a = ann!
+    if a.optional || !a.args.is_empty() || scalar_named(a.name) == null { return null }
     ann
+}
+
+/// Whether the annotation's own walk already spoke.
+fn refused_annotation(cx: TypeCx, declared: TypeId?) -> bool {
+    declared != null && cx.view.types.shape_of(declared!) is .Error
 }
 
 // ── The voices ──

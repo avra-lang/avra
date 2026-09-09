@@ -106,17 +106,17 @@ impl LowerCx {
         match self.jobs.settle(self.view.file, s) {
             .Ok(x) -> self.settled_reg(e, x),
             .Err(why) -> {
-                self.unsettled(e, s, why)
+                self.unsettled(s, why)
                 self.zero_of(ty)
             },
         }
     }
 
-    /// The settled value as an instruction. A const holds a literal
-    /// today; the day the evaluator settles more, this is where the
-    /// folded value arrives. Minted in the LITERAL's own shape, then
-    /// lifted into what the use wears — the declaration emits
-    /// nothing, so an annotation's lift is re-emitted at every use.
+    /// The settled value as an instruction — a literal as written,
+    /// or the one the evaluator answered. Minted in the LITERAL's own
+    /// shape, then lifted into what the use wears — the declaration
+    /// emits nothing, so an annotation's lift is re-emitted at every
+    /// use.
     fn settled_reg(e: ExprId, value: Expr) -> Reg? {
         let raw: Reg? = self.constant_reg(value)
         if raw == null { return null }
@@ -333,10 +333,11 @@ fn is_literal(x: Expr) -> bool {
 
 impl LowerCx {
     /// The three laws a settlement can break, each in its own words.
-    fn unsettled(e: ExprId, s: StmtId, why: Unsettled) {
+    fn unsettled(s: StmtId, why: Unsettled) {
         let name = self.view.store.let_name(s) ?? "this const"
-        // AT THE DECLARATION'S VALUE, not the use that asked
-        let at = self.view.loc_of(self.view.store.stmt_value(s) ?? e)
+        // AT THE DECLARATION'S VALUE, not the use that asked — a const
+        // that reached here has one
+        let at = self.view.loc_of(self.view.store.const_value(s)!)
         let d = match why {
             .Reach(label) -> refusal("const.reach", at, "a const cannot read the world", "`${name}` ${label}", "a const settles at compile time from pure computation alone — read the world at run time, under `let`"),
             .Budget(label) -> refusal("const.budget", at, "a const ran past its budget", "`${name}` ${label}", "compute less here, or settle it at run time under `let`"),
