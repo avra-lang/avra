@@ -4,21 +4,25 @@
 //! worklist (a fresh value in its context, handed back with the
 //! body), so an enqueue is a write in place, never through a shared
 //! box; `seen` keys by mangled name, once per body.
-use core.{ExprId, TypeId, DeclId, FileId}
+use core.{ExprId, TypeId, DeclId, FileId, StmtId, Expr}
 
 /// One body WANTED — the unit of lowering: a declaration's body (or
 /// a file's main, when `decl` is absent), under concrete Vars when
 /// it is generic, named by its symbol or mangling, in its file.
-export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub? }
+export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, settles: StmtId? = null }
+
+/// Why a const did not SETTLE — three laws, each its own voice: the
+/// value reached the world, ran past its budget, or trapped.
+export enum Unsettled { Reach(string), Budget(string), Trap(string) }
 
 /// One body's worklist: the bodies it wants, the lambdas it lifted,
 /// the wrappers it minted, and the names it has already asked for.
-export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, externs: List<string> }
+export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Expr, Unsettled> }
 
 /// A fresh worklist over the program's extern symbols — what every
 /// body's emitter refuses an unknown callee against.
-export fn new_jobs(externs: List<string>) -> Jobs {
-    Jobs { pending: [], seen: {}, lifts: [], wraps: [], externs: externs }
+export fn new_jobs(externs: List<string>, settle: fn(FileId, StmtId) -> Result<Expr, Unsettled>) -> Jobs {
+    Jobs { pending: [], seen: {}, lifts: [], wraps: [], externs: externs, settle: settle }
 }
 
 /// A NAMED fn boxed as a value calls through a generated WRAPPER
