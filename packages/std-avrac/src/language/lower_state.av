@@ -2,7 +2,7 @@
 //! instruction order, slots and cells, bindings read, fn values and
 //! their wrappers, lambdas lifted, captures packed, callee symbols
 //! and the mono worklist's enqueue — the verbs the walk speaks.
-use core.{StmtId, ExprId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, int_of, text_of, bool_of}
+use core.{StmtId, ExprId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, int_of, text_of, bool_of, bits_of}
 use diagnostics.{loc_at, refusal}
 use features.{LowerCx, capture_lane, Sub, Cap, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled}
 use @std.errors.{Loc}
@@ -105,7 +105,10 @@ impl LowerCx {
         if is_literal(written) { return self.settled_reg(e, written) }
         match self.jobs.settle(self.view.file, s) {
             .Ok(x) -> self.settled_reg(e, x),
-            .Err(why) -> { self.unsettled(e, s, why); null },
+            .Err(why) -> {
+                self.unsettled(e, s, why)
+                null
+            },
         }
     }
 
@@ -135,9 +138,15 @@ impl LowerCx {
             return dst
         }
         let b: bool? = bool_of(value)
-        if b == null { return null }
-        let dst = self.shaped(Type.Bool)
-        self.out.give(Ins.ConstBool(dst, b!))
+        if b != null {
+            let dst = self.shaped(Type.Bool)
+            self.out.give(Ins.ConstBool(dst, b!))
+            return dst
+        }
+        let bits: int? = bits_of(value)
+        if bits == null { return null }
+        let dst = self.shaped(Type.Float)
+        self.out.give(Ins.ConstFloat(dst, bits!))
         dst
     }
 
