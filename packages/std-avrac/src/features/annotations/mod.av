@@ -1,0 +1,23 @@
+//! `@name(args)` before a declaration — a call the COMPILER makes
+//! over the declaration at compile time. The annotation is a fact of
+//! the declaration it crosses (the store's `annotations_of`), never a
+//! node of its own: its callee is an ident and its arguments are
+//! expressions, so every pass reads them as it reads any expression.
+use features.{LanguageFeature, BuilderRow}
+use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+
+export fn annotations() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name        | build
+        "annotated" | build_annotated
+    }
+    component LanguageFeature f {
+        name = "annotations"
+        docs = "`@name(args)` above a declaration — the compiler calls `name` over the declaration at compile time."
+        gram = grammar {
+            stmt = a:PKG ( "(" ( e:expression ( "," e:expression )* ","? )? ")" )? BREAK? d:stmt -> annotated(a, e, d)
+        }
+        builders = rows
+    }
+    f
+}

@@ -8,7 +8,7 @@
 //! pass: `let` visibility is sequential and a later `let` shadows an
 //! earlier one; `fn` names are program-wide, so recursion and mutual
 //! recursion are free. Inside a body, params bind innermost.
-use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore, LambdaParts}
+use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore, LambdaParts, Annotation}
 use diagnostics.{Diag, error_at, loc_at, pointed, refusal, Voices, no_voices}
 use features.modules.{module_laws}
 use features.{ResolveCx, Def, LFrame, Dispatch, self_word, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats, nothing, semantics_of, stmt_semantics_of, post_order}
@@ -58,7 +58,10 @@ impl ResolveCx {
     mut fn resolve_stmts(in_block: bool, stmts: List<StmtId>) {
         let was = self.in_block
         self.in_block = in_block
-        for s in stmts { stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).resolve_stmt(self, s) }
+        for s in stmts {
+            stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).resolve_stmt(self, s)
+            for a in self.view.store.annotations_of(s) { self.walk_annotation(a) }
+        }
         self.in_block = was
     }
 
@@ -136,6 +139,12 @@ impl ResolveCx {
     }
 
     /// One subtree's resolution, children before owners.
+    /// An annotation's callee and arguments resolve as expressions do.
+    mut fn walk_annotation(a: Annotation) {
+        self.walk(a.callee)
+        for e in a.args { self.walk(e) }
+    }
+
     mut fn walk(root: ExprId) {
         for e in post_order(self.dispatch, self.view.store, root) { semantics_of(self.dispatch, self.view.store.expr(e)).resolve(self, e) }
     }
