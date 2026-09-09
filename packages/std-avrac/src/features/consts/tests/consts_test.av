@@ -3,7 +3,7 @@
 // computed value at compile time and refuses what traps, runs away
 // or reaches the world, an annotation is held to, and a const
 // crosses into a fn body where a top-level `let` cannot.
-use @std.avrac.testing.{shown, refused_with, refusals, ir_of}
+use @std.avrac.testing.{shown, refused_with, refused_at_run, refusals, ir_of}
 use @std.avrac.language.{render_ir}
 
 spec "features/consts — a value the compiler settles" {
@@ -54,11 +54,11 @@ spec "features/consts — a value the compiler settles" {
         then "a computed const DECLARES what it settles to" {
             refused_with("fn f() -> int {\n    3\n}\nconst N = f()\nN", "declares what it settles to")
         }
-        then "a trap while settling is refused at compile time" {
-            refused_with("fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nZ", "trapped while settling")
+        then "a trap while settling is refused when the const is LOWERED — analysis is clean" {
+            refused_at_run("fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nZ", "trapped while settling")
         }
         then "a runaway settlement is refused at its budget" {
-            refused_with("fn spin() -> int {\n    mut i = 0\n    while i >= 0 { i = i + 1 }\n    i\n}\nconst W: int = spin()\nW", "ran past its budget")
+            refused_at_run("fn spin() -> int {\n    mut i = 0\n    while i >= 0 { i = i + 1 }\n    i\n}\nconst W: int = spin()\nW", "ran past its budget")
         }
     }
     given "an annotation" {
