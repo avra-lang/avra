@@ -3,8 +3,8 @@
 //! their wrappers, lambdas lifted, captures packed, callee symbols
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, int_of, text_of, bool_of}
-use diagnostics.{loc_at}
-use features.{LowerCx, capture_lane, Sub, Cap, viewed, def_type_of, Wanted, Lift, Wrap}
+use diagnostics.{loc_at, refusal}
+use features.{LowerCx, capture_lane, Sub, Cap, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -95,12 +95,18 @@ impl LowerCx {
     }
 
     /// A DEFINITION read: a const IS its value, so the READ emits
-    /// that value — a constant the compiler settled, minted in THIS
-    /// body. Every other binding reads the slot it was bound to.
+    /// that value — a literal as written, else what the evaluator
+    /// SETTLED — minted in THIS body. Every other binding reads the
+    /// slot it was bound to.
     fn defined_reg(e: ExprId, s: StmtId, ty: TypeId) -> Reg? {
         let value: ExprId? = self.view.store.const_value(s)
         if value == null { return self.slot_reg(s, ty) }
-        self.settled_reg(e, self.view.store.expr(value!))
+        let written: Expr = self.view.store.expr(value!)
+        if is_literal(written) { return self.settled_reg(e, written) }
+        match self.jobs.settle(self.view.file, s) {
+            .Ok(x) -> self.settled_reg(e, x),
+            .Err(why) -> { self.unsettled(e, s, why); null },
+        }
     }
 
     /// The settled value as an instruction. A const holds a literal
@@ -294,4 +300,28 @@ impl LowerCx {
 /// env box a lifted lambda's captures ride in.
 fn first_seat() -> Reg {
     Reg { index: 0 }
+}
+
+/// A value read straight off the page.
+fn is_literal(x: Expr) -> bool {
+    match x {
+        .IntLit(_) or .StrLit(_) or .BoolLit(_) or .FloatLit(_) -> true,
+        _ -> false,
+    }
+}
+
+// ── The voices ──
+
+impl LowerCx {
+    /// The three laws a settlement can break, each in its own words.
+    fn unsettled(e: ExprId, s: StmtId, why: Unsettled) {
+        let name = self.view.store.let_name(s) ?? "this const"
+        let at = self.view.loc_of(e)
+        let d = match why {
+            .Reach(label) -> refusal("const.reach", at, "a const cannot read the world", "`${name}` ${label}", "a const settles at compile time from pure computation alone — read the world at run time, under `let`"),
+            .Budget(label) -> refusal("const.budget", at, "a const ran past its budget", "`${name}` ${label}", "compute less here, or settle it at run time under `let`"),
+            .Trap(words) -> refusal("const.trap", at, "a const trapped while settling", "`${name}` ${words}", "the initializer runs at compile time, so what traps there is refused here"),
+        }
+        self.out.voices.speak(d)
+    }
 }

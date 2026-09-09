@@ -10,7 +10,8 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, filled, joined, rt_index}
+use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, filled, joined, rt_index, hosted_symbol, Expr}
+use features.{Unsettled}
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -49,11 +50,13 @@ type Machine = {
     onces: Map<string, Val>,
     out: List<string>,
     failures: List<string>,
+    // instructions this run may still execute; below zero it traps
+    budget: int,
 }
 
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, out: [], failures: [] }
+    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, out: [], failures: [], budget: unbudgeted() }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -112,6 +115,62 @@ fn truth_of(symbol: string, v: Val) -> Result<bool, string> {
     }
 }
 
+/// A run nobody budgets: a program runs to its end.
+fn unbudgeted() -> int { 1000000000000000 }
+
+/// A const's initializer run to its value: the entry under no
+/// arguments, its answer spelled as the literal a use lowers. Refused
+/// BEFORE running when any body reaches the world, DURING it when the
+/// budget runs out or a body traps, and AFTER it when the value has
+/// no literal spelling yet.
+export fn run_settle(l: Lowered, steps: int) -> Result<Expr, Unsettled> {
+    let world: string? = world_reached(l)
+    if world != null { return .Err(Unsettled.Reach(world!)) }
+    mut m = fresh_machine(l)
+    m.budget = steps
+    let answer: Val? = m.run_body(l.entry, [])
+    if m.budget < 0 { return .Err(Unsettled.Budget("took more than ${steps} steps")) }
+    if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
+    literal_of(answer)
+}
+
+/// The first row a settlement reaches that touches the world, with
+/// the body it sits in — or null when every row is pure.
+fn world_reached(l: Lowered) -> string? {
+    let rows = rt_index()
+    let hit: Body? = l.fns.concat([l.entry]).find((b: Body) -> world_in(rows, b) != null)
+    if hit == null { return null }
+    world_in(rows, hit!)
+}
+
+fn world_in(rows: Map<string, RtSig>, b: Body) -> string? {
+    let hit: Ins? = b.ins.find((i: Ins) -> reaches_world(rows, i))
+    if hit == null { return null }
+    "reaches `${hosted_symbol(hit!) ?? ""}` in `${b.name}`"
+}
+
+/// A row the registry marks World — or one it does not know, which
+/// is a program's own extern and reaches whatever it likes.
+fn reaches_world(rows: Map<string, RtSig>, i: Ins) -> bool {
+    let h: string? = hosted_symbol(i)
+    if h == null { return false }
+    let row: RtSig? = rows.get(h!)
+    if row == null { return true }
+    row!.reach is .World
+}
+
+/// A settled value as the literal a use lowers.
+fn literal_of(v: Val?) -> Result<Expr, Unsettled> {
+    if v == null { return .Err(Unsettled.Trap("answered nothing")) }
+    match v! {
+        .I(n) -> .Ok(Expr.IntLit(n)),
+        .B(b) -> .Ok(Expr.BoolLit(b)),
+        .S(s) -> .Ok(Expr.StrLit(s)),
+        .F(bits) -> .Ok(Expr.FloatLit(bits)),
+        .A(_) or .C(_) or .M(_) or .N -> .Err(Unsettled.Trap("settles to a list, a record or a map — only a scalar or text is spelled today")),
+    }
+}
+
 /// The deepest call the machine runs before it refuses: the machine
 /// recurses on the host's stack, and a runaway recursion must answer
 /// as a trap naming its case, never as a crash of the run. The bound
@@ -136,8 +195,10 @@ impl Machine {
         mut answer: Val? = null
         mut pc = 0
         while pc < b.ins.length && self.failures.is_empty() {
+            self.budget = self.budget - 1
+            if self.budget < 0 { self.trapped("ran past its budget") }
             // everything else DELEGATES to `step`, which is exhaustive
-            match b.ins[pc] {
+            else { match b.ins[pc] {
                 .RetVal(r) -> {
                     answer = self.at(r)
                     pc = b.ins.length
@@ -152,7 +213,7 @@ impl Machine {
                 rest -> {
                     pc = self.step(b, pc)
                 }
-            }
+            } }
         }
         let _ = self.frames.pop()
         answer

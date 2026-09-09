@@ -14,9 +14,9 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts}
+use core.{Table, new_table, Expr, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted}
+use features.{Unsettled, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -94,6 +94,10 @@ export type Workspace = {
     closed: bool,
     clock: fn() -> int,
     phases: List<Phase>,
+    // consts settled this workspace, by their unit name; and the ones
+    // settling now, so a const asking for itself is refused
+    settles: Map<string, Expr>,
+    settling: Map<string, bool>,
 }
 
 /// One package of the workspace: its key (the manifest's name; ""
@@ -201,7 +205,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         decl_facts: new_table(), method_clashes: new_table(), folds: new_table(),
         analyses: new_table(), units: new_table(), specs: {}, asks: [], defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
-        clock: clock, phases: [],
+        clock: clock, phases: [], settles: {}, settling: {},
     }
     for f in families() {
         if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
@@ -609,10 +613,31 @@ impl Workspace {
         if self.db.ask(k) is .Reuse { return self.units.at(id)! }
         self.db.begin(k)
         let w = self.asks[id]
-        let out = lower_unit(self.analysis(w.file), self.extern_symbols(), w)
+        let ws = self
+        let settle: fn(FileId, StmtId) -> Result<Expr, Unsettled> = (f: FileId, s: StmtId) -> ws.settled(f, s)
+        let out = lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle)
         self.db.settle(k, self.db.revision())
         self.units.keep(id, out)
         out
+    }
+
+    /// A const's value, settled ONCE per workspace: its initializer
+    /// lowered as a program of its own — the units it reaches are the
+    /// program's, memoized — then run in the evaluator. A const whose
+    /// value asks for itself is refused as the cycle it is.
+    fn settled(f: FileId, s: StmtId) -> Result<Expr, Unsettled> {
+        let name = "const$${f.index}$${s.index}"
+        let held: Expr? = self.settles.get(name)
+        if held != null { return .Ok(held!) }
+        if self.settling.get(name) != null { return .Err(Unsettled.Trap("asks for its own value while settling")) }
+        self.settling.set(name, true)
+        let ws = self
+        let l = memory(self.decls.settlement(Wanted { file: f, decl: null, name: name, sub: null, settles: s }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
+        if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
+        match run_settle(l, settle_steps()) {
+            .Ok(x) -> { self.settles.set(name, x); .Ok(x) },
+            .Err(why) -> .Err(why),
+        }
     }
 
     // ── Modules ──
@@ -1306,3 +1331,6 @@ fn listed_twice(at: Loc?, item: string) -> Diag {
 fn unpackaged_use(at: Loc?) -> Diag {
     refusal("resolve.unpackaged", at, "this file is not in a package — `use` needs a root", "this use", "put an `avra.toml` at the package root, with this file under its `src/` — modules are named from there")
 }
+
+/// The instructions one settlement may run before it is refused.
+fn settle_steps() -> int { 10000000 }

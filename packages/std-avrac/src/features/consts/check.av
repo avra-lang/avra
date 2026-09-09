@@ -1,13 +1,12 @@
 //! THE SETTLED LAW: a const's value is known when the COMPILER
-//! runs, so what may stand there is what the compiler can settle —
-//! today a literal, tomorrow anything the evaluator finishes. And
-//! an annotated const holds what it declares, like any binding.
+//! runs — a literal as written, or what the evaluator finishes; the
+//! lowering asks it and speaks its refusals. And an annotated const
+//! holds what it declares, like any binding.
 use core.{StmtId, ExprId, TypeId, TypeRef}
 use features.{TypeCx}
-use diagnostics.{refusal}
 
-/// The value walks under its declaration's want, then two laws: it
-/// SETTLES, and — when annotated — it holds what it declares.
+/// The value walks under its declaration's want, then — when
+/// annotated — it holds what it declares.
 export fn check_const(mut cx: TypeCx, s: StmtId) {
     let held: ExprId? = cx.view.store.stmt_value(s)
     if held == null { return }
@@ -20,34 +19,7 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     let declared: TypeId? = if ann == null { null } else { cx.bind_declared(s, ann!) }
     if declared != null { cx.plant_want(v, declared!) }
     cx.walk_value(s)
-    if !settles(cx, v) { return }
     if cx.refuses_void_value(v) { return }
     if declared == null { return }
     cx.declared_binding(v, cx.view.store.let_name(s) ?? "this const", declared!)
-}
-
-/// Whether the compiler can settle this value TODAY. A literal it
-/// can; everything else waits for the evaluator to run at compile
-/// time, and says so rather than pretending.
-fn settles(mut cx: TypeCx, v: ExprId) -> bool {
-    if literal(cx, v) { return true }
-    unsettled(cx, v)
-    false
-}
-
-/// A value the compiler reads straight off the page.
-fn literal(cx: TypeCx, v: ExprId) -> bool {
-    match cx.view.store.expr(v) {
-        .IntLit(_) or .StrLit(_) or .BoolLit(_) -> true,
-        _ -> false,
-    }
-}
-
-// ── The voices ──
-
-fn unsettled(mut cx: TypeCx, v: ExprId) {
-    let _ = cx.spoken(refusal("type.const", cx.loc_of(v),
-                       "a const's value must be known at compile time",
-                       "computed here",
-                       "today that means a literal — `let` holds what the program computes"))
 }
