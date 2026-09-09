@@ -6679,6 +6679,15 @@ additions get siblings, nothing changes shape:
 
 ## Sugar backlog — dogfooding asks
 
+- EMBED OUTSIDE A CONST IS A RUN-TIME TRAP TODAY, not a compile-time
+  refusal: `let t = embed("x")` at the top level compiles and traps
+  when it runs (both engines, the same words). The static law is a
+  lowering check — a `Reach.Embed` row reached by a body that is not
+  a settlement unit — and it needs the emitter to know it is inside
+  one (`Jobs` would carry `settling`). RECORDED TRIGGER: fires when
+  the `settled` family lands (docs/2026_09_09_COMPTIME_DESIGN.md §4.2),
+  whose unit ids name the settlements. Probed 2026-09-09 on
+  lane/comptime.
 - A COMPUTED CONST INFERS ITS TYPE. `const F: int = fact(5)` must
   declare `int` (F2063): a const's type is read from every body, a
   body's facts hold only its own range, so today the STORE answers

@@ -123,6 +123,27 @@ spec "features/consts (adversarial)" {
             shown("type P = { x: int }\nfn p() -> P { P { x: 1 } }\nconst X: int = p().x\nX") == "1"
         }
     }
+    // red team, comptime S2: a boxed const is one box, called for
+    given "boxed consts" {
+        then "a push on a const is refused as on any `let`" {
+            refused_with("fn xs() -> List<int> {\n    [1]\n}\nconst XS: List<int> = xs()\nXS.push(4)\nXS.length", "is not `mut`")
+        }
+        then "so is a map's set" {
+            refused_with("fn m() -> Map<string, int> {\n    mut d: Map<string, int> = {}\n    d\n}\nconst M: Map<string, int> = m()\nM.set(\"k\", 1)\nM.length", "is not `mut`")
+        }
+        then "and a `mut` seat" {
+            refused_with("fn xs() -> List<int> {\n    [1]\n}\nconst XS: List<int> = xs()\nfn bump(mut ys: List<int>) -> int {\n    ys.push(9)\n    ys.length\n}\nbump(XS)", "writes through it")
+        }
+        then "an empty list settles as empty" {
+            shown("fn e() -> List<int> {\n    []\n}\nconst E: List<int> = e()\nE.length") == "0"
+        }
+        then "a boxed const of a boxed const settles" {
+            shown("fn xs() -> List<int> {\n    [1, 2, 3]\n}\nconst XS: List<int> = xs()\nfn more() -> List<int> {\n    XS.concat([4])\n}\nconst YS: List<int> = more()\nXS.length + YS.length") == "7"
+        }
+        then "a lambda reads one" {
+            shown("fn xs() -> List<int> {\n    [1, 2, 3]\n}\nconst XS: List<int> = xs()\nlet f = () -> XS.length\nf()") == "3"
+        }
+    }
     given "cascades" {
         then "a value the walk refused earns no second refusal" {
             refusals("const X =\nX") == 1

@@ -585,8 +585,15 @@ values (S2), `const` as an exportable module declaration, the reach
 refusal's full call chain (it names the row and the body), and the
 refusal pointing at the declaration (it points at the first use).
 
-S2 STATUS (lane/comptime, 2026-09-09): the AGGREGATE half LANDED, the
-`embed` half NOT YET. A const whose value rides a pointer (a list, a
+S2 STATUS (lane/comptime, 2026-09-09): LANDED, both halves. `embed`
+is `@std/meta`'s one verb over the `avra_embed` row (reach `Embed`):
+the interpreter reads beside the const's source and records the file
+(`Settled.embeds`, unused until the family), natively it traps. It is
+allowed only where the value is SPELLED (a text const): a boxed const
+is built at run time, where no source sits beside the program, and
+the refusal says so. Outside a const it is a run-time trap (ROADMAP
+trigger). Red-teamed: 27 aggregate programs and 11 embed programs,
+no divergence; mutation of a const refuses as on a `let`. A const whose value rides a pointer (a list, a
 map, text/list/map under `?`) is settled by the evaluator for the
 laws and then CALLED by the program: its unit is `once`-shaped
 (`lower_const` → `once_body`), answering the value once per process
