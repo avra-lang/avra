@@ -1,5 +1,5 @@
-//! `@std/meta` — the verbs a program speaks TO THE COMPILER. Each
-//! runs at compile time, inside a `const`, and nowhere else.
+//! `@std/meta` — what a program says TO THE COMPILER, and what the
+//! compiler hands back. Every verb here runs at compile time.
 //!
 //!     use @std.meta.{embed}
 //!     const SCHEMA: string = embed("schema.sql")
@@ -8,8 +8,55 @@
 //! declares the const, and the build records the file as an input.
 //! A program reaching `embed` at run time traps: the file sits beside
 //! the SOURCE, and a running program has none.
+//!
+//!     use @std.meta.{Fn, Diagnostic, refuse}
+//!     export fn short(f: Fn) -> List<Diagnostic> {
+//!         if f.params.length <= 3 { [] } else { [refuse("`${f.name}` takes ${f.params.length} seats — three is the most")] }
+//!     }
+//!
+//! An ANNOTATION `@short` above a fn calls `short` over that fn at
+//! compile time: the fn's first seat says what it takes (`Fn`, or
+//! `Type` for a record or enum), and what it answers is its effect —
+//! `List<Diagnostic>` validates, `void` records only.
+
+use @std.errors.{Loc}
 
 extern fn avra_embed(path: string) -> string
+
+/// A fn's parameter as an annotation sees it: its name, its type's
+/// spelling, and whether it is a `mut` seat.
+export type Param = { name: string, ty: string, mutable: bool }
+
+/// A fn declaration as an annotation's first seat receives it. Types
+/// are SPELLED here — the words the program wrote, resolved — until
+/// a type value of its own arrives.
+export type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }
+
+/// A record's field: its name and its type's spelling.
+export type Field = { name: string, ty: string }
+
+/// An enum's variant: its name and its payload's spellings.
+export type Variant = { name: string, payload: List<string> }
+
+/// A type declaration as an annotation's first seat receives it: a
+/// record has fields, an enum has variants.
+export type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }
+
+/// What an annotation says back about a declaration. A fn answering
+/// `List<Diagnostic>` VALIDATES: an empty list passes, and each
+/// diagnostic is spoken at the place it names — the declaration
+/// when it names none.
+export type Diagnostic = { message: string, help: string?, at: Loc? }
+
+/// A refusal at the declaration itself.
+export fn refuse(message: string) -> Diagnostic {
+    Diagnostic { message: message, help: null, at: null }
+}
+
+/// A refusal at a place — a field's, a parameter's — with its remedy.
+export fn refuse_at(at: Loc?, message: string, help: string?) -> Diagnostic {
+    Diagnostic { message: message, help: help, at: at }
+}
 
 /// A file's text, read at compile time beside the source. Into a
 /// `string` const only — a boxed const is built at run time, where
