@@ -263,7 +263,7 @@ impl TypeCx {
     /// FLATTENS: `a?.b` over a nullable member answers ONE absence.
     mut fn nullable_over(ty: TypeId) -> TypeId {
         if self.view.types.carried(ty) != null { return ty }
-        self.view.types.intern(Type.Opt(ty))
+        self.type(ty?)
     }
 
     /// THE member law: what a type answers to a property name — a
@@ -470,7 +470,16 @@ impl TypeCx {
     mut fn wrong_argument(callee: string, j: int, want: TypeId, a: ExprId) {
         let n = self.name_at(a)
         if self.view.store.is_trailing(a) { return self.block_misseated(callee, j, want, n, a) }
+        if self.view.store.is_hole(a) { return self.hole_misseated(n, a) }
         self.emit(refusal("type.mismatch", self.loc_of(a), "argument ${j + 1} of `${callee}` wants `${self.view.types.name_of(want)}`, found `${n}`", this_is(n), null))
+    }
+
+    /// A type literal's HOLE holding the wrong thing — the argument
+    /// refusal in the literal's words: a hole names a binding holding an id.
+    mut fn hole_misseated(n: string, a: ExprId) {
+        // a hole IS a name: the mark is set on the identifier alone
+        let name = self.view.store.ident_name(a)!
+        self.emit(refusal("type.mismatch", self.loc_of(a), "`${name}` is a type literal's hole — it names an id, and this `${name}` holds `${n}`", "named here", "spell the shape (`int?`, `List<T>`), or name a binding that holds an id"))
     }
 
     /// A trailing block at a seat that does not take it — the argument

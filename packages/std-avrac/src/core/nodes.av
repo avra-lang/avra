@@ -519,13 +519,17 @@ export type NodeStore = {
     pat_fingerprints: List<int>,
     // a lambda written as a TRAILING BLOCK (`f(a) { x -> … }`)
     trailing: List<bool>,
+    // a call written as a TYPE LITERAL (`v.type(T)`), and a NAME
+    // written inside one — a hole
+    type_lits: List<bool>,
+    holes: List<bool>,
 }
 
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
         stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], statics: [],
-        pats: [], pat_spans: [], pat_fingerprints: [], trailing: [],
+        pats: [], pat_spans: [], pat_fingerprints: [], trailing: [], type_lits: [], holes: [],
     }
 }
 
@@ -534,6 +538,8 @@ impl NodeStore {
     fn alloc_expr(e: Expr, span: Span?) -> ExprId {
         self.expr_fingerprints.push(self.fingerprint_expr(e))
         self.trailing.push(false)
+        self.type_lits.push(false)
+        self.holes.push(false)
         ExprId { index: self.exprs.add(e, span) }
     }
 
@@ -546,6 +552,28 @@ impl NodeStore {
 
     fn is_trailing(e: ExprId) -> bool {
         self.trailing[e.index]
+    }
+
+    /// A call written as a TYPE LITERAL — the mark is part of the
+    /// node: a receiver that cannot answer refuses in the literal's words.
+    fn mark_type_lit(e: ExprId) {
+        self.type_lits.set(e.index, true)
+        self.expr_fingerprints.set(e.index, fp(112, [self.expr_fingerprints[e.index]]))
+    }
+
+    fn is_type_lit(e: ExprId) -> bool {
+        self.type_lits[e.index]
+    }
+
+    /// A name written inside a type literal — a HOLE, the id it
+    /// names: a binding of the wrong type refuses as a hole.
+    fn mark_hole(e: ExprId) {
+        self.holes.set(e.index, true)
+        self.expr_fingerprints.set(e.index, fp(113, [self.expr_fingerprints[e.index]]))
+    }
+
+    fn is_hole(e: ExprId) -> bool {
+        self.holes[e.index]
     }
 
     /// THE CALL PROTOCOL: the node with `blocks` appended to its

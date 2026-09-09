@@ -84,27 +84,27 @@ export fn program_entry(types: TypeRegistry, programs: List<ProgramCall>) -> Bod
 fn one_program(mut e: EntryBuild, pr: ProgramCall, tally: Reg) {
     e.give(Ins.CallRtVoid("avra_case_begin", [e.text(pr.label)]))
     e.give(Ins.CallRtVoid("avra_capture_begin", []))
-    let answered = e.mint(e.types.intern(Type.Int))
+    let answered = e.mint(e.types.type(int))
     e.give(Ins.Call(answered, pr.symbol, []))
-    let got = e.mint(e.types.intern(Type.Str))
+    let got = e.mint(e.types.type(string))
     e.give(Ins.CallRt(got, "avra_capture_end", []))
     // THE MINT LAW: operands first, the answer last
     let wanted = e.text(pr.expected)
-    let same = e.mint(e.types.intern(Type.Bool))
+    let same = e.mint(e.types.type(bool))
     e.give(Ins.CallRt(same, "avra_streq", [got, wanted]))
     e.give(Ins.IfStart(same))
     e.say("${pr.label}: ${legs_of(pr)} == expected")
     e.give(Ins.ArmEnd(e.constant(0)))
     e.say("${pr.label}: native != expected")
     e.give(Ins.CallRtVoid("avra_puts", [got]))
-    let held = e.mint(e.types.intern(Type.Int))
+    let held = e.mint(e.types.type(int))
     e.give(Ins.Load(held, tally))
     let one = e.constant(1)
-    let more = e.mint(e.types.intern(Type.Int))
+    let more = e.mint(e.types.type(int))
     e.give(Ins.Bin(more, BinOp.Add, held, one))
     e.give(Ins.Store(tally, more))
     let gives = e.constant(0)
-    let merged = e.mint(e.types.intern(Type.Int))
+    let merged = e.mint(e.types.type(int))
     e.give(Ins.RegionEnd(merged, gives))
 }
 
@@ -132,12 +132,12 @@ export fn cases_entry(types: TypeRegistry, cases: List<CaseCall>) -> Body {
 fn tally_line(mut e: EntryBuild, total: int, failed: Reg) {
     // THE MINT LAW: every operand minted before the answer that reads it
     let count = e.constant(total)
-    let passed = e.mint(e.types.intern(Type.Int))
+    let passed = e.mint(e.types.type(int))
     e.give(Ins.Bin(passed, BinOp.Sub, count, failed))
-    let text = e.mint(e.types.intern(Type.Str))
+    let text = e.mint(e.types.type(string))
     e.give(Ins.CallRt(text, "avra_int_text", [passed]))
     let tail = e.text("/${total} tests passed")
-    let line = e.mint(e.types.intern(Type.Str))
+    let line = e.mint(e.types.type(string))
     e.give(Ins.CallRt(line, "avra_str_concat", [text, tail]))
     e.give(Ins.CallRtVoid("avra_puts", [line]))
 }
@@ -145,21 +145,21 @@ fn tally_line(mut e: EntryBuild, total: int, failed: Reg) {
 /// One case: called, judged, and counted when it fails.
 fn one_case(mut e: EntryBuild, c: CaseCall, tally: Reg) {
     e.give(Ins.CallRtVoid("avra_case_begin", [e.text(c.label)]))
-    let ok = e.mint(e.types.intern(Type.Bool))
+    let ok = e.mint(e.types.type(bool))
     e.give(Ins.Call(ok, c.symbol, []))
     e.give(Ins.IfStart(ok))
     e.give(Ins.ArmEnd(e.constant(0)))
     // only a FAILURE speaks — a green case is the tally's business
     e.say("    ✗ ${c.label}")
-    let held = e.mint(e.types.intern(Type.Int))
+    let held = e.mint(e.types.type(int))
     e.give(Ins.Load(held, tally))
     // THE MINT LAW: operands first, the answer last
     let one = e.constant(1)
-    let more = e.mint(e.types.intern(Type.Int))
+    let more = e.mint(e.types.type(int))
     e.give(Ins.Bin(more, BinOp.Add, held, one))
     e.give(Ins.Store(tally, more))
     let gives = e.constant(0)
-    let merged = e.mint(e.types.intern(Type.Int))
+    let merged = e.mint(e.types.type(int))
     e.give(Ins.RegionEnd(merged, gives))
 }
 
@@ -185,14 +185,14 @@ impl EntryBuild {
 
     /// An int constant in a fresh register.
     fn constant(v: int) -> Reg {
-        let r = self.mint(self.types.intern(Type.Int))
+        let r = self.mint(self.types.type(int))
         self.give(Ins.ConstInt(r, v))
         r
     }
 
     /// A string literal in a fresh register.
     fn text(s: string) -> Reg {
-        let r = self.mint(self.types.intern(Type.Str))
+        let r = self.mint(self.types.type(string))
         self.give(Ins.ConstStr(r, s))
         r
     }
@@ -207,7 +207,7 @@ impl EntryBuild {
 
     /// A cell counting failures, seeded at zero.
     fn counter() -> Reg {
-        let tally = self.mint(self.types.intern(Type.Int))
+        let tally = self.mint(self.types.type(int))
         self.give(Ins.Alloca(tally))
         self.give(Ins.Store(tally, self.constant(0)))
         tally
@@ -215,7 +215,7 @@ impl EntryBuild {
 
     /// The failures counted so far.
     fn failures(tally: Reg) -> Reg {
-        let failed = self.mint(self.types.intern(Type.Int))
+        let failed = self.mint(self.types.type(int))
         self.give(Ins.Load(failed, tally))
         failed
     }
@@ -230,7 +230,7 @@ impl EntryBuild {
         self.give(Ins.ArmEnd(self.constant(0)))
         self.give(Ins.CallRtVoid("avra_process_exit", [self.constant(1)]))
         let gives = self.constant(0)
-        let merged = self.mint(self.types.intern(Type.Int))
+        let merged = self.mint(self.types.type(int))
         self.give(Ins.RegionEnd(merged, gives))
         self.give(Ins.ScopeExit(null))
         self.give(Ins.Ret(0))
@@ -239,13 +239,13 @@ impl EntryBuild {
     /// Whether the tally is zero — the suite's verdict.
     fn zero_test(failed: Reg) -> Reg {
         let zero = self.constant(0)
-        let same = self.mint(self.types.intern(Type.Bool))
+        let same = self.mint(self.types.type(bool))
         self.give(Ins.Bin(same, BinOp.Eq, failed, zero))
         same
     }
 
     fn built() -> Body {
-        Body { name: "main", params: [], ret: self.types.intern(Type.Int),
+        Body { name: "main", params: [], ret: self.types.type(int),
                gives: null, ins: self.ins, reg_types: self.tys }
     }
 }

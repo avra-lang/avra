@@ -1,0 +1,44 @@
+// proves: a type literal folds to its receiver's `interned`, on both engines — the words, `?`, the three constructors, fn seats with their marks, a hole, and the answer chaining like any postfix
+enum Spelling {
+    Int
+    Float
+    Bool
+    Str
+    Ptr
+    Void
+    Opt(inner: Spelling)
+    List(elem: Spelling)
+    Map(key: Spelling, value: Spelling)
+    Res(ok: Spelling, err: Spelling)
+    Fn(params: List<Spelling>, muts: List<bool>, ret: Spelling)
+    Id(id: int)
+}
+type Names = { held: List<string> }
+impl Names {
+    fn interned(t: Spelling) -> string {
+        match t {
+            .Int -> "int",
+            .Float -> "float",
+            .Bool -> "bool",
+            .Str -> "string",
+            .Ptr -> "ptr",
+            .Void -> "void",
+            .Opt(inner) -> "${self.interned(inner)}?",
+            .List(elem) -> "List<${self.interned(elem)}>",
+            .Map(k, v) -> "Map<${self.interned(k)}, ${self.interned(v)}>",
+            .Res(ok, err) -> "Result<${self.interned(ok)}, ${self.interned(err)}>",
+            .Fn(ps, muts, ret) -> "fn(${[self.seat(p, muts[j]) for j, p in ps].join(", ")}) -> ${self.interned(ret)}",
+            .Id(id) -> self.held[id],
+        }
+    }
+    fn seat(p: Spelling, written: bool) -> string {
+        if written { "mut ${self.interned(p)}" } else { self.interned(p) }
+    }
+}
+fn seat_of(x: Names, i: int) -> string { x.type(List<i>) }
+let n = Names { held: ["Cx", "Row"] }
+let cx = 0
+let row = 1
+let some: Names? = n
+let none: Names? = null
+"${n.type(int)} ${n.type(string?)} ${n.type(List<string?>)} ${n.type(Map<string, bool>)} ${n.type(Result<int, ptr>)} ${n.type(fn(int, mut float) -> void)} ${n.type(fn() -> row)} ${n.type(List<cx>)} ${n.type(Result<cx, row>?)} ${n.type(int).length} ${seat_of(n, 1)} ${some?.type(int) ?? "-"} ${none?.type(int) ?? "-"}"

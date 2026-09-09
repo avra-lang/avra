@@ -606,6 +606,19 @@ reintroducing I3's blind spot names the two spellings it lost.
       `self.rides(it)`. And a `..` before a name is not a field's
       dot: a rewrite that refused `.name` refused `0..name` too,
       and one site read `decls` as undefined.
+- I40 (ratcheted) A STRUCTURAL TYPE INTERNED BY HAND —
+      `cx.view.types.intern(Type.Opt(cx.view.types.intern(Type.Str)))`,
+      the type rebuilt inside out, one `intern` per level. The
+      TYPE LITERAL spells it as a program does: `cx.type(string?)`,
+      `cx.type(Map<string, want>)`, `types.type(fn(int) -> bool)`.
+      Landed as sugar 2 (docs/2026_09_09_SUGAR_2_TYPE_LITERALS.md):
+      87 sites in one scripted sweep. THE REACH is every file but
+      core/types.av, whose `interned` IS the fold. NOT the smell: a
+      shape the literal cannot spell — a declared type (`Enum`,
+      `Struct`, `App`, `Var`, `Dyn`, `TypeName`), `Error`, `Null`,
+      the empty literals' own types — and a part that is an
+      EXPRESSION rather than a name (`Type.Opt(seat!.elem)`): a hole
+      is a NAME, so those four sites bind a name first or stay.
 
 ## Lowering: MINT IN EMISSION ORDER
 

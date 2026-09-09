@@ -38,6 +38,24 @@ SKIP = ("spec_test",)
 # lines — the old single-line greps caught the rare shape and
 # reported success. ──
 
+# I40: a shape a TYPE LITERAL spells — a word, or Opt/List/Map/Res
+# over words and plain names — interned by hand. The fold that gives
+# the literal its meaning (core/types.av's `interned`) is the one
+# place that spells the shapes; everywhere else is the smell.
+SPELLED_PART = r"(?:\w+|Type\.(?:Int|Float|Bool|Str|Ptr|Void))"
+SPELLED_SHAPE = re.compile(
+    r"\.intern\(Type\.(?:Int|Float|Bool|Str|Ptr|Void)\)"
+    r"|\.intern\(Type\.(?:Opt|List)\(" + SPELLED_PART + r"\)\)"
+    r"|\.intern\(Type\.(?:Map|Res)\(" + SPELLED_PART + r", " + SPELLED_PART + r"\)\)")
+
+def spelled_shape(lines):
+    """A structural shape interned by hand where `.type(T)` spells it (I40)."""
+    if CURRENT["path"].endswith("core/types.av"):
+        return
+    for i, l in enumerate(lines):
+        if SPELLED_SHAPE.search(l):
+            yield i, l.strip()
+
 def line_rx(pattern):
     p = re.compile(pattern)
     def f(lines):
@@ -469,6 +487,9 @@ RULES = {
     "I39": (state_verb,
             "a vocabulary verb as a free fn taking a pass state first — the state's "
             "impl is its vocabulary: write `mut fn verb(…)` there and call `cx.verb(…)`"),
+    "I40": (spelled_shape,
+            "a structural type interned by hand — `intern(Type.Opt(intern(Type.Str)))` — "
+            "where a type literal spells it: `cx.type(string?)`, `types.type(List<elem>)`"),
 }
 
 UNRATCHETED = {
@@ -569,6 +590,9 @@ SPECIMENS = {
     "I39": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
             ["fn sig(ws: Workspace, d: DeclId) -> FnSig? {"],
             ["fn fields_zipped(b: Builder, fs: List<Token>) -> Result<List<Param>, string> {"]],
+    "I40": [["    let str = cx.view.types.intern(Type.Str)"],
+            ["    cx.view.types.intern(Type.Opt(held))"],
+            ["    self.types.intern(Type.Map(cx.view.types.intern(Type.Str), want))"]],
 }
 
 def next_free_code():

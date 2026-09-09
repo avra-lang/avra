@@ -6783,6 +6783,55 @@ additions get siblings, nothing changes shape:
   voice, unbuilt. AND THE F2051 GAP the sweep closed: a `mut` seat
   handed to a fn VALUE's `mut` seat (`f(c)` with `f: fn(mut C)`)
   counted as never written (`valued_evidence`, receivers.av).
+- ~~TYPE LITERALS~~ — LANDED 2026-09-09 as sugar 2
+  (docs/2026_09_09_SUGAR_2_TYPE_LITERALS.md): `v.type(T)` is a
+  postfix like the rest, expanded at PARSE time to ONE call,
+  `v.interned(<T as a TypeLit value>)` — bare variants heard from
+  the seat, so no site imports anything and the receiver is read
+  once (`cx.type(List<string?>)` is `cx.interned(.List(.Opt(.Str)))`).
+  The words and `List`/`Map`/`Result`/`fn(…) -> R` spell shapes; any
+  other NAME is a HOLE, the binding it names (`cx.type(Map<string,
+  want>)`). THE WORD IS `type`, not the doc's `ty`: a new keyword
+  reserves a name, and `ty` names 273 bindings in the tree while
+  `type` was reserved already. THE RECEIVER IS EXPLICIT, not "the
+  context in scope": the 128 sites spelled ten receivers
+  (`cx.view.types`, `self.types`, `types`, `reg`, `e.types`,
+  `a.view.decls.types`…), so no one binding was "the" table;
+  TypeCx, LowerCx and Decls carry `interned` so `cx.type(int)` reads
+  as the doc wanted. 87 sites swept, 37 left — every one a shape the
+  literal cannot spell (a declared type, `Error`, `Null`, the empty
+  literals) or a part that is an expression. I40 ratchets it.
+  DOGFOODING ASKS FROM THE SWEEP: (1) AN EXPRESSION HOLE —
+  `cx.type(List<${elem_of(x)}>)`: four sites keep `intern(Type.Opt(
+  seat!.elem))` because a hole is a NAME, so a computed part binds a
+  name first; (2) a TYPE PARAMETER is no hole in a program —
+  `x.type(T)` in `fn g<T>` refuses as "`T` is not defined", true and
+  misdirecting, and the compiler's own bodies never wanted it; (3)
+  `int??` is unspellable in the type grammar (one `?` per name), so a
+  doubly-nullable literal is `List<T?>?`-shaped or nothing.
+- THE RED TEAM ON TYPE LITERALS (2026-09-09, 142 programs across the
+  eight classes, eval == native on every accepted one — no wrong
+  answer, no divergence). Eleven survivors, every one a refusal's
+  WORDS, each a test now (expr_spine/tests/type_lit_adversarial_
+  test.av): a value in the slot (`n.type(1)`) fell through to a
+  method call named `type` and said "declare `fn type`" — a keyword
+  can never be declared, so a dot-call NAMED BY A KEYWORD that no
+  method answers speaks as the grammar form it failed to be
+  (`form_refusal`, impls/check.av); `?.type(T)` read `int` as an
+  expression — the chain is spelled now, lowered to the same match
+  every `?.` link is; `N.type(int)` on a type NAME spoke as a variant
+  construction; a hole holding the wrong type said "argument 1 of
+  `.Id` wants `int`" — the expansion's seat leaked, so a hole is
+  MARKED and refuses as a hole; a trailing block after a literal
+  widened the expansion's call ("`N.interned` takes 1 arguments…") —
+  refused in the literal's words. FOUND AND LEFT, named: a parser
+  hole plus the statement's "expected BREAK" is two messages for one
+  mistake at nine malformed shapes (`fn(mut)`, `List<int>>`, `f()`
+  in the slot) — the hole law's, not the literal's; `n.type(List<>)`
+  is the hole plus the arity law, both true; and an `interned` that
+  is a FN FIELD or takes an `int` seat says "`.Int` builds a variant,
+  and `int` has none" — the receiver's contract in the variant's
+  words.
 - A BOUND METHOD AS A VALUE (filed 2026-09-09, the sugar 1 sweep).
   `xs.any(self.stmt_rides)` is F2003 "no field `stmt_rides` on
   `NodeStore`" — a method name read without parentheses is a property

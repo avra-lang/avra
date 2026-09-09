@@ -98,9 +98,26 @@ export enum Type {
     Error
 }
 
-/// The interner: shapes in, ids out — assigned once, compared as
-/// ints forever. The index map is keyed by each shape's CANONICAL
-/// form — deterministic structural content, children by interned id —
+/// A type as a program SPELLS it — what `v.type(List<string?>)`
+/// expands to, one value the receiver's `interned` folds to an id.
+/// Structural shapes only: a declared name has no spelling here,
+/// its id is a binding named in the literal (`Id`).
+export enum TypeLit {
+    Int
+    Float
+    Bool
+    Str
+    Ptr
+    Void
+    Opt(inner: TypeLit)
+    List(elem: TypeLit)
+    Map(key: TypeLit, value: TypeLit)
+    Res(ok: TypeLit, err: TypeLit)
+    Fn(params: List<TypeLit>, muts: List<bool>, ret: TypeLit)
+    /// A hole: an id already in hand, named in the literal.
+    Id(id: TypeId)
+}
+
 /// A record's layout row: the fields it IS when flat, and whether an
 /// impl SEALED it boxed. A record's declaration and its impl block
 /// are ordered only by demand — two memoized queries, possibly in
@@ -180,6 +197,25 @@ impl TypeRegistry {
         let id = TypeId { index: self.shapes.length - 1 }
         self.ids.set(key, id)
         id
+    }
+
+    /// The id a spelled type names — `.type(T)`'s answer: every
+    /// part interned, children first, through the one `intern`.
+    fn interned(t: TypeLit) -> TypeId {
+        match t {
+            .Int -> self.intern(Type.Int),
+            .Float -> self.intern(Type.Float),
+            .Bool -> self.intern(Type.Bool),
+            .Str -> self.intern(Type.Str),
+            .Ptr -> self.intern(Type.Ptr),
+            .Void -> self.intern(Type.Void),
+            .Opt(inner) -> self.intern(Type.Opt(self.interned(inner))),
+            .List(elem) -> self.intern(Type.List(self.interned(elem))),
+            .Map(k, v) -> self.intern(Type.Map(self.interned(k), self.interned(v))),
+            .Res(ok, err) -> self.intern(Type.Res(self.interned(ok), self.interned(err))),
+            .Fn(ps, muts, ret) -> self.intern(Type.Fn([self.interned(p) for p in ps], muts, self.interned(ret))),
+            .Id(id) -> id,
+        }
     }
 
     fn shape_of(id: TypeId) -> Type { self.shapes[id.index] }

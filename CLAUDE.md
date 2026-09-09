@@ -802,6 +802,14 @@ engine's spec, written by dogfooding.
   engines read one instruction stream by construction; I33 ratchets
   the raw brackets, I39 the free verbs, and the vocabulary grows
   with the next shared shape.
+- A TYPE IN A PASS IS SPELLED, NEVER REBUILT: `cx.type(List<string?>)`,
+  `cx.type(Map<string, want>)` — a type literal, the type in its own
+  spelling folded ONCE by its receiver's `interned` (core/types.av's
+  `TypeLit`); a name that spells no shape is a HOLE, the `TypeId`
+  binding it names. `intern(Type.Opt(intern(Type.Str)))` is I40. The
+  receiver is any value with `interned`: the registry, TypeCx,
+  LowerCx, Decls. A declared type has no spelling — bind its id and
+  name the binding.
 - THE IR's BOOL LAW (ours, enforced by the evaluator): `&&`/`||`
   are never `Bin` over bool registers — they are lazy regions
   (`IfStart … ArmEnd … RegionEnd`); a `Bin(Or)` on bools is the
@@ -954,6 +962,10 @@ Syntax the grammar lacks:
   engines). Worth stating because the literal's refusal cascades into
   a "write the type explicitly" further down, and the pin that
   silences it is not the thing that was wrong.
+- A DOUBLE `?` on a type (`int??`): F0100 "expected `)` while parsing
+  `stmt`" at the second `?` — the type grammar takes one `?` per name,
+  so a doubly-nullable value has no spelling, in an annotation or a
+  type literal alike.
 - Type aliases and newtypes (`type Id = int`): "expected `{` while
   parsing `stmt`". Typed ids are single-field structs (`{ index:
   int }`), which the checker keeps apart.

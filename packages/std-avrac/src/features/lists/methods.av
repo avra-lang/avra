@@ -21,7 +21,7 @@ export fn check_map(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     if seat == null { return cx.error_type }
     let answer = seat!.answer
     if !slot_worthy(cx.view.types, cx.view.types.shape_of(answer)) { return uncollectable(cx, mc.e, answer) }
-    cx.view.types.intern(Type.List(answer))
+    cx.type(List<answer>)
 }
 
 /// `xs.filter(p)` — the receiver's own type.
@@ -45,7 +45,7 @@ export fn check_all(mut cx: TypeCx, mc: MethodCall) -> TypeId { judged_type(cx, 
 fn judged_type(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
     let seat: WalkSeat? = predicate_seat(cx, mc, name)
     if seat == null { return cx.error_type }
-    cx.view.types.intern(Type.Bool)
+    cx.type(bool)
 }
 
 /// THE GROWTH WORD: `xs.push(v)` mutates a PLACE — the receiver is
@@ -55,7 +55,7 @@ fn judged_type(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
 export fn check_push(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, "push")
     if elem == null || !opened_place(cx, mc, "push") || !cx.seated(mc, "push", [elem!]) { return cx.error_type }
-    cx.view.types.intern(Type.Void)
+    cx.type(void)
 }
 
 /// `xs.pop()` — the last element, removed; the list is a mut place.
@@ -69,14 +69,14 @@ export fn check_pop(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 export fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, "set")
     if elem == null || !opened_place(cx, mc, "set") || !cx.seated(mc, "set", [int_type(cx), elem!]) { return cx.error_type }
-    cx.view.types.intern(Type.Void)
+    cx.type(void)
 }
 
 /// `xs.contains(v)` — whether some element is `v`.
 export fn check_contains(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = scanned(cx, mc, "contains")
     if elem == null || !cx.seated(mc, "contains", [elem!]) { return cx.error_type }
-    cx.view.types.intern(Type.Bool)
+    cx.type(bool)
 }
 
 /// `xs.index_of(v)` — the first position of `v`, or -1.
@@ -99,7 +99,7 @@ fn scanned(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
 export fn check_is_empty(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     if cx.shape_at(mc.subject) is .EmptyList { return cx.unmeasurable_empty(mc.e, "[]", "List<int>") }
     if !cx.seated(mc, "is_empty", []) { return cx.error_type }
-    cx.view.types.intern(Type.Bool)
+    cx.type(bool)
 }
 
 /// `xs.first()` / `xs.last()` — the edge element, nullable.
@@ -138,8 +138,8 @@ export fn check_join(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, "join")
     if elem == null { return cx.error_type }
     if !(cx.view.types.shape_of(elem!) is .Str) { return joins_text(cx, mc.e, elem!) }
-    if !cx.seated(mc, "join", [cx.view.types.intern(Type.Str)]) { return cx.error_type }
-    cx.view.types.intern(Type.Str)
+    if !cx.seated(mc, "join", [cx.type(string)]) { return cx.error_type }
+    cx.type(string)
 }
 
 /// THE PRELUDE the plain rows share: the element the receiver
@@ -163,7 +163,7 @@ fn opened_place(mut cx: TypeCx, mc: MethodCall, name: string) -> bool {
 }
 
 fn int_type(mut cx: TypeCx) -> TypeId {
-    cx.view.types.intern(Type.Int)
+    cx.type(int)
 }
 
 // ── The walk prelude ──
@@ -238,7 +238,7 @@ export fn list_shape(args: TypeArgs) -> Type {
 /// declared type adopts it.
 export fn check_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
     if cx.view.types.shape_of(ty) is .EmptyList { return cx.unmeasurable_empty(e, "[]", "List<int>") }
-    cx.view.types.intern(Type.Int)
+    cx.type(int)
 }
 
 // ── The voices ──

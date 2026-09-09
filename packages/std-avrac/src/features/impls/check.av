@@ -23,14 +23,14 @@ fn methoded(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List
 fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId {
     if cx.errored(subject) { return cx.error_type }
     match callee_of(cx.view, cx.type_at(subject), name) {
-        .Variant(decl, tname) -> cx.construct_variant(e, decl, tname, name, args),
+        .Variant(decl, tname) -> if cx.view.store.is_type_lit(e) { no_interned(cx, e, tname) } else { cx.construct_variant(e, decl, tname, name, args) },
         .Static(m, tname) -> static_call(cx, e, m, tname, name, args),
         .Bounded(decl, j, tname) -> bounded_call(cx, e, subject, tname, cx.bound_name(decl, j), name, args),
         .Contract(tdecl, tname) -> dyn_call(cx, e, subject, tdecl, tname, name, args),
         .FnField(_, fty) -> fielded_call(cx, e, name, fty, args),
         .Row(r) -> r.check(cx, MethodCall { e: e, subject: subject, args: args }),
         .Declared(decl, tname) -> declared_call(cx, e, subject, decl, tname, name, args),
-        .Nameless -> no_methods_here(cx, subject, name),
+        .Nameless -> form_refusal(cx, e, cx.name_at(subject), name) ?? no_methods_here(cx, subject, name),
     }
 }
 
@@ -38,7 +38,7 @@ fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args:
 /// receiver, judges arity and every seat; the inout laws follow.
 fn declared_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, target: string, name: string, args: List<ExprId>) -> TypeId {
     let found: FnSig? = cx.method_sig(decl, name)
-    if found == null { return no_such_method(cx, e, target, name) }
+    if found == null { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
     let m: DeclId? = cx.view.decls.method(decl, name)
     let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, decl, found!))
     let wants = sig.params.length - 1
@@ -57,7 +57,7 @@ fn declared_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, targe
 /// exactly as written and the seats are numbered from zero.
 fn static_call(mut cx: TypeCx, e: ExprId, m: DeclId, target: string, name: string, args: List<ExprId>) -> TypeId {
     let found: FnSig? = fn_sig_of(cx.view.decls.sig(m))
-    if found == null { return no_such_method(cx, e, target, name) }
+    if found == null { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
     let sig = found!
     if args.length != sig.params.length { return wrong_static_arity(cx, e, target, name, sig.params.length, args.length) }
     for j, a in args {
@@ -107,6 +107,16 @@ fn instantiated_sig(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, si
     }
 }
 
+/// An unanswered dot-call that is a grammar FORM refuses in the
+/// form's words — a type literal's, or a keyword-named call's, the
+/// form it failed to be. Null for an ordinary call: the caller's
+/// own words apply.
+fn form_refusal(mut cx: TypeCx, e: ExprId, target: string, name: string) -> TypeId? {
+    if cx.view.store.is_type_lit(e) { return no_interned(cx, e, target) }
+    if cx.keywords.contains(name) { return keyword_form(cx, e, name) }
+    null
+}
+
 // ── The voices ──
 
 fn no_methods_here(mut cx: TypeCx, subject: ExprId, name: string) -> TypeId {
@@ -116,6 +126,16 @@ fn no_methods_here(mut cx: TypeCx, subject: ExprId, name: string) -> TypeId {
 
 fn no_such_method(mut cx: TypeCx, e: ExprId, target: string, name: string) -> TypeId {
     cx.spoken(refusal("type.method", cx.loc_of(e), "`${target}` has no method `${name}`", "called here", "declare it — `impl ${target} { fn ${name}(…) -> … }`"))
+}
+
+/// A dot-call named by a KEYWORD is a grammar form that did not match
+/// — no method can wear the name, so the remedy is the form's.
+fn keyword_form(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
+    cx.spoken(refusal("type.method", cx.loc_of(e), "`.${name}(…)` names no method — `${name}` is a keyword, and the grammar's form did not match", "written here", "a type literal is `.type(T)` over a TYPE: `int?`, `List<T>`, `fn(int) -> bool`, or a name holding an id"))
+}
+
+fn no_interned(mut cx: TypeCx, e: ExprId, target: string) -> TypeId {
+    cx.spoken(refusal("type.method", cx.loc_of(e), "`.type(…)` interns into its receiver, and `${target}` has no `interned`", "written here", "declare `interned` on `${target}` — its seat is the enum the literal spells, its answer the id — or name a table that has one: `cx.type(…)`"))
 }
 
 fn wrong_method_arity(mut cx: TypeCx, e: ExprId, target: string, name: string, wants: int, found: int) -> TypeId {

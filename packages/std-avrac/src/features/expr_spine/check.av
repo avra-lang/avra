@@ -10,8 +10,8 @@ use diagnostics.{refusal}
 fn spine_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
-        .IntLit(_) -> cx.view.types.intern(Type.Int),
-        .FloatLit(_) -> cx.view.types.intern(Type.Float),
+        .IntLit(_) -> cx.type(int),
+        .FloatLit(_) -> cx.type(float),
         .Ident(_) -> cx.target_type(e),
         .Binary(op, l, r) -> binary_type(cx, e, op, l, r),
         .Not(v) -> not_type(cx, v),
@@ -166,7 +166,7 @@ fn wears(sh: Type, want: Type) -> bool {
 /// `!` negates a bool; Error absorbs to the answer.
 fn not_type(mut cx: TypeCx, v: ExprId) -> TypeId {
     let sh = cx.shape_at(v)
-    if sh is .Bool || sh is .Error { return cx.view.types.intern(Type.Bool) }
+    if sh is .Bool || sh is .Error { return cx.type(bool) }
     not_negatable(cx, v)
 }
 
@@ -223,7 +223,7 @@ fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId
         if cx.view.store.expr(asked!) is .Ident {
             cx.record_ask(e, asked!, op == BinOp.Ne)
         }
-        return cx.view.types.intern(Type.Bool)
+        return cx.type(bool)
     }
     // A GUARANTEE beside `null` is a question with only one answer.
     if ls is .Null && rs is .Null { return both_absent(cx, op, l) }
@@ -236,7 +236,7 @@ fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId
     let inner: TypeId? = nullable_compared(cx, l, r)
     if inner != null {
         if !cx.compares_by_value(inner!) { return not_comparable(cx, op, l) }
-        return cx.view.types.intern(Type.Bool)
+        return cx.type(bool)
     }
     // An AGGREGATE would compare by ADDRESS — never what the writer
     // meant, and the engines disagreed about it: the interpreter
@@ -244,7 +244,7 @@ fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId
     // identical values.
     let found: ExprId? = uncomparable(cx, l, r)
     if found != null { return not_comparable(cx, op, found!) }
-    if !cx.types_disagree(cx.type_at(l), cx.type_at(r)) { return cx.view.types.intern(Type.Bool) }
+    if !cx.types_disagree(cx.type_at(l), cx.type_at(r)) { return cx.type(bool) }
     mismatched_sides(cx, op, l, r)
 }
 

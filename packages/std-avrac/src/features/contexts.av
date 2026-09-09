@@ -3,7 +3,7 @@
 //! asks the namespace) — and the CONTEXTS' vocabularies: every
 //! method a feature's rule calls on a TypeCx, LowerCx or statement
 //! context forwards from here to the one definition.
-use core.{Expr, int_of, text_of, bool_of, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, NodeStore, TypeRegistry, Binding, Param, filled, Reg, Ins, dst_of, rt_sig_of, same_stmt, same_expr, same_decl}
+use core.{Expr, int_of, text_of, bool_of, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, filled, Reg, Ins, dst_of, rt_sig_of, same_stmt, same_expr, same_decl}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
 
@@ -184,7 +184,7 @@ export fn def_type_of(facts: TypeFacts, store: NodeStore, types: TypeRegistry, e
     if store.const_value(s) != null { return settled_type(store, types, s) ?? error_type }
     let declared: TypeId? = facts.declared_binding(s)
     if declared != null { return declared! }
-    if store.stmt(s) is .For { return types.intern(Type.Int) }
+    if store.stmt(s) is .For { return types.type(int) }
     let v: ExprId? = store.stmt_value(s)
     if v == null { return error_type }
     facts.type_at(v!)
@@ -200,7 +200,7 @@ fn settled_type(store: NodeStore, types: TypeRegistry, s: StmtId) -> TypeId? {
     let word: Type? = literal_shape(store.expr(v!))
     if word == null { return null }
     let held = types.intern(word!)
-    if store.binding_ty(s)?.optional ?? false { return types.intern(Type.Opt(held)) }
+    if store.binding_ty(s)?.optional ?? false { return types.type(held?) }
     held
 }
 
@@ -222,6 +222,8 @@ export fn viewed(types: TypeRegistry, sub: Sub?, ty: TypeId) -> TypeId {
 
 impl TypeCx {
     fn type_at(e: ExprId) -> TypeId { self.facts.type_at(e) }
+    /// A type literal's answer — `cx.type(T)` interns into this view's table.
+    fn interned(t: TypeLit) -> TypeId { self.view.types.interned(t) }
     fn shape_at(e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
     /// Whether typing already refused here — the cause spoke, so the
     /// site absorbs instead of speaking twice.
@@ -276,6 +278,8 @@ impl TypeCx {
 
 impl LowerCx {
     fn viewed(ty: TypeId) -> TypeId { viewed(self.view.types, self.sub, ty) }
+    /// A type literal's answer — `cx.type(T)` interns into this view's table.
+    fn interned(t: TypeLit) -> TypeId { self.view.types.interned(t) }
     fn type_at(e: ExprId) -> TypeId { self.viewed(self.facts.type_at(e)) }
     fn shape_at(e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
     fn result(e: ExprId) -> Reg { self.out.mint_ty(self.type_at(e)) }
@@ -327,6 +331,9 @@ impl LowerCx {
 // ── voices ──
 
 impl Decls {
+    /// A type literal's answer — `self.type(T)` interns into the table.
+    fn interned(t: TypeLit) -> TypeId { self.types.interned(t) }
+
     fn not_a_value(d: DeclId) -> Diag {
         refusal("type.lambda", self.loc(d), "a generic fn is not a value — no single signature to wear", "declared here", "wrap it — `(x: T0) -> ${self.fn_name(d) ?? "f"}(x)` with the types pinned")
     }

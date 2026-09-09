@@ -50,8 +50,9 @@ fn got_type(mut cx: TypeCx, e: ExprId, args: List<ExprId>, value: TypeId) -> Typ
         cx.wrong_arity(e, "get", 1, args.length)
         return cx.error_type
     }
-    if !cx.accepts(args[0], cx.view.types.intern(Type.Str)) { cx.wrong_argument("get", 0, cx.view.types.intern(Type.Str), args[0]) }
-    cx.view.types.intern(Type.Opt(value))
+    let key = cx.type(string)
+    if !cx.accepts(args[0], key) { cx.wrong_argument("get", 0, key, args[0]) }
+    cx.type(value?)
 }
 
 fn set_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
@@ -62,9 +63,10 @@ fn set_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, valu
     let root: ExprId? = cx.view.store.place_root(subject)
     if root == null { return cx.not_a_place_call(e, "set") }
     if !cx.is_mut(root!) { return cx.not_mut_call(e, "set", cx.view.store.ident_name(root!) ?? "this name") }
-    if !cx.accepts(args[0], cx.view.types.intern(Type.Str)) { cx.wrong_argument("set", 0, cx.view.types.intern(Type.Str), args[0]) }
+    let key = cx.type(string)
+    if !cx.accepts(args[0], key) { cx.wrong_argument("set", 0, key, args[0]) }
     if !cx.accepts(args[1], value) { cx.wrong_argument("set", 1, value, args[1]) }
-    cx.view.types.intern(Type.Void)
+    cx.type(void)
 }
 
 /// `m.get(k)`: presence asked first, the value adopted into the
@@ -122,6 +124,6 @@ export fn string_keys(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
 
 export fn check_map_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
     if cx.view.types.shape_of(ty) is .EmptyMap { return cx.unmeasurable_empty(e, "{}", "Map<string, int>") }
-    cx.view.types.intern(Type.Int)
+    cx.type(int)
 }
 
