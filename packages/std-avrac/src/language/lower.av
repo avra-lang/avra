@@ -36,46 +36,48 @@ export type Lowered = {
     externs: List<RtSig>,
 }
 
-/// The program's extern fns by symbol — what every emitter refuses
-/// an unknown callee against. A whole-table walk: gathered once per
-/// lowering, never per body.
-export fn extern_names(decls: Decls) -> List<string> {
-    [decls.symbol(d.id) for d in decls.decls if decls.is_extern(d.id)]
-}
+impl Decls {
+    /// The program's extern fns by symbol — what every emitter refuses
+    /// an unknown callee against. A whole-table walk: gathered once per
+    /// lowering, never per body.
+    fn extern_names() -> List<string> {
+        [self.symbol(d.id) for d in self.decls if self.is_extern(d.id)]
+    }
 
-/// The program's extern fns as registry rows.
-fn extern_rows(decls: Decls) -> List<RtSig> {
-    [extern_row_of(decls, d) for d in decls.decls if decls.is_extern(d.id)]
-}
+    /// The program's extern fns as registry rows.
+    fn extern_rows() -> List<RtSig> {
+        [self.extern_row_of(d) for d in self.decls if self.is_extern(d.id)]
+    }
 
-/// An extern's runtime row. The WIDTHS are read back from the
-/// program — the annotation the seat wrote — because the signature
-/// carries the type that crosses (`int`) and never the machine
-/// width: a width is a property of a SEAT, and the store is where
-/// the seats are.
-fn extern_row_of(decls: Decls, d: Decl) -> RtSig {
-    let sig: FnSig? = fn_sig_of(decls.sig(d.id))
-    let host: ExternParts? = decls.store(d.id).extern_parts(d.stmt)
-    let params: List<TypeId> = sig?.params ?? []
-    inout_row(decls.symbol(d.id),
-              extern_kind(decls.types, host?.ret, sig?.ret ?? decls.types.intern(Type.Void)),
-              [host_seat_kind(decls, d.id, host, j, p) for j, p in params],
-              [host_cell_kind(decls, d.id, host, j, p) for j, p in params])
-}
+    /// An extern's runtime row. The WIDTHS are read back from the
+    /// program — the annotation the seat wrote — because the signature
+    /// carries the type that crosses (`int`) and never the machine
+    /// width: a width is a property of a SEAT, and the store is where
+    /// the seats are.
+    fn extern_row_of(d: Decl) -> RtSig {
+        let sig: FnSig? = fn_sig_of(self.sig(d.id))
+        let host: ExternParts? = self.store(d.id).extern_parts(d.stmt)
+        let params: List<TypeId> = sig?.params ?? []
+        inout_row(self.symbol(d.id),
+                  extern_kind(self.types, host?.ret, sig?.ret ?? self.types.intern(Type.Void)),
+                  [self.host_seat_kind(d.id, host, j, p) for j, p in params],
+                  [self.host_cell_kind(d.id, host, j, p) for j, p in params])
+    }
 
-/// A host seat's ABI kind. A `mut` seat is an INOUT — it carries the
-/// ADDRESS of the caller's cell, so it is a POINTER whatever the
-/// cell holds; every other seat is its width or its type's kind.
-fn host_seat_kind(decls: Decls, d: DeclId, host: ExternParts?, j: int, p: TypeId) -> RtKind {
-    if decls.mut_seat(d, j) { return RtKind.Ptr }
-    extern_kind(decls.types, seat_written(host, j), p)
-}
+    /// A host seat's ABI kind. A `mut` seat is an INOUT — it carries the
+    /// ADDRESS of the caller's cell, so it is a POINTER whatever the
+    /// cell holds; every other seat is its width or its type's kind.
+    fn host_seat_kind(d: DeclId, host: ExternParts?, j: int, p: TypeId) -> RtKind {
+        if self.mut_seat(d, j) { return RtKind.Ptr }
+        extern_kind(self.types, seat_written(host, j), p)
+    }
 
-/// The width of the CELL behind an inout seat — what the backend
-/// normalises after the call. `Void` for every seat that is not one.
-fn host_cell_kind(decls: Decls, d: DeclId, host: ExternParts?, j: int, p: TypeId) -> RtKind {
-    if !decls.mut_seat(d, j) { return RtKind.Void }
-    extern_kind(decls.types, seat_written(host, j), p)
+    /// The width of the CELL behind an inout seat — what the backend
+    /// normalises after the call. `Void` for every seat that is not one.
+    fn host_cell_kind(d: DeclId, host: ExternParts?, j: int, p: TypeId) -> RtKind {
+        if !self.mut_seat(d, j) { return RtKind.Void }
+        extern_kind(self.types, seat_written(host, j), p)
+    }
 }
 
 /// The annotation seat `j` wrote, when the declaration is an extern
@@ -101,8 +103,8 @@ fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> LowerCx 
 
 /// A lone file's program, lowered without a memo — the tests' seam.
 export fn lower(a: Analysis) -> Lowered {
-    let externs = extern_names(a.view.decls)
-    union(a.view.decls, [a], 0, false, false, (w: Wanted) -> lower_unit(a, externs, w))
+    let externs = a.view.decls.extern_names()
+    a.view.decls.union([a], 0, false, false, (w: Wanted) -> lower_unit(a, externs, w))
 }
 
 /// One unit LOWERED: its body with the lambdas it lifted and the
@@ -151,52 +153,54 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted) -> Unit {
     Unit { bodies: bodies, wants: wants, voices: Voices { list: spoken } }
 }
 
-/// The whole program as IR: the entry's main and every body it
-/// reaches, transitively — each unit through `unit_of`, which the
-/// workspace memoizes. A program only CHECKED has no entry: every
-/// declared body lowers instead, so each speaks its refusals; a
-/// test run asks for `every` declared body under its entry, whose
-/// laws (a module file runs nothing) still hold. A unit is asked
-/// once per symbol; the guard is the polymorphic-recursion refusal.
-export fn union(decls: Decls, files: List<Analysis>, entry: int?, every: bool, programs: bool, unit_of: fn(Wanted) -> Unit) -> Lowered {
-    mut fns: List<Body> = []
-    mut spoken: List<Diag> = []
-    let at: int = entry ?? 0
-    let bodies: List<Wanted> = if entry == null || every { flatten([declared(a) for a in files]) } else { [] }
-    // EVERY FILE A PROGRAM: each file's run-time statements lower as
-    // a body under the program's own symbol, for a runner's entry to
-    // call in turn — every program in one binary
-    mut wants: List<Wanted> = if programs { bodies.concat([program_main(a) for a in files]) } else { bodies }
-    for i, a in files {
-        if entry != null && i != at { spoken = spoken.concat(entry_only(a, files[at])) }
-    }
-    let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: "main", sub: null }) }
-    mut entry_body: Body = empty_main(decls.types).body
-    if main_unit != null {
-        let mu = main_unit!
-        entry_body = mu.bodies.first() ?? entry_body
-        fns = fns.concat(mu.bodies.slice(1, mu.bodies.length))
-        spoken = spoken.concat(mu.voices.list)
-        wants = wants.concat(mu.wants)
-    }
-    mut seen: Map<string, bool> = {}
-    mut minted = 0
-    while !wants.is_empty() && minted < unit_ceiling() {
-        let w = wants.pop()
-        if seen.get(w.name) == null {
-            seen.set(w.name, true)
-            minted = minted + 1
-            let u = unit_of(w)
-            fns = fns.concat(u.bodies)
-            spoken = spoken.concat(u.voices.list)
-            wants = wants.concat(u.wants)
+impl Decls {
+    /// The whole program as IR: the entry's main and every body it
+    /// reaches, transitively — each unit through `unit_of`, which the
+    /// workspace memoizes. A program only CHECKED has no entry: every
+    /// declared body lowers instead, so each speaks its refusals; a
+    /// test run asks for `every` declared body under its entry, whose
+    /// laws (a module file runs nothing) still hold. A unit is asked
+    /// once per symbol; the guard is the polymorphic-recursion refusal.
+    fn union(files: List<Analysis>, entry: int?, every: bool, programs: bool, unit_of: fn(Wanted) -> Unit) -> Lowered {
+        mut fns: List<Body> = []
+        mut spoken: List<Diag> = []
+        let at: int = entry ?? 0
+        let bodies: List<Wanted> = if entry == null || every { flatten([declared(a) for a in files]) } else { [] }
+        // EVERY FILE A PROGRAM: each file's run-time statements lower as
+        // a body under the program's own symbol, for a runner's entry to
+        // call in turn — every program in one binary
+        mut wants: List<Wanted> = if programs { bodies.concat([program_main(a) for a in files]) } else { bodies }
+        for i, a in files {
+            if entry != null && i != at { spoken = spoken.concat(entry_only(a, files[at])) }
         }
+        let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: "main", sub: null }) }
+        mut entry_body: Body = empty_main(self.types).body
+        if main_unit != null {
+            let mu = main_unit!
+            entry_body = mu.bodies.first() ?? entry_body
+            fns = fns.concat(mu.bodies.slice(1, mu.bodies.length))
+            spoken = spoken.concat(mu.voices.list)
+            wants = wants.concat(mu.wants)
+        }
+        mut seen: Map<string, bool> = {}
+        mut minted = 0
+        while !wants.is_empty() && minted < unit_ceiling() {
+            let w = wants.pop()
+            if seen.get(w.name) == null {
+                seen.set(w.name, true)
+                minted = minted + 1
+                let u = unit_of(w)
+                fns = fns.concat(u.bodies)
+                spoken = spoken.concat(u.voices.list)
+                wants = wants.concat(u.wants)
+            }
+        }
+        if !wants.is_empty() {
+            spoken.push(defect_at(null, "specializations exploded past ${unit_ceiling()} — polymorphic recursion is not supported"))
+        }
+        spoken = spoken.concat(minted_pointers(self.types, fns.concat([entry_body])))
+        Lowered { fns: fns, entry: entry_body, types: self.types, diagnostics: spoken, externs: self.extern_rows() }
     }
-    if !wants.is_empty() {
-        spoken.push(defect_at(null, "specializations exploded past ${unit_ceiling()} — polymorphic recursion is not supported"))
-    }
-    spoken = spoken.concat(minted_pointers(decls.types, fns.concat([entry_body])))
-    Lowered { fns: fns, entry: entry_body, types: decls.types, diagnostics: spoken, externs: extern_rows(decls) }
 }
 
 /// THE POINTER-CONSTANT LAW. A `ConstInt` aimed at a pointer-riding

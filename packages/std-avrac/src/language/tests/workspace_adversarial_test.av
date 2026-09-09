@@ -3,7 +3,7 @@
 // module's line, and the crossings that must simply work. The
 // vertical story lives in workspace_test.av; these are the programs
 // that tried to break it.
-use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, program, analyze_source}
+use @std.avrac.language.{avra, new_workspace, memory_host, analyze_source}
 use language.{Workspace}
 
 /// A root file plus whatever the attack adds.
@@ -13,12 +13,12 @@ fn package(files: Map<string, string>, names: List<string>) -> Workspace {
 
 /// The root file's ONE refusal, saying this.
 fn refuses_once(files: Map<string, string>, names: List<string>, saying: string) -> bool {
-    let a = analyze_file(package(files, names), "/w/src/main.av")
+    let a = package(files, names).analyze_file("/w/src/main.av")
     a.diagnostics.length == 1 && a.report().contains(saying)
 }
 
 fn runs(files: Map<string, string>, names: List<string>) -> string? {
-    match program(package(files, names), "/w/src/main.av").run() {
+    match package(files, names).program("/w/src/main.av").run() {
         .Ok(text) -> text,
         .Err(_) -> null,
     }
@@ -178,16 +178,16 @@ spec "language/workspace (adversarial)" {
         }
         then "a default reading its file's top-level binding refuses in ITS file, not the literal's" {
             let ws = package({ "/w/src/main.av": "use util.{Q}\nQ {}.y\n", "/w/src/util/shapes.av": "let k = 3\nexport type Q = { y: int = k }\n" }, ["/w/src/main.av", "/w/src/util/shapes.av"])
-            let shapes = analyze_file(ws, "/w/src/util/shapes.av")
-            analyze_file(ws, "/w/src/main.av").clean() &&
+            let shapes = ws.analyze_file("/w/src/util/shapes.av")
+            ws.analyze_file("/w/src/main.av").clean() &&
                 shapes.diagnostics.length == 1 && shapes.report().contains("`k` is a run-time binding of the top level")
         }
     }
     given "a type's methods are one namespace across its module's files" {
         then "the same method in two files of one module clashes at the LATER file, only" {
             let ws = package({ "/w/src/main.av": "use util.{P}\nP { x: 1 }.show()\n", "/w/src/util/a.av": "export type P = { x: int }\nimpl P {\n    fn show() -> int {\n        self.x\n    }\n}\n", "/w/src/util/b.av": "impl P {\n    fn show() -> int {\n        self.x + 1\n    }\n}\n" }, ["/w/src/main.av", "/w/src/util/a.av", "/w/src/util/b.av"])
-            let later = analyze_file(ws, "/w/src/util/b.av")
-            analyze_file(ws, "/w/src/util/a.av").clean() &&
+            let later = ws.analyze_file("/w/src/util/b.av")
+            ws.analyze_file("/w/src/util/a.av").clean() &&
                 later.diagnostics.length == 1 && later.report().contains("`P.show` is declared twice")
         }
     }

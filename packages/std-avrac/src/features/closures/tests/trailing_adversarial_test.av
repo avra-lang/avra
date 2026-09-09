@@ -1,0 +1,173 @@
+// The red team's record for trailing blocks: every attack class,
+// each survivor pinned. The fixtures below are the subject; each
+// test shows only its attack.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+/// The seats under attack: a thunk, a one-seat fn, two seats, three,
+/// a chooser, two valueless takers, a text thunk.
+fn seats() -> string {
+    "fn run(f: fn() -> int) -> int { f() }\nfn apply(v: int, f: fn(int) -> int) -> int { f(v) }\nfn both(a: int, b: int, f: fn(int, int) -> int) -> int { f(a, b) }\nfn three(f: fn(int, int, int) -> int) -> int { f(1, 2, 3) }\nfn pick(c: bool, a: fn() -> int, b: fn() -> int) -> int { if c { a() } else { b() } }\nfn noop(f: fn()) -> int { f()\n    7 }\nfn single(f: fn(int)) -> int { f(1)\n    8 }\nfn text(f: fn() -> string) -> string { f() }\n"
+}
+
+fn under(attack: string) -> string {
+    "${seats()}${attack}"
+}
+
+spec "features/closures/trailing — the red team" {
+    given "degenerate shapes" {
+        then "a block of no seats and no statements fills a valueless thunk" {
+            shown(under("noop() { }")) == "7"
+        }
+        then "a seat with an empty body answers nothing" {
+            shown(under("single { x -> }")) == "8"
+        }
+        then "three seats, three names" {
+            shown(under("three { a, b, c -> a + b + c }")) == "6"
+        }
+        then "a trailing comma closes the seat list" {
+            shown(under("both(1, 2) { a, b, -> a + b }")) == "3"
+        }
+        then "blocks nest three deep" {
+            shown(under("run { run { run { 1 } } }")) == "1"
+        }
+        then "a block whose whole body is a block is one block" {
+            shown(under("run {{ 1 }}")) == "1"
+        }
+        then "a body that is only `it` takes the seat" {
+            shown(under("[1, 2].map { it }[1]")) == "2"
+        }
+        then "a name before an empty brace pair is a record literal, and the remedy names the call" {
+            refused_with(under("noop { }"), "a call taking an empty block writes its parentheses: `noop() { }`")
+        }
+    }
+    given "wrong types in every slot" {
+        then "a block answering the wrong type names the seat's fn type" {
+            refused_with(under("apply(1) { x -> \"s\" }"), "the trailing block fills seat 2 of `apply`, which takes `fn(int) -> int`, and the block is `fn(int) -> string`")
+        }
+        then "too many seats misfit" {
+            refused_with(under("apply(1) { x, y -> x }"), "this lambda does not fit its seat, `fn(int) -> int`")
+        }
+        then "a list seat refuses the block" {
+            refused_with("fn lst(xs: List<int>) -> int { xs.length }\nlst { 1 }", "the trailing block fills seat 1 of `lst`, which takes `List<int>`")
+        }
+        then "a record seat refuses the block" {
+            refused_with("type P = { x: int }\nfn pt(p: P) -> int { p.x }\npt { 1 }", "the trailing block fills seat 1 of `pt`, which takes `P`")
+        }
+        then "an enum seat refuses the block" {
+            refused_with("enum E { A B }\nfn en(e: E) -> int { 1 }\nen { 1 }", "the trailing block fills seat 1 of `en`, which takes `E`")
+        }
+        then "a fn seat in the MIDDLE is not the last argument" {
+            refused_with("fn two(a: int, b: fn() -> int, c: int) -> int { b() + a + c }\ntwo(1) { 2 }", "`two` takes 3 arguments, and the parentheses give 1")
+        }
+        then "a local that holds no fn is not callable with a block" {
+            refused_with(under("let v = 3\nv { 1 }"), "`v` is not callable — it holds a `int`")
+        }
+        then "`it` in a block for a seatless fn slot speaks the pronoun's words" {
+            refused_with(under("run { it }"), "the body reads `it`, so the block takes one seat — this slot is `fn() -> int`, which hands it none")
+        }
+        then "an annotated seat does not parse — the slot types a block's seats" {
+            refusals(under("apply(1) { x: int -> x }")) == 2
+        }
+        then "a second `else` is refused" {
+            refused_with(under("pick(true) { 1 } else { 2 } else { 3 }"), "expected BREAK")
+        }
+    }
+    given "malformed surface, position by position" {
+        then "an unclosed block is named" {
+            refusals(under("run { 1")) == 2
+        }
+        then "an arrow with no seat before it" {
+            refusals(under("apply(1) { -> 1 }")) == 2
+        }
+        then "`else` with no block" {
+            refused_with(under("pick(true) { 1 } else"), "expected BREAK")
+        }
+        then "a second bare block is refused in its own words" {
+            refused_with(under("pick(true) { 1 } { 2 }"), "a second trailing block follows the first")
+        }
+        then "a stray closing brace" {
+            refused_with(under("apply(1) { x -> x }}"), "expected EOF")
+        }
+        then "a keyword as a seat name" {
+            refused_with(under("apply(1) { if -> 1 }"), "`if` is a keyword")
+        }
+    }
+    given "crossings" {
+        then "in a fn body, added to" {
+            shown(under("fn body() -> int { run { 40 } + 2 }\nbody()")) == "42"
+        }
+        then "answered from a lambda" {
+            shown(under("fn answers() -> fn() -> int { () -> run { 6 } }\nanswers()()")) == "6"
+        }
+        then "a list element and a record field" {
+            shown(under("type P = { x: int }\n\"\${[run { 1 }, 2][0]} \${P { x: run { 3 } }.x}\"")) == "1 3"
+        }
+        then "inside an interpolation hole" {
+            shown(under("\"v=\${run { 6 }}\"")) == "v=6"
+        }
+        then "recursion through a block" {
+            shown(under("fn deep(n: int) -> int { if n == 0 { 0 } else { run { deep(n - 1) + 1 } } }\ndeep(5)")) == "5"
+        }
+        then "a block inside a block reads both seats" {
+            shown(under("fn pair(f: fn(int, int) -> int) -> int { f(3, 4) }\npair { a, b -> apply(a) { x -> x * b } }")) == "12"
+        }
+        then "chained through the ladder" {
+            shown(under("run { 1 } + run { 2 } * run { 3 }")) == "7"
+        }
+        then "`return` inside a block answers no fn" {
+            refused_with(under("fn body() -> int { run { return 1 } }\nbody()"), "a `return` answers a fn, and there is none enclosing")
+        }
+        then "`fail` inside a block raises to no caller" {
+            refused_with("fn res(f: fn() -> Result<int, string>) -> Result<int, string> { f() }\nfn body() -> Result<int, string> { res { fail \"no\" } }\nbody()", "a `fail` raises to a caller, and there is none enclosing")
+        }
+        then "a head with a block is refused, and reads as the head's brace" {
+            refusals(under("mut t = 0\nfor v in [1, 2].map { it * 2 } { t = t + v }\nt")) == 1
+        }
+        then "a postfix after the block reads the block's answer" {
+            refused_with(under("run { 1 }.length"), "no property `length` on `int`")
+        }
+    }
+    given "names against names" {
+        then "`it` written as a seat is a seat" {
+            shown(under("apply(1) { it -> it + 1 }")) == "2"
+        }
+        then "a seat shadows an outer binding" {
+            shown(under("let x = 10\napply(1) { x -> x }")) == "1"
+        }
+        then "the same seat name at two levels reads the inner" {
+            shown(under("apply(1) { x -> apply(2) { x -> x } + x }")) == "3"
+        }
+        then "a seat named after the callee" {
+            shown(under("apply(1) { apply -> apply }")) == "1"
+        }
+        then "a seat named twice is refused" {
+            refused_with(under("both(1, 2) { x, x -> x }"), "`x` names two of this lambda's seats")
+        }
+        then "`self` is not a seat name" {
+            refusals("type C = { n: int }\nimpl C {\n    fn go(f: fn(int) -> int) -> int { f(self.n) }\n    fn use_self() -> int { self.go { self -> self } }\n}\nC { n: 3 }.use_self()") == 2
+        }
+        then "nested blocks each claim their own `it`" {
+            shown(under("[[1], [2, 3]].map { it.map { it * 2 }.length }[1]")) == "2"
+        }
+    }
+    given "ownership" {
+        then "text flows through a thunk" {
+            shown(under("let s = \"held\"\ntext { s }")) == "held"
+        }
+        then "a block called twice builds text twice and the capture survives" {
+            shown(under("fn twice(f: fn() -> string) -> string { \"\${f()}\${f()}\" }\nlet s = \"ab\"\ntwice { \"\${s}-\" }")) == "ab-ab-"
+        }
+        then "a `mut` seat of a list is written through" {
+            shown("fn grow(mut xs: List<string>, f: fn(mut List<string>) -> int) -> int { f(xs) }\nmut xs = [\"a\"]\ngrow(xs) { xs -> xs.push(\"b\")\n    xs.length }\n\"\${xs.length} \${xs[1]}\"") == "2 b"
+        }
+        then "a record's list is written through a `mut` seat" {
+            shown("type B = { xs: List<string> }\nfn fill(mut b: B, f: fn(mut B)) -> int { f(b)\n    b.xs.length }\nmut b = B { xs: [] }\nlet n = fill(b) { b -> b.xs.push(\"s\") }\n\"\${n} \${b.xs.length}\"") == "1 1"
+        }
+        then "a write through a CAPTURE is refused once, and the seat does not repeat it" {
+            refused_with(under("mut log: List<string> = []\nfn each(f: fn(string)) -> int { f(\"x\")\n    2 }\neach { s -> log.push(s) }\nlog.length"), "`log` is not `mut` — `push` mutates it")
+        }
+        then "text nests through two thunks" {
+            shown(under("let s = \"outer\"\ntext { text { s } }")) == "outer"
+        }
+    }
+}

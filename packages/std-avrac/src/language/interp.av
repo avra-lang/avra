@@ -173,13 +173,13 @@ impl Machine {
             .Call(d, callee, args) -> self.put_at(d, self.call_val(callee, args), pc),
             .FnAddr(d, sym) -> self.put_at(d, self.fn_addr_val(sym), pc),
             .CallPtr(d, f, args) -> self.put_at(d, self.call_ptr_val(f, args), pc),
-            .IfStart(c) -> if self.truth(c) { pc + 1 } else { past_else(b, pc) },
-            .SwitchStart(sel, cases) -> arm_start(b, pc, self.chosen_arm(sel, cases)),
+            .IfStart(c) -> if self.truth(c) { pc + 1 } else { b.past_else(pc) },
+            .SwitchStart(sel, cases) -> b.arm_start(pc, self.chosen_arm(sel, cases)),
             .ArmEnd(gives) -> self.merge_then(b, gives, pc),
             .RegionEnd(d, gives) -> self.put_at(d, self.at(gives) ?? Val.I(0), pc),
             .LoopStart -> pc + 1,
-            .LoopCond(c) -> if self.truth(c) { pc + 1 } else { past_loop(b, pc) },
-            .LoopEnd -> loop_header(b, pc) + 1,
+            .LoopCond(c) -> if self.truth(c) { pc + 1 } else { b.past_loop(pc) },
+            .LoopEnd -> b.loop_header(pc) + 1,
             .Alloca(d) -> self.put_at(d, self.fresh_cell(), pc),
             .Load(d, slot) -> self.put_at(d, self.cell_read(slot), pc),
             .Store(slot, src) -> self.store_step(slot, src, pc),
@@ -188,7 +188,6 @@ impl Machine {
         }
     }
 
-
     /// The backend's twin rule: a POINTER-RIDING destination makes the
     /// constant the null pointer — the absence value. The two engines
     /// must read one instruction alike.
@@ -196,7 +195,6 @@ impl Machine {
         if self.l.types.rides_pointer(b.reg_types[d.index]) { return Val.N }
         Val.I(v)
     }
-
 
     /// A packed value rides the same table an aggregate does — the
     /// interpreter's bookkeeping, not the machine's layout.
@@ -208,11 +206,9 @@ impl Machine {
         self.fresh_array([self.value(r) for r in elems])
     }
 
-
     fn flat_reg(b: Body, r: Reg) -> bool {
         self.l.types.is_flat(b.reg_types[r.index])
     }
-
 
     fn extract_val(b: Body, src: Reg, at: int) -> Val {
         if self.flat_reg(b, src) { return self.value(src) }
@@ -226,7 +222,6 @@ impl Machine {
         arr[at]
     }
 
-
     /// A register written in the TOP frame — the frame is a value, so
     /// the frame that holds the write is stored back over the old one.
     fn put(d: Reg, v: Val) {
@@ -235,7 +230,6 @@ impl Machine {
         regs.set(d.index, v)
         self.frames.set(at, regs)
 
-
     }
 
     fn put_at(d: Reg, v: Val, pc: int) -> int {
@@ -243,16 +237,13 @@ impl Machine {
         pc + 1
     }
 
-
     fn at(r: Reg) -> Val? {
         self.frames.last()![r.index]
     }
 
-
     fn trapped(msg: string) {
         self.failures.push(msg)
     }
-
 
     /// A register's value, which a clean program guarantees present.
     fn value(r: Reg) -> Val {
@@ -264,7 +255,6 @@ impl Machine {
         v!
     }
 
-
     fn truth(r: Reg) -> bool {
         match self.value(r) {
             .B(v) -> v,
@@ -275,11 +265,9 @@ impl Machine {
         }
     }
 
-
     fn int_val(r: Reg) -> int {
         self.whole(self.value(r))
     }
-
 
     fn text_val(v: Val) -> string {
         match v {
@@ -291,7 +279,6 @@ impl Machine {
         }
     }
 
-
     /// A register's float BITS — the evaluator's float currency.
     fn bits_val(r: Reg) -> int {
         match self.value(r) {
@@ -302,7 +289,6 @@ impl Machine {
             }
         }
     }
-
 
     /// IEEE-754 through the SAME C bodies the compiled program uses,
     /// so the two engines cannot drift on a rounding.
@@ -323,7 +309,6 @@ impl Machine {
             .And or .Or -> self.defect_val(lazy_in_eager()),
         }
     }
-
 
     fn bin_val(op: BinOp, a: Reg, x: Reg) -> Val {
         let nulls: bool = self.value(a) is .N || self.value(x) is .N
@@ -363,7 +348,6 @@ impl Machine {
         }
     }
 
-
     /// `==`/`!=` where an operand is the ABSENCE — the presence test a
     /// niche nullable lowers to. Two absences agree; an absence and a
     /// present value never do.
@@ -378,7 +362,6 @@ impl Machine {
         }
     }
 
-
     /// `==`/`!=` over two bool registers — the one non-int Bin.
     fn bool_eq_val(op: BinOp, a: Reg, x: Reg) -> Val {
         let l = self.truth(a)
@@ -392,13 +375,11 @@ impl Machine {
         }
     }
 
-
     fn un_val(op: UnOp, src: Reg) -> Val {
         match op {
             .Not -> Val.B(!self.truth(src)),
         }
     }
-
 
     /// THE defect phrase, worded once: everything here is impossible
     /// past the gate, so each site says only what it saw.
@@ -406,12 +387,10 @@ impl Machine {
         self.trapped("defect: ${what} in a clean program")
     }
 
-
     fn defect_val(what: string) -> Val {
         self.defect(what)
         Val.I(0)
     }
-
 
     /// Which arm the selector chooses: the case that matches, else the
     /// LAST arm (the default). A semantic scan — `index_of` compares
@@ -424,12 +403,11 @@ impl Machine {
         cases.length
     }
 
-
     /// At an ArmEnd after the then-branch ran: seal the merge at the
     /// matching RegionEnd with the then-value and continue past it.
     fn merge_then(b: Body, gives: Reg, pc: int) -> int {
         let v: Val? = self.at(gives)
-        let end = ahead(b, pc, opens_region, closes_region, closes_region)
+        let end = b.ahead(pc, opens_region, closes_region, closes_region)
         if end < b.ins.length {
             let d: Reg? = match b.ins[end] {
                 .RegionEnd(dst, _) -> dst,
@@ -440,7 +418,6 @@ impl Machine {
         end + 1
     }
 
-
     /// A fn address in EVAL-land is the body's index — opaque, like
     /// the machine address it stands in for.
     fn fn_addr_val(sym: string) -> Val {
@@ -449,7 +426,6 @@ impl Machine {
         }
         self.defect_val("a fn address without a body survived lowering")
     }
-
 
     fn call_ptr_val(f: Reg, args: List<Reg>) -> Val {
         let held: Val = self.value(f)
@@ -463,18 +439,15 @@ impl Machine {
         self.run_call(self.l.fns[at], args)
     }
 
-
     fn non_address() -> Val {
         self.defect_val("an indirect call through a non-address")
     }
-
 
     fn call_val(callee: string, args: List<Reg>) -> Val {
         let target: Body? = body_named(self.l, callee)
         if target == null { return self.defect_val("a call without a body survived lowering") }
         self.run_call(target!, args)
     }
-
 
     /// Both call shapes land here: arguments read, the body run, an
     /// answerless body a defect.
@@ -483,12 +456,10 @@ impl Machine {
         answer ?? self.defect_val("a fn body answered nothing")
     }
 
-
     fn fresh_cell() -> Val {
         self.cells.push(Val.I(0))
         Val.C(self.cells.length - 1)
     }
-
 
     fn cell_read(slot: Reg) -> Val {
         match self.value(slot) {
@@ -496,7 +467,6 @@ impl Machine {
             _ -> self.defect_val("a load through a non-cell"),
         }
     }
-
 
     fn store_step(slot: Reg, src: Reg, pc: int) -> int {
         let v = self.value(src)
@@ -508,7 +478,6 @@ impl Machine {
         }
         pc + 1
     }
-
 
     /// A value's printed text — the twin of the runtime's projections.
     fn val_text(v: Val) -> string {
@@ -524,12 +493,10 @@ impl Machine {
         }
     }
 
-
     fn rt_void(callee: string, args: List<Reg>, pc: int) -> int {
         let _ = self.rt_dispatch(callee, [self.value(r) for r in args])
         pc + 1
     }
-
 
     /// A value-producing runtime call; a Bool-typed destination narrows
     /// the runtime's i64 answer, exactly as the backend does.
@@ -543,7 +510,6 @@ impl Machine {
         }
         raw
     }
-
 
     /// The registry's host column, hosted — exhaustive over RtHost, so
     /// a row with a new host demands its arm here.
@@ -619,18 +585,15 @@ impl Machine {
         }
     }
 
-
     /// An extern fn is the host's — the evaluator has no body for it.
     fn unhosted_extern(callee: string) -> Val {
         self.trapped("`${callee}` is extern — the evaluator cannot host it; build natively")
         Val.I(0)
     }
 
-
     fn array_new_val() -> Val {
         self.fresh_array([])
     }
-
 
     /// A new array in the table, holding these values.
     fn fresh_array(elems: List<Val>) -> Val {
@@ -649,12 +612,10 @@ impl Machine {
         }
     }
 
-
     fn array_pop_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a pop from a non-array") }
         self.popped(id)
     }
-
 
     fn popped(id: int) -> Val {
         mut arr = self.arrays[id]
@@ -666,7 +627,6 @@ impl Machine {
         self.arrays.set(id, arr)
         last
 
-
     }
 
     fn array_concat_val(vals: List<Val>) -> Val {
@@ -676,13 +636,11 @@ impl Machine {
         self.fresh_array(self.arrays[a!].concat(self.arrays[b!]))
     }
 
-
     /// The slots from lo up to hi, clamped — worded like the runtime's.
     fn array_slice_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a slice of a non-array") }
         self.sliced(id, self.whole(vals[1]), self.whole(vals[2]))
     }
-
 
     fn sliced(id: int, from: int, to: int) -> Val {
         let xs = self.arrays[id]
@@ -690,7 +648,6 @@ impl Machine {
         let hi = clamped(to, 0, xs.length)
         self.fresh_array(if lo < hi { xs.slice(lo, hi) } else { [] })
     }
-
 
     /// The bytes from lo up to hi, clamped — worded like the runtime's.
     fn str_substring_val(vals: List<Val>) -> Val {
@@ -701,7 +658,6 @@ impl Machine {
         Val.S(if lo < hi { s.substring(lo, hi) } else { "" })
     }
 
-
     /// The byte at `i` as a code; past the text, the runtime's trap.
     fn str_char_code_val(vals: List<Val>) -> Val {
         let s = self.text_val(vals[0])
@@ -710,7 +666,6 @@ impl Machine {
         if i < 0 || i >= n { return self.out_of_bounds(i, n) }
         Val.I(s.char_code(i))
     }
-
 
     /// VALUE SEMANTICS, spelled as the spec: the interpreter has no
     /// counts, so opening a place for writing ALWAYS copies the box —
@@ -732,12 +687,10 @@ impl Machine {
         }
     }
 
-
     fn map_new_val() -> Val {
         self.maps.push(MapVal { keys: [], vals: [] })
         Val.M(self.maps.length - 1)
     }
-
 
     fn map_slot(id: int, key: string) -> int {
         self.maps[id].keys.index_of(key)
@@ -748,18 +701,15 @@ impl Machine {
         Val.I(self.maps[id].keys.length)
     }
 
-
     fn map_has_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.defect_val("a lookup in a non-map") }
         Val.B(self.map_slot(id, self.text_val(vals[1])) >= 0)
     }
 
-
     fn map_get_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.defect_val("a read from a non-map") }
         self.map_read(id, self.text_val(vals[1]))
     }
-
 
     fn map_read(id: int, key: string) -> Val {
         let s = self.map_slot(id, key)
@@ -767,12 +717,10 @@ impl Machine {
         self.maps[id].vals[s]
     }
 
-
     fn map_set_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.defect_val("a write into a non-map") }
         self.map_write(id, self.text_val(vals[1]), vals[2])
     }
-
 
     fn map_write(id: int, key: string, v: Val) -> Val {
         let s = self.map_slot(id, key)
@@ -781,7 +729,6 @@ impl Machine {
                       else { entry with { keys: entry.keys.concat([key]), vals: entry.vals.concat([v]) } }
         self.maps.set(id, written)
         Val.I(0)
-
 
     }
 
@@ -795,7 +742,6 @@ impl Machine {
             _ -> self.defect_val("a place opened through a non-cell"),
         }
 
-
     }
 
     fn slot_unique_val(vals: List<Val>) -> Val {
@@ -805,12 +751,10 @@ impl Machine {
         fresh
     }
 
-
     fn slot_set_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a non-array slot write") }
         self.slot_written(id, self.whole(vals[1]), vals[2])
     }
-
 
     fn slot_written(id: int, at: int, v: Val) -> Val {
         mut arr = self.arrays[id]
@@ -825,12 +769,10 @@ impl Machine {
         Val.I(0)
     }
 
-
     fn array_push_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a push into a non-array") }
         self.pushed(id, vals[1])
     }
-
 
     fn pushed(id: int, v: Val) -> Val {
         mut arr = self.arrays[id]
@@ -843,7 +785,6 @@ impl Machine {
         self.trapped("unwrapped an absent value")
         Val.I(0)
     }
-
 
     /// `v!` on a NICHE nullable — identity through the presence guard.
     /// The once cache asked: this run's answer for the symbol, or
@@ -864,7 +805,6 @@ impl Machine {
         vals[0]
     }
 
-
     /// `v!` on a PAIR nullable — the flag guards, the value passes.
     fn insist_scalar_val(vals: List<Val>) -> Val {
         let present: bool = match vals[0] {
@@ -875,12 +815,10 @@ impl Machine {
         vals[1]
     }
 
-
     fn array_get_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a read from a non-array") }
         self.slot_read_val(id, self.whole(vals[1]))
     }
-
 
     fn slot_read_val(id: int, at: int) -> Val {
         let arr = self.arrays[id]
@@ -888,18 +826,15 @@ impl Machine {
         arr[at]
     }
 
-
     fn array_len_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a length of a non-array") }
         Val.I(self.arrays[id].length)
     }
 
-
     fn str_join_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a join over a non-array") }
         Val.S(joined([self.text_val(e) for e in self.arrays[id]], self.text_val(vals[1])))
     }
-
 
     /// One printed line lands in the machine's output.
     fn puts_val(vals: List<Val>) -> Val {
@@ -918,7 +853,6 @@ impl Machine {
             },
         }
     }
-
 
     fn streq_val(vals: List<Val>) -> Val {
         verdict(self.text_val(vals[0]) == self.text_val(vals[1]))
@@ -976,54 +910,56 @@ fn eputs_val(line: string) -> Val {
 
 // ── Control-flow bracket scans ──────────────────────────────────
 
-/// Where arm `k` of the region opened at `from` begins: just past
-/// the k-th arm separator at depth 0.
-fn arm_start(b: Body, from: int, k: int) -> int {
-    mut at = from
-    for j in 0..k { at = ahead(b, at, opens_region, closes_region, (i: Ins) -> i is .ArmEnd) }
-    at + 1
-}
-
-/// Forward from `from`+1: the pc of the first `target` at depth 0,
-/// with `opens`/`closes` tracking nesting. Target wins over close
-/// at depth 0, so a closer can BE the target.
-fn ahead(b: Body, from: int, opens: fn(Ins) -> bool, closes: fn(Ins) -> bool, target: fn(Ins) -> bool) -> int {
-    mut depth = 0
-    mut j = from + 1
-    while j < b.ins.length {
-        let i = b.ins[j]
-        if depth == 0 && target(i) { return j }
-        if opens(i) { depth = depth + 1 }
-        if closes(i) { depth = depth - 1 }
-        j = j + 1
+impl Body {
+    /// Where arm `k` of the region opened at `from` begins: just past
+    /// the k-th arm separator at depth 0.
+    fn arm_start(from: int, k: int) -> int {
+        mut at = from
+        for j in 0..k { at = self.ahead(at, opens_region, closes_region, (i: Ins) -> i is .ArmEnd) }
+        at + 1
     }
-    b.ins.length
-}
 
-/// From an IfStart: the pc just past its matching ArmEnd.
-fn past_else(b: Body, from: int) -> int {
-    ahead(b, from, opens_region, closes_region, (i: Ins) -> i is .ArmEnd) + 1
-}
-
-/// From a false LoopCond: the pc just past the matching LoopEnd.
-fn past_loop(b: Body, from: int) -> int {
-    ahead(b, from, (i: Ins) -> i is .LoopStart, (i: Ins) -> i is .LoopEnd, (i: Ins) -> i is .LoopEnd) + 1
-}
-
-/// From a LoopEnd: its matching LoopStart — the back edge. The
-/// one backward scan, shaped exactly as `ahead`: target first at
-/// depth 0, then the open/close bookkeeping.
-fn loop_header(b: Body, from: int) -> int {
-    mut depth = 0
-    mut j = from - 1
-    while j >= 0 {
-        let i = b.ins[j]
-        if depth == 0 && i is .LoopStart { return j }
-        if i is .LoopEnd { depth = depth + 1 }
-        if i is .LoopStart { depth = depth - 1 }
-        j = j - 1
+    /// Forward from `from`+1: the pc of the first `target` at depth 0,
+    /// with `opens`/`closes` tracking nesting. Target wins over close
+    /// at depth 0, so a closer can BE the target.
+    fn ahead(from: int, opens: fn(Ins) -> bool, closes: fn(Ins) -> bool, target: fn(Ins) -> bool) -> int {
+        mut depth = 0
+        mut j = from + 1
+        while j < self.ins.length {
+            let i = self.ins[j]
+            if depth == 0 && target(i) { return j }
+            if opens(i) { depth = depth + 1 }
+            if closes(i) { depth = depth - 1 }
+            j = j + 1
+        }
+        self.ins.length
     }
-    0
+
+    /// From an IfStart: the pc just past its matching ArmEnd.
+    fn past_else(from: int) -> int {
+        self.ahead(from, opens_region, closes_region, (i: Ins) -> i is .ArmEnd) + 1
+    }
+
+    /// From a false LoopCond: the pc just past the matching LoopEnd.
+    fn past_loop(from: int) -> int {
+        self.ahead(from, (i: Ins) -> i is .LoopStart, (i: Ins) -> i is .LoopEnd, (i: Ins) -> i is .LoopEnd) + 1
+    }
+
+    /// From a LoopEnd: its matching LoopStart — the back edge. The
+    /// one backward scan, shaped exactly as `ahead`: target first at
+    /// depth 0, then the open/close bookkeeping.
+    fn loop_header(from: int) -> int {
+        mut depth = 0
+        mut j = from - 1
+        while j >= 0 {
+            let i = self.ins[j]
+            if depth == 0 && i is .LoopStart { return j }
+            if i is .LoopEnd { depth = depth + 1 }
+            if i is .LoopStart { depth = depth - 1 }
+            j = j - 1
+        }
+        0
+    }
 }
 
 // ── Calls ───────────────────────────────────────────────────────

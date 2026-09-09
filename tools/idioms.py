@@ -351,6 +351,26 @@ def comma_list_open(lines):
             if not l[m.end():].lstrip().startswith('","?'):
                 yield i, l.strip()[:60] + " … " + m.group(0)[:40]
 
+# THE PASS STATES: the structs whose impl IS their vocabulary. A verb
+# over one is a method (`cx.open_region(c)`), never a free fn taking
+# the state first (`open_region(cx, c)`) — the rule reaches the pass's
+# own files (features/*.av, language/*.av), where the shared
+# vocabularies live; a feature dir's rule bodies dispatch on the
+# state and stay free. A new state struct joins here when its impl
+# becomes its vocabulary.
+STATES = r"TypeCx|LowerCx|ResolveCx|Survey|Workspace|Decls|Builder|Body|Scope"
+STATE_VERB = re.compile(r"^(?:export )?fn \w+\((?:mut )?\w+: (?:" + STATES + r")\b")
+PASS_FILES = re.compile(r"packages/std-avrac/src/(features|language)/[^/]+\.av$")
+
+def state_verb(lines):
+    """A vocabulary verb written as a free fn taking a pass state
+    first — the state's impl is where it belongs (I39)."""
+    if CURRENT["path"] and not PASS_FILES.search(CURRENT["path"]):
+        return
+    for i, l in enumerate(lines):
+        if STATE_VERB.match(l):
+            yield i, l.strip()
+
 def restrlen(lines):
     """A loop condition that re-measures a STRING's length. Hoist it:
     `let n = s.length` before the loop, then test `i < n`."""
@@ -446,6 +466,9 @@ RULES = {
     "I36": (line_rx(r"^\s*(\w+) = \1 \+ (\"|\(|\w+\.substring\()"),
             "text grown by `s = s + piece` — quadratic; a `@std/text` builder "
             "(`builder()`, `push`, `built`) or `repeat`/`pad_*` says it in linear time"),
+    "I39": (state_verb,
+            "a vocabulary verb as a free fn taking a pass state first — the state's "
+            "impl is its vocabulary: write `mut fn verb(…)` there and call `cx.verb(…)`"),
 }
 
 UNRATCHETED = {
@@ -543,6 +566,9 @@ SPECIMENS = {
     "I36": [['        out = out + " "'],
             ["            text = text + src.substring(j, j + 1)"],
             ["            out = out + (unescaped(text.char_code(j + 1)) ?? text.substring(j, j + 2))"]],
+    "I39": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
+            ["fn sig(ws: Workspace, d: DeclId) -> FnSig? {"],
+            ["fn fields_zipped(b: Builder, fs: List<Token>) -> Result<List<Param>, string> {"]],
 }
 
 def next_free_code():

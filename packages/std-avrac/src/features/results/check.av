@@ -5,7 +5,7 @@
 //! the unmatched keep propagating — which needs the same channel
 //! `?` needs.
 use core.{ExprId, Type, TypeId, ResSides}
-use features.{TypeCx, EnumSig, accepts, spoken, this_is, variants_are, TypeArgs, res_enum_sig}
+use features.{TypeCx, EnumSig, this_is, variants_are, TypeArgs, res_enum_sig}
 use diagnostics.{refusal}
 
 fn catch_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -68,7 +68,7 @@ fn arm_bind(mut cx: TypeCx, e: ExprId, err: TypeId, vn: string, bind: string, va
 fn arm_answer(mut cx: TypeCx, t: TypeId, value: ExprId) {
     let at = cx.walk_type(value)
     if cx.errored_ty(at) { return }
-    if accepts(cx, value, t) { return }
+    if cx.accepts(value, t) { return }
     arm_not_ok(cx, value, t)
 }
 
@@ -101,11 +101,11 @@ export fn res_variants(args: TypeArgs) -> EnumSig? {
 
 fn not_a_result(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
-    spoken(cx, refusal("type.catch", cx.loc_of(subject), "`catch` recovers a `Result`, this is `${n}`", this_is(n), "only a fallible value has a failure to recover from"))
+    cx.spoken(refusal("type.catch", cx.loc_of(subject), "`catch` recovers a `Result`, this is `${n}`", this_is(n), "only a fallible value has a failure to recover from"))
 }
 
 fn uncarried_rest(mut cx: TypeCx, e: ExprId, err: TypeId) -> TypeId {
-    spoken(cx, refusal("type.catch", cx.loc_of(e), "a selective `catch` lets the other failures pass, and this fn cannot carry them", "the rest propagate", "name every variant (a total catch), add a catch-all arm `e ->`, or promise `Result<_, ${cx.view.types.name_of(err)}>`"))
+    cx.spoken(refusal("type.catch", cx.loc_of(e), "a selective `catch` lets the other failures pass, and this fn cannot carry them", "the rest propagate", "name every variant (a total catch), add a catch-all arm `e ->`, or promise `Result<_, ${cx.view.types.name_of(err)}>`"))
 }
 
 fn no_variants_to_name(mut cx: TypeCx, e: ExprId, vn: string, err: TypeId) {

@@ -15,83 +15,85 @@ export enum Place {
     Slot(box: Reg, at: Reg)
 }
 
-/// The place an expression names, opened for one write — null for
-/// a value (resolve refuses those before lowering).
-export fn opened_place(mut cx: LowerCx, e: ExprId) -> Place? {
-    let step: PlaceStep? = cx.view.store.place_step(e)
-    if step == null { return null }
-    match step! {
-        .Root(_) -> cell_place(cx, e),
-        .Field(subject, name) -> field_place(cx, subject, name),
-        .At(subject, index) -> Place.Slot(unique_box(cx, subject), cx.reg_of(index)),
-    }
-}
-
-/// A field's place. A FLAT record IS its one field, so writing that
-/// field writes the RECORD — the subject's own place, not a slot in
-/// a box the record does not have.
-fn field_place(mut cx: LowerCx, subject: ExprId, name: string) -> Place? {
-    if flat_at(cx, subject) { return opened_place(cx, subject) }
-    Place.Slot(unique_box(cx, subject), field_slot(cx, subject, name))
-}
-
-fn cell_place(cx: LowerCx, e: ExprId) -> Place? {
-    let cell: Reg? = cx.cell_of(e)
-    if cell == null { return null }
-    Place.Cell(cell!)
-}
-
-/// The box a path's subject holds, UNIQUE for writing. Operands
-/// first, the destination last — registers define in mint order.
-export fn unique_box(mut cx: LowerCx, s: ExprId) -> Reg {
-    let step: PlaceStep? = cx.view.store.place_step(s)
-    if step == null { return lower_defect(cx, s, "a mutation through a value survived resolve") }
-    match step! {
-        .Root(_) -> {
-            let cell: Reg? = cx.cell_of(s)
-            if cell != null {
-                let dst = cx.mint_ty(cx.type_at(s))
-                // a BORROW of a parameter's field writes through to the
-                // field (bs2's aliasing, honored until self-host); any
-                // other cell opens unique — copy-on-write
-                if borrows(cx, s) { cx.emit(Ins.Load(dst, cell!)) } else { cx.emit(Ins.CallRt(dst, "avra_cell_unique", [cell!])) }
-                return dst
-            }
-            // a method's receiver: `self` is the box itself — shared
-            // by design, so no uniqueness is asked of it
-            cx.def_reg(s) ?? lower_defect(cx, s, "a mutation rooted outside a mut cell survived resolve")
+impl LowerCx {
+    /// The place an expression names, opened for one write — null for
+    /// a value (resolve refuses those before lowering).
+    mut fn opened_place(e: ExprId) -> Place? {
+        let step: PlaceStep? = self.view.store.place_step(e)
+        if step == null { return null }
+        match step! {
+            .Root(_) -> self.cell_place(e),
+            .Field(subject, name) -> self.field_place(subject, name),
+            .At(subject, index) -> Place.Slot(self.unique_box(subject), self.reg_of(index)),
         }
-        .Field(subject, name) -> slot_opened(cx, s, unique_box(cx, subject), field_slot(cx, subject, name)),
-        .At(subject, index) -> slot_opened(cx, s, unique_box(cx, subject), cx.reg_of(index)),
     }
-}
 
-/// Whether a root name is a `mut` binding that borrows a parameter's
-/// field.
-fn borrows(cx: LowerCx, root: ExprId) -> bool {
-    let b: Binding? = cx.names.binding(root)
-    if b == null { return false }
-    match b! {
-        .Def(s) -> cx.facts.is_borrow(s),
-        .Param(_) or .Receiver or .Decl(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+    /// A field's place. A FLAT record IS its one field, so writing that
+    /// field writes the RECORD — the subject's own place, not a slot in
+    /// a box the record does not have.
+    mut fn field_place(subject: ExprId, name: string) -> Place? {
+        if self.flat_at(subject) { return self.opened_place(subject) }
+        Place.Slot(self.unique_box(subject), self.field_slot(subject, name))
     }
-}
 
-fn slot_opened(mut cx: LowerCx, s: ExprId, parent: Reg, at: Reg) -> Reg {
-    let dst = cx.mint_ty(cx.type_at(s))
-    cx.emit(Ins.CallRt(dst, "avra_slot_unique", [parent, at]))
-    dst
-}
-
-/// A field's declaration index as a register — the slot it lives in.
-fn field_slot(mut cx: LowerCx, subject: ExprId, name: string) -> Reg {
-    let sig: StructSig? = cx.fields_at(subject)
-    let slot: int? = sig?.slot_of(name)
-    let idx = cx.mint_shape(Type.Int)
-    if slot == null {
-        let _ = lower_defect(cx, subject, "a fieldless place survived typing")
-        return idx
+    fn cell_place(e: ExprId) -> Place? {
+        let cell: Reg? = self.cell_of(e)
+        if cell == null { return null }
+        Place.Cell(cell!)
     }
-    cx.emit(Ins.ConstInt(idx, slot!))
-    idx
+
+    /// The box a path's subject holds, UNIQUE for writing. Operands
+    /// first, the destination last — registers define in mint order.
+    mut fn unique_box(s: ExprId) -> Reg {
+        let step: PlaceStep? = self.view.store.place_step(s)
+        if step == null { return self.lower_defect(s, "a mutation through a value survived resolve") }
+        match step! {
+            .Root(_) -> {
+                let cell: Reg? = self.cell_of(s)
+                if cell != null {
+                    let dst = self.mint_ty(self.type_at(s))
+                    // a BORROW of a parameter's field writes through to the
+                    // field (bs2's aliasing, honored until self-host); any
+                    // other cell opens unique — copy-on-write
+                    if self.borrows(s) { self.emit(Ins.Load(dst, cell!)) } else { self.emit(Ins.CallRt(dst, "avra_cell_unique", [cell!])) }
+                    return dst
+                }
+                // a method's receiver: `self` is the box itself — shared
+                // by design, so no uniqueness is asked of it
+                self.def_reg(s) ?? self.lower_defect(s, "a mutation rooted outside a mut cell survived resolve")
+            }
+            .Field(subject, name) -> self.slot_opened(s, self.unique_box(subject), self.field_slot(subject, name)),
+            .At(subject, index) -> self.slot_opened(s, self.unique_box(subject), self.reg_of(index)),
+        }
+    }
+
+    /// Whether a root name is a `mut` binding that borrows a parameter's
+    /// field.
+    fn borrows(root: ExprId) -> bool {
+        let b: Binding? = self.names.binding(root)
+        if b == null { return false }
+        match b! {
+            .Def(s) -> self.facts.is_borrow(s),
+            .Param(_) or .Receiver or .Decl(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+        }
+    }
+
+    mut fn slot_opened(s: ExprId, parent: Reg, at: Reg) -> Reg {
+        let dst = self.mint_ty(self.type_at(s))
+        self.emit(Ins.CallRt(dst, "avra_slot_unique", [parent, at]))
+        dst
+    }
+
+    /// A field's declaration index as a register — the slot it lives in.
+    mut fn field_slot(subject: ExprId, name: string) -> Reg {
+        let sig: StructSig? = self.fields_at(subject)
+        let slot: int? = sig?.slot_of(name)
+        let idx = self.mint_shape(Type.Int)
+        if slot == null {
+            let _ = self.lower_defect(subject, "a fieldless place survived typing")
+            return idx
+        }
+        self.emit(Ins.ConstInt(idx, slot!))
+        idx
+    }
 }

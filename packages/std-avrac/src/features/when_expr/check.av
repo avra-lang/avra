@@ -2,12 +2,12 @@
 //! the `_` arm's type — the total arm anchors, since it always
 //! exists. Error absorbs everywhere.
 use core.{ExprId, TypeId}
-use features.{TypeCx, require_bool, arms_agree}
+use features.{TypeCx}
 
 fn when_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) {
         .When(conds, values, fallback) -> {
-            for c in conds { require_bool(cx, c, "a `when` condition", "this decides an arm") }
+            for c in conds { cx.require_bool(c, "a `when` condition", "this decides an arm") }
             arms_type(cx, values, fallback)
         }
         _ -> cx.error_type,
@@ -16,5 +16,5 @@ fn when_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 
 fn arms_type(mut cx: TypeCx, values: List<ExprId>, fallback: ExprId) -> TypeId {
     if cx.errored(fallback) { return cx.error_type }
-    arms_agree(cx, "type.mismatch", "when", "the `_` arm", fallback, values)
+    cx.arms_agree("type.mismatch", "when", "the `_` arm", fallback, values)
 }

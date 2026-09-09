@@ -76,7 +76,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .ScopeExit(gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
-                for s in settled(scope, gives) { out.push(s) }
+                for s in scope.settled(gives) { out.push(s) }
                 // a yield is retained only where something RECEIVES
                 // it: an enclosing scope adopts, or — at the
                 // outermost — the CALLER takes it as the answer, and
@@ -99,7 +99,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .ArmEnd(gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
-                for s in settled(scope, gives) { out.push(s) }
+                for s in scope.settled(gives) { out.push(s) }
                 // LICENSED I3: the pass's OUTPUT accumulates
                 for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
                 // LICENSED I15: a scope STACK walked by the pass, not a bracket body
@@ -109,7 +109,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .RegionEnd(_, gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
-                for s in settled(scope, gives) { out.push(s) }
+                for s in scope.settled(gives) { out.push(s) }
                 // LICENSED I3: the pass's OUTPUT accumulates
                 for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
                 manages(types, reg_types, open_scopes, i)
@@ -188,7 +188,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .LoopCond(_) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED I3: the pass's OUTPUT accumulates
-                for s in settled(scope, null) { out.push(s) }
+                for s in scope.settled(null) { out.push(s) }
                 out.push(i)
             }
             .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
@@ -315,7 +315,7 @@ fn exit_releases(open_scopes: Stack<Scope>, kept: Reg) -> List<Reg> {
     mut j = open_scopes.depth() - 1
     while j >= 0 {
         let scope: Scope = open_scopes.at(j)
-        out = out.concat(releases_for(scope, kept))
+        out = out.concat(scope.releases_for(kept))
         j = j - 1
     }
     out
@@ -349,12 +349,14 @@ fn moved_out(types: TypeRegistry, reg_types: List<TypeId>, scope: Scope, gives: 
     [Ins.Retain(r)]
 }
 
-/// The strategy: what a scope owes at its exit. `kept` is a value
-/// that escapes the scope and is owned elsewhere.
-fn releases_for(scope: Scope, kept: Reg?) -> List<Reg> {
-    match scope.tier {
-        .Application -> kept_out(reversed(scope.managed), kept),
-        .Systems or .Bare or .Hardware -> [],
+impl Scope {
+    /// The strategy: what a scope owes at its exit. `kept` is a value
+    /// that escapes the scope and is owned elsewhere.
+    fn releases_for(kept: Reg?) -> List<Reg> {
+        match self.tier {
+            .Application -> kept_out(reversed(self.managed), kept),
+            .Systems or .Bare or .Hardware -> [],
+        }
     }
 }
 
@@ -490,10 +492,12 @@ fn exit_cells(open_scopes: Stack<Scope>) -> List<Reg> {
     out
 }
 
-/// What a closing scope owes: its cells settled, last bound first,
-/// then the releases its yield leaves behind.
-fn settled(scope: Scope, gives: Reg?) -> List<Ins> {
-    [cell_settle(c) for c in reversed(scope.cells)].concat([Ins.Release(r) for r in releases_for(scope, gives)])
+impl Scope {
+    /// What a closing scope owes: its cells settled, last bound first,
+    /// then the releases its yield leaves behind.
+    fn settled(gives: Reg?) -> List<Ins> {
+        [cell_settle(c) for c in reversed(self.cells)].concat([Ins.Release(r) for r in self.releases_for(gives)])
+    }
 }
 
 /// The caller's retains for a call's managed arguments.

@@ -3,12 +3,12 @@
 //! widening reached lists at G3); the empty literal is the
 //! absence-of-elements value, adopted by whatever list claims it.
 use core.{ExprId, Type, TypeId}
-use features.{TypeCx, spoken, this_is, slot_worthy, want_refused, accepts, require_bool, require_int, unslottable, unslottable_want}
+use features.{TypeCx, this_is, slot_worthy}
 use diagnostics.{refusal}
 
 fn list_type(mut cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
     if elems.is_empty() { return cx.view.types.intern(Type.EmptyList) }
-    if want_refused(cx, e) { return cx.error_type }
+    if cx.want_refused(e) { return cx.error_type }
     // a slot that KNOWS its elements judges each by the one
     // assignment door — heterogeneity boxes, lambdas hear seats
     let want: TypeId? = wanted_elem(cx, e)
@@ -16,9 +16,9 @@ fn list_type(mut cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
     let head = leading_element(cx, elems)
     let elem = cx.type_at(head)
     if cx.errored(head) { return cx.error_type }
-    if !slot_worthy(cx.view.types, cx.shape_at(head)) { return unslottable(cx, head, "a list element") }
+    if !slot_worthy(cx.view.types, cx.shape_at(head)) { return cx.unslottable(head, "a list element") }
     for k in elems {
-        if !accepts(cx, k, elem) { return disagreeing_element(cx, k, elem) }
+        if !cx.accepts(k, elem) { return disagreeing_element(cx, k, elem) }
     }
     cx.view.types.intern(Type.List(elem))
 }
@@ -45,25 +45,23 @@ fn wanted_elem(cx: TypeCx, e: ExprId) -> TypeId? {
 /// widens record (dyn boxes, auto-Ok), and the refusals speak the
 /// slot's words, not the head's.
 fn heard_list(mut cx: TypeCx, e: ExprId, elems: List<ExprId>, want: TypeId) -> TypeId {
-    if !slot_worthy(cx.view.types, cx.view.types.shape_of(want)) { return unslottable_want(cx, e, want, "a list element") }
+    if !slot_worthy(cx.view.types, cx.view.types.shape_of(want)) { return cx.unslottable_want(e, want, "a list element") }
     for k in elems {
-        if !accepts(cx, k, want) { return unwanted_element(cx, k, want) }
+        if !cx.accepts(k, want) { return unwanted_element(cx, k, want) }
     }
     cx.view.types.intern(Type.List(want))
 }
 
 // ── The voices ──
 
-
-
 fn disagreeing_element(mut cx: TypeCx, k: ExprId, elem: TypeId) -> TypeId {
     let n = cx.name_at(k)
-    spoken(cx, refusal("type.list_element", cx.loc_of(k), "a list's elements share one type — the first is `${cx.view.types.name_of(elem)}`, this is `${n}`", this_is(n), null))
+    cx.spoken(refusal("type.list_element", cx.loc_of(k), "a list's elements share one type — the first is `${cx.view.types.name_of(elem)}`, this is `${n}`", this_is(n), null))
 }
 
 fn unwanted_element(mut cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {
     let n = cx.name_at(k)
-    spoken(cx, refusal("type.list_element", cx.loc_of(k), "this list holds `${cx.view.types.name_of(want)}`, this is `${n}`", this_is(n), null))
+    cx.spoken(refusal("type.list_element", cx.loc_of(k), "this list holds `${cx.view.types.name_of(want)}`, this is `${n}`", this_is(n), null))
 }
 
 /// THE COMPREHENSION LAW: the head is the `for` statement's. Over a
@@ -81,7 +79,7 @@ fn comp_type(mut cx: TypeCx, e: ExprId, elem: ExprId, index: string?, source: Ex
     let ew: TypeId? = wanted_elem(cx, e)
     if ew != null { cx.plant_want(elem, ew!) }
     let ety = cx.walk_type(elem)
-    if cx.errored(elem) || want_refused(cx, e) { return cx.error_type }
+    if cx.errored(elem) || cx.want_refused(e) { return cx.error_type }
     match ew {
         null -> collected(cx, elem, ety)
         w? -> heard_elem(cx, elem, ety, w)
@@ -93,13 +91,13 @@ fn comp_type(mut cx: TypeCx, e: ExprId, elem: ExprId, index: string?, source: Ex
 /// disagrees keeps its own list, and the SEAT speaks: an `accepts`
 /// miss is silent by contract.
 fn heard_elem(mut cx: TypeCx, elem: ExprId, ety: TypeId, w: TypeId) -> TypeId {
-    cx.view.types.intern(Type.List(if accepts(cx, elem, w) { w } else { ety }))
+    cx.view.types.intern(Type.List(if cx.accepts(elem, w) { w } else { ety }))
 }
 
 /// The list an element of its own type makes — the element rides a
 /// slot.
 fn collected(mut cx: TypeCx, elem: ExprId, ety: TypeId) -> TypeId {
-    if !slot_worthy(cx.view.types, cx.shape_at(elem)) { return unslottable(cx, elem, "a list element") }
+    if !slot_worthy(cx.view.types, cx.shape_at(elem)) { return cx.unslottable(elem, "a list element") }
     cx.view.types.intern(Type.List(ety))
 }
 
@@ -107,7 +105,7 @@ fn collected(mut cx: TypeCx, elem: ExprId, ety: TypeId) -> TypeId {
 fn filter_checks(mut cx: TypeCx, cond: ExprId, tys: List<TypeId>) {
     cx.bind_types(cond, tys)
     let _ = cx.walk_type(cond)
-    require_bool(cx, cond, "a comprehension's filter", "this decides the element")
+    cx.require_bool(cond, "a comprehension's filter", "this decides the element")
 }
 
 /// The binders' types over a list: the element's, under the index's
@@ -126,8 +124,8 @@ fn walked_types(mut cx: TypeCx, index: string?, source: ExprId) -> List<TypeId> 
 /// bounds are ints, and an index has nothing to name — it wears the
 /// refusal's type while the count still types.
 fn counted_types(mut cx: TypeCx, index: string?, lo: ExprId, hi: ExprId) -> List<TypeId> {
-    require_int(cx, lo, "a range's low bound", "this is where counting starts")
-    require_int(cx, hi, "a range's high bound", "this is where counting stops")
+    cx.require_int(lo, "a range's low bound", "this is where counting starts")
+    cx.require_int(hi, "a range's high bound", "this is where counting stops")
     let int = cx.view.types.intern(Type.Int)
     if index == null { return [int] }
     [range_has_no_index(cx, lo), int]
@@ -141,9 +139,9 @@ fn binders(mut cx: TypeCx, index: string?, elem: TypeId) -> List<TypeId> {
 
 fn not_walkable(mut cx: TypeCx, source: ExprId) -> TypeId {
     let n = cx.name_at(source)
-    spoken(cx, refusal("type.list", cx.loc_of(source), "a comprehension walks a list, found `${n}`", this_is(n), "`for x in xs` needs a `List<T>` — an empty `[]` has no element yet; `for i in lo..hi` counts"))
+    cx.spoken(refusal("type.list", cx.loc_of(source), "a comprehension walks a list, found `${n}`", this_is(n), "`for x in xs` needs a `List<T>` — an empty `[]` has no element yet; `for i in lo..hi` counts"))
 }
 
 fn range_has_no_index(mut cx: TypeCx, lo: ExprId) -> TypeId {
-    spoken(cx, refusal("type.list", cx.loc_of(lo), "a range has no index — the counter IS the position", "counted from here", "write `for i in lo..hi`"))
+    cx.spoken(refusal("type.list", cx.loc_of(lo), "a range has no index — the counter IS the position", "counted from here", "write `for i in lo..hi`"))
 }

@@ -168,6 +168,7 @@ impl TypeRegistry {
         // as one type however it was built: an unmarked seat list is
         // empty, and `marked` reads absence as unwritten.
         let t = trimmed_marks(raw)
+        self.keep_seats_boxed(t)
         let key = self.canon(t)
         let hit: TypeId? = self.ids.get(key)
         if hit != null { return hit! }
@@ -197,6 +198,22 @@ impl TypeRegistry {
     /// one-slot box, because a word has no spare value for absence.
     fn opt_rides_pointer(inner: TypeId) -> bool {
         self.rides_pointer(inner) || self.is_flat(inner)
+    }
+
+    /// A `mut` SEAT KEEPS ITS BOX whichever fn type names it — a
+    /// lambda's, a written `fn(mut C)`, a declared fn worn as a value
+    /// — since a write must reach a box and a flat record has none.
+    /// A declaration's own seats seal at declare (`keep_boxed`); this
+    /// is the same law at the type's seam.
+    fn keep_seats_boxed(t: Type) {
+        match t {
+            .Fn(params, muts, _) -> {
+                for j, p in params {
+                    if marked(muts, j) { self.unflatten(p) }
+                }
+            }
+            _ -> nothing_sealed(),
+        }
     }
 
     /// A record KEEPS its box: an impl may write through `self`, and
@@ -352,7 +369,6 @@ impl TypeRegistry {
     }
 }
 
-
 /// What a `Result` carries on each side — res_parts' answer.
 export type ResSides = { ok: TypeId, err: TypeId }
 
@@ -397,4 +413,8 @@ export fn no_marks(n: int) -> List<bool> {
         j = j + 1
     }
     out
+}
+
+/// A shape with no seats to seal.
+fn nothing_sealed() {
 }

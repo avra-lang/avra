@@ -1,0 +1,94 @@
+// Trailing blocks: `f(a) { x -> body }` is `f(a, (x) -> body)`, an
+// `else { … }` after it fills the next fn seat, and a brace-anchored
+// HEAD (`if`, `while`, `for`, `match`, `if let`) takes none.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+spec "features/closures/trailing" {
+    given "the block is the call's last argument" {
+        then "a named call takes one after its parentheses" {
+            shown("fn apply(v: int, f: fn(int) -> int) -> int { f(v) }\napply(20) { n -> n + 1 }") == "21"
+        }
+        then "a method call takes one" {
+            shown("[1, 2, 3].map { x -> x * 2 }[2]") == "6"
+        }
+        then "an applied value takes one" {
+            shown("fn adder(n: int) -> fn(fn() -> int) -> int {\n    (f: fn() -> int) -> f() + n\n}\nadder(40)() { 2 }") == "42"
+        }
+        then "a name with no parentheses is a call with none" {
+            shown("fn run(f: fn() -> string) -> string { f() }\nrun { \"ran\" }") == "ran"
+        }
+        then "a field read with no parentheses is a method call with none" {
+            shown("type T = { x: int }\nimpl T {\n    fn tx(f: fn() -> int) -> int { f() + self.x }\n}\nlet t = T { x: 40 }\nt.tx { 2 }") == "42"
+        }
+        then "`else` fills the second fn seat" {
+            shown("fn pick(c: bool, a: fn() -> int, b: fn() -> int) -> int { if c { a() } else { b() } }\n\"\${pick(true) { 1 } else { 2 }} \${pick(false) { 1 } else { 2 }}\"") == "1 2"
+        }
+        then "a block with no arrow that reads `it` takes one seat" {
+            shown("([1, 2, 3].filter { it > 1 }).length") == "2"
+        }
+        then "`it` is heard inside the block's statements" {
+            shown("[3, 4].map {\n    let y = it * 10\n    y + it\n}[1]") == "44"
+        }
+        then "a multi-statement body answers its tail" {
+            shown("[1, 2].map { x ->\n    let y = x * 10\n    y + 1\n}[1]") == "21"
+        }
+        then "a seat hears its slot's `mut` mark" {
+            shown("type C = { n: int }\nimpl C {\n    mut fn bump() { self.n = self.n + 1 }\n}\nfn touched(mut c: C, f: fn(mut C) -> int) -> int { f(c) }\nmut c = C { n: 1 }\nlet a = touched(c) { c -> c.bump()\n    c.n }\n\"\${a} \${c.n}\"") == "2 2"
+        }
+        then "a written `mut` seat is assigned through" {
+            shown("type C = { n: int }\nfn touched(mut c: C, f: fn(mut C) -> int) -> int { f(c) }\nmut c = C { n: 1 }\nlet a = touched(c) { mut c -> c.n = 10\n    c.n }\n\"\${a} \${c.n}\"") == "10 10"
+        }
+        then "a `mut` seat handed to a fn value's `mut` seat is a write" {
+            refusals("type C = { n: int }\nfn touched(mut c: C, f: fn(mut C) -> int) -> int { f(c) }\nmut c = C { n: 1 }\ntouched(c) { mut c -> c.n = 10\n    c.n }") == 0
+        }
+        then "a lambda's own `mut` seat is written through" {
+            shown("type C = { n: int }\nlet set: fn(mut C) -> int = (mut c: C) -> {\n    c.n = 5\n    c.n\n}\nmut c = C { n: 1 }\n\"\${set(c)} \${c.n}\"") == "5 5"
+        }
+    }
+    given "the heads take none" {
+        then "an `if` condition keeps its braces" {
+            shown("fn one(v: int) -> bool { v > 0 }\nif one(1) { 42 } else { 0 }") == "42"
+        }
+        then "a `while` condition keeps its braces" {
+            shown("fn lt(v: int) -> bool { v < 3 }\nmut k = 0\nwhile lt(k) { k = k + 1 }\nk") == "3"
+        }
+        then "a `for` subject keeps its braces" {
+            shown("fn ids(n: int) -> List<int> { [n, n] }\nmut k = 0\nfor v in ids(2) { k = k + v }\nk") == "4"
+        }
+        then "a `match` subject keeps its braces" {
+            shown("fn one(v: int) -> int { v }\nmatch one(2) { 2 -> \"two\", _ -> \"other\" }") == "two"
+        }
+        then "a struct literal in a condition still parses as one" {
+            shown("type P = { x: int }\nfn same(a: P, b: P) -> bool { a.x == b.x }\nif same(P { x: 1 }, P { x: 1 }) { 1 } else { 0 }") == "1"
+        }
+        then "a let-else subject takes one block, and the `else` is the let's" {
+            shown("fn f() -> int? {\n    let held? = [1, 2, 3].find { it > 2 } else { return null }\n    held\n}\nf() ?? 0") == "3"
+        }
+        then "a parenthesised head takes one" {
+            shown("fn apply(v: int, f: fn(int) -> int) -> int { f(v) }\nmatch (apply(2) { n -> n }) { 2 -> \"two\", _ -> \"other\" }") == "two"
+        }
+    }
+    given "the refusals, each in the block's words" {
+        then "a callee with no seat left refuses at the call" {
+            refused_with("fn one(v: int) -> int { v }\none(1) { 2 }", "a trailing block fills a fn seat, and there is no seat left for it")
+        }
+        then "a seat that is not a fn refuses the block" {
+            refused_with("fn one(v: int) -> int { v }\none { 2 }", "the trailing block fills seat 1 of `one`, which takes `int`")
+        }
+        then "a block whose seats misfit the fn seat is refused as a fn" {
+            refused_with("fn apply(v: int, f: fn(int) -> int) -> int { f(v) }\napply(1) { 2 }", "the trailing block fills seat 2 of `apply`, which takes `fn(int) -> int`")
+        }
+        then "a hungry block at a scalar seat speaks at the walk's end" {
+            refused_with("fn one(v: int) -> int { v }\none { x -> x }", "a trailing block fills a fn seat, and this seat takes `int`")
+        }
+        then "a block after a non-call refuses" {
+            refused_with("let s = 1 + 2 { 3 }\ns", "a trailing block follows this expression, and only a call takes one")
+        }
+        then "a block in an `if` head is the body, and its arrow is refused as a statement" {
+            refusals("fn one(v: int) -> int { v }\nif one(1) { x -> x } { let _ = 0 }\n1") == 3
+        }
+        then "a lambda's `mut` seat refuses a non-mut fn seat" {
+            refused_with("type C = { n: int }\nlet set: fn(C) -> int = (mut c: C) -> c.n\n1", "`set` declares `fn(C) -> int`, this is `fn(mut C) -> int`")
+        }
+    }
+}

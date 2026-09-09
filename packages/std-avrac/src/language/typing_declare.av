@@ -339,7 +339,7 @@ impl TypeCx {
     /// would be a type nothing can lower.
     fn applied(at: Loc?, t: TypeRef) -> TypeId {
         let row: TypeRow? = type_row(self.view.lang.types, t.name)
-        let takes: int? = row?.arity ?? declared_arity(self, t.name)
+        let takes: int? = row?.arity ?? self.declared_arity(t.name)
         if takes == null {
             // The NAME law speaks first: a constructor that names no
             // type at all is not an arity mistake, and saying so
@@ -449,23 +449,23 @@ impl TypeCx {
         if self.view.decls.is_enum(d) { return self.view.types.intern(Type.Enum(d, name)) }
         self.view.types.intern(Type.Struct(d, name))
     }
-}
 
-/// A declaration's signature — the ONE entry the `sig` query runs.
-/// A method declares under its parent: a trait's sig, or an impl's
-/// method (the impl's verdict decides whether it is real or
-/// wreckage); the impl block itself checks its contract.
-export fn declare_one(mut t: TypeCx, x: Decl) {
-    match x.kind {
-        .Record -> t.declare_record(x.stmt),
-        .Enum -> t.declare_enum(x.stmt),
-        .Fn -> t.declare_fn(x.stmt),
-        .Method -> t.declare_member(x),
-        .Default -> t.declare_default(x),
-        .Impl -> t.declare_impl_block(x.stmt),
-        .Case -> t.declare_case(x),
-        // a builtin was signed at admission, from its row
-        .Trait or .Main or .Builtin -> nothing(),
+    /// A declaration's signature — the ONE entry the `sig` query runs.
+    /// A method declares under its parent: a trait's sig, or an impl's
+    /// method (the impl's verdict decides whether it is real or
+    /// wreckage); the impl block itself checks its contract.
+    mut fn declare_one(x: Decl) {
+        match x.kind {
+            .Record -> self.declare_record(x.stmt),
+            .Enum -> self.declare_enum(x.stmt),
+            .Fn -> self.declare_fn(x.stmt),
+            .Method -> self.declare_member(x),
+            .Default -> self.declare_default(x),
+            .Impl -> self.declare_impl_block(x.stmt),
+            .Case -> self.declare_case(x),
+            // a builtin was signed at admission, from its row
+            .Trait or .Main or .Builtin -> nothing(),
+        }
     }
 }
 

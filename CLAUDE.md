@@ -89,8 +89,12 @@ source and refuses a repeated number.
   read or write its tables (`speak`, `bind`, `mint`, `give`) live
   as methods, so drivers read as prose. The free state fns the
   bootstrap habit left (`eval_node(ev, cx, e)`, the interpreter's
-  `put(m, …)`, the backend's `define(em, …)`) are methods now — ours
-  has no #1377 (probed); new code writes the method.
+  `put(m, …)`, the backend's `define(em, …)`) are methods now, and
+  so are the pass contexts' whole vocabularies (`cx.accepts(e,
+  want)`, `cx.open_region(c)`, `ws.sig(d)` — 320 verbs, one sweep);
+  I39 refuses a new free verb in the pass's own files. A PASS ENTRY
+  POINT (`lower(a: Analysis)`, `memory(l: Lowered)`) keeps the one
+  standard signature and is not a verb.
 - A long fn splits at its PHASE boundaries into named helpers, each
   with a one-line contract (`match_seq` matches, `built` builds;
   `printed_value` dispatches, `bool_word` branches). If a fn needs
@@ -785,12 +789,19 @@ engine's spec, written by dogfooding.
   re-measure at ~40 instructions, do not re-argue.
 - THE EMISSION VOCABULARY (features/emit.av): a feature's lowering
   emits its own VALUE shape and SPEAKS every control shape —
-  `open_region`/`arm_end`/`close_region`, `loop_start`/`loop_cond`/
+  `cx.open_region`/`arm_end`/`close_region`, `loop_start`/`loop_cond`/
   `loop_end`, the walk (`opened`/`counted`/`turn_*`), the cells,
   `const_int`/`const_bool`, `measured_reg`/`measure_of` — never a
-  raw `cx.emit(Ins.IfStart…)` or `Ins.LoopStart`. Two engines read
-  one instruction stream by construction; I33 ratchets it, and the
-  vocabulary grows with the next shared shape.
+  raw `cx.emit(Ins.IfStart…)` or `Ins.LoopStart`. A TWO-ARMED REGION
+  IS ONE EXPRESSION: `cx.region(c, e) { cx -> … } else { cx -> … }`,
+  `region_as`, `presence` (the present arm handed what the value
+  carries), `void_region`/`void_branches` — the brackets spoken once
+  inside the verb, so no site can mismatch them; the open/arm/close
+  verbs remain for folds and switches. The block takes the context
+  as a `mut` seat heard from the slot, never as a capture. Two
+  engines read one instruction stream by construction; I33 ratchets
+  the raw brackets, I39 the free verbs, and the vocabulary grows
+  with the next shared shape.
 - THE IR's BOOL LAW (ours, enforced by the evaluator): `&&`/`||`
   are never `Bin` over bool registers — they are lazy regions
   (`IfStart … ArmEnd … RegionEnd`); a `Bin(Or)` on bools is the
@@ -981,12 +992,17 @@ Syntax the grammar lacks:
   are F2055 "takes arguments — a `once` answer is one value for the
   whole process", and that refusal reaches the mistake whether or
   not the parameter carries a `mut`.
-- A TRAILING-LAMBDA call (`tx { 42 }` where `tx` takes `fn() ->
-  int`): "expected BREAK while parsing `stmt`", pointing at the `{`.
-  The lambda in an ARGUMENT seat is fine (`tx(() -> 42)`), so every
-  scoped-resource verb spells `db.tx(() -> { … })` and never
-  `db.tx { … }` — worth listing because the braced form is the one
-  that gets written first.
+- A TRAILING BLOCK IN A HEAD: `if f(a) { x -> x } { … }` is F0100
+  "expected BREAK" at the `->` — a head (`if`, `while`, `for`, `match`,
+  `if let`, `let … else`) keeps its brace, so a call wanting a block
+  there is parenthesised: `if (f(a) { x -> x }) { … }`. Everywhere
+  else `f(a) { x -> body }` is `f(a, (x) -> body)`, a postfix like the
+  rest (`xs.find { it > 1 } ?? 0`), and `else { … }` fills the next fn
+  seat — provisionally: sugar 5 retires the word for the seat's name
+  (`other: { … }`), since `else` reads as a branch whatever the seat is. Two shapes it does not reach: `a?.m { … }` (the chain lowers
+  to a match — the block goes in the parentheses), and `(f(a)) { … }`
+  widens `f(a)` (a paren group mints no node) where `f(a)() { … }`
+  applies the answer.
 - A GENERIC FN AS A VALUE (`let f: fn(int) -> int = ident<int>`, the
   pinned call unapplied): "expected BREAK while parsing `stmt`" — a
   pinned call is a CALL in the grammar, so a generic fn cannot be
@@ -1115,6 +1131,11 @@ Wants the typer does not carry yet:
   (`let held: T? = self.rows[i]`): F2001 "`T` names no type".
   Leave that local un-annotated; a field read or `with` on a
   generic method's answer needs no bind at all.
+- A BOUND METHOD AS A VALUE (`xs.any(self.rides)`): F2003 "no field
+  `rides` on `S`" — a method name without parentheses is a PROPERTY
+  read. A free fn is a value (`xs.any(big)` answers); the method is
+  not. Write the wrapper `(k) -> self.rides(k)` (sugar backlog: a
+  bound method as a value).
 - `it` through a self-method wrapper (`xs.any(self.rides(it))`):
   F2033 "`it` has no element here — this seat takes `int`, not a
   fn" — `it` binds to the NEAREST call; write `(k) ->

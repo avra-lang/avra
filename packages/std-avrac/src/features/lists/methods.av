@@ -2,8 +2,8 @@
 //! fn argument's seats and answer before any loop exists), the
 //! scans, the growth words and the copies, each a row's rule; the
 //! receiver is always a list because the row's `takes` said so.
-use core.{ExprId, TypeId, Type, Arrow, LambdaParts}
-use features.{TypeCx, MethodCall, spoken, this_is, accepts, slot_worthy, slice_promise, not_a_place_call, not_mut_call, TypeArgs, unmeasurable_empty, compares_by_value, seated}
+use core.{ExprId, TypeId, Type, Arrow, LambdaParts, no_marks}
+use features.{TypeCx, MethodCall, this_is, slot_worthy, slice_promise, TypeArgs}
 use diagnostics.{refusal}
 
 /// The empty literal takes the rows too — each rule refuses it in
@@ -54,35 +54,35 @@ fn judged_type(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
 /// element to accept and answers the absorbing type.
 export fn check_push(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, "push")
-    if elem == null || !opened_place(cx, mc, "push") || !seated(cx, mc, "push", [elem!]) { return cx.error_type }
+    if elem == null || !opened_place(cx, mc, "push") || !cx.seated(mc, "push", [elem!]) { return cx.error_type }
     cx.view.types.intern(Type.Void)
 }
 
 /// `xs.pop()` — the last element, removed; the list is a mut place.
 export fn check_pop(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, "pop")
-    if elem == null || !opened_place(cx, mc, "pop") || !seated(cx, mc, "pop", []) { return cx.error_type }
+    if elem == null || !opened_place(cx, mc, "pop") || !cx.seated(mc, "pop", []) { return cx.error_type }
     elem!
 }
 
 /// `xs.set(i, v)` — one slot rewritten; the list is a mut place.
 export fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, "set")
-    if elem == null || !opened_place(cx, mc, "set") || !seated(cx, mc, "set", [int_type(cx), elem!]) { return cx.error_type }
+    if elem == null || !opened_place(cx, mc, "set") || !cx.seated(mc, "set", [int_type(cx), elem!]) { return cx.error_type }
     cx.view.types.intern(Type.Void)
 }
 
 /// `xs.contains(v)` — whether some element is `v`.
 export fn check_contains(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = scanned(cx, mc, "contains")
-    if elem == null || !seated(cx, mc, "contains", [elem!]) { return cx.error_type }
+    if elem == null || !cx.seated(mc, "contains", [elem!]) { return cx.error_type }
     cx.view.types.intern(Type.Bool)
 }
 
 /// `xs.index_of(v)` — the first position of `v`, or -1.
 export fn check_index_of(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = scanned(cx, mc, "index_of")
-    if elem == null || !seated(cx, mc, "index_of", [elem!]) { return cx.error_type }
+    if elem == null || !cx.seated(mc, "index_of", [elem!]) { return cx.error_type }
     int_type(cx)
 }
 
@@ -90,15 +90,15 @@ export fn check_index_of(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 fn scanned(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
     let elem: TypeId? = elem_held(cx, mc, name)
     if elem == null { return null }
-    if compares_by_value(cx, elem!) { return elem }
+    if cx.compares_by_value(elem!) { return elem }
     let _ = scans_by_value(cx, mc.e, name, elem!)
     null
 }
 
 /// `xs.is_empty()` — measured, like `length`.
 export fn check_is_empty(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    if cx.shape_at(mc.subject) is .EmptyList { return unmeasurable_empty(cx, mc.e, "[]", "List<int>") }
-    if !seated(cx, mc, "is_empty", []) { return cx.error_type }
+    if cx.shape_at(mc.subject) is .EmptyList { return cx.unmeasurable_empty(mc.e, "[]", "List<int>") }
+    if !cx.seated(mc, "is_empty", []) { return cx.error_type }
     cx.view.types.intern(Type.Bool)
 }
 
@@ -108,19 +108,19 @@ export fn check_last(mut cx: TypeCx, mc: MethodCall) -> TypeId { edge_type(cx, m
 
 fn edge_type(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, name)
-    if elem == null || !seated(cx, mc, name, []) { return cx.error_type }
+    if elem == null || !cx.seated(mc, name, []) { return cx.error_type }
     cx.view.types.intern(Type.Opt(elem!))
 }
 
 /// `xs.concat(ys)` — a fresh list of both, the same type.
 export fn check_concat(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    if elem_held(cx, mc, "concat") == null || !seated(cx, mc, "concat", [cx.type_at(mc.subject)]) { return cx.error_type }
+    if elem_held(cx, mc, "concat") == null || !cx.seated(mc, "concat", [cx.type_at(mc.subject)]) { return cx.error_type }
     cx.type_at(mc.subject)
 }
 
 /// `xs.slice(lo, hi)` — a fresh list of a range, the same type.
 export fn check_slice(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    if elem_held(cx, mc, "slice") == null || !seated(cx, mc, "slice", [int_type(cx), int_type(cx)]) { return cx.error_type }
+    if elem_held(cx, mc, "slice") == null || !cx.seated(mc, "slice", [int_type(cx), int_type(cx)]) { return cx.error_type }
     cx.type_at(mc.subject)
 }
 
@@ -128,7 +128,7 @@ export fn check_slice(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 /// that reads the index beside the element; anywhere else it would
 /// promise pairs the language has no values for, so it refuses.
 export fn check_enumerate(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    if elem_held(cx, mc, "enumerate") == null || !seated(cx, mc, "enumerate", []) { return cx.error_type }
+    if elem_held(cx, mc, "enumerate") == null || !cx.seated(mc, "enumerate", []) { return cx.error_type }
     if !cx.paired(mc.e) { return unpaired_enumerate(cx, mc.e) }
     cx.type_at(mc.subject)
 }
@@ -138,7 +138,7 @@ export fn check_join(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, "join")
     if elem == null { return cx.error_type }
     if !(cx.view.types.shape_of(elem!) is .Str) { return joins_text(cx, mc.e, elem!) }
-    if !seated(cx, mc, "join", [cx.view.types.intern(Type.Str)]) { return cx.error_type }
+    if !cx.seated(mc, "join", [cx.view.types.intern(Type.Str)]) { return cx.error_type }
     cx.view.types.intern(Type.Str)
 }
 
@@ -154,11 +154,11 @@ fn elem_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
 fn opened_place(mut cx: TypeCx, mc: MethodCall, name: string) -> bool {
     let root: ExprId? = cx.view.store.place_root(mc.subject)
     if root == null {
-        let _ = not_a_place_call(cx, mc.e, name)
+        let _ = cx.not_a_place_call(mc.e, name)
         return false
     }
     if cx.is_mut(root!) { return true }
-    let _ = not_mut_call(cx, mc.e, name, cx.view.store.ident_name(root!) ?? "this name")
+    let _ = cx.not_mut_call(mc.e, name, cx.view.store.ident_name(root!) ?? "this name")
     false
 }
 
@@ -203,7 +203,7 @@ fn walk_arg(mut cx: TypeCx, e: ExprId, name: string, elem: TypeId, args: List<Ex
         let _ = one_fn_wanted(cx, e, name, args.length)
         return null
     }
-    let rescued: TypeId? = cx.retype_seated(args[0], [elem])
+    let rescued: TypeId? = cx.retype_seated(args[0], [elem], no_marks(1))
     let fnty: TypeId = rescued ?? cx.type_at(args[0])
     if cx.errored_ty(fnty) {
         // a lambda with the wrong seat count could never be fed —
@@ -237,51 +237,51 @@ export fn list_shape(args: TypeArgs) -> Type {
 /// `xs.length` — an int; the empty literal has no length until a
 /// declared type adopts it.
 export fn check_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
-    if cx.view.types.shape_of(ty) is .EmptyList { return unmeasurable_empty(cx, e, "[]", "List<int>") }
+    if cx.view.types.shape_of(ty) is .EmptyList { return cx.unmeasurable_empty(e, "[]", "List<int>") }
     cx.view.types.intern(Type.Int)
 }
 
 // ── The voices ──
 
 fn unpaired_enumerate(mut cx: TypeCx, e: ExprId) -> TypeId {
-    spoken(cx, refusal("type.list_element", cx.loc_of(e), "`enumerate` pairs only under a paired `for` head — pairs as values arrive with tuples", "enumerated here", "pair at the head — `for i, x in xs { … }`, or `[… for i, x in xs]`"))
+    cx.spoken(refusal("type.list_element", cx.loc_of(e), "`enumerate` pairs only under a paired `for` head — pairs as values arrive with tuples", "enumerated here", "pair at the head — `for i, x in xs { … }`, or `[… for i, x in xs]`"))
 }
 
 fn scans_by_value(mut cx: TypeCx, e: ExprId, name: string, elem: TypeId) -> TypeId {
-    spoken(cx, refusal("type.list_element", cx.loc_of(e), "`${name}` scans by value — scalars and text for now, this list holds `${cx.view.types.name_of(elem)}`", "scanned here", "spell the scan — `xs.any(same(it))` with the fields you mean"))
+    cx.spoken(refusal("type.list_element", cx.loc_of(e), "`${name}` scans by value — scalars and text for now, this list holds `${cx.view.types.name_of(elem)}`", "scanned here", "spell the scan — `xs.any(same(it))` with the fields you mean"))
 }
 
 fn joins_text(mut cx: TypeCx, e: ExprId, elem: TypeId) -> TypeId {
-    spoken(cx, refusal("type.list_element", cx.loc_of(e), "`join` reads a list of text, this one holds `${cx.view.types.name_of(elem)}`", "joined here", "map the elements to strings first"))
+    cx.spoken(refusal("type.list_element", cx.loc_of(e), "`join` reads a list of text, this one holds `${cx.view.types.name_of(elem)}`", "joined here", "map the elements to strings first"))
 }
 
 /// A walk on `[]` cannot know its elements.
 fn unknowable_walk(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    spoken(cx, refusal("type.list_element", cx.loc_of(e), "`[].${name}` cannot know its elements", "walked here", "bind the list under a typed let first — `let xs: List<int> = []`"))
+    cx.spoken(refusal("type.list_element", cx.loc_of(e), "`[].${name}` cannot know its elements", "walked here", "bind the list under a typed let first — `let xs: List<int> = []`"))
 }
 
 fn misseated_walk(mut cx: TypeCx, name: string, a: ExprId, seats: int) -> TypeId {
-    spoken(cx, refusal("type.mismatch", cx.loc_of(a), "`${name}` seats one param — the element — and this lambda takes ${seats}", "this lambda", null))
+    cx.spoken(refusal("type.mismatch", cx.loc_of(a), "`${name}` seats one param — the element — and this lambda takes ${seats}", "this lambda", null))
 }
 
 fn uncollectable(mut cx: TypeCx, e: ExprId, answer: TypeId) -> TypeId {
-    spoken(cx, refusal("type.list_scalar", cx.loc_of(e), "`map` cannot collect `${cx.view.types.name_of(answer)}` yet", "this walk", slice_promise("elements")))
+    cx.spoken(refusal("type.list_scalar", cx.loc_of(e), "`map` cannot collect `${cx.view.types.name_of(answer)}` yet", "this walk", slice_promise("elements")))
 }
 
 fn fnless_walk(mut cx: TypeCx, name: string, a: ExprId) -> TypeId {
     let n = cx.name_at(a)
-    spoken(cx, refusal("type.mismatch", cx.loc_of(a), "`${name}` wants a fn taking the element, found `${n}`", this_is(n), null))
+    cx.spoken(refusal("type.mismatch", cx.loc_of(a), "`${name}` wants a fn taking the element, found `${n}`", this_is(n), null))
 }
 
 fn seat_not_element(mut cx: TypeCx, e: ExprId, name: string, elem: TypeId, fnty: TypeId) -> TypeId {
-    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${name}`'s fn takes the element `${cx.view.types.name_of(elem)}` — this one is `${cx.view.types.name_of(fnty)}`", "this call", null))
+    cx.spoken(refusal("type.mismatch", cx.loc_of(e), "`${name}`'s fn takes the element `${cx.view.types.name_of(elem)}` — this one is `${cx.view.types.name_of(fnty)}`", "this call", null))
 }
 
 /// A predicate walk's fn must answer bool.
 fn unpredicated(mut cx: TypeCx, e: ExprId, name: string, got: TypeId) -> TypeId {
-    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${name}`'s fn must answer `bool`, this one answers `${cx.view.types.name_of(got)}`", "this call", null))
+    cx.spoken(refusal("type.mismatch", cx.loc_of(e), "`${name}`'s fn must answer `bool`, this one answers `${cx.view.types.name_of(got)}`", "this call", null))
 }
 
 fn one_fn_wanted(mut cx: TypeCx, e: ExprId, name: string, found: int) -> TypeId {
-    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${name}` takes one fn, found ${found} arguments", "this call", null))
+    cx.spoken(refusal("type.mismatch", cx.loc_of(e), "`${name}` takes one fn, found ${found} arguments", "this call", null))
 }

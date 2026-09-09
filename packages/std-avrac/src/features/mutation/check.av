@@ -3,7 +3,7 @@
 //! PLACE whose type — read off the target — is the slot's law, the
 //! value ACCEPTED by it with widening recorded like every slot's.
 use core.{StmtId, ExprId, TypeId, TypeRef, same_expr, Binding}
-use features.{TypeCx, accepts, declared_binding, this_is, refuses_type_value, refuses_void_value, place_lawful}
+use features.{TypeCx, this_is}
 use diagnostics.{refusal}
 
 export fn check_mut(mut cx: TypeCx, s: StmtId) {
@@ -17,11 +17,11 @@ export fn check_mut(mut cx: TypeCx, s: StmtId) {
     let declared: TypeId? = if ann == null { null } else { cx.bind_declared(s, ann!) }
     if declared != null { cx.plant_want(v, declared!) }
     cx.walk(v)
-    if refuses_type_value(cx, v) { return }
-    if refuses_void_value(cx, v) { return }
+    if cx.refuses_type_value(v) { return }
+    if cx.refuses_void_value(v) { return }
     if borrows_field(cx, v) { cx.mark_borrow(s) }
     if declared != null {
-        declared_binding(cx, v, cx.view.store.let_name(s) ?? "this binding", declared!)
+        cx.declared_binding(v, cx.view.store.let_name(s) ?? "this binding", declared!)
     }
 }
 
@@ -48,13 +48,13 @@ export fn check_assign(mut cx: TypeCx, s: StmtId) {
     let t = target!
     cx.walk(t)
     let want = cx.type_at(t)
-    if cx.errored_ty(want) || !place_lawful(cx, t) {
+    if cx.errored_ty(want) || !cx.place_lawful(t) {
         cx.walk(v)
         return
     }
     cx.plant_want(v, want)
     cx.walk(v)
-    if !accepts(cx, v, want) { slot_refused(cx, s, t, want, v) }
+    if !cx.accepts(v, want) { slot_refused(cx, s, t, want, v) }
 }
 
 // ── The voices ──

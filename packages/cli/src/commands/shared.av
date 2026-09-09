@@ -1,7 +1,7 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef}
-use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, program, lone_workspace, timed_workspace, programs_workspace, parsed_cases, parse_clean, entry_of, no_target, avra, emit_ll, link_words}
+use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, lone_workspace, timed_workspace, programs_workspace, no_target, avra, emit_ll}
 use @std.avrac.core.{joined, distinct}
 use @std.path.{dir_of, under_dir, joined_path}
 use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit_text, exit}
@@ -54,7 +54,7 @@ fn program_arg(args: CliResult) -> Program? {
         no_such_file(path)
         return null
     }
-    let entered: Program = program(file_workspace(path), path)
+    let entered: Program = file_workspace(path).program(path)
     entered
 }
 
@@ -82,7 +82,7 @@ fn lone(path: string) -> Workspace {
 /// one — every file analyzed either way.
 fn root_program(root: string) -> Program {
     let ws = timed_workspace(disk_host(), root, avra(), () -> now_ns())
-    program(ws, entry_of(ws))
+    ws.program(ws.entry_of())
 }
 
 /// The argued path as a program: a directory is a package root, a
@@ -107,10 +107,10 @@ fn caseless_program(args: CliResult) -> Program? {
         return null
     }
     if is_dir(path) {
-        let whole: Program = program(timed_workspace(disk_host(), path, avra(), () -> now_ns()), null)
+        let whole: Program = timed_workspace(disk_host(), path, avra(), () -> now_ns()).program(null)
         return whole
     }
-    let held: Program = program(file_workspace(path), null)
+    let held: Program = file_workspace(path).program(null)
     held
 }
 
@@ -124,16 +124,16 @@ fn on_cases(args: CliResult, act: fn(Program, List<TestCase>) -> int) -> int {
         let held: Workspace? = package_workspace(path)
         if held == null { return 2 }
         mut ws = held!
-        let found = parsed_cases(ws)
+        let found = ws.parsed_cases()
         // no cases AND a clean parse: a broken spec file parses to no
         // cases, and its refusal is the answer, not a green. A program
         // test the package carries is a proof of its own, so the run
         // goes on.
-        if found.is_empty() && parse_clean(ws) && !has_program_tests(ws) {
+        if found.is_empty() && ws.parse_clean() && !has_program_tests(ws) {
             println("no spec cases here")
             return 0
         }
-        return act(program(ws, null), found)
+        return act(ws.program(null), found)
     }
     let held: Program? = caseless_program(args)
     if held == null { return 2 }
@@ -227,7 +227,6 @@ fn timed(args: CliResult) -> bool {
     args.has_flag("time")
 }
 
-
 /// The nearest ancestor holding `avra.toml`, if any.
 fn package_root(dir: string) -> string? {
     mut d = dir
@@ -237,7 +236,6 @@ fn package_root(dir: string) -> string? {
     }
     null
 }
-
 
 /// clang links the `.ll` with Avra's runtime — and whatever the
 /// program's packages promised their externs — into a native binary.
@@ -282,7 +280,7 @@ fn plan_unwritten(message: string) -> string {
 /// own objects and flags, the binary's path — the plan a hand-off
 /// writes and a product links by.
 fn clang_words(ll_path: string, p: Program, opt: string) -> List<string> {
-    ["-w", opt, ll_path, "build/avra_runtime.o"].concat(link_words(p.ws)).concat(["-o", binary_name(ll_path)])
+    ["-w", opt, ll_path, "build/avra_runtime.o"].concat(p.ws.link_words()).concat(["-o", binary_name(ll_path)])
 }
 
 fn linked(ll_path: string, p: Program, opt: string) -> int {

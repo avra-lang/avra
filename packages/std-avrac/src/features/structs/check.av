@@ -2,7 +2,7 @@
 //! (resolve spoke otherwise), and the written fields match it —
 //! each declared field exactly once, each value the field's type.
 use core.{ExprId, StmtId, Type, TypeId, StructParts, DeclId}
-use features.{no_pins, Pins, TypeCx, StructSig, spoken, this_is, fields_are, repeated_at, accepts, slot_worthy, tparams_refused, unpinned_of, bound_closed, slice_promise, pinned_by_want, hungry, agreed}
+use features.{no_pins, Pins, TypeCx, StructSig, this_is, fields_are, repeated_at, slot_worthy, tparams_refused, unpinned_of, slice_promise}
 use diagnostics.{refusal}
 
 fn structs_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -55,10 +55,10 @@ fn generic_lit(mut cx: TypeCx, e: ExprId, name: string, fields: List<string>,
         }
     }
     if missing_fields(cx, e, name, fields, sig) || spoke { return cx.error_type }
-    let pinned = pinned_by_want(cx, e, decl, bound)
+    let pinned = cx.pinned_by_want(e, decl, bound)
     let missing: string? = unpinned_of(tp, pinned)
-    if missing != null { return if cx.starving { unpinned_by_fields(cx, e, missing!) } else { hungry(cx, e) } }
-    let concrete = bound_closed(cx, pinned)
+    if missing != null { return if cx.starving { unpinned_by_fields(cx, e, missing!) } else { cx.hungry(e) } }
+    let concrete = cx.bound_closed(pinned)
     for ft in sig.types {
         let landed = cx.view.types.substituted(ft, decl, concrete)
         if !slot_worthy(cx.view.types, cx.view.types.shape_of(landed)) { return unslottable_literal(cx, e, landed) }
@@ -75,7 +75,7 @@ fn generic_field(mut cx: TypeCx, name: string, sig: StructSig, f: string, v: Exp
     let slot: int? = field_slot(cx, name, sig, f, v, dup)
     if slot == null { return false }
     let want = sig.types[slot!]
-    if agreed(cx, v, want, decl, bound) { return true }
+    if cx.agreed(v, want, decl, bound) { return true }
     wrong_field_type(cx, v, f, want)
     false
 }
@@ -129,7 +129,7 @@ fn field_check(mut cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprI
     if slot == null { return }
     // the ONE assignment door — a field slot lifts like any other
     // (auto-Ok, dyn boxing), and the lift is recorded for lowering
-    if !accepts(cx, v, sig.types[slot!]) { wrong_field_type(cx, v, f, sig.types[slot!]) }
+    if !cx.accepts(v, sig.types[slot!]) { wrong_field_type(cx, v, f, sig.types[slot!]) }
 }
 
 // ── The field-law voices, worded once for both paths ──
@@ -149,11 +149,11 @@ fn wrong_field_type(mut cx: TypeCx, v: ExprId, f: string, want: TypeId) {
 
 fn not_a_struct(mut cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
-    spoken(cx, refusal("type.with_struct", cx.loc_of(e), "`with` copies a struct, found `${n}`", this_is(n), null))
+    cx.spoken(refusal("type.with_struct", cx.loc_of(e), "`with` copies a struct, found `${n}`", this_is(n), null))
 }
 
 fn unslottable_literal(mut cx: TypeCx, e: ExprId, landed: TypeId) -> TypeId {
-    spoken(cx, refusal("type.struct_fields", cx.loc_of(e), "this literal makes a slot `${cx.view.types.name_of(landed)}`, which a slot cannot hold yet", "in this literal", slice_promise("slots")))
+    cx.spoken(refusal("type.struct_fields", cx.loc_of(e), "this literal makes a slot `${cx.view.types.name_of(landed)}`, which a slot cannot hold yet", "in this literal", slice_promise("slots")))
 }
 
 fn repeated_field(mut cx: TypeCx, v: ExprId, f: string) {
@@ -161,19 +161,19 @@ fn repeated_field(mut cx: TypeCx, v: ExprId, f: string) {
 }
 
 fn unpinned_by_fields(mut cx: TypeCx, e: ExprId, tparam: string) -> TypeId {
-    spoken(cx, refusal("type.struct_fields", cx.loc_of(e), "`${tparam}` is not pinned by the fields", "in this literal", "give `${tparam}`'s field a value of a concrete type"))
+    cx.spoken(refusal("type.struct_fields", cx.loc_of(e), "`${tparam}` is not pinned by the fields", "in this literal", "give `${tparam}`'s field a value of a concrete type"))
 }
 
 /// A literal under a name that declares no fields — an enum's.
 fn not_a_record(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    spoken(cx, refusal("type.struct_fields", cx.loc_of(e), "`${name}` is an enum, not a record — it has no fields to fill", "built here", "construct a variant instead — `${name}.<variant>`"))
+    cx.spoken(refusal("type.struct_fields", cx.loc_of(e), "`${name}` is an enum, not a record — it has no fields to fill", "built here", "construct a variant instead — `${name}.<variant>`"))
 }
 
 /// THE DEFAULT LAW, at the declaration: a field's default (walked
 /// under the field's want) is accepted by the field — every literal
 /// that omits the field then calls it without judging it again.
 export fn fits_default(mut cx: TypeCx, d: ExprId, name: string, want: TypeId) {
-    if accepts(cx, d, want) { return }
+    if cx.accepts(d, want) { return }
     let n = cx.name_at(d)
     cx.emit(refusal("type.struct_fields", cx.loc_of(d), "field `${name}` defaults to `${n}`, and it is `${cx.view.types.name_of(want)}`", this_is(n), null))
 }

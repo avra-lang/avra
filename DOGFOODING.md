@@ -578,6 +578,34 @@ reintroducing I3's blind spot names the two spellings it lost.
       the four verbs that ARE the spelling; an Emitter's own `give`
       in a synthesized body (test_run.av) has no context and is not
       the smell.
+- I39 (ratcheted) A VOCABULARY VERB AS A FREE FN TAKING A PASS
+      STATE FIRST — `open_region(cx, c)`, `accepts(cx, e, want)`,
+      `sig(ws, d)`. A state struct's impl IS its vocabulary, so the
+      verb is a method (`cx.open_region(c)`, `ws.sig(d)`) and the
+      context reads as the receiver it is: eight of nine lines of a
+      lowering rule once carried `cx` as a first argument. Landed
+      as sugar 1's level one (docs/2026_09_09_SUGAR_1_CONTEXT_
+      RECEIVER.md): 320 verbs across the shared vocabularies
+      (checks, values, emit, unify, variants, places, contexts,
+      contract, namespace, builder) and the drivers (workspace,
+      receivers, typing, lower, interp) became methods in one
+      scripted sweep, every call site with them; the IR of 88
+      programs was byte-identical before and after. THE REACH is
+      the pass's own files — features/*.av and language/*.av —
+      where the shared vocabularies live; a feature dir's rule
+      bodies (`call_type(cx, e)`) are dispatch targets and stay
+      free. NOT the smell: a pass ENTRY POINT taking the pass's
+      INPUT (`lower(a: Analysis)`, `memory(l: Lowered)`,
+      `render_ir(l)`) — that is a pass's one standard signature,
+      and a constructor taking a `Host`. LICENSED where a TABLE
+      ROW holds the fn as a value (`measured_reg`): a method is no
+      value. THE PRONOUN TRAP the sweep hit ten times: `xs.any(
+      verb(cx, it))` rewritten to `xs.any(cx.verb(it))` rebinds
+      `it` to the NEAREST method call — the wrapper lambda `(k) ->
+      cx.verb(k)` is the spelling, as the subset already says of
+      `self.rides(it)`. And a `..` before a name is not a field's
+      dot: a rewrite that refused `.name` refused `0..name` too,
+      and one site read `decls` as undefined.
 
 ## Lowering: MINT IN EMISSION ORDER
 
@@ -1203,25 +1231,36 @@ resolution, provably); a `trait Pass` erases that and has no
 consumer until the query engine memoizes passes uniformly — that is
 its trigger, not before.
 
-## Capability contexts: data + driver-wired fns
+## Capability contexts: the state's impl is its vocabulary
 
-A context struct crosses layers DOWNWARD carrying fn fields the
-driver wires at construction — features call capabilities without
-importing the pass, and pass state stays with the pass. The engine's
-`MatchContext.build` and every pass Cx are the same pattern:
+A pass context (`TypeCx`, `LowerCx`, `ResolveCx`) is the pass's own
+STATE, declared in features/contract.av and given its verbs as
+METHODS: the walk's verbs where the walk lives (language/typing.av's
+`impl TypeCx`), the reads over facts (features/contexts.av), and the
+shared vocabularies every feature speaks (checks.av, emit.av,
+values.av, unify.av, variants.av, places.av) — so a feature's rule
+reads as prose on its receiver, `cx.accepts(e, want)`,
+`cx.open_region(c)`, `cx.presence(v, held, e) { cx, carried -> … }
+else { … }`, and never as `accepts(cx, e, want)`. I39 ratchets it
+(the pass's own files); a feature dir's rule bodies dispatch on the
+context and stay free.
 
 ```avra
-let cx = TypeCx {
-    store: p.store,
-    type_at: (e: ExprId) -> t.of_expr[e.index],
-    intern: (sh: Type) -> t.types.intern(sh),
-    emit: (d: Diag) -> t.speak(d),
-    ...
+fn coalesce_reg(mut cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
+    let v = cx.reg_of(l)
+    let held = cx.type_at(l)
+    if cx.view.types.carried(held) == null { return v }
+    cx.region(cx.presence_of(v, held), e) { cx -> cx.carried_of(v, held) } else { cx -> cx.reg_of(r) }
 }
 ```
 
-Closures capture the LET-bound state struct (never a `mut` local) and
-mutate through it — the rebind-alias idiom underneath.
+A block handed the context takes it as a `mut` seat — heard from the
+slot's `fn(mut LowerCx) -> Reg`, never captured: a capture is a copy,
+and a copy's `depth` diverges from the box's list. The earlier shape
+— fn fields wired at construction, captured by every closure — is
+gone with the sweep (the engine's `MatchContext.build` keeps one such
+field, the builder dispatch, because a grammar run IS parameterised
+by its builders).
 
 ## One semantics: lowering IS the meaning
 

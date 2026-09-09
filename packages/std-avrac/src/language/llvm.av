@@ -250,7 +250,6 @@ impl Emit {
         ll_type_of(self.lc, self.types, self.tys[r.index])
     }
 
-
     /// The indirect call: the fn TYPE derives from the site's own
     /// registers (ret from dst, params from args), so the built type
     /// matches the callee that boxing named — every seat is cast to
@@ -271,14 +270,12 @@ impl Emit {
         avra_llvm_build_call(self.b, fty, fp, vargs, args.length, "")
     }
 
-
     fn call(name: string, args: List<ptr>) -> ptr {
         let f = avra_llvm_get_named_function(self.m, name)
         let arr = avra_llvm_value_array_new(args.length)
         for i, a in args { avra_llvm_value_array_set(arr, i, a) }
         avra_llvm_build_call(self.b, avra_llvm_fn_type_of(f), f, arr, args.length, "")
     }
-
 
     fn emit_ins(i: Ins) {
         match i {
@@ -315,7 +312,6 @@ impl Emit {
         }
     }
 
-
     /// An int constant — or the NULL POINTER when the destination
     /// rides one: absence is the zero of its type, and the only
     /// ConstInt lowering ever aims at a pointer register is 0. The
@@ -327,12 +323,10 @@ impl Emit {
         avra_llvm_const_int(avra_llvm_int64_type(self.lc), v, 1)
     }
 
-
     /// Whether a register holds a FLAT record — one that IS its field.
     fn flat_value(r: Reg) -> bool {
         self.types.is_flat(self.tys[r.index])
     }
-
 
     /// One element out of an aggregate — or the value itself, when the
     /// aggregate is a FLAT record and IS that element.
@@ -340,7 +334,6 @@ impl Emit {
         if self.flat_value(src) { return self.vals[src.index] }
         avra_llvm_build_extract_value(self.b, self.vals[src.index], at, "x")
     }
-
 
     /// A packed value: element by element into an undef aggregate —
     /// registers all the way, which is what lets SROA see through it.
@@ -355,12 +348,10 @@ impl Emit {
         agg
     }
 
-
     /// The next register's value — registers mint in instruction order.
     fn define(v: ptr) {
         self.vals.push(v)
     }
-
 
     /// icmp predicates by number: 32 eq, 33 ne, 38 sgt, 39 sge, 40 slt,
     /// 41 sle. `And`/`Or` are the LAZY ops: they lower as regions and
@@ -386,7 +377,6 @@ impl Emit {
         self.bin_value(op, l, r)
     }
 
-
     /// IEEE-754 arithmetic and ORDERED comparison. NaN answers false
     /// to every ordered question, which is the standard's rule.
     fn float_value(op: BinOp, a: ptr, b: ptr) -> ptr {
@@ -407,7 +397,6 @@ impl Emit {
             .And or .Or -> self.wrecked(lazy_in_eager(), a),
         }
     }
-
 
     fn bin_value(op: BinOp, a: ptr, b: ptr) -> ptr {
         match op {
@@ -436,13 +425,11 @@ impl Emit {
         }
     }
 
-
     fn un_value(op: UnOp, v: ptr) -> ptr {
         match op {
             .Not -> avra_llvm_build_not(self.b, v, "not"),
         }
     }
-
 
     /// A runtime call, generic over every callee declare_runtime names.
     /// The runtime speaks i64 for truth; a bool-shaped register narrows
@@ -468,7 +455,6 @@ impl Emit {
         raw
     }
 
-
     /// Whether the registry declares an I64 answer for this callee.
     /// A MATCH, never `is .I64`: this decides what crosses the extern
     /// boundary, so a new RtKind must state its answer here or the
@@ -484,7 +470,6 @@ impl Emit {
             .I32 or .U32 or .F64 or .Ptr or .Void -> false,
         }
     }
-
 
     /// A NARROW ANSWER IS WIDENED WITH THE SIGN ITS WIDTH NAMES, and
     /// this match is where the author must say which: `i32` and `u32`
@@ -507,19 +492,16 @@ impl Emit {
         }
     }
 
-
     /// A callee's row: the runtime's, or one of the program's externs.
     fn callee_sig(callee: string) -> RtSig? {
         // LICENSED I18: two registries asked in turn — the second answers when the first has no row
         self.rt.get(callee) ?? self.externs.find(it.name == callee)
     }
 
-
     fn void_rt_call(callee: string, args: List<Reg>) {
         let _ = self.call(callee, self.rt_args(callee, args))
         self.normalized_cells(callee, args)
     }
-
 
     /// A NARROW INOUT CELL IS NORMALISED AFTER THE CALL. An Avra cell
     /// is eight bytes; a C `int*` out-parameter writes FOUR of them,
@@ -549,7 +531,6 @@ impl Emit {
         }
     }
 
-
     /// One cell re-read at its declared width. DECIDE BEFORE EMITTING:
     /// a seat that is not a narrow inout gets no instructions at all,
     /// and its register is not a cell to load from — the first draft
@@ -567,7 +548,6 @@ impl Emit {
         let _ = avra_llvm_build_store(self.b, full, cell)
     }
 
-
     /// Whether a cell's width extends SIGNED, or absence when the
     /// width is not a narrow one and the cell needs nothing.
     fn narrow_sign(width: RtKind) -> bool? {
@@ -578,7 +558,6 @@ impl Emit {
             .I64 or .F64 or .Ptr or .Void -> null,
         }
     }
-
 
     /// Runtime-call arguments, each coerced to its declared param —
     /// the runtime's int64 slots carry pointers too, so a
@@ -591,7 +570,6 @@ impl Emit {
         for j, r in args { out.push(self.rt_arg(callee, j, r)) }
         out
     }
-
 
     /// A registry I64 param is a SLOT — every value category rides it,
     /// so pointer-riding registers cast down and bools widen in. A
@@ -629,21 +607,17 @@ impl Emit {
         v
     }
 
-
     fn released(r: Reg) {
         let _ = self.call("avra_rc_release", [self.vals[r.index]])
     }
-
 
     fn retained(r: Reg) {
         let _ = self.call("avra_rc_retain", [self.vals[r.index]])
     }
 
-
     fn ret_value(r: Reg) {
         let _ = avra_llvm_build_ret(self.b, self.vals[r.index])
     }
-
 
     /// An early return: ret RIGHT HERE, then open a dead block so the
     /// arm's unreachable tail (its yield, the region's br) lands
@@ -654,18 +628,15 @@ impl Emit {
         avra_llvm_position_at_end(self.b, dead)
     }
 
-
     /// A process code wears the answer type the fn was declared with:
     /// C's `int` at the entry, the IR's `int` in a program body.
     fn ret_code(code: int) {
         let _ = avra_llvm_build_ret(self.b, avra_llvm_const_int(avra_llvm_return_type_of(self.fn_val), code, 0))
     }
 
-
     fn stored(slot: Reg, src: Reg) {
         let _ = avra_llvm_build_store(self.b, self.vals[src.index], self.vals[slot.index])
     }
-
 
     /// Open the loop: fall into the header, where the condition's
     /// instructions re-run each turn.
@@ -677,7 +648,6 @@ impl Emit {
         self.loops.push(LoopFrame { header: header, exit: exit })
     }
 
-
     /// The condition decides: true falls into the body, false exits.
     fn loop_cond(c: Reg) {
         let f = self.loops.last()!
@@ -686,14 +656,12 @@ impl Emit {
         avra_llvm_position_at_end(self.b, body)
     }
 
-
     /// Close the back edge and stand at the exit.
     fn loop_end() {
         let f = self.loops.pop()
         let _ = avra_llvm_build_br(self.b, f.header)
         avra_llvm_position_at_end(self.b, f.exit)
     }
-
 
     /// Open a two-arm region: branch on the condition, build into the
     /// first arm.
@@ -705,7 +673,6 @@ impl Emit {
         avra_llvm_position_at_end(self.b, then_bb)
         self.open_region([then_bb, else_bb], merge_bb)
     }
-
 
     /// Open an N-arm region: ONE jump table over the selector, the last
     /// arm its default — which is why a total match needs no
@@ -724,14 +691,12 @@ impl Emit {
         self.open_region(arms, merge_bb)
     }
 
-
     /// The region stack's push — arm 0 is already being built.
     fn open_region(arms: List<ptr>, merge_bb: ptr) {
         let r = Region { arms: arms, next: 1, merge_bb: merge_bb, ended: [], gives: [] }
         // LICENSED I15: a region STACK across fns, not a bracket body
         self.frames.push(r)
     }
-
 
     /// End this arm — where it ended, what it yields — and build into
     /// the next. Nested regions moved the insert block; ask, never
@@ -747,7 +712,6 @@ impl Emit {
         // LICENSED I15: a region STACK across fns, not a bracket body
         self.frames.push(advanced)
     }
-
 
     /// End the LAST arm and merge: one phi over every arm's yield is
     /// the region's register.

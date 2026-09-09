@@ -108,6 +108,31 @@ impl Builder {
         .Ok(LangNode.NExpr(id))
     }
 
+    /// A head WIDENED by its trailing blocks — each marked as one,
+    /// the call given them as its last arguments through the call
+    /// protocol. A head that is no call refuses in the block's words.
+    fn trailed(h: ExprId, blocks: List<ExprId>) -> Result<ExprId, string> {
+        if blocks.is_empty() { return .Ok(h) }
+        for k in blocks { self.store.mark_trailing(k) }
+        let widened: Expr? = self.store.called_with(h, blocks)
+        if widened == null { return .Err("a trailing block follows this expression, and only a call takes one — `f(…) { … }`, `a.m(…) { … }`, a name, a field read") }
+        .Ok(self.expr_node(widened!))
+    }
+
+    /// THE BLOCK LAW: statements as a scope answering with its tail.
+    /// A block's value is its final expression; one that ends in any
+    /// other statement (or is empty) has none, and TYPING says what
+    /// that means — void, or the fn's promise when the statement
+    /// leaves. A scope holding nothing but its value IS the value: no
+    /// node is minted for it.
+    fn block_of(stmts: List<StmtId>) -> ExprId {
+        if stmts.is_empty() { return self.expr_node(Expr.Block(stmts, null)) }
+        let value: ExprId? = self.store.answer_of(stmts.last()!)
+        if value == null { return self.expr_node(Expr.Block(stmts, null)) }
+        if stmts.length == 1 { return value! }
+        self.expr_node(Expr.Block(stmts.slice(0, stmts.length - 1), value!))
+    }
+
     /// Where this build's branch ENDED — the bound a positional
     /// reconstruction measures against. Absent for a synthesized
     /// branch, and a caller that needs it must say so.
@@ -253,27 +278,29 @@ fn token_between(tokens: List<Token>, after: int, before: int) -> string {
     hit!.text
 }
 
-/// Field names, their types, and the DEFAULTS some carry, zipped —
-/// captures arrive per slot, so a default finds its field by
-/// POSITION: the last name that starts before it.
-export fn fields_zipped(b: Builder, fs: List<Token>, ft: List<TypeRef>, fds: List<ExprId>) -> Result<List<Param>, string> {
-    if fs.length != ft.length {
-        return .Err(zip_defect_of("field names and types"))
+impl Builder {
+    /// Field names, their types, and the DEFAULTS some carry, zipped —
+    /// captures arrive per slot, so a default finds its field by
+    /// POSITION: the last name that starts before it.
+    fn fields_zipped(fs: List<Token>, ft: List<TypeRef>, fds: List<ExprId>) -> Result<List<Param>, string> {
+        if fs.length != ft.length {
+            return .Err(zip_defect_of("field names and types"))
+        }
+        .Ok([Param { name: f.text, ty: ft[j], default: self.default_before(fs, fds, j), mutable: false } for j, f in fs])
     }
-    .Ok([Param { name: f.text, ty: ft[j], default: default_before(b, fs, fds, j), mutable: false } for j, f in fs])
-}
 
-/// The default whose position falls between field `j`'s name and
-/// the next field's — null when none does.
-fn default_before(b: Builder, fs: List<Token>, fds: List<ExprId>, j: int) -> ExprId? {
-    let lo = fs[j].span.lo
-    let hi: int = if j + 1 < fs.length { fs[j + 1].span.lo } else { 1000000000 }
-    fds.find(starts_between(b, it, lo, hi))
-}
+    /// The default whose position falls between field `j`'s name and
+    /// the next field's — null when none does.
+    fn default_before(fs: List<Token>, fds: List<ExprId>, j: int) -> ExprId? {
+        let lo = fs[j].span.lo
+        let hi: int = if j + 1 < fs.length { fs[j + 1].span.lo } else { 1000000000 }
+        fds.find((d) -> self.starts_between(d, lo, hi))
+    }
 
-fn starts_between(b: Builder, e: ExprId, lo: int, hi: int) -> bool {
-    let sp: Span? = b.store.expr_span(e)
-    sp != null && within(sp!.lo, lo, hi)
+    fn starts_between(e: ExprId, lo: int, hi: int) -> bool {
+        let sp: Span? = self.store.expr_span(e)
+        sp != null && within(sp!.lo, lo, hi)
+    }
 }
 
 /// Strictly inside the window `after..before`.

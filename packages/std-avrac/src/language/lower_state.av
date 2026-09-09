@@ -4,7 +4,7 @@
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, int_of, text_of, bool_of}
 use diagnostics.{loc_at}
-use features.{LowerCx, fn_box, box_size, capture_lane, slot_read, adopted, Sub, Cap, viewed, def_type_of, Wanted, Lift, Wrap}
+use features.{LowerCx, capture_lane, Sub, Cap, viewed, def_type_of, Wanted, Lift, Wrap}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -149,7 +149,7 @@ impl LowerCx {
     fn lifted_constant(e: ExprId, r: Reg) -> Reg {
         let want = self.concrete(self.facts.type_at(e))
         if self.view.decls.types.shape_of(want) is .Opt {
-            return adopted(self, want, false, r)
+            return self.adopted(want, false, r)
         }
         r
     }
@@ -169,16 +169,16 @@ impl LowerCx {
                 name: wname,
             })
         }
-        let size = box_size(self, 1)
+        let size = self.box_size(1)
         let dst = self.mint(e)
-        fn_box(self, dst, size, wname, [])
+        self.fn_box(dst, size, wname, [])
         dst
     }
 
     /// A capture read: its LANE of the env box, worn at `ty` — the
     /// lane law lives with the fn value's other verbs.
     fn env_read(j: int, ty: TypeId) -> Reg? {
-        slot_read(self, self.env_box(), capture_lane(j), ty)
+        self.slot_read(self.env_box(), capture_lane(j), ty)
     }
 
     /// The type a lambda's Nth capture wears — typing seated it

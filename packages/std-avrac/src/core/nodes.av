@@ -360,6 +360,11 @@ export fn spelled(t: TypeRef) -> string {
     base
 }
 
+/// The pronoun's own seat — what an implicit `it` lambda declares.
+export fn pronoun_param() -> Param {
+    Param { name: "it", ty: null, default: null, mutable: false }
+}
+
 /// One declared parameter: its name and its written type. An ABSENT
 /// type IS a unit enum variant, so one shape covers both and no arm
 /// has to ask which kind it is.
@@ -512,13 +517,15 @@ export type NodeStore = {
     pats: List<Pat>,
     pat_spans: List<Span?>,
     pat_fingerprints: List<int>,
+    // a lambda written as a TRAILING BLOCK (`f(a) { x -> … }`)
+    trailing: List<bool>,
 }
 
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
         stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], statics: [],
-        pats: [], pat_spans: [], pat_fingerprints: [],
+        pats: [], pat_spans: [], pat_fingerprints: [], trailing: [],
     }
 }
 
@@ -526,7 +533,48 @@ impl NodeStore {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span?) -> ExprId {
         self.expr_fingerprints.push(self.fingerprint_expr(e))
+        self.trailing.push(false)
         ExprId { index: self.exprs.add(e, span) }
+    }
+
+    /// A lambda written as a TRAILING BLOCK — the mark is part of the
+    /// node: the block's refusals speak in the block's words.
+    fn mark_trailing(e: ExprId) {
+        self.trailing.set(e.index, true)
+        self.expr_fingerprints.set(e.index, fp(111, [self.expr_fingerprints[e.index]]))
+    }
+
+    fn is_trailing(e: ExprId) -> bool {
+        self.trailing[e.index]
+    }
+
+    /// THE CALL PROTOCOL: the node with `blocks` appended to its
+    /// arguments — a trailing block is a call's LAST argument, and a
+    /// name or a field read with no parentheses is a call with none.
+    /// Null for every shape that is not a call.
+    fn called_with(e: ExprId, blocks: List<ExprId>) -> Expr? {
+        match self.expr(e) {
+            .Call(callee, pins, args) -> Expr.Call(callee, pins, args.concat(blocks)),
+            .MethodCall(subject, name, args) -> Expr.MethodCall(subject, name, args.concat(blocks)),
+            .CallValue(subject, args) -> Expr.CallValue(subject, args.concat(blocks)),
+            .Ident(name) -> Expr.Call(name, [], blocks),
+            .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or
+            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Interp(_, _) or .If(_, _, _) or .Receiver or
+            .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or
+            .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
+            .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or
+            .Lambda(_, _) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) -> null,
+        }
+    }
+
+    /// An argument the PRONOUN rides becomes an implicit one-param
+    /// lambda — `xs.map(it * 2)` is `xs.map((it) -> it * 2)`, and the
+    /// expected-type channel seats it like any other. The wrap is the
+    /// pronoun's WHOLE mechanism: nothing downstream knows it exists.
+    fn pronouned(a: ExprId) -> ExprId {
+        if !self.pronoun_rides(a) { return a }
+        self.alloc_expr(Expr.Lambda([pronoun_param()], a), self.expr_span(a))
     }
 
     /// The value a tail statement answers with: an expression
@@ -772,12 +820,11 @@ impl NodeStore {
     }
 
     /// Does the PRONOUN ride this subtree unbound? `it` belongs to
-    /// the nearest enclosing METHOD call: a lambda binds its own
-    /// scope (false), a nested method call's arguments started
-    /// fresh scopes at their own build (subject only), and every
-    /// other node asks its children. A block's STATEMENTS do not
-    /// carry the pronoun (recorded) — only its answering value.
-    /// Exhaustive: a new expression must answer.
+    /// the nearest enclosing METHOD call or trailing block: a lambda
+    /// binds its own scope (false), a nested method call's arguments
+    /// started fresh scopes at their own build (subject only), and
+    /// every other node asks its children — a block its statements
+    /// and its value. Exhaustive: a new expression must answer.
     fn pronoun_rides(id: ExprId) -> bool {
         match self.expr(id) {
             .Ident(name) -> name == "it",
@@ -803,7 +850,7 @@ impl NodeStore {
             .CallValue(subject, cargs) -> self.pronoun_rides(subject) || self.any_rides(cargs),
             .When(conds, values, fallback) ->
                 self.any_rides(conds) || self.any_rides(values) || self.pronoun_rides(fallback),
-            .Block(_, value) -> if value == null { false } else { self.pronoun_rides(value!) },
+            .Block(stmts, value) -> self.any_stmt_rides(stmts) || (value != null && self.pronoun_rides(value!)),
             .StructLit(_, _, values) -> self.any_rides(values),
             .With(subject, _, values) -> self.pronoun_rides(subject) || self.any_rides(values),
             .Match(subject, arms) -> self.pronoun_rides(subject) || self.any_rides([a.value for a in arms]),
@@ -815,17 +862,41 @@ impl NodeStore {
     }
 
     fn any_rides(ids: List<ExprId>) -> bool {
-        // LICENSED I4: `it` binds to the NEAREST call, so a self-method
-        // predicate is F2033 — the scan is spelled
-        for k in ids {
-            if self.pronoun_rides(k) { return true }
+        ids.any((k) -> self.pronoun_rides(k))
+    }
+
+    fn any_stmt_rides(ids: List<StmtId>) -> bool {
+        ids.any((s) -> self.stmt_rides(s))
+    }
+
+    /// Does the pronoun ride a STATEMENT unbound? A declaration
+    /// opens its own world and carries none; every other statement
+    /// asks its expressions and its bodies. Exhaustive: a new
+    /// statement must answer.
+    fn stmt_rides(s: StmtId) -> bool {
+        match self.stmt(s) {
+            .Let(_, _, v) -> self.pronoun_rides(v),
+            .MutLet(_, _, v) -> self.pronoun_rides(v),
+            .ConstDecl(_, _, v) -> self.pronoun_rides(v),
+            .ExprStmt(v) -> self.pronoun_rides(v),
+            .Discard(v) -> self.pronoun_rides(v),
+            .Fail(v) -> self.pronoun_rides(v),
+            .Defer(v, _) -> self.pronoun_rides(v),
+            .Assign(t, v) -> self.pronoun_rides(t) || self.pronoun_rides(v),
+            .Return(v) -> v != null && self.pronoun_rides(v!),
+            .While(c, stmts) -> self.pronoun_rides(c) || self.any_stmt_rides(stmts),
+            .IfStmt(c, t, e) -> self.pronoun_rides(c) || self.any_stmt_rides(t) || self.any_stmt_rides(e),
+            .LetElse(_, subject, stmts) -> self.pronoun_rides(subject) || self.any_stmt_rides(stmts),
+            .For(_, from, to, _, _, stmts) -> self.pronoun_rides(from) || self.pronoun_rides(to) || self.any_stmt_rides(stmts),
+            .ForEach(_, _, subject, stmts) -> self.pronoun_rides(subject) || self.any_stmt_rides(stmts),
+            .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or
+            .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) or .Use(_, _) or .Error -> false,
         }
-        false
     }
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 52.
+    /// Tags are never reused; `make fingerprints` names the next.
     fn fingerprint_expr(e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),

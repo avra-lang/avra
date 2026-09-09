@@ -8,7 +8,7 @@
 //! pass: `let` visibility is sequential and a later `let` shadows an
 //! earlier one; `fn` names are program-wide, so recursion and mutual
 //! recursion are free. Inside a body, params bind innermost.
-use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore}
+use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore, LambdaParts}
 use diagnostics.{Diag, error_at, loc_at, pointed, refusal, Voices, no_voices}
 use features.modules.{module_laws}
 use features.{ResolveCx, Def, LFrame, Dispatch, self_word, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats, nothing, semantics_of, stmt_semantics_of, post_order}
@@ -379,12 +379,23 @@ impl ResolveCx {
     /// A parameter read of a `mut` seat is marked as one — the
     /// place law asks the read, never the name.
     fn note_mut_seat(e: ExprId, b: Binding) {
-        // one arm answers — a projection; every other binding is not a seat
-        let seat: int? = match b {
-            .Param(i) -> i,
-            _ -> null,
+        if self.seat_written_mut(b) { self.facts.mark_mut_read(e) }
+    }
+
+    /// Whether a binding is a seat WRITTEN `mut` — a fn's, by the open
+    /// body's marks; a lambda's, by its own declaration.
+    fn seat_written_mut(b: Binding) -> bool {
+        match b {
+            .Param(i) -> self.seat_is_mut(i),
+            .LambdaParam(l, i) -> self.lambda_seat_mut(l, i),
+            .Receiver or .Def(_) or .Pattern(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> false,
         }
-        if seat != null && self.seat_is_mut(seat!) { self.facts.mark_mut_read(e) }
+    }
+
+    fn lambda_seat_mut(l: ExprId, i: int) -> bool {
+        let parts: LambdaParts? = self.view.store.lambda_parts(l)
+        if parts == null { return false }
+        parts!.params[i].mutable
     }
 
     fn seat_is_mut(i: int) -> bool {
@@ -404,7 +415,9 @@ impl ResolveCx {
         false
     }
 
-    /// A literal's type name resolves in the type namespace alone.
+    /// A literal's type name resolves in the type namespace alone. A
+    /// FN's name here is the empty-block trap: `run {}` reads as a
+    /// record literal, so the remedy names the call.
     mut fn use_type(e: ExprId, name: string) {
         if self.met(e) { return }
         let found: DeclId? = self.facts.names.types.get(name)
@@ -412,6 +425,7 @@ impl ResolveCx {
             self.bind_use(e, Binding.Decl(found!))
             return
         }
+        if self.facts.names.fns.get(name) != null { return self.emit(refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared — `${name}` is a fn, and a name before `{ }` reads as a record literal", "used here", "a call taking an empty block writes its parentheses: `${name}() { }`")) }
         self.emit(self.suggested(
             refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared", "used here", null),
             e, name, self.facts.names.type_names))
