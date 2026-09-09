@@ -83,10 +83,10 @@ source(s)
 The compiler answers to its own name:
 
 ```sh
-./avra run corpus/fns.av      # the interpreter says BIG!
-./avra build corpus/fns.av    # a native binary that agrees
-./avra ir corpus/branch.av    # the memory-annotated IR
-./avra corpus corpus          # every program, both engines, one process
+./avra run packages/std-avrac/corpus/fns.av     # the interpreter says BIG!
+./avra build packages/std-avrac/corpus/fns.av   # a native binary that agrees
+./avra ir packages/std-avrac/corpus/branch.av   # the memory-annotated IR
+./avra test packages/std-avrac                  # its cases and its corpus, both engines
 ./avra grammar                # the assembled language
 ./avra explain F2000          # any diagnostic code
 ```
@@ -97,20 +97,20 @@ module (`emit`), the diagnostics registry.
 ## The gates
 
 ```sh
-make gate     # the bar for every change: vocab + idioms + test + corpus
+make gate     # the bar for every change: vocab + idioms + test
 make vocab    # the IR seam: every Ins consumer stays exhaustive
 make idioms   # the ratchet: mechanical smells may never RISE
 make test     # every module's spec/given/then suite
 make tested   # the suites with the scaffolder's template among them
-make corpus   # every corpus/*.av: eval == native == .expected
-make bench    # the measured curve: suite + corpus wall times
+make bench    # the measured curve: the suites' wall time
 make fuzz     # corpus mutants through `avra check`: diagnose, never crash
 make scaffold-check   # `avra new feature` templates still compile
 ```
 
-`corpus/` is the language's proof by example: each program is a few
+A package's `corpus/` is its proof by example: each program is a few
 lines, states what it proves, and is held to its expected output
-through both the evaluator and the compiled binary, forever.
+through both the evaluator and the compiled binary, forever. A corpus
+program is a test with a second engine, so its suite runs it.
 
 ## Growing the language
 
@@ -136,10 +136,10 @@ packages/std-avrac/src/
                passes, interp, backend
   diagnostics/ structured errors and their rendering
   testing/     what every spec asks of a program: shown, refused_with
+packages/*/corpus/  a package's proof by example, both engines
 packages/cli/  the avra command; each subcommand one file
 runtime/       avra_runtime.c — the native half of the semantics
 backend/       llvm_wrapper.c — the compiler's LLVM binding
-corpus/        the proof-by-example suite
 tools/         the gate's scripts: the idiom ratchet, bench, fuzz
 ```
 

@@ -1,13 +1,13 @@
 #!/bin/sh
 # Error tolerance is the product: deterministic mutations of every
-# corpus program run through `avra check`, which must DIAGNOSE (exit
+# program test run through `avra check`, which must DIAGNOSE (exit
 # 0-2) and never crash (signal-grade exit). Standalone, not in the
 # gate (spawn-heavy) — run after grammar or lexer work.
 set -u
 cd "$(dirname "$0")/.."
 fails=0
 n=0
-for f in corpus/*.av; do
+for f in $(find packages -path "*/tests/*" -name "*.av" -not -name "*_test.av"); do
     base=$(basename "$f" .av)
     for m in head1 head2 noparen dupbrace dropfirst reversed noquote; do
         out="build/fuzz_${base}_${m}.av"

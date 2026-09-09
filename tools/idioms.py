@@ -618,8 +618,16 @@ def selftest():
 def sources():
     for base in SRC:
         for path in glob.glob(os.path.join(ROOT, base, "**", "*.av"), recursive=True):
-            if not any(s in path for s in SKIP):
+            if not any(s in path for s in SKIP) and not is_program(path):
                 yield path
+
+
+def is_program(path):
+    """A PROGRAM TEST IS A PROOF, NOT COMPILER CODE: the text it must
+    print sits beside it, and the shape it proves is often the very
+    one the bar forbids — `mut.av`'s subject IS a `mut`, `lists.av`'s
+    IS an index walk. The bar reads what the compiler is written in."""
+    return os.path.exists(path[: -len(".av")] + ".expected")
 
 def licensed(lines, i, code):
     """A license lives AT the site: on the line or just above it."""

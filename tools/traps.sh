@@ -1,6 +1,6 @@
 #!/bin/sh
 # THE TRAP CONTRACT, kept. A trap is a VERDICT (exit 2) and its words
-# name the fault — laws no corpus program can hold, because the corpus
+# name the fault — laws no program test can hold, because a suite
 # runs every program in one process and a trap ends it. Each row builds
 # a program, runs it, and demands the exact words and the exact status.
 #
