@@ -178,8 +178,8 @@ export fn timed_workspace(host: Host, root: string, lang: Language, clock: fn() 
 }
 
 /// A DIRECTORY OF PROGRAMS as one workspace: root and source root
-/// alike, every `.av` under it a module — the corpus, where a
-/// package's sources would sit under `src/`.
+/// alike, every `.av` under it a module — a program test's own root,
+/// where a package's sources would sit under `src/`.
 export fn programs_workspace(host: Host, dir: string, lang: Language, clock: fn() -> int) -> Workspace {
     built(host, dir, dir, lang, clock, false, true)
 }
@@ -1045,7 +1045,7 @@ impl Program {
 
     /// The program lowered with EVERY FILE A PROGRAM: each file's main
     /// under its program symbol, beside every declared body — what a
-    /// corpus binary's entry calls in turn.
+    /// programs binary's entry calls in turn.
     fn programs_checked() -> Result<Lowered, string> {
         if !self.clean() { return .Err(self.report()) }
         let lo = self.lowered_as(null, true, true)
@@ -1158,8 +1158,18 @@ fn load_packages(ws: Workspace, src: string) {
 /// the root, since they never travel.
 fn admit_dependencies(ws: Workspace, i: int, m: Manifest, root: bool, chain: List<string>) {
     for d in m.deps {
-        if !d.dev || root { admitted(ws, d.key, normalized(joined_path(ws.packages[i].root, d.path!)), d.at, chain) }
+        if !d.dev || root { admitted(ws, d.key, normalized(joined_path(ws.packages[i].root, d.path!)), d.at, dep_chain(d, chain)) }
     }
+}
+
+/// The chain a dependency's admission extends. A DEV EDGE STARTS ITS
+/// OWN: the tests are the consumer and nothing depends on them, so a
+/// package's test reaching a library that depends BACK on it closes no
+/// cycle — `@std/text`'s program prints through `@std/io`, which reads
+/// `@std/text`. A library edge carries the chain it came by.
+fn dep_chain(d: Dependency, chain: List<string>) -> List<string> {
+    if d.dev { return [] }
+    chain
 }
 
 fn admitted(ws: Workspace, key: string, dir: string, at: Loc?, chain: List<string>) {

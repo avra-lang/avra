@@ -1,9 +1,9 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef}
-use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, program, lone_workspace, timed_workspace, parsed_cases, parse_clean, entry_of, no_target, avra, emit_ll, link_words}
+use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, program, lone_workspace, timed_workspace, programs_workspace, parsed_cases, parse_clean, entry_of, no_target, avra, emit_ll, link_words}
 use @std.avrac.core.{joined, distinct}
-use @std.path.{dir_of, under_dir}
+use @std.path.{dir_of, under_dir, joined_path}
 use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit_text, exit}
 use @std.time.{now_ns}
 use @std.errors.{Error}
@@ -47,23 +47,35 @@ fn path_arg(args: CliResult) -> string {
     args.arg("file")
 }
 
-/// The argued file as a PROGRAM: inside a package's sources — an
-/// `avra.toml` ancestor marks the root, `src/` under it holds the
-/// modules — every file of it, entered here; outside one, the lone
-/// file. Null when the file does not exist.
+/// The argued file as a PROGRAM, entered. Null when it does not exist.
 fn program_arg(args: CliResult) -> Program? {
     let path = path_arg(args)
     if !exists(path) {
         no_such_file(path)
         return null
     }
-    let root: string? = package_root(dir_of(path))
-    if root == null || !under_dir(path, "${root!}/src") {
-        let lone: Program = program(lone_workspace(path, read_or_die(path), avra()), path)
-        return lone
-    }
-    let whole: Program = program(timed_workspace(disk_host(), root!, avra(), () -> now_ns()), path)
-    whole
+    let entered: Program = program(file_workspace(path), path)
+    entered
+}
+
+/// THE WORKSPACE A NAMED FILE BELONGS TO: its package when it sits
+/// under one's `src/` — an `avra.toml` ancestor marks the root; the
+/// DIRECTORY OF PROGRAMS when that root has no `src/`, since a program
+/// test sits beside its `avra.toml` and every file there is a program
+/// of its own; the lone file otherwise.
+fn file_workspace(path: string) -> Workspace {
+    let held: string? = package_root(dir_of(path))
+    if held == null { return lone(path) }
+    let root = held!
+    let src = joined_path(root, "src")
+    if !exists(src) { return programs_workspace(disk_host(), root, avra(), () -> now_ns()) }
+    if !under_dir(path, src) { return lone(path) }
+    timed_workspace(disk_host(), root, avra(), () -> now_ns())
+}
+
+/// A file outside any package: a package of one holding just it.
+fn lone(path: string) -> Workspace {
+    lone_workspace(path, read_or_die(path), avra())
 }
 
 /// A package root as a program entered at its `[bin]` when it has
@@ -98,12 +110,7 @@ fn caseless_program(args: CliResult) -> Program? {
         let whole: Program = program(timed_workspace(disk_host(), path, avra(), () -> now_ns()), null)
         return whole
     }
-    let root: string? = package_root(dir_of(path))
-    if root == null || !under_dir(path, "${root!}/src") {
-        let lone: Program = program(lone_workspace(path, read_or_die(path), avra()), null)
-        return lone
-    }
-    let held: Program = program(timed_workspace(disk_host(), root!, avra(), () -> now_ns()), null)
+    let held: Program = program(file_workspace(path), null)
     held
 }
 
@@ -119,8 +126,10 @@ fn on_cases(args: CliResult, act: fn(Program, List<TestCase>) -> int) -> int {
         mut ws = held!
         let found = parsed_cases(ws)
         // no cases AND a clean parse: a broken spec file parses to no
-        // cases, and its refusal is the answer, not a green
-        if found.is_empty() && parse_clean(ws) {
+        // cases, and its refusal is the answer, not a green. A program
+        // test the package carries is a proof of its own, so the run
+        // goes on.
+        if found.is_empty() && parse_clean(ws) && !has_program_tests(ws) {
             println("no spec cases here")
             return 0
         }
@@ -241,33 +250,32 @@ fn link(ll_path: string, p: Program) -> int {
     linked(ll_path, p, "-O1")
 }
 
-/// THE HAND-OFF: a binary run once is linked and run by a FRESH
-/// image of this program — `avra staged <plan>` — so the workspace
-/// this process holds (a suite's is ~2.4 GB) is gone while clang
-/// and the binary run, and a suite peaks at the larger of the two,
-/// not their sum. It links at -O0: its hot code is the runtime's,
-/// compiled on its own, so the optimizer's seconds buy nothing
-/// (measured: 6.6s -> 1.1s to link the suite, the same run time).
-/// The plan is a file beside the module: clang's words, one per
-/// line; the binary is the word after `-o`. Answers only when the
-/// exec failed.
-fn staged(ll_path: string, p: Program) -> int {
-    let plan = "${ll_path}.link"
-    if !planned(plan, clang_words(ll_path, p, "-O0")) { return 1 }
-    let _ = avra_exec_self(["staged", plan])
+/// THE HAND-OFF: every binary a run needs is linked and run by a
+/// FRESH image of this program — `avra staged <plan>...` — so the
+/// workspaces this process holds are gone while clang and the
+/// binaries run, and a suite peaks at the larger of the two, not
+/// their sum. Answers only when the exec failed.
+fn handed_off(plans: List<string>) -> int {
+    let _ = avra_exec_self(["staged"].concat(plans))
     eprintln("avra: could not run this program again for the link")
     1
 }
 
-/// The plan written, one word per line — or the host's refusal spoken.
-fn planned(plan: string, words: List<string>) -> bool {
-    match write_text(plan, joined(words, "\n")) {
-        .Ok(_) -> true,
-        .Err(e) -> {
-            eprintln("avra: could not write the link plan — ${e.describe().message}")
-            false
-        }
+/// A module's LINK PLAN, written beside it: clang's words one per
+/// line, the binary the word after `-o`. It links at -O0 — the hot
+/// code is the runtime's, compiled on its own, so the optimizer's
+/// seconds buy nothing (measured: 6.6s -> 1.1s to link the suite,
+/// the same run time). The plan's path, or the host's refusal.
+fn plan_for(ll_path: string, p: Program) -> Result<string, string> {
+    let plan = "${ll_path}.link"
+    match write_text(plan, joined(clang_words(ll_path, p, "-O0"), "\n")) {
+        .Ok(_) -> .Ok(plan),
+        .Err(e) -> .Err(plan_unwritten(e.describe().message)),
     }
+}
+
+fn plan_unwritten(message: string) -> string {
+    "avra: could not write the link plan — ${message}"
 }
 
 /// clang's words for a module: the level, the runtime, the package's

@@ -18,7 +18,7 @@ RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite
 
-.PHONY: census traps test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
+.PHONY: census traps test tested clean gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
         check run ir emit build-native native-check avra
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
@@ -69,7 +69,8 @@ avra: $(RUNTIME_OBJS)
 # Scratch a run leaves behind: the test binaries each package's
 # cases were linked into.
 sweep:
-	@rm -rf packages/*/build build/test_shards
+	@find packages -type d -name build -prune -exec rm -rf {} +
+	@rm -rf build/test_shards
 
 test: $(RUNTIME_OBJS) build/sqlite3.o build/sqlite_sentinel.o
 	@for p in $(SUITES); do \
@@ -108,7 +109,7 @@ build/avra_runtime.o: runtime/avra_runtime.c build/runtime.sha
 	cc -O2 -Wall -Werror -c runtime/avra_runtime.c -o build/avra_runtime.o
 
 # The runtime's trap contract: the words and the verdict (exit 2).
-# No corpus program can hold it — the corpus runs every program in
+# No program test can hold it — a suite runs every program in
 # one process, and a trap ends it. AFTER `tested`, because a row may
 # depend on a package: a broken package should fail its OWN suite
 # first, not this keeper, which would name the harness for someone
@@ -127,9 +128,8 @@ build/llvm_wrapper.o: backend/llvm_wrapper.c build/llvm_wrapper.sha
 
 clean:
 	rm -rf build scratch packages/cli/src/main_stamped.av
-	find packages corpus -name "*.av.ll" -delete
-	find corpus -type f ! -name "*.av" ! -name "*.expected" ! -name "expected" ! -name "avra.toml" ! -name "native-only" -delete
-	rm -rf packages/*/build
+	find packages -name "*.av.ll" -delete
+	find packages -type d -name build -prune -exec rm -rf {} +
 
 check: $(RUNTIME_OBJS)
 	@./avra check $(FILE)
@@ -145,42 +145,6 @@ emit: $(RUNTIME_OBJS)
 
 build-native: $(RUNTIME_OBJS)
 	@./avra build $(FILE)
-
-# The corpus gate: every corpus/*.av must say its .expected — first
-# through the evaluator, then through ONE native binary holding them
-# all (`avra corpus`). A feature's end-to-end proof is one tiny
-# program plus one tiny expected file.
-# A PACKAGE proves the same as corpus/<name>/main.av (its avra.toml
-# marks the root) beside corpus/<name>/expected. corpus/native/ holds
-# programs the evaluator cannot run — extern fns — proved native only.
-#
-# A PACKAGE corpus may be native-only too, and it needs its own mark:
-# corpus/native/ takes LOOSE files, which cannot `use` a package at all
-# ("this file is not in a package — `use` needs a root"), so a driver
-# built ON a package can only be proved in the package form. A `native-only`
-# file beside `expected` drops the evaluator leg, and the gate's own line
-# then SAYS "native == expected" rather than claiming a differential it
-# never ran. The label travels with the artifact: a reader of the gate's
-# output learns the program is single-engine without opening a document.
-corpus: $(RUNTIME_OBJS) build/sqlite3.o
-	@./avra corpus corpus
-	@./avra corpus --native-only corpus/native
-	@for d in corpus/*/; do \
-	  d=$${d%/}; [ -f $$d/src/main.av ] || continue; \
-	  if [ -f $$d/native-only ]; then legs="native"; else \
-	    ./avra run $$d/src/main.av > /tmp/avra-corpus-eval.out 2>&1 \
-	      || { echo "$$d: eval FAILED"; cat /tmp/avra-corpus-eval.out; exit 1; }; \
-	    diff $$d/expected /tmp/avra-corpus-eval.out \
-	      || { echo "$$d: eval != expected"; exit 1; }; \
-	    legs="eval == native"; \
-	  fi; \
-	  ./avra build $$d/src/main.av > /tmp/avra-bin.path 2>&1 \
-	    || { echo "$$d: build FAILED"; cat /tmp/avra-bin.path; exit 1; }; \
-	  $$(cat /tmp/avra-bin.path) > /tmp/avra-corpus-native.out; \
-	  diff $$d/expected /tmp/avra-corpus-native.out \
-	    || { echo "$$d: native != expected"; exit 1; }; \
-	  echo "$$d: $$legs == expected"; \
-	done
 
 # The idiom bar: the baseline LISTS sites and only ever shrinks —
 # `idioms-accept` prunes what is fixed and can never add. A new
@@ -204,7 +168,7 @@ fingerprints:
 # THE EXTERN WALL'S WIDTH: Avra's `int` is 64 bits and C's is 32, so a
 # C body answering a narrow type writes only the low half and a
 # negative value reads as a large positive one. Both engines agree on
-# that wrong answer, so the corpus cannot catch it.
+# that wrong answer, so a program test cannot catch it.
 externs:
 	@python3 tools/externs.py
 
@@ -281,13 +245,14 @@ witness: $(RUNTIME_OBJS) build/width_witness.o
 	  || { echo "witness: Avra and C disagree on the same object — the extern seam lost a width"; exit 1; }
 	@echo "witness: Avra == C on the same object — $$(cat build/witness-avra.out)"
 
-# The whole gate: the vocabulary's guarantee, idioms, unit specs,
-# then the corpus end to end.
+# The whole gate: the vocabulary's guarantee, idioms, then every
+# proof a package carries — its spec cases and its program tests,
+# both inside its own suite.
 # THE GATE: the suites run with the scaffolder's template in place —
 # scaffolded into std-avrac before, removed after, however the suites
 # end — so the templates' own test is one case of that suite, not a
 # second compile of the whole compiler for one case.
-gate: vocab fingerprints externs idioms tested traps corpus witness
+gate: vocab fingerprints externs idioms tested traps witness
 
 tested: $(RUNTIME_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
@@ -302,11 +267,11 @@ native-check: $(RUNTIME_OBJS)
 	@"$$(cat build/native-check-bin.path)" > build/native-check-native.out
 	@diff build/native-check-eval.out build/native-check-native.out && echo "native == eval"
 
-# The measured curve: suite + native corpus wall times.
+# The measured curve: the suites' wall time.
 bench: $(RUNTIME_OBJS)
 	@sh tools/bench.sh
 
-# Mutated corpus through `avra check`: diagnose, never crash.
+# Mutated program tests through `avra check`: diagnose, never crash.
 fuzz: $(RUNTIME_OBJS)
 	@sh tools/fuzz.sh
 

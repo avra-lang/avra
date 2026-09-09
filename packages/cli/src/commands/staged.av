@@ -1,8 +1,9 @@
-//! `avra staged <plan>` — the LIGHT phase of a test or corpus run, in a
-//! fresh image: link the module the heavy phase emitted, run the
-//! binary, judge its status. The plan is clang's words, one per
-//! line; the binary is the word after `-o`. Hidden: `test` and
-//! `corpus` reach it through `avra_exec_self`, never a person.
+//! `avra staged <plan>...` — the LIGHT phase of a suite run, in a
+//! fresh image: link each module the heavy phase emitted, run its
+//! binary, judge its status. A plan is clang's words, one per line;
+//! the binary is the word after `-o`. The first red plan stops the
+//! run, so a failure names one thing. Hidden: `test` reaches it
+//! through `avra_exec_self`, never a person.
 use @std.cli.{Subcommand, CliResult, Runnable, CommandSpec, ArgDef}
 use @std.avrac.language.{verdict_of, plan_binary}
 use @std.process.{status_of}
@@ -12,21 +13,30 @@ type StagedCmd = { }
 
 impl Runnable for StagedCmd {
     fn run(args: CliResult) -> int {
-        let words = (read_text(path_arg(args)) catch "").split("\n")
-        let binary: string? = plan_binary(words)
-        if binary == null {
-            eprintln("avra: ${path_arg(args)} is not a link plan — clang's words, the binary after `-o`")
-            return 2
+        for plan in args.args_of("file") {
+            let code = plan_ran(plan)
+            if code != 0 { return code }
         }
-        let linked: int = match clang_ran(words) {
-            .Ok(x) -> judged_link(x, binary!),
-            .Err(e) -> refused_by_host(e),
-        }
-        if linked != 0 { return 1 }
-        match run_binary(binary!) {
-            .Ok(x) -> judged(status_of(x)),
-            .Err(e) -> refused_by_host(e),
-        }
+        0
+    }
+}
+
+/// One plan: linked, run, judged.
+fn plan_ran(plan: string) -> int {
+    let words = (read_text(plan) catch "").split("\n")
+    let binary: string? = plan_binary(words)
+    if binary == null {
+        eprintln("avra: ${plan} is not a link plan — clang's words, the binary after `-o`")
+        return 2
+    }
+    let linked: int = match clang_ran(words) {
+        .Ok(x) -> judged_link(x, binary!),
+        .Err(e) -> refused_by_host(e),
+    }
+    if linked != 0 { return 1 }
+    match run_binary(binary!) {
+        .Ok(x) -> judged(status_of(x)),
+        .Err(e) -> refused_by_host(e),
     }
 }
 
@@ -50,10 +60,10 @@ export fn staged_command() -> Subcommand {
     let body: StagedCmd = StagedCmd { }
     let meta = CommandSpec {
         name: "staged",
-        description: "Link and run a module the heavy phase emitted (internal)",
+        description: "Link and run the modules the heavy phase emitted (internal)",
         hidden: true,
         flags: [],
-        args: [ArgDef { name: "file", description: "the link plan", required: true, variadic: false }],
+        args: [ArgDef { name: "file", description: "the link plans", required: true, variadic: true }],
         options: [],
     }
     Subcommand { meta: meta, body: body }

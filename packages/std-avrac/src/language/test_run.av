@@ -21,21 +21,25 @@ export fn runner_rows() -> List<RtSig> {
     ]
 }
 
-/// One corpus program as the entry needs it: the symbol that runs it,
-/// the line its verdict prints, and the text it must print.
-export type ProgramCall = { symbol: string, label: string, expected: string }
+/// One program test as the entry needs it: the symbol that runs it,
+/// the line its verdict prints, the text it must print, and whether
+/// the EVALUATOR ran it too. The label travels with the artifact: the
+/// binary's own line names the engines that agreed, so a reader of
+/// the gate's output learns a program is single-engine without
+/// opening a document.
+export type ProgramCall = { symbol: string, label: string, expected: string, evaluated: bool }
 
-/// The host fns a corpus binary declares beyond the runner's: the
+/// The host fns a programs binary declares beyond the runner's: the
 /// capture of everything a program prints, so the entry can compare
 /// it in-process.
-export fn corpus_rows() -> List<RtSig> {
+export fn program_rows() -> List<RtSig> {
     runner_rows().concat([
         extern_row("avra_capture_begin", RtKind.Void, []),
         extern_row("avra_capture_end", RtKind.Ptr, []),
     ])
 }
 
-/// What a test or corpus binary's status MEANS. It says its tally
+/// What a test or programs binary's status MEANS. It says its tally
 /// itself and answers 0 or 1; 127 is a binary that could not start;
 /// anything else is a death — a case or program trapped, or a
 /// signal killed it, and everything after it never ran.
@@ -63,28 +67,15 @@ export fn plan_binary(words: List<string>) -> string? {
     words[at + 1]
 }
 
-/// THE CORPUS BINARY'S ENTRY: every program run in turn with its
+/// THE PROGRAMS BINARY'S ENTRY: every program run in turn with its
 /// output captured and compared to what it must print; a mismatch
 /// speaks and counts; the verdict leaves through the exit status.
-/// One compiler, one clang, one process for the whole corpus.
-export fn corpus_entry(types: TypeRegistry, programs: List<ProgramCall>) -> Body {
+/// One compiler, one clang, one process for every program.
+export fn program_entry(types: TypeRegistry, programs: List<ProgramCall>) -> Body {
     mut e = new_entry(types)
-    let tally = e.mint(types.intern(Type.Int))
-    e.give(Ins.Alloca(tally))
-    e.give(Ins.Store(tally, e.constant(0)))
+    let tally = e.counter()
     for pr in programs { one_program(e, pr, tally) }
-    let failed = e.mint(types.intern(Type.Int))
-    e.give(Ins.Load(failed, tally))
-    e.give(Ins.IfStart(e.zero_test(failed)))
-    e.say("${counted(programs.length, "program")}: native == expected")
-    e.give(Ins.CallRtVoid("avra_process_exit", [e.constant(0)]))
-    e.give(Ins.ArmEnd(e.constant(0)))
-    e.give(Ins.CallRtVoid("avra_process_exit", [e.constant(1)]))
-    let gives = e.constant(0)
-    let merged = e.mint(types.intern(Type.Int))
-    e.give(Ins.RegionEnd(merged, gives))
-    e.give(Ins.ScopeExit(null))
-    e.give(Ins.Ret(0))
+    e.leaves_by_verdict(e.failures(tally), "${counted(programs.length, "program")} proved")
     e.built()
 }
 
@@ -102,6 +93,7 @@ fn one_program(mut e: EntryBuild, pr: ProgramCall, tally: Reg) {
     let same = e.mint(e.types.intern(Type.Bool))
     e.give(Ins.CallRt(same, "avra_streq", [got, wanted]))
     e.give(Ins.IfStart(same))
+    e.say("${pr.label}: ${legs_of(pr)} == expected")
     e.give(Ins.ArmEnd(e.constant(0)))
     e.say("${pr.label}: native != expected")
     e.give(Ins.CallRtVoid("avra_puts", [got]))
@@ -116,28 +108,21 @@ fn one_program(mut e: EntryBuild, pr: ProgramCall, tally: Reg) {
     e.give(Ins.RegionEnd(merged, gives))
 }
 
+/// The engines a program's line names — the evaluator ran it here
+/// before the binary was built, or the marker beside it said not to.
+fn legs_of(pr: ProgramCall) -> string {
+    if pr.evaluated { "eval == native" } else { "native" }
+}
+
 /// The entry: a cell counts failures, each case decides which line
 /// prints, and the verdict leaves through the exit status.
 export fn cases_entry(types: TypeRegistry, cases: List<CaseCall>) -> Body {
     mut e = new_entry(types)
-    let tally = e.mint(types.intern(Type.Int))
-    e.give(Ins.Alloca(tally))
-    e.give(Ins.Store(tally, e.constant(0)))
+    let tally = e.counter()
     for c in cases { one_case(e, c, tally) }
-    let failed = e.mint(types.intern(Type.Int))
-    e.give(Ins.Load(failed, tally))
+    let failed = e.failures(tally)
     e.tally(cases.length, failed)
-    // THE STATUS IS A VERDICT, never a count: a status is eight bits,
-    // and 256 failures would read as success.
-    e.give(Ins.IfStart(e.zero_test(failed)))
-    e.give(Ins.CallRtVoid("avra_process_exit", [e.constant(0)]))
-    e.give(Ins.ArmEnd(e.constant(0)))
-    e.give(Ins.CallRtVoid("avra_process_exit", [e.constant(1)]))
-    let gives = e.constant(0)
-    let merged = e.mint(types.intern(Type.Int))
-    e.give(Ins.RegionEnd(merged, gives))
-    e.give(Ins.ScopeExit(null))
-    e.give(Ins.Ret(0))
+    e.leaves_by_verdict(failed, null)
     e.built()
 }
 
@@ -219,6 +204,37 @@ impl EntryBuild {
 
     /// The suite's closing line.
     fn tally(total: int, failed: Reg) { tally_line(self, total, failed) }
+
+    /// A cell counting failures, seeded at zero.
+    fn counter() -> Reg {
+        let tally = self.mint(self.types.intern(Type.Int))
+        self.give(Ins.Alloca(tally))
+        self.give(Ins.Store(tally, self.constant(0)))
+        tally
+    }
+
+    /// The failures counted so far.
+    fn failures(tally: Reg) -> Reg {
+        let failed = self.mint(self.types.intern(Type.Int))
+        self.give(Ins.Load(failed, tally))
+        failed
+    }
+
+    /// THE STATUS IS A VERDICT, never a count: a status is eight bits,
+    /// and 256 failures would read as success. A closing word is said
+    /// on the green side alone.
+    fn leaves_by_verdict(failed: Reg, green: string?) {
+        self.give(Ins.IfStart(self.zero_test(failed)))
+        if green != null { self.say(green!) }
+        self.give(Ins.CallRtVoid("avra_process_exit", [self.constant(0)]))
+        self.give(Ins.ArmEnd(self.constant(0)))
+        self.give(Ins.CallRtVoid("avra_process_exit", [self.constant(1)]))
+        let gives = self.constant(0)
+        let merged = self.mint(self.types.intern(Type.Int))
+        self.give(Ins.RegionEnd(merged, gives))
+        self.give(Ins.ScopeExit(null))
+        self.give(Ins.Ret(0))
+    }
 
     /// Whether the tally is zero — the suite's verdict.
     fn zero_test(failed: Reg) -> Reg {

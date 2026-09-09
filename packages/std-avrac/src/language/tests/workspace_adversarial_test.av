@@ -32,25 +32,25 @@ fn pair() -> string {
     "export type Pair = { a: int, b: int }\n"
 }
 
-/// The root program over a vendored `@corpus/util` whose one file
+/// The root program over a vendored `@acme/util` whose one file
 /// is `p` — the main file's text is the attack, its `use` included.
 fn vendored_over(p: string, main: string) -> Map<string, string> {
     {
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@corpus/util\" = { path = \"vendor/util\" }\n",
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/util\" = { path = \"vendor/util\" }\n",
         "/w/src/main.av": main,
-        "/w/vendor/util/avra.toml": "[package]\nname = \"@corpus/util\"\nversion = \"0.1.0\"\n",
+        "/w/vendor/util/avra.toml": "[package]\nname = \"@acme/util\"\nversion = \"0.1.0\"\n",
         "/w/vendor/util/src/p.av": p,
     }
 }
 
 /// The vendored `Pair`, used by the main file.
 fn vendored(main: string) -> Map<string, string> {
-    vendored_over(pair(), "use @corpus.util.{Pair}\n${main}")
+    vendored_over(pair(), "use @acme.util.{Pair}\n${main}")
 }
 
 /// The vendored `Pair` beside a vendored trait.
 fn vendored_show(main: string) -> Map<string, string> {
-    vendored_over("${pair()}export trait Show {\n    fn show() -> string\n}\n", "use @corpus.util.{Pair, Show}\n${main}")
+    vendored_over("${pair()}export trait Show {\n    fn show() -> string\n}\n", "use @acme.util.{Pair, Show}\n${main}")
 }
 
 fn vendored_names() -> List<string> {
@@ -114,22 +114,22 @@ spec "language/workspace (adversarial)" {
         }
         then "an impl of a dependency's type is an orphan — and its body does not crash the walk" {
             refuses_once(vendored("impl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\n1\n"), vendored_names(),
-                         "`impl Pair` belongs in package `@corpus.util`, where `Pair` is declared")
+                         "`impl Pair` belongs in package `@acme.util`, where `Pair` is declared")
         }
         then "an orphan's method reading a param does not crash the walk either" {
             refuses_once(vendored("impl Pair {\n    fn plus(n: int) -> int {\n        self.a + n\n    }\n}\n1\n"), vendored_names(),
-                         "`impl Pair` belongs in package `@corpus.util`")
+                         "`impl Pair` belongs in package `@acme.util`")
         }
         then "an orphan's method, called, speaks the orphan alone" {
             refuses_once(vendored("impl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\nPair { a: 1, b: 2 }.sum()\n"), vendored_names(),
-                         "`impl Pair` belongs in package `@corpus.util`")
+                         "`impl Pair` belongs in package `@acme.util`")
         }
         then "a dependency's type takes a LOCAL trait's methods" {
             runs(vendored("trait Show {\n    fn show() -> string\n}\nimpl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\nPair { a: 1, b: 2 }.show()\n"), vendored_names()) == "pair"
         }
         then "a dependency's trait for a dependency's type is an orphan — the impl named as written" {
             refuses_once(vendored_show("impl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\n1\n"), vendored_names(),
-                         "`impl Show for Pair` belongs in package `@corpus.util`, where `Pair` is declared")
+                         "`impl Show for Pair` belongs in package `@acme.util`, where `Pair` is declared")
         }
         then "a local trait may be implemented for a foreign type" {
             runs({ "/w/src/main.av": "use util.{Pair}\ntrait Show {\n    fn show() -> string\n}\nimpl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\nPair { a: 1, b: 2 }.show()\n", "/w/src/util/p.av": pair() },
