@@ -1,0 +1,44 @@
+// `run_settle` — a const's initializer run to its value. The reach
+// law is checked BEFORE the run: one World row anywhere in the
+// program refuses it, naming the row and the body.
+use @std.avrac.testing.{ir_of}
+use @std.avrac.language.{run_settle, Body}
+use @std.avrac.core.{Ins}
+use @std.avrac.features.{Unsettled}
+
+spec "language/settle — the evaluator settles a const" {
+    given "a program's own entry" {
+        then "prints, and printing reaches the world" {
+            match run_settle(ir_of("3 + 4"), 1000) {
+                .Err(why) -> reaches(why, "avra_puts"),
+                .Ok(_) -> false,
+            }
+        }
+    }
+    given "the reach law" {
+        then "a World row in any body refuses before the run, naming the row" {
+            let l = ir_of("fn f() -> int { 3 }\nf()")
+            let f: Body = l.fns.first()!
+            let worldly = f with { ins: [Ins.CallRtVoid("avra_io_write", [])].concat(f.ins) }
+            match run_settle(l with { fns: [worldly] }, 1000) {
+                .Err(why) -> reaches(why, "avra_io_write"),
+                .Ok(_) -> false,
+            }
+        }
+        then "a row the registry does not know is the program's own extern, and reaches the world" {
+            let l = ir_of("3")
+            let e: Body = l.entry
+            match run_settle(l with { entry: e with { ins: [Ins.CallRtVoid("sqlite3_open", [])].concat(e.ins) } }, 1000) {
+                .Err(why) -> reaches(why, "sqlite3_open"),
+                .Ok(_) -> false,
+            }
+        }
+    }
+}
+
+fn reaches(why: Unsettled, row: string) -> bool {
+    match why {
+        .Reach(label) -> label.contains(row),
+        .Budget(_) or .Trap(_) -> false,
+    }
+}

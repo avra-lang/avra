@@ -20,9 +20,17 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     let declared: TypeId? = if ann == null { null } else { cx.bind_declared(s, ann!) }
     if declared != null { cx.plant_want(v, declared!) }
     cx.walk_value(s)
-    if !written(cx.view.store.expr(v)) && annotated_scalar(ann) == null {
-        undeclared(cx, v)
-        return
+    // a value the walk already refused is spoken for
+    if cx.shape_at(v) is .Error { return }
+    if !written(cx.view.store.expr(v)) {
+        if ann == null {
+            undeclared(cx, v)
+            return
+        }
+        if annotated_scalar(ann) == null {
+            unspelled(cx, v, cx.view.store.let_name(s) ?? "this const", declared)
+            return
+        }
     }
     if cx.refuses_void_value(v) { return }
     if declared == null { return }
@@ -34,10 +42,12 @@ fn written(value: Expr) -> bool {
     int_of(value) != null || text_of(value) != null || bool_of(value) != null || bits_of(value) != null
 }
 
-/// The scalar an annotation names, when it names one.
+/// The scalar an annotation names, when it names one — plain, never
+/// wrapped in `?`: a settled value is spelled as a literal, and a
+/// literal is never absent.
 fn annotated_scalar(ann: TypeRef?) -> TypeRef? {
     if ann == null { return null }
-    if !ann!.args.is_empty() || scalar_named(ann!.name) == null { return null }
+    if ann!.optional || !ann!.args.is_empty() || scalar_named(ann!.name) == null { return null }
     ann
 }
 
@@ -51,4 +61,15 @@ fn undeclared(mut cx: TypeCx, v: ExprId) {
                        "a const the compiler computes declares what it settles to",
                        "computed here",
                        "write the type on the const — `const N: int = …` — a scalar or text; a list or a record arrives with the next slice"))
+}
+
+/// What a settlement can SPELL is a literal: a scalar or text. A
+/// list, a record, an enum, a fn, an absent value — each waits for
+/// the slice that lays its value out.
+fn unspelled(mut cx: TypeCx, v: ExprId, name: string, declared: TypeId?) {
+    let spelled = if declared == null { "that" } else { "`${cx.view.types.name_of(declared!)}`" }
+    let _ = cx.spoken(refusal("const.scalar", cx.loc_of(v),
+                       "a const settles to a scalar or text today",
+                       "`${name}` declares ${spelled}",
+                       "a list, a record, an enum or an absent value arrives with the next slice — hold it in a `let`, or a `once fn`"))
 }

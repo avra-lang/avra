@@ -3,7 +3,7 @@
 // the feature, not to use it. Grouped by attack class. A case that
 // once produced a wrong answer, a crash, an internal defect, or an
 // engine divergence keeps its place here forever.
-use @std.avrac.testing.{shown, refusals, refused_with}
+use @std.avrac.testing.{refused_at_run, shown, refusals, refused_with}
 
 spec "features/consts (adversarial)" {
     given "a lambda's env" {
@@ -90,6 +90,44 @@ spec "features/consts (adversarial)" {
         }
         then "the refusal names the CONSTRUCT, not the value's type" {
             refused_with("const N = g()\nfn g() -> int {\n    3\n}\nN", "computed here")
+        }
+    }
+
+    // red team, comptime S1: the evaluator settles a computed const
+    given "degenerate settlements" {
+        then "the evaluator's call depth is the settlement's, and its words say so" {
+            refused_at_run("fn d(n: int) -> int { if n == 0 { 0 } else { 1 + d(n - 1) } }\nconst D: int = d(500)\nD", "recursion too deep")
+        }
+        then "an overflow wraps as the program's would" {
+            shown("fn m() -> int { 9223372036854775807 + 1 }\nconst M: int = m()\nM") == "-9223372036854775808"
+        }
+        then "an empty text settles as empty" {
+            shown("fn e() -> string { \"\" }\nconst E: string = e()\nlet t = \"[${E}]\"\nt") == "[]"
+        }
+        then "a float settles by its bits" {
+            shown("fn h() -> float { 1.5 * 2.0 }\nconst H: float = h()\nH") == "3.0"
+        }
+    }
+    given "what a settlement cannot spell" {
+        then "a list annotation is refused for the LAW, not for the missing type" {
+            refused_with("fn l() -> List<int> { [1, 2] }\nconst X: List<int> = l()\nX.length", "scalar or text")
+        }
+        then "so is a record" {
+            refused_with("type P = { x: int }\nfn p() -> P { P { x: 1 } }\nconst X: P = p()\nX.x", "scalar or text")
+        }
+        then "and an absent value — a literal is never absent" {
+            refused_with("fn n() -> int? { null }\nconst X: int? = n()\nX ?? 9", "scalar or text")
+        }
+        then "a record's SCALAR field settles" {
+            shown("type P = { x: int }\nfn p() -> P { P { x: 1 } }\nconst X: int = p().x\nX") == "1"
+        }
+    }
+    given "cascades" {
+        then "a value the walk refused earns no second refusal" {
+            refusals("const X =\nX") == 1
+        }
+        then "a computed const read in a fn body settles there too" {
+            shown("fn f() -> int { 3 }\nconst A: int = f()\nfn twice() -> int { A * 2 }\nconst B: int = twice()\nB") == "6"
         }
     }
 }

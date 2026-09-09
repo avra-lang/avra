@@ -335,7 +335,8 @@ impl LowerCx {
     /// The three laws a settlement can break, each in its own words.
     fn unsettled(e: ExprId, s: StmtId, why: Unsettled) {
         let name = self.view.store.let_name(s) ?? "this const"
-        let at = self.view.loc_of(e)
+        // AT THE DECLARATION'S VALUE, not the use that asked
+        let at = self.view.loc_of(self.view.store.stmt_value(s) ?? e)
         let d = match why {
             .Reach(label) -> refusal("const.reach", at, "a const cannot read the world", "`${name}` ${label}", "a const settles at compile time from pure computation alone — read the world at run time, under `let`"),
             .Budget(label) -> refusal("const.budget", at, "a const ran past its budget", "`${name}` ${label}", "compute less here, or settle it at run time under `let`"),
