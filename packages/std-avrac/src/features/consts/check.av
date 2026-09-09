@@ -3,7 +3,7 @@
 //! lowering asks it and speaks its refusals. And an annotated const
 //! holds what it declares, like any binding.
 use core.{StmtId, ExprId, TypeId, TypeRef, Expr, int_of, text_of, bool_of, bits_of}
-use features.{TypeCx, scalar_named}
+use features.{TypeCx, spelled_type}
 use diagnostics.{refusal}
 
 /// The value walks under its declaration's want, then — when
@@ -27,7 +27,7 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
             undeclared(cx, v)
             return
         }
-        if annotated_scalar(ann) == null {
+        if spelled_type(cx.view.types, ann) == null {
             unspelled(cx, v, cx.view.store.let_name(s) ?? "this const", declared)
             return
         }
@@ -40,16 +40,6 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
 /// A value read straight off the page.
 fn written(value: Expr) -> bool {
     int_of(value) != null || text_of(value) != null || bool_of(value) != null || bits_of(value) != null
-}
-
-/// The scalar an annotation names, when it names one — plain, never
-/// wrapped in `?`: a settled value is spelled as a literal, and a
-/// literal is never absent.
-fn annotated_scalar(ann: TypeRef?) -> TypeRef? {
-    if ann == null { return null }
-    let a = ann!
-    if a.optional || !a.args.is_empty() || scalar_named(a.name) == null { return null }
-    ann
 }
 
 /// Whether the annotation's own walk already spoke.
@@ -69,13 +59,14 @@ fn undeclared(mut cx: TypeCx, v: ExprId) {
                        "write the type on the const — `const N: int = …` — a scalar or text; a list or a record arrives with the next slice"))
 }
 
-/// What a settlement can SPELL is a literal: a scalar or text. A
-/// list, a record, an enum, a fn, an absent value — each waits for
-/// the slice that lays its value out.
+/// A computed const's type is read from the STORE, so it is spelled
+/// in words the registry knows: a scalar, text, `List<…>`,
+/// `Map<string, …>`, each under `?`. A declared type's name waits
+/// for the query that answers a const's type from typing.
 fn unspelled(mut cx: TypeCx, v: ExprId, name: string, declared: TypeId?) {
     let spelled = if declared == null { "that" } else { "`${cx.view.types.name_of(declared!)}`" }
     let _ = cx.spoken(refusal("const.scalar", cx.loc_of(v),
-                       "a const settles to a scalar or text today",
+                       "a computed const's type is spelled in words",
                        "`${name}` declares ${spelled}",
-                       "a list, a record, an enum or an absent value arrives with the next slice — hold it in a `let`, or a `once fn`"))
+                       "a scalar, text, `List<…>`, `Map<string, …>`, each under `?` — a declared type's name arrives with the const's own query; hold one in a `once fn` today"))
 }

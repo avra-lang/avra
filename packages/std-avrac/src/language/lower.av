@@ -9,7 +9,7 @@
 //! the statement list.
 use core.{StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind, extern_row, inout_row, no_marks, ExternParts, Param, TypeRef}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
-use features.{LowerCx, FnSig, fn_sig_of, Sub, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled}
+use features.{LowerCx, FnSig, fn_sig_of, Sub, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled}
 
 /// One lowered body: instructions in order and each register's type
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
@@ -120,7 +120,7 @@ export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices }
 /// program's extern symbols, gathered once per program by the
 /// workspace: every body's emitter refuses a callee it does not
 /// know against it.
-export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(FileId, StmtId) -> Result<Expr, Unsettled>) -> Unit {
+export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> Unit {
     if w.decl != null && !a.view.decls.has_body(w.decl!) {
         mut out = new_emitter(externs)
         out.defect("a unit without a body was asked for — `${w.name}`")
@@ -306,7 +306,7 @@ type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }
 /// One body — a fn's, a method's, a default's: params pre-minted as
 /// registers 0..N-1, the body inside one scope, the answer after
 /// the scope settles.
-fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Expr, Unsettled>) -> LoweredBody {
+fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> LoweredBody {
     let root: ExprId = x.root!
     let sig: FnSig? = fn_sig_of(a.view.decls.sig(x.id))
     let raw: List<TypeId> = sig?.params ?? []
@@ -330,7 +330,7 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, externs: List<string
 /// lambda's own fn type — a pointer, managed, released by the
 /// callee per the ABI), registers 1..N its params; the body reads
 /// captures through slot 1+j of the env.
-fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Expr, Unsettled>) -> LoweredBody {
+fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> LoweredBody {
     let lam_ty = viewed(a.view.decls.types, lj.sub, a.facts.type_at(lj.lam))
     let held: Arrow? = a.view.decls.types.arrow_parts(lam_ty)
     let seats: List<TypeId> = held?.seats ?? []
@@ -378,14 +378,18 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
 /// A file's run-time statements as a body under `name` — `main` for
 /// the entry, a program's own symbol when every file is a program.
 /// A const's initializer as a body of its own: no params, the value
-/// inside the seats' bracket, the answer after it settles.
-fn lower_const(a: Analysis, s: StmtId, name: string, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Expr, Unsettled>) -> LoweredBody {
+/// inside the seats' bracket, the answer after it settles. The
+/// evaluator runs it to settle the const; a program calls it only
+/// for a value no literal spells.
+fn lower_const(a: Analysis, s: StmtId, name: string, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> LoweredBody {
     let root: ExprId = a.view.store.const_value(s)!
     let rt: TypeId = a.facts.type_at(root)
     mut lo = new_lower_cx(a, rt, null, new_jobs(externs, settle))
     lo.out.seeded()
     lo.seats_enter()
-    let r = lo.reg_of(root)
+    // a value that rides a pointer is answered ONCE per process, as a
+    // `once fn` is; a scalar is spelled at its uses and never called
+    let r = if a.view.decls.types.rides_pointer(rt) { lo.once_body(name, root, rt) } else { lo.reg_of(root) }
     lo.seats_exit(r)
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
@@ -396,11 +400,11 @@ fn lower_const(a: Analysis, s: StmtId, name: string, externs: List<string>, sett
 
 /// Where no workspace stands behind the lowering, no const settles.
 // LICENSED I23: a fn VALUE filling the settle seat — its parameters are the seat's contract, and the answer needs none of them
-fn no_settle(f: FileId, s: StmtId) -> Result<Expr, Unsettled> {
+fn no_settle(f: FileId, s: StmtId) -> Result<Settled, Unsettled> {
     .Err(Unsettled.Trap("nothing here evaluates a const"))
 }
 
-fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Expr, Unsettled>) -> LoweredBody {
+fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> LoweredBody {
     mut lo = new_lower_cx(a, null, null, new_jobs(externs, settle))
     lo.scope_enter()
     lo.lower_stmts(a.view.stmts)

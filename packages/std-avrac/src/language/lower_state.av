@@ -4,7 +4,7 @@
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, int_of, text_of, bool_of, bits_of}
 use diagnostics.{loc_at, refusal}
-use features.{LowerCx, capture_lane, Sub, Cap, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled}
+use features.{LowerCx, capture_lane, Sub, Cap, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, const_symbol}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -104,7 +104,7 @@ impl LowerCx {
         let written: Expr = self.view.store.expr(value!)
         if is_literal(written) { return self.settled_reg(e, written) }
         match self.jobs.settle(self.view.file, s) {
-            .Ok(x) -> self.settled_reg(e, x),
+            .Ok(x) -> if x.spelled != null { self.settled_reg(e, x.spelled!) } else { self.const_call(s, ty) },
             .Err(why) -> {
                 self.unsettled(s, why)
                 self.zero_of(ty)
@@ -312,6 +312,19 @@ fn first_seat() -> Reg {
 }
 
 impl LowerCx {
+    /// A const no literal spells is CALLED: its unit answers the value
+    /// once per process and the same box after — one unit, wanted on
+    /// first sight like any body.
+    fn const_call(s: StmtId, ty: TypeId) -> Reg? {
+        let name = const_symbol(self.view.file, s)
+        if self.unseen(name) {
+            self.jobs.pending.push(Wanted { file: self.view.file, decl: null, name: name, sub: null, settles: s })
+        }
+        let dst = self.out.mint_ty(ty)
+        self.out.give(Ins.Call(dst, name, []))
+        dst
+    }
+
     /// The zero of a type — what a refused const reads as, so the
     /// body lowers on and the refusal alone is what the program hears.
     fn zero_of(ty: TypeId) -> Reg? {

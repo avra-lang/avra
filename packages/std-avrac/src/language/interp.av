@@ -11,7 +11,7 @@
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
 use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, opens_region, closes_region, filled, joined, rt_index, hosted_symbol, Expr}
-use features.{Unsettled}
+use features.{Unsettled, Settled}
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -119,11 +119,12 @@ fn truth_of(symbol: string, v: Val) -> Result<bool, string> {
 fn unbudgeted() -> int { 1000000000000000 }
 
 /// A const's initializer run to its value: the entry under no
-/// arguments, its answer spelled as the literal a use lowers. Refused
-/// BEFORE running when any body reaches the world, DURING it when the
-/// budget runs out or a body traps, and AFTER it when the value has
-/// no literal spelling yet.
-export fn run_settle(l: Lowered, steps: int) -> Result<Expr, Unsettled> {
+/// arguments, its answer spelled as the literal a use lowers — or,
+/// when the value rides a pointer, only RUN, so the laws hold and the
+/// program's own call answers it. Refused BEFORE running when any
+/// body reaches the world, DURING it when the budget runs out or a
+/// body traps, and AFTER it when a spelled value has no literal.
+export fn run_settle(l: Lowered, steps: int, spell: bool) -> Result<Settled, Unsettled> {
     let world: string? = world_reached(l)
     if world != null { return .Err(Unsettled.Reach(world!)) }
     mut m = fresh_machine(l)
@@ -131,7 +132,11 @@ export fn run_settle(l: Lowered, steps: int) -> Result<Expr, Unsettled> {
     let answer: Val? = m.run_body(l.entry, [])
     if m.budget < 0 { return .Err(Unsettled.Budget("took more than ${steps} steps")) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
-    literal_of(answer)
+    if !spell { return .Ok(Settled { spelled: null }) }
+    match literal_of(answer) {
+        .Ok(x) -> .Ok(Settled { spelled: x }),
+        .Err(why) -> .Err(why),
+    }
 }
 
 /// The first row a settlement reaches that touches the world, with
@@ -167,7 +172,7 @@ fn literal_of(v: Val?) -> Result<Expr, Unsettled> {
         .B(b) -> .Ok(Expr.BoolLit(b)),
         .S(s) -> .Ok(Expr.StrLit(s)),
         .F(bits) -> .Ok(Expr.FloatLit(bits)),
-        .A(_) or .C(_) or .M(_) or .N -> .Err(Unsettled.Trap("settles to a list, a record or a map — only a scalar or text is spelled today")),
+        .A(_) or .C(_) or .M(_) or .N -> .Err(Unsettled.Trap("answered a box where a scalar was declared")),
     }
 }
 

@@ -198,11 +198,45 @@ export fn def_type_of(facts: TypeFacts, store: NodeStore, types: TypeRegistry, e
 fn settled_type(store: NodeStore, types: TypeRegistry, s: StmtId) -> TypeId? {
     let v: ExprId? = store.const_value(s)
     if v == null { return null }
-    let word: Type? = literal_shape(store.expr(v!)) ?? annotated_scalar(store.binding_ty(s))
-    if word == null { return null }
+    let word: Type? = literal_shape(store.expr(v!))
+    if word == null { return spelled_type(types, store.binding_ty(s)) }
     let held = types.intern(word!)
     if store.binding_ty(s)?.optional ?? false { return types.type(held?) }
     held
+}
+
+/// A type an annotation spells IN WORDS — a scalar, text, `List<…>`,
+/// `Map<string, …>`, each under `?` — resolved from the registry
+/// alone. A declared type's NAME needs the namespace, which no store
+/// read has; it answers null here.
+export fn spelled_type(types: TypeRegistry, ann: TypeRef?) -> TypeId? {
+    if ann == null { return null }
+    let a = ann!
+    let plain: TypeId? = spelled_plain(types, a)
+    if plain == null { return null }
+    let held = plain!
+    if a.optional { return types.type(held?) }
+    held
+}
+
+fn spelled_plain(types: TypeRegistry, a: TypeRef) -> TypeId? {
+    if a.args.is_empty() {
+        let word: Type? = scalar_named(a.name)
+        return if word == null { null } else { types.intern(word!) }
+    }
+    let inner: TypeId? = spelled_type(types, a.args.last())
+    if inner == null { return null }
+    let elem = inner!
+    match a.name {
+        "List" -> if a.args.length == 1 { types.type(List<elem>) } else { null },
+        "Map" -> if a.args.length == 2 && keyed_by_text(a.args[0]) { types.type(Map<string, elem>) } else { null },
+        _ -> null,
+    }
+}
+
+/// A map's key spelled `string`, bare.
+fn keyed_by_text(k: TypeRef) -> bool {
+    k.name == "string" && k.args.is_empty() && !k.optional
 }
 
 /// The shape a literal wears.
@@ -212,13 +246,6 @@ fn literal_shape(value: Expr) -> Type? {
     if bool_of(value) != null { return Type.Bool }
     if bits_of(value) != null { return Type.Float }
     null
-}
-
-/// The scalar an annotation names, when it names one.
-fn annotated_scalar(ann: TypeRef?) -> Type? {
-    if ann == null { return null }
-    if !ann!.args.is_empty() { return null }
-    scalar_named(ann!.name)
 }
 
 /// What a settlement SPELLS today: a scalar or text, by its word.
