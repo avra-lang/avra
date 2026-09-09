@@ -18,26 +18,41 @@ pair, and nothing checks that they do.
         cx.adopted(want, gathered(w, read.parts, text, want))
     } else { cx.absent(want) }
 
-Two rules:
-1. The emission vocabulary lives as METHODS on the pass context. A
-   helper that takes `cx` first becomes `cx.helper(...)`. CLAUDE.md
-   already says a state struct's impl is its vocabulary; this finishes
-   the move for every pass.
-2. A call may take its LAST fn-typed argument as a trailing block:
-   `f(a) { x -> body }` is `f(a, (x) -> body)`. An `else { }` after the
-   block fills a second trailing fn argument.
+## Three levels
+1. **Verbs as methods on the state.** `presence(cx, r)` becomes
+   `cx.presence(r)`. CLAUDE.md already says a state struct's impl is
+   its vocabulary; this finishes the move for every pass. Nothing new
+   in the language.
+2. **Trailing blocks.** A call may take its LAST fn-typed argument as a
+   block after the parentheses: `f(a) { x -> body }` is
+   `f(a, (x) -> body)`; an `else { }` after it fills a second trailing
+   fn seat. This is Swift's trailing closure, Ruby's block, Rust's
+   `thread::scope(|s| …)` without the punctuation.
+3. **Implicit receiver inside the block** — NOT proposed here. In
+   Kotlin a lambda-with-receiver makes the block's free calls resolve
+   against the receiver, so `cx.` vanishes and a builder reads like a
+   declaration. It costs visible magic (P7): a reader cannot see which
+   calls touch the context. Decide after 1 and 2 exist.
+
+## Where it applies
+Not one pass. Every value threaded through many calls, and every verb
+that owns a scope:
+- the lowering and typing contexts (`LowerCx`, `TypeCx`)
+- builders: the HTTP reply writer, a string builder
+- scoped resources: `db.tx { }`, `with_file(path) { f -> … }`,
+  the extern frame's staged call
+- the test harness: `given "…" { then "…" { … } }`
 
 ## What it buys
 A region is one expression whose arms are blocks, so open, arm-end and
 close are written once inside the method and cannot be mismatched at a
-call site. Every scoped-resource verb (`db.tx { }`, `with_file { }`)
-reads the same way.
+call site. Scoped verbs stop taking `() -> { … }` argument lambdas.
 
 ## Cost
 Grammar: a `{` after a call's `)` currently reads as "expected BREAK".
-The block must parse as an argument only when the callee's last seat is
-fn-typed — a typing question, so the parse admits it and the checker
-refuses a block on a non-fn seat with a named refusal.
+The parse admits the block; the checker refuses one on a callee whose
+last seat is not fn-typed, with a named refusal. Level 1 is a sweep,
+not a language change.
 
 ## Trigger
 Lands with the first pass rewritten to it; the idiom ratchet then
