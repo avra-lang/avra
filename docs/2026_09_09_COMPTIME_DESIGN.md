@@ -618,6 +618,43 @@ Still to land: declaration-producing and fn-replacing effects; the
 two-tier expansion namespace and provenance; annotation facts and
 `explain @name`. Quotes and derive remain S4.
 
+NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
+
+- [ ] **S3d — construction probe (the gate).** Build a `Decl`/
+      `Code<T>`/`Fn` answer WITHOUT quotes: what directed wrap verbs
+      the meta boundary offers (`f with { body: … }`-style), how the
+      splice copies into the target store, and how `@traced`
+      (Fn→Fn) works through them. The old tree's constructor-call
+      trees are refused as a PERMANENT path (§3.5), so the probe
+      decides whether the no-quotes API is a narrow directed one or
+      a temporary one S4 retires. RECORDED TRIGGER: probe written
+      to the lane, deciding which; before any S3d code.
+- [ ] **S3e — the effect doors.** Widen `answers_effect`
+      (annotations/check.av) beyond `void`/`List<Diagnostic>`;
+      `@std/meta` gains `Decl`/`Decls`/`Code<T>`; the `expanded`
+      workspace family (memoized, fingerprint-keyed,
+      cycle-diagnosed) rides the memo kernel.
+- [ ] **S3f — two-tier namespace + provenance.** Generated
+      declarations resolve in a second tier behind the user's own;
+      every spliced node records (annotation site, annotation fn,
+      template site) — the `avra expand` blame and the two-frame
+      diagnostic.
+- [ ] **S3g — visible magic.** `avra explain @name` (the signature
+      IS the effect), `avra expand`, and the node SOURCE PRINTER
+      (which also unblocks `fmt`).
+- [ ] **S3h — the proof.** `@deprecated`, a `Diagnostics` lint,
+      Fn→Fn `@traced` in a test package, and the first compiler
+      derive erasing one `_of` accessor family.
+- [ ] **S1 leftovers (small, fold in).** The reach refusal's full
+      call chain (names each link, not just row+body) — the one
+      "world" voice annotations share; and `export const` (waits on
+      the module-constant sugar, ROADMAP:7175).
+- Then **S4** (quotes + `${}` + `@derive`: `@derive(Show, Eq)` on a
+  struct and an enum, `fingerprint_stmt`'s arms erased), then **S5**
+  (const seats: `matches(const pattern, s)`), then the later list
+  (static aggregate data, JIT, type operators, sublanguage holes,
+  manifest read grants, parallel settlement, `@total`).
+
 Order rationale: S1 is what the owner already queued (ROADMAP:8218,
 "NEXT: comptime (`const`, evaluated at compile time)") and proves the
 engine seam with no namespace change. S3 before S4 because the
