@@ -2,7 +2,7 @@
 //! runs — a literal as written, or what the evaluator finishes; the
 //! lowering asks it and speaks its refusals. Its type is recorded as
 //! a workspace fact; an annotation still holds what it declares.
-use core.{StmtId, ExprId, TypeId, TypeRef, Expr, int_of, text_of, bool_of, bits_of}
+use core.{StmtId, ExprId, TypeId, TypeRef, Type, Expr, int_of, text_of, bool_of, bits_of}
 use features.{TypeCx, declared_decl}
 use diagnostics.{refusal}
 
@@ -47,7 +47,12 @@ fn materializable(cx: TypeCx, ty: TypeId) -> bool {
     // query order cannot turn the same record from kept into copied.
     let named = declared_decl(cx.view.types.shape_of(ty))
     if named != null { let _ = cx.view.decls.sig(named!) }
-    cx.view.types.spells(ty) || cx.view.types.rides_pointer(ty)
+    match cx.view.types.shape_of(ty) {
+        .Int or .Float or .Bool or .Str or .List(_) or .Map(_, _) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) -> true,
+        .Opt(inner) -> cx.view.types.rides_pointer(ty) && materializable(cx, inner),
+        .Ptr or .Cell(_) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or
+        .Null or .EmptyList or .Error or .Void or .EmptyMap -> false,
+    }
 }
 
 // ── The voices ──
@@ -60,7 +65,7 @@ fn materializable(cx: TypeCx, ty: TypeId) -> bool {
 fn unspelled(mut cx: TypeCx, v: ExprId, name: string, held: TypeId) {
     let spelled = "`${cx.view.types.name_of(held)}`"
     let _ = cx.spoken(refusal("const.scalar", cx.loc_of(v),
-                       "a computed const's type is spelled in words",
+                       "a computed const needs a compile-time value form",
                        "`${name}` declares ${spelled}",
-                       "use a scalar, text, `List<…>`, `Map<string, …>`, or `?` over text, a list or a map — hold a named aggregate in a `once fn`"))
+                       "use a scalar, text, list, map, record, enum, result, or an optional over one of them"))
 }

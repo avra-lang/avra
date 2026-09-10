@@ -695,7 +695,11 @@ impl Workspace {
     /// One settlement run: the initializer lowered as a program, its
     /// laws checked, its value spelled when the type spells one.
     fn settlement_of(f: FileId, root: ExprId, name: string) -> Result<Settled, Unsettled> {
-        let l = self.isolated(f, root, name)
+        // The evaluator's source unit and the program's materialized
+        // const unit are different IR under different symbols. The
+        // Lowered memo keys by symbol, so sharing one would make query
+        // order choose which body survives.
+        let l = self.isolated(f, root, "settling$${name}")
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         run_settle(l, settle_steps(), self.decls.types.spells(l.entry.ret), dir_of(self.decls.file(f).path))
     }

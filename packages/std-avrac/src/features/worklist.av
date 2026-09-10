@@ -10,20 +10,12 @@ use @std.errors.{Loc}
 /// One body WANTED — the unit of lowering: a declaration's body (or
 /// a file's main, when `decl` is absent), under concrete Vars when
 /// it is generic, named by its symbol or mangling, in its file.
-export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, root: ExprId? = null }
+export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, root: ExprId? = null, settled: Settled? = null }
 
 /// Why a const did not SETTLE — three laws, each its own voice: the
 /// value reached the world, ran past its budget, or trapped. And
 /// `Spoken`: an earlier read already said so, and this one is silent.
 export enum Unsettled { Reach(string), Budget(string), Trap(string), Spoken }
-
-/// A const that settled: the literal a use lowers — or none, when the
-/// value rides a pointer and a use CALLS its unit, which answers once.
-export type Settled = { spelled: Expr?, embeds: List<string> = [], fingerprint: int }
-
-/// A settlement query's held answer. A refusal remains in full for
-/// fingerprinting; repeated reads turn it into silent `Spoken`.
-export enum Settlement { Held(Settled), Refused(Unsettled) }
 
 /// The unit a const's initializer lowers as, named for its statement.
 export fn const_symbol(f: FileId, s: StmtId) -> string {
@@ -45,6 +37,15 @@ export enum MetaVal { Int(int), Float(int), Text(string), Bool(bool), Absent, No
 export type MetaMap = { keys: List<string>, values: List<MetaVal> }
 
 export type MetaHeap = { nodes: List<List<MetaVal>>, maps: List<MetaMap> }
+
+/// One transport for every value that crosses out of the evaluator.
+/// `spelled` is the scalar fast path; aggregates retain the same
+/// type-driven value and heap used by lifted calls.
+export type Settled = { spelled: Expr?, answer: MetaVal, heap: MetaHeap, embeds: List<string> = [], fingerprint: int }
+
+/// A settlement query's held answer. A refusal remains in full for
+/// fingerprinting; repeated reads turn it into silent `Spoken`.
+export enum Settlement { Held(Settled), Refused(Unsettled) }
 
 export fn new_meta_heap() -> MetaHeap { MetaHeap { nodes: [], maps: [] } }
 

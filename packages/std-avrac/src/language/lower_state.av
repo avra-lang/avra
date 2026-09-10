@@ -104,7 +104,9 @@ impl LowerCx {
         let written: Expr = self.view.store.expr(value!)
         if is_literal(written) { return self.settled_reg(e, written) }
         match self.jobs.settle(self.view.file, s) {
-            .Ok(x) -> if x.spelled != null { self.settled_reg(e, x.spelled!) } else { self.const_call(s, ty) },
+            .Ok(x) -> if x.spelled != null { self.settled_reg(e, x.spelled!) }
+                      else if !self.view.types.rides_pointer(ty) { self.materialized(x.answer, x.heap, ty) }
+                      else { self.const_call(s, ty, x) },
             .Err(why) -> {
                 self.unsettled(s, why)
                 self.zero_of(ty)
@@ -315,10 +317,10 @@ impl LowerCx {
     /// A const no literal spells is CALLED: its unit answers the value
     /// once per process and the same box after — one unit, wanted on
     /// first sight like any body.
-    fn const_call(s: StmtId, ty: TypeId) -> Reg? {
+    fn const_call(s: StmtId, ty: TypeId, settled: Settled) -> Reg? {
         let name = const_symbol(self.view.file, s)
         if self.unseen(name) {
-            self.jobs.pending.push(Wanted { file: self.view.file, decl: null, name: name, sub: null, root: self.view.store.const_value(s) })
+            self.jobs.pending.push(Wanted { file: self.view.file, decl: null, name: name, sub: null, root: self.view.store.const_value(s), settled: settled })
         }
         let dst = self.out.mint_ty(ty)
         self.out.give(Ins.Call(dst, name, []))

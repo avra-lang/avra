@@ -74,12 +74,12 @@ spec "features/consts — a value the compiler settles" {
         then "a copy taken from a const is a copy" {
             shown("fn xs() -> List<int> {\n    [1, 2]\n}\nconst XS: List<int> = xs()\nmut ys = XS\nys.push(3)\n\"\${XS.length} \${ys.length}\"") == "2 3"
         }
-        then "the use is a CALL to the const's unit, never the initializer inline" {
+        then "the use calls a literal-backed unit, never the initializer" {
             let text = render_ir(ir_of("fn xs() -> List<int> {\n    [1, 2]\n}\nconst XS: List<int> = xs()\nXS.length"))
-            text.contains("call const$") && text.contains("avra_once_get")
+            text.contains("call const$") && text.contains("avra_once_get") && !text.contains("call xs")
         }
-        then "`?` over a scalar is refused as the once law refuses it" {
-            refused_with("fn m() -> int? {\n    3\n}\nconst M: int? = m()\nM ?? 9", "spelled in words")
+        then "`?` over a scalar has no compile-time value form yet" {
+            refused_with("fn m() -> int? {\n    3\n}\nconst M = m()\nM ?? 9", "compile-time value form")
         }
         then "a named managed aggregate type is inferred" {
             shown("type P = { x: int, y: int }\nfn p() -> P {\n    P { x: 1, y: 2 }\n}\nconst X = p()\nX.x + X.y") == "3"

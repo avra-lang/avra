@@ -5,7 +5,7 @@
 //! printed answer.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, Deferred, semantics_of, stmt_semantics_of}
+use features.{LowerCx, Deferred, semantics_of, stmt_semantics_of, Settled}
 
 impl LowerCx {
     /// One subtree's register, lowered at first request and
@@ -99,7 +99,7 @@ impl LowerCx {
     /// keeps it. The key is the fn's own SYMBOL — unique in a
     /// binary by the linker's own law, and in a run by the
     /// evaluator's table.
-    mut fn once_body(symbol: string, root: ExprId, answer: TypeId) -> Reg {
+    mut fn once_body(symbol: string, root: ExprId, answer: TypeId, settled: Settled?) -> Reg {
         let key = self.mint_shape(Type.Str)
         self.emit(Ins.ConstStr(key, symbol))
         // the cache answers `T?` — under the niche the nullable IS
@@ -109,7 +109,8 @@ impl LowerCx {
         let held = self.mint_ty(maybe)
         self.emit(Ins.CallRt(held, "avra_once_get", [key]))
         self.region_as(self.presence_of(held, maybe), answer) { cx -> cx.carried_of(held, maybe) } else { cx ->
-            let made = cx.reg_of(root)
+            let made = if settled == null { cx.reg_of(root) }
+                       else { cx.materialized(settled!.answer, settled!.heap, answer) }
             cx.emit(Ins.CallRtVoid("avra_once_set", [key, made]))
             made
         }

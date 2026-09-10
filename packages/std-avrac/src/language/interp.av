@@ -131,7 +131,9 @@ fn unbudgeted() -> int { 1000000000000000 }
 /// body reaches the world, DURING it when the budget runs out or a
 /// body traps, and AFTER it when a spelled value has no literal.
 export fn run_settle(l: Lowered, steps: int, spell: bool, base: string) -> Result<Settled, Unsettled> {
-    let world: string? = world_reached(l, spell)
+    // Every answer crosses into compiler-owned data now, so embed is
+    // safe for aggregates as well as values with a source literal.
+    let world: string? = world_reached(l, true)
     if world != null { return .Err(Unsettled.Reach(world!)) }
     mut m = fresh_machine(l)
     m.budget = steps
@@ -140,9 +142,12 @@ export fn run_settle(l: Lowered, steps: int, spell: bool, base: string) -> Resul
     if m.budget < 0 { return .Err(Unsettled.Budget(over_budget(steps))) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
     let fingerprint = m.value_hash(answer)
-    if !spell { return .Ok(Settled { spelled: null, embeds: m.embeds, fingerprint: fingerprint }) }
+    if answer == null { return .Err(Unsettled.Trap("answered nothing")) }
+    mut heap = new_meta_heap()
+    let crossed = m.meta_of(answer!, heap)
+    if !spell { return .Ok(Settled { spelled: null, answer: crossed, heap: heap, embeds: m.embeds, fingerprint: fingerprint }) }
     match literal_of(answer) {
-        .Ok(x) -> .Ok(Settled { spelled: x, embeds: m.embeds, fingerprint: fingerprint }),
+        .Ok(x) -> .Ok(Settled { spelled: x, answer: crossed, heap: heap, embeds: m.embeds, fingerprint: fingerprint }),
         .Err(why) -> .Err(why),
     }
 }
