@@ -606,14 +606,14 @@ refuse with F2064. Static data (§4.5 later) and `embed` remain.
 S3 STATUS (lane/comptime, 2026-09-09): S3a–S3c LANDED as a reviewed
 checkpoint. `@name(args)` is ordinary resolved and typed syntax;
 `@std.meta` supplies the nominal `Fn`, `Type`, and `Diagnostic`
-boundary; validation fns run in the evaluator with scalar/text
-arguments and a `MetaHeap` for declaration metadata. The `Lifted`
+boundary; validation fns run in the evaluator with ordinary values
+and a `MetaHeap` for declaration metadata. The `Lifted`
 query family now owns each annotation call's memoization,
 fingerprint, dependency edges, and recursion verdict; the former
 parallel `LiftStatus` map is gone. Program proofs cover stacked
 annotations, fn/record/enum metadata, `void` and diagnostic effects,
-float crossing, and counterfeit meta types. Still to land: aggregate
-arguments; declaration-producing and fn-replacing effects; the
+float and nested aggregate crossing, and counterfeit meta types.
+Still to land: declaration-producing and fn-replacing effects; the
 two-tier expansion namespace and provenance; annotation facts and
 `explain @name`. Quotes and derive remain S4.
 
