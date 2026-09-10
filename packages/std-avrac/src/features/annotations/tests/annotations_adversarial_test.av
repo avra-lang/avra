@@ -16,7 +16,7 @@ fn packaged(source: string) -> Program {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
         "/w/src/main.av": source,
         "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
-        "/w/vendor/meta/src/meta.av": "export type Fn = { name: string }\nexport type Type = { name: string }\nexport type Diagnostic = { message: string, help: string?, at: int }\n",
+        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc? }\n",
     }
     mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av"]), "/w", avra())
     ws.program("/w/src/main.av")
@@ -26,6 +26,13 @@ fn refused(source: string, phrase: string) -> bool {
     let p = packaged(source)
     let ds = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
     ds.length == 1 && p.report().contains(phrase)
+}
+
+fn refused_at(source: string, phrase: string, line: int) -> bool {
+    let p = packaged(source)
+    let ds = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
+    let report = p.report()
+    ds.length == 1 && report.contains(phrase) && report.contains("main.av:${line}")
 }
 
 spec "features/annotations — the compile-time call's laws" {
@@ -63,9 +70,15 @@ spec "features/annotations — the compile-time call's laws" {
     given "validation" {
         then "a returned Diagnostic speaks once at the declaration" {
             let src = meta_use() +
-                      "fn reject(f: Fn) -> List<Diagnostic> { [Diagnostic { message: \"`\${f.name}` is forbidden\", help: null, at: 0 }] }\n" +
+                      "fn reject(f: Fn) -> List<Diagnostic> { [Diagnostic { message: \"`\${f.name}` is forbidden\", help: null, at: null }] }\n" +
                       "@reject\nfn forbidden() -> int { 1 }\nforbidden()"
             refused(src, "`forbidden` is forbidden")
+        }
+        then "a diagnostic can point at the field that caused it" {
+            let src = meta_use() +
+                      "fn reject(t: Type) -> List<Diagnostic> { [Diagnostic { message: \"bad field\", help: null, at: t.fields[0].at }] }\n" +
+                      "@reject\ntype P = { x: int }\n1"
+            refused_at(src, "bad field", 4)
         }
     }
     given "argument evaluation" {
