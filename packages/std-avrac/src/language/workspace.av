@@ -105,6 +105,10 @@ export type Workspace = {
 /// the `Lifted` family's key; the call expression mints that identity.
 type LiftAsk = { decl: DeclId, file: FileId, stmt: StmtId, args: List<ExprId> }
 
+fn lift_ask(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> LiftAsk {
+    LiftAsk { decl: d, file: f, stmt: s, args: args }
+}
+
 /// The query family's held value. A refusal remains here in full so a
 /// new revision can compare it, while a repeated read speaks nothing.
 enum LiftResult { Said(List<Said>), Refused(Unsettled) }
@@ -683,10 +687,13 @@ impl Workspace {
     fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
         let name = "lift$${f.index}$${call.index}"
         let known: int? = self.lift_specs.get(name)
-        if known != null { return self.lifted_at(known!) }
+        if known != null {
+            self.lift_asks.set(known!, lift_ask(d, f, s, args))
+            return self.lifted_at(known!)
+        }
         let id = self.lift_asks.length
         self.lift_specs.set(name, id)
-        self.lift_asks.push(LiftAsk { decl: d, file: f, stmt: s, args: args })
+        self.lift_asks.push(lift_ask(d, f, s, args))
         self.lifted_at(id)
     }
 
@@ -1591,9 +1598,11 @@ fn lift_hash(r: LiftResult) -> int {
 
 fn said_hash(x: Said) -> int {
     let at = x.at
-    if at == null { return fp(53, [fp_str(x.message), fp_str(x.help ?? "")]) }
-    let loc = at!
-    fp(53, [fp_str(x.message), fp_str(x.help ?? ""), fp_str(loc.file ?? ""), loc.lo, loc.hi])
+    let place = if at == null { [] } else {
+        let loc = at!
+        [fp_str(loc.file ?? ""), loc.lo, loc.hi]
+    }
+    fp(53, [fp_str(x.message), fp_str(x.help ?? "")].concat(place))
 }
 
 fn unsettled_hash(why: Unsettled) -> int {
