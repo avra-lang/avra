@@ -9,6 +9,9 @@ export enum MemoAsk<T> {
     Cycle
 }
 
+/// One input read with the fingerprint of the bytes that produced it.
+export type Loaded<T> = { value: T, fingerprint: int }
+
 export type Memo<T> = { db: Db, family: int, values: Cell<Table<T>> }
 
 export fn new_memo<T>(db: Db, family: int) -> Memo<T> {
@@ -85,6 +88,23 @@ impl Memo<T> {
         values.keep(arg, value)
         self.values.set(values)
         value
+    }
+
+    /// An input whose semantic value does not retain its source bytes.
+    /// The loader reads once and returns both products of that read.
+    fn input_loaded(arg: int, load: fn() -> Loaded<T>) -> T {
+        let held = self.values.get().at(arg)
+        if held != null {
+            self.db.record_dep(self.query_key(arg))
+            return held!
+        }
+        let loaded = load()
+        self.db.set_input(self.query_key(arg), loaded.fingerprint)
+        self.db.record_dep(self.query_key(arg))
+        mut values = self.values.get()
+        values.keep(arg, loaded.value)
+        self.values.set(values)
+        loaded.value
     }
 
     /// The whole protocol for an acyclic derived family.
