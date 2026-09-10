@@ -620,25 +620,29 @@ two-tier expansion namespace and provenance; annotation facts and
 
 NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
 
-- [ ] **S3d — construction probe (the gate).** Build a `Decl`/
-      `Code<T>`/`Fn` answer WITHOUT quotes: what directed wrap verbs
-      the meta boundary offers (`f with { body: … }`-style), how the
-      splice copies into the target store, and how `@traced`
-      (Fn→Fn) works through them. The old tree's constructor-call
-      trees are refused as a PERMANENT path (§3.5), so the probe
-      decides whether the no-quotes API is a narrow directed one or
-      a temporary one S4 retires. RECORDED TRIGGER: probe written
-      to the lane, deciding which; before any S3d code.
+- [x] **S3d — construction probe (the gate).** DONE 2026-09-10 —
+      docs/2026_09_10_COMPTIME_S3D_CONSTRUCTION_PROBE.md. VERDICT: a
+      narrow DIRECTED API, permanent — emitter fns at the meta
+      boundary answer a data-shaped `Decls`, and the compiler owns
+      ONE materializer, a registry over the directive KINDS
+      (`Trace`, `Projection`, `Template` — S4's quote is one more
+      arm, never a second seam). No node assembly in user derives;
+      the 800-line encoder/decoder MIRROR cannot recur because there
+      is one direction and the registry spells every arm (I22).
+      `@traced` is the Trace arm (the Wrap precedent), the `_of`
+      accessors are the Projection arm (three copies of one shape),
+      and `@derive(Show)` on an arbitrary struct does NOT fit — its
+      body is the user's template, S4's.
 - [ ] **S3e — the effect doors.** Widen `answers_effect`
-      (annotations/check.av) beyond `void`/`List<Diagnostic>`;
-      `@std/meta` gains `Decl`/`Decls`/`Code<T>`; the `expanded`
-      workspace family (memoized, fingerprint-keyed,
-      cycle-diagnosed) rides the memo kernel.
-- [ ] **S3f — two-tier namespace + provenance.** Generated
-      declarations resolve in a second tier behind the user's own;
-      every spliced node records (annotation site, annotation fn,
-      template site) — the `avra expand` blame and the two-frame
-      diagnostic.
+      (annotations/check.av) with `Decls` — `Decl`/`DeclKind` rode
+      as a record, the crossing is already proven; the Lifted family
+      returns `{ saids, decls }`; `@std/meta` ships the emitter fns.
+- [ ] **S3f — two-tier namespace + provenance.** THE FUNDAMENTAL
+      BUILDING BLOCK the probe lands on: a per-file GENERATED
+      STORE, DeclIds minted beside written ones (`items(f)` becomes
+      written ∪ generated), resolution answering written at once and
+      generated on a second look; every spliced node records
+      (annotation site, annotation fn, template site).
 - [ ] **S3g — visible magic.** `avra explain @name` (the signature
       IS the effect), `avra expand`, and the node SOURCE PRINTER
       (which also unblocks `fmt`).
