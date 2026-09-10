@@ -35,17 +35,20 @@ fn threshold(f: Fn, value: float) -> List<Diagnostic> {
 }
 
 type Bounds = { low: int, high: int }
+enum Mode { Strict, Relaxed(int) }
 type Policy = {
     bounds: Bounds,
     labels: List<string>,
     weights: Map<string, int>,
+    mode: Mode,
     note: string?,
 }
 
 fn configured(f: Fn, p: Policy) -> List<Diagnostic> {
     let hot = p.weights.get("hot") ?? 0
+    let strict = match p.mode { .Strict -> true, .Relaxed(_) -> false }
     if f.name == "sum" && p.bounds.low == 2 && p.bounds.high == 9 &&
-       p.labels.length == 2 && p.labels[1] == "right" && hot == 7 && p.note == null {
+       p.labels.length == 2 && p.labels[1] == "right" && hot == 7 && strict && p.note == null {
         []
     } else {
         [refuse("aggregate argument did not cross")]
@@ -59,6 +62,7 @@ fn configured(f: Fn, p: Policy) -> List<Diagnostic> {
     bounds: Bounds { low: 2, high: 9 },
     labels: ["left", "right"],
     weights: { "hot": 7 },
+    mode: .Strict,
     note: null,
 })
 fn sum(left: int, right: int) -> int {
