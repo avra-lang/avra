@@ -12,7 +12,7 @@ use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, T
 use @std.path.{stem_of}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
-use features.{TypeRow, TypeArgs}
+use features.{TypeRow, TypeArgs, Said, Unsettled}
 
 /// A file's path facts — known at first mention, before its parse.
 export type FileInfo = { id: FileId, path: string, module_id: ModuleId }
@@ -52,6 +52,9 @@ export type Decls = {
     // without walking every declaration in the workspace
     impls_by_name: Map<string, List<DeclId>>,
     ensure: List<fn(DeclId)>,
+    // the workspace's lifting hook: an annotation fn run over a
+    // declaration at compile time, what it said back
+    lifter: List<fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<List<Said>, Unsettled>>,
     ensure_methods: List<fn(DeclId)>,
     // the language's own type declarations, one per row that is an
     // enum — and the rows they read their parts from
@@ -70,12 +73,19 @@ export type Decls = {
     ensure_writes: List<fn(DeclId)>,
 }
 
+/// Where no workspace stands behind the table, nothing lifts.
+// LICENSED I23: a fn VALUE filling the lifter seat — its parameters are the seat's contract, and the answer needs none of them
+fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
+    .Err(Unsettled.Trap("nothing here lifts an annotation"))
+}
+
 export fn new_decls() -> Decls {
     Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
         stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], children: [], methods: [], impls: [], impls_by_name: {},
         ensure: [no_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
         seat_muts: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
+        lifter: [no_lifter],
     }
 }
 
@@ -387,6 +397,16 @@ impl Decls {
     fn module_of(d: DeclId) -> string { self.module_name(self.file(self.decl(d).file).module_id) }
     fn package_of(d: DeclId) -> string { package_of_module(self.module_of(d)) }
 
+    /// Whether a type is one declaration exported by `@std/meta`.
+    /// The DeclId is the identity; the package and export name locate
+    /// that identity without accepting an equal-shaped user record.
+    fn meta_type(ty: TypeId, name: string) -> bool {
+        match self.types.shape_of(ty) {
+            .Struct(d, declared) -> declared == name && self.package_of(d) == "@std.meta",
+            rest -> false,
+        }
+    }
+
     /// A declaration's signature — asking it IS the query: the hook
     /// the workspace arms computes it on first ask and records the
     /// dependency; the table only holds.
@@ -405,11 +425,24 @@ impl Decls {
         self.ensure.set(0, no_ensure)
         self.ensure_methods.set(0, no_ensure)
         self.ensure_writes.set(0, no_ensure)
+        self.lifter.set(0, no_lifter)
     }
 
     /// The workspace arms the sig hook once.
     fn arm(ensure: fn(DeclId)) {
         self.ensure.set(0, ensure)
+    }
+
+    /// The workspace arms the lifting hook once.
+    fn arm_lifter(lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<List<Said>, Unsettled>) {
+        self.lifter.set(0, lift)
+    }
+
+    /// An annotation fn `d` run over the declaration at `s` in file
+    /// `f`, with these settled arguments — asking IS the run.
+    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
+        let lift = self.lifter[0]
+        lift(d, f, s, call, args)
     }
 
     fn declare(d: DeclId, sig: DeclSig) {

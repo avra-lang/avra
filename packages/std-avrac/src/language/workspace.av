@@ -14,9 +14,9 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts}
+use core.{Table, new_table, Expr, StmtId, Span, int_of, bits_of, text_of, bool_of, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted}
+use features.{Unsettled, Settled, Settlement, LiftStatus, const_symbol, expr_symbol, MetaVal, MetaHeap, Said, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -96,6 +96,8 @@ export type Workspace = {
     phases: List<Phase>,
     // every const asked to settle this workspace, by its unit name
     settlements: Map<string, Settlement>,
+    // every annotation call, including the call currently lowering
+    lifts: Map<string, LiftStatus>,
 }
 
 /// One package of the workspace: its key (the manifest's name; ""
@@ -203,7 +205,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         decl_facts: new_table(), method_clashes: new_table(), folds: new_table(),
         analyses: new_table(), units: new_table(), specs: {}, asks: [], defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
-        clock: clock, phases: [], settlements: {},
+        clock: clock, phases: [], settlements: {}, lifts: {},
     }
     for f in families() {
         if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
@@ -212,6 +214,8 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
+    let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<List<Said>, Unsettled> = (d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> ws.lifted(d, f, s, call, args)
+    ws.decls.arm_lifter(lift)
     ws.load_packages(src)
     ws
 }
@@ -624,7 +628,15 @@ impl Workspace {
     /// program's, memoized — then run in the evaluator. A const whose
     /// value asks for itself is refused as the cycle it is.
     fn settled(f: FileId, s: StmtId) -> Result<Settled, Unsettled> {
-        let name = const_symbol(f, s)
+        self.settled_root(f, const_symbol(f, s), self.analysis(f).view.store.const_value(s)!)
+    }
+
+    /// An annotation's argument settled like a const's value.
+    fn settled_expr(f: FileId, e: ExprId) -> Result<Settled, Unsettled> {
+        self.settled_root(f, expr_symbol(f, e), e)
+    }
+
+    fn settled_root(f: FileId, name: string, root: ExprId) -> Result<Settled, Unsettled> {
         let stood: Settlement? = self.settlements.get(name)
         if stood != null {
             return match stood! {
@@ -634,7 +646,7 @@ impl Workspace {
             }
         }
         self.settlements.set(name, Settlement.Settling)
-        let r = self.settlement_of(f, s, name)
+        let r = self.settlement_of(f, root, name)
         self.settlements.set(name, match r {
             .Ok(x) -> Settlement.Held(x),
             .Err(why) -> Settlement.Refused(why),
@@ -644,11 +656,189 @@ impl Workspace {
 
     /// One settlement run: the initializer lowered as a program, its
     /// laws checked, its value spelled when the type spells one.
-    fn settlement_of(f: FileId, s: StmtId, name: string) -> Result<Settled, Unsettled> {
+    fn settlement_of(f: FileId, root: ExprId, name: string) -> Result<Settled, Unsettled> {
         let ws = self
-        let l = memory(self.decls.settlement(Wanted { file: f, decl: null, name: name, sub: null, settles: s }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
+        let l = memory(self.decls.settlement(Wanted { file: f, decl: null, name: name, sub: null, root: root }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         run_settle(l, settle_steps(), self.decls.types.spells(l.entry.ret), dir_of(self.decls.file(f).path))
+    }
+
+    /// An annotation fn run over a declaration: the fn's own program
+    /// lowered and checked for reach, the declaration crossed in as
+    /// the fn's first seat asks, each argument settled and crossed,
+    /// and what the fn answered read back as what it SAID.
+    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
+        let name = "lift$${f.index}$${call.index}"
+        let stood: LiftStatus? = self.lifts.get(name)
+        if stood != null {
+            return match stood! {
+                .Lifting -> .Ok([]),
+                .Held(saids) -> .Ok(saids),
+                .Refused(_) -> .Err(Unsettled.Spoken),
+            }
+        }
+        self.lifts.set(name, LiftStatus.Lifting)
+        let r = self.lifted_once(d, f, s, args)
+        self.lifts.set(name, match r {
+            .Ok(saids) -> LiftStatus.Held(saids),
+            .Err(why) -> LiftStatus.Refused(why),
+        })
+        r
+    }
+
+    /// One annotation call after its recursion guard is standing.
+    fn lifted_once(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
+        let x = self.decls.decl(d)
+        let ws = self
+        let l = memory(self.decls.settlement(Wanted { file: x.file, decl: d, name: self.decls.symbol(d), sub: null }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
+        if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
+        let sig = fn_sig_of(self.decls.sig(d))
+        if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }
+        mut heap = MetaHeap { nodes: [] }
+        mut vals: List<MetaVal> = [self.crossed_decl(f, s, sig!.params.first()!, heap)]
+        for e in args {
+            match self.settled_expr(f, e) {
+                .Ok(v) -> vals.push(crossed_literal(v.spelled)),
+                .Err(why) -> { return .Err(why) },
+            }
+        }
+        match run_lifted(l, self.decls.symbol(d), vals, heap, settle_steps()) {
+            .Ok(r) -> .Ok(self.saids(r, sig!.ret)),
+            .Err(why) -> .Err(why),
+        }
+    }
+
+    /// The declaration at `s` as the value the fn's first seat asks
+    /// for — its slots filled BY NAME from the seat type's own field
+    /// table, so the compiler and `@std/meta` agree by the field's
+    /// name and never by a position.
+    fn crossed_decl(f: FileId, s: StmtId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
+        let a = self.analysis(f)
+        let found: DeclId? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s))
+        let found_sig: StructSig? = self.decls.fields_of_type(want)
+        if found == null || found_sig == null { return MetaVal.Absent }
+        let d = found!
+        let sig = found_sig!
+        let x = self.decls.decl(d)
+        let at = self.crossed_loc(a, a.view.store.stmt_span(s), heap)
+        mut slots: List<MetaVal> = []
+        for i, n in sig.names {
+            slots.push(match n {
+                "name" -> MetaVal.Text(x.name),
+                "at" -> at,
+                "answer" -> MetaVal.Text(self.decls.types.name_of(fn_sig_of(self.decls.sig(d))?.ret ?? self.decls.types.type(void))),
+                "params" -> self.crossed_params(a, d, sig.types[i], heap),
+                "fields" -> self.crossed_fields(d, sig.types[i], heap),
+                "variants" -> self.crossed_variants(d, sig.types[i], heap),
+                _ -> MetaVal.Absent,
+            })
+        }
+        heap.node(slots)
+    }
+
+    /// A fn's parameters as `Param` values: name, the type's spelling,
+    /// its `mut` mark — built by the `List<Param>` seat's element type.
+    fn crossed_params(a: Analysis, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
+        let found_fn = fn_sig_of(self.decls.sig(d))
+        let item: TypeId? = elem_of(self.decls.types, want)
+        if found_fn == null || item == null { return heap.node([]) }
+        let fs = found_fn!
+        let elem: StructSig? = self.decls.fields_of_type(item!)
+        if elem == null { return heap.node([]) }
+        let shape = elem!
+        let names = param_names(a.view.store, self.decls.decl(d).stmt)
+        mut out: List<MetaVal> = []
+        for i, ty in fs.params {
+            mut slots: List<MetaVal> = []
+            for n in shape.names {
+                slots.push(match n {
+                    "name" -> MetaVal.Text(names[i]),
+                    "ty" -> MetaVal.Text(self.decls.types.name_of(ty)),
+                    "mutable" -> MetaVal.Bool(self.decls.mut_seat(d, i)),
+                    _ -> MetaVal.Absent,
+                })
+            }
+            out.push(heap.node(slots))
+        }
+        heap.node(out)
+    }
+
+    /// A record's fields as `Field` values.
+    fn crossed_fields(d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
+        let x = self.decls.decl(d)
+        let own: StructSig? = self.decls.fields_of_type(self.decls.types.intern(Type.Struct(d, x.name)))
+        let item: TypeId? = elem_of(self.decls.types, want)
+        if own == null || item == null { return heap.node([]) }
+        let elem: StructSig? = self.decls.fields_of_type(item!)
+        if elem == null { return heap.node([]) }
+        let shape = elem!
+        mut out: List<MetaVal> = []
+        for i, n in own!.names {
+            mut slots: List<MetaVal> = []
+            for e in shape.names {
+                slots.push(match e {
+                    "name" -> MetaVal.Text(n),
+                    "ty" -> MetaVal.Text(self.decls.types.name_of(own!.types[i])),
+                    _ -> MetaVal.Absent,
+                })
+            }
+            out.push(heap.node(slots))
+        }
+        heap.node(out)
+    }
+
+    /// An enum's variants as `Variant` values: name and payload spellings.
+    fn crossed_variants(d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
+        let x = self.decls.decl(d)
+        let own = self.decls.variants_of_type(self.decls.types.intern(Type.Enum(d, x.name)))
+        let item: TypeId? = elem_of(self.decls.types, want)
+        if own == null || item == null { return heap.node([]) }
+        let elem: StructSig? = self.decls.fields_of_type(item!)
+        if elem == null { return heap.node([]) }
+        let shape = elem!
+        mut out: List<MetaVal> = []
+        for i, n in own!.names {
+            mut slots: List<MetaVal> = []
+            for e in shape.names {
+                slots.push(match e {
+                    "name" -> MetaVal.Text(n),
+                    "payload" -> heap.node([MetaVal.Text(self.decls.types.name_of(p)) for p in own!.payloads[i]]),
+                    _ -> MetaVal.Absent,
+                })
+            }
+            out.push(heap.node(slots))
+        }
+        heap.node(out)
+    }
+
+    /// A source span as a `Loc` value — file, lo, hi — or absent.
+    fn crossed_loc(a: Analysis, sp: Span?, mut heap: MetaHeap) -> MetaVal {
+        if sp == null { return MetaVal.Absent }
+        heap.node([MetaVal.Text(a.view.source.file), MetaVal.Int(sp!.lo), MetaVal.Int(sp!.hi)])
+    }
+
+    /// What a lifted call SAID: nothing for a void answer, else each
+    /// `Diagnostic` of the list, read by its field names.
+    fn saids(r: Lifted, ret: TypeId) -> List<Said> {
+        let elem: TypeId? = elem_of(self.decls.types, ret)
+        if elem == null { return [] }
+        let sig: StructSig? = self.decls.fields_of_type(elem!)
+        if sig == null { return [] }
+        [self.said_of(r.heap, sig!, item) for item in r.heap.slots(r.answer)]
+    }
+
+    fn said_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Said {
+        let slots = heap.slots(item)
+        mut out = Said { message: "", help: null, at: null }
+        for i, n in sig.names {
+            match n {
+                "message" -> { out = out with { message: text_of_meta(slots[i]) } },
+                "help" -> { out = out with { help: if slots[i] is .Absent { null } else { text_of_meta(slots[i]) } } },
+                "at" -> { out = out with { at: loc_of_meta(heap, slots[i]) } },
+                _ -> nothing(),
+            }
+        }
+        out
     }
 
     // ── Modules ──
@@ -1345,3 +1535,55 @@ fn unpackaged_use(at: Loc?) -> Diag {
 
 /// The instructions one settlement may run before it is refused.
 fn settle_steps() -> int { 10000000 }
+
+/// A settled literal crossed: its value, or absent for a value that
+/// spelled nothing.
+fn crossed_literal(x: Expr?) -> MetaVal {
+    if x == null { return MetaVal.Absent }
+    let value = x!
+    let n: int? = int_of(value)
+    if n != null { return MetaVal.Int(n!) }
+    let f: int? = bits_of(value)
+    if f != null { return MetaVal.Float(f!) }
+    let s: string? = text_of(value)
+    if s != null { return MetaVal.Text(s!) }
+    let b: bool? = bool_of(value)
+    if b != null { return MetaVal.Bool(b!) }
+    MetaVal.Absent
+}
+
+fn text_of_meta(v: MetaVal) -> string {
+    match v {
+        .Text(s) -> s,
+        .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) -> "",
+    }
+}
+
+/// A `Loc` value read back: file, lo, hi.
+fn loc_of_meta(heap: MetaHeap, v: MetaVal) -> Loc? {
+    let slots = heap.slots(v)
+    if slots.length < 3 { return null }
+    match slots[1] {
+        .Int(lo) -> match slots[2] {
+            .Int(hi) -> Loc { file: if slots[0] is .Absent { null } else { text_of_meta(slots[0]) }, lo: lo, hi: hi },
+            .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) -> null,
+        },
+        .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) -> null,
+    }
+}
+
+/// A fn declaration's parameter names, in seat order.
+fn param_names(store: NodeStore, s: StmtId) -> List<string> {
+    match store.stmt(s) {
+        .FnDecl(_, _, params, _, _) -> [p.name for p in params],
+        _ -> [],
+    }
+}
+
+/// A list type's element, or null for any other shape.
+fn elem_of(types: TypeRegistry, ty: TypeId) -> TypeId? {
+    match types.shape_of(ty) {
+        .List(e) -> e,
+        _ -> null,
+    }
+}

@@ -12,7 +12,7 @@
 //! live in machine tables addressed by handle.
 use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, Reach, opens_region, closes_region, filled, joined, rt_index, hosted_symbol, Expr}
 use @std.path.{joined_path}
-use features.{Unsettled, Settled}
+use features.{Unsettled, Settled, MetaVal, MetaHeap}
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -100,7 +100,7 @@ fn ran(l: Lowered, target: Body) -> Result<Ran, string> {
 /// The body a symbol names, or the refusal.
 fn named_body(l: Lowered, symbol: string) -> Result<Body, string> {
     let target: Body? = body_named(l, symbol)
-    if target == null { return .Err("no body named `${symbol}`") }
+    if target == null { return .Err(no_body_named(symbol)) }
     .Ok(target!)
 }
 
@@ -110,6 +110,7 @@ fn printed(r: Ran) -> string {
 }
 
 fn body_named(l: Lowered, name: string) -> Body? {
+    if l.entry.name == name { return l.entry }
     l.fns.find(it.name == name)
 }
 
@@ -136,13 +137,35 @@ export fn run_settle(l: Lowered, steps: int, spell: bool, base: string) -> Resul
     m.budget = steps
     m.base = base
     let answer: Val? = m.run_body(l.entry, [])
-    if m.budget < 0 { return .Err(Unsettled.Budget("took more than ${steps} steps")) }
+    if m.budget < 0 { return .Err(Unsettled.Budget(over_budget(steps))) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
     if !spell { return .Ok(Settled { spelled: null, embeds: m.embeds }) }
     match literal_of(answer) {
         .Ok(x) -> .Ok(Settled { spelled: x, embeds: m.embeds }),
         .Err(why) -> .Err(why),
     }
+}
+
+/// What a lifted call answered, with the heap its records live in.
+export type Lifted = { answer: MetaVal, heap: MetaHeap }
+
+/// A fn run at compile time over crossing values: the body under its
+/// arguments, its answer crossed back. The reach law holds as for a
+/// const whose value is not spelled — no world, no embed.
+export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: MetaHeap, steps: int) -> Result<Lifted, Unsettled> {
+    let world: string? = world_reached(l, false)
+    if world != null { return .Err(Unsettled.Reach(world!)) }
+    let target: Body? = body_named(l, symbol)
+    if target == null { return .Err(Unsettled.Trap(no_body_named(symbol))) }
+    mut m = fresh_machine(l)
+    m.budget = steps
+    let vals = [m.val_of(heap, a) for a in args]
+    let answer: Val? = m.run_body(target!, vals)
+    if m.budget < 0 { return .Err(Unsettled.Budget(over_budget(steps))) }
+    if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
+    mut out = MetaHeap { nodes: [] }
+    let crossed = m.meta_of(answer ?? Val.I(0), out)
+    .Ok(Lifted { answer: crossed, heap: out })
 }
 
 /// The first row a settlement reaches that it may not, with the body
@@ -321,6 +344,38 @@ impl Machine {
 
     fn at(r: Reg) -> Val? {
         self.frames.last()![r.index]
+    }
+
+    /// A crossing value as the machine holds it: a node becomes an
+    /// array of its slots, minted in the table.
+    fn val_of(heap: MetaHeap, m: MetaVal) -> Val {
+        match m {
+            .Int(n) -> Val.I(n),
+            .Float(bits) -> Val.F(bits),
+            .Text(s) -> Val.S(s),
+            .Bool(b) -> Val.B(b),
+            .Absent -> Val.N,
+            .Node(id) -> {
+                self.fresh_array([self.val_of(heap, x) for x in heap.nodes[id]])
+            },
+        }
+    }
+
+    /// A machine value crossed back: an array becomes a node of the
+    /// heap handed in; a float crosses as its bits; a cell or a map
+    /// has no crossing and reads absent.
+    fn meta_of(v: Val, mut heap: MetaHeap) -> MetaVal {
+        match v {
+            .I(n) -> MetaVal.Int(n),
+            .F(bits) -> MetaVal.Float(bits),
+            .B(b) -> MetaVal.Bool(b),
+            .S(s) -> MetaVal.Text(s),
+            .N -> MetaVal.Absent,
+            .A(id) -> {
+                heap.node([self.meta_of(x, heap) for x in self.arrays[id]])
+            },
+            .C(_) or .M(_) -> MetaVal.Absent,
+        }
     }
 
     /// `embed`: the file beside the settlement's source, read whole —
@@ -957,6 +1012,9 @@ impl Machine {
         verdict(self.text_val(vals[0]) == self.text_val(vals[1]))
     }
 }
+
+fn no_body_named(symbol: string) -> string { "no body named `${symbol}`" }
+fn over_budget(steps: int) -> string { "took more than ${steps} steps" }
 // ── The host seam the evaluator reaches through ─────────────────
 // The process substrate, the io rows and the clock are the runtime's
 // own C; the evaluator calls the same functions the native program

@@ -337,6 +337,12 @@ export fn elems_of(e: Expr) -> List<ExprId>? {
 /// whether it was written nullable (`int?`). An annotation is DATA,
 /// not a node — no pass walks one — so its span rides here rather
 /// than in a side table.
+/// `@name(args)` on a declaration: the call the compiler makes over
+/// it at compile time. The callee is an ident NODE and the arguments
+/// are expression nodes, so resolution and typing read them as any
+/// expression — no second name law.
+export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, span: Span? }
+
 export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, muts: List<bool> = [] }
 
 /// The same written type with its `?` dropped — what a nullable
@@ -520,6 +526,8 @@ export type NodeStore = {
     // `mut fn` — a method declaring that it writes its receiver
     mutating: List<bool>,
     onces: List<bool>,
+    // `@name(args)` marks per statement, in written order
+    annotations: List<List<Annotation>>,
     // `static fn` — a fn under an impl declaring it has NO receiver
     statics: List<bool>,
     pats: List<Pat>,
@@ -536,7 +544,7 @@ export type NodeStore = {
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
-        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], statics: [],
+        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], statics: [], annotations: [],
         pats: [], pat_spans: [], pat_fingerprints: [], trailing: [], type_lits: [], holes: [],
     }
 }
@@ -730,7 +738,22 @@ impl NodeStore {
         self.mutating.push(false)
         self.onces.push(false)
         self.statics.push(false)
+        self.annotations.push([])
         StmtId { index: self.stmts.add(s, span) }
+    }
+
+    /// `@name(args)` crossed this declaration: the call the compiler
+    /// makes over it, recorded as a fact of the declaration — its
+    /// callee an ident node, so every pass reads it as one.
+    fn annotate(s: StmtId, a: Annotation) {
+        mut held = self.annotations[s.index]
+        held.push(a)
+        self.annotations.set(s.index, held)
+        self.stmt_fingerprints.set(s.index, fp(114, [self.stmt_fingerprints[s.index], self.expr_fingerprint(a.callee)].concat([self.expr_fingerprint(e) for e in a.args])))
+    }
+
+    fn annotations_of(s: StmtId) -> List<Annotation> {
+        self.annotations[s.index]
     }
 
     /// `mut fn` crossed this declaration — it says its receiver is

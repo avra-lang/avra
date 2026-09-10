@@ -1,0 +1,71 @@
+// The annotation boundary: its callee, receiver, remaining seats,
+// answer effect, execution, and one-message discipline.
+use @std.avrac.language.{avra, new_workspace, memory_host, Program}
+use @std.avrac.core.{flatten}
+
+fn meta_use() -> string {
+    "use @std.meta.{Fn, Type, Diagnostic}\n"
+}
+
+fn fn_use() -> string {
+    "use @std.meta.{Fn}\n"
+}
+
+fn packaged(source: string) -> Program {
+    let files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+        "/w/src/main.av": source,
+        "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
+        "/w/vendor/meta/src/meta.av": "export type Fn = { name: string }\nexport type Type = { name: string }\nexport type Diagnostic = { message: string, help: string?, at: int }\n",
+    }
+    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av"]), "/w", avra())
+    ws.program("/w/src/main.av")
+}
+
+fn refused(source: string, phrase: string) -> bool {
+    let p = packaged(source)
+    let ds = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
+    ds.length == 1 && p.report().contains(phrase)
+}
+
+spec "features/annotations — the compile-time call's laws" {
+    given "the callee and receiver" {
+        then "a value is not an annotation fn" {
+            refused("let mark = 1\n@mark\nfn answer() -> int { 1 }\nanswer()", "an annotation names a fn")
+        }
+        then "the fn's first seat must take this declaration" {
+            refused(meta_use() + "fn mark(f: Fn) { }\n@mark\ntype P = { x: int }\n1", "takes `Fn`, and this is a type")
+        }
+        then "the fn must take the declaration" {
+            refused("fn mark() { }\n@mark\nfn answer() -> int { 1 }\nanswer()", "takes nothing")
+        }
+        then "a same-named user record cannot counterfeit the meta receiver" {
+            refused("type Fn = {}\nfn mark(f: Fn) { }\n@mark\nfn answer() -> int { 1 }\nanswer()", "not `@std.meta.Fn`")
+        }
+    }
+    given "the remaining seats and answer" {
+        then "written arguments fill every remaining seat" {
+            refused(meta_use() + "fn mark(f: Fn, n: int) { }\n@mark\nfn answer() -> int { 1 }\nanswer()", "takes 1 after the declaration, this writes 0")
+        }
+        then "each argument has its seat's type" {
+            refused(meta_use() + "fn mark(f: Fn, n: int) { }\n@mark(\"three\")\nfn answer() -> int { 1 }\nanswer()", "this seat of `mark` takes `int`")
+        }
+        then "the answer declares the effect" {
+            refused(meta_use() + "fn mark(f: Fn) -> int { 1 }\n@mark\nfn answer() -> int { 1 }\nanswer()", "answers `int`")
+        }
+        then "a same-named user record cannot counterfeit diagnostics" {
+            let src = fn_use() + "type Diagnostic = { message: string }\n" +
+                      "fn mark(f: Fn) -> List<Diagnostic> { [] }\n" +
+                      "@mark\nfn answer() -> int { 1 }\nanswer()"
+            refused(src, "not `List<@std.meta.Diagnostic>`")
+        }
+    }
+    given "validation" {
+        then "a returned Diagnostic speaks once at the declaration" {
+            let src = meta_use() +
+                      "fn reject(f: Fn) -> List<Diagnostic> { [Diagnostic { message: \"`\${f.name}` is forbidden\", help: null, at: 0 }] }\n" +
+                      "@reject\nfn forbidden() -> int { 1 }\nforbidden()"
+            refused(src, "`forbidden` is forbidden")
+        }
+    }
+}

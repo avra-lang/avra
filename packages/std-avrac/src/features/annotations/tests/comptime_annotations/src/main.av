@@ -1,0 +1,53 @@
+use @std.meta.{Fn, Type, Diagnostic, refuse}
+
+fn named(f: Fn, want: string) -> List<Diagnostic> {
+    if f.name == want && f.params.length == 2 && f.params[0].name == "left" &&
+       f.params[0].ty == "int" && f.params[1].name == "right" && f.answer == "int" {
+        []
+    } else {
+        [refuse("wrong fn metadata for `${f.name}`")]
+    }
+}
+
+fn two_fields(t: Type) -> List<Diagnostic> {
+    if t.name == "Pair" && t.fields.length == 2 && t.fields[0].name == "left" &&
+       t.fields[0].ty == "int" && t.fields[1].ty == "string" {
+        []
+    } else {
+        [refuse("wrong type metadata for `${t.name}`")]
+    }
+}
+
+fn two_variants(t: Type) -> List<Diagnostic> {
+    if t.name == "Choice" && t.variants.length == 2 && t.variants[0].name == "None" &&
+       t.variants[1].name == "Some" && t.variants[1].payload.length == 2 {
+        []
+    } else {
+        [refuse("wrong enum metadata for `${t.name}`")]
+    }
+}
+
+fn deprecated(f: Fn, note: string) {
+}
+
+fn threshold(f: Fn, value: float) -> List<Diagnostic> {
+    if value > 1.4 { [] } else { [refuse("float argument did not cross")] }
+}
+
+@named("sum")
+@deprecated("use add")
+@threshold(1.5)
+fn sum(left: int, right: int) -> int {
+    left + right
+}
+
+@two_fields
+type Pair = { left: int, right: string }
+
+@two_variants
+enum Choice {
+    None
+    Some(int, string)
+}
+
+"${sum(2, 3)} ${Pair { left: 7, right: "ok" }.right}"

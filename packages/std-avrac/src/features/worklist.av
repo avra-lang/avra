@@ -5,11 +5,12 @@
 //! body), so an enqueue is a write in place, never through a shared
 //! box; `seen` keys by mangled name, once per body.
 use core.{ExprId, TypeId, DeclId, FileId, StmtId, Expr}
+use @std.errors.{Loc}
 
 /// One body WANTED — the unit of lowering: a declaration's body (or
 /// a file's main, when `decl` is absent), under concrete Vars when
 /// it is generic, named by its symbol or mangling, in its file.
-export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, settles: StmtId? = null }
+export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, root: ExprId? = null }
 
 /// Why a const did not SETTLE — three laws, each its own voice: the
 /// value reached the world, ran past its budget, or trapped. And
@@ -29,6 +30,45 @@ export enum Settlement { Settling, Held(Settled), Refused(Unsettled) }
 export fn const_symbol(f: FileId, s: StmtId) -> string {
     "const$${f.index}$${s.index}"
 }
+
+/// The unit an expression lowers as on its own — an annotation's
+/// argument, settled like a const's value.
+export fn expr_symbol(f: FileId, e: ExprId) -> string {
+    "expr$${f.index}$${e.index}"
+}
+
+/// A value CROSSING between the compiler and a lifted call: a scalar
+/// or text by value, an absent value as itself, and a record or a
+/// list as a NODE of the heap it travels with — a record's slots in
+/// declaration order, a list's elements in order; the two are one
+/// shape to the evaluator.
+export enum MetaVal { Int(int), Float(int), Text(string), Bool(bool), Absent, Node(int) }
+
+export type MetaHeap = { nodes: List<List<MetaVal>> }
+
+impl MetaHeap {
+    /// A record or list of these values, as the node that names it.
+    fn node(slots: List<MetaVal>) -> MetaVal {
+        self.nodes.push(slots)
+        MetaVal.Node(self.nodes.length - 1)
+    }
+
+    fn slots(v: MetaVal) -> List<MetaVal> {
+        match v {
+            .Node(id) -> self.nodes[id],
+            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Absent -> [],
+        }
+    }
+}
+
+/// What a lifted call SAID about a declaration: one diagnostic, in
+/// the annotation's own words, at the place it chose.
+export type Said = { message: string, help: string?, at: Loc? }
+
+/// Where one annotation call stands while its callee is lowered and
+/// run. Re-entering the same call is the lowering pass seeing the
+/// annotation it is already proving, so it contributes nothing.
+export enum LiftStatus { Lifting, Held(List<Said>), Refused(Unsettled) }
 
 /// One body's worklist: the bodies it wants, the lambdas it lifted,
 /// the wrappers it minted, and the names it has already asked for.

@@ -7,11 +7,12 @@
 //! never an option and never an Unknown — a hole or unresolved
 //! name types as the interned Error, which ABSORBS: the causing
 //! pass already spoke, so no diagnostic cascades from it.
-use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, NodeStore, FileId, DeclId, FnParts, Binding, same_expr, flatten, LambdaParts, marked}
+use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, NodeStore, FileId, DeclId, FnParts, Binding, same_expr, flatten, LambdaParts, marked, Annotation}
 use diagnostics.{Diag, loc_at, refusal}
 use features.{TypeCx, NarrowFrame, Dispatch, semantics_of, stmt_semantics_of, post_order, FnSig, DeclSig, fn_sig_of, TypeRow, type_row, Decls, Decl, Cap, new_type_facts, def_type_of, type_named, TypeFacts, NameFacts, FileView, nothing}
 use features.structs.{fits_default}
 use features.specs.{fits_case}
+use features.annotations.{check_annotation}
 use @std.errors.{Loc}
 
 /// A type context over one expression range of a file, reading the
@@ -37,7 +38,14 @@ impl TypeCx {
     /// own.
     mut fn type_decl(x: Decl) -> TypeFacts {
         match x.kind {
-            .Main -> self.type_stmts(runtime_stmts(self.view)),
+            .Main -> {
+                self.type_stmts(runtime_stmts(self.view))
+                // a top-level declaration's annotations sit ABOVE it,
+                // so the entry's body owns them, and types them here
+                for s in self.view.stmts {
+                    if self.view.store.is_declaration(s) { self.type_annotations(s) }
+                }
+            },
             // a bodyless fn is an EXTERN, and its declaration has laws
             // of its own — `stmt_semantics_of` already routes it home
             .Fn -> if x.root == null { self.type_stmts([x.stmt]) } else { self.fn_body(x) },
@@ -100,7 +108,10 @@ impl TypeCx {
     mut fn type_stmts(stmts: List<StmtId>) {
         let was = self.starving
         self.starving = false
-        for s in stmts { stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).type_stmt(self, s) }
+        for s in stmts {
+            stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).type_stmt(self, s)
+            self.type_annotations(s)
+        }
         self.starving = was
     }
 
@@ -128,6 +139,25 @@ impl TypeCx {
     /// goes hungry as any walk does, so the brackets here and in
     /// `type_stmts` and `feed` clear the word for exactly the
     /// nested work.
+    /// A statement's annotations, each typed by the body that OWNS its
+    /// expressions: an annotation sits above its declaration, outside
+    /// the declaration's own span, so the enclosing body holds it and
+    /// a declaration's own context passes it by.
+    mut fn type_annotations(s: StmtId) {
+        for a in self.view.store.annotations_of(s) {
+            if self.facts.owns(a.callee) {
+                self.walk_annotation(a)
+                check_annotation(self, s, a)
+            }
+        }
+    }
+
+    /// An annotation's callee and arguments type as expressions do.
+    mut fn walk_annotation(a: Annotation) {
+        self.walk(a.callee)
+        for e in a.args { self.walk(e) }
+    }
+
     mut fn walk(root: ExprId) {
         let was = self.starving
         self.starving = false
