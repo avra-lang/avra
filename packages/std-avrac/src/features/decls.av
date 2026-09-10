@@ -44,6 +44,7 @@ export type Decls = {
     decls: List<Decl>,
     keys: Map<string, DeclId>,
     sigs: List<DeclSig?>,
+    const_types: Map<string, TypeId>,
     children: List<List<DeclId>>,
     methods: List<List<DeclId>>,
     impls: List<List<DeclId>>,
@@ -52,6 +53,7 @@ export type Decls = {
     // without walking every declaration in the workspace
     impls_by_name: Map<string, List<DeclId>>,
     ensure: List<fn(DeclId)>,
+    ensure_const: List<fn(FileId, StmtId)>,
     // the workspace's lifting hook: an annotation fn run over a
     // declaration at compile time, what it said back
     lifter: List<fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<List<Said>, Unsettled>>,
@@ -79,11 +81,15 @@ fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) 
     .Err(Unsettled.Trap("nothing here lifts an annotation"))
 }
 
+fn no_const_ensure(f: FileId, s: StmtId) { }
+
+fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
+
 export fn new_decls() -> Decls {
     Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
-        stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], children: [], methods: [], impls: [], impls_by_name: {},
-        ensure: [no_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
+        stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
+        ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
         seat_muts: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
         lifter: [no_lifter],
     }
@@ -423,6 +429,7 @@ impl Decls {
     /// sig asked after that is held or, loudly, absent.
     fn disarm() {
         self.ensure.set(0, no_ensure)
+        self.ensure_const.set(0, no_const_ensure)
         self.ensure_methods.set(0, no_ensure)
         self.ensure_writes.set(0, no_ensure)
         self.lifter.set(0, no_lifter)
@@ -431,6 +438,18 @@ impl Decls {
     /// The workspace arms the sig hook once.
     fn arm(ensure: fn(DeclId)) {
         self.ensure.set(0, ensure)
+    }
+
+    fn arm_const(ensure: fn(FileId, StmtId)) { self.ensure_const.set(0, ensure) }
+
+    fn const_type(f: FileId, s: StmtId) -> TypeId? {
+        let ensure = self.ensure_const[0]
+        ensure(f, s)
+        self.const_types.get(const_type_key(f, s))
+    }
+
+    fn record_const_type(f: FileId, s: StmtId, ty: TypeId) {
+        self.const_types.set(const_type_key(f, s), ty)
     }
 
     /// The workspace arms the lifting hook once.
