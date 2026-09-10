@@ -1,0 +1,168 @@
+//! THE ANNOTATION LAW: `@name(args)` is the call `name(<the
+//! declaration>, args)` made at compile time. So `name` is a fn; its
+//! FIRST seat says what it takes — `Fn` for a fn, `Type` for a record
+//! or enum; the written arguments fill the seats after it, settled
+//! like a const's value; and what it ANSWERS is its effect —
+//! `List<Diagnostic>` validates, `void` records only. The law
+//! satisfied, the call runs, and what it said is spoken here.
+use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt}
+use features.{TypeCx, fn_sig_of, FnSig, Said, Unsettled}
+use diagnostics.{refusal, loc_at}
+use @std.errors.{Loc}
+
+export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
+    if cx.errored(a.callee) { return }
+    let d: DeclId? = cx.bound_decl(a.callee)
+    if d == null || cx.view.decls.fn_name(d!) == null {
+        not_a_fn(cx, a)
+        return
+    }
+    let sig: FnSig? = fn_sig_of(cx.view.decls.sig(d!))
+    if sig == null { return }
+    let seats = sig!.params
+    if seats.is_empty() {
+        takes_no_declaration(cx, a)
+        return
+    }
+    let kind: DeclKind? = declared_kind(cx, s)
+    if !receiver_fits(cx, seats.first()!, kind) {
+        wrong_receiver(cx, a, seats.first()!, kind)
+        return
+    }
+    if seats.length - 1 != a.args.length {
+        wrong_count(cx, a, seats.length - 1)
+        return
+    }
+    if !arguments_fit(cx, a, seats) { return }
+    if !answers_effect(cx, sig!.ret) {
+        wrong_answer(cx, a, sig!.ret)
+        return
+    }
+    match cx.view.decls.lifted(d!, cx.view.file, s, a.args) {
+        .Ok(saids) -> {
+            for x in saids { spoken_said(cx, a, s, x) }
+        },
+        .Err(why) -> unsettled(cx, a, why),
+    }
+}
+
+/// The kind of declaration the annotation crosses, or null for a
+/// statement that declares nothing.
+fn declared_kind(cx: TypeCx, s: StmtId) -> DeclKind? {
+    let d: DeclId? = cx.view.decls.decls_of_file(cx.view.file).find((c: DeclId) -> same_stmt(cx.view.decls.decl(c).stmt, s))
+    if d == null { return null }
+    cx.view.decls.decl(d!).kind
+}
+
+/// `Fn` takes a fn; `Type` takes a record or an enum.
+fn receiver_fits(cx: TypeCx, seat: TypeId, kind: DeclKind?) -> bool {
+    if kind == null { return false }
+    match cx.view.types.name_of(seat) {
+        "Fn" -> kind! is .Fn,
+        "Type" -> kind! is .Record || kind! is .Enum,
+        rest -> false,
+    }
+}
+
+/// Each written argument accepted by the seat after the declaration's.
+fn arguments_fit(mut cx: TypeCx, a: Annotation, seats: List<TypeId>) -> bool {
+    mut fit = true
+    for i, e in a.args {
+        if cx.errored(e) { fit = false }
+        else if !cx.accepts(e, seats[i + 1]) {
+            wrong_argument(cx, a, e, seats[i + 1])
+            fit = false
+        }
+    }
+    fit
+}
+
+/// `void`, or a list of `Diagnostic`.
+fn answers_effect(cx: TypeCx, ret: TypeId) -> bool {
+    match cx.view.types.shape_of(ret) {
+        .Void -> true,
+        .List(e) -> cx.view.types.name_of(e) == "Diagnostic",
+        _ -> false,
+    }
+}
+
+// ── The voices ──
+
+fn at_annotation(cx: TypeCx, a: Annotation) -> Loc? {
+    if a.span == null { return null }
+    loc_at(cx.view.source.file, a.span!)
+}
+
+fn not_a_fn(mut cx: TypeCx, a: Annotation) {
+    let _ = cx.spoken(refusal("annotation.callee", at_annotation(cx, a),
+                       "an annotation names a fn over a declaration",
+                       "`@${a.name}` names no fn",
+                       "write `fn ${a.name}(f: Fn) -> List<Diagnostic>` — or `t: Type` for a record or enum — and import it"))
+}
+
+fn takes_no_declaration(mut cx: TypeCx, a: Annotation) {
+    let _ = cx.spoken(refusal("annotation.receiver", at_annotation(cx, a),
+                       "an annotation's first seat says what it takes",
+                       "`${a.name}` takes nothing",
+                       "its first parameter is the declaration: `f: Fn`, or `t: Type` for a record or enum"))
+}
+
+fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) {
+    let took = cx.view.types.name_of(seat)
+    let this = if kind == null { "not a declaration" } else { "a ${kind_shown(kind!)}" }
+    let _ = cx.spoken(refusal("annotation.receiver", at_annotation(cx, a),
+                       "an annotation's first seat says what it takes",
+                       "`${a.name}` takes `${took}`, and this is ${this}",
+                       "`Fn` crosses a fn, `Type` a record or an enum — nothing else yet"))
+}
+
+fn kind_shown(k: DeclKind) -> string {
+    match k {
+        .Fn -> "fn",
+        .Record -> "type",
+        .Enum -> "enum",
+        rest -> "declaration",
+    }
+}
+
+fn wrong_count(mut cx: TypeCx, a: Annotation, wanted: int) {
+    let _ = cx.spoken(refusal("annotation.seats", at_annotation(cx, a),
+                       "an annotation's arguments fill its seats",
+                       "`${a.name}` takes ${wanted} after the declaration, this writes ${a.args.length}",
+                       null))
+}
+
+fn wrong_argument(mut cx: TypeCx, a: Annotation, e: ExprId, want: TypeId) {
+    let _ = cx.spoken(refusal("annotation.seats", cx.loc_of(e),
+                       "an annotation's arguments fill its seats",
+                       "this seat of `${a.name}` takes `${cx.view.types.name_of(want)}`",
+                       "an argument settles at compile time: a scalar or text"))
+}
+
+fn wrong_answer(mut cx: TypeCx, a: Annotation, ret: TypeId) {
+    let _ = cx.spoken(refusal("annotation.answer", at_annotation(cx, a),
+                       "an annotation answers nothing or `List<Diagnostic>`",
+                       "`${a.name}` answers `${cx.view.types.name_of(ret)}`",
+                       "`List<Diagnostic>` validates the declaration; `void` records the annotation and says nothing"))
+}
+
+/// What the annotation SAID, at the place it named — the declaration
+/// itself when it named none.
+fn spoken_said(mut cx: TypeCx, a: Annotation, s: StmtId, x: Said) {
+    let here: Loc? = x.at ?? cx.view.stmt_loc(s)
+    let _ = cx.spoken(refusal("annotation.said", here, x.message, "refused by `@${a.name}`", x.help))
+}
+
+fn unsettled(mut cx: TypeCx, a: Annotation, why: Unsettled) {
+    let label = match why {
+        .Reach(words) -> "`${a.name}` ${words}",
+        .Budget(words) -> "`${a.name}` ${words}",
+        .Trap(words) -> "`${a.name}` ${words}",
+        .Spoken -> "",
+    }
+    if label.is_empty() { return }
+    let _ = cx.spoken(refusal("annotation.unsettled", at_annotation(cx, a),
+                       "an annotation could not run",
+                       label,
+                       "an annotation runs at compile time from pure computation alone"))
+}
