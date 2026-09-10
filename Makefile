@@ -236,8 +236,8 @@ build/width_witness.o: packages/width-witness/src/witness.c
 # under a rule whose whole claim is "Avra == C on the SAME object".
 # The build LOCK stays in /tmp by design: it is machine-wide.
 witness: $(RUNTIME_OBJS) build/width_witness.o
-	@./avra build packages/width-witness > build/witness.path 2>&1 \
-	  || { echo "witness: build FAILED"; cat build/witness.path; exit 1; }
+	@./avra build packages/width-witness > build/witness.path 2> build/witness.err \
+	  || { echo "witness: build FAILED"; cat build/witness.err; cat build/witness.path; exit 1; }
 	@$$(tail -1 build/witness.path) > build/witness-avra.out
 	@cc -O2 -o build/witness-c packages/width-witness/src/reader.c build/width_witness.o
 	@build/witness-c > build/witness-c.out
