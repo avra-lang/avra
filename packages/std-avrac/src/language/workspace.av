@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, int_of, text_of, bool_of, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts}
+use core.{Table, new_table, Expr, StmtId, Span, int_of, bits_of, text_of, bool_of, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, Settled, Settlement, LiftStatus, const_symbol, expr_symbol, MetaVal, MetaHeap, Said, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
@@ -1530,6 +1530,8 @@ fn crossed_literal(x: Expr?) -> MetaVal {
     if x == null { return MetaVal.Absent }
     let n: int? = int_of(x!)
     if n != null { return MetaVal.Int(n!) }
+    let f: int? = bits_of(x!)
+    if f != null { return MetaVal.Float(f!) }
     let s: string? = text_of(x!)
     if s != null { return MetaVal.Text(s!) }
     let b: bool? = bool_of(x!)
@@ -1540,7 +1542,7 @@ fn crossed_literal(x: Expr?) -> MetaVal {
 fn text_of_meta(v: MetaVal) -> string {
     match v {
         .Text(s) -> s,
-        .Int(_) or .Bool(_) or .Absent or .Node(_) -> "",
+        .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) -> "",
     }
 }
 
@@ -1551,9 +1553,9 @@ fn loc_of_meta(heap: MetaHeap, v: MetaVal) -> Loc? {
     match slots[1] {
         .Int(lo) -> match slots[2] {
             .Int(hi) -> Loc { file: if slots[0] is .Absent { null } else { text_of_meta(slots[0]) }, lo: lo, hi: hi },
-            .Text(_) or .Bool(_) or .Absent or .Node(_) -> null,
+            .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) -> null,
         },
-        .Text(_) or .Bool(_) or .Absent or .Node(_) -> null,
+        .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) -> null,
     }
 }
 
