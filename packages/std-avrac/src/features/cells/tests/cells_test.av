@@ -1,0 +1,24 @@
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/cells" {
+    given "one explicit shared slot" {
+        then "copies see replacement through either name" {
+            shown("let a = Cell.new(1)\nlet b = a\nb.set(2)\na.get()") == "2"
+        }
+        then "the binding itself need not be mut" {
+            shown("let c: Cell<int> = Cell.new(3)\nc.set(4)\nc.get()") == "4"
+        }
+        then "get preserves aggregate value semantics" {
+            shown("let c = Cell.new([1])\nmut snapshot = c.get()\nsnapshot.push(2)\nc.get().length") == "1"
+        }
+        then "set accepts the held type" {
+            refused_with("let c = Cell.new(1)\nc.set(\"x\")\n0", "argument 1 of `set` wants `int`, found `string`")
+        }
+        then "get takes no arguments" {
+            refused_with("let c = Cell.new(1)\nc.get(2)", "`get` takes 0 arguments, found 1")
+        }
+        then "the type has one argument" {
+            refused_with("let c: Cell<int, int> = Cell.new(1)\n0", "`Cell` is applied to 2 types; it takes 1")
+        }
+    }
+}

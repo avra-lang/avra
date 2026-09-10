@@ -1,0 +1,85 @@
+//! `Cell<T>` — one explicit shared slot. Copies of a cell share its
+//! referent; `get` copies the held value and `set` replaces it without
+//! requiring the cell binding itself to be `mut`.
+use core.{Type, TypeId, Reg, Ins}
+use features.{LanguageFeature, MethodRow, ReceiverEffect, TypeRow, TypeArgs, MethodCall, TypeCx, LowerCx, no_law, no_variants, slot_worthy}
+
+export fn cells() -> LanguageFeature {
+    let methods = table<MethodRow> {
+        name  | takes       | check     | lower     | effect
+        "new" | on_cell_type | check_new | lower_new | ReceiverEffect.Read
+        "get" | on_cell      | check_get | lower_get | ReceiverEffect.Read
+        "set" | on_cell      | check_set | lower_set | ReceiverEffect.Shared
+    }
+    let types = table<TypeRow> {
+        name   | arity | slots | judge  | builds     | variants
+        "Cell" | 1     | true  | no_law | cell_shape | no_variants
+    }
+    component LanguageFeature f {
+        name = "cells"
+        docs = "`Cell.new(v)` creates an explicit shared `Cell<T>`; copies share one slot, `get()` reads its value, and `set(v)` replaces it through any copy."
+        methods = methods
+        types = types
+    }
+    f
+}
+
+fn on_cell_type(t: Type) -> bool {
+    match t {
+        .TypeName(_, "Cell") -> true,
+        _ -> false,
+    }
+}
+
+fn on_cell(t: Type) -> bool { t is .Cell }
+
+fn check_new(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    if mc.args.length != 1 {
+        cx.wrong_arity(mc.e, "Cell.new", 1, mc.args.length)
+        return cx.error_type
+    }
+    let held = cx.type_at(mc.args[0])
+    if cx.errored_ty(held) { return cx.error_type }
+    if !slot_worthy(cx.view.types, cx.view.types.shape_of(held)) {
+        return cx.unslottable(mc.args[0], "a cell")
+    }
+    cx.view.types.intern(Type.Cell(held))
+}
+
+fn held_type(cx: TypeCx, mc: MethodCall) -> TypeId? {
+    cx.view.types.cell_inner(cx.type_at(mc.subject))
+}
+
+fn check_get(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let held: TypeId? = held_type(cx, mc)
+    if held == null || !cx.seated(mc, "get", []) { return cx.error_type }
+    held!
+}
+
+fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let held: TypeId? = held_type(cx, mc)
+    if held == null || !cx.seated(mc, "set", [held!]) { return cx.error_type }
+    cx.type(void)
+}
+
+fn lower_new(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    if mc.args.length != 1 { return cx.lower_defect(mc.e, "a Cell.new without one value survived typing") }
+    let value = cx.reg_of(mc.args[0])
+    let size = cx.box_size(1)
+    let dst = cx.result(mc.e)
+    cx.grown_box(dst, size, [value])
+    dst
+}
+
+fn lower_get(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    cx.slot_read(cx.reg_of(mc.subject), 0, cx.view.types.cell_inner(cx.type_at(mc.subject)))
+}
+
+fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let box = cx.reg_of(mc.subject)
+    let at = cx.const_int(0)
+    cx.emit(Ins.CallRtVoid("avra_slot_set", [box, at, cx.reg_of(mc.args[0])]))
+    cx.hollow_of(cx.type_at(mc.e))
+}
+
+fn cell_shape(args: TypeArgs) -> Type { Type.Cell(args.parts[0]) }

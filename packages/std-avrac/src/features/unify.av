@@ -35,6 +35,7 @@ impl TypeCx {
         match self.view.types.shape_of(want) {
             .Var(decl, j, _) -> self.var_binds(decl, j, got, target, bound),
             .List(w) -> self.elem_unifies(w, got, target, bound),
+            .Cell(w) -> self.cell_unifies(w, got, target, bound),
             .Map(_, wv) -> self.value_unifies(wv, got, target, bound),
             .Opt(w) -> self.carried_unifies(w, got, target, bound),
             .Res(wo, we) -> self.sides_unify(wo, we, got, target, bound),
@@ -44,6 +45,11 @@ impl TypeCx {
             .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
             .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> want.index == got.index,
         }
+    }
+
+    fn cell_unifies(w: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
+        let g: TypeId? = self.view.types.cell_inner(got)
+        g != null && self.unify(w, g!, target, bound)
     }
 
     /// A fn type unifies STRUCTURALLY: seat by seat, then the answer —
@@ -86,7 +92,7 @@ impl TypeCx {
         match self.view.types.shape_of(got) {
             .List(g) -> self.unify(w, g, target, bound),
             .EmptyList -> true,
-            .Opt(_) or .Null or .Map(_, _) or .EmptyMap or
+            .Opt(_) or .Null or .Cell(_) or .Map(_, _) or .EmptyMap or
             .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
             .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
         }
@@ -97,7 +103,7 @@ impl TypeCx {
         match self.view.types.shape_of(got) {
             .Map(_, g) -> self.unify(w, g, target, bound),
             .EmptyMap -> true,
-            .Opt(_) or .Null or .List(_) or .EmptyList or
+            .Opt(_) or .Null or .Cell(_) or .List(_) or .EmptyList or
             .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
             .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
         }
@@ -112,7 +118,7 @@ impl TypeCx {
         match self.view.types.shape_of(got) {
             .Opt(g) -> self.unify(w, g, target, bound),
             .Null -> !(self.view.types.shape_of(w) is .Var),
-            .List(_) or .EmptyList or .Map(_, _) or .EmptyMap or
+            .List(_) or .Cell(_) or .EmptyList or .Map(_, _) or .EmptyMap or
             .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
             .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> !(self.view.types.shape_of(w) is .Var) && self.unify(w, got, target, bound),
         }
@@ -132,6 +138,7 @@ impl TypeCx {
         match self.view.types.shape_of(ty) {
             .Res(ok, err) -> self.res_side_unlawful(ok, err),
             .List(elem) -> self.unlawful_side(elem),
+            .Cell(inner) -> self.unlawful_side(inner),
             .Opt(inner) -> self.unlawful_side(inner),
             .Map(_, v) -> self.unlawful_side(v),
             .EmptyMap -> null,
@@ -157,6 +164,7 @@ impl TypeCx {
             .Var(decl, j, _) ->
                 if decl.index == target.index { bound.slots[j] != null } else { true },
             .List(elem) -> self.fully_bound(elem, target, bound),
+            .Cell(inner) -> self.fully_bound(inner, target, bound),
             .Map(k, v) -> self.fully_bound(k, target, bound) && self.fully_bound(v, target, bound),
             .EmptyMap -> true,
             .Opt(inner) -> self.fully_bound(inner, target, bound),
@@ -213,7 +221,7 @@ impl TypeCx {
 export fn slot_worthy(types: TypeRegistry, sh: Type) -> bool {
     match sh {
         .Ptr or .Int or .Float or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
-        .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) or .Fn(_, _, _) or
+        .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Cell(_) or .Var(_, _, _) or .Fn(_, _, _) or
         .Map(_, _) -> true,
         // a nullable POINTER is its own nullable — the slot holds
         // the pointer, absence the null one (the niche); a scalar

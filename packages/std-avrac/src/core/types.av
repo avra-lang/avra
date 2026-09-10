@@ -47,6 +47,9 @@ export enum Type {
     // ── The built-in boxes — STRUCTURAL: interned by their parts. ──
     /// A homogeneous aggregate.
     List(elem: TypeId)
+    /// Explicit shared interior mutability. Copies share one slot;
+    /// `get` reads a value snapshot and `set` replaces the shared slot.
+    Cell(inner: TypeId)
     /// A string-keyed, insertion-ordered map — order is BY DESIGN,
     /// so iterating one never needs a rule. Other key types are
     /// recorded.
@@ -111,6 +114,7 @@ export enum TypeLit {
     Void
     Opt(inner: TypeLit)
     List(elem: TypeLit)
+    Cell(inner: TypeLit)
     Map(key: TypeLit, value: TypeLit)
     Res(ok: TypeLit, err: TypeLit)
     Fn(params: List<TypeLit>, muts: List<bool>, ret: TypeLit)
@@ -143,7 +147,7 @@ export fn new_type_registry() -> TypeRegistry {
 /// truth the machine projections ask.
 export fn ptr_shape(t: Type) -> bool {
     match t {
-        .Str or .Ptr or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
+        .Str or .Ptr or .List(_) or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
         .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or
         .Map(_, _) or .EmptyMap -> true,
         .Int or .Float or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
@@ -162,6 +166,7 @@ impl TypeRegistry {
             .Str -> "2",
             .Bool -> "3",
             .List(elem) -> "4:${elem.index}",
+            .Cell(inner) -> "19:${inner.index}",
             .Struct(decl, _) -> "5:${decl.index}",
             .Enum(decl, _) -> "6:${decl.index}",
             .TypeName(decl, _) -> "7:${decl.index}",
@@ -211,6 +216,7 @@ impl TypeRegistry {
             .Void -> self.intern(Type.Void),
             .Opt(inner) -> self.intern(Type.Opt(self.interned(inner))),
             .List(elem) -> self.intern(Type.List(self.interned(elem))),
+            .Cell(inner) -> self.intern(Type.Cell(self.interned(inner))),
             .Map(k, v) -> self.intern(Type.Map(self.interned(k), self.interned(v))),
             .Res(ok, err) -> self.intern(Type.Res(self.interned(ok), self.interned(err))),
             .Fn(ps, muts, ret) -> self.intern(Type.Fn([self.interned(p) for p in ps], muts, self.interned(ret))),
@@ -289,6 +295,13 @@ impl TypeRegistry {
         }
     }
 
+    fn cell_inner(id: TypeId) -> TypeId? {
+        match self.shape_of(id) {
+            .Cell(t) -> t,
+            _ -> null,
+        }
+    }
+
     /// A Result's two sides, or absent when the id is not one —
     /// `carried`'s twin for the failure channel.
     fn res_parts(id: TypeId) -> ResSides? {
@@ -341,6 +354,7 @@ impl TypeRegistry {
             .Var(decl, j, _) ->
                 if decl.index == target.index { args[j] } else { ty },
             .List(elem) -> self.intern(Type.List(self.substituted(elem, target, args))),
+            .Cell(inner) -> self.intern(Type.Cell(self.substituted(inner, target, args))),
             .Map(k, v) -> self.intern(Type.Map(self.substituted(k, target, args), self.substituted(v, target, args))),
             .Opt(inner) -> self.intern(Type.Opt(self.substituted(inner, target, args))),
             .Res(ok, err) -> self.intern(Type.Res(self.substituted(ok, target, args),
@@ -364,6 +378,7 @@ impl TypeRegistry {
             .Str -> "string",
             .Bool -> "bool",
             .List(elem) -> "List<${self.name_of(elem)}>",
+            .Cell(inner) -> "Cell<${self.name_of(inner)}>",
             .Struct(_, name) -> name,
             .Dyn(_, name) -> "dyn ${name}",
             .Fn(params, muts, ret) -> "fn(${joined(self.seat_words(params, muts), ", ")})${self.answer_word(ret)}",
@@ -389,6 +404,7 @@ impl TypeRegistry {
             .App(_, _, args) -> args,
             .Res(ok, err) -> [ok, err],
             .List(t) -> [t],
+            .Cell(t) -> [t],
             .Map(k, v) -> [k, v],
             .Opt(t) -> [t],
             .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or

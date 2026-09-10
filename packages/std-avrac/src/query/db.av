@@ -30,7 +30,7 @@ export enum Verdict {
     Cycle
 }
 
-type Cell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int }
+type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int }
 
 /// The revision, hits and misses are one-cell lists (the mut-cell
 /// protocol). `cells` is ONE flat list, ARG-MAJOR — the cell of
@@ -43,7 +43,7 @@ type Cell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: in
 /// began; `open` is the stack of queries computing now.
 export type Db = {
     rev: List<int>,
-    cells: List<Cell?>,
+    cells: List<QueryCell?>,
     verifiers: List<fn(int) -> int>,
     deps: List<Key>,
     marks: List<int>,
@@ -92,13 +92,13 @@ impl Db {
     /// The driver sets an INPUT: a cell with no deps whose changed_at
     /// advances only when the hash moved.
     fn set_input(key: Key, value_hash: int) {
-        let prior: Cell? = self.cell(key)
+        let prior: QueryCell? = self.cell(key)
         if prior != null && prior!.value_hash == value_hash {
-            self.write(key, Cell { deps: [], changed_at: prior!.changed_at, verified_at: self.revision(), value_hash: value_hash })
+            self.write(key, QueryCell { deps: [], changed_at: prior!.changed_at, verified_at: self.revision(), value_hash: value_hash })
             return
         }
         if prior != null { self.bump() }
-        self.write(key, Cell { deps: [], changed_at: self.revision(), verified_at: self.revision(), value_hash: value_hash })
+        self.write(key, QueryCell { deps: [], changed_at: self.revision(), verified_at: self.revision(), value_hash: value_hash })
     }
 
     /// The red-green decision for a derived query, recording the
@@ -106,18 +106,18 @@ impl Db {
     fn ask(key: Key) -> Verdict {
         self.record_dep(key)
         if self.open.any(same_key(it, key)) { return Verdict.Cycle }
-        let held: Cell? = self.cell(key)
+        let held: QueryCell? = self.cell(key)
         if held == null { return self.miss() }
         let cell = held!
         if cell.verified_at == self.revision() { return self.hit() }
         if self.any_dep_changed(cell) { return self.miss() }
-        self.write(key, Cell { deps: cell.deps, changed_at: cell.changed_at, verified_at: self.revision(), value_hash: cell.value_hash })
+        self.write(key, QueryCell { deps: cell.deps, changed_at: cell.changed_at, verified_at: self.revision(), value_hash: cell.value_hash })
         self.hit()
     }
 
     /// Re-verify each dep through its family; true when one changed
     /// after this cell was last verified.
-    fn any_dep_changed(cell: Cell) -> bool {
+    fn any_dep_changed(cell: QueryCell) -> bool {
         for d in cell.deps {
             if self.changed_after(d, cell.verified_at) { return true }
         }
@@ -157,9 +157,9 @@ impl Db {
         let deps = self.deps.slice(start, self.deps.length)
         while self.deps.length > start { let _ = self.deps.pop() }
         let _ = self.open.pop()
-        let prior: Cell? = self.cell(key)
+        let prior: QueryCell? = self.cell(key)
         let changed = if prior != null && prior!.value_hash == value_hash { prior!.changed_at } else { self.revision() }
-        self.write(key, Cell { deps: deps, changed_at: changed, verified_at: self.revision(), value_hash: value_hash })
+        self.write(key, QueryCell { deps: deps, changed_at: changed, verified_at: self.revision(), value_hash: value_hash })
     }
 
     /// A read lands in the open frame — one push, no frame copied.
@@ -168,16 +168,16 @@ impl Db {
         self.deps.push(key)
     }
 
-    fn cell(key: Key) -> Cell? {
+    fn cell(key: Key) -> QueryCell? {
         let at = self.slot(key)
         if at >= self.cells.length { return null }
-        let held: Cell? = self.cells[at]
+        let held: QueryCell? = self.cells[at]
         held
     }
 
     /// One element set through the field; the arg space grows by
     /// appending a stride of absences.
-    fn write(key: Key, cell: Cell) {
+    fn write(key: Key, cell: QueryCell) {
         let at = self.slot(key)
         while self.cells.length <= at { self.cells.push(null) }
         self.cells.set(at, cell)

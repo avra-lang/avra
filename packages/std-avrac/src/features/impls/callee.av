@@ -27,6 +27,8 @@ export enum Callee {
 
 export fn callee_of(view: FileView, ty: TypeId, name: string) -> Callee {
     let sh: Type = view.types.shape_of(ty)
+    let built: Callee? = builtin_static(view, sh, name)
+    if built != null { return built! }
     let spoken_for: Callee? = through_a_contract(view, sh, name)
     if spoken_for != null { return spoken_for! }
     let field: Callee? = fn_field(view, ty, name)
@@ -36,6 +38,20 @@ export fn callee_of(view: FileView, ty: TypeId, name: string) -> Callee {
     declared(sh) ?? Callee.Nameless
 }
 
+/// A structural built-in type's static vocabulary. Declared variants
+/// and user-written static methods keep their established precedence.
+fn builtin_static(view: FileView, sh: Type, name: string) -> Callee? {
+    match sh {
+        .TypeName(decl, tname) -> {
+            if names_a_variant(view, decl, name) || static_method(view, decl, name) != null { return null }
+            let row: MethodRow? = method_row(view.lang.methods, name, sh)
+            if row == null { return null }
+            Callee.Row(row!)
+        }
+        _ -> null,
+    }
+}
+
 /// A receiver whose methods a TYPE or a TRAIT supplies before any
 /// field or row is asked.
 fn through_a_contract(view: FileView, sh: Type, name: string) -> Callee? {
@@ -43,7 +59,7 @@ fn through_a_contract(view: FileView, sh: Type, name: string) -> Callee? {
         .TypeName(decl, tname) -> type_receiver(view, decl, tname, name),
         .Var(decl, j, tname) -> Callee.Bounded(decl, j, tname),
         .Dyn(d, n) -> Callee.Contract(d, n),
-        .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Int or .Float or .Bool or .Str or .Ptr or .List(_) or
+        .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Int or .Float or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or
         .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or
         .Error or .Void -> null,
     }
@@ -89,7 +105,7 @@ fn declared(sh: Type) -> Callee? {
         .Struct(d, n) -> Callee.Declared(d, n),
         .Enum(d, n) -> Callee.Declared(d, n),
         .App(d, n, _) -> Callee.Declared(d, n),
-        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Int or .Float or .Bool or .Str or .Ptr or .List(_) or
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Int or .Float or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or
         .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or
         .Error or .Void -> null,
     }
