@@ -57,11 +57,8 @@ fn declared_kind(cx: TypeCx, s: StmtId) -> DeclKind? {
 /// `Fn` takes a fn; `Type` takes a record or an enum.
 fn receiver_fits(cx: TypeCx, seat: TypeId, kind: DeclKind?) -> bool {
     if kind == null { return false }
-    match cx.view.types.name_of(seat) {
-        "Fn" -> kind! is .Fn,
-        "Type" -> kind! is .Record || kind! is .Enum,
-        rest -> false,
-    }
+    if cx.view.decls.meta_type(seat, "Fn") { return kind! is .Fn }
+    cx.view.decls.meta_type(seat, "Type") && (kind! is .Record || kind! is .Enum)
 }
 
 /// Each written argument accepted by the seat after the declaration's.
@@ -81,7 +78,7 @@ fn arguments_fit(mut cx: TypeCx, a: Annotation, seats: List<TypeId>) -> bool {
 fn answers_effect(cx: TypeCx, ret: TypeId) -> bool {
     match cx.view.types.shape_of(ret) {
         .Void -> true,
-        .List(e) -> cx.view.types.name_of(e) == "Diagnostic",
+        .List(e) -> cx.view.decls.meta_type(e, "Diagnostic"),
         rest -> false,
     }
 }
@@ -110,9 +107,14 @@ fn takes_no_declaration(mut cx: TypeCx, a: Annotation) {
 fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) {
     let took = cx.view.types.name_of(seat)
     let this = if kind == null { "not a declaration" } else { "a ${kind_shown(kind!)}" }
+    let found = if (took == "Fn" || took == "Type") && !cx.view.decls.meta_type(seat, took) {
+        "`${a.name}` takes `${took}` from another module, not `@std.meta.${took}`"
+    } else {
+        "`${a.name}` takes `${took}`, and this is ${this}"
+    }
     let _ = cx.spoken(refusal("annotation.receiver", at_annotation(cx, a),
                        "an annotation's first seat says what it takes",
-                       "`${a.name}` takes `${took}`, and this is ${this}",
+                       found,
                        "`Fn` crosses a fn, `Type` a record or an enum — nothing else yet"))
 }
 
@@ -140,9 +142,15 @@ fn wrong_argument(mut cx: TypeCx, a: Annotation, e: ExprId, want: TypeId) {
 }
 
 fn wrong_answer(mut cx: TypeCx, a: Annotation, ret: TypeId) {
+    let shown = match cx.view.types.shape_of(ret) {
+        .List(e) -> if cx.view.types.name_of(e) == "Diagnostic" {
+            "`List<Diagnostic>` from another module, not `List<@std.meta.Diagnostic>`"
+        } else { "`${cx.view.types.name_of(ret)}`" },
+        rest -> "`${cx.view.types.name_of(ret)}`",
+    }
     let _ = cx.spoken(refusal("annotation.answer", at_annotation(cx, a),
                        "an annotation answers nothing or `List<Diagnostic>`",
-                       "`${a.name}` answers `${cx.view.types.name_of(ret)}`",
+                       "`${a.name}` answers ${shown}",
                        "`List<Diagnostic>` validates the declaration; `void` records the annotation and says nothing"))
 }
 
