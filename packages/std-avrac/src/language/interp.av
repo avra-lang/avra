@@ -10,7 +10,7 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, Reach, opens_region, closes_region, filled, joined, rt_index, hosted_symbol, Expr}
+use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, Reach, opens_region, closes_region, filled, joined, rt_index, hosted_symbol, Expr, fp, fp_str}
 use @std.path.{joined_path}
 use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap}
 
@@ -139,9 +139,10 @@ export fn run_settle(l: Lowered, steps: int, spell: bool, base: string) -> Resul
     let answer: Val? = m.run_body(l.entry, [])
     if m.budget < 0 { return .Err(Unsettled.Budget(over_budget(steps))) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
-    if !spell { return .Ok(Settled { spelled: null, embeds: m.embeds }) }
+    let fingerprint = m.value_hash(answer)
+    if !spell { return .Ok(Settled { spelled: null, embeds: m.embeds, fingerprint: fingerprint }) }
     match literal_of(answer) {
-        .Ok(x) -> .Ok(Settled { spelled: x, embeds: m.embeds }),
+        .Ok(x) -> .Ok(Settled { spelled: x, embeds: m.embeds, fingerprint: fingerprint }),
         .Err(why) -> .Err(why),
     }
 }
@@ -249,6 +250,22 @@ fn call_limit() -> int {
 }
 
 impl Machine {
+    /// A value's structural identity, independent of its run's heap
+    /// handles. Settlement queries use it for exact early cutoff.
+    fn value_hash(v: Val?) -> int {
+        if v == null { return fp(1, []) }
+        match v! {
+            .I(n) -> fp(2, [n]),
+            .F(bits) -> fp(3, [bits]),
+            .B(b) -> fp(4, [if b { 1 } else { 0 }]),
+            .S(s) -> fp(5, [fp_str(s)]),
+            .A(id) -> fp(6, [self.value_hash(x) for x in self.arrays[id]]),
+            .C(id) -> fp(7, [self.value_hash(self.cells[id])]),
+            .M(id) -> fp(8, [fp_str(k) for k in self.maps[id].keys].concat([self.value_hash(x) for x in self.maps[id].vals])),
+            .N -> fp(9, []),
+        }
+    }
+
     /// One body under its argument values; params ARE registers 0..N-1.
     /// The answer is RetVal's register, when one fires.
     fn run_body(b: Body, args: List<Val>) -> Val? {
