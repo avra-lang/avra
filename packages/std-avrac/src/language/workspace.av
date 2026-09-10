@@ -661,6 +661,13 @@ impl Workspace {
         let ask = self.settle_asks[id]
         let root = self.analysis(ask.file).view.store.const_value(ask.stmt)!
         let r = self.settlement_of(ask.file, root, ask.name)
+        // `embed` is the one permitted build-world read. Make every
+        // file it opened a source input dependency before this query
+        // closes, so its content participates in revalidation.
+        match r {
+            .Ok(value) -> { for path in value.embeds { touch(self.source(self.file_id(path))) } },
+            .Err(_) -> { let _ = 0 },
+        }
         let held = match r {
             .Ok(x) -> Settlement.Held(x),
             .Err(why) -> Settlement.Refused(why),
