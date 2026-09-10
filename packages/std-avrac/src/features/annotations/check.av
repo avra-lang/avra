@@ -6,7 +6,7 @@
 //! records, `List<Diagnostic>` validates. The law
 //! satisfied, the call runs, and what it said is spoken here.
 use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt}
-use features.{TypeCx, fn_sig_of, FnSig, Said, Unsettled}
+use features.{TypeCx, fn_sig_of, FnSig, Said, Unsettled, nothing}
 use diagnostics.{refusal, loc_at}
 use @std.errors.{Loc}
 
@@ -41,13 +41,17 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
         return
     }
     if !arguments_fit(cx, a, seats) { return }
-    if effect_of(cx, sig.ret) == null {
+    let effect: Effect? = effect_of(cx, sig.ret)
+    if effect == null {
         wrong_answer(cx, a, sig.ret)
         return
     }
     match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
-        .Ok(saids) -> {
-            for x in saids { spoken_said(cx, a, s, x) }
+        .Ok(crossed) -> {
+            match effect! {
+                .Records or .Validates -> { for x in cx.view.decls.saids(crossed, sig.ret) { spoken_said(cx, a, s, x) } },
+                .Declares -> nothing(),
+            }
         },
         .Err(why) -> unsettled(cx, a, why),
     }
@@ -85,13 +89,13 @@ fn arguments_fit(mut cx: TypeCx, a: Annotation, seats: List<TypeId>) -> bool {
 /// An annotation's ANSWER as what it does — the effect census the
 /// gate and the voice share. A new answer effect is one arm here,
 /// one row in `effect_census`, and one sentence in `effect_words`.
-enum Effect { Records, Validates }
+enum Effect { Records, Validates, Declares }
 
 /// The effect an answer has, or null when it has none.
 fn effect_of(cx: TypeCx, ret: TypeId) -> Effect? {
     match cx.view.types.shape_of(ret) {
         .Void -> Effect.Records,
-        .List(e) -> if cx.view.decls.meta_type(e, "Diagnostic") { Effect.Validates } else { null },
+        .List(e) -> if cx.view.decls.meta_type(e, "Diagnostic") { Effect.Validates } else if cx.view.decls.meta_type(e, "Decl") { Effect.Declares } else { null },
         rest -> null,
     }
 }
@@ -99,7 +103,7 @@ fn effect_of(cx: TypeCx, ret: TypeId) -> Effect? {
 /// The effects in census order — consumers enumerate through this,
 /// never by hand.
 fn effect_census() -> List<Effect> {
-    [Effect.Records, Effect.Validates]
+    [Effect.Records, Effect.Validates, Effect.Declares]
 }
 
 // ── The voices ──
@@ -178,6 +182,7 @@ fn effect_words(e: Effect) -> string {
     match e {
         .Records -> "`void` records the annotation and says nothing",
         .Validates -> "`List<Diagnostic>` validates the declaration",
+        .Declares -> "`List<Decl>` generates declarations beside the one stood under",
     }
 }
 

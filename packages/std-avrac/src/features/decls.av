@@ -12,7 +12,7 @@ use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, T
 use @std.path.{stem_of}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
-use features.{TypeRow, TypeArgs, Said, Unsettled}
+use features.{TypeRow, TypeArgs, Said, Unsettled, Lifted, MetaHeap, MetaVal, StructSig, EnumSig}
 
 /// A file's path facts — known at first mention, before its parse.
 export type FileInfo = { id: FileId, path: string, module_id: ModuleId }
@@ -56,7 +56,7 @@ export type Decls = {
     ensure_const: List<fn(FileId, StmtId)>,
     // the workspace's lifting hook: an annotation fn run over a
     // declaration at compile time, what it said back
-    lifter: List<fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<List<Said>, Unsettled>>,
+    lifter: List<fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>>,
     ensure_methods: List<fn(DeclId)>,
     // the language's own type declarations, one per row that is an
     // enum — and the rows they read their parts from
@@ -77,7 +77,7 @@ export type Decls = {
 
 /// Where no workspace stands behind the table, nothing lifts.
 // LICENSED I23: a fn VALUE filling the lifter seat — its parameters are the seat's contract, and the answer needs none of them
-fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
+fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
     .Err(Unsettled.Trap("nothing here lifts an annotation"))
 }
 
@@ -456,15 +456,75 @@ impl Decls {
     }
 
     /// The workspace arms the lifting hook once.
-    fn arm_lifter(lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<List<Said>, Unsettled>) {
+    fn arm_lifter(lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>) {
         self.lifter.set(0, lift)
     }
 
     /// An annotation fn `d` run over the declaration at `s` in file
     /// `f`, with these settled arguments — asking IS the run.
-    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
+    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
         let lift = self.lifter[0]
         lift(d, f, s, call, args)
+    }
+
+    /// What a lifted call SAID: each `Diagnostic` of its answer, read
+    /// by the element record's field names.
+    fn saids(r: Lifted, ret: TypeId) -> List<Said> {
+        let elem: TypeId? = self.elem_of(ret)
+        if elem == null { return [] }
+        let sig: StructSig? = self.fields_of_type(elem!)
+        if sig == null { return [] }
+        [self.said_of(r.heap, sig!, item) for item in r.heap.slots(r.answer)]
+    }
+
+    /// A list type's element, or null for any other shape.
+    fn elem_of(ty: TypeId) -> TypeId? {
+        match self.types.shape_of(ty) {
+            .List(e) -> e,
+            _ -> null,
+        }
+    }
+
+    fn said_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Said {
+        Said {
+            message: self.text_of_meta(self.field_of(heap, sig, item, "message")),
+            help: self.optional_text(self.field_of(heap, sig, item, "help")),
+            at: self.loc_of_meta(heap, self.field_of(heap, sig, item, "at")),
+        }
+    }
+
+    /// A crossed row's slot by its seat's field name — the ONE read
+    /// across the meta boundary; absence for a name the seat lacks.
+    fn field_of(heap: MetaHeap, sig: StructSig, item: MetaVal, name: string) -> MetaVal {
+        let i = sig.names.index_of(name)
+        if i < 0 { return MetaVal.Absent }
+        heap.slots(item)[i]
+    }
+
+    fn optional_text(v: MetaVal) -> string? {
+        match v {
+            .Text(s) -> s,
+            .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
+        }
+    }
+
+    fn text_of_meta(v: MetaVal) -> string {
+        match v {
+            .Text(s) -> s,
+            .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> "",
+        }
+    }
+
+    fn loc_of_meta(heap: MetaHeap, v: MetaVal) -> Loc? {
+        let slots = heap.slots(v)
+        if slots.length < 3 { return null }
+        match slots[1] {
+            .Int(lo) -> match slots[2] {
+                .Int(hi) -> Loc { file: if slots[0] is .Absent { null } else { self.text_of_meta(slots[0]) }, lo: lo, hi: hi },
+                .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
+            },
+            .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
+        }
     }
 
     fn declare(d: DeclId, sig: DeclSig) {

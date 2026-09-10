@@ -14,9 +14,9 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, TypeRef}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, Said, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, Said, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -117,11 +117,15 @@ fn lift_ask(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> LiftAsk {
 
 /// The query family's held value. A refusal remains here in full so a
 /// new revision can compare it, while a repeated read speaks nothing.
-enum LiftResult { Said(List<Said>), Refused(Unsettled) }
+/// The query family's held value. A refusal remains here in full so a
+/// new revision can compare it, while a repeated read speaks nothing.
+/// A SUCCESS holds the crossing itself — saids and the materializer
+/// read the same rows through the field protocol.
+enum LiftResult { Crossed(Lifted), Refused(Unsettled) }
 
-fn reused_lift(held: LiftResult) -> Result<List<Said>, Unsettled> {
+fn reused_lift(held: LiftResult) -> Result<Lifted, Unsettled> {
     match held {
-        .Said(saids) -> .Ok(saids),
+        .Crossed(crossed) -> .Ok(crossed),
         .Refused(_) -> .Err(Unsettled.Spoken),
     }
 }
@@ -262,7 +266,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
-    let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<List<Said>, Unsettled> = (d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> ws.lifted(d, f, s, call, args)
+    let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> ws.lifted(d, f, s, call, args)
     ws.decls.arm_lifter(lift)
     ws.load_packages(src)
     ws
@@ -724,9 +728,11 @@ impl Workspace {
 
     /// An annotation fn run over a declaration: the fn's own program
     /// lowered and checked for reach, the declaration crossed in as
-    /// the fn's first seat asks, each argument settled and crossed,
-    /// and what the fn answered read back as what it SAID.
-    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
+    /// the fn's first seat asks (from the PARSE view, so generating
+    /// an expanded sibling needs no typed answers of this file), each
+    /// argument settled and crossed, and what the fn answered read
+    /// back as what it SAID.
+    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
         let name = "lift$${f.index}$${call.index}"
         let known: int? = self.lift_specs.get(name)
         if known != null {
@@ -742,16 +748,16 @@ impl Workspace {
     /// One annotation query. The kernel's cycle verdict is the
     /// lowering pass seeing the annotation it is currently proving,
     /// so that recursive view contributes nothing.
-    fn lifted_at(id: int) -> Result<List<Said>, Unsettled> {
+    fn lifted_at(id: int) -> Result<Lifted, Unsettled> {
         match self.lift_results.ask(id) {
-            .Cycle -> { return .Ok([]) },
+            .Cycle -> { return .Err(Unsettled.Trap("asks for its own answer while lifting")) },
             .Reuse(held) -> { return reused_lift(held) },
             .Compute -> self.lift_results.begin(id),
         }
         let ask = self.lift_asks[id]
         let r = self.lifted_once(ask.decl, ask.file, ask.stmt, ask.args)
         let held = match r {
-            .Ok(saids) -> LiftResult.Said(saids),
+            .Ok(crossed) -> LiftResult.Crossed(crossed),
             .Err(why) -> LiftResult.Refused(why),
         }
         let _ = self.lift_results.finish(id, held, lift_hash(held))
@@ -759,7 +765,7 @@ impl Workspace {
     }
 
     /// One annotation call after its recursion guard is standing.
-    fn lifted_once(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
+    fn lifted_once(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
         let x = self.decls.decl(d)
         let ws = self
         let l = memory(self.decls.settlement(Wanted { file: x.file, decl: d, name: self.decls.symbol(d), sub: null }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
@@ -775,7 +781,7 @@ impl Workspace {
             }
         }
         match run_lifted(l, self.decls.symbol(d), vals, heap, settle_steps()) {
-            .Ok(r) -> .Ok(self.saids(r, sig!.ret)),
+            .Ok(r2) -> .Ok(r2),
             .Err(why) -> .Err(why),
         }
     }
@@ -783,52 +789,70 @@ impl Workspace {
     /// The declaration at `s` as the value the fn's first seat asks
     /// for — its slots filled BY NAME from the seat type's own field
     /// table, so the compiler and `@std/meta` agree by the field's
-    /// name and never by a position.
+    /// name and never by a position. Reads the PARSE store only: an
+    /// expanded sibling is generated before this file's typed facts
+    /// exist.
     fn crossed_decl(f: FileId, s: StmtId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
-        let a = self.analysis(f)
+        let v = file_view(self.lang, self.parsed(f), self.decls, f)
         let found: DeclId? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s))
         let found_sig: StructSig? = self.decls.fields_of_type(want)
         if found == null || found_sig == null { return MetaVal.Absent }
         let d = found!
         let sig = found_sig!
         let x = self.decls.decl(d)
-        let at = self.crossed_loc(a, a.view.store.stmt_span(s), heap)
+        let at = self.crossed_loc(v, v.store.stmt_span(s), heap)
         mut slots: List<MetaVal> = []
         for i, n in sig.names {
             slots.push(match n {
                 "name" -> MetaVal.Text(x.name),
                 "at" -> at,
-                "answer" -> MetaVal.Text(self.decls.types.name_of(fn_sig_of(self.decls.sig(d))?.ret ?? self.decls.types.type(void))),
-                "params" -> self.crossed_params(a, d, sig.types[i], heap),
-                "fields" -> self.crossed_fields(a, d, sig.types[i], heap),
-                "variants" -> self.crossed_variants(a, d, sig.types[i], heap),
+                "answer" -> self.crossed_answer(v, s, heap),
+                "params" -> self.crossed_params(v, d, sig.types[i], heap),
+                "fields" -> self.crossed_fields(v, d, sig.types[i], heap),
+                "variants" -> self.crossed_variants(v, d, sig.types[i], heap),
                 _ -> MetaVal.Absent,
             })
         }
         heap.node(slots)
     }
 
+    /// A fn's answer, spelled from its declared TypeRef — a store read
+    /// alone, so crossing a declaration needs no typed facts.
+    fn crossed_answer(v: FileView, s: StmtId, mut heap: MetaHeap) -> MetaVal {
+        let ret: TypeRef? = v.store.fn_parts(s)?.ret
+        if ret == null { return MetaVal.Absent }
+        let held: TypeId? = spelled_type(self.decls.types, ret!)
+        if held == null { return MetaVal.Absent }
+        MetaVal.Text(self.decls.types.name_of(held!))
+    }
+
     /// A fn's parameters as `Param` values: name, the type's spelling,
     /// its `mut` mark — built by the `List<Param>` seat's element type.
-    fn crossed_params(a: Analysis, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
-        let found_fn = fn_sig_of(self.decls.sig(d))
+    fn crossed_params(v: FileView, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let item: TypeId? = elem_of(self.decls.types, want)
-        if found_fn == null || item == null { return heap.node([]) }
-        let fs = found_fn!
+        if item == null { return heap.node([]) }
         let elem: StructSig? = self.decls.fields_of_type(item!)
         if elem == null { return heap.node([]) }
         let shape = elem!
-        let params = declared_params(a.view.store, self.decls.decl(d).stmt)
+        let params = declared_params(v.store, self.decls.decl(d).stmt)
         heap.node([meta_row(heap, shape, {
             "name": MetaVal.Text(params[i].name),
-            "ty": MetaVal.Text(self.decls.types.name_of(ty)),
-            "mutable": MetaVal.Bool(self.decls.mut_seat(d, i)),
-            "at": self.crossed_loc(a, params[i].span, heap),
-        }) for i, ty in fs.params])
+            "ty": self.param_ty(v, params[i], heap),
+            "mutable": MetaVal.Bool(params[i].mutable),
+            "at": self.crossed_loc(v, params[i].span, heap),
+        }) for i in 0..params.length])
+    }
+
+    /// A parameter's type, spelled from its declared TypeRef — the
+    /// same store-only read `crossed_answer` uses.
+    fn param_ty(v: FileView, p: Param, mut heap: MetaHeap) -> MetaVal {
+        let held: TypeId? = spelled_type(self.decls.types, p.ty)
+        if held == null { return MetaVal.Absent }
+        MetaVal.Text(self.decls.types.name_of(held!))
     }
 
     /// A record's fields as `Field` values.
-    fn crossed_fields(a: Analysis, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
+    fn crossed_fields(v: FileView, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let x = self.decls.decl(d)
         let own: StructSig? = self.decls.fields_of_type(self.decls.types.intern(Type.Struct(d, x.name)))
         let item: TypeId? = elem_of(self.decls.types, want)
@@ -836,16 +860,16 @@ impl Workspace {
         let elem: StructSig? = self.decls.fields_of_type(item!)
         if elem == null { return heap.node([]) }
         let shape = elem!
-        let fields = declared_fields(a.view.store, x.stmt)
+        let fields = declared_fields(v.store, x.stmt)
         heap.node([meta_row(heap, shape, {
             "name": MetaVal.Text(n),
             "ty": MetaVal.Text(self.decls.types.name_of(own!.types[i])),
-            "at": self.crossed_loc(a, fields[i].span, heap),
+            "at": self.crossed_loc(v, fields[i].span, heap),
         }) for i, n in own!.names])
     }
 
     /// An enum's variants as `Variant` values: name and payload spellings.
-    fn crossed_variants(a: Analysis, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
+    fn crossed_variants(v: FileView, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let x = self.decls.decl(d)
         let own = self.decls.variants_of_type(self.decls.types.intern(Type.Enum(d, x.name)))
         let item: TypeId? = elem_of(self.decls.types, want)
@@ -853,36 +877,18 @@ impl Workspace {
         let elem: StructSig? = self.decls.fields_of_type(item!)
         if elem == null { return heap.node([]) }
         let shape = elem!
-        let variants = declared_variants(a.view.store, x.stmt)
+        let variants = declared_variants(v.store, x.stmt)
         heap.node([meta_row(heap, shape, {
             "name": MetaVal.Text(n),
             "payload": heap.node([MetaVal.Text(self.decls.types.name_of(p)) for p in own!.payloads[i]]),
-            "at": self.crossed_loc(a, variants[i].span, heap),
+            "at": self.crossed_loc(v, variants[i].span, heap),
         }) for i, n in own!.names])
     }
 
     /// A source span as a `Loc` value — file, lo, hi — or absent.
-    fn crossed_loc(a: Analysis, sp: Span?, mut heap: MetaHeap) -> MetaVal {
+    fn crossed_loc(v: FileView, sp: Span?, mut heap: MetaHeap) -> MetaVal {
         if sp == null { return MetaVal.Absent }
-        heap.node([MetaVal.Text(a.view.source.file), MetaVal.Int(sp!.lo), MetaVal.Int(sp!.hi)])
-    }
-
-    /// What a lifted call SAID: nothing for a void answer, else each
-    /// `Diagnostic` of the list, read by its field names.
-    fn saids(r: Lifted, ret: TypeId) -> List<Said> {
-        let elem: TypeId? = elem_of(self.decls.types, ret)
-        if elem == null { return [] }
-        let sig: StructSig? = self.decls.fields_of_type(elem!)
-        if sig == null { return [] }
-        [self.said_of(r.heap, sig!, item) for item in r.heap.slots(r.answer)]
-    }
-
-    fn said_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Said {
-        Said {
-            message: text_of_meta(field_of(heap, sig, item, "message")),
-            help: optional_text(field_of(heap, sig, item, "help")),
-            at: loc_of_meta(heap, field_of(heap, sig, item, "at")),
-        }
+        heap.node([MetaVal.Text(v.source.file), MetaVal.Int(sp!.lo), MetaVal.Int(sp!.hi)])
     }
 
     // ── Modules ──
@@ -1577,8 +1583,22 @@ fn settle_steps() -> int { 10000000 }
 /// An annotation answer's structural fingerprint for early cutoff.
 fn lift_hash(r: LiftResult) -> int {
     match r {
-        .Said(saids) -> fp(43, [said_hash(x) for x in saids]),
+        .Crossed(c) -> fp(43, [meta_hash(c.heap, c.answer)]),
         .Refused(why) -> fp(47, [unsettled_hash(why)]),
+    }
+}
+
+/// A crossed value's structural fingerprint, the heap followed — what
+/// the evaluator's fingerprinting is to a recalculation's early cutoff.
+fn meta_hash(heap: MetaHeap, v: MetaVal) -> int {
+    match v {
+        .Int(n) -> fp(2, [n]),
+        .Float(bits) -> fp(3, [bits]),
+        .Bool(b) -> fp(4, [if b { 1 } else { 0 }]),
+        .Text(s) -> fp(5, [fp_str(s)]),
+        .Node(id) -> fp(6, [meta_hash(heap, x) for x in heap.nodes[id]]),
+        .Map(id) -> fp(8, [fp_str(k) for k in heap.maps[id].keys].concat([meta_hash(heap, x) for x in heap.maps[id].values])),
+        .Absent -> fp(9, []),
     }
 }
 
@@ -1604,42 +1624,6 @@ fn unsettled_hash(why: Unsettled) -> int {
         .Budget(words) -> fp(61, [fp_str(words)]),
         .Trap(words) -> fp(67, [fp_str(words)]),
         .Spoken -> fp(71, []),
-    }
-}
-
-fn text_of_meta(v: MetaVal) -> string {
-    match v {
-        .Text(s) -> s,
-        .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> "",
-    }
-}
-
-/// A `Loc` value read back: file, lo, hi.
-fn loc_of_meta(heap: MetaHeap, v: MetaVal) -> Loc? {
-    let slots = heap.slots(v)
-    if slots.length < 3 { return null }
-    match slots[1] {
-        .Int(lo) -> match slots[2] {
-            .Int(hi) -> Loc { file: if slots[0] is .Absent { null } else { text_of_meta(slots[0]) }, lo: lo, hi: hi },
-            .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
-        },
-        .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
-    }
-}
-
-/// A record's slot by its seat's field name — the one READ across
-/// the meta boundary; absence for a name the seat does not carry.
-fn field_of(heap: MetaHeap, sig: StructSig, item: MetaVal, name: string) -> MetaVal {
-    let i = sig.names.index_of(name)
-    if i < 0 { return MetaVal.Absent }
-    heap.slots(item)[i]
-}
-
-/// A text slot, when it is one.
-fn optional_text(v: MetaVal) -> string? {
-    match v {
-        .Text(s) -> s,
-        .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
     }
 }
 
