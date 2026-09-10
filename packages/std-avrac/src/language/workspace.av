@@ -80,7 +80,7 @@ export type Workspace = {
     decl_facts: Memo<TypeFacts>,
     method_clashes: Table<List<Clash>>,
     folds: Memo<TypeFacts>,
-    analyses: Table<Analysis>,
+    analyses: Memo<Analysis>,
     specs: Map<string, int>,
     asks: List<Wanted>,
     units: Memo<Unit>,
@@ -245,7 +245,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         name_facts: new_memo<NameFacts>(db, ordinal(Family.Resolved)), sig_voices: new_table(),
         decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), method_clashes: new_table(),
         folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
-        analyses: new_table(), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
+        analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
@@ -272,11 +272,11 @@ impl Workspace {
     /// every sig it will ask for is held, so the captures go; the
     /// workspace then dies with its last holder.
     mut fn disarmed() {
+        // An Analysis holds the program closure back to this workspace.
+        // Evict its typed values and kernel cells as one operation.
+        self.analyses.evict()
         self.db.disarm()
         self.decls.disarm()
-        // an Analysis holds a closure over `self`: the table of them is
-        // the second loop through the same box
-        self.analyses = new_table()
         self.closed = true
     }
 
@@ -575,18 +575,13 @@ impl Workspace {
 
     /// One file's analysis: the snapshot every facade reads.
     fn analysis(f: FileId) -> Analysis {
-        let k = key(Family.Analysis, f.index)
-        if self.db.ask(k) is .Reuse {
-            // a closed workspace keeps no Analysis: the record is remade
-            // over its memoized parts, and never kept
-            let held: Analysis? = self.analyses.at(f.index)
-            return held ?? self.analyzed(f)
-        }
-        self.db.begin(k)
+        // A closed one-shot workspace retains no Analysis because its
+        // program closure points back here.
+        if self.closed { return self.analyzed(f) }
+        let held = self.analyses.start_recursive(f.index)
+        if held != null { return held! }
         let out = self.analyzed(f)
-        self.db.settle(k, self.db.revision())
-        if !self.closed { self.analyses.keep(f.index, out) }
-        out
+        self.analyses.finish(f.index, out, self.db.revision())
     }
 
     /// The record itself: every pass's facts for the file, and the way
