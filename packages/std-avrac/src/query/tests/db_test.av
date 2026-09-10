@@ -3,15 +3,14 @@
 use @std.avrac.query.{Db, new_db, Key}
 
 /// A derived family over the kernel: computes 2n, counting runs.
-/// The tally is SHARED with the family's closure, which writes it
-/// through the lists' aliasing — the shape `Cell<T>` (spec 11.3)
-/// names; a capture cannot fill a `mut` seat, so the seats read.
-type Toy = { db: Db, input: int, double_family: int, runs: List<int>, values: List<int> }
+/// The tally and values are explicit shared cells, so the verifier's
+/// captured Toy and the caller's Toy observe the same query state.
+type Toy = { db: Db, input: int, double_family: int, runs: Cell<int>, values: Cell<List<int>> }
 
 fn toy() -> Toy {
     mut db = new_db()
     let input = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
-    let t = Toy { db: db, input: input, double_family: 0, runs: [0], values: [0, 0, 0, 0] }
+    let t = Toy { db: db, input: input, double_family: 0, runs: Cell.new(0), values: Cell.new([0, 0, 0, 0]) }
     let double_family = db.family((arg: int) -> verified_double(t, arg))
     t with { double_family: double_family }
 }
@@ -30,17 +29,17 @@ fn set(t: Toy, arg: int, v: int) {
 fn double_of(t: Toy, arg: int) -> int {
     let key = Key { family: t.double_family, arg: arg }
     match t.db.ask(key) {
-        .Reuse -> t.values[arg],
+        .Reuse -> t.values.get()[arg],
         .Cycle -> 0 - 1,
         .Compute -> {
             t.db.begin(key)
             let in_key = Key { family: t.input, arg: arg }
             t.db.record_dep(in_key)
             let v = t.db.changed_at(in_key) * 0 + read_input(t, arg) * 2
-            mut runs = t.runs
-            runs.set(0, runs[0] + 1)
-            mut vs = t.values
+            t.runs.set(t.runs.get() + 1)
+            mut vs = t.values.get()
             vs.set(arg, v)
+            t.values.set(vs)
             t.db.settle(key, v)
             v
         }
@@ -49,12 +48,13 @@ fn double_of(t: Toy, arg: int) -> int {
 
 /// The input's value rides beside the kernel — its hash is the value.
 fn read_input(t: Toy, arg: int) -> int {
-    t.values[arg + 2]
+    t.values.get()[arg + 2]
 }
 
 fn put(t: Toy, arg: int, v: int) {
-    mut vs = t.values
+    mut vs = t.values.get()
     vs.set(arg + 2, v)
+    t.values.set(vs)
     set(t, arg, v)
 }
 
@@ -66,14 +66,14 @@ spec "query/db" {
             let a = double_of(t, 0)
             put(t, 0, 21)
             let b = double_of(t, 0)
-            a == 42 && b == 42 && t.runs[0] == 1
+            a == 42 && b == 42 && t.runs.get() == 1
         }
         then "a changed input recomputes" {
             mut t = toy()
             put(t, 0, 1)
             let _ = double_of(t, 0)
             put(t, 0, 5)
-            double_of(t, 0) == 10 && t.runs[0] == 2
+            double_of(t, 0) == 10 && t.runs.get() == 2
         }
         then "the counters tell the story" {
             mut t = toy()
