@@ -54,7 +54,7 @@ export type Decls = {
     ensure: List<fn(DeclId)>,
     // the workspace's lifting hook: an annotation fn run over a
     // declaration at compile time, what it said back
-    lifter: List<fn(DeclId, FileId, StmtId, List<ExprId>) -> Result<List<Said>, Unsettled>>,
+    lifter: List<fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<List<Said>, Unsettled>>,
     ensure_methods: List<fn(DeclId)>,
     // the language's own type declarations, one per row that is an
     // enum — and the rows they read their parts from
@@ -75,7 +75,7 @@ export type Decls = {
 
 /// Where no workspace stands behind the table, nothing lifts.
 // LICENSED I23: a fn VALUE filling the lifter seat — its parameters are the seat's contract, and the answer needs none of them
-fn no_lifter(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
+fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
     .Err(Unsettled.Trap("nothing here lifts an annotation"))
 }
 
@@ -423,15 +423,15 @@ impl Decls {
     }
 
     /// The workspace arms the lifting hook once.
-    fn arm_lifter(lift: fn(DeclId, FileId, StmtId, List<ExprId>) -> Result<List<Said>, Unsettled>) {
+    fn arm_lifter(lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<List<Said>, Unsettled>) {
         self.lifter.set(0, lift)
     }
 
     /// An annotation fn `d` run over the declaration at `s` in file
     /// `f`, with these settled arguments — asking IS the run.
-    fn lifted(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
+    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
         let lift = self.lifter[0]
-        lift(d, f, s, args)
+        lift(d, f, s, call, args)
     }
 
     fn declare(d: DeclId, sig: DeclSig) {

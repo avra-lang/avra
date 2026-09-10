@@ -8,13 +8,13 @@ use @std.avrac.language.{analyze_source}
 spec "features/annotations — a call over a declaration" {
     given "the surface" {
         then "an annotated fn is the fn" {
-            shown("fn tag(x: int) -> int {\n    x\n}\n@tag(3)\nfn f() -> int {\n    1\n}\nf()") == "1"
+            shown("type Fn = {}\nfn tag(f: Fn, n: int) { }\n@tag(3)\nfn answer() -> int {\n    1\n}\nanswer()") == "1"
         }
         then "a bare annotation takes no parentheses" {
-            shown("fn tag() -> int {\n    0\n}\n@tag\ntype P = { x: int }\nP { x: 2 }.x") == "2"
+            shown("type Type = {}\nfn tag(t: Type) { }\n@tag\ntype P = { x: int }\nP { x: 2 }.x") == "2"
         }
         then "annotations stack" {
-            shown("fn a() -> int {\n    0\n}\nfn b(n: int) -> int {\n    n\n}\n@a\n@b(1)\nfn f() -> int {\n    3\n}\nf()") == "3"
+            shown("type Fn = {}\nfn a(f: Fn) { }\nfn b(f: Fn, n: int) { }\n@a\n@b(1)\nfn answer() -> int {\n    3\n}\nanswer()") == "3"
         }
         then "the annotation is recorded on the declaration, in written order" {
             let a = analyze_source("fn a() -> int {\n    0\n}\nfn b(n: int) -> int {\n    n\n}\n@a\n@b(1)\nfn f() -> int {\n    3\n}\nf()")
@@ -27,7 +27,7 @@ spec "features/annotations — a call over a declaration" {
             refused_with("@nope\nfn f() -> int {\n    1\n}\nf()", "not defined")
         }
         then "an argument that does not type is refused as any expression is" {
-            refused_with("fn tag(x: int) -> int {\n    x\n}\n@tag(zzz)\nfn f() -> int {\n    1\n}\nf()", "not defined")
+            refused_with("type Fn = {}\nfn tag(f: Fn, x: int) { }\n@tag(zzz)\nfn answer() -> int {\n    1\n}\nanswer()", "not defined")
         }
         then "one mistake, one message" {
             refusals("@nope\nfn f() -> int {\n    1\n}\nf()") == 1

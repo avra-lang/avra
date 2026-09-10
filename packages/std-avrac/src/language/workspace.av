@@ -16,7 +16,7 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, int_of, text_of, bool_of, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, Said, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing}
+use features.{Unsettled, Settled, Settlement, LiftStatus, const_symbol, expr_symbol, MetaVal, MetaHeap, Said, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -96,6 +96,8 @@ export type Workspace = {
     phases: List<Phase>,
     // every const asked to settle this workspace, by its unit name
     settlements: Map<string, Settlement>,
+    // every annotation call, including the call currently lowering
+    lifts: Map<string, LiftStatus>,
 }
 
 /// One package of the workspace: its key (the manifest's name; ""
@@ -203,7 +205,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         decl_facts: new_table(), method_clashes: new_table(), folds: new_table(),
         analyses: new_table(), units: new_table(), specs: {}, asks: [], defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
-        clock: clock, phases: [], settlements: {},
+        clock: clock, phases: [], settlements: {}, lifts: {},
     }
     for f in families() {
         if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
@@ -212,7 +214,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
-    let lift: fn(DeclId, FileId, StmtId, List<ExprId>) -> Result<List<Said>, Unsettled> = (d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> ws.lifted(d, f, s, args)
+    let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<List<Said>, Unsettled> = (d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> ws.lifted(d, f, s, call, args)
     ws.decls.arm_lifter(lift)
     ws.load_packages(src)
     ws
@@ -665,7 +667,27 @@ impl Workspace {
     /// lowered and checked for reach, the declaration crossed in as
     /// the fn's first seat asks, each argument settled and crossed,
     /// and what the fn answered read back as what it SAID.
-    fn lifted(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
+    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
+        let name = "lift$${f.index}$${call.index}"
+        let stood: LiftStatus? = self.lifts.get(name)
+        if stood != null {
+            return match stood! {
+                .Lifting -> .Ok([]),
+                .Held(saids) -> .Ok(saids),
+                .Refused(_) -> .Err(Unsettled.Spoken),
+            }
+        }
+        self.lifts.set(name, LiftStatus.Lifting)
+        let r = self.lifted_once(d, f, s, args)
+        self.lifts.set(name, match r {
+            .Ok(saids) -> LiftStatus.Held(saids),
+            .Err(why) -> LiftStatus.Refused(why),
+        })
+        r
+    }
+
+    /// One annotation call after its recursion guard is standing.
+    fn lifted_once(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> Result<List<Said>, Unsettled> {
         let x = self.decls.decl(d)
         let ws = self
         let l = memory(self.decls.settlement(Wanted { file: x.file, decl: d, name: self.decls.symbol(d), sub: null }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
