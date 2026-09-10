@@ -186,5 +186,13 @@ spec "query/memo" {
             }, (v: int) -> v)
             first == 21 && second == 21 && runs.get() == 1
         }
+        then "eviction removes values and kernel reuse together" {
+            let db = new_db()
+            let family = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
+            let memo = new_memo<int>(db, family)
+            let _ = memo.demand(0, () -> 21, (v: int) -> v)
+            memo.evict()
+            memo.demand(0, () -> 34, (v: int) -> v) == 34
+        }
     }
 }

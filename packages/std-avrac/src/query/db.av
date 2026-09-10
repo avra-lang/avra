@@ -167,6 +167,20 @@ impl Db {
         self.replace(s)
     }
 
+    /// Remove every cell in one family. Typed memo storage must be
+    /// evicted with it, so a later ask cannot reuse bookkeeping after
+    /// its value has been released.
+    fn evict_family(family: int) {
+        mut s = self.snapshot()
+        mut at = family
+        let stride = s.verifiers.length
+        while at < s.cells.length {
+            s.cells.set(at, null)
+            at = at + stride
+        }
+        self.replace(s)
+    }
+
     fn hit() -> Verdict {
         mut s = self.snapshot()
         s.hits.set(0, s.hits[0] + 1)
