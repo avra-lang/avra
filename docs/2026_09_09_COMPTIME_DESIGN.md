@@ -612,7 +612,8 @@ query family now owns each annotation call's memoization,
 fingerprint, dependency edges, and recursion verdict; the former
 parallel `LiftStatus` map is gone. Program proofs cover stacked
 annotations, fn/record/enum metadata, `void` and diagnostic effects,
-float and nested aggregate crossing, and counterfeit meta types.
+float and nested aggregate crossing, counterfeit meta types, and
+precise source locations on fn parameters, record fields and enum variants.
 Still to land: declaration-producing and fn-replacing effects; the
 two-tier expansion namespace and provenance; annotation facts and
 `explain @name`. Quotes and derive remain S4.
