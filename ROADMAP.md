@@ -7288,6 +7288,73 @@ recorded here so the wanting sites are named.
   `from_codepoint(65533)` is the spelling until then. Wanting sites:
   the json specs' surrogate and control-character cases.
 
+- A PRE-COMMIT GATE RUNS THE CHEAP KEEPERS. The lane's own history
+  proves agents commit past the bar: 82a7ecd (the MetaVal crossing)
+  landed five new idiom violations, an unused import, and a settle
+  test that passed vacuously — all caught only by a later `make gate`
+  (2026-09-10, lane/comptime). The cheap keepers (`idioms`, `vocab`,
+  `fingerprints`, `externs`) are sub-second; wire hooks.json to refuse
+  on them, and the full gate stays the merge bar.
+
+- THE IDIOM REPORT NAMES THE LOCAL IT FLAGS. tools/idioms.py's I26
+  matcher already computes `[name! xN]` and truncates it away, so the
+  site reads "one nullable local forced open 3+ times" and the reader
+  greps the tool to learn which local. Print the binding's name
+  (`held! x4`) in the site line — the difference between acting and
+  investigating. Wanting site: every I26 fix (values.av's
+  meta_record/meta_enum exemplars).
+
+- `??` GUARD-BINDING, SO "GUARD ONCE, BIND ONCE" IS ONE LINE. The
+  idiom's own cure is the three-line
+  `let held = f(); if held == null { return … }; let sig = held!` —
+  longer than the smell, so the ratchet punishes
+  the commonest pass stanza (values.av's meta_record/meta_enum; the
+  compiled compiler holds dozens). THE ASK, probed before assuming:
+  a guarded bind — `let sig = self.fields_of(ty) ?? { return … }` —
+  or a failure-lane `or`, so the idiomatic form is SHORTER than the
+  violation and the class collapses by construction.
+
+- `avra check <file>` SCOPES TO THE FILE WHEN IT IS ONE FILE IN A
+  PACKAGE. Checking `packages/std-avrac/…/aggregate.av` surfaced
+  dozens of F0902 module-file refusals from OTHER files (sweep.av),
+  the named file's two real defects buried at the tail — signal
+  drowning hides findings (2026-09-10, lane/comptime). The named
+  file's defects come first, or a single-file argument checks only
+  that file.
+
+- `avra impact <symbol>` — THE COMPILER ANSWERS "WHAT DOES THIS
+  TOUCH" TODAY. Which program tests cover the fn, which bodies lower
+  it, who settles it: the workspace's memo graph (declaration → body
+  → settlement → lift) already IS the dependency index, and `explain`
+  is the seed. Ends grep-guessing test scope; P10/P11 own the
+  premise — the compiler is the semantic index agents grep around.
+
+- `avra query <file>:<line> --json` — type-at-point, the binding, the
+  law that refused and why, from the facts tables the compiler
+  already holds. The one probe result an agent asks for fastest;
+  today it is grep plus reading, the floor P10 was meant to raise.
+
+- A SESSION HANDOFF ARTIFACT PER LANE. Resuming a dropped agent
+  session cost a 26 MB JSONL mine plus reconstructing intent from a
+  staged/unstaged split (2026-09-10, lane/comptime). The dated STATUS
+  paragraphs in docs/2026_09_09_COMPTIME_DESIGN.md were the best
+  orientation available — make that pattern first-class: a
+  `docs/<date>_HANDOFF_<lane>.md` (entry / mid / next, human- and
+  agent-readable) touched at each checkpoint commit, so the resume
+  reads one file.
+
+- DOCS SPELL `rg`, NEVER GNU-ONLY `grep -g`. Two commands copied
+  verbatim from CLAUDE.md/subset failed on macOS BSD grep this
+  session; an agent copies, so the tax is real. Standardize the
+  examples on `rg` (or spell both forms).
+
+- REVIEW-ROUND CHECKLIST: NAME THE ROW A TEST TRIPS ON. The staged
+  settle_test embed case "passed" while refusing on `avra_puts`,
+  never exercising the embed admission — an instance of "A TEST'S
+  NAME IS READ AS ITS SCOPE", caught by assertion surgery rather than
+  the green (2026-09-10, lane/comptime). A review-round item: for
+  each via-the-machine case, say which runtime row it actually trips.
+
 ## The error spine (rung 10 — designed 2026-08-31, from the epic)
 
 Source: `../forge-crafting-intepreters/docs/2026_06_08_ERROR_HANDLING_EPIC.md`
