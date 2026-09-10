@@ -26,6 +26,25 @@ impl Memo<T> {
         }
     }
 
+    /// Open an acyclic query unless its typed value is reusable.
+    /// Absence means the caller owns the computation and must finish it.
+    fn start(arg: int) -> T? {
+        match self.ask(arg) {
+            .Reuse(value) -> value,
+            .Cycle -> self.cycle_value(arg),
+            .Compute -> {
+                self.db.begin(self.query_key(arg))
+                null
+            }
+        }
+    }
+
+    fn finish(arg: int, value: T, fingerprint: int) -> T {
+        self.settle(arg, value, fingerprint)
+    }
+
+    fn clear() { self.values.set(new_table()) }
+
     fn settle(arg: int, value: T, fingerprint: int) -> T {
         self.db.settle(self.query_key(arg), fingerprint)
         mut values = self.values.get()

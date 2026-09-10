@@ -72,14 +72,14 @@ export type Workspace = {
     // lowering (index 0)
     externs: Table<List<string>>,
     programs: Memo<Parsed>,
-    file_items: Table<List<DeclId>>,
-    module_names: Table<ModuleNames>,
-    visibles: Table<Namespace>,
-    name_facts: Table<NameFacts>,
+    file_items: Memo<List<DeclId>>,
+    module_names: Memo<ModuleNames>,
+    visibles: Memo<Namespace>,
+    name_facts: Memo<NameFacts>,
     sig_voices: Table<Voices>,
-    decl_facts: Table<TypeFacts>,
+    decl_facts: Memo<TypeFacts>,
     method_clashes: Table<List<Clash>>,
-    folds: Table<TypeFacts>,
+    folds: Memo<TypeFacts>,
     analyses: Table<Analysis>,
     specs: Map<string, int>,
     asks: List<Wanted>,
@@ -217,9 +217,13 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     mut ws = Workspace {
         host: host, root: root, lang: lang, db: db, decls: language_decls(lang),
         sources: new_memo<SourceFile>(db, ordinal(Family.Source)), manifests: new_table(), externs: new_table(),
-        programs: new_memo<Parsed>(db, ordinal(Family.Parsed)), file_items: new_table(), module_names: new_table(),
-        visibles: new_table(), name_facts: new_table(), sig_voices: new_table(),
-        decl_facts: new_table(), method_clashes: new_table(), folds: new_table(),
+        programs: new_memo<Parsed>(db, ordinal(Family.Parsed)),
+        file_items: new_memo<List<DeclId>>(db, ordinal(Family.Items)),
+        module_names: new_memo<ModuleNames>(db, ordinal(Family.Namespace)),
+        visibles: new_memo<Namespace>(db, ordinal(Family.Visible)),
+        name_facts: new_memo<NameFacts>(db, ordinal(Family.Resolved)), sig_voices: new_table(),
+        decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), method_clashes: new_table(),
+        folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
         analyses: new_table(), units: new_table(), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_table(), defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
@@ -322,16 +326,11 @@ impl Workspace {
     /// The declarations a file MINTS into the one table; the answer's
     /// hash is the item tree's — names and kinds.
     fn items(f: FileId) -> List<DeclId> {
-        let k = key(Family.Items, f.index)
-        if self.db.ask(k) is .Reuse {
-            return self.file_items.at(f.index) ?? []
-        }
-        self.db.begin(k)
+        let held = self.file_items.start(f.index)
+        if held != null { return held! }
         let p = self.parsed(f)
         let ids = self.decls.admit(f, p.store, p.stmts)
-        self.db.settle(k, fp(7, [self.item_print(d) for d in ids]))
-        self.file_items.keep(f.index, ids)
-        ids
+        self.file_items.finish(f.index, ids, fp(7, [self.item_print(d) for d in ids]))
     }
 
     /// The declaration behind an id.
@@ -349,23 +348,19 @@ impl Workspace {
     /// A module's names, bound ONCE: every file's declarations in file
     /// then declaration order.
     fn namespace(m: ModuleId) -> ModuleNames {
-        let k = key(Family.Namespace, m.index)
-        if self.db.ask(k) is .Reuse { return self.module_names.at(m.index)! }
-        self.db.begin(k)
+        let held = self.module_names.start(m.index)
+        if held != null { return held! }
         let paths = self.module_files(module_path(segments_of(self.decls.module_name(m))))
         let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
         let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
-        self.db.settle(k, fp(3, [d.index for d in names.bound].concat([names.clashes.length])))
-        self.module_names.keep(m.index, names)
-        names
+        self.module_names.finish(m.index, names, fp(3, [d.index for d in names.bound].concat([names.clashes.length])))
     }
 
     /// What a file's top level sees: its module's names, then its
     /// imports — with what the `use` lines earned.
     fn visible(f: FileId) -> Namespace {
-        let k = key(Family.Visible, f.index)
-        if self.db.ask(k) is .Reuse { return self.visibles.at(f.index)! }
-        self.db.begin(k)
+        let held = self.visibles.start(f.index)
+        if held != null { return held! }
         let p = self.parsed(f)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
@@ -376,22 +371,17 @@ impl Workspace {
         }
         let names = self.decls.file_names(f, self.namespace(self.decls.file(f).module_id), imports, (path: string) -> self.shown(path))
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
-        self.db.settle(k, self.db.revision())
-        self.visibles.keep(f.index, out)
-        out
+        self.visibles.finish(f.index, out, self.db.revision())
     }
 
     /// A file's names resolved.
     fn resolved(f: FileId) -> NameFacts {
-        let k = key(Family.Resolved, f.index)
-        if self.db.ask(k) is .Reuse { return self.name_facts.at(f.index)! }
-        self.db.begin(k)
+        let held = self.name_facts.start(f.index)
+        if held != null { return held! }
         touch(self.items(f))
         let p = self.parsed(f)
         let out = resolve(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, f), self.visible(f))
-        self.db.settle(k, self.db.revision())
-        self.name_facts.keep(f.index, out)
-        out
+        self.name_facts.finish(f.index, out, self.db.revision())
     }
 
     /// A declaration's signature, computed on first ask: the ONE place
@@ -450,15 +440,12 @@ impl Workspace {
     /// One declaration's body typed — a table over its own expression
     /// range, the sigs it names asked as it reads them.
     fn typed(d: DeclId) -> TypeFacts {
-        let k = key(Family.Typed, d.index)
-        if self.db.ask(k) is .Reuse { return self.decl_facts.at(d.index)! }
-        self.db.begin(k)
+        let held = self.decl_facts.start(d.index)
+        if held != null { return held! }
         let x = self.decls.decl(d)
         mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
-        self.db.settle(k, self.db.revision())
-        self.decl_facts.keep(d.index, out)
-        out
+        self.decl_facts.finish(d.index, out, self.db.revision())
     }
 
     /// A file's bodies as one table: Main's facts first (its range
@@ -466,9 +453,8 @@ impl Workspace {
     /// their voices in source order — what the facade and lowering
     /// read by expression.
     fn folded(f: FileId) -> TypeFacts {
-        let k = key(Family.Folded, f.index)
-        if self.db.ask(k) is .Reuse { return self.folds.at(f.index)! }
-        self.db.begin(k)
+        let held = self.folds.start(f.index)
+        if held != null { return held! }
         let p = self.parsed(f)
         let hole = self.decls.types.intern(Type.Error)
         mut out = new_type_facts(0, p.store.exprs.count(), p.store.stmts.count(), hole)
@@ -479,9 +465,7 @@ impl Workspace {
             spoken = spoken.concat(facts.voices.list)
         }
         let folded_facts = out with { voices: Voices { list: by_position(spoken) } }
-        self.db.settle(k, self.db.revision())
-        self.folds.keep(f.index, folded_facts)
-        folded_facts
+        self.folds.finish(f.index, folded_facts, self.db.revision())
     }
 
     /// A file's bodies to type: Main, then every declaration owning a
