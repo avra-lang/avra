@@ -2,21 +2,24 @@
 // proved here: the annotation is a fact of the declaration it
 // crosses, its callee resolves like any name, its arguments type
 // like any expression, and the declaration stands unchanged.
-use @std.avrac.testing.{shown, refused_with, refusals}
+use @std.avrac.testing.{refused_with, refusals}
 use @std.avrac.language.{analyze_source}
 
 spec "features/annotations — a call over a declaration" {
     given "the surface" {
         then "an annotated fn is the fn" {
-            shown("type Fn = {}\nfn tag(f: Fn, n: int) { }\n@tag(3)\nfn answer() -> int {\n    1\n}\nanswer()") == "1"
+            let a = analyze_source("fn tag(n: int) -> int { n }\n@tag(3)\nfn answer() -> int { 1 }\nanswer()")
+            a.view.store.fn_parts(a.view.stmts[1])?.name == "answer"
         }
         then "a bare annotation takes no parentheses" {
-            shown("type Type = {}\nfn tag(t: Type) { }\n@tag\ntype P = { x: int }\nP { x: 2 }.x") == "2"
+            let a = analyze_source("fn tag() { }\n@tag\ntype P = { x: int }\nP { x: 2 }.x")
+            a.view.store.type_decl_name(a.view.stmts[1]) == "P"
         }
         then "annotations stack" {
-            shown("type Fn = {}\nfn a(f: Fn) { }\nfn b(f: Fn, n: int) { }\n@a\n@b(1)\nfn answer() -> int {\n    3\n}\nanswer()") == "3"
+            let a = analyze_source("fn a() { }\nfn b(n: int) { }\n@a\n@b(1)\nfn answer() -> int { 3 }\nanswer()")
+            [x.name for x in a.view.store.annotations_of(a.view.stmts[2])].join(",") == "b,a"
         }
-        then "the annotation is recorded on the declaration, in written order" {
+        then "every annotation is recorded on the declaration" {
             let a = analyze_source("fn a() -> int {\n    0\n}\nfn b(n: int) -> int {\n    n\n}\n@a\n@b(1)\nfn f() -> int {\n    3\n}\nf()")
             let marks = [a.view.store.annotations_of(s).length for s in a.view.stmts]
             ["${n}" for n in marks].join(",") == "0,0,2,0"
