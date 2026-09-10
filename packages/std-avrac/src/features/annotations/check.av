@@ -12,14 +12,20 @@ use @std.errors.{Loc}
 
 export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     if cx.errored(a.callee) { return }
-    let d: DeclId? = cx.bound_decl(a.callee)
-    if d == null || cx.view.decls.fn_name(d!) == null {
+    let found: DeclId? = cx.bound_decl(a.callee)
+    if found == null {
         not_a_fn(cx, a)
         return
     }
-    let sig: FnSig? = fn_sig_of(cx.view.decls.sig(d!))
-    if sig == null { return }
-    let seats = sig!.params
+    let d = found!
+    if cx.view.decls.fn_name(d) == null {
+        not_a_fn(cx, a)
+        return
+    }
+    let found_sig: FnSig? = fn_sig_of(cx.view.decls.sig(d))
+    if found_sig == null { return }
+    let sig = found_sig!
+    let seats = sig.params
     if seats.is_empty() {
         takes_no_declaration(cx, a)
         return
@@ -34,11 +40,11 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
         return
     }
     if !arguments_fit(cx, a, seats) { return }
-    if !answers_effect(cx, sig!.ret) {
-        wrong_answer(cx, a, sig!.ret)
+    if !answers_effect(cx, sig.ret) {
+        wrong_answer(cx, a, sig.ret)
         return
     }
-    match cx.view.decls.lifted(d!, cx.view.file, s, a.callee, a.args) {
+    match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
         .Ok(saids) -> {
             for x in saids { spoken_said(cx, a, s, x) }
         },
@@ -57,8 +63,9 @@ fn declared_kind(cx: TypeCx, s: StmtId) -> DeclKind? {
 /// `Fn` takes a fn; `Type` takes a record or an enum.
 fn receiver_fits(cx: TypeCx, seat: TypeId, kind: DeclKind?) -> bool {
     if kind == null { return false }
-    if cx.view.decls.meta_type(seat, "Fn") { return kind! is .Fn }
-    cx.view.decls.meta_type(seat, "Type") && (kind! is .Record || kind! is .Enum)
+    let declared = kind!
+    if cx.view.decls.meta_type(seat, "Fn") { return declared is .Fn }
+    cx.view.decls.meta_type(seat, "Type") && (declared is .Record || declared is .Enum)
 }
 
 /// Each written argument accepted by the seat after the declaration's.
@@ -99,7 +106,7 @@ fn not_a_fn(mut cx: TypeCx, a: Annotation) {
 
 fn takes_no_declaration(mut cx: TypeCx, a: Annotation) {
     let _ = cx.spoken(refusal("annotation.receiver", at_annotation(cx, a),
-                       "an annotation's first seat says what it takes",
+                       receiver_law(),
                        "`${a.name}` takes nothing",
                        "its first parameter is the declaration: `f: Fn`, or `t: Type` for a record or enum"))
 }
@@ -113,7 +120,7 @@ fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) 
         "`${a.name}` takes `${took}`, and this is ${this}"
     }
     let _ = cx.spoken(refusal("annotation.receiver", at_annotation(cx, a),
-                       "an annotation's first seat says what it takes",
+                       receiver_law(),
                        found,
                        "`Fn` crosses a fn, `Type` a record or an enum — nothing else yet"))
 }
@@ -129,14 +136,14 @@ fn kind_shown(k: DeclKind) -> string {
 
 fn wrong_count(mut cx: TypeCx, a: Annotation, wanted: int) {
     let _ = cx.spoken(refusal("annotation.seats", at_annotation(cx, a),
-                       "an annotation's arguments fill its seats",
+                       seats_law(),
                        "`${a.name}` takes ${wanted} after the declaration, this writes ${a.args.length}",
                        null))
 }
 
 fn wrong_argument(mut cx: TypeCx, a: Annotation, e: ExprId, want: TypeId) {
     let _ = cx.spoken(refusal("annotation.seats", cx.loc_of(e),
-                       "an annotation's arguments fill its seats",
+                       seats_law(),
                        "this seat of `${a.name}` takes `${cx.view.types.name_of(want)}`",
                        "an argument settles at compile time: a scalar or text"))
 }
@@ -174,3 +181,6 @@ fn unsettled(mut cx: TypeCx, a: Annotation, why: Unsettled) {
                        label,
                        "an annotation runs at compile time from pure computation alone"))
 }
+
+fn receiver_law() -> string { "an annotation's first seat says what it takes" }
+fn seats_law() -> string { "an annotation's arguments fill its seats" }

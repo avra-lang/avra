@@ -100,7 +100,7 @@ fn ran(l: Lowered, target: Body) -> Result<Ran, string> {
 /// The body a symbol names, or the refusal.
 fn named_body(l: Lowered, symbol: string) -> Result<Body, string> {
     let target: Body? = body_named(l, symbol)
-    if target == null { return .Err("no body named `${symbol}`") }
+    if target == null { return .Err(no_body_named(symbol)) }
     .Ok(target!)
 }
 
@@ -137,7 +137,7 @@ export fn run_settle(l: Lowered, steps: int, spell: bool, base: string) -> Resul
     m.budget = steps
     m.base = base
     let answer: Val? = m.run_body(l.entry, [])
-    if m.budget < 0 { return .Err(Unsettled.Budget("took more than ${steps} steps")) }
+    if m.budget < 0 { return .Err(Unsettled.Budget(over_budget(steps))) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
     if !spell { return .Ok(Settled { spelled: null, embeds: m.embeds }) }
     match literal_of(answer) {
@@ -156,13 +156,12 @@ export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: Meta
     let world: string? = world_reached(l, false)
     if world != null { return .Err(Unsettled.Reach(world!)) }
     let target: Body? = body_named(l, symbol)
-    if target == null { return .Err(Unsettled.Trap("no body named `${symbol}`")) }
+    if target == null { return .Err(Unsettled.Trap(no_body_named(symbol))) }
     mut m = fresh_machine(l)
     m.budget = steps
-    mut vals: List<Val> = []
-    for a in args { vals.push(m.val_of(heap, a)) }
+    let vals = [m.val_of(heap, a) for a in args]
     let answer: Val? = m.run_body(target!, vals)
-    if m.budget < 0 { return .Err(Unsettled.Budget("took more than ${steps} steps")) }
+    if m.budget < 0 { return .Err(Unsettled.Budget(over_budget(steps))) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
     mut out = MetaHeap { nodes: [] }
     let crossed = m.meta_of(answer ?? Val.I(0), out)
@@ -357,9 +356,7 @@ impl Machine {
             .Bool(b) -> Val.B(b),
             .Absent -> Val.N,
             .Node(id) -> {
-                mut elems: List<Val> = []
-                for x in heap.nodes[id] { elems.push(self.val_of(heap, x)) }
-                self.fresh_array(elems)
+                self.fresh_array([self.val_of(heap, x) for x in heap.nodes[id]])
             },
         }
     }
@@ -375,9 +372,7 @@ impl Machine {
             .S(s) -> MetaVal.Text(s),
             .N -> MetaVal.Absent,
             .A(id) -> {
-                mut slots: List<MetaVal> = []
-                for x in self.arrays[id] { slots.push(self.meta_of(x, heap)) }
-                heap.node(slots)
+                heap.node([self.meta_of(x, heap) for x in self.arrays[id]])
             },
             .C(_) or .M(_) -> MetaVal.Absent,
         }
@@ -1017,6 +1012,9 @@ impl Machine {
         verdict(self.text_val(vals[0]) == self.text_val(vals[1]))
     }
 }
+
+fn no_body_named(symbol: string) -> string { "no body named `${symbol}`" }
+fn over_budget(steps: int) -> string { "took more than ${steps} steps" }
 // ── The host seam the evaluator reaches through ─────────────────
 // The process substrate, the io rows and the clock are the runtime's
 // own C; the evaluator calls the same functions the native program

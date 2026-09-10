@@ -714,20 +714,22 @@ impl Workspace {
     /// name and never by a position.
     fn crossed_decl(f: FileId, s: StmtId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let a = self.analysis(f)
-        let d: DeclId? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s))
-        let sig: StructSig? = self.decls.fields_of_type(want)
-        if d == null || sig == null { return MetaVal.Absent }
-        let x = self.decls.decl(d!)
+        let found: DeclId? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s))
+        let found_sig: StructSig? = self.decls.fields_of_type(want)
+        if found == null || found_sig == null { return MetaVal.Absent }
+        let d = found!
+        let sig = found_sig!
+        let x = self.decls.decl(d)
         let at = self.crossed_loc(a, a.view.store.stmt_span(s), heap)
         mut slots: List<MetaVal> = []
-        for i, n in sig!.names {
+        for i, n in sig.names {
             slots.push(match n {
                 "name" -> MetaVal.Text(x.name),
                 "at" -> at,
-                "answer" -> MetaVal.Text(self.decls.types.name_of(fn_sig_of(self.decls.sig(d!))?.ret ?? self.decls.types.intern(Type.Void))),
-                "params" -> self.crossed_params(a, d!, sig!.types[i], heap),
-                "fields" -> self.crossed_fields(d!, sig!.types[i], heap),
-                "variants" -> self.crossed_variants(d!, sig!.types[i], heap),
+                "answer" -> MetaVal.Text(self.decls.types.name_of(fn_sig_of(self.decls.sig(d))?.ret ?? self.decls.types.type(void))),
+                "params" -> self.crossed_params(a, d, sig.types[i], heap),
+                "fields" -> self.crossed_fields(d, sig.types[i], heap),
+                "variants" -> self.crossed_variants(d, sig.types[i], heap),
                 _ -> MetaVal.Absent,
             })
         }
@@ -737,14 +739,18 @@ impl Workspace {
     /// A fn's parameters as `Param` values: name, the type's spelling,
     /// its `mut` mark — built by the `List<Param>` seat's element type.
     fn crossed_params(a: Analysis, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
-        let fs = fn_sig_of(self.decls.sig(d))
-        let elem: StructSig? = self.decls.fields_of_type(elem_of(self.decls.types, want) ?? want)
-        if fs == null || elem == null { return heap.node([]) }
+        let found_fn = fn_sig_of(self.decls.sig(d))
+        let item: TypeId? = elem_of(self.decls.types, want)
+        if found_fn == null || item == null { return heap.node([]) }
+        let fs = found_fn!
+        let elem: StructSig? = self.decls.fields_of_type(item!)
+        if elem == null { return heap.node([]) }
+        let shape = elem!
         let names = param_names(a.view.store, self.decls.decl(d).stmt)
         mut out: List<MetaVal> = []
-        for i, ty in fs!.params {
+        for i, ty in fs.params {
             mut slots: List<MetaVal> = []
-            for n in elem!.names {
+            for n in shape.names {
                 slots.push(match n {
                     "name" -> MetaVal.Text(names[i]),
                     "ty" -> MetaVal.Text(self.decls.types.name_of(ty)),
@@ -761,12 +767,15 @@ impl Workspace {
     fn crossed_fields(d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let x = self.decls.decl(d)
         let own: StructSig? = self.decls.fields_of_type(self.decls.types.intern(Type.Struct(d, x.name)))
-        let elem: StructSig? = self.decls.fields_of_type(elem_of(self.decls.types, want) ?? want)
-        if own == null || elem == null { return heap.node([]) }
+        let item: TypeId? = elem_of(self.decls.types, want)
+        if own == null || item == null { return heap.node([]) }
+        let elem: StructSig? = self.decls.fields_of_type(item!)
+        if elem == null { return heap.node([]) }
+        let shape = elem!
         mut out: List<MetaVal> = []
         for i, n in own!.names {
             mut slots: List<MetaVal> = []
-            for e in elem!.names {
+            for e in shape.names {
                 slots.push(match e {
                     "name" -> MetaVal.Text(n),
                     "ty" -> MetaVal.Text(self.decls.types.name_of(own!.types[i])),
@@ -782,12 +791,15 @@ impl Workspace {
     fn crossed_variants(d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let x = self.decls.decl(d)
         let own = self.decls.variants_of_type(self.decls.types.intern(Type.Enum(d, x.name)))
-        let elem: StructSig? = self.decls.fields_of_type(elem_of(self.decls.types, want) ?? want)
-        if own == null || elem == null { return heap.node([]) }
+        let item: TypeId? = elem_of(self.decls.types, want)
+        if own == null || item == null { return heap.node([]) }
+        let elem: StructSig? = self.decls.fields_of_type(item!)
+        if elem == null { return heap.node([]) }
+        let shape = elem!
         mut out: List<MetaVal> = []
         for i, n in own!.names {
             mut slots: List<MetaVal> = []
-            for e in elem!.names {
+            for e in shape.names {
                 slots.push(match e {
                     "name" -> MetaVal.Text(n),
                     "payload" -> heap.node([MetaVal.Text(self.decls.types.name_of(p)) for p in own!.payloads[i]]),
@@ -1528,13 +1540,14 @@ fn settle_steps() -> int { 10000000 }
 /// spelled nothing.
 fn crossed_literal(x: Expr?) -> MetaVal {
     if x == null { return MetaVal.Absent }
-    let n: int? = int_of(x!)
+    let value = x!
+    let n: int? = int_of(value)
     if n != null { return MetaVal.Int(n!) }
-    let f: int? = bits_of(x!)
+    let f: int? = bits_of(value)
     if f != null { return MetaVal.Float(f!) }
-    let s: string? = text_of(x!)
+    let s: string? = text_of(value)
     if s != null { return MetaVal.Text(s!) }
-    let b: bool? = bool_of(x!)
+    let b: bool? = bool_of(value)
     if b != null { return MetaVal.Bool(b!) }
     MetaVal.Absent
 }
