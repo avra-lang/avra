@@ -7314,6 +7314,30 @@ recorded here so the wanting sites are named.
   or a failure-lane `or`, so the idiomatic form is SHORTER than the
   violation and the class collapses by construction.
 
+- AN EMPTY AGGREGATE LITERAL ADOPTS A PLANTED NON-NULLABLE WANT.
+  `[]` under a `List<int>` want types as `List<int>`, `{}` under
+  `Map<string, int>` as that map — never `.EmptyList`/`.EmptyMap`
+  when the seat knows its element. Today only the BINDING's declared
+  type rescues the literal (`let xs: List<int> = []` works by
+  declared type), so a const's materializer had to carry the const's
+  type in a new `Wanted.answer` field to route AROUND the literal's
+  own shape (lane/comptime 422fe46, 2026-09-10) — the wart this ask
+  removes at its root. The NULLABLE want stays refused (F2024, the
+  subset cache's entry). Probe before assuming: want-less `[]` method
+  refusals (`unmeasurable_empty`, lists/methods.av) and
+  `empty_adopted`'s identity widen (checks.av) both rest on the
+  literal NOT adopting, and `plant_want` must keep flowing to heirs
+  (a lambda in the seat hears it).
+
+- `avra probe` — BASE-STAMPED PROBE RECORDS. A probe result names
+  the base that answered it (the Attribution law, CLAUDE.md), and
+  today the stamping is hand prose. THE ASK: `avra probe <file>`
+  writes one row — source, refusal F-codes, base commit, compiler
+  binary — into the probe log, so a re-probe after a merge shows its
+  own age instead of reading current forever. Companion to `avra
+  query`/`avra impact`; the subset cache's recorded-trigger (probe
+  logs as gate-verified program tests) is the natural home.
+
 - `avra check <file>` SCOPES TO THE FILE WHEN IT IS ONE FILE IN A
   PACKAGE. Checking `packages/std-avrac/…/aggregate.av` surfaced
   dozens of F0902 module-file refusals from OTHER files (sweep.av),
