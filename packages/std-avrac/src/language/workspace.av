@@ -78,6 +78,7 @@ export type Workspace = {
     name_facts: Memo<NameFacts>,
     sig_voices: Table<Voices>,
     decl_facts: Memo<TypeFacts>,
+    const_type_facts: Memo<TypeId>,
     method_clashes: Table<List<Clash>>,
     folds: Memo<TypeFacts>,
     analyses: Memo<Analysis>,
@@ -157,6 +158,7 @@ enum Family {
     Sig
     Methods
     Typed
+    ConstTyped
     Folded
     Analysis
     Settled
@@ -181,20 +183,21 @@ fn ordinal(f: Family) -> int {
         .Sig -> 6,
         .Methods -> 7,
         .Typed -> 8,
-        .Folded -> 9,
-        .Analysis -> 10,
-        .Settled -> 11,
-        .Lowered -> 12,
-        .Lifted -> 13,
-        .Manifest -> 14,
-        .Receivers -> 15,
+        .ConstTyped -> 9,
+        .Folded -> 10,
+        .Analysis -> 11,
+        .Settled -> 12,
+        .Lowered -> 13,
+        .Lifted -> 14,
+        .Manifest -> 15,
+        .Receivers -> 16,
     }
 }
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
     let all: List<Family> = [Family.Source, Family.Parsed, Family.Items, Family.Namespace, Family.Visible, Family.Resolved,
-                             Family.Sig, Family.Methods, Family.Typed, Family.Folded, Family.Analysis, Family.Settled, Family.Lowered, Family.Lifted, Family.Manifest,
+                             Family.Sig, Family.Methods, Family.Typed, Family.ConstTyped, Family.Folded, Family.Analysis, Family.Settled, Family.Lowered, Family.Lifted, Family.Manifest,
                              Family.Receivers]
     all
 }
@@ -243,7 +246,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         module_names: new_memo<ModuleNames>(db, ordinal(Family.Namespace)),
         visibles: new_memo<Namespace>(db, ordinal(Family.Visible)),
         name_facts: new_memo<NameFacts>(db, ordinal(Family.Resolved)), sig_voices: new_table(),
-        decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), method_clashes: new_table(),
+        decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), const_type_facts: new_memo<TypeId>(db, ordinal(Family.ConstTyped)), method_clashes: new_table(),
         folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
@@ -256,6 +259,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     }
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
+    ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
     let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<List<Said>, Unsettled> = (d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> ws.lifted(d, f, s, call, args)
@@ -288,6 +292,8 @@ impl Workspace {
         let _ = self.methods(d)
     }
 
+    fn const_type_ensured(f: FileId, s: StmtId) { let _ = self.const_type_at(self.settle_id(f, s)) }
+
     fn writes_ensured() {
         let _ = self.receivers()
     }
@@ -305,6 +311,7 @@ impl Workspace {
             .Sig -> touch(self.sig(decl_at_arg(arg))),
             .Methods -> touch(self.methods(decl_at_arg(arg))),
             .Typed -> touch(self.typed(decl_at_arg(arg))),
+            .ConstTyped -> touch(self.const_type_at(arg)),
             .Folded -> touch(self.folded(file_at(arg))),
             .Analysis -> touch(self.analysis(file_at(arg))),
             .Settled -> touch(self.settled_at(arg)),
@@ -630,13 +637,35 @@ impl Workspace {
     /// program's, memoized — then run in the evaluator. A const whose
     /// value asks for itself is refused as the cycle it is.
     fn settled(f: FileId, s: StmtId) -> Result<Settled, Unsettled> {
+        self.settled_at(self.settle_id(f, s))
+    }
+
+    fn settle_id(f: FileId, s: StmtId) -> int {
         let name = const_symbol(f, s)
         let known: int? = self.settle_specs.get(name)
-        if known != null { return self.settled_at(known!) }
+        if known != null { return known! }
         let id = self.settle_asks.length
         self.settle_specs.set(name, id)
         self.settle_asks.push(SettleAsk { file: f, stmt: s, name: name })
-        self.settled_at(id)
+        id
+    }
+
+    /// A const's inferred type is a program fact, like a signature:
+    /// type its owning Main on demand and publish the answer through
+    /// Decls so every other body reads the same identity.
+    fn const_type_at(id: int) -> TypeId {
+        let error = self.decls.types.intern(Type.Error)
+        match self.const_type_facts.ask(id) {
+            .Cycle -> { return error },
+            .Reuse(held) -> { return held },
+            .Compute -> self.const_type_facts.begin(id),
+        }
+        let ask = self.settle_asks[id]
+        touch(self.items(ask.file))
+        let main: DeclId? = self.decls.main_of(ask.file)
+        if main != null { touch(self.typed(main!)) }
+        let ty = self.decls.held_const_type(ask.file, ask.stmt) ?? error
+        self.const_type_facts.finish(id, ty, ty.index)
     }
 
     fn settled_at(id: int) -> Result<Settled, Unsettled> {
