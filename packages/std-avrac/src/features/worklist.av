@@ -4,13 +4,13 @@
 //! worklist (a fresh value in its context, handed back with the
 //! body), so an enqueue is a write in place, never through a shared
 //! box; `seen` keys by mangled name, once per body.
-use core.{ExprId, TypeId, DeclId, FileId, StmtId, Expr}
+use core.{ExprId, TypeId, DeclId, FileId, StmtId}
 use @std.errors.{Loc}
 
 /// One body WANTED — the unit of lowering: a declaration's body (or
 /// a file's main, when `decl` is absent), under concrete Vars when
 /// it is generic, named by its symbol or mangling, in its file.
-export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, root: ExprId? = null, settled: Settled? = null }
+export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, root: ExprId? = null, settled: Settled? = null, answer: TypeId? = null }
 
 /// Why a const did not SETTLE — three laws, each its own voice: the
 /// value reached the world, ran past its budget, or trapped. And
@@ -39,9 +39,8 @@ export type MetaMap = { keys: List<string>, values: List<MetaVal> }
 export type MetaHeap = { nodes: List<List<MetaVal>>, maps: List<MetaMap> }
 
 /// One transport for every value that crosses out of the evaluator.
-/// `spelled` is the scalar fast path; aggregates retain the same
-/// type-driven value and heap used by lifted calls.
-export type Settled = { spelled: Expr?, answer: MetaVal, heap: MetaHeap, embeds: List<string> = [], fingerprint: int }
+/// Const settlement and lifted calls share this type-driven tree.
+export type Settled = { answer: MetaVal, heap: MetaHeap, embeds: List<string> = [], fingerprint: int }
 
 /// A settlement query's held answer. A refusal remains in full for
 /// fingerprinting; repeated reads turn it into silent `Spoken`.

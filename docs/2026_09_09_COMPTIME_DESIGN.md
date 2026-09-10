@@ -576,10 +576,9 @@ S1 STATUS (lane/comptime, 2026-09-09): LANDED for scalars and text.
 `run_settle` (interp.av) + `Machine.budget`; `reach` column on
 `rt_sigs` (24 World rows); `settlement`/`lower_const` (lower.av);
 the typed `Settled` query family + kernel cycle verdict; F2060 reach, F2061
-budget, F2062 trap, F2063 declares. ONE DEVIATION FROM §3.1: a
-computed const DECLARES its scalar type (`const F: int = fact(5)`),
-because a const's type is read from the store alone (contexts.av
-`settled_type`); inference is a sugar-backlog entry. Not yet: the
+budget, F2062 trap, F2063 form. The §3.1 deviation closed: a computed
+const INFERS its type through the const-type query family
+(`decls.const_type`, workspace.av). Not yet: the
 `const` as an exportable module declaration and the reach refusal's
 full call chain (it names the row and the body).
 
@@ -587,20 +586,19 @@ S2 STATUS (lane/comptime, 2026-09-09): LANDED, both halves. `embed`
 is `@std/meta`'s one verb over the `avra_embed` row (reach `Embed`):
 the interpreter reads beside the const's source and records the file;
 the `Settled` family records each one as a source-input dependency.
-Natively it traps. It is
-allowed only where the value is SPELLED (a text const): a boxed const
-is built at run time, where no source sits beside the program, and
-the refusal says so. Outside a const it is a run-time trap (ROADMAP
+Natively it traps. Embed is admitted where the result crosses back
+into compiler-owned data — const settlement and crossed annotation
+args — and refused in lifted annotation fn bodies, which cannot
+return build inputs. Outside a const it is a run-time trap (ROADMAP
 trigger). Red-teamed: 27 aggregate programs and 11 embed programs,
 no divergence; mutation of a const refuses as on a `let`. A const whose value rides a pointer (a list, a
 map, text/list/map under `?`) is settled by the evaluator for the
 laws and then CALLED by the program: its unit is `once`-shaped
 (`lower_const` → `once_body`), answering the value once per process
-and the same box after (`const_call`, lower_state.av). The type is
-still read from the store, so it is spelled in WORDS (`spelled_type`,
-contexts.av: scalars, `List<…>`, `Map<string, …>`, `?` over a
-pointer-riding one); a declared type's NAME and `?` over a scalar
-refuse with F2064. Static data (§4.5 later) remains. A runtime path
+and the same box after (`const_call`, lower_state.av). The value
+crosses as one `MetaVal` tree that lowering materializes under the
+const's type (values.av); a type with no compile-time value form
+refuses with F2063. Static data (§4.5 later) remains. A runtime path
 reaching `embed` still traps dynamically; its static effect-graph
 refusal is recorded in ROADMAP because a phase bit on a memoized body
 is unsound.

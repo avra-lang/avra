@@ -107,17 +107,19 @@ impl LowerCx {
     }
 
     mut fn meta_record(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Reg {
-        let sig = self.fields_of(ty)
-        if sig != null && self.view.types.is_flat(ty) {
-            if sig!.types.length != 1 { return self.meta_defect(ty) }
-            let field = self.materialized(v, heap, sig!.types[0])
+        let held = self.fields_of(ty)
+        if held == null { return self.meta_defect(ty) }
+        let sig = held!
+        if self.view.types.is_flat(ty) {
+            if sig.types.length != 1 { return self.meta_defect(ty) }
+            let field = self.materialized(v, heap, sig.types[0])
             let dst = self.mint_ty(ty)
             self.emit(Ins.Pack(dst, [field]))
             return dst
         }
         let slots = heap.slots(v)
-        if sig == null || slots.length != sig!.types.length { return self.meta_defect(ty) }
-        let values = [self.materialized(x, heap, sig!.types[j]) for j, x in slots]
+        if slots.length != sig.types.length { return self.meta_defect(ty) }
+        let values = [self.materialized(x, heap, sig.types[j]) for j, x in slots]
         let size = self.box_size(values.length)
         let dst = self.mint_ty(ty)
         self.grown_box(dst, size, values)
@@ -149,17 +151,21 @@ impl LowerCx {
     }
 
     mut fn meta_enum(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Reg {
-        let sig = self.variants_of(ty)
+        let held = self.variants_of(ty)
+        if held == null { return self.meta_defect(ty) }
+        let sig = held!
         let slots = heap.slots(v)
-        if sig == null || slots.is_empty() { return self.meta_defect(ty) }
-        let tag: int? = match slots[0] { .Int(n) -> n, rest -> null }
-        if tag == null || tag! < 0 || tag! >= sig!.payloads.length { return self.meta_defect(ty) }
-        let payload_types = sig!.payloads[tag!]
+        if slots.is_empty() { return self.meta_defect(ty) }
+        let raw: int? = match slots[0] { .Int(n) -> n, rest -> null }
+        if raw == null { return self.meta_defect(ty) }
+        let tag = raw!
+        if tag < 0 || tag >= sig.payloads.length { return self.meta_defect(ty) }
+        let payload_types = sig.payloads[tag]
         if slots.length != payload_types.length + 1 { return self.meta_defect(ty) }
         let payloads = [self.materialized(slots[j + 1], heap, pt) for j, pt in payload_types]
         let size = self.box_size(1 + payloads.length)
         let dst = self.mint_ty(ty)
-        self.tagged_value(dst, size, tag!, payloads)
+        self.tagged_value(dst, size, tag, payloads)
         dst
     }
 

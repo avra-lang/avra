@@ -126,7 +126,7 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(F
         out.defect("a unit without a body was asked for — `${w.name}`")
         return Unit { bodies: [], wants: [], voices: out.voices }
     }
-    let first = if w.root != null { lower_root(a, w.root!, w.name, w.settled, externs, settle) } else if w.decl == null { lower_main(a, w.name, externs, settle) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, externs, settle) }
+    let first = if w.root != null { lower_root(a, w.root!, w.name, w.settled, w.answer, externs, settle) } else if w.decl == null { lower_main(a, w.name, externs, settle) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, externs, settle) }
     mut bodies: List<Body> = [first.body]
     mut spoken: List<Diag> = first.voices.list
     mut wants: List<Wanted> = first.jobs.pending
@@ -382,8 +382,8 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
 /// bracket, the answer after it settles. The evaluator runs it to
 /// settle the value; a program calls it only for a value no literal
 /// spells, which it answers once.
-fn lower_root(a: Analysis, root: ExprId, name: string, settled: Settled?, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> LoweredBody {
-    let rt: TypeId = a.facts.type_at(root)
+fn lower_root(a: Analysis, root: ExprId, name: string, settled: Settled?, answer: TypeId?, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> LoweredBody {
+    let rt: TypeId = answer ?? a.facts.type_at(root)
     mut lo = new_lower_cx(a, rt, null, new_jobs(externs, settle))
     lo.out.seeded()
     lo.seats_enter()

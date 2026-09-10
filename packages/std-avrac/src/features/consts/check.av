@@ -2,7 +2,7 @@
 //! runs — a literal as written, or what the evaluator finishes; the
 //! lowering asks it and speaks its refusals. Its type is recorded as
 //! a workspace fact; an annotation still holds what it declares.
-use core.{StmtId, ExprId, TypeId, TypeRef, Type, Expr, int_of, text_of, bool_of, bits_of}
+use core.{StmtId, ExprId, TypeId, TypeRef, Expr, int_of, text_of, bool_of, bits_of}
 use features.{TypeCx, declared_decl}
 use diagnostics.{refusal}
 
@@ -23,7 +23,7 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     if cx.refuses_void_value(v) { return }
     let held = declared ?? cx.type_at(v)
     if !written(cx.view.store.expr(v)) && !materializable(cx, held) {
-        unspelled(cx, v, cx.view.store.let_name(s) ?? "this const", held)
+        unformed(cx, v, cx.view.store.let_name(s) ?? "this const", held)
         return
     }
     if declared != null { cx.declared_binding(v, cx.view.store.let_name(s) ?? "this const", declared!) }
@@ -57,15 +57,13 @@ fn materializable(cx: TypeCx, ty: TypeId) -> bool {
 
 // ── The voices ──
 
-/// A computed const is read from every body, and a body's facts hold
-/// only its own range — so the const's type is written where every
-/// body can read it: on the declaration.
-/// A computed const must have a runtime form: a literal instruction
-/// or a value the guarded const unit can keep.
-fn unspelled(mut cx: TypeCx, v: ExprId, name: string, held: TypeId) {
-    let spelled = "`${cx.view.types.name_of(held)}`"
-    let _ = cx.spoken(refusal("const.scalar", cx.loc_of(v),
+/// A computed const needs a compile-time value form: a literal the
+/// lowering spells, or a type the materializer can rebuild from the
+/// evaluator's crossed tree.
+fn unformed(mut cx: TypeCx, v: ExprId, name: string, held: TypeId) {
+    let form = "`${cx.view.types.name_of(held)}`"
+    let _ = cx.spoken(refusal("const.form", cx.loc_of(v),
                        "a computed const needs a compile-time value form",
-                       "`${name}` declares ${spelled}",
+                       "`${name}` declares ${form}",
                        "use a scalar, text, list, map, record, enum, result, or an optional over one of them"))
 }

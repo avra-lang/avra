@@ -104,8 +104,7 @@ impl LowerCx {
         let written: Expr = self.view.store.expr(value!)
         if is_literal(written) { return self.settled_reg(e, written) }
         match self.jobs.settle(self.view.file, s) {
-            .Ok(x) -> if x.spelled != null { self.settled_reg(e, x.spelled!) }
-                      else if !self.view.types.rides_pointer(ty) { self.materialized(x.answer, x.heap, ty) }
+            .Ok(x) -> if !self.view.types.rides_pointer(ty) { self.materialized(x.answer, x.heap, ty) }
                       else { self.const_call(s, ty, x) },
             .Err(why) -> {
                 self.unsettled(s, why)
@@ -320,7 +319,7 @@ impl LowerCx {
     fn const_call(s: StmtId, ty: TypeId, settled: Settled) -> Reg? {
         let name = const_symbol(self.view.file, s)
         if self.unseen(name) {
-            self.jobs.pending.push(Wanted { file: self.view.file, decl: null, name: name, sub: null, root: self.view.store.const_value(s), settled: settled })
+            self.jobs.pending.push(Wanted { file: self.view.file, decl: null, name: name, sub: null, root: self.view.store.const_value(s), settled: settled, answer: ty })
         }
         let dst = self.out.mint_ty(ty)
         self.out.give(Ins.Call(dst, name, []))
