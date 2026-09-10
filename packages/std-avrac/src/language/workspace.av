@@ -349,8 +349,7 @@ impl Workspace {
     /// The declarations a file MINTS into the one table; the answer's
     /// hash is the item tree's — names and kinds.
     fn items(f: FileId) -> List<DeclId> {
-        let held = self.file_items.start(f.index)
-        if held != null { return held! }
+        match self.file_items.start(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let p = self.parsed(f)
         let ids = self.decls.admit(f, p.store, p.stmts)
         self.file_items.finish(f.index, ids, fp(7, [self.item_print(d) for d in ids]))
@@ -371,8 +370,7 @@ impl Workspace {
     /// A module's names, bound ONCE: every file's declarations in file
     /// then declaration order.
     fn namespace(m: ModuleId) -> ModuleNames {
-        let held = self.module_names.start(m.index)
-        if held != null { return held! }
+        match self.module_names.start(m.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let paths = self.module_files(module_path(segments_of(self.decls.module_name(m))))
         let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
         let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
@@ -382,8 +380,7 @@ impl Workspace {
     /// What a file's top level sees: its module's names, then its
     /// imports — with what the `use` lines earned.
     fn visible(f: FileId) -> Namespace {
-        let held = self.visibles.start(f.index)
-        if held != null { return held! }
+        match self.visibles.start(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let p = self.parsed(f)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
@@ -399,8 +396,7 @@ impl Workspace {
 
     /// A file's names resolved.
     fn resolved(f: FileId) -> NameFacts {
-        let held = self.name_facts.start(f.index)
-        if held != null { return held! }
+        match self.name_facts.start(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         touch(self.items(f))
         let p = self.parsed(f)
         let out = resolve(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, f), self.visible(f))
@@ -466,8 +462,7 @@ impl Workspace {
         // Annotation evaluation re-types the declaration after hiding
         // the active annotation, so this family also has a smaller
         // recursive view.
-        let held = self.decl_facts.start_recursive(d.index)
-        if held != null { return held! }
+        match self.decl_facts.start_recursive(d.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let x = self.decls.decl(d)
         mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
@@ -481,8 +476,7 @@ impl Workspace {
     fn folded(f: FileId) -> TypeFacts {
         // Annotation evaluation re-enters the file after the active
         // annotation has been hidden; that recursive view is smaller.
-        let held = self.folds.start_recursive(f.index)
-        if held != null { return held! }
+        match self.folds.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let p = self.parsed(f)
         let hole = self.decls.types.intern(Type.Error)
         mut out = new_type_facts(0, p.store.exprs.count(), p.store.stmts.count(), hole)
@@ -578,8 +572,7 @@ impl Workspace {
         // A closed one-shot workspace retains no Analysis because its
         // program closure points back here.
         if self.closed { return self.analyzed(f) }
-        let held = self.analyses.start_recursive(f.index)
-        if held != null { return held! }
+        match self.analyses.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let out = self.analyzed(f)
         self.analyses.finish(f.index, out, self.db.revision())
     }
@@ -624,8 +617,7 @@ impl Workspace {
     /// One unit lowered and remembered: a body edit re-lowers its own
     /// unit; the specializations it wants are other units.
     fn lowered(id: int) -> Unit {
-        let held = self.units.start_recursive(id)
-        if held != null { return held! }
+        match self.units.start_recursive(id) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let w = self.asks[id]
         let ws = self
         let settle: fn(FileId, StmtId) -> Result<Settled, Unsettled> = (f: FileId, s: StmtId) -> ws.settled(f, s)
