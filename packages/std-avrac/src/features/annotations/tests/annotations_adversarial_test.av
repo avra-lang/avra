@@ -1,0 +1,41 @@
+// The annotation boundary: its callee, receiver, remaining seats,
+// answer effect, execution, and one-message discipline.
+use @std.avrac.testing.{refused_with}
+
+fn fn_type() -> string {
+    "type Fn = {}\n"
+}
+
+spec "features/annotations — the compile-time call's laws" {
+    given "the callee and receiver" {
+        then "a value is not an annotation fn" {
+            refused_with("let mark = 1\n@mark\nfn answer() -> int { 1 }\nanswer()", "an annotation names a fn")
+        }
+        then "the fn's first seat must take this declaration" {
+            refused_with(fn_type() + "fn mark(f: Fn) { }\n@mark\ntype P = { x: int }\n1", "takes `Fn`, and this is a type")
+        }
+        then "the fn must take the declaration" {
+            refused_with("fn mark() { }\n@mark\nfn answer() -> int { 1 }\nanswer()", "takes nothing")
+        }
+    }
+    given "the remaining seats and answer" {
+        then "written arguments fill every remaining seat" {
+            refused_with(fn_type() + "fn mark(f: Fn, n: int) { }\n@mark\nfn answer() -> int { 1 }\nanswer()", "takes 1 after the declaration, this writes 0")
+        }
+        then "each argument has its seat's type" {
+            refused_with(fn_type() + "fn mark(f: Fn, n: int) { }\n@mark(\"three\")\nfn answer() -> int { 1 }\nanswer()", "this seat of `mark` takes `int`")
+        }
+        then "the answer declares the effect" {
+            refused_with(fn_type() + "fn mark(f: Fn) -> int { 1 }\n@mark\nfn answer() -> int { 1 }\nanswer()", "answers `int`")
+        }
+    }
+    given "validation" {
+        then "a returned Diagnostic speaks once at the declaration" {
+            let src = "type Fn = { name: string }\n" +
+                      "type Diagnostic = { message: string, help: string?, at: int }\n" +
+                      "fn reject(f: Fn) -> List<Diagnostic> { [Diagnostic { message: \"`\${f.name}` is forbidden\", help: null, at: 0 }] }\n" +
+                      "@reject\nfn forbidden() -> int { 1 }\nforbidden()"
+            refused_with(src, "`forbidden` is forbidden")
+        }
+    }
+}
