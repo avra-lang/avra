@@ -3,12 +3,16 @@
 //! filed under the id that asked. The table is a TYPE because a
 //! write reaches a place through its receiver.
 
+/// One dense slot: absence is a variant rather than `T?`, so scalar
+/// and managed values use the same table representation.
+enum TableSlot<T> { Empty, Held(T) }
+
 /// Values by index, absent until placed.
-export type Table<T> = { rows: List<T?> }
+export type Table<T> = { rows: List<TableSlot<T>> }
 
 /// An empty table — its rows arrive with the ids that ask.
 export fn new_table<T>() -> Table<T> {
-    let empty: List<T?> = []
+    let empty: List<TableSlot<T>> = []
     Table { rows: empty }
 }
 
@@ -16,13 +20,16 @@ export fn new_table<T>() -> Table<T> {
 impl Table<T> {
     fn at(i: int) -> T? {
         if i >= self.rows.length { return null }
-        self.rows[i]
+        match self.rows[i] {
+            .Held(v) -> v,
+            .Empty -> null,
+        }
     }
 
     /// `v` filed under `i` — the table grows to hold it.
     fn keep(i: int, v: T) {
-        while self.rows.length <= i { self.rows.push(null) }
-        self.rows.set(i, v)
+        while self.rows.length <= i { self.rows.push(TableSlot.Empty) }
+        self.rows.set(i, TableSlot.Held(v))
     }
 
     /// How many ids the table has room for — its last placement's,
