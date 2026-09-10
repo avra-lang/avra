@@ -1,0 +1,55 @@
+//! Typed values over the query kernel. A family owns one memo; copies
+//! share both its database and its value table, so higher-order query
+//! bodies may safely capture either handle.
+use core.{Table, new_table}
+
+export enum MemoAsk<T> {
+    Reuse(T)
+    Compute
+    Cycle
+}
+
+export type Memo<T> = { db: Db, family: int, values: Cell<Table<T>> }
+
+export fn new_memo<T>(db: Db, family: int) -> Memo<T> {
+    Memo { db: db, family: family, values: Cell.new(new_table<T>()) }
+}
+
+impl Memo<T> {
+    fn query_key(arg: int) -> Key { Key { family: self.family, arg: arg } }
+
+    fn ask(arg: int) -> MemoAsk<T> {
+        match self.db.ask(self.query_key(arg)) {
+            .Reuse -> MemoAsk.Reuse(self.values.get().at(arg)!),
+            .Compute -> MemoAsk.Compute,
+            .Cycle -> MemoAsk.Cycle,
+        }
+    }
+
+    fn settle(arg: int, value: T, fingerprint: int) -> T {
+        self.db.settle(self.query_key(arg), fingerprint)
+        mut values = self.values.get()
+        values.keep(arg, value)
+        self.values.set(values)
+        value
+    }
+
+    /// The whole protocol for an acyclic derived family.
+    fn demand(arg: int, compute: fn() -> T, fingerprint: fn(T) -> int) -> T {
+        match self.ask(arg) {
+            .Reuse(value) -> value,
+            .Cycle -> self.cycle_value(arg),
+            .Compute -> {
+                self.db.begin(self.query_key(arg))
+                let value = compute()
+                self.settle(arg, value, fingerprint(value))
+            }
+        }
+    }
+
+    fn cycle_value(arg: int) -> T {
+        let held = self.values.get().at(arg)
+        if held == null { avra_trap("defect: an acyclic memo family reached itself") }
+        held!
+    }
+}
