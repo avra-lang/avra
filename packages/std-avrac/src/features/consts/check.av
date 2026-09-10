@@ -1,40 +1,33 @@
 //! THE SETTLED LAW: a const's value is known when the COMPILER
 //! runs — a literal as written, or what the evaluator finishes; the
-//! lowering asks it and speaks its refusals. And an annotated const
-//! holds what it declares, like any binding.
+//! lowering asks it and speaks its refusals. Its type is recorded as
+//! a workspace fact; an annotation still holds what it declares.
 use core.{StmtId, ExprId, TypeId, TypeRef, Expr, int_of, text_of, bool_of, bits_of}
-use features.{TypeCx, spelled_type}
+use features.{TypeCx, declared_decl}
 use diagnostics.{refusal}
 
-/// The value walks under its declaration's want, then — when
-/// annotated — it holds what it declares.
+/// The value walks under its declaration's want, then records the
+/// inferred or declared type where every body can ask for it.
 export fn check_const(mut cx: TypeCx, s: StmtId) {
     let held: ExprId? = cx.view.store.stmt_value(s)
     if held == null { return }
     let v = held!
     let ann: TypeRef? = cx.view.store.binding_ty(s)
-    // THE DECLARED type, held here rather than asked back: a const's
-    // TYPE is its settled value's, so the annotation is the only
-    // thing that can disagree with the value — and asking the const
-    // for its type would compare the value against itself.
+    // Hold the declaration here: asking the const's shared type while
+    // computing that same fact would compare the value against itself.
     let declared: TypeId? = if ann == null { null } else { cx.bind_declared(s, ann!) }
     if declared != null { cx.plant_want(v, declared!) }
     cx.walk_value(s)
     // a value or an annotation the walk already refused is spoken for
     if cx.errored(v) || refused_annotation(cx, declared) { return }
-    if !written(cx.view.store.expr(v)) {
-        if ann == null {
-            undeclared(cx, v)
-            return
-        }
-        if spelled_type(cx.view.types, ann) == null {
-            unspelled(cx, v, cx.view.store.let_name(s) ?? "this const", declared)
-            return
-        }
-    }
     if cx.refuses_void_value(v) { return }
-    if declared == null { return }
-    cx.declared_binding(v, cx.view.store.let_name(s) ?? "this const", declared!)
+    let held = declared ?? cx.type_at(v)
+    if !written(cx.view.store.expr(v)) && !materializable(cx, held) {
+        unspelled(cx, v, cx.view.store.let_name(s) ?? "this const", held)
+        return
+    }
+    if declared != null { cx.declared_binding(v, cx.view.store.let_name(s) ?? "this const", declared!) }
+    cx.view.decls.record_const_type(cx.view.file, s, held)
 }
 
 /// A value read straight off the page.
@@ -47,25 +40,25 @@ fn refused_annotation(cx: TypeCx, declared: TypeId?) -> bool {
     declared != null && cx.view.types.shape_of(declared!) is .Error
 }
 
+/// A scalar is emitted at every read. A managed value is built by
+/// the const's guarded unit and kept for the process.
+fn materializable(cx: TypeCx, ty: TypeId) -> bool {
+    // Flatness is a declaration fact. Demand it before judging so
+    // query order cannot turn the same record from kept into copied.
+    let named = declared_decl(cx.view.types.shape_of(ty))
+    if named != null { let _ = cx.view.decls.sig(named!) }
+    cx.view.types.spells(ty) || cx.view.types.rides_pointer(ty)
+}
+
 // ── The voices ──
 
 /// A computed const is read from every body, and a body's facts hold
 /// only its own range — so the const's type is written where every
 /// body can read it: on the declaration.
-fn undeclared(mut cx: TypeCx, v: ExprId) {
-    let _ = cx.spoken(refusal("const.declares", cx.loc_of(v),
-                       "a const the compiler computes declares what it settles to",
-                       "computed here",
-                       "write the type on the const — a scalar, text, `List<…>`, `Map<string, …>`, or `?` over a pointer-riding one"))
-}
-
-/// A computed const's type is read from the STORE, so it is spelled
-/// in words the registry knows: a scalar, text, `List<…>`,
-/// `Map<string, …>`, or `?` over one that rides a pointer. A declared
-/// type's name waits for the query that answers a const's type from
-/// typing.
-fn unspelled(mut cx: TypeCx, v: ExprId, name: string, declared: TypeId?) {
-    let spelled = if declared == null { "that" } else { "`${cx.view.types.name_of(declared!)}`" }
+/// A computed const must have a runtime form: a literal instruction
+/// or a value the guarded const unit can keep.
+fn unspelled(mut cx: TypeCx, v: ExprId, name: string, held: TypeId) {
+    let spelled = "`${cx.view.types.name_of(held)}`"
     let _ = cx.spoken(refusal("const.scalar", cx.loc_of(v),
                        "a computed const's type is spelled in words",
                        "`${name}` declares ${spelled}",

@@ -176,25 +176,24 @@ export fn declared_decl(sh: Type) -> DeclId? {
 
 /// What a `let`/`mut` binding holds: its declared type, its value's
 /// type, or — for a loop's counter — int.
-export fn def_type_of(facts: TypeFacts, store: NodeStore, types: TypeRegistry, error_type: TypeId, s: StmtId) -> TypeId {
+export fn def_type_of(facts: TypeFacts, mut view: FileView, error_type: TypeId, s: StmtId) -> TypeId {
     // A CONST FIRST, AND ONLY: it is read from OTHER bodies, and a
     // body's facts hold only its own range — so a const's type is
     // the program's answer or the HOLE. Falling through would index
     // the asker's table with another body's expression (-1).
-    if store.const_value(s) != null { return settled_type(store, types, s) ?? error_type }
+    if view.store.const_value(s) != null {
+        return settled_type(view.store, view.types, s) ?? view.decls.const_type(view.file, s) ?? error_type
+    }
     let declared: TypeId? = facts.declared_binding(s)
     if declared != null { return declared! }
-    if store.stmt(s) is .For { return types.type(int) }
-    let v: ExprId? = store.stmt_value(s)
+    if view.store.stmt(s) is .For { return view.types.type(int) }
+    let v: ExprId? = view.store.stmt_value(s)
     if v == null { return error_type }
     facts.type_at(v!)
 }
 
-/// The type a const wears: its written value's own shape, else the
-/// scalar its annotation names — a COMPUTED const declares what it
-/// settles to — wrapped when the annotation asks for absence. Read
-/// from the store alone: the value and the written type are all a
-/// const's type needs, and both are the program's, not a body's.
+/// A literal const's type can be read without asking the workspace.
+/// Computed and nominal types fall through to the ConstTyped family.
 fn settled_type(store: NodeStore, types: TypeRegistry, s: StmtId) -> TypeId? {
     let v: ExprId? = store.const_value(s)
     if v == null { return null }
@@ -309,7 +308,7 @@ impl TypeCx {
             _ -> false,
         }
     }
-    fn def_type(s: StmtId) -> TypeId { def_type_of(self.facts, self.view.store, self.view.types, self.error_type, s) }
+    fn def_type(s: StmtId) -> TypeId { def_type_of(self.facts, self.view, self.error_type, s) }
     fn bind_types(v: ExprId, tys: List<TypeId>) { self.facts.bind_types(v, tys) }
     fn pat_loc(p: PatId) -> Loc? { self.view.pat_loc(p) }
     fn widen(v: ExprId, ty: TypeId) { self.facts.widen(v, ty) }

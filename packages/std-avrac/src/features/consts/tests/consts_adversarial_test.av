@@ -76,21 +76,17 @@ spec "features/consts (adversarial)" {
         }
     }
 
-    given "a const that never settled" {
-        // A computed const without its type is refused (F2063) —
-        // but a fn body READING it asked the const for its type,
-        // which fell through to the asker's fact table indexed by
-        // ANOTHER body's expression: `index -1 is out of bounds`,
-        // no diagnostic, no location. A const's type is the
-        // program's answer or the hole; it is never a body's.
-        then "an unsettled const read in a fn body is refused, not trapped" {
-            refused_with("fn g() -> int {\n    3\n}\nconst N = g()\nfn f() -> int {\n    N\n}\nf()", "declares what it settles to")
+    given "an inferred const across body floors" {
+        // A const's type is a workspace fact. Reading it from another
+        // body must never index that body's local expression facts.
+        then "an inferred const reads in a fn body" {
+            shown("fn g() -> int {\n    3\n}\nconst N = g()\nfn f() -> int {\n    N\n}\nf()") == "3"
         }
-        then "an unsettled const read in a lambda is refused, not trapped" {
-            refused_with("fn g() -> int {\n    3\n}\nconst N = g()\nlet f = () -> N\nf()", "declares what it settles to")
+        then "an inferred const reads in a lambda" {
+            shown("fn g() -> int {\n    3\n}\nconst N = g()\nlet f = () -> N\nf()") == "3"
         }
-        then "the refusal names the CONSTRUCT, not the value's type" {
-            refused_with("const N = g()\nfn g() -> int {\n    3\n}\nN", "computed here")
+        then "inference resolves a later declaration" {
+            shown("const N = g()\nfn g() -> int {\n    3\n}\nN") == "3"
         }
     }
 
@@ -110,14 +106,14 @@ spec "features/consts (adversarial)" {
         }
     }
     given "what a settlement cannot spell" {
-        then "a record's type NAME is refused for the LAW, not for a missing type" {
-            refused_with("type P = { x: int }\nfn p() -> P { P { x: 1 } }\nconst X: P = p()\nX.x", "spelled in words")
+        then "a flat record is refused until it has a static value form" {
+            refused_with("type P = { x: int }\nfn p() -> P { P { x: 1 } }\nconst X = p()\nX.x", "spelled in words")
         }
         then "so is a scalar under `?` — a box the runtime cannot keep" {
             refused_with("fn n() -> int? { null }\nconst X: int? = n()\nX ?? 9", "spelled in words")
         }
-        then "a list of a record's name is refused the same way" {
-            refused_with("type P = { x: int }\nfn p() -> List<P> { [P { x: 1 }] }\nconst X: List<P> = p()\nX.length", "spelled in words")
+        then "a list carrying a nominal type crosses too" {
+            shown("type P = { x: int }\nfn p() -> List<P> { [P { x: 1 }] }\nconst X = p()\nX.length") == "1"
         }
         then "a record's SCALAR field settles" {
             shown("type P = { x: int }\nfn p() -> P { P { x: 1 } }\nconst X: int = p().x\nX") == "1"

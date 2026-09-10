@@ -51,8 +51,8 @@ spec "features/consts — a value the compiler settles" {
             let text = render_ir(ir_of("fn f() -> int {\n    3\n}\nconst N: int = f()\nN + 1"))
             !text.contains("call f") && text.contains("int 3")
         }
-        then "a computed const DECLARES what it settles to" {
-            refused_with("fn f() -> int {\n    3\n}\nconst N = f()\nN", "declares what it settles to")
+        then "a computed const infers what it settles to" {
+            shown("fn f() -> int {\n    3\n}\nconst N = f()\nN") == "3"
         }
         then "a trap while settling is refused when the const is LOWERED — analysis is clean" {
             refused_at_run("fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nZ", "trapped while settling")
@@ -81,8 +81,8 @@ spec "features/consts — a value the compiler settles" {
         then "`?` over a scalar is refused as the once law refuses it" {
             refused_with("fn m() -> int? {\n    3\n}\nconst M: int? = m()\nM ?? 9", "spelled in words")
         }
-        then "a declared type's NAME is not a spelling yet" {
-            refused_with("type P = { x: int }\nfn p() -> P {\n    P { x: 1 }\n}\nconst X: P = p()\nX.x", "spelled in words")
+        then "a named managed aggregate type is inferred" {
+            shown("type P = { x: int, y: int }\nfn p() -> P {\n    P { x: 1, y: 2 }\n}\nconst X = p()\nX.x + X.y") == "3"
         }
     }
     given "an annotation" {
