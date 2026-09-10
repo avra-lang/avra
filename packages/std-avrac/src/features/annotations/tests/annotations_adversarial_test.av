@@ -68,4 +68,21 @@ spec "features/annotations — the compile-time call's laws" {
             refused(src, "`forbidden` is forbidden")
         }
     }
+    given "argument evaluation" {
+        then "an argument that reaches the world is refused before it runs" {
+            let src = meta_use() +
+                      "extern fn avra_puts(s: string)\n" +
+                      "fn noisy() -> int { avra_puts(\"x\")\n1 }\n" +
+                      "fn mark(f: Fn, n: int) { }\n" +
+                      "@mark(noisy())\nfn answer() -> int { 1 }\nanswer()"
+            refused(src, "reaches `avra_puts`")
+        }
+        then "an argument trap is reported once at its annotation" {
+            let src = meta_use() +
+                      "fn boom() -> int { 1 / 0 }\n" +
+                      "fn mark(f: Fn, n: int) { }\n" +
+                      "@mark(boom())\nfn answer() -> int { 1 }\nanswer()"
+            refused(src, "division by zero")
+        }
+    }
 }
