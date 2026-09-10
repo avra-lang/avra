@@ -603,21 +603,19 @@ contexts.av: scalars, `List<…>`, `Map<string, …>`, `?` over a
 pointer-riding one); a declared type's NAME and `?` over a scalar
 refuse with F2064. Static data (§4.5 later) and `embed` remain.
 
-S3 STATUS (lane/comptime, 2026-09-09): S3a and S3b LANDED as a
-reviewed checkpoint. `@name(args)` is stored on the declaration and
-composes innermost-first. Its callee and arguments use ordinary
-resolution and typing. The first seat accepts the nominal
-`@std.meta.Fn` or `@std.meta.Type`; the answer is `void` or
-`List<@std.meta.Diagnostic>`. The same lowered evaluator runs the
-call under the const purity and step laws. `Fn`, record, enum and
-source-location metadata cross by field name through `MetaHeap`;
-scalar arguments include int, float, bool and text. A per-call state
-breaks the lowering/type recursion and memoizes the answer. The
-program proof in `features/annotations/tests/comptime_annotations`
-exercises metadata, validation and void annotations through the real
-`@std/meta` package. Still S3c: make this state a query family; cross
-aggregate arguments; implement `Decls`, `Fn -> Fn`, the two-tier
-namespace and provenance; expose annotation facts and `explain`.
+S3 STATUS (lane/comptime, 2026-09-09): S3a–S3c LANDED as a reviewed
+checkpoint. `@name(args)` is ordinary resolved and typed syntax;
+`@std.meta` supplies the nominal `Fn`, `Type`, and `Diagnostic`
+boundary; validation fns run in the evaluator with scalar/text
+arguments and a `MetaHeap` for declaration metadata. The `Lifted`
+query family now owns each annotation call's memoization,
+fingerprint, dependency edges, and recursion verdict; the former
+parallel `LiftStatus` map is gone. Program proofs cover stacked
+annotations, fn/record/enum metadata, `void` and diagnostic effects,
+float crossing, and counterfeit meta types. Still to land: aggregate
+arguments; declaration-producing and fn-replacing effects; the
+two-tier expansion namespace and provenance; annotation facts and
+`explain @name`. Quotes and derive remain S4.
 
 Order rationale: S1 is what the owner already queued (ROADMAP:8218,
 "NEXT: comptime (`const`, evaluated at compile time)") and proves the
