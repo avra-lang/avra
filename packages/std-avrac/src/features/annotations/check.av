@@ -2,8 +2,8 @@
 //! declaration>, args)` made at compile time. So `name` is a fn; its
 //! FIRST seat says what it takes — `Fn` for a fn, `Type` for a record
 //! or enum; the written arguments fill the seats after it, settled
-//! like a const's value; and what it ANSWERS is its effect —
-//! `List<Diagnostic>` validates, `void` records only. The law
+//! like a const's value; and what it ANSWERS is its effect — `void`
+//! records, `List<Diagnostic>` validates. The law
 //! satisfied, the call runs, and what it said is spoken here.
 use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt}
 use features.{TypeCx, fn_sig_of, FnSig, Said, Unsettled}
@@ -41,7 +41,7 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
         return
     }
     if !arguments_fit(cx, a, seats) { return }
-    if !answers_effect(cx, sig.ret) {
+    if effect_of(cx, sig.ret) == null {
         wrong_answer(cx, a, sig.ret)
         return
     }
@@ -82,13 +82,24 @@ fn arguments_fit(mut cx: TypeCx, a: Annotation, seats: List<TypeId>) -> bool {
     fit
 }
 
-/// `void`, or a list of `Diagnostic`.
-fn answers_effect(cx: TypeCx, ret: TypeId) -> bool {
+/// An annotation's ANSWER as what it does — the effect census the
+/// gate and the voice share. A new answer effect is one arm here,
+/// one row in `effect_census`, and one sentence in `effect_words`.
+enum Effect { Records, Validates }
+
+/// The effect an answer has, or null when it has none.
+fn effect_of(cx: TypeCx, ret: TypeId) -> Effect? {
     match cx.view.types.shape_of(ret) {
-        .Void -> true,
-        .List(e) -> cx.view.decls.meta_type(e, "Diagnostic"),
-        rest -> false,
+        .Void -> Effect.Records,
+        .List(e) -> if cx.view.decls.meta_type(e, "Diagnostic") { Effect.Validates } else { null },
+        rest -> null,
     }
+}
+
+/// The effects in census order — consumers enumerate through this,
+/// never by hand.
+fn effect_census() -> List<Effect> {
+    [Effect.Records, Effect.Validates]
 }
 
 // ── The voices ──
@@ -157,9 +168,17 @@ fn wrong_answer(mut cx: TypeCx, a: Annotation, ret: TypeId) {
         rest -> "`${cx.view.types.name_of(ret)}`",
     }
     let _ = cx.spoken(refusal("annotation.answer", at_annotation(cx, a),
-                       "an annotation answers nothing or `List<Diagnostic>`",
+                       "an annotation answers an effect",
                        "`${a.name}` answers ${shown}",
-                       "`List<Diagnostic>` validates the declaration; `void` records the annotation and says nothing"))
+                       [effect_words(x) for x in effect_census()].join("; ")))
+}
+
+/// The effects' words, one sentence per arm.
+fn effect_words(e: Effect) -> string {
+    match e {
+        .Records -> "`void` records the annotation and says nothing",
+        .Validates -> "`List<Diagnostic>` validates the declaration",
+    }
 }
 
 /// What the annotation SAID, at the place it named — the declaration

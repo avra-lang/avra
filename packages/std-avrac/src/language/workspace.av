@@ -819,21 +819,12 @@ impl Workspace {
         if elem == null { return heap.node([]) }
         let shape = elem!
         let params = declared_params(a.view.store, self.decls.decl(d).stmt)
-        mut out: List<MetaVal> = []
-        for i, ty in fs.params {
-            mut slots: List<MetaVal> = []
-            for n in shape.names {
-                slots.push(match n {
-                    "name" -> MetaVal.Text(params[i].name),
-                    "ty" -> MetaVal.Text(self.decls.types.name_of(ty)),
-                    "mutable" -> MetaVal.Bool(self.decls.mut_seat(d, i)),
-                    "at" -> self.crossed_loc(a, params[i].span, heap),
-                    _ -> MetaVal.Absent,
-                })
-            }
-            out.push(heap.node(slots))
-        }
-        heap.node(out)
+        heap.node([meta_row(heap, shape, {
+            "name": MetaVal.Text(params[i].name),
+            "ty": MetaVal.Text(self.decls.types.name_of(ty)),
+            "mutable": MetaVal.Bool(self.decls.mut_seat(d, i)),
+            "at": self.crossed_loc(a, params[i].span, heap),
+        }) for i, ty in fs.params])
     }
 
     /// A record's fields as `Field` values.
@@ -846,20 +837,11 @@ impl Workspace {
         if elem == null { return heap.node([]) }
         let shape = elem!
         let fields = declared_fields(a.view.store, x.stmt)
-        mut out: List<MetaVal> = []
-        for i, n in own!.names {
-            mut slots: List<MetaVal> = []
-            for e in shape.names {
-                slots.push(match e {
-                    "name" -> MetaVal.Text(n),
-                    "ty" -> MetaVal.Text(self.decls.types.name_of(own!.types[i])),
-                    "at" -> self.crossed_loc(a, fields[i].span, heap),
-                    _ -> MetaVal.Absent,
-                })
-            }
-            out.push(heap.node(slots))
-        }
-        heap.node(out)
+        heap.node([meta_row(heap, shape, {
+            "name": MetaVal.Text(n),
+            "ty": MetaVal.Text(self.decls.types.name_of(own!.types[i])),
+            "at": self.crossed_loc(a, fields[i].span, heap),
+        }) for i, n in own!.names])
     }
 
     /// An enum's variants as `Variant` values: name and payload spellings.
@@ -872,20 +854,11 @@ impl Workspace {
         if elem == null { return heap.node([]) }
         let shape = elem!
         let variants = declared_variants(a.view.store, x.stmt)
-        mut out: List<MetaVal> = []
-        for i, n in own!.names {
-            mut slots: List<MetaVal> = []
-            for e in shape.names {
-                slots.push(match e {
-                    "name" -> MetaVal.Text(n),
-                    "payload" -> heap.node([MetaVal.Text(self.decls.types.name_of(p)) for p in own!.payloads[i]]),
-                    "at" -> self.crossed_loc(a, variants[i].span, heap),
-                    _ -> MetaVal.Absent,
-                })
-            }
-            out.push(heap.node(slots))
-        }
-        heap.node(out)
+        heap.node([meta_row(heap, shape, {
+            "name": MetaVal.Text(n),
+            "payload": heap.node([MetaVal.Text(self.decls.types.name_of(p)) for p in own!.payloads[i]]),
+            "at": self.crossed_loc(a, variants[i].span, heap),
+        }) for i, n in own!.names])
     }
 
     /// A source span as a `Loc` value — file, lo, hi — or absent.
@@ -905,17 +878,11 @@ impl Workspace {
     }
 
     fn said_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Said {
-        let slots = heap.slots(item)
-        mut out = Said { message: "", help: null, at: null }
-        for i, n in sig.names {
-            match n {
-                "message" -> { out = out with { message: text_of_meta(slots[i]) } },
-                "help" -> { out = out with { help: if slots[i] is .Absent { null } else { text_of_meta(slots[i]) } } },
-                "at" -> { out = out with { at: loc_of_meta(heap, slots[i]) } },
-                _ -> nothing(),
-            }
+        Said {
+            message: text_of_meta(field_of(heap, sig, item, "message")),
+            help: optional_text(field_of(heap, sig, item, "help")),
+            at: loc_of_meta(heap, field_of(heap, sig, item, "at")),
         }
-        out
     }
 
     // ── Modules ──
@@ -1658,6 +1625,30 @@ fn loc_of_meta(heap: MetaHeap, v: MetaVal) -> Loc? {
         },
         .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
     }
+}
+
+/// A record's slot by its seat's field name — the one READ across
+/// the meta boundary; absence for a name the seat does not carry.
+fn field_of(heap: MetaHeap, sig: StructSig, item: MetaVal, name: string) -> MetaVal {
+    let i = sig.names.index_of(name)
+    if i < 0 { return MetaVal.Absent }
+    heap.slots(item)[i]
+}
+
+/// A text slot, when it is one.
+fn optional_text(v: MetaVal) -> string? {
+    match v {
+        .Text(s) -> s,
+        .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
+    }
+}
+
+/// A record under a seat: one slot per field, in the seat's own
+/// order, filled by NAME from a keyed map — the one WRITE across the
+/// meta boundary; absence for a name the map does not carry. The
+/// reader (`field_of`) agrees by the name, never by a position.
+fn meta_row(heap: MetaHeap, shape: StructSig, filled: Map<string, MetaVal>) -> MetaVal {
+    heap.node([filled.get(n) ?? MetaVal.Absent for n in shape.names])
 }
 
 /// A fn declaration's parameters, with their source spans.
