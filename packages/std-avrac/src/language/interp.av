@@ -12,7 +12,7 @@
 //! live in machine tables addressed by handle.
 use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, Reach, opens_region, closes_region, filled, joined, rt_index, hosted_symbol, Expr}
 use @std.path.{joined_path}
-use features.{Unsettled, Settled, MetaVal, MetaHeap}
+use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap}
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -149,6 +149,10 @@ export fn run_settle(l: Lowered, steps: int, spell: bool, base: string) -> Resul
 /// What a lifted call answered, with the heap its records live in.
 export type Lifted = { answer: MetaVal, heap: MetaHeap }
 
+fn crossed_answer(answer: MetaVal, heap: MetaHeap) -> Lifted {
+    Lifted { answer: answer, heap: heap }
+}
+
 /// A fn run at compile time over crossing values: the body under its
 /// arguments, its answer crossed back. The reach law holds as for a
 /// const whose value is not spelled — no world, no embed.
@@ -163,9 +167,28 @@ export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: Meta
     let answer: Val? = m.run_body(target!, vals)
     if m.budget < 0 { return .Err(Unsettled.Budget(over_budget(steps))) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
-    mut out = MetaHeap { nodes: [] }
+    mut out = new_meta_heap()
     let crossed = m.meta_of(answer ?? Val.I(0), out)
-    .Ok(Lifted { answer: crossed, heap: out })
+    .Ok(crossed_answer(crossed, out))
+}
+
+/// An isolated expression run directly into the crossing transport.
+/// Unlike scalar const settlement, no source literal is synthesized:
+/// nested records, lists and maps remain values. Embed is permitted
+/// because the result exists only while the compiler call runs.
+export fn run_crossed(l: Lowered, steps: int, base: string) -> Result<Lifted, Unsettled> {
+    let world: string? = world_reached(l, true)
+    if world != null { return .Err(Unsettled.Reach(world!)) }
+    mut m = fresh_machine(l)
+    m.budget = steps
+    m.base = base
+    let answer: Val? = m.run_body(l.entry, [])
+    if m.budget < 0 { return .Err(Unsettled.Budget(over_budget(steps))) }
+    if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
+    if answer == null { return .Err(Unsettled.Trap("answered nothing")) }
+    mut out = new_meta_heap()
+    let crossed = m.meta_of(answer!, out)
+    .Ok(crossed_answer(crossed, out))
 }
 
 /// The first row a settlement reaches that it may not, with the body
@@ -358,6 +381,11 @@ impl Machine {
             .Node(id) -> {
                 self.fresh_array([self.val_of(heap, x) for x in heap.nodes[id]])
             },
+            .Map(id) -> {
+                let row = heap.maps[id]
+                self.maps.push(MapVal { keys: row.keys, vals: [self.val_of(heap, x) for x in row.values] })
+                Val.M(self.maps.length - 1)
+            },
         }
     }
 
@@ -374,7 +402,11 @@ impl Machine {
             .A(id) -> {
                 heap.node([self.meta_of(x, heap) for x in self.arrays[id]])
             },
-            .C(_) or .M(_) -> MetaVal.Absent,
+            .M(id) -> {
+                let row = self.maps[id]
+                heap.map(row.keys, [self.meta_of(x, heap) for x in row.vals])
+            },
+            .C(_) -> MetaVal.Absent,
         }
     }
 
