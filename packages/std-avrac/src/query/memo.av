@@ -39,9 +39,28 @@ impl Memo<T> {
         }
     }
 
+    /// Open a query whose computation deliberately makes progress on
+    /// re-entry. Lowering uses this while its annotation is hidden by
+    /// the recursive view; that smaller view is the cycle answer.
+    fn start_recursive(arg: int) -> T? {
+        match self.ask(arg) {
+            .Reuse(value) -> value,
+            .Cycle -> {
+                self.db.begin(self.query_key(arg))
+                null
+            },
+            .Compute -> {
+                self.db.begin(self.query_key(arg))
+                null
+            }
+        }
+    }
+
     fn finish(arg: int, value: T, fingerprint: int) -> T {
         self.settle(arg, value, fingerprint)
     }
+
+    fn begin(arg: int) { self.db.begin(self.query_key(arg)) }
 
     fn clear() { self.values.set(new_table()) }
 
@@ -85,7 +104,7 @@ impl Memo<T> {
 
     fn cycle_value(arg: int) -> T {
         let held = self.values.get().at(arg)
-        if held == null { avra_trap("defect: an acyclic memo family reached itself") }
+        if held == null { avra_trap("defect: acyclic memo family ${self.family} reached key ${arg}") }
         held!
     }
 }

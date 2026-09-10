@@ -18,7 +18,7 @@ use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, TypeR
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, Said, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
-use query.{Db, new_db, Key, Memo, new_memo}
+use query.{Db, new_db, Key, Memo, MemoAsk, new_memo}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
 use @std.testing.{CaseRef, words}
 
@@ -83,10 +83,10 @@ export type Workspace = {
     analyses: Table<Analysis>,
     specs: Map<string, int>,
     asks: List<Wanted>,
-    units: Table<Unit>,
+    units: Memo<Unit>,
     lift_specs: Map<string, int>,
     lift_asks: List<LiftAsk>,
-    lift_results: Table<LiftResult>,
+    lift_results: Memo<LiftResult>,
     defects: List<Diag>,
     packages: List<Package>,
     package_voices: List<Diag>,
@@ -112,6 +112,13 @@ fn lift_ask(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> LiftAsk {
 /// The query family's held value. A refusal remains here in full so a
 /// new revision can compare it, while a repeated read speaks nothing.
 enum LiftResult { Said(List<Said>), Refused(Unsettled) }
+
+fn reused_lift(held: LiftResult) -> Result<List<Said>, Unsettled> {
+    match held {
+        .Said(saids) -> .Ok(saids),
+        .Refused(_) -> .Err(Unsettled.Spoken),
+    }
+}
 
 /// One package of the workspace: its key (the manifest's name; ""
 /// for a root without one), its root and source directories, its
@@ -224,8 +231,8 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         name_facts: new_memo<NameFacts>(db, ordinal(Family.Resolved)), sig_voices: new_table(),
         decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), method_clashes: new_table(),
         folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
-        analyses: new_table(), units: new_table(), specs: {}, asks: [],
-        lift_specs: {}, lift_asks: [], lift_results: new_table(), defects: [],
+        analyses: new_table(), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
+        lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)), defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [], settlements: {},
     }
@@ -440,7 +447,10 @@ impl Workspace {
     /// One declaration's body typed — a table over its own expression
     /// range, the sigs it names asked as it reads them.
     fn typed(d: DeclId) -> TypeFacts {
-        let held = self.decl_facts.start(d.index)
+        // Annotation evaluation re-types the declaration after hiding
+        // the active annotation, so this family also has a smaller
+        // recursive view.
+        let held = self.decl_facts.start_recursive(d.index)
         if held != null { return held! }
         let x = self.decls.decl(d)
         mut t = self.type_cx_for(x)
@@ -453,7 +463,9 @@ impl Workspace {
     /// their voices in source order — what the facade and lowering
     /// read by expression.
     fn folded(f: FileId) -> TypeFacts {
-        let held = self.folds.start(f.index)
+        // Annotation evaluation re-enters the file after the active
+        // annotation has been hidden; that recursive view is smaller.
+        let held = self.folds.start_recursive(f.index)
         if held != null { return held! }
         let p = self.parsed(f)
         let hole = self.decls.types.intern(Type.Error)
@@ -601,16 +613,13 @@ impl Workspace {
     /// One unit lowered and remembered: a body edit re-lowers its own
     /// unit; the specializations it wants are other units.
     fn lowered(id: int) -> Unit {
-        let k = key(Family.Lowered, id)
-        if self.db.ask(k) is .Reuse { return self.units.at(id)! }
-        self.db.begin(k)
+        let held = self.units.start_recursive(id)
+        if held != null { return held! }
         let w = self.asks[id]
         let ws = self
         let settle: fn(FileId, StmtId) -> Result<Settled, Unsettled> = (f: FileId, s: StmtId) -> ws.settled(f, s)
         let out = lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle)
-        self.db.settle(k, self.db.revision())
-        self.units.keep(id, out)
-        out
+        self.units.finish(id, out, self.db.revision())
     }
 
     /// A const's value, settled ONCE per workspace: its initializer
@@ -686,24 +695,18 @@ impl Workspace {
     /// lowering pass seeing the annotation it is currently proving,
     /// so that recursive view contributes nothing.
     fn lifted_at(id: int) -> Result<List<Said>, Unsettled> {
-        let k = key(Family.Lifted, id)
-        let verdict = self.db.ask(k)
-        if verdict is .Cycle { return .Ok([]) }
-        if verdict is .Reuse {
-            return match self.lift_results.at(id)! {
-                .Said(saids) -> .Ok(saids),
-                .Refused(_) -> .Err(Unsettled.Spoken),
-            }
+        match self.lift_results.ask(id) {
+            .Cycle -> { return .Ok([]) },
+            .Reuse(held) -> { return reused_lift(held) },
+            .Compute -> self.lift_results.begin(id),
         }
-        self.db.begin(k)
         let ask = self.lift_asks[id]
         let r = self.lifted_once(ask.decl, ask.file, ask.stmt, ask.args)
         let held = match r {
             .Ok(saids) -> LiftResult.Said(saids),
             .Err(why) -> LiftResult.Refused(why),
         }
-        self.db.settle(k, lift_hash(held))
-        self.lift_results.keep(id, held)
+        let _ = self.lift_results.finish(id, held, lift_hash(held))
         r
     }
 
