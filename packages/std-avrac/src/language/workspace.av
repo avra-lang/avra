@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, int_of, bits_of, text_of, bool_of, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts}
+use core.{Table, new_table, Expr, StmtId, Span, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, Said, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
@@ -648,11 +648,6 @@ impl Workspace {
         self.settled_root(f, const_symbol(f, s), self.analysis(f).view.store.const_value(s)!)
     }
 
-    /// An annotation's argument settled like a const's value.
-    fn settled_expr(f: FileId, e: ExprId) -> Result<Settled, Unsettled> {
-        self.settled_root(f, expr_symbol(f, e), e)
-    }
-
     fn settled_root(f: FileId, name: string, root: ExprId) -> Result<Settled, Unsettled> {
         let stood: Settlement? = self.settlements.get(name)
         if stood != null {
@@ -674,10 +669,27 @@ impl Workspace {
     /// One settlement run: the initializer lowered as a program, its
     /// laws checked, its value spelled when the type spells one.
     fn settlement_of(f: FileId, root: ExprId, name: string) -> Result<Settled, Unsettled> {
-        let ws = self
-        let l = memory(self.decls.settlement(Wanted { file: f, decl: null, name: name, sub: null, root: root }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
+        let l = self.isolated(f, root, name)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         run_settle(l, settle_steps(), self.decls.types.spells(l.entry.ret), dir_of(self.decls.file(f).path))
+    }
+
+    /// One expression lowered as a program of its own, while every
+    /// body it reaches remains a shared `Lowered` query.
+    fn isolated(f: FileId, root: ExprId, name: string) -> Lowered {
+        let ws = self
+        memory(self.decls.settlement(Wanted { file: f, decl: null, name: name, sub: null, root: root }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
+    }
+
+    /// An annotation argument evaluated directly into the crossing
+    /// transport, including every nested aggregate.
+    fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
+        let l = self.isolated(f, e, expr_symbol(f, e))
+        if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
+        match run_crossed(l, settle_steps(), dir_of(self.decls.file(f).path)) {
+            .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)),
+            .Err(why) -> .Err(why),
+        }
     }
 
     /// An annotation fn run over a declaration: the fn's own program
@@ -733,8 +745,8 @@ impl Workspace {
         mut heap = new_meta_heap()
         mut vals: List<MetaVal> = [self.crossed_decl(f, s, sig!.params.first()!, heap)]
         for e in args {
-            match self.settled_expr(f, e) {
-                .Ok(v) -> vals.push(crossed_literal(v.spelled)),
+            match self.crossed_expr(f, e, heap) {
+                .Ok(v) -> vals.push(v),
                 .Err(why) -> { return .Err(why) },
             }
         }
@@ -1571,22 +1583,6 @@ fn unpackaged_use(at: Loc?) -> Diag {
 
 /// The instructions one settlement may run before it is refused.
 fn settle_steps() -> int { 10000000 }
-
-/// A settled literal crossed: its value, or absent for a value that
-/// spelled nothing.
-fn crossed_literal(x: Expr?) -> MetaVal {
-    if x == null { return MetaVal.Absent }
-    let value = x!
-    let n: int? = int_of(value)
-    if n != null { return MetaVal.Int(n!) }
-    let f: int? = bits_of(value)
-    if f != null { return MetaVal.Float(f!) }
-    let s: string? = text_of(value)
-    if s != null { return MetaVal.Text(s!) }
-    let b: bool? = bool_of(value)
-    if b != null { return MetaVal.Bool(b!) }
-    MetaVal.Absent
-}
 
 /// An annotation answer's structural fingerprint for early cutoff.
 fn lift_hash(r: LiftResult) -> int {
