@@ -34,6 +34,23 @@ impl Memo<T> {
         value
     }
 
+    /// A once-read input. Its loader runs on first sight; later reads
+    /// record the dependency and return the shared typed value.
+    fn input(arg: int, load: fn() -> T, fingerprint: fn(T) -> int) -> T {
+        let held = self.values.get().at(arg)
+        if held != null {
+            self.db.record_dep(self.query_key(arg))
+            return held!
+        }
+        let value = load()
+        self.db.set_input(self.query_key(arg), fingerprint(value))
+        self.db.record_dep(self.query_key(arg))
+        mut values = self.values.get()
+        values.keep(arg, value)
+        self.values.set(values)
+        value
+    }
+
     /// The whole protocol for an acyclic derived family.
     fn demand(arg: int, compute: fn() -> T, fingerprint: fn(T) -> int) -> T {
         match self.ask(arg) {

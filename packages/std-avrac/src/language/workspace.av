@@ -18,7 +18,7 @@ use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, TypeR
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, Said, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
-use query.{Db, new_db, Key}
+use query.{Db, new_db, Key, Memo, new_memo}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
 use @std.testing.{CaseRef, words}
 
@@ -66,12 +66,12 @@ export type Workspace = {
     // fingerprinted and indexed once. A host that changes under a
     // running workspace (Era IV's live editing) invalidates these
     // with the revision; today no host does.
-    sources: Table<SourceFile>,
+    sources: Memo<SourceFile>,
     manifests: Table<Manifest>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
     externs: Table<List<string>>,
-    programs: Table<Parsed>,
+    programs: Memo<Parsed>,
     file_items: Table<List<DeclId>>,
     module_names: Table<ModuleNames>,
     visibles: Table<Namespace>,
@@ -213,9 +213,11 @@ fn language_decls(lang: Language) -> Decls {
 /// The workspace with its families registered, its table armed,
 /// and its packages loaded from the root's manifest outward.
 fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool, per_file: bool) -> Workspace {
+    let db = new_db()
     mut ws = Workspace {
-        host: host, root: root, lang: lang, db: new_db(), decls: language_decls(lang),
-        sources: new_table(), manifests: new_table(), externs: new_table(), programs: new_table(), file_items: new_table(), module_names: new_table(),
+        host: host, root: root, lang: lang, db: db, decls: language_decls(lang),
+        sources: new_memo<SourceFile>(db, ordinal(Family.Source)), manifests: new_table(), externs: new_table(),
+        programs: new_memo<Parsed>(db, ordinal(Family.Parsed)), file_items: new_table(), module_names: new_table(),
         visibles: new_table(), name_facts: new_table(), sig_voices: new_table(),
         decl_facts: new_table(), method_clashes: new_table(), folds: new_table(),
         analyses: new_table(), units: new_table(), specs: {}, asks: [],
@@ -304,30 +306,17 @@ impl Workspace {
     /// An INPUT: the file's text, hashed; the revision moves only when
     /// the text did.
     fn source(f: FileId) -> SourceFile {
-        let k = key(Family.Source, f.index)
-        let held: SourceFile? = self.sources.at(f.index)
-        if held != null {
-            self.db.record_dep(k)
-            return held!
-        }
-        let path = self.decls.file(f).path
-        let text = self.host.read(path)
-        self.db.set_input(k, fp_str(text))
-        self.db.record_dep(k)
-        let src = new_source_file(path, text)
-        self.sources.keep(f.index, src)
-        src
+        self.sources.input(f.index, () -> {
+            let path = self.decls.file(f).path
+            new_source_file(path, self.host.read(path))
+        }, (src: SourceFile) -> fp_str(src.text))
     }
 
     /// The file parsed — pure in its text.
     fn parsed(f: FileId) -> Parsed {
-        let k = key(Family.Parsed, f.index)
-        if self.db.ask(k) is .Reuse { return self.programs.at(f.index)! }
-        self.db.begin(k)
-        let p = parse_program(self.lang, self.source(f))
-        self.db.settle(k, program_hash(p))
-        self.programs.keep(f.index, p)
-        p
+        self.programs.demand(f.index,
+            () -> parse_program(self.lang, self.source(f)),
+            (p: Parsed) -> program_hash(p))
     }
 
     /// The declarations a file MINTS into the one table; the answer's
