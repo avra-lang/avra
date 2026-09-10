@@ -43,7 +43,11 @@ pushes through a `mut` borrow:
 
 ```avra
 once fn slots() -> List<int> { [] }
-fn bump() -> int { mut xs = slots(); xs.push(1); xs.length }
+fn bump() -> int {
+    mut xs = slots()
+    xs.push(1)
+    xs.length
+}
 "${bump()} ${bump()} ${bump()} | table now holds ${slots().length}"
 ```
 ```
@@ -55,7 +59,11 @@ fn bump() -> int { mut xs = slots(); xs.push(1); xs.length }
 ```avra
 type Table = { rows: List<int>, label: string }
 once fn t() -> Table { Table { rows: [], label: "reg" } }
-fn bump() -> int { mut x = t(); x.rows.push(1); x.rows.length }
+fn bump() -> int {
+    mut x = t()
+    x.rows.push(1)
+    x.rows.length
+}
 "${bump()} ${bump()} | now ${t().rows.length}"
 ```
 ```
@@ -65,7 +73,10 @@ fn bump() -> int { mut x = t(); x.rows.push(1); x.rows.length }
 **P3 — the path-write route is REFUSED, by name.**
 
 ```avra
-fn bump() -> int { t().rows.push(1); t().rows.length }
+fn bump() -> int {
+    t().rows.push(1)
+    t().rows.length
+}
 ```
 ```
 error[F2034]: `push` mutates a place, and this list is a value

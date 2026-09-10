@@ -251,11 +251,18 @@ allocated at exactly *n* makes that a real defect).
 
 ## Part III — A day in the perfect world
 
+**[v1] throughout.** Every fragment in III.1–III.6 is the destination, not
+today's driver: today `@std/sqlite` exports `open`, `prepare`, `step`, the
+`bind_*` verbs, `int_at`, `class_at` and a free `run(db, sql)`, and none of
+`db.exec` / `db.query` / `db.rows<T>` / `db.tx` / `db.cell` / `db.blob_open`
+exists yet. The `use` lines and the declaration spellings are today's, so
+that nothing here teaches a syntax that will never be right.
+
 ### III.1 — The opening move
 
 ```avra
-use @std/sqlite.{open}
-use @std/io.{println}
+use @std.sqlite.{open}
+use @std.io.{println}
 
 fn main() -> Result<int, dyn Error> {
     let db = open("app.db")?
@@ -282,7 +289,7 @@ Nothing is opened that is not closed; the caller wrote no `close` and no
 ### III.2 — Rows become values
 
 ```avra
-struct User { id: int, name: string, score: float }
+type User = { id: int, name: string, score: float }
 
 let leaders = db.rows<User>("select id, name, score from users order by score desc limit 3")?
 for u in leaders { println("${u.name} — ${u.score}") }
@@ -345,7 +352,7 @@ let head = blob.read(0, 4096)?              // 4 KB out of a 2 GB document
 ### III.6 — The wall is right there
 
 ```avra
-use @std/sqlite/c.{sqlite3_db_status, SQLITE_DBSTATUS_CACHE_USED}
+use @std.sqlite.c.{sqlite3_db_status, SQLITE_DBSTATUS_CACHE_USED}
 
 let used = sqlite3_db_status(db, SQLITE_DBSTATUS_CACHE_USED)?
 ```
@@ -455,12 +462,12 @@ throws away the low byte's neighbours has thrown away the retry decision.
 
 ```avra
 enum SqlError {
-    Refused { code: int, message: string, sql: string? },
-    Busy { code: int, waited_ms: int },
+    Refused(code: int, message: string, sql: string?),
+    Busy(code: int, waited_ms: int),
     NoSuchColumn(string),
-    WrongType { column: string, wanted: string, found: Storage },
+    WrongType(column: string, wanted: string, found: Storage),
     Misuse(string),                       // SQLITE_MISUSE is OUR bug, not the query's
-    Opening { path: string, code: int },
+    Opening(path: string, code: int),
 }
 impl Error for SqlError { … }
 ```
