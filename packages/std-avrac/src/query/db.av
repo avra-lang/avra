@@ -29,14 +29,14 @@ export enum Verdict {
 type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int }
 
 type DbState = {
-    rev: List<int>,
+    rev: int,
     cells: List<QueryCell?>,
     verifiers: List<fn(int) -> int>,
     deps: List<Key>,
     marks: List<int>,
     open: List<Key>,
-    hits: List<int>,
-    misses: List<int>,
+    hits: int,
+    misses: int,
 }
 
 /// A database is a shared handle. Copying it copies the handle; every
@@ -45,7 +45,7 @@ type DbState = {
 export type Db = { state: Cell<DbState> }
 
 export fn new_db() -> Db {
-    let state = DbState { rev: [1], cells: [], verifiers: [], deps: [], marks: [], open: [], hits: [0], misses: [0] }
+    let state = DbState { rev: 1, cells: [], verifiers: [], deps: [], marks: [], open: [], hits: 0, misses: 0 }
     Db { state: Cell.new(state) }
 }
 
@@ -54,11 +54,11 @@ impl Db {
 
     fn replace(state: DbState) { self.state.set(state) }
 
-    fn revision() -> int { self.snapshot().rev[0] }
+    fn revision() -> int { self.snapshot().rev }
 
     fn bump() {
         mut s = self.snapshot()
-        s.rev.set(0, s.rev[0] + 1)
+        s.rev = s.rev + 1
         self.replace(s)
     }
 
@@ -86,7 +86,7 @@ impl Db {
             self.replace(s)
             return
         }
-        if prior != null { s.rev.set(0, state_revision(s) + 1) }
+        if prior != null { s.rev = state_revision(s) + 1 }
         let rev = state_revision(s)
         write_cell(s, key, QueryCell { deps: [], changed_at: rev, verified_at: rev, value_hash: value_hash })
         self.replace(s)
@@ -183,25 +183,25 @@ impl Db {
 
     fn hit() -> Verdict {
         mut s = self.snapshot()
-        s.hits.set(0, s.hits[0] + 1)
+        s.hits = s.hits + 1
         self.replace(s)
         Verdict.Reuse
     }
 
     fn miss() -> Verdict {
         mut s = self.snapshot()
-        s.misses.set(0, s.misses[0] + 1)
+        s.misses = s.misses + 1
         self.replace(s)
         Verdict.Compute
     }
 
     fn stats() -> string {
         let s = self.snapshot()
-        "rev ${state_revision(s)}: ${s.hits[0]} hits, ${s.misses[0]} misses"
+        "rev ${state_revision(s)}: ${s.hits} hits, ${s.misses} misses"
     }
 }
 
-fn state_revision(s: DbState) -> int { s.rev[0] }
+fn state_revision(s: DbState) -> int { s.rev }
 
 fn state_slot(s: DbState, key: Key) -> int {
     let _ = s.verifiers[key.family]
