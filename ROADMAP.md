@@ -6679,22 +6679,25 @@ additions get siblings, nothing changes shape:
 
 ## Sugar backlog — dogfooding asks
 
-- EMBED OUTSIDE A CONST IS A RUN-TIME TRAP TODAY, not a compile-time
+- EMBED OUTSIDE COMPILER EVALUATION IS A RUN-TIME TRAP TODAY, not a compile-time
   refusal: `let t = embed("x")` at the top level compiles and traps
   when it runs (both engines, the same words). The static law is a
-  lowering check — a `Reach.Embed` row reached by a body that is not
-  a settlement unit — and it needs the emitter to know it is inside
-  one (`Jobs` would carry `settling`). RECORDED TRIGGER: fires when
-  the `settled` family lands (docs/2026_09_09_COMPTIME_DESIGN.md §4.2),
-  whose unit ids name the settlements. Probed 2026-09-09 on
-  lane/comptime.
+  effect-graph check from each runtime root. A `Jobs.settling` bit was
+  tried and REFUSED during the comptime memo review: `meta.embed` is
+  phase-polymorphic, so marking its memoized body makes the answer
+  depend on which phase lowered it first and rejects the std package
+  when bodies are checked independently. The call graph must carry
+  `Reach.Embed`; runtime roots refuse it, while settlement and crossed
+  annotation roots admit and track it. RECORDED TRIGGER: lands with
+  the expansion/effect graph, before declaration-producing annotations.
+  Probed 2026-09-10 on lane/comptime.
 - A COMPUTED CONST INFERS ITS TYPE. `const F: int = fact(5)` must
   declare `int` (F2063): a const's type is read from every body, a
   body's facts hold only its own range, so today the STORE answers
   it — a literal's shape or the annotation's scalar word
   (`settled_type`, features/contexts.av). The inference is a
-  workspace query over the entry's typed facts, keyed by the const's
-  StmtId; wanting site: every computed const in the tree. Landed
+  workspace query over the entry's typed facts, keyed by FileId plus
+  StmtId; wanting site: every computed const in the tree. Recorded
   with comptime S1 (docs/2026_09_09_COMPTIME_DESIGN.md §6).
 
 - PROCESS-WIDE MUTABLE STATE — a package cannot own a handle table.
