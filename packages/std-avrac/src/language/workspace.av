@@ -87,6 +87,9 @@ export type Workspace = {
     lift_specs: Map<string, int>,
     lift_asks: List<LiftAsk>,
     lift_results: Memo<LiftResult>,
+    settle_specs: Map<string, int>,
+    settle_asks: List<SettleAsk>,
+    settlements: Memo<Settlement>,
     defects: List<Diag>,
     packages: List<Package>,
     package_voices: List<Diag>,
@@ -97,13 +100,15 @@ export type Workspace = {
     closed: bool,
     clock: fn() -> int,
     phases: List<Phase>,
-    // every const asked to settle this workspace, by its unit name
-    settlements: Map<string, Settlement>,
 }
 
 /// One annotation query's stable inputs. Its dense list position is
 /// the `Lifted` family's key; the call expression mints that identity.
 type LiftAsk = { decl: DeclId, file: FileId, stmt: StmtId, args: List<ExprId> }
+
+/// A const site's stable inputs. The dense list position is the
+/// `Settled` family's key; its initializer is read inside the query.
+type SettleAsk = { file: FileId, stmt: StmtId, name: string }
 
 fn lift_ask(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> LiftAsk {
     LiftAsk { decl: d, file: f, stmt: s, args: args }
@@ -116,6 +121,13 @@ enum LiftResult { Said(List<Said>), Refused(Unsettled) }
 fn reused_lift(held: LiftResult) -> Result<List<Said>, Unsettled> {
     match held {
         .Said(saids) -> .Ok(saids),
+        .Refused(_) -> .Err(Unsettled.Spoken),
+    }
+}
+
+fn reused_settlement(held: Settlement) -> Result<Settled, Unsettled> {
+    match held {
+        .Held(value) -> .Ok(value),
         .Refused(_) -> .Err(Unsettled.Spoken),
     }
 }
@@ -147,6 +159,7 @@ enum Family {
     Typed
     Folded
     Analysis
+    Settled
     Lowered
     Lifted
     Manifest
@@ -170,17 +183,18 @@ fn ordinal(f: Family) -> int {
         .Typed -> 8,
         .Folded -> 9,
         .Analysis -> 10,
-        .Lowered -> 11,
-        .Lifted -> 12,
-        .Manifest -> 13,
-        .Receivers -> 14,
+        .Settled -> 11,
+        .Lowered -> 12,
+        .Lifted -> 13,
+        .Manifest -> 14,
+        .Receivers -> 15,
     }
 }
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
     let all: List<Family> = [Family.Source, Family.Parsed, Family.Items, Family.Namespace, Family.Visible, Family.Resolved,
-                             Family.Sig, Family.Methods, Family.Typed, Family.Folded, Family.Analysis, Family.Lowered, Family.Lifted, Family.Manifest,
+                             Family.Sig, Family.Methods, Family.Typed, Family.Folded, Family.Analysis, Family.Settled, Family.Lowered, Family.Lifted, Family.Manifest,
                              Family.Receivers]
     all
 }
@@ -232,9 +246,10 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), method_clashes: new_table(),
         folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
         analyses: new_table(), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
-        lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)), defects: [],
+        lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
-        clock: clock, phases: [], settlements: {},
+        clock: clock, phases: [],
     }
     for f in families() {
         if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
@@ -292,6 +307,7 @@ impl Workspace {
             .Typed -> touch(self.typed(decl_at_arg(arg))),
             .Folded -> touch(self.folded(file_at(arg))),
             .Analysis -> touch(self.analysis(file_at(arg))),
+            .Settled -> touch(self.settled_at(arg)),
             .Lowered -> touch(self.lowered(arg)),
             .Lifted -> touch(self.lifted_at(arg)),
             .Manifest -> touch(self.manifest(arg)),
@@ -627,24 +643,29 @@ impl Workspace {
     /// program's, memoized — then run in the evaluator. A const whose
     /// value asks for itself is refused as the cycle it is.
     fn settled(f: FileId, s: StmtId) -> Result<Settled, Unsettled> {
-        self.settled_root(f, const_symbol(f, s), self.analysis(f).view.store.const_value(s)!)
+        let name = const_symbol(f, s)
+        let known: int? = self.settle_specs.get(name)
+        if known != null { return self.settled_at(known!) }
+        let id = self.settle_asks.length
+        self.settle_specs.set(name, id)
+        self.settle_asks.push(SettleAsk { file: f, stmt: s, name: name })
+        self.settled_at(id)
     }
 
-    fn settled_root(f: FileId, name: string, root: ExprId) -> Result<Settled, Unsettled> {
-        let stood: Settlement? = self.settlements.get(name)
-        if stood != null {
-            return match stood! {
-                .Held(x) -> .Ok(x),
-                .Refused(_) -> .Err(Unsettled.Spoken),
-                .Settling -> .Err(Unsettled.Trap("asks for its own value while settling")),
-            }
+    fn settled_at(id: int) -> Result<Settled, Unsettled> {
+        match self.settlements.ask(id) {
+            .Cycle -> { return .Err(Unsettled.Trap("asks for its own value while settling")) },
+            .Reuse(held) -> { return reused_settlement(held) },
+            .Compute -> self.settlements.begin(id),
         }
-        self.settlements.set(name, Settlement.Settling)
-        let r = self.settlement_of(f, root, name)
-        self.settlements.set(name, match r {
+        let ask = self.settle_asks[id]
+        let root = self.analysis(ask.file).view.store.const_value(ask.stmt)!
+        let r = self.settlement_of(ask.file, root, ask.name)
+        let held = match r {
             .Ok(x) -> Settlement.Held(x),
             .Err(why) -> Settlement.Refused(why),
-        })
+        }
+        let _ = self.settlements.finish(id, held, settlement_hash(held))
         r
     }
 
@@ -1570,6 +1591,13 @@ fn lift_hash(r: LiftResult) -> int {
     match r {
         .Said(saids) -> fp(43, [said_hash(x) for x in saids]),
         .Refused(why) -> fp(47, [unsettled_hash(why)]),
+    }
+}
+
+fn settlement_hash(s: Settlement) -> int {
+    match s {
+        .Held(value) -> fp(41, [value.fingerprint]),
+        .Refused(why) -> fp(43, [unsettled_hash(why)]),
     }
 }
 
