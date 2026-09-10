@@ -34,9 +34,33 @@ fn threshold(f: Fn, value: float) -> List<Diagnostic> {
     if value > 1.4 { [] } else { [refuse("float argument did not cross")] }
 }
 
+type Bounds = { low: int, high: int }
+type Policy = {
+    bounds: Bounds,
+    labels: List<string>,
+    weights: Map<string, int>,
+    note: string?,
+}
+
+fn configured(f: Fn, p: Policy) -> List<Diagnostic> {
+    let hot = p.weights.get("hot") ?? 0
+    if f.name == "sum" && p.bounds.low == 2 && p.bounds.high == 9 &&
+       p.labels.length == 2 && p.labels[1] == "right" && hot == 7 && p.note == null {
+        []
+    } else {
+        [refuse("aggregate argument did not cross")]
+    }
+}
+
 @named("sum")
 @deprecated("use add")
 @threshold(1.5)
+@configured(Policy {
+    bounds: Bounds { low: 2, high: 9 },
+    labels: ["left", "right"],
+    weights: { "hot": 7 },
+    note: null,
+})
 fn sum(left: int, right: int) -> int {
     left + right
 }
