@@ -394,7 +394,7 @@ impl Decls {
     /// name can take. The body is the wrap: enter, the original call,
     /// exit. The twin answers like the original and carries its own
     /// range, so typing, resolution and lowering read it as written.
-    fn mint_generated(f: FileId, name: string, params: List<Param>, ret: TypeRef, original: string, label: string, at: Span?) -> DeclId {
+    fn mint_generated(f: FileId, name: string, params: List<Param>, ret: TypeRef, original: string, at: Span?) -> DeclId {
         let key = generated_key(f, name)
         let known: DeclId? = self.known_id(key)
         if known != null { return known! }
@@ -403,20 +403,16 @@ impl Decls {
         // twin's nodes mint — its subtree is allocated first (children
         // before the block that holds them), then the FnDecl stmt.
         let lo = store.exprs.count()
-        // THE WRAP: enter; let v = original(args); exit; v — the
-        // temp's name carries the twin's own mark, which no WRITTEN
-        // binding can collide with.
+        // THE WRAP: let v = original(args); v — the twin answers the
+        // original's call. The temp's name carries the twin's own
+        // mark, which no WRITTEN binding can collide with. (The enter
+        // / exit puts wrap is a later directive; v1 proves the seam.)
         let v = "${name}$$v"
-        let label_expr = store.alloc_expr(Expr.StrLit(label), at)
-        let enter = store.alloc_expr(Expr.Call("enter", [], [label_expr]), at)
-        let exit = store.alloc_expr(Expr.Call("exit", [], [label_expr]), at)
         let arg_ids = [store.alloc_expr(Expr.Ident(p.name), at) for p in params]
         let call = store.alloc_expr(Expr.Call(original, [], arg_ids), at)
         let bound = store.alloc_expr(Expr.Ident(v), at)
-        let e1 = store.alloc_stmt(Stmt.ExprStmt(enter), at)
         let l2 = store.alloc_stmt(Stmt.Let(v, null, call), at)
-        let e3 = store.alloc_stmt(Stmt.ExprStmt(exit), at)
-        let body = store.alloc_expr(Expr.Block([e1, l2, e3], bound), at)
+        let body = store.alloc_expr(Expr.Block([l2], bound), at)
         let s = store.alloc_stmt(Stmt.FnDecl(name, [], params, ret, body), at)
         let d = self.mint(key, f, s, name, DeclKind.Fn, false, "", null, false, body)
         // THE GENERATED RANGE: the twin's own nodes, minted last, so
@@ -425,6 +421,13 @@ impl Decls {
         // resolution and lowering read it exactly as a written fn.
         let hi = store.exprs.count()
         self.decls.set(d.index, self.decl(d) with { lo: lo, hi: hi })
+        // THE FILE'S DECL LIST: the twin joins the written decls so
+        // items, the namespace, bodies_of and lowering all see it —
+        // the resolver's miss is only the FIRST look; every other
+        // consumer reads the file's decls through this table.
+        mut file_list = self.file_decls[f.index]
+        file_list.push(d)
+        self.file_decls.set(f.index, file_list)
         d
     }
 
