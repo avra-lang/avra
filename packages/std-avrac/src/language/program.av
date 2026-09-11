@@ -2,7 +2,7 @@
 //! which feature speaks for which node. Parsing and the statement
 //! spine live here; analysis stacks on top in analysis.av.
 use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, Variant, Case, TypeRef, flatten}
-use grammar.{Captured, RunOutcome, run_grammar, lex_source, lex_diagnostic}
+use grammar.{Captured, RunOutcome, DocComment, run_grammar, lex_source, lex_diagnostic}
 use features.{LangNode, NodeSemantics, StmtSemantics, PatSemantics, Dispatch, build_named, list_at, stmt_id_at}
 use features.expr_spine.{SpineSemantics}
 use features.str_lit.{StrSemantics}
@@ -62,15 +62,27 @@ export fn parse_program(lang: Language, src: SourceFile) -> Parsed {
         return Parsed { store: new_node_store(), stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
     }
     let lexed = lex_source(src.text)
-    let store = new_node_store()
+    mut store = new_node_store()
     let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span)
     let o = run_grammar<LangNode>(lang.syntax!, lexed.tokens, build)
+    attach_docs(store, lexed.docs)
     let engine = [lex_diagnostic(e) for e in lexed.errors].concat(o.diagnostics)
     Parsed {
         store: store,
         stmts: program_stmts(store, o),
         source: src,
         voices: Voices { list: project_all(engine, src.file, lang.rows.codes) },
+    }
+}
+
+/// Attach each source-ordered doc group to the nearest statement
+/// beginning after its declaration-prefix anchor. This includes
+/// nested methods; annotations and `export` precede the declaration
+/// node's own span, so token equality is deliberately not required.
+fn attach_docs(mut store: NodeStore, docs: List<DocComment>) {
+    for doc in docs {
+        let target = store.statement_after(doc.before)
+        if target != null { store.document(target!, doc.lines) }
     }
 }
 

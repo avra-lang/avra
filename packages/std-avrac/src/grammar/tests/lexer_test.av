@@ -130,6 +130,29 @@ spec "grammar/lexer" {
             let ops = [t.text for t in div.tokens if t.kind == TokenKind.Op]
             ops.length == 1 && ops[0] == "/" && div.errors.is_empty()
         }
+        then "contiguous declaration-leading `///` lines are retained as one group" {
+            let r = lex_source("/// First line.\n/// Second line.\nexport fn answer() -> int { 42 }")
+            r.docs.length == 1 && r.docs[0].lines.join("\n") == "First line.\nSecond line." &&
+                r.docs[0].before == 33
+        }
+        then "an empty `///` line is a line of the group" {
+            let r = lex_source("///\n/// a\nfn a() -> int { 1 }")
+            r.docs.length == 1 && r.docs[0].lines.length == 2 &&
+                r.docs[0].lines[0].is_empty() && r.docs[0].lines[1] == "a"
+        }
+        then "an ordinary comment inside a doc group does not detach it" {
+            let r = lex_source("/// kept\n// note\nfn a() {}")
+            r.docs.length == 1 && r.docs[0].lines.join("\n") == "kept"
+        }
+        then "a blank line, a module doc alone, or a trailing doc cannot become a doc group" {
+            let blank = lex_source("/// orphan\n\nfn a() {}")
+            let module = lex_source("//! module\nfn a() {}")
+            let trailing = lex_source("let x = 1 /// trailing\nfn a() {}")
+            blank.docs.is_empty() && module.docs.is_empty() && trailing.docs.is_empty()
+        }
+        then "an orphan before a closing brace cannot attach across the scope" {
+            lex_source("fn a() {\n    /// orphan\n}\nfn b() {}").docs.is_empty()
+        }
     }
     given "interpolation pieces" {
         then "a holed string lexes as begin, hole tokens, end" {

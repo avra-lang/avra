@@ -68,8 +68,14 @@ impl Token {
 /// One recorded problem; lexing continued past it.
 export type LexError = { message: string, span: Span }
 
-/// Every token and every problem from one pass.
-export type LexResult = { tokens: List<Token>, errors: List<LexError> }
+/// A declaration-leading `///` group, one entry per line. `before`
+/// is the first token after the group; parsing uses that source-order
+/// anchor to attach the lines without making comments part of the
+/// grammar.
+export type DocComment = { lines: List<string>, before: int }
+
+/// Every token, retained doc comment and problem from one pass.
+export type LexResult = { tokens: List<Token>, docs: List<DocComment>, errors: List<LexError> }
 
 /// Membership in the single-char operator set; `-`, `<`, `>`, `!`,
 /// `.`, and `|` reach here only after their two-char munches have
@@ -309,6 +315,28 @@ fn line_end(src: string, n: int, from: int) -> int {
     j
 }
 
+/// The contents of one `///` line, with its conventional one space
+/// removed. Further indentation is the documentation's own text.
+fn doc_line(src: string, n: int, i: int) -> string {
+    let end = line_end(src, n, i)
+    let from = if i + 3 < end && src.char_code(i + 3) == 32 { i + 4 } else { i + 3 }
+    let hi = if end > from && src.char_code(end - 1) == 13 { end - 1 } else { end }
+    src.substring(from, hi)
+}
+
+/// Whether a token can begin a documented declaration. This guard
+/// keeps an orphan doc before `}` from drifting to the next scope's
+/// declaration. An annotation is a declaration prefix too.
+fn declaration_start(t: Token) -> bool {
+    if t.kind == TokenKind.Pkg { return true }
+    if t.kind != TokenKind.Name { return false }
+    match t.text {
+        "export" or "fn" or "extern" or "mut" or "once" or "static" or
+            "const" or "type" or "enum" or "trait" or "impl" -> true,
+        _ -> false,
+    }
+}
+
 /// THE TWO-CHAR OPERATORS, by the CODES that spell them — each
 /// munches before its single-char prefix. Read by code because this
 /// is the scanner's inner loop: a list of strings here is a fresh
@@ -486,11 +514,24 @@ fn continuing_op(text: string) -> bool {
 /// string instead of emitting the brace.
 fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bool) -> LexResult {
     mut raw: List<Token> = []
+    mut docs: List<DocComment> = []
+    mut pending: List<string> = []
+    mut line_comment = false
+    mut line_has_token = false
     mut errors: List<LexError> = []
     mut holes: List<int> = []
     mut i = 0
     let n = src.length
     while i < n {
+        let comment = src.char_code(i) == 47 && i + 1 < n && src.char_code(i + 1) == 47
+        if comment {
+            // Any comment marks its line; only a `///` at line start
+            // is a doc line, and only a blank line detaches a group.
+            line_comment = true
+            if !line_has_token && i + 2 < n && src.char_code(i + 2) == 47 {
+                pending.push(doc_line(src, n, i))
+            }
+        }
         mut s = scan_step(src, n, i, interpolate)
         if in_hole(holes, s.token) {
             let t = s.token!
@@ -510,7 +551,24 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
             errors.push(hole_error(s.token!.span.lo))
             holes = []
         }
-        if s.token != null { raw.push(s.token!) }
+        if s.token != null {
+            let t = s.token!
+            if t.kind == TokenKind.Break {
+                line_has_token = false
+                if !pending.is_empty() && !line_comment { pending = [] }
+                line_comment = false
+            } else {
+                if !pending.is_empty() {
+                    if declaration_start(t) {
+                        docs.push(DocComment { lines: pending, before: t.span.lo })
+                    }
+                    pending = []
+                }
+                line_has_token = true
+                line_comment = false
+            }
+            raw.push(t)
+        }
         if s.err != null { errors.push(s.err!) }
         if s.opens_hole { holes.push(0) }
         i = s.next
@@ -534,7 +592,7 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
         tokens.push(token(TokenKind.Break, "", src.length, src.length))
     }
     tokens.push(token(TokenKind.Eof, "", src.length, src.length))
-    LexResult { tokens: tokens, errors: errors }
+    LexResult { tokens: tokens, docs: docs, errors: errors }
 }
 
 /// The unclosed-hole complaint, at `at`.

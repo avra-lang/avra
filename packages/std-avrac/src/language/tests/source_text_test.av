@@ -33,6 +33,21 @@ spec "source text" {
     }
 
     given "the statement surface" {
+        then "a doc-only edit changes the statement fingerprint" {
+            let before = parse_source("/// a\nfn f() -> int { 1 }")
+            let after = parse_source("/// b\nfn f() -> int { 1 }")
+            before.store.stmt_fingerprint(before.stmts[0]) != after.store.stmt_fingerprint(after.stmts[0])
+        }
+        then "an empty documentation line survives as `///`" {
+            canonical("///\nfn a() -> int { 1 }") == "///\nfn a() -> int {\n    1\n}" &&
+                stable("///\nfn a() -> int { 1 }") &&
+                canonical("/// a\n///\nfn a() -> int { 1 }") == "/// a\n///\nfn a() -> int {\n    1\n}" &&
+                stable("/// a\n///\nfn a() -> int { 1 }")
+        }
+        then "documentation survives annotations, modifiers, and nested trait members" {
+            let source = "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int { 1 }\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}"
+            canonical(source) == "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int {\n    1\n}\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}" && stable(source)
+        }
         then "declarations, control flow and effects reach a fixed point" {
             stable("""
 @memo("key", 3)

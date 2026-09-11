@@ -1427,10 +1427,13 @@ impl Program {
         let decls = self.ws.decls
         let hit = decls.decls.find((d: Decl) -> d.name == name && decls.fn_name(d.id) != null)
         if hit == null { return null }
-        let sig: FnSig? = fn_sig_of(decls.sig(hit!.id))
+        let decl = hit!
+        let sig: FnSig? = fn_sig_of(decls.sig(decl.id))
         if sig == null { return null }
         let holes = [decls.types.name_of(pt) for pt in sig!.params]
-        "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig!.ret)}"
+        let signature = "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig!.ret)}"
+        let doc = decls.store(decl.id).doc_comment(decl.stmt)
+        if doc == null { signature } else { "${signature}\n\n${doc!.join("\n")}" }
     }
 
     /// A file's generated declarations, each in canonical source

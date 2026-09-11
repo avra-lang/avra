@@ -29,10 +29,17 @@ export fn render_expression(store: NodeStore, expr: ExprId) -> string {
 type SourceText = { store: NodeStore }
 
 impl SourceText {
-    /// A statement and the annotation lines attached to it.
+    /// A statement and its retained documentation and annotations.
     fn statement(s: StmtId, depth: int) -> List<string> {
-        [source_line(depth, self.annotation(a, depth)) for a in self.store.annotations_of(s)]
+        self.doc_lines(s, depth)
+            .concat([source_line(depth, self.annotation(a, depth)) for a in self.store.annotations_of(s)])
             .concat(self.statement_node(s, depth))
+    }
+
+    fn doc_lines(s: StmtId, depth: int) -> List<string> {
+        let doc = self.store.doc_comment(s)
+        if doc == null { return [] }
+        [source_line(depth, if line.is_empty() { "///" } else { "/// ${line}" }) for line in doc!]
     }
 
     /// The statement registry: every Stmt variant has one source form.
@@ -158,10 +165,10 @@ impl SourceText {
         match self.store.stmt(s) {
             .FnDecl(name, tparams, params, ret, body) -> {
                 let head = "${self.fn_mark(s)}fn ${source_name(name)}${self.type_params(tparams)}(${self.params(params, depth)}) -> ${spelled(ret)}"
-                match self.store.expr(body) {
+                self.doc_lines(s, depth).concat(match self.store.expr(body) {
                     .Error -> [source_line(depth, head)],
                     rest -> [source_line(depth, "${head} ${self.block(body, depth)}")],
-                }
+                })
             },
             rest -> self.statement(s, depth),
         }

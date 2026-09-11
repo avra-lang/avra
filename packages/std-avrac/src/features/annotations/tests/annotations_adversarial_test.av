@@ -24,7 +24,7 @@ fn packaged(source: string) -> Program {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
         "/w/src/main.av": source,
         "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
-        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc? }\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport type Directive = { twin: string, name: string, at: Loc? }\nexport fn traced(f: Fn, label: string) -> List<Directive> { [Directive { twin: \"\${f.name}_traced\", name: f.name, at: null }] }\nexport fn collect(f: Fn, xs: List<int>) -> List<Directive> { [] }\n",
+        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc? }\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport type Directive = { twin: string, name: string, at: Loc? }\n/// Makes a traced sibling.\n/// The signature declares the effect.\nexport fn traced(f: Fn, label: string) -> List<Directive> { [Directive { twin: \"\${f.name}_traced\", name: f.name, at: null }] }\nexport fn collect(f: Fn, xs: List<int>) -> List<Directive> { [] }\n",
     }
     mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av"]), "/w", avra())
     ws.program("/w/src/main.av")
@@ -90,7 +90,7 @@ spec "features/annotations — the compile-time call's laws" {
     given "declaration generation" {
         then "an annotation fn's signature IS its effect — `explain @name`" {
             let p = packaged(directive_use() + "@traced(\"sum\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
-            p.explain_annotation("traced") == "fn traced(Fn, string) -> List<Directive>"
+            p.explain_annotation("traced") == "fn traced(Fn, string) -> List<Directive>\n\nMakes a traced sibling.\nThe signature declares the effect."
         }
         then "a generated twin lists with its provenance" {
             mut p = packaged(directive_use() + "@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
