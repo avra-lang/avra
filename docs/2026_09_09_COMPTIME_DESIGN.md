@@ -788,9 +788,12 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       `@derive(Show)` generate `fn show` on a struct. S4e LANDED — the
       `quote { … }` surface: the lexer takes the body whole (like a
       `grammar` block) and the parser makes it one string literal, so
-      braces, quotes and newlines inside need no escaping. NEXT: `${}`
-      code holes inside a quote (so a derive interpolates rather than
-      concatenating), then `Code<T>` claim + origin hygiene, then
+      braces, quotes and newlines inside need no escaping. S4f LANDED —
+      `${e}` HOLES: the raw scan is brace-depth aware across holes
+      (a generated fn's own `{}` count, a `}` in the body's string
+      literal does not), a hole in code position splices its value,
+      and a `${}` inside the generated program's string literal stays
+      that program's. NEXT: the `Code<T>` claim + origin hygiene, then
       `@derive(Show, Eq)` in std.
 - [ ] **S1 leftovers (small, fold in).** The reach refusal's full
       call chain (names each link, not just row+body) — the one

@@ -3,18 +3,21 @@
 //! `grammar` block); the parser makes it a string, so a derive feeds
 //! it straight to a `Directive`'s `code`.
 use features.{LanguageFeature, BuilderRow}
+use features.str_lit.{build_interp}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 
 export fn quote_lit() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name    | build
         "quote" | build_quote
+        "quote_interp" | build_interp
     }
     component LanguageFeature f {
         name = "quote"
-        docs = "`quote { … }` — a block of generated source as a string literal, no escaping."
+        docs = "`quote { … }` — generated source as one string literal, no escaping; \${e} is a hole."
         gram = grammar {
             primary = "quote" "{" t:STRING -> quote(t)
+                    | "quote" "{" b:ISTR_BEGIN e:expression ( m:ISTR_MID e2:expression )* t:ISTR_END -> quote_interp(b, e, m, e2, t)
         }
         builders = rows
     }

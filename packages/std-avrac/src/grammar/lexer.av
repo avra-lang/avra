@@ -108,7 +108,7 @@ fn scan_while(src: string, n: int, from: int, pred: fn(int) -> bool) -> int {
 /// One scanner step: at most one token, at most one error, always
 /// progress. `opens_hole` means the token ended at `${` and the
 /// loop now lexes the hole's expression.
-type ScanStep = { token: Token?, err: LexError?, opens_hole: bool, next: int }
+type ScanStep = { token: Token?, err: LexError?, opens_hole: bool, next: int, depth: int = 0 }
 
 /// A step that produced a token.
 fn emit(t: Token, next: int) -> ScanStep {
@@ -259,7 +259,7 @@ fn unescape(e: int) -> string? {
 /// or not at all.
 enum StrStop { Quote, Hole, Ragged }
 
-type StrPart = { text: string, stop: StrStop, next: int }
+type StrPart = { text: string, stop: StrStop, next: int, depth: int = 0 }
 
 /// Text from `from` (already inside the quotes) to the piece's end.
 /// Plain runs are copied whole into the builder; only an escape
@@ -318,6 +318,55 @@ fn scan_string(src: string, i: int, opening: bool, interpolate: bool) -> ScanSte
         }
     }
     ScanStep { token: t, err: null, opens_hole: p.stop is .Hole, next: p.next }
+}
+
+/// A QUOTE piece: raw source to the next `${` or the `}` that closes
+/// the quote. Braces inside the body count (a generated fn's own
+/// `{}`), and braces inside the body's STRING literals do not — the
+/// same rule the `grammar` block's scan follows.
+fn scan_quote_part(src: string, from: int, start: int) -> StrPart {
+    let n = src.length
+    mut depth = start
+    mut quoted = false
+    mut j = from
+    while j < n {
+        let c = src.char_code(j)
+        if quoted {
+            if c == 92 { j = j + 1 }
+            else if c == 34 { quoted = false }
+        } else if c == 34 {
+            quoted = true
+        } else if c == 36 && j + 1 < n && src.char_code(j + 1) == 123 {
+            return StrPart { text: src.substring(from, j), stop: StrStop.Hole, next: j + 2, depth: depth }
+        } else if c == 123 {
+            depth = depth + 1
+        } else if c == 125 {
+            if depth == 0 { return StrPart { text: src.substring(from, j), stop: StrStop.Quote, next: j + 1 } }
+            depth = depth - 1
+        }
+        j = j + 1
+    }
+    ragged(src.substring(from, j), j)
+}
+
+/// A quote piece as its token, the string scanner's twin: the OPENING
+/// piece is Str (no hole) or IStrBegin; a CONTINUATION piece is
+/// IStrMid or IStrEnd. `opens_hole` tells the loop to enter a hole.
+fn scan_quote(src: string, i: int, opening: bool, start: int) -> ScanStep {
+    let p = scan_quote_part(src, i, start)
+    let kind = match p.stop {
+        .Quote or .Ragged -> if opening { TokenKind.Str } else { TokenKind.IStrEnd },
+        .Hole -> if opening { TokenKind.IStrBegin } else { TokenKind.IStrMid },
+    }
+    let t = token(kind, p.text, i, p.next)
+    if p.stop is .Ragged {
+        return ScanStep {
+            token: t, opens_hole: false,
+            err: LexError { message: "a `quote` block is never closed", span: span_of(i, p.next) },
+            next: p.next,
+        }
+    }
+    ScanStep { token: t, err: null, opens_hole: p.stop is .Hole, next: p.next, depth: p.depth }
 }
 
 /// First index at or after `from` that is a newline (or the end).
@@ -532,6 +581,11 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
     mut line_has_token = false
     mut errors: List<LexError> = []
     mut holes: List<int> = []
+    // whether each open hole belongs to a `quote` (true) or a string,
+    // and for a quote hole the brace depth the raw body had reached
+    mut quoted_holes: List<bool> = []
+    mut quote_depths: List<int> = []
+    mut opened_quote = false
     mut i = 0
     let n = src.length
     while i < n {
@@ -544,6 +598,7 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
                 pending.push(doc_line(src, n, i))
             }
         }
+        opened_quote = false
         mut s = scan_step(src, n, i, interpolate)
         if in_hole(holes, s.token) {
             let t = s.token!
@@ -551,7 +606,13 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
             if t.text == "}" {
                 if holes.last()! == 0 {
                     let _ = holes.pop()
-                    s = scan_string(src, s.next, false, interpolate)
+                    let was_quote = quoted_holes.pop()
+                    if was_quote {
+                        opened_quote = true
+                        s = scan_quote(src, s.next, false, quote_depths.pop())
+                    } else {
+                        s = scan_string(src, s.next, false, interpolate)
+                    }
                 } else {
                     holes.set(holes.length - 1, holes.last()! - 1)
                 }
@@ -562,6 +623,8 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
         if !holes.is_empty() && s.token != null && s.token!.kind == TokenKind.Break {
             errors.push(hole_error(s.token!.span.lo))
             holes = []
+            quoted_holes = []
+            quote_depths = []
         }
         if s.token != null {
             let t = s.token!
@@ -582,7 +645,11 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
             raw.push(t)
         }
         if s.err != null { errors.push(s.err!) }
-        if s.opens_hole { holes.push(0) }
+        if s.opens_hole {
+            holes.push(0)
+            quoted_holes.push(opened_quote)
+            if opened_quote { quote_depths.push(s.depth) }
+        }
         i = s.next
         // THE GRAMMAR BLOCK is not Avra: its body is grammar
         // notation, so the lexer hands it over whole. Nothing else
@@ -595,10 +662,15 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
             i = body.next
         }
         if opens_quote(raw, s.token) {
-            let body = scan_raw_block(src, n, i, "quote")
-            if body.token != null { raw.push(body.token!) }
-            if body.err != null { errors.push(body.err!) }
-            i = body.next
+            let first = scan_quote(src, i, true, 0)
+            if first.token != null { raw.push(first.token!) }
+            if first.err != null { errors.push(first.err!) }
+            if first.opens_hole {
+                holes.push(0)
+                quoted_holes.push(true)
+                quote_depths.push(first.depth)
+            }
+            i = first.next
         }
     }
     if !holes.is_empty() { errors.push(hole_error(src.length)) }
