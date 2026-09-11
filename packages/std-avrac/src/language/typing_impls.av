@@ -16,7 +16,16 @@ impl TypeCx {
         if parts == null { return }
         let fp = parts!
         let contract: DeclId = self.view.decls.decl(self.decl_of(f)).parent!
-        if self.view.store.is_static(f) { self.static_in_a_trait(f) }
+        // AN ASSOCIATED FN spends no receiver seat: `Self` is not in
+        // scope for it, so a signature naming `Self` does not resolve.
+        if self.view.store.is_static(f) {
+            self.record_receiver_word(f, [])
+            self.declare(f, DeclSig.Fn(FnSig {
+                params: self.annotated_params(f, fp),
+                ret: self.annotated(f, fp.ret),
+            }))
+            return
+        }
         self.record_receiver_word(f, [false])
         // `Self` is in scope for the sig's annotations
         self.enter_target_scope(contract)
@@ -313,12 +322,6 @@ impl TypeCx {
 
     fn static_names_a_variant(f: StmtId, tname: string, name: string) {
         self.emit(refusal("type.static_name", self.stmt_loc(f), "`${tname}.${name}` is already a variant — a `static fn` of that name could never be called", "declared here", "rename the `static fn`: a variant wins the spelling `${tname}.${name}`"))
-    }
-
-    /// A `static fn` in a TRAIT: a contract with no receiver answers
-    /// `Self`, and `Self` has no name in a signature yet.
-    fn static_in_a_trait(f: StmtId) {
-        self.emit(refusal("type.static_fn", self.stmt_loc(f), "`static fn` in a trait would answer `Self`, which has no name in a signature yet", "declared here", "declare it in each `impl` instead — inherent statics land"))
     }
 
     fn orphan_impl(s: StmtId, heading: string, target: string, owner: string) {
