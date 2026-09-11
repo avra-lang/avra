@@ -783,10 +783,13 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       (`parse_into`, no cross-store copy), admits its declarations,
       and they type and run as written. A trait's `derive` builds that
       source with ordinary interpolation today; a program test has
-      `@derive(Show)` generate `fn show` on a struct. NEXT: the
-      `quote { ... }` surface with `${}` code holes (so a derive need
-      not hand-build strings), then `Code<T>` claim + origin hygiene,
-      then `@derive(Show, Eq)` in std.
+      `@derive(Show)` generate `fn show` on a struct. S4e LANDED — the
+      `quote { … }` surface: the lexer takes the body whole (like a
+      `grammar` block) and the parser makes it one string literal, so
+      braces, quotes and newlines inside need no escaping. NEXT: `${}`
+      code holes inside a quote (so a derive interpolates rather than
+      concatenating), then `Code<T>` claim + origin hygiene, then
+      `@derive(Show, Eq)` in std.
 - [ ] **S1 leftovers (small, fold in).** The reach refusal's full
       call chain (names each link, not just row+body) — the one
       "world" voice annotations share; and `export const` (waits on

@@ -162,18 +162,30 @@ fn measured_real(t: Token, text: string, lo: int, hi: int) -> ScanStep {
 /// keyword, then the brace the block's own body may not be read
 /// through.
 fn opens_grammar(raw: List<Token>, just: Token?) -> bool {
+    opens_word_block(raw, just, "grammar")
+}
+
+/// A `quote { … }` body is taken whole too: its bytes are generated
+/// SOURCE, not our tokens, so the lexer hands it over as one literal.
+fn opens_quote(raw: List<Token>, just: Token?) -> bool {
+    opens_word_block(raw, just, "quote")
+}
+
+/// Whether the token just consumed is a `{` opening a raw block after
+/// the word `word`.
+fn opens_word_block(raw: List<Token>, just: Token?, word: string) -> bool {
     if just == null { return false }
     if just!.kind != TokenKind.Op || just!.text != "{" { return false }
     if raw.length < 2 { return false }
     let before = raw[raw.length - 2]
-    before.kind == TokenKind.Name && before.text == "grammar"
+    before.kind == TokenKind.Name && before.text == word
 }
 
 /// THE GRAMMAR BLOCK'S BODY, taken whole: every byte to the brace
 /// that closes the one already consumed. Braces inside the body's
 /// own STRING literals do not count — `block`'s grammar writes `"{"`
 /// as a literal, and a counter blind to quotes would end there.
-fn scan_raw_block(src: string, n: int, from: int) -> ScanStep {
+fn scan_raw_block(src: string, n: int, from: int, word: string) -> ScanStep {
     mut depth = 1
     mut i = from
     mut quoted = false
@@ -195,7 +207,7 @@ fn scan_raw_block(src: string, n: int, from: int) -> ScanStep {
         }
         i = i + 1
     }
-    refused("a `grammar` block is never closed", from, n)
+    refused("a `${word}` block is never closed", from, n)
 }
 
 /// A step that produced only an error.
@@ -577,7 +589,13 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
         // could read it — `n:NAME` and `->` are not our tokens, and
         // the braces it counts live inside its own string literals.
         if opens_grammar(raw, s.token) {
-            let body = scan_raw_block(src, n, i)
+            let body = scan_raw_block(src, n, i, "grammar")
+            if body.token != null { raw.push(body.token!) }
+            if body.err != null { errors.push(body.err!) }
+            i = body.next
+        }
+        if opens_quote(raw, s.token) {
+            let body = scan_raw_block(src, n, i, "quote")
             if body.token != null { raw.push(body.token!) }
             if body.err != null { errors.push(body.err!) }
             i = body.next
