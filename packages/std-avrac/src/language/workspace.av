@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, int_of, text_of, bool_of, bits_of, is_literal}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, int_of, text_of, bool_of, bits_of, is_literal}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
@@ -1433,22 +1433,60 @@ impl Program {
         "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig!.ret)}"
     }
 
-    /// A file's generated declarations, each a line with its origin —
-    /// what `avra expand` prints today, before the source printer.
+    /// A file's generated declarations, each in canonical source
+    /// with its origin — the compact listing API retained for tools
+    /// that want only generated declarations.
     fn generated_lines(f: FileId) -> List<string> {
         [self.decl_line(d) for d in self.ws.expanded(f)]
     }
 
-    /// One generated declaration as `fn name(params) -> ret`, its
-    /// provenance appended.
+    /// A file as compiled: written nodes in source order, with every
+    /// generated declaration immediately after the declaration its
+    /// annotation wrapped.
+    fn expanded_source(f: FileId) -> string {
+        let made = self.ws.expanded(f)
+        let parsed = self.ws.parsed(f)
+        mut chunks: List<string> = []
+        mut attached: List<DeclId> = []
+        for s in parsed.stmts {
+            chunks.push(render_statement(parsed.store, s))
+            let written: DeclId? = self.ws.decls.decl_of(f, s)
+            if written != null {
+                let name = self.ws.decls.decl(written!).name
+                for d in made {
+                    let provenance = self.ws.decls.provenance_of(d)
+                    if provenance != null && provenance!.original == name {
+                        chunks.push(self.decl_block(d))
+                        attached.push(d)
+                    }
+                }
+            }
+        }
+        // A malformed declaration table must not make a generated
+        // node invisible. Clean programs attach every declaration;
+        // recovery output keeps any orphan at the end.
+        for d in made {
+            if !attached.any(same_decl(it, d)) { chunks.push(self.decl_block(d)) }
+        }
+        joined(chunks, "\n\n")
+    }
+
+    /// One generated declaration as source with provenance appended.
     fn decl_line(d: DeclId) -> string {
-        let decls = self.ws.decls
-        let sig: FnSig? = fn_sig_of(decls.sig(d))
-        let holes = if sig == null { [] } else { [decls.types.name_of(pt) for pt in sig!.params] }
-        let ret = if sig == null { "?" } else { decls.types.name_of(sig!.ret) }
-        let prov = decls.provenance_of(d)
-        let from = if prov == null { "" } else { "   // from @${prov!.ann} on ${prov!.original}" }
-        "fn ${decls.decl(d).name}(${holes.join(", ")}) -> ${ret}${from}"
+        let source = render_statement(self.ws.decls.store(d), self.ws.decls.decl(d).stmt)
+        let provenance = self.provenance_line(d)
+        if provenance.is_empty() { source } else { "${source}   ${provenance}" }
+    }
+
+    fn decl_block(d: DeclId) -> string {
+        let source = render_statement(self.ws.decls.store(d), self.ws.decls.decl(d).stmt)
+        let provenance = self.provenance_line(d)
+        if provenance.is_empty() { source } else { "${provenance}\n${source}" }
+    }
+
+    fn provenance_line(d: DeclId) -> string {
+        let provenance = self.ws.decls.provenance_of(d)
+        if provenance == null { "" } else { "// from @${provenance!.ann} on ${provenance!.original}" }
     }
 
     fn clean() -> bool { self.defects.is_empty() && !has_errors(self.voices) && !self.files.any(unclean(it)) }

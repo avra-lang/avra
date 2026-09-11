@@ -1,0 +1,403 @@
+//! The canonical source projection of the AST. Every node answers in
+//! parseable Avra; layout and redundant parentheses are presentation,
+//! while node order, operator grouping, declaration marks and payloads
+//! are preserved. `avra expand` and the future formatter share this one
+//! renderer.
+use core.{NodeStore, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Variant, Case, Annotation, TypeRef, quoted_text, spelled, op_symbol, joined, flatten, filled}
+use features.{chained_binder}
+use @std.text.{Text, builder}
+
+fn source_text(store: NodeStore) -> SourceText { SourceText { store: store } }
+
+/// Statements as canonical source, separated at the top level.
+export fn render_source(store: NodeStore, stmts: List<StmtId>) -> string {
+    let out = source_text(store)
+    joined([joined(out.statement(s, 0), "\n") for s in stmts], "\n\n")
+}
+
+/// One statement as canonical source.
+export fn render_statement(store: NodeStore, stmt: StmtId) -> string {
+    let out = source_text(store)
+    joined(out.statement(stmt, 0), "\n")
+}
+
+/// One expression as canonical source.
+export fn render_expression(store: NodeStore, expr: ExprId) -> string {
+    source_text(store).expression(expr, 0, 0)
+}
+
+type SourceText = { store: NodeStore }
+
+impl SourceText {
+    /// A statement and the annotation lines attached to it.
+    fn statement(s: StmtId, depth: int) -> List<string> {
+        [source_line(depth, self.annotation(a, depth)) for a in self.store.annotations_of(s)]
+            .concat(self.statement_node(s, depth))
+    }
+
+    /// The statement registry: every Stmt variant has one source form.
+    fn statement_node(s: StmtId, depth: int) -> List<string> {
+        let exported = if self.store.is_exported(s) { "export " } else { "" }
+        match self.store.stmt(s) {
+            .Let(name, ty, value) -> [source_line(depth, "let ${source_name(name)}${self.annotation_type(ty)} = ${self.expression(value, 0, depth)}")],
+            .MutLet(name, ty, value) -> [source_line(depth, "mut ${source_name(name)}${self.annotation_type(ty)} = ${self.expression(value, 0, depth)}")],
+            .ConstDecl(name, ty, value) -> [source_line(depth, "${exported}const ${source_name(name)}${self.annotation_type(ty)} = ${self.expression(value, 0, depth)}")],
+            .Assign(target, value) -> [source_line(depth, "${self.expression(target, 0, depth)} = ${self.expression(value, 0, depth)}")],
+            .ExprStmt(value) -> [source_line(depth, self.expression(value, 0, depth))],
+            .Discard(value) -> [source_line(depth, "let _ = ${self.expression(value, 0, depth)}")],
+            .FnDecl(name, tparams, params, ret, body) -> [source_line(depth, "${exported}${self.fn_mark(s)}fn ${source_name(name)}${self.type_params(tparams)}(${self.params(params, depth)}) -> ${spelled(ret)} ${self.block(body, depth)}")],
+            .ExternFn(name, params, ret) -> [source_line(depth, "${exported}extern fn ${source_name(name)}(${self.params(params, depth)}) -> ${spelled(ret)}")],
+            .While(cond, stmts) -> [self.statement_block("while ${self.expression(cond, 0, depth)}", stmts, depth)],
+            .IfStmt(cond, yes, no) -> [self.if_statement(cond, yes, no, depth)],
+            .Return(value) -> [source_line(depth, if value == null { "return" } else { "return ${self.expression(value!, 0, depth)}" })],
+            .Fail(value) -> [source_line(depth, "fail ${self.expression(value, 0, depth)}")],
+            .ImplDecl(of, target, fns) -> [self.impl_decl(exported, of, target, fns, depth)],
+            .TraitDecl(name, fns) -> [self.trait_decl(exported, name, fns, depth)],
+            .LetElse(name, subject, stmts) -> [self.statement_block("let ${source_name(name)}? = ${self.expression(subject, 0, depth)} else", stmts, depth)],
+            .For(name, from, to, _, _, stmts) -> [self.statement_block("for ${source_name(name)} in ${self.expression(from, 0, depth)}..${self.expression(to, 0, depth)}", stmts, depth)],
+            .Use(path, items) -> [source_line(depth, "use ${joined(path, ".")}.{${joined(items, ", ")}}")],
+            .ForEach(index, name, subject, stmts) -> [self.statement_block("for ${self.loop_binds(index, name)} in ${self.expression(subject, 0, depth)}", stmts, depth)],
+            .StructDecl(name, tparams, fields) -> [self.struct_decl(exported, name, tparams, fields, depth)],
+            .EnumDecl(name, tparams, variants) -> [self.enum_decl(exported, name, tparams, variants, depth)],
+            .Spec(name, cases) -> [self.spec_decl(name, cases, depth)],
+            .Defer(body, on_error) -> [source_line(depth, "${if on_error { "errdefer" } else { "defer" }} ${self.deferred(body, depth)}")],
+            .Error -> [source_line(depth, "__error")],
+        }
+    }
+
+    fn annotation(a: Annotation, depth: int) -> string {
+        if a.args.is_empty() { return "@${a.name}" }
+        "@${a.name}(${joined([self.expression(x, 0, depth) for x in a.args], ", ")})"
+    }
+
+    fn annotation_type(ty: TypeRef?) -> string {
+        if ty == null { "" } else { ": ${spelled(ty!)}" }
+    }
+
+    fn fn_mark(s: StmtId) -> string {
+        when {
+            self.store.is_mutating(s) -> "mut "
+            self.store.is_static(s) -> "static "
+            self.store.is_once(s) -> "once "
+            _ -> ""
+        }
+    }
+
+    fn type_params(params: List<Param>) -> string {
+        if params.is_empty() { return "" }
+        "<${joined(["${source_name(p.name)}${self.bound(p.ty)}" for p in params], ", ")}>"
+    }
+
+    fn named_type_params(params: List<string>) -> string {
+        if params.is_empty() { return "" }
+        "<${joined([source_name(p) for p in params], ", ")}>"
+    }
+
+    fn bound(ty: TypeRef?) -> string {
+        if ty == null { "" } else { ": ${spelled(ty!)}" }
+    }
+
+    fn params(params: List<Param>, depth: int) -> string {
+        joined([self.param(p, depth) for p in params], ", ")
+    }
+
+    fn param(p: Param, depth: int) -> string {
+        let name = if p.name.is_empty() { "" } else { "${source_name(p.name)}${if p.ty == null { "" } else { ": " }}" }
+        let ty = if p.ty == null { "" } else { spelled(p.ty!) }
+        "${if p.mutable { "mut " } else { "" }}${name}${ty}${self.default_value(p.default, depth)}"
+    }
+
+    fn default_value(value: ExprId?, depth: int) -> string {
+        if value == null { "" } else { " = ${self.expression(value!, 0, depth)}" }
+    }
+
+    fn block(body: ExprId, depth: int) -> string {
+        match self.store.expr(body) {
+            .Block(stmts, value) -> self.braced(stmts, value, depth),
+            rest -> self.braced([], body, depth),
+        }
+    }
+
+    fn braced(stmts: List<StmtId>, value: ExprId?, depth: int) -> string {
+        let body = flatten([self.statement(s, depth + 1) for s in stmts])
+        let lines = if value == null { body } else { body.concat([source_line(depth + 1, self.expression(value!, 0, depth + 1))]) }
+        if lines.is_empty() { return "{}" }
+        "{\n${joined(lines, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    fn statement_block(head: string, stmts: List<StmtId>, depth: int) -> string {
+        let body = flatten([self.statement(s, depth + 1) for s in stmts])
+        if body.is_empty() { return source_line(depth, "${head} {}") }
+        "${source_line(depth, "${head} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    fn if_statement(cond: ExprId, yes: List<StmtId>, no: List<StmtId>, depth: int) -> string {
+        let y = flatten([self.statement(s, depth + 1) for s in yes])
+        let condition = self.expression(cond, 0, depth)
+        let head = source_line(depth, "if ${condition} {")
+        if no.is_empty() {
+            if y.is_empty() { return source_line(depth, "if ${condition} {}") }
+            return "${head}\n${joined(y, "\n")}\n${source_line(depth, "}")}"
+        }
+        let n = flatten([self.statement(s, depth + 1) for s in no])
+        "${head}\n${joined(y, "\n")}\n${source_line(depth, "} else {")}\n${joined(n, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    fn impl_decl(exported: string, of: string?, target: string, fns: List<StmtId>, depth: int) -> string {
+        let head = if of == null { "${exported}impl ${source_name(target)}" } else { "${exported}impl ${source_name(of!)} for ${source_name(target)}" }
+        self.statement_block(head, fns, depth)
+    }
+
+    fn trait_decl(exported: string, name: string, fns: List<StmtId>, depth: int) -> string {
+        let body = flatten([self.trait_member(s, depth + 1) for s in fns])
+        if body.is_empty() { return source_line(depth, "${exported}trait ${source_name(name)} {}") }
+        "${source_line(depth, "${exported}trait ${source_name(name)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    fn trait_member(s: StmtId, depth: int) -> List<string> {
+        match self.store.stmt(s) {
+            .FnDecl(name, tparams, params, ret, body) -> {
+                let head = "${self.fn_mark(s)}fn ${source_name(name)}${self.type_params(tparams)}(${self.params(params, depth)}) -> ${spelled(ret)}"
+                match self.store.expr(body) {
+                    .Error -> [source_line(depth, head)],
+                    rest -> [source_line(depth, "${head} ${self.block(body, depth)}")],
+                }
+            },
+            rest -> self.statement(s, depth),
+        }
+    }
+
+    fn struct_decl(exported: string, name: string, tparams: List<string>, fields: List<Param>, depth: int) -> string {
+        if fields.is_empty() { return source_line(depth, "${exported}type ${source_name(name)}${self.named_type_params(tparams)} = {}") }
+        let body = [source_line(depth + 1, "${self.param(f, depth + 1)},") for f in fields]
+        "${source_line(depth, "${exported}type ${source_name(name)}${self.named_type_params(tparams)} = {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    fn enum_decl(exported: string, name: string, tparams: List<string>, variants: List<Variant>, depth: int) -> string {
+        let body = [source_line(depth + 1, self.variant(v, depth + 1)) for v in variants]
+        if body.is_empty() { return source_line(depth, "${exported}enum ${source_name(name)}${self.named_type_params(tparams)} {}") }
+        "${source_line(depth, "${exported}enum ${source_name(name)}${self.named_type_params(tparams)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    fn variant(v: Variant, depth: int) -> string {
+        if v.payloads.is_empty() { return source_name(v.name) }
+        "${source_name(v.name)}(${self.params(v.payloads, depth)})"
+    }
+
+    fn spec_decl(name: string, cases: List<Case>, depth: int) -> string {
+        let body = flatten([self.case_lines(c, depth + 1) for c in cases])
+        if body.is_empty() { return source_line(depth, "spec ${quoted_text(name)} {}") }
+        "${source_line(depth, "spec ${quoted_text(name)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    fn case_lines(c: Case, depth: int) -> List<string> {
+        let one = source_line(depth + if c.group.is_empty() { 0 } else { 1 }, "then ${quoted_text(c.name)} ${self.block(c.body, depth + if c.group.is_empty() { 0 } else { 1 })}")
+        if c.group.is_empty() { return [one] }
+        [source_line(depth, "given ${quoted_text(c.group)} {"), one, source_line(depth, "}")]
+    }
+
+    fn deferred(body: ExprId, depth: int) -> string {
+        match self.store.expr(body) {
+            .Lambda(params, value) -> if params.is_empty() { self.expression(value, 0, depth) } else { self.expression(body, 0, depth) },
+            rest -> self.expression(body, 0, depth),
+        }
+    }
+
+    fn loop_binds(index: string?, name: string) -> string {
+        if index == null { source_name(name) } else { "${source_name(index!)}, ${source_name(name)}" }
+    }
+
+    /// The expression registry: every Expr variant has one source form.
+    fn expression(id: ExprId, parent: int, depth: int) -> string {
+        match self.store.expr(id) {
+            // A negative literal is stored folded, but it still has
+            // unary precedence on the page: `(-3).field` must keep
+            // its group or it reads back as `-(3.field)`.
+            .IntLit(value) -> numeric("${value}", parent),
+            .FloatLit(bits) -> numeric(avra_float_text_bits(bits), parent),
+            .StrLit(value) -> grouped(quoted_text(value), 12, parent),
+            .BoolLit(value) -> grouped(if value { "true" } else { "false" }, 12, parent),
+            .Ident(name) -> grouped(source_name(name), 12, parent),
+            .Receiver -> grouped("self", 12, parent),
+            .Binary(op, left, right) -> self.binary(op, left, right, parent, depth),
+            .Not(value) -> grouped("!${self.expression(value, 9, depth)}", 9, parent),
+            .ListLit(elems) -> grouped("[${joined([self.expression(e, 0, depth) for e in elems], ", ")}]", 12, parent),
+            .Comp(elem, index, name, source, hi, cond) -> self.comprehension(elem, index, name, source, hi, cond, parent, depth),
+            .MapLit(keys, values) -> grouped("{${joined(["${self.expression(k, 0, depth)}: ${self.expression(values[j], 0, depth)}" for j, k in keys], ", ")}}", 12, parent),
+            .Index(subject, index) -> grouped("${self.expression(subject, 11, depth)}[${self.expression(index, 0, depth)}]", 11, parent),
+            .Prop(subject, name) -> grouped("${self.expression(subject, 11, depth)}.${source_name(name)}", 11, parent),
+            .Interp(parts, holes) -> grouped(self.interpolation(parts, holes, depth), 12, parent),
+            .If(cond, yes, no) -> grouped("if ${self.expression(cond, 0, depth)} ${self.block(yes, depth)} else ${self.block(no, depth)}", 12, parent),
+            .When(conds, values, fallback) -> grouped(self.when_expr(conds, values, fallback, depth), 12, parent),
+            .Block(stmts, value) -> grouped(self.braced(stmts, value, depth), 12, parent),
+            .Call(callee, pins, args) -> grouped("${source_name(callee)}${self.pins(pins)}(${self.args(args, depth)})", 12, parent),
+            .StructLit(name, fields, values) -> grouped("${source_name(name)} { ${joined(["${source_name(f)}: ${self.expression(values[j], 0, depth)}" for j, f in fields], ", ")} }", 12, parent),
+            .With(subject, fields, values) -> grouped("${self.expression(subject, 10, depth)} with { ${joined(["${source_name(f)}: ${self.expression(values[j], 0, depth)}" for j, f in fields], ", ")} }", 10, parent),
+            .Match(subject, arms) -> grouped(self.match_expr(subject, arms, depth), 12, parent),
+            .NullLit -> grouped("null", 12, parent),
+            .Coalesce(left, right) -> grouped("${self.expression(left, 5, depth)} ?? ${self.expression(right, 6, depth)}", 5, parent),
+            .MatchOpt(subject, bind, present, absent) -> self.match_optional(subject, bind, present, absent, parent, depth),
+            .Lambda(params, body) -> grouped("(${self.params(params, depth)}) -> ${self.expression(body, 0, depth)}", 12, parent),
+            // Parentheses preserve VALUE application. Without the
+            // witness, `(f)(x)` would print `f(x)` and read back as
+            // the direct, declaration-resolved Call variant.
+            .CallValue(subject, args) -> grouped("(${self.expression(subject, 0, depth)})(${self.args(args, depth)})", 11, parent),
+            .Chain(subject, name) -> grouped("${self.expression(subject, 11, depth)}?.${source_name(name)}", 11, parent),
+            .Force(value) -> grouped("${self.expression(value, 11, depth)}!", 11, parent),
+            .Is(subject, variant) -> grouped("${self.expression(subject, 5, depth)} is .${source_name(variant)}", 4, parent),
+            .VariantLit(name, args) -> grouped(".${source_name(name)}${if args.is_empty() { "" } else { "(${self.args(args, depth)})" }}", 12, parent),
+            .Propagate(value) -> grouped("${self.expression(value, 11, depth)}?", 11, parent),
+            .Catch(subject, variants, binds, values) -> grouped(self.catch_expr(subject, variants, binds, values, depth), 1, parent),
+            .MethodCall(subject, name, args) -> grouped("${self.expression(subject, 11, depth)}.${source_name(name)}(${self.args(args, depth)})", 11, parent),
+            .Error -> grouped("__error", 12, parent),
+        }
+    }
+
+    fn binary(op: BinOp, left: ExprId, right: ExprId, parent: int, depth: int) -> string {
+        let p = binary_precedence(op)
+        // Comparisons do not chain. The bitwise band does, but the
+        // language deliberately refuses a run mixing operators; a
+        // mixed left child therefore needs its group even though a
+        // conventional precedence table would drop it.
+        let lp = if comparison(op) || self.mixed_bitwise(op, left) { p + 1 } else { p }
+        grouped("${self.expression(left, lp, depth)} ${op_symbol(op)} ${self.expression(right, p + 1, depth)}", p, parent)
+    }
+
+    fn mixed_bitwise(op: BinOp, left: ExprId) -> bool {
+        if !bitwise(op) { return false }
+        match self.store.expr(left) {
+            .Binary(held, _, _) -> bitwise(held) && op_symbol(held) != op_symbol(op),
+            rest -> false,
+        }
+    }
+
+    fn comprehension(elem: ExprId, index: string?, name: string, source: ExprId, hi: ExprId?, cond: ExprId?, parent: int, depth: int) -> string {
+        let binds = if index == null { source_name(name) } else { "${source_name(index!)}, ${source_name(name)}" }
+        let range = if hi == null { self.expression(source, 0, depth) } else { "${self.expression(source, 0, depth)}..${self.expression(hi!, 0, depth)}" }
+        let guard = if cond == null { "" } else { " if ${self.expression(cond!, 0, depth)}" }
+        grouped("[${self.expression(elem, 0, depth)} for ${binds} in ${range}${guard}]", 12, parent)
+    }
+
+    fn interpolation(parts: List<string>, holes: List<ExprId>, depth: int) -> string {
+        if parts.is_empty() { return quoted_text("") }
+        mut out: Text = builder()
+        out.push("\"")
+        out.push(unquoted(parts[0]))
+        for j, hole in holes {
+            out.push("\${")
+            out.push(self.expression(hole, 0, depth))
+            out.push("}")
+            out.push(unquoted(parts[j + 1]))
+        }
+        out.push("\"")
+        out.built()
+    }
+
+    fn when_expr(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId, depth: int) -> string {
+        let arms = [source_line(depth + 1, "${self.expression(c, 0, depth + 1)} -> ${self.expression(values[j], 0, depth + 1)}") for j, c in conds]
+        "when {\n${joined(arms.concat([source_line(depth + 1, "_ -> ${self.expression(fallback, 0, depth + 1)}")]), "\n")}\n${source_line(depth, "}")}"
+    }
+
+    fn match_expr(subject: ExprId, arms: List<Arm>, depth: int) -> string {
+        let body = [source_line(depth + 1, "${joined([self.pattern(p, depth + 1) for p in a.pats], " or ")} -> ${self.expression(a.value, 0, depth + 1)}") for a in arms]
+        "match ${self.expression(subject, 0, depth)} {\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    fn match_optional(subject: ExprId, bind: string, present: ExprId, absent: ExprId, parent: int, depth: int) -> string {
+        let chained: Expr? = if bind == chained_binder() { self.store.expr(present) } else { null }
+        if chained != null && self.store.expr(absent) is .NullLit {
+            match chained! {
+                .MethodCall(receiver, name, args) -> {
+                    if self.store.ident_name(receiver) == chained_binder() {
+                        return grouped("${self.expression(subject, 11, depth)}?.${source_name(name)}(${self.args(args, depth)})", 11, parent)
+                    }
+                },
+                rest -> { let _ = 0 },
+            }
+        }
+        grouped("match ${self.expression(subject, 0, depth)} {\n${source_line(depth + 1, "${source_name(bind)}? -> ${self.expression(present, 0, depth + 1)}")}\n${source_line(depth + 1, "null -> ${self.expression(absent, 0, depth + 1)}")}\n${source_line(depth, "}")}", 12, parent)
+    }
+
+    fn catch_expr(subject: ExprId, variants: List<string>, binds: List<string>, values: List<ExprId>, depth: int) -> string {
+        if values.length == 1 {
+            let head = self.catch_head(variants[0], binds[0])
+            return "${self.expression(subject, 2, depth)} catch ${head}${self.expression(values[0], 2, depth)}"
+        }
+        let arms = [source_line(depth + 1, "${self.catch_head(variants[j], binds[j])}${self.expression(v, 0, depth + 1)}") for j, v in values]
+        "${self.expression(subject, 2, depth)} catch {\n${joined(arms, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    fn catch_head(variant: string, bind: string) -> string {
+        if variant.is_empty() {
+            if bind.is_empty() { return "" }
+            return "${source_name(bind)} -> "
+        }
+        ".${source_name(variant)}${if bind.is_empty() { "" } else { "(${source_name(bind)})" }} -> "
+    }
+
+    fn pattern(id: PatId, depth: int) -> string {
+        match self.store.pat(id) {
+            .Wild -> "_",
+            .Rest -> "rest",
+            .Bind(name) -> source_name(name),
+            .Variant(name, args) -> ".${source_name(name)}${if args.is_empty() { "" } else { "(${joined([self.pattern(p, depth) for p in args], ", ")})" }}",
+            .Lit(value) -> self.expression(value, 0, depth),
+        }
+    }
+
+    fn pins(pins: List<TypeRef>) -> string {
+        if pins.is_empty() { "" } else { "<${joined([spelled(p) for p in pins], ", ")}>" }
+    }
+
+    fn args(args: List<ExprId>, depth: int) -> string {
+        joined([self.expression(a, 0, depth) for a in args], ", ")
+    }
+}
+
+fn source_line(depth: int, text: string) -> string {
+    "${joined(filled(depth, "    "), "")}${text}"
+}
+
+/// Compiler-minted binders are hygienic and intentionally not user
+/// spellable. Their projection uses a readable source identifier.
+fn source_name(name: string) -> string {
+    name.replace("$", "_").replace(" ", "_")
+}
+
+fn unquoted(text: string) -> string {
+    let q = quoted_text(text)
+    q.substring(1, q.length - 1)
+}
+
+fn grouped(text: string, own: int, parent: int) -> string {
+    if own < parent { "(${text})" } else { text }
+}
+
+fn numeric(text: string, parent: int) -> string {
+    grouped(text, if text.starts_with("-") { 9 } else { 12 }, parent)
+}
+
+fn comparison(op: BinOp) -> bool {
+    match op {
+        .Eq or .Ne or .Lt or .Le or .Gt or .Ge -> true,
+        .Add or .Sub or .Mul or .Div or .Mod or .And or .Or or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> false,
+    }
+}
+
+fn bitwise(op: BinOp) -> bool {
+    match op {
+        .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> true,
+        .Add or .Sub or .Mul or .Div or .Mod or .And or .Or or .Eq or .Ne or .Lt or .Le or .Gt or .Ge -> false,
+    }
+}
+
+fn binary_precedence(op: BinOp) -> int {
+    match op {
+        .Or -> 2,
+        .And -> 3,
+        .Eq or .Ne or .Lt or .Le or .Gt or .Ge -> 4,
+        .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> 6,
+        .Add or .Sub -> 7,
+        .Mul or .Div or .Mod -> 8,
+    }
+}
