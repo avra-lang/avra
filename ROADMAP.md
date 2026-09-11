@@ -6834,7 +6834,8 @@ PERFORMANCE 1, PROCESS 2.
   THE ASK: a doc-comment side table on the declaration.
 - **`explain @name` PRINTS THE SIGNATURE ALONE**, which is honest (the
   signature IS the effect) but the doc half is owed. REMAINING S3g:
-  `avra expand` + the node source printer.
+  stored doc comments, now that `avra expand` + the node source
+  printer landed at `bc5a7a7`.
 - **A SAME-FILE `Declares` ANNOTATION WAS SILENT, AND IS REFUSED NOW.**
   The provider-only guard (`declared_work`) skipped an annotation fn
   that stood in the file it annotated — no twin, no diagnostic (found
@@ -6843,6 +6844,43 @@ PERFORMANCE 1, PROCESS 2.
   annotation fn in another file". The boundary is honest: expanding
   needs the annotation fn's signature, which needs this file's names,
   which are the very thing being resolved.
+
+### ADDENDUM — S3g node source printer, same day (`bc5a7a7`)
+
+- **FEATURES — `AVRA EXPAND` NOW SHOWS THE FILE, CLOSED.** The earlier
+  survey's request is landed: `language/source_text.av` exhaustively
+  projects the AST, and `Program.expanded_source` inserts generated
+  declarations immediately after their annotated origins. Evidence:
+  `./avra expand …/annotations/tests/traced/src/main.av` printed the
+  written `sum`, its provenance, the
+  complete `sum_traced` wrapper, and the final expression.
+- **DEFECTS — TWO PRECEDENCE WRONG ANSWERS, FIXED.** Structural
+  round-trip tests first failed for `(-3).magnitude` (printed as
+  `-3.magnitude`) and `(a & b) | (c ^ d)` (printed without the groups
+  the mixed-bitwise law requires). `numeric` now gives a negative
+  folded literal unary precedence, and mixed bitwise left children
+  retain their group. Both witnesses are permanent in
+  `language/tests/source_text_test.av`.
+- **DOCTRINE — A SOURCE PROJECTION PROVES ITS TREE, NOT ONLY ITS
+  TEXT.** The printer suite reparses every fixture, reaches a textual
+  fixed point, and compares top-level statement fingerprints before
+  and after. This caught semantic regrouping that a pretty golden
+  alone would miss. The direct value-call witness also pins `(f)(1)`
+  so it never becomes declaration call `f(1)`.
+- **FRICTION / PERFORMANCE — CONFIRMED, ALREADY ROUTED.** Targeted
+  printer specs took about 20.5 s and peaked near 318 MB under
+  `tools/watch.sh`, while emitting the already-recorded F2047 warning
+  flood; the final gate peaked at 572 MB. F2047 remains routed to S2,
+  and the survey adds no duplicate backlog row.
+- **PROCESS — THE IDIOM KEEPER PAID FOR ITSELF.** The first gate found
+  11 violations in the new slice; all were removed with no baseline
+  increase, including quadratic interpolation assembly (now the
+  `@std/text` builder) and a hand-rolled DeclId comparison (now
+  `same_decl`). `make gate`: 2236/2236 compiler tests and 88 compiler
+  programs, plus both annotation programs, green.
+- **SUGAR, NEW FEATURE ASKS, OWNERSHIP, REFUSAL QUALITY:** swept; no
+  new evidence beyond the already-filed doc-comment, trap-breadcrumb,
+  and count-sized-table asks. The next S3g work is stored doc comments.
 
 ## Sugar backlog — dogfooding asks
 

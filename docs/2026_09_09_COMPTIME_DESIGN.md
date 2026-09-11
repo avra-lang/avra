@@ -1,9 +1,10 @@
 # Comptime — `const`, annotations, quotes
 
-> **STATUS 2026-09-11 (lane/comptime, HEAD `3091948`):** S1 and S3f
-> DONE (the `@traced` twin generates and runs); S3g PARTIAL
-> (`avra explain @name`, provenance, `avra expand` — the node source
-> printer remains); S3h PARTIAL (`@traced`, a Diagnostics lint);
+> **STATUS 2026-09-11 (lane/comptime, HEAD `bc5a7a7`):** S1 and S3f
+> DONE (the `@traced` twin generates and runs); S3g PARTIAL only on
+> stored doc comments (`avra explain @name`, provenance, the exhaustive
+> node source printer, and full-file `avra expand` have landed); S3h
+> PARTIAL (`@traced`, a Diagnostics lint);
 > S4/S5 not started. **See the LANE HANDOFF at the top of §6** for the
 > laws pinned, the seams, and where to pick up.
 
@@ -503,10 +504,10 @@ keeps the promise and says so.
 - `avra expand <file>` prints the file as compiled: consts as their
   literal, generated declarations inlined after their annotated
   declaration, each headed `// from @derive(Show) on Pt
-  (std-show/show.av:12)`. It needs a **source printer** for nodes —
-  the tree has a DSL renderer (`grammar/render.av`) and an IR printer
-  (`ir_text.av`), not this. The printer is its own slice and `fmt`
-  wants it too.
+  (std-show/show.av:12)`. The exhaustive **source printer** for nodes
+  is now `language/source_text.av`; `fmt` can consume the same
+  projection. Const literal substitution and richer provenance text
+  arrive with the slices that produce those values/templates.
 - The provenance side table (§3.5) is what `expand` and the LSP read.
 - `avra explain @traced` prints the annotation fn's signature and
   doc comment. The signature is the effect (§3.3); nothing else needs
@@ -569,15 +570,16 @@ Flagged so ratification is a decision, not a surprise.
 
 ### LANE HANDOFF (lane/comptime, 2026-09-11)
 
-HEAD `3091948`, tree clean, `make gate` green. Take the lock, then
+HEAD `bc5a7a7`, tree clean, `make gate` green. Take the lock, then
 work in the order below.
 
 DONE: **S3f** (two-tier namespace; `@traced` generates and runs) and
-most of **S3g** (`avra explain @name`, provenance, `avra expand`).
-NEXT: the node SOURCE PRINTER (S3g; unblocks `fmt`), then `@deprecated`
-(S3h; needs a WARNING channel — annotations speak refusals only today
-— plus call-site provenance), then the first compiler derive (S3h),
-then S4/S5.
+all of **S3g** except stored doc comments (`avra explain @name`,
+provenance, the exhaustive Expr/Stmt source printer, and full-file
+`avra expand`). NEXT: store doc comments and append an annotation fn's
+docs to `avra explain @name`; then `@deprecated` (S3h; needs a WARNING
+channel — annotations speak refusals only today — plus call-site
+provenance), then the first compiler derive (S3h), then S4/S5.
 
 THE LAWS S3f/S3g pinned — a next agent must not re-derive them:
 - A `Declares` annotation's arguments are LITERALS (F2067,
@@ -602,9 +604,11 @@ THE MECHANICS — where the seams are:
   answers of the file it is expanding.
 
 TESTS: `annotations/tests/traced/` (program test, eval == native ==
-expected) and `annotations_adversarial_test.av` (18 cases). The loop
-per commit is work -> `/red-team` -> `/review-round` -> `/feedback`;
-the `/feedback` skill files findings under ROADMAP.md.
+expected), `annotations_adversarial_test.av` (20 cases, including exact
+expanded-source goldens), and `language/tests/source_text_test.av` (12
+canonical/structural round trips). The loop per commit is work ->
+`/red-team` -> `/review-round` -> `/feedback`; the `/feedback` skill
+files findings under ROADMAP.md.
 
 Sizes are for one lane. Each slice lands with its program tests,
 goldens, F-codes, `make gate` green, and its idiom entries.
@@ -614,7 +618,7 @@ goldens, F-codes, `make gate` green, and its idiom entries.
 | **S1** | **`const` settles** | `run_call` seat + `Machine.budget`; `reach` column on `rt_sigs`; the static reach check; `settled` family; `settles` (`consts/check.av:29`) asks the evaluator; scalar/string materialization; `const` as an exportable declaration; F-codes for reach, budget, trap, cycle | `const CRC = crc_table(256)` folds; eval == native; a `read_text` in a const refuses with the chain; a `while true` refuses at the budget; `avra check` over `@std/avrac` unchanged | 3–4 days |
 | **S2** | **`embed` + aggregates** | `embed` row with file-input deps; literal spelling of values; aggregate consts under `once` | a TOML const parsed at compile time; editing the file re-settles; a list const reads as a load | 2 days |
 | **S3** | **annotations + `@std/meta` + expansion** | `@name(args)` grammar (`@` already lexes as `Pkg`, `lexer.av:374`); first-seat law; answer-type effects; meta values in (crossing 1); `expanded` family; two-tier namespace; provenance table; annotation side table; `explain @name` | `@deprecated`, a `Diagnostics` lint, and `Fn -> Fn` `@traced` written in a test package; a derive built from meta values directly (no quotes yet) erasing one `_of` accessor family in the compiler | 5–6 days |
-| **S4** | **`quote` + `${}`** | the quote literal (Avra as a sublanguage of the assembled grammar); hole typing by position; template store + splice copy; origin-hygiene table; `Code<T>` claim check; `avra expand` + the source printer; trait associated fns + `Trait.derive`; `@derive` in std | `@derive(Show, Eq)` on a struct and an enum, in std, tested by `spec` + `expand` golden; `fingerprint_stmt`'s arms erased by `@derive` in the compiler's own source | 5–7 days |
+| **S4** | **`quote` + `${}`** | the quote literal (Avra as a sublanguage of the assembled grammar); hole typing by position; template store + splice copy; origin-hygiene table; `Code<T>` claim check; quote/template provenance through the landed source printer; trait associated fns + `Trait.derive`; `@derive` in std | `@derive(Show, Eq)` on a struct and an enum, in std, tested by `spec` + `expand` golden; `fingerprint_stmt`'s arms erased by `@derive` in the compiler's own source | 5–7 days |
 | **S5** | **`const` seats** | the seat mark in fn types; `Sub` widened by settled values; per-instantiation folding | `matches(const pattern, s)` compiles one unit per pattern; the regex body folds | 3 days |
 | later | static data for aggregates; JIT engine behind `run_call`; type operators (`Type -> Type`, needs aliases); typed sublanguage holes (`sql { }`); manifest read grants; parallel settlement; `@total` | | |
 
@@ -708,14 +712,14 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       @traced` answers `fn traced(Fn, string) -> List<Directive>`;
       and PROVENANCE (S3f's other half): `mint_generated` records
       `Provenance { ann, original, at }` per generated declaration, and
-      `avra expand <file>` lists them — `fn sum_traced(int, int) ->
-      int   // from @traced on sum`. The source printer's foundation
-      is pinned: source quoting protects interpolation openers, and a
-      written type spells `dyn`, fn arrows, and `mut` seats without
-      losing them. REMAINING: the node SOURCE
-      PRINTER (`avra expand` echoes the listing, not the file; the
-      printer also unblocks `fmt`), and doc comments (not stored), so
-      `explain @name` prints the signature alone.
+      `avra expand <file>` now prints the whole canonical file and
+      inlines each generated declaration after its annotated origin.
+      `language/source_text.av` exhaustively projects Expr, Stmt and
+      Pat nodes; source quoting protects interpolation openers, types
+      preserve `dyn`, fn arrows and `mut` seats, and the test suite
+      proves parse/print fixed points plus statement fingerprints.
+      REMAINING: doc comments are not stored, so `explain @name`
+      prints the signature alone.
 - [ ] **S3h — the proof.** A `Diagnostics` lint LANDED in a test
       package (comptime_annotations' `@named`/`@configured`
       validators), and Fn→Fn `@traced` LANDED (`annotations/tests/
