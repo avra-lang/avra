@@ -1,15 +1,13 @@
 // A trait ships its own derive: the compiler runs this over the
-// annotated declaration and admits the SOURCE it answers beside it.
-// `quote { … }` is that source, with `${…}` holes for the meta values.
-use @std.meta.{Named, Directive}
+// annotated type and admits the SOURCE it answers beside it. This is
+// a real `Show`: the body interpolates each field.
+use @std.meta.{Type, Directive}
 
 trait Show {
-    static fn derive(what: Named) -> List<Directive> {
-        // A value inside the GENERATED program's string is built here
-        // and spliced as a literal; a hole in code position is the
-        // type name and the body.
-        let body = "\"shown " + what.name + "\""
-        [Directive { twin: "", name: what.name, at: what.at,
-                     code: quote { impl ${what.name} { fn show() -> string { ${body} } } } }]
+    static fn derive(t: Type) -> List<Directive> {
+        let fields = ["${f.name}: \${self.${f.name}}" for f in t.fields]
+        let body = "\"" + t.name + " { " + fields.join(", ") + " }\""
+        [Directive { twin: "", name: t.name, at: t.at,
+                     code: quote { impl ${t.name} { fn show() -> string { ${body} } } } }]
     }
 }

@@ -793,8 +793,14 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       (a generated fn's own `{}` count, a `}` in the body's string
       literal does not), a hole in code position splices its value,
       and a `${}` inside the generated program's string literal stays
-      that program's. NEXT: the `Code<T>` claim + origin hygiene, then
-      `@derive(Show, Eq)` in std.
+      that program's. THE CROSSING IS PARSE-ONLY (fixed with S4f): a
+      `Type` receiver's fields and variants are read from the PARSE
+      tree, never the signature — asking a sig re-entered the resolve
+      being served. A `derive` now runs over a `Type` and generates a
+      REAL `Show`: `packages/std-avrac/src/features/annotations/tests/
+      derive` prints `Point { x: 1, y: hi }` (eval == native ==
+      expected). NEXT: the `Code<T>` claim + origin hygiene, then
+      `@derive(Show, Eq)` shipped in std.
 - [ ] **S1 leftovers (small, fold in).** The reach refusal's full
       call chain (names each link, not just row+body) — the one
       "world" voice annotations share; and `export const` (waits on

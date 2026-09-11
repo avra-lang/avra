@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, int_of, text_of, bool_of, bits_of, is_literal, Annotation, Binding, named_ref}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, int_of, text_of, bool_of, bits_of, is_literal, Annotation, Binding, named_ref, spelled}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
@@ -1085,6 +1085,12 @@ impl Workspace {
         heap.node(slots)
     }
 
+    /// A type reference's spelling, "" for a written absence.
+    fn spelling(t: TypeRef?) -> string {
+        if t == null { return "" }
+        spelled(t!)
+    }
+
     /// A fn's answer, spelled from its declared TypeRef — a store read
     /// alone, so crossing a declaration needs no typed facts.
     fn crossed_answer(v: FileView, s: StmtId) -> MetaVal {
@@ -1111,35 +1117,31 @@ impl Workspace {
     /// A record's fields as `Field` values.
     fn crossed_fields(v: FileView, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let x = self.decls.decl(d)
-        let own: StructSig? = self.decls.fields_of_type(self.decls.types.intern(Type.Struct(d, x.name)))
         let item: TypeId? = elem_of(self.decls.types, want)
-        if own == null || item == null { return heap.node([]) }
+        if item == null { return heap.node([]) }
         let elem: StructSig? = self.decls.fields_of_type(item!)
         if elem == null { return heap.node([]) }
         let shape = elem!
-        let fields = declared_fields(v.store, x.stmt)
         heap.node([meta_row(heap, shape, {
-            "name": MetaVal.Text(n),
-            "ty": MetaVal.Text(self.decls.types.name_of(own!.types[i])),
-            "at": self.crossed_loc(v, fields[i].span, heap),
-        }) for i, n in own!.names])
+            "name": MetaVal.Text(f.name),
+            "ty": MetaVal.Text(self.spelling(f.ty)),
+            "at": self.crossed_loc(v, f.span, heap),
+        }) for f in declared_fields(v.store, x.stmt)])
     }
 
     /// An enum's variants as `Variant` values: name and payload spellings.
     fn crossed_variants(v: FileView, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let x = self.decls.decl(d)
-        let own = self.decls.variants_of_type(self.decls.types.intern(Type.Enum(d, x.name)))
         let item: TypeId? = elem_of(self.decls.types, want)
-        if own == null || item == null { return heap.node([]) }
+        if item == null { return heap.node([]) }
         let elem: StructSig? = self.decls.fields_of_type(item!)
         if elem == null { return heap.node([]) }
         let shape = elem!
-        let variants = declared_variants(v.store, x.stmt)
         heap.node([meta_row(heap, shape, {
-            "name": MetaVal.Text(n),
-            "payload": heap.node([MetaVal.Text(self.decls.types.name_of(p)) for p in own!.payloads[i]]),
-            "at": self.crossed_loc(v, variants[i].span, heap),
-        }) for i, n in own!.names])
+            "name": MetaVal.Text(va.name),
+            "payload": heap.node([MetaVal.Text(self.spelling(p.ty)) for p in va.payloads]),
+            "at": self.crossed_loc(v, va.span, heap),
+        }) for va in declared_variants(v.store, x.stmt)])
     }
 
     /// A source span as a `Loc` value — file, lo, hi — or absent.
