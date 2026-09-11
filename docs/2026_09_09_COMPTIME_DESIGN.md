@@ -763,6 +763,17 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       dodges), and an impl-shaped derive rides `Decls.methods`
       instead, so the proof moves into S4 with the first real
       `@derive`.
+- [~] **S4 — quotes + `${}` + `@derive`.** STARTED (lane/comptime):
+      S4a LANDED — a trait's `static fn` is an ASSOCIATED fn: no
+      receiver seat, `Self` out of scope (a signature naming it
+      refuses F2001), answered exactly by each impl-for and called
+      through the type (`P.derive(3)`). NEXT, in order: (1) a
+      declaration's NAME in an annotation's argument list as its meta
+      value (`@derive(Show)` hands a `Trait`), which needs the
+      type-as-value typing the argument position alone permits;
+      (2) the `Trait.derive(t)` meta verb and `@std/meta.derive`; (3)
+      the quote literal, `${}` holes, template store and splice; (4)
+      the first compiler derive.
 - [ ] **S1 leftovers (small, fold in).** The reach refusal's full
       call chain (names each link, not just row+body) — the one
       "world" voice annotations share; and `export const` (waits on
