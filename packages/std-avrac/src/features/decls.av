@@ -8,11 +8,11 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref}
+use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr}
 use @std.path.{stem_of}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
-use features.{TypeRow, TypeArgs, Said, Unsettled, Lifted, MetaHeap, MetaVal, StructSig, EnumSig}
+use features.{TypeRow, TypeArgs, Said, Unsettled, Lifted, MetaHeap, MetaVal, StructSig, EnumSig, generated_key, Decl}
 
 /// A file's path facts — known at first mention, before its parse.
 export type FileInfo = { id: FileId, path: string, module_id: ModuleId }
@@ -389,6 +389,42 @@ impl Decls {
         held
     }
 
+    /// A GENERATED declaration — an annotation's traced twin — minted
+    /// into its file's store and decl table under a key no WRITTEN
+    /// name can take. The body is the wrap: enter, the original call,
+    /// exit. The twin answers like the original and carries its own
+    /// range, so typing, resolution and lowering read it as written.
+    fn mint_generated(f: FileId, name: string, params: List<Param>, ret: TypeRef, original: string, label: string, at: Span?) -> DeclId {
+        let key = generated_key(f, name)
+        let known: DeclId? = self.known_id(key)
+        if known != null { return known! }
+        let store = self.store_of(f)
+        // THE WRAP: enter; let v = original(args); exit; v — the
+        // temp's name carries the twin's own mark, which no WRITTEN
+        // binding can collide with.
+        let v = "${name}$$v"
+        let label_expr = store.alloc_expr(Expr.StrLit(label), at)
+        let enter = store.alloc_expr(Expr.Call("enter", [], [label_expr]), at)
+        let exit = store.alloc_expr(Expr.Call("exit", [], [label_expr]), at)
+        let arg_ids = [store.alloc_expr(Expr.Ident(p.name), at) for p in params]
+        let call = store.alloc_expr(Expr.Call(original, [], arg_ids), at)
+        let bound = store.alloc_expr(Expr.Ident(v), at)
+        let e1 = store.alloc_stmt(Stmt.ExprStmt(enter), at)
+        let l2 = store.alloc_stmt(Stmt.Let(v, null, call), at)
+        let e3 = store.alloc_stmt(Stmt.ExprStmt(exit), at)
+        let body = store.alloc_expr(Expr.Block([e1, l2, e3], bound), at)
+        let s = store.alloc_stmt(Stmt.FnDecl(name, [], params, ret, body), at)
+        let d = self.mint(key, f, s, name, DeclKind.Fn, false, "", null, false, body)
+        // THE GENERATED RANGE: the twin's own nodes, minted last, so
+        // its body's exprs sit at the arena's end — lo its first, hi
+        // the arena's edge (nothing after it is another's). Typing,
+        // resolution and lowering read it exactly as a written fn.
+        let lo = body.index
+        let hi = store.exprs.count()
+        self.decls.set(d.index, self.decl(d) with { lo: lo, hi: hi })
+        d
+    }
+
     // ── declarations ──
 
     fn decl(d: DeclId) -> Decl { self.decls[d.index] }
@@ -470,11 +506,35 @@ impl Decls {
     /// What a lifted call SAID: each `Diagnostic` of its answer, read
     /// by the element record's field names.
     fn saids(r: Lifted, ret: TypeId) -> List<Said> {
-        let elem: TypeId? = self.elem_of(ret)
-        if elem == null { return [] }
-        let sig: StructSig? = self.fields_of_type(elem!)
+        let sig: StructSig? = self.elem_sig(ret)
         if sig == null { return [] }
         [self.said_of(r.heap, sig!, item) for item in r.heap.slots(r.answer)]
+    }
+
+    /// A Declares answer's rows: each `Directive` of the crossed list,
+    /// read by its field names — the same field protocol `said_of` uses.
+    fn directives_of(r: Lifted, ret: TypeId) -> List<Directive> {
+        let sig: StructSig? = self.elem_sig(ret)
+        if sig == null { return [] }
+        [self.directive_of(r.heap, sig!, item) for item in r.heap.slots(r.answer)]
+    }
+
+    /// The element record's sig of a list answer, or null for none.
+    fn elem_sig(ret: TypeId) -> StructSig? {
+        let elem: TypeId? = self.elem_of(ret)
+        if elem == null { return null }
+        self.fields_of_type(elem!)
+    }
+
+    /// A crossed `Directive` row: the twin's name, the original's, and
+    /// the site — the three fields the materializer mints from.
+    fn directive_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Directive {
+        let slots = heap.slots(item)
+        Directive {
+            twin: self.text_of_meta(self.field_of(heap, sig, item, "twin")),
+            name: self.text_of_meta(self.field_of(heap, sig, item, "name")),
+            at: self.loc_of_meta(heap, self.field_of(heap, sig, item, "at")),
+        }
     }
 
     /// A list type's element, or null for any other shape.

@@ -25,7 +25,7 @@ fn reserved() -> List<string> {
      "channel", "select"]
 }
 
-export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, scope: Namespace) -> NameFacts {
+export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, scope: Namespace, miss: fn(string) -> DeclId?) -> NameFacts {
     let defs = defs_of(view.store, view.stmts)
     mut r = ResolveCx {
         view: view, dispatch: dispatch, keywords: keywords, all_defs: defs,
@@ -39,7 +39,7 @@ export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, sc
         visible: {}, overlays: [], lframes: [], floors: [], receivers: [], muts: [],
         walked: filled(view.store.exprs.count(), false),
         scoped: filled(view.store.stmts.count(), false),
-        scope: [], in_block: false,
+        scope: [], in_block: false, miss: miss,
     }
     r.name_laws()
     r.resolve_stmts(false, view.stmts)
@@ -484,8 +484,13 @@ impl ResolveCx {
         let named_type: DeclId? = self.facts.names.types.get(name)
         if named_type != null { return Binding.Decl(named_type!) }
         let f: DeclId? = self.facts.names.fns.get(name)
-        if f == null { return null }
-        Binding.Decl(f!)
+        if f != null { return Binding.Decl(f!) }
+        // THE TWO-TIER SECOND LOOK: a written program knows no such
+        // name; a GENERATED declaration may. The workspace's oracle
+        // materializes on demand and answers, or says none.
+        let gen: DeclId? = self.miss(name)
+        if gen == null { return null }
+        Binding.Decl(gen!)
     }
 
     /// The LOCAL half of the name chain, lambda-aware: the
