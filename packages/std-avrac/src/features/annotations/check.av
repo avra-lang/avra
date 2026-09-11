@@ -54,23 +54,45 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     // names serve, so it reaches only what the parse tree holds — and
     // its fn must stand in ANOTHER file, or it would need this file's
     // names while they are still being made.
-    let declares = match effect! {
-        .Declares -> true,
+    let act = effect!
+    let declares = match act {
+        .Declares or .Derives -> true,
         .Records or .Validates -> false,
     }
     if declares && same_file(cx.view.decls.decl(d).file, cx.view.file) {
         same_file_annotation(cx, a)
         return
     }
-    if declares && a.args.any((e: ExprId) -> !is_literal(cx.view.store.expr(e))) {
+    // A declaration's NAME is source-known too: `@derive(Show)` must
+    // reach the trait while the file's names are still being made.
+    if declares && a.args.any((e: ExprId) -> !is_literal(cx.view.store.expr(e)) && cx.bound_decl(e) == null) {
         computed_argument(cx, a)
         return
     }
+    // A `@derive` runs each named trait's associated `derive`, which
+    // must stand in ANOTHER file for the same reason a Declares
+    // annotation's fn must: expanding needs this file's names.
+    if act is .Derives {
+        for e in a.args {
+            let tr: DeclId? = cx.bound_decl(e)
+            if tr != null {
+                let trait_id = tr!
+                let member: DeclId? = cx.view.decls.trait_fns(trait_id).find((m: DeclId) -> cx.view.decls.fn_name(m) == "derive")
+                if member != null {
+                    let m = member!
+                    if same_file(cx.view.decls.decl(m).file, cx.view.file) {
+                        derived_same_file(cx, a)
+                        return
+                    }
+                }
+            }
+        }
+    }
     match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
         .Ok(crossed) -> {
-            match effect! {
+            match act {
                 .Records or .Validates -> { for x in cx.view.decls.saids(crossed, sig.ret) { if !x.warning { spoken_said(cx, a, s, x) } } },
-                .Declares -> nothing(),
+                .Declares or .Derives -> nothing(),
             }
         },
         .Err(why) -> unsettled(cx, a, why),
@@ -111,13 +133,14 @@ fn arguments_fit(mut cx: TypeCx, a: Annotation, seats: List<TypeId>) -> bool {
 /// An annotation's ANSWER as what it does — the effect census the
 /// gate and the voice share. A new answer effect is one arm here,
 /// one row in `effect_census`, and one sentence in `effect_words`.
-enum Effect { Records, Validates, Declares }
+enum Effect { Records, Validates, Declares, Derives }
 
 /// The effect an answer has, or null when it has none.
 fn effect_of(cx: TypeCx, ret: TypeId) -> Effect? {
     match cx.view.types.shape_of(ret) {
         .Void -> Effect.Records,
         .List(e) -> if cx.view.decls.meta_type(e, "Diagnostic") { Effect.Validates } else if cx.view.decls.meta_type(e, "Directive") { Effect.Declares } else { null },
+        .Struct(_, _) -> if cx.view.decls.meta_type(ret, "Derived") { Effect.Derives } else { null },
         rest -> null,
     }
 }
@@ -125,7 +148,7 @@ fn effect_of(cx: TypeCx, ret: TypeId) -> Effect? {
 /// The effects in census order — consumers enumerate through this,
 /// never by hand.
 fn effect_census() -> List<Effect> {
-    [Effect.Records, Effect.Validates, Effect.Declares]
+    [Effect.Records, Effect.Validates, Effect.Declares, Effect.Derives]
 }
 
 /// The written arguments: a DECLARATION'S NAME in a meta seat is its
@@ -226,6 +249,15 @@ fn same_file_annotation(mut cx: TypeCx, a: Annotation) {
                        "declare the annotation fn in another file — expanding it needs this file's names, which are still being made"))
 }
 
+/// A `@derive` trait's associated `derive` must stand in another
+/// file: expanding needs this file's names, which are still being made.
+fn derived_same_file(mut cx: TypeCx, a: Annotation) {
+    let _ = cx.spoken(refusal("annotation.seats", at_annotation(cx, a),
+                       seats_law(),
+                       "`${a.name}` derives from a trait whose `derive` stands in this file",
+                       "declare the trait — with its `derive` — in another file; expanding it needs this file's names, which are still being made"))
+}
+
 fn wrong_answer(mut cx: TypeCx, a: Annotation, ret: TypeId) {
     let shown = match cx.view.types.shape_of(ret) {
         .List(e) -> if cx.view.types.name_of(e) == "Diagnostic" {
@@ -245,6 +277,7 @@ fn effect_words(e: Effect) -> string {
         .Records -> "`void` records the annotation and says nothing",
         .Validates -> "`List<Diagnostic>` validates the declaration",
         .Declares -> "`List<Directive>` generates declarations beside the one stood under",
+        .Derives -> "`Derived` runs each named trait's `derive` over the declaration",
     }
 }
 

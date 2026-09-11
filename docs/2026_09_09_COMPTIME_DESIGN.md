@@ -771,9 +771,17 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       NAME in an annotation's argument list IS its meta value: typed
       as the seat, crossed by identity, so `@uses(Show)` hands a
       `Trait` and `@pair(Q)` a `Type` (and a genuinely failed argument
-      still speaks). NEXT, in order: (2) the `Trait.derive(t)` meta
-      verb and `@std/meta.derive`; (3) the quote literal, `${}` holes,
-      template store and splice; (4) the first compiler derive.
+      still speaks). S4c LANDED — `@derive`: `@std/meta.derive(what:
+      Named, tr: Trait) -> Derived` is the annotation; the compiler's
+      `.Derives` effect runs the named trait's associated `derive`
+      over the annotated declaration and materializes the directives
+      it answers (stack `@derive` for more traits; a list seat is a
+      follow-up). A trait's `derive` stands in ANOTHER file — the
+      provider law — and a same-file one speaks. The trait's `derive`
+      answers compiler-owned `Directive`s today. NEXT, in order: (3)
+      the quote literal, `${}` holes, template store and splice — so a
+      trait's `derive` can answer a USER template; (4) the first
+      user-visible derive (`Show`).
 - [ ] **S1 leftovers (small, fold in).** The reach refusal's full
       call chain (names each link, not just row+body) — the one
       "world" voice annotations share; and `export const` (waits on

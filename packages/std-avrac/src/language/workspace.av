@@ -16,7 +16,7 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, int_of, text_of, bool_of, bits_of, is_literal, Annotation, Binding}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -815,7 +815,7 @@ impl Workspace {
     /// argument settled and crossed, and what the fn answered read
     /// back as what it SAID.
     fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
-        let name = "lift$${f.index}$${call.index}"
+        let name = "lift$${f.index}$${call.index}$${d.index}"
         let known: int? = self.lift_specs.get(name)
         if known != null {
             self.lift_asks.set(known!, lift_ask(d, f, s, args))
@@ -925,20 +925,16 @@ impl Workspace {
         for d in self.decls.decls_of_file(f) {
             for w in self.declared_work(f, d, p, vis) {
                 // A DECLARES ANNOTATION RUNS INSIDE THE RESOLVE IT
-                // SERVES, so its arguments must be literals the parse
-                // tree already holds — crossing a computed one needs
-                // this file's typed answers, which do not exist yet.
-                // `check_annotation` speaks the refusal.
-                if w.args.all((e: ExprId) -> is_literal(p.store.expr(e))) {
-                    match self.lifted(w.ann, f, w.stmt, w.callee, w.args) {
-                        .Ok(crossed) -> {
-                            for directive in self.decls.directives_of(crossed, w.ret) {
-                                if !directive.twin.is_empty() {
-                                    made.push(self.decls.mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, self.decls.decl(w.ann).name, w.at))
-                                }
-                            }
-                        },
-                        .Err(_) -> { let _ = 0 },
+                // SERVES, so its arguments must be SOURCE-KNOWN — a
+                // literal or a declaration's name — never a computed
+                // value that needs this file's typed answers.
+                let source_known = w.args.all((e: ExprId) -> is_literal(p.store.expr(e)) || p.store.ident_name(e) != null)
+                if source_known {
+                    let directives: List<Directive> = if self.is_derived(w.ret) { self.derive_directives(w, f, p, vis) } else { self.lifted_directives(w, f) }
+                    for directive in directives {
+                        if !directive.twin.is_empty() {
+                            made.push(self.decls.mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, self.decls.decl(w.ann).name, w.at))
+                        }
                     }
                 }
             }
@@ -971,12 +967,15 @@ impl Workspace {
                     // in another, computable file.
                     if !same_file(self.decls.decl(ann_decl).file, f) {
                         let asig: FnSig? = fn_sig_of(self.decls.sig(ann_decl))
-                        if asig != null && self.is_declares(asig!.ret) {
-                            out.push(DeclareWork {
-                                ann: ann_decl, stmt: x.stmt, callee: a.callee, args: a.args,
-                                ret: asig!.ret, tparams: parts!.tparams, params: params, answer: ret!, original: x.name,
-                                at: a.span ?? p.store.stmt_span(x.stmt),
-                            })
+                        if asig != null {
+                            let sig = asig!
+                            if self.is_declares(sig.ret) || self.is_derived(sig.ret) {
+                                out.push(DeclareWork {
+                                    ann: ann_decl, stmt: x.stmt, callee: a.callee, args: a.args,
+                                    ret: sig.ret, tparams: parts!.tparams, params: params, answer: ret!, original: x.name,
+                                    at: a.span ?? p.store.stmt_span(x.stmt),
+                                })
+                            }
                         }
                     }
                 }
@@ -990,6 +989,50 @@ impl Workspace {
         let elem: TypeId? = elem_of(self.decls.types, ret)
         if elem == null { return false }
         match self.decls.types.shape_of(elem!) { .Struct(_, declared) -> declared == "Directive", rest -> false }
+    }
+
+    /// Whether a return type is `@std.meta.Derived` — the `@derive`
+    /// cue: the compiler runs each named trait's associated `derive`.
+    fn is_derived(ret: TypeId) -> bool { self.decls.meta_type(ret, "Derived") }
+
+    /// One Declares annotation's directives, run through the evaluator.
+    fn lifted_directives(w: DeclareWork, f: FileId) -> List<Directive> {
+        match self.lifted(w.ann, f, w.stmt, w.callee, w.args) {
+            .Ok(crossed) -> self.decls.directives_of(crossed, w.ret),
+            .Err(_) -> [],
+        }
+    }
+
+    /// A `@derive`'s directives: each named trait's associated
+    /// `derive` run over the annotated declaration, concatenated.
+    fn derive_directives(w: DeclareWork, f: FileId, p: Parsed, vis: Namespace) -> List<Directive> {
+        flatten([self.trait_directives(self.named_trait(p, vis, e), w, f) for e in w.args])
+    }
+
+    /// The trait an argument NAME stands for, or none.
+    fn named_trait(p: Parsed, vis: Namespace, e: ExprId) -> DeclId? {
+        let name: string? = p.store.ident_name(e)
+        if name == null { return null }
+        vis.types.get(name!)
+    }
+
+    /// One trait's associated `derive` over the declaration — its
+    /// directives, or none when the trait declares no `derive`.
+    fn trait_directives(tr: DeclId?, w: DeclareWork, f: FileId) -> List<Directive> {
+        if tr == null { return [] }
+        let trait_id = tr!
+        let member: DeclId? = self.decls.trait_fns(trait_id).find((m: DeclId) -> self.decls.fn_name(m) == "derive")
+        if member == null { return [] }
+        let m = member!
+        // The provider guard: a same-file derive would need this file's
+        // names while they are still being made. `check_annotation` speaks.
+        if same_file(self.decls.decl(m).file, f) { return [] }
+        let msig: FnSig? = fn_sig_of(self.decls.sig(m))
+        if msig == null { return [] }
+        match self.lifted(m, f, w.stmt, w.callee, []) {
+            .Ok(crossed) -> self.decls.directives_of(crossed, msig!.ret),
+            .Err(_) -> [],
+        }
     }
 
     /// The declaration at `s` as the value the fn's first seat asks
