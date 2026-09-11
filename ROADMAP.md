@@ -6882,6 +6882,67 @@ PERFORMANCE 1, PROCESS 2.
   new evidence beyond the already-filed doc-comment, trap-breadcrumb,
   and count-sized-table asks. The next S3g work is stored doc comments.
 
+### ADDENDUM — S3g stored doc comments, same day (`f868c2f`)
+
+- **FEATURES — DOC COMMENTS ARE STORED, PRINTED, AND EXPLAINED.** The
+  lexer retains a contiguous declaration-leading `///` group as its
+  LINES with the anchor `before` (the first token after the group);
+  `NodeStore.docs` holds it per statement, `statement_after` lands the
+  anchor on the earliest statement beginning at or after it, the source
+  projection re-emits the group above its declaration, and
+  `avra explain @name` appends it to the signature. The doc rides the
+  statement fingerprint, so a doc-only edit cannot be cut off by the
+  parsed-program memo. Evidence: `avra expand` reproduces all 31 doc
+  lines of `@std/meta/src/meta.av` and all 321 of
+  `language/workspace.av`, and a doc-bearing program is `eval == native`.
+- **DEFECTS — TWO SILENT DOC LOSSES, FOUND BY THE RED TEAM AND FIXED.**
+  (1) An EMPTY doc line vanished: the printer re-split a joined string,
+  and `split` drops a trailing empty segment while `""` splits to `[]`,
+  so `///` alone and a trailing `///` line were lost — the group is now
+  stored as lines, never round-tripped through a join. (2) An ordinary
+  comment between a doc group and its declaration DETACHED it, so
+  `/// doc` + `// LICENSED I23: …` + `fn` lost the doc — measured on the
+  compiler's OWN `grammar/lexer.av` (2 lines) and `features/mod.av` (5).
+  A comment is now transparent; only a BLANK line (or a non-declaration
+  token) detaches. `avra expand` on `grammar/lexer.av` now reproduces
+  all 122 doc lines (was 120). Witnesses:
+  `language/tests/docs_adversarial_test.av`, `grammar/tests/lexer_test.av`,
+  `language/tests/source_text_test.av`.
+- **DEFECT (OPEN, ATTRIBUTED, PRE-EXISTING AT `eb35bea`) — `avra
+  expand` ON A STATEMENT-LESS PROGRAM TRAPS.** `avra: index 0 is out of
+  bounds (length 0)`, exit 2, where the command's own guard says "the
+  program is empty". Reached by an empty file, a file holding only a
+  doc comment, an unclosed interpolation hole, and a CR-only file whose
+  single line is a comment. Attributed by stashing the doc work and
+  rebuilding at `eb35bea`, where it reproduces identically. THE ASK:
+  `Program.entry_file` answers null when no file was parsed, so
+  `expand`'s existing message speaks.
+- **LIMITATION, RECORDED (A DEADLINE, NOT A STYLE CHOICE) — DOCS WITH
+  NO TABLE ARE DROPPED.** A module's `//!`, an enum variant's and a
+  struct field's `///` are not retained: they are not
+  declaration-leading, and the printer walks statements. Measured over
+  the compiler's own source: `core/nodes.av` loses 158 doc lines (all
+  variant docs) and `features/mod.av` 5. The day `fmt` consumes the
+  projection it will DELETE those lines. Pinned by the
+  `docs_adversarial_test.av` row that must fail when the tables land.
+- **DOCTRINE — A FLAT JOIN IS NOT A ROUND TRIP WHEN THE TAIL IS EMPTY.**
+  An instance of CLAUDE.md's arity law: `join("\n")`/`split("\n")`
+  round-trips only while no line is empty; the empty tail is what
+  `split` spends, so the lens was discarded and the join kept as the
+  fingerprint key alone.
+- **SURVIVED (no finding).** 57 attack programs: every `///`-prefix
+  position (`/`, `//`, `//!`, `////`, `/// `, `///\t`, trailing after
+  tokens, inside `(`/`[` continuations, CRLF, CR-only, EOF, inside a
+  string, inside an interpolation hole); every cross-feature seat (fn
+  body, `while`/`match` arm, impl, trait, `spec`, `const`, `extern`,
+  `once`, `static`, a local `type`, struct/enum members); doc text
+  carrying keywords, `${}`, braces, quotes, semicolons, unicode and
+  trailing spaces (opaque and byte-preserved); ownership
+  (`AVRA_MEM_STATS=1 ./avra check` settles every category to zero at
+  exit); and refusal quality (zero `defect:` lines). One class is N/A:
+  a comment takes no value, so "every slot, every wrong type" has no
+  seats.
+
 ## Sugar backlog — dogfooding asks
 
 FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and
@@ -6900,6 +6961,12 @@ evidence under "Feedback survey — 2026-09-11"):
 - SHORTEN THE IMPORT WALL — every new helper edits a 40-name `use
   core.{…}` (language/workspace.av:17). Wants a module-qualified
   reference or a glob form.
+- MEMBER AND MODULE DOCS HAVE NO TABLE — a `///` on an enum variant or
+  a struct field, and a module's `//!`, are dropped by the source
+  projection (`core/nodes.av` loses 158 lines, `features/mod.av` 5).
+  WANTING SITE: `fmt`, which would delete them the day it consumes
+  `language/source_text.av`. Needs a doc seat on `Variant`/`Param` (or
+  an anchor-keyed table) and one for the module header.
 
 
 - AN AGGREGATE ARGUMENT TO A DECLARATION-GENERATING ANNOTATION. A
