@@ -915,25 +915,31 @@ impl Workspace {
         mut made: List<DeclId> = []
         for d in self.decls.decls_of_file(f) {
             for w in self.declared_work(f, d, p, vis) {
-                // A DECLARES ANNOTATION RUNS INSIDE THE RESOLVE IT
-                // SERVES, so its arguments must be SOURCE-KNOWN — a
-                // literal or a declaration's name — never a computed
-                // value that needs this file's typed answers.
-                let source_known = w.args.all((e: ExprId) -> is_literal(p.store.expr(e)) || p.store.ident_name(e) != null)
-                if source_known {
-                    let directives: List<Directive> = if self.is_derived(w.ret) { self.derive_directives(w, f, p, vis) } else { self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.ret) }
-                    for directive in directives {
-                        if directive.code != null {
-                            made = made.concat(self.admit_code(f, directive.code!, self.decls.decl(w.ann).name, w.at))
-                        } else if !directive.twin.is_empty() {
-                            made.push(self.decls.mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, self.decls.decl(w.ann).name, w.at))
-                        }
-                    }
-                }
+                made = made.concat(self.materialized(f, w, p, vis))
             }
         }
         self.generated.finish(f.index, made, fp(31, [d.index for d in made]))
         made
+    }
+
+    /// One annotation's declarations materialized. A DECLARES or
+    /// DERIVES annotation RUNS INSIDE THE RESOLVE IT SERVES, so its
+    /// arguments must be SOURCE-KNOWN — a literal or a declaration's
+    /// name — never a computed value that needs this file's typed
+    /// answers, which do not exist yet.
+    fn materialized(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace) -> List<DeclId> {
+        if !w.args.all((e: ExprId) -> is_literal(p.store.expr(e)) || p.store.ident_name(e) != null) { return [] }
+        let directives = if self.is_derived(w.ret) { self.derive_directives(w, f, p, vis) } else { self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.ret) }
+        flatten([self.materialized_directive(f, w, directive) for directive in directives])
+    }
+
+    /// One directive: a `code` is generated SOURCE parsed and admitted
+    /// beside the original, a `twin` mints a fn beside it.
+    fn materialized_directive(f: FileId, w: DeclareWork, directive: Directive) -> List<DeclId> {
+        let ann = self.decls.decl(w.ann).name
+        if directive.code != null { return self.admit_code(f, directive.code!, ann, w.at) }
+        if directive.twin.is_empty() { return [] }
+        [self.decls.mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, ann, w.at)]
     }
 
     /// A written fn's Declares annotation, as the materializer's

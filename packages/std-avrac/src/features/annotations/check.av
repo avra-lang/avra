@@ -69,25 +69,7 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
         computed_argument(cx, a)
         return
     }
-    // A `@derive` runs each named trait's associated `derive`, which
-    // must stand in ANOTHER file for the same reason a Declares
-    // annotation's fn must: expanding needs this file's names.
-    if act is .Derives {
-        for e in a.args {
-            let tr: DeclId? = cx.bound_decl(e)
-            if tr != null {
-                let trait_id = tr!
-                let member: DeclId? = cx.view.decls.trait_derive(trait_id)
-                if member != null {
-                    let m = member!
-                    if same_file(cx.view.decls.decl(m).file, cx.view.file) {
-                        derived_same_file(cx, a)
-                        return
-                    }
-                }
-            }
-        }
-    }
+    if act is .Derives && derive_provider_law(cx, a) { return }
     match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
         .Ok(crossed) -> {
             match act {
@@ -240,6 +222,28 @@ fn same_file_annotation(mut cx: TypeCx, a: Annotation) {
                        seats_law(),
                        "`${a.name}` generates declarations and stands in this file",
                        "declare the annotation fn in another file — expanding it needs this file's names, which are still being made"))
+}
+
+/// THE `@derive` PROVIDER LAW, asked of every trait argument: its
+/// associated `derive` must stand in ANOTHER file, for the same reason
+/// a Declares annotation's fn must — expanding needs this file's
+/// names, which are still being made. Answers whether it spoke.
+fn derive_provider_law(mut cx: TypeCx, a: Annotation) -> bool {
+    for e in a.args {
+        let tr: DeclId? = cx.bound_decl(e)
+        if tr != null {
+            let trait_id = tr!
+            let member: DeclId? = cx.view.decls.trait_derive(trait_id)
+            if member != null {
+                let m = member!
+                if same_file(cx.view.decls.decl(m).file, cx.view.file) {
+                    derived_same_file(cx, a)
+                    return true
+                }
+            }
+        }
+    }
+    false
 }
 
 /// A `@derive` trait's associated `derive` must stand in another
