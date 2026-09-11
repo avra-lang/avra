@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, TypeRef}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, TypeRef, int_of, text_of, bool_of}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
@@ -88,7 +88,7 @@ export type Workspace = {
     lift_specs: Map<string, int>,
     lift_asks: List<LiftAsk>,
     lift_results: Memo<LiftResult>,
-    expansions: Memo<List<DeclId>>,
+    generated: Memo<List<DeclId>>,
     settle_specs: Map<string, int>,
     settle_asks: List<SettleAsk>,
     settlements: Memo<Settlement>,
@@ -257,7 +257,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
-        expansions: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
+        generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
         settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
@@ -438,10 +438,11 @@ impl Workspace {
     /// never re-enters the namespace from inside a resolve).
     fn has_declares(f: FileId) -> bool {
         let p = self.parsed(f)
+        mut any = false
         for s in p.stmts {
-            if !p.store.annotations_of(s).is_empty() { return true }
+            if !p.store.annotations_of(s).is_empty() { any = true }
         }
-        false
+        any
     }
 
     /// A declaration's signature, computed on first ask: the ONE place
@@ -805,7 +806,7 @@ impl Workspace {
         mut heap = new_meta_heap()
         mut vals: List<MetaVal> = [self.crossed_decl(f, s, sig!.params.first()!, heap)]
         for e in args {
-            match self.crossed_expr(f, e, heap) {
+            match self.crossed_arg(f, e, heap) {
                 .Ok(v) -> vals.push(v),
                 .Err(why) -> { return .Err(why) },
             }
@@ -814,6 +815,22 @@ impl Workspace {
             .Ok(r2) -> .Ok(r2),
             .Err(why) -> .Err(why),
         }
+    }
+
+    /// An annotation argument crossed — a LITERAL straight off the
+    /// parse tree (an isolated run needs this file's analysis, which
+    /// is the very resolve the two-tier miss is serving: a cycle),
+    /// anything else through the isolated evaluator.
+    fn crossed_arg(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
+        let p = self.parsed(f)
+        let raw = p.store.expr(e)
+        let n: int? = int_of(raw)
+        if n != null { return .Ok(MetaVal.Int(n!)) }
+        let t: string? = text_of(raw)
+        if t != null { return .Ok(MetaVal.Text(t!)) }
+        let b: bool? = bool_of(raw)
+        if b != null { return .Ok(MetaVal.Bool(b!)) }
+        self.crossed_expr(f, e, heap)
     }
 
     /// A file's GENERATED declarations: every Declares-annotated
@@ -827,7 +844,7 @@ impl Workspace {
         // walks is itself a dependency of that resolve. The kernel's
         // recursion guard makes the re-entry a SMALLER view (an empty
         // expansion for the resolve in flight), never a trap.
-        match self.expansions.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.generated.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let p = self.parsed(f)
         let vis = self.visible(f)
         mut made: List<DeclId> = []
@@ -845,7 +862,7 @@ impl Workspace {
                 }
             }
         }
-        self.expansions.finish(f.index, made, fp(31, [d.index for d in made]))
+        self.generated.finish(f.index, made, fp(31, [d.index for d in made]))
         made
     }
 
@@ -862,20 +879,23 @@ impl Workspace {
         for a in anns {
             let callee_name: string? = p.store.ident_name(a.callee)
             if callee_name != null {
-                let ann_decl: DeclId? = vis.fns.get(callee_name!)
-                // A callee from the SAME FILE would need this very
-                // file's resolved names to sign — the cycle the kernel
-                // trips on. The two-tier expansion is for PROVIDER
-                // annotations (std-meta's `traced`), whose sig lives in
-                // another, computable file.
-                if ann_decl != null && !same_file(self.decls.decl(ann_decl!).file, f) {
-                    let asig = fn_sig_of(self.decls.sig(ann_decl!))
-                    if asig != null && self.is_declares(asig!.ret) {
-                        out.push(DeclareWork {
-                            ann: ann_decl!, stmt: x.stmt, callee: a.callee, args: a.args,
-                            ret: asig!.ret, params: params, answer: ret!, original: x.name, label: x.name,
-                            at: a.span ?? p.store.stmt_span(x.stmt),
-                        })
+                let found: DeclId? = vis.fns.get(callee_name!)
+                if found != null {
+                    let ann_decl = found!
+                    // A callee from the SAME FILE would need this very
+                    // file's resolved names to sign — the cycle the kernel
+                    // trips on. The two-tier expansion is for PROVIDER
+                    // annotations (std-meta's `traced`), whose sig lives
+                    // in another, computable file.
+                    if !same_file(self.decls.decl(ann_decl).file, f) {
+                        let asig: FnSig? = fn_sig_of(self.decls.sig(ann_decl))
+                        if asig != null && self.is_declares(asig!.ret) {
+                            out.push(DeclareWork {
+                                ann: ann_decl, stmt: x.stmt, callee: a.callee, args: a.args,
+                                ret: asig!.ret, params: params, answer: ret!, original: x.name, label: x.name,
+                                at: a.span ?? p.store.stmt_span(x.stmt),
+                            })
+                        }
                     }
                 }
             }

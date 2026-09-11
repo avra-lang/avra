@@ -398,7 +398,11 @@ impl Decls {
         let key = generated_key(f, name)
         let known: DeclId? = self.known_id(key)
         if known != null { return known! }
-        let store = self.store_of(f)
+        mut store = self.store_of(f)
+        // THE GENERATED RANGE's LO: the arena's edge BEFORE any of the
+        // twin's nodes mint — its subtree is allocated first (children
+        // before the block that holds them), then the FnDecl stmt.
+        let lo = store.exprs.count()
         // THE WRAP: enter; let v = original(args); exit; v — the
         // temp's name carries the twin's own mark, which no WRITTEN
         // binding can collide with.
@@ -419,7 +423,6 @@ impl Decls {
         // its body's exprs sit at the arena's end — lo its first, hi
         // the arena's edge (nothing after it is another's). Typing,
         // resolution and lowering read it exactly as a written fn.
-        let lo = body.index
         let hi = store.exprs.count()
         self.decls.set(d.index, self.decl(d) with { lo: lo, hi: hi })
         d

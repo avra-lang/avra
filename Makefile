@@ -18,7 +18,7 @@ RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-meta packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite
 
-.PHONY: census traps test tested clean gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
+.PHONY: census traps test tested clean seed-check gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
         check run ir emit build-native native-check avra
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
@@ -127,9 +127,34 @@ build/llvm_wrapper.o: backend/llvm_wrapper.c build/llvm_wrapper.sha
 	cc -c -O2 -I$(LLVM_PREFIX)/include -o build/llvm_wrapper.o backend/llvm_wrapper.c
 
 clean:
+	@mkdir -p build
+	@cp build/avra /tmp/avra_clean_save 2>/dev/null || true
 	rm -rf build scratch packages/cli/src/main_stamped.av
 	find packages -name "*.av.ll" -delete
 	find packages -type d -name build -prune -exec rm -rf {} +
+	@mkdir -p build
+	# THE WORKING COMPILER SURVIVES A CLEAN: `build/avra` is the
+	# compiler itself, not build debris — deleting it strands the tree
+	# (its seed may predate HEAD), and it rebuilds from itself on the
+	# next `make avra`. Rescue it before the build directory goes, and
+	# restore it after.
+	@mv /tmp/avra_clean_save build/avra 2>/dev/null || true
+
+# THE SEED MUST COMPILE HEAD — a seed that cannot is a fossil, and a
+# fossil is discovered only on the day it is needed (bootstrap/README.md).
+# This gate step cold-bootstraps into a throwaway BUILD and refuses a
+# latent drift: a seed that fails here fails the gate, not a future
+# `make clean` + `make bootstrap`.
+seed-check:
+	@mkdir -p build/seed-check
+	@cp bootstrap/seed.ll build/seed-check/seed.ll
+	@clang -w -O1 build/seed-check/seed.ll $(RUNTIME_OBJS) \
+	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/seed-check/avra 2>/dev/null \
+	 || { echo "seed-check: seed links — FAILED"; exit 1; }
+	@build/seed-check/avra build packages/cli >> build/seed-check/out 2>&1 \
+	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; tail -c 2000 build/seed-check/out; rm -rf build/seed-check; exit 1; }
+	@rm -rf build/seed-check
+	@echo "seed-check: the seed compiles HEAD"
 
 check: $(RUNTIME_OBJS)
 	@./avra check $(FILE)
@@ -252,7 +277,7 @@ witness: $(RUNTIME_OBJS) build/width_witness.o
 # scaffolded into std-avrac before, removed after, however the suites
 # end — so the templates' own test is one case of that suite, not a
 # second compile of the whole compiler for one case.
-gate: vocab fingerprints externs idioms tested traps witness
+gate: seed-check vocab fingerprints externs idioms tested traps witness
 
 tested: $(RUNTIME_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
