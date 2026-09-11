@@ -25,7 +25,7 @@ fn reserved() -> List<string> {
      "channel", "select"]
 }
 
-export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, scope: Namespace, miss: fn(string) -> DeclId?) -> NameFacts {
+export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, scope: Namespace, miss: fn(string) -> DeclId?, generated: List<StmtId>) -> NameFacts {
     let defs = defs_of(view.store, view.stmts)
     mut r = ResolveCx {
         view: view, dispatch: dispatch, keywords: keywords, all_defs: defs,
@@ -43,6 +43,11 @@ export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, sc
     }
     r.name_laws()
     r.resolve_stmts(false, view.stmts)
+    // A GENERATED DECLARATION'S BODY IS WRITTEN TO THE ARENA, NOT TO
+    // THE PARSE TREE — its statement joins no `p.stmts`, so the walk
+    // above never reaches it. Resolve it here, after the written
+    // bodies, so its names are bound as any declared fn's are.
+    r.resolve_stmts(false, generated)
     r.facts with { voices: Voices { list: flatten([scope.voices.list, module_laws(view.store, view.source.file, view.stmts), r.facts.voices.list]) } }
 }
 

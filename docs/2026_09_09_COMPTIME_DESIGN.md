@@ -637,12 +637,22 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       (annotations/check.av) with `Decls` — `Decl`/`DeclKind` rode
       as a record, the crossing is already proven; the Lifted family
       returns `{ saids, decls }`; `@std/meta` ships the emitter fns.
-- [ ] **S3f — two-tier namespace + provenance.** THE FUNDAMENTAL
-      BUILDING BLOCK the probe lands on: a per-file GENERATED
-      STORE, DeclIds minted beside written ones (`items(f)` becomes
-      written ∪ generated), resolution answering written at once and
-      generated on a second look; every spliced node records
-      (annotation site, annotation fn, template site).
+- [x] **S3f — two-tier namespace.** LANDED (lane/comptime):
+      `Decls.mint_generated` mints a twin into the file's store and
+      decl table under a `generated_key`; `file_decls` and `decl_ids`
+      admit it, so `items`, `bodies_of` and lowering read it as
+      written; `resolve` walks the generated statements after the
+      written ones; `resolved(f)` materializes the expansions BEFORE
+      the resolver sizes its per-expression tables — the arena must be
+      complete first, or a table is born short. The resolver's miss
+      (`generated_named`) is still the second LOOK. A `@traced("sum")`
+      proof generates `sum_traced` and answers in both engines
+      (`annotations/tests/traced`). A DECLARES annotation reaches
+      LITERAL arguments only: its generated name must exist while the
+      file's names are still being resolved, so a computed argument
+      refuses (F2067, "generates declarations, so its arguments come
+      from the source alone") rather than cycling. PROVENANCE (the
+      splice table) rides S3g.
 - [ ] **S3g — visible magic.** `avra explain @name` (the signature
       IS the effect), `avra expand`, and the node SOURCE PRINTER
       (which also unblocks `fmt`).
@@ -658,13 +668,13 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
   (const seats: `matches(const pattern, s)`), then the later list
   (static aggregate data, JIT, type operators, sublanguage holes,
   manifest read grants, parallel settlement, `@total`).
-- RECORDED TRIGGER (S3e): the `Declares` effect re-lands when its
-  materializer does — `@std/meta`'s `Decl`/`traced` ship PARKED today
-  (a `List<Decl>` answer refuses loudly, F2068, named survivor test
-  in annotations_adversarial_test), and the gate's census gains the
-  `Declares` arm back the moment `expanded` consumes it. The twin's
-  name must be SPELLABLE (a `$`-mangle cannot appear in user code,
-  F0001) — the '@traced' proof calls `sum_traced`.
+- RECORDED TRIGGER (S3e): **PAID by S3f** — the `Declares` effect is
+  back in the census, `@std/meta`'s `Directive`/`traced` are consumed
+  by `expanded`, and the twin's name is spellable (`sum_traced`). The
+  next trigger: an aggregate `Declares` argument, which waits on the
+  quote phase (S4) — today it refuses with F2067, because a computed
+  argument needs typed answers that do not exist until the name it
+  makes is known.
 
 Order rationale: S1 is what the owner already queued (ROADMAP:8218,
 "NEXT: comptime (`const`, evaluated at compile time)") and proves the

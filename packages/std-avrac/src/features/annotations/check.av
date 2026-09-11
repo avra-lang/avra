@@ -5,7 +5,7 @@
 //! like a const's value; and what it ANSWERS is its effect — `void`
 //! records, `List<Diagnostic>` validates. The law
 //! satisfied, the call runs, and what it said is spoken here.
-use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt}
+use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt, is_literal}
 use features.{TypeCx, fn_sig_of, FnSig, Said, Unsettled, nothing}
 use diagnostics.{refusal, loc_at}
 use @std.errors.{Loc}
@@ -44,6 +44,18 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     let effect: Effect? = effect_of(cx, sig.ret)
     if effect == null {
         wrong_answer(cx, a, sig.ret)
+        return
+    }
+    // A DECLARES ANNOTATION runs inside the resolve its generated
+    // names serve, so it reaches only what the parse tree holds. A
+    // computed argument is refused here, before the expansion would
+    // ask for typed answers that do not exist yet.
+    let computed = match effect! {
+        .Declares -> a.args.any((e: ExprId) -> !is_literal(cx.view.store.expr(e))),
+        .Records or .Validates -> false,
+    }
+    if computed {
+        computed_argument(cx, a)
         return
     }
     match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
@@ -162,6 +174,16 @@ fn wrong_argument(mut cx: TypeCx, a: Annotation, e: ExprId, want: TypeId) {
                        seats_law(),
                        "this seat of `${a.name}` takes `${cx.view.types.name_of(want)}`",
                        "an argument is evaluated at compile time and must fit the written seat"))
+}
+
+/// A declaration-GENERATING annotation reaches only literals: its
+/// generated names must exist before the file's names are known, so
+/// its arguments run at the same moment, before any typed answer.
+fn computed_argument(mut cx: TypeCx, a: Annotation) {
+    let _ = cx.spoken(refusal("annotation.seats", at_annotation(cx, a),
+                       seats_law(),
+                       "`${a.name}` generates declarations, so its arguments come from the source alone",
+                       "a computed argument needs typed answers that do not exist until the name it makes is known"))
 }
 
 fn wrong_answer(mut cx: TypeCx, a: Annotation, ret: TypeId) {

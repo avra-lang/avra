@@ -1111,6 +1111,13 @@ Syntax the grammar lacks:
   the one that fires.
 
 Wants the typer does not carry yet:
+- A DECLARES ANNOTATION'S ARGUMENT IS A LITERAL. `@traced([1, 2])`
+  is F2067 "`traced` generates declarations, so its arguments come
+  from the source alone" — a generated name must exist while the
+  file's names are still being resolved, so the crossing reaches
+  only what the parse tree holds. A computed argument is the ask
+  that arrives with quotes (S4); `Records`/`Validates` annotations
+  take aggregates today, because they run after resolve.
 - A GENERIC struct literal's field seat UNIFIES instead of planting a
   want, so a no-argument generic call written there still needs its
   pin (`MatchContext { absent: captured_absent<N>(), … }` inside a

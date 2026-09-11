@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, TypeRef, int_of, text_of, bool_of}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, int_of, text_of, bool_of, bits_of, is_literal}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
@@ -414,12 +414,22 @@ impl Workspace {
     fn resolved(f: FileId) -> NameFacts {
         match self.name_facts.start(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         touch(self.items(f))
+        // THE ARENA IS COMPLETE BEFORE ANY TABLE IS SIZED. An
+        // expansion MINTS the twin's nodes, and the resolver's
+        // per-expression tables are sized to the arena as it stands —
+        // so the expansions run here, ahead of them, and their
+        // statements join the walk. (The second-tier LOOKUP still
+        // happens on a miss, below.)
+        let made = if self.has_declares(f) { self.expanded(f) } else { [] }
         let p = self.parsed(f)
         // THE TWO-TIER SECOND LOOK: a name missing from the written
         // namespace asks the file's generated declarations, which
         // materialize on demand through `expanded`.
         let miss = (name: string) -> self.generated_named(f, name)
-        let out = resolve(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, f), self.visible(f), miss)
+        // A generated body's statement stands in the arena, never in
+        // the parse tree — resolve it after the written bodies.
+        let generated = [self.decls.decl(d).stmt for d in made]
+        let out = resolve(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, f), self.visible(f), miss, generated)
         self.name_facts.finish(f.index, out, self.db.revision())
     }
 
@@ -830,6 +840,8 @@ impl Workspace {
         if t != null { return .Ok(MetaVal.Text(t!)) }
         let b: bool? = bool_of(raw)
         if b != null { return .Ok(MetaVal.Bool(b!)) }
+        let bits: int? = bits_of(raw)
+        if bits != null { return .Ok(MetaVal.Float(bits!)) }
         self.crossed_expr(f, e, heap)
     }
 
@@ -850,15 +862,22 @@ impl Workspace {
         mut made: List<DeclId> = []
         for d in self.decls.decls_of_file(f) {
             for w in self.declared_work(f, d, p, vis) {
-                match self.lifted(w.ann, f, w.stmt, w.callee, w.args) {
-                    .Ok(crossed) -> {
-                        for directive in self.decls.directives_of(crossed, w.ret) {
-                            if !directive.twin.is_empty() {
-                                made.push(self.decls.mint_generated(f, directive.twin, w.params, w.answer, w.original, w.at))
+                // A DECLARES ANNOTATION RUNS INSIDE THE RESOLVE IT
+                // SERVES, so its arguments must be literals the parse
+                // tree already holds — crossing a computed one needs
+                // this file's typed answers, which do not exist yet.
+                // `check_annotation` speaks the refusal.
+                if w.args.all((e: ExprId) -> is_literal(p.store.expr(e))) {
+                    match self.lifted(w.ann, f, w.stmt, w.callee, w.args) {
+                        .Ok(crossed) -> {
+                            for directive in self.decls.directives_of(crossed, w.ret) {
+                                if !directive.twin.is_empty() {
+                                    made.push(self.decls.mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, w.at))
+                                }
                             }
-                        }
-                    },
-                    .Err(_) -> { let _ = 0 },
+                        },
+                        .Err(_) -> { let _ = 0 },
+                    }
                 }
             }
         }
@@ -872,8 +891,9 @@ impl Workspace {
         let x = self.decls.decl(d)
         let anns = p.store.annotations_of(x.stmt)
         if anns.is_empty() { return [] }
+        let parts: FnParts? = p.store.fn_parts(x.stmt)
         let params = declared_params(p.store, x.stmt)
-        let ret: TypeRef? = p.store.fn_parts(x.stmt)?.ret
+        let ret: TypeRef? = parts?.ret
         if ret == null { return [] }
         mut out: List<DeclareWork> = []
         for a in anns {
@@ -892,7 +912,7 @@ impl Workspace {
                         if asig != null && self.is_declares(asig!.ret) {
                             out.push(DeclareWork {
                                 ann: ann_decl, stmt: x.stmt, callee: a.callee, args: a.args,
-                                ret: asig!.ret, params: params, answer: ret!, original: x.name,
+                                ret: asig!.ret, tparams: parts!.tparams, params: params, answer: ret!, original: x.name,
                                 at: a.span ?? p.store.stmt_span(x.stmt),
                             })
                         }

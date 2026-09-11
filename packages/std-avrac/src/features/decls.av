@@ -391,10 +391,12 @@ impl Decls {
 
     /// A GENERATED declaration — an annotation's traced twin — minted
     /// into its file's store and decl table under a key no WRITTEN
-    /// name can take. The body is the wrap: enter, the original call,
-    /// exit. The twin answers like the original and carries its own
-    /// range, so typing, resolution and lowering read it as written.
-    fn mint_generated(f: FileId, name: string, params: List<Param>, ret: TypeRef, original: string, at: Span?) -> DeclId {
+    /// name can take. The body is the wrap: the original's own call,
+    /// bound and answered. The twin carries the original's type
+    /// parameters and parameter seats, so it answers like the original,
+    /// and its own expression range, so typing, resolution and lowering
+    /// read it as written.
+    fn mint_generated(f: FileId, name: string, tparams: List<Param>, params: List<Param>, ret: TypeRef, original: string, at: Span?) -> DeclId {
         let key = generated_key(f, name)
         let known: DeclId? = self.known_id(key)
         if known != null { return known! }
@@ -413,7 +415,7 @@ impl Decls {
         let bound = store.alloc_expr(Expr.Ident(v), at)
         let l2 = store.alloc_stmt(Stmt.Let(v, null, call), at)
         let body = store.alloc_expr(Expr.Block([l2], bound), at)
-        let s = store.alloc_stmt(Stmt.FnDecl(name, [], params, ret, body), at)
+        let s = store.alloc_stmt(Stmt.FnDecl(name, tparams, params, ret, body), at)
         let d = self.mint(key, f, s, name, DeclKind.Fn, false, "", null, false, body)
         // THE GENERATED RANGE: the twin's own nodes, minted last, so
         // its body's exprs sit at the arena's end — lo its first, hi
@@ -428,6 +430,17 @@ impl Decls {
         mut file_list = self.file_decls[f.index]
         file_list.push(d)
         self.file_decls.set(f.index, file_list)
+        // THE STATEMENT TABLE: `decl_of` is how typing asks a
+        // statement for its declaration, and each file's table is
+        // sized when the file is declared — before any twin. Grow it
+        // to the statement the twin just minted, or the lookup reads
+        // past its end.
+        mut by_stmt = self.decl_ids[f.index]
+        if by_stmt.length < store.stmts.count() {
+            by_stmt = by_stmt.concat(filled<DeclId?>(store.stmts.count() - by_stmt.length, null))
+        }
+        by_stmt.set(s.index, d)
+        self.decl_ids.set(f.index, by_stmt)
         d
     }
 

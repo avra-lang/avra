@@ -6679,6 +6679,18 @@ additions get siblings, nothing changes shape:
 
 ## Sugar backlog — dogfooding asks
 
+- AN AGGREGATE ARGUMENT TO A DECLARATION-GENERATING ANNOTATION. A
+  `Declares` annotation's generated name must exist while the file's
+  names are still being resolved, so its arguments cross from the
+  PARSE tree alone: `@traced([1, 2])` refuses with F2067 "generates
+  declarations, so its arguments come from the source alone", where
+  a `Records`/`Validates` annotation takes aggregates because it runs
+  after resolve. The ask is the quote phase (S4) — a template that
+  yields a meta value without the declaration's typed answers.
+  Wanting site: `@traced`'s label is a literal `"sum"` today; a
+  computed label is the first shape the quotes unblock. Landed as a
+  law and an adversarial test (2026-09-10, lane/comptime).
+
 - EMBED OUTSIDE COMPILER EVALUATION IS A RUN-TIME TRAP TODAY, not a compile-time
   refusal: `let t = embed("x")` at the top level compiles and traps
   when it runs (both engines, the same words). The static law is a
