@@ -6949,8 +6949,15 @@ FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and
 evidence under "Feedback survey — 2026-09-11"):
 
 - GROW A LIST TO SIZE — `xs.resize(n, v)` (a List method). Wanting
-  site: `Decls.mint_generated`'s `by_stmt.concat(filled<DeclId?>(n -
+  site: `Decls.record_generated`'s `by_stmt.concat(filled<DeclId?>(n -
   by_stmt.length, null))`.
+- A LIST SEAT FILLED BY MANY ARGUMENTS — `@derive(Show, Eq)` should
+  hand one `List<Trait>` seat two traits, as the design writes it
+  (`derive(t: Type, traits: List<Trait>)`), but an annotation is
+  arity-exact, so `@std/meta.derive` takes ONE `Trait` and stacks
+  instead. Wanting site: `@std/meta.derive` (`packages/std-meta/src/
+  meta.av`); the shape is a REST/LIST seat any call may fill with
+  several written arguments.
 - A GUARD THAT STILL COUNTS ARMS — `effect! is .Declares` was the
   obvious draft but violates the registry law, so a two-arm `match`
   stands (features/annotations/check.av). Wants a guard spelling the
