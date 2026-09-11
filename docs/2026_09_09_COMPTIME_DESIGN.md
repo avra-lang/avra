@@ -767,13 +767,13 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       S4a LANDED — a trait's `static fn` is an ASSOCIATED fn: no
       receiver seat, `Self` out of scope (a signature naming it
       refuses F2001), answered exactly by each impl-for and called
-      through the type (`P.derive(3)`). NEXT, in order: (1) a
-      declaration's NAME in an annotation's argument list as its meta
-      value (`@derive(Show)` hands a `Trait`), which needs the
-      type-as-value typing the argument position alone permits;
-      (2) the `Trait.derive(t)` meta verb and `@std/meta.derive`; (3)
-      the quote literal, `${}` holes, template store and splice; (4)
-      the first compiler derive.
+      through the type (`P.derive(3)`). S4b LANDED — a declaration's
+      NAME in an annotation's argument list IS its meta value: typed
+      as the seat, crossed by identity, so `@uses(Show)` hands a
+      `Trait` and `@pair(Q)` a `Type` (and a genuinely failed argument
+      still speaks). NEXT, in order: (2) the `Trait.derive(t)` meta
+      verb and `@std/meta.derive`; (3) the quote literal, `${}` holes,
+      template store and splice; (4) the first compiler derive.
 - [ ] **S1 leftovers (small, fold in).** The reach refusal's full
       call chain (names each link, not just row+body) — the one
       "world" voice annotations share; and `export const` (waits on

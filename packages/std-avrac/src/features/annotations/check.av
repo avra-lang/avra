@@ -12,7 +12,6 @@ use @std.errors.{Loc}
 
 export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     if cx.errored(a.callee) { return }
-    if a.args.any((e: ExprId) -> cx.errored(e)) { return }
     let found: DeclId? = cx.bound_decl(a.callee)
     if found == null {
         not_a_fn(cx, a)
@@ -27,6 +26,11 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     if found_sig == null { return }
     let sig = found_sig!
     let seats = sig.params
+    // THE ARGUMENT POSITION: a declaration's NAME is its meta value,
+    // typed as the seat; every other argument types as an expression.
+    // A genuinely failed argument is absorbed here, its cause spoken.
+    type_arguments(cx, a, seats)
+    if a.args.any((e: ExprId) -> cx.errored(e)) { return }
     if seats.is_empty() {
         takes_no_declaration(cx, a)
         return
@@ -122,6 +126,26 @@ fn effect_of(cx: TypeCx, ret: TypeId) -> Effect? {
 /// never by hand.
 fn effect_census() -> List<Effect> {
     [Effect.Records, Effect.Validates, Effect.Declares]
+}
+
+/// The written arguments: a DECLARATION'S NAME in a meta seat is its
+/// meta value, typed as the seat; anything else is an expression.
+fn type_arguments(mut cx: TypeCx, a: Annotation, seats: List<TypeId>) {
+    for i, e in a.args {
+        let want: TypeId = if i + 1 < seats.length { seats[i + 1] } else { cx.error_type }
+        if seat_is_meta(cx, want) && cx.bound_decl(e) != null {
+            cx.facts.set_type(e, want)
+        } else {
+            cx.walk(e)
+        }
+    }
+}
+
+/// Whether a seat takes a declaration whole — the three receiver
+/// kinds and the metadata-only `Named`.
+fn seat_is_meta(cx: TypeCx, ty: TypeId) -> bool {
+    cx.view.decls.meta_type(ty, "Type") || cx.view.decls.meta_type(ty, "Trait") ||
+        cx.view.decls.meta_type(ty, "Fn") || cx.view.decls.meta_type(ty, "Named")
 }
 
 // ── The voices ──

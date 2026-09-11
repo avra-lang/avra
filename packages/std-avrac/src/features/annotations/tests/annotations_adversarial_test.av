@@ -28,7 +28,7 @@ fn packaged(source: string) -> Program {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
         "/w/src/main.av": source,
         "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
-        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc?, warning: bool = false }\nexport type Named = { name: string, at: Loc? }\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport type Directive = { twin: string, name: string, at: Loc? }\nexport fn warn(message: string) -> Diagnostic { Diagnostic { message: message, help: null, at: null, warning: true } }\nexport fn deprecated(what: Named, note: string) -> List<Diagnostic> { [warn(\"`\${what.name}` is deprecated — \${note}\" )] }\n/// Makes a traced sibling.\n/// The signature declares the effect.\nexport fn traced(f: Fn, label: string) -> List<Directive> { [Directive { twin: \"\${f.name}_traced\", name: f.name, at: null }] }\nexport fn collect(f: Fn, xs: List<int>) -> List<Directive> { [] }\n",
+        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc?, warning: bool = false }\nexport type Named = { name: string, at: Loc? }\nexport type Trait = { name: string, at: Loc? }\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport type Directive = { twin: string, name: string, at: Loc? }\nexport fn warn(message: string) -> Diagnostic { Diagnostic { message: message, help: null, at: null, warning: true } }\nexport fn deprecated(what: Named, note: string) -> List<Diagnostic> { [warn(\"`\${what.name}` is deprecated — \${note}\" )] }\n/// Makes a traced sibling.\n/// The signature declares the effect.\nexport fn traced(f: Fn, label: string) -> List<Directive> { [Directive { twin: \"\${f.name}_traced\", name: f.name, at: null }] }\nexport fn collect(f: Fn, xs: List<int>) -> List<Directive> { [] }\n",
     }
     mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av"]), "/w", avra())
     ws.program("/w/src/main.av")
@@ -146,6 +146,19 @@ spec "features/annotations — the compile-time call's laws" {
                       "fn reject(t: Type) -> List<Diagnostic> { [Diagnostic { message: \"bad field\", help: null, at: t.fields[0].at }] }\n" +
                       "@reject\ntype P = {\n    x: int\n}\n1"
             refused_at(src, "bad field", 5)
+        }
+        then "a declaration's NAME in an argument list is its meta value" {
+            let src = "use @std.meta.{Type, Trait, Diagnostic}\n" +
+                      "trait Show {\n    fn show() -> int\n}\n" +
+                      "fn uses(t: Type, tr: Trait) -> List<Diagnostic> {\n    if t.name == \"P\" && tr.name == \"Show\" { [] } else { [Diagnostic { message: \"wrong pair\", help: null, at: null }] }\n}\n" +
+                      "@uses(Show)\ntype P = { x: int }\n1"
+            packaged(src).clean()
+        }
+        then "a TYPE name in an argument seat crosses the same way" {
+            let src = "use @std.meta.{Type, Diagnostic}\n" +
+                      "fn pair(t: Type, u: Type) -> List<Diagnostic> {\n    if t.name == \"P\" && u.name == \"Q\" { [] } else { [Diagnostic { message: \"wrong pair\", help: null, at: null }] }\n}\n" +
+                      "@pair(Q)\ntype P = { x: int }\ntype Q = { y: int }\n1"
+            packaged(src).clean()
         }
     }
     given "warnings" {
