@@ -1,5 +1,12 @@
 # Comptime — `const`, annotations, quotes
 
+> **STATUS 2026-09-11 (lane/comptime, HEAD `3091948`):** S1 and S3f
+> DONE (the `@traced` twin generates and runs); S3g PARTIAL
+> (`avra explain @name`, provenance, `avra expand` — the node source
+> printer remains); S3h PARTIAL (`@traced`, a Diagnostics lint);
+> S4/S5 not started. **See the LANE HANDOFF at the top of §6** for the
+> laws pinned, the seams, and where to pick up.
+
 Designed 2026-09-09, from first principles, for ratification.
 
 Sources, in authority order: the spec (1.2 erased binary, 1.3 unified
@@ -560,6 +567,45 @@ Flagged so ratification is a decision, not a surprise.
 
 ## 6. Slices, in order, each with its proof
 
+### LANE HANDOFF (lane/comptime, 2026-09-11)
+
+HEAD `3091948`, tree clean, `make gate` green. Take the lock, then
+work in the order below.
+
+DONE: **S3f** (two-tier namespace; `@traced` generates and runs) and
+most of **S3g** (`avra explain @name`, provenance, `avra expand`).
+NEXT: the node SOURCE PRINTER (S3g; unblocks `fmt`), then `@deprecated`
+(S3h; needs a WARNING channel — annotations speak refusals only today
+— plus call-site provenance), then the first compiler derive (S3h),
+then S4/S5.
+
+THE LAWS S3f/S3g pinned — a next agent must not re-derive them:
+- A `Declares` annotation's arguments are LITERALS (F2067,
+  "generates declarations, so its arguments come from the source
+  alone"): its generated name must exist while names are still being
+  resolved, so a computed arg cannot cross. Aggregates work for
+  `Records`/`Validates` (they run after resolve).
+- A `Declares` annotation's fn must stand in ANOTHER file (F2067,
+  "generates declarations and stands in this file") — the provider
+  guard; a same-file one cannot compute its own file's names.
+
+THE MECHANICS — where the seams are:
+- `Decls.mint_generated` (features/decls.av) mints the twin and admits
+  it to `file_decls` AND grows `decl_ids` (a table born at file-declare
+  time); it records `Provenance { ann, original, at }`.
+- `Workspace.resolved(f)` MATERIALIZES expansions BEFORE the resolver
+  sizes its per-expression tables, and `resolve` walks the generated
+  statements after the written ones — a table sized before the arena
+  grows is the class of bug that bit twice (see ROADMAP's feedback
+  survey; a keeper for it is requested).
+- `expanded(f)` runs during `resolved` and must not need the typed
+  answers of the file it is expanding.
+
+TESTS: `annotations/tests/traced/` (program test, eval == native ==
+expected) and `annotations_adversarial_test.av` (18 cases). The loop
+per commit is work -> `/red-team` -> `/review-round` -> `/feedback`;
+the `/feedback` skill files findings under ROADMAP.md.
+
 Sizes are for one lane. Each slice lands with its program tests,
 goldens, F-codes, `make gate` green, and its idiom entries.
 
@@ -633,10 +679,11 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       accessors are the Projection arm (three copies of one shape),
       and `@derive(Show)` on an arbitrary struct does NOT fit — its
       body is the user's template, S4's.
-- [ ] **S3e — the effect doors.** Widen `answers_effect`
-      (annotations/check.av) with `Decls` — `Decl`/`DeclKind` rode
-      as a record, the crossing is already proven; the Lifted family
-      returns `{ saids, decls }`; `@std/meta` ships the emitter fns.
+- [x] **S3e — the effect doors.** LANDED with S3f: the census
+      answers `Declares` for `List<Directive>`, the `Lifted` crossing
+      returns directives, and `@std/meta` ships `traced`/`Directive`
+      (the parked `Decl` name is retired — it collided with the
+      compiler's own declaration record).
 - [x] **S3f — two-tier namespace.** LANDED (lane/comptime):
       `Decls.mint_generated` mints a twin into the file's store and
       decl table under a `generated_key`; `file_decls` and `decl_ids`
@@ -651,8 +698,10 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       LITERAL arguments only: its generated name must exist while the
       file's names are still being resolved, so a computed argument
       refuses (F2067, "generates declarations, so its arguments come
-      from the source alone") rather than cycling. PROVENANCE (the
-      splice table) rides S3g.
+      from the source alone") rather than cycling, and its fn must
+      stand in ANOTHER file (F2067) — the provider guard refuses a
+      same-file annotation fn instead of silently skipping it. The
+      splice PROVENANCE landed with S3g.
 - [~] **S3g — visible magic.** LANDED (lane/comptime):
       `avra explain @name` (`Program.explain_annotation`) prints the
       declared fn's signature, which IS its effect — `avra explain
@@ -664,9 +713,13 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       PRINTER (`avra expand` echoes the listing, not the file; the
       printer also unblocks `fmt`), and doc comments (not stored), so
       `explain @name` prints the signature alone.
-- [ ] **S3h — the proof.** `@deprecated`, a `Diagnostics` lint,
-      Fn→Fn `@traced` in a test package, and the first compiler
-      derive erasing one `_of` accessor family.
+- [ ] **S3h — the proof.** A `Diagnostics` lint LANDED in a test
+      package (comptime_annotations' `@named`/`@configured`
+      validators), and Fn→Fn `@traced` LANDED (`annotations/tests/
+      traced`). REMAINING: `@deprecated` (needs a WARNING channel —
+      annotations speak refusals only today — plus call-site
+      provenance, so a caller is warned, not the declaration), and
+      the first compiler derive erasing one `_of` accessor family.
 - [ ] **S1 leftovers (small, fold in).** The reach refusal's full
       call chain (names each link, not just row+body) — the one
       "world" voice annotations share; and `export const` (waits on
