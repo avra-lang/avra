@@ -6677,7 +6677,168 @@ additions get siblings, nothing changes shape:
       to merge a tree that changed under the gate. Worth designing
       rather than patching.
 
+- [ ] A TRAP NAMES ITS SITE, AND A COUNT-BORN TABLE IS GUARDED. The
+      2026-09-11 feedback survey (lane/comptime) found the highest-cost
+      friction in the slice: two `index N out of bounds (length M)`
+      aborts that named no file, pass or declaration (roughly two
+      hours bisecting with hand-added prints; `lldb` named the fault in
+      minutes), a `defect:` that read `family 5 key 0` instead of
+      `Resolved`/file 0, and a debug print that cost an extern
+      declaration (F3017, module-wide). The capability: every
+      `avra_trap` / `trap_bounds` / `missing_value` prints the current
+      PASS and the declaration in hand, a `--trace-passes` breadcrumb,
+      and a keeper that names a per-file table sized from
+      `store.exprs.count()` or `store.stmts.count()` at pass start —
+      the class that bit TWICE in one slice and was found only by
+      lldb. FIRES when the next bounds abort costs more than a minute
+      to localize, or at the next pass added, whichever comes first.
+      Evidence: ROADMAP "Feedback survey — 2026-09-11".
+
+## Feedback survey — 2026-09-11 (lane/comptime)
+
+The first run of `/feedback` (`.claude/skills/feedback`): a survey of
+the two-tier namespace slice (S3f) — the compiler recovery, the
+`@traced` materializer, and the debugging it took. Every row carries
+its evidence; the base is `c48a4e6` unless noted. Counts: FRICTION 5,
+SUGAR 4, FEATURES 4, DEFECTS 3 (all fixed in the slice), DOCTRINE 2,
+PERFORMANCE 1, PROCESS 2.
+
+### FRICTION — what cost time
+
+- **A TRAP NAMES ITS SITE.** `index 5 is out of bounds (length 4)`
+  (the `decl_ids` table) and `index 12 is out of bounds (length 12)`
+  (the resolver's tables) aborted the compile with NO file, pass or
+  declaration. Roughly two hours went to bisecting with hand-added
+  `avra_eputs` prints; `lldb -o 'breakpoint set -n trap_bounds' -o bt`
+  named it in minutes (`TypeCx.decl_of` -> `avra_array_get_owned` ->
+  the unguarded read). THE ASK: `trap_bounds` / `missing_value` /
+  `avra_trap` print the current PASS and the declaration in hand, and a
+  `--trace-passes` breadcrumb keeps the last few pass entries reachable
+  from a backtrace. (Routed: FEATURES "a trap breadcrumb".)
+- **AN INTERNAL DEFECT NAMES ITS SYMBOL.** `defect: memo family 5
+  reused missing key 0` (query/memo.av:148) — family 5 is `Resolved`
+  and key 0 is file 0, but neither is named. THE ASK: the family's
+  registered NAME and the key's symbol, not two ints.
+- **A DEBUG PRINT NEEDS NO DECLARATION DANCE.** Adding `extern fn
+  avra_eputs(line: string)` to `features/decls.av` was F3017
+  "`avra_eputs` is declared twice in this module — here and in
+  `language/interp.av`": the extern wall is MODULE-wide, and a
+  `core`/`features` file cannot see the `language` module's row. THE
+  ASK: one always-available debug verb (a `core`-level `say` builtin),
+  so instrumenting a pass never edits an import or an extern.
+- **A SCRATCH PROBE OF AN IMPORTED FEATURE NEEDS A PACKAGE.** `use
+  @std.meta.{traced}` in a loose file is F3015 "this file is not in a
+  package — `use` needs a root", so every probe of the annotation had
+  to build a package dir (`tests/traced/`). THE ASK: a scratch/lone
+  mode (`avra check --root <pkg> <file>`), or a synthesized root for a
+  lone file that reaches a dependency by path.
+- **THE BUILD ADVANCES ONE GENERATION, SILENTLY.** `make avra`
+  compiles with the standing binary, so a front-end/lowering change
+  needs a SECOND build (CLAUDE.md doctrine) — and the FIRST build
+  PASSED while the new behavior was absent, which reads as "the fix
+  did not work". CONFIRMS the doctrine; the ask is a one-line "built
+  with generation N, source is N+1" notice.
+
+### SUGAR — a construct the language should have
+
+- **GROW A LIST TO SIZE.** `mint_generated` needs `decl_ids[f]` to
+  reach a new statement: `by_stmt.concat(filled<DeclId?>(n -
+  by_stmt.length, null))` (features/decls.av). THE ASK: `xs.resize(n,
+  v)` (a List method) so a sized table extends in one verb.
+- **A GUARD THAT STILL COUNTS ARMS.** The `is`-catch-all law
+  (CLAUDE.md) forced `match effect! { .Declares -> …, .Records or
+  .Validates -> false }` where `effect! is .Declares` was the obvious
+  draft (features/annotations/check.av). THE ASK: a spelling that
+  reads as a guard yet discharges the registry obligation — an
+  equality over a payload-free enum, or an `is` the compiler proves
+  exhaustive.
+- **INTERPOLATE A VALUE, NOT ONLY A SCALAR.** Instrumentation wanted
+  `${r.answer}` (a `MetaVal`); F2007 "an interpolation hole prints as
+  a scalar or string, found `MetaVal`". THE ASK: a derived `Show` (S4
+  `@derive`) reachable from interpolation, or a `--debug` form.
+- **SHORTEN THE IMPORT WALL.** Every new helper edits a 40-name `use
+  core.{…}` (language/workspace.av:17). THE ASK: a module-qualified
+  reference or a glob form, so a helper's home does not cost a
+  line-long edit.
+
+### FEATURES — a capability
+
+- **`avra explain` / `avra expand`** — wanted to SEE the generated
+  twin's AST and IR; already S3g (docs/2026_09_09_COMPTIME_DESIGN.md).
+  CONFIRMS the design; the survey adds the wanting site (debugging
+  `mint_generated`).
+- **DUMP ONE DECL'S IR WHILE ANOTHER IS BROKEN.** `avra ir` traps on
+  a bad program, so the twin's IR could not be read to check the mint
+  order. THE ASK: `avra ir <decl>` lowers only that declaration (or
+  prints what it can), so a broken sibling does not hide a good one.
+- **A TRAP BREADCRUMB ON EVERY PATH.** `avra_case_begin` is set only
+  by language/test_run.av, so a trap under `avra run`/`check` names
+  no case; the test runner proves the machinery works. THE ASK: every
+  driver announces the declaration/statement in hand, so a wreck names
+  where it died (FRICTION "a trap names its site", reused).
+- **A KEEPER FOR COUNT-SIZED TABLES.** The slice's two bounds bugs
+  were ONE class: a per-file table sized from `store.exprs.count()` or
+  `store.stmts.count()` at pass start, then a GENERATED node grows the
+  arena past it. THE ASK: a keeper that names a table born from a
+  count that can later grow, so the third instance is caught by `make
+  gate`, not by lldb.
+
+### DEFECTS — the compiler blaming itself (all fixed in the slice)
+
+- **`decl_ids` BORN BEFORE THE TWIN.** `decl_of` read past the table
+  (`TypeCx.decl_of` -> `index 5 out of bounds (length 4)`); fixed by
+  growing the table in `mint_generated`.
+- **RESOLVER TABLES BORN BEFORE THE EXPANSION.** `bindings` sized to
+  the pre-twin arena; fixed by materializing expansions in
+  `resolved(f)` before the resolver sizes its tables and resolving the
+  generated statements after the written ones.
+- **`@traced([1, 2])` -> `defect: memo family 5 reused missing key
+  0`.** Fixed into F2067: a `Declares` annotation reaches literals
+  only.
+
+### DOCTRINE
+
+- **THE DECLARES PHASE LAW** (new this slice): a name-generating
+  annotation runs inside the resolve its generated names serve, so its
+  arguments cross from the parse tree alone. Filed at CLAUDE.md "The
+  subset today", the design doc's S3f, and the sugar backlog.
+- **PROFILE, DON'T REASON, proved again.** Two hours of reasoning
+  about which table could not name it; the `lldb` backtrace did, in
+  minutes.
+
+### PERFORMANCE
+
+- **THE GATE'S PEAK** — `watch: peak ~600 MB` for `make gate` (the
+  compiler compiling itself). Recorded, not a new finding; the
+  instrument is `tools/watch.sh`.
+
+### PROCESS
+
+- **THE SEED IS A FOSSIL UNLESS REFRESHED.** Recovery took the
+  bootstrap ladder (CLAUDE.md, ROADMAP). `make seed-check` is now in
+  the gate and `make clean` preserves `build/avra`. CONFIRMS.
+- **`/feedback` IS A SKILL NOW.** This section is its first run; the
+  survey lands with the change that ran it.
+
 ## Sugar backlog — dogfooding asks
+
+FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and
+evidence under "Feedback survey — 2026-09-11"):
+
+- GROW A LIST TO SIZE — `xs.resize(n, v)` (a List method). Wanting
+  site: `Decls.mint_generated`'s `by_stmt.concat(filled<DeclId?>(n -
+  by_stmt.length, null))`.
+- A GUARD THAT STILL COUNTS ARMS — `effect! is .Declares` was the
+  obvious draft but violates the registry law, so a two-arm `match`
+  stands (features/annotations/check.av). Wants a guard spelling the
+  compiler can still prove exhaustive.
+- INTERPOLATE A VALUE, NOT ONLY A SCALAR — `${r.answer}` on a
+  `MetaVal` is F2007. Wants a derived `Show` (S4 `@derive`) reachable
+  from interpolation.
+- SHORTEN THE IMPORT WALL — every new helper edits a 40-name `use
+  core.{…}` (language/workspace.av:17). Wants a module-qualified
+  reference or a glob form.
+
 
 - AN AGGREGATE ARGUMENT TO A DECLARATION-GENERATING ANNOTATION. A
   `Declares` annotation's generated name must exist while the file's
