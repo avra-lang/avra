@@ -103,6 +103,9 @@ export type TypeFacts = {
     // a `mut` binding that BORROWS a parameter's field (bs2's
     // aliasing, honored until self-host — ROADMAP: the bs2 debt ledger)
     borrows: List<bool>,
+    // a use whose declaration's warnings were already spoken — one
+    // voice per use, however often the node is typed
+    warned: List<bool>,
     voices: Voices,
 }
 
@@ -121,6 +124,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         captures: filled<List<TypeId>?>(exprs, null),
         wants: filled<TypeId?>(exprs, null),
         hungry: filled(exprs, false),
+        warned: filled(exprs, false),
         starved: filled<TypeId?>(exprs, null),
         scopes: filled<ParamScope?>(exprs, null),
         pattern_types: empty_lists_ty(exprs),
@@ -245,6 +249,13 @@ impl TypeFacts {
 
     fn mark_borrow(s: StmtId) {
         self.borrows.set(s.index, true)
+    }
+
+    /// Whether this use already spoke its declaration's warnings.
+    fn spoke_warning(e: ExprId) -> bool { self.warned[e.index - self.lo] }
+
+    fn mark_warned(e: ExprId) {
+        self.warned.set(e.index - self.lo, true)
     }
 
     fn is_borrow(s: StmtId) -> bool { self.borrows[s.index] }

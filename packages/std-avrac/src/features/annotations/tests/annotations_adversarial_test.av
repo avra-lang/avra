@@ -15,6 +15,10 @@ fn directive_use() -> string {
     "use @std.meta.{Fn, Directive, traced}\n"
 }
 
+fn deprecation_use() -> string {
+    "use @std.meta.{deprecated}\n"
+}
+
 fn collect_use() -> string {
     "use @std.meta.{Fn, Directive, collect}\n"
 }
@@ -24,7 +28,7 @@ fn packaged(source: string) -> Program {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
         "/w/src/main.av": source,
         "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
-        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc? }\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport type Directive = { twin: string, name: string, at: Loc? }\n/// Makes a traced sibling.\n/// The signature declares the effect.\nexport fn traced(f: Fn, label: string) -> List<Directive> { [Directive { twin: \"\${f.name}_traced\", name: f.name, at: null }] }\nexport fn collect(f: Fn, xs: List<int>) -> List<Directive> { [] }\n",
+        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc?, warning: bool = false }\nexport type Named = { name: string, at: Loc? }\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport type Directive = { twin: string, name: string, at: Loc? }\nexport fn warn(message: string) -> Diagnostic { Diagnostic { message: message, help: null, at: null, warning: true } }\nexport fn deprecated(what: Named, note: string) -> List<Diagnostic> { [warn(\"`\${what.name}` is deprecated — \${note}\" )] }\n/// Makes a traced sibling.\n/// The signature declares the effect.\nexport fn traced(f: Fn, label: string) -> List<Directive> { [Directive { twin: \"\${f.name}_traced\", name: f.name, at: null }] }\nexport fn collect(f: Fn, xs: List<int>) -> List<Directive> { [] }\n",
     }
     mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av"]), "/w", avra())
     ws.program("/w/src/main.av")
@@ -41,6 +45,15 @@ fn refused_at(source: string, phrase: string, line: int) -> bool {
     let ds = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
     let report = p.report()
     ds.length == 1 && report.contains(phrase) && report.contains("main.av:${line}")
+}
+
+/// A clean program's warnings, rendered; a refusal's report when it
+/// refused — the whole check, whichever side.
+fn checked(p: Program) -> string {
+    match p.check() {
+        .Ok(warned) -> warned,
+        .Err(report) -> report,
+    }
 }
 
 /// `refused`, with a pinned COUNT — a refusal test proves both the
@@ -133,6 +146,25 @@ spec "features/annotations — the compile-time call's laws" {
                       "fn reject(t: Type) -> List<Diagnostic> { [Diagnostic { message: \"bad field\", help: null, at: t.fields[0].at }] }\n" +
                       "@reject\ntype P = {\n    x: int\n}\n1"
             refused_at(src, "bad field", 5)
+        }
+    }
+    given "warnings" {
+        then "a deprecation warns at the use, not the declaration" {
+            let p = packaged(deprecation_use() +
+                             "@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
+            let out = checked(p)
+            p.clean() && out.contains("F2071") && out.contains("`sum` is deprecated — use add") &&
+                out.contains("main.av:4") && out.contains("used here")
+        }
+        then "a use before the declaration still warns — the marks are a query" {
+            let p = packaged(deprecation_use() +
+                             "fn call() -> int { sum(1, 2) }\n@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\ncall()")
+            checked(p).contains("main.av:2")
+        }
+        then "a type deprecation reaches its uses too" {
+            let p = packaged(deprecation_use() +
+                             "@deprecated(\"use Pt\")\ntype Old = { x: int }\nOld { x: 1 }.x")
+            checked(p).contains("`Old` is deprecated")
         }
     }
     given "argument evaluation" {

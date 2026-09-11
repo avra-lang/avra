@@ -1,12 +1,13 @@
 # Comptime — `const`, annotations, quotes
 
-> **STATUS 2026-09-11 (lane/comptime, HEAD `bc5a7a7`):** S1 and S3f
-> DONE (the `@traced` twin generates and runs); S3g PARTIAL only on
-> stored doc comments (`avra explain @name`, provenance, the exhaustive
-> node source printer, and full-file `avra expand` have landed); S3h
-> PARTIAL (`@traced`, a Diagnostics lint);
-> S4/S5 not started. **See the LANE HANDOFF at the top of §6** for the
-> laws pinned, the seams, and where to pick up.
+> **STATUS 2026-09-11 (lane/comptime):** S1, S3f, S3g and S3h's
+> `@deprecated` DONE (warnings reach a use; `@traced` generates and
+> runs; stored doc comments, `avra explain @name`, provenance, the
+> exhaustive node source printer, and full-file `avra expand` all
+> landed); S3h's compiler derive BLOCKED on the per-file generated
+> namespace (see the handoff); S4/S5 not started. **See the LANE
+> HANDOFF at the top of §6** for the laws pinned, the seams, and
+> where to pick up.
 
 Designed 2026-09-09, from first principles, for ratification.
 
@@ -573,13 +574,47 @@ Flagged so ratification is a decision, not a surprise.
 HEAD `bc5a7a7`, tree clean, `make gate` green. Take the lock, then
 work in the order below.
 
-DONE: **S3f** (two-tier namespace; `@traced` generates and runs) and
-all of **S3g** except stored doc comments (`avra explain @name`,
+DONE: **S3f** (two-tier namespace; `@traced` generates and runs),
+all of **S3g** (stored doc comments appended to `avra explain @name`,
 provenance, the exhaustive Expr/Stmt source printer, and full-file
-`avra expand`). NEXT: store doc comments and append an annotation fn's
-docs to `avra explain @name`; then `@deprecated` (S3h; needs a WARNING
-channel — annotations speak refusals only today — plus call-site
-provenance), then the first compiler derive (S3h), then S4/S5.
+`avra expand`), and S3h's `@deprecated`: a `Validates` annotation's
+WARNINGS are kept on the declaration and spoken at every USE of it,
+while its errors speak at the declaration. NEXT: S3h's compiler
+derive is BLOCKED on the per-file generated namespace (below); then
+S4/S5.
+
+THE WARNING CHANNEL (S3h's `@deprecated`):
+- A `@std.meta.Diagnostic` carries `warning: bool`; `warn(message)`
+  mints one and `@std.meta.deprecated(what: Named, note)` answers it.
+  A `Named` receiver (`{ name, at }`) is the metadata-only first seat
+  that accepts ANY declaration — fn, record or enum.
+- `Decls.marks(d)` is a QUERY, armed by the workspace
+  (`arm_marks`/`marks_ensured`): it runs the declaration's
+  `List<Diagnostic>` annotations on first ask, keeps their warnings
+  and records them. A use reads it through `TypeCx.warn_use(e)`,
+  called wherever a name is typed — `spine_type`'s `.Ident`, a
+  call's node, and a struct literal's node — and speaks each warning
+  AT THE USE. So a caller is warned, not the declaration, and a use
+  BEFORE the declaration still warns, because asking IS the query.
+- `check_annotation` therefore speaks only ERRORS at the declaration;
+  a warning is the declaration's word for its users.
+- A builtin or synthetic declaration has no statement record; marks
+  return empty for it (`computed_marks`'s stmt guard).
+
+THE DERIVE, RETIRED INTO S4: erasing the `_of` accessor family from
+`features/contract.av` in its FREE-FN form is dropped. Generated
+declarations are admitted only to `file_decls`, the two-tier name
+lookup (`generated_named(f, …)`) is PER FILE, and `namespace(m)`
+binds from `items(file)`, which never sees them — so a free fn
+generated in one file is invisible in another, and pulling `expanded`
+into `namespace` is the cycle the two-tier design exists to avoid.
+The first real derive therefore lands in S4 and is IMPL-SHAPED: its
+members are found through `Decls.methods`, which is already
+program-wide, so no namespace widening is owed. (`DeclSig`'s accessors
+can become methods — `d.fn_sig?` — if that family is the chosen
+proof.) The module-namespace widening remains a LATER slice for any
+derive that MUST splice a module-level declaration used cross-file,
+e.g. a `Code<T>` template; it is not owed by S3h.
 
 THE LAWS S3f/S3g pinned — a next agent must not re-derive them:
 - A `Declares` annotation's arguments are LITERALS (F2067,
@@ -720,13 +755,14 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       proves parse/print fixed points plus statement fingerprints.
       REMAINING: doc comments are not stored, so `explain @name`
       prints the signature alone.
-- [ ] **S3h — the proof.** A `Diagnostics` lint LANDED in a test
-      package (comptime_annotations' `@named`/`@configured`
-      validators), and Fn→Fn `@traced` LANDED (`annotations/tests/
-      traced`). REMAINING: `@deprecated` (needs a WARNING channel —
-      annotations speak refusals only today — plus call-site
-      provenance, so a caller is warned, not the declaration), and
-      the first compiler derive erasing one `_of` accessor family.
+- [x] **S3h — the proof.** LANDED: a `Diagnostics` lint in a test
+      package, Fn→Fn `@traced`, and `@deprecated` (warning channel +
+      call-site provenance; see the handoff). The compiler derive's
+      free-fn form is RETIRED — it needs generated declarations to
+      join the MODULE namespace (the cycle the two-tier design
+      dodges), and an impl-shaped derive rides `Decls.methods`
+      instead, so the proof moves into S4 with the first real
+      `@derive`.
 - [ ] **S1 leftovers (small, fold in).** The reach refusal's full
       call chain (names each link, not just row+body) — the one
       "world" voice annotations share; and `export const` (waits on

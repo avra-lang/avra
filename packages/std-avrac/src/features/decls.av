@@ -46,6 +46,10 @@ export type Decls = {
     sigs: List<DeclSig?>,
     // a GENERATED declaration's origin — null for every written one
     provenance: List<Provenance?>,
+    // a declaration's WARNINGS: the words it keeps for its users,
+    // computed on first ask through `ensure_marks` (null = unasked)
+    marks: List<List<Said>?>,
+    ensure_marks: List<fn(DeclId)>,
     const_types: Map<string, TypeId>,
     children: List<List<DeclId>>,
     methods: List<List<DeclId>>,
@@ -83,6 +87,10 @@ fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) 
     .Err(Unsettled.Trap("nothing here lifts an annotation"))
 }
 
+// LICENSED I23: the hook's contract carries the declaration
+fn no_marks(d: DeclId) {
+}
+
 // LICENSED I23: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
 fn no_const_ensure(f: FileId, s: StmtId) { }
 
@@ -91,7 +99,7 @@ fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 export fn new_decls() -> Decls {
     Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
-        stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], provenance: [], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
+        stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
         ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
         seat_muts: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
         lifter: [no_lifter],
@@ -366,6 +374,7 @@ impl Decls {
             self.keys.set(key, id)
             self.sigs.push(null)
             self.provenance.push(null)
+            self.marks.push(null)
             self.targets.push(null)
             self.seat_muts.push([])
             self.declared_writes.push(false)
@@ -496,6 +505,7 @@ impl Decls {
         self.ensure_const.set(0, no_const_ensure)
         self.ensure_methods.set(0, no_ensure)
         self.ensure_writes.set(0, no_ensure)
+        self.ensure_marks.set(0, no_marks)
         self.lifter.set(0, no_lifter)
     }
 
@@ -521,6 +531,26 @@ impl Decls {
     /// The workspace arms the lifting hook once.
     fn arm_lifter(lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>) {
         self.lifter.set(0, lift)
+    }
+
+    /// The workspace arms the marks hook once — a declaration's
+    /// use-site warnings are a query of the program, never a table
+    /// an earlier walk happened to fill.
+    fn arm_marks(ensure: fn(DeclId)) {
+        self.ensure_marks.set(0, ensure)
+    }
+
+    /// A declaration's warnings, asked at a use. Asking IS the
+    /// computation; the table only holds.
+    fn marks(d: DeclId) -> List<Said> {
+        let ensure = self.ensure_marks[0]
+        ensure(d)
+        let held: List<Said>? = self.marks[d.index]
+        held ?? []
+    }
+
+    fn record_marks(d: DeclId, xs: List<Said>) {
+        self.marks.set(d.index, xs)
     }
 
     /// An annotation fn `d` run over the declaration at `s` in file
@@ -577,6 +607,7 @@ impl Decls {
             message: self.text_of_meta(self.field_of(heap, sig, item, "message")),
             help: self.optional_text(self.field_of(heap, sig, item, "help")),
             at: self.loc_of_meta(heap, self.field_of(heap, sig, item, "at")),
+            warning: self.bool_of_meta(self.field_of(heap, sig, item, "warning")),
         }
     }
 
@@ -586,6 +617,13 @@ impl Decls {
         let i = sig.names.index_of(name)
         if i < 0 { return MetaVal.Absent }
         heap.slots(item)[i]
+    }
+
+    fn bool_of_meta(v: MetaVal) -> bool {
+        match v {
+            .Bool(b) -> b,
+            .Int(_) or .Float(_) or .Text(_) or .Absent or .Node(_) or .Map(_) -> false,
+        }
     }
 
     fn optional_text(v: MetaVal) -> string? {

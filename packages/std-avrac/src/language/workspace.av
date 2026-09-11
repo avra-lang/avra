@@ -14,9 +14,9 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, int_of, text_of, bool_of, bits_of, is_literal}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, int_of, text_of, bool_of, bits_of, is_literal, Annotation}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -270,6 +270,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
+    ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
     let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> ws.lifted(d, f, s, call, args)
     ws.decls.arm_lifter(lift)
     ws.load_packages(src)
@@ -304,6 +305,46 @@ impl Workspace {
 
     fn writes_ensured() {
         let _ = self.receivers()
+    }
+
+    fn marks_ensured(d: DeclId) {
+        let _ = self.computed_marks(d)
+    }
+
+    /// A declaration's use-site warnings: each `List<Diagnostic>`
+    /// annotation run and its WARNINGS kept (errors speak at the
+    /// declaration). Runs inside the armed hook, so a use finds a
+    /// later declaration's warnings however the files are ordered.
+    fn computed_marks(d: DeclId) -> List<Said> {
+        let x = self.decls.decl(d)
+        let p = self.parsed(x.file)
+        // A builtin or synthetic declaration has no statement record;
+        // nothing annotates it, so there is nothing to keep.
+        if x.stmt.index >= p.store.annotations.length { return [] }
+        let vis = self.visible(x.file)
+        let out = flatten([self.annotation_warnings(x, p, vis, a) for a in p.store.annotations_of(x.stmt)])
+        self.decls.record_marks(d, out)
+        out
+    }
+
+    /// One annotation's WARNING diagnostics, empty for an annotation
+    /// that answers something other than `List<Diagnostic>`.
+    fn annotation_warnings(x: Decl, p: Parsed, vis: Namespace, a: Annotation) -> List<Said> {
+        let name: string? = p.store.ident_name(a.callee)
+        if name == null { return [] }
+        let found: DeclId? = vis.fns.get(name!)
+        if found == null { return [] }
+        let sig: FnSig? = fn_sig_of(self.decls.sig(found!))
+        if sig == null { return [] }
+        let s = sig!
+        if s.params.is_empty() { return [] }
+        let elem: TypeId? = elem_of(self.decls.types, s.ret)
+        if elem == null { return [] }
+        if !self.decls.meta_type(elem!, "Diagnostic") { return [] }
+        match self.lifted(found!, x.file, x.stmt, a.callee, a.args) {
+            .Ok(crossed) -> [w for w in self.decls.saids(crossed, s.ret) if w.warning],
+            .Err(_) -> [],
+        }
     }
 
     /// The kernel's verifier for every family: the key re-asked through
@@ -813,6 +854,7 @@ impl Workspace {
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         let sig = fn_sig_of(self.decls.sig(d))
         if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }
+        if sig!.params.is_empty() { return .Err(Unsettled.Trap("`${x.name}` takes no declaration to lift")) }
         mut heap = new_meta_heap()
         mut vals: List<MetaVal> = [self.crossed_decl(f, s, sig!.params.first()!, heap)]
         for e in args {

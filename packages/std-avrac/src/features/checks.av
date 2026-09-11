@@ -15,6 +15,27 @@ impl TypeCx {
         self.error_type
     }
 
+    /// A use of a declaration speaks the declaration's warnings —
+    /// the one place a `@deprecated` reaches its callers, at the use
+    /// itself. Spoken once per use, however often the node is typed.
+    mut fn warn_use(e: ExprId) {
+        if !self.facts.owns(e) { return }
+        if self.facts.spoke_warning(e) { return }
+        let b: Binding? = self.names.binding(e)
+        if b == null { return }
+        match b! {
+            .Decl(d) -> {
+                let held = self.view.decls.marks(d)
+                if held.is_empty() { return }
+                self.facts.mark_warned(e)
+                for x in held {
+                    let _ = self.spoken(warning("annotation.warning", x.at ?? self.loc_of(e), x.message, "used here", x.help))
+                }
+            },
+            .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> nothing(),
+        }
+    }
+
     /// The condition law: `subject` names the site ("an `if`
     /// condition"), `label` points at it ("this decides the branch").
     mut fn require_bool(e: ExprId, subject: string, label: string) {

@@ -4,7 +4,7 @@
 //! cause was diagnosed where it happened; the wording lives here
 //! with the operators.
 use core.{ExprId, BinOp, Type, TypeId, op_symbol, DeclId, int_of}
-use features.{TypeCx, EnumSig, this_is, variants_are, build_a_record}
+use features.{TypeCx, EnumSig, this_is, variants_are, build_a_record, nothing}
 use diagnostics.{refusal}
 
 fn spine_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -12,7 +12,10 @@ fn spine_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) {
         .IntLit(_) -> cx.type(int),
         .FloatLit(_) -> cx.type(float),
-        .Ident(_) -> cx.target_type(e),
+        .Ident(_) -> {
+            cx.warn_use(e)
+            cx.target_type(e)
+        },
         .Binary(op, l, r) -> binary_type(cx, e, op, l, r),
         .Not(v) -> not_type(cx, v),
         .Index(s, i) -> index_type(cx, s, i),

@@ -65,7 +65,7 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
         .Ok(crossed) -> {
             match effect! {
-                .Records or .Validates -> { for x in cx.view.decls.saids(crossed, sig.ret) { spoken_said(cx, a, s, x) } },
+                .Records or .Validates -> { for x in cx.view.decls.saids(crossed, sig.ret) { if !x.warning { spoken_said(cx, a, s, x) } } },
                 .Declares -> nothing(),
             }
         },
@@ -81,10 +81,12 @@ fn declared_kind(cx: TypeCx, s: StmtId) -> DeclKind? {
     cx.view.decls.decl(d!).kind
 }
 
-/// `Fn` takes a fn; `Type` takes a record or an enum.
+/// `Fn` takes a fn; `Type` takes a record or an enum; `Named` takes
+/// any declaration, for an annotation that only names it.
 fn receiver_fits(cx: TypeCx, seat: TypeId, kind: DeclKind?) -> bool {
     if kind == null { return false }
     let declared = kind!
+    if cx.view.decls.meta_type(seat, "Named") { return true }
     if cx.view.decls.meta_type(seat, "Fn") { return declared is .Fn }
     cx.view.decls.meta_type(seat, "Type") && (declared is .Record || declared is .Enum)
 }
@@ -146,7 +148,7 @@ fn takes_no_declaration(mut cx: TypeCx, a: Annotation) {
 fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) {
     let took = cx.view.types.name_of(seat)
     let this = if kind == null { "not a declaration" } else { "a ${kind_shown(kind!)}" }
-    let found = if (took == "Fn" || took == "Type") && !cx.view.decls.meta_type(seat, took) {
+    let found = if ["Fn", "Type", "Named"].contains(took) && !cx.view.decls.meta_type(seat, took) {
         "`${a.name}` takes `${took}` from another module, not `@std.meta.${took}`"
     } else {
         "`${a.name}` takes `${took}`, and this is ${this}"
@@ -154,7 +156,7 @@ fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) 
     let _ = cx.spoken(refusal("annotation.receiver", at_annotation(cx, a),
                        receiver_law(),
                        found,
-                       "`Fn` crosses a fn, `Type` a record or an enum — nothing else yet"))
+                       "`Fn` crosses a fn, `Type` a record or an enum, `Named` any declaration"))
 }
 
 fn kind_shown(k: DeclKind) -> string {
@@ -222,8 +224,10 @@ fn effect_words(e: Effect) -> string {
     }
 }
 
-/// What the annotation SAID, at the place it named — the declaration
-/// itself when it named none.
+/// What the annotation SAID about the declaration itself, at the
+/// place it named — the declaration when it named none. A WARNING is
+/// the declaration's word for its users, kept and spoken at each use
+/// (`warn_use`), never here.
 fn spoken_said(mut cx: TypeCx, a: Annotation, s: StmtId, x: Said) {
     let here: Loc? = x.at ?? cx.view.stmt_loc(s)
     let _ = cx.spoken(refusal("annotation.said", here, x.message, "refused by `@${a.name}`", x.help))

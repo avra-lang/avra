@@ -48,7 +48,7 @@ export type Type = { name: string, fields: List<Field>, variants: List<Variant>,
 /// `List<Diagnostic>` VALIDATES: an empty list passes, and each
 /// diagnostic is spoken at the place it names — the declaration
 /// when it names none.
-export type Diagnostic = { message: string, help: string?, at: Loc? }
+export type Diagnostic = { message: string, help: string?, at: Loc?, warning: bool = false }
 
 /// A refusal at the declaration itself.
 export fn refuse(message: string) -> Diagnostic {
@@ -58,6 +58,22 @@ export fn refuse(message: string) -> Diagnostic {
 /// A refusal at a place — a field's, a parameter's — with its remedy.
 export fn refuse_at(at: Loc?, message: string, help: string?) -> Diagnostic {
     Diagnostic { message: message, help: help, at: at }
+}
+
+/// A declaration's word for its USERS: not spoken where the
+/// declaration stands, but at every use of it. `@deprecated` is the
+/// one shipped today.
+export fn warn(message: string) -> Diagnostic {
+    Diagnostic { message: message, help: null, at: null, warning: true }
+}
+
+/// Any declaration, for an annotation that only needs to NAME it.
+export type Named = { name: string, at: Loc? }
+
+/// The declaration is out of favour; every use is warned with the
+/// note. A warning, so the build still runs.
+export fn deprecated(what: Named, note: string) -> List<Diagnostic> {
+    [warn("`${what.name}` is deprecated — ${note}")]
 }
 
 /// A file's text, read at compile time beside the source. Into a
