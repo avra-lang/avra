@@ -16,6 +16,7 @@ impl Runnable for ExplainCmd {
     fn run(args: CliResult) -> int {
         let q = args.arg("code")
         if q == "process" { return explained_process(args.arg("at")) }
+        if q.starts_with("@") { return explained_annotation(q.substring(1, q.length)) }
         let hit: DiagCode? = avra().rows.codes.find(it.id == q || it.kind == q)
         if hit == null {
             eprintln("avra: nothing registered under `${q}`")
@@ -25,6 +26,25 @@ impl Runnable for ExplainCmd {
         println("${c.id} ${c.kind} — ${c.summary}")
         0
     }
+}
+
+/// `avra explain @name` — the annotation fn's signature, which IS
+/// its effect (§3.3 of the comptime design). The package is the
+/// directory the command stands in, as `explain process` reads its
+/// manifest.
+fn explained_annotation(name: string) -> int {
+    let p = root_program(".")
+    if !p.clean() {
+        eprintln(p.report())
+        return 1
+    }
+    let sig = p.explain_annotation(name)
+    if sig == null {
+        eprintln("avra: no fn `${name}` is declared in this package")
+        return 1
+    }
+    println(sig!)
+    0
 }
 
 /// The package's declared tools, minted as the library mints them, and

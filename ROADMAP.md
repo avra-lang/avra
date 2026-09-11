@@ -6820,6 +6820,22 @@ PERFORMANCE 1, PROCESS 2.
 - **`/feedback` IS A SKILL NOW.** This section is its first run; the
   survey lands with the change that ran it.
 
+### ADDENDUM — S3g (`explain @name`), same day
+
+- **A CONDITIONAL PROGRAM NEED HAS NO CLEAN SHAPE.** `avra explain`
+  takes a registry key OR needs a program (`@name`). `phased`/`on_program`
+  read the `file` arg (`explain` has none), and `phased`'s act is
+  `fn(Program) -> Result<int,string>` — it cannot receive the name
+  argument. The workaround: `root_program(".")` and a name-only fn.
+  THE ASK: a command helper for "a program when the argument asks for
+  one", or a `phased` that passes the command's own args through.
+- **DOC COMMENTS ARE NOT STORED.** `avra explain @name` should print
+  the annotation fn's doc comment (§4.6), but the lexer drops them.
+  THE ASK: a doc-comment side table on the declaration.
+- **`explain @name` PRINTS THE SIGNATURE ALONE**, which is honest (the
+  signature IS the effect) but the doc half is owed. REMAINING S3g:
+  `avra expand` + the node source printer.
+
 ## Sugar backlog — dogfooding asks
 
 FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and

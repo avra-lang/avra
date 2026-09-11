@@ -1421,6 +1421,18 @@ impl Program {
         self.files[self.entry!.at]
     }
 
+    /// An annotation fn's signature, which IS its effect — `avra
+    /// explain @name`. Null when no declared fn wears the name.
+    fn explain_annotation(name: string) -> string? {
+        let decls = self.ws.decls
+        let hit = decls.decls.find((d: Decl) -> d.name == name && decls.fn_name(d.id) != null)
+        if hit == null { return null }
+        let sig: FnSig? = fn_sig_of(decls.sig(hit!.id))
+        if sig == null { return null }
+        let holes = [decls.types.name_of(pt) for pt in sig!.params]
+        "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig!.ret)}"
+    }
+
     fn clean() -> bool { self.defects.is_empty() && !has_errors(self.voices) && !self.files.any(unclean(it)) }
 
     /// The packages' voices first (a manifest's trouble explains

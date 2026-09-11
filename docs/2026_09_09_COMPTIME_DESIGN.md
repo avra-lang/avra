@@ -653,9 +653,13 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       refuses (F2067, "generates declarations, so its arguments come
       from the source alone") rather than cycling. PROVENANCE (the
       splice table) rides S3g.
-- [ ] **S3g — visible magic.** `avra explain @name` (the signature
-      IS the effect), `avra expand`, and the node SOURCE PRINTER
-      (which also unblocks `fmt`).
+- [~] **S3g — visible magic.** `avra explain @name` LANDED (lane/
+      comptime): `Program.explain_annotation` finds the declared fn by
+      name and prints its signature, which IS its effect — `avra
+      explain @traced` answers `fn traced(Fn, string) ->
+      List<Directive>`. REMAINING: `avra expand` and the node SOURCE
+      PRINTER (which also unblocks `fmt`); doc comments are not stored
+      yet, so `explain @name` prints the signature alone.
 - [ ] **S3h — the proof.** `@deprecated`, a `Diagnostics` lint,
       Fn→Fn `@traced` in a test package, and the first compiler
       derive erasing one `_of` accessor family.
