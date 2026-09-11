@@ -330,9 +330,7 @@ impl Workspace {
     /// One annotation's WARNING diagnostics, empty for an annotation
     /// that answers something other than `List<Diagnostic>`.
     fn annotation_warnings(x: Decl, p: Parsed, vis: Namespace, a: Annotation) -> List<Said> {
-        let name: string? = p.store.ident_name(a.callee)
-        if name == null { return [] }
-        let found: DeclId? = vis.fns.get(name!)
+        let found: DeclId? = self.named_arg(p, vis, a.callee)
         if found == null { return [] }
         let sig: FnSig? = fn_sig_of(self.decls.sig(found!))
         if sig == null { return [] }
@@ -875,7 +873,7 @@ impl Workspace {
     /// is the very resolve the two-tier miss is serving: a cycle),
     /// anything else through the isolated evaluator.
     fn crossed_arg(f: FileId, e: ExprId, want: TypeId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
-        let named: DeclId? = if self.wants_a_decl(want) { self.arg_decl(f, e) } else { null }
+        let named: DeclId? = if self.decls.takes_a_decl(want) { self.arg_decl(f, e) } else { null }
         if named != null { return .Ok(self.crossed_decl_of(named!, want, heap)) }
         let p = self.parsed(f)
         let raw = p.store.expr(e)
@@ -898,13 +896,6 @@ impl Workspace {
             .Decl(d) -> d,
             .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
         }
-    }
-
-    /// Whether a meta seat takes a declaration whole — the three
-    /// receiver kinds and the metadata-only `Named`.
-    fn wants_a_decl(want: TypeId) -> bool {
-        self.decls.meta_type(want, "Type") || self.decls.meta_type(want, "Trait") ||
-            self.decls.meta_type(want, "Fn") || self.decls.meta_type(want, "Named")
     }
 
     /// A file's GENERATED declarations: every Declares-annotated
@@ -930,7 +921,7 @@ impl Workspace {
                 // value that needs this file's typed answers.
                 let source_known = w.args.all((e: ExprId) -> is_literal(p.store.expr(e)) || p.store.ident_name(e) != null)
                 if source_known {
-                    let directives: List<Directive> = if self.is_derived(w.ret) { self.derive_directives(w, f, p, vis) } else { self.lifted_directives(w, f) }
+                    let directives: List<Directive> = if self.is_derived(w.ret) { self.derive_directives(w, f, p, vis) } else { self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.ret) }
                     for directive in directives {
                         if directive.code != null {
                             made = made.concat(self.admit_code(f, directive.code!, self.decls.decl(w.ann).name, w.at))
@@ -1012,10 +1003,11 @@ impl Workspace {
         self.decls.mint_generated_code(f, p.store, p.stmts, lo, hi, ann, at)
     }
 
-    /// One Declares annotation's directives, run through the evaluator.
-    fn lifted_directives(w: DeclareWork, f: FileId) -> List<Directive> {
-        match self.lifted(w.ann, f, w.stmt, w.callee, w.args) {
-            .Ok(crossed) -> self.decls.directives_of(crossed, w.ret),
+    /// A lifted call's directives, or none when it refused — the ONE
+    /// read of a `List<Directive>` answer.
+    fn lifted_directives(d: DeclId, f: FileId, stmt: StmtId, call: ExprId, args: List<ExprId>, ret: TypeId) -> List<Directive> {
+        match self.lifted(d, f, stmt, call, args) {
+            .Ok(crossed) -> self.decls.directives_of(crossed, ret),
             .Err(_) -> [],
         }
     }
@@ -1023,14 +1015,15 @@ impl Workspace {
     /// A `@derive`'s directives: each named trait's associated
     /// `derive` run over the annotated declaration, concatenated.
     fn derive_directives(w: DeclareWork, f: FileId, p: Parsed, vis: Namespace) -> List<Directive> {
-        flatten([self.trait_directives(self.named_trait(p, vis, e), w, f) for e in w.args])
+        flatten([self.trait_directives(self.named_arg(p, vis, e), w, f) for e in w.args])
     }
 
-    /// The trait an argument NAME stands for, or none.
-    fn named_trait(p: Parsed, vis: Namespace, e: ExprId) -> DeclId? {
+    /// A declaration's NAME in an annotation's argument list, in this
+    /// file's scope — a fn, a type, or a trait.
+    fn named_arg(p: Parsed, vis: Namespace, e: ExprId) -> DeclId? {
         let name: string? = p.store.ident_name(e)
         if name == null { return null }
-        vis.types.get(name!)
+        vis.fns.get(name!) ?? vis.types.get(name!)
     }
 
     /// One trait's associated `derive` over the declaration — its
@@ -1038,7 +1031,7 @@ impl Workspace {
     fn trait_directives(tr: DeclId?, w: DeclareWork, f: FileId) -> List<Directive> {
         if tr == null { return [] }
         let trait_id = tr!
-        let member: DeclId? = self.decls.trait_fns(trait_id).find((m: DeclId) -> self.decls.fn_name(m) == "derive")
+        let member: DeclId? = self.decls.trait_derive(trait_id)
         if member == null { return [] }
         let m = member!
         // The provider guard: a same-file derive would need this file's
@@ -1046,10 +1039,7 @@ impl Workspace {
         if same_file(self.decls.decl(m).file, f) { return [] }
         let msig: FnSig? = fn_sig_of(self.decls.sig(m))
         if msig == null { return [] }
-        match self.lifted(m, f, w.stmt, w.callee, []) {
-            .Ok(crossed) -> self.decls.directives_of(crossed, msig!.ret),
-            .Err(_) -> [],
-        }
+        self.lifted_directives(m, f, w.stmt, w.callee, [], msig!.ret)
     }
 
     /// The declaration at `s` as the value the fn's first seat asks

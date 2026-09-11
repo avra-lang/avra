@@ -77,7 +77,7 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
             let tr: DeclId? = cx.bound_decl(e)
             if tr != null {
                 let trait_id = tr!
-                let member: DeclId? = cx.view.decls.trait_fns(trait_id).find((m: DeclId) -> cx.view.decls.fn_name(m) == "derive")
+                let member: DeclId? = cx.view.decls.trait_derive(trait_id)
                 if member != null {
                     let m = member!
                     if same_file(cx.view.decls.decl(m).file, cx.view.file) {
@@ -156,19 +156,12 @@ fn effect_census() -> List<Effect> {
 fn type_arguments(mut cx: TypeCx, a: Annotation, seats: List<TypeId>) {
     for i, e in a.args {
         let want: TypeId = if i + 1 < seats.length { seats[i + 1] } else { cx.error_type }
-        if seat_is_meta(cx, want) && cx.bound_decl(e) != null {
+        if cx.view.decls.takes_a_decl(want) && cx.bound_decl(e) != null {
             cx.facts.set_type(e, want)
         } else {
             cx.walk(e)
         }
     }
-}
-
-/// Whether a seat takes a declaration whole — the three receiver
-/// kinds and the metadata-only `Named`.
-fn seat_is_meta(cx: TypeCx, ty: TypeId) -> bool {
-    cx.view.decls.meta_type(ty, "Type") || cx.view.decls.meta_type(ty, "Trait") ||
-        cx.view.decls.meta_type(ty, "Fn") || cx.view.decls.meta_type(ty, "Named")
 }
 
 // ── The voices ──

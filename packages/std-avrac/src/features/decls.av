@@ -408,7 +408,6 @@ impl Decls {
     /// declarations mint from the same arena every pass already reads.
     fn mint_generated_code(f: FileId, store: NodeStore, stmts: List<StmtId>, lo: int, hi: int, ann: string, at: Span?) -> List<DeclId> {
         mut made: List<DeclId> = []
-        let path = self.file(f).path
         for s in stmts {
             let kind: DeclKind? = store.declared_kind(s)
             if kind != null {
@@ -436,21 +435,21 @@ impl Decls {
         // block's nodes are contiguous and already past the written
         // ones, so typing and lowering read them exactly as written.
         for d in made { self.decls.set(d.index, self.decl(d) with { lo: lo, hi: hi }) }
-        // THE STATEMENT TABLE grows to the arena, and each generated
-        // declaration joins the file's list so items and lowering see it.
-        mut by_stmt = self.decl_ids[f.index]
-        if by_stmt.length < store.stmts.count() {
-            by_stmt = by_stmt.concat(filled<DeclId?>(store.stmts.count() - by_stmt.length, null))
-        }
-        for d in made {
-            let x = self.decl(d)
-            by_stmt.set(x.stmt.index, d)
-        }
-        self.decl_ids.set(f.index, by_stmt)
-        let file_list = self.file_decls[f.index].concat(made)
-        self.file_decls.set(f.index, file_list)
-        let _ = path
+        self.record_generated(f, made)
         made
+    }
+
+    /// A generated declaration joins the file's LIST and its statement
+    /// table, so `items`, the namespace, resolve and lowering read it
+    /// as written. The statement table is grown to the arena first —
+    /// `decl_of` reads it by statement, and a miss reads past its end.
+    fn record_generated(f: FileId, made: List<DeclId>) {
+        mut by_stmt = self.decl_ids[f.index]
+        let stmts = self.store_of(f).stmts.count()
+        if by_stmt.length < stmts { by_stmt = by_stmt.concat(filled<DeclId?>(stmts - by_stmt.length, null)) }
+        for d in made { by_stmt.set(self.decl(d).stmt.index, d) }
+        self.decl_ids.set(f.index, by_stmt)
+        self.file_decls.set(f.index, self.file_decls[f.index].concat(made))
     }
 
     /// A GENERATED declaration — an annotation's traced twin — minted
@@ -487,24 +486,7 @@ impl Decls {
         // resolution and lowering read it exactly as a written fn.
         let hi = store.exprs.count()
         self.decls.set(d.index, self.decl(d) with { lo: lo, hi: hi })
-        // THE FILE'S DECL LIST: the twin joins the written decls so
-        // items, the namespace, bodies_of and lowering all see it —
-        // the resolver's miss is only the FIRST look; every other
-        // consumer reads the file's decls through this table.
-        mut file_list = self.file_decls[f.index]
-        file_list.push(d)
-        self.file_decls.set(f.index, file_list)
-        // THE STATEMENT TABLE: `decl_of` is how typing asks a
-        // statement for its declaration, and each file's table is
-        // sized when the file is declared — before any twin. Grow it
-        // to the statement the twin just minted, or the lookup reads
-        // past its end.
-        mut by_stmt = self.decl_ids[f.index]
-        if by_stmt.length < store.stmts.count() {
-            by_stmt = by_stmt.concat(filled<DeclId?>(store.stmts.count() - by_stmt.length, null))
-        }
-        by_stmt.set(s.index, d)
-        self.decl_ids.set(f.index, by_stmt)
+        self.record_generated(f, [d])
         // THE PROVENANCE: who asked for it, what it wraps, and where.
         self.provenance.set(d.index, Provenance { ann: ann, original: original, at: at })
         d
@@ -527,6 +509,14 @@ impl Decls {
 
     fn module_of(d: DeclId) -> string { self.module_name(self.file(self.decl(d).file).module_id) }
     fn package_of(d: DeclId) -> string { package_of_module(self.module_of(d)) }
+
+    /// Whether a meta seat takes a declaration WHOLE — the three
+    /// receiver kinds and the metadata-only `Named`. The annotation
+    /// boundary's ONE spelling, read by typing and by the crossing.
+    fn takes_a_decl(ty: TypeId) -> bool {
+        self.meta_type(ty, "Type") || self.meta_type(ty, "Trait") ||
+            self.meta_type(ty, "Fn") || self.meta_type(ty, "Named")
+    }
 
     /// Whether a type is one declaration exported by `@std/meta`.
     /// The DeclId is the identity; the package and export name locate
@@ -981,6 +971,12 @@ impl Decls {
     /// A trait's method names — the vtable's order.
     fn trait_method_names(d: DeclId) -> List<string> {
         [self.decl(m).name for m in self.trait_fns(d)]
+    }
+
+    /// A trait's associated `derive` member, or none — the ONE name
+    /// the compiler runs for `@derive`.
+    fn trait_derive(d: DeclId) -> DeclId? {
+        self.trait_fns(d).find((m: DeclId) -> self.fn_name(m) == "derive")
     }
 
     /// A type's method by name — asking IS the query: the hook fills
