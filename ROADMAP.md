@@ -6835,6 +6835,14 @@ PERFORMANCE 1, PROCESS 2.
 - **`explain @name` PRINTS THE SIGNATURE ALONE**, which is honest (the
   signature IS the effect) but the doc half is owed. REMAINING S3g:
   `avra expand` + the node source printer.
+- **A SAME-FILE `Declares` ANNOTATION WAS SILENT, AND IS REFUSED NOW.**
+  The provider-only guard (`declared_work`) skipped an annotation fn
+  that stood in the file it annotated — no twin, no diagnostic (found
+  writing the S3g test). Now `check_annotation` refuses it: "`gen`
+  generates declarations and stands in this file — declare the
+  annotation fn in another file". The boundary is honest: expanding
+  needs the annotation fn's signature, which needs this file's names,
+  which are the very thing being resolved.
 
 ## Sugar backlog — dogfooding asks
 

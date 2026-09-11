@@ -44,6 +44,8 @@ export type Decls = {
     decls: List<Decl>,
     keys: Map<string, DeclId>,
     sigs: List<DeclSig?>,
+    // a GENERATED declaration's origin — null for every written one
+    provenance: List<Provenance?>,
     const_types: Map<string, TypeId>,
     children: List<List<DeclId>>,
     methods: List<List<DeclId>>,
@@ -89,7 +91,7 @@ fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 export fn new_decls() -> Decls {
     Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
-        stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
+        stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], provenance: [], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
         ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
         seat_muts: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
         lifter: [no_lifter],
@@ -363,6 +365,7 @@ impl Decls {
             self.decls.push(d)
             self.keys.set(key, id)
             self.sigs.push(null)
+            self.provenance.push(null)
             self.targets.push(null)
             self.seat_muts.push([])
             self.declared_writes.push(false)
@@ -396,7 +399,7 @@ impl Decls {
     /// parameters and parameter seats, so it answers like the original,
     /// and its own expression range, so typing, resolution and lowering
     /// read it as written.
-    fn mint_generated(f: FileId, name: string, tparams: List<Param>, params: List<Param>, ret: TypeRef, original: string, at: Span?) -> DeclId {
+    fn mint_generated(f: FileId, name: string, tparams: List<Param>, params: List<Param>, ret: TypeRef, original: string, ann: string, at: Span?) -> DeclId {
         let key = generated_key(f, name)
         let known: DeclId? = self.known_id(key)
         if known != null { return known! }
@@ -441,12 +444,17 @@ impl Decls {
         }
         by_stmt.set(s.index, d)
         self.decl_ids.set(f.index, by_stmt)
+        // THE PROVENANCE: who asked for it, what it wraps, and where.
+        self.provenance.set(d.index, Provenance { ann: ann, original: original, at: at })
         d
     }
 
     // ── declarations ──
 
     fn decl(d: DeclId) -> Decl { self.decls[d.index] }
+
+    /// A generated declaration's origin, or null for a written one.
+    fn provenance_of(d: DeclId) -> Provenance? { self.provenance[d.index] }
 
     /// The declaration a statement of a file makes, when it does.
     fn decl_of(f: FileId, s: StmtId) -> DeclId? {

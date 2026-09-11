@@ -12,7 +12,11 @@ fn fn_use() -> string {
 }
 
 fn directive_use() -> string {
-    "use @std.meta.{Fn, Directive}\n"
+    "use @std.meta.{Fn, Directive, traced}\n"
+}
+
+fn collect_use() -> string {
+    "use @std.meta.{Fn, Directive, collect}\n"
 }
 
 fn packaged(source: string) -> Program {
@@ -20,7 +24,7 @@ fn packaged(source: string) -> Program {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
         "/w/src/main.av": source,
         "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
-        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc? }\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport type Directive = { twin: string, name: string, at: Loc? }\nexport fn traced(f: Fn, label: string) -> List<Directive> { [] }\n",
+        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc? }\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport type Directive = { twin: string, name: string, at: Loc? }\nexport fn traced(f: Fn, label: string) -> List<Directive> { [Directive { twin: \"\${f.name}_traced\", name: f.name, at: null }] }\nexport fn collect(f: Fn, xs: List<int>) -> List<Directive> { [] }\n",
     }
     mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av"]), "/w", avra())
     ws.program("/w/src/main.av")
@@ -85,17 +89,26 @@ spec "features/annotations — the compile-time call's laws" {
     }
     given "declaration generation" {
         then "an annotation fn's signature IS its effect — `explain @name`" {
-            let p = packaged(directive_use() + "fn traced(f: Fn, label: string) -> List<Directive> { [] }\n" +
-                             "@traced(\"sum\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
+            let p = packaged(directive_use() + "@traced(\"sum\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
             p.explain_annotation("traced") == "fn traced(Fn, string) -> List<Directive>"
+        }
+        then "a generated twin lists with its provenance" {
+            let p = packaged(directive_use() + "@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
+            let lines = p.generated_lines(p.entry_file()!.view.file)
+            lines.length == 1 && lines[0].contains("sum_traced") && lines[0].contains("@traced")
+        }
+        then "a declaration-making annotation fn in the same file is refused, not ignored" {
+            refused_n(directive_use() +
+                      "fn gen(f: Fn) -> List<Directive> { [] }\n" +
+                      "@gen\nfn sum() -> int { 1 }\nsum()",
+                      "generates declarations and stands in this file", 1)
         }
         then "an undeclared annotation name explains to nothing" {
             let p = packaged(directive_use() + "1")
             p.explain_annotation("ghost") == null
         }
         then "a declaration-making annotation reaches only literals" {
-            refused_n(directive_use() + "fn gen(f: Fn, xs: List<int>) -> List<Directive> { [] }\n" +
-                      "@gen([1, 2])\nfn answer() -> int { 1 }\nanswer()",
+            refused_n(collect_use() + "@collect([1, 2])\nfn answer() -> int { 1 }\nanswer()",
                       "generates declarations, so its arguments come from the source alone", 1)
         }
     }

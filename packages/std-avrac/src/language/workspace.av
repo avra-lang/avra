@@ -872,7 +872,7 @@ impl Workspace {
                         .Ok(crossed) -> {
                             for directive in self.decls.directives_of(crossed, w.ret) {
                                 if !directive.twin.is_empty() {
-                                    made.push(self.decls.mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, w.at))
+                                    made.push(self.decls.mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, self.decls.decl(w.ann).name, w.at))
                                 }
                             }
                         },
@@ -1431,6 +1431,24 @@ impl Program {
         if sig == null { return null }
         let holes = [decls.types.name_of(pt) for pt in sig!.params]
         "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig!.ret)}"
+    }
+
+    /// A file's generated declarations, each a line with its origin —
+    /// what `avra expand` prints today, before the source printer.
+    fn generated_lines(f: FileId) -> List<string> {
+        [self.decl_line(d) for d in self.ws.expanded(f)]
+    }
+
+    /// One generated declaration as `fn name(params) -> ret`, its
+    /// provenance appended.
+    fn decl_line(d: DeclId) -> string {
+        let decls = self.ws.decls
+        let sig: FnSig? = fn_sig_of(decls.sig(d))
+        let holes = if sig == null { [] } else { [decls.types.name_of(pt) for pt in sig!.params] }
+        let ret = if sig == null { "?" } else { decls.types.name_of(sig!.ret) }
+        let prov = decls.provenance_of(d)
+        let from = if prov == null { "" } else { "   // from @${prov!.ann} on ${prov!.original}" }
+        "fn ${decls.decl(d).name}(${holes.join(", ")}) -> ${ret}${from}"
     }
 
     fn clean() -> bool { self.defects.is_empty() && !has_errors(self.voices) && !self.files.any(unclean(it)) }

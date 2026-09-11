@@ -5,7 +5,7 @@
 //! like a const's value; and what it ANSWERS is its effect — `void`
 //! records, `List<Diagnostic>` validates. The law
 //! satisfied, the call runs, and what it said is spoken here.
-use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt, is_literal}
+use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt, is_literal, same_file}
 use features.{TypeCx, fn_sig_of, FnSig, Said, Unsettled, nothing}
 use diagnostics.{refusal, loc_at}
 use @std.errors.{Loc}
@@ -47,14 +47,18 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
         return
     }
     // A DECLARES ANNOTATION runs inside the resolve its generated
-    // names serve, so it reaches only what the parse tree holds. A
-    // computed argument is refused here, before the expansion would
-    // ask for typed answers that do not exist yet.
-    let computed = match effect! {
-        .Declares -> a.args.any((e: ExprId) -> !is_literal(cx.view.store.expr(e))),
+    // names serve, so it reaches only what the parse tree holds — and
+    // its fn must stand in ANOTHER file, or it would need this file's
+    // names while they are still being made.
+    let declares = match effect! {
+        .Declares -> true,
         .Records or .Validates -> false,
     }
-    if computed {
+    if declares && same_file(cx.view.decls.decl(d).file, cx.view.file) {
+        same_file_annotation(cx, a)
+        return
+    }
+    if declares && a.args.any((e: ExprId) -> !is_literal(cx.view.store.expr(e))) {
         computed_argument(cx, a)
         return
     }
@@ -184,6 +188,16 @@ fn computed_argument(mut cx: TypeCx, a: Annotation) {
                        seats_law(),
                        "`${a.name}` generates declarations, so its arguments come from the source alone",
                        "a computed argument needs typed answers that do not exist until the name it makes is known"))
+}
+
+/// A declaration-generating annotation's fn must stand in another
+/// file: expanding needs its signature, which needs this file's names,
+/// which are the very thing still being resolved.
+fn same_file_annotation(mut cx: TypeCx, a: Annotation) {
+    let _ = cx.spoken(refusal("annotation.seats", at_annotation(cx, a),
+                       seats_law(),
+                       "`${a.name}` generates declarations and stands in this file",
+                       "declare the annotation fn in another file — expanding it needs this file's names, which are still being made"))
 }
 
 fn wrong_answer(mut cx: TypeCx, a: Annotation, ret: TypeId) {

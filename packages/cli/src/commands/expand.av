@@ -1,0 +1,31 @@
+//! `avra expand <file>` — the file as compiled, its generated
+//! declarations shown beside the written ones. The source printer
+//! (§4.6 of the comptime design) is owed; this lists the generated
+//! declarations and their provenance until it lands.
+use @std.cli.{Subcommand, CliResult, Runnable}
+use @std.avrac.language.{Program}
+use @std.io.{println}
+
+type ExpandCmd = { }
+
+impl Runnable for ExpandCmd {
+    fn run(args: CliResult) -> int { phased(args, "expand", expanded) }
+}
+
+fn expanded(p: Program) -> Result<int, string> {
+    let entered = p.entry_file()
+    if entered == null { fail "the program is empty" }
+    let a = entered!
+    let lines = p.generated_lines(a.view.file)
+    if lines.is_empty() {
+        println("${a.view.source.file} — no generated declarations")
+        return 0
+    }
+    println("${a.view.source.file} — ${lines.length} generated")
+    for l in lines { println("  ${l}") }
+    0
+}
+
+export fn expand_command() -> Subcommand {
+    Subcommand { meta: file_command("expand", "Print a file as compiled — its generated declarations"), body: ExpandCmd { } }
+}
