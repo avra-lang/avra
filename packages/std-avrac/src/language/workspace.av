@@ -16,7 +16,7 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, TypeRef}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -88,6 +88,7 @@ export type Workspace = {
     lift_specs: Map<string, int>,
     lift_asks: List<LiftAsk>,
     lift_results: Memo<LiftResult>,
+    expansions: Memo<List<DeclId>>,
     settle_specs: Map<string, int>,
     settle_asks: List<SettleAsk>,
     settlements: Memo<Settlement>,
@@ -170,6 +171,7 @@ enum Family {
     Lifted
     Manifest
     Receivers
+    Expanded
 }
 
 fn key(f: Family, arg: int) -> Key {
@@ -195,6 +197,7 @@ fn ordinal(f: Family) -> int {
         .Lifted -> 14,
         .Manifest -> 15,
         .Receivers -> 16,
+        .Expanded -> 17,
     }
 }
 
@@ -202,7 +205,7 @@ fn ordinal(f: Family) -> int {
 fn families() -> List<Family> {
     let all: List<Family> = [Family.Source, Family.Parsed, Family.Items, Family.Namespace, Family.Visible, Family.Resolved,
                              Family.Sig, Family.Methods, Family.Typed, Family.ConstTyped, Family.Folded, Family.Analysis, Family.Settled, Family.Lowered, Family.Lifted, Family.Manifest,
-                             Family.Receivers]
+                             Family.Receivers, Family.Expanded]
     all
 }
 
@@ -254,6 +257,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
+        expansions: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
         settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
@@ -323,6 +327,7 @@ impl Workspace {
             .Lifted -> touch(self.lifted_at(arg)),
             .Manifest -> touch(self.manifest(arg)),
             .Receivers -> touch(self.receivers()),
+            .Expanded -> touch(self.expanded(file_at(arg))),
         }
         self.db.changed_at(key(f, arg))
     }
@@ -410,8 +415,33 @@ impl Workspace {
         match self.name_facts.start(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         touch(self.items(f))
         let p = self.parsed(f)
-        let out = resolve(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, f), self.visible(f))
+        // THE TWO-TIER SECOND LOOK: a name missing from the written
+        // namespace asks the file's generated declarations, which
+        // materialize on demand through `expanded`.
+        let miss = (name: string) -> self.generated_named(f, name)
+        let out = resolve(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, f), self.visible(f), miss)
         self.name_facts.finish(f.index, out, self.db.revision())
+    }
+
+    /// A generated declaration's id by its NAME, or none — demanded
+    /// lazily, so a program names a twin only if that name exists.
+    fn generated_named(f: FileId, name: string) -> DeclId? {
+        if !self.has_declares(f) { return null }
+        let made = self.expanded(f)
+        let found: DeclId? = made.find((d: DeclId) -> self.decls.decl(d).name == name)
+        found
+    }
+
+    /// Whether the file has ANY Declares annotation — the parse-level
+    /// prefilter that keeps the two-tier second look off the common
+    /// path: a file with no generator never demands `expanded` (and
+    /// never re-enters the namespace from inside a resolve).
+    fn has_declares(f: FileId) -> bool {
+        let p = self.parsed(f)
+        for s in p.stmts {
+            if !p.store.annotations_of(s).is_empty() { return true }
+        }
+        false
     }
 
     /// A declaration's signature, computed on first ask: the ONE place
@@ -784,6 +814,80 @@ impl Workspace {
             .Ok(r2) -> .Ok(r2),
             .Err(why) -> .Err(why),
         }
+    }
+
+    /// A file's GENERATED declarations: every Declares-annotated
+    /// WRITTEN fn's directives materialized as real twins in the file's
+    /// store and decl table — the two-tier namespace's second tier.
+    /// Memoized per file; minting is idempotent by the generated key,
+    /// so a re-run after invalidation mints nothing new.
+    fn expanded(f: FileId) -> List<DeclId> {
+        // RECURSIVE: `expanded` is demanded from INSIDE a resolve's
+        // miss — a two-tier lookup — and the namespace the materializer
+        // walks is itself a dependency of that resolve. The kernel's
+        // recursion guard makes the re-entry a SMALLER view (an empty
+        // expansion for the resolve in flight), never a trap.
+        match self.expansions.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        let p = self.parsed(f)
+        let vis = self.visible(f)
+        mut made: List<DeclId> = []
+        for d in self.decls.decls_of_file(f) {
+            for w in self.declared_work(f, d, p, vis) {
+                match self.lifted(w.ann, f, w.stmt, w.callee, w.args) {
+                    .Ok(crossed) -> {
+                        for directive in self.decls.directives_of(crossed, w.ret) {
+                            if !directive.twin.is_empty() {
+                                made.push(self.decls.mint_generated(f, directive.twin, w.params, w.answer, w.original, w.label, w.at))
+                            }
+                        }
+                    },
+                    .Err(_) -> { let _ = 0 },
+                }
+            }
+        }
+        self.expansions.finish(f.index, made, fp(31, [d.index for d in made]))
+        made
+    }
+
+    /// A written fn's Declares annotation, as the materializer's
+    /// inputs — nothing when the annotation is not a generator.
+    fn declared_work(f: FileId, d: DeclId, p: Parsed, vis: Namespace) -> List<DeclareWork> {
+        let x = self.decls.decl(d)
+        let anns = p.store.annotations_of(x.stmt)
+        if anns.is_empty() { return [] }
+        let params = declared_params(p.store, x.stmt)
+        let ret: TypeRef? = p.store.fn_parts(x.stmt)?.ret
+        if ret == null { return [] }
+        mut out: List<DeclareWork> = []
+        for a in anns {
+            let callee_name: string? = p.store.ident_name(a.callee)
+            if callee_name != null {
+                let ann_decl: DeclId? = vis.fns.get(callee_name!)
+                // A callee from the SAME FILE would need this very
+                // file's resolved names to sign — the cycle the kernel
+                // trips on. The two-tier expansion is for PROVIDER
+                // annotations (std-meta's `traced`), whose sig lives in
+                // another, computable file.
+                if ann_decl != null && !same_file(self.decls.decl(ann_decl!).file, f) {
+                    let asig = fn_sig_of(self.decls.sig(ann_decl!))
+                    if asig != null && self.is_declares(asig!.ret) {
+                        out.push(DeclareWork {
+                            ann: ann_decl!, stmt: x.stmt, callee: a.callee, args: a.args,
+                            ret: asig!.ret, params: params, answer: ret!, original: x.name, label: x.name,
+                            at: a.span ?? p.store.stmt_span(x.stmt),
+                        })
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether a return type is `List<Directive>` — the Declares cue.
+    fn is_declares(ret: TypeId) -> bool {
+        let elem: TypeId? = elem_of(self.decls.types, ret)
+        if elem == null { return false }
+        match self.decls.types.shape_of(elem!) { .Struct(_, declared) -> declared == "Directive", rest -> false }
     }
 
     /// The declaration at `s` as the value the fn's first seat asks

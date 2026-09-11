@@ -4,7 +4,7 @@
 //! worklist (a fresh value in its context, handed back with the
 //! body), so an enqueue is a write in place, never through a shared
 //! box; `seen` keys by mangled name, once per body.
-use core.{ExprId, TypeId, DeclId, FileId, StmtId}
+use core.{ExprId, TypeId, DeclId, FileId, StmtId, TypeRef, Param, Span}
 use @std.errors.{Loc}
 
 /// One body WANTED — the unit of lowering: a declaration's body (or
@@ -20,6 +20,13 @@ export enum Unsettled { Reach(string), Budget(string), Trap(string), Spoken }
 /// The unit a const's initializer lowers as, named for its statement.
 export fn const_symbol(f: FileId, s: StmtId) -> string {
     "const$${f.index}$${s.index}"
+}
+
+/// A generated declaration's table key — under no WRITTEN name can
+/// collide, so a twin mints once and re-minting is identity.
+/// `name` is the generated fn's TWIN name.
+export fn generated_key(f: FileId, name: string) -> string {
+    "generated$${f.index}$${name}"
 }
 
 /// The unit an expression lowers as on its own — an annotation's
@@ -89,6 +96,17 @@ impl MetaHeap {
 /// What a lifted call SAID about a declaration: one diagnostic, in
 /// the annotation's own words, at the place it chose.
 export type Said = { message: string, help: string?, at: Loc? }
+
+/// A DIRECTIVE a Declares annotation asked the compiler to fulfil —
+/// a fn's wrapped twin, an impl's projection. The compiler's own
+/// view of the crossing: `@std/meta`'s spellable `Directive` ships
+/// the same fields; the materializer mints a twin from them. (NOT
+/// `Decl` — that is the compiler's own declaration record.)
+export type Directive = { twin: string, name: string, at: Loc? }
+
+/// One generated fn's materializer inputs, gathered from a written
+/// declaration and its Declares annotation.
+export type DeclareWork = { ann: DeclId, stmt: StmtId, callee: ExprId, args: List<ExprId>, ret: TypeId, params: List<Param>, answer: TypeRef, original: string, label: string, at: Span? }
 
 /// One body's worklist: the bodies it wants, the lambdas it lifted,
 /// the wrappers it minted, and the names it has already asked for.
