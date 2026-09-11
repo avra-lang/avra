@@ -709,7 +709,10 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       and PROVENANCE (S3f's other half): `mint_generated` records
       `Provenance { ann, original, at }` per generated declaration, and
       `avra expand <file>` lists them — `fn sum_traced(int, int) ->
-      int   // from @traced on sum`. REMAINING: the node SOURCE
+      int   // from @traced on sum`. The source printer's foundation
+      is pinned: source quoting protects interpolation openers, and a
+      written type spells `dyn`, fn arrows, and `mut` seats without
+      losing them. REMAINING: the node SOURCE
       PRINTER (`avra expand` echoes the listing, not the file; the
       printer also unblocks `fmt`), and doc comments (not stored), so
       `explain @name` prints the signature alone.

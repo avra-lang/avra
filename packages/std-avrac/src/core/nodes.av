@@ -375,10 +375,19 @@ export fn plain(t: TypeRef) -> TypeRef {
 
 /// A written type, spelled back — what a diagnostic quotes.
 export fn spelled(t: TypeRef) -> string {
-    let base = if t.args.is_empty() { t.name }
+    let base = if t.arrow { spelled_arrow(t) }
+               else if t.args.is_empty() { "${if t.dynamic { "dyn " } else { "" }}${t.name}" }
                else { "${t.name}<${joined([spelled(a) for a in t.args], ", ")}>" }
     if t.optional { return "${base}?" }
     base
+}
+
+/// A fn type's arguments are its seats followed by its answer.
+fn spelled_arrow(t: TypeRef) -> string {
+    let n = t.args.length
+    if n == 0 { return "fn()" }
+    let seats = ["${if marked(t.muts, j) { "mut " } else { "" }}${spelled(a)}" for j, a in t.args.slice(0, n - 1)]
+    "fn(${joined(seats, ", ")}) -> ${spelled(t.args[n - 1])}"
 }
 
 /// The pronoun's own seat — what an implicit `it` lambda declares.
