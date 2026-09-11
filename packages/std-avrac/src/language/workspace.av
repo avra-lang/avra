@@ -16,7 +16,7 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, TypeRef}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, Said, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -806,7 +806,7 @@ impl Workspace {
             slots.push(match n {
                 "name" -> MetaVal.Text(x.name),
                 "at" -> at,
-                "answer" -> self.crossed_answer(v, s, heap),
+                "answer" -> self.crossed_answer(v, s),
                 "params" -> self.crossed_params(v, d, sig.types[i], heap),
                 "fields" -> self.crossed_fields(v, d, sig.types[i], heap),
                 "variants" -> self.crossed_variants(v, d, sig.types[i], heap),
@@ -818,12 +818,8 @@ impl Workspace {
 
     /// A fn's answer, spelled from its declared TypeRef — a store read
     /// alone, so crossing a declaration needs no typed facts.
-    fn crossed_answer(v: FileView, s: StmtId, mut heap: MetaHeap) -> MetaVal {
-        let ret: TypeRef? = v.store.fn_parts(s)?.ret
-        if ret == null { return MetaVal.Absent }
-        let held: TypeId? = spelled_type(self.decls.types, ret!)
-        if held == null { return MetaVal.Absent }
-        MetaVal.Text(self.decls.types.name_of(held!))
+    fn crossed_answer(v: FileView, s: StmtId) -> MetaVal {
+        typed_meta(self.decls.types, v.store.fn_parts(s)?.ret)
     }
 
     /// A fn's parameters as `Param` values: name, the type's spelling,
@@ -837,18 +833,10 @@ impl Workspace {
         let params = declared_params(v.store, self.decls.decl(d).stmt)
         heap.node([meta_row(heap, shape, {
             "name": MetaVal.Text(params[i].name),
-            "ty": self.param_ty(v, params[i], heap),
+            "ty": typed_meta(self.decls.types, params[i].ty),
             "mutable": MetaVal.Bool(params[i].mutable),
             "at": self.crossed_loc(v, params[i].span, heap),
         }) for i in 0..params.length])
-    }
-
-    /// A parameter's type, spelled from its declared TypeRef — the
-    /// same store-only read `crossed_answer` uses.
-    fn param_ty(v: FileView, p: Param, mut heap: MetaHeap) -> MetaVal {
-        let held: TypeId? = spelled_type(self.decls.types, p.ty)
-        if held == null { return MetaVal.Absent }
-        MetaVal.Text(self.decls.types.name_of(held!))
     }
 
     /// A record's fields as `Field` values.
@@ -1583,7 +1571,7 @@ fn settle_steps() -> int { 10000000 }
 /// An annotation answer's structural fingerprint for early cutoff.
 fn lift_hash(r: LiftResult) -> int {
     match r {
-        .Crossed(c) -> fp(43, [meta_hash(c.heap, c.answer)]),
+        .Crossed(c) -> fp(77, [meta_hash(c.heap, c.answer)]),
         .Refused(why) -> fp(47, [unsettled_hash(why)]),
     }
 }
@@ -1592,13 +1580,13 @@ fn lift_hash(r: LiftResult) -> int {
 /// the evaluator's fingerprinting is to a recalculation's early cutoff.
 fn meta_hash(heap: MetaHeap, v: MetaVal) -> int {
     match v {
-        .Int(n) -> fp(2, [n]),
-        .Float(bits) -> fp(3, [bits]),
-        .Bool(b) -> fp(4, [if b { 1 } else { 0 }]),
-        .Text(s) -> fp(5, [fp_str(s)]),
-        .Node(id) -> fp(6, [meta_hash(heap, x) for x in heap.nodes[id]]),
-        .Map(id) -> fp(8, [fp_str(k) for k in heap.maps[id].keys].concat([meta_hash(heap, x) for x in heap.maps[id].values])),
-        .Absent -> fp(9, []),
+        .Int(n) -> fp(74, [n]),
+        .Float(bits) -> fp(75, [bits]),
+        .Bool(b) -> fp(76, [if b { 1 } else { 0 }]),
+        .Text(s) -> fp(78, [fp_str(s)]),
+        .Node(id) -> fp(79, [meta_hash(heap, x) for x in heap.nodes[id]]),
+        .Map(id) -> fp(81, [fp_str(k) for k in heap.maps[id].keys].concat([meta_hash(heap, x) for x in heap.maps[id].values])),
+        .Absent -> fp(83, []),
     }
 }
 
@@ -1607,15 +1595,6 @@ fn settlement_hash(s: Settlement) -> int {
         .Held(value) -> fp(41, [value.fingerprint]),
         .Refused(why) -> fp(73, [unsettled_hash(why)]),
     }
-}
-
-fn said_hash(x: Said) -> int {
-    let at = x.at
-    let place = if at == null { [] } else {
-        let loc = at!
-        [fp_str(loc.file ?? ""), loc.lo, loc.hi]
-    }
-    fp(53, [fp_str(x.message), fp_str(x.help ?? "")].concat(place))
 }
 
 fn unsettled_hash(why: Unsettled) -> int {
@@ -1633,6 +1612,15 @@ fn unsettled_hash(why: Unsettled) -> int {
 /// reader (`field_of`) agrees by the name, never by a position.
 fn meta_row(heap: MetaHeap, shape: StructSig, filled: Map<string, MetaVal>) -> MetaVal {
     heap.node([filled.get(n) ?? MetaVal.Absent for n in shape.names])
+}
+
+/// A declared TypeRef as the crossing's text value — parsed from the
+/// STORE alone, absent when the word names a type only the namespace
+/// knows. The same read `crossed_answer` makes.
+fn typed_meta(types: TypeRegistry, ann: TypeRef?) -> MetaVal {
+    let held: TypeId? = spelled_type(types, ann)
+    if held == null { return MetaVal.Absent }
+    MetaVal.Text(types.name_of(held!))
 }
 
 /// A fn declaration's parameters, with their source spans.

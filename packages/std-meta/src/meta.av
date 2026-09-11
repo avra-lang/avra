@@ -17,7 +17,9 @@
 //! An ANNOTATION `@short` above a fn calls `short` over that fn at
 //! compile time: the fn's first seat says what it takes (`Fn`, or
 //! `Type` for a record or enum), and what it answers is its effect —
-//! `List<Diagnostic>` validates, `void` records only.
+//! `List<Diagnostic>` validates, `void` records. The `Decl`/
+//! `traced` pair (generation) ships here parked: a `List<Decl>`
+//! answer is refused loudly until its materializer lands (S3e).
 
 use @std.errors.{Loc}
 
@@ -67,15 +69,18 @@ export fn embed(path: string) -> string {
 
 /// A fn the COMPILER is asked to add beside its source — the
 /// declaration-producing answer. Its ONE directive today: `traced`,
-/// a wrapped twin calling the original under `puts`. A directive is
-/// its own record type (the answer-type IS the census arm), so this
-/// record's fields are exactly what "trace" needs — a duplicate, a
-/// name, and the site.
+/// a wrapped twin calling the original between puts. Landed with the
+/// Declares census arm; the materializer that consumes THIS list is
+/// S3e (RECORDED TRIGGER: the '@traced' proof in the annotations
+/// active list). The twin's name must be SPELLABLE — a generated
+/// name from the directive, never a `$`-mangle.
 export type Decl = { twin: string, name: string, at: Loc? }
 
 /// The trace directive's decoder: `@traced("label")` on `fn sum`
-/// asks for a sibling `fn sum$traced` calling `sum` between the
-/// label's puts.
-export fn traced(f: Fn, label: string) -> Decl {
-    Decl { twin: "${f.name}$traced", name: f.name, at: f.at }
+/// asks for a sibling named `sum_traced` calling `sum` between the
+/// label's puts. Answers a LIST — the effect is `List<Decl>` once
+/// S3e lands; until then an annotation answering it is refused
+/// loudly, never dropped.
+export fn traced(f: Fn, label: string) -> List<Decl> {
+    [Decl { twin: "${f.name}_traced", name: f.name, at: f.at }]
 }

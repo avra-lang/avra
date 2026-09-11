@@ -16,7 +16,7 @@ fn packaged(source: string) -> Program {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
         "/w/src/main.av": source,
         "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
-        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc? }\n",
+        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc? }\nexport type Decl = { twin: string, name: string, at: Loc? }\n",
     }
     mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av"]), "/w", avra())
     ws.program("/w/src/main.av")
@@ -33,6 +33,14 @@ fn refused_at(source: string, phrase: string, line: int) -> bool {
     let ds = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
     let report = p.report()
     ds.length == 1 && report.contains(phrase) && report.contains("main.av:${line}")
+}
+
+/// `refused`, with a pinned COUNT — a refusal test proves both the
+/// words and that a cascade did not hide behind them.
+fn refused_n(source: string, phrase: string, n: int) -> bool {
+    let p = packaged(source)
+    let ds = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
+    ds.length == n && p.report().contains(phrase)
 }
 
 spec "features/annotations — the compile-time call's laws" {
@@ -65,6 +73,10 @@ spec "features/annotations — the compile-time call's laws" {
                       "fn mark(f: Fn) -> List<Diagnostic> { [] }\n" +
                       "@mark\nfn answer() -> int { 1 }\nanswer()"
             refused(src, "not `List<@std.meta.Diagnostic>`")
+        }
+        then "an unimplemented generation effect refuses loudly, never a quiet drop" {
+            refused_n(meta_use() + "fn mark(f: Fn) -> List<Decl> { [] }\n@mark\nfn answer() -> int { 1 }\nanswer()",
+                      "answers an effect", 2)
         }
     }
     given "validation" {

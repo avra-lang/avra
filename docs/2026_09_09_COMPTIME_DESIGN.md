@@ -658,6 +658,13 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
   (const seats: `matches(const pattern, s)`), then the later list
   (static aggregate data, JIT, type operators, sublanguage holes,
   manifest read grants, parallel settlement, `@total`).
+- RECORDED TRIGGER (S3e): the `Declares` effect re-lands when its
+  materializer does — `@std/meta`'s `Decl`/`traced` ship PARKED today
+  (a `List<Decl>` answer refuses loudly, F2068, named survivor test
+  in annotations_adversarial_test), and the gate's census gains the
+  `Declares` arm back the moment `expanded` consumes it. The twin's
+  name must be SPELLABLE (a `$`-mangle cannot appear in user code,
+  F0001) — the '@traced' proof calls `sum_traced`.
 
 Order rationale: S1 is what the owner already queued (ROADMAP:8218,
 "NEXT: comptime (`const`, evaluated at compile time)") and proves the
