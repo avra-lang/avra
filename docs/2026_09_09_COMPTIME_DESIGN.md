@@ -777,11 +777,16 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       over the annotated declaration and materializes the directives
       it answers (stack `@derive` for more traits; a list seat is a
       follow-up). A trait's `derive` stands in ANOTHER file — the
-      provider law — and a same-file one speaks. The trait's `derive`
-      answers compiler-owned `Directive`s today. NEXT, in order: (3)
-      the quote literal, `${}` holes, template store and splice — so a
-      trait's `derive` can answer a USER template; (4) the first
-      user-visible derive (`Show`).
+      provider law — and a same-file one speaks. S4d LANDED — the
+      TEMPLATE PRIMITIVE: a `Directive` may carry `code`, generated
+      SOURCE; the compiler parses it INTO the annotated file's store
+      (`parse_into`, no cross-store copy), admits its declarations,
+      and they type and run as written. A trait's `derive` builds that
+      source with ordinary interpolation today; a program test has
+      `@derive(Show)` generate `fn show` on a struct. NEXT: the
+      `quote { ... }` surface with `${}` code holes (so a derive need
+      not hand-build strings), then `Code<T>` claim + origin hygiene,
+      then `@derive(Show, Eq)` in std.
 - [ ] **S1 leftovers (small, fold in).** The reach refusal's full
       call chain (names each link, not just row+body) — the one
       "world" voice annotations share; and `export const` (waits on

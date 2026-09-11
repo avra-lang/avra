@@ -401,6 +401,58 @@ impl Decls {
         held
     }
 
+    // ── generated source, parsed and admitted ──
+
+    /// Generated SOURCE admitted beside the declaration that asked for
+    /// it: the code was parsed INTO this file's store (no copy), so the
+    /// declarations mint from the same arena every pass already reads.
+    fn mint_generated_code(f: FileId, store: NodeStore, stmts: List<StmtId>, lo: int, hi: int, ann: string, at: Span?) -> List<DeclId> {
+        mut made: List<DeclId> = []
+        let path = self.file(f).path
+        for s in stmts {
+            let kind: DeclKind? = store.declared_kind(s)
+            if kind != null {
+                let k = kind!
+                let name = store.declared_name(s) ?? ""
+                let key = generated_key(f, name)
+                let d = self.mint(key, f, s, name, k, false, "", null, false, store.fn_parts(s)?.body)
+                self.decls.set(d.index, self.decl(d) with { lo: lo, hi: hi })
+                self.provenance.set(d.index, Provenance { ann: ann, original: name, at: at })
+                made.push(d)
+                let fns: List<StmtId> = store.trait_parts(s)?.fns ?? []
+                made = made.concat([self.mint_method(key, f, store, m, name, d, declared_body(store, m)) for m in fns])
+            }
+            let ip: ImplParts? = store.impl_parts(s)
+            if ip != null {
+                let block = ip!
+                let key = generated_key(f, "${block.target}$$impl")
+                let block_decl = self.mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
+                self.provenance.set(block_decl.index, Provenance { ann: ann, original: block.target, at: at })
+                made.push(block_decl)
+                made = made.concat([self.mint_method(key, f, store, m, block.target, block_decl, store.fn_parts(m)?.body) for m in block.fns])
+            }
+        }
+        // EVERY generated declaration wears the generated RANGE: the
+        // block's nodes are contiguous and already past the written
+        // ones, so typing and lowering read them exactly as written.
+        for d in made { self.decls.set(d.index, self.decl(d) with { lo: lo, hi: hi }) }
+        // THE STATEMENT TABLE grows to the arena, and each generated
+        // declaration joins the file's list so items and lowering see it.
+        mut by_stmt = self.decl_ids[f.index]
+        if by_stmt.length < store.stmts.count() {
+            by_stmt = by_stmt.concat(filled<DeclId?>(store.stmts.count() - by_stmt.length, null))
+        }
+        for d in made {
+            let x = self.decl(d)
+            by_stmt.set(x.stmt.index, d)
+        }
+        self.decl_ids.set(f.index, by_stmt)
+        let file_list = self.file_decls[f.index].concat(made)
+        self.file_decls.set(f.index, file_list)
+        let _ = path
+        made
+    }
+
     /// A GENERATED declaration — an annotation's traced twin — minted
     /// into its file's store and decl table under a key no WRITTEN
     /// name can take. The body is the wrap: the original's own call,
@@ -591,6 +643,7 @@ impl Decls {
             twin: self.text_of_meta(self.field_of(heap, sig, item, "twin")),
             name: self.text_of_meta(self.field_of(heap, sig, item, "name")),
             at: self.loc_of_meta(heap, self.field_of(heap, sig, item, "at")),
+            code: self.optional_text(self.field_of(heap, sig, item, "code")),
         }
     }
 

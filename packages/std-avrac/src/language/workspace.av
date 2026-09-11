@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, int_of, text_of, bool_of, bits_of, is_literal, Annotation, Binding}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, int_of, text_of, bool_of, bits_of, is_literal, Annotation, Binding, named_ref}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
@@ -932,7 +932,9 @@ impl Workspace {
                 if source_known {
                     let directives: List<Directive> = if self.is_derived(w.ret) { self.derive_directives(w, f, p, vis) } else { self.lifted_directives(w, f) }
                     for directive in directives {
-                        if !directive.twin.is_empty() {
+                        if directive.code != null {
+                            made = made.concat(self.admit_code(f, directive.code!, self.decls.decl(w.ann).name, w.at))
+                        } else if !directive.twin.is_empty() {
                             made.push(self.decls.mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, self.decls.decl(w.ann).name, w.at))
                         }
                     }
@@ -949,10 +951,12 @@ impl Workspace {
         let x = self.decls.decl(d)
         let anns = p.store.annotations_of(x.stmt)
         if anns.is_empty() { return [] }
+        // A code directive needs no declaration shape; a twin walks a
+        // FN, so a type's twin reads empty seats and a `void` answer.
         let parts: FnParts? = p.store.fn_parts(x.stmt)
-        let params = declared_params(p.store, x.stmt)
-        let ret: TypeRef? = parts?.ret
-        if ret == null { return [] }
+        let params = if parts == null { [] } else { declared_params(p.store, x.stmt) }
+        let tparams: List<Param> = parts?.tparams ?? []
+        let answer: TypeRef = parts?.ret ?? named_ref("void")
         mut out: List<DeclareWork> = []
         for a in anns {
             let callee_name: string? = p.store.ident_name(a.callee)
@@ -972,7 +976,7 @@ impl Workspace {
                             if self.is_declares(sig.ret) || self.is_derived(sig.ret) {
                                 out.push(DeclareWork {
                                     ann: ann_decl, stmt: x.stmt, callee: a.callee, args: a.args,
-                                    ret: sig.ret, tparams: parts!.tparams, params: params, answer: ret!, original: x.name,
+                                    ret: sig.ret, tparams: tparams, params: params, answer: answer, original: x.name,
                                     at: a.span ?? p.store.stmt_span(x.stmt),
                                 })
                             }
@@ -994,6 +998,19 @@ impl Workspace {
     /// Whether a return type is `@std.meta.Derived` — the `@derive`
     /// cue: the compiler runs each named trait's associated `derive`.
     fn is_derived(ret: TypeId) -> bool { self.decls.meta_type(ret, "Derived") }
+
+    /// A directive's generated SOURCE parsed into this file's store —
+    /// no copy: the declarations mint from the same arena every pass
+    /// already reads. Refused source is dropped (its voices are the
+    /// template author's to fix; a later slice speaks them).
+    fn admit_code(f: FileId, code: string, ann: string, at: Span?) -> List<DeclId> {
+        mut store = self.decls.store_of(f)
+        let lo = store.exprs.count()
+        let p = parse_into(self.lang, store, new_source_file("<generated>", code))
+        if !p.voices.list.is_empty() { return [] }
+        let hi = p.store.exprs.count()
+        self.decls.mint_generated_code(f, p.store, p.stmts, lo, hi, ann, at)
+    }
 
     /// One Declares annotation's directives, run through the evaluator.
     fn lifted_directives(w: DeclareWork, f: FileId) -> List<Directive> {

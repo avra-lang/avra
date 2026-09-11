@@ -58,11 +58,18 @@ export fn new_dispatch() -> Dispatch {
 }
 
 export fn parse_program(lang: Language, src: SourceFile) -> Parsed {
+    mut store = new_node_store()
+    parse_into(lang, store, src)
+}
+
+/// Parse into a store ALREADY standing — the target file's, when a
+/// generated declaration's source is admitted beside the one that
+/// asked for it. The returned statements are the newly minted ones.
+export fn parse_into(lang: Language, mut store: NodeStore, src: SourceFile) -> Parsed {
     if lang.syntax == null {
-        return Parsed { store: new_node_store(), stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
+        return Parsed { store: store, stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
     }
     let lexed = lex_source(src.text)
-    mut store = new_node_store()
     let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span)
     let o = run_grammar<LangNode>(lang.syntax!, lexed.tokens, build)
     attach_docs(store, lexed.docs)
